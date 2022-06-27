@@ -1,0 +1,307 @@
+-- basic builtin datatypes
+SELECT * FROM pglogical_regress_variables()
+\gset
+\c :provider_dsn
+CREATE TABLE public.basic_dml (
+	id serial primary key,
+	other integer,
+	data text,
+	something interval
+);
+-- fails as primary key is not included
+SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml', columns := '{ data, something}');
+ERROR:  REPLICA IDENTITY columns must be replicated
+SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml', columns := '{id, data, something}');
+ replication_set_add_table 
+---------------------------
+ t
+(1 row)
+
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+CREATE TABLE public.basic_dml (
+	id serial primary key,
+	data text,
+	something interval,
+	subonly integer,
+	subonly_def integer DEFAULT 99
+);
+\c :provider_dsn
+-- check basic insert replication
+INSERT INTO basic_dml(other, data, something)
+VALUES (5, 'foo', '1 minute'::interval),
+       (4, 'bar', '12 weeks'::interval),
+       (3, 'baz', '2 years 1 hour'::interval),
+       (2, 'qux', '8 months 2 days'::interval),
+       (1, NULL, NULL);
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data, something FROM basic_dml ORDER BY id;
+ id | data |    something     
+----+------+------------------
+  1 | foo  | @ 1 min
+  2 | bar  | @ 84 days
+  3 | baz  | @ 2 years 1 hour
+  4 | qux  | @ 8 mons 2 days
+  5 |      | 
+(5 rows)
+
+-- update one row
+\c :provider_dsn
+UPDATE basic_dml SET other = '4', data = NULL, something = '3 days'::interval WHERE id = 4;
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data, something FROM basic_dml ORDER BY id;
+ id | data |    something     
+----+------+------------------
+  1 | foo  | @ 1 min
+  2 | bar  | @ 84 days
+  3 | baz  | @ 2 years 1 hour
+  4 |      | @ 3 days
+  5 |      | 
+(5 rows)
+
+-- update multiple rows
+\c :provider_dsn
+SELECT * FROM basic_dml order by id;
+ id | other | data |    something     
+----+-------+------+------------------
+  1 |     5 | foo  | @ 1 min
+  2 |     4 | bar  | @ 84 days
+  3 |     3 | baz  | @ 2 years 1 hour
+  4 |     4 |      | @ 3 days
+  5 |     1 |      | 
+(5 rows)
+
+UPDATE basic_dml SET data = data || other::text;
+SELECT * FROM basic_dml order by id;
+ id | other | data |    something     
+----+-------+------+------------------
+  1 |     5 | foo5 | @ 1 min
+  2 |     4 | bar4 | @ 84 days
+  3 |     3 | baz3 | @ 2 years 1 hour
+  4 |     4 |      | @ 3 days
+  5 |     1 |      | 
+(5 rows)
+
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data, something FROM basic_dml ORDER BY id;
+ id | data |    something     
+----+------+------------------
+  1 | foo5 | @ 1 min
+  2 | bar4 | @ 84 days
+  3 | baz3 | @ 2 years 1 hour
+  4 |      | @ 3 days
+  5 |      | 
+(5 rows)
+
+\c :provider_dsn
+UPDATE basic_dml SET other = id, data = data || id::text;
+SELECT * FROM basic_dml order by id;
+ id | other | data  |    something     
+----+-------+-------+------------------
+  1 |     1 | foo51 | @ 1 min
+  2 |     2 | bar42 | @ 84 days
+  3 |     3 | baz33 | @ 2 years 1 hour
+  4 |     4 |       | @ 3 days
+  5 |     5 |       | 
+(5 rows)
+
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data, something FROM basic_dml ORDER BY id;
+ id | data  |    something     
+----+-------+------------------
+  1 | foo51 | @ 1 min
+  2 | bar42 | @ 84 days
+  3 | baz33 | @ 2 years 1 hour
+  4 |       | @ 3 days
+  5 |       | 
+(5 rows)
+
+\c :provider_dsn
+UPDATE basic_dml SET other = id, something = something - '10 seconds'::interval WHERE id < 3;
+UPDATE basic_dml SET other = id, something = something + '10 seconds'::interval WHERE id > 3;
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data, something, subonly, subonly_def FROM basic_dml ORDER BY id;
+ id | data  |     something      | subonly | subonly_def 
+----+-------+--------------------+---------+-------------
+  1 | foo51 | @ 50 secs          |         |          99
+  2 | bar42 | @ 84 days -10 secs |         |          99
+  3 | baz33 | @ 2 years 1 hour   |         |          99
+  4 |       | @ 3 days 10 secs   |         |          99
+  5 |       |                    |         |          99
+(5 rows)
+
+-- delete one row
+\c :provider_dsn
+DELETE FROM basic_dml WHERE id = 2;
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data, something FROM basic_dml ORDER BY id;
+ id | data  |    something     
+----+-------+------------------
+  1 | foo51 | @ 50 secs
+  3 | baz33 | @ 2 years 1 hour
+  4 |       | @ 3 days 10 secs
+  5 |       | 
+(4 rows)
+
+-- delete multiple rows
+\c :provider_dsn
+DELETE FROM basic_dml WHERE id < 4;
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data, something FROM basic_dml ORDER BY id;
+ id | data |    something     
+----+------+------------------
+  4 |      | @ 3 days 10 secs
+  5 |      | 
+(2 rows)
+
+-- truncate
+\c :provider_dsn
+TRUNCATE basic_dml;
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data, something FROM basic_dml ORDER BY id;
+ id | data | something 
+----+------+-----------
+(0 rows)
+
+-- copy
+\c :provider_dsn
+\COPY basic_dml FROM STDIN WITH CSV
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data, something FROM basic_dml ORDER BY id;
+  id  | data | something 
+------+------+-----------
+ 9000 | aaa  | @ 1 hour
+ 9001 | bbb  | @ 2 years
+ 9002 | ccc  | @ 3 mins
+ 9003 | ddd  | @ 4 days
+(4 rows)
+
+\c :provider_dsn
+-- drop columns being filtered at provider
+-- even primary key can be dropped
+ALTER TABLE basic_dml DROP COLUMN id;
+ALTER TABLE basic_dml DROP COLUMN data;
+\c :subscriber_dsn
+SELECT id, data, something FROM basic_dml ORDER BY id;
+  id  | data | something 
+------+------+-----------
+ 9000 | aaa  | @ 1 hour
+ 9001 | bbb  | @ 2 years
+ 9002 | ccc  | @ 3 mins
+ 9003 | ddd  | @ 4 days
+(4 rows)
+
+\c :provider_dsn
+-- add column to table at provider
+ALTER TABLE basic_dml ADD COLUMN data1 text;
+INSERT INTO basic_dml(other, data1, something)
+VALUES (5, 'foo', '1 minute'::interval),
+       (4, 'bar', '12 weeks'::interval);
+-- inserts after dropping primary key still reach the subscriber.
+UPDATE basic_dml set something = something - '10 seconds'::interval;
+DELETE FROM basic_dml WHERE other = 2;
+SELECT * FROM basic_dml ORDER BY other;
+ other |     something      | data1 
+-------+--------------------+-------
+     1 | @ 59 mins 50 secs  | 
+     3 | @ 2 mins 50 secs   | 
+     4 | @ 4 days -10 secs  | 
+     4 | @ 84 days -10 secs | bar
+     5 | @ 50 secs          | foo
+(5 rows)
+
+SELECT nspname, relname, att_list, has_row_filter FROM pglogical.show_repset_table_info('basic_dml', ARRAY['default']);
+ nspname |  relname  |  att_list   | has_row_filter 
+---------+-----------+-------------+----------------
+ public  | basic_dml | {something} | f
+(1 row)
+
+\c :subscriber_dsn
+-- verify that columns are not automatically added for filtering unless told so.
+SELECT * FROM pglogical.show_subscription_table('test_subscription', 'basic_dml');
+ nspname |  relname  | status  
+---------+-----------+---------
+ public  | basic_dml | unknown
+(1 row)
+
+SELECT * FROM basic_dml ORDER BY id;
+  id  | data | something | subonly | subonly_def 
+------+------+-----------+---------+-------------
+    1 |      | @ 1 min   |         |          99
+    2 |      | @ 84 days |         |          99
+ 9000 | aaa  | @ 1 hour  |         |          99
+ 9001 | bbb  | @ 2 years |         |          99
+ 9002 | ccc  | @ 3 mins  |         |          99
+ 9003 | ddd  | @ 4 days  |         |          99
+(6 rows)
+
+\c :provider_dsn
+\set VERBOSITY terse
+SELECT pglogical.replicate_ddl_command($$
+	DROP TABLE public.basic_dml CASCADE;
+$$);
+NOTICE:  drop cascades to table public.basic_dml membership in replication set default
+ replicate_ddl_command 
+-----------------------
+ t
+(1 row)
+

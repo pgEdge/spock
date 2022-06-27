@@ -1,0 +1,106 @@
+--test COPY
+SELECT * FROM pglogical_regress_variables()
+\gset
+\c :provider_dsn
+SELECT pglogical.replicate_ddl_command($$
+     CREATE TABLE public.x (
+	a serial primary key,
+	b int,
+	c text not null default 'stuff',
+	d text,
+	e text
+     );
+$$);
+ replicate_ddl_command 
+-----------------------
+ t
+(1 row)
+
+SELECT * FROM pglogical.replication_set_add_table('default', 'x');
+ replication_set_add_table 
+---------------------------
+ t
+(1 row)
+
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+COPY x (a, b, c, d, e) from stdin;
+COPY x (b, d) from stdin;
+COPY x (b, d) from stdin;
+COPY x (a, b, c, d, e) from stdin;
+SELECT * FROM x ORDER BY a;
+   a   | b  |   c   |    d    | e  
+-------+----+-------+---------+----
+     1 |  1 | stuff | test_1  | 
+     2 |  2 | stuff | test_2  | 
+     3 |  3 | stuff | test_3  | 
+     4 |  4 | stuff | test_4  | 
+     5 |  5 | stuff | test_5  | 
+     6 |  6 | stuff | test_6  | 
+     7 |  7 | stuff | test_7  | 
+     8 |  8 | stuff | test_8  | 
+     9 |  9 | stuff | test_9  | 
+    10 | 10 | stuff | test_10 | 
+    11 | 11 | stuff | test_11 | 
+    12 | 12 | stuff | test_12 | 
+    13 | 13 | stuff | test_13 | 
+    14 | 14 | stuff | test_14 | 
+    15 | 15 | stuff | test_15 | 
+  9999 |    | \N    | NN      | 
+ 10000 | 21 | 31    | 41      | 51
+ 10001 | 22 | 32    | 42      | 52
+ 10002 | 23 | 33    | 43      | 53
+ 10003 | 24 | 34    | 44      | 54
+ 10004 | 25 | 35    | 45      | 55
+ 10005 | 26 | 36    | 46      | 56
+(22 rows)
+
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM x ORDER BY a;
+   a   | b  |   c   |    d    | e  
+-------+----+-------+---------+----
+     1 |  1 | stuff | test_1  | 
+     2 |  2 | stuff | test_2  | 
+     3 |  3 | stuff | test_3  | 
+     4 |  4 | stuff | test_4  | 
+     5 |  5 | stuff | test_5  | 
+     6 |  6 | stuff | test_6  | 
+     7 |  7 | stuff | test_7  | 
+     8 |  8 | stuff | test_8  | 
+     9 |  9 | stuff | test_9  | 
+    10 | 10 | stuff | test_10 | 
+    11 | 11 | stuff | test_11 | 
+    12 | 12 | stuff | test_12 | 
+    13 | 13 | stuff | test_13 | 
+    14 | 14 | stuff | test_14 | 
+    15 | 15 | stuff | test_15 | 
+  9999 |    | \N    | NN      | 
+ 10000 | 21 | 31    | 41      | 51
+ 10001 | 22 | 32    | 42      | 52
+ 10002 | 23 | 33    | 43      | 53
+ 10003 | 24 | 34    | 44      | 54
+ 10004 | 25 | 35    | 45      | 55
+ 10005 | 26 | 36    | 46      | 56
+(22 rows)
+
+\c :provider_dsn
+\set VERBOSITY terse
+SELECT pglogical.replicate_ddl_command($$
+	DROP TABLE public.x CASCADE;
+$$);
+NOTICE:  drop cascades to table public.x membership in replication set default
+ replicate_ddl_command 
+-----------------------
+ t
+(1 row)
+

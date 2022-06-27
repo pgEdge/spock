@@ -1,0 +1,141 @@
+SELECT * FROM pglogical_regress_variables()
+\gset
+\c :provider_dsn
+SELECT E'\'' || current_database() || E'\'' AS pubdb;
+    pubdb     
+--------------
+ 'regression'
+(1 row)
+
+\gset
+\c :provider_dsn
+DO $$
+BEGIN
+	IF (SELECT setting::integer/100 FROM pg_settings WHERE name = 'server_version_num') = 904 THEN
+		CREATE EXTENSION IF NOT EXISTS pglogical_origin;
+	END IF;
+END;$$;
+SELECT * FROM pglogical.create_subscription(
+    subscription_name := 'test_bidirectional',
+    provider_dsn := (SELECT subscriber_dsn FROM pglogical_regress_variables()) || ' user=super',
+    synchronize_structure := false,
+    synchronize_data := false,
+    forward_origins := '{}');
+ create_subscription 
+---------------------
+          4269973126
+(1 row)
+
+BEGIN;
+SET LOCAL statement_timeout = '10s';
+SELECT pglogical.wait_for_subscription_sync_complete('test_bidirectional');
+ wait_for_subscription_sync_complete 
+-------------------------------------
+ 
+(1 row)
+
+COMMIT;
+\c :subscriber_dsn
+SELECT pglogical.replicate_ddl_command($$
+    CREATE TABLE public.basic_dml (
+        id serial primary key,
+        other integer,
+        data text,
+        something interval
+    );
+$$);
+ replicate_ddl_command 
+-----------------------
+ t
+(1 row)
+
+SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml');
+ replication_set_add_table 
+---------------------------
+ t
+(1 row)
+
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :provider_dsn
+SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml');
+ replication_set_add_table 
+---------------------------
+ t
+(1 row)
+
+-- check basic insert replication
+INSERT INTO basic_dml(other, data, something)
+VALUES (5, 'foo', '1 minute'::interval),
+       (4, 'bar', '12 weeks'::interval),
+       (3, 'baz', '2 years 1 hour'::interval),
+       (2, 'qux', '8 months 2 days'::interval),
+       (1, NULL, NULL);
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, other, data, something FROM basic_dml ORDER BY id;
+ id | other | data |    something     
+----+-------+------+------------------
+  1 |     5 | foo  | @ 1 min
+  2 |     4 | bar  | @ 84 days
+  3 |     3 | baz  | @ 2 years 1 hour
+  4 |     2 | qux  | @ 8 mons 2 days
+  5 |     1 |      | 
+(5 rows)
+
+UPDATE basic_dml SET other = id, something = something - '10 seconds'::interval WHERE id < 3;
+UPDATE basic_dml SET other = id, something = something + '10 seconds'::interval WHERE id > 3;
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :provider_dsn
+SELECT id, other, data, something FROM basic_dml ORDER BY id;
+ id | other | data |        something        
+----+-------+------+-------------------------
+  1 |     1 | foo  | @ 50 secs
+  2 |     2 | bar  | @ 84 days -10 secs
+  3 |     3 | baz  | @ 2 years 1 hour
+  4 |     4 | qux  | @ 8 mons 2 days 10 secs
+  5 |     5 |      | 
+(5 rows)
+
+\c :provider_dsn
+\set VERBOSITY terse
+SELECT pglogical.replicate_ddl_command($$
+    DROP TABLE public.basic_dml CASCADE;
+$$);
+NOTICE:  drop cascades to table public.basic_dml membership in replication set default
+ replicate_ddl_command 
+-----------------------
+ t
+(1 row)
+
+SELECT pglogical.drop_subscription('test_bidirectional');
+ drop_subscription 
+-------------------
+                 1
+(1 row)
+
+SET client_min_messages = 'warning';
+DROP EXTENSION IF EXISTS pglogical_origin;
+\c :subscriber_dsn
+\a
+SELECT slot_name FROM pg_replication_slots WHERE database = current_database();
+slot_name
+(0 rows)
+SELECT count(*) FROM pg_stat_replication WHERE application_name = 'test_bidirectional';
+count
+0
+(1 row)

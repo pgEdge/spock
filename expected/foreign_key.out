@@ -1,0 +1,84 @@
+--FOREIGN KEY
+SELECT * FROM pglogical_regress_variables()
+\gset
+\c :provider_dsn
+SELECT pglogical.replicate_ddl_command($$
+CREATE TABLE public.f1k_products (
+    product_no integer PRIMARY KEY,
+    product_id integer,
+    name text,
+    price numeric
+);
+
+CREATE TABLE public.f1k_orders (
+    order_id integer,
+    product_no integer REFERENCES public.f1k_products (product_no),
+    quantity integer
+);
+--pass
+$$);
+ replicate_ddl_command 
+-----------------------
+ t
+(1 row)
+
+SELECT * FROM pglogical.replication_set_add_table('default', 'f1k_products');
+ replication_set_add_table 
+---------------------------
+ t
+(1 row)
+
+SELECT * FROM pglogical.replication_set_add_table('default_insert_only', 'f1k_orders');
+ replication_set_add_table 
+---------------------------
+ t
+(1 row)
+
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+INSERT into public.f1k_products VALUES (1, 1, 'product1', 1.20);
+INSERT into public.f1k_products VALUES (2, 2, 'product2', 2.40);
+INSERT into public.f1k_orders VALUES (300, 1, 4);
+INSERT into public.f1k_orders VALUES (22, 2, 14);
+INSERT into public.f1k_orders VALUES (23, 2, 24);
+INSERT into public.f1k_orders VALUES (24, 2, 40);
+SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM public.f1k_products;
+ product_no | product_id |   name   | price 
+------------+------------+----------+-------
+          1 |          1 | product1 |  1.20
+          2 |          2 | product2 |  2.40
+(2 rows)
+
+SELECT * FROM public.f1k_orders;
+ order_id | product_no | quantity 
+----------+------------+----------
+      300 |          1 |        4
+       22 |          2 |       14
+       23 |          2 |       24
+       24 |          2 |       40
+(4 rows)
+
+\c :provider_dsn
+\set VERBOSITY terse
+SELECT pglogical.replicate_ddl_command($$
+	DROP TABLE public.f1k_orders CASCADE;
+	DROP TABLE public.f1k_products CASCADE;
+$$);
+NOTICE:  drop cascades to table public.f1k_orders membership in replication set default_insert_only
+NOTICE:  drop cascades to table public.f1k_products membership in replication set default
+ replicate_ddl_command 
+-----------------------
+ t
+(1 row)
+
