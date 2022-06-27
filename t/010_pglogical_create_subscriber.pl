@@ -10,9 +10,9 @@ my $PROVIDER_PORT=5431;
 my $PROVIDER_DSN = "postgresql://super\@localhost:$PROVIDER_PORT/postgres";
 my $SUBSCRIBER_DSN = "postgresql://super\@localhost:$PGPORT/postgres";
 
-program_help_ok('pglogical_create_subscriber');
+program_help_ok('spock_create_subscriber');
 
-program_options_handling_ok('pglogical_create_subscriber');
+program_options_handling_ok('spock_create_subscriber');
 
 system_or_bail 'rm', '-rf', '/tmp/tmp_datadir';
 system_or_bail 'rm', '-rf', '/tmp/tmp_backupdir';
@@ -57,13 +57,13 @@ system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "INSERT I
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "INSERT INTO some_local_tbl3(key, data) VALUES('key2', NULL)";
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "INSERT INTO some_local_tbl3(key, data) VALUES('key3', 'data3')";
 # Required for PostgreSQL 9.4 run
-#system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS pglogical_origin";
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS pglogical VERSION '1.0.0'";
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "ALTER EXTENSION pglogical UPDATE";
+#system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS spock_origin";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS spock VERSION '1.0.0'";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "ALTER EXTENSION spock UPDATE";
 
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT * FROM pglogical.create_node(node_name := 'test_provider', dsn := 'dbname=postgres user=super')";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT * FROM spock.create_node(node_name := 'test_provider', dsn := 'dbname=postgres user=super')";
 
-command_ok([ 'pglogical_create_subscriber', '-D', '/tmp/tmp_backupdir', "--subscriber-name=test_subscriber", "--subscriber-dsn=$SUBSCRIBER_DSN", "--provider-dsn=$PROVIDER_DSN", '--drop-slot-if-exists', '-v', '--hba-conf=regress-pg_hba.conf', '--postgresql-conf=/tmp/tmp_datadir/postgresql.conf'], 'pglogical_create_subscriber check');
+command_ok([ 'spock_create_subscriber', '-D', '/tmp/tmp_backupdir', "--subscriber-name=test_subscriber", "--subscriber-dsn=$SUBSCRIBER_DSN", "--provider-dsn=$PROVIDER_DSN", '--drop-slot-if-exists', '-v', '--hba-conf=regress-pg_hba.conf', '--postgresql-conf=/tmp/tmp_datadir/postgresql.conf'], 'spock_create_subscriber check');
 
 #test whether preseed data is there
 

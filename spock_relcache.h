@@ -1,21 +1,21 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_relcache.h
- *		pglogical relation cache
+ * spock_relcache.h
+ *		spock relation cache
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_relcache.h
+ *		spock_relcache.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef PGLOGICAL_RELCACHE_H
-#define PGLOGICAL_RELCACHE_H
+#ifndef SPOCK_RELCACHE_H
+#define SPOCK_RELCACHE_H
 
 #include "storage/lock.h"
 
-typedef struct PGLogicalRemoteRel
+typedef struct SpockRemoteRel
 {
 	uint32		relid;
 	char	   *nspname;
@@ -25,9 +25,9 @@ typedef struct PGLogicalRemoteRel
 
 	/* Only returned by info function, not protocol. */
 	bool		hasRowFilter;
-} PGLogicalRemoteRel;
+} SpockRemoteRel;
 
-typedef struct PGLogicalRelation
+typedef struct SpockRelation
 {
 	/* Info coming from the remote side. */
 	uint32		remoteid;
@@ -43,19 +43,19 @@ typedef struct PGLogicalRelation
 
 	/* Additional cache, only valid as long as relation mapping is. */
 	bool		hasTriggers;
-} PGLogicalRelation;
+} SpockRelation;
 
-extern void pglogical_relation_cache_update(uint32 remoteid,
+extern void spock_relation_cache_update(uint32 remoteid,
 											 char *schemaname, char *relname,
 											 int natts, char **attnames);
-extern void pglogical_relation_cache_updater(PGLogicalRemoteRel *remoterel);
+extern void spock_relation_cache_updater(SpockRemoteRel *remoterel);
 
-extern PGLogicalRelation *pglogical_relation_open(uint32 remoteid,
+extern SpockRelation *spock_relation_open(uint32 remoteid,
 												   LOCKMODE lockmode);
-extern void pglogical_relation_close(PGLogicalRelation * rel,
+extern void spock_relation_close(SpockRelation * rel,
 									  LOCKMODE lockmode);
-extern void pglogical_relation_invalidate_cb(Datum arg, Oid reloid);
+extern void spock_relation_invalidate_cb(Datum arg, Oid reloid);
 
-struct PGLogicalTupleData;
+struct SpockTupleData;
 
-#endif /* PGLOGICAL_RELCACHE_H */
+#endif /* SPOCK_RELCACHE_H */

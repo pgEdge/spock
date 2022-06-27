@@ -1,4 +1,4 @@
-site_name: pglogical
+site_name: spock
 docs_dir: .
 site_dir: ../docs-site
 theme:
@@ -6,7 +6,7 @@ theme:
     one_page: true
 copyright: 'Copyright 2019 © 2ndQuadrant Limited'
 nav:
-    - pglogical: README.md
+    - spock: README.md
 markdown_extensions:
     - codehilite:
         css_class: highlight

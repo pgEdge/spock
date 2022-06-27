@@ -1,15 +1,15 @@
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
 CREATE USER super2 SUPERUSER;
 \c :subscriber_dsn
-SELECT * FROM pglogical.alter_node_add_interface('test_provider', 'super2', (SELECT provider_dsn FROM pglogical_regress_variables()) || ' user=super2');
+SELECT * FROM spock.alter_node_add_interface('test_provider', 'super2', (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super2');
  alter_node_add_interface 
 --------------------------
                3319308158
 (1 row)
 
-SELECT * FROM pglogical.alter_subscription_interface('test_subscription', 'super2');
+SELECT * FROM spock.alter_subscription_interface('test_subscription', 'super2');
  alter_subscription_interface 
 ------------------------------
  t
@@ -18,7 +18,7 @@ SELECT * FROM pglogical.alter_subscription_interface('test_subscription', 'super
 DO $$
 BEGIN
     FOR i IN 1..100 LOOP
-        IF EXISTS (SELECT 1 FROM pglogical.show_subscription_status() WHERE status != 'down') THEN
+        IF EXISTS (SELECT 1 FROM spock.show_subscription_status() WHERE status != 'down') THEN
             EXIT;
         END IF;
         PERFORM pg_sleep(0.1);
@@ -30,7 +30,7 @@ SELECT pg_sleep(0.1);
  
 (1 row)
 
-SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM pglogical.show_subscription_status();
+SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.show_subscription_status();
  subscription_name |   status    | provider_node |           replication_sets            | forward_origins 
 -------------------+-------------+---------------+---------------------------------------+-----------------
  test_subscription | replicating | test_provider | {default,default_insert_only,ddl_sql} | 
@@ -40,7 +40,7 @@ SELECT subscription_name, status, provider_node, replication_sets, forward_origi
 SELECT plugin, slot_type, active FROM pg_replication_slots;
       plugin      | slot_type | active 
 ------------------+-----------+--------
- pglogical_output | logical   | t
+ spock_output | logical   | t
 (1 row)
 
 SELECT usename FROM pg_stat_replication WHERE application_name = 'test_subscription';
@@ -50,7 +50,7 @@ SELECT usename FROM pg_stat_replication WHERE application_name = 'test_subscript
 (1 row)
 
 \c :subscriber_dsn
-SELECT * FROM pglogical.alter_subscription_interface('test_subscription', 'test_provider');
+SELECT * FROM spock.alter_subscription_interface('test_subscription', 'test_provider');
  alter_subscription_interface 
 ------------------------------
  t
@@ -59,7 +59,7 @@ SELECT * FROM pglogical.alter_subscription_interface('test_subscription', 'test_
 DO $$
 BEGIN
     FOR i IN 1..100 LOOP
-        IF EXISTS (SELECT 1 FROM pglogical.show_subscription_status() WHERE status != 'down') THEN
+        IF EXISTS (SELECT 1 FROM spock.show_subscription_status() WHERE status != 'down') THEN
             EXIT;
         END IF;
         PERFORM pg_sleep(0.1);
@@ -71,7 +71,7 @@ SELECT pg_sleep(0.1);
  
 (1 row)
 
-SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM pglogical.show_subscription_status();
+SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.show_subscription_status();
  subscription_name |   status    | provider_node |           replication_sets            | forward_origins 
 -------------------+-------------+---------------+---------------------------------------+-----------------
  test_subscription | replicating | test_provider | {default,default_insert_only,ddl_sql} | 
@@ -82,7 +82,7 @@ DROP USER super2;
 SELECT plugin, slot_type, active FROM pg_replication_slots;
       plugin      | slot_type | active 
 ------------------+-----------+--------
- pglogical_output | logical   | t
+ spock_output | logical   | t
 (1 row)
 
 SELECT usename FROM pg_stat_replication WHERE application_name = 'test_subscription';

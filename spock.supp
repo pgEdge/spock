@@ -8,8 +8,8 @@
    match-leak-kinds: possible,definite,reachable
    fun:*lloc*
    ...
-   fun:pglogical_sync_subscription
-   fun:pglogical_apply_main
+   fun:spock_sync_subscription
+   fun:spock_apply_main
 }
 
 {
@@ -19,7 +19,7 @@
    fun:*lloc*
    ...
    fun:get_subscription
-   fun:pglogical_apply_main
+   fun:spock_apply_main
 }
 
 {
@@ -29,7 +29,7 @@
    fun:*lloc*
    ...
    fun:get_queue_table_oid
-   fun:pglogical_apply_main
+   fun:spock_apply_main
 }
 
 {
@@ -39,7 +39,7 @@
    fun:*lloc*
    ...
    fun:BackgroundWorkerInitializeConnectionByOid
-   fun:pglogical_apply_main
+   fun:spock_apply_main
 }
 
 {
@@ -49,7 +49,7 @@
    fun:*lloc*
    ...
    fun:replorigin_by_name
-   fun:pglogical_apply_main
+   fun:spock_apply_main
 }
 
 {
@@ -59,7 +59,7 @@
    fun:*lloc*
    ...
    fun:ResourceOwnerCreate
-   fun:pglogical_apply_main
+   fun:spock_apply_main
 }
 
 {
@@ -72,7 +72,7 @@
 }
 
 #
-# pglogical's relcache persists across txns.
+# spock's relcache persists across txns.
 #
 # These allocations are in CacheMemoryContext.
 #
@@ -83,7 +83,7 @@
    match-leak-kinds: possible
    fun:*lloc*
    ...
-   fun:pglogical_relation_cache_update
+   fun:spock_relation_cache_update
    ...
    fun:apply_work
 }
@@ -94,7 +94,7 @@
    match-leak-kinds: reachable
    fun:*lloc*
    ...
-   fun:pglogical_relation_open
+   fun:spock_relation_open
 }
 
 
@@ -141,14 +141,14 @@
    fun:heap_update
    ...
    fun:standard_ProcessUtility
-   fun:pglogical_ProcessUtility
+   fun:spock_ProcessUtility
    ...
    fun:handle_sql
    ...
    fun:apply_work
 }
 
-# Anything else in standard_ProcessUtility called via pglogical_ProcessUtility
+# Anything else in standard_ProcessUtility called via spock_ProcessUtility
 # during pgl SQL execution.
 #
 # This MUST not be invoked in TopMemoryContext, and so long as txn state is sane
@@ -161,12 +161,12 @@
    fun:*lloc*
    ...
    fun:standard_ProcessUtility
-   fun:pglogical_ProcessUtility
+   fun:spock_ProcessUtility
    ...
    fun:handle_sql
    ...
    fun:apply_work
-   fun:pglogical_apply_main
+   fun:spock_apply_main
 }
 
 
@@ -181,8 +181,8 @@
    match-leak-kinds: possible
    fun:MemoryContextAlloc
    fun:MemoryContextStrdup
-   fun:pglogical_relation_cache_update
-   fun:pglogical_read_rel
+   fun:spock_relation_cache_update
+   fun:spock_read_rel
    fun:handle_relation
    fun:replication_handler
    fun:apply_work
@@ -339,7 +339,7 @@
    fun:MemoryContextCreate
    fun:AllocSetContextCreate
    fun:apply_work
-   fun:pglogical_apply_main
+   fun:spock_apply_main
 }
 
 # This is stashed in a static var on first allocation and reused. It
@@ -353,7 +353,7 @@
    fun:makeStringInfo
    fun:send_feedback
    fun:apply_work
-   fun:pglogical_apply_main
+   fun:spock_apply_main
 }
 
 # It's typical for syscache and catcache entries to live beyond a single txn.

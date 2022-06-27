@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_manager.c
- * 		pglogical worker for managing apply workers in a database
+ * spock_manager.c
+ * 		spock worker for managing apply workers in a database
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical_manager.c
+ *		  spock_manager.c
  *
  *-------------------------------------------------------------------------
  */
@@ -28,15 +28,15 @@
 
 #include "pgstat.h"
 
-#include "pglogical_node.h"
-#include "pglogical_worker.h"
-#include "pglogical.h"
+#include "spock_node.h"
+#include "spock_worker.h"
+#include "spock.h"
 
 #define INITIAL_SLEEP 10000L
 #define MAX_SLEEP 180000L
 #define MIN_SLEEP 5000L
 
-void pglogical_manager_main(Datum main_arg);
+void spock_manager_main(Datum main_arg);
 
 /*
  * Manage the apply workers - start new ones, kill old ones.
@@ -44,7 +44,7 @@ void pglogical_manager_main(Datum main_arg);
 static bool
 manage_apply_workers(void)
 {
-	PGLogicalLocalNode *node;
+	SpockLocalNode *node;
 	List	   *subscriptions;
 	List	   *workers;
 	List	   *subs_to_start = NIL;
@@ -53,9 +53,9 @@ manage_apply_workers(void)
 	bool		ret = true;
 
 	/* Get list of existing workers. */
-	LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-	workers = pglogical_apply_find_all(MyPGLogicalWorker->dboid);
-	LWLockRelease(PGLogicalCtx->lock);
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+	workers = spock_apply_find_all(MySpockWorker->dboid);
+	LWLockRelease(SpockCtx->lock);
 
 	StartTransactionCommand();
 
@@ -70,8 +70,8 @@ manage_apply_workers(void)
 	/* Check for active workers for each subscription. */
 	foreach (slc, subscriptions)
 	{
-		PGLogicalSubscription  *sub = (PGLogicalSubscription *) lfirst(slc);
-		PGLogicalWorker		   *apply = NULL;
+		SpockSubscription  *sub = (SpockSubscription *) lfirst(slc);
+		SpockWorker		   *apply = NULL;
 #if PG_VERSION_NUM < 130000
 		ListCell			   *next;
 		ListCell			   *prev = NULL;
@@ -92,7 +92,7 @@ manage_apply_workers(void)
 		for (wlc = list_head(workers); wlc; wlc = next)
 #endif
 		{
-			apply = (PGLogicalWorker *) lfirst(wlc);
+			apply = (SpockWorker *) lfirst(wlc);
 
 #if PG_VERSION_NUM < 130000
 			/* We might delete the cell so advance it now. */
@@ -120,7 +120,7 @@ manage_apply_workers(void)
 			apply = NULL;
 
 		/* Skip if the worker was alrady registered. */
-		if (pglogical_worker_running(apply))
+		if (spock_worker_running(apply))
 			continue;
 
 		/* Check if this is crashed worker and if we want to restart it now. */
@@ -151,38 +151,38 @@ manage_apply_workers(void)
 
 	foreach (slc, subs_to_start)
 	{
-		PGLogicalSubscription  *sub = (PGLogicalSubscription *) lfirst(slc);
-		PGLogicalWorker			apply;
+		SpockSubscription  *sub = (SpockSubscription *) lfirst(slc);
+		SpockWorker			apply;
 
-		memset(&apply, 0, sizeof(PGLogicalWorker));
-		apply.worker_type = PGLOGICAL_WORKER_APPLY;
-		apply.dboid = MyPGLogicalWorker->dboid;
+		memset(&apply, 0, sizeof(SpockWorker));
+		apply.worker_type = SPOCK_WORKER_APPLY;
+		apply.dboid = MySpockWorker->dboid;
 		apply.worker.apply.subid = sub->id;
 		apply.worker.apply.sync_pending = true;
 		apply.worker.apply.replay_stop_lsn = InvalidXLogRecPtr;
 
-		pglogical_worker_register(&apply);
+		spock_worker_register(&apply);
 	}
 
 	CommitTransactionCommand();
 
 	/* Kill any remaining running workers that should not be running. */
-	LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 	foreach (wlc, workers)
 	{
-		PGLogicalWorker *worker = (PGLogicalWorker *) lfirst(wlc);
-		pglogical_worker_kill(worker);
+		SpockWorker *worker = (SpockWorker *) lfirst(wlc);
+		spock_worker_kill(worker);
 
 		/* Cleanup old info about crashed apply workers. */
 		if (worker && worker->crashed_at != 0)
 		{
-			elog(DEBUG2, "cleaning pglogical worker slot %zu",
-			     (worker - &PGLogicalCtx->workers[0]));
-			worker->worker_type = PGLOGICAL_WORKER_NONE;
+			elog(DEBUG2, "cleaning spock worker slot %zu",
+			     (worker - &SpockCtx->workers[0]));
+			worker->worker_type = SPOCK_WORKER_NONE;
 			worker->crashed_at = 0;
 		}
 	}
-	LWLockRelease(PGLogicalCtx->lock);
+	LWLockRelease(SpockCtx->lock);
 
 	return ret;
 }
@@ -191,19 +191,19 @@ manage_apply_workers(void)
  * Entry point for manager worker.
  */
 void
-pglogical_manager_main(Datum main_arg)
+spock_manager_main(Datum main_arg)
 {
 	int			slot = DatumGetInt32(main_arg);
 	Oid			extoid;
 	int			sleep_timer = INITIAL_SLEEP;
 
 	/* Setup shmem. */
-	pglogical_worker_attach(slot, PGLOGICAL_WORKER_MANAGER);
+	spock_worker_attach(slot, SPOCK_WORKER_MANAGER);
 
 	/* Establish signal handlers. */
 	pqsignal(SIGTERM, handle_sigterm);
 
-	CurrentResourceOwner = ResourceOwnerCreate(NULL, "pglogical manager");
+	CurrentResourceOwner = ResourceOwnerCreate(NULL, "spock manager");
 
 	StartTransactionCommand();
 
@@ -212,14 +212,14 @@ pglogical_manager_main(Datum main_arg)
 	if (!OidIsValid(extoid))
 		proc_exit(0);
 
-	elog(LOG, "starting pglogical database manager for database %s",
+	elog(LOG, "starting spock database manager for database %s",
 		 get_database_name(MyDatabaseId));
 
 	CommitTransactionCommand();
 
 	/* Use separate transaction to avoid lock escalation. */
 	StartTransactionCommand();
-	pglogical_manage_extension();
+	spock_manage_extension();
 	CommitTransactionCommand();
 
 	/* Main wait loop. */

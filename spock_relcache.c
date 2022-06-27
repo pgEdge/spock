@@ -1,12 +1,12 @@
 /* -------------------------------------------------------------------------
  *
- * pglogical_relcache.c
+ * spock_relcache.c
  *     Caching relation specific information
  *
  * Copyright (C) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_relcache.c
+ *		spock_relcache.c
  *
  * -------------------------------------------------------------------------
  */
@@ -25,18 +25,18 @@
 #include "utils/inval.h"
 #include "utils/rel.h"
 
-#include "pglogical.h"
-#include "pglogical_relcache.h"
+#include "spock.h"
+#include "spock_relcache.h"
 
-#define PGLOGICALRELATIONHASH_INITIAL_SIZE 128
-static HTAB *PGLogicalRelationHash = NULL;
+#define SPOCKRELATIONHASH_INITIAL_SIZE 128
+static HTAB *SpockRelationHash = NULL;
 
 
-static void pglogical_relcache_init(void);
+static void spock_relcache_init(void);
 static int tupdesc_get_att_by_name(TupleDesc desc, const char *attname);
 
 static void
-relcache_free_entry(PGLogicalRelation *entry)
+relcache_free_entry(SpockRelation *entry)
 {
 	pfree(entry->nspname);
 	pfree(entry->relname);
@@ -60,17 +60,17 @@ relcache_free_entry(PGLogicalRelation *entry)
 }
 
 
-PGLogicalRelation *
-pglogical_relation_open(uint32 remoteid, LOCKMODE lockmode)
+SpockRelation *
+spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 {
-	PGLogicalRelation *entry;
+	SpockRelation *entry;
 	bool		found;
 
-	if (PGLogicalRelationHash == NULL)
-		pglogical_relcache_init();
+	if (SpockRelationHash == NULL)
+		spock_relcache_init();
 
 	/* Search for existing entry. */
-	entry = hash_search(PGLogicalRelationHash, (void *) &remoteid,
+	entry = hash_search(SpockRelationHash, (void *) &remoteid,
 						HASH_FIND, &found);
 
 	if (!found)
@@ -123,21 +123,21 @@ pglogical_relation_open(uint32 remoteid, LOCKMODE lockmode)
 }
 
 void
-pglogical_relation_cache_update(uint32 remoteid, char *schemaname,
+spock_relation_cache_update(uint32 remoteid, char *schemaname,
 								 char *relname, int natts, char **attnames)
 {
 	MemoryContext		oldcontext;
-	PGLogicalRelation  *entry;
+	SpockRelation  *entry;
 	bool				found;
 	int					i;
 
-	if (PGLogicalRelationHash == NULL)
-		pglogical_relcache_init();
+	if (SpockRelationHash == NULL)
+		spock_relcache_init();
 
 	/*
 	 * HASH_ENTER returns the existing entry if present or creates a new one.
 	 */
-	entry = hash_search(PGLogicalRelationHash, (void *) &remoteid,
+	entry = hash_search(SpockRelationHash, (void *) &remoteid,
 						HASH_ENTER, &found);
 
 	if (found)
@@ -160,20 +160,20 @@ pglogical_relation_cache_update(uint32 remoteid, char *schemaname,
 }
 
 void
-pglogical_relation_cache_updater(PGLogicalRemoteRel *remoterel)
+spock_relation_cache_updater(SpockRemoteRel *remoterel)
 {
 	MemoryContext		oldcontext;
-	PGLogicalRelation  *entry;
+	SpockRelation  *entry;
 	bool				found;
 	int					i;
 
-	if (PGLogicalRelationHash == NULL)
-		pglogical_relcache_init();
+	if (SpockRelationHash == NULL)
+		spock_relcache_init();
 
 	/*
 	 * HASH_ENTER returns the existing entry if present or creates a new one.
 	 */
-	entry = hash_search(PGLogicalRelationHash, (void *) &remoterel->relid,
+	entry = hash_search(SpockRelationHash, (void *) &remoterel->relid,
 						HASH_ENTER, &found);
 
 	if (found)
@@ -196,29 +196,29 @@ pglogical_relation_cache_updater(PGLogicalRemoteRel *remoterel)
 }
 
 void
-pglogical_relation_close(PGLogicalRelation * rel, LOCKMODE lockmode)
+spock_relation_close(SpockRelation * rel, LOCKMODE lockmode)
 {
 	table_close(rel->rel, lockmode);
 	rel->rel = NULL;
 }
 
 static void
-pglogical_relcache_invalidate_callback(Datum arg, Oid reloid)
+spock_relcache_invalidate_callback(Datum arg, Oid reloid)
 {
-	PGLogicalRelation *entry;
+	SpockRelation *entry;
 
 	/* Just to be sure. */
-	if (PGLogicalRelationHash == NULL)
+	if (SpockRelationHash == NULL)
 		return;
 
 	if (reloid != InvalidOid)
 	{
 		HASH_SEQ_STATUS status;
 
-		hash_seq_init(&status, PGLogicalRelationHash);
+		hash_seq_init(&status, SpockRelationHash);
 
 		/* TODO, use inverse lookup hastable */
-		while ((entry = (PGLogicalRelation *) hash_seq_search(&status)) != NULL)
+		while ((entry = (SpockRelation *) hash_seq_search(&status)) != NULL)
 		{
 			if (entry->reloid == reloid)
 				entry->reloid = InvalidOid;
@@ -229,15 +229,15 @@ pglogical_relcache_invalidate_callback(Datum arg, Oid reloid)
 		/* invalidate all cache entries */
 		HASH_SEQ_STATUS status;
 
-		hash_seq_init(&status, PGLogicalRelationHash);
+		hash_seq_init(&status, SpockRelationHash);
 
-		while ((entry = (PGLogicalRelation *) hash_seq_search(&status)) != NULL)
+		while ((entry = (SpockRelation *) hash_seq_search(&status)) != NULL)
 			entry->reloid = InvalidOid;
 	}
 }
 
 static void
-pglogical_relcache_init(void)
+spock_relcache_init(void)
 {
 	HASHCTL		ctl;
 	int			hashflags;
@@ -249,7 +249,7 @@ pglogical_relcache_init(void)
 	/* Initialize the hash table. */
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(uint32);
-	ctl.entrysize = sizeof(PGLogicalRelation);
+	ctl.entrysize = sizeof(SpockRelation);
 	ctl.hcxt = CacheMemoryContext;
 	hashflags = HASH_ELEM | HASH_CONTEXT;
 #if PG_VERSION_NUM < 90500
@@ -267,12 +267,12 @@ pglogical_relcache_init(void)
 	hashflags |= HASH_BLOBS;
 #endif
 
-	PGLogicalRelationHash = hash_create("pglogical relation cache",
-                                            PGLOGICALRELATIONHASH_INITIAL_SIZE,
+	SpockRelationHash = hash_create("spock relation cache",
+                                            SPOCKRELATIONHASH_INITIAL_SIZE,
                                             &ctl, hashflags);
 
 	/* Watch for invalidation events. */
-	CacheRegisterRelcacheCallback(pglogical_relcache_invalidate_callback,
+	CacheRegisterRelcacheCallback(spock_relcache_invalidate_callback,
 								  (Datum) 0);
 }
 

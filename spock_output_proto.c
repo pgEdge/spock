@@ -1,48 +1,48 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_proto.c
- * 		pglogical protocol functions
+ * spock_proto.c
+ * 		spock protocol functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical_proto.c
+ *		  spock_proto.c
  *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 #include "replication/reorderbuffer.h"
-#include "pglogical_output_plugin.h"
+#include "spock_output_plugin.h"
 
-#include "pglogical_output_proto.h"
-#include "pglogical_proto_native.h"
-#include "pglogical_proto_json.h"
+#include "spock_output_proto.h"
+#include "spock_proto_native.h"
+#include "spock_proto_json.h"
 
-PGLogicalProtoAPI *
-pglogical_init_api(PGLogicalProtoType typ)
+SpockProtoAPI *
+spock_init_api(SpockProtoType typ)
 {
-	PGLogicalProtoAPI  *res = palloc0(sizeof(PGLogicalProtoAPI));
+	SpockProtoAPI  *res = palloc0(sizeof(SpockProtoAPI));
 
-	if (typ == PGLogicalProtoJson)
+	if (typ == SpockProtoJson)
 	{
 		res->write_rel = NULL;
-		res->write_begin = pglogical_json_write_begin;
-		res->write_commit = pglogical_json_write_commit;
+		res->write_begin = spock_json_write_begin;
+		res->write_commit = spock_json_write_commit;
 		res->write_origin = NULL;
-		res->write_insert = pglogical_json_write_insert;
-		res->write_update = pglogical_json_write_update;
-		res->write_delete = pglogical_json_write_delete;
+		res->write_insert = spock_json_write_insert;
+		res->write_update = spock_json_write_update;
+		res->write_delete = spock_json_write_delete;
 		res->write_startup_message = json_write_startup_message;
 	}
 	else
 	{
-		res->write_rel = pglogical_write_rel;
-		res->write_begin = pglogical_write_begin;
-		res->write_commit = pglogical_write_commit;
-		res->write_origin = pglogical_write_origin;
-		res->write_insert = pglogical_write_insert;
-		res->write_update = pglogical_write_update;
-		res->write_delete = pglogical_write_delete;
+		res->write_rel = spock_write_rel;
+		res->write_begin = spock_write_begin;
+		res->write_commit = spock_write_commit;
+		res->write_origin = spock_write_origin;
+		res->write_insert = spock_write_insert;
+		res->write_update = spock_write_update;
+		res->write_delete = spock_write_delete;
 		res->write_startup_message = write_startup_message;
 	}
 

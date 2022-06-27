@@ -1,5 +1,5 @@
 -- basic builtin datatypes
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 -- create and populate table at provider
 \c :provider_dsn
@@ -9,7 +9,7 @@ CREATE TABLE public.basic_dml (
 	data text,
 	something interval
 );
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
@@ -33,13 +33,13 @@ CREATE TABLE public.basic_dml (
 	subonly integer,
 	subonly_def integer DEFAULT 99
 );
-SELECT nspname, relname, att_list, has_row_filter FROM pglogical.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |                att_list                 | has_row_filter 
 ---------+-----------+-----------------------------------------+----------------
  public  | basic_dml | {id,data,something,subonly,subonly_def} | f
 (1 row)
 
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
@@ -48,9 +48,9 @@ WHERE relid = 'public.basic_dml'::regclass;
 
 \c :provider_dsn
 -- Fails: the column filter list must include the key
-SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something}');
+SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something}');
 ERROR:  REPLICA IDENTITY columns must be replicated
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
@@ -58,9 +58,9 @@ WHERE relid = 'public.basic_dml'::regclass;
 (1 row)
 
 -- Fails: the column filter list may not include cols that are not in the table
-SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something, nosuchcol}');
+SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something, nosuchcol}');
 ERROR:  table public.basic_dml does not have column nosuchcol
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
@@ -68,20 +68,20 @@ WHERE relid = 'public.basic_dml'::regclass;
 (1 row)
 
 -- At provider, add table to replication set, with filtered columns
-SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data, something}');
+SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data, something}');
  replication_set_add_table 
 ---------------------------
  t
 (1 row)
 
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
  public  | basic_dml | default
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM pglogical.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |      att_list       | has_row_filter 
 ---------+-----------+---------------------+----------------
  public  | basic_dml | {id,data,something} | f
@@ -97,7 +97,7 @@ SELECT id, data, something FROM basic_dml ORDER BY id;
   5 |      | 
 (5 rows)
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
 -----------------------
  
@@ -106,20 +106,20 @@ SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 BEGIN;
 SET LOCAL statement_timeout = '10s';
-SELECT pglogical.wait_for_table_sync_complete('test_subscription', 'basic_dml');
+SELECT spock.wait_for_table_sync_complete('test_subscription', 'basic_dml');
  wait_for_table_sync_complete 
 ------------------------------
  
 (1 row)
 
 COMMIT;
-SELECT nspname, relname, att_list, has_row_filter FROM pglogical.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |                att_list                 | has_row_filter 
 ---------+-----------+-----------------------------------------+----------------
  public  | basic_dml | {id,data,something,subonly,subonly_def} | f
 (1 row)
 
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
@@ -140,10 +140,10 @@ SELECT id, data, something FROM basic_dml ORDER BY id;
 \c :provider_dsn
 -- Adding a table that's already selectively replicated fails
 \set VERBOSITY terse
-SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml', synchronize_data := true);
+SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true);
 ERROR:  duplicate key value violates unique constraint "replication_set_table_pkey"
 \set VERBOSITY default
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
@@ -152,10 +152,10 @@ WHERE relid = 'public.basic_dml'::regclass;
 
 -- So does trying to re-add to change the column set
 \set VERBOSITY terse
-SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data}');
+SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data}');
 ERROR:  duplicate key value violates unique constraint "replication_set_table_pkey"
 \set VERBOSITY default
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
@@ -166,14 +166,14 @@ WHERE relid = 'public.basic_dml'::regclass;
 -- but due to RM#5916 you can
 BEGIN;
 ALTER TABLE public.basic_dml DROP COLUMN data;
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
  public  | basic_dml | default
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM pglogical.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |    att_list    | has_row_filter 
 ---------+-----------+----------------+----------------
  public  | basic_dml | {id,something} | f
@@ -182,7 +182,7 @@ SELECT nspname, relname, att_list, has_row_filter FROM pglogical.show_repset_tab
 ROLLBACK;
 -- Even when wrapped (RM#5916)
 BEGIN;
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 ALTER TABLE public.basic_dml DROP COLUMN data;
 $$);
  replicate_ddl_command 
@@ -190,14 +190,14 @@ $$);
  t
 (1 row)
 
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
  public  | basic_dml | default
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM pglogical.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |    att_list    | has_row_filter 
 ---------+-----------+----------------+----------------
  public  | basic_dml | {id,something} | f
@@ -207,20 +207,20 @@ ROLLBACK;
 -- CASCADE should be allowed though
 BEGIN;
 ALTER TABLE public.basic_dml DROP COLUMN data CASCADE;
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
  public  | basic_dml | default
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM pglogical.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |    att_list    | has_row_filter 
 ---------+-----------+----------------+----------------
  public  | basic_dml | {id,something} | f
 (1 row)
 
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
@@ -229,7 +229,7 @@ WHERE relid = 'public.basic_dml'::regclass;
 
 ROLLBACK;
 BEGIN;
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 ALTER TABLE public.basic_dml DROP COLUMN data CASCADE;
 $$);
  replicate_ddl_command 
@@ -237,13 +237,13 @@ $$);
  t
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM pglogical.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |    att_list    | has_row_filter 
 ---------+-----------+----------------+----------------
  public  | basic_dml | {id,something} | f
 (1 row)
 
-SELECT nspname, relname, set_name FROM pglogical.tables
+SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
  nspname |  relname  | set_name 
 ---------+-----------+----------
@@ -255,14 +255,14 @@ ROLLBACK;
 -- this case the downstream doesn't have the 'other' column and apply will
 -- fail.
 ALTER TABLE public.basic_dml DROP COLUMN other;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
 -----------------------
  
 (1 row)
 
 \set VERBOSITY terse
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 	DROP TABLE public.basic_dml CASCADE;
 $$);
 NOTICE:  drop cascades to table public.basic_dml membership in replication set default

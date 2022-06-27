@@ -1,14 +1,14 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_node.c
- *		pglogical node and subscription catalog manipulation functions
+ * spock_node.c
+ *		spock node and subscription catalog manipulation functions
  *
  * TODO: caching
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_node.c
+ *		spock_node.c
  *
  *-------------------------------------------------------------------------
  */
@@ -37,10 +37,10 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
-#include "pglogical_node.h"
-#include "pglogical_repset.h"
-#include "pglogical_worker.h"
-#include "pglogical.h"
+#include "spock_node.h"
+#include "spock_repset.h"
+#include "spock_worker.h"
+#include "spock.h"
 
 #define CATALOG_NODE			"node"
 #define CATALOG_LOCAL_NODE		"local_node"
@@ -139,7 +139,7 @@ validate_subscription_name(const char *name)
  * Add new node to catalog.
  */
 void
-create_node(PGLogicalNode *node)
+create_node(SpockNode *node)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -180,7 +180,7 @@ create_node(PGLogicalNode *node)
 
 	CommandCounterIncrement();
 
-	pglogical_subscription_changed(InvalidOid, false);
+	spock_subscription_changed(InvalidOid, false);
 }
 
 /*
@@ -219,15 +219,15 @@ drop_node(Oid nodeid)
 
 	CommandCounterIncrement();
 
-	pglogical_subscription_changed(InvalidOid, false);
+	spock_subscription_changed(InvalidOid, false);
 }
 
-static PGLogicalNode *
+static SpockNode *
 node_fromtuple(HeapTuple tuple)
 {
 	NodeTuple *nodetup = (NodeTuple *) GETSTRUCT(tuple);
-	PGLogicalNode *node
-		= (PGLogicalNode *) palloc(sizeof(PGLogicalNode));
+	SpockNode *node
+		= (SpockNode *) palloc(sizeof(SpockNode));
 	node->id = nodetup->node_id;
 	node->name = pstrdup(NameStr(nodetup->node_name));
 	return node;
@@ -236,10 +236,10 @@ node_fromtuple(HeapTuple tuple)
 /*
  * Load the info for specific node.
  */
-PGLogicalNode *
+SpockNode *
 get_node(Oid nodeid)
 {
-	PGLogicalNode  *node;
+	SpockNode  *node;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -272,10 +272,10 @@ get_node(Oid nodeid)
 /*
  * Load the info for specific node.
  */
-PGLogicalNode *
+SpockNode *
 get_node_by_name(const char *name, bool missing_ok)
 {
-	PGLogicalNode  *node;
+	SpockNode  *node;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -333,7 +333,7 @@ create_local_node(Oid nodeid, Oid ifid)
 
 	/* TODO: better error message */
 	if (get_local_node(false, true))
-		elog(ERROR, "current database is already configured as pglogical node");
+		elog(ERROR, "current database is already configured as spock node");
 
 	/* Form a tuple. */
 	memset(nulls, false, sizeof(nulls));
@@ -390,7 +390,7 @@ drop_local_node(void)
 /*
  * Return local node.
  */
-PGLogicalLocalNode *
+SpockLocalNode *
 get_local_node(bool for_update, bool missing_ok)
 {
 	RangeVar	   *rv;
@@ -401,7 +401,7 @@ get_local_node(bool for_update, bool missing_ok)
 	Oid				nodeid;
 	Oid				nodeifid;
 	bool			isnull;
-	PGLogicalLocalNode *res;
+	SpockLocalNode *res;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_NODE, -1);
 	rel = table_openrv_extended(rv, for_update ?
@@ -415,7 +415,7 @@ get_local_node(bool for_update, bool missing_ok)
 
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("local pglogical node not found")));
+				 errmsg("local spock node not found")));
 	}
 
 	/* Find the local node tuple. */
@@ -435,7 +435,7 @@ get_local_node(bool for_update, bool missing_ok)
 
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("local pglogical node not found")));
+				 errmsg("local spock node not found")));
 	}
 
 	desc = RelationGetDescr(rel);
@@ -448,7 +448,7 @@ get_local_node(bool for_update, bool missing_ok)
 	systable_endscan(scan);
 	table_close(rel, for_update ? NoLock : RowExclusiveLock);
 
-	res = (PGLogicalLocalNode *) palloc(sizeof(PGLogicalLocalNode));
+	res = (SpockLocalNode *) palloc(sizeof(SpockLocalNode));
 	res->node = get_node(nodeid);
 	res->node_if = get_node_interface(nodeifid);
 
@@ -683,7 +683,7 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
  * Add new subscription to catalog.
  */
 void
-create_subscription(PGLogicalSubscription *sub)
+create_subscription(SpockSubscription *sub)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -754,14 +754,14 @@ create_subscription(PGLogicalSubscription *sub)
 
 	CommandCounterIncrement();
 
-	pglogical_subscription_changed(sub->id, true);
+	spock_subscription_changed(sub->id, true);
 }
 
 /*
  * Change the subscription tuple.
  */
 void
-alter_subscription(PGLogicalSubscription *sub)
+alter_subscription(SpockSubscription *sub)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -840,7 +840,7 @@ alter_subscription(PGLogicalSubscription *sub)
 
 	CommandCounterIncrement();
 
-	pglogical_subscription_changed(sub->id, true);
+	spock_subscription_changed(sub->id, true);
 }
 
 /*
@@ -879,18 +879,18 @@ drop_subscription(Oid subid)
 
 	CommandCounterIncrement();
 
-	pglogical_subscription_changed(subid, true);
+	spock_subscription_changed(subid, true);
 }
 
-static PGLogicalSubscription*
+static SpockSubscription*
 subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 {
 	SubscriptionTuple *subtup = (SubscriptionTuple *) GETSTRUCT(tuple);
 	Datum		d;
 	bool		isnull;
 
-	PGLogicalSubscription *sub =
-		(PGLogicalSubscription *) palloc(sizeof(PGLogicalSubscription));
+	SpockSubscription *sub =
+		(SpockSubscription *) palloc(sizeof(SpockSubscription));
 	sub->id = subtup->sub_id;
 	sub->name = pstrdup(NameStr(subtup->sub_name));
 	sub->enabled = subtup->sub_enabled;
@@ -943,10 +943,10 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 /*
  * Load the info for specific subscriber.
  */
-PGLogicalSubscription *
+SpockSubscription *
 get_subscription(Oid subid)
 {
-	PGLogicalSubscription    *sub;
+	SpockSubscription    *sub;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -981,10 +981,10 @@ get_subscription(Oid subid)
 /*
  * Load the info for specific subscriber.
  */
-PGLogicalSubscription *
+SpockSubscription *
 get_subscription_by_name(const char *name, bool missing_ok)
 {
-	PGLogicalSubscription    *sub;
+	SpockSubscription    *sub;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -1031,7 +1031,7 @@ get_subscription_by_name(const char *name, bool missing_ok)
 List *
 get_node_subscriptions(Oid nodeid, bool origin)
 {
-	PGLogicalSubscription    *sub;
+	SpockSubscription    *sub;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;

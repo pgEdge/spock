@@ -1,30 +1,30 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_output_plugin.h
- *		pglogical output plugin
+ * spock_output_plugin.h
+ *		spock output plugin
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_output_plugin.h
+ *		spock_output_plugin.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef PG_LOGICAL_OUTPUT_PLUGIN_H
-#define PG_LOGICAL_OUTPUT_PLUGIN_H
+#ifndef SPOCK_OUTPUT_PLUGIN_H
+#define SPOCK_OUTPUT_PLUGIN_H
 
 #include "nodes/pg_list.h"
 #include "nodes/primnodes.h"
 
 /* summon cross-PG-version compatibility voodoo */
-#include "pglogical_compat.h"
+#include "spock_compat.h"
 
-/* typedef appears in pglogical_output_plugin.h */
-typedef struct PGLogicalOutputData
+/* typedef appears in spock_output_plugin.h */
+typedef struct SpockOutputData
 {
 	MemoryContext context;
 
-	struct PGLogicalProtoAPI *api;
+	struct SpockProtoAPI *api;
 
 	/* Cached node id */
 	Oid			local_node_id;
@@ -67,9 +67,9 @@ typedef struct PGLogicalOutputData
 
 	/* List of origin names */
     List	   *forward_origins;
-	/* List of PGLogicalRepSet */
+	/* List of SpockRepSet */
 	List	   *replication_sets;
 	RangeVar   *replicate_only_table;
-} PGLogicalOutputData;
+} SpockOutputData;
 
-#endif /* PG_LOGICAL_OUTPUT_PLUGIN_H */
+#endif /* SPOCK_OUTPUT_PLUGIN_H */

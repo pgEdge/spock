@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_output.c
+ * spock_output.c
  *		  Logical Replication output plugin
  *
  * Copyright (c) 2012-2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical_output.c
+ *		  spock_output.c
  *
  *-------------------------------------------------------------------------
  */
@@ -31,14 +31,14 @@
 #include "utils/snapmgr.h"
 #include "replication/origin.h"
 
-#include "pglogical_output_plugin.h"
-#include "pglogical.h"
-#include "pglogical_output_config.h"
-#include "pglogical_executor.h"
-#include "pglogical_node.h"
-#include "pglogical_output_proto.h"
-#include "pglogical_queue.h"
-#include "pglogical_repset.h"
+#include "spock_output_plugin.h"
+#include "spock.h"
+#include "spock_output_config.h"
+#include "spock_executor.h"
+#include "spock_node.h"
+#include "spock_output_proto.h"
+#include "spock_queue.h"
+#include "spock_repset.h"
 
 #ifdef HAVE_REPLICATION_ORIGINS
 #include "replication/origin.h"
@@ -63,18 +63,18 @@ static bool pg_decode_origin_filter(LogicalDecodingContext *ctx,
 #endif
 
 static void send_startup_message(LogicalDecodingContext *ctx,
-		PGLogicalOutputData *data, bool last_message);
+		SpockOutputData *data, bool last_message);
 
 static bool startup_message_sent = false;
 
-typedef struct PGLRelMetaCacheEntry
+typedef struct SPKRelMetaCacheEntry
 {
 	Oid relid;
 	/* Does the client have this relation cached? */
 	bool is_cached;
 	/* Entry is valid and not due to be purged */
 	bool is_valid;
-} PGLRelMetaCacheEntry;
+} SPKRelMetaCacheEntry;
 
 #define RELMETACACHE_INITIAL_SIZE 128
 static HTAB *RelMetaCache = NULL;
@@ -82,7 +82,7 @@ static MemoryContext RelMetaCacheContext = NULL;
 static int InvalidRelMetaCacheCnt = 0;
 
 static void relmetacache_init(MemoryContext decoding_context);
-static PGLRelMetaCacheEntry *relmetacache_get_relation(PGLogicalOutputData *data,
+static SPKRelMetaCacheEntry *relmetacache_get_relation(SpockOutputData *data,
 													   Relation rel);
 static void relmetacache_flush(void);
 static void relmetacache_prune(void);
@@ -106,7 +106,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 }
 
 static bool
-check_binary_compatibility(PGLogicalOutputData *data)
+check_binary_compatibility(SpockOutputData *data)
 {
 	if (data->client_binary_basetypes_major_version != PG_VERSION_NUM / 100)
 		return false;
@@ -168,11 +168,11 @@ static void
 pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 				  bool is_init)
 {
-	PGLogicalOutputData	   *data = palloc0(sizeof(PGLogicalOutputData));
+	SpockOutputData	   *data = palloc0(sizeof(SpockOutputData));
 
 	/* Short lived memory context for individual messages */
 	data->context = AllocSetContextCreate(ctx->context,
-										  "pglogical output msg context",
+										  "spock output msg context",
 										  ALLOCSET_DEFAULT_SIZES);
 	data->allow_internal_basetypes = false;
 	data->allow_binary_basetypes = false;
@@ -189,7 +189,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 	{
 		int		params_format;
 		bool	started_tx = false;
-		PGLogicalLocalNode *node;
+		SpockLocalNode *node;
 		MemoryContext oldctx;
 
 		/*
@@ -247,17 +247,17 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 				 errmsg("client sent startup parameters in format %d but we only support format 1",
 					params_format)));
 
-		if (data->client_min_proto_version > PGLOGICAL_PROTO_VERSION_NUM)
+		if (data->client_min_proto_version > SPOCK_PROTO_VERSION_NUM)
 			ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("client sent min_proto_version=%d but we only support protocol %d or lower",
-					 data->client_min_proto_version, PGLOGICAL_PROTO_VERSION_NUM)));
+					 data->client_min_proto_version, SPOCK_PROTO_VERSION_NUM)));
 
-		if (data->client_max_proto_version < PGLOGICAL_PROTO_MIN_VERSION_NUM)
+		if (data->client_max_proto_version < SPOCK_PROTO_MIN_VERSION_NUM)
 			ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("client sent max_proto_version=%d but we only support protocol %d or higher",
-				 	data->client_max_proto_version, PGLOGICAL_PROTO_MIN_VERSION_NUM)));
+				 	data->client_max_proto_version, SPOCK_PROTO_MIN_VERSION_NUM)));
 
 		/*
 		 * Set correct protocol format.
@@ -269,7 +269,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 				&& strcmp(data->client_protocol_format, "json") == 0)
 		{
 			oldctx = MemoryContextSwitchTo(ctx->context);
-			data->api = pglogical_init_api(PGLogicalProtoJson);
+			data->api = spock_init_api(SpockProtoJson);
 			opt->output_type = OUTPUT_PLUGIN_TEXTUAL_OUTPUT;
 			MemoryContextSwitchTo(oldctx);
 		}
@@ -278,7 +278,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 				 || data->client_protocol_format == NULL)
 		{
 			oldctx = MemoryContextSwitchTo(ctx->context);
-			data->api = pglogical_init_api(PGLogicalProtoNative);
+			data->api = spock_init_api(SpockProtoNative);
 			opt->output_type = OUTPUT_PLUGIN_BINARY_OUTPUT;
 
 			if (data->client_no_txinfo)
@@ -374,7 +374,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 	}
 
 	/* So we can identify the process type in Valgrind logs */
-	VALGRIND_PRINTF("PGLOGICAL: pglogical worker output_plugin\n");
+	VALGRIND_PRINTF("SPOCK: spock worker output_plugin\n");
 	/* For incremental leak checking */
 	VALGRIND_DISABLE_ERROR_REPORTING;
 	VALGRIND_DO_LEAK_CHECK;
@@ -387,7 +387,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 static void
 pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 {
-	PGLogicalOutputData* data = (PGLogicalOutputData*)ctx->output_plugin_private;
+	SpockOutputData* data = (SpockOutputData*)ctx->output_plugin_private;
 	bool send_replication_origin = data->forward_changeset_origins;
 	MemoryContext old_ctx;
 
@@ -443,7 +443,7 @@ static void
 pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					 XLogRecPtr commit_lsn)
 {
-	PGLogicalOutputData* data = (PGLogicalOutputData*)ctx->output_plugin_private;
+	SpockOutputData* data = (SpockOutputData*)ctx->output_plugin_private;
 	MemoryContext old_ctx;
 
 	old_ctx = MemoryContextSwitchTo(data->context);
@@ -467,10 +467,10 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 }
 
 static bool
-pglogical_change_filter(PGLogicalOutputData *data, Relation relation,
+spock_change_filter(SpockOutputData *data, Relation relation,
 						ReorderBufferChange *change, Bitmapset **att_list)
 {
-	PGLogicalTableRepInfo *tblinfo;
+	SpockTableRepInfo *tblinfo;
 	ListCell	   *lc;
 
 	if (data->replicate_only_table)
@@ -511,7 +511,7 @@ pglogical_change_filter(PGLogicalOutputData *data, Relation relation,
 
 				foreach (plc, data->replication_sets)
 				{
-					PGLogicalRepSet	   *rs = lfirst(plc);
+					SpockRepSet	   *rs = lfirst(plc);
 
 					/* TODO: this is somewhat ugly. */
 					if (strcmp(queue_set, rs->name) == 0 &&
@@ -533,7 +533,7 @@ pglogical_change_filter(PGLogicalOutputData *data, Relation relation,
 		 * having to deal with cache invalidation callbacks.
 		 */
 		HeapTuple			tup;
-		PGLogicalRepSet	   *replicated_set;
+		SpockRepSet	   *replicated_set;
 		ListCell		   *plc;
 
 		if (change->action == REORDER_BUFFER_CHANGE_UPDATE)
@@ -546,7 +546,7 @@ pglogical_change_filter(PGLogicalOutputData *data, Relation relation,
 		replicated_set = replication_set_from_tuple(tup);
 		foreach (plc, data->replication_sets)
 		{
-			PGLogicalRepSet	   *rs = lfirst(plc);
+			SpockRepSet	   *rs = lfirst(plc);
 
 			/* Check if the changed repset is used by us. */
 			if (rs->id == replicated_set->id)
@@ -615,7 +615,7 @@ pglogical_change_filter(PGLogicalOutputData *data, Relation relation,
 		/* Skip empty changes. */
 		if (!newtup && !oldtup)
 		{
-			elog(DEBUG1, "pglogical output got empty change");
+			elog(DEBUG1, "spock output got empty change");
 			return false;
 		}
 
@@ -630,7 +630,7 @@ pglogical_change_filter(PGLogicalOutputData *data, Relation relation,
 		foreach (lc, tblinfo->row_filter)
 		{
 			Node	   *row_filter = (Node *) lfirst(lc);
-			ExprState  *exprstate = pglogical_prepare_row_filter(row_filter);
+			ExprState  *exprstate = spock_prepare_row_filter(row_filter);
 			Datum		res;
 			bool		isnull;
 
@@ -660,7 +660,7 @@ static void
 pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				 Relation relation, ReorderBufferChange *change)
 {
-	PGLogicalOutputData *data = ctx->output_plugin_private;
+	SpockOutputData *data = ctx->output_plugin_private;
 	MemoryContext	old;
 	Bitmapset	   *att_list = NULL;
 
@@ -668,7 +668,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	old = MemoryContextSwitchTo(data->context);
 
 	/* First check the table filter */
-	if (!pglogical_change_filter(data, relation, change, &att_list))
+	if (!spock_change_filter(data, relation, change, &att_list))
 		return;
 
 	/*
@@ -680,7 +680,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	 */
 	if (data->api->write_rel != NULL)
 	{
-		PGLRelMetaCacheEntry *cached_relmeta;
+		SPKRelMetaCacheEntry *cached_relmeta;
 		cached_relmeta = relmetacache_get_relation(data, relation);
 
 		if (!cached_relmeta->is_cached)
@@ -744,7 +744,7 @@ static bool
 pg_decode_origin_filter(LogicalDecodingContext *ctx,
 						RepOriginId origin_id)
 {
-	PGLogicalOutputData *data = ctx->output_plugin_private;
+	SpockOutputData *data = ctx->output_plugin_private;
 	bool ret;
 
 	if (origin_id == InvalidRepOriginId)
@@ -765,7 +765,7 @@ pg_decode_origin_filter(LogicalDecodingContext *ctx,
 
 static void
 send_startup_message(LogicalDecodingContext *ctx,
-		PGLogicalOutputData *data, bool last_message)
+		SpockOutputData *data, bool last_message)
 {
 	List *msg;
 
@@ -798,7 +798,7 @@ pg_decode_shutdown(LogicalDecodingContext * ctx)
 {
 	relmetacache_flush();
 
-	VALGRIND_PRINTF("PGLOGICAL: output plugin shutdown\n");
+	VALGRIND_PRINTF("SPOCK: output plugin shutdown\n");
 
 	/*
 	 * no need to delete data->context as it's child of ctx->context which
@@ -814,7 +814,7 @@ pg_decode_shutdown(LogicalDecodingContext * ctx)
 static void
 relmetacache_invalidation_cb(Datum arg, Oid relid)
  {
-	struct PGLRelMetaCacheEntry *hentry;
+	struct SPKRelMetaCacheEntry *hentry;
 	Assert (RelMetaCache != NULL);
 
 	/*
@@ -829,7 +829,7 @@ relmetacache_invalidation_cb(Datum arg, Oid relid)
 	 * entirely normal, since there's no way to unregister for an
 	 * invalidation event. So we don't care if it's found or not.
 	 */
-	hentry = (struct PGLRelMetaCacheEntry *)
+	hentry = (struct SPKRelMetaCacheEntry *)
 		hash_search(RelMetaCache, &relid, HASH_FIND, NULL);
 
 	if (hentry != NULL)
@@ -859,7 +859,7 @@ relmetacache_init(MemoryContext decoding_context)
 		MemoryContext old_ctxt;
 
 		RelMetaCacheContext = AllocSetContextCreate(TopMemoryContext,
-											  "pglogical output relmetacache",
+											  "spock output relmetacache",
 											  ALLOCSET_DEFAULT_SIZES);
 
 		/* Make a new hash table for the cache */
@@ -867,7 +867,7 @@ relmetacache_init(MemoryContext decoding_context)
 
 		MemSet(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(Oid);
-		ctl.entrysize = sizeof(struct PGLRelMetaCacheEntry);
+		ctl.entrysize = sizeof(struct SPKRelMetaCacheEntry);
 		ctl.hcxt = RelMetaCacheContext;
 
 #if PG_VERSION_NUM >= 90500
@@ -878,7 +878,7 @@ relmetacache_init(MemoryContext decoding_context)
 #endif
 
 		old_ctxt = MemoryContextSwitchTo(RelMetaCacheContext);
-		RelMetaCache = hash_create("pglogical relation metadata cache",
+		RelMetaCache = hash_create("spock relation metadata cache",
 								   RELMETACACHE_INITIAL_SIZE,
 								   &ctl, hash_flags);
 		(void) MemoryContextSwitchTo(old_ctxt);
@@ -899,17 +899,17 @@ relmetacache_init(MemoryContext decoding_context)
  *
  * Returns true on a cache hit, false on a miss.
  */
-static PGLRelMetaCacheEntry *
-relmetacache_get_relation(struct PGLogicalOutputData *data,
+static SPKRelMetaCacheEntry *
+relmetacache_get_relation(struct SpockOutputData *data,
 						  Relation rel)
 {
-	struct PGLRelMetaCacheEntry *hentry;
+	struct SPKRelMetaCacheEntry *hentry;
 	bool found;
 	MemoryContext old_mctx;
 
 	/* Find cached function info, creating if not found */
 	old_mctx = MemoryContextSwitchTo(RelMetaCacheContext);
-	hentry = (struct PGLRelMetaCacheEntry*) hash_search(RelMetaCache,
+	hentry = (struct SPKRelMetaCacheEntry*) hash_search(RelMetaCache,
 										 (void *)(&RelationGetRelid(rel)),
 										 HASH_ENTER, &found);
 	(void) MemoryContextSwitchTo(old_mctx);
@@ -940,13 +940,13 @@ static void
 relmetacache_flush(void)
 {
 	HASH_SEQ_STATUS status;
-	struct PGLRelMetaCacheEntry *hentry;
+	struct SPKRelMetaCacheEntry *hentry;
 
 	if (RelMetaCache != NULL)
 	{
 		hash_seq_init(&status, RelMetaCache);
 
-		while ((hentry = (struct PGLRelMetaCacheEntry*) hash_seq_search(&status)) != NULL)
+		while ((hentry = (struct SPKRelMetaCacheEntry*) hash_seq_search(&status)) != NULL)
 		{
 			if (hash_search(RelMetaCache,
 							(void *) &hentry->relid,
@@ -966,7 +966,7 @@ static void
 relmetacache_prune(void)
 {
 	HASH_SEQ_STATUS status;
-	struct PGLRelMetaCacheEntry *hentry;
+	struct SPKRelMetaCacheEntry *hentry;
 
 	/*
 	 * Since the pruning can be expensive, do it only if ig we invalidated
@@ -977,7 +977,7 @@ relmetacache_prune(void)
 
 	hash_seq_init(&status, RelMetaCache);
 
-	while ((hentry = (struct PGLRelMetaCacheEntry*) hash_seq_search(&status)) != NULL)
+	while ((hentry = (struct SPKRelMetaCacheEntry*) hash_seq_search(&status)) != NULL)
 	{
 		if (!hentry->is_valid)
 		{

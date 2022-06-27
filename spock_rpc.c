@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_rpc.c
+ * spock_rpc.c
  *				Remote calls
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *				pglogical_rpc.c
+ *				spock_rpc.c
  *
  *-------------------------------------------------------------------------
  */
@@ -23,10 +23,10 @@
 
 #include "utils/rel.h"
 
-#include "pglogical_relcache.h"
-#include "pglogical_repset.h"
-#include "pglogical_rpc.h"
-#include "pglogical.h"
+#include "spock_relcache.h"
+#include "spock_repset.h"
+#include "spock_rpc.h"
+#include "spock.h"
 
 #define atooid(x)  ((Oid) strtoul((x), NULL, 10))
 
@@ -59,23 +59,23 @@ pg_logical_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 	}
 
 	initStringInfo(&query);
-	if (pglogical_remote_function_exists(conn, "pglogical", "show_repset_table_info", 2, NULL))
+	if (spock_remote_function_exists(conn, "spock", "show_repset_table_info", 2, NULL))
 	{
-		/* PGLogical 2.0+ */
+		/* Spock 2.0+ */
 		appendStringInfo(&query,
 						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
 						 "       i.has_row_filter"
-						 "  FROM (SELECT DISTINCT relid FROM pglogical.tables WHERE set_name = ANY(ARRAY[%s])) t,"
-						 "       LATERAL pglogical.show_repset_table_info(t.relid, ARRAY[%s]) i",
+						 "  FROM (SELECT DISTINCT relid FROM spock.tables WHERE set_name = ANY(ARRAY[%s])) t,"
+						 "       LATERAL spock.show_repset_table_info(t.relid, ARRAY[%s]) i",
 						 repsetarr.data, repsetarr.data);
 	}
 	else
 	{
-		/* PGLogical 1.x */
+		/* Spock 1.x */
 		appendStringInfo(&query,
 						 "SELECT r.oid AS relid, t.nspname, t.relname, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = r.oid AND NOT attisdropped AND attnum > 0) AS att_list,"
 						 "       false AS has_row_filter"
-						 "  FROM pglogical.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
+						 "  FROM spock.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
 						 " WHERE t.set_name = ANY(ARRAY[%s]) AND r.relname = t.relname AND n.oid = r.relnamespace AND n.nspname = t.nspname",
 						 repsetarr.data);
 	}
@@ -87,7 +87,7 @@ pg_logical_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 
 	for (i = 0; i < PQntuples(res); i++)
 	{
-		PGLogicalRemoteRel *remoterel = palloc0(sizeof(PGLogicalRemoteRel));
+		SpockRemoteRel *remoterel = palloc0(sizeof(SpockRemoteRel));
 
 		remoterel->relid = atooid(PQgetvalue(res, i, 0));
 		remoterel->nspname = pstrdup(PQgetvalue(res, i, 1));
@@ -108,11 +108,11 @@ pg_logical_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 /*
  * Like above but for one table.
  */
-PGLogicalRemoteRel *
+SpockRemoteRel *
 pg_logical_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 								   List *replication_sets)
 {
-	PGLogicalRemoteRel *remoterel = palloc0(sizeof(PGLogicalRemoteRel));
+	SpockRemoteRel *remoterel = palloc0(sizeof(SpockRemoteRel));
 	PGresult   *res;
 	ListCell   *lc;
 	bool		first = true;
@@ -140,23 +140,23 @@ pg_logical_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 	}
 
 	initStringInfo(&query);
-	if (pglogical_remote_function_exists(conn, "pglogical", "show_repset_table_info", 2, NULL))
+	if (spock_remote_function_exists(conn, "spock", "show_repset_table_info", 2, NULL))
 	{
-		/* PGLogical 2.0+ */
+		/* Spock 2.0+ */
 		appendStringInfo(&query,
 						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
 						 "       i.has_row_filter"
-						 "  FROM pglogical.show_repset_table_info(%s::regclass, ARRAY[%s]) i",
+						 "  FROM spock.show_repset_table_info(%s::regclass, ARRAY[%s]) i",
 						 PQescapeLiteral(conn, relname.data, relname.len),
 						 repsetarr.data);
 	}
 	else
 	{
-		/* PGLogical 1.x */
+		/* Spock 1.x */
 		appendStringInfo(&query,
 						 "SELECT r.oid AS relid, t.nspname, t.relname, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = r.oid AND NOT attisdropped AND attnum > 0) AS att_list,"
 						 "       false AS has_row_filter"
-						 "  FROM pglogical.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
+						 "  FROM spock.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
 						 " WHERE r.oid = %s::regclass AND t.set_name = ANY(ARRAY[%s]) AND r.relname = t.relname AND n.oid = r.relnamespace AND n.nspname = t.nspname",
 						 PQescapeLiteral(conn, relname.data, relname.len),
 						 repsetarr.data);
@@ -186,7 +186,7 @@ pg_logical_get_remote_repset_table(PGconn *conn, RangeVar *rv,
  * Is the remote slot active?.
  */
 bool
-pglogical_remote_slot_active(PGconn *conn, const char *slot_name)
+spock_remote_slot_active(PGconn *conn, const char *slot_name)
 {
 	PGresult	   *res;
 	const char	   *values[1];
@@ -216,14 +216,14 @@ pglogical_remote_slot_active(PGconn *conn, const char *slot_name)
 		return false;
 	}
 
-	/* Slot found, validate that it's pglogical slot */
+	/* Slot found, validate that it's spock slot */
 	if (PQgetisnull(res, 0, 0))
 		elog(ERROR, "Unexpectedly null field %s", PQfname(res, 0));
 
-	if (strcmp("pglogical_output", PQgetvalue(res, 0, 0)) != 0 &&
-		strcmp("pglogical", PQgetvalue(res, 0, 0)) != 0)
+	if (strcmp("spock_output", PQgetvalue(res, 0, 0)) != 0 &&
+		strcmp("spock", PQgetvalue(res, 0, 0)) != 0)
 		ereport(ERROR,
-				(errmsg("slot %s is not pglogical slot", slot_name)));
+				(errmsg("slot %s is not spock slot", slot_name)));
 
 	ret = (strcmp(PQgetvalue(res, 0, 1), "t") == 0);
 
@@ -236,7 +236,7 @@ pglogical_remote_slot_active(PGconn *conn, const char *slot_name)
  * Drops replication slot on remote node that has been used by the local node.
  */
 void
-pglogical_drop_remote_slot(PGconn *conn, const char *slot_name)
+spock_drop_remote_slot(PGconn *conn, const char *slot_name)
 {
 	PGresult	   *res;
 	const char	   *values[1];
@@ -270,10 +270,10 @@ pglogical_drop_remote_slot(PGconn *conn, const char *slot_name)
 	if (PQgetisnull(res, 0, 0))
 		elog(ERROR, "Unexpectedly null field %s", PQfname(res, 0));
 
-	if (strcmp("pglogical_output", PQgetvalue(res, 0, 0)) != 0 &&
-		strcmp("pglogical", PQgetvalue(res, 0, 0)) != 0)
+	if (strcmp("spock_output", PQgetvalue(res, 0, 0)) != 0 &&
+		strcmp("spock", PQgetvalue(res, 0, 0)) != 0)
 		ereport(ERROR,
-				(errmsg("slot %s is not pglogical slot", slot_name)));
+				(errmsg("slot %s is not spock slot", slot_name)));
 
 	PQclear(res);
 
@@ -293,20 +293,20 @@ pglogical_drop_remote_slot(PGconn *conn, const char *slot_name)
 }
 
 void
-pglogical_remote_node_info(PGconn *conn, Oid *nodeid, char **node_name, char **sysid, char **dbname, char **replication_sets)
+spock_remote_node_info(PGconn *conn, Oid *nodeid, char **node_name, char **sysid, char **dbname, char **replication_sets)
 {
 	PGresult	   *res;
 
-	res = PQexec(conn, "SELECT node_id, node_name, sysid, dbname, replication_sets FROM pglogical.pglogical_node_info()");
+	res = PQexec(conn, "SELECT node_id, node_name, sysid, dbname, replication_sets FROM spock.spock_node_info()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		elog(ERROR, "could not fetch remote node info: %s\n", PQerrorMessage(conn));
 
 	/* No nodes found? */
 	if (PQntuples(res) == 0)
-		elog(ERROR, "the remote database is not configured as a pglogical node.\n");
+		elog(ERROR, "the remote database is not configured as a spock node.\n");
 
 	if (PQntuples(res) > 1)
-		elog(ERROR, "the remote database has multiple nodes configured. That is not supported with current version of pglogical.\n");
+		elog(ERROR, "the remote database has multiple nodes configured. That is not supported with current version of spock.\n");
 
 	*nodeid = atooid(PQgetvalue(res, 0, 0));
 	*node_name = pstrdup(PQgetvalue(res, 0, 1));
@@ -321,7 +321,7 @@ pglogical_remote_node_info(PGconn *conn, Oid *nodeid, char **node_name, char **s
 }
 
 bool
-pglogical_remote_function_exists(PGconn *conn, const char *nspname,
+spock_remote_function_exists(PGconn *conn, const char *nspname,
 								 const char *proname, int nargs, char *argname)
 {
 	PGresult	   *res;

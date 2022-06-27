@@ -1,12 +1,12 @@
 --PRIMARY KEY
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 
 \c :provider_dsn
 
 -- testing update of primary key
 -- create  table with primary key and 3 other tables referencing it
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 CREATE TABLE public.pk_users (
     id integer PRIMARY KEY,
     another_id integer unique not null,
@@ -18,7 +18,7 @@ CREATE TABLE public.pk_users (
 --pass
 $$);
 
-SELECT * FROM pglogical.replication_set_add_table('default', 'pk_users');
+SELECT * FROM spock.replication_set_add_table('default', 'pk_users');
 
 INSERT INTO pk_users VALUES(1,11,1,'User1', 'Address1');
 INSERT INTO pk_users VALUES(2,12,1,'User2', 'Address2');
@@ -28,7 +28,7 @@ INSERT INTO pk_users VALUES(4,14,2,'User4', 'Address4');
 SELECT * FROM pk_users ORDER BY id;
 
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
@@ -38,7 +38,7 @@ SELECT * FROM pk_users ORDER BY id;
 
 UPDATE pk_users SET address='UpdatedAddress1' WHERE id=1;
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
@@ -53,7 +53,7 @@ INSERT INTO pk_users VALUES (6000,6000,0,'sub2',NULL);
 INSERT INTO pk_users VALUES (5001,5000,1,'pub1',NULL);
 -- And a conflict that violates two constraints
 INSERT INTO pk_users VALUES (6000,6000,1,'pub2',NULL);
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT * FROM pk_users WHERE id IN (5000,5001,6000) ORDER BY id;
@@ -63,7 +63,7 @@ DELETE FROM pk_users WHERE id IN (5000,5001,6000);
 
 \set VERBOSITY terse
 
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 CREATE UNIQUE INDEX another_id_temp_idx ON public.pk_users (another_id);
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY USING INDEX another_id_temp_idx;
@@ -74,7 +74,7 @@ $$);
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;
 
 UPDATE pk_users SET address='UpdatedAddress2' WHERE id=2;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;
@@ -84,7 +84,7 @@ SELECT * FROM pk_users ORDER BY id;
 \c :provider_dsn
 UPDATE pk_users SET address='UpdatedAddress3' WHERE another_id=12;
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
@@ -93,7 +93,7 @@ SELECT * FROM pk_users ORDER BY id;
 \c :provider_dsn
 UPDATE pk_users SET address='UpdatedAddress4' WHERE a_id=2;
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
@@ -107,7 +107,7 @@ SELECT * FROM pk_users ORDER BY id;
 SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
 \gset
 
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 CREATE UNIQUE INDEX id_temp_idx ON public.pk_users (id);
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY USING INDEX id_temp_idx;
@@ -115,12 +115,12 @@ $$);
 
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, :curr_lsn);
+SELECT spock.wait_slot_confirm_lsn(NULL, :curr_lsn);
 
 \c :subscriber_dsn
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;
 
-SELECT pglogical.alter_subscription_disable('test_subscription', true);
+SELECT spock.alter_subscription_disable('test_subscription', true);
 
 \c :provider_dsn
 
@@ -138,12 +138,12 @@ BEGIN
 END;
 $$;
 
-SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN json_extract_path(data::json, 'relation') END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '1', 'max_proto_version', '1', 'startup_params_format', '1', 'proto_format', 'json', 'pglogical.replication_set_names', 'default,ddl_sql');
-SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN data END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '1', 'max_proto_version', '1', 'startup_params_format', '1', 'proto_format', 'json', 'pglogical.replication_set_names', 'default,ddl_sql');
+SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN json_extract_path(data::json, 'relation') END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '1', 'max_proto_version', '1', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default,ddl_sql');
+SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN data END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '1', 'max_proto_version', '1', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default,ddl_sql');
 
 \c :subscriber_dsn
 
-SELECT pglogical.alter_subscription_enable('test_subscription', true);
+SELECT spock.alter_subscription_enable('test_subscription', true);
 DELETE FROM pk_users WHERE id = 4;-- remove the offending entries.
 
 \c :provider_dsn
@@ -159,7 +159,7 @@ BEGIN
 END;
 $$;
 UPDATE pk_users SET address='UpdatedAddress2' WHERE id=2;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT * FROM pk_users ORDER BY id;
@@ -171,7 +171,7 @@ SELECT * FROM pk_users ORDER BY id;
 -- that will break replication once added to a repset, or prevent
 -- dml that would break on apply.
 --
--- See 2ndQuadrant/pglogical_internal#146
+-- See 2ndQuadrant/spock_internal#146
 --
 
 -- Show that the current PK is not marked 'indisreplident' because we use
@@ -179,25 +179,25 @@ SELECT * FROM pk_users ORDER BY id;
 SELECT indisreplident FROM pg_index WHERE indexrelid = 'pk_users_pkey'::regclass;
 SELECT relreplident FROM pg_class WHERE oid = 'pk_users'::regclass;
 
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey;
 $$);
 
 INSERT INTO pk_users VALUES(90,0,0,'User90', 'Address90');
 
--- pglogical will stop us adding the table to a repset if we try to,
+-- spock will stop us adding the table to a repset if we try to,
 -- but didn't stop us altering it, and won't stop us updating it...
 BEGIN;
-SELECT * FROM pglogical.replication_set_remove_table('default', 'pk_users');
-SELECT * FROM pglogical.replication_set_add_table('default', 'pk_users');
+SELECT * FROM spock.replication_set_remove_table('default', 'pk_users');
+SELECT * FROM spock.replication_set_add_table('default', 'pk_users');
 ROLLBACK;
 
--- Per 2ndQuadrant/pglogical_internal#146 this shouldn't be allowed, but
+-- Per 2ndQuadrant/spock_internal#146 this shouldn't be allowed, but
 -- currently is. Logical decoding will fail to capture this change and we
 -- won't progress with decoding.
 --
 -- This will get recorded by logical decoding with no 'oldkey' values,
--- causing pglogical to fail to apply it with an error like
+-- causing spock to fail to apply it with an error like
 --
 --    CONFLICT: remote UPDATE on relation public.pk_users (tuple not found). Resolution: skip.
 --
@@ -207,7 +207,7 @@ UPDATE pk_users SET id = 91 WHERE id = 90;
 -- will be lost.
 BEGIN;
 SET LOCAL statement_timeout = '2s';
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 ROLLBACK;
 
 -- To carry on we'll need to make the index on the downstream
@@ -222,14 +222,14 @@ ALTER TABLE public.pk_users
 ALTER TABLE public.pk_users
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY (id) NOT DEFERRABLE;
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 
 
 
 -- Demonstrate that deferrable indexes aren't yet supported for updates on downstream
 -- and will fail with an informative error.
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 ALTER TABLE public.pk_users
     DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY (id) DEFERRABLE INITIALLY DEFERRED;
@@ -241,24 +241,24 @@ ALTER TABLE public.pk_users REPLICA IDENTITY USING INDEX pk_users_pkey;
 -- New index isn't REPLICA IDENTITY either
 SELECT indisreplident FROM pg_index WHERE indexrelid = 'pk_users_pkey'::regclass;
 
--- pglogical won't let us add the table to a repset, though
--- it doesn't stop us altering it; see 2ndQuadrant/pglogical_internal#146
+-- spock won't let us add the table to a repset, though
+-- it doesn't stop us altering it; see 2ndQuadrant/spock_internal#146
 BEGIN;
-SELECT * FROM pglogical.replication_set_remove_table('default', 'pk_users');
-SELECT * FROM pglogical.replication_set_add_table('default', 'pk_users');
+SELECT * FROM spock.replication_set_remove_table('default', 'pk_users');
+SELECT * FROM spock.replication_set_add_table('default', 'pk_users');
 ROLLBACK;
 
 -- We can still INSERT (which is fine)
 INSERT INTO pk_users VALUES(100,0,0,'User100', 'Address100');
 
--- FIXME pglogical shouldn't allow this, no valid replica identity exists
--- see 2ndQuadrant/pglogical_internal#146
+-- FIXME spock shouldn't allow this, no valid replica identity exists
+-- see 2ndQuadrant/spock_internal#146
 UPDATE pk_users SET id = 101 WHERE id = 100;
 
 -- Must time out, apply will fail on downstream due to no replident index
 BEGIN;
 SET LOCAL statement_timeout = '2s';
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 ROLLBACK;
 
 \c :subscriber_dsn
@@ -274,10 +274,10 @@ ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
 
 -- then replay. Toggle the subscription's enabled state
 -- to make it recover faster for a quicker test run.
-SELECT pglogical.alter_subscription_disable('test_subscription', true);
-SELECT pglogical.alter_subscription_enable('test_subscription', true);
+SELECT spock.alter_subscription_disable('test_subscription', true);
+SELECT spock.alter_subscription_enable('test_subscription', true);
 \c :provider_dsn
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT id FROM pk_users WHERE id IN (90, 91, 100, 101) ORDER BY id;
@@ -296,7 +296,7 @@ VALUES (200,2000,repeat('waah daah sooo mooo', 1000));
 INSERT INTO pk_users (id, another_id, address)
 VALUES (200,2000,repeat('boop boop doop boop', 1000));
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT id, another_id, left(address,30) AS address_abbrev
@@ -307,14 +307,14 @@ FROM pk_users WHERE another_id = 2000;
 DELETE FROM pk_users WHERE id = 1;
 \c :provider_dsn
 DELETE FROM pk_users WHERE id = 1;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 -- UPDATE conflicts violating multiple constraints.
 -- For this one we need to put the secondary unique
 -- constraint back.
 TRUNCATE TABLE pk_users;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.replicate_ddl_command($$
   CREATE UNIQUE INDEX pk_users_another_id_idx ON public.pk_users(another_id);
 $$);
 \c :subscriber_dsn
@@ -325,7 +325,7 @@ INSERT INTO pk_users VALUES
 INSERT INTO pk_users VALUES
 (3,11,1,'pub',NULL),
 (4,22,1,'pub',NULL);
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 SELECT * FROM pk_users ORDER BY id;
 \c :provider_dsn
@@ -335,7 +335,7 @@ SELECT * FROM pk_users ORDER BY id;
 -- identity, replace it, and satisfy the other constraint in the process.
 UPDATE pk_users SET id=1, another_id = 10, name='should_error' WHERE id = 3 AND another_id = 11;
 SELECT * FROM pk_users ORDER BY id;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 -- UPDATEs to missing rows could either resurrect the row or conclude it
 -- shouldn't exist and discard it. Currently pgl unconditionally discards, so
@@ -344,7 +344,7 @@ SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
 DELETE FROM pk_users WHERE id = 4 AND another_id = 22;
 \c :provider_dsn
 UPDATE pk_users SET name = 'jesus' WHERE id = 4;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 -- No resurrection here
 SELECT * FROM pk_users ORDER BY id;
@@ -355,21 +355,21 @@ SELECT * FROM pk_users ORDER BY id;
 INSERT INTO pk_users VALUES (5,55,0,'sub',NULL);
 \c :provider_dsn
 INSERT INTO pk_users VALUES (6,66,0,'sub',NULL);
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 -- The new row (6,55) will conflict with (5,55)
 UPDATE pk_users SET another_id = 55, name = 'pub_should_error' WHERE id = 6;
 SELECT * FROM pk_users ORDER BY id;
 -- We'll time out due to apply errors
 BEGIN;
 SET LOCAL statement_timeout = '2s';
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 ROLLBACK;
 -- This time we'll fix it by deleting the conflicting row
 \c :subscriber_dsn
 SELECT * FROM pk_users ORDER BY id;
 DELETE FROM pk_users WHERE id = 5;
 \c :provider_dsn
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 SELECT * FROM pk_users ORDER BY id;
 
@@ -377,6 +377,6 @@ SELECT * FROM pk_users ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 	DROP TABLE public.pk_users CASCADE;
 $$);

@@ -1,10 +1,10 @@
 --test COPY
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 
 \c :provider_dsn
 
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
      CREATE TABLE public.x (
 	a serial primary key,
 	b int,
@@ -14,9 +14,9 @@ SELECT pglogical.replicate_ddl_command($$
      );
 $$);
 
-SELECT * FROM pglogical.replication_set_add_table('default', 'x');
+SELECT * FROM spock.replication_set_add_table('default', 'x');
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 COPY x (a, b, c, d, e) from stdin;
 9999	\N	\\N	\NN	\N
@@ -53,7 +53,7 @@ COPY x (a, b, c, d, e) from stdin;
 \.
 
 SELECT * FROM x ORDER BY a;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT * FROM x ORDER BY a;
@@ -61,6 +61,6 @@ SELECT * FROM x ORDER BY a;
 \c :provider_dsn
 
 \set VERBOSITY terse
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 	DROP TABLE public.x CASCADE;
 $$);

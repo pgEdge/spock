@@ -1,12 +1,12 @@
 --PRIMARY KEY
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 
 \c :provider_dsn
 
 -- Test conflicts where a secondary unique constraint with a predicate exits,
 -- ensuring we don't generate false conflicts.
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 CREATE TABLE public.secondary_unique_pred (
     a integer PRIMARY KEY,
     b integer NOT NULL,
@@ -16,7 +16,7 @@ CREATE TABLE public.secondary_unique_pred (
 CREATE UNIQUE INDEX ON public.secondary_unique_pred (b) WHERE (check_unique);
 $$);
 
-SELECT * FROM pglogical.replication_set_add_table('default', 'secondary_unique_pred');
+SELECT * FROM spock.replication_set_add_table('default', 'secondary_unique_pred');
 
 INSERT INTO secondary_unique_pred (a, b, check_unique) VALUES (1, 1, false);
 INSERT INTO secondary_unique_pred (a, b, check_unique) VALUES (2, 1, false);
@@ -26,7 +26,7 @@ INSERT INTO secondary_unique_pred (a, b, check_unique) VALUES (5, 2, true);
 
 SELECT * FROM secondary_unique_pred ORDER BY a;
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
@@ -42,7 +42,7 @@ INSERT INTO secondary_unique_pred (a, b, check_unique) VALUES (4, 2, false);
 
 SELECT * FROM secondary_unique_pred ORDER BY a;
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
@@ -50,6 +50,6 @@ SELECT * FROM secondary_unique_pred ORDER BY a;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 	DROP TABLE public.secondary_unique_pred CASCADE;
 $$);

@@ -1,21 +1,21 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_repset.h
- *		pglogical replication set manipulation functions
+ * spock_repset.h
+ *		spock replication set manipulation functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_repset.h
+ *		spock_repset.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef PGLOGICAL_REPSET_H
-#define PGLOGICAL_REPSET_H
+#ifndef SPOCK_REPSET_H
+#define SPOCK_REPSET_H
 
 #include "replication/reorderbuffer.h"
 
-typedef struct PGLogicalRepSet
+typedef struct SpockRepSet
 {
 	Oid			id;
 	Oid			nodeid;
@@ -24,14 +24,14 @@ typedef struct PGLogicalRepSet
 	bool		replicate_update;
 	bool		replicate_delete;
 	bool		replicate_truncate;
-} PGLogicalRepSet;
+} SpockRepSet;
 
 #define DEFAULT_REPSET_NAME "default"
 #define DEFAULT_INSONLY_REPSET_NAME "default_insert_only"
 #define DDL_SQL_REPSET_NAME "ddl_sql"
 
 /* This is only valid within one output plugin instance/walsender. */
-typedef struct PGLogicalTableRepInfo
+typedef struct SpockTableRepInfo
 {
 	Oid				reloid;				/* key */
 
@@ -46,10 +46,10 @@ typedef struct PGLogicalTableRepInfo
 										   otherwise each replicated column
 										   is a member */
 	List		   *row_filter;			/* compiled row_filter nodes */
-} PGLogicalTableRepInfo;
+} SpockTableRepInfo;
 
-extern PGLogicalRepSet *get_replication_set(Oid setid);
-extern PGLogicalRepSet *get_replication_set_by_name(Oid nodeid,
+extern SpockRepSet *get_replication_set(Oid setid);
+extern SpockRepSet *get_replication_set_by_name(Oid nodeid,
 													const char *setname,
 													bool missing_ok);
 
@@ -57,11 +57,11 @@ extern List *get_node_replication_sets(Oid nodeid);
 extern List *get_replication_sets(Oid nodeid, List *replication_set_names,
 								  bool missing_ok);
 
-extern PGLogicalTableRepInfo *get_table_replication_info(Oid nodeid,
+extern SpockTableRepInfo *get_table_replication_info(Oid nodeid,
 						   Relation table, List *subs_replication_sets);
 
-extern void create_replication_set(PGLogicalRepSet *repset);
-extern void alter_replication_set(PGLogicalRepSet *repset);
+extern void create_replication_set(SpockRepSet *repset);
+extern void alter_replication_set(SpockRepSet *repset);
 extern void drop_replication_set(Oid setid);
 extern void drop_node_replication_sets(Oid nodeid);
 
@@ -78,7 +78,7 @@ extern PGDLLEXPORT void replication_set_remove_seq(Oid setid, Oid reloid,
 extern List *get_table_replication_sets(Oid nodeid, Oid reloid);
 extern List *get_seq_replication_sets(Oid nodeid, Oid seqoid);
 
-extern PGLogicalRepSet *replication_set_from_tuple(HeapTuple tuple);
+extern SpockRepSet *replication_set_from_tuple(HeapTuple tuple);
 
 extern Oid get_replication_set_rel_oid(void);
 extern Oid get_replication_set_table_rel_oid(void);
@@ -87,4 +87,4 @@ extern Oid get_replication_set_seq_rel_oid(void);
 extern char *stringlist_to_identifierstr(List *repsets);
 extern int get_att_num_by_name(TupleDesc desc, const char *attname);
 
-#endif /* PGLOGICAL_REPSET_H */
+#endif /* SPOCK_REPSET_H */

@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_repset.c
- *		pglogical replication set manipulation functions
+ * spock_repset.c
+ *		spock replication set manipulation functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_repset.c
+ *		spock_repset.c
  *
  *-------------------------------------------------------------------------
  */
@@ -43,11 +43,11 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
-#include "pglogical_dependency.h"
-#include "pglogical_node.h"
-#include "pglogical_queue.h"
-#include "pglogical_repset.h"
-#include "pglogical.h"
+#include "spock_dependency.h"
+#include "spock_node.h"
+#include "spock_queue.h"
+#include "spock_repset.h"
+#include "spock.h"
 
 #define CATALOG_REPSET			"replication_set"
 #define CATALOG_REPSET_SEQ		"replication_set_seq"
@@ -107,10 +107,10 @@ static HTAB *RepSetTableHash = NULL;
 /*
  * Read the replication set.
  */
-PGLogicalRepSet *
+SpockRepSet *
 get_replication_set(Oid setid)
 {
-	PGLogicalRepSet    *repset;
+	SpockRepSet    *repset;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -145,10 +145,10 @@ get_replication_set(Oid setid)
 /*
  * Find replication set by name
  */
-PGLogicalRepSet *
+SpockRepSet *
 get_replication_set_by_name(Oid nodeid, const char *setname, bool missing_ok)
 {
-	PGLogicalRepSet    *repset;
+	SpockRepSet    *repset;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -196,7 +196,7 @@ get_replication_set_by_name(Oid nodeid, const char *setname, bool missing_ok)
 static void
 repset_relcache_invalidate_callback(Datum arg, Oid reloid)
 {
-	PGLogicalTableRepInfo *entry;
+	SpockTableRepInfo *entry;
 
 	/* Just to be sure. */
 	if (RepSetTableHash == NULL)
@@ -244,7 +244,7 @@ repset_relcache_init(void)
 	/* Initialize the hash table. */
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(Oid);
-	ctl.entrysize = sizeof(PGLogicalTableRepInfo);
+	ctl.entrysize = sizeof(SpockTableRepInfo);
 	ctl.hcxt = CacheMemoryContext;
 	hashflags = HASH_ELEM | HASH_CONTEXT;
 #if PG_VERSION_NUM < 90500
@@ -261,7 +261,7 @@ repset_relcache_init(void)
 	hashflags |= HASH_BLOBS;
 #endif
 
-	RepSetTableHash = hash_create("pglogical repset table cache",
+	RepSetTableHash = hash_create("spock repset table cache",
                                       REPSETTABLEHASH_INITIAL_SIZE, &ctl,
                                       hashflags);
 
@@ -302,7 +302,7 @@ get_node_replication_sets(Oid nodeid)
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
 		RepSetTuple	*t = (RepSetTuple *) GETSTRUCT(tuple);
-		PGLogicalRepSet	    *repset = get_replication_set(t->id);
+		SpockRepSet	    *repset = get_replication_set(t->id);
 		replication_sets = lappend(replication_sets, repset);
 	}
 
@@ -372,11 +372,11 @@ get_replication_sets(Oid nodeid, List *replication_set_names, bool missing_ok)
 	return replication_sets;
 }
 
-PGLogicalTableRepInfo *
+SpockTableRepInfo *
 get_table_replication_info(Oid nodeid, Relation table,
 						   List *subs_replication_sets)
 {
-	PGLogicalTableRepInfo *entry;
+	SpockTableRepInfo *entry;
 	bool			found;
 	RangeVar	   *rv;
 	Oid				reloid = RelationGetRelid(table);
@@ -454,7 +454,7 @@ get_table_replication_info(Oid nodeid, Relation table,
 
 		foreach (lc, subs_replication_sets)
 		{
-			PGLogicalRepSet	   *repset = lfirst(lc);
+			SpockRepSet	   *repset = lfirst(lc);
 			bool				isnull;
 			Datum				d;
 
@@ -553,7 +553,7 @@ get_table_replication_sets(Oid nodeid, Oid reloid)
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
 		RepSetSeqTuple		*t = (RepSetSeqTuple *) GETSTRUCT(tuple);
-		PGLogicalRepSet	    *repset = get_replication_set(t->id);
+		SpockRepSet	    *repset = get_replication_set(t->id);
 
 		if (repset->nodeid != nodeid)
 			continue;
@@ -625,7 +625,7 @@ get_seq_replication_sets(Oid nodeid, Oid seqoid)
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
 		RepSetSeqTuple		*t = (RepSetSeqTuple *) GETSTRUCT(tuple);
-		PGLogicalRepSet	    *repset = get_replication_set(t->id);
+		SpockRepSet	    *repset = get_replication_set(t->id);
 
 		if (repset->nodeid != nodeid)
 			continue;
@@ -643,7 +643,7 @@ get_seq_replication_sets(Oid nodeid, Oid seqoid)
  * Add new tuple to the replication_sets catalog.
  */
 void
-create_replication_set(PGLogicalRepSet *repset)
+create_replication_set(SpockRepSet *repset)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -712,7 +712,7 @@ create_replication_set(PGLogicalRepSet *repset)
  * Alter the existing replication set.
  */
 void
-alter_replication_set(PGLogicalRepSet *repset)
+alter_replication_set(SpockRepSet *repset)
 {
 	RangeVar	   *rv;
 	SysScanDesc		scan;
@@ -861,7 +861,7 @@ replication_set_remove_tables(Oid setid, Oid nodeid)
 
 		/* Dependency cleanup. */
 		myself.objectSubId = reloid;
-		pglogical_tryDropDependencies(&myself, DROP_CASCADE);
+		spock_tryDropDependencies(&myself, DROP_CASCADE);
 	}
 
 	/* Cleanup. */
@@ -907,13 +907,13 @@ replication_set_remove_seqs(Oid setid, Oid nodeid)
 		/* Make sure the sequence_has_replication_sets sees the changes. */
 		CommandCounterIncrement();
 		if (!sequence_has_replication_sets(nodeid, seqoid))
-			pglogical_drop_sequence_state_record(seqoid);
+			spock_drop_sequence_state_record(seqoid);
 
 		CacheInvalidateRelcacheByRelid(seqoid);
 
 		/* Dependency cleanup. */
 		myself.objectSubId = seqoid;
-		pglogical_tryDropDependencies(&myself, DROP_CASCADE);
+		spock_tryDropDependencies(&myself, DROP_CASCADE);
 	}
 
 	/* Cleanup. */
@@ -1023,7 +1023,7 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	HeapTuple	tup;
 	Datum		values[Natts_repset_table];
 	bool		nulls[Natts_repset_table];
-	PGLogicalRepSet *repset = get_replication_set(setid);
+	SpockRepSet *repset = get_replication_set(setid);
 	ObjectAddress	referenced;
 	ObjectAddress	myself;
 
@@ -1093,12 +1093,12 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	referenced.objectId = reloid;
 	referenced.objectSubId = 0;
 
-	pglogical_recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
+	spock_recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 
 	/* Make sure we record dependencies for the row_filter as well. */
 	if (row_filter)
 	{
-		pglogical_recordDependencyOnSingleRelExpr(&myself, row_filter,
+		spock_recordDependencyOnSingleRelExpr(&myself, row_filter,
 												  reloid, DEPENDENCY_NORMAL,
 												  DEPENDENCY_NORMAL);
 	}
@@ -1121,7 +1121,7 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 	HeapTuple	tup;
 	Datum		values[Natts_repset_table];
 	bool		nulls[Natts_repset_table];
-	PGLogicalRepSet *repset = get_replication_set(setid);
+	SpockRepSet *repset = get_replication_set(setid);
 	ObjectAddress	referenced;
 	ObjectAddress	myself;
 
@@ -1135,7 +1135,7 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 				 errmsg("UNLOGGED and TEMP sequences cannot be replicated")));
 
 	/* Ensure track the state of the sequence. */
-	pglogical_create_sequence_state_record(seqoid);
+	spock_create_sequence_state_record(seqoid);
 
 	table_close(targetrel, NoLock);
 
@@ -1167,7 +1167,7 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 	referenced.objectId = seqoid;
 	referenced.objectSubId = 0;
 
-	pglogical_recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
+	spock_recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 
 	table_close(rel, RowExclusiveLock);
 
@@ -1300,7 +1300,7 @@ replication_set_remove_table(Oid setid, Oid reloid, bool from_drop)
 	myself.classId = get_replication_set_table_rel_oid();
 	myself.objectId = setid;
 	myself.objectSubId = reloid;
-	pglogical_tryDropDependencies(&myself, DROP_CASCADE);
+	spock_tryDropDependencies(&myself, DROP_CASCADE);
 
 	/* Make sure the has_relation_replication_sets sees the changes. */
 	CommandCounterIncrement();
@@ -1322,7 +1322,7 @@ replication_set_remove_seq(Oid setid, Oid seqoid, bool from_drop)
 	HeapTuple		tuple;
 	ScanKeyData		key[2];
 	ObjectAddress	myself;
-	PGLogicalRepSet *repset = get_replication_set(setid);
+	SpockRepSet *repset = get_replication_set(setid);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_SEQ, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1358,12 +1358,12 @@ replication_set_remove_seq(Oid setid, Oid seqoid, bool from_drop)
 	myself.classId = get_replication_set_seq_rel_oid();
 	myself.objectId = setid;
 	myself.objectSubId = seqoid;
-	pglogical_tryDropDependencies(&myself, DROP_CASCADE);
+	spock_tryDropDependencies(&myself, DROP_CASCADE);
 
 	/* Make sure the has_relation_replication_sets sees the changes. */
 	CommandCounterIncrement();
 	if (from_drop || !sequence_has_replication_sets(repset->nodeid, seqoid))
-		pglogical_drop_sequence_state_record(seqoid);
+		spock_drop_sequence_state_record(seqoid);
 
 	/* Cleanup. */
 	systable_endscan(scan);
@@ -1371,13 +1371,13 @@ replication_set_remove_seq(Oid setid, Oid seqoid, bool from_drop)
 }
 
 /*
- * Utility functions for working with PGLogicalRepSet struct.
+ * Utility functions for working with SpockRepSet struct.
  */
-PGLogicalRepSet*
+SpockRepSet*
 replication_set_from_tuple(HeapTuple tuple)
 {
 	RepSetTuple *repsettup = (RepSetTuple *) GETSTRUCT(tuple);
-	PGLogicalRepSet *repset = (PGLogicalRepSet *) palloc(sizeof(PGLogicalRepSet));
+	SpockRepSet *repset = (SpockRepSet *) palloc(sizeof(SpockRepSet));
 	repset->id = repsettup->id;
 	repset->nodeid = repsettup->nodeid;
 	repset->name = pstrdup(NameStr(repsettup->name));
@@ -1397,7 +1397,7 @@ get_replication_set_rel_oid(void)
 	static Oid	repsetreloid = InvalidOid;
 
 	if (repsetreloid == InvalidOid)
-		repsetreloid = get_pglogical_table_oid(CATALOG_REPSET);
+		repsetreloid = get_spock_table_oid(CATALOG_REPSET);
 
 	return repsetreloid;
 }
@@ -1411,7 +1411,7 @@ get_replication_set_table_rel_oid(void)
 	static Oid	repsettablereloid = InvalidOid;
 
 	if (repsettablereloid == InvalidOid)
-		repsettablereloid = get_pglogical_table_oid(CATALOG_REPSET_TABLE);
+		repsettablereloid = get_spock_table_oid(CATALOG_REPSET_TABLE);
 
 	return repsettablereloid;
 }
@@ -1425,7 +1425,7 @@ get_replication_set_seq_rel_oid(void)
 	static Oid	repsetseqreloid = InvalidOid;
 
 	if (repsetseqreloid == InvalidOid)
-		repsetseqreloid = get_pglogical_table_oid(CATALOG_REPSET_SEQ);
+		repsetseqreloid = get_spock_table_oid(CATALOG_REPSET_SEQ);
 
 	return repsetseqreloid;
 }

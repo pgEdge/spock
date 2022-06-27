@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_queue.c
- *		pglogical queue and connection catalog manipulation functions
+ * spock_queue.c
+ *		spock queue and connection catalog manipulation functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_queue.c
+ *		spock_queue.c
  *
  *-------------------------------------------------------------------------
  */
@@ -45,8 +45,8 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
-#include "pglogical_queue.h"
-#include "pglogical.h"
+#include "spock_queue.h"
+#include "spock.h"
 
 #define CATALOG_QUEUE	"queue"
 
@@ -179,7 +179,7 @@ get_queue_table_oid(void)
 	static Oid	queuetableoid = InvalidOid;
 
 	if (queuetableoid == InvalidOid)
-		queuetableoid = get_pglogical_table_oid(CATALOG_QUEUE);
+		queuetableoid = get_spock_table_oid(CATALOG_QUEUE);
 
 	return queuetableoid;
 }
@@ -238,7 +238,7 @@ create_truncate_trigger(Relation rel)
 	tgstmt->initdeferred = false;
 	tgstmt->constrrel = NULL;
 
-	trgobj = PGLCreateTrigger(tgstmt, NULL, RelationGetRelid(rel), InvalidOid,
+	trgobj = SPKCreateTrigger(tgstmt, NULL, RelationGetRelid(rel), InvalidOid,
 							  InvalidOid, InvalidOid, true /* tgisinternal */);
 
 	extension.classId = ExtensionRelationId;

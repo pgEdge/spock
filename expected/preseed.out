@@ -1,17 +1,17 @@
 -- Indirection for connection strings
-CREATE OR REPLACE FUNCTION public.pglogical_regress_variables(
+CREATE OR REPLACE FUNCTION public.spock_regress_variables(
     OUT orig_provider_dsn text,
     OUT provider_dsn text,
     OUT provider1_dsn text,
     OUT subscriber_dsn text
     ) RETURNS record LANGUAGE SQL AS $f$
 SELECT
-    current_setting('pglogical.orig_provider_dsn'),
-    current_setting('pglogical.provider_dsn'),
-    current_setting('pglogical.provider1_dsn'),
-    current_setting('pglogical.subscriber_dsn')
+    current_setting('spock.orig_provider_dsn'),
+    current_setting('spock.provider_dsn'),
+    current_setting('spock.provider1_dsn'),
+    current_setting('spock.subscriber_dsn')
 $f$;
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 /*
  * Tests to ensure that objects/data that exists pre-clone is successfully
@@ -36,60 +36,60 @@ INSERT INTO some_local_tbl3(key, data) VALUES('key1', 'data1');
 INSERT INTO some_local_tbl3(key, data) VALUES('key2', NULL);
 INSERT INTO some_local_tbl3(key, data) VALUES('key3', 'data3');
 /*
- * Make sure that the pglogical_regress_variables function exists both on
+ * Make sure that the spock_regress_variables function exists both on
  * provider and subscriber since the original connection might have been
  * to completely different database.
  */
-CREATE OR REPLACE FUNCTION public.pglogical_regress_variables(
+CREATE OR REPLACE FUNCTION public.spock_regress_variables(
     OUT orig_provider_dsn text,
     OUT provider_dsn text,
     OUT provider1_dsn text,
     OUT subscriber_dsn text
     ) RETURNS record LANGUAGE SQL AS $f$
 SELECT
-    current_setting('pglogical.orig_provider_dsn'),
-    current_setting('pglogical.provider_dsn'),
-    current_setting('pglogical.provider1_dsn'),
-    current_setting('pglogical.subscriber_dsn')
+    current_setting('spock.orig_provider_dsn'),
+    current_setting('spock.provider_dsn'),
+    current_setting('spock.provider1_dsn'),
+    current_setting('spock.subscriber_dsn')
 $f$;
 CREATE DATABASE regression1;
 CREATE DATABASE sourcedb;
 \c :orig_provider_dsn
-CREATE OR REPLACE FUNCTION public.pglogical_regress_variables(
+CREATE OR REPLACE FUNCTION public.spock_regress_variables(
     OUT orig_provider_dsn text,
     OUT provider_dsn text,
     OUT provider1_dsn text,
     OUT subscriber_dsn text
     ) RETURNS record LANGUAGE SQL AS $f$
 SELECT
-    current_setting('pglogical.orig_provider_dsn'),
-    current_setting('pglogical.provider_dsn'),
-    current_setting('pglogical.provider1_dsn'),
-    current_setting('pglogical.subscriber_dsn')
+    current_setting('spock.orig_provider_dsn'),
+    current_setting('spock.provider_dsn'),
+    current_setting('spock.provider1_dsn'),
+    current_setting('spock.subscriber_dsn')
 $f$;
 \c :provider1_dsn
-CREATE OR REPLACE FUNCTION public.pglogical_regress_variables(
+CREATE OR REPLACE FUNCTION public.spock_regress_variables(
     OUT orig_provider_dsn text,
     OUT provider_dsn text,
     OUT provider1_dsn text,
     OUT subscriber_dsn text
     ) RETURNS record LANGUAGE SQL AS $f$
 SELECT
-    current_setting('pglogical.orig_provider_dsn'),
-    current_setting('pglogical.provider_dsn'),
-    current_setting('pglogical.provider1_dsn'),
-    current_setting('pglogical.subscriber_dsn')
+    current_setting('spock.orig_provider_dsn'),
+    current_setting('spock.provider_dsn'),
+    current_setting('spock.provider1_dsn'),
+    current_setting('spock.subscriber_dsn')
 $f$;
 \c :subscriber_dsn
-CREATE OR REPLACE FUNCTION public.pglogical_regress_variables(
+CREATE OR REPLACE FUNCTION public.spock_regress_variables(
     OUT orig_provider_dsn text,
     OUT provider_dsn text,
     OUT provider1_dsn text,
     OUT subscriber_dsn text
     ) RETURNS record LANGUAGE SQL AS $f$
 SELECT
-    current_setting('pglogical.orig_provider_dsn'),
-    current_setting('pglogical.provider_dsn'),
-    current_setting('pglogical.provider1_dsn'),
-    current_setting('pglogical.subscriber_dsn')
+    current_setting('spock.orig_provider_dsn'),
+    current_setting('spock.provider_dsn'),
+    current_setting('spock.provider1_dsn'),
+    current_setting('spock.subscriber_dsn')
 $f$;

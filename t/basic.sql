@@ -7,7 +7,7 @@ BEGIN
         END LOOP;
 END;$FUNC$ LANGUAGE plpgsql;
 
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 	CREATE TABLE public.basic_dml (
 		id serial primary key,
 		other integer,
@@ -16,7 +16,7 @@ SELECT pglogical.replicate_ddl_command($$
 	);
 $$);
 
-SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml');
+SELECT * FROM spock.replication_set_add_table('default', 'basic_dml');
 
 SELECT pg_xlog_wait_remote_apply(pg_current_xlog_location(), 0);
 

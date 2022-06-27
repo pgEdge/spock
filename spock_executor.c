@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_executor.c
- * 		pglogical executor related functions
+ * spock_executor.c
+ * 		spock executor related functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical_executor.c
+ *		  spock_executor.c
  *
  *-------------------------------------------------------------------------
  */
@@ -50,17 +50,17 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
-#include "pglogical_node.h"
-#include "pglogical_executor.h"
-#include "pglogical_repset.h"
-#include "pglogical_queue.h"
-#include "pglogical_dependency.h"
-#include "pglogical.h"
+#include "spock_node.h"
+#include "spock_executor.h"
+#include "spock_repset.h"
+#include "spock_queue.h"
+#include "spock_dependency.h"
+#include "spock.h"
 
-List *pglogical_truncated_tables = NIL;
+List *spock_truncated_tables = NIL;
 
-static DropBehavior	pglogical_lastDropBehavior = DROP_RESTRICT;
-static bool			dropping_pglogical_obj = false;
+static DropBehavior	spock_lastDropBehavior = DROP_RESTRICT;
+static bool			dropping_spock_obj = false;
 static object_access_hook_type next_object_access_hook = NULL;
 
 static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
@@ -117,7 +117,7 @@ prepare_per_tuple_econtext(EState *estate, TupleDesc tupdesc)
 }
 
 ExprState *
-pglogical_prepare_row_filter(Node *row_filter)
+spock_prepare_row_filter(Node *row_filter)
 {
 	ExprState  *exprstate;
 	Expr	   *expr;
@@ -145,23 +145,23 @@ pglogical_prepare_row_filter(Node *row_filter)
 }
 
 static void
-pglogical_start_truncate(void)
+spock_start_truncate(void)
 {
-	pglogical_truncated_tables = NIL;
+	spock_truncated_tables = NIL;
 }
 
 static void
-pglogical_finish_truncate(void)
+spock_finish_truncate(void)
 {
 	ListCell	   *tlc;
-	PGLogicalLocalNode *local_node;
+	SpockLocalNode *local_node;
 
-	/* If this is not pglogical node, don't do anything. */
+	/* If this is not spock node, don't do anything. */
 	local_node = get_local_node(false, true);
-	if (!local_node || !list_length(pglogical_truncated_tables))
+	if (!local_node || !list_length(spock_truncated_tables))
 		return;
 
-	foreach (tlc, pglogical_truncated_tables)
+	foreach (tlc, spock_truncated_tables)
 	{
 		Oid			reloid = lfirst_oid(tlc);
 		char	   *nspname;
@@ -190,7 +190,7 @@ pglogical_finish_truncate(void)
 
 			foreach (rlc, repsets)
 			{
-				PGLogicalRepSet	    *repset = (PGLogicalRepSet *) lfirst(rlc);
+				SpockRepSet	    *repset = (SpockRepSet *) lfirst(rlc);
 				repset_names = lappend(repset_names, pstrdup(repset->name));
 			}
 
@@ -200,12 +200,12 @@ pglogical_finish_truncate(void)
 		}
 	}
 
-	list_free(pglogical_truncated_tables);
-	pglogical_truncated_tables = NIL;
+	list_free(spock_truncated_tables);
+	spock_truncated_tables = NIL;
 }
 
 static void
-pglogical_ProcessUtility(
+spock_ProcessUtility(
 #if PG_VERSION_NUM >= 100000
 						 PlannedStmt *pstmt,
 #else
@@ -236,31 +236,31 @@ pglogical_ProcessUtility(
 	#define		sentToRemote NULL
 #endif
 
-	dropping_pglogical_obj = false;
+	dropping_spock_obj = false;
 
 	if (nodeTag(parsetree) == T_TruncateStmt)
-		pglogical_start_truncate();
+		spock_start_truncate();
 
 	if (nodeTag(parsetree) == T_DropStmt)
-		pglogical_lastDropBehavior = ((DropStmt *)parsetree)->behavior;
+		spock_lastDropBehavior = ((DropStmt *)parsetree)->behavior;
 
 	/* There's no reason we should be in a long lived context here */
 	Assert(CurrentMemoryContext != TopMemoryContext
 		   && CurrentMemoryContext != CacheMemoryContext);
 
 	if (next_ProcessUtility_hook)
-		PGLnext_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context, params,
+		SPKnext_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context, params,
 									queryEnv, dest,
 									sentToRemote,
 									qc);
 	else
-		PGLstandard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
+		SPKstandard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
 								   queryEnv, dest,
 								   sentToRemote,
 								   qc);
 
 	if (nodeTag(parsetree) == T_TruncateStmt)
-		pglogical_finish_truncate();
+		spock_finish_truncate();
 }
 
 
@@ -270,7 +270,7 @@ pglogical_ProcessUtility(
  * Calls to dependency tracking code.
  */
 static void
-pglogical_object_access(ObjectAccessType access,
+spock_object_access(ObjectAccessType access,
 						Oid classId,
 						Oid objectId,
 						int subId,
@@ -289,13 +289,13 @@ pglogical_object_access(ObjectAccessType access,
 		if ((drop_arg->dropflags & PERFORM_DELETION_INTERNAL) != 0)
 			return;
 
-		/* Dropping pglogical itself? */
+		/* Dropping spock itself? */
 		if (classId == ExtensionRelationId &&
 			objectId == get_extension_oid(EXTENSION_NAME, true) &&
 			objectId != InvalidOid /* Should not happen but check anyway */)
-			dropping_pglogical_obj = true;
+			dropping_spock_obj = true;
 
-		/* Dropping relation within pglogical? */
+		/* Dropping relation within spock? */
 		if (classId == RelationRelationId)
 		{
 			Oid			relnspoid;
@@ -305,14 +305,14 @@ pglogical_object_access(ObjectAccessType access,
 			relnspoid = get_rel_namespace(objectId);
 
 			if (pglnspoid == relnspoid)
-				dropping_pglogical_obj = true;
+				dropping_spock_obj = true;
 		}
 
 		/*
 		 * Don't do extra dependency checks for internal objects, those
 		 * should be handled by Postgres.
 		 */
-		if (dropping_pglogical_obj)
+		if (dropping_spock_obj)
 			return;
 
 		/* No local node? */
@@ -324,19 +324,19 @@ pglogical_object_access(ObjectAccessType access,
 		if (SessionReplicationRole == SESSION_REPLICATION_ROLE_REPLICA)
 			behavior = DROP_CASCADE;
 		else
-			behavior = pglogical_lastDropBehavior;
+			behavior = spock_lastDropBehavior;
 
-		pglogical_checkDependency(&object, behavior);
+		spock_checkDependency(&object, behavior);
 	}
 }
 
 void
-pglogical_executor_init(void)
+spock_executor_init(void)
 {
 	next_ProcessUtility_hook = ProcessUtility_hook;
-	ProcessUtility_hook = pglogical_ProcessUtility;
+	ProcessUtility_hook = spock_ProcessUtility;
 
 	/* Object access hook */
 	next_object_access_hook = object_access_hook;
-	object_access_hook = pglogical_object_access;
+	object_access_hook = spock_object_access;
 }

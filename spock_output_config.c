@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_output_config.c
+ * spock_output_config.c
  *		  Logical Replication output plugin configuration handling
  *
  * Copyright (c) 2012-2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical_output_config.c
+ *		  spock_output_config.c
  *
  *-------------------------------------------------------------------------
  */
@@ -21,33 +21,33 @@
 
 #include "miscadmin.h"
 
-#include "pglogical.h"
-#include "pglogical_output_config.h"
-#include "pglogical_output_proto.h"
-#include "pglogical_repset.h"
+#include "spock.h"
+#include "spock_output_config.h"
+#include "spock_output_proto.h"
+#include "spock_repset.h"
 
-typedef enum PGLogicalOutputParamType
+typedef enum SpockOutputParamType
 {
 	OUTPUT_PARAM_TYPE_BOOL,
 	OUTPUT_PARAM_TYPE_UINT32,
 	OUTPUT_PARAM_TYPE_INT32,
 	OUTPUT_PARAM_TYPE_STRING,
 	OUTPUT_PARAM_TYPE_QUALIFIED_NAME
-} PGLogicalOutputParamType;
+} SpockOutputParamType;
 
 /* param parsing */
 static Datum get_param_value(DefElem *elem, bool null_ok,
-		PGLogicalOutputParamType type);
+		SpockOutputParamType type);
 
 static Datum get_param(List *options, const char *name, bool missing_ok,
-					   bool null_ok, PGLogicalOutputParamType type,
+					   bool null_ok, SpockOutputParamType type,
 					   bool *found);
 static bool parse_param_bool(DefElem *elem);
 static uint32 parse_param_uint32(DefElem *elem);
 static int32 parse_param_int32(DefElem *elem);
 
 static void
-process_parameters_v1(List *options, PGLogicalOutputData *data);
+process_parameters_v1(List *options, SpockOutputData *data);
 
 enum {
 	PARAM_UNRECOGNISED,
@@ -65,9 +65,9 @@ enum {
 	PARAM_BINARY_WANT_INTERNAL_BASETYPES,
 	PARAM_BINARY_WANT_BINARY_BASETYPES,
 	PARAM_BINARY_BASETYPES_MAJOR_VERSION,
-	PARAM_PGLOGICAL_FORWARD_ORIGINS,
-	PARAM_PGLOGICAL_REPLICATION_SET_NAMES,
-	PARAM_PGLOGICAL_REPLICATE_ONLY_TABLE,
+	PARAM_SPOCK_FORWARD_ORIGINS,
+	PARAM_SPOCK_REPLICATION_SET_NAMES,
+	PARAM_SPOCK_REPLICATE_ONLY_TABLE,
 	PARAM_HOOKS_SETUP_FUNCTION,
 	PARAM_PG_VERSION,
 	PARAM_NO_TXINFO
@@ -94,9 +94,9 @@ static OutputPluginParam param_lookup[] = {
 	{"binary.want_internal_basetypes", PARAM_BINARY_WANT_INTERNAL_BASETYPES},
 	{"binary.want_binary_basetypes", PARAM_BINARY_WANT_BINARY_BASETYPES},
 	{"binary.basetypes_major_version", PARAM_BINARY_BASETYPES_MAJOR_VERSION},
-	{"pglogical.forward_origins", PARAM_PGLOGICAL_FORWARD_ORIGINS},
-	{"pglogical.replication_set_names", PARAM_PGLOGICAL_REPLICATION_SET_NAMES},
-	{"pglogical.replicate_only_table", PARAM_PGLOGICAL_REPLICATE_ONLY_TABLE},
+	{"spock.forward_origins", PARAM_SPOCK_FORWARD_ORIGINS},
+	{"spock.replication_set_names", PARAM_SPOCK_REPLICATION_SET_NAMES},
+	{"spock.replicate_only_table", PARAM_SPOCK_REPLICATE_ONLY_TABLE},
 	{"hooks.setup_function", PARAM_HOOKS_SETUP_FUNCTION},
 	{"pg_version", PARAM_PG_VERSION},
 	{"no_txinfo", PARAM_NO_TXINFO},
@@ -123,7 +123,7 @@ get_param_key(const char * const param_name)
 
 
 void
-process_parameters_v1(List *options, PGLogicalOutputData *data)
+process_parameters_v1(List *options, SpockOutputData *data)
 {
 	Datum		val;
 	ListCell	*lc;
@@ -226,7 +226,7 @@ process_parameters_v1(List *options, PGLogicalOutputData *data)
 				data->client_binary_basetypes_major_version = DatumGetUInt32(val);
 				break;
 
-			case PARAM_PGLOGICAL_FORWARD_ORIGINS:
+			case PARAM_SPOCK_FORWARD_ORIGINS:
 				{
 					List		   *forward_origin_names;
 					ListCell	   *lc;
@@ -248,7 +248,7 @@ process_parameters_v1(List *options, PGLogicalOutputData *data)
 					break;
 				}
 
-			case PARAM_PGLOGICAL_REPLICATION_SET_NAMES:
+			case PARAM_SPOCK_REPLICATION_SET_NAMES:
 				{
 					List *replication_set_names;
 					val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_STRING);
@@ -263,7 +263,7 @@ process_parameters_v1(List *options, PGLogicalOutputData *data)
 					break;
 				}
 
-			case PARAM_PGLOGICAL_REPLICATE_ONLY_TABLE:
+			case PARAM_SPOCK_REPLICATE_ONLY_TABLE:
 				{
 					List *replicate_only_table;
 
@@ -288,7 +288,7 @@ process_parameters_v1(List *options, PGLogicalOutputData *data)
 
 			case PARAM_UNRECOGNISED:
 				ereport(DEBUG1,
-						(errmsg("Unrecognised pglogical parameter %s ignored", elem->defname)));
+						(errmsg("Unrecognised spock parameter %s ignored", elem->defname)));
 				break;
 		}
 	}
@@ -296,14 +296,14 @@ process_parameters_v1(List *options, PGLogicalOutputData *data)
 
 /*
  * Read parameters sent by client at startup and store recognised
- * ones in the parameters PGLogicalOutputData.
+ * ones in the parameters SpockOutputData.
  *
- * The PGLogicalOutputData must have all client-supplied parameter fields
+ * The SpockOutputData must have all client-supplied parameter fields
  * zeroed, such as by memset or palloc0, since values not supplied
  * by the client are not set.
  */
 int
-process_parameters(List *options, PGLogicalOutputData *data)
+process_parameters(List *options, SpockOutputData *data)
 {
 	Datum	val;
 	int		params_format;
@@ -313,19 +313,19 @@ process_parameters(List *options, PGLogicalOutputData *data)
 
 	params_format = DatumGetUInt32(val);
 
-	if (params_format == PGLOGICAL_STARTUP_PARAM_FORMAT_FLAT)
+	if (params_format == SPOCK_STARTUP_PARAM_FORMAT_FLAT)
 		process_parameters_v1(options, data);
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("startup_params_format %d not supported, only version %d supported",
-					 params_format, PGLOGICAL_STARTUP_PARAM_FORMAT_FLAT)));
+					 params_format, SPOCK_STARTUP_PARAM_FORMAT_FLAT)));
 
 	return params_format;
 }
 
 static Datum
-get_param_value(DefElem *elem, bool null_ok, PGLogicalOutputParamType type)
+get_param_value(DefElem *elem, bool null_ok, SpockOutputParamType type)
 {
 	/* Check for NULL value */
 	if (elem->arg == NULL || strVal(elem->arg) == NULL)
@@ -363,7 +363,7 @@ get_param_value(DefElem *elem, bool null_ok, PGLogicalOutputParamType type)
  */
 static Datum
 get_param(List *options, const char *name, bool missing_ok, bool null_ok,
-		  PGLogicalOutputParamType type, bool *found)
+		  SpockOutputParamType type, bool *found)
 {
 	ListCell	   *option;
 
@@ -487,7 +487,7 @@ add_startup_msg_b(List *l, char *key, bool val)
  * it's not like startup msg performance matters much.
  */
 List *
-prepare_startup_message(PGLogicalOutputData *data)
+prepare_startup_message(SpockOutputData *data)
 {
 	List *l = NIL;
 
@@ -512,10 +512,10 @@ prepare_startup_message(PGLogicalOutputData *data)
 	l = add_startup_msg_i(l, "walsender_pid", MyProcPid);
 
 	/* and ourselves */
-	l = add_startup_msg_s(l, "pglogical_version",
-			PGLOGICAL_VERSION);
-	l = add_startup_msg_i(l, "pglogical_version_num",
-			PGLOGICAL_VERSION_NUM);
+	l = add_startup_msg_s(l, "spock_version",
+			SPOCK_VERSION);
+	l = add_startup_msg_i(l, "spock_version_num",
+			SPOCK_VERSION_NUM);
 
 	/* binary options enabled */
 	l = add_startup_msg_b(l, "binary.internal_basetypes",

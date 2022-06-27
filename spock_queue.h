@@ -1,17 +1,17 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_node.h
- *		pglogical node and connection catalog manipulation functions
+ * spock_node.h
+ *		spock node and connection catalog manipulation functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_node.h
+ *		spock_node.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef PGLOGICAL_QUEUE_H
-#define PGLOGICAL_QUEUE_H
+#ifndef SPOCK_QUEUE_H
+#define SPOCK_QUEUE_H
 
 #include "utils/jsonb.h"
 
@@ -38,4 +38,4 @@ extern Oid get_queue_table_oid(void);
 
 extern void create_truncate_trigger(Relation rel);
 
-#endif /* PGLOGICAL_NODE_H */
+#endif /* SPOCK_NODE_H */

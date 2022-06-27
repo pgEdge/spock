@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_proto_native.c
- * 		pglogical binary protocol functions
+ * spock_proto_native.c
+ * 		spock binary protocol functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical_proto_native.c
+ *		  spock_proto_native.c
  *
  *-------------------------------------------------------------------------
  */
@@ -26,15 +26,15 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
-#include "pglogical_output_plugin.h"
-#include "pglogical_output_proto.h"
-#include "pglogical_proto_native.h"
+#include "spock_output_plugin.h"
+#include "spock_output_proto.h"
+#include "spock_proto_native.h"
 
 #define IS_REPLICA_IDENTITY 1
 
-static void pglogical_write_attrs(StringInfo out, Relation rel,
+static void spock_write_attrs(StringInfo out, Relation rel,
 								  Bitmapset *att_list);
-static void pglogical_write_tuple(StringInfo out, PGLogicalOutputData *data,
+static void spock_write_tuple(StringInfo out, SpockOutputData *data,
 								  Relation rel, HeapTuple tuple,
 								  Bitmapset *att_list);
 static char decide_datum_transfer(Form_pg_attribute att,
@@ -42,10 +42,10 @@ static char decide_datum_transfer(Form_pg_attribute att,
 								  bool allow_internal_basetypes,
 								  bool allow_binary_basetypes);
 
-static void pglogical_read_attrs(StringInfo in, char ***attrnames,
+static void spock_read_attrs(StringInfo in, char ***attrnames,
 								  int *nattrnames);
-static void pglogical_read_tuple(StringInfo in, PGLogicalRelation *rel,
-					  PGLogicalTupleData *tuple);
+static void spock_read_tuple(StringInfo in, SpockRelation *rel,
+					  SpockTupleData *tuple);
 
 /*
  * Write functions
@@ -55,7 +55,7 @@ static void pglogical_read_tuple(StringInfo in, PGLogicalRelation *rel,
  * Write relation description to the output stream.
  */
 void
-pglogical_write_rel(StringInfo out, PGLogicalOutputData *data, Relation rel,
+spock_write_rel(StringInfo out, SpockOutputData *data, Relation rel,
 					Bitmapset *att_list)
 {
 	char	   *nspname;
@@ -88,7 +88,7 @@ pglogical_write_rel(StringInfo out, PGLogicalOutputData *data, Relation rel,
 	pq_sendbytes(out, relname, relnamelen);
 
 	/* send the attribute info */
-	pglogical_write_attrs(out, rel, att_list);
+	spock_write_attrs(out, rel, att_list);
 
 	pfree(nspname);
 }
@@ -97,7 +97,7 @@ pglogical_write_rel(StringInfo out, PGLogicalOutputData *data, Relation rel,
  * Write relation attributes to the outputstream.
  */
 static void
-pglogical_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
+spock_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
 {
 	TupleDesc	desc;
 	int			i;
@@ -162,7 +162,7 @@ pglogical_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
  * Write BEGIN to the output stream.
  */
 void
-pglogical_write_begin(StringInfo out, PGLogicalOutputData *data,
+spock_write_begin(StringInfo out, SpockOutputData *data,
 					  ReorderBufferTXN *txn)
 {
 	uint8	flags = 0;
@@ -182,7 +182,7 @@ pglogical_write_begin(StringInfo out, PGLogicalOutputData *data,
  * Write COMMIT to the output stream.
  */
 void
-pglogical_write_commit(StringInfo out, PGLogicalOutputData *data,
+spock_write_commit(StringInfo out, SpockOutputData *data,
 					   ReorderBufferTXN *txn, XLogRecPtr commit_lsn)
 {
 	uint8 flags = 0;
@@ -202,7 +202,7 @@ pglogical_write_commit(StringInfo out, PGLogicalOutputData *data,
  * Write ORIGIN to the output stream.
  */
 void
-pglogical_write_origin(StringInfo out, const char *origin,
+spock_write_origin(StringInfo out, const char *origin,
 						XLogRecPtr origin_lsn)
 {
 	uint8	flags = 0;
@@ -228,7 +228,7 @@ pglogical_write_origin(StringInfo out, const char *origin,
  * Write INSERT to the output stream.
  */
 void
-pglogical_write_insert(StringInfo out, PGLogicalOutputData *data,
+spock_write_insert(StringInfo out, SpockOutputData *data,
 						Relation rel, HeapTuple newtuple,
 						Bitmapset *att_list)
 {
@@ -243,14 +243,14 @@ pglogical_write_insert(StringInfo out, PGLogicalOutputData *data,
 	pq_sendint(out, RelationGetRelid(rel), 4);
 
 	pq_sendbyte(out, 'N');		/* new tuple follows */
-	pglogical_write_tuple(out, data, rel, newtuple, att_list);
+	spock_write_tuple(out, data, rel, newtuple, att_list);
 }
 
 /*
  * Write UPDATE to the output stream.
  */
 void
-pglogical_write_update(StringInfo out, PGLogicalOutputData *data,
+spock_write_update(StringInfo out, SpockOutputData *data,
 						Relation rel, HeapTuple oldtuple, HeapTuple newtuple,
 						Bitmapset *att_list)
 {
@@ -277,18 +277,18 @@ pglogical_write_update(StringInfo out, PGLogicalOutputData *data,
 	if (oldtuple != NULL)
 	{
 		pq_sendbyte(out, 'K');	/* old key follows */
-		pglogical_write_tuple(out, data, rel, oldtuple, att_list);
+		spock_write_tuple(out, data, rel, oldtuple, att_list);
 	}
 
 	pq_sendbyte(out, 'N');		/* new tuple follows */
-	pglogical_write_tuple(out, data, rel, newtuple, att_list);
+	spock_write_tuple(out, data, rel, newtuple, att_list);
 }
 
 /*
  * Write DELETE to the output stream.
  */
 void
-pglogical_write_delete(StringInfo out, PGLogicalOutputData *data,
+spock_write_delete(StringInfo out, SpockOutputData *data,
 						Relation rel, HeapTuple oldtuple,
 						Bitmapset *att_list)
 {
@@ -308,12 +308,12 @@ pglogical_write_delete(StringInfo out, PGLogicalOutputData *data,
 	 * See notes on update for details
 	 */
 	pq_sendbyte(out, 'K');	/* old key follows */
-	pglogical_write_tuple(out, data, rel, oldtuple, att_list);
+	spock_write_tuple(out, data, rel, oldtuple, att_list);
 }
 
 /*
  * Most of the brains for startup message creation lives in
- * pglogical_config.c, so this presently just sends the set of key/value pairs.
+ * spock_config.c, so this presently just sends the set of key/value pairs.
  */
 void
 write_startup_message(StringInfo out, List *msg)
@@ -321,7 +321,7 @@ write_startup_message(StringInfo out, List *msg)
 	ListCell *lc;
 
 	pq_sendbyte(out, 'S');	/* message type field */
-	pq_sendbyte(out, PGLOGICAL_STARTUP_MSG_FORMAT_FLAT); 	/* startup message version */
+	pq_sendbyte(out, SPOCK_STARTUP_MSG_FORMAT_FLAT); 	/* startup message version */
 	foreach (lc, msg)
 	{
 		DefElem *param = (DefElem*)lfirst(lc);
@@ -336,7 +336,7 @@ write_startup_message(StringInfo out, List *msg)
  * Write a tuple to the outputstream, in the most efficient format possible.
  */
 static void
-pglogical_write_tuple(StringInfo out, PGLogicalOutputData *data,
+spock_write_tuple(StringInfo out, SpockOutputData *data,
 					  Relation rel, HeapTuple tuple, Bitmapset *att_list)
 {
 	TupleDesc	desc;
@@ -538,7 +538,7 @@ decide_datum_transfer(Form_pg_attribute att, Form_pg_type typclass,
  * Read transaction BEGIN from the stream.
  */
 void
-pglogical_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
+spock_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
 					  TimestampTz *committime, TransactionId *remote_xid)
 {
 	/* read flags */
@@ -557,7 +557,7 @@ pglogical_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
  * Read transaction COMMIT from the stream.
  */
 void
-pglogical_read_commit(StringInfo in, XLogRecPtr *commit_lsn,
+spock_read_commit(StringInfo in, XLogRecPtr *commit_lsn,
 					   XLogRecPtr *end_lsn, TimestampTz *committime)
 {
 	/* read flags */
@@ -575,7 +575,7 @@ pglogical_read_commit(StringInfo in, XLogRecPtr *commit_lsn,
  * Read ORIGIN from the output stream.
  */
 char *
-pglogical_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
+spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
 {
 	uint8	flags;
 	uint8	len;
@@ -599,14 +599,14 @@ pglogical_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
  *
  * Fills the new tuple.
  */
-PGLogicalRelation *
-pglogical_read_insert(StringInfo in, LOCKMODE lockmode,
-					   PGLogicalTupleData *newtup)
+SpockRelation *
+spock_read_insert(StringInfo in, LOCKMODE lockmode,
+					   SpockTupleData *newtup)
 {
 	char		action;
 	uint32		relid;
 	uint8		flags;
-	PGLogicalRelation *rel;
+	SpockRelation *rel;
 
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
@@ -621,9 +621,9 @@ pglogical_read_insert(StringInfo in, LOCKMODE lockmode,
 		elog(ERROR, "expected new tuple but got %d",
 			 action);
 
-	rel = pglogical_relation_open(relid, lockmode);
+	rel = spock_relation_open(relid, lockmode);
 
-	pglogical_read_tuple(in, rel, newtup);
+	spock_read_tuple(in, rel, newtup);
 
 	return rel;
 }
@@ -631,14 +631,14 @@ pglogical_read_insert(StringInfo in, LOCKMODE lockmode,
 /*
  * Read UPDATE from stream.
  */
-PGLogicalRelation *
-pglogical_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
-					   PGLogicalTupleData *oldtup, PGLogicalTupleData *newtup)
+SpockRelation *
+spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
+					   SpockTupleData *oldtup, SpockTupleData *newtup)
 {
 	char		action;
 	Oid			relid;
 	uint8		flags;
-	PGLogicalRelation *rel;
+	SpockRelation *rel;
 
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
@@ -654,12 +654,12 @@ pglogical_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 		elog(ERROR, "expected action 'N', 'O' or 'K', got %c",
 			 action);
 
-	rel = pglogical_relation_open(relid, lockmode);
+	rel = spock_relation_open(relid, lockmode);
 
 	/* check for old tuple */
 	if (action == 'K' || action == 'O')
 	{
-		pglogical_read_tuple(in, rel, oldtup);
+		spock_read_tuple(in, rel, oldtup);
 		*hasoldtup = true;
 		action = pq_getmsgbyte(in);
 	}
@@ -671,7 +671,7 @@ pglogical_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 		elog(ERROR, "expected action 'N', got %c",
 			 action);
 
-	pglogical_read_tuple(in, rel, newtup);
+	spock_read_tuple(in, rel, newtup);
 
 	return rel;
 }
@@ -681,14 +681,14 @@ pglogical_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
  *
  * Fills the old tuple.
  */
-PGLogicalRelation *
-pglogical_read_delete(StringInfo in, LOCKMODE lockmode,
-					   PGLogicalTupleData *oldtup)
+SpockRelation *
+spock_read_delete(StringInfo in, LOCKMODE lockmode,
+					   SpockTupleData *oldtup)
 {
 	char		action;
 	Oid			relid;
 	uint8		flags;
-	PGLogicalRelation *rel;
+	SpockRelation *rel;
 
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
@@ -703,9 +703,9 @@ pglogical_read_delete(StringInfo in, LOCKMODE lockmode,
 	if (action != 'K' && action != 'O')
 		elog(ERROR, "expected action 'O' or 'K' %c", action);
 
-	rel = pglogical_relation_open(relid, lockmode);
+	rel = spock_relation_open(relid, lockmode);
 
-	pglogical_read_tuple(in, rel, oldtup);
+	spock_read_tuple(in, rel, oldtup);
 
 	return rel;
 }
@@ -717,8 +717,8 @@ pglogical_read_delete(StringInfo in, LOCKMODE lockmode,
  * The returned tuple is converted to the local relation tuple format.
  */
 static void
-pglogical_read_tuple(StringInfo in, PGLogicalRelation *rel,
-					  PGLogicalTupleData *tuple)
+spock_read_tuple(StringInfo in, SpockRelation *rel,
+					  SpockTupleData *tuple)
 {
 	int			i;
 	int			natts;
@@ -822,11 +822,11 @@ pglogical_read_tuple(StringInfo in, PGLogicalRelation *rel,
 }
 
 /*
- * Read schema.relation from stream and return as PGLogicalRelation opened in
+ * Read schema.relation from stream and return as SpockRelation opened in
  * lockmode.
  */
 uint32
-pglogical_read_rel(StringInfo in)
+spock_read_rel(StringInfo in)
 {
 	uint8		flags;
 	uint32		relid;
@@ -851,9 +851,9 @@ pglogical_read_rel(StringInfo in)
 	relname = (char *) pq_getmsgbytes(in, len);
 
 	/* Get attribute description */
-	pglogical_read_attrs(in, &attrnames, &natts);
+	spock_read_attrs(in, &attrnames, &natts);
 
-	pglogical_relation_cache_update(relid, schemaname, relname, natts, attrnames);
+	spock_relation_cache_update(relid, schemaname, relname, natts, attrnames);
 
 	return relid;
 }
@@ -864,7 +864,7 @@ pglogical_read_rel(StringInfo in)
  * TODO handle flags.
  */
 static void
-pglogical_read_attrs(StringInfo in, char ***attrnames, int *nattrnames)
+spock_read_attrs(StringInfo in, char ***attrnames, int *nattrnames)
 {
 	int			i;
 	uint16		nattrs;

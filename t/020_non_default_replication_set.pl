@@ -42,21 +42,21 @@ system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE U
 system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "CREATE USER super SUPERUSER";
 
 # Required for PostgreSQL 9.4 run
-#system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS pglogical_origin";
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS pglogical VERSION '1.0.0'";
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "ALTER EXTENSION pglogical UPDATE";
+#system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS spock_origin";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS spock VERSION '1.0.0'";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "ALTER EXTENSION spock UPDATE";
 
 # Required for PostgreSQL 9.4 run
-#system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS pglogical_origin";
-system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS pglogical";
+#system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS spock_origin";
+system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS spock";
 
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT * FROM pglogical.create_node(node_name := 'test_provider', dsn := 'dbname=postgres user=super')";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT * FROM spock.create_node(node_name := 'test_provider', dsn := 'dbname=postgres user=super')";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "SELECT * FROM pglogical.create_node(node_name := 'test_subscriber', dsn := '$SUBSCRIBER_DSN')";
+system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "SELECT * FROM spock.create_node(node_name := 'test_subscriber', dsn := '$SUBSCRIBER_DSN')";
 
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT * FROM pglogical.create_replication_set('delay')";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT * FROM spock.create_replication_set('delay')";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "SELECT * FROM pglogical.create_subscription(
+system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "SELECT * FROM spock.create_subscription(
     subscription_name := 'test_subscription_delay',
     provider_dsn := '$PROVIDER_DSN',
         replication_sets := '{delay}',
@@ -68,7 +68,7 @@ system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "SELECT * FROM p
 system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "DO \$\$
 BEGIN
         FOR i IN 1..100 LOOP
-                IF EXISTS (SELECT 1 FROM pglogical.show_subscription_status() WHERE status = 'replicating') THEN
+                IF EXISTS (SELECT 1 FROM spock.show_subscription_status() WHERE status = 'replicating') THEN
                         RETURN;
                 END IF;
                 PERFORM pg_sleep(0.1);
@@ -76,19 +76,19 @@ BEGIN
 END;
 \$\$";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM pglogical.show_subscription_status()";
+system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.show_subscription_status()";
 
 system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "DO \$\$
 BEGIN
     FOR i IN 1..300 LOOP
-        IF EXISTS (SELECT 1 FROM pglogical.local_sync_status WHERE sync_status = 'r') THEN
+        IF EXISTS (SELECT 1 FROM spock.local_sync_status WHERE sync_status = 'r') THEN
             EXIT;
         END IF;
         PERFORM pg_sleep(0.1);
     END LOOP;
 END;\$\$";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status FROM pglogical.local_sync_status ORDER BY 2,3,4";
+system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status FROM spock.local_sync_status ORDER BY 2,3,4";
 
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE OR REPLACE FUNCTION public.pg_xlog_wait_remote_apply(i_pos pg_lsn, i_pid integer) RETURNS VOID
 AS \$FUNC\$
@@ -98,7 +98,7 @@ BEGIN
         END LOOP;
 END;\$FUNC\$ LANGUAGE plpgsql";
 
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT pglogical.replicate_ddl_command(\$\$
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT spock.replicate_ddl_command(\$\$
     CREATE TABLE public.basic_dml1 (
         id serial primary key,
         other integer,
@@ -106,8 +106,8 @@ system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT p
         something interval
     );
 \$\$)";
-system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "select * from pglogical.show_subscription_status('test_subscription_delay');";
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT * FROM pglogical.replication_set_add_table('delay', 'basic_dml1', true) ";
+system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "select * from spock.show_subscription_status('test_subscription_delay');";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "SELECT * FROM spock.replication_set_add_table('delay', 'basic_dml1', true) ";
 
 #At this point subscriber sync starts crashing (`sync worker`) and recovering
 # check logs at this point at:

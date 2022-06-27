@@ -1,46 +1,46 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_worker.h
- *              pglogical worker helper functions
+ * spock_worker.h
+ *              spock worker helper functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *              pglogical_worker.h
+ *              spock_worker.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef PGLOGICAL_WORKER_H
-#define PGLOGICAL_WORKER_H
+#ifndef SPOCK_WORKER_H
+#define SPOCK_WORKER_H
 
 #include "storage/lock.h"
 
-#include "pglogical.h"
+#include "spock.h"
 
 typedef enum {
-	PGLOGICAL_WORKER_NONE,		/* Unused slot. */
-	PGLOGICAL_WORKER_MANAGER,	/* Manager. */
-	PGLOGICAL_WORKER_APPLY,		/* Apply. */
-	PGLOGICAL_WORKER_SYNC		/* Special type of Apply that synchronizes
+	SPOCK_WORKER_NONE,		/* Unused slot. */
+	SPOCK_WORKER_MANAGER,	/* Manager. */
+	SPOCK_WORKER_APPLY,		/* Apply. */
+	SPOCK_WORKER_SYNC		/* Special type of Apply that synchronizes
 								 * one table. */
-} PGLogicalWorkerType;
+} SpockWorkerType;
 
-typedef struct PGLogicalApplyWorker
+typedef struct SpockApplyWorker
 {
 	Oid			subid;				/* Subscription id for apply worker. */
 	bool		sync_pending;		/* Is there new synchronization info pending?. */
 	XLogRecPtr	replay_stop_lsn;	/* Replay should stop here if defined. */
-} PGLogicalApplyWorker;
+} SpockApplyWorker;
 
-typedef struct PGLogicalSyncWorker
+typedef struct SpockSyncWorker
 {
-	PGLogicalApplyWorker	apply; /* Apply worker info, must be first. */
+	SpockApplyWorker	apply; /* Apply worker info, must be first. */
 	NameData	nspname;	/* Name of the schema of table to copy if any. */
 	NameData	relname;	/* Name of the table to copy if any. */
-} PGLogicalSyncWorker;
+} SpockSyncWorker;
 
-typedef struct PGLogicalWorker {
-	PGLogicalWorkerType	worker_type;
+typedef struct SpockWorker {
+	SpockWorkerType	worker_type;
 
 	/* Generation counter incremented at each registration */
 	uint16 generation;
@@ -57,13 +57,13 @@ typedef struct PGLogicalWorker {
 	/* Type-specific worker info */
 	union
 	{
-		PGLogicalApplyWorker apply;
-		PGLogicalSyncWorker sync;
+		SpockApplyWorker apply;
+		SpockSyncWorker sync;
 	} worker;
 
-} PGLogicalWorker;
+} SpockWorker;
 
-typedef struct PGLogicalContext {
+typedef struct SpockContext {
 	/* Write lock. */
 	LWLock	   *lock;
 
@@ -75,37 +75,37 @@ typedef struct PGLogicalContext {
 
 	/* Background workers. */
 	int			total_workers;
-	PGLogicalWorker  workers[FLEXIBLE_ARRAY_MEMBER];
-} PGLogicalContext;
+	SpockWorker  workers[FLEXIBLE_ARRAY_MEMBER];
+} SpockContext;
 
-extern PGLogicalContext		   *PGLogicalCtx;
-extern PGLogicalWorker		   *MyPGLogicalWorker;
-extern PGLogicalApplyWorker	   *MyApplyWorker;
-extern PGLogicalSubscription   *MySubscription;
+extern SpockContext		   *SpockCtx;
+extern SpockWorker		   *MySpockWorker;
+extern SpockApplyWorker	   *MyApplyWorker;
+extern SpockSubscription   *MySubscription;
 
 extern volatile sig_atomic_t got_SIGTERM;
 
 extern void handle_sigterm(SIGNAL_ARGS);
 
-extern void pglogical_subscription_changed(Oid subid, bool kill);
+extern void spock_subscription_changed(Oid subid, bool kill);
 
-extern void pglogical_worker_shmem_init(void);
+extern void spock_worker_shmem_init(void);
 
-extern int pglogical_worker_register(PGLogicalWorker *worker);
-extern void pglogical_worker_attach(int slot, PGLogicalWorkerType type);
+extern int spock_worker_register(SpockWorker *worker);
+extern void spock_worker_attach(int slot, SpockWorkerType type);
 
-extern PGLogicalWorker *pglogical_manager_find(Oid dboid);
-extern PGLogicalWorker *pglogical_apply_find(Oid dboid, Oid subscriberid);
-extern List *pglogical_apply_find_all(Oid dboid);
+extern SpockWorker *spock_manager_find(Oid dboid);
+extern SpockWorker *spock_apply_find(Oid dboid, Oid subscriberid);
+extern List *spock_apply_find_all(Oid dboid);
 
-extern PGLogicalWorker *pglogical_sync_find(Oid dboid, Oid subid,
+extern SpockWorker *spock_sync_find(Oid dboid, Oid subid,
 											const char *nspname, const char *relname);
-extern List *pglogical_sync_find_all(Oid dboid, Oid subscriberid);
+extern List *spock_sync_find_all(Oid dboid, Oid subscriberid);
 
-extern PGLogicalWorker *pglogical_get_worker(int slot);
-extern bool pglogical_worker_running(PGLogicalWorker *w);
-extern void pglogical_worker_kill(PGLogicalWorker *worker);
+extern SpockWorker *spock_get_worker(int slot);
+extern bool spock_worker_running(SpockWorker *w);
+extern void spock_worker_kill(SpockWorker *worker);
 
-extern const char * pglogical_worker_type_name(PGLogicalWorkerType type);
+extern const char * spock_worker_type_name(SpockWorkerType type);
 
-#endif /* PGLOGICAL_WORKER_H */
+#endif /* SPOCK_WORKER_H */

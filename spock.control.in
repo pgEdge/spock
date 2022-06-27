@@ -1,7 +1,7 @@
-# pglogical extension
+# spock extension
 comment = 'PostgreSQL Logical Replication'
-default_version = '__PGLOGICAL_VERSION__'
-module_pathname = '$libdir/pglogical'
+default_version = '__SPOCK_VERSION__'
+module_pathname = '$libdir/spock'
 relocatable = false
 __REQUIRES__
-schema = pglogical
+schema = spock

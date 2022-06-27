@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_apply.c
- * 		pglogical apply logic
+ * spock_apply.c
+ * 		spock apply logic
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical.c
+ *		  spock.c
  *
  *-------------------------------------------------------------------------
  */
@@ -61,22 +61,22 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
-#include "pglogical_conflict.h"
-#include "pglogical_executor.h"
-#include "pglogical_node.h"
-#include "pglogical_queue.h"
-#include "pglogical_relcache.h"
-#include "pglogical_repset.h"
-#include "pglogical_rpc.h"
-#include "pglogical_sync.h"
-#include "pglogical_worker.h"
-#include "pglogical_apply.h"
-#include "pglogical_apply_heap.h"
-#include "pglogical_apply_spi.h"
-#include "pglogical.h"
+#include "spock_conflict.h"
+#include "spock_executor.h"
+#include "spock_node.h"
+#include "spock_queue.h"
+#include "spock_relcache.h"
+#include "spock_repset.h"
+#include "spock_rpc.h"
+#include "spock_sync.h"
+#include "spock_worker.h"
+#include "spock_apply.h"
+#include "spock_apply_heap.h"
+#include "spock_apply_spi.h"
+#include "spock.h"
 
 
-void pglogical_apply_main(Datum main_arg);
+void spock_apply_main(Datum main_arg);
 
 static bool			in_remote_transaction = false;
 static XLogRecPtr	remote_origin_lsn = InvalidXLogRecPtr;
@@ -87,38 +87,38 @@ static Oid			QueueRelid = InvalidOid;
 
 static List		   *SyncingTables = NIL;
 
-PGLogicalApplyWorker	   *MyApplyWorker = NULL;
-PGLogicalSubscription	   *MySubscription = NULL;
+SpockApplyWorker	   *MyApplyWorker = NULL;
+SpockSubscription	   *MySubscription = NULL;
 
 static PGconn	   *applyconn = NULL;
 
-typedef struct PGLogicalApplyFunctions
+typedef struct SpockApplyFunctions
 {
-	pglogical_apply_begin_fn	on_begin;
-	pglogical_apply_commit_fn	on_commit;
-	pglogical_apply_insert_fn	do_insert;
-	pglogical_apply_update_fn	do_update;
-	pglogical_apply_delete_fn	do_delete;
-	pglogical_apply_can_mi_fn	can_multi_insert;
-	pglogical_apply_mi_add_tuple_fn	multi_insert_add_tuple;
-	pglogical_apply_mi_finish_fn	multi_insert_finish;
-} PGLogicalApplyFunctions;
+	spock_apply_begin_fn	on_begin;
+	spock_apply_commit_fn	on_commit;
+	spock_apply_insert_fn	do_insert;
+	spock_apply_update_fn	do_update;
+	spock_apply_delete_fn	do_delete;
+	spock_apply_can_mi_fn	can_multi_insert;
+	spock_apply_mi_add_tuple_fn	multi_insert_add_tuple;
+	spock_apply_mi_finish_fn	multi_insert_finish;
+} SpockApplyFunctions;
 
-static PGLogicalApplyFunctions apply_api =
+static SpockApplyFunctions apply_api =
 {
-	.on_begin = pglogical_apply_heap_begin,
-	.on_commit = pglogical_apply_heap_commit,
-	.do_insert = pglogical_apply_heap_insert,
-	.do_update = pglogical_apply_heap_update,
-	.do_delete = pglogical_apply_heap_delete,
-	.can_multi_insert = pglogical_apply_heap_can_mi,
-	.multi_insert_add_tuple = pglogical_apply_heap_mi_add_tuple,
-	.multi_insert_finish = pglogical_apply_heap_mi_finish
+	.on_begin = spock_apply_heap_begin,
+	.on_commit = spock_apply_heap_commit,
+	.do_insert = spock_apply_heap_insert,
+	.do_update = spock_apply_heap_update,
+	.do_delete = spock_apply_heap_delete,
+	.can_multi_insert = spock_apply_heap_can_mi,
+	.multi_insert_add_tuple = spock_apply_heap_mi_add_tuple,
+	.multi_insert_finish = spock_apply_heap_mi_finish
 };
 
 /* Number of tuples inserted after which we switch to multi-insert. */
 #define MIN_MULTI_INSERT_TUPLES 5
-static PGLogicalRelation   *last_insert_rel = NULL;
+static SpockRelation   *last_insert_rel = NULL;
 static int					last_insert_rel_cnt = 0;
 static bool					use_multi_insert = false;
 
@@ -129,12 +129,12 @@ static bool					use_multi_insert = false;
  */
 static uint32			xact_action_counter;
 
-typedef struct PGLFlushPosition
+typedef struct SPKFlushPosition
 {
 	dlist_node node;
 	XLogRecPtr local_end;
 	XLogRecPtr remote_end;
-} PGLFlushPosition;
+} SPKFlushPosition;
 
 dlist_head lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
 
@@ -149,7 +149,7 @@ typedef struct ApplyExecState
 struct ActionErrCallbackArg
 {
 	const char * action_name;
-	PGLogicalRelation *rel;
+	SpockRelation *rel;
 	bool is_ddl_or_drop;
 };
 
@@ -178,7 +178,7 @@ should_apply_changes_for_rel(const char *nspname, const char *relname)
 
 		foreach (lc, SyncingTables)
 		{
-			PGLogicalSyncStatus	   *sync = (PGLogicalSyncStatus *) lfirst(lc);
+			SpockSyncStatus	   *sync = (SpockSyncStatus *) lfirst(lc);
 
 			if (namestrcmp(&sync->nspname, nspname) == 0 &&
 				namestrcmp(&sync->relname, relname) == 0 &&
@@ -203,7 +203,7 @@ static void
 format_action_description(
 	StringInfo si,
 	const char * action_name,
-	PGLogicalRelation *rel,
+	SpockRelation *rel,
 	bool is_ddl_or_drop)
 {
 	appendStringInfoString(si, "apply ");
@@ -268,11 +268,11 @@ ensure_transaction(void)
 	}
 
 	/*
-	 * pglogical doesn't have "statements" as such, so we'll report one
+	 * spock doesn't have "statements" as such, so we'll report one
 	 * statement per applied transaction. We must set the statement start time
 	 * because StartTransaction() uses it to initialize the transaction cached
 	 * timestamp used by current_timestamp. If we don't set it, every xact will
-	 * get the same current_timestamp. See 2ndQuadrant/pglogical_internal#148
+	 * get the same current_timestamp. See 2ndQuadrant/spock_internal#148
 	 */
 	SetCurrentStatementStartTimestamp();
 
@@ -292,13 +292,13 @@ handle_begin(StringInfo s)
 	xact_action_counter = 1;
 	errcallback_arg.action_name = "BEGIN";
 
-	pglogical_read_begin(s, &commit_lsn, &commit_time, &remote_xid);
+	spock_read_begin(s, &commit_lsn, &commit_time, &remote_xid);
 
 	replorigin_session_origin_timestamp = commit_time;
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
 
-	VALGRIND_PRINTF("PGLOGICAL_APPLY: begin %u\n", remote_xid);
+	VALGRIND_PRINTF("SPOCK_APPLY: begin %u\n", remote_xid);
 
 	/* don't want the overhead otherwise */
 	if (apply_delay > 0)
@@ -340,13 +340,13 @@ handle_commit(StringInfo s)
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
 
-	pglogical_read_commit(s, &commit_lsn, &end_lsn, &commit_time);
+	spock_read_commit(s, &commit_lsn, &end_lsn, &commit_time);
 
 	Assert(commit_time == replorigin_session_origin_timestamp);
 
 	if (IsTransactionState())
 	{
-		PGLFlushPosition *flushpos;
+		SPKFlushPosition *flushpos;
 
 		multi_insert_finish();
 
@@ -359,7 +359,7 @@ handle_commit(StringInfo s)
 		MemoryContextSwitchTo(TopMemoryContext);
 
 		/* Track commit lsn  */
-		flushpos = (PGLFlushPosition *) palloc(sizeof(PGLFlushPosition));
+		flushpos = (SPKFlushPosition *) palloc(sizeof(SPKFlushPosition));
 		flushpos->local_end = XactLastCommitEnd;
 		flushpos->remote_end = end_lsn;
 
@@ -424,8 +424,8 @@ handle_commit(StringInfo s)
 			&& MyApplyWorker->replay_stop_lsn <= end_lsn)
 	{
 		ereport(LOG,
-				(errmsg("pglogical %s finished processing; replayed to %X/%X of required %X/%X",
-				 MyPGLogicalWorker->worker_type == PGLOGICAL_WORKER_SYNC ? "sync" : "apply",
+				(errmsg("spock %s finished processing; replayed to %X/%X of required %X/%X",
+				 MySpockWorker->worker_type == SPOCK_WORKER_SYNC ? "sync" : "apply",
 				 (uint32)(end_lsn>>32), (uint32)end_lsn,
 				 (uint32)(MyApplyWorker->replay_stop_lsn >>32),
 				 (uint32)MyApplyWorker->replay_stop_lsn)));
@@ -433,12 +433,12 @@ handle_commit(StringInfo s)
 		/*
 		 * If this is sync worker, update syncing table state to done.
 		 */
-		if (MyPGLogicalWorker->worker_type == PGLOGICAL_WORKER_SYNC)
+		if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
 		{
 			StartTransactionCommand();
 			set_table_sync_status(MyApplyWorker->subid,
-							  NameStr(MyPGLogicalWorker->worker.sync.nspname),
-							  NameStr(MyPGLogicalWorker->worker.sync.relname),
+							  NameStr(MySpockWorker->worker.sync.nspname),
+							  NameStr(MySpockWorker->worker.sync.relname),
 							  SYNC_STATUS_SYNCDONE, end_lsn);
 			CommitTransactionCommand();
 		}
@@ -452,7 +452,7 @@ handle_commit(StringInfo s)
 		/*
 		 * Disconnect.
 		 *
-		 * This needs to happen before the pglogical_sync_worker_finish()
+		 * This needs to happen before the spock_sync_worker_finish()
 		 * call otherwise slot drop will fail.
 		 */
 		PQfinish(applyconn);
@@ -460,14 +460,14 @@ handle_commit(StringInfo s)
 		/*
 		 * If this is sync worker, finish it.
 		 */
-		if (MyPGLogicalWorker->worker_type == PGLOGICAL_WORKER_SYNC)
-			pglogical_sync_worker_finish();
+		if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
+			spock_sync_worker_finish();
 
 		/* Stop gracefully */
 		proc_exit(0);
 	}
 
-	VALGRIND_PRINTF("PGLOGICAL_APPLY: commit %u\n", remote_xid);
+	VALGRIND_PRINTF("SPOCK_APPLY: commit %u\n", remote_xid);
 
 	xact_action_counter = 0;
 	remote_xid = InvalidTransactionId;
@@ -506,7 +506,7 @@ handle_origin(StringInfo s)
 	/* We have to start transaction here so that we can work with origins. */
 	ensure_transaction();
 
-	origin = pglogical_read_origin(s, &remote_origin_lsn);
+	origin = spock_read_origin(s, &remote_origin_lsn);
 	remote_origin_id = replorigin_by_name(origin, true);
 }
 
@@ -521,14 +521,14 @@ handle_relation(StringInfo s)
 {
 	multi_insert_finish();
 
-	(void) pglogical_read_rel(s);
+	(void) spock_read_rel(s);
 }
 
 static void
 handle_insert(StringInfo s)
 {
-	PGLogicalTupleData	newtup;
-	PGLogicalRelation  *rel;
+	SpockTupleData	newtup;
+	SpockRelation  *rel;
 	bool				started_tx = ensure_transaction();
 
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -536,13 +536,13 @@ handle_insert(StringInfo s)
 	errcallback_arg.action_name = "INSERT";
 	xact_action_counter++;
 
-	rel = pglogical_read_insert(s, RowExclusiveLock, &newtup);
+	rel = spock_read_insert(s, RowExclusiveLock, &newtup);
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
 	{
-		pglogical_relation_close(rel, NoLock);
+		spock_relation_close(rel, NoLock);
 		PopActiveSnapshot();
 		CommandCounterIncrement();
 		return;
@@ -563,7 +563,7 @@ handle_insert(StringInfo s)
 			return;
 		}
 	}
-	else if (pglogical_batch_inserts &&
+	else if (spock_batch_inserts &&
 			 RelationGetRelid(rel->rel) != QueueRelid &&
 			 apply_api.can_multi_insert &&
 			 apply_api.can_multi_insert(rel))
@@ -598,7 +598,7 @@ handle_insert(StringInfo s)
 							 newtup.values, newtup.nulls);
 
 		LockRelationIdForSession(&lockid, RowExclusiveLock);
-		pglogical_relation_close(rel, NoLock);
+		spock_relation_close(rel, NoLock);
 
 		PopActiveSnapshot();
 		CommandCounterIncrement();
@@ -623,7 +623,7 @@ handle_insert(StringInfo s)
 	}
 	else
 	{
-		pglogical_relation_close(rel, NoLock);
+		spock_relation_close(rel, NoLock);
 
 		PopActiveSnapshot();
 		CommandCounterIncrement();
@@ -636,12 +636,12 @@ multi_insert_finish(void)
 	if (use_multi_insert && last_insert_rel_cnt)
 	{
 		const char *old_action = errcallback_arg.action_name;
-		PGLogicalRelation *old_rel = errcallback_arg.rel;
+		SpockRelation *old_rel = errcallback_arg.rel;
 		errcallback_arg.action_name = "multi INSERT";
 		errcallback_arg.rel = last_insert_rel;
 
 		apply_api.multi_insert_finish(last_insert_rel);
-		pglogical_relation_close(last_insert_rel, NoLock);
+		spock_relation_close(last_insert_rel, NoLock);
 		use_multi_insert = false;
 		last_insert_rel = NULL;
 		last_insert_rel_cnt = 0;
@@ -654,9 +654,9 @@ multi_insert_finish(void)
 static void
 handle_update(StringInfo s)
 {
-	PGLogicalTupleData	oldtup;
-	PGLogicalTupleData	newtup;
-	PGLogicalRelation  *rel;
+	SpockTupleData	oldtup;
+	SpockTupleData	newtup;
+	SpockRelation  *rel;
 	bool				hasoldtup;
 
 	errcallback_arg.action_name = "UPDATE";
@@ -668,14 +668,14 @@ handle_update(StringInfo s)
 
 	PushActiveSnapshot(GetTransactionSnapshot());
 
-	rel = pglogical_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup,
+	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup,
 								&newtup);
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
 	{
-		pglogical_relation_close(rel, NoLock);
+		spock_relation_close(rel, NoLock);
 		PopActiveSnapshot();
 		CommandCounterIncrement();
 		return;
@@ -683,7 +683,7 @@ handle_update(StringInfo s)
 
 	apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 
-	pglogical_relation_close(rel, NoLock);
+	spock_relation_close(rel, NoLock);
 
 	PopActiveSnapshot();
 	CommandCounterIncrement();
@@ -692,8 +692,8 @@ handle_update(StringInfo s)
 static void
 handle_delete(StringInfo s)
 {
-	PGLogicalTupleData	oldtup;
-	PGLogicalRelation  *rel;
+	SpockTupleData	oldtup;
+	SpockRelation  *rel;
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
 	xact_action_counter++;
@@ -704,13 +704,13 @@ handle_delete(StringInfo s)
 
 	PushActiveSnapshot(GetTransactionSnapshot());
 
-	rel = pglogical_read_delete(s, RowExclusiveLock, &oldtup);
+	rel = spock_read_delete(s, RowExclusiveLock, &oldtup);
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
 	{
-		pglogical_relation_close(rel, NoLock);
+		spock_relation_close(rel, NoLock);
 		PopActiveSnapshot();
 		CommandCounterIncrement();
 		return;
@@ -718,7 +718,7 @@ handle_delete(StringInfo s)
 
 	apply_api.do_delete(rel, &oldtup);
 
-	pglogical_relation_close(rel, NoLock);
+	spock_relation_close(rel, NoLock);
 
 	PopActiveSnapshot();
 	CommandCounterIncrement();
@@ -779,7 +779,7 @@ parse_bool_param(const char *key, const char *value)
 static void
 handle_startup_param(const char *key, const char *value)
 {
-	elog(DEBUG2, "apply got pglogical startup msg param  %s=%s", key, value);
+	elog(DEBUG2, "apply got spock startup msg param  %s=%s", key, value);
 
 	if (strcmp(key, "pg_version") == 0)
 		elog(DEBUG1, "upstream Pg version is %s", value);
@@ -914,8 +914,8 @@ handle_table_sync(QueuedMessage *queued_message)
 {
 	RangeVar			   *rv;
 	MemoryContext			oldcontext;
-	PGLogicalSyncStatus	   *oldsync;
-	PGLogicalSyncStatus	   *newsync;
+	SpockSyncStatus	   *oldsync;
+	SpockSyncStatus	   *newsync;
 
 	rv = parse_relation_message(queued_message->message);
 
@@ -933,7 +933,7 @@ handle_table_sync(QueuedMessage *queued_message)
 
 	/* Keep the lists persistent. */
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-	newsync = palloc0(sizeof(PGLogicalSyncStatus));
+	newsync = palloc0(sizeof(SpockSyncStatus));
 	MemoryContextSwitchTo(oldcontext);
 
 	newsync->kind = SYNC_KIND_DATA;
@@ -1076,7 +1076,7 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 		elog(ERROR, "malformed message in queued message tuple, item type %d expected %d", r, WJB_DONE);
 
 	/* Run the extracted SQL. */
-	pglogical_execute_sql_command(sql, queued_message->role, tx_just_started);
+	spock_execute_sql_command(sql, queued_message->role, tx_just_started);
 }
 
 /*
@@ -1213,8 +1213,8 @@ get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
 
 	dlist_foreach_modify(iter, &lsn_mapping)
 	{
-		PGLFlushPosition *pos =
-			dlist_container(PGLFlushPosition, node, iter.cur);
+		SPKFlushPosition *pos =
+			dlist_container(SPKFlushPosition, node, iter.cur);
 
 		*write = pos->remote_end;
 
@@ -1231,7 +1231,7 @@ get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
 			 * could potentially be long. Instead get the last element and
 			 * grab the write position from there.
 			 */
-			pos = dlist_tail_element(PGLFlushPosition, node,
+			pos = dlist_tail_element(SPKFlushPosition, node,
 									 &lsn_mapping);
 			*write = pos->remote_end;
 			return false;
@@ -1500,7 +1500,7 @@ apply_work(PGconn *streamConn)
 }
 
 /*
- * Add context to the errors produced by pglogical_execute_sql_command().
+ * Add context to the errors produced by spock_execute_sql_command().
  */
 static void
 execute_sql_command_error_cb(void *arg)
@@ -1512,7 +1512,7 @@ execute_sql_command_error_cb(void *arg)
  * Execute an SQL command. This can be multiple multiple queries.
  */
 void
-pglogical_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
+spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 {
 	const char *save_debug_query_string = debug_query_string;
 	List	   *commands;
@@ -1596,7 +1596,7 @@ pglogical_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 
 		PopActiveSnapshot();
 
-		portal = CreatePortal("pglogical", true, true);
+		portal = CreatePortal("spock", true, true);
 		PortalDefineQuery(portal, NULL,
 						  cmdstr,
 						  commandTag,
@@ -1651,8 +1651,8 @@ reread_unsynced_tables(Oid subid)
 	saved_ctx = MemoryContextSwitchTo(TopMemoryContext);
 	foreach (lc, unsynced_tables)
 	{
-		PGLogicalSyncStatus	   *sync = palloc(sizeof(PGLogicalSyncStatus));
-		memcpy(sync, lfirst(lc), sizeof(PGLogicalSyncStatus));
+		SpockSyncStatus	   *sync = palloc(sizeof(SpockSyncStatus));
+		memcpy(sync, lfirst(lc), sizeof(SpockSyncStatus));
 		SyncingTables = lappend(SyncingTables, sync);
 	}
 
@@ -1691,8 +1691,8 @@ process_syncing_tables(XLogRecPtr end_lsn)
 		for (lc = list_head(SyncingTables); lc; lc = next)
 #endif
 		{
-			PGLogicalSyncStatus	   *sync = (PGLogicalSyncStatus *) lfirst(lc);
-			PGLogicalSyncStatus	   *newsync;
+			SpockSyncStatus	   *sync = (SpockSyncStatus *) lfirst(lc);
+			SpockSyncStatus	   *newsync;
 
 #if PG_VERSION_NUM < 130000
 			/* We might delete the cell so advance it now. */
@@ -1719,21 +1719,21 @@ process_syncing_tables(XLogRecPtr end_lsn)
 				sync->statuslsn = InvalidXLogRecPtr;
 			}
 			else
-				memcpy(sync, newsync, sizeof(PGLogicalSyncStatus));
+				memcpy(sync, newsync, sizeof(SpockSyncStatus));
 			CommitTransactionCommand();
 			MemoryContextSwitchTo(MessageContext);
 
 			if (sync->status == SYNC_STATUS_SYNCWAIT)
 			{
-				PGLogicalWorker *worker;
+				SpockWorker *worker;
 
-				LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-				worker = pglogical_sync_find(MyDatabaseId,
+				LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+				worker = spock_sync_find(MyDatabaseId,
 											 MyApplyWorker->subid,
 											 NameStr(sync->nspname),
 											 NameStr(sync->relname));
 
-				if (pglogical_worker_running(worker) &&
+				if (spock_worker_running(worker) &&
 					end_lsn >= worker->worker.apply.replay_stop_lsn)
 				{
 					worker->worker.apply.replay_stop_lsn = end_lsn;
@@ -1748,9 +1748,9 @@ process_syncing_tables(XLogRecPtr end_lsn)
 					CommitTransactionCommand();
 					MemoryContextSwitchTo(MessageContext);
 
-					if (pglogical_worker_running(worker))
+					if (spock_worker_running(worker))
 						SetLatch(&worker->proc->procLatch);
-					LWLockRelease(PGLogicalCtx->lock);
+					LWLockRelease(SpockCtx->lock);
 
 					if (wait_for_sync_status_change(MyApplyWorker->subid,
 													NameStr(sync->nspname),
@@ -1760,7 +1760,7 @@ process_syncing_tables(XLogRecPtr end_lsn)
 						sync->status = SYNC_STATUS_SYNCDONE;
 				}
 				else
-					LWLockRelease(PGLogicalCtx->lock);
+					LWLockRelease(SpockCtx->lock);
 			}
 
 			if (sync->status == SYNC_STATUS_SYNCDONE &&
@@ -1807,21 +1807,21 @@ process_syncing_tables(XLogRecPtr end_lsn)
 		List		   *workers;
 		ListCell	   *wlc;
 		int				nworkers = 0;
-		PGLogicalSyncStatus	   *sync = (PGLogicalSyncStatus *) lfirst(lc);
+		SpockSyncStatus	   *sync = (SpockSyncStatus *) lfirst(lc);
 
 		if (sync->status == SYNC_STATUS_SYNCDONE || sync->status == SYNC_STATUS_READY)
 			continue;
 
-		LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-		workers = pglogical_sync_find_all(MyDatabaseId, MyApplyWorker->subid);
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+		workers = spock_sync_find_all(MyDatabaseId, MyApplyWorker->subid);
 		foreach (wlc, workers)
 		{
-			PGLogicalWorker	   *worker = (PGLogicalWorker *) lfirst(wlc);
+			SpockWorker	   *worker = (SpockWorker *) lfirst(wlc);
 
-			if (pglogical_worker_running(worker))
+			if (spock_worker_running(worker))
 				nworkers++;
 		}
-		LWLockRelease(PGLogicalCtx->lock);
+		LWLockRelease(SpockCtx->lock);
 
 		if (nworkers < 1)
 		{
@@ -1836,12 +1836,12 @@ process_syncing_tables(XLogRecPtr end_lsn)
 static void
 start_sync_worker(Name nspname, Name relname)
 {
-	PGLogicalWorker			worker;
+	SpockWorker			worker;
 
 	/* Start the sync worker. */
-	memset(&worker, 0, sizeof(PGLogicalWorker));
-	worker.worker_type = PGLOGICAL_WORKER_SYNC;
-	worker.dboid = MyPGLogicalWorker->dboid;
+	memset(&worker, 0, sizeof(SpockWorker));
+	worker.worker_type = SPOCK_WORKER_SYNC;
+	worker.dboid = MySpockWorker->dboid;
 	worker.worker.apply.subid = MyApplyWorker->subid;
 	worker.worker.apply.sync_pending = false; /* Makes no sense for sync worker. */
 
@@ -1850,7 +1850,7 @@ start_sync_worker(Name nspname, Name relname)
 	memcpy(&worker.worker.sync.nspname, nspname, sizeof(NameData));
 	memcpy(&worker.worker.sync.relname, relname, sizeof(NameData));
 
-	(void) pglogical_worker_register(&worker);
+	(void) spock_worker_register(&worker);
 }
 
 static inline TimeOffset
@@ -1872,7 +1872,7 @@ interval_to_timeoffset(const Interval *interval)
 }
 
 void
-pglogical_apply_main(Datum main_arg)
+spock_apply_main(Datum main_arg)
 {
 	int				slot = DatumGetInt32(main_arg);
 	PGconn		   *streamConn;
@@ -1883,39 +1883,39 @@ pglogical_apply_main(Datum main_arg)
 	char		   *origins;
 
 	/* Setup shmem. */
-	pglogical_worker_attach(slot, PGLOGICAL_WORKER_APPLY);
-	Assert(MyPGLogicalWorker->worker_type == PGLOGICAL_WORKER_APPLY);
-	MyApplyWorker = &MyPGLogicalWorker->worker.apply;
+	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
+	Assert(MySpockWorker->worker_type == SPOCK_WORKER_APPLY);
+	MyApplyWorker = &MySpockWorker->worker.apply;
 
 	/* Establish signal handlers. */
 	pqsignal(SIGTERM, handle_sigterm);
 
 	/* Attach to dsm segment. */
 	Assert(CurrentResourceOwner == NULL);
-	CurrentResourceOwner = ResourceOwnerCreate(NULL, "pglogical apply");
+	CurrentResourceOwner = ResourceOwnerCreate(NULL, "spock apply");
 
 	/* Load correct apply API. */
-	if (pglogical_use_spi)
+	if (spock_use_spi)
 	{
-		if (pglogical_conflict_resolver != PGLOGICAL_RESOLVE_ERROR)
+		if (spock_conflict_resolver != SPOCK_RESOLVE_ERROR)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("pglogical.use_spi can only be used when "
-							"pglogical.conflict_resolution is set to 'error'")));
+					 errmsg("spock.use_spi can only be used when "
+							"spock.conflict_resolution is set to 'error'")));
 
-		apply_api.on_begin = pglogical_apply_spi_begin;
-		apply_api.on_commit = pglogical_apply_spi_commit;
-		apply_api.do_insert = pglogical_apply_spi_insert;
-		apply_api.do_update = pglogical_apply_spi_update;
-		apply_api.do_delete = pglogical_apply_spi_delete;
-		apply_api.can_multi_insert = pglogical_apply_spi_can_mi;
-		apply_api.multi_insert_add_tuple = pglogical_apply_spi_mi_add_tuple;
-		apply_api.multi_insert_finish = pglogical_apply_spi_mi_finish;
+		apply_api.on_begin = spock_apply_spi_begin;
+		apply_api.on_commit = spock_apply_spi_commit;
+		apply_api.do_insert = spock_apply_spi_insert;
+		apply_api.do_update = spock_apply_spi_update;
+		apply_api.do_delete = spock_apply_spi_delete;
+		apply_api.can_multi_insert = spock_apply_spi_can_mi;
+		apply_api.multi_insert_add_tuple = spock_apply_spi_mi_add_tuple;
+		apply_api.multi_insert_finish = spock_apply_spi_mi_finish;
 	}
 
 	/* Setup synchronous commit according to the user's wishes */
 	SetConfigOption("synchronous_commit",
-					pglogical_synchronous_commit ? "local" : "off",
+					spock_synchronous_commit ? "local" : "off",
 					PGC_BACKEND, PGC_S_OVERRIDE);	/* other context? */
 
 	/* Run as replica session replication role. */
@@ -1954,7 +1954,7 @@ pglogical_apply_main(Datum main_arg)
 			interval_to_timeoffset(MySubscription->apply_delay) / 1000;
 
 	/* If the subscription isn't initialized yet, initialize it. */
-	pglogical_sync_subscription(MySubscription);
+	spock_sync_subscription(MySubscription);
 
 	elog(DEBUG1, "connecting to provider %s, dsn %s",
 		 MySubscription->origin->name, MySubscription->origin_if->dsn);
@@ -1974,7 +1974,7 @@ pglogical_apply_main(Datum main_arg)
 	origin_startpos = replorigin_session_get_progress(false);
 
 	/* Start the replication. */
-	streamConn = pglogical_connect_replica(MySubscription->origin_if->dsn,
+	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
 										   MySubscription->name, NULL);
 
 	repsets = stringlist_to_identifierstr(MySubscription->replication_sets);
@@ -1984,9 +1984,9 @@ pglogical_apply_main(Datum main_arg)
 	 * IDENTIFY_SYSTEM sets up some internal state on walsender so call it even
 	 * if we don't (yet) want to use any of the results.
      */
-	pglogical_identify_system(streamConn, NULL, NULL, NULL, NULL);
+	spock_identify_system(streamConn, NULL, NULL, NULL, NULL);
 
-	pglogical_start_replication(streamConn, MySubscription->slot_name,
+	spock_start_replication(streamConn, MySubscription->slot_name,
 								origin_startpos, origins, repsets, NULL,
 								MySubscription->force_text_transfer);
 	pfree(repsets);

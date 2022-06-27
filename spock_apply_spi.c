@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_apply_spi.c
- * 		pglogical apply functions using SPI
+ * spock_apply_spi.c
+ * 		spock apply functions using SPI
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical_apply_spi.c
+ *		  spock_apply_spi.c
  *
  * NOTES
  *	  The multi-insert support is not done through SPI but using binary
@@ -40,14 +40,14 @@
 #include "utils/rel.h"
 #include "utils/builtins.h"
 
-#include "pglogical.h"
-#include "pglogical_apply_spi.h"
-#include "pglogical_conflict.h"
+#include "spock.h"
+#include "spock_apply_spi.h"
+#include "spock_conflict.h"
 
 /* State related to bulk insert */
-typedef struct pglogical_copyState
+typedef struct spock_copyState
 {
-	PGLogicalRelation  *rel;
+	SpockRelation  *rel;
 
 	StringInfo		copy_stmt;
 	List		   *copy_parsetree;
@@ -61,28 +61,28 @@ typedef struct pglogical_copyState
 	List		   *attnumlist;
 	int				copy_buffered_tuples;
 	size_t			copy_buffered_size;
-} pglogical_copyState;
+} spock_copyState;
 
-static pglogical_copyState *pglcstate = NULL;
+static spock_copyState *pglcstate = NULL;
 
 static const char BinarySignature[11] = "PGCOPY\n\377\r\n\0";
 
-static void pglogical_start_copy(PGLogicalRelation *rel);
-static void pglogical_proccess_copy(pglogical_copyState *pglcstate);
+static void spock_start_copy(SpockRelation *rel);
+static void spock_proccess_copy(spock_copyState *pglcstate);
 
-static void pglogical_copySendData(pglogical_copyState *pglcstate,
+static void spock_copySendData(spock_copyState *pglcstate,
 								   const void *databuf, int datasize);
-static void pglogical_copySendEndOfRow(pglogical_copyState *pglcstate);
-static void pglogical_copySendInt32(pglogical_copyState *pglcstate, int32 val);
-static void pglogical_copySendInt16(pglogical_copyState *pglcstate, int16 val);
-static void pglogical_copyOneRowTo(pglogical_copyState *pglcstate,
+static void spock_copySendEndOfRow(spock_copyState *pglcstate);
+static void spock_copySendInt32(spock_copyState *pglcstate, int32 val);
+static void spock_copySendInt16(spock_copyState *pglcstate, int16 val);
+static void spock_copyOneRowTo(spock_copyState *pglcstate,
 								   Datum *values, bool *nulls);
 
 /*
  * Handle begin (connect SPI).
  */
 void
-pglogical_apply_spi_begin(void)
+spock_apply_spi_begin(void)
 {
 	if (SPI_connect() != SPI_OK_CONNECT)
 		elog(ERROR, "SPI_connect failed");
@@ -93,7 +93,7 @@ pglogical_apply_spi_begin(void)
  * Handle commit (finish SPI).
  */
 void
-pglogical_apply_spi_commit(void)
+spock_apply_spi_commit(void)
 {
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
@@ -104,7 +104,7 @@ pglogical_apply_spi_commit(void)
  * Handle insert via SPI.
  */
 void
-pglogical_apply_spi_insert(PGLogicalRelation *rel, PGLogicalTupleData *newtup)
+spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup)
 {
 	TupleDesc		desc = RelationGetDescr(rel->rel);
 	Oid				argtypes[MaxTupleAttributeNumber];
@@ -170,8 +170,8 @@ pglogical_apply_spi_insert(PGLogicalRelation *rel, PGLogicalTupleData *newtup)
  * Handle update via SPI.
  */
 void
-pglogical_apply_spi_update(PGLogicalRelation *rel, PGLogicalTupleData *oldtup,
-						   PGLogicalTupleData *newtup)
+spock_apply_spi_update(SpockRelation *rel, SpockTupleData *oldtup,
+						   SpockTupleData *newtup)
 {
 	TupleDesc		desc = RelationGetDescr(rel->rel);
 	Oid				argtypes[MaxTupleAttributeNumber];
@@ -249,7 +249,7 @@ pglogical_apply_spi_update(PGLogicalRelation *rel, PGLogicalTupleData *oldtup,
  * Handle delete via SPI.
  */
 void
-pglogical_apply_spi_delete(PGLogicalRelation *rel, PGLogicalTupleData *oldtup)
+spock_apply_spi_delete(SpockRelation *rel, SpockTupleData *oldtup)
 {
 	TupleDesc		desc = RelationGetDescr(rel->rel);
 	Oid				argtypes[MaxTupleAttributeNumber];
@@ -298,24 +298,24 @@ pglogical_apply_spi_delete(PGLogicalRelation *rel, PGLogicalTupleData *oldtup)
 
 
 /* We currently can't support multi insert using COPY on windows. */
-#if !defined(WIN32) && !defined(PGL_NO_STDIN_ASSIGN)
+#if !defined(WIN32) && !defined(SPK_NO_STDIN_ASSIGN)
 
 bool
-pglogical_apply_spi_can_mi(PGLogicalRelation *rel)
+spock_apply_spi_can_mi(SpockRelation *rel)
 {
 	/* Multi insert is only supported when conflicts result in errors. */
-	return pglogical_conflict_resolver == PGLOGICAL_RESOLVE_ERROR;
+	return spock_conflict_resolver == SPOCK_RESOLVE_ERROR;
 }
 
 void
-pglogical_apply_spi_mi_add_tuple(PGLogicalRelation *rel,
-								 PGLogicalTupleData *tup)
+spock_apply_spi_mi_add_tuple(SpockRelation *rel,
+								 SpockTupleData *tup)
 {
 	Datum	*values;
 	bool	*nulls;
 
 	/* Start COPY if not already done so */
-	pglogical_start_copy(rel);
+	spock_start_copy(rel);
 
 #define MAX_BUFFERED_TUPLES		10000
 #define MAX_BUFFER_SIZE			60000
@@ -325,8 +325,8 @@ pglogical_apply_spi_mi_add_tuple(PGLogicalRelation *rel,
 	if (pglcstate->copy_buffered_tuples > MAX_BUFFERED_TUPLES ||
 		pglcstate->copy_buffered_size > MAX_BUFFER_SIZE)
 	{
-		pglogical_apply_spi_mi_finish(rel);
-		pglogical_start_copy(rel);
+		spock_apply_spi_mi_finish(rel);
+		spock_start_copy(rel);
 	}
 
 	/*
@@ -334,7 +334,7 @@ pglogical_apply_spi_mi_add_tuple(PGLogicalRelation *rel,
 	 */
 	values = (Datum *) tup->values;
 	nulls = (bool *) tup->nulls;
-	pglogical_copyOneRowTo(pglcstate, values, nulls);
+	spock_copyOneRowTo(pglcstate, values, nulls);
 }
 
 
@@ -342,7 +342,7 @@ pglogical_apply_spi_mi_add_tuple(PGLogicalRelation *rel,
  * Initialize copy state for reation.
  */
 static void
-pglogical_start_copy(PGLogicalRelation *rel)
+spock_start_copy(SpockRelation *rel)
 {
 	MemoryContext oldcontext;
 	TupleDesc		desc;
@@ -358,12 +358,12 @@ pglogical_start_copy(PGLogicalRelation *rel)
 
 	/* We are in COPY but for different relation, finish it first. */
 	if (pglcstate && pglcstate->rel != rel)
-		pglogical_apply_spi_mi_finish(pglcstate->rel);
+		spock_apply_spi_mi_finish(pglcstate->rel);
 
 	oldcontext = MemoryContextSwitchTo(TopTransactionContext);
 
 	/* Initialize new COPY state. */
-	pglcstate = palloc0(sizeof(pglogical_copyState));
+	pglcstate = palloc0(sizeof(spock_copyState));
 
 	pglcstate->copy_file = -1;
 	pglcstate->msgbuf = makeStringInfo();
@@ -420,7 +420,7 @@ pglogical_start_copy(PGLogicalRelation *rel)
 
 	/*
 	 * This is a bit of kludge to let COPY FROM read from the STDIN. In
-	 * pglogical, the apply worker is accumulating tuples received from the
+	 * spock, the apply worker is accumulating tuples received from the
 	 * publisher and queueing them for a bulk load. But the COPY API can only
 	 * deal with either a file or a PROGRAM or STDIN.
 	 *
@@ -456,14 +456,14 @@ pglogical_start_copy(PGLogicalRelation *rel)
 	pglcstate->copy_parsetree = pg_parse_query(pglcstate->copy_stmt->data);
 	MemoryContextSwitchTo(oldcontext);
 
-	pglogical_copySendData(pglcstate, BinarySignature,
+	spock_copySendData(pglcstate, BinarySignature,
 						   sizeof(BinarySignature));
-	pglogical_copySendInt32(pglcstate, 0);
-	pglogical_copySendInt32(pglcstate, 0);
+	spock_copySendInt32(pglcstate, 0);
+	spock_copySendInt32(pglcstate, 0);
 }
 
 static void
-pglogical_proccess_copy(pglogical_copyState *pglcstate)
+spock_proccess_copy(spock_copyState *pglcstate)
 {
 	uint64	processed;
 	FILE	*save_stdin;
@@ -477,10 +477,10 @@ pglogical_proccess_copy(pglogical_copyState *pglcstate)
 	 * processed. We also close the file descriptor because DoCopy expects to
 	 * see a real EOF too
 	 */
-	pglogical_copySendInt16(pglcstate, -1);
+	spock_copySendInt16(pglcstate, -1);
 
 	/* Also ensure that the data is flushed to the stream */
-	pglogical_copySendEndOfRow(pglcstate);
+	spock_copySendEndOfRow(pglcstate);
 
 	/*
 	 * Now close the write end of the pipe so that DoCopy sees end of the
@@ -509,10 +509,10 @@ pglogical_proccess_copy(pglogical_copyState *pglcstate)
 
 	/* Initiate the actual COPY */
 #if PG_VERSION_NUM >= 100000
-	PGLDoCopy((CopyStmt*)((RawStmt *)linitial(pglcstate->copy_parsetree))->stmt,
+	SPKDoCopy((CopyStmt*)((RawStmt *)linitial(pglcstate->copy_parsetree))->stmt,
 		pglcstate->copy_stmt->data, &processed);
 #else
-	PGLDoCopy((CopyStmt *) linitial(pglcstate->copy_parsetree),
+	SPKDoCopy((CopyStmt *) linitial(pglcstate->copy_parsetree),
 			  pglcstate->copy_stmt->data, &processed);
 #endif
 
@@ -536,14 +536,14 @@ pglogical_proccess_copy(pglogical_copyState *pglcstate)
 }
 
 void
-pglogical_apply_spi_mi_finish(PGLogicalRelation *rel)
+spock_apply_spi_mi_finish(SpockRelation *rel)
 {
 	if (!pglcstate)
 		return;
 
 	Assert(pglcstate->rel == rel);
 
-	pglogical_proccess_copy(pglcstate);
+	spock_proccess_copy(pglcstate);
 
 	if (pglcstate->copy_stmt)
 	{
@@ -581,46 +581,46 @@ pglogical_apply_spi_mi_finish(PGLogicalRelation *rel)
 }
 
 /*
- * pglogical_copySendInt32 sends an int32 in network byte order
+ * spock_copySendInt32 sends an int32 in network byte order
  */
 static void
-pglogical_copySendInt32(pglogical_copyState *pglcstate, int32 val)
+spock_copySendInt32(spock_copyState *pglcstate, int32 val)
 {
 	uint32		buf;
 
 	buf = htonl((uint32) val);
-	pglogical_copySendData(pglcstate, &buf, sizeof(buf));
+	spock_copySendData(pglcstate, &buf, sizeof(buf));
 }
 
 /*
- * pglogical_copySendInt16 sends an int16 in network byte order
+ * spock_copySendInt16 sends an int16 in network byte order
  */
 static void
-pglogical_copySendInt16(pglogical_copyState *pglcstate, int16 val)
+spock_copySendInt16(spock_copyState *pglcstate, int16 val)
 {
 	uint16		buf;
 
 	buf = htons((uint16) val);
-	pglogical_copySendData(pglcstate, &buf, sizeof(buf));
+	spock_copySendData(pglcstate, &buf, sizeof(buf));
 }
 
 /*----------
- * pglogical_copySendData sends output data to the destination (file or frontend)
- * pglogical_copySendEndOfRow does the appropriate thing at end of each data row
- *	(data is not actually flushed except by pglogical_copySendEndOfRow)
+ * spock_copySendData sends output data to the destination (file or frontend)
+ * spock_copySendEndOfRow does the appropriate thing at end of each data row
+ *	(data is not actually flushed except by spock_copySendEndOfRow)
  *
  * NB: no data conversion is applied by these functions
  *----------
  */
 static void
-pglogical_copySendData(pglogical_copyState *pglcstate, const void *databuf,
+spock_copySendData(spock_copyState *pglcstate, const void *databuf,
 					   int datasize)
 {
 	appendBinaryStringInfo(pglcstate->msgbuf, databuf, datasize);
 }
 
 static void
-pglogical_copySendEndOfRow(pglogical_copyState *pglcstate)
+spock_copySendEndOfRow(spock_copyState *pglcstate)
 {
 	StringInfo	msgbuf = pglcstate->msgbuf;
 
@@ -640,7 +640,7 @@ pglogical_copySendEndOfRow(pglogical_copyState *pglcstate)
  * Emit one row during CopyTo().
  */
 static void
-pglogical_copyOneRowTo(pglogical_copyState *pglcstate, Datum *values,
+spock_copyOneRowTo(spock_copyState *pglcstate, Datum *values,
 					   bool *nulls)
 {
 	FmgrInfo   *out_functions = pglcstate->out_functions;
@@ -651,7 +651,7 @@ pglogical_copyOneRowTo(pglogical_copyState *pglcstate, Datum *values,
 	oldcontext = MemoryContextSwitchTo(pglcstate->rowcontext);
 
 	/* Binary per-tuple header */
-	pglogical_copySendInt16(pglcstate, list_length(pglcstate->attnumlist));
+	spock_copySendInt16(pglcstate, list_length(pglcstate->attnumlist));
 
 	foreach(cur, pglcstate->attnumlist)
 	{
@@ -660,15 +660,15 @@ pglogical_copyOneRowTo(pglogical_copyState *pglcstate, Datum *values,
 		bool		isnull = nulls[attnum];
 
 		if (isnull)
-			pglogical_copySendInt32(pglcstate, -1);
+			spock_copySendInt32(pglcstate, -1);
 		else
 		{
 			bytea	   *outputbytes;
 
 			outputbytes = SendFunctionCall(&out_functions[attnum],
 										   value);
-			pglogical_copySendInt32(pglcstate, VARSIZE(outputbytes) - VARHDRSZ);
-			pglogical_copySendData(pglcstate, VARDATA(outputbytes),
+			spock_copySendInt32(pglcstate, VARSIZE(outputbytes) - VARHDRSZ);
+			spock_copySendData(pglcstate, VARDATA(outputbytes),
 						 VARSIZE(outputbytes) - VARHDRSZ);
 		}
 	}
@@ -676,7 +676,7 @@ pglogical_copyOneRowTo(pglogical_copyState *pglcstate, Datum *values,
 	pglcstate->copy_buffered_tuples++;
 	pglcstate->copy_buffered_size += pglcstate->msgbuf->len;
 
-	pglogical_copySendEndOfRow(pglcstate);
+	spock_copySendEndOfRow(pglcstate);
 
 	MemoryContextSwitchTo(oldcontext);
 }
@@ -684,22 +684,22 @@ pglogical_copyOneRowTo(pglogical_copyState *pglcstate, Datum *values,
 #else /* WIN32 */
 
 bool
-pglogical_apply_spi_can_mi(PGLogicalRelation *rel)
+spock_apply_spi_can_mi(SpockRelation *rel)
 {
 	return false;
 }
 
 void
-pglogical_apply_spi_mi_add_tuple(PGLogicalRelation *rel,
-								 PGLogicalTupleData *tup)
+spock_apply_spi_mi_add_tuple(SpockRelation *rel,
+								 SpockTupleData *tup)
 {
-	elog(ERROR, "pglogical_apply_spi_mi_add_tuple called unexpectedly");
+	elog(ERROR, "spock_apply_spi_mi_add_tuple called unexpectedly");
 }
 
 void
-pglogical_apply_spi_mi_finish(PGLogicalRelation *rel)
+spock_apply_spi_mi_finish(SpockRelation *rel)
 {
-	elog(ERROR, "pglogical_apply_spi_mi_finish called unexpectedly");
+	elog(ERROR, "spock_apply_spi_mi_finish called unexpectedly");
 }
 
 #endif /* WIN32 */

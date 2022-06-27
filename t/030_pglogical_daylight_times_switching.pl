@@ -60,22 +60,22 @@ system_or_bail 'sleep', '17';
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "CREATE USER super SUPERUSER";
 system_or_bail 'psql', '-p', "$PGPORT", '-c', "CREATE USER super SUPERUSER";
 
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "CREATE EXTENSION IF NOT EXISTS pglogical VERSION '1.0.0'";
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "ALTER EXTENSION pglogical UPDATE";
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "CREATE EXTENSION IF NOT EXISTS pglogical";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "CREATE EXTENSION IF NOT EXISTS spock VERSION '1.0.0'";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "ALTER EXTENSION spock UPDATE";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "CREATE EXTENSION IF NOT EXISTS spock";
 
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT * FROM pglogical.create_node(node_name := 'test_provider', dsn := 'dbname=postgres user=super')";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT * FROM spock.create_node(node_name := 'test_provider', dsn := 'dbname=postgres user=super')";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM pglogical.create_node(node_name := 'test_subscriber', dsn := '$SUBSCRIBER_DSN')";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM spock.create_node(node_name := 'test_subscriber', dsn := '$SUBSCRIBER_DSN')";
 
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT * FROM pglogical.create_replication_set('delay')";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT * FROM spock.create_replication_set('delay')";
 
 system_or_bail 'psql', '-p', "$PGPORT", '-c', "CREATE or REPLACE function int2interval (x integer) returns interval as
 \$\$ select \$1*'1 sec'::interval \$\$
 language sql";
 
 # create default subscription
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM pglogical.create_subscription(
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM spock.create_subscription(
     subscription_name := 'test_subscription',
     provider_dsn := '$PROVIDER_DSN',
     forward_origins := '{}',
@@ -84,7 +84,7 @@ system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM pglogical.create_su
 )";
 
 # create delayed subscription too.
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM pglogical.create_subscription(
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM spock.create_subscription(
     subscription_name := 'test_subscription_delay',
     provider_dsn := '$PROVIDER_DSN',
     replication_sets := '{delay}',
@@ -97,7 +97,7 @@ system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM pglogical.create_su
 system_or_bail 'psql', '-p', "$PGPORT", '-c', "DO \$\$
 BEGIN
         FOR i IN 1..100 LOOP
-                IF EXISTS (SELECT 1 FROM pglogical.show_subscription_status() WHERE status = 'replicating' AND subscription_name = 'test_subscription_delay') THEN
+                IF EXISTS (SELECT 1 FROM spock.show_subscription_status() WHERE status = 'replicating' AND subscription_name = 'test_subscription_delay') THEN
                         RETURN;
                 END IF;
                 PERFORM pg_sleep(0.1);
@@ -105,12 +105,12 @@ BEGIN
 END;
 \$\$";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM pglogical.show_subscription_status()";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.show_subscription_status()";
 
 system_or_bail 'psql', '-p', "$PGPORT", '-c', "DO \$\$
 BEGIN
     FOR i IN 1..300 LOOP
-        IF EXISTS (SELECT 1 FROM pglogical.local_sync_status WHERE sync_status != 'r') THEN
+        IF EXISTS (SELECT 1 FROM spock.local_sync_status WHERE sync_status != 'r') THEN
             PERFORM pg_sleep(0.1);
         ELSE
             EXIT;
@@ -118,7 +118,7 @@ BEGIN
     END LOOP;
 END;\$\$";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status FROM pglogical.local_sync_status ORDER BY 2,3,4";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status FROM spock.local_sync_status ORDER BY 2,3,4";
 #change timezone to after daylight savings border.
 command_ok([ 'timedatectl', 'set-time', "2016-11-06 06:40:00" ], 'switching daylight savings time check');
 
@@ -127,7 +127,7 @@ system_or_bail 'sleep', '300';
 system_or_bail 'psql', '-p', "$PGPORT", '-c', "DO \$\$
 BEGIN
         FOR i IN 1..100 LOOP
-                IF EXISTS (SELECT 1 FROM pglogical.show_subscription_status() WHERE status = 'replicating' AND subscription_name = 'test_subscription_delay') THEN
+                IF EXISTS (SELECT 1 FROM spock.show_subscription_status() WHERE status = 'replicating' AND subscription_name = 'test_subscription_delay') THEN
                         RETURN;
                 END IF;
                 PERFORM pg_sleep(0.1);
@@ -135,12 +135,12 @@ BEGIN
 END;
 \$\$";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM pglogical.show_subscription_status()";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.show_subscription_status()";
 
 system_or_bail 'psql', '-p', "$PGPORT", '-c', "DO \$\$
 BEGIN
     FOR i IN 1..300 LOOP
-        IF EXISTS (SELECT 1 FROM pglogical.local_sync_status WHERE sync_status != 'r') THEN
+        IF EXISTS (SELECT 1 FROM spock.local_sync_status WHERE sync_status != 'r') THEN
             PERFORM pg_sleep(0.1);
         ELSE
             EXIT;
@@ -148,7 +148,7 @@ BEGIN
     END LOOP;
 END;\$\$";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status FROM pglogical.local_sync_status ORDER BY 2,3,4";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status FROM spock.local_sync_status ORDER BY 2,3,4";
 
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "CREATE OR REPLACE FUNCTION public.pg_xlog_wait_remote_apply(i_pos pg_lsn, i_pid integer) RETURNS VOID
 AS \$FUNC\$
@@ -162,7 +162,7 @@ system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "CREATE TABLE public.timest
         id text primary key,
         ts timestamptz
 )";
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT pglogical.replicate_ddl_command(\$\$
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT spock.replicate_ddl_command(\$\$
     CREATE TABLE public.basic_dml1 (
         id serial primary key,
         other integer,
@@ -172,7 +172,7 @@ system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT pglogical.replicate
 \$\$)";
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT pg_xlog_wait_remote_apply(pg_current_xlog_location(), 0)";
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "INSERT INTO timestamps VALUES ('ts1', CURRENT_TIMESTAMP)";
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT * FROM pglogical.replication_set_add_table('delay', 'basic_dml1', true) ";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT * FROM spock.replication_set_add_table('delay', 'basic_dml1', true) ";
 
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT pg_xlog_wait_remote_apply(pg_current_xlog_location(), 0)";
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "INSERT INTO timestamps VALUES ('ts2', CURRENT_TIMESTAMP)";
@@ -187,16 +187,16 @@ system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT pg_xlog_wait_remote
 
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "INSERT INTO timestamps VALUES ('ts3', CURRENT_TIMESTAMP)";
 
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "select * from pglogical.show_subscription_status('test_subscription_delay');";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "select * from spock.show_subscription_status('test_subscription_delay');";
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT round (EXTRACT(EPOCH FROM (SELECT ts from timestamps where id = 'ts2')) - EXTRACT(EPOCH FROM (SELECT ts from timestamps where id = 'ts1'))) :: integer as ddl_replicate_time";
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT round (EXTRACT(EPOCH FROM (SELECT ts from timestamps where id = 'ts3')) - EXTRACT(EPOCH FROM (SELECT ts from timestamps where id = 'ts2'))) :: integer as inserts_replicate_time";
 command_ok([ 'psql', '-p', "$PROVIDER_PORT", '-c', "SELECT * FROM basic_dml1" ], 'provider data check');
 
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "select * from pglogical.show_subscription_status('test_subscription_delay');";
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM pglogical.show_subscription_table('test_subscription_delay', 'basic_dml1')";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "select * from spock.show_subscription_status('test_subscription_delay');";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM spock.show_subscription_table('test_subscription_delay', 'basic_dml1')";
 #check the data of table at subscriber
 command_ok([ 'psql', '-p', "$PGPORT", '-c', "SELECT * FROM basic_dml1" ], 'replication check');
-system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT pglogical.drop_subscription('test_subscription_delay')";
+system_or_bail 'psql', '-p', "$PGPORT", '-c', "SELECT spock.drop_subscription('test_subscription_delay')";
 
 #cleanup
 system("pg_ctl stop -D /tmp/tmp_030_sdatadir -m immediate &");

@@ -1,8 +1,8 @@
-#ifndef PG_LOGICAL_OUTPUT_CONFIG_H
-#define PG_LOGICAL_OUTPUT_CONFIG_H
+#ifndef SPOCK_OUTPUT_CONFIG_H
+#define SPOCK_OUTPUT_CONFIG_H
 
 #include "nodes/pg_list.h"
-#include "pglogical_output_plugin.h"
+#include "spock_output_plugin.h"
 
 inline static bool
 server_float4_byval(void)
@@ -44,8 +44,8 @@ server_bigendian(void)
 #endif
 }
 
-extern int process_parameters(List *options, PGLogicalOutputData *data);
+extern int process_parameters(List *options, SpockOutputData *data);
 
-extern List *prepare_startup_message(PGLogicalOutputData *data);
+extern List *prepare_startup_message(SpockOutputData *data);
 
 #endif

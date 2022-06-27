@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical.c
- * 		pglogical initialization and common functionality
+ * spock.c
+ * 		spock initialization and common functionality
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical.c
+ *		  spock.c
  *
  *-------------------------------------------------------------------------
  */
@@ -51,21 +51,21 @@
 
 #include "pgstat.h"
 
-#include "pglogical_executor.h"
-#include "pglogical_node.h"
-#include "pglogical_conflict.h"
-#include "pglogical_worker.h"
-#include "pglogical.h"
+#include "spock_executor.h"
+#include "spock_node.h"
+#include "spock_conflict.h"
+#include "spock_worker.h"
+#include "spock.h"
 
 PG_MODULE_MAGIC;
 
-static const struct config_enum_entry PGLogicalConflictResolvers[] = {
-	{"error", PGLOGICAL_RESOLVE_ERROR, false},
+static const struct config_enum_entry SpockConflictResolvers[] = {
+	{"error", SPOCK_RESOLVE_ERROR, false},
 #ifndef XCP
-	{"apply_remote", PGLOGICAL_RESOLVE_APPLY_REMOTE, false},
-	{"keep_local", PGLOGICAL_RESOLVE_KEEP_LOCAL, false},
-	{"last_update_wins", PGLOGICAL_RESOLVE_LAST_UPDATE_WINS, false},
-	{"first_update_wins", PGLOGICAL_RESOLVE_FIRST_UPDATE_WINS, false},
+	{"apply_remote", SPOCK_RESOLVE_APPLY_REMOTE, false},
+	{"keep_local", SPOCK_RESOLVE_KEEP_LOCAL, false},
+	{"last_update_wins", SPOCK_RESOLVE_LAST_UPDATE_WINS, false},
+	{"first_update_wins", SPOCK_RESOLVE_FIRST_UPDATE_WINS, false},
 #endif
 	{NULL, 0, false}
 };
@@ -88,17 +88,17 @@ static const struct config_enum_entry server_message_level_options[] = {
 	{NULL, 0, false}
 };
 
-bool	pglogical_synchronous_commit = false;
-char   *pglogical_temp_directory = "";
-bool	pglogical_use_spi = false;
-bool	pglogical_batch_inserts = true;
-static char *pglogical_temp_directory_config;
+bool	spock_synchronous_commit = false;
+char   *spock_temp_directory = "";
+bool	spock_use_spi = false;
+bool	spock_batch_inserts = true;
+static char *spock_temp_directory_config;
 
 void _PG_init(void);
-void pglogical_supervisor_main(Datum main_arg);
-char *pglogical_extra_connection_options;
+void spock_supervisor_main(Datum main_arg);
+char *spock_extra_connection_options;
 
-static PGconn * pglogical_connect_base(const char *connstr,
+static PGconn * spock_connect_base(const char *connstr,
 									   const char *appname,
 									   const char *suffix,
 									   bool replication);
@@ -243,7 +243,7 @@ parsePGArray(const char *atext, char ***itemarray, int *nitems)
  * Get oid of our queue table.
  */
 inline Oid
-get_pglogical_table_oid(const char *table)
+get_spock_table_oid(const char *table)
 {
 	Oid			nspoid;
 	Oid			reloid;
@@ -262,7 +262,7 @@ get_pglogical_table_oid(const char *table)
 #define CONN_PARAM_ARRAY_SIZE 9
 
 static PGconn *
-pglogical_connect_base(const char *connstr, const char *appname,
+spock_connect_base(const char *connstr, const char *appname,
 					   const char *suffix, bool replication)
 {
 	int				i=0;
@@ -272,7 +272,7 @@ pglogical_connect_base(const char *connstr, const char *appname,
 	StringInfoData s;
 
 	initStringInfo(&s);
-	appendStringInfoString(&s, pglogical_extra_connection_options);
+	appendStringInfoString(&s, spock_extra_connection_options);
 	appendStringInfoChar(&s, ' ');
 	appendStringInfoString(&s, connstr);
 
@@ -339,20 +339,20 @@ pglogical_connect_base(const char *connstr, const char *appname,
  * Make standard postgres connection, ERROR on failure.
  */
 PGconn *
-pglogical_connect(const char *connstring, const char *connname,
+spock_connect(const char *connstring, const char *connname,
 				  const char *suffix)
 {
-	return pglogical_connect_base(connstring, connname, suffix, false);
+	return spock_connect_base(connstring, connname, suffix, false);
 }
 
 /*
  * Make replication connection, ERROR on failure.
  */
 PGconn *
-pglogical_connect_replica(const char *connstring, const char *connname,
+spock_connect_replica(const char *connstring, const char *connname,
 						  const char *suffix)
 {
-	return pglogical_connect_base(connstring, connname, suffix, true);
+	return spock_connect_base(connstring, connname, suffix, true);
 }
 
 /*
@@ -361,7 +361,7 @@ pglogical_connect_replica(const char *connstring, const char *connname,
  * Called by db manager.
  */
 void
-pglogical_manage_extension(void)
+spock_manage_extension(void)
 {
 	Relation	extrel;
 	SysScanDesc scandesc;
@@ -373,7 +373,7 @@ pglogical_manage_extension(void)
 
 	PushActiveSnapshot(GetTransactionSnapshot());
 
-	/* make sure we're operating without other pglogical workers interfering */
+	/* make sure we're operating without other spock workers interfering */
 	extrel = table_open(ExtensionRelationId, ShareUpdateExclusiveLock);
 
 	ScanKeyInit(&key[0],
@@ -401,7 +401,7 @@ pglogical_manage_extension(void)
 		extversion = text_to_cstring(DatumGetTextPP(datum));
 
 		/* Only run the alter if the versions don't match. */
-		if (strcmp(extversion, PGLOGICAL_VERSION) != 0)
+		if (strcmp(extversion, SPOCK_VERSION) != 0)
 		{
 			AlterExtensionStmt alter_stmt;
 
@@ -421,7 +421,7 @@ pglogical_manage_extension(void)
  * Call IDENTIFY_SYSTEM on the connection and report its results.
  */
 void
-pglogical_identify_system(PGconn *streamConn, uint64* sysid,
+spock_identify_system(PGconn *streamConn, uint64* sysid,
 							TimeLineID *timeline, XLogRecPtr *xlogpos,
 							Name *dbname)
 {
@@ -479,7 +479,7 @@ pglogical_identify_system(PGconn *streamConn, uint64* sysid,
 }
 
 void
-pglogical_start_replication(PGconn *streamConn, const char *slot_name,
+spock_start_replication(PGconn *streamConn, const char *slot_name,
 							XLogRecPtr start_pos, const char *forward_origins,
 							const char *replication_sets,
 							const char *replicate_only_table,
@@ -499,8 +499,8 @@ pglogical_start_replication(PGconn *streamConn, const char *slot_name,
 	/* Basic protocol info. */
 	appendStringInfo(&command, "expected_encoding '%s'",
 					 GetDatabaseEncodingName());
-	appendStringInfo(&command, ", min_proto_version '%d'", PGLOGICAL_MIN_PROTO_VERSION_NUM);
-	appendStringInfo(&command, ", max_proto_version '%d'", PGLOGICAL_MAX_PROTO_VERSION_NUM);
+	appendStringInfo(&command, ", min_proto_version '%d'", SPOCK_MIN_PROTO_VERSION_NUM);
+	appendStringInfo(&command, ", max_proto_version '%d'", SPOCK_MAX_PROTO_VERSION_NUM);
 	appendStringInfo(&command, ", startup_params_format '1'");
 
 	/* Binary protocol compatibility. */
@@ -541,25 +541,25 @@ pglogical_start_replication(PGconn *streamConn, const char *slot_name,
 #endif
 					 );
 
-	/* We don't care about this anymore but pglogical 1.x expects this. */
+	/* We don't care about this anymore but spock 1.x expects this. */
 	appendStringInfoString(&command,
-						   ", \"hooks.setup_function\" 'pglogical.pglogical_hooks_setup'");
+						   ", \"hooks.setup_function\" 'spock.spock_hooks_setup'");
 
 	if (forward_origins)
-		appendStringInfo(&command, ", \"pglogical.forward_origins\" %s",
+		appendStringInfo(&command, ", \"spock.forward_origins\" %s",
 					 quote_literal_cstr(forward_origins));
 
 	if (replicate_only_table)
 	{
 		/* Send the table name we want to the upstream */
-		appendStringInfoString(&command, ", \"pglogical.replicate_only_table\" ");
+		appendStringInfoString(&command, ", \"spock.replicate_only_table\" ");
 		appendStringInfoString(&command, quote_literal_cstr(replicate_only_table));
 	}
 
 	if (replication_sets)
 	{
 		/* Send the replication set names we want to the upstream */
-		appendStringInfoString(&command, ", \"pglogical.replication_set_names\" ");
+		appendStringInfoString(&command, ", \"spock.replication_set_names\" ");
 		appendStringInfoString(&command, quote_literal_cstr(replication_sets));
 	}
 
@@ -568,9 +568,9 @@ pglogical_start_replication(PGconn *streamConn, const char *slot_name,
 
 	/* general info about the downstream */
 	appendStringInfo(&command, ", pg_version '%u'", PG_VERSION_NUM);
-	appendStringInfo(&command, ", pglogical_version '%s'", PGLOGICAL_VERSION);
-	appendStringInfo(&command, ", pglogical_version_num '%d'", PGLOGICAL_VERSION_NUM);
-	appendStringInfo(&command, ", pglogical_apply_pid '%d'", MyProcPid);
+	appendStringInfo(&command, ", spock_version '%s'", SPOCK_VERSION);
+	appendStringInfo(&command, ", spock_version_num '%d'", SPOCK_VERSION_NUM);
+	appendStringInfo(&command, ", spock_apply_pid '%d'", MyProcPid);
 
 	appendStringInfoChar(&command, ')');
 
@@ -583,13 +583,13 @@ pglogical_start_replication(PGconn *streamConn, const char *slot_name,
 }
 
 /*
- * Start the manager workers for every db which has a pglogical node.
+ * Start the manager workers for every db which has a spock node.
  *
  * Note that we start workers that are not necessary here. We do this because
- * we need to check every individual database to check if there is pglogical
+ * we need to check every individual database to check if there is spock
  * node setup and it's not possible to switch connections to different
  * databases within one background worker. The workers that won't find any
- * pglogical node setup will exit immediately during startup.
+ * spock node setup will exit immediately during startup.
  * This behavior can cause issue where we consume all the allowed workers and
  * eventually error out even though the max_worker_processes is set high enough
  * to satisfy the actual needed worker count.
@@ -615,7 +615,7 @@ start_manager_workers(void)
 #else
 		Oid					dboid = pgdatabase->oid;
 #endif
-		PGLogicalWorker		worker;
+		SpockWorker		worker;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -624,23 +624,23 @@ start_manager_workers(void)
 			continue;
 
 		/* Worker already attached, nothing to do. */
-		LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-		if (pglogical_worker_running(pglogical_manager_find(dboid)))
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+		if (spock_worker_running(spock_manager_find(dboid)))
 		{
-			LWLockRelease(PGLogicalCtx->lock);
+			LWLockRelease(SpockCtx->lock);
 			continue;
 		}
-		LWLockRelease(PGLogicalCtx->lock);
+		LWLockRelease(SpockCtx->lock);
 
 		/* No record found, try running new worker. */
-		elog(DEBUG1, "registering pglogical manager process for database %s",
+		elog(DEBUG1, "registering spock manager process for database %s",
 			 NameStr(pgdatabase->datname));
 
-		memset(&worker, 0, sizeof(PGLogicalWorker));
-		worker.worker_type = PGLOGICAL_WORKER_MANAGER;
+		memset(&worker, 0, sizeof(SpockWorker));
+		worker.worker_type = SPOCK_WORKER_MANAGER;
 		worker.dboid = dboid;
 
-		pglogical_worker_register(&worker);
+		spock_worker_register(&worker);
 	}
 
 	table_endscan(scan);
@@ -651,7 +651,7 @@ start_manager_workers(void)
  * Static bgworker used for initialization and management (our main process).
  */
 void
-pglogical_supervisor_main(Datum main_arg)
+spock_supervisor_main(Datum main_arg)
 {
 	/* Establish signal handlers. */
 	pqsignal(SIGTERM, handle_sigterm);
@@ -663,18 +663,18 @@ pglogical_supervisor_main(Datum main_arg)
 	 * looking at this shared struct since they're all started by the
 	 * supervisor, but let's be safe.
 	 */
-	LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-	PGLogicalCtx->supervisor = MyProc;
-	PGLogicalCtx->subscriptions_changed = true;
-	LWLockRelease(PGLogicalCtx->lock);
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+	SpockCtx->supervisor = MyProc;
+	SpockCtx->subscriptions_changed = true;
+	LWLockRelease(SpockCtx->lock);
 
 	/* Make it easy to identify our processes. */
 	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,
 					PGC_USERSET, PGC_S_SESSION);
 
-	elog(LOG, "starting pglogical supervisor");
+	elog(LOG, "starting spock supervisor");
 
-	VALGRIND_PRINTF("PGLOGICAL: supervisor\n");
+	VALGRIND_PRINTF("SPOCK: supervisor\n");
 
 	/* Setup connection to pinned catalogs (we only ever read pg_database). */
 #if PG_VERSION_NUM >= 110000
@@ -690,14 +690,14 @@ pglogical_supervisor_main(Datum main_arg)
     {
 		int rc;
 
-		if (PGLogicalCtx->subscriptions_changed)
+		if (SpockCtx->subscriptions_changed)
 		{
 			/*
 			 * No need to lock here, since we'll take account of all sub
 			 * changes up to this point, even if new ones were added between
 			 * the test above and flag clear. We're just being woken up.
 			 */
-			PGLogicalCtx->subscriptions_changed = false;
+			SpockCtx->subscriptions_changed = false;
 			StartTransactionCommand();
 			start_manager_workers();
 			CommitTransactionCommand();
@@ -714,16 +714,16 @@ pglogical_supervisor_main(Datum main_arg)
 			proc_exit(1);
 	}
 
-	VALGRIND_PRINTF("PGLOGICAL: supervisor exit\n");
+	VALGRIND_PRINTF("SPOCK: supervisor exit\n");
 	proc_exit(0);
 }
 
 static void
-pglogical_temp_directory_assing_hook(const char *newval, void *extra)
+spock_temp_directory_assing_hook(const char *newval, void *extra)
 {
 	if (strlen(newval))
 	{
-		pglogical_temp_directory = strdup(newval);
+		spock_temp_directory = strdup(newval);
 	}
 	else
 	{
@@ -747,11 +747,11 @@ pglogical_temp_directory_assing_hook(const char *newval, void *extra)
 		}
 #endif
 
-		pglogical_temp_directory = strdup(tmpdir);
+		spock_temp_directory = strdup(tmpdir);
 
 	}
 
-	if (pglogical_temp_directory == NULL)
+	if (spock_temp_directory == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory")));
@@ -767,43 +767,43 @@ _PG_init(void)
 	BackgroundWorker bgw;
 
 	if (!process_shared_preload_libraries_in_progress)
-		elog(ERROR, "pglogical is not in shared_preload_libraries");
+		elog(ERROR, "spock is not in shared_preload_libraries");
 
-	DefineCustomEnumVariable("pglogical.conflict_resolution",
+	DefineCustomEnumVariable("spock.conflict_resolution",
 							 gettext_noop("Sets method used for conflict resolution for resolvable conflicts."),
 							 NULL,
-							 &pglogical_conflict_resolver,
+							 &spock_conflict_resolver,
 #ifdef XCP
-							 PGLOGICAL_RESOLVE_ERROR,
+							 SPOCK_RESOLVE_ERROR,
 #else
-							 PGLOGICAL_RESOLVE_APPLY_REMOTE,
+							 SPOCK_RESOLVE_APPLY_REMOTE,
 #endif
-							 PGLogicalConflictResolvers,
+							 SpockConflictResolvers,
 							 PGC_SUSET, 0,
-							 pglogical_conflict_resolver_check_hook,
+							 spock_conflict_resolver_check_hook,
 							 NULL, NULL);
 
-	DefineCustomEnumVariable("pglogical.conflict_log_level",
+	DefineCustomEnumVariable("spock.conflict_log_level",
 							 gettext_noop("Sets log level used for logging resolved conflicts."),
 							 NULL,
-							 &pglogical_conflict_log_level,
+							 &spock_conflict_log_level,
 							 LOG,
 							 server_message_level_options,
 							 PGC_SUSET, 0,
 							 NULL, NULL, NULL);
 
-	DefineCustomBoolVariable("pglogical.synchronous_commit",
-							 "pglogical specific synchronous commit value",
+	DefineCustomBoolVariable("spock.synchronous_commit",
+							 "spock specific synchronous commit value",
 							 NULL,
-							 &pglogical_synchronous_commit,
+							 &spock_synchronous_commit,
 							 false, PGC_POSTMASTER,
 							 0,
 							 NULL, NULL, NULL);
 
-	DefineCustomBoolVariable("pglogical.use_spi",
+	DefineCustomBoolVariable("spock.use_spi",
 							 "Use SPI instead of low-level API for applying changes",
 							 NULL,
-							 &pglogical_use_spi,
+							 &spock_use_spi,
 #ifdef XCP
 							 true,
 #else
@@ -813,10 +813,10 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
-	DefineCustomBoolVariable("pglogical.batch_inserts",
+	DefineCustomBoolVariable("spock.batch_inserts",
 							 "Batch inserts if possible",
 							 NULL,
-							 &pglogical_batch_inserts,
+							 &spock_batch_inserts,
 							 true,
 							 PGC_POSTMASTER,
 							 0,
@@ -827,20 +827,20 @@ _PG_init(void)
 	 * crash recovery is very careful to delete only particularly formatted
 	 * files. Instead for now just allow user to specify dump storage.
 	 */
-	DefineCustomStringVariable("pglogical.temp_directory",
+	DefineCustomStringVariable("spock.temp_directory",
 							   "Directory to store dumps for local restore",
 							   NULL,
-							   &pglogical_temp_directory_config,
+							   &spock_temp_directory_config,
 							   "", PGC_SIGHUP,
 							   0,
 							   NULL,
-							   pglogical_temp_directory_assing_hook,
+							   spock_temp_directory_assing_hook,
 							   NULL);
 
-	DefineCustomStringVariable("pglogical.extra_connection_options",
+	DefineCustomStringVariable("spock.extra_connection_options",
 							   "connection options to add to all peer node connections",
 							   NULL,
-							   &pglogical_extra_connection_options,
+							   &spock_extra_connection_options,
 							   "",
 							   PGC_SIGHUP,
 							   0,
@@ -850,10 +850,10 @@ _PG_init(void)
 		return;
 
 	/* Init workers. */
-	pglogical_worker_shmem_init();
+	spock_worker_shmem_init();
 
 	/* Init executor module */
-	pglogical_executor_init();
+	spock_executor_init();
 
 	/* Run the supervisor. */
 	memset(&bgw, 0, sizeof(bgw));
@@ -863,9 +863,9 @@ _PG_init(void)
 	snprintf(bgw.bgw_library_name, BGW_MAXLEN,
 			 EXTENSION_NAME);
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN,
-			 "pglogical_supervisor_main");
+			 "spock_supervisor_main");
 	snprintf(bgw.bgw_name, BGW_MAXLEN,
-			 "pglogical supervisor");
+			 "spock supervisor");
 	bgw.bgw_restart_time = 5;
 
 	RegisterBackgroundWorker(&bgw);

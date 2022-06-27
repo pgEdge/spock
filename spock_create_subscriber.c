@@ -1,12 +1,12 @@
 /* -------------------------------------------------------------------------
  *
- * pglogical_create_subscriber.c
- *		Initialize a new pglogical subscriber from a physical base backup
+ * spock_create_subscriber.c
+ *		Initialize a new spock subscriber from a physical base backup
  *
  * Copyright (C) 2012-2016, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_create_subscriber.c
+ *		spock_create_subscriber.c
  *
  * -------------------------------------------------------------------------
  */
@@ -54,7 +54,7 @@
 #include "access/xlog_internal.h"
 #include "catalog/pg_control.h"
 
-#include "pglogical_fe.h"
+#include "spock_fe.h"
 
 #define MAX_APPLY_DELAY 86400
 
@@ -105,7 +105,7 @@ static char *create_restore_point(PGconn *conn, char *restore_point_name);
 static char *initialize_replication_slot(PGconn *conn, char *dbname,
 							char *provider_node_name, char *subscription_name,
 							bool drop_slot_if_exists);
-static void pglogical_subscribe(PGconn *conn, char *subscriber_name,
+static void spock_subscribe(PGconn *conn, char *subscriber_name,
 								char *subscriber_dsn,
 								char *provider_connstr,
 								char *replication_sets,
@@ -375,11 +375,11 @@ main(int argc, char **argv)
 	 * Create log file where new postgres instance will log to while being
 	 * initialized.
 	 */
-	logfd = open("pglogical_create_subscriber_postgres.log", O_CREAT | O_RDWR,
+	logfd = open("spock_create_subscriber_postgres.log", O_CREAT | O_RDWR,
 				 S_IRUSR | S_IWUSR);
 	if (logfd == -1)
 	{
-		die(_("Creating pglogical_create_subscriber_postgres.log failed: %s"),
+		die(_("Creating spock_create_subscriber_postgres.log failed: %s"),
 			strerror(errno));
 	}
 	/* Safe to close() unchecked, we didn't write */
@@ -482,12 +482,12 @@ main(int argc, char **argv)
 	restore_point_name = NULL;
 
 	/*
-	 * Start subscriber node with pglogical disabled, and wait until it starts
+	 * Start subscriber node with spock disabled, and wait until it starts
 	 * accepting connections which means it has caught up to the restore point.
 	 */
-	pg_ctl_ret = run_pg_ctl("start -l \"pglogical_create_subscriber_postgres.log\" -o \"-c shared_preload_libraries=''\"");
+	pg_ctl_ret = run_pg_ctl("start -l \"spock_create_subscriber_postgres.log\" -o \"-c shared_preload_libraries=''\"");
 	if (pg_ctl_ret != 0)
-		die(_("Postgres startup for restore point catchup failed with %d. See pglogical_create_subscriber_postgres.log."), pg_ctl_ret);
+		die(_("Postgres startup for restore point catchup failed with %d. See spock_create_subscriber_postgres.log."), pg_ctl_ret);
 
 	wait_primary_connection(sub_connstr);
 
@@ -495,7 +495,7 @@ main(int argc, char **argv)
 	 * Clean any per-node data that were copied by pg_basebackup.
 	 */
 	print_msg(VERBOSITY_VERBOSE,
-			  _("Removing old pglogical configuration ...\n"));
+			  _("Removing old spock configuration ...\n"));
 
 	for (dbnum = 0; dbnum < n_databases; dbnum++)
 	{
@@ -512,23 +512,23 @@ main(int argc, char **argv)
 		subscriber_conn = NULL;
 	}
 
-	/* Stop Postgres so we can reset system id and start it with pglogical loaded. */
+	/* Stop Postgres so we can reset system id and start it with spock loaded. */
 	pg_ctl_ret = run_pg_ctl("stop");
 	if (pg_ctl_ret != 0)
-		die(_("Postgres stop after restore point catchup failed with %d. See pglogical_create_subscriber_postgres.log."), pg_ctl_ret);
+		die(_("Postgres stop after restore point catchup failed with %d. See spock_create_subscriber_postgres.log."), pg_ctl_ret);
 	wait_postmaster_shutdown();
 
 	/*
-	 * Start the node again, now with pglogical active so that we can start the
+	 * Start the node again, now with spock active so that we can start the
 	 * logical replication. This is final start, so don't log to to special log
 	 * file anymore.
 	 */
 	print_msg(VERBOSITY_NORMAL,
-			  _("Initializing pglogical on the subscriber node:\n"));
+			  _("Initializing spock on the subscriber node:\n"));
 
 	pg_ctl_ret = run_pg_ctl("start");
 	if (pg_ctl_ret != 0)
-		die(_("Postgres restart with pglogical enabled failed with %d."), pg_ctl_ret);
+		die(_("Postgres restart with spock enabled failed with %d."), pg_ctl_ret);
 	wait_postmaster_connection(base_sub_connstr);
 
 	for (dbnum = 0; dbnum < n_databases; dbnum++)
@@ -542,10 +542,10 @@ main(int argc, char **argv)
 
 		/* Create the extension. */
 		print_msg(VERBOSITY_VERBOSE,
-				  _("Creating pglogical extension for database %s...\n"), db);
+				  _("Creating spock extension for database %s...\n"), db);
 		if (PQserverVersion(subscriber_conn) < 90500)
-			install_extension(subscriber_conn, "pglogical_origin");
-		install_extension(subscriber_conn, "pglogical");
+			install_extension(subscriber_conn, "spock_origin");
+		install_extension(subscriber_conn, "spock");
 
 		/*
 		 * Create the identifier which is setup with the position to which we
@@ -562,7 +562,7 @@ main(int argc, char **argv)
 				  subscriber_name, db);
 		print_msg(VERBOSITY_VERBOSE, _("Replication sets: %s\n"), replication_sets);
 
-		pglogical_subscribe(subscriber_conn, subscriber_name, sub_connstr,
+		spock_subscribe(subscriber_conn, subscriber_name, sub_connstr,
 							prov_connstr, replication_sets, apply_delay,
 							force_text_transfer);
 
@@ -592,7 +592,7 @@ main(int argc, char **argv)
 static void
 usage(void)
 {
-	printf(_("%s create new pglogical subscriber from basebackup of provider.\n\n"), progname);
+	printf(_("%s create new spock subscriber from basebackup of provider.\n\n"), progname);
 	printf(_("Usage:\n"));
 	printf(_("  %s [OPTION]...\n"), progname);
 	printf(_("\nGeneral options:\n"));
@@ -806,7 +806,7 @@ initialize_replication_slot(PGconn *conn, char *dbname,
 	/* Generate the slot name. */
 	initPQExpBuffer(&query);
 	printfPQExpBuffer(&query,
-					  "SELECT pglogical.pglogical_gen_slot_name(%s, %s, %s)",
+					  "SELECT spock.spock_gen_slot_name(%s, %s, %s)",
 					  PQescapeLiteral(conn, dbname, strlen(dbname)),
 					  PQescapeLiteral(conn, provider_node_name,
 									  strlen(provider_node_name)),
@@ -860,7 +860,7 @@ initialize_replication_slot(PGconn *conn, char *dbname,
 	/* And finally, create the slot. */
 	appendPQExpBuffer(&query, "SELECT pg_create_logical_replication_slot(%s, '%s');",
 					  PQescapeLiteral(conn, slot_name, strlen(slot_name)),
-					  "pglogical_output");
+					  "spock_output");
 
 	res = PQexec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -878,7 +878,7 @@ initialize_replication_slot(PGconn *conn, char *dbname,
 /*
  * Read replication info about remote connection
  *
- * TODO: unify with pglogical_remote_node_info in pglogical_rpc
+ * TODO: unify with spock_remote_node_info in spock_rpc
  */
 static RemoteInfo *
 get_remote_info(PGconn* conn)
@@ -886,19 +886,19 @@ get_remote_info(PGconn* conn)
 	RemoteInfo		    *ri = (RemoteInfo *)pg_malloc0(sizeof(RemoteInfo));
 	PGresult	   *res;
 
-	if (!extension_exists(conn, "pglogical"))
-		die(_("The remote node is not configured as a pglogical provider.\n"));
+	if (!extension_exists(conn, "spock"))
+		die(_("The remote node is not configured as a spock provider.\n"));
 
-	res = PQexec(conn, "SELECT node_id, node_name, sysid, dbname, replication_sets FROM pglogical.pglogical_node_info()");
+	res = PQexec(conn, "SELECT node_id, node_name, sysid, dbname, replication_sets FROM spock.spock_node_info()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		die(_("could not fetch remote node info: %s\n"), PQerrorMessage(conn));
 
 	/* No nodes found? */
 	if (PQntuples(res) == 0)
-		die(_("The remote database is not configured as a pglogical node.\n"));
+		die(_("The remote database is not configured as a spock node.\n"));
 
 	if (PQntuples(res) > 1)
-		die(_("The remote database has multiple nodes configured. That is not supported with current version of pglogical.\n"));
+		die(_("The remote database has multiple nodes configured. That is not supported with current version of spock.\n"));
 
 #define atooid(x)  ((Oid) strtoul((x), NULL, 10))
 
@@ -988,10 +988,10 @@ remove_unwanted_data(PGconn *conn)
 		PQclear(res);
 	}
 
-	res = PQexec(conn, "DROP EXTENSION pglogical CASCADE;");
+	res = PQexec(conn, "DROP EXTENSION spock CASCADE;");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
-		die(_("Could not clean the pglogical extension, status %s: %s\n"),
+		die(_("Could not clean the spock extension, status %s: %s\n"),
 			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 	}
 	PQclear(res);
@@ -1040,7 +1040,7 @@ initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
 	}
 	else
 	{
-		printfPQExpBuffer(query, "INSERT INTO pglogical_origin.replication_origin (roident, roname, roremote_lsn) SELECT COALESCE(MAX(roident::int), 0) + 1, %s, %s FROM pglogical_origin.replication_origin",
+		printfPQExpBuffer(query, "INSERT INTO spock_origin.replication_origin (roident, roname, roremote_lsn) SELECT COALESCE(MAX(roident::int), 0) + 1, %s, %s FROM spock_origin.replication_origin",
 						  PQescapeLiteral(conn, origin_name, strlen(origin_name)),
 						  remote_lsn ? PQescapeLiteral(conn, remote_lsn, strlen(remote_lsn)) : "0");
 
@@ -1086,7 +1086,7 @@ create_restore_point(PGconn *conn, char *restore_point_name)
 }
 
 static void
-pglogical_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
+spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 					char *provider_dsn, char *replication_sets,
 					int apply_delay, bool force_text_transfer)
 {
@@ -1096,7 +1096,7 @@ pglogical_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 
 	initPQExpBuffer(&query);
 	printfPQExpBuffer(&query,
-					  "SELECT pglogical.create_node(node_name := %s, dsn := %s);",
+					  "SELECT spock.create_node(node_name := %s, dsn := %s);",
 					  PQescapeLiteral(conn, subscriber_name, strlen(subscriber_name)),
 					  PQescapeLiteral(conn, subscriber_dsn, strlen(subscriber_dsn)));
 
@@ -1113,7 +1113,7 @@ pglogical_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 
 	printfPQExpBuffer(&repsets, "{%s}", replication_sets);
 	printfPQExpBuffer(&query,
-					  "SELECT pglogical.create_subscription("
+					  "SELECT spock.create_subscription("
 					  "subscription_name := %s, provider_dsn := %s, "
 					  "replication_sets := %s, "
 					  "apply_delay := '%d seconds'::interval, "
@@ -1134,7 +1134,7 @@ pglogical_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 	PQclear(res);
 
 	/* TODO */
-	res = PQexec(conn, "UPDATE pglogical.local_sync_status SET sync_status = 'r'");
+	res = PQexec(conn, "UPDATE spock.local_sync_status SET sync_status = 'r'");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		die(_("Could not update subscription, status %s: %s\n"),
@@ -1791,6 +1791,6 @@ static char *
 generate_restore_point_name(void)
 {
 	char *rpn = malloc(NAMEDATALEN);
-	snprintf(rpn, NAMEDATALEN-1, "pglogical_create_subscriber_%lx", random());
+	snprintf(rpn, NAMEDATALEN-1, "spock_create_subscriber_%lx", random());
 	return rpn;
 }

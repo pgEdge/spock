@@ -31,9 +31,9 @@ max_wal_senders = 12
 wal_sender_timeout = '$WALSENDER_TIMEOUT'
 max_connections = 200
 log_line_prefix = '%t %p '
-shared_preload_libraries = 'pglogical'
+shared_preload_libraries = 'spock'
 track_commit_timestamp = on
-pglogical.synchronous_commit = true
+spock.synchronous_commit = true
 ]);
 $node_provider->dump_info;
 $node_provider->start;
@@ -42,13 +42,13 @@ $node_provider->safe_psql('postgres', "CREATE DATABASE $dbname");
 my $node_subscriber = get_new_node('subscriber');
 $node_subscriber->init();
 $node_subscriber->append_conf('postgresql.conf', qq[
-shared_preload_libraries = 'pglogical'
+shared_preload_libraries = 'spock'
 wal_level = logical
 max_wal_senders = 10
 max_replication_slots = 10
 track_commit_timestamp = on
 fsync=off
-pglogical.synchronous_commit = true
+spock.synchronous_commit = true
 log_line_prefix = '%t %p '
 ]);
 $node_subscriber->dump_info;
@@ -59,28 +59,28 @@ $node_subscriber->safe_psql('postgres', "CREATE DATABASE $dbname");
 $node_provider->safe_psql($dbname,
         "CREATE USER $super_user SUPERUSER;");
 $node_provider->safe_psql($dbname,
-        "CREATE EXTENSION IF NOT EXISTS pglogical VERSION '1.0.0';");
+        "CREATE EXTENSION IF NOT EXISTS spock VERSION '1.0.0';");
 $node_provider->safe_psql($dbname,
-        "ALTER EXTENSION pglogical UPDATE;");
+        "ALTER EXTENSION spock UPDATE;");
 
 my $provider_connstr = $node_provider->connstr;
 print "node_provider - connstr : $provider_connstr\n";
 
 $node_provider->safe_psql($dbname,
-        "SELECT * FROM pglogical.create_node(node_name := 'test_provider', dsn := '$provider_connstr dbname=$dbname user=$super_user');");
+        "SELECT * FROM spock.create_node(node_name := 'test_provider', dsn := '$provider_connstr dbname=$dbname user=$super_user');");
 
 # Create subscriber node on subscriber:
 $node_subscriber->safe_psql($dbname,
         "CREATE USER $super_user SUPERUSER;");
 $node_subscriber->safe_psql($dbname,
-        "CREATE EXTENSION IF NOT EXISTS pglogical VERSION '1.0.0';");
+        "CREATE EXTENSION IF NOT EXISTS spock VERSION '1.0.0';");
 $node_subscriber->safe_psql($dbname,
-        "ALTER EXTENSION pglogical UPDATE;");
+        "ALTER EXTENSION spock UPDATE;");
 my $subscriber_connstr = $node_subscriber->connstr;
 print "node_subscriber - connstr : $subscriber_connstr\n";
 
 $node_subscriber->safe_psql($dbname,
-        "SELECT * FROM pglogical.create_node(node_name := 'test_subscriber', dsn := '$subscriber_connstr dbname=$dbname user=$super_user');");
+        "SELECT * FROM spock.create_node(node_name := 'test_subscriber', dsn := '$subscriber_connstr dbname=$dbname user=$super_user');");
 
 # Initialise pgbench on provider and print initial data count in tables
 $node_provider->command_ok([ 'pgbench', '-i', '-s', $PGBENCH_SCALE, $dbname],
@@ -94,11 +94,11 @@ for my $tbl (@pgbench_tables)
 	my $setname = 'default';
 	$setname = 'default_insert_only' if ($tbl eq 'pgbench_history');
 	$node_provider->safe_psql($dbname,
-			"SELECT * FROM pglogical.replication_set_add_table('$setname', '$tbl', false);");
+			"SELECT * FROM spock.replication_set_add_table('$setname', '$tbl', false);");
 }
 
 $node_subscriber->safe_psql($dbname,
-        "SELECT pglogical.create_subscription(
+        "SELECT spock.create_subscription(
     subscription_name := 'test_subscription',
     synchronize_structure := true,
     synchronize_data := true,
@@ -106,7 +106,7 @@ $node_subscriber->safe_psql($dbname,
 );");
 
 $node_subscriber->poll_query_until($dbname,
-	q[SELECT EXISTS (SELECT 1 FROM pglogical.show_subscription_status() where subscription_name = 'test_subscription' AND status = 'replicating')])
+	q[SELECT EXISTS (SELECT 1 FROM spock.show_subscription_status() where subscription_name = 'test_subscription' AND status = 'replicating')])
 	or BAIL_OUT('subscription failed to reach "replicating" state');
 
 # Make write-load active on the tables  pgbench_history
@@ -161,12 +161,12 @@ do {
 
 		eval {
 			$node_subscriber->safe_psql($dbname,
-					"SELECT * FROM pglogical.alter_subscription_resynchronize_table('test_subscription', '$tbl');");
+					"SELECT * FROM spock.alter_subscription_resynchronize_table('test_subscription', '$tbl');");
 		};
 		if ($@)
 		{
 			diag "attempt to resync $tbl failed with $@; sync_status is currently " .
-				$node_subscriber->safe_psql($dbname, "SELECT sync_status FROM pglogical.local_sync_status WHERE sync_relname = '$tbl'");
+				$node_subscriber->safe_psql($dbname, "SELECT sync_status FROM spock.local_sync_status WHERE sync_relname = '$tbl'");
 			fail("$tbl didn't sync: resync request failed");
 			next EACH_TABLE;
 		}
@@ -179,7 +179,7 @@ do {
 				qq[SELECT pid FROM pg_stat_activity WHERE application_name LIKE '%sync%']);
 
 			my $status = $node_subscriber->safe_psql($dbname,
-				qq[SELECT sync_status FROM pglogical.local_sync_status WHERE sync_relname = '$tbl']);
+				qq[SELECT sync_status FROM spock.local_sync_status WHERE sync_relname = '$tbl']);
 
 			if ($status eq 'r')
 			{
@@ -216,7 +216,7 @@ do {
 
 				diag "status line after failed sync is "
 					. $node_subscriber->safe_psql($dbname,
-					 	qq[SELECT * FROM pglogical.local_sync_status WHERE sync_relname = '$tbl']);
+					 	qq[SELECT * FROM spock.local_sync_status WHERE sync_relname = '$tbl']);
 
 				if ($line =~ qr/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ (\d+) LOG:/)
 				{
@@ -281,7 +281,7 @@ is($pgbench_handle->full_result(0), 0, "pgbench run successfull ");
 note " waiting for catchup";
 
 # Wait for catchup
-$node_provider->safe_psql($dbname, 'SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);');
+$node_provider->safe_psql($dbname, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL);');
 
 note "comparing tables";
 
@@ -312,7 +312,7 @@ for my $tbl (@pgbench_tables)
 		# Compare the tables
 		$node_provider->safe_psql($dbname, qq[\\copy (SELECT * FROM $tbl ORDER BY $sortkey) to tmp_check/$tbl-provider]);
 		$node_subscriber->safe_psql($dbname, qq[\\copy (SELECT * FROM $tbl ORDER BY $sortkey) to tmp_check/$tbl-subscriber]);
-		$node_subscriber->safe_psql($dbname, qq[\\copy (SELECT * FROM $tbl, pglogical.xact_commit_timestamp_origin($tbl.xmin) ORDER BY $sortkey) to tmp_check/$tbl-subscriber-detail]);
+		$node_subscriber->safe_psql($dbname, qq[\\copy (SELECT * FROM $tbl, spock.xact_commit_timestamp_origin($tbl.xmin) ORDER BY $sortkey) to tmp_check/$tbl-subscriber-detail]);
 		IPC::Run::run(['diff', '-u', "tmp_check/$tbl-provider", "tmp_check/$tbl-subscriber"], '>', "tmp_check/$tbl-diff");
 		diag "differences between $tbl on provider and subscriber recorded in tmp_check/";
 	}

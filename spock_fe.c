@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical.c
- * 		pglogical utility functions shared between backend and frontend
+ * spock.c
+ * 		spock utility functions shared between backend and frontend
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical.c
+ *		  spock.c
  *
  *-------------------------------------------------------------------------
  */
@@ -29,7 +29,7 @@
 
 #include "pqexpbuffer.h"
 
-#include "pglogical_fe.h"
+#include "spock_fe.h"
 
 static char *PQconninfoParamsToConnstr(const char *const * keywords, const char *const * values);
 static void appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str);

@@ -1,6 +1,6 @@
 -- test huge transactions
 -- Set 'max_locks_per_transaction' to 10000 to run test
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
 -- medium number of rows in many different tables (100k): replication with DDL outside transaction
@@ -10,7 +10,7 @@ DECLARE
         cr_command varchar;
 BEGIN
         FOR i IN $1 .. $2 LOOP
-                cr_command := 'SELECT pglogical.replicate_ddl_command(''
+                cr_command := 'SELECT spock.replicate_ddl_command(''
                 CREATE TABLE public.HUGE' || i || ' (
                 id integer primary key,
                 id1 integer,
@@ -29,7 +29,7 @@ DECLARE
         cr_command varchar;
 BEGIN
         FOR i IN $1 .. $2 LOOP
-                cr_command := 'SELECT * FROM pglogical.replication_set_add_table(
+                cr_command := 'SELECT * FROM spock.replication_set_add_table(
                 ''default'', ''HUGE' || i || ''' );';
         EXECUTE cr_command;
         END LOOP;
@@ -53,7 +53,7 @@ DECLARE
         cr_command varchar;
 BEGIN
         FOR i IN $1 .. $2 LOOP
-                cr_command := 'SELECT pglogical.replicate_ddl_command(''
+                cr_command := 'SELECT spock.replicate_ddl_command(''
                          DROP TABLE public.HUGE' || i ||' CASCADE;
                       '')';
         EXECUTE cr_command;
@@ -72,7 +72,7 @@ SELECT * FROM add_many_tables_to_replication_set(1,100000);
  
 (1 row)
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
 -----------------------
  
@@ -86,7 +86,7 @@ SELECT * FROM insert_into_many_tables(1,100000);
 (1 row)
 
 COMMIT;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
 -----------------------
  
@@ -314,7 +314,7 @@ NOTICE:  drop cascades to 1 other object
  
 (1 row)
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
 -----------------------
  
@@ -341,7 +341,7 @@ SELECT * FROM insert_into_many_tables(1,100000);
 (1 row)
 
 COMMIT;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
 -----------------------
  
@@ -573,7 +573,7 @@ DROP function create_many_tables(int, int);
 DROP function add_many_tables_to_replication_set(int, int);
 DROP function insert_into_many_tables(int, int);
 DROP function drop_many_tables(int, int);
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
 -----------------------
  

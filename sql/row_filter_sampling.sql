@@ -1,10 +1,10 @@
 -- row based filtering
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 
 \c :provider_dsn
 -- testing volatile sampling function in row_filter
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 	CREATE TABLE public.test_tablesample (id int primary key, name text) WITH (fillfactor=10);
 $$);
 -- use fillfactor so we don't have to load too much data to get multiple pages
@@ -19,21 +19,21 @@ create or replace function funcn_get_bernoulli_sample_count(integer, integer) re
 $$ (SELECT count(*) FROM test_tablesample TABLESAMPLE BERNOULLI ($1) REPEATABLE ($2)); $$
 language sql volatile;
 
-SELECT * FROM pglogical.replication_set_add_table('default', 'test_tablesample', false, row_filter := $rf$id > funcn_get_system_sample_count(100, 3) $rf$);
-SELECT * FROM pglogical.replication_set_remove_table('default', 'test_tablesample');
-SELECT * FROM pglogical.replication_set_add_table('default', 'test_tablesample', true, row_filter := $rf$id > funcn_get_bernoulli_sample_count(10, 0) $rf$);
+SELECT * FROM spock.replication_set_add_table('default', 'test_tablesample', false, row_filter := $rf$id > funcn_get_system_sample_count(100, 3) $rf$);
+SELECT * FROM spock.replication_set_remove_table('default', 'test_tablesample');
+SELECT * FROM spock.replication_set_add_table('default', 'test_tablesample', true, row_filter := $rf$id > funcn_get_bernoulli_sample_count(10, 0) $rf$);
 
 SELECT * FROM test_tablesample ORDER BY id limit 5;
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
 BEGIN;
 SET LOCAL statement_timeout = '10s';
-SELECT pglogical.wait_for_table_sync_complete('test_subscription', 'test_tablesample');
+SELECT spock.wait_for_table_sync_complete('test_subscription', 'test_tablesample');
 COMMIT;
 
-SELECT sync_kind, sync_nspname, sync_relname, sync_status FROM pglogical.local_sync_status WHERE sync_relname = 'test_tablesample';
+SELECT sync_kind, sync_nspname, sync_relname, sync_status FROM spock.local_sync_status WHERE sync_relname = 'test_tablesample';
 
 SELECT * FROM test_tablesample ORDER BY id limit 5;
 
@@ -41,6 +41,6 @@ SELECT * FROM test_tablesample ORDER BY id limit 5;
 \set VERBOSITY terse
 DROP FUNCTION funcn_get_system_sample_count(integer, integer);
 DROP FUNCTION funcn_get_bernoulli_sample_count(integer, integer);
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 	DROP TABLE public.test_tablesample CASCADE;
 $$);

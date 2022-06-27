@@ -1,24 +1,24 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_sync.h
+ * spock_sync.h
  *		table synchronization functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *              pglogical_sync.h
+ *              spock_sync.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef PGLOGICAL_SYNC_H
-#define PGLOGICAL_SYNC_H
+#ifndef SPOCK_SYNC_H
+#define SPOCK_SYNC_H
 
 #include "libpq-fe.h"
 
 #include "nodes/primnodes.h"
-#include "pglogical_node.h"
+#include "spock_node.h"
 
-typedef struct PGLogicalSyncStatus
+typedef struct SpockSyncStatus
 {
 	char		kind;
 	Oid			subid;
@@ -27,7 +27,7 @@ typedef struct PGLogicalSyncStatus
 	char		status;
 	XLogRecPtr	statuslsn;		/* remote lsn of the state change used for
 								 * synchronization coordination */
-} PGLogicalSyncStatus;
+} SpockSyncStatus;
 
 #define SYNC_KIND_INIT		'i'
 #define SYNC_KIND_FULL		'f'
@@ -50,15 +50,15 @@ typedef struct PGLogicalSyncStatus
 #define SYNC_STATUS_SYNCDONE	'y'		/* Synchronization finished (at lsn). */
 #define SYNC_STATUS_READY		'r'		/* Done. */
 
-extern void pglogical_sync_worker_finish(void);
+extern void spock_sync_worker_finish(void);
 
-extern void pglogical_sync_subscription(PGLogicalSubscription *sub);
-extern char pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table, XLogRecPtr *status_lsn);
+extern void spock_sync_subscription(SpockSubscription *sub);
+extern char spock_sync_table(SpockSubscription *sub, RangeVar *table, XLogRecPtr *status_lsn);
 
-extern void create_local_sync_status(PGLogicalSyncStatus *sync);
+extern void create_local_sync_status(SpockSyncStatus *sync);
 extern void drop_subscription_sync_status(Oid subid);
 
-extern PGLogicalSyncStatus *get_subscription_sync_status(Oid subid,
+extern SpockSyncStatus *get_subscription_sync_status(Oid subid,
 														 bool missing_ok);
 extern void set_subscription_sync_status(Oid subid, char status);
 
@@ -66,7 +66,7 @@ extern void drop_table_sync_status(const char *nspname, const char *relname);
 extern void drop_table_sync_status_for_sub(Oid subid, const char *nspname,
 							   const char *relname);
 
-extern PGLogicalSyncStatus *get_table_sync_status(Oid subid,
+extern SpockSyncStatus *get_table_sync_status(Oid subid,
 												  const char *schemaname,
 												  const char *relname,
 												  bool missing_ok);
@@ -76,7 +76,7 @@ extern void set_table_sync_status(Oid subid, const char *schemaname,
 extern List *get_unsynced_tables(Oid subid);
 
 /* For interface compat with pgl3 */
-inline static void free_sync_status(PGLogicalSyncStatus *sync)
+inline static void free_sync_status(SpockSyncStatus *sync)
 {
 	pfree(sync);
 }
@@ -92,5 +92,5 @@ extern List *get_subscription_tables(Oid subid);
 extern void QuoteWindowsArgv(StringInfo cmdline, const char * argv[]);
 #endif
 
-#endif /* PGLOGICAL_SYNC_H */
+#endif /* SPOCK_SYNC_H */
 

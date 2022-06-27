@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_sync.c
+ * spock_sync.c
  *		table synchronization functions
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *				pglogical_sync.c
+ *				spock_sync.c
  *
  *-------------------------------------------------------------------------
  */
@@ -62,17 +62,17 @@
 #include "utils/rel.h"
 #include "utils/resowner.h"
 
-#include "pglogical_relcache.h"
-#include "pglogical_repset.h"
-#include "pglogical_rpc.h"
-#include "pglogical_sync.h"
-#include "pglogical_worker.h"
-#include "pglogical.h"
+#include "spock_relcache.h"
+#include "spock_repset.h"
+#include "spock_rpc.h"
+#include "spock_sync.h"
+#include "spock_worker.h"
+#include "spock.h"
 
 #define CATALOG_LOCAL_SYNC_STATUS	"local_sync_status"
 
 #if PG_VERSION_NUM < 90500
-#define PGDUMP_BINARY "pglogical_dump"
+#define PGDUMP_BINARY "spock_dump"
 #else
 #define PGDUMP_BINARY "pg_dump"
 #endif
@@ -86,9 +86,9 @@
 #define Anum_sync_status		5
 #define Anum_sync_statuslsn		6
 
-void pglogical_sync_main(Datum main_arg);
+void spock_sync_main(Datum main_arg);
 
-static PGLogicalSyncWorker	   *MySyncWorker = NULL;
+static SpockSyncWorker	   *MySyncWorker = NULL;
 
 #ifdef WIN32
 static int exec_cmd_win32(const char *cmd, char *cmdargv[]);
@@ -151,17 +151,17 @@ get_pg_executable(char *cmdname, char *cmdbuf)
 	uint32		version;
 
 	if (find_other_exec_version(my_exec_path, cmdname, &version, cmdbuf))
-		elog(ERROR, "pglogical subscriber init failed to find %s relative to binary %s",
+		elog(ERROR, "spock subscriber init failed to find %s relative to binary %s",
 			 cmdname, my_exec_path);
 
 	if (version / 100 != PG_VERSION_NUM / 100)
-		elog(ERROR, "pglogical subscriber init found %s with wrong major version %d.%d, expected %d.%d",
+		elog(ERROR, "spock subscriber init found %s with wrong major version %d.%d, expected %d.%d",
 			 cmdname, version / 100 / 100, version / 100 % 100,
 			 PG_VERSION_NUM / 100 / 100, PG_VERSION_NUM / 100 % 100);
 }
 
 static void
-dump_structure(PGLogicalSubscription *sub, const char *destfile,
+dump_structure(SpockSubscription *sub, const char *destfile,
 			   const char *snapshot)
 {
 	char	   *dsn;
@@ -198,14 +198,14 @@ dump_structure(PGLogicalSubscription *sub, const char *destfile,
 	cmdargv[cmdargc++] = pstrdup(s.data);
 	resetStringInfo(&s);
 
-	/* Skip the pglogical_origin if it exists locally. */
+	/* Skip the spock_origin if it exists locally. */
 	StartTransactionCommand();
-	has_pgl_origin = OidIsValid(LookupExplicitNamespace("pglogical_origin",
+	has_pgl_origin = OidIsValid(LookupExplicitNamespace("spock_origin",
 														true));
 	CommitTransactionCommand();
 	if (has_pgl_origin)
 	{
-		appendStringInfo(&s, "--exclude-schema=%s", "pglogical_origin");
+		appendStringInfo(&s, "--exclude-schema=%s", "spock_origin");
 		cmdargv[cmdargc++] = pstrdup(s.data);
 		resetStringInfo(&s);
 	}
@@ -231,7 +231,7 @@ dump_structure(PGLogicalSubscription *sub, const char *destfile,
 }
 
 static void
-restore_structure(PGLogicalSubscription *sub, const char *srcfile,
+restore_structure(SpockSubscription *sub, const char *srcfile,
 				  const char *section)
 {
 	char	   *dsn;
@@ -242,7 +242,7 @@ restore_structure(PGLogicalSubscription *sub, const char *srcfile,
 	StringInfoData	s;
 
 	dsn = pgl_get_connstr((char *) sub->target_if->dsn, NULL,
-						  "-cpglogical.subscription_schema_restore=true",
+						  "-cspock.subscription_schema_restore=true",
 						  &err_msg);
 	if (dsn == NULL)
 		elog(ERROR, "invalid connection string \"%s\": %s",
@@ -306,7 +306,7 @@ retry:
 	initStringInfo(&query);
 
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s%s",
-					 slot_name, "pglogical_output",
+					 slot_name, "spock_output",
 					 use_failover_slot ? " FAILOVER" : "");
 
 
@@ -323,12 +323,12 @@ retry:
 		 */
 		if (sqlstate &&
 			strcmp(sqlstate, "42710" /*ERRCODE_DUPLICATE_OBJECT*/) == 0 &&
-			!pglogical_remote_slot_active(sql_conn, slot_name))
+			!spock_remote_slot_active(sql_conn, slot_name))
 		{
 			pfree(query.data);
 			PQclear(res);
 
-			pglogical_drop_remote_slot(sql_conn, slot_name);
+			spock_drop_remote_slot(sql_conn, slot_name);
 
 			goto retry;
 		}
@@ -478,7 +478,7 @@ finish_copy_target_tx(PGconn *conn)
 
 
 static int
-physatt_in_attmap(PGLogicalRelation *rel, int attid)
+physatt_in_attmap(SpockRelation *rel, int attid)
 {
 	AttrNumber	i;
 
@@ -493,7 +493,7 @@ physatt_in_attmap(PGLogicalRelation *rel, int attid)
  * Create list of columns for COPY based on logical relation mapping.
  */
 static List *
-make_copy_attnamelist(PGLogicalRelation *rel)
+make_copy_attnamelist(SpockRelation *rel)
 {
 	List	   *attnamelist = NIL;
 	TupleDesc	desc = RelationGetDescr(rel->rel);
@@ -522,9 +522,9 @@ make_copy_attnamelist(PGLogicalRelation *rel)
  */
 static void
 copy_table_data(PGconn *origin_conn, PGconn *target_conn,
-				PGLogicalRemoteRel *remoterel, List *replication_sets)
+				SpockRemoteRel *remoterel, List *replication_sets)
 {
-	PGLogicalRelation *rel;
+	SpockRelation *rel;
 	PGresult   *res;
 	int			bytes;
 	char	   *copybuf;
@@ -539,8 +539,8 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	/* Build the relation map. */
 	StartTransactionCommand();
 	oldctx = MemoryContextSwitchTo(curctx);
-	pglogical_relation_cache_updater(remoterel);
-	rel = pglogical_relation_open(remoterel->relid, AccessShareLock);
+	spock_relation_cache_updater(remoterel);
+	rel = spock_relation_open(remoterel->relid, AccessShareLock);
 	attnamelist = make_copy_attnamelist(rel);
 
 	initStringInfo(&attlist);
@@ -557,7 +557,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 												  strlen(attname)));
 	}
 	MemoryContextSwitchTo(oldctx);
-	pglogical_relation_close(rel, AccessShareLock);
+	spock_relation_close(rel, AccessShareLock);
 	CommitTransactionCommand();
 
 	/* Build COPY TO query. */
@@ -598,7 +598,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		}
 
 		appendStringInfo(&query,
-						 "(SELECT %s FROM pglogical.table_data_filtered(NULL::%s, %s::regclass, ARRAY[%s])) ",
+						 "(SELECT %s FROM spock.table_data_filtered(NULL::%s, %s::regclass, ARRAY[%s])) ",
 						 list_length(attnamelist) ? attlist.data : "*",
 						 relname.data,
 						 PQescapeLiteral(origin_conn, relname.data, relname.len),
@@ -703,18 +703,18 @@ copy_tables_data(char *sub_name, const char *origin_dsn,
 	ListCell   *lc;
 
 	/* Connect to origin node. */
-	origin_conn = pglogical_connect(origin_dsn, sub_name, "copy");
+	origin_conn = spock_connect(origin_dsn, sub_name, "copy");
 	start_copy_origin_tx(origin_conn, origin_snapshot);
 
 	/* Connect to target node. */
-	target_conn = pglogical_connect(target_dsn, sub_name, "copy");
+	target_conn = spock_connect(target_dsn, sub_name, "copy");
 	start_copy_target_tx(target_conn, origin_name);
 
 	/* Copy every table. */
 	foreach (lc, tables)
 	{
 		RangeVar	*rv = lfirst(lc);
-		PGLogicalRemoteRel	*remoterel;
+		SpockRemoteRel	*remoterel;
 
 		remoterel = pg_logical_get_remote_repset_table(origin_conn, rv,
 													   replication_sets);
@@ -750,7 +750,7 @@ copy_replication_sets_data(char *sub_name, const char *origin_dsn,
 	ListCell   *lc;
 
 	/* Connect to origin node. */
-	origin_conn = pglogical_connect(origin_dsn, sub_name, "copy");
+	origin_conn = spock_connect(origin_dsn, sub_name, "copy");
 	start_copy_origin_tx(origin_conn, origin_snapshot);
 
 	/* Get tables to copy from origin node. */
@@ -758,13 +758,13 @@ copy_replication_sets_data(char *sub_name, const char *origin_dsn,
 												 replication_sets);
 
 	/* Connect to target node. */
-	target_conn = pglogical_connect(target_dsn, sub_name, "copy");
+	target_conn = spock_connect(target_dsn, sub_name, "copy");
 	start_copy_target_tx(target_conn, origin_name);
 
 	/* Copy every table. */
 	foreach (lc, tables)
 	{
-		PGLogicalRemoteRel	*remoterel = lfirst(lc);
+		SpockRemoteRel	*remoterel = lfirst(lc);
 
 		copy_table_data(origin_conn, target_conn, remoterel, replication_sets);
 
@@ -779,19 +779,19 @@ copy_replication_sets_data(char *sub_name, const char *origin_dsn,
 }
 
 static void
-pglogical_sync_worker_cleanup(PGLogicalSubscription *sub)
+spock_sync_worker_cleanup(SpockSubscription *sub)
 {
 	PGconn			   *origin_conn;
 
 	/* Drop the slot on the remote side. */
-	origin_conn = pglogical_connect(sub->origin_if->dsn, sub->name,
+	origin_conn = spock_connect(sub->origin_if->dsn, sub->name,
 									"cleanup");
 	/* Wait for slot to be free. */
 	while (!got_SIGTERM)
 	{
 		int	rc;
 
-		if (!pglogical_remote_slot_active(origin_conn, sub->slot_name))
+		if (!spock_remote_slot_active(origin_conn, sub->slot_name))
 			break;
 
 		rc = WaitLatch(&MyProc->procLatch,
@@ -805,7 +805,7 @@ pglogical_sync_worker_cleanup(PGLogicalSubscription *sub)
 			proc_exit(1);
 	}
 
-	pglogical_drop_remote_slot(origin_conn, sub->slot_name);
+	spock_drop_remote_slot(origin_conn, sub->slot_name);
 	PQfinish(origin_conn);
 
 	/* Drop the origin tracking locally. */
@@ -822,26 +822,26 @@ pglogical_sync_worker_cleanup(PGLogicalSubscription *sub)
 }
 
 static void
-pglogical_sync_worker_cleanup_error_cb(int code, Datum arg)
+spock_sync_worker_cleanup_error_cb(int code, Datum arg)
 {
-	PGLogicalSubscription  *sub = (PGLogicalSubscription *) DatumGetPointer(arg);
-	pglogical_sync_worker_cleanup(sub);
+	SpockSubscription  *sub = (SpockSubscription *) DatumGetPointer(arg);
+	spock_sync_worker_cleanup(sub);
 }
 
 static void
-pglogical_sync_tmpfile_cleanup_cb(int code, Datum arg)
+spock_sync_tmpfile_cleanup_cb(int code, Datum arg)
 {
 	const char *tmpfile = DatumGetCString(arg);
 
 	if (unlink(tmpfile) != 0 && errno != ENOENT)
-		elog(WARNING, "Failed to clean up pglogical temporary dump file \"%s\" on exit/error: %m",
+		elog(WARNING, "Failed to clean up spock temporary dump file \"%s\" on exit/error: %m",
 			 tmpfile);
 }
 
 void
-pglogical_sync_subscription(PGLogicalSubscription *sub)
+spock_sync_subscription(SpockSubscription *sub)
 {
-	PGLogicalSyncStatus *sync;
+	SpockSyncStatus *sync;
 	XLogRecPtr		lsn;
 	char			status;
 	MemoryContext	myctx,
@@ -849,7 +849,7 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 
 	/* We need our own context for keeping things between transactions. */
 	myctx = AllocSetContextCreate(CurrentMemoryContext,
-								   "pglogical_sync_subscription cxt",
+								   "spock_sync_subscription cxt",
 								   ALLOCSET_DEFAULT_SIZES);
 
 	StartTransactionCommand();
@@ -887,16 +887,16 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 
 		elog(INFO, "initializing subscriber %s", sub->name);
 
-		origin_conn = pglogical_connect(sub->origin_if->dsn,
+		origin_conn = spock_connect(sub->origin_if->dsn,
 										sub->name, "snap");
 
 		/* 2QPG9.6 and 2QPG11 support failover slots */
 		use_failover_slot =
-			pglogical_remote_function_exists(origin_conn, "pg_catalog",
+			spock_remote_function_exists(origin_conn, "pg_catalog",
 											 "pg_create_logical_replication_slot",
 											 -1,
 											 "failover");
-		origin_conn_repl = pglogical_connect_replica(sub->origin_if->dsn,
+		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
 													 sub->name, "snap");
 
 		snapshot = ensure_replication_slot_snapshot(origin_conn,
@@ -906,16 +906,16 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 
 		PQfinish(origin_conn);
 
-		PG_ENSURE_ERROR_CLEANUP(pglogical_sync_worker_cleanup_error_cb,
+		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
 		{
 			char	tmpfile[MAXPGPATH];
 
-			snprintf(tmpfile, MAXPGPATH, "%s/pglogical-%d.dump",
-					 pglogical_temp_directory, MyProcPid);
+			snprintf(tmpfile, MAXPGPATH, "%s/spock-%d.dump",
+					 spock_temp_directory, MyProcPid);
 			canonicalize_path(tmpfile);
 
-			PG_ENSURE_ERROR_CLEANUP(pglogical_sync_tmpfile_cleanup_cb,
+			PG_ENSURE_ERROR_CLEANUP(spock_sync_tmpfile_cleanup_cb,
 									CStringGetDatum(tmpfile));
 			{
 #if PG_VERSION_NUM >= 90500
@@ -979,8 +979,8 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 					StartTransactionCommand();
 					foreach (lc, tables)
 					{
-						PGLogicalRemoteRel	   *remoterel = lfirst(lc);
-						PGLogicalSyncStatus	   *oldsync;
+						SpockRemoteRel	   *remoterel = lfirst(lc);
+						SpockSyncStatus	   *oldsync;
 
 						oldsync = get_table_sync_status(sub->id,
 														remoterel->nspname,
@@ -994,7 +994,7 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 						}
 						else
 						{
-							PGLogicalSyncStatus	   newsync;
+							SpockSyncStatus	   newsync;
 
 							newsync.kind = SYNC_KIND_FULL;
 							newsync.subid = sub->id;
@@ -1021,12 +1021,12 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 					restore_structure(sub, tmpfile, "post-data");
 				}
 			}
-			PG_END_ENSURE_ERROR_CLEANUP(pglogical_sync_tmpfile_cleanup_cb,
+			PG_END_ENSURE_ERROR_CLEANUP(spock_sync_tmpfile_cleanup_cb,
 										CStringGetDatum(tmpfile));
-			pglogical_sync_tmpfile_cleanup_cb(0,
+			spock_sync_tmpfile_cleanup_cb(0,
 											  CStringGetDatum(tmpfile));
 		}
-		PG_END_ENSURE_ERROR_CLEANUP(pglogical_sync_worker_cleanup_error_cb,
+		PG_END_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 									PointerGetDatum(sub));
 
 		PQfinish(origin_conn_repl);
@@ -1052,13 +1052,13 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 }
 
 char
-pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table,
+spock_sync_table(SpockSubscription *sub, RangeVar *table,
 					 XLogRecPtr *status_lsn)
 {
 	PGconn	   *origin_conn_repl, *origin_conn;
 	RepOriginId	originid;
 	char	   *snapshot;
-	PGLogicalSyncStatus	   *sync;
+	SpockSyncStatus	   *sync;
 
 	StartTransactionCommand();
 
@@ -1086,17 +1086,17 @@ pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table,
 
 	CommitTransactionCommand();
 
-	origin_conn_repl = pglogical_connect_replica(sub->origin_if->dsn,
+	origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
 												 sub->name, "copy");
 
-	origin_conn = pglogical_connect(sub->origin_if->dsn, sub->name, "copy_slot");
+	origin_conn = spock_connect(sub->origin_if->dsn, sub->name, "copy_slot");
 	snapshot = ensure_replication_slot_snapshot(origin_conn, origin_conn_repl,
 												sub->slot_name, false,
 												status_lsn);
 	PQfinish(origin_conn);
 
 	/* Make sure we cleanup the slot if something goes wrong. */
-	PG_ENSURE_ERROR_CLEANUP(pglogical_sync_worker_cleanup_error_cb,
+	PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 							PointerGetDatum(sub));
 	{
 #if PG_VERSION_NUM >= 90500
@@ -1127,7 +1127,7 @@ pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table,
 						 snapshot, list_make1(table), sub->replication_sets,
 						 sub->slot_name);
 	}
-	PG_END_ENSURE_ERROR_CLEANUP(pglogical_sync_worker_cleanup_error_cb,
+	PG_END_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
 
 	PQfinish(origin_conn_repl);
@@ -1136,9 +1136,9 @@ pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table,
 }
 
 void
-pglogical_sync_worker_finish(void)
+spock_sync_worker_finish(void)
 {
-	PGLogicalWorker	   *apply;
+	SpockWorker	   *apply;
 
 	/*
 	 * Commit any outstanding transaction. This is the usual case, unless
@@ -1154,19 +1154,19 @@ pglogical_sync_worker_finish(void)
 	XLogFlush(GetXLogWriteRecPtr());
 
 	StartTransactionCommand();
-	pglogical_sync_worker_cleanup(MySubscription);
+	spock_sync_worker_cleanup(MySubscription);
 	CommitTransactionCommand();
 
 	/*
 	 * In case there is apply process running, it might be waiting
 	 * for the table status change so tell it to check.
 	 */
-	LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-	apply = pglogical_apply_find(MyPGLogicalWorker->dboid,
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+	apply = spock_apply_find(MySpockWorker->dboid,
 								 MyApplyWorker->subid);
-	if (pglogical_worker_running(apply))
+	if (spock_worker_running(apply))
 		SetLatch(&apply->proc->procLatch);
-	LWLockRelease(PGLogicalCtx->lock);
+	LWLockRelease(SpockCtx->lock);
 
 	elog(LOG, "finished sync of table %s.%s for subscriber %s",
 		 NameStr(MySyncWorker->nspname), NameStr(MySyncWorker->relname),
@@ -1174,7 +1174,7 @@ pglogical_sync_worker_finish(void)
 }
 
 void
-pglogical_sync_main(Datum main_arg)
+spock_sync_main(Datum main_arg)
 {
 	int				slot = DatumGetInt32(main_arg);
 	PGconn		   *streamConn;
@@ -1188,8 +1188,8 @@ pglogical_sync_main(Datum main_arg)
 	char			status;
 
 	/* Setup shmem. */
-	pglogical_worker_attach(slot, PGLOGICAL_WORKER_SYNC);
-	MySyncWorker = &MyPGLogicalWorker->worker.sync;
+	spock_worker_attach(slot, SPOCK_WORKER_SYNC);
+	MySyncWorker = &MySpockWorker->worker.sync;
 	MyApplyWorker = &MySyncWorker->apply;
 
 	/* Establish signal handlers. */
@@ -1197,11 +1197,11 @@ pglogical_sync_main(Datum main_arg)
 
 	/* Attach to dsm segment. */
 	Assert(CurrentResourceOwner == NULL);
-	CurrentResourceOwner = ResourceOwnerCreate(NULL, "pglogical sync");
+	CurrentResourceOwner = ResourceOwnerCreate(NULL, "spock sync");
 
 	/* Setup synchronous commit according to the user's wishes */
 	SetConfigOption("synchronous_commit",
-					pglogical_synchronous_commit ? "local" : "off",
+					spock_synchronous_commit ? "local" : "off",
 					PGC_BACKEND, PGC_S_OVERRIDE);	/* other context? */
 
 	/* Run as replica session replication role. */
@@ -1241,10 +1241,10 @@ pglogical_sync_main(Datum main_arg)
 		 MySubscription->origin_if->name, MySubscription->origin_if->dsn);
 
 	/* Do the initial sync first. */
-	status = pglogical_sync_table(MySubscription, copytable, &status_lsn);
+	status = spock_sync_table(MySubscription, copytable, &status_lsn);
 	if (status == SYNC_STATUS_SYNCDONE || status == SYNC_STATUS_READY)
 	{
-		pglogical_sync_worker_finish();
+		spock_sync_worker_finish();
 		proc_exit(0);
 	}
 
@@ -1271,32 +1271,32 @@ pglogical_sync_main(Datum main_arg)
 
 	/*
 	 * In case there is nothing to catchup, finish immediately.
-	 * Note pglogical_sync_worker_finish() will commit.
+	 * Note spock_sync_worker_finish() will commit.
 	 */
 	if (status_lsn >= MyApplyWorker->replay_stop_lsn)
 	{
 		/* Mark local table as done. */
 		set_table_sync_status(MyApplyWorker->subid,
-							  NameStr(MyPGLogicalWorker->worker.sync.nspname),
-							  NameStr(MyPGLogicalWorker->worker.sync.relname),
+							  NameStr(MySpockWorker->worker.sync.nspname),
+							  NameStr(MySpockWorker->worker.sync.relname),
 							  SYNC_STATUS_SYNCDONE, status_lsn);
-		pglogical_sync_worker_finish();
+		spock_sync_worker_finish();
 		proc_exit(0);
 	}
 
 	CommitTransactionCommand();
 
 	/* Start the replication. */
-	streamConn = pglogical_connect_replica(MySubscription->origin_if->dsn,
+	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
 										   MySubscription->name, "catchup");
 
 	/*
 	 * IDENTIFY_SYSTEM sets up some internal state on walsender so call it even
 	 * if we don't (yet) want to use any of the results.
      */
-	pglogical_identify_system(streamConn, NULL, NULL, NULL, NULL);
+	spock_identify_system(streamConn, NULL, NULL, NULL, NULL);
 
-	pglogical_start_replication(streamConn, MySubscription->slot_name,
+	spock_start_replication(streamConn, MySubscription->slot_name,
 								status_lsn, "all", NULL, tablename,
 								MySubscription->force_text_transfer);
 
@@ -1317,7 +1317,7 @@ pglogical_sync_main(Datum main_arg)
 
 /* Create subscription sync status record in catalog. */
 void
-create_local_sync_status(PGLogicalSyncStatus *sync)
+create_local_sync_status(SpockSyncStatus *sync)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -1388,14 +1388,14 @@ drop_subscription_sync_status(Oid subid)
 	table_close(rel, RowExclusiveLock);
 }
 
-static PGLogicalSyncStatus *
+static SpockSyncStatus *
 syncstatus_fromtuple(HeapTuple tuple, TupleDesc desc)
 {
-	PGLogicalSyncStatus	   *sync;
+	SpockSyncStatus	   *sync;
 	Datum					d;
 	bool					isnull;
 
-	sync = (PGLogicalSyncStatus *) palloc0(sizeof(PGLogicalSyncStatus));
+	sync = (SpockSyncStatus *) palloc0(sizeof(SpockSyncStatus));
 
 	d = fastgetattr(tuple, Anum_sync_kind, desc, &isnull);
 	Assert(!isnull);
@@ -1425,10 +1425,10 @@ syncstatus_fromtuple(HeapTuple tuple, TupleDesc desc)
 }
 
 /* Get the sync status for a subscription. */
-PGLogicalSyncStatus *
+SpockSyncStatus *
 get_subscription_sync_status(Oid subid, bool missing_ok)
 {
-	PGLogicalSyncStatus	   *sync;
+	SpockSyncStatus	   *sync;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -1600,11 +1600,11 @@ drop_table_sync_status_for_sub(Oid subid, const char *nspname,
 }
 
 /* Get the sync status for a table. */
-PGLogicalSyncStatus *
+SpockSyncStatus *
 get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 					  bool missing_ok)
 {
-	PGLogicalSyncStatus	   *sync;
+	SpockSyncStatus	   *sync;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -1681,7 +1681,7 @@ get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 List *
 get_unsynced_tables(Oid subid)
 {
-	PGLogicalSyncStatus	   *sync;
+	SpockSyncStatus	   *sync;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -1722,7 +1722,7 @@ get_unsynced_tables(Oid subid)
 List *
 get_subscription_tables(Oid subid)
 {
-	PGLogicalSyncStatus	   *sync;
+	SpockSyncStatus	   *sync;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -1840,8 +1840,8 @@ wait_for_sync_status_change(Oid subid, const char *nspname, const char *relname,
 
 	while (!got_SIGTERM)
 	{
-		PGLogicalWorker		   *worker;
-		PGLogicalSyncStatus	   *sync;
+		SpockWorker		   *worker;
+		SpockSyncStatus	   *sync;
 
 		StartTransactionCommand();
 		sync = get_table_sync_status(subid, nspname, relname, true);
@@ -1861,9 +1861,9 @@ wait_for_sync_status_change(Oid subid, const char *nspname, const char *relname,
 		(void) MemoryContextSwitchTo(old_ctx);
 
 		/* Check if the worker is still alive - no point waiting if it died. */
-		LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-		worker = pglogical_sync_find(MyDatabaseId, subid, nspname, relname);
-		LWLockRelease(PGLogicalCtx->lock);
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+		worker = spock_sync_find(MyDatabaseId, subid, nspname, relname);
+		LWLockRelease(SpockCtx->lock);
 		if (!worker)
 			break;
 

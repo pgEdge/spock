@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_dependency.c
- *		pglogical dependenct handling
+ * spock_dependency.c
+ *		spock dependenct handling
  *
  *		Most of the code here is taken from dependency.c as the dependency
  *		handling in postgres is sadly not extensible.
@@ -14,7 +14,7 @@
  *		keep old-version compatibility.
  *
  * IDENTIFICATION
- *		pglogical_functions.c
+ *		spock_functions.c
  *
  *-------------------------------------------------------------------------
  */
@@ -89,14 +89,14 @@
 #include "utils/tqual.h"
 #endif
 
-#include "pglogical_dependency.h"
-#include "pglogical_sync.h"
-#include "pglogical_repset.h"
-#include "pglogical.h"
+#include "spock_dependency.h"
+#include "spock_sync.h"
+#include "spock_repset.h"
+#include "spock.h"
 
 #define CATALOG_REPSET_RELATION	"depend"
 
-typedef struct FormData_pglogical_depend
+typedef struct FormData_spock_depend
 {
 	/*
 	 * Identification of the dependent (referencing) object.
@@ -119,21 +119,21 @@ typedef struct FormData_pglogical_depend
 	 * field.  See DependencyType in catalog/dependency.h.
 	 */
 	char		deptype;		/* see codes in dependency.h */
-} FormData_pglogical_depend;
+} FormData_spock_depend;
 
-typedef FormData_pglogical_depend *Form_pglogical_depend;
+typedef FormData_spock_depend *Form_spock_depend;
 
-#define Natts_pglogical_depend				7
-#define Anum_pglogical_depend_classid		1
-#define Anum_pglogical_depend_objid			2
-#define Anum_pglogical_depend_objsubid		3
-#define Anum_pglogical_depend_refclassid	4
-#define Anum_pglogical_depend_refobjid		5
-#define Anum_pglogical_depend_refobjsubid	6
-#define Anum_pglogical_depend_deptype		7
+#define Natts_spock_depend				7
+#define Anum_spock_depend_classid		1
+#define Anum_spock_depend_objid			2
+#define Anum_spock_depend_objsubid		3
+#define Anum_spock_depend_refclassid	4
+#define Anum_spock_depend_refobjid		5
+#define Anum_spock_depend_refobjsubid	6
+#define Anum_spock_depend_deptype		7
 
 static Oid
-get_pglogical_depend_rel_oid(void);
+get_spock_depend_rel_oid(void);
 
 /*
  * Deletion processing requires additional state for each ObjectAddress that
@@ -232,8 +232,8 @@ static void reportDependentObjects(const ObjectAddresses *targetObjects,
 					   DropBehavior behavior,
 					   int msglevel,
 					   const ObjectAddress *origObject);
-static void PGLAcquireDeletionLock(const ObjectAddress *object, int flags);
-static void PGLReleaseDeletionLock(const ObjectAddress *object);
+static void SPKAcquireDeletionLock(const ObjectAddress *object, int flags);
+static void SPKReleaseDeletionLock(const ObjectAddress *object);
 static bool find_expr_references_walker(Node *node,
 							find_expr_references_context *context);
 static void eliminate_duplicate_dependencies(ObjectAddresses *addrs);
@@ -254,7 +254,7 @@ static void deleteOneObjectDepencencyRecord(const ObjectAddress *object, Relatio
 static void deleteOneObject(const ObjectAddress *object, Relation *depRel);
 static void doDeletion(const ObjectAddress *object);
 
-static char *pglogical_getObjectDescription(const ObjectAddress *object);
+static char *spock_getObjectDescription(const ObjectAddress *object);
 
 /*
  * Go through the objects given running the final actions on them, and execute
@@ -281,14 +281,14 @@ deleteObjectsInList(ObjectAddresses *targetObjects, Relation *depRel)
  * The first argument is the dependent object, the second the one it
  * references.
  *
- * This simply creates an entry in pglogical_depend, without any other processing.
+ * This simply creates an entry in spock_depend, without any other processing.
  */
 void
-pglogical_recordDependencyOn(const ObjectAddress *depender,
+spock_recordDependencyOn(const ObjectAddress *depender,
 				   const ObjectAddress *referenced,
 				   DependencyType behavior)
 {
-	pglogical_recordMultipleDependencies(depender, referenced, 1, behavior);
+	spock_recordMultipleDependencies(depender, referenced, 1, behavior);
 }
 
 /*
@@ -296,7 +296,7 @@ pglogical_recordDependencyOn(const ObjectAddress *depender,
  * object.  This has a little less overhead than recording each separately.
  */
 void
-pglogical_recordMultipleDependencies(const ObjectAddress *depender,
+spock_recordMultipleDependencies(const ObjectAddress *depender,
 						   const ObjectAddress *referenced,
 						   int nreferenced,
 						   DependencyType behavior)
@@ -304,13 +304,13 @@ pglogical_recordMultipleDependencies(const ObjectAddress *depender,
 	Relation	dependDesc;
 	HeapTuple	tup;
 	int			i;
-	bool		nulls[Natts_pglogical_depend];
-	Datum		values[Natts_pglogical_depend];
+	bool		nulls[Natts_spock_depend];
+	Datum		values[Natts_spock_depend];
 
 	if (nreferenced <= 0)
 		return;					/* nothing to do */
 
-	dependDesc = table_open(get_pglogical_depend_rel_oid(),
+	dependDesc = table_open(get_spock_depend_rel_oid(),
 						   RowExclusiveLock);
 
 	memset(nulls, false, sizeof(nulls));
@@ -321,15 +321,15 @@ pglogical_recordMultipleDependencies(const ObjectAddress *depender,
 		 * Record the Dependency.  Note we don't bother to check for
 		 * duplicate dependencies; there's no harm in them.
 		 */
-		values[Anum_pglogical_depend_classid - 1] = ObjectIdGetDatum(depender->classId);
-		values[Anum_pglogical_depend_objid - 1] = ObjectIdGetDatum(depender->objectId);
-		values[Anum_pglogical_depend_objsubid - 1] = Int32GetDatum(depender->objectSubId);
+		values[Anum_spock_depend_classid - 1] = ObjectIdGetDatum(depender->classId);
+		values[Anum_spock_depend_objid - 1] = ObjectIdGetDatum(depender->objectId);
+		values[Anum_spock_depend_objsubid - 1] = Int32GetDatum(depender->objectSubId);
 
-		values[Anum_pglogical_depend_refclassid - 1] = ObjectIdGetDatum(referenced->classId);
-		values[Anum_pglogical_depend_refobjid - 1] = ObjectIdGetDatum(referenced->objectId);
-		values[Anum_pglogical_depend_refobjsubid - 1] = Int32GetDatum(referenced->objectSubId);
+		values[Anum_spock_depend_refclassid - 1] = ObjectIdGetDatum(referenced->classId);
+		values[Anum_spock_depend_refobjid - 1] = ObjectIdGetDatum(referenced->objectId);
+		values[Anum_spock_depend_refobjsubid - 1] = Int32GetDatum(referenced->objectSubId);
 
-		values[Anum_pglogical_depend_deptype - 1] = CharGetDatum((char) behavior);
+		values[Anum_spock_depend_deptype - 1] = CharGetDatum((char) behavior);
 
 		tup = heap_form_tuple(dependDesc->rd_att, values, nulls);
 
@@ -368,7 +368,7 @@ pglogical_recordMultipleDependencies(const ObjectAddress *depender,
  *	targetObjects: list of objects that are scheduled to be deleted
  *	pendingObjects: list of other objects slated for destruction, but
  *			not necessarily in targetObjects yet (can be NULL if none)
- *	*depRel: already opened pglogical_depend relation
+ *	*depRel: already opened spock_depend relation
  */
 static void
 findDependentObjects(const ObjectAddress *object,
@@ -424,21 +424,21 @@ findDependentObjects(const ObjectAddress *object,
 	 * have to transform this deletion request into a deletion request of the
 	 * owning object.  (We'll eventually recurse back to this object, but the
 	 * owning object has to be visited first so it will be deleted after.) The
-	 * way to find out about this is to scan the pglogical_depend entries that show
+	 * way to find out about this is to scan the spock_depend entries that show
 	 * what this object depends on.
 	 */
 	ScanKeyInit(&key[0],
-				Anum_pglogical_depend_classid,
+				Anum_spock_depend_classid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(object->classId));
 	ScanKeyInit(&key[1],
-				Anum_pglogical_depend_objid,
+				Anum_spock_depend_objid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(object->objectId));
 	if (object->objectSubId != 0)
 	{
 		ScanKeyInit(&key[2],
-					Anum_pglogical_depend_objsubid,
+					Anum_spock_depend_objsubid,
 					BTEqualStrategyNumber, F_INT4EQ,
 					Int32GetDatum(object->objectSubId));
 		nkeys = 3;
@@ -451,7 +451,7 @@ findDependentObjects(const ObjectAddress *object,
 
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
-		Form_pglogical_depend foundDep = (Form_pglogical_depend) GETSTRUCT(tup);
+		Form_spock_depend foundDep = (Form_spock_depend) GETSTRUCT(tup);
 
 		otherObject.classId = foundDep->refclassid;
 		otherObject.objectId = foundDep->refobjid;
@@ -497,7 +497,7 @@ findDependentObjects(const ObjectAddress *object,
 					{
 						systable_endscan(scan);
 						/* need to release caller's lock; see notes below */
-						PGLReleaseDeletionLock(object);
+						SPKReleaseDeletionLock(object);
 						return;
 					}
 
@@ -509,7 +509,7 @@ findDependentObjects(const ObjectAddress *object,
 					 * well as corner cases such as dropping a transient
 					 * object created within such a script.
 					 *
-					 * Note that pglogical currently does not care about
+					 * Note that spock currently does not care about
 					 * extension dependencies and CurrentExtensionObject is
 					 * not PGDLLIMPORTed so we relax this and just skip any
 					 * extension dependencies.
@@ -520,11 +520,11 @@ findDependentObjects(const ObjectAddress *object,
 						break;
 
 					/* No exception applies, so throw the error */
-					otherObjDesc = pglogical_getObjectDescription(&otherObject);
+					otherObjDesc = spock_getObjectDescription(&otherObject);
 					ereport(ERROR,
 							(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
 							 errmsg("cannot drop %s because %s requires it",
-									pglogical_getObjectDescription(object),
+									spock_getObjectDescription(object),
 									otherObjDesc),
 							 errhint("You can drop %s instead.",
 									 otherObjDesc)));
@@ -561,19 +561,19 @@ findDependentObjects(const ObjectAddress *object,
 				 * caller's lock to avoid deadlock against a concurrent
 				 * deletion of the owning object.)
 				 */
-				PGLReleaseDeletionLock(object);
-				PGLAcquireDeletionLock(&otherObject, 0);
+				SPKReleaseDeletionLock(object);
+				SPKAcquireDeletionLock(&otherObject, 0);
 
 				/*
 				 * The owning object might have been deleted while we waited
 				 * to lock it; if so, neither it nor the current object are
 				 * interesting anymore.  We test this by checking the
-				 * pglogical_depend entry (see notes below).
+				 * spock_depend entry (see notes below).
 				 */
 				if (!systable_recheck_tuple(scan, tup))
 				{
 					systable_endscan(scan);
-					PGLReleaseDeletionLock(&otherObject);
+					SPKReleaseDeletionLock(&otherObject);
 					return;
 				}
 
@@ -605,11 +605,11 @@ findDependentObjects(const ObjectAddress *object,
 				 * the depender fields...
 				 */
 				elog(ERROR, "incorrect use of PIN dependency with %s",
-					 pglogical_getObjectDescription(object));
+					 spock_getObjectDescription(object));
 				break;
 			default:
 				elog(ERROR, "unrecognized dependency type '%c' for %s",
-					 foundDep->deptype, pglogical_getObjectDescription(object));
+					 foundDep->deptype, spock_getObjectDescription(object));
 				break;
 		}
 	}
@@ -625,17 +625,17 @@ findDependentObjects(const ObjectAddress *object,
 	mystack.next = stack;
 
 	ScanKeyInit(&key[0],
-				Anum_pglogical_depend_refclassid,
+				Anum_spock_depend_refclassid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(object->classId));
 	ScanKeyInit(&key[1],
-				Anum_pglogical_depend_refobjid,
+				Anum_spock_depend_refobjid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(object->objectId));
 	if (object->objectSubId != 0)
 	{
 		ScanKeyInit(&key[2],
-					Anum_pglogical_depend_refobjsubid,
+					Anum_spock_depend_refobjsubid,
 					BTEqualStrategyNumber, F_INT4EQ,
 					Int32GetDatum(object->objectSubId));
 		nkeys = 3;
@@ -648,7 +648,7 @@ findDependentObjects(const ObjectAddress *object,
 
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
-		Form_pglogical_depend foundDep = (Form_pglogical_depend) GETSTRUCT(tup);
+		Form_spock_depend foundDep = (Form_spock_depend) GETSTRUCT(tup);
 		int			subflags;
 
 		otherObject.classId = foundDep->classid;
@@ -658,19 +658,19 @@ findDependentObjects(const ObjectAddress *object,
 		/*
 		 * Must lock the dependent object before recursing to it.
 		 */
-		PGLAcquireDeletionLock(&otherObject, 0);
+		SPKAcquireDeletionLock(&otherObject, 0);
 
 		/*
 		 * The dependent object might have been deleted while we waited to
 		 * lock it; if so, we don't need to do anything more with it. We can
 		 * test this cheaply and independently of the object's type by seeing
-		 * if the pglogical_depend tuple we are looking at is still live. (If the
+		 * if the spock_depend tuple we are looking at is still live. (If the
 		 * object got deleted, the tuple would have been deleted too.)
 		 */
 		if (!systable_recheck_tuple(scan, tup))
 		{
 			/* release the now-useless lock */
-			PGLReleaseDeletionLock(&otherObject);
+			SPKReleaseDeletionLock(&otherObject);
 			/* and continue scanning for dependencies */
 			continue;
 		}
@@ -705,12 +705,12 @@ findDependentObjects(const ObjectAddress *object,
 				ereport(ERROR,
 						(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
 						 errmsg("cannot drop %s because it is required by the database system",
-								pglogical_getObjectDescription(object))));
+								spock_getObjectDescription(object))));
 				subflags = 0;	/* keep compiler quiet */
 				break;
 			default:
 				elog(ERROR, "unrecognized dependency type '%c' for %s",
-					 foundDep->deptype, pglogical_getObjectDescription(object));
+					 foundDep->deptype, spock_getObjectDescription(object));
 				subflags = 0;	/* keep compiler quiet */
 				break;
 		}
@@ -813,7 +813,7 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 		if (extra->flags & DEPFLAG_ORIGINAL)
 			continue;
 
-		objDesc = pglogical_getObjectDescription(obj);
+		objDesc = spock_getObjectDescription(obj);
 
 		/*
 		 * If, at any stage of the recursive search, we reached the object via
@@ -836,7 +836,7 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 		}
 		else if (behavior == DROP_RESTRICT)
 		{
-			char	   *otherDesc = pglogical_getObjectDescription(&extra->dependee);
+			char	   *otherDesc = spock_getObjectDescription(&extra->dependee);
 
 			if (numReportedClient < MAX_REPORTED_DEPS)
 			{
@@ -894,7 +894,7 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 			ereport(ERROR,
 					(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
 				  errmsg("cannot drop %s because other objects depend on it",
-						 pglogical_getObjectDescription(origObject)),
+						 spock_getObjectDescription(origObject)),
 					 errdetail("%s", clientdetail.data),
 					 errdetail_log("%s", logdetail.data),
 					 errhint("Use DROP ... CASCADE to drop the dependent objects too.")));
@@ -929,14 +929,14 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 }
 
 /*
- * PGLAcquireDeletionLock - acquire a suitable lock for deleting an object
+ * SPKAcquireDeletionLock - acquire a suitable lock for deleting an object
  *
  * We use LockRelation for relations, LockDatabaseObject for everything
  * else.  Note that dependency.c is not concerned with deleting any kind of
  * shared-across-databases object, so we have no need for LockSharedObject.
  */
 static void
-PGLAcquireDeletionLock(const ObjectAddress *object, int flags)
+SPKAcquireDeletionLock(const ObjectAddress *object, int flags)
 {
 	if (object->classId == RelationRelationId)
 	{
@@ -960,10 +960,10 @@ PGLAcquireDeletionLock(const ObjectAddress *object, int flags)
 }
 
 /*
- * PGLReleaseDeletionLock - release an object deletion lock
+ * SPKReleaseDeletionLock - release an object deletion lock
  */
 static void
-PGLReleaseDeletionLock(const ObjectAddress *object)
+SPKReleaseDeletionLock(const ObjectAddress *object)
 {
 	if (object->classId == RelationRelationId)
 		UnlockRelationOid(object->objectId, AccessExclusiveLock);
@@ -989,7 +989,7 @@ PGLReleaseDeletionLock(const ObjectAddress *object)
  * ordinary query, so other cases need to cope as necessary.
  */
 void
-pglogical_recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
+spock_recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
 								Node *expr, Oid relId,
 								DependencyType behavior,
 								DependencyType self_behavior)
@@ -1047,7 +1047,7 @@ pglogical_recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
 		context.addrs->numrefs = outrefs;
 
 		/* Record the self-dependencies */
-		pglogical_recordMultipleDependencies(depender,
+		spock_recordMultipleDependencies(depender,
 								   self_addrs->refs, self_addrs->numrefs,
 								   self_behavior);
 
@@ -1055,7 +1055,7 @@ pglogical_recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
 	}
 
 	/* Record the external dependencies */
-	pglogical_recordMultipleDependencies(depender,
+	spock_recordMultipleDependencies(depender,
 							   context.addrs->refs, context.addrs->numrefs,
 							   behavior);
 
@@ -1908,17 +1908,17 @@ stack_address_present_add_flags(const ObjectAddress *object,
 /*
  * Drop dependencies if possible, error if not.
  */
-void pglogical_tryDropDependencies(const ObjectAddress *object,
+void spock_tryDropDependencies(const ObjectAddress *object,
 								   DropBehavior behavior)
 {
 	Relation	depRel;
 	ObjectAddresses *targetObjects;
 
 	/*
-	 * We save some cycles by opening pglogical_depend just once and passing the
+	 * We save some cycles by opening spock_depend just once and passing the
 	 * Relation pointer down to all the recursive deletion steps.
 	 */
-	depRel = table_open(get_pglogical_depend_rel_oid(), RowExclusiveLock);
+	depRel = table_open(get_spock_depend_rel_oid(), RowExclusiveLock);
 
 	/*
 	 * Construct a list of objects to delete (ie, the given object plus
@@ -1975,17 +1975,17 @@ deleteOneObjectDepencencyRecord(const ObjectAddress *object, Relation *depRel)
 	HeapTuple	tup;
 
 	ScanKeyInit(&key[0],
-				Anum_pglogical_depend_classid,
+				Anum_spock_depend_classid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(object->classId));
 	ScanKeyInit(&key[1],
-				Anum_pglogical_depend_objid,
+				Anum_spock_depend_objid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(object->objectId));
 	if (object->objectSubId != 0)
 	{
 		ScanKeyInit(&key[2],
-					Anum_pglogical_depend_objsubid,
+					Anum_spock_depend_objsubid,
 					BTEqualStrategyNumber, F_INT4EQ,
 					Int32GetDatum(object->objectSubId));
 		nkeys = 3;
@@ -2007,7 +2007,7 @@ deleteOneObjectDepencencyRecord(const ObjectAddress *object, Relation *depRel)
 /*
  * deleteOneObject: delete a single object for performDeletion.
  *
- * *depRel is the already-open pglogical_depend relation.
+ * *depRel is the already-open spock_depend relation.
  */
 static void
 deleteOneObject(const ObjectAddress *object, Relation *depRel)
@@ -2025,10 +2025,10 @@ deleteOneObject(const ObjectAddress *object, Relation *depRel)
 	doDeletion(object);
 
 	/*
-	 * Now remove any pglogical_depend records that link from this object to others.
+	 * Now remove any spock_depend records that link from this object to others.
 	 * (Any records linking to this object should be gone already.)
 	 *
-	 * When dropping a whole object (subId = 0), remove all pglogical_depend records
+	 * When dropping a whole object (subId = 0), remove all spock_depend records
 	 * for its sub-objects too.
 	 */
 	deleteOneObjectDepencencyRecord(object, depRel);
@@ -2047,7 +2047,7 @@ deleteOneObject(const ObjectAddress *object, Relation *depRel)
 /*
  * doDeletion: actually delete a single object
  *
- * This is customised in pglogical.
+ * This is customised in spock.
  */
 static void
 doDeletion(const ObjectAddress *object)
@@ -2061,7 +2061,7 @@ doDeletion(const ObjectAddress *object)
 		replication_set_remove_seq(object->objectId, object->objectSubId,
 								   true);
 	else
-		elog(ERROR, "unrecognized pglogical object class: %u",
+		elog(ERROR, "unrecognized spock object class: %u",
 			 object->classId);
 }
 
@@ -2069,12 +2069,12 @@ doDeletion(const ObjectAddress *object)
  * Get (cached) oid of the dependency catalog
  */
 static Oid
-get_pglogical_depend_rel_oid(void)
+get_spock_depend_rel_oid(void)
 {
 	static Oid	dependrelationoid = InvalidOid;
 
 	if (dependrelationoid == InvalidOid)
-		dependrelationoid = get_pglogical_table_oid(CATALOG_REPSET_RELATION);
+		dependrelationoid = get_spock_table_oid(CATALOG_REPSET_RELATION);
 
 	return dependrelationoid;
 }
@@ -2082,17 +2082,17 @@ get_pglogical_depend_rel_oid(void)
 
 /*
  * Get the object description, first looking into our object description
- * cache, our own knowledge of pglogical objects and finally standard postgres
+ * cache, our own knowledge of spock objects and finally standard postgres
  * way.
  */
 static char *
-pglogical_getObjectDescription(const ObjectAddress *object)
+spock_getObjectDescription(const ObjectAddress *object)
 {
 	StringInfoData	objdesc;
 
 	if (object->classId == get_replication_set_rel_oid())
 	{
-		PGLogicalRepSet *repset;
+		SpockRepSet *repset;
 		repset = get_replication_set(object->objectId);
 
 		initStringInfo(&objdesc);
@@ -2104,7 +2104,7 @@ pglogical_getObjectDescription(const ObjectAddress *object)
 			 object->classId == get_replication_set_seq_rel_oid())
 	{
 		ObjectAddress	tbladdr;
-		PGLogicalRepSet *repset;
+		SpockRepSet *repset;
 
 		tbladdr.classId = RelationRelationId;
 		tbladdr.objectId = object->objectSubId;
@@ -2114,7 +2114,7 @@ pglogical_getObjectDescription(const ObjectAddress *object)
 
 		initStringInfo(&objdesc);
 		appendStringInfo(&objdesc, "%s membership in replication set %s",
-						 pglogical_getObjectDescription(&tbladdr),
+						 spock_getObjectDescription(&tbladdr),
 						 repset->name);
 
 		return objdesc.data;
@@ -2125,7 +2125,7 @@ pglogical_getObjectDescription(const ObjectAddress *object)
 
 
 void
-pglogical_checkDependency(const ObjectAddress *object, DropBehavior behavior)
+spock_checkDependency(const ObjectAddress *object, DropBehavior behavior)
 {
 	HeapTuple		tp;
 	Form_pg_class	reltup;
@@ -2133,7 +2133,7 @@ pglogical_checkDependency(const ObjectAddress *object, DropBehavior behavior)
 	if (object->classId != RelationRelationId)
 		return;
 
-	pglogical_tryDropDependencies(object, behavior);
+	spock_tryDropDependencies(object, behavior);
 
 	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(object->objectId));
 	if (!HeapTupleIsValid(tp))

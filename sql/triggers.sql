@@ -1,15 +1,15 @@
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 
 \c :provider_dsn
 
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 	CREATE TABLE public.test_trg_data(id serial primary key, data text);
 $$);
 
-SELECT * FROM pglogical.replication_set_add_table('default', 'test_trg_data');
+SELECT * FROM spock.replication_set_add_table('default', 'test_trg_data');
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
@@ -44,7 +44,7 @@ FOR EACH ROW EXECUTE PROCEDURE test_trg_data_hist_fn();
 
 INSERT INTO test_trg_data(data) VALUES ('no_history');
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
@@ -59,7 +59,7 @@ INSERT INTO test_trg_data(data) VALUES ('yes_history');
 UPDATE test_trg_data SET data = 'yes_history';
 DELETE FROM test_trg_data;
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 
@@ -69,7 +69,7 @@ SELECT * FROM test_trg_hist;
 DROP TABLE test_trg_hist CASCADE;
 
 \c :provider_dsn
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
         CREATE TABLE public.basic_dml (
                 id serial primary key,
                 other integer,
@@ -78,9 +78,9 @@ SELECT pglogical.replicate_ddl_command($$
         );
 $$);
 
-SELECT * FROM pglogical.replication_set_add_table('default', 'basic_dml');
+SELECT * FROM spock.replication_set_add_table('default', 'basic_dml');
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 -- create row filter trigger
@@ -113,7 +113,7 @@ FOR EACH ROW EXECUTE PROCEDURE filter_basic_dml_fn();
 5003,4,ddd,4 days
 \.
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 -- rows received at suscriber as trigger is not enabled yet.
@@ -130,7 +130,7 @@ VALUES (5, 'foo', '1 minute'::interval),
        (3, 'baz', '2 years 1 hour'::interval),
        (2, 'qux', '8 months 2 days'::interval),
        (1, NULL, NULL);
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 -- rows filtered at suscriber as trigger is enabled.
@@ -142,7 +142,7 @@ DROP FUNCTION filter_basic_dml_fn() CASCADE;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
 	DROP TABLE public.test_trg_data CASCADE;
 	DROP TABLE public.basic_dml CASCADE;
 $$);

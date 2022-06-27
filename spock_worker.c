@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical.c
- * 		pglogical initialization and common functionality
+ * spock.c
+ * 		spock initialization and common functionality
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical.c
+ *		  spock.c
  *
  *-------------------------------------------------------------------------
  */
@@ -31,8 +31,8 @@
 
 #include "pgstat.h"
 
-#include "pglogical_sync.h"
-#include "pglogical_worker.h"
+#include "spock_sync.h"
+#include "spock_worker.h"
 
 
 typedef struct signal_worker_item
@@ -44,9 +44,9 @@ static	List *signal_workers = NIL;
 
 volatile sig_atomic_t	got_SIGTERM = false;
 
-PGLogicalContext	   *PGLogicalCtx = NULL;
-PGLogicalWorker		   *MyPGLogicalWorker = NULL;
-static uint16			MyPGLogicalWorkerGeneration;
+SpockContext	   *SpockCtx = NULL;
+SpockWorker		   *MySpockWorker = NULL;
+static uint16			MySpockWorkerGeneration;
 
 static bool xacthook_signal_workers = false;
 static bool xact_cb_installed = false;
@@ -54,8 +54,8 @@ static bool xact_cb_installed = false;
 
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
-static void pglogical_worker_detach(bool crash);
-static void wait_for_worker_startup(PGLogicalWorker *worker,
+static void spock_worker_detach(bool crash);
+static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
 static void signal_worker_xact_callback(XactEvent event, void *arg);
 
@@ -83,14 +83,14 @@ find_empty_worker_slot(Oid dboid)
 {
 	int	i;
 
-	Assert(LWLockHeldByMe(PGLogicalCtx->lock));
+	Assert(LWLockHeldByMe(SpockCtx->lock));
 
-	for (i = 0; i < PGLogicalCtx->total_workers; i++)
+	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
-		if (PGLogicalCtx->workers[i].worker_type == PGLOGICAL_WORKER_NONE
-		    || (PGLogicalCtx->workers[i].crashed_at != 0 
-                && (PGLogicalCtx->workers[i].dboid == dboid
-                    || PGLogicalCtx->workers[i].dboid == InvalidOid)))
+		if (SpockCtx->workers[i].worker_type == SPOCK_WORKER_NONE
+		    || (SpockCtx->workers[i].crashed_at != 0 
+                && (SpockCtx->workers[i].dboid == dboid
+                    || SpockCtx->workers[i].dboid == InvalidOid)))
 			return i;
 	}
 
@@ -98,31 +98,31 @@ find_empty_worker_slot(Oid dboid)
 }
 
 /*
- * Register the pglogical worker proccess.
+ * Register the spock worker proccess.
  *
  * Return the assigned slot number.
  */
 int
-pglogical_worker_register(PGLogicalWorker *worker)
+spock_worker_register(SpockWorker *worker)
 {
 	BackgroundWorker	bgw;
-	PGLogicalWorker		*worker_shm;
+	SpockWorker		*worker_shm;
 	BackgroundWorkerHandle *bgw_handle;
 	int					slot;
 	int					next_generation;
 
-	Assert(worker->worker_type != PGLOGICAL_WORKER_NONE);
+	Assert(worker->worker_type != SPOCK_WORKER_NONE);
 
-	LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
 	slot = find_empty_worker_slot(worker->dboid);
 	if (slot == -1)
 	{
-		LWLockRelease(PGLogicalCtx->lock);
-		elog(ERROR, "could not register pglogical worker: all background worker slots are already used");
+		LWLockRelease(SpockCtx->lock);
+		elog(ERROR, "could not register spock worker: all background worker slots are already used");
 	}
 
-	worker_shm = &PGLogicalCtx->workers[slot];
+	worker_shm = &SpockCtx->workers[slot];
 
 	/*
 	 * Maintain a generation counter for worker registrations; see
@@ -133,13 +133,13 @@ pglogical_worker_register(PGLogicalWorker *worker)
 	else
 		next_generation = worker_shm->generation + 1;
 
-	memcpy(worker_shm, worker, sizeof(PGLogicalWorker));
+	memcpy(worker_shm, worker, sizeof(SpockWorker));
 	worker_shm->generation = next_generation;
 	worker_shm->crashed_at = 0;
 	worker_shm->proc = NULL;
 	worker_shm->worker_type = worker->worker_type;
 
-	LWLockRelease(PGLogicalCtx->lock);
+	LWLockRelease(SpockCtx->lock);
 
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags =	BGWORKER_SHMEM_ACCESS |
@@ -147,28 +147,28 @@ pglogical_worker_register(PGLogicalWorker *worker)
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, BGW_MAXLEN,
 			 EXTENSION_NAME);
-	if (worker->worker_type == PGLOGICAL_WORKER_MANAGER)
+	if (worker->worker_type == SPOCK_WORKER_MANAGER)
 	{
 		snprintf(bgw.bgw_function_name, BGW_MAXLEN,
-				 "pglogical_manager_main");
+				 "spock_manager_main");
 		snprintf(bgw.bgw_name, BGW_MAXLEN,
-				 "pglogical manager %u", worker->dboid);
+				 "spock manager %u", worker->dboid);
 	}
-	else if (worker->worker_type == PGLOGICAL_WORKER_SYNC)
+	else if (worker->worker_type == SPOCK_WORKER_SYNC)
 	{
 		snprintf(bgw.bgw_function_name, BGW_MAXLEN,
-				 "pglogical_sync_main");
+				 "spock_sync_main");
 		snprintf(bgw.bgw_name, BGW_MAXLEN,
-				 "pglogical sync %*s %u:%u", NAMEDATALEN - 37,
+				 "spock sync %*s %u:%u", NAMEDATALEN - 37,
 				 shorten_hash(NameStr(worker->worker.sync.relname), NAMEDATALEN - 37),
 				 worker->dboid, worker->worker.sync.apply.subid);
 	}
 	else
 	{
 		snprintf(bgw.bgw_function_name, BGW_MAXLEN,
-				 "pglogical_apply_main");
+				 "spock_apply_main");
 		snprintf(bgw.bgw_name, BGW_MAXLEN,
-				 "pglogical apply %u:%u", worker->dboid,
+				 "spock apply %u:%u", worker->dboid,
 				 worker->worker.apply.subid);
 	}
 
@@ -194,7 +194,7 @@ pglogical_worker_register(PGLogicalWorker *worker)
  * until worker actually attaches to our shmem.
  */
 static void
-wait_for_worker_startup(PGLogicalWorker *worker,
+wait_for_worker_startup(SpockWorker *worker,
 						BackgroundWorkerHandle *handle)
 {
 	BgwHandleStatus status;
@@ -211,16 +211,16 @@ wait_for_worker_startup(PGLogicalWorker *worker,
 
 		if (got_SIGTERM)
 		{
-			elog(DEBUG1, "pglogical supervisor exiting on SIGTERM");
+			elog(DEBUG1, "spock supervisor exiting on SIGTERM");
 			proc_exit(0);
 		}
 
 		status = GetBackgroundWorkerPid(handle, &pid);
 
-		if (status == BGWH_STARTED && pglogical_worker_running(worker))
+		if (status == BGWH_STARTED && spock_worker_running(worker))
 		{
 			elog(DEBUG2, "%s worker at slot %zu started with pid %d and attached to shmem",
-				 pglogical_worker_type_name(worker->worker_type), (worker - &PGLogicalCtx->workers[0]), pid);
+				 spock_worker_type_name(worker->worker_type), (worker - &SpockCtx->workers[0]), pid);
 			break;
 		}
 		if (status == BGWH_STOPPED)
@@ -235,7 +235,7 @@ wait_for_worker_startup(PGLogicalWorker *worker,
 			 *   exited before we got rescheduled
 			 *
 			 * If it detached cleanly it will've set its worker type to
-			 * PGLOGICAL_WORKER_NONE, which it can't have been at entry, so we
+			 * SPOCK_WORKER_NONE, which it can't have been at entry, so we
 			 * know it must've started, attached and cleared it.
 			 *
 			 * However, someone else might've grabbed the slot and re-used it
@@ -248,7 +248,7 @@ wait_for_worker_startup(PGLogicalWorker *worker,
 			 * a crash (setting crashed_at), then the slot re-used by another
 			 * manager.
 			 */
-			if (worker->worker_type != PGLOGICAL_WORKER_NONE
+			if (worker->worker_type != SPOCK_WORKER_NONE
 				&& worker->generation == generation
 				&& worker->crashed_at == 0)
 			{
@@ -258,7 +258,7 @@ wait_for_worker_startup(PGLogicalWorker *worker,
 				 * crashed so the slot can be re-used.
 				 */
 				elog(DEBUG2, "%s worker at slot %zu exited prematurely",
-					 pglogical_worker_type_name(worker->worker_type), (worker - &PGLogicalCtx->workers[0]));
+					 spock_worker_type_name(worker->worker_type), (worker - &SpockCtx->workers[0]));
 				worker->crashed_at = GetCurrentTimestamp();
 			}
 			else
@@ -269,7 +269,7 @@ wait_for_worker_startup(PGLogicalWorker *worker,
 				 * shmem attach.
 				 */
 				elog(DEBUG2, "%s worker at slot %zu exited before we noticed it started",
-					 pglogical_worker_type_name(worker->worker_type), (worker - &PGLogicalCtx->workers[0]));
+					 spock_worker_type_name(worker->worker_type), (worker - &SpockCtx->workers[0]));
 			}
 			break;
 		}
@@ -292,22 +292,22 @@ wait_for_worker_startup(PGLogicalWorker *worker,
  * Called on process exit.
  */
 static void
-pglogical_worker_on_exit(int code, Datum arg)
+spock_worker_on_exit(int code, Datum arg)
 {
-	pglogical_worker_detach(code != 0);
+	spock_worker_detach(code != 0);
 }
 
 /*
- * Attach the current master process to the PGLogicalCtx.
+ * Attach the current master process to the SpockCtx.
  *
  * Called during worker startup to inform the master the worker
  * is ready and give it access to the worker's PGPROC.
  */
 void
-pglogical_worker_attach(int slot, PGLogicalWorkerType type)
+spock_worker_attach(int slot, SpockWorkerType type)
 {
 	Assert(slot >= 0);
-	Assert(slot < PGLogicalCtx->total_workers);
+	Assert(slot < SpockCtx->total_workers);
 
 	MyProcPort = (Port *) calloc(1, sizeof(Port));
 
@@ -315,29 +315,29 @@ pglogical_worker_attach(int slot, PGLogicalWorkerType type)
 	set_latch_on_sigusr1 = true;
 #endif
 
-	LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
-	before_shmem_exit(pglogical_worker_on_exit, (Datum) 0);
+	before_shmem_exit(spock_worker_on_exit, (Datum) 0);
 
-	MyPGLogicalWorker = &PGLogicalCtx->workers[slot];
-	Assert(MyPGLogicalWorker->proc == NULL);
-	Assert(MyPGLogicalWorker->worker_type == type);
-	MyPGLogicalWorker->proc = MyProc;
-	MyPGLogicalWorkerGeneration = MyPGLogicalWorker->generation;
+	MySpockWorker = &SpockCtx->workers[slot];
+	Assert(MySpockWorker->proc == NULL);
+	Assert(MySpockWorker->worker_type == type);
+	MySpockWorker->proc = MyProc;
+	MySpockWorkerGeneration = MySpockWorker->generation;
 
 	elog(DEBUG2, "%s worker [%d] attaching to slot %d generation %hu",
-		 pglogical_worker_type_name(type), MyProcPid, slot,
-		 MyPGLogicalWorkerGeneration);
+		 spock_worker_type_name(type), MyProcPid, slot,
+		 MySpockWorkerGeneration);
 
 	/*
 	 * So we can find workers in valgrind output, send a Valgrind client
 	 * request to print to the Valgrind log.
 	 */
-	VALGRIND_PRINTF("PGLOGICAL: pglogical worker %s (%s)\n",
-		pglogical_worker_type_name(type),
+	VALGRIND_PRINTF("SPOCK: spock worker %s (%s)\n",
+		spock_worker_type_name(type),
 		MyBgworkerEntry->bgw_name);
 
-	LWLockRelease(PGLogicalCtx->lock);
+	LWLockRelease(SpockCtx->lock);
 
 	/* Make it easy to identify our processes. */
 	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,
@@ -351,11 +351,11 @@ pglogical_worker_attach(int slot, PGLogicalWorkerType type)
 					PGC_USERSET, PGC_S_SESSION);
 
 	/* Connect to database if needed. */
-	if (MyPGLogicalWorker->dboid != InvalidOid)
+	if (MySpockWorker->dboid != InvalidOid)
 	{
 		MemoryContext oldcontext;
 
-		BackgroundWorkerInitializeConnectionByOid(MyPGLogicalWorker->dboid,
+		BackgroundWorkerInitializeConnectionByOid(MySpockWorker->dboid,
 												  InvalidOid
 #if PG_VERSION_NUM >= 110000
 												  , 0 /* flags */
@@ -365,37 +365,37 @@ pglogical_worker_attach(int slot, PGLogicalWorkerType type)
 
 		StartTransactionCommand();
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		MyProcPort->database_name = pstrdup(get_database_name(MyPGLogicalWorker->dboid));
+		MyProcPort->database_name = pstrdup(get_database_name(MySpockWorker->dboid));
 		MemoryContextSwitchTo(oldcontext);
 		CommitTransactionCommand();
 	}
 }
 
 /*
- * Detach the current master process from the PGLogicalCtx.
+ * Detach the current master process from the SpockCtx.
  *
  * Called during master worker exit.
  */
 static void
-pglogical_worker_detach(bool crash)
+spock_worker_detach(bool crash)
 {
 	/* Nothing to detach. */
-	if (MyPGLogicalWorker == NULL)
+	if (MySpockWorker == NULL)
 		return;
 
-	LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
-	Assert(MyPGLogicalWorker->proc = MyProc);
-	Assert(MyPGLogicalWorker->generation == MyPGLogicalWorkerGeneration);
-	MyPGLogicalWorker->proc = NULL;
+	Assert(MySpockWorker->proc = MyProc);
+	Assert(MySpockWorker->generation == MySpockWorkerGeneration);
+	MySpockWorker->proc = NULL;
 
 	elog(LOG, "%s worker [%d] at slot %zu generation %hu %s",
-		 pglogical_worker_type_name(MyPGLogicalWorker->worker_type),
-		 MyProcPid, MyPGLogicalWorker - &PGLogicalCtx->workers[0],
-		 MyPGLogicalWorkerGeneration,
+		 spock_worker_type_name(MySpockWorker->worker_type),
+		 MyProcPid, MySpockWorker - &SpockCtx->workers[0],
+		 MySpockWorkerGeneration,
 		 crash ? "exiting with error" : "detaching cleanly");
 
-	VALGRIND_PRINTF("PGLOGICAL: worker detaching, unclean=%d\n",
+	VALGRIND_PRINTF("SPOCK: worker detaching, unclean=%d\n",
 		crash);
 
 	/*
@@ -411,39 +411,39 @@ pglogical_worker_detach(bool crash)
 	 */
 	if (crash)
 	{
-		MyPGLogicalWorker->crashed_at = GetCurrentTimestamp();
+		MySpockWorker->crashed_at = GetCurrentTimestamp();
 
 		/* Manager crash, make sure supervisor notices. */
-		if (MyPGLogicalWorker->worker_type == PGLOGICAL_WORKER_MANAGER)
-			PGLogicalCtx->subscriptions_changed = true;
+		if (MySpockWorker->worker_type == SPOCK_WORKER_MANAGER)
+			SpockCtx->subscriptions_changed = true;
 	}
 	else
 	{
 		/* Worker has finished work, clean up its state from shmem. */
-		MyPGLogicalWorker->worker_type = PGLOGICAL_WORKER_NONE;
-		MyPGLogicalWorker->dboid = InvalidOid;
+		MySpockWorker->worker_type = SPOCK_WORKER_NONE;
+		MySpockWorker->dboid = InvalidOid;
 	}
 
-	MyPGLogicalWorker = NULL;
+	MySpockWorker = NULL;
 
-	LWLockRelease(PGLogicalCtx->lock);
+	LWLockRelease(SpockCtx->lock);
 }
 
 /*
  * Find the manager worker for given database.
  */
-PGLogicalWorker *
-pglogical_manager_find(Oid dboid)
+SpockWorker *
+spock_manager_find(Oid dboid)
 {
 	int i;
 
-	Assert(LWLockHeldByMe(PGLogicalCtx->lock));
+	Assert(LWLockHeldByMe(SpockCtx->lock));
 
-	for (i = 0; i < PGLogicalCtx->total_workers; i++)
+	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
-		if (PGLogicalCtx->workers[i].worker_type == PGLOGICAL_WORKER_MANAGER &&
-			dboid == PGLogicalCtx->workers[i].dboid)
-			return &PGLogicalCtx->workers[i];
+		if (SpockCtx->workers[i].worker_type == SPOCK_WORKER_MANAGER &&
+			dboid == SpockCtx->workers[i].dboid)
+			return &SpockCtx->workers[i];
 	}
 
 	return NULL;
@@ -452,18 +452,18 @@ pglogical_manager_find(Oid dboid)
 /*
  * Find the apply worker for given subscription.
  */
-PGLogicalWorker *
-pglogical_apply_find(Oid dboid, Oid subscriberid)
+SpockWorker *
+spock_apply_find(Oid dboid, Oid subscriberid)
 {
 	int i;
 
-	Assert(LWLockHeldByMe(PGLogicalCtx->lock));
+	Assert(LWLockHeldByMe(SpockCtx->lock));
 
-	for (i = 0; i < PGLogicalCtx->total_workers; i++)
+	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
-		PGLogicalWorker	   *w = &PGLogicalCtx->workers[i];
+		SpockWorker	   *w = &SpockCtx->workers[i];
 
-		if (w->worker_type == PGLOGICAL_WORKER_APPLY &&
+		if (w->worker_type == SPOCK_WORKER_APPLY &&
 			dboid == w->dboid &&
 			subscriberid == w->worker.apply.subid)
 			return w;
@@ -476,18 +476,18 @@ pglogical_apply_find(Oid dboid, Oid subscriberid)
  * Find all apply workers for given database.
  */
 List *
-pglogical_apply_find_all(Oid dboid)
+spock_apply_find_all(Oid dboid)
 {
 	int			i;
 	List	   *res = NIL;
 
-	Assert(LWLockHeldByMe(PGLogicalCtx->lock));
+	Assert(LWLockHeldByMe(SpockCtx->lock));
 
-	for (i = 0; i < PGLogicalCtx->total_workers; i++)
+	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
-		if (PGLogicalCtx->workers[i].worker_type == PGLOGICAL_WORKER_APPLY &&
-			dboid == PGLogicalCtx->workers[i].dboid)
-			res = lappend(res, &PGLogicalCtx->workers[i]);
+		if (SpockCtx->workers[i].worker_type == SPOCK_WORKER_APPLY &&
+			dboid == SpockCtx->workers[i].dboid)
+			res = lappend(res, &SpockCtx->workers[i]);
 	}
 
 	return res;
@@ -496,17 +496,17 @@ pglogical_apply_find_all(Oid dboid)
 /*
  * Find the sync worker for given subscription and table
  */
-PGLogicalWorker *
-pglogical_sync_find(Oid dboid, Oid subscriberid, const char *nspname, const char *relname)
+SpockWorker *
+spock_sync_find(Oid dboid, Oid subscriberid, const char *nspname, const char *relname)
 {
 	int i;
 
-	Assert(LWLockHeldByMe(PGLogicalCtx->lock));
+	Assert(LWLockHeldByMe(SpockCtx->lock));
 
-	for (i = 0; i < PGLogicalCtx->total_workers; i++)
+	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
-		PGLogicalWorker *w = &PGLogicalCtx->workers[i];
-		if (w->worker_type == PGLOGICAL_WORKER_SYNC && dboid == w->dboid &&
+		SpockWorker *w = &SpockCtx->workers[i];
+		if (w->worker_type == SPOCK_WORKER_SYNC && dboid == w->dboid &&
 			subscriberid == w->worker.apply.subid &&
 			strcmp(NameStr(w->worker.sync.nspname), nspname) == 0 &&
 			strcmp(NameStr(w->worker.sync.relname), relname) == 0)
@@ -521,17 +521,17 @@ pglogical_sync_find(Oid dboid, Oid subscriberid, const char *nspname, const char
  * Find the sync worker for given subscription
  */
 List *
-pglogical_sync_find_all(Oid dboid, Oid subscriberid)
+spock_sync_find_all(Oid dboid, Oid subscriberid)
 {
 	int			i;
 	List	   *res = NIL;
 
-	Assert(LWLockHeldByMe(PGLogicalCtx->lock));
+	Assert(LWLockHeldByMe(SpockCtx->lock));
 
-	for (i = 0; i < PGLogicalCtx->total_workers; i++)
+	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
-		PGLogicalWorker *w = &PGLogicalCtx->workers[i];
-		if (w->worker_type == PGLOGICAL_WORKER_SYNC && dboid == w->dboid &&
+		SpockWorker *w = &SpockCtx->workers[i];
+		if (w->worker_type == SPOCK_WORKER_SYNC && dboid == w->dboid &&
 			subscriberid == w->worker.apply.subid)
 			res = lappend(res, w);
 	}
@@ -542,31 +542,31 @@ pglogical_sync_find_all(Oid dboid, Oid subscriberid)
 /*
  * Get worker based on slot
  */
-PGLogicalWorker *
-pglogical_get_worker(int slot)
+SpockWorker *
+spock_get_worker(int slot)
 {
-	Assert(LWLockHeldByMe(PGLogicalCtx->lock));
-	return &PGLogicalCtx->workers[slot];
+	Assert(LWLockHeldByMe(SpockCtx->lock));
+	return &SpockCtx->workers[slot];
 }
 
 /*
  * Is the worker running?
  */
 bool
-pglogical_worker_running(PGLogicalWorker *worker)
+spock_worker_running(SpockWorker *worker)
 {
 	return worker && worker->proc;
 }
 
 void
-pglogical_worker_kill(PGLogicalWorker *worker)
+spock_worker_kill(SpockWorker *worker)
 {
-	Assert(LWLockHeldByMe(PGLogicalCtx->lock));
-	if (pglogical_worker_running(worker))
+	Assert(LWLockHeldByMe(SpockCtx->lock));
+	if (spock_worker_running(worker))
 	{
-		elog(DEBUG2, "killing pglogical %s worker [%d] at slot %zu",
-			 pglogical_worker_type_name(worker->worker_type),
-			 worker->proc->pid, (worker - &PGLogicalCtx->workers[0]));
+		elog(DEBUG2, "killing spock %s worker [%d] at slot %zu",
+			 spock_worker_type_name(worker->worker_type),
+			 worker->proc->pid, (worker - &SpockCtx->workers[0]));
 		kill(worker->proc->pid, SIGTERM);
 	}
 }
@@ -576,37 +576,37 @@ signal_worker_xact_callback(XactEvent event, void *arg)
 {
 	if (event == XACT_EVENT_COMMIT && xacthook_signal_workers)
 	{
-		PGLogicalWorker	   *w;
+		SpockWorker	   *w;
 		ListCell	   *l;
 
-		LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
 		foreach (l, signal_workers)
 		{
 			signal_worker_item *item = (signal_worker_item *) lfirst(l);
 
-			w = pglogical_apply_find(MyDatabaseId, item->subid);
+			w = spock_apply_find(MyDatabaseId, item->subid);
 			if (item->kill)
-				pglogical_worker_kill(w);
-			else if (pglogical_worker_running(w))
+				spock_worker_kill(w);
+			else if (spock_worker_running(w))
 			{
 				w->worker.apply.sync_pending = true;
 				SetLatch(&w->proc->procLatch);
 			}
 		}
 
-		PGLogicalCtx->subscriptions_changed = true;
+		SpockCtx->subscriptions_changed = true;
 
 		/* Signal the manager worker, if there's one */
-		w = pglogical_manager_find(MyDatabaseId);
-		if (pglogical_worker_running(w))
+		w = spock_manager_find(MyDatabaseId);
+		if (spock_worker_running(w))
 			SetLatch(&w->proc->procLatch);
 
 		/* and signal the supervisor, for good measure */
-		if (PGLogicalCtx->supervisor)
-			SetLatch(&PGLogicalCtx->supervisor->procLatch);
+		if (SpockCtx->supervisor)
+			SetLatch(&SpockCtx->supervisor->procLatch);
 
-		LWLockRelease(PGLogicalCtx->lock);
+		LWLockRelease(SpockCtx->lock);
 
 		list_free_deep(signal_workers);
 		signal_workers = NIL;
@@ -619,7 +619,7 @@ signal_worker_xact_callback(XactEvent event, void *arg)
  * Enqueue signal for supervisor/manager at COMMIT.
  */
 void
-pglogical_subscription_changed(Oid subid, bool kill)
+spock_subscription_changed(Oid subid, bool kill)
 {
 	if (!xact_cb_installed)
 	{
@@ -649,15 +649,15 @@ pglogical_subscription_changed(Oid subid, bool kill)
 static size_t
 worker_shmem_size(int nworkers)
 {
-	return offsetof(PGLogicalContext, workers) +
-		sizeof(PGLogicalWorker) * nworkers;
+	return offsetof(SpockContext, workers) +
+		sizeof(SpockWorker) * nworkers;
 }
 
 /*
  * Init shmem needed for workers.
  */
 static void
-pglogical_worker_shmem_startup(void)
+spock_worker_shmem_startup(void)
 {
 	bool        found;
 	int			nworkers;
@@ -673,17 +673,17 @@ pglogical_worker_shmem_startup(void)
 										  false));
 
 	/* Init signaling context for the various processes. */
-	PGLogicalCtx = ShmemInitStruct("pglogical_context",
+	SpockCtx = ShmemInitStruct("spock_context",
 								   worker_shmem_size(nworkers), &found);
 
 	if (!found)
 	{
-		PGLogicalCtx->lock = &(GetNamedLWLockTranche("pglogical"))->lock;
-		PGLogicalCtx->supervisor = NULL;
-		PGLogicalCtx->subscriptions_changed = false;
-		PGLogicalCtx->total_workers = nworkers;
-		memset(PGLogicalCtx->workers, 0,
-			   sizeof(PGLogicalWorker) * PGLogicalCtx->total_workers);
+		SpockCtx->lock = &(GetNamedLWLockTranche("spock"))->lock;
+		SpockCtx->supervisor = NULL;
+		SpockCtx->subscriptions_changed = false;
+		SpockCtx->total_workers = nworkers;
+		memset(SpockCtx->workers, 0,
+			   sizeof(SpockWorker) * SpockCtx->total_workers);
 	}
 }
 
@@ -691,7 +691,7 @@ pglogical_worker_shmem_startup(void)
  * Request shmem resources for our worker management.
  */
 void
-pglogical_worker_shmem_init(void)
+spock_worker_shmem_init(void)
 {
 	int			nworkers;
 
@@ -712,28 +712,28 @@ pglogical_worker_shmem_init(void)
 	 * tries to allocate or free blocks from this array at once.  There won't
 	 * be enough contention to make anything fancier worth doing.
 	 */
-	RequestNamedLWLockTranche("pglogical", 1);
+	RequestNamedLWLockTranche("spock", 1);
 
 	/*
 	 * Whether this is a first startup or crash recovery, we'll be re-initing
 	 * the bgworkers.
 	 */
-	PGLogicalCtx = NULL;
-	MyPGLogicalWorker = NULL;
+	SpockCtx = NULL;
+	MySpockWorker = NULL;
 
 	prev_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook = pglogical_worker_shmem_startup;
+	shmem_startup_hook = spock_worker_shmem_startup;
 }
 
 const char *
-pglogical_worker_type_name(PGLogicalWorkerType type)
+spock_worker_type_name(SpockWorkerType type)
 {
 	switch (type)
 	{
-		case PGLOGICAL_WORKER_NONE: return "none";
-		case PGLOGICAL_WORKER_MANAGER: return "manager";
-		case PGLOGICAL_WORKER_APPLY: return "apply";
-		case PGLOGICAL_WORKER_SYNC: return "sync";
+		case SPOCK_WORKER_NONE: return "none";
+		case SPOCK_WORKER_MANAGER: return "manager";
+		case SPOCK_WORKER_APPLY: return "apply";
+		case SPOCK_WORKER_SYNC: return "sync";
 		default: Assert(false); return NULL;
 	}
 }

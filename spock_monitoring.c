@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_monitoring.c
+ * spock_monitoring.c
  * 		support for monitoring and progress tracking
  *
  * Copyright (c) 2017, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		  pglogical_monitoring.c
+ *		  spock_monitoring.c
  *
  *-------------------------------------------------------------------------
  */
@@ -24,9 +24,9 @@
 
 #include "pgstat.h"
 
-#include "pglogical.h"
+#include "spock.h"
 
-PG_FUNCTION_INFO_V1(pglogical_wait_slot_confirm_lsn);
+PG_FUNCTION_INFO_V1(spock_wait_slot_confirm_lsn);
 
 /*
  * Wait for the confirmed_flush_lsn of the specified slot, or all logical slots
@@ -36,7 +36,7 @@ PG_FUNCTION_INFO_V1(pglogical_wait_slot_confirm_lsn);
  * No timeout is offered, use a statement_timeout.
  */
 Datum
-pglogical_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
+spock_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
 {
 	XLogRecPtr target_lsn;
 	Name slot_name;

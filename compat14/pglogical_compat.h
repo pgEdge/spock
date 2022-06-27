@@ -1,5 +1,5 @@
-#ifndef PG_LOGICAL_COMPAT_H
-#define PG_LOGICAL_COMPAT_H
+#ifndef SPOCK_COMPAT_H
+#define SPOCK_COMPAT_H
 
 #include "access/amapi.h"
 #include "access/heapam.h"
@@ -55,16 +55,16 @@
 
 #define makeDefElem(name, arg) makeDefElem(name, arg, -1)
 
-#define PGLstandard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, sentToRemote, qc) \
+#define SPKstandard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, sentToRemote, qc) \
 	standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
 
-#define PGLnext_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, sentToRemote, qc) \
+#define SPKnext_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, sentToRemote, qc) \
 	next_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
 
-#define PGLCreateTrigger(stmt, queryString, relOid, refRelOid, constraintOid, indexOid, isInternal) \
+#define SPKCreateTrigger(stmt, queryString, relOid, refRelOid, constraintOid, indexOid, isInternal) \
 	CreateTrigger(stmt, queryString, relOid, refRelOid, constraintOid, indexOid, InvalidOid, InvalidOid, NULL, isInternal, false);
 
-#define	PGLDoCopy(stmt, queryString, processed) \
+#define	SPKDoCopy(stmt, queryString, processed) \
 	do \
 	{ \
 		ParseState* pstate = make_parsestate(NULL); \
@@ -72,7 +72,7 @@
 		free_parsestate(pstate); \
 	} while (false);
 
-#define PGLReplicationSlotCreate(name, db_specific, persistency) ReplicationSlotCreate(name, db_specific, persistency)
+#define SPKReplicationSlotCreate(name, db_specific, persistency) ReplicationSlotCreate(name, db_specific, persistency)
 
 #ifndef rbtxn_has_catalog_changes
 #define rbtxn_has_catalog_changes(txn) (txn->has_catalog_changes)

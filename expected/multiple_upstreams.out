@@ -1,4 +1,4 @@
-SELECT * FROM pglogical_regress_variables()
+SELECT * FROM spock_regress_variables()
 \gset
 \c :subscriber_dsn
 GRANT ALL ON SCHEMA public TO nonsuper;
@@ -16,11 +16,11 @@ SET client_min_messages = 'warning';
 DO $$
 BEGIN
         IF (SELECT setting::integer/100 FROM pg_settings WHERE name = 'server_version_num') = 904 THEN
-                CREATE EXTENSION IF NOT EXISTS pglogical_origin;
+                CREATE EXTENSION IF NOT EXISTS spock_origin;
         END IF;
 END;$$;
-CREATE EXTENSION IF NOT EXISTS pglogical;
-SELECT * FROM pglogical.create_node(node_name := 'test_provider1', dsn := (SELECT provider1_dsn FROM pglogical_regress_variables()) || ' user=super');
+CREATE EXTENSION IF NOT EXISTS spock;
+SELECT * FROM spock.create_node(node_name := 'test_provider1', dsn := (SELECT provider1_dsn FROM spock_regress_variables()) || ' user=super');
  create_node 
 -------------
    866557357
@@ -28,7 +28,7 @@ SELECT * FROM pglogical.create_node(node_name := 'test_provider1', dsn := (SELEC
 
 \c :provider_dsn
 -- add these entries to provider
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
       CREATE TABLE public.multi_ups_tbl(id integer primary key, key text unique not null, data text);
 $$);
  replicate_ddl_command 
@@ -39,13 +39,13 @@ $$);
 INSERT INTO multi_ups_tbl VALUES(1, 'key1', 'data1');
 INSERT INTO multi_ups_tbl VALUES(2, 'key2', 'data2');
 INSERT INTO multi_ups_tbl VALUES(3, 'key3', 'data3');
-SELECT * FROM pglogical.replication_set_add_table('default', 'multi_ups_tbl', true);
+SELECT * FROM spock.replication_set_add_table('default', 'multi_ups_tbl', true);
  replication_set_add_table 
 ---------------------------
  t
 (1 row)
 
-SELECT pglogical.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
 -----------------------
  
@@ -57,18 +57,18 @@ CREATE TABLE multi_ups_tbl(id integer primary key, key text unique not null, dat
 INSERT INTO multi_ups_tbl VALUES(4, 'key4', 'data4');
 INSERT INTO multi_ups_tbl VALUES(5, 'key5', 'data5');
 INSERT INTO multi_ups_tbl VALUES(6, 'key6', 'data6');
-SELECT * FROM pglogical.replication_set_add_table('default', 'multi_ups_tbl');
+SELECT * FROM spock.replication_set_add_table('default', 'multi_ups_tbl');
  replication_set_add_table 
 ---------------------------
  t
 (1 row)
 
 \c :subscriber_dsn
--- We'll use the already existing pglogical node
+-- We'll use the already existing spock node
 -- notice synchronize_structure as false when table definition already exists
-SELECT * FROM pglogical.create_subscription(
+SELECT * FROM spock.create_subscription(
     subscription_name := 'test_subscription1',
-    provider_dsn := (SELECT provider1_dsn FROM pglogical_regress_variables()) || ' user=super',
+    provider_dsn := (SELECT provider1_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := false,
 	forward_origins := '{}');
  create_subscription 
@@ -78,21 +78,21 @@ SELECT * FROM pglogical.create_subscription(
 
 BEGIN;
 SET LOCAL statement_timeout = '10s';
-SELECT pglogical.wait_for_subscription_sync_complete('test_subscription1');
+SELECT spock.wait_for_subscription_sync_complete('test_subscription1');
  wait_for_subscription_sync_complete 
 -------------------------------------
  
 (1 row)
 
 COMMIT;
-SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM pglogical.show_subscription_status();
+SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.show_subscription_status();
  subscription_name  |   status    | provider_node  |           replication_sets            | forward_origins 
 --------------------+-------------+----------------+---------------------------------------+-----------------
  test_subscription  | replicating | test_provider  | {default,default_insert_only,ddl_sql} | 
  test_subscription1 | replicating | test_provider1 | {default,default_insert_only,ddl_sql} | 
 (2 rows)
 
-SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM pglogical.local_sync_status ORDER BY 2,3,4;
+SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
  sync_kind | sync_subid | sync_nspname | sync_relname  | ?column? 
 -----------+------------+--------------+---------------+----------
  f         | 3102546391 | public       | multi_ups_tbl | t
@@ -117,8 +117,8 @@ SELECT * from multi_ups_tbl ORDER BY id;
 SELECT plugin, slot_type, active FROM pg_replication_slots;
       plugin      | slot_type | active 
 ------------------+-----------+--------
- pglogical_output | logical   | t
- pglogical_output | logical   | t
+ spock_output | logical   | t
+ spock_output | logical   | t
 (2 rows)
 
 SELECT count(*) FROM pg_stat_replication;
@@ -130,7 +130,7 @@ SELECT count(*) FROM pg_stat_replication;
 -- cleanup
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT pglogical.replicate_ddl_command($$
+SELECT spock.replicate_ddl_command($$
         DROP TABLE public.multi_ups_tbl CASCADE;
 $$);
 NOTICE:  drop cascades to table public.multi_ups_tbl membership in replication set default
@@ -140,20 +140,20 @@ NOTICE:  drop cascades to table public.multi_ups_tbl membership in replication s
 (1 row)
 
 \c :provider1_dsn
-SELECT * FROM pglogical.drop_node(node_name := 'test_provider1');
+SELECT * FROM spock.drop_node(node_name := 'test_provider1');
 ERROR:  cannot drop node "test_provider1" because one or more replication slots for the node are still active
 \set VERBOSITY terse
 DROP TABLE public.multi_ups_tbl CASCADE;
 NOTICE:  drop cascades to table multi_ups_tbl membership in replication set default
 \c :subscriber_dsn
-SELECT * FROM pglogical.drop_subscription('test_subscription1');
+SELECT * FROM spock.drop_subscription('test_subscription1');
  drop_subscription 
 -------------------
                  1
 (1 row)
 
 \c :provider1_dsn
-SELECT * FROM pglogical.drop_node(node_name := 'test_provider1');
+SELECT * FROM spock.drop_node(node_name := 'test_provider1');
  drop_node 
 -----------
  t
@@ -162,7 +162,7 @@ SELECT * FROM pglogical.drop_node(node_name := 'test_provider1');
 SELECT plugin, slot_type, active FROM pg_replication_slots;
       plugin      | slot_type | active 
 ------------------+-----------+--------
- pglogical_output | logical   | t
+ spock_output | logical   | t
 (1 row)
 
 SELECT count(*) FROM pg_stat_replication;

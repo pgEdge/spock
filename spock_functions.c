@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
- * pglogical_functions.c
- *		pglogical SQL visible interfaces
+ * spock_functions.c
+ *		spock SQL visible interfaces
  *
  * Copyright (c) 2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *		pglogical_functions.c
+ *		spock_functions.c
  *
  *-------------------------------------------------------------------------
  */
@@ -70,99 +70,99 @@
 
 #include "pgstat.h"
 
-#include "pglogical_dependency.h"
-#include "pglogical_node.h"
-#include "pglogical_executor.h"
-#include "pglogical_queue.h"
-#include "pglogical_relcache.h"
-#include "pglogical_repset.h"
-#include "pglogical_rpc.h"
-#include "pglogical_sync.h"
-#include "pglogical_worker.h"
+#include "spock_dependency.h"
+#include "spock_node.h"
+#include "spock_executor.h"
+#include "spock_queue.h"
+#include "spock_relcache.h"
+#include "spock_repset.h"
+#include "spock_rpc.h"
+#include "spock_sync.h"
+#include "spock_worker.h"
 
-#include "pglogical.h"
+#include "spock.h"
 
 /* Node management. */
-PG_FUNCTION_INFO_V1(pglogical_create_node);
-PG_FUNCTION_INFO_V1(pglogical_drop_node);
-PG_FUNCTION_INFO_V1(pglogical_alter_node_add_interface);
-PG_FUNCTION_INFO_V1(pglogical_alter_node_drop_interface);
+PG_FUNCTION_INFO_V1(spock_create_node);
+PG_FUNCTION_INFO_V1(spock_drop_node);
+PG_FUNCTION_INFO_V1(spock_alter_node_add_interface);
+PG_FUNCTION_INFO_V1(spock_alter_node_drop_interface);
 
 /* Subscription management. */
-PG_FUNCTION_INFO_V1(pglogical_create_subscription);
-PG_FUNCTION_INFO_V1(pglogical_drop_subscription);
+PG_FUNCTION_INFO_V1(spock_create_subscription);
+PG_FUNCTION_INFO_V1(spock_drop_subscription);
 
-PG_FUNCTION_INFO_V1(pglogical_alter_subscription_interface);
+PG_FUNCTION_INFO_V1(spock_alter_subscription_interface);
 
-PG_FUNCTION_INFO_V1(pglogical_alter_subscription_disable);
-PG_FUNCTION_INFO_V1(pglogical_alter_subscription_enable);
+PG_FUNCTION_INFO_V1(spock_alter_subscription_disable);
+PG_FUNCTION_INFO_V1(spock_alter_subscription_enable);
 
-PG_FUNCTION_INFO_V1(pglogical_alter_subscription_add_replication_set);
-PG_FUNCTION_INFO_V1(pglogical_alter_subscription_remove_replication_set);
+PG_FUNCTION_INFO_V1(spock_alter_subscription_add_replication_set);
+PG_FUNCTION_INFO_V1(spock_alter_subscription_remove_replication_set);
 
-PG_FUNCTION_INFO_V1(pglogical_alter_subscription_synchronize);
-PG_FUNCTION_INFO_V1(pglogical_alter_subscription_resynchronize_table);
+PG_FUNCTION_INFO_V1(spock_alter_subscription_synchronize);
+PG_FUNCTION_INFO_V1(spock_alter_subscription_resynchronize_table);
 
-PG_FUNCTION_INFO_V1(pglogical_show_subscription_table);
-PG_FUNCTION_INFO_V1(pglogical_show_subscription_status);
+PG_FUNCTION_INFO_V1(spock_show_subscription_table);
+PG_FUNCTION_INFO_V1(spock_show_subscription_status);
 
-PG_FUNCTION_INFO_V1(pglogical_wait_for_subscription_sync_complete);
-PG_FUNCTION_INFO_V1(pglogical_wait_for_table_sync_complete);
+PG_FUNCTION_INFO_V1(spock_wait_for_subscription_sync_complete);
+PG_FUNCTION_INFO_V1(spock_wait_for_table_sync_complete);
 
 /* Replication set manipulation. */
-PG_FUNCTION_INFO_V1(pglogical_create_replication_set);
-PG_FUNCTION_INFO_V1(pglogical_alter_replication_set);
-PG_FUNCTION_INFO_V1(pglogical_drop_replication_set);
-PG_FUNCTION_INFO_V1(pglogical_replication_set_add_table);
-PG_FUNCTION_INFO_V1(pglogical_replication_set_add_all_tables);
-PG_FUNCTION_INFO_V1(pglogical_replication_set_remove_table);
-PG_FUNCTION_INFO_V1(pglogical_replication_set_add_sequence);
-PG_FUNCTION_INFO_V1(pglogical_replication_set_add_all_sequences);
-PG_FUNCTION_INFO_V1(pglogical_replication_set_remove_sequence);
+PG_FUNCTION_INFO_V1(spock_create_replication_set);
+PG_FUNCTION_INFO_V1(spock_alter_replication_set);
+PG_FUNCTION_INFO_V1(spock_drop_replication_set);
+PG_FUNCTION_INFO_V1(spock_replication_set_add_table);
+PG_FUNCTION_INFO_V1(spock_replication_set_add_all_tables);
+PG_FUNCTION_INFO_V1(spock_replication_set_remove_table);
+PG_FUNCTION_INFO_V1(spock_replication_set_add_sequence);
+PG_FUNCTION_INFO_V1(spock_replication_set_add_all_sequences);
+PG_FUNCTION_INFO_V1(spock_replication_set_remove_sequence);
 
 /* Other manipulation function */
-PG_FUNCTION_INFO_V1(pglogical_synchronize_sequence);
+PG_FUNCTION_INFO_V1(spock_synchronize_sequence);
 
 /* DDL */
-PG_FUNCTION_INFO_V1(pglogical_replicate_ddl_command);
-PG_FUNCTION_INFO_V1(pglogical_queue_truncate);
-PG_FUNCTION_INFO_V1(pglogical_truncate_trigger_add);
-PG_FUNCTION_INFO_V1(pglogical_dependency_check_trigger);
+PG_FUNCTION_INFO_V1(spock_replicate_ddl_command);
+PG_FUNCTION_INFO_V1(spock_queue_truncate);
+PG_FUNCTION_INFO_V1(spock_truncate_trigger_add);
+PG_FUNCTION_INFO_V1(spock_dependency_check_trigger);
 
 /* Internal utils */
-PG_FUNCTION_INFO_V1(pglogical_gen_slot_name);
-PG_FUNCTION_INFO_V1(pglogical_node_info);
-PG_FUNCTION_INFO_V1(pglogical_show_repset_table_info);
-PG_FUNCTION_INFO_V1(pglogical_table_data_filtered);
+PG_FUNCTION_INFO_V1(spock_gen_slot_name);
+PG_FUNCTION_INFO_V1(spock_node_info);
+PG_FUNCTION_INFO_V1(spock_show_repset_table_info);
+PG_FUNCTION_INFO_V1(spock_table_data_filtered);
 
 /* Information */
-PG_FUNCTION_INFO_V1(pglogical_version);
-PG_FUNCTION_INFO_V1(pglogical_version_num);
-PG_FUNCTION_INFO_V1(pglogical_min_proto_version);
-PG_FUNCTION_INFO_V1(pglogical_max_proto_version);
+PG_FUNCTION_INFO_V1(spock_version);
+PG_FUNCTION_INFO_V1(spock_version_num);
+PG_FUNCTION_INFO_V1(spock_min_proto_version);
+PG_FUNCTION_INFO_V1(spock_max_proto_version);
 
-PG_FUNCTION_INFO_V1(pglogical_xact_commit_timestamp_origin);
+PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 
 /* Compatibility for upgrading */
-PG_FUNCTION_INFO_V1(pglogical_show_repset_table_info_by_target);
+PG_FUNCTION_INFO_V1(spock_show_repset_table_info_by_target);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
 
-bool in_pglogical_replicate_ddl_command = false;
+bool in_spock_replicate_ddl_command = false;
 
-static PGLogicalLocalNode *
+static SpockLocalNode *
 check_local_node(bool for_update)
 {
-	PGLogicalLocalNode *node;
+	SpockLocalNode *node;
 
 	node = get_local_node(for_update, true);
 	if (!node)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("current database is not configured as pglogical node"),
-				 errhint("create pglogical node first")));
+				 errmsg("current database is not configured as spock node"),
+				 errhint("create spock node first")));
 
 	return node;
 }
@@ -171,13 +171,13 @@ check_local_node(bool for_update)
  * Create new node
  */
 Datum
-pglogical_create_node(PG_FUNCTION_ARGS)
+spock_create_node(PG_FUNCTION_ARGS)
 {
 	char			   *node_name = NameStr(*PG_GETARG_NAME(0));
 	char			   *node_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	PGLogicalNode		node;
+	SpockNode		node;
 	PGlogicalInterface	nodeif;
-	PGLogicalRepSet		repset;
+	SpockRepSet		repset;
 
 	node.id = InvalidOid;
 	node.name = node_name;
@@ -228,17 +228,17 @@ pglogical_create_node(PG_FUNCTION_ARGS)
  * TODO: support cascade (drop subscribers)
  */
 Datum
-pglogical_drop_node(PG_FUNCTION_ARGS)
+spock_drop_node(PG_FUNCTION_ARGS)
 {
 	char	   *node_name = NameStr(*PG_GETARG_NAME(0));
 	bool		ifexists = PG_GETARG_BOOL(1);
-	PGLogicalNode  *node;
+	SpockNode  *node;
 
 	node = get_node_by_name(node_name, ifexists);
 
 	if (node != NULL)
 	{
-		PGLogicalLocalNode *local_node;
+		SpockLocalNode *local_node;
 		List			   *osubs;
 		List			   *tsubs;
 
@@ -267,7 +267,7 @@ pglogical_drop_node(PG_FUNCTION_ARGS)
 			{
 				res = SPI_execute("SELECT pg_catalog.pg_drop_replication_slot(slot_name)"
 								  "  FROM pg_catalog.pg_replication_slots"
-								  " WHERE (plugin = 'pglogical_output' OR plugin = 'pglogical')"
+								  " WHERE (plugin = 'spock_output' OR plugin = 'spock')"
 								  "   AND database = current_database()"
 								  "   AND slot_name ~ 'pgl_.*'",
 								  false, 0);
@@ -308,12 +308,12 @@ pglogical_drop_node(PG_FUNCTION_ARGS)
  * Add interface to a node.
  */
 Datum
-pglogical_alter_node_add_interface(PG_FUNCTION_ARGS)
+spock_alter_node_add_interface(PG_FUNCTION_ARGS)
 {
 	char	   *node_name = NameStr(*PG_GETARG_NAME(0));
 	char	   *if_name = NameStr(*PG_GETARG_NAME(1));
 	char	   *if_dsn = text_to_cstring(PG_GETARG_TEXT_PP(2));
-	PGLogicalNode	   *node;
+	SpockNode	   *node;
 	PGlogicalInterface *oldif,
 						newif;
 
@@ -343,11 +343,11 @@ pglogical_alter_node_add_interface(PG_FUNCTION_ARGS)
  * Drop interface from a node.
  */
 Datum
-pglogical_alter_node_drop_interface(PG_FUNCTION_ARGS)
+spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 {
 	char	   *node_name = NameStr(*PG_GETARG_NAME(0));
 	char	   *if_name = NameStr(*PG_GETARG_NAME(1));
-	PGLogicalNode	   *node;
+	SpockNode	   *node;
 	PGlogicalInterface *oldif;
 	List		   *other_subs;
 	ListCell	   *lc;
@@ -368,7 +368,7 @@ pglogical_alter_node_drop_interface(PG_FUNCTION_ARGS)
 	other_subs = get_node_subscriptions(node->id, true);
 	foreach (lc, other_subs)
 	{
-		PGLogicalSubscription  *sub = (PGLogicalSubscription *) lfirst(lc);
+		SpockSubscription  *sub = (SpockSubscription *) lfirst(lc);
 		if (oldif->id == sub->origin_if->id)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -387,7 +387,7 @@ pglogical_alter_node_drop_interface(PG_FUNCTION_ARGS)
  * Connect two existing nodes.
  */
 Datum
-pglogical_create_subscription(PG_FUNCTION_ARGS)
+spock_create_subscription(PG_FUNCTION_ARGS)
 {
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	char				   *provider_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
@@ -398,12 +398,12 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 	Interval			   *apply_delay = PG_GETARG_INTERVAL_P(6);
 	bool					force_text_transfer = PG_GETARG_BOOL(7);
 	PGconn				   *conn;
-	PGLogicalSubscription	sub;
-	PGLogicalSyncStatus		sync;
-	PGLogicalNode			origin;
-	PGLogicalNode		   *existing_origin;
+	SpockSubscription	sub;
+	SpockSyncStatus		sync;
+	SpockNode			origin;
+	SpockNode		   *existing_origin;
 	PGlogicalInterface		originif;
-	PGLogicalLocalNode     *localnode;
+	SpockLocalNode     *localnode;
 	PGlogicalInterface		targetif;
 	List				   *replication_sets;
 	List				   *other_subs;
@@ -414,16 +414,16 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 	localnode = get_local_node(true, false);
 
 	/* Now, fetch info about remote node. */
-	conn = pglogical_connect(provider_dsn, sub_name, "create");
-	pglogical_remote_node_info(conn, &origin.id, &origin.name, NULL, NULL, NULL);
+	conn = spock_connect(provider_dsn, sub_name, "create");
+	spock_remote_node_info(conn, &origin.id, &origin.name, NULL, NULL, NULL);
 	PQfinish(conn);
 
 	/* Check that we can connect remotely also in replication mode. */
-	conn = pglogical_connect_replica(provider_dsn, sub_name, "create");
+	conn = spock_connect_replica(provider_dsn, sub_name, "create");
 	PQfinish(conn);
 
 	/* Check that local connection works. */
-	conn = pglogical_connect(localnode->node_if->dsn, sub_name, "create");
+	conn = spock_connect(localnode->node_if->dsn, sub_name, "create");
 	PQfinish(conn);
 
 	/*
@@ -469,7 +469,7 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 	other_subs = get_node_subscriptions(originif.nodeid, true);
 	foreach (lc, other_subs)
 	{
-		PGLogicalSubscription  *esub = (PGLogicalSubscription *) lfirst(lc);
+		SpockSubscription  *esub = (SpockSubscription *) lfirst(lc);
 		ListCell			   *esetcell;
 
 		foreach (esetcell, esub->replication_sets)
@@ -516,7 +516,7 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 	create_subscription(&sub);
 
 	/* Create synchronization status for the subscription. */
-	memset(&sync, 0, sizeof(PGLogicalSyncStatus));
+	memset(&sync, 0, sizeof(SpockSyncStatus));
 
 	if (sync_structure && sync_data)
 		sync.kind = SYNC_KIND_FULL;
@@ -538,19 +538,19 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
  * Remove subscribption.
  */
 Datum
-pglogical_drop_subscription(PG_FUNCTION_ARGS)
+spock_drop_subscription(PG_FUNCTION_ARGS)
 {
 	char	   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	bool		ifexists = PG_GETARG_BOOL(1);
-	PGLogicalSubscription  *sub;
+	SpockSubscription  *sub;
 
 	sub = get_subscription_by_name(sub_name, ifexists);
 
 	if (sub != NULL)
 	{
-		PGLogicalWorker	   *apply;
+		SpockWorker	   *apply;
 		List			   *other_subs;
-		PGLogicalLocalNode *node;
+		SpockLocalNode *node;
 
 		node = get_local_node(true, false);
 
@@ -582,24 +582,24 @@ pglogical_drop_subscription(PG_FUNCTION_ARGS)
 		}
 
 		/* Kill the apply to unlock the resources. */
-		LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-		apply = pglogical_apply_find(MyDatabaseId, sub->id);
-		pglogical_worker_kill(apply);
-		LWLockRelease(PGLogicalCtx->lock);
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+		apply = spock_apply_find(MyDatabaseId, sub->id);
+		spock_worker_kill(apply);
+		LWLockRelease(SpockCtx->lock);
 
 		/* Wait for the apply to die. */
 		for (;;)
 		{
 			int rc;
 
-			LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-			apply = pglogical_apply_find(MyDatabaseId, sub->id);
-			if (!pglogical_worker_running(apply))
+			LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+			apply = spock_apply_find(MyDatabaseId, sub->id);
+			if (!spock_worker_running(apply))
 			{
-				LWLockRelease(PGLogicalCtx->lock);
+				LWLockRelease(SpockCtx->lock);
 				break;
 			}
-			LWLockRelease(PGLogicalCtx->lock);
+			LWLockRelease(SpockCtx->lock);
 
 			CHECK_FOR_INTERRUPTS();
 
@@ -620,9 +620,9 @@ pglogical_drop_subscription(PG_FUNCTION_ARGS)
 		 */
 		PG_TRY();
 		{
-			PGconn *origin_conn = pglogical_connect(sub->origin_if->dsn,
+			PGconn *origin_conn = spock_connect(sub->origin_if->dsn,
 													sub->name, "cleanup");
-			pglogical_drop_remote_slot(origin_conn, sub->slot_name);
+			spock_drop_remote_slot(origin_conn, sub->slot_name);
 			PQfinish(origin_conn);
 		}
 		PG_CATCH();
@@ -644,11 +644,11 @@ pglogical_drop_subscription(PG_FUNCTION_ARGS)
  * Disable subscription.
  */
 Datum
-pglogical_alter_subscription_disable(PG_FUNCTION_ARGS)
+spock_alter_subscription_disable(PG_FUNCTION_ARGS)
 {
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	bool					immediate = PG_GETARG_BOOL(1);
-	PGLogicalSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
 
 	/* XXX: Only used for locking purposes. */
 	(void) get_local_node(true, false);
@@ -659,7 +659,7 @@ pglogical_alter_subscription_disable(PG_FUNCTION_ARGS)
 
 	if (immediate)
 	{
-		PGLogicalWorker		   *apply;
+		SpockWorker		   *apply;
 
 		if ((IsTransactionBlock() || IsSubTransaction()))
 			ereport(ERROR,
@@ -667,10 +667,10 @@ pglogical_alter_subscription_disable(PG_FUNCTION_ARGS)
 					 errmsg("alter_subscription_disable with immediate = true "
 							"cannot be run inside a transaction block")));
 
-		LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-		apply = pglogical_apply_find(MyDatabaseId, sub->id);
-		pglogical_worker_kill(apply);
-		LWLockRelease(PGLogicalCtx->lock);
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+		apply = spock_apply_find(MyDatabaseId, sub->id);
+		spock_worker_kill(apply);
+		LWLockRelease(SpockCtx->lock);
 	}
 
 	PG_RETURN_BOOL(true);
@@ -680,11 +680,11 @@ pglogical_alter_subscription_disable(PG_FUNCTION_ARGS)
  * Enable subscription.
  */
 Datum
-pglogical_alter_subscription_enable(PG_FUNCTION_ARGS)
+spock_alter_subscription_enable(PG_FUNCTION_ARGS)
 {
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	bool					immediate = PG_GETARG_BOOL(1);
-	PGLogicalSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
 
 	/* XXX: Only used for locking purposes. */
 	(void) get_local_node(true, false);
@@ -712,11 +712,11 @@ pglogical_alter_subscription_enable(PG_FUNCTION_ARGS)
  * Switch interface the subscription is using.
  */
 Datum
-pglogical_alter_subscription_interface(PG_FUNCTION_ARGS)
+spock_alter_subscription_interface(PG_FUNCTION_ARGS)
 {
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	char				   *if_name = NameStr(*PG_GETARG_NAME(1));
-	PGLogicalSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
 	PGlogicalInterface	   *new_if;
 
 	/* XXX: Only used for locking purposes. */
@@ -737,11 +737,11 @@ pglogical_alter_subscription_interface(PG_FUNCTION_ARGS)
  * Add replication set to subscription.
  */
 Datum
-pglogical_alter_subscription_add_replication_set(PG_FUNCTION_ARGS)
+spock_alter_subscription_add_replication_set(PG_FUNCTION_ARGS)
 {
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	char				   *repset_name = NameStr(*PG_GETARG_NAME(1));
-	PGLogicalSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
 	ListCell			   *lc;
 
 	foreach (lc, sub->replication_sets)
@@ -762,11 +762,11 @@ pglogical_alter_subscription_add_replication_set(PG_FUNCTION_ARGS)
  * Remove replication set to subscription.
  */
 Datum
-pglogical_alter_subscription_remove_replication_set(PG_FUNCTION_ARGS)
+spock_alter_subscription_remove_replication_set(PG_FUNCTION_ARGS)
 {
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	char				   *repset_name = NameStr(*PG_GETARG_NAME(1));
-	PGLogicalSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
 	ListCell			   *lc;
 #if PG_VERSION_NUM < 130000
 	ListCell			   *next;
@@ -812,18 +812,18 @@ pglogical_alter_subscription_remove_replication_set(PG_FUNCTION_ARGS)
  * Synchronize all the missing tables.
  */
 Datum
-pglogical_alter_subscription_synchronize(PG_FUNCTION_ARGS)
+spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 {
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	bool					truncate = PG_GETARG_BOOL(1);
-	PGLogicalSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
 	PGconn				   *conn;
 	List				   *remote_tables;
 	List				   *local_tables;
 	ListCell			   *lc;
 
 	/* Read table list from provider. */
-	conn = pglogical_connect(sub->origin_if->dsn, sub_name, "sync");
+	conn = spock_connect(sub->origin_if->dsn, sub_name, "sync");
 	remote_tables = pg_logical_get_remote_repset_tables(conn, sub->replication_sets);
 	PQfinish(conn);
 
@@ -832,8 +832,8 @@ pglogical_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 	/* Compare with sync status on subscription. And add missing ones. */
 	foreach (lc, remote_tables)
 	{
-		PGLogicalRemoteRel	   *remoterel = lfirst(lc);
-		PGLogicalSyncStatus	   *oldsync = NULL;
+		SpockRemoteRel	   *remoterel = lfirst(lc);
+		SpockSyncStatus	   *oldsync = NULL;
 #if PG_VERSION_NUM < 130000
 		ListCell			   *prev = NULL;
 		ListCell			   *next;
@@ -846,7 +846,7 @@ pglogical_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 		for (llc = list_head(local_tables); llc; llc = next)
 #endif
 		{
-			PGLogicalSyncStatus *tablesync = (PGLogicalSyncStatus *) lfirst(llc);
+			SpockSyncStatus *tablesync = (SpockSyncStatus *) lfirst(llc);
 
 #if PG_VERSION_NUM < 130000
 			/* We might delete the cell so advance it now. */
@@ -874,9 +874,9 @@ pglogical_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 
 		if (!oldsync)
 		{
-			PGLogicalSyncStatus	   newsync;
+			SpockSyncStatus	   newsync;
 
-			memset(&newsync, 0, sizeof(PGLogicalSyncStatus));
+			memset(&newsync, 0, sizeof(SpockSyncStatus));
 			newsync.kind = SYNC_KIND_DATA;
 			newsync.subid = sub->id;
 			namestrcpy(&newsync.nspname, remoterel->nspname);
@@ -895,7 +895,7 @@ pglogical_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 	 */
 	foreach (lc, local_tables)
 	{
-		PGLogicalSyncStatus *tablesync = (PGLogicalSyncStatus *) lfirst(lc);
+		SpockSyncStatus *tablesync = (SpockSyncStatus *) lfirst(lc);
 
 		drop_table_sync_status_for_sub(tablesync->subid,
 									   NameStr(tablesync->nspname),
@@ -903,7 +903,7 @@ pglogical_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 	}
 
 	/* Tell apply to re-read sync statuses. */
-	pglogical_subscription_changed(sub->id, false);
+	spock_subscription_changed(sub->id, false);
 
 	PG_RETURN_BOOL(true);
 }
@@ -912,13 +912,13 @@ pglogical_alter_subscription_synchronize(PG_FUNCTION_ARGS)
  * Resynchronize one existing table.
  */
 Datum
-pglogical_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
+spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 {
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	Oid						reloid = PG_GETARG_OID(1);
 	bool					truncate = PG_GETARG_BOOL(2);
-	PGLogicalSubscription  *sub = get_subscription_by_name(sub_name, false);
-	PGLogicalSyncStatus	   *oldsync;
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSyncStatus	   *oldsync;
 	Relation				rel;
 	char				   *nspname,
 						   *relname;
@@ -943,9 +943,9 @@ pglogical_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		PGLogicalSyncStatus	   newsync;
+		SpockSyncStatus	   newsync;
 
-		memset(&newsync, 0, sizeof(PGLogicalSyncStatus));
+		memset(&newsync, 0, sizeof(SpockSyncStatus));
 		newsync.kind = SYNC_KIND_DATA;
 		newsync.subid = sub->id;
 		namestrcpy(&newsync.nspname, nspname);
@@ -960,7 +960,7 @@ pglogical_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 		truncate_table(nspname, relname);
 
 	/* Tell apply to re-read sync statuses. */
-	pglogical_subscription_changed(sub->id, false);
+	spock_subscription_changed(sub->id, false);
 
 	PG_RETURN_BOOL(true);
 }
@@ -969,7 +969,7 @@ pglogical_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
  * Synchronize one sequence.
  */
 Datum
-pglogical_synchronize_sequence(PG_FUNCTION_ARGS)
+spock_synchronize_sequence(PG_FUNCTION_ARGS)
 {
 	Oid			reloid = PG_GETARG_OID(0);
 
@@ -1011,14 +1011,14 @@ sync_status_to_string(char status)
  * Show info about one table.
  */
 Datum
-pglogical_show_subscription_table(PG_FUNCTION_ARGS)
+spock_show_subscription_table(PG_FUNCTION_ARGS)
 {
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	Oid						reloid = PG_GETARG_OID(1);
-	PGLogicalSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
 	char				   *nspname;
 	char				   *relname;
-	PGLogicalSyncStatus	   *sync;
+	SpockSyncStatus	   *sync;
 	char	   *sync_status;
 	TupleDesc	tupdesc;
 	Datum		values[3];
@@ -1056,14 +1056,14 @@ pglogical_show_subscription_table(PG_FUNCTION_ARGS)
  * Show info about subscribtion.
  */
 Datum
-pglogical_show_subscription_status(PG_FUNCTION_ARGS)
+spock_show_subscription_status(PG_FUNCTION_ARGS)
 {
 	List			   *subscriptions;
 	ListCell		   *lc;
 	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc			tupdesc;
 	Tuplestorestate	   *tupstore;
-	PGLogicalLocalNode *node;
+	SpockLocalNode *node;
 	MemoryContext		per_query_ctx;
 	MemoryContext		oldcontext;
 
@@ -1086,7 +1086,7 @@ pglogical_show_subscription_status(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		PGLogicalSubscription  *sub;
+		SpockSubscription  *sub;
 		sub = get_subscription_by_name(NameStr(*PG_GETARG_NAME(0)), false);
 		subscriptions = list_make1(sub);
 	}
@@ -1108,8 +1108,8 @@ pglogical_show_subscription_status(PG_FUNCTION_ARGS)
 
 	foreach (lc, subscriptions)
 	{
-		PGLogicalSubscription  *sub = lfirst(lc);
-		PGLogicalWorker		   *apply;
+		SpockSubscription  *sub = lfirst(lc);
+		SpockWorker		   *apply;
 		Datum	values[7];
 		bool	nulls[7];
 		char   *status;
@@ -1117,11 +1117,11 @@ pglogical_show_subscription_status(PG_FUNCTION_ARGS)
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
 
-		LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
-		apply = pglogical_apply_find(MyDatabaseId, sub->id);
-		if (pglogical_worker_running(apply))
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+		apply = spock_apply_find(MyDatabaseId, sub->id);
+		if (spock_worker_running(apply))
 		{
-			PGLogicalSyncStatus	   *sync;
+			SpockSyncStatus	   *sync;
 			sync = get_subscription_sync_status(sub->id, true);
 
 			if (!sync)
@@ -1135,7 +1135,7 @@ pglogical_show_subscription_status(PG_FUNCTION_ARGS)
 			status = "disabled";
 		else
 			status = "down";
-		LWLockRelease(PGLogicalCtx->lock);
+		LWLockRelease(SpockCtx->lock);
 
 		values[0] = CStringGetTextDatum(sub->name);
 		values[1] = CStringGetTextDatum(status);
@@ -1165,10 +1165,10 @@ pglogical_show_subscription_status(PG_FUNCTION_ARGS)
  * Create new replication set.
  */
 Datum
-pglogical_create_replication_set(PG_FUNCTION_ARGS)
+spock_create_replication_set(PG_FUNCTION_ARGS)
 {
-	PGLogicalRepSet		repset;
-	PGLogicalLocalNode *node;
+	SpockRepSet		repset;
+	SpockLocalNode *node;
 
 	node = check_local_node(true);
 
@@ -1191,10 +1191,10 @@ pglogical_create_replication_set(PG_FUNCTION_ARGS)
  * Alter existing replication set.
  */
 Datum
-pglogical_alter_replication_set(PG_FUNCTION_ARGS)
+spock_alter_replication_set(PG_FUNCTION_ARGS)
 {
-	PGLogicalRepSet	   *repset;
-	PGLogicalLocalNode *node;
+	SpockRepSet	   *repset;
+	SpockLocalNode *node;
 
 	if (PG_ARGISNULL(0))
 		ereport(ERROR,
@@ -1224,12 +1224,12 @@ pglogical_alter_replication_set(PG_FUNCTION_ARGS)
  * Drop existing replication set.
  */
 Datum
-pglogical_drop_replication_set(PG_FUNCTION_ARGS)
+spock_drop_replication_set(PG_FUNCTION_ARGS)
 {
 	char	   *set_name = NameStr(*PG_GETARG_NAME(0));
 	bool		ifexists = PG_GETARG_BOOL(1);
-	PGLogicalRepSet    *repset;
-	PGLogicalLocalNode *node;
+	SpockRepSet    *repset;
+	SpockLocalNode *node;
 
 	node = check_local_node(true);
 
@@ -1242,7 +1242,7 @@ pglogical_drop_replication_set(PG_FUNCTION_ARGS)
 }
 
 /*
- * error context callback for parse failure during pglogical_replication_set_add_table()
+ * error context callback for parse failure during spock_replication_set_add_table()
  */
 static void
 add_table_parser_error_callback(void *arg)
@@ -1389,17 +1389,17 @@ fail:
  * Add replication set / table mapping.
  */
 Datum
-pglogical_replication_set_add_table(PG_FUNCTION_ARGS)
+spock_replication_set_add_table(PG_FUNCTION_ARGS)
 {
 	Name				repset_name;
 	Oid					reloid;
 	bool				synchronize;
 	Node			   *row_filter = NULL;
 	List			   *att_list = NIL;
-	PGLogicalRepSet    *repset;
+	SpockRepSet    *repset;
 	Relation			rel;
 	TupleDesc			tupDesc;
-	PGLogicalLocalNode *node;
+	SpockLocalNode *node;
 	char			   *nspname;
 	char			   *relname;
 	StringInfoData		json;
@@ -1505,14 +1505,14 @@ pglogical_replication_set_add_table(PG_FUNCTION_ARGS)
  * Add replication set / sequence mapping.
  */
 Datum
-pglogical_replication_set_add_sequence(PG_FUNCTION_ARGS)
+spock_replication_set_add_sequence(PG_FUNCTION_ARGS)
 {
 	Name				repset_name = PG_GETARG_NAME(0);
 	Oid					reloid = PG_GETARG_OID(1);
 	bool				synchronize = PG_GETARG_BOOL(2);
-	PGLogicalRepSet    *repset;
+	SpockRepSet    *repset;
 	Relation			rel;
-	PGLogicalLocalNode *node;
+	SpockLocalNode *node;
 	char			   *nspname;
 	char			   *relname;
 	StringInfoData		json;
@@ -1561,13 +1561,13 @@ pglogical_replication_set_add_sequence(PG_FUNCTION_ARGS)
  * schemas.
  */
 static Datum
-pglogical_replication_set_add_all_relations(Name repset_name,
+spock_replication_set_add_all_relations(Name repset_name,
 											ArrayType *nsp_names,
 											bool synchronize, char relkind)
 {
-	PGLogicalRepSet    *repset;
+	SpockRepSet    *repset;
 	Relation			rel;
-	PGLogicalLocalNode *node;
+	SpockLocalNode *node;
 	ListCell		   *lc;
 	List			   *existing_relations = NIL;
 
@@ -1674,13 +1674,13 @@ pglogical_replication_set_add_all_relations(Name repset_name,
  * Add replication set / table mapping based on schemas.
  */
 Datum
-pglogical_replication_set_add_all_tables(PG_FUNCTION_ARGS)
+spock_replication_set_add_all_tables(PG_FUNCTION_ARGS)
 {
 	Name		repset_name = PG_GETARG_NAME(0);
 	ArrayType  *nsp_names = PG_GETARG_ARRAYTYPE_P(1);
 	bool		synchronize = PG_GETARG_BOOL(2);
 
-	return pglogical_replication_set_add_all_relations(repset_name, nsp_names,
+	return spock_replication_set_add_all_relations(repset_name, nsp_names,
 													   synchronize,
 													   RELKIND_RELATION);
 }
@@ -1689,13 +1689,13 @@ pglogical_replication_set_add_all_tables(PG_FUNCTION_ARGS)
  * Add replication set / sequence mapping based on schemas.
  */
 Datum
-pglogical_replication_set_add_all_sequences(PG_FUNCTION_ARGS)
+spock_replication_set_add_all_sequences(PG_FUNCTION_ARGS)
 {
 	Name		repset_name = PG_GETARG_NAME(0);
 	ArrayType  *nsp_names = PG_GETARG_ARRAYTYPE_P(1);
 	bool		synchronize = PG_GETARG_BOOL(2);
 
-	return pglogical_replication_set_add_all_relations(repset_name, nsp_names,
+	return spock_replication_set_add_all_relations(repset_name, nsp_names,
 													   synchronize,
 													   RELKIND_SEQUENCE);
 }
@@ -1703,15 +1703,15 @@ pglogical_replication_set_add_all_sequences(PG_FUNCTION_ARGS)
 /*
  * Remove replication set / table mapping.
  *
- * Unlike the pglogical_replication_set_add_table, this function does not care
+ * Unlike the spock_replication_set_add_table, this function does not care
  * if table is valid or not, as we are just removing the record from repset.
  */
 Datum
-pglogical_replication_set_remove_table(PG_FUNCTION_ARGS)
+spock_replication_set_remove_table(PG_FUNCTION_ARGS)
 {
 	Oid			reloid = PG_GETARG_OID(1);
-	PGLogicalRepSet    *repset;
-	PGLogicalLocalNode *node;
+	SpockRepSet    *repset;
+	SpockLocalNode *node;
 
 	node = check_local_node(true);
 
@@ -1728,11 +1728,11 @@ pglogical_replication_set_remove_table(PG_FUNCTION_ARGS)
  * Remove replication set / sequence mapping.
  */
 Datum
-pglogical_replication_set_remove_sequence(PG_FUNCTION_ARGS)
+spock_replication_set_remove_sequence(PG_FUNCTION_ARGS)
 {
 	Oid			seqoid = PG_GETARG_OID(1);
-	PGLogicalRepSet    *repset;
-	PGLogicalLocalNode *node;
+	SpockRepSet    *repset;
+	SpockLocalNode *node;
 
 	node = check_local_node(true);
 
@@ -1746,19 +1746,19 @@ pglogical_replication_set_remove_sequence(PG_FUNCTION_ARGS)
 }
 
 /*
- * pglogical_replicate_ddl_command
+ * spock_replicate_ddl_command
  *
  * Queues the input SQL for replication.
  */
 Datum
-pglogical_replicate_ddl_command(PG_FUNCTION_ARGS)
+spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 {
 	text	   *command = PG_GETARG_TEXT_PP(0);
 	char	   *query = text_to_cstring(command);
 	int			save_nestlevel;
 	List	   *replication_sets;
 	ListCell   *lc;
-	PGLogicalLocalNode *node;
+	SpockLocalNode *node;
 	StringInfoData		cmd;
 
 	node = check_local_node(false);
@@ -1803,12 +1803,12 @@ pglogical_replicate_ddl_command(PG_FUNCTION_ARGS)
 
 	/*
 	 * Execute the query locally.
-	 * Use PG_TRY to ensure in_pglogical_replicate_ddl_command gets cleaned up
+	 * Use PG_TRY to ensure in_spock_replicate_ddl_command gets cleaned up
 	 */
-	in_pglogical_replicate_ddl_command = true;
+	in_spock_replicate_ddl_command = true;
 	PG_TRY();
 	{
-		pglogical_execute_sql_command(query, GetUserNameFromId(GetUserId()
+		spock_execute_sql_command(query, GetUserNameFromId(GetUserId()
 	#if PG_VERSION_NUM >= 90500
 															   , false
 	#endif
@@ -1817,12 +1817,12 @@ pglogical_replicate_ddl_command(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		in_pglogical_replicate_ddl_command = false;
+		in_spock_replicate_ddl_command = false;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
-	in_pglogical_replicate_ddl_command = false;
+	in_spock_replicate_ddl_command = false;
 
 	/*
 	 * Restore the GUC variables we set above.
@@ -1833,23 +1833,23 @@ pglogical_replicate_ddl_command(PG_FUNCTION_ARGS)
 }
 
 /*
- * pglogical_queue_trigger
+ * spock_queue_trigger
  *
  * Trigger which queues the TRUNCATE command.
  *
  * This function only writes to internal linked list, actual queueing is done
- * by pglogical_finish_truncate().
+ * by spock_finish_truncate().
  */
 Datum
-pglogical_queue_truncate(PG_FUNCTION_ARGS)
+spock_queue_truncate(PG_FUNCTION_ARGS)
 {
 	TriggerData	   *trigdata = (TriggerData *) fcinfo->context;
 	const char	   *funcname = "queue_truncate";
 	MemoryContext	oldcontext;
-	PGLogicalLocalNode *local_node;
+	SpockLocalNode *local_node;
 
 	/* Return if this function was called from apply process. */
-	if (MyPGLogicalWorker)
+	if (MySpockWorker)
 		PG_RETURN_VOID();
 
 	/* Make sure this is being called as an AFTER TRUNCTATE trigger. */
@@ -1866,14 +1866,14 @@ pglogical_queue_truncate(PG_FUNCTION_ARGS)
 				 errmsg("function \"%s\" must be fired AFTER TRUNCATE",
 						funcname)));
 
-	/* If this is not pglogical node, don't do anything. */
+	/* If this is not spock node, don't do anything. */
 	local_node = get_local_node(false, true);
 	if (!local_node)
 		PG_RETURN_VOID();
 
 	/* Make sure the list change survives the trigger call. */
 	oldcontext = MemoryContextSwitchTo(TopTransactionContext);
-	pglogical_truncated_tables = lappend_oid(pglogical_truncated_tables,
+	spock_truncated_tables = lappend_oid(spock_truncated_tables,
 									RelationGetRelid(trigdata->tg_relation));
 	MemoryContextSwitchTo(oldcontext);
 
@@ -1881,18 +1881,18 @@ pglogical_queue_truncate(PG_FUNCTION_ARGS)
 }
 
 /*
- * pglogical_dependency_check_trigger
+ * spock_dependency_check_trigger
  *
  * No longer used, present for smoother upgrades.
  */
 Datum
-pglogical_dependency_check_trigger(PG_FUNCTION_ARGS)
+spock_dependency_check_trigger(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_VOID();
 }
 
 Datum
-pglogical_node_info(PG_FUNCTION_ARGS)
+spock_node_info(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
 	Datum		values[5];
@@ -1900,7 +1900,7 @@ pglogical_node_info(PG_FUNCTION_ARGS)
 	HeapTuple	htup;
 	char		sysid[32];
 	List	   *repsets;
-	PGLogicalLocalNode *node;
+	SpockLocalNode *node;
 
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -1933,7 +1933,7 @@ pglogical_node_info(PG_FUNCTION_ARGS)
  * about changing it, as it must be upward- and downward-compatible.
  */
 Datum
-pglogical_show_repset_table_info(PG_FUNCTION_ARGS)
+spock_show_repset_table_info(PG_FUNCTION_ARGS)
 {
 	Oid			reloid = PG_GETARG_OID(0);
  	ArrayType  *rep_set_names = PG_GETARG_ARRAYTYPE_P(1);
@@ -1948,8 +1948,8 @@ pglogical_show_repset_table_info(PG_FUNCTION_ARGS)
 	char	   *nspname;
 	char	   *relname;
 	HeapTuple	htup;
-	PGLogicalLocalNode *node;
-	PGLogicalTableRepInfo *tableinfo;
+	SpockLocalNode *node;
+	SpockTableRepInfo *tableinfo;
 
 	node = get_local_node(false, false);
 
@@ -2010,7 +2010,7 @@ pglogical_show_repset_table_info(PG_FUNCTION_ARGS)
  * Dummy function to allow upgrading through all intermediate versions
  */
 Datum
-pglogical_show_repset_table_info_by_target(PG_FUNCTION_ARGS)
+spock_show_repset_table_info_by_target(PG_FUNCTION_ARGS)
 {
 	abort();
 }
@@ -2053,7 +2053,7 @@ filter_tuple(HeapTuple htup, ExprContext *econtext, List *row_filter_list)
  * filtered data for initial COPY.
  */
 Datum
-pglogical_table_data_filtered(PG_FUNCTION_ARGS)
+spock_table_data_filtered(PG_FUNCTION_ARGS)
 {
 	Oid			argtype = get_fn_expr_argtype(fcinfo->flinfo, 0);
 	Oid			reloid;
@@ -2070,8 +2070,8 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
 	EState		   *estate;
 	ExprContext	   *econtext;
 	Tuplestorestate *tupstore;
-	PGLogicalLocalNode *node;
-	PGLogicalTableRepInfo *tableinfo;
+	SpockLocalNode *node;
+	SpockTableRepInfo *tableinfo;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 
@@ -2094,7 +2094,7 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("first argument of %s must be a row type",
-						"pglogical_table_data_filtered")));
+						"spock_table_data_filtered")));
 
 	rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 
@@ -2137,7 +2137,7 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("return type of %s must be same as row type of the relation",
-						"pglogical_table_data_filtered")));
+						"spock_table_data_filtered")));
 
 	/* Build the replication info for the table. */
 	replication_sets = textarray_to_list(rep_set_names);
@@ -2155,7 +2155,7 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
 	foreach (lc, tableinfo->row_filter)
 	{
 		Node	   *row_filter = (Node *) lfirst(lc);
-		ExprState  *exprstate = pglogical_prepare_row_filter(row_filter);
+		ExprState  *exprstate = spock_prepare_row_filter(row_filter);
 
 		row_filter_list = lappend(row_filter_list, exprstate);
 	}
@@ -2189,12 +2189,12 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
  * given, for sync to complete for a specific table.
  *
  * We have to play games with snapshots to achieve this, since we're looking at
- * pglogical tables in the future as far as our snapshot is concerned.
+ * spock tables in the future as far as our snapshot is concerned.
  */
 static void
-pglogical_wait_for_sync_complete(char *subscription_name, char *relnamespace, char *relname)
+spock_wait_for_sync_complete(char *subscription_name, char *relnamespace, char *relname)
 {
-	PGLogicalSubscription *sub;
+	SpockSubscription *sub;
 
 	/*
 	 * If we wait in SERIALIZABLE, then the next snapshot after we return
@@ -2207,7 +2207,7 @@ pglogical_wait_for_sync_complete(char *subscription_name, char *relnamespace, ch
 
 	do
 	{
-		PGLogicalSyncStatus	   *subsync;
+		SpockSyncStatus	   *subsync;
 		List				   *tables;
 		bool					isdone = false;
 		int						rc;
@@ -2227,7 +2227,7 @@ pglogical_wait_for_sync_complete(char *subscription_name, char *relnamespace, ch
 			 */
 			if (relname != NULL)
 			{
-				PGLogicalSyncStatus *table = get_table_sync_status(sub->id, relnamespace, relname, false);
+				SpockSyncStatus *table = get_table_sync_status(sub->id, relnamespace, relname, false);
 				isdone = table && table->status == SYNC_STATUS_READY;
 				free_sync_status(table);
 			}
@@ -2242,7 +2242,7 @@ pglogical_wait_for_sync_complete(char *subscription_name, char *relnamespace, ch
 				isdone = tables == NIL;
 				foreach (lc, tables)
 				{
-					PGLogicalSyncStatus *table = lfirst(lc);
+					SpockSyncStatus *table = lfirst(lc);
 					free_sync_status(table);
 				}
 				list_free(tables);
@@ -2268,17 +2268,17 @@ pglogical_wait_for_sync_complete(char *subscription_name, char *relnamespace, ch
 }
 
 Datum
-pglogical_wait_for_subscription_sync_complete(PG_FUNCTION_ARGS)
+spock_wait_for_subscription_sync_complete(PG_FUNCTION_ARGS)
 {
 	char *subscription_name = NameStr(*PG_GETARG_NAME(0));
 
-	pglogical_wait_for_sync_complete(subscription_name, NULL, NULL);
+	spock_wait_for_sync_complete(subscription_name, NULL, NULL);
 
 	PG_RETURN_VOID();
 }
 
 Datum
-pglogical_wait_for_table_sync_complete(PG_FUNCTION_ARGS)
+spock_wait_for_table_sync_complete(PG_FUNCTION_ARGS)
 {
 	char *subscription_name = NameStr(*PG_GETARG_NAME(0));
 	Oid relid = PG_GETARG_OID(1);
@@ -2287,7 +2287,7 @@ pglogical_wait_for_table_sync_complete(PG_FUNCTION_ARGS)
 	relname = get_rel_name(relid);
 	relnamespace = get_namespace_name(get_rel_namespace(relid));
 
-	pglogical_wait_for_sync_complete(subscription_name, relnamespace, relname);
+	spock_wait_for_sync_complete(subscription_name, relnamespace, relname);
 
 	PG_RETURN_VOID();
 }
@@ -2297,7 +2297,7 @@ pglogical_wait_for_table_sync_complete(PG_FUNCTION_ARGS)
  * too.
  */
 Datum
-pglogical_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
+spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 {
 #ifdef HAVE_REPLICATION_ORIGINS
 	TransactionId xid = PG_GETARG_UINT32(0);
@@ -2343,7 +2343,7 @@ pglogical_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 }
 
 Datum
-pglogical_gen_slot_name(PG_FUNCTION_ARGS)
+spock_gen_slot_name(PG_FUNCTION_ARGS)
 {
 	char	   *dbname = NameStr(*PG_GETARG_NAME(0));
 	char	   *provider_node_name = NameStr(*PG_GETARG_NAME(1));
@@ -2395,40 +2395,40 @@ gen_slot_name(Name slot_name, char *dbname, const char *provider_node,
 }
 
 Datum
-pglogical_version(PG_FUNCTION_ARGS)
+spock_version(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_TEXT_P(cstring_to_text(PGLOGICAL_VERSION));
+	PG_RETURN_TEXT_P(cstring_to_text(SPOCK_VERSION));
 }
 
 Datum
-pglogical_version_num(PG_FUNCTION_ARGS)
+spock_version_num(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT32(PGLOGICAL_VERSION_NUM);
+	PG_RETURN_INT32(SPOCK_VERSION_NUM);
 }
 
 Datum
-pglogical_max_proto_version(PG_FUNCTION_ARGS)
+spock_max_proto_version(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT32(PGLOGICAL_MAX_PROTO_VERSION_NUM);
+	PG_RETURN_INT32(SPOCK_MAX_PROTO_VERSION_NUM);
 }
 
 Datum
-pglogical_min_proto_version(PG_FUNCTION_ARGS)
+spock_min_proto_version(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT32(PGLOGICAL_MIN_PROTO_VERSION_NUM);
+	PG_RETURN_INT32(SPOCK_MIN_PROTO_VERSION_NUM);
 }
 
 /* Dummy functions for backward comptibility. */
 Datum
-pglogical_truncate_trigger_add(PG_FUNCTION_ARGS)
+spock_truncate_trigger_add(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_VOID();
 }
 
-PGDLLEXPORT extern Datum pglogical_hooks_setup(PG_FUNCTION_ARGS);
-PG_FUNCTION_INFO_V1(pglogical_hooks_setup);
+PGDLLEXPORT extern Datum spock_hooks_setup(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(spock_hooks_setup);
 Datum
-pglogical_hooks_setup(PG_FUNCTION_ARGS)
+spock_hooks_setup(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_VOID();
 }
