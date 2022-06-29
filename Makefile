@@ -56,11 +56,6 @@ SCRIPTS_built += spock_dump/spock_dump
 SCRIPTS += spock_dump/spock_dump
 requires = requires=spock_origin
 control_path = $(abspath $(abs_top_builddir))/spock.control
-else
-DATA += spock_origin.control spock_origin--1.0.0.sql
-requires =
-control_path = $(abspath $(srcdir))/spock.control
-endif
 
 EXTRA_CLEAN += $(control_path)
 

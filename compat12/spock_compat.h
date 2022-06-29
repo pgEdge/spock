@@ -28,11 +28,6 @@
 #define ExecAlterExtensionStmt(stmt) \
 	ExecAlterExtensionStmt(NULL, stmt)
 
-/*
- * Pg 11 adds an argument here.  We don't need to special-case 2ndQPostgres
- * anymore because it adds a separate ExecBRDeleteTriggers2 now, so this only
- * handles the stock Pg11 change.
- */ 
 #define ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple) \
  	ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, NULL)
 
@@ -79,7 +74,6 @@
 #define rbtxn_has_catalog_changes(txn) (txn->has_catalog_changes)
 #endif
 
-/* ad7dbee368a */
 #define ExecInitExtraTupleSlot(estate) \
 	ExecInitExtraTupleSlot(estate, NULL, &TTSOpsHeapTuple)
 
@@ -88,10 +82,15 @@
 
 #define DatumGetJsonb DatumGetJsonbP
 
-#define pgl_heap_attisnull(tup, attnum, tupledesc) \
+#define spk_heap_attisnull(tup, attnum, tupledesc) \
 	heap_attisnull(tup, attnum, tupledesc)
 
-/* cd142e032ebd50ec7974b3633269477c2c72f1cc removed replorigin_drop */
+#define CommandTag const char *
+#define QueryCompletion char
+
+#define pg_plan_queries(querytrees, query_string, cursorOptions, boundParams) \
+	pg_plan_queries(querytrees, cursorOptions, boundParams)
+
 inline static void
 replorigin_drop_by_name(char *name, bool missing_ok, bool nowait)
 {
