@@ -63,19 +63,19 @@ typedef struct spock_copyState
 	size_t			copy_buffered_size;
 } spock_copyState;
 
-static spock_copyState *pglcstate = NULL;
+static spock_copyState *spkcstate = NULL;
 
 static const char BinarySignature[11] = "PGCOPY\n\377\r\n\0";
 
 static void spock_start_copy(SpockRelation *rel);
-static void spock_proccess_copy(spock_copyState *pglcstate);
+static void spock_proccess_copy(spock_copyState *spkcstate);
 
-static void spock_copySendData(spock_copyState *pglcstate,
+static void spock_copySendData(spock_copyState *spkcstate,
 								   const void *databuf, int datasize);
-static void spock_copySendEndOfRow(spock_copyState *pglcstate);
-static void spock_copySendInt32(spock_copyState *pglcstate, int32 val);
-static void spock_copySendInt16(spock_copyState *pglcstate, int16 val);
-static void spock_copyOneRowTo(spock_copyState *pglcstate,
+static void spock_copySendEndOfRow(spock_copyState *spkcstate);
+static void spock_copySendInt32(spock_copyState *spkcstate, int32 val);
+static void spock_copySendInt16(spock_copyState *spkcstate, int16 val);
+static void spock_copyOneRowTo(spock_copyState *spkcstate,
 								   Datum *values, bool *nulls);
 
 /*
@@ -322,8 +322,8 @@ spock_apply_spi_mi_add_tuple(SpockRelation *rel,
 	/*
 	 * If sufficient work is pending, process that first
 	 */
-	if (pglcstate->copy_buffered_tuples > MAX_BUFFERED_TUPLES ||
-		pglcstate->copy_buffered_size > MAX_BUFFER_SIZE)
+	if (spkcstate->copy_buffered_tuples > MAX_BUFFERED_TUPLES ||
+		spkcstate->copy_buffered_size > MAX_BUFFER_SIZE)
 	{
 		spock_apply_spi_mi_finish(rel);
 		spock_start_copy(rel);
@@ -334,7 +334,7 @@ spock_apply_spi_mi_add_tuple(SpockRelation *rel,
 	 */
 	values = (Datum *) tup->values;
 	nulls = (bool *) tup->nulls;
-	spock_copyOneRowTo(pglcstate, values, nulls);
+	spock_copyOneRowTo(spkcstate, values, nulls);
 }
 
 
@@ -353,35 +353,35 @@ spock_start_copy(SpockRelation *rel)
 	int				i;
 
 	/* We are already doing COPY for requested relation, nothing to do. */
-	if (pglcstate && pglcstate->rel == rel)
+	if (spkcstate && spkcstate->rel == rel)
 		return;
 
 	/* We are in COPY but for different relation, finish it first. */
-	if (pglcstate && pglcstate->rel != rel)
-		spock_apply_spi_mi_finish(pglcstate->rel);
+	if (spkcstate && spkcstate->rel != rel)
+		spock_apply_spi_mi_finish(spkcstate->rel);
 
 	oldcontext = MemoryContextSwitchTo(TopTransactionContext);
 
 	/* Initialize new COPY state. */
-	pglcstate = palloc0(sizeof(spock_copyState));
+	spkcstate = palloc0(sizeof(spock_copyState));
 
-	pglcstate->copy_file = -1;
-	pglcstate->msgbuf = makeStringInfo();
-	pglcstate->rowcontext = AllocSetContextCreate(CurrentMemoryContext,
+	spkcstate->copy_file = -1;
+	spkcstate->msgbuf = makeStringInfo();
+	spkcstate->rowcontext = AllocSetContextCreate(CurrentMemoryContext,
 												  "COPY TO",
 												  ALLOCSET_DEFAULT_SIZES);
 
-	pglcstate->rel = rel;
+	spkcstate->rel = rel;
 
 	for (i = 0; i < rel->natts; i++)
-		pglcstate->attnumlist = lappend_int(pglcstate->attnumlist,
+		spkcstate->attnumlist = lappend_int(spkcstate->attnumlist,
 											rel->attmap[i]);
 
 	desc = RelationGetDescr(rel->rel);
 	num_phys_attrs = desc->natts;
 
 	/* Get info about the columns we need to process. */
-	pglcstate->out_functions = (FmgrInfo *) palloc(num_phys_attrs * sizeof(FmgrInfo));
+	spkcstate->out_functions = (FmgrInfo *) palloc(num_phys_attrs * sizeof(FmgrInfo));
 
 	/* Get attribute list in a CSV form */
 	initStringInfo(&attrnames);
@@ -392,7 +392,7 @@ spock_start_copy(SpockRelation *rel)
 	 * mapping to our side, build a COPY statement that can be parsed and
 	 * executed later to bulk load the incoming tuples.
 	 */
-	foreach(cur, pglcstate->attnumlist)
+	foreach(cur, spkcstate->attnumlist)
 	{
 		int         attnum = lfirst_int(cur);
 		Oid         out_func_oid;
@@ -401,7 +401,7 @@ spock_start_copy(SpockRelation *rel)
 		getTypeBinaryOutputInfo(TupleDescAttr(desc,attnum)->atttypid,
 								&out_func_oid,
 								&isvarlena);
-		fmgr_info(out_func_oid, &pglcstate->out_functions[attnum]);
+		fmgr_info(out_func_oid, &spkcstate->out_functions[attnum]);
 		appendStringInfo(&attrnames, "%s %s",
 						 delim,
 						 quote_identifier(NameStr(TupleDescAttr(desc,attnum)->attname)));
@@ -409,8 +409,8 @@ spock_start_copy(SpockRelation *rel)
 
 	}
 
-	pglcstate->copy_stmt = makeStringInfo();
-	appendStringInfo(pglcstate->copy_stmt, "COPY %s.%s (%s) FROM STDIN "
+	spkcstate->copy_stmt = makeStringInfo();
+	appendStringInfo(spkcstate->copy_stmt, "COPY %s.%s (%s) FROM STDIN "
 					 "WITH (FORMAT BINARY)",
 					 quote_identifier(rel->nspname),
 					 quote_identifier(rel->relname),
@@ -444,31 +444,31 @@ spock_start_copy(SpockRelation *rel)
 	 * going to read anything from the STDIN normally. So our highjacking of
 	 * the stream seems ok.
 	 */
-	if (pglcstate->copy_file == -1)
-		pglcstate->copy_file = OpenTemporaryFile(true);
+	if (spkcstate->copy_file == -1)
+		spkcstate->copy_file = OpenTemporaryFile(true);
 
-	Assert(pglcstate->copy_file > 0);
+	Assert(spkcstate->copy_file > 0);
 
-	pglcstate->copy_write_file = fopen(FilePathName(pglcstate->copy_file), "w");
-	pglcstate->copy_read_file = fopen(FilePathName(pglcstate->copy_file), "r");
-	pglcstate->copy_mechanism = 'f';
+	spkcstate->copy_write_file = fopen(FilePathName(spkcstate->copy_file), "w");
+	spkcstate->copy_read_file = fopen(FilePathName(spkcstate->copy_file), "r");
+	spkcstate->copy_mechanism = 'f';
 
-	pglcstate->copy_parsetree = pg_parse_query(pglcstate->copy_stmt->data);
+	spkcstate->copy_parsetree = pg_parse_query(spkcstate->copy_stmt->data);
 	MemoryContextSwitchTo(oldcontext);
 
-	spock_copySendData(pglcstate, BinarySignature,
+	spock_copySendData(spkcstate, BinarySignature,
 						   sizeof(BinarySignature));
-	spock_copySendInt32(pglcstate, 0);
-	spock_copySendInt32(pglcstate, 0);
+	spock_copySendInt32(spkcstate, 0);
+	spock_copySendInt32(spkcstate, 0);
 }
 
 static void
-spock_proccess_copy(spock_copyState *pglcstate)
+spock_proccess_copy(spock_copyState *spkcstate)
 {
 	uint64	processed;
 	FILE	*save_stdin;
 
-	if (!pglcstate->copy_parsetree || !pglcstate->copy_buffered_tuples)
+	if (!spkcstate->copy_parsetree || !spkcstate->copy_buffered_tuples)
 		return;
 
 	/*
@@ -477,10 +477,10 @@ spock_proccess_copy(spock_copyState *pglcstate)
 	 * processed. We also close the file descriptor because DoCopy expects to
 	 * see a real EOF too
 	 */
-	spock_copySendInt16(pglcstate, -1);
+	spock_copySendInt16(spkcstate, -1);
 
 	/* Also ensure that the data is flushed to the stream */
-	spock_copySendEndOfRow(pglcstate);
+	spock_copySendEndOfRow(spkcstate);
 
 	/*
 	 * Now close the write end of the pipe so that DoCopy sees end of the
@@ -491,9 +491,9 @@ spock_proccess_copy(spock_copyState *pglcstate)
 	 * COPY protocol currently works, we don't have any other option but to
 	 * close the stream.
 	 */
-	fflush(pglcstate->copy_write_file);
-	fclose(pglcstate->copy_write_file);
-	pglcstate->copy_write_file = NULL;
+	fflush(spkcstate->copy_write_file);
+	fclose(spkcstate->copy_write_file);
+	spkcstate->copy_write_file = NULL;
 
 	/*
 	 * The COPY statement previously crafted will read from STDIN. So we
@@ -502,35 +502,35 @@ spock_proccess_copy(spock_copyState *pglcstate)
 	 * restore it back when the COPY is done
 	 */
 	save_stdin = stdin;
-	stdin = pglcstate->copy_read_file;
+	stdin = spkcstate->copy_read_file;
 
 	/* COPY may call into SPI (triggers, ...) and we already are in SPI. */
 	SPI_push();
 
 	/* Initiate the actual COPY */
 #if PG_VERSION_NUM >= 100000
-	SPKDoCopy((CopyStmt*)((RawStmt *)linitial(pglcstate->copy_parsetree))->stmt,
-		pglcstate->copy_stmt->data, &processed);
+	SPKDoCopy((CopyStmt*)((RawStmt *)linitial(spkcstate->copy_parsetree))->stmt,
+		spkcstate->copy_stmt->data, &processed);
 #else
-	SPKDoCopy((CopyStmt *) linitial(pglcstate->copy_parsetree),
-			  pglcstate->copy_stmt->data, &processed);
+	SPKDoCopy((CopyStmt *) linitial(spkcstate->copy_parsetree),
+			  spkcstate->copy_stmt->data, &processed);
 #endif
 
 	/* Clean up SPI state */
 	SPI_pop();
 
-	fclose(pglcstate->copy_read_file);
-	pglcstate->copy_read_file = NULL;
+	fclose(spkcstate->copy_read_file);
+	spkcstate->copy_read_file = NULL;
 	stdin = save_stdin;
 
 	/* Ensure we processed correct number of tuples */
-	Assert(processed == pglcstate->copy_buffered_tuples);
+	Assert(processed == spkcstate->copy_buffered_tuples);
 
-	list_free_deep(pglcstate->copy_parsetree);
-	pglcstate->copy_parsetree = NIL;
+	list_free_deep(spkcstate->copy_parsetree);
+	spkcstate->copy_parsetree = NIL;
 
-	pglcstate->copy_buffered_tuples = 0;
-	pglcstate->copy_buffered_size = 0;
+	spkcstate->copy_buffered_tuples = 0;
+	spkcstate->copy_buffered_size = 0;
 
 	CommandCounterIncrement();
 }
@@ -538,70 +538,70 @@ spock_proccess_copy(spock_copyState *pglcstate)
 void
 spock_apply_spi_mi_finish(SpockRelation *rel)
 {
-	if (!pglcstate)
+	if (!spkcstate)
 		return;
 
-	Assert(pglcstate->rel == rel);
+	Assert(spkcstate->rel == rel);
 
-	spock_proccess_copy(pglcstate);
+	spock_proccess_copy(spkcstate);
 
-	if (pglcstate->copy_stmt)
+	if (spkcstate->copy_stmt)
 	{
-		pfree(pglcstate->copy_stmt->data);
-		pfree(pglcstate->copy_stmt);
+		pfree(spkcstate->copy_stmt->data);
+		pfree(spkcstate->copy_stmt);
 	}
 
-	if (pglcstate->attnumlist)
-		list_free(pglcstate->attnumlist);
+	if (spkcstate->attnumlist)
+		list_free(spkcstate->attnumlist);
 
-	if (pglcstate->copy_file != -1)
-		FileClose(pglcstate->copy_file);
+	if (spkcstate->copy_file != -1)
+		FileClose(spkcstate->copy_file);
 
-	if (pglcstate->copy_write_file)
-		fclose(pglcstate->copy_write_file);
+	if (spkcstate->copy_write_file)
+		fclose(spkcstate->copy_write_file);
 
-	if (pglcstate->copy_read_file)
-		fclose(pglcstate->copy_read_file);
+	if (spkcstate->copy_read_file)
+		fclose(spkcstate->copy_read_file);
 
-	if (pglcstate->msgbuf)
+	if (spkcstate->msgbuf)
 	{
-		pfree(pglcstate->msgbuf->data);
-		pfree(pglcstate->msgbuf);
+		pfree(spkcstate->msgbuf->data);
+		pfree(spkcstate->msgbuf);
 	}
 
-	if (pglcstate->rowcontext)
+	if (spkcstate->rowcontext)
 	{
-		MemoryContextDelete(pglcstate->rowcontext);
-		pglcstate->rowcontext = NULL;
+		MemoryContextDelete(spkcstate->rowcontext);
+		spkcstate->rowcontext = NULL;
 	}
 
-	pfree(pglcstate);
+	pfree(spkcstate);
 
-	pglcstate = NULL;
+	spkcstate = NULL;
 }
 
 /*
  * spock_copySendInt32 sends an int32 in network byte order
  */
 static void
-spock_copySendInt32(spock_copyState *pglcstate, int32 val)
+spock_copySendInt32(spock_copyState *spkcstate, int32 val)
 {
 	uint32		buf;
 
 	buf = htonl((uint32) val);
-	spock_copySendData(pglcstate, &buf, sizeof(buf));
+	spock_copySendData(spkcstate, &buf, sizeof(buf));
 }
 
 /*
  * spock_copySendInt16 sends an int16 in network byte order
  */
 static void
-spock_copySendInt16(spock_copyState *pglcstate, int16 val)
+spock_copySendInt16(spock_copyState *spkcstate, int16 val)
 {
 	uint16		buf;
 
 	buf = htons((uint16) val);
-	spock_copySendData(pglcstate, &buf, sizeof(buf));
+	spock_copySendData(spkcstate, &buf, sizeof(buf));
 }
 
 /*----------
@@ -613,20 +613,20 @@ spock_copySendInt16(spock_copyState *pglcstate, int16 val)
  *----------
  */
 static void
-spock_copySendData(spock_copyState *pglcstate, const void *databuf,
+spock_copySendData(spock_copyState *spkcstate, const void *databuf,
 					   int datasize)
 {
-	appendBinaryStringInfo(pglcstate->msgbuf, databuf, datasize);
+	appendBinaryStringInfo(spkcstate->msgbuf, databuf, datasize);
 }
 
 static void
-spock_copySendEndOfRow(spock_copyState *pglcstate)
+spock_copySendEndOfRow(spock_copyState *spkcstate)
 {
-	StringInfo	msgbuf = pglcstate->msgbuf;
+	StringInfo	msgbuf = spkcstate->msgbuf;
 
 	if (fwrite(msgbuf->data, msgbuf->len, 1,
-				pglcstate->copy_write_file) != 1 ||
-			ferror(pglcstate->copy_write_file))
+				spkcstate->copy_write_file) != 1 ||
+			ferror(spkcstate->copy_write_file))
 	{
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -640,43 +640,43 @@ spock_copySendEndOfRow(spock_copyState *pglcstate)
  * Emit one row during CopyTo().
  */
 static void
-spock_copyOneRowTo(spock_copyState *pglcstate, Datum *values,
+spock_copyOneRowTo(spock_copyState *spkcstate, Datum *values,
 					   bool *nulls)
 {
-	FmgrInfo   *out_functions = pglcstate->out_functions;
+	FmgrInfo   *out_functions = spkcstate->out_functions;
 	MemoryContext oldcontext;
 	ListCell   *cur;
 
-	MemoryContextReset(pglcstate->rowcontext);
-	oldcontext = MemoryContextSwitchTo(pglcstate->rowcontext);
+	MemoryContextReset(spkcstate->rowcontext);
+	oldcontext = MemoryContextSwitchTo(spkcstate->rowcontext);
 
 	/* Binary per-tuple header */
-	spock_copySendInt16(pglcstate, list_length(pglcstate->attnumlist));
+	spock_copySendInt16(spkcstate, list_length(spkcstate->attnumlist));
 
-	foreach(cur, pglcstate->attnumlist)
+	foreach(cur, spkcstate->attnumlist)
 	{
 		int			attnum = lfirst_int(cur);
 		Datum		value = values[attnum];
 		bool		isnull = nulls[attnum];
 
 		if (isnull)
-			spock_copySendInt32(pglcstate, -1);
+			spock_copySendInt32(spkcstate, -1);
 		else
 		{
 			bytea	   *outputbytes;
 
 			outputbytes = SendFunctionCall(&out_functions[attnum],
 										   value);
-			spock_copySendInt32(pglcstate, VARSIZE(outputbytes) - VARHDRSZ);
-			spock_copySendData(pglcstate, VARDATA(outputbytes),
+			spock_copySendInt32(spkcstate, VARSIZE(outputbytes) - VARHDRSZ);
+			spock_copySendData(spkcstate, VARDATA(outputbytes),
 						 VARSIZE(outputbytes) - VARHDRSZ);
 		}
 	}
 
-	pglcstate->copy_buffered_tuples++;
-	pglcstate->copy_buffered_size += pglcstate->msgbuf->len;
+	spkcstate->copy_buffered_tuples++;
+	spkcstate->copy_buffered_size += spkcstate->msgbuf->len;
 
-	spock_copySendEndOfRow(pglcstate);
+	spock_copySendEndOfRow(spkcstate);
 
 	MemoryContextSwitchTo(oldcontext);
 }

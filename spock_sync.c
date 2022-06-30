@@ -169,10 +169,10 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	char		pg_dump[MAXPGPATH];
 	char	   *cmdargv[20];
 	int			cmdargc = 0;
-	bool		has_pgl_origin;
+	bool		has_spk_origin;
 	StringInfoData	s;
 
-	dsn = pgl_get_connstr((char *) sub->origin_if->dsn, NULL, NULL, &err_msg);
+	dsn = spk_get_connstr((char *) sub->origin_if->dsn, NULL, NULL, &err_msg);
 	if (dsn == NULL)
 		elog(ERROR, "invalid connection string \"%s\": %s",
 			 sub->origin_if->dsn, err_msg);
@@ -200,10 +200,10 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 
 	/* Skip the spock_origin if it exists locally. */
 	StartTransactionCommand();
-	has_pgl_origin = OidIsValid(LookupExplicitNamespace("spock_origin",
+	has_spk_origin = OidIsValid(LookupExplicitNamespace("spock_origin",
 														true));
 	CommitTransactionCommand();
-	if (has_pgl_origin)
+	if (has_spk_origin)
 	{
 		appendStringInfo(&s, "--exclude-schema=%s", "spock_origin");
 		cmdargv[cmdargc++] = pstrdup(s.data);
@@ -241,7 +241,7 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
 	int			cmdargc = 0;
 	StringInfoData	s;
 
-	dsn = pgl_get_connstr((char *) sub->target_if->dsn, NULL,
+	dsn = spk_get_connstr((char *) sub->target_if->dsn, NULL,
 						  "-cspock.subscription_schema_restore=true",
 						  &err_msg);
 	if (dsn == NULL)
@@ -1448,8 +1448,8 @@ get_subscription_sync_status(Oid subid, bool missing_ok)
 	scan = systable_beginscan(rel, 0, true, NULL, 1, key);
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		if (pgl_heap_attisnull(tuple, Anum_sync_nspname, NULL) &&
-			pgl_heap_attisnull(tuple, Anum_sync_relname, NULL))
+		if (spk_heap_attisnull(tuple, Anum_sync_nspname, NULL) &&
+			spk_heap_attisnull(tuple, Anum_sync_relname, NULL))
 			break;
 	}
 
@@ -1500,8 +1500,8 @@ set_subscription_sync_status(Oid subid, char status)
 	scan = systable_beginscan(rel, 0, true, NULL, 1, key);
 	while (HeapTupleIsValid(oldtup = systable_getnext(scan)))
 	{
-		if (pgl_heap_attisnull(oldtup, Anum_sync_nspname, NULL) &&
-			pgl_heap_attisnull(oldtup, Anum_sync_relname, NULL))
+		if (spk_heap_attisnull(oldtup, Anum_sync_nspname, NULL) &&
+			spk_heap_attisnull(oldtup, Anum_sync_relname, NULL))
 			break;
 	}
 
@@ -1703,8 +1703,8 @@ get_unsynced_tables(Oid subid)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		if (pgl_heap_attisnull(tuple, Anum_sync_nspname, NULL) &&
-			pgl_heap_attisnull(tuple, Anum_sync_relname, NULL))
+		if (spk_heap_attisnull(tuple, Anum_sync_nspname, NULL) &&
+			spk_heap_attisnull(tuple, Anum_sync_relname, NULL))
 			continue;
 
 		sync = syncstatus_fromtuple(tuple, tupDesc);
@@ -1744,8 +1744,8 @@ get_subscription_tables(Oid subid)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		if (pgl_heap_attisnull(tuple, Anum_sync_nspname, NULL) &&
-			pgl_heap_attisnull(tuple, Anum_sync_relname, NULL))
+		if (spk_heap_attisnull(tuple, Anum_sync_nspname, NULL) &&
+			spk_heap_attisnull(tuple, Anum_sync_relname, NULL))
 			continue;
 
 		sync = syncstatus_fromtuple(tuple, tupDesc);

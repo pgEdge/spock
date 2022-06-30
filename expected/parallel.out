@@ -49,8 +49,8 @@ SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', '
 SELECT * FROM spock.show_subscription_status();
      subscription_name      |   status    | provider_node |         provider_dsn         |                 slot_name                  |           replication_sets            | forward_origins 
 ----------------------------+-------------+---------------+------------------------------+--------------------------------------------+---------------------------------------+-----------------
- test_subscription          | replicating | test_provider | dbname=regression user=super | pgl_postgres_test_provider_test_sube55bf37 | {default,default_insert_only,ddl_sql} | 
- test_subscription_parallel | replicating | test_provider | dbname=regression user=super | pgl_postgres_test_provider_test_subf1783d2 | {parallel}                            | 
+ test_subscription          | replicating | test_provider | dbname=regression user=super | spk_postgres_test_provider_test_sube55bf37 | {default,default_insert_only,ddl_sql} | 
+ test_subscription_parallel | replicating | test_provider | dbname=regression user=super | spk_postgres_test_provider_test_subf1783d2 | {parallel}                            | 
 (2 rows)
 
 -- Make sure we see the slot and active connection

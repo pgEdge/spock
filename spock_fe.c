@@ -105,7 +105,7 @@ find_other_exec_version(const char *argv0, const char *target,
  * dbname can be specified in connstr parameter
  */
 char *
-pgl_get_connstr(char *connstr, char *dbname, char *options, char **errmsg)
+spk_get_connstr(char *connstr, char *dbname, char *options, char **errmsg)
 {
 	char		*ret;
 	int			argcount = 1;	/* dbname */

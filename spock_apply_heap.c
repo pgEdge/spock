@@ -106,7 +106,7 @@ typedef struct ApplyMIState
 #endif
 
 
-static ApplyMIState *pglmistate = NULL;
+static ApplyMIState *spkmistate = NULL;
 
 void
 spock_apply_heap_begin(void)
@@ -790,21 +790,21 @@ spock_apply_heap_mi_start(SpockRelation *rel)
 	TupleDesc		desc;
 	bool			volatile_defexprs = false;
 
-	if (pglmistate && pglmistate->rel == rel)
+	if (spkmistate && spkmistate->rel == rel)
 		return;
 
-	if (pglmistate && pglmistate->rel != rel)
-		spock_apply_heap_mi_finish(pglmistate->rel);
+	if (spkmistate && spkmistate->rel != rel)
+		spock_apply_heap_mi_finish(spkmistate->rel);
 
 	oldctx = MemoryContextSwitchTo(TopTransactionContext);
 
 	/* Initialize new MultiInsert state. */
-	pglmistate = palloc0(sizeof(ApplyMIState));
+	spkmistate = palloc0(sizeof(ApplyMIState));
 
-	pglmistate->rel = rel;
+	spkmistate->rel = rel;
 
 	/* Initialize the executor state. */
-	pglmistate->aestate = aestate = init_apply_exec_state(rel);
+	spkmistate->aestate = aestate = init_apply_exec_state(rel);
 	MemoryContextSwitchTo(TopTransactionContext);
 	resultRelInfo = aestate->resultRelInfo;
 
@@ -850,23 +850,23 @@ spock_apply_heap_mi_start(SpockRelation *rel)
 		  resultRelInfo->ri_TrigDesc->trig_insert_instead_row)) ||
 		volatile_defexprs)
 	{
-		pglmistate->maxbuffered_tuples = 1;
+		spkmistate->maxbuffered_tuples = 1;
 	}
 	else
 	{
-		pglmistate->maxbuffered_tuples = 1000;
+		spkmistate->maxbuffered_tuples = 1000;
 	}
 
-	pglmistate->cid = GetCurrentCommandId(true);
-	pglmistate->bistate = GetBulkInsertState();
+	spkmistate->cid = GetCurrentCommandId(true);
+	spkmistate->bistate = GetBulkInsertState();
 
 	/* Make the space for buffer. */
 #if PG_VERSION_NUM >= 120000
-	pglmistate->buffered_tuples = palloc0(pglmistate->maxbuffered_tuples * sizeof(TupleTableSlot *));
+	spkmistate->buffered_tuples = palloc0(spkmistate->maxbuffered_tuples * sizeof(TupleTableSlot *));
 #else
-	pglmistate->buffered_tuples = palloc0(pglmistate->maxbuffered_tuples * sizeof(HeapTuple));
+	spkmistate->buffered_tuples = palloc0(spkmistate->maxbuffered_tuples * sizeof(HeapTuple));
 #endif
-	pglmistate->nbuffered_tuples = 0;
+	spkmistate->nbuffered_tuples = 0;
 
 	MemoryContextSwitchTo(oldctx);
 }
@@ -879,19 +879,19 @@ spock_apply_heap_mi_flush(void)
 	ResultRelInfo  *resultRelInfo;
 	int				i;
 
-	if (!pglmistate || pglmistate->nbuffered_tuples == 0)
+	if (!spkmistate || spkmistate->nbuffered_tuples == 0)
 		return;
 
-	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(pglmistate->aestate->estate));
-	heap_multi_insert(pglmistate->rel->rel,
-					  pglmistate->buffered_tuples,
-					  pglmistate->nbuffered_tuples,
-					  pglmistate->cid,
+	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(spkmistate->aestate->estate));
+	heap_multi_insert(spkmistate->rel->rel,
+					  spkmistate->buffered_tuples,
+					  spkmistate->nbuffered_tuples,
+					  spkmistate->cid,
 					  0, /* hi_options */
-					  pglmistate->bistate);
+					  spkmistate->bistate);
 	MemoryContextSwitchTo(oldctx);
 
-	resultRelInfo = pglmistate->aestate->resultRelInfo;
+	resultRelInfo = spkmistate->aestate->resultRelInfo;
 
 	/*
 	 * If there are any indexes, update them for all the inserted tuples, and
@@ -899,13 +899,13 @@ spock_apply_heap_mi_flush(void)
 	 */
 	if (resultRelInfo->ri_NumIndices > 0)
 	{
-		for (i = 0; i < pglmistate->nbuffered_tuples; i++)
+		for (i = 0; i < spkmistate->nbuffered_tuples; i++)
 		{
 			List	   *recheckIndexes = NIL;
 
 #if PG_VERSION_NUM < 120000
-			ExecStoreTuple(pglmistate->buffered_tuples[i],
-						   pglmistate->aestate->slot,
+			ExecStoreTuple(spkmistate->buffered_tuples[i],
+						   spkmistate->aestate->slot,
 						   InvalidBuffer, false);
 #endif
 			recheckIndexes =
@@ -914,12 +914,12 @@ spock_apply_heap_mi_flush(void)
 									  resultRelInfo,
 #endif
 #if PG_VERSION_NUM >= 120000
-									  pglmistate->buffered_tuples[i],
+									  spkmistate->buffered_tuples[i],
 #else
-									  pglmistate->aestate->slot,
-									  &(pglmistate->buffered_tuples[i]->t_self),
+									  spkmistate->aestate->slot,
+									  &(spkmistate->buffered_tuples[i]->t_self),
 #endif
-									  pglmistate->aestate->estate
+									  spkmistate->aestate->estate
 #if PG_VERSION_NUM >= 90500
 #if PG_VERSION_NUM >= 140000
 									  , false
@@ -927,8 +927,8 @@ spock_apply_heap_mi_flush(void)
 									  , false, NULL, NIL
 #endif
 									 );
-			ExecARInsertTriggers(pglmistate->aestate->estate, resultRelInfo,
-								 pglmistate->buffered_tuples[i],
+			ExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
+								 spkmistate->buffered_tuples[i],
 								 recheckIndexes);
 			list_free(recheckIndexes);
 		}
@@ -941,15 +941,15 @@ spock_apply_heap_mi_flush(void)
 	else if (resultRelInfo->ri_TrigDesc != NULL &&
 			 resultRelInfo->ri_TrigDesc->trig_insert_after_row)
 	{
-		for (i = 0; i < pglmistate->nbuffered_tuples; i++)
+		for (i = 0; i < spkmistate->nbuffered_tuples; i++)
 		{
-			ExecARInsertTriggers(pglmistate->aestate->estate, resultRelInfo,
-								 pglmistate->buffered_tuples[i],
+			ExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
+								 spkmistate->buffered_tuples[i],
 								 NIL);
 		}
 	}
 
-	pglmistate->nbuffered_tuples = 0;
+	spkmistate->nbuffered_tuples = 0;
 }
 
 /* Add tuple to the MultiInsert. */
@@ -967,13 +967,13 @@ spock_apply_heap_mi_add_tuple(SpockRelation *rel,
 	/*
 	 * If sufficient work is pending, process that first
 	 */
-	if (pglmistate->nbuffered_tuples >= pglmistate->maxbuffered_tuples)
+	if (spkmistate->nbuffered_tuples >= spkmistate->maxbuffered_tuples)
 		spock_apply_heap_mi_flush();
 
 	/* Process and store remote tuple in the slot */
-	aestate = pglmistate->aestate;
+	aestate = spkmistate->aestate;
 
-	if (pglmistate->nbuffered_tuples == 0)
+	if (spkmistate->nbuffered_tuples == 0)
 	{
 		/*
 		 * Reset the per-tuple exprcontext. We can only do this if the
@@ -1022,40 +1022,40 @@ spock_apply_heap_mi_add_tuple(SpockRelation *rel,
 						aestate->estate);
 
 #if PG_VERSION_NUM >= 120000
-	if (pglmistate->buffered_tuples[pglmistate->nbuffered_tuples] == NULL)
-		pglmistate->buffered_tuples[pglmistate->nbuffered_tuples] = table_slot_create(rel->rel, NULL);
+	if (spkmistate->buffered_tuples[spkmistate->nbuffered_tuples] == NULL)
+		spkmistate->buffered_tuples[spkmistate->nbuffered_tuples] = table_slot_create(rel->rel, NULL);
 	else
-		ExecClearTuple(pglmistate->buffered_tuples[pglmistate->nbuffered_tuples]);
-	ExecCopySlot(pglmistate->buffered_tuples[pglmistate->nbuffered_tuples], slot);
+		ExecClearTuple(spkmistate->buffered_tuples[spkmistate->nbuffered_tuples]);
+	ExecCopySlot(spkmistate->buffered_tuples[spkmistate->nbuffered_tuples], slot);
 #else
-	pglmistate->buffered_tuples[pglmistate->nbuffered_tuples] = remotetuple;
+	spkmistate->buffered_tuples[spkmistate->nbuffered_tuples] = remotetuple;
 #endif
-	pglmistate->nbuffered_tuples++;
+	spkmistate->nbuffered_tuples++;
 	MemoryContextSwitchTo(oldctx);
 }
 
 void
 spock_apply_heap_mi_finish(SpockRelation *rel)
 {
-	if (!pglmistate)
+	if (!spkmistate)
 		return;
 
-	Assert(pglmistate->rel == rel);
+	Assert(spkmistate->rel == rel);
 
 	spock_apply_heap_mi_flush();
 
-	FreeBulkInsertState(pglmistate->bistate);
+	FreeBulkInsertState(spkmistate->bistate);
 
-	finish_apply_exec_state(pglmistate->aestate);
+	finish_apply_exec_state(spkmistate->aestate);
 
 #if PG_VERSION_NUM >= 120000
-	for (int i = 0; i < pglmistate->maxbuffered_tuples; i++)
-		if (pglmistate->buffered_tuples[i])
-			ExecDropSingleTupleTableSlot(pglmistate->buffered_tuples[i]);
+	for (int i = 0; i < spkmistate->maxbuffered_tuples; i++)
+		if (spkmistate->buffered_tuples[i])
+			ExecDropSingleTupleTableSlot(spkmistate->buffered_tuples[i]);
 #endif
 
-	pfree(pglmistate->buffered_tuples);
-	pfree(pglmistate);
+	pfree(spkmistate->buffered_tuples);
+	pfree(spkmistate);
 
-	pglmistate = NULL;
+	spkmistate = NULL;
 }

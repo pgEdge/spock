@@ -87,7 +87,7 @@ static SPKRelMetaCacheEntry *relmetacache_get_relation(SpockOutputData *data,
 static void relmetacache_flush(void);
 static void relmetacache_prune(void);
 
-static void pglReorderBufferCleanSerializedTXNs(const char *slotname);
+static void spkReorderBufferCleanSerializedTXNs(const char *slotname);
 
 /* specify output plugin callbacks */
 void
@@ -201,7 +201,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 		 * We can defend against this by doing our own cleanup of any serialized
 		 * txns in the reorder buffer on startup.
 		 */
-		pglReorderBufferCleanSerializedTXNs(NameStr(MyReplicationSlot->data.name));
+		spkReorderBufferCleanSerializedTXNs(NameStr(MyReplicationSlot->data.name));
 
 		if (!IsTransactionState())
 		{
@@ -996,7 +996,7 @@ relmetacache_prune(void)
  * https://www.postgresql.org/message-id/CAMsr+YHdX=XECbZshDZ2CZNWGTyw-taYBnzqVfx4JzM4ExP5xg@mail.gmail.com
  */
 static void
-pglReorderBufferCleanSerializedTXNs(const char *slotname)
+spkReorderBufferCleanSerializedTXNs(const char *slotname)
 {
 	DIR		   *spill_dir;
 	struct dirent *spill_de;

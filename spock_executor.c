@@ -299,12 +299,12 @@ spock_object_access(ObjectAccessType access,
 		if (classId == RelationRelationId)
 		{
 			Oid			relnspoid;
-			Oid			pglnspoid;
+			Oid			spknspoid;
 
-			pglnspoid = get_namespace_oid(EXTENSION_NAME, true);
+			spknspoid = get_namespace_oid(EXTENSION_NAME, true);
 			relnspoid = get_rel_namespace(objectId);
 
-			if (pglnspoid == relnspoid)
+			if (spknspoid == relnspoid)
 				dropping_spock_obj = true;
 		}
 

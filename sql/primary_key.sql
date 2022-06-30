@@ -338,7 +338,7 @@ SELECT * FROM pk_users ORDER BY id;
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 -- UPDATEs to missing rows could either resurrect the row or conclude it
--- shouldn't exist and discard it. Currently pgl unconditionally discards, so
+-- shouldn't exist and discard it. Currently spk unconditionally discards, so
 -- this row's name is a misnomer.
 \c :subscriber_dsn
 DELETE FROM pk_users WHERE id = 4 AND another_id = 22;

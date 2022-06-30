@@ -3,7 +3,7 @@
 # these cleanly, but ... meh.
 
 {
-   pgl_apply_start_sync_sub
+   spk_apply_start_sync_sub
    Memcheck:Leak
    match-leak-kinds: possible,definite,reachable
    fun:*lloc*
@@ -13,7 +13,7 @@
 }
 
 {
-   pgl_apply_start_getsub
+   spk_apply_start_getsub
    Memcheck:Leak
    match-leak-kinds: possible,definite,reachable
    fun:*lloc*
@@ -23,7 +23,7 @@
 }
 
 {
-   pgl_apply_start_queuetable
+   spk_apply_start_queuetable
    Memcheck:Leak
    match-leak-kinds: possible,definite,reachable
    fun:*lloc*
@@ -33,7 +33,7 @@
 }
 
 {
-   pgl_apply_start_bgw
+   spk_apply_start_bgw
    Memcheck:Leak
    match-leak-kinds: possible,definite,reachable
    fun:*lloc*
@@ -43,7 +43,7 @@
 }
 
 {
-   pgl_apply_start_replorigin
+   spk_apply_start_replorigin
    Memcheck:Leak
    match-leak-kinds: possible,definite,reachable
    fun:*lloc*
@@ -53,7 +53,7 @@
 }
 
 {
-   pgl_apply_start_resowner
+   spk_apply_start_resowner
    Memcheck:Leak
    match-leak-kinds: definite,definite,reachable
    fun:*lloc*
@@ -63,7 +63,7 @@
 }
 
 {
-   pgl_bgw_init
+   spk_bgw_init
    Memcheck:Leak
    match-leak-kinds: possible
    fun:malloc
@@ -78,7 +78,7 @@
 #
 
 {
-   pgl_relcache_update
+   spk_relcache_update
    Memcheck:Leak
    match-leak-kinds: possible
    fun:*lloc*
@@ -89,7 +89,7 @@
 }
 
 {
-   pgl_relcache_open
+   spk_relcache_open
    Memcheck:Leak
    match-leak-kinds: reachable
    fun:*lloc*
@@ -106,7 +106,7 @@
 #
 
 {
-   pgl_relation
+   spk_relation
    Memcheck:Leak
    match-leak-kinds: possible
    fun:*lloc*
@@ -115,7 +115,7 @@
 }
 
 {
-   pgl_relation
+   spk_relation
    Memcheck:Leak
    match-leak-kinds: possible
    fun:*lloc*
@@ -128,11 +128,11 @@
 # Valgrind keeps claiming that bms_copy escapes heap_update. I cannot find how
 # that could be happening. We'll suppress the report for now on the assumption
 # that anything happening this deep in Pg should be causing much greater upset
-# than in pgl, but it merits further digging.
+# than in spk, but it merits further digging.
 #
 
 {
-   pgl_pg_bms_copy
+   spk_pg_bms_copy
    Memcheck:Leak
    match-leak-kinds: reachable
    fun:palloc
@@ -149,13 +149,13 @@
 }
 
 # Anything else in standard_ProcessUtility called via spock_ProcessUtility
-# during pgl SQL execution.
+# during spk SQL execution.
 #
 # This MUST not be invoked in TopMemoryContext, and so long as txn state is sane
 # cannot then allocate into TopMemoryContext. (Shame Valgrind doesn't let us name
 # mempools for allocations).
 {
-   pgl_sql_processutility
+   spk_sql_processutility
    Memcheck:Leak
    match-leak-kinds: reachable,possible
    fun:*lloc*
@@ -332,7 +332,7 @@
 
 # This is allocated once on entry to apply_work
 {
-   pgl_reachable_msgcontext
+   spk_reachable_msgcontext
    Memcheck:Leak
    match-leak-kinds: reachable
    fun:MemoryContextAlloc
@@ -345,7 +345,7 @@
 # This is stashed in a static var on first allocation and reused. It
 # shouldn't grow.
 {
-   pgl_reachable_feedback
+   spk_reachable_feedback
    Memcheck:Leak
    match-leak-kinds: reachable
    fun:palloc
@@ -357,7 +357,7 @@
 }
 
 # It's typical for syscache and catcache entries to live beyond a single txn.
-# That's kind of the point. If pgl fails to release cache entries that's not
+# That's kind of the point. If spk fails to release cache entries that's not
 # something we can detect easily, except maybe with CLOBBER_CACHE_ALWAYS,
 # which runs like treacle under valgrind.
 {
@@ -432,7 +432,7 @@
 
 #
 # This report looks bogus. There should be no way for the allocated wait-event
-# set to escape WaitLatchOrSocket. In pgl it only arises once anyway.
+# set to escape WaitLatchOrSocket. In spk it only arises once anyway.
 #
 {
    pg_waitlatchorsocket

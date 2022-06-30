@@ -269,7 +269,7 @@ spock_drop_node(PG_FUNCTION_ARGS)
 								  "  FROM pg_catalog.pg_replication_slots"
 								  " WHERE (plugin = 'spock_output' OR plugin = 'spock')"
 								  "   AND database = current_database()"
-								  "   AND slot_name ~ 'pgl_.*'",
+								  "   AND slot_name ~ 'spk_.*'",
 								  false, 0);
 			}
 			PG_CATCH();
@@ -2363,7 +2363,7 @@ spock_gen_slot_name(PG_FUNCTION_ARGS)
  * Generate slot name (used also for origin identifier)
  *
  * The current format is:
- * pgl_<subscriber database name>_<provider node name>_<subscription name>
+ * spk_<subscriber database name>_<provider node name>_<subscription name>
  *
  * Note that we want to leave enough free space for 8 bytes of suffix
  * which in practice means 9 bytes including the underscore.
@@ -2376,7 +2376,7 @@ gen_slot_name(Name slot_name, char *dbname, const char *provider_node,
 
 	memset(NameStr(*slot_name), 0, NAMEDATALEN);
 	snprintf(NameStr(*slot_name), NAMEDATALEN,
-			 "pgl_%s_%s_%s",
+			 "spk_%s_%s_%s",
 			 shorten_hash(dbname, 16),
 			 shorten_hash(provider_node, 16),
 			 shorten_hash(subscription_name, 16));

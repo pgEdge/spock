@@ -75,7 +75,7 @@ extern void set_table_sync_status(Oid subid, const char *schemaname,
 								  XLogRecPtr status_lsn);
 extern List *get_unsynced_tables(Oid subid);
 
-/* For interface compat with pgl3 */
+/* For interface compat with spk3 */
 inline static void free_sync_status(SpockSyncStatus *sync)
 {
 	pfree(sync);

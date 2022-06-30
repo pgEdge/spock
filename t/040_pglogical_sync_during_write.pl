@@ -20,7 +20,7 @@ my $WALSENDER_TIMEOUT = $ENV{PGBENCH_TIMEOUT} // '5s';
 $SIG{__DIE__} = sub { Carp::confess @_ };
 $SIG{INT}  = sub { die("interupted by SIGINT"); };
 
-my $dbname="pgltest";
+my $dbname="spktest";
 my $super_user="super";
 my $node_provider = get_new_node('provider');
 $node_provider->init();
