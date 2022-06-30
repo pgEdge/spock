@@ -508,13 +508,8 @@ spock_proccess_copy(spock_copyState *spkcstate)
 	SPI_push();
 
 	/* Initiate the actual COPY */
-#if PG_VERSION_NUM >= 100000
 	SPKDoCopy((CopyStmt*)((RawStmt *)linitial(spkcstate->copy_parsetree))->stmt,
 		spkcstate->copy_stmt->data, &processed);
-#else
-	SPKDoCopy((CopyStmt *) linitial(spkcstate->copy_parsetree),
-			  spkcstate->copy_stmt->data, &processed);
-#endif
 
 	/* Clean up SPI state */
 	SPI_pop();

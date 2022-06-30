@@ -455,27 +455,16 @@ main(int argc, char **argv)
 			  _("Bringing subscriber node to the restore point ...\n"));
 	if (recovery_conf)
 	{
-#if PG_VERSION_NUM >= 120000
 		CopyConfFile(recovery_conf, "postgresql.auto.conf", true);
-#else
-		CopyConfFile(recovery_conf, "recovery.conf", false);
-#endif
 	}
 	else
 	{
-#if PG_VERSION_NUM < 120000
-		appendPQExpBuffer(recoveryconfcontents, "standby_mode = 'on'\n");
-#endif
 		appendPQExpBuffer(recoveryconfcontents, "primary_conninfo = '%s'\n",
 								escape_single_quotes_ascii(prov_connstr));
 	}
 	appendPQExpBuffer(recoveryconfcontents, "recovery_target_name = '%s'\n", restore_point_name);
 	appendPQExpBuffer(recoveryconfcontents, "recovery_target_inclusive = true\n");
-#if PG_VERSION_NUM >= 90500
 	appendPQExpBuffer(recoveryconfcontents, "recovery_target_action = promote\n");
-#else
-	appendPQExpBuffer(recoveryconfcontents, "pause_at_recovery_target = false\n");
-#endif
 	WriteRecoveryConf(recoveryconfcontents);
 
 	free(restore_point_name);
@@ -1353,15 +1342,9 @@ WriteRecoveryConf(PQExpBuffer contents)
 	char		filename[MAXPGPATH];
 	FILE	   *cf;
 
-#if PG_VERSION_NUM >= 120000
 	sprintf(filename, "%s/postgresql.auto.conf", data_dir);
 
 	cf = fopen(filename, "a");
-#else
-	sprintf(filename, "%s/recovery.conf", data_dir);
-
-	cf = fopen(filename, "w");
-#endif
 	if (cf == NULL)
 	{
 		die(_("%s: could not create file \"%s\": %s\n"), progname, filename, strerror(errno));
@@ -1375,7 +1358,6 @@ WriteRecoveryConf(PQExpBuffer contents)
 
 	fclose(cf);
 
-#if PG_VERSION_NUM >= 120000
 	{
 		sprintf(filename, "%s/standby.signal", data_dir);
 		cf = fopen(filename, "w");
@@ -1386,7 +1368,6 @@ WriteRecoveryConf(PQExpBuffer contents)
 
 		fclose(cf);
 	}
-#endif
 }
 
 /*

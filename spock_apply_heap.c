@@ -36,11 +36,7 @@
 #include "nodes/parsenodes.h"
 
 #include "optimizer/clauses.h"
-#if PG_VERSION_NUM >= 120000
 #include "optimizer/optimizer.h"
-#else
-#include "optimizer/planner.h"
-#endif
 
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
@@ -89,21 +85,13 @@ typedef struct ApplyMIState
 	CommandId			cid;
 	BulkInsertState		bistate;
 
-#if PG_VERSION_NUM >= 120000
 	TupleTableSlot	  **buffered_tuples;
-#else
-	HeapTuple		   *buffered_tuples;
-#endif
 	int					maxbuffered_tuples;
 	int					nbuffered_tuples;
 } ApplyMIState;
 
 
-#if PG_VERSION_NUM >= 120000
 #define TTS_TUP(slot) (((HeapTupleTableSlot *)slot)->tuple)
-#else
-#define TTS_TUP(slot) (slot->tts_tuple)
-#endif
 
 
 static ApplyMIState *spkmistate = NULL;
@@ -131,16 +119,11 @@ UserTableUpdateOpenIndexes(ResultRelInfo *relinfo, EState *estate, TupleTableSlo
 											   relinfo,
 #endif
 											   slot,
-#if PG_VERSION_NUM < 120000
-											   &slot->tts_tuple->t_self,
-#endif
 											   estate
 #if PG_VERSION_NUM >= 140000
 											   , update
 #endif
-#if PG_VERSION_NUM >= 90500
 											   , false, NULL, NIL
-#endif
 											   );
 
 		/* FIXME: recheck the indexes */
@@ -321,17 +304,10 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 
 	/* Initialize the executor state. */
 	aestate = init_apply_exec_state(rel);
-#if PG_VERSION_NUM >= 120000
 	localslot = table_slot_create(rel->rel, &aestate->estate->es_tupleTable);
-#else
-	localslot = ExecInitExtraTupleSlot(aestate->estate);
-	ExecSetSlotDescriptor(localslot, RelationGetDescr(rel->rel));
-#endif
 
 	ExecOpenIndices(aestate->resultRelInfo
-#if PG_VERSION_NUM >= 90500
 					, false
-#endif
 					);
 
 	/*
@@ -356,17 +332,9 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	{
 		has_before_triggers = true;
 
-#if PG_VERSION_NUM >= 120000
 		if (!ExecBRInsertTriggers(aestate->estate,
 								  aestate->resultRelInfo,
 								  aestate->slot))
-#else
-		aestate->slot = ExecBRInsertTriggers(aestate->estate,
-											 aestate->resultRelInfo,
-											 aestate->slot);
-
-		if (aestate->slot == NULL)		/* "do nothing" */
-#endif
 		{
 			finish_apply_exec_state(aestate);
 			return;
@@ -375,11 +343,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	}
 
 	/* trigger might have changed tuple */
-#if PG_VERSION_NUM >= 120000
 	remotetuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
-#else
-	remotetuple = ExecMaterializeSlot(aestate->slot);
-#endif
 
 	/* Did we find matching key in any candidate-key index? */
 	if (OidIsValid(conflicts_idx_id))
@@ -407,9 +371,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 
 		if (apply)
 		{
-#if PG_VERSION_NUM >= 120000
 			bool update_indexes;
-#endif
 
 			if (applytuple != remotetuple)
 				ExecStoreHeapTuple(applytuple, aestate->slot, false);
@@ -417,23 +379,12 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 			if (aestate->resultRelInfo->ri_TrigDesc &&
 				aestate->resultRelInfo->ri_TrigDesc->trig_update_before_row)
 			{
-#if PG_VERSION_NUM >= 120000
 				if (!ExecBRUpdateTriggers(aestate->estate,
 										  &aestate->epqstate,
 										  aestate->resultRelInfo,
 										  &(TTS_TUP(localslot)->t_self),
 										  NULL,
 										  aestate->slot))
-#else
-				aestate->slot = ExecBRUpdateTriggers(aestate->estate,
-													 &aestate->epqstate,
-													 aestate->resultRelInfo,
-													 &(TTS_TUP(localslot)->t_self),
-													 NULL,
-													 aestate->slot);
-
-				if (aestate->slot == NULL)		/* "do nothing" */
-#endif
 				{
 					finish_apply_exec_state(aestate);
 					return;
@@ -442,44 +393,28 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 			}
 
 			/* trigger might have changed tuple */
-#if PG_VERSION_NUM >= 120000
 			remotetuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
-#else
-			remotetuple = ExecMaterializeSlot(aestate->slot);
-#endif
 
 			/* Check the constraints of the tuple */
 			if (rel->rel->rd_att->constr)
 				ExecConstraints(aestate->resultRelInfo, aestate->slot,
 								aestate->estate);
 
-#if PG_VERSION_NUM >= 120000
 			simple_table_tuple_update(rel->rel,
 									  &(localslot->tts_tid),
 									  aestate->slot,
 									  aestate->estate->es_snapshot,
 									  &update_indexes);
 			if (update_indexes)
-#else
-			simple_heap_update(rel->rel, &(TTS_TUP(localslot)->t_self),
-							   TTS_TUP(aestate->slot));
-			if (!HeapTupleIsHeapOnly(TTS_TUP(aestate->slot)))
-#endif
 				recheckIndexes = UserTableUpdateOpenIndexes(aestate->resultRelInfo,
 															aestate->estate,
 															aestate->slot,
 															true);
 
 			/* AFTER ROW UPDATE Triggers */
-#if PG_VERSION_NUM >= 120000
 			ExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
 								 &(TTS_TUP(localslot)->t_self),
 								 NULL, aestate->slot, recheckIndexes);
-#else
-			ExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
-								 &(TTS_TUP(localslot)->t_self),
-								 NULL, applytuple, recheckIndexes);
-#endif
 		}
 	}
 	else
@@ -489,21 +424,12 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 			ExecConstraints(aestate->resultRelInfo, aestate->slot,
 							aestate->estate);
 
-#if PG_VERSION_NUM >= 120000
 		simple_table_tuple_insert(aestate->resultRelInfo->ri_RelationDesc, aestate->slot);
-#else
-		simple_heap_insert(rel->rel, TTS_TUP(aestate->slot));
-#endif
 		UserTableUpdateOpenIndexes(aestate->resultRelInfo, aestate->estate, aestate->slot, false);
 
 		/* AFTER ROW INSERT Triggers */
-#if PG_VERSION_NUM >= 120000
 		ExecARInsertTriggers(aestate->estate, aestate->resultRelInfo,
 							 aestate->slot, recheckIndexes);
-#else
-		ExecARInsertTriggers(aestate->estate, aestate->resultRelInfo,
-							 remotetuple, recheckIndexes);
-#endif
 	}
 
 	finish_apply_exec_state(aestate);
@@ -530,12 +456,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 	/* Initialize the executor state. */
 	aestate = init_apply_exec_state(rel);
-#if PG_VERSION_NUM >= 120000
 	localslot = table_slot_create(rel->rel, &aestate->estate->es_tupleTable);
-#else
-	localslot = ExecInitExtraTupleSlot(aestate->estate);
-	ExecSetSlotDescriptor(localslot, RelationGetDescr(rel->rel));
-#endif
 
 	/* Search for existing tuple with same key */
 	found = spock_tuple_find_replidx(aestate->resultRelInfo, oldtup, localslot,
@@ -572,21 +493,11 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		{
 			has_before_triggers = true;
 
-#if PG_VERSION_NUM >= 120000
 			if (!ExecBRUpdateTriggers(aestate->estate,
 									  &aestate->epqstate,
 									  aestate->resultRelInfo,
 									  &(TTS_TUP(localslot)->t_self),
 									  NULL, aestate->slot))
-#else
-			aestate->slot = ExecBRUpdateTriggers(aestate->estate,
-												 &aestate->epqstate,
-												 aestate->resultRelInfo,
-												 &(TTS_TUP(localslot)->t_self),
-												 NULL, aestate->slot);
-
-			if (aestate->slot == NULL)		/* "do nothing" */
-#endif
 			{
 				finish_apply_exec_state(aestate);
 				return;
@@ -594,11 +505,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		}
 
 		/* trigger might have changed tuple */
-#if PG_VERSION_NUM >= 120000
 		remotetuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
-#else
-		remotetuple = ExecMaterializeSlot(aestate->slot);
-#endif
 		local_origin_found = get_tuple_origin(TTS_TUP(localslot), &xmin,
 											  &local_origin, &local_ts);
 
@@ -634,34 +541,21 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 		if (apply)
 		{
-#if PG_VERSION_NUM >= 120000
 			bool update_indexes;
-#endif
-
 			/* Check the constraints of the tuple */
 			if (rel->rel->rd_att->constr)
 				ExecConstraints(aestate->resultRelInfo, aestate->slot,
 								aestate->estate);
 
-#if PG_VERSION_NUM >= 120000
 			simple_table_tuple_update(rel->rel,
 									  &(localslot->tts_tid),
 									  aestate->slot,
 									  aestate->estate->es_snapshot,
 									  &update_indexes);
 			if (update_indexes)
-#else
-			simple_heap_update(rel->rel, &(TTS_TUP(localslot)->t_self),
-							   TTS_TUP(aestate->slot));
-
-			/* Only update indexes if it's not HOT update. */
-			if (!HeapTupleIsHeapOnly(TTS_TUP(aestate->slot)))
-#endif
 			{
 				ExecOpenIndices(aestate->resultRelInfo
-#if PG_VERSION_NUM >= 90500
 								, false
-#endif
 							   );
 				recheckIndexes = UserTableUpdateOpenIndexes(aestate->resultRelInfo,
 															aestate->estate,
@@ -670,15 +564,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			}
 
 			/* AFTER ROW UPDATE Triggers */
-#if PG_VERSION_NUM >= 120000
 			ExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
 								 &(TTS_TUP(localslot)->t_self),
 								 NULL, aestate->slot, recheckIndexes);
-#else
-			ExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
-								 &(TTS_TUP(localslot)->t_self),
-								 NULL, applytuple, recheckIndexes);
-#endif
 		}
 	}
 	else
@@ -717,12 +605,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 
 	/* Initialize the executor state. */
 	aestate = init_apply_exec_state(rel);
-#if PG_VERSION_NUM >= 120000
 	localslot = table_slot_create(rel->rel, &aestate->estate->es_tupleTable);
-#else
-	localslot = ExecInitExtraTupleSlot(aestate->estate);
-	ExecSetSlotDescriptor(localslot, RelationGetDescr(rel->rel));
-#endif
 
 	if (spock_tuple_find_replidx(aestate->resultRelInfo, oldtup, localslot,
 									 &replident_idx_id))
@@ -809,9 +692,7 @@ spock_apply_heap_mi_start(SpockRelation *rel)
 	resultRelInfo = aestate->resultRelInfo;
 
 	ExecOpenIndices(resultRelInfo
-#if PG_VERSION_NUM >= 90500
 					, false
-#endif
 					);
 
 	/* Check if table has any volatile default expressions. */
@@ -861,11 +742,7 @@ spock_apply_heap_mi_start(SpockRelation *rel)
 	spkmistate->bistate = GetBulkInsertState();
 
 	/* Make the space for buffer. */
-#if PG_VERSION_NUM >= 120000
 	spkmistate->buffered_tuples = palloc0(spkmistate->maxbuffered_tuples * sizeof(TupleTableSlot *));
-#else
-	spkmistate->buffered_tuples = palloc0(spkmistate->maxbuffered_tuples * sizeof(HeapTuple));
-#endif
 	spkmistate->nbuffered_tuples = 0;
 
 	MemoryContextSwitchTo(oldctx);
@@ -903,29 +780,17 @@ spock_apply_heap_mi_flush(void)
 		{
 			List	   *recheckIndexes = NIL;
 
-#if PG_VERSION_NUM < 120000
-			ExecStoreTuple(spkmistate->buffered_tuples[i],
-						   spkmistate->aestate->slot,
-						   InvalidBuffer, false);
-#endif
 			recheckIndexes =
 				ExecInsertIndexTuples(
 #if PG_VERSION_NUM >= 140000
 									  resultRelInfo,
 #endif
-#if PG_VERSION_NUM >= 120000
 									  spkmistate->buffered_tuples[i],
-#else
-									  spkmistate->aestate->slot,
-									  &(spkmistate->buffered_tuples[i]->t_self),
-#endif
 									  spkmistate->aestate->estate
-#if PG_VERSION_NUM >= 90500
 #if PG_VERSION_NUM >= 140000
 									  , false
 #endif
-									  , false, NULL, NIL
-#endif
+                                                                          , false, NULL, NIL
 									 );
 			ExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
 								 spkmistate->buffered_tuples[i],
@@ -995,25 +860,13 @@ spock_apply_heap_mi_add_tuple(SpockRelation *rel,
 	if (aestate->resultRelInfo->ri_TrigDesc &&
 		aestate->resultRelInfo->ri_TrigDesc->trig_insert_before_row)
 	{
-#if PG_VERSION_NUM >= 120000
 		if (!ExecBRInsertTriggers(aestate->estate,
 								 aestate->resultRelInfo,
 								 slot))
-#else
-		slot = ExecBRInsertTriggers(aestate->estate,
-									aestate->resultRelInfo,
-									slot);
-
-		if (slot == NULL)
-#endif
 		{
 			MemoryContextSwitchTo(oldctx);
 			return;
 		}
-#if PG_VERSION_NUM < 120000
-		else
-			remotetuple = ExecMaterializeSlot(slot);
-#endif
 	}
 
 	/* Check the constraints of the tuple */
@@ -1021,15 +874,11 @@ spock_apply_heap_mi_add_tuple(SpockRelation *rel,
 		ExecConstraints(aestate->resultRelInfo, slot,
 						aestate->estate);
 
-#if PG_VERSION_NUM >= 120000
 	if (spkmistate->buffered_tuples[spkmistate->nbuffered_tuples] == NULL)
 		spkmistate->buffered_tuples[spkmistate->nbuffered_tuples] = table_slot_create(rel->rel, NULL);
 	else
 		ExecClearTuple(spkmistate->buffered_tuples[spkmistate->nbuffered_tuples]);
 	ExecCopySlot(spkmistate->buffered_tuples[spkmistate->nbuffered_tuples], slot);
-#else
-	spkmistate->buffered_tuples[spkmistate->nbuffered_tuples] = remotetuple;
-#endif
 	spkmistate->nbuffered_tuples++;
 	MemoryContextSwitchTo(oldctx);
 }
@@ -1048,11 +897,9 @@ spock_apply_heap_mi_finish(SpockRelation *rel)
 
 	finish_apply_exec_state(spkmistate->aestate);
 
-#if PG_VERSION_NUM >= 120000
 	for (int i = 0; i < spkmistate->maxbuffered_tuples; i++)
 		if (spkmistate->buffered_tuples[i])
 			ExecDropSingleTupleTableSlot(spkmistate->buffered_tuples[i]);
-#endif
 
 	pfree(spkmistate->buffered_tuples);
 	pfree(spkmistate);

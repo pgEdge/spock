@@ -610,11 +610,7 @@ start_manager_workers(void)
 	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
 	{
 		Form_pg_database	pgdatabase = (Form_pg_database) GETSTRUCT(tup);
-#if PG_VERSION_NUM < 120000
-		Oid					dboid = HeapTupleGetOid(tup);
-#else
 		Oid					dboid = pgdatabase->oid;
-#endif
 		SpockWorker		worker;
 
 		CHECK_FOR_INTERRUPTS();
@@ -677,13 +673,7 @@ spock_supervisor_main(Datum main_arg)
 	VALGRIND_PRINTF("SPOCK: supervisor\n");
 
 	/* Setup connection to pinned catalogs (we only ever read pg_database). */
-#if PG_VERSION_NUM >= 110000
 	BackgroundWorkerInitializeConnection(NULL, NULL, 0);
-#elif PG_VERSION_NUM >= 90500
-	BackgroundWorkerInitializeConnection(NULL, NULL);
-#else
-	BackgroundWorkerInitializeConnection("postgres", NULL);
-#endif
 
 	/* Main wait loop. */
 	while (!got_SIGTERM)

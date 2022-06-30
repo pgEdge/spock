@@ -52,9 +52,6 @@ SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
 OBJS += $(srcdir)/compat$(PGVER)/spock_compat.o
 
 REGRESS += --dbname=regression
-SCRIPTS_built += spock_dump/spock_dump
-SCRIPTS += spock_dump/spock_dump
-requires = requires=spock_origin
 control_path = $(abspath $(abs_top_builddir))/spock.control
 
 EXTRA_CLEAN += $(control_path)

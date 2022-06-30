@@ -21,9 +21,7 @@
 
 #include "postgres.h"
 
-#if PG_VERSION_NUM >= 120000
 #include "access/heapam.h"
-#endif
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"
@@ -37,14 +35,8 @@
 #include "catalog/pg_authid.h"
 #include "catalog/pg_cast.h"
 #include "catalog/pg_collation.h"
-#if PG_VERSION_NUM < 110000
-#include "catalog/pg_collation_fn.h"
-#endif
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_conversion.h"
-#if PG_VERSION_NUM < 110000
-#include "catalog/pg_conversion_fn.h"
-#endif
 #include "catalog/pg_database.h"
 #include "catalog/pg_default_acl.h"
 #include "catalog/pg_event_trigger.h"
@@ -85,9 +77,6 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
-#if PG_VERSION_NUM < 120000
-#include "utils/tqual.h"
-#endif
 
 #include "spock_dependency.h"
 #include "spock_sync.h"
@@ -461,14 +450,9 @@ findDependentObjects(const ObjectAddress *object,
 		{
 			case DEPENDENCY_NORMAL:
 			case DEPENDENCY_AUTO:
-#if PG_VERSION_NUM >= 90600
 			case DEPENDENCY_AUTO_EXTENSION:
-#endif
 				/* no problem */
 				break;
-#if PG_VERSION_NUM >= 110000 && PG_VERSION_NUM < 120000
-			case DEPENDENCY_INTERNAL_AUTO:
-#endif
 			case DEPENDENCY_INTERNAL:
 			case DEPENDENCY_EXTENSION:
 
@@ -550,10 +534,6 @@ findDependentObjects(const ObjectAddress *object,
 				 * other words, we don't follow the links back to the owning
 				 * object.
 				 */
-#if PG_VERSION_NUM >= 110000 && PG_VERSION_NUM < 120000
-				if (foundDep->deptype == DEPENDENCY_INTERNAL_AUTO)
-					break;
-#endif
 
 				/*
 				 * First, release caller's lock on this object and get
@@ -682,15 +662,10 @@ findDependentObjects(const ObjectAddress *object,
 				subflags = DEPFLAG_NORMAL;
 				break;
 			case DEPENDENCY_AUTO:
-#if PG_VERSION_NUM >= 90600
 			case DEPENDENCY_AUTO_EXTENSION:
 				subflags = DEPFLAG_AUTO;
 				break;
-#endif
 			case DEPENDENCY_INTERNAL:
-#if PG_VERSION_NUM >= 110000 && PG_VERSION_NUM < 120000
-			case DEPENDENCY_INTERNAL_AUTO:
-#endif
 				subflags = DEPFLAG_INTERNAL;
 				break;
 			case DEPENDENCY_EXTENSION:
@@ -1217,7 +1192,6 @@ find_expr_references_walker(Node *node,
 										   context->addrs);
 					break;
 
-#if PG_VERSION_NUM >= 90500
 				case REGNAMESPACEOID:
 					objoid = DatumGetObjectId(con->constvalue);
 					if (SearchSysCacheExists1(NAMESPACEOID,
@@ -1235,7 +1209,6 @@ find_expr_references_walker(Node *node,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("constant of the type \"regrole\" cannot be used here")));
 					break;
-#endif
 			}
 		}
 		return false;
@@ -1314,7 +1287,6 @@ find_expr_references_walker(Node *node,
 		/* Extra work needed here if we ever need this case */
 		elog(ERROR, "already-planned subqueries not supported");
 	}
-#if PG_VERSION_NUM >= 110000
 	else if (IsA(node, FieldSelect))
 	{
 		FieldSelect *fselect = (FieldSelect *) node;
@@ -1360,7 +1332,6 @@ find_expr_references_walker(Node *node,
 			add_object_address(OCLASS_TYPE, fstore->resulttype, 0,
 							   context->addrs);
 	}
-#endif
 	else if (IsA(node, RelabelType))
 	{
 		RelabelType *relab = (RelabelType *) node;
@@ -1386,17 +1357,9 @@ find_expr_references_walker(Node *node,
 	{
 		ArrayCoerceExpr *acoerce = (ArrayCoerceExpr *) node;
 
-#if PG_VERSION_NUM < 110000
-		/* See Pg commit c12d570fa14 */
-		if (OidIsValid(acoerce->elemfuncid))
-			add_object_address(OCLASS_PROC, acoerce->elemfuncid, 0,
-							   context->addrs);
-#endif
-
 		add_object_address(OCLASS_TYPE, acoerce->resulttype, 0,
 						   context->addrs);
 
-#if PG_VERSION_NUM >= 110000
 		/*
 		 * elemfuncid and coerceexpr are gone, replaced by elemexprstate
 		 * as part of arrays-over-domains support; see Pg commit c12d570fa14
@@ -1406,7 +1369,6 @@ find_expr_references_walker(Node *node,
 			acoerce->resultcollid != DEFAULT_COLLATION_OID)
 			add_object_address(OCLASS_COLLATION, acoerce->resultcollid, 0,
 							   context->addrs);
-#endif
 
 		/* fall through to examine arguments */
 	}
@@ -1456,7 +1418,6 @@ find_expr_references_walker(Node *node,
 		add_object_address(OCLASS_TYPE, cd->resulttype, 0,
 						   context->addrs);
 	}
-#if PG_VERSION_NUM >= 90500
 	else if (IsA(node, OnConflictExpr))
 	{
 		OnConflictExpr *onconflict = (OnConflictExpr *) node;
@@ -1466,7 +1427,6 @@ find_expr_references_walker(Node *node,
 							   context->addrs);
 		/* fall through to examine arguments */
 	}
-#endif
 	else if (IsA(node, SortGroupClause))
 	{
 		SortGroupClause *sgc = (SortGroupClause *) node;
@@ -1478,7 +1438,6 @@ find_expr_references_walker(Node *node,
 							   context->addrs);
 		return false;
 	}
-#if PG_VERSION_NUM >= 110000
 	else if (IsA(node, WindowClause))
 	{
 		WindowClause *wc = (WindowClause *) node;
@@ -1495,7 +1454,6 @@ find_expr_references_walker(Node *node,
 							   context->addrs);
 		/* fall through to examine substructure */
 	}
-#endif
 	else if (IsA(node, Query))
 	{
 		/* Recurse into RTE subquery or not-yet-planned sublink subquery */
@@ -1619,7 +1577,6 @@ find_expr_references_walker(Node *node,
 								   context->addrs);
 		}
 	}
-#if PG_VERSION_NUM >= 90500
 	else if (IsA(node, TableSampleClause))
 	{
 		TableSampleClause *tsc = (TableSampleClause *) node;
@@ -1628,7 +1585,6 @@ find_expr_references_walker(Node *node,
 						   context->addrs);
 		/* fall through to examine arguments */
 	}
-#endif
 
 	return expression_tree_walker(node, find_expr_references_walker,
 								  (void *) context);

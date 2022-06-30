@@ -40,9 +40,6 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-#if PG_VERSION_NUM < 120000
-#include "utils/tqual.h"
-#endif
 #include "utils/typcache.h"
 
 #include "spock_conflict.h"
@@ -139,9 +136,6 @@ static bool
 find_index_tuple(ScanKey skey, Relation rel, Relation idxrel,
 				 LockTupleMode lockmode, TupleTableSlot *slot)
 {
-#if PG_VERSION_NUM < 120000
-	HeapTuple	scantuple;
-#endif
 	bool		found;
 	IndexScanDesc scan;
 	SnapshotData snap;
@@ -163,16 +157,9 @@ retry:
 	index_rescan(scan, skey, IndexRelationGetNumberOfKeyAttributes(idxrel),
 				 NULL, 0);
 
-#if PG_VERSION_NUM >= 120000
 	if (index_getnext_slot(scan, ForwardScanDirection, slot))
-#else
-	if ((scantuple = index_getnext(scan, ForwardScanDirection)) != NULL)
-#endif
 	{
 		found = true;
-#if PG_VERSION_NUM < 120000
-		ExecStoreTuple(scantuple, slot, InvalidBuffer, false);
-#endif
 		ExecMaterializeSlot(slot);
 
 		/*
@@ -193,21 +180,11 @@ retry:
 	/* Matching tuple found, no concurrent txns modifying it */
 	if (found)
 	{
-#if PG_VERSION_NUM >= 120000
 		TM_FailureData tmfd;
 		TM_Result res;
-#else
-		Buffer buf;
-		HeapUpdateFailureData hufd;
-		HTSU_Result res;
-		HeapTupleData locktup;
-
-		ItemPointerCopy(&slot->tts_tuple->t_self, &locktup.t_self);
-#endif
 
 		PushActiveSnapshot(GetLatestSnapshot());
 
-#if PG_VERSION_NUM >= 120000
 		res = table_tuple_lock(rel, &(slot->tts_tid), GetLatestSnapshot(),
 							   slot,
 							   GetCurrentCommandId(false),
@@ -215,32 +192,15 @@ retry:
 							   LockWaitBlock,
 							   0 /* don't follow updates */ ,
 							   &tmfd);
-#else
-		res = heap_lock_tuple(rel, &locktup, GetCurrentCommandId(false),
-							  lockmode,
-							  false /* wait */,
-							  false /* don't follow updates */,
-							  &buf, &hufd);
-		/* the tuple slot already has the buffer pinned */
-		ReleaseBuffer(buf);
-#endif
 
 		PopActiveSnapshot();
 
 		switch (res)
 		{
-#if PG_VERSION_NUM >= 120000
 			case TM_Ok:
-#else
-			case HeapTupleMayBeUpdated:
-#endif
 				/* lock was successfully acquired */
 				break;
-#if PG_VERSION_NUM >= 120000
 			case TM_Updated:
-#else
-			case HeapTupleUpdated:
-#endif
 				/*
 				 * We lost a race between when we looked up the tuple and
 				 * checked for concurrent modifying txns and when we tried to
@@ -407,11 +367,7 @@ spock_tuple_find_conflict(ResultRelInfo *relinfo, SpockTupleData *tuple,
 
 		if (found)
 		{
-#if PG_VERSION_NUM >= 120000
 			ItemPointerCopy(&outslot->tts_tid, &conflicting_tid);
-#else
-			ItemPointerCopy(&outslot->tts_tuple->t_self, &conflicting_tid);
-#endif
 			conflict_idx = RelationGetRelid(idxrel);
 			break;
 		}

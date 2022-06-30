@@ -311,10 +311,6 @@ spock_worker_attach(int slot, SpockWorkerType type)
 
 	MyProcPort = (Port *) calloc(1, sizeof(Port));
 
-#if PG_VERSION_NUM < 90600
-	set_latch_on_sigusr1 = true;
-#endif
-
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
 	before_shmem_exit(spock_worker_on_exit, (Datum) 0);
@@ -357,9 +353,7 @@ spock_worker_attach(int slot, SpockWorkerType type)
 
 		BackgroundWorkerInitializeConnectionByOid(MySpockWorker->dboid,
 												  InvalidOid
-#if PG_VERSION_NUM >= 110000
 												  , 0 /* flags */
-#endif
 												  );
 
 

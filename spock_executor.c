@@ -32,11 +32,7 @@
 
 #include "nodes/nodeFuncs.h"
 
-#if PG_VERSION_NUM >= 120000
 #include "optimizer/optimizer.h"
-#else
-#include "optimizer/planner.h"
-#endif
 
 #include "parser/parse_coerce.h"
 
@@ -80,19 +76,7 @@ create_estate_for_relation(Relation rel, bool forwrite)
 
 	/* Initialize executor state. */
 	estate = CreateExecutorState();
-#if PG_VERSION_NUM >= 120000
 	ExecInitRangeTable(estate, list_make1(rte));
-#elif PG_VERSION_NUM >= 110000 && SECONDQ_VERSION_NUM >= 103
-	/* 2ndQPostgres 11 r1.3 changes executor API */
-	estate->es_range_table = alist_add(NULL, rte);
-#else
-	estate->es_range_table = list_make1(rte);
-#endif
-
-#if PG_VERSION_NUM < 120000
-	if (rel->trigdesc)
-		estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate);
-#endif
 
 	estate->es_output_cid = GetCurrentCommandId(forwrite);
 
@@ -206,32 +190,21 @@ spock_finish_truncate(void)
 
 static void
 spock_ProcessUtility(
-#if PG_VERSION_NUM >= 100000
 						 PlannedStmt *pstmt,
-#else
-						 Node *pstmt,
-#endif
 						 const char *queryString,
 #if PG_VERSION_NUM >= 140000
 						 bool readOnlyTree,
 #endif
 						 ProcessUtilityContext context,
 						 ParamListInfo params,
-#if PG_VERSION_NUM >= 100000
 						 QueryEnvironment *queryEnv,
-#endif
 						 DestReceiver *dest,
 #ifdef XCP
 						 bool sentToRemote,
 #endif
 						 QueryCompletion *qc)
 {
-#if PG_VERSION_NUM >= 100000
 	Node	   *parsetree = pstmt->utilityStmt;
-#else
-	Node	   *parsetree = pstmt;
-	#define		queryEnv NULL
-#endif
 #ifndef XCP
 	#define		sentToRemote NULL
 #endif

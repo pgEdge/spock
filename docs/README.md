@@ -11,7 +11,7 @@ reused from the earlier Slony technology:
 * Replication Set - a collection of tables
 
 spock is utilising the latest in-core features, so we have these version restrictions:
-* Provider & subscriber nodes must run PostgreSQL 12+ 
+* Provider & subscriber nodes must run PostgreSQL 13 & 14
 
 Use cases supported are:
 * Asynchronous Multi-Master Replication with conflict resolution
