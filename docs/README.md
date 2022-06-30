@@ -78,7 +78,6 @@ conflict resolution with last/first update wins (see [Conflicts](#conflicts)),
 you can add this additional option to postgresql.conf:
 
     track_commit_timestamp = on # needed for last/first update wins conflict resolution
-                                # property available in PostgreSQL 9.5+
 
 `pg_hba.conf` has to allow logical replication connections from
 localhost. Logical replication connections are treated
