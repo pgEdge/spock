@@ -1,20 +1,15 @@
-# spock 2
+# Spock
 
-The spock extension provides logical streaming replication for PostgreSQL,
-using a publish/subscribe model. It is based on technology developed as 
-part of the BDR project (http://2ndquadrant.com/bdr)
+The spock extension provides logical & (optionally bi-directional) replication for PostgreSQL 13+. 
+Our initial version is based on technology originally developed by 2ndQuadrant in the BDR2 & then pgLogical projects. 
 
-We use the following terms to describe data streams between nodes, deliberately
-reused from the earlier Slony technology:
+We use the following terms to describe data streams between nodes:
 * Nodes - PostgreSQL database instances
 * Providers and Subscribers - roles taken by Nodes
 * Replication Set - a collection of tables
 
-spock is utilising the latest in-core features, so we have these version restrictions:
-* Provider & subscriber nodes must run PostgreSQL 13 & 14
-
 Use cases supported are:
-* Asynchronous Multi-Master Replication with conflict resolution
+* Asynchronous Bi-Directional Replication with conflict resolution
 * Upgrades between major versions (given the above restrictions)
 * Full database replication
 * Selective replication of sets of tables using replication sets
@@ -78,7 +73,7 @@ decoding:
     max_wal_senders = 10        # one per node needed on provider node
     shared_preload_libraries = 'spock'
 
-If you are using PostgreSQL 9.5+ (this won't work on 9.4) and want to handle
+If you want to handle
 conflict resolution with last/first update wins (see [Conflicts](#conflicts)),
 you can add this additional option to postgresql.conf:
 
@@ -86,9 +81,7 @@ you can add this additional option to postgresql.conf:
                                 # property available in PostgreSQL 9.5+
 
 `pg_hba.conf` has to allow logical replication connections from
-localhost. Up until PostgreSQL 9.6, logical replication connections
-are managed using the `replication` keyword in `pg_hba.conf`. In
-PostgreSQL 10 and later, logical replication connections are treated
+localhost. Logical replication connections are treated
 by `pg_hba.conf` as regular connections to the provider database.
 
 Next the `spock` extension has to be installed on all nodes:
