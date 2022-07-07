@@ -1,7 +1,7 @@
-# Spock
+# Spock 3.x
 
 The spock extension provides logical & (optionally bi-directional) replication for PostgreSQL 13+. 
-Our initial version is based on technology originally developed by 2ndQuadrant in the BDR2 & then pgLogical projects. 
+Our initial version is based on technology originally developed by 2ndQuadrant in the BDR2 & pgLogical2 projects. 
 
 We use the following terms to describe data streams between nodes:
 * Nodes - PostgreSQL database instances
@@ -601,9 +601,7 @@ can be either set in `postgresql.conf` or via `ALTER SYSTEM SET`.
   The default value in PostgreSQL is `apply_remote`.
 
   The `keep_local`, `last_update_wins` and `first_update_wins` settings
-  require `track_commit_timestamp` PostgreSQL setting to be enabled. As
-  `track_commit_timestamp` is not available in PostgreSQL 9.4
-  `spock.conflict_resolution` can only be `apply_remote` or `error`.
+  require `track_commit_timestamp` PostgreSQL setting to be enabled.
 
 - `spock.conflict_log_level`
   Sets the log level for reporting detected conflicts when the
