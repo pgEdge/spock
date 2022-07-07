@@ -1,4 +1,4 @@
-# Spock 3.x
+# Spock
 
 The spock extension provides logical & (optionally bi-directional) replication for PostgreSQL 13+. 
 Our initial version is based on technology originally developed by 2ndQuadrant in the BDR2 & pgLogical2 projects. 
