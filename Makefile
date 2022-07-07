@@ -49,30 +49,14 @@ SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
 
 OBJS += $(srcdir)/compat$(PGVER)/spock_compat.o
 
-REGRESS += --dbname=regression
-control_path = $(abspath $(abs_top_builddir))/spock.control
+requires =
+control_path = $(abspath $(srcdir))/spock.control
 
 EXTRA_CLEAN += $(control_path)
-
 
 PGXS = $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
-
-ifeq ($(PGVER),94)
-regresscheck: ;
-check: ;
-
-$(srcdir)/spock_dump/pg_dump.c:
-	$(warning spock_dump empty, trying to fetch as submodule)
-	git submodule init
-	git submodule update
-
-spock_dump/spock_dump: spock_dump/pg_dump.c
-
-SUBDIRS += spock_dump
-
-else
 # We can't do a normal 'make check' because PGXS doesn't support
 # creating a temp install. We don't want to use a normal PGXS
 # 'installcheck' though, because it's a pain to set up a temp install
@@ -94,8 +78,6 @@ regresscheck:
 	    $(REGRESS)
 
 check: install regresscheck
-
-endif
 
 spock_create_subscriber: spock_create_subscriber.o spock_fe.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(libpq_pgport) $(filter-out -lreadline, $(LIBS)) -o $@$(X)
@@ -162,11 +144,6 @@ endef
 
 $(foreach target,$(if $1,$1,$(standard_targets)),$(foreach subdir,$(if $2,$2,$(SUBDIRS)),$(eval $(call _spk_create_recursive_target,$(target),$(subdir),$(if $3,$3,$(target))))))
 
-
-#
-# The following hideous hack works around pg_regress's inability to inject
-# prefix commands by using a wrapper 'postgres' that finds the real postgres.
-#
 
 define VALGRIND_WRAPPER
 #!/bin/bash

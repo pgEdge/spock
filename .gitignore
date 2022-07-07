@@ -1,4 +1,13 @@
+results
+regression_output
+tmp_check
+pglogical_create_subscriber
+.vimrc
 *.o
 *.so
 *.bc
+*.gcda
+*.gcno
+*~
+/postgres
 spock.control
