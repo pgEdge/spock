@@ -54,7 +54,11 @@
 #include "tcop/utility.h"
 
 #include "utils/builtins.h"
+
+#if PG_VERSION_NUM <= 140000
 #include "utils/int8.h"
+#endif
+
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
