@@ -26,7 +26,8 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic extended conflict
 		  row_filter_sampling att_list column_filter apply_delay multiple_upstreams \
 		  node_origin_cascade drop
 
-EXTRA_CLEAN += compat14/spock_compat.o compat14/spock_compat.bc \
+EXTRA_CLEAN += compat15/spock_compat.o compat15/spock_compat.bc \
+                           compat14/spock_compat.o compat14/spock_compat.bc \
 			   spock_create_subscriber.o
 
 spock_version=$(shell awk '/\#define SPOCK_VERSION[ \t]+\".*\"/ { print substr($$3,2,length($$3)-2) }' $(realpath $(srcdir)/spock.h) )
