@@ -3,10 +3,9 @@
  * spock_create_subscriber.c
  *		Initialize a new spock subscriber from a physical base backup
  *
- * Copyright (C) 2012-2016, PostgreSQL Global Development Group
- *
- * IDENTIFICATION
- *		spock_create_subscriber.c
+ * Copyright (c) 2021-2022, OSCG Partners, LLC
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
  *
  * -------------------------------------------------------------------------
  */

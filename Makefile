@@ -6,7 +6,7 @@ PGFILEDESC = "spock - logical multi-master replication"
 
 MODULES = spock_output
 
-DATA = spock--3.0.0.sql
+DATA = spock--3.0.sql
 
 OBJS = spock_apply.o spock_conflict.o spock_manager.o \
 	   spock.o spock_node.o spock_relcache.o \
@@ -26,16 +26,12 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic extended conflict
 		  row_filter_sampling att_list column_filter apply_delay multiple_upstreams \
 		  node_origin_cascade drop
 
-EXTRA_CLEAN += compat13/spock_compat.o compat13/spock_compat.bc \
-			   compat14/spock_compat.o compat14/spock_compat.bc \
+EXTRA_CLEAN += compat14/spock_compat.o compat14/spock_compat.bc \
 			   spock_create_subscriber.o
 
-# The # in #define is taken as a comment, per https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=142043
-# so it must be escaped. The $ placeholders in awk must be doubled too.
 spock_version=$(shell awk '/\#define SPOCK_VERSION[ \t]+\".*\"/ { print substr($$3,2,length($$3)-2) }' $(realpath $(srcdir)/spock.h) )
 
 # For regression checks
-# http://www.postgresql.org/message-id/CAB7nPqTsR5o3g-fBi6jbsVdhfPiLFWQ_0cGU5=94Rv_8W3qvFA@mail.gmail.com
 # this makes "make check" give a useful error
 abs_top_builddir = .
 NO_TEMP_INSTALL = yes

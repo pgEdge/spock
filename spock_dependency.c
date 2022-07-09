@@ -3,6 +3,11 @@
  * spock_dependency.c
  *		spock dependenct handling
  *
+ * Copyright (c) 2021-2022, OSCG Partners, LLC
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ * NOTES:
  *		Most of the code here is taken from dependency.c as the dependency
  *		handling in postgres is sadly not extensible.
  *
@@ -12,9 +17,6 @@
  *
  *		for version comparisons, but you can't apply directly as you must
  *		keep old-version compatibility.
- *
- * IDENTIFICATION
- *		spock_functions.c
  *
  *-------------------------------------------------------------------------
  */
