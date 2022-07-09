@@ -1,7 +1,7 @@
 # Spock
 
 The spock extension provides logical & (optionally bi-directional) replication for PostgreSQL 14. 
-We levergae much of the BDR2 technology originally developed by 2ndQuadrant. 
+We leverage much of the BDR2 technology originally developed by 2ndQuadrant. 
 
 We use the following terms to describe data streams between nodes:
 * Nodes - PostgreSQL database instances
@@ -595,11 +595,6 @@ can be either set in `postgresql.conf` or via `ALTER SYSTEM SET`.
   - `first_update_wins` - the version of the data with oldest timestamp will
      be kept (this can be either local or remote version)
 
-  The available settings and defaults depend on version of PostgreSQL and
-  other settings.
-
-  The default value in PostgreSQL is `apply_remote`.
-
   The `keep_local`, `last_update_wins` and `first_update_wins` settings
   require `track_commit_timestamp` PostgreSQL setting to be enabled.
 
@@ -808,5 +803,4 @@ to large objects, so spock cannot replicate large objects.
 Also any DDL limitations apply so extra care need to be taken when using
 `replicate_ddl_command()`.
 
-spock license is The Server Side Public License
-
+Spock License is AGPLv3
