@@ -6,8 +6,8 @@ We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [B
 This years v3.0 should include (at least) the following important enhancements:
 * Support for pg15
 * Better error handling for Conflict Resolution
-* Better Management & Monitoring stats and integration
-* A web UI for configuration
+* Better management & monitoring stats and integration
+* A web UI for configuration, management & monitoring
 
 
 We use the following terms to describe data streams between nodes:
