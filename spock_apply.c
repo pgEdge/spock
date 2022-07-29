@@ -55,8 +55,10 @@
 
 #include "utils/builtins.h"
 
-#if PG_VERSION_NUM <= 140000
+#if PG_VERSION_NUM < 150000
 #include "utils/int8.h"
+#else
+#include "utils/builtins.h"
 #endif
 
 #include "utils/jsonb.h"
@@ -1030,7 +1032,11 @@ handle_sequence(QueuedMessage *queued_message)
 
 	nspoid = get_namespace_oid(nspname, false);
 	reloid = get_relname_relid(relname, nspoid);
+#if PG_VERSION_NUM < 150000
 	scanint8(last_value_raw, false, &last_value);
+#else
+	last_value = pg_strtoint64(last_value_raw);
+#endif
 
 	DirectFunctionCall2(setval_oid, ObjectIdGetDatum(reloid),
 						Int64GetDatum(last_value));
