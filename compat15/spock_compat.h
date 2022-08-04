@@ -27,7 +27,7 @@
 #define GetCurrentIntegerTimestamp() GetCurrentTimestamp()
 
 #define pg_analyze_and_rewrite(parsetree, query_string, paramTypes, numParams) \
-	pg_analyze_and_rewrite(parsetree, query_string, paramTypes, numParams, NULL)
+	pg_analyze_and_rewrite_fixedparams(parsetree, query_string, paramTypes, numParams, NULL)
 
 #define CreateCommandTag(raw_parsetree) \
 	CreateCommandTag(raw_parsetree->stmt)
