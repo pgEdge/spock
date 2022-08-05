@@ -481,10 +481,19 @@ handle_commit(StringInfo s)
 	 * the notification queues have already been flushed, the same error won't
 	 * occur again, however if errors continue, they will dramatically slow
 	 * down - but not stop - replication.
+	 *
+	 * For PG15 and above, such notifications are sent at transaction commit.
+	 * (This is also true of previous version branches that received a fix[1]
+	 * but where ProcessCompletedNotifies() was converted to a no-op routine
+	 * to avoid breaking ABI.)
+	 *
+	 * [1] -- https://www.postgresql.org/message-id/flat/153243441449.1404.2274116228506175596@wrigleys.postgresql.org
 	 */
+#if PG_VERSION_NUM < 150000
 	ProcessCompletedNotifies();
+#endif
 
-	pgstat_report_activity(STATE_IDLE, NULL);
+    pgstat_report_activity(STATE_IDLE, NULL);
 }
 
 /*
