@@ -487,7 +487,7 @@ handle_commit(StringInfo s)
 	 * but where ProcessCompletedNotifies() was converted to a no-op routine
 	 * to avoid breaking ABI.)
 	 *
-	 * [1] -- https://www.postgresql.org/message-id/flat/153243441449.1404.2274116228506175596@wrigleys.postgresql.org
+	 * [1] -- Discussion: https://www.postgresql.org/message-id/flat/153243441449.1404.2274116228506175596@wrigleys.postgresql.org
 	 */
 #if PG_VERSION_NUM < 150000
 	ProcessCompletedNotifies();
