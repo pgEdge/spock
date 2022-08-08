@@ -1218,8 +1218,11 @@ static bool
 get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
 {
 	dlist_mutable_iter iter;
+#if PG_VERSION_NUM < 150000
 	XLogRecPtr	local_flush = GetFlushRecPtr();
-
+#else
+	XLogRecPtr	local_flush = GetFlushRecPtr(NULL);
+#endif
 	*write = InvalidXLogRecPtr;
 	*flush = InvalidXLogRecPtr;
 
