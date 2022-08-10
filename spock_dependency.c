@@ -26,6 +26,9 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
+#if PG_VERSION_NUM >= 150000
+#include "catalog/catalog.h"
+#endif
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
@@ -408,6 +411,18 @@ findDependentObjects(const ObjectAddress *object,
 	if (object_address_present_add_flags(object, flags, targetObjects))
 		return;
 
+#if PG_VERSION_NUM >= 150000
+	/*
+	 * If the target object is pinned, we can just error out immediately; it
+	 * won't have any objects recorded as depending on it.
+	 */
+	if (IsPinnedObject(object->classId, object->objectId))
+		ereport(ERROR,
+				(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
+				 errmsg("cannot drop %s because it is required by the database system",
+						spock_getObjectDescription(object))));
+#endif
+
 	/*
 	 * The target object might be internally dependent on some other object
 	 * (its "owner"), and/or be a member of an extension (also considered its
@@ -580,6 +595,7 @@ findDependentObjects(const ObjectAddress *object,
 				systable_endscan(scan);
 				return;
 
+#if PG_VERSION_NUM < 150000
 			case DEPENDENCY_PIN:
 
 				/*
@@ -589,6 +605,7 @@ findDependentObjects(const ObjectAddress *object,
 				elog(ERROR, "incorrect use of PIN dependency with %s",
 					 spock_getObjectDescription(object));
 				break;
+#endif
 			default:
 				elog(ERROR, "unrecognized dependency type '%c' for %s",
 					 foundDep->deptype, spock_getObjectDescription(object));
@@ -673,6 +690,7 @@ findDependentObjects(const ObjectAddress *object,
 			case DEPENDENCY_EXTENSION:
 				subflags = DEPFLAG_EXTENSION;
 				break;
+#if PG_VERSION_NUM < 150000
 			case DEPENDENCY_PIN:
 
 				/*
@@ -685,6 +703,7 @@ findDependentObjects(const ObjectAddress *object,
 								spock_getObjectDescription(object))));
 				subflags = 0;	/* keep compiler quiet */
 				break;
+#endif
 			default:
 				elog(ERROR, "unrecognized dependency type '%c' for %s",
 					 foundDep->deptype, spock_getObjectDescription(object));
@@ -791,6 +810,12 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 			continue;
 
 		objDesc = spock_getObjectDescription(obj);
+
+#if PG_VERSION_NUM >= 150000
+		/* An object being dropped concurrently doesn't need to be reported */
+		if (objDesc == NULL)
+			continue;
+#endif
 
 		/*
 		 * If, at any stage of the recursive search, we reached the object via
