@@ -811,12 +811,6 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 
 		objDesc = spock_getObjectDescription(obj);
 
-#if PG_VERSION_NUM >= 150000
-		/* An object being dropped concurrently doesn't need to be reported */
-		if (objDesc == NULL)
-			continue;
-#endif
-
 		/*
 		 * If, at any stage of the recursive search, we reached the object via
 		 * an AUTO, INTERNAL, or EXTENSION dependency, then it's okay to
