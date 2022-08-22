@@ -41,6 +41,9 @@
 #define ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple) \
  	ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, NULL)
 
+#define ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot) \
+	ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot, NULL)
+
 #undef ExecEvalExpr
 #define ExecEvalExpr(expr, econtext, isNull, isDone) \
 	((*(expr)->evalfunc) (expr, econtext, isNull))
