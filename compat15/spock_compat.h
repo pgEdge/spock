@@ -54,13 +54,13 @@
 	InitResultRelInfo(resultRelInfo, resultRelationDesc, resultRelationIndex, NULL, instrument_options)
 
 #define ExecARUpdateTriggers(estate, relinfo, tupleid, fdw_trigtuple, newslot, recheckIndexes) \
-	ExecARUpdateTriggers(estate, relinfo, tupleid, fdw_trigtuple, newslot, recheckIndexes, NULL)
+	ExecARUpdateTriggers(estate, relinfo, NULL, NULL, tupleid, fdw_trigtuple, newslot, recheckIndexes, NULL, false)
 
 #define ExecARInsertTriggers(estate, relinfo, slot, recheckIndexes) \
 	ExecARInsertTriggers(estate, relinfo, slot, recheckIndexes, NULL)
 
 #define ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple) \
-	ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple, NULL)
+	ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple, NULL, false)
 
 #define makeDefElem(name, arg) makeDefElem(name, arg, -1)
 
