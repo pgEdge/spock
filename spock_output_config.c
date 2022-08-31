@@ -16,7 +16,11 @@
 #include "nodes/makefuncs.h"
 #include "replication/reorderbuffer.h"
 #include "utils/builtins.h"
+#if PG_VERSION_NUM < 150000
 #include "utils/int8.h"
+#else
+#include "utils/builtins.h"
+#endif
 
 #include "miscadmin.h"
 
@@ -413,12 +417,16 @@ static uint32
 parse_param_uint32(DefElem *elem)
 {
 	int64		res;
+	char		*str;
+	char		*endptr;
 
-	if (!scanint8(strVal(elem->arg), true, &res))
+	str = strVal(elem->arg);
+	res = strtoi64(str, &endptr, 10);
+	if (str == endptr || *endptr != '\0')
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("could not parse integer value \"%s\" for parameter \"%s\"",
-						strVal(elem->arg), elem->defname)));
+						str, elem->defname)));
 
 	if (res > PG_UINT32_MAX || res < 0)
 		ereport(ERROR,
@@ -433,12 +441,16 @@ static int32
 parse_param_int32(DefElem *elem)
 {
 	int64		res;
+	char		*str;
+	char		*endptr;
 
-	if (!scanint8(strVal(elem->arg), true, &res))
+	str = strVal(elem->arg);
+	res = strtoi64(str, &endptr, 10);
+	if (str == endptr || *endptr != '\0')
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("could not parse integer value \"%s\" for parameter \"%s\"",
-						strVal(elem->arg), elem->defname)));
+						str, elem->defname)));
 
 	if (res > PG_INT32_MAX || res < PG_INT32_MIN)
 		ereport(ERROR,
