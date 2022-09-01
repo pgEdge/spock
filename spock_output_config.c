@@ -18,8 +18,6 @@
 #include "utils/builtins.h"
 #if PG_VERSION_NUM < 150000
 #include "utils/int8.h"
-#else
-#include "utils/builtins.h"
 #endif
 
 #include "miscadmin.h"
