@@ -417,10 +417,17 @@ parse_param_uint32(DefElem *elem)
 	int64		res;
 	char		*str;
 	char		*endptr;
+	bool		error;
 
 	str = strVal(elem->arg);
+#if PG_VERSION_NUM >= 150000
 	res = strtoi64(str, &endptr, 10);
-	if (str == endptr || *endptr != '\0')
+	error = (str == endptr || *endptr != '\0');
+#else
+	error = (!scanint8(str, true, &res));
+#endif
+
+	if (error)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("could not parse integer value \"%s\" for parameter \"%s\"",
@@ -441,10 +448,17 @@ parse_param_int32(DefElem *elem)
 	int64		res;
 	char		*str;
 	char		*endptr;
+	bool		error;
 
 	str = strVal(elem->arg);
+#if PG_VERSION_NUM >= 150000
 	res = strtoi64(str, &endptr, 10);
-	if (str == endptr || *endptr != '\0')
+	error = (str == endptr || *endptr != '\0');
+#else
+	error = (!scanint8(str, true, &res));
+#endif
+
+	if (error)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("could not parse integer value \"%s\" for parameter \"%s\"",
