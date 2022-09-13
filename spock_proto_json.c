@@ -67,9 +67,17 @@ spock_json_write_begin(StringInfo out, SpockOutputData *data, ReorderBufferTXN *
 		appendStringInfo(out, ", \"origin_lsn\":\"%X/%X\"",
 			(uint32)(txn->origin_lsn >> 32), (uint32)(txn->origin_lsn));
 #endif
+#if PG_VERSION_NUM >= 150000
+		if (txn->xact_time.commit_time != 0)
+#else
 		if (txn->commit_time != 0)
+#endif
 		appendStringInfo(out, ", \"commit_time\":\"%s\"",
+#if PG_VERSION_NUM >= 150000
+			timestamptz_to_str(txn->xact_time.commit_time));
+#else
 			timestamptz_to_str(txn->commit_time));
+#endif
 	}
 	appendStringInfoChar(out, '}');
 }
