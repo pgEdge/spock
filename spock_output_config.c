@@ -416,8 +416,10 @@ parse_param_uint32(DefElem *elem)
 {
 	int64		res;
 	char		*str;
-	char		*endptr;
 	bool		error;
+#if PG_VERSION_NUM >= 150000
+	char		*endptr;
+#endif
 
 	str = strVal(elem->arg);
 #if PG_VERSION_NUM >= 150000
@@ -447,8 +449,10 @@ parse_param_int32(DefElem *elem)
 {
 	int64		res;
 	char		*str;
-	char		*endptr;
 	bool		error;
+#if PG_VERSION_NUM >= 150000
+	char		*endptr;
+#endif
 
 	str = strVal(elem->arg);
 #if PG_VERSION_NUM >= 150000
