@@ -38,8 +38,8 @@ SELECT subscription_name, status, provider_node, replication_sets, forward_origi
 
 \c :provider_dsn
 SELECT plugin, slot_type, active FROM pg_replication_slots;
-      plugin      | slot_type | active 
-------------------+-----------+--------
+    plugin    | slot_type | active 
+--------------+-----------+--------
  spock_output | logical   | t
 (1 row)
 
@@ -80,8 +80,8 @@ SELECT subscription_name, status, provider_node, replication_sets, forward_origi
 \c :provider_dsn
 DROP USER super2;
 SELECT plugin, slot_type, active FROM pg_replication_slots;
-      plugin      | slot_type | active 
-------------------+-----------+--------
+    plugin    | slot_type | active 
+--------------+-----------+--------
  spock_output | logical   | t
 (1 row)
 

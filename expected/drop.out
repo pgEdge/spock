@@ -5,8 +5,8 @@ SELECT * FROM spock.drop_node(node_name := 'test_provider');
 ERROR:  cannot drop node "test_provider" because one or more replication slots for the node are still active
 HINT:  drop the subscriptions connected to the node first
 SELECT plugin, slot_type, active FROM pg_replication_slots;
-      plugin      | slot_type | active 
-------------------+-----------+--------
+    plugin    | slot_type | active 
+--------------+-----------+--------
  spock_output | logical   | t
 (1 row)
 

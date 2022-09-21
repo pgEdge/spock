@@ -56,8 +56,8 @@ SELECT * FROM spock.show_subscription_status();
 -- Make sure we see the slot and active connection
 \c :provider_dsn
 SELECT plugin, slot_type, database, active FROM pg_replication_slots;
-      plugin      | slot_type |  database  | active 
-------------------+-----------+------------+--------
+    plugin    | slot_type |  database  | active 
+--------------+-----------+------------+--------
  spock_output | logical   | regression | t
  spock_output | logical   | regression | t
 (2 rows)

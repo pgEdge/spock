@@ -43,7 +43,7 @@ system_or_bail 'psql', '-p', "$PGPORT", '-d', "postgres", '-c', "CREATE USER sup
 
 # Required for PostgreSQL 9.4 run
 #system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS spock_origin";
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS spock VERSION '1.0.0'";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "CREATE EXTENSION IF NOT EXISTS spock VERSION '3.0'";
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-d', "postgres", '-c', "ALTER EXTENSION spock UPDATE";
 
 # Required for PostgreSQL 9.4 run

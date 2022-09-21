@@ -60,7 +60,7 @@ system_or_bail 'sleep', '17';
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "CREATE USER super SUPERUSER";
 system_or_bail 'psql', '-p', "$PGPORT", '-c', "CREATE USER super SUPERUSER";
 
-system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "CREATE EXTENSION IF NOT EXISTS spock VERSION '1.0.0'";
+system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "CREATE EXTENSION IF NOT EXISTS spock VERSION '3.0'";
 system_or_bail 'psql', '-p', "$PROVIDER_PORT", '-c', "ALTER EXTENSION spock UPDATE";
 system_or_bail 'psql', '-p', "$PGPORT", '-c', "CREATE EXTENSION IF NOT EXISTS spock";
 

@@ -115,8 +115,8 @@ SELECT * from multi_ups_tbl ORDER BY id;
 -- Make sure we see the slot and active connection
 \c :provider1_dsn
 SELECT plugin, slot_type, active FROM pg_replication_slots;
-      plugin      | slot_type | active 
-------------------+-----------+--------
+    plugin    | slot_type | active 
+--------------+-----------+--------
  spock_output | logical   | t
  spock_output | logical   | t
 (2 rows)
@@ -160,8 +160,8 @@ SELECT * FROM spock.drop_node(node_name := 'test_provider1');
 (1 row)
 
 SELECT plugin, slot_type, active FROM pg_replication_slots;
-      plugin      | slot_type | active 
-------------------+-----------+--------
+    plugin    | slot_type | active 
+--------------+-----------+--------
  spock_output | logical   | t
 (1 row)
 

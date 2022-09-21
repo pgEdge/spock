@@ -59,7 +59,7 @@ $node_subscriber->safe_psql('postgres', "CREATE DATABASE $dbname");
 $node_provider->safe_psql($dbname,
         "CREATE USER $super_user SUPERUSER;");
 $node_provider->safe_psql($dbname,
-        "CREATE EXTENSION IF NOT EXISTS spock VERSION '1.0.0';");
+        "CREATE EXTENSION IF NOT EXISTS spock VERSION '3.0';");
 $node_provider->safe_psql($dbname,
         "ALTER EXTENSION spock UPDATE;");
 
@@ -73,7 +73,7 @@ $node_provider->safe_psql($dbname,
 $node_subscriber->safe_psql($dbname,
         "CREATE USER $super_user SUPERUSER;");
 $node_subscriber->safe_psql($dbname,
-        "CREATE EXTENSION IF NOT EXISTS spock VERSION '1.0.0';");
+        "CREATE EXTENSION IF NOT EXISTS spock VERSION '3.0';");
 $node_subscriber->safe_psql($dbname,
         "ALTER EXTENSION spock UPDATE;");
 my $subscriber_connstr = $node_subscriber->connstr;
