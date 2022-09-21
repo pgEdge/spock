@@ -308,6 +308,18 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	Assert(slot >= 0);
 	Assert(slot < SpockCtx->total_workers);
 
+	/*
+	 * Establish signal handlers. We must do this before unblocking the
+	 * signals. The default SIGTERM handler of Postgres's background
+	 * worker processes otherwise might throw a FATAL error, forcing us
+	 * to exit while potentially holding a spinlock and/or corrupt
+	 * shared memory.
+	 */
+	pqsignal(SIGTERM, handle_sigterm);
+
+	/* Now safe to process signals */
+	BackgroundWorkerUnblockSignals();
+
 	MyProcPort = (Port *) calloc(1, sizeof(Port));
 
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
@@ -337,9 +349,6 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	/* Make it easy to identify our processes. */
 	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,
 					PGC_USERSET, PGC_S_SESSION);
-
-	/* Establish signal handlers. */
-	BackgroundWorkerUnblockSignals();
 
 	/* Make it easy to identify our processes. */
 	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,

@@ -1902,9 +1902,6 @@ spock_apply_main(Datum main_arg)
 	Assert(MySpockWorker->worker_type == SPOCK_WORKER_APPLY);
 	MyApplyWorker = &MySpockWorker->worker.apply;
 
-	/* Establish signal handlers. */
-	pqsignal(SIGTERM, handle_sigterm);
-
 	/* Attach to dsm segment. */
 	Assert(CurrentResourceOwner == NULL);
 	CurrentResourceOwner = ResourceOwnerCreate(NULL, "spock apply");

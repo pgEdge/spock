@@ -177,9 +177,6 @@ spock_manager_main(Datum main_arg)
 	/* Setup shmem. */
 	spock_worker_attach(slot, SPOCK_WORKER_MANAGER);
 
-	/* Establish signal handlers. */
-	pqsignal(SIGTERM, handle_sigterm);
-
 	CurrentResourceOwner = ResourceOwnerCreate(NULL, "spock manager");
 
 	StartTransactionCommand();
