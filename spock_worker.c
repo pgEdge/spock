@@ -50,7 +50,9 @@ static uint16			MySpockWorkerGeneration;
 static bool xacthook_signal_workers = false;
 static bool xact_cb_installed = false;
 
-
+#if PG_VERSION_NUM >= 150000
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
+#endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 static void spock_worker_detach(bool crash);
@@ -656,6 +658,39 @@ worker_shmem_size(int nworkers)
 }
 
 /*
+ * Requests any additional shared memory required for spock.
+ */
+static void
+spock_worker_shmem_request(void)
+{
+	int			nworkers;
+
+#if PG_VERSION_NUM >= 150000
+	if (prev_shmem_request_hook != NULL)
+		prev_shmem_request_hook();
+#else
+	Assert(process_shared_preload_libraries_in_progress);
+#endif
+
+	/*
+	 * This is cludge for Windows (Postgres des not define the GUC variable
+	 * as PGDDLIMPORT)
+	 */
+	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
+										  false));
+
+	/* Allocate enough shmem for the worker limit ... */
+	RequestAddinShmemSpace(worker_shmem_size(nworkers));
+
+	/*
+	 * We'll need to be able to take exclusive locks so only one per-db backend
+	 * tries to allocate or free blocks from this array at once.  There won't
+	 * be enough contention to make anything fancier worth doing.
+	 */
+	RequestNamedLWLockTranche("spock", 1);
+}
+
+/*
  * Init shmem needed for workers.
  */
 static void
@@ -695,27 +730,6 @@ spock_worker_shmem_startup(void)
 void
 spock_worker_shmem_init(void)
 {
-	int			nworkers;
-
-	Assert(process_shared_preload_libraries_in_progress);
-
-	/*
-	 * This is cludge for Windows (Postgres des not define the GUC variable
-	 * as PGDDLIMPORT)
-	 */
-	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
-										  false));
-
-	/* Allocate enough shmem for the worker limit ... */
-	RequestAddinShmemSpace(worker_shmem_size(nworkers));
-
-	/*
-	 * We'll need to be able to take exclusive locks so only one per-db backend
-	 * tries to allocate or free blocks from this array at once.  There won't
-	 * be enough contention to make anything fancier worth doing.
-	 */
-	RequestNamedLWLockTranche("spock", 1);
-
 	/*
 	 * Whether this is a first startup or crash recovery, we'll be re-initing
 	 * the bgworkers.
@@ -723,6 +737,12 @@ spock_worker_shmem_init(void)
 	SpockCtx = NULL;
 	MySpockWorker = NULL;
 
+#if PG_VERSION_NUM < 150000
+	spock_worker_shmem_request();
+#else
+	prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook = spock_worker_shmem_request;
+#endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = spock_worker_shmem_startup;
 }
