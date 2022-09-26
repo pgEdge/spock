@@ -665,7 +665,7 @@ spock_supervisor_main(Datum main_arg)
 
 	/* Make it easy to identify our processes. */
 	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,
-					PGC_USERSET, PGC_S_SESSION);
+					PGC_USERSET, PGC_S_OVERRIDE);
 
 	elog(LOG, "starting spock supervisor");
 
