@@ -43,6 +43,10 @@
 #include "spock_apply_spi.h"
 #include "spock_conflict.h"
 
+/* for ntohl/htonl */
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 /* State related to bulk insert */
 typedef struct spock_copyState
 {
