@@ -43,8 +43,7 @@
 #include "spock_apply_spi.h"
 #include "spock_conflict.h"
 
-/* for ntohl/htonl */
-#include <netinet/in.h>
+/* for htonl/htons */
 #include <arpa/inet.h>
 
 /* State related to bulk insert */
