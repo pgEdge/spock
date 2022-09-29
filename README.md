@@ -1,13 +1,14 @@
 # Spock
 
-This SPOCK extension provides logical & multi-master bi-directional replication for PostgreSQL 14+. 
-We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source projects as a solid foundation to build upon for this enterprise-class extension.  
+[Mr. Spock](https://en.wikipedia.org/wiki/Spock) was a logical man/vulcan  
 
-This years v3.0 should include (at least) the following important enhancements:
-* Support for pg15
+This SPOCK extension provides logical & multi-master bi-directional replication for PostgreSQL 14+. 
+We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source projects as a solid foundation to build upon for this enterprise-class extension. 
+
+This years v3.0 will include (at least) the following important enhancements:
+* Support for pg15 (available now)
 * Better error handling for Conflict Resolution
 * Better management & monitoring stats and integration
-* A web UI for configuration, management & monitoring
 
 
 We use the following terms to describe data streams between nodes:
@@ -810,4 +811,4 @@ to large objects, so spock cannot replicate large objects.
 Also any DDL limitations apply so extra care need to be taken when using
 `replicate_ddl_command()`.
 
-Spock License is AGPLv3
+Spock License is AGPLv3 
