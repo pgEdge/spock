@@ -20,6 +20,13 @@
 
 #include "spock_proto_native.h"
 
+/* conflict log table */
+#define CATALOG_LOGTABLE "log_conflicts"
+#define CATALOG_LOGTABLE_SEQ "log_conflicts"
+#define SPOCK_LOG_TABLE_COLS 16
+
+extern TransactionId remote_xid;
+
 typedef enum SpockConflictResolution
 {
 	SpockResolution_ApplyRemote,
@@ -38,6 +45,7 @@ typedef enum
 
 extern int spock_conflict_resolver;
 extern int spock_conflict_log_level;
+extern bool	spock_log_conflict_to_table;
 
 typedef enum SpockConflictType
 {
@@ -78,6 +86,21 @@ extern void spock_report_conflict(SpockConflictType conflict_type,
 						  Oid conflict_idx_id,
 						  bool has_before_triggers);
 
+extern void spock_conflict_log_table(SpockConflictType conflict_type,
+						  SpockRelation *rel,
+						  HeapTuple localtuple,
+						  SpockTupleData *oldkey,
+						  HeapTuple remotetuple,
+						  HeapTuple applytuple,
+						  SpockConflictResolution resolution,
+						  TransactionId local_tuple_xid,
+						  bool found_local_origin,
+						  RepOriginId local_tuple_origin,
+						  TimestampTz local_tuple_timestamp,
+						  Oid conflict_idx_id,
+						  bool has_before_triggers);
+extern Oid get_conflict_log_table_oid(void);
+extern Oid get_conflict_log_seq(void);
 extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 									   GucSource source);
 

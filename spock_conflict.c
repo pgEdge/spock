@@ -21,6 +21,8 @@
 #include "access/transam.h"
 #include "access/xact.h"
 
+#include "catalog/dependency.h"
+#include "catalog/indexing.h"
 #include "catalog/pg_type.h"
 
 #include "executor/executor.h"
@@ -36,19 +38,25 @@
 #include "utils/builtins.h"
 #include "utils/datetime.h"
 #include "utils/lsyscache.h"
+#include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
+#include "spock.h"
 #include "spock_conflict.h"
 #include "spock_proto_native.h"
+#include "spock_node.h"
 
 int		spock_conflict_resolver = SPOCK_RESOLVE_APPLY_REMOTE;
 int		spock_conflict_log_level = LOG;
+bool	spock_log_conflict_to_table = false;
 
 static void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 	HeapTuple tuple);
+static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
+	bool *ret_isnull);
 
 /*
  * Setup a ScanKey for a search in the relation 'rel' for a tuple 'key' that
@@ -531,7 +539,6 @@ try_resolve_conflict(Relation rel, HeapTuple localtuple, HeapTuple remotetuple,
 	return apply;
 }
 
-#if 0
 static char *
 conflict_type_to_string(SpockConflictType conflict_type)
 {
@@ -550,7 +557,6 @@ conflict_type_to_string(SpockConflictType conflict_type)
 	/* Unreachable */
 	return NULL;
 }
-#endif
 
 static char *
 conflict_resolution_to_string(SpockConflictResolution resolution)
@@ -611,6 +617,12 @@ spock_report_conflict(SpockConflictType conflict_type,
 	TupleDesc desc = RelationGetDescr(rel->rel);
 	const char *idxname = "(unknown)";
 	const char *qualrelname;
+
+	spock_conflict_log_table(conflict_type, rel, localtuple, oldkey,
+							 remotetuple, applytuple, resolution,
+							 local_tuple_xid, found_local_origin,
+							 local_tuple_origin, local_tuple_commit_ts,
+							 conflict_idx_oid, has_before_triggers);
 
 	memset(local_tup_ts_str, 0, MAXDATELEN);
 	if (found_local_origin)
@@ -680,6 +692,185 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   (uint32)replorigin_session_origin_lsn)));
 			break;
 	}
+}
+
+/*
+ * Log the conflict to spock.log_conflicts table
+ *
+ * There are number of tuples passed:
+ *
+ * - The local tuple we conflict with or NULL if not found [localtuple];
+ *
+ * - If the remote tuple was an update, the key of the old tuple
+ *   as a SpockTuple [oldkey]
+ *
+ * - The remote tuple, after we fill any defaults and apply any local
+ *   BEFORE triggers but before conflict resolution [remotetuple];
+ *
+ * - The tuple we'll actually apply if any, after conflict resolution
+ *   [applytuple]
+ *
+ * The SpockRelation's name info is for the remote rel. If we add relation
+ * mapping we'll need to get the name/namespace of the local relation too.
+ *
+ * This runs in MessageContext so we don't have to worry about leaks, but
+ * we still try to free the big chunks as we go.
+ */
+void
+spock_conflict_log_table(SpockConflictType conflict_type,
+						  SpockRelation *rel,
+						  HeapTuple localtuple,
+						  SpockTupleData *oldkey,
+						  HeapTuple remotetuple,
+						  HeapTuple applytuple,
+						  SpockConflictResolution resolution,
+						  TransactionId local_tuple_xid,
+						  bool found_local_origin,
+						  RepOriginId local_tuple_origin,
+						  TimestampTz local_tuple_commit_ts,
+						  Oid conflict_idx_oid,
+						  bool has_before_triggers)
+{
+	HeapTuple	tup;
+	Datum	values[SPOCK_LOG_TABLE_COLS];
+	bool	nulls[SPOCK_LOG_TABLE_COLS];
+	TupleDesc desc = RelationGetDescr(rel->rel);
+	Relation	logrel;
+	const char *qualrelname;
+	SpockLocalNode *localnode;
+	SpockNode	*node;
+	NameData	node_name;
+
+	/* See the GUC settings for spock.spock_log_conflict_to_table is enabled. */
+	if (!spock_log_conflict_to_table)
+		return;
+
+	memset(values, 0, sizeof(values));
+	memset(nulls, 0, sizeof(nulls));
+
+	localnode = get_local_node(false, false);
+	node = localnode->node;
+
+	/* id */
+	values[0] = DirectFunctionCall1(nextval_oid, get_conflict_log_seq());
+
+	/* node_name */
+	namestrcpy(&node_name, node->name);
+	values[1] = NameGetDatum(&node_name);
+
+	/* log_time */
+	values[2] = TimestampTzGetDatum(GetCurrentIntegerTimestamp());
+
+	/* relname */
+	qualrelname = quote_qualified_identifier(
+		get_namespace_name(RelationGetNamespace(rel->rel)),
+		RelationGetRelationName(rel->rel));
+	values[3] = CStringGetTextDatum(qualrelname);
+
+	/* index name */
+	if (OidIsValid(conflict_idx_oid))
+	{
+		char *idxname;
+
+		idxname = get_rel_name(conflict_idx_oid);
+		values[4] = CStringGetTextDatum(idxname);
+	}
+	else
+		nulls[4] = true;
+
+	/* conflict type */
+	values[5] = CStringGetTextDatum(conflict_type_to_string(conflict_type));
+	/* conflict_resolution */
+	values[6] = CStringGetTextDatum(conflict_resolution_to_string(resolution));
+	/* local_origin */
+	values[7] = Int32GetDatum(found_local_origin? (int)local_tuple_origin : -1);
+
+	/* local_tuple */
+	if (localtuple != NULL)
+	{
+		Datum datum;
+
+		datum = heap_copy_tuple_as_datum(localtuple, desc);
+		values[8] = spock_conflict_row_to_json(datum, false, &nulls[7]);
+	}
+	else
+		nulls[8] = true;
+
+	/* local_xid */
+	if (local_tuple_xid != InvalidTransactionId)
+		values[9] = TransactionIdGetDatum(local_tuple_xid);
+	else
+		nulls[9] = true;
+
+	/* local_timestamp */
+	values[10] = TimestampTzGetDatum(local_tuple_commit_ts);
+	/* remote_origin */
+	values[11] = Int32GetDatum((int)replorigin_session_origin);
+
+	/* remote_tuple */
+	if (remotetuple != NULL)
+	{
+		Datum datum;
+
+		datum = heap_copy_tuple_as_datum(remotetuple, desc);
+		values[12] = spock_conflict_row_to_json(datum, false, &nulls[11]);
+	}
+	else
+		nulls[12] = true;
+
+	/* remote_xid */
+	if (remote_xid != InvalidTransactionId)
+		values[13] = TransactionIdGetDatum(remote_xid);
+	else
+		nulls[13] = true;
+
+	/* remote_timestamp */
+	values[14] = TimestampTzGetDatum(replorigin_session_origin_timestamp);
+	/* remote lsn */
+	if (replorigin_session_origin_lsn != InvalidXLogRecPtr)
+		values[15] = LSNGetDatum(replorigin_session_origin_lsn);
+	else
+		nulls[15] = true;
+
+	logrel = table_open(get_conflict_log_table_oid(), RowExclusiveLock);
+	tup = heap_form_tuple(logrel->rd_att, values, nulls);
+	CatalogTupleInsert(logrel, tup);
+	heap_freetuple(tup);
+	table_close(logrel, RowExclusiveLock);
+}
+
+/*
+ * Get (cached) oid of the conflict log table.
+ */
+Oid
+get_conflict_log_table_oid(void)
+{
+	static Oid	logtableoid = InvalidOid;
+
+	if (logtableoid == InvalidOid)
+		logtableoid = get_spock_table_oid(CATALOG_LOGTABLE);
+
+	return logtableoid;
+}
+
+/*
+ * Get (cached) oid of the conflict log sequence, which is created
+ * implicitly.
+ */
+Oid
+get_conflict_log_seq(void)
+{
+	static Oid seqoid = InvalidOid;
+
+	if (seqoid == InvalidOid)
+	{
+		Oid	reloid;
+
+		reloid = get_conflict_log_table_oid();
+		seqoid = getIdentitySequence(reloid, 0, false);
+	}
+
+	return seqoid;
 }
 
 /* Checks validity of spock_conflict_resolver GUC */
@@ -802,4 +993,33 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 		appendStringInfoChar(s, ':');
 		appendStringInfoString(s, outputstr);
 	}
+}
+
+/*
+ * Convert the target row to json form if it isn't null.
+ */
+static Datum
+spock_conflict_row_to_json(Datum row, bool row_isnull, bool *ret_isnull)
+{
+	Datum row_json;
+	if (row_isnull)
+	{
+		row_json = (Datum) 0;
+		*ret_isnull = 1;
+	}
+	else
+	{
+		/*
+		 * We don't handle errors with a PG_TRY / PG_CATCH here, because that's
+		 * not sufficient to make the transaction usable given that we might
+		 * fail in user defined casts, etc. We'd need a full savepoint, which
+		 * is too expensive. So if this fails we'll just propagate the exception
+		 * and abort the apply transaction.
+		 *
+		 * It shouldn't fail unless something's pretty broken anyway.
+		 */
+		row_json = DirectFunctionCall1(row_to_json, row);
+		*ret_isnull = 0;
+	}
+	return row_json;
 }

@@ -159,7 +159,7 @@ struct ActionErrCallbackArg
 };
 
 struct ActionErrCallbackArg errcallback_arg;
-static TransactionId remote_xid;
+TransactionId remote_xid;
 
 static void multi_insert_finish(void);
 

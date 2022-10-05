@@ -124,6 +124,31 @@ CREATE TABLE spock.depend (
 	deptype "char" NOT NULL
 ) WITH (user_catalog_table=true);
 
+CREATE TABLE log_conflicts (
+    id int generated always as identity,
+    node_name name NOT NULL,
+    log_time timestamptz NOT NULL,
+    relname text,
+    idxname text,
+    conflict_type text,
+    conflict_resolution text,
+
+    -- columns for local changes
+    local_origin int,
+    local_tuple text,
+    local_xid xid,
+    local_timestamp timestamptz,
+
+    -- columns for remote changes
+    remote_origin int,
+    remote_tuple text,
+    remote_xid xid,
+    remote_timestamp timestamptz,
+    remote_lsn pg_lsn,
+
+    PRIMARY KEY(id, node_name)
+) WITH (user_catalog_table=true);
+
 CREATE VIEW spock.TABLES AS
     WITH set_relations AS (
         SELECT s.set_name, r.set_reloid
