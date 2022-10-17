@@ -21,8 +21,7 @@
 #include "spock_proto_native.h"
 
 /* conflict log table */
-#define CATALOG_LOGTABLE "log_conflicts"
-#define CATALOG_LOGTABLE_SEQ "log_conflicts"
+#define CATALOG_LOGTABLE "resolutions"
 #define SPOCK_LOG_TABLE_COLS 16
 
 extern TransactionId remote_xid;
@@ -45,7 +44,7 @@ typedef enum
 
 extern int spock_conflict_resolver;
 extern int spock_conflict_log_level;
-extern bool	spock_log_conflict_to_table;
+extern bool	spock_save_resolutions;
 
 typedef enum SpockConflictType
 {

@@ -781,10 +781,10 @@ _PG_init(void)
 							 PGC_SUSET, 0,
 							 NULL, NULL, NULL);
 
-	DefineCustomBoolVariable("spock.log_conflict_to_table",
-							 "Log conflicts to spock."CATALOG_LOGTABLE" table.",
+	DefineCustomBoolVariable("spock.save_resolutions",
+							 "Log conflict resolutions to spock."CATALOG_LOGTABLE" table.",
 							 NULL,
-							 &spock_log_conflict_to_table,
+							 &spock_save_resolutions,
 							 false, PGC_POSTMASTER,
 							 0,
 							 NULL, NULL, NULL);

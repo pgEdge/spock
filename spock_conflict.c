@@ -51,7 +51,7 @@
 
 int		spock_conflict_resolver = SPOCK_RESOLVE_APPLY_REMOTE;
 int		spock_conflict_log_level = LOG;
-bool	spock_log_conflict_to_table = false;
+bool	spock_save_resolutions = false;
 
 static void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 	HeapTuple tuple);
@@ -618,6 +618,13 @@ spock_report_conflict(SpockConflictType conflict_type,
 	const char *idxname = "(unknown)";
 	const char *qualrelname;
 
+	/*
+	 * Filter out the conflicts that were resolved by applying the remote
+	 * tuple.
+	 */
+	if (resolution == SpockResolution_ApplyRemote)
+		return;
+
 	spock_conflict_log_table(conflict_type, rel, localtuple, oldkey,
 							 remotetuple, applytuple, resolution,
 							 local_tuple_xid, found_local_origin,
@@ -695,7 +702,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 }
 
 /*
- * Log the conflict to spock.log_conflicts table
+ * Log the conflict to spock.resolutions table
  *
  * There are number of tuples passed:
  *
@@ -741,8 +748,8 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 	SpockNode	*node;
 	NameData	node_name;
 
-	/* See the GUC settings for spock.spock_log_conflict_to_table is enabled. */
-	if (!spock_log_conflict_to_table)
+	/* See the GUC settings for spock.spock_save_resolutions is enabled. */
+	if (!spock_save_resolutions)
 		return;
 
 	memset(values, 0, sizeof(values));

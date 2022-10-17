@@ -124,7 +124,7 @@ CREATE TABLE spock.depend (
 	deptype "char" NOT NULL
 ) WITH (user_catalog_table=true);
 
-CREATE TABLE log_conflicts (
+CREATE TABLE resolutions (
     id int generated always as identity,
     node_name name NOT NULL,
     log_time timestamptz NOT NULL,
