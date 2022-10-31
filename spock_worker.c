@@ -350,11 +350,7 @@ spock_worker_attach(int slot, SpockWorkerType type)
 
 	/* Make it easy to identify our processes. */
 	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,
-					PGC_USERSET, PGC_S_OVERRIDE);
-
-	/* Make it easy to identify our processes. */
-	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,
-					PGC_USERSET, PGC_S_OVERRIDE);
+					PGC_BACKEND, PGC_S_OVERRIDE);
 
 	/* Connect to database if needed. */
 	if (MySpockWorker->dboid != InvalidOid)
