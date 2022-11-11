@@ -124,7 +124,15 @@ CREATE TABLE spock.depend (
 	deptype "char" NOT NULL
 ) WITH (user_catalog_table=true);
 
-CREATE TABLE resolutions (
+CREATE TABLE spock.pii (
+    id int generated always as identity,
+    pii_schema text NOT NULL,
+    pii_table text NOT NULL,
+    pii_column text NOT NULL,
+    PRIMARY KEY(id)
+) WITH (user_catalog_table=true);
+
+CREATE TABLE spock.resolutions (
     id int generated always as identity,
     node_name name NOT NULL,
     log_time timestamptz NOT NULL,
