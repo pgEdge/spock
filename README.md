@@ -5,10 +5,11 @@
 This SPOCK extension provides logical & multi-master bi-directional replication for PostgreSQL 14+. 
 We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source projects as a solid foundation to build upon for this enterprise-class extension. 
 
-This years v3.0 will include (at least) the following important enhancements:
-* Support for pg15 (available now)
+This years v3.0.x includes the following important enhancements:
+* Support for pg15
 * Better error handling for Conflict Resolution
 * Better management & monitoring stats and integration
+* A 'pii' table for making it easy for personably identifiable data to be kept in country
 
 
 We use the following terms to describe data streams between nodes:
@@ -38,7 +39,8 @@ Architectural details:
 ## Requirements
 
 The `spock` extension must be installed on both provider and subscriber.
-You must `CREATE EXTENSION spock` on both.
+You must `CREATE EXTENSION spock` on both.  For major version upgrades, the old node 
+can be running pglogical2 before it is upgraded to become a spock node.
 
 Tables on the provider and subscriber must have the same names and be in the
 same schema. Future revisions may add mapping features.
