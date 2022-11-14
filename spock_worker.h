@@ -77,6 +77,48 @@ typedef struct SpockContext {
 	SpockWorker  workers[FLEXIBLE_ARRAY_MEMBER];
 } SpockContext;
 
+typedef struct spockHashKey
+{
+	/* hash key */
+	Oid			dboid;
+	Oid			nodeid;
+	char		slot_name[NAMEDATALEN];
+} spockHashKey;
+
+/*
+ * statistics counters to keep in hashtable.
+ */
+typedef struct spockCounters
+{
+	/* provide stats */
+	// int64	pnode_tup_ins;
+	// int64	pnode_tup_upd;
+	// int64	pnode_tup_del;
+
+	/* subscriber stats */
+	int64	n_tup_ins;
+	int64	n_tup_upd;
+	int64	n_tup_del;
+
+	TimestampTz last_reset;
+} spockCounters;
+
+typedef struct spockStatsEntry
+{
+	spockHashKey 	key;			/* hash key */
+
+	spockCounters	counters;		/* stat counters */
+	slock_t			mutex;			/*  */
+} spockStatsEntry;
+
+typedef enum spockStatsType
+{
+	INSERT_STATS,
+	UPDATE_STATS,
+	DELETE_STATS
+} spockStatsType;
+
+extern HTAB				   *SpockHash;
 extern SpockContext		   *SpockCtx;
 extern SpockWorker		   *MySpockWorker;
 extern SpockApplyWorker	   *MyApplyWorker;
@@ -106,5 +148,7 @@ extern bool spock_worker_running(SpockWorker *w);
 extern void spock_worker_kill(SpockWorker *worker);
 
 extern const char * spock_worker_type_name(SpockWorkerType type);
+extern void handle_sub_counters(spockStatsType typ, int ntup);
+extern void handle_pr_counters(Oid nodeid, spockStatsType typ, int ntup);
 
 #endif /* SPOCK_WORKER_H */

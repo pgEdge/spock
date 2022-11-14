@@ -18,6 +18,7 @@
 #include "access/xact.h"
 
 #include "commands/dbcommands.h"
+#include "common/hashfn.h"
 
 #include "storage/ipc.h"
 #include "storage/proc.h"
@@ -27,6 +28,8 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#include "replication/slot.h"
+#include "replication/slot.h"
 
 #include "pgstat.h"
 
@@ -43,9 +46,11 @@ static	List *signal_workers = NIL;
 
 volatile sig_atomic_t	got_SIGTERM = false;
 
+HTAB			   *SpockHash = NULL;
 SpockContext	   *SpockCtx = NULL;
 SpockWorker		   *MySpockWorker = NULL;
 static uint16			MySpockWorkerGeneration;
+
 
 static bool xacthook_signal_workers = false;
 static bool xact_cb_installed = false;
@@ -59,6 +64,7 @@ static void spock_worker_detach(bool crash);
 static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
 static void signal_worker_xact_callback(XactEvent event, void *arg);
+static uint32 spock_counters_hash(const void *key, Size keysize);
 
 
 void
@@ -89,7 +95,7 @@ find_empty_worker_slot(Oid dboid)
 	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
 		if (SpockCtx->workers[i].worker_type == SPOCK_WORKER_NONE
-		    || (SpockCtx->workers[i].crashed_at != 0 
+		    || (SpockCtx->workers[i].crashed_at != 0
                 && (SpockCtx->workers[i].dboid == dboid
                     || SpockCtx->workers[i].dboid == InvalidOid)))
 			return i;
@@ -694,6 +700,7 @@ spock_worker_shmem_startup(void)
 {
 	bool        found;
 	int			nworkers;
+	HASHCTL		hctl;
 
 	if (prev_shmem_startup_hook != NULL)
 		prev_shmem_startup_hook();
@@ -704,6 +711,10 @@ spock_worker_shmem_startup(void)
 	 */
 	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 										  false));
+
+	SpockCtx = NULL;
+	 /* avoid possible race-conditions, when initializing the shared memory. */
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
 	/* Init signaling context for the various processes. */
 	SpockCtx = ShmemInitStruct("spock_context",
@@ -718,6 +729,32 @@ spock_worker_shmem_startup(void)
 		memset(SpockCtx->workers, 0,
 			   sizeof(SpockWorker) * SpockCtx->total_workers);
 	}
+
+	memset(&hctl, 0, sizeof(hctl));
+	hctl.keysize = sizeof(spockHashKey);
+	hctl.entrysize = sizeof(spockStatsEntry);
+	hctl.hash = spock_counters_hash;
+	SpockHash = ShmemInitHash("spock nodecounters hash",
+							  max_replication_slots,
+							  max_replication_slots,
+							  &hctl,
+							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
+	LWLockRelease(AddinShmemInitLock);
+}
+
+/*
+ * Hash functions for spock counters.
+ */
+static uint32
+spock_counters_hash(const void *key, Size keysize)
+{
+	const spockHashKey *k = (const spockHashKey *) key;
+
+	Assert(keysize == sizeof(spockHashKey));
+
+	return hash_uint32((uint32) k->dboid) ^
+		hash_uint32((uint32) k->nodeid) ^
+		hash_any((const unsigned char *) k->slot_name, NAMEDATALEN);
 }
 
 /*
@@ -753,5 +790,87 @@ spock_worker_type_name(SpockWorkerType type)
 		case SPOCK_WORKER_APPLY: return "apply";
 		case SPOCK_WORKER_SYNC: return "sync";
 		default: Assert(false); return NULL;
+	}
+}
+
+void
+handle_sub_counters(spockStatsType typ, int ntup)
+{
+	bool found = false;
+	SpockSubscription *sub = get_subscription(MyApplyWorker->subid);
+	spockHashKey key;
+	spockCounters *count;
+
+	memset(&key, 0, sizeof(spockHashKey));
+	key.dboid = MyDatabaseId;
+	key.nodeid = sub->target_if->nodeid;
+	strncpy(key.slot_name, sub->slot_name, NAMEDATALEN);
+
+	spockStatsEntry *entry = (spockStatsEntry *) hash_search(SpockHash, &key,
+										HASH_ENTER, &found);
+	if (!found)
+	{
+		/* New stats entry */
+		count = &entry->counters;
+		count->last_reset = GetCurrentTimestamp();
+		count->n_tup_ins = 0;
+		count->n_tup_upd = 0;
+		count->n_tup_del = 0;
+	}
+
+	count = &entry->counters;
+	switch(typ)
+	{
+		case INSERT_STATS:
+				count->n_tup_ins += ntup;
+			break;
+		case UPDATE_STATS:
+				count->n_tup_upd += ntup;
+			break;
+		case DELETE_STATS:
+				count->n_tup_del += ntup;
+			break;
+		default:
+			elog(ERROR, "invalid stat type (%u) specified", typ);
+	}
+}
+
+void
+handle_pr_counters(Oid nodeid, spockStatsType typ, int ntup)
+{
+	bool found = false;
+	spockHashKey key;
+	spockCounters *count;
+
+	memset(&key, 0, sizeof(spockHashKey));
+	key.dboid = MyDatabaseId;
+	key.nodeid = nodeid;
+
+	spockStatsEntry *entry = (spockStatsEntry *) hash_search(SpockHash, &key,
+										HASH_ENTER, &found);
+	if (!found)
+	{
+		/* New stats entry */
+		count = &entry->counters;
+		count->last_reset = GetCurrentTimestamp();
+		count->n_tup_ins = 0;
+		count->n_tup_upd = 0;
+		count->n_tup_del = 0;
+	}
+
+	count = &entry->counters;
+	switch(typ)
+	{
+		case INSERT_STATS:
+				count->n_tup_ins += ntup;
+			break;
+		case UPDATE_STATS:
+				count->n_tup_upd += ntup;
+			break;
+		case DELETE_STATS:
+				count->n_tup_del += ntup;
+			break;
+		default:
+			elog(ERROR, "invalid stat type (%u) specified", typ);
 	}
 }

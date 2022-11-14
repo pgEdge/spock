@@ -280,3 +280,17 @@ RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME'
 
 CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" timestamptz, OUT "roident" oid)
 RETURNS record RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_xact_commit_timestamp_origin';
+
+CREATE FUNCTION spock.get_spock_counters(
+    OUT dbid oid,
+    OUT nodeid oid,
+    OUT slot_name text,
+    OUT n_tup_ins bigint,
+    OUT n_tup_upd bigint,
+    OUT n_tup_del bigint,
+    OUT last_reset timestamptz)
+RETURNS SETOF record
+LANGUAGE c AS 'MODULE_PATHNAME', 'get_spock_counters';
+
+CREATE FUNCTION spock.reset_spock_counters() RETURNS void
+LANGUAGE c AS 'MODULE_PATHNAME', 'reset_spock_counters';

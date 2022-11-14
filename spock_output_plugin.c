@@ -38,6 +38,7 @@
 #include "spock_output_proto.h"
 #include "spock_queue.h"
 #include "spock_repset.h"
+#include "spock_worker.h"
 
 #ifdef HAVE_REPLICATION_ORIGINS
 #include "replication/origin.h"
@@ -700,6 +701,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 									&change->data.tp.newtuple->tuple,
 									att_list);
 			OutputPluginWrite(ctx, true);
+			handle_pr_counters(data->local_node_id, INSERT_STATS, 1);
 			break;
 		case REORDER_BUFFER_CHANGE_UPDATE:
 			{
@@ -711,6 +713,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 										&change->data.tp.newtuple->tuple,
 										att_list);
 				OutputPluginWrite(ctx, true);
+				handle_pr_counters(data->local_node_id, UPDATE_STATS, 1);
 				break;
 			}
 		case REORDER_BUFFER_CHANGE_DELETE:
@@ -721,6 +724,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 										&change->data.tp.oldtuple->tuple,
 										att_list);
 				OutputPluginWrite(ctx, true);
+				handle_pr_counters(data->local_node_id, DELETE_STATS, 1);
 			}
 			else
 				elog(DEBUG1, "didn't send DELETE change because of missing oldtuple");

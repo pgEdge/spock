@@ -145,6 +145,10 @@ PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 /* Compatibility for upgrading */
 PG_FUNCTION_INFO_V1(spock_show_repset_table_info_by_target);
 
+/* Stats/Counters */
+PG_FUNCTION_INFO_V1(get_spock_counters);
+PG_FUNCTION_INFO_V1(reset_spock_counters);
+
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
@@ -2354,5 +2358,116 @@ PG_FUNCTION_INFO_V1(spock_hooks_setup);
 Datum
 spock_hooks_setup(PG_FUNCTION_ARGS)
 {
+	PG_RETURN_VOID();
+}
+
+PGDLLEXPORT extern Datum get_spock_counters(PG_FUNCTION_ARGS);
+Datum
+get_spock_counters(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc			tupdesc;
+	Tuplestorestate	   *tupstore;
+	MemoryContext		per_query_ctx;
+	MemoryContext		oldcontext;
+	HASH_SEQ_STATUS		hash_seq;
+	spockStatsEntry	   *entry;
+	Datum			   *values;
+	bool			   *nulls;
+	int					ncols;
+
+	if (!SpockCtx || !SpockHash)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("spock must be loaded via shared_preload_libraries")));
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
+
+	/* Switch into long-lived context to construct returned data structures */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+	hash_seq_init(&hash_seq, SpockHash);
+
+	ncols = 7;
+	values = palloc0(sizeof(Datum) * ncols);
+	nulls = palloc0(sizeof(bool) * ncols);
+
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		int			i = 0;
+		spockCounters *counter =  &entry->counters;
+
+		memset(values, 0, sizeof(Datum) * ncols);
+		memset(nulls, 0, sizeof(bool) * ncols);
+
+		values[i++] = ObjectIdGetDatum(entry->key.dboid);
+		values[i++] = ObjectIdGetDatum(entry->key.nodeid);
+
+		if (strlen(entry->key.slot_name) > 0)
+			values[i++] = CStringGetTextDatum(entry->key.slot_name);
+		else
+			nulls[i++] = true;
+
+		values[i++] = Int64GetDatum(counter->n_tup_ins);
+		values[i++] = Int64GetDatum(counter->n_tup_upd);
+		values[i++] = Int64GetDatum(counter->n_tup_del);
+		if (counter->last_reset != 0)
+			values[i++] = TimestampTzGetDatum(counter->last_reset);
+		else
+			nulls[i++] = true;
+
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
+	LWLockRelease(SpockCtx->lock);
+
+	tuplestore_donestoring(tupstore);
+	MemoryContextSwitchTo(oldcontext);
+
+	return (Datum) 0;
+}
+
+PGDLLEXPORT extern Datum reset_spock_counters(PG_FUNCTION_ARGS);
+Datum
+reset_spock_counters(PG_FUNCTION_ARGS)
+{
+	HASH_SEQ_STATUS		hash_seq;
+	spockStatsEntry	   *entry;
+
+	if (!SpockCtx || !SpockHash)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("spock must be loaded via shared_preload_libraries")));
+
+
+	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+
+	hash_seq_init(&hash_seq, SpockHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		hash_search(SpockHash, &entry->key, HASH_REMOVE, NULL);
+	}
+
+	LWLockRelease(SpockCtx->lock);
 	PG_RETURN_VOID();
 }
