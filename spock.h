@@ -42,7 +42,7 @@ extern char *spock_temp_directory;
 extern bool spock_use_spi;
 extern bool spock_batch_inserts;
 extern char *spock_extra_connection_options;
-extern bool	spock_counters;
+extern bool	spock_ch_stats;
 
 extern char *shorten_hash(const char *str, int maxlen);
 

@@ -92,7 +92,7 @@ char   *spock_temp_directory = "";
 bool	spock_use_spi = false;
 bool	spock_batch_inserts = true;
 static char *spock_temp_directory_config;
-bool	spock_counters = true;
+bool	spock_ch_stats = true;
 
 void _PG_init(void);
 void spock_supervisor_main(Datum main_arg);
@@ -847,7 +847,7 @@ _PG_init(void)
 	DefineCustomBoolVariable("spock.channel_counters",
 							   "Enable spock statistics information collection",
 							   NULL,
-							   &spock_counters,
+							   &spock_ch_stats,
 							   true,
 							   PGC_BACKEND,
 							   0,

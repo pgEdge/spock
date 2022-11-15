@@ -281,7 +281,7 @@ RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME'
 CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" timestamptz, OUT "roident" oid)
 RETURNS record RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_xact_commit_timestamp_origin';
 
-CREATE FUNCTION spock.get_spock_counters(
+CREATE FUNCTION spock.get_channel_stats(
     OUT dbid oid,
     OUT nodeid oid,
     OUT slot_name text,
@@ -290,7 +290,13 @@ CREATE FUNCTION spock.get_spock_counters(
     OUT n_tup_del bigint,
     OUT last_reset timestamptz)
 RETURNS SETOF record
-LANGUAGE c AS 'MODULE_PATHNAME', 'get_spock_counters';
+LANGUAGE c AS 'MODULE_PATHNAME', 'get_channel_stats';
 
-CREATE FUNCTION spock.reset_spock_counters() RETURNS void
-LANGUAGE c AS 'MODULE_PATHNAME', 'reset_spock_counters';
+CREATE FUNCTION spock.reset_channel_stats() RETURNS void
+LANGUAGE c AS 'MODULE_PATHNAME', 'reset_channel_stats';
+
+CREATE VIEW spock.get_channel_stats
+       (dbid, nodeid, slot_name, n_tup_ins, n_tup_upd, n_tup_del, last_reset)
+       AS
+       SELECT dbid, nodeid, slot_name, n_tup_ins, n_tup_upd, n_tup_del, last_reset
+       FROM spock.get_channel_stats();

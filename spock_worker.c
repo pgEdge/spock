@@ -64,7 +64,7 @@ static void spock_worker_detach(bool crash);
 static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
 static void signal_worker_xact_callback(XactEvent event, void *arg);
-static uint32 spock_counters_hash(const void *key, Size keysize);
+static uint32 spock_ch_stats_hash(const void *key, Size keysize);
 
 
 void
@@ -733,8 +733,8 @@ spock_worker_shmem_startup(void)
 	memset(&hctl, 0, sizeof(hctl));
 	hctl.keysize = sizeof(spockHashKey);
 	hctl.entrysize = sizeof(spockStatsEntry);
-	hctl.hash = spock_counters_hash;
-	SpockHash = ShmemInitHash("spock nodecounters hash",
+	hctl.hash = spock_ch_stats_hash;
+	SpockHash = ShmemInitHash("spock channel stats hash",
 							  max_replication_slots,
 							  max_replication_slots,
 							  &hctl,
@@ -746,7 +746,7 @@ spock_worker_shmem_startup(void)
  * Hash functions for spock counters.
  */
 static uint32
-spock_counters_hash(const void *key, Size keysize)
+spock_ch_stats_hash(const void *key, Size keysize)
 {
 	const spockHashKey *k = (const spockHashKey *) key;
 

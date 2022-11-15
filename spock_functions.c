@@ -146,8 +146,8 @@ PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 PG_FUNCTION_INFO_V1(spock_show_repset_table_info_by_target);
 
 /* Stats/Counters */
-PG_FUNCTION_INFO_V1(get_spock_counters);
-PG_FUNCTION_INFO_V1(reset_spock_counters);
+PG_FUNCTION_INFO_V1(get_channel_stats);
+PG_FUNCTION_INFO_V1(reset_channel_stats);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -2361,9 +2361,9 @@ spock_hooks_setup(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-PGDLLEXPORT extern Datum get_spock_counters(PG_FUNCTION_ARGS);
+PGDLLEXPORT extern Datum get_channel_stats(PG_FUNCTION_ARGS);
 Datum
-get_spock_counters(PG_FUNCTION_ARGS)
+get_channel_stats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc			tupdesc;
@@ -2447,9 +2447,9 @@ get_spock_counters(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-PGDLLEXPORT extern Datum reset_spock_counters(PG_FUNCTION_ARGS);
+PGDLLEXPORT extern Datum reset_channel_stats(PG_FUNCTION_ARGS);
 Datum
-reset_spock_counters(PG_FUNCTION_ARGS)
+reset_channel_stats(PG_FUNCTION_ARGS)
 {
 	HASH_SEQ_STATUS		hash_seq;
 	spockStatsEntry	   *entry;
