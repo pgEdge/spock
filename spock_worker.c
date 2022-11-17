@@ -35,7 +35,11 @@
 
 #include "spock_sync.h"
 #include "spock_worker.h"
+#include <unistd.h>
 
+#define SPOCK_CH_STATS	PGSTAT_STAT_PERMANENT_DIRECTORY "/spock_ch_stats.stat"
+/*	Magic Number for spock stats - yyyymmddN */
+#define SPOCK_CH_STATS_HEADER	202211151
 
 typedef struct signal_worker_item
 {
@@ -49,7 +53,7 @@ volatile sig_atomic_t	got_SIGTERM = false;
 HTAB			   *SpockHash = NULL;
 SpockContext	   *SpockCtx = NULL;
 SpockWorker		   *MySpockWorker = NULL;
-static uint16			MySpockWorkerGeneration;
+static uint16		MySpockWorkerGeneration;
 
 
 static bool xacthook_signal_workers = false;
@@ -59,13 +63,14 @@ static bool xact_cb_installed = false;
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 #endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-
+static void spock_shmem_shutdown(int code, Datum arg);
 static void spock_worker_detach(bool crash);
 static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
 static void signal_worker_xact_callback(XactEvent event, void *arg);
 static uint32 spock_ch_stats_hash(const void *key, Size keysize);
-
+static void save_ch_stats(bool crash);
+static void load_ch_stats(void);
 
 void
 handle_sigterm(SIGNAL_ARGS)
@@ -302,6 +307,15 @@ static void
 spock_worker_on_exit(int code, Datum arg)
 {
 	spock_worker_detach(code != 0);
+}
+
+/*
+ * Called on on_shmem_exit callback.
+ */
+static void
+spock_shmem_shutdown(int code, Datum arg)
+{
+	save_ch_stats(code != 0);
 }
 
 /*
@@ -739,7 +753,171 @@ spock_worker_shmem_startup(void)
 							  max_replication_slots,
 							  &hctl,
 							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
+
+	if (!IsUnderPostmaster)
+		on_shmem_exit(spock_shmem_shutdown, 0);
+
+	load_ch_stats();
 	LWLockRelease(AddinShmemInitLock);
+}
+
+/*
+ * save_ch_stats:
+ *
+ * Save the stats to the file named SPOCK_CH_STATS (defined above). This
+ * function is called during the on_exit_shmem callback is executed.
+ *
+ * The format of this file is as follows:
+ * SPOCK_CH_STATS_HEADER  (uint32) - header, a unique number to differentiate
+ * 		version of this file.
+ * SPOCK_VERSION_NUM (uint32) - Spock Version
+ * N_ENTRIES (uint32) - num of entries being written
+ * ENTRY (spockStatsEntry) - one liner per entry of hashtable.
+ */
+static void
+save_ch_stats(bool crash)
+{
+	FILE	   *file;
+	HASH_SEQ_STATUS		hash_seq;
+	spockStatsEntry	   *entry;
+	uint32				header;
+	uint32				spock_version;
+	uint32				nenteries;
+
+	/* don't try to save during crash */
+	if (crash)
+		return;
+
+	/* Safety check ... shouldn't get here unless shmem is set up. */
+	if (!SpockCtx || !SpockHash)
+		return;
+
+	header = SPOCK_CH_STATS_HEADER;
+	spock_version = SPOCK_VERSION_NUM;
+	file = AllocateFile(SPOCK_CH_STATS ".tmp", PG_BINARY_W);
+	if (file == NULL)
+		goto error;
+
+	if (fwrite(&header, sizeof(uint32), 1, file) != 1)
+		goto error;
+	if (fwrite(&spock_version, sizeof(uint32), 1, file) != 1)
+		goto error;
+	nenteries = hash_get_num_entries(SpockHash);
+	if (fwrite(&nenteries, sizeof(int32), 1, file) != 1)
+		goto error;
+
+	hash_seq_init(&hash_seq, SpockHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		if (fwrite(entry, sizeof(spockStatsEntry), 1, file) != 1)
+		{
+			/* note: we assume hash_seq_term won't change errno */
+			hash_seq_term(&hash_seq);
+			goto error;
+		}
+	}
+
+	if (FreeFile(file))
+	{
+		file = NULL;
+		goto error;
+	}
+
+	/*
+	 * Rename file into place, so we atomically replace any old one.
+	 */
+	(void) durable_rename(SPOCK_CH_STATS ".tmp", SPOCK_CH_STATS, LOG);
+	return;
+error:
+	ereport(LOG,
+			(errcode_for_file_access(),
+			 errmsg("could not write file \"%s\": %m",
+					SPOCK_CH_STATS ".tmp")));
+	if (file)
+		FreeFile(file);
+	unlink(SPOCK_CH_STATS ".tmp");
+}
+
+/*
+ * load_ch_stats:
+ *
+ * Load the stats from file (SPOCK_CH_STATS) and create entries for it in the
+ * hash table. This function is called from shmem startup and it should not be
+ * called from anywhere else.
+ *
+ * Note that there are no locks/mutex etc because at this point there should not
+ * be any other process active.
+ */
+static void
+load_ch_stats(void)
+{
+	FILE	   *file;
+	uint32		header;
+	uint32		spock_version;
+	uint32		nentries;
+
+	/* Safety check ... shouldn't get here unless shmem is set up. */
+	if (!SpockCtx || !SpockHash)
+		return;
+
+	file = AllocateFile(SPOCK_CH_STATS, PG_BINARY_R);
+	if (file == NULL)
+	{
+		if (errno != ENOENT)
+			goto read_error;
+		/* No existing persisted stats file, so we're done */
+		FreeFile(file);
+		return;
+	}
+
+	if (fread(&header, sizeof(uint32), 1, file) != 1 ||
+		fread(&spock_version, sizeof(uint32), 1, file) != 1 ||
+		fread(&nentries, sizeof(int32), 1, file) != 1)
+		goto read_error;
+
+	if (header != SPOCK_CH_STATS_HEADER ||
+		spock_version != SPOCK_VERSION_NUM)
+		goto data_error;
+
+	for (int i = 0; i < nentries; i++)
+	{
+		spockStatsEntry	temp;
+		spockStatsEntry *entry;
+		bool			found;
+
+		if (fread(&temp, sizeof(spockStatsEntry), 1, file) != 1)
+			goto read_error;
+
+		/* Add the entry in the hashtable */
+		entry = (spockStatsEntry *) hash_search(SpockHash, &temp.key,
+												HASH_ENTER, &found);
+		if (!found)
+		{
+			memset(&entry->counters, 0, sizeof(spockCounters));
+			SpinLockInit(&entry->mutex);
+		}
+		/* copy counters to the hashtable */
+		entry->counters = temp.counters;
+	}
+
+	FreeFile(file);
+	return;
+
+read_error:
+	ereport(LOG,
+			(errcode_for_file_access(),
+			 errmsg("could not read file \"%s\": %m",
+					SPOCK_CH_STATS)));
+	goto fail;
+data_error:
+	ereport(LOG,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("ignoring invalid data in file \"%s\"",
+					SPOCK_CH_STATS)));
+	goto fail;
+fail:
+	if (file)
+		FreeFile(file);
 }
 
 /*
@@ -799,7 +977,7 @@ handle_sub_counters(spockStatsType typ, int ntup)
 	bool found = false;
 	SpockSubscription *sub = get_subscription(MyApplyWorker->subid);
 	spockHashKey key;
-	spockCounters *count;
+	spockCounters *counters;
 
 	memset(&key, 0, sizeof(spockHashKey));
 	key.dboid = MyDatabaseId;
@@ -811,28 +989,29 @@ handle_sub_counters(spockStatsType typ, int ntup)
 	if (!found)
 	{
 		/* New stats entry */
-		count = &entry->counters;
-		count->last_reset = GetCurrentTimestamp();
-		count->n_tup_ins = 0;
-		count->n_tup_upd = 0;
-		count->n_tup_del = 0;
+		counters = &entry->counters;
+		memset(counters, 0, sizeof(spockCounters));
+		counters->last_reset = GetCurrentTimestamp();
+		SpinLockInit(&entry->mutex);
 	}
 
-	count = &entry->counters;
+	counters = &entry->counters;
+	SpinLockAcquire(&entry->mutex);
 	switch(typ)
 	{
 		case INSERT_STATS:
-				count->n_tup_ins += ntup;
+				counters->n_tup_ins += ntup;
 			break;
 		case UPDATE_STATS:
-				count->n_tup_upd += ntup;
+				counters->n_tup_upd += ntup;
 			break;
 		case DELETE_STATS:
-				count->n_tup_del += ntup;
+				counters->n_tup_del += ntup;
 			break;
 		default:
 			elog(ERROR, "invalid stat type (%u) specified", typ);
 	}
+	SpinLockRelease(&entry->mutex);
 }
 
 void
@@ -840,7 +1019,7 @@ handle_pr_counters(Oid nodeid, spockStatsType typ, int ntup)
 {
 	bool found = false;
 	spockHashKey key;
-	spockCounters *count;
+	spockCounters *counters;
 
 	memset(&key, 0, sizeof(spockHashKey));
 	key.dboid = MyDatabaseId;
@@ -851,26 +1030,27 @@ handle_pr_counters(Oid nodeid, spockStatsType typ, int ntup)
 	if (!found)
 	{
 		/* New stats entry */
-		count = &entry->counters;
-		count->last_reset = GetCurrentTimestamp();
-		count->n_tup_ins = 0;
-		count->n_tup_upd = 0;
-		count->n_tup_del = 0;
+		counters = &entry->counters;
+		memset(counters, 0, sizeof(spockCounters));
+		counters->last_reset = GetCurrentTimestamp();
+		SpinLockInit(&entry->mutex);
 	}
 
-	count = &entry->counters;
+	counters = &entry->counters;
+	SpinLockAcquire(&entry->mutex);
 	switch(typ)
 	{
 		case INSERT_STATS:
-				count->n_tup_ins += ntup;
+				counters->n_tup_ins += ntup;
 			break;
 		case UPDATE_STATS:
-				count->n_tup_upd += ntup;
+				counters->n_tup_upd += ntup;
 			break;
 		case DELETE_STATS:
-				count->n_tup_del += ntup;
+				counters->n_tup_del += ntup;
 			break;
 		default:
 			elog(ERROR, "invalid stat type (%u) specified", typ);
 	}
+	SpinLockRelease(&entry->mutex);
 }
