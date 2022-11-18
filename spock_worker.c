@@ -865,8 +865,8 @@ load_ch_stats(void)
 	{
 		if (errno != ENOENT)
 			goto read_error;
+
 		/* No existing persisted stats file, so we're done */
-		FreeFile(file);
 		return;
 	}
 
