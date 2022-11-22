@@ -69,7 +69,6 @@ static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
 static void signal_worker_xact_callback(XactEvent event, void *arg);
 static uint32 spock_ch_stats_hash(const void *key, Size keysize);
-static void save_ch_stats(bool crash);
 static void load_ch_stats(void);
 
 void
@@ -774,7 +773,7 @@ spock_worker_shmem_startup(void)
  * N_ENTRIES (uint32) - num of entries being written
  * ENTRY (spockStatsEntry) - one liner per entry of hashtable.
  */
-static void
+void
 save_ch_stats(bool crash)
 {
 	FILE	   *file;

@@ -150,5 +150,6 @@ extern void spock_worker_kill(SpockWorker *worker);
 extern const char * spock_worker_type_name(SpockWorkerType type);
 extern void handle_sub_counters(spockStatsType typ, int ntup);
 extern void handle_pr_counters(Oid nodeid, spockStatsType typ, int ntup);
+extern void save_ch_stats(bool crash);
 
 #endif /* SPOCK_WORKER_H */
