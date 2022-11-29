@@ -2374,7 +2374,6 @@ get_channel_stats(PG_FUNCTION_ARGS)
 	spockStatsEntry	   *entry;
 	Datum			   *values;
 	bool			   *nulls;
-	int					ncols;
 
 	if (!SpockCtx || !SpockHash)
 		ereport(ERROR,
@@ -2409,25 +2408,29 @@ get_channel_stats(PG_FUNCTION_ARGS)
 	LWLockAcquire(SpockCtx->lock, LW_SHARED);
 	hash_seq_init(&hash_seq, SpockHash);
 
-	ncols = 7;
-	values = palloc0(sizeof(Datum) * ncols);
-	nulls = palloc0(sizeof(bool) * ncols);
+	values = palloc0(sizeof(Datum) * SPOCK_STATS_COLS);
+	nulls = palloc0(sizeof(bool) * SPOCK_STATS_COLS);
 
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
+		char       *qualname;
 		int			i = 0;
 		spockCounters *counter =  &entry->counters;
 
-		memset(values, 0, sizeof(Datum) * ncols);
-		memset(nulls, 0, sizeof(bool) * ncols);
+		memset(values, 0, sizeof(Datum) * SPOCK_STATS_COLS);
+		memset(nulls, 0, sizeof(bool) * SPOCK_STATS_COLS);
 
 		values[i++] = ObjectIdGetDatum(entry->key.dboid);
-		values[i++] = ObjectIdGetDatum(entry->key.nodeid);
+		//values[i++] = ObjectIdGetDatum(entry->key.relid);
 
-		if (strlen(entry->key.slot_name) > 0)
-			values[i++] = CStringGetTextDatum(entry->key.slot_name);
+		values[i++] = ObjectIdGetDatum(entry->nodeid);
+		if (strlen(entry->slot_name) > 0)
+			values[i++] = CStringGetTextDatum(entry->slot_name);
 		else
 			nulls[i++] = true;
+
+		qualname = quote_qualified_identifier(entry->schemaname, entry->relname);
+		values[i++] = CStringGetTextDatum(qualname);
 
 		values[i++] = Int64GetDatum(counter->n_tup_ins);
 		values[i++] = Int64GetDatum(counter->n_tup_upd);

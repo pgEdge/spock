@@ -28,6 +28,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#include "utils/lsyscache.h"
 #include "replication/slot.h"
 #include "replication/slot.h"
 
@@ -39,7 +40,7 @@
 
 #define SPOCK_CH_STATS	PGSTAT_STAT_PERMANENT_DIRECTORY "/spock_ch_stats.stat"
 /*	Magic Number for spock stats - yyyymmddN */
-#define SPOCK_CH_STATS_HEADER	202211151
+#define SPOCK_CH_STATS_HEADER	202211251
 
 typedef struct signal_worker_item
 {
@@ -930,8 +931,7 @@ spock_ch_stats_hash(const void *key, Size keysize)
 	Assert(keysize == sizeof(spockHashKey));
 
 	return hash_uint32((uint32) k->dboid) ^
-		hash_uint32((uint32) k->nodeid) ^
-		hash_any((const unsigned char *) k->slot_name, NAMEDATALEN);
+		hash_uint32((uint32) k->relid);
 }
 
 /*
@@ -971,19 +971,19 @@ spock_worker_type_name(SpockWorkerType type)
 }
 
 void
-handle_sub_counters(spockStatsType typ, int ntup)
+handle_sub_counters(Relation relation, spockStatsType typ, int ntup)
 {
 	bool found = false;
 	SpockSubscription *sub = get_subscription(MyApplyWorker->subid);
 	spockHashKey key;
 	spockCounters *counters;
+	spockStatsEntry *entry;
 
 	memset(&key, 0, sizeof(spockHashKey));
 	key.dboid = MyDatabaseId;
-	key.nodeid = sub->target_if->nodeid;
-	strncpy(key.slot_name, sub->slot_name, NAMEDATALEN);
+	key.relid = RelationGetRelid(relation);
 
-	spockStatsEntry *entry = (spockStatsEntry *) hash_search(SpockHash, &key,
+	entry = (spockStatsEntry *) hash_search(SpockHash, &key,
 										HASH_ENTER, &found);
 	if (!found)
 	{
@@ -996,6 +996,12 @@ handle_sub_counters(spockStatsType typ, int ntup)
 
 	counters = &entry->counters;
 	SpinLockAcquire(&entry->mutex);
+	entry->nodeid = sub->target_if->nodeid;
+	strncpy(entry->slot_name, sub->slot_name, NAMEDATALEN);
+	strncpy(entry->schemaname,
+			get_namespace_name(RelationGetNamespace(relation)),
+			NAMEDATALEN);
+	strncpy(entry->relname, RelationGetRelationName(relation), NAMEDATALEN);
 	switch(typ)
 	{
 		case INSERT_STATS:
@@ -1014,17 +1020,18 @@ handle_sub_counters(spockStatsType typ, int ntup)
 }
 
 void
-handle_pr_counters(Oid nodeid, spockStatsType typ, int ntup)
+handle_pr_counters(Relation relation, Oid nodeid, spockStatsType typ, int ntup)
 {
 	bool found = false;
 	spockHashKey key;
 	spockCounters *counters;
+	spockStatsEntry *entry;
 
 	memset(&key, 0, sizeof(spockHashKey));
 	key.dboid = MyDatabaseId;
-	key.nodeid = nodeid;
+	key.relid = RelationGetRelid(relation);
 
-	spockStatsEntry *entry = (spockStatsEntry *) hash_search(SpockHash, &key,
+	entry = (spockStatsEntry *) hash_search(SpockHash, &key,
 										HASH_ENTER, &found);
 	if (!found)
 	{
@@ -1037,6 +1044,12 @@ handle_pr_counters(Oid nodeid, spockStatsType typ, int ntup)
 
 	counters = &entry->counters;
 	SpinLockAcquire(&entry->mutex);
+	entry->nodeid = nodeid;
+	memset(entry->slot_name, 0, NAMEDATALEN);
+	strncpy(entry->schemaname,
+			get_namespace_name(RelationGetNamespace(relation)),
+			NAMEDATALEN);
+	strncpy(entry->relname, RelationGetRelationName(relation), NAMEDATALEN);
 	switch(typ)
 	{
 		case INSERT_STATS:

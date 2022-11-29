@@ -16,6 +16,8 @@
 
 #include "spock.h"
 
+#define SPOCK_STATS_COLS	8
+
 typedef enum {
 	SPOCK_WORKER_NONE,		/* Unused slot. */
 	SPOCK_WORKER_MANAGER,	/* Manager. */
@@ -81,8 +83,7 @@ typedef struct spockHashKey
 {
 	/* hash key */
 	Oid			dboid;
-	Oid			nodeid;
-	char		slot_name[NAMEDATALEN];
+	Oid			relid;
 } spockHashKey;
 
 /*
@@ -90,25 +91,25 @@ typedef struct spockHashKey
  */
 typedef struct spockCounters
 {
-	/* provide stats */
-	// int64	pnode_tup_ins;
-	// int64	pnode_tup_upd;
-	// int64	pnode_tup_del;
-
-	/* subscriber stats */
+	/* stats counters */
 	int64	n_tup_ins;
 	int64	n_tup_upd;
 	int64	n_tup_del;
 
-	TimestampTz last_reset;
+	TimestampTz	last_reset;
 } spockCounters;
 
 typedef struct spockStatsEntry
 {
-	spockHashKey 	key;			/* hash key */
+	spockHashKey key;			/* hash key */
+
+	Oid		nodeid;
+	char	slot_name[NAMEDATALEN];
+	char	schemaname[NAMEDATALEN];
+	char	relname[NAMEDATALEN];
 
 	spockCounters	counters;		/* stat counters */
-	slock_t			mutex;			/*  */
+	slock_t	mutex;
 } spockStatsEntry;
 
 typedef enum spockStatsType
@@ -148,8 +149,8 @@ extern bool spock_worker_running(SpockWorker *w);
 extern void spock_worker_kill(SpockWorker *worker);
 
 extern const char * spock_worker_type_name(SpockWorkerType type);
-extern void handle_sub_counters(spockStatsType typ, int ntup);
-extern void handle_pr_counters(Oid nodeid, spockStatsType typ, int ntup);
+extern void handle_sub_counters(Relation relation, spockStatsType typ, int ntup);
+extern void handle_pr_counters(Relation relation, Oid nodeid, spockStatsType typ, int ntup);
 extern void save_ch_stats(bool crash);
 
 #endif /* SPOCK_WORKER_H */

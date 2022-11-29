@@ -284,7 +284,8 @@ RETURNS record RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAM
 CREATE FUNCTION spock.get_channel_stats(
     OUT dbid oid,
     OUT nodeid oid,
-    OUT slot_name text,
+    OUT slotname text,
+    OUT tablename text,
     OUT n_tup_ins bigint,
     OUT n_tup_upd bigint,
     OUT n_tup_del bigint,
@@ -295,8 +296,17 @@ LANGUAGE c AS 'MODULE_PATHNAME', 'get_channel_stats';
 CREATE FUNCTION spock.reset_channel_stats() RETURNS void
 LANGUAGE c AS 'MODULE_PATHNAME', 'reset_channel_stats';
 
-CREATE VIEW spock.get_channel_stats
-       (dbid, nodeid, slot_name, n_tup_ins, n_tup_upd, n_tup_del, last_reset)
-       AS
-       SELECT dbid, nodeid, slot_name, n_tup_ins, n_tup_upd, n_tup_del, last_reset
-       FROM spock.get_channel_stats();
+CREATE VIEW spock.get_channel_stats AS
+  SELECT dbid, nodeid, slotname, tablename, n_tup_ins, n_tup_upd,
+  	 n_tup_del, last_reset
+  FROM spock.get_channel_stats();
+
+CREATE VIEW spock.get_brief_channel_stats AS
+  SELECT DISTINCT ON(s1.nodeid) dbid, s1.nodeid, slotname, s2.n_tup_ins,
+  	 s2.n_tup_upd, s2.n_tup_del, s2.last_reset
+  FROM spock.get_channel_stats() s1
+  INNER JOIN
+    (SELECT nodeid, sum(n_tup_ins) n_tup_ins, sum(n_tup_upd) n_tup_upd,
+    sum(n_tup_del) n_tup_del, max(last_reset) last_reset
+    FROM spock.get_channel_stats() group by nodeid) s2
+  ON (s1.nodeid=s2.nodeid);

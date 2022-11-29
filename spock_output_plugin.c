@@ -701,7 +701,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 									&change->data.tp.newtuple->tuple,
 									att_list);
 			OutputPluginWrite(ctx, true);
-			handle_pr_counters(data->local_node_id, INSERT_STATS, 1);
+			handle_pr_counters(relation, data->local_node_id, INSERT_STATS, 1);
 			break;
 		case REORDER_BUFFER_CHANGE_UPDATE:
 			{
@@ -713,7 +713,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 										&change->data.tp.newtuple->tuple,
 										att_list);
 				OutputPluginWrite(ctx, true);
-				handle_pr_counters(data->local_node_id, UPDATE_STATS, 1);
+				handle_pr_counters(relation, data->local_node_id, UPDATE_STATS, 1);
 				break;
 			}
 		case REORDER_BUFFER_CHANGE_DELETE:
@@ -724,7 +724,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 										&change->data.tp.oldtuple->tuple,
 										att_list);
 				OutputPluginWrite(ctx, true);
-				handle_pr_counters(data->local_node_id, DELETE_STATS, 1);
+				handle_pr_counters(relation, data->local_node_id, DELETE_STATS, 1);
 			}
 			else
 				elog(DEBUG1, "didn't send DELETE change because of missing oldtuple");
