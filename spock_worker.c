@@ -977,11 +977,15 @@ void
 handle_sub_counters(Relation relation, spockStatsType typ, int ntup)
 {
 	bool found = false;
-	SpockSubscription *sub = get_subscription(MyApplyWorker->subid);
+	SpockSubscription *sub;
 	spockHashKey key;
 	spockCounters *counters;
 	spockStatsEntry *entry;
 
+	if (!spock_ch_stats)
+		return;
+
+	sub = get_subscription(MyApplyWorker->subid);
 	memset(&key, 0, sizeof(spockHashKey));
 	key.dboid = MyDatabaseId;
 	key.relid = RelationGetRelid(relation);
@@ -1029,6 +1033,9 @@ handle_pr_counters(Relation relation, char *slotname, Oid nodeid, spockStatsType
 	spockHashKey key;
 	spockCounters *counters;
 	spockStatsEntry *entry;
+
+	if (!spock_ch_stats)
+		return;
 
 	memset(&key, 0, sizeof(spockHashKey));
 	key.dboid = MyDatabaseId;
