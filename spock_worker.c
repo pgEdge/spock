@@ -896,7 +896,10 @@ load_ch_stats(void)
 			memset(&entry->counters, 0, sizeof(spockCounters));
 			SpinLockInit(&entry->mutex);
 		}
-		/* copy counters to the hashtable */
+		entry->nodeid = temp.nodeid;
+		memcpy(entry->slot_name, temp.slot_name, sizeof(temp.slot_name));
+		memcpy(entry->schemaname, temp.schemaname, sizeof(temp.schemaname));
+		memcpy(entry->relname, temp.relname, sizeof(temp.relname));
 		entry->counters = temp.counters;
 	}
 
@@ -1020,7 +1023,7 @@ handle_sub_counters(Relation relation, spockStatsType typ, int ntup)
 }
 
 void
-handle_pr_counters(Relation relation, Oid nodeid, spockStatsType typ, int ntup)
+handle_pr_counters(Relation relation, char *slotname, Oid nodeid, spockStatsType typ, int ntup)
 {
 	bool found = false;
 	spockHashKey key;
@@ -1042,10 +1045,12 @@ handle_pr_counters(Relation relation, Oid nodeid, spockStatsType typ, int ntup)
 		SpinLockInit(&entry->mutex);
 	}
 
+	Assert(slotname != NULL);
+
 	counters = &entry->counters;
 	SpinLockAcquire(&entry->mutex);
 	entry->nodeid = nodeid;
-	memset(entry->slot_name, 0, NAMEDATALEN);
+	strncpy(entry->slot_name, slotname, NAMEDATALEN);
 	strncpy(entry->schemaname,
 			get_namespace_name(RelationGetNamespace(relation)),
 			NAMEDATALEN);
