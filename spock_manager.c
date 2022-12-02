@@ -173,7 +173,6 @@ spock_manager_main(Datum main_arg)
 	int			slot = DatumGetInt32(main_arg);
 	Oid			extoid;
 	int			sleep_timer = INITIAL_SLEEP;
-	static TimestampTz last_dump_time = 0;
 
 	/* Setup shmem. */
 	spock_worker_attach(slot, SPOCK_WORKER_MANAGER);
@@ -197,16 +196,11 @@ spock_manager_main(Datum main_arg)
 	spock_manage_extension();
 	CommitTransactionCommand();
 
-	if (last_dump_time == 0)
-		last_dump_time = GetCurrentTimestamp();
-
 	/* Main wait loop. */
 	while (!got_SIGTERM)
     {
 		int		rc;
 		bool	processed_all;
-		long	delay_in_ms;
-		TimestampTz	next_dump_time;
 
 		/* Launch the apply workers. */
 		processed_all = manage_apply_workers();
@@ -216,29 +210,6 @@ spock_manager_main(Datum main_arg)
 			sleep_timer = Min(sleep_timer * 2, MAX_SLEEP);
 		else
 			sleep_timer = Max(sleep_timer / 2, MIN_SLEEP);
-
-		/*
-		 * Compute the next dump time. It's an approximate dump time +/-
-		 * MAX_SLEEP. It's because spock manager awakes between MIN_SLEEP
-		 * and MAX_SLEEP interval. The MAX_SLEEP is limited to 3 minutes
-		 * to perform a checkup on apply workers and sequences. So whenever
-		 * it awakes, check the stats dump interval and dump them.
-		 */
-		next_dump_time =
-			TimestampTzPlusMilliseconds(last_dump_time,
-										spock_statsdump_interval * 1000);
-		delay_in_ms =
-			TimestampDifferenceMilliseconds(GetCurrentTimestamp(),
-											next_dump_time);
-
-		/* Perform a dump if it's time. */
-		if (delay_in_ms <= 0)
-		{
-			last_dump_time = GetCurrentTimestamp();
-			save_ch_stats(false);
-		}
-		else if (delay_in_ms < sleep_timer)
-			sleep_timer = delay_in_ms;
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,

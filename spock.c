@@ -93,7 +93,6 @@ bool	spock_use_spi = false;
 bool	spock_batch_inserts = true;
 static char *spock_temp_directory_config;
 bool	spock_ch_stats = true;
-int		spock_statsdump_interval = 0;
 
 void _PG_init(void);
 void spock_supervisor_main(Datum main_arg);
@@ -853,19 +852,6 @@ _PG_init(void)
 							   PGC_BACKEND,
 							   0,
 							   NULL, NULL, NULL);
-
-	DefineCustomIntVariable("spock.channel_stats_interval",
-							"Sets the interval between dumps of channel stats",
-							NULL,
-							&spock_statsdump_interval,
-							300,
-							0, INT_MAX / 1000,
-							PGC_SIGHUP,
-							GUC_UNIT_S,
-							NULL,
-							NULL,
-							NULL);
-
 	if (IsBinaryUpgrade)
 		return;
 
