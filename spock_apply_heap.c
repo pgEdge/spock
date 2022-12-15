@@ -50,6 +50,7 @@
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
 
+#include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
@@ -92,8 +93,12 @@ typedef struct ApplyMIState
 
 #define TTS_TUP(slot) (((HeapTupleTableSlot *)slot)->tuple)
 
-
 static ApplyMIState *spkmistate = NULL;
+
+static bool relation_has_delta_columns(SpockRelation *rel);
+static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
+							  SpockTupleData *newtup, SpockTupleData *deltatup,
+							  TupleTableSlot *localslot);
 
 void
 spock_apply_heap_begin(void)
@@ -232,6 +237,104 @@ fill_missing_defaults(SpockRelation *rel, EState *estate,
 												econtext,
 												&tuple->nulls[defmap[i]],
 												NULL);
+}
+
+static bool
+relation_has_delta_columns(SpockRelation *rel)
+{
+	TupleDesc			tupdesc = RelationGetDescr(rel->rel);
+	AttributeOpts	   *aopt;
+	int					attno;
+
+	for (attno = 1; attno <= tupdesc->natts; attno++)
+	{
+		/* check the attribute options */
+		aopt = get_attribute_options(rel->rel->rd_id, attno);
+		if (aopt != NULL && aopt->log_old_value)
+			return true;
+	}
+
+	return false;
+}
+
+static void
+build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
+				  SpockTupleData *newtup,
+				  SpockTupleData *deltatup,
+				  TupleTableSlot *localslot)
+{
+	TupleDesc			tupdesc = RelationGetDescr(rel->rel);
+	Form_pg_attribute	att;
+	AttributeOpts	   *aopt;
+	int					attidx;
+	Datum				loc_value;
+	Datum				delta;
+	bool				loc_isnull;
+	PGFunction			func_add;
+	PGFunction			func_sub;
+
+	for (attidx = 0; attidx < tupdesc->natts; attidx++)
+	{
+		/* Get the attribute options */
+		aopt = get_attribute_options(rel->rel->rd_id, attidx + 1);
+		if (aopt == NULL || !aopt->log_old_value)
+		{
+			deltatup->values[attidx] = 0xdeadbeef;
+			deltatup->nulls[attidx] = true;
+			deltatup->changed[attidx] = false;
+			continue;
+		}
+
+		/*
+		 * Column is marked LOG_OLD_VALUE=true. We use that as flag
+		 * to apply the delta between the remote old and new instead
+		 * of the plain new value.
+		 *
+		 * To perform the actual delta math we need the functions behind
+		 * the '+' and '-' operators for the data type.
+		 *
+		 * XXX: This is currently hardcoded for the builtin data types
+		 * we support. Ideally we would lookup those operators in the
+		 * system cache, but that isn't straight forward and we get into
+		 * all sorts of trouble when it comes to user defined data types
+		 * and the search path.
+		 */
+		att = TupleDescAttr(tupdesc, attidx);
+		switch (att->atttypid)
+		{
+			case INT4OID:
+				func_add = int4pl;
+				func_sub = int4mi;
+				break;
+
+			case INT8OID:
+				func_add = int8pl;
+				func_sub = int8mi;
+				break;
+
+			case NUMERICOID:
+				func_add = numeric_add;
+				func_sub = numeric_sub;
+				break;
+
+			default:
+				elog(ERROR, "spock delta replication for type %d not supported",
+					 att->atttypid);
+		}
+
+		/* We also need the old value of the current local tuple */
+		loc_value = heap_getattr(TTS_TUP(localslot), attidx + 1, tupdesc,
+								 &loc_isnull);
+
+		/* Finally we can do the actual delta apply */
+		delta = DirectFunctionCall2(func_sub,
+									newtup->values[attidx],
+									oldtup->values[attidx]);
+		deltatup->values[attidx] = DirectFunctionCall2(func_add, loc_value,
+														delta);
+		deltatup->nulls[attidx] = false;
+		deltatup->changed[attidx] = true;
+	}
 }
 
 static ApplyExecState *
@@ -485,6 +588,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(aestate->estate));
 		fill_missing_defaults(rel, aestate->estate, newtup);
+
 		remotetuple = heap_modify_tuple(TTS_TUP(localslot),
 										RelationGetDescr(rel->rel),
 										newtup->values,
@@ -542,6 +646,29 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		{
 			apply = true;
 			applytuple = remotetuple;
+		}
+
+		/*
+		 * If the relation has columns that are marked LOG_OLD_VALUE
+		 * we apply the delta between the remote new and old values.
+		 */
+		if (relation_has_delta_columns(rel))
+		{
+			SpockTupleData	deltatup;
+			HeapTuple		currenttuple;
+
+			currenttuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
+			oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(aestate->estate));
+			build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
+			applytuple = heap_modify_tuple(currenttuple,
+										   RelationGetDescr(rel->rel),
+										   deltatup.values,
+										   deltatup.nulls,
+										   deltatup.changed);
+			MemoryContextSwitchTo(oldctx);
+			ExecStoreHeapTuple(applytuple, aestate->slot, true);
+
+			apply = true;
 		}
 
 		if (apply)
