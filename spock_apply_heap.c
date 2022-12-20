@@ -322,18 +322,34 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 					 att->atttypid);
 		}
 
-		/* We also need the old value of the current local tuple */
-		loc_value = heap_getattr(TTS_TUP(localslot), attidx + 1, tupdesc,
-								 &loc_isnull);
+		if (oldtup->nulls[attidx])
+		{
+			/*
+			 * This is a special case. Columns for delta apply need to
+			 * be marked NOT NULL and LOG_OLD_VALUE=true. During this
+			 * remote UPDATE LOG_OLD_VALUE setting was false. We use this
+			 * as a flag to force plain NEW value application. This is
+			 * useful in case a server ever gets out of sync.
+			 */
+			deltatup->values[attidx] = newtup->values[attidx];
+			deltatup->nulls[attidx] = false;
+			deltatup->changed[attidx] = true;
+		}
+		else
+		{
+			/* We also need the old value of the current local tuple */
+			loc_value = heap_getattr(TTS_TUP(localslot), attidx + 1, tupdesc,
+									 &loc_isnull);
 
-		/* Finally we can do the actual delta apply */
-		delta = DirectFunctionCall2(func_sub,
-									newtup->values[attidx],
-									oldtup->values[attidx]);
-		deltatup->values[attidx] = DirectFunctionCall2(func_add, loc_value,
-														delta);
-		deltatup->nulls[attidx] = false;
-		deltatup->changed[attidx] = true;
+			/* Finally we can do the actual delta apply */
+			delta = DirectFunctionCall2(func_sub,
+										newtup->values[attidx],
+										oldtup->values[attidx]);
+			deltatup->values[attidx] = DirectFunctionCall2(func_add, loc_value,
+															delta);
+			deltatup->nulls[attidx] = false;
+			deltatup->changed[attidx] = true;
+		}
 	}
 }
 
