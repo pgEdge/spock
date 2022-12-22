@@ -29,7 +29,7 @@ index 24211807ca..7e3f5219e0 100644
  
  	return (bytea *) build_reloptions(reloptions, validate,
 diff --git a/src/backend/access/heap/heapam.c b/src/backend/access/heap/heapam.c
-index c74fbd0104..27041c0856 100644
+index c74fbd0104..3f4b2a902b 100644
 --- a/src/backend/access/heap/heapam.c
 +++ b/src/backend/access/heap/heapam.c
 @@ -64,6 +64,7 @@
@@ -97,7 +97,15 @@ index c74fbd0104..27041c0856 100644
  										   &old_key_copied);
  
  	/* NO EREPORT(ERROR) from here till changes are logged */
-@@ -4052,6 +4059,26 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
+@@ -4002,6 +4009,7 @@ l2:
+ 	bms_free(key_attrs);
+ 	bms_free(id_attrs);
+ 	bms_free(modified_attrs);
++	bms_free(logged_old_attrs);
+ 	bms_free(interesting_attrs);
+ 
+ 	return TM_Ok;
+@@ -4052,6 +4060,26 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
  	}
  }
  
@@ -124,7 +132,7 @@ index c74fbd0104..27041c0856 100644
  /*
   * Check which columns are being updated.
   *
-@@ -8533,6 +8560,7 @@ log_heap_new_cid(Relation relation, HeapTuple tup)
+@@ -8533,6 +8561,7 @@ log_heap_new_cid(Relation relation, HeapTuple tup)
   */
  static HeapTuple
  ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
@@ -132,7 +140,7 @@ index c74fbd0104..27041c0856 100644
  					   bool *copy)
  {
  	TupleDesc	desc = RelationGetDescr(relation);
-@@ -8565,13 +8593,16 @@ ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
+@@ -8565,13 +8594,16 @@ ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
  	}
  
  	/* if the key isn't required and we're only logging the key, we're done */
