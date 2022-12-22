@@ -1,7 +1,7 @@
 results
 regression_output
 tmp_check
-pglogical_create_subscriber
+spock_create_subscriber
 .vimrc
 *.o
 *.so
