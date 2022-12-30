@@ -86,55 +86,53 @@ The first thing we need is to modify the table **pgbench_history**
 so that we can replicate it. This table lacks a primary key and
 many replication systems, ***spock*** included, don't normally replicate
 tables like that. The process is a bit tricky as it requires a different
-configuration on each node. The SQL below assumes that `${nid}`
+configuration on each node. The SQL below assumes that `branch`
 expands into the local node ID, like it would if the SQL was
 provided by a shell here-document and `$nid` was set accordingly.
 It creates a sequence based primary key **hid** where the sequence on
 each node is generating unique numers that start on the node-id and
 increment in steps of 100. This means node 1 will create **hid** values
 of 1, 101, 201, ... while node 2 creates 2, 102, 202, ... . This is
-conflict free on inserts across the entire distributed database.
+conflict free on inserts across the entire distributed database. These
+changes can be found in ***spock-bench-alter-H.sql***.
 
 ```
-ALTER TABLE pgbench_history
-    ADD COLUMN hid bigserial;
-ALTER TABLE pgbench_history
-    ADD PRIMARY KEY (hid);
-ALTER SEQUENCE pgbench_history_hid_seq
-    START ${nid}
-    RESTART ${nid}
-    INCREMENT 100;
+ALTER TABLE pgbench_history ADD COLUMN hid bigserial;
+ALTER TABLE pgbench_history ADD PRIMARY KEY (hid);
+ALTER SEQUENCE pgbench_history_hid_seq START :branch RESTART :branch INCREMENT 100;
 ```
+
+It is important to perform this change before creating the ***spock***
+replication setup since the history table cannot be added to the
+replication set without a primary key.
 
 Next we create two additional columns on the **pgbench_tellers** and
 **pgbench_accounts** tables. The test would be sufficient with just
-one column on each, but why not have two for the price of two?
+one column on each, but why not have two for the price of two? These
+changes can be found in ***spock-bench-alter-TA.sql***.
 
 ```
-ALTER TABLE pgbench_tellers
-    ADD COLUMN trandom integer DEFAULT 0;
-ALTER TABLE pgbench_tellers
-    ADD COLUMN tlastts timestamp with time zone DEFAULT 'EPOCH';
+ALTER TABLE pgbench_tellers ADD COLUMN trandom integer DEFAULT 0;
+ALTER TABLE pgbench_tellers ADD COLUMN tlastts timestamp with time zone DEFAULT 'EPOCH';
 
-ALTER TABLE pgbench_accounts
-    ADD COLUMN arandom integer DEFAULT 0;
-ALTER TABLE pgbench_accounts
-    ADD COLUMN alastts timestamp with time zone DEFAULT 'EPOCH';
+ALTER TABLE pgbench_accounts ADD COLUMN arandom integer DEFAULT 0;
+ALTER TABLE pgbench_accounts ADD COLUMN alastts timestamp with time zone DEFAULT 'EPOCH';
 ```
-
 
 Third we configure the balance columns on each of the three main
 tables to **LOG_OLD_VALUE=true** (which causes ***spock***
-to use **delta-resolve** for those columns).
+to use **delta-resolve** for those columns). These changes are also
+found in ***spock-bench-alter-TA.sql***.
 
 ```
-ALTER TABLE pgbench_accounts
-    ALTER COLUMN abalance SET (LOG_OLD_VALUE=true);
-ALTER TABLE pgbench_branches
-    ALTER COLUMN bbalance SET (LOG_OLD_VALUE=true);
-ALTER TABLE pgbench_tellers
-    ALTER COLUMN tbalance SET (LOG_OLD_VALUE=true);
+ALTER TABLE pgbench_accounts ALTER COLUMN abalance SET (LOG_OLD_VALUE=true);
+ALTER TABLE pgbench_branches ALTER COLUMN bbalance SET (LOG_OLD_VALUE=true);
+ALTER TABLE pgbench_tellers ALTER COLUMN tbalance SET (LOG_OLD_VALUE=true);
 ```
+
+The changes in ***spock-bench-alter-TA.sql*** can only be performed
+after the data has been loaded into the pgbench tables since they break
+the way pgbench does the initial load for the accounts table.
 
 
 ### Custom pgbench transaction profiles
