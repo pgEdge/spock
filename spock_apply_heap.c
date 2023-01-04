@@ -475,12 +475,15 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		bool				apply;
 		bool				local_origin_found;
 
-		local_origin_found = get_tuple_origin(TTS_TUP(localslot), &xmin,
+		local_origin_found = get_tuple_origin(RelationGetRelid(rel->rel),
+											  TTS_TUP(localslot),
+											  NULL, &xmin,
 											  &local_origin, &local_ts);
 
 		/* Tuple already exists, try resolving conflict. */
 		apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
 									 remotetuple, &applytuple,
+									 local_origin, local_ts,
 									 &resolution);
 
 		spock_report_conflict(CONFLICT_INSERT_INSERT, rel,
@@ -574,6 +577,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	MemoryContext		oldctx;
 	Oid					replident_idx_id;
 	bool				has_before_triggers = false;
+	bool				is_delta_apply = false;
 
 	/* Initialize the executor state. */
 	aestate = init_apply_exec_state(rel);
@@ -631,7 +635,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 		/* trigger might have changed tuple */
 		remotetuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
-		local_origin_found = get_tuple_origin(TTS_TUP(localslot), &xmin,
+		local_origin_found = get_tuple_origin(RelationGetRelid(rel->rel),
+											  TTS_TUP(localslot),
+											  &(localslot->tts_tid), &xmin,
 											  &local_origin, &local_ts);
 
 		/*
@@ -646,6 +652,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 			apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
 										 remotetuple, &applytuple,
+										 local_origin, local_ts,
 										 &resolution);
 
 			spock_report_conflict(CONFLICT_UPDATE_UPDATE, rel,
@@ -684,7 +691,11 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			MemoryContextSwitchTo(oldctx);
 			ExecStoreHeapTuple(applytuple, aestate->slot, true);
 
-			apply = true;
+			if (!apply)
+			{
+				is_delta_apply = true;
+				apply = true;
+			}
 		}
 
 		if (apply)
@@ -709,6 +720,19 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 															aestate->estate,
 															aestate->slot,
 															true);
+			}
+
+			if (is_delta_apply)
+			{
+				/*
+				 * We forced an update to a row that we normally had
+				 * to skip because it has delta resolve columns. Remember
+				 * the correct origin, xmin and commit timestamp for
+				 * get_tuple_origion() to figure it out.
+				 */
+				spock_cth_store(RelationGetRelid(rel->rel),
+								&(aestate->slot->tts_tid), local_origin,
+								GetTopTransactionId(), local_ts);
 			}
 
 			/* AFTER ROW UPDATE Triggers */

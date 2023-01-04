@@ -65,8 +65,14 @@ typedef struct SpockWorker {
 } SpockWorker;
 
 typedef struct SpockContext {
-	/* Write lock. */
+	/* Write lock for the entire context. */
 	LWLock	   *lock;
+
+	/* Access lock for the Conflict Tracking Hash. */
+	LWLock	   *cth_lock;
+
+	/* Counter for entries in Conflict Tracking Hash */
+	int			cth_count;
 
 	/* Supervisor process. */
 	PGPROC	   *supervisor;
@@ -120,6 +126,7 @@ typedef enum spockStatsType
 } spockStatsType;
 
 extern HTAB				   *SpockHash;
+extern HTAB				   *SpockConflictHash;
 extern SpockContext		   *SpockCtx;
 extern SpockWorker		   *MySpockWorker;
 extern SpockApplyWorker	   *MyApplyWorker;
