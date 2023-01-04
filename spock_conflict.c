@@ -433,7 +433,8 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 		 *
 		 * XXX: TODO, for now we just always apply remote change.
 		 */
-		elog(LOG, "SPOCK: conflict_resolve_by_timestamp: timestamps identical!");
+		elog(LOG, "SPOCK: conflict_resolve_by_timestamp(): "
+				  "timestamps identical!");
 
 		*resolution = SpockResolution_ApplyRemote;
 		return true;
@@ -574,10 +575,6 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 		LWLockRelease(SpockCtx->cth_lock);
 		return true;
 	}
-
-	elog(LOG, "get_tuple_origin: relid=%d tid=(%d,%d) orig=%d ts=%ld overrides",
-		 relid, BlockIdGetBlockNumber(&(cth_entry->key.tid.ip_blkid)), cth_entry->key.tid.ip_posid,
-		 cth_entry->last_origin, cth_entry->last_ts);
 
     cmp = timestamptz_cmp_internal(*local_ts, cth_entry->last_ts);
 	if (spock_conflict_resolver == SPOCK_RESOLVE_FIRST_UPDATE_WINS)
@@ -1067,8 +1064,7 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	if (cth_entry == NULL)
 	{
 		LWLockRelease(SpockCtx->cth_lock);
-		elog(LOG, "spock_cth_store: out of shared memory");
-		return;
+		elog(ERROR, "spock_cth_store: out of shared memory");
 	}
 
 	if (!cth_found)
@@ -1083,10 +1079,6 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	 */
 
 	LWLockRelease(SpockCtx->cth_lock);
-
-	elog(LOG, "spock_cth_store: relid=%d tid=(%d,%d) orig=%d ts=%ld found=%s",
-		 relid, BlockIdGetBlockNumber(&tid->ip_blkid), tid->ip_posid,
-		 last_origin, last_ts, cth_found ? "true" : "false");
 }
 
 uint32
