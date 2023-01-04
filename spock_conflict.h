@@ -24,6 +24,9 @@
 #define CATALOG_LOGTABLE "resolutions"
 #define SPOCK_LOG_TABLE_COLS 16
 
+/* Conflict tracking permanent table */
+#define	SPOCK_CTT_NAME	 "conflict_tracker"
+
 extern TransactionId remote_xid;
 
 typedef enum SpockConflictResolution

@@ -28,6 +28,7 @@
 #include "common/hashfn.h"
 
 #include "executor/executor.h"
+#include "executor/spi.h"
 
 #include "parser/parse_relation.h"
 
@@ -61,6 +62,12 @@ static void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 	HeapTuple tuple);
 static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
 	bool *ret_isnull);
+
+/*
+ * Support functions for conflict tracking permanent table
+ */
+static void spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found);
+static void spock_ctt_remove(SpockCTHKey *cth_key);
 
 /*
  * Setup a ScanKey for a search in the relation 'rel' for a tuple 'key' that
@@ -527,7 +534,8 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 			/* If found decrement the entry count */
 			SpockCtx->cth_count--;
 
-			/* TODO: Delete the entry from the backing table. */
+			/* Delete the entry from the backing table. */
+			spock_ctt_remove(&cth_key);
 		}
 
 		LWLockRelease(SpockCtx->cth_lock);
@@ -571,7 +579,8 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 		hash_search(SpockConflictHash, &cth_key, HASH_REMOVE, &cth_found);
 		SpockCtx->cth_count--;
 
-		/* TODO: delete the entry from the backing table */
+		/* delete the entry from the backing table */
+		spock_ctt_remove(&cth_key);
 
 		LWLockRelease(SpockCtx->cth_lock);
 		return true;
@@ -586,7 +595,8 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 		hash_search(SpockConflictHash, &cth_key, HASH_REMOVE, &cth_found);
 		SpockCtx->cth_count--;
 
-		/* TODO: delete the entry from the backing table */
+		/* delete the entry from the backing table */
+		spock_ctt_remove(&cth_key);
 	}
 	else
 	{
@@ -1071,8 +1081,9 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	cth_entry->last_ts = last_ts;
 
 	/*
-	 * TODO: Store this entry in the permanent backing table
+	 * Store this entry in the permanent backing table
 	 */
+	spock_ctt_store(cth_entry, cth_found);
 
 	LWLockRelease(SpockCtx->cth_lock);
 }
@@ -1224,6 +1235,60 @@ spock_cth_match_fn(const void *key1, const void *key2, Size keylen)
 	return 1;
 }
 
+static void
+spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found)
+{
+	StringInfoData	cmd;
+
+	initStringInfo(&cmd);
+
+	if (cth_found)
+	{
+		appendStringInfo(&cmd, "UPDATE %s.%s", EXTENSION_NAME, SPOCK_CTT_NAME);
+		appendStringInfo(&cmd, " SET last_origin=%d, last_xmin='%u', last_ts='%s'",
+			cth_entry->last_origin,
+			cth_entry->last_xmin,
+			timestamptz_to_str(cth_entry->last_ts));
+		appendStringInfo(&cmd, " WHERE relid=%u AND tid='(%d,%d)'",
+			cth_entry->key.relid,
+			BlockIdGetBlockNumber(&cth_entry->key.tid.ip_blkid), cth_entry->key.tid.ip_posid);
+	}
+	else
+	{
+		appendStringInfo(&cmd, "INSERT INTO %s.%s", EXTENSION_NAME, SPOCK_CTT_NAME);
+		appendStringInfo(&cmd, " VALUES (%u, '(%d,%d)', %d, '%u', '%s')",
+			cth_entry->key.relid,
+			BlockIdGetBlockNumber(&cth_entry->key.tid.ip_blkid), cth_entry->key.tid.ip_posid,
+			cth_entry->last_origin,
+			cth_entry->last_xmin,
+			timestamptz_to_str(cth_entry->last_ts));
+	}
+
+	SPI_connect();
+	if (SPI_exec(cmd.data, 0) < 0)
+		elog(ERROR, "SPI_exec failed %s", cmd.data);
+	SPI_finish();
+	pfree(cmd.data);
+}
+
+static void
+spock_ctt_remove(SpockCTHKey *cth_key)
+{
+	StringInfoData	cmd;
+
+	initStringInfo(&cmd);
+
+	appendStringInfo(&cmd, "DELETE FROM %s.%s", EXTENSION_NAME, SPOCK_CTT_NAME);
+	appendStringInfo(&cmd, " WHERE relid=%u AND tid='(%d,%d)'",
+		cth_key->relid,
+		BlockIdGetBlockNumber(&cth_key->tid.ip_blkid), cth_key->tid.ip_posid);
+
+	SPI_connect();
+	if (SPI_exec(cmd.data, 0) != SPI_OK_DELETE)
+		elog(ERROR, "SPI_exec failed %s", cmd.data);
+	SPI_finish();
+	pfree(cmd.data);
+}
 
 /*
  * print the tuple 'tuple' into the StringInfo s

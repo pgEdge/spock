@@ -339,3 +339,14 @@ CREATE FUNCTION spock.prune_conflict_tracking()
 RETURNS int4
 AS 'MODULE_PATHNAME', 'prune_conflict_tracking'
 LANGUAGE C;
+
+CREATE TABLE spock.conflict_tracker (
+    relid oid,
+    tid tid,
+
+    last_origin int,
+    last_xmin xid,
+    last_ts timestamptz,
+
+    PRIMARY KEY(relid, tid)
+) WITH (user_catalog_table=true);
