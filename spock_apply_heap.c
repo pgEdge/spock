@@ -748,7 +748,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 				 */
 				spock_cth_store(RelationGetRelid(rel->rel),
 								&(aestate->slot->tts_tid), local_origin,
-								GetTopTransactionId(), local_ts);
+								GetTopTransactionId(), local_ts, false);
 			}
 
 			/* AFTER ROW UPDATE Triggers */

@@ -1032,7 +1032,7 @@ spock_conflict_resolver_check_hook(int *newval, void **extra,
  */
 void
 spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
-				TransactionId last_xmin, TimestampTz last_ts)
+				TransactionId last_xmin, TimestampTz last_ts, bool is_init)
 {
 	SpockCTHKey			cth_key;
 	SpockCTHEntry	   *cth_entry;
@@ -1083,7 +1083,8 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	/*
 	 * Store this entry in the permanent backing table
 	 */
-	spock_ctt_store(cth_entry, cth_found);
+	if (!is_init)
+		spock_ctt_store(cth_entry, cth_found);
 
 	LWLockRelease(SpockCtx->cth_lock);
 }
@@ -1209,8 +1210,9 @@ spock_cth_prune(bool has_cth_lock)
 			SpockCtx->cth_count--;
 
 			/*
-			 * TODO: Remove this entry from the backing table
+			 * Remove this entry from the backing table
 			 */
+			spock_ctt_remove(&entry->key);
 		}
 	}
 
