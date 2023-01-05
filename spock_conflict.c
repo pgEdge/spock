@@ -218,8 +218,9 @@ retry:
 				 * lock the matched tuple.
 				 *
 				 * XXX: Improve handling here.
+				 * XXX: Improve how?
 				 */
-				ereport(LOG,
+				ereport(DEBUG1,
 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 						 errmsg("concurrent update, retrying")));
 				goto retry;
@@ -1033,24 +1034,19 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	/* We intend to modify the hash table, lock exclusive */
 	LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
 
-	if (SpockCtx->cth_count >= spock_conflict_max_tracking)
+	if (SpockCtx->cth_count >= (spock_conflict_max_tracking * 3 / 4))
 	{
 		/*
-		 * TODO: This means we ran out of memory in the conflict tracking
-		 * hash table. We need to attempt a purge of old entries.
-		 *
-		 * Not sure what we are going to do if we cannot purge at least
-		 * one old entry. Do we error out and stall replication or do we
-		 * just log the problem and risk data drift between the nodes?
-		 *
-		 * We can run over this for a while "borrowing" shared memory
-		 * from other backend parts as long as they don't need it. But
-		 * that sounds like a huge kluge.
+		 * We are running low on space in the conflict tracking hash
+		 * table. Because there can be multiple databases we need to
+		 * leave some headroom to give them time to prune as well, so
+		 * we start doing this at 75% fill factor.
 		 */
+		int32	num_pruned;
 
-		LWLockRelease(SpockCtx->cth_lock);
-		elog(LOG, "spock_cth_store: out of entries");
-		return;
+		num_pruned = spock_cth_prune(true);
+		elog(LOG, "SPOCK: %d entries pruned from conflict tracking hash",
+			 num_pruned);
 	}
 
 	/* Search for the hash entry or create a new one */
@@ -1064,7 +1060,7 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	if (cth_entry == NULL)
 	{
 		LWLockRelease(SpockCtx->cth_lock);
-		elog(ERROR, "spock_cth_store: out of shared memory");
+		elog(ERROR, "SPOCK: out of shared memory for conflict tracking");
 	}
 
 	if (!cth_found)
@@ -1079,6 +1075,138 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	 */
 
 	LWLockRelease(SpockCtx->cth_lock);
+}
+
+typedef struct CTHPruneOrigin
+{
+	RepOriginId		remote_id;
+	TimestampTz		last_ts;
+} CTHPruneOrigin;
+
+int32
+spock_cth_prune(bool has_cth_lock)
+{
+	int32			num_pruned = 0;
+	List		   *workers = NIL;
+	ListCell	   *wlc;
+	SpockWorker	   *worker;
+	List		   *origins = NIL;
+	ListCell	   *olc;
+	CTHPruneOrigin *origin;
+	TimestampTz		min_last_ts = 0;
+	TimestampTz		cmp_last_ts = 0;
+	Datum			intvl10;
+	HASH_SEQ_STATUS	hash_seq;
+	SpockCTHEntry  *entry;
+
+	/*
+	 * We need to find the min(max(last commit ts of every remote)).
+	 * This is the safe timestamp from before which we don't need
+	 * to keep any tracking entries. The idea is that transactions
+	 * are received in commit order per remote. If an entry has a
+	 * last_ts before the last_ts of a node, then we can never
+	 * again receive any replication action that is before that and
+	 * the last update wins will always apply. If this is true for
+	 * all remotes, we no longer need the entry.
+	 *
+	 * We first assemble a list of all remote IDs and their
+	 * last commit timestamp. This list should always be in the
+	 * single digits, so a list implementation is fine.
+	 */
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+	workers = spock_apply_find_all(MyDatabaseId);
+	foreach (wlc, workers)
+	{
+		bool	found = false;
+
+		worker = (SpockWorker *)lfirst(wlc);
+		if (worker->worker.apply.remote_id == InvalidRepOriginId)
+			continue;
+
+		foreach (olc, origins)
+		{
+			origin = (CTHPruneOrigin *)lfirst(olc);
+
+			if (origin->remote_id == worker->worker.apply.remote_id)
+			{
+				if (timestamptz_cmp_internal(origin->last_ts,
+											 worker->worker.apply.last_ts) > 0)
+				{
+					origin->last_ts = worker->worker.apply.last_ts;
+				}
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+		{
+			origin = (CTHPruneOrigin *)palloc(sizeof(CTHPruneOrigin));
+			origin->remote_id = worker->worker.apply.remote_id;
+			origin->last_ts = worker->worker.apply.last_ts;
+			origins = lappend(origins, origin);
+		}
+	}
+	LWLockRelease(SpockCtx->lock);
+
+	if (origins == NIL)
+		/* No origins at all? This only happens after boot. */
+		PG_RETURN_INT32(0);
+
+	/*
+	 * Now find the min of the last commit timestamps of all remotes.
+	 */
+	foreach(olc, origins)
+	{
+		origin = (CTHPruneOrigin *)lfirst(olc);
+
+		if (min_last_ts == 0)
+			min_last_ts = origin->last_ts;
+		else
+			if (timestamptz_cmp_internal(origin->last_ts, min_last_ts) < 0)
+				min_last_ts = origin->last_ts;
+	}
+
+	/*
+	 * We apply a 10s safety distance because there is a small chance
+	 * that a node's commit timestamp actually does run backwards.
+	 * This is because the commit timestamp is placed into the commit
+	 * WAL record before it is added to the WAL. So there is a race
+	 * condition where one backend gets a timestamp after another but
+	 * writes the WAL record first.
+	 */
+	intvl10 = DirectFunctionCall3(interval_in, PointerGetDatum("10s"),
+								  ObjectIdGetDatum(InvalidOid),
+								  Int32GetDatum(-1));
+	cmp_last_ts = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_mi_interval,
+														  TimestampTzGetDatum(min_last_ts),
+														  intvl10));
+
+	/*
+	 * Finally prune the conflict tracking hash from all entries that
+	 * have a last_ts older than our cmp_last_ts.
+	 */
+	if (!has_cth_lock)
+		LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
+
+	hash_seq_init(&hash_seq, SpockConflictHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		if (timestamptz_cmp_internal(entry->last_ts, cmp_last_ts) < 0)
+		{
+			hash_search(SpockConflictHash, &entry->key, HASH_REMOVE, NULL);
+			num_pruned++;
+			SpockCtx->cth_count--;
+
+			/*
+			 * TODO: Remove this entry from the backing table
+			 */
+		}
+	}
+
+	if (!has_cth_lock)
+		LWLockRelease(SpockCtx->cth_lock);
+
+	return num_pruned;
 }
 
 uint32

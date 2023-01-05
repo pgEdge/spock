@@ -334,3 +334,8 @@ CREATE VIEW spock.conflict_tracking AS
   JOIN pg_catalog.pg_class C ON C.oid = T.relid
   JOIN pg_catalog.pg_namespace N on N.oid = C.relnamespace
   WHERE D.datname = pg_catalog.current_database();
+
+CREATE FUNCTION spock.prune_conflict_tracking()
+RETURNS int4
+AS 'MODULE_PATHNAME', 'prune_conflict_tracking'
+LANGUAGE C;

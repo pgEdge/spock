@@ -341,6 +341,8 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	Assert(MySpockWorker->worker_type == type);
 	MySpockWorker->proc = MyProc;
 	MySpockWorkerGeneration = MySpockWorker->generation;
+	MySpockWorker->worker.apply.remote_id = InvalidRepOriginId;
+	MySpockWorker->worker.apply.last_ts = 0;
 
 	elog(DEBUG2, "%s worker [%d] attaching to slot %d generation %hu",
 		 spock_worker_type_name(type), MyProcPid, slot,

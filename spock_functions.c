@@ -150,6 +150,7 @@ PG_FUNCTION_INFO_V1(spock_show_repset_table_info_by_target);
 PG_FUNCTION_INFO_V1(get_channel_stats);
 PG_FUNCTION_INFO_V1(reset_channel_stats);
 PG_FUNCTION_INFO_V1(get_conflict_tracking);
+PG_FUNCTION_INFO_V1(prune_conflict_tracking);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -2542,4 +2543,14 @@ get_conflict_tracking(PG_FUNCTION_ARGS)
 	tuplestore_donestoring(tupstore);
 
 	PG_RETURN_VOID();
+}
+
+Datum
+prune_conflict_tracking(PG_FUNCTION_ARGS)
+{
+	int32	result;
+
+	result = spock_cth_prune(false);
+
+	PG_RETURN_INT32(result);
 }

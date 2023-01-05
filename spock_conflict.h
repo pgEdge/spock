@@ -133,6 +133,7 @@ extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 extern void spock_cth_store(Oid relid, ItemPointer tid,
 							RepOriginId last_origin, TransactionId last_xmin,
 							TimestampTz last_ts);
+extern int32 spock_cth_prune(bool has_cth_lock);
 extern uint32 spock_cth_hash_fn(const void *key, Size keylen);
 extern int spock_cth_match_fn(const void *key1, const void *key2, Size keylen);
 #endif /* SPOCK_CONGLICT_H */
