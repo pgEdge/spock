@@ -1091,87 +1091,164 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	LWLockRelease(SpockCtx->cth_lock);
 }
 
-typedef struct CTHPruneOrigin
+/*
+ * Private structures for spock_cth_prune()
+ */
+typedef struct CTHPruneSub
 {
-	RepOriginId		remote_id;
+	Oid				sub_id;
+	char		   *sub_name;
+	RepOriginId		replorigin;
+} CTHPruneSub;
+
+typedef struct CTHPruneOrig
+{
+	RepOriginId		replorigin;
 	TimestampTz		last_ts;
-} CTHPruneOrigin;
+} CTHPruneOrig;
 
 int32
 spock_cth_prune(bool has_cth_lock)
 {
 	int32			num_pruned = 0;
+	TupleDesc		tupdesc;
+	List		   *subscriptions = NIL;
+	ListCell	   *slc;
+	CTHPruneSub	   *sub;
+	List		   *origins = NIL;
+	ListCell	   *olc;
+	CTHPruneOrig   *origin;
 	List		   *workers = NIL;
 	ListCell	   *wlc;
 	SpockWorker	   *worker;
-	List		   *origins = NIL;
-	ListCell	   *olc;
-	CTHPruneOrigin *origin;
 	TimestampTz		min_last_ts = 0;
 	TimestampTz		cmp_last_ts = 0;
 	Datum			intvl10;
 	HASH_SEQ_STATUS	hash_seq;
-	SpockCTHEntry  *entry;
+	SpockCTHEntry   *entry;
+	int				rc;
+	uint64			i;
+	bool			all_ok = true;
 
 	/*
 	 * We need to find the min(max(last commit ts of every remote)).
 	 * This is the safe timestamp from before which we don't need
 	 * to keep any tracking entries. The idea is that transactions
-	 * are received in commit order per remote. If an entry has a
+	 * are received in commit order per replorigin. If an entry has a
 	 * last_ts before the last_ts of a node, then we can never
 	 * again receive any replication action that is before that and
 	 * the last update wins will always apply. If this is true for
 	 * all remotes, we no longer need the entry.
-	 *
-	 * We first assemble a list of all remote IDs and their
-	 * last commit timestamp. This list should always be in the
-	 * single digits, so a list implementation is fine.
+	 */
+
+
+	/* Get a list of all spock.subscriptions */
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPOCK: SPI_connect() failed");
+	rc = SPI_execute("SELECT sub_id, sub_name "
+					 "FROM spock.subscription", true, 0);
+	if (rc != SPI_OK_SELECT)
+		elog(ERROR, "SPOCK: SPI_execute() failed");
+	if (SPI_tuptable == NULL)
+	{
+		SPI_finish();
+		return 0;
+	}
+	tupdesc = SPI_tuptable->tupdesc;
+	for (i = 0; i < SPI_tuptable->numvals; i++)
+	{
+		HeapTuple	tup = SPI_tuptable->vals[i];
+		bool		isnull;
+
+		sub = palloc(sizeof(CTHPruneSub));
+		sub->sub_id = DatumGetObjectId(SPI_getbinval(tup, tupdesc, 1,
+													 &isnull));
+		sub->sub_name = SPI_getvalue(tup, tupdesc, 2);
+		sub->replorigin = InvalidRepOriginId;
+		subscriptions = lappend(subscriptions, sub);
+	}
+	SPI_finish();
+
+	/*
+	 * Now find all the workers and fill in the replorigin. While at
+	 * it build the list of unique replorigins with their max(last_ts).
 	 */
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 	workers = spock_apply_find_all(MyDatabaseId);
-	foreach (wlc, workers)
+	foreach (slc, subscriptions)
 	{
-		bool	found = false;
+		sub = (CTHPruneSub *)lfirst(slc);
 
-		worker = (SpockWorker *)lfirst(wlc);
-		if (worker->worker.apply.remote_id == InvalidRepOriginId)
-			continue;
-
-		foreach (olc, origins)
+		foreach (wlc, workers)
 		{
-			origin = (CTHPruneOrigin *)lfirst(olc);
+			bool	found = false;
 
-			if (origin->remote_id == worker->worker.apply.remote_id)
+			worker = (SpockWorker *)lfirst(wlc);
+
+			if (worker->worker.apply.subid == sub->sub_id)
 			{
-				if (timestamptz_cmp_internal(origin->last_ts,
-											 worker->worker.apply.last_ts) > 0)
-				{
-					origin->last_ts = worker->worker.apply.last_ts;
-				}
-				found = true;
-				break;
+				sub->replorigin = worker->worker.apply.replorigin;
 			}
-		}
-		if (!found)
-		{
-			origin = (CTHPruneOrigin *)palloc(sizeof(CTHPruneOrigin));
-			origin->remote_id = worker->worker.apply.remote_id;
-			origin->last_ts = worker->worker.apply.last_ts;
-			origins = lappend(origins, origin);
+
+			foreach (olc, origins)
+			{
+				origin = (CTHPruneOrig *)lfirst(olc);
+
+				if (origin->replorigin == worker->worker.apply.replorigin)
+				{
+					if (timestamptz_cmp_internal(origin->last_ts,
+												 worker->worker.apply.last_ts) > 0)
+					{
+						origin->last_ts = worker->worker.apply.last_ts;
+					}
+					found = true;
+					break;
+				}
+			}
+			if (!found)
+			{
+				origin = (CTHPruneOrig *)palloc(sizeof(CTHPruneOrig));
+				origin->replorigin = worker->worker.apply.replorigin;
+				origin->last_ts = worker->worker.apply.last_ts;
+				origins = lappend(origins, origin);
+			}
 		}
 	}
 	LWLockRelease(SpockCtx->lock);
 
-	if (origins == NIL)
-		/* No origins at all? This only happens after boot. */
-		PG_RETURN_INT32(0);
+	/*
+	 * Make sure we found a replorigin and last_ts for every
+	 * subscription. We cannot proceed without that because
+	 * we don't know how we lost connection to that node and
+	 * there could be outstanding transactions there with
+	 * conflicts that need the current entries to resolve.
+	 */
+	foreach (slc, subscriptions)
+	{
+		sub = (CTHPruneSub *)lfirst(slc);
+
+
+		if (sub->replorigin == InvalidRepOriginId)
+		{
+			elog(LOG, "SPOCK: sub_id=%u sub_name=%s "
+				 "replorigin=InvalidRepOriginId",
+				 sub->sub_id, sub->sub_name);
+			all_ok = false;
+		}
+	}
+	if (!all_ok)
+	{
+		elog(LOG, "SPOCK: cannot prune conflict tracking, one or more "
+			 "subscriptions have unknown last commit timestamp.");
+		return 0;
+	}
 
 	/*
-	 * Now find the min of the last commit timestamps of all remotes.
+	 * Now find the min of the last commit timestamps of all replorigins.
 	 */
 	foreach(olc, origins)
 	{
-		origin = (CTHPruneOrigin *)lfirst(olc);
+		origin = (CTHPruneOrig *)lfirst(olc);
 
 		if (min_last_ts == 0)
 			min_last_ts = origin->last_ts;
@@ -1181,14 +1258,14 @@ spock_cth_prune(bool has_cth_lock)
 	}
 
 	/*
-	 * We apply a 10s safety distance because there is a small chance
+	 * We apply a 1s safety distance because there is a small chance
 	 * that a node's commit timestamp actually does run backwards.
 	 * This is because the commit timestamp is placed into the commit
 	 * WAL record before it is added to the WAL. So there is a race
 	 * condition where one backend gets a timestamp after another but
 	 * writes the WAL record first.
 	 */
-	intvl10 = DirectFunctionCall3(interval_in, PointerGetDatum("10s"),
+	intvl10 = DirectFunctionCall3(interval_in, PointerGetDatum("1s"),
 								  ObjectIdGetDatum(InvalidOid),
 								  Int32GetDatum(-1));
 	cmp_last_ts = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_mi_interval,

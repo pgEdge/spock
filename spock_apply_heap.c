@@ -113,14 +113,14 @@ spock_apply_heap_commit(void)
 	 * assigned origin and the last commit timestamp.
 	 */
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
-	if (MySpockWorker->worker.apply.remote_id != replorigin_session_origin)
+	if (MySpockWorker->worker.apply.replorigin != replorigin_session_origin)
 	{
-		if (MySpockWorker->worker.apply.remote_id != InvalidRepOriginId)
+		if (MySpockWorker->worker.apply.replorigin != InvalidRepOriginId)
 			/* This should never happen */
 			elog(LOG, "SPOCK: remote origin id changes from %d to %d",
-				 MySpockWorker->worker.apply.remote_id,
+				 MySpockWorker->worker.apply.replorigin,
 				 replorigin_session_origin);
-		MySpockWorker->worker.apply.remote_id = replorigin_session_origin;
+		MySpockWorker->worker.apply.replorigin = replorigin_session_origin;
 	}
 	MySpockWorker->worker.apply.last_ts = replorigin_session_origin_timestamp;
 	LWLockRelease(SpockCtx->lock);
