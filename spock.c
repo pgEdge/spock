@@ -790,7 +790,7 @@ _PG_init(void)
 							"tracked in shared memory for last_update_wins "
 							"with delta resolution interference",
 							&spock_conflict_max_tracking,
-							1000,
+							10000,
 							100,
 							INT_MAX,
 							PGC_POSTMASTER,

@@ -31,7 +31,7 @@ typedef struct SpockApplyWorker
 	Oid			subid;				/* Subscription id for apply worker. */
 	bool		sync_pending;		/* Is there new synchronization info pending?. */
 	XLogRecPtr	replay_stop_lsn;	/* Replay should stop here if defined. */
-	RepOriginId	remote_id;			/* Remote origin id of apply worker. */
+	RepOriginId	replorigin;			/* Remote origin id of apply worker. */
 	TimestampTz	last_ts;			/* Last remote commit timestamp. */
 } SpockApplyWorker;
 
