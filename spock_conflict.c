@@ -1054,11 +1054,7 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 		 * leave some headroom to give them time to prune as well, so
 		 * we start doing this at 75% fill factor.
 		 */
-		int32	num_pruned;
-
-		num_pruned = spock_cth_prune(true);
-		elog(LOG, "SPOCK: %d entries pruned from conflict tracking hash",
-			 num_pruned);
+		spock_cth_prune(true);
 	}
 
 	/* Search for the hash entry or create a new one */
