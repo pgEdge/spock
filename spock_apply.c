@@ -43,6 +43,7 @@
 
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
+#include "replication/walsender.h"
 
 #include "rewrite/rewriteHandler.h"
 
@@ -1351,6 +1352,7 @@ apply_work(PGconn *streamConn)
 	int			fd;
 	char	   *copybuf = NULL;
 	XLogRecPtr	last_received = InvalidXLogRecPtr;
+	TimestampTz	last_receive_timestamp = GetCurrentTimestamp();
 
 	applyconn = streamConn;
 	fd = PQsocket(applyconn);
@@ -1398,6 +1400,27 @@ apply_work(PGconn *streamConn)
 			elog(ERROR, "connection to other side has died");
 		}
 
+		/*
+		 * The walsender is supposed to ping us for a status update
+		 * every wal_sender_timeout / 2 milliseconds. If we don't get
+		 * those, we assume that we have lost the connection.
+		 *
+		 * Note: keepalive configuration is supposed to cover this but
+		 * is apparently unreliable.
+		 */
+		if (rc & WL_TIMEOUT)
+		{
+			TimestampTz		timeout;
+
+			timeout = TimestampTzPlusMilliseconds(last_receive_timestamp,
+												  (wal_sender_timeout * 3) / 2);
+			if (GetCurrentTimestamp() > timeout)
+			{
+				elog(ERROR, "SPOCK: terminating apply due to missing "
+							"walsender ping");
+			}
+		}
+
 		Assert(CurrentMemoryContext == MessageContext);
 
 		for (;;)
@@ -1431,6 +1454,8 @@ apply_work(PGconn *streamConn)
 			{
 				int c;
 				StringInfoData s;
+
+				last_receive_timestamp = GetCurrentTimestamp();
 
 				/*
 				 * We're using a StringInfo to wrap existing data here, as a

@@ -31,8 +31,8 @@
 #include "spock_worker.h"
 #include "spock.h"
 
-#define INITIAL_SLEEP 10000L
-#define MAX_SLEEP 180000L
+#define INITIAL_SLEEP 5000L
+#define MAX_SLEEP 10000L
 #define MIN_SLEEP 5000L
 
 void spock_manager_main(Datum main_arg);
