@@ -580,6 +580,8 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 		elog(FATAL, "could not send replication command \"%s\": %s\n, sqlstate: %s",
 			 command.data, PQresultErrorMessage(res), sqlstate);
 	PQclear(res);
+
+	elog(LOG, "SPOCK %s: connected", MySubscription->name);
 }
 
 /*
