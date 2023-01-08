@@ -1492,8 +1492,9 @@ apply_work(PGconn *streamConn)
 												  (wal_sender_timeout * 3) / 2);
 			if (GetCurrentTimestamp() > timeout)
 			{
-				elog(ERROR, "SPOCK: terminating apply due to missing "
-							"walsender ping");
+				elog(ERROR, "SPOCK %s: terminating apply due to missing "
+							"walsender ping",
+					 MySubscription->name);
 			}
 		}
 
