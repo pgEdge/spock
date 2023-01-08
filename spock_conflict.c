@@ -1046,7 +1046,8 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	/* We intend to modify the hash table, lock exclusive */
 	LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
 
-	if (SpockCtx->cth_count >= (spock_conflict_max_tracking * 3 / 4))
+	if (SpockCtx->cth_count >= (spock_conflict_max_tracking * 3 / 4) &&
+		SpockCtx->cth_count % 100 == 0)
 	{
 		/*
 		 * We are running low on space in the conflict tracking hash
