@@ -26,6 +26,7 @@
 #include "catalog/pg_type.h"
 
 #include "common/hashfn.h"
+#include "nodes/makefuncs.h"
 
 #include "executor/executor.h"
 #include "executor/spi.h"
@@ -40,6 +41,7 @@
 
 #include "utils/builtins.h"
 #include "utils/datetime.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
@@ -1240,56 +1242,107 @@ spock_cth_match_fn(const void *key1, const void *key2, Size keylen)
 static void
 spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found)
 {
-	StringInfoData	cmd;
+	Relation	rel;
+	HeapTuple	tup;
+	TupleDesc	tupdesc;
+	RangeVar   *rv;
+	Datum		values[5];
+	bool		nulls[5];
+	bool		replaces[5];
 
-	initStringInfo(&cmd);
+	rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
+	rel = table_openrv(rv, RowExclusiveLock);
+	tupdesc = RelationGetDescr(rel);
 
-	if (cth_found)
+	MemSet(values, 0, sizeof(values));
+	MemSet(nulls, 0, sizeof(nulls));
+	MemSet(replaces, 0, sizeof(replaces));
+
+	/* key */
+	values[0] = ObjectIdGetDatum(cth_entry->key.relid);
+	values[1] = PointerGetDatum(&cth_entry->key.tid);
+
+	values[2] = Int16GetDatum(cth_entry->last_origin);
+	replaces[2] = true;
+
+	values[3] = TransactionIdGetDatum(cth_entry->last_xmin);
+	replaces[3] = true;
+
+	values[4] = TimestampTzGetDatum(cth_entry->last_ts);
+	replaces[3] = true;
+
+	if (!cth_found)
 	{
-		appendStringInfo(&cmd, "UPDATE %s.%s", EXTENSION_NAME, SPOCK_CTT_NAME);
-		appendStringInfo(&cmd, " SET last_origin=%d, last_xmin='%u', last_ts='%s'",
-			cth_entry->last_origin,
-			cth_entry->last_xmin,
-			timestamptz_to_str(cth_entry->last_ts));
-		appendStringInfo(&cmd, " WHERE relid=%u AND tid='(%d,%d)'",
-			cth_entry->key.relid,
-			BlockIdGetBlockNumber(&cth_entry->key.tid.ip_blkid), cth_entry->key.tid.ip_posid);
+		tup = heap_form_tuple(tupdesc, values, nulls);
+
+		/* Inser new tuple in catalog. */
+		CatalogTupleInsert(rel, tup);
 	}
 	else
 	{
-		appendStringInfo(&cmd, "INSERT INTO %s.%s", EXTENSION_NAME, SPOCK_CTT_NAME);
-		appendStringInfo(&cmd, " VALUES (%u, '(%d,%d)', %d, '%u', '%s')",
-			cth_entry->key.relid,
-			BlockIdGetBlockNumber(&cth_entry->key.tid.ip_blkid), cth_entry->key.tid.ip_posid,
-			cth_entry->last_origin,
-			cth_entry->last_xmin,
-			timestamptz_to_str(cth_entry->last_ts));
+		ScanKeyData key[2];
+		SysScanDesc scan;
+
+		ScanKeyInit(&key[0],
+					1,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(cth_entry->key.relid));
+		ScanKeyInit(&key[1],
+					2,
+					BTEqualStrategyNumber, F_TIDEQ,
+					PointerGetDatum(&cth_entry->key.tid));
+
+		scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+		while ((tup = systable_getnext(scan)) != NULL)
+		{
+			tup = heap_modify_tuple(tup, tupdesc, values, nulls, replaces);
+
+			/* Update the tuple in catalog. */
+			CatalogTupleUpdate(rel, &tup->t_self, tup);
+
+			break;				/* there can be only one match */
+		}
+		systable_endscan(scan);
 	}
 
-	SPI_connect();
-	if (SPI_exec(cmd.data, 0) < 0)
-		elog(ERROR, "SPI_exec failed %s", cmd.data);
-	SPI_finish();
-	pfree(cmd.data);
+	/* Cleanup */
+	heap_freetuple(tup);
+	table_close(rel, RowExclusiveLock);
 }
 
 static void
 spock_ctt_remove(SpockCTHKey *cth_key)
 {
-	StringInfoData	cmd;
+	Relation	rel;
+	HeapTuple	tup;
+	RangeVar   *rv;
+	ScanKeyData key[2];
+	SysScanDesc scan;
 
-	initStringInfo(&cmd);
+	ScanKeyInit(&key[0],
+				1,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(cth_key->relid));
+	ScanKeyInit(&key[1],
+				2,
+				BTEqualStrategyNumber, F_TIDEQ,
+				PointerGetDatum(&cth_key->tid));
 
-	appendStringInfo(&cmd, "DELETE FROM %s.%s", EXTENSION_NAME, SPOCK_CTT_NAME);
-	appendStringInfo(&cmd, " WHERE relid=%u AND tid='(%d,%d)'",
-		cth_key->relid,
-		BlockIdGetBlockNumber(&cth_key->tid.ip_blkid), cth_key->tid.ip_posid);
+	rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
+	rel = table_openrv(rv, RowExclusiveLock);
 
-	SPI_connect();
-	if (SPI_exec(cmd.data, 0) != SPI_OK_DELETE)
-		elog(ERROR, "SPI_exec failed %s", cmd.data);
-	SPI_finish();
-	pfree(cmd.data);
+	scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+	while ((tup = systable_getnext(scan)) != NULL)
+	{
+		/* Remove the tuple in catalog. */
+		CatalogTupleDelete(rel, &tup->t_self);
+
+		break;				/* there can be only one match */
+	}
+
+	/* Cleanup */
+	systable_endscan(scan);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*
