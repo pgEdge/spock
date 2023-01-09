@@ -60,6 +60,8 @@ int		spock_conflict_log_level = LOG;
 int		spock_conflict_max_tracking = 0;
 bool	spock_save_resolutions = false;
 
+static	Relation	spock_ctt_rel = NULL;
+
 static void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 	HeapTuple tuple);
 static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
@@ -1319,13 +1321,18 @@ spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found)
 	Relation	rel;
 	HeapTuple	tup;
 	TupleDesc	tupdesc;
-	RangeVar   *rv;
 	Datum		values[5];
 	bool		nulls[5];
 	bool		replaces[5];
 
-	rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
-	rel = table_openrv(rv, RowExclusiveLock);
+	if (spock_ctt_rel == NULL)
+	{
+		RangeVar   *rv;
+
+		rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
+		spock_ctt_rel = table_openrv(rv, RowExclusiveLock);
+	}
+	rel = spock_ctt_rel;
 	tupdesc = RelationGetDescr(rel);
 
 	MemSet(values, 0, sizeof(values));
@@ -1381,7 +1388,6 @@ spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found)
 
 	/* Cleanup */
 	heap_freetuple(tup);
-	table_close(rel, RowExclusiveLock);
 }
 
 static void
@@ -1389,7 +1395,6 @@ spock_ctt_remove(SpockCTHKey *cth_key)
 {
 	Relation	rel;
 	HeapTuple	tup;
-	RangeVar   *rv;
 	ScanKeyData key[2];
 	SysScanDesc scan;
 
@@ -1402,8 +1407,14 @@ spock_ctt_remove(SpockCTHKey *cth_key)
 				BTEqualStrategyNumber, F_TIDEQ,
 				PointerGetDatum(&cth_key->tid));
 
-	rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
-	rel = table_openrv(rv, RowExclusiveLock);
+	if (spock_ctt_rel == NULL)
+	{
+		RangeVar   *rv;
+
+		rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
+		spock_ctt_rel = table_openrv(rv, RowExclusiveLock);
+	}
+	rel = spock_ctt_rel;
 
 	scan = systable_beginscan(rel, 0, true, NULL, 2, key);
 	while ((tup = systable_getnext(scan)) != NULL)
@@ -1416,7 +1427,16 @@ spock_ctt_remove(SpockCTHKey *cth_key)
 
 	/* Cleanup */
 	systable_endscan(scan);
-	table_close(rel, RowExclusiveLock);
+}
+
+void
+spock_ctt_close(void)
+{
+	if (spock_ctt_rel != NULL)
+	{
+		table_close(spock_ctt_rel, RowExclusiveLock);
+		spock_ctt_rel = NULL;
+	}
 }
 
 /*

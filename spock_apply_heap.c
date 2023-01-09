@@ -124,6 +124,9 @@ spock_apply_heap_commit(void)
 	}
 	MySpockWorker->worker.apply.last_ts = replorigin_session_origin_timestamp;
 	LWLockRelease(SpockCtx->lock);
+
+	/* Close the backing table for Conflict Tracking (if open) */
+	spock_ctt_close();
 }
 
 
