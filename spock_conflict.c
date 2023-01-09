@@ -26,6 +26,7 @@
 #include "catalog/pg_type.h"
 
 #include "common/hashfn.h"
+#include "nodes/makefuncs.h"
 
 #include "executor/executor.h"
 #include "executor/spi.h"
@@ -40,6 +41,7 @@
 
 #include "utils/builtins.h"
 #include "utils/datetime.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
@@ -58,10 +60,18 @@ int		spock_conflict_log_level = LOG;
 int		spock_conflict_max_tracking = 0;
 bool	spock_save_resolutions = false;
 
+static	Relation	spock_ctt_rel = NULL;
+
 static void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 	HeapTuple tuple);
 static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
 	bool *ret_isnull);
+
+/*
+ * Support functions for conflict tracking permanent table
+ */
+static void spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found);
+static void spock_ctt_remove(SpockCTHKey *cth_key);
 
 /*
  * Setup a ScanKey for a search in the relation 'rel' for a tuple 'key' that
@@ -528,7 +538,8 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 			/* If found decrement the entry count */
 			SpockCtx->cth_count--;
 
-			/* TODO: Delete the entry from the backing table. */
+			/* Delete the entry from the backing table. */
+			spock_ctt_remove(&cth_key);
 		}
 
 		LWLockRelease(SpockCtx->cth_lock);
@@ -572,7 +583,8 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 		hash_search(SpockConflictHash, &cth_key, HASH_REMOVE, &cth_found);
 		SpockCtx->cth_count--;
 
-		/* TODO: delete the entry from the backing table */
+		/* delete the entry from the backing table */
+		spock_ctt_remove(&cth_key);
 
 		LWLockRelease(SpockCtx->cth_lock);
 		return true;
@@ -587,7 +599,8 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 		hash_search(SpockConflictHash, &cth_key, HASH_REMOVE, &cth_found);
 		SpockCtx->cth_count--;
 
-		/* TODO: delete the entry from the backing table */
+		/* delete the entry from the backing table */
+		spock_ctt_remove(&cth_key);
 	}
 	else
 	{
@@ -1023,7 +1036,7 @@ spock_conflict_resolver_check_hook(int *newval, void **extra,
  */
 void
 spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
-				TransactionId last_xmin, TimestampTz last_ts)
+				TransactionId last_xmin, TimestampTz last_ts, bool is_init)
 {
 	SpockCTHKey			cth_key;
 	SpockCTHEntry	   *cth_entry;
@@ -1069,8 +1082,10 @@ spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
 	cth_entry->last_ts = last_ts;
 
 	/*
-	 * TODO: Store this entry in the permanent backing table
+	 * Store this entry in the permanent backing table
 	 */
+	if (!is_init)
+		spock_ctt_store(cth_entry, cth_found);
 
 	LWLockRelease(SpockCtx->cth_lock);
 }
@@ -1273,8 +1288,9 @@ spock_cth_prune(bool has_cth_lock)
 			SpockCtx->cth_count--;
 
 			/*
-			 * TODO: Remove this entry from the backing table
+			 * Remove this entry from the backing table
 			 */
+			spock_ctt_remove(&entry->key);
 		}
 	}
 
@@ -1299,6 +1315,129 @@ spock_cth_match_fn(const void *key1, const void *key2, Size keylen)
 	return 1;
 }
 
+static void
+spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found)
+{
+	Relation	rel;
+	HeapTuple	tup;
+	TupleDesc	tupdesc;
+	Datum		values[5];
+	bool		nulls[5];
+	bool		replaces[5];
+
+	if (spock_ctt_rel == NULL)
+	{
+		RangeVar   *rv;
+
+		rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
+		spock_ctt_rel = table_openrv(rv, RowExclusiveLock);
+	}
+	rel = spock_ctt_rel;
+	tupdesc = RelationGetDescr(rel);
+
+	MemSet(values, 0, sizeof(values));
+	MemSet(nulls, 0, sizeof(nulls));
+	MemSet(replaces, 0, sizeof(replaces));
+
+	/* key */
+	values[0] = ObjectIdGetDatum(cth_entry->key.relid);
+	values[1] = PointerGetDatum(&cth_entry->key.tid);
+
+	values[2] = Int16GetDatum(cth_entry->last_origin);
+	replaces[2] = true;
+
+	values[3] = TransactionIdGetDatum(cth_entry->last_xmin);
+	replaces[3] = true;
+
+	values[4] = TimestampTzGetDatum(cth_entry->last_ts);
+	replaces[3] = true;
+
+	if (!cth_found)
+	{
+		tup = heap_form_tuple(tupdesc, values, nulls);
+
+		/* Inser new tuple in catalog. */
+		CatalogTupleInsert(rel, tup);
+	}
+	else
+	{
+		ScanKeyData key[2];
+		SysScanDesc scan;
+
+		ScanKeyInit(&key[0],
+					1,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(cth_entry->key.relid));
+		ScanKeyInit(&key[1],
+					2,
+					BTEqualStrategyNumber, F_TIDEQ,
+					PointerGetDatum(&cth_entry->key.tid));
+
+		scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+		while ((tup = systable_getnext(scan)) != NULL)
+		{
+			tup = heap_modify_tuple(tup, tupdesc, values, nulls, replaces);
+
+			/* Update the tuple in catalog. */
+			CatalogTupleUpdate(rel, &tup->t_self, tup);
+
+			break;				/* there can be only one match */
+		}
+		systable_endscan(scan);
+	}
+
+	/* Cleanup */
+	heap_freetuple(tup);
+}
+
+static void
+spock_ctt_remove(SpockCTHKey *cth_key)
+{
+	Relation	rel;
+	HeapTuple	tup;
+	ScanKeyData key[2];
+	SysScanDesc scan;
+
+	ScanKeyInit(&key[0],
+				1,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(cth_key->relid));
+	ScanKeyInit(&key[1],
+				2,
+				BTEqualStrategyNumber, F_TIDEQ,
+				PointerGetDatum(&cth_key->tid));
+
+	if (spock_ctt_rel == NULL)
+	{
+		RangeVar   *rv;
+
+		rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
+		spock_ctt_rel = table_openrv(rv, RowExclusiveLock);
+	}
+	rel = spock_ctt_rel;
+
+	scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+	while ((tup = systable_getnext(scan)) != NULL)
+	{
+		/* Remove the tuple in catalog. */
+		CatalogTupleDelete(rel, &tup->t_self);
+
+		break;				/* there can be only one match */
+	}
+
+	/* Cleanup */
+	systable_endscan(scan);
+}
+
+void
+spock_ctt_close(void)
+{
+	if (spock_ctt_rel != NULL)
+	{
+		table_close(spock_ctt_rel, RowExclusiveLock);
+		spock_ctt_rel = NULL;
+	}
+}
 
 /*
  * print the tuple 'tuple' into the StringInfo s

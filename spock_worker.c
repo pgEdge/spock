@@ -15,10 +15,13 @@
 
 #include "libpq/libpq-be.h"
 
+#include "access/commit_ts.h"
 #include "access/xact.h"
 
 #include "commands/dbcommands.h"
 #include "common/hashfn.h"
+
+#include "nodes/makefuncs.h"
 
 #include "storage/ipc.h"
 #include "storage/proc.h"
@@ -928,4 +931,59 @@ handle_pr_counters(Relation relation, char *slotname, Oid nodeid, spockStatsType
 			elog(ERROR, "invalid stat type (%u) specified", typ);
 	}
 	SpinLockRelease(&entry->mutex);
+}
+
+void
+initialize_spock_cth(void)
+{
+
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TupleDesc	tupdesc;
+	RangeVar   *rv;
+
+	/* Safety check */
+	if (!SpockCtx || !SpockConflictHash)
+		return;
+
+	if (!track_commit_timestamp)
+		return;
+
+	rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
+	rel = table_openrv(rv, RowExclusiveLock);
+	scan = systable_beginscan(rel, 0, true, NULL, 0, NULL);
+	tupdesc = RelationGetDescr(rel);
+
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		bool	isnull;
+		Oid		relid;
+		ItemPointer	tid;
+		RepOriginId	last_origin;
+		TransactionId	last_xmin;
+		TimestampTz	last_ts;
+
+		relid = DatumGetObjectId(fastgetattr(tuple, 1, tupdesc, &isnull));
+		Assert(!isnull);
+
+		tid = (ItemPointer)
+				DatumGetPointer(fastgetattr(tuple, 2, tupdesc, &isnull));
+		Assert(!isnull);
+
+		last_origin = DatumGetInt32(fastgetattr(tuple, 3, tupdesc, &isnull));
+		Assert(!isnull);
+
+		last_xmin = DatumGetTransactionId(fastgetattr(tuple, 4, tupdesc, &isnull));
+		Assert(!isnull);
+
+		last_ts = DatumGetTimestampTz(fastgetattr(tuple, 5, tupdesc, &isnull));
+		Assert(!isnull);
+
+		spock_cth_store(relid, tid, last_origin, last_xmin, last_ts, true);
+	}
+
+	/* Cleanup */
+	systable_endscan(scan);
+	table_close(rel, NoLock);
 }

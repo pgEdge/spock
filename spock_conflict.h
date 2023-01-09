@@ -24,6 +24,9 @@
 #define CATALOG_LOGTABLE "resolutions"
 #define SPOCK_LOG_TABLE_COLS 16
 
+/* Conflict tracking permanent table */
+#define	SPOCK_CTT_NAME	 "conflict_tracker"
+
 extern TransactionId remote_xid;
 
 typedef enum SpockConflictResolution
@@ -128,12 +131,13 @@ extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 									   GucSource source);
 
 /*
- * Support functions for conflict tracking hash
+ * Support functions for conflict tracking hash and table
  */
 extern void spock_cth_store(Oid relid, ItemPointer tid,
 							RepOriginId last_origin, TransactionId last_xmin,
-							TimestampTz last_ts);
+							TimestampTz last_ts, bool is_init);
 extern int32 spock_cth_prune(bool has_cth_lock);
 extern uint32 spock_cth_hash_fn(const void *key, Size keylen);
 extern int spock_cth_match_fn(const void *key1, const void *key2, Size keylen);
+extern void spock_ctt_close(void);
 #endif /* SPOCK_CONGLICT_H */
