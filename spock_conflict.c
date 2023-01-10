@@ -61,6 +61,7 @@ int		spock_conflict_max_tracking = 0;
 bool	spock_save_resolutions = false;
 
 static	Relation	spock_ctt_rel = NULL;
+static	Oid			spock_ctt_relind = InvalidOid;
 
 static void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 	HeapTuple tuple);
@@ -1328,9 +1329,15 @@ spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found)
 	if (spock_ctt_rel == NULL)
 	{
 		RangeVar   *rv;
+		List	   *indexes;
 
 		rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
 		spock_ctt_rel = table_openrv(rv, RowExclusiveLock);
+
+		indexes = RelationGetIndexList(spock_ctt_rel);
+		Assert(list_length(indexes) == 1);
+		spock_ctt_relind = linitial_oid(indexes);
+		list_free(indexes);
 	}
 	rel = spock_ctt_rel;
 	tupdesc = RelationGetDescr(rel);
@@ -1373,7 +1380,7 @@ spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found)
 					BTEqualStrategyNumber, F_TIDEQ,
 					PointerGetDatum(&cth_entry->key.tid));
 
-		scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+		scan = systable_beginscan(rel, spock_ctt_relind, true, NULL, 2, key);
 		while ((tup = systable_getnext(scan)) != NULL)
 		{
 			tup = heap_modify_tuple(tup, tupdesc, values, nulls, replaces);
@@ -1410,13 +1417,18 @@ spock_ctt_remove(SpockCTHKey *cth_key)
 	if (spock_ctt_rel == NULL)
 	{
 		RangeVar   *rv;
+		List	   *indexes;
 
 		rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
 		spock_ctt_rel = table_openrv(rv, RowExclusiveLock);
+		indexes = RelationGetIndexList(spock_ctt_rel);
+		Assert(list_length(indexes) == 1);
+		spock_ctt_relind = linitial_oid(indexes);
+		list_free(indexes);
 	}
 	rel = spock_ctt_rel;
 
-	scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+	scan = systable_beginscan(rel, spock_ctt_relind, true, NULL, 2, key);
 	while ((tup = systable_getnext(scan)) != NULL)
 	{
 		/* Remove the tuple in catalog. */
@@ -1436,6 +1448,7 @@ spock_ctt_close(void)
 	{
 		table_close(spock_ctt_rel, RowExclusiveLock);
 		spock_ctt_rel = NULL;
+		spock_ctt_relind = InvalidOid;
 	}
 }
 
