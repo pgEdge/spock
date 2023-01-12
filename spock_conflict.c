@@ -1320,7 +1320,7 @@ static void
 spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found)
 {
 	Relation	rel;
-	HeapTuple	tup;
+	HeapTuple	tup = NULL;
 	TupleDesc	tupdesc;
 	Datum		values[5];
 	bool		nulls[5];
@@ -1394,7 +1394,8 @@ spock_ctt_store(SpockCTHEntry *cth_entry, bool cth_found)
 	}
 
 	/* Cleanup */
-	heap_freetuple(tup);
+	if (tup)
+		heap_freetuple(tup);
 }
 
 static void
