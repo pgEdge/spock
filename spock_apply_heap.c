@@ -50,6 +50,7 @@
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
 
+#include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
@@ -92,8 +93,12 @@ typedef struct ApplyMIState
 
 #define TTS_TUP(slot) (((HeapTupleTableSlot *)slot)->tuple)
 
-
 static ApplyMIState *spkmistate = NULL;
+
+static bool relation_has_delta_columns(SpockRelation *rel);
+static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
+							  SpockTupleData *newtup, SpockTupleData *deltatup,
+							  TupleTableSlot *localslot);
 
 void
 spock_apply_heap_begin(void)
@@ -103,6 +108,25 @@ spock_apply_heap_begin(void)
 void
 spock_apply_heap_commit(void)
 {
+	/*
+	 * For pruning of the Conflict Tracking Hash we remember our
+	 * assigned origin and the last commit timestamp.
+	 */
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+	if (MySpockWorker->worker.apply.replorigin != replorigin_session_origin)
+	{
+		if (MySpockWorker->worker.apply.replorigin != InvalidRepOriginId)
+			/* This should never happen */
+			elog(LOG, "SPOCK: remote origin id changes from %d to %d",
+				 MySpockWorker->worker.apply.replorigin,
+				 replorigin_session_origin);
+		MySpockWorker->worker.apply.replorigin = replorigin_session_origin;
+	}
+	MySpockWorker->worker.apply.last_ts = replorigin_session_origin_timestamp;
+	LWLockRelease(SpockCtx->lock);
+
+	/* Close the backing table for Conflict Tracking (if open) */
+	spock_ctt_close();
 }
 
 
@@ -234,6 +258,120 @@ fill_missing_defaults(SpockRelation *rel, EState *estate,
 												NULL);
 }
 
+static bool
+relation_has_delta_columns(SpockRelation *rel)
+{
+	TupleDesc			tupdesc = RelationGetDescr(rel->rel);
+	AttributeOpts	   *aopt;
+	int					attno;
+
+	for (attno = 1; attno <= tupdesc->natts; attno++)
+	{
+		/* check the attribute options */
+		aopt = get_attribute_options(rel->rel->rd_id, attno);
+		if (aopt != NULL && aopt->log_old_value)
+			return true;
+	}
+
+	return false;
+}
+
+static void
+build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
+				  SpockTupleData *newtup,
+				  SpockTupleData *deltatup,
+				  TupleTableSlot *localslot)
+{
+	TupleDesc			tupdesc = RelationGetDescr(rel->rel);
+	Form_pg_attribute	att;
+	AttributeOpts	   *aopt;
+	int					attidx;
+	Datum				loc_value;
+	Datum				delta;
+	bool				loc_isnull;
+	PGFunction			func_add;
+	PGFunction			func_sub;
+
+	for (attidx = 0; attidx < tupdesc->natts; attidx++)
+	{
+		/* Get the attribute options */
+		aopt = get_attribute_options(rel->rel->rd_id, attidx + 1);
+		if (aopt == NULL || !aopt->log_old_value)
+		{
+			deltatup->values[attidx] = 0xdeadbeef;
+			deltatup->nulls[attidx] = true;
+			deltatup->changed[attidx] = false;
+			continue;
+		}
+
+		/*
+		 * Column is marked LOG_OLD_VALUE=true. We use that as flag
+		 * to apply the delta between the remote old and new instead
+		 * of the plain new value.
+		 *
+		 * To perform the actual delta math we need the functions behind
+		 * the '+' and '-' operators for the data type.
+		 *
+		 * XXX: This is currently hardcoded for the builtin data types
+		 * we support. Ideally we would lookup those operators in the
+		 * system cache, but that isn't straight forward and we get into
+		 * all sorts of trouble when it comes to user defined data types
+		 * and the search path.
+		 */
+		att = TupleDescAttr(tupdesc, attidx);
+		switch (att->atttypid)
+		{
+			case INT4OID:
+				func_add = int4pl;
+				func_sub = int4mi;
+				break;
+
+			case INT8OID:
+				func_add = int8pl;
+				func_sub = int8mi;
+				break;
+
+			case NUMERICOID:
+				func_add = numeric_add;
+				func_sub = numeric_sub;
+				break;
+
+			default:
+				elog(ERROR, "spock delta replication for type %d not supported",
+					 att->atttypid);
+		}
+
+		if (oldtup->nulls[attidx])
+		{
+			/*
+			 * This is a special case. Columns for delta apply need to
+			 * be marked NOT NULL and LOG_OLD_VALUE=true. During this
+			 * remote UPDATE LOG_OLD_VALUE setting was false. We use this
+			 * as a flag to force plain NEW value application. This is
+			 * useful in case a server ever gets out of sync.
+			 */
+			deltatup->values[attidx] = newtup->values[attidx];
+			deltatup->nulls[attidx] = false;
+			deltatup->changed[attidx] = true;
+		}
+		else
+		{
+			/* We also need the old value of the current local tuple */
+			loc_value = heap_getattr(TTS_TUP(localslot), attidx + 1, tupdesc,
+									 &loc_isnull);
+
+			/* Finally we can do the actual delta apply */
+			delta = DirectFunctionCall2(func_sub,
+										newtup->values[attidx],
+										oldtup->values[attidx]);
+			deltatup->values[attidx] = DirectFunctionCall2(func_add, loc_value,
+															delta);
+			deltatup->nulls[attidx] = false;
+			deltatup->changed[attidx] = true;
+		}
+	}
+}
+
 static ApplyExecState *
 init_apply_exec_state(SpockRelation *rel)
 {
@@ -356,12 +494,15 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		bool				apply;
 		bool				local_origin_found;
 
-		local_origin_found = get_tuple_origin(TTS_TUP(localslot), &xmin,
+		local_origin_found = get_tuple_origin(RelationGetRelid(rel->rel),
+											  TTS_TUP(localslot),
+											  NULL, &xmin,
 											  &local_origin, &local_ts);
 
 		/* Tuple already exists, try resolving conflict. */
 		apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
 									 remotetuple, &applytuple,
+									 local_origin, local_ts,
 									 &resolution);
 
 		spock_report_conflict(CONFLICT_INSERT_INSERT, rel,
@@ -455,6 +596,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	MemoryContext		oldctx;
 	Oid					replident_idx_id;
 	bool				has_before_triggers = false;
+	bool				is_delta_apply = false;
 
 	/* Initialize the executor state. */
 	aestate = init_apply_exec_state(rel);
@@ -485,6 +627,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(aestate->estate));
 		fill_missing_defaults(rel, aestate->estate, newtup);
+
 		remotetuple = heap_modify_tuple(TTS_TUP(localslot),
 										RelationGetDescr(rel->rel),
 										newtup->values,
@@ -511,7 +654,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 		/* trigger might have changed tuple */
 		remotetuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
-		local_origin_found = get_tuple_origin(TTS_TUP(localslot), &xmin,
+		local_origin_found = get_tuple_origin(RelationGetRelid(rel->rel),
+											  TTS_TUP(localslot),
+											  &(localslot->tts_tid), &xmin,
 											  &local_origin, &local_ts);
 
 		/*
@@ -526,6 +671,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 			apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
 										 remotetuple, &applytuple,
+										 local_origin, local_ts,
 										 &resolution);
 
 			spock_report_conflict(CONFLICT_UPDATE_UPDATE, rel,
@@ -542,6 +688,33 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		{
 			apply = true;
 			applytuple = remotetuple;
+		}
+
+		/*
+		 * If the relation has columns that are marked LOG_OLD_VALUE
+		 * we apply the delta between the remote new and old values.
+		 */
+		if (relation_has_delta_columns(rel))
+		{
+			SpockTupleData	deltatup;
+			HeapTuple		currenttuple;
+
+			currenttuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
+			oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(aestate->estate));
+			build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
+			applytuple = heap_modify_tuple(currenttuple,
+										   RelationGetDescr(rel->rel),
+										   deltatup.values,
+										   deltatup.nulls,
+										   deltatup.changed);
+			MemoryContextSwitchTo(oldctx);
+			ExecStoreHeapTuple(applytuple, aestate->slot, true);
+
+			if (!apply)
+			{
+				is_delta_apply = true;
+				apply = true;
+			}
 		}
 
 		if (apply)
@@ -566,6 +739,19 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 															aestate->estate,
 															aestate->slot,
 															true);
+			}
+
+			if (is_delta_apply)
+			{
+				/*
+				 * We forced an update to a row that we normally had
+				 * to skip because it has delta resolve columns. Remember
+				 * the correct origin, xmin and commit timestamp for
+				 * get_tuple_origion() to figure it out.
+				 */
+				spock_cth_store(RelationGetRelid(rel->rel),
+								&(aestate->slot->tts_tid), local_origin,
+								GetTopTransactionId(), local_ts, false);
 			}
 
 			/* AFTER ROW UPDATE Triggers */

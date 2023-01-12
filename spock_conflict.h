@@ -24,6 +24,9 @@
 #define CATALOG_LOGTABLE "resolutions"
 #define SPOCK_LOG_TABLE_COLS 16
 
+/* Conflict tracking permanent table */
+#define	SPOCK_CTT_NAME	 "conflict_tracker"
+
 extern TransactionId remote_xid;
 
 typedef enum SpockConflictResolution
@@ -44,6 +47,7 @@ typedef enum
 
 extern int spock_conflict_resolver;
 extern int spock_conflict_log_level;
+extern int spock_conflict_max_tracking;
 extern bool	spock_save_resolutions;
 
 typedef enum SpockConflictType
@@ -54,6 +58,27 @@ typedef enum SpockConflictType
 	CONFLICT_DELETE_DELETE
 } SpockConflictType;
 
+/*
+ * SpockCTHKey	Conflict Tracking Hash Table Key
+ */
+typedef struct SpockCTHKey
+{
+	Oid				datid;
+	Oid				relid;
+	ItemPointerData	tid;
+} SpockCTHKey;
+
+/*
+ * SpockCTHEntry	Conflict Tracking Hash Table Entry
+ */
+typedef struct SpockCTHEntry
+{
+	SpockCTHKey		key;
+	RepOriginId		last_origin;
+	TransactionId	last_xmin;
+	TimestampTz		last_ts;
+} SpockCTHEntry;
+
 extern bool spock_tuple_find_replidx(ResultRelInfo *relinfo,
 										 SpockTupleData *tuple,
 										 TupleTableSlot *oldslot,
@@ -63,11 +88,13 @@ extern Oid spock_tuple_find_conflict(ResultRelInfo *relinfo,
 										 SpockTupleData *tuple,
 										 TupleTableSlot *oldslot);
 
-extern bool get_tuple_origin(HeapTuple local_tuple, TransactionId *xmin,
-							 RepOriginId *local_origin, TimestampTz *local_ts);
+extern bool get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
+							 TransactionId *xmin, RepOriginId *local_origin,
+							 TimestampTz *local_ts);
 
 extern bool try_resolve_conflict(Relation rel, HeapTuple localtuple,
 								 HeapTuple remotetuple, HeapTuple *resulttuple,
+								 RepOriginId local_origin, TimestampTz local_ts,
 								 SpockConflictResolution *resolution);
 
 
@@ -103,4 +130,14 @@ extern Oid get_conflict_log_seq(void);
 extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 									   GucSource source);
 
+/*
+ * Support functions for conflict tracking hash and table
+ */
+extern void spock_cth_store(Oid relid, ItemPointer tid,
+							RepOriginId last_origin, TransactionId last_xmin,
+							TimestampTz last_ts, bool is_init);
+extern int32 spock_cth_prune(bool has_cth_lock);
+extern uint32 spock_cth_hash_fn(const void *key, Size keylen);
+extern int spock_cth_match_fn(const void *key1, const void *key2, Size keylen);
+extern void spock_ctt_close(void);
 #endif /* SPOCK_CONGLICT_H */

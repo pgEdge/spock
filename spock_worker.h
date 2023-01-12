@@ -31,6 +31,8 @@ typedef struct SpockApplyWorker
 	Oid			subid;				/* Subscription id for apply worker. */
 	bool		sync_pending;		/* Is there new synchronization info pending?. */
 	XLogRecPtr	replay_stop_lsn;	/* Replay should stop here if defined. */
+	RepOriginId	replorigin;			/* Remote origin id of apply worker. */
+	TimestampTz	last_ts;			/* Last remote commit timestamp. */
 } SpockApplyWorker;
 
 typedef struct SpockSyncWorker
@@ -65,8 +67,14 @@ typedef struct SpockWorker {
 } SpockWorker;
 
 typedef struct SpockContext {
-	/* Write lock. */
+	/* Write lock for the entire context. */
 	LWLock	   *lock;
+
+	/* Access lock for the Conflict Tracking Hash. */
+	LWLock	   *cth_lock;
+
+	/* Counter for entries in Conflict Tracking Hash */
+	int			cth_count;
 
 	/* Supervisor process. */
 	PGPROC	   *supervisor;
@@ -120,6 +128,7 @@ typedef enum spockStatsType
 } spockStatsType;
 
 extern HTAB				   *SpockHash;
+extern HTAB				   *SpockConflictHash;
 extern SpockContext		   *SpockCtx;
 extern SpockWorker		   *MySpockWorker;
 extern SpockApplyWorker	   *MyApplyWorker;
@@ -151,5 +160,6 @@ extern void spock_worker_kill(SpockWorker *worker);
 extern const char * spock_worker_type_name(SpockWorkerType type);
 extern void handle_sub_counters(Relation relation, spockStatsType typ, int ntup);
 extern void handle_pr_counters(Relation relation, char *slotname, Oid nodeid, spockStatsType typ, int ntup);
+extern void initialize_spock_cth(void);
 
 #endif /* SPOCK_WORKER_H */

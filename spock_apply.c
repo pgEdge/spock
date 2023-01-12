@@ -43,6 +43,7 @@
 
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
+#include "replication/walsender.h"
 
 #include "rewrite/rewriteHandler.h"
 
@@ -403,7 +404,9 @@ handle_commit(StringInfo s)
 		remote_origin_id != replorigin_session_origin)
 	{
 		Relation replorigin_rel;
-		elog(DEBUG3, "advancing origin oid %u for forwarded row to %X/%X",
+		elog(DEBUG3, "SPOCK %s: advancing origin oid %u for forwarded "
+					 "row to %X/%X",
+			MySubscription->name,
 			remote_origin_id,
 			(uint32)(XactLastCommitEnd>>32), (uint32)XactLastCommitEnd);
 
@@ -423,11 +426,13 @@ handle_commit(StringInfo s)
 			&& MyApplyWorker->replay_stop_lsn <= end_lsn)
 	{
 		ereport(LOG,
-				(errmsg("spock %s finished processing; replayed to %X/%X of required %X/%X",
-				 MySpockWorker->worker_type == SPOCK_WORKER_SYNC ? "sync" : "apply",
-				 (uint32)(end_lsn>>32), (uint32)end_lsn,
-				 (uint32)(MyApplyWorker->replay_stop_lsn >>32),
-				 (uint32)MyApplyWorker->replay_stop_lsn)));
+				(errmsg("SPOCK %s: %s finished processing; replayed "
+						"to %X/%X of required %X/%X",
+						MySubscription->name,
+						MySpockWorker->worker_type == SPOCK_WORKER_SYNC ? "sync" : "apply",
+						(uint32)(end_lsn>>32), (uint32)end_lsn,
+						(uint32)(MyApplyWorker->replay_stop_lsn >>32),
+						(uint32)MyApplyWorker->replay_stop_lsn)));
 
 		/*
 		 * If this is sync worker, update syncing table state to done.
@@ -509,7 +514,8 @@ handle_origin(StringInfo s)
 	 * any actual writes.
 	 */
 	if (!in_remote_transaction || IsTransactionState())
-		elog(ERROR, "ORIGIN message sent out of order");
+		elog(ERROR, "SPOCK %s: ORIGIN message sent out of order",
+			 MySubscription->name);
 
 	/* We have to start transaction here so that we can work with origins. */
 	ensure_transaction();
@@ -743,7 +749,8 @@ handle_startup(StringInfo s)
 {
 	uint8 msgver = pq_getmsgbyte(s);
 	if (msgver != 1)
-		elog(ERROR, "Expected startup message version 1, but got %u", msgver);
+		elog(ERROR, "SPOCK %s: Expected startup message version 1, but got %u",
+			 MySubscription->name, msgver);
 
 	/*
 	 * The startup message consists of null-terminated strings as key/value
@@ -756,12 +763,16 @@ handle_startup(StringInfo s)
 		if (strlen(k) == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("invalid startup message: key has zero length")));
+					 errmsg("SPOCK %s: invalid startup message: key has "
+							"zero length",
+							MySubscription->name)));
 
 		if (getmsgisend(s))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("invalid startup message: key '%s' has no following value", k)));
+					 errmsg("SPOCK %s: invalid startup message: key '%s' "
+							"has no following value",
+							MySubscription->name, k)));
 
 		/* It's OK to have a zero length value */
 		v = pq_getmsgstring(s);
@@ -778,8 +789,9 @@ parse_bool_param(const char *key, const char *value)
 	if (!parse_bool(value, &result))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("couldn't parse value '%s' for key '%s' as boolean",
-						value, key)));
+				 errmsg("SPOCK %s: couldn't parse value '%s' for key '%s' "
+						"as boolean",
+						MySubscription->name, value, key)));
 
 	return result;
 }
@@ -787,10 +799,12 @@ parse_bool_param(const char *key, const char *value)
 static void
 handle_startup_param(const char *key, const char *value)
 {
-	elog(DEBUG2, "apply got spock startup msg param  %s=%s", key, value);
+	elog(DEBUG2, "SPOCK %s: apply got spock startup msg param  %s=%s",
+		 MySubscription->name, key, value);
 
 	if (strcmp(key, "pg_version") == 0)
-		elog(DEBUG1, "upstream Pg version is %s", value);
+		elog(DEBUG1, "SPOCK %s: upstream Pg version is %s",
+			 MySubscription->name, value);
 
 	if (strcmp(key, "encoding") == 0)
 	{
@@ -799,15 +813,18 @@ handle_startup_param(const char *key, const char *value)
 		if (encoding != GetDatabaseEncoding())
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("expected encoding=%s from upstream but got %s",
-						 GetDatabaseEncodingName(), value)));
+					 errmsg("SPOCK %s: expected encoding=%s from upstream "
+							"but got %s",
+							MySubscription->name,
+							GetDatabaseEncodingName(), value)));
 	}
 
 	if (strcmp(key, "forward_changeset_origins") == 0)
 	{
 		bool fwd = parse_bool_param(key, value);
 		/* FIXME: Store this somewhere */
-		elog(DEBUG1, "changeset origin forwarding enabled: %s", fwd ? "t" : "f");
+		elog(DEBUG1, "SPOCK %s: changeset origin forwarding enabled: %s",
+			 MySubscription->name, fwd ? "t" : "f");
 	}
 
 	/*
@@ -834,13 +851,16 @@ parse_relation_message(Jsonb *message)
 
 	/* Parse and validate the json message. */
 	if (!JB_ROOT_IS_OBJECT(message))
-		elog(ERROR, "malformed message in queued message tuple: root is not object");
+		elog(ERROR, "SPOCK %s: malformed message in queued message tuple: "
+					"root is not object",
+			 MySubscription->name);
 
 	it = JsonbIteratorInit(&message->root);
 	while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_DONE)
 	{
 		if (level == 0 && r != WJB_BEGIN_OBJECT)
-			elog(ERROR, "root element needs to be an object");
+			elog(ERROR, "SPOCK %s: root element needs to be an object",
+				 MySubscription->name);
 		else if (level == 0 && r == WJB_BEGIN_OBJECT)
 		{
 			level++;
@@ -852,7 +872,8 @@ parse_relation_message(Jsonb *message)
 			else if (strncmp(v.val.string.val, "table_name", v.val.string.len) == 0)
 				parse_res = &relname;
 			else
-				elog(ERROR, "unexpected key: %s",
+				elog(ERROR, "SPOCK %s: unexpected key: %s",
+					 MySubscription->name,
 					 pnstrdup(v.val.string.val, v.val.string.len));
 
 			key = v.val.string.val;
@@ -860,16 +881,19 @@ parse_relation_message(Jsonb *message)
 		else if (level == 1 && r == WJB_VALUE)
 		{
 			if (!key)
-				elog(ERROR, "in wrong state when parsing key");
+				elog(ERROR, "SPOCK %s: in wrong state when parsing key",
+					 MySubscription->name);
 
 			if (v.type != jbvString)
-				elog(ERROR, "unexpected type for key '%s': %u", key, v.type);
+				elog(ERROR, "SPOCK %s: unexpected type for key '%s': %u",
+					 MySubscription->name, key, v.type);
 
 			*parse_res = pnstrdup(v.val.string.val, v.val.string.len);
 		}
 		else if (level == 1 && r != WJB_END_OBJECT)
 		{
-			elog(ERROR, "unexpected content: %u at level %d", r, level);
+			elog(ERROR, "SPOCK %s: unexpected content: %u at level %d",
+				 MySubscription->name, r, level);
 		}
 		else if (r == WJB_END_OBJECT)
 		{
@@ -878,16 +902,19 @@ parse_relation_message(Jsonb *message)
 			key = NULL;
 		}
 		else
-			elog(ERROR, "unexpected content: %u at level %d", r, level);
+			elog(ERROR, "SPOCK %s: unexpected content: %u at level %d",
+				 MySubscription->name, r, level);
 
 	}
 
 	/* Check if we got both schema and table names. */
 	if (!nspname)
-		elog(ERROR, "missing schema_name in relation message");
+		elog(ERROR, "SPOCK %s: missing schema_name in relation message",
+			 MySubscription->name);
 
 	if (!relname)
-		elog(ERROR, "missing table_name in relation message");
+		elog(ERROR, "SPOCK %s: missing table_name in relation message",
+			 MySubscription->name);
 
 	return makeRangeVar(nspname, relname, -1);
 }
@@ -932,8 +959,9 @@ handle_table_sync(QueuedMessage *queued_message)
 
 	if (oldsync)
 	{
-		elog(INFO,
-			 "table sync came from queue for table %s.%s which already being synchronized, skipping",
+		elog(INFO, "SPOCK %s: table sync came from queue for table %s.%s "
+				   "which already being synchronized, skipping",
+			 MySubscription->name,
 			 rv->schemaname, rv->relname);
 
 		return;
@@ -979,13 +1007,16 @@ handle_sequence(QueuedMessage *queued_message)
 
 	/* Parse and validate the json message. */
 	if (!JB_ROOT_IS_OBJECT(message))
-		elog(ERROR, "malformed message in queued message tuple: root is not object");
+		elog(ERROR, "SPOCK %s: malformed message in queued message tuple: "
+					"root is not object",
+			 MySubscription->name);
 
 	it = JsonbIteratorInit(&message->root);
 	while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_DONE)
 	{
 		if (level == 0 && r != WJB_BEGIN_OBJECT)
-			elog(ERROR, "root element needs to be an object");
+			elog(ERROR, "SPOCK %s: root element needs to be an object",
+				 MySubscription->name);
 		else if (level == 0 && r == WJB_BEGIN_OBJECT)
 		{
 			level++;
@@ -999,7 +1030,8 @@ handle_sequence(QueuedMessage *queued_message)
 			else if (strncmp(v.val.string.val, "last_value", v.val.string.len) == 0)
 				parse_res = &last_value_raw;
 			else
-				elog(ERROR, "unexpected key: %s",
+				elog(ERROR, "SPOCK %s: unexpected key: %s",
+					 MySubscription->name,
 					 pnstrdup(v.val.string.val, v.val.string.len));
 
 			key = v.val.string.val;
@@ -1007,16 +1039,19 @@ handle_sequence(QueuedMessage *queued_message)
 		else if (level == 1 && r == WJB_VALUE)
 		{
 			if (!key)
-				elog(ERROR, "in wrong state when parsing key");
+				elog(ERROR, "SPOCK %s: in wrong state when parsing key",
+					 MySubscription->name);
 
 			if (v.type != jbvString)
-				elog(ERROR, "unexpected type for key '%s': %u", key, v.type);
+				elog(ERROR, "SPOCK %s: unexpected type for key '%s': %u",
+					 MySubscription->name, key, v.type);
 
 			*parse_res = pnstrdup(v.val.string.val, v.val.string.len);
 		}
 		else if (level == 1 && r != WJB_END_OBJECT)
 		{
-			elog(ERROR, "unexpected content: %u at level %d", r, level);
+			elog(ERROR, "SPOCK %s: unexpected content: %u at level %d",
+				 MySubscription->name, r, level);
 		}
 		else if (r == WJB_END_OBJECT)
 		{
@@ -1025,19 +1060,23 @@ handle_sequence(QueuedMessage *queued_message)
 			key = NULL;
 		}
 		else
-			elog(ERROR, "unexpected content: %u at level %d", r, level);
+			elog(ERROR, "SPOCK %s: unexpected content: %u at level %d",
+				 MySubscription->name, r, level);
 
 	}
 
 	/* Check if we got both schema and table names. */
 	if (!nspname)
-		elog(ERROR, "missing schema_name in sequence message");
+		elog(ERROR, "SPOCK %s: missing schema_name in sequence message",
+			 MySubscription->name);
 
 	if (!relname)
-		elog(ERROR, "missing table_name in sequence message");
+		elog(ERROR, "SPOCK %s: missing table_name in sequence message",
+			 MySubscription->name);
 
 	if (!last_value_raw)
-		elog(ERROR, "missing last_value in sequence message");
+		elog(ERROR, "SPOCK %s: missing last_value in sequence message",
+			 MySubscription->name);
 
 	nspoid = get_namespace_oid(nspname, false);
 	reloid = get_relname_relid(relname, nspoid);
@@ -1063,29 +1102,41 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 
 	/* Validate the json and extract the SQL string from it. */
 	if (!JB_ROOT_IS_SCALAR(queued_message->message))
-		elog(ERROR, "malformed message in queued message tuple: root is not scalar");
+		elog(ERROR, "SPOCK %s: malformed message in queued message tuple: "
+					"root is not scalar",
+			 MySubscription->name);
 
 	it = JsonbIteratorInit(&queued_message->message->root);
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_BEGIN_ARRAY)
-		elog(ERROR, "malformed message in queued message tuple, item type %d expected %d", r, WJB_BEGIN_ARRAY);
+		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
+					"item type %d expected %d",
+			 MySubscription->name, r, WJB_BEGIN_ARRAY);
 
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_ELEM)
-		elog(ERROR, "malformed message in queued message tuple, item type %d expected %d", r, WJB_ELEM);
+		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
+					"item type %d expected %d",
+			 MySubscription->name, r, WJB_ELEM);
 
 	if (v.type != jbvString)
-		elog(ERROR, "malformed message in queued message tuple, expected value type %d got %d", jbvString, v.type);
+		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
+					"expected value type %d got %d",
+			 MySubscription->name, jbvString, v.type);
 
 	sql = pnstrdup(v.val.string.val, v.val.string.len);
 
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_END_ARRAY)
-		elog(ERROR, "malformed message in queued message tuple, item type %d expected %d", r, WJB_END_ARRAY);
+		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
+					"item type %d expected %d",
+			 MySubscription->name, r, WJB_END_ARRAY);
 
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_DONE)
-		elog(ERROR, "malformed message in queued message tuple, item type %d expected %d", r, WJB_DONE);
+		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
+					"item type %d expected %d",
+			 MySubscription->name, r, WJB_DONE);
 
 	/* Run the extracted SQL. */
 	spock_execute_sql_command(sql, queued_message->role, tx_just_started);
@@ -1124,7 +1175,8 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 			handle_sequence(queued_message);
 			break;
 		default:
-			elog(ERROR, "unknown message type '%c'",
+			elog(ERROR, "SPOCK %s: unknown message type '%c'",
+				 MySubscription->name,
 				 queued_message->message_type);
 	}
 
@@ -1181,7 +1233,8 @@ replication_handler(StringInfo s)
 			handle_startup(s);
 			break;
 		default:
-			elog(ERROR, "unknown action of type %c", action);
+			elog(ERROR, "SPOCK %s: unknown action of type %c",
+				 MySubscription->name, action);
 	}
 
 	Assert(CurrentMemoryContext == MessageContext);
@@ -1315,8 +1368,9 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 	pq_sendint64(reply_message, now);			/* sendTime */
 	pq_sendbyte(reply_message, false);			/* replyRequested */
 
-	elog(DEBUG2, "sending feedback (force %d) to recv %X/%X, write %X/%X, flush %X/%X",
-		 force,
+	elog(DEBUG2, "SPOCK %s: sending feedback (force %d) to recv %X/%X, "
+				 "write %X/%X, flush %X/%X",
+		 MySubscription->name, force,
 		 (uint32) (recvpos >> 32), (uint32) recvpos,
 		 (uint32) (writepos >> 32), (uint32) writepos,
 		 (uint32) (flushpos >> 32), (uint32) flushpos
@@ -1327,8 +1381,8 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
-				 errmsg("could not send feedback packet: %s",
-						PQerrorMessage(conn))));
+				 errmsg("SPOCK %s: could not send feedback packet: %s",
+						MySubscription->name, PQerrorMessage(conn))));
 		return false;
 	}
 
@@ -1351,6 +1405,7 @@ apply_work(PGconn *streamConn)
 	int			fd;
 	char	   *copybuf = NULL;
 	XLogRecPtr	last_received = InvalidXLogRecPtr;
+	TimestampTz	last_receive_timestamp = GetCurrentTimestamp();
 
 	applyconn = streamConn;
 	fd = PQsocket(applyconn);
@@ -1395,7 +1450,52 @@ apply_work(PGconn *streamConn)
 
 		if (PQstatus(applyconn) == CONNECTION_BAD)
 		{
-			elog(ERROR, "connection to other side has died");
+			elog(ERROR, "SPOCK %s: connection to other side has died",
+				 MySubscription->name);
+		}
+
+		/*
+		 * The walsender is supposed to ping us for a status update
+		 * every wal_sender_timeout / 2 milliseconds. If we don't get
+		 * those, we assume that we have lost the connection.
+		 *
+		 * Note: keepalive configuration is supposed to cover this but
+		 * is apparently unreliable.
+		 */
+		if (rc & WL_TIMEOUT)
+		{
+			TimestampTz		timeout;
+
+			timeout = TimestampTzPlusMilliseconds(last_receive_timestamp,
+												  (wal_sender_timeout * 3) / 2);
+			if (GetCurrentTimestamp() > timeout)
+			{
+				elog(ERROR, "SPOCK %s: terminating apply due to missing "
+							"walsender ping",
+					 MySubscription->name);
+			}
+		}
+
+		/*
+		 * The walsender is supposed to ping us for a status update
+		 * every wal_sender_timeout / 2 milliseconds. If we don't get
+		 * those, we assume that we have lost the connection.
+		 *
+		 * Note: keepalive configuration is supposed to cover this but
+		 * is apparently unreliable.
+		 */
+		if (rc & WL_TIMEOUT)
+		{
+			TimestampTz		timeout;
+
+			timeout = TimestampTzPlusMilliseconds(last_receive_timestamp,
+												  (wal_sender_timeout * 3) / 2);
+			if (GetCurrentTimestamp() > timeout)
+			{
+				elog(ERROR, "SPOCK %s: terminating apply due to missing "
+							"walsender ping",
+					 MySubscription->name);
+			}
 		}
 
 		Assert(CurrentMemoryContext == MessageContext);
@@ -1413,15 +1513,18 @@ apply_work(PGconn *streamConn)
 
 			if (r == -1)
 			{
-				elog(ERROR, "data stream ended");
+				elog(ERROR, "SPOCK %s: data stream ended",
+					 MySubscription->name);
 			}
 			else if (r == -2)
 			{
-				elog(ERROR, "could not read COPY data: %s",
+				elog(ERROR, "SPOCK %s: could not read COPY data: %s",
+					 MySubscription->name,
 					 PQerrorMessage(applyconn));
 			}
 			else if (r < 0)
-				elog(ERROR, "invalid COPY status %d", r);
+				elog(ERROR, "SPOCK %s: invalid COPY status %d",
+					 MySubscription->name, r);
 			else if (r == 0)
 			{
 				/* need to wait for new data */
@@ -1431,6 +1534,8 @@ apply_work(PGconn *streamConn)
 			{
 				int c;
 				StringInfoData s;
+
+				last_receive_timestamp = GetCurrentTimestamp();
 
 				/*
 				 * We're using a StringInfo to wrap existing data here, as a
@@ -1912,8 +2017,9 @@ spock_apply_main(Datum main_arg)
 		if (spock_conflict_resolver != SPOCK_RESOLVE_ERROR)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("spock.use_spi can only be used when "
-							"spock.conflict_resolution is set to 'error'")));
+					 errmsg("SPOCK %s: spock.use_spi can only be used when "
+							"spock.conflict_resolution is set to 'error'",
+							MySubscription->name)));
 
 		apply_api.on_begin = spock_apply_spi_begin;
 		apply_api.on_commit = spock_apply_spi_commit;
@@ -1958,7 +2064,7 @@ spock_apply_main(Datum main_arg)
 #endif
 	CommitTransactionCommand();
 
-	elog(LOG, "starting apply for subscription %s", MySubscription->name);
+	elog(LOG, "SPOCK %s: starting apply worker", MySubscription->name);
 
 	/* Set apply delay if any. */
 	if (MySubscription->apply_delay)
@@ -1968,7 +2074,8 @@ spock_apply_main(Datum main_arg)
 	/* If the subscription isn't initialized yet, initialize it. */
 	spock_sync_subscription(MySubscription);
 
-	elog(DEBUG1, "connecting to provider %s, dsn %s",
+	elog(DEBUG1, "SPOCK %s: connecting to provider %s, dsn %s",
+		 MySubscription->name,
 		 MySubscription->origin->name, MySubscription->origin_if->dsn);
 
 	/*
@@ -1979,8 +2086,9 @@ spock_apply_main(Datum main_arg)
 	QueueRelid = get_queue_table_oid();
 
 	originid = replorigin_by_name(MySubscription->slot_name, false);
-	elog(DEBUG2, "setting up replication origin %s (oid %u)",
-		MySubscription->slot_name, originid);
+	elog(DEBUG2, "SPOCK %s: setting up replication origin %s (oid %u)",
+		 MySubscription->name,
+		 MySubscription->slot_name, originid);
 	replorigin_session_setup(originid);
 	replorigin_session_origin = originid;
 	origin_startpos = replorigin_session_get_progress(false);

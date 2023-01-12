@@ -78,6 +78,7 @@
 #include "spock_rpc.h"
 #include "spock_sync.h"
 #include "spock_worker.h"
+#include "spock_conflict.h"
 
 #include "spock.h"
 
@@ -148,6 +149,8 @@ PG_FUNCTION_INFO_V1(spock_show_repset_table_info_by_target);
 /* Stats/Counters */
 PG_FUNCTION_INFO_V1(get_channel_stats);
 PG_FUNCTION_INFO_V1(reset_channel_stats);
+PG_FUNCTION_INFO_V1(get_conflict_tracking);
+PG_FUNCTION_INFO_V1(prune_conflict_tracking);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -2473,4 +2476,82 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 
 	LWLockRelease(SpockCtx->lock);
 	PG_RETURN_VOID();
+}
+
+Datum
+get_conflict_tracking(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+	TupleDesc			tupdesc;
+	Tuplestorestate	   *tupstore;
+	MemoryContext		per_query_ctx;
+	MemoryContext		oldcontext;
+	HASH_SEQ_STATUS		hash_seq;
+	SpockCTHEntry	   *entry;
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context "
+						"that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not "
+						"allowed in this context")));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
+
+	hash_seq_init(&hash_seq, SpockConflictHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		Datum		values[6];
+		bool		nulls[6];
+
+		/* Include this entry in the result. */
+		MemSet(values, 0, sizeof(values));
+		MemSet(nulls, 0, sizeof(nulls));
+
+		values[0] = ObjectIdGetDatum(entry->key.datid);
+		values[1] = ObjectIdGetDatum(entry->key.relid);
+		values[2] = PointerGetDatum(&entry->key.tid);
+		values[3] = Int16GetDatum(entry->last_origin);
+		values[4] = TransactionIdGetDatum(entry->last_xmin);
+		values[5] = TimestampTzGetDatum(entry->last_ts);
+
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
+
+	LWLockRelease(SpockCtx->cth_lock);
+
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
+
+	PG_RETURN_VOID();
+}
+
+Datum
+prune_conflict_tracking(PG_FUNCTION_ARGS)
+{
+	int32	result;
+
+	result = spock_cth_prune(false);
+	spock_ctt_close();
+
+	PG_RETURN_INT32(result);
 }

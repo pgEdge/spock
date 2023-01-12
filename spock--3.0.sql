@@ -310,3 +310,43 @@ CREATE VIEW spock.get_channel_summary_stats AS
     sum(n_tup_del) n_tup_del, max(last_reset) last_reset
     FROM spock.get_channel_stats() group by slotname) s2
   ON (s1.slotname=s2.slotname);
+
+--
+-- Conflict Tracking hash table content
+--
+CREATE FUNCTION spock.get_conflict_tracking(
+	OUT datid oid,
+	OUT relid oid,
+	OUT tid tid,
+	OUT last_origin int2,
+	OUT last_xmin xid,
+	OUT last_ts timestamptz
+)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'get_conflict_tracking'
+STRICT LANGUAGE C ROWS 10000;
+
+CREATE VIEW spock.conflict_tracking AS
+  SELECT N.nspname, C.relname, T.tid, T.last_origin,
+    T.last_xmin, T.last_ts
+  FROM spock.get_conflict_tracking() T
+  JOIN pg_catalog.pg_database D ON D.oid = T.datid
+  JOIN pg_catalog.pg_class C ON C.oid = T.relid
+  JOIN pg_catalog.pg_namespace N on N.oid = C.relnamespace
+  WHERE D.datname = pg_catalog.current_database();
+
+CREATE FUNCTION spock.prune_conflict_tracking()
+RETURNS int4
+AS 'MODULE_PATHNAME', 'prune_conflict_tracking'
+LANGUAGE C;
+
+CREATE TABLE spock.conflict_tracker (
+    relid oid,
+    tid tid,
+
+    last_origin int,
+    last_xmin xid,
+    last_ts timestamptz,
+
+    PRIMARY KEY(relid, tid)
+) WITH (user_catalog_table=true);
