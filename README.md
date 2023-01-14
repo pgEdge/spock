@@ -2,18 +2,21 @@
 
 [Mr. Spock](https://en.wikipedia.org/wiki/Spock) was a logical man/vulcan  
 
-This SPOCK extension provides logical & multi-master bi-directional replication for PostgreSQL 14+. 
+This SPOCK extension provides logical & multi-master bi-directional replication for PostgreSQL 15+. 
 We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source projects as a solid foundation to build upon for this enterprise-class extension. 
 
-This years v3.0.x includes the following important enhancements:
-* Support for pg15
+Our first version is 3.0.x and includes the following important enhancements:
+
+* Support for Asynchronous Active-Active Replication with conflict resolution
+* Conflict-free Delta-Apply Columns
 * Better error handling for Conflict Resolution
 * Better management & monitoring stats and integration
 * A 'pii' table for making it easy for personably identifiable data to be kept in country
+* Support for pg15
 
 
-We use the following terms to describe data streams between nodes:
-* Nodes - PostgreSQL database instances
+We use the following terms, borrowed from [Slony-I](https://slony.info), to describe data streams between nodes:
+* Nodes - Postgres database instances
 * Providers and Subscribers - roles taken by Nodes
 * Replication Set - a collection of tables
 
@@ -813,4 +816,28 @@ to large objects, so spock cannot replicate large objects.
 Also any DDL limitations apply so extra care need to be taken when using
 `replicate_ddl_command()`.
 
-Spock License is AGPLv3 
+## Conflict-Free Delta-Apply Columns
+
+Logical Multi-Master replication can get itself into trouble on running sums (such as a ytd balance).  Unlike other
+solutions, we do NOT have a special data type for this.   Any numeric data type will do (including numeric, float, double precision, int4, int8, etc).
+
+Suppose that a running bank account sum contains a balance of $1,000.   Two transactions "conflict" because they overlap with each from two different multi-master nodes.   Transaction A is a $1,000 withdrawl from the account.  Transaction B is also a $1,000 withdrawl from the account.  The correct balance is $-1,000.  Our Delta-Apply algorithm fixes this problem and highly conflicting wrkloads with this scenario (like a tpc-c like benchmark) now run correctly at lightning speeds.
+
+This feature is powerful AND simple in it's implementation as follows:
+
+  - A small diff patch to PostgreSQL core
+    - a very small postgresql licensed patch is applied to a core postgres source tree before building a PG binary.
+    - the above diff patch adds functionality to support ALTER TABLE t1 COLUMN c1 SET(log_old_value=true)
+    - this patch will be submitted to pg16 core postgres and discussed at the Ottowa Conference.
+
+  - When an update occurs on a 'log_old_value' column
+    - First, the old value for that column is captured to the WAL 
+    - Second, the new value comes in the transaction is above to be applied to a subscriber
+    - Before the new value overwrites the old value, a delta value is created from the above two steps and it is correctly applied
+
+Note that on a conflicting transaction, the delta column will get correctly calculated and applied.  The configured conflict resolution strategy applies to non-delta columns (normally last-update-wins).
+
+As a special saftey-valve feature.  If the user ever needs to re-set a log_old_value column you can temporaily alter the column to "log_old_value" is false.
+
+
+Spock is Community Licensed (similar to https://www.confluent.io/confluent-community-license-faq/) 
