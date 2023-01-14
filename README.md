@@ -30,7 +30,7 @@ Use cases supported are:
 * Data gather/merge from multiple upstream servers
 
 Architectural details:
-* spock works on a per-database level, not whole server level like
+* Spock works on a per-database level, not whole server level like
   physical streaming replication
 * One Provider may feed multiple Subscribers without incurring additional disk
   write overhead
@@ -43,7 +43,7 @@ Architectural details:
 
 The `spock` extension must be installed on both provider and subscriber.
 You must `CREATE EXTENSION spock` on both.  For major version upgrades, the old node 
-can be running pglogical2 before it is upgraded to become a spock node.
+can be running a recent version of pgLogical2 before it is upgraded to become a Spock node.
 
 Tables on the provider and subscriber must have the same names and be in the
 same schema. Future revisions may add mapping features.
@@ -72,7 +72,7 @@ install. You might need to use `sudo` for the install step.
 
 ## Usage
 
-This section describes basic usage of the spock replication extension.
+This section describes basic usage of the Spock replication extension.
 
 ### Quick setup
 
@@ -96,7 +96,7 @@ you can add this additional option to postgresql.conf:
 localhost. Logical replication connections are treated
 by `pg_hba.conf` as regular connections to the provider database.
 
-Next the `spock` extension has to be installed on all nodes:
+Next the `spock` extension has to be installed on all nodes in the database to be replicated:
 
     CREATE EXTENSION spock;
 
@@ -840,4 +840,4 @@ Note that on a conflicting transaction, the delta column will get correctly calc
 As a special saftey-valve feature.  If the user ever needs to re-set a log_old_value column you can temporaily alter the column to "log_old_value" is false.
 
 
-Spock is Community Licensed (similar to https://www.confluent.io/confluent-community-license-faq/) 
+Spock is licensed under the pgEdge Community Licensed (essentialy same as Kafka's https://www.confluent.io/confluent-community-license-faq/) 
