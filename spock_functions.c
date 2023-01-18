@@ -2550,7 +2550,7 @@ prune_conflict_tracking(PG_FUNCTION_ARGS)
 {
 	int32	result;
 
-	result = spock_cth_prune(false);
+	result = spock_ctt_prune(false);
 	spock_ctt_close();
 
 	PG_RETURN_INT32(result);

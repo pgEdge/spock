@@ -73,8 +73,9 @@ typedef struct SpockContext {
 	/* Access lock for the Conflict Tracking Hash. */
 	LWLock	   *cth_lock;
 
-	/* Counter for entries in Conflict Tracking Hash */
-	int			cth_count;
+	/* Interval for pruning the conflict_tracker table */
+	Datum	ctt_prune_interval;
+	Datum	ctt_last_prune;
 
 	/* Supervisor process. */
 	PGPROC	   *supervisor;
@@ -160,6 +161,5 @@ extern void spock_worker_kill(SpockWorker *worker);
 extern const char * spock_worker_type_name(SpockWorkerType type);
 extern void handle_sub_counters(Relation relation, spockStatsType typ, int ntup);
 extern void handle_pr_counters(Relation relation, char *slotname, Oid nodeid, spockStatsType typ, int ntup);
-extern void initialize_spock_cth(void);
 
 #endif /* SPOCK_WORKER_H */

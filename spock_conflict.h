@@ -77,6 +77,7 @@ typedef struct SpockCTHEntry
 	RepOriginId		last_origin;
 	TransactionId	last_xmin;
 	TimestampTz		last_ts;
+	int				last_pid;
 } SpockCTHEntry;
 
 extern bool spock_tuple_find_replidx(ResultRelInfo *relinfo,
@@ -135,9 +136,15 @@ extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
  */
 extern void spock_cth_store(Oid relid, ItemPointer tid,
 							RepOriginId last_origin, TransactionId last_xmin,
-							TimestampTz last_ts, bool is_init);
+							TimestampTz last_ts, bool has_cth_lock);
+extern void spock_cth_remove(Oid relid, ItemPointer tid, bool has_cth_lock);
+extern bool spock_cth_fetch(Oid relid, ItemPointer tid,
+							RepOriginId *last_origin, TransactionId *last_xmin,
+							TimestampTz *last_ts, bool has_cth_lock);
 extern int32 spock_cth_prune(bool has_cth_lock);
 extern uint32 spock_cth_hash_fn(const void *key, Size keylen);
 extern int spock_cth_match_fn(const void *key1, const void *key2, Size keylen);
+
+extern int32 spock_ctt_prune(bool has_cth_lock);
 extern void spock_ctt_close(void);
 #endif /* SPOCK_CONGLICT_H */

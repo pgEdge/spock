@@ -189,9 +189,6 @@ spock_manager_main(Datum main_arg)
 	elog(LOG, "starting spock database manager for database %s",
 		 get_database_name(MyDatabaseId));
 
-	/* Load Conflicts Tracking hash from the permanent table */
-	initialize_spock_cth();
-
 	CommitTransactionCommand();
 
 	/* Use separate transaction to avoid lock escalation. */

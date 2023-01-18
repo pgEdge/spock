@@ -90,6 +90,8 @@ static const struct config_enum_entry server_message_level_options[] = {
 bool	spock_synchronous_commit = false;
 char   *spock_temp_directory = "";
 bool	spock_use_spi = false;
+Datum	spock_ctt_prune_interval;
+char   *spock_ctt_prune_string = "";
 bool	spock_batch_inserts = true;
 static char *spock_temp_directory_config;
 bool	spock_ch_stats = true;
@@ -751,6 +753,19 @@ spock_temp_directory_assing_hook(const char *newval, void *extra)
 				 errmsg("out of memory")));
 }
 
+static void
+spock_assign_ctt_prune_interval(const char *newval, void *extra)
+{
+	Datum	intvl;
+
+	intvl = DirectFunctionCall3(interval_in, PointerGetDatum(newval),
+								ObjectIdGetDatum(InvalidOid),
+								Int32GetDatum(-1));
+	spock_ctt_prune_interval = intvl;
+	if (SpockCtx != NULL)
+		SpockCtx->ctt_prune_interval = intvl;
+}
+
 
 /*
  * Entry point for this module.
@@ -862,6 +877,17 @@ _PG_init(void)
 							   PGC_SIGHUP,
 							   0,
 							   NULL, NULL, NULL);
+
+	DefineCustomStringVariable("spock.conflict_prune_interval",
+							   "Interval for pruning the conflict_tracker table",
+							   NULL,
+							   &spock_ctt_prune_string,
+							   "30s",
+							   PGC_SIGHUP,
+							   0,
+							   NULL,
+							   spock_assign_ctt_prune_interval,
+							   NULL);
 
 	DefineCustomBoolVariable("spock.channel_counters",
 							   "Enable spock statistics information collection",

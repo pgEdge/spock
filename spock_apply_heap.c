@@ -103,11 +103,16 @@ static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 void
 spock_apply_heap_begin(void)
 {
+	spock_cth_prune(false);
 }
 
 void
 spock_apply_heap_commit(void)
 {
+	TimestampTz	next_prune;
+	TimestampTz	now;
+	int32		num_pruned;
+
 	/*
 	 * For pruning of the Conflict Tracking Hash we remember our
 	 * assigned origin and the last commit timestamp.
@@ -125,10 +130,25 @@ spock_apply_heap_commit(void)
 	MySpockWorker->worker.apply.last_ts = replorigin_session_origin_timestamp;
 	LWLockRelease(SpockCtx->lock);
 
-	/* Close the backing table for Conflict Tracking (if open) */
+	next_prune = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_pl_interval,
+														 SpockCtx->ctt_last_prune,
+														 SpockCtx->ctt_prune_interval
+														 ));
+	now = GetCurrentTimestamp();
+	if (next_prune <= now)
+	{
+		SpockCtx->ctt_last_prune = now;
+
+		PushActiveSnapshot(GetTransactionSnapshot());
+		num_pruned = spock_ctt_prune(false);
+		PopActiveSnapshot();
+        CommandCounterIncrement();
+
+		elog(LOG, "SPOCK: %d entries pruned from CTT", num_pruned);
+	}
+
 	spock_ctt_close();
 }
-
 
 static List *
 UserTableUpdateOpenIndexes(ResultRelInfo *relinfo, EState *estate, TupleTableSlot *slot, bool update)

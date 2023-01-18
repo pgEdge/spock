@@ -40,6 +40,7 @@
 extern bool spock_synchronous_commit;
 extern char *spock_temp_directory;
 extern bool spock_use_spi;
+extern Datum spock_ctt_prune_interval;
 extern bool spock_batch_inserts;
 extern char *spock_extra_connection_options;
 extern bool	spock_ch_stats;

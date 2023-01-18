@@ -349,4 +349,4 @@ CREATE TABLE spock.conflict_tracker (
     last_ts timestamptz,
 
     PRIMARY KEY(relid, tid)
-) WITH (user_catalog_table=true);
+);
