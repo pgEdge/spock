@@ -1476,28 +1476,6 @@ apply_work(PGconn *streamConn)
 			}
 		}
 
-		/*
-		 * The walsender is supposed to ping us for a status update
-		 * every wal_sender_timeout / 2 milliseconds. If we don't get
-		 * those, we assume that we have lost the connection.
-		 *
-		 * Note: keepalive configuration is supposed to cover this but
-		 * is apparently unreliable.
-		 */
-		if (rc & WL_TIMEOUT)
-		{
-			TimestampTz		timeout;
-
-			timeout = TimestampTzPlusMilliseconds(last_receive_timestamp,
-												  (wal_sender_timeout * 3) / 2);
-			if (GetCurrentTimestamp() > timeout)
-			{
-				elog(ERROR, "SPOCK %s: terminating apply due to missing "
-							"walsender ping",
-					 MySubscription->name);
-			}
-		}
-
 		Assert(CurrentMemoryContext == MessageContext);
 
 		for (;;)
