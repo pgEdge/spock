@@ -1076,7 +1076,7 @@ spock_cth_remove(Oid relid, ItemPointer tid, bool has_cth_lock)
 				   tid->ip_posid);
 	hash_search(SpockConflictHash, &cth_key, HASH_REMOVE, &found);
 
-		/* Delete the entry from the backing table. */
+	/* Delete the entry from the backing table. */
 	spock_ctt_remove(relid, tid);
 
 	if (!has_cth_lock)
@@ -1337,9 +1337,13 @@ spock_ctt_prune(bool has_cth_lock)
 
 	argtypes[0] = TIMESTAMPTZOID;
 	args[0] = TimestampTzGetDatum(cmp_last_ts);
+	if (!has_cth_lock)
+		LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
 	rc = SPI_execute_with_args("DELETE FROM " EXTENSION_NAME "."
 							   SPOCK_CTT_NAME " WHERE last_ts < $1",
 							   1, argtypes, args, NULL, false, 0);
+	if (!has_cth_lock)
+		LWLockRelease(SpockCtx->cth_lock);
 	if (rc != SPI_OK_DELETE)
 		elog(ERROR, "SPOCK: SPI_execute() failed");
 	num_pruned = SPI_processed;
