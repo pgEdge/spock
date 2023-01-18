@@ -130,10 +130,8 @@ spock_apply_heap_commit(void)
 	MySpockWorker->worker.apply.last_ts = replorigin_session_origin_timestamp;
 	LWLockRelease(SpockCtx->lock);
 
-	next_prune = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_pl_interval,
-														 SpockCtx->ctt_last_prune,
-														 SpockCtx->ctt_prune_interval
-														 ));
+	next_prune = TimestampTzPlusMilliseconds(SpockCtx->ctt_last_prune,
+											 SpockCtx->ctt_prune_interval * 1000);
 	now = GetCurrentTimestamp();
 	if (next_prune <= now)
 	{

@@ -74,7 +74,7 @@ typedef struct SpockContext {
 	LWLock	   *cth_lock;
 
 	/* Interval for pruning the conflict_tracker table */
-	Datum	ctt_prune_interval;
+	int		ctt_prune_interval;
 	Datum	ctt_last_prune;
 
 	/* Supervisor process. */
