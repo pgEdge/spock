@@ -142,7 +142,7 @@ spock_apply_heap_commit(void)
 		PopActiveSnapshot();
         CommandCounterIncrement();
 
-		elog(LOG, "SPOCK: %d entries pruned from CTT", num_pruned);
+		elog(DEBUG1, "SPOCK: %d entries pruned from CTT", num_pruned);
 	}
 
 	spock_ctt_close();
