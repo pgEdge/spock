@@ -339,6 +339,11 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		att = TupleDescAttr(tupdesc, attidx);
 		switch (att->atttypid)
 		{
+			case INT2OID:
+				func_add = int2pl;
+				func_sub = int2mi;
+				break;
+
 			case INT4OID:
 				func_add = int4pl;
 				func_sub = int4mi;
@@ -349,9 +354,29 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 				func_sub = int8mi;
 				break;
 
+			case FLOAT4OID:
+				func_add = float4pl;
+				func_sub = float4mi;
+				break;
+
+			case FLOAT8OID:
+				func_add = float8pl;
+				func_sub = float8mi;
+				break;
+
 			case NUMERICOID:
 				func_add = numeric_add;
 				func_sub = numeric_sub;
+				break;
+
+			case MONEYOID:
+				func_add = cash_pl;
+				func_sub = cash_mi;
+				break;
+
+			case BOOLOID:
+				func_add = boolor_statefunc;
+				func_sub = boolor_statefunc;
 				break;
 
 			default:
