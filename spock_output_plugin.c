@@ -663,7 +663,6 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	SpockOutputData *data = ctx->output_plugin_private;
 	MemoryContext	old;
 	Bitmapset	   *att_list = NULL;
-	ReplicationSlot *slot = ctx->slot;
 
 	/* Avoid leaking memory by using and resetting our own context */
 	old = MemoryContextSwitchTo(data->context);
@@ -702,7 +701,8 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 									&change->data.tp.newtuple->tuple,
 									att_list);
 			OutputPluginWrite(ctx, true);
-			handle_pr_counters(relation, NameStr(slot->data.name), data->local_node_id, INSERT_STATS, 1);
+			handle_stats_counter(relation, InvalidOid,
+								 SPOCK_STATS_INSERT_COUNT, 1);
 			break;
 		case REORDER_BUFFER_CHANGE_UPDATE:
 			{
@@ -714,7 +714,8 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 										&change->data.tp.newtuple->tuple,
 										att_list);
 				OutputPluginWrite(ctx, true);
-				handle_pr_counters(relation, NameStr(slot->data.name), data->local_node_id, UPDATE_STATS, 1);
+				handle_stats_counter(relation, InvalidOid,
+									 SPOCK_STATS_UPDATE_COUNT, 1);
 				break;
 			}
 		case REORDER_BUFFER_CHANGE_DELETE:
@@ -725,7 +726,8 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 										&change->data.tp.oldtuple->tuple,
 										att_list);
 				OutputPluginWrite(ctx, true);
-				handle_pr_counters(relation, NameStr(slot->data.name), data->local_node_id, DELETE_STATS, 1);
+				handle_stats_counter(relation, InvalidOid,
+									 SPOCK_STATS_DELETE_COUNT, 1);
 			}
 			else
 				elog(DEBUG1, "didn't send DELETE change because of missing oldtuple");

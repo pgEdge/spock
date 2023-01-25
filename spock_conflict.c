@@ -735,6 +735,11 @@ spock_report_conflict(SpockConflictType conflict_type,
 	if (resolution == SpockResolution_ApplyRemote)
 		return;
 
+	/* Count statistics */
+	handle_stats_counter(rel->rel, MyApplyWorker->subid,
+						 SPOCK_STATS_CONFLICT_COUNT, 1);
+
+	/* If configured log resolution to table */
 	spock_conflict_log_table(conflict_type, rel, localtuple, oldkey,
 							 remotetuple, applytuple, resolution,
 							 local_tuple_xid, found_local_origin,

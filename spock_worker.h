@@ -16,8 +16,6 @@
 
 #include "spock.h"
 
-#define SPOCK_STATS_COLS	8
-
 typedef enum {
 	SPOCK_WORKER_NONE,		/* Unused slot. */
 	SPOCK_WORKER_MANAGER,	/* Manager. */
@@ -88,45 +86,32 @@ typedef struct SpockContext {
 	SpockWorker  workers[FLEXIBLE_ARRAY_MEMBER];
 } SpockContext;
 
-typedef struct spockHashKey
+typedef enum spockStatsType
+{
+	SPOCK_STATS_INSERT_COUNT = 0,
+	SPOCK_STATS_UPDATE_COUNT,
+	SPOCK_STATS_DELETE_COUNT,
+	SPOCK_STATS_CONFLICT_COUNT,
+	SPOCK_STATS_DCA_COUNT,
+
+	SPOCK_STATS_NUM_COUNTERS = SPOCK_STATS_DCA_COUNT + 1
+} spockStatsType;
+
+typedef struct spockStatsKey
 {
 	/* hash key */
-	Oid			dboid;
-	Oid			relid;
-} spockHashKey;
-
-/*
- * statistics counters to keep in hashtable.
- */
-typedef struct spockCounters
-{
-	/* stats counters */
-	int64	n_tup_ins;
-	int64	n_tup_upd;
-	int64	n_tup_del;
-
-	TimestampTz	last_reset;
-} spockCounters;
+	Oid			dboid;		/* Database Oid */
+	Oid			subid;		/* Subscription (InvalidOid for sender) */
+	Oid			relid;		/* Table Oid */
+} spockStatsKey;
 
 typedef struct spockStatsEntry
 {
-	spockHashKey key;			/* hash key */
+	spockStatsKey	key;	/* hash key */
 
-	Oid		nodeid;
-	char	slot_name[NAMEDATALEN];
-	char	schemaname[NAMEDATALEN];
-	char	relname[NAMEDATALEN];
-
-	spockCounters	counters;		/* stat counters */
-	slock_t	mutex;
+	int64			counter[SPOCK_STATS_NUM_COUNTERS];
+	slock_t			mutex;
 } spockStatsEntry;
-
-typedef enum spockStatsType
-{
-	INSERT_STATS,
-	UPDATE_STATS,
-	DELETE_STATS
-} spockStatsType;
 
 extern HTAB				   *SpockHash;
 extern HTAB				   *SpockConflictHash;
@@ -134,6 +119,13 @@ extern SpockContext		   *SpockCtx;
 extern SpockWorker		   *MySpockWorker;
 extern SpockApplyWorker	   *MyApplyWorker;
 extern SpockSubscription   *MySubscription;
+extern int					spock_stats_max_entries_conf;
+extern int					spock_stats_max_entries;
+extern bool					spock_stats_hash_full;
+
+#define SPOCK_STATS_MAX_ENTRIES(_nworkers) \
+	(spock_stats_max_entries_conf < 0 ? (1000 * _nworkers) \
+									  : spock_stats_max_entries_conf)
 
 extern volatile sig_atomic_t got_SIGTERM;
 
@@ -159,7 +151,10 @@ extern bool spock_worker_running(SpockWorker *w);
 extern void spock_worker_kill(SpockWorker *worker);
 
 extern const char * spock_worker_type_name(SpockWorkerType type);
-extern void handle_sub_counters(Relation relation, spockStatsType typ, int ntup);
+extern void handle_stats_counter(Relation relation, Oid subid,
+								spockStatsType typ, int ntup);
+/*
 extern void handle_pr_counters(Relation relation, char *slotname, Oid nodeid, spockStatsType typ, int ntup);
+*/
 
 #endif /* SPOCK_WORKER_H */

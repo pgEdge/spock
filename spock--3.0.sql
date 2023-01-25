@@ -282,34 +282,42 @@ CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" ti
 RETURNS record RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_xact_commit_timestamp_origin';
 
 CREATE FUNCTION spock.get_channel_stats(
-    OUT dbid oid,
-    OUT nodeid oid,
-    OUT slotname text,
-    OUT tablename text,
+    OUT subid oid,
+	OUT relid oid,
     OUT n_tup_ins bigint,
     OUT n_tup_upd bigint,
     OUT n_tup_del bigint,
-    OUT last_reset timestamptz)
+	OUT n_conflict bigint,
+	OUT n_dca bigint)
 RETURNS SETOF record
 LANGUAGE c AS 'MODULE_PATHNAME', 'get_channel_stats';
 
 CREATE FUNCTION spock.reset_channel_stats() RETURNS void
 LANGUAGE c AS 'MODULE_PATHNAME', 'reset_channel_stats';
 
-CREATE VIEW spock.get_channel_table_stats AS
-  SELECT dbid, nodeid, slotname, tablename, n_tup_ins, n_tup_upd,
-  	 n_tup_del, last_reset
-  FROM spock.get_channel_stats();
+CREATE VIEW spock.channel_table_stats AS
+  SELECT H.subid, H.relid,
+	 CASE H.subid
+	 	WHEN 0 THEN '<output>'
+		ELSE S.sub_name
+	 END AS sub_name,
+	 pg_catalog.quote_ident(N.nspname) || '.' || pg_catalog.quote_ident(C.relname) AS table_name,
+	 H.n_tup_ins, H.n_tup_upd, H.n_tup_del,
+	 H.n_conflict, H.n_dca
+  FROM spock.get_channel_stats() AS H
+  LEFT JOIN spock.subscription AS S ON S.sub_id = H.subid
+  LEFT JOIN pg_catalog.pg_class AS C ON C.oid = H.relid
+  LEFT JOIN pg_catalog.pg_namespace AS N ON N.oid = C.relnamespace;
 
-CREATE VIEW spock.get_channel_summary_stats AS
-  SELECT DISTINCT ON(s1.slotname) dbid, s1.slotname, s2.n_tup_ins,
-  	 s2.n_tup_upd, s2.n_tup_del, s2.last_reset
-  FROM spock.get_channel_stats() s1
-  INNER JOIN
-    (SELECT slotname, sum(n_tup_ins) n_tup_ins, sum(n_tup_upd) n_tup_upd,
-    sum(n_tup_del) n_tup_del, max(last_reset) last_reset
-    FROM spock.get_channel_stats() group by slotname) s2
-  ON (s1.slotname=s2.slotname);
+CREATE VIEW spock.channel_summary_stats AS
+  SELECT subid, sub_name,
+     sum(n_tup_ins) AS n_tup_ins,
+     sum(n_tup_upd) AS n_tup_upd,
+     sum(n_tup_del) AS n_tup_del,
+     sum(n_conflict) AS n_conflict,
+     sum(n_dca) AS n_dca
+  FROM spock.channel_table_stats
+  GROUP BY subid, sub_name;
 
 --
 -- Conflict Tracking hash table content

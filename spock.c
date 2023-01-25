@@ -801,6 +801,20 @@ _PG_init(void)
 							NULL,
 							NULL);
 
+	DefineCustomIntVariable("spock.stats_max_entries",
+							"Maximum entries for statistics",
+							"Maximum number of entries that can be "
+							"entered into the channel stats.",
+							&spock_stats_max_entries_conf,
+							-1,
+							100,
+							INT_MAX,
+							PGC_POSTMASTER,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
 	DefineCustomBoolVariable("spock.save_resolutions",
 							 "Log conflict resolutions to spock."CATALOG_LOGTABLE" table.",
 							 NULL,

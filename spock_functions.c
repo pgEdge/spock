@@ -2411,40 +2411,31 @@ get_channel_stats(PG_FUNCTION_ARGS)
 	LWLockAcquire(SpockCtx->lock, LW_SHARED);
 	hash_seq_init(&hash_seq, SpockHash);
 
-	values = palloc0(sizeof(Datum) * SPOCK_STATS_COLS);
-	nulls = palloc0(sizeof(bool) * SPOCK_STATS_COLS);
+	values = palloc0(sizeof(Datum) * (SPOCK_STATS_NUM_COUNTERS + 2));
+	nulls = palloc0(sizeof(bool) * (SPOCK_STATS_NUM_COUNTERS + 2));
 
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
-		char       *qualname;
 		int			i = 0;
-		spockCounters *counter =  &entry->counters;
+		int			j;
 
-		memset(values, 0, sizeof(Datum) * SPOCK_STATS_COLS);
-		memset(nulls, 0, sizeof(bool) * SPOCK_STATS_COLS);
+		if (entry->key.dboid != MyDatabaseId)
+			continue;
 
-		values[i++] = ObjectIdGetDatum(entry->key.dboid);
-		//values[i++] = ObjectIdGetDatum(entry->key.relid);
+		memset(values, 0, sizeof(Datum) * (SPOCK_STATS_NUM_COUNTERS + 2));
+		memset(nulls, 0, sizeof(bool) * (SPOCK_STATS_NUM_COUNTERS + 2));
 
-		values[i++] = ObjectIdGetDatum(entry->nodeid);
-		if (strlen(entry->slot_name) > 0)
-			values[i++] = CStringGetTextDatum(entry->slot_name);
-		else
-			nulls[i++] = true;
+		values[i++] = ObjectIdGetDatum(entry->key.subid);
+		values[i++] = ObjectIdGetDatum(entry->key.relid);
 
-		qualname = quote_qualified_identifier(entry->schemaname, entry->relname);
-		values[i++] = CStringGetTextDatum(qualname);
-
-		values[i++] = Int64GetDatum(counter->n_tup_ins);
-		values[i++] = Int64GetDatum(counter->n_tup_upd);
-		values[i++] = Int64GetDatum(counter->n_tup_del);
-		if (counter->last_reset != 0)
-			values[i++] = TimestampTzGetDatum(counter->last_reset);
-		else
-			nulls[i++] = true;
+		for (j = 0; j < SPOCK_STATS_NUM_COUNTERS; j++)
+			values[i++] = Int64GetDatum(entry->counter[j]);
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
+
+	spock_stats_hash_full = false;
+
 	LWLockRelease(SpockCtx->lock);
 
 	tuplestore_donestoring(tupstore);
@@ -2466,7 +2457,7 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 				 errmsg("spock must be loaded via shared_preload_libraries")));
 
 
-	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
 	hash_seq_init(&hash_seq, SpockHash);
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)

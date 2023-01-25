@@ -55,6 +55,9 @@ HTAB			   *SpockConflictHash = NULL;
 SpockContext	   *SpockCtx = NULL;
 SpockWorker		   *MySpockWorker = NULL;
 static uint16		MySpockWorkerGeneration;
+int					spock_stats_max_entries_conf = -1;
+int					spock_stats_max_entries;
+bool				spock_stats_hash_full = false;
 
 
 static bool xacthook_signal_workers = false;
@@ -668,10 +671,12 @@ worker_shmem_size(int nworkers, bool include_hash)
 	num_bytes = add_size(num_bytes,
 						 sizeof(SpockWorker) * nworkers);
 
+	spock_stats_max_entries = SPOCK_STATS_MAX_ENTRIES(nworkers);
+
 	if (include_hash)
 	{
 		num_bytes = add_size(num_bytes,
-							 hash_estimate_size(max_replication_slots,
+							 hash_estimate_size(spock_stats_max_entries,
 												sizeof(spockStatsEntry)));
 		num_bytes = add_size(num_bytes,
 							 hash_estimate_size(spock_conflict_max_tracking,
@@ -733,7 +738,6 @@ spock_worker_shmem_startup(void)
 	 */
 	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 										  false));
-
 	SpockCtx = NULL;
 	 /* avoid possible race-conditions, when initializing the shared memory. */
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
@@ -756,12 +760,12 @@ spock_worker_shmem_startup(void)
 	}
 
 	memset(&hctl, 0, sizeof(hctl));
-	hctl.keysize = sizeof(spockHashKey);
+	hctl.keysize = sizeof(spockStatsKey);
 	hctl.entrysize = sizeof(spockStatsEntry);
 	hctl.hash = spock_ch_stats_hash;
 	SpockHash = ShmemInitHash("spock channel stats hash",
-							  max_replication_slots,
-							  max_replication_slots,
+							  spock_stats_max_entries,
+							  spock_stats_max_entries,
 							  &hctl,
 							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
 
@@ -785,9 +789,9 @@ spock_worker_shmem_startup(void)
 static uint32
 spock_ch_stats_hash(const void *key, Size keysize)
 {
-	const spockHashKey *k = (const spockHashKey *) key;
+	const spockStatsKey *k = (const spockStatsKey *) key;
 
-	Assert(keysize == sizeof(spockHashKey));
+	Assert(keysize == sizeof(spockStatsKey));
 
 	return hash_uint32((uint32) k->dboid) ^
 		hash_uint32((uint32) k->relid);
@@ -830,107 +834,66 @@ spock_worker_type_name(SpockWorkerType type)
 }
 
 void
-handle_sub_counters(Relation relation, spockStatsType typ, int ntup)
+handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 {
 	bool found = false;
-	SpockSubscription *sub;
-	spockHashKey key;
-	spockCounters *counters;
+	spockStatsKey key;
 	spockStatsEntry *entry;
 
 	if (!spock_ch_stats)
 		return;
 
-	sub = get_subscription(MyApplyWorker->subid);
-	memset(&key, 0, sizeof(spockHashKey));
+	memset(&key, 0, sizeof(spockStatsKey));
 	key.dboid = MyDatabaseId;
+	key.subid = subid;
 	key.relid = RelationGetRelid(relation);
 
+	/*
+	 * We first try to find an existing entry while holding the
+	 * SpockCtx lock in shared mode.
+	 */
+	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+
 	entry = (spockStatsEntry *) hash_search(SpockHash, &key,
-										HASH_ENTER, &found);
+											HASH_FIND, &found);
+	if (!found)
+	{
+		/*
+		 * Didn't find this entry. Check that we didn't exceed the
+		 * hash table previously.
+		 */
+		LWLockRelease(SpockCtx->lock);
+		if (spock_stats_hash_full)
+			return;
+
+		/*
+		 * Upgrade to exclusive lock since we attempt to create a
+		 * new entry in the hash table. Then check for overflow
+		 * again.
+		 */
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+		if (hash_get_num_entries(SpockHash) >= spock_stats_max_entries)
+		{
+			LWLockRelease(SpockCtx->lock);
+			elog(LOG, "SPOCK: channel counter hash table full");
+			spock_stats_hash_full = true;
+			return;
+		}
+
+		entry = (spockStatsEntry *) hash_search(SpockHash, &key,
+												HASH_ENTER, &found);
+	}
+
 	if (!found)
 	{
 		/* New stats entry */
-		counters = &entry->counters;
-		memset(counters, 0, sizeof(spockCounters));
-		counters->last_reset = GetCurrentTimestamp();
+		memset(entry->counter, 0, sizeof(entry->counter));
 		SpinLockInit(&entry->mutex);
 	}
 
-	counters = &entry->counters;
 	SpinLockAcquire(&entry->mutex);
-	entry->nodeid = sub->target_if->nodeid;
-	strncpy(entry->slot_name, sub->slot_name, NAMEDATALEN);
-	strncpy(entry->schemaname,
-			get_namespace_name(RelationGetNamespace(relation)),
-			NAMEDATALEN);
-	strncpy(entry->relname, RelationGetRelationName(relation), NAMEDATALEN);
-	switch(typ)
-	{
-		case INSERT_STATS:
-				counters->n_tup_ins += ntup;
-			break;
-		case UPDATE_STATS:
-				counters->n_tup_upd += ntup;
-			break;
-		case DELETE_STATS:
-				counters->n_tup_del += ntup;
-			break;
-		default:
-			elog(ERROR, "invalid stat type (%u) specified", typ);
-	}
+	entry->counter[typ] += ntup;
 	SpinLockRelease(&entry->mutex);
-}
 
-void
-handle_pr_counters(Relation relation, char *slotname, Oid nodeid, spockStatsType typ, int ntup)
-{
-	bool found = false;
-	spockHashKey key;
-	spockCounters *counters;
-	spockStatsEntry *entry;
-
-	if (!spock_ch_stats)
-		return;
-
-	memset(&key, 0, sizeof(spockHashKey));
-	key.dboid = MyDatabaseId;
-	key.relid = RelationGetRelid(relation);
-
-	entry = (spockStatsEntry *) hash_search(SpockHash, &key,
-										HASH_ENTER, &found);
-	if (!found)
-	{
-		/* New stats entry */
-		counters = &entry->counters;
-		memset(counters, 0, sizeof(spockCounters));
-		counters->last_reset = GetCurrentTimestamp();
-		SpinLockInit(&entry->mutex);
-	}
-
-	Assert(slotname != NULL);
-
-	counters = &entry->counters;
-	SpinLockAcquire(&entry->mutex);
-	entry->nodeid = nodeid;
-	strncpy(entry->slot_name, slotname, NAMEDATALEN);
-	strncpy(entry->schemaname,
-			get_namespace_name(RelationGetNamespace(relation)),
-			NAMEDATALEN);
-	strncpy(entry->relname, RelationGetRelationName(relation), NAMEDATALEN);
-	switch(typ)
-	{
-		case INSERT_STATS:
-				counters->n_tup_ins += ntup;
-			break;
-		case UPDATE_STATS:
-				counters->n_tup_upd += ntup;
-			break;
-		case DELETE_STATS:
-				counters->n_tup_del += ntup;
-			break;
-		default:
-			elog(ERROR, "invalid stat type (%u) specified", typ);
-	}
-	SpinLockRelease(&entry->mutex);
+	LWLockRelease(SpockCtx->lock);
 }

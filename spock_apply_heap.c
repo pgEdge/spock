@@ -462,7 +462,8 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	localslot = table_slot_create(rel->rel, &aestate->estate->es_tupleTable);
 
 	/* update stats */
-	handle_sub_counters(rel->rel, INSERT_STATS, 1);
+	handle_stats_counter(rel->rel, MyApplyWorker->subid,
+						 SPOCK_STATS_INSERT_COUNT, 1);
 
 	ExecOpenIndices(aestate->resultRelInfo
 					, false
@@ -621,7 +622,8 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	localslot = table_slot_create(rel->rel, &aestate->estate->es_tupleTable);
 
 	/* update stats */
-	handle_sub_counters(rel->rel, UPDATE_STATS, 1);
+	handle_stats_counter(rel->rel, MyApplyWorker->subid,
+						 SPOCK_STATS_UPDATE_COUNT, 1);
 
 	/* Search for existing tuple with same key */
 	found = spock_tuple_find_replidx(aestate->resultRelInfo, oldtup, localslot,
@@ -732,6 +734,10 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			{
 				is_delta_apply = true;
 				apply = true;
+
+				/* Count the DCA event in stats */
+				handle_stats_counter(rel->rel, MyApplyWorker->subid,
+									 SPOCK_STATS_DCA_COUNT, 1);
 			}
 		}
 
@@ -817,7 +823,8 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	localslot = table_slot_create(rel->rel, &aestate->estate->es_tupleTable);
 
 	/* update stats */
-	handle_sub_counters(rel->rel, DELETE_STATS, 1);
+	handle_stats_counter(rel->rel, MyApplyWorker->subid,
+						 SPOCK_STATS_DELETE_COUNT, 1);
 
 	if (spock_tuple_find_replidx(aestate->resultRelInfo, oldtup, localslot,
 									 &replident_idx_id))
@@ -972,7 +979,9 @@ spock_apply_heap_mi_flush(void)
 		return;
 
 	/* update stats */
-	handle_sub_counters(spkmistate->rel->rel, INSERT_STATS, spkmistate->nbuffered_tuples);
+	handle_stats_counter(spkmistate->rel->rel, MyApplyWorker->subid,
+						 SPOCK_STATS_INSERT_COUNT,
+						 spkmistate->nbuffered_tuples);
 
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(spkmistate->aestate->estate));
 	heap_multi_insert(spkmistate->rel->rel,
