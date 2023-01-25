@@ -2073,7 +2073,7 @@ spock_apply_main(Datum main_arg)
 
 	/* Start the replication. */
 	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
-										   MySubscription->name, NULL);
+										   MySubscription->slot_name, NULL);
 
 	repsets = stringlist_to_identifierstr(MySubscription->replication_sets);
 	origins = stringlist_to_identifierstr(MySubscription->forward_origins);
