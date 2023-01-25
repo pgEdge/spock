@@ -374,10 +374,18 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 				func_sub = cash_mi;
 				break;
 
+#if 0
+			/*
+			 * BOOL is supposed to follow OR logic. But this code only 
+			 * works if we have a conflict. A local transaction is not
+			 * prevented from changing it back to false, and it won't
+			 * propagate. We need to come up with a different solution.
+			 */
 			case BOOLOID:
 				func_add = boolor_statefunc;
 				func_sub = boolor_statefunc;
 				break;
+#endif
 
 			default:
 				elog(ERROR, "spock delta replication for type %d not supported",
