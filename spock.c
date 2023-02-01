@@ -807,7 +807,7 @@ _PG_init(void)
 							"entered into the channel stats.",
 							&spock_stats_max_entries_conf,
 							-1,
-							100,
+							-1,
 							INT_MAX,
 							PGC_POSTMASTER,
 							0,
