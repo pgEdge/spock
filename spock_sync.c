@@ -601,15 +601,28 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	}
 	else
 	{
-		/* Otherwise just copy the table. */
-		appendStringInfo(&query, "%s.%s ",
-						 PQescapeIdentifier(origin_conn, remoterel->nspname,
+		if (remoterel->isPartitioned)
+		{
+			/* use COPY(SELECT...) for partitioned tables. */
+			appendStringInfo(&query, "(SELECT %s FROM %s.%s) ",
+							 list_length(attnamelist) ? attlist.data : "*",
+							 PQescapeIdentifier(origin_conn, remoterel->nspname,
 											strlen(remoterel->nspname)),
-						 PQescapeIdentifier(origin_conn, remoterel->relname,
+							 PQescapeIdentifier(origin_conn, remoterel->relname,
 											strlen(remoterel->relname)));
+		}
+		else
+		{
+			/* Otherwise just copy the table. */
+			appendStringInfo(&query, "%s.%s ",
+							PQescapeIdentifier(origin_conn, remoterel->nspname,
+												strlen(remoterel->nspname)),
+							PQescapeIdentifier(origin_conn, remoterel->relname,
+												strlen(remoterel->relname)));
 
-		if (list_length(attnamelist))
-			appendStringInfo(&query, "(%s) ", attlist.data);
+			if (list_length(attnamelist))
+				appendStringInfo(&query, "(%s) ", attlist.data);
+		}
 	}
 	appendStringInfoString(&query, "TO stdout");
 

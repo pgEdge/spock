@@ -1874,8 +1874,9 @@ spock_show_repset_table_info(PG_FUNCTION_ARGS)
 	TupleDesc	rettupdesc;
 	int			i;
 	List	   *att_list = NIL;
-	Datum		values[5];
-	bool		nulls[5];
+	bool		is_partitioned = false;
+	Datum		values[6];
+	bool		nulls[6];
 	char	   *nspname;
 	char	   *relname;
 	HeapTuple	htup;
@@ -1921,6 +1922,9 @@ spock_show_repset_table_info(PG_FUNCTION_ARGS)
 		att_list = lappend(att_list, NameStr(att->attname));
 	}
 
+	/* is partitioned? */
+	is_partitioned = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
+
 	/* And now build the result. */
 	memset(nulls, false, sizeof(nulls));
 	values[0] = ObjectIdGetDatum(RelationGetRelid(rel));
@@ -1928,6 +1932,7 @@ spock_show_repset_table_info(PG_FUNCTION_ARGS)
 	values[2] = CStringGetTextDatum(relname);
 	values[3] = PointerGetDatum(strlist_to_textarray(att_list));
 	values[4] = BoolGetDatum(list_length(tableinfo->row_filter) > 0);
+	values[5] = BoolGetDatum(is_partitioned);
 
 	htup = heap_form_tuple(rettupdesc, values, nulls);
 

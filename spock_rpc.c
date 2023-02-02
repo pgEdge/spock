@@ -63,7 +63,7 @@ pg_logical_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 		/* Spock 2.0+ */
 		appendStringInfo(&query,
 						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
-						 "       i.has_row_filter"
+						 "       i.has_row_filter, i.is_partitioned"
 						 "  FROM (SELECT DISTINCT relid FROM spock.tables WHERE set_name = ANY(ARRAY[%s])) t,"
 						 "       LATERAL spock.show_repset_table_info(t.relid, ARRAY[%s]) i",
 						 repsetarr.data, repsetarr.data);
@@ -73,7 +73,7 @@ pg_logical_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 		/* Spock 1.x */
 		appendStringInfo(&query,
 						 "SELECT r.oid AS relid, t.nspname, t.relname, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = r.oid AND NOT attisdropped AND attnum > 0) AS att_list,"
-						 "       false AS has_row_filter"
+						 "       false AS has_row_filter, 'f' AS is_partitioned"
 						 "  FROM spock.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
 						 " WHERE t.set_name = ANY(ARRAY[%s]) AND r.relname = t.relname AND n.oid = r.relnamespace AND n.nspname = t.nspname",
 						 repsetarr.data);
@@ -95,6 +95,7 @@ pg_logical_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 						  &remoterel->natts))
 			elog(ERROR, "could not parse column list for table");
 		remoterel->hasRowFilter = (strcmp(PQgetvalue(res, i, 4), "t") == 0);
+		remoterel->isPartitioned = (strcmp(PQgetvalue(res, i, 5), "t") == 0);
 
 		tables = lappend(tables, remoterel);
 	}
@@ -144,7 +145,7 @@ pg_logical_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 		/* Spock 2.0+ */
 		appendStringInfo(&query,
 						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
-						 "       i.has_row_filter"
+						 "       i.has_row_filter, i.is_partitioned"
 						 "  FROM spock.show_repset_table_info(%s::regclass, ARRAY[%s]) i",
 						 PQescapeLiteral(conn, relname.data, relname.len),
 						 repsetarr.data);
@@ -154,7 +155,7 @@ pg_logical_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 		/* Spock 1.x */
 		appendStringInfo(&query,
 						 "SELECT r.oid AS relid, t.nspname, t.relname, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = r.oid AND NOT attisdropped AND attnum > 0) AS att_list,"
-						 "       false AS has_row_filter"
+						 "       false AS has_row_filter, 'f' AS is_partitioned"
 						 "  FROM spock.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
 						 " WHERE r.oid = %s::regclass AND t.set_name = ANY(ARRAY[%s]) AND r.relname = t.relname AND n.oid = r.relnamespace AND n.nspname = t.nspname",
 						 PQescapeLiteral(conn, relname.data, relname.len),
@@ -173,7 +174,7 @@ pg_logical_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 					  &remoterel->natts))
 		elog(ERROR, "could not parse column list for table");
 	remoterel->hasRowFilter = (strcmp(PQgetvalue(res, 0, 4), "t") == 0);
-
+	remoterel->isPartitioned = (strcmp(PQgetvalue(res, 0, 5), "t") == 0);
 
 	PQclear(res);
 
