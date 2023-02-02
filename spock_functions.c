@@ -1948,35 +1948,6 @@ spock_show_repset_table_info_by_target(PG_FUNCTION_ARGS)
 
 
 /*
- * Decide if to return tuple or not.
- */
-static bool
-filter_tuple(HeapTuple htup, ExprContext *econtext, List *row_filter_list)
-{
-	ListCell	   *lc;
-
-	ExecStoreHeapTuple(htup, econtext->ecxt_scantuple, false);
-
-	foreach (lc, row_filter_list)
-	{
-		ExprState  *exprstate = (ExprState *) lfirst(lc);
-		Datum		res;
-		bool		isnull;
-
-		res = ExecEvalExpr(exprstate, econtext, &isnull, NULL);
-
-		/* NULL is same as false for our use. */
-		if (isnull)
-			return false;
-
-		if (!DatumGetBool(res))
-			return false;
-	}
-
-	return true;
-}
-
-/*
  * Do sequential table scan and return all rows that pass the row filter(s)
  * defined in speficied replication set(s) for a table.
  *
@@ -1995,9 +1966,6 @@ spock_table_data_filtered(PG_FUNCTION_ARGS)
 	ListCell   *lc;
 	TupleDesc	tupdesc;
 	TupleDesc	reltupdesc;
-	TableScanDesc scandesc;
-	HeapTuple	htup;
-	List	   *row_filter_list = NIL;
 	EState		   *estate;
 	ExprContext	   *econtext;
 	Tuplestorestate *tupstore;
@@ -2005,6 +1973,9 @@ spock_table_data_filtered(PG_FUNCTION_ARGS)
 	SpockTableRepInfo *tableinfo;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
+	StringInfoData	query;
+	int 		i = 0;
+	int 		rc;
 
 	node = get_local_node(false, false);
 
@@ -2082,32 +2053,54 @@ spock_table_data_filtered(PG_FUNCTION_ARGS)
 	estate = create_estate_for_relation(rel, false);
 	econtext = prepare_per_tuple_econtext(estate, reltupdesc);
 
-	/* Prepare the row filter expression. */
+	/* Prepare query with row filter expression. */
+	initStringInfo(&query);
+	appendStringInfo(&query, "SELECT * FROM %s.%s",
+			quote_identifier(get_namespace_name(RelationGetNamespace(rel))),
+			quote_identifier(RelationGetRelationName(rel)));
+
+	if (list_length(tableinfo->row_filter) > 0)
+		appendStringInfoString(&query, " WHERE ");
+
 	foreach (lc, tableinfo->row_filter)
 	{
-		Node	   *row_filter = (Node *) lfirst(lc);
-		ExprState  *exprstate = spock_prepare_row_filter(row_filter);
+		Node       *row_filter = (Node *) lfirst(lc);
+		Datum 		row_filter_d;
+		Datum 		resqual;
 
-		row_filter_list = lappend(row_filter_list, exprstate);
+		row_filter_d = CStringGetTextDatum(nodeToString(row_filter));
+		resqual = DirectFunctionCall2(pg_get_expr, row_filter_d,
+							ObjectIdGetDatum(reloid));
+		if (i > 0)
+			appendStringInfo(&query, " OR ");
+
+		appendStringInfo(&query, " %s",
+				text_to_cstring(DatumGetTextP(resqual)));
+		i++;
+		pfree(DatumGetTextP(resqual));
+		pfree(DatumGetTextPP(row_filter_d));
 	}
 
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPOCK: SPI_connect() failed");
 
-	/* Scan the table. */
-	scandesc = table_beginscan(rel, GetActiveSnapshot(), 0, NULL);
+	rc = SPI_execute(query.data, true, 0);
+	if (rc != SPI_OK_SELECT)
+		elog(ERROR, "SPOCK: SPI_execute() failed");
 
-	while (HeapTupleIsValid(htup = heap_getnext(scandesc, ForwardScanDirection)))
+	for (i = 0; i < SPI_processed; i++)
 	{
-		if (!filter_tuple(htup, econtext, row_filter_list))
-			continue;
+		HeapTuple	tup = SPI_tuptable->vals[i];
 
-		tuplestore_puttuple(tupstore, htup);
+		tuplestore_puttuple(tupstore, tup);
 	}
 
 	/* Cleanup. */
 	ExecDropSingleTupleTableSlot(econtext->ecxt_scantuple);
 	FreeExecutorState(estate);
 
-	heap_endscan(scandesc);
+	SPI_freetuptable(SPI_tuptable);
+	SPI_finish();
 	table_close(rel, NoLock);
 
 	PG_RETURN_NULL();
