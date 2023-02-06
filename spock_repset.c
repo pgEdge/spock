@@ -513,6 +513,70 @@ get_table_replication_info(Oid nodeid, Relation table,
 	return entry;
 }
 
+RepSetTableTuple*
+get_table_replication_row(Oid repsetid, Oid reloid,
+						  List **att_list, Node **row_filter)
+{
+	Oid				repset_reloid;
+	Oid				repset_indoid;
+	Relation		repset_rel;
+	ScanKeyData		key[2];
+	SysScanDesc		scan;
+	HeapTuple		tuple;
+	TupleDesc		repset_rel_desc;
+	RepSetTableTuple	*reptuple = NULL;
+
+	repset_reloid = get_replication_set_table_rel_oid();
+	repset_rel = table_open(repset_reloid, RowExclusiveLock);
+	repset_rel_desc = RelationGetDescr(repset_rel);
+	repset_indoid = RelationGetPrimaryKeyIndex(repset_rel);
+
+	ScanKeyInit(&key[0],
+				Anum_repset_table_setid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(repsetid));
+	ScanKeyInit(&key[1],
+				Anum_repset_table_reloid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(reloid));
+
+	scan = systable_beginscan(repset_rel, repset_indoid, true, NULL, 2, key);
+	tuple = systable_getnext(scan);
+
+	if (HeapTupleIsValid(tuple))
+	{
+		bool				isnull;
+		Datum				d;
+
+		reptuple = (RepSetTableTuple *) GETSTRUCT(tuple);
+		/* Update replicated column map. */
+		if (att_list != NULL)
+		{
+			d = heap_getattr(tuple, Anum_repset_table_att_list,
+								repset_rel_desc, &isnull);
+			if (!isnull)
+				*att_list = textarray_to_list(DatumGetArrayTypePCopy(d));
+		}
+
+		if (row_filter != NULL)
+		{
+			/* Add row filter if any. */
+			d = heap_getattr(tuple, Anum_repset_table_row_filter,
+								repset_rel_desc, &isnull);
+			if (!isnull)
+			{
+				MemoryContext olctx = MemoryContextSwitchTo(CacheMemoryContext);
+				*row_filter = stringToNode(TextDatumGetCString(d));
+				MemoryContextSwitchTo(olctx);
+			}
+		}
+	}
+
+	systable_endscan(scan);
+	table_close(repset_rel, RowExclusiveLock);
+	return reptuple;
+}
+
 List *
 get_table_replication_sets(Oid nodeid, Oid reloid)
 {

@@ -48,6 +48,10 @@ typedef struct SpockTableRepInfo
 	bool		   is_partitioned;		/* if a tables is partitioned */
 } SpockTableRepInfo;
 
+/* forward declaration */
+struct RepSetTableTuple;
+typedef struct RepSetTableTuple RepSetTableTuple;
+
 extern SpockRepSet *get_replication_set(Oid setid);
 extern SpockRepSet *get_replication_set_by_name(Oid nodeid,
 													const char *setname,
@@ -59,6 +63,8 @@ extern List *get_replication_sets(Oid nodeid, List *replication_set_names,
 
 extern SpockTableRepInfo *get_table_replication_info(Oid nodeid,
 						   Relation table, List *subs_replication_sets);
+extern RepSetTableTuple *get_table_replication_row(Oid repsetid, Oid reloid,
+							List **att_list, Node **row_filter);
 
 extern void create_replication_set(SpockRepSet *repset);
 extern void alter_replication_set(SpockRepSet *repset);

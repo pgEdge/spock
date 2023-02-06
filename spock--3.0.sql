@@ -201,11 +201,11 @@ CREATE FUNCTION spock.drop_replication_set(set_name name, ifexists boolean DEFAU
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_replication_set';
 
 CREATE FUNCTION spock.replication_set_add_table(set_name name, relation regclass, synchronize_data boolean DEFAULT false,
-	columns text[] DEFAULT NULL, row_filter text DEFAULT NULL)
+	columns text[] DEFAULT NULL, row_filter text DEFAULT NULL, include_partitions boolean default true)
 RETURNS boolean CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_table';
 CREATE FUNCTION spock.replication_set_add_all_tables(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_tables';
-CREATE FUNCTION spock.replication_set_remove_table(set_name name, relation regclass)
+CREATE FUNCTION spock.replication_set_remove_table(set_name name, relation regclass, include_partitions boolean default true)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_table';
 
 CREATE FUNCTION spock.replication_set_add_sequence(set_name name, relation regclass, synchronize_data boolean DEFAULT false)
@@ -214,6 +214,10 @@ CREATE FUNCTION spock.replication_set_add_all_sequences(set_name name, schema_na
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_sequences';
 CREATE FUNCTION spock.replication_set_remove_sequence(set_name name, relation regclass)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_sequence';
+
+CREATE FUNCTION spock.add_partition(parent regclass, partition regclass default NULL,
+    row_filter text default NULL)
+RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_add_partition';
 
 CREATE FUNCTION spock.alter_subscription_synchronize(subscription_name name, truncate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';

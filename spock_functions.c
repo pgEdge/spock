@@ -24,6 +24,7 @@
 #include "catalog/heap.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
 
 #include "commands/dbcommands.h"
@@ -119,6 +120,7 @@ PG_FUNCTION_INFO_V1(spock_replication_set_remove_table);
 PG_FUNCTION_INFO_V1(spock_replication_set_add_sequence);
 PG_FUNCTION_INFO_V1(spock_replication_set_add_all_sequences);
 PG_FUNCTION_INFO_V1(spock_replication_set_remove_sequence);
+PG_FUNCTION_INFO_V1(spock_add_partition);
 
 /* Other manipulation function */
 PG_FUNCTION_INFO_V1(spock_synchronize_sequence);
@@ -1345,6 +1347,9 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	char			   *nspname;
 	char			   *relname;
 	StringInfoData		json;
+	bool			inc_partitions;
+	List		   *reloids = NIL;
+	ListCell	   *lc;
 
 	/* Proccess for required parameters. */
 	if (PG_ARGISNULL(0))
@@ -1363,6 +1368,7 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	repset_name = PG_GETARG_NAME(0);
 	reloid = PG_GETARG_OID(1);
 	synchronize = PG_GETARG_BOOL(2);
+	inc_partitions = PG_GETARG_BOOL(5);
 
 	/* standard check for node. */
 	node = check_local_node(true);
@@ -1421,20 +1427,30 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 									  text_to_cstring(PG_GETARG_TEXT_PP(4)));
 	}
 
-	replication_set_add_table(repset->id, reloid, att_list, row_filter);
+	if (inc_partitions && rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		reloids = find_all_inheritors(reloid, NoLock, NULL);
+	else
+		reloids = lappend_oid(reloids, reloid);
 
-	if (synchronize)
+	foreach (lc, reloids)
 	{
-		/* It's easier to construct json manually than via Jsonb API... */
-		initStringInfo(&json);
-		appendStringInfo(&json, "{\"schema_name\": ");
-		escape_json(&json, nspname);
-		appendStringInfo(&json, ",\"table_name\": ");
-		escape_json(&json, relname);
-		appendStringInfo(&json, "}");
-		/* Queue the synchronize request for replication. */
-		queue_message(list_make1(repset->name), GetUserId(),
-					  QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
+		Oid		partoid = lfirst_oid(lc);
+
+		replication_set_add_table(repset->id, partoid, att_list, row_filter);
+
+		if (synchronize)
+		{
+			/* It's easier to construct json manually than via Jsonb API... */
+			initStringInfo(&json);
+			appendStringInfo(&json, "{\"schema_name\": ");
+			escape_json(&json, nspname);
+			appendStringInfo(&json, ",\"table_name\": ");
+			escape_json(&json, relname);
+			appendStringInfo(&json, "}");
+			/* Queue the synchronize request for replication. */
+			queue_message(list_make1(repset->name), GetUserId(),
+						QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
+		}
 	}
 
 	/* Cleanup. */
@@ -1650,6 +1666,10 @@ spock_replication_set_remove_table(PG_FUNCTION_ARGS)
 	Oid			reloid = PG_GETARG_OID(1);
 	SpockRepSet    *repset;
 	SpockLocalNode *node;
+	char		relkind;
+	bool		inc_partitions;
+	List	   *reloids = NIL;
+	ListCell   *lc;
 
 	node = check_local_node(true);
 
@@ -1657,7 +1677,26 @@ spock_replication_set_remove_table(PG_FUNCTION_ARGS)
 	repset = get_replication_set_by_name(node->node->id,
 										 NameStr(*PG_GETARG_NAME(0)), false);
 
-	replication_set_remove_table(repset->id, reloid, false);
+	inc_partitions = PG_GETARG_BOOL(3);
+	relkind = get_rel_relkind(reloid);
+	if (relkind == RELKIND_PARTITIONED_TABLE && inc_partitions)
+		reloids = find_all_inheritors(reloid, NoLock, NULL);
+	else
+		reloids = lappend_oid(reloids, reloid);
+
+	foreach (lc, reloids)
+	{
+		Oid		partoid = lfirst_oid(lc);
+		bool	ignore_err = false;
+
+		/*
+		 * Ignore error reporting for a missing partitions. It's possible that
+		 * we have dropped some partitions at one point, and then we try to drop
+		 * all partitions.
+		 */
+		ignore_err = get_rel_relispartition(partoid);
+		replication_set_remove_table(repset->id, partoid, ignore_err);
+	}
 
 	PG_RETURN_BOOL(true);
 }
@@ -1681,6 +1720,90 @@ spock_replication_set_remove_sequence(PG_FUNCTION_ARGS)
 	replication_set_remove_seq(repset->id, seqoid, false);
 
 	PG_RETURN_BOOL(true);
+}
+
+Datum
+spock_add_partition(PG_FUNCTION_ARGS)
+{
+	Relation	rel;
+	Oid		parent_reloid = InvalidOid;
+	Oid		partition_rel = InvalidOid;
+	SpockLocalNode *local_node;
+	List	   *repsets = NIL;
+	Node	*row_filter = NULL;
+	ListCell   *lc;
+	int		nrows = 0;
+
+	if (PG_ARGISNULL(0))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("parent table cannot be NULL")));
+
+	parent_reloid = PG_GETARG_OID(0);
+	rel = table_open(parent_reloid, AccessShareLock);
+
+	/* specific partition */
+	if (!PG_ARGISNULL(1))
+		partition_rel = PG_GETARG_OID(1);
+
+	/* row filter */
+	if (!PG_ARGISNULL(2))
+	{
+		/* Proccess row_filter if any. */
+		row_filter = parse_row_filter(rel,
+									text_to_cstring(PG_GETARG_TEXT_PP(2)));
+	}
+
+	/* standard check for node. */
+	local_node = check_local_node(true);
+	repsets = get_table_replication_sets(local_node->node->id, parent_reloid);
+
+	/* relation is not partitioned. nothing to do here. */
+	if (rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		PG_RETURN_INT32(0);
+
+	foreach (lc, repsets)
+	{
+		SpockRepSet	   *repset = (SpockRepSet *) lfirst(lc);
+		List		   *reloids = NIL;
+		List		   *att_list = NIL;
+		Node		   *reptbl_row_filter = NULL;
+		ListCell	   *rlc;
+
+		/* get columns list and row filter for the parent table. */
+		get_table_replication_row(repset->id, parent_reloid, &att_list, &reptbl_row_filter);
+
+		/* use parent's row_filter, if not given. */
+		if (row_filter == NULL)
+			row_filter = reptbl_row_filter;
+
+		if (OidIsValid(partition_rel))
+			reloids = lappend_oid(reloids, partition_rel);
+		else
+			reloids = find_all_inheritors(parent_reloid, NoLock, NULL);
+
+		foreach (rlc, reloids)
+		{
+			Oid		partoid = lfirst_oid(rlc);
+
+			/* skip adding parent table, It's already there. */
+			if (partoid == parent_reloid)
+				continue;
+
+			/* skip, if a partitions already existed. */
+			if (get_table_replication_row(repset->id, partoid, NULL, NULL))
+				continue;
+
+			replication_set_add_table(repset->id, partoid, att_list, row_filter);
+			nrows++;
+		}
+
+		pfree(reptbl_row_filter);
+		list_free(att_list);
+	}
+
+	table_close(rel, NoLock);
+	PG_RETURN_INT32(nrows);
 }
 
 /*
