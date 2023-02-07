@@ -1677,7 +1677,7 @@ spock_replication_set_remove_table(PG_FUNCTION_ARGS)
 	repset = get_replication_set_by_name(node->node->id,
 										 NameStr(*PG_GETARG_NAME(0)), false);
 
-	inc_partitions = PG_GETARG_BOOL(3);
+	inc_partitions = PG_GETARG_BOOL(2);
 	relkind = get_rel_relkind(reloid);
 	if (relkind == RELKIND_PARTITIONED_TABLE && inc_partitions)
 		reloids = find_all_inheritors(reloid, NoLock, NULL);
