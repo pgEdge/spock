@@ -1439,6 +1439,8 @@ apply_work(PGconn *streamConn)
 
 		ResetLatch(&MyProc->procLatch);
 
+		CHECK_FOR_INTERRUPTS();
+
 		Assert(CurrentMemoryContext == MessageContext);
 
 		/* emergency bailout if postmaster has died */
