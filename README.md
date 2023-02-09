@@ -1,6 +1,5 @@
-# Spock
+# Spock - Logical & Multi-Active (multi-master) Replication w/ Conflict Resolution & Avoidance
 
-[Mr. Spock](https://en.wikipedia.org/wiki/Spock) was a logical man/vulcan  
 
 This SPOCK extension provides logical & multi-master bi-directional replication for PostgreSQL 15+. 
 We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source projects as a solid foundation to build upon for this enterprise-class extension. 
@@ -14,9 +13,7 @@ Our first version is 3.0.x and includes the following important enhancements:
 * Better management & monitoring stats and integration
 * A 'pii' table for making it easy for personably identifiable data to be kept in country
 
-
-
-We use the following terms, borrowed from [Slony-I](https://slony.info), to describe data streams between nodes:
+We use the following terms, borrowed from [Jan's](https://linkedin/jan_wieck) [Slony-I](https://slony.info), to describe data streams between nodes:
 * Nodes - Postgres database instances
 * Providers and Subscribers - roles taken by Nodes
 * Replication Set - a collection of tables
@@ -39,6 +36,85 @@ Architectural details:
   between changes with automatic and configurable conflict resolution (some,
   but not all aspects required for multi-master).
 * Cascading replication is implemented in the form of changeset forwarding.
+
+# Major New Features
+
+## Conflict-Free Delta-Apply Columns (Conflict Avoidance)
+
+Logical Multi-Master replication can get itself into trouble on running sums (such as a ytd balance).  Unlike other
+solutions, we do NOT have a special data type for this.   Any numeric data type will do (including numeric, float, double precision, int4, int8, etc).
+
+Suppose that a running bank account sum contains a balance of $1,000.   Two transactions "conflict" because they overlap with each from two different multi-master nodes.   Transaction A is a $1,000 withdrawl from the account.  Transaction B is also a $1,000 withdrawl from the account.  The correct balance is $-1,000.  Our Delta-Apply algorithm fixes this problem and highly conflicting wrkloads with this scenario (like a tpc-c like benchmark) now run correctly at lightning speeds.
+
+This feature is powerful AND simple in it's implementation as follows:
+
+  - A small diff patch to PostgreSQL core
+    - a very small postgresql licensed patch is applied to a core postgres source tree before building a PG binary.
+    - the above diff patch adds functionality to support ALTER TABLE t1 COLUMN c1 SET(log_old_value=true)
+    - this patch will be submitted to pg16 core postgres and discussed at the Ottowa Conference.
+
+  - When an update occurs on a 'log_old_value' column
+    - First, the old value for that column is captured to the WAL 
+    - Second, the new value comes in the transaction is above to be applied to a subscriber
+    - Before the new value overwrites the old value, a delta value is created from the above two steps and it is correctly applied
+
+Note that on a conflicting transaction, the delta column will get correctly calculated and applied.  The configured conflict resolution strategy applies to non-delta columns (normally last-update-wins).
+
+As a special saftey-valve feature.  If the user ever needs to re-set a log_old_value column you can temporaily alter the column to "log_old_value" is false.
+
+## Conflicts Overview
+
+In case the node is subscribed to multiple providers, or when local writes
+happen on a subscriber, conflicts can arise for the incoming changes. These
+are automatically detected and can be acted on depending on the configuration.
+
+The configuration of the conflicts resolver is done via the
+`spock.conflict_resolution` setting.
+
+The resolved conflicts are logged using the log level set using
+`spock.conflict_log_level`. This parameter defaults to `LOG`. If set to
+lower level than `log_min_messages` the resolved conflicts won't appear in
+the server log.
+
+## Conflict Configuration options
+
+Some aspects of Spock can be configured using configuration options that
+can be either set in `postgresql.conf` or via `ALTER SYSTEM SET`.
+
+- `spock.conflict_resolution`
+  Sets the resolution method for any detected conflicts between local data
+  and incoming changes.
+
+  Possible values:
+  - `error` - the replication will stop on error if conflict is detected and
+    manual action is needed for resolving
+  - `apply_remote` - always apply the change that's conflicting with local
+    data
+  - `keep_local` - keep the local version of the data and ignore the
+     conflicting change that is coming from the remote node
+  - `last_update_wins` - the version of data with newest commit timestamp
+     will be kept (this can be either local or remote version)
+  - `first_update_wins` - the version of the data with oldest timestamp will
+     be kept (this can be either local or remote version)
+
+  The `keep_local`, `last_update_wins` and `first_update_wins` settings
+  require `track_commit_timestamp` PostgreSQL setting to be enabled.
+
+- `spock.conflict_log_level`
+  Sets the log level for reporting detected conflicts when the
+  `spock.conflict_resolution` is set to anything else than `error`.
+
+  Main use for this setting is to suppress logging of conflicts.
+
+  Possible values are same as for `log_min_messages` PostgreSQL setting.
+
+  The default is `LOG`.
+
+- `spock.batch_inserts`
+  Tells Spock to use batch insert mechanism if possible. Batch mechanism
+  uses PostgreSQL internal batch insert mode which is also used by `COPY`
+  command.
+
 
 ## Requirements
 
@@ -86,11 +162,6 @@ decoding:
     max_replication_slots = 10  # one per node needed on provider node
     max_wal_senders = 10        # one per node needed on provider node
     shared_preload_libraries = 'spock'
-
-If you want to handle
-conflict resolution with last/first update wins (see [Conflicts](#conflicts)),
-you can add this additional option to postgresql.conf:
-
     track_commit_timestamp = on # needed for last/first update wins conflict resolution
 
 `pg_hba.conf` has to allow logical replication connections from
@@ -574,59 +645,6 @@ when `COMMIT` command reports success to client if spock subscription
 name is used in `synchronous_standby_names`. Refer to PostgreSQL
 documentation for more info about how to configure these two variables.
 
-## Conflicts
-
-In case the node is subscribed to multiple providers, or when local writes
-happen on a subscriber, conflicts can arise for the incoming changes. These
-are automatically detected and can be acted on depending on the configuration.
-
-The configuration of the conflicts resolver is done via the
-`spock.conflict_resolution` setting.
-
-The resolved conflicts are logged using the log level set using
-`spock.conflict_log_level`. This parameter defaults to `LOG`. If set to
-lower level than `log_min_messages` the resolved conflicts won't appear in
-the server log.
-
-## Configuration options
-
-Some aspects of Spock can be configured using configuration options that
-can be either set in `postgresql.conf` or via `ALTER SYSTEM SET`.
-
-- `spock.conflict_resolution`
-  Sets the resolution method for any detected conflicts between local data
-  and incoming changes.
-
-  Possible values:
-  - `error` - the replication will stop on error if conflict is detected and
-    manual action is needed for resolving
-  - `apply_remote` - always apply the change that's conflicting with local
-    data
-  - `keep_local` - keep the local version of the data and ignore the
-     conflicting change that is coming from the remote node
-  - `last_update_wins` - the version of data with newest commit timestamp
-     will be kept (this can be either local or remote version)
-  - `first_update_wins` - the version of the data with oldest timestamp will
-     be kept (this can be either local or remote version)
-
-  The `keep_local`, `last_update_wins` and `first_update_wins` settings
-  require `track_commit_timestamp` PostgreSQL setting to be enabled.
-
-- `spock.conflict_log_level`
-  Sets the log level for reporting detected conflicts when the
-  `spock.conflict_resolution` is set to anything else than `error`.
-
-  Main use for this setting is to suppress logging of conflicts.
-
-  Possible values are same as for `log_min_messages` PostgreSQL setting.
-
-  The default is `LOG`.
-
-- `spock.batch_inserts`
-  Tells Spock to use batch insert mechanism if possible. Batch mechanism
-  uses PostgreSQL internal batch insert mode which is also used by `COPY`
-  command.
-
   The batch inserts will improve replication performance of transactions that
   did many inserts into one table. Spock will switch to batch mode when
   transaction did more than 5 INSERTs.
@@ -817,28 +835,5 @@ to large objects, so spock cannot replicate large objects.
 Also any DDL limitations apply so extra care need to be taken when using
 `replicate_ddl_command()`.
 
-## Conflict-Free Delta-Apply Columns
 
-Logical Multi-Master replication can get itself into trouble on running sums (such as a ytd balance).  Unlike other
-solutions, we do NOT have a special data type for this.   Any numeric data type will do (including numeric, float, double precision, int4, int8, etc).
-
-Suppose that a running bank account sum contains a balance of $1,000.   Two transactions "conflict" because they overlap with each from two different multi-master nodes.   Transaction A is a $1,000 withdrawl from the account.  Transaction B is also a $1,000 withdrawl from the account.  The correct balance is $-1,000.  Our Delta-Apply algorithm fixes this problem and highly conflicting wrkloads with this scenario (like a tpc-c like benchmark) now run correctly at lightning speeds.
-
-This feature is powerful AND simple in it's implementation as follows:
-
-  - A small diff patch to PostgreSQL core
-    - a very small postgresql licensed patch is applied to a core postgres source tree before building a PG binary.
-    - the above diff patch adds functionality to support ALTER TABLE t1 COLUMN c1 SET(log_old_value=true)
-    - this patch will be submitted to pg16 core postgres and discussed at the Ottowa Conference.
-
-  - When an update occurs on a 'log_old_value' column
-    - First, the old value for that column is captured to the WAL 
-    - Second, the new value comes in the transaction is above to be applied to a subscriber
-    - Before the new value overwrites the old value, a delta value is created from the above two steps and it is correctly applied
-
-Note that on a conflicting transaction, the delta column will get correctly calculated and applied.  The configured conflict resolution strategy applies to non-delta columns (normally last-update-wins).
-
-As a special saftey-valve feature.  If the user ever needs to re-set a log_old_value column you can temporaily alter the column to "log_old_value" is false.
-
-
-Spock is licensed under the pgEdge Community Licensed (essentialy same as Kafka's https://www.confluent.io/confluent-community-license-faq/) 
+Spock is licensed under the pgEdge Community License (essentialy same as Kafka's https://www.confluent.io/confluent-community-license-faq/) 
