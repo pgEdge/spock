@@ -121,6 +121,7 @@ PG_FUNCTION_INFO_V1(spock_replication_set_add_sequence);
 PG_FUNCTION_INFO_V1(spock_replication_set_add_all_sequences);
 PG_FUNCTION_INFO_V1(spock_replication_set_remove_sequence);
 PG_FUNCTION_INFO_V1(spock_add_partition);
+PG_FUNCTION_INFO_V1(spock_remove_partition);
 
 /* Other manipulation function */
 PG_FUNCTION_INFO_V1(spock_synchronize_sequence);
@@ -1730,7 +1731,8 @@ spock_add_partition(PG_FUNCTION_ARGS)
 	Oid		partition_rel = InvalidOid;
 	SpockLocalNode *local_node;
 	List	   *repsets = NIL;
-	Node	*row_filter = NULL;
+	List	   *reloids = NIL;
+	Node	   *row_filter = NULL;
 	ListCell   *lc;
 	int		nrows = 0;
 
@@ -1760,12 +1762,20 @@ spock_add_partition(PG_FUNCTION_ARGS)
 
 	/* relation is not partitioned. nothing to do here. */
 	if (rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+	{
+		table_close(rel, NoLock);
 		PG_RETURN_INT32(0);
+	}
+
+	/* prepare list of tables/partitions to be removed from replication set */
+	if (OidIsValid(partition_rel))
+		reloids = lappend_oid(reloids, partition_rel);
+	else
+		reloids = find_all_inheritors(parent_reloid, NoLock, NULL);
 
 	foreach (lc, repsets)
 	{
 		SpockRepSet	   *repset = (SpockRepSet *) lfirst(lc);
-		List		   *reloids = NIL;
 		List		   *att_list = NIL;
 		Node		   *reptbl_row_filter = NULL;
 		ListCell	   *rlc;
@@ -1776,11 +1786,6 @@ spock_add_partition(PG_FUNCTION_ARGS)
 		/* use parent's row_filter, if not given. */
 		if (row_filter == NULL)
 			row_filter = reptbl_row_filter;
-
-		if (OidIsValid(partition_rel))
-			reloids = lappend_oid(reloids, partition_rel);
-		else
-			reloids = find_all_inheritors(parent_reloid, NoLock, NULL);
 
 		foreach (rlc, reloids)
 		{
@@ -1800,6 +1805,75 @@ spock_add_partition(PG_FUNCTION_ARGS)
 
 		pfree(reptbl_row_filter);
 		list_free(att_list);
+	}
+
+	table_close(rel, NoLock);
+	PG_RETURN_INT32(nrows);
+}
+
+Datum
+spock_remove_partition(PG_FUNCTION_ARGS)
+{
+	Relation	rel;
+	Oid		parent_reloid = InvalidOid;
+	Oid		partition_rel = InvalidOid;
+	SpockLocalNode *local_node;
+	List	   *repsets = NIL;
+	List	   *reloids = NIL;
+	ListCell   *lc;
+	int		nrows = 0;
+	bool	ignore_err = false;
+
+	if (PG_ARGISNULL(0))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("parent table cannot be NULL")));
+
+	parent_reloid = PG_GETARG_OID(0);
+	rel = table_open(parent_reloid, AccessShareLock);
+
+	/* specific partition */
+	if (!PG_ARGISNULL(1))
+		partition_rel = PG_GETARG_OID(1);
+
+	/* standard check for node. */
+	local_node = check_local_node(true);
+	repsets = get_table_replication_sets(local_node->node->id, parent_reloid);
+
+	/* relation is not partitioned. nothing to do here. */
+	if (rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+	{
+		table_close(rel, NoLock);
+		PG_RETURN_INT32(0);
+	}
+
+	/* prepare list of tables/partitions to be removed from replication set */
+	if (OidIsValid(partition_rel))
+		reloids = lappend_oid(reloids, partition_rel);
+	else
+		reloids = find_all_inheritors(parent_reloid, NoLock, NULL);
+
+	ignore_err = list_length(reloids) > 1;
+	foreach (lc, repsets)
+	{
+		SpockRepSet	   *repset = (SpockRepSet *) lfirst(lc);
+		ListCell	   *rlc;
+
+		foreach (rlc, reloids)
+		{
+			Oid		partoid = lfirst_oid(rlc);
+
+			/* skip parent table being removed. */
+			if (partoid == parent_reloid)
+				continue;
+
+			/*
+			 * don't report error while removing multiple parttions. some of
+			 * them may have been removed.
+			 */
+			replication_set_remove_table(repset->id, partoid, ignore_err);
+			nrows++;
+		}
 	}
 
 	table_close(rel, NoLock);

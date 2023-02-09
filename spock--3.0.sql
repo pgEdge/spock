@@ -170,7 +170,7 @@ CREATE VIEW spock.TABLES AS
         SELECT r.oid, n.nspname, r.relname, r.relreplident
           FROM pg_catalog.pg_class r,
                pg_catalog.pg_namespace n
-         WHERE r.relkind = 'r'
+         WHERE r.relkind IN ('r', 'p')
            AND r.relpersistence = 'p'
            AND n.oid = r.relnamespace
            AND n.nspname !~ '^pg_'
@@ -181,7 +181,7 @@ CREATE VIEW spock.TABLES AS
       FROM pg_catalog.pg_namespace n,
            pg_catalog.pg_class r,
            set_relations s
-     WHERE r.relkind = 'r'
+     WHERE r.relkind IN ('r', 'p')
        AND n.oid = r.relnamespace
        AND r.oid = s.set_reloid
      UNION
@@ -218,6 +218,8 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicat
 CREATE FUNCTION spock.add_partition(parent regclass, partition regclass default NULL,
     row_filter text default NULL)
 RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_add_partition';
+CREATE FUNCTION spock.remove_partition(parent regclass, partition regclass default NULL)
+RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_remove_partition';
 
 CREATE FUNCTION spock.alter_subscription_synchronize(subscription_name name, truncate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';
