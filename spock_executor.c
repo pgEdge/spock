@@ -21,6 +21,7 @@
 #include "catalog/dependency.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
+#include "catalog/pg_authid_d.h"
 #include "catalog/pg_extension.h"
 #include "catalog/pg_type.h"
 
@@ -248,6 +249,9 @@ spock_object_access(ObjectAccessType access,
 						int subId,
 						void *arg)
 {
+	Oid		save_userid = 0;
+	int		save_sec_context = 0;
+
 	if (next_object_access_hook)
 		(*next_object_access_hook) (access, classId, objectId, subId, arg);
 
@@ -287,9 +291,20 @@ spock_object_access(ObjectAccessType access,
 		if (dropping_spock_obj)
 			return;
 
-		/* No local node? */
-		if (!get_local_node(false, true))
+		/*
+		 * Check that we have a local node. We need to elevate access
+		 * because this is called as an executor DROP hook under the
+		 * session user, who not necessarily has access permission to
+		 * Spock extension objects.
+		 */
+		GetUserIdAndSecContext(&save_userid, &save_sec_context);
+		SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
+							   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+		if(!get_local_node(false, true))
+		{
+			SetUserIdAndSecContext(save_userid, save_sec_context);
 			return;
+		}
 
 		ObjectAddressSubSet(object, classId, objectId, subId);
 
@@ -299,6 +314,9 @@ spock_object_access(ObjectAccessType access,
 			behavior = spock_lastDropBehavior;
 
 		spock_checkDependency(&object, behavior);
+
+		/* Restore previous session privileges */
+		SetUserIdAndSecContext(save_userid, save_sec_context);
 	}
 }
 
