@@ -1,4 +1,4 @@
-# Spock - Logical & Multi-Active (multi-master) Replication w/ Conflict Resolution & Avoidance
+# Spock: Multi-Active Replication with Conflict Resolution & Avoidance
 
 
 This SPOCK extension provides logical & multi-master bi-directional replication for PostgreSQL 15+. 
@@ -13,25 +13,24 @@ Our first version is 3.0.x and includes the following important enhancements:
 * Better management & monitoring stats and integration
 * A 'pii' table for making it easy for personably identifiable data to be kept in country
 
-We use the following terms, borrowed from [Jan's](https://linkedin/jan_wieck) [Slony-I](https://slony.info), to describe data streams between nodes:
+We use the following terms, borrowed from [Jan's](https://www.linkedin.com/in/jan-wieck-3140812) well known [Slony-I](https://slony.info), to describe data streams between nodes:
 * Nodes - Postgres database instances
 * Providers and Subscribers - roles taken by Nodes
 * Replication Set - a collection of tables
 
 Use cases supported are:
 * Asynchronous Bi-Directional Replication with conflict resolution
-* Upgrades between major versions (given the above restrictions)
+* Upgrades between major versions
 * Full database replication
 * Selective replication of sets of tables using replication sets
 * Selective replication of table rows at either publisher or subscriber side (row_filter)
+* Selective Replication of Partitioned tables
 * Selective replication of table columns at publisher side
 * Data gather/merge from multiple upstream servers
 
 Architectural details:
-* Spock works on a per-database level, not whole server level like
-  physical streaming replication
-* One Provider may feed multiple Subscribers without incurring additional disk
-  write overhead
+* Spock works on a per-database level, not whole server level likephysical streaming replication
+* One Provider may feed multiple Subscribers without incurring additional disk write overhead
 * One Subscriber can merge changes from several origins and detect conflict
   between changes with automatic and configurable conflict resolution (some,
   but not all aspects required for multi-master).
