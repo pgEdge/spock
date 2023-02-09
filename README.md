@@ -7,12 +7,13 @@ We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [B
 
 Our first version is 3.0.x and includes the following important enhancements:
 
-* Support for Asynchronous Active-Active Replication with conflict resolution
+* Support for Asynchronous Multi-Active Replication with conflict resolution
 * Conflict-free Delta-Apply Columns
+* Replication of Partitioned Tables (to help robustly support Geo-Sharding) 
 * Better error handling for Conflict Resolution
 * Better management & monitoring stats and integration
 * A 'pii' table for making it easy for personably identifiable data to be kept in country
-* Support for pg15
+
 
 
 We use the following terms, borrowed from [Slony-I](https://slony.info), to describe data streams between nodes:
