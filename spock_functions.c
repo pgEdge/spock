@@ -24,6 +24,7 @@
 #include "catalog/heap.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_authid_d.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
 
@@ -1975,6 +1976,8 @@ spock_queue_truncate(PG_FUNCTION_ARGS)
 	const char	   *funcname = "queue_truncate";
 	MemoryContext	oldcontext;
 	SpockLocalNode *local_node;
+	Oid				save_userid = 0;
+	int				save_sec_context = 0;
 
 	/* Return if this function was called from apply process. */
 	if (MySpockWorker)
@@ -1994,8 +1997,18 @@ spock_queue_truncate(PG_FUNCTION_ARGS)
 				 errmsg("function \"%s\" must be fired AFTER TRUNCATE",
 						funcname)));
 
+	/*
+	 * Elevate access level to read spock schema objects.
+	 */
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
+						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+
 	/* If this is not spock node, don't do anything. */
 	local_node = get_local_node(false, true);
+
+	SetUserIdAndSecContext(save_userid, save_sec_context);
+
 	if (!local_node)
 		PG_RETURN_VOID();
 

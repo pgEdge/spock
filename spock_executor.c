@@ -139,11 +139,22 @@ spock_finish_truncate(void)
 {
 	ListCell	   *tlc;
 	SpockLocalNode *local_node;
+	Oid				session_userid = GetUserId();
+	Oid				save_userid = 0;
+	int				save_sec_context = 0;
 
-	/* If this is not spock node, don't do anything. */
+	/* Elevate permissions to access spock objects */
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
+						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+
+	/* If this is not a spock node, don't do anything. */
 	local_node = get_local_node(false, true);
 	if (!local_node || !list_length(spock_truncated_tables))
+	{
+		SetUserIdAndSecContext(save_userid, save_sec_context);
 		return;
+	}
 
 	foreach (tlc, spock_truncated_tables)
 	{
@@ -179,10 +190,13 @@ spock_finish_truncate(void)
 			}
 
 			/* Queue the truncate for replication. */
-			queue_message(repset_names, GetUserId(),
+			queue_message(repset_names, session_userid,
 						  QUEUE_COMMAND_TYPE_TRUNCATE, json.data);
 		}
 	}
+
+	/* Restore original session permissions */
+	SetUserIdAndSecContext(save_userid, save_sec_context);
 
 	list_free(spock_truncated_tables);
 	spock_truncated_tables = NIL;
