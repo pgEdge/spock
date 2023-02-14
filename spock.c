@@ -94,6 +94,7 @@ int		spock_ctt_prune_interval;
 bool	spock_batch_inserts = true;
 static char *spock_temp_directory_config;
 bool	spock_ch_stats = true;
+static char *spock_country_code;
 
 void _PG_init(void);
 void spock_supervisor_main(Datum main_arg);
@@ -895,6 +896,16 @@ _PG_init(void)
 							   PGC_BACKEND,
 							   0,
 							   NULL, NULL, NULL);
+
+	DefineCustomStringVariable("spock.country",
+							   "Sets the country code",
+							   NULL,
+							   &spock_country_code,
+							   "??", PGC_SIGHUP,
+							   0,
+							   NULL,
+							   NULL,
+							   NULL);
 	if (IsBinaryUpgrade)
 		return;
 

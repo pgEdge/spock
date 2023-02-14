@@ -275,6 +275,10 @@ LANGUAGE c AS 'MODULE_PATHNAME';
 CREATE FUNCTION spock_min_proto_version() RETURNS integer
 LANGUAGE c AS 'MODULE_PATHNAME';
 
+CREATE FUNCTION spock.get_country() RETURNS text
+LANGUAGE sql AS
+$$ SELECT current_setting('spock.country') $$;
+
 CREATE FUNCTION
 spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
 RETURNS void LANGUAGE c AS 'spock','spock_wait_slot_confirm_lsn';
