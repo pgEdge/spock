@@ -356,7 +356,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
 
 - `spock.wait_for_subscription_sync_complete(subscription_name name)`
 
-   Wait for a subscription or to finish synchronization after a
+   Wait for a subscription to finish synchronization after a
    `spock.create_subscription` or `spock.alter_subscription_synchronize`.
 
   This function waits until the subscription's initial schema/data sync,
