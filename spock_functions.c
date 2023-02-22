@@ -2059,7 +2059,7 @@ spock_node_info(PG_FUNCTION_ARGS)
 	values[1] = CStringGetTextDatum(node->node->name);
 	values[2] = CStringGetTextDatum(sysid);
 	values[3] = CStringGetTextDatum(get_database_name(MyDatabaseId));
-	values[4] = CStringGetTextDatum(stringlist_to_identifierstr(repsets));
+	values[4] = CStringGetTextDatum(repsetslist_to_identifierstr(repsets));
 
 	htup = heap_form_tuple(tupdesc, values, nulls);
 

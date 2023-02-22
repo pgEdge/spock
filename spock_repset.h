@@ -90,7 +90,8 @@ extern Oid get_replication_set_rel_oid(void);
 extern Oid get_replication_set_table_rel_oid(void);
 extern Oid get_replication_set_seq_rel_oid(void);
 
-extern char *stringlist_to_identifierstr(List *repsets);
+extern char *stringlist_to_identifierstr(List *strings);
+extern char *repsetslist_to_identifierstr(List *repsets);
 extern int get_att_num_by_name(TupleDesc desc, const char *attname);
 
 #endif /* SPOCK_REPSET_H */

@@ -1524,6 +1524,38 @@ stringlist_to_identifierstr(List *strings)
 	return res.data;
 }
 
+/*
+ * Given a List of SpockRepSet, return it as single comma separated
+ * string, quoting identifiers as needed.
+ *
+ * This is essentially the reverse of SplitIdentifierString.
+ *
+ * The caller should free the result.
+ */
+char *
+repsetslist_to_identifierstr(List *repsets)
+{
+	ListCell *lc;
+	StringInfoData res;
+	bool first = true;
+
+	initStringInfo(&res);
+
+	foreach (lc, repsets)
+	{
+		SpockRepSet *repset = lfirst(lc);
+
+		if (first)
+			first = false;
+		else
+			appendStringInfoChar(&res, ',');
+
+		appendStringInfoString(&res, quote_identifier(repset->name));
+	}
+
+	return res.data;
+}
+
 int
 get_att_num_by_name(TupleDesc desc, const char *attname)
 {
