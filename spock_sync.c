@@ -601,7 +601,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	}
 	else
 	{
-		if (remoterel->isPartitioned)
+		if (remoterel->relkind == RELKIND_PARTITIONED_TABLE)
 		{
 			/* use COPY(SELECT...) for partitioned tables. */
 			appendStringInfo(&query, "(SELECT %s FROM %s.%s) ",
@@ -727,7 +727,13 @@ copy_tables_data(char *sub_name, const char *origin_dsn,
 		remoterel = pg_logical_get_remote_repset_table(origin_conn, rv,
 													   replication_sets);
 
-		copy_table_data(origin_conn, target_conn, remoterel, replication_sets);
+		/*
+		 * In case of table partitioning, we synchronize the partitioned
+		 * (parent) table and skip the partitions. Other tables are synchronized
+		 * normally.
+		 */
+		if (!remoterel->ispartition)
+			copy_table_data(origin_conn, target_conn, remoterel, replication_sets);
 
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -774,7 +780,13 @@ copy_replication_sets_data(char *sub_name, const char *origin_dsn,
 	{
 		SpockRemoteRel	*remoterel = lfirst(lc);
 
-		copy_table_data(origin_conn, target_conn, remoterel, replication_sets);
+		/*
+		 * In case of table partitioning, we synchronize the partitioned
+		 * (parent) table and skip the partitions. Other tables are synchronized
+		 * normally.
+		 */
+		if (!remoterel->ispartition)
+			copy_table_data(origin_conn, target_conn, remoterel, replication_sets);
 
 		CHECK_FOR_INTERRUPTS();
 	}

@@ -45,7 +45,6 @@ typedef struct SpockTableRepInfo
 										   otherwise each replicated column
 										   is a member */
 	List		   *row_filter;			/* compiled row_filter nodes */
-	bool		   is_partitioned;		/* if a tables is partitioned */
 } SpockTableRepInfo;
 
 /* forward declaration */

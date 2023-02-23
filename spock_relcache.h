@@ -24,7 +24,8 @@ typedef struct SpockRemoteRel
 
 	/* Only returned by info function, not protocol. */
 	bool		hasRowFilter;
-	bool		isPartitioned;
+	char		relkind;
+	bool		ispartition;
 } SpockRemoteRel;
 
 typedef struct SpockRelation

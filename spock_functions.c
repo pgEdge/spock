@@ -1440,7 +1440,8 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 
 		replication_set_add_table(repset->id, partoid, att_list, row_filter);
 
-		if (synchronize)
+		/* In case of partitions, only synchronize the parent table. */
+		if (synchronize && (partoid == reloid))
 		{
 			/* It's easier to construct json manually than via Jsonb API... */
 			initStringInfo(&json);
@@ -1567,20 +1568,26 @@ spock_replication_set_add_all_relations(Name repset_name,
 			/*
 			 * Only add logged relations which are not system relations
 			 * (catalog, toast).
+			 * Include partitioned tables as well.
 			 */
-			if (reltup->relkind != relkind ||
+			if ((reltup->relkind != RELKIND_PARTITIONED_TABLE &&
+				 reltup->relkind != relkind) ||
 				reltup->relpersistence != RELPERSISTENCE_PERMANENT ||
 				IsSystemClass(reloid, reltup))
 				continue;
 
 			if (!list_member_oid(existing_relations, reloid))
 			{
-				if (relkind == RELKIND_RELATION)
+				bool	ispartition;
+
+				if (relkind == RELKIND_RELATION || relkind == RELKIND_PARTITIONED_TABLE)
 					replication_set_add_table(repset->id, reloid, NIL, NULL);
 				else
 					replication_set_add_seq(repset->id, reloid);
 
-				if (synchronize)
+				/* don't synchronize the partitions */
+				ispartition = get_rel_relispartition(reloid);
+				if (synchronize && !ispartition)
 				{
 					char			   *relname;
 					StringInfoData		json;
@@ -2084,9 +2091,8 @@ spock_show_repset_table_info(PG_FUNCTION_ARGS)
 	TupleDesc	rettupdesc;
 	int			i;
 	List	   *att_list = NIL;
-	bool		is_partitioned = false;
-	Datum		values[6];
-	bool		nulls[6];
+	Datum		values[7];
+	bool		nulls[7];
 	char	   *nspname;
 	char	   *relname;
 	HeapTuple	htup;
@@ -2132,9 +2138,6 @@ spock_show_repset_table_info(PG_FUNCTION_ARGS)
 		att_list = lappend(att_list, NameStr(att->attname));
 	}
 
-	/* is partitioned? */
-	is_partitioned = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
-
 	/* And now build the result. */
 	memset(nulls, false, sizeof(nulls));
 	values[0] = ObjectIdGetDatum(RelationGetRelid(rel));
@@ -2142,7 +2145,8 @@ spock_show_repset_table_info(PG_FUNCTION_ARGS)
 	values[2] = CStringGetTextDatum(relname);
 	values[3] = PointerGetDatum(strlist_to_textarray(att_list));
 	values[4] = BoolGetDatum(list_length(tableinfo->row_filter) > 0);
-	values[5] = BoolGetDatum(is_partitioned);
+	values[5] = CharGetDatum(rel->rd_rel->relkind);
+	values[6] = BoolGetDatum(rel->rd_rel->relispartition);
 
 	htup = heap_form_tuple(rettupdesc, values, nulls);
 
