@@ -724,7 +724,7 @@ copy_tables_data(char *sub_name, const char *origin_dsn,
 		RangeVar	*rv = lfirst(lc);
 		SpockRemoteRel	*remoterel;
 
-		remoterel = pg_logical_get_remote_repset_table(origin_conn, rv,
+		remoterel = spock_get_remote_repset_table(origin_conn, rv,
 													   replication_sets);
 
 		/*
@@ -768,7 +768,7 @@ copy_replication_sets_data(char *sub_name, const char *origin_dsn,
 	start_copy_origin_tx(origin_conn, origin_snapshot);
 
 	/* Get tables to copy from origin node. */
-	tables = pg_logical_get_remote_repset_tables(origin_conn,
+	tables = spock_get_remote_repset_tables(origin_conn,
 												 replication_sets);
 
 	/* Connect to target node. */

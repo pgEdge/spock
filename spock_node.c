@@ -458,7 +458,7 @@ get_local_node(bool for_update, bool missing_ok)
  * Add new node interface to catalog.
  */
 void
-create_node_interface(PGlogicalInterface *nodeif)
+create_node_interface(SpockInterface *nodeif)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -580,7 +580,7 @@ drop_node_interfaces(Oid nodeid)
 /*
  * Get the node interface from the catalog.
  */
-PGlogicalInterface *
+SpockInterface *
 get_node_interface(Oid ifid)
 {
 	RangeVar	   *rv;
@@ -589,7 +589,7 @@ get_node_interface(Oid ifid)
 	HeapTuple		tuple;
 	ScanKeyData		key[1];
 	NodeInterfaceTuple *iftup;
-	PGlogicalInterface *nodeif;
+	SpockInterface *nodeif;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -607,7 +607,7 @@ get_node_interface(Oid ifid)
 		elog(ERROR, "node interface %u not found", ifid);
 
 	iftup = (NodeInterfaceTuple *) GETSTRUCT(tuple);
-	nodeif = (PGlogicalInterface *) palloc(sizeof(PGlogicalInterface));
+	nodeif = (SpockInterface *) palloc(sizeof(SpockInterface));
 	nodeif->id = iftup->if_id;
 	nodeif->name = pstrdup(NameStr(iftup->if_name));
 	nodeif->nodeid = iftup->if_nodeid;
@@ -623,7 +623,7 @@ get_node_interface(Oid ifid)
 /*
  * Get the node interface by name.
  */
-PGlogicalInterface *
+SpockInterface *
 get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 {
 	RangeVar	   *rv;
@@ -632,7 +632,7 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 	HeapTuple		tuple;
 	ScanKeyData		key[2];
 	NodeInterfaceTuple *iftup;
-	PGlogicalInterface *nodeif;
+	SpockInterface *nodeif;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -665,7 +665,7 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 	}
 
 	iftup = (NodeInterfaceTuple *) GETSTRUCT(tuple);
-	nodeif = (PGlogicalInterface *) palloc(sizeof(PGlogicalInterface));
+	nodeif = (SpockInterface *) palloc(sizeof(SpockInterface));
 	nodeif->id = iftup->if_id;
 	nodeif->name = pstrdup(NameStr(iftup->if_name));
 	nodeif->nodeid = iftup->if_nodeid;

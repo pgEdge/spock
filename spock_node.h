@@ -20,18 +20,18 @@ typedef struct SpockNode
 	char	   *name;
 } SpockNode;
 
-typedef struct PGlogicalInterface
+typedef struct SpockInterface
 {
 	Oid				id;
 	const char	   *name;
 	Oid				nodeid;
 	const char	   *dsn;
-} PGlogicalInterface;
+} SpockInterface;
 
 typedef struct SpockLocalNode
 {
 	SpockNode	*node;
-	PGlogicalInterface *node_if;
+	SpockInterface *node_if;
 } SpockLocalNode;
 
 typedef struct SpockSubscription
@@ -40,8 +40,8 @@ typedef struct SpockSubscription
 	char	   *name;
 	SpockNode	   *origin;
    	SpockNode	   *target;
-	PGlogicalInterface *origin_if;
-	PGlogicalInterface *target_if;
+	SpockInterface *origin_if;
+	SpockInterface *target_if;
 	bool		enabled;
 	Interval   *apply_delay;
 	char	   *slot_name;
@@ -56,11 +56,11 @@ extern void drop_node(Oid nodeid);
 extern SpockNode *get_node(Oid nodeid);
 extern SpockNode *get_node_by_name(const char *name, bool missing_ok);
 
-extern void create_node_interface(PGlogicalInterface *node);
+extern void create_node_interface(SpockInterface *node);
 extern void drop_node_interface(Oid ifid);
 extern void drop_node_interfaces(Oid nodeid);
-extern PGlogicalInterface *get_node_interface(Oid ifid);
-extern PGlogicalInterface *get_node_interface_by_name(Oid nodeid,
+extern SpockInterface *get_node_interface(Oid ifid);
+extern SpockInterface *get_node_interface_by_name(Oid nodeid,
 													  const char *name,
 													  bool missing_ok);
 

@@ -14,9 +14,9 @@
 
 #include "libpq-fe.h"
 
-extern List *pg_logical_get_remote_repset_tables(PGconn *conn,
+extern List *spock_get_remote_repset_tables(PGconn *conn,
 									List *replication_sets);
-extern SpockRemoteRel *pg_logical_get_remote_repset_table(PGconn *conn,
+extern SpockRemoteRel *spock_get_remote_repset_table(PGconn *conn,
 								  RangeVar *rv, List *replication_sets);
 
 extern bool spock_remote_slot_active(PGconn *conn, const char *slot_name);

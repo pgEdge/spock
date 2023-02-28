@@ -186,7 +186,7 @@ spock_create_node(PG_FUNCTION_ARGS)
 	char			   *node_name = NameStr(*PG_GETARG_NAME(0));
 	char			   *node_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	SpockNode		node;
-	PGlogicalInterface	nodeif;
+	SpockInterface	nodeif;
 	SpockRepSet		repset;
 
 	node.id = InvalidOid;
@@ -324,7 +324,7 @@ spock_alter_node_add_interface(PG_FUNCTION_ARGS)
 	char	   *if_name = NameStr(*PG_GETARG_NAME(1));
 	char	   *if_dsn = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	SpockNode	   *node;
-	PGlogicalInterface *oldif,
+	SpockInterface *oldif,
 						newif;
 
 	node = get_node_by_name(node_name, false);
@@ -358,7 +358,7 @@ spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 	char	   *node_name = NameStr(*PG_GETARG_NAME(0));
 	char	   *if_name = NameStr(*PG_GETARG_NAME(1));
 	SpockNode	   *node;
-	PGlogicalInterface *oldif;
+	SpockInterface *oldif;
 	List		   *other_subs;
 	ListCell	   *lc;
 
@@ -412,9 +412,9 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	SpockSyncStatus		sync;
 	SpockNode			origin;
 	SpockNode		   *existing_origin;
-	PGlogicalInterface		originif;
+	SpockInterface		originif;
 	SpockLocalNode     *localnode;
-	PGlogicalInterface		targetif;
+	SpockInterface		targetif;
 	List				   *replication_sets;
 	List				   *other_subs;
 	ListCell			   *lc;
@@ -457,7 +457,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		PGlogicalInterface *existingif;
+		SpockInterface *existingif;
 
 		existingif = get_node_interface_by_name(origin.id, origin.name, false);
 		if (strcmp(existingif->dsn, provider_dsn) != 0)
@@ -466,7 +466,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 					 errmsg("dsn \"%s\" points to existing node \"%s\" with different dsn \"%s\"",
 					 provider_dsn, origin.name, existingif->dsn)));
 
-		memcpy(&originif, existingif, sizeof(PGlogicalInterface));
+		memcpy(&originif, existingif, sizeof(SpockInterface));
 	}
 
 	/*
@@ -727,7 +727,7 @@ spock_alter_subscription_interface(PG_FUNCTION_ARGS)
 	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	char				   *if_name = NameStr(*PG_GETARG_NAME(1));
 	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
-	PGlogicalInterface	   *new_if;
+	SpockInterface	   *new_if;
 
 	/* XXX: Only used for locking purposes. */
 	(void) get_local_node(true, false);
@@ -813,7 +813,7 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 
 	/* Read table list from provider. */
 	conn = spock_connect(sub->origin_if->dsn, sub_name, "sync");
-	remote_tables = pg_logical_get_remote_repset_tables(conn, sub->replication_sets);
+	remote_tables = spock_get_remote_repset_tables(conn, sub->replication_sets);
 	PQfinish(conn);
 
 	local_tables = get_subscription_tables(sub->id);

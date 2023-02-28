@@ -33,7 +33,7 @@
  * Fetch list of tables that are grouped in specified replication sets.
  */
 List *
-pg_logical_get_remote_repset_tables(PGconn *conn, List *replication_sets)
+spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 {
 	PGresult   *res;
 	int			i;
@@ -110,7 +110,7 @@ pg_logical_get_remote_repset_tables(PGconn *conn, List *replication_sets)
  * Like above but for one table.
  */
 SpockRemoteRel *
-pg_logical_get_remote_repset_table(PGconn *conn, RangeVar *rv,
+spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 								   List *replication_sets)
 {
 	SpockRemoteRel *remoterel = palloc0(sizeof(SpockRemoteRel));
