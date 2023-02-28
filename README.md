@@ -835,4 +835,4 @@ Also any DDL limitations apply so extra care need to be taken when using
 `replicate_ddl_command()`.
 
 
-Spock is licensed under the pgEdge Community License (essentialy same as Kafka's https://www.confluent.io/confluent-community-license-faq/) 
+Spock is licensed under the [pgEdge Community License](LICENSE.md]
