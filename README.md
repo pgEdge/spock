@@ -834,5 +834,4 @@ to large objects, so spock cannot replicate large objects.
 Also any DDL limitations apply so extra care need to be taken when using
 `replicate_ddl_command()`.
 
-
-Spock is licensed under the [pgEdge Community License](LICENSE.md]
+Spock is licensed under the [pgEdge Community License](LICENSE.md)
