@@ -180,7 +180,7 @@ Now create the provider node:
 
 Add all tables in `public` schema to the `default` replication set.
 
-    SELECT spock.replication_set_add_all_tables('default', ARRAY['public']);
+    SELECT spock.repset_add_all_tables('default', ARRAY['public']);
 
 Optionally you can also create additional replication sets and add tables to
 them (see [Replication sets](#replication-sets)).
@@ -201,12 +201,12 @@ subscriber node must be created:
 And finally on the subscriber node you can create the subscription which will
 start synchronization and replication process in the background:
 
-    SELECT spock.create_subscription(
-        subscription_name := 'subscription1',
+    SELECT spock.create_sub(
+        sub_name := 'subscription1',
         provider_dsn := 'host=providerhost port=5432 dbname=db'
     );
 
-    SELECT spock.wait_for_subscription_sync_complete('subscription1');
+    SELECT spock.wait_for_sub_sync('subscription1');
 
 ### Creating subscriber nodes with base backups
 
@@ -215,7 +215,7 @@ supports creating a subscriber by cloning the provider with `pg_basebackup` and
 starting it up as a spock subscriber. This is done with the
 `spock_create_subscriber` tool; see the `--help` output.
 
-Unlike `spock.create_subscription`'s data sync options, this clone ignores
+Unlike `spock.create_sub`'s data sync options, this clone ignores
 replication sets and copies all tables on all databases. However, it's often
 much faster, especially over high-bandwidth links.
 
@@ -261,20 +261,20 @@ Nodes can be added and removed dynamically using the SQL interfaces.
 
 ### Subscription management
 
-- `spock.create_subscription(subscription_name name, provider_dsn text,
-  replication_sets text[], synchronize_structure boolean,
-  synchronize_data boolean, forward_origins text[], apply_delay interval)`
+- `spock.create_sub(sub_name name, provider_dsn text,
+  repsets text[], sync_structure boolean,
+  sync_data boolean, forward_origins text[], apply_delay interval)`
   Creates a subscription from current node to the provider node. Command does
   not block, just initiates the action.
 
   Parameters:
-  - `subscription_name` - name of the subscription, must be unique
+  - `sub_name` - name of the subscription, must be unique
   - `provider_dsn` - connection string to a provider
-  - `replication_sets` - array of replication sets to subscribe to, these must
+  - `repsets` - array of replication sets to subscribe to, these must
     already exist, default is "{default,default_insert_only,ddl_sql}"
-  - `synchronize_structure` - specifies if to synchronize structure from
+  - `sync_structure` - specifies if to synchronize structure from
     provider to the subscriber, default false
-  - `synchronize_data` - specifies if to synchronize data from provider to
+  - `sync_data` - specifies if to synchronize data from provider to
     the subscriber, default true
   - `forward_origins` - array of origin names to forward, currently only
     supported values are empty array meaning don't forward any changes
@@ -287,77 +287,77 @@ Nodes can be added and removed dynamically using the SQL interfaces.
     change the type of a replicated column on the subscriber), default
     is false
 
-  The `subscription_name` is used as `application_name` by the replication
+  The `sub_name` is used as `application_name` by the replication
   connection. This means that it's visible in the `pg_stat_replication`
   monitoring view. It can also be used in `synchronous_standby_names` when
   spock is used as part of
   [synchronous replication](#synchronous-replication) setup.
 
-  Use `spock.wait_for_subscription_sync_complete(sub_name)` to wait for the
+  Use `spock.wait_for_sub_sync(sub_name)` to wait for the
   subscription to asynchronously start replicating and complete any needed
   schema and/or data sync.
 
-- `spock.drop_subscription(subscription_name name, ifexists bool)`
+- `spock.drop_sub(sub_name name, ifexists bool)`
   Disconnects the subscription and removes it from the catalog.
 
   Parameters:
-  - `subscription_name` - name of the existing subscription
+  - `sub_name` - name of the existing subscription
   - `ifexists` - if true, error is not thrown when subscription does not exist,
     default is false
 
-- `spock.alter_subscription_disable(subscription_name name, immediate bool)`
+- `spock.alter_sub_disable(sub_name name, immediate bool)`
    Disables a subscription and disconnects it from the provider.
 
   Parameters:
-  - `subscription_name` - name of the existing subscription
+  - `sub_name` - name of the existing subscription
   - `immediate` - if true, the subscription is stopped immediately, otherwise
     it will be only stopped at the end of current transaction, default is false
 
-- `spock.alter_subscription_enable(subscription_name name, immediate bool)`
+- `spock.alter_sub_enable(sub_name name, immediate bool)`
   Enables disabled subscription.
 
   Parameters:
-  - `subscription_name` - name of the existing subscription
+  - `sub_name` - name of the existing subscription
   - `immediate` - if true, the subscription is started immediately, otherwise
     it will be only started at the end of current transaction, default is false
 
-- `spock.alter_subscription_interface(subscription_name name, interface_name name)`
+- `spock.alter_sub_interface(sub_name name, interface_name name)`
   Switch the subscription to use different interface to connect to provider
   node.
 
   Parameters:
-  - `subscription_name` - name of an existing subscription
+  - `sub_name` - name of an existing subscription
   - `interface_name` - name of an existing interface of the current provider
     node
 
-- `spock.alter_subscription_synchronize(subscription_name name, truncate bool)`
+- `spock.alter_sub_synch(sub_name name, truncate bool)`
   All unsynchronized tables in all sets are synchronized in a single operation.
   Tables are copied and synchronized one by one. Command does not block, just
-  initiates the action. Use `spock.wait_for_subscription_sync_complete`
+  initiates the action. Use `spock.wait_for_sub_sync`
   to wait for completion.
 
   Parameters:
-  - `subscription_name` - name of the existing subscription
+  - `sub_name` - name of the existing subscription
   - `truncate` - if true, tables will be truncated before copy, default false
 
-- `spock.alter_subscription_resynchronize_table(subscription_name name,
+- `spock.alter_sub_resync_table(sub_name name,
   relation regclass)`
   Resynchronize one existing table. The table may not be the target of any
   foreign key constraints.
   **WARNING: This function will truncate the table immediately, and only then
   begin synchronising it, so it will be empty while being synced**
 
-  Does not block, use `spock.wait_for_table_sync_complete` to wait for
+  Does not block, use `spock.wait_for_table_sync` to wait for
   completion.
 
   Parameters:
-  - `subscription_name` - name of the existing subscription
+  - `sub_name` - name of the existing subscription
   - `relation` - name of existing table, optionally qualified
 
-- `spock.wait_for_subscription_sync_complete(subscription_name name)`
+- `spock.wait_for_sub_sync(sub_name name)`
 
    Wait for a subscription to finish synchronization after a
-   `spock.create_subscription` or `spock.alter_subscription_synchronize`.
+   `spock.create_sub` or `spock.alter_sub_synch`.
 
   This function waits until the subscription's initial schema/data sync,
   if any, are done, and until any tables pending individual resynchronisation
@@ -365,11 +365,11 @@ Nodes can be added and removed dynamically using the SQL interfaces.
 
   For best results, run `SELECT spock.wait_slot_confirm_lsn(NULL, NULL)` on the
   provider after any replication set changes that requested resyncs, and only
-  then call `spock.wait_for_subscription_sync_complete` on the subscriber.
+  then call `spock.wait_for_sub_sync` on the subscriber.
 
-- `spock.wait_for_table_sync_complete(subscription_name name, relation regclass)`
+- `spock.wait_for_table_sync(sub_name name, relation regclass)`
 
-  Same as `spock.wait_for_subscription_sync_complete`, but waits only for
+  Same as `spock.wait_for_sub_sync`, but waits only for
   the subscription's initial sync and the named table. Other tables pending
   resynchronisation are ignored.
 
@@ -389,38 +389,38 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   This function is very useful to ensure all subscribers have received changes
   up to a certain point on the provider.
 
-- `spock.show_subscription_status(subscription_name name)`
+- `spock.show_sub_status(sub_name name)`
   Shows status and basic information about subscription.
 
   Parameters:
-  - `subscription_name` - optional name of the existing subscription, when no
+  - `sub_name` - optional name of the existing subscription, when no
     name was provided, the function will show status for all subscriptions on
     local node
 
-- `spock.show_subscription_table(subscription_name name,
+- `spock.show_sub_table(sub_name name,
   relation regclass)`
   Shows synchronization status of a table.
 
   Parameters:
-  - `subscription_name` - name of the existing subscription
+  - `sub_name` - name of the existing subscription
   - `relation` - name of existing table, optionally qualified
 
-- `spock.alter_subscription_add_replication_set(subscription_name name,
-  replication_set name)`
+- `spock.alter_sub_add_repset(sub_name name,
+  repset name)`
   Adds one replication set into a subscriber. Does not synchronize, only
   activates consumption of events.
 
   Parameters:
-  - `subscription_name` - name of the existing subscription
-  - `replication_set` - name of replication set to add
+  - `sub_name` - name of the existing subscription
+  - `repset` - name of replication set to add
 
-- `spock.alter_subscription_remove_replication_set(subscription_name name,
-  replication_set name)`
+- `spock.alter_sub_remove_repset(sub_name name,
+  repset name)`
   Removes one replication set from a subscriber.
 
   Parameters:
-  - `subscription_name` - name of the existing subscription
-  - `replication_set` - name of replication set to remove
+  - `sub_name` - name of the existing subscription
+  - `repset` - name of replication set to remove
 
 
 There is also a `postgresql.conf` parameter,
@@ -454,7 +454,7 @@ The "ddl_sql" replication set is defined to replicate schema changes specified b
 
 The following functions are provided for managing the replication sets:
 
-- `spock.create_replication_set(set_name name, replicate_insert bool, replicate_update bool, replicate_delete bool, replicate_truncate bool)`
+- `spock.create_repset(set_name name, replicate_insert bool, replicate_update bool, replicate_delete bool, replicate_truncate bool)`
   This function creates a new replication set.
 
   Parameters:
@@ -464,7 +464,7 @@ The following functions are provided for managing the replication sets:
   - `replicate_delete` - specifies if `DELETE` is replicated, default true
   - `replicate_truncate` - specifies if `TRUNCATE` is replicated, default true
 
-- `spock.alter_replication_set(set_name name, replicate_inserts bool, replicate_updates bool, replicate_deletes bool, replicate_truncate bool)`
+- `spock.alter_repset(set_name name, replicate_inserts bool, replicate_updates bool, replicate_deletes bool, replicate_truncate bool)`
   This function changes the parameters of the existing replication set.
 
   Parameters:
@@ -474,19 +474,19 @@ The following functions are provided for managing the replication sets:
   - `replicate_delete` - specifies if `DELETE` is replicated, default true
   - `replicate_truncate` - specifies if `TRUNCATE` is replicated, default true
 
-- `spock.drop_replication_set(set_name text)`
+- `spock.drop_repset(set_name text)`
   Removes the replication set.
 
   Parameters:
   - `set_name` - name of the existing replication set
 
-- `spock.replication_set_add_table(set_name name, relation regclass, synchronize_data boolean, columns text[], row_filter text)`
+- `spock.repset_add_table(set_name name, relation regclass, sync_data boolean, columns text[], row_filter text)`
   Adds a table to replication set.
 
   Parameters:
   - `set_name` - name of the existing replication set
   - `relation` - name or OID of the table to be added to the set
-  - `synchronize_data` - if true, the table data is synchronized on all
+  - `sync_data` - if true, the table data is synchronized on all
     subscribers which are subscribed to given replication set, default false
   - `columns` - list of columns to replicate. Normally when all columns
     should be replicated, this will be set to NULL which is the
@@ -494,11 +494,11 @@ The following functions are provided for managing the replication sets:
   - `row_filter` - row filtering expression, default NULL (no filtering),
     see [Row Filtering](#row-filtering) for more info.
   **WARNING: Use caution when synchronizing data with a valid row filter.**
-Using `synchronize_data=true` with a valid `row_filter` is like a one-time operation for a table.
+Using `sync_data=true` with a valid `row_filter` is like a one-time operation for a table.
 Executing it again with modified `row_filter` won't synchronize data to subscriber. Subscribers
-may need to call `spock.alter_subscription_resynchronize_table()` to fix it.
+may need to call `spock.alter_sub_resync_table()` to fix it.
 
-- `spock.replication_set_add_all_tables(set_name name, schema_names text[], synchronize_data boolean)`
+- `spock.repset_add_all_tables(set_name name, schema_names text[], sync_data boolean)`
   Adds all tables in given schemas. Only existing tables are added, table that
   will be created in future will not be added automatically. For how to ensure
   that tables created in future are added to correct replication set, see
@@ -508,25 +508,25 @@ may need to call `spock.alter_subscription_resynchronize_table()` to fix it.
   - `set_name` - name of the existing replication set
   - `schema_names` - array of names name of existing schemas from which tables
     should be added
-  - `synchronize_data` - if true, the table data is synchronized on all
+  - `sync_data` - if true, the table data is synchronized on all
     subscribers which are subscribed to given replication set, default false
 
-- `spock.replication_set_remove_table(set_name name, relation regclass)`
+- `spock.repset_remove_table(set_name name, relation regclass)`
   Remove a table from replication set.
 
   Parameters:
   - `set_name` - name of the existing replication set
   - `relation` - name or OID of the table to be removed from the set
 
-- `spock.replication_set_add_sequence(set_name name, relation regclass, synchronize_data boolean)`
+- `spock.repset_add_sequence(set_name name, relation regclass, sync_data boolean)`
   Adds a sequence to a replication set.
 
   Parameters:
   - `set_name` - name of the existing replication set
   - `relation` - name or OID of the sequence to be added to the set
-  - `synchronize_data` - if true, the sequence value will be synchronized immediately, default false
+  - `sync_data` - if true, the sequence value will be synchronized immediately, default false
 
-- `spock.replication_set_add_all_sequences(set_name name, schema_names text[], synchronize_data boolean)`
+- `spock.repset_add_all_sequences(set_name name, schema_names text[], sync_data boolean)`
   Adds all sequences from the given schemas. Only existing sequences are added, any sequences that
   will be created in future will not be added automatically.
 
@@ -534,9 +534,9 @@ may need to call `spock.alter_subscription_resynchronize_table()` to fix it.
   - `set_name` - name of the existing replication set
   - `schema_names` - array of names name of existing schemas from which tables
     should be added
-  - `synchronize_data` - if true, the sequence value will be synchronized immediately, default false
+  - `sync_data` - if true, the sequence value will be synchronized immediately, default false
 
-- `spock.replication_set_remove_sequence(set_name name, relation regclass)`
+- `spock.repset_remove_sequence(set_name name, relation regclass)`
   Remove a sequence from a replication set.
 
   Parameters:
@@ -561,9 +561,9 @@ Example:
         LOOP
             IF obj.object_type = 'table' THEN
                 IF obj.schema_name = 'config' THEN
-                    PERFORM spock.replication_set_add_table('configuration', obj.objid);
+                    PERFORM spock.repset_add_table('configuration', obj.objid);
                 ELSIF NOT obj.in_extension THEN
-                    PERFORM spock.replication_set_add_table('default', obj.objid);
+                    PERFORM spock.repset_add_table('default', obj.objid);
                 END IF;
             END IF;
         END LOOP;
@@ -581,17 +581,17 @@ by extensions will go to `default` replication set.
 
 ### Additional functions
 
-- `spock.replicate_ddl_command(command text, replication_sets text[])`
+- `spock.replicate_ddl_command(command text, repsets text[])`
   Execute locally and then send the specified command to the replication queue
   for execution on subscribers which are subscribed to one of the specified
-  `replication_sets`.
+  `repsets`.
 
   Parameters:
   - `command` - DDL query to execute
-  - `replication_sets` - array of replication sets which this command should be
+  - `repsets` - array of replication sets which this command should be
     associated with, default "{ddl_sql}"
 
-- `spock.synchronize_sequence(relation regclass)`
+- `spock.sync_sequence(relation regclass)`
   Push sequence state to all subscribers. Unlike the subscription and table
   synchronization function, this function should be run on provider. It forces
   update of the tracked sequence state which will be consumed by all
@@ -609,7 +609,7 @@ side.
 #### Row Filtering on Provider
 
 On the provider the row filtering can be done by specifying `row_filter`
-parameter for the `spock.replication_set_add_table` function. The
+parameter for the `spock.repset_add_table` function. The
 `row_filter` is normal PostgreSQL expression which has the same limitations
 on what's allowed as the `CHECK` constraint.
 
@@ -786,7 +786,7 @@ that the subscribers actually receive future state of the sequence. This
 minimizes the chance of subscriber's notion of sequence's `last_value` falling
 behind but does not completely eliminate the possibility.
 
-It might be desirable to call `synchronize_sequence` to ensure all subscribers
+It might be desirable to call `sync_sequence` to ensure all subscribers
 have up to date information about given sequence after "big events" in the
 database such as data loading or during the online upgrade.
 
