@@ -248,7 +248,7 @@ There are two forwarding modes:
 
   Selected by installing a transaction and/or row filter hook (see "hooks").
 
-If the upstream server is 9.5 or newer the server will enable changeset origin
+The server will enable changeset origin
 information. It will set `forward_changeset_origins` to true in the startup
 reply message to indicate this. It will then send changeset origin messages
 after the `BEGIN` for each transaction, per the protocol documentation. Origin
@@ -256,11 +256,6 @@ messages are omitted for transactions originating directly on the immediate
 upstream to save bandwidth.  If `forward_changeset_origins` is true then
 transactions without an origin are always from the immediate upstream that’s
 running the decoding plugin.
-
-Note that 9.4 servers lack replication origin information and won't send it
-on the wire. They also always pass zeroes to the hooks. So you can't filter
-by origin in 9.4, and thus can't do mutual multi-master as it'll create an
-infinite loop.
 
 Clients may use this facility to form arbitrarily complex topologies when
 combined with hooks to determine which transactions are forwarded. An obvious
