@@ -405,7 +405,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `sub_name` - name of the existing subscription
   - `relation` - name of existing table, optionally qualified
 
-- `spock.alter_sub_add_repset(sub_name name,
+- `spock.sub_add_repset(sub_name name,
   repset name)`
   Adds one replication set into a subscriber. Does not synchronize, only
   activates consumption of events.
@@ -414,7 +414,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `sub_name` - name of the existing subscription
   - `repset` - name of replication set to add
 
-- `spock.alter_sub_remove_repset(sub_name name,
+- `spock.sub_remove_repset(sub_name name,
   repset name)`
   Removes one replication set from a subscriber.
 
