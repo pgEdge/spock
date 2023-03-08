@@ -49,33 +49,33 @@ RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_node'
 CREATE FUNCTION spock.drop_node(node_name name, ifexists boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_node';
 
-CREATE FUNCTION spock.alter_node_add_interface(node_name name, interface_name name, dsn text)
+CREATE FUNCTION spock.node_add_interface(node_name name, interface_name name, dsn text)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_add_interface';
-CREATE FUNCTION spock.alter_node_drop_interface(node_name name, interface_name name)
+CREATE FUNCTION spock.node_drop_interface(node_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface';
 
-CREATE FUNCTION spock.create_subscription(subscription_name name, provider_dsn text,
+CREATE FUNCTION spock.create_sub(subscription_name name, provider_dsn text,
     replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
     synchronize_data boolean = true, forward_origins text[] = '{all}', apply_delay interval DEFAULT '0',
     force_text_transfer boolean = false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
-CREATE FUNCTION spock.drop_subscription(subscription_name name, ifexists boolean DEFAULT false)
+CREATE FUNCTION spock.drop_sub(subscription_name name, ifexists boolean DEFAULT false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_subscription';
 
-CREATE FUNCTION spock.alter_subscription_interface(subscription_name name, interface_name name)
+CREATE FUNCTION spock.alter_sub_interface(subscription_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_interface';
 
-CREATE FUNCTION spock.alter_subscription_disable(subscription_name name, immediate boolean DEFAULT false)
+CREATE FUNCTION spock.sub_disable(subscription_name name, immediate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_disable';
-CREATE FUNCTION spock.alter_subscription_enable(subscription_name name, immediate boolean DEFAULT false)
+CREATE FUNCTION spock.sub_enable(subscription_name name, immediate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_enable';
 
-CREATE FUNCTION spock.alter_subscription_add_replication_set(subscription_name name, replication_set name)
+CREATE FUNCTION spock.sub_add_repset(subscription_name name, replication_set name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_add_replication_set';
-CREATE FUNCTION spock.alter_subscription_remove_replication_set(subscription_name name, replication_set name)
+CREATE FUNCTION spock.sub_remove_repset(subscription_name name, replication_set name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_remove_replication_set';
 
-CREATE FUNCTION spock.show_subscription_status(subscription_name name DEFAULT NULL,
+CREATE FUNCTION spock.show_sub_status(subscription_name name DEFAULT NULL,
     OUT subscription_name text, OUT status text, OUT provider_node text,
     OUT provider_dsn text, OUT slot_name text, OUT replication_sets text[],
     OUT forward_origins text[])
@@ -189,30 +189,30 @@ CREATE VIEW spock.TABLES AS
       FROM user_tables t
      WHERE t.oid NOT IN (SELECT set_reloid FROM set_relations);
 
-CREATE FUNCTION spock.create_replication_set(set_name name,
+CREATE FUNCTION spock.create_repset(set_name name,
     replicate_insert boolean = true, replicate_update boolean = true,
     replicate_delete boolean = true, replicate_truncate boolean = true)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_replication_set';
-CREATE FUNCTION spock.alter_replication_set(set_name name,
+CREATE FUNCTION spock.alter_repset(set_name name,
     replicate_insert boolean DEFAULT NULL, replicate_update boolean DEFAULT NULL,
     replicate_delete boolean DEFAULT NULL, replicate_truncate boolean DEFAULT NULL)
 RETURNS oid CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_replication_set';
-CREATE FUNCTION spock.drop_replication_set(set_name name, ifexists boolean DEFAULT false)
+CREATE FUNCTION spock.drop_repset(set_name name, ifexists boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_replication_set';
 
-CREATE FUNCTION spock.replication_set_add_table(set_name name, relation regclass, synchronize_data boolean DEFAULT false,
+CREATE FUNCTION spock.repset_add_table(set_name name, relation regclass, synchronize_data boolean DEFAULT false,
 	columns text[] DEFAULT NULL, row_filter text DEFAULT NULL, include_partitions boolean default true)
 RETURNS boolean CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_table';
-CREATE FUNCTION spock.replication_set_add_all_tables(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
+CREATE FUNCTION spock.repset_add_all_tables(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_tables';
-CREATE FUNCTION spock.replication_set_remove_table(set_name name, relation regclass, include_partitions boolean default true)
+CREATE FUNCTION spock.repset_remove_table(set_name name, relation regclass, include_partitions boolean default true)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_table';
 
-CREATE FUNCTION spock.replication_set_add_sequence(set_name name, relation regclass, synchronize_data boolean DEFAULT false)
+CREATE FUNCTION spock.repset_add_sequence(set_name name, relation regclass, synchronize_data boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_sequence';
-CREATE FUNCTION spock.replication_set_add_all_sequences(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
+CREATE FUNCTION spock.repset_add_all_sequences(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_sequences';
-CREATE FUNCTION spock.replication_set_remove_sequence(set_name name, relation regclass)
+CREATE FUNCTION spock.repset_remove_sequence(set_name name, relation regclass)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_sequence';
 
 CREATE FUNCTION spock.add_partition(parent regclass, partition regclass default NULL,
@@ -221,14 +221,14 @@ RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spoc
 CREATE FUNCTION spock.remove_partition(parent regclass, partition regclass default NULL)
 RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_remove_partition';
 
-CREATE FUNCTION spock.alter_subscription_synchronize(subscription_name name, truncate boolean DEFAULT false)
+CREATE FUNCTION spock.alter_sub_synch(subscription_name name, truncate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';
 
-CREATE FUNCTION spock.alter_subscription_resynchronize_table(subscription_name name, relation regclass,
+CREATE FUNCTION spock.sub_resynch_table(subscription_name name, relation regclass,
 	truncate boolean DEFAULT true)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table';
 
-CREATE FUNCTION spock.synchronize_sequence(relation regclass)
+CREATE FUNCTION spock.synch_sequence(relation regclass)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_synchronize_sequence';
 
 CREATE FUNCTION spock.table_data_filtered(reltyp anyelement, relation regclass, repsets text[])
@@ -238,7 +238,7 @@ CREATE FUNCTION spock.show_repset_table_info(relation regclass, repsets text[], 
 	OUT relname text, OUT att_list text[], OUT has_row_filter boolean, OUT relkind "char", OUT relispartition boolean)
 RETURNS record STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_repset_table_info';
 
-CREATE FUNCTION spock.show_subscription_table(subscription_name name, relation regclass, OUT nspname text, OUT relname text, OUT status text)
+CREATE FUNCTION spock.show_sub_table(subscription_name name, relation regclass, OUT nspname text, OUT relname text, OUT status text)
 RETURNS record STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_subscription_table';
 
 CREATE TABLE spock.queue (
@@ -249,7 +249,7 @@ CREATE TABLE spock.queue (
     message json NOT NULL
 );
 
-CREATE FUNCTION spock.replicate_ddl_command(command text, replication_sets text[] DEFAULT '{ddl_sql}')
+CREATE FUNCTION spock.replicate_ddl(command text, replication_sets text[] DEFAULT '{ddl_sql}')
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
 
 CREATE OR REPLACE FUNCTION spock.queue_truncate()
@@ -282,10 +282,10 @@ $$ SELECT current_setting('spock.country') $$;
 CREATE FUNCTION
 spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
 RETURNS void LANGUAGE c AS 'spock','spock_wait_slot_confirm_lsn';
-CREATE FUNCTION spock.wait_for_subscription_sync_complete(subscription_name name)
+CREATE FUNCTION spock.wait_for_sub_sync(subscription_name name)
 RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete';
 
-CREATE FUNCTION spock.wait_for_table_sync_complete(subscription_name name, relation regclass)
+CREATE FUNCTION spock.wait_for_table_sync(subscription_name name, relation regclass)
 RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete';
 
 CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" timestamptz, OUT "roident" oid)
