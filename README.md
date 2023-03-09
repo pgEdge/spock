@@ -54,7 +54,7 @@ This feature is powerful AND simple in it's implementation as follows:
 
   - When an update occurs on a 'log_old_value' column
     - First, the old value for that column is captured to the WAL 
-    - Second, the new value comes in the transaction is above to be applied to a subscriber
+    - Second, the new value comes in the transaction to be applied to a subscriber
     - Before the new value overwrites the old value, a delta value is created from the above two steps and it is correctly applied
 
 Note that on a conflicting transaction, the delta column will get correctly calculated and applied.  The configured conflict resolution strategy applies to non-delta columns (normally last-update-wins).
