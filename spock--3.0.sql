@@ -44,7 +44,7 @@ CREATE TABLE spock.local_sync_status (
 );
 
 
-CREATE FUNCTION spock.create_node(node_name name, dsn text)
+CREATE FUNCTION spock.node_create(node_name name, dsn text)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_node';
 CREATE FUNCTION spock.drop_node(node_name name, ifexists boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_node';
@@ -54,15 +54,15 @@ RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_a
 CREATE FUNCTION spock.node_drop_interface(node_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface';
 
-CREATE FUNCTION spock.create_sub(subscription_name name, provider_dsn text,
+CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
     replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
     synchronize_data boolean = true, forward_origins text[] = '{all}', apply_delay interval DEFAULT '0',
     force_text_transfer boolean = false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
-CREATE FUNCTION spock.drop_sub(subscription_name name, ifexists boolean DEFAULT false)
+CREATE FUNCTION spock.sub_drop(subscription_name name, ifexists boolean DEFAULT false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_subscription';
 
-CREATE FUNCTION spock.alter_sub_interface(subscription_name name, interface_name name)
+CREATE FUNCTION spock.sub_alter_interface(subscription_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_interface';
 
 CREATE FUNCTION spock.sub_disable(subscription_name name, immediate boolean DEFAULT false)
@@ -75,7 +75,7 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_su
 CREATE FUNCTION spock.sub_remove_repset(subscription_name name, replication_set name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_remove_replication_set';
 
-CREATE FUNCTION spock.show_sub_status(subscription_name name DEFAULT NULL,
+CREATE FUNCTION spock.sub_show_status(subscription_name name DEFAULT NULL,
     OUT subscription_name text, OUT status text, OUT provider_node text,
     OUT provider_dsn text, OUT slot_name text, OUT replication_sets text[],
     OUT forward_origins text[])
@@ -189,15 +189,15 @@ CREATE VIEW spock.TABLES AS
       FROM user_tables t
      WHERE t.oid NOT IN (SELECT set_reloid FROM set_relations);
 
-CREATE FUNCTION spock.create_repset(set_name name,
+CREATE FUNCTION spock.repset_create(set_name name,
     replicate_insert boolean = true, replicate_update boolean = true,
     replicate_delete boolean = true, replicate_truncate boolean = true)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_replication_set';
-CREATE FUNCTION spock.alter_repset(set_name name,
+CREATE FUNCTION spock.repset_alter(set_name name,
     replicate_insert boolean DEFAULT NULL, replicate_update boolean DEFAULT NULL,
     replicate_delete boolean DEFAULT NULL, replicate_truncate boolean DEFAULT NULL)
 RETURNS oid CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_replication_set';
-CREATE FUNCTION spock.drop_repset(set_name name, ifexists boolean DEFAULT false)
+CREATE FUNCTION spock.repset_drop(set_name name, ifexists boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_replication_set';
 
 CREATE FUNCTION spock.repset_add_table(set_name name, relation regclass, synchronize_data boolean DEFAULT false,
@@ -215,30 +215,30 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicat
 CREATE FUNCTION spock.repset_remove_sequence(set_name name, relation regclass)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_sequence';
 
-CREATE FUNCTION spock.add_partition(parent regclass, partition regclass default NULL,
+CREATE FUNCTION spock.pertition_add(parent regclass, partition regclass default NULL,
     row_filter text default NULL)
 RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_add_partition';
-CREATE FUNCTION spock.remove_partition(parent regclass, partition regclass default NULL)
+CREATE FUNCTION spock.partition_remove(parent regclass, partition regclass default NULL)
 RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_remove_partition';
 
-CREATE FUNCTION spock.alter_sub_synch(subscription_name name, truncate boolean DEFAULT false)
+CREATE FUNCTION spock.sub_alter_synch(subscription_name name, truncate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';
 
 CREATE FUNCTION spock.sub_resynch_table(subscription_name name, relation regclass,
 	truncate boolean DEFAULT true)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table';
 
-CREATE FUNCTION spock.synch_sequence(relation regclass)
+CREATE FUNCTION spock.synch_seq(relation regclass)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_synchronize_sequence';
 
 CREATE FUNCTION spock.table_data_filtered(reltyp anyelement, relation regclass, repsets text[])
 RETURNS SETOF anyelement CALLED ON NULL INPUT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_table_data_filtered';
 
-CREATE FUNCTION spock.show_repset_table_info(relation regclass, repsets text[], OUT relid oid, OUT nspname text,
+CREATE FUNCTION spock.repset_show_table(relation regclass, repsets text[], OUT relid oid, OUT nspname text,
 	OUT relname text, OUT att_list text[], OUT has_row_filter boolean, OUT relkind "char", OUT relispartition boolean)
 RETURNS record STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_repset_table_info';
 
-CREATE FUNCTION spock.show_sub_table(subscription_name name, relation regclass, OUT nspname text, OUT relname text, OUT status text)
+CREATE FUNCTION spock.sub_show_table(subscription_name name, relation regclass, OUT nspname text, OUT relname text, OUT status text)
 RETURNS record STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_subscription_table';
 
 CREATE TABLE spock.queue (
