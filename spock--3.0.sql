@@ -282,10 +282,10 @@ $$ SELECT current_setting('spock.country') $$;
 CREATE FUNCTION
 spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
 RETURNS void LANGUAGE c AS 'spock','spock_wait_slot_confirm_lsn';
-CREATE FUNCTION spock.wait_for_sub_sync(subscription_name name)
+CREATE FUNCTION spock.sub_wait_for_sync(subscription_name name)
 RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete';
 
-CREATE FUNCTION spock.wait_for_table_sync(subscription_name name, relation regclass)
+CREATE FUNCTION spock.table_wait_for_sync(subscription_name name, relation regclass)
 RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete';
 
 CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" timestamptz, OUT "roident" oid)

@@ -68,8 +68,8 @@ pglogical.show_subscription_table
 spock.show_sub_table
  
 pglogical.wait_for_subscription_sync_complete
-spock.wait_sub_sync
+spock.sub_wait_for_sync
  
 pglogical.wait_for_table_sync_complete
-spock.wait_table_sync
+spock.table_wait_for_sync
  
