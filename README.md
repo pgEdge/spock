@@ -223,8 +223,7 @@ much faster, especially over high-bandwidth links.
 
 Nodes can be added and removed dynamically using the SQL interfaces.
 
-#### spock_node_create
-
+#### spock-node-create
 - `spock.node_create(node_name name, dsn text)`
   Creates a node.
 
@@ -233,6 +232,8 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `dsn` - connection string to the node, for nodes that are supposed to be
     providers, this should be reachable from outside
 
+
+#### spock-node-drop
 - `spock.node_drop(node_name name, ifexists bool)`
   Drops the spock node.
 
@@ -241,6 +242,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `ifexists` - if true, error is not thrown when subscription does not exist,
     default is false
 
+#### spock-node-add-interface
 - `spock.node_add_interface(node_name name, interface_name name, dsn text)`
   Adds additional interface to a node.
 
@@ -254,6 +256,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `interface_name` - name of a new interface to be added
   - `dsn` - connection string to the node used for the new interface
 
+#### spock-node-drop-interface
 - `spock.node_drop_interface(node_name name, interface_name name)`
   Remove existing interface from a node.
 
