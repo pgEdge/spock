@@ -1,3 +1,9 @@
+
+
+spock.node_create
+spock.node_drop
+
+
 pglogical.alter_node_add_interface
 spock.node_add_interface
 

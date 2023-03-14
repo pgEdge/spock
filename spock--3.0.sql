@@ -46,7 +46,7 @@ CREATE TABLE spock.local_sync_status (
 
 CREATE FUNCTION spock.node_create(node_name name, dsn text)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_node';
-CREATE FUNCTION spock.drop_node(node_name name, ifexists boolean DEFAULT false)
+CREATE FUNCTION spock.node_drop(node_name name, ifexists boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_node';
 
 CREATE FUNCTION spock.node_add_interface(node_name name, interface_name name, dsn text)
@@ -208,14 +208,14 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicat
 CREATE FUNCTION spock.repset_remove_table(set_name name, relation regclass, include_partitions boolean default true)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_table';
 
-CREATE FUNCTION spock.repset_add_sequence(set_name name, relation regclass, synchronize_data boolean DEFAULT false)
+CREATE FUNCTION spock.repset_add_seq(set_name name, relation regclass, synchronize_data boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_sequence';
-CREATE FUNCTION spock.repset_add_all_sequences(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
+CREATE FUNCTION spock.repset_add_all_seqs(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_sequences';
-CREATE FUNCTION spock.repset_remove_sequence(set_name name, relation regclass)
+CREATE FUNCTION spock.repset_remove_seq(set_name name, relation regclass)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_sequence';
 
-CREATE FUNCTION spock.pertition_add(parent regclass, partition regclass default NULL,
+CREATE FUNCTION spock.partition_add(parent regclass, partition regclass default NULL,
     row_filter text default NULL)
 RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_add_partition';
 CREATE FUNCTION spock.partition_remove(parent regclass, partition regclass default NULL)

@@ -266,6 +266,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
 
 ### Subscription management
 
+#### spock-sub-create
 - `spock.sub_create(sub_name name, provider_dsn text,
   repsets text[], sync_structure boolean,
   sync_data boolean, forward_origins text[], apply_delay interval)`
@@ -302,6 +303,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   subscription to asynchronously start replicating and complete any needed
   schema and/or data sync.
 
+#### spock-sub-drop
 - `spock.sub_drop(sub_name name, ifexists bool)`
   Disconnects the subscription and removes it from the catalog.
 
@@ -310,6 +312,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `ifexists` - if true, error is not thrown when subscription does not exist,
     default is false
 
+#### spock-sub-disable
 - `spock.sub_disable(sub_name name, immediate bool)`
    Disables a subscription and disconnects it from the provider.
 
@@ -318,6 +321,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `immediate` - if true, the subscription is stopped immediately, otherwise
     it will be only stopped at the end of current transaction, default is false
 
+#### spock-sub-enable
 - `spock.sub_enable(sub_name name, immediate bool)`
   Enables disabled subscription.
 
@@ -326,6 +330,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `immediate` - if true, the subscription is started immediately, otherwise
     it will be only started at the end of current transaction, default is false
 
+#### spock-sub-alter-interface
 - `spock.sub_alter_interface(sub_name name, interface_name name)`
   Switch the subscription to use different interface to connect to provider
   node.
@@ -335,6 +340,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `interface_name` - name of an existing interface of the current provider
     node
 
+#### spock-sub-synch
 - `spock.sub_synch(sub_name name, truncate bool)`
   All unsynchronized tables in all sets are synchronized in a single operation.
   Tables are copied and synchronized one by one. Command does not block, just
@@ -345,6 +351,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `sub_name` - name of the existing subscription
   - `truncate` - if true, tables will be truncated before copy, default false
 
+#### spock-sub-resynch-table
 - `spock.sub_resync_table(sub_name name,
   relation regclass)`
   Resynchronize one existing table. The table may not be the target of any
@@ -359,6 +366,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `sub_name` - name of the existing subscription
   - `relation` - name of existing table, optionally qualified
 
+#### spock-sub-wait-for-sync
 - `spock.sub_wait_for_sync(sub_name name)`
 
    Wait for a subscription to finish synchronization after a
@@ -372,6 +380,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   provider after any replication set changes that requested resyncs, and only
   then call `spock.wait_for_sub_sync` on the subscriber.
 
+#### spock-sub-wait-table-sync
 - `spock.wait_table_sync(sub_name name, relation regclass)`
 
   Same as `spock.wait_for_sub_sync`, but waits only for
@@ -394,6 +403,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   This function is very useful to ensure all subscribers have received changes
   up to a certain point on the provider.
 
+#### spock-sub-show-status
 - `spock.sub_show_status(sub_name name)`
   Shows status and basic information about subscription.
 
@@ -402,6 +412,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
     name was provided, the function will show status for all subscriptions on
     local node
 
+#### spock-sub-show-table
 - `spock.sub_show_table(sub_name name, relation regclass)`
   Shows synchronization status of a table.
 
@@ -409,6 +420,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `sub_name` - name of the existing subscription
   - `relation` - name of existing table, optionally qualified
 
+#### spock-sub-add-repset
 - `spock.sub_add_repset(sub_name name, repset name)`
   Adds one replication set into a subscriber. Does not synchronize, only
   activates consumption of events.
@@ -417,6 +429,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `sub_name` - name of the existing subscription
   - `repset` - name of replication set to add
 
+#### spock-sub-remove-respset
 - `spock.sub_remove_repset(sub_name name, repset name)`
   Removes one replication set from a subscriber.
 
@@ -456,7 +469,8 @@ The "ddl_sql" replication set is defined to replicate schema changes specified b
 
 The following functions are provided for managing the replication sets:
 
-- `spock.create_repset(set_name name, replicate_insert bool, replicate_update bool, replicate_delete bool, replicate_truncate bool)`
+#### spock-repset-create
+- `spock.repset_create(set_name name, replicate_insert bool, replicate_update bool, replicate_delete bool, replicate_truncate bool)`
   This function creates a new replication set.
 
   Parameters:
@@ -466,7 +480,8 @@ The following functions are provided for managing the replication sets:
   - `replicate_delete` - specifies if `DELETE` is replicated, default true
   - `replicate_truncate` - specifies if `TRUNCATE` is replicated, default true
 
-- `spock.alter_repset(set_name name, replicate_inserts bool, replicate_updates bool, replicate_deletes bool, replicate_truncate bool)`
+#### spock-repset-alter
+- `spock.repset_alter(set_name name, replicate_inserts bool, replicate_updates bool, replicate_deletes bool, replicate_truncate bool)`
   This function changes the parameters of the existing replication set.
 
   Parameters:
@@ -476,12 +491,14 @@ The following functions are provided for managing the replication sets:
   - `replicate_delete` - specifies if `DELETE` is replicated, default true
   - `replicate_truncate` - specifies if `TRUNCATE` is replicated, default true
 
-- `spock.drop_repset(set_name text)`
+#### spock-repset-drop
+- `spock.repset_drop(set_name text)`
   Removes the replication set.
 
   Parameters:
   - `set_name` - name of the existing replication set
 
+#### spock-repset-add-table
 - `spock.repset_add_table(set_name name, relation regclass, sync_data boolean, columns text[], row_filter text)`
   Adds a table to replication set.
 
@@ -500,6 +517,7 @@ Using `sync_data=true` with a valid `row_filter` is like a one-time operation fo
 Executing it again with modified `row_filter` won't synchronize data to subscriber. Subscribers
 may need to call `spock.alter_sub_resync_table()` to fix it.
 
+#### spock-repset-add-all-tables
 - `spock.repset_add_all_tables(set_name name, schema_names text[], sync_data boolean)`
   Adds all tables in given schemas. Only existing tables are added, table that
   will be created in future will not be added automatically. For how to ensure
@@ -513,6 +531,7 @@ may need to call `spock.alter_sub_resync_table()` to fix it.
   - `sync_data` - if true, the table data is synchronized on all
     subscribers which are subscribed to given replication set, default false
 
+#### spock-repset-remove-table
 - `spock.repset_remove_table(set_name name, relation regclass)`
   Remove a table from replication set.
 
@@ -520,6 +539,7 @@ may need to call `spock.alter_sub_resync_table()` to fix it.
   - `set_name` - name of the existing replication set
   - `relation` - name or OID of the table to be removed from the set
 
+#### spock-repset-add-seq
 - `spock.repset_add_seq(set_name name, relation regclass, sync_data boolean)`
   Adds a sequence to a replication set.
 
@@ -528,6 +548,7 @@ may need to call `spock.alter_sub_resync_table()` to fix it.
   - `relation` - name or OID of the sequence to be added to the set
   - `sync_data` - if true, the sequence value will be synchronized immediately, default false
 
+#### spock-repset-add-all-seqs
 - `spock.repset_add_all_seqs(set_name name, schema_names text[], sync_data boolean)`
   Adds all sequences from the given schemas. Only existing sequences are added, any sequences that
   will be created in future will not be added automatically.
@@ -538,6 +559,7 @@ may need to call `spock.alter_sub_resync_table()` to fix it.
     should be added
   - `sync_data` - if true, the sequence value will be synchronized immediately, default false
 
+#### spock-repset-remove-seq
 - `spock.repset_remove_seq(set_name name, relation regclass)`
   Remove a sequence from a replication set.
 
@@ -583,6 +605,7 @@ by extensions will go to `default` replication set.
 
 ### Additional functions
 
+#### spock-replicate-ddl
 - `spock.replicate_ddl(command text, repsets text[])`
   Execute locally and then send the specified command to the replication queue
   for execution on subscribers which are subscribed to one of the specified
@@ -593,6 +616,7 @@ by extensions will go to `default` replication set.
   - `repsets` - array of replication sets which this command should be
     associated with, default "{ddl_sql}"
 
+#### spock-seq-sync
 - `spock.seq_sync(relation regclass)`
   Push sequence state to all subscribers. Unlike the subscription and table
   synchronization function, this function should be run on provider. It forces
