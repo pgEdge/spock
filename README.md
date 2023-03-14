@@ -223,7 +223,9 @@ much faster, especially over high-bandwidth links.
 
 Nodes can be added and removed dynamically using the SQL interfaces.
 
-- `spock.create_node(node_name name, dsn text)`
+#### spock_node_create
+
+- `spock.node_create(node_name name, dsn text)`
   Creates a node.
 
   Parameters:
@@ -231,7 +233,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `dsn` - connection string to the node, for nodes that are supposed to be
     providers, this should be reachable from outside
 
-- `spock.drop_node(node_name name, ifexists bool)`
+- `spock.node_drop(node_name name, ifexists bool)`
   Drops the spock node.
 
   Parameters:
