@@ -173,7 +173,7 @@ Next the `spock` extension has to be installed on all nodes in the database to b
 
 Now create the provider node:
 
-    SELECT spock.create_node(
+    SELECT spock.node_create(
         node_name := 'provider1',
         dsn := 'host=providerhost port=5432 dbname=db'
     );
@@ -193,7 +193,7 @@ incrementally for better control.
 Once the provider node is setup, subscribers can be subscribed to it. First the
 subscriber node must be created:
 
-    SELECT spock.create_node(
+    SELECT spock.node_create(
         node_name := 'subscriber1',
         dsn := 'host=thishost port=5432 dbname=db'
     );
@@ -201,12 +201,12 @@ subscriber node must be created:
 And finally on the subscriber node you can create the subscription which will
 start synchronization and replication process in the background:
 
-    SELECT spock.create_sub(
+    SELECT spock.sub_create(
         sub_name := 'subscription1',
         provider_dsn := 'host=providerhost port=5432 dbname=db'
     );
 
-    SELECT spock.wait_for_sub_sync('subscription1');
+    SELECT spock.sub_wait_for_sync('subscription1');
 
 ### Creating subscriber nodes with base backups
 
@@ -215,7 +215,7 @@ supports creating a subscriber by cloning the provider with `pg_basebackup` and
 starting it up as a spock subscriber. This is done with the
 `spock_create_subscriber` tool; see the `--help` output.
 
-Unlike `spock.create_sub`'s data sync options, this clone ignores
+Unlike `spock.sub_create`'s data sync options, this clone ignores
 replication sets and copies all tables on all databases. However, it's often
 much faster, especially over high-bandwidth links.
 
@@ -378,12 +378,12 @@ Nodes can be added and removed dynamically using the SQL interfaces.
 
   For best results, run `SELECT spock.wait_slot_confirm_lsn(NULL, NULL)` on the
   provider after any replication set changes that requested resyncs, and only
-  then call `spock.wait_for_sub_sync` on the subscriber.
+  then call `spock.sub_wait_for_sync` on the subscriber.
 
 #### spock-sub-wait-table-sync
 - `spock.wait_table_sync(sub_name name, relation regclass)`
 
-  Same as `spock.wait_for_sub_sync`, but waits only for
+  Same as `spock.sub_wait_for_sync`, but waits only for
   the subscription's initial sync and the named table. Other tables pending
   resynchronisation are ignored.
 
@@ -761,7 +761,7 @@ if such an index is present when it attempts to apply changes to a table.
 Automatic DDL replication is not supported. Managing DDL so that the provider and
 subscriber database(s) remain compatible is the responsibility of the user.
 
-spock provides the `spock.replicate_ddl_command` function to allow DDL
+spock provides the `spock.replicate_ddl` function to allow DDL
 to be run on the provider and subscriber at a consistent point.
 
 ### No replication queue flush
@@ -777,12 +777,12 @@ that makes the subscriber table incompatible with the queued transactions
 replication will stop.
 
 Administrators should either ensure that writes to the master are stopped
-before making schema changes, or use the `spock.replicate_ddl_command`
+before making schema changes, or use the `spock.replicate_ddl`
 function to queue schema changes so they're replayed at a consistent point
 on the replica.
 
 Once multi-master replication support is added then using
-`spock.replicate_ddl_command` will not be enough, as the subscriber may be
+`spock.replicate_ddl` will not be enough, as the subscriber may be
 generating new xacts with the old structure after the schema change is
 committed on the publisher. Users will have to ensure writes are stopped on all
 nodes and all slots are caught up before making schema changes.
