@@ -1,14 +1,16 @@
-# Spock: Multi-Active Replication with Conflict Resolution & Avoidance
+# Spock
+
+## Multi-Active Replication with Conflict Resolution & Avoidance
 
 
-This SPOCK extension provides logical & multi-master bi-directional replication for PostgreSQL 15+. 
+This SPOCK extension provides multi-active replication for PostgreSQL 15+. 
 We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source projects as a solid foundation to build upon for this enterprise-class extension. 
 
-Our first version is 3.0.x and includes the following important enhancements:
+Our first version is 3.0 and includes the following important enhancements:
 
 * Support for Asynchronous Multi-Active Replication with conflict resolution
 * Conflict-free Delta-Apply Columns
-* Replication of Partitioned Tables (to help robustly support Geo-Sharding) 
+* Replication of Partitioned Tables (to help support Geo-Sharding) 
 * Better error handling for Conflict Resolution
 * Better management & monitoring stats and integration
 * A 'pii' table for making it easy for personably identifiable data to be kept in country
@@ -19,7 +21,7 @@ We use the following terms, borrowed from [Jan's](https://www.linkedin.com/in/ja
 * Replication Set - a collection of tables
 
 Use cases supported are:
-* Asynchronous Bi-Directional Replication with conflict resolution
+* Asynchronous Multi-active Replication with conflict resolution
 * Upgrades between major versions
 * Full database replication
 * Selective replication of sets of tables using replication sets
@@ -37,6 +39,11 @@ Architectural details:
 * Cascading replication is implemented in the form of changeset forwarding.
 
 # Major New Features
+
+## Replication of Partitioned Tables
+
+Jan, Asif or Korry need to write something up.....
+
 
 ## Conflict-Free Delta-Apply Columns (Conflict Avoidance)
 
