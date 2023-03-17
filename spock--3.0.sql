@@ -221,14 +221,14 @@ RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spoc
 CREATE FUNCTION spock.partition_remove(parent regclass, partition regclass default NULL)
 RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_remove_partition';
 
-CREATE FUNCTION spock.sub_alter_synch(subscription_name name, truncate boolean DEFAULT false)
+CREATE FUNCTION spock.sub_alter_sync(subscription_name name, truncate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';
 
-CREATE FUNCTION spock.sub_resynch_table(subscription_name name, relation regclass,
+CREATE FUNCTION spock.sub_resync_table(subscription_name name, relation regclass,
 	truncate boolean DEFAULT true)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table';
 
-CREATE FUNCTION spock.synch_seq(relation regclass)
+CREATE FUNCTION spock.sync_seq(relation regclass)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_synchronize_sequence';
 
 CREATE FUNCTION spock.table_data_filtered(reltyp anyelement, relation regclass, repsets text[])

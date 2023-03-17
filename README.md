@@ -347,8 +347,8 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `interface_name` - name of an existing interface of the current provider
     node
 
-#### spock-sub-synch
-- `spock.sub_synch(sub_name name, truncate bool)`
+#### spock-sub-sync
+- `spock.sub_sync(sub_name name, truncate bool)`
   All unsynchronized tables in all sets are synchronized in a single operation.
   Tables are copied and synchronized one by one. Command does not block, just
   initiates the action. Use `spock.wait_for_sub_sync`
@@ -358,7 +358,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `sub_name` - name of the existing subscription
   - `truncate` - if true, tables will be truncated before copy, default false
 
-#### spock-sub-resynch-table
+#### spock-sub-resync-table
 - `spock.sub_resync_table(sub_name name,
   relation regclass)`
   Resynchronize one existing table. The table may not be the target of any
@@ -377,7 +377,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
 - `spock.sub_wait_for_sync(sub_name name)`
 
    Wait for a subscription to finish synchronization after a
-   `spock.sub_create` or `spock.sub_synch`.
+   `spock.sub_create` or `spock.sub_sync`.
 
   This function waits until the subscription's initial schema/data sync,
   if any, are done, and until any tables pending individual resynchronisation
