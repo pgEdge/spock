@@ -42,7 +42,19 @@ Architectural details:
 
 ## Replication of Partitioned Tables
 
-Jan, Asif or Korry need to write something up.....
+The Partition tables can now be replicated. By default, when adding a partitioned table to the replication set, it will include all of it's present partitions to the replication set. The later partitions can be added using `add_partition` function. The DDL for the partitioned and partitions should be present on the subscriber nodes (same as for normal tables).
+
+Similarly, when removing partitioned table from the replication set, By default, the partitions of said table will also be removed.
+
+The replication of partition tables is bit different from normal tables. When doing initial synchronization, we query the partitioned table (or parent) to get all the rows for synchronization purposes and don't synchronize the individual partitions. However, after the initial sync of data, the normal operations resume i.e. the partitions start replicating like normal tables.
+
+It's possible to add individual partitions to the replication set in which case they will be replicated like regular tables (to the table of the same name as the partition on the subscriber). This has some performance advantages in the case partitioning definition is the same on both provider and subscriber, as the partitioning logic does not have to be executed.
+
+**Note:** There an exception to individual partition replication, which is, the individual partitions won't sync up the existing data. It's equivalent to setting `synchronize_data = false`.
+
+When partitions are replicated through a partitioned table, the exception is the TRUNCATE command which always replicates with the list of affected tables or partitions.
+
+Additionally, `row_filter` can also be used with partitioned tables, as well as with individual partitions.
 
 
 ## Conflict-Free Delta-Apply Columns (Conflict Avoidance)
