@@ -1811,7 +1811,8 @@ spock_add_partition(PG_FUNCTION_ARGS)
 			nrows++;
 		}
 
-		pfree(reptbl_row_filter);
+		if (reptbl_row_filter)
+			pfree(reptbl_row_filter);
 		list_free(att_list);
 	}
 
