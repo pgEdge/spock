@@ -42,7 +42,7 @@ Architectural details:
 
 ## Replication of Partitioned Tables
 
-Partitioned tables can now be replicated. By default, when adding a partitioned table to a replication set, it will include all of it's present partitions. The later partitions can be added using `add_partition` function. The DDL for the partitioned and partitions should be present on the subscriber nodes (same as for normal tables).
+Partitioned tables can now be replicated. By default, when adding a partitioned table to a replication set, it will include all of it's present partitions. The later partitions can be added using `partition_add` function. The DDL for the partitioned and partitions should be present on the subscriber nodes (same as for normal tables).
 
 Similarly, when removing partitioned table from the replication set, By default, the partitions of said table will also be removed.
 
