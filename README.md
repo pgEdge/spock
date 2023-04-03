@@ -42,7 +42,7 @@ Architectural details:
 
 ## Replication of Partitioned Tables
 
-Partitioned tables can now be replicated. By default, when adding a partitioned table to a replication set, it will include all of it's present partitions. The later partitions can be added using `partition_add` function. The DDL for the partitioned and partitions should be present on the subscriber nodes (same as for normal tables).
+Partitioned tables can now be replicated. By default, when adding a partitioned table to a replication set, it will include all of its present partitions. The later partitions can be added using the `partition_add` function. The DDL for the partitioned and partitions should be present on the subscriber nodes (same as for normal tables).
 
 Similarly, when removing partitioned table from the replication set, By default, the partitions of said table will also be removed.
 
@@ -64,7 +64,7 @@ solutions, we do NOT have a special data type for this.   Any numeric data type 
 
 Suppose that a running bank account sum contains a balance of $1,000.   Two transactions "conflict" because they overlap with each from two different multi-master nodes.   Transaction A is a $1,000 withdrawl from the account.  Transaction B is also a $1,000 withdrawl from the account.  The correct balance is $-1,000.  Our Delta-Apply algorithm fixes this problem and highly conflicting wrkloads with this scenario (like a tpc-c like benchmark) now run correctly at lightning speeds.
 
-This feature is powerful AND simple in it's implementation as follows:
+This feature is powerful AND simple in its implementation as follows:
 
   - A small diff patch to PostgreSQL core
     - a very small postgresql licensed patch is applied to a core postgres source tree before building a PG binary.
