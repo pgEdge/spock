@@ -286,14 +286,14 @@ Nodes can be added and removed dynamically using the SQL interfaces.
 ### Subscription management
 
 #### spock-sub-create
-- `spock.sub_create(sub_name name, provider_dsn text,
+- `spock.sub_create(subscription_name name, provider_dsn text,
   repsets text[], sync_structure boolean,
   sync_data boolean, forward_origins text[], apply_delay interval)`
   Creates a subscription from current node to the provider node. Command does
   not block, just initiates the action.
 
   Parameters:
-  - `sub_name` - name of the subscription, must be unique
+  - `subscription_name` - name of the subscription, must be unique
   - `provider_dsn` - connection string to a provider
   - `repsets` - array of replication sets to subscribe to, these must
     already exist, default is "{default,default_insert_only,ddl_sql}"
@@ -312,67 +312,66 @@ Nodes can be added and removed dynamically using the SQL interfaces.
     change the type of a replicated column on the subscriber), default
     is false
 
-  The `sub_name` is used as `application_name` by the replication
+  The `subscription_name` is used as `application_name` by the replication
   connection. This means that it's visible in the `pg_stat_replication`
   monitoring view. It can also be used in `synchronous_standby_names` when
   spock is used as part of
   [synchronous replication](#synchronous-replication) setup.
 
-  Use `spock.sub_wait_for_sync(sub_name)` to wait for the
+  Use `spock.sub_wait_for_sync(subscription_name)` to wait for the
   subscription to asynchronously start replicating and complete any needed
   schema and/or data sync.
 
 #### spock-sub-drop
-- `spock.sub_drop(sub_name name, ifexists bool)`
+- `spock.sub_drop(subscription_name name, ifexists bool)`
   Disconnects the subscription and removes it from the catalog.
 
   Parameters:
-  - `sub_name` - name of the existing subscription
+  - `subscription_name` - name of the existing subscription
   - `ifexists` - if true, error is not thrown when subscription does not exist,
     default is false
 
 #### spock-sub-disable
-- `spock.sub_disable(sub_name name, immediate bool)`
+- `spock.sub_disable(subscription_name name, immediate bool)`
    Disables a subscription and disconnects it from the provider.
 
   Parameters:
-  - `sub_name` - name of the existing subscription
+  - `subscription_name` - name of the existing subscription
   - `immediate` - if true, the subscription is stopped immediately, otherwise
     it will be only stopped at the end of current transaction, default is false
 
 #### spock-sub-enable
-- `spock.sub_enable(sub_name name, immediate bool)`
+- `spock.sub_enable(subscription_name name, immediate bool)`
   Enables disabled subscription.
 
   Parameters:
-  - `sub_name` - name of the existing subscription
+  - `subscription_name` - name of the existing subscription
   - `immediate` - if true, the subscription is started immediately, otherwise
     it will be only started at the end of current transaction, default is false
 
 #### spock-sub-alter-interface
-- `spock.sub_alter_interface(sub_name name, interface_name name)`
+- `spock.sub_alter_interface(subscription_name name, interface_name name)`
   Switch the subscription to use different interface to connect to provider
   node.
 
   Parameters:
-  - `sub_name` - name of an existing subscription
+  - `subscription_name` - name of an existing subscription
   - `interface_name` - name of an existing interface of the current provider
     node
 
 #### spock-sub-sync
-- `spock.sub_sync(sub_name name, truncate bool)`
+- `spock.sub_sync(subscription_name name, truncate bool)`
   All unsynchronized tables in all sets are synchronized in a single operation.
   Tables are copied and synchronized one by one. Command does not block, just
   initiates the action. Use `spock.wait_for_sub_sync`
   to wait for completion.
 
   Parameters:
-  - `sub_name` - name of the existing subscription
+  - `subscription_name` - name of the existing subscription
   - `truncate` - if true, tables will be truncated before copy, default false
 
 #### spock-sub-resync-table
-- `spock.sub_resync_table(sub_name name,
-  relation regclass)`
+- `spock.sub_resync_table(subscription_name name, relation regclass)`
   Resynchronize one existing table. The table may not be the target of any
   foreign key constraints.
   **WARNING: This function will truncate the table immediately, and only then
@@ -382,11 +381,11 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   completion.
 
   Parameters:
-  - `sub_name` - name of the existing subscription
+  - `subscription_name` - name of the existing subscription
   - `relation` - name of existing table, optionally qualified
 
 #### spock-sub-wait-for-sync
-- `spock.sub_wait_for_sync(sub_name name)`
+- `spock.sub_wait_for_sync(subscription_name name)`
 
    Wait for a subscription to finish synchronization after a
    `spock.sub_create` or `spock.sub_sync`.
@@ -400,7 +399,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   then call `spock.sub_wait_for_sync` on the subscriber.
 
 #### spock-sub-wait-table-sync
-- `spock.wait_table_sync(sub_name name, relation regclass)`
+- `spock.sub_wait_table_sync(subscription_name name, relation regclass)`
 
   Same as `spock.sub_wait_for_sync`, but waits only for
   the subscription's initial sync and the named table. Other tables pending
@@ -423,37 +422,37 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   up to a certain point on the provider.
 
 #### spock-sub-show-status
-- `spock.sub_show_status(sub_name name)`
+- `spock.sub_show_status(subscription_name name)`
   Shows status and basic information about subscription.
 
   Parameters:
-  - `sub_name` - optional name of the existing subscription, when no
+  - `subscription_name` - optional name of the existing subscription, when no
     name was provided, the function will show status for all subscriptions on
     local node
 
 #### spock-sub-show-table
-- `spock.sub_show_table(sub_name name, relation regclass)`
+- `spock.sub_show_table(subscription_name name, relation regclass)`
   Shows synchronization status of a table.
 
   Parameters:
-  - `sub_name` - name of the existing subscription
+  - `subscription_name` - name of the existing subscription
   - `relation` - name of existing table, optionally qualified
 
 #### spock-sub-add-repset
-- `spock.sub_add_repset(sub_name name, repset name)`
+- `spock.sub_add_repset(subscription_name name, repset name)`
   Adds one replication set into a subscriber. Does not synchronize, only
   activates consumption of events.
 
   Parameters:
-  - `sub_name` - name of the existing subscription
+  - `subscription_name` - name of the existing subscription
   - `repset` - name of replication set to add
 
 #### spock-sub-remove-respset
-- `spock.sub_remove_repset(sub_name name, repset name)`
+- `spock.sub_remove_repset(subscription_name name, repset name)`
   Removes one replication set from a subscriber.
 
   Parameters:
-  - `sub_name` - name of the existing subscription
+  - `subscription_name` - name of the existing subscription
   - `repset` - name of replication set to remove
 
 
