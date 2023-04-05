@@ -183,14 +183,34 @@ check_local_node(bool for_update)
 Datum
 spock_create_node(PG_FUNCTION_ARGS)
 {
-	char			   *node_name = NameStr(*PG_GETARG_NAME(0));
-	char			   *node_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	char		   *node_name;
+	char		   *node_dsn;
+	char		   *location = NULL;
+	char		   *country = NULL;
+	Jsonb		   *info = NULL;
 	SpockNode		node;
 	SpockInterface	nodeif;
 	SpockRepSet		repset;
 
+	/* node name or dsn cannot be NULL */
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+		PG_RETURN_NULL();
+
+	node_name = NameStr(*PG_GETARG_NAME(0));
+	node_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
+
+	if (!PG_ARGISNULL(2))
+		location = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	if (!PG_ARGISNULL(3))
+		country = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	if (!PG_ARGISNULL(4))
+		info = PG_GETARG_JSONB_P(4);
+
 	node.id = InvalidOid;
 	node.name = node_name;
+	node.location = location;
+	node.country = country;
+	node.info = info;
 	create_node(&node);
 
 	nodeif.id = InvalidOid;
@@ -410,7 +430,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	PGconn				   *conn;
 	SpockSubscription	sub;
 	SpockSyncStatus		sync;
-	SpockNode			origin;
+	SpockNode		   *origin;
 	SpockNode		   *existing_origin;
 	SpockInterface		originif;
 	SpockLocalNode     *localnode;
@@ -425,7 +445,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 
 	/* Now, fetch info about remote node. */
 	conn = spock_connect(provider_dsn, sub_name, "create");
-	spock_remote_node_info(conn, &origin.id, &origin.name, NULL, NULL, NULL);
+	origin = spock_remote_node_info(conn, NULL, NULL, NULL);
 	PQfinish(conn);
 
 	/* Check that we can connect remotely also in replication mode. */
@@ -440,18 +460,18 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	 * Check for existing local representation of remote node and interface
 	 * and lock it if it already exists.
 	 */
-	existing_origin = get_node_by_name(origin.name, true);
+	existing_origin = get_node_by_name(origin->name, true);
 
 	/*
 	 * If not found, crate local representation of remote node and interface.
 	 */
 	if (!existing_origin)
 	{
-		create_node(&origin);
+		create_node(origin);
 
 		originif.id = InvalidOid;
-		originif.name = origin.name;
-		originif.nodeid = origin.id;
+		originif.name = origin->name;
+		originif.nodeid = origin->id;
 		originif.dsn = provider_dsn;
 		create_node_interface(&originif);
 	}
@@ -459,12 +479,12 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	{
 		SpockInterface *existingif;
 
-		existingif = get_node_interface_by_name(origin.id, origin.name, false);
+		existingif = get_node_interface_by_name(origin->id, origin->name, false);
 		if (strcmp(existingif->dsn, provider_dsn) != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("dsn \"%s\" points to existing node \"%s\" with different dsn \"%s\"",
-					 provider_dsn, origin.name, existingif->dsn)));
+					 provider_dsn, origin->name, existingif->dsn)));
 
 		memcpy(&originif, existingif, sizeof(SpockInterface));
 	}
@@ -496,7 +516,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("existing subscription \"%s\" to node "
 									"\"%s\" already subscribes to replication "
-									"set \"%s\"", esub->name, origin.name,
+									"set \"%s\"", esub->name, origin->name,
 									newset)));
 			}
 		}
@@ -518,7 +538,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	sub.forward_origins = textarray_to_list(forward_origin_names);
 	sub.enabled = true;
 	gen_slot_name(&slot_name, get_database_name(MyDatabaseId),
-				  origin.name, sub_name);
+				  origin->name, sub_name);
 	sub.slot_name = pstrdup(NameStr(slot_name));
 	sub.apply_delay = apply_delay;
 	sub.force_text_transfer = force_text_transfer;

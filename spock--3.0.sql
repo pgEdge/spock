@@ -2,7 +2,10 @@
 
 CREATE TABLE spock.node (
     node_id oid NOT NULL PRIMARY KEY,
-    node_name name NOT NULL UNIQUE
+    node_name name NOT NULL UNIQUE,
+    location text,
+    country text,
+    info jsonb
 ) WITH (user_catalog_table=true);
 
 CREATE TABLE spock.node_interface (
@@ -44,8 +47,10 @@ CREATE TABLE spock.local_sync_status (
 );
 
 
-CREATE FUNCTION spock.node_create(node_name name, dsn text)
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_node';
+CREATE FUNCTION spock.node_create(node_name name, dsn text,
+    location text DEFAULT NULL, country text DEFAULT NULL,
+    info jsonb DEFAULT NULL)
+RETURNS oid CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_node';
 CREATE FUNCTION spock.node_drop(node_name name, ifexists boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_node';
 

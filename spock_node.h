@@ -13,11 +13,15 @@
 #define SPOCK_NODE_H
 
 #include "datatype/timestamp.h"
+#include "utils/jsonb.h"
 
 typedef struct SpockNode
 {
 	Oid			id;
 	char	   *name;
+	char	   *location;
+	char	   *country;
+	Jsonb	   *info;
 } SpockNode;
 
 typedef struct SpockInterface
