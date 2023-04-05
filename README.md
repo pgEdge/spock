@@ -44,13 +44,13 @@ Architectural details:
 
 Partitioned tables can now be replicated. By default, when adding a partitioned table to a replication set, it will include all of its present partitions. The later partitions can be added using the `partition_add` function. The DDL for the partitioned and partitions should be present on the subscriber nodes (same as for normal tables).
 
-Similarly, when removing partitioned table from the replication set, By default, the partitions of said table will also be removed.
+Similarly, when removing a partitioned table from a replication set, by default, the partitions of the table will also be removed.
 
-The replication of partition tables is bit different from normal tables. When doing initial synchronization, we query the partitioned table (or parent) to get all the rows for synchronization purposes and don't synchronize the individual partitions. However, after the initial sync of data, the normal operations resume i.e. the partitions start replicating like normal tables.
+The replication of partitioned tables is a bit different from normal tables. When doing initial synchronization, we query the partitioned table (or parent) to get all the rows for synchronization purposes and don't synchronize the individual partitions. However, after the initial sync of data, the normal operations resume i.e. the partitions start replicating like normal tables.
 
-It's possible to add individual partitions to the replication set in which case they will be replicated like regular tables (to the table of the same name as the partition on the subscriber). This has some performance advantages in the case partitioning definition is the same on both provider and subscriber, as the partitioning logic does not have to be executed.
+It's possible to add individual partitions to the replication set in which case they will be replicated like regular tables (to the table of the same name as the partition on the subscriber). This has performance advantages when partitioning definition is the same on both provider and subscriber, as the partitioning logic does not have to be executed.
 
-**Note:** There an exception to individual partition replication, which is, the individual partitions won't sync up the existing data. It's equivalent to setting `synchronize_data = false`.
+**Note:** There is an exception to individual partition replication, which is, the individual partitions won't sync up the existing data. It's equivalent to setting `synchronize_data = false`.
 
 When partitions are replicated through a partitioned table, the exception is the TRUNCATE command which always replicates with the list of affected tables or partitions.
 
