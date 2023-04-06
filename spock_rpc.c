@@ -304,7 +304,7 @@ spock_remote_node_info(PGconn* conn, char **sysid, char **dbname, char **replica
 	SpockNode	   *node = (SpockNode *)palloc0(sizeof(SpockNode));
 	PGresult	   *res;
 
-	res = PQexec(conn, "SELECT * FROM spock.spock_node_info()");
+	res = PQexec(conn, "SELECT * FROM spock.node_info()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		elog(ERROR, "could not fetch remote node info: %s\n", PQerrorMessage(conn));
 

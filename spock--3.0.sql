@@ -260,9 +260,11 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicat
 CREATE OR REPLACE FUNCTION spock.queue_truncate()
 RETURNS trigger LANGUAGE c AS 'MODULE_PATHNAME', 'spock_queue_truncate';
 
-CREATE FUNCTION spock.spock_node_info(OUT node_id oid, OUT node_name text, OUT sysid text, OUT dbname text, OUT replication_sets text)
+CREATE FUNCTION spock.node_info(OUT node_id oid, OUT node_name text,
+    OUT sysid text, OUT dbname text, OUT replication_sets text,
+    OUT location text, OUT country text, OUT info jsonb)
 RETURNS record
-STABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME';
+STABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME', 'spock_node_info';
 
 CREATE FUNCTION spock.spock_gen_slot_name(name, name, name)
 RETURNS name

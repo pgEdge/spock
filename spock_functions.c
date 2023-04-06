@@ -2064,8 +2064,8 @@ Datum
 spock_node_info(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
-	Datum		values[5];
-	bool		nulls[5];
+	Datum		values[8];
+	bool		nulls[8];
 	HeapTuple	htup;
 	char		sysid[32];
 	List	   *repsets;
@@ -2088,6 +2088,21 @@ spock_node_info(PG_FUNCTION_ARGS)
 	values[2] = CStringGetTextDatum(sysid);
 	values[3] = CStringGetTextDatum(get_database_name(MyDatabaseId));
 	values[4] = CStringGetTextDatum(repsetslist_to_identifierstr(repsets));
+
+	if (node->node->location)
+		values[5] = CStringGetTextDatum(node->node->location);
+	else
+		nulls[5] = true;
+
+	if (node->node->country)
+		values[6] = CStringGetTextDatum(node->node->country);
+	else
+		nulls[6] = true;
+
+	if (node->node->info)
+		values[7] = JsonbPGetDatum(node->node->info);
+	else
+		nulls[7] = true;
 
 	htup = heap_form_tuple(tupdesc, values, nulls);
 
