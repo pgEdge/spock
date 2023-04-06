@@ -31,7 +31,7 @@ SELECT * FROM some_local_tbl3 ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP SEQUENCE public.some_local_seq;
 	DROP TABLE public.some_local_tbl;
 	DROP TABLE public.some_local_tbl1;

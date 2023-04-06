@@ -33,7 +33,7 @@ CREATE TABLE public.basic_dml (
 	subonly_def integer DEFAULT 99
 );
 
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
 
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
@@ -41,24 +41,24 @@ WHERE relid = 'public.basic_dml'::regclass;
 \c :provider_dsn
 
 -- Fails: the column filter list must include the key
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something}');
 
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
 
 -- Fails: the column filter list may not include cols that are not in the table
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something, nosuchcol}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something, nosuchcol}');
 
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
 
 -- At provider, add table to replication set, with filtered columns
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data, something}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data, something}');
 
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
 
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
 
 SELECT id, data, something FROM basic_dml ORDER BY id;
 
@@ -67,11 +67,11 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 
 BEGIN;
-SET LOCAL statement_timeout = '10s';
-SELECT spock.wait_for_table_sync_complete('test_subscription', 'basic_dml');
+SET LOCAL statement_timeout = '20s';
+SELECT spock.table_wait_for_sync('test_subscription', 'basic_dml');
 COMMIT;
 
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
 
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
@@ -83,14 +83,14 @@ SELECT id, data, something FROM basic_dml ORDER BY id;
 
 -- Adding a table that's already selectively replicated fails
 \set VERBOSITY terse
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true);
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true);
 \set VERBOSITY default
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
 
 -- So does trying to re-add to change the column set
 \set VERBOSITY terse
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data}');
 \set VERBOSITY default
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
@@ -101,17 +101,17 @@ BEGIN;
 ALTER TABLE public.basic_dml DROP COLUMN data;
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
 ROLLBACK;
 
 -- Even when wrapped (RM#5916)
 BEGIN;
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 ALTER TABLE public.basic_dml DROP COLUMN data;
 $$);
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
 ROLLBACK;
 
 -- CASCADE should be allowed though
@@ -119,16 +119,16 @@ BEGIN;
 ALTER TABLE public.basic_dml DROP COLUMN data CASCADE;
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
 ROLLBACK;
 
 BEGIN;
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 ALTER TABLE public.basic_dml DROP COLUMN data CASCADE;
 $$);
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
 ROLLBACK;
@@ -141,7 +141,7 @@ ALTER TABLE public.basic_dml DROP COLUMN other;
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.basic_dml CASCADE;
 $$);
 

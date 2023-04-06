@@ -1,7 +1,7 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
-SELECT * FROM spock.drop_node(node_name := 'test_provider');
+SELECT * FROM spock.node_drop(node_name := 'test_provider');
 ERROR:  cannot drop node "test_provider" because one or more replication slots for the node are still active
 HINT:  drop the subscriptions connected to the node first
 SELECT plugin, slot_type, active FROM pg_replication_slots;
@@ -17,21 +17,21 @@ SELECT count(*) FROM pg_stat_replication;
 (1 row)
 
 \c :subscriber_dsn
-SELECT * FROM spock.drop_subscription('test_subscription');
- drop_subscription 
--------------------
-                 1
+SELECT * FROM spock.sub_drop('test_subscription');
+ sub_drop 
+----------
+        1
 (1 row)
 
-SELECT * FROM spock.drop_node(node_name := 'test_subscriber');
- drop_node 
+SELECT * FROM spock.node_drop(node_name := 'test_subscriber');
+ node_drop 
 -----------
  t
 (1 row)
 
 \c :provider_dsn
-SELECT * FROM spock.drop_node(node_name := 'test_provider');
- drop_node 
+SELECT * FROM spock.node_drop(node_name := 'test_provider');
+ node_drop 
 -----------
  t
 (1 row)

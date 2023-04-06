@@ -2,7 +2,7 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.f1k_products (
     product_no integer PRIMARY KEY,
     product_id integer,
@@ -17,20 +17,20 @@ CREATE TABLE public.f1k_orders (
 );
 --pass
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'f1k_products');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default', 'f1k_products');
+ repset_add_table 
+------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default_insert_only', 'f1k_orders');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default_insert_only', 'f1k_orders');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -71,14 +71,14 @@ SELECT * FROM public.f1k_orders;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.f1k_orders CASCADE;
 	DROP TABLE public.f1k_products CASCADE;
 $$);
 NOTICE:  drop cascades to table public.f1k_orders membership in replication set default_insert_only
 NOTICE:  drop cascades to table public.f1k_products membership in replication set default
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 

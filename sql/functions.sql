@@ -5,7 +5,7 @@ SELECT * FROM spock_regress_variables()
 
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE FUNCTION public.add(integer, integer) RETURNS integer
     AS 'select $1 + $2;'
     LANGUAGE SQL
@@ -19,7 +19,7 @@ CREATE TABLE public.funct2(
 ) ;
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default_insert_only', 'public.funct2');
+SELECT * FROM spock.repset_add_table('default_insert_only', 'public.funct2');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -34,7 +34,7 @@ SELECT * from public.funct2;
 
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 create or replace function public.get_curr_century() returns double precision as
  'SELECT EXTRACT(CENTURY FROM NOW());'
 language sql volatile;
@@ -46,7 +46,7 @@ CREATE TABLE public.funct5(
 );
 $$);
 
-SELECT * FROM spock.replication_set_add_all_tables('default_insert_only', '{public}');
+SELECT * FROM spock.repset_add_all_tables('default_insert_only', '{public}');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -61,7 +61,7 @@ SELECT * from public.funct5;
 --nextval check
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE SEQUENCE public.INSERT_SEQ;
 
 CREATE TABLE public.funct (
@@ -70,7 +70,7 @@ CREATE TABLE public.funct (
 );
 $$);
 
-SELECT * FROM spock.replication_set_add_all_tables('default_insert_only', '{public}');
+SELECT * FROM spock.repset_add_all_tables('default_insert_only', '{public}');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -96,7 +96,7 @@ SELECT * FROM public.funct;
 -- test replication where the destination table has extra (nullable) columns that are not in the origin table
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.nullcheck_tbl(
 	id integer PRIMARY KEY,
 	id1 integer,
@@ -104,7 +104,7 @@ CREATE TABLE public.nullcheck_tbl(
 ) ;
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'nullcheck_tbl');
+SELECT * FROM spock.repset_add_table('default', 'nullcheck_tbl');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -145,7 +145,7 @@ SELECT * FROM public.nullcheck_tbl;
 
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.not_nullcheck_tbl(
 	id integer PRIMARY KEY,
 	id1 integer,
@@ -153,7 +153,7 @@ CREATE TABLE public.not_nullcheck_tbl(
 ) ;
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'not_nullcheck_tbl');
+SELECT * FROM spock.repset_add_table('default', 'not_nullcheck_tbl');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -177,7 +177,7 @@ SELECT * FROM public.not_nullcheck_tbl;
 INSERT INTO public.not_nullcheck_tbl(id,id1,name) VALUES (3,3,'name3');
 SELECT * FROM public.not_nullcheck_tbl;
 
-SELECT spock.alter_subscription_disable('test_subscription', true);
+SELECT spock.sub_disable('test_subscription', true);
 
 \c :provider_dsn
 
@@ -197,7 +197,7 @@ SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 
 
 \c :subscriber_dsn
 
-SELECT spock.alter_subscription_enable('test_subscription', true);
+SELECT spock.sub_enable('test_subscription', true);
 ALTER TABLE public.not_nullcheck_tbl ALTER COLUMN id2 SET default 99;
 
 \c :provider_dsn
@@ -223,7 +223,7 @@ SELECT * FROM public.not_nullcheck_tbl;
 
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE FUNCTION public.some_prime_numbers() RETURNS SETOF integer
 	LANGUAGE sql IMMUTABLE STRICT LEAKPROOF
 	AS $_$
@@ -247,7 +247,7 @@ CREATE TABLE public.prime_tbl (
 INSERT INTO public.prime_tbl (num) VALUES(17), (31), (79);
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'public.prime_tbl');
+SELECT * FROM spock.repset_add_table('default', 'public.prime_tbl');
 
 DELETE FROM public.prime_tbl WHERE num = 31;
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
@@ -257,7 +257,7 @@ SELECT num FROM public.prime_tbl;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.funct CASCADE;
 	DROP SEQUENCE public.INSERT_SEQ;
 	DROP TABLE public.funct2 CASCADE;

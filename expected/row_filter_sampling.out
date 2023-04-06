@@ -3,10 +3,10 @@ SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
 -- testing volatile sampling function in row_filter
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.test_tablesample (id int primary key, name text) WITH (fillfactor=10);
 $$);
- replicate_ddl_command 
+ replicate_ddl 
 -----------------------
  t
 (1 row)
@@ -20,8 +20,8 @@ language sql volatile;
 create or replace function funcn_get_bernoulli_sample_count(integer, integer) returns bigint as
 $$ (SELECT count(*) FROM test_tablesample TABLESAMPLE BERNOULLI ($1) REPEATABLE ($2)); $$
 language sql volatile;
-SELECT * FROM spock.replication_set_add_table('default', 'test_tablesample', false, row_filter := $rf$id > funcn_get_system_sample_count(100, 3) $rf$);
- replication_set_add_table 
+SELECT * FROM spock.repset_add_table('default', 'test_tablesample', false, row_filter := $rf$id > funcn_get_system_sample_count(100, 3) $rf$);
+ repset_add_table 
 ---------------------------
  t
 (1 row)
@@ -32,8 +32,8 @@ SELECT * FROM spock.replication_set_remove_table('default', 'test_tablesample');
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'test_tablesample', true, row_filter := $rf$id > funcn_get_bernoulli_sample_count(10, 0) $rf$);
- replication_set_add_table 
+SELECT * FROM spock.repset_add_table('default', 'test_tablesample', true, row_filter := $rf$id > funcn_get_bernoulli_sample_count(10, 0) $rf$);
+ repset_add_table 
 ---------------------------
  t
 (1 row)
@@ -84,11 +84,11 @@ SELECT * FROM test_tablesample ORDER BY id limit 5;
 \set VERBOSITY terse
 DROP FUNCTION funcn_get_system_sample_count(integer, integer);
 DROP FUNCTION funcn_get_bernoulli_sample_count(integer, integer);
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.test_tablesample CASCADE;
 $$);
 NOTICE:  drop cascades to table public.test_tablesample membership in replication set default
- replicate_ddl_command 
+ replicate_ddl 
 -----------------------
  t
 (1 row)

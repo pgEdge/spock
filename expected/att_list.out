@@ -9,11 +9,11 @@ CREATE TABLE public.basic_dml (
 	something interval
 );
 -- fails as primary key is not included
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', columns := '{ data, something}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', columns := '{ data, something}');
 ERROR:  REPLICA IDENTITY columns must be replicated
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', columns := '{id, data, something}');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', columns := '{id, data, something}');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -269,7 +269,7 @@ SELECT * FROM basic_dml ORDER BY other;
      5 | @ 50 secs          | foo
 (5 rows)
 
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml', ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml', ARRAY['default']);
  nspname |  relname  |  att_list   | has_row_filter 
 ---------+-----------+-------------+----------------
  public  | basic_dml | {something} | f
@@ -277,7 +277,7 @@ SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_i
 
 \c :subscriber_dsn
 -- verify that columns are not automatically added for filtering unless told so.
-SELECT * FROM spock.show_subscription_table('test_subscription', 'basic_dml');
+SELECT * FROM spock.sub_show_table('test_subscription', 'basic_dml');
  nspname |  relname  | status  
 ---------+-----------+---------
  public  | basic_dml | unknown
@@ -296,12 +296,12 @@ SELECT * FROM basic_dml ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.basic_dml CASCADE;
 $$);
 NOTICE:  drop cascades to table public.basic_dml membership in replication set default
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 

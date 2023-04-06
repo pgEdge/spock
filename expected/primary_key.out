@@ -4,7 +4,7 @@ SELECT * FROM spock_regress_variables()
 \c :provider_dsn
 -- testing update of primary key
 -- create  table with primary key and 3 other tables referencing it
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.pk_users (
     id integer PRIMARY KEY,
     another_id integer unique not null,
@@ -15,14 +15,14 @@ CREATE TABLE public.pk_users (
 
 --pass
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'pk_users');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default', 'pk_users');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -109,7 +109,7 @@ SELECT * FROM pk_users WHERE id IN (5000,5001,6000) ORDER BY id;
 \c :provider_dsn
 DELETE FROM pk_users WHERE id IN (5000,5001,6000);
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE UNIQUE INDEX another_id_temp_idx ON public.pk_users (another_id);
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY USING INDEX another_id_temp_idx;
@@ -117,8 +117,8 @@ ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_another_id_key;
 $$);
 NOTICE:  ALTER TABLE / ADD CONSTRAINT USING INDEX will rename index "another_id_temp_idx" to "pk_users_pkey"
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
@@ -202,14 +202,14 @@ SELECT * FROM pk_users ORDER BY id;
 \set VERBOSITY terse
 SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
 \gset
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE UNIQUE INDEX id_temp_idx ON public.pk_users (id);
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY USING INDEX id_temp_idx;
 $$);
 NOTICE:  ALTER TABLE / ADD CONSTRAINT USING INDEX will rename index "id_temp_idx" to "pk_users_pkey"
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
@@ -240,9 +240,9 @@ SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_
  address    | f          | f
 (5 rows)
 
-SELECT spock.alter_subscription_disable('test_subscription', true);
- alter_subscription_disable 
-----------------------------
+SELECT spock.sub_disable('test_subscription', true);
+ sub_disable 
+-------------
  t
 (1 row)
 
@@ -275,9 +275,9 @@ SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 
 (0 rows)
 
 \c :subscriber_dsn
-SELECT spock.alter_subscription_enable('test_subscription', true);
- alter_subscription_enable 
----------------------------
+SELECT spock.sub_enable('test_subscription', true);
+ sub_enable 
+------------
  t
 (1 row)
 
@@ -331,11 +331,11 @@ SELECT relreplident FROM pg_class WHERE oid = 'pk_users'::regclass;
  d
 (1 row)
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey;
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
@@ -343,13 +343,13 @@ INSERT INTO pk_users VALUES(90,0,0,'User90', 'Address90');
 -- spock will stop us adding the table to a repset if we try to,
 -- but didn't stop us altering it, and won't stop us updating it...
 BEGIN;
-SELECT * FROM spock.replication_set_remove_table('default', 'pk_users');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'pk_users');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'pk_users');
+SELECT * FROM spock.repset_add_table('default', 'pk_users');
 ERROR:  table pk_users cannot be added to replication set default
 ROLLBACK;
 -- Per 2ndQuadrant/spock_internal#146 this shouldn't be allowed, but
@@ -386,13 +386,13 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 -- Demonstrate that deferrable indexes aren't yet supported for updates on downstream
 -- and will fail with an informative error.
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 ALTER TABLE public.pk_users
     DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY (id) DEFERRABLE INITIALLY DEFERRED;
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
@@ -409,13 +409,13 @@ SELECT indisreplident FROM pg_index WHERE indexrelid = 'pk_users_pkey'::regclass
 -- spock won't let us add the table to a repset, though
 -- it doesn't stop us altering it; see 2ndQuadrant/spock_internal#146
 BEGIN;
-SELECT * FROM spock.replication_set_remove_table('default', 'pk_users');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'pk_users');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'pk_users');
+SELECT * FROM spock.repset_add_table('default', 'pk_users');
 ERROR:  table pk_users cannot be added to replication set default
 ROLLBACK;
 -- We can still INSERT (which is fine)
@@ -444,15 +444,15 @@ ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY (id) NOT DEFERRABLE;
 -- then replay. Toggle the subscription's enabled state
 -- to make it recover faster for a quicker test run.
-SELECT spock.alter_subscription_disable('test_subscription', true);
- alter_subscription_disable 
-----------------------------
+SELECT spock.sub_disable('test_subscription', true);
+ sub_disable 
+-------------
  t
 (1 row)
 
-SELECT spock.alter_subscription_enable('test_subscription', true);
- alter_subscription_enable 
----------------------------
+SELECT spock.sub_enable('test_subscription', true);
+ sub_enable 
+------------
  t
 (1 row)
 
@@ -523,11 +523,11 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  
 (1 row)
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
   CREATE UNIQUE INDEX pk_users_another_id_idx ON public.pk_users(another_id);
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
@@ -657,12 +657,12 @@ SELECT * FROM pk_users ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.pk_users CASCADE;
 $$);
 NOTICE:  drop cascades to table public.pk_users membership in replication set default
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 

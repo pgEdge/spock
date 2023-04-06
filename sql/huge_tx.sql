@@ -4,7 +4,7 @@ SELECT * FROM spock_regress_variables()
 
 \c :provider_dsn
 -- lots of small rows replication with DDL outside transaction
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.a_huge (
 		id integer primary key,
                 id1 integer,
@@ -12,7 +12,7 @@ SELECT spock.replicate_ddl_command($$
 		data1 text default 'data1'
 	);
 $$);
-SELECT * FROM spock.replication_set_add_table('default', 'a_huge');
+SELECT * FROM spock.repset_add_table('default', 'a_huge');
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 BEGIN;
@@ -30,7 +30,7 @@ SELECT count(*) FROM a_huge;
 \c :provider_dsn
 -- lots of small rows replication with DDL within transaction
 BEGIN;
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.b_huge (
 		id integer primary key,
                 id1 integer,
@@ -39,7 +39,7 @@ SELECT spock.replicate_ddl_command($$
 	);
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'b_huge');
+SELECT * FROM spock.repset_add_table('default', 'b_huge');
 
 INSERT INTO public.b_huge VALUES (generate_series(1,20000000), generate_series(1,20000000));
 
@@ -53,7 +53,7 @@ SELECT count(*) FROM b_huge;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.a_huge CASCADE;
 	DROP TABLE public.b_huge CASCADE;
 $$);

@@ -3,11 +3,11 @@ SELECT * FROM spock_regress_variables()
 
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.test_trg_data(id serial primary key, data text);
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'test_trg_data');
+SELECT * FROM spock.repset_add_table('default', 'test_trg_data');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -69,7 +69,7 @@ SELECT * FROM test_trg_hist;
 DROP TABLE test_trg_hist CASCADE;
 
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
         CREATE TABLE public.basic_dml (
                 id serial primary key,
                 other integer,
@@ -78,7 +78,7 @@ SELECT spock.replicate_ddl_command($$
         );
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -142,7 +142,7 @@ DROP FUNCTION filter_basic_dml_fn() CASCADE;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.test_trg_data CASCADE;
 	DROP TABLE public.basic_dml CASCADE;
 $$);

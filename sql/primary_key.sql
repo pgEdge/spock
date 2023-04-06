@@ -6,7 +6,7 @@ SELECT * FROM spock_regress_variables()
 
 -- testing update of primary key
 -- create  table with primary key and 3 other tables referencing it
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.pk_users (
     id integer PRIMARY KEY,
     another_id integer unique not null,
@@ -18,7 +18,7 @@ CREATE TABLE public.pk_users (
 --pass
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'pk_users');
+SELECT * FROM spock.repset_add_table('default', 'pk_users');
 
 INSERT INTO pk_users VALUES(1,11,1,'User1', 'Address1');
 INSERT INTO pk_users VALUES(2,12,1,'User2', 'Address2');
@@ -63,7 +63,7 @@ DELETE FROM pk_users WHERE id IN (5000,5001,6000);
 
 \set VERBOSITY terse
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE UNIQUE INDEX another_id_temp_idx ON public.pk_users (another_id);
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY USING INDEX another_id_temp_idx;
@@ -107,7 +107,7 @@ SELECT * FROM pk_users ORDER BY id;
 SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
 \gset
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE UNIQUE INDEX id_temp_idx ON public.pk_users (id);
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY USING INDEX id_temp_idx;
@@ -120,7 +120,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, :curr_lsn);
 \c :subscriber_dsn
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;
 
-SELECT spock.alter_subscription_disable('test_subscription', true);
+SELECT spock.sub_disable('test_subscription', true);
 
 \c :provider_dsn
 
@@ -143,7 +143,7 @@ SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 
 
 \c :subscriber_dsn
 
-SELECT spock.alter_subscription_enable('test_subscription', true);
+SELECT spock.sub_yenable('test_subscription', true);
 DELETE FROM pk_users WHERE id = 4;-- remove the offending entries.
 
 \c :provider_dsn
@@ -179,7 +179,7 @@ SELECT * FROM pk_users ORDER BY id;
 SELECT indisreplident FROM pg_index WHERE indexrelid = 'pk_users_pkey'::regclass;
 SELECT relreplident FROM pg_class WHERE oid = 'pk_users'::regclass;
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey;
 $$);
 
@@ -189,7 +189,7 @@ INSERT INTO pk_users VALUES(90,0,0,'User90', 'Address90');
 -- but didn't stop us altering it, and won't stop us updating it...
 BEGIN;
 SELECT * FROM spock.replication_set_remove_table('default', 'pk_users');
-SELECT * FROM spock.replication_set_add_table('default', 'pk_users');
+SELECT * FROM spock.repset_add_table('default', 'pk_users');
 ROLLBACK;
 
 -- Per 2ndQuadrant/spock_internal#146 this shouldn't be allowed, but
@@ -229,7 +229,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 -- Demonstrate that deferrable indexes aren't yet supported for updates on downstream
 -- and will fail with an informative error.
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 ALTER TABLE public.pk_users
     DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY (id) DEFERRABLE INITIALLY DEFERRED;
@@ -245,7 +245,7 @@ SELECT indisreplident FROM pg_index WHERE indexrelid = 'pk_users_pkey'::regclass
 -- it doesn't stop us altering it; see 2ndQuadrant/spock_internal#146
 BEGIN;
 SELECT * FROM spock.replication_set_remove_table('default', 'pk_users');
-SELECT * FROM spock.replication_set_add_table('default', 'pk_users');
+SELECT * FROM spock.repset_add_table('default', 'pk_users');
 ROLLBACK;
 
 -- We can still INSERT (which is fine)
@@ -314,7 +314,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 -- constraint back.
 TRUNCATE TABLE pk_users;
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
   CREATE UNIQUE INDEX pk_users_another_id_idx ON public.pk_users(another_id);
 $$);
 \c :subscriber_dsn
@@ -377,6 +377,6 @@ SELECT * FROM pk_users ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.pk_users CASCADE;
 $$);

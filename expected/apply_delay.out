@@ -20,7 +20,7 @@ SELECT * FROM spock.create_replication_set('delay');
 CREATE or REPLACE function int2interval (x integer) returns interval as
 $$ select $1*'1 sec'::interval $$
 language sql;
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription_delay',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	replication_sets := '{delay}',
@@ -29,15 +29,15 @@ SELECT * FROM spock.create_subscription(
 	synchronize_data := false,
 	apply_delay := int2interval(2) -- 2 seconds
 );
- create_subscription 
+ sub_create 
 ---------------------
           1550781037
 (1 row)
 
 BEGIN;
 SET LOCAL statement_timeout = '30s';
-SELECT spock.wait_for_subscription_sync_complete('test_subscription_delay');
- wait_for_subscription_sync_complete 
+SELECT spock.sub_wait_for_sync('test_subscription_delay');
+ sub_wait_for_sync 
 -------------------------------------
  
 (1 row)
@@ -75,7 +75,7 @@ CREATE TABLE public.timestamps (
         id text primary key,
         ts timestamptz
 );
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
     CREATE TABLE public.basic_dml1 (
         id serial primary key,
         other integer,
@@ -83,7 +83,7 @@ SELECT spock.replicate_ddl_command($$
         something interval
     );
 $$);
- replicate_ddl_command 
+ replicate_ddl 
 -----------------------
  t
 (1 row)
@@ -96,8 +96,8 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 (1 row)
 
 INSERT INTO timestamps VALUES ('ts1', CURRENT_TIMESTAMP);
-SELECT * FROM spock.replication_set_add_table('delay', 'basic_dml1');
- replication_set_add_table 
+SELECT * FROM spock.repset_add_table('delay', 'basic_dml1');
+ repset_add_table 
 ---------------------------
  t
 (1 row)
@@ -162,10 +162,10 @@ SELECT * FROM spock.drop_replication_set('delay');
 (1 row)
 
 DROP TABLE public.timestamps CASCADE;
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
     DROP TABLE public.basic_dml1 CASCADE;
 $$);
- replicate_ddl_command 
+ replicate_ddl 
 -----------------------
  t
 (1 row)

@@ -63,7 +63,7 @@ ALTER EXTENSION spock UPDATE;
 
 \dx spock
 
-SELECT * FROM spock.create_node(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super');
+SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super');
 
 \c :subscriber_dsn
 SET client_min_messages = 'warning';
@@ -77,17 +77,17 @@ END;$$;
 
 CREATE EXTENSION IF NOT EXISTS spock;
 
-SELECT * FROM spock.create_node(node_name := 'test_subscriber', dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=super');
+SELECT * FROM spock.node_create(node_name := 'test_subscriber', dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=super');
 
 BEGIN;
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := true,
 	forward_origins := '{}');
 /*
  * Remove the function we added in preseed because otherwise the restore of
- * schema will fail. We do this in same transaction as create_subscription()
+ * schema will fail. We do this in same transaction as sub_create()
  * because the subscription process will only start on commit.
  */
 DROP FUNCTION IF EXISTS public.spock_regress_variables();
@@ -95,7 +95,7 @@ COMMIT;
 
 BEGIN;
 SET LOCAL statement_timeout = '30s';
-SELECT spock.wait_for_subscription_sync_complete('test_subscription');
+SELECT spock.sub_wait_for_sync('test_subscription');
 COMMIT;
 
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;

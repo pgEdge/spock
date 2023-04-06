@@ -12,7 +12,7 @@ DECLARE
         cr_command varchar;
 BEGIN
         FOR i IN $1 .. $2 LOOP
-                cr_command := 'SELECT spock.replicate_ddl_command(''
+                cr_command := 'SELECT spock.replicate_ddl(''
                 CREATE TABLE public.HUGE' || i || ' (
                 id integer primary key,
                 id1 integer,
@@ -33,7 +33,7 @@ DECLARE
         cr_command varchar;
 BEGIN
         FOR i IN $1 .. $2 LOOP
-                cr_command := 'SELECT * FROM spock.replication_set_add_table(
+                cr_command := 'SELECT * FROM spock.repset_add_table(
                 ''default'', ''HUGE' || i || ''' );';
         EXECUTE cr_command;
         END LOOP;
@@ -59,7 +59,7 @@ DECLARE
         cr_command varchar;
 BEGIN
         FOR i IN $1 .. $2 LOOP
-                cr_command := 'SELECT spock.replicate_ddl_command(''
+                cr_command := 'SELECT spock.replicate_ddl(''
                          DROP TABLE public.HUGE' || i ||' CASCADE;
                       '')';
         EXECUTE cr_command;

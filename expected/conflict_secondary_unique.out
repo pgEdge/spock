@@ -4,7 +4,7 @@ SELECT * FROM spock_regress_variables()
 \c :provider_dsn
 -- Test conflicts where a secondary unique constraint with a predicate exits,
 -- ensuring we don't generate false conflicts.
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.secondary_unique_pred (
     a integer PRIMARY KEY,
     b integer NOT NULL,
@@ -13,14 +13,14 @@ CREATE TABLE public.secondary_unique_pred (
 
 CREATE UNIQUE INDEX ON public.secondary_unique_pred (b) WHERE (check_unique);
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'secondary_unique_pred');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default', 'secondary_unique_pred');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -87,12 +87,12 @@ SELECT * FROM secondary_unique_pred ORDER BY a;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.secondary_unique_pred CASCADE;
 $$);
 NOTICE:  drop cascades to table public.secondary_unique_pred membership in replication set default
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 

@@ -11,9 +11,9 @@ CREATE TABLE public.basic_dml (
 );
 
 -- fails as primary key is not included
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', columns := '{ data, something}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', columns := '{ data, something}');
 
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', columns := '{id, data, something}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', columns := '{id, data, something}');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -122,15 +122,15 @@ VALUES (5, 'foo', '1 minute'::interval),
 UPDATE basic_dml set something = something - '10 seconds'::interval;
 DELETE FROM basic_dml WHERE other = 2;
 SELECT * FROM basic_dml ORDER BY other;
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml', ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml', ARRAY['default']);
 
 \c :subscriber_dsn
 -- verify that columns are not automatically added for filtering unless told so.
-SELECT * FROM spock.show_subscription_table('test_subscription', 'basic_dml');
+SELECT * FROM spock.sub_show_table('test_subscription', 'basic_dml');
 SELECT * FROM basic_dml ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.basic_dml CASCADE;
 $$);

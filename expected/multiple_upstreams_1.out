@@ -19,18 +19,18 @@ BEGIN
 END;$$;
 CREATE EXTENSION IF NOT EXISTS spock VERSION '2.0.0';
 ALTER EXTENSION spock UPDATE;
-SELECT * FROM spock.create_node(node_name := 'test_provider1', dsn := (SELECT provider1_dsn FROM spock_regress_variables()) || ' user=super');
- create_node 
+SELECT * FROM spock.node_create(node_name := 'test_provider1', dsn := (SELECT provider1_dsn FROM spock_regress_variables()) || ' user=super');
+ node_create 
 -------------
    866557357
 (1 row)
 
 \c :provider_dsn
 -- add these entries to provider
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
       CREATE TABLE public.multi_ups_tbl(id integer primary key, key text unique not null, data text);
 $$);
- replicate_ddl_command 
+ replicate_ddl 
 -----------------------
  t
 (1 row)
@@ -38,8 +38,8 @@ $$);
 INSERT INTO multi_ups_tbl VALUES(1, 'key1', 'data1');
 INSERT INTO multi_ups_tbl VALUES(2, 'key2', 'data2');
 INSERT INTO multi_ups_tbl VALUES(3, 'key3', 'data3');
-SELECT * FROM spock.replication_set_add_table('default', 'multi_ups_tbl', true);
- replication_set_add_table 
+SELECT * FROM spock.repset_add_table('default', 'multi_ups_tbl', true);
+ repset_add_table 
 -----------------------
  t
 (1 row)
@@ -56,8 +56,8 @@ CREATE TABLE multi_ups_tbl(id integer primary key, key text unique not null, dat
 INSERT INTO multi_ups_tbl VALUES(4, 'key4', 'data4');
 INSERT INTO multi_ups_tbl VALUES(5, 'key5', 'data5');
 INSERT INTO multi_ups_tbl VALUES(6, 'key6', 'data6');
-SELECT * FROM spock.replication_set_add_table('default', 'multi_ups_tbl');
- replication_set_add_table 
+SELECT * FROM spock.repset_add_table('default', 'multi_ups_tbl');
+ repset_add_table 
 -----------------------
  t
 (1 row)
@@ -66,19 +66,19 @@ SELECT * FROM spock.replication_set_add_table('default', 'multi_ups_tbl');
 -- We'll use the already existing spock node
 -- notice synchronize_structure as false when table definition already exists
 BEGIN;
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription1',
     provider_dsn := (SELECT provider1_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := false,
 	forward_origins := '{}');
- create_subscription 
+ sub_create 
 ---------------------
           3102546391
 (1 row)
 
 /*
  * Remove the function we added in preseed because otherwise the restore of
- * schema will fail. We do this in same transaction as create_subscription()
+ * schema will fail. We do this in same transaction as sub_create()
  * because the subscription process will only start on commit.
  */
 DROP FUNCTION IF EXISTS public.spock_regress_variables();
@@ -146,14 +146,14 @@ SELECT count(*) FROM pg_stat_replication;
 
 -- cleanup
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
         DROP TABLE public.multi_ups_tbl CASCADE;
 $$);
 NOTICE:  drop cascades to table public.multi_ups_tbl membership in replication set default
 CONTEXT:  during execution of queued SQL statement: 
         DROP TABLE public.multi_ups_tbl CASCADE;
 
- replicate_ddl_command 
+ replicate_ddl 
 -----------------------
  t
 (1 row)

@@ -33,14 +33,14 @@ END;
 $$;
 ALTER EXTENSION spock UPDATE;
 -- fail (local node not existing)
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica',
 	forward_origins := '{}');
 ERROR:  local spock node not found
 -- succeed
-SELECT * FROM spock.create_node(node_name := 'test_subscriber', dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=nonreplica');
- create_node 
+SELECT * FROM spock.node_create(node_name := 'test_subscriber', dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=nonreplica');
+ node_create 
 -------------
   1755434425
 (1 row)
@@ -48,7 +48,7 @@ SELECT * FROM spock.create_node(node_name := 'test_subscriber', dsn := (SELECT s
 -- fail (can't connect to remote)
 DO $$
 BEGIN
-    SELECT * FROM spock.create_subscription(
+    SELECT * FROM spock.sub_create(
         subscription_name := 'test_subscription',
         provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonexisting',
         forward_origins := '{}');
@@ -60,7 +60,7 @@ $$;
 ERROR:  could not connect to the postgresql server: FATAL:  role "nonexisting" does not exist
 
 -- fail (remote node not existing)
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica',
 	forward_origins := '{}');
@@ -69,8 +69,8 @@ ERROR:  could not fetch remote node info: ERROR:  local spock node not found
 
 \c :provider_dsn
 -- succeed
-SELECT * FROM spock.create_node(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica');
- create_node 
+SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica');
+ node_create 
 -------------
   2689511696
 (1 row)
@@ -80,7 +80,7 @@ SELECT * FROM spock.create_node(node_name := 'test_provider', dsn := (SELECT pro
 -- fail (can't connect with replication connection to remote)
 DO $$
 BEGIN
-    SELECT * FROM spock.create_subscription(
+    SELECT * FROM spock.sub_create(
         subscription_name := 'test_subscription',
         provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica',
             forward_origins := '{}');
@@ -91,16 +91,16 @@ END;
 $$;
 ERROR:  could not connect to the postgresql server in replication mode
 -- cleanup
-SELECT * FROM spock.drop_node('test_subscriber');
- drop_node 
+SELECT * FROM spock.node_drop('test_subscriber');
+ node_drop 
 -----------
  t
 (1 row)
 
 DROP EXTENSION spock;
 \c :provider_dsn
-SELECT * FROM spock.drop_node('test_provider');
- drop_node 
+SELECT * FROM spock.node_drop('test_provider');
+ node_drop 
 -----------
  t
 (1 row)

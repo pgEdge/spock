@@ -4,7 +4,7 @@ SELECT * FROM spock_regress_variables()
 
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
      CREATE TABLE public.x (
 	a serial primary key,
 	b int,
@@ -14,7 +14,7 @@ SELECT spock.replicate_ddl_command($$
      );
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'x');
+SELECT * FROM spock.repset_add_table('default', 'x');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -61,6 +61,6 @@ SELECT * FROM x ORDER BY a;
 \c :provider_dsn
 
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.x CASCADE;
 $$);

@@ -30,14 +30,14 @@ END;
 $$;
 ALTER EXTENSION spock UPDATE;
 
-SELECT * FROM spock.create_node(node_name := 'test_orig_provider', dsn := (SELECT orig_provider_dsn FROM spock_regress_variables()) || ' user=super');
+SELECT * FROM spock.node_create(node_name := 'test_orig_provider', dsn := (SELECT orig_provider_dsn FROM spock_regress_variables()) || ' user=super');
 
 \c :provider_dsn
 SET client_min_messages = 'warning';
 -- test_provider spock node already exists here.
 
 BEGIN;
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_orig_subscription',
     provider_dsn := (SELECT orig_provider_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := false,
@@ -46,10 +46,10 @@ COMMIT;
 
 BEGIN;
 SET LOCAL statement_timeout = '10s';
-SELECT spock.wait_for_subscription_sync_complete('test_orig_subscription');
+SELECT spock.sub_wait_for_sync('test_orig_subscription');
 COMMIT;
 
-SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.show_subscription_status();
+SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.sub_show_status();
 
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
 
@@ -62,7 +62,7 @@ SELECT count(*) FROM pg_stat_replication;
 
 \c :orig_provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.top_level_tbl (
 		id serial primary key,
 		other integer,
@@ -71,7 +71,7 @@ SELECT spock.replicate_ddl_command($$
 	);
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'top_level_tbl');
+SELECT * FROM spock.repset_add_table('default', 'top_level_tbl');
 INSERT INTO top_level_tbl(other, data, something)
 VALUES (5, 'foo', '1 minute'::interval),
        (4, 'bar', '12 weeks'::interval),
@@ -85,7 +85,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT id, other, data, something FROM top_level_tbl ORDER BY id;
 
 -- Table that replicates from top level provider to mid-level spock node.
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.mid_level_tbl (
 		id serial primary key,
 		other integer,
@@ -94,7 +94,7 @@ SELECT spock.replicate_ddl_command($$
 	);
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'mid_level_tbl');
+SELECT * FROM spock.repset_add_table('default', 'mid_level_tbl');
 INSERT INTO mid_level_tbl(other, data, something)
 VALUES (5, 'foo', '1 minute'::interval),
        (4, 'bar', '12 weeks'::interval),
@@ -110,21 +110,21 @@ SELECT id, other, data, something FROM mid_level_tbl ORDER BY id;
 -- drop the tables
 \c :orig_provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.top_level_tbl CASCADE;
 $$);
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.mid_level_tbl CASCADE;
 $$);
 
 \c :provider_dsn
-SELECT * FROM spock.drop_subscription('test_orig_subscription');
+SELECT * FROM spock.sub_drop('test_orig_subscription');
 
 \c :orig_provider_dsn
-SELECT * FROM spock.drop_node(node_name := 'test_orig_provider');
+SELECT * FROM spock.node_drop(node_name := 'test_orig_provider');
 
 SELECT plugin, slot_type, active FROM pg_replication_slots;
 SELECT count(*) FROM pg_stat_replication;

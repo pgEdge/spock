@@ -6,7 +6,7 @@ SELECT * FROM spock_regress_variables()
 
 -- Test conflicts where a secondary unique constraint with a predicate exits,
 -- ensuring we don't generate false conflicts.
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.secondary_unique_pred (
     a integer PRIMARY KEY,
     b integer NOT NULL,
@@ -16,7 +16,7 @@ CREATE TABLE public.secondary_unique_pred (
 CREATE UNIQUE INDEX ON public.secondary_unique_pred (b) WHERE (check_unique);
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'secondary_unique_pred');
+SELECT * FROM spock.repset_add_table('default', 'secondary_unique_pred');
 
 INSERT INTO secondary_unique_pred (a, b, check_unique) VALUES (1, 1, false);
 INSERT INTO secondary_unique_pred (a, b, check_unique) VALUES (2, 1, false);
@@ -50,6 +50,6 @@ SELECT * FROM secondary_unique_pred ORDER BY a;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.secondary_unique_pred CASCADE;
 $$);

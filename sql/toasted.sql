@@ -4,7 +4,7 @@ SELECT * FROM spock_regress_variables()
 
 \c :provider_dsn
 BEGIN;
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.toasted (
 		id serial primary key,
 		other text,
@@ -12,9 +12,9 @@ SELECT spock.replicate_ddl_command($$
 	);
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'toasted');
+SELECT * FROM spock.repset_add_table('default', 'toasted');
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	ALTER TABLE public.toasted ALTER COLUMN data SET STORAGE EXTERNAL;
 $$);
 COMMIT;
@@ -48,6 +48,6 @@ SELECT * FROM toasted ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.toasted CASCADE;
 $$);

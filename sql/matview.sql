@@ -4,12 +4,12 @@ SELECT * FROM spock_regress_variables()
 
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.test_tbl(id serial primary key, data text);
 CREATE MATERIALIZED VIEW public.test_mv AS (SELECT * FROM public.test_tbl);
 $$);
 
-SELECT * FROM spock.replication_set_add_all_tables('default', '{public}');
+SELECT * FROM spock.repset_add_all_tables('default', '{public}');
 
 INSERT INTO test_tbl VALUES (1, 'a');
 
@@ -28,7 +28,7 @@ SELECT * FROM test_tbl ORDER BY id;
 SELECT * FROM test_mv ORDER BY id;
 
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
   CREATE UNIQUE INDEX ON public.test_mv(id);
 $$);
 INSERT INTO test_tbl VALUES (3, 'c');
@@ -39,7 +39,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 INSERT INTO test_tbl VALUES (4, 'd');
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
   REFRESH MATERIALIZED VIEW public.test_mv;
 $$);
 
@@ -47,7 +47,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 INSERT INTO test_tbl VALUES (5, 'e');
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
   REFRESH MATERIALIZED VIEW CONCURRENTLY public.test_mv;
 $$);
 
@@ -63,6 +63,6 @@ SELECT * FROM test_mv ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.test_tbl CASCADE;
 $$);

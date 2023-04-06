@@ -14,7 +14,7 @@ BEGIN
 	END IF;
 END;$$;
 
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_bidirectional',
     provider_dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=super',
     synchronize_structure := false,
@@ -23,11 +23,11 @@ SELECT * FROM spock.create_subscription(
 
 BEGIN;
 SET LOCAL statement_timeout = '10s';
-SELECT spock.wait_for_subscription_sync_complete('test_bidirectional');
+SELECT spock.sub_wait_for_sync('test_bidirectional');
 COMMIT;
 
 \c :subscriber_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
     CREATE TABLE public.basic_dml (
         id serial primary key,
         other integer,
@@ -36,13 +36,13 @@ SELECT spock.replicate_ddl_command($$
     );
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :provider_dsn
 
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml');
 
 -- check basic insert replication
 INSERT INTO basic_dml(other, data, something)
@@ -66,11 +66,11 @@ SELECT id, other, data, something FROM basic_dml ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
     DROP TABLE public.basic_dml CASCADE;
 $$);
 
-SELECT spock.drop_subscription('test_bidirectional');
+SELECT spock.sub_drop('test_bidirectional');
 
 SET client_min_messages = 'warning';
 DROP EXTENSION IF EXISTS spock_origin;

@@ -2,18 +2,18 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.test_tbl(id serial primary key, data text);
 CREATE MATERIALIZED VIEW public.test_mv AS (SELECT * FROM public.test_tbl);
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_all_tables('default', '{public}');
- replication_set_add_all_tables 
---------------------------------
+SELECT * FROM spock.repset_add_all_tables('default', '{public}');
+ repset_add_all_tables 
+-----------------------
  t
 (1 row)
 
@@ -53,11 +53,11 @@ SELECT * FROM test_mv ORDER BY id;
 (0 rows)
 
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
   CREATE UNIQUE INDEX ON public.test_mv(id);
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
@@ -70,11 +70,11 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 (1 row)
 
 INSERT INTO test_tbl VALUES (4, 'd');
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
   REFRESH MATERIALIZED VIEW public.test_mv;
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
@@ -85,11 +85,11 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 (1 row)
 
 INSERT INTO test_tbl VALUES (5, 'e');
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
   REFRESH MATERIALIZED VIEW CONCURRENTLY public.test_mv;
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
@@ -142,13 +142,13 @@ SELECT * FROM test_mv ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.test_tbl CASCADE;
 $$);
 NOTICE:  drop cascades to materialized view public.test_mv
 NOTICE:  drop cascades to table public.test_tbl membership in replication set default
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 

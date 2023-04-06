@@ -33,7 +33,7 @@ CREATE TABLE public.basic_dml (
 	subonly integer,
 	subonly_def integer DEFAULT 99
 );
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |                att_list                 | has_row_filter 
 ---------+-----------+-----------------------------------------+----------------
  public  | basic_dml | {id,data,something,subonly,subonly_def} | f
@@ -48,7 +48,7 @@ WHERE relid = 'public.basic_dml'::regclass;
 
 \c :provider_dsn
 -- Fails: the column filter list must include the key
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something}');
 ERROR:  REPLICA IDENTITY columns must be replicated
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
@@ -58,7 +58,7 @@ WHERE relid = 'public.basic_dml'::regclass;
 (1 row)
 
 -- Fails: the column filter list may not include cols that are not in the table
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something, nosuchcol}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true, columns := '{data, something, nosuchcol}');
 ERROR:  table public.basic_dml does not have column nosuchcol
 SELECT nspname, relname, set_name FROM spock.tables
 WHERE relid = 'public.basic_dml'::regclass;
@@ -68,8 +68,8 @@ WHERE relid = 'public.basic_dml'::regclass;
 (1 row)
 
 -- At provider, add table to replication set, with filtered columns
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data, something}');
- replication_set_add_table 
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data, something}');
+ repset_add_table 
 ---------------------------
  t
 (1 row)
@@ -81,7 +81,7 @@ WHERE relid = 'public.basic_dml'::regclass;
  public  | basic_dml | default
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |      att_list       | has_row_filter 
 ---------+-----------+---------------------+----------------
  public  | basic_dml | {id,data,something} | f
@@ -113,7 +113,7 @@ SELECT spock.wait_for_table_sync_complete('test_subscription', 'basic_dml');
 (1 row)
 
 COMMIT;
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |                att_list                 | has_row_filter 
 ---------+-----------+-----------------------------------------+----------------
  public  | basic_dml | {id,data,something,subonly,subonly_def} | f
@@ -140,7 +140,7 @@ SELECT id, data, something FROM basic_dml ORDER BY id;
 \c :provider_dsn
 -- Adding a table that's already selectively replicated fails
 \set VERBOSITY terse
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true);
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true);
 ERROR:  duplicate key value violates unique constraint "replication_set_table_pkey"
 \set VERBOSITY default
 SELECT nspname, relname, set_name FROM spock.tables
@@ -152,7 +152,7 @@ WHERE relid = 'public.basic_dml'::regclass;
 
 -- So does trying to re-add to change the column set
 \set VERBOSITY terse
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data}');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data}');
 ERROR:  duplicate key value violates unique constraint "replication_set_table_pkey"
 \set VERBOSITY default
 SELECT nspname, relname, set_name FROM spock.tables
@@ -173,7 +173,7 @@ WHERE relid = 'public.basic_dml'::regclass;
  public  | basic_dml | default
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |    att_list    | has_row_filter 
 ---------+-----------+----------------+----------------
  public  | basic_dml | {id,something} | f
@@ -182,10 +182,10 @@ SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_i
 ROLLBACK;
 -- Even when wrapped (RM#5916)
 BEGIN;
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 ALTER TABLE public.basic_dml DROP COLUMN data;
 $$);
- replicate_ddl_command 
+ replicate_ddl 
 -----------------------
  t
 (1 row)
@@ -197,7 +197,7 @@ WHERE relid = 'public.basic_dml'::regclass;
  public  | basic_dml | default
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |    att_list    | has_row_filter 
 ---------+-----------+----------------+----------------
  public  | basic_dml | {id,something} | f
@@ -214,7 +214,7 @@ WHERE relid = 'public.basic_dml'::regclass;
  public  | basic_dml | default
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |    att_list    | has_row_filter 
 ---------+-----------+----------------+----------------
  public  | basic_dml | {id,something} | f
@@ -229,15 +229,15 @@ WHERE relid = 'public.basic_dml'::regclass;
 
 ROLLBACK;
 BEGIN;
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 ALTER TABLE public.basic_dml DROP COLUMN data CASCADE;
 $$);
- replicate_ddl_command 
+ replicate_ddl 
 -----------------------
  t
 (1 row)
 
-SELECT nspname, relname, att_list, has_row_filter FROM spock.show_repset_table_info('basic_dml'::regclass, ARRAY['default']);
+SELECT nspname, relname, att_list, has_row_filter FROM spock.repset_show_table('basic_dml'::regclass, ARRAY['default']);
  nspname |  relname  |    att_list    | has_row_filter 
 ---------+-----------+----------------+----------------
  public  | basic_dml | {id,something} | f
@@ -262,11 +262,11 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 (1 row)
 
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.basic_dml CASCADE;
 $$);
 NOTICE:  drop cascades to table public.basic_dml membership in replication set default
- replicate_ddl_command 
+ replicate_ddl 
 -----------------------
  t
 (1 row)

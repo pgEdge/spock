@@ -3,7 +3,7 @@ SELECT * FROM spock_regress_variables()
 \gset
 
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.tst_one_array (
 		a INTEGER PRIMARY KEY,
 		b INTEGER[]
@@ -74,7 +74,7 @@ SELECT spock.replicate_ddl_command($$
 	);
 $$);
 
-SELECT * FROM spock.replication_set_add_all_tables('default', '{public}');
+SELECT * FROM spock.repset_add_all_tables('default', '{public}');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -555,7 +555,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.tst_one_array CASCADE;
 	DROP TABLE public.tst_arrays CASCADE;
 	DROP TABLE public.tst_one_enum CASCADE;

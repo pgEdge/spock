@@ -2,7 +2,7 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE FUNCTION public.add(integer, integer) RETURNS integer
     AS 'select $1 + $2;'
     LANGUAGE SQL
@@ -15,14 +15,14 @@ CREATE TABLE public.funct2(
 	c integer DEFAULT public.add(10,12 )
 ) ;
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default_insert_only', 'public.funct2');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default_insert_only', 'public.funct2');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -49,7 +49,7 @@ SELECT * from public.funct2;
 (2 rows)
 
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 create or replace function public.get_curr_century() returns double precision as
  'SELECT EXTRACT(CENTURY FROM NOW());'
 language sql volatile;
@@ -60,14 +60,14 @@ CREATE TABLE public.funct5(
 	c double precision DEFAULT public.get_curr_century()
 );
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_all_tables('default_insert_only', '{public}');
- replication_set_add_all_tables 
---------------------------------
+SELECT * FROM spock.repset_add_all_tables('default_insert_only', '{public}');
+ repset_add_all_tables 
+-----------------------
  t
 (1 row)
 
@@ -95,7 +95,7 @@ SELECT * from public.funct5;
 
 --nextval check
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE SEQUENCE public.INSERT_SEQ;
 
 CREATE TABLE public.funct (
@@ -103,14 +103,14 @@ CREATE TABLE public.funct (
 	b INT DEFAULT nextval('public.insert_seq')
 );
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_all_tables('default_insert_only', '{public}');
- replication_set_add_all_tables 
---------------------------------
+SELECT * FROM spock.repset_add_all_tables('default_insert_only', '{public}');
+ repset_add_all_tables 
+-----------------------
  t
 (1 row)
 
@@ -158,21 +158,21 @@ SELECT * FROM public.funct;
 
 -- test replication where the destination table has extra (nullable) columns that are not in the origin table
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.nullcheck_tbl(
 	id integer PRIMARY KEY,
 	id1 integer,
 	name text
 ) ;
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'nullcheck_tbl');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default', 'nullcheck_tbl');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -246,21 +246,21 @@ SELECT * FROM public.nullcheck_tbl;
 (5 rows)
 
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.not_nullcheck_tbl(
 	id integer PRIMARY KEY,
 	id1 integer,
 	name text
 ) ;
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'not_nullcheck_tbl');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default', 'not_nullcheck_tbl');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -290,16 +290,16 @@ SELECT * FROM public.not_nullcheck_tbl;
 (0 rows)
 
 INSERT INTO public.not_nullcheck_tbl(id,id1,name) VALUES (3,3,'name3');
-ERROR:  null value in column "id2" violates not-null constraint
+ERROR:  null value in column "id2" of relation "not_nullcheck_tbl" violates not-null constraint
 DETAIL:  Failing row contains (3, 3, name3, null).
 SELECT * FROM public.not_nullcheck_tbl;
  id | id1 | name | id2 
 ----+-----+------+-----
 (0 rows)
 
-SELECT spock.alter_subscription_disable('test_subscription', true);
- alter_subscription_disable 
-----------------------------
+SELECT spock.sub_disable('test_subscription', true);
+ sub_disable 
+-------------
  t
 (1 row)
 
@@ -333,9 +333,9 @@ SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 
 (4 rows)
 
 \c :subscriber_dsn
-SELECT spock.alter_subscription_enable('test_subscription', true);
- alter_subscription_enable 
----------------------------
+SELECT spock.sub_enable('test_subscription', true);
+ sub_enable 
+------------
  t
 (1 row)
 
@@ -369,7 +369,7 @@ SELECT * FROM public.not_nullcheck_tbl;
 (2 rows)
 
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE FUNCTION public.some_prime_numbers() RETURNS SETOF integer
 	LANGUAGE sql IMMUTABLE STRICT LEAKPROOF
 	AS $_$
@@ -392,14 +392,14 @@ CREATE TABLE public.prime_tbl (
 
 INSERT INTO public.prime_tbl (num) VALUES(17), (31), (79);
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'public.prime_tbl');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default', 'public.prime_tbl');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -420,7 +420,7 @@ SELECT num FROM public.prime_tbl;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.funct CASCADE;
 	DROP SEQUENCE public.INSERT_SEQ;
 	DROP TABLE public.funct2 CASCADE;
@@ -440,8 +440,8 @@ NOTICE:  drop cascades to table public.funct5 membership in replication set defa
 NOTICE:  drop cascades to table public.nullcheck_tbl membership in replication set default
 NOTICE:  drop cascades to table public.not_nullcheck_tbl membership in replication set default
 NOTICE:  drop cascades to table public.prime_tbl membership in replication set default
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 

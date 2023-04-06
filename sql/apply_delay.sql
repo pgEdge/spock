@@ -16,7 +16,7 @@ CREATE or REPLACE function int2interval (x integer) returns interval as
 $$ select $1*'1 sec'::interval $$
 language sql;
 
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription_delay',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	replication_sets := '{delay}',
@@ -28,7 +28,7 @@ SELECT * FROM spock.create_subscription(
 
 BEGIN;
 SET LOCAL statement_timeout = '30s';
-SELECT spock.wait_for_subscription_sync_complete('test_subscription_delay');
+SELECT spock.sub_wait_for_sync('test_subscription_delay');
 COMMIT;
 
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
@@ -45,7 +45,7 @@ CREATE TABLE public.timestamps (
         ts timestamptz
 );
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
     CREATE TABLE public.basic_dml1 (
         id serial primary key,
         other integer,
@@ -58,7 +58,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 INSERT INTO timestamps VALUES ('ts1', CURRENT_TIMESTAMP);
 
-SELECT * FROM spock.replication_set_add_table('delay', 'basic_dml1');
+SELECT * FROM spock.repset_add_table('delay', 'basic_dml1');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -90,6 +90,6 @@ SELECT spock.drop_subscription('test_subscription_delay');
 \set VERBOSITY terse
 SELECT * FROM spock.drop_replication_set('delay');
 DROP TABLE public.timestamps CASCADE;
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
     DROP TABLE public.basic_dml1 CASCADE;
 $$);

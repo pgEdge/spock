@@ -1,17 +1,17 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.test_trg_data(id serial primary key, data text);
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'test_trg_data');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default', 'test_trg_data');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -95,7 +95,7 @@ SELECT * FROM test_trg_hist;
 
 DROP TABLE test_trg_hist CASCADE;
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
         CREATE TABLE public.basic_dml (
                 id serial primary key,
                 other integer,
@@ -103,14 +103,14 @@ SELECT spock.replicate_ddl_command($$
                 something interval
         );
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml');
- replication_set_add_table 
----------------------------
+SELECT * FROM spock.repset_add_table('default', 'basic_dml');
+ repset_add_table 
+------------------
  t
 (1 row)
 
@@ -194,14 +194,14 @@ DROP FUNCTION filter_basic_dml_fn() CASCADE;
 NOTICE:  drop cascades to trigger filter_basic_dml_trg on table basic_dml
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.test_trg_data CASCADE;
 	DROP TABLE public.basic_dml CASCADE;
 $$);
 NOTICE:  drop cascades to table public.test_trg_data membership in replication set default
 NOTICE:  drop cascades to table public.basic_dml membership in replication set default
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 

@@ -5,7 +5,7 @@ SELECT * FROM spock_regress_variables()
 
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE TABLE public.f1k_products (
     product_no integer PRIMARY KEY,
     product_id integer,
@@ -21,8 +21,8 @@ CREATE TABLE public.f1k_orders (
 --pass
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'f1k_products');
-SELECT * FROM spock.replication_set_add_table('default_insert_only', 'f1k_orders');
+SELECT * FROM spock.repset_add_table('default', 'f1k_products');
+SELECT * FROM spock.repset_add_table('default_insert_only', 'f1k_orders');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -44,7 +44,7 @@ SELECT * FROM public.f1k_orders;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.f1k_orders CASCADE;
 	DROP TABLE public.f1k_products CASCADE;
 $$);

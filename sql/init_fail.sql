@@ -39,18 +39,18 @@ $$;
 ALTER EXTENSION spock UPDATE;
 
 -- fail (local node not existing)
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica',
 	forward_origins := '{}');
 
 -- succeed
-SELECT * FROM spock.create_node(node_name := 'test_subscriber', dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=nonreplica');
+SELECT * FROM spock.node_create(node_name := 'test_subscriber', dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=nonreplica');
 
 -- fail (can't connect to remote)
 DO $$
 BEGIN
-    SELECT * FROM spock.create_subscription(
+    SELECT * FROM spock.sub_create(
         subscription_name := 'test_subscription',
         provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonexisting',
         forward_origins := '{}');
@@ -61,14 +61,14 @@ END;
 $$;
 
 -- fail (remote node not existing)
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica',
 	forward_origins := '{}');
 
 \c :provider_dsn
 -- succeed
-SELECT * FROM spock.create_node(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica');
+SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica');
 
 \c :subscriber_dsn
 \set VERBOSITY terse
@@ -76,7 +76,7 @@ SELECT * FROM spock.create_node(node_name := 'test_provider', dsn := (SELECT pro
 -- fail (can't connect with replication connection to remote)
 DO $$
 BEGIN
-    SELECT * FROM spock.create_subscription(
+    SELECT * FROM spock.sub_create(
         subscription_name := 'test_subscription',
         provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica',
             forward_origins := '{}');
@@ -87,11 +87,11 @@ END;
 $$;
 -- cleanup
 
-SELECT * FROM spock.drop_node('test_subscriber');
+SELECT * FROM spock.node_drop('test_subscriber');
 DROP EXTENSION spock;
 
 \c :provider_dsn
-SELECT * FROM spock.drop_node('test_provider');
+SELECT * FROM spock.node_drop('test_provider');
 
 SET client_min_messages = 'warning';
 DROP OWNED BY nonreplica;

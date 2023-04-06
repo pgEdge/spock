@@ -2,7 +2,7 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.tst_one_array (
 		a INTEGER PRIMARY KEY,
 		b INTEGER[]
@@ -72,14 +72,14 @@ SELECT spock.replicate_ddl_command($$
 		c int8range[]
 	);
 $$);
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_all_tables('default', '{public}');
- replication_set_add_all_tables 
---------------------------------
+SELECT * FROM spock.repset_add_all_tables('default', '{public}');
+ repset_add_all_tables 
+-----------------------
  t
 (1 row)
 
@@ -1393,7 +1393,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.tst_one_array CASCADE;
 	DROP TABLE public.tst_arrays CASCADE;
 	DROP TABLE public.tst_one_enum CASCADE;
@@ -1427,8 +1427,8 @@ NOTICE:  drop cascades to table public.tst_comp_enum_what membership in replicat
 NOTICE:  drop cascades to table public.tst_comp_mix_array membership in replication set default
 NOTICE:  drop cascades to table public.tst_range membership in replication set default
 NOTICE:  drop cascades to table public.tst_range_array membership in replication set default
- replicate_ddl_command 
------------------------
+ replicate_ddl 
+---------------
  t
 (1 row)
 

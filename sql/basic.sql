@@ -3,7 +3,7 @@ SELECT * FROM spock_regress_variables()
 \gset
 
 \c :provider_dsn
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.basic_dml (
 		id serial primary key,
 		other integer,
@@ -12,7 +12,7 @@ SELECT spock.replicate_ddl_command($$
 	);
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -90,6 +90,6 @@ SELECT id, other, data, something FROM basic_dml ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.basic_dml CASCADE;
 $$);

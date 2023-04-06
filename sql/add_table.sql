@@ -13,7 +13,7 @@ CREATE TABLE public.test_publicschema(data text, id serial primary key);
 
 \c :provider_dsn
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 CREATE SCHEMA "strange.schema-IS";
 CREATE TABLE public.test_nosync(id serial primary key, data text);
 CREATE TABLE "strange.schema-IS".test_strangeschema(id serial primary key, "S0m3th1ng" timestamptz DEFAULT '1993-01-01 00:00:00 CET');
@@ -23,19 +23,19 @@ $$);
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 -- create some replication sets
-SELECT * FROM spock.create_replication_set('repset_test');
+SELECT * FROM spock.repset_create('repset_test');
 
 -- move tables to replication set that is not subscribed
-SELECT * FROM spock.replication_set_add_table('repset_test', 'test_publicschema');
-SELECT * FROM spock.replication_set_add_table('repset_test', 'test_nosync');
-SELECT * FROM spock.replication_set_add_table('repset_test', '"strange.schema-IS".test_strangeschema');
-SELECT * FROM spock.replication_set_add_table('repset_test', '"strange.schema-IS".test_diff_repset');
-SELECT * FROM spock.replication_set_add_all_sequences('repset_test', '{public}');
-SELECT * FROM spock.replication_set_add_sequence('repset_test', pg_get_serial_sequence('"strange.schema-IS".test_strangeschema', 'id'));
-SELECT * FROM spock.replication_set_add_sequence('repset_test', pg_get_serial_sequence('"strange.schema-IS".test_diff_repset', 'id'));
-SELECT * FROM spock.replication_set_add_all_sequences('default', '{public}');
-SELECT * FROM spock.replication_set_add_sequence('default', pg_get_serial_sequence('"strange.schema-IS".test_strangeschema', 'id'));
-SELECT * FROM spock.replication_set_add_sequence('default', pg_get_serial_sequence('"strange.schema-IS".test_diff_repset', 'id'));
+SELECT * FROM spock.repset_add_table('repset_test', 'test_publicschema');
+SELECT * FROM spock.repset_add_table('repset_test', 'test_nosync');
+SELECT * FROM spock.repset_add_table('repset_test', '"strange.schema-IS".test_strangeschema');
+SELECT * FROM spock.repset_add_table('repset_test', '"strange.schema-IS".test_diff_repset');
+SELECT * FROM spock.repset_add_all_sequences('repset_test', '{public}');
+SELECT * FROM spock.repset_add_sequence('repset_test', pg_get_serial_sequence('"strange.schema-IS".test_strangeschema', 'id'));
+SELECT * FROM spock.repset_add_sequence('repset_test', pg_get_serial_sequence('"strange.schema-IS".test_diff_repset', 'id'));
+SELECT * FROM spock.repset_add_all_sequences('default', '{public}');
+SELECT * FROM spock.repset_add_sequence('default', pg_get_serial_sequence('"strange.schema-IS".test_strangeschema', 'id'));
+SELECT * FROM spock.repset_add_sequence('default', pg_get_serial_sequence('"strange.schema-IS".test_diff_repset', 'id'));
 
 INSERT INTO public.test_publicschema(data) VALUES('a');
 INSERT INTO public.test_publicschema(data) VALUES('b');
@@ -51,9 +51,9 @@ SELECT * FROM public.test_publicschema;
 \c :provider_dsn
 
 -- move tables back to the subscribed replication set
-SELECT * FROM spock.replication_set_add_table('default', 'test_publicschema', true);
-SELECT * FROM spock.replication_set_add_table('default', 'test_nosync', false);
-SELECT * FROM spock.replication_set_add_table('default', '"strange.schema-IS".test_strangeschema', true);
+SELECT * FROM spock.repset_add_table('default', 'test_publicschema', true);
+SELECT * FROM spock.repset_add_table('default', 'test_nosync', false);
+SELECT * FROM spock.repset_add_table('default', '"strange.schema-IS".test_strangeschema', true);
 
 
 \c :subscriber_dsn
@@ -124,8 +124,8 @@ SELECT nspname, relname, status IN ('synchronized', 'replicating') FROM spock.sh
 \x
 
 BEGIN;
-SELECT * FROM spock.alter_subscription_add_replication_set('test_subscription', 'repset_test');
-SELECT * FROM spock.alter_subscription_remove_replication_set('test_subscription', 'default');
+SELECT * FROM spock.repset_alter_sub_add_repset('test_subscription', 'repset_test');
+SELECT * FROM spock.repset_alter_sub_remove_repset('test_subscription', 'default');
 COMMIT;
 
 DO $$
@@ -225,24 +225,24 @@ END;
 $$;
 
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.test_publicschema CASCADE;
 	DROP TABLE public.test_nosync CASCADE;
 	DROP SCHEMA "strange.schema-IS" CASCADE;
 $$);
 
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	CREATE TABLE public.synctest(a int primary key, b text);
 $$);
 
-SELECT * FROM spock.replication_set_add_table('repset_test', 'synctest', synchronize_data := false);
+SELECT * FROM spock.repset_add_table('repset_test', 'synctest', synchronize_data := false);
 
 INSERT INTO synctest VALUES (1, '1');
 
 -- no way to see if this worked currently, but if one can manually check
 -- if there is conflict in log or not (conflict = bad here)
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	SELECT pg_sleep(5);
 	UPDATE public.synctest SET b = md5(a::text);
 $$);
@@ -271,7 +271,7 @@ SELECT * FROM synctest;
 \c :provider_dsn
 
 \set VERBOSITY terse
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
 	DROP TABLE public.synctest CASCADE;
 $$);
 
