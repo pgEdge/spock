@@ -3,11 +3,11 @@ SELECT * FROM spock_regress_variables()
 
 \c :provider_dsn
 
-SELECT * FROM spock.create_replication_set('parallel');
+SELECT * FROM spock.repset_create('parallel');
 
 \c :subscriber_dsn
 
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription_parallel',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	replication_sets := '{parallel,default}',
@@ -16,7 +16,7 @@ SELECT * FROM spock.create_subscription(
 	synchronize_data := false
 );
 
-SELECT * FROM spock.create_subscription(
+SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription_parallel',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	replication_sets := '{parallel}',
@@ -27,19 +27,19 @@ SELECT * FROM spock.create_subscription(
 
 BEGIN;
 SET LOCAL statement_timeout = '10s';
-SELECT spock.wait_for_subscription_sync_complete('test_subscription_parallel');
+SELECT spock.sub_wait_for_sync('test_subscription_parallel');
 COMMIT;
 
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
 
-SELECT * FROM spock.show_subscription_status();
+SELECT * FROM spock.sub_show_status();
 
 -- Make sure we see the slot and active connection
 \c :provider_dsn
 SELECT plugin, slot_type, database, active FROM pg_replication_slots;
 SELECT count(*) FROM pg_stat_replication;
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
     CREATE TABLE public.basic_dml1 (
         id serial primary key,
         other integer,
@@ -54,8 +54,8 @@ SELECT spock.replicate_ddl_command($$
     );
 $$);
 
-SELECT * FROM spock.replication_set_add_table('default', 'basic_dml1');
-SELECT * FROM spock.replication_set_add_table('parallel', 'basic_dml2');
+SELECT * FROM spock.repset_add_table('default', 'basic_dml1');
+SELECT * FROM spock.repset_add_table('parallel', 'basic_dml2');
 
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
@@ -85,13 +85,13 @@ SELECT * FROM basic_dml2;
 SELECT * FROM basic_dml1;
 SELECT * FROM basic_dml2;
 
-SELECT spock.drop_subscription('test_subscription_parallel');
+SELECT spock.sub_drop('test_subscription_parallel');
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT * FROM spock.drop_replication_set('parallel');
+SELECT * FROM spock.repset_drop('parallel');
 
-SELECT spock.replicate_ddl_command($$
+SELECT spock.replicate_ddl($$
     DROP TABLE public.basic_dml1 CASCADE;
     DROP TABLE public.basic_dml2 CASCADE;
 $$);

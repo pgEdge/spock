@@ -1,10 +1,10 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
-SELECT * FROM spock.create_replication_set('parallel');
- create_replication_set 
-------------------------
-             3731651575
+SELECT * FROM spock.repset_create('parallel');
+ repset_create 
+---------------
+    3731651575
 (1 row)
 
 \c :subscriber_dsn
@@ -26,15 +26,15 @@ SELECT * FROM spock.sub_create(
 	synchronize_data := false
 );
  sub_create 
----------------------
-          4051189029
+------------
+ 4051189029
 (1 row)
 
 BEGIN;
 SET LOCAL statement_timeout = '10s';
 SELECT spock.sub_wait_for_sync('test_subscription_parallel');
  sub_wait_for_sync 
--------------------------------------
+-------------------
  
 (1 row)
 
@@ -46,7 +46,7 @@ SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', '
  i         | 4051189029 |              |              | t
 (2 rows)
 
-SELECT * FROM spock.show_subscription_status();
+SELECT * FROM spock.sub_show_status();
      subscription_name      |   status    | provider_node |         provider_dsn         |                 slot_name                  |           replication_sets            | forward_origins 
 ----------------------------+-------------+---------------+------------------------------+--------------------------------------------+---------------------------------------+-----------------
  test_subscription          | replicating | test_provider | dbname=regression user=super | spk_postgres_test_provider_test_sube55bf37 | {default,default_insert_only,ddl_sql} | 
@@ -83,19 +83,19 @@ SELECT spock.replicate_ddl($$
     );
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml1');
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('parallel', 'basic_dml2');
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -162,17 +162,17 @@ SELECT * FROM basic_dml2;
   5 |     1 |      | 
 (3 rows)
 
-SELECT spock.drop_subscription('test_subscription_parallel');
- drop_subscription 
--------------------
-                 1
+SELECT spock.sub_drop('test_subscription_parallel');
+ sub_drop 
+----------
+        1
 (1 row)
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT * FROM spock.drop_replication_set('parallel');
- drop_replication_set 
-----------------------
+SELECT * FROM spock.repset_drop('parallel');
+ repset_drop 
+-------------
  t
 (1 row)
 
@@ -182,7 +182,7 @@ SELECT spock.replicate_ddl($$
 $$);
 NOTICE:  drop cascades to table public.basic_dml1 membership in replication set default
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
