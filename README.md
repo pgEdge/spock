@@ -13,10 +13,10 @@ Our first version is 3.0 and includes the following important enhancements:
 * Replication of Partitioned Tables (to help support Geo-Sharding) 
 * Better error handling for Conflict Resolution
 * Better management & monitoring stats and integration
-* A 'pii' table for making it easy for personably identifiable data to be kept in country
+* A 'pii' table for making it easy for personally identifiable data to be kept in country
 
 We use the following terms, borrowed from [Jan's](https://www.linkedin.com/in/jan-wieck-3140812) well known [Slony-I](https://slony.info), to describe data streams between nodes:
-* Nodes - Postgres database instances
+* Nodes - PostgreSQL database instances
 * Providers and Subscribers - roles taken by Nodes
 * Replication Set - a collection of tables
 
@@ -31,7 +31,7 @@ Use cases supported are:
 * Data gather/merge from multiple upstream servers
 
 Architectural details:
-* Spock works on a per-database level, not whole server level likephysical streaming replication
+* Spock works on a per-database level, not whole server level like physical streaming replication
 * One Provider may feed multiple Subscribers without incurring additional disk write overhead
 * One Subscriber can merge changes from several origins and detect conflict
   between changes with automatic and configurable conflict resolution (some,
@@ -59,17 +59,17 @@ Additionally, `row_filter` can also be used with partitioned tables, as well as 
 
 ## Conflict-Free Delta-Apply Columns (Conflict Avoidance)
 
-Logical Multi-Master replication can get itself into trouble on running sums (such as a ytd balance).  Unlike other
+Logical Multi-Master replication can get itself into trouble on running sums (such as a YTD balance).  Unlike other
 solutions, we do NOT have a special data type for this.   Any numeric data type will do (including numeric, float, double precision, int4, int8, etc).
 
-Suppose that a running bank account sum contains a balance of $1,000.   Two transactions "conflict" because they overlap with each from two different multi-master nodes.   Transaction A is a $1,000 withdrawl from the account.  Transaction B is also a $1,000 withdrawl from the account.  The correct balance is $-1,000.  Our Delta-Apply algorithm fixes this problem and highly conflicting wrkloads with this scenario (like a tpc-c like benchmark) now run correctly at lightning speeds.
+Suppose that a running bank account sum contains a balance of `$1,000`.   Two transactions "conflict" because they overlap with each from two different multi-master nodes.   Transaction A is a `$1,000` withdrawal from the account.  Transaction B is also a `$1,000` withdrawal from the account.  The correct balance is `$-1,000`.  Our Delta-Apply algorithm fixes this problem and highly conflicting workloads with this scenario (like a tpc-c like benchmark) now run correctly at lightning speeds.
 
 This feature is powerful AND simple in its implementation as follows:
 
   - A small diff patch to PostgreSQL core
-    - a very small postgresql licensed patch is applied to a core postgres source tree before building a PG binary.
+    - a very small PostgreSQL licensed patch is applied to a core PostgreSQL source tree before building a PG binary.
     - the above diff patch adds functionality to support ALTER TABLE t1 COLUMN c1 SET(log_old_value=true)
-    - this patch will be submitted to pg16 core postgres and discussed at the Ottowa Conference.
+    - this patch will be submitted to pg16 core PostgreSQL and discussed at the Ottawa Conference.
 
   - When an update occurs on a 'log_old_value' column
     - First, the old value for that column is captured to the WAL 
@@ -78,7 +78,7 @@ This feature is powerful AND simple in its implementation as follows:
 
 Note that on a conflicting transaction, the delta column will get correctly calculated and applied.  The configured conflict resolution strategy applies to non-delta columns (normally last-update-wins).
 
-As a special saftey-valve feature.  If the user ever needs to re-set a log_old_value column you can temporaily alter the column to "log_old_value" is false.
+As a special safety-valve feature.  If the user ever needs to re-set a log_old_value column you can temporarily alter the column to "log_old_value" is false.
 
 ## Conflicts Overview
 
@@ -447,7 +447,7 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `subscription_name` - name of the existing subscription
   - `repset` - name of replication set to add
 
-#### spock-sub-remove-respset
+#### spock-sub-remove-repset
 - `spock.sub_remove_repset(subscription_name name, repset name)`
   Removes one replication set from a subscriber.
 
