@@ -31,12 +31,12 @@ We use the following terms, borrowed from [Jan's](https://www.linkedin.com/in/ja
 * Replication Set - a collection of tables
 
 Use cases supported are:
-* Asynchronous Multi-active Replication with conflict resolution
+* Asynchronous multi-active replication with conflict resolution
 * Upgrades between major versions
 * Full database replication
 * Selective replication of sets of tables using replication sets
 * Selective replication of table rows at either publisher or subscriber side (row_filter)
-* Selective Replication of Partitioned tables
+* Selective replication of partitioned tables
 * Selective replication of table columns at publisher side
 * Data gather/merge from multiple upstream servers
 
