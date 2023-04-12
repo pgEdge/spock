@@ -8,12 +8,22 @@ We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [B
 
 Our first version is 3.0 and includes the following important enhancements:
 
+* Support for pg15
 * Support for Asynchronous Multi-Active Replication with conflict resolution
-* Conflict-free Delta-Apply Columns
-* Replication of Partitioned Tables (to help support Geo-Sharding) 
-* Better error handling for Conflict Resolution
+* Conflict-free delta-apply columns
+* Replication of partitioned tables (to help support geo-sharding) 
+* Making database clusters location aware (to help support geo-sharding)
+* Better error handling for conflict resolution
 * Better management & monitoring stats and integration
 * A 'pii' table for making it easy for personally identifiable data to be kept in country
+
+Our second version is 3.1 (planned for GA in late Q3) and will include the following important enhancements:
+
+* Support for pg16
+* Supoort for near-zero downtime upgrades between pg15 & pg16
+* Better support for minimizing system interuption during switch-over and failover
+* Improved support for in-region shadow nodes (in different AZ's)
+
 
 We use the following terms, borrowed from [Jan's](https://www.linkedin.com/in/jan-wieck-3140812) well known [Slony-I](https://slony.info), to describe data streams between nodes:
 * Nodes - PostgreSQL database instances
