@@ -52,9 +52,12 @@ typedef struct NodeTuple
 	NameData	node_name;
 } NodeTuple;
 
-#define Natts_node			4
+#define Natts_node			5
 #define Anum_node_id		1
 #define Anum_node_name		2
+#define Anum_node_location	3
+#define Anum_node_country	4
+#define Anum_node_info		5
 
 #define Natts_local_node			2
 #define Anum_node_local_id			1
@@ -167,6 +170,20 @@ create_node(SpockNode *node)
 	values[Anum_node_id - 1] = ObjectIdGetDatum(node->id);
 	namestrcpy(&node_name, node->name);
 	values[Anum_node_name - 1] = NameGetDatum(&node_name);
+	if (node->location != NULL)
+		values[Anum_node_location - 1] = CStringGetTextDatum(node->location);
+	else
+		nulls[Anum_node_location - 1] = true;
+
+	if (node->country != NULL)
+		values[Anum_node_country - 1] = CStringGetTextDatum(node->country);
+	else
+		nulls[Anum_node_country - 1] = true;
+
+	if (node->info != NULL)
+		values[Anum_node_info - 1] = JsonbPGetDatum(node->info);
+	else
+		nulls[Anum_node_info - 1] = true;
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
@@ -222,13 +239,28 @@ drop_node(Oid nodeid)
 }
 
 static SpockNode *
-node_fromtuple(HeapTuple tuple)
+node_fromtuple(HeapTuple tuple, TupleDesc desc)
 {
 	NodeTuple *nodetup = (NodeTuple *) GETSTRUCT(tuple);
+	Datum	datum;
+	bool	isnull;
 	SpockNode *node
-		= (SpockNode *) palloc(sizeof(SpockNode));
+		= (SpockNode *) palloc0(sizeof(SpockNode));
 	node->id = nodetup->node_id;
 	node->name = pstrdup(NameStr(nodetup->node_name));
+
+	datum = heap_getattr(tuple, Anum_node_location, desc, &isnull);
+	if (!isnull)
+		node->location = TextDatumGetCString(datum);
+
+	datum = heap_getattr(tuple, Anum_node_country, desc, &isnull);
+	if (!isnull)
+		node->country = TextDatumGetCString(datum);
+
+	datum = heap_getattr(tuple, Anum_node_info, desc, &isnull);
+	if (!isnull)
+		node->info = DatumGetJsonbP(datum);
+
 	return node;
 }
 
@@ -260,7 +292,7 @@ get_node(Oid nodeid)
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "node %u not found", nodeid);
 
-	node = node_fromtuple(tuple);
+	node = node_fromtuple(tuple, RelationGetDescr(rel));
 
 	systable_endscan(scan);
 	table_close(rel, RowExclusiveLock);
@@ -305,7 +337,7 @@ get_node_by_name(const char *name, bool missing_ok)
 		elog(ERROR, "node %s not found", name);
 	}
 
-	node = node_fromtuple(tuple);
+	node = node_fromtuple(tuple, RelationGetDescr(rel));
 
 	systable_endscan(scan);
 	table_close(rel, RowExclusiveLock);

@@ -877,7 +877,7 @@ get_remote_info(PGconn* conn)
 	if (!extension_exists(conn, "spock"))
 		die(_("The remote node is not configured as a spock provider.\n"));
 
-	res = PQexec(conn, "SELECT node_id, node_name, sysid, dbname, replication_sets FROM spock.spock_node_info()");
+	res = PQexec(conn, "SELECT node_id, node_name, sysid, dbname, replication_sets FROM spock.node_info()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		die(_("could not fetch remote node info: %s\n"), PQerrorMessage(conn));
 

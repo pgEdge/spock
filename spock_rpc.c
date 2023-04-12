@@ -21,6 +21,7 @@
 #include "storage/lock.h"
 
 #include "utils/rel.h"
+#include "utils/builtins.h"
 
 #include "spock_relcache.h"
 #include "spock_repset.h"
@@ -294,12 +295,16 @@ spock_drop_remote_slot(PGconn *conn, const char *slot_name)
 	PQclear(res);
 }
 
-void
-spock_remote_node_info(PGconn *conn, Oid *nodeid, char **node_name, char **sysid, char **dbname, char **replication_sets)
+/*
+ * Read replication info about remote connection
+ */
+SpockNode *
+spock_remote_node_info(PGconn* conn, char **sysid, char **dbname, char **replication_sets)
 {
+	SpockNode	   *node = (SpockNode *)palloc0(sizeof(SpockNode));
 	PGresult	   *res;
 
-	res = PQexec(conn, "SELECT node_id, node_name, sysid, dbname, replication_sets FROM spock.spock_node_info()");
+	res = PQexec(conn, "SELECT * FROM spock.node_info()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		elog(ERROR, "could not fetch remote node info: %s\n", PQerrorMessage(conn));
 
@@ -310,16 +315,24 @@ spock_remote_node_info(PGconn *conn, Oid *nodeid, char **node_name, char **sysid
 	if (PQntuples(res) > 1)
 		elog(ERROR, "the remote database has multiple nodes configured. That is not supported with current version of spock.\n");
 
-	*nodeid = atooid(PQgetvalue(res, 0, 0));
-	*node_name = pstrdup(PQgetvalue(res, 0, 1));
+	node->id = atooid(PQgetvalue(res, 0, 0));
+	node->name = pstrdup(PQgetvalue(res, 0, 1));
 	if (sysid)
 		*sysid = pstrdup(PQgetvalue(res, 0, 2));
 	if (dbname)
 		*dbname = pstrdup(PQgetvalue(res, 0, 3));
 	if (replication_sets)
 		*replication_sets = pstrdup(PQgetvalue(res, 0, 4));
+	if (!PQgetisnull(res, 0, 5))
+		node->location = pstrdup(PQgetvalue(res, 0, 5));
+	if (!PQgetisnull(res, 0, 6))
+		node->country = pstrdup(PQgetvalue(res, 0, 6));
+	if (!PQgetisnull(res, 0, 7))
+		node->info = DatumGetJsonb(DirectFunctionCall1(jsonb_in,
+				CStringGetDatum(PQgetvalue(res, 0, 7))));
 
 	PQclear(res);
+	return node;
 }
 
 bool
