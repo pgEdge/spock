@@ -35,8 +35,9 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic extended conflict
 REGRESS := $(filter-out primary_key, $(REGRESS))
 REGRESS := $(filter-out apply_delay, $(REGRESS))
 
-EXTRA_CLEAN += compat15/spock_compat.o compat15/spock_compat.bc \
-		spock_create_subscriber.o
+EXTRA_CLEAN += compat16/spock_compat.o compat16/spock_compat.bc \
+				compat15/spock_compat.o compat15/spock_compat.bc \
+				spock_create_subscriber.o
 
 spock_version=$(shell awk '/\#define SPOCK_VERSION[ \t]+\".*\"/ { print substr($$3,2,length($$3)-2) }' $(realpath $(srcdir)/spock.h) )
 
