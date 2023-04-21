@@ -14,8 +14,6 @@
 
 #include "nodes/execnodes.h"
 
-#include "replication/origin.h"
-
 #include "utils/guc.h"
 
 #include "spock_proto_native.h"

@@ -27,6 +27,7 @@
 #include "executor/executor.h"
 #include "executor/spi.h"
 
+#include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 
 #include "storage/fd.h"

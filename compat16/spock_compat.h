@@ -100,4 +100,7 @@
 
 #define getObjectDescription(object) getObjectDescription(object, false)
 
+#define replorigin_session_setup(node) \
+	replorigin_session_setup(node, 0)
+
 #endif
