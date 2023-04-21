@@ -35,6 +35,7 @@
 #include "optimizer/optimizer.h"
 
 #include "parser/parse_coerce.h"
+#include "parser/parse_relation.h"
 
 #include "tcop/utility.h"
 
@@ -66,7 +67,7 @@ create_estate_for_relation(Relation rel, bool forwrite)
 {
 	EState	   *estate;
 	RangeTblEntry *rte;
-
+	List	   *perminfos = NIL;
 
 	/* Dummy range table entry needed by executor. */
 	rte = makeNode(RangeTblEntry);
@@ -76,7 +77,13 @@ create_estate_for_relation(Relation rel, bool forwrite)
 
 	/* Initialize executor state. */
 	estate = CreateExecutorState();
-	ExecInitRangeTable(estate, list_make1(rte));
+
+	addRTEPermissionInfo(&perminfos, rte);
+	ExecInitRangeTable(estate, list_make1(rte)
+#if PG_VERSION_NUM >= 160000
+		, perminfos
+#endif
+		);
 
 	estate->es_output_cid = GetCurrentCommandId(forwrite);
 
