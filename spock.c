@@ -37,6 +37,7 @@
 
 #include "parser/parse_coerce.h"
 
+#include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 
 #include "storage/ipc.h"
