@@ -165,6 +165,9 @@ UserTableUpdateOpenIndexes(ResultRelInfo *relinfo, EState *estate, TupleTableSlo
 											   , update
 #endif
 											   , false, NULL, NIL
+#if PG_VERSION_NUM >= 160000
+											   , false
+#endif
 											   );
 
 		/* FIXME: recheck the indexes */
@@ -566,7 +569,11 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 
 		if (apply)
 		{
+#if PG_VERSION_NUM >= 160000
+			TU_UpdateIndexes update_indexes;
+#else
 			bool update_indexes;
+#endif
 
 			if (applytuple != remotetuple)
 				ExecStoreHeapTuple(applytuple, aestate->slot, false);
@@ -776,7 +783,11 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 		if (apply)
 		{
+#if PG_VERSION_NUM >= 160000
+			TU_UpdateIndexes update_indexes;
+#else
 			bool update_indexes;
+#endif
 			/* Check the constraints of the tuple */
 			if (rel->rel->rd_att->constr)
 				ExecConstraints(aestate->resultRelInfo, aestate->slot,
@@ -1048,6 +1059,9 @@ spock_apply_heap_mi_flush(void)
 									  , false
 #endif
                                                                           , false, NULL, NIL
+#if PG_VERSION_NUM >= 160000
+									  , false
+#endif
 									 );
 			ExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
 								 spkmistate->buffered_tuples[i],

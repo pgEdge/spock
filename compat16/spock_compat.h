@@ -103,4 +103,11 @@
 #define replorigin_session_setup(node) \
 	replorigin_session_setup(node, 0)
 
+#define simple_heap_update(relation, otid, tup) \
+	do \
+	{ \
+		TU_UpdateIndexes updateIndexes;	\
+		simple_heap_update(relation, otid, tup, &updateIndexes);	\
+	} while (false);
+
 #endif
