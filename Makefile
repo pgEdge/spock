@@ -6,7 +6,7 @@ PGFILEDESC = "spock - logical multi-master replication"
 
 MODULES = spock_output
 
-DATA = spock--3.0.sql
+DATA = spock--3.1.sql
 
 OBJS = spock_apply.o spock_conflict.o spock_manager.o \
 	   spock.o spock_node.o spock_relcache.o \
@@ -36,6 +36,7 @@ REGRESS := $(filter-out primary_key, $(REGRESS))
 REGRESS := $(filter-out apply_delay, $(REGRESS))
 
 EXTRA_CLEAN += compat15/spock_compat.o compat15/spock_compat.bc \
+		compat16/spock_compat.o compat16/spock_compat.bc \
 		spock_create_subscriber.o
 
 spock_version=$(shell awk '/\#define SPOCK_VERSION[ \t]+\".*\"/ { print substr($$3,2,length($$3)-2) }' $(realpath $(srcdir)/spock.h) )
