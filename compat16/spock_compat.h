@@ -39,10 +39,17 @@
 	ExecAlterExtensionStmt(NULL, stmt)
 
 #define ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple) \
+<<<<<<< HEAD
 	ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, NULL, NULL, NULL)
 
 #define ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot) \
 	ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot, NULL, NULL)
+=======
+ 	ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, NULL)
+
+#define ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot) \
+	ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot, NULL)
+>>>>>>> 953ef32 (bump to 3.1 1st pass)
 
 #undef ExecEvalExpr
 #define ExecEvalExpr(expr, econtext, isNull, isDone) \
@@ -100,6 +107,7 @@
 
 #define getObjectDescription(object) getObjectDescription(object, false)
 
+<<<<<<< HEAD
 #define replorigin_session_setup(node) \
 	replorigin_session_setup(node, 0)
 
@@ -110,4 +118,6 @@
 		simple_heap_update(relation, otid, tup, &updateIndexes);	\
 	} while (false);
 
+=======
+>>>>>>> 953ef32 (bump to 3.1 1st pass)
 #endif
