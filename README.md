@@ -20,7 +20,7 @@ Our first version is 3.0 and includes the following important enhancements:
 Our second version is 3.1 (planned for GA in late Q3) and will include the following important enhancements:
 
 * Support for pg16
-* Supoort for near-zero downtime upgrades between pg15 & pg16
+* Support for near-zero downtime upgrades between pg15 & pg16
 * Better support for minimizing system interuption during switch-over and failover
 * Improved support for in-region shadow nodes (in different AZ's)
 
@@ -231,7 +231,7 @@ And finally on the subscriber node you can create the subscription which will
 start synchronization and replication process in the background:
 
     SELECT spock.sub_create(
-        sub_name := 'subscription1',
+        subscription_name := 'subscription1',
         provider_dsn := 'host=providerhost port=5432 dbname=db'
     );
 
