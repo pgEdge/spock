@@ -99,5 +99,7 @@
 	heap_attisnull(tup, attnum, tupledesc)
 
 #define getObjectDescription(object) getObjectDescription(object, false)
+#define addRTEPermissionInfo(rteperminfos, rte) \
+	*rteperminfos = NIL;
 
 #endif
