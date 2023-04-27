@@ -81,7 +81,7 @@
 #define Anum_sync_status		5
 #define Anum_sync_statuslsn		6
 
-void spock_sync_main(Datum main_arg);
+PGDLLEXPORT void spock_sync_main(Datum main_arg);
 
 static SpockSyncWorker	   *MySyncWorker = NULL;
 

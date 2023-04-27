@@ -82,7 +82,7 @@
 #include "spock.h"
 
 
-void spock_apply_main(Datum main_arg);
+PGDLLEXPORT void spock_apply_main(Datum main_arg);
 
 static bool			in_remote_transaction = false;
 static XLogRecPtr	remote_origin_lsn = InvalidXLogRecPtr;
