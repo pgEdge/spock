@@ -35,7 +35,7 @@
 #define MAX_SLEEP 10000L
 #define MIN_SLEEP 5000L
 
-void spock_manager_main(Datum main_arg);
+PGDLLEXPORT void spock_manager_main(Datum main_arg);
 
 /*
  * Manage the apply workers - start new ones, kill old ones.

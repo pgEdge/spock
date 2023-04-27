@@ -98,7 +98,7 @@ bool	spock_ch_stats = true;
 static char *spock_country_code;
 
 void _PG_init(void);
-void spock_supervisor_main(Datum main_arg);
+PGDLLEXPORT void spock_supervisor_main(Datum main_arg);
 char *spock_extra_connection_options;
 
 static PGconn * spock_connect_base(const char *connstr,
