@@ -1,15 +1,16 @@
 # Spock
 
-## Multi-Active Replication with Conflict Resolution & Avoidance
+## Multi-Master Replication with Conflict Resolution & Avoidance
 
 
-This SPOCK extension provides multi-active replication for PostgreSQL 15+. 
-We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source projects as a solid foundation to build upon for this enterprise-class extension. 
+This SPOCK extension provides multi-master (multi-active) replication for PostgreSQL 15+. 
+We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source 
+projects as a solid foundation to build upon for this enterprise-class extension. 
 
 Our first version is 3.0 and includes the following important enhancements:
 
-* Support for pg15
-* Support for Asynchronous Multi-Active Replication with conflict resolution
+* Support for pg15 (with support for pg10 thru pg14 dropped)
+* Support for Asynchronous Multi-Master Replication with conflict resolution
 * Conflict-free delta-apply columns
 * Replication of partitioned tables (to help support geo-sharding) 
 * Making database clusters location aware (to help support geo-sharding)
