@@ -24,6 +24,7 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "replication/reorderbuffer.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/json.h"
 #include "utils/lsyscache.h"
