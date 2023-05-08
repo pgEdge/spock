@@ -38,6 +38,7 @@
 
 #include "miscadmin.h"
 
+#include "nodes/bitmapset.h"
 #include "nodes/makefuncs.h"
 
 #include "pgtime.h"
