@@ -234,7 +234,7 @@ And finally on the subscriber node you can create the subscription which will
 start synchronization and replication process in the background:
 
     SELECT spock.sub_create(
-        sub_name := 'subscription1',
+        subscription_name := 'subscription1',
         provider_dsn := 'host=providerhost port=5432 dbname=db'
     );
 
