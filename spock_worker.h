@@ -71,6 +71,9 @@ typedef struct SpockContext {
 	/* Access lock for the Conflict Tracking Hash. */
 	LWLock	   *cth_lock;
 
+	/* Access lock for Lag Tracking Hash. */
+	LWLock	   *lag_lock;
+
 	/* Interval for pruning the conflict_tracker table */
 	int		ctt_prune_interval;
 	Datum	ctt_last_prune;
@@ -113,6 +116,21 @@ typedef struct spockStatsEntry
 	slock_t			mutex;
 } spockStatsEntry;
 
+/* A sample associating a WAL location with the time it was written. */
+typedef struct
+{
+	XLogRecPtr		lsn;
+	TimestampTz		time;
+} WalTimeSample;
+
+typedef struct LagTrackerEntry
+{
+	char			slotname[NAMEDATALEN];
+	WalTimeSample	commit_sample;
+
+} LagTrackerEntry;
+
+extern HTAB				   *LagTrackerHash;
 extern HTAB				   *SpockHash;
 extern HTAB				   *SpockConflictHash;
 extern SpockContext		   *SpockCtx;
@@ -153,8 +171,7 @@ extern void spock_worker_kill(SpockWorker *worker);
 extern const char * spock_worker_type_name(SpockWorkerType type);
 extern void handle_stats_counter(Relation relation, Oid subid,
 								spockStatsType typ, int ntup);
-/*
-extern void handle_pr_counters(Relation relation, char *slotname, Oid nodeid, spockStatsType typ, int ntup);
-*/
+
+extern LagTrackerEntry *lagtracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts);
 
 #endif /* SPOCK_WORKER_H */

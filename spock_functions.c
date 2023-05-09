@@ -67,6 +67,7 @@
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -156,6 +157,9 @@ PG_FUNCTION_INFO_V1(get_channel_stats);
 PG_FUNCTION_INFO_V1(reset_channel_stats);
 PG_FUNCTION_INFO_V1(get_conflict_tracking);
 PG_FUNCTION_INFO_V1(prune_conflict_tracking);
+
+PG_FUNCTION_INFO_V1(lagtracker_info);
+PG_FUNCTION_INFO_V1(lagtracker_feedback);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -2794,4 +2798,89 @@ prune_conflict_tracking(PG_FUNCTION_ARGS)
 	spock_ctt_close();
 
 	PG_RETURN_INT32(result);
+}
+
+Datum
+lagtracker_info(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+	TupleDesc			tupdesc;
+	Tuplestorestate	   *tupstore;
+	MemoryContext		per_query_ctx;
+	MemoryContext		oldcontext;
+	HASH_SEQ_STATUS		hash_seq;
+	LagTrackerEntry	   *hentry;
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context "
+						"that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not "
+						"allowed in this context")));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	LWLockAcquire(SpockCtx->lag_lock, LW_EXCLUSIVE);
+
+	hash_seq_init(&hash_seq, LagTrackerHash);
+	while ((hentry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		Datum		values[3];
+		bool		nulls[3];
+
+		/* Include this entry in the result. */
+		MemSet(values, 0, sizeof(values));
+		MemSet(nulls, 0, sizeof(nulls));
+
+		values[0] = CStringGetTextDatum(hentry->slotname);
+		if (hentry->commit_sample.lsn == InvalidXLogRecPtr)
+			nulls[1] = nulls[2] = true;
+		else
+		{
+			values[1] = LSNGetDatum(hentry->commit_sample.lsn);
+			values[2] = TimestampTzGetDatum(hentry->commit_sample.time);
+		}
+
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
+
+	LWLockRelease(SpockCtx->lag_lock);
+
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
+
+	PG_RETURN_VOID();
+}
+
+Datum
+lagtracker_feedback(PG_FUNCTION_ARGS)
+{
+	char *slotname;
+	XLogRecPtr last_recvpos;
+	TimestampTz time;
+
+	slotname = NameStr(*PG_GETARG_NAME(0));
+	last_recvpos = PG_GETARG_LSN(1);
+	time = PG_GETARG_TIMESTAMPTZ(2);
+
+	lagtracker_entry(slotname, last_recvpos, time);
+
+	PG_RETURN_VOID();
 }

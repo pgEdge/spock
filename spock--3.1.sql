@@ -375,3 +375,19 @@ CREATE TABLE spock.conflict_tracker (
 
     PRIMARY KEY(relid, tid)
 );
+
+CREATE FUNCTION spock.lagtracker(
+    OUT slotname text,
+    OUT commit_lsn pg_lsn,
+    OUT commit_timestamp timestamptz,
+    OUT remote_lsn pg_lsn,
+    OUT remote_timestamp timestamptz
+)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'lagtracker_info'
+STRICT LANGUAGE C;
+
+CREATE VIEW spock.lagtracker AS
+    SELECT slotname, commit_lsn, commit_timestamp, write_lsn, reply_time
+    FROM spock.lagtracker() l, pg_stat_replication r
+    WHERE l.slotname=r.application_name;
