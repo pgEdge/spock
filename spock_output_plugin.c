@@ -192,6 +192,9 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 		SpockLocalNode *node;
 		MemoryContext oldctx;
 
+		/* Add slot to the hashtable */
+		lagtracker_entry(NameStr(MyReplicationSlot->data.name), InvalidXLogRecPtr, 0);
+
 		/*
 		 * There's a potential corruption bug in PostgreSQL 10.1, 9.6.6, 9.5.10
 		 * and 9.4.15 that can cause reorder buffers to accumulate duplicated
@@ -448,6 +451,12 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	old_ctx = MemoryContextSwitchTo(data->context);
 
+	/* update progress */
+	OutputPluginUpdateProgress(ctx, false);
+
+	/* Save lsn and time in hash */
+	lagtracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn, txn->xact_time.commit_time);
+
 	OutputPluginPrepareWrite(ctx, true);
 	data->api->write_commit(ctx->out, data, txn, commit_lsn);
 	OutputPluginWrite(ctx, true);
@@ -666,6 +675,12 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	/* Avoid leaking memory by using and resetting our own context */
 	old = MemoryContextSwitchTo(data->context);
+
+	/* update progress */
+	OutputPluginUpdateProgress(ctx, false);
+
+	/* Save lsn and time in hash */
+	lagtracker_entry(NameStr(MyReplicationSlot->data.name), ctx->write_location, txn->xact_time.commit_time);
 
 	/* First check the table filter */
 	if (!spock_change_filter(data, relation, change, &att_list))
