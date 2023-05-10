@@ -9,14 +9,14 @@ projects as a solid foundation to build upon for this enterprise-class extension
 
 Our current version is 3.1 and includes the following important enhancements beyond Spock 3.0:
 
-* Support for pg15 **AND pg16**
-* Regression testing improvements
+* Support for both pg15 **AND** pg16
 * Prelim testing for online upgrades between pg15 & pg16
+* Regression testing improvements
 
 
 Our first version is 3.0 and includes the following important enhancements beyond its pg_logical-2.4.2 base:
 
-* Support for pg15 (with support for pg10 thru pg14 dropped)
+* Support for pg15 (support for pg10 thru pg14 dropped)
 * Support for Asynchronous Multi-Master Replication with conflict resolution
 * Conflict-free delta-apply columns
 * Replication of partitioned tables (to help support geo-sharding) 
@@ -28,7 +28,7 @@ Our first version is 3.0 and includes the following important enhancements beyon
 * Improved support for in-region shadow nodes (in different AZ's)
 
 
-We use the following terms, borrowed from [Jan's](https://www.linkedin.com/in/jan-wieck-3140812) well known [Slony-I](https://slony.info), to describe data streams between nodes:
+We use the following terms, borrowed from [Jan's](https://www.linkedin.com/in/jan-wieck-3140812) well known [Slony](https://slony.info) project, to describe data streams between nodes:
 * Nodes - PostgreSQL database instances
 * Providers and Subscribers - roles taken by Nodes
 * Replication Set - a collection of tables
