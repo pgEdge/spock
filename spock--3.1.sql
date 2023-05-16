@@ -386,7 +386,8 @@ AS 'MODULE_PATHNAME', 'lag_tracker_info'
 STRICT LANGUAGE C;
 
 CREATE VIEW spock.lag_tracker AS
-    SELECT slot_name, commit_lsn, commit_timestamp,
-		timeofday()::timestamptz - commit_timestamp AS replication_lag,
-		pg_wal_lsn_diff(pg_current_wal_insert_lsn(), commit_lsn) AS replication_lag_bytes
-    FROM spock.lag_tracker();
+    SELECT L.slot_name, L.commit_lsn, L.commit_timestamp,
+		pg_catalog.timeofday()::timestamptz - L.commit_timestamp AS replication_lag,
+		pg_wal_lsn_diff(pg_catalog.pg_current_wal_insert_lsn(), S.write_lsn) AS replication_lag_bytes
+    FROM spock.lag_tracker() L
+	LEFT JOIN pg_catalog.pg_stat_replication S ON S.application_name = L.slot_name;
