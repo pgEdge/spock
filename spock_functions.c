@@ -158,8 +158,8 @@ PG_FUNCTION_INFO_V1(reset_channel_stats);
 PG_FUNCTION_INFO_V1(get_conflict_tracking);
 PG_FUNCTION_INFO_V1(prune_conflict_tracking);
 
-PG_FUNCTION_INFO_V1(lagtracker_info);
-PG_FUNCTION_INFO_V1(lagtracker_feedback);
+PG_FUNCTION_INFO_V1(lag_tracker_info);
+PG_FUNCTION_INFO_V1(lag_tracker_feedback);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -2801,7 +2801,7 @@ prune_conflict_tracking(PG_FUNCTION_ARGS)
 }
 
 Datum
-lagtracker_info(PG_FUNCTION_ARGS)
+lag_tracker_info(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
 	TupleDesc			tupdesc;
@@ -2870,7 +2870,7 @@ lagtracker_info(PG_FUNCTION_ARGS)
 }
 
 Datum
-lagtracker_feedback(PG_FUNCTION_ARGS)
+lag_tracker_feedback(PG_FUNCTION_ARGS)
 {
 	char *slotname;
 	XLogRecPtr last_recvpos;
@@ -2880,7 +2880,7 @@ lagtracker_feedback(PG_FUNCTION_ARGS)
 	last_recvpos = PG_GETARG_LSN(1);
 	time = PG_GETARG_TIMESTAMPTZ(2);
 
-	lagtracker_entry(slotname, last_recvpos, time);
+	lag_tracker_entry(slotname, last_recvpos, time);
 
 	PG_RETURN_VOID();
 }

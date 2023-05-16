@@ -913,7 +913,7 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 }
 
 LagTrackerEntry *
-lagtracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts)
+lag_tracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts)
 {
 	LagTrackerEntry *hentry;
 	bool found;
