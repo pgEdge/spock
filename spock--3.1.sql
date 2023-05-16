@@ -376,18 +376,17 @@ CREATE TABLE spock.conflict_tracker (
     PRIMARY KEY(relid, tid)
 );
 
-CREATE FUNCTION spock.lagtracker(
-    OUT slotname text,
+CREATE FUNCTION spock.lag_tracker(
+    OUT slot_name text,
     OUT commit_lsn pg_lsn,
-    OUT commit_timestamp timestamptz,
-    OUT remote_lsn pg_lsn,
-    OUT remote_timestamp timestamptz
+    OUT commit_timestamp timestamptz
 )
 RETURNS SETOF record
-AS 'MODULE_PATHNAME', 'lagtracker_info'
+AS 'MODULE_PATHNAME', 'lag_tracker_info'
 STRICT LANGUAGE C;
 
-CREATE VIEW spock.lagtracker AS
-    SELECT slotname, commit_lsn, commit_timestamp, write_lsn, reply_time
-    FROM spock.lagtracker() l, pg_stat_replication r
-    WHERE l.slotname=r.application_name;
+CREATE VIEW spock.lag_tracker AS
+    SELECT slot_name, commit_lsn, commit_timestamp,
+		timeofday()::timestamptz - commit_timestamp AS replication_lag,
+		pg_wal_lsn_diff(pg_current_wal_insert_lsn(), commit_lsn) AS replication_lag_bytes
+    FROM spock.lag_tracker();

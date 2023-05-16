@@ -193,7 +193,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 		MemoryContext oldctx;
 
 		/* Add slot to the hashtable */
-		lagtracker_entry(NameStr(MyReplicationSlot->data.name), InvalidXLogRecPtr, 0);
+		lag_tracker_entry(NameStr(MyReplicationSlot->data.name), InvalidXLogRecPtr, 0);
 
 		/*
 		 * There's a potential corruption bug in PostgreSQL 10.1, 9.6.6, 9.5.10
@@ -455,7 +455,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	OutputPluginUpdateProgress(ctx, false);
 
 	/* Save lsn and time in hash */
-	lagtracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn, txn->xact_time.commit_time);
+	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn, txn->xact_time.commit_time);
 
 	OutputPluginPrepareWrite(ctx, true);
 	data->api->write_commit(ctx->out, data, txn, commit_lsn);
@@ -680,7 +680,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	OutputPluginUpdateProgress(ctx, false);
 
 	/* Save lsn and time in hash */
-	lagtracker_entry(NameStr(MyReplicationSlot->data.name), ctx->write_location, txn->xact_time.commit_time);
+	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), ctx->write_location, txn->xact_time.commit_time);
 
 	/* First check the table filter */
 	if (!spock_change_filter(data, relation, change, &att_list))

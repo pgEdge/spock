@@ -172,6 +172,6 @@ extern const char * spock_worker_type_name(SpockWorkerType type);
 extern void handle_stats_counter(Relation relation, Oid subid,
 								spockStatsType typ, int ntup);
 
-extern LagTrackerEntry *lagtracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts);
+extern LagTrackerEntry *lag_tracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts);
 
 #endif /* SPOCK_WORKER_H */
