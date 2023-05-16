@@ -387,7 +387,10 @@ STRICT LANGUAGE C;
 
 CREATE VIEW spock.lag_tracker AS
     SELECT L.slot_name, L.commit_lsn, L.commit_timestamp,
-		pg_catalog.timeofday()::timestamptz - L.commit_timestamp AS replication_lag,
+		CASE WHEN pg_wal_lsn_diff(pg_catalog.pg_current_wal_insert_lsn(), S.write_lsn) <= 0 
+		THEN '0'::interval
+		ELSE pg_catalog.timeofday()::timestamptz - L.commit_timestamp
+		END AS replication_lag,
 		pg_wal_lsn_diff(pg_catalog.pg_current_wal_insert_lsn(), S.write_lsn) AS replication_lag_bytes
     FROM spock.lag_tracker() L
 	LEFT JOIN pg_catalog.pg_stat_replication S ON S.application_name = L.slot_name;
