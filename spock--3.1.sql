@@ -375,3 +375,22 @@ CREATE TABLE spock.conflict_tracker (
 
     PRIMARY KEY(relid, tid)
 );
+
+CREATE FUNCTION spock.lag_tracker(
+    OUT slot_name text,
+    OUT commit_lsn pg_lsn,
+    OUT commit_timestamp timestamptz
+)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'lag_tracker_info'
+STRICT LANGUAGE C;
+
+CREATE VIEW spock.lag_tracker AS
+    SELECT L.slot_name, L.commit_lsn, L.commit_timestamp,
+		CASE WHEN pg_wal_lsn_diff(pg_catalog.pg_current_wal_insert_lsn(), S.write_lsn) <= 0 
+		THEN '0'::interval
+		ELSE pg_catalog.timeofday()::timestamptz - L.commit_timestamp
+		END AS replication_lag,
+		pg_wal_lsn_diff(pg_catalog.pg_current_wal_insert_lsn(), S.write_lsn) AS replication_lag_bytes
+    FROM spock.lag_tracker() L
+	LEFT JOIN pg_catalog.pg_stat_replication S ON S.application_name = L.slot_name;

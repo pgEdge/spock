@@ -51,6 +51,7 @@ static	List *signal_workers = NIL;
 
 volatile sig_atomic_t	got_SIGTERM = false;
 
+HTAB			   *LagTrackerHash = NULL;
 HTAB			   *SpockHash = NULL;
 HTAB			   *SpockConflictHash = NULL;
 SpockContext	   *SpockCtx = NULL;
@@ -682,6 +683,9 @@ worker_shmem_size(int nworkers, bool include_hash)
 		num_bytes = add_size(num_bytes,
 							 hash_estimate_size(spock_conflict_max_tracking,
 												sizeof(SpockCTHEntry)));
+		num_bytes = add_size(num_bytes,
+							 hash_estimate_size(max_replication_slots,
+												sizeof(LagTrackerEntry)));
 	}
 
 	return num_bytes;
@@ -717,7 +721,7 @@ spock_worker_shmem_request(void)
 	 * tries to allocate or free blocks from this array at once.  There won't
 	 * be enough contention to make anything fancier worth doing.
 	 */
-	RequestNamedLWLockTranche("spock", 2);
+	RequestNamedLWLockTranche("spock", 3);
 }
 
 /*
@@ -751,6 +755,7 @@ spock_worker_shmem_startup(void)
 	{
 		SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
 		SpockCtx->cth_lock = &((GetNamedLWLockTranche("spock")[1]).lock);
+		SpockCtx->lag_lock = &((GetNamedLWLockTranche("spock")[2]).lock);
 		SpockCtx->ctt_last_prune = GetCurrentTimestamp();
 		SpockCtx->ctt_prune_interval = spock_ctt_prune_interval;
 		SpockCtx->supervisor = NULL;
@@ -780,6 +785,14 @@ spock_worker_shmem_startup(void)
 									  spock_conflict_max_tracking,
 									  &hctl,
 									  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+	memset(&hctl, 0, sizeof(hctl));
+	hctl.keysize = NAMEDATALEN;
+	hctl.entrysize = sizeof(LagTrackerEntry);
+	LagTrackerHash = ShmemInitHash("spock lag tracker hash",
+									  max_replication_slots,
+									  max_replication_slots,
+									  &hctl,
+									  HASH_ELEM | HASH_STRINGS);
 
 	LWLockRelease(AddinShmemInitLock);
 }
@@ -897,4 +910,25 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 	SpinLockRelease(&entry->mutex);
 
 	LWLockRelease(SpockCtx->lock);
+}
+
+LagTrackerEntry *
+lag_tracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts)
+{
+	LagTrackerEntry *hentry;
+	bool found;
+
+	Assert(LagTrackerHash != NULL);
+	LWLockAcquire(SpockCtx->lag_lock, LW_EXCLUSIVE);
+
+	/* Find lag info, creating if not found */
+	hentry = (LagTrackerEntry *) hash_search(LagTrackerHash,
+										 slotname,
+										 HASH_ENTER, &found);
+	Assert(hentry != NULL);
+	hentry->commit_sample.lsn = lsn;
+	hentry->commit_sample.time = ts;
+
+	LWLockRelease(SpockCtx->lag_lock);
+	return hentry;
 }
