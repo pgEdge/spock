@@ -110,4 +110,7 @@
 		simple_heap_update(relation, otid, tup, &updateIndexes);	\
 	} while (false);
 
+#define EvalPlanQualInit(epqstate, parentestate, subplan, auxrowmarks, epqParam) \
+	EvalPlanQualInit(epqstate, parentestate, subplan, auxrowmarks, epqParam, NIL)
+
 #endif
