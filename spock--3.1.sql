@@ -340,6 +340,10 @@ RETURNS SETOF boolean STRICT VOLATILE SECURITY DEFINER LANGUAGE sql AS
     'SELECT spock.replicate_ddl(cmd, $2) FROM (SELECT unnest(command) cmd)';
 GRANT EXECUTE ON FUNCTION spock.replicate_ddl(text[], text[]) TO spock_admin;
 
+CREATE FUNCTION spock.replicate_ddl(command text[], replication_sets text[] DEFAULT '{ddl_sql}')
+RETURNS SETOF boolean STRICT VOLATILE LANGUAGE sql AS
+    'SELECT spock.replicate_ddl(cmd, $2) FROM (SELECT unnest(command) cmd)';
+
 CREATE FUNCTION spock.queue_truncate()
 RETURNS trigger SECURITY DEFINER LANGUAGE c AS 'MODULE_PATHNAME', 'spock_queue_truncate';
 GRANT EXECUTE ON FUNCTION spock.queue_truncate TO spock_admin;
