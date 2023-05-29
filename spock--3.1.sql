@@ -257,6 +257,10 @@ CREATE TABLE spock.queue (
 CREATE FUNCTION spock.replicate_ddl(command text, replication_sets text[] DEFAULT '{ddl_sql}')
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
 
+CREATE FUNCTION spock.replicate_ddl(command text[], replication_sets text[] DEFAULT '{ddl_sql}')
+RETURNS SETOF boolean STRICT VOLATILE LANGUAGE sql AS
+    'SELECT spock.replicate_ddl(cmd, $2) FROM (SELECT unnest(command) cmd)';
+
 CREATE OR REPLACE FUNCTION spock.queue_truncate()
 RETURNS trigger LANGUAGE c AS 'MODULE_PATHNAME', 'spock_queue_truncate';
 
