@@ -478,6 +478,7 @@ AS 'MODULE_PATHNAME', 'lag_tracker_info'
 STRICT SECURITY DEFINER LANGUAGE C;
 GRANT EXECUTE ON FUNCTION spock.lag_tracker TO spock_admin;
 
+
 CREATE VIEW spock.lag_tracker AS
     SELECT L.slot_name, L.commit_lsn, L.commit_timestamp,
 		CASE WHEN pg_wal_lsn_diff(pg_catalog.pg_current_wal_insert_lsn(), S.write_lsn) <= 0 
@@ -525,3 +526,5 @@ $$
 	SET session_replication_role TO 'replica';
 $$;
 GRANT EXECUTE ON FUNCTION spock.set_session_replication_role_replica TO spock_admin;
+=======
+>>>>>>> 413f07c (add md5 agg function for checksumming rows &/or groups of rows &/or tables)
