@@ -506,15 +506,6 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 		return false;
 	}
 
-	if (*xmin == GetTopTransactionId())
-	{
-		/*
-		 * This is a tuple that our own transaction created. There cannot
-		 * be any meaningful information in the conflict tracking hash.
-		 */
-		return TransactionIdGetCommitTsData(*xmin, local_ts, local_origin);
-	}
-
 	if (tid == NULL)
 	{
 		/*
@@ -526,7 +517,8 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 	/* Everything below might change the conflict tracking data. */
 	LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
 
-	if (!TransactionIdGetCommitTsData(*xmin, local_ts, local_origin))
+	if (!TransactionIdEquals(*xmin, GetTopTransactionId()) &&
+		!TransactionIdGetCommitTsData(*xmin, local_ts, local_origin))
 	{
 		/*
 		 * The commit timestamp info for this transaction was trimmed
