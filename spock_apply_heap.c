@@ -722,12 +722,10 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 											  &local_origin, &local_ts);
 
 		/*
-		 * If the local tuple was previously updated by different transaction
-		 * on different server, consider this to be conflict and resolve it.
+		 * If we found the original commit timestamp for the
+		 * local tuple, perform conflict resolution.
 		 */
-		if (local_origin_found &&
-			xmin != GetTopTransactionId() &&
-			local_origin != replorigin_session_origin)
+		if (local_origin_found)
 		{
 			SpockConflictResolution resolution;
 
@@ -743,11 +741,18 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 									  local_ts, replident_idx_id,
 									  has_before_triggers);
 
-			if (applytuple != remotetuple)
+			/*
+			 * Remote tuple won, so we go forward with that as a base.
+			 */
+			if (apply && applytuple != remotetuple)
 				ExecStoreHeapTuple(applytuple, aestate->slot, false);
 		}
 		else
 		{
+			/*
+			 * We didn't even find the commit timestamp for the current
+			 * local tuple. So the remote tuple must be newer than that.
+			 */
 			apply = true;
 			applytuple = remotetuple;
 		}
@@ -761,7 +766,22 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			SpockTupleData	deltatup;
 			HeapTuple		currenttuple;
 
-			currenttuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
+			/*
+			 * Depending on previous conflict resolution our final NEW
+			 * tuple will be based on either the incoming remote tuple
+			 * or the existing local one and then the delta processing
+			 * on top of that.
+			 */
+			if (apply)
+			{
+				currenttuple = ExecFetchSlotHeapTuple(aestate->slot,
+													  true, NULL);
+			}
+			else
+			{
+				currenttuple = ExecFetchSlotHeapTuple(localslot,
+													  true, NULL);
+			}
 			oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(aestate->estate));
 			build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
 			applytuple = heap_modify_tuple(currenttuple,
