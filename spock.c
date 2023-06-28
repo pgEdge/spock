@@ -788,21 +788,6 @@ _PG_init(void)
 							 PGC_SUSET, 0,
 							 NULL, NULL, NULL);
 
-	DefineCustomIntVariable("spock.conflict_max_tracking",
-							"Maximum entries for conflict tracking",
-							"Maximum number of entries that can be "
-							"tracked in shared memory for last_update_wins "
-							"with delta resolution interference",
-							&spock_conflict_max_tracking,
-							10000,
-							100,
-							INT_MAX,
-							PGC_POSTMASTER,
-							0,
-							NULL,
-							NULL,
-							NULL);
-
 	DefineCustomIntVariable("spock.stats_max_entries",
 							"Maximum entries for statistics",
 							"Maximum number of entries that can be "

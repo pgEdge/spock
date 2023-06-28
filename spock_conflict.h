@@ -45,7 +45,6 @@ typedef enum
 
 extern int spock_conflict_resolver;
 extern int spock_conflict_log_level;
-extern int spock_conflict_max_tracking;
 extern bool	spock_save_resolutions;
 
 typedef enum SpockConflictType
@@ -55,28 +54,6 @@ typedef enum SpockConflictType
 	CONFLICT_UPDATE_DELETE,
 	CONFLICT_DELETE_DELETE
 } SpockConflictType;
-
-/*
- * SpockCTHKey	Conflict Tracking Hash Table Key
- */
-typedef struct SpockCTHKey
-{
-	Oid				datid;
-	Oid				relid;
-	ItemPointerData	tid;
-} SpockCTHKey;
-
-/*
- * SpockCTHEntry	Conflict Tracking Hash Table Entry
- */
-typedef struct SpockCTHEntry
-{
-	SpockCTHKey		key;
-	RepOriginId		last_origin;
-	TransactionId	last_xmin;
-	TimestampTz		last_ts;
-	int				last_pid;
-} SpockCTHEntry;
 
 extern bool spock_tuple_find_replidx(ResultRelInfo *relinfo,
 										 SpockTupleData *tuple,
@@ -130,19 +107,11 @@ extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 									   GucSource source);
 
 /*
- * Support functions for conflict tracking hash and table
+ * Support functions for conflict tracking table
  */
-extern void spock_cth_store(Oid relid, ItemPointer tid,
+extern void spock_ctt_store(Oid relid, ItemPointer tid,
 							RepOriginId last_origin, TransactionId last_xmin,
-							TimestampTz last_ts, bool has_cth_lock);
-extern void spock_cth_remove(Oid relid, ItemPointer tid, bool has_cth_lock);
-extern bool spock_cth_fetch(Oid relid, ItemPointer tid,
-							RepOriginId *last_origin, TransactionId *last_xmin,
-							TimestampTz *last_ts, bool has_cth_lock);
-extern int32 spock_cth_prune(bool has_cth_lock);
-extern uint32 spock_cth_hash_fn(const void *key, Size keylen);
-extern int spock_cth_match_fn(const void *key1, const void *key2, Size keylen);
-
-extern int32 spock_ctt_prune(bool has_cth_lock);
+							TimestampTz last_ts);
+extern int32 spock_ctt_prune(void);
 extern void spock_ctt_close(void);
 #endif /* SPOCK_CONGLICT_H */

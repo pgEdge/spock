@@ -340,30 +340,6 @@ CREATE VIEW spock.channel_summary_stats AS
   FROM spock.channel_table_stats
   GROUP BY subid, sub_name;
 
---
--- Conflict Tracking hash table content
---
-CREATE FUNCTION spock.get_conflict_tracking(
-	OUT datid oid,
-	OUT relid oid,
-	OUT tid tid,
-	OUT last_origin int2,
-	OUT last_xmin xid,
-	OUT last_ts timestamptz
-)
-RETURNS SETOF record
-AS 'MODULE_PATHNAME', 'get_conflict_tracking'
-STRICT LANGUAGE C ROWS 10000;
-
-CREATE VIEW spock.conflict_tracking AS
-  SELECT N.nspname, C.relname, T.tid, T.last_origin,
-    T.last_xmin, T.last_ts
-  FROM spock.get_conflict_tracking() T
-  JOIN pg_catalog.pg_database D ON D.oid = T.datid
-  JOIN pg_catalog.pg_class C ON C.oid = T.relid
-  JOIN pg_catalog.pg_namespace N on N.oid = C.relnamespace
-  WHERE D.datname = pg_catalog.current_database();
-
 CREATE FUNCTION spock.prune_conflict_tracking()
 RETURNS int4
 AS 'MODULE_PATHNAME', 'prune_conflict_tracking'

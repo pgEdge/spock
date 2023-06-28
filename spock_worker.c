@@ -53,7 +53,6 @@ volatile sig_atomic_t	got_SIGTERM = false;
 
 HTAB			   *LagTrackerHash = NULL;
 HTAB			   *SpockHash = NULL;
-HTAB			   *SpockConflictHash = NULL;
 SpockContext	   *SpockCtx = NULL;
 SpockWorker		   *MySpockWorker = NULL;
 static uint16		MySpockWorkerGeneration;
@@ -681,9 +680,6 @@ worker_shmem_size(int nworkers, bool include_hash)
 							 hash_estimate_size(spock_stats_max_entries,
 												sizeof(spockStatsEntry)));
 		num_bytes = add_size(num_bytes,
-							 hash_estimate_size(spock_conflict_max_tracking,
-												sizeof(SpockCTHEntry)));
-		num_bytes = add_size(num_bytes,
 							 hash_estimate_size(max_replication_slots,
 												sizeof(LagTrackerEntry)));
 	}
@@ -716,12 +712,8 @@ spock_worker_shmem_request(void)
 	/* Allocate enough shmem for the worker limit ... */
 	RequestAddinShmemSpace(worker_shmem_size(nworkers, true));
 
-	/*
-	 * We'll need to be able to take exclusive locks so only one per-db backend
-	 * tries to allocate or free blocks from this array at once.  There won't
-	 * be enough contention to make anything fancier worth doing.
-	 */
-	RequestNamedLWLockTranche("spock", 3);
+	/* Allocate the number of LW-locks needed for Spock. */
+	RequestNamedLWLockTranche("spock", 2);
 }
 
 /*
@@ -754,8 +746,7 @@ spock_worker_shmem_startup(void)
 	if (!found)
 	{
 		SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
-		SpockCtx->cth_lock = &((GetNamedLWLockTranche("spock")[1]).lock);
-		SpockCtx->lag_lock = &((GetNamedLWLockTranche("spock")[2]).lock);
+		SpockCtx->lag_lock = &((GetNamedLWLockTranche("spock")[1]).lock);
 		SpockCtx->ctt_last_prune = GetCurrentTimestamp();
 		SpockCtx->ctt_prune_interval = spock_ctt_prune_interval;
 		SpockCtx->supervisor = NULL;
@@ -775,16 +766,6 @@ spock_worker_shmem_startup(void)
 							  &hctl,
 							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
 
-	memset(&hctl, 0, sizeof(hctl));
-	hctl.keysize = sizeof(SpockCTHKey);
-	hctl.entrysize = sizeof(SpockCTHEntry);
-	hctl.hash = spock_cth_hash_fn;
-	hctl.match = spock_cth_match_fn;
-	SpockConflictHash = ShmemInitHash("spock conflict tracking hash",
-									  spock_conflict_max_tracking,
-									  spock_conflict_max_tracking,
-									  &hctl,
-									  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
 	memset(&hctl, 0, sizeof(hctl));
 	hctl.keysize = NAMEDATALEN;
 	hctl.entrysize = sizeof(LagTrackerEntry);
