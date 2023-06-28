@@ -105,7 +105,7 @@ static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 void
 spock_apply_heap_begin(void)
 {
-	spock_cth_prune(false);
+	return;
 }
 
 void
@@ -140,7 +140,7 @@ spock_apply_heap_commit(void)
 		SpockCtx->ctt_last_prune = now;
 
 		PushActiveSnapshot(GetTransactionSnapshot());
-		num_pruned = spock_ctt_prune(false);
+		num_pruned = spock_ctt_prune();
 		PopActiveSnapshot();
         CommandCounterIncrement();
 
@@ -839,9 +839,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 				 * the correct origin, xmin and commit timestamp for
 				 * get_tuple_origion() to figure it out.
 				 */
-				spock_cth_store(RelationGetRelid(rel->rel),
+				spock_ctt_store(RelationGetRelid(rel->rel),
 								&(aestate->slot->tts_tid), local_origin,
-								GetTopTransactionId(), local_ts, false);
+								GetTopTransactionId(), local_ts);
 			}
 
 			/* AFTER ROW UPDATE Triggers */
