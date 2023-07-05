@@ -19,6 +19,7 @@
 #include "mb/pg_wchar.h"
 #include "replication/logical.h"
 
+#include "miscadmin.h"
 #include "access/xact.h"
 #include "executor/executor.h"
 #include "catalog/namespace.h"
@@ -29,6 +30,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "replication/origin.h"
+#include "replication/syncrep.h"
 
 #include "spock_output_plugin.h"
 #include "spock.h"
@@ -451,11 +453,23 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	old_ctx = MemoryContextSwitchTo(data->context);
 
+	/* Save lsn and time in hash for lag_tracker*/
+	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn,
+					  txn->xact_time.commit_time);
+
+	/*
+	 * If we are configured for synchronous replication we must wait
+	 * for this commit_lsn to be confirmed according to the configuration
+	 * of synchronous_standby_names before sending it to the subscriber.
+	 * A failover to the synchronous standby may otherwise forget a
+	 * transaction already sent to a Spock node.
+	 */
+	HOLD_INTERRUPTS();
+	SyncRepWaitForLSN(commit_lsn, true);
+	RESUME_INTERRUPTS();
+
 	/* update progress */
 	OutputPluginUpdateProgress(ctx, false);
-
-	/* Save lsn and time in hash */
-	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn, txn->xact_time.commit_time);
 
 	OutputPluginPrepareWrite(ctx, true);
 	data->api->write_commit(ctx->out, data, txn, commit_lsn);
