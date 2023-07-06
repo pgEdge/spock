@@ -454,10 +454,6 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	old_ctx = MemoryContextSwitchTo(data->context);
 
-	/* Save lsn and time in hash for lag_tracker*/
-	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn,
-					  txn->xact_time.commit_time);
-
 	/*
 	 * If we are configured for synchronous replication we must wait
 	 * for this commit_lsn to be confirmed according to the configuration
@@ -468,6 +464,10 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	HOLD_INTERRUPTS();
 	SyncRepWaitForLSN(end_lsn, true);
 	RESUME_INTERRUPTS();
+
+	/* Save lsn and time in hash for lag_tracker*/
+	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn,
+					  txn->xact_time.commit_time);
 
 	/* update progress */
 	OutputPluginUpdateProgress(ctx, false);
