@@ -450,6 +450,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 {
 	SpockOutputData* data = (SpockOutputData*)ctx->output_plugin_private;
 	MemoryContext old_ctx;
+	XLogRecPtr end_lsn = txn->end_lsn;
 
 	old_ctx = MemoryContextSwitchTo(data->context);
 
@@ -465,7 +466,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	 * transaction already sent to a Spock node.
 	 */
 	HOLD_INTERRUPTS();
-	SyncRepWaitForLSN(commit_lsn, true);
+	SyncRepWaitForLSN(end_lsn, true);
 	RESUME_INTERRUPTS();
 
 	/* update progress */
