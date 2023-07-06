@@ -57,7 +57,6 @@
 
 int		spock_conflict_resolver = SPOCK_RESOLVE_APPLY_REMOTE;
 int		spock_conflict_log_level = LOG;
-int		spock_conflict_max_tracking = 0;
 bool	spock_save_resolutions = false;
 
 static	Relation	spock_ctt_rel = NULL;
@@ -71,9 +70,6 @@ static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
 /*
  * Support functions for conflict tracking permanent table
  */
-static void spock_ctt_store(Oid relid, ItemPointer tid,
-                            RepOriginId last_origin, TransactionId last_xmin,
-                            TimestampTz last_ts);
 static void spock_ctt_remove(Oid relid, ItemPointer tid);
 static bool spock_ctt_fetch(Oid relid, ItemPointer tid,
 							RepOriginId *last_origin, TransactionId *last_xmin,
@@ -481,7 +477,6 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 	RepOriginId		last_origin;
 	TransactionId	last_xmin;
 	TimestampTz		last_ts;
-	bool			cth_found;
 	int				cmp;
 
 	*xmin = HeapTupleHeaderGetXmin(local_tuple->t_data);
@@ -514,9 +509,6 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 		return TransactionIdGetCommitTsData(*xmin, local_ts, local_origin);
 	}
 
-	/* Everything below might change the conflict tracking data. */
-	LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
-
 	if (!TransactionIdEquals(*xmin, GetTopTransactionId()) &&
 		!TransactionIdGetCommitTsData(*xmin, local_ts, local_origin))
 	{
@@ -525,9 +517,7 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 		 * already. Nothing much we can do other than drop the tracking
 		 * entry, if we have one.
 		 */
-		spock_cth_remove(relid, tid, true);
-
-		LWLockRelease(SpockCtx->cth_lock);
+		spock_ctt_remove(relid, tid);
 		return false;
 	}
 
@@ -543,13 +533,8 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 	 * If we find one and it loses the conflict criteria, we drop it.
 	 */
 
-	cth_found = spock_cth_fetch(relid, tid, &last_origin, &last_xmin,
-								&last_ts, true);
-	if (!cth_found)
-	{
-		LWLockRelease(SpockCtx->cth_lock);
+	if (!spock_ctt_fetch(relid, tid, &last_origin, &last_xmin, &last_ts))
 		return true;
-	}
 
 	if (!TransactionIdEquals(last_xmin, *xmin))
 	{
@@ -560,9 +545,7 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 		 * reused. We can identify that because the xmin in the local slot
 		 * is now different from when we stored it.
 		 */
-		spock_cth_remove(relid, tid, true);
-
-		LWLockRelease(SpockCtx->cth_lock);
+		spock_ctt_remove(relid, tid);
 		return true;
 	}
 
@@ -572,17 +555,15 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 
 	if (cmp > 0)
 	{
-		spock_cth_remove(relid, tid, true);
+		spock_ctt_remove(relid, tid);
 	}
 	else
 	{
 		*local_origin = last_origin;
 		*local_ts = last_ts;
 
-		spock_cth_store(relid, tid, last_origin, *xmin, last_ts, true);
+		spock_ctt_store(relid, tid, last_origin, *xmin, last_ts);
 	}
-
-	LWLockRelease(SpockCtx->cth_lock);
 
 	return true;
 }
@@ -1010,174 +991,32 @@ spock_conflict_resolver_check_hook(int *newval, void **extra,
 
 
 /*
- * Conflict Tracking Hash support functions
+ * Private structures for spock_ctt_prune()
  */
-void
-spock_cth_store(Oid relid, ItemPointer tid, RepOriginId last_origin,
-				TransactionId last_xmin, TimestampTz last_ts,
-				bool has_cth_lock)
-{
-	SpockCTHKey			cth_key;
-	SpockCTHEntry	   *cth_entry;
-	bool				cth_found;
-
-	if (!track_commit_timestamp)
-		return;
-
-	/* We intend to modify the hash table, lock exclusive */
-	if (!has_cth_lock)
-		LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
-
-	/* Search for the hash entry or create a new one */
-	memset(&cth_key, 0, sizeof(cth_key));
-	cth_key.datid = MyDatabaseId;
-	cth_key.relid = relid;
-	ItemPointerSet(&(cth_key.tid), BlockIdGetBlockNumber(&tid->ip_blkid),
-				   tid->ip_posid);
-	cth_entry = (SpockCTHEntry *)hash_search(SpockConflictHash,
-											 &cth_key, HASH_ENTER, &cth_found);
-	if (cth_entry == NULL)
-	{
-		if (!has_cth_lock)
-			LWLockRelease(SpockCtx->cth_lock);
-		elog(ERROR, "SPOCK: out of shared memory for conflict tracking");
-	}
-
-	cth_entry->last_origin = last_origin;
-	cth_entry->last_xmin = last_xmin;
-	cth_entry->last_ts = last_ts;
-	cth_entry->last_pid = MyProcPid;
-
-	/*
-	 * Store this entry also in the permanent backing table
-	 */
-	spock_ctt_store(relid, tid, last_origin, last_xmin, last_ts);
-
-	if (!has_cth_lock)
-		LWLockRelease(SpockCtx->cth_lock);
-}
-
-void
-spock_cth_remove(Oid relid, ItemPointer tid, bool has_cth_lock)
-{
-	SpockCTHKey		cth_key;
-	bool			found;
-
-	if (!has_cth_lock)
-		LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
-
-	memset(&cth_key, 0, sizeof(cth_key));
-	cth_key.datid = MyDatabaseId;
-	cth_key.relid = relid;
-	ItemPointerSet(&(cth_key.tid), BlockIdGetBlockNumber(&tid->ip_blkid),
-				   tid->ip_posid);
-	hash_search(SpockConflictHash, &cth_key, HASH_REMOVE, &found);
-
-	/* Delete the entry from the backing table. */
-	spock_ctt_remove(relid, tid);
-
-	if (!has_cth_lock)
-		LWLockRelease(SpockCtx->cth_lock);
-}
-
-bool
-spock_cth_fetch(Oid relid, ItemPointer tid,
-				RepOriginId *last_origin, TransactionId *last_xmin,
-				TimestampTz *last_ts, bool has_cth_lock)
-{
-	SpockCTHKey		cth_key;
-	SpockCTHEntry  *cth_entry;
-	bool			found;
-
-	if (!has_cth_lock)
-		LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
-
-	memset(&cth_key, 0, sizeof(cth_key));
-	cth_key.datid = MyDatabaseId;
-	cth_key.relid = relid;
-	ItemPointerSet(&(cth_key.tid), BlockIdGetBlockNumber(&tid->ip_blkid),
-				   tid->ip_posid);
-	cth_entry = hash_search(SpockConflictHash, &cth_key, HASH_REMOVE, &found);
-
-	if (found)
-	{
-
-		*last_origin = cth_entry->last_origin;
-		*last_xmin = cth_entry->last_xmin;
-		*last_ts = cth_entry->last_ts;
-
-		if (!has_cth_lock)
-			LWLockRelease(SpockCtx->cth_lock);
-		return true;
-	}
-
-	found = spock_ctt_fetch(relid, tid, last_origin, last_xmin, last_ts);
-
-	if (!has_cth_lock)
-		LWLockRelease(SpockCtx->cth_lock);
-	return found;
-}
-
-int32
-spock_cth_prune(bool has_cth_lock)
-{
-	int32			num_pruned = 0;
-	HASH_SEQ_STATUS	hash_seq;
-	SpockCTHEntry   *entry;
-
-	if (!has_cth_lock)
-		LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
-
-	if (SpockConflictHash == NULL)
-	{
-		LWLockRelease(SpockCtx->cth_lock);
-		return -1;
-	}
-
-	hash_seq_init(&hash_seq, SpockConflictHash);
-	while ((entry = hash_seq_search(&hash_seq)) != NULL)
-	{
-		if (entry->last_pid == MyProcPid
-			&& entry->last_xmin != GetTopTransactionId())
-		{
-			hash_search(SpockConflictHash, &entry->key, HASH_REMOVE, NULL);
-			num_pruned++;
-		}
-	}
-
-	if (!has_cth_lock)
-		LWLockRelease(SpockCtx->cth_lock);
-
-	return num_pruned;
-}
-
-/*
- * Private structures for spock_cth_prune()
- */
-typedef struct CTHPruneSub
+typedef struct CTTPruneSub
 {
 	Oid				sub_id;
 	char		   *sub_name;
 	RepOriginId		replorigin;
-} CTHPruneSub;
+} CTTPruneSub;
 
-typedef struct CTHPruneOrig
+typedef struct CTTPruneOrig
 {
 	RepOriginId		replorigin;
 	TimestampTz		last_ts;
-} CTHPruneOrig;
+} CTTPruneOrig;
 
 int32
-spock_ctt_prune(bool has_cth_lock)
+spock_ctt_prune(void)
 {
 	int32			num_pruned = 0;
 	TupleDesc		tupdesc;
 	List		   *subscriptions = NIL;
 	ListCell	   *slc;
-	CTHPruneSub	   *sub;
+	CTTPruneSub	   *sub;
 	List		   *origins = NIL;
 	ListCell	   *olc;
-	CTHPruneOrig   *origin;
+	CTTPruneOrig   *origin;
 	List		   *workers = NIL;
 	ListCell	   *wlc;
 	SpockWorker	   *worker;
@@ -1220,7 +1059,7 @@ spock_ctt_prune(bool has_cth_lock)
 		HeapTuple	tup = SPI_tuptable->vals[i];
 		bool		isnull;
 
-		sub = palloc(sizeof(CTHPruneSub));
+		sub = palloc(sizeof(CTTPruneSub));
 		sub->sub_id = DatumGetObjectId(SPI_getbinval(tup, tupdesc, 1,
 													 &isnull));
 		sub->sub_name = SPI_getvalue(tup, tupdesc, 2);
@@ -1236,7 +1075,7 @@ spock_ctt_prune(bool has_cth_lock)
 	workers = spock_apply_find_all(MyDatabaseId);
 	foreach (slc, subscriptions)
 	{
-		sub = (CTHPruneSub *)lfirst(slc);
+		sub = (CTTPruneSub *)lfirst(slc);
 
 		foreach (wlc, workers)
 		{
@@ -1251,7 +1090,7 @@ spock_ctt_prune(bool has_cth_lock)
 
 			foreach (olc, origins)
 			{
-				origin = (CTHPruneOrig *)lfirst(olc);
+				origin = (CTTPruneOrig *)lfirst(olc);
 
 				if (origin->replorigin == worker->worker.apply.replorigin)
 				{
@@ -1266,7 +1105,7 @@ spock_ctt_prune(bool has_cth_lock)
 			}
 			if (!found)
 			{
-				origin = (CTHPruneOrig *)palloc(sizeof(CTHPruneOrig));
+				origin = (CTTPruneOrig *)palloc(sizeof(CTTPruneOrig));
 				origin->replorigin = worker->worker.apply.replorigin;
 				origin->last_ts = worker->worker.apply.last_ts;
 				origins = lappend(origins, origin);
@@ -1284,7 +1123,7 @@ spock_ctt_prune(bool has_cth_lock)
 	 */
 	foreach (slc, subscriptions)
 	{
-		sub = (CTHPruneSub *)lfirst(slc);
+		sub = (CTTPruneSub *)lfirst(slc);
 
 
 		if (sub->replorigin == InvalidRepOriginId)
@@ -1308,7 +1147,7 @@ spock_ctt_prune(bool has_cth_lock)
 	 */
 	foreach(olc, origins)
 	{
-		origin = (CTHPruneOrig *)lfirst(olc);
+		origin = (CTTPruneOrig *)lfirst(olc);
 
 		if (min_last_ts == 0)
 			min_last_ts = origin->last_ts;
@@ -1334,13 +1173,9 @@ spock_ctt_prune(bool has_cth_lock)
 
 	argtypes[0] = TIMESTAMPTZOID;
 	args[0] = TimestampTzGetDatum(cmp_last_ts);
-	if (!has_cth_lock)
-		LWLockAcquire(SpockCtx->cth_lock, LW_EXCLUSIVE);
 	rc = SPI_execute_with_args("DELETE FROM " EXTENSION_NAME "."
 							   SPOCK_CTT_NAME " WHERE last_ts < $1",
 							   1, argtypes, args, NULL, false, 0);
-	if (!has_cth_lock)
-		LWLockRelease(SpockCtx->cth_lock);
 	if (rc != SPI_OK_DELETE)
 		elog(ERROR, "SPOCK: SPI_execute() failed");
 	num_pruned = SPI_processed;
@@ -1350,22 +1185,7 @@ spock_ctt_prune(bool has_cth_lock)
 	return num_pruned;
 }
 
-uint32
-spock_cth_hash_fn(const void *key, Size keylen)
-{
-	return hash_bytes(key, keylen);
-}
-
-int
-spock_cth_match_fn(const void *key1, const void *key2, Size keylen)
-{
-	if (memcmp(key1, key2, keylen) == 0)
-		return 0;
-
-	return 1;
-}
-
-static void
+void
 spock_ctt_store(Oid relid, ItemPointer tid,
 				RepOriginId last_origin, TransactionId last_xmin,
 				TimestampTz last_ts)

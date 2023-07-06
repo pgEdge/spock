@@ -68,9 +68,6 @@ typedef struct SpockContext {
 	/* Write lock for the entire context. */
 	LWLock	   *lock;
 
-	/* Access lock for the Conflict Tracking Hash. */
-	LWLock	   *cth_lock;
-
 	/* Access lock for Lag Tracking Hash. */
 	LWLock	   *lag_lock;
 
@@ -132,7 +129,6 @@ typedef struct LagTrackerEntry
 
 extern HTAB				   *LagTrackerHash;
 extern HTAB				   *SpockHash;
-extern HTAB				   *SpockConflictHash;
 extern SpockContext		   *SpockCtx;
 extern SpockWorker		   *MySpockWorker;
 extern SpockApplyWorker	   *MyApplyWorker;
