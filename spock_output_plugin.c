@@ -19,6 +19,7 @@
 #include "mb/pg_wchar.h"
 #include "replication/logical.h"
 
+#include "miscadmin.h"
 #include "access/xact.h"
 #include "executor/executor.h"
 #include "catalog/namespace.h"
@@ -29,6 +30,8 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "replication/origin.h"
+#include "replication/syncrep.h"
+#include "replication/walsender_private.h"
 
 #include "spock_output_plugin.h"
 #include "spock.h"
@@ -80,6 +83,7 @@ typedef struct SPKRelMetaCacheEntry
 static HTAB *RelMetaCache = NULL;
 static MemoryContext RelMetaCacheContext = NULL;
 static int InvalidRelMetaCacheCnt = 0;
+static int MyWalSenderIdx = 0;
 
 static void relmetacache_init(MemoryContext decoding_context);
 static SPKRelMetaCacheEntry *relmetacache_get_relation(SpockOutputData *data,
@@ -191,6 +195,13 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 		bool	started_tx = false;
 		SpockLocalNode *node;
 		MemoryContext oldctx;
+
+		/*
+		 * Discover our WalSender slot index. We use this to work around a problem
+		 * in SyncRepWaitForLSN() later.
+		 */
+		if (MyWalSnd != NULL)
+			MyWalSenderIdx = (MyWalSnd - WalSndCtl->walsnds) + 1;
 
 		/* Add slot to the hashtable */
 		lag_tracker_entry(NameStr(MyReplicationSlot->data.name), InvalidXLogRecPtr, 0);
@@ -446,16 +457,51 @@ static void
 pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					 XLogRecPtr commit_lsn)
 {
-	SpockOutputData* data = (SpockOutputData*)ctx->output_plugin_private;
-	MemoryContext old_ctx;
+	SpockOutputData    *data = (SpockOutputData*)ctx->output_plugin_private;
+	MemoryContext		old_ctx;
+	XLogRecPtr			end_lsn = txn->end_lsn - MyWalSenderIdx;
 
 	old_ctx = MemoryContextSwitchTo(data->context);
 
+	/*
+	 * If we are configured for synchronous replication we must wait
+	 * for this end_lsn to be confirmed according to the configuration
+	 * of synchronous_standby_names before sending it to the subscriber.
+	 * A failover to the synchronous standby may otherwise forget a
+	 * transaction already sent to a Spock node.
+	 *
+	 * There currently is a problem in SyncRepWaitForLSN() in that it
+	 * expects the wait queue to be sorted by LSN and that there are
+	 * no duplicate LSNs in it. There is no good reason for uniqueness
+	 * in that list, but the corresponding Assert code will TRAP if
+	 * we don't use a unique LSN. We therefore use our WalSndCtl->walsnds
+	 * slot number +1 and subtract that from the end_lsn. This works as
+	 * long as that offset is smaller than the size of the commit record
+	 * itself.
+	 */
+	if (MyWalSenderIdx == 0)
+	{
+		elog(LOG, "Spock: don't have a walsender idx - "
+				  " not calling SyncRepWaitForLSN()");
+	}
+	else if (end_lsn <= commit_lsn)
+	{
+		elog(LOG, "Spock: walsender idx too big (%d) - "
+				  " not calling SyncRepWaitForLSN()", MyWalSenderIdx);
+	}
+	else
+	{
+		HOLD_INTERRUPTS();
+		SyncRepWaitForLSN(end_lsn, true);
+		RESUME_INTERRUPTS();
+	}
+
+	/* Save lsn and time in hash for lag_tracker*/
+	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn,
+					  txn->xact_time.commit_time);
+
 	/* update progress */
 	OutputPluginUpdateProgress(ctx, false);
-
-	/* Save lsn and time in hash */
-	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn, txn->xact_time.commit_time);
 
 	OutputPluginPrepareWrite(ctx, true);
 	data->api->write_commit(ctx->out, data, txn, commit_lsn);
