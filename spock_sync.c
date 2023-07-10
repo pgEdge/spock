@@ -567,7 +567,6 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	{
 		StringInfoData	relname;
 		StringInfoData	repsetarr;
-		ListCell   *lc;
 
 		initStringInfo(&relname);
 		appendStringInfo(&relname, "%s.%s",
@@ -935,8 +934,8 @@ spock_sync_subscription(SpockSubscription *sub)
 					 spock_temp_directory, MyProcPid);
 			canonicalize_path(tmpfile);
 
-			PG_ENSURE_ERROR_CLEANUP(spock_sync_tmpfile_cleanup_cb,
-									CStringGetDatum(tmpfile));
+			PG_ENSURE_ERROR_CLEANUP_SUFFIX(spock_sync_tmpfile_cleanup_cb,
+									CStringGetDatum(tmpfile), _suf);
 			{
 				Relation replorigin_rel;
 
@@ -1035,8 +1034,8 @@ spock_sync_subscription(SpockSubscription *sub)
 					restore_structure(sub, tmpfile, "post-data");
 				}
 			}
-			PG_END_ENSURE_ERROR_CLEANUP(spock_sync_tmpfile_cleanup_cb,
-										CStringGetDatum(tmpfile));
+			PG_END_ENSURE_ERROR_CLEANUP_SUFFIX(spock_sync_tmpfile_cleanup_cb,
+										CStringGetDatum(tmpfile), _suf);
 			spock_sync_tmpfile_cleanup_cb(0,
 											  CStringGetDatum(tmpfile));
 		}

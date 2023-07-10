@@ -1417,7 +1417,6 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	if (!PG_ARGISNULL(3))
 	{
 		ArrayType  *att_names = PG_GETARG_ARRAYTYPE_P(3);
-		ListCell   *lc;
 		Bitmapset  *idattrs;
 
 		/* fetch bitmap of REPLICATION IDENTITY attributes */

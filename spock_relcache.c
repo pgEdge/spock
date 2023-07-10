@@ -98,7 +98,6 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		if (entry->rel->trigdesc != NULL)
 		{
 			TriggerDesc	   *trigdesc = entry->rel->trigdesc;
-			int				i;
 
 			for (i = 0; i < trigdesc->numtriggers; i++)
 			{
