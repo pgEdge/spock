@@ -18,6 +18,24 @@
 #include "access/tableam.h"
 #include "utils/varlena.h"
 
+
+/* Redefine macros with a SUFFIX arg, to be passed-on to PG_TRY/PG_CATCH */
+#define PG_ENSURE_ERROR_CLEANUP_SUFFIX(cleanup_function, arg, _suf)	\
+	do { \
+		before_shmem_exit(cleanup_function, arg); \
+		PG_TRY(_suf)
+
+#define PG_END_ENSURE_ERROR_CLEANUP_SUFFIX(cleanup_function, arg, _suf)	\
+		cancel_before_shmem_exit(cleanup_function, arg); \
+		PG_CATCH(_suf); \
+		{ \
+			cancel_before_shmem_exit(cleanup_function, arg); \
+			cleanup_function (0, arg); \
+			PG_RE_THROW(); \
+		} \
+		PG_END_TRY(_suf); \
+	} while (0)
+
 #define WaitLatchOrSocket(latch, wakeEvents, sock, timeout) \
 	WaitLatchOrSocket(latch, wakeEvents, sock, timeout, PG_WAIT_EXTENSION)
 
