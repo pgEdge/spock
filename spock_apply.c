@@ -2104,6 +2104,8 @@ apply_work(PGconn *streamConn)
 
 			/* We must not have fallen out of MessageContext by accident */
 			Assert(CurrentMemoryContext == MessageContext);
+
+			CHECK_FOR_INTERRUPTS();
 		}
 
 		/* confirm all writes at once */

@@ -837,6 +837,8 @@ spock_sync_worker_cleanup(SpockSubscription *sub)
 		/* emergency bailout if postmaster has died */
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
+
+		CHECK_FOR_INTERRUPTS();
 	}
 
 	spock_drop_remote_slot(origin_conn, sub->slot_name);
@@ -1895,6 +1897,8 @@ wait_for_sync_status_change(Oid subid, const char *nspname, const char *relname,
 		/* emergency bailout if postmaster has died */
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
+
+		CHECK_FOR_INTERRUPTS();
 	}
 
 	(void) MemoryContextSwitchTo(old_ctx);
