@@ -1,4 +1,4 @@
-\set bid :branch
+\set bid (random(1, :scale / 3) - 1) * 3 + :branch
 \set aid random(1, 100000) + 100000 * (:bid - 1)
 \set tid random(1, 10) + 10 * (:bid - 1)
 \set delta random(-5000, 5000)
