@@ -96,6 +96,7 @@ bool	spock_batch_inserts = true;
 static char *spock_temp_directory_config;
 bool	spock_ch_stats = true;
 static char *spock_country_code;
+bool	spock_deny_ddl = false;
 
 void _PG_init(void);
 PGDLLEXPORT void spock_supervisor_main(Datum main_arg);
@@ -105,7 +106,6 @@ static PGconn * spock_connect_base(const char *connstr,
 									   const char *appname,
 									   const char *suffix,
 									   bool replication);
-
 
 /*
  * Ensure string is not longer than maxlen.
@@ -892,6 +892,16 @@ _PG_init(void)
 							   NULL,
 							   NULL,
 							   NULL);
+
+	DefineCustomBoolVariable("spock.deny_all_ddl",
+							   "Deny All DDL statements",
+							   NULL,
+							   &spock_deny_ddl,
+							   false,
+							   PGC_SUSET,
+							   0,
+							   NULL, NULL, NULL);
+
 	if (IsBinaryUpgrade)
 		return;
 
