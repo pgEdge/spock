@@ -232,6 +232,14 @@ spock_ProcessUtility(
 
 	dropping_spock_obj = false;
 
+	if (spock_deny_ddl && GetCommandLogLevel(parsetree) == LOGSTMT_DDL)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("cannot execute %s within spock cluster",
+						CreateCommandName(parsetree))));
+	}
+
 	if (nodeTag(parsetree) == T_TruncateStmt)
 		spock_start_truncate();
 
