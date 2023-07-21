@@ -44,6 +44,7 @@ extern int	spock_ctt_prune_interval;
 extern bool spock_batch_inserts;
 extern char *spock_extra_connection_options;
 extern bool	spock_ch_stats;
+extern bool	spock_deny_ddl;
 
 extern char *shorten_hash(const char *str, int maxlen);
 
