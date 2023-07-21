@@ -1686,6 +1686,16 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 
 		commandTag = CreateCommandTag(command);
 
+		/* check if it's a DDL statement. we only do this for in_spock_replicate_ddl_command */
+		if (in_spock_replicate_ddl_command &&
+			GetCommandLogLevel(command->stmt) != LOGSTMT_DDL)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					errmsg("spock.replicate_ddl() cannot execute %s statement",
+							GetCommandTagName(commandTag))));
+		}
+
 		querytree_list = pg_analyze_and_rewrite(
 			command,
 			cmdstr,
