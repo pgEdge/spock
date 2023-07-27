@@ -730,7 +730,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	/* First check the table filter */
 	if (!spock_change_filter(data, relation, change, &att_list))
-		return;
+		goto cleanup;
 
 	/*
 	 * If the protocol wants to write relation information and the client
@@ -797,7 +797,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			Assert(false);
 	}
 
-	/* Cleanup */
+cleanup:
 	Assert(CurrentMemoryContext == data->context);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(data->context);
