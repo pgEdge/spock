@@ -554,9 +554,10 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 
 			/*
 			 * No replication set means global message, those are always
-			 * replicated.
+			 * replicated, but excluding TRUNCATE.
 			 */
-			if (q->replication_sets == NULL)
+			if (q->replication_sets == NULL &&
+				q->message_type != QUEUE_COMMAND_TYPE_TRUNCATE)
 				return true;
 
 			foreach (qlc, q->replication_sets)
