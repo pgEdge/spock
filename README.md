@@ -886,7 +886,8 @@ encoding. We recommend using `UTF-8` encoding in all replicated databases.
 ### Large objects
 
 PostgreSQL's logical decoding facility does not support decoding changes
-to large objects, so spock cannot replicate large objects.
+to [large objects](https://www.postgresql.org/docs/current/largeobjects.html), 
+so spock cannot replicate large objects.
 
 Also any DDL limitations apply so extra care need to be taken when using
 `replicate_ddl_command()`.
