@@ -1084,7 +1084,7 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 
 	initPQExpBuffer(&query);
 	printfPQExpBuffer(&query,
-					  "SELECT spock.create_node(node_name := %s, dsn := %s);",
+					  "SELECT spock.node_create(node_name := %s, dsn := %s);",
 					  PQescapeLiteral(conn, subscriber_name, strlen(subscriber_name)),
 					  PQescapeLiteral(conn, subscriber_dsn, strlen(subscriber_dsn)));
 
@@ -1101,7 +1101,7 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 
 	printfPQExpBuffer(&repsets, "{%s}", replication_sets);
 	printfPQExpBuffer(&query,
-					  "SELECT spock.create_subscription("
+					  "SELECT spock.sub_create("
 					  "subscription_name := %s, provider_dsn := %s, "
 					  "replication_sets := %s, "
 					  "apply_delay := '%d seconds'::interval, "
