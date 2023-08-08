@@ -33,12 +33,12 @@ BEGIN
         IF version() ~ 'Postgres-XL' THEN
                 CREATE EXTENSION IF NOT EXISTS spock;
         ELSE
-                CREATE EXTENSION IF NOT EXISTS spock VERSION '3.0';
+                CREATE EXTENSION IF NOT EXISTS spock VERSION '3.1';
         END IF;
 END;
 $$;
 ALTER EXTENSION spock UPDATE;
-NOTICE:  version "3.0" of extension "spock" is already installed
+NOTICE:  version "3.1" of extension "spock" is already installed
 SELECT spock.spock_version() = extversion
 FROM pg_extension
 WHERE extname = 'spock';
