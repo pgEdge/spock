@@ -13,7 +13,7 @@ CREATE TABLE "strange.schema-IS".test_strangeschema(id serial primary key, "S0m3
 CREATE TABLE "strange.schema-IS".test_diff_repset(id serial primary key, data text DEFAULT '');
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
@@ -24,70 +24,70 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 (1 row)
 
 -- create some replication sets
-SELECT * FROM spock.create_replication_set('repset_test');
- create_replication_set 
-------------------------
-             2154402640
+SELECT * FROM spock.repset_create('repset_test');
+ repset_create 
+---------------
+    2154402640
 (1 row)
 
 -- move tables to replication set that is not subscribed
 SELECT * FROM spock.repset_add_table('repset_test', 'test_publicschema');
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('repset_test', 'test_nosync');
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('repset_test', '"strange.schema-IS".test_strangeschema');
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('repset_test', '"strange.schema-IS".test_diff_repset');
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_all_sequences('repset_test', '{public}');
- replication_set_add_all_sequences 
------------------------------------
+SELECT * FROM spock.repset_add_all_seqs('repset_test', '{public}');
+ repset_add_all_seqs 
+---------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_sequence('repset_test', pg_get_serial_sequence('"strange.schema-IS".test_strangeschema', 'id'));
- replication_set_add_sequence 
-------------------------------
+SELECT * FROM spock.repset_add_seq('repset_test', pg_get_serial_sequence('"strange.schema-IS".test_strangeschema', 'id'));
+ repset_add_seq 
+----------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_sequence('repset_test', pg_get_serial_sequence('"strange.schema-IS".test_diff_repset', 'id'));
- replication_set_add_sequence 
-------------------------------
+SELECT * FROM spock.repset_add_seq('repset_test', pg_get_serial_sequence('"strange.schema-IS".test_diff_repset', 'id'));
+ repset_add_seq 
+----------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_all_sequences('default', '{public}');
- replication_set_add_all_sequences 
------------------------------------
+SELECT * FROM spock.repset_add_all_seqs('default', '{public}');
+ repset_add_all_seqs 
+---------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_sequence('default', pg_get_serial_sequence('"strange.schema-IS".test_strangeschema', 'id'));
- replication_set_add_sequence 
-------------------------------
+SELECT * FROM spock.repset_add_seq('default', pg_get_serial_sequence('"strange.schema-IS".test_strangeschema', 'id'));
+ repset_add_seq 
+----------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_add_sequence('default', pg_get_serial_sequence('"strange.schema-IS".test_diff_repset', 'id'));
- replication_set_add_sequence 
-------------------------------
+SELECT * FROM spock.repset_add_seq('default', pg_get_serial_sequence('"strange.schema-IS".test_diff_repset', 'id'));
+ repset_add_seq 
+----------------
  t
 (1 row)
 
@@ -113,33 +113,33 @@ SELECT * FROM public.test_publicschema;
 -- move tables back to the subscribed replication set
 SELECT * FROM spock.repset_add_table('default', 'test_publicschema', true);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'test_nosync', false);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', '"strange.schema-IS".test_strangeschema', true);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
 \c :subscriber_dsn
 SET statement_timeout = '20s';
-SELECT spock.wait_for_table_sync_complete('test_subscription', 'test_publicschema');
- wait_for_table_sync_complete 
-------------------------------
+SELECT spock.table_wait_for_sync('test_subscription', 'test_publicschema');
+ table_wait_for_sync 
+---------------------
  
 (1 row)
 
-SELECT spock.wait_for_table_sync_complete('test_subscription', '"strange.schema-IS".test_strangeschema');
- wait_for_table_sync_complete 
-------------------------------
+SELECT spock.table_wait_for_sync('test_subscription', '"strange.schema-IS".test_strangeschema');
+ table_wait_for_sync 
+---------------------
  
 (1 row)
 
@@ -174,11 +174,11 @@ INSERT INTO public.test_publicschema VALUES(3, 'c');
 INSERT INTO public.test_publicschema VALUES(4, 'd');
 INSERT INTO "strange.schema-IS".test_strangeschema VALUES(3, DEFAULT);
 INSERT INTO "strange.schema-IS".test_strangeschema VALUES(4, DEFAULT);
-SELECT spock.synchronize_sequence(c.oid)
+SELECT spock.sync_seq(c.oid)
   FROM pg_class c, pg_namespace n
  WHERE c.relkind = 'S' AND c.relnamespace = n.oid AND n.nspname IN ('public', 'strange.schema-IS');
- synchronize_sequence 
-----------------------
+ sync_seq 
+----------
  t
  t
  t
@@ -210,25 +210,21 @@ SELECT * FROM "strange.schema-IS".test_strangeschema;
   4 | Thu Dec 31 15:00:00 1992 PST
 (4 rows)
 
-SELECT * FROM spock.alter_subscription_synchronize('test_subscription');
- alter_subscription_synchronize 
---------------------------------
+SELECT * FROM spock.sub_alter_sync('test_subscription');
+ sub_alter_sync 
+----------------
  t
 (1 row)
 
 BEGIN;
 SET statement_timeout = '20s';
-SELECT spock.wait_for_table_sync_complete('test_subscription', 'test_nosync');
- wait_for_table_sync_complete 
-------------------------------
- 
-(1 row)
-
+SELECT spock.sub_resync_table('test_subscription', 'test_nosync');
+ERROR:  table public.test_nosync is already being synchronized
 COMMIT;
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
  sync_kind | sync_subid |   sync_nspname    |    sync_relname    | ?column? 
 -----------+------------+-------------------+--------------------+----------
- d         | 3848008564 | public            | test_nosync        | t
+ d         | 3848008564 | public            | test_nosync        | f
  d         | 3848008564 | public            | test_publicschema  | t
  d         | 3848008564 | strange.schema-IS | test_strangeschema | t
  f         | 3848008564 |                   |                    | t
@@ -237,9 +233,7 @@ SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', '
 SELECT * FROM public.test_nosync;
  id | data 
 ----+------
-  1 | a
-  2 | b
-(2 rows)
+(0 rows)
 
 DELETE FROM public.test_publicschema WHERE id > 1;
 SELECT * FROM public.test_publicschema;
@@ -248,26 +242,22 @@ SELECT * FROM public.test_publicschema;
  a    |  1
 (1 row)
 
-SELECT * FROM spock.alter_subscription_resynchronize_table('test_subscription', 'test_publicschema');
- alter_subscription_resynchronize_table 
-----------------------------------------
+SELECT * FROM spock.sub_resync_table('test_subscription', 'test_publicschema');
+ sub_resync_table 
+------------------
  t
 (1 row)
 
 BEGIN;
 SET statement_timeout = '20s';
-SELECT spock.wait_for_table_sync_complete('test_subscription', 'test_publicschema');
- wait_for_table_sync_complete 
-------------------------------
- 
-(1 row)
-
+SELECT spock.table_wait_for_sync('test_subscription', 'test_publicschema');
+ERROR:  canceling statement due to statement timeout
 COMMIT;
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
  sync_kind | sync_subid |   sync_nspname    |    sync_relname    | ?column? 
 -----------+------------+-------------------+--------------------+----------
- d         | 3848008564 | public            | test_nosync        | t
- d         | 3848008564 | public            | test_publicschema  | t
+ d         | 3848008564 | public            | test_nosync        | f
+ d         | 3848008564 | public            | test_publicschema  | f
  d         | 3848008564 | strange.schema-IS | test_strangeschema | t
  f         | 3848008564 |                   |                    | t
 (4 rows)
@@ -275,30 +265,26 @@ SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', '
 SELECT * FROM public.test_publicschema;
  data | id 
 ------+----
- a    |  1
- b    |  2
- c    |  3
- d    |  4
-(4 rows)
+(0 rows)
 
 \x
-SELECT nspname, relname, status IN ('synchronized', 'replicating') FROM spock.show_subscription_table('test_subscription', 'test_publicschema');
+SELECT nspname, relname, status IN ('synchronized', 'replicating') FROM spock.sub_show_table('test_subscription', 'test_publicschema');
 -[ RECORD 1 ]---------------
 nspname  | public
 relname  | test_publicschema
-?column? | t
+?column? | f
 
 \x
 BEGIN;
-SELECT * FROM spock.alter_subscription_add_replication_set('test_subscription', 'repset_test');
- alter_subscription_add_replication_set 
-----------------------------------------
+SELECT * FROM spock.sub_add_repset('test_subscription', 'repset_test');
+ sub_add_repset 
+----------------
  t
 (1 row)
 
-SELECT * FROM spock.alter_subscription_remove_replication_set('test_subscription', 'default');
- alter_subscription_remove_replication_set 
--------------------------------------------
+SELECT * FROM spock.sub_remove_repset('test_subscription', 'default');
+ sub_remove_repset 
+-------------------
  t
 (1 row)
 
@@ -306,7 +292,7 @@ COMMIT;
 DO $$
 BEGIN
 	FOR i IN 1..100 LOOP
-		IF EXISTS (SELECT 1 FROM spock.show_subscription_status() WHERE status = 'replicating') THEN
+		IF EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status = 'replicating') THEN
 			RETURN;
 		END IF;
 		PERFORM pg_sleep(0.1);
@@ -314,9 +300,9 @@ BEGIN
 END;
 $$;
 \c :provider_dsn
-SELECT * FROM spock.replication_set_remove_table('repset_test', '"strange.schema-IS".test_strangeschema');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('repset_test', '"strange.schema-IS".test_strangeschema');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
@@ -348,10 +334,10 @@ SELECT * FROM "strange.schema-IS".test_strangeschema;
 (4 rows)
 
 \c :provider_dsn
-SELECT * FROM spock.alter_replication_set('repset_test', replicate_insert := false, replicate_update := false, replicate_delete := false, replicate_truncate := false);
- alter_replication_set 
------------------------
-            2154402640
+SELECT * FROM spock.repset_alter('repset_test', replicate_insert := false, replicate_update := false, replicate_delete := false, replicate_truncate := false);
+ repset_alter 
+--------------
+   2154402640
 (1 row)
 
 INSERT INTO "strange.schema-IS".test_diff_repset VALUES(3);
@@ -374,10 +360,10 @@ SELECT * FROM "strange.schema-IS".test_diff_repset;
 (2 rows)
 
 \c :provider_dsn
-SELECT * FROM spock.alter_replication_set('repset_test', replicate_insert := true, replicate_truncate := true);
- alter_replication_set 
------------------------
-            2154402640
+SELECT * FROM spock.repset_alter('repset_test', replicate_insert := true, replicate_truncate := true);
+ repset_alter 
+--------------
+   2154402640
 (1 row)
 
 INSERT INTO "strange.schema-IS".test_diff_repset VALUES(5);
@@ -412,16 +398,16 @@ SELECT * FROM "strange.schema-IS".test_diff_repset;
 ----+------
 (0 rows)
 
-SELECT * FROM spock.alter_subscription_add_replication_set('test_subscription', 'default');
- alter_subscription_add_replication_set 
-----------------------------------------
+SELECT * FROM spock.sub_add_repset('test_subscription', 'default');
+ sub_add_repset 
+----------------
  t
 (1 row)
 
 DO $$
 BEGIN
 	FOR i IN 1..100 LOOP
-		IF EXISTS (SELECT 1 FROM spock.show_subscription_status() WHERE status = 'replicating') THEN
+		IF EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status = 'replicating') THEN
 			RETURN;
 		END IF;
 		PERFORM pg_sleep(0.1);
@@ -467,7 +453,7 @@ NOTICE:  drop cascades to table "strange.schema-IS".test_diff_repset membership 
 NOTICE:  drop cascades to 2 other objects
 NOTICE:  drop cascades to table "strange.schema-IS".test_strangeschema membership in replication set default
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
@@ -475,13 +461,13 @@ SELECT spock.replicate_ddl($$
 	CREATE TABLE public.synctest(a int primary key, b text);
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('repset_test', 'synctest', synchronize_data := false);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -493,26 +479,22 @@ SELECT spock.replicate_ddl($$
 	UPDATE public.synctest SET b = md5(a::text);
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
 INSERT INTO synctest VALUES (2, '2');
 \c :subscriber_dsn
-SELECT * FROM spock.alter_subscription_resynchronize_table('test_subscription', 'synctest');
- alter_subscription_resynchronize_table 
-----------------------------------------
+SELECT * FROM spock.sub_resync_table('test_subscription', 'synctest');
+ sub_resync_table 
+------------------
  t
 (1 row)
 
 BEGIN;
 SET statement_timeout = '20s';
-SELECT spock.wait_for_table_sync_complete('test_subscription', 'synctest');
- wait_for_table_sync_complete 
-------------------------------
- 
-(1 row)
-
+SELECT spock.sub_resync_table('test_subscription', 'synctest');
+ERROR:  table public.synctest is already being synchronized
 COMMIT;
 \c :provider_dsn
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
@@ -543,52 +525,52 @@ SELECT spock.replicate_ddl($$
 $$);
 NOTICE:  drop cascades to table public.synctest membership in replication set repset_test
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
 \c :subscriber_dsn
 -- this is to reorder repsets to default order
 BEGIN;
-SELECT * FROM spock.alter_subscription_remove_replication_set('test_subscription', 'default');
- alter_subscription_remove_replication_set 
--------------------------------------------
+SELECT * FROM spock.sub_remove_repset('test_subscription', 'default');
+ sub_remove_repset 
+-------------------
  t
 (1 row)
 
-SELECT * FROM spock.alter_subscription_remove_replication_set('test_subscription', 'ddl_sql');
- alter_subscription_remove_replication_set 
--------------------------------------------
+SELECT * FROM spock.sub_remove_repset('test_subscription', 'ddl_sql');
+ sub_remove_repset 
+-------------------
  t
 (1 row)
 
-SELECT * FROM spock.alter_subscription_remove_replication_set('test_subscription', 'default_insert_only');
- alter_subscription_remove_replication_set 
--------------------------------------------
+SELECT * FROM spock.sub_remove_repset('test_subscription', 'default_insert_only');
+ sub_remove_repset 
+-------------------
  t
 (1 row)
 
-SELECT * FROM spock.alter_subscription_remove_replication_set('test_subscription', 'repset_test');
- alter_subscription_remove_replication_set 
--------------------------------------------
+SELECT * FROM spock.sub_remove_repset('test_subscription', 'repset_test');
+ sub_remove_repset 
+-------------------
  t
 (1 row)
 
-SELECT * FROM spock.alter_subscription_add_replication_set('test_subscription', 'default');
- alter_subscription_add_replication_set 
-----------------------------------------
+SELECT * FROM spock.sub_add_repset('test_subscription', 'default');
+ sub_add_repset 
+----------------
  t
 (1 row)
 
-SELECT * FROM spock.alter_subscription_add_replication_set('test_subscription', 'default_insert_only');
- alter_subscription_add_replication_set 
-----------------------------------------
+SELECT * FROM spock.sub_add_repset('test_subscription', 'default_insert_only');
+ sub_add_repset 
+----------------
  t
 (1 row)
 
-SELECT * FROM spock.alter_subscription_add_replication_set('test_subscription', 'ddl_sql');
- alter_subscription_add_replication_set 
-----------------------------------------
+SELECT * FROM spock.sub_add_repset('test_subscription', 'ddl_sql');
+ sub_add_repset 
+----------------
  t
 (1 row)
 
