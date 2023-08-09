@@ -11,8 +11,8 @@ SELECT spock.replicate_ddl($$
 		insert_xid bigint DEFAULT txid_current()
 	);
 $$);
- replicate_ddl 
------------------------
+ replicate_ddl
+--------------- 
  t
 (1 row)
 
@@ -32,13 +32,13 @@ language sql volatile;
 -- we allow volatile functions, it's user's responsibility to not do writes
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := 'current_user = data');
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
@@ -57,68 +57,68 @@ SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter :
 ERROR:  argument of row_filter must be type boolean, not type text
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := $rf$id between 2 AND 4$rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := NULL);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := $rf$id > funcn_add(1,2) $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := $rf$data = funcn_nochange('baz') $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := $rf$ other > funcn_get_curr_decade()  $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 -- use this filter for rest of the test
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', true, row_filter := $rf$id > 1 AND data IS DISTINCT FROM 'baz' AND data IS DISTINCT FROM 'bbb'$rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -131,7 +131,7 @@ SELECT nspname, relname, set_name FROM spock.tables WHERE relname = 'basic_dml';
 -- fail, the membership in repset depends on data column
 \set VERBOSITY terse
 ALTER TABLE basic_dml DROP COLUMN data;
-ERROR:  cannot drop table basic_dml column data because other objects depend on it
+ERROR:  cannot drop column data of table basic_dml because other objects depend on it
 \set VERBOSITY default
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
@@ -145,7 +145,7 @@ BEGIN;
 SET LOCAL statement_timeout = '10s';
 SELECT spock.sub_wait_for_sync('test_subscription');
  sub_wait_for_sync 
--------------------------------------
+-------------------
  
 (1 row)
 
@@ -377,7 +377,7 @@ SELECT spock.replicate_ddl($$
 	);
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
@@ -387,7 +387,7 @@ INSERT INTO test_jsonb VALUES
 ('object','{"field1":"val1","field2":"val2","field3":null, "field4": 4, "field5": [1,2,3], "field6": {"f1":9}}');
 SELECT * FROM spock.repset_add_table('default', 'test_jsonb', true, row_filter := $rf$(test_json ->> 'field2') IS DISTINCT FROM 'val2' $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -416,15 +416,15 @@ SELECT * FROM test_jsonb ORDER BY json_type;
 
 \c :provider_dsn
 -- Filter may refer to not-replicated columns
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, columns := ARRAY['id', 'data'], row_filter := $rf$other = 2$rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -462,16 +462,16 @@ BEGIN
   RETURN arg;
 END;
 $$;
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_simple(other) = 100 $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -517,16 +517,16 @@ BEGIN
   END IF;
 END;
 $$;
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_logic(other) = other $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -564,16 +564,16 @@ END;
 $$;
 CREATE ROLE temp_owner;
 ALTER FUNCTION func_plpgsql_security_definer(integer) OWNER TO temp_owner;
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_security_definer(other) = 300 $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -613,16 +613,16 @@ BEGIN
   RAISE EXCEPTION 'should be unreachable';
 END;
 $$;
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_exception(other) = 400 $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -662,9 +662,9 @@ END;
 $$;
 -- fails with SRF context error
 BEGIN;
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
@@ -680,16 +680,16 @@ BEGIN
   RETURN (SELECT true FROM func_plpgsql_srf_retq(arg) WHERE result = arg * 2);
 END;
 $$;
-SELECT * FROM spock.replication_set_remove_table('default', 'basic_dml');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_call_set(other) $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -738,7 +738,7 @@ $$);
 NOTICE:  drop cascades to table public.basic_dml membership in replication set default
 NOTICE:  drop cascades to table public.test_jsonb membership in replication set default
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
