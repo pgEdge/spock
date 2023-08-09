@@ -32,7 +32,6 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic extended conflict
 # but occassionaly it is helpful to disable one or more
 # cases while developing.
 
-REGRESS := $(filter-out primary_key, $(REGRESS))
 REGRESS := $(filter-out apply_delay, $(REGRESS))
 
 EXTRA_CLEAN += compat16/spock_compat.o compat16/spock_compat.bc \

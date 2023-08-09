@@ -143,7 +143,7 @@ SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 
 
 \c :subscriber_dsn
 
-SELECT spock.sub_yenable('test_subscription', true);
+SELECT spock.sub_enable('test_subscription', true);
 DELETE FROM pk_users WHERE id = 4;-- remove the offending entries.
 
 \c :provider_dsn
@@ -188,7 +188,7 @@ INSERT INTO pk_users VALUES(90,0,0,'User90', 'Address90');
 -- spock will stop us adding the table to a repset if we try to,
 -- but didn't stop us altering it, and won't stop us updating it...
 BEGIN;
-SELECT * FROM spock.replication_set_remove_table('default', 'pk_users');
+SELECT * FROM spock.repset_remove_table('default', 'pk_users');
 SELECT * FROM spock.repset_add_table('default', 'pk_users');
 ROLLBACK;
 
@@ -244,7 +244,7 @@ SELECT indisreplident FROM pg_index WHERE indexrelid = 'pk_users_pkey'::regclass
 -- spock won't let us add the table to a repset, though
 -- it doesn't stop us altering it; see 2ndQuadrant/spock_internal#146
 BEGIN;
-SELECT * FROM spock.replication_set_remove_table('default', 'pk_users');
+SELECT * FROM spock.repset_remove_table('default', 'pk_users');
 SELECT * FROM spock.repset_add_table('default', 'pk_users');
 ROLLBACK;
 
@@ -274,8 +274,8 @@ ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
 
 -- then replay. Toggle the subscription's enabled state
 -- to make it recover faster for a quicker test run.
-SELECT spock.alter_subscription_disable('test_subscription', true);
-SELECT spock.alter_subscription_enable('test_subscription', true);
+SELECT spock.sub_disable('test_subscription', true);
+SELECT spock.sub_enable('test_subscription', true);
 \c :provider_dsn
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
