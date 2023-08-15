@@ -1,4 +1,4 @@
-# test truncate on cascade nodes with diferent replication sets. RT87453
+# test truncate on cascade nodes with different replication sets. RT87453
 use strict;
 use warnings;
 use PostgresNode;
