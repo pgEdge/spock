@@ -1,17 +1,17 @@
 # test truncate on cascade nodes with different replication sets. RT87453
 use strict;
 use warnings;
-use PostgresNode;
 use Cwd;
 use Config;
-use TestLib;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More tests => 7;
 
 my $dbname = 'pgltest';
 my $super_user="super";
 
 # create the node_a
-my $node_a = get_new_node('node_a');
+my $node_a = PostgreSQL::Test::Cluster->new('node_a');
 $node_a->init();
 $node_a->append_conf('postgresql.conf', qq[
 wal_level = 'logical'
@@ -27,7 +27,7 @@ $node_a->start;
 $node_a->safe_psql('postgres', qq[CREATE DATABASE $dbname]);
 
 # create the node_b
-my $node_b = get_new_node('node_b');
+my $node_b = PostgreSQL::Test::Cluster->new('node_b');
 $node_b->init();
 $node_b->append_conf('postgresql.conf', qq[
 shared_preload_libraries = 'spock'
@@ -43,7 +43,7 @@ $node_b->start;
 $node_b->safe_psql('postgres', qq[CREATE DATABASE $dbname]);
 
 # create the node_c
-my $node_c = get_new_node('node_c');
+my $node_c = PostgreSQL::Test::Cluster->new('node_c');
 $node_c->init();
 $node_c->append_conf('postgresql.conf', qq[
 shared_preload_libraries = 'spock'
@@ -119,7 +119,12 @@ $node_b->safe_psql($dbname,
 			"SELECT * FROM spock.repset_add_table('set_b', 'b2c', false);");
 
 $node_c->safe_psql($dbname, q[create table a2b( x int primary key)]);
-$node_c->safe_psql($dbname, q[create table b2c( x int primary key)]);
+$node_c->safe_psql($dbname, q[create table b2c( x int)]);
+# Add an INVALID index, then add the real PRIMARY KEY.
+$node_c->safe_psql($dbname, q[insert into b2c values (1),(1)]);
+$node_c->psql($dbname, q[create unique index concurrently on b2c(x)]);
+$node_c->safe_psql($dbname, q[delete from b2c]);
+$node_c->safe_psql($dbname, q[alter table b2c add primary key (x)]);
 
 #insert some rows in the a2b table to check that it actually worked
 $node_a->safe_psql($dbname, q[INSERT INTO a2b VALUES (1)]);
