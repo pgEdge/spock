@@ -452,21 +452,21 @@ Nodes can be added and removed dynamically using the SQL interfaces.
   - `relation` - name of existing table, optionally qualified
 
 #### spock-sub-add-repset
-- `spock.sub_add_repset(subscription_name name, repset name)`
+- `spock.sub_add_repset(subscription_name name, replication_set name)`
   Adds one replication set into a subscriber. Does not synchronize, only
   activates consumption of events.
 
   Parameters:
   - `subscription_name` - name of the existing subscription
-  - `repset` - name of replication set to add
+  - `replication_set` - name of replication set to add
 
 #### spock-sub-remove-repset
-- `spock.sub_remove_repset(subscription_name name, repset name)`
+- `spock.sub_remove_repset(subscription_name name, replication_set name)`
   Removes one replication set from a subscriber.
 
   Parameters:
   - `subscription_name` - name of the existing subscription
-  - `repset` - name of replication set to remove
+  - `replication_set` - name of replication set to remove
 
 
 There is also a `postgresql.conf` parameter,
