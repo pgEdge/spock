@@ -335,14 +335,6 @@ GRANT SELECT ON TABLE spock.queue TO spock_admin;
 CREATE FUNCTION spock.replicate_ddl(command text, replication_sets text[] DEFAULT '{ddl_sql}')
 RETURNS boolean STRICT VOLATILE SECURITY DEFINER LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
 GRANT EXECUTE ON FUNCTION spock.replicate_ddl(text, text[]) TO spock_admin;
-<<<<<<< HEAD
-CREATE FUNCTION spock.replicate_ddl(command text[], replication_sets text[] DEFAULT '{ddl_sql}')
-RETURNS SETOF boolean STRICT VOLATILE SECURITY DEFINER LANGUAGE sql AS
-    'SELECT spock.replicate_ddl(cmd, $2) FROM (SELECT unnest(command) cmd)';
-GRANT EXECUTE ON FUNCTION spock.replicate_ddl(text[], text[]) TO spock_admin;
-
-=======
->>>>>>> 95e46f3 (Add roles and permissions to all spock objects)
 CREATE FUNCTION spock.replicate_ddl(command text[], replication_sets text[] DEFAULT '{ddl_sql}')
 RETURNS SETOF boolean STRICT VOLATILE SECURITY DEFINER LANGUAGE sql AS
     'SELECT spock.replicate_ddl(cmd, $2) FROM (SELECT unnest(command) cmd)';
@@ -481,7 +473,6 @@ RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'lag_tracker_info'
 STRICT SECURITY DEFINER LANGUAGE C;
 GRANT EXECUTE ON FUNCTION spock.lag_tracker TO spock_admin;
-
 
 CREATE VIEW spock.lag_tracker AS
     SELECT L.slot_name, L.commit_lsn, L.commit_timestamp,
