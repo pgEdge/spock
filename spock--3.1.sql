@@ -288,14 +288,14 @@ CREATE FUNCTION spock.repset_remove_seq(set_name name, relation regclass)
 RETURNS boolean STRICT VOLATILE SECURITY DEFINER LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_sequence';
 GRANT EXECUTE ON FUNCTION spock.repset_remove_seq TO spock_admin;
 
-CREATE FUNCTION spock.partition_add(parent regclass, partition regclass default NULL,
+CREATE FUNCTION spock.repset_add_partition(parent regclass, partition regclass default NULL,
     row_filter text default NULL)
-RETURNS int CALLED ON NULL INPUT VOLATILE SECURITY DEFINER LANGUAGE c AS 'MODULE_PATHNAME', 'spock_add_partition';
-GRANT EXECUTE ON FUNCTION spock.partition_add TO spock_admin;
+RETURNS int CALLED ON NULL INPUT VOLATILE SECURITY DEFINER LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_partition';
+GRANT EXECUTE ON FUNCTION spock.repset_add_partition TO spock_admin;
 
-CREATE FUNCTION spock.partition_remove(parent regclass, partition regclass default NULL)
-RETURNS int CALLED ON NULL INPUT VOLATILE SECURITY DEFINER LANGUAGE c AS 'MODULE_PATHNAME', 'spock_remove_partition';
-GRANT EXECUTE ON FUNCTION spock.partition_remove TO spock_admin;
+CREATE FUNCTION spock.repset_remove_partition(parent regclass, partition regclass default NULL)
+RETURNS int CALLED ON NULL INPUT VOLATILE SECURITY DEFINER LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_partition';
+GRANT EXECUTE ON FUNCTION spock.repset_remove_partition TO spock_admin;
 
 CREATE FUNCTION spock.sub_alter_sync(subscription_name name, truncate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE SECURITY DEFINER LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';
