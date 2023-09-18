@@ -93,7 +93,7 @@ GRANT EXECUTE ON FUNCTION spock.node_drop_interface TO spock_admin;
 
 CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
     replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
-    synchronize_data boolean = true, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
+    synchronize_data boolean = false, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
     force_text_transfer boolean = false)
 RETURNS oid STRICT VOLATILE SECURITY DEFINER LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
 GRANT EXECUTE ON FUNCTION spock.sub_create TO spock_admin;
