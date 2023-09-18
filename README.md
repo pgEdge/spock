@@ -165,24 +165,13 @@ Tables must have the same `PRIMARY KEY`s. It is not recommended to add additiona
 
 Some additional requirements are covered in [Limitations and Restrictions](#limitations-and-restrictions).
 
-## Installation from source code
-
-Source code installs are the same as for any other PostgreSQL extension built
-using PGXS.
-
-Make sure the directory containing `pg_config` from the PostgreSQL release is
-listed in your `PATH` environment variable. You might have to install a `-dev`
-or `-devel` package for your PostgreSQL release from your package manager if
-you don't have `pg_config`.
-
-Then run `make` to compile, and `make install` to
-install. You might need to use `sudo` for the install step.
-
 ## Usage
 
-This section describes basic usage of the Spock replication extension.
+This section describes basic usage of the Spock replication extension.  
+It should be noted the pgEdge, when you install the Spock extension, does this quick setup for you (and more).
 
 ### Quick setup
+
 
 First the PostgreSQL server has to be properly configured to support logical
 decoding:
