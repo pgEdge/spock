@@ -3,15 +3,22 @@
 ## Multi-Master Replication with Conflict Resolution & Avoidance
 
 
-This SPOCK extension provides multi-master (multi-active) replication for PostgreSQL 15 & 16. 
+This SPOCK extension provides multi-master (multi-active) replication for PostgreSQL 15, 16 & 17dev
 We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source 
 projects as a solid foundation to build upon for this enterprise-class extension. 
 
-Our current version is 3.1 and includes the following important enhancements beyond Spock 3.0:
+Our current version is 3.2 and includes the following important enhancements beyond Spock 3.1:
+
+* Support for pg17dev (and pg15/16 of course)
+
+
+Our second version is 3.1 and has been stabilized and hardened to include the following:
 
 * Support for both pg15 **AND** pg16
 * Prelim testing for online upgrades between pg15 & pg16
 * Regression testing improvements
+* Improved support for in-region shadow nodes (in different AZ's)
+* Improved and document support for replication and maintaining partitioned tables.
 
 
 Our first version is 3.0 and includes the following important enhancements beyond its pg_logical-2.4.2 base:
@@ -25,7 +32,6 @@ Our first version is 3.0 and includes the following important enhancements beyon
 * Better management & monitoring stats and integration
 * A 'pii' table for making it easy for personally identifiable data to be kept in country
 * Better support for minimizing system interuption during switch-over and failover
-* Improved support for in-region shadow nodes (in different AZ's)
 
 
 We use the following terms, borrowed from [Jan's](https://www.linkedin.com/in/jan-wieck-3140812) well known [Slony](https://slony.info) project, to describe data streams between nodes:
