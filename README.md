@@ -12,6 +12,8 @@ Our current version is 3.1 and includes the following important enhancements bey
 * Support for both pg15 **AND** pg16
 * Prelim testing for online upgrades between pg15 & pg16
 * Regression testing improvements
+* Improved support for in-region shadow nodes (in different AZ's)
+* Improved and document support for replication and maintaining partitioned tables.
 
 
 Our first version is 3.0 and includes the following important enhancements beyond its pg_logical-2.4.2 base:
@@ -25,7 +27,6 @@ Our first version is 3.0 and includes the following important enhancements beyon
 * Better management & monitoring stats and integration
 * A 'pii' table for making it easy for personally identifiable data to be kept in country
 * Better support for minimizing system interuption during switch-over and failover
-* Improved support for in-region shadow nodes (in different AZ's)
 
 
 We use the following terms, borrowed from [Jan's](https://www.linkedin.com/in/jan-wieck-3140812) well known [Slony](https://slony.info) project, to describe data streams between nodes:
