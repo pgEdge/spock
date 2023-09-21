@@ -2,11 +2,11 @@
 
 MODULE_big = spock
 EXTENSION = spock
-PGFILEDESC = "spock - logical multi-master replication"
+PGFILEDESC = "spock - multi-master replication"
 
 MODULES = spock_output
 
-DATA = spock--3.1.sql
+DATA = spock--3.1.sql spock--3.2.sql
 
 OBJS = spock_apply.o spock_conflict.o spock_manager.o \
 	   spock.o spock_node.o spock_relcache.o \
@@ -34,7 +34,8 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic extended conflict
 
 REGRESS := $(filter-out apply_delay, $(REGRESS))
 
-EXTRA_CLEAN += compat16/spock_compat.o compat16/spock_compat.bc \
+EXTRA_CLEAN += compat17/spock_compat.o compat17/spock_compat.bc \
+				compat16/spock_compat.o compat16/spock_compat.bc \
 				compat15/spock_compat.o compat15/spock_compat.bc \
 				spock_create_subscriber.o
 
