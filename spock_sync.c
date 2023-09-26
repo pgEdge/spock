@@ -396,12 +396,12 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 	char		   *s;
 	const char	   *setup_query =
 		"BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;\n"
+		"SET session_replication_role = 'replica';\n"
 		"SET DATESTYLE = ISO;\n"
 		"SET INTERVALSTYLE = POSTGRES;\n"
 		"SET extra_float_digits TO 3;\n"
 		"SET statement_timeout = 0;\n"
-		"SET lock_timeout = 0;\n"
-		"SELECT spock.set_session_replication_role_replica();\n";
+		"SET lock_timeout = 0;\n";
 	StringInfoData	query;
 
 	initStringInfo(&query);
@@ -423,7 +423,7 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 	appendStringInfoString(&query, setup_query);
 
 	res = PQexec(conn, query.data);
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		elog(ERROR, "BEGIN on target node failed: %s",
 				PQresultErrorMessage(res));
 	PQclear(res);
