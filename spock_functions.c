@@ -123,8 +123,8 @@ PG_FUNCTION_INFO_V1(spock_replication_set_remove_table);
 PG_FUNCTION_INFO_V1(spock_replication_set_add_sequence);
 PG_FUNCTION_INFO_V1(spock_replication_set_add_all_sequences);
 PG_FUNCTION_INFO_V1(spock_replication_set_remove_sequence);
-PG_FUNCTION_INFO_V1(spock_add_partition);
-PG_FUNCTION_INFO_V1(spock_remove_partition);
+PG_FUNCTION_INFO_V1(spock_replication_set_add_partition);
+PG_FUNCTION_INFO_V1(spock_replication_set_remove_partition);
 
 /* Other manipulation function */
 PG_FUNCTION_INFO_V1(spock_synchronize_sequence);
@@ -1755,7 +1755,7 @@ spock_replication_set_remove_sequence(PG_FUNCTION_ARGS)
 }
 
 Datum
-spock_add_partition(PG_FUNCTION_ARGS)
+spock_replication_set_add_partition(PG_FUNCTION_ARGS)
 {
 	Relation	rel;
 	Oid		parent_reloid = InvalidOid;
@@ -1844,7 +1844,7 @@ spock_add_partition(PG_FUNCTION_ARGS)
 }
 
 Datum
-spock_remove_partition(PG_FUNCTION_ARGS)
+spock_replication_set_remove_partition(PG_FUNCTION_ARGS)
 {
 	Relation	rel;
 	Oid		parent_reloid = InvalidOid;
