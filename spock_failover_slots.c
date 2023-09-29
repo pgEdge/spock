@@ -1,6 +1,14 @@
-/*
- * Postgres Failover Slots (spock_failover_slots)
+/*-------------------------------------------------------------------------
  *
+ * spock_failover_slot.c
+ *          Postgres Failover Slots
+ *
+ * Copyright (c) 2022-2023, pgEdge, Inc.
+ * Portions Copyright (c) 2023, EnterpriseDB Corporation.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
@@ -59,8 +67,6 @@
 #include "libpq/auth.h"
 #include "libpq/libpq.h"
 
-#define PG_FAILOVER_SLOTS_VERSION "1.0.1"
-
 #if PG_VERSION_NUM < 130000
 #define SignalHandlerForConfigReload PostgresSigHupHandler
 #define GetWalRcvFlushRecPtr GetWalRcvWriteRecPtr
@@ -102,12 +108,13 @@ XLogRecPtr standby_slot_names_oldest_flush_lsn = InvalidXLogRecPtr;
 
 /* Slots to sync */
 char *spock_failover_slots_dsn;
-char *pg_failover_slot_names;
-static char *pg_failover_slot_names_str = NULL;
-static List *pg_failover_slot_names_list = NIL;
+char *spock_failover_slot_names;
+static char *spock_failover_slot_names_str = NULL;
+static List *spock_failover_slot_names_list = NIL;
 static bool spock_failover_slots_drop = true;
 
 char *spock_failover_slots_version_str;
+void spock_init_failover_slot(void);
 
 PGDLLEXPORT void spock_failover_slots_main(Datum main_arg);
 
@@ -137,27 +144,27 @@ assign_failover_slot_names(const char *newval, void *extra)
 	ListCell *lc;
 
 	/* cleanup memory to prevent leaking or SET/config reload */
-	if (pg_failover_slot_names_str)
-		pfree(pg_failover_slot_names_str);
-	if (pg_failover_slot_names_list)
+	if (spock_failover_slot_names_str)
+		pfree(spock_failover_slot_names_str);
+	if (spock_failover_slot_names_list)
 	{
-		foreach (lc, pg_failover_slot_names_list)
+		foreach (lc, spock_failover_slot_names_list)
 		{
 			FailoverSlotFilter *filter = lfirst(lc);
 
-			/* val was pointer to pg_failover_slot_names_str */
+			/* val was pointer to spock_failover_slot_names_str */
 			pfree(filter);
 		}
-		list_free(pg_failover_slot_names_list);
+		list_free(spock_failover_slot_names_list);
 	}
 
-	pg_failover_slot_names_list = NIL;
+	spock_failover_slot_names_list = NIL;
 
 	/* Allocate memory in long lasting context. */
 	old_ctx = MemoryContextSwitchTo(TopMemoryContext);
 
-	pg_failover_slot_names_str = pstrdup(newval);
-	SplitIdentifierString(pg_failover_slot_names_str, ',', &slot_names_list);
+	spock_failover_slot_names_str = pstrdup(newval);
+	SplitIdentifierString(spock_failover_slot_names_str, ',', &slot_names_list);
 
 	foreach (lc, slot_names_list)
 	{
@@ -195,8 +202,8 @@ assign_failover_slot_names(const char *newval, void *extra)
 				 errmsg(
 					 "unrecognized synchronize_failover_slot_names format")));
 
-		pg_failover_slot_names_list =
-			lappend(pg_failover_slot_names_list, filter);
+		spock_failover_slot_names_list =
+			lappend(spock_failover_slot_names_list, filter);
 	}
 
 	/* Clean the temporary list, but not the contents. */
@@ -878,7 +885,7 @@ synchronize_failover_slots(long sleep_time)
 	StringInfoData connstr;
 
 	if (!WalRcv || !HotStandbyActive() ||
-		list_length(pg_failover_slot_names_list) == 0)
+		list_length(spock_failover_slot_names_list) == 0)
 		return sleep_time;
 
 	/* XXX should these be errors or just soft return like above? */
@@ -915,7 +922,7 @@ synchronize_failover_slots(long sleep_time)
 	 * Hence do not synchronize WAL decoder slot. Those will be created after
 	 * promotion
 	 */
-	slots = remote_get_primary_slot_info(conn, pg_failover_slot_names_list);
+	slots = remote_get_primary_slot_info(conn, spock_failover_slot_names_list);
 	safe_lsn = remote_get_physical_slot_lsn(conn, WalRcv->slotname);
 
 	/*
@@ -1440,7 +1447,7 @@ spock_init_failover_slot(void)
 	DefineCustomStringVariable(
 		"spock.synchronize_slot_names",
 		"list of slots to synchronize from primary to physical standby", "",
-		&pg_failover_slot_names, "name_like:%%",
+		&spock_failover_slot_names, "name_like:%%",
 		PGC_SIGHUP, /* Sync ALL slots by default */
 		GUC_LIST_INPUT, check_failover_slot_names, assign_failover_slot_names,
 		NULL);

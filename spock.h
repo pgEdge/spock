@@ -108,6 +108,6 @@ pg_attribute_printf(1, 2) pg_attribute_unused() static inline void VALGRIND_PRIN
 
 #endif
 
-void spock_init_failover_slot(void);
+extern void spock_init_failover_slot(void);
 
 #endif /* SPOCK_H */
