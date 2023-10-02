@@ -10,6 +10,7 @@ projects as a solid foundation to build upon for this enterprise-class extension
 Our current version is 3.2 and includes the following important enhancements beyond Spock 3.1:
 
 * Support for pg17devel (and pg15/16 of course)
+* Native support for Failover Slots via integrating pg_failover_slots extension
 
 
 Our second version is 3.1 and has been stabilized and hardened to include the following:
