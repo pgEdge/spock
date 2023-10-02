@@ -925,4 +925,6 @@ _PG_init(void)
 	bgw.bgw_restart_time = 5;
 
 	RegisterBackgroundWorker(&bgw);
+
+    spock_init_failover_slot();
 }
