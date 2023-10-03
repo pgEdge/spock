@@ -391,3 +391,22 @@ CREATE  AGGREGATE spock.md5_agg (ORDER BY anyelement)
   SFUNC = spock.md5_agg_sfunc,
   INITCOND = ''
 );
+
+-- ----------------------------------------------------------------------
+-- Spock Read Only
+-- ----------------------------------------------------------------------
+CREATE FUNCTION spock.set_cluster_readonly() RETURNS bool
+ AS 'MODULE_PATHNAME', 'spockro_set_readonly'
+ LANGUAGE C STRICT;
+
+CREATE FUNCTION spock.unset_cluster_readonly() RETURNS bool
+ AS 'MODULE_PATHNAME', 'spockro_unset_readonly'
+ LANGUAGE C STRICT;
+
+CREATE FUNCTION spock.get_cluster_readonly() RETURNS bool
+ AS 'MODULE_PATHNAME', 'spockro_get_readonly'
+ LANGUAGE C STRICT;
+
+CREATE FUNCTION spock.terminate_active_transactions() RETURNS bool
+ AS 'MODULE_PATHNAME', 'spockro_terminate_active_transactions'
+ LANGUAGE C STRICT;

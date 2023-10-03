@@ -34,6 +34,7 @@
 
 #include "optimizer/optimizer.h"
 
+#include "parser/analyze.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_relation.h"
 
@@ -61,6 +62,9 @@ static bool			dropping_spock_obj = false;
 static object_access_hook_type next_object_access_hook = NULL;
 
 static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
+extern post_parse_analyze_hook_type prev_post_parse_analyze_hook;
+extern ExecutorStart_hook_type prev_executor_start_hook;
+
 
 EState *
 create_estate_for_relation(Relation rel, bool forwrite)
@@ -362,4 +366,12 @@ spock_executor_init(void)
 	/* Object access hook */
 	next_object_access_hook = object_access_hook;
 	object_access_hook = spock_object_access;
+
+	/* analyzer hook for spock readonly */
+	prev_post_parse_analyze_hook = post_parse_analyze_hook;
+	post_parse_analyze_hook = spock_post_parse_analyze;
+
+	/* executor hook for spock readonly */
+	prev_executor_start_hook = ExecutorStart_hook;
+	ExecutorStart_hook = spock_ExecutorStart;
 }

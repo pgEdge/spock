@@ -81,6 +81,9 @@ typedef struct SpockContext {
 	/* Signal that subscription info have changed. */
 	bool		subscriptions_changed;
 
+	/* cluster read-only global flag */
+	bool		cluster_is_readonly;
+
 	/* Background workers. */
 	int			total_workers;
 	SpockWorker  workers[FLEXIBLE_ARRAY_MEMBER];
