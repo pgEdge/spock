@@ -4,7 +4,7 @@
 
 
 This SPOCK extension provides multi-master (multi-active) replication for PostgreSQL 15 & 16. 
-We leveraged both the [pgLogical](https://github.com/2ndQuadrant/pglogical) & [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source 
+We leveraged the [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2)  
 projects as a solid foundation to build upon for this enterprise-class extension. 
 
 Our current version is 3.1 and includes the following important enhancements beyond Spock 3.0:
