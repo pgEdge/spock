@@ -379,15 +379,15 @@ CREATE VIEW spock.lag_tracker AS
 
 
 CREATE FUNCTION spock.md5_agg_sfunc(text, anyelement) 
-       RETURNS text
-       LANGUAGE sql
+	RETURNS text
+	LANGUAGE sql
 AS
 $$
-  SELECT md5($1 || $2::text)
+	SELECT md5($1 || $2::text)
 $$;
 CREATE  AGGREGATE spock.md5_agg (ORDER BY anyelement)
 (
-  STYPE = text,
-  SFUNC = spock.md5_agg_sfunc,
-  INITCOND = ''
+	STYPE = text,
+	SFUNC = spock.md5_agg_sfunc,
+	INITCOND = ''
 );
