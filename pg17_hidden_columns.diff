@@ -1,0 +1,72 @@
+diff --git a/src/backend/access/common/reloptions.c b/src/backend/access/common/reloptions.c
+index 469de9bb49..a7d5afc2b6 100644
+--- a/src/backend/access/common/reloptions.c
++++ b/src/backend/access/common/reloptions.c
+@@ -168,6 +168,15 @@ static relopt_bool boolRelOpts[] =
+ 		},
+ 		true
+ 	},
++	{
++		{
++			"invisible",
++			"Avoids expansion of this column by SELECT *",
++			RELOPT_KIND_ATTRIBUTE,
++			ShareUpdateExclusiveLock
++		},
++		false
++	},
+ 	/* list terminator */
+ 	{{NULL}}
+ };
+@@ -2072,7 +2081,8 @@ attribute_reloptions(Datum reloptions, bool validate)
+ {
+ 	static const relopt_parse_elt tab[] = {
+ 		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
+-		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)}
++		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
++		{"invisible", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, invisible)}
+ 	};
+ 
+ 	return (bytea *) build_reloptions(reloptions, validate,
+diff --git a/src/backend/parser/parse_relation.c b/src/backend/parser/parse_relation.c
+index 864ea9b0d5..cd0d635756 100644
+--- a/src/backend/parser/parse_relation.c
++++ b/src/backend/parser/parse_relation.c
+@@ -31,6 +31,7 @@
+ #include "parser/parse_type.h"
+ #include "parser/parsetree.h"
+ #include "storage/lmgr.h"
++#include "utils/attoptcache.h"
+ #include "utils/builtins.h"
+ #include "utils/lsyscache.h"
+ #include "utils/rel.h"
+@@ -3217,11 +3218,17 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
+ 		char	   *label = strVal(lfirst(name));
+ 		Var		   *varnode = (Var *) lfirst(var);
+ 		TargetEntry *te;
++		AttributeOpts *opts;
+ 
+ 		te = makeTargetEntry((Expr *) varnode,
+ 							 (AttrNumber) pstate->p_next_resno++,
+ 							 label,
+ 							 false);
++		opts = get_attribute_options(rte->relid, varnode->varattno);
++
++		if (opts && opts->invisible)
++			te->resjunk = true;
++
+ 		te_list = lappend(te_list, te);
+ 
+ 		if (require_col_privs)
+diff --git a/src/include/utils/attoptcache.h b/src/include/utils/attoptcache.h
+index e4119b6aa2..8e21fe09f1 100644
+--- a/src/include/utils/attoptcache.h
++++ b/src/include/utils/attoptcache.h
+@@ -21,6 +21,7 @@ typedef struct AttributeOpts
+ 	int32		vl_len_;		/* varlena header (do not touch directly!) */
+ 	float8		n_distinct;
+ 	float8		n_distinct_inherited;
++	bool        invisible;
+ } AttributeOpts;
+ 
+ extern AttributeOpts *get_attribute_options(Oid attrelid, int attnum);
