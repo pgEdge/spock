@@ -393,6 +393,25 @@ CREATE  AGGREGATE spock.md5_agg (ORDER BY anyelement)
 );
 
 -- ----------------------------------------------------------------------
+-- Spock Read Only
+-- ----------------------------------------------------------------------
+CREATE FUNCTION spock.set_cluster_readonly() RETURNS bool
+ AS 'MODULE_PATHNAME', 'spockro_set_readonly'
+ LANGUAGE C STRICT;
+
+CREATE FUNCTION spock.unset_cluster_readonly() RETURNS bool
+ AS 'MODULE_PATHNAME', 'spockro_unset_readonly'
+ LANGUAGE C STRICT;
+
+CREATE FUNCTION spock.get_cluster_readonly() RETURNS bool
+ AS 'MODULE_PATHNAME', 'spockro_get_readonly'
+ LANGUAGE C STRICT;
+
+CREATE FUNCTION spock.terminate_active_transactions() RETURNS bool
+ AS 'MODULE_PATHNAME', 'spockro_terminate_active_transactions'
+ LANGUAGE C STRICT;
+
+-- ----------------------------------------------------------------------
 -- We check the PostgreSQL major version number in case a future
 -- catalog change forces us to provide different functions for
 -- different versions.
@@ -586,3 +605,4 @@ $$ LANGUAGE plpgsql;
 -- End of PG major version dependent PL/pgSQL definitions
 END;
 $version_dependent$ LANGUAGE plpgsql;
+>>>>>>> main

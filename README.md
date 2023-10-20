@@ -888,4 +888,44 @@ so spock cannot replicate large objects.
 Also any DDL limitations apply so extra care need to be taken when using
 `replicate_ddl_command()`.
 
+
+## Spock Read Only
+
+Spock support enabling a cluster to be operated in read-only mode.
+
+The read-only status is managed only in (shared) memory with a global flag. SQL
+functions are provided to set the flag, to unset the flag and to query the flag.
+The current functionality does not allow to store the read-only status in a
+permanent way.
+
+The flag is at cluster level: either all databases are read-only or all database
+are read-write (the usual setting).
+
+The read-only mode is implemented by filtering SQL statements:
+
+- SELECT statements are allowed if they don't call functions that write.
+- DML (INSERT, UPDATE, DELETE) and DDL statements including TRUNCATE are forbidden entirely.
+- DCL statements GRANT and REVOKE are also forbidden.
+
+This means that the databases are in read-only mode at SQL level: however, the
+checkpointer, background writer, walwriter and the autovacuum launcher are still
+running; this means that the database files are not read-only and that in some
+cases the database may still write to disk.
+
+### Functions
+
+Spock read only supports following functions:
+- set_cluster_readonly
+  This function is for setting the cluster in read-only mode.
+
+- unset_cluster_readonly
+  This function is for setting cluster in read-write mode.
+
+- get_cluster_readonly
+  This function can be used to query the cluster status. It returns true if the
+  cluster is read-only and false if not.
+
+- terminate_active_transactions
+  This function is to terminate any active transactions.
+
 Spock is licensed under the [pgEdge Community License v1.0](PGEDGE-COMMUNITY-LICENSE.md)

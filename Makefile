@@ -16,7 +16,8 @@ OBJS = spock_apply.o spock_conflict.o spock_manager.o \
 	   spock_dependency.o spock_apply_heap.o spock_apply_spi.o \
 	   spock_output_config.o spock_output_plugin.o \
 	   spock_output_proto.o spock_proto_json.o \
-	   spock_proto_native.o spock_monitoring.o spock_failover_slots.o
+	   spock_proto_native.o spock_monitoring.o spock_failover_slots.o \
+	   spock_readonly.o
 
 SCRIPTS_built = spock_create_subscriber
 
