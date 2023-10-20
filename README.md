@@ -10,6 +10,9 @@ project as a solid foundation to build upon for this enterprise-class extension.
 Our current version is 3.2 and includes the following important enhancements beyond Spock 3.1:
 
 * Support for pg17devel
+* Support for Snowflake Sequence migrations
+* Support for setting a database to ReadOnly
+* a couple small bug fixes from pgLogical
 * Native support for Failover Slots via integrating pg_failover_slots extension
 
 
