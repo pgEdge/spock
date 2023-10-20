@@ -7,16 +7,17 @@ This SPOCK extension provides multi-master replication for PostgreSQL 15+
 We leveraged the [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source 
 project as a solid foundation to build upon for this enterprise-class extension. 
 
-Our current version is 3.2 and includes the following important enhancements beyond Spock 3.1:
+Our development version is 3.2 and includes the following important enhancements beyond Spock 3.1:
 
 * Support for pg17devel
 * Support for Snowflake Sequence migrations
 * Support for setting a database to ReadOnly
-* a couple small bug fixes from pgLogical
+* Prelim support for Hidden Columns
+* A couple small bug fixes from pgLogical
 * Native support for Failover Slots via integrating pg_failover_slots extension
 
 
-Our second version is 3.1 and has been stabilized and hardened to include the following:
+Our production version is 3.1 and has been stabilized and hardened to include the following:
 
 * Support for both pg15 **AND** pg16
 * Prelim testing for online upgrades between pg15 & pg16
@@ -25,7 +26,7 @@ Our second version is 3.1 and has been stabilized and hardened to include the fo
 * Improved and document support for replication and maintaining partitioned tables.
 
 
-Our first version is 3.0 and includes the following important enhancements beyond its pg_logical-2.4.2 base:
+Our beta version was 3.0 and includes the following important enhancements beyond its pg_logical-2.4.2 base:
 
 * Support for pg15 (support for pg10 thru pg14 dropped)
 * Support for Asynchronous Multi-Master Replication with conflict resolution
