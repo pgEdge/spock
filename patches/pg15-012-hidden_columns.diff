@@ -1,0 +1,103 @@
+diff --git a/src/backend/access/common/reloptions.c b/src/backend/access/common/reloptions.c
+index 98cb27a521..d9ecb699a8 100644
+--- a/src/backend/access/common/reloptions.c
++++ b/src/backend/access/common/reloptions.c
+@@ -177,6 +177,15 @@ static relopt_bool boolRelOpts[] =
+ 		},
+ 		false
+ 	},
++	{
++		{
++			"invisible",
++			"Avoids expansion of this column by SELECT *",
++			RELOPT_KIND_ATTRIBUTE,
++			ShareUpdateExclusiveLock
++		},
++		false
++	},
+ 	/* list terminator */
+ 	{{NULL}}
+ };
+@@ -2086,7 +2095,8 @@ attribute_reloptions(Datum reloptions, bool validate)
+ 	static const relopt_parse_elt tab[] = {
+ 		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
+ 		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
+-		{"log_old_value", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, log_old_value)}
++		{"log_old_value", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, log_old_value)},
++		{"invisible", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, invisible)}
+ 	};
+ 
+ 	return (bytea *) build_reloptions(reloptions, validate,
+diff --git a/src/backend/parser/parse_relation.c b/src/backend/parser/parse_relation.c
+index 863c25f303..13e22a0c37 100644
+--- a/src/backend/parser/parse_relation.c
++++ b/src/backend/parser/parse_relation.c
+@@ -31,6 +31,7 @@
+ #include "parser/parse_type.h"
+ #include "parser/parsetree.h"
+ #include "storage/lmgr.h"
++#include "utils/attoptcache.h"
+ #include "utils/builtins.h"
+ #include "utils/lsyscache.h"
+ #include "utils/rel.h"
+@@ -3187,11 +3188,17 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
+ 		char	   *label = strVal(lfirst(name));
+ 		Var		   *varnode = (Var *) lfirst(var);
+ 		TargetEntry *te;
++		AttributeOpts *opts;
+ 
+ 		te = makeTargetEntry((Expr *) varnode,
+ 							 (AttrNumber) pstate->p_next_resno++,
+ 							 label,
+ 							 false);
++		opts = get_attribute_options(rte->relid, varnode->varattno);
++
++		if (opts && opts->invisible)
++			te->resjunk = true;
++
+ 		te_list = lappend(te_list, te);
+ 
+ 		if (require_col_privs)
+diff --git a/src/backend/parser/parse_target.c b/src/backend/parser/parse_target.c
+index c6827f9285..91a1e8c7ea 100644
+--- a/src/backend/parser/parse_target.c
++++ b/src/backend/parser/parse_target.c
+@@ -27,6 +27,7 @@
+ #include "parser/parse_target.h"
+ #include "parser/parse_type.h"
+ #include "parser/parsetree.h"
++#include "utils/attoptcache.h"
+ #include "utils/builtins.h"
+ #include "utils/lsyscache.h"
+ #include "utils/rel.h"
+@@ -1025,12 +1026,18 @@ checkInsertTargets(ParseState *pstate, List *cols, List **attrnos)
+ 		{
+ 			ResTarget  *col;
+ 			Form_pg_attribute attr;
++			AttributeOpts *opts;
+ 
+ 			attr = TupleDescAttr(pstate->p_target_relation->rd_att, i);
+ 
+ 			if (attr->attisdropped)
+ 				continue;
+ 
++			opts = get_attribute_options(RelationGetRelid(pstate->p_target_relation), i+1);
++
++			if (opts && opts->invisible)
++				continue;
++
+ 			col = makeNode(ResTarget);
+ 			col->name = pstrdup(NameStr(attr->attname));
+ 			col->indirection = NIL;
+diff --git a/src/include/utils/attoptcache.h b/src/include/utils/attoptcache.h
+index 3410600d8f..6551b87e0b 100644
+--- a/src/include/utils/attoptcache.h
++++ b/src/include/utils/attoptcache.h
+@@ -22,6 +22,7 @@ typedef struct AttributeOpts
+ 	float8		n_distinct;
+ 	float8		n_distinct_inherited;
+ 	bool		log_old_value;
++	bool		invisible;
+ } AttributeOpts;
+ 
+ extern AttributeOpts *get_attribute_options(Oid spcid, int attnum);
