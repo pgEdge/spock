@@ -1,10 +1,10 @@
 diff --git a/src/backend/access/common/reloptions.c b/src/backend/access/common/reloptions.c
-index 469de9bb49..a7d5afc2b6 100644
+index 1b6f351..c6aa6ab 100644
 --- a/src/backend/access/common/reloptions.c
 +++ b/src/backend/access/common/reloptions.c
-@@ -168,6 +168,15 @@ static relopt_bool boolRelOpts[] =
+@@ -177,6 +177,15 @@ static relopt_bool boolRelOpts[] =
  		},
- 		true
+ 		false
  	},
 +	{
 +		{
@@ -18,18 +18,18 @@ index 469de9bb49..a7d5afc2b6 100644
  	/* list terminator */
  	{{NULL}}
  };
-@@ -2072,7 +2081,8 @@ attribute_reloptions(Datum reloptions, bool validate)
- {
+@@ -2082,7 +2091,8 @@ attribute_reloptions(Datum reloptions, bool validate)
  	static const relopt_parse_elt tab[] = {
  		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
--		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)}
-+		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
+ 		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
+-		{"log_old_value", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, log_old_value)}
++		{"log_old_value", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, log_old_value)},
 +		{"invisible", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, invisible)}
  	};
  
  	return (bytea *) build_reloptions(reloptions, validate,
 diff --git a/src/backend/parser/parse_relation.c b/src/backend/parser/parse_relation.c
-index 864ea9b0d5..cd0d635756 100644
+index 864ea9b..cd0d635 100644
 --- a/src/backend/parser/parse_relation.c
 +++ b/src/backend/parser/parse_relation.c
 @@ -31,6 +31,7 @@
@@ -59,7 +59,7 @@ index 864ea9b0d5..cd0d635756 100644
  
  		if (require_col_privs)
 diff --git a/src/backend/parser/parse_target.c b/src/backend/parser/parse_target.c
-index 3bc62ac3ba..c28464bacb 100644
+index 3bc62ac..c28464b 100644
 --- a/src/backend/parser/parse_target.c
 +++ b/src/backend/parser/parse_target.c
 @@ -27,6 +27,7 @@
@@ -90,14 +90,14 @@ index 3bc62ac3ba..c28464bacb 100644
  			col->name = pstrdup(NameStr(attr->attname));
  			col->indirection = NIL;
 diff --git a/src/include/utils/attoptcache.h b/src/include/utils/attoptcache.h
-index e4119b6aa2..8e21fe09f1 100644
+index 0233bda..43e25e9 100644
 --- a/src/include/utils/attoptcache.h
 +++ b/src/include/utils/attoptcache.h
-@@ -21,6 +21,7 @@ typedef struct AttributeOpts
- 	int32		vl_len_;		/* varlena header (do not touch directly!) */
+@@ -22,6 +22,7 @@ typedef struct AttributeOpts
  	float8		n_distinct;
  	float8		n_distinct_inherited;
-+	bool        invisible;
+ 	bool		log_old_value;
++	bool		invisible;
  } AttributeOpts;
  
  extern AttributeOpts *get_attribute_options(Oid attrelid, int attnum);
