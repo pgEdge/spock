@@ -605,4 +605,3 @@ $$ LANGUAGE plpgsql;
 -- End of PG major version dependent PL/pgSQL definitions
 END;
 $version_dependent$ LANGUAGE plpgsql;
->>>>>>> main
