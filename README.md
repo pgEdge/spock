@@ -14,6 +14,7 @@ Our current version is 3.1 and includes the following important enhancements bey
 * Regression testing improvements
 * Improved support for in-region shadow nodes (in different AZ's)
 * Improved and document support for replication and maintaining partitioned tables.
+* Snowflake Sequence migration
 
 
 Our first version is 3.0 and includes the following important enhancements beyond its pg_logical-2.4.2 base:
