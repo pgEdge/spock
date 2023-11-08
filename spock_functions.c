@@ -516,7 +516,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 				char	   *newset = lfirst(nsetcell);
 
 				if (strcmp(newset, existingset) == 0)
-					ereport(ERROR,
+					ereport(WARNING,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("existing subscription \"%s\" to node "
 									"\"%s\" already subscribes to replication "

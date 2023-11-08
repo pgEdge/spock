@@ -55,6 +55,7 @@
 #include "spock_node.h"
 #include "spock_conflict.h"
 #include "spock_worker.h"
+#include "spock_output_plugin.h"
 #include "spock.h"
 
 PG_MODULE_MAGIC;
@@ -907,6 +908,9 @@ _PG_init(void)
 
 	/* Init workers. */
 	spock_worker_shmem_init();
+
+	/* Init output plugin shmem */
+	spock_output_plugin_shmem_init();
 
 	/* Init executor module */
 	spock_executor_init();

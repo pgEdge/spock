@@ -29,9 +29,11 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/guc.h"
 #include "replication/origin.h"
 #include "replication/syncrep.h"
 #include "replication/walsender_private.h"
+#include "storage/ipc.h"
 
 #include "spock_output_plugin.h"
 #include "spock.h"
@@ -84,6 +86,20 @@ static HTAB *RelMetaCache = NULL;
 static MemoryContext RelMetaCacheContext = NULL;
 static int InvalidRelMetaCacheCnt = 0;
 static int MyWalSenderIdx = 0;
+
+static bool						slot_group_on_exit_set = false;
+static SpockOutputSlotGroup	   *slot_group = NULL;
+static bool						slot_group_skip_xact = false;
+
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
+static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
+
+static void spock_output_join_slot_group(NameData slot_name);
+static void spock_output_leave_slot_group(void);
+static void spock_output_plugin_shmem_request(void);
+static void spock_output_plugin_shmem_startup(void);
+static Size spock_output_plugin_shmem_size(int nworkers);
+static void spock_output_plugin_on_exit(int code, Datum arg);
 
 static void relmetacache_init(MemoryContext decoding_context);
 static SPKRelMetaCacheEntry *relmetacache_get_relation(SpockOutputData *data,
@@ -174,6 +190,9 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 {
 	SpockOutputData	   *data = palloc0(sizeof(SpockOutputData));
 
+	/* Join our slot-group if possible */
+	spock_output_join_slot_group(ctx->slot->data.name);
+
 	/* Short lived memory context for individual messages */
 	data->context = AllocSetContextCreate(ctx->context,
 										  "spock output msg context",
@@ -210,7 +229,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 		 * There's a potential corruption bug in PostgreSQL 10.1, 9.6.6, 9.5.10
 		 * and 9.4.15 that can cause reorder buffers to accumulate duplicated
 		 * transactions. See
-		 *   https://www.postgresql.org/message-id/CAMsr+YHdX=XECbZshDZ2CZNWGTyw-taYBnzqVfx4JzM4ExP5xg@mail.gmail.com
+		 *	 https://www.postgresql.org/message-id/CAMsr+YHdX=XECbZshDZ2CZNWGTyw-taYBnzqVfx4JzM4ExP5xg@mail.gmail.com
 		 *
 		 * We can defend against this by doing our own cleanup of any serialized
 		 * txns in the reorder buffer on startup.
@@ -271,7 +290,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 			ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("client sent max_proto_version=%d but we only support protocol %d or higher",
-				 	data->client_max_proto_version, SPOCK_PROTO_MIN_VERSION_NUM)));
+					data->client_max_proto_version, SPOCK_PROTO_MIN_VERSION_NUM)));
 
 		/*
 		 * Set correct protocol format.
@@ -288,7 +307,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 			MemoryContextSwitchTo(oldctx);
 		}
 		else if ((data->client_protocol_format != NULL
-			     && strcmp(data->client_protocol_format, "native") == 0)
+				 && strcmp(data->client_protocol_format, "native") == 0)
 				 || data->client_protocol_format == NULL)
 		{
 			oldctx = MemoryContextSwitchTo(ctx->context);
@@ -307,7 +326,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 			ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("client requested protocol %s but only \"json\" or \"native\" are supported",
-				 	data->client_protocol_format)));
+					data->client_protocol_format)));
 		}
 
 		/* check for encoding match if specific encoding demanded by client */
@@ -405,6 +424,36 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	bool send_replication_origin = data->forward_changeset_origins;
 	MemoryContext old_ctx;
 
+	/*
+	 * Check if we are a member of a replication slot-group and if so,
+	 * if another member is already working on this transaction. If
+	 * nobody does, then claim this transaction for us and start
+	 * working.
+	 */
+	if (slot_group != NULL)
+	{
+		LWLockAcquire(slot_group->lock, LW_EXCLUSIVE);
+		if (slot_group->last_lsn >= txn->end_lsn)
+		{
+			slot_group_skip_xact = true;
+			elog(DEBUG1, "slot-group '%s' skipping transaction with end_lsn %X/%X"
+					  " - last_lsn %X/%X",
+				 NameStr(slot_group->name),
+				 (uint32)(txn->end_lsn >> 32),
+				 (uint32)(txn->end_lsn),
+				 (uint32)(slot_group->last_lsn >> 32),
+				 (uint32)(slot_group->last_lsn));
+			LWLockRelease(slot_group->lock);
+			return;
+		}
+		elog(DEBUG1, "slot-group '%s' sending transaction with end_lsn %X/%X",
+			 NameStr(slot_group->name),
+			 (uint32)(txn->end_lsn >> 32),
+			 (uint32)(txn->end_lsn));
+		slot_group->last_lsn = txn->end_lsn;
+		LWLockRelease(slot_group->lock);
+	}
+
 	old_ctx = MemoryContextSwitchTo(data->context);
 
 	VALGRIND_DO_ADDED_LEAK_CHECK;
@@ -433,10 +482,10 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 		 * XXX: which behaviour we want here?
 		 *
 		 * Alternatives:
-		 *  - don't send origin message if origin name not found
-		 *    (that's what we do now)
-		 *  - throw error - that will break replication, not good
-		 *  - send some special "unknown" origin
+		 *	- don't send origin message if origin name not found
+		 *	  (that's what we do now)
+		 *	- throw error - that will break replication, not good
+		 *	- send some special "unknown" origin
 		 */
 		if (data->api->write_origin &&
 			replorigin_by_oid(txn->origin_id, true, &origin))
@@ -457,9 +506,19 @@ static void
 pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					 XLogRecPtr commit_lsn)
 {
-	SpockOutputData    *data = (SpockOutputData*)ctx->output_plugin_private;
+	SpockOutputData	   *data = (SpockOutputData*)ctx->output_plugin_private;
 	MemoryContext		old_ctx;
 	XLogRecPtr			end_lsn = txn->end_lsn - MyWalSenderIdx;
+
+	/*
+	 * If we are in slot-group skip transaction mode, we simply end
+	 * it here and wait for the next transaction.
+	 */
+	if (slot_group_skip_xact)
+	{
+		slot_group_skip_xact = false;
+		return;
+	}
 
 	old_ctx = MemoryContextSwitchTo(data->context);
 
@@ -720,6 +779,14 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	MemoryContext	old;
 	Bitmapset	   *att_list = NULL;
 
+	/*
+	 * If we are in slot-group skip transaction mode do nothing
+	 */
+	if (slot_group_skip_xact)
+	{
+		return;
+	}
+
 	/* Avoid leaking memory by using and resetting our own context */
 	old = MemoryContextSwitchTo(data->context);
 
@@ -816,8 +883,8 @@ pg_decode_origin_filter(LogicalDecodingContext *ctx,
 	bool ret;
 
 	if (origin_id == InvalidRepOriginId)
-	    /* Never filter out locally originated tx's */
-	    ret = false;
+		/* Never filter out locally originated tx's */
+		ret = false;
 
 	else
 		/*
@@ -866,12 +933,220 @@ pg_decode_shutdown(LogicalDecodingContext * ctx)
 {
 	relmetacache_flush();
 
+	spock_output_leave_slot_group();
+
 	VALGRIND_PRINTF("SPOCK: output plugin shutdown\n");
 
 	/*
 	 * no need to delete data->context as it's child of ctx->context which
 	 * will expire on return.
 	 */
+}
+
+/*
+ * Install hooks to request shared resources for slot-group management
+ */
+void
+spock_output_plugin_shmem_init(void)
+{
+	prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook = spock_output_plugin_shmem_request;
+	prev_shmem_startup_hook = shmem_startup_hook;
+	shmem_startup_hook = spock_output_plugin_shmem_startup;
+}
+
+/*
+ * Join a slot-group if possible
+ */
+static void
+spock_output_join_slot_group(NameData slot_name)
+{
+	SpockOutputSlotGroup   *groups;
+	SpockOutputSlotGroup   *free_group = NULL;
+	int						free_i = 0;
+	NameData				group_name;
+	bool					is_slot_group = false;
+	char				   *cp;
+	int						i;
+
+	/*
+	 * Ensure we are not already a member of a slot-group
+	 */
+	if (slot_group != NULL)
+		elog(ERROR, "slot '%s' is already a slot-group member",
+			 NameStr(slot_name));
+
+	/*
+	 * Determine the group name (if possible)
+	 */
+	strcpy(NameStr(group_name), NameStr(slot_name));
+	for(cp = NameStr(group_name); *cp; cp++)
+	{
+		if (cp[0] == '_'
+			&& (cp[1] >= '0' && cp[1] <= '9')
+			&& cp[2] == '\0')
+		{
+			*cp = '\0';
+			is_slot_group = true;
+			break;
+		}
+	}
+	if (!is_slot_group)
+		return;
+
+	/*
+	 * Register our on_proc_exit callback if not done yet
+	 */
+	if (!slot_group_on_exit_set)
+	{
+		on_proc_exit(spock_output_plugin_on_exit, 0);
+		slot_group_on_exit_set = true;
+	}
+
+	/*
+	 * Find and join this group; use an empty slot if not found
+	 */
+	elog(LOG, "SPOCK join slot-group '%s' for slot '%s'",
+		 NameStr(group_name),
+		 NameStr(slot_name));
+	LWLockAcquire(SpockCtx->slot_group_master_lock, LW_EXCLUSIVE);
+	groups = SpockCtx->slot_groups;
+	for (i = 0; i < SpockCtx->slot_ngroups; i++)
+	{
+		if (free_group == NULL && groups[i].nattached == 0)
+		{
+			free_group = &groups[i];
+			free_i = i;
+		}
+		if (strcmp(NameStr(group_name), NameStr(groups[i].name)) == 0
+			&& groups[i].nattached > 0)
+		{
+			slot_group = &groups[i];
+			slot_group->nattached++;
+			elog(LOG, "using existing slot-group %d - nattached=%d", i,
+				 slot_group->nattached);
+			break;
+		}
+	}
+	if (slot_group == NULL)
+	{
+		elog(LOG, "using free slot-group %d", free_i);
+		slot_group = free_group;
+		strcpy(NameStr(slot_group->name), NameStr(group_name));
+		slot_group->nattached = 1;
+	}
+
+	LWLockRelease(SpockCtx->slot_group_master_lock);
+}
+
+static void
+spock_output_leave_slot_group(void)
+{
+	/*
+	 * Nothing to do if we are not a member of a slot-group
+	 */
+	if (slot_group == NULL)
+	{
+		return;
+	}
+
+	/*
+	 * Remove ourselves from the slot-group
+	 */
+	LWLockAcquire(SpockCtx->slot_group_master_lock, LW_EXCLUSIVE);
+	slot_group->nattached--;
+	elog(LOG, "removed from slot-group '%s' - nattached=%d",
+		 NameStr(slot_group->name), slot_group->nattached);
+	slot_group = NULL;
+	LWLockRelease(SpockCtx->slot_group_master_lock);
+}
+
+/*
+ * Reserve additional shared resources for slot-group management
+ */
+static void
+spock_output_plugin_shmem_request(void)
+{
+	int		nworkers;
+
+	if (prev_shmem_request_hook != NULL)
+		prev_shmem_request_hook();
+
+	/*
+	 * This is cludge for Windows (Postgres des not define the GUC variable
+	 * as PGDDLIMPORT)
+	 */
+	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
+										  false));
+
+	/*
+	 * Request enough shared memory for nworkers slot-groups (worst case)
+	 */
+	RequestAddinShmemSpace(spock_output_plugin_shmem_size(nworkers));
+
+	/*
+	 * Request the LWlocks needed
+	 */
+	RequestNamedLWLockTranche("spock_slot_groups", nworkers + 1);
+}
+
+/*
+ * Initialize shared resources for slot-group management
+ */
+static void
+spock_output_plugin_shmem_startup(void)
+{
+	bool					found;
+	int						nworkers;
+	SpockOutputSlotGroup   *slot_groups;
+	int						i;
+
+	if (prev_shmem_startup_hook != NULL)
+		prev_shmem_startup_hook();
+
+	/*
+	 * This is kludge for Windows (Postgres does not define the GUC variable
+	 * as PGDLLIMPORT)
+	 */
+	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
+										  false));
+
+	/* Get the shared resources */
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+	SpockCtx->slot_group_master_lock = &((GetNamedLWLockTranche("spock_slot_groups")[0]).lock);
+	SpockCtx->slot_ngroups = nworkers;
+	slot_groups = ShmemInitStruct("spock_slot_groups",
+								 spock_output_plugin_shmem_size(nworkers),
+								 &found);
+	if (!found)
+	{
+		memset(slot_groups, 0, spock_output_plugin_shmem_size(nworkers));
+		SpockCtx->slot_groups = slot_groups;
+		for (i = 0; i < nworkers; i++)
+		{
+			slot_groups[i].lock = &((GetNamedLWLockTranche("spock_slot_groups")[i + 1]).lock);
+		}
+	}
+
+	LWLockRelease(AddinShmemInitLock);
+}
+
+/*
+ * Calculate the shared memory needed for slot-group management
+ */
+static Size
+spock_output_plugin_shmem_size(int nworkers)
+{
+	return(nworkers * sizeof(SpockOutputSlotGroup));
+}
+
+/*
+ * Cleanup called on proc_exit
+ */
+static void
+spock_output_plugin_on_exit(int code, Datum arg)
+{
+	spock_output_leave_slot_group();
 }
 
 

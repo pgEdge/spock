@@ -14,6 +14,7 @@
 
 #include "nodes/pg_list.h"
 #include "nodes/primnodes.h"
+#include "storage/lock.h"
 
 /* summon cross-PG-version compatibility voodoo */
 #include "spock_compat.h"
@@ -70,5 +71,18 @@ typedef struct SpockOutputData
 	List	   *replication_sets;
 	RangeVar   *replicate_only_table;
 } SpockOutputData;
+
+/*
+ * Shared memory information per slot-group
+ */
+typedef struct SpockOutputSlotGroup
+{
+    NameData    name;
+	LWLock	   *lock;
+    int         nattached;
+    XLogRecPtr  last_lsn;
+} SpockOutputSlotGroup;
+
+extern void spock_output_plugin_shmem_init(void);
 
 #endif /* SPOCK_OUTPUT_PLUGIN_H */
