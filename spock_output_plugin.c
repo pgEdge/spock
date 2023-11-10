@@ -498,7 +498,12 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	/* Save lsn and time in hash for lag_tracker*/
 	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn,
-					  txn->xact_time.commit_time);
+#if PG_VERSION_NUM >= 150000
+					  txn->xact_time.commit_time
+#else
+					   txn->commit_time
+#endif
+					   );
 
 	/* update progress */
 	OutputPluginUpdateProgress(ctx, false);
@@ -727,7 +732,13 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	OutputPluginUpdateProgress(ctx, false);
 
 	/* Save lsn and time in hash */
-	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), ctx->write_location, txn->xact_time.commit_time);
+	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), ctx->write_location,
+#if PG_VERSION_NUM >= 150000
+					  txn->xact_time.commit_time
+#else
+					   txn->commit_time
+#endif
+					   );
 
 	/* First check the table filter */
 	if (!spock_change_filter(data, relation, change, &att_list))
