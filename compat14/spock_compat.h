@@ -18,6 +18,12 @@
 #include "access/tableam.h"
 #include "utils/varlena.h"
 
+#define PG_ENSURE_ERROR_CLEANUP_SUFFIX(cleanup_function, arg, _suf)	\
+		PG_ENSURE_ERROR_CLEANUP(cleanup_function, arg)
+
+#define PG_END_ENSURE_ERROR_CLEANUP_SUFFIX(cleanup_function, arg, _suf)	\
+		PG_END_ENSURE_ERROR_CLEANUP(cleanup_function, arg)
+
 #define WaitLatchOrSocket(latch, wakeEvents, sock, timeout) \
 	WaitLatchOrSocket(latch, wakeEvents, sock, timeout, PG_WAIT_EXTENSION)
 
@@ -96,5 +102,10 @@
 	heap_attisnull(tup, attnum, tupledesc)
 
 #define getObjectDescription(object) getObjectDescription(object, false)
+#define addRTEPermissionInfo(rteperminfos, rte) \
+	*rteperminfos = NIL;
+
+#define OutputPluginUpdateProgress(ctx, false) \
+			OutputPluginUpdateProgress(ctx)
 
 #endif

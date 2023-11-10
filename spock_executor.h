@@ -13,7 +13,11 @@
 #define SPOCK_EXECUTOR_H
 
 #include "executor/executor.h"
+#if PG_VERSION_NUM < 160000
+#include "utils/queryjumble.h"
+#else
 #include "nodes/queryjumble.h"
+#endif
 #include "parser/parse_node.h"
 
 extern List *spock_truncated_tables;
