@@ -91,7 +91,9 @@ static bool						slot_group_on_exit_set = false;
 static SpockOutputSlotGroup	   *slot_group = NULL;
 static bool						slot_group_skip_xact = false;
 
+#if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
+#endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 static void spock_output_join_slot_group(NameData slot_name);
@@ -960,8 +962,12 @@ pg_decode_shutdown(LogicalDecodingContext * ctx)
 void
 spock_output_plugin_shmem_init(void)
 {
+#if PG_VERSION_NUM < 150000
+	spock_output_plugin_shmem_request();
+#else
 	prev_shmem_request_hook = shmem_request_hook;
 	shmem_request_hook = spock_output_plugin_shmem_request;
+#endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = spock_output_plugin_shmem_startup;
 }
@@ -1080,8 +1086,10 @@ spock_output_plugin_shmem_request(void)
 {
 	int		nworkers;
 
+#if PG_VERSION_NUM >= 150000
 	if (prev_shmem_request_hook != NULL)
 		prev_shmem_request_hook();
+#endif
 
 	/*
 	 * This is cludge for Windows (Postgres des not define the GUC variable
