@@ -1051,6 +1051,7 @@ spock_output_join_slot_group(NameData slot_name)
 		slot_group = free_group;
 		strcpy(NameStr(slot_group->name), NameStr(group_name));
 		slot_group->nattached = 1;
+		slot_group->last_lsn = InvalidXLogRecPtr;
 	}
 
 	LWLockRelease(SpockCtx->slot_group_master_lock);
