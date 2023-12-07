@@ -784,6 +784,16 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 
 					len = pq_getmsgint(in, 4); /* read length */
 
+					if (att->attbyval && att->attlen > 0 && len != att->attlen)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+								 errmsg("binary data length mismatch"),
+								 errdetail("attribute %s of table %s expects "
+								 		   "%d bytes but %d bytes received",
+										   NameStr(att->attname),
+										   NameStr(rel->rel->rd_rel->relname),
+										   att->attlen, len)));
+
 					getTypeBinaryInputInfo(att->atttypid,
 										   &typreceive, &typioparam);
 
