@@ -108,4 +108,7 @@
 #define addRTEPermissionInfo(rteperminfos, rte) \
 	*rteperminfos = NIL;
 
+#define SwitchToUntrustedUser(userid, context) ((void)0)
+#define RestoreUserContext(context) ((void)0)
+
 #endif
