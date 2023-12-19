@@ -108,4 +108,7 @@
 #define OutputPluginUpdateProgress(ctx, false) \
 			OutputPluginUpdateProgress(ctx)
 
+#define SwitchToUntrustedUser(userid, context) ((void)0)
+#define RestoreUserContext(context) ((void)0)
+
 #endif
