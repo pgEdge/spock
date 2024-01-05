@@ -19,7 +19,7 @@ OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
 				spock_output_config.o spock_output_plugin.o \
 				spock_output_proto.o spock_proto_json.o \
 				spock_proto_native.o spock_monitoring.o spock_failover_slots.o \
-				spock_readonly.o 
+				spock_readonly.o spock_common.o
 
 SCRIPTS_built = spock_create_subscriber
 

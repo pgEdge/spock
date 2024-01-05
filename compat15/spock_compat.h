@@ -106,8 +106,10 @@
 #define addRTEPermissionInfo(rteperminfos, rte) \
 	*rteperminfos = NIL;
 
-#define SwitchToUntrustedUser(userid, context) ((void)0)
-#define RestoreUserContext(context) ((void)0)
+#define SwitchToUntrustedUser(userid, context) \
+		SPKSwitchToUntrustedUser(userid, context)
+#define RestoreUserContext(context) \
+		SPKRestoreUserContext(context)
 
 /* Must use this interface for access HeapTuple in ReorderBufferChange */
 #define ReorderBufferChangeHeapTuple(change, tuple_type) \

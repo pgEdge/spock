@@ -67,9 +67,6 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
-#if PG_VERSION_NUM >= 160000
-#include "utils/usercontext.h"
-#endif
 
 #include "spock_conflict.h"
 #include "spock_executor.h"
@@ -84,6 +81,7 @@
 #include "spock_apply_heap.h"
 #include "spock_apply_spi.h"
 #include "spock_exception_handler.h"
+#include "spock_common.h"
 #include "spock.h"
 
 
@@ -708,9 +706,7 @@ handle_insert(StringInfo s)
 	HeapTuple	localtup = NULL;
 	SpockRelation *rel;
 	ErrorData  *edata;
-#if PG_VERSION_NUM >= 160000
 	UserContext ucxt;
-#endif
 	bool		started_tx;
 	bool		failed = false;
 	char	   *action_name = "INSERT";
@@ -909,9 +905,7 @@ handle_update(StringInfo s)
 	SpockRelation *rel;
 	ErrorData  *edata;
 	HeapTuple	localtup;
-#if PG_VERSION_NUM >= 160000
 	UserContext ucxt;
-#endif
 	bool		hasoldtup;
 	bool		failed = false;
 
@@ -1015,9 +1009,7 @@ handle_delete(StringInfo s)
 	SpockRelation *rel;
 	HeapTuple	localtup;
 	ErrorData  *edata;
-#if PG_VERSION_NUM >= 160000
 	UserContext ucxt;
-#endif
 	bool		failed = false;
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
