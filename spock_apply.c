@@ -1163,8 +1163,10 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 					"item type %d expected %d",
 			 MySubscription->name, r, WJB_DONE);
 
+	in_spock_queue_command = true;
 	/* Run the extracted SQL. */
 	spock_execute_sql_command(sql, queued_message->role, tx_just_started);
+	in_spock_queue_command = false;
 }
 
 /*

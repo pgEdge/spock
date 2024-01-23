@@ -45,6 +45,7 @@
 
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+//#include "utils/guc_hooks.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -98,6 +99,10 @@ static char *spock_temp_directory_config;
 bool	spock_ch_stats = true;
 static char *spock_country_code;
 bool	spock_deny_ddl = false;
+bool	spock_enable_ddl_replication = false;
+bool	spock_include_ddl_repset = false;
+
+// char   *spock_ddl_search_path;
 
 void _PG_init(void);
 PGDLLEXPORT void spock_supervisor_main(Datum main_arg);
@@ -755,6 +760,14 @@ spock_temp_directory_assing_hook(const char *newval, void *extra)
 				 errmsg("out of memory")));
 }
 
+#if 0
+static void
+spock_assign_ddl_search_path(const char *newval, void *extra)
+{
+	// search_path;
+}
+#endif
+
 /*
  * Entry point for this module.
  */
@@ -902,6 +915,37 @@ _PG_init(void)
 							   PGC_SUSET,
 							   0,
 							   NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.enable_ddl_replication",
+							   "Replicate All DDL statements automatically",
+							   NULL,
+							   &spock_enable_ddl_replication,
+							   false,
+							   PGC_USERSET,
+							   0,
+							   NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.include_ddl_repset",
+							   "If possible, add tables to the replication set while doing ddl_replication",
+							   NULL,
+							   &spock_include_ddl_repset,
+							   false,
+							   PGC_USERSET,
+							   0,
+							   NULL, NULL, NULL);
+
+#if 0
+	DefineCustomStringVariable("spock.ddl_search_path",
+							   "Set search path during auto DDL's",
+							   NULL,
+							   &spock_ddl_search_path,
+							   "",
+							   PGC_SUSET,
+							   0,
+							   check_search_path,
+							   spock_assign_ddl_search_path,
+							   NULL);
+#endif
 
 	if (IsBinaryUpgrade)
 		return;

@@ -22,6 +22,8 @@
 
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
+
+#include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/snapmgr.h"
 #include "utils/memutils.h"
@@ -32,7 +34,9 @@
 #include "storage/procarray.h"
 #include "executor/executor.h"
 
+#include "spock_repset.h"
 #include "spock_worker.h"
+#include "spock.h"
 
 post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
 ExecutorStart_hook_type prev_executor_start_hook = NULL;
@@ -128,6 +132,7 @@ void
 spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 {
 	bool		command_is_ro = false;
+	bool		auto_ddl_command = false;
 
 	switch (query->commandType)
 	{
@@ -135,7 +140,11 @@ spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 			command_is_ro = true;
 			break;
 		case CMD_UTILITY:
+			if (spock_enable_ddl_replication &&
+				GetCommandLogLevel(query->utilityStmt) == LOGSTMT_DDL)
+				auto_ddl_command = true;
 
+			/* TODO: replace strstr with IsA(query->utilityStmt, TransactionStmt) */
 			/* allow ROLLBACK for killed transactions */
 			if (strstr((pstate->p_sourcetext), "rollback") ||
 				strstr((pstate->p_sourcetext), "ROLLBACK"))
@@ -170,6 +179,21 @@ spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 
 	if (spockro_get_readonly_internal() && !command_is_ro)
 		ereport(ERROR, (errmsg("spock: invalid statement for a read-only cluster")));
+
+	/* we don't want to replicate if it's coming from spock.queue. */
+	if (auto_ddl_command &&
+		!in_spock_queue_command &&
+		get_local_node(false, true))
+	{
+		const char *curr_qry;
+		int			loc = query->stmt_location;
+		int			len = query->stmt_len;
+
+		pstate->p_sourcetext = CleanQuerytext(pstate->p_sourcetext, &loc, &len);
+		curr_qry = pnstrdup(pstate->p_sourcetext, len);
+		spock_auto_replicate_ddl(curr_qry, list_make1(DDL_SQL_REPSET_NAME),
+								 GetUserNameFromId(GetUserId(), false));
+	}
 
 	if (prev_post_parse_analyze_hook)
 		(*prev_post_parse_analyze_hook) (pstate, query, jstate);
