@@ -217,6 +217,51 @@ spock_finish_truncate(void)
 	spock_truncated_tables = NIL;
 }
 
+/*
+ * add_ddl_to_repset
+ *		Check if the DDL statement can be added to the replication set. (For
+ * now only tables are added). The function also checks whether the table has
+ * needed indexes to be added to replication set. If not, they are ignored.
+ */
+static void
+add_ddl_to_repset(Node *parsetree)
+{
+	CreateStmt *stmt;
+	Relation	targetrel;
+	SpockRepSet *repset;
+	SpockLocalNode *node;
+	Oid		reloid = InvalidOid;
+
+	if (nodeTag(parsetree) != T_CreateStmt)
+		return;
+
+	node = get_local_node(false, true);
+	if (!node)
+		return;
+
+	stmt = (CreateStmt *) parsetree;
+	repset = get_replication_set_by_name(node->node->id, DDL_SQL_REPSET_NAME, false);
+	targetrel = table_openrv(stmt->relation, AccessShareLock);
+	reloid = RelationGetRelid(targetrel);
+
+	/* UNLOGGED and TEMP relations cannot be part of replication set. */
+	if (!RelationNeedsWAL(targetrel))
+		return;
+
+	if (targetrel->rd_indexvalid == 0)
+		RelationGetIndexList(targetrel);
+
+	if (!OidIsValid(targetrel->rd_replidindex) &&
+		(repset->replicate_update || repset->replicate_delete))
+		return;
+
+	table_close(targetrel, NoLock);
+
+	replication_set_add_table(repset->id, reloid, NIL, NULL);
+	elog(DEBUG1, "table '%s' added to '%s' replication set.",
+			DDL_SQL_REPSET_NAME, stmt->relation->relname);
+}
+
 static void
 spock_ProcessUtility(
 						 PlannedStmt *pstmt,
@@ -271,8 +316,11 @@ spock_ProcessUtility(
 
 	if (nodeTag(parsetree) == T_TruncateStmt)
 		spock_finish_truncate();
-}
 
+	if (GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
+		spock_include_ddl_repset)
+		add_ddl_to_repset(parsetree);
+}
 
 /*
  * Handle object drop.
