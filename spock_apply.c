@@ -66,6 +66,9 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#if PG_VERSION_NUM >= 160000
+#include "utils/usercontext.h"
+#endif
 
 #include "spock_conflict.h"
 #include "spock_executor.h"
@@ -543,7 +546,10 @@ handle_insert(StringInfo s)
 {
 	SpockTupleData	newtup;
 	SpockRelation  *rel;
-	bool				started_tx = ensure_transaction();
+#if PG_VERSION_NUM >= 160000
+	UserContext		ucxt;
+#endif
+	bool			started_tx = ensure_transaction();
 
 	PushActiveSnapshot(GetTransactionSnapshot());
 
@@ -561,6 +567,9 @@ handle_insert(StringInfo s)
 		CommandCounterIncrement();
 		return;
 	}
+
+	/* Make sure that any user-supplied code runs as the table owner. */
+	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 	/* Handle multi_insert capabilities. */
 	if (use_multi_insert)
@@ -612,6 +621,7 @@ handle_insert(StringInfo s)
 							 newtup.values, newtup.nulls);
 
 		LockRelationIdForSession(&lockid, RowExclusiveLock);
+		RestoreUserContext(&ucxt);
 		spock_relation_close(rel, NoLock);
 
 		PopActiveSnapshot();
@@ -637,6 +647,7 @@ handle_insert(StringInfo s)
 	}
 	else
 	{
+		RestoreUserContext(&ucxt);
 		spock_relation_close(rel, NoLock);
 
 		PopActiveSnapshot();
@@ -671,7 +682,10 @@ handle_update(StringInfo s)
 	SpockTupleData	oldtup;
 	SpockTupleData	newtup;
 	SpockRelation  *rel;
-	bool				hasoldtup;
+#if PG_VERSION_NUM >= 160000
+	UserContext		ucxt;
+#endif
+	bool			hasoldtup;
 
 	errcallback_arg.action_name = "UPDATE";
 	xact_action_counter++;
@@ -695,8 +709,12 @@ handle_update(StringInfo s)
 		return;
 	}
 
+	/* Make sure that any user-supplied code runs as the table owner. */
+	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
 	apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 
+	RestoreUserContext(&ucxt);
 	spock_relation_close(rel, NoLock);
 
 	PopActiveSnapshot();
@@ -708,6 +726,9 @@ handle_delete(StringInfo s)
 {
 	SpockTupleData	oldtup;
 	SpockRelation  *rel;
+#if PG_VERSION_NUM >= 160000
+	UserContext		ucxt;
+#endif
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
 	xact_action_counter++;
@@ -730,8 +751,12 @@ handle_delete(StringInfo s)
 		return;
 	}
 
+	/* Make sure that any user-supplied code runs as the table owner. */
+	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
 	apply_api.do_delete(rel, &oldtup);
 
+	RestoreUserContext(&ucxt);
 	spock_relation_close(rel, NoLock);
 
 	PopActiveSnapshot();
