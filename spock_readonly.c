@@ -181,8 +181,15 @@ spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 		ereport(ERROR, (errmsg("spock: invalid statement for a read-only cluster")));
 
 	/* we don't want to replicate if it's coming from spock.queue. */
-	if (auto_ddl_command &&
-		!in_spock_queue_command &&
+	if (in_spock_queue_command || in_spock_replicate_ddl_command)
+	{
+		/*
+		 * Do Nothing. Hook was called as a result of spock.replicate_ddl()
+		 * or handle_sql() function call. The action has already been taken,
+		 * so no need for the duplication.
+		 */
+	}
+	else if (auto_ddl_command &&
 		get_local_node(false, true))
 	{
 		const char *curr_qry;

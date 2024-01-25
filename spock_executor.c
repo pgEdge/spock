@@ -259,7 +259,7 @@ add_ddl_to_repset(Node *parsetree)
 
 	replication_set_add_table(repset->id, reloid, NIL, NULL);
 	elog(DEBUG1, "table '%s' added to '%s' replication set.",
-			DDL_SQL_REPSET_NAME, stmt->relation->relname);
+			stmt->relation->relname, DDL_SQL_REPSET_NAME);
 }
 
 static void
@@ -317,6 +317,7 @@ spock_ProcessUtility(
 	if (nodeTag(parsetree) == T_TruncateStmt)
 		spock_finish_truncate();
 
+	/* TODO: do we restrict adding DDLs to repset when coming from spock.replicate_ddl? */
 	if (GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
 		spock_include_ddl_repset)
 		add_ddl_to_repset(parsetree);
