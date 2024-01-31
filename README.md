@@ -3,14 +3,15 @@
 ## Multi-Master Replication with Conflict Resolution & Avoidance
 
 
-This SPOCK extension provides multi-master replication for PostgreSQL 15+
+This SPOCK extension provides multi-master replication for PostgreSQL 14+
 We leveraged the [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source 
 project as a solid foundation to build upon for this enterprise-class extension. 
 
 Our production version is 3.2 and includes the following important enhancements beyond Spock 3.1:
 
+* Support for pg14
 * Support for pg17devel
-* Support for Snowflake Sequence migrations
+* Support for Snowflake Sequences
 * Support for setting a database to ReadOnly
 * Prelim support for Hidden Columns
 * A couple small bug fixes from pgLogical
@@ -569,6 +570,9 @@ may need to call `spock.alter_sub_resync_table()` to fix it.
   - `relation` - name or OID of the table to be removed from the set
 
 #### spock-repset-add-seq
+We strongly recommend that you use our new [Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences) rather
+than using the legacy sequences.
+
 - `spock.repset_add_seq(set_name name, relation regclass, sync_data boolean)`
   Adds a sequence to a replication set.
 
@@ -834,6 +838,9 @@ support for foreign keys in PostgreSQL).
 not replicated to the replica.
 
 ### Sequences
+
+We strongly recommend that you use our new [Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences) rather
+than using the legacy sequences described below.
 
 The state of sequences added to replication sets is replicated periodically
 and not in real-time. Dynamic buffer is used for the value being replicated so
