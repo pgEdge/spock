@@ -66,7 +66,9 @@
 #include "utils/inval.h"
 #include "utils/json.h"
 #include "utils/guc.h"
+#if PG_VERSION_NUM >= 160000
 #include "utils/guc_hooks.h"
+#endif
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"

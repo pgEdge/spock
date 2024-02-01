@@ -240,7 +240,6 @@ add_ddl_to_repset(Node *parsetree)
 		return;
 
 	stmt = (CreateStmt *) parsetree;
-	repset = get_replication_set_by_name(node->node->id, DDL_SQL_REPSET_NAME, false);
 	targetrel = table_openrv(stmt->relation, AccessShareLock);
 	reloid = RelationGetRelid(targetrel);
 
@@ -250,6 +249,12 @@ add_ddl_to_repset(Node *parsetree)
 
 	if (targetrel->rd_indexvalid == 0)
 		RelationGetIndexList(targetrel);
+
+	/* choose the 'default' repset, if table has PK or replica identity defined. */
+	if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
+		repset = get_replication_set_by_name(node->node->id, DEFAULT_REPSET_NAME, false);
+	else
+		repset = get_replication_set_by_name(node->node->id, DDL_SQL_REPSET_NAME, false);
 
 	if (!OidIsValid(targetrel->rd_replidindex) &&
 		(repset->replicate_update || repset->replicate_delete))
