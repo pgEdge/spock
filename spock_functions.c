@@ -157,8 +157,18 @@ PG_FUNCTION_INFO_V1(get_channel_stats);
 PG_FUNCTION_INFO_V1(reset_channel_stats);
 PG_FUNCTION_INFO_V1(prune_conflict_tracking);
 
+/* Lag Tracking */
 PG_FUNCTION_INFO_V1(lag_tracker_info);
 PG_FUNCTION_INFO_V1(lag_tracker_feedback);
+
+/* Generic delta apply functions */
+PG_FUNCTION_INFO_V1(delta_apply_int2);
+PG_FUNCTION_INFO_V1(delta_apply_int4);
+PG_FUNCTION_INFO_V1(delta_apply_int8);
+PG_FUNCTION_INFO_V1(delta_apply_float4);
+PG_FUNCTION_INFO_V1(delta_apply_float8);
+PG_FUNCTION_INFO_V1(delta_apply_numeric);
+PG_FUNCTION_INFO_V1(delta_apply_money);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -2814,4 +2824,89 @@ lag_tracker_feedback(PG_FUNCTION_ARGS)
 	lag_tracker_entry(slotname, last_recvpos, time);
 
 	PG_RETURN_VOID();
+}
+
+/* Generic delta apply functions */
+Datum
+delta_apply_int2(PG_FUNCTION_ARGS)
+{
+	Datum	old_value = PG_GETARG_DATUM(0);
+	Datum	new_value = PG_GETARG_DATUM(1);
+	Datum	local_val = PG_GETARG_DATUM(2);
+	Datum	delta;
+
+	delta = DirectFunctionCall2(int2mi, new_value, old_value);
+	PG_RETURN_DATUM(DirectFunctionCall2(int2pl, local_val, delta));
+}
+
+Datum
+delta_apply_int4(PG_FUNCTION_ARGS)
+{
+	Datum	old_value = PG_GETARG_DATUM(0);
+	Datum	new_value = PG_GETARG_DATUM(1);
+	Datum	local_val = PG_GETARG_DATUM(2);
+	Datum	delta;
+
+	delta = DirectFunctionCall2(int4mi, new_value, old_value);
+	PG_RETURN_DATUM(DirectFunctionCall2(int4pl, local_val, delta));
+}
+
+Datum
+delta_apply_int8(PG_FUNCTION_ARGS)
+{
+	Datum	old_value = PG_GETARG_DATUM(0);
+	Datum	new_value = PG_GETARG_DATUM(1);
+	Datum	local_val = PG_GETARG_DATUM(2);
+	Datum	delta;
+
+	delta = DirectFunctionCall2(int8mi, new_value, old_value);
+	PG_RETURN_DATUM(DirectFunctionCall2(int8pl, local_val, delta));
+}
+
+Datum
+delta_apply_float4(PG_FUNCTION_ARGS)
+{
+	Datum	old_value = PG_GETARG_DATUM(0);
+	Datum	new_value = PG_GETARG_DATUM(1);
+	Datum	local_val = PG_GETARG_DATUM(2);
+	Datum	delta;
+
+	delta = DirectFunctionCall2(float4mi, new_value, old_value);
+	PG_RETURN_DATUM(DirectFunctionCall2(float4pl, local_val, delta));
+}
+
+Datum
+delta_apply_float8(PG_FUNCTION_ARGS)
+{
+	Datum	old_value = PG_GETARG_DATUM(0);
+	Datum	new_value = PG_GETARG_DATUM(1);
+	Datum	local_val = PG_GETARG_DATUM(2);
+	Datum	delta;
+
+	delta = DirectFunctionCall2(float8mi, new_value, old_value);
+	PG_RETURN_DATUM(DirectFunctionCall2(float8pl, local_val, delta));
+}
+
+Datum
+delta_apply_numeric(PG_FUNCTION_ARGS)
+{
+	Datum	old_value = PG_GETARG_DATUM(0);
+	Datum	new_value = PG_GETARG_DATUM(1);
+	Datum	local_val = PG_GETARG_DATUM(2);
+	Datum	delta;
+
+	delta = DirectFunctionCall2(numeric_sub, new_value, old_value);
+	PG_RETURN_DATUM(DirectFunctionCall2(numeric_add, local_val, delta));
+}
+
+Datum
+delta_apply_money(PG_FUNCTION_ARGS)
+{
+	Datum	old_value = PG_GETARG_DATUM(0);
+	Datum	new_value = PG_GETARG_DATUM(1);
+	Datum	local_val = PG_GETARG_DATUM(2);
+	Datum	delta;
+
+	delta = DirectFunctionCall2(cash_mi, new_value, old_value);
+	PG_RETURN_DATUM(DirectFunctionCall2(cash_pl, local_val, delta));
 }

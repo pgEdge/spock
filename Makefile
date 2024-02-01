@@ -6,7 +6,7 @@ PGFILEDESC = "spock - multi-master replication"
 
 MODULES = spock_output
 
-DATA = spock--3.1.sql spock--3.2.sql
+DATA = spock--3.1.sql spock--3.2.sql spock--3.3.sql
 
 OBJS = spock_apply.o spock_conflict.o spock_manager.o \
 	   spock.o spock_node.o spock_relcache.o \

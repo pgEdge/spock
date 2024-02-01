@@ -41,6 +41,8 @@ typedef struct SpockRelation
 	Oid			reloid;
 	Relation	rel;
 	int		   *attmap;
+	bool		has_delta_columns;
+	Oid		   *delta_apply_functions;
 
 	/* Additional cache, only valid as long as relation mapping is. */
 	bool		hasTriggers;
@@ -56,6 +58,8 @@ extern SpockRelation *spock_relation_open(uint32 remoteid,
 extern void spock_relation_close(SpockRelation * rel,
 									  LOCKMODE lockmode);
 extern void spock_relation_invalidate_cb(Datum arg, Oid reloid);
+
+extern Oid spock_lookup_delta_function(char *fname, Oid typeoid);
 
 struct SpockTupleData;
 
