@@ -266,15 +266,17 @@ action_error_callback(void *arg)
 	pfree(si.data);
 }
 
+/*
+ * Begin one step (one INSERT, UPDATE, etc) of a replication transaction.
+ *
+ * Start a transaction, if this is the first step (else we keep using the
+ * existing transaction).
+ * Also provide a global snapshot and ensure we run in ApplyMessageContext.
+ */
 static bool
-ensure_transaction(void)
+begin_replication_step(void)
 {
-	if (IsTransactionState())
-	{
-		if (CurrentMemoryContext != MessageContext)
-			MemoryContextSwitchTo(MessageContext);
-		return false;
-	}
+	bool result = false;
 
 	/*
 	 * spock doesn't have "statements" as such, so we'll report one
@@ -285,11 +287,32 @@ ensure_transaction(void)
 	 */
 	SetCurrentStatementStartTimestamp();
 
-	StartTransactionCommand();
-	apply_api.on_begin();
+	if (!IsTransactionState())
+	{
+		StartTransactionCommand();
+		apply_api.on_begin();
+		result = true;
+	}
+
+	PushActiveSnapshot(GetTransactionSnapshot());
 	MemoryContextSwitchTo(MessageContext);
 
-	return true;
+	return result;
+}
+
+/*
+ * Finish up one step of a replication transaction.
+ * Callers of begin_replication_step() must also call this.
+ *
+ * We don't close out the transaction here, but we should increment
+ * the command counter to make the effects of this step visible.
+ */
+static void
+end_replication_step(void)
+{
+	PopActiveSnapshot();
+
+    CommandCounterIncrement();
 }
 
 static void
@@ -521,7 +544,7 @@ handle_origin(StringInfo s)
 			 MySubscription->name);
 
 	/* We have to start transaction here so that we can work with origins. */
-	ensure_transaction();
+	begin_replication_step();
 
 	origin = spock_read_origin(s, &remote_origin_lsn);
 	remote_origin_id = replorigin_by_name(origin, true);
@@ -549,9 +572,9 @@ handle_insert(StringInfo s)
 #if PG_VERSION_NUM >= 160000
 	UserContext		ucxt;
 #endif
-	bool			started_tx = ensure_transaction();
+	bool			started_tx;
 
-	PushActiveSnapshot(GetTransactionSnapshot());
+	started_tx = begin_replication_step();
 
 	errcallback_arg.action_name = "INSERT";
 	xact_action_counter++;
@@ -563,8 +586,7 @@ handle_insert(StringInfo s)
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
 	{
 		spock_relation_close(rel, NoLock);
-		PopActiveSnapshot();
-		CommandCounterIncrement();
+		end_replication_step();
 		return;
 	}
 
@@ -624,8 +646,7 @@ handle_insert(StringInfo s)
 		RestoreUserContext(&ucxt);
 		spock_relation_close(rel, NoLock);
 
-		PopActiveSnapshot();
-		CommandCounterIncrement();
+		end_replication_step();
 
 		apply_api.on_commit();
 
@@ -650,8 +671,7 @@ handle_insert(StringInfo s)
 		RestoreUserContext(&ucxt);
 		spock_relation_close(rel, NoLock);
 
-		PopActiveSnapshot();
-		CommandCounterIncrement();
+		end_replication_step();
 	}
 }
 
@@ -687,14 +707,12 @@ handle_update(StringInfo s)
 #endif
 	bool			hasoldtup;
 
+	begin_replication_step();
+
 	errcallback_arg.action_name = "UPDATE";
 	xact_action_counter++;
 
-	ensure_transaction();
-
 	multi_insert_finish();
-
-	PushActiveSnapshot(GetTransactionSnapshot());
 
 	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup,
 								&newtup);
@@ -704,8 +722,7 @@ handle_update(StringInfo s)
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
 	{
 		spock_relation_close(rel, NoLock);
-		PopActiveSnapshot();
-		CommandCounterIncrement();
+		end_replication_step();
 		return;
 	}
 
@@ -717,8 +734,7 @@ handle_update(StringInfo s)
 	RestoreUserContext(&ucxt);
 	spock_relation_close(rel, NoLock);
 
-	PopActiveSnapshot();
-	CommandCounterIncrement();
+	end_replication_step();
 }
 
 static void
@@ -733,11 +749,9 @@ handle_delete(StringInfo s)
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
 	xact_action_counter++;
 
-	ensure_transaction();
+	begin_replication_step();
 
 	multi_insert_finish();
-
-	PushActiveSnapshot(GetTransactionSnapshot());
 
 	rel = spock_read_delete(s, RowExclusiveLock, &oldtup);
 	errcallback_arg.rel = rel;
@@ -746,8 +760,7 @@ handle_delete(StringInfo s)
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
 	{
 		spock_relation_close(rel, NoLock);
-		PopActiveSnapshot();
-		CommandCounterIncrement();
+		end_replication_step();
 		return;
 	}
 
@@ -759,8 +772,7 @@ handle_delete(StringInfo s)
 	RestoreUserContext(&ucxt);
 	spock_relation_close(rel, NoLock);
 
-	PopActiveSnapshot();
-	CommandCounterIncrement();
+	end_replication_step();
 }
 
 inline static bool

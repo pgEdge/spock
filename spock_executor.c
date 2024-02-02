@@ -103,7 +103,8 @@ prepare_per_tuple_econtext(EState *estate, TupleDesc tupdesc)
 	econtext = GetPerTupleExprContext(estate);
 
 	oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
-	econtext->ecxt_scantuple = ExecInitExtraTupleSlot(estate);
+	econtext->ecxt_scantuple = ExecInitExtraTupleSlot(estate, NULL, 
+													  &TTSOpsHeapTuple);
 	MemoryContextSwitchTo(oldContext);
 
 	ExecSetSlotDescriptor(econtext->ecxt_scantuple, tupdesc);

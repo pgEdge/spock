@@ -85,9 +85,10 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	/* Need to update the local cache? */
 	if (!OidIsValid(entry->reloid))
 	{
-		RangeVar   *rv = makeNode(RangeVar);
-		int			i;
-		TupleDesc	desc;
+		RangeVar	   *rv = makeNode(RangeVar);
+		int				i;
+		TupleDesc		desc;
+		ResultRelInfo  *relinfo;
 
 		rv->schemaname = (char *) entry->nspname;
 		rv->relname = (char *) entry->relname;
@@ -130,7 +131,10 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			}
 		}
 
+		relinfo = makeNode(ResultRelInfo);
+		InitResultRelInfo(relinfo, entry->rel, 1, NULL, 0);
 		entry->reloid = RelationGetRelid(entry->rel);
+		entry->idxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
 
 		/* Cache trigger info. */
 		entry->hasTriggers = false;

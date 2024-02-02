@@ -39,6 +39,7 @@ typedef struct SpockRelation
 
 	/* Mapping to local relation, filled as needed. */
 	Oid			reloid;
+	Oid			idxoid;
 	Relation	rel;
 	int		   *attmap;
 	bool		has_delta_columns;

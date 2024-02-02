@@ -1147,7 +1147,7 @@ spock_ctt_prune(void)
 	}
 	if (!all_ok)
 	{
-		elog(LOG, "SPOCK: cannot prune conflict tracking, one or more "
+		elog(DEBUG1, "SPOCK: cannot prune conflict tracking, one or more "
 			 "subscriptions have unknown last commit timestamp.");
 		SPI_finish();
 		return 0;

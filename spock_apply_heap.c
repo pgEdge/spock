@@ -40,8 +40,11 @@
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 
+#include "parser/parse_relation.h"
+
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
+#include "replication/logicalrelation.h"
 
 #include "rewrite/rewriteHandler.h"
 
@@ -71,27 +74,58 @@
 #include "spock_worker.h"
 #include "spock_apply_heap.h"
 
-typedef struct ApplyExecState {
-	EState			   *estate;
-	EPQState			epqstate;
-	ResultRelInfo	   *resultRelInfo;
-	TupleTableSlot	   *slot;
+typedef struct ApplyExecutionData
+{
+	EState *estate; /* executor state, used to track resources */
+
+	SpockRelation *targetRel;	  /* replication target rel */
+	ResultRelInfo *targetRelInfo; /* ResultRelInfo for same */
+} ApplyExecutionData;
+
+typedef struct ApplyExecState
+{
+	EState *estate;
+	EPQState epqstate;
+	ResultRelInfo *resultRelInfo;
+	TupleTableSlot *slot;
 } ApplyExecState;
 
 /* State related to bulk insert */
 typedef struct ApplyMIState
 {
-	SpockRelation  *rel;
-	ApplyExecState	   *aestate;
+	SpockRelation *rel;
+	ApplyExecState *aestate;
 
-	CommandId			cid;
-	BulkInsertState		bistate;
+	CommandId cid;
+	BulkInsertState bistate;
 
-	TupleTableSlot	  **buffered_tuples;
-	int					maxbuffered_tuples;
-	int					nbuffered_tuples;
+	TupleTableSlot **buffered_tuples;
+	int maxbuffered_tuples;
+	int nbuffered_tuples;
 } ApplyMIState;
 
+typedef struct ApplyErrorCallbackArg
+{
+	LogicalRepMsgType command; /* 0 if invalid */
+	LogicalRepRelMapEntry *rel;
+
+	/* Remote node information */
+	int remote_attnum; /* -1 if invalid */
+	TransactionId remote_xid;
+	XLogRecPtr finish_lsn;
+	char *origin_name;
+} ApplyErrorCallbackArg;
+
+/* errcontext tracker */
+ApplyErrorCallbackArg apply_error_callback_arg =
+	{
+		.command = 0,
+		.rel = NULL,
+		.remote_attnum = -1,
+		.remote_xid = InvalidTransactionId,
+		.finish_lsn = InvalidXLogRecPtr,
+		.origin_name = NULL,
+};
 
 #define TTS_TUP(slot) (((HeapTupleTableSlot *)slot)->tuple)
 
@@ -104,18 +138,321 @@ static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 							  TupleTableSlot *localslot);
 #endif
 
-void
-spock_apply_heap_begin(void)
+/*
+ * Executor state preparation for evaluation of constraint expressions,
+ * indexes and triggers for the specified relation.
+ *
+ * Note that the caller must open and close any indexes to be updated.
+ */
+static ApplyExecutionData *
+create_edata_for_relation(SpockRelation *rel)
+{
+	ApplyExecutionData *edata;
+	EState *estate;
+	RangeTblEntry *rte;
+	List *perminfos = NIL;
+	ResultRelInfo *resultRelInfo;
+
+	edata = (ApplyExecutionData *)palloc0(sizeof(ApplyExecutionData));
+	edata->targetRel = rel;
+
+	edata->estate = estate = CreateExecutorState();
+
+	rte = makeNode(RangeTblEntry);
+	rte->rtekind = RTE_RELATION;
+	rte->relid = RelationGetRelid(rel->rel);
+	rte->relkind = rel->rel->rd_rel->relkind;
+	rte->rellockmode = AccessShareLock;
+
+	addRTEPermissionInfo(&perminfos, rte);
+
+	ExecInitRangeTable(estate, list_make1(rte), perminfos);
+
+	edata->targetRelInfo = resultRelInfo = makeNode(ResultRelInfo);
+
+	/*
+	 * Use Relation opened by logicalrep_rel_open() instead of opening it
+	 * again.
+	 */
+	InitResultRelInfo(resultRelInfo, rel->rel, 1, NULL, 0);
+
+	/*
+	 * We put the ResultRelInfo in the es_opened_result_relations list, even
+	 * though we don't populate the es_result_relations array.  That's a bit
+	 * bogus, but it's enough to make ExecGetTriggerResultRel() find them.
+	 *
+	 * ExecOpenIndices() is not called here either, each execution path doing
+	 * an apply operation being responsible for that.
+	 */
+	estate->es_opened_result_relations =
+		lappend(estate->es_opened_result_relations, resultRelInfo);
+
+	estate->es_output_cid = GetCurrentCommandId(true);
+
+	/* Prepare to catch AFTER triggers. */
+	AfterTriggerBeginQuery();
+
+	/* other fields of edata remain NULL for now */
+
+	return edata;
+}
+
+/*
+ * Finish any operations related to the executor state created by
+ * create_edata_for_relation().
+ */
+static void
+finish_edata(ApplyExecutionData *edata)
+{
+	EState *estate = edata->estate;
+
+	/* Handle any queued AFTER triggers. */
+	AfterTriggerEndQuery(estate);
+
+	/*
+	 * Cleanup.  It might seem that we should call ExecCloseResultRelations()
+	 * here, but we intentionally don't.  It would close the rel we added to
+	 * es_opened_result_relations above, which is wrong because we took no
+	 * corresponding refcount.  We rely on ExecCleanupTupleRouting() to close
+	 * any other relations opened during execution.
+	 */
+	ExecResetTupleTable(estate->es_tupleTable, false);
+	FreeExecutorState(estate);
+	pfree(edata);
+}
+
+/*
+ * Executes default values for columns for which we can't map to remote
+ * relation columns.
+ *
+ * This allows us to support tables which have more columns on the downstream
+ * than on the upstream.
+ */
+static void
+slot_fill_defaults(SpockRelation *rel, EState *estate,
+				   TupleTableSlot *slot)
+{
+#if 0
+	TupleDesc	desc = RelationGetDescr(rel->localrel);
+	int			num_phys_attrs = desc->natts;
+	int			i;
+	int			attnum,
+				num_defaults = 0;
+	int		   *defmap;
+	ExprState **defexprs;
+	ExprContext *econtext;
+
+	econtext = GetPerTupleExprContext(estate);
+
+	/* We got all the data via replication, no need to evaluate anything. */
+	if (num_phys_attrs == rel->remoterel.natts)
+		return;
+
+	defmap = (int *) palloc(num_phys_attrs * sizeof(int));
+	defexprs = (ExprState **) palloc(num_phys_attrs * sizeof(ExprState *));
+
+	Assert(rel->attrmap->maplen == num_phys_attrs);
+	for (attnum = 0; attnum < num_phys_attrs; attnum++)
+	{
+		Expr	   *defexpr;
+
+		if (TupleDescAttr(desc, attnum)->attisdropped || TupleDescAttr(desc, attnum)->attgenerated)
+			continue;
+
+		if (rel->attrmap->attnums[attnum] >= 0)
+			continue;
+
+		defexpr = (Expr *) build_column_default(rel->localrel, attnum + 1);
+
+		if (defexpr != NULL)
+		{
+			/* Run the expression through planner */
+			defexpr = expression_planner(defexpr);
+
+			/* Initialize executable expression in copycontext */
+			defexprs[num_defaults] = ExecInitExpr(defexpr, NULL);
+			defmap[num_defaults] = attnum;
+			num_defaults++;
+		}
+	}
+
+	for (i = 0; i < num_defaults; i++)
+		slot->tts_values[defmap[i]] =
+			ExecEvalExpr(defexprs[i], econtext, &slot->tts_isnull[defmap[i]]);
+#endif
+}
+
+/*
+ * Store tuple data into slot.
+ *
+ * Incoming data can be either text or binary format.
+ */
+static void
+slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
+				SpockTupleData *tupleData)
+{
+	int natts = slot->tts_tupleDescriptor->natts;
+	int i;
+
+	ExecClearTuple(slot);
+
+	/* Call the "in" function for each non-dropped, non-null attribute */
+	Assert(natts == rel->natts);
+	for (i = 0; i < natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, i);
+		int remoteattnum = rel->attmap[i];
+
+		if (!att->attisdropped && remoteattnum >= 0)
+		{
+			Assert(remoteattnum < tupleData->ncols);
+
+			if (!tupleData->nulls[remoteattnum])
+			{
+				/*
+				 * Fill in the Datum for this attribute
+				 */
+				slot->tts_values[i] = tupleData->values[i];
+				slot->tts_isnull[i] = false;
+			}
+			else
+			{
+				/*
+				 * NULL value from remote.
+				 */
+				slot->tts_values[i] = (Datum)0;
+				slot->tts_isnull[i] = true;
+			}
+		}
+		else
+		{
+			/*
+			 * We assign NULL to dropped attributes and missing values
+			 * (missing values should be later filled using
+			 * slot_fill_defaults).
+			 */
+			slot->tts_values[i] = (Datum)0;
+			slot->tts_isnull[i] = true;
+		}
+	}
+
+	ExecStoreVirtualTuple(slot);
+}
+
+/*
+ * Replace updated columns with data from the SpockTupleData struct.
+ * This is somewhat similar to heap_modify_tuple but also calls the type
+ * input functions on the user data.
+ *
+ * "slot" is filled with a copy of the tuple in "srcslot", replacing
+ * columns provided in "tupleData" and leaving others as-is.
+ *
+ * Caution: unreplaced pass-by-ref columns in "slot" will point into the
+ * storage for "srcslot".  This is OK for current usage, but someday we may
+ * need to materialize "slot" at the end to make it independent of "srcslot".
+ */
+static void
+slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
+				 SpockRelation *rel,
+				 SpockTupleData *tupleData)
+{
+	int natts = slot->tts_tupleDescriptor->natts;
+	int i;
+
+	/* We'll fill "slot" with a virtual tuple, so we must start with ... */
+	ExecClearTuple(slot);
+
+	/*
+	 * Copy all the column data from srcslot, so that we'll have valid values
+	 * for unreplaced columns.
+	 */
+	Assert(natts == srcslot->tts_tupleDescriptor->natts);
+	slot_getallattrs(srcslot);
+	memcpy(slot->tts_values, srcslot->tts_values, natts * sizeof(Datum));
+	memcpy(slot->tts_isnull, srcslot->tts_isnull, natts * sizeof(bool));
+
+	/* Call the "in" function for each replaced attribute */
+	Assert(natts == rel->natts);
+	for (i = 0; i < natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, i);
+		int remoteattnum = rel->attmap[i];
+
+		if (remoteattnum < 0)
+			continue;
+
+		if (!att->attisdropped && remoteattnum >= 0)
+		{
+			if (!tupleData->nulls[remoteattnum])
+			{
+				/* Use the value from the NEW remote tuple */
+				slot->tts_values[i] = tupleData->values[i];
+				slot->tts_isnull[i] = false;
+			}
+			else
+			{
+				/* Must be LOGICALREP_COLUMN_NULL */
+				slot->tts_values[i] = (Datum)0;
+				slot->tts_isnull[i] = true;
+			}
+		}
+	}
+
+	/* And finally, declare that "slot" contains a valid virtual tuple */
+	ExecStoreVirtualTuple(slot);
+}
+
+/*
+ * Try to find a tuple received from the publication side (in 'remoteslot') in
+ * the corresponding local relation using either replica identity index,
+ * primary key, index or if needed, sequential scan.
+ *
+ * Local tuple, if found, is returned in '*localslot'.
+ */
+static bool
+FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
+						Oid localidxoid,
+						TupleTableSlot *remoteslot,
+						TupleTableSlot **localslot)
+{
+	EState *estate = edata->estate;
+	bool found;
+
+	*localslot = table_slot_create(localrel, &estate->es_tupleTable);
+
+	if (OidIsValid(localidxoid))
+	{
+#ifdef USE_ASSERT_CHECKING
+		Relation idxrel = index_open(localidxoid, AccessShareLock);
+
+		/* Index must be PK, RI, or usable for REPLICA IDENTITY FULL tables */
+		Assert(GetRelationIdentityOrPK(idxrel) == localidxoid ||
+			   IsIndexUsableForReplicaIdentityFull(BuildIndexInfo(idxrel),
+												   edata->targetRel->attrmap));
+		index_close(idxrel, AccessShareLock);
+#endif
+
+		found = RelationFindReplTupleByIndex(localrel, localidxoid,
+											 LockTupleExclusive,
+											 remoteslot, *localslot);
+	}
+	else
+		found = RelationFindReplTupleSeq(localrel, LockTupleExclusive,
+										 remoteslot, *localslot);
+
+	return found;
+}
+
+void spock_apply_heap_begin(void)
 {
 	return;
 }
 
-void
-spock_apply_heap_commit(void)
+void spock_apply_heap_commit(void)
 {
-	TimestampTz	next_prune;
-	TimestampTz	now;
-	int32		num_pruned;
+	TimestampTz next_prune;
+	TimestampTz now;
+	int32 num_pruned;
 
 	/*
 	 * For pruning of the Conflict Tracking Hash we remember our
@@ -144,7 +481,7 @@ spock_apply_heap_commit(void)
 		PushActiveSnapshot(GetTransactionSnapshot());
 		num_pruned = spock_ctt_prune();
 		PopActiveSnapshot();
-        CommandCounterIncrement();
+		CommandCounterIncrement();
 
 		elog(DEBUG1, "SPOCK: %d entries pruned from CTT", num_pruned);
 	}
@@ -155,24 +492,27 @@ spock_apply_heap_commit(void)
 static List *
 UserTableUpdateOpenIndexes(ResultRelInfo *relinfo, EState *estate, TupleTableSlot *slot, bool update)
 {
-	List	   *recheckIndexes = NIL;
+	List *recheckIndexes = NIL;
 
 	if (relinfo->ri_NumIndices > 0)
 	{
 		recheckIndexes = ExecInsertIndexTuples(
 #if PG_VERSION_NUM >= 140000
-											   relinfo,
+			relinfo,
 #endif
-											   slot,
-											   estate
+			slot,
+			estate
 #if PG_VERSION_NUM >= 140000
-											   , update
+			,
+			update
 #endif
-											   , false, NULL, NIL
+			,
+			false, NULL, NIL
 #if PG_VERSION_NUM >= 160000
-											   , false
+			,
+			false
 #endif
-											   );
+		);
 
 		/* FIXME: recheck the indexes */
 		if (recheckIndexes != NIL)
@@ -201,9 +541,9 @@ UserTableUpdateOpenIndexes(ResultRelInfo *relinfo, EState *estate, TupleTableSlo
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("spock doesn't support deferrable indexes"),
 					 errdetail("relation %s.%s has deferrable indexes: %s",
-								quote_identifier(nspname),
-								quote_identifier(relname),
-								si.data)));
+							   quote_identifier(nspname),
+							   quote_identifier(relname),
+							   si.data)));
 		}
 
 		list_free(recheckIndexes);
@@ -215,7 +555,7 @@ UserTableUpdateOpenIndexes(ResultRelInfo *relinfo, EState *estate, TupleTableSlo
 static bool
 physatt_in_attmap(SpockRelation *rel, int attid)
 {
-	AttrNumber	i;
+	AttrNumber i;
 
 	for (i = 0; i < rel->natts; i++)
 		if (rel->attmap[i] == attid)
@@ -233,12 +573,12 @@ static void
 fill_missing_defaults(SpockRelation *rel, EState *estate,
 					  SpockTupleData *tuple)
 {
-	TupleDesc	desc = RelationGetDescr(rel->rel);
-	AttrNumber	num_phys_attrs = desc->natts;
-	int			i;
-	AttrNumber	attnum,
-				num_defaults = 0;
-	int		   *defmap;
+	TupleDesc desc = RelationGetDescr(rel->rel);
+	AttrNumber num_phys_attrs = desc->natts;
+	int i;
+	AttrNumber attnum,
+		num_defaults = 0;
+	int *defmap;
 	ExprState **defexprs;
 	ExprContext *econtext;
 
@@ -248,20 +588,20 @@ fill_missing_defaults(SpockRelation *rel, EState *estate,
 	if (num_phys_attrs == rel->natts)
 		return;
 
-	defmap = (int *) palloc(num_phys_attrs * sizeof(int));
-	defexprs = (ExprState **) palloc(num_phys_attrs * sizeof(ExprState *));
+	defmap = (int *)palloc(num_phys_attrs * sizeof(int));
+	defexprs = (ExprState **)palloc(num_phys_attrs * sizeof(ExprState *));
 
 	for (attnum = 0; attnum < num_phys_attrs; attnum++)
 	{
-		Expr	   *defexpr;
+		Expr *defexpr;
 
-		if (TupleDescAttr(desc,attnum)->attisdropped)
+		if (TupleDescAttr(desc, attnum)->attisdropped)
 			continue;
 
 		if (physatt_in_attmap(rel, attnum))
 			continue;
 
-		defexpr = (Expr *) build_column_default(rel->rel, attnum + 1);
+		defexpr = (Expr *)build_column_default(rel->rel, attnum + 1);
 
 		if (defexpr != NULL)
 		{
@@ -273,7 +613,6 @@ fill_missing_defaults(SpockRelation *rel, EState *estate,
 			defmap[num_defaults] = attnum;
 			num_defaults++;
 		}
-
 	}
 
 	for (i = 0; i < num_defaults; i++)
@@ -288,9 +627,9 @@ fill_missing_defaults(SpockRelation *rel, EState *estate,
 static bool
 relation_has_delta_columns(SpockRelation *rel)
 {
-	TupleDesc			tupdesc = RelationGetDescr(rel->rel);
-	AttributeOpts	   *aopt;
-	int					attno;
+	TupleDesc tupdesc = RelationGetDescr(rel->rel);
+	AttributeOpts *aopt;
+	int attno;
 
 	for (attno = 1; attno <= tupdesc->natts; attno++)
 	{
@@ -309,15 +648,15 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 				  SpockTupleData *deltatup,
 				  TupleTableSlot *localslot)
 {
-	TupleDesc			tupdesc = RelationGetDescr(rel->rel);
-	Form_pg_attribute	att;
-	AttributeOpts	   *aopt;
-	int					attidx;
-	Datum				loc_value;
-	Datum				delta;
-	bool				loc_isnull;
-	PGFunction			func_add;
-	PGFunction			func_sub;
+	TupleDesc tupdesc = RelationGetDescr(rel->rel);
+	Form_pg_attribute att;
+	AttributeOpts *aopt;
+	int attidx;
+	Datum loc_value;
+	Datum delta;
+	bool loc_isnull;
+	PGFunction func_add;
+	PGFunction func_sub;
 
 	for (attidx = 0; attidx < tupdesc->natts; attidx++)
 	{
@@ -348,40 +687,40 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		att = TupleDescAttr(tupdesc, attidx);
 		switch (att->atttypid)
 		{
-			case INT2OID:
-				func_add = int2pl;
-				func_sub = int2mi;
-				break;
+		case INT2OID:
+			func_add = int2pl;
+			func_sub = int2mi;
+			break;
 
-			case INT4OID:
-				func_add = int4pl;
-				func_sub = int4mi;
-				break;
+		case INT4OID:
+			func_add = int4pl;
+			func_sub = int4mi;
+			break;
 
-			case INT8OID:
-				func_add = int8pl;
-				func_sub = int8mi;
-				break;
+		case INT8OID:
+			func_add = int8pl;
+			func_sub = int8mi;
+			break;
 
-			case FLOAT4OID:
-				func_add = float4pl;
-				func_sub = float4mi;
-				break;
+		case FLOAT4OID:
+			func_add = float4pl;
+			func_sub = float4mi;
+			break;
 
-			case FLOAT8OID:
-				func_add = float8pl;
-				func_sub = float8mi;
-				break;
+		case FLOAT8OID:
+			func_add = float8pl;
+			func_sub = float8mi;
+			break;
 
-			case NUMERICOID:
-				func_add = numeric_add;
-				func_sub = numeric_sub;
-				break;
+		case NUMERICOID:
+			func_add = numeric_add;
+			func_sub = numeric_sub;
+			break;
 
-			case MONEYOID:
-				func_add = cash_pl;
-				func_sub = cash_mi;
-				break;
+		case MONEYOID:
+			func_add = cash_pl;
+			func_sub = cash_mi;
+			break;
 
 #if 0
 			/*
@@ -396,9 +735,9 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 				break;
 #endif
 
-			default:
-				elog(ERROR, "spock delta replication for type %d not supported",
-					 att->atttypid);
+		default:
+			elog(ERROR, "spock delta replication for type %d not supported",
+				 att->atttypid);
 		}
 
 		if (oldtup->nulls[attidx])
@@ -425,7 +764,7 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 										newtup->values[attidx],
 										oldtup->values[attidx]);
 			deltatup->values[attidx] = DirectFunctionCall2(func_add, loc_value,
-															delta);
+														   delta);
 			deltatup->nulls[attidx] = false;
 			deltatup->changed[attidx] = true;
 		}
@@ -436,13 +775,13 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 static ApplyExecState *
 init_apply_exec_state(SpockRelation *rel)
 {
-	ApplyExecState	   *aestate = palloc0(sizeof(ApplyExecState));
+	ApplyExecState *aestate = palloc0(sizeof(ApplyExecState));
 
 	/* Initialize the executor state. */
 	aestate->estate = create_estate_for_relation(rel->rel, true);
 
 	aestate->resultRelInfo = makeNode(ResultRelInfo);
-	InitResultRelInfo(aestate->resultRelInfo, rel->rel, 1, 0);
+	InitResultRelInfo(aestate->resultRelInfo, rel->rel, 1, NULL, 0);
 
 #if PG_VERSION_NUM < 140000
 	aestate->estate->es_result_relations = aestate->resultRelInfo;
@@ -450,18 +789,18 @@ init_apply_exec_state(SpockRelation *rel)
 	aestate->estate->es_result_relation_info = aestate->resultRelInfo;
 #endif
 
-	aestate->slot = ExecInitExtraTupleSlot(aestate->estate);
+	// aestate->slot = ExecInitExtraTupleSlot(aestate->estate);
 	ExecSetSlotDescriptor(aestate->slot, RelationGetDescr(rel->rel));
 
 	if (aestate->resultRelInfo->ri_TrigDesc)
-		EvalPlanQualInit(&aestate->epqstate, aestate->estate, NULL, NIL, -1);
+		EvalPlanQualInit(&aestate->epqstate, aestate->estate, NULL, NIL, -1,
+						 NIL);
 
 	/* Prepare to catch AFTER triggers. */
 	AfterTriggerBeginQuery();
 
 	return aestate;
 }
-
 
 static void
 finish_apply_exec_state(ApplyExecState *aestate)
@@ -490,467 +829,254 @@ finish_apply_exec_state(ApplyExecState *aestate)
 /*
  * Handle insert via low level api.
  */
-void
-spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
+void spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 {
-	ApplyExecState	   *aestate;
-	Oid					conflicts_idx_id;
-	TupleTableSlot	   *localslot;
-	HeapTuple			remotetuple;
-	HeapTuple			applytuple;
-	SpockConflictResolution resolution;
-	List			   *recheckIndexes = NIL;
-	MemoryContext		oldctx;
-	bool				has_before_triggers = false;
+	ApplyExecutionData *edata;
+	EState *estate;
+	TupleTableSlot *remoteslot;
+	MemoryContext oldctx;
 
 	/* Initialize the executor state. */
-	aestate = init_apply_exec_state(rel);
-	localslot = table_slot_create(rel->rel, &aestate->estate->es_tupleTable);
+	edata = create_edata_for_relation(rel);
+	estate = edata->estate;
+	remoteslot = ExecInitExtraTupleSlot(estate,
+										RelationGetDescr(rel->rel),
+										&TTSOpsVirtual);
 
 	/* update stats */
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
 						 SPOCK_STATS_INSERT_COUNT, 1);
 
-	ExecOpenIndices(aestate->resultRelInfo
-					, false
-					);
-
 	/*
-	 * Check for existing tuple with same key in any unique index containing
-	 * only normal columns. This doesn't just check the replica identity index,
-	 * but it'll prefer it and use it first.
+	 * TODO: Spock does an all-column UPDATE if row exists on INSERT
 	 */
-	conflicts_idx_id = spock_tuple_find_conflict(aestate->resultRelInfo,
-													 newtup,
-													 localslot);
 
 	/* Process and store remote tuple in the slot */
-	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(aestate->estate));
-	fill_missing_defaults(rel, aestate->estate, newtup);
-	remotetuple = heap_form_tuple(RelationGetDescr(rel->rel),
-								  newtup->values, newtup->nulls);
+	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+	slot_store_data(remoteslot, rel, newtup);
+	slot_fill_defaults(rel, estate, remoteslot);
 	MemoryContextSwitchTo(oldctx);
-	ExecStoreHeapTuple(remotetuple, aestate->slot, true);
 
-	if (aestate->resultRelInfo->ri_TrigDesc &&
-		aestate->resultRelInfo->ri_TrigDesc->trig_insert_before_row)
-	{
-		has_before_triggers = true;
+	/* Do the actual INSERT */
+	ExecOpenIndices(edata->targetRelInfo, false);
+	ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
+	ExecCloseIndices(edata->targetRelInfo);
 
-		if (!ExecBRInsertTriggers(aestate->estate,
-								  aestate->resultRelInfo,
-								  aestate->slot))
-		{
-			finish_apply_exec_state(aestate);
-			return;
-		}
-
-	}
-
-	/* trigger might have changed tuple */
-	remotetuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
-
-	/* Did we find matching key in any candidate-key index? */
-	if (OidIsValid(conflicts_idx_id))
-	{
-		TransactionId		xmin;
-		TimestampTz			local_ts;
-		RepOriginId			local_origin;
-		bool				apply;
-		bool				local_origin_found;
-
-		local_origin_found = get_tuple_origin(RelationGetRelid(rel->rel),
-											  TTS_TUP(localslot),
-											  NULL, &xmin,
-											  &local_origin, &local_ts);
-
-		/* Tuple already exists, try resolving conflict. */
-		apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
-									 remotetuple, &applytuple,
-									 local_origin, local_ts,
-									 &resolution);
-
-		spock_report_conflict(CONFLICT_INSERT_INSERT, rel,
-								  TTS_TUP(localslot), NULL, remotetuple,
-								  applytuple, resolution, xmin,
-								  local_origin_found, local_origin,
-								  local_ts, conflicts_idx_id,
-								  has_before_triggers);
-
-		if (apply)
-		{
-#if PG_VERSION_NUM >= 160000
-			TU_UpdateIndexes update_indexes;
-#else
-			bool update_indexes;
-#endif
-
-			if (applytuple != remotetuple)
-				ExecStoreHeapTuple(applytuple, aestate->slot, false);
-
-			if (aestate->resultRelInfo->ri_TrigDesc &&
-				aestate->resultRelInfo->ri_TrigDesc->trig_update_before_row)
-			{
-				if (!ExecBRUpdateTriggers(aestate->estate,
-										  &aestate->epqstate,
-										  aestate->resultRelInfo,
-										  &(TTS_TUP(localslot)->t_self),
-										  NULL,
-										  aestate->slot))
-				{
-					finish_apply_exec_state(aestate);
-					return;
-				}
-
-			}
-
-			/* trigger might have changed tuple */
-			remotetuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
-
-			/* Check the constraints of the tuple */
-			if (rel->rel->rd_att->constr)
-				ExecConstraints(aestate->resultRelInfo, aestate->slot,
-								aestate->estate);
-
-			simple_table_tuple_update(rel->rel,
-									  &(localslot->tts_tid),
-									  aestate->slot,
-									  aestate->estate->es_snapshot,
-									  &update_indexes);
-			if (update_indexes)
-				recheckIndexes = UserTableUpdateOpenIndexes(aestate->resultRelInfo,
-															aestate->estate,
-															aestate->slot,
-															true);
-
-			/* AFTER ROW UPDATE Triggers */
-			ExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
-								 &(TTS_TUP(localslot)->t_self),
-								 NULL, aestate->slot, recheckIndexes);
-		}
-	}
-	else
-	{
-		/* Check the constraints of the tuple */
-		if (rel->rel->rd_att->constr)
-			ExecConstraints(aestate->resultRelInfo, aestate->slot,
-							aestate->estate);
-
-		simple_table_tuple_insert(aestate->resultRelInfo->ri_RelationDesc, aestate->slot);
-		UserTableUpdateOpenIndexes(aestate->resultRelInfo, aestate->estate, aestate->slot, false);
-
-		/* AFTER ROW INSERT Triggers */
-		ExecARInsertTriggers(aestate->estate, aestate->resultRelInfo,
-							 aestate->slot, recheckIndexes);
-	}
-
-	finish_apply_exec_state(aestate);
-
-	CommandCounterIncrement();
+	/* Cleanup */
+	finish_edata(edata);
 }
-
 
 /*
  * Handle update via low level api.
  */
-void
-spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
-							SpockTupleData *newtup)
+void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
+							 SpockTupleData *newtup)
 {
-	ApplyExecState	   *aestate;
-	bool				found;
-	TupleTableSlot	   *localslot;
-	HeapTuple			remotetuple;
-	List			   *recheckIndexes = NIL;
-	MemoryContext		oldctx;
-	Oid					replident_idx_id;
-	bool				has_before_triggers = false;
-	bool				is_delta_apply = false;
+	ApplyExecutionData *edata;
+	EState *estate;
+	EPQState epqstate;
+	TupleTableSlot *remoteslot;
+	TupleTableSlot *localslot;
+	HeapTuple remotetuple;
+	RTEPermissionInfo *target_perminfo;
+	MemoryContext oldctx;
+	LogicalRepRelId relid;
+	LogicalRepRelMapEntry *relmapentry;
+	ResultRelInfo *relinfo;
+	bool found;
+	bool has_oldtup;
 
 	/* Initialize the executor state. */
-	aestate = init_apply_exec_state(rel);
-	localslot = table_slot_create(rel->rel, &aestate->estate->es_tupleTable);
+	edata = create_edata_for_relation(rel);
+	estate = edata->estate;
+	remoteslot = ExecInitExtraTupleSlot(estate,
+										RelationGetDescr(rel->rel),
+										&TTSOpsVirtual);
 
 	/* update stats */
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
 						 SPOCK_STATS_UPDATE_COUNT, 1);
 
-	/* Search for existing tuple with same key */
-	found = spock_tuple_find_replidx(aestate->resultRelInfo, oldtup, localslot,
-										 &replident_idx_id);
+	/*
+	 * Populate updatedCols so that per-column triggers can fire, and so
+	 * executor can correctly pass down indexUnchanged hint.  This could
+	 * include more columns than were actually changed on the publisher
+	 * because the logical replication protocol doesn't contain that
+	 * information.  But it would for example exclude columns that only exist
+	 * on the subscriber, since we are not touching those.
+	 */
+	target_perminfo = list_nth(estate->es_rteperminfos, 0);
+	for (int i = 0; i < remoteslot->tts_tupleDescriptor->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(remoteslot->tts_tupleDescriptor, i);
+		int remoteattnum = rel->attmap[i];
+
+		if (!att->attisdropped && remoteattnum >= 0)
+		{
+			Assert(remoteattnum < newtup.ncols);
+			target_perminfo->updatedCols =
+				bms_add_member(target_perminfo->updatedCols,
+							   i + 1 - FirstLowInvalidHeapAttributeNumber);
+		}
+	}
+
+	/* Build the search tuple. */
+	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+	slot_store_data(remoteslot, rel, oldtup);
+	MemoryContextSwitchTo(oldctx);
+
+	/* Find the current local tuple */
+	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
+	ExecOpenIndices(edata->targetRelInfo, false);
+
+	relmapentry = edata->targetRel;
+	relinfo = edata->targetRelInfo;
+
+	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
+									edata->targetRel->idxoid,
+									remoteslot, &localslot);
+	ExecClearTuple(remoteslot);
 
 	/*
-	 * Tuple found, update the local tuple.
+	 * Perform the UPDATE if Tuple found.
 	 *
-	 * Note this will fail if there are other unique indexes and one or more of
-	 * them would be violated by the new tuple.
+	 * Note this will fail if there are other conflicting unique indexes.
 	 */
 	if (found)
 	{
-		TransactionId	xmin;
-		TimestampTz		local_ts;
-		RepOriginId		local_origin;
-		bool			local_origin_found;
-		bool			apply;
-		HeapTuple		applytuple;
+		TransactionId xmin;
+		TimestampTz local_ts;
+		RepOriginId local_origin;
+		bool local_origin_found;
+		bool apply;
+		HeapTuple applytuple;
 
 		/* Process and store remote tuple in the slot */
-		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(aestate->estate));
-		fill_missing_defaults(rel, aestate->estate, newtup);
-
-		remotetuple = heap_modify_tuple(TTS_TUP(localslot),
-										RelationGetDescr(rel->rel),
-										newtup->values,
-										newtup->nulls,
-										newtup->changed);
+		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 		MemoryContextSwitchTo(oldctx);
-		ExecStoreHeapTuple(remotetuple, aestate->slot, true);
 
-		if (aestate->resultRelInfo->ri_TrigDesc &&
-			aestate->resultRelInfo->ri_TrigDesc->trig_update_before_row)
-		{
-			has_before_triggers = true;
-
-			if (!ExecBRUpdateTriggers(aestate->estate,
-									  &aestate->epqstate,
-									  aestate->resultRelInfo,
-									  &(TTS_TUP(localslot)->t_self),
-									  NULL, aestate->slot))
-			{
-				finish_apply_exec_state(aestate);
-				return;
-			}
-		}
-
-		/* trigger might have changed tuple */
-		remotetuple = ExecFetchSlotHeapTuple(aestate->slot, true, NULL);
+		remotetuple = ExecFetchSlotHeapTuple(remoteslot, true, NULL);
 		local_origin_found = get_tuple_origin(RelationGetRelid(rel->rel),
 											  TTS_TUP(localslot),
 											  &(localslot->tts_tid), &xmin,
 											  &local_origin, &local_ts);
 
+		SpockConflictResolution resolution;
+
+		apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
+									 remotetuple, &applytuple,
+									 local_origin, local_ts,
+									 &resolution);
+
 		/*
-		 * If we found the original commit timestamp for the
-		 * local tuple, perform conflict resolution.
+		 * Remote tuple won, so we go forward with that as a base.
 		 */
-		if (local_origin_found)
+		if (apply && applytuple == remotetuple)
 		{
-			SpockConflictResolution resolution;
+			slot_modify_data(remoteslot, localslot, relmapentry, newtup);
+			EvalPlanQualSetSlot(&epqstate, remoteslot);
 
-			apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
-										 remotetuple, &applytuple,
-										 local_origin, local_ts,
-										 &resolution);
-
-			spock_report_conflict(CONFLICT_UPDATE_UPDATE, rel,
-									  TTS_TUP(localslot), oldtup,
-									  remotetuple, applytuple, resolution,
-									  xmin, local_origin_found, local_origin,
-									  local_ts, replident_idx_id,
-									  has_before_triggers);
-
-			/*
-			 * Remote tuple won, so we go forward with that as a base.
-			 */
-			if (apply && applytuple != remotetuple)
-				ExecStoreHeapTuple(applytuple, aestate->slot, false);
+			/* Do the actual update. */
+			ExecSimpleRelationUpdate(edata->targetRelInfo, estate, &epqstate,
+									 localslot, remoteslot);
 		}
 		else
 		{
-			/*
-			 * We didn't even find the commit timestamp for the current
-			 * local tuple. So the remote tuple must be newer than that.
-			 */
-			apply = true;
-			applytuple = remotetuple;
-		}
-
-#ifndef NO_LOG_OLD_VALUE
-		/*
-		 * If the relation has columns that are marked LOG_OLD_VALUE
-		 * we apply the delta between the remote new and old values.
-		 */
-		if (relation_has_delta_columns(rel))
-		{
-			SpockTupleData	deltatup;
-			HeapTuple		currenttuple;
-
-			/*
-			 * Depending on previous conflict resolution our final NEW
-			 * tuple will be based on either the incoming remote tuple
-			 * or the existing local one and then the delta processing
-			 * on top of that.
-			 */
-			if (apply)
-			{
-				currenttuple = ExecFetchSlotHeapTuple(aestate->slot,
-													  true, NULL);
-			}
-			else
-			{
-				currenttuple = ExecFetchSlotHeapTuple(localslot,
-													  true, NULL);
-			}
-			oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(aestate->estate));
-			build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
-			applytuple = heap_modify_tuple(currenttuple,
-										   RelationGetDescr(rel->rel),
-										   deltatup.values,
-										   deltatup.nulls,
-										   deltatup.changed);
-			MemoryContextSwitchTo(oldctx);
-			ExecStoreHeapTuple(applytuple, aestate->slot, true);
-
-			if (!apply)
-			{
-				is_delta_apply = true;
-				apply = true;
-
-				/* Count the DCA event in stats */
-				handle_stats_counter(rel->rel, MyApplyWorker->subid,
-									 SPOCK_STATS_DCA_COUNT, 1);
-			}
-		}
-#endif /* NO_LOG_OLD_VALUE */
-
-		if (apply)
-		{
-#if PG_VERSION_NUM >= 160000
-			TU_UpdateIndexes update_indexes;
-#else
-			bool update_indexes;
-#endif
-			/* Check the constraints of the tuple */
-			if (rel->rel->rd_att->constr)
-				ExecConstraints(aestate->resultRelInfo, aestate->slot,
-								aestate->estate);
-
-			simple_table_tuple_update(rel->rel,
-									  &(localslot->tts_tid),
-									  aestate->slot,
-									  aestate->estate->es_snapshot,
-									  &update_indexes);
-			if (update_indexes)
-			{
-				ExecOpenIndices(aestate->resultRelInfo
-								, false
-							   );
-				recheckIndexes = UserTableUpdateOpenIndexes(aestate->resultRelInfo,
-															aestate->estate,
-															aestate->slot,
-															true);
-			}
-
-			if (is_delta_apply)
-			{
-				/*
-				 * We forced an update to a row that we normally had
-				 * to skip because it has delta resolve columns. Remember
-				 * the correct origin, xmin and commit timestamp for
-				 * get_tuple_origion() to figure it out.
-				 */
-				spock_ctt_store(RelationGetRelid(rel->rel),
-								&(aestate->slot->tts_tid), local_origin,
-								GetTopTransactionId(), local_ts);
-			}
-
-			/* AFTER ROW UPDATE Triggers */
-			ExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
-								 &(TTS_TUP(localslot)->t_self),
-								 NULL, aestate->slot, recheckIndexes);
+			spock_report_conflict(CONFLICT_UPDATE_UPDATE, rel,
+								  TTS_TUP(localslot), oldtup,
+								  remotetuple, applytuple, resolution,
+								  xmin, local_origin_found, local_origin,
+								  local_ts, rel->idxoid,
+								  true /* FIXME: unused in the call chain*/);
 		}
 	}
 	else
 	{
 		/*
-		 * The tuple to be updated could not be found.
-		 *
-		 * We can't do INSERT here because we might not have whole tuple.
+		 * The tuple to be updated could not be found.  Do nothing except for
+		 * emitting a log message.
 		 */
-		remotetuple = heap_form_tuple(RelationGetDescr(rel->rel),
-									  newtup->values,
-									  newtup->nulls);
-		spock_report_conflict(CONFLICT_UPDATE_DELETE, rel, NULL, oldtup,
-								  remotetuple, NULL, SpockResolution_Skip,
-								  InvalidTransactionId, false,
-								  InvalidRepOriginId, (TimestampTz)0,
-								  replident_idx_id, has_before_triggers);
+		elog(LOG,
+			 "logical replication did not find row to be updated "
+			 "in replication target relation \"%s\"",
+			 RelationGetRelationName(rel->rel));
 	}
 
 	/* Cleanup. */
-	finish_apply_exec_state(aestate);
-
-	CommandCounterIncrement();
+	ExecCloseIndices(edata->targetRelInfo);
+	EvalPlanQualEnd(&epqstate);
+	finish_edata(edata);
 }
 
 /*
  * Handle delete via low level api.
  */
-void
-spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
+void spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 {
-	ApplyExecState	   *aestate;
-	TupleTableSlot	   *localslot;
-	Oid					replident_idx_id;
-	bool				has_before_triggers = false;
+	ApplyExecutionData *edata;
+	EState *estate;
+	EPQState epqstate;
+	TupleTableSlot *remoteslot;
+	TupleTableSlot *localslot;
+	MemoryContext oldctx;
+	bool found;
 
 	/* Initialize the executor state. */
-	aestate = init_apply_exec_state(rel);
-	localslot = table_slot_create(rel->rel, &aestate->estate->es_tupleTable);
+	edata = create_edata_for_relation(rel);
+	estate = edata->estate;
+	remoteslot = ExecInitExtraTupleSlot(estate,
+										RelationGetDescr(rel->rel),
+										&TTSOpsVirtual);
 
 	/* update stats */
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
-						 SPOCK_STATS_DELETE_COUNT, 1);
+						 SPOCK_STATS_UPDATE_COUNT, 1);
 
-	if (spock_tuple_find_replidx(aestate->resultRelInfo, oldtup, localslot,
-									 &replident_idx_id))
+	/* Build the search tuple. */
+	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+	slot_store_data(remoteslot, rel, oldtup);
+	MemoryContextSwitchTo(oldctx);
+
+	/* Find the current local tuple */
+	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
+	ExecOpenIndices(edata->targetRelInfo, false);
+
+	found = FindReplTupleInLocalRel(edata, rel->rel,
+									rel->idxoid,
+									remoteslot, &localslot);
+	ExecClearTuple(remoteslot);
+
+	/*
+	 * Perform the DELETE if Tuple found.
+	 *
+	 * Note this will fail if there are other conflicting unique indexes.
+	 */
+	if (found)
 	{
-		if (aestate->resultRelInfo->ri_TrigDesc &&
-			aestate->resultRelInfo->ri_TrigDesc->trig_delete_before_row)
-		{
-			bool dodelete = ExecBRDeleteTriggers(aestate->estate,
-												 &aestate->epqstate,
-												 aestate->resultRelInfo,
-												 &(TTS_TUP(localslot)->t_self),
-												 NULL);
-
-			has_before_triggers = true;
-
-			if (!dodelete)		/* "do nothing" */
-			{
-				finish_apply_exec_state(aestate);
-				return;
-			}
-		}
-
-		/* Tuple found, delete it. */
-		simple_heap_delete(rel->rel, &(TTS_TUP(localslot)->t_self));
-
-		/* AFTER ROW DELETE Triggers */
-		ExecARDeleteTriggers(aestate->estate, aestate->resultRelInfo,
-							 &(TTS_TUP(localslot)->t_self), NULL);
+		/* Delete the tuple found */
+		EvalPlanQualSetSlot(&epqstate, remoteslot);
+		ExecSimpleRelationDelete(edata->targetRelInfo, estate, &epqstate,
+								 localslot);
 	}
 	else
 	{
-		/* The tuple to be deleted could not be found. */
-		HeapTuple remotetuple = heap_form_tuple(RelationGetDescr(rel->rel),
-												oldtup->values, oldtup->nulls);
-		spock_report_conflict(CONFLICT_DELETE_DELETE, rel, NULL, oldtup,
-								  remotetuple, NULL, SpockResolution_Skip,
-								  InvalidTransactionId, false,
-								  InvalidRepOriginId, (TimestampTz)0,
-								  replident_idx_id, has_before_triggers);
+		/*
+		 * The tuple to be updated could not be found.  Do nothing except for
+		 * emitting a log message.
+		 */
+		elog(LOG,
+			 "logical replication did not find row to be deleted "
+			 "in replication target relation \"%s\"",
+			 RelationGetRelationName(rel->rel));
 	}
 
 	/* Cleanup. */
-	finish_apply_exec_state(aestate);
-
-	CommandCounterIncrement();
+	ExecCloseIndices(edata->targetRelInfo);
+	EvalPlanQualEnd(&epqstate);
+	finish_edata(edata);
 }
 
-
-bool
-spock_apply_heap_can_mi(SpockRelation *rel)
+bool spock_apply_heap_can_mi(SpockRelation *rel)
 {
 	/* Multi insert is only supported when conflicts result in errors. */
 	return spock_conflict_resolver == SPOCK_RESOLVE_ERROR;
@@ -962,11 +1088,11 @@ spock_apply_heap_can_mi(SpockRelation *rel)
 static void
 spock_apply_heap_mi_start(SpockRelation *rel)
 {
-	MemoryContext	oldctx;
+	MemoryContext oldctx;
 	ApplyExecState *aestate;
-	ResultRelInfo  *resultRelInfo;
-	TupleDesc		desc;
-	bool			volatile_defexprs = false;
+	ResultRelInfo *resultRelInfo;
+	TupleDesc desc;
+	bool volatile_defexprs = false;
 
 	if (spkmistate && spkmistate->rel == rel)
 		return;
@@ -986,30 +1112,28 @@ spock_apply_heap_mi_start(SpockRelation *rel)
 	MemoryContextSwitchTo(TopTransactionContext);
 	resultRelInfo = aestate->resultRelInfo;
 
-	ExecOpenIndices(resultRelInfo
-					, false
-					);
+	ExecOpenIndices(resultRelInfo, false);
 
 	/* Check if table has any volatile default expressions. */
 	desc = RelationGetDescr(rel->rel);
 	if (desc->natts != rel->natts)
 	{
-		int			attnum;
+		int attnum;
 
 		for (attnum = 0; attnum < desc->natts; attnum++)
 		{
-			Expr	   *defexpr;
+			Expr *defexpr;
 
-			if (TupleDescAttr(desc,attnum)->attisdropped)
+			if (TupleDescAttr(desc, attnum)->attisdropped)
 				continue;
 
-			defexpr = (Expr *) build_column_default(rel->rel, attnum + 1);
+			defexpr = (Expr *)build_column_default(rel->rel, attnum + 1);
 
 			if (defexpr != NULL)
 			{
 				/* Run the expression through planner */
 				defexpr = expression_planner(defexpr);
-				volatile_defexprs = contain_volatile_functions_not_nextval((Node *) defexpr);
+				volatile_defexprs = contain_volatile_functions_not_nextval((Node *)defexpr);
 
 				if (volatile_defexprs)
 					break;
@@ -1047,9 +1171,9 @@ spock_apply_heap_mi_start(SpockRelation *rel)
 static void
 spock_apply_heap_mi_flush(void)
 {
-	MemoryContext	oldctx;
-	ResultRelInfo  *resultRelInfo;
-	int				i;
+	MemoryContext oldctx;
+	ResultRelInfo *resultRelInfo;
+	int i;
 
 	if (!spkmistate || spkmistate->nbuffered_tuples == 0)
 		return;
@@ -1078,23 +1202,26 @@ spock_apply_heap_mi_flush(void)
 	{
 		for (i = 0; i < spkmistate->nbuffered_tuples; i++)
 		{
-			List	   *recheckIndexes = NIL;
+			List *recheckIndexes = NIL;
 
 			recheckIndexes =
 				ExecInsertIndexTuples(
 #if PG_VERSION_NUM >= 140000
-									  resultRelInfo,
+					resultRelInfo,
 #endif
-									  spkmistate->buffered_tuples[i],
-									  spkmistate->aestate->estate
+					spkmistate->buffered_tuples[i],
+					spkmistate->aestate->estate
 #if PG_VERSION_NUM >= 140000
-									  , false
+					,
+					false
 #endif
-                                                                          , false, NULL, NIL
+					,
+					false, NULL, NIL
 #if PG_VERSION_NUM >= 160000
-									  , false
+					,
+					false
 #endif
-									 );
+				);
 			ExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
 								 spkmistate->buffered_tuples[i],
 								 recheckIndexes);
@@ -1121,13 +1248,12 @@ spock_apply_heap_mi_flush(void)
 }
 
 /* Add tuple to the MultiInsert. */
-void
-spock_apply_heap_mi_add_tuple(SpockRelation *rel,
-								  SpockTupleData *tup)
+void spock_apply_heap_mi_add_tuple(SpockRelation *rel,
+								   SpockTupleData *tup)
 {
-	MemoryContext	oldctx;
+	MemoryContext oldctx;
 	ApplyExecState *aestate;
-	HeapTuple		remotetuple;
+	HeapTuple remotetuple;
 	TupleTableSlot *slot;
 
 	spock_apply_heap_mi_start(rel);
@@ -1164,8 +1290,8 @@ spock_apply_heap_mi_add_tuple(SpockRelation *rel,
 		aestate->resultRelInfo->ri_TrigDesc->trig_insert_before_row)
 	{
 		if (!ExecBRInsertTriggers(aestate->estate,
-								 aestate->resultRelInfo,
-								 slot))
+								  aestate->resultRelInfo,
+								  slot))
 		{
 			MemoryContextSwitchTo(oldctx);
 			return;
@@ -1186,8 +1312,7 @@ spock_apply_heap_mi_add_tuple(SpockRelation *rel,
 	MemoryContextSwitchTo(oldctx);
 }
 
-void
-spock_apply_heap_mi_finish(SpockRelation *rel)
+void spock_apply_heap_mi_finish(SpockRelation *rel)
 {
 	if (!spkmistate)
 		return;
