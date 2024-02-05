@@ -47,7 +47,6 @@ extern bool	spock_ch_stats;
 extern bool	spock_deny_ddl;
 extern bool	spock_enable_ddl_replication;
 extern bool	spock_include_ddl_repset;
-// extern char *spock_ddl_search_path;
 
 extern char *shorten_hash(const char *str, int maxlen);
 
