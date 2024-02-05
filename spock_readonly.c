@@ -198,7 +198,12 @@ spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 
 		pstate->p_sourcetext = CleanQuerytext(pstate->p_sourcetext, &loc, &len);
 		curr_qry = pnstrdup(pstate->p_sourcetext, len);
-		spock_auto_replicate_ddl(curr_qry, list_make1(DDL_SQL_REPSET_NAME),
+
+		ereport(INFO,
+			(errmsg("DDL statements are being replicated."),
+			 errdetail_log("statement '%s'", curr_qry)));
+
+		spock_auto_replicate_ddl(curr_qry, list_make1(DEFAULT_INSONLY_REPSET_NAME),
 								 GetUserNameFromId(GetUserId(), false));
 	}
 

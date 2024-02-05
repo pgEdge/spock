@@ -226,21 +226,27 @@ spock_finish_truncate(void)
 static void
 add_ddl_to_repset(Node *parsetree)
 {
-	CreateStmt *stmt;
 	Relation	targetrel;
 	SpockRepSet *repset;
 	SpockLocalNode *node;
 	Oid		reloid = InvalidOid;
+	RangeVar   *relation = NULL;
 
-	if (nodeTag(parsetree) != T_CreateStmt)
+	if (nodeTag(parsetree) == T_AlterTableStmt)
+		relation = castNode(AlterTableStmt, parsetree)->relation;
+	else if (nodeTag(parsetree) == T_CreateStmt)
+		relation = castNode(CreateStmt, parsetree)->relation;
+	else
+	{
+		/* only tables are added to repset. */
 		return;
+	}
 
 	node = get_local_node(false, true);
 	if (!node)
 		return;
 
-	stmt = (CreateStmt *) parsetree;
-	targetrel = table_openrv(stmt->relation, AccessShareLock);
+	targetrel = table_openrv(relation, AccessShareLock);
 	reloid = RelationGetRelid(targetrel);
 
 	/* UNLOGGED and TEMP relations cannot be part of replication set. */
@@ -252,19 +258,49 @@ add_ddl_to_repset(Node *parsetree)
 
 	/* choose the 'default' repset, if table has PK or replica identity defined. */
 	if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
+	{
+		SpockRepSet *ins_repset;
 		repset = get_replication_set_by_name(node->node->id, DEFAULT_REPSET_NAME, false);
+
+		/*
+		 * if table was ever part of insert_only repset, remove it from there.
+		 * since it has met the requirement to be added to default repset.
+		 */
+		ins_repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
+		replication_set_remove_table(ins_repset->id, RelationGetRelid(targetrel), true);
+	}
 	else
-		repset = get_replication_set_by_name(node->node->id, DDL_SQL_REPSET_NAME, false);
+		repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
 
 	if (!OidIsValid(targetrel->rd_replidindex) &&
 		(repset->replicate_update || repset->replicate_delete))
 		return;
 
-	table_close(targetrel, NoLock);
-
 	replication_set_add_table(repset->id, reloid, NIL, NULL);
-	elog(DEBUG1, "table '%s' added to '%s' replication set.",
-			stmt->relation->relname, DDL_SQL_REPSET_NAME);
+
+	/*
+	 * FIXME: should a trucate request be sent before sync? perhaps based on a
+	 * configuration option?
+	 */
+
+	/* synchronize table */
+	{
+		StringInfoData		json;
+
+		/* It's easier to construct json manually than via Jsonb API... */
+		initStringInfo(&json);
+		appendStringInfo(&json, "{\"schema_name\": ");
+		escape_json(&json, get_namespace_name(RelationGetNamespace(targetrel)));
+		appendStringInfo(&json, ",\"table_name\": ");
+		escape_json(&json, RelationGetRelationName(targetrel));
+		appendStringInfo(&json, "}");
+		/* Queue the synchronize request for replication. */
+		queue_message(list_make1(repset->name), GetUserId(),
+					QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
+	}
+	table_close(targetrel, NoLock);
+	elog(LOG, "table '%s' was added to '%s' replication set.",
+		 relation->relname, repset->name);
 }
 
 static void
@@ -322,10 +358,21 @@ spock_ProcessUtility(
 	if (nodeTag(parsetree) == T_TruncateStmt)
 		spock_finish_truncate();
 
-	/* TODO: do we restrict adding DDLs to repset when coming from spock.replicate_ddl? */
-	if (GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
-		spock_include_ddl_repset)
+	/* we don't want to replicate if it's coming from spock.queue. */
+	if (in_spock_queue_command || in_spock_replicate_ddl_command)
+	{
+		/*
+		 * Do Nothing. Hook was called as a result of spock.replicate_ddl()
+		 * or handle_sql() function call. The action has already been taken,
+		 * so no need for the duplication.
+		 */
+	}
+	else if (GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
+			 spock_enable_ddl_replication &&
+			 spock_include_ddl_repset)
+	{
 		add_ddl_to_repset(parsetree);
+	}
 }
 
 /*

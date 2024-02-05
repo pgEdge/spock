@@ -760,13 +760,6 @@ spock_temp_directory_assing_hook(const char *newval, void *extra)
 				 errmsg("out of memory")));
 }
 
-#if 0
-static void
-spock_assign_ddl_search_path(const char *newval, void *extra)
-{
-	// search_path;
-}
-#endif
 
 /*
  * Entry point for this module.
@@ -933,19 +926,6 @@ _PG_init(void)
 							   PGC_USERSET,
 							   0,
 							   NULL, NULL, NULL);
-
-#if 0
-	DefineCustomStringVariable("spock.ddl_search_path",
-							   "Set search path during auto DDL's",
-							   NULL,
-							   &spock_ddl_search_path,
-							   "",
-							   PGC_SUSET,
-							   0,
-							   check_search_path,
-							   spock_assign_ddl_search_path,
-							   NULL);
-#endif
 
 	if (IsBinaryUpgrade)
 		return;
