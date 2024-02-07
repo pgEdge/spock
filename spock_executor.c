@@ -218,6 +218,31 @@ spock_finish_truncate(void)
 }
 
 /*
+ * remove_table_from_repsets
+ *		removes given table from the other replication sets.
+ */
+static void
+remove_table_from_repsets(Oid nodeid, Oid reloid, bool only_for_update)
+{
+	ListCell *lc;
+	List *repsets;
+
+	repsets = get_table_replication_sets(nodeid, reloid);
+	foreach(lc, repsets)
+	{
+		SpockRepSet	   *rs = (SpockRepSet *) lfirst(lc);
+
+		if (only_for_update)
+		{
+			if (rs->replicate_update || rs->replicate_delete)
+				replication_set_remove_table(rs->id, reloid, true);
+		}
+		else
+			replication_set_remove_table(rs->id, reloid, true);
+	}
+}
+
+/*
  * add_ddl_to_repset
  *		Check if the DDL statement can be added to the replication set. (For
  * now only tables are added). The function also checks whether the table has
@@ -251,7 +276,13 @@ add_ddl_to_repset(Node *parsetree)
 
 	/* UNLOGGED and TEMP relations cannot be part of replication set. */
 	if (!RelationNeedsWAL(targetrel))
+	{
+		/* remove table from the repsets. */
+		remove_table_from_repsets(node->node->id, reloid, false);
+
+		table_close(targetrel, NoLock);
 		return;
+	}
 
 	if (targetrel->rd_indexvalid == 0)
 		RelationGetIndexList(targetrel);
@@ -259,68 +290,62 @@ add_ddl_to_repset(Node *parsetree)
 	/* choose the 'default' repset, if table has PK or replica identity defined. */
 	if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
 	{
-		SpockRepSet *ins_repset;
 		repset = get_replication_set_by_name(node->node->id, DEFAULT_REPSET_NAME, false);
 
 		/*
-		 * if table was ever part of insert_only repset, remove it from there.
-		 * since it has met the requirement to be added to default repset.
+		 * remove table from previous repsets, it will be added to 'default'
+		 * down below.
 		 */
-		ins_repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
-		replication_set_remove_table(ins_repset->id, RelationGetRelid(targetrel), true);
+		remove_table_from_repsets(node->node->id, reloid, false);
 	}
 	else
 	{
-		ListCell *lc;
-		List *repsets;
-
 		repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
 		/*
 		 * no primary key defined. let's see if the table is part of any other
 		 * repset or not?
 		 */
-		repsets = get_table_replication_sets(node->node->id, reloid);
-
-		foreach(lc, repsets)
-		{
-			SpockRepSet	   *rs = (SpockRepSet *) lfirst(lc);
-
-			if (rs->replicate_update || rs->replicate_delete)
-				replication_set_remove_table(rs->id, reloid, true);
-		}
+		remove_table_from_repsets(node->node->id, reloid, true);
 	}
 
 	if (!OidIsValid(targetrel->rd_replidindex) &&
 		(repset->replicate_update || repset->replicate_delete))
+	{
+		table_close(targetrel, NoLock);
 		return;
+	}
 
 	/* Add if not already present. */
 	if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
+	{
 		replication_set_add_table(repset->id, reloid, NIL, NULL);
 
-	/*
-	 * FIXME: should a trucate request be sent before sync? perhaps based on a
-	 * configuration option?
-	 */
+		/*
+		* FIXME: should a trucate request be sent before sync? perhaps based on a
+		* configuration option?
+		*/
 
-	/* synchronize table */
-	{
-		StringInfoData		json;
+		/* synchronize table */
+		{
+			StringInfoData		json;
 
-		/* It's easier to construct json manually than via Jsonb API... */
-		initStringInfo(&json);
-		appendStringInfo(&json, "{\"schema_name\": ");
-		escape_json(&json, get_namespace_name(RelationGetNamespace(targetrel)));
-		appendStringInfo(&json, ",\"table_name\": ");
-		escape_json(&json, RelationGetRelationName(targetrel));
-		appendStringInfo(&json, "}");
-		/* Queue the synchronize request for replication. */
-		queue_message(list_make1(repset->name), GetUserId(),
-					QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
+			/* It's easier to construct json manually than via Jsonb API... */
+			initStringInfo(&json);
+			appendStringInfo(&json, "{\"schema_name\": ");
+			escape_json(&json, get_namespace_name(RelationGetNamespace(targetrel)));
+			appendStringInfo(&json, ",\"table_name\": ");
+			escape_json(&json, RelationGetRelationName(targetrel));
+			appendStringInfo(&json, "}");
+			/* Queue the synchronize request for replication. */
+			queue_message(list_make1(repset->name), GetUserId(),
+						QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
+		}
+
+		elog(LOG, "table '%s' was added to '%s' replication set.",
+			 relation->relname, repset->name);
 	}
+
 	table_close(targetrel, NoLock);
-	elog(LOG, "table '%s' was added to '%s' replication set.",
-		 relation->relname, repset->name);
 }
 
 static void
