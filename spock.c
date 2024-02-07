@@ -102,7 +102,6 @@ bool	spock_deny_ddl = false;
 bool	spock_enable_ddl_replication = false;
 bool	spock_include_ddl_repset = false;
 
-// char   *spock_ddl_search_path;
 
 void _PG_init(void);
 PGDLLEXPORT void spock_supervisor_main(Datum main_arg);

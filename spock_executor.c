@@ -270,13 +270,33 @@ add_ddl_to_repset(Node *parsetree)
 		replication_set_remove_table(ins_repset->id, RelationGetRelid(targetrel), true);
 	}
 	else
+	{
+		ListCell *lc;
+		List *repsets;
+
 		repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
+		/*
+		 * no primary key defined. let's see if the table is part of any other
+		 * repset or not?
+		 */
+		repsets = get_table_replication_sets(node->node->id, reloid);
+
+		foreach(lc, repsets)
+		{
+			SpockRepSet	   *rs = (SpockRepSet *) lfirst(lc);
+
+			if (rs->replicate_update || rs->replicate_delete)
+				replication_set_remove_table(rs->id, reloid, true);
+		}
+	}
 
 	if (!OidIsValid(targetrel->rd_replidindex) &&
 		(repset->replicate_update || repset->replicate_delete))
 		return;
 
-	replication_set_add_table(repset->id, reloid, NIL, NULL);
+	/* Add if not already present. */
+	if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
+		replication_set_add_table(repset->id, reloid, NIL, NULL);
 
 	/*
 	 * FIXME: should a trucate request be sent before sync? perhaps based on a
@@ -358,13 +378,15 @@ spock_ProcessUtility(
 	if (nodeTag(parsetree) == T_TruncateStmt)
 		spock_finish_truncate();
 
-	/* we don't want to replicate if it's coming from spock.queue. */
-	if (in_spock_queue_command || in_spock_replicate_ddl_command)
+	/*
+	 * we don't want to replicate if it's coming from spock.queue. But we do
+	 * add tables to repset whenever there is one.
+	 */
+	if (in_spock_replicate_ddl_command)
 	{
 		/*
-		 * Do Nothing. Hook was called as a result of spock.replicate_ddl()
-		 * or handle_sql() function call. The action has already been taken,
-		 * so no need for the duplication.
+		 * Do Nothing. Hook was called as a result of spock.replicate_ddl().
+		 * The action has already been taken, so no need for the duplication.
 		 */
 	}
 	else if (GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
