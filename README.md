@@ -92,7 +92,7 @@ This feature is powerful AND simple in its implementation as follows:
 
   - A small diff patch to PostgreSQL core
     - a very small PostgreSQL licensed patch is applied to a core PostgreSQL source tree before building a PG binary.
-    - the above diff patch adds functionality to support ALTER TABLE t1 COLUMN c1 SET(log_old_value=true)
+    - the above diff patch adds functionality to support ALTER TABLE t1 ALTER COLUMN c1 SET(log_old_value=true)
     - this patch will be submitted to pg16 core PostgreSQL and discussed at the Ottawa Conference.
 
   - When an update occurs on a 'log_old_value' column
