@@ -106,9 +106,9 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 BEGIN;
 SET LOCAL statement_timeout = '10s';
-SELECT spock.wait_for_table_sync_complete('test_subscription', 'basic_dml');
- wait_for_table_sync_complete 
-------------------------------
+SELECT spock.table_wait_for_sync('test_subscription', 'basic_dml');
+ table_wait_for_sync 
+---------------------
  
 (1 row)
 
