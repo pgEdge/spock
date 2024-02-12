@@ -132,7 +132,6 @@ ApplyErrorCallbackArg apply_error_callback_arg =
 static ApplyMIState *spkmistate = NULL;
 
 #ifndef NO_LOG_OLD_VALUE
-static bool relation_has_delta_columns(SpockRelation *rel);
 static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 							  SpockTupleData *newtup, SpockTupleData *deltatup,
 							  TupleTableSlot *localslot);
@@ -340,6 +339,44 @@ slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
 }
 
 /*
+ * Store tuple data into slot from HeapTuple.
+ */
+static void
+slot_store_htup(TupleTableSlot *slot, SpockRelation *rel,
+				HeapTuple htup)
+{
+	int natts = slot->tts_tupleDescriptor->natts;
+	int i;
+
+	ExecClearTuple(slot);
+
+	/* Call the "in" function for each non-dropped, non-null attribute */
+	Assert(natts == rel->natts);
+	for (i = 0; i < natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, i);
+		int remoteattnum = rel->attmap[i];
+
+		if (!att->attisdropped && remoteattnum >= 0)
+		{
+			slot->tts_values[i] = heap_getattr(htup, i + 1,
+											   slot->tts_tupleDescriptor,
+											   &slot->tts_isnull[i]);
+		}
+		else
+		{
+			/*
+			 * We assign NULL to dropped attributes
+			 */
+			slot->tts_values[i] = (Datum)0;
+			slot->tts_isnull[i] = true;
+		}
+	}
+
+	ExecStoreVirtualTuple(slot);
+}
+
+/*
  * Replace updated columns with data from the SpockTupleData struct.
  * This is somewhat similar to heap_modify_tuple but also calls the type
  * input functions on the user data.
@@ -489,69 +526,6 @@ void spock_apply_heap_commit(void)
 	spock_ctt_close();
 }
 
-static List *
-UserTableUpdateOpenIndexes(ResultRelInfo *relinfo, EState *estate, TupleTableSlot *slot, bool update)
-{
-	List *recheckIndexes = NIL;
-
-	if (relinfo->ri_NumIndices > 0)
-	{
-		recheckIndexes = ExecInsertIndexTuples(
-#if PG_VERSION_NUM >= 140000
-			relinfo,
-#endif
-			slot,
-			estate
-#if PG_VERSION_NUM >= 140000
-			,
-			update
-#endif
-			,
-			false, NULL, NIL
-#if PG_VERSION_NUM >= 160000
-			,
-			false
-#endif
-		);
-
-		/* FIXME: recheck the indexes */
-		if (recheckIndexes != NIL)
-		{
-			StringInfoData si;
-			ListCell *lc;
-			const char *idxname, *relname, *nspname;
-			Relation target_rel = relinfo->ri_RelationDesc;
-
-			relname = RelationGetRelationName(target_rel);
-			nspname = get_namespace_name(RelationGetNamespace(target_rel));
-
-			initStringInfo(&si);
-			foreach (lc, recheckIndexes)
-			{
-				Oid idxoid = lfirst_oid(lc);
-				idxname = get_rel_name(idxoid);
-				if (idxname == NULL)
-					elog(ERROR, "cache lookup failed for index oid %u", idxoid);
-				if (si.len > 0)
-					appendStringInfoString(&si, ", ");
-				appendStringInfoString(&si, quote_identifier(idxname));
-			}
-
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("spock doesn't support deferrable indexes"),
-					 errdetail("relation %s.%s has deferrable indexes: %s",
-							   quote_identifier(nspname),
-							   quote_identifier(relname),
-							   si.data)));
-		}
-
-		list_free(recheckIndexes);
-	}
-
-	return recheckIndexes;
-}
-
 static bool
 physatt_in_attmap(SpockRelation *rel, int attid)
 {
@@ -624,24 +598,6 @@ fill_missing_defaults(SpockRelation *rel, EState *estate,
 
 #ifndef NO_LOG_OLD_VALUE
 
-static bool
-relation_has_delta_columns(SpockRelation *rel)
-{
-	TupleDesc tupdesc = RelationGetDescr(rel->rel);
-	AttributeOpts *aopt;
-	int attno;
-
-	for (attno = 1; attno <= tupdesc->natts; attno++)
-	{
-		/* check the attribute options */
-		aopt = get_attribute_options(rel->rel->rd_id, attno);
-		if (aopt != NULL && aopt->log_old_value)
-			return true;
-	}
-
-	return false;
-}
-
 static void
 build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 				  SpockTupleData *newtup,
@@ -649,20 +605,14 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 				  TupleTableSlot *localslot)
 {
 	TupleDesc tupdesc = RelationGetDescr(rel->rel);
-	Form_pg_attribute att;
-	AttributeOpts *aopt;
 	int attidx;
 	Datum loc_value;
-	Datum delta;
+	Datum result;
 	bool loc_isnull;
-	PGFunction func_add;
-	PGFunction func_sub;
 
 	for (attidx = 0; attidx < tupdesc->natts; attidx++)
 	{
-		/* Get the attribute options */
-		aopt = get_attribute_options(rel->rel->rd_id, attidx + 1);
-		if (aopt == NULL || !aopt->log_old_value)
+		if (rel->delta_apply_functions[attidx] == InvalidOid)
 		{
 			deltatup->values[attidx] = 0xdeadbeef;
 			deltatup->nulls[attidx] = true;
@@ -684,61 +634,6 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		 * all sorts of trouble when it comes to user defined data types
 		 * and the search path.
 		 */
-		att = TupleDescAttr(tupdesc, attidx);
-		switch (att->atttypid)
-		{
-		case INT2OID:
-			func_add = int2pl;
-			func_sub = int2mi;
-			break;
-
-		case INT4OID:
-			func_add = int4pl;
-			func_sub = int4mi;
-			break;
-
-		case INT8OID:
-			func_add = int8pl;
-			func_sub = int8mi;
-			break;
-
-		case FLOAT4OID:
-			func_add = float4pl;
-			func_sub = float4mi;
-			break;
-
-		case FLOAT8OID:
-			func_add = float8pl;
-			func_sub = float8mi;
-			break;
-
-		case NUMERICOID:
-			func_add = numeric_add;
-			func_sub = numeric_sub;
-			break;
-
-		case MONEYOID:
-			func_add = cash_pl;
-			func_sub = cash_mi;
-			break;
-
-#if 0
-			/*
-			 * BOOL is supposed to follow OR logic. But this code only 
-			 * works if we have a conflict. A local transaction is not
-			 * prevented from changing it back to false, and it won't
-			 * propagate. We need to come up with a different solution.
-			 */
-			case BOOLOID:
-				func_add = boolor_statefunc;
-				func_sub = boolor_statefunc;
-				break;
-#endif
-
-		default:
-			elog(ERROR, "spock delta replication for type %d not supported",
-				 att->atttypid);
-		}
 
 		if (oldtup->nulls[attidx])
 		{
@@ -755,16 +650,11 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		}
 		else
 		{
-			/* We also need the old value of the current local tuple */
 			loc_value = heap_getattr(TTS_TUP(localslot), attidx + 1, tupdesc,
 									 &loc_isnull);
 
-			/* Finally we can do the actual delta apply */
-			delta = DirectFunctionCall2(func_sub,
-										newtup->values[attidx],
-										oldtup->values[attidx]);
-			deltatup->values[attidx] = DirectFunctionCall2(func_add, loc_value,
-														   delta);
+			result = OidFunctionCall3Coll(rel->delta_apply_functions[attidx], InvalidOid, oldtup->values[attidx], newtup->values[attidx], loc_value);
+			deltatup->values[attidx] = result;
 			deltatup->nulls[attidx] = false;
 			deltatup->changed[attidx] = true;
 		}
@@ -880,11 +770,9 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	HeapTuple remotetuple;
 	RTEPermissionInfo *target_perminfo;
 	MemoryContext oldctx;
-	LogicalRepRelId relid;
-	LogicalRepRelMapEntry *relmapentry;
 	ResultRelInfo *relinfo;
 	bool found;
-	bool has_oldtup;
+	bool is_delta_apply = false;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -929,7 +817,6 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
 	ExecOpenIndices(edata->targetRelInfo, false);
 
-	relmapentry = edata->targetRel;
 	relinfo = edata->targetRelInfo;
 
 	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
@@ -950,6 +837,7 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		bool local_origin_found;
 		bool apply;
 		HeapTuple applytuple;
+		SpockConflictResolution resolution;
 
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
@@ -961,8 +849,6 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 											  &(localslot->tts_tid), &xmin,
 											  &local_origin, &local_ts);
 
-		SpockConflictResolution resolution;
-
 		apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
 									 remotetuple, &applytuple,
 									 local_origin, local_ts,
@@ -973,12 +859,7 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		 */
 		if (apply && applytuple == remotetuple)
 		{
-			slot_modify_data(remoteslot, localslot, relmapentry, newtup);
-			EvalPlanQualSetSlot(&epqstate, remoteslot);
-
-			/* Do the actual update. */
-			ExecSimpleRelationUpdate(edata->targetRelInfo, estate, &epqstate,
-									 localslot, remoteslot);
+			slot_modify_data(remoteslot, localslot, rel, newtup);
 		}
 		else
 		{
@@ -988,6 +869,69 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 								  xmin, local_origin_found, local_origin,
 								  local_ts, rel->idxoid,
 								  true /* FIXME: unused in the call chain*/);
+		}
+
+		if (rel->has_delta_columns)
+		{
+			SpockTupleData deltatup;
+			HeapTuple currenttuple;
+
+			/*
+			 * Depending on previous conflict resolution our final NEW
+			 * tuple will be based on either the incoming remote tuple
+			 * or the existing local one and then the delta processing
+			 * on top of that.
+			 */
+			if (apply)
+			{
+				currenttuple = ExecFetchSlotHeapTuple(remoteslot, true, NULL);
+			}
+			else
+			{
+				currenttuple = ExecFetchSlotHeapTuple(localslot, true, NULL);
+			}
+			oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+			build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
+			applytuple = heap_modify_tuple(currenttuple,
+										   RelationGetDescr(rel->rel),
+										   deltatup.values,
+										   deltatup.nulls,
+										   deltatup.changed);
+			MemoryContextSwitchTo(oldctx);
+			slot_store_htup(remoteslot, rel, applytuple);
+
+			if (!apply)
+			{
+				is_delta_apply = true;
+				apply = true;
+
+				/* Count the DCA event in stats */
+				handle_stats_counter(rel->rel, MyApplyWorker->subid,
+									 SPOCK_STATS_DCA_COUNT, 1);
+			}
+		}
+
+		if (apply)
+		{
+			EvalPlanQualSetSlot(&epqstate, remoteslot);
+
+			/* Do the actual update. */
+			ExecSimpleRelationUpdate(edata->targetRelInfo, estate, &epqstate,
+									 localslot, remoteslot);
+
+			/* If this is a delta-apply, perform conflict tracking */
+			if (is_delta_apply)
+			{
+				/*
+				 * We forced an update to a row that we normally had
+				 * to skip because it has delta resolve columns. Remember
+				 * the correct origin, xmin and commit timestamp for
+				 * get_tuple_origion() to figure it out.
+				 */
+				spock_ctt_store(RelationGetRelid(rel->rel),
+								&(remoteslot->tts_tid), local_origin,
+								GetTopTransactionId(), local_ts);
+			}
 		}
 	}
 	else
