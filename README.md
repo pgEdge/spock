@@ -3,21 +3,22 @@
 ## Multi-Master Replication with Conflict Resolution & Avoidance
 
 
-This SPOCK extension provides multi-master replication for PostgreSQL 15+
+This SPOCK extension provides multi-master replication for PostgreSQL 14+
 We leveraged the [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source 
 project as a solid foundation to build upon for this enterprise-class extension. 
 
-Our development version is 3.2 and includes the following important enhancements beyond Spock 3.1:
+Our production version is 3.2 and includes the following important enhancements beyond Spock 3.1:
 
+* Support for pg14
 * Support for pg17devel
-* Support for Snowflake Sequence migrations
+* Support for Snowflake Sequences
 * Support for setting a database to ReadOnly
 * Prelim support for Hidden Columns
 * A couple small bug fixes from pgLogical
 * Native support for Failover Slots via integrating pg_failover_slots extension
 
 
-Our production version is 3.1 and has been stabilized and hardened to include the following:
+Our initial production version was 3.1 and included the following:
 
 * Support for both pg15 **AND** pg16
 * Prelim testing for online upgrades between pg15 & pg16
@@ -136,11 +137,9 @@ can be either set in `postgresql.conf` or via `ALTER SYSTEM SET`.
      conflicting change that is coming from the remote node
   - `last_update_wins` - the version of data with newest commit timestamp
      will be kept (this can be either local or remote version)
-  - `first_update_wins` - the version of the data with oldest timestamp will
-     be kept (this can be either local or remote version)
 
-  The `keep_local`, `last_update_wins` and `first_update_wins` settings
-  require `track_commit_timestamp` PostgreSQL setting to be enabled.
+  For conflict resolution, the `track_commit_timestamp` PostgreSQL setting 
+  is always enabled.
 
 - `spock.conflict_log_level`
   Sets the log level for reporting detected conflicts when the
@@ -193,7 +192,7 @@ decoding:
     max_replication_slots = 10  # one per node needed on provider node
     max_wal_senders = 10        # one per node needed on provider node
     shared_preload_libraries = 'spock'
-    track_commit_timestamp = on # needed for last/first update wins conflict resolution
+    track_commit_timestamp = on # needed for conflict resolution
 
 `pg_hba.conf` has to allow logical replication connections from
 localhost. Logical replication connections are treated
@@ -571,6 +570,9 @@ may need to call `spock.alter_sub_resync_table()` to fix it.
   - `relation` - name or OID of the table to be removed from the set
 
 #### spock-repset-add-seq
+We strongly recommend that you use our new [Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences) rather
+than using the legacy sequences.
+
 - `spock.repset_add_seq(set_name name, relation regclass, sync_data boolean)`
   Adds a sequence to a replication set.
 
@@ -836,6 +838,9 @@ support for foreign keys in PostgreSQL).
 not replicated to the replica.
 
 ### Sequences
+
+We strongly recommend that you use our new [Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences) rather
+than using the legacy sequences described below.
 
 The state of sequences added to replication sets is replicated periodically
 and not in real-time. Dynamic buffer is used for the value being replicated so

@@ -45,6 +45,8 @@ extern bool spock_batch_inserts;
 extern char *spock_extra_connection_options;
 extern bool	spock_ch_stats;
 extern bool	spock_deny_ddl;
+extern bool	spock_enable_ddl_replication;
+extern bool	spock_include_ddl_repset;
 
 extern char *shorten_hash(const char *str, int maxlen);
 
@@ -83,6 +85,10 @@ extern void spock_drop_sequence_state_record(Oid seqoid);
 extern int64 sequence_get_last_value(Oid seqoid);
 
 extern bool in_spock_replicate_ddl_command;
+extern bool in_spock_queue_command;
+// extern Datum spock_replicate_ddl_command(PG_FUNCTION_ARGS);
+extern void spock_auto_replicate_ddl(const char *query, List *replication_sets,
+									 const char *role);
 
 #include "utils/memdebug.h"
 

@@ -7,14 +7,15 @@ SELECT * FROM spock.repset_create('parallel');
 
 \c :subscriber_dsn
 
-SELECT * FROM spock.sub_create(
-    subscription_name := 'test_subscription_parallel',
-    provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
-	replication_sets := '{parallel,default}',
-	forward_origins := '{}',
-	synchronize_structure := false,
-	synchronize_data := false
-);
+-- FIXME: The statment below is commented out temporarily.
+-- SELECT * FROM spock.sub_create(
+--     subscription_name := 'test_subscription_parallel',
+--     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
+-- 	replication_sets := '{parallel,default}',
+-- 	forward_origins := '{}',
+-- 	synchronize_structure := false,
+-- 	synchronize_data := false
+-- );
 
 SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription_parallel',

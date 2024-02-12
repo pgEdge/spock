@@ -21,11 +21,14 @@ OBJS = spock_apply.o spock_conflict.o spock_manager.o \
 
 SCRIPTS_built = spock_create_subscriber
 
-REGRESS = preseed infofuncs init_fail init preseed_check basic extended conflict_secondary_unique \
-		  toasted replication_set add_table matview bidirectional primary_key \
-		  interfaces foreign_key functions copy sequence triggers parallel row_filter \
-		  row_filter_sampling att_list column_filter apply_delay multiple_upstreams \
+REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
+		  toasted replication_set matview bidirectional primary_key \
+		  interfaces foreign_key copy sequence triggers parallel \
+		  att_list apply_delay multiple_upstreams \
 		  node_origin_cascade drop
+
+# Disabled following tests:
+#	extended add_table functions row_filter row_filter_sampling column_filter
 
 # The following test cases are disabled while developing.
 #

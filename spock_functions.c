@@ -58,6 +58,7 @@
 
 #include "tcop/tcopprot.h"
 
+#include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -65,6 +66,9 @@
 #include "utils/inval.h"
 #include "utils/json.h"
 #include "utils/guc.h"
+#if PG_VERSION_NUM >= 160000
+#include "utils/guc_hooks.h"
+#endif
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
@@ -175,6 +179,7 @@ static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *subscriber_name);
 
 bool in_spock_replicate_ddl_command = false;
+bool in_spock_queue_command = false;
 
 static SpockLocalNode *
 check_local_node(bool for_update)
@@ -1937,19 +1942,20 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 	ListCell   *lc;
 	SpockLocalNode *node;
 	StringInfoData		cmd;
+	StringInfoData		q;
+	List	   *path_list = NIL;
+	char	   *search_path;
+	char	   *role;
 
 	node = check_local_node(false);
 
-	/* XXX: This is here for backwards compatibility with pre 1.1 extension. */
-	if (PG_NARGS() < 2)
-	{
-		replication_sets = list_make1(DDL_SQL_REPSET_NAME);
-	}
-	else
-	{
-		ArrayType  *rep_set_names = PG_GETARG_ARRAYTYPE_P(1);
-		replication_sets = textarray_to_list(rep_set_names);
-	}
+	replication_sets = textarray_to_list(PG_GETARG_ARRAYTYPE_P(1));
+	search_path = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	role = text_to_cstring(PG_GETARG_TEXT_PP(3));
+
+	/* validate given search path */
+	if (!check_search_path(&search_path, NULL, PGC_S_SESSION))
+		elog(ERROR, "provided search path is not valid");
 
 	/* Validate replication sets. */
 	foreach(lc, replication_sets)
@@ -1962,18 +1968,38 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 	save_nestlevel = NewGUCNestLevel();
 
 	/* Force everything in the query to be fully qualified. */
-	(void) set_config_option("search_path", "",
+	(void) set_config_option("search_path", search_path,
 							 PGC_USERSET, PGC_S_SESSION,
 							 GUC_ACTION_SAVE, true, 0
 							 , false
 							 );
 
+	/* Add search path to the query for execution on the target node */
+	initStringInfo(&q);
+	SplitIdentifierString(search_path, ',', &path_list);
+	if (path_list != NIL)
+	{
+		ListCell *lc;
+
+		appendStringInfoString(&q, "SET search_path TO ");
+		foreach(lc, path_list)
+		{
+			if (lc != list_head(path_list))
+				appendStringInfoChar(&q, ',');
+			appendStringInfo(&q, "%s", quote_identifier((char *) lfirst(lc)));
+		}
+		appendStringInfo(&q, "; ");
+	}
+	else
+		appendStringInfo(&q, "SET search_path TO ''; ");
+	appendStringInfoString(&q, query);
+
 	/* Convert the query to json string. */
 	initStringInfo(&cmd);
-	escape_json(&cmd, query);
+	escape_json(&cmd, q.data);
 
 	/* Queue the query for replication. */
-	queue_message(replication_sets, GetUserId(),
+	queue_message(replication_sets, get_role_oid(role, false),
 				  QUEUE_COMMAND_TYPE_SQL, cmd.data);
 
 	/*
@@ -1983,7 +2009,7 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 	in_spock_replicate_ddl_command = true;
 	PG_TRY();
 	{
-		spock_execute_sql_command(query, GetUserNameFromId(GetUserId() , false), false);
+		spock_execute_sql_command(query, role, false);
 	}
 	PG_CATCH();
 	{
@@ -2000,6 +2026,51 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 	AtEOXact_GUC(true, save_nestlevel);
 
 	PG_RETURN_BOOL(true);
+}
+
+/*
+ * spock_auto_replicate_ddl
+ *
+ * Add the DDL statement to the spock.queue table so it can
+ * be replicated to connected nodes. It also sends the current
+ * search_path along with the query.
+ */
+void
+spock_auto_replicate_ddl(const char *query, List *replication_sets,
+						 const char *role)
+{
+	ListCell 	   *lc;
+	SpockLocalNode *node;
+	StringInfoData	cmd;
+	StringInfoData	q;
+	char		   *search_path;
+
+	node = check_local_node(false);
+
+	/* Validate replication sets. */
+	foreach(lc, replication_sets)
+	{
+		char   *setname = lfirst(lc);
+
+		(void) get_replication_set_by_name(node->node->id, setname, false);
+	}
+
+	/* Add search path to the query for execution on the target node */
+	search_path = GetConfigOptionByName("search_path", NULL, false);
+	initStringInfo(&q);
+	if (strlen(search_path) > 0)
+		appendStringInfo(&q, "SET search_path TO %s; ", search_path);
+	else
+		appendStringInfo(&q, "SET search_path TO ''; ");
+	appendStringInfoString(&q, query);
+
+	/* Convert the query to json string. */
+	initStringInfo(&cmd);
+	escape_json(&cmd, q.data);
+
+	/* Queue the query for replication. */
+	queue_message(replication_sets, get_role_oid(role, false),
+				  QUEUE_COMMAND_TYPE_SQL, cmd.data);
 }
 
 /*

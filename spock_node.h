@@ -71,6 +71,7 @@ extern SpockInterface *get_node_interface_by_name(Oid nodeid,
 extern void create_local_node(Oid nodeid, Oid ifid);
 extern void drop_local_node(void);
 extern SpockLocalNode *get_local_node(bool for_update, bool missing_ok);
+extern bool is_local_node(void);
 
 extern void create_subscription(SpockSubscription *sub);
 extern void alter_subscription(SpockSubscription *sub);
