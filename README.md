@@ -9,7 +9,7 @@ projects as a solid foundation to build upon for this enterprise-class extension
 
 **Version 3.3** is our current version under active development.  It presently includes the following important enhancements beyond v3.2:
 
-* Full re-work of paralell slots implementation to fully support mixed OLTP workloads
+* Full re-work of paralell slots implementation to support mixed OLTP workloads
 * Improved support for delta_apply columns to support various data types
 * Improved regression test coverage
 
@@ -17,7 +17,7 @@ Our current production version is v3.2 and includes the following important enha
 
 * Support for pg14
 * Support for pg17devel
-* Support for Snowflake Sequences
+* Support for [Snowflake Sequences](https://github.com/pgedge/snowflake-sequences)
 * Support for setting a database to ReadOnly
 * Prelim support for Hidden Columns
 * A couple small bug fixes from pgLogical
