@@ -3,11 +3,17 @@
 ## Multi-Master Replication with Conflict Resolution & Avoidance
 
 
-This SPOCK extension provides multi-master replication for PostgreSQL 14+
-We leveraged the [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source 
-project as a solid foundation to build upon for this enterprise-class extension. 
+This SPOCK extension provides multi-master replication for PostgreSQL 14+.
+We originally leveraged the [pgLogical](https://github.com/2ndQuadrant/pglogical) and [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) 
+projects as a solid foundation to build upon for this enterprise-class extension. 
 
-Our production version is 3.2 and includes the following important enhancements beyond Spock 3.1:
+**Version 3.3** is our current version under active development.  It presently includes the following important enhancements beyond v3.2:
+
+* Full re-work of paralell slots implementation to fully support mixed OLTP workloads
+* Improved support for delta_apply columns to support various data types
+* Improved regression test coverage
+
+Our current production version is v3.2 and includes the following important enhancements beyond Spock v3.1:
 
 * Support for pg14
 * Support for pg17devel
@@ -16,6 +22,7 @@ Our production version is 3.2 and includes the following important enhancements 
 * Prelim support for Hidden Columns
 * A couple small bug fixes from pgLogical
 * Native support for Failover Slots via integrating pg_failover_slots extension
+* Paralell slots support for insert only workloads
 
 
 Our initial production version was 3.1 and included the following:
@@ -27,7 +34,7 @@ Our initial production version was 3.1 and included the following:
 * Improved and document support for replication and maintaining partitioned tables.
 
 
-Our beta version was 3.0 and includes the following important enhancements beyond its pg_logical-2.4.2 base:
+Our beta version was 3.0 and includes the following important enhancements beyond its bdr/pg_logical base:
 
 * Support for pg15 (support for pg10 thru pg14 dropped)
 * Support for Asynchronous Multi-Master Replication with conflict resolution
