@@ -2027,13 +2027,14 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
  */
 void
 spock_auto_replicate_ddl(const char *query, List *replication_sets,
-						 const char *role)
+						 const char *role, Node *stmt)
 {
 	ListCell 	   *lc;
 	SpockLocalNode *node;
 	StringInfoData	cmd;
 	StringInfoData	q;
 	char		   *search_path;
+	bool			add_search_path = true;
 
 	node = check_local_node(false);
 
@@ -2045,13 +2046,65 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		(void) get_replication_set_by_name(node->node->id, setname, false);
 	}
 
-	/* Add search path to the query for execution on the target node */
-	search_path = GetConfigOptionByName("search_path", NULL, false);
+	/* not all objects require search path setting. */
+	switch(nodeTag(stmt))
+	{
+		case T_CreatedbStmt:	/* DATABASE */
+		case T_DropdbStmt:
+		case T_AlterDatabaseStmt:
+		case T_AlterDatabaseRefreshCollStmt:
+		case T_AlterDatabaseSetStmt:
+		case T_AlterSystemStmt:		/* ALTER SYSTEM */
+			add_search_path = false;
+			return;		/* skip these statements. */
+			break;
+
+		case T_CreateTableSpaceStmt:	/* TABLESPACE */
+		case T_DropTableSpaceStmt:
+		case T_AlterTableSpaceOptionsStmt:
+			add_search_path = false;
+			break;
+
+		case T_AlterTableStmt:
+			{
+				ListCell *cell;
+				AlterTableStmt *atstmt = (AlterTableStmt *) stmt;
+
+				foreach(cell, atstmt->cmds)
+				{
+					AlterTableCmd *cmd = (AlterTableCmd *) lfirst(cell);
+					if (cmd->subtype == AT_DetachPartition &&
+						((PartitionCmd *) cmd->def)->concurrent)
+						elog(ERROR, "ALTER TABLE ... DETACH CONCURRENTLY cannot auto replicate");
+				}
+			}
+			break;
+
+		case T_IndexStmt:
+			if (castNode(IndexStmt, stmt)->concurrent)
+				elog(ERROR, "CREATE INDEX CONCURRENTLY cannot auto replicate");
+			break;
+
+		default:
+			add_search_path = true;
+			break;
+	}
+
+	ereport(WARNING,
+		(errmsg("DDL statements are being replicated."),
+			errdetail_log("statement '%s'", query)));
+
 	initStringInfo(&q);
-	if (strlen(search_path) > 0)
-		appendStringInfo(&q, "SET search_path TO %s; ", search_path);
-	else
-		appendStringInfo(&q, "SET search_path TO ''; ");
+	if (add_search_path)
+	{
+		/* Add search path to the query for execution on the target node */
+		search_path = GetConfigOptionByName("search_path", NULL, false);
+		if (strlen(search_path) > 0)
+			appendStringInfo(&q, "SET search_path TO %s; ", search_path);
+		else
+			appendStringInfo(&q, "SET search_path TO ''; ");
+	}
+	/* add query to buffer */
 	appendStringInfoString(&q, query);
 
 	/* Convert the query to json string. */

@@ -86,9 +86,8 @@ extern int64 sequence_get_last_value(Oid seqoid);
 
 extern bool in_spock_replicate_ddl_command;
 extern bool in_spock_queue_command;
-// extern Datum spock_replicate_ddl_command(PG_FUNCTION_ARGS);
 extern void spock_auto_replicate_ddl(const char *query, List *replication_sets,
-									 const char *role);
+									 const char *role, Node *stmt);
 
 #include "utils/memdebug.h"
 
