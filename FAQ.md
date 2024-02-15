@@ -9,7 +9,7 @@ like oid, xmin.
 * What happens if a column being filtered on is dropped?
  - Currently in spock replication, even primary key can be dropped at provider.
 If a column being filtered on is dropped, at provider it is removed from the column
-filter too. This can be seen using `spock.show_repset_table_info()`.
+filter too. This can be seen using `spock.repset_show_table()`.
  Columns at subscriber remain as is, which is correct and expected. At subscriber,
 in this state INSERTs replicate, but UPDATEs and DELETEs do not.
 

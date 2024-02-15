@@ -59,14 +59,14 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 	}
 
 	initStringInfo(&query);
-	if (spock_remote_function_exists(conn, "spock", "show_repset_table_info", 2, NULL))
+	if (spock_remote_function_exists(conn, "spock", "repset_show_table", 2, NULL))
 	{
 		/* Spock 2.0+ */
 		appendStringInfo(&query,
 						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
 						 "       i.has_row_filter, i.relkind, i.relispartition"
 						 "  FROM (SELECT DISTINCT relid FROM spock.tables WHERE set_name = ANY(ARRAY[%s])) t,"
-						 "       LATERAL spock.show_repset_table_info(t.relid, ARRAY[%s]) i",
+						 "       LATERAL spock.repset_show_table(t.relid, ARRAY[%s]) i",
 						 repsetarr.data, repsetarr.data);
 	}
 	else
@@ -142,13 +142,13 @@ spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 	}
 
 	initStringInfo(&query);
-	if (spock_remote_function_exists(conn, "spock", "show_repset_table_info", 2, NULL))
+	if (spock_remote_function_exists(conn, "spock", "repset_show_table", 2, NULL))
 	{
 		/* Spock 2.0+ */
 		appendStringInfo(&query,
 						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
 						 "       i.has_row_filter, i.relkind, i.relispartition"
-						 "  FROM spock.show_repset_table_info(%s::regclass, ARRAY[%s]) i",
+						 "  FROM spock.repset_show_table(%s::regclass, ARRAY[%s]) i",
 						 PQescapeLiteral(conn, relname.data, relname.len),
 						 repsetarr.data);
 	}

@@ -11,8 +11,8 @@ SELECT spock.replicate_ddl($$
 		insert_xid bigint DEFAULT txid_current()
 	);
 $$);
- replicate_ddl
---------------- 
+ replicate_ddl 
+---------------
  t
 (1 row)
 
