@@ -22,6 +22,7 @@
 #include "common/hashfn.h"
 
 #include "nodes/makefuncs.h"
+#include "postmaster/interrupt.h"
 
 #include "storage/ipc.h"
 #include "storage/proc.h"
@@ -333,6 +334,7 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	 * shared memory.
 	 */
 	pqsignal(SIGTERM, handle_sigterm);
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 
 	/* Now safe to process signals */
 	BackgroundWorkerUnblockSignals();

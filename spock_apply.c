@@ -41,6 +41,7 @@
 #include "pgxc/pgxcnode.h"
 #endif
 
+#include "postmaster/interrupt.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 #include "replication/walsender.h"
@@ -1470,6 +1471,12 @@ apply_work(PGconn *streamConn)
 
 		Assert(CurrentMemoryContext == MessageContext);
 
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
 		/* emergency bailout if postmaster has died */
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
@@ -1541,6 +1548,12 @@ apply_work(PGconn *streamConn)
 			{
 				int c;
 				StringInfoData s;
+
+				if (ConfigReloadPending)
+				{
+					ConfigReloadPending = false;
+					ProcessConfigFile(PGC_SIGHUP);
+				}
 
 				last_receive_timestamp = GetCurrentTimestamp();
 
