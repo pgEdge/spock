@@ -2056,6 +2056,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		case T_AlterDatabaseSetStmt:
 		case T_AlterSystemStmt:		/* ALTER SYSTEM */
 			add_search_path = false;
+			elog(WARNING, "This DDL statement will not be replicated.");
 			return;		/* skip these statements. */
 			break;
 
@@ -2075,14 +2076,20 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 					AlterTableCmd *cmd = (AlterTableCmd *) lfirst(cell);
 					if (cmd->subtype == AT_DetachPartition &&
 						((PartitionCmd *) cmd->def)->concurrent)
-						elog(ERROR, "ALTER TABLE ... DETACH CONCURRENTLY cannot auto replicate");
+					{
+						elog(WARNING, "This DDL statement will not be replicated.");
+						return;
+					}
 				}
 			}
 			break;
 
 		case T_IndexStmt:
 			if (castNode(IndexStmt, stmt)->concurrent)
-				elog(ERROR, "CREATE INDEX CONCURRENTLY cannot auto replicate");
+			{
+				elog(WARNING, "This DDL statement will not be replicated.");
+				return;
+			}
 			break;
 
 		default:
@@ -2090,9 +2097,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 	}
 
-	ereport(WARNING,
-		(errmsg("DDL statements are being replicated."),
-			errdetail_log("statement '%s'", query)));
+	elog(INFO, "DDL statement replicated.");
 
 	initStringInfo(&q);
 	if (add_search_path)
