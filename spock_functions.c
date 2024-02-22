@@ -2056,8 +2056,19 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		case T_AlterDatabaseSetStmt:
 		case T_AlterSystemStmt:		/* ALTER SYSTEM */
 			add_search_path = false;
-			elog(WARNING, "This DDL statement will not be replicated.");
-			return;		/* skip these statements. */
+			goto skip_ddl;
+			break;
+		case T_AlterOwnerStmt:
+			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_DATABASE)
+				goto skip_ddl;
+			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_TABLESPACE)
+				add_search_path = false;
+			break;
+		case T_RenameStmt:
+			if (castNode(RenameStmt, stmt)->renameType == OBJECT_DATABASE)
+				goto skip_ddl;
+			if (castNode(RenameStmt, stmt)->renameType == OBJECT_TABLESPACE)
+				add_search_path = false;
 			break;
 
 		case T_CreateTableSpaceStmt:	/* TABLESPACE */
@@ -2076,20 +2087,14 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 					AlterTableCmd *cmd = (AlterTableCmd *) lfirst(cell);
 					if (cmd->subtype == AT_DetachPartition &&
 						((PartitionCmd *) cmd->def)->concurrent)
-					{
-						elog(WARNING, "This DDL statement will not be replicated.");
-						return;
-					}
+						goto skip_ddl;
 				}
 			}
 			break;
 
 		case T_IndexStmt:
 			if (castNode(IndexStmt, stmt)->concurrent)
-			{
-				elog(WARNING, "This DDL statement will not be replicated.");
-				return;
-			}
+				goto skip_ddl;
 			break;
 
 		default:
@@ -2119,6 +2124,11 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	/* Queue the query for replication. */
 	queue_message(replication_sets, get_role_oid(role, false),
 				  QUEUE_COMMAND_TYPE_SQL, cmd.data);
+
+	return;
+
+skip_ddl:
+	elog(WARNING, "This DDL statement will not be replicated.");
 }
 
 /*
