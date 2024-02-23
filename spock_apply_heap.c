@@ -772,6 +772,7 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	MemoryContext oldctx;
 	ResultRelInfo *relinfo;
 	bool found;
+	int retry;
 	bool is_delta_apply = false;
 
 	/* Initialize the executor state. */
@@ -819,10 +820,21 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 	relinfo = edata->targetRelInfo;
 
-	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
-									edata->targetRel->idxoid,
-									remoteslot, &localslot);
+	retry = 0;
+	while (retry < 5)
+	{
+		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
+										edata->targetRel->idxoid,
+										remoteslot, &localslot);
+		if (found)
+			break;
+
+		retry++;
+	}
 	ExecClearTuple(remoteslot);
+
+	if (retry > 0)
+		elog(LOG, "spock_apply_heap_update() retried %d times", retry);
 
 	/*
 	 * Perform the UPDATE if Tuple found.
@@ -963,7 +975,9 @@ void spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	TupleTableSlot *remoteslot;
 	TupleTableSlot *localslot;
 	MemoryContext oldctx;
+	ResultRelInfo *relinfo;
 	bool found;
+	int retry;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -985,10 +999,28 @@ void spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
 	ExecOpenIndices(edata->targetRelInfo, false);
 
-	found = FindReplTupleInLocalRel(edata, rel->rel,
-									rel->idxoid,
-									remoteslot, &localslot);
+	relinfo = edata->targetRelInfo;
+
+	retry = 0;
+	while (retry < 5)
+	{
+		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
+										edata->targetRel->idxoid,
+										remoteslot, &localslot);
+		/*
+		found = FindReplTupleInLocalRel(edata, rel->rel,
+										rel->idxoid,
+										remoteslot, &localslot);
+		*/
+		if (found)
+			break;
+
+		retry++;
+	}
 	ExecClearTuple(remoteslot);
+
+	if (retry > 0)
+		elog(LOG, "spock_apply_heap_delete() retried %d times", retry);
 
 	/*
 	 * Perform the DELETE if Tuple found.
