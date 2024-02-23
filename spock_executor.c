@@ -320,27 +320,6 @@ add_ddl_to_repset(Node *parsetree)
 	{
 		replication_set_add_table(repset->id, reloid, NIL, NULL);
 
-		/*
-		* FIXME: should a trucate request be sent before sync? perhaps based on a
-		* configuration option?
-		*/
-
-		/* synchronize table */
-		{
-			StringInfoData		json;
-
-			/* It's easier to construct json manually than via Jsonb API... */
-			initStringInfo(&json);
-			appendStringInfo(&json, "{\"schema_name\": ");
-			escape_json(&json, get_namespace_name(RelationGetNamespace(targetrel)));
-			appendStringInfo(&json, ",\"table_name\": ");
-			escape_json(&json, RelationGetRelationName(targetrel));
-			appendStringInfo(&json, "}");
-			/* Queue the synchronize request for replication. */
-			queue_message(list_make1(repset->name), GetUserId(),
-						QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
-		}
-
 		elog(LOG, "table '%s' was added to '%s' replication set.",
 			 relation->relname, repset->name);
 	}
