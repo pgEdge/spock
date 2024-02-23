@@ -2035,6 +2035,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	StringInfoData	q;
 	char		   *search_path;
 	bool			add_search_path = true;
+	bool			warn = false;
 
 	node = check_local_node(false);
 
@@ -2071,6 +2072,10 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				add_search_path = false;
 			break;
 
+		case T_CreateTableAsStmt:
+			warn = true;
+			break;
+
 		case T_CreateTableSpaceStmt:	/* TABLESPACE */
 		case T_DropTableSpaceStmt:
 		case T_AlterTableSpaceOptionsStmt:
@@ -2102,7 +2107,10 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 	}
 
-	elog(INFO, "DDL statement replicated.");
+	if (warn)
+		elog(WARNING, "DDL statement replicated, but could be unsafe.");
+	else
+		elog(INFO, "DDL statement replicated.");
 
 	initStringInfo(&q);
 	if (add_search_path)
