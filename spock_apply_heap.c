@@ -1007,11 +1007,6 @@ void spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
 										edata->targetRel->idxoid,
 										remoteslot, &localslot);
-		/*
-		found = FindReplTupleInLocalRel(edata, rel->rel,
-										rel->idxoid,
-										remoteslot, &localslot);
-		*/
 		if (found)
 			break;
 
