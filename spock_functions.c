@@ -2802,17 +2802,6 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 }
 
 Datum
-prune_conflict_tracking(PG_FUNCTION_ARGS)
-{
-	int32	result;
-
-	result = spock_ctt_prune();
-	spock_ctt_close();
-
-	PG_RETURN_INT32(result);
-}
-
-Datum
 lag_tracker_info(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;

@@ -44,6 +44,8 @@ typedef struct SpockRelation
 	int		   *attmap;
 	bool		has_delta_columns;
 	Oid		   *delta_apply_functions;
+	int16		att_commit_ts;
+	int16		att_commit_origin;
 
 	/* Additional cache, only valid as long as relation mapping is. */
 	bool		hasTriggers;

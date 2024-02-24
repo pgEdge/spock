@@ -341,22 +341,6 @@ CREATE VIEW spock.channel_summary_stats AS
   FROM spock.channel_table_stats
   GROUP BY subid, sub_name;
 
-CREATE FUNCTION spock.prune_conflict_tracking()
-RETURNS int4
-AS 'MODULE_PATHNAME', 'prune_conflict_tracking'
-LANGUAGE C;
-
-CREATE TABLE spock.conflict_tracker (
-    relid oid,
-    tid tid,
-
-    last_origin int,
-    last_xmin xid,
-    last_ts timestamptz,
-
-    PRIMARY KEY(relid, tid)
-);
-
 CREATE FUNCTION spock.lag_tracker(
     OUT slot_name text,
     OUT commit_lsn pg_lsn,

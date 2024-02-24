@@ -95,11 +95,22 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		entry->rel = table_openrv(rv, lockmode);
 
 		desc = RelationGetDescr(entry->rel);
+		entry->att_commit_ts = -1;
+		entry->att_commit_origin = -1;
 		for (i = 0; i < entry->natts; i++)
 		{
 			AttributeOpts  *aopt;
 
 			entry->attmap[i] = tupdesc_get_att_by_name(desc, entry->attnames[i]);
+			/*
+			 * Remember the attnum for the hidden columns
+			 * _Spock_CommitTS_ and _Spock_CommitOrigin_
+			 */
+			if (strcmp(entry->attnames[i], "_Spock_CommitTS_") == 0)
+				entry->att_commit_ts = i;
+			else if (strcmp(entry->attnames[i], "_Spock_CommitOrigin_") == 0)
+				entry->att_commit_origin = i;
+
 			/*
 			 * If we find attribute options for this column and the
 			 * delta_apply_function is set, lookup the oid for it.

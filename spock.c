@@ -93,7 +93,6 @@ static const struct config_enum_entry server_message_level_options[] = {
 bool	spock_synchronous_commit = false;
 char   *spock_temp_directory = "";
 bool	spock_use_spi = false;
-int		spock_ctt_prune_interval;
 bool	spock_batch_inserts = true;
 static char *spock_temp_directory_config;
 bool	spock_ch_stats = true;
@@ -868,16 +867,6 @@ _PG_init(void)
 							   "",
 							   PGC_SIGHUP,
 							   0,
-							   NULL, NULL, NULL);
-
-	DefineCustomIntVariable("spock.conflict_prune_interval",
-							   "Interval for pruning the conflict_tracker table",
-							   NULL,
-							   &spock_ctt_prune_interval,
-							   30,
-							   0, 3600,
-							   PGC_SIGHUP,
-							   GUC_UNIT_S,
 							   NULL, NULL, NULL);
 
 	DefineCustomBoolVariable("spock.channel_counters",

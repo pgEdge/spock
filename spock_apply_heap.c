@@ -487,43 +487,6 @@ void spock_apply_heap_begin(void)
 
 void spock_apply_heap_commit(void)
 {
-	TimestampTz next_prune;
-	TimestampTz now;
-	int32 num_pruned;
-
-	/*
-	 * For pruning of the Conflict Tracking Hash we remember our
-	 * assigned origin and the last commit timestamp.
-	 */
-	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
-	if (MySpockWorker->worker.apply.replorigin != replorigin_session_origin)
-	{
-		if (MySpockWorker->worker.apply.replorigin != InvalidRepOriginId)
-			/* This should never happen */
-			elog(LOG, "SPOCK: remote origin id changes from %d to %d",
-				 MySpockWorker->worker.apply.replorigin,
-				 replorigin_session_origin);
-		MySpockWorker->worker.apply.replorigin = replorigin_session_origin;
-	}
-	MySpockWorker->worker.apply.last_ts = replorigin_session_origin_timestamp;
-	LWLockRelease(SpockCtx->lock);
-
-	next_prune = TimestampTzPlusMilliseconds(SpockCtx->ctt_last_prune,
-											 SpockCtx->ctt_prune_interval * 1000);
-	now = GetCurrentTimestamp();
-	if (next_prune <= now)
-	{
-		SpockCtx->ctt_last_prune = now;
-
-		PushActiveSnapshot(GetTransactionSnapshot());
-		num_pruned = spock_ctt_prune();
-		PopActiveSnapshot();
-		CommandCounterIncrement();
-
-		elog(DEBUG1, "SPOCK: %d entries pruned from CTT", num_pruned);
-	}
-
-	spock_ctt_close();
 }
 
 static bool
@@ -773,7 +736,6 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	ResultRelInfo *relinfo;
 	bool found;
 	int retry;
-	bool is_delta_apply = false;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -856,8 +818,7 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		MemoryContextSwitchTo(oldctx);
 
 		remotetuple = ExecFetchSlotHeapTuple(remoteslot, true, NULL);
-		local_origin_found = get_tuple_origin(RelationGetRelid(rel->rel),
-											  TTS_TUP(localslot),
+		local_origin_found = get_tuple_origin(rel, TTS_TUP(localslot),
 											  &(localslot->tts_tid), &xmin,
 											  &local_origin, &local_ts);
 
@@ -867,10 +828,18 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 									 &resolution);
 
 		/*
-		 * Remote tuple won, so we go forward with that as a base.
+		 * If remote tuple won we go forward with that as a base.
 		 */
 		if (apply && applytuple == remotetuple)
 		{
+			/* Set _Spock_CommitTS_ and _Spock_CommitOrigin_ to NULL */
+			if (rel->att_commit_ts > 0 && rel->att_commit_origin > 0)
+			{
+				newtup->nulls[rel->att_commit_ts] = true;
+				newtup->nulls[rel->att_commit_origin] = true;
+				newtup->changed[rel->att_commit_ts] = true;
+				newtup->changed[rel->att_commit_origin] = true;
+			}
 			slot_modify_data(remoteslot, localslot, rel, newtup);
 		}
 		else
@@ -904,6 +873,37 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			}
 			oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 			build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
+			if (!apply)
+			{
+				/*
+				 * We are overriding apply=false because of delta apply.
+				 * Remember the current commit timestamp and origin
+				 * in the hidden columns.
+				 */
+				apply = true;
+
+				deltatup.values[rel->att_commit_ts] = TimestampTzGetDatum(local_ts);
+				deltatup.nulls[rel->att_commit_ts] = false;
+				deltatup.changed[rel->att_commit_ts] = true;
+				deltatup.values[rel->att_commit_origin] = Int32GetDatum(local_origin);
+				deltatup.nulls[rel->att_commit_origin] = false;
+				deltatup.changed[rel->att_commit_origin] = true;
+
+				/* Count the DCA event in stats */
+				handle_stats_counter(rel->rel, MyApplyWorker->subid,
+									 SPOCK_STATS_DCA_COUNT, 1);
+			}
+			else
+			{
+				/*
+				 * We let the remote row get applied. Set the hidden
+				 * commit_ts and _origin columns to NULL.
+				 */
+				deltatup.nulls[rel->att_commit_ts] = true;
+				deltatup.changed[rel->att_commit_ts] = true;
+				deltatup.nulls[rel->att_commit_origin] = true;
+				deltatup.changed[rel->att_commit_origin] = true;
+			}
 			applytuple = heap_modify_tuple(currenttuple,
 										   RelationGetDescr(rel->rel),
 										   deltatup.values,
@@ -911,39 +911,16 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 										   deltatup.changed);
 			MemoryContextSwitchTo(oldctx);
 			slot_store_htup(remoteslot, rel, applytuple);
-
-			if (!apply)
-			{
-				is_delta_apply = true;
-				apply = true;
-
-				/* Count the DCA event in stats */
-				handle_stats_counter(rel->rel, MyApplyWorker->subid,
-									 SPOCK_STATS_DCA_COUNT, 1);
-			}
 		}
 
+		/*
+		 * Finally do the actual tuple update if needed.
+		 */
 		if (apply)
 		{
 			EvalPlanQualSetSlot(&epqstate, remoteslot);
-
-			/* Do the actual update. */
 			ExecSimpleRelationUpdate(edata->targetRelInfo, estate, &epqstate,
 									 localslot, remoteslot);
-
-			/* If this is a delta-apply, perform conflict tracking */
-			if (is_delta_apply)
-			{
-				/*
-				 * We forced an update to a row that we normally had
-				 * to skip because it has delta resolve columns. Remember
-				 * the correct origin, xmin and commit timestamp for
-				 * get_tuple_origion() to figure it out.
-				 */
-				spock_ctt_store(RelationGetRelid(rel->rel),
-								&(remoteslot->tts_tid), local_origin,
-								GetTopTransactionId(), local_ts);
-			}
 		}
 	}
 	else

@@ -72,10 +72,6 @@ typedef struct SpockContext {
 	/* Access lock for Lag Tracking Hash. */
 	LWLock	   *lag_lock;
 
-	/* Interval for pruning the conflict_tracker table */
-	int		ctt_prune_interval;
-	Datum	ctt_last_prune;
-
 	/* Supervisor process. */
 	PGPROC	   *supervisor;
 

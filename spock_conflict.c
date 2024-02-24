@@ -59,21 +59,10 @@ int		spock_conflict_resolver = SPOCK_RESOLVE_APPLY_REMOTE;
 int		spock_conflict_log_level = LOG;
 bool	spock_save_resolutions = false;
 
-static	Relation	spock_ctt_rel = NULL;
-static	Oid			spock_ctt_relind = InvalidOid;
-
 static void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 	HeapTuple tuple);
 static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
 	bool *ret_isnull);
-
-/*
- * Support functions for conflict tracking permanent table
- */
-static void spock_ctt_remove(Oid relid, ItemPointer tid);
-static bool spock_ctt_fetch(Oid relid, ItemPointer tid,
-							RepOriginId *last_origin, TransactionId *last_xmin,
-							TimestampTz *last_ts);
 
 /*
  * Setup a ScanKey for a search in the relation 'rel' for a tuple 'key' that
@@ -481,14 +470,11 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
  * Returns true if local origin data was found, false if not.
  */
 bool
-get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
+get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 				 TransactionId *xmin,
 				 RepOriginId *local_origin, TimestampTz *local_ts)
 {
-	RepOriginId		last_origin;
-	TransactionId	last_xmin;
-	TimestampTz		last_ts;
-	int				cmp;
+	int		cmp;
 
 	*xmin = HeapTupleHeaderGetXmin(local_tuple->t_data);
 	if (!track_commit_timestamp)
@@ -525,55 +511,47 @@ get_tuple_origin(Oid relid, HeapTuple local_tuple, ItemPointer tid,
 	{
 		/*
 		 * The commit timestamp info for this transaction was trimmed
-		 * already. Nothing much we can do other than drop the tracking
-		 * entry, if we have one.
+		 * already. Nothing much we can do.
 		 */
-		spock_ctt_remove(relid, tid);
 		return false;
 	}
 
 	/*
-	 * Try to lookup a tracking entry in hour conflict tracking data.
-	 *
-	 * If we don't find one then we return the original results from
-	 * TransactionIdGetCommitTsData().
-	 *
-	 * If we find one and it wins the conflict criteria, we keep it and
-	 * change the origin and timestamp information returned to that.
-	 *
-	 * If we find one and it loses the conflict criteria, we drop it.
+	 * Check if the local tuple has commit_ts and commit_origin
+	 * override information.
 	 */
 
-	if (!spock_ctt_fetch(relid, tid, &last_origin, &last_xmin, &last_ts))
-		return true;
-
-	if (!TransactionIdEquals(last_xmin, *xmin))
+	if (rel->att_commit_ts >= 0 && rel->att_commit_origin >= 0)
 	{
+		bool	isnull;
+		Datum	commit_ts;
+		Datum	commit_origin;
+
+		commit_ts = heap_getattr(local_tuple,
+								 rel->attmap[rel->att_commit_ts] + 1,
+								 RelationGetDescr(rel->rel), &isnull);
+		if (isnull)
+			return true;
+
+		commit_origin = heap_getattr(local_tuple,
+									 rel->attmap[rel->att_commit_origin] + 1,
+									 RelationGetDescr(rel->rel), &isnull);
+		if (isnull)
+			return true;
+
 		/*
-		 * The local tuple at this ItemPointer (ctid) isn't the one that
-		 * we remembered this entry for. This can happen when a tuple we
-		 * remembered was deleted, vacuumed and the ItemPointer then
-		 * reused. We can identify that because the xmin in the local slot
-		 * is now different from when we stored it.
+		 * We found last commit info in the local tuple. Override
+		 * what TransactionIdGetCommitTsData() returned if it is
+		 * later than that.
 		 */
-		spock_ctt_remove(relid, tid);
-		return true;
-	}
-
-    cmp = timestamptz_cmp_internal(*local_ts, last_ts);
-	if (spock_conflict_resolver == SPOCK_RESOLVE_FIRST_UPDATE_WINS)
-		cmp = -cmp;
-
-	if (cmp > 0)
-	{
-		spock_ctt_remove(relid, tid);
-	}
-	else
-	{
-		*local_origin = last_origin;
-		*local_ts = last_ts;
-
-		spock_ctt_store(relid, tid, last_origin, *xmin, last_ts);
+		cmp = timestamptz_cmp_internal(*local_ts, commit_ts);
+		if (spock_conflict_resolver == SPOCK_RESOLVE_FIRST_UPDATE_WINS)
+			cmp = -cmp;
+		if (cmp < 0)
+		{
+			*local_origin = (RepOriginId)DatumGetInt32(commit_origin);
+			*local_ts = DatumGetTimestampTz(commit_ts);
+		}
 	}
 
 	return true;
@@ -998,352 +976,6 @@ spock_conflict_resolver_check_hook(int *newval, void **extra,
 	}
 
 	return true;
-}
-
-
-/*
- * Private structures for spock_ctt_prune()
- */
-typedef struct CTTPruneSub
-{
-	Oid				sub_id;
-	char		   *sub_name;
-	RepOriginId		replorigin;
-} CTTPruneSub;
-
-typedef struct CTTPruneOrig
-{
-	RepOriginId		replorigin;
-	TimestampTz		last_ts;
-} CTTPruneOrig;
-
-int32
-spock_ctt_prune(void)
-{
-	int32			num_pruned = 0;
-	TupleDesc		tupdesc;
-	List		   *subscriptions = NIL;
-	ListCell	   *slc;
-	CTTPruneSub	   *sub;
-	List		   *origins = NIL;
-	ListCell	   *olc;
-	CTTPruneOrig   *origin;
-	List		   *workers = NIL;
-	ListCell	   *wlc;
-	SpockWorker	   *worker;
-	TimestampTz		min_last_ts = 0;
-	TimestampTz		cmp_last_ts = 0;
-	Datum			intvl10;
-	Oid				argtypes[1];
-	Datum			args[1];
-	int				rc;
-	uint64			i;
-	bool			all_ok = true;
-
-	/*
-	 * We need to find the min(max(last commit ts of every remote)).
-	 * This is the safe timestamp from before which we don't need
-	 * to keep any tracking entries. The idea is that transactions
-	 * are received in commit order per replorigin. If an entry has a
-	 * last_ts before the last_ts of a node, then we can never
-	 * again receive any replication action that is before that and
-	 * the last update wins will always apply. If this is true for
-	 * all remotes, we no longer need the entry.
-	 */
-
-
-	/* Get a list of all spock.subscriptions */
-	if (SPI_connect() != SPI_OK_CONNECT)
-		elog(ERROR, "SPOCK: SPI_connect() failed");
-	rc = SPI_execute("SELECT sub_id, sub_name "
-					 "FROM spock.subscription", true, 0);
-	if (rc != SPI_OK_SELECT)
-		elog(ERROR, "SPOCK: SPI_execute() failed");
-	if (SPI_tuptable == NULL)
-	{
-		SPI_finish();
-		return 0;
-	}
-	tupdesc = SPI_tuptable->tupdesc;
-	for (i = 0; i < SPI_tuptable->numvals; i++)
-	{
-		HeapTuple	tup = SPI_tuptable->vals[i];
-		bool		isnull;
-
-		sub = palloc(sizeof(CTTPruneSub));
-		sub->sub_id = DatumGetObjectId(SPI_getbinval(tup, tupdesc, 1,
-													 &isnull));
-		sub->sub_name = SPI_getvalue(tup, tupdesc, 2);
-		sub->replorigin = InvalidRepOriginId;
-		subscriptions = lappend(subscriptions, sub);
-	}
-
-	/*
-	 * Now find all the workers and fill in the replorigin. While at
-	 * it build the list of unique replorigins with their max(last_ts).
-	 */
-	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
-	workers = spock_apply_find_all(MyDatabaseId);
-	foreach (slc, subscriptions)
-	{
-		sub = (CTTPruneSub *)lfirst(slc);
-
-		foreach (wlc, workers)
-		{
-			bool	found = false;
-
-			worker = (SpockWorker *)lfirst(wlc);
-
-			if (worker->worker.apply.subid == sub->sub_id)
-			{
-				sub->replorigin = worker->worker.apply.replorigin;
-			}
-
-			foreach (olc, origins)
-			{
-				origin = (CTTPruneOrig *)lfirst(olc);
-
-				if (origin->replorigin == worker->worker.apply.replorigin)
-				{
-					if (timestamptz_cmp_internal(origin->last_ts,
-												 worker->worker.apply.last_ts) > 0)
-					{
-						origin->last_ts = worker->worker.apply.last_ts;
-					}
-					found = true;
-					break;
-				}
-			}
-			if (!found)
-			{
-				origin = (CTTPruneOrig *)palloc(sizeof(CTTPruneOrig));
-				origin->replorigin = worker->worker.apply.replorigin;
-				origin->last_ts = worker->worker.apply.last_ts;
-				origins = lappend(origins, origin);
-			}
-		}
-	}
-	LWLockRelease(SpockCtx->lock);
-
-	/*
-	 * Make sure we found a replorigin and last_ts for every
-	 * subscription. We cannot proceed without that because
-	 * we don't know how we lost connection to that node and
-	 * there could be outstanding transactions there with
-	 * conflicts that need the current entries to resolve.
-	 */
-	foreach (slc, subscriptions)
-	{
-		sub = (CTTPruneSub *)lfirst(slc);
-
-
-		if (sub->replorigin == InvalidRepOriginId)
-		{
-			elog(LOG, "SPOCK: sub_id=%u sub_name=%s "
-				 "replorigin=InvalidRepOriginId",
-				 sub->sub_id, sub->sub_name);
-			all_ok = false;
-		}
-	}
-	if (!all_ok)
-	{
-		elog(DEBUG1, "SPOCK: cannot prune conflict tracking, one or more "
-			 "subscriptions have unknown last commit timestamp.");
-		SPI_finish();
-		return 0;
-	}
-
-	/*
-	 * Now find the min of the last commit timestamps of all replorigins.
-	 */
-	foreach(olc, origins)
-	{
-		origin = (CTTPruneOrig *)lfirst(olc);
-
-		if (min_last_ts == 0)
-			min_last_ts = origin->last_ts;
-		else
-			if (timestamptz_cmp_internal(origin->last_ts, min_last_ts) < 0)
-				min_last_ts = origin->last_ts;
-	}
-
-	/*
-	 * We apply a 10s safety distance because there is a small chance
-	 * that a node's commit timestamp actually does run backwards.
-	 * This is because the commit timestamp is placed into the commit
-	 * WAL record before it is added to the WAL. So there is a race
-	 * condition where one backend gets a timestamp after another but
-	 * writes the WAL record first.
-	 */
-	intvl10 = DirectFunctionCall3(interval_in, PointerGetDatum("10s"),
-								  ObjectIdGetDatum(InvalidOid),
-								  Int32GetDatum(-1));
-	cmp_last_ts = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_mi_interval,
-														  TimestampTzGetDatum(min_last_ts),
-														  intvl10));
-
-	argtypes[0] = TIMESTAMPTZOID;
-	args[0] = TimestampTzGetDatum(cmp_last_ts);
-	rc = SPI_execute_with_args("DELETE FROM " EXTENSION_NAME "."
-							   SPOCK_CTT_NAME " WHERE last_ts < $1",
-							   1, argtypes, args, NULL, false, 0);
-	if (rc != SPI_OK_DELETE)
-		elog(ERROR, "SPOCK: SPI_execute() failed");
-	num_pruned = SPI_processed;
-
-	SPI_finish();
-
-	return num_pruned;
-}
-
-void
-spock_ctt_store(Oid relid, ItemPointer tid,
-				RepOriginId last_origin, TransactionId last_xmin,
-				TimestampTz last_ts)
-{
-	Relation	rel;
-	HeapTuple	tup = NULL;
-	TupleDesc	tupdesc;
-	Datum		values[5];
-	bool		nulls[5];
-	bool		replaces[5];
-
-	/* Delete any eventually existing old tuple. */
-	spock_ctt_remove(relid, tid);
-
-	rel = spock_ctt_rel;
-	tupdesc = RelationGetDescr(rel);
-
-	MemSet(values, 0, sizeof(values));
-	MemSet(nulls, 0, sizeof(nulls));
-	MemSet(replaces, 0, sizeof(replaces));
-
-	/* key */
-	values[0] = ObjectIdGetDatum(relid);
-	values[1] = PointerGetDatum(tid);
-
-	values[2] = Int16GetDatum(last_origin);
-	replaces[2] = true;
-
-	values[3] = TransactionIdGetDatum(last_xmin);
-	replaces[3] = true;
-
-	values[4] = TimestampTzGetDatum(last_ts);
-	replaces[3] = true;
-
-	/* Inser new tuple in catalog. */
-	tup = heap_form_tuple(tupdesc, values, nulls);
-	CatalogTupleInsert(rel, tup);
-	heap_freetuple(tup);
-}
-
-static void
-spock_ctt_remove(Oid relid, ItemPointer tid)
-{
-	Relation	rel;
-	HeapTuple	tup;
-	ScanKeyData key[2];
-	SysScanDesc scan;
-
-	ScanKeyInit(&key[0],
-				1,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(relid));
-	ScanKeyInit(&key[1],
-				2,
-				BTEqualStrategyNumber, F_TIDEQ,
-				PointerGetDatum(tid));
-
-	if (spock_ctt_rel == NULL)
-	{
-		RangeVar   *rv;
-		List	   *indexes;
-
-		rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
-		spock_ctt_rel = table_openrv(rv, RowExclusiveLock);
-		indexes = RelationGetIndexList(spock_ctt_rel);
-		Assert(list_length(indexes) == 1);
-		spock_ctt_relind = linitial_oid(indexes);
-		list_free(indexes);
-	}
-	rel = spock_ctt_rel;
-
-	scan = systable_beginscan(rel, spock_ctt_relind, true, NULL, 2, key);
-	while ((tup = systable_getnext(scan)) != NULL)
-	{
-		/* Remove the tuple in catalog. */
-		CatalogTupleDelete(rel, &tup->t_self);
-
-		break;				/* there can be only one match */
-	}
-
-	/* Cleanup */
-	systable_endscan(scan);
-}
-
-static bool
-spock_ctt_fetch(Oid relid, ItemPointer tid,
-				RepOriginId *last_origin, TransactionId *last_xmin,
-				TimestampTz *last_ts)
-{
-	Relation	rel;
-	HeapTuple	tup;
-	ScanKeyData key[2];
-	SysScanDesc scan;
-	TupleDesc	tupdesc;
-	bool		ctt_found = false;
-
-	ScanKeyInit(&key[0],
-				1,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(relid));
-	ScanKeyInit(&key[1],
-				2,
-				BTEqualStrategyNumber, F_TIDEQ,
-				PointerGetDatum(tid));
-
-	if (spock_ctt_rel == NULL)
-	{
-		RangeVar   *rv;
-		List	   *indexes;
-
-		rv = makeRangeVar(EXTENSION_NAME, SPOCK_CTT_NAME, -1);
-		spock_ctt_rel = table_openrv(rv, RowExclusiveLock);
-		indexes = RelationGetIndexList(spock_ctt_rel);
-		Assert(list_length(indexes) == 1);
-		spock_ctt_relind = linitial_oid(indexes);
-		list_free(indexes);
-	}
-	rel = spock_ctt_rel;
-	tupdesc = RelationGetDescr(rel);
-
-	scan = systable_beginscan(rel, spock_ctt_relind, true, NULL, 2, key);
-	tup = systable_getnext(scan);
-	if (tup)
-	{
-		bool	isnull;
-
-		ctt_found = true;
-
-		*last_origin = DatumGetInt16(heap_getattr(tup, 3, tupdesc, &isnull));
-		*last_xmin = DatumGetTransactionId(heap_getattr(tup, 4,
-														tupdesc, &isnull));
-		*last_ts = DatumGetTimestampTz(heap_getattr(tup, 5, tupdesc, &isnull));
-	}
-	systable_endscan(scan);
-
-	return ctt_found;
-}
-
-void
-spock_ctt_close(void)
-{
-	if (spock_ctt_rel != NULL)
-	{
-		table_close(spock_ctt_rel, NoLock);
-		spock_ctt_rel = NULL;
-		spock_ctt_relind = InvalidOid;
-	}
 }
 
 /*
