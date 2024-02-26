@@ -517,10 +517,18 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 	}
 
 	/*
+	 * If the origin reported by TransactionIdGetCommitTsData() is
+	 * InvalidRepOriginId then the tuple was last modified by a local
+	 * transaction. Whatever may be recorded in the hidden columns
+	 * is irrelevant in that case.
+	 */
+	if (local_origin == InvalidRepOriginId)
+		return true;
+
+	/*
 	 * Check if the local tuple has commit_ts and commit_origin
 	 * override information.
 	 */
-
 	if (rel->att_commit_ts >= 0 && rel->att_commit_origin >= 0)
 	{
 		bool	isnull;
