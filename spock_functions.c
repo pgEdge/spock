@@ -2053,20 +2053,27 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		case T_CreatedbStmt:	/* DATABASE */
 		case T_DropdbStmt:
 		case T_AlterDatabaseStmt:
+#if PG_VERSION_NUM >= 150000
 		case T_AlterDatabaseRefreshCollStmt:
+#endif
 		case T_AlterDatabaseSetStmt:
 		case T_AlterSystemStmt:		/* ALTER SYSTEM */
+		case T_CreateSubscriptionStmt:	/* SUBSCRIPTION */
+		case T_DropSubscriptionStmt:
+		case T_AlterSubscriptionStmt:
 			add_search_path = false;
 			goto skip_ddl;
 			break;
 		case T_AlterOwnerStmt:
-			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_DATABASE)
+			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_DATABASE ||
+				castNode(RenameStmt, stmt)->renameType == OBJECT_SUBSCRIPTION)
 				goto skip_ddl;
 			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_TABLESPACE)
 				add_search_path = false;
 			break;
 		case T_RenameStmt:
-			if (castNode(RenameStmt, stmt)->renameType == OBJECT_DATABASE)
+			if (castNode(RenameStmt, stmt)->renameType == OBJECT_DATABASE ||
+				castNode(RenameStmt, stmt)->renameType == OBJECT_SUBSCRIPTION)
 				goto skip_ddl;
 			if (castNode(RenameStmt, stmt)->renameType == OBJECT_TABLESPACE)
 				add_search_path = false;
@@ -2079,6 +2086,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		case T_CreateTableSpaceStmt:	/* TABLESPACE */
 		case T_DropTableSpaceStmt:
 		case T_AlterTableSpaceOptionsStmt:
+		case T_ClusterStmt:				/* CLUSTER */
 			add_search_path = false;
 			break;
 
