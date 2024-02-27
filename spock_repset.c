@@ -1112,8 +1112,6 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 						   "UPDATEs and/or DELETEs"),
 				 errhint("Add a PRIMARY KEY to the table")));
 
-	create_truncate_trigger(targetrel);
-
 	table_close(targetrel, NoLock);
 
 	/* Open the catalog. */

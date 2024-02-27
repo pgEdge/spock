@@ -35,6 +35,7 @@ extern QueuedMessage *queued_message_from_tuple(HeapTuple queue_tup);
 
 extern Oid get_queue_table_oid(void);
 
-extern void create_truncate_trigger(Relation rel);
+extern void create_truncate_trigger(Oid relid);
+extern void create_commit_info_columns(Oid relid);
 
 #endif /* SPOCK_NODE_H */

@@ -1472,9 +1472,15 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	else
 		reloids = lappend_oid(reloids, reloid);
 
+	/* Need to close the relation for doing ALTER TABLE */
+	table_close(rel, NoLock);
+
 	foreach (lc, reloids)
 	{
-		Oid		partoid = lfirst_oid(lc);
+		Oid			partoid = lfirst_oid(lc);
+
+		create_truncate_trigger(partoid);
+		create_commit_info_columns(partoid);
 
 		replication_set_add_table(repset->id, partoid, att_list, row_filter);
 
@@ -1493,9 +1499,6 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 						QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
 		}
 	}
-
-	/* Cleanup. */
-	table_close(rel, NoLock);
 
 	PG_RETURN_BOOL(true);
 }

@@ -29,6 +29,8 @@
 #include "commands/extension.h"
 #include "commands/trigger.h"
 
+#include "executor/spi.h"
+
 #include "miscadmin.h"
 
 #include "nodes/makefuncs.h"
@@ -45,6 +47,7 @@
 #include "utils/timestamp.h"
 
 #include "spock_queue.h"
+#include "spock_repset.h"
 #include "spock.h"
 
 #define CATALOG_QUEUE	"queue"
@@ -191,19 +194,21 @@ get_queue_table_oid(void)
  * This is basically wrapper around CreateTrigger().
  */
 void
-create_truncate_trigger(Relation rel)
+create_truncate_trigger(Oid relid)
 {
+	Relation		rel;
 	CreateTrigStmt *tgstmt;
 	ObjectAddress	trgobj;
 	ObjectAddress	extension;
-	Oid			fargtypes[1];
-	List	   *funcname = list_make2(makeString(EXTENSION_NAME),
+	Oid				fargtypes[1];
+	List		   *funcname = list_make2(makeString(EXTENSION_NAME),
 									  makeString("queue_truncate"));
 
 	/*
 	 * Check for already existing trigger on the table to avoid adding
 	 * duplicate ones.
 	 */
+	rel = table_open(relid, ShareRowExclusiveLock);
 	if (rel->trigdesc)
 	{
 		Trigger	   *trigger = rel->trigdesc->triggers;
@@ -216,11 +221,15 @@ create_truncate_trigger(Relation rel)
 				continue;
 
 			if (trigger->tgfoid == funcoid)
+			{
+				table_close(rel, NoLock);
 				return;
+			}
 
 			trigger++;
 		}
 	}
+	table_close(rel, NoLock);
 
 	tgstmt = makeNode(CreateTrigStmt);
 	tgstmt->trigname = "queue_truncate_trigger";
@@ -248,4 +257,63 @@ create_truncate_trigger(Relation rel)
 
 	/* Make the new trigger visible within this session */
 	CommandCounterIncrement();
+}
+
+/*
+ * Create columns _Spock_CommitTS_ and _Spock_CommitOrigin_
+ * if they don't exist on a relation.
+ */
+void
+create_commit_info_columns(Oid relid)
+{
+	Relation			rel;
+	TupleDesc			tupdesc;
+	const char		   *nspname;
+	const char		   *relname;
+	StringInfoData		query;
+	bool				col_ts_exists = false;
+	bool				col_origin_exists = false;
+
+	/* Check if the columns exist already */
+	rel = table_open(relid, ShareRowExclusiveLock);
+	tupdesc = RelationGetDescr(rel);
+	if (get_att_num_by_name(tupdesc, "_Spock_CommitTS_") > 0)
+		col_ts_exists = true;
+	if (get_att_num_by_name(tupdesc, "_Spock_CommitOrigin_") > 0)
+		col_origin_exists = true;
+	table_close(rel, NoLock);
+	if (col_ts_exists && col_origin_exists)
+		return;
+
+	nspname = quote_identifier(get_namespace_name(get_rel_namespace(relid)));
+	relname = quote_identifier(get_rel_name(relid));
+	SPI_connect();
+
+	/* If _Spock_CommitTS_ does not exist add it */
+	if (!col_ts_exists)
+	{
+		initStringInfo(&query);
+		appendStringInfo(&query, "ALTER TABLE %s.%s ADD COLUMN "
+						 "\"_Spock_CommitTS_\" pg_catalog.timestamptz;\n",
+						 nspname, relname);
+		appendStringInfo(&query, "ALTER TABLE %s.%s ALTER COLUMN "
+						 "\"_Spock_CommitTS_\" SET (invisible=true);",
+						 nspname, relname);
+		SPI_execute(query.data, false, 0);
+	}
+
+	/* If _Spock_CommitOrigin_ does not exist add it */
+	if (!col_ts_exists)
+	{
+		initStringInfo(&query);
+		appendStringInfo(&query, "ALTER TABLE %s.%s ADD COLUMN "
+						 "\"_Spock_CommitOrigin_\" pg_catalog.int4;\n",
+						 nspname, relname);
+		appendStringInfo(&query, "ALTER TABLE %s.%s ALTER COLUMN "
+						 "\"_Spock_CommitOrigin_\" SET (invisible=true);",
+						 nspname, relname);
+		SPI_execute(query.data, false, 0);
+	}
+
+	SPI_finish();
 }
