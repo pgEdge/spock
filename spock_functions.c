@@ -199,17 +199,16 @@ check_local_node(bool for_update)
 /*
  * Create new node
  */
-Datum
-spock_create_node(PG_FUNCTION_ARGS)
+Datum spock_create_node(PG_FUNCTION_ARGS)
 {
-	char		   *node_name;
-	char		   *node_dsn;
-	char		   *location = NULL;
-	char		   *country = NULL;
-	Jsonb		   *info = NULL;
-	SpockNode		node;
-	SpockInterface	nodeif;
-	SpockRepSet		repset;
+	char *node_name;
+	char *node_dsn;
+	char *location = NULL;
+	char *country = NULL;
+	Jsonb *info = NULL;
+	SpockNode node;
+	SpockInterface nodeif;
+	SpockRepSet repset;
 
 	/* node name or dsn cannot be NULL */
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
@@ -276,20 +275,19 @@ spock_create_node(PG_FUNCTION_ARGS)
  *
  * TODO: support cascade (drop subscribers)
  */
-Datum
-spock_drop_node(PG_FUNCTION_ARGS)
+Datum spock_drop_node(PG_FUNCTION_ARGS)
 {
-	char	   *node_name = NameStr(*PG_GETARG_NAME(0));
-	bool		ifexists = PG_GETARG_BOOL(1);
-	SpockNode  *node;
+	char *node_name = NameStr(*PG_GETARG_NAME(0));
+	bool ifexists = PG_GETARG_BOOL(1);
+	SpockNode *node;
 
 	node = get_node_by_name(node_name, ifexists);
 
 	if (node != NULL)
 	{
 		SpockLocalNode *local_node;
-		List			   *osubs;
-		List			   *tsubs;
+		List *osubs;
+		List *tsubs;
 
 		osubs = get_node_subscriptions(node->id, true);
 		tsubs = get_node_subscriptions(node->id, false);
@@ -303,7 +301,7 @@ spock_drop_node(PG_FUNCTION_ARGS)
 		local_node = get_local_node(true, true);
 		if (local_node && local_node->node->id == node->id)
 		{
-			int		res;
+			int res;
 
 			/*
 			 * Also drop all the slots associated with the node.
@@ -356,15 +354,14 @@ spock_drop_node(PG_FUNCTION_ARGS)
 /*
  * Add interface to a node.
  */
-Datum
-spock_alter_node_add_interface(PG_FUNCTION_ARGS)
+Datum spock_alter_node_add_interface(PG_FUNCTION_ARGS)
 {
-	char	   *node_name = NameStr(*PG_GETARG_NAME(0));
-	char	   *if_name = NameStr(*PG_GETARG_NAME(1));
-	char	   *if_dsn = text_to_cstring(PG_GETARG_TEXT_PP(2));
-	SpockNode	   *node;
+	char *node_name = NameStr(*PG_GETARG_NAME(0));
+	char *if_name = NameStr(*PG_GETARG_NAME(1));
+	char *if_dsn = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	SpockNode *node;
 	SpockInterface *oldif,
-						newif;
+		newif;
 
 	node = get_node_by_name(node_name, false);
 	if (node == NULL)
@@ -377,7 +374,7 @@ spock_alter_node_add_interface(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("node \"%s\" already has interface named \"%s\"",
-				 node_name, if_name)));
+						node_name, if_name)));
 
 	newif.id = InvalidOid;
 	newif.name = if_name;
@@ -391,15 +388,14 @@ spock_alter_node_add_interface(PG_FUNCTION_ARGS)
 /*
  * Drop interface from a node.
  */
-Datum
-spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
+Datum spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 {
-	char	   *node_name = NameStr(*PG_GETARG_NAME(0));
-	char	   *if_name = NameStr(*PG_GETARG_NAME(1));
-	SpockNode	   *node;
+	char *node_name = NameStr(*PG_GETARG_NAME(0));
+	char *if_name = NameStr(*PG_GETARG_NAME(1));
+	SpockNode *node;
 	SpockInterface *oldif;
-	List		   *other_subs;
-	ListCell	   *lc;
+	List *other_subs;
+	ListCell *lc;
 
 	node = get_node_by_name(node_name, false);
 	if (node == NULL)
@@ -412,52 +408,50 @@ spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("interface \"%s\" for node node \"%s\" not found",
-				 if_name, node_name)));
+						if_name, node_name)));
 
 	other_subs = get_node_subscriptions(node->id, true);
 	foreach (lc, other_subs)
 	{
-		SpockSubscription  *sub = (SpockSubscription *) lfirst(lc);
+		SpockSubscription *sub = (SpockSubscription *)lfirst(lc);
 		if (oldif->id == sub->origin_if->id)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("cannot drop interface \"%s\" for node \"%s\" because subscription \"%s\" is using it",
 							oldif->name, node->name, sub->name),
 					 errhint("change the subscription interface first")));
-        }
+	}
 
 	drop_node_interface(oldif->id);
 
 	PG_RETURN_BOOL(true);
 }
 
-
 /*
  * Connect two existing nodes.
  */
-Datum
-spock_create_subscription(PG_FUNCTION_ARGS)
+Datum spock_create_subscription(PG_FUNCTION_ARGS)
 {
-	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	char				   *provider_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	ArrayType			   *rep_set_names = PG_GETARG_ARRAYTYPE_P(2);
-	bool					sync_structure = PG_GETARG_BOOL(3);
-	bool					sync_data = PG_GETARG_BOOL(4);
-	ArrayType			   *forward_origin_names = PG_GETARG_ARRAYTYPE_P(5);
-	Interval			   *apply_delay = PG_GETARG_INTERVAL_P(6);
-	bool					force_text_transfer = PG_GETARG_BOOL(7);
-	PGconn				   *conn;
-	SpockSubscription	sub;
-	SpockSyncStatus		sync;
-	SpockNode		   *origin;
-	SpockNode		   *existing_origin;
-	SpockInterface		originif;
-	SpockLocalNode     *localnode;
-	SpockInterface		targetif;
-	List				   *replication_sets;
-	List				   *other_subs;
-	ListCell			   *lc;
-	NameData				slot_name;
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	char *provider_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	ArrayType *rep_set_names = PG_GETARG_ARRAYTYPE_P(2);
+	bool sync_structure = PG_GETARG_BOOL(3);
+	bool sync_data = PG_GETARG_BOOL(4);
+	ArrayType *forward_origin_names = PG_GETARG_ARRAYTYPE_P(5);
+	Interval *apply_delay = PG_GETARG_INTERVAL_P(6);
+	bool force_text_transfer = PG_GETARG_BOOL(7);
+	PGconn *conn;
+	SpockSubscription sub;
+	SpockSyncStatus sync;
+	SpockNode *origin;
+	SpockNode *existing_origin;
+	SpockInterface originif;
+	SpockLocalNode *localnode;
+	SpockInterface targetif;
+	List *replication_sets;
+	List *other_subs;
+	ListCell *lc;
+	NameData slot_name;
 
 	/* Check that this is actually a node. */
 	localnode = get_local_node(true, false);
@@ -503,7 +497,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("dsn \"%s\" points to existing node \"%s\" with different dsn \"%s\"",
-					 provider_dsn, origin->name, existingif->dsn)));
+							provider_dsn, origin->name, existingif->dsn)));
 
 		memcpy(&originif, existingif, sizeof(SpockInterface));
 	}
@@ -518,24 +512,25 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	other_subs = get_node_subscriptions(originif.nodeid, true);
 	foreach (lc, other_subs)
 	{
-		SpockSubscription  *esub = (SpockSubscription *) lfirst(lc);
-		ListCell			   *esetcell;
+		SpockSubscription *esub = (SpockSubscription *)lfirst(lc);
+		ListCell *esetcell;
 
 		foreach (esetcell, esub->replication_sets)
 		{
-			char	   *existingset = lfirst(esetcell);
-			ListCell   *nsetcell;
+			char *existingset = lfirst(esetcell);
+			ListCell *nsetcell;
 
 			foreach (nsetcell, replication_sets)
 			{
-				char	   *newset = lfirst(nsetcell);
+				char *newset = lfirst(nsetcell);
 
 				if (strcmp(newset, existingset) == 0)
 					ereport(WARNING,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("existing subscription \"%s\" to node "
 									"\"%s\" already subscribes to replication "
-									"set \"%s\"", esub->name, origin->name,
+									"set \"%s\"",
+									esub->name, origin->name,
 									newset)));
 			}
 		}
@@ -586,19 +581,18 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 /*
  * Remove subscribption.
  */
-Datum
-spock_drop_subscription(PG_FUNCTION_ARGS)
+Datum spock_drop_subscription(PG_FUNCTION_ARGS)
 {
-	char	   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	bool		ifexists = PG_GETARG_BOOL(1);
-	SpockSubscription  *sub;
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	bool ifexists = PG_GETARG_BOOL(1);
+	SpockSubscription *sub;
 
 	sub = get_subscription_by_name(sub_name, ifexists);
 
 	if (sub != NULL)
 	{
-		SpockWorker	   *apply;
-		List			   *other_subs;
+		SpockWorker *apply;
+		List *other_subs;
 		SpockLocalNode *node;
 
 		node = get_local_node(true, false);
@@ -670,7 +664,7 @@ spock_drop_subscription(PG_FUNCTION_ARGS)
 		PG_TRY();
 		{
 			PGconn *origin_conn = spock_connect(sub->origin_if->dsn,
-													sub->name, "cleanup");
+												sub->name, "cleanup");
 			spock_drop_remote_slot(origin_conn, sub->slot_name);
 			PQfinish(origin_conn);
 		}
@@ -692,15 +686,14 @@ spock_drop_subscription(PG_FUNCTION_ARGS)
 /*
  * Disable subscription.
  */
-Datum
-spock_alter_subscription_disable(PG_FUNCTION_ARGS)
+Datum spock_alter_subscription_disable(PG_FUNCTION_ARGS)
 {
-	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	bool					immediate = PG_GETARG_BOOL(1);
-	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	bool immediate = PG_GETARG_BOOL(1);
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
 
 	/* XXX: Only used for locking purposes. */
-	(void) get_local_node(true, false);
+	(void)get_local_node(true, false);
 
 	sub->enabled = false;
 
@@ -708,7 +701,7 @@ spock_alter_subscription_disable(PG_FUNCTION_ARGS)
 
 	if (immediate)
 	{
-		SpockWorker		   *apply;
+		SpockWorker *apply;
 
 		if ((IsTransactionBlock() || IsSubTransaction()))
 			ereport(ERROR,
@@ -728,15 +721,14 @@ spock_alter_subscription_disable(PG_FUNCTION_ARGS)
 /*
  * Enable subscription.
  */
-Datum
-spock_alter_subscription_enable(PG_FUNCTION_ARGS)
+Datum spock_alter_subscription_enable(PG_FUNCTION_ARGS)
 {
-	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	bool					immediate = PG_GETARG_BOOL(1);
-	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	bool immediate = PG_GETARG_BOOL(1);
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
 
 	/* XXX: Only used for locking purposes. */
-	(void) get_local_node(true, false);
+	(void)get_local_node(true, false);
 
 	sub->enabled = true;
 
@@ -760,16 +752,15 @@ spock_alter_subscription_enable(PG_FUNCTION_ARGS)
 /*
  * Switch interface the subscription is using.
  */
-Datum
-spock_alter_subscription_interface(PG_FUNCTION_ARGS)
+Datum spock_alter_subscription_interface(PG_FUNCTION_ARGS)
 {
-	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	char				   *if_name = NameStr(*PG_GETARG_NAME(1));
-	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
-	SpockInterface	   *new_if;
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	char *if_name = NameStr(*PG_GETARG_NAME(1));
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
+	SpockInterface *new_if;
 
 	/* XXX: Only used for locking purposes. */
-	(void) get_local_node(true, false);
+	(void)get_local_node(true, false);
 
 	new_if = get_node_interface_by_name(sub->origin->id, if_name, false);
 
@@ -785,17 +776,16 @@ spock_alter_subscription_interface(PG_FUNCTION_ARGS)
 /*
  * Add replication set to subscription.
  */
-Datum
-spock_alter_subscription_add_replication_set(PG_FUNCTION_ARGS)
+Datum spock_alter_subscription_add_replication_set(PG_FUNCTION_ARGS)
 {
-	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	char				   *repset_name = NameStr(*PG_GETARG_NAME(1));
-	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
-	ListCell			   *lc;
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	char *repset_name = NameStr(*PG_GETARG_NAME(1));
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
+	ListCell *lc;
 
 	foreach (lc, sub->replication_sets)
 	{
-		char	   *rs = (char *) lfirst(lc);
+		char *rs = (char *)lfirst(lc);
 
 		if (strcmp(rs, repset_name) == 0)
 			PG_RETURN_BOOL(false);
@@ -810,17 +800,16 @@ spock_alter_subscription_add_replication_set(PG_FUNCTION_ARGS)
 /*
  * Remove replication set to subscription.
  */
-Datum
-spock_alter_subscription_remove_replication_set(PG_FUNCTION_ARGS)
+Datum spock_alter_subscription_remove_replication_set(PG_FUNCTION_ARGS)
 {
-	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	char				   *repset_name = NameStr(*PG_GETARG_NAME(1));
-	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
-	ListCell			   *lc;
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	char *repset_name = NameStr(*PG_GETARG_NAME(1));
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
+	ListCell *lc;
 
-	foreach(lc, sub->replication_sets)
+	foreach (lc, sub->replication_sets)
 	{
-		char	   *rs = (char *) lfirst(lc);
+		char *rs = (char *)lfirst(lc);
 
 		if (strcmp(rs, repset_name) == 0)
 		{
@@ -830,7 +819,6 @@ spock_alter_subscription_remove_replication_set(PG_FUNCTION_ARGS)
 
 			PG_RETURN_BOOL(true);
 		}
-
 	}
 
 	PG_RETURN_BOOL(false);
@@ -839,16 +827,15 @@ spock_alter_subscription_remove_replication_set(PG_FUNCTION_ARGS)
 /*
  * Synchronize all the missing tables.
  */
-Datum
-spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
+Datum spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 {
-	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	bool					truncate = PG_GETARG_BOOL(1);
-	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
-	PGconn				   *conn;
-	List				   *remote_tables;
-	List				   *local_tables;
-	ListCell			   *lc;
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	bool truncate = PG_GETARG_BOOL(1);
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
+	PGconn *conn;
+	List *remote_tables;
+	List *local_tables;
+	ListCell *lc;
 
 	/* Read table list from provider. */
 	conn = spock_connect(sub->origin_if->dsn, sub_name, "sync");
@@ -860,13 +847,13 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 	/* Compare with sync status on subscription. And add missing ones. */
 	foreach (lc, remote_tables)
 	{
-		SpockRemoteRel	   *remoterel = lfirst(lc);
-		SpockSyncStatus	   *oldsync = NULL;
-		ListCell			   *llc;
+		SpockRemoteRel *remoterel = lfirst(lc);
+		SpockSyncStatus *oldsync = NULL;
+		ListCell *llc;
 
-		foreach(llc, local_tables)
+		foreach (llc, local_tables)
 		{
-			SpockSyncStatus *tablesync = (SpockSyncStatus *) lfirst(llc);
+			SpockSyncStatus *tablesync = (SpockSyncStatus *)lfirst(llc);
 
 			if (namestrcmp(&tablesync->nspname, remoterel->nspname) == 0 &&
 				namestrcmp(&tablesync->relname, remoterel->relname) == 0)
@@ -879,7 +866,7 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 
 		if (!oldsync)
 		{
-			SpockSyncStatus	   newsync;
+			SpockSyncStatus newsync;
 
 			memset(&newsync, 0, sizeof(SpockSyncStatus));
 			newsync.kind = SYNC_KIND_DATA;
@@ -900,7 +887,7 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 	 */
 	foreach (lc, local_tables)
 	{
-		SpockSyncStatus *tablesync = (SpockSyncStatus *) lfirst(lc);
+		SpockSyncStatus *tablesync = (SpockSyncStatus *)lfirst(lc);
 
 		drop_table_sync_status_for_sub(tablesync->subid,
 									   NameStr(tablesync->nspname),
@@ -916,17 +903,16 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 /*
  * Resynchronize one existing table.
  */
-Datum
-spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
+Datum spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 {
-	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	Oid						reloid = PG_GETARG_OID(1);
-	bool					truncate = PG_GETARG_BOOL(2);
-	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
-	SpockSyncStatus	   *oldsync;
-	Relation				rel;
-	char				   *nspname,
-						   *relname;
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	Oid reloid = PG_GETARG_OID(1);
+	bool truncate = PG_GETARG_BOOL(2);
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
+	SpockSyncStatus *oldsync;
+	Relation rel;
+	char *nspname,
+		*relname;
 
 	rel = table_open(reloid, AccessShareLock);
 
@@ -948,7 +934,7 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		SpockSyncStatus	   newsync;
+		SpockSyncStatus newsync;
 
 		memset(&newsync, 0, sizeof(SpockSyncStatus));
 		newsync.kind = SYNC_KIND_DATA;
@@ -973,13 +959,12 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 /*
  * Synchronize one sequence.
  */
-Datum
-spock_synchronize_sequence(PG_FUNCTION_ARGS)
+Datum spock_synchronize_sequence(PG_FUNCTION_ARGS)
 {
-	Oid			reloid = PG_GETARG_OID(0);
+	Oid reloid = PG_GETARG_OID(0);
 
 	/* Check that this is actually a node. */
-	(void) get_local_node(true, false);
+	(void)get_local_node(true, false);
 
 	synchronize_sequence(reloid);
 
@@ -991,49 +976,48 @@ sync_status_to_string(char status)
 {
 	switch (status)
 	{
-		case SYNC_STATUS_INIT:
-			return "sync_init";
-		case SYNC_STATUS_STRUCTURE:
-			return "sync_structure";
-		case SYNC_STATUS_DATA:
-			return "sync_data";
-		case SYNC_STATUS_CONSTRAINTS:
-			return "sync_constraints";
-		case SYNC_STATUS_SYNCWAIT:
-			return "sync_waiting";
-		case SYNC_STATUS_CATCHUP:
-			return "catchup";
-		case SYNC_STATUS_SYNCDONE:
-			return "synchronized";
-		case SYNC_STATUS_READY:
-			return "replicating";
-		default:
-			return "unknown";
+	case SYNC_STATUS_INIT:
+		return "sync_init";
+	case SYNC_STATUS_STRUCTURE:
+		return "sync_structure";
+	case SYNC_STATUS_DATA:
+		return "sync_data";
+	case SYNC_STATUS_CONSTRAINTS:
+		return "sync_constraints";
+	case SYNC_STATUS_SYNCWAIT:
+		return "sync_waiting";
+	case SYNC_STATUS_CATCHUP:
+		return "catchup";
+	case SYNC_STATUS_SYNCDONE:
+		return "synchronized";
+	case SYNC_STATUS_READY:
+		return "replicating";
+	default:
+		return "unknown";
 	}
 }
 
 /*
  * Show info about one table.
  */
-Datum
-spock_show_subscription_table(PG_FUNCTION_ARGS)
+Datum spock_show_subscription_table(PG_FUNCTION_ARGS)
 {
-	char				   *sub_name = NameStr(*PG_GETARG_NAME(0));
-	Oid						reloid = PG_GETARG_OID(1);
-	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
-	char				   *nspname;
-	char				   *relname;
-	SpockSyncStatus	   *sync;
-	char	   *sync_status;
-	TupleDesc	tupdesc;
-	Datum		values[3];
-	bool		nulls[3];
-	HeapTuple	result_tuple;
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	Oid reloid = PG_GETARG_OID(1);
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
+	char *nspname;
+	char *relname;
+	SpockSyncStatus *sync;
+	char *sync_status;
+	TupleDesc tupdesc;
+	Datum values[3];
+	bool nulls[3];
+	HeapTuple result_tuple;
 
 	tupdesc = CreateTemplateTupleDesc(3);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "nspname", TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "relname", TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "status", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber)1, "nspname", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber)2, "relname", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber)3, "status", TEXTOID, -1, 0);
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	nspname = get_namespace_name(get_rel_namespace(reloid));
@@ -1060,17 +1044,16 @@ spock_show_subscription_table(PG_FUNCTION_ARGS)
 /*
  * Show info about subscribtion.
  */
-Datum
-spock_show_subscription_status(PG_FUNCTION_ARGS)
+Datum spock_show_subscription_status(PG_FUNCTION_ARGS)
 {
-	List			   *subscriptions;
-	ListCell		   *lc;
-	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc			tupdesc;
-	Tuplestorestate	   *tupstore;
+	List *subscriptions;
+	ListCell *lc;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+	TupleDesc tupdesc;
+	Tuplestorestate *tupstore;
 	SpockLocalNode *node;
-	MemoryContext		per_query_ctx;
-	MemoryContext		oldcontext;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
 
 	/* check to see if caller supports us returning a tuplestore */
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
@@ -1080,7 +1063,7 @@ spock_show_subscription_status(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
+				 errmsg("materialize mode required, but it is not "
 						"allowed in this context")));
 
 	node = check_local_node(false);
@@ -1091,7 +1074,7 @@ spock_show_subscription_status(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		SpockSubscription  *sub;
+		SpockSubscription *sub;
 		sub = get_subscription_by_name(NameStr(*PG_GETARG_NAME(0)), false);
 		subscriptions = list_make1(sub);
 	}
@@ -1113,11 +1096,11 @@ spock_show_subscription_status(PG_FUNCTION_ARGS)
 
 	foreach (lc, subscriptions)
 	{
-		SpockSubscription  *sub = lfirst(lc);
-		SpockWorker		   *apply;
-		Datum	values[7];
-		bool	nulls[7];
-		char   *status;
+		SpockSubscription *sub = lfirst(lc);
+		SpockWorker *apply;
+		Datum values[7];
+		bool nulls[7];
+		char *status;
 
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
@@ -1126,7 +1109,7 @@ spock_show_subscription_status(PG_FUNCTION_ARGS)
 		apply = spock_apply_find(MyDatabaseId, sub->id);
 		if (spock_worker_running(apply))
 		{
-			SpockSyncStatus	   *sync;
+			SpockSyncStatus *sync;
 			sync = get_subscription_sync_status(sub->id, true);
 
 			if (!sync)
@@ -1169,10 +1152,9 @@ spock_show_subscription_status(PG_FUNCTION_ARGS)
 /*
  * Create new replication set.
  */
-Datum
-spock_create_replication_set(PG_FUNCTION_ARGS)
+Datum spock_create_replication_set(PG_FUNCTION_ARGS)
 {
-	SpockRepSet		repset;
+	SpockRepSet repset;
 	SpockLocalNode *node;
 
 	node = check_local_node(true);
@@ -1195,10 +1177,9 @@ spock_create_replication_set(PG_FUNCTION_ARGS)
 /*
  * Alter existing replication set.
  */
-Datum
-spock_alter_replication_set(PG_FUNCTION_ARGS)
+Datum spock_alter_replication_set(PG_FUNCTION_ARGS)
 {
-	SpockRepSet	   *repset;
+	SpockRepSet *repset;
 	SpockLocalNode *node;
 
 	if (PG_ARGISNULL(0))
@@ -1228,12 +1209,11 @@ spock_alter_replication_set(PG_FUNCTION_ARGS)
 /*
  * Drop existing replication set.
  */
-Datum
-spock_drop_replication_set(PG_FUNCTION_ARGS)
+Datum spock_drop_replication_set(PG_FUNCTION_ARGS)
 {
-	char	   *set_name = NameStr(*PG_GETARG_NAME(0));
-	bool		ifexists = PG_GETARG_BOOL(1);
-	SpockRepSet    *repset;
+	char *set_name = NameStr(*PG_GETARG_NAME(0));
+	bool ifexists = PG_GETARG_BOOL(1);
+	SpockRepSet *repset;
 	SpockLocalNode *node;
 
 	node = check_local_node(true);
@@ -1252,7 +1232,7 @@ spock_drop_replication_set(PG_FUNCTION_ARGS)
 static void
 add_table_parser_error_callback(void *arg)
 {
-	const char *row_filter_str = (const char *) arg;
+	const char *row_filter_str = (const char *)arg;
 
 	errcontext("invalid row_filter expression \"%s\"", row_filter_str);
 
@@ -1267,13 +1247,13 @@ add_table_parser_error_callback(void *arg)
 static Node *
 parse_row_filter(Relation rel, char *row_filter_str)
 {
-	Node	   *row_filter = NULL;
-	List	   *raw_parsetree_list;
+	Node *row_filter = NULL;
+	List *raw_parsetree_list;
 	SelectStmt *stmt;
-	ResTarget  *restarget;
+	ResTarget *restarget;
 	ParseState *pstate;
-	char	   *nspname;
-	char	   *relname;
+	char *nspname;
+	char *relname;
 	ParseNamespaceItem *nsitem;
 	StringInfoData buf;
 	ErrorContextCallback myerrcontext;
@@ -1291,7 +1271,7 @@ parse_row_filter(Relation rel, char *row_filter_str)
 
 	/* Parse it, providing proper error context. */
 	myerrcontext.callback = add_table_parser_error_callback;
-	myerrcontext.arg = (void *) row_filter_str;
+	myerrcontext.arg = (void *)row_filter_str;
 	myerrcontext.previous = error_context_stack;
 	error_context_stack = &myerrcontext;
 
@@ -1302,7 +1282,7 @@ parse_row_filter(Relation rel, char *row_filter_str)
 	/* Validate the output from the parser. */
 	if (list_length(raw_parsetree_list) != 1)
 		goto fail;
-	stmt = (SelectStmt *) linitial_node(RawStmt, raw_parsetree_list)->stmt;
+	stmt = (SelectStmt *)linitial_node(RawStmt, raw_parsetree_list)->stmt;
 	if (stmt == NULL ||
 		!IsA(stmt, SelectStmt) ||
 		stmt->distinctClause != NIL ||
@@ -1321,7 +1301,7 @@ parse_row_filter(Relation rel, char *row_filter_str)
 		goto fail;
 	if (list_length(stmt->targetList) != 1)
 		goto fail;
-	restarget = (ResTarget *) linitial(stmt->targetList);
+	restarget = (ResTarget *)linitial(stmt->targetList);
 	if (restarget == NULL ||
 		!IsA(restarget, ResTarget) ||
 		restarget->name != NULL ||
@@ -1367,30 +1347,29 @@ fail:
 	ereport(ERROR,
 			(errcode(ERRCODE_SYNTAX_ERROR),
 			 errmsg("invalid row_filter expression \"%s\"", row_filter_str)));
-	return NULL;	/* keep compiler quiet */
+	return NULL; /* keep compiler quiet */
 }
 
 /*
  * Add replication set / table mapping.
  */
-Datum
-spock_replication_set_add_table(PG_FUNCTION_ARGS)
+Datum spock_replication_set_add_table(PG_FUNCTION_ARGS)
 {
-	Name				repset_name;
-	Oid					reloid;
-	bool				synchronize;
-	Node			   *row_filter = NULL;
-	List			   *att_list = NIL;
-	SpockRepSet    *repset;
-	Relation			rel;
-	TupleDesc			tupDesc;
+	Name repset_name;
+	Oid reloid;
+	bool synchronize;
+	Node *row_filter = NULL;
+	List *att_list = NIL;
+	SpockRepSet *repset;
+	Relation rel;
+	TupleDesc tupDesc;
 	SpockLocalNode *node;
-	char			   *nspname;
-	char			   *relname;
-	StringInfoData		json;
-	bool			inc_partitions;
-	List		   *reloids = NIL;
-	ListCell	   *lc;
+	char *nspname;
+	char *relname;
+	StringInfoData json;
+	bool inc_partitions;
+	List *reloids = NIL;
+	ListCell *lc;
 
 	/* Proccess for required parameters. */
 	if (PG_ARGISNULL(0))
@@ -1431,8 +1410,8 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	/* Proccess att_list. */
 	if (!PG_ARGISNULL(3))
 	{
-		ArrayType  *att_names = PG_GETARG_ARRAYTYPE_P(3);
-		Bitmapset  *idattrs;
+		ArrayType *att_names = PG_GETARG_ARRAYTYPE_P(3);
+		Bitmapset *idattrs;
 
 		/* fetch bitmap of REPLICATION IDENTITY attributes */
 		idattrs = RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_IDENTITY_KEY);
@@ -1440,8 +1419,8 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 		att_list = textarray_to_list(att_names);
 		foreach (lc, att_list)
 		{
-			char   *attname = (char *) lfirst(lc);
-			int		attnum = get_att_num_by_name(tupDesc, attname);
+			char *attname = (char *)lfirst(lc);
+			int attnum = get_att_num_by_name(tupDesc, attname);
 
 			if (attnum < 0)
 				ereport(ERROR,
@@ -1451,7 +1430,7 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 								attname)));
 
 			idattrs = bms_del_member(idattrs,
-								attnum - FirstLowInvalidHeapAttributeNumber);
+									 attnum - FirstLowInvalidHeapAttributeNumber);
 		}
 
 		if (!bms_is_empty(idattrs))
@@ -1477,7 +1456,7 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 
 	foreach (lc, reloids)
 	{
-		Oid			partoid = lfirst_oid(lc);
+		Oid partoid = lfirst_oid(lc);
 
 		create_truncate_trigger(partoid);
 		create_commit_info_columns(partoid);
@@ -1496,7 +1475,7 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 			appendStringInfo(&json, "}");
 			/* Queue the synchronize request for replication. */
 			queue_message(list_make1(repset->name), GetUserId(),
-						QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
+						  QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
 		}
 	}
 
@@ -1506,18 +1485,17 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 /*
  * Add replication set / sequence mapping.
  */
-Datum
-spock_replication_set_add_sequence(PG_FUNCTION_ARGS)
+Datum spock_replication_set_add_sequence(PG_FUNCTION_ARGS)
 {
-	Name				repset_name = PG_GETARG_NAME(0);
-	Oid					reloid = PG_GETARG_OID(1);
-	bool				synchronize = PG_GETARG_BOOL(2);
-	SpockRepSet    *repset;
-	Relation			rel;
+	Name repset_name = PG_GETARG_NAME(0);
+	Oid reloid = PG_GETARG_OID(1);
+	bool synchronize = PG_GETARG_BOOL(2);
+	SpockRepSet *repset;
+	Relation rel;
 	SpockLocalNode *node;
-	char			   *nspname;
-	char			   *relname;
-	StringInfoData		json;
+	char *nspname;
+	char *relname;
+	StringInfoData json;
 
 	node = check_local_node(true);
 
@@ -1544,8 +1522,8 @@ spock_replication_set_add_sequence(PG_FUNCTION_ARGS)
 		escape_json(&json, nspname);
 		appendStringInfo(&json, ",\"sequence_name\": ");
 		escape_json(&json, relname);
-        appendStringInfo(&json, ",\"last_value\": \""INT64_FORMAT"\"",
-								 sequence_get_last_value(reloid));
+		appendStringInfo(&json, ",\"last_value\": \"" INT64_FORMAT "\"",
+						 sequence_get_last_value(reloid));
 		appendStringInfo(&json, "}");
 
 		/* Add sequence to the queue. */
@@ -1556,7 +1534,8 @@ spock_replication_set_add_sequence(PG_FUNCTION_ARGS)
 	/* Cleanup. */
 	table_close(rel, NoLock);
 
-	PG_RETURN_BOOL(true);}
+	PG_RETURN_BOOL(true);
+}
 
 /*
  * Common function for adding replication set / relation mapping based on
@@ -1564,14 +1543,14 @@ spock_replication_set_add_sequence(PG_FUNCTION_ARGS)
  */
 static Datum
 spock_replication_set_add_all_relations(Name repset_name,
-											ArrayType *nsp_names,
-											bool synchronize, char relkind)
+										ArrayType *nsp_names,
+										bool synchronize, char relkind)
 {
-	SpockRepSet    *repset;
-	Relation			rel;
+	SpockRepSet *repset;
+	Relation rel;
 	SpockLocalNode *node;
-	ListCell		   *lc;
-	List			   *existing_relations = NIL;
+	ListCell *lc;
+	List *existing_relations = NIL;
 
 	node = check_local_node(true);
 
@@ -1587,11 +1566,11 @@ spock_replication_set_add_all_relations(Name repset_name,
 
 	foreach (lc, textarray_to_list(nsp_names))
 	{
-		char	   *nspname = lfirst(lc);
-		Oid			nspoid = LookupExplicitNamespace(nspname, false);
+		char *nspname = lfirst(lc);
+		Oid nspoid = LookupExplicitNamespace(nspname, false);
 		ScanKeyData skey[1];
 		SysScanDesc sysscan;
-		HeapTuple	tuple;
+		HeapTuple tuple;
 
 		ScanKeyInit(&skey[0],
 					Anum_pg_class_relnamespace,
@@ -1603,8 +1582,8 @@ spock_replication_set_add_all_relations(Name repset_name,
 
 		while (HeapTupleIsValid(tuple = systable_getnext(sysscan)))
 		{
-			Form_pg_class	reltup = (Form_pg_class) GETSTRUCT(tuple);
-			Oid				reloid = reltup->oid;
+			Form_pg_class reltup = (Form_pg_class)GETSTRUCT(tuple);
+			Oid reloid = reltup->oid;
 
 			/*
 			 * Only add logged relations which are not system relations
@@ -1619,20 +1598,25 @@ spock_replication_set_add_all_relations(Name repset_name,
 
 			if (!list_member_oid(existing_relations, reloid))
 			{
-				bool	ispartition;
+				bool ispartition;
 
 				if (relkind == RELKIND_RELATION || relkind == RELKIND_PARTITIONED_TABLE)
+				{
+					create_truncate_trigger(reloid);
+					create_commit_info_columns(reloid);
 					replication_set_add_table(repset->id, reloid, NIL, NULL);
+				}
 				else
+					// FIXME: What happens if the id is a snowflake sequence?
 					replication_set_add_seq(repset->id, reloid);
 
 				/* don't synchronize the partitions */
 				ispartition = get_rel_relispartition(reloid);
 				if (synchronize && !ispartition)
 				{
-					char			   *relname;
-					StringInfoData		json;
-					char				cmdtype;
+					char *relname;
+					StringInfoData json;
+					char cmdtype;
 
 					relname = get_rel_name(reloid);
 
@@ -1642,20 +1626,20 @@ spock_replication_set_add_all_relations(Name repset_name,
 					escape_json(&json, nspname);
 					switch (relkind)
 					{
-						case RELKIND_RELATION:
-							appendStringInfo(&json, ",\"table_name\": ");
-							escape_json(&json, relname);
-							cmdtype = QUEUE_COMMAND_TYPE_TABLESYNC;
-							break;
-						case RELKIND_SEQUENCE:
-							appendStringInfo(&json, ",\"sequence_name\": ");
-							escape_json(&json, relname);
-							appendStringInfo(&json, ",\"last_value\": \""INT64_FORMAT"\"",
-											 sequence_get_last_value(reloid));
-							cmdtype = QUEUE_COMMAND_TYPE_SEQUENCE;
-							break;
-						default:
-							elog(ERROR, "unsupported relkind '%c'", relkind);
+					case RELKIND_RELATION:
+						appendStringInfo(&json, ",\"table_name\": ");
+						escape_json(&json, relname);
+						cmdtype = QUEUE_COMMAND_TYPE_TABLESYNC;
+						break;
+					case RELKIND_SEQUENCE:
+						appendStringInfo(&json, ",\"sequence_name\": ");
+						escape_json(&json, relname);
+						appendStringInfo(&json, ",\"last_value\": \"" INT64_FORMAT "\"",
+										 sequence_get_last_value(reloid));
+						cmdtype = QUEUE_COMMAND_TYPE_SEQUENCE;
+						break;
+					default:
+						elog(ERROR, "unsupported relkind '%c'", relkind);
 					}
 					appendStringInfo(&json, "}");
 
@@ -1677,31 +1661,29 @@ spock_replication_set_add_all_relations(Name repset_name,
 /*
  * Add replication set / table mapping based on schemas.
  */
-Datum
-spock_replication_set_add_all_tables(PG_FUNCTION_ARGS)
+Datum spock_replication_set_add_all_tables(PG_FUNCTION_ARGS)
 {
-	Name		repset_name = PG_GETARG_NAME(0);
-	ArrayType  *nsp_names = PG_GETARG_ARRAYTYPE_P(1);
-	bool		synchronize = PG_GETARG_BOOL(2);
+	Name repset_name = PG_GETARG_NAME(0);
+	ArrayType *nsp_names = PG_GETARG_ARRAYTYPE_P(1);
+	bool synchronize = PG_GETARG_BOOL(2);
 
 	return spock_replication_set_add_all_relations(repset_name, nsp_names,
-													   synchronize,
-													   RELKIND_RELATION);
+												   synchronize,
+												   RELKIND_RELATION);
 }
 
 /*
  * Add replication set / sequence mapping based on schemas.
  */
-Datum
-spock_replication_set_add_all_sequences(PG_FUNCTION_ARGS)
+Datum spock_replication_set_add_all_sequences(PG_FUNCTION_ARGS)
 {
-	Name		repset_name = PG_GETARG_NAME(0);
-	ArrayType  *nsp_names = PG_GETARG_ARRAYTYPE_P(1);
-	bool		synchronize = PG_GETARG_BOOL(2);
+	Name repset_name = PG_GETARG_NAME(0);
+	ArrayType *nsp_names = PG_GETARG_ARRAYTYPE_P(1);
+	bool synchronize = PG_GETARG_BOOL(2);
 
 	return spock_replication_set_add_all_relations(repset_name, nsp_names,
-													   synchronize,
-													   RELKIND_SEQUENCE);
+												   synchronize,
+												   RELKIND_SEQUENCE);
 }
 
 /*
@@ -1710,16 +1692,15 @@ spock_replication_set_add_all_sequences(PG_FUNCTION_ARGS)
  * Unlike the spock_replication_set_add_table, this function does not care
  * if table is valid or not, as we are just removing the record from repset.
  */
-Datum
-spock_replication_set_remove_table(PG_FUNCTION_ARGS)
+Datum spock_replication_set_remove_table(PG_FUNCTION_ARGS)
 {
-	Oid			reloid = PG_GETARG_OID(1);
-	SpockRepSet    *repset;
+	Oid reloid = PG_GETARG_OID(1);
+	SpockRepSet *repset;
 	SpockLocalNode *node;
-	char		relkind;
-	bool		inc_partitions;
-	List	   *reloids = NIL;
-	ListCell   *lc;
+	char relkind;
+	bool inc_partitions;
+	List *reloids = NIL;
+	ListCell *lc;
 
 	node = check_local_node(true);
 
@@ -1736,8 +1717,8 @@ spock_replication_set_remove_table(PG_FUNCTION_ARGS)
 
 	foreach (lc, reloids)
 	{
-		Oid		partoid = lfirst_oid(lc);
-		bool	ignore_err = false;
+		Oid partoid = lfirst_oid(lc);
+		bool ignore_err = false;
 
 		/*
 		 * Ignore error reporting for a missing partitions. It's possible that
@@ -1754,11 +1735,10 @@ spock_replication_set_remove_table(PG_FUNCTION_ARGS)
 /*
  * Remove replication set / sequence mapping.
  */
-Datum
-spock_replication_set_remove_sequence(PG_FUNCTION_ARGS)
+Datum spock_replication_set_remove_sequence(PG_FUNCTION_ARGS)
 {
-	Oid			seqoid = PG_GETARG_OID(1);
-	SpockRepSet    *repset;
+	Oid seqoid = PG_GETARG_OID(1);
+	SpockRepSet *repset;
 	SpockLocalNode *node;
 
 	node = check_local_node(true);
@@ -1772,23 +1752,22 @@ spock_replication_set_remove_sequence(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
-Datum
-spock_replication_set_add_partition(PG_FUNCTION_ARGS)
+Datum spock_replication_set_add_partition(PG_FUNCTION_ARGS)
 {
-	Relation	rel;
-	Oid		parent_reloid = InvalidOid;
-	Oid		partition_rel = InvalidOid;
+	Relation rel;
+	Oid parent_reloid = InvalidOid;
+	Oid partition_rel = InvalidOid;
 	SpockLocalNode *local_node;
-	List	   *repsets = NIL;
-	List	   *reloids = NIL;
-	Node	   *row_filter = NULL;
-	ListCell   *lc;
-	int		nrows = 0;
+	List *repsets = NIL;
+	List *reloids = NIL;
+	Node *row_filter = NULL;
+	ListCell *lc;
+	int nrows = 0;
 
 	if (PG_ARGISNULL(0))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				errmsg("parent table cannot be NULL")));
+				 errmsg("parent table cannot be NULL")));
 
 	parent_reloid = PG_GETARG_OID(0);
 	rel = table_open(parent_reloid, AccessShareLock);
@@ -1802,7 +1781,7 @@ spock_replication_set_add_partition(PG_FUNCTION_ARGS)
 	{
 		/* Proccess row_filter if any. */
 		row_filter = parse_row_filter(rel,
-									text_to_cstring(PG_GETARG_TEXT_PP(2)));
+									  text_to_cstring(PG_GETARG_TEXT_PP(2)));
 	}
 
 	/* standard check for node. */
@@ -1824,10 +1803,10 @@ spock_replication_set_add_partition(PG_FUNCTION_ARGS)
 
 	foreach (lc, repsets)
 	{
-		SpockRepSet	   *repset = (SpockRepSet *) lfirst(lc);
-		List		   *att_list = NIL;
-		Node		   *reptbl_row_filter = NULL;
-		ListCell	   *rlc;
+		SpockRepSet *repset = (SpockRepSet *)lfirst(lc);
+		List *att_list = NIL;
+		Node *reptbl_row_filter = NULL;
+		ListCell *rlc;
 
 		/* get columns list and row filter for the parent table. */
 		get_table_replication_row(repset->id, parent_reloid, &att_list, &reptbl_row_filter);
@@ -1838,7 +1817,7 @@ spock_replication_set_add_partition(PG_FUNCTION_ARGS)
 
 		foreach (rlc, reloids)
 		{
-			Oid		partoid = lfirst_oid(rlc);
+			Oid partoid = lfirst_oid(rlc);
 
 			/* skip adding parent table, It's already there. */
 			if (partoid == parent_reloid)
@@ -1861,23 +1840,22 @@ spock_replication_set_add_partition(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(nrows);
 }
 
-Datum
-spock_replication_set_remove_partition(PG_FUNCTION_ARGS)
+Datum spock_replication_set_remove_partition(PG_FUNCTION_ARGS)
 {
-	Relation	rel;
-	Oid		parent_reloid = InvalidOid;
-	Oid		partition_rel = InvalidOid;
+	Relation rel;
+	Oid parent_reloid = InvalidOid;
+	Oid partition_rel = InvalidOid;
 	SpockLocalNode *local_node;
-	List	   *repsets = NIL;
-	List	   *reloids = NIL;
-	ListCell   *lc;
-	int		nrows = 0;
-	bool	ignore_err = false;
+	List *repsets = NIL;
+	List *reloids = NIL;
+	ListCell *lc;
+	int nrows = 0;
+	bool ignore_err = false;
 
 	if (PG_ARGISNULL(0))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				errmsg("parent table cannot be NULL")));
+				 errmsg("parent table cannot be NULL")));
 
 	parent_reloid = PG_GETARG_OID(0);
 	rel = table_open(parent_reloid, AccessShareLock);
@@ -1906,12 +1884,12 @@ spock_replication_set_remove_partition(PG_FUNCTION_ARGS)
 	ignore_err = list_length(reloids) > 1;
 	foreach (lc, repsets)
 	{
-		SpockRepSet	   *repset = (SpockRepSet *) lfirst(lc);
-		ListCell	   *rlc;
+		SpockRepSet *repset = (SpockRepSet *)lfirst(lc);
+		ListCell *rlc;
 
 		foreach (rlc, reloids)
 		{
-			Oid		partoid = lfirst_oid(rlc);
+			Oid partoid = lfirst_oid(rlc);
 
 			/* skip parent table being removed. */
 			if (partoid == parent_reloid)
@@ -1935,20 +1913,19 @@ spock_replication_set_remove_partition(PG_FUNCTION_ARGS)
  *
  * Queues the input SQL for replication.
  */
-Datum
-spock_replicate_ddl_command(PG_FUNCTION_ARGS)
+Datum spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 {
-	text	   *command = PG_GETARG_TEXT_PP(0);
-	char	   *query = text_to_cstring(command);
-	int			save_nestlevel;
-	List	   *replication_sets;
-	ListCell   *lc;
+	text *command = PG_GETARG_TEXT_PP(0);
+	char *query = text_to_cstring(command);
+	int save_nestlevel;
+	List *replication_sets;
+	ListCell *lc;
 	SpockLocalNode *node;
-	StringInfoData		cmd;
-	StringInfoData		q;
-	List	   *path_list = NIL;
-	char	   *search_path;
-	char	   *role;
+	StringInfoData cmd;
+	StringInfoData q;
+	List *path_list = NIL;
+	char *search_path;
+	char *role;
 
 	node = check_local_node(false);
 
@@ -1961,21 +1938,19 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 		elog(ERROR, "provided search path is not valid");
 
 	/* Validate replication sets. */
-	foreach(lc, replication_sets)
+	foreach (lc, replication_sets)
 	{
-		char   *setname = lfirst(lc);
+		char *setname = lfirst(lc);
 
-		(void) get_replication_set_by_name(node->node->id, setname, false);
+		(void)get_replication_set_by_name(node->node->id, setname, false);
 	}
 
 	save_nestlevel = NewGUCNestLevel();
 
 	/* Force everything in the query to be fully qualified. */
-	(void) set_config_option("search_path", search_path,
-							 PGC_USERSET, PGC_S_SESSION,
-							 GUC_ACTION_SAVE, true, 0
-							 , false
-							 );
+	(void)set_config_option("search_path", search_path,
+							PGC_USERSET, PGC_S_SESSION,
+							GUC_ACTION_SAVE, true, 0, false);
 
 	/* Add search path to the query for execution on the target node */
 	initStringInfo(&q);
@@ -1985,11 +1960,11 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 		ListCell *lc;
 
 		appendStringInfoString(&q, "SET search_path TO ");
-		foreach(lc, path_list)
+		foreach (lc, path_list)
 		{
 			if (lc != list_head(path_list))
 				appendStringInfoChar(&q, ',');
-			appendStringInfo(&q, "%s", quote_identifier((char *) lfirst(lc)));
+			appendStringInfo(&q, "%s", quote_identifier((char *)lfirst(lc)));
 		}
 		appendStringInfo(&q, "; ");
 	}
@@ -2038,24 +2013,23 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
  * be replicated to connected nodes. It also sends the current
  * search_path along with the query.
  */
-void
-spock_auto_replicate_ddl(const char *query, List *replication_sets,
-						 const char *role)
+void spock_auto_replicate_ddl(const char *query, List *replication_sets,
+							  const char *role)
 {
-	ListCell 	   *lc;
+	ListCell *lc;
 	SpockLocalNode *node;
-	StringInfoData	cmd;
-	StringInfoData	q;
-	char		   *search_path;
+	StringInfoData cmd;
+	StringInfoData q;
+	char *search_path;
 
 	node = check_local_node(false);
 
 	/* Validate replication sets. */
-	foreach(lc, replication_sets)
+	foreach (lc, replication_sets)
 	{
-		char   *setname = lfirst(lc);
+		char *setname = lfirst(lc);
 
-		(void) get_replication_set_by_name(node->node->id, setname, false);
+		(void)get_replication_set_by_name(node->node->id, setname, false);
 	}
 
 	/* Add search path to the query for execution on the target node */
@@ -2084,15 +2058,14 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
  * This function only writes to internal linked list, actual queueing is done
  * by spock_finish_truncate().
  */
-Datum
-spock_queue_truncate(PG_FUNCTION_ARGS)
+Datum spock_queue_truncate(PG_FUNCTION_ARGS)
 {
-	TriggerData	   *trigdata = (TriggerData *) fcinfo->context;
-	const char	   *funcname = "queue_truncate";
-	MemoryContext	oldcontext;
+	TriggerData *trigdata = (TriggerData *)fcinfo->context;
+	const char *funcname = "queue_truncate";
+	MemoryContext oldcontext;
 	SpockLocalNode *local_node;
-	Oid				save_userid = 0;
-	int				save_sec_context = 0;
+	Oid save_userid = 0;
+	int save_sec_context = 0;
 
 	/* Return if this function was called from apply process. */
 	if (MySpockWorker)
@@ -2130,7 +2103,7 @@ spock_queue_truncate(PG_FUNCTION_ARGS)
 	/* Make sure the list change survives the trigger call. */
 	oldcontext = MemoryContextSwitchTo(TopTransactionContext);
 	spock_truncated_tables = lappend_oid(spock_truncated_tables,
-									RelationGetRelid(trigdata->tg_relation));
+										 RelationGetRelid(trigdata->tg_relation));
 	MemoryContextSwitchTo(oldcontext);
 
 	PG_RETURN_VOID();
@@ -2141,21 +2114,19 @@ spock_queue_truncate(PG_FUNCTION_ARGS)
  *
  * No longer used, present for smoother upgrades.
  */
-Datum
-spock_dependency_check_trigger(PG_FUNCTION_ARGS)
+Datum spock_dependency_check_trigger(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_VOID();
 }
 
-Datum
-spock_node_info(PG_FUNCTION_ARGS)
+Datum spock_node_info(PG_FUNCTION_ARGS)
 {
-	TupleDesc	tupdesc;
-	Datum		values[8];
-	bool		nulls[8];
-	HeapTuple	htup;
-	char		sysid[32];
-	List	   *repsets;
+	TupleDesc tupdesc;
+	Datum values[8];
+	bool nulls[8];
+	HeapTuple htup;
+	char sysid[32];
+	List *repsets;
 	SpockLocalNode *node;
 
 	/* Build a tuple descriptor for our result type */
@@ -2203,22 +2174,21 @@ spock_node_info(PG_FUNCTION_ARGS)
  * info needed to do initial synchronization correctly. Be careful
  * about changing it, as it must be upward- and downward-compatible.
  */
-Datum
-spock_show_repset_table_info(PG_FUNCTION_ARGS)
+Datum spock_show_repset_table_info(PG_FUNCTION_ARGS)
 {
-	Oid			reloid = PG_GETARG_OID(0);
- 	ArrayType  *rep_set_names = PG_GETARG_ARRAYTYPE_P(1);
-	Relation	rel;
-	List	   *replication_sets;
-	TupleDesc	reldesc;
-	TupleDesc	rettupdesc;
-	int			i;
-	List	   *att_list = NIL;
-	Datum		values[7];
-	bool		nulls[7];
-	char	   *nspname;
-	char	   *relname;
-	HeapTuple	htup;
+	Oid reloid = PG_GETARG_OID(0);
+	ArrayType *rep_set_names = PG_GETARG_ARRAYTYPE_P(1);
+	Relation rel;
+	List *replication_sets;
+	TupleDesc reldesc;
+	TupleDesc rettupdesc;
+	int i;
+	List *att_list = NIL;
+	Datum values[7];
+	bool nulls[7];
+	char *nspname;
+	char *relname;
+	HeapTuple htup;
 	SpockLocalNode *node;
 	SpockTableRepInfo *tableinfo;
 
@@ -2246,7 +2216,7 @@ spock_show_repset_table_info(PG_FUNCTION_ARGS)
 	/* Build the column list. */
 	for (i = 0; i < reldesc->natts; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(reldesc,i);
+		Form_pg_attribute att = TupleDescAttr(reldesc, i);
 
 		/* Skip dropped columns. */
 		if (att->attisdropped)
@@ -2278,16 +2248,13 @@ spock_show_repset_table_info(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(htup));
 }
 
-
 /*
  * Dummy function to allow upgrading through all intermediate versions
  */
-Datum
-spock_show_repset_table_info_by_target(PG_FUNCTION_ARGS)
+Datum spock_show_repset_table_info_by_target(PG_FUNCTION_ARGS)
 {
 	abort();
 }
-
 
 /*
  * Do sequential table scan and return all rows that pass the row filter(s)
@@ -2296,28 +2263,27 @@ spock_show_repset_table_info_by_target(PG_FUNCTION_ARGS)
  * This is called by downstream sync worker on the upstream to obtain
  * filtered data for initial COPY.
  */
-Datum
-spock_table_data_filtered(PG_FUNCTION_ARGS)
+Datum spock_table_data_filtered(PG_FUNCTION_ARGS)
 {
-	Oid			argtype = get_fn_expr_argtype(fcinfo->flinfo, 0);
-	Oid			reloid;
- 	ArrayType  *rep_set_names;
+	Oid argtype = get_fn_expr_argtype(fcinfo->flinfo, 0);
+	Oid reloid;
+	ArrayType *rep_set_names;
 	ReturnSetInfo *rsi;
-	Relation	rel;
-	List	   *replication_sets;
-	ListCell   *lc;
-	TupleDesc	tupdesc;
-	TupleDesc	reltupdesc;
-	EState		   *estate;
-	ExprContext	   *econtext;
+	Relation rel;
+	List *replication_sets;
+	ListCell *lc;
+	TupleDesc tupdesc;
+	TupleDesc reltupdesc;
+	EState *estate;
+	ExprContext *econtext;
 	Tuplestorestate *tupstore;
 	SpockLocalNode *node;
 	SpockTableRepInfo *tableinfo;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
-	StringInfoData	query;
-	int 		i = 0;
-	int 		rc;
+	StringInfoData query;
+	int i = 0;
+	int rc;
 
 	node = get_local_node(false, false);
 
@@ -2340,7 +2306,7 @@ spock_table_data_filtered(PG_FUNCTION_ARGS)
 				 errmsg("first argument of %s must be a row type",
 						"spock_table_data_filtered")));
 
-	rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	rsi = (ReturnSetInfo *)fcinfo->resultinfo;
 
 	if (!rsi || !IsA(rsi, ReturnSetInfo) ||
 		(rsi->allowedModes & SFRM_Materialize) == 0 ||
@@ -2398,26 +2364,26 @@ spock_table_data_filtered(PG_FUNCTION_ARGS)
 	/* Prepare query with row filter expression. */
 	initStringInfo(&query);
 	appendStringInfo(&query, "SELECT * FROM %s.%s",
-			quote_identifier(get_namespace_name(RelationGetNamespace(rel))),
-			quote_identifier(RelationGetRelationName(rel)));
+					 quote_identifier(get_namespace_name(RelationGetNamespace(rel))),
+					 quote_identifier(RelationGetRelationName(rel)));
 
 	if (list_length(tableinfo->row_filter) > 0)
 		appendStringInfoString(&query, " WHERE ");
 
 	foreach (lc, tableinfo->row_filter)
 	{
-		Node       *row_filter = (Node *) lfirst(lc);
-		Datum 		row_filter_d;
-		Datum 		resqual;
+		Node *row_filter = (Node *)lfirst(lc);
+		Datum row_filter_d;
+		Datum resqual;
 
 		row_filter_d = CStringGetTextDatum(nodeToString(row_filter));
 		resqual = DirectFunctionCall2(pg_get_expr, row_filter_d,
-							ObjectIdGetDatum(reloid));
+									  ObjectIdGetDatum(reloid));
 		if (i > 0)
 			appendStringInfo(&query, " OR ");
 
 		appendStringInfo(&query, " %s",
-				text_to_cstring(DatumGetTextP(resqual)));
+						 text_to_cstring(DatumGetTextP(resqual)));
 		i++;
 		pfree(DatumGetTextP(resqual));
 		pfree(DatumGetTextPP(row_filter_d));
@@ -2432,7 +2398,7 @@ spock_table_data_filtered(PG_FUNCTION_ARGS)
 
 	for (i = 0; i < SPI_processed; i++)
 	{
-		HeapTuple	tup = SPI_tuptable->vals[i];
+		HeapTuple tup = SPI_tuptable->vals[i];
 
 		tuplestore_puttuple(tupstore, tup);
 	}
@@ -2447,8 +2413,6 @@ spock_table_data_filtered(PG_FUNCTION_ARGS)
 
 	PG_RETURN_NULL();
 }
-
-
 
 /*
  * Wait for subscription and initial sync to complete, or, if relation info is
@@ -2473,10 +2437,10 @@ spock_wait_for_sync_complete(char *subscription_name, char *relnamespace, char *
 
 	do
 	{
-		SpockSyncStatus	   *subsync;
-		List				   *tables;
-		bool					isdone = false;
-		int						rc;
+		SpockSyncStatus *subsync;
+		List *tables;
+		bool isdone = false;
+		int rc;
 
 		/* We need to see the latest rows */
 		PushActiveSnapshot(GetLatestSnapshot());
@@ -2533,8 +2497,7 @@ spock_wait_for_sync_complete(char *subscription_name, char *relnamespace, char *
 	} while (1);
 }
 
-Datum
-spock_wait_for_subscription_sync_complete(PG_FUNCTION_ARGS)
+Datum spock_wait_for_subscription_sync_complete(PG_FUNCTION_ARGS)
 {
 	char *subscription_name = NameStr(*PG_GETARG_NAME(0));
 
@@ -2543,8 +2506,7 @@ spock_wait_for_subscription_sync_complete(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-Datum
-spock_wait_for_table_sync_complete(PG_FUNCTION_ARGS)
+Datum spock_wait_for_table_sync_complete(PG_FUNCTION_ARGS)
 {
 	char *subscription_name = NameStr(*PG_GETARG_NAME(0));
 	Oid relid = PG_GETARG_OID(1);
@@ -2562,28 +2524,27 @@ spock_wait_for_table_sync_complete(PG_FUNCTION_ARGS)
  * Like pg_xact_commit_timestamp but extended for replorigin
  * too.
  */
-Datum
-spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
+Datum spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 {
 #ifdef HAVE_REPLICATION_ORIGINS
 	TransactionId xid = PG_GETARG_UINT32(0);
 	TimestampTz ts;
-	RepOriginId	origin;
-	bool		found;
+	RepOriginId origin;
+	bool found;
 #endif
-	TupleDesc	tupdesc;
-	Datum		values[2];
-	bool		nulls[2] = {false, false};
-	HeapTuple	tup;
+	TupleDesc tupdesc;
+	Datum values[2];
+	bool nulls[2] = {false, false};
+	HeapTuple tup;
 
 	/*
 	 * Construct a tuple descriptor for the result row. Must match the
 	 * function declaration.
 	 */
 	tupdesc = CreateTemplateTupleDesc(2);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "timestamp",
+	TupleDescInitEntry(tupdesc, (AttrNumber)1, "timestamp",
 					   TIMESTAMPTZOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "roident",
+	TupleDescInitEntry(tupdesc, (AttrNumber)2, "roident",
 					   OIDOID, -1, 0);
 	tupdesc = BlessTupleDesc(tupdesc);
 
@@ -2608,22 +2569,20 @@ spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(tup));
 }
 
-Datum
-spock_gen_slot_name(PG_FUNCTION_ARGS)
+Datum spock_gen_slot_name(PG_FUNCTION_ARGS)
 {
-	char	   *dbname = NameStr(*PG_GETARG_NAME(0));
-	char	   *provider_node_name = NameStr(*PG_GETARG_NAME(1));
-	char	   *subscription_name = NameStr(*PG_GETARG_NAME(2));
-	Name		slot_name;
+	char *dbname = NameStr(*PG_GETARG_NAME(0));
+	char *provider_node_name = NameStr(*PG_GETARG_NAME(1));
+	char *subscription_name = NameStr(*PG_GETARG_NAME(2));
+	Name slot_name;
 
-	slot_name = (Name) palloc0(NAMEDATALEN);
+	slot_name = (Name)palloc0(NAMEDATALEN);
 
 	gen_slot_name(slot_name, dbname, provider_node_name,
 				  subscription_name);
 
 	PG_RETURN_NAME(slot_name);
 }
-
 
 /*
  * Generate slot name (used also for origin identifier)
@@ -2646,72 +2605,63 @@ gen_slot_name(Name slot_name, char *dbname, const char *provider_node,
 			 shorten_hash(dbname, 16),
 			 shorten_hash(provider_node, 16),
 			 shorten_hash(subscription_name, 16));
-	NameStr(*slot_name)[NAMEDATALEN-1] = '\0';
+	NameStr(*slot_name)[NAMEDATALEN - 1] = '\0';
 
 	/* Replace all the invalid characters in slot name with underscore. */
 	for (cp = NameStr(*slot_name); *cp; cp++)
 	{
-		if (!((*cp >= 'a' && *cp <= 'z')
-			  || (*cp >= '0' && *cp <= '9')
-			  || (*cp == '_')))
+		if (!((*cp >= 'a' && *cp <= 'z') || (*cp >= '0' && *cp <= '9') || (*cp == '_')))
 		{
 			*cp = '_';
 		}
 	}
 }
 
-Datum
-spock_version(PG_FUNCTION_ARGS)
+Datum spock_version(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_TEXT_P(cstring_to_text(SPOCK_VERSION));
 }
 
-Datum
-spock_version_num(PG_FUNCTION_ARGS)
+Datum spock_version_num(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(SPOCK_VERSION_NUM);
 }
 
-Datum
-spock_max_proto_version(PG_FUNCTION_ARGS)
+Datum spock_max_proto_version(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(SPOCK_MAX_PROTO_VERSION_NUM);
 }
 
-Datum
-spock_min_proto_version(PG_FUNCTION_ARGS)
+Datum spock_min_proto_version(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(SPOCK_MIN_PROTO_VERSION_NUM);
 }
 
 /* Dummy functions for backward comptibility. */
-Datum
-spock_truncate_trigger_add(PG_FUNCTION_ARGS)
+Datum spock_truncate_trigger_add(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_VOID();
 }
 
 PGDLLEXPORT extern Datum spock_hooks_setup(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(spock_hooks_setup);
-Datum
-spock_hooks_setup(PG_FUNCTION_ARGS)
+Datum spock_hooks_setup(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_VOID();
 }
 
 PGDLLEXPORT extern Datum get_channel_stats(PG_FUNCTION_ARGS);
-Datum
-get_channel_stats(PG_FUNCTION_ARGS)
+Datum get_channel_stats(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc			tupdesc;
-	Tuplestorestate	   *tupstore;
-	MemoryContext		per_query_ctx;
-	MemoryContext		oldcontext;
-	HASH_SEQ_STATUS		hash_seq;
-	spockStatsEntry	   *entry;
-	Datum			   *values;
-	bool			   *nulls;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+	TupleDesc tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	HASH_SEQ_STATUS hash_seq;
+	spockStatsEntry *entry;
+	Datum *values;
+	bool *nulls;
 
 	if (!SpockCtx || !SpockHash)
 		ereport(ERROR,
@@ -2726,7 +2676,7 @@ get_channel_stats(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
+				 errmsg("materialize mode required, but it is not "
 						"allowed in this context")));
 
 	/* Switch into long-lived context to construct returned data structures */
@@ -2751,8 +2701,8 @@ get_channel_stats(PG_FUNCTION_ARGS)
 
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
-		int			i = 0;
-		int			j;
+		int i = 0;
+		int j;
 
 		if (entry->key.dboid != MyDatabaseId)
 			continue;
@@ -2776,21 +2726,19 @@ get_channel_stats(PG_FUNCTION_ARGS)
 	tuplestore_donestoring(tupstore);
 	MemoryContextSwitchTo(oldcontext);
 
-	return (Datum) 0;
+	return (Datum)0;
 }
 
 PGDLLEXPORT extern Datum reset_channel_stats(PG_FUNCTION_ARGS);
-Datum
-reset_channel_stats(PG_FUNCTION_ARGS)
+Datum reset_channel_stats(PG_FUNCTION_ARGS)
 {
-	HASH_SEQ_STATUS		hash_seq;
-	spockStatsEntry	   *entry;
+	HASH_SEQ_STATUS hash_seq;
+	spockStatsEntry *entry;
 
 	if (!SpockCtx || !SpockHash)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("spock must be loaded via shared_preload_libraries")));
-
 
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
@@ -2804,16 +2752,15 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-Datum
-lag_tracker_info(PG_FUNCTION_ARGS)
+Datum lag_tracker_info(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
-	TupleDesc			tupdesc;
-	Tuplestorestate	   *tupstore;
-	MemoryContext		per_query_ctx;
-	MemoryContext		oldcontext;
-	HASH_SEQ_STATUS		hash_seq;
-	LagTrackerEntry	   *hentry;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+	TupleDesc tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	HASH_SEQ_STATUS hash_seq;
+	LagTrackerEntry *hentry;
 
 	/* check to see if caller supports us returning a tuplestore */
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
@@ -2846,8 +2793,8 @@ lag_tracker_info(PG_FUNCTION_ARGS)
 	hash_seq_init(&hash_seq, LagTrackerHash);
 	while ((hentry = hash_seq_search(&hash_seq)) != NULL)
 	{
-		Datum		values[3];
-		bool		nulls[3];
+		Datum values[3];
+		bool nulls[3];
 
 		/* Include this entry in the result. */
 		MemSet(values, 0, sizeof(values));
@@ -2873,8 +2820,7 @@ lag_tracker_info(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-Datum
-lag_tracker_feedback(PG_FUNCTION_ARGS)
+Datum lag_tracker_feedback(PG_FUNCTION_ARGS)
 {
 	char *slotname;
 	XLogRecPtr last_recvpos;
@@ -2890,85 +2836,78 @@ lag_tracker_feedback(PG_FUNCTION_ARGS)
 }
 
 /* Generic delta apply functions */
-Datum
-delta_apply_int2(PG_FUNCTION_ARGS)
+Datum delta_apply_int2(PG_FUNCTION_ARGS)
 {
-	Datum	old_value = PG_GETARG_DATUM(0);
-	Datum	new_value = PG_GETARG_DATUM(1);
-	Datum	local_val = PG_GETARG_DATUM(2);
-	Datum	delta;
+	Datum old_value = PG_GETARG_DATUM(0);
+	Datum new_value = PG_GETARG_DATUM(1);
+	Datum local_val = PG_GETARG_DATUM(2);
+	Datum delta;
 
 	delta = DirectFunctionCall2(int2mi, new_value, old_value);
 	PG_RETURN_DATUM(DirectFunctionCall2(int2pl, local_val, delta));
 }
 
-Datum
-delta_apply_int4(PG_FUNCTION_ARGS)
+Datum delta_apply_int4(PG_FUNCTION_ARGS)
 {
-	Datum	old_value = PG_GETARG_DATUM(0);
-	Datum	new_value = PG_GETARG_DATUM(1);
-	Datum	local_val = PG_GETARG_DATUM(2);
-	Datum	delta;
+	Datum old_value = PG_GETARG_DATUM(0);
+	Datum new_value = PG_GETARG_DATUM(1);
+	Datum local_val = PG_GETARG_DATUM(2);
+	Datum delta;
 
 	delta = DirectFunctionCall2(int4mi, new_value, old_value);
 	PG_RETURN_DATUM(DirectFunctionCall2(int4pl, local_val, delta));
 }
 
-Datum
-delta_apply_int8(PG_FUNCTION_ARGS)
+Datum delta_apply_int8(PG_FUNCTION_ARGS)
 {
-	Datum	old_value = PG_GETARG_DATUM(0);
-	Datum	new_value = PG_GETARG_DATUM(1);
-	Datum	local_val = PG_GETARG_DATUM(2);
-	Datum	delta;
+	Datum old_value = PG_GETARG_DATUM(0);
+	Datum new_value = PG_GETARG_DATUM(1);
+	Datum local_val = PG_GETARG_DATUM(2);
+	Datum delta;
 
 	delta = DirectFunctionCall2(int8mi, new_value, old_value);
 	PG_RETURN_DATUM(DirectFunctionCall2(int8pl, local_val, delta));
 }
 
-Datum
-delta_apply_float4(PG_FUNCTION_ARGS)
+Datum delta_apply_float4(PG_FUNCTION_ARGS)
 {
-	Datum	old_value = PG_GETARG_DATUM(0);
-	Datum	new_value = PG_GETARG_DATUM(1);
-	Datum	local_val = PG_GETARG_DATUM(2);
-	Datum	delta;
+	Datum old_value = PG_GETARG_DATUM(0);
+	Datum new_value = PG_GETARG_DATUM(1);
+	Datum local_val = PG_GETARG_DATUM(2);
+	Datum delta;
 
 	delta = DirectFunctionCall2(float4mi, new_value, old_value);
 	PG_RETURN_DATUM(DirectFunctionCall2(float4pl, local_val, delta));
 }
 
-Datum
-delta_apply_float8(PG_FUNCTION_ARGS)
+Datum delta_apply_float8(PG_FUNCTION_ARGS)
 {
-	Datum	old_value = PG_GETARG_DATUM(0);
-	Datum	new_value = PG_GETARG_DATUM(1);
-	Datum	local_val = PG_GETARG_DATUM(2);
-	Datum	delta;
+	Datum old_value = PG_GETARG_DATUM(0);
+	Datum new_value = PG_GETARG_DATUM(1);
+	Datum local_val = PG_GETARG_DATUM(2);
+	Datum delta;
 
 	delta = DirectFunctionCall2(float8mi, new_value, old_value);
 	PG_RETURN_DATUM(DirectFunctionCall2(float8pl, local_val, delta));
 }
 
-Datum
-delta_apply_numeric(PG_FUNCTION_ARGS)
+Datum delta_apply_numeric(PG_FUNCTION_ARGS)
 {
-	Datum	old_value = PG_GETARG_DATUM(0);
-	Datum	new_value = PG_GETARG_DATUM(1);
-	Datum	local_val = PG_GETARG_DATUM(2);
-	Datum	delta;
+	Datum old_value = PG_GETARG_DATUM(0);
+	Datum new_value = PG_GETARG_DATUM(1);
+	Datum local_val = PG_GETARG_DATUM(2);
+	Datum delta;
 
 	delta = DirectFunctionCall2(numeric_sub, new_value, old_value);
 	PG_RETURN_DATUM(DirectFunctionCall2(numeric_add, local_val, delta));
 }
 
-Datum
-delta_apply_money(PG_FUNCTION_ARGS)
+Datum delta_apply_money(PG_FUNCTION_ARGS)
 {
-	Datum	old_value = PG_GETARG_DATUM(0);
-	Datum	new_value = PG_GETARG_DATUM(1);
-	Datum	local_val = PG_GETARG_DATUM(2);
-	Datum	delta;
+	Datum old_value = PG_GETARG_DATUM(0);
+	Datum new_value = PG_GETARG_DATUM(1);
+	Datum local_val = PG_GETARG_DATUM(2);
+	Datum delta;
 
 	delta = DirectFunctionCall2(cash_mi, new_value, old_value);
 	PG_RETURN_DATUM(DirectFunctionCall2(cash_pl, local_val, delta));
