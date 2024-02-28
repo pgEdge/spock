@@ -169,7 +169,7 @@ static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *subscriber_name);
 
 bool in_spock_replicate_ddl_command = false;
-bool in_spock_queue_command = false;
+bool in_spock_queue_ddl_command = false;
 
 static SpockLocalNode *
 check_local_node(bool for_update)
@@ -2139,7 +2139,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 
 	/* Queue the query for replication. */
 	queue_message(replication_sets, get_role_oid(role, false),
-				  QUEUE_COMMAND_TYPE_SQL, cmd.data);
+				  QUEUE_COMMAND_TYPE_DDL, cmd.data);
 
 	return;
 

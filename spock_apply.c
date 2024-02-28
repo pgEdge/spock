@@ -1164,10 +1164,8 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 					"item type %d expected %d",
 			 MySubscription->name, r, WJB_DONE);
 
-	in_spock_queue_command = true;
 	/* Run the extracted SQL. */
 	spock_execute_sql_command(sql, queued_message->role, tx_just_started);
-	in_spock_queue_command = false;
 }
 
 /*
@@ -1186,9 +1184,13 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 
 	switch (queued_message->message_type)
 	{
+		case QUEUE_COMMAND_TYPE_DDL:
+			in_spock_queue_ddl_command = true;
+			/* fallthrough */
 		case QUEUE_COMMAND_TYPE_SQL:
 			errcallback_arg.action_name = "QUEUED_SQL";
 			handle_sql(queued_message, tx_just_started);
+			in_spock_queue_ddl_command = false;
 			break;
 		case QUEUE_COMMAND_TYPE_TRUNCATE:
 			errcallback_arg.action_name = "QUEUED_TRUNCATE";

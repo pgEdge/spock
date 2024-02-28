@@ -344,6 +344,7 @@ spock_ProcessUtility(
 						 QueryCompletion *qc)
 {
 	Node	   *parsetree = pstmt->utilityStmt;
+	static bool skip_ext_objs = false;
 #ifndef XCP
 	#define		sentToRemote NULL
 #endif
@@ -363,6 +364,10 @@ spock_ProcessUtility(
 
 	if (nodeTag(parsetree) == T_DropStmt)
 		spock_lastDropBehavior = ((DropStmt *)parsetree)->behavior;
+
+	if (context == PROCESS_UTILITY_TOPLEVEL &&
+		nodeTag(parsetree) == T_CreateExtensionStmt)
+		skip_ext_objs = true;
 
 	/* There's no reason we should be in a long lived context here */
 	Assert(CurrentMemoryContext != TopMemoryContext
@@ -386,18 +391,48 @@ spock_ProcessUtility(
 	 * we don't want to replicate if it's coming from spock.queue. But we do
 	 * add tables to repset whenever there is one.
 	 */
-	if (in_spock_replicate_ddl_command)
+	if (in_spock_queue_ddl_command || in_spock_replicate_ddl_command)
 	{
+		/* if DDL is from spoc.queue, add it to the repset. */
+		if (in_spock_queue_ddl_command)
+			add_ddl_to_repset(parsetree);
+
 		/*
-		 * Do Nothing. Hook was called as a result of spock.replicate_ddl().
+		 * Do Nothing else. Hook was called as a result of spock.replicate_ddl().
 		 * The action has already been taken, so no need for the duplication.
 		 */
 	}
 	else if (GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
 			 spock_enable_ddl_replication &&
-			 spock_include_ddl_repset)
+			 get_local_node(false, true))
 	{
-		add_ddl_to_repset(parsetree);
+		/*
+		 * Normally only allow the top level commands to be replicate. However,
+		 * we also want to allow DDL from within a function/procedure to replicate
+		 * based on 'allow_ddl_from_functions'.
+		 * One caveat though, don't allow DDLs within the extension scripts.
+		 */
+		if (context == PROCESS_UTILITY_TOPLEVEL ||
+			(context == PROCESS_UTILITY_QUERY &&
+			 allow_ddl_from_functions &&
+			 !skip_ext_objs))
+		{
+			const char *curr_qry;
+			int			loc = pstmt->stmt_location;
+			int			len = pstmt->stmt_len;
+
+			skip_ext_objs = false;
+			queryString = CleanQuerytext(queryString, &loc, &len);
+			curr_qry = pnstrdup(queryString, len);
+
+			spock_auto_replicate_ddl(curr_qry,
+									 list_make1(DEFAULT_INSONLY_REPSET_NAME),
+									 GetUserNameFromId(GetUserId(), false),
+									 parsetree);
+
+			if (spock_include_ddl_repset)
+				add_ddl_to_repset(parsetree);
+		}
 	}
 }
 

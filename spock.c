@@ -45,7 +45,6 @@
 
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
-//#include "utils/guc_hooks.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -101,6 +100,7 @@ static char *spock_country_code;
 bool	spock_deny_ddl = false;
 bool	spock_enable_ddl_replication = false;
 bool	spock_include_ddl_repset = false;
+bool	allow_ddl_from_functions = false;
 
 
 void _PG_init(void);
@@ -918,9 +918,18 @@ _PG_init(void)
 							   NULL, NULL, NULL);
 
 	DefineCustomBoolVariable("spock.include_ddl_repset",
-							   "If possible, add tables to the replication set while doing ddl_replication",
+							   "Add tables to the replication set while doing ddl replication",
 							   NULL,
 							   &spock_include_ddl_repset,
+							   false,
+							   PGC_USERSET,
+							   0,
+							   NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.allow_ddl_from_functions",
+							   "Allow replication of DDL statements from within functions",
+							   NULL,
+							   &allow_ddl_from_functions,
 							   false,
 							   PGC_USERSET,
 							   0,

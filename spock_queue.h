@@ -18,6 +18,7 @@
 #define QUEUE_COMMAND_TYPE_TRUNCATE		'T'
 #define QUEUE_COMMAND_TYPE_TABLESYNC	'A'
 #define QUEUE_COMMAND_TYPE_SEQUENCE		'S'
+#define QUEUE_COMMAND_TYPE_DDL			'D'
 
 typedef struct QueuedMessage
 {
