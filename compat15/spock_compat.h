@@ -41,6 +41,12 @@
 #define PortalRun(portal, count, isTopLevel, dest, altdest, qc) \
 	PortalRun(portal, count, isTopLevel, true, dest, altdest, qc)
 
+#define ExecInitRangeTable(estate, rangeTable, perminfos) \
+	ExecInitRangeTable(estate, rangeTable)
+
+#define EvalPlanQualInit(epqstate, parentstate, subplan, auxrowmarks, epqParam, resultRelations) \
+	EvalPlanQualInitExt(epqstate, parentstate, subplan, auxrowmarks, epqParam, resultRelations)
+
 #define ExecAlterExtensionStmt(stmt) \
 	ExecAlterExtensionStmt(NULL, stmt)
 
@@ -55,9 +61,6 @@
 	((*(expr)->evalfunc) (expr, econtext, isNull))
 
 #define Form_pg_sequence Form_pg_sequence_data
-
-#define InitResultRelInfo(resultRelInfo, resultRelationDesc, resultRelationIndex, instrument_options) \
-	InitResultRelInfo(resultRelInfo, resultRelationDesc, resultRelationIndex, NULL, instrument_options)
 
 #define ExecARUpdateTriggers(estate, relinfo, tupleid, fdw_trigtuple, newslot, recheckIndexes) \
 	ExecARUpdateTriggers(estate, relinfo, NULL, NULL, tupleid, fdw_trigtuple, newslot, recheckIndexes, NULL, false)
@@ -92,9 +95,6 @@
 #ifndef rbtxn_has_catalog_changes
 #define rbtxn_has_catalog_changes(txn) (txn->has_catalog_changes)
 #endif
-
-#define ExecInitExtraTupleSlot(estate) \
-	ExecInitExtraTupleSlot(estate, NULL, &TTSOpsHeapTuple)
 
 #define ACL_OBJECT_RELATION OBJECT_TABLE
 #define ACL_OBJECT_SEQUENCE OBJECT_SEQUENCE

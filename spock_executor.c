@@ -83,11 +83,7 @@ create_estate_for_relation(Relation rel, bool forwrite)
 	estate = CreateExecutorState();
 
 	addRTEPermissionInfo(&perminfos, rte);
-	ExecInitRangeTable(estate, list_make1(rte)
-#if PG_VERSION_NUM >= 160000
-		, perminfos
-#endif
-		);
+	ExecInitRangeTable(estate, list_make1(rte), perminfos);
 
 	estate->es_output_cid = GetCurrentCommandId(forwrite);
 

@@ -731,7 +731,6 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	TupleTableSlot *remoteslot;
 	TupleTableSlot *localslot;
 	HeapTuple remotetuple;
-	RTEPermissionInfo *target_perminfo;
 	MemoryContext oldctx;
 	ResultRelInfo *relinfo;
 	bool found;
@@ -747,29 +746,6 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	/* update stats */
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
 						 SPOCK_STATS_UPDATE_COUNT, 1);
-
-	/*
-	 * Populate updatedCols so that per-column triggers can fire, and so
-	 * executor can correctly pass down indexUnchanged hint.  This could
-	 * include more columns than were actually changed on the publisher
-	 * because the logical replication protocol doesn't contain that
-	 * information.  But it would for example exclude columns that only exist
-	 * on the subscriber, since we are not touching those.
-	 */
-	target_perminfo = list_nth(estate->es_rteperminfos, 0);
-	for (int i = 0; i < remoteslot->tts_tupleDescriptor->natts; i++)
-	{
-		Form_pg_attribute att = TupleDescAttr(remoteslot->tts_tupleDescriptor, i);
-		int remoteattnum = rel->attmap[i];
-
-		if (!att->attisdropped && remoteattnum >= 0)
-		{
-			Assert(remoteattnum < newtup.ncols);
-			target_perminfo->updatedCols =
-				bms_add_member(target_perminfo->updatedCols,
-							   i + 1 - FirstLowInvalidHeapAttributeNumber);
-		}
-	}
 
 	/* Build the search tuple. */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
