@@ -363,7 +363,16 @@ spock_ProcessUtility(
 		spock_start_truncate();
 
 	if (nodeTag(parsetree) == T_DropStmt)
-		spock_lastDropBehavior = ((DropStmt *)parsetree)->behavior;
+	{
+		/*
+		 * Allow one to drop replication tables without specifying the CASCADE
+		 * option when in auto ddl replicatino mode.
+		 */
+		if (spock_enable_ddl_replication || in_spock_queue_ddl_command)
+			spock_lastDropBehavior = DROP_CASCADE;
+		else
+			spock_lastDropBehavior = ((DropStmt *)parsetree)->behavior;
+	}
 
 	if (context == PROCESS_UTILITY_TOPLEVEL &&
 		nodeTag(parsetree) == T_CreateExtensionStmt)
