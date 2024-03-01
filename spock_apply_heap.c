@@ -462,8 +462,8 @@ FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
 #ifdef USE_ASSERT_CHECKING
 		Relation idxrel = index_open(localidxoid, AccessShareLock);
 
-		/* Index must be PK, RI, or usable for REPLICA IDENTITY FULL tables */
-		Assert(GetRelationIdentityOrPK(idxrel) == localidxoid);
+		/* Index must be PK, or RI */
+		Assert(GetRelationIdentityOrPK(localrel) == localidxoid);
 		index_close(idxrel, AccessShareLock);
 #endif
 
@@ -733,6 +733,8 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	ResultRelInfo *relinfo;
 	bool found;
 	int retry;
+	bool clear_remoteslot = false;
+	bool clear_localslot = false;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -767,7 +769,6 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 		retry++;
 	}
-	ExecClearTuple(remoteslot);
 
 	if (retry > 0)
 		elog(LOG, "spock_apply_heap_update() retried %d times", retry);
@@ -791,7 +792,8 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 		MemoryContextSwitchTo(oldctx);
 
-		remotetuple = ExecFetchSlotHeapTuple(remoteslot, true, NULL);
+		remotetuple = ExecFetchSlotHeapTuple(remoteslot, true,
+											 &clear_remoteslot);
 		local_origin_found = get_tuple_origin(rel, TTS_TUP(localslot),
 											  &(localslot->tts_tid), &xmin,
 											  &local_origin, &local_ts);
@@ -839,11 +841,12 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			 */
 			if (apply)
 			{
-				currenttuple = ExecFetchSlotHeapTuple(remoteslot, true, NULL);
+				currenttuple = remotetuple;
 			}
 			else
 			{
-				currenttuple = ExecFetchSlotHeapTuple(localslot, true, NULL);
+				currenttuple = ExecFetchSlotHeapTuple(localslot, true,
+													  &clear_localslot);
 			}
 			oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 			build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
@@ -910,7 +913,11 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	}
 
 	/* Cleanup. */
-	ExecCloseIndices(edata->targetRelInfo);
+	if (clear_remoteslot)
+		ExecClearTuple(remoteslot);
+	if (clear_localslot)
+		ExecClearTuple(localslot);
+	ExecCloseIndices(edata->targetRelInfo)
 	EvalPlanQualEnd(&epqstate);
 	finish_edata(edata);
 }
