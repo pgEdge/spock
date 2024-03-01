@@ -70,7 +70,7 @@ WHERE relid = 'public.basic_dml'::regclass;
 -- At provider, add table to replication set, with filtered columns
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', synchronize_data := true, columns := '{id, data, something}');
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -105,7 +105,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 BEGIN;
-SET LOCAL statement_timeout = '10s';
+SET LOCAL statement_timeout = '20s';
 SELECT spock.table_wait_for_sync('test_subscription', 'basic_dml');
  table_wait_for_sync 
 ---------------------
@@ -186,7 +186,7 @@ SELECT spock.replicate_ddl($$
 ALTER TABLE public.basic_dml DROP COLUMN data;
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
@@ -233,7 +233,7 @@ SELECT spock.replicate_ddl($$
 ALTER TABLE public.basic_dml DROP COLUMN data CASCADE;
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
@@ -267,7 +267,7 @@ SELECT spock.replicate_ddl($$
 $$);
 NOTICE:  drop cascades to table public.basic_dml membership in replication set default
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 

@@ -41,6 +41,7 @@
 #include "pgxc/pgxcnode.h"
 #endif
 
+#include "postmaster/interrupt.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 #include "replication/walsender.h"
@@ -1175,10 +1176,8 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 					"item type %d expected %d",
 			 MySubscription->name, r, WJB_DONE);
 
-	in_spock_queue_command = true;
 	/* Run the extracted SQL. */
 	spock_execute_sql_command(sql, queued_message->role, tx_just_started);
-	in_spock_queue_command = false;
 }
 
 /*
@@ -1197,9 +1196,13 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 
 	switch (queued_message->message_type)
 	{
+		case QUEUE_COMMAND_TYPE_DDL:
+			in_spock_queue_ddl_command = true;
+			/* fallthrough */
 		case QUEUE_COMMAND_TYPE_SQL:
 			errcallback_arg.action_name = "QUEUED_SQL";
 			handle_sql(queued_message, tx_just_started);
+			in_spock_queue_ddl_command = false;
 			break;
 		case QUEUE_COMMAND_TYPE_TRUNCATE:
 			errcallback_arg.action_name = "QUEUED_TRUNCATE";
@@ -1482,6 +1485,12 @@ apply_work(PGconn *streamConn)
 
 		Assert(CurrentMemoryContext == MessageContext);
 
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
 		/* emergency bailout if postmaster has died */
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
@@ -1553,6 +1562,12 @@ apply_work(PGconn *streamConn)
 			{
 				int c;
 				StringInfoData s;
+
+				if (ConfigReloadPending)
+				{
+					ConfigReloadPending = false;
+					ProcessConfigFile(PGC_SIGHUP);
+				}
 
 				last_receive_timestamp = GetCurrentTimestamp();
 

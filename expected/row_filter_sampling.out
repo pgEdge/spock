@@ -7,7 +7,7 @@ SELECT spock.replicate_ddl($$
 	CREATE TABLE public.test_tablesample (id int primary key, name text) WITH (fillfactor=10);
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
@@ -22,19 +22,19 @@ $$ (SELECT count(*) FROM test_tablesample TABLESAMPLE BERNOULLI ($1) REPEATABLE 
 language sql volatile;
 SELECT * FROM spock.repset_add_table('default', 'test_tablesample', false, row_filter := $rf$id > funcn_get_system_sample_count(100, 3) $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
-SELECT * FROM spock.replication_set_remove_table('default', 'test_tablesample');
- replication_set_remove_table 
-------------------------------
+SELECT * FROM spock.repset_remove_table('default', 'test_tablesample');
+ repset_remove_table 
+---------------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'test_tablesample', true, row_filter := $rf$id > funcn_get_bernoulli_sample_count(10, 0) $rf$);
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -57,9 +57,9 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 BEGIN;
 SET LOCAL statement_timeout = '10s';
-SELECT spock.wait_for_table_sync_complete('test_subscription', 'test_tablesample');
- wait_for_table_sync_complete 
-------------------------------
+SELECT spock.table_wait_for_sync('test_subscription', 'test_tablesample');
+ table_wait_for_sync 
+---------------------
  
 (1 row)
 
@@ -89,7 +89,7 @@ SELECT spock.replicate_ddl($$
 $$);
 NOTICE:  drop cascades to table public.test_tablesample membership in replication set default
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 

@@ -132,7 +132,6 @@ void
 spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 {
 	bool		command_is_ro = false;
-	bool		auto_ddl_command = false;
 
 	switch (query->commandType)
 	{
@@ -140,10 +139,6 @@ spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 			command_is_ro = true;
 			break;
 		case CMD_UTILITY:
-			if (spock_enable_ddl_replication &&
-				GetCommandLogLevel(query->utilityStmt) == LOGSTMT_DDL)
-				auto_ddl_command = true;
-
 			/* TODO: replace strstr with IsA(query->utilityStmt, TransactionStmt) */
 			/* allow ROLLBACK for killed transactions */
 			if (strstr((pstate->p_sourcetext), "rollback") ||
@@ -179,33 +174,6 @@ spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 
 	if (spockro_get_readonly_internal() && !command_is_ro)
 		ereport(ERROR, (errmsg("spock: invalid statement for a read-only cluster")));
-
-	/* we don't want to replicate if it's coming from spock.queue. */
-	if (in_spock_queue_command || in_spock_replicate_ddl_command)
-	{
-		/*
-		 * Do Nothing. Hook was called as a result of spock.replicate_ddl()
-		 * or handle_sql() function call. The action has already been taken,
-		 * so no need for the duplication.
-		 */
-	}
-	else if (auto_ddl_command &&
-		get_local_node(false, true))
-	{
-		const char *curr_qry;
-		int			loc = query->stmt_location;
-		int			len = query->stmt_len;
-
-		pstate->p_sourcetext = CleanQuerytext(pstate->p_sourcetext, &loc, &len);
-		curr_qry = pnstrdup(pstate->p_sourcetext, len);
-
-		ereport(INFO,
-			(errmsg("DDL statements are being replicated."),
-			 errdetail_log("statement '%s'", curr_qry)));
-
-		spock_auto_replicate_ddl(curr_qry, list_make1(DEFAULT_INSONLY_REPSET_NAME),
-								 GetUserNameFromId(GetUserId(), false));
-	}
 
 	if (prev_post_parse_analyze_hook)
 		(*prev_post_parse_analyze_hook) (pstate, query, jstate);

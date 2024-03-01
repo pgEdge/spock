@@ -179,7 +179,7 @@ static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *subscriber_name);
 
 bool in_spock_replicate_ddl_command = false;
-bool in_spock_queue_command = false;
+bool in_spock_queue_ddl_command = false;
 
 static SpockLocalNode *
 check_local_node(bool for_update)
@@ -2013,14 +2013,17 @@ Datum spock_replicate_ddl_command(PG_FUNCTION_ARGS)
  * be replicated to connected nodes. It also sends the current
  * search_path along with the query.
  */
-void spock_auto_replicate_ddl(const char *query, List *replication_sets,
-							  const char *role)
+void
+spock_auto_replicate_ddl(const char *query, List *replication_sets,
+						 const char *role, Node *stmt)
 {
 	ListCell *lc;
 	SpockLocalNode *node;
-	StringInfoData cmd;
-	StringInfoData q;
-	char *search_path;
+	StringInfoData	cmd;
+	StringInfoData	q;
+	char		   *search_path;
+	bool			add_search_path = true;
+	bool			warn = false;
 
 	node = check_local_node(false);
 
@@ -2032,13 +2035,90 @@ void spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		(void)get_replication_set_by_name(node->node->id, setname, false);
 	}
 
-	/* Add search path to the query for execution on the target node */
-	search_path = GetConfigOptionByName("search_path", NULL, false);
-	initStringInfo(&q);
-	if (strlen(search_path) > 0)
-		appendStringInfo(&q, "SET search_path TO %s; ", search_path);
+	/* not all objects require search path setting. */
+	switch(nodeTag(stmt))
+	{
+		case T_CreatedbStmt:	/* DATABASE */
+		case T_DropdbStmt:
+		case T_AlterDatabaseStmt:
+#if PG_VERSION_NUM >= 150000
+		case T_AlterDatabaseRefreshCollStmt:
+#endif
+		case T_AlterDatabaseSetStmt:
+		case T_AlterSystemStmt:		/* ALTER SYSTEM */
+		case T_CreateSubscriptionStmt:	/* SUBSCRIPTION */
+		case T_DropSubscriptionStmt:
+		case T_AlterSubscriptionStmt:
+			add_search_path = false;
+			goto skip_ddl;
+			break;
+		case T_AlterOwnerStmt:
+			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_DATABASE ||
+				castNode(RenameStmt, stmt)->renameType == OBJECT_SUBSCRIPTION)
+				goto skip_ddl;
+			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_TABLESPACE)
+				add_search_path = false;
+			break;
+		case T_RenameStmt:
+			if (castNode(RenameStmt, stmt)->renameType == OBJECT_DATABASE ||
+				castNode(RenameStmt, stmt)->renameType == OBJECT_SUBSCRIPTION)
+				goto skip_ddl;
+			if (castNode(RenameStmt, stmt)->renameType == OBJECT_TABLESPACE)
+				add_search_path = false;
+			break;
+
+		case T_CreateTableAsStmt:
+			warn = true;
+			break;
+
+		case T_CreateTableSpaceStmt:	/* TABLESPACE */
+		case T_DropTableSpaceStmt:
+		case T_AlterTableSpaceOptionsStmt:
+		case T_ClusterStmt:				/* CLUSTER */
+			add_search_path = false;
+			break;
+
+		case T_AlterTableStmt:
+			{
+				ListCell *cell;
+				AlterTableStmt *atstmt = (AlterTableStmt *) stmt;
+
+				foreach(cell, atstmt->cmds)
+				{
+					AlterTableCmd *cmd = (AlterTableCmd *) lfirst(cell);
+					if (cmd->subtype == AT_DetachPartition &&
+						((PartitionCmd *) cmd->def)->concurrent)
+						goto skip_ddl;
+				}
+			}
+			break;
+
+		case T_IndexStmt:
+			if (castNode(IndexStmt, stmt)->concurrent)
+				goto skip_ddl;
+			break;
+
+		default:
+			add_search_path = true;
+			break;
+	}
+
+	if (warn)
+		elog(WARNING, "DDL statement replicated, but could be unsafe.");
 	else
-		appendStringInfo(&q, "SET search_path TO ''; ");
+		elog(INFO, "DDL statement replicated.");
+
+	initStringInfo(&q);
+	if (add_search_path)
+	{
+		/* Add search path to the query for execution on the target node */
+		search_path = GetConfigOptionByName("search_path", NULL, false);
+		if (strlen(search_path) > 0)
+			appendStringInfo(&q, "SET search_path TO %s; ", search_path);
+		else
+			appendStringInfo(&q, "SET search_path TO ''; ");
+	}
+	/* add query to buffer */
 	appendStringInfoString(&q, query);
 
 	/* Convert the query to json string. */
@@ -2047,7 +2127,12 @@ void spock_auto_replicate_ddl(const char *query, List *replication_sets,
 
 	/* Queue the query for replication. */
 	queue_message(replication_sets, get_role_oid(role, false),
-				  QUEUE_COMMAND_TYPE_SQL, cmd.data);
+				  QUEUE_COMMAND_TYPE_DDL, cmd.data);
+
+	return;
+
+skip_ddl:
+	elog(WARNING, "This DDL statement will not be replicated.");
 }
 
 /*
