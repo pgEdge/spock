@@ -737,7 +737,7 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 
 	natts = pq_getmsgint(in, 2);
 	if (rel->natts != natts)
-		elog(ERROR, "tuple natts mismatch between remote relation metadata cache (natts=%u) and remote tuple data (natts=%u)", rel->natts, natts);
+		elog(ERROR, "tuple natts mismatch for relation (%s) between remote relation metadata cache (natts=%u) and remote tuple data (natts=%u)", rel->relname, rel->natts, natts);
 
 	desc = RelationGetDescr(rel->rel);
 

@@ -304,7 +304,7 @@ slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
 
 		if (!att->attisdropped && remoteattnum >= 0)
 		{
-			Assert(remoteattnum < tupleData->ncols);
+			Assert(remoteattnum < rel->natts);
 
 			if (!tupleData->nulls[remoteattnum])
 			{
@@ -463,9 +463,7 @@ FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
 		Relation idxrel = index_open(localidxoid, AccessShareLock);
 
 		/* Index must be PK, RI, or usable for REPLICA IDENTITY FULL tables */
-		Assert(GetRelationIdentityOrPK(idxrel) == localidxoid ||
-			   IsIndexUsableForReplicaIdentityFull(BuildIndexInfo(idxrel),
-												   edata->targetRel->attrmap));
+		Assert(GetRelationIdentityOrPK(idxrel) == localidxoid);
 		index_close(idxrel, AccessShareLock);
 #endif
 
