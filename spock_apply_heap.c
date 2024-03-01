@@ -917,7 +917,7 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		ExecClearTuple(remoteslot);
 	if (clear_localslot)
 		ExecClearTuple(localslot);
-	ExecCloseIndices(edata->targetRelInfo)
+	ExecCloseIndices(edata->targetRelInfo);
 	EvalPlanQualEnd(&epqstate);
 	finish_edata(edata);
 }
