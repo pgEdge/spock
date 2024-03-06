@@ -165,6 +165,7 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	char	   *cmdargv[20];
 	int			cmdargc = 0;
 	bool		has_spk_origin;
+	bool		has_snowflake;
 	StringInfoData	s;
 
 	dsn = spk_get_connstr((char *) sub->origin_if->dsn, NULL, NULL, &err_msg);
@@ -193,14 +194,23 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	cmdargv[cmdargc++] = pstrdup(s.data);
 	resetStringInfo(&s);
 
-	/* Skip the spock_origin if it exists locally. */
+	/* Skip the spock_origin and snowflake if it exists locally. */
 	StartTransactionCommand();
 	has_spk_origin = OidIsValid(LookupExplicitNamespace("spock_origin",
+														true));
+	has_snowflake = OidIsValid(LookupExplicitNamespace("snowflake",
 														true));
 	CommitTransactionCommand();
 	if (has_spk_origin)
 	{
 		appendStringInfo(&s, "--exclude-schema=%s", "spock_origin");
+		cmdargv[cmdargc++] = pstrdup(s.data);
+		resetStringInfo(&s);
+	}
+
+	if (has_snowflake)
+	{
+		appendStringInfo(&s, "--exclude-schema=%s", "snowflake");
 		cmdargv[cmdargc++] = pstrdup(s.data);
 		resetStringInfo(&s);
 	}
