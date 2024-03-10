@@ -841,7 +841,8 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			 */
 			if (apply)
 			{
-				currenttuple = remotetuple;
+				currenttuple = ExecFetchSlotHeapTuple(remoteslot, true,
+													  &clear_localslot);
 			}
 			else
 			{
