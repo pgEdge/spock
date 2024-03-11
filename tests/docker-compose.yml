@@ -1,0 +1,53 @@
+version: '3'
+
+services:
+  pgedge-n1:
+    container_name: n1
+    hostname: n1
+    image: pgedgeinc/spock
+    environment:
+      - HOSTNAME=n1
+      - PEER_NAMES=n2,n3
+      - TZ=America/Toronto
+    env_file:
+      - pgedge.env
+    ports:
+      - '15432:5432'
+    volumes:
+      - '${GITHUB_WORKSPACE}:/home/pgedge/spock-private'
+      - '~/spockbench:/home/pgedge/spockbench'
+      - './lib-list.txt:/home/pgedge/lib-list.txt'
+
+  pgedge-n2:
+    container_name: n2
+    hostname: n2
+    image: pgedgeinc/spock
+    environment:
+      - HOSTNAME=n2
+      - PEER_NAMES=n1,n3
+      - TZ=America/Toronto
+    env_file:
+      - pgedge.env
+    ports:
+      - '15433:5432'
+    volumes:
+      - '${GITHUB_WORKSPACE}:/home/pgedge/spock-private'
+      - '~/spockbench:/home/pgedge/spockbench'
+      - './lib-list.txt:/home/pgedge/lib-list.txt'
+
+  pgedge-n3:
+    container_name: n3
+    hostname: n3
+    image: pgedgeinc/spock
+    environment:
+      - HOSTNAME=n3
+      - PEER_NAMES=n1,n2
+      - TZ=America/Toronto
+    env_file:
+      - pgedge.env
+    ports:
+      - '15434:5432'
+    volumes:
+      - '${GITHUB_WORKSPACE}:/home/pgedge/spock-private'
+      - '~/spockbench:/home/pgedge/spockbench'
+      - './lib-list.txt:/home/pgedge/lib-list.txt'

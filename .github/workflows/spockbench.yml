@@ -1,0 +1,34 @@
+name: Spockbench tests
+run-name: Running Spockbench
+on: [push]
+jobs:
+  pull-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Checkout spockbench
+        run: |
+          eval $(ssh-agent -s)
+          ssh-add - <<< '${{ secrets.GH_ACTIONS_PRIV_KEY }}'
+          git clone git@github.com:pgedge/spockbench ~/spockbench
+      
+      - name: Add permissions
+        run: |
+          sudo chmod -R a+w ${GITHUB_WORKSPACE}
+          sudo chmod -R a+w ~/spockbench
+
+      - name: Start docker
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/
+          docker-compose build
+          docker-compose up
+
+      - name: Check spockbench output
+        run: |
+          grep -q "ERROR" ${GITHUB_WORKSPACE}/spockbench-*.out && exit 1 || exit 0
+

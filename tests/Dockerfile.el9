@@ -1,0 +1,35 @@
+FROM rockylinux:9
+RUN dnf -y  --allowerasing install bzip2 epel-release  \
+    curl sudo procps vim unzip python3 nc  \
+    openssh-server openssh-clients dnsutils clang
+RUN dnf -y groupinstall "Development Tools"
+RUN useradd -m pgedge -s /bin/bash && \
+    echo pgedge:asdf | chpasswd && \
+    echo "pgedge ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/pgedge
+COPY lib-list.txt /home/pgedge/
+RUN dnf install --enablerepo=crb -y $(cat /home/pgedge/lib-list.txt)
+USER pgedge
+WORKDIR /home/pgedge
+
+RUN git clone https://github.com/postgres/postgres /home/pgedge/postgres && \
+          cd /home/pgedge/postgres && git checkout REL_16_2
+
+RUN ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
+    cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys && \
+    sudo chmod -R a+w ~/postgres
+
+RUN curl -fsSL https://pgedge-upstream.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
+RUN sudo -u pgedge python3 /home/pgedge/install.py
+RUN cd pgedge && ./nodectl install pgedge -U admin -P inSecure123! -d demo
+COPY pg16* /home/pgedge/postgres/
+WORKDIR /home/pgedge/postgres
+RUN git apply --verbose pg16*
+RUN options="'--prefix=/home/pgedge/pgedge/pg16' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' 'LLVM_CONFIG=/usr/bin/llvm-config-64' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && \
+    eval ./configure $options && \
+    make -j16 && \
+    make install
+
+COPY entrypoint.sh /home/pgedge
+RUN sudo chmod +x /home/pgedge/entrypoint.sh
+
+CMD /home/pgedge/entrypoint.sh
