@@ -1,5 +1,5 @@
 # Spock
-
+![Spockbench tests](https://github.com/pgedge/spock-private/actions/workflows/spockbench.yml/badge.svg)
 ## Multi-Master Replication with Conflict Resolution & Avoidance
 
 
