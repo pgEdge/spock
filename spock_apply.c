@@ -388,7 +388,13 @@ handle_commit(StringInfo s)
 		/* We need to write end_lsn to the commit record. */
 		replorigin_session_origin_lsn = end_lsn;
 
+		/* Have the commit code adjust our logical clock if needed */
+		remoteTransactionStopTimestamp = commit_time;
+
 		CommitTransactionCommand();
+
+		remoteTransactionStopTimestamp = 0;
+
 		MemoryContextSwitchTo(TopMemoryContext);
 
 		/* Track commit lsn  */
