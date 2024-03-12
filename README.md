@@ -22,6 +22,7 @@ Our previous production version was v3.2 and includes the following important en
 * Support for pg14
 * Support for pg17devel
 * Support for [Snowflake Sequences](https://github.com/pgedge/snowflake-sequences)
+* Support for Auto DDL
 * Support for setting a database to ReadOnly
 * Prelim support for Hidden Columns
 * A couple small bug fixes from pgLogical
