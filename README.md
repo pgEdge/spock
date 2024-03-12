@@ -67,14 +67,17 @@ Architectural details:
 # Major New Features
 
 ## Snowflake Sequences
-[Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences)
-Snowflake is a PostgreSQL extension providing an int8 and sequence based unique ID solution to optionally replace the PostgreSQL built-in bigserial data type. This extension allows Snowflake IDs that are unique within one sequence across multiple PostgreSQL instances in a distributed cluster.
+[Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences) is a PostgreSQL extension providing an int8 and sequence based unique ID solution to optionally replace the PostgreSQL built-in bigserial data type. This extension allows Snowflake IDs that are unique within one sequence across multiple PostgreSQL instances in a distributed cluster.
 
 ## Automatic Replication of DDL
 DDL statements can now be automatically replicated. This feature can be enabled by setting the following to on: `spock.enable_ddl_replication`, `spock.include_ddl_repset`, and `spock.allow_ddl_from_functions`. It is recommended to set these to on only when the database schema matches exactly on all nodes- either when all databases have no objects, or when all databases have exactly the same objects and all tables are added to replication sets.
+
 By default, these settings are set to off. When these settings are on, it is recommended that DDL statements dangerous for replication be executed in a maintenance window to avoid errors that will impact replication.
+
 `spock.enable_ddl_replication` will enable replication of ddl statements through the default replication set. Some DDL statements are intentionally not replicated (ie. CREATE DATABASE), and some are replicated but could cause issues in two ways. Some DDL statements could lead to inconsistent data (ie. CREATE TABLE... AS...) since the DDL statement is replicated before the table is added to the replication set. Some DDL statements are replicated, but are potentially an issue in a 3+ node cluster (ie. DROP TABLE).
+
 `spock.include_ddl_repset` will enable spock to automatically add tables to replication sets at the time they are created on each node. Tables with Primary Keys will be added to the default replication set, and tables without Primary Keys will be added to the default_insert_only replication set. Altering a table to add or remove a Primary Key will make the correct adjustment to which replication set the table is part of. Setting a table to unlogged will remove it from replication. Detaching a partition will not remove it from replication.
+
 `spock.allow_ddl_from_functions` will enable spock to automatically replicate DDL statements that are called within functions to also be automatically replicated. This can be turned off if these functions are expected to run on every node.When this is set to off statements replicated from functions adhere to the same rule previously described for 'include_ddl_repset.' If a table possesses a defined primary key, it will be added into the 'default' replication set; alternatively, they will be added to the 'default_insert_only' replication set.
 
 During the auto replication process, various messages are generated to provide information about the execution. Here are the descriptions for each message:
