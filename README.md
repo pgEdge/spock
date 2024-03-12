@@ -74,6 +74,26 @@ Architectural details:
 
 # Major New Features
 
+## Snowflake Sequences
+[Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences)
+Snowflake is a PostgreSQL extension providing an int8 and sequence based unique ID solution to optionally replace the PostgreSQL built-in bigserial data type. This extension allows Snowflake IDs that are unique within one sequence across multiple PostgreSQL instances in a distributed cluster.
+
+## Automatic Replication of DDL
+DDL statements can now be automatically replicated. This feature can be enabled by setting the following to on: `spock.enable_ddl_replication`, `spock.include_ddl_repset`, and `spock.allow_ddl_from_functions`. It is recommended to set these to on only when the database schema matches exactly on all nodes- either when all databases have no objects, or when all databases have exactly the same objects and all tables are added to replication sets.
+By default, these settings are set to off. When these settings are on, it is recommended that DDL statements dangerous for replication be executed in a maintenance window to avoid errors that will impact replication.
+`spock.enable_ddl_replication` will enable replication of ddl statements through the default replication set. Some DDL statements are intentionally not replicated (ie. CREATE DATABASE), and some are replicated but could cause issues in two ways. Some DDL statements could lead to inconsistent data (ie. CREATE TABLE... AS...) since the DDL statement is replicated before the table is added to the replication set. Some DDL statements are replicated, but are potentially an issue in a 3+ node cluster (ie. DROP TABLE).
+`spock.include_ddl_repset` will enable spock to automatically add tables to replication sets at the time they are created on each node. Tables with Primary Keys will be added to the default replication set, and tables without Primary Keys will be added to the default_insert_only replication set. Altering a table to add or remove a Primary Key will make the correct adjustment to which replication set the table is part of. Setting a table to unlogged will remove it from replication. Detaching a partition will not remove it from replication.
+`spock.allow_ddl_from_functions` will enable spock to automatically replicate DDL statements that are called within functions to also be automatically replicated. This can be turned off if these functions are expected to run on every node.When this is set to off statements replicated from functions adhere to the same rule previously described for 'include_ddl_repset.' If a table possesses a defined primary key, it will be added into the 'default' replication set; alternatively, they will be added to the 'default_insert_only' replication set.
+
+During the auto replication process, various messages are generated to provide information about the execution. Here are the descriptions for each message:
+- "DDL statement replicated."
+This message is a INFO level message. It is displayed whenever a DDL statement is successfully replicated. To include these messages in the server log files, the configuration must have "log_min_messages=INFO" set.
+- "DDL statement replicated, but could be unsafe."
+This message serves as a warning. It is generated when certain DDL statements, though successfully replicated, are deemed potentially unsafe. For example, statements like "CREATE TABLE... AS..." will trigger this warning.
+- "This DDL statement will not be replicated."
+This warning message is generated when auto replication is active, but the specific DDL is either unsupported or intentionally excluded from replication.4- "table 'test' was added to 'default' replication set." This is a LOG message providing information about the replication set used for a given table when 'spock.include_ddl_repset' is set.
+
+
 ## Replication of Partitioned Tables
 
 Partitioned tables can now be replicated. By default, when adding a partitioned table to a replication set, it will include all of its present partitions. The later partitions can be added using the `partition_add` function. The DDL for the partitioned and partitions should be present on the subscriber nodes (same as for normal tables).
@@ -579,9 +599,7 @@ may need to call `spock.alter_sub_resync_table()` to fix it.
   - `relation` - name or OID of the table to be removed from the set
 
 #### spock-repset-add-seq
-We strongly recommend that you use our new [Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences) rather
-than using the legacy sequences.
-
+*Warning:* For a multi master system, adding sequences to replication sets is not recomended. Use our new [Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences) instead.
 - `spock.repset_add_seq(set_name name, relation regclass, sync_data boolean)`
   Adds a sequence to a replication set.
 
@@ -591,6 +609,7 @@ than using the legacy sequences.
   - `sync_data` - if true, the sequence value will be synchronized immediately, default false
 
 #### spock-repset-add-all-seqs
+*Warning:* For a multi master system, adding sequences to replication sets is not recomended. Use our new [Snowflake Sequences](https://github.com/pgEdge/snowflake-sequences) instead.
 - `spock.repset_add_all_seqs(set_name name, schema_names text[], sync_data boolean)`
   Adds all sequences from the given schemas. Only existing sequences are added, any sequences that
   will be created in future will not be added automatically.
