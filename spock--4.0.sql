@@ -255,10 +255,7 @@ CREATE TABLE spock.queue (
     message json NOT NULL
 );
 
-CREATE FUNCTION spock.replicate_ddl(command text,
-									replication_sets text[] DEFAULT '{ddl_sql}',
-									search_path text DEFAULT '',
-									role text DEFAULT CURRENT_USER)
+CREATE FUNCTION spock.replicate_ddl(command text, replication_sets text[] DEFAULT '{ddl_sql}')
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
 
 CREATE FUNCTION spock.replicate_ddl(command text[], replication_sets text[] DEFAULT '{ddl_sql}')
@@ -343,22 +340,6 @@ CREATE VIEW spock.channel_summary_stats AS
      sum(n_dca) AS n_dca
   FROM spock.channel_table_stats
   GROUP BY subid, sub_name;
-
-CREATE FUNCTION spock.prune_conflict_tracking()
-RETURNS int4
-AS 'MODULE_PATHNAME', 'prune_conflict_tracking'
-LANGUAGE C;
-
-CREATE TABLE spock.conflict_tracker (
-    relid oid,
-    tid tid,
-
-    last_origin int,
-    last_xmin xid,
-    last_ts timestamptz,
-
-    PRIMARY KEY(relid, tid)
-);
 
 CREATE FUNCTION spock.lag_tracker(
     OUT slot_name text,
@@ -608,3 +589,21 @@ $$ LANGUAGE plpgsql;
 -- End of PG major version dependent PL/pgSQL definitions
 END;
 $version_dependent$ LANGUAGE plpgsql;
+
+-- ----
+-- Generic delta apply functions for all numeric data types
+-- ----
+CREATE FUNCTION spock.delta_apply(int2, int2, int2)
+RETURNS int2 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int2';
+CREATE FUNCTION spock.delta_apply(int4, int4, int4)
+RETURNS int4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int4';
+CREATE FUNCTION spock.delta_apply(int8, int8, int8)
+RETURNS int8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int8';
+CREATE FUNCTION spock.delta_apply(float4, float4, float4)
+RETURNS float4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float4';
+CREATE FUNCTION spock.delta_apply(float8, float8, float8)
+RETURNS float8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float8';
+CREATE FUNCTION spock.delta_apply(numeric, numeric, numeric)
+RETURNS numeric LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_numeric';
+CREATE FUNCTION spock.delta_apply(money, money, money)
+RETURNS money LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_money';

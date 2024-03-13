@@ -7,13 +7,17 @@ This SPOCK extension provides multi-master replication for PostgreSQL 14+.
 We originally leveraged the [pgLogical](https://github.com/2ndQuadrant/pglogical) and [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) 
 projects as a solid foundation to build upon for this enterprise-class extension. 
 
-**Version 3.3** is our current version under active development.  It presently includes the following important enhancements beyond v3.2:
+**Version 4.0** is our current version under active development.  It presently includes the following important enhancements beyond v3.3:
 
 * Full re-work of paralell slots implementation to support mixed OLTP workloads
 * Improved support for delta_apply columns to support various data types
 * Improved regression test coverage
 
-Our current production version is v3.2 and includes the following important enhancements beyond Spock v3.1:
+Our current production version is v3.3 and includes the following enhancements over v3.2:
+
+* Automatic replication of DDL statements
+
+Our previous production version was v3.2 and includes the following important enhancements beyond Spock v3.1:
 
 * Support for pg14
 * Support for pg17devel
