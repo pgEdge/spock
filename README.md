@@ -7,18 +7,24 @@ This SPOCK extension provides multi-master replication for PostgreSQL 14+
 We leveraged the [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) Open Source 
 project as a solid foundation to build upon for this enterprise-class extension. 
 
-Our production version is 3.2 and includes the following important enhancements beyond Spock 3.1:
+Our current version is 3.3 and includes the following important enhancements beyond Spock 3.2:
+
+* support for Auto DDL
+* support for OSX development environment
+* Support for Snowflake Sequences
+* Support for setting a database to ReadOnly
+
+
+Version 3.2 came out in mid 2023 and included the following enhancements:cements beyond Spock 3.1:
 
 * Support for pg14
 * Support for pg17devel
-* Support for Snowflake Sequences
-* Support for setting a database to ReadOnly
 * Prelim support for Hidden Columns
 * A couple small bug fixes from pgLogical
 * Native support for Failover Slots via integrating pg_failover_slots extension
 
 
-Our initial production version was 3.1 and included the following:
+Version 3.1 came out in early 2023 and included the following:
 
 * Support for both pg15 **AND** pg16
 * Prelim testing for online upgrades between pg15 & pg16
