@@ -22,6 +22,8 @@ typedef struct SpockNode
 	char	   *location;
 	char	   *country;
 	Jsonb	   *info;
+	/* Fields contained in the info jsonb */
+	int32		tiebreaker;
 } SpockNode;
 
 typedef struct SpockInterface

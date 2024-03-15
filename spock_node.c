@@ -158,7 +158,7 @@ create_node(SpockNode *node)
 	if (node->id == InvalidOid)
 		node->id =
 			DatumGetUInt32(hash_any((const unsigned char *) node->name,
-									strlen(node->name)));
+									strlen(node->name))) & 0xffff;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -259,7 +259,31 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 
 	datum = heap_getattr(tuple, Anum_node_info, desc, &isnull);
 	if (!isnull)
+	{
+		Datum	value;
+		int32	intval;
+
 		node->info = DatumGetJsonbP(datum);
+
+		/*
+		 * The node entry has jsonb info, try to extract the
+		 * tiebreaker value from that. If it isn't set we
+		 * fallback to the node-id.
+		 */
+		value = DirectFunctionCall2(jsonb_object_field_text, datum,
+								   CStringGetTextDatum("tiebreaker"));
+		if (DatumGetPointer(value) != NULL)
+		{
+			intval = pg_strtoint32(TextDatumGetCString(value));
+			node->tiebreaker = intval;
+		}
+		else
+			node->tiebreaker = node->id;
+	}
+	else
+	{
+		node->tiebreaker = node->id;
+	}
 
 	return node;
 }
