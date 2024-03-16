@@ -433,6 +433,10 @@ handle_commit(StringInfo s)
 	 * replication identifier here will ERROR because it's already in use
 	 * for the direct connection from X to Z. So don't do that.
 	 */
+#if 0
+	/*
+	 * XXX: This needs to be redone with Spock style forwarding in mind.
+	 */
 	if (remote_origin_id != InvalidRepOriginId &&
 		remote_origin_id != replorigin_session_origin)
 	{
@@ -448,6 +452,7 @@ handle_commit(StringInfo s)
 						   XactLastCommitEnd, false, false /* XXX ? */);
 		table_close(replorigin_rel, RowExclusiveLock);
 	}
+#endif
 
 	in_remote_transaction = false;
 
@@ -540,8 +545,6 @@ handle_commit(StringInfo s)
 static void
 handle_origin(StringInfo s)
 {
-	char		   *origin;
-
 	/*
 	 * ORIGIN message can only come inside remote transaction and before
 	 * any actual writes.
@@ -550,11 +553,15 @@ handle_origin(StringInfo s)
 		elog(ERROR, "SPOCK %s: ORIGIN message sent out of order",
 			 MySubscription->name);
 
-	/* We have to start transaction here so that we can work with origins. */
-	begin_replication_step();
-
-	origin = spock_read_origin(s, &remote_origin_lsn);
-	remote_origin_id = replorigin_by_name(origin, true);
+	/*
+	 * Read the message and adjust the replorigin_session_origin to
+	 * the real origin_id. PostgreSQL builtin logical replication
+	 * uses the non-sensical roident, which is linked to the slot of
+	 * the provider and has nothing to do with the actual origin of
+	 * the original transaction.
+	 */
+	remote_origin_id = spock_read_origin(s, &remote_origin_lsn);
+	replorigin_session_origin = remote_origin_id;
 }
 
 /*

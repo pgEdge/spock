@@ -205,8 +205,8 @@ spock_write_commit(StringInfo out, SpockOutputData *data,
  * Write ORIGIN to the output stream.
  */
 void
-spock_write_origin(StringInfo out, const char *origin,
-						XLogRecPtr origin_lsn)
+spock_write_origin(StringInfo out, const RepOriginId origin_id,
+				   XLogRecPtr origin_lsn)
 {
 	uint8	flags = 0;
 	uint8	len;
@@ -218,13 +218,9 @@ spock_write_origin(StringInfo out, const char *origin,
 	/* send the flags field its self */
 	pq_sendbyte(out, flags);
 
-	/* fixed fields */
+	/* send fields */
 	pq_sendint64(out, origin_lsn);
-
-	/* origin */
-	len = strlen(origin) + 1;
-	pq_sendbyte(out, len);
-	pq_sendbytes(out, origin, len);
+	pq_sendint(out, origin_id, sizeof(RepOriginId));
 }
 
 /*
@@ -577,7 +573,7 @@ spock_read_commit(StringInfo in, XLogRecPtr *commit_lsn,
 /*
  * Read ORIGIN from the output stream.
  */
-char *
+RepOriginId
 spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
 {
 	uint8	flags;
@@ -588,12 +584,9 @@ spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
 	Assert(flags == 0);
 	(void) flags; /* unused */
 
-	/* fixed fields */
+	/* read fields */
 	*origin_lsn = pq_getmsgint64(in);
-
-	/* origin */
-	len = pq_getmsgbyte(in);
-	return pnstrdup(pq_getmsgbytes(in, len), len);
+	return pq_getmsgint(in, sizeof(RepOriginId));
 }
 
 

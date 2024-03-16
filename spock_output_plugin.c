@@ -91,6 +91,9 @@ static bool						slot_group_on_exit_set = false;
 static SpockOutputSlotGroup	   *slot_group = NULL;
 static bool						slot_group_skip_xact = false;
 
+static char					   *MyOutputNodeName = NULL;
+static RepOriginId				MyOutputNodeId = InvalidRepOriginId;
+
 #if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 #endif
@@ -246,7 +249,15 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 		node = get_local_node(false, false);
 		data->local_node_id	= node->node->id;
 
-		 /*
+		/*
+		 * Remember our own node.name for quick access out write_origin().
+		 */
+		oldctx = MemoryContextSwitchTo(TopMemoryContext);
+		MyOutputNodeName = pstrdup(node->node->name);
+		MyOutputNodeId = node->node->id;
+		MemoryContextSwitchTo(oldctx);
+
+		/*
 		 * Ideally we'd send the startup message immediately. That way
 		 * it'd arrive before any error we emit if we see incompatible
 		 * options sent by the client here. That way the client could
@@ -463,11 +474,6 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	if (!startup_message_sent)
 		send_startup_message(ctx, data, false /* can't be last message */);
 
-#ifdef HAVE_REPLICATION_ORIGINS
-	/* If the record didn't originate locally, send origin info */
-	send_replication_origin &= txn->origin_id != InvalidRepOriginId;
-#endif
-
 	OutputPluginPrepareWrite(ctx, !send_replication_origin);
 	data->api->write_begin(ctx->out, data, txn);
 
@@ -481,17 +487,24 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 		OutputPluginPrepareWrite(ctx, true);
 
 		/*
-		 * XXX: which behaviour we want here?
-		 *
-		 * Alternatives:
-		 *	- don't send origin message if origin name not found
-		 *	  (that's what we do now)
-		 *	- throw error - that will break replication, not good
-		 *	- send some special "unknown" origin
+		 * On transactions that originated locally generate the origin
+		 * message with our own and node.id. Remote transactions
+		 * that we forward will have the node.id of what we got from
+		 * the remote, which is the real origin of the transaction.
 		 */
-		if (data->api->write_origin &&
-			replorigin_by_oid(txn->origin_id, true, &origin))
-			data->api->write_origin(ctx->out, origin, txn->origin_lsn);
+		if (data->api->write_origin)
+		{
+			if (txn->origin_id == InvalidRepOriginId)
+			{
+				data->api->write_origin(ctx->out, MyOutputNodeId,
+										txn->origin_lsn);
+			}
+			else
+			{
+				data->api->write_origin(ctx->out, txn->origin_id,
+										txn->origin_lsn);
+			}
+		}
 	}
 #endif
 

@@ -26,8 +26,8 @@
  * have backwards compatibility for. We negotiate protocol versions during the
  * startup handshake. See the protocol documentation for details.
  */
-#define SPOCK_PROTO_VERSION_NUM 1
-#define SPOCK_PROTO_MIN_VERSION_NUM 1
+#define SPOCK_PROTO_VERSION_NUM 2
+#define SPOCK_PROTO_MIN_VERSION_NUM 2
 
 /*
  * The startup parameter format is versioned separately to the rest of the wire
@@ -63,8 +63,9 @@ typedef void (*spock_write_begin_fn) (StringInfo out, SpockOutputData * data,
 typedef void (*spock_write_commit_fn) (StringInfo out, SpockOutputData * data,
 							   ReorderBufferTXN *txn, XLogRecPtr commit_lsn);
 
-typedef void (*spock_write_origin_fn) (StringInfo out, const char *origin,
-													   XLogRecPtr origin_lsn);
+typedef void (*spock_write_origin_fn) (StringInfo out,
+									   const RepOriginId origin_id,
+									   XLogRecPtr origin_lsn);
 
 typedef void (*spock_write_insert_fn) (StringInfo out, SpockOutputData * data,
 										   Relation rel, HeapTuple newtuple,
