@@ -442,16 +442,53 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 	else
 	{
 		/*
-		 * The timestamps were equal, break the tie in a manner that is
-		 * consistent across all nodes.
-		 *
-		 * XXX: TODO, for now we just always apply remote change.
+		 * The timestamps were equal. Use the "tiebreaker" from the
+		 * spock.node configuration to come up with a winner.
 		 */
-		elog(LOG, "SPOCK: conflict_resolve_by_timestamp(): "
-				  "timestamps identical!");
+		SpockNode	   *loc_node;
+		SpockNode	   *rmt_node;
 
-		*resolution = SpockResolution_ApplyRemote;
-		return true;
+		/* If the current local tuple is really local, use our own node.id */
+		if (local_origin_id == InvalidRepOriginId)
+		{
+			SpockLocalNode *local_node = get_local_node(false, false);
+
+			local_origin_id = local_node->node->id;
+		}
+
+		/* Get the two nodes for their "tiebreaker" */
+		loc_node = get_node(local_origin_id);
+		rmt_node = get_node(remote_origin_id);
+
+		if (loc_node->tiebreaker == rmt_node->tiebreaker)
+		{
+			/*
+			 * Major pilot error here. Our default for the tiebreaker is
+			 * the unique 16-bit node.id but the user somehow managed to
+			 * get identical values into the "info" jsonb "tiebreaker"
+			 * element.
+			 */
+			elog(WARNING, "CONFLICT: current node=%d and remote node=%d "
+						  "tiebreaker values are equal!",
+						  loc_node->id, rmt_node->id);
+			*resolution = SpockResolution_ApplyRemote;
+			return true;
+		}
+
+		if (loc_node->tiebreaker < rmt_node->tiebreaker)
+		{
+			/* TODO: Need diagnostig logging for ACE here */
+			elog(LOG, "CONFLICT: current node=%d wins over %d by tiebreaker", loc_node->id, rmt_node->id);
+			*resolution = SpockResolution_KeepLocal;
+			return false;
+		}
+		else
+		{
+			/* TODO: Need diagnostig logging for ACE here */
+			elog(LOG, "CONFLICT: remote  node=%d wins over %d by tiebreaker", rmt_node->id, loc_node->id);
+			*resolution = SpockResolution_ApplyRemote;
+			return true;
+		}
 	}
 }
 
