@@ -48,6 +48,7 @@
 #include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
 
+#include "replication/message.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 #include "replication/slot.h"
@@ -77,16 +78,17 @@
 
 #include "pgstat.h"
 
+#include "spock_conflict.h"
 #include "spock_dependency.h"
-#include "spock_node.h"
 #include "spock_executor.h"
+#include "spock_node.h"
+#include "spock_output_plugin.h"
 #include "spock_queue.h"
 #include "spock_relcache.h"
 #include "spock_repset.h"
 #include "spock_rpc.h"
 #include "spock_sync.h"
 #include "spock_worker.h"
-#include "spock_conflict.h"
 
 #include "spock.h"
 
@@ -173,6 +175,10 @@ PG_FUNCTION_INFO_V1(delta_apply_float4);
 PG_FUNCTION_INFO_V1(delta_apply_float8);
 PG_FUNCTION_INFO_V1(delta_apply_numeric);
 PG_FUNCTION_INFO_V1(delta_apply_money);
+
+/* Functions to pause/resume replication (session_replication_role=local) */
+PG_FUNCTION_INFO_V1(spock_pause_replication);
+PG_FUNCTION_INFO_V1(spock_resume_replication);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -2996,4 +3002,31 @@ Datum delta_apply_money(PG_FUNCTION_ARGS)
 
 	delta = DirectFunctionCall2(cash_mi, new_value, old_value);
 	PG_RETURN_DATUM(DirectFunctionCall2(cash_pl, local_val, delta));
+}
+
+/*
+ * Functions to pause/resume replication (session_replication_role=local)
+ */
+Datum
+spock_pause_replication(PG_FUNCTION_ARGS)
+{
+	char				   *prefix = "Spock";
+	SpockWalMessageSimple	message;
+	XLogRecPtr				lsn;
+
+	message.mtype = SPOCK_PAUSE_REPLICATION;
+	lsn = LogLogicalMessage(prefix, (char *)&message, sizeof(message), true);
+	PG_RETURN_LSN(lsn);
+}
+
+Datum
+spock_resume_replication(PG_FUNCTION_ARGS)
+{
+	char				   *prefix = "Spock";
+	SpockWalMessageSimple	message;
+	XLogRecPtr				lsn;
+
+	message.mtype = SPOCK_RESUME_REPLICATION;
+	lsn = LogLogicalMessage(prefix, (char *)&message, sizeof(message), true);
+	PG_RETURN_LSN(lsn);
 }

@@ -607,3 +607,13 @@ CREATE FUNCTION spock.delta_apply(numeric, numeric, numeric)
 RETURNS numeric LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_numeric';
 CREATE FUNCTION spock.delta_apply(money, money, money)
 RETURNS money LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_money';
+
+-- ----
+-- Functions for pause/resume replication
+-- ----
+CREATE FUNCTION spock.pause_replication()
+RETURNS pg_catalog.pg_lsn LANGUAGE c
+AS 'MODULE_PATHNAME', 'spock_pause_replication';
+CREATE FUNCTION spock.resume_replication()
+RETURNS pg_catalog.pg_lsn LANGUAGE c
+AS 'MODULE_PATHNAME', 'spock_resume_replication';

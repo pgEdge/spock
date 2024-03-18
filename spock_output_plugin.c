@@ -51,6 +51,10 @@
 
 extern void		_PG_output_plugin_init(OutputPluginCallbacks *cb);
 
+/* Global variables */
+bool	spock_replication_is_paused = false;
+
+/* Local functions */
 static void pg_decode_startup(LogicalDecodingContext * ctx,
 							  OutputPluginOptions *opt, bool is_init);
 static void pg_decode_shutdown(LogicalDecodingContext * ctx);
@@ -61,6 +65,14 @@ static void pg_decode_commit_txn(LogicalDecodingContext *ctx,
 static void pg_decode_change(LogicalDecodingContext *ctx,
 				 ReorderBufferTXN *txn, Relation rel,
 				 ReorderBufferChange *change);
+static void pg_decode_message(LogicalDecodingContext *ctx,
+							  ReorderBufferTXN *txn,
+							  XLogRecPtr message_lsn,
+							  bool transactional,
+							  const char *prefix,
+							  Size message_size,
+							  const char *message);
+
 
 #ifdef HAVE_REPLICATION_ORIGINS
 static bool pg_decode_origin_filter(LogicalDecodingContext *ctx,
@@ -124,6 +136,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->begin_cb = pg_decode_begin_txn;
 	cb->change_cb = pg_decode_change;
 	cb->commit_cb = pg_decode_commit_txn;
+	cb->message_cb = pg_decode_message;
 #ifdef HAVE_REPLICATION_ORIGINS
 	cb->filter_by_origin_cb = pg_decode_origin_filter;
 #endif
@@ -437,6 +450,9 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	bool send_replication_origin = data->forward_changeset_origins;
 	MemoryContext old_ctx;
 
+	/* Reset if replication is paused */
+	spock_replication_is_paused = false;
+
 	/*
 	 * Check if we are a member of a replication slot-group and if so,
 	 * if another member is already working on this transaction. If
@@ -525,6 +541,9 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	MemoryContext		old_ctx;
 	XLogRecPtr			end_lsn = txn->end_lsn - MyWalSenderIdx;
 
+	/* Reset if replication is paused */
+	spock_replication_is_paused = false;
+
 	/*
 	 * If we are in slot-group skip transaction mode, we simply end
 	 * it here and wait for the next transaction.
@@ -598,6 +617,61 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	MemoryContextReset(data->context);
 
 	VALGRIND_DO_ADDED_LEAK_CHECK;
+}
+
+/*
+ * MESSAGE callback
+ */
+static void
+pg_decode_message(LogicalDecodingContext *ctx,
+				  ReorderBufferTXN *txn, XLogRecPtr message_lsn,
+				  bool transactional, const char *prefix,
+				  Size message_size, const char *message)
+{
+	SpockWalMessage	   *msg = (SpockWalMessage *)message;
+
+	/* Ignore messages that are not meant for Spock */
+	if (strcmp(prefix, "Spock") != 0)
+		return;
+
+	/* Check that we have at least the message type */
+	if (message_size < sizeof(SpockWalMessageSimple))
+	{
+		elog(WARNING, "Spock custom WAL message: message_size %d too short",
+			 message_size);
+		return;
+	}
+
+	switch (msg->mtype)
+	{
+		case SPOCK_PAUSE_REPLICATION:
+			/* Turn decoding off for the remainder of the transaction */
+			if (message_size != sizeof(SpockWalMessageSimple))
+			{
+				elog(WARNING, "Spock custom WAL message: wrong message "
+							  "size %d for simple message", message_size);
+				return;
+			}
+			spock_replication_is_paused = true;
+			break;
+
+		case SPOCK_RESUME_REPLICATION:
+			/* Turn decoding back on */
+			if (message_size != sizeof(SpockWalMessageSimple))
+			{
+				elog(WARNING, "Spock custom WAL message: wrong message "
+							  "size %d for simple message", message_size);
+				return;
+			}
+			spock_replication_is_paused = false;
+			break;
+
+		default:
+			elog(WARNING, "Spock custom WAL message: unknown message type %d",
+				 msg->mtype);
+			return;
+	}
+
 }
 
 static bool
@@ -803,9 +877,11 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	 * If we are in slot-group skip transaction mode do nothing
 	 */
 	if (slot_group_skip_xact)
-	{
 		return;
-	}
+
+	/* If replication is paused skip these actions */
+	if (spock_replication_is_paused)
+		return;
 
 	/* Avoid leaking memory by using and resetting our own context */
 	old = MemoryContextSwitchTo(data->context);

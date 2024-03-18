@@ -83,6 +83,25 @@ typedef struct SpockOutputSlotGroup
     XLogRecPtr  last_lsn;
 } SpockOutputSlotGroup;
 
+/*
+ * Custom WAL messages
+ */
+extern bool		spock_replication_is_paused;
+
+#define SPOCK_PAUSE_REPLICATION		1	/* Suppress subsequent DML/DDL */
+#define SPOCK_RESUME_REPLICATION	2	/* Resume regular replication */
+
+typedef struct SpockWalMessageSimple
+{
+	int32		mtype;
+} SpockWalMessageSimple;
+
+typedef union SpockWalMessage
+{
+	int32					mtype;
+	SpockWalMessageSimple	simple;
+} SpockWalMessage;
+
 extern void spock_output_plugin_shmem_init(void);
 
 #endif /* SPOCK_OUTPUT_PLUGIN_H */
