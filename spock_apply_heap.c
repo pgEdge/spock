@@ -294,44 +294,23 @@ slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
 	int i;
 
 	ExecClearTuple(slot);
+	memset(slot->tts_values, 0, natts * sizeof(Datum));
+	memset(slot->tts_isnull, 1, natts * sizeof(bool));
 
 	/* Call the "in" function for each non-dropped, non-null attribute */
-	Assert(natts == rel->natts);
-	for (i = 0; i < natts; i++)
+	for (i = 0; i < rel->natts; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, i);
 		int remoteattnum = rel->attmap[i];
+		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, remoteattnum);
 
-		if (!att->attisdropped && remoteattnum >= 0)
-		{
-			Assert(remoteattnum < rel->natts);
-
-			if (!tupleData->nulls[remoteattnum])
-			{
-				/*
-				 * Fill in the Datum for this attribute
-				 */
-				slot->tts_values[i] = tupleData->values[i];
-				slot->tts_isnull[i] = false;
-			}
-			else
-			{
-				/*
-				 * NULL value from remote.
-				 */
-				slot->tts_values[i] = (Datum)0;
-				slot->tts_isnull[i] = true;
-			}
-		}
-		else
+		Assert(remoteattnum < rel->natts);
+		if (!tupleData->nulls[i])
 		{
 			/*
-			 * We assign NULL to dropped attributes and missing values
-			 * (missing values should be later filled using
-			 * slot_fill_defaults).
+			 * Fill in the Datum for this attribute
 			 */
-			slot->tts_values[i] = (Datum)0;
-			slot->tts_isnull[i] = true;
+			slot->tts_values[att->attnum - 1] = tupleData->values[i];
+			slot->tts_isnull[att->attnum - 1] = false;
 		}
 	}
 
@@ -349,28 +328,19 @@ slot_store_htup(TupleTableSlot *slot, SpockRelation *rel,
 	int i;
 
 	ExecClearTuple(slot);
+	memset(slot->tts_values, 0, natts * sizeof(Datum));
+	memset(slot->tts_isnull, 1, natts * sizeof(bool));
 
 	/* Call the "in" function for each non-dropped, non-null attribute */
-	Assert(natts == rel->natts);
-	for (i = 0; i < natts; i++)
+	for (i = 0; i < rel->natts; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, i);
 		int remoteattnum = rel->attmap[i];
+		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, remoteattnum);
 
-		if (!att->attisdropped && remoteattnum >= 0)
-		{
-			slot->tts_values[i] = heap_getattr(htup, i + 1,
-											   slot->tts_tupleDescriptor,
-											   &slot->tts_isnull[i]);
-		}
-		else
-		{
-			/*
-			 * We assign NULL to dropped attributes
-			 */
-			slot->tts_values[i] = (Datum)0;
-			slot->tts_isnull[i] = true;
-		}
+		Assert(remoteattnum < rel->natts);
+		slot->tts_values[att->attnum - 1] = heap_getattr(htup, i + 1,
+											slot->tts_tupleDescriptor,
+											&slot->tts_isnull[i]);
 	}
 
 	ExecStoreVirtualTuple(slot);
@@ -409,29 +379,17 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 	memcpy(slot->tts_isnull, srcslot->tts_isnull, natts * sizeof(bool));
 
 	/* Call the "in" function for each replaced attribute */
-	Assert(natts == rel->natts);
-	for (i = 0; i < natts; i++)
+	for (i = 0; i < rel->natts; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, i);
 		int remoteattnum = rel->attmap[i];
+		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, remoteattnum);
 
-		if (remoteattnum < 0)
-			continue;
-
-		if (!att->attisdropped && remoteattnum >= 0)
+		Assert(remoteattnum < rel->natts);
+		if (!tupleData->nulls[i])
 		{
-			if (!tupleData->nulls[remoteattnum])
-			{
-				/* Use the value from the NEW remote tuple */
-				slot->tts_values[i] = tupleData->values[i];
-				slot->tts_isnull[i] = false;
-			}
-			else
-			{
-				/* Must be LOGICALREP_COLUMN_NULL */
-				slot->tts_values[i] = (Datum)0;
-				slot->tts_isnull[i] = true;
-			}
+			/* Use the value from the NEW remote tuple */
+			slot->tts_values[att->attnum - 1] = tupleData->values[i];
+			slot->tts_isnull[att->attnum - 1] = false;
 		}
 	}
 
