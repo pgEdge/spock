@@ -1416,7 +1416,7 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	tupDesc = RelationGetDescr(rel);
 
 	nspname = get_namespace_name(RelationGetNamespace(rel));
-	relname = RelationGetRelationName(rel);
+	relname = pstrdup(RelationGetRelationName(rel));
 
 	/* Proccess att_list. */
 	if (!PG_ARGISNULL(3))
