@@ -1921,7 +1921,7 @@ truncate_table(char *nspname, char *relname)
 	truncate = makeNode(TruncateStmt);
 	truncate->relations = list_make1(rv);
 	truncate->restart_seqs = false;
-	truncate->behavior = DROP_RESTRICT;
+	truncate->behavior = DROP_CASCADE;
 
 	/*
 	 * We use standard_ProcessUtility to process the truncate statement. This
