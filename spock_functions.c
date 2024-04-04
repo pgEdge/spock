@@ -2063,7 +2063,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 		case T_AlterOwnerStmt:
 			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_DATABASE ||
-				castNode(RenameStmt, stmt)->renameType == OBJECT_SUBSCRIPTION)
+				castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_SUBSCRIPTION)
 				goto skip_ddl;
 			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_TABLESPACE)
 				add_search_path = false;
@@ -2104,6 +2104,12 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 
 		case T_IndexStmt:
 			if (castNode(IndexStmt, stmt)->concurrent)
+				goto skip_ddl;
+			break;
+
+		case T_DropStmt:
+			if (castNode(DropStmt, stmt)->removeType == OBJECT_INDEX &&
+				castNode(DropStmt, stmt)->concurrent)
 				goto skip_ddl;
 			break;
 
