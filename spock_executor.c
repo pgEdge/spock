@@ -19,6 +19,7 @@
 #include "access/xlog.h"
 
 #include "catalog/dependency.h"
+#include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_authid_d.h"
@@ -176,7 +177,30 @@ add_ddl_to_repset(Node *parsetree)
 	RangeVar   *relation = NULL;
 
 	if (nodeTag(parsetree) == T_AlterTableStmt)
-		relation = castNode(AlterTableStmt, parsetree)->relation;
+	{
+		if (castNode(AlterTableStmt, parsetree)->objtype == OBJECT_TABLE)
+			relation = castNode(AlterTableStmt, parsetree)->relation;
+		else if (castNode(AlterTableStmt, parsetree)->objtype == OBJECT_INDEX)
+		{
+			ListCell *cell;
+			AlterTableStmt *atstmt = (AlterTableStmt *) parsetree;
+
+			foreach(cell, atstmt->cmds)
+			{
+				AlterTableCmd *cmd = (AlterTableCmd *) lfirst(cell);
+
+				if (cmd->subtype == AT_AttachPartition)
+				{
+					RangeVar   *rv = castNode(AlterTableStmt, parsetree)->relation;
+					Relation	indrel;
+
+					indrel = relation_openrv(rv, AccessShareLock);
+					reloid = IndexGetRelation(RelationGetRelid(indrel), false);
+					table_close(indrel, NoLock);
+				}
+			}
+		}
+	}
 	else if (nodeTag(parsetree) == T_CreateStmt)
 		relation = castNode(CreateStmt, parsetree)->relation;
 	else
@@ -189,7 +213,11 @@ add_ddl_to_repset(Node *parsetree)
 	if (!node)
 		return;
 
-	targetrel = table_openrv(relation, AccessShareLock);
+	if (OidIsValid(reloid))
+		targetrel = RelationIdGetRelation(reloid);
+	else
+		targetrel = table_openrv(relation, AccessShareLock);
+
 	reloid = RelationGetRelid(targetrel);
 
 	/* UNLOGGED and TEMP relations cannot be part of replication set. */
@@ -241,7 +269,7 @@ add_ddl_to_repset(Node *parsetree)
 		replication_set_add_table(repset->id, reloid, NIL, NULL);
 
 		elog(LOG, "table '%s' was added to '%s' replication set.",
-			 relation->relname, repset->name);
+			 get_rel_name(reloid), repset->name);
 	}
 }
 
