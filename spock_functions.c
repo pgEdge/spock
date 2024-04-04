@@ -2055,6 +2055,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_TABLESPACE)
 				add_search_path = false;
 			break;
+
 		case T_RenameStmt:
 			if (castNode(RenameStmt, stmt)->renameType == OBJECT_DATABASE ||
 				castNode(RenameStmt, stmt)->renameType == OBJECT_SUBSCRIPTION)
@@ -2064,7 +2065,29 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 		case T_CreateTableAsStmt:
-			warn = true;
+			{
+				CreateTableAsStmt *ctas = castNode(CreateTableAsStmt, stmt);
+
+				if (ctas->into->rel->relpersistence == RELPERSISTENCE_TEMP ||
+					nodeTag(ctas->query) == T_ExecuteStmt)
+					goto skip_ddl;
+				warn = true;
+			}
+			break;
+
+		case T_CreateStmt:
+			if (castNode(CreateStmt, stmt)->relation->relpersistence == RELPERSISTENCE_TEMP)
+				goto skip_ddl;
+			break;
+
+		case T_CreateSeqStmt:
+			if (castNode(CreateSeqStmt, stmt)->sequence->relpersistence == RELPERSISTENCE_TEMP)
+				goto skip_ddl;
+			break;
+
+		case T_ViewStmt:
+			if (castNode(ViewStmt, stmt)->view->relpersistence == RELPERSISTENCE_TEMP)
+				goto skip_ddl;
 			break;
 
 		case T_CreateTableSpaceStmt:	/* TABLESPACE */
