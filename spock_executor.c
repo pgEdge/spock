@@ -205,6 +205,18 @@ add_ddl_to_repset(Node *parsetree)
 		relation = castNode(CreateStmt, parsetree)->relation;
 	else if (nodeTag(parsetree) == T_CreateTableAsStmt)
 		relation = castNode(CreateTableAsStmt, parsetree)->into->rel;
+	else if (nodeTag(parsetree) == T_CreateSchemaStmt)
+	{
+		ListCell *lc;
+		CreateSchemaStmt *cstmt = (CreateSchemaStmt *) parsetree;
+
+		foreach(lc, cstmt->schemaElts)
+		{
+			if (nodeTag(lfirst(lc)) == T_CreateStmt)
+				add_ddl_to_repset(lfirst(lc));
+		}
+		return;
+	}
 	else
 	{
 		/* only tables are added to repset. */
