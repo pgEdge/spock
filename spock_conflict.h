@@ -103,4 +103,7 @@ extern Oid get_conflict_log_seq(void);
 extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 									   GucSource source);
 
+extern void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
+	HeapTuple tuple);
+
 #endif /* SPOCK_CONGLICT_H */

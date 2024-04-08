@@ -16,6 +16,7 @@
 
 #include "spock.h"
 #include "spock_output_plugin.h"	/* for SpockOutputSlotGroup */
+#include "spock_proto_native.h"
 
 typedef enum {
 	SPOCK_WORKER_NONE,		/* Unused slot. */
@@ -32,6 +33,7 @@ typedef struct SpockApplyWorker
 	XLogRecPtr	replay_stop_lsn;	/* Replay should stop here if defined. */
 	RepOriginId	replorigin;			/* Remote origin id of apply worker. */
 	TimestampTz	last_ts;			/* Last remote commit timestamp. */
+	bool		use_try_block;		/* Use try block for apply. */
 } SpockApplyWorker;
 
 typedef struct SpockSyncWorker
@@ -91,6 +93,13 @@ typedef struct SpockContext {
 	SpockWorker  workers[FLEXIBLE_ARRAY_MEMBER];
 } SpockContext;
 
+typedef struct SpockErrorLog
+{
+	NameData		slot_name;
+	XLogRecPtr		commit_lsn;
+	HeapTuple		local_tuple;
+} SpockErrorLog;
+
 typedef enum spockStatsType
 {
 	SPOCK_STATS_INSERT_COUNT = 0,
@@ -101,6 +110,13 @@ typedef enum spockStatsType
 
 	SPOCK_STATS_NUM_COUNTERS = SPOCK_STATS_DCA_COUNT + 1
 } spockStatsType;
+
+typedef enum spockErrorLogBehaviour
+{
+	IGNORE,
+	DISCARD,
+	TRANSDISCARD
+} spockErrorLogBehaviour;
 
 typedef struct spockStatsKey
 {
@@ -138,9 +154,11 @@ extern SpockContext		   *SpockCtx;
 extern SpockWorker		   *MySpockWorker;
 extern SpockApplyWorker	   *MyApplyWorker;
 extern SpockSubscription   *MySubscription;
+extern SpockErrorLog		*error_log_ptr;
 extern int					spock_stats_max_entries_conf;
 extern int					spock_stats_max_entries;
 extern bool					spock_stats_hash_full;
+extern int					error_log_behaviour;
 
 #define SPOCK_STATS_MAX_ENTRIES(_nworkers) \
 	(spock_stats_max_entries_conf < 0 ? (1000 * _nworkers) \
@@ -174,5 +192,8 @@ extern void handle_stats_counter(Relation relation, Oid subid,
 								spockStatsType typ, int ntup);
 
 extern LagTrackerEntry *lag_tracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts);
+extern void add_entry_to_error_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_xid, 
+					SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup, 
+					SpockTupleData *remotenewtup, char *action, char *error_message);
 
 #endif /* SPOCK_WORKER_H */

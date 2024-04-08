@@ -89,6 +89,7 @@
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
 
 static bool			in_remote_transaction = false;
+static bool 		first_begin_at_startup = true;
 static XLogRecPtr	remote_origin_lsn = InvalidXLogRecPtr;
 static RepOriginId	remote_origin_id = InvalidRepOriginId;
 static TimeOffset	apply_delay = 0;
@@ -99,6 +100,7 @@ static List		   *SyncingTables = NIL;
 
 SpockApplyWorker	   *MyApplyWorker = NULL;
 SpockSubscription	   *MySubscription = NULL;
+int						my_error_log_index = -1;
 
 static PGconn	   *applyconn = NULL;
 
@@ -319,8 +321,13 @@ end_replication_step(void)
 static void
 handle_begin(StringInfo s)
 {
+	SpockErrorLog   *error_log;
+	SpockErrorLog 	*new_elog_entry;
 	XLogRecPtr		commit_lsn;
 	TimestampTz		commit_time;
+	bool slot_found = false;
+	int sub_name_len = strlen(MySubscription->name);
+	int free_slot_index = -1;
 
 	xact_action_counter = 1;
 	errcallback_arg.action_name = "BEGIN";
@@ -330,6 +337,92 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_timestamp = commit_time;
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
+
+	elog(LOG, "SpockErrorLog: Error log behaviour is set to %d", error_log_behaviour);
+
+	/* 
+	 * We either create a new shared memory struct in the error
+	 * log for ourselves if it doesn't exist, or check the commit 
+	 * lsn of the existing entry. There are four cases here:
+	 * 
+	 * 1. The error log is empty and we need to create a new slot anyway.
+	 *	
+	 * 2. The error log is not empty, but we didn't find ourselves in
+	 * any of the entries. We need to create a slot here as well.
+     *
+	 * 3. The error log is not empty and we found our entry, but the commit
+	 * lsn does not match. We simply update the commit lsn and move on.
+	 * This case happens when we have not errored out previously.
+	 * 
+	 * 4. The error log is not empty, we found our entry and the commit
+	 * lsn. This would mean that we previously errored and restarted.
+	 * We set the MyApplyWorker->use_try_block = true.
+	 */
+
+	if (first_begin_at_startup)
+	{
+		first_begin_at_startup = false;
+
+		elog(DEBUG1, "SpockErrorLog: First time encountering a BEGIN command. Checking the error_log_ptr for the commit_lsn");
+
+		for (int i = 0; i <= SpockCtx->total_workers; i++)
+		{
+			error_log = &error_log_ptr[i];
+			if(strncmp(NameStr(error_log->slot_name), MySubscription->name, sub_name_len) == 0)
+			{
+				/* If we find our slot in shared memory, check for commit LSN
+				 */
+				slot_found = true;
+				elog(DEBUG1, "SpockErrorLog: Found the slot_name in the error_log_ptr. Checking for commit_lsn (%lu).", commit_lsn);
+				my_error_log_index = i;
+
+				if(error_log->commit_lsn == commit_lsn)
+				{
+					elog(DEBUG1, "SpockErrorLog: Found the commit_lsn in the error_log_ptr. Using the try block now.");
+					MyApplyWorker->use_try_block = true;
+				}
+
+				/* Break out out of the loop whether we've found the commit LSN or not
+				 * since we have already found our slot
+				 */
+				break;
+			}
+			else if (free_slot_index < 0 && strlen(NameStr(error_log->slot_name)) == 0)
+			 	/* If we find a free slot in shared memory, remember its index
+				*/
+				free_slot_index = i;
+		}
+
+		if (!slot_found)
+		{
+			/* If we don't find ourselves in shared memory, then we get the pointer to
+			 * the first free slot we remembered earlier, and fill in our slot name,
+			 * commit_lsn and set local_tuple = NULL
+			 */
+			elog(DEBUG1, "SpockErrorLog: Error log is empty. Creating a new shared memory struct");
+			MyApplyWorker->use_try_block = false;
+
+			if (free_slot_index < 0)
+				elog(ERROR, "SpockErrorLog: No free slot found in the error_log_ptr");
+
+			/* TODO: What happens if a subscription is dropped? Memory leak */
+			new_elog_entry = &error_log_ptr[free_slot_index];
+			namestrcpy(&new_elog_entry->slot_name, MySubscription->name);
+
+			/* Redundant, since it's happening below. But we'll have it for now */
+			new_elog_entry->commit_lsn = commit_lsn;
+			new_elog_entry->local_tuple = NULL;
+
+			my_error_log_index = free_slot_index;
+			elog(DEBUG1, "SpockErrorLog: Created a new error_log_ptr for the slot %s \
+			with commit_lsn %lu at free_slot_index = (%d)", MySubscription->name, commit_lsn, free_slot_index);
+		}
+	}
+
+	/* FIXME: Is it possible for my_error_log_index to be -1 here? */
+	elog(DEBUG1, "SpockErrorLog: Updating the commit_lsn in the error_log_ptr to (%lu)", commit_lsn);
+	error_log = &error_log_ptr[my_error_log_index];
+	error_log->commit_lsn = commit_lsn;
 
 	VALGRIND_PRINTF("SPOCK_APPLY: begin %u\n", remote_xid);
 
@@ -362,6 +455,7 @@ handle_begin(StringInfo s)
 
 /*
  * Handle COMMIT message.
+ * TODO: Properly handle commit for TRANSDISCARD cases.
  */
 static void
 handle_commit(StringInfo s)
@@ -513,6 +607,11 @@ handle_commit(StringInfo s)
 
 	xact_action_counter = 0;
 	remote_xid = InvalidTransactionId;
+	
+	/* This is the only place we can reset the use_try_block = false
+	without any risk of going into the error deathloop
+	*/
+	MyApplyWorker->use_try_block = false;
 
 	process_syncing_tables(end_lsn);
 
@@ -582,11 +681,16 @@ static void
 handle_insert(StringInfo s)
 {
 	SpockTupleData	newtup;
+	SpockTupleData	*oldtup = NULL;
+	HeapTuple		localtup = NULL;
 	SpockRelation  *rel;
+	ErrorData	   *edata;
 #if PG_VERSION_NUM >= 160000
 	UserContext		ucxt;
 #endif
 	bool			started_tx;
+	bool 			failed = false;
+	char			*action_name = "INSERT";
 
 	started_tx = begin_replication_step();
 
@@ -607,8 +711,10 @@ handle_insert(StringInfo s)
 	/* Make sure that any user-supplied code runs as the table owner. */
 	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
-	/* Handle multi_insert capabilities. */
-	if (use_multi_insert)
+	/* Handle multi_insert capabilities.
+	 * TODO: Don't do multi- or batch-inserts when in use_try_block mode
+	 */
+	if (use_multi_insert && MyApplyWorker->use_try_block == false)
 	{
 		if (rel != last_insert_rel)
 		{
@@ -625,7 +731,8 @@ handle_insert(StringInfo s)
 	else if (spock_batch_inserts &&
 			 RelationGetRelid(rel->rel) != QueueRelid &&
 			 apply_api.can_multi_insert &&
-			 apply_api.can_multi_insert(rel))
+			 apply_api.can_multi_insert(rel) &&
+			 MyApplyWorker->use_try_block == false)
 	{
 		if (rel != last_insert_rel)
 		{
@@ -640,7 +747,57 @@ handle_insert(StringInfo s)
 	}
 
 	/* Normal insert. */
-	apply_api.do_insert(rel, &newtup);
+	
+	/* TODO: Handle multiple inserts */
+	if(MyApplyWorker->use_try_block)
+	{
+		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u", remote_xid);
+		PG_TRY();
+		{
+			elog(LOG, "SpockErrorLog: Running apply_api.do_insert for xid %u inside try block", remote_xid);
+			BeginInternalSubTransaction(NULL);
+			apply_api.do_insert(rel, &newtup);
+		}
+		PG_CATCH();
+		{
+			failed = true;
+			elog(DEBUG1, "SpockErrorLog: Caught error for xid %u", remote_xid);
+			RollbackAndReleaseCurrentSubTransaction();
+			edata = CopyErrorData();
+		}
+		PG_END_TRY();
+
+		if(!failed)
+		{
+			if(error_log_behaviour == TRANSDISCARD)
+			{
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. Rolling back and releasing the current subtransaction for xid %u", remote_xid);
+				RollbackAndReleaseCurrentSubTransaction();
+			}
+			else
+			{
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. Releasing the current subtransaction for xid %u", remote_xid);
+				ReleaseCurrentSubTransaction();
+			}
+		}
+		else
+		{
+			/* Insert into the error table here */
+			elog(DEBUG1, "SpockErrorLog: Received error message for xid %u, message = (%s)", remote_xid, edata->message);
+			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for xid %u", remote_xid);
+			if(error_log_behaviour > IGNORE)
+			{
+				add_entry_to_error_log(remote_origin_id, replorigin_session_origin_timestamp, 
+										remote_xid, rel, localtup, oldtup, &newtup, action_name, edata->message);
+			}	
+
+		}
+	}
+	else
+	{
+		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for xid %u outside try block", remote_xid);
+		apply_api.do_insert(rel, &newtup);
+	}
 
 	/* if INSERT was into our queue, process the message. */
 	if (RelationGetRelid(rel->rel) == QueueRelid)
@@ -684,7 +841,6 @@ handle_insert(StringInfo s)
 	{
 		RestoreUserContext(&ucxt);
 		spock_relation_close(rel, NoLock);
-
 		end_replication_step();
 	}
 }
@@ -716,10 +872,13 @@ handle_update(StringInfo s)
 	SpockTupleData	oldtup;
 	SpockTupleData	newtup;
 	SpockRelation  *rel;
+	ErrorData	   *edata;
+	HeapTuple 		localtup;
 #if PG_VERSION_NUM >= 160000
 	UserContext		ucxt;
 #endif
 	bool			hasoldtup;
+	bool			failed = false;
 
 	begin_replication_step();
 
@@ -740,10 +899,60 @@ handle_update(StringInfo s)
 		return;
 	}
 
+	elog(DEBUG1, "SpockErrorLog: hasoldtup = %d", hasoldtup);
+
 	/* Make sure that any user-supplied code runs as the table owner. */
 	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
-	apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
+	if (MyApplyWorker->use_try_block == true)
+	{
+		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u", remote_xid);
+		PG_TRY();
+		{
+			elog(LOG, "SpockErrorLog: Running apply_api.do_update for xid %u inside try block", remote_xid);
+			BeginInternalSubTransaction(NULL);
+			apply_api.do_update(rel, hasoldtup ? &oldtup : NULL, &newtup);
+		}
+		PG_CATCH();
+		{
+			failed = true;
+			elog(DEBUG1, "SpockErrorLog: Caught error for xid %u", remote_xid);
+			RollbackAndReleaseCurrentSubTransaction();
+			edata = CopyErrorData();
+		}
+		PG_END_TRY();
+
+		if(!failed)
+		{
+			if(error_log_behaviour == TRANSDISCARD)
+			{
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. Rolling back and releasing the current subtransaction for xid %u", remote_xid);
+				RollbackAndReleaseCurrentSubTransaction();
+			}
+			else
+			{
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. Releasing the current subtransaction for xid %u", remote_xid);
+				ReleaseCurrentSubTransaction();
+			}
+		}
+		else
+		{
+			elog(DEBUG1, "SpockErrorLog: Received error message for xid %u, message = (%s)", remote_xid, edata->message);
+			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for xid %u", remote_xid);
+			if(error_log_behaviour > IGNORE)
+			{
+				localtup = error_log_ptr[my_error_log_index].local_tuple;
+				add_entry_to_error_log(remote_origin_id, replorigin_session_origin_timestamp, 
+										remote_xid, rel, localtup, hasoldtup ? &oldtup : NULL, &newtup, "UPDATE", edata->message);
+			}
+
+		}
+	}
+	else
+	{
+		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_update for xid %u outside try block", remote_xid);
+		apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
+	}
 
 	RestoreUserContext(&ucxt);
 	spock_relation_close(rel, NoLock);
@@ -755,10 +964,14 @@ static void
 handle_delete(StringInfo s)
 {
 	SpockTupleData	oldtup;
+	SpockTupleData	*newtup = NULL;
 	SpockRelation  *rel;
+	HeapTuple 		localtup;
+	ErrorData	   *edata;
 #if PG_VERSION_NUM >= 160000
 	UserContext		ucxt;
 #endif
+	bool			failed = false;
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
 	xact_action_counter++;
@@ -781,7 +994,55 @@ handle_delete(StringInfo s)
 	/* Make sure that any user-supplied code runs as the table owner. */
 	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
-	apply_api.do_delete(rel, &oldtup);
+	if(MyApplyWorker->use_try_block)
+	{
+		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u", remote_xid);
+		PG_TRY();
+		{
+			elog(LOG, "SpockErrorLog: Running apply_api.do_delete for xid %u inside try block", remote_xid);
+			BeginInternalSubTransaction(NULL);
+			apply_api.do_delete(rel, &oldtup);
+		}
+		PG_CATCH();
+		{
+			failed = true;
+			elog(DEBUG1, "SpockErrorLog: Caught error for xid %u", remote_xid);
+			RollbackAndReleaseCurrentSubTransaction();
+			edata = CopyErrorData();
+		}
+		PG_END_TRY();
+
+		if(!failed)
+		{
+			if(error_log_behaviour == TRANSDISCARD)
+			{
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. Rolling back and releasing the current subtransaction for xid %u", remote_xid);
+				RollbackAndReleaseCurrentSubTransaction();
+			}
+			else
+			{
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. Releasing the current subtransaction for xid %u", remote_xid);
+				ReleaseCurrentSubTransaction();
+			}
+		}
+		else
+		{
+			elog(DEBUG1, "SpockErrorLog: Received error message for xid %u, message = (%s)", remote_xid, edata->message);
+			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for xid %u", remote_xid);
+			if(error_log_behaviour > IGNORE)
+			{
+				localtup = error_log_ptr[my_error_log_index].local_tuple;
+				add_entry_to_error_log(remote_origin_id, replorigin_session_origin_timestamp, 
+										remote_xid, rel, localtup, &oldtup, newtup, "DELETE", edata->message);
+			}
+
+		}
+	}
+	else
+	{
+		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for xid %u outside try block", remote_xid);
+		apply_api.do_delete(rel, &oldtup);
+	}
 
 	RestoreUserContext(&ucxt);
 	spock_relation_close(rel, NoLock);
@@ -2063,6 +2324,7 @@ spock_apply_main(Datum main_arg)
 	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
 	Assert(MySpockWorker->worker_type == SPOCK_WORKER_APPLY);
 	MyApplyWorker = &MySpockWorker->worker.apply;
+	elog(LOG, "SpockErrorLog: Initialised MyApplyWorker");
 
 	/* Attach to dsm segment. */
 	Assert(CurrentResourceOwner == NULL);

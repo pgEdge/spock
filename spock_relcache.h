@@ -32,8 +32,8 @@ typedef struct SpockRelation
 {
 	/* Info coming from the remote side. */
 	uint32		remoteid;
-	char	   *nspname;
-	char	   *relname;
+	char	   *nspname; /* Schema name */
+	char	   *relname; /* Table name */
 	int			natts;
 	char	  **attnames;
 

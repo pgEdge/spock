@@ -89,6 +89,12 @@ static const struct config_enum_entry server_message_level_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry error_log_behaviour_options[] = {
+	{"ignore", IGNORE, false},
+	{"discard", DISCARD, false},
+	{"transdiscard", TRANSDISCARD, false}
+};
+
 bool	spock_synchronous_commit = false;
 char   *spock_temp_directory = "";
 bool	spock_use_spi = false;
@@ -790,6 +796,15 @@ _PG_init(void)
 							 &spock_conflict_log_level,
 							 LOG,
 							 server_message_level_options,
+							 PGC_SUSET, 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomEnumVariable("spock.error_log_behaviour",
+							 gettext_noop("Sets the default behaviour when an apply worker encounters an error."),
+							 NULL,
+							 &error_log_behaviour,
+							 TRANSDISCARD,
+							 error_log_behaviour_options,
 							 PGC_SUSET, 0,
 							 NULL, NULL, NULL);
 

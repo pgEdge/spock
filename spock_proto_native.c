@@ -655,6 +655,7 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 	/* check for old tuple */
 	if (action == 'K' || action == 'O')
 	{
+		elog(DEBUG1, "SpockErrorLog: spock_read_update oldtup is (%s)", oldtup == NULL ? "NULL" : "NOT NULL");
 		spock_read_tuple(in, rel, oldtup);
 		*hasoldtup = true;
 		action = pq_getmsgbyte(in);

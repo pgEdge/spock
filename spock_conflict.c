@@ -59,8 +59,6 @@ int		spock_conflict_resolver = SPOCK_RESOLVE_APPLY_REMOTE;
 int		spock_conflict_log_level = LOG;
 bool	spock_save_resolutions = false;
 
-static void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
-	HeapTuple tuple);
 static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
 	bool *ret_isnull);
 
@@ -1028,7 +1026,7 @@ spock_conflict_resolver_check_hook(int *newval, void **extra,
  *
  * (Based on bdr2)
  */
-static void
+void
 tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 {
 	int			natt;

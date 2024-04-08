@@ -1613,7 +1613,7 @@ spock_replication_set_add_all_relations(Name repset_name,
 					replication_set_add_table(repset->id, reloid, NIL, NULL);
 				}
 				else
-					// FIXME: What happens if the id is a snowflake sequence?
+					/* FIXME: What happens if the id is a snowflake sequence? */
 					replication_set_add_seq(repset->id, reloid);
 
 				/* don't synchronize the partitions */

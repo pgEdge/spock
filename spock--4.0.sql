@@ -46,6 +46,20 @@ CREATE TABLE spock.local_sync_status (
     UNIQUE (sync_subid, sync_nspname, sync_relname)
 );
 
+CREATE TABLE spock.error_log (
+	node_id oid NOT NULL,
+	commit_timestamp timestamptz NOT NULL,
+	remote_xid bigint NOT NULL,
+	table_schema text NOT NULL,
+	table_name text NOT NULL,
+	local_tuple text,
+	old_remote_tuple text NOT NULL,
+	new_remote_tuple text NOT NULL,
+	operation text NOT NULL,
+	error_message text NOT NULL,
+	retry_errored_at timestamptz NOT NULL,
+	PRIMARY KEY (node_id, commit_timestamp)
+) WITH (user_catalog_table=true);
 
 CREATE FUNCTION spock.node_create(node_name name, dsn text,
     location text DEFAULT NULL, country text DEFAULT NULL,

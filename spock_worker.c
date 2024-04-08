@@ -21,6 +21,10 @@
 #include "commands/dbcommands.h"
 #include "common/hashfn.h"
 
+#include "catalog/dependency.h"
+#include "catalog/indexing.h"
+#include "catalog/pg_type.h"
+
 #include "nodes/makefuncs.h"
 #include "postmaster/interrupt.h"
 
@@ -33,6 +37,8 @@
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
+#include "utils/builtins.h"
 #include "replication/origin.h"
 #include "replication/slot.h"
 
@@ -41,8 +47,22 @@
 #include "spock_sync.h"
 #include "spock_worker.h"
 #include "spock_conflict.h"
+#include "spock_relcache.h"
 
+#define Natts_error_table 11
+#define Anum_error_log_node_id 1
+#define Anum_error_log_commit_ts 2
+#define Anum_error_log_remote_xid 3
+#define Anum_error_log_schema 4
+#define Anum_error_log_table 5
+#define Anum_error_log_local_tuple 6
+#define Anum_error_log_remote_old_tuple 7
+#define Anum_error_log_remote_new_tuple 8
+#define Anum_error_log_operation 9
+#define Anum_error_log_message 10
+#define Anum_error_log_retry_errored_at 11
 
+#define CATALOG_ERROR_LOG "error_log"
 typedef struct signal_worker_item
 {
 	Oid		subid;
@@ -56,9 +76,11 @@ HTAB			   *LagTrackerHash = NULL;
 HTAB			   *SpockHash = NULL;
 SpockContext	   *SpockCtx = NULL;
 SpockWorker		   *MySpockWorker = NULL;
+SpockErrorLog      *error_log_ptr = NULL;
 static uint16		MySpockWorkerGeneration;
 int					spock_stats_max_entries_conf = -1;
 int					spock_stats_max_entries;
+int 				error_log_behaviour = TRANSDISCARD;
 bool				spock_stats_hash_full = false;
 
 
@@ -75,6 +97,7 @@ static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
 static void signal_worker_xact_callback(XactEvent event, void *arg);
 static uint32 spock_ch_stats_hash(const void *key, Size keysize);
+static void spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple);
 
 
 void
@@ -673,6 +696,8 @@ worker_shmem_size(int nworkers, bool include_hash)
 	num_bytes = offsetof(SpockContext, workers);
 	num_bytes = add_size(num_bytes,
 						 sizeof(SpockWorker) * nworkers);
+	num_bytes = add_size(num_bytes,
+						 sizeof(SpockErrorLog) * nworkers);
 
 	spock_stats_max_entries = SPOCK_STATS_MAX_ENTRIES(nworkers);
 
@@ -745,6 +770,7 @@ spock_worker_shmem_startup(void)
 	SpockCtx = ShmemInitStruct("spock_context",
 							   worker_shmem_size(nworkers, false), &found);
 
+
 	if (!found)
 	{
 		SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
@@ -756,6 +782,12 @@ spock_worker_shmem_startup(void)
 		memset(SpockCtx->workers, 0,
 			   sizeof(SpockWorker) * SpockCtx->total_workers);
 	}
+
+	error_log_ptr = ShmemInitStruct("spock_error_log_ptr",
+									worker_shmem_size(nworkers, false), &found);
+	
+	if (!found)
+		memset(error_log_ptr, 0, sizeof(SpockErrorLog) * nworkers);
 
 	memset(&hctl, 0, sizeof(hctl));
 	hctl.keysize = sizeof(spockStatsKey);
@@ -913,4 +945,219 @@ lag_tracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts)
 
 	LWLockRelease(SpockCtx->lag_lock);
 	return hentry;
+}
+
+/*
+ * Add an entry to the error log.
+ */
+void
+add_entry_to_error_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_xid, 
+					SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup, 
+					SpockTupleData *remotenewtup, char *action, char *error_message)
+{
+	RangeVar   *rv;
+	Relation	rel;
+	TupleDesc	tupDesc;
+	TupleDesc	taregtTupDesc;
+	HeapTuple	tup;
+	Datum		values[Natts_error_table];
+	bool		nulls[Natts_error_table];
+	StringInfoData localtup_str;
+	StringInfoData remote_oldtup_str;
+	StringInfoData remote_newtup_str;
+	char *local_tup_str = NULL;
+	char *old_tup_str = NULL;
+	char *new_tup_str = NULL;
+	char *schema = targetrel->nspname;
+	char *table = targetrel->relname;
+
+
+	rv = makeRangeVar(EXTENSION_NAME, CATALOG_ERROR_LOG, -1);
+	rel = table_openrv(rv, RowExclusiveLock);
+	tupDesc = RelationGetDescr(rel);
+	taregtTupDesc = RelationGetDescr(targetrel->rel);
+
+	/* FIXME: This decision will change and grow more complex
+	 * as other columns are added to the error table
+	 */
+	if(localtup != NULL)
+	{
+		elog(DEBUG1, "SpockErrorLog: localtup is not NULL.");
+		initStringInfo(&localtup_str);
+		tuple_to_stringinfo(&localtup_str, taregtTupDesc, localtup);
+		local_tup_str = localtup_str.data;
+	}
+	if(remoteoldtup != NULL)
+	{
+		elog(DEBUG1, "SpockErrorLog: remoteoldtup is not NULL.");
+		initStringInfo(&remote_oldtup_str);
+		spock_tuple_to_stringinfo(&remote_oldtup_str, taregtTupDesc, remoteoldtup);
+		old_tup_str = remote_oldtup_str.data;
+	}
+	if(remotenewtup != NULL)
+	{
+		elog(DEBUG1, "SpockErrorLog: remotenewtup is not NULL.");
+		initStringInfo(&remote_newtup_str);
+		spock_tuple_to_stringinfo(&remote_newtup_str, taregtTupDesc, remotenewtup);
+		new_tup_str = remote_newtup_str.data;
+	}
+
+	/* Form a tuple. */
+	memset(nulls, 0, sizeof(nulls));
+	memset(values, 0, sizeof(values));
+
+	values[Anum_error_log_node_id - 1] = ObjectIdGetDatum(nodeid);
+	values[Anum_error_log_commit_ts - 1] = TimestampTzGetDatum(commit_ts);
+	values[Anum_error_log_remote_xid - 1] = TransactionIdGetDatum(remote_xid);
+	values[Anum_error_log_schema - 1] = CStringGetTextDatum(schema);
+	values[Anum_error_log_table - 1] = CStringGetTextDatum(table);
+	
+	if(localtup != NULL)
+		values[Anum_error_log_local_tuple - 1] = CStringGetTextDatum(local_tup_str);
+	else
+	{
+		values[Anum_error_log_local_tuple - 1] = (Datum) 0;
+		nulls[Anum_error_log_local_tuple - 1] = true;
+	}
+	if(remoteoldtup != NULL)
+		values[Anum_error_log_remote_old_tuple - 1] = CStringGetTextDatum(old_tup_str);
+	else
+	{
+		values[Anum_error_log_remote_old_tuple - 1] = (Datum) 0;
+		nulls[Anum_error_log_remote_old_tuple - 1] = true;
+	}
+
+	if(remotenewtup != NULL)
+		values[Anum_error_log_remote_new_tuple - 1] = CStringGetTextDatum(new_tup_str);
+	else
+	{
+		values[Anum_error_log_remote_new_tuple - 1] = (Datum) 0;
+		nulls[Anum_error_log_remote_new_tuple - 1] = true;
+	}
+	
+	values[Anum_error_log_operation - 1] = CStringGetTextDatum(action);
+	values[Anum_error_log_message - 1] = CStringGetTextDatum(error_message);
+	values[Anum_error_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
+
+	tup = heap_form_tuple(tupDesc, values, nulls);
+
+	/* Insert the tuple to the catalog. */
+	CatalogTupleInsert(rel, tup);
+
+	/* Cleanup. */
+	heap_freetuple(tup);
+	table_close(rel, RowExclusiveLock);
+
+	elog(LOG, "SpockErrorLog: Inserted tuple into error_log table.");
+
+	CommandCounterIncrement();
+}
+
+/*
+ * Convert a SpockTupleData to a string.
+ */
+static void
+spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple)
+{
+	int			natt;
+	bool		first = true;
+
+	static const int MAX_CONFLICT_LOG_ATTR_LEN = 40;
+
+	/* print all columns individually */
+	for (natt = 0; natt < tupdesc->natts; natt++)
+	{
+		Form_pg_attribute attr; /* the attribute itself */
+		Oid			typid;		/* type of current attribute */
+		HeapTuple	type_tuple; /* information about a type */
+		Form_pg_type type_form;
+		Oid			typoutput;	/* output function */
+		bool		typisvarlena;
+		Datum		origval;	/* possibly toasted Datum */
+		Datum		val	= PointerGetDatum(NULL); /* definitely detoasted Datum */
+		char	   *outputstr = NULL;
+		bool		isnull = false;		/* column is null? */
+
+		attr = TupleDescAttr(tupdesc, natt);
+		/*
+		 * don't print dropped columns, we can't be sure everything is
+		 * available for them
+		 */
+		if (attr->attisdropped)
+			continue;
+
+		/*
+		 * Don't print system columns
+		 */
+		if (attr->attnum < 0)
+			continue;
+
+		typid = attr->atttypid;
+
+		/* gather type name */
+		type_tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
+		if (!HeapTupleIsValid(type_tuple))
+			elog(ERROR, "cache lookup failed for type %u", typid);
+		type_form = (Form_pg_type) GETSTRUCT(type_tuple);
+
+		/* print attribute name */
+		if (first)
+			first = false;
+		else
+			appendStringInfoChar(s, ' ');
+		appendStringInfoString(s, NameStr(attr->attname));
+
+		/* print attribute type */
+		appendStringInfoChar(s, '[');
+		appendStringInfoString(s, NameStr(type_form->typname));
+		appendStringInfoChar(s, ']');
+
+		/* query output function */
+		getTypeOutputInfo(typid,
+						  &typoutput, &typisvarlena);
+
+		ReleaseSysCache(type_tuple);
+
+		if(!tuple->nulls[natt])
+		{
+			/* get Datum from tuple */
+			origval = tuple->values[natt];
+			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. origval is NOT NULL");
+		}
+		else
+		{
+			isnull = true;
+			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. origval is NULL");
+		}
+		
+		if (isnull)
+			outputstr = "(null)";
+		else if (typisvarlena && VARATT_IS_EXTERNAL_ONDISK(origval))
+			outputstr = "(unchanged-toast-datum)";
+		else if (typisvarlena)
+			val = PointerGetDatum(PG_DETOAST_DATUM(origval));
+		else
+			val = origval;
+
+		/* print data */
+		if (outputstr == NULL)
+		{
+			outputstr = OidOutputFunctionCall(typoutput, val);
+			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. outputstr is (%s)", outputstr);
+		}
+		
+		/*
+		 * Abbreviate the Datum if it's too long. This may make it syntatically
+		 * invalid, but it's not like we're writing out a valid ROW(...) as it
+		 * is.
+		 */
+		if (strlen(outputstr) > MAX_CONFLICT_LOG_ATTR_LEN)
+		{
+			/* The null written at the end of strcpy will truncate the string */
+			strcpy(&outputstr[MAX_CONFLICT_LOG_ATTR_LEN-5], "...");
+		}
+
+		appendStringInfoChar(s, ':');
+		appendStringInfoString(s, outputstr);
+	}
 }

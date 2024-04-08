@@ -73,6 +73,7 @@
 #include "spock_sync.h"
 #include "spock_worker.h"
 #include "spock_apply_heap.h"
+#include "spock_apply.h"
 
 typedef struct ApplyExecutionData
 {
@@ -694,6 +695,8 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	bool clear_remoteslot = false;
 	bool clear_localslot = false;
 
+	elog(DEBUG1, "SpockErrorLog: spock_apply_heap_update() oldtup is (%s)", oldtup == NULL ? "NULL" : "NOT NULL");
+
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
 	estate = edata->estate;
@@ -707,7 +710,17 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 	/* Build the search tuple. */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-	slot_store_data(remoteslot, rel, oldtup);
+	
+	/* It is possible that the remoteoldtup is null
+	 * because there were no delta-apply columns or
+	 * pkey changes. In such a case, we do not try 
+	 * and reconstruct an oldtup based on pkey values
+	 * and local tuple contents because the tuple
+	 * may not exist locally.
+	 */
+	if (oldtup != NULL)
+		slot_store_data(remoteslot, rel, oldtup);
+
 	MemoryContextSwitchTo(oldctx);
 
 	/* Find the current local tuple */
@@ -744,7 +757,15 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		bool local_origin_found;
 		bool apply;
 		HeapTuple applytuple;
+		HeapTuple local_tuple;
 		SpockConflictResolution resolution;
+		SpockErrorLog *error_log = &error_log_ptr[my_error_log_index];
+
+		/* Fetch the contents of the local slot and 
+		 * store it in the error log
+		 */
+		local_tuple = ExecFetchSlotHeapTuple(localslot, true, NULL);
+		error_log->local_tuple = local_tuple;
 
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
@@ -864,10 +885,11 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		/*
 		 * The tuple to be updated could not be found.  Do nothing except for
 		 * emitting a log message.
+		 * TODO: Add pkey information as well.
 		 */
-		elog(LOG,
+		elog(ERROR,
 			 "logical replication did not find row to be updated "
-			 "in replication target relation \"%s\"",
+			 "in replication target relation (%s.%s)", rel->nspname, 
 			 RelationGetRelationName(rel->rel));
 	}
 
@@ -909,7 +931,17 @@ void spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 
 	/* Build the search tuple. */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-	slot_store_data(remoteslot, rel, oldtup);
+
+	/* It is possible that the remoteoldtup is null
+	 * because there were no delta-apply columns or
+	 * pkey changes. In such a case, we do not try 
+	 * and reconstruct an oldtup based on pkey values
+	 * and local tuple contents because the tuple
+	 * may not exist locally.
+	 */
+	if (oldtup != NULL)
+		slot_store_data(remoteslot, rel, oldtup);
+
 	MemoryContextSwitchTo(oldctx);
 
 	/* Find the current local tuple */
@@ -952,9 +984,9 @@ void spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		 * The tuple to be updated could not be found.  Do nothing except for
 		 * emitting a log message.
 		 */
-		elog(LOG,
+		elog(ERROR,
 			 "logical replication did not find row to be deleted "
-			 "in replication target relation \"%s\"",
+			 "in replication target relation (%s.%s)", rel->nspname,
 			 RelationGetRelationName(rel->rel));
 	}
 

@@ -30,4 +30,6 @@ typedef bool (*spock_apply_can_mi_fn) (SpockRelation *rel);
 typedef void (*spock_apply_mi_add_tuple_fn) (SpockRelation *rel,
 												 SpockTupleData *tup);
 typedef void (*spock_apply_mi_finish_fn) (SpockRelation *rel);
+
+extern int my_error_log_index;
 #endif /* SPOCK_APPLY_H */
