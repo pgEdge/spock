@@ -30,6 +30,8 @@ RUN options="'--prefix=/home/pgedge/pgedge/pg16' '--disable-rpath' '--with-zstd'
     make install
 
 COPY entrypoint.sh /home/pgedge
+COPY run-tests.sh /home/pgedge
 RUN sudo chmod +x /home/pgedge/entrypoint.sh
+RUN sudo chmod +x /home/pgedge/run-tests.sh
 
 CMD /home/pgedge/entrypoint.sh

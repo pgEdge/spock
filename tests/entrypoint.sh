@@ -1,5 +1,5 @@
 #!/bin/bash
-#set -e
+set -ae
 
 cd /home/pgedge
 . /home/pgedge/pgedge/pg16/pg16.env
@@ -60,6 +60,7 @@ done
 ./nodectl spock sub-create "sub_${peer_names[1]}$HOSTNAME"_4 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
 
 psql -U admin -h /tmp -d demo -c "create table t1 (id serial primary key, data int8);"
+psql -U admin -h /tmp -d demo -c "create table t2 (id serial primary key, data int8);"
 psql -U admin -h /tmp -d demo -c "alter table t1 alter column data set (log_old_value=true, delta_apply_function=spock.delta_apply);"
 
 spockbench -h /tmp -i -s 10 demo
@@ -83,5 +84,4 @@ psql -U admin -h /tmp -d demo -c "alter table pgbench_tellers alter column tbala
 
 psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_replication_set', '{public}');"
 
-spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} -s 10 -T 600 -R 3000 -P 5 -j 16 -c 50 -n --spock-tx-mix=550,225,225 -U admin demo
-spockbench-check -U admin demo > /home/pgedge/spock-private/spockbench-$HOSTNAME.out
+./run-tests.sh
