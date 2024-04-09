@@ -20,7 +20,7 @@ RUN ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
 
 RUN curl -fsSL https://pgedge-upstream.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
 RUN sudo -u pgedge python3 /home/pgedge/install.py
-RUN cd pgedge && ./nodectl install pgedge -U admin -P inSecure123! -d demo
+RUN cd pgedge && ./pgedge setup -U admin -P inSecure123! -d demo --pg 16
 COPY pg16* /home/pgedge/postgres/
 WORKDIR /home/pgedge/postgres
 RUN git apply --verbose pg16*

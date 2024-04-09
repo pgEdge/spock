@@ -18,7 +18,7 @@ cd ~/spockbench
 sudo python3 setup.py install
 
 cd ~/pgedge
-./nc restart
+./pgedge restart
 
 while ! pg_isready -h /tmp; do
   echo "Waiting for PostgreSQL to become ready..."
@@ -26,8 +26,8 @@ while ! pg_isready -h /tmp; do
 done
 
 echo "==========Creating tables and repsets=========="
-./nodectl spock node-create $HOSTNAME "host=$HOSTNAME user=pgedge dbname=demo" demo
-./nodectl spock repset-create demo_replication_set demo
+./pgedge spock node-create $HOSTNAME "host=$HOSTNAME user=pgedge dbname=demo" demo
+./pgedge spock repset-create demo_replication_set demo
 
 IFS=',' read -r -a peer_names <<< "$PEER_NAMES"
 
@@ -47,17 +47,17 @@ do
     done
 done
 
-./nodectl spock sub-create sub_${peer_names[0]}$HOSTNAME   "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-./nodectl spock sub-create "sub_${peer_names[0]}$HOSTNAME"_1 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-./nodectl spock sub-create "sub_${peer_names[0]}$HOSTNAME"_2 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-./nodectl spock sub-create "sub_${peer_names[0]}$HOSTNAME"_3 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-./nodectl spock sub-create "sub_${peer_names[0]}$HOSTNAME"_4 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create sub_${peer_names[0]}$HOSTNAME   "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_1 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_2 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_3 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_4 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
 
-./nodectl spock sub-create sub_${peer_names[1]}$HOSTNAME   "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-./nodectl spock sub-create "sub_${peer_names[1]}$HOSTNAME"_1 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-./nodectl spock sub-create "sub_${peer_names[1]}$HOSTNAME"_2 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-./nodectl spock sub-create "sub_${peer_names[1]}$HOSTNAME"_3 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-./nodectl spock sub-create "sub_${peer_names[1]}$HOSTNAME"_4 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create sub_${peer_names[1]}$HOSTNAME   "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_1 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_2 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_3 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_4 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
 
 psql -U admin -h /tmp -d demo -c "create table t1 (id serial primary key, data int8);"
 psql -U admin -h /tmp -d demo -c "create table t2 (id serial primary key, data int8);"
@@ -70,18 +70,18 @@ psql -U admin -h /tmp -d demo -c "alter table pgbench_accounts alter column abal
 psql -U admin -h /tmp -d demo -c "alter table pgbench_branches alter column bbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
 psql -U admin -h /tmp -d demo -c "alter table pgbench_tellers alter column tbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
 
-./nodectl spock sub-add-repset sub_${peer_names[0]}$HOSTNAME demo_replication_set demo
-./nodectl spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_1 demo_replication_set demo
-./nodectl spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_2 demo_replication_set demo
-./nodectl spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_3 demo_replication_set demo
-./nodectl spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_4 demo_replication_set demo
+./pgedge spock sub-add-repset sub_${peer_names[0]}$HOSTNAME demo_replication_set demo
+./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_1 demo_replication_set demo
+./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_2 demo_replication_set demo
+./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_3 demo_replication_set demo
+./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_4 demo_replication_set demo
 
-./nodectl spock sub-add-repset sub_${peer_names[1]}$HOSTNAME demo_replication_set demo
-./nodectl spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_1 demo_replication_set demo
-./nodectl spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_2 demo_replication_set demo
-./nodectl spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_3 demo_replication_set demo
-./nodectl spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_4 demo_replication_set demo
+./pgedge spock sub-add-repset sub_${peer_names[1]}$HOSTNAME demo_replication_set demo
+./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_1 demo_replication_set demo
+./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_2 demo_replication_set demo
+./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_3 demo_replication_set demo
+./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_4 demo_replication_set demo
 
 psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_replication_set', '{public}');"
 
-./run-tests.sh
+cd /home/pgedge && ./run-tests.sh $peer_names
