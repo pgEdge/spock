@@ -176,9 +176,8 @@ PG_FUNCTION_INFO_V1(delta_apply_float8);
 PG_FUNCTION_INFO_V1(delta_apply_numeric);
 PG_FUNCTION_INFO_V1(delta_apply_money);
 
-/* Functions to pause/resume replication (session_replication_role=local) */
-PG_FUNCTION_INFO_V1(spock_pause_replication);
-PG_FUNCTION_INFO_V1(spock_resume_replication);
+/* Function to control REPAIR mode */
+PG_FUNCTION_INFO_V1(spock_repair_mode);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -3005,28 +3004,23 @@ Datum delta_apply_money(PG_FUNCTION_ARGS)
 }
 
 /*
- * Functions to pause/resume replication (session_replication_role=local)
+ * Function to control REPAIR mode
+ *
+ * The Spock output plugin with suppress all DML messages after decoding
+ * the SPOCK_REPAIR_MODE_ON message. Normal operation will resume after
+ * receiving the SPOCK_REPAIR_MODE_OFF message or on transaction end.
+ *
+ * This is equivalent to session_replication_role=local.
  */
 Datum
-spock_pause_replication(PG_FUNCTION_ARGS)
+spock_repair_mode(PG_FUNCTION_ARGS)
 {
 	char				   *prefix = "Spock";
 	SpockWalMessageSimple	message;
 	XLogRecPtr				lsn;
+	bool					enabled = PG_GETARG_BOOL(0);
 
-	message.mtype = SPOCK_PAUSE_REPLICATION;
-	lsn = LogLogicalMessage(prefix, (char *)&message, sizeof(message), true);
-	PG_RETURN_LSN(lsn);
-}
-
-Datum
-spock_resume_replication(PG_FUNCTION_ARGS)
-{
-	char				   *prefix = "Spock";
-	SpockWalMessageSimple	message;
-	XLogRecPtr				lsn;
-
-	message.mtype = SPOCK_RESUME_REPLICATION;
+	message.mtype = (enabled) ? SPOCK_REPAIR_MODE_ON : SPOCK_REPAIR_MODE_OFF;
 	lsn = LogLogicalMessage(prefix, (char *)&message, sizeof(message), true);
 	PG_RETURN_LSN(lsn);
 }

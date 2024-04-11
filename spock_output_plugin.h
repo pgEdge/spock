@@ -86,10 +86,10 @@ typedef struct SpockOutputSlotGroup
 /*
  * Custom WAL messages
  */
-extern bool		spock_replication_is_paused;
+extern bool		spock_replication_repair_mode;
 
-#define SPOCK_PAUSE_REPLICATION		1	/* Suppress subsequent DML/DDL */
-#define SPOCK_RESUME_REPLICATION	2	/* Resume regular replication */
+#define SPOCK_REPAIR_MODE_ON		1	/* Suppress subsequent DML/DDL */
+#define SPOCK_REPAIR_MODE_OFF		2	/* Resume regular replication */
 
 typedef struct SpockWalMessageSimple
 {

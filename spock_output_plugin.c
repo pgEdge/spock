@@ -52,7 +52,7 @@
 extern void		_PG_output_plugin_init(OutputPluginCallbacks *cb);
 
 /* Global variables */
-bool	spock_replication_is_paused = false;
+bool	spock_replication_repair_mode = false;
 
 /* Local functions */
 static void pg_decode_startup(LogicalDecodingContext * ctx,
@@ -450,8 +450,8 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	bool send_replication_origin = data->forward_changeset_origins;
 	MemoryContext old_ctx;
 
-	/* Reset if replication is paused */
-	spock_replication_is_paused = false;
+	/* Reset repair mode */
+	spock_replication_repair_mode = false;
 
 	/*
 	 * Check if we are a member of a replication slot-group and if so,
@@ -541,8 +541,8 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	MemoryContext		old_ctx;
 	XLogRecPtr			end_lsn = txn->end_lsn - MyWalSenderIdx;
 
-	/* Reset if replication is paused */
-	spock_replication_is_paused = false;
+	/* Reset repair mode */
+	spock_replication_repair_mode = false;
 
 	/*
 	 * If we are in slot-group skip transaction mode, we simply end
@@ -644,7 +644,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 
 	switch (msg->mtype)
 	{
-		case SPOCK_PAUSE_REPLICATION:
+		case SPOCK_REPAIR_MODE_ON:
 			/* Turn decoding off for the remainder of the transaction */
 			if (message_size != sizeof(SpockWalMessageSimple))
 			{
@@ -652,10 +652,10 @@ pg_decode_message(LogicalDecodingContext *ctx,
 							  "size %d for simple message", message_size);
 				return;
 			}
-			spock_replication_is_paused = true;
+			spock_replication_repair_mode = true;
 			break;
 
-		case SPOCK_RESUME_REPLICATION:
+		case SPOCK_REPAIR_MODE_OFF:
 			/* Turn decoding back on */
 			if (message_size != sizeof(SpockWalMessageSimple))
 			{
@@ -663,7 +663,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 							  "size %d for simple message", message_size);
 				return;
 			}
-			spock_replication_is_paused = false;
+			spock_replication_repair_mode = false;
 			break;
 
 		default:
@@ -879,8 +879,8 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	if (slot_group_skip_xact)
 		return;
 
-	/* If replication is paused skip these actions */
-	if (spock_replication_is_paused)
+	/* If in repair mode skip these actions */
+	if (spock_replication_repair_mode)
 		return;
 
 	/* Avoid leaking memory by using and resetting our own context */

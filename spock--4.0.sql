@@ -623,11 +623,8 @@ CREATE FUNCTION spock.delta_apply(money, money, money)
 RETURNS money LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_money';
 
 -- ----
--- Functions for pause/resume replication
+-- Function to control REPAIR mode
 -- ----
-CREATE FUNCTION spock.pause_replication()
+CREATE FUNCTION spock.repair_mode(enabled bool)
 RETURNS pg_catalog.pg_lsn LANGUAGE c
-AS 'MODULE_PATHNAME', 'spock_pause_replication';
-CREATE FUNCTION spock.resume_replication()
-RETURNS pg_catalog.pg_lsn LANGUAGE c
-AS 'MODULE_PATHNAME', 'spock_resume_replication';
+AS 'MODULE_PATHNAME', 'spock_repair_mode';
