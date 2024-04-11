@@ -134,7 +134,7 @@ get_spock_depend_rel_oid(void);
  * it's planning to delete.  For simplicity and code-sharing we make the
  * ObjectAddresses code support arrays with or without this extra state.
  */
-typedef struct
+typedef struct ObjectAddressExtra
 {
 	int			flags;			/* bitmask, see bit definitions below */
 	ObjectAddress dependee;		/* object whose deletion forced this one */
@@ -169,7 +169,7 @@ typedef struct ObjectAddressStack
 } ObjectAddressStack;
 
 /* for find_expr_references_walker */
-typedef struct
+typedef struct find_expr_references_context
 {
 	ObjectAddresses *addrs;		/* addresses being accumulated */
 	List	   *rtables;		/* list of rangetables to resolve Vars */

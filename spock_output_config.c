@@ -74,7 +74,8 @@ enum {
 	PARAM_NO_TXINFO
 } OutputPluginParamKey;
 
-typedef struct {
+typedef struct OutputPluginParam
+{
 	const char * const paramname;
 	int paramkey;
 } OutputPluginParam;

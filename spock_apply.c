@@ -88,32 +88,32 @@
 
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
 
-static bool			in_remote_transaction = false;
-static bool 		first_begin_at_startup = true;
-static XLogRecPtr	remote_origin_lsn = InvalidXLogRecPtr;
-static RepOriginId	remote_origin_id = InvalidRepOriginId;
-static TimeOffset	apply_delay = 0;
+static bool in_remote_transaction = false;
+static bool first_begin_at_startup = true;
+static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
+static RepOriginId remote_origin_id = InvalidRepOriginId;
+static TimeOffset apply_delay = 0;
 
-static Oid			QueueRelid = InvalidOid;
+static Oid	QueueRelid = InvalidOid;
 
-static List		   *SyncingTables = NIL;
+static List *SyncingTables = NIL;
 
-SpockApplyWorker	   *MyApplyWorker = NULL;
-SpockSubscription	   *MySubscription = NULL;
-int						my_error_log_index = -1;
+SpockApplyWorker *MyApplyWorker = NULL;
+SpockSubscription *MySubscription = NULL;
+int			my_error_log_index = -1;
 
-static PGconn	   *applyconn = NULL;
+static PGconn *applyconn = NULL;
 
 typedef struct SpockApplyFunctions
 {
-	spock_apply_begin_fn	on_begin;
-	spock_apply_commit_fn	on_commit;
-	spock_apply_insert_fn	do_insert;
-	spock_apply_update_fn	do_update;
-	spock_apply_delete_fn	do_delete;
-	spock_apply_can_mi_fn	can_multi_insert;
-	spock_apply_mi_add_tuple_fn	multi_insert_add_tuple;
-	spock_apply_mi_finish_fn	multi_insert_finish;
+	spock_apply_begin_fn on_begin;
+	spock_apply_commit_fn on_commit;
+	spock_apply_insert_fn do_insert;
+	spock_apply_update_fn do_update;
+	spock_apply_delete_fn do_delete;
+	spock_apply_can_mi_fn can_multi_insert;
+	spock_apply_mi_add_tuple_fn multi_insert_add_tuple;
+	spock_apply_mi_finish_fn multi_insert_finish;
 } SpockApplyFunctions;
 
 static SpockApplyFunctions apply_api =
@@ -130,39 +130,39 @@ static SpockApplyFunctions apply_api =
 
 /* Number of tuples inserted after which we switch to multi-insert. */
 #define MIN_MULTI_INSERT_TUPLES 5
-static SpockRelation   *last_insert_rel = NULL;
-static int					last_insert_rel_cnt = 0;
-static bool					use_multi_insert = false;
+static SpockRelation *last_insert_rel = NULL;
+static int	last_insert_rel_cnt = 0;
+static bool use_multi_insert = false;
 
 /*
  * A message counter for the xact, for debugging. We don't send
  * the remote change LSN with messages, so this aids identification
  * of which change causes an error.
  */
-static uint32			xact_action_counter;
+static uint32 xact_action_counter;
 
 typedef struct SPKFlushPosition
 {
-	dlist_node node;
-	XLogRecPtr local_end;
-	XLogRecPtr remote_end;
+	dlist_node	node;
+	XLogRecPtr	local_end;
+	XLogRecPtr	remote_end;
 } SPKFlushPosition;
 
-dlist_head lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
+dlist_head	lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
 
 typedef struct ApplyExecState
 {
-	EState			   *estate;
-	EPQState		   epqstate;
-	ResultRelInfo	   *resultRelInfo;
-	TupleTableSlot	   *slot;
+	EState	   *estate;
+	EPQState	epqstate;
+	ResultRelInfo *resultRelInfo;
+	TupleTableSlot *slot;
 } ApplyExecState;
 
 struct ActionErrCallbackArg
 {
-	const char * action_name;
+	const char *action_name;
 	SpockRelation *rel;
-	bool is_ddl_or_drop;
+	bool		is_ddl_or_drop;
 };
 
 struct ActionErrCallbackArg errcallback_arg;
@@ -186,11 +186,11 @@ should_apply_changes_for_rel(const char *nspname, const char *relname)
 {
 	if (list_length(SyncingTables) > 0)
 	{
-		ListCell	   *lc;
+		ListCell   *lc;
 
-		foreach (lc, SyncingTables)
+		foreach(lc, SyncingTables)
 		{
-			SpockSyncStatus	   *sync = (SpockSyncStatus *) lfirst(lc);
+			SpockSyncStatus *sync = (SpockSyncStatus *) lfirst(lc);
 
 			if (namestrcmp(&sync->nspname, nspname) == 0 &&
 				namestrcmp(&sync->relname, relname) == 0 &&
@@ -213,44 +213,44 @@ should_apply_changes_for_rel(const char *nspname, const char *relname)
  */
 static void
 format_action_description(
-	StringInfo si,
-	const char * action_name,
-	SpockRelation *rel,
-	bool is_ddl_or_drop)
+						  StringInfo si,
+						  const char *action_name,
+						  SpockRelation *rel,
+						  bool is_ddl_or_drop)
 {
 	appendStringInfoString(si, "apply ");
 	appendStringInfoString(si,
-		action_name == NULL ? "(unknown action)" : action_name);
+						   action_name == NULL ? "(unknown action)" : action_name);
 
-	if (rel != NULL && 
+	if (rel != NULL &&
 		rel->nspname != NULL
 		&& rel->relname != NULL
 		&& !is_ddl_or_drop)
 	{
 		appendStringInfo(si, " from remote relation %s.%s",
-				rel->nspname, rel->relname);
+						 rel->nspname, rel->relname);
 	}
 
 	appendStringInfo(si,
-			" in commit before %X/%X, xid %u committed at %s (action #%u)",
-			(uint32)(replorigin_session_origin_lsn>>32),
-			(uint32)replorigin_session_origin_lsn,
-			remote_xid,
-			timestamptz_to_str(replorigin_session_origin_timestamp),
-			xact_action_counter);
+					 " in commit before %X/%X, xid %u committed at %s (action #%u)",
+					 (uint32) (replorigin_session_origin_lsn >> 32),
+					 (uint32) replorigin_session_origin_lsn,
+					 remote_xid,
+					 timestamptz_to_str(replorigin_session_origin_timestamp),
+					 xact_action_counter);
 
 	if (replorigin_session_origin != InvalidRepOriginId)
 	{
 		appendStringInfo(si, " from node replorigin %u",
-			replorigin_session_origin);
+						 replorigin_session_origin);
 	}
 
 	if (remote_origin_id != InvalidRepOriginId)
 	{
 		appendStringInfo(si, " forwarded from commit %X/%X on node %u",
-				(uint32)(remote_origin_lsn>>32),
-				(uint32)remote_origin_lsn,
-				remote_origin_id);
+						 (uint32) (remote_origin_lsn >> 32),
+						 (uint32) remote_origin_lsn,
+						 remote_origin_id);
 	}
 }
 
@@ -258,12 +258,13 @@ static void
 action_error_callback(void *arg)
 {
 	StringInfoData si;
+
 	initStringInfo(&si);
 
 	format_action_description(&si,
-		errcallback_arg.action_name,
-		errcallback_arg.rel,
-		errcallback_arg.is_ddl_or_drop);
+							  errcallback_arg.action_name,
+							  errcallback_arg.rel,
+							  errcallback_arg.is_ddl_or_drop);
 
 	errcontext("%s", si.data);
 	pfree(si.data);
@@ -279,14 +280,14 @@ action_error_callback(void *arg)
 static bool
 begin_replication_step(void)
 {
-	bool result = false;
+	bool		result = false;
 
 	/*
-	 * spock doesn't have "statements" as such, so we'll report one
-	 * statement per applied transaction. We must set the statement start time
-	 * because StartTransaction() uses it to initialize the transaction cached
-	 * timestamp used by current_timestamp. If we don't set it, every xact will
-	 * get the same current_timestamp. See 2ndQuadrant/spock_internal#148
+	 * spock doesn't have "statements" as such, so we'll report one statement
+	 * per applied transaction. We must set the statement start time because
+	 * StartTransaction() uses it to initialize the transaction cached
+	 * timestamp used by current_timestamp. If we don't set it, every xact
+	 * will get the same current_timestamp. See 2ndQuadrant/spock_internal#148
 	 */
 	SetCurrentStatementStartTimestamp();
 
@@ -315,19 +316,20 @@ end_replication_step(void)
 {
 	PopActiveSnapshot();
 
-    CommandCounterIncrement();
+	CommandCounterIncrement();
 }
 
 static void
 handle_begin(StringInfo s)
 {
-	SpockErrorLog   *error_log;
-	SpockErrorLog 	*new_elog_entry;
-	XLogRecPtr		commit_lsn;
-	TimestampTz		commit_time;
-	bool slot_found = false;
-	int sub_name_len = strlen(MySubscription->name);
-	int free_slot_index = -1;
+	SpockErrorLog *error_log;
+	SpockErrorLog *new_elog_entry;
+	XLogRecPtr	commit_lsn;
+	TimestampTz commit_time;
+	bool		slot_found = false;
+	int			sub_name_len = strlen(MySubscription->name);
+	int			free_slot_index = -1;
+	char	   *slot_name;
 
 	xact_action_counter = 1;
 	errcallback_arg.action_name = "BEGIN";
@@ -340,87 +342,106 @@ handle_begin(StringInfo s)
 
 	elog(LOG, "SpockErrorLog: Error log behaviour is set to %d", error_log_behaviour);
 
-	/* 
-	 * We either create a new shared memory struct in the error
-	 * log for ourselves if it doesn't exist, or check the commit 
-	 * lsn of the existing entry. There are four cases here:
-	 * 
+	/*
+	 * We either create a new shared memory struct in the error log for
+	 * ourselves if it doesn't exist, or check the commit lsn of the existing
+	 * entry. There are four cases here:
+	 *
 	 * 1. The error log is empty and we need to create a new slot anyway.
-	 *	
-	 * 2. The error log is not empty, but we didn't find ourselves in
-	 * any of the entries. We need to create a slot here as well.
-     *
+	 *
+	 * 2. The error log is not empty, but we didn't find ourselves in any of
+	 * the entries. We need to create a slot here as well.
+	 *
 	 * 3. The error log is not empty and we found our entry, but the commit
-	 * lsn does not match. We simply update the commit lsn and move on.
-	 * This case happens when we have not errored out previously.
-	 * 
-	 * 4. The error log is not empty, we found our entry and the commit
-	 * lsn. This would mean that we previously errored and restarted.
-	 * We set the MyApplyWorker->use_try_block = true.
+	 * lsn does not match. We simply update the commit lsn and move on. This
+	 * case happens when we have not errored out previously.
+	 *
+	 * 4. The error log is not empty, we found our entry and the commit lsn.
+	 * This would mean that we previously errored and restarted. We set the
+	 * MyApplyWorker->use_try_block = true.
 	 */
 
 	if (first_begin_at_startup)
 	{
 		first_begin_at_startup = false;
 
-		elog(DEBUG1, "SpockErrorLog: First time encountering a BEGIN command. Checking the error_log_ptr for the commit_lsn");
+		elog(DEBUG1, "SpockErrorLog: First time encountering a BEGIN command. \
+		Checking the error_log_ptr for the commit_lsn");
 
 		for (int i = 0; i <= SpockCtx->total_workers; i++)
 		{
 			error_log = &error_log_ptr[i];
-			if(strncmp(NameStr(error_log->slot_name), MySubscription->name, sub_name_len) == 0)
+			slot_name = NameStr(error_log->slot_name);
+
+			if (strncmp(slot_name, MySubscription->name, sub_name_len) == 0)
 			{
-				/* If we find our slot in shared memory, check for commit LSN
+				/*
+				 * If we find our slot in shared memory, check for commit LSN
 				 */
 				slot_found = true;
-				elog(DEBUG1, "SpockErrorLog: Found the slot_name in the error_log_ptr. Checking for commit_lsn (%lu).", commit_lsn);
+				elog(DEBUG1, "SpockErrorLog: Found the slot_name in the \
+				error_log_ptr. Checking for commit_lsn (%lu).", commit_lsn);
 				my_error_log_index = i;
 
-				if(error_log->commit_lsn == commit_lsn)
+				if (error_log->commit_lsn == commit_lsn)
 				{
-					elog(DEBUG1, "SpockErrorLog: Found the commit_lsn in the error_log_ptr. Using the try block now.");
+					elog(DEBUG1, "SpockErrorLog: Found the commit_lsn in the \
+					error_log_ptr. Using the try block now.");
 					MyApplyWorker->use_try_block = true;
 				}
 
-				/* Break out out of the loop whether we've found the commit LSN or not
-				 * since we have already found our slot
+				/*
+				 * Break out out of the loop whether we've found the commit
+				 * LSN or not since we have already found our slot
 				 */
 				break;
 			}
-			else if (free_slot_index < 0 && strlen(NameStr(error_log->slot_name)) == 0)
-			 	/* If we find a free slot in shared memory, remember its index
-				*/
+			else if (free_slot_index < 0 && strlen(slot_name) == 0)
+			{
+				/*
+				 * If we find a free slot in shared memory, remember its index
+				 */
 				free_slot_index = i;
+			}
+
 		}
 
 		if (!slot_found)
 		{
-			/* If we don't find ourselves in shared memory, then we get the pointer to
-			 * the first free slot we remembered earlier, and fill in our slot name,
-			 * commit_lsn and set local_tuple = NULL
+			/*
+			 * If we don't find ourselves in shared memory, then we get the
+			 * pointer to the first free slot we remembered earlier, and fill
+			 * in our slot name, commit_lsn and set local_tuple = NULL
 			 */
-			elog(DEBUG1, "SpockErrorLog: Error log is empty. Creating a new shared memory struct");
+			elog(DEBUG1, "SpockErrorLog: Error log is empty. Creating a new \
+			shared memory struct");
 			MyApplyWorker->use_try_block = false;
 
 			if (free_slot_index < 0)
-				elog(ERROR, "SpockErrorLog: No free slot found in the error_log_ptr");
+				elog(ERROR, "SpockErrorLog: No free slot found in the \
+				error_log_ptr");
 
 			/* TODO: What happens if a subscription is dropped? Memory leak */
 			new_elog_entry = &error_log_ptr[free_slot_index];
 			namestrcpy(&new_elog_entry->slot_name, MySubscription->name);
 
-			/* Redundant, since it's happening below. But we'll have it for now */
+			/*
+			 * Redundant, since it's happening below. But we'll have it for
+			 * now
+			 */
 			new_elog_entry->commit_lsn = commit_lsn;
 			new_elog_entry->local_tuple = NULL;
 
 			my_error_log_index = free_slot_index;
 			elog(DEBUG1, "SpockErrorLog: Created a new error_log_ptr for the slot %s \
-			with commit_lsn %lu at free_slot_index = (%d)", MySubscription->name, commit_lsn, free_slot_index);
+			with commit_lsn %lu at free_slot_index = (%d)",
+				 MySubscription->name, commit_lsn, free_slot_index);
 		}
 	}
 
 	/* FIXME: Is it possible for my_error_log_index to be -1 here? */
-	elog(DEBUG1, "SpockErrorLog: Updating the commit_lsn in the error_log_ptr to (%lu)", commit_lsn);
+	elog(DEBUG1, "SpockErrorLog: Updating the commit_lsn in the \
+	error_log_ptr to (%lu)", commit_lsn);
 	error_log = &error_log_ptr[my_error_log_index];
 	error_log->commit_lsn = commit_lsn;
 
@@ -429,7 +450,8 @@ handle_begin(StringInfo s)
 	/* don't want the overhead otherwise */
 	if (apply_delay > 0)
 	{
-		TimestampTz		current;
+		TimestampTz current;
+
 		current = GetCurrentIntegerTimestamp();
 
 		/* ensure no weirdness due to clock drift */
@@ -460,9 +482,9 @@ handle_begin(StringInfo s)
 static void
 handle_commit(StringInfo s)
 {
-	XLogRecPtr		commit_lsn;
-	XLogRecPtr		end_lsn;
-	TimestampTz		commit_time;
+	XLogRecPtr	commit_lsn;
+	XLogRecPtr	end_lsn;
+	TimestampTz commit_time;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
@@ -506,44 +528,43 @@ handle_commit(StringInfo s)
 	 * data at the right place.
 	 *
 	 * This is only necessary when we're streaming data from one peer (A) that
-	 * in turn receives from other peers (B, C), and we plan to later switch to
-	 * replaying directly from B and/or C, no longer receiving forwarded xacts
-	 * from A. When we do the switchover we need to know the right place at
-	 * which to start replay from B and C. We don't actually do that yet, but
-	 * we'll want to be able to do cascaded initialisation in future, so it's
-	 * worth keeping track.
+	 * in turn receives from other peers (B, C), and we plan to later switch
+	 * to replaying directly from B and/or C, no longer receiving forwarded
+	 * xacts from A. When we do the switchover we need to know the right place
+	 * at which to start replay from B and C. We don't actually do that yet,
+	 * but we'll want to be able to do cascaded initialisation in future, so
+	 * it's worth keeping track.
 	 *
-	 * A failure can occur here (see #79) if there's a cascading
-	 * replication configuration like:
+	 * A failure can occur here (see #79) if there's a cascading replication
+	 * configuration like:
 	 *
-	 * X--> Y -> Z
-	 * |         ^
-	 * |         |
-	 * \---------/
+	 * X--> Y -> Z |         ^ |         | \---------/
 	 *
 	 * where the direct and indirect connections from X to Z use different
 	 * replication sets so as not to conflict, and where Y and Z are on the
 	 * same PostgreSQL instance. In this case our attempt to advance the
-	 * replication identifier here will ERROR because it's already in use
-	 * for the direct connection from X to Z. So don't do that.
+	 * replication identifier here will ERROR because it's already in use for
+	 * the direct connection from X to Z. So don't do that.
 	 */
 #if 0
+
 	/*
 	 * XXX: This needs to be redone with Spock style forwarding in mind.
 	 */
 	if (remote_origin_id != InvalidRepOriginId &&
 		remote_origin_id != replorigin_session_origin)
 	{
-		Relation replorigin_rel;
+		Relation	replorigin_rel;
+
 		elog(DEBUG3, "SPOCK %s: advancing origin oid %u for forwarded "
-					 "row to %X/%X",
-			MySubscription->name,
-			remote_origin_id,
-			(uint32)(XactLastCommitEnd>>32), (uint32)XactLastCommitEnd);
+			 "row to %X/%X",
+			 MySubscription->name,
+			 remote_origin_id,
+			 (uint32) (XactLastCommitEnd >> 32), (uint32) XactLastCommitEnd);
 
 		replorigin_rel = table_open(ReplicationOriginRelationId, RowExclusiveLock);
 		replorigin_advance(remote_origin_id, remote_origin_lsn,
-						   XactLastCommitEnd, false, false /* XXX ? */);
+						   XactLastCommitEnd, false, false /* XXX ? */ );
 		table_close(replorigin_rel, RowExclusiveLock);
 	}
 #endif
@@ -555,16 +576,16 @@ handle_commit(StringInfo s)
 	 * last record we're supposed to process.
 	 */
 	if (MyApplyWorker->replay_stop_lsn != InvalidXLogRecPtr
-			&& MyApplyWorker->replay_stop_lsn <= end_lsn)
+		&& MyApplyWorker->replay_stop_lsn <= end_lsn)
 	{
 		ereport(LOG,
 				(errmsg("SPOCK %s: %s finished processing; replayed "
 						"to %X/%X of required %X/%X",
 						MySubscription->name,
 						MySpockWorker->worker_type == SPOCK_WORKER_SYNC ? "sync" : "apply",
-						(uint32)(end_lsn>>32), (uint32)end_lsn,
-						(uint32)(MyApplyWorker->replay_stop_lsn >>32),
-						(uint32)MyApplyWorker->replay_stop_lsn)));
+						(uint32) (end_lsn >> 32), (uint32) end_lsn,
+						(uint32) (MyApplyWorker->replay_stop_lsn >> 32),
+						(uint32) MyApplyWorker->replay_stop_lsn)));
 
 		/*
 		 * If this is sync worker, update syncing table state to done.
@@ -573,9 +594,9 @@ handle_commit(StringInfo s)
 		{
 			StartTransactionCommand();
 			set_table_sync_status(MyApplyWorker->subid,
-							  NameStr(MySpockWorker->worker.sync.nspname),
-							  NameStr(MySpockWorker->worker.sync.relname),
-							  SYNC_STATUS_SYNCDONE, end_lsn);
+								  NameStr(MySpockWorker->worker.sync.nspname),
+								  NameStr(MySpockWorker->worker.sync.relname),
+								  SYNC_STATUS_SYNCDONE, end_lsn);
 			CommitTransactionCommand();
 		}
 
@@ -588,8 +609,8 @@ handle_commit(StringInfo s)
 		/*
 		 * Disconnect.
 		 *
-		 * This needs to happen before the spock_sync_worker_finish()
-		 * call otherwise slot drop will fail.
+		 * This needs to happen before the spock_sync_worker_finish() call
+		 * otherwise slot drop will fail.
 		 */
 		PQfinish(applyconn);
 
@@ -607,10 +628,11 @@ handle_commit(StringInfo s)
 
 	xact_action_counter = 0;
 	remote_xid = InvalidTransactionId;
-	
-	/* This is the only place we can reset the use_try_block = false
-	without any risk of going into the error deathloop
-	*/
+
+	/*
+	 * This is the only place we can reset the use_try_block = false without
+	 * any risk of going into the error deathloop
+	 */
 	MyApplyWorker->use_try_block = false;
 
 	process_syncing_tables(end_lsn);
@@ -629,13 +651,14 @@ handle_commit(StringInfo s)
 	 * but where ProcessCompletedNotifies() was converted to a no-op routine
 	 * to avoid breaking ABI.)
 	 *
-	 * [1] -- Discussion: https://www.postgresql.org/message-id/flat/153243441449.1404.2274116228506175596@wrigleys.postgresql.org
+	 * [1] -- Discussion:
+	 * https://www.postgresql.org/message-id/flat/153243441449.1404.2274116228506175596@wrigleys.postgresql.org
 	 */
 #if PG_VERSION_NUM < 150000
 	ProcessCompletedNotifies();
 #endif
 
-    pgstat_report_activity(STATE_IDLE, NULL);
+	pgstat_report_activity(STATE_IDLE, NULL);
 }
 
 /*
@@ -645,19 +668,18 @@ static void
 handle_origin(StringInfo s)
 {
 	/*
-	 * ORIGIN message can only come inside remote transaction and before
-	 * any actual writes.
+	 * ORIGIN message can only come inside remote transaction and before any
+	 * actual writes.
 	 */
 	if (!in_remote_transaction || IsTransactionState())
 		elog(ERROR, "SPOCK %s: ORIGIN message sent out of order",
 			 MySubscription->name);
 
 	/*
-	 * Read the message and adjust the replorigin_session_origin to
-	 * the real origin_id. PostgreSQL builtin logical replication
-	 * uses the non-sensical roident, which is linked to the slot of
-	 * the provider and has nothing to do with the actual origin of
-	 * the original transaction.
+	 * Read the message and adjust the replorigin_session_origin to the real
+	 * origin_id. PostgreSQL builtin logical replication uses the non-sensical
+	 * roident, which is linked to the slot of the provider and has nothing to
+	 * do with the actual origin of the original transaction.
 	 */
 	remote_origin_id = spock_read_origin(s, &remote_origin_lsn);
 	replorigin_session_origin = remote_origin_id;
@@ -680,17 +702,17 @@ handle_relation(StringInfo s)
 static void
 handle_insert(StringInfo s)
 {
-	SpockTupleData	newtup;
-	SpockTupleData	*oldtup = NULL;
-	HeapTuple		localtup = NULL;
-	SpockRelation  *rel;
-	ErrorData	   *edata;
+	SpockTupleData newtup;
+	SpockTupleData *oldtup = NULL;
+	HeapTuple	localtup = NULL;
+	SpockRelation *rel;
+	ErrorData  *edata;
 #if PG_VERSION_NUM >= 160000
-	UserContext		ucxt;
+	UserContext ucxt;
 #endif
-	bool			started_tx;
-	bool 			failed = false;
-	char			*action_name = "INSERT";
+	bool		started_tx;
+	bool		failed = false;
+	char	   *action_name = "INSERT";
 
 	started_tx = begin_replication_step();
 
@@ -711,8 +733,9 @@ handle_insert(StringInfo s)
 	/* Make sure that any user-supplied code runs as the table owner. */
 	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
-	/* Handle multi_insert capabilities.
-	 * TODO: Don't do multi- or batch-inserts when in use_try_block mode
+	/*
+	 * Handle multi_insert capabilities. TODO: Don't do multi- or
+	 * batch-inserts when in use_try_block mode
 	 */
 	if (use_multi_insert && MyApplyWorker->use_try_block == false)
 	{
@@ -747,14 +770,15 @@ handle_insert(StringInfo s)
 	}
 
 	/* Normal insert. */
-	
+
 	/* TODO: Handle multiple inserts */
-	if(MyApplyWorker->use_try_block)
+	if (MyApplyWorker->use_try_block)
 	{
 		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u", remote_xid);
 		PG_TRY();
 		{
-			elog(LOG, "SpockErrorLog: Running apply_api.do_insert for xid %u inside try block", remote_xid);
+			elog(LOG, "SpockErrorLog: Running apply_api.do_insert for \
+			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_insert(rel, &newtup);
 		}
@@ -767,44 +791,53 @@ handle_insert(StringInfo s)
 		}
 		PG_END_TRY();
 
-		if(!failed)
+		if (!failed)
 		{
-			if(error_log_behaviour == TRANSDISCARD)
+			if (error_log_behaviour == TRANSDISCARD)
 			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. Rolling back and releasing the current subtransaction for xid %u", remote_xid);
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. \
+				Rolling back and releasing the current subtransaction for \
+				xid %u", remote_xid);
 				RollbackAndReleaseCurrentSubTransaction();
 			}
 			else
 			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. Releasing the current subtransaction for xid %u", remote_xid);
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. \
+				Releasing the current subtransaction for xid %u", remote_xid);
 				ReleaseCurrentSubTransaction();
 			}
 		}
 		else
 		{
 			/* Insert into the error table here */
-			elog(DEBUG1, "SpockErrorLog: Received error message for xid %u, message = (%s)", remote_xid, edata->message);
-			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for xid %u", remote_xid);
-			if(error_log_behaviour > IGNORE)
+			elog(DEBUG1, "SpockErrorLog: Received error message for xid %u, \
+			message = (%s)", remote_xid, edata->message);
+			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for \
+			xid %u", remote_xid);
+
+			if (error_log_behaviour > IGNORE)
 			{
-				add_entry_to_error_log(remote_origin_id, replorigin_session_origin_timestamp, 
-										remote_xid, rel, localtup, oldtup, &newtup, action_name, edata->message);
-			}	
+				add_entry_to_error_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid, rel, localtup, oldtup,
+									   &newtup, action_name, edata->message);
+			}
 
 		}
 	}
 	else
 	{
-		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for xid %u outside try block", remote_xid);
+		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for \
+		xid %u outside try block", remote_xid);
 		apply_api.do_insert(rel, &newtup);
 	}
 
 	/* if INSERT was into our queue, process the message. */
 	if (RelationGetRelid(rel->rel) == QueueRelid)
 	{
-		HeapTuple		ht;
-		LockRelId		lockid = rel->rel->rd_lockInfo.lockRelId;
-		Relation		qrel;
+		HeapTuple	ht;
+		LockRelId	lockid = rel->rel->rd_lockInfo.lockRelId;
+		Relation	qrel;
 
 		multi_insert_finish();
 
@@ -834,8 +867,8 @@ handle_insert(StringInfo s)
 		apply_api.on_begin();
 		MemoryContextSwitchTo(MessageContext);
 
-//		if (oldxid != GetTopTransactionId())
-//			CommitTransactionCommand();
+/* 		if (oldxid != GetTopTransactionId()) */
+/* 			CommitTransactionCommand(); */
 	}
 	else
 	{
@@ -852,6 +885,7 @@ multi_insert_finish(void)
 	{
 		const char *old_action = errcallback_arg.action_name;
 		SpockRelation *old_rel = errcallback_arg.rel;
+
 		errcallback_arg.action_name = "multi INSERT";
 		errcallback_arg.rel = last_insert_rel;
 
@@ -869,16 +903,16 @@ multi_insert_finish(void)
 static void
 handle_update(StringInfo s)
 {
-	SpockTupleData	oldtup;
-	SpockTupleData	newtup;
-	SpockRelation  *rel;
-	ErrorData	   *edata;
-	HeapTuple 		localtup;
+	SpockTupleData oldtup;
+	SpockTupleData newtup;
+	SpockRelation *rel;
+	ErrorData  *edata;
+	HeapTuple	localtup;
 #if PG_VERSION_NUM >= 160000
-	UserContext		ucxt;
+	UserContext ucxt;
 #endif
-	bool			hasoldtup;
-	bool			failed = false;
+	bool		hasoldtup;
+	bool		failed = false;
 
 	begin_replication_step();
 
@@ -888,7 +922,7 @@ handle_update(StringInfo s)
 	multi_insert_finish();
 
 	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup,
-								&newtup);
+							&newtup);
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */
@@ -906,10 +940,12 @@ handle_update(StringInfo s)
 
 	if (MyApplyWorker->use_try_block == true)
 	{
-		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u", remote_xid);
+		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u",
+			 remote_xid);
 		PG_TRY();
 		{
-			elog(LOG, "SpockErrorLog: Running apply_api.do_update for xid %u inside try block", remote_xid);
+			elog(LOG, "SpockErrorLog: Running apply_api.do_update for \
+			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_update(rel, hasoldtup ? &oldtup : NULL, &newtup);
 		}
@@ -922,35 +958,45 @@ handle_update(StringInfo s)
 		}
 		PG_END_TRY();
 
-		if(!failed)
+		if (!failed)
 		{
-			if(error_log_behaviour == TRANSDISCARD)
+			if (error_log_behaviour == TRANSDISCARD)
 			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. Rolling back and releasing the current subtransaction for xid %u", remote_xid);
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. \
+				Rolling back and releasing the current subtransaction for \
+				xid %u", remote_xid);
 				RollbackAndReleaseCurrentSubTransaction();
 			}
 			else
 			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. Releasing the current subtransaction for xid %u", remote_xid);
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. \
+				Releasing the current subtransaction for xid %u", remote_xid);
 				ReleaseCurrentSubTransaction();
 			}
 		}
 		else
 		{
-			elog(DEBUG1, "SpockErrorLog: Received error message for xid %u, message = (%s)", remote_xid, edata->message);
-			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for xid %u", remote_xid);
-			if(error_log_behaviour > IGNORE)
+			elog(DEBUG1, "SpockErrorLog: Received error message for \
+			xid %u, message = (%s)", remote_xid, edata->message);
+			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for \
+			xid %u", remote_xid);
+
+			if (error_log_behaviour > IGNORE)
 			{
 				localtup = error_log_ptr[my_error_log_index].local_tuple;
-				add_entry_to_error_log(remote_origin_id, replorigin_session_origin_timestamp, 
-										remote_xid, rel, localtup, hasoldtup ? &oldtup : NULL, &newtup, "UPDATE", edata->message);
+				add_entry_to_error_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid, rel, localtup,
+									   hasoldtup ? &oldtup : NULL, &newtup,
+									   "UPDATE", edata->message);
 			}
 
 		}
 	}
 	else
 	{
-		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_update for xid %u outside try block", remote_xid);
+		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_update for \
+		xid %u outside try block", remote_xid);
 		apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 	}
 
@@ -963,15 +1009,15 @@ handle_update(StringInfo s)
 static void
 handle_delete(StringInfo s)
 {
-	SpockTupleData	oldtup;
-	SpockTupleData	*newtup = NULL;
-	SpockRelation  *rel;
-	HeapTuple 		localtup;
-	ErrorData	   *edata;
+	SpockTupleData oldtup;
+	SpockTupleData *newtup = NULL;
+	SpockRelation *rel;
+	HeapTuple	localtup;
+	ErrorData  *edata;
 #if PG_VERSION_NUM >= 160000
-	UserContext		ucxt;
+	UserContext ucxt;
 #endif
-	bool			failed = false;
+	bool		failed = false;
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
 	xact_action_counter++;
@@ -994,12 +1040,14 @@ handle_delete(StringInfo s)
 	/* Make sure that any user-supplied code runs as the table owner. */
 	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
-	if(MyApplyWorker->use_try_block)
+	if (MyApplyWorker->use_try_block)
 	{
-		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u", remote_xid);
+		elog(DEBUG1, "SpockErrorLog: use_try_block is true for \
+		xid %u", remote_xid);
 		PG_TRY();
 		{
-			elog(LOG, "SpockErrorLog: Running apply_api.do_delete for xid %u inside try block", remote_xid);
+			elog(LOG, "SpockErrorLog: Running apply_api.do_delete for \
+			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_delete(rel, &oldtup);
 		}
@@ -1012,35 +1060,45 @@ handle_delete(StringInfo s)
 		}
 		PG_END_TRY();
 
-		if(!failed)
+		if (!failed)
 		{
-			if(error_log_behaviour == TRANSDISCARD)
+			if (error_log_behaviour == TRANSDISCARD)
 			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. Rolling back and releasing the current subtransaction for xid %u", remote_xid);
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. \
+				Rolling back and releasing the current subtransaction for \
+				xid %u", remote_xid);
 				RollbackAndReleaseCurrentSubTransaction();
 			}
 			else
 			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. Releasing the current subtransaction for xid %u", remote_xid);
+				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. \
+				Releasing the current subtransaction for xid %u", remote_xid);
 				ReleaseCurrentSubTransaction();
 			}
 		}
 		else
 		{
-			elog(DEBUG1, "SpockErrorLog: Received error message for xid %u, message = (%s)", remote_xid, edata->message);
-			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for xid %u", remote_xid);
-			if(error_log_behaviour > IGNORE)
+			elog(DEBUG1, "SpockErrorLog: Received error message for \
+			xid %u, message = (%s)", remote_xid, edata->message);
+			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for \
+			xid %u", remote_xid);
+
+			if (error_log_behaviour > IGNORE)
 			{
 				localtup = error_log_ptr[my_error_log_index].local_tuple;
-				add_entry_to_error_log(remote_origin_id, replorigin_session_origin_timestamp, 
-										remote_xid, rel, localtup, &oldtup, newtup, "DELETE", edata->message);
+				add_entry_to_error_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid, rel, localtup,
+									   &oldtup, newtup, 
+									   "DELETE", edata->message);
 			}
 
 		}
 	}
 	else
 	{
-		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for xid %u outside try block", remote_xid);
+		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for \
+		xid %u outside try block", remote_xid);
 		apply_api.do_delete(rel, &oldtup);
 	}
 
@@ -1059,7 +1117,8 @@ getmsgisend(StringInfo msg)
 static void
 handle_startup(StringInfo s)
 {
-	uint8 msgver = pq_getmsgbyte(s);
+	uint8		msgver = pq_getmsgbyte(s);
+
 	if (msgver != 1)
 		elog(ERROR, "SPOCK %s: Expected startup message version 1, but got %u",
 			 MySubscription->name, msgver);
@@ -1068,8 +1127,10 @@ handle_startup(StringInfo s)
 	 * The startup message consists of null-terminated strings as key/value
 	 * pairs. The first entry is always the format identifier.
 	 */
-	do {
-		const char *k, *v;
+	do
+	{
+		const char *k,
+				   *v;
 
 		k = pq_getmsgstring(s);
 		if (strlen(k) == 0)
@@ -1096,7 +1157,7 @@ handle_startup(StringInfo s)
 static bool
 parse_bool_param(const char *key, const char *value)
 {
-	bool result;
+	bool		result;
 
 	if (!parse_bool(value, &result))
 		ereport(ERROR,
@@ -1120,7 +1181,7 @@ handle_startup_param(const char *key, const char *value)
 
 	if (strcmp(key, "encoding") == 0)
 	{
-		int encoding = pg_char_to_encoding(value);
+		int			encoding = pg_char_to_encoding(value);
 
 		if (encoding != GetDatabaseEncoding())
 			ereport(ERROR,
@@ -1133,7 +1194,8 @@ handle_startup_param(const char *key, const char *value)
 
 	if (strcmp(key, "forward_changeset_origins") == 0)
 	{
-		bool fwd = parse_bool_param(key, value);
+		bool		fwd = parse_bool_param(key, value);
+
 		/* FIXME: Store this somewhere */
 		elog(DEBUG1, "SPOCK %s: changeset origin forwarding enabled: %s",
 			 MySubscription->name, fwd ? "t" : "f");
@@ -1143,8 +1205,8 @@ handle_startup_param(const char *key, const char *value)
 	 * We just ignore a bunch of parameters here because we specify what we
 	 * require when we send our params to the upstream. It's required to ERROR
 	 * if it can't match what we asked for. It may send the startup message
-	 * first, but it'll be followed by an ERROR if it does. There's no need
-	 * to check params we can't do anything about mismatches of, like protocol
+	 * first, but it'll be followed by an ERROR if it does. There's no need to
+	 * check params we can't do anything about mismatches of, like protocol
 	 * versions and type sizes.
 	 */
 }
@@ -1152,19 +1214,19 @@ handle_startup_param(const char *key, const char *value)
 static RangeVar *
 parse_relation_message(Jsonb *message)
 {
-	JsonbIterator  *it;
-	JsonbValue		v;
-	int				r;
-	int				level = 0;
-	char		   *key = NULL;
-	char		  **parse_res = NULL;
-	char		   *nspname = NULL;
-	char		   *relname = NULL;
+	JsonbIterator *it;
+	JsonbValue	v;
+	int			r;
+	int			level = 0;
+	char	   *key = NULL;
+	char	  **parse_res = NULL;
+	char	   *nspname = NULL;
+	char	   *relname = NULL;
 
 	/* Parse and validate the json message. */
 	if (!JB_ROOT_IS_OBJECT(message))
 		elog(ERROR, "SPOCK %s: malformed message in queued message tuple: "
-					"root is not object",
+			 "root is not object",
 			 MySubscription->name);
 
 	it = JsonbIteratorInit(&message->root);
@@ -1237,7 +1299,7 @@ parse_relation_message(Jsonb *message)
 static void
 handle_truncate(QueuedMessage *queued_message)
 {
-	RangeVar	   *rv;
+	RangeVar   *rv;
 
 	/*
 	 * If table doesn't exist locally, it can't be subscribed.
@@ -1259,10 +1321,10 @@ handle_truncate(QueuedMessage *queued_message)
 static void
 handle_table_sync(QueuedMessage *queued_message)
 {
-	RangeVar			   *rv;
-	MemoryContext			oldcontext;
-	SpockSyncStatus	   *oldsync;
-	SpockSyncStatus	   *newsync;
+	RangeVar   *rv;
+	MemoryContext oldcontext;
+	SpockSyncStatus *oldsync;
+	SpockSyncStatus *newsync;
 
 	rv = parse_relation_message(queued_message->message);
 
@@ -1272,7 +1334,7 @@ handle_table_sync(QueuedMessage *queued_message)
 	if (oldsync)
 	{
 		elog(INFO, "SPOCK %s: table sync came from queue for table %s.%s "
-				   "which already being synchronized, skipping",
+			 "which already being synchronized, skipping",
 			 MySubscription->name,
 			 rv->schemaname, rv->relname);
 
@@ -1303,24 +1365,24 @@ handle_table_sync(QueuedMessage *queued_message)
 static void
 handle_sequence(QueuedMessage *queued_message)
 {
-	Jsonb		   *message = queued_message->message;
-	JsonbIterator  *it;
-	JsonbValue		v;
-	int				r;
-	int				level = 0;
-	char		   *key = NULL;
-	char		  **parse_res = NULL;
-	char		   *nspname = NULL;
-	char		   *relname = NULL;
-	char		   *last_value_raw = NULL;
-	int64			last_value;
-	Oid				nspoid;
-	Oid				reloid;
+	Jsonb	   *message = queued_message->message;
+	JsonbIterator *it;
+	JsonbValue	v;
+	int			r;
+	int			level = 0;
+	char	   *key = NULL;
+	char	  **parse_res = NULL;
+	char	   *nspname = NULL;
+	char	   *relname = NULL;
+	char	   *last_value_raw = NULL;
+	int64		last_value;
+	Oid			nspoid;
+	Oid			reloid;
 
 	/* Parse and validate the json message. */
 	if (!JB_ROOT_IS_OBJECT(message))
 		elog(ERROR, "SPOCK %s: malformed message in queued message tuple: "
-					"root is not object",
+			 "root is not object",
 			 MySubscription->name);
 
 	it = JsonbIteratorInit(&message->root);
@@ -1401,6 +1463,7 @@ handle_sequence(QueuedMessage *queued_message)
 	DirectFunctionCall2(setval_oid, ObjectIdGetDatum(reloid),
 						Int64GetDatum(last_value));
 }
+
 /*
  * Handle SQL message comming via queue table.
  */
@@ -1415,25 +1478,25 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 	/* Validate the json and extract the SQL string from it. */
 	if (!JB_ROOT_IS_SCALAR(queued_message->message))
 		elog(ERROR, "SPOCK %s: malformed message in queued message tuple: "
-					"root is not scalar",
+			 "root is not scalar",
 			 MySubscription->name);
 
 	it = JsonbIteratorInit(&queued_message->message->root);
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_BEGIN_ARRAY)
 		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
-					"item type %d expected %d",
+			 "item type %d expected %d",
 			 MySubscription->name, r, WJB_BEGIN_ARRAY);
 
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_ELEM)
 		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
-					"item type %d expected %d",
+			 "item type %d expected %d",
 			 MySubscription->name, r, WJB_ELEM);
 
 	if (v.type != jbvString)
 		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
-					"expected value type %d got %d",
+			 "expected value type %d got %d",
 			 MySubscription->name, jbvString, v.type);
 
 	sql = pnstrdup(v.val.string.val, v.val.string.len);
@@ -1441,13 +1504,13 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_END_ARRAY)
 		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
-					"item type %d expected %d",
+			 "item type %d expected %d",
 			 MySubscription->name, r, WJB_END_ARRAY);
 
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_DONE)
 		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
-					"item type %d expected %d",
+			 "item type %d expected %d",
 			 MySubscription->name, r, WJB_DONE);
 
 	/* Run the extracted SQL. */
@@ -1460,8 +1523,8 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 static void
 handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 {
-	QueuedMessage  *queued_message;
-	const char	   *old_action_name;
+	QueuedMessage *queued_message;
+	const char *old_action_name;
 
 	old_action_name = errcallback_arg.action_name;
 	errcallback_arg.is_ddl_or_drop = true;
@@ -1504,7 +1567,7 @@ static void
 replication_handler(StringInfo s)
 {
 	ErrorContextCallback errcallback;
-	char action = pq_getmsgbyte(s);
+	char		action = pq_getmsgbyte(s);
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
 	errcallback.callback = action_error_callback;
@@ -1516,35 +1579,35 @@ replication_handler(StringInfo s)
 
 	switch (action)
 	{
-		/* BEGIN */
+			/* BEGIN */
 		case 'B':
 			handle_begin(s);
 			break;
-		/* COMMIT */
+			/* COMMIT */
 		case 'C':
 			handle_commit(s);
 			break;
-		/* ORIGIN */
+			/* ORIGIN */
 		case 'O':
 			handle_origin(s);
 			break;
-		/* RELATION */
+			/* RELATION */
 		case 'R':
 			handle_relation(s);
 			break;
-		/* INSERT */
+			/* INSERT */
 		case 'I':
 			handle_insert(s);
 			break;
-		/* UPDATE */
+			/* UPDATE */
 		case 'U':
 			handle_update(s);
 			break;
-		/* DELETE */
+			/* DELETE */
 		case 'D':
 			handle_delete(s);
 			break;
-		/* STARTUP MESSAGE */
+			/* STARTUP MESSAGE */
 		case 'S':
 			handle_startup(s);
 			break;
@@ -1634,14 +1697,14 @@ get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
 static bool
 send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 {
-	static StringInfo	reply_message = NULL;
+	static StringInfo reply_message = NULL;
 
 	static XLogRecPtr last_recvpos = InvalidXLogRecPtr;
 	static XLogRecPtr last_writepos = InvalidXLogRecPtr;
 	static XLogRecPtr last_flushpos = InvalidXLogRecPtr;
 
-	XLogRecPtr writepos;
-	XLogRecPtr flushpos;
+	XLogRecPtr	writepos;
+	XLogRecPtr	flushpos;
 
 	/* It's legal to not pass a recvpos */
 	if (recvpos < last_recvpos)
@@ -1670,7 +1733,8 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 
 	if (!reply_message)
 	{
-		MemoryContext	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+
 		reply_message = makeStringInfo();
 		MemoryContextSwitchTo(oldcontext);
 	}
@@ -1678,14 +1742,14 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 		resetStringInfo(reply_message);
 
 	pq_sendbyte(reply_message, 'r');
-	pq_sendint64(reply_message, recvpos);		/* write */
-	pq_sendint64(reply_message, flushpos);		/* flush */
-	pq_sendint64(reply_message, writepos);		/* apply */
-	pq_sendint64(reply_message, now);			/* sendTime */
-	pq_sendbyte(reply_message, false);			/* replyRequested */
+	pq_sendint64(reply_message, recvpos);	/* write */
+	pq_sendint64(reply_message, flushpos);	/* flush */
+	pq_sendint64(reply_message, writepos);	/* apply */
+	pq_sendint64(reply_message, now);	/* sendTime */
+	pq_sendbyte(reply_message, false);	/* replyRequested */
 
 	elog(DEBUG2, "SPOCK %s: sending feedback (force %d) to recv %X/%X, "
-				 "write %X/%X, flush %X/%X",
+		 "write %X/%X, flush %X/%X",
 		 MySubscription->name, force,
 		 (uint32) (recvpos >> 32), (uint32) recvpos,
 		 (uint32) (writepos >> 32), (uint32) writepos,
@@ -1721,7 +1785,7 @@ apply_work(PGconn *streamConn)
 	int			fd;
 	char	   *copybuf = NULL;
 	XLogRecPtr	last_received = InvalidXLogRecPtr;
-	TimestampTz	last_receive_timestamp = GetCurrentTimestamp();
+	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
 
 	applyconn = streamConn;
 	fd = PQsocket(applyconn);
@@ -1779,23 +1843,23 @@ apply_work(PGconn *streamConn)
 		}
 
 		/*
-		 * The walsender is supposed to ping us for a status update
-		 * every wal_sender_timeout / 2 milliseconds. If we don't get
-		 * those, we assume that we have lost the connection.
+		 * The walsender is supposed to ping us for a status update every
+		 * wal_sender_timeout / 2 milliseconds. If we don't get those, we
+		 * assume that we have lost the connection.
 		 *
-		 * Note: keepalive configuration is supposed to cover this but
-		 * is apparently unreliable.
+		 * Note: keepalive configuration is supposed to cover this but is
+		 * apparently unreliable.
 		 */
 		if (rc & WL_TIMEOUT)
 		{
-			TimestampTz		timeout;
+			TimestampTz timeout;
 
 			timeout = TimestampTzPlusMilliseconds(last_receive_timestamp,
 												  (wal_sender_timeout * 3) / 2);
 			if (GetCurrentTimestamp() > timeout)
 			{
 				elog(ERROR, "SPOCK %s: terminating apply due to missing "
-							"walsender ping",
+					 "walsender ping",
 					 MySubscription->name);
 			}
 		}
@@ -1834,7 +1898,7 @@ apply_work(PGconn *streamConn)
 			}
 			else
 			{
-				int c;
+				int			c;
 				StringInfoData s;
 
 				if (ConfigReloadPending)
@@ -1847,7 +1911,8 @@ apply_work(PGconn *streamConn)
 
 				/*
 				 * We're using a StringInfo to wrap existing data here, as a
-				 * cursor. We init it manually to avoid a redundant allocation.
+				 * cursor. We init it manually to avoid a redundant
+				 * allocation.
 				 */
 				memset(&s, 0, sizeof(StringInfoData));
 				s.data = copybuf;
@@ -1876,11 +1941,11 @@ apply_work(PGconn *streamConn)
 				}
 				else if (c == 'k')
 				{
-					XLogRecPtr endpos;
-					bool reply_requested;
+					XLogRecPtr	endpos;
+					bool		reply_requested;
 
 					endpos = pq_getmsgint64(&s);
-					/* timestamp = */ pq_getmsgint64(&s);
+					 /* timestamp = */ pq_getmsgint64(&s);
 					reply_requested = pq_getmsgbyte(&s);
 
 					send_feedback(applyconn, endpos,
@@ -1909,7 +1974,7 @@ apply_work(PGconn *streamConn)
 
 		if (!in_remote_transaction)
 			process_syncing_tables(last_received);
-		
+
 		/* We must not have switched out of MessageContext by mistake */
 		Assert(CurrentMemoryContext == MessageContext);
 
@@ -1976,8 +2041,8 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 
 	/*
 	 * Do a limited amount of safety checking against CONCURRENTLY commands
-	 * executed in situations where they aren't allowed. The sender side should
-	 * provide protection, but better be safe than sorry.
+	 * executed in situations where they aren't allowed. The sender side
+	 * should provide protection, but better be safe than sorry.
 	 */
 	isTopLevel = isTopLevel && (list_length(commands) == 1);
 
@@ -1989,7 +2054,7 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 	{
 		List	   *plantree_list;
 		List	   *querytree_list;
-		RawStmt	   *command = (RawStmt *) lfirst(command_i);
+		RawStmt    *command = (RawStmt *) lfirst(command_i);
 		CommandTag	commandTag;
 		Portal		portal;
 		int			save_nestlevel;
@@ -2014,23 +2079,26 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 
 		commandTag = CreateCommandTag(command);
 
-		/* check if it's a DDL statement. we only do this for in_spock_replicate_ddl_command */
+		/*
+		 * check if it's a DDL statement. we only do this for
+		 * in_spock_replicate_ddl_command
+		 */
 		if (in_spock_replicate_ddl_command &&
 			GetCommandLogLevel(command->stmt) != LOGSTMT_DDL)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					errmsg("spock.replicate_ddl() cannot execute %s statement",
+					 errmsg("spock.replicate_ddl() cannot execute %s statement",
 							GetCommandTagName(commandTag))));
 		}
 
 		querytree_list = pg_analyze_and_rewrite(
-			command,
-			cmdstr,
-			NULL, 0);
+												command,
+												cmdstr,
+												NULL, 0);
 
 		plantree_list = pg_plan_queries(
-			querytree_list, cmdstr, 0, NULL);
+										querytree_list, cmdstr, 0, NULL);
 
 		PopActiveSnapshot();
 
@@ -2076,9 +2144,9 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 static void
 reread_unsynced_tables(Oid subid)
 {
-	MemoryContext	saved_ctx;
-	List		   *unsynced_tables;
-	ListCell	   *lc;
+	MemoryContext saved_ctx;
+	List	   *unsynced_tables;
+	ListCell   *lc;
 
 	/* Cleanup first. */
 	list_free_deep(SyncingTables);
@@ -2087,9 +2155,10 @@ reread_unsynced_tables(Oid subid)
 	/* Read new state. */
 	unsynced_tables = get_unsynced_tables(subid);
 	saved_ctx = MemoryContextSwitchTo(TopMemoryContext);
-	foreach (lc, unsynced_tables)
+	foreach(lc, unsynced_tables)
 	{
-		SpockSyncStatus	   *sync = palloc(sizeof(SpockSyncStatus));
+		SpockSyncStatus *sync = palloc(sizeof(SpockSyncStatus));
+
 		memcpy(sync, lfirst(lc), sizeof(SpockSyncStatus));
 		SyncingTables = lappend(SyncingTables, sync);
 	}
@@ -2100,7 +2169,7 @@ reread_unsynced_tables(Oid subid)
 static void
 process_syncing_tables(XLogRecPtr end_lsn)
 {
-	ListCell	   *lc;
+	ListCell   *lc;
 
 	Assert(CurrentMemoryContext == MessageContext);
 	Assert(!IsTransactionState());
@@ -2119,8 +2188,8 @@ process_syncing_tables(XLogRecPtr end_lsn)
 	if (list_length(SyncingTables) > 0)
 	{
 #if PG_VERSION_NUM < 130000
-		ListCell	   *prev = NULL;
-		ListCell	   *next;
+		ListCell   *prev = NULL;
+		ListCell   *next;
 #endif
 
 #if PG_VERSION_NUM >= 130000
@@ -2129,8 +2198,8 @@ process_syncing_tables(XLogRecPtr end_lsn)
 		for (lc = list_head(SyncingTables); lc; lc = next)
 #endif
 		{
-			SpockSyncStatus	   *sync = (SpockSyncStatus *) lfirst(lc);
-			SpockSyncStatus	   *newsync;
+			SpockSyncStatus *sync = (SpockSyncStatus *) lfirst(lc);
+			SpockSyncStatus *newsync;
 
 #if PG_VERSION_NUM < 130000
 			/* We might delete the cell so advance it now. */
@@ -2139,13 +2208,13 @@ process_syncing_tables(XLogRecPtr end_lsn)
 
 			StartTransactionCommand();
 			newsync = get_table_sync_status(MyApplyWorker->subid,
-										 NameStr(sync->nspname),
-										 NameStr(sync->relname), true);
+											NameStr(sync->nspname),
+											NameStr(sync->relname), true);
 
 			/*
-			 * TODO: what to do here? We don't really want to die,
-			 * but this can mean many things, for now we just assume table is
-			 * not relevant for us anymore and leave fixing to the user.
+			 * TODO: what to do here? We don't really want to die, but this
+			 * can mean many things, for now we just assume table is not
+			 * relevant for us anymore and leave fixing to the user.
 			 *
 			 * The reason why this part happens in transaction is that the
 			 * memory allocated for sync info will get automatically cleaned
@@ -2167,9 +2236,9 @@ process_syncing_tables(XLogRecPtr end_lsn)
 
 				LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 				worker = spock_sync_find(MyDatabaseId,
-											 MyApplyWorker->subid,
-											 NameStr(sync->nspname),
-											 NameStr(sync->relname));
+										 MyApplyWorker->subid,
+										 NameStr(sync->nspname),
+										 NameStr(sync->relname));
 
 				if (spock_worker_running(worker) &&
 					end_lsn >= worker->worker.apply.replay_stop_lsn)
@@ -2240,21 +2309,21 @@ process_syncing_tables(XLogRecPtr end_lsn)
 	 * If there are still pending tables for synchronization, launch the sync
 	 * worker.
 	 */
-	foreach (lc, SyncingTables)
+	foreach(lc, SyncingTables)
 	{
-		List		   *workers;
-		ListCell	   *wlc;
-		int				nworkers = 0;
-		SpockSyncStatus	   *sync = (SpockSyncStatus *) lfirst(lc);
+		List	   *workers;
+		ListCell   *wlc;
+		int			nworkers = 0;
+		SpockSyncStatus *sync = (SpockSyncStatus *) lfirst(lc);
 
 		if (sync->status == SYNC_STATUS_SYNCDONE || sync->status == SYNC_STATUS_READY)
 			continue;
 
 		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 		workers = spock_sync_find_all(MyDatabaseId, MyApplyWorker->subid);
-		foreach (wlc, workers)
+		foreach(wlc, workers)
 		{
-			SpockWorker	   *worker = (SpockWorker *) lfirst(wlc);
+			SpockWorker *worker = (SpockWorker *) lfirst(wlc);
 
 			if (spock_worker_running(worker))
 				nworkers++;
@@ -2274,14 +2343,15 @@ process_syncing_tables(XLogRecPtr end_lsn)
 static void
 start_sync_worker(Name nspname, Name relname)
 {
-	SpockWorker			worker;
+	SpockWorker worker;
 
 	/* Start the sync worker. */
 	memset(&worker, 0, sizeof(SpockWorker));
 	worker.worker_type = SPOCK_WORKER_SYNC;
 	worker.dboid = MySpockWorker->dboid;
 	worker.worker.apply.subid = MyApplyWorker->subid;
-	worker.worker.apply.sync_pending = false; /* Makes no sense for sync worker. */
+	worker.worker.apply.sync_pending = false;	/* Makes no sense for sync
+												 * worker. */
 
 	/* Tell the worker to stop at current position. */
 	worker.worker.sync.apply.replay_stop_lsn = replorigin_session_origin_lsn;
@@ -2312,13 +2382,13 @@ interval_to_timeoffset(const Interval *interval)
 void
 spock_apply_main(Datum main_arg)
 {
-	int				slot = DatumGetInt32(main_arg);
-	PGconn		   *streamConn;
-	RepOriginId		originid;
-	XLogRecPtr		origin_startpos;
-	MemoryContext	saved_ctx;
-	char		   *repsets;
-	char		   *origins;
+	int			slot = DatumGetInt32(main_arg);
+	PGconn	   *streamConn;
+	RepOriginId originid;
+	XLogRecPtr	origin_startpos;
+	MemoryContext saved_ctx;
+	char	   *repsets;
+	char	   *origins;
 
 	/* Setup shmem. */
 	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
@@ -2357,7 +2427,7 @@ spock_apply_main(Datum main_arg)
 
 	/* Run as replica session replication role. */
 	SetConfigOption("session_replication_role", "replica",
-					PGC_SUSET, PGC_S_OVERRIDE);	/* other context? */
+					PGC_SUSET, PGC_S_OVERRIDE); /* other context? */
 
 	/*
 	 * Disable function body checks during replay. That's necessary because a)
@@ -2375,6 +2445,7 @@ spock_apply_main(Datum main_arg)
 	MemoryContextSwitchTo(saved_ctx);
 
 #ifdef XCP
+
 	/*
 	 * When runnin under XL, initialise the XL executor so that the datanode
 	 * and coordinator information is initialised properly.
@@ -2398,8 +2469,7 @@ spock_apply_main(Datum main_arg)
 		 MySubscription->origin->name, MySubscription->origin_if->dsn);
 
 	/*
-	 * Cache the queue relation id.
-	 * TODO: invalidation
+	 * Cache the queue relation id. TODO: invalidation
 	 */
 	StartTransactionCommand();
 	QueueRelid = get_queue_table_oid();
@@ -2414,27 +2484,27 @@ spock_apply_main(Datum main_arg)
 
 	/* Start the replication. */
 	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
-										   MySubscription->slot_name, NULL);
+									   MySubscription->slot_name, NULL);
 
 	repsets = stringlist_to_identifierstr(MySubscription->replication_sets);
 	origins = stringlist_to_identifierstr(MySubscription->forward_origins);
 
 	/*
-	 * IDENTIFY_SYSTEM sets up some internal state on walsender so call it even
-	 * if we don't (yet) want to use any of the results.
-     */
+	 * IDENTIFY_SYSTEM sets up some internal state on walsender so call it
+	 * even if we don't (yet) want to use any of the results.
+	 */
 	spock_identify_system(streamConn, NULL, NULL, NULL, NULL);
 
 	spock_start_replication(streamConn, MySubscription->slot_name,
-								origin_startpos, origins, repsets, NULL,
-								MySubscription->force_text_transfer);
+							origin_startpos, origins, repsets, NULL,
+							MySubscription->force_text_transfer);
 	pfree(repsets);
 
 	CommitTransactionCommand();
 
 	/*
-	 * Do an initial leak check with reporting off; we don't want to see
-	 * these results, just the later output from ADDED leak checks.
+	 * Do an initial leak check with reporting off; we don't want to see these
+	 * results, just the later output from ADDED leak checks.
 	 */
 	VALGRIND_DISABLE_ERROR_REPORTING;
 	VALGRIND_DO_LEAK_CHECK;

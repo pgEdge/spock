@@ -65,23 +65,23 @@
 #define CATALOG_ERROR_LOG "error_log"
 typedef struct signal_worker_item
 {
-	Oid		subid;
-	bool	kill;
+	Oid			subid;
+	bool		kill;
 } signal_worker_item;
-static	List *signal_workers = NIL;
+static List *signal_workers = NIL;
 
-volatile sig_atomic_t	got_SIGTERM = false;
+volatile sig_atomic_t got_SIGTERM = false;
 
-HTAB			   *LagTrackerHash = NULL;
-HTAB			   *SpockHash = NULL;
-SpockContext	   *SpockCtx = NULL;
-SpockWorker		   *MySpockWorker = NULL;
-SpockErrorLog      *error_log_ptr = NULL;
-static uint16		MySpockWorkerGeneration;
-int					spock_stats_max_entries_conf = -1;
-int					spock_stats_max_entries;
-int 				error_log_behaviour = TRANSDISCARD;
-bool				spock_stats_hash_full = false;
+HTAB	   *LagTrackerHash = NULL;
+HTAB	   *SpockHash = NULL;
+SpockContext *SpockCtx = NULL;
+SpockWorker *MySpockWorker = NULL;
+SpockErrorLog *error_log_ptr = NULL;
+static uint16 MySpockWorkerGeneration;
+int			spock_stats_max_entries_conf = -1;
+int			spock_stats_max_entries;
+int			error_log_behaviour = TRANSDISCARD;
+bool		spock_stats_hash_full = false;
 
 
 static bool xacthook_signal_workers = false;
@@ -121,16 +121,16 @@ handle_sigterm(SIGNAL_ARGS)
 static int
 find_empty_worker_slot(Oid dboid)
 {
-	int	i;
+	int			i;
 
 	Assert(LWLockHeldByMe(SpockCtx->lock));
 
 	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
 		if (SpockCtx->workers[i].worker_type == SPOCK_WORKER_NONE
-		    || (SpockCtx->workers[i].crashed_at != 0
-                && (SpockCtx->workers[i].dboid == dboid
-                    || SpockCtx->workers[i].dboid == InvalidOid)))
+			|| (SpockCtx->workers[i].crashed_at != 0
+				&& (SpockCtx->workers[i].dboid == dboid
+					|| SpockCtx->workers[i].dboid == InvalidOid)))
 			return i;
 	}
 
@@ -145,11 +145,11 @@ find_empty_worker_slot(Oid dboid)
 int
 spock_worker_register(SpockWorker *worker)
 {
-	BackgroundWorker	bgw;
-	SpockWorker		*worker_shm;
+	BackgroundWorker bgw;
+	SpockWorker *worker_shm;
 	BackgroundWorkerHandle *bgw_handle;
-	int					slot;
-	int					next_generation;
+	int			slot;
+	int			next_generation;
 
 	Assert(worker->worker_type != SPOCK_WORKER_NONE);
 
@@ -182,7 +182,7 @@ spock_worker_register(SpockWorker *worker)
 	LWLockRelease(SpockCtx->lock);
 
 	memset(&bgw, 0, sizeof(bgw));
-	bgw.bgw_flags =	BGWORKER_SHMEM_ACCESS |
+	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, BGW_MAXLEN,
@@ -266,13 +266,11 @@ wait_for_worker_startup(SpockWorker *worker,
 		if (status == BGWH_STOPPED)
 		{
 			/*
-			 * The worker may have:
-			 * - failed to launch after registration
-			 * - launched then crashed/exited before attaching
-			 * - launched, attached, done its work, detached cleanly and exited
-			 *   before we got rescheduled
-			 * - launched, attached, crashed and self-reported its crash, then
-			 *   exited before we got rescheduled
+			 * The worker may have: - failed to launch after registration -
+			 * launched then crashed/exited before attaching - launched,
+			 * attached, done its work, detached cleanly and exited before we
+			 * got rescheduled - launched, attached, crashed and self-reported
+			 * its crash, then exited before we got rescheduled
 			 *
 			 * If it detached cleanly it will've set its worker type to
 			 * SPOCK_WORKER_NONE, which it can't have been at entry, so we
@@ -304,9 +302,9 @@ wait_for_worker_startup(SpockWorker *worker,
 			else
 			{
 				/*
-				 * Worker exited normally or self-reported a crash and may have already been
-				 * replaced. Either way, we don't care, we're only looking for crashes before
-				 * shmem attach.
+				 * Worker exited normally or self-reported a crash and may
+				 * have already been replaced. Either way, we don't care,
+				 * we're only looking for crashes before shmem attach.
 				 */
 				elog(DEBUG2, "%s worker at slot %zu exited before we noticed it started",
 					 spock_worker_type_name(worker->worker_type), (worker - &SpockCtx->workers[0]));
@@ -351,10 +349,9 @@ spock_worker_attach(int slot, SpockWorkerType type)
 
 	/*
 	 * Establish signal handlers. We must do this before unblocking the
-	 * signals. The default SIGTERM handler of Postgres's background
-	 * worker processes otherwise might throw a FATAL error, forcing us
-	 * to exit while potentially holding a spinlock and/or corrupt
-	 * shared memory.
+	 * signals. The default SIGTERM handler of Postgres's background worker
+	 * processes otherwise might throw a FATAL error, forcing us to exit while
+	 * potentially holding a spinlock and/or corrupt shared memory.
 	 */
 	pqsignal(SIGTERM, handle_sigterm);
 	pqsignal(SIGHUP, SignalHandlerForConfigReload);
@@ -385,8 +382,8 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	 * request to print to the Valgrind log.
 	 */
 	VALGRIND_PRINTF("SPOCK: spock worker %s (%s)\n",
-		spock_worker_type_name(type),
-		MyBgworkerEntry->bgw_name);
+					spock_worker_type_name(type),
+					MyBgworkerEntry->bgw_name);
 
 	LWLockRelease(SpockCtx->lock);
 
@@ -401,8 +398,8 @@ spock_worker_attach(int slot, SpockWorkerType type)
 
 		BackgroundWorkerInitializeConnectionByOid(MySpockWorker->dboid,
 												  InvalidOid
-												  , 0 /* flags */
-												  );
+												  ,0	/* flags */
+			);
 
 
 		StartTransactionCommand();
@@ -438,15 +435,15 @@ spock_worker_detach(bool crash)
 		 crash ? "exiting with error" : "detaching cleanly");
 
 	VALGRIND_PRINTF("SPOCK: worker detaching, unclean=%d\n",
-		crash);
+					crash);
 
 	/*
 	 * If we crashed we need to report it.
 	 *
-	 * The crash logic only works because all of the workers are attached
-	 * to shmem and the serious crashes that we can't catch here cause
-	 * postmaster to restart whole server killing all our workers and cleaning
-	 * shmem so we start from clean state in that scenario.
+	 * The crash logic only works because all of the workers are attached to
+	 * shmem and the serious crashes that we can't catch here cause postmaster
+	 * to restart whole server killing all our workers and cleaning shmem so
+	 * we start from clean state in that scenario.
 	 *
 	 * It's vital NOT to clear or change the generation field here; see
 	 * wait_for_worker_startup(...).
@@ -477,7 +474,7 @@ spock_worker_detach(bool crash)
 SpockWorker *
 spock_manager_find(Oid dboid)
 {
-	int i;
+	int			i;
 
 	Assert(LWLockHeldByMe(SpockCtx->lock));
 
@@ -497,13 +494,13 @@ spock_manager_find(Oid dboid)
 SpockWorker *
 spock_apply_find(Oid dboid, Oid subscriberid)
 {
-	int i;
+	int			i;
 
 	Assert(LWLockHeldByMe(SpockCtx->lock));
 
 	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
-		SpockWorker	   *w = &SpockCtx->workers[i];
+		SpockWorker *w = &SpockCtx->workers[i];
 
 		if (w->worker_type == SPOCK_WORKER_APPLY &&
 			dboid == w->dboid &&
@@ -541,13 +538,14 @@ spock_apply_find_all(Oid dboid)
 SpockWorker *
 spock_sync_find(Oid dboid, Oid subscriberid, const char *nspname, const char *relname)
 {
-	int i;
+	int			i;
 
 	Assert(LWLockHeldByMe(SpockCtx->lock));
 
 	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
 		SpockWorker *w = &SpockCtx->workers[i];
+
 		if (w->worker_type == SPOCK_WORKER_SYNC && dboid == w->dboid &&
 			subscriberid == w->worker.apply.subid &&
 			strcmp(NameStr(w->worker.sync.nspname), nspname) == 0 &&
@@ -573,6 +571,7 @@ spock_sync_find_all(Oid dboid, Oid subscriberid)
 	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
 		SpockWorker *w = &SpockCtx->workers[i];
+
 		if (w->worker_type == SPOCK_WORKER_SYNC && dboid == w->dboid &&
 			subscriberid == w->worker.apply.subid)
 			res = lappend(res, w);
@@ -618,12 +617,12 @@ signal_worker_xact_callback(XactEvent event, void *arg)
 {
 	if (event == XACT_EVENT_COMMIT && xacthook_signal_workers)
 	{
-		SpockWorker	   *w;
-		ListCell	   *l;
+		SpockWorker *w;
+		ListCell   *l;
 
 		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
-		foreach (l, signal_workers)
+		foreach(l, signal_workers)
 		{
 			signal_worker_item *item = (signal_worker_item *) lfirst(l);
 
@@ -671,7 +670,7 @@ spock_subscription_changed(Oid subid, bool kill)
 
 	if (OidIsValid(subid))
 	{
-		MemoryContext	oldcxt;
+		MemoryContext oldcxt;
 		signal_worker_item *item;
 
 		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
@@ -691,7 +690,7 @@ spock_subscription_changed(Oid subid, bool kill)
 static Size
 worker_shmem_size(int nworkers, bool include_hash)
 {
-	Size	num_bytes = 0;
+	Size		num_bytes = 0;
 
 	num_bytes = offsetof(SpockContext, workers);
 	num_bytes = add_size(num_bytes,
@@ -730,8 +729,8 @@ spock_worker_shmem_request(void)
 #endif
 
 	/*
-	 * This is cludge for Windows (Postgres des not define the GUC variable
-	 * as PGDDLIMPORT)
+	 * This is cludge for Windows (Postgres des not define the GUC variable as
+	 * PGDDLIMPORT)
 	 */
 	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 										  false));
@@ -749,7 +748,7 @@ spock_worker_shmem_request(void)
 static void
 spock_worker_shmem_startup(void)
 {
-	bool        found;
+	bool		found;
 	int			nworkers;
 	HASHCTL		hctl;
 
@@ -763,7 +762,7 @@ spock_worker_shmem_startup(void)
 	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 										  false));
 	SpockCtx = NULL;
-	 /* avoid possible race-conditions, when initializing the shared memory. */
+	/* avoid possible race-conditions, when initializing the shared memory. */
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
 	/* Init signaling context for the various processes. */
@@ -785,7 +784,7 @@ spock_worker_shmem_startup(void)
 
 	error_log_ptr = ShmemInitStruct("spock_error_log_ptr",
 									worker_shmem_size(nworkers, false), &found);
-	
+
 	if (!found)
 		memset(error_log_ptr, 0, sizeof(SpockErrorLog) * nworkers);
 
@@ -803,10 +802,10 @@ spock_worker_shmem_startup(void)
 	hctl.keysize = NAMEDATALEN;
 	hctl.entrysize = sizeof(LagTrackerEntry);
 	LagTrackerHash = ShmemInitHash("spock lag tracker hash",
-									  max_replication_slots,
-									  max_replication_slots,
-									  &hctl,
-									  HASH_ELEM | HASH_STRINGS);
+								   max_replication_slots,
+								   max_replication_slots,
+								   &hctl,
+								   HASH_ELEM | HASH_STRINGS);
 
 	LWLockRelease(AddinShmemInitLock);
 }
@@ -853,18 +852,24 @@ spock_worker_type_name(SpockWorkerType type)
 {
 	switch (type)
 	{
-		case SPOCK_WORKER_NONE: return "none";
-		case SPOCK_WORKER_MANAGER: return "manager";
-		case SPOCK_WORKER_APPLY: return "apply";
-		case SPOCK_WORKER_SYNC: return "sync";
-		default: Assert(false); return NULL;
+		case SPOCK_WORKER_NONE:
+			return "none";
+		case SPOCK_WORKER_MANAGER:
+			return "manager";
+		case SPOCK_WORKER_APPLY:
+			return "apply";
+		case SPOCK_WORKER_SYNC:
+			return "sync";
+		default:
+			Assert(false);
+			return NULL;
 	}
 }
 
 void
 handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 {
-	bool found = false;
+	bool		found = false;
 	spockStatsKey key;
 	spockStatsEntry *entry;
 
@@ -877,8 +882,8 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 	key.relid = RelationGetRelid(relation);
 
 	/*
-	 * We first try to find an existing entry while holding the
-	 * SpockCtx lock in shared mode.
+	 * We first try to find an existing entry while holding the SpockCtx lock
+	 * in shared mode.
 	 */
 	LWLockAcquire(SpockCtx->lock, LW_SHARED);
 
@@ -887,17 +892,16 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 	if (!found)
 	{
 		/*
-		 * Didn't find this entry. Check that we didn't exceed the
-		 * hash table previously.
+		 * Didn't find this entry. Check that we didn't exceed the hash table
+		 * previously.
 		 */
 		LWLockRelease(SpockCtx->lock);
 		if (spock_stats_hash_full)
 			return;
 
 		/*
-		 * Upgrade to exclusive lock since we attempt to create a
-		 * new entry in the hash table. Then check for overflow
-		 * again.
+		 * Upgrade to exclusive lock since we attempt to create a new entry in
+		 * the hash table. Then check for overflow again.
 		 */
 		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 		if (hash_get_num_entries(SpockHash) >= spock_stats_max_entries)
@@ -930,15 +934,15 @@ LagTrackerEntry *
 lag_tracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts)
 {
 	LagTrackerEntry *hentry;
-	bool found;
+	bool		found;
 
 	Assert(LagTrackerHash != NULL);
 	LWLockAcquire(SpockCtx->lag_lock, LW_EXCLUSIVE);
 
 	/* Find lag info, creating if not found */
 	hentry = (LagTrackerEntry *) hash_search(LagTrackerHash,
-										 slotname,
-										 HASH_ENTER, &found);
+											 slotname,
+											 HASH_ENTER, &found);
 	Assert(hentry != NULL);
 	hentry->commit_sample.lsn = lsn;
 	hentry->commit_sample.time = ts;
@@ -951,9 +955,9 @@ lag_tracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts)
  * Add an entry to the error log.
  */
 void
-add_entry_to_error_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_xid, 
-					SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup, 
-					SpockTupleData *remotenewtup, char *action, char *error_message)
+add_entry_to_error_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_xid,
+					   SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup,
+					   SpockTupleData *remotenewtup, char *action, char *error_message)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -965,11 +969,11 @@ add_entry_to_error_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_x
 	StringInfoData localtup_str;
 	StringInfoData remote_oldtup_str;
 	StringInfoData remote_newtup_str;
-	char *local_tup_str = NULL;
-	char *old_tup_str = NULL;
-	char *new_tup_str = NULL;
-	char *schema = targetrel->nspname;
-	char *table = targetrel->relname;
+	char	   *local_tup_str = NULL;
+	char	   *old_tup_str = NULL;
+	char	   *new_tup_str = NULL;
+	char	   *schema = targetrel->nspname;
+	char	   *table = targetrel->relname;
 
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_ERROR_LOG, -1);
@@ -977,24 +981,25 @@ add_entry_to_error_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_x
 	tupDesc = RelationGetDescr(rel);
 	taregtTupDesc = RelationGetDescr(targetrel->rel);
 
-	/* FIXME: This decision will change and grow more complex
-	 * as other columns are added to the error table
+	/*
+	 * FIXME: This decision will change and grow more complex as other columns
+	 * are added to the error table
 	 */
-	if(localtup != NULL)
+	if (localtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: localtup is not NULL.");
 		initStringInfo(&localtup_str);
 		tuple_to_stringinfo(&localtup_str, taregtTupDesc, localtup);
 		local_tup_str = localtup_str.data;
 	}
-	if(remoteoldtup != NULL)
+	if (remoteoldtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: remoteoldtup is not NULL.");
 		initStringInfo(&remote_oldtup_str);
 		spock_tuple_to_stringinfo(&remote_oldtup_str, taregtTupDesc, remoteoldtup);
 		old_tup_str = remote_oldtup_str.data;
 	}
-	if(remotenewtup != NULL)
+	if (remotenewtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: remotenewtup is not NULL.");
 		initStringInfo(&remote_newtup_str);
@@ -1011,15 +1016,15 @@ add_entry_to_error_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_x
 	values[Anum_error_log_remote_xid - 1] = TransactionIdGetDatum(remote_xid);
 	values[Anum_error_log_schema - 1] = CStringGetTextDatum(schema);
 	values[Anum_error_log_table - 1] = CStringGetTextDatum(table);
-	
-	if(localtup != NULL)
+
+	if (localtup != NULL)
 		values[Anum_error_log_local_tuple - 1] = CStringGetTextDatum(local_tup_str);
 	else
 	{
 		values[Anum_error_log_local_tuple - 1] = (Datum) 0;
 		nulls[Anum_error_log_local_tuple - 1] = true;
 	}
-	if(remoteoldtup != NULL)
+	if (remoteoldtup != NULL)
 		values[Anum_error_log_remote_old_tuple - 1] = CStringGetTextDatum(old_tup_str);
 	else
 	{
@@ -1027,14 +1032,14 @@ add_entry_to_error_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_x
 		nulls[Anum_error_log_remote_old_tuple - 1] = true;
 	}
 
-	if(remotenewtup != NULL)
+	if (remotenewtup != NULL)
 		values[Anum_error_log_remote_new_tuple - 1] = CStringGetTextDatum(new_tup_str);
 	else
 	{
 		values[Anum_error_log_remote_new_tuple - 1] = (Datum) 0;
 		nulls[Anum_error_log_remote_new_tuple - 1] = true;
 	}
-	
+
 	values[Anum_error_log_operation - 1] = CStringGetTextDatum(action);
 	values[Anum_error_log_message - 1] = CStringGetTextDatum(error_message);
 	values[Anum_error_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
@@ -1074,11 +1079,13 @@ spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple
 		Oid			typoutput;	/* output function */
 		bool		typisvarlena;
 		Datum		origval;	/* possibly toasted Datum */
-		Datum		val	= PointerGetDatum(NULL); /* definitely detoasted Datum */
+		Datum		val = PointerGetDatum(NULL);	/* definitely detoasted
+													 * Datum */
 		char	   *outputstr = NULL;
-		bool		isnull = false;		/* column is null? */
+		bool		isnull = false; /* column is null? */
 
 		attr = TupleDescAttr(tupdesc, natt);
+
 		/*
 		 * don't print dropped columns, we can't be sure everything is
 		 * available for them
@@ -1105,6 +1112,7 @@ spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple
 			first = false;
 		else
 			appendStringInfoChar(s, ' ');
+
 		appendStringInfoString(s, NameStr(attr->attname));
 
 		/* print attribute type */
@@ -1118,18 +1126,19 @@ spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple
 
 		ReleaseSysCache(type_tuple);
 
-		if(!tuple->nulls[natt])
+		if (!tuple->nulls[natt])
 		{
-			/* get Datum from tuple */
 			origval = tuple->values[natt];
-			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. origval is NOT NULL");
+			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. \
+			origval is NOT NULL");
 		}
 		else
 		{
 			isnull = true;
-			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. origval is NULL");
+			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. \
+			origval is NULL");
 		}
-		
+
 		if (isnull)
 			outputstr = "(null)";
 		else if (typisvarlena && VARATT_IS_EXTERNAL_ONDISK(origval))
@@ -1139,23 +1148,20 @@ spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple
 		else
 			val = origval;
 
-		/* print data */
 		if (outputstr == NULL)
 		{
 			outputstr = OidOutputFunctionCall(typoutput, val);
-			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. outputstr is (%s)", outputstr);
+			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. \
+			outputstr is (%s)", outputstr);
 		}
-		
+
 		/*
-		 * Abbreviate the Datum if it's too long. This may make it syntatically
-		 * invalid, but it's not like we're writing out a valid ROW(...) as it
-		 * is.
+		 * Abbreviate the Datum if it's too long. This may make it
+		 * syntatically invalid, but it's not like we're writing out a valid
+		 * ROW(...) as it is.
 		 */
 		if (strlen(outputstr) > MAX_CONFLICT_LOG_ATTR_LEN)
-		{
-			/* The null written at the end of strcpy will truncate the string */
-			strcpy(&outputstr[MAX_CONFLICT_LOG_ATTR_LEN-5], "...");
-		}
+			strcpy(&outputstr[MAX_CONFLICT_LOG_ATTR_LEN - 5], "...");
 
 		appendStringInfoChar(s, ':');
 		appendStringInfoString(s, outputstr);

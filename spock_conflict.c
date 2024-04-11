@@ -55,12 +55,12 @@
 #include "spock_node.h"
 #include "spock_worker.h"
 
-int		spock_conflict_resolver = SPOCK_RESOLVE_APPLY_REMOTE;
-int		spock_conflict_log_level = LOG;
-bool	spock_save_resolutions = false;
+int			spock_conflict_resolver = SPOCK_RESOLVE_APPLY_REMOTE;
+int			spock_conflict_log_level = LOG;
+bool		spock_save_resolutions = false;
 
 static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
-	bool *ret_isnull);
+										bool *ret_isnull);
 
 /*
  * Setup a ScanKey for a search in the relation 'rel' for a tuple 'key' that
@@ -77,7 +77,7 @@ build_index_scan_key(ScanKey skey, Relation rel, Relation idxrel, SpockTupleData
 	Datum		indkeyDatum;
 	bool		isnull;
 	oidvector  *opclass;
-	int2vector  *indkey;
+	int2vector *indkey;
 	bool		hasnulls = false;
 
 	indclassDatum = SysCacheGetAttr(INDEXRELID, idxrel->rd_indextuple,
@@ -177,8 +177,7 @@ retry:
 		 * Did any concurrent txn affect the tuple? (See
 		 * HeapTupleSatisfiesDirty for how we get this).
 		 */
-		xwait = TransactionIdIsValid(snap.xmin) ?
-			snap.xmin : snap.xmax;
+		xwait = TransactionIdIsValid(snap.xmin) ? snap.xmin : snap.xmax;
 
 		if (TransactionIdIsValid(xwait))
 		{
@@ -192,7 +191,7 @@ retry:
 	if (found)
 	{
 		TM_FailureData tmfd;
-		TM_Result res;
+		TM_Result	res;
 
 		PushActiveSnapshot(GetLatestSnapshot());
 
@@ -212,13 +211,13 @@ retry:
 				/* lock was successfully acquired */
 				break;
 			case TM_Updated:
+
 				/*
 				 * We lost a race between when we looked up the tuple and
 				 * checked for concurrent modifying txns and when we tried to
 				 * lock the matched tuple.
 				 *
-				 * XXX: Improve handling here.
-				 * XXX: Improve how?
+				 * XXX: Improve handling here. XXX: Improve how?
 				 */
 				ereport(DEBUG1,
 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
@@ -243,14 +242,14 @@ retry:
  */
 bool
 spock_tuple_find_replidx(ResultRelInfo *relinfo, SpockTupleData *tuple,
-							 TupleTableSlot *oldslot, Oid *idxrelid)
+						 TupleTableSlot *oldslot, Oid *idxrelid)
 {
-	Oid				idxoid;
-	Relation		idxrel;
-	ScanKeyData		index_key[INDEX_MAX_KEYS];
-	bool			found;
+	Oid			idxoid;
+	Relation	idxrel;
+	ScanKeyData index_key[INDEX_MAX_KEYS];
+	bool		found;
 
-	/* Open REPLICA IDENTITY index.*/
+	/* Open REPLICA IDENTITY index. */
 	idxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
 	if (!OidIsValid(idxoid))
 	{
@@ -263,7 +262,7 @@ spock_tuple_find_replidx(ResultRelInfo *relinfo, SpockTupleData *tuple,
 	*idxrelid = idxoid;
 	idxrel = index_open(idxoid, RowExclusiveLock);
 
-	/* Build scan key for just opened index*/
+	/* Build scan key for just opened index */
 	build_index_scan_key(index_key, relinfo->ri_RelationDesc, idxrel, tuple);
 
 	/* Try to find the row and store any matching row in 'oldslot'. */
@@ -294,45 +293,46 @@ spock_tuple_find_replidx(ResultRelInfo *relinfo, SpockTupleData *tuple,
  */
 Oid
 spock_tuple_find_conflict(ResultRelInfo *relinfo, SpockTupleData *tuple,
-							  TupleTableSlot *outslot)
+						  TupleTableSlot *outslot)
 {
-	Oid				conflict_idx = InvalidOid;
-	ScanKeyData		index_key[INDEX_MAX_KEYS];
-	int				i;
-	ItemPointerData	conflicting_tid;
-	Oid				replidxoid;
-	bool			found = false;
+	Oid			conflict_idx = InvalidOid;
+	ScanKeyData index_key[INDEX_MAX_KEYS];
+	int			i;
+	ItemPointerData conflicting_tid;
+	Oid			replidxoid;
+	bool		found = false;
 
 	ItemPointerSetInvalid(&conflicting_tid);
 
 	/*
 	 * Check the replica identity index with a SnapshotDirty scan first, like
-	 * spock_tuple_find_replidx, but without ERRORing if we don't find
-	 * a replica identity index.
+	 * spock_tuple_find_replidx, but without ERRORing if we don't find a
+	 * replica identity index.
 	 */
 	replidxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
 	if (OidIsValid(replidxoid))
 	{
 		Relation	idxrel = index_open(replidxoid, RowExclusiveLock);
+
 		build_index_scan_key(index_key, relinfo->ri_RelationDesc, idxrel, tuple);
 		found = find_index_tuple(index_key, relinfo->ri_RelationDesc, idxrel,
-							 LockTupleExclusive, outslot);
+								 LockTupleExclusive, outslot);
 		index_close(idxrel, NoLock);
 		if (found)
 			return replidxoid;
 	}
 
 	/*
-	 * Do a SnapshotDirty search for conflicting tuples. If any is found
-	 * store it in outslot and return the oid of the matching index. We
-	 * don't continue scanning for matches in other indexes, so we won't
-	 * notice if the tuple conflicts with another index, and it'll
-	 * raise a unique violation on apply instead.
+	 * Do a SnapshotDirty search for conflicting tuples. If any is found store
+	 * it in outslot and return the oid of the matching index. We don't
+	 * continue scanning for matches in other indexes, so we won't notice if
+	 * the tuple conflicts with another index, and it'll raise a unique
+	 * violation on apply instead.
 	 *
-	 * We could carry on here even if (found) and look for secondary conflicts,
-	 * but all we'd be able to do would be ERROR here instead of later. The
-	 * rest of the time we'd just pay a useless performance cost for extra
-	 * index scans.
+	 * We could carry on here even if (found) and look for secondary
+	 * conflicts, but all we'd be able to do would be ERROR here instead of
+	 * later. The rest of the time we'd just pay a useless performance cost
+	 * for extra index scans.
 	 */
 	for (i = 0; i < relinfo->ri_NumIndices; i++)
 	{
@@ -347,13 +347,13 @@ spock_tuple_find_conflict(ResultRelInfo *relinfo, SpockTupleData *tuple,
 			continue;
 
 		/*
-		 * TODO: predicates should be handled better. There's no point scanning
-		 * an index where the predicates show it could never match anyway, and
-		 * it can produce false conflicts if the predicate includes non-indexed
-		 * columns. We could find a local tuple that matches the predicate in
-		 * the index, but there's only a true conflict if the remote tuple also
-		 * matches the predicate. If we ignore the predicate we generate a false
-		 * conflict. See RM#1839.
+		 * TODO: predicates should be handled better. There's no point
+		 * scanning an index where the predicates show it could never match
+		 * anyway, and it can produce false conflicts if the predicate
+		 * includes non-indexed columns. We could find a local tuple that
+		 * matches the predicate in the index, but there's only a true
+		 * conflict if the remote tuple also matches the predicate. If we
+		 * ignore the predicate we generate a false conflict. See RM#1839.
 		 *
 		 * For now we reject conflict resolution on indexes with predicates
 		 * entirely. If there's a conflict it'll be raised on apply with a
@@ -369,13 +369,12 @@ spock_tuple_find_conflict(ResultRelInfo *relinfo, SpockTupleData *tuple,
 			continue;
 
 		/*
-		 * If this index may not be complete enough to exhibit
-		 * uniqueness and drive correct query results, move on to other
-		 * indexes.  If no index meets all qualifications and this one
-		 * is ii_ReadyForInserts, one could argue for using this one
-		 * instead of using no index.  We don't offer that.  (The
-		 * server's infer_arbiter_indexes(), which performs a similar
-		 * role, also requires indisvalid.)
+		 * If this index may not be complete enough to exhibit uniqueness and
+		 * drive correct query results, move on to other indexes.  If no index
+		 * meets all qualifications and this one is ii_ReadyForInserts, one
+		 * could argue for using this one instead of using no index.  We don't
+		 * offer that.  (The server's infer_arbiter_indexes(), which performs
+		 * a similar role, also requires indisvalid.)
 		 */
 		if (!idxrel->rd_index->indisvalid)
 			continue;
@@ -401,7 +400,6 @@ spock_tuple_find_conflict(ResultRelInfo *relinfo, SpockTupleData *tuple,
 	return conflict_idx;
 }
 
-
 /*
  * Resolve conflict based on commit timestamp.
  */
@@ -411,7 +409,7 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 							  TimestampTz local_ts,
 							  TimestampTz remote_ts,
 							  bool last_update_wins,
-							  SpockConflictResolution *resolution)
+							  SpockConflictResolution * resolution)
 {
 	int			cmp;
 
@@ -440,11 +438,11 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 	else
 	{
 		/*
-		 * The timestamps were equal. Use the "tiebreaker" from the
-		 * spock.node configuration to come up with a winner.
+		 * The timestamps were equal. Use the "tiebreaker" from the spock.node
+		 * configuration to come up with a winner.
 		 */
-		SpockNode	   *loc_node;
-		SpockNode	   *rmt_node;
+		SpockNode  *loc_node;
+		SpockNode  *rmt_node;
 
 		/* If the current local tuple is really local, use our own node.id */
 		if (local_origin_id == InvalidRepOriginId)
@@ -461,14 +459,13 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 		if (loc_node->tiebreaker == rmt_node->tiebreaker)
 		{
 			/*
-			 * Major pilot error here. Our default for the tiebreaker is
-			 * the unique 16-bit node.id but the user somehow managed to
-			 * get identical values into the "info" jsonb "tiebreaker"
-			 * element.
+			 * Major pilot error here. Our default for the tiebreaker is the
+			 * unique 16-bit node.id but the user somehow managed to get
+			 * identical values into the "info" jsonb "tiebreaker" element.
 			 */
 			elog(WARNING, "CONFLICT: current node=%d and remote node=%d "
-						  "tiebreaker values are equal!",
-						  loc_node->id, rmt_node->id);
+				 "tiebreaker values are equal!",
+				 loc_node->id, rmt_node->id);
 			*resolution = SpockResolution_ApplyRemote;
 			return true;
 		}
@@ -509,7 +506,7 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 				 TransactionId *xmin,
 				 RepOriginId *local_origin, TimestampTz *local_ts)
 {
-	int		cmp;
+	int			cmp;
 
 	*xmin = HeapTupleHeaderGetXmin(local_tuple->t_data);
 	if (!track_commit_timestamp)
@@ -522,11 +519,11 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 	if (TransactionIdIsValid(*xmin) && !TransactionIdIsNormal(*xmin))
 	{
 		/*
-		 * Pg emits an ERROR if you try to pass FrozenTransactionId (2)
-		 * or BootstrapTransactionId (1) to TransactionIdGetCommitTsData,
-		 * per RT#46983 . This seems like an oversight in the core function,
-		 * but we can work around it here by setting it to the same thing
-		 * we'd get if the xid's commit timestamp was trimmed already.
+		 * Pg emits an ERROR if you try to pass FrozenTransactionId (2) or
+		 * BootstrapTransactionId (1) to TransactionIdGetCommitTsData, per
+		 * RT#46983 . This seems like an oversight in the core function, but
+		 * we can work around it here by setting it to the same thing we'd get
+		 * if the xid's commit timestamp was trimmed already.
 		 */
 		*local_origin = InvalidRepOriginId;
 		*local_ts = 0;
@@ -545,8 +542,8 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 		!TransactionIdGetCommitTsData(*xmin, local_ts, local_origin))
 	{
 		/*
-		 * The commit timestamp info for this transaction was trimmed
-		 * already. Nothing much we can do.
+		 * The commit timestamp info for this transaction was trimmed already.
+		 * Nothing much we can do.
 		 */
 		return false;
 	}
@@ -554,21 +551,21 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 	/*
 	 * If the origin reported by TransactionIdGetCommitTsData() is
 	 * InvalidRepOriginId then the tuple was last modified by a local
-	 * transaction. Whatever may be recorded in the hidden columns
-	 * is irrelevant in that case.
+	 * transaction. Whatever may be recorded in the hidden columns is
+	 * irrelevant in that case.
 	 */
 	if (local_origin == InvalidRepOriginId)
 		return true;
 
 	/*
-	 * Check if the local tuple has commit_ts and commit_origin
-	 * override information.
+	 * Check if the local tuple has commit_ts and commit_origin override
+	 * information.
 	 */
 	if (rel->att_commit_ts >= 0 && rel->att_commit_origin >= 0)
 	{
-		bool	isnull;
-		Datum	commit_ts;
-		Datum	commit_origin;
+		bool		isnull;
+		Datum		commit_ts;
+		Datum		commit_origin;
 
 		commit_ts = heap_getattr(local_tuple,
 								 rel->attmap[rel->att_commit_ts] + 1,
@@ -583,16 +580,15 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 			return true;
 
 		/*
-		 * We found last commit info in the local tuple. Override
-		 * what TransactionIdGetCommitTsData() returned if it is
-		 * later than that.
+		 * We found last commit info in the local tuple. Override what
+		 * TransactionIdGetCommitTsData() returned if it is later than that.
 		 */
 		cmp = timestamptz_cmp_internal(*local_ts, commit_ts);
 		if (spock_conflict_resolver == SPOCK_RESOLVE_FIRST_UPDATE_WINS)
 			cmp = -cmp;
 		if (cmp < 0)
 		{
-			*local_origin = (RepOriginId)DatumGetInt32(commit_origin);
+			*local_origin = (RepOriginId) DatumGetInt32(commit_origin);
 			*local_ts = DatumGetTimestampTz(commit_ts);
 		}
 	}
@@ -609,9 +605,9 @@ bool
 try_resolve_conflict(Relation rel, HeapTuple localtuple, HeapTuple remotetuple,
 					 HeapTuple *resulttuple,
 					 RepOriginId local_origin, TimestampTz local_ts,
-					 SpockConflictResolution *resolution)
+					 SpockConflictResolution * resolution)
 {
-	bool			apply = false;
+	bool		apply = false;
 
 	switch (spock_conflict_resolver)
 	{
@@ -714,22 +710,23 @@ conflict_resolution_to_string(SpockConflictResolution resolution)
  */
 void
 spock_report_conflict(SpockConflictType conflict_type,
-						  SpockRelation *rel,
-						  HeapTuple localtuple,
-						  SpockTupleData *oldkey,
-						  HeapTuple remotetuple,
-						  HeapTuple applytuple,
-						  SpockConflictResolution resolution,
-						  TransactionId local_tuple_xid,
-						  bool found_local_origin,
-						  RepOriginId local_tuple_origin,
-						  TimestampTz local_tuple_commit_ts,
-						  Oid conflict_idx_oid,
-						  bool has_before_triggers)
+					  SpockRelation *rel,
+					  HeapTuple localtuple,
+					  SpockTupleData *oldkey,
+					  HeapTuple remotetuple,
+					  HeapTuple applytuple,
+					  SpockConflictResolution resolution,
+					  TransactionId local_tuple_xid,
+					  bool found_local_origin,
+					  RepOriginId local_tuple_origin,
+					  TimestampTz local_tuple_commit_ts,
+					  Oid conflict_idx_oid,
+					  bool has_before_triggers)
 {
-	char local_tup_ts_str[MAXDATELEN] = "(unset)";
-	StringInfoData localtup, remotetup;
-	TupleDesc desc = RelationGetDescr(rel->rel);
+	char		local_tup_ts_str[MAXDATELEN] = "(unset)";
+	StringInfoData localtup,
+				remotetup;
+	TupleDesc	desc = RelationGetDescr(rel->rel);
 	const char *idxname = "(unknown)";
 	const char *qualrelname;
 
@@ -754,7 +751,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 	memset(local_tup_ts_str, 0, MAXDATELEN);
 	if (found_local_origin)
 		strcpy(local_tup_ts_str,
-			timestamptz_to_str(local_tuple_commit_ts));
+			   timestamptz_to_str(local_tuple_commit_ts));
 
 	initStringInfo(&remotetup);
 	tuple_to_stringinfo(&remotetup, desc, remotetuple);
@@ -769,8 +766,8 @@ spock_report_conflict(SpockConflictType conflict_type,
 		idxname = get_rel_name(conflict_idx_oid);
 
 	qualrelname = quote_qualified_identifier(
-		get_namespace_name(RelationGetNamespace(rel->rel)),
-		RelationGetRelationName(rel->rel));
+											 get_namespace_name(RelationGetNamespace(rel->rel)),
+											 RelationGetRelationName(rel->rel));
 
 	/*
 	 * We try to provide a lot of information about conflicting tuples because
@@ -795,13 +792,13 @@ spock_report_conflict(SpockConflictType conflict_type,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("existing local tuple {%s} xid=%u,origin=%d,timestamp=%s; remote tuple {%s}%s in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
 							   localtup.data, local_tuple_xid,
-							   found_local_origin ? (int)local_tuple_origin : -1,
+							   found_local_origin ? (int) local_tuple_origin : -1,
 							   local_tup_ts_str,
-							   remotetup.data, has_before_triggers ? "*":"",
+							   remotetup.data, has_before_triggers ? "*" : "",
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32)(replorigin_session_origin_lsn<<32),
-							   (uint32)replorigin_session_origin_lsn)));
+							   (uint32) (replorigin_session_origin_lsn << 32),
+							   (uint32) replorigin_session_origin_lsn)));
 			break;
 		case CONFLICT_UPDATE_DELETE:
 		case CONFLICT_DELETE_DELETE:
@@ -812,11 +809,11 @@ spock_report_conflict(SpockConflictType conflict_type,
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("remote tuple {%s}%s in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
-							   remotetup.data, has_before_triggers ? "*":"",
+							   remotetup.data, has_before_triggers ? "*" : "",
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32)(replorigin_session_origin_lsn<<32),
-							   (uint32)replorigin_session_origin_lsn)));
+							   (uint32) (replorigin_session_origin_lsn << 32),
+							   (uint32) replorigin_session_origin_lsn)));
 			break;
 	}
 }
@@ -845,27 +842,27 @@ spock_report_conflict(SpockConflictType conflict_type,
  */
 void
 spock_conflict_log_table(SpockConflictType conflict_type,
-						  SpockRelation *rel,
-						  HeapTuple localtuple,
-						  SpockTupleData *oldkey,
-						  HeapTuple remotetuple,
-						  HeapTuple applytuple,
-						  SpockConflictResolution resolution,
-						  TransactionId local_tuple_xid,
-						  bool found_local_origin,
-						  RepOriginId local_tuple_origin,
-						  TimestampTz local_tuple_commit_ts,
-						  Oid conflict_idx_oid,
-						  bool has_before_triggers)
+						 SpockRelation *rel,
+						 HeapTuple localtuple,
+						 SpockTupleData *oldkey,
+						 HeapTuple remotetuple,
+						 HeapTuple applytuple,
+						 SpockConflictResolution resolution,
+						 TransactionId local_tuple_xid,
+						 bool found_local_origin,
+						 RepOriginId local_tuple_origin,
+						 TimestampTz local_tuple_commit_ts,
+						 Oid conflict_idx_oid,
+						 bool has_before_triggers)
 {
 	HeapTuple	tup;
-	Datum	values[SPOCK_LOG_TABLE_COLS];
-	bool	nulls[SPOCK_LOG_TABLE_COLS];
-	TupleDesc desc = RelationGetDescr(rel->rel);
+	Datum		values[SPOCK_LOG_TABLE_COLS];
+	bool		nulls[SPOCK_LOG_TABLE_COLS];
+	TupleDesc	desc = RelationGetDescr(rel->rel);
 	Relation	logrel;
 	const char *qualrelname;
 	SpockLocalNode *localnode;
-	SpockNode	*node;
+	SpockNode  *node;
 	NameData	node_name;
 
 	/* See the GUC settings for spock.spock_save_resolutions is enabled. */
@@ -890,14 +887,14 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 
 	/* relname */
 	qualrelname = quote_qualified_identifier(
-		get_namespace_name(RelationGetNamespace(rel->rel)),
-		RelationGetRelationName(rel->rel));
+											 get_namespace_name(RelationGetNamespace(rel->rel)),
+											 RelationGetRelationName(rel->rel));
 	values[3] = CStringGetTextDatum(qualrelname);
 
 	/* index name */
 	if (OidIsValid(conflict_idx_oid))
 	{
-		char *idxname;
+		char	   *idxname;
 
 		idxname = get_rel_name(conflict_idx_oid);
 		values[4] = CStringGetTextDatum(idxname);
@@ -910,12 +907,12 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 	/* conflict_resolution */
 	values[6] = CStringGetTextDatum(conflict_resolution_to_string(resolution));
 	/* local_origin */
-	values[7] = Int32GetDatum(found_local_origin? (int)local_tuple_origin : -1);
+	values[7] = Int32GetDatum(found_local_origin ? (int) local_tuple_origin : -1);
 
 	/* local_tuple */
 	if (localtuple != NULL)
 	{
-		Datum datum;
+		Datum		datum;
 
 		datum = heap_copy_tuple_as_datum(localtuple, desc);
 		values[8] = spock_conflict_row_to_json(datum, false, &nulls[7]);
@@ -932,12 +929,12 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 	/* local_timestamp */
 	values[10] = TimestampTzGetDatum(local_tuple_commit_ts);
 	/* remote_origin */
-	values[11] = Int32GetDatum((int)replorigin_session_origin);
+	values[11] = Int32GetDatum((int) replorigin_session_origin);
 
 	/* remote_tuple */
 	if (remotetuple != NULL)
 	{
-		Datum datum;
+		Datum		datum;
 
 		datum = heap_copy_tuple_as_datum(remotetuple, desc);
 		values[12] = spock_conflict_row_to_json(datum, false, &nulls[11]);
@@ -987,11 +984,11 @@ get_conflict_log_table_oid(void)
 Oid
 get_conflict_log_seq(void)
 {
-	static Oid seqoid = InvalidOid;
+	static Oid	seqoid = InvalidOid;
 
 	if (seqoid == InvalidOid)
 	{
-		Oid	reloid;
+		Oid			reloid;
 
 		reloid = get_conflict_log_table_oid();
 		seqoid = getIdentitySequence(reloid, 0, false);
@@ -1003,12 +1000,12 @@ get_conflict_log_seq(void)
 /* Checks validity of spock_conflict_resolver GUC */
 bool
 spock_conflict_resolver_check_hook(int *newval, void **extra,
-									   GucSource source)
+								   GucSource source)
 {
 	/*
-	 * Only allow SPOCK_RESOLVE_APPLY_REMOTE when track_commit_timestamp
-	 * is off, because there is no way to know where the local tuple
-	 * originated from.
+	 * Only allow SPOCK_RESOLVE_APPLY_REMOTE when track_commit_timestamp is
+	 * off, because there is no way to know where the local tuple originated
+	 * from.
 	 */
 	if (!track_commit_timestamp &&
 		*newval != SPOCK_RESOLVE_APPLY_REMOTE &&
@@ -1044,7 +1041,8 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 		Oid			typoutput;	/* output function */
 		bool		typisvarlena;
 		Datum		origval;	/* possibly toasted Datum */
-		Datum		val	= PointerGetDatum(NULL); /* definitely detoasted Datum */
+		Datum		val = PointerGetDatum(NULL);	/* definitely detoasted
+													 * Datum */
 		char	   *outputstr = NULL;
 		bool		isnull;		/* column is null? */
 
@@ -1106,14 +1104,14 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 			outputstr = OidOutputFunctionCall(typoutput, val);
 
 		/*
-		 * Abbreviate the Datum if it's too long. This may make it syntatically
-		 * invalid, but it's not like we're writing out a valid ROW(...) as it
-		 * is.
+		 * Abbreviate the Datum if it's too long. This may make it
+		 * syntatically invalid, but it's not like we're writing out a valid
+		 * ROW(...) as it is.
 		 */
 		if (strlen(outputstr) > MAX_CONFLICT_LOG_ATTR_LEN)
 		{
 			/* The null written at the end of strcpy will truncate the string */
-			strcpy(&outputstr[MAX_CONFLICT_LOG_ATTR_LEN-5], "...");
+			strcpy(&outputstr[MAX_CONFLICT_LOG_ATTR_LEN - 5], "...");
 		}
 
 		appendStringInfoChar(s, ':');
@@ -1127,7 +1125,8 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 static Datum
 spock_conflict_row_to_json(Datum row, bool row_isnull, bool *ret_isnull)
 {
-	Datum row_json;
+	Datum		row_json;
+
 	if (row_isnull)
 	{
 		row_json = (Datum) 0;
@@ -1136,11 +1135,11 @@ spock_conflict_row_to_json(Datum row, bool row_isnull, bool *ret_isnull)
 	else
 	{
 		/*
-		 * We don't handle errors with a PG_TRY / PG_CATCH here, because that's
-		 * not sufficient to make the transaction usable given that we might
-		 * fail in user defined casts, etc. We'd need a full savepoint, which
-		 * is too expensive. So if this fails we'll just propagate the exception
-		 * and abort the apply transaction.
+		 * We don't handle errors with a PG_TRY / PG_CATCH here, because
+		 * that's not sufficient to make the transaction usable given that we
+		 * might fail in user defined casts, etc. We'd need a full savepoint,
+		 * which is too expensive. So if this fails we'll just propagate the
+		 * exception and abort the apply transaction.
 		 *
 		 * It shouldn't fail unless something's pretty broken anyway.
 		 */

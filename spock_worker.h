@@ -135,7 +135,7 @@ typedef struct spockStatsEntry
 } spockStatsEntry;
 
 /* A sample associating a WAL location with the time it was written. */
-typedef struct
+typedef struct WalTimeSample
 {
 	XLogRecPtr		lsn;
 	TimestampTz		time;
