@@ -1,5 +1,5 @@
 #!/bin/bash
-set -ae
+set -e
 
 cd /home/pgedge
 . /home/pgedge/pgedge/pg16/pg16.env
@@ -18,6 +18,8 @@ cd ~/spockbench
 sudo python3 setup.py install
 
 cd ~/pgedge
+sed -i '/log_min_messages/s/^#//g' data/pg16/postgresql.conf
+sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg16/postgresql.conf
 ./pgedge restart
 
 while ! pg_isready -h /tmp; do
@@ -84,4 +86,5 @@ psql -U admin -h /tmp -d demo -c "alter table pgbench_tellers alter column tbala
 
 psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_replication_set', '{public}');"
 
-cd /home/pgedge && ./run-tests.sh $peer_names
+spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} -s 10 -T 600 -R 3000 -P 5 -j 16 -c 50 -n --spock-tx-mix=550,225,225 -U admin demo
+spockbench-check -U admin demo > /home/pgedge/spock-private/spockbench-$HOSTNAME.out
