@@ -83,6 +83,7 @@
 #include "spock_apply.h"
 #include "spock_apply_heap.h"
 #include "spock_apply_spi.h"
+#include "spock_exception_handler.h"
 #include "spock.h"
 
 
@@ -100,7 +101,7 @@ static List *SyncingTables = NIL;
 
 SpockApplyWorker *MyApplyWorker = NULL;
 SpockSubscription *MySubscription = NULL;
-int			my_error_log_index = -1;
+int			my_exception_log_index = -1;
 
 static PGconn *applyconn = NULL;
 
@@ -322,8 +323,8 @@ end_replication_step(void)
 static void
 handle_begin(StringInfo s)
 {
-	SpockErrorLog *error_log;
-	SpockErrorLog *new_elog_entry;
+	SpockExceptionLog *exception_log;
+	SpockExceptionLog *new_elog_entry;
 	XLogRecPtr	commit_lsn;
 	TimestampTz commit_time;
 	bool		slot_found = false;
@@ -340,7 +341,7 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
 
-	elog(LOG, "SpockErrorLog: Error log behaviour is set to %d", error_log_behaviour);
+	elog(LOG, "SpockErrorLog: Error log behaviour is set to %d", exception_log_behaviour);
 
 	/*
 	 * We either create a new shared memory struct in the error log for
@@ -366,12 +367,12 @@ handle_begin(StringInfo s)
 		first_begin_at_startup = false;
 
 		elog(DEBUG1, "SpockErrorLog: First time encountering a BEGIN command. \
-		Checking the error_log_ptr for the commit_lsn");
+		Checking the exception_log_ptr for the commit_lsn");
 
 		for (int i = 0; i <= SpockCtx->total_workers; i++)
 		{
-			error_log = &error_log_ptr[i];
-			slot_name = NameStr(error_log->slot_name);
+			exception_log = &exception_log_ptr[i];
+			slot_name = NameStr(exception_log->slot_name);
 
 			if (strncmp(slot_name, MySubscription->name, sub_name_len) == 0)
 			{
@@ -380,13 +381,13 @@ handle_begin(StringInfo s)
 				 */
 				slot_found = true;
 				elog(DEBUG1, "SpockErrorLog: Found the slot_name in the \
-				error_log_ptr. Checking for commit_lsn (%lu).", commit_lsn);
-				my_error_log_index = i;
+				exception_log_ptr. Checking for commit_lsn (%lu).", commit_lsn);
+				my_exception_log_index = i;
 
-				if (error_log->commit_lsn == commit_lsn)
+				if (exception_log->commit_lsn == commit_lsn)
 				{
 					elog(DEBUG1, "SpockErrorLog: Found the commit_lsn in the \
-					error_log_ptr. Using the try block now.");
+					exception_log_ptr. Using the try block now.");
 					MyApplyWorker->use_try_block = true;
 				}
 
@@ -419,10 +420,10 @@ handle_begin(StringInfo s)
 
 			if (free_slot_index < 0)
 				elog(ERROR, "SpockErrorLog: No free slot found in the \
-				error_log_ptr");
+				exception_log_ptr");
 
 			/* TODO: What happens if a subscription is dropped? Memory leak */
-			new_elog_entry = &error_log_ptr[free_slot_index];
+			new_elog_entry = &exception_log_ptr[free_slot_index];
 			namestrcpy(&new_elog_entry->slot_name, MySubscription->name);
 
 			/*
@@ -432,18 +433,18 @@ handle_begin(StringInfo s)
 			new_elog_entry->commit_lsn = commit_lsn;
 			new_elog_entry->local_tuple = NULL;
 
-			my_error_log_index = free_slot_index;
-			elog(DEBUG1, "SpockErrorLog: Created a new error_log_ptr for the slot %s \
+			my_exception_log_index = free_slot_index;
+			elog(DEBUG1, "SpockErrorLog: Created a new exception_log_ptr for the slot %s \
 			with commit_lsn %lu at free_slot_index = (%d)",
 				 MySubscription->name, commit_lsn, free_slot_index);
 		}
 	}
 
-	/* FIXME: Is it possible for my_error_log_index to be -1 here? */
+	/* FIXME: Is it possible for my_exception_log_index to be -1 here? */
 	elog(DEBUG1, "SpockErrorLog: Updating the commit_lsn in the \
-	error_log_ptr to (%lu)", commit_lsn);
-	error_log = &error_log_ptr[my_error_log_index];
-	error_log->commit_lsn = commit_lsn;
+	exception_log_ptr to (%lu)", commit_lsn);
+	exception_log = &exception_log_ptr[my_exception_log_index];
+	exception_log->commit_lsn = commit_lsn;
 
 	VALGRIND_PRINTF("SPOCK_APPLY: begin %u\n", remote_xid);
 
@@ -793,7 +794,7 @@ handle_insert(StringInfo s)
 
 		if (!failed)
 		{
-			if (error_log_behaviour == TRANSDISCARD)
+			if (exception_log_behaviour == TRANSDISCARD)
 			{
 				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. \
 				Rolling back and releasing the current subtransaction for \
@@ -815,9 +816,9 @@ handle_insert(StringInfo s)
 			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for \
 			xid %u", remote_xid);
 
-			if (error_log_behaviour > IGNORE)
+			if (exception_log_behaviour > IGNORE)
 			{
-				add_entry_to_error_log(remote_origin_id,
+				add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
 									   remote_xid, rel, localtup, oldtup,
 									   &newtup, action_name, edata->message);
@@ -960,7 +961,7 @@ handle_update(StringInfo s)
 
 		if (!failed)
 		{
-			if (error_log_behaviour == TRANSDISCARD)
+			if (exception_log_behaviour == TRANSDISCARD)
 			{
 				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. \
 				Rolling back and releasing the current subtransaction for \
@@ -981,10 +982,10 @@ handle_update(StringInfo s)
 			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for \
 			xid %u", remote_xid);
 
-			if (error_log_behaviour > IGNORE)
+			if (exception_log_behaviour > IGNORE)
 			{
-				localtup = error_log_ptr[my_error_log_index].local_tuple;
-				add_entry_to_error_log(remote_origin_id,
+				localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+				add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
 									   remote_xid, rel, localtup,
 									   hasoldtup ? &oldtup : NULL, &newtup,
@@ -1062,7 +1063,7 @@ handle_delete(StringInfo s)
 
 		if (!failed)
 		{
-			if (error_log_behaviour == TRANSDISCARD)
+			if (exception_log_behaviour == TRANSDISCARD)
 			{
 				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. \
 				Rolling back and releasing the current subtransaction for \
@@ -1083,10 +1084,10 @@ handle_delete(StringInfo s)
 			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for \
 			xid %u", remote_xid);
 
-			if (error_log_behaviour > IGNORE)
+			if (exception_log_behaviour > IGNORE)
 			{
-				localtup = error_log_ptr[my_error_log_index].local_tuple;
-				add_entry_to_error_log(remote_origin_id,
+				localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+				add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
 									   remote_xid, rel, localtup,
 									   &oldtup, newtup, 

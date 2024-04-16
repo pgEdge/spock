@@ -74,6 +74,7 @@
 #include "spock_worker.h"
 #include "spock_apply_heap.h"
 #include "spock_apply.h"
+#include "spock_exception_handler.h"
 
 typedef struct ApplyExecutionData
 {
@@ -759,13 +760,13 @@ void spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		HeapTuple applytuple;
 		HeapTuple local_tuple;
 		SpockConflictResolution resolution;
-		SpockErrorLog *error_log = &error_log_ptr[my_error_log_index];
+		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
 		/* Fetch the contents of the local slot and 
 		 * store it in the error log
 		 */
 		local_tuple = ExecFetchSlotHeapTuple(localslot, true, NULL);
-		error_log->local_tuple = local_tuple;
+		exception_log->local_tuple = local_tuple;
 
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));

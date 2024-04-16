@@ -56,6 +56,7 @@
 #include "spock_conflict.h"
 #include "spock_worker.h"
 #include "spock_output_plugin.h"
+#include "spock_exception_handler.h"
 #include "spock.h"
 
 PG_MODULE_MAGIC;
@@ -89,7 +90,7 @@ static const struct config_enum_entry server_message_level_options[] = {
 	{NULL, 0, false}
 };
 
-static const struct config_enum_entry error_log_behaviour_options[] = {
+static const struct config_enum_entry exception_log_behaviour_options[] = {
 	{"ignore", IGNORE, false},
 	{"discard", DISCARD, false},
 	{"transdiscard", TRANSDISCARD, false}
@@ -799,12 +800,12 @@ _PG_init(void)
 							 PGC_SUSET, 0,
 							 NULL, NULL, NULL);
 
-	DefineCustomEnumVariable("spock.error_log_behaviour",
+	DefineCustomEnumVariable("spock.exception_log_behaviour",
 							 gettext_noop("Sets the default behaviour when an apply worker encounters an error."),
 							 NULL,
-							 &error_log_behaviour,
+							 &exception_log_behaviour,
 							 TRANSDISCARD,
-							 error_log_behaviour_options,
+							 exception_log_behaviour_options,
 							 PGC_SUSET, 0,
 							 NULL, NULL, NULL);
 

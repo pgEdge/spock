@@ -65,8 +65,6 @@
 #define ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple) \
 	ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple, NULL)
 
-#define makeDefElem(name, arg) makeDefElem(name, arg, -1)
-
 #define SPKstandard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, sentToRemote, qc) \
 	standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
 
