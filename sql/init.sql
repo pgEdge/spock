@@ -55,7 +55,7 @@ BEGIN
 	IF version() ~ 'Postgres-XL' THEN
 		CREATE EXTENSION IF NOT EXISTS spock;
 	ELSE
-		CREATE EXTENSION IF NOT EXISTS spock VERSION '3.1';
+		CREATE EXTENSION IF NOT EXISTS spock VERSION '3.2';
 	END IF;
 END;
 $$;
@@ -84,6 +84,7 @@ SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := true,
+	synchronize_data := true,
 	forward_origins := '{}');
 /*
  * Remove the function we added in preseed because otherwise the restore of

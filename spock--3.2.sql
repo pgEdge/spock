@@ -255,7 +255,10 @@ CREATE TABLE spock.queue (
     message json NOT NULL
 );
 
-CREATE FUNCTION spock.replicate_ddl(command text, replication_sets text[] DEFAULT '{ddl_sql}')
+CREATE FUNCTION spock.replicate_ddl(command text,
+									replication_sets text[] DEFAULT '{ddl_sql}',
+									search_path text DEFAULT '',
+									role text DEFAULT CURRENT_USER)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
 
 CREATE FUNCTION spock.replicate_ddl(command text[], replication_sets text[] DEFAULT '{ddl_sql}')

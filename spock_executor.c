@@ -217,6 +217,137 @@ spock_finish_truncate(void)
 	spock_truncated_tables = NIL;
 }
 
+/*
+ * remove_table_from_repsets
+ *		removes given table from the other replication sets.
+ */
+static void
+remove_table_from_repsets(Oid nodeid, Oid reloid, bool only_for_update)
+{
+	ListCell *lc;
+	List *repsets;
+
+	repsets = get_table_replication_sets(nodeid, reloid);
+	foreach(lc, repsets)
+	{
+		SpockRepSet	   *rs = (SpockRepSet *) lfirst(lc);
+
+		if (only_for_update)
+		{
+			if (rs->replicate_update || rs->replicate_delete)
+				replication_set_remove_table(rs->id, reloid, true);
+		}
+		else
+			replication_set_remove_table(rs->id, reloid, true);
+	}
+}
+
+/*
+ * add_ddl_to_repset
+ *		Check if the DDL statement can be added to the replication set. (For
+ * now only tables are added). The function also checks whether the table has
+ * needed indexes to be added to replication set. If not, they are ignored.
+ */
+static void
+add_ddl_to_repset(Node *parsetree)
+{
+	Relation	targetrel;
+	SpockRepSet *repset;
+	SpockLocalNode *node;
+	Oid		reloid = InvalidOid;
+	RangeVar   *relation = NULL;
+
+	if (nodeTag(parsetree) == T_AlterTableStmt)
+		relation = castNode(AlterTableStmt, parsetree)->relation;
+	else if (nodeTag(parsetree) == T_CreateStmt)
+		relation = castNode(CreateStmt, parsetree)->relation;
+	else
+	{
+		/* only tables are added to repset. */
+		return;
+	}
+
+	node = get_local_node(false, true);
+	if (!node)
+		return;
+
+	targetrel = table_openrv(relation, AccessShareLock);
+	reloid = RelationGetRelid(targetrel);
+
+	/* UNLOGGED and TEMP relations cannot be part of replication set. */
+	if (!RelationNeedsWAL(targetrel))
+	{
+		/* remove table from the repsets. */
+		remove_table_from_repsets(node->node->id, reloid, false);
+
+		table_close(targetrel, NoLock);
+		return;
+	}
+
+	if (targetrel->rd_indexvalid == 0)
+		RelationGetIndexList(targetrel);
+
+	/* choose the 'default' repset, if table has PK or replica identity defined. */
+	if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
+	{
+		repset = get_replication_set_by_name(node->node->id, DEFAULT_REPSET_NAME, false);
+
+		/*
+		 * remove table from previous repsets, it will be added to 'default'
+		 * down below.
+		 */
+		remove_table_from_repsets(node->node->id, reloid, false);
+	}
+	else
+	{
+		repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
+		/*
+		 * no primary key defined. let's see if the table is part of any other
+		 * repset or not?
+		 */
+		remove_table_from_repsets(node->node->id, reloid, true);
+	}
+
+	if (!OidIsValid(targetrel->rd_replidindex) &&
+		(repset->replicate_update || repset->replicate_delete))
+	{
+		table_close(targetrel, NoLock);
+		return;
+	}
+
+	/* Add if not already present. */
+	if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
+	{
+		replication_set_add_table(repset->id, reloid, NIL, NULL);
+
+		/*
+		* FIXME: should a trucate request be sent before sync? perhaps based on a
+		* configuration option?
+		*/
+
+		/* synchronize table */
+		{
+			StringInfoData		json;
+
+			/* It's easier to construct json manually than via Jsonb API... */
+			initStringInfo(&json);
+			appendStringInfo(&json, "{\"schema_name\": ");
+			escape_json(&json, get_namespace_name(RelationGetNamespace(targetrel)));
+			appendStringInfo(&json, ",\"table_name\": ");
+			escape_json(&json, RelationGetRelationName(targetrel));
+			appendStringInfo(&json, "}");
+			/* Queue the synchronize request for replication. */
+			queue_message(list_make1(repset->name), GetUserId(),
+						QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
+		}
+
+		elog(LOG, "table '%s' was added to '%s' replication set.",
+			 relation->relname, repset->name);
+	}
+
+	table_close(targetrel, NoLock);
+}
+
 static void
 spock_ProcessUtility(
 						 PlannedStmt *pstmt,
@@ -271,8 +402,25 @@ spock_ProcessUtility(
 
 	if (nodeTag(parsetree) == T_TruncateStmt)
 		spock_finish_truncate();
-}
 
+	/*
+	 * we don't want to replicate if it's coming from spock.queue. But we do
+	 * add tables to repset whenever there is one.
+	 */
+	if (in_spock_replicate_ddl_command)
+	{
+		/*
+		 * Do Nothing. Hook was called as a result of spock.replicate_ddl().
+		 * The action has already been taken, so no need for the duplication.
+		 */
+	}
+	else if (GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
+			 spock_enable_ddl_replication &&
+			 spock_include_ddl_repset)
+	{
+		add_ddl_to_repset(parsetree);
+	}
+}
 
 /*
  * Handle object drop.

@@ -55,6 +55,7 @@ SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription1',
     provider_dsn := (SELECT provider1_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := false,
+        synchronize_data := true,
 	forward_origins := '{}');
 
 BEGIN;

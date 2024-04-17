@@ -49,7 +49,7 @@ BEGIN
 	IF version() ~ 'Postgres-XL' THEN
 		CREATE EXTENSION IF NOT EXISTS spock;
 	ELSE
-		CREATE EXTENSION IF NOT EXISTS spock VERSION '3.1';
+		CREATE EXTENSION IF NOT EXISTS spock VERSION '3.2';
 	END IF;
 END;
 $$;
@@ -58,7 +58,7 @@ ALTER EXTENSION spock UPDATE;
                List of installed extensions
  Name  | Version | Schema |          Description           
 -------+---------+--------+--------------------------------
- spock | 3.1     | spock  | PostgreSQL Logical Replication
+ spock | 3.2     | spock  | PostgreSQL Logical Replication
 (1 row)
 
 SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super');
@@ -87,6 +87,7 @@ SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := true,
+	synchronize_data := true,
 	forward_origins := '{}');
  sub_create 
 ------------
