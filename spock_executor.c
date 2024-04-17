@@ -176,6 +176,10 @@ add_ddl_to_repset(Node *parsetree)
 	Oid		reloid = InvalidOid;
 	RangeVar   *relation = NULL;
 
+	/* no need to proceed if spock_include_ddl_repset is off */
+	if (!spock_include_ddl_repset)
+		return;
+
 	if (nodeTag(parsetree) == T_AlterTableStmt)
 	{
 		if (castNode(AlterTableStmt, parsetree)->objtype == OBJECT_TABLE)
@@ -287,6 +291,51 @@ add_ddl_to_repset(Node *parsetree)
 	}
 }
 
+static bool
+autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
+					NodeTag stmt)
+{
+	/* Allow all toplevel statements. */
+	if (context == PROCESS_UTILITY_TOPLEVEL)
+		return true;
+
+	/*
+	 * Indicates a portion of a query. These statements should be handled by the
+	 * corresponding top-level query.
+	 */
+	if (context == PROCESS_UTILITY_SUBCOMMAND)
+		return false;
+
+	/*
+	 * When the ProcessUtility hook is invoked due to a function call (enabled
+	 * by allow_ddl_from_functions) or a query from the queue (with
+	 * in_spock_queue_ddl_command set to true), the context is rarely
+	 * PROCESS_UTILITY_TOPLEVEL. Handling the context when it is
+	 * PROCESS_UTILITY_TOPLEVEL is straightforward. In other cases, our
+	 * objective is to filter out CREATE|DROP EXTENSION and CREATE SCHEMA
+	 * statements, which execute scripts or subcommands lacking top-level
+	 * status. Therefore, we need to filter out these internal commands.
+	 *
+	 * The purpose of this filtering is to include only the main statement (or
+	 * query provided by the client) in autoddl. To achieve this, we store the
+	 * nodetag of these statements in 'toplevel_stmt' and verify if the
+	 * current statement matches it. If not, it indicates the invocation of
+	 * subcommands, which we disregard.
+	 *
+	 * All other statements are allowed without filtering.
+	 */
+	if (context != PROCESS_UTILITY_TOPLEVEL &&
+		(allow_ddl_from_functions || in_spock_queue_ddl_command))
+	{
+		if (toplevel_stmt != T_Invalid)
+			return toplevel_stmt == stmt;
+
+		return true;
+	}
+
+	return false;
+}
+
 static void
 spock_ProcessUtility(
 						 PlannedStmt *pstmt,
@@ -304,7 +353,7 @@ spock_ProcessUtility(
 						 QueryCompletion *qc)
 {
 	Node	   *parsetree = pstmt->utilityStmt;
-	static bool skip_ext_objs = false;
+	static NodeTag toplevel_stmt = T_Invalid;
 #ifndef XCP
 	#define		sentToRemote NULL
 #endif
@@ -331,9 +380,22 @@ spock_ProcessUtility(
 			spock_lastDropBehavior = ((DropStmt *)parsetree)->behavior;
 	}
 
-	if (context == PROCESS_UTILITY_TOPLEVEL &&
-		nodeTag(parsetree) == T_CreateExtensionStmt)
-		skip_ext_objs = true;
+	/*
+	 * When the context is not PROCESS_UTILITY_TOPLEVEL, it becomes
+	 * challenging to differentiate between scripted commands and subcommands
+	 * generated as a result of CREATE|DROP EXTENSION and CREATE SCHEMA
+	 * statements. In autoddl, we only include statements that directly
+	 * originate from the client. To accomplish this, we store the nodetag of
+	 * the top-level statements for later comparison in the
+	 * autoddl_can_proceed() function. If the tags do not match, it indicates
+	 * that the statement did not originate from the client but rather is a
+	 * subcommand generated internally.
+	 */
+	if (nodeTag(parsetree) == T_CreateExtensionStmt ||
+		nodeTag(parsetree) == T_CreateSchemaStmt ||
+		(nodeTag(parsetree) == T_DropStmt &&
+		 castNode(DropStmt, parsetree)->removeType == OBJECT_EXTENSION))
+		toplevel_stmt = nodeTag(parsetree);
 
 	/* There's no reason we should be in a long lived context here */
 	Assert(CurrentMemoryContext != TopMemoryContext
@@ -357,8 +419,12 @@ spock_ProcessUtility(
 	if (in_spock_queue_ddl_command || in_spock_replicate_ddl_command)
 	{
 		/* if DDL is from spoc.queue, add it to the repset. */
-		if (in_spock_queue_ddl_command)
+		if (in_spock_queue_ddl_command &&
+			autoddl_can_proceed(context, toplevel_stmt, nodeTag(parsetree)))
+		{
+			toplevel_stmt = T_Invalid;
 			add_ddl_to_repset(parsetree);
+		}
 
 		/*
 		 * Do Nothing else. Hook was called as a result of spock.replicate_ddl().
@@ -369,22 +435,13 @@ spock_ProcessUtility(
 			 spock_enable_ddl_replication &&
 			 get_local_node(false, true))
 	{
-		/*
-		 * Normally only allow the top level commands to be replicate. However,
-		 * we also want to allow DDL from within a function/procedure to replicate
-		 * based on 'allow_ddl_from_functions'.
-		 * One caveat though, don't allow DDLs within the extension scripts.
-		 */
-		if (context == PROCESS_UTILITY_TOPLEVEL ||
-			(context == PROCESS_UTILITY_QUERY &&
-			 allow_ddl_from_functions &&
-			 !skip_ext_objs))
+		if (autoddl_can_proceed(context, toplevel_stmt, nodeTag(parsetree)))
 		{
 			const char *curr_qry;
 			int			loc = pstmt->stmt_location;
 			int			len = pstmt->stmt_len;
 
-			skip_ext_objs = false;
+			toplevel_stmt = T_Invalid;
 			queryString = CleanQuerytext(queryString, &loc, &len);
 			curr_qry = pnstrdup(queryString, len);
 
@@ -393,8 +450,7 @@ spock_ProcessUtility(
 									 GetUserNameFromId(GetUserId(), false),
 									 parsetree);
 
-			if (spock_include_ddl_repset)
-				add_ddl_to_repset(parsetree);
+			add_ddl_to_repset(parsetree);
 		}
 	}
 }
