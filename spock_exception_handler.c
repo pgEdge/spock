@@ -39,6 +39,7 @@
 #include "spock_conflict.h"
 #include "spock_relcache.h"
 #include "spock_exception_handler.h"
+#include "spock_jsonb_utils.h"
 
 #define Natts_exception_table 11
 #define Anum_exception_log_node_id 1
@@ -65,22 +66,19 @@ static void spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupl
  */
 void
 add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_xid,
-					   SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup,
-					   SpockTupleData *remotenewtup, char *action, char *error_message)
+						   SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup,
+						   SpockTupleData *remotenewtup, char *action, char *error_message)
 {
 	RangeVar   *rv;
 	Relation	rel;
 	TupleDesc	tupDesc;
-	TupleDesc	taregtTupDesc;
+	TupleDesc	targetTupDesc;
 	HeapTuple	tup;
 	Datum		values[Natts_exception_table];
 	bool		nulls[Natts_exception_table];
-	StringInfoData localtup_str;
-	StringInfoData remote_oldtup_str;
-	StringInfoData remote_newtup_str;
-	char	   *local_tup_str = NULL;
-	char	   *old_tup_str = NULL;
-	char	   *new_tup_str = NULL;
+	Jsonb	   *localtup_json;
+	Jsonb	   *remoteoldtup_json;
+	Jsonb	   *remotenewtup_json;
 	char	   *schema = targetrel->nspname;
 	char	   *table = targetrel->relname;
 
@@ -88,7 +86,7 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_EXCEPTION_LOG, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
-	taregtTupDesc = RelationGetDescr(targetrel->rel);
+	targetTupDesc = RelationGetDescr(targetrel->rel);
 
 	/*
 	 * FIXME: This decision will change and grow more complex as other columns
@@ -97,23 +95,19 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	if (localtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: localtup is not NULL.");
-		initStringInfo(&localtup_str);
-		tuple_to_stringinfo(&localtup_str, taregtTupDesc, localtup);
-		local_tup_str = localtup_str.data;
+		localtup_json = spock_tuple_data_to_jsonb(localtup, targetTupDesc);
 	}
 	if (remoteoldtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: remoteoldtup is not NULL.");
-		initStringInfo(&remote_oldtup_str);
-		spock_tuple_to_stringinfo(&remote_oldtup_str, taregtTupDesc, remoteoldtup);
-		old_tup_str = remote_oldtup_str.data;
+		remoteoldtup_json = spock_tuple_data_to_jsonb(remoteoldtup, targetTupDesc);
 	}
 	if (remotenewtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: remotenewtup is not NULL.");
-		initStringInfo(&remote_newtup_str);
-		spock_tuple_to_stringinfo(&remote_newtup_str, taregtTupDesc, remotenewtup);
-		new_tup_str = remote_newtup_str.data;
+		remotenewtup_json = spock_tuple_data_to_jsonb(remotenewtup, targetTupDesc);
+		/* Convert local_jsonb to string and print it */
+		elog(DEBUG1, "SpockErrorLog: local_jsonb is (%s)", JsonbToCString(NULL, &remotenewtup_json->root, VARSIZE(remotenewtup_json)));
 	}
 
 	/* Form a tuple. */
@@ -127,14 +121,14 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	values[Anum_exception_log_table - 1] = CStringGetTextDatum(table);
 
 	if (localtup != NULL)
-		values[Anum_exception_log_local_tuple - 1] = CStringGetTextDatum(local_tup_str);
+		values[Anum_exception_log_local_tuple - 1] = PointerGetDatum(localtup_json);
 	else
 	{
 		values[Anum_exception_log_local_tuple - 1] = (Datum) 0;
 		nulls[Anum_exception_log_local_tuple - 1] = true;
 	}
 	if (remoteoldtup != NULL)
-		values[Anum_exception_log_remote_old_tuple - 1] = CStringGetTextDatum(old_tup_str);
+		values[Anum_exception_log_remote_old_tuple - 1] = PointerGetDatum(remoteoldtup_json);
 	else
 	{
 		values[Anum_exception_log_remote_old_tuple - 1] = (Datum) 0;
@@ -142,7 +136,7 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	}
 
 	if (remotenewtup != NULL)
-		values[Anum_exception_log_remote_new_tuple - 1] = CStringGetTextDatum(new_tup_str);
+		values[Anum_exception_log_remote_new_tuple - 1] = PointerGetDatum(remotenewtup_json);
 	else
 	{
 		values[Anum_exception_log_remote_new_tuple - 1] = (Datum) 0;
@@ -166,6 +160,7 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 
 	CommandCounterIncrement();
 }
+
 
 /*
  * Convert a SpockTupleData to a string.

@@ -41,9 +41,9 @@
 
 typedef struct SpockExceptionLog
 {
-	NameData		slot_name;
-	XLogRecPtr		commit_lsn;
-	HeapTuple		local_tuple;
+	NameData	slot_name;
+	XLogRecPtr	commit_lsn;
+	HeapTuple	local_tuple;
 } SpockExceptionLog;
 
 typedef enum SpockExceptionLogBehaviour
@@ -51,12 +51,12 @@ typedef enum SpockExceptionLogBehaviour
 	IGNORE,
 	DISCARD,
 	TRANSDISCARD
-} SpockExceptionLogBehaviour;
+}			SpockExceptionLogBehaviour;
 
-extern SpockExceptionLog		*exception_log_ptr;
-extern int					exception_log_behaviour;
+extern SpockExceptionLog *exception_log_ptr;
+extern int	exception_log_behaviour;
 
 extern void
-add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_xid,
-					   SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup,
-					   SpockTupleData *remotenewtup, char *action, char *error_message);
+			add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_xid,
+									   SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup,
+									   SpockTupleData *remotenewtup, char *action, char *error_message);

@@ -9,16 +9,17 @@ MODULES = spock_output
 DATA = spock--3.2.sql spock--3.3.sql spock--4.0.sql \
 	   spock--3.2--3.3.sql
 
-OBJS = spock_exception_handler.o spock_apply.o spock_conflict.o spock_manager.o \
-	   spock.o spock_node.o spock_relcache.o \
-	   spock_repset.o spock_rpc.o spock_functions.o \
-	   spock_queue.o spock_fe.o spock_worker.o \
-	   spock_sync.o spock_sequences.o spock_executor.o \
-	   spock_dependency.o spock_apply_heap.o spock_apply_spi.o \
-	   spock_output_config.o spock_output_plugin.o \
-	   spock_output_proto.o spock_proto_json.o \
-	   spock_proto_native.o spock_monitoring.o spock_failover_slots.o \
-	   spock_readonly.o 
+OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
+			 	spock_conflict.o spock_manager.o \
+	   		spock.o spock_node.o spock_relcache.o \
+				spock_repset.o spock_rpc.o spock_functions.o \
+				spock_queue.o spock_fe.o spock_worker.o \
+				spock_sync.o spock_sequences.o spock_executor.o \
+				spock_dependency.o spock_apply_heap.o spock_apply_spi.o \
+				spock_output_config.o spock_output_plugin.o \
+				spock_output_proto.o spock_proto_json.o \
+				spock_proto_native.o spock_monitoring.o spock_failover_slots.o \
+				spock_readonly.o 
 
 SCRIPTS_built = spock_create_subscriber
 
