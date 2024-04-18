@@ -29,4 +29,4 @@ typedef struct JsonbInState
 	Node	   *escontext;
 } JsonbInState;
 
-extern Jsonb *spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupdesc);
+extern JsonbValue *spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupdesc);

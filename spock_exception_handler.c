@@ -41,18 +41,16 @@
 #include "spock_exception_handler.h"
 #include "spock_jsonb_utils.h"
 
-#define Natts_exception_table 11
+#define Natts_exception_table 9
 #define Anum_exception_log_node_id 1
 #define Anum_exception_log_commit_ts 2
 #define Anum_exception_log_remote_xid 3
 #define Anum_exception_log_schema 4
 #define Anum_exception_log_table 5
-#define Anum_exception_log_local_tuple 6
-#define Anum_exception_log_remote_old_tuple 7
-#define Anum_exception_log_remote_new_tuple 8
-#define Anum_exception_log_operation 9
-#define Anum_exception_log_message 10
-#define Anum_exception_log_retry_errored_at 11
+#define Anum_exception_log_exception_context 6
+#define Anum_exception_log_operation 7
+#define Anum_exception_log_message 8
+#define Anum_exception_log_retry_errored_at 9
 
 #define CATALOG_EXCEPTION_LOG "exception_log"
 
@@ -76,9 +74,12 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	HeapTuple	tup;
 	Datum		values[Natts_exception_table];
 	bool		nulls[Natts_exception_table];
-	Jsonb	   *localtup_json;
-	Jsonb	   *remoteoldtup_json;
-	Jsonb	   *remotenewtup_json;
+	JsonbParseState *state = NULL;
+	JsonbValue	val;
+	JsonbValue *localtup_json = NULL;
+	JsonbValue *remoteoldtup_json = NULL;
+	JsonbValue *remotenewtup_json = NULL;
+	Jsonb	   *context_json;
 	char	   *schema = targetrel->nspname;
 	char	   *table = targetrel->relname;
 
@@ -88,27 +89,64 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	tupDesc = RelationGetDescr(rel);
 	targetTupDesc = RelationGetDescr(targetrel->rel);
 
-	/*
-	 * FIXME: This decision will change and grow more complex as other columns
-	 * are added to the error table
-	 */
+	(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
+
+	elog(DEBUG1, "SpockErrorLog: Trying to add localtup_json to state.");
+
+	val.type = jbvString;
+	val.val.string.val = "local_tuple";
+	val.val.string.len = strlen(val.val.string.val);
+	(void) pushJsonbValue(&state, WJB_KEY, &val);
+
 	if (localtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: localtup is not NULL.");
 		localtup_json = spock_tuple_data_to_jsonb(localtup, targetTupDesc);
+		(void) pushJsonbValue(&state, WJB_VALUE, localtup_json);
 	}
+	else
+	{
+		(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
+		(void) pushJsonbValue(&state, WJB_END_OBJECT, NULL);
+	}
+
+	elog(DEBUG1, "SpockErrorLog: Trying to add remoteoldtup_json to state.");
+	val.val.string.val = "remote_old_tuple";
+	val.val.string.len = strlen(val.val.string.val);
+	(void) pushJsonbValue(&state, WJB_KEY, &val);
+
 	if (remoteoldtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: remoteoldtup is not NULL.");
 		remoteoldtup_json = spock_tuple_data_to_jsonb(remoteoldtup, targetTupDesc);
+		(void) pushJsonbValue(&state, WJB_VALUE, remoteoldtup_json);
 	}
+	else
+	{
+		(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
+		(void) pushJsonbValue(&state, WJB_END_OBJECT, NULL);
+
+	}
+
+	elog(DEBUG1, "SpockErrorLog: Trying to add remotenewtup_json to state.");
+	val.val.string.val = "remote_new_tuple";
+	val.val.string.len = strlen(val.val.string.val);
+	(void) pushJsonbValue(&state, WJB_KEY, &val);
+
 	if (remotenewtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: remotenewtup is not NULL.");
 		remotenewtup_json = spock_tuple_data_to_jsonb(remotenewtup, targetTupDesc);
-		/* Convert local_jsonb to string and print it */
-		elog(DEBUG1, "SpockErrorLog: local_jsonb is (%s)", JsonbToCString(NULL, &remotenewtup_json->root, VARSIZE(remotenewtup_json)));
+		(void) pushJsonbValue(&state, WJB_VALUE, remotenewtup_json);
 	}
+	else
+	{
+		(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
+		(void) pushJsonbValue(&state, WJB_END_OBJECT, NULL);
+	}
+
+	context_json = JsonbValueToJsonb(pushJsonbValue(&state, WJB_END_OBJECT, NULL));
+	elog(DEBUG1, "SpockErrorLog: context_json is populated");
 
 	/* Form a tuple. */
 	memset(nulls, 0, sizeof(nulls));
@@ -119,30 +157,7 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	values[Anum_exception_log_remote_xid - 1] = TransactionIdGetDatum(remote_xid);
 	values[Anum_exception_log_schema - 1] = CStringGetTextDatum(schema);
 	values[Anum_exception_log_table - 1] = CStringGetTextDatum(table);
-
-	if (localtup != NULL)
-		values[Anum_exception_log_local_tuple - 1] = PointerGetDatum(localtup_json);
-	else
-	{
-		values[Anum_exception_log_local_tuple - 1] = (Datum) 0;
-		nulls[Anum_exception_log_local_tuple - 1] = true;
-	}
-	if (remoteoldtup != NULL)
-		values[Anum_exception_log_remote_old_tuple - 1] = PointerGetDatum(remoteoldtup_json);
-	else
-	{
-		values[Anum_exception_log_remote_old_tuple - 1] = (Datum) 0;
-		nulls[Anum_exception_log_remote_old_tuple - 1] = true;
-	}
-
-	if (remotenewtup != NULL)
-		values[Anum_exception_log_remote_new_tuple - 1] = PointerGetDatum(remotenewtup_json);
-	else
-	{
-		values[Anum_exception_log_remote_new_tuple - 1] = (Datum) 0;
-		nulls[Anum_exception_log_remote_new_tuple - 1] = true;
-	}
-
+	values[Anum_exception_log_exception_context - 1] = PointerGetDatum(context_json);
 	values[Anum_exception_log_operation - 1] = CStringGetTextDatum(action);
 	values[Anum_exception_log_message - 1] = CStringGetTextDatum(error_message);
 	values[Anum_exception_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());

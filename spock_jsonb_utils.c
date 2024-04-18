@@ -731,7 +731,7 @@ datum_to_jsonb(Datum val, bool is_null, JsonbInState *result,
 	}
 }
 
-Jsonb *
+JsonbValue *
 spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 {
 	JsonbParseState *state = NULL;
@@ -780,14 +780,15 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 		 */
 		if (attr->attnum < 0)
 			continue;
-		
-		/* Skip over hidden columns 
-		 * TODO: Using get_attribute_options fails here because the realtion 
-		 * is a SpockTuple and not a HeapTuple.
-		 * Use a better method than this temporary fix here */
+
+		/*
+		 * Skip over hidden columns TODO: Using get_attribute_options fails
+		 * here because the realtion is a SpockTuple and not a HeapTuple. Use
+		 * a better method than this temporary fix here
+		 */
 		if (strncmp(NameStr(attr->attname), "_Spock", 6) == 0)
 			continue;
-		
+
 		typid = attr->atttypid;
 
 		/* gather type name */
@@ -810,6 +811,19 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 
 		elog(DEBUG1, "SpockErrorLog: Added attribute name to JSON object: %s", val.val.string.val);
 		/* Key for JSON object */
+		(void) pushJsonbValue(&state, WJB_KEY, &val);
+		(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
+
+		val.val.string.val = "type";
+		val.val.string.len = strlen(val.val.string.val);
+		(void) pushJsonbValue(&state, WJB_KEY, &val);
+
+		val.val.string.val = NameStr(type_form->typname);
+		val.val.string.len = strlen(val.val.string.val);
+		(void) pushJsonbValue(&state, WJB_VALUE, &val);
+
+		val.val.string.val = "value";
+		val.val.string.len = strlen(val.val.string.val);
 		(void) pushJsonbValue(&state, WJB_KEY, &val);
 
 		memset(&result, 0, sizeof(JsonbInState));
@@ -837,13 +851,12 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 
 		elog(DEBUG1, "SpockErrorLog: Converted datum to JSON object");
 
-		//(void) pushJsonbValue(&state, WJB_VALUE, result.res);
-
+		(void) pushJsonbValue(&state, WJB_END_OBJECT, NULL);
 	}
 
 	/* End the JSON object */
 	jval = pushJsonbValue(&state, WJB_END_OBJECT, NULL);
 
 	/* Convert JsonbValue to Jsonb */
-	return JsonbValueToJsonb(jval);
+	return jval;
 }
