@@ -33,6 +33,7 @@
 #include "utils/jsonb.h"
 #include "utils/jsonfuncs.h"
 #include "utils/typcache.h"
+#include "utils/attoptcache.h"
 
 #include "parser/parse_coerce.h"
 
@@ -747,7 +748,7 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 	static const int MAX_CONFLICT_LOG_ATTR_LEN = 40;
 
 	/* Start building the JSON object */
-	jval = pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
+	(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
 
 	/* print all columns individually */
 	for (natt = 0; natt < tupleDesc->natts; natt++)
@@ -779,7 +780,14 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 		 */
 		if (attr->attnum < 0)
 			continue;
-
+		
+		/* Skip over hidden columns 
+		 * TODO: Using get_attribute_options fails here because the realtion 
+		 * is a SpockTuple and not a HeapTuple.
+		 * Use a better method than this temporary fix here */
+		if (strncmp(NameStr(attr->attname), "_Spock", 6) == 0)
+			continue;
+		
 		typid = attr->atttypid;
 
 		/* gather type name */
@@ -802,7 +810,7 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 
 		elog(DEBUG1, "SpockErrorLog: Added attribute name to JSON object: %s", val.val.string.val);
 		/* Key for JSON object */
-		jval = pushJsonbValue(&state, WJB_KEY, &val);
+		(void) pushJsonbValue(&state, WJB_KEY, &val);
 
 		memset(&result, 0, sizeof(JsonbInState));
 
@@ -825,11 +833,11 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 		elog(DEBUG1, "SpockErrorLog: Category of type: %d", tcategory);
 
 		/* Value for JSON object */
-		datum_to_jsonb(datumval, isnull, &result, tcategory, typoutput, false);
+		datum_to_jsonb(datumval, isnull, &state, tcategory, typoutput, false);
 
 		elog(DEBUG1, "SpockErrorLog: Converted datum to JSON object");
 
-		jval = pushJsonbValue(&state, WJB_VALUE, result.res);
+		//(void) pushJsonbValue(&state, WJB_VALUE, result.res);
 
 	}
 
