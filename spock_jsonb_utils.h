@@ -30,3 +30,4 @@ typedef struct JsonbInState
 } JsonbInState;
 
 extern JsonbValue *spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupdesc);
+extern JsonbValue *heap_tuple_to_jsonb(HeapTuple *tuple, TupleDesc tupdesc);

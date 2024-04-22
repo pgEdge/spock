@@ -41,16 +41,17 @@
 #include "spock_exception_handler.h"
 #include "spock_jsonb_utils.h"
 
-#define Natts_exception_table 9
-#define Anum_exception_log_node_id 1
-#define Anum_exception_log_commit_ts 2
-#define Anum_exception_log_remote_xid 3
-#define Anum_exception_log_schema 4
-#define Anum_exception_log_table 5
-#define Anum_exception_log_exception_context 6
-#define Anum_exception_log_operation 7
-#define Anum_exception_log_message 8
-#define Anum_exception_log_retry_errored_at 9
+#define Natts_exception_table 10
+#define Anum_exception_log_id 1
+#define Anum_exception_log_node_id 2
+#define Anum_exception_log_commit_ts 3
+#define Anum_exception_log_remote_xid 4
+#define Anum_exception_log_schema 5
+#define Anum_exception_log_table 6
+#define Anum_exception_log_exception_context 7
+#define Anum_exception_log_operation 8
+#define Anum_exception_log_message 9
+#define Anum_exception_log_retry_errored_at 10
 
 #define CATALOG_EXCEPTION_LOG "exception_log"
 
@@ -58,6 +59,8 @@ SpockExceptionLog *exception_log_ptr = NULL;
 int			exception_log_behaviour = TRANSDISCARD;
 
 static void spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple);
+static Oid	get_exception_log_table_oid(void);
+static Oid	get_exception_log_seq(void);
 
 /*
  * Add an entry to the error log.
@@ -101,7 +104,7 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	if (localtup != NULL)
 	{
 		elog(DEBUG1, "SpockErrorLog: localtup is not NULL.");
-		localtup_json = spock_tuple_data_to_jsonb(localtup, targetTupDesc);
+		localtup_json = heap_tuple_to_jsonb(localtup, targetTupDesc);
 		(void) pushJsonbValue(&state, WJB_VALUE, localtup_json);
 	}
 	else
@@ -152,6 +155,7 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	memset(nulls, 0, sizeof(nulls));
 	memset(values, 0, sizeof(values));
 
+	values[Anum_exception_log_id - 1] = DirectFunctionCall1(nextval_oid, get_exception_log_seq());
 	values[Anum_exception_log_node_id - 1] = ObjectIdGetDatum(nodeid);
 	values[Anum_exception_log_commit_ts - 1] = TimestampTzGetDatum(commit_ts);
 	values[Anum_exception_log_remote_xid - 1] = TransactionIdGetDatum(remote_xid);
@@ -174,6 +178,40 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	elog(LOG, "SpockErrorLog: Inserted tuple into exception_log table.");
 
 	CommandCounterIncrement();
+}
+
+/*
+ * Get (cached) oid of the conflict log table.
+ */
+static Oid
+get_exception_log_table_oid(void)
+{
+	static Oid	logtableoid = InvalidOid;
+
+	if (logtableoid == InvalidOid)
+		logtableoid = get_spock_table_oid(CATALOG_EXCEPTION_LOG);
+
+	return logtableoid;
+}
+
+/*
+ * Get (cached) oid of the conflict log sequence, which is created
+ * implicitly.
+ */
+static Oid
+get_exception_log_seq(void)
+{
+	static Oid	seqoid = InvalidOid;
+
+	if (seqoid == InvalidOid)
+	{
+		Oid			reloid;
+
+		reloid = get_exception_log_table_oid();
+		seqoid = getIdentitySequence(reloid, 0, false);
+	}
+
+	return seqoid;
 }
 
 

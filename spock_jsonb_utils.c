@@ -742,7 +742,6 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 	Jsonb	   *jsonb_val;
 	int			natts = tupleDesc->natts;
 	Datum		attr;
-	bool		isNull;
 	int			natt;
 	bool		first = true;
 	static const int MAX_CONFLICT_LOG_ATTR_LEN = 40;
@@ -829,13 +828,148 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 		memset(&result, 0, sizeof(JsonbInState));
 
 		if (tuple->nulls[natt])
+		{
+			elog(DEBUG1, "SpockErrorLog: Value is NULL");
 			isnull = true;
+		}
 		else
+		{
+			elog(DEBUG1, "SpockErrorLog: Value is not NULL");
 			origval = tuple->values[natt];
+		}
 
-		if (typisvarlena && VARATT_IS_EXTERNAL_ONDISK(origval))
+		if (typisvarlena && !isnull && VARATT_IS_EXTERNAL_ONDISK(origval))
 			outputstr = "(unchanged-toast-datum)";
-		else if (typisvarlena)
+		else if (typisvarlena && !isnull)
+		{
+			elog(DEBUG1, "SpockErrorLog: Trying to detoast datum");
+			datumval = PointerGetDatum(PG_DETOAST_DATUM(origval));
+		}
+		else
+			datumval = origval;
+
+		if (outputstr != NULL)
+			datumval = PointerGetDatum(cstring_to_text(outputstr));
+
+		elog(DEBUG1, "SpockErrorLog: Trying to categorize type");
+		jsonb_categorize_type(typid, &tcategory, &typoutput);
+		elog(DEBUG1, "SpockErrorLog: Category of type: %d", tcategory);
+
+		/* Value for JSON object */
+		datum_to_jsonb(datumval, isnull, &state, tcategory, typoutput, false);
+
+		elog(DEBUG1, "SpockErrorLog: Converted datum to JSON object");
+
+		(void) pushJsonbValue(&state, WJB_END_OBJECT, NULL);
+	}
+
+	/* End the JSON object */
+	jval = pushJsonbValue(&state, WJB_END_OBJECT, NULL);
+
+	/* Convert JsonbValue to Jsonb */
+	return jval;
+}
+
+JsonbValue *
+heap_tuple_to_jsonb(HeapTuple *tuple, TupleDesc tupleDesc)
+{
+	JsonbParseState *state = NULL;
+	JsonbValue *jval,
+				val;
+	JsonbTypeCategory tcategory;
+	JsonbInState result;
+	Jsonb	   *jsonb_val;
+	int			natts = tupleDesc->natts;
+	Datum		attr;
+	int			natt;
+	bool		first = true;
+	static const int MAX_CONFLICT_LOG_ATTR_LEN = 40;
+
+	/* Start building the JSON object */
+	(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
+
+	/* print all columns individually */
+	for (natt = 0; natt < tupleDesc->natts; natt++)
+	{
+		Form_pg_attribute attr; /* the attribute itself */
+		Oid			typid;		/* type of current attribute */
+		HeapTuple	type_tuple; /* information about a type */
+		Form_pg_type type_form;
+		Oid			typoutput;	/* output function */
+		bool		typisvarlena;
+		Datum		origval = PointerGetDatum(NULL);	/* possibly toasted
+														 * Datum */
+		Datum		datumval = PointerGetDatum(NULL);	/* definitely detoasted
+														 * Datum */
+		char	   *outputstr = NULL;
+		bool		isnull = false; /* column is null? */
+
+		attr = TupleDescAttr(tupleDesc, natt);
+
+		/*
+		 * don't print dropped columns, we can't be sure everything is
+		 * available for them
+		 */
+		if (attr->attisdropped)
+			continue;
+
+		/*
+		 * Don't print system columns
+		 */
+		if (attr->attnum < 0)
+			continue;
+
+		/*
+		 * Skip over hidden columns TODO: Using get_attribute_options fails
+		 * here because the realtion is a SpockTuple and not a HeapTuple. Use
+		 * a better method than this temporary fix here
+		 */
+		if (strncmp(NameStr(attr->attname), "_Spock", 6) == 0)
+			continue;
+
+		typid = attr->atttypid;
+
+		/* gather type name */
+		type_tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
+
+		if (!HeapTupleIsValid(type_tuple))
+			elog(ERROR, "cache lookup failed for type %u", typid);
+
+		type_form = (Form_pg_type) GETSTRUCT(type_tuple);
+
+		/* query output function */
+		getTypeOutputInfo(typid,
+						  &typoutput, &typisvarlena);
+
+		ReleaseSysCache(type_tuple);
+
+		val.type = jbvString;
+		val.val.string.val = NameStr(attr->attname);
+		val.val.string.len = strlen(val.val.string.val);
+
+		elog(DEBUG1, "SpockErrorLog: Added attribute name to JSON object: %s", val.val.string.val);
+		/* Key for JSON object */
+		(void) pushJsonbValue(&state, WJB_KEY, &val);
+		(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
+
+		val.val.string.val = "type";
+		val.val.string.len = strlen(val.val.string.val);
+		(void) pushJsonbValue(&state, WJB_KEY, &val);
+
+		val.val.string.val = NameStr(type_form->typname);
+		val.val.string.len = strlen(val.val.string.val);
+		(void) pushJsonbValue(&state, WJB_VALUE, &val);
+
+		val.val.string.val = "value";
+		val.val.string.len = strlen(val.val.string.val);
+		(void) pushJsonbValue(&state, WJB_KEY, &val);
+
+		memset(&result, 0, sizeof(JsonbInState));
+		origval = heap_getattr(tuple, natt + 1, tupleDesc, &isnull);
+
+		if (typisvarlena && !isnull && VARATT_IS_EXTERNAL_ONDISK(origval))
+			outputstr = "(unchanged-toast-datum)";
+		else if (typisvarlena && !isnull)
 			datumval = PointerGetDatum(PG_DETOAST_DATUM(origval));
 		else
 			datumval = origval;

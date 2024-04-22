@@ -819,9 +819,9 @@ handle_insert(StringInfo s)
 			if (exception_log_behaviour > IGNORE)
 			{
 				add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid, rel, localtup, oldtup,
-									   &newtup, action_name, edata->message);
+										   replorigin_session_origin_timestamp,
+										   remote_xid, rel, localtup, oldtup,
+										   &newtup, action_name, edata->message);
 			}
 
 		}
@@ -948,7 +948,7 @@ handle_update(StringInfo s)
 			elog(LOG, "SpockErrorLog: Running apply_api.do_update for \
 			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
-			apply_api.do_update(rel, hasoldtup ? &oldtup : NULL, &newtup);
+			apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 		}
 		PG_CATCH();
 		{
@@ -986,10 +986,10 @@ handle_update(StringInfo s)
 			{
 				localtup = exception_log_ptr[my_exception_log_index].local_tuple;
 				add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid, rel, localtup,
-									   hasoldtup ? &oldtup : NULL, &newtup,
-									   "UPDATE", edata->message);
+										   replorigin_session_origin_timestamp,
+										   remote_xid, rel, localtup,
+										   hasoldtup ? &oldtup : NULL, &newtup,
+										   "UPDATE", edata->message);
 			}
 
 		}
@@ -1088,10 +1088,10 @@ handle_delete(StringInfo s)
 			{
 				localtup = exception_log_ptr[my_exception_log_index].local_tuple;
 				add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid, rel, localtup,
-									   &oldtup, newtup, 
-									   "DELETE", edata->message);
+										   replorigin_session_origin_timestamp,
+										   remote_xid, rel, localtup,
+										   &oldtup, newtup,
+										   "DELETE", edata->message);
 			}
 
 		}
