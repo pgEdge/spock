@@ -27,7 +27,6 @@
 #include "catalog/pg_type.h"
 
 #include "commands/extension.h"
-#include "commands/trigger.h"
 
 #include "executor/spi.h"
 
@@ -46,6 +45,7 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
+#include "spock_common.h"
 #include "spock_queue.h"
 #include "spock_repset.h"
 #include "spock.h"

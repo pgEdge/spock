@@ -15,6 +15,7 @@
 #include "utils/guc.h"
 
 #include "spock_common.h"
+#include "spock_compat.h"
 
 /*
  * Temporarily switch to a new user ID.
@@ -57,4 +58,95 @@ SPKRestoreUserContext(UserContext *context)
 	if (context->save_nestlevel != -1)
 		AtEOXact_GUC(false, context->save_nestlevel);
 	SetUserIdAndSecContext(context->save_userid, context->save_sec_context);
+}
+
+bool
+SPKExecBRDeleteTriggers(EState *estate,
+						EPQState *epqstate,
+						ResultRelInfo *relinfo,
+						ItemPointer tupleid,
+						HeapTuple fdw_trigtuple)
+{
+	UserContext		ucxt;
+	bool			ret;
+
+	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+	ret = ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple);
+	RestoreUserContext(&ucxt);
+
+	return ret;
+}
+
+void
+SPKExecARDeleteTriggers(EState *estate,
+						ResultRelInfo *relinfo,
+						ItemPointer tupleid,
+						HeapTuple fdw_trigtuple)
+{
+	UserContext		ucxt;
+
+	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+	ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple);
+	RestoreUserContext(&ucxt);
+}
+
+bool
+SPKExecBRUpdateTriggers(EState *estate,
+						EPQState *epqstate,
+						ResultRelInfo *relinfo,
+						ItemPointer tupleid,
+						HeapTuple fdw_trigtuple,
+						TupleTableSlot *slot)
+{
+	UserContext		ucxt;
+	bool			ret;
+
+	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+	ret = ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot);
+	RestoreUserContext(&ucxt);
+
+	return ret;
+}
+
+void
+SPKExecARUpdateTriggers(EState *estate,
+						ResultRelInfo *relinfo,
+						ItemPointer tupleid,
+						HeapTuple fdw_trigtuple,
+						TupleTableSlot *slot,
+						List *recheckIndexes)
+{
+	UserContext		ucxt;
+
+	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+	ExecARUpdateTriggers(estate, relinfo, tupleid, fdw_trigtuple, slot, recheckIndexes);
+	RestoreUserContext(&ucxt);
+}
+
+bool
+SPKExecBRInsertTriggers(EState *estate,
+						ResultRelInfo *relinfo,
+						TupleTableSlot *slot)
+{
+	UserContext		ucxt;
+	bool			ret;
+
+	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+	ret = ExecBRInsertTriggers(estate, relinfo, slot);
+	RestoreUserContext(&ucxt);
+
+	return ret;
+}
+
+void
+SPKExecARInsertTriggers(EState *estate,
+						ResultRelInfo *relinfo,
+						TupleTableSlot *slot,
+						List *recheckIndexes)
+{
+	UserContext		ucxt;
+
+	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+	ExecARInsertTriggers(estate, relinfo, slot, recheckIndexes);
+	RestoreUserContext(&ucxt);
 }

@@ -26,7 +26,6 @@
 #include "catalog/pg_type.h"
 
 #include "commands/extension.h"
-#include "commands/trigger.h"
 
 #include "executor/executor.h"
 
@@ -48,6 +47,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+#include "spock_common.h"
 #include "spock_node.h"
 #include "spock_executor.h"
 #include "spock_repset.h"

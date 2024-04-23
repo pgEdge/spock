@@ -24,7 +24,6 @@
 #include "commands/dbcommands.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
-#include "commands/trigger.h"
 
 #include "executor/executor.h"
 
@@ -68,6 +67,7 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#include "spock_common.h"
 #include "spock_conflict.h"
 #include "spock_executor.h"
 #include "spock_node.h"
@@ -706,7 +706,6 @@ handle_insert(StringInfo s)
 	HeapTuple	localtup = NULL;
 	SpockRelation *rel;
 	ErrorData  *edata;
-	UserContext ucxt;
 	bool		started_tx;
 	bool		failed = false;
 	char	   *action_name = "INSERT";
@@ -726,9 +725,6 @@ handle_insert(StringInfo s)
 		end_replication_step();
 		return;
 	}
-
-	/* Make sure that any user-supplied code runs as the table owner. */
-	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 	/*
 	 * Handle multi_insert capabilities. TODO: Don't do multi- or
@@ -844,7 +840,6 @@ handle_insert(StringInfo s)
 							 newtup.values, newtup.nulls);
 
 		LockRelationIdForSession(&lockid, RowExclusiveLock);
-		RestoreUserContext(&ucxt);
 		spock_relation_close(rel, NoLock);
 
 		end_replication_step();
@@ -869,7 +864,6 @@ handle_insert(StringInfo s)
 	}
 	else
 	{
-		RestoreUserContext(&ucxt);
 		spock_relation_close(rel, NoLock);
 		end_replication_step();
 	}
@@ -905,7 +899,6 @@ handle_update(StringInfo s)
 	SpockRelation *rel;
 	ErrorData  *edata;
 	HeapTuple	localtup;
-	UserContext ucxt;
 	bool		hasoldtup;
 	bool		failed = false;
 
@@ -929,9 +922,6 @@ handle_update(StringInfo s)
 	}
 
 	elog(DEBUG1, "SpockErrorLog: hasoldtup = %d", hasoldtup);
-
-	/* Make sure that any user-supplied code runs as the table owner. */
-	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 	if (MyApplyWorker->use_try_block == true)
 	{
@@ -995,7 +985,6 @@ handle_update(StringInfo s)
 		apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 	}
 
-	RestoreUserContext(&ucxt);
 	spock_relation_close(rel, NoLock);
 
 	end_replication_step();
@@ -1009,7 +998,6 @@ handle_delete(StringInfo s)
 	SpockRelation *rel;
 	HeapTuple	localtup;
 	ErrorData  *edata;
-	UserContext ucxt;
 	bool		failed = false;
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
@@ -1029,9 +1017,6 @@ handle_delete(StringInfo s)
 		end_replication_step();
 		return;
 	}
-
-	/* Make sure that any user-supplied code runs as the table owner. */
-	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 	if (MyApplyWorker->use_try_block)
 	{
@@ -1095,7 +1080,6 @@ handle_delete(StringInfo s)
 		apply_api.do_delete(rel, &oldtup);
 	}
 
-	RestoreUserContext(&ucxt);
 	spock_relation_close(rel, NoLock);
 
 	end_replication_step();

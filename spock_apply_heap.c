@@ -26,7 +26,6 @@
 #include "commands/dbcommands.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
-#include "commands/trigger.h"
 
 #include "executor/executor.h"
 
@@ -62,6 +61,7 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#include "spock_common.h"
 #include "spock_conflict.h"
 #include "spock_executor.h"
 #include "spock_node.h"
@@ -649,6 +649,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	EState	   *estate;
 	TupleTableSlot *remoteslot;
 	MemoryContext oldctx;
+	UserContext		ucxt;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -671,10 +672,14 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	slot_fill_defaults(rel, estate, remoteslot);
 	MemoryContextSwitchTo(oldctx);
 
+	/* Make sure that any user-supplied code runs as the table owner. */
+	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
 	/* Do the actual INSERT */
 	ExecOpenIndices(edata->targetRelInfo, false);
 	ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
 	ExecCloseIndices(edata->targetRelInfo);
+	RestoreUserContext(&ucxt);
 
 	/* Cleanup */
 	finish_edata(edata);
@@ -878,9 +883,15 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		 */
 		if (apply)
 		{
+			UserContext	ucxt;
+
+			/* Make sure that any user-supplied code runs as the table owner. */
+			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
 			EvalPlanQualSetSlot(&epqstate, remoteslot);
 			ExecSimpleRelationUpdate(edata->targetRelInfo, estate, &epqstate,
 									 localslot, remoteslot);
+			RestoreUserContext(&ucxt);
 		}
 	}
 	else
@@ -976,6 +987,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	 */
 	if (found)
 	{
+		UserContext		ucxt;
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
 		/*
@@ -983,10 +995,15 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		 */
 		local_tuple = ExecFetchSlotHeapTuple(localslot, true, &clear_localslot);
 		exception_log->local_tuple = local_tuple;
+
+		/* Make sure that any user-supplied code runs as the table owner. */
+		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
 		/* Delete the tuple found */
 		EvalPlanQualSetSlot(&epqstate, remoteslot);
 		ExecSimpleRelationDelete(edata->targetRelInfo, estate, &epqstate,
 								 localslot);
+		RestoreUserContext(&ucxt);
 	}
 	else
 	{
@@ -1153,9 +1170,9 @@ spock_apply_heap_mi_flush(void)
 									  false
 #endif
 				);
-			ExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
-								 spkmistate->buffered_tuples[i],
-								 recheckIndexes);
+			SPKExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
+									spkmistate->buffered_tuples[i],
+									recheckIndexes);
 			list_free(recheckIndexes);
 		}
 	}
@@ -1169,7 +1186,7 @@ spock_apply_heap_mi_flush(void)
 	{
 		for (i = 0; i < spkmistate->nbuffered_tuples; i++)
 		{
-			ExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
+			SPKExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
 								 spkmistate->buffered_tuples[i],
 								 NIL);
 		}
@@ -1221,9 +1238,9 @@ spock_apply_heap_mi_add_tuple(SpockRelation *rel,
 	if (aestate->resultRelInfo->ri_TrigDesc &&
 		aestate->resultRelInfo->ri_TrigDesc->trig_insert_before_row)
 	{
-		if (!ExecBRInsertTriggers(aestate->estate,
-								  aestate->resultRelInfo,
-								  slot))
+		if (!SPKExecBRInsertTriggers(aestate->estate,
+									 aestate->resultRelInfo,
+									 slot))
 		{
 			MemoryContextSwitchTo(oldctx);
 			return;

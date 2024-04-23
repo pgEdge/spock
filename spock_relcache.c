@@ -17,8 +17,6 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_trigger.h"
 
-#include "commands/trigger.h"
-
 #include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -26,6 +24,7 @@
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
+#include "spock_common.h"
 
 #include "spock.h"
 #include "spock_relcache.h"
