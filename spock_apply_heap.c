@@ -26,7 +26,6 @@
 #include "commands/dbcommands.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
-#include "commands/trigger.h"
 
 #include "executor/executor.h"
 
@@ -59,6 +58,7 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#include "spock_common.h"
 #include "spock_conflict.h"
 #include "spock_executor.h"
 #include "spock_node.h"
@@ -537,7 +537,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	{
 		has_before_triggers = true;
 
-		if (!ExecBRInsertTriggers(aestate->estate,
+		if (!SPKExecBRInsertTriggers(aestate->estate,
 								  aestate->resultRelInfo,
 								  aestate->slot))
 		{
@@ -591,7 +591,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 			if (aestate->resultRelInfo->ri_TrigDesc &&
 				aestate->resultRelInfo->ri_TrigDesc->trig_update_before_row)
 			{
-				if (!ExecBRUpdateTriggers(aestate->estate,
+				if (!SPKExecBRUpdateTriggers(aestate->estate,
 										  &aestate->epqstate,
 										  aestate->resultRelInfo,
 										  &(TTS_TUP(localslot)->t_self),
@@ -624,7 +624,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 															true);
 
 			/* AFTER ROW UPDATE Triggers */
-			ExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
+			SPKExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
 								 &(TTS_TUP(localslot)->t_self),
 								 NULL, aestate->slot, recheckIndexes);
 		}
@@ -640,7 +640,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		UserTableUpdateOpenIndexes(aestate->resultRelInfo, aestate->estate, aestate->slot, false);
 
 		/* AFTER ROW INSERT Triggers */
-		ExecARInsertTriggers(aestate->estate, aestate->resultRelInfo,
+		SPKExecARInsertTriggers(aestate->estate, aestate->resultRelInfo,
 							 aestate->slot, recheckIndexes);
 	}
 
@@ -711,7 +711,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		{
 			has_before_triggers = true;
 
-			if (!ExecBRUpdateTriggers(aestate->estate,
+			if (!SPKExecBRUpdateTriggers(aestate->estate,
 									  &aestate->epqstate,
 									  aestate->resultRelInfo,
 									  &(TTS_TUP(localslot)->t_self),
@@ -855,7 +855,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			}
 
 			/* AFTER ROW UPDATE Triggers */
-			ExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
+			SPKExecARUpdateTriggers(aestate->estate, aestate->resultRelInfo,
 								 &(TTS_TUP(localslot)->t_self),
 								 NULL, aestate->slot, recheckIndexes);
 		}
@@ -908,7 +908,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		if (aestate->resultRelInfo->ri_TrigDesc &&
 			aestate->resultRelInfo->ri_TrigDesc->trig_delete_before_row)
 		{
-			bool dodelete = ExecBRDeleteTriggers(aestate->estate,
+			bool dodelete = SPKExecBRDeleteTriggers(aestate->estate,
 												 &aestate->epqstate,
 												 aestate->resultRelInfo,
 												 &(TTS_TUP(localslot)->t_self),
@@ -927,7 +927,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		simple_heap_delete(rel->rel, &(TTS_TUP(localslot)->t_self));
 
 		/* AFTER ROW DELETE Triggers */
-		ExecARDeleteTriggers(aestate->estate, aestate->resultRelInfo,
+		SPKExecARDeleteTriggers(aestate->estate, aestate->resultRelInfo,
 							 &(TTS_TUP(localslot)->t_self), NULL);
 	}
 	else
@@ -1095,7 +1095,7 @@ spock_apply_heap_mi_flush(void)
 									  , false
 #endif
 									 );
-			ExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
+			SPKExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
 								 spkmistate->buffered_tuples[i],
 								 recheckIndexes);
 			list_free(recheckIndexes);
@@ -1111,7 +1111,7 @@ spock_apply_heap_mi_flush(void)
 	{
 		for (i = 0; i < spkmistate->nbuffered_tuples; i++)
 		{
-			ExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
+			SPKExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
 								 spkmistate->buffered_tuples[i],
 								 NIL);
 		}
@@ -1163,7 +1163,7 @@ spock_apply_heap_mi_add_tuple(SpockRelation *rel,
 	if (aestate->resultRelInfo->ri_TrigDesc &&
 		aestate->resultRelInfo->ri_TrigDesc->trig_insert_before_row)
 	{
-		if (!ExecBRInsertTriggers(aestate->estate,
+		if (!SPKExecBRInsertTriggers(aestate->estate,
 								 aestate->resultRelInfo,
 								 slot))
 		{

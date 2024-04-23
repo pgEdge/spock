@@ -112,4 +112,5 @@
 		SPKSwitchToUntrustedUser(userid, context)
 #define RestoreUserContext(context) \
 		SPKRestoreUserContext(context)
+
 #endif

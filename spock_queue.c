@@ -27,7 +27,6 @@
 #include "catalog/pg_type.h"
 
 #include "commands/extension.h"
-#include "commands/trigger.h"
 
 #include "miscadmin.h"
 
@@ -44,6 +43,7 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
+#include "spock_common.h"
 #include "spock_queue.h"
 #include "spock.h"
 

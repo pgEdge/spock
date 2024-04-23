@@ -14,6 +14,9 @@
 #define SPOCK_COMMON_H
 
 #include "access/amapi.h"
+#include "commands/trigger.h"
+
+extern void AfterTriggerBeginQuery(void);
 
 #if PG_VERSION_NUM >= 160000
 #include "utils/usercontext.h"
@@ -34,5 +37,37 @@ typedef struct UserContext
 /* Function prototypes. */
 extern void SPKSwitchToUntrustedUser(Oid userid, UserContext *context);
 extern void SPKRestoreUserContext(UserContext *context);
+
+extern bool SPKExecBRDeleteTriggers(EState *estate,
+								 EPQState *epqstate,
+								 ResultRelInfo *relinfo,
+								 ItemPointer tupleid,
+								 HeapTuple fdw_trigtuple);
+extern void SPKExecARDeleteTriggers(EState *estate,
+								 ResultRelInfo *relinfo,
+								 ItemPointer tupleid,
+								 HeapTuple fdw_trigtuple);
+
+extern bool SPKExecBRUpdateTriggers(EState *estate,
+								 EPQState *epqstate,
+								 ResultRelInfo *relinfo,
+								 ItemPointer tupleid,
+								 HeapTuple fdw_trigtuple,
+								 TupleTableSlot *slot);
+extern void SPKExecARUpdateTriggers(EState *estate,
+								 ResultRelInfo *relinfo,
+								 ItemPointer tupleid,
+								 HeapTuple fdw_trigtuple,
+								 TupleTableSlot *slot,
+								 List *recheckIndexes);
+
+extern bool SPKExecBRInsertTriggers(EState *estate,
+								 ResultRelInfo *relinfo,
+								 TupleTableSlot *slot);
+extern void SPKExecARInsertTriggers(EState *estate,
+								 ResultRelInfo *relinfo,
+								 TupleTableSlot *slot,
+								 List *recheckIndexes);
+
 
 #endif /* SPOCK_COMMON_H */
