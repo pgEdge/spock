@@ -839,7 +839,7 @@ spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupleDesc)
 		}
 
 		if (typisvarlena && !isnull && VARATT_IS_EXTERNAL_ONDISK(origval))
-			outputstr = "(unchanged-toast-datum)";
+			outputstr = "(toasted-datum)";
 		else if (typisvarlena && !isnull)
 		{
 			elog(DEBUG1, "SpockErrorLog: Trying to detoast datum");
@@ -968,7 +968,7 @@ heap_tuple_to_jsonb(HeapTuple *tuple, TupleDesc tupleDesc)
 		origval = heap_getattr(tuple, natt + 1, tupleDesc, &isnull);
 
 		if (typisvarlena && !isnull && VARATT_IS_EXTERNAL_ONDISK(origval))
-			outputstr = "(unchanged-toast-datum)";
+			outputstr = "(toasted-datum)";
 		else if (typisvarlena && !isnull)
 			datumval = PointerGetDatum(PG_DETOAST_DATUM(origval));
 		else

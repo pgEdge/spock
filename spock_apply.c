@@ -808,7 +808,7 @@ handle_insert(StringInfo s)
 				ReleaseCurrentSubTransaction();
 			}
 		}
-		else
+		else if (failed || exception_log_behaviour == TRANSDISCARD)
 		{
 			/* Insert into the error table here */
 			elog(DEBUG1, "SpockErrorLog: Received error message for xid %u, \
@@ -975,7 +975,7 @@ handle_update(StringInfo s)
 				ReleaseCurrentSubTransaction();
 			}
 		}
-		else
+		else if (failed || exception_log_behaviour == TRANSDISCARD)
 		{
 			elog(DEBUG1, "SpockErrorLog: Received error message for \
 			xid %u, message = (%s)", remote_xid, edata->message);
@@ -1077,7 +1077,7 @@ handle_delete(StringInfo s)
 				ReleaseCurrentSubTransaction();
 			}
 		}
-		else
+		else if (failed || exception_log_behaviour == TRANSDISCARD)
 		{
 			elog(DEBUG1, "SpockErrorLog: Received error message for \
 			xid %u, message = (%s)", remote_xid, edata->message);

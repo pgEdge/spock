@@ -60,7 +60,7 @@ CREATE TABLE spock.exception_log (
 	error_message text NOT NULL,
 	retry_errored_at timestamptz NOT NULL,
 	-- Perhaps node_id and commit_timestamp are not needed here
-	PRIMARY KEY(exception_id, node_id, commit_timestamp)
+	PRIMARY KEY(node_id, commit_timestamp, exception_id)
 ) WITH (user_catalog_table=true);
 
 CREATE FUNCTION spock.node_create(node_name name, dsn text,
