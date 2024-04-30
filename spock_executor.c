@@ -357,6 +357,9 @@ spock_ProcessUtility(
 #ifndef XCP
 	#define		sentToRemote NULL
 #endif
+	Oid			roleoid = InvalidOid;
+	Oid			save_userid = 0;
+	int			save_sec_context = 0;
 
 	dropping_spock_obj = false;
 
@@ -412,6 +415,18 @@ spock_ProcessUtility(
 								   sentToRemote,
 								   qc);
 
+	roleoid = GetUserId();
+
+	/*
+	 * Check that we have a local node. We need to elevate access
+	 * because this is called as an executor Utility hook under the
+	 * session user, who not necessarily has access permission to
+	 * Spock extension objects.
+	 */
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
+							save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+
 	/*
 	 * we don't want to replicate if it's coming from spock.queue. But we do
 	 * add tables to repset whenever there is one.
@@ -447,12 +462,14 @@ spock_ProcessUtility(
 
 			spock_auto_replicate_ddl(curr_qry,
 									 list_make1(DEFAULT_INSONLY_REPSET_NAME),
-									 GetUserNameFromId(GetUserId(), false),
+									 roleoid,
 									 parsetree);
 
 			add_ddl_to_repset(parsetree);
 		}
 	}
+	/* Restore previous session privileges */
+	SetUserIdAndSecContext(save_userid, save_sec_context);
 }
 
 /*
