@@ -2012,7 +2012,7 @@ Datum spock_replicate_ddl_command(PG_FUNCTION_ARGS)
  */
 void
 spock_auto_replicate_ddl(const char *query, List *replication_sets,
-						 const char *role, Node *stmt)
+						 Oid roleoid, Node *stmt)
 {
 	ListCell *lc;
 	SpockLocalNode *node;
@@ -2152,8 +2152,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	escape_json(&cmd, q.data);
 
 	/* Queue the query for replication. */
-	queue_message(replication_sets, get_role_oid(role, false),
-				  QUEUE_COMMAND_TYPE_DDL, cmd.data);
+	queue_message(replication_sets, roleoid, QUEUE_COMMAND_TYPE_DDL, cmd.data);
 
 	return;
 
