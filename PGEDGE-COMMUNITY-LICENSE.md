@@ -14,7 +14,7 @@ This pgEdge Community License Agreement Version 1.0 (the "**Agreement**") sets f
 
 **b.**  On each Software copy, Licensee shall reproduce and not remove or alter all pgEdge or third party copyright or other proprietary notices contained in the Software, and Licensee must provide the notice below with each copy.
 
-"This software is made available by pgEdge, Inc., under the terms of the pgEdge Community License Agreement, Version 1.0 located at https://www.pgEdge.com/pgEdge-community-license. BY INSTALLING, DOWNLOADING, ACCESSING, USING OR DISTRIBUTING ANY OF THE SOFTWARE, YOU AGREE TO THE TERMS OF SUCH LICENSE AGREEMENT."
+"This software is made available by pgEdge, Inc., under the terms of the pgEdge Community License Agreement, Version 1.0 located at https://www.pgEdge.com/communitylicense. BY INSTALLING, DOWNLOADING, ACCESSING, USING OR DISTRIBUTING ANY OF THE SOFTWARE, YOU AGREE TO THE TERMS OF SUCH LICENSE AGREEMENT."
 
 **1.3 Licensee Modifications**. Licensee may add its own copyright notices to modifications made by Licensee and may provide additional or different license terms and conditions for use, reproduction, or distribution of Licensee's modifications. While redistributing the Software or modifications thereof, Licensee may choose to offer, for a fee or free of charge, support, warranty, indemnity, or other obligations.Licensee, and not pgEdge, will be responsible for any such obligations.
 
