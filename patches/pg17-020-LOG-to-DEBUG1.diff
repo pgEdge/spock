@@ -1,0 +1,46 @@
+diff --git a/src/backend/executor/execReplication.c b/src/backend/executor/execReplication.c
+index d0a89cd577..4b692f3f80 100644
+--- a/src/backend/executor/execReplication.c
++++ b/src/backend/executor/execReplication.c
+@@ -267,17 +267,17 @@ retry:
+ 			case TM_Updated:
+ 				/* XXX: Improve handling here */
+ 				if (ItemPointerIndicatesMovedPartitions(&tmfd.ctid))
+-					ereport(LOG,
++					ereport(DEBUG1,
+ 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+ 							 errmsg("tuple to be locked was already moved to another partition due to concurrent update, retrying")));
+ 				else
+-					ereport(LOG,
++					ereport(DEBUG1,
+ 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+ 							 errmsg("concurrent update, retrying")));
+ 				goto retry;
+ 			case TM_Deleted:
+ 				/* XXX: Improve handling here */
+-				ereport(LOG,
++				ereport(DEBUG1,
+ 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+ 						 errmsg("concurrent delete, retrying")));
+ 				goto retry;
+@@ -451,17 +451,17 @@ retry:
+ 			case TM_Updated:
+ 				/* XXX: Improve handling here */
+ 				if (ItemPointerIndicatesMovedPartitions(&tmfd.ctid))
+-					ereport(LOG,
++					ereport(DEBUG1,
+ 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+ 							 errmsg("tuple to be locked was already moved to another partition due to concurrent update, retrying")));
+ 				else
+-					ereport(LOG,
++					ereport(DEBUG1,
+ 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+ 							 errmsg("concurrent update, retrying")));
+ 				goto retry;
+ 			case TM_Deleted:
+ 				/* XXX: Improve handling here */
+-				ereport(LOG,
++				ereport(DEBUG1,
+ 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+ 						 errmsg("concurrent delete, retrying")));
+ 				goto retry;

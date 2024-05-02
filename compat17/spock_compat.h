@@ -68,9 +68,6 @@
 
 #define Form_pg_sequence Form_pg_sequence_data
 
-#define InitResultRelInfo(resultRelInfo, resultRelationDesc, resultRelationIndex, instrument_options) \
-	InitResultRelInfo(resultRelInfo, resultRelationDesc, resultRelationIndex, NULL, instrument_options)
-
 #define ExecARUpdateTriggers(estate, relinfo, tupleid, fdw_trigtuple, newslot, recheckIndexes) \
 	ExecARUpdateTriggers(estate, relinfo, NULL, NULL, tupleid, fdw_trigtuple, newslot, recheckIndexes, NULL, false)
 
@@ -105,9 +102,6 @@
 #define rbtxn_has_catalog_changes(txn) (txn->has_catalog_changes)
 #endif
 
-#define ExecInitExtraTupleSlot(estate) \
-	ExecInitExtraTupleSlot(estate, NULL, &TTSOpsHeapTuple)
-
 #define ACL_OBJECT_RELATION OBJECT_TABLE
 #define ACL_OBJECT_SEQUENCE OBJECT_SEQUENCE
 
@@ -128,7 +122,11 @@
 		simple_heap_update(relation, otid, tup, &updateIndexes);	\
 	} while (false);
 
-#define EvalPlanQualInit(epqstate, parentestate, subplan, auxrowmarks, epqParam) \
-	EvalPlanQualInit(epqstate, parentestate, subplan, auxrowmarks, epqParam, NIL)
+#define LogLogicalMessage(_prefix, _message, _size, _transactional) \
+	LogLogicalMessage(_prefix, _message, _size, _transactional, false)
+
+/* Must use this interface for access HeapTuple in ReorderBufferChange */
+#define ReorderBufferChangeHeapTuple(change, tuple_type) \
+	change->data.tp.tuple_type
 
 #endif

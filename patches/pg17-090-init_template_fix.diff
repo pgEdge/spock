@@ -1,0 +1,22 @@
+diff --git a/src/Makefile.global.in b/src/Makefile.global.in
+index a00c909681..c915f0a226 100644
+--- a/src/Makefile.global.in
++++ b/src/Makefile.global.in
+@@ -409,10 +409,15 @@ ld_library_path_var = LD_LIBRARY_PATH
+ # with_temp_install_extra is for individual ports to define if they
+ # need something more here. If not defined then the expansion does
+ # nothing.
+-with_temp_install = \
++ifdef NO_TEMP_INSTALL
++with_temp_install =
++else
++with_temp_install = INITDB_TEMPLATE='$(abs_top_builddir)'/tmp_install/initdb-template
++endif
++
++with_temp_install += \
+ 	PATH="$(abs_top_builddir)/tmp_install$(bindir):$(CURDIR):$$PATH" \
+ 	$(call add_to_path,$(strip $(ld_library_path_var)),$(abs_top_builddir)/tmp_install$(libdir)) \
+-	INITDB_TEMPLATE='$(abs_top_builddir)'/tmp_install/initdb-template \
+ 	$(with_temp_install_extra)
+ 
+ temp-install: | submake-generated-headers

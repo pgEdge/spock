@@ -111,4 +111,8 @@
 #define SwitchToUntrustedUser(userid, context) ((void)0)
 #define RestoreUserContext(context) ((void)0)
 
+/* Must use this interface for access HeapTuple in ReorderBufferChange */
+#define ReorderBufferChangeHeapTuple(change, tuple_type) \
+	&change->data.tp.tuple_type->tuple
+
 #endif

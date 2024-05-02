@@ -1,0 +1,44 @@
+diff --git a/src/backend/access/common/reloptions.c b/src/backend/access/common/reloptions.c
+index d2092cf900..7c2f61aebc 100644
+--- a/src/backend/access/common/reloptions.c
++++ b/src/backend/access/common/reloptions.c
+@@ -564,6 +564,19 @@ static relopt_enum enumRelOpts[] =
+ 
+ static relopt_string stringRelOpts[] =
+ {
++	{
++		{
++			"delta_apply_function",
++			"Function called to perform delta conflict avoidance",
++			RELOPT_KIND_ATTRIBUTE,
++			ShareUpdateExclusiveLock
++		},
++		-1,
++		true,
++		NULL,
++		NULL,
++		NULL
++	},
+ 	/* list terminator */
+ 	{{NULL}}
+ };
+@@ -2090,6 +2103,7 @@ attribute_reloptions(Datum reloptions, bool validate)
+ 		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
+ 		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
+ 		{"log_old_value", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, log_old_value)},
++		{"delta_apply_function", RELOPT_TYPE_STRING, offsetof(AttributeOpts, delta_apply_function)},
+ 		{"invisible", RELOPT_TYPE_BOOL, offsetof(AttributeOpts, invisible)}
+ 	};
+ 
+diff --git a/src/include/utils/attoptcache.h b/src/include/utils/attoptcache.h
+index fe4b6f9475..c45531c951 100644
+--- a/src/include/utils/attoptcache.h
++++ b/src/include/utils/attoptcache.h
+@@ -22,6 +22,7 @@ typedef struct AttributeOpts
+ 	float8		n_distinct;
+ 	float8		n_distinct_inherited;
+ 	bool		log_old_value;
++	int			delta_apply_function;
+ 	bool		invisible;
+ } AttributeOpts;
+ 
