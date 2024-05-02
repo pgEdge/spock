@@ -108,7 +108,9 @@
 #define OutputPluginUpdateProgress(ctx, false) \
 			OutputPluginUpdateProgress(ctx)
 
-#define SwitchToUntrustedUser(userid, context) ((void)0)
-#define RestoreUserContext(context) ((void)0)
+#define SwitchToUntrustedUser(userid, context) \
+		SPKSwitchToUntrustedUser(userid, context)
+#define RestoreUserContext(context) \
+		SPKRestoreUserContext(context)
 
 #endif

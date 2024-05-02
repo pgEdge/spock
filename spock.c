@@ -25,7 +25,6 @@
 #include "catalog/pg_type.h"
 
 #include "commands/extension.h"
-#include "commands/trigger.h"
 
 #include "executor/executor.h"
 

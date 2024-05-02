@@ -30,7 +30,6 @@
 
 #include "commands/dbcommands.h"
 #include "commands/event_trigger.h"
-#include "commands/trigger.h"
 
 #include "executor/spi.h"
 
