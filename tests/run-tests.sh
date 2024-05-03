@@ -7,7 +7,7 @@ spock_version=$(psql -U $DBUSER -d $DBNAME -A -t -h /tmp -c "select spock.spock_
 # Run only on two nodes to avoid complications
 if [[ $spock_version == "4.0" && $(hostname) == "n1" ]];
 then
-  #========== Error Log tests ========== 
+  #========== Exception Log tests ========== 
 
   # We perform the following tests in two cases:
   # a. Table containing delta-apply columns
@@ -60,7 +60,7 @@ _EOF_
   echo "Waiting for apply worker timeouts..."
   sleep 30
   echo "Checking the exception table now..."
-  elog_entries=$(PGPASSWORD=$DBPASSWD psql -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "SELECT count(*) from spock.error_log;")
+  elog_entries=$(PGPASSWORD=$DBPASSWD psql -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "SELECT count(*) from spock.exception_log;")
   echo $elog_entries > /home/pgedge/spock-private/exception-tests.out
 fi
 

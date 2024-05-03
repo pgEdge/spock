@@ -30,5 +30,6 @@ jobs:
 
       - name: Check spockbench output
         run: |
-          grep -q "ERROR" ${GITHUB_WORKSPACE}/spockbench-*.out && exit 1 || exit 0
+          cd ${GITHUB_WORKSPACE}/tests/
+          ./check-outputs.sh
 
