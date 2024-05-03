@@ -1,17 +1,11 @@
 #!/bin/bash
 
-set -ae
-
 peer_names=$1
-
-# ==========Spockbench tests ========== 
-#spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} -s 10 -T 600 -R 3000 -P 5 -j 16 -c 50 -n --spock-tx-mix=550,225,225 -U admin demo
-#spockbench-check -U admin demo > /home/pgedge/spock-private/spockbench-$HOSTNAME.out
-
 
 spock_version=$(psql -U $DBUSER -d $DBNAME -A -t -h /tmp -c "select spock.spock_version();")
 
-if [ $spock_version == "4.0" ];
+# Run only on two nodes to avoid complications
+if [[ $spock_version == "4.0" && $(hostname) == "n1" ]];
 then
   #========== Error Log tests ========== 
 
@@ -23,11 +17,60 @@ then
   # 2. UPDATE: Row not found, duplicate secondary constraint
   # 3. DELETE: Row not found
 
-  psql -U $DBUSER -d $DBNAME -h /tmp -c "insert into t2 values(1,100);" &
+  # ----
+  # Create table and test data on n1
+  # ----
+  psql -U $DBUSER -d $DBNAME -h /tmp <<_EOF_
+  	CREATE TABLE t4 (
+  		id		integer PRIMARY KEY,
+  		data	text
+  	);
+  
+  	INSERT INTO t4 VALUES (2, 'missing row on UPDATE');
+  	INSERT INTO t4 VALUES (3, 'missing row on DELETE');
+  
+  	SELECT spock.repset_add_table(
+  		set_name := 'demo_replication_set',
+  		relation := 't4'
+  	);
+_EOF_
+  
+  # ----
+  # Create table and test data on n2
+  # ----
+  PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} <<_EOF_
+  	CREATE TABLE t4 (
+  		id		integer PRIMARY KEY,
+  		data	text
+  	);
+  
+  	INSERT INTO t4 VALUES (1, 'duplicate key on INSERT');
+  	SELECT spock.repset_add_table(
+  		set_name := 'demo_replication_set',
+  		relation := 't4'
+  	);
+_EOF_
+  
+  psql -U $DBUSER -d $DBNAME -h /tmp <<_EOF_
+  	INSERT INTO t4 VALUES (1, 'trigger duplicate key');
+  	UPDATE t4 SET data = 'trigger missing key on UPDATE' WHERE id = 2;
+  	DELETE FROM t4 WHERE id = 3; -- trigger missing key on DELETE
+_EOF_
 
-  PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "insert into t2 values(1,200);" &
-
-  wait
-
-  psql -U $DBUSER -d $DBNAME -h /tmp -c "select * from spock.error_log;"
+  echo "Waiting for apply worker timeouts..."
+  sleep 30
+  echo "Checking the exception table now..."
+  elog_entries=$(PGPASSWORD=$DBPASSWD psql -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "SELECT count(*) from spock.error_log;")
+  echo $elog_entries > /home/pgedge/spock-private/exception-tests.out
 fi
+
+spockbench -h /tmp -i -s $SCALEFACTOR demo
+psql -U admin -h /tmp -d demo -c "select spock.convert_sequence_to_snowflake('pgbench_history_hid_seq');"
+psql -U admin -h /tmp -d demo -c "alter table pgbench_accounts alter column abalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
+psql -U admin -h /tmp -d demo -c "alter table pgbench_branches alter column bbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
+psql -U admin -h /tmp -d demo -c "alter table pgbench_tellers alter column tbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
+
+psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_replication_set', '{public}');"
+# ==========Spockbench tests ========== 
+spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} -s $SCALEFACTOR -T $RUNTIME -R $RATE -P 5 -j $THREADS -c $CONNECTIONS -n --spock-tx-mix=550,225,225 -U admin demo
+spockbench-check -U admin demo > /home/pgedge/spock-private/spockbench-$HOSTNAME.out

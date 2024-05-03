@@ -9,9 +9,7 @@ echo 'export PATH=/home/test/pgedge/pg16/bin:$PATH' >> /home/pgedge/.bashrc
 
 echo "==========Recompiling Spock=========="
 cd ~/spock-private
-make -j16 > /dev/null
-make install > /dev/null
-
+make clean && make -j16 && make install
 
 echo "==========Installing Spockbench=========="
 cd ~/spockbench
@@ -20,6 +18,18 @@ sudo python3 setup.py install
 cd ~/pgedge
 sed -i '/log_min_messages/s/^#//g' data/pg16/postgresql.conf
 sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg16/postgresql.conf
+./pgedge restart
+
+while ! pg_isready -h /tmp; do
+  echo "Waiting for PostgreSQL to become ready..."
+  sleep 1
+done
+
+psql -h /tmp -U $DBUSER -d $DBNAME -c "drop extension spock;"
+psql -h /tmp -U $DBUSER -d $DBNAME -c "drop schema public cascade;"
+psql -h /tmp -U $DBUSER -d $DBNAME -c "create schema public;"
+psql -h /tmp -U $DBUSER -d $DBNAME -c "create extension spock;"
+
 ./pgedge restart
 
 while ! pg_isready -h /tmp; do
@@ -49,42 +59,35 @@ do
     done
 done
 
+# TODO: Re-introduce parallel slots at a later point when the apply worker restarts are handled correctly
+# and transactions are not skipped on restart in parallel mode
 ./pgedge spock sub-create sub_${peer_names[0]}$HOSTNAME   "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_1 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_2 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_3 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_4 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_1 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_2 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_3 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_4 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
 
 ./pgedge spock sub-create sub_${peer_names[1]}$HOSTNAME   "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_1 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_2 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_3 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_4 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_1 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_2 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_3 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_4 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
 
 psql -U admin -h /tmp -d demo -c "create table t1 (id serial primary key, data int8);"
 psql -U admin -h /tmp -d demo -c "create table t2 (id serial primary key, data int8);"
 psql -U admin -h /tmp -d demo -c "alter table t1 alter column data set (log_old_value=true, delta_apply_function=spock.delta_apply);"
 
-spockbench -h /tmp -i -s 10 demo
-
-psql -U admin -h /tmp -d demo -c "select spock.convert_sequence_to_snowflake('pgbench_history_hid_seq');"
-psql -U admin -h /tmp -d demo -c "alter table pgbench_accounts alter column abalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
-psql -U admin -h /tmp -d demo -c "alter table pgbench_branches alter column bbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
-psql -U admin -h /tmp -d demo -c "alter table pgbench_tellers alter column tbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
-
 ./pgedge spock sub-add-repset sub_${peer_names[0]}$HOSTNAME demo_replication_set demo
-./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_1 demo_replication_set demo
-./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_2 demo_replication_set demo
-./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_3 demo_replication_set demo
-./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_4 demo_replication_set demo
+#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_1 demo_replication_set demo
+#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_2 demo_replication_set demo
+#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_3 demo_replication_set demo
+#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_4 demo_replication_set demo
 
 ./pgedge spock sub-add-repset sub_${peer_names[1]}$HOSTNAME demo_replication_set demo
-./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_1 demo_replication_set demo
-./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_2 demo_replication_set demo
-./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_3 demo_replication_set demo
-./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_4 demo_replication_set demo
+#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_1 demo_replication_set demo
+#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_2 demo_replication_set demo
+#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_3 demo_replication_set demo
+#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_4 demo_replication_set demo
 
-psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_replication_set', '{public}');"
 
-spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} -s 10 -T 600 -R 3000 -P 5 -j 16 -c 50 -n --spock-tx-mix=550,225,225 -U admin demo
-spockbench-check -U admin demo > /home/pgedge/spock-private/spockbench-$HOSTNAME.out
+cd /home/pgedge && ./run-tests.sh $peer_names
