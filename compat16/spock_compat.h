@@ -96,10 +96,6 @@
 
 #define SPKReplicationSlotCreate(name, db_specific, persistency) ReplicationSlotCreate(name, db_specific, persistency)
 
-#ifndef rbtxn_has_catalog_changes
-#define rbtxn_has_catalog_changes(txn) (txn->has_catalog_changes)
-#endif
-
 #define ACL_OBJECT_RELATION OBJECT_TABLE
 #define ACL_OBJECT_SEQUENCE OBJECT_SEQUENCE
 

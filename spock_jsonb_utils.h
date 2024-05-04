@@ -29,5 +29,6 @@ typedef struct JsonbInState
 	Node	   *escontext;
 } JsonbInState;
 
-extern JsonbValue *spock_tuple_data_to_jsonb(SpockTupleData *tuple, TupleDesc tupdesc);
-extern JsonbValue *heap_tuple_to_jsonb(HeapTuple *tuple, TupleDesc tupdesc);
+extern char *spock_tuple_to_json_cstring(SpockTupleData *tuple,
+										 TupleDesc tupdesc);
+extern char *heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupdesc);

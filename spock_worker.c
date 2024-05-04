@@ -82,7 +82,6 @@ static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
 static void signal_worker_xact_callback(XactEvent event, void *arg);
 static uint32 spock_ch_stats_hash(const void *key, Size keysize);
-static void spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple);
 
 
 void

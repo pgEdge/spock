@@ -209,7 +209,6 @@ spock_write_origin(StringInfo out, const RepOriginId origin_id,
 				   XLogRecPtr origin_lsn)
 {
 	uint8	flags = 0;
-	uint8	len;
 
 	Assert(strlen(origin) < 255);
 
@@ -577,7 +576,6 @@ RepOriginId
 spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
 {
 	uint8	flags;
-	uint8	len;
 
 	/* read the flags */
 	flags = pq_getmsgbyte(in);

@@ -58,7 +58,6 @@
 SpockExceptionLog *exception_log_ptr = NULL;
 int			exception_log_behaviour = TRANSDISCARD;
 
-static void spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple);
 static Oid	get_exception_log_table_oid(void);
 static Oid	get_exception_log_seq(void);
 
@@ -77,79 +76,52 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	HeapTuple	tup;
 	Datum		values[Natts_exception_table];
 	bool		nulls[Natts_exception_table];
-	JsonbParseState *state = NULL;
-	JsonbValue	val;
-	JsonbValue *localtup_json = NULL;
-	JsonbValue *remoteoldtup_json = NULL;
-	JsonbValue *remotenewtup_json = NULL;
-	Jsonb	   *context_json;
+	Datum		context_val;
 	char	   *schema = targetrel->nspname;
 	char	   *table = targetrel->relname;
 
+	StringInfoData	s;
+	char		   *str_local_tup;
+	char		   *str_remote_old_tup;
+	char		   *str_remote_new_tup;
 
+	/* Get the tuple descriptors */
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_EXCEPTION_LOG, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 	targetTupDesc = RelationGetDescr(targetrel->rel);
 
-	(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
-
-	elog(DEBUG1, "SpockErrorLog: Trying to add localtup_json to state.");
-
-	val.type = jbvString;
-	val.val.string.val = "local_tuple";
-	val.val.string.len = strlen(val.val.string.val);
-	(void) pushJsonbValue(&state, WJB_KEY, &val);
-
-	if (localtup != NULL)
-	{
-		elog(DEBUG1, "SpockErrorLog: localtup is not NULL.");
-		localtup_json = heap_tuple_to_jsonb(localtup, targetTupDesc);
-		(void) pushJsonbValue(&state, WJB_VALUE, localtup_json);
-	}
+	/* Convert the three (possible) tuples into json strings */
+	if (localtup != NULL && localtup->t_data != NULL)
+		str_local_tup = heap_tuple_to_json_cstring(&localtup,
+												   targetTupDesc);
 	else
-	{
-		(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
-		(void) pushJsonbValue(&state, WJB_END_OBJECT, NULL);
-	}
-
-	elog(DEBUG1, "SpockErrorLog: Trying to add remoteoldtup_json to state.");
-	val.val.string.val = "remote_old_tuple";
-	val.val.string.len = strlen(val.val.string.val);
-	(void) pushJsonbValue(&state, WJB_KEY, &val);
+		str_local_tup = pstrdup("null");
 
 	if (remoteoldtup != NULL)
-	{
-		elog(DEBUG1, "SpockErrorLog: remoteoldtup is not NULL.");
-		remoteoldtup_json = spock_tuple_data_to_jsonb(remoteoldtup, targetTupDesc);
-		(void) pushJsonbValue(&state, WJB_VALUE, remoteoldtup_json);
-	}
+		str_remote_old_tup = spock_tuple_to_json_cstring(remoteoldtup,
+														 targetTupDesc);
 	else
-	{
-		(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
-		(void) pushJsonbValue(&state, WJB_END_OBJECT, NULL);
-
-	}
-
-	elog(DEBUG1, "SpockErrorLog: Trying to add remotenewtup_json to state.");
-	val.val.string.val = "remote_new_tuple";
-	val.val.string.len = strlen(val.val.string.val);
-	(void) pushJsonbValue(&state, WJB_KEY, &val);
+		str_remote_old_tup = pstrdup("null");
 
 	if (remotenewtup != NULL)
-	{
-		elog(DEBUG1, "SpockErrorLog: remotenewtup is not NULL.");
-		remotenewtup_json = spock_tuple_data_to_jsonb(remotenewtup, targetTupDesc);
-		(void) pushJsonbValue(&state, WJB_VALUE, remotenewtup_json);
-	}
+		str_remote_new_tup = spock_tuple_to_json_cstring(remotenewtup,
+														 targetTupDesc);
 	else
-	{
-		(void) pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
-		(void) pushJsonbValue(&state, WJB_END_OBJECT, NULL);
-	}
+		str_remote_new_tup = pstrdup("null");
 
-	context_json = JsonbValueToJsonb(pushJsonbValue(&state, WJB_END_OBJECT, NULL));
-	elog(DEBUG1, "SpockErrorLog: context_json is populated");
+	/* Assemble the overall context string */
+	initStringInfo(&s);
+	appendStringInfoString(&s, "{\"local_tup\": ");
+	appendStringInfoString(&s, str_local_tup);
+	appendStringInfoString(&s, ", \"remote_old_tup\": ");
+	appendStringInfoString(&s, str_remote_old_tup);
+	appendStringInfoString(&s, ", \"remote_new_tup\": ");
+	appendStringInfoString(&s, str_remote_new_tup);
+	appendStringInfoString(&s, "}");
+
+	/* Convert the context into a jsonb Datum */
+	context_val = DirectFunctionCall1(jsonb_in, CStringGetDatum(s.data));
 
 	/* Form a tuple. */
 	memset(nulls, 0, sizeof(nulls));
@@ -161,7 +133,7 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	values[Anum_exception_log_remote_xid - 1] = TransactionIdGetDatum(remote_xid);
 	values[Anum_exception_log_schema - 1] = CStringGetTextDatum(schema);
 	values[Anum_exception_log_table - 1] = CStringGetTextDatum(table);
-	values[Anum_exception_log_exception_context - 1] = PointerGetDatum(context_json);
+	values[Anum_exception_log_exception_context - 1] = context_val;
 	values[Anum_exception_log_operation - 1] = CStringGetTextDatum(action);
 	values[Anum_exception_log_message - 1] = CStringGetTextDatum(error_message);
 	values[Anum_exception_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
@@ -212,115 +184,4 @@ get_exception_log_seq(void)
 	}
 
 	return seqoid;
-}
-
-
-/*
- * Convert a SpockTupleData to a string.
- */
-static void
-spock_tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, SpockTupleData *tuple)
-{
-	int			natt;
-	bool		first = true;
-
-	static const int MAX_CONFLICT_LOG_ATTR_LEN = 40;
-
-	/* print all columns individually */
-	for (natt = 0; natt < tupdesc->natts; natt++)
-	{
-		Form_pg_attribute attr; /* the attribute itself */
-		Oid			typid;		/* type of current attribute */
-		HeapTuple	type_tuple; /* information about a type */
-		Form_pg_type type_form;
-		Oid			typoutput;	/* output function */
-		bool		typisvarlena;
-		Datum		origval;	/* possibly toasted Datum */
-		Datum		val = PointerGetDatum(NULL);	/* definitely detoasted
-													 * Datum */
-		char	   *outputstr = NULL;
-		bool		isnull = false; /* column is null? */
-
-		attr = TupleDescAttr(tupdesc, natt);
-
-		/*
-		 * don't print dropped columns, we can't be sure everything is
-		 * available for them
-		 */
-		if (attr->attisdropped)
-			continue;
-
-		/*
-		 * Don't print system columns
-		 */
-		if (attr->attnum < 0)
-			continue;
-
-		typid = attr->atttypid;
-
-		/* gather type name */
-		type_tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
-		if (!HeapTupleIsValid(type_tuple))
-			elog(ERROR, "cache lookup failed for type %u", typid);
-		type_form = (Form_pg_type) GETSTRUCT(type_tuple);
-
-		/* print attribute name */
-		if (first)
-			first = false;
-		else
-			appendStringInfoChar(s, ' ');
-
-		appendStringInfoString(s, NameStr(attr->attname));
-
-		/* print attribute type */
-		appendStringInfoChar(s, '[');
-		appendStringInfoString(s, NameStr(type_form->typname));
-		appendStringInfoChar(s, ']');
-
-		/* query output function */
-		getTypeOutputInfo(typid,
-						  &typoutput, &typisvarlena);
-
-		ReleaseSysCache(type_tuple);
-
-		if (!tuple->nulls[natt])
-		{
-			origval = tuple->values[natt];
-			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. \
-			origval is NOT NULL");
-		}
-		else
-		{
-			isnull = true;
-			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. \
-			origval is NULL");
-		}
-
-		if (isnull)
-			outputstr = "(null)";
-		else if (typisvarlena && VARATT_IS_EXTERNAL_ONDISK(origval))
-			outputstr = "(unchanged-toast-datum)";
-		else if (typisvarlena)
-			val = PointerGetDatum(PG_DETOAST_DATUM(origval));
-		else
-			val = origval;
-
-		if (outputstr == NULL)
-		{
-			outputstr = OidOutputFunctionCall(typoutput, val);
-			elog(DEBUG1, "SpockErrorLog: Inside spock_tuple_to_stringinfo. \
-			outputstr is (%s)", outputstr);
-		}
-
-		/*
-		 * Abbreviate the Datum if it's too long. This may make it
-		 * syntatically invalid, but it's not like we're writing out a valid
-		 * ROW(...) as it is.
-		 */
-		if (strlen(outputstr) > MAX_CONFLICT_LOG_ATTR_LEN)
-			strcpy(&outputstr[MAX_CONFLICT_LOG_ATTR_LEN - 5], "...");
-
-		appendStringInfoChar(s, ':');
-		appendStringInfoString(s, outputstr);
-	}
 }

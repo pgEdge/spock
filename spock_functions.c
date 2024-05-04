@@ -1959,14 +1959,14 @@ Datum spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 	SplitIdentifierString(search_path, ',', &path_list);
 	if (path_list != NIL)
 	{
-		ListCell *lc;
+		ListCell *lc2;
 
 		appendStringInfoString(&q, "SET search_path TO ");
-		foreach (lc, path_list)
+		foreach (lc2, path_list)
 		{
-			if (lc != list_head(path_list))
+			if (lc2 != list_head(path_list))
 				appendStringInfoChar(&q, ',');
-			appendStringInfo(&q, "%s", quote_identifier((char *)lfirst(lc)));
+			appendStringInfo(&q, "%s", quote_identifier((char *)lfirst(lc2)));
 		}
 		appendStringInfo(&q, "; ");
 	}

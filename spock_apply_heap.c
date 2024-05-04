@@ -663,7 +663,12 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 						 SPOCK_STATS_INSERT_COUNT, 1);
 
 	/*
-	 * TODO: Spock does an all-column UPDATE if row exists on INSERT
+	 * TODO: Spock used to do an all-column UPDATE if row exists on INSERT.
+	 * With the new exception handling we now throw an error on dupkey
+	 * (or anything else going wrong). To either get back to the old
+	 * behavior or present the conflicting local row in the exception_log
+	 * we need to lookup the new pkey and store the row in
+	 * exception_log->local_tuple.
 	 */
 
 	/* Process and store remote tuple in the slot */
@@ -896,10 +901,13 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	}
 	else
 	{
+		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
+
 		/*
 		 * The tuple to be updated could not be found.  Do nothing except for
 		 * emitting a log message. TODO: Add pkey information as well.
 		 */
+		exception_log->local_tuple = NULL;
 		elog(ERROR,
 			 "logical replication did not find row to be updated "
 			 "in replication target relation (%s.%s)", rel->nspname,
@@ -1007,10 +1015,13 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	}
 	else
 	{
+		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
+
 		/*
 		 * The tuple to be updated could not be found.  Do nothing except for
 		 * emitting a log message.
 		 */
+		exception_log->local_tuple = NULL;
 		elog(ERROR,
 			 "logical replication did not find row to be deleted "
 			 "in replication target relation (%s.%s)", rel->nspname,

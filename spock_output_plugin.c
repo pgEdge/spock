@@ -496,8 +496,6 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 #ifdef HAVE_REPLICATION_ORIGINS
 	if (send_replication_origin)
 	{
-		char *origin;
-
 		/* Message boundary */
 		OutputPluginWrite(ctx, false);
 		OutputPluginPrepareWrite(ctx, true);
@@ -637,7 +635,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 	/* Check that we have at least the message type */
 	if (message_size < sizeof(SpockWalMessageSimple))
 	{
-		elog(WARNING, "Spock custom WAL message: message_size %d too short",
+		elog(WARNING, "Spock custom WAL message: message_size %lu too short",
 			 message_size);
 		return;
 	}
@@ -649,7 +647,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 			if (message_size != sizeof(SpockWalMessageSimple))
 			{
 				elog(WARNING, "Spock custom WAL message: wrong message "
-							  "size %d for simple message", message_size);
+							  "size %lu for simple message", message_size);
 				return;
 			}
 			spock_replication_repair_mode = true;
@@ -660,7 +658,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 			if (message_size != sizeof(SpockWalMessageSimple))
 			{
 				elog(WARNING, "Spock custom WAL message: wrong message "
-							  "size %d for simple message", message_size);
+							  "size %lu for simple message", message_size);
 				return;
 			}
 			spock_replication_repair_mode = false;
