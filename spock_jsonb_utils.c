@@ -79,9 +79,6 @@ datum_to_json_cstring(Datum val, Oid type, bool isnull)
 	values[0] = val;
 
 	/* Execute the SPI query */
-	rc = SPI_connect();
-	if (rc != SPI_OK_CONNECT)
-		elog(ERROR, "datum_to_json_cstring: SPI_connect returned %d", rc);
 	rc = SPI_execute_with_args(query, 1, argtypes, values, NULL, true, 0);
 	if (rc != SPI_OK_SELECT)
 		elog(ERROR, "datum_to_json_cstring: SPI query '%s' returned %d",
@@ -97,13 +94,13 @@ datum_to_json_cstring(Datum val, Oid type, bool isnull)
 	/* If for any reason to_json() returned NULL we convert to 'null' string */
 	if (resnull)
 	{
-		SPI_finish();
+		SPI_freetuptable(SPI_tuptable);
 		return "null";
 	}
 
 	/* Convert the result to CString, cleanup and return result */
 	result = DatumGetCString(DirectFunctionCall1(textout, resval));
-	SPI_finish();
+	SPI_freetuptable(SPI_tuptable);
 	return result;
 }
 
@@ -118,12 +115,18 @@ spock_tuple_to_json_cstring(SpockTupleData *tuple, TupleDesc tupleDesc)
 {
 	int			natt;
 	Oid			typid;
+	int			rc;
 
 	StringInfoData	s;
 	bool			add_comma = false;
 
 	initStringInfo(&s);
 	appendStringInfoString(&s, "{");
+
+	/* Connect to SPI, every call to convert a datum to json needs it */
+	rc = SPI_connect();
+	if (rc != SPI_OK_CONNECT)
+		elog(ERROR, "datum_to_json_cstring: SPI_connect returned %d", rc);
 
 	/* print all columns individually */
 	for (natt = 0; natt < tupleDesc->natts; natt++)
@@ -180,6 +183,9 @@ spock_tuple_to_json_cstring(SpockTupleData *tuple, TupleDesc tupleDesc)
 
 	}
 
+	/* Cleanup SPI */
+	SPI_finish();
+
 	/* Terminate the json string and return the result */
 	appendStringInfoString(&s, "}");
 	return s.data;
@@ -191,9 +197,15 @@ heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupleDesc)
 	int				natt;
 	bool			add_comma = false;
 	StringInfoData	s;
+	int				rc;
 
 	initStringInfo(&s);
 	appendStringInfo(&s, "{");
+
+	/* Connect to SPI, every call to convert a datum to json needs it */
+	rc = SPI_connect();
+	if (rc != SPI_OK_CONNECT)
+		elog(ERROR, "datum_to_json_cstring: SPI_connect returned %d", rc);
 
 	/* print all columns individually */
 	for (natt = 0; natt < tupleDesc->natts; natt++)
@@ -253,6 +265,9 @@ heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupleDesc)
 											   type_form->oid,
 											   isnull));
 	}
+
+	/* Cleanup SPI */
+	SPI_finish();
 
 	appendStringInfoString(&s, "}");
 	return s.data;
