@@ -339,7 +339,7 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
 
-	elog(LOG, "SpockErrorLog: Error log behaviour is set to %d", exception_log_behaviour);
+	elog(DEBUG1, "SpockErrorLog: Error log behaviour is set to %d", exception_log_behaviour);
 
 	/*
 	 * We either create a new shared memory struct in the error log for
