@@ -56,7 +56,16 @@ typedef enum SpockExceptionLogBehaviour
 extern SpockExceptionLog *exception_log_ptr;
 extern int	exception_log_behaviour;
 
-extern void
-			add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_xid,
-									   SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup,
-									   SpockTupleData *remotenewtup, char *action, char *error_message);
+extern void add_entry_to_exception_log(Oid remote_origin,
+									   TimestampTz remote_commit_ts,
+									   TransactionId remote_xid,
+									   Oid local_origin,
+									   TimestampTz local_commit_ts,
+									   SpockRelation *targetrel,
+									   HeapTuple localtup,
+									   SpockTupleData *remoteoldtup,
+									   SpockTupleData *remotenewtup,
+									   char *ddl_statement, char *ddl_user,
+									   char *ddl_search_path,
+									   char *operation,
+									   char *error_message);

@@ -812,8 +812,11 @@ handle_insert(StringInfo s)
 			{
 				add_entry_to_exception_log(remote_origin_id,
 										   replorigin_session_origin_timestamp,
-										   remote_xid, rel, localtup, oldtup,
-										   &newtup, action_name, edata->message);
+										   remote_xid,
+										   0, 0,
+										   rel, localtup, oldtup, &newtup,
+										   NULL, NULL, NULL,
+										   action_name, edata->message);
 			}
 
 		}
@@ -968,11 +971,32 @@ handle_update(StringInfo s)
 
 			if (exception_log_behaviour > IGNORE)
 			{
+				RepOriginId		local_origin;
+				TimestampTz		local_commit_ts;
+				TransactionId	xmin;
+				bool			local_origin_found = false;
+
 				localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+				if (localtup != NULL)
+					local_origin_found = get_tuple_origin(rel, localtup,
+														  &(localtup->t_self),
+														  &xmin,
+														  &local_origin,
+														  &local_commit_ts);
+				if (!local_origin_found)
+				{
+					xmin = InvalidTransactionId;
+					local_origin = InvalidRepOriginId;
+					local_commit_ts = 0;
+				}
+
 				add_entry_to_exception_log(remote_origin_id,
 										   replorigin_session_origin_timestamp,
-										   remote_xid, rel, localtup,
+										   remote_xid,
+										   local_origin, local_commit_ts,
+										   rel, localtup,
 										   hasoldtup ? &oldtup : NULL, &newtup,
+										   NULL, NULL, NULL,
 										   "UPDATE", edata->message);
 			}
 
@@ -994,7 +1018,6 @@ static void
 handle_delete(StringInfo s)
 {
 	SpockTupleData oldtup;
-	SpockTupleData *newtup = NULL;
 	SpockRelation *rel;
 	HeapTuple	localtup;
 	ErrorData  *edata;
@@ -1063,12 +1086,33 @@ handle_delete(StringInfo s)
 
 			if (exception_log_behaviour > IGNORE)
 			{
+				RepOriginId		local_origin;
+				TimestampTz		local_commit_ts;
+				TransactionId	xmin;
+				bool			local_origin_found = false;
+
 				localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+				if (localtup != NULL)
+					local_origin_found = get_tuple_origin(rel, localtup,
+														  &(localtup->t_self),
+														  &xmin,
+														  &local_origin,
+														  &local_commit_ts);
+				if (!local_origin_found)
+				{
+					xmin = InvalidTransactionId;
+					local_origin = InvalidRepOriginId;
+					local_commit_ts = 0;
+				}
+
 				add_entry_to_exception_log(remote_origin_id,
 										   replorigin_session_origin_timestamp,
-										   remote_xid, rel, localtup,
-										   &oldtup, newtup,
-										   "DELETE", edata->message);
+										   remote_xid,
+										   local_origin, local_commit_ts,
+										   rel, localtup,
+										   &oldtup, NULL,
+										   NULL, NULL, NULL,
+										   "UPDATE", edata->message);
 			}
 
 		}

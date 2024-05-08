@@ -49,18 +49,24 @@ CREATE TABLE spock.local_sync_status (
 -- TODO: Create a new primary key for this table
 -- A single transaction could have multiple erroring rows
 CREATE TABLE spock.exception_log (
-	exception_id int generated always as identity,
-	node_id oid NOT NULL,
-	commit_timestamp timestamptz NOT NULL,
+	remote_origin oid NOT NULL,
+	remote_commit_ts timestamptz NOT NULL,
+	command_counter integer NOT NULL,
 	remote_xid bigint NOT NULL,
-	table_schema text NOT NULL,
-	table_name text NOT NULL,
-	exception_context jsonb NOT NULL,
-	operation text NOT NULL,
+	local_origin oid,
+	local_commit_ts timestamptz,
+	table_schema text,
+	table_name text,
+	operation text,
+	local_tup jsonb,
+	remote_old_tup jsonb,
+	remote_new_tup jsonb,
+	ddl_statement text,
+	ddl_user text,
+	ddl_search_path text,
 	error_message text NOT NULL,
 	retry_errored_at timestamptz NOT NULL,
-	-- Perhaps node_id and commit_timestamp are not needed here
-	PRIMARY KEY(node_id, commit_timestamp, exception_id)
+	PRIMARY KEY(remote_origin, remote_commit_ts, command_counter)
 ) WITH (user_catalog_table=true);
 
 CREATE FUNCTION spock.node_create(node_name name, dsn text,

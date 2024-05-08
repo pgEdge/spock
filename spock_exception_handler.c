@@ -41,33 +41,46 @@
 #include "spock_exception_handler.h"
 #include "spock_jsonb_utils.h"
 
-#define Natts_exception_table 10
-#define Anum_exception_log_id 1
-#define Anum_exception_log_node_id 2
-#define Anum_exception_log_commit_ts 3
+#define Natts_exception_table 17
+#define Anum_exception_log_remote_origin 1
+#define Anum_exception_log_remote_commit_ts 2
+#define Anum_exception_log_command_counter 3
 #define Anum_exception_log_remote_xid 4
-#define Anum_exception_log_schema 5
-#define Anum_exception_log_table 6
-#define Anum_exception_log_exception_context 7
-#define Anum_exception_log_operation 8
-#define Anum_exception_log_message 9
-#define Anum_exception_log_retry_errored_at 10
+#define Anum_exception_log_local_origin 5
+#define Anum_exception_log_local_commit_ts 6
+#define Anum_exception_log_schema 7
+#define Anum_exception_log_table 8
+#define Anum_exception_log_operation 9
+#define Anum_exception_log_local_tup 10
+#define Anum_exception_log_remote_old_tup 11
+#define Anum_exception_log_remote_new_tup 12
+#define Anum_exception_log_ddl_statement 13
+#define Anum_exception_log_ddl_user 14
+#define Anum_exception_log_ddl_search_path 15
+#define Anum_exception_log_error_message 16
+#define Anum_exception_log_retry_errored_at 17
 
 #define CATALOG_EXCEPTION_LOG "exception_log"
 
 SpockExceptionLog *exception_log_ptr = NULL;
 int			exception_log_behaviour = TRANSDISCARD;
+int			exception_command_counter = 0;
 
-static Oid	get_exception_log_table_oid(void);
-static Oid	get_exception_log_seq(void);
 
 /*
  * Add an entry to the error log.
  */
 void
-add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remote_xid,
-						   SpockRelation *targetrel, HeapTuple localtup, SpockTupleData *remoteoldtup,
-						   SpockTupleData *remotenewtup, char *action, char *error_message)
+add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
+						   TransactionId remote_xid,
+						   Oid local_origin, TimestampTz local_commit_ts,
+						   SpockRelation *targetrel,
+						   HeapTuple localtup, SpockTupleData *remoteoldtup,
+						   SpockTupleData *remotenewtup,
+						   char *ddl_statement, char *ddl_user,
+						   char *ddl_search_path,
+						   char *operation,
+						   char *error_message)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -76,14 +89,12 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	HeapTuple	tup;
 	Datum		values[Natts_exception_table];
 	bool		nulls[Natts_exception_table];
-	Datum		context_val;
 	char	   *schema = targetrel->nspname;
 	char	   *table = targetrel->relname;
 
-	StringInfoData	s;
-	char		   *str_local_tup;
-	char		   *str_remote_old_tup;
-	char		   *str_remote_new_tup;
+	char	   *str_local_tup;
+	char	   *str_remote_old_tup;
+	char	   *str_remote_new_tup;
 
 	/* Get the tuple descriptors */
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_EXCEPTION_LOG, -1);
@@ -96,46 +107,75 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 		str_local_tup = heap_tuple_to_json_cstring(&localtup,
 												   targetTupDesc);
 	else
-		str_local_tup = pstrdup("null");
+		str_local_tup = NULL;
 
 	if (remoteoldtup != NULL)
 		str_remote_old_tup = spock_tuple_to_json_cstring(remoteoldtup,
 														 targetTupDesc);
 	else
-		str_remote_old_tup = pstrdup("null");
+		str_remote_old_tup = NULL;
 
 	if (remotenewtup != NULL)
 		str_remote_new_tup = spock_tuple_to_json_cstring(remotenewtup,
 														 targetTupDesc);
 	else
-		str_remote_new_tup = pstrdup("null");
-
-	/* Assemble the overall context string */
-	initStringInfo(&s);
-	appendStringInfoString(&s, "{\"local_tup\": ");
-	appendStringInfoString(&s, str_local_tup);
-	appendStringInfoString(&s, ", \"remote_old_tup\": ");
-	appendStringInfoString(&s, str_remote_old_tup);
-	appendStringInfoString(&s, ", \"remote_new_tup\": ");
-	appendStringInfoString(&s, str_remote_new_tup);
-	appendStringInfoString(&s, "}");
-
-	/* Convert the context into a jsonb Datum */
-	context_val = DirectFunctionCall1(jsonb_in, CStringGetDatum(s.data));
+		str_remote_new_tup = NULL;
 
 	/* Form a tuple. */
 	memset(nulls, 0, sizeof(nulls));
 	memset(values, 0, sizeof(values));
 
-	values[Anum_exception_log_id - 1] = DirectFunctionCall1(nextval_oid, get_exception_log_seq());
-	values[Anum_exception_log_node_id - 1] = ObjectIdGetDatum(nodeid);
-	values[Anum_exception_log_commit_ts - 1] = TimestampTzGetDatum(commit_ts);
+	values[Anum_exception_log_remote_origin - 1] = ObjectIdGetDatum(remote_origin);
+	values[Anum_exception_log_remote_commit_ts - 1] = TimestampTzGetDatum(remote_commit_ts);
+	values[Anum_exception_log_command_counter - 1] = ++exception_command_counter;
 	values[Anum_exception_log_remote_xid - 1] = TransactionIdGetDatum(remote_xid);
-	values[Anum_exception_log_schema - 1] = CStringGetTextDatum(schema);
-	values[Anum_exception_log_table - 1] = CStringGetTextDatum(table);
-	values[Anum_exception_log_exception_context - 1] = context_val;
-	values[Anum_exception_log_operation - 1] = CStringGetTextDatum(action);
-	values[Anum_exception_log_message - 1] = CStringGetTextDatum(error_message);
+	if (ddl_statement == NULL)
+	{
+		if (str_local_tup != NULL)
+		{
+			values[Anum_exception_log_local_origin - 1] = 0;
+			values[Anum_exception_log_local_commit_ts - 1] = 0;
+		}
+		else
+		{
+			nulls[Anum_exception_log_local_origin - 1] = 'n';
+			nulls[Anum_exception_log_local_commit_ts - 1] = 'n';
+		}
+		values[Anum_exception_log_schema - 1] = CStringGetTextDatum(schema);
+		values[Anum_exception_log_table - 1] = CStringGetTextDatum(table);
+		values[Anum_exception_log_operation - 1] = CStringGetTextDatum(operation);
+		if (str_local_tup != NULL)
+			values[Anum_exception_log_local_tup - 1] = DirectFunctionCall1(jsonb_in, CStringGetDatum(str_local_tup));
+		else
+			nulls[Anum_exception_log_local_tup - 1] = 'n';
+		if (str_remote_old_tup != NULL)
+			values[Anum_exception_log_remote_old_tup - 1] = DirectFunctionCall1(jsonb_in, CStringGetDatum(str_remote_old_tup));
+		else
+			nulls[Anum_exception_log_remote_old_tup - 1] = 'n';
+		if (str_remote_new_tup != NULL)
+			values[Anum_exception_log_remote_new_tup - 1] = DirectFunctionCall1(jsonb_in, CStringGetDatum(str_remote_new_tup));
+		else
+			nulls[Anum_exception_log_remote_new_tup - 1] = 'n';
+		nulls[Anum_exception_log_ddl_statement - 1] = 'n';
+		nulls[Anum_exception_log_ddl_user - 1] = 'n';
+		nulls[Anum_exception_log_ddl_search_path - 1] = 'n';
+	}
+	else
+	{
+		nulls[Anum_exception_log_local_origin - 1] = 'n';
+		nulls[Anum_exception_log_local_commit_ts - 1] = 'n';
+		nulls[Anum_exception_log_schema - 1] = 'n';
+		nulls[Anum_exception_log_table - 1] = 'n';
+		values[Anum_exception_log_operation - 1] = CStringGetTextDatum("DDL");
+		nulls[Anum_exception_log_local_tup - 1] = 'n';
+		nulls[Anum_exception_log_remote_old_tup - 1] = 'n';
+		nulls[Anum_exception_log_remote_new_tup - 1] = 'n';
+		values[Anum_exception_log_ddl_statement - 1] = CStringGetTextDatum(ddl_statement);
+		values[Anum_exception_log_ddl_user - 1] = CStringGetTextDatum(ddl_user);
+		values[Anum_exception_log_ddl_search_path - 1] = CStringGetTextDatum(ddl_search_path);
+	}
+
+	values[Anum_exception_log_error_message - 1] = CStringGetTextDatum(error_message);
 	values[Anum_exception_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
@@ -147,41 +187,5 @@ add_entry_to_exception_log(Oid nodeid, TimestampTz commit_ts, TransactionId remo
 	heap_freetuple(tup);
 	table_close(rel, RowExclusiveLock);
 
-	elog(LOG, "SpockErrorLog: Inserted tuple into exception_log table.");
-
 	CommandCounterIncrement();
-}
-
-/*
- * Get (cached) oid of the conflict log table.
- */
-static Oid
-get_exception_log_table_oid(void)
-{
-	static Oid	logtableoid = InvalidOid;
-
-	if (logtableoid == InvalidOid)
-		logtableoid = get_spock_table_oid(CATALOG_EXCEPTION_LOG);
-
-	return logtableoid;
-}
-
-/*
- * Get (cached) oid of the conflict log sequence, which is created
- * implicitly.
- */
-static Oid
-get_exception_log_seq(void)
-{
-	static Oid	seqoid = InvalidOid;
-
-	if (seqoid == InvalidOid)
-	{
-		Oid			reloid;
-
-		reloid = get_exception_log_table_oid();
-		seqoid = getIdentitySequence(reloid, 0, false);
-	}
-
-	return seqoid;
 }

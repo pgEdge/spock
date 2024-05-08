@@ -121,7 +121,7 @@ spock_tuple_to_json_cstring(SpockTupleData *tuple, TupleDesc tupleDesc)
 	bool			add_comma = false;
 
 	initStringInfo(&s);
-	appendStringInfoString(&s, "{");
+	appendStringInfoString(&s, "[");
 
 	/* Connect to SPI, every call to convert a datum to json needs it */
 	rc = SPI_connect();
@@ -172,9 +172,9 @@ spock_tuple_to_json_cstring(SpockTupleData *tuple, TupleDesc tupleDesc)
 			appendStringInfoString(&s, ", ");
 		else
 			add_comma = true;
-		appendStringInfo(&s, "%s: {",
+		appendStringInfo(&s, "{\"attname\": %s, ",
 						 name_to_json_cstring(&attr->attname));
-		appendStringInfo(&s, "\"type\": %s, ",
+		appendStringInfo(&s, "\"atttype\": %s, ",
 						 name_to_json_cstring(&type_form->typname));
 		appendStringInfo(&s, "\"value\": %s}",
 						 datum_to_json_cstring(tuple->values[natt],
@@ -187,7 +187,7 @@ spock_tuple_to_json_cstring(SpockTupleData *tuple, TupleDesc tupleDesc)
 	SPI_finish();
 
 	/* Terminate the json string and return the result */
-	appendStringInfoString(&s, "}");
+	appendStringInfoString(&s, "]");
 	return s.data;
 }
 
@@ -200,7 +200,7 @@ heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupleDesc)
 	int				rc;
 
 	initStringInfo(&s);
-	appendStringInfo(&s, "{");
+	appendStringInfo(&s, "[");
 
 	/* Connect to SPI, every call to convert a datum to json needs it */
 	rc = SPI_connect();
@@ -255,9 +255,9 @@ heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupleDesc)
 			appendStringInfoString(&s, ", ");
 		else
 			add_comma = true;
-		appendStringInfo(&s, "%s: {",
+		appendStringInfo(&s, "{\"attname\": %s, ",
 						 name_to_json_cstring(&attr->attname));
-		appendStringInfo(&s, "\"type\": %s, ",
+		appendStringInfo(&s, "\"atttype\": %s, ",
 						 name_to_json_cstring(&type_form->typname));
 		origval = heap_getattr(*tuple, natt + 1, tupleDesc, &isnull);
 		appendStringInfo(&s, "\"value\": %s}",
@@ -269,6 +269,6 @@ heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupleDesc)
 	/* Cleanup SPI */
 	SPI_finish();
 
-	appendStringInfoString(&s, "}");
+	appendStringInfoString(&s, "]");
 	return s.data;
 }
