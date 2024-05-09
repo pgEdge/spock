@@ -39,6 +39,7 @@ typedef struct SpockTableRepInfo
 	bool			replicate_insert;	/* should insert be replicated? */
 	bool			replicate_update;	/* should update be replicated? */
 	bool			replicate_delete;	/* should delete be replicated? */
+	bool			replicate_truncate;	/* should truncate be replicated? */
 
 	Bitmapset	   *att_list;			/* column filter
 										   NULL if everything is replicated

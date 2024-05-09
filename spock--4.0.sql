@@ -284,9 +284,6 @@ CREATE FUNCTION spock.replicate_ddl(command text[], replication_sets text[] DEFA
 RETURNS SETOF boolean STRICT VOLATILE LANGUAGE sql AS
     'SELECT spock.replicate_ddl(cmd, $2) FROM (SELECT unnest(command) cmd)';
 
-CREATE OR REPLACE FUNCTION spock.queue_truncate()
-RETURNS trigger LANGUAGE c AS 'MODULE_PATHNAME', 'spock_queue_truncate';
-
 CREATE FUNCTION spock.node_info(OUT node_id oid, OUT node_name text,
     OUT sysid text, OUT dbname text, OUT replication_sets text,
     OUT location text, OUT country text, OUT info jsonb)

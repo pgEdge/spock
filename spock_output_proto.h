@@ -49,6 +49,9 @@
  */
 #define SPOCK_STARTUP_MSG_FORMAT_FLAT 1
 
+#define TRUNCATE_CASCADE		(1<<0)
+#define TRUNCATE_RESTART_SEQS	(1<<1)
+
 typedef enum SpockProtoType
 {
 	SpockProtoNative,
@@ -79,6 +82,9 @@ typedef void (*spock_write_delete_fn) (StringInfo out, SpockOutputData * data,
 										   Bitmapset *att_list);
 
 typedef void (*write_startup_message_fn) (StringInfo out, List *msg);
+typedef void (*spock_write_truncate_fn) (StringInfo out, int nrelids,
+										 Oid relids[], bool cascade,
+										 bool restart_seqs);
 
 typedef struct SpockProtoAPI
 {
@@ -90,6 +96,7 @@ typedef struct SpockProtoAPI
 	spock_write_update_fn write_update;
 	spock_write_delete_fn write_delete;
 	write_startup_message_fn write_startup_message;
+	spock_write_truncate_fn write_truncate;
 } SpockProtoAPI;
 
 extern SpockProtoAPI *spock_init_api(SpockProtoType typ);

@@ -111,4 +111,9 @@
 #define ReorderBufferChangeHeapTuple(change, tuple_type) \
 	&change->data.tp.tuple_type->tuple
 
+#define ExecuteTruncateGuts(explicit_rels, relids, relids_logged, behavior, \
+							restart_seqs, run_as_table_owner) \
+		ExecuteTruncateGuts(explicit_rels, relids, relids_logged, behavior, \
+							restart_seqs)
+
 #endif

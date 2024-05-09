@@ -136,7 +136,6 @@ PG_FUNCTION_INFO_V1(spock_synchronize_sequence);
 
 /* DDL */
 PG_FUNCTION_INFO_V1(spock_replicate_ddl_command);
-PG_FUNCTION_INFO_V1(spock_queue_truncate);
 PG_FUNCTION_INFO_V1(spock_truncate_trigger_add);
 PG_FUNCTION_INFO_V1(spock_dependency_check_trigger);
 
@@ -1460,7 +1459,6 @@ Datum spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	{
 		Oid partoid = lfirst_oid(lc);
 
-		create_truncate_trigger(partoid);
 		create_commit_info_columns(partoid);
 
 		replication_set_add_table(repset->id, partoid, att_list, row_filter);
@@ -1604,7 +1602,6 @@ spock_replication_set_add_all_relations(Name repset_name,
 
 				if (relkind == RELKIND_RELATION || relkind == RELKIND_PARTITIONED_TABLE)
 				{
-					create_truncate_trigger(reloid);
 					create_commit_info_columns(reloid);
 					replication_set_add_table(repset->id, reloid, NIL, NULL);
 				}
@@ -2137,64 +2134,6 @@ skip_ddl:
 	elog(WARNING, "This DDL statement will not be replicated.");
 }
 
-/*
- * spock_queue_trigger
- *
- * Trigger which queues the TRUNCATE command.
- *
- * This function only writes to internal linked list, actual queueing is done
- * by spock_finish_truncate().
- */
-Datum spock_queue_truncate(PG_FUNCTION_ARGS)
-{
-	TriggerData *trigdata = (TriggerData *)fcinfo->context;
-	const char *funcname = "queue_truncate";
-	MemoryContext oldcontext;
-	SpockLocalNode *local_node;
-	Oid save_userid = 0;
-	int save_sec_context = 0;
-
-	/* Return if this function was called from apply process. */
-	if (MySpockWorker)
-		PG_RETURN_VOID();
-
-	/* Make sure this is being called as an AFTER TRUNCTATE trigger. */
-	if (!CALLED_AS_TRIGGER(fcinfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("function \"%s\" was not called by trigger manager",
-						funcname)));
-
-	if (!TRIGGER_FIRED_AFTER(trigdata->tg_event) ||
-		!TRIGGER_FIRED_BY_TRUNCATE(trigdata->tg_event))
-		ereport(ERROR,
-				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("function \"%s\" must be fired AFTER TRUNCATE",
-						funcname)));
-
-	/*
-	 * Elevate access level to read spock schema objects.
-	 */
-	GetUserIdAndSecContext(&save_userid, &save_sec_context);
-	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
-						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-
-	/* If this is not spock node, don't do anything. */
-	local_node = get_local_node(false, true);
-
-	SetUserIdAndSecContext(save_userid, save_sec_context);
-
-	if (!local_node)
-		PG_RETURN_VOID();
-
-	/* Make sure the list change survives the trigger call. */
-	oldcontext = MemoryContextSwitchTo(TopTransactionContext);
-	spock_truncated_tables = lappend_oid(spock_truncated_tables,
-										 RelationGetRelid(trigdata->tg_relation));
-	MemoryContextSwitchTo(oldcontext);
-
-	PG_RETURN_VOID();
-}
 
 /*
  * spock_dependency_check_trigger

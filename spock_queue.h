@@ -15,7 +15,6 @@
 #include "utils/jsonb.h"
 
 #define QUEUE_COMMAND_TYPE_SQL			'Q'
-#define QUEUE_COMMAND_TYPE_TRUNCATE		'T'
 #define QUEUE_COMMAND_TYPE_TABLESYNC	'A'
 #define QUEUE_COMMAND_TYPE_SEQUENCE		'S'
 #define QUEUE_COMMAND_TYPE_DDL			'D'
@@ -35,8 +34,6 @@ extern void queue_message(List *replication_sets, Oid roleoid,
 extern QueuedMessage *queued_message_from_tuple(HeapTuple queue_tup);
 
 extern Oid get_queue_table_oid(void);
-
-extern void create_truncate_trigger(Oid relid);
 extern void create_commit_info_columns(Oid relid);
 
 #endif /* SPOCK_NODE_H */

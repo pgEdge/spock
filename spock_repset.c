@@ -409,6 +409,7 @@ get_table_replication_info(Oid nodeid, Relation table,
 	entry->replicate_insert = false;
 	entry->replicate_update = false;
 	entry->replicate_delete = false;
+	entry->replicate_truncate = false;
 	entry->att_list = NULL;
 	entry->row_filter = NIL;
 
@@ -466,6 +467,8 @@ get_table_replication_info(Oid nodeid, Relation table,
 					entry->replicate_update = true;
 				if (repset->replicate_delete)
 					entry->replicate_delete = true;
+				if (repset->replicate_truncate)
+					entry->replicate_truncate = true;
 
 				/* Update replicated column map. */
 				d = heap_getattr(tuple, Anum_repset_table_att_list,

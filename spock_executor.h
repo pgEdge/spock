@@ -20,7 +20,6 @@
 #endif
 #include "parser/parse_node.h"
 
-extern List *spock_truncated_tables;
 
 extern EState *create_estate_for_relation(Relation rel, bool forwrite);
 extern ExprContext *prepare_per_tuple_econtext(EState *estate, TupleDesc tupdesc);

@@ -72,7 +72,9 @@ static void pg_decode_message(LogicalDecodingContext *ctx,
 							  const char *prefix,
 							  Size message_size,
 							  const char *message);
-
+static void pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
+							   int nrelations, Relation relations[],
+							   ReorderBufferChange *change);
 
 #ifdef HAVE_REPLICATION_ORIGINS
 static bool pg_decode_origin_filter(LogicalDecodingContext *ctx,
@@ -137,6 +139,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->change_cb = pg_decode_change;
 	cb->commit_cb = pg_decode_commit_txn;
 	cb->message_cb = pg_decode_message;
+	cb->truncate_cb = pg_decode_truncate;
 #ifdef HAVE_REPLICATION_ORIGINS
 	cb->filter_by_origin_cb = pg_decode_origin_filter;
 #endif
@@ -705,10 +708,9 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 
 			/*
 			 * No replication set means global message, those are always
-			 * replicated, but excluding TRUNCATE.
+			 * replicated.
 			 */
-			if (q->replication_sets == NULL &&
-				q->message_type != QUEUE_COMMAND_TYPE_TRUNCATE)
+			if (q->replication_sets == NULL)
 				return true;
 
 			foreach (qlc, q->replication_sets)
@@ -722,8 +724,7 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 
 					/* TODO: this is somewhat ugly. */
 					if (strcmp(queue_set, rs->name) == 0 &&
-						(q->message_type != QUEUE_COMMAND_TYPE_TRUNCATE ||
-						 rs->replicate_truncate))
+						rs->replicate_truncate)
 						return true;
 				}
 			}
@@ -863,6 +864,42 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 	return true;
 }
 
+/*
+ * Send relation description.
+ */
+static void
+maybe_send_schema(LogicalDecodingContext *ctx, ReorderBufferChange *change,
+			Relation relation)
+{
+	SpockOutputData *data = ctx->output_plugin_private;
+	SPKRelMetaCacheEntry *cached_relmeta;
+
+	/*
+	 * If the protocol wants to write relation information and the client
+	 * isn't known to have metadata cached for this relation already,
+	 * send relation metadata.
+	 *
+	 * TODO: track hit/miss stats
+	 */
+	if (data->api->write_rel == NULL)
+		return;
+
+	cached_relmeta = relmetacache_get_relation(data, relation);
+	if (!cached_relmeta->is_cached)
+	{
+		SpockTableRepInfo *tblinfo;
+
+		tblinfo = get_table_replication_info(data->local_node_id, relation,
+										data->replication_sets);
+
+
+		OutputPluginPrepareWrite(ctx, false);
+		data->api->write_rel(ctx->out, data, relation, tblinfo->att_list);
+		OutputPluginWrite(ctx, false);
+		cached_relmeta->is_cached = true;
+	}
+}
+
 static void
 pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				 Relation relation, ReorderBufferChange *change)
@@ -900,26 +937,8 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	if (!spock_change_filter(data, relation, change, &att_list))
 		goto cleanup;
 
-	/*
-	 * If the protocol wants to write relation information and the client
-	 * isn't known to have metadata cached for this relation already,
-	 * send relation metadata.
-	 *
-	 * TODO: track hit/miss stats
-	 */
-	if (data->api->write_rel != NULL)
-	{
-		SPKRelMetaCacheEntry *cached_relmeta;
-		cached_relmeta = relmetacache_get_relation(data, relation);
-
-		if (!cached_relmeta->is_cached)
-		{
-			OutputPluginPrepareWrite(ctx, false);
-			data->api->write_rel(ctx->out, data, relation, att_list);
-			OutputPluginWrite(ctx, false);
-			cached_relmeta->is_cached = true;
-		}
-	}
+	/* Send relation description */
+	maybe_send_schema(ctx, change, relation);
 
 	/* Send the data */
 	switch (change->action)
@@ -969,6 +988,62 @@ cleanup:
 	Assert(CurrentMemoryContext == data->context);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(data->context);
+}
+
+static void
+pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
+				   int nrelations, Relation relations[],
+				   ReorderBufferChange *change)
+{
+	SpockOutputData *data = (SpockOutputData*)ctx->output_plugin_private;
+	MemoryContext old;
+	int			i;
+	int			nrelids;
+	Oid		   *relids;
+	List	   *repsets;
+
+	/*
+	 * If we are in slot-group skip transaction mode do nothing
+	 */
+	if (slot_group_skip_xact)
+		return;
+
+	/* If in repair mode skip these actions */
+	if (spock_replication_repair_mode)
+		return;
+
+	relids = palloc0(nrelations * sizeof(Oid));
+	nrelids = 0;
+
+	for (i = 0; i < nrelations; i++)
+	{
+		ListCell   *rlc;
+		Relation	relation = relations[i];
+		Oid			relid = RelationGetRelid(relation);
+
+		repsets = get_table_replication_sets(data->local_node_id, relid);
+		foreach(rlc, repsets)
+		{
+			SpockRepSet *repset = (SpockRepSet *) lfirst(rlc);
+
+			if (!repset->replicate_truncate)
+				continue;
+		}
+
+		relids[nrelids++] = relid;
+		/* Send relation description */
+		maybe_send_schema(ctx, change, relation);
+	}
+
+	old = MemoryContextSwitchTo(data->context);
+	OutputPluginPrepareWrite(ctx, true);
+	data->api->write_truncate(ctx->out, nrelids, relids,
+							  change->data.truncate.cascade,
+							  change->data.truncate.restart_seqs);
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(data->context);
+
+	OutputPluginWrite(ctx, true);
 }
 
 #ifdef HAVE_REPLICATION_ORIGINS

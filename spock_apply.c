@@ -19,6 +19,8 @@
 #include "access/xact.h"
 
 #include "catalog/namespace.h"
+#include "catalog/pg_inherits.h"
+#include "catalog/catalog.h"
 
 #include "commands/async.h"
 #include "commands/dbcommands.h"
@@ -1149,6 +1151,118 @@ handle_delete(StringInfo s)
 	end_replication_step();
 }
 
+/*
+ * Handle TRUNCATE
+ */
+static void
+handle_truncate(StringInfo s)
+{
+	bool		cascade = false;
+	bool		restart_seqs = false;
+	List	   *remote_relids = NIL;
+	List	   *remote_rels = NIL;
+	List	   *rels = NIL;
+	List	   *part_rels = NIL;
+	List	   *relids = NIL;
+	List	   *relids_logged = NIL;
+	ListCell   *lc;
+	LOCKMODE	lockmode = AccessExclusiveLock;
+
+	begin_replication_step();
+
+	errcallback_arg.action_name = "TRUNCATE";
+	remote_relids = spock_read_truncate(s, &cascade, &restart_seqs);
+
+	foreach(lc, remote_relids)
+	{
+		SpockRelation *rel;
+		Oid			relid = lfirst_oid(lc);
+
+		rel = spock_relation_open(relid, lockmode);
+		errcallback_arg.rel = rel;
+
+		/* If in list of relations which are being synchronized, skip. */
+		if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
+		{
+			spock_relation_close(rel, NoLock);
+			continue;
+		}
+
+		remote_rels = lappend(remote_rels, rel);
+		rels = lappend(rels, rel->rel);
+		relids = lappend_oid(relids, rel->reloid);
+		if (RelationIsLogicallyLogged(rel->rel))
+			relids_logged = lappend_oid(relids_logged, rel->reloid);
+
+		/*
+		 * Truncate partitions if we got a message to truncate a partitioned
+		 * table.
+		 */
+		if (rel->rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		{
+			ListCell   *child;
+			List	   *children = find_all_inheritors(rel->reloid,
+													   lockmode,
+													   NULL);
+
+			foreach(child, children)
+			{
+				Oid			childrelid = lfirst_oid(child);
+				Relation	childrel;
+
+				if (list_member_oid(relids, childrelid))
+					continue;
+
+				/* find_all_inheritors already got lock */
+				childrel = table_open(childrelid, NoLock);
+
+				/*
+				 * Ignore temp tables of other backends.  See similar code in
+				 * ExecuteTruncate().
+				 */
+				if (RELATION_IS_OTHER_TEMP(childrel))
+				{
+					table_close(childrel, lockmode);
+					continue;
+				}
+
+				rels = lappend(rels, childrel);
+				part_rels = lappend(part_rels, childrel);
+				relids = lappend_oid(relids, childrelid);
+				/* Log this relation only if needed for logical decoding */
+				if (RelationIsLogicallyLogged(childrel))
+					relids_logged = lappend_oid(relids_logged, childrelid);
+			}
+		}
+	}
+
+	/*
+	 * Even if we used CASCADE on the upstream primary we explicitly default
+	 * to replaying changes without further cascading. This might be later
+	 * changeable with a user specified option.
+	 */
+	ExecuteTruncateGuts(rels,
+						relids,
+						relids_logged,
+						DROP_RESTRICT,
+						restart_seqs,
+						false);
+	foreach(lc, remote_rels)
+	{
+		SpockRelation *rel = lfirst(lc);
+
+		spock_relation_close(rel, NoLock);
+	}
+	foreach(lc, part_rels)
+	{
+		Relation	rel = lfirst(lc);
+
+		table_close(rel, NoLock);
+	}
+
+	end_replication_step();
+}
+
 inline static bool
 getmsgisend(StringInfo msg)
 {
@@ -1332,28 +1446,6 @@ parse_relation_message(Jsonb *message)
 			 MySubscription->name);
 
 	return makeRangeVar(nspname, relname, -1);
-}
-
-/*
- * Handle TRUNCATE message comming via queue table.
- */
-static void
-handle_truncate(QueuedMessage *queued_message)
-{
-	RangeVar   *rv;
-
-	/*
-	 * If table doesn't exist locally, it can't be subscribed.
-	 *
-	 * TODO: should we error here?
-	 */
-	rv = parse_relation_message(queued_message->message);
-
-	/* If in list of relations which are being synchronized, skip. */
-	if (!should_apply_changes_for_rel(rv->schemaname, rv->relname))
-		return;
-
-	truncate_table(rv->schemaname, rv->relname);
 }
 
 /*
@@ -1582,10 +1674,6 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 			handle_sql(queued_message, tx_just_started);
 			in_spock_queue_ddl_command = false;
 			break;
-		case QUEUE_COMMAND_TYPE_TRUNCATE:
-			errcallback_arg.action_name = "QUEUED_TRUNCATE";
-			handle_truncate(queued_message);
-			break;
 		case QUEUE_COMMAND_TYPE_TABLESYNC:
 			errcallback_arg.action_name = "QUEUED_TABLESYNC";
 			handle_table_sync(queued_message);
@@ -1647,6 +1735,10 @@ replication_handler(StringInfo s)
 			/* DELETE */
 		case 'D':
 			handle_delete(s);
+			break;
+			/* TRUNCATE */
+		case 'T':
+			handle_truncate(s);
 			break;
 			/* STARTUP MESSAGE */
 		case 'S':

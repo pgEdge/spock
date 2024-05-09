@@ -55,7 +55,6 @@
 #include "spock_dependency.h"
 #include "spock.h"
 
-List *spock_truncated_tables = NIL;
 
 static DropBehavior	spock_lastDropBehavior = DROP_RESTRICT;
 static bool			dropping_spock_obj = false;
@@ -134,84 +133,6 @@ spock_prepare_row_filter(Node *row_filter)
 	exprstate = ExecInitExpr(expr, NULL);
 
 	return exprstate;
-}
-
-static void
-spock_start_truncate(void)
-{
-	spock_truncated_tables = NIL;
-}
-
-static void
-spock_finish_truncate(void)
-{
-	ListCell	   *tlc;
-	SpockLocalNode *local_node;
-	Oid				session_userid = GetUserId();
-	Oid				save_userid = 0;
-	int				save_sec_context = 0;
-
-	/* Elevate permissions to access spock objects */
-	GetUserIdAndSecContext(&save_userid, &save_sec_context);
-	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
-						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-
-	/* If this is not a spock node, don't do anything. */
-	local_node = get_local_node(false, true);
-	if (!local_node || !list_length(spock_truncated_tables))
-	{
-		SetUserIdAndSecContext(save_userid, save_sec_context);
-		return;
-	}
-
-	foreach (tlc, spock_truncated_tables)
-	{
-		Oid			reloid = lfirst_oid(tlc);
-		char	   *nspname;
-		char	   *relname;
-		List	   *repsets;
-		StringInfoData	json;
-
-		/* Format the query. */
-		nspname = get_namespace_name(get_rel_namespace(reloid));
-		relname = get_rel_name(reloid);
-
-		elog(DEBUG3, "truncating the table %s.%s", nspname, relname);
-
-		/* It's easier to construct json manually than via Jsonb API... */
-		initStringInfo(&json);
-		appendStringInfo(&json, "{\"schema_name\": ");
-		escape_json(&json, nspname);
-		appendStringInfo(&json, ",\"table_name\": ");
-		escape_json(&json, relname);
-		appendStringInfo(&json, "}");
-
-		repsets = get_table_replication_sets(local_node->node->id, reloid);
-
-		if (list_length(repsets))
-		{
-			List	   *repset_names = NIL;
-			ListCell   *rlc;
-
-			foreach (rlc, repsets)
-			{
-				SpockRepSet	    *repset = (SpockRepSet *) lfirst(rlc);
-				repset_names = lappend(repset_names, pstrdup(repset->name));
-				elog(DEBUG1, "truncating the table %s.%s for %s repset",
-					 nspname, relname, repset->name);
-			}
-
-			/* Queue the truncate for replication. */
-			queue_message(repset_names, session_userid,
-						  QUEUE_COMMAND_TYPE_TRUNCATE, json.data);
-		}
-	}
-
-	/* Restore original session permissions */
-	SetUserIdAndSecContext(save_userid, save_sec_context);
-
-	list_free(spock_truncated_tables);
-	spock_truncated_tables = NIL;
 }
 
 /*
@@ -356,9 +277,6 @@ spock_ProcessUtility(
 						CreateCommandName(parsetree))));
 	}
 
-	if (nodeTag(parsetree) == T_TruncateStmt)
-		spock_start_truncate();
-
 	if (nodeTag(parsetree) == T_DropStmt)
 	{
 		/*
@@ -389,9 +307,6 @@ spock_ProcessUtility(
 								   queryEnv, dest,
 								   sentToRemote,
 								   qc);
-
-	if (nodeTag(parsetree) == T_TruncateStmt)
-		spock_finish_truncate();
 
 	/*
 	 * we don't want to replicate if it's coming from spock.queue. But we do

@@ -43,6 +43,8 @@ extern void spock_write_update(StringInfo out, SpockOutputData *data,
 extern void spock_write_delete(StringInfo out, SpockOutputData *data,
 		Relation rel, HeapTuple oldtuple, Bitmapset *att_list);
 extern void write_startup_message(StringInfo out, List *msg);
+extern void spock_write_truncate(StringInfo out, int nrelids, Oid relids[],
+								 bool cascade, bool restart_seqs);
 
 extern void spock_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
 					  TimestampTz *committime, TransactionId *remote_xid);
@@ -56,4 +58,6 @@ extern SpockRelation *spock_read_update(StringInfo in, LOCKMODE lockmode, bool *
 					   SpockTupleData *oldtup, SpockTupleData *newtup);
 extern SpockRelation *spock_read_delete(StringInfo in, LOCKMODE lockmode,
 												 SpockTupleData *oldtup);
+extern List *spock_read_truncate(StringInfo in, bool *cascade, bool *restart_seqs);
+
 #endif /* SPOCK_PROTO_NATIVE_H */
