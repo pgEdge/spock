@@ -133,8 +133,8 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 	{
 		if (str_local_tup != NULL)
 		{
-			values[Anum_exception_log_local_origin - 1] = 0;
-			values[Anum_exception_log_local_commit_ts - 1] = 0;
+			values[Anum_exception_log_local_origin - 1] = local_origin;
+			values[Anum_exception_log_local_commit_ts - 1] = local_commit_ts;
 		}
 		else
 		{

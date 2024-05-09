@@ -989,6 +989,16 @@ handle_update(StringInfo s)
 					local_origin = InvalidRepOriginId;
 					local_commit_ts = 0;
 				}
+				else
+				{
+					if (local_origin == 0)
+					{
+						SpockLocalNode *local_node;
+
+						local_node = get_local_node(false, false);
+						local_origin = local_node->node->id;
+					}
+				}
 
 				add_entry_to_exception_log(remote_origin_id,
 										   replorigin_session_origin_timestamp,
@@ -1104,6 +1114,16 @@ handle_delete(StringInfo s)
 					local_origin = InvalidRepOriginId;
 					local_commit_ts = 0;
 				}
+				else
+				{
+					if (local_origin == 0)
+					{
+						SpockLocalNode *local_node;
+
+						local_node = get_local_node(false, false);
+						local_origin = local_node->node->id;
+					}
+				}
 
 				add_entry_to_exception_log(remote_origin_id,
 										   replorigin_session_origin_timestamp,
@@ -1112,7 +1132,7 @@ handle_delete(StringInfo s)
 										   rel, localtup,
 										   &oldtup, NULL,
 										   NULL, NULL, NULL,
-										   "UPDATE", edata->message);
+										   "DELETE", edata->message);
 			}
 
 		}
