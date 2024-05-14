@@ -233,6 +233,8 @@ add_ddl_to_repset(Node *parsetree)
 		return;
 	}
 
+	table_close(targetrel, NoLock);
+
 	/* Add if not already present. */
 	if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
 	{
@@ -241,8 +243,6 @@ add_ddl_to_repset(Node *parsetree)
 		elog(LOG, "table '%s' was added to '%s' replication set.",
 			 relation->relname, repset->name);
 	}
-
-	table_close(targetrel, NoLock);
 }
 
 static void

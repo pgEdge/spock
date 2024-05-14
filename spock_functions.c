@@ -1459,8 +1459,6 @@ Datum spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	{
 		Oid partoid = lfirst_oid(lc);
 
-		create_commit_info_columns(partoid);
-
 		replication_set_add_table(repset->id, partoid, att_list, row_filter);
 
 		/* In case of partitions, only synchronize the parent table. */
