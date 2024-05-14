@@ -1,8 +1,8 @@
 diff --git a/src/backend/access/common/reloptions.c b/src/backend/access/common/reloptions.c
-index 1b6f351..c6aa6ab 100644
+index 414458aa04..d2092cf900 100644
 --- a/src/backend/access/common/reloptions.c
 +++ b/src/backend/access/common/reloptions.c
-@@ -177,6 +177,15 @@ static relopt_bool boolRelOpts[] =
+@@ -175,6 +175,15 @@ static relopt_bool boolRelOpts[] =
  		},
  		false
  	},
@@ -18,7 +18,7 @@ index 1b6f351..c6aa6ab 100644
  	/* list terminator */
  	{{NULL}}
  };
-@@ -2082,7 +2091,8 @@ attribute_reloptions(Datum reloptions, bool validate)
+@@ -2080,7 +2089,8 @@ attribute_reloptions(Datum reloptions, bool validate)
  	static const relopt_parse_elt tab[] = {
  		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
  		{"n_distinct_inherited", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct_inherited)},
@@ -29,7 +29,7 @@ index 1b6f351..c6aa6ab 100644
  
  	return (bytea *) build_reloptions(reloptions, validate,
 diff --git a/src/backend/parser/parse_relation.c b/src/backend/parser/parse_relation.c
-index 864ea9b..cd0d635 100644
+index 2f64eaf0e3..df04b1b7fc 100644
 --- a/src/backend/parser/parse_relation.c
 +++ b/src/backend/parser/parse_relation.c
 @@ -31,6 +31,7 @@
@@ -40,7 +40,7 @@ index 864ea9b..cd0d635 100644
  #include "utils/builtins.h"
  #include "utils/lsyscache.h"
  #include "utils/rel.h"
-@@ -3217,11 +3218,17 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
+@@ -3216,11 +3217,17 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
  		char	   *label = strVal(lfirst(name));
  		Var		   *varnode = (Var *) lfirst(var);
  		TargetEntry *te;
@@ -59,7 +59,7 @@ index 864ea9b..cd0d635 100644
  
  		if (require_col_privs)
 diff --git a/src/backend/parser/parse_target.c b/src/backend/parser/parse_target.c
-index 3bc62ac..c28464b 100644
+index ee6fcd0503..4af8404df2 100644
 --- a/src/backend/parser/parse_target.c
 +++ b/src/backend/parser/parse_target.c
 @@ -27,6 +27,7 @@
@@ -70,7 +70,7 @@ index 3bc62ac..c28464b 100644
  #include "utils/builtins.h"
  #include "utils/lsyscache.h"
  #include "utils/rel.h"
-@@ -1016,12 +1017,18 @@ checkInsertTargets(ParseState *pstate, List *cols, List **attrnos)
+@@ -1029,12 +1030,18 @@ checkInsertTargets(ParseState *pstate, List *cols, List **attrnos)
  		{
  			ResTarget  *col;
  			Form_pg_attribute attr;
@@ -90,7 +90,7 @@ index 3bc62ac..c28464b 100644
  			col->name = pstrdup(NameStr(attr->attname));
  			col->indirection = NIL;
 diff --git a/src/include/utils/attoptcache.h b/src/include/utils/attoptcache.h
-index 0233bda..43e25e9 100644
+index 4fe60a0a9e..fe4b6f9475 100644
 --- a/src/include/utils/attoptcache.h
 +++ b/src/include/utils/attoptcache.h
 @@ -22,6 +22,7 @@ typedef struct AttributeOpts

@@ -310,9 +310,13 @@ ensure_replication_slot_snapshot(PGconn *sql_conn, PGconn *repl_conn,
 retry:
 	initStringInfo(&query);
 
-	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s%s",
-					 slot_name, "spock_output",
-					 use_failover_slot ? " FAILOVER" : "");
+	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
+					 slot_name, "spock_output");
+	/* TODO: Should we ever use FAILOVER here? */
+	/*
+	if (use_failover_slot)
+		appendStringInfo(&query, " FAILOVER");
+	*/
 
 
 	res = PQexec(repl_conn, query.data);
@@ -338,8 +342,9 @@ retry:
 			goto retry;
 		}
 
-		elog(ERROR, "could not create replication slot on provider: %s\n",
-			 PQresultErrorMessage(res));
+		elog(ERROR, "could not create replication slot on provider: %s\n"
+		     "query: %s",
+			 PQresultErrorMessage(res), query.data);
 	}
 
 	*lsn = DatumGetLSN(DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,

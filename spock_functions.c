@@ -1150,8 +1150,6 @@ spock_show_subscription_status(PG_FUNCTION_ARGS)
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
 
-	tuplestore_donestoring(tupstore);
-
 	PG_RETURN_VOID();
 }
 
@@ -2843,7 +2841,6 @@ get_channel_stats(PG_FUNCTION_ARGS)
 
 	LWLockRelease(SpockCtx->lock);
 
-	tuplestore_donestoring(tupstore);
 	MemoryContextSwitchTo(oldcontext);
 
 	return (Datum) 0;
@@ -2947,9 +2944,6 @@ lag_tracker_info(PG_FUNCTION_ARGS)
 	}
 
 	LWLockRelease(SpockCtx->lag_lock);
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
 
 	PG_RETURN_VOID();
 }

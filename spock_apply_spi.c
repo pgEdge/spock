@@ -507,15 +507,9 @@ spock_proccess_copy(spock_copyState *spkcstate)
 	save_stdin = stdin;
 	stdin = spkcstate->copy_read_file;
 
-	/* COPY may call into SPI (triggers, ...) and we already are in SPI. */
-	SPI_push();
-
 	/* Initiate the actual COPY */
 	SPKDoCopy((CopyStmt*)((RawStmt *)linitial(spkcstate->copy_parsetree))->stmt,
 		spkcstate->copy_stmt->data, &processed);
-
-	/* Clean up SPI state */
-	SPI_pop();
 
 	fclose(spkcstate->copy_read_file);
 	spkcstate->copy_read_file = NULL;

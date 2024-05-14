@@ -610,7 +610,7 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 		/* Special case - queue table */
 		if (change->action == REORDER_BUFFER_CHANGE_INSERT)
 		{
-			HeapTuple		tup = &change->data.tp.newtuple->tuple;
+			HeapTuple		tup = ReorderBufferChangeHeapTuple(change, newtuple);
 			QueuedMessage  *q;
 			ListCell	   *qlc;
 
@@ -659,9 +659,9 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 		ListCell		   *plc;
 
 		if (change->action == REORDER_BUFFER_CHANGE_UPDATE)
-			 tup = &change->data.tp.newtuple->tuple;
+			 tup = ReorderBufferChangeHeapTuple(change, newtuple);
 		else if (change->action == REORDER_BUFFER_CHANGE_DELETE)
-			 tup = &change->data.tp.oldtuple->tuple;
+			 tup = ReorderBufferChangeHeapTuple(change, oldtuple);
 		else
 			return false;
 
@@ -730,9 +730,9 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 		ExprContext	   *econtext;
 		TupleDesc		tupdesc = RelationGetDescr(relation);
 		HeapTuple		oldtup = change->data.tp.oldtuple ?
-			&change->data.tp.oldtuple->tuple : NULL;
+			ReorderBufferChangeHeapTuple(change, oldtuple) : NULL;
 		HeapTuple		newtup = change->data.tp.newtuple ?
-			&change->data.tp.newtuple->tuple : NULL;
+			ReorderBufferChangeHeapTuple(change, newtuple) : NULL;
 
 		/* Skip empty changes. */
 		if (!newtup && !oldtup)
@@ -840,7 +840,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		case REORDER_BUFFER_CHANGE_INSERT:
 			OutputPluginPrepareWrite(ctx, true);
 			data->api->write_insert(ctx->out, data, relation,
-									&change->data.tp.newtuple->tuple,
+									ReorderBufferChangeHeapTuple(change, newtuple),
 									att_list);
 			OutputPluginWrite(ctx, true);
 			handle_stats_counter(relation, InvalidOid,
@@ -849,11 +849,11 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		case REORDER_BUFFER_CHANGE_UPDATE:
 			{
 				HeapTuple oldtuple = change->data.tp.oldtuple ?
-					&change->data.tp.oldtuple->tuple : NULL;
+					ReorderBufferChangeHeapTuple(change, oldtuple) : NULL;
 
 				OutputPluginPrepareWrite(ctx, true);
 				data->api->write_update(ctx->out, data, relation, oldtuple,
-										&change->data.tp.newtuple->tuple,
+										ReorderBufferChangeHeapTuple(change, newtuple),
 										att_list);
 				OutputPluginWrite(ctx, true);
 				handle_stats_counter(relation, InvalidOid,
@@ -865,7 +865,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			{
 				OutputPluginPrepareWrite(ctx, true);
 				data->api->write_delete(ctx->out, data, relation,
-										&change->data.tp.oldtuple->tuple,
+										ReorderBufferChangeHeapTuple(change, oldtuple),
 										att_list);
 				OutputPluginWrite(ctx, true);
 				handle_stats_counter(relation, InvalidOid,

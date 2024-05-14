@@ -1604,7 +1604,7 @@ apply_work(PGconn *streamConn)
 		Assert(CurrentMemoryContext == MessageContext);
 
 		/* Cleanup the memory. */
-		MemoryContextResetAndDeleteChildren(MessageContext);
+		MemoryContextReset(MessageContext);
 
 		/*
 		 * Only do a leak check if we're between txns; we don't want lots of
