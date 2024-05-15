@@ -92,7 +92,8 @@ static const struct config_enum_entry server_message_level_options[] = {
 static const struct config_enum_entry exception_log_behaviour_options[] = {
 	{"ignore", IGNORE, false},
 	{"discard", DISCARD, false},
-	{"transdiscard", TRANSDISCARD, false}
+	{"transdiscard", TRANSDISCARD, false},
+	{NULL, 0, false}
 };
 
 bool	spock_synchronous_commit = false;
