@@ -973,7 +973,11 @@ get_conflict_log_seq(void)
 		Oid	reloid;
 
 		reloid = get_conflict_log_table_oid();
-		seqoid = getIdentitySequence(reloid, 0, false);
+#if PG_VERSION_NUM >= 170000
+		seqoid = getIdentitySequence(RelationIdGetRelation(reloid), InvalidAttrNumber, false);
+#else
+		seqoid = getIdentitySequence(reloid, InvalidAttrNumber, false);
+#endif
 	}
 
 	return seqoid;
