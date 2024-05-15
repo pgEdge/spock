@@ -16,6 +16,7 @@
 #include "catalog/pg_type.h"
 #include "libpq/pqformat.h"
 #include "nodes/parsenodes.h"
+#include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -210,7 +211,7 @@ spock_write_origin(StringInfo out, const RepOriginId origin_id,
 {
 	uint8	flags = 0;
 
-	Assert(strlen(origin) < 255);
+	Assert(origin_id != InvalidRepOriginId);
 
 	pq_sendbyte(out, 'O');		/* ORIGIN */
 
