@@ -1600,7 +1600,6 @@ spock_replication_set_add_all_relations(Name repset_name,
 
 				if (relkind == RELKIND_RELATION || relkind == RELKIND_PARTITIONED_TABLE)
 				{
-					create_commit_info_columns(reloid);
 					replication_set_add_table(repset->id, reloid, NIL, NULL);
 				}
 				else

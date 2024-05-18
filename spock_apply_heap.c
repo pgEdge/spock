@@ -18,6 +18,7 @@
 #include "libpq-fe.h"
 #include "pgstat.h"
 
+#include "access/commit_ts.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
 
@@ -773,6 +774,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		HeapTuple	local_tuple;
 		SpockConflictResolution resolution;
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
+		bool		is_delta_apply = false;
 
 		/*
 		 * Fetch the contents of the local slot and store it in the error log
@@ -800,14 +802,6 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		 */
 		if (apply && applytuple == remotetuple)
 		{
-			/* Set _Spock_CommitTS_ and _Spock_CommitOrigin_ to NULL */
-			if (rel->att_commit_ts > 0 && rel->att_commit_origin > 0)
-			{
-				newtup->nulls[rel->att_commit_ts] = true;
-				newtup->nulls[rel->att_commit_origin] = true;
-				newtup->changed[rel->att_commit_ts] = true;
-				newtup->changed[rel->att_commit_origin] = true;
-			}
 			slot_modify_data(remoteslot, localslot, rel, newtup);
 		}
 		else
@@ -851,28 +845,11 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 				 * hidden columns.
 				 */
 				apply = true;
-
-				deltatup.values[rel->att_commit_ts] = TimestampTzGetDatum(local_ts);
-				deltatup.nulls[rel->att_commit_ts] = false;
-				deltatup.changed[rel->att_commit_ts] = true;
-				deltatup.values[rel->att_commit_origin] = Int32GetDatum(local_origin);
-				deltatup.nulls[rel->att_commit_origin] = false;
-				deltatup.changed[rel->att_commit_origin] = true;
+				is_delta_apply = true;
 
 				/* Count the DCA event in stats */
 				handle_stats_counter(rel->rel, MyApplyWorker->subid,
 									 SPOCK_STATS_DCA_COUNT, 1);
-			}
-			else
-			{
-				/*
-				 * We let the remote row get applied. Set the hidden commit_ts
-				 * and _origin columns to NULL.
-				 */
-				deltatup.nulls[rel->att_commit_ts] = true;
-				deltatup.changed[rel->att_commit_ts] = true;
-				deltatup.nulls[rel->att_commit_origin] = true;
-				deltatup.changed[rel->att_commit_origin] = true;
 			}
 			applytuple = heap_modify_tuple(currenttuple,
 										   RelationGetDescr(rel->rel),
@@ -893,9 +870,25 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			/* Make sure that any user-supplied code runs as the table owner. */
 			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
+			/*
+			 * If this is a forced delta-apply we execute it in a
+			 * subtransaction and record the local_ts & local_origin
+			 * for CommitTsData override.
+			 */
+			if (is_delta_apply)
+				BeginInternalSubTransaction("SpockDeltaApply");
+
 			EvalPlanQualSetSlot(&epqstate, remoteslot);
 			ExecSimpleRelationUpdate(edata->targetRelInfo, estate, &epqstate,
 									 localslot, remoteslot);
+
+			if (is_delta_apply)
+			{
+				SubTransactionIdSetCommitTsData(GetCurrentTransactionId(),
+												local_ts, local_origin);
+				ReleaseCurrentSubTransaction();
+			}
+
 			RestoreUserContext(&ucxt);
 		}
 	}

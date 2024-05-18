@@ -34,6 +34,5 @@ extern void queue_message(List *replication_sets, Oid roleoid,
 extern QueuedMessage *queued_message_from_tuple(HeapTuple queue_tup);
 
 extern Oid get_queue_table_oid(void);
-extern void create_commit_info_columns(Oid relid);
 
 #endif /* SPOCK_NODE_H */
