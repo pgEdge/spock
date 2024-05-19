@@ -1,8 +1,8 @@
 diff --git a/doc/src/sgml/func.sgml b/doc/src/sgml/func.sgml
-index 4dec67980b..6fe883d470 100644
+index 48e5809ce5..0bf77cd0d5 100644
 --- a/doc/src/sgml/func.sgml
 +++ b/doc/src/sgml/func.sgml
-@@ -26279,6 +26279,21 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
+@@ -26280,6 +26280,21 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
          prepared with <xref linkend="sql-prepare-transaction"/>.
         </para></entry>
        </row>
