@@ -1,31 +1,35 @@
+diff --git a/src/backend/access/rmgrdesc/committsdesc.c b/src/backend/access/rmgrdesc/committsdesc.c
+index e7155cd507..636085febf 100644
+--- a/src/backend/access/rmgrdesc/committsdesc.c
++++ b/src/backend/access/rmgrdesc/committsdesc.c
+@@ -38,6 +38,13 @@ commit_ts_desc(StringInfo buf, XLogReaderState *record)
+ 		appendStringInfo(buf, "pageno %d, oldestXid %u",
+ 						 trunc->pageno, trunc->oldestXid);
+ 	}
++	else if (info == COMMIT_TS_SUBTRANS_TS)
++	{
++		SubTransactionCommitTsEntry	*entry = (SubTransactionCommitTsEntry *)rec;
++
++		appendStringInfo(buf, "xid %u, time %ld, nodeid %d",
++						 entry->xid, entry->time, entry->nodeid);
++	}
+ }
+ 
+ const char *
+@@ -49,6 +56,8 @@ commit_ts_identify(uint8 info)
+ 			return "ZEROPAGE";
+ 		case COMMIT_TS_TRUNCATE:
+ 			return "TRUNCATE";
++		case COMMIT_TS_SUBTRANS_TS:
++			return "SUBTRANS_TS";
+ 		default:
+ 			return NULL;
+ 	}
 diff --git a/src/backend/access/transam/commit_ts.c b/src/backend/access/transam/commit_ts.c
-index b897fabc70..0056513be3 100644
+index b897fabc70..87ca8ac975 100644
 --- a/src/backend/access/transam/commit_ts.c
 +++ b/src/backend/access/transam/commit_ts.c
-@@ -59,6 +59,22 @@ typedef struct CommitTimestampEntry
- 	RepOriginId nodeid;
- } CommitTimestampEntry;
- 
-+/*
-+ * pgEdge requires to override the CommitTimestampEntry for individual
-+ * subtransactions in the case that delta-apply needs to override losing
-+ * last-update-wins. spock_apply_heap will then perform this (rare)
-+ * update in a subtransaction so that this individual row gets its own
-+ * xmin. By overriding this xid's CommitTsData the row can retain its
-+ * original CommitTsData and not assume that of the overall replication
-+ * transaction.
-+ */
-+typedef struct SubTransactionCommitTsEntry
-+{
-+	TransactionId	xid;
-+	TimestampTz		time;
-+	RepOriginId		nodeid;
-+} SubTransactionCommitTsEntry;
-+
- #define SizeOfCommitTimestampEntry (offsetof(CommitTimestampEntry, nodeid) + \
- 									sizeof(RepOriginId))
- 
-@@ -77,6 +93,14 @@ static SlruCtlData CommitTsCtlData;
+@@ -77,6 +77,14 @@ static SlruCtlData CommitTsCtlData;
  
  #define CommitTsCtl (&CommitTsCtlData)
  
@@ -40,7 +44,7 @@ index b897fabc70..0056513be3 100644
  /*
   * We keep a cache of the last value set in shared memory.
   *
-@@ -113,6 +137,8 @@ static void ActivateCommitTs(void);
+@@ -113,6 +121,8 @@ static void ActivateCommitTs(void);
  static void DeactivateCommitTs(void);
  static void WriteZeroPageXlogRec(int pageno);
  static void WriteTruncateXlogRec(int pageno, TransactionId oldestXid);
@@ -49,7 +53,7 @@ index b897fabc70..0056513be3 100644
  
  /*
   * TransactionTreeSetCommitTsData
-@@ -205,6 +231,15 @@ TransactionTreeSetCommitTsData(TransactionId xid, int nsubxids,
+@@ -205,6 +215,15 @@ TransactionTreeSetCommitTsData(TransactionId xid, int nsubxids,
  	if (TransactionIdPrecedes(ShmemVariableCache->newestCommitTsXid, newestXact))
  		ShmemVariableCache->newestCommitTsXid = newestXact;
  	LWLockRelease(CommitTsLock);
@@ -65,7 +69,7 @@ index b897fabc70..0056513be3 100644
  }
  
  /*
-@@ -243,12 +278,24 @@ TransactionIdSetCommitTs(TransactionId xid, TimestampTz ts,
+@@ -243,12 +262,24 @@ TransactionIdSetCommitTs(TransactionId xid, TimestampTz ts,
  {
  	int			entryno = TransactionIdToCTsEntry(xid);
  	CommitTimestampEntry entry;
@@ -90,7 +94,7 @@ index b897fabc70..0056513be3 100644
  	memcpy(CommitTsCtl->shared->page_buffer[slotno] +
  		   SizeOfCommitTimestampEntry * entryno,
  		   &entry, SizeOfCommitTimestampEntry);
-@@ -369,6 +416,60 @@ GetLatestCommitTsData(TimestampTz *ts, RepOriginId *nodeid)
+@@ -369,6 +400,60 @@ GetLatestCommitTsData(TimestampTz *ts, RepOriginId *nodeid)
  	return xid;
  }
  
@@ -151,7 +155,7 @@ index b897fabc70..0056513be3 100644
  static void
  error_commit_ts_disabled(void)
  {
-@@ -960,6 +1061,23 @@ WriteTruncateXlogRec(int pageno, TransactionId oldestXid)
+@@ -960,6 +1045,23 @@ WriteTruncateXlogRec(int pageno, TransactionId oldestXid)
  	(void) XLogInsert(RM_COMMIT_TS_ID, COMMIT_TS_TRUNCATE);
  }
  
@@ -175,7 +179,7 @@ index b897fabc70..0056513be3 100644
  /*
   * CommitTS resource manager's routines
   */
-@@ -1000,6 +1118,19 @@ commit_ts_redo(XLogReaderState *record)
+@@ -1000,6 +1102,19 @@ commit_ts_redo(XLogReaderState *record)
  
  		SimpleLruTruncate(CommitTsCtl, trunc->pageno);
  	}
@@ -196,10 +200,37 @@ index b897fabc70..0056513be3 100644
  		elog(PANIC, "commit_ts_redo: unknown op code %u", info);
  }
 diff --git a/src/include/access/commit_ts.h b/src/include/access/commit_ts.h
-index 5087cdce51..5485cf8e6c 100644
+index 5087cdce51..b90681ee24 100644
 --- a/src/include/access/commit_ts.h
 +++ b/src/include/access/commit_ts.h
-@@ -26,6 +26,9 @@ extern bool TransactionIdGetCommitTsData(TransactionId xid,
+@@ -1,3 +1,4 @@
++
+ /*
+  * commit_ts.h
+  *
+@@ -16,6 +17,21 @@
+ #include "replication/origin.h"
+ #include "storage/sync.h"
+ 
++/*
++ * pgEdge requires to override the CommitTimestampEntry for individual
++ * subtransactions in the case that delta-apply needs to override losing
++ * last-update-wins. spock_apply_heap will then perform this (rare)
++ * update in a subtransaction so that this individual row gets its own
++ * xmin. By overriding this xid's CommitTsData the row can retain its
++ * original CommitTsData and not assume that of the overall replication
++ * transaction.
++ */
++typedef struct SubTransactionCommitTsEntry
++{
++	TransactionId	xid;
++	TimestampTz		time;
++	RepOriginId		nodeid;
++} SubTransactionCommitTsEntry;
+ 
+ extern PGDLLIMPORT bool track_commit_timestamp;
+ 
+@@ -26,6 +42,9 @@ extern bool TransactionIdGetCommitTsData(TransactionId xid,
  										 TimestampTz *ts, RepOriginId *nodeid);
  extern TransactionId GetLatestCommitTsData(TimestampTz *ts,
  										   RepOriginId *nodeid);
@@ -209,7 +240,7 @@ index 5087cdce51..5485cf8e6c 100644
  
  extern Size CommitTsShmemBuffers(void);
  extern Size CommitTsShmemSize(void);
-@@ -46,6 +49,7 @@ extern int	committssyncfiletag(const FileTag *ftag, char *path);
+@@ -46,6 +65,7 @@ extern int	committssyncfiletag(const FileTag *ftag, char *path);
  /* XLOG stuff */
  #define COMMIT_TS_ZEROPAGE		0x00
  #define COMMIT_TS_TRUNCATE		0x10

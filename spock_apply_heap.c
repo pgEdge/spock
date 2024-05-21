@@ -841,8 +841,6 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			{
 				/*
 				 * We are overriding apply=false because of delta apply.
-				 * Remember the current commit timestamp and origin in the
-				 * hidden columns.
 				 */
 				apply = true;
 				is_delta_apply = true;
