@@ -2012,7 +2012,7 @@ Datum spock_replicate_ddl_command(PG_FUNCTION_ARGS)
  */
 void
 spock_auto_replicate_ddl(const char *query, List *replication_sets,
-						 const char *role, Node *stmt)
+						 Oid roleoid, Node *stmt)
 {
 	ListCell *lc;
 	SpockLocalNode *node;
@@ -2051,11 +2051,12 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 		case T_AlterOwnerStmt:
 			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_DATABASE ||
-				castNode(RenameStmt, stmt)->renameType == OBJECT_SUBSCRIPTION)
+				castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_SUBSCRIPTION)
 				goto skip_ddl;
 			if (castNode(AlterOwnerStmt, stmt)->objectType == OBJECT_TABLESPACE)
 				add_search_path = false;
 			break;
+
 		case T_RenameStmt:
 			if (castNode(RenameStmt, stmt)->renameType == OBJECT_DATABASE ||
 				castNode(RenameStmt, stmt)->renameType == OBJECT_SUBSCRIPTION)
@@ -2065,7 +2066,29 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 		case T_CreateTableAsStmt:
-			warn = true;
+			{
+				CreateTableAsStmt *ctas = castNode(CreateTableAsStmt, stmt);
+
+				if (ctas->into->rel->relpersistence == RELPERSISTENCE_TEMP ||
+					nodeTag(ctas->query) == T_ExecuteStmt)
+					goto skip_ddl;
+				warn = true;
+			}
+			break;
+
+		case T_CreateStmt:
+			if (castNode(CreateStmt, stmt)->relation->relpersistence == RELPERSISTENCE_TEMP)
+				goto skip_ddl;
+			break;
+
+		case T_CreateSeqStmt:
+			if (castNode(CreateSeqStmt, stmt)->sequence->relpersistence == RELPERSISTENCE_TEMP)
+				goto skip_ddl;
+			break;
+
+		case T_ViewStmt:
+			if (castNode(ViewStmt, stmt)->view->relpersistence == RELPERSISTENCE_TEMP)
+				goto skip_ddl;
 			break;
 
 		case T_CreateTableSpaceStmt:	/* TABLESPACE */
@@ -2092,6 +2115,12 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 
 		case T_IndexStmt:
 			if (castNode(IndexStmt, stmt)->concurrent)
+				goto skip_ddl;
+			break;
+
+		case T_DropStmt:
+			if (castNode(DropStmt, stmt)->removeType == OBJECT_INDEX &&
+				castNode(DropStmt, stmt)->concurrent)
 				goto skip_ddl;
 			break;
 
@@ -2123,8 +2152,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	escape_json(&cmd, q.data);
 
 	/* Queue the query for replication. */
-	queue_message(replication_sets, get_role_oid(role, false),
-				  QUEUE_COMMAND_TYPE_DDL, cmd.data);
+	queue_message(replication_sets, roleoid, QUEUE_COMMAND_TYPE_DDL, cmd.data);
 
 	return;
 

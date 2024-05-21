@@ -19,6 +19,7 @@
 #include "access/xlog.h"
 
 #include "catalog/dependency.h"
+#include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_authid_d.h"
@@ -175,10 +176,51 @@ add_ddl_to_repset(Node *parsetree)
 	Oid		reloid = InvalidOid;
 	RangeVar   *relation = NULL;
 
+	/* no need to proceed if spock_include_ddl_repset is off */
+	if (!spock_include_ddl_repset)
+		return;
+
 	if (nodeTag(parsetree) == T_AlterTableStmt)
-		relation = castNode(AlterTableStmt, parsetree)->relation;
+	{
+		if (castNode(AlterTableStmt, parsetree)->objtype == OBJECT_TABLE)
+			relation = castNode(AlterTableStmt, parsetree)->relation;
+		else if (castNode(AlterTableStmt, parsetree)->objtype == OBJECT_INDEX)
+		{
+			ListCell *cell;
+			AlterTableStmt *atstmt = (AlterTableStmt *) parsetree;
+
+			foreach(cell, atstmt->cmds)
+			{
+				AlterTableCmd *cmd = (AlterTableCmd *) lfirst(cell);
+
+				if (cmd->subtype == AT_AttachPartition)
+				{
+					RangeVar   *rv = castNode(AlterTableStmt, parsetree)->relation;
+					Relation	indrel;
+
+					indrel = relation_openrv(rv, AccessShareLock);
+					reloid = IndexGetRelation(RelationGetRelid(indrel), false);
+					table_close(indrel, NoLock);
+				}
+			}
+		}
+	}
 	else if (nodeTag(parsetree) == T_CreateStmt)
 		relation = castNode(CreateStmt, parsetree)->relation;
+	else if (nodeTag(parsetree) == T_CreateTableAsStmt)
+		relation = castNode(CreateTableAsStmt, parsetree)->into->rel;
+	else if (nodeTag(parsetree) == T_CreateSchemaStmt)
+	{
+		ListCell *lc;
+		CreateSchemaStmt *cstmt = (CreateSchemaStmt *) parsetree;
+
+		foreach(lc, cstmt->schemaElts)
+		{
+			if (nodeTag(lfirst(lc)) == T_CreateStmt)
+				add_ddl_to_repset(lfirst(lc));
+		}
+		return;
+	}
 	else
 	{
 		/* only tables are added to repset. */
@@ -189,7 +231,11 @@ add_ddl_to_repset(Node *parsetree)
 	if (!node)
 		return;
 
-	targetrel = table_openrv(relation, AccessShareLock);
+	if (OidIsValid(reloid))
+		targetrel = RelationIdGetRelation(reloid);
+	else
+		targetrel = table_openrv(relation, AccessShareLock);
+
 	reloid = RelationGetRelid(targetrel);
 
 	/* UNLOGGED and TEMP relations cannot be part of replication set. */
@@ -241,8 +287,53 @@ add_ddl_to_repset(Node *parsetree)
 		replication_set_add_table(repset->id, reloid, NIL, NULL);
 
 		elog(LOG, "table '%s' was added to '%s' replication set.",
-			 relation->relname, repset->name);
+			 get_rel_name(reloid), repset->name);
 	}
+}
+
+static bool
+autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
+					NodeTag stmt)
+{
+	/* Allow all toplevel statements. */
+	if (context == PROCESS_UTILITY_TOPLEVEL)
+		return true;
+
+	/*
+	 * Indicates a portion of a query. These statements should be handled by the
+	 * corresponding top-level query.
+	 */
+	if (context == PROCESS_UTILITY_SUBCOMMAND)
+		return false;
+
+	/*
+	 * When the ProcessUtility hook is invoked due to a function call (enabled
+	 * by allow_ddl_from_functions) or a query from the queue (with
+	 * in_spock_queue_ddl_command set to true), the context is rarely
+	 * PROCESS_UTILITY_TOPLEVEL. Handling the context when it is
+	 * PROCESS_UTILITY_TOPLEVEL is straightforward. In other cases, our
+	 * objective is to filter out CREATE|DROP EXTENSION and CREATE SCHEMA
+	 * statements, which execute scripts or subcommands lacking top-level
+	 * status. Therefore, we need to filter out these internal commands.
+	 *
+	 * The purpose of this filtering is to include only the main statement (or
+	 * query provided by the client) in autoddl. To achieve this, we store the
+	 * nodetag of these statements in 'toplevel_stmt' and verify if the
+	 * current statement matches it. If not, it indicates the invocation of
+	 * subcommands, which we disregard.
+	 *
+	 * All other statements are allowed without filtering.
+	 */
+	if (context != PROCESS_UTILITY_TOPLEVEL &&
+		(allow_ddl_from_functions || in_spock_queue_ddl_command))
+	{
+		if (toplevel_stmt != T_Invalid)
+			return toplevel_stmt == stmt;
+
+		return true;
+	}
+
+	return false;
 }
 
 static void
@@ -262,10 +353,13 @@ spock_ProcessUtility(
 						 QueryCompletion *qc)
 {
 	Node	   *parsetree = pstmt->utilityStmt;
-	static bool skip_ext_objs = false;
+	static NodeTag toplevel_stmt = T_Invalid;
 #ifndef XCP
 	#define		sentToRemote NULL
 #endif
+	Oid			roleoid = InvalidOid;
+	Oid			save_userid = 0;
+	int			save_sec_context = 0;
 
 	dropping_spock_obj = false;
 
@@ -289,9 +383,22 @@ spock_ProcessUtility(
 			spock_lastDropBehavior = ((DropStmt *)parsetree)->behavior;
 	}
 
-	if (context == PROCESS_UTILITY_TOPLEVEL &&
-		nodeTag(parsetree) == T_CreateExtensionStmt)
-		skip_ext_objs = true;
+	/*
+	 * When the context is not PROCESS_UTILITY_TOPLEVEL, it becomes
+	 * challenging to differentiate between scripted commands and subcommands
+	 * generated as a result of CREATE|DROP EXTENSION and CREATE SCHEMA
+	 * statements. In autoddl, we only include statements that directly
+	 * originate from the client. To accomplish this, we store the nodetag of
+	 * the top-level statements for later comparison in the
+	 * autoddl_can_proceed() function. If the tags do not match, it indicates
+	 * that the statement did not originate from the client but rather is a
+	 * subcommand generated internally.
+	 */
+	if (nodeTag(parsetree) == T_CreateExtensionStmt ||
+		nodeTag(parsetree) == T_CreateSchemaStmt ||
+		(nodeTag(parsetree) == T_DropStmt &&
+		 castNode(DropStmt, parsetree)->removeType == OBJECT_EXTENSION))
+		toplevel_stmt = nodeTag(parsetree);
 
 	/* There's no reason we should be in a long lived context here */
 	Assert(CurrentMemoryContext != TopMemoryContext
@@ -308,6 +415,18 @@ spock_ProcessUtility(
 								   sentToRemote,
 								   qc);
 
+	roleoid = GetUserId();
+
+	/*
+	 * Check that we have a local node. We need to elevate access
+	 * because this is called as an executor Utility hook under the
+	 * session user, who not necessarily has access permission to
+	 * Spock extension objects.
+	 */
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
+							save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+
 	/*
 	 * we don't want to replicate if it's coming from spock.queue. But we do
 	 * add tables to repset whenever there is one.
@@ -315,8 +434,12 @@ spock_ProcessUtility(
 	if (in_spock_queue_ddl_command || in_spock_replicate_ddl_command)
 	{
 		/* if DDL is from spoc.queue, add it to the repset. */
-		if (in_spock_queue_ddl_command)
+		if (in_spock_queue_ddl_command &&
+			autoddl_can_proceed(context, toplevel_stmt, nodeTag(parsetree)))
+		{
+			toplevel_stmt = T_Invalid;
 			add_ddl_to_repset(parsetree);
+		}
 
 		/*
 		 * Do Nothing else. Hook was called as a result of spock.replicate_ddl().
@@ -327,34 +450,26 @@ spock_ProcessUtility(
 			 spock_enable_ddl_replication &&
 			 get_local_node(false, true))
 	{
-		/*
-		 * Normally only allow the top level commands to be replicate. However,
-		 * we also want to allow DDL from within a function/procedure to replicate
-		 * based on 'allow_ddl_from_functions'.
-		 * One caveat though, don't allow DDLs within the extension scripts.
-		 */
-		if (context == PROCESS_UTILITY_TOPLEVEL ||
-			(context == PROCESS_UTILITY_QUERY &&
-			 allow_ddl_from_functions &&
-			 !skip_ext_objs))
+		if (autoddl_can_proceed(context, toplevel_stmt, nodeTag(parsetree)))
 		{
 			const char *curr_qry;
 			int			loc = pstmt->stmt_location;
 			int			len = pstmt->stmt_len;
 
-			skip_ext_objs = false;
+			toplevel_stmt = T_Invalid;
 			queryString = CleanQuerytext(queryString, &loc, &len);
 			curr_qry = pnstrdup(queryString, len);
 
 			spock_auto_replicate_ddl(curr_qry,
 									 list_make1(DEFAULT_INSONLY_REPSET_NAME),
-									 GetUserNameFromId(GetUserId(), false),
+									 roleoid,
 									 parsetree);
 
-			if (spock_include_ddl_repset)
-				add_ddl_to_repset(parsetree);
+			add_ddl_to_repset(parsetree);
 		}
 	}
+	/* Restore previous session privileges */
+	SetUserIdAndSecContext(save_userid, save_sec_context);
 }
 
 /*
