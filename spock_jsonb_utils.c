@@ -150,14 +150,6 @@ spock_tuple_to_json_cstring(SpockTupleData *tuple, TupleDesc tupleDesc)
 		if (attr->attnum < 0)
 			continue;
 
-		/*
-		 * Skip over hidden columns TODO: Using get_attribute_options fails
-		 * here because the realtion is a SpockTuple and not a HeapTuple. Use
-		 * a better method than this temporary fix here
-		 */
-		if (strncmp(NameStr(attr->attname), "_Spock", 6) == 0)
-			continue;
-
 		typid = attr->atttypid;
 
 		/* gather type name */
@@ -231,14 +223,6 @@ heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupleDesc)
 		 * Don't print system columns
 		 */
 		if (attr->attnum < 0)
-			continue;
-
-		/*
-		 * Skip over hidden columns TODO: Using get_attribute_options fails
-		 * here because the realtion is a SpockTuple and not a HeapTuple. Use
-		 * a better method than this temporary fix here
-		 */
-		if (strncmp(NameStr(attr->attname), "_Spock", 6) == 0)
 			continue;
 
 		typid = attr->atttypid;

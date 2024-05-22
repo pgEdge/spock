@@ -24,7 +24,6 @@ Our previous production version was v3.2 and includes the following important en
 * Support for [Snowflake Sequences](https://github.com/pgedge/snowflake-sequences)
 * Support for Auto DDL
 * Support for setting a database to ReadOnly
-* Prelim support for Hidden Columns
 * A couple small bug fixes from pgLogical
 * Native support for Failover Slots via integrating pg_failover_slots extension
 * Paralell slots support for insert only workloads

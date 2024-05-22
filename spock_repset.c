@@ -1169,9 +1169,6 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 
 	table_close(rel, RowExclusiveLock);
 
-	/* create Spock_CommitTS and Spock_CommitOrigin columns */
-	create_commit_info_columns(reloid);
-
 	CommandCounterIncrement();
 }
 

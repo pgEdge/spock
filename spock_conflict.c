@@ -506,8 +506,6 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 				 TransactionId *xmin,
 				 RepOriginId *local_origin, TimestampTz *local_ts)
 {
-	int			cmp;
-
 	*xmin = HeapTupleHeaderGetXmin(local_tuple->t_data);
 	if (!track_commit_timestamp)
 	{
@@ -546,51 +544,6 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 		 * Nothing much we can do.
 		 */
 		return false;
-	}
-
-	/*
-	 * If the origin reported by TransactionIdGetCommitTsData() is
-	 * InvalidRepOriginId then the tuple was last modified by a local
-	 * transaction. Whatever may be recorded in the hidden columns is
-	 * irrelevant in that case.
-	 */
-	if (local_origin == InvalidRepOriginId)
-		return true;
-
-	/*
-	 * Check if the local tuple has commit_ts and commit_origin override
-	 * information.
-	 */
-	if (rel->att_commit_ts >= 0 && rel->att_commit_origin >= 0)
-	{
-		bool		isnull;
-		Datum		commit_ts;
-		Datum		commit_origin;
-
-		commit_ts = heap_getattr(local_tuple,
-								 rel->attmap[rel->att_commit_ts] + 1,
-								 RelationGetDescr(rel->rel), &isnull);
-		if (isnull)
-			return true;
-
-		commit_origin = heap_getattr(local_tuple,
-									 rel->attmap[rel->att_commit_origin] + 1,
-									 RelationGetDescr(rel->rel), &isnull);
-		if (isnull)
-			return true;
-
-		/*
-		 * We found last commit info in the local tuple. Override what
-		 * TransactionIdGetCommitTsData() returned if it is later than that.
-		 */
-		cmp = timestamptz_cmp_internal(*local_ts, commit_ts);
-		if (spock_conflict_resolver == SPOCK_RESOLVE_FIRST_UPDATE_WINS)
-			cmp = -cmp;
-		if (cmp < 0)
-		{
-			*local_origin = (RepOriginId) DatumGetInt32(commit_origin);
-			*local_ts = DatumGetTimestampTz(commit_ts);
-		}
 	}
 
 	return true;

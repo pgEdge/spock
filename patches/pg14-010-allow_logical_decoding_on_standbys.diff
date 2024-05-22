@@ -1,8 +1,8 @@
 diff --git a/doc/src/sgml/func.sgml b/doc/src/sgml/func.sgml
-index 7cc9573314b..f95e9284de0 100644
+index fd877a4ea8..e5e44a167d 100644
 --- a/doc/src/sgml/func.sgml
 +++ b/doc/src/sgml/func.sgml
-@@ -25797,6 +25797,21 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
+@@ -25798,6 +25798,21 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
          prepared with <xref linkend="sql-prepare-transaction"/>.
         </para></entry>
        </row>
@@ -25,7 +25,7 @@ index 7cc9573314b..f95e9284de0 100644
      </tgroup>
     </table>
 diff --git a/doc/src/sgml/logicaldecoding.sgml b/doc/src/sgml/logicaldecoding.sgml
-index 7805dd44a18..69a984ceeb1 100644
+index 7805dd44a1..69a984ceeb 100644
 --- a/doc/src/sgml/logicaldecoding.sgml
 +++ b/doc/src/sgml/logicaldecoding.sgml
 @@ -297,6 +297,33 @@ postgres=# select * from pg_logical_slot_get_changes('regression_slot', NULL, NU
@@ -63,7 +63,7 @@ index 7805dd44a18..69a984ceeb1 100644
       <para>
        Replication slots persist across crashes and know nothing about the state
 diff --git a/src/backend/access/transam/xlog.c b/src/backend/access/transam/xlog.c
-index 60e3ae6e506..687c7832f05 100644
+index 60e3ae6e50..687c7832f0 100644
 --- a/src/backend/access/transam/xlog.c
 +++ b/src/backend/access/transam/xlog.c
 @@ -5127,6 +5127,17 @@ LocalProcessControlFile(bool reset)
@@ -105,7 +105,7 @@ index 60e3ae6e506..687c7832f05 100644
   * GetLastImportantRecPtr -- Returns the LSN of the last important record
   * inserted. All records not explicitly marked as unimportant are considered
 diff --git a/src/backend/access/transam/xlogfuncs.c b/src/backend/access/transam/xlogfuncs.c
-index b98deb72ec6..3b9c9b7cae4 100644
+index b98deb72ec..3b9c9b7cae 100644
 --- a/src/backend/access/transam/xlogfuncs.c
 +++ b/src/backend/access/transam/xlogfuncs.c
 @@ -30,6 +30,7 @@
@@ -154,7 +154,7 @@ index b98deb72ec6..3b9c9b7cae4 100644
   * pg_create_restore_point: a named point for restore
   *
 diff --git a/src/backend/access/transam/xlogutils.c b/src/backend/access/transam/xlogutils.c
-index d17d660f460..5888ed255a4 100644
+index d17d660f46..5888ed255a 100644
 --- a/src/backend/access/transam/xlogutils.c
 +++ b/src/backend/access/transam/xlogutils.c
 @@ -684,7 +684,8 @@ XLogTruncateRelation(RelFileNode rnode, ForkNumber forkNum,
@@ -212,7 +212,7 @@ index d17d660f460..5888ed255a4 100644
  		if (state->currTLI == ThisTimeLineID)
  		{
 diff --git a/src/backend/catalog/system_functions.sql b/src/backend/catalog/system_functions.sql
-index a416e94d371..a9253a5db30 100644
+index a416e94d37..a9253a5db3 100644
 --- a/src/backend/catalog/system_functions.sql
 +++ b/src/backend/catalog/system_functions.sql
 @@ -613,6 +613,8 @@ REVOKE EXECUTE ON FUNCTION pg_create_restore_point(text) FROM public;
@@ -225,7 +225,7 @@ index a416e94d371..a9253a5db30 100644
  
  REVOKE EXECUTE ON FUNCTION pg_wal_replay_resume() FROM public;
 diff --git a/src/backend/replication/logical/decode.c b/src/backend/replication/logical/decode.c
-index 1c0058fc8fd..30762e18e43 100644
+index 1c0058fc8f..30762e18e4 100644
 --- a/src/backend/replication/logical/decode.c
 +++ b/src/backend/replication/logical/decode.c
 @@ -215,11 +215,39 @@ DecodeXLogOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
@@ -270,7 +270,7 @@ index 1c0058fc8fd..30762e18e43 100644
  		case XLOG_FPW_CHANGE:
  		case XLOG_FPI_FOR_HINT:
 diff --git a/src/backend/replication/logical/logical.c b/src/backend/replication/logical/logical.c
-index f7d14919077..42670e7dd42 100644
+index f7d1491907..42670e7dd4 100644
 --- a/src/backend/replication/logical/logical.c
 +++ b/src/backend/replication/logical/logical.c
 @@ -119,23 +119,21 @@ CheckLogicalDecodingRequirements(void)
@@ -325,7 +325,7 @@ index f7d14919077..42670e7dd42 100644
  	slot = MyReplicationSlot;
  
 diff --git a/src/backend/replication/slot.c b/src/backend/replication/slot.c
-index 037a347cba0..96733b2ebd2 100644
+index 037a347cba..96733b2ebd 100644
 --- a/src/backend/replication/slot.c
 +++ b/src/backend/replication/slot.c
 @@ -1094,37 +1094,28 @@ ReplicationSlotReserveWal(void)
@@ -403,7 +403,7 @@ index 037a347cba0..96733b2ebd2 100644
  
  /*
 diff --git a/src/backend/replication/walsender.c b/src/backend/replication/walsender.c
-index 28f0a294736..24ca2ddff27 100644
+index 28f0a29473..24ca2ddff2 100644
 --- a/src/backend/replication/walsender.c
 +++ b/src/backend/replication/walsender.c
 @@ -815,16 +815,34 @@ logical_read_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr, int req
@@ -475,7 +475,7 @@ index 28f0a294736..24ca2ddff27 100644
  	/* If EndRecPtr is still past our flushPtr, it means we caught up. */
  	if (logical_decoding_ctx->reader->EndRecPtr >= flushPtr)
 diff --git a/src/include/access/xlog.h b/src/include/access/xlog.h
-index ee3e369b79f..aed20383973 100644
+index ee3e369b79..aed2038397 100644
 --- a/src/include/access/xlog.h
 +++ b/src/include/access/xlog.h
 @@ -333,6 +333,7 @@ extern Size XLOGShmemSize(void);
@@ -495,7 +495,7 @@ index ee3e369b79f..aed20383973 100644
  extern void RemovePromoteSignalFiles(void);
  
 diff --git a/src/include/access/xlogutils.h b/src/include/access/xlogutils.h
-index 9ac602b674d..5c56c6beac3 100644
+index 9ac602b674..5c56c6beac 100644
 --- a/src/include/access/xlogutils.h
 +++ b/src/include/access/xlogutils.h
 @@ -56,7 +56,8 @@ extern void wal_segment_open(XLogReaderState *state,
@@ -509,7 +509,7 @@ index 9ac602b674d..5c56c6beac3 100644
  extern void WALReadRaiseError(WALReadError *errinfo);
  
 diff --git a/src/include/catalog/pg_proc.dat b/src/include/catalog/pg_proc.dat
-index 79669bf5a2e..58bdf93ecf0 100644
+index 79669bf5a2..58bdf93ecf 100644
 --- a/src/include/catalog/pg_proc.dat
 +++ b/src/include/catalog/pg_proc.dat
 @@ -6218,6 +6218,9 @@
