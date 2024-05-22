@@ -107,6 +107,8 @@ bool	spock_deny_ddl = false;
 bool	spock_enable_ddl_replication = false;
 bool	spock_include_ddl_repset = false;
 bool	allow_ddl_from_functions = false;
+int		restart_delay_default;
+int		restart_delay_on_exception;
 
 
 void _PG_init(void);
@@ -939,6 +941,32 @@ _PG_init(void)
 							   PGC_USERSET,
 							   0,
 							   NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.restart_delay_default",
+							"Default apply-worker restart delay in ms",
+							NULL,
+							&restart_delay_default,
+							5000,
+							0,
+							INT_MAX,
+							PGC_POSTMASTER,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("spock.restart_delay_on_exception",
+							"apply-worker restart delay in ms on exception",
+							NULL,
+							&restart_delay_on_exception,
+							0,
+							0,
+							INT_MAX,
+							PGC_POSTMASTER,
+							0,
+							NULL,
+							NULL,
+							NULL);
 
 	if (IsBinaryUpgrade)
 		return;

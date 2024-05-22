@@ -112,7 +112,7 @@ find_empty_worker_slot(Oid dboid)
 	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
 		if (SpockCtx->workers[i].worker_type == SPOCK_WORKER_NONE
-			|| (SpockCtx->workers[i].crashed_at != 0
+			|| (SpockCtx->workers[i].terminated_at != 0
 				&& (SpockCtx->workers[i].dboid == dboid
 					|| SpockCtx->workers[i].dboid == InvalidOid)))
 			return i;
@@ -159,7 +159,8 @@ spock_worker_register(SpockWorker *worker)
 
 	memcpy(worker_shm, worker, sizeof(SpockWorker));
 	worker_shm->generation = next_generation;
-	worker_shm->crashed_at = 0;
+	worker_shm->terminated_at = 0;
+	worker_shm->restart_delay = restart_delay_default;
 	worker_shm->proc = NULL;
 	worker_shm->worker_type = worker->worker_type;
 
@@ -202,7 +203,7 @@ spock_worker_register(SpockWorker *worker)
 
 	if (!RegisterDynamicBackgroundWorker(&bgw, &bgw_handle))
 	{
-		worker_shm->crashed_at = GetCurrentTimestamp();
+		worker_shm->terminated_at = GetCurrentTimestamp();
 		ereport(ERROR,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				 errmsg("worker registration failed, you might want to increase max_worker_processes setting")));
@@ -267,21 +268,21 @@ wait_for_worker_startup(SpockWorker *worker,
 			 * on registration to tell the difference. If the generation
 			 * counter has increased we know the our worker must've exited
 			 * cleanly (setting the worker type back to NONE) or self-reported
-			 * a crash (setting crashed_at), then the slot re-used by another
+			 * a crash (setting terminated_at), then the slot re-used by another
 			 * manager.
 			 */
 			if (worker->worker_type != SPOCK_WORKER_NONE
 				&& worker->generation == generation
-				&& worker->crashed_at == 0)
+				&& worker->terminated_at == 0)
 			{
 				/*
 				 * The worker we launched (same generation) crashed before
-				 * attaching to shmem so it didn't set crashed_at. Mark it
+				 * attaching to shmem so it didn't set terminated_at. Mark it
 				 * crashed so the slot can be re-used.
 				 */
 				elog(DEBUG2, "%s worker at slot %zu exited prematurely",
 					 spock_worker_type_name(worker->worker_type), (worker - &SpockCtx->workers[0]));
-				worker->crashed_at = GetCurrentTimestamp();
+				worker->terminated_at = GetCurrentTimestamp();
 			}
 			else
 			{
@@ -402,6 +403,8 @@ spock_worker_attach(int slot, SpockWorkerType type)
 static void
 spock_worker_detach(bool crash)
 {
+	bool	signal_manager = false;
+
 	/* Nothing to detach. */
 	if (MySpockWorker == NULL)
 		return;
@@ -434,17 +437,33 @@ spock_worker_detach(bool crash)
 	 */
 	if (crash)
 	{
-		MySpockWorker->crashed_at = GetCurrentTimestamp();
+		MySpockWorker->terminated_at = GetCurrentTimestamp();
 
-		/* Manager crash, make sure supervisor notices. */
+		/*
+		 * If a database manager terminates, inform the Spock supervisor.
+		 * Otherwise inform the Spock manager for this database so that
+		 * it can restart terminated apply-workers immediately (if
+		 * necessary).
+		 */
 		if (MySpockWorker->worker_type == SPOCK_WORKER_MANAGER)
 			SpockCtx->subscriptions_changed = true;
+		else
+			signal_manager = true;
 	}
 	else
 	{
 		/* Worker has finished work, clean up its state from shmem. */
 		MySpockWorker->worker_type = SPOCK_WORKER_NONE;
 		MySpockWorker->dboid = InvalidOid;
+	}
+
+	if (signal_manager)
+	{
+		SpockWorker	   *my_manager;
+
+		my_manager = spock_manager_find(MySpockWorker->dboid);
+
+		SetLatch(&my_manager->proc->procLatch);
 	}
 
 	MySpockWorker = NULL;
@@ -581,6 +600,15 @@ bool
 spock_worker_running(SpockWorker *worker)
 {
 	return worker && worker->proc;
+}
+
+/*
+ * Is the worker terminating?
+ */
+bool
+spock_worker_terminating(SpockWorker *worker)
+{
+	return worker && worker->proc && worker->terminated_at != 0;
 }
 
 void

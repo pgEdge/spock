@@ -53,7 +53,10 @@ typedef struct SpockWorker {
 	PGPROC *proc;
 
 	/* Time at which worker crashed (normally 0). */
-	TimestampTz	crashed_at;
+	TimestampTz	terminated_at;
+
+	/* Interval for restart delay in ms */
+	int restart_delay;
 
 	/* Database id to connect to. */
 	Oid		dboid;
@@ -170,6 +173,7 @@ extern List *spock_sync_find_all(Oid dboid, Oid subscriberid);
 
 extern SpockWorker *spock_get_worker(int slot);
 extern bool spock_worker_running(SpockWorker *w);
+extern bool spock_worker_terminating(SpockWorker *w);
 extern void spock_worker_kill(SpockWorker *worker);
 
 extern const char * spock_worker_type_name(SpockWorkerType type);

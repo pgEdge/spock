@@ -332,6 +332,15 @@ handle_begin(StringInfo s)
 	int			free_slot_index = -1;
 	char	   *slot_name;
 
+	/*
+	 * To get here we must have connected successfully and the
+	 * replication stream is delivering the first transaction.
+	 * At this point we switch to restart_delay_on_exception
+	 * assuming that we are just replicating a transaction without
+	 * exception handling.
+	 */
+	MySpockWorker->restart_delay = restart_delay_on_exception;
+
 	xact_action_counter = 1;
 	errcallback_arg.action_name = "BEGIN";
 
@@ -389,6 +398,12 @@ handle_begin(StringInfo s)
 					elog(DEBUG1, "SpockErrorLog: Found the commit_lsn in the \
 					exception_log_ptr. Using the try block now.");
 					MyApplyWorker->use_try_block = true;
+
+					/*
+					 * If we unexpectedly terminate again with error during
+					 * exception handling, don't go into a fast error loop.
+					 */
+					MySpockWorker->restart_delay = restart_delay_default;
 				}
 
 				/*
@@ -441,6 +456,13 @@ handle_begin(StringInfo s)
 	}
 
 	/* FIXME: Is it possible for my_exception_log_index to be -1 here? */
+	/*
+	 * Yes, it is because all of this information should have been
+	 * part of the SpockApplyWorker struct instead its own shared
+	 * memory array. The overall process structure of the supervisor,
+	 * the db-level manager and the apply-worker is taking care of
+	 * this shared memory already.
+	 */
 	elog(DEBUG1, "SpockErrorLog: Updating the commit_lsn in the \
 	exception_log_ptr to (%lu)", commit_lsn);
 	exception_log = &exception_log_ptr[my_exception_log_index];
@@ -772,7 +794,7 @@ handle_insert(StringInfo s)
 		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u", remote_xid);
 		PG_TRY();
 		{
-			elog(LOG, "SpockErrorLog: Running apply_api.do_insert for \
+			elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for \
 			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_insert(rel, &newtup);
@@ -934,7 +956,7 @@ handle_update(StringInfo s)
 			 remote_xid);
 		PG_TRY();
 		{
-			elog(LOG, "SpockErrorLog: Running apply_api.do_update for \
+			elog(DEBUG1, "SpockErrorLog: Running apply_api.do_update for \
 			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
@@ -1059,7 +1081,7 @@ handle_delete(StringInfo s)
 		xid %u", remote_xid);
 		PG_TRY();
 		{
-			elog(LOG, "SpockErrorLog: Running apply_api.do_delete for \
+			elog(DEBUG1, "SpockErrorLog: Running apply_api.do_delete for \
 			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_delete(rel, &oldtup);
@@ -2527,7 +2549,7 @@ spock_apply_main(Datum main_arg)
 	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
 	Assert(MySpockWorker->worker_type == SPOCK_WORKER_APPLY);
 	MyApplyWorker = &MySpockWorker->worker.apply;
-	elog(LOG, "SpockErrorLog: Initialised MyApplyWorker");
+	elog(DEBUG1, "SpockErrorLog: Initialised MyApplyWorker");
 
 	/* Attach to dsm segment. */
 	Assert(CurrentResourceOwner == NULL);
@@ -2587,7 +2609,7 @@ spock_apply_main(Datum main_arg)
 #endif
 	CommitTransactionCommand();
 
-	elog(LOG, "SPOCK %s: starting apply worker", MySubscription->name);
+	elog(DEBUG1, "SPOCK %s: starting apply worker", MySubscription->name);
 
 	/* Set apply delay if any. */
 	if (MySubscription->apply_delay)

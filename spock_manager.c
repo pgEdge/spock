@@ -31,16 +31,12 @@
 #include "spock_worker.h"
 #include "spock.h"
 
-#define INITIAL_SLEEP 5000L
-#define MAX_SLEEP 10000L
-#define MIN_SLEEP 5000L
-
 PGDLLEXPORT void spock_manager_main(Datum main_arg);
 
 /*
  * Manage the apply workers - start new ones, kill old ones.
  */
-static bool
+static long
 manage_apply_workers(void)
 {
 	SpockLocalNode *node;
@@ -49,7 +45,7 @@ manage_apply_workers(void)
 	List	   *subs_to_start = NIL;
 	ListCell   *slc,
 			   *wlc;
-	bool		ret = true;
+	long		ret = restart_delay_default;
 
 	/* Get list of existing workers. */
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
@@ -58,7 +54,7 @@ manage_apply_workers(void)
 
 	StartTransactionCommand();
 
-	/* Get local node, exit if no found. */
+	/* Get local node, exit if not found. */
 	node = get_local_node(true, true);
 	if (!node)
 		proc_exit(0);
@@ -73,14 +69,14 @@ manage_apply_workers(void)
 		SpockWorker		   *apply = NULL;
 
 		/*
-		 * Skip if subscriber not enabled.
+		 * Skip if subscription not enabled.
 		 * This must be called before the following search loop because
-		 * we want to kill any workers for disabled subscribers.
+		 * we want to kill any workers for disabled subscription.
 		 */
 		if (!sub->enabled)
 			continue;
 
-		/* Check if the subscriber already has registered worker. */
+		/* Check if the subscription already has registered worker. */
 		foreach(wlc, workers)
 		{
 			apply = (SpockWorker *) lfirst(wlc);
@@ -92,7 +88,8 @@ manage_apply_workers(void)
 				break;
 			}
 		}
-		/* If the subscriber does not have a registered worker. */
+
+		/* If the subscription does not have a registered worker */
 		if (!wlc)
 			apply = NULL;
 
@@ -100,26 +97,45 @@ manage_apply_workers(void)
 		if (spock_worker_running(apply))
 			continue;
 
-		/* Check if this is crashed worker and if we want to restart it now. */
+		/*
+		 * Check if this is a terminated worker and if we want to restart
+		 * it now.
+		 */
 		if (apply)
 		{
-			if (apply->crashed_at != 0)
+			if (apply->terminated_at != 0)
 			{
 				TimestampTz	restart_time;
+				TimestampTz now = GetCurrentTimestamp();
 
-				restart_time = TimestampTzPlusMilliseconds(apply->crashed_at,
-														   MIN_SLEEP);
+				/*
+				 * The requested restart time is restart_delay ms after
+				 * the apply-worker had terminated.
+				 */
+				restart_time = TimestampTzPlusMilliseconds(apply->terminated_at,
+														   apply->restart_delay);
 
-				if (restart_time > GetCurrentTimestamp())
+				/*
+				 * If it is not time to restart this apply-worker yet
+				 * then skip it, but adjust the return value to the
+				 * lowest ms when this function needs to be called again.
+				 */
+				if (restart_time >= now)
 				{
-					ret = false;
+					long delay;
+
+					delay = TimestampDifferenceMilliseconds(now,
+															restart_time);
+
+					if (delay < ret)
+						ret = delay;
 					continue;
 				}
-			}
-			else
-			{
-				ret = false;
-				continue;
+				else
+				{
+					/* Ask for re-evaluation right now (in a ms) */
+					ret = 1;
+				}
 			}
 		}
 
@@ -151,12 +167,12 @@ manage_apply_workers(void)
 		spock_worker_kill(worker);
 
 		/* Cleanup old info about crashed apply workers. */
-		if (worker && worker->crashed_at != 0)
+		if (worker && worker->terminated_at != 0)
 		{
 			elog(DEBUG2, "cleaning spock worker slot %zu",
 			     (worker - &SpockCtx->workers[0]));
 			worker->worker_type = SPOCK_WORKER_NONE;
-			worker->crashed_at = 0;
+			worker->terminated_at = 0;
 		}
 	}
 	LWLockRelease(SpockCtx->lock);
@@ -172,7 +188,6 @@ spock_manager_main(Datum main_arg)
 {
 	int			slot = DatumGetInt32(main_arg);
 	Oid			extoid;
-	int			sleep_timer = INITIAL_SLEEP;
 
 	/* Setup shmem. */
 	spock_worker_attach(slot, SPOCK_WORKER_MANAGER);
@@ -200,20 +215,19 @@ spock_manager_main(Datum main_arg)
 	while (!got_SIGTERM)
     {
 		int		rc;
-		bool	processed_all;
+		int		sleep_timer;
 
-		/* Launch the apply workers. */
-		processed_all = manage_apply_workers();
-
-		/* Handle sequences and update our sleep timer as necessary. */
-		if (synchronize_sequences())
-			sleep_timer = Min(sleep_timer * 2, MAX_SLEEP);
-		else
-			sleep_timer = Max(sleep_timer / 2, MIN_SLEEP);
+		/*
+		 * Launch or restart apply-workers. This determines how long
+		 * we have to wait before doing this again based on the restart
+		 * delay of any abnormally terminated worker (possibly due to
+		 * connection errors or exception handling).
+		 */
+		sleep_timer = manage_apply_workers();
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					   processed_all ? sleep_timer : MIN_SLEEP);
+					   sleep_timer);
 
         ResetLatch(&MyProc->procLatch);
 
