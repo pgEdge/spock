@@ -350,8 +350,6 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
 
-	elog(DEBUG1, "SpockErrorLog: Error log behaviour is set to %d", exception_log_behaviour);
-
 	/*
 	 * We either create a new shared memory struct in the error log for
 	 * ourselves if it doesn't exist, or check the commit lsn of the existing
@@ -375,9 +373,6 @@ handle_begin(StringInfo s)
 	{
 		first_begin_at_startup = false;
 
-		elog(DEBUG1, "SpockErrorLog: First time encountering a BEGIN command. \
-		Checking the exception_log_ptr for the commit_lsn");
-
 		for (int i = 0; i <= SpockCtx->total_workers; i++)
 		{
 			exception_log = &exception_log_ptr[i];
@@ -389,14 +384,10 @@ handle_begin(StringInfo s)
 				 * If we find our slot in shared memory, check for commit LSN
 				 */
 				slot_found = true;
-				elog(DEBUG1, "SpockErrorLog: Found the slot_name in the \
-				exception_log_ptr. Checking for commit_lsn (%lu).", commit_lsn);
 				my_exception_log_index = i;
 
 				if (exception_log->commit_lsn == commit_lsn)
 				{
-					elog(DEBUG1, "SpockErrorLog: Found the commit_lsn in the \
-					exception_log_ptr. Using the try block now.");
 					MyApplyWorker->use_try_block = true;
 
 					/*
@@ -429,13 +420,7 @@ handle_begin(StringInfo s)
 			 * pointer to the first free slot we remembered earlier, and fill
 			 * in our slot name, commit_lsn and set local_tuple = NULL
 			 */
-			elog(DEBUG1, "SpockErrorLog: Error log is empty. Creating a new \
-			shared memory struct");
 			MyApplyWorker->use_try_block = false;
-
-			if (free_slot_index < 0)
-				elog(ERROR, "SpockErrorLog: No free slot found in the \
-				exception_log_ptr");
 
 			/* TODO: What happens if a subscription is dropped? Memory leak */
 			new_elog_entry = &exception_log_ptr[free_slot_index];
@@ -449,9 +434,6 @@ handle_begin(StringInfo s)
 			new_elog_entry->local_tuple = NULL;
 
 			my_exception_log_index = free_slot_index;
-			elog(DEBUG1, "SpockErrorLog: Created a new exception_log_ptr for the slot %s \
-			with commit_lsn %lu at free_slot_index = (%d)",
-				 MySubscription->name, commit_lsn, free_slot_index);
 		}
 	}
 
@@ -463,8 +445,6 @@ handle_begin(StringInfo s)
 	 * the db-level manager and the apply-worker is taking care of
 	 * this shared memory already.
 	 */
-	elog(DEBUG1, "SpockErrorLog: Updating the commit_lsn in the \
-	exception_log_ptr to (%lu)", commit_lsn);
 	exception_log = &exception_log_ptr[my_exception_log_index];
 	exception_log->commit_lsn = commit_lsn;
 
@@ -791,18 +771,14 @@ handle_insert(StringInfo s)
 	/* TODO: Handle multiple inserts */
 	if (MyApplyWorker->use_try_block)
 	{
-		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u", remote_xid);
 		PG_TRY();
 		{
-			elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for \
-			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_insert(rel, &newtup);
 		}
 		PG_CATCH();
 		{
 			failed = true;
-			elog(DEBUG1, "SpockErrorLog: Caught error for xid %u", remote_xid);
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
 		}
@@ -811,27 +787,13 @@ handle_insert(StringInfo s)
 		if (!failed)
 		{
 			if (exception_log_behaviour == TRANSDISCARD)
-			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. \
-				Rolling back and releasing the current subtransaction for \
-				xid %u", remote_xid);
 				RollbackAndReleaseCurrentSubTransaction();
-			}
 			else
-			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. \
-				Releasing the current subtransaction for xid %u", remote_xid);
 				ReleaseCurrentSubTransaction();
-			}
 		}
 		else if (failed || exception_log_behaviour == TRANSDISCARD)
 		{
 			/* Insert into the error table here */
-			elog(DEBUG1, "SpockErrorLog: Received error message for xid %u, \
-			message = (%s)", remote_xid, edata->message);
-			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for \
-			xid %u", remote_xid);
-
 			if (exception_log_behaviour > IGNORE)
 			{
 				add_entry_to_exception_log(remote_origin_id,
@@ -847,8 +809,6 @@ handle_insert(StringInfo s)
 	}
 	else
 	{
-		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for \
-		xid %u outside try block", remote_xid);
 		apply_api.do_insert(rel, &newtup);
 	}
 
@@ -948,23 +908,16 @@ handle_update(StringInfo s)
 		return;
 	}
 
-	elog(DEBUG1, "SpockErrorLog: hasoldtup = %d", hasoldtup);
-
 	if (MyApplyWorker->use_try_block == true)
 	{
-		elog(DEBUG1, "SpockErrorLog: use_try_block is true for xid %u",
-			 remote_xid);
 		PG_TRY();
 		{
-			elog(DEBUG1, "SpockErrorLog: Running apply_api.do_update for \
-			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 		}
 		PG_CATCH();
 		{
 			failed = true;
-			elog(DEBUG1, "SpockErrorLog: Caught error for xid %u", remote_xid);
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
 		}
@@ -973,26 +926,12 @@ handle_update(StringInfo s)
 		if (!failed)
 		{
 			if (exception_log_behaviour == TRANSDISCARD)
-			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. \
-				Rolling back and releasing the current subtransaction for \
-				xid %u", remote_xid);
 				RollbackAndReleaseCurrentSubTransaction();
-			}
 			else
-			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. \
-				Releasing the current subtransaction for xid %u", remote_xid);
 				ReleaseCurrentSubTransaction();
-			}
 		}
 		else if (failed || exception_log_behaviour == TRANSDISCARD)
 		{
-			elog(DEBUG1, "SpockErrorLog: Received error message for \
-			xid %u, message = (%s)", remote_xid, edata->message);
-			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for \
-			xid %u", remote_xid);
-
 			if (exception_log_behaviour > IGNORE)
 			{
 				RepOriginId		local_origin;
@@ -1038,8 +977,6 @@ handle_update(StringInfo s)
 	}
 	else
 	{
-		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_update for \
-		xid %u outside try block", remote_xid);
 		apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 	}
 
@@ -1077,19 +1014,14 @@ handle_delete(StringInfo s)
 
 	if (MyApplyWorker->use_try_block)
 	{
-		elog(DEBUG1, "SpockErrorLog: use_try_block is true for \
-		xid %u", remote_xid);
 		PG_TRY();
 		{
-			elog(DEBUG1, "SpockErrorLog: Running apply_api.do_delete for \
-			xid %u inside try block", remote_xid);
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_delete(rel, &oldtup);
 		}
 		PG_CATCH();
 		{
 			failed = true;
-			elog(DEBUG1, "SpockErrorLog: Caught error for xid %u", remote_xid);
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
 		}
@@ -1098,26 +1030,12 @@ handle_delete(StringInfo s)
 		if (!failed)
 		{
 			if (exception_log_behaviour == TRANSDISCARD)
-			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to TRANSDISCARD. \
-				Rolling back and releasing the current subtransaction for \
-				xid %u", remote_xid);
 				RollbackAndReleaseCurrentSubTransaction();
-			}
 			else
-			{
-				elog(DEBUG1, "SpockErrorLog: Behaviour set to DISCARD. \
-				Releasing the current subtransaction for xid %u", remote_xid);
 				ReleaseCurrentSubTransaction();
-			}
 		}
 		else if (failed || exception_log_behaviour == TRANSDISCARD)
 		{
-			elog(DEBUG1, "SpockErrorLog: Received error message for \
-			xid %u, message = (%s)", remote_xid, edata->message);
-			elog(DEBUG1, "SpockErrorLog: Inserting into the error table for \
-			xid %u", remote_xid);
-
 			if (exception_log_behaviour > IGNORE)
 			{
 				RepOriginId		local_origin;
@@ -1163,8 +1081,6 @@ handle_delete(StringInfo s)
 	}
 	else
 	{
-		elog(DEBUG1, "SpockErrorLog: Running apply_api.do_insert for \
-		xid %u outside try block", remote_xid);
 		apply_api.do_delete(rel, &oldtup);
 	}
 
@@ -2549,7 +2465,6 @@ spock_apply_main(Datum main_arg)
 	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
 	Assert(MySpockWorker->worker_type == SPOCK_WORKER_APPLY);
 	MyApplyWorker = &MySpockWorker->worker.apply;
-	elog(DEBUG1, "SpockErrorLog: Initialised MyApplyWorker");
 
 	/* Attach to dsm segment. */
 	Assert(CurrentResourceOwner == NULL);

@@ -711,8 +711,6 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	bool		clear_remoteslot = false;
 	bool		clear_localslot = false;
 
-	elog(DEBUG1, "SpockErrorLog: spock_apply_heap_update() oldtup is (%s)", oldtup == NULL ? "NULL" : "NOT NULL");
-
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
 	estate = edata->estate;
