@@ -223,7 +223,7 @@ spock_manager_main(Datum main_arg)
 		 * delay of any abnormally terminated worker (possibly due to
 		 * connection errors or exception handling).
 		 */
-		sleep_timer = manage_apply_workers();
+		sleep_timer = Max(manage_apply_workers(), 1);
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
