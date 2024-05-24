@@ -947,7 +947,7 @@ _PG_init(void)
 							NULL,
 							&restart_delay_default,
 							5000,
-							0,
+							SPOCK_RESTART_MIN_DELAY,
 							INT_MAX,
 							PGC_POSTMASTER,
 							0,

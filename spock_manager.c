@@ -129,12 +129,8 @@ manage_apply_workers(void)
 
 					if (delay < ret)
 						ret = delay;
+
 					continue;
-				}
-				else
-				{
-					/* Ask for re-evaluation right now (in a ms) */
-					ret = 1;
 				}
 			}
 		}
@@ -177,7 +173,11 @@ manage_apply_workers(void)
 	}
 	LWLockRelease(SpockCtx->lock);
 
-	return ret;
+	/*
+	 * Let's guard against a zero restart delay so that an
+	 * external latch would have some timeout.
+	 */
+	return Max(ret, SPOCK_RESTART_MIN_DELAY);
 }
 
 /*
@@ -223,7 +223,7 @@ spock_manager_main(Datum main_arg)
 		 * delay of any abnormally terminated worker (possibly due to
 		 * connection errors or exception handling).
 		 */
-		sleep_timer = Max(manage_apply_workers(), 1);
+		sleep_timer = manage_apply_workers();
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,

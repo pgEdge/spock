@@ -37,6 +37,9 @@
 
 #define HAVE_REPLICATION_ORIGINS
 
+/* Min allowed value for restart_delay_default GUC */
+#define SPOCK_RESTART_MIN_DELAY 1
+
 extern bool spock_synchronous_commit;
 extern char *spock_temp_directory;
 extern bool spock_use_spi;
