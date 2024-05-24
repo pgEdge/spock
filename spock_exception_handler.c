@@ -63,7 +63,8 @@
 #define CATALOG_EXCEPTION_LOG "exception_log"
 
 SpockExceptionLog *exception_log_ptr = NULL;
-int			exception_log_behaviour = TRANSDISCARD;
+int			exception_behaviour = TRANSDISCARD;
+int			exception_logging = LOG_ALL;
 int			exception_command_counter = 0;
 
 
@@ -127,7 +128,7 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 
 	values[Anum_exception_log_remote_origin - 1] = ObjectIdGetDatum(remote_origin);
 	values[Anum_exception_log_remote_commit_ts - 1] = TimestampTzGetDatum(remote_commit_ts);
-	values[Anum_exception_log_command_counter - 1] = ++exception_command_counter;
+	values[Anum_exception_log_command_counter - 1] = exception_command_counter;
 	values[Anum_exception_log_remote_xid - 1] = TransactionIdGetDatum(remote_xid);
 	if (ddl_statement == NULL)
 	{
@@ -175,7 +176,10 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 		values[Anum_exception_log_ddl_search_path - 1] = CStringGetTextDatum(ddl_search_path);
 	}
 
-	values[Anum_exception_log_error_message - 1] = CStringGetTextDatum(error_message);
+	if (error_message == NULL)
+		nulls[Anum_exception_log_error_message - 1] = 'n';
+	else
+		values[Anum_exception_log_error_message - 1] = CStringGetTextDatum(error_message);
 	values[Anum_exception_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
 
 	tup = heap_form_tuple(tupDesc, values, nulls);

@@ -480,7 +480,6 @@ handle_begin(StringInfo s)
 
 /*
  * Handle COMMIT message.
- * TODO: Properly handle commit for TRANSDISCARD cases.
  */
 static void
 handle_commit(StringInfo s)
@@ -773,6 +772,7 @@ handle_insert(StringInfo s)
 	{
 		PG_TRY();
 		{
+			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_insert(rel, &newtup);
 		}
@@ -786,26 +786,32 @@ handle_insert(StringInfo s)
 
 		if (!failed)
 		{
-			if (exception_log_behaviour == TRANSDISCARD)
+			if (exception_behaviour == TRANSDISCARD)
 				RollbackAndReleaseCurrentSubTransaction();
 			else
 				ReleaseCurrentSubTransaction();
 		}
-		else if (failed || exception_log_behaviour == TRANSDISCARD)
-		{
-			/* Insert into the error table here */
-			if (exception_log_behaviour > IGNORE)
-			{
-				add_entry_to_exception_log(remote_origin_id,
-										   replorigin_session_origin_timestamp,
-										   remote_xid,
-										   0, 0,
-										   rel, localtup, oldtup, &newtup,
-										   NULL, NULL, NULL,
-										   action_name, edata->message);
-			}
 
-		}
+		/* Exception logging */
+		if (failed && exception_logging != LOG_NONE)
+			add_entry_to_exception_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid,
+									   0, 0,
+									   rel, localtup, oldtup, &newtup,
+									   NULL, NULL, NULL,
+									   action_name, edata->message);
+		else if (!failed && exception_logging != LOG_NONE &&
+				 (exception_logging == LOG_ALL ||
+				  exception_behaviour == TRANSDISCARD))
+			add_entry_to_exception_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid,
+									   0, 0,
+									   rel, localtup, oldtup, &newtup,
+									   NULL, NULL, NULL,
+									   action_name, NULL);
+
 	}
 	else
 	{
@@ -845,9 +851,6 @@ handle_insert(StringInfo s)
 
 		apply_api.on_begin();
 		MemoryContextSwitchTo(MessageContext);
-
-/* 		if (oldxid != GetTopTransactionId()) */
-/* 			CommitTransactionCommand(); */
 	}
 	else
 	{
@@ -912,6 +915,7 @@ handle_update(StringInfo s)
 	{
 		PG_TRY();
 		{
+			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 		}
@@ -925,54 +929,94 @@ handle_update(StringInfo s)
 
 		if (!failed)
 		{
-			if (exception_log_behaviour == TRANSDISCARD)
+			if (exception_behaviour == TRANSDISCARD)
 				RollbackAndReleaseCurrentSubTransaction();
 			else
 				ReleaseCurrentSubTransaction();
 		}
-		else if (failed || exception_log_behaviour == TRANSDISCARD)
+
+		/* Exception logging */
+		if (failed && exception_logging != LOG_NONE)
 		{
-			if (exception_log_behaviour > IGNORE)
+			RepOriginId		local_origin;
+			TimestampTz		local_commit_ts;
+			TransactionId	xmin;
+			bool			local_origin_found = false;
+
+			localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+			if (localtup != NULL)
+				local_origin_found = get_tuple_origin(rel, localtup,
+													  &(localtup->t_self),
+													  &xmin,
+													  &local_origin,
+													  &local_commit_ts);
+			if (!local_origin_found)
 			{
-				RepOriginId		local_origin;
-				TimestampTz		local_commit_ts;
-				TransactionId	xmin;
-				bool			local_origin_found = false;
-
-				localtup = exception_log_ptr[my_exception_log_index].local_tuple;
-				if (localtup != NULL)
-					local_origin_found = get_tuple_origin(rel, localtup,
-														  &(localtup->t_self),
-														  &xmin,
-														  &local_origin,
-														  &local_commit_ts);
-				if (!local_origin_found)
+				xmin = InvalidTransactionId;
+				local_origin = InvalidRepOriginId;
+				local_commit_ts = 0;
+			}
+			else
+			{
+				if (local_origin == 0)
 				{
-					xmin = InvalidTransactionId;
-					local_origin = InvalidRepOriginId;
-					local_commit_ts = 0;
-				}
-				else
-				{
-					if (local_origin == 0)
-					{
-						SpockLocalNode *local_node;
+					SpockLocalNode *local_node;
 
-						local_node = get_local_node(false, false);
-						local_origin = local_node->node->id;
-					}
+					local_node = get_local_node(false, false);
+					local_origin = local_node->node->id;
 				}
-
-				add_entry_to_exception_log(remote_origin_id,
-										   replorigin_session_origin_timestamp,
-										   remote_xid,
-										   local_origin, local_commit_ts,
-										   rel, localtup,
-										   hasoldtup ? &oldtup : NULL, &newtup,
-										   NULL, NULL, NULL,
-										   "UPDATE", edata->message);
 			}
 
+			add_entry_to_exception_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid,
+									   local_origin, local_commit_ts,
+									   rel, localtup,
+									   hasoldtup ? &oldtup : NULL, &newtup,
+									   NULL, NULL, NULL,
+									   "UPDATE", edata->message);
+		}
+		else if (!failed && exception_logging != LOG_NONE &&
+				 (exception_logging == LOG_ALL ||
+				  exception_behaviour == TRANSDISCARD))
+		{
+			RepOriginId		local_origin;
+			TimestampTz		local_commit_ts;
+			TransactionId	xmin;
+			bool			local_origin_found = false;
+
+			localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+			if (localtup != NULL)
+				local_origin_found = get_tuple_origin(rel, localtup,
+													  &(localtup->t_self),
+													  &xmin,
+													  &local_origin,
+													  &local_commit_ts);
+			if (!local_origin_found)
+			{
+				xmin = InvalidTransactionId;
+				local_origin = InvalidRepOriginId;
+				local_commit_ts = 0;
+			}
+			else
+			{
+				if (local_origin == 0)
+				{
+					SpockLocalNode *local_node;
+
+					local_node = get_local_node(false, false);
+					local_origin = local_node->node->id;
+				}
+			}
+
+			add_entry_to_exception_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid,
+									   local_origin, local_commit_ts,
+									   rel, localtup,
+									   hasoldtup ? &oldtup : NULL, &newtup,
+									   NULL, NULL, NULL,
+									   "UPDATE", NULL);
 		}
 	}
 	else
@@ -1016,6 +1060,7 @@ handle_delete(StringInfo s)
 	{
 		PG_TRY();
 		{
+			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
 			apply_api.do_delete(rel, &oldtup);
 		}
@@ -1029,54 +1074,94 @@ handle_delete(StringInfo s)
 
 		if (!failed)
 		{
-			if (exception_log_behaviour == TRANSDISCARD)
+			if (exception_behaviour == TRANSDISCARD)
 				RollbackAndReleaseCurrentSubTransaction();
 			else
 				ReleaseCurrentSubTransaction();
 		}
-		else if (failed || exception_log_behaviour == TRANSDISCARD)
+
+		/* Exception logging */
+		if (failed && exception_logging != LOG_NONE)
 		{
-			if (exception_log_behaviour > IGNORE)
+			RepOriginId		local_origin;
+			TimestampTz		local_commit_ts;
+			TransactionId	xmin;
+			bool			local_origin_found = false;
+
+			localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+			if (localtup != NULL)
+				local_origin_found = get_tuple_origin(rel, localtup,
+													  &(localtup->t_self),
+													  &xmin,
+													  &local_origin,
+													  &local_commit_ts);
+			if (!local_origin_found)
 			{
-				RepOriginId		local_origin;
-				TimestampTz		local_commit_ts;
-				TransactionId	xmin;
-				bool			local_origin_found = false;
-
-				localtup = exception_log_ptr[my_exception_log_index].local_tuple;
-				if (localtup != NULL)
-					local_origin_found = get_tuple_origin(rel, localtup,
-														  &(localtup->t_self),
-														  &xmin,
-														  &local_origin,
-														  &local_commit_ts);
-				if (!local_origin_found)
+				xmin = InvalidTransactionId;
+				local_origin = InvalidRepOriginId;
+				local_commit_ts = 0;
+			}
+			else
+			{
+				if (local_origin == 0)
 				{
-					xmin = InvalidTransactionId;
-					local_origin = InvalidRepOriginId;
-					local_commit_ts = 0;
-				}
-				else
-				{
-					if (local_origin == 0)
-					{
-						SpockLocalNode *local_node;
+					SpockLocalNode *local_node;
 
-						local_node = get_local_node(false, false);
-						local_origin = local_node->node->id;
-					}
+					local_node = get_local_node(false, false);
+					local_origin = local_node->node->id;
 				}
-
-				add_entry_to_exception_log(remote_origin_id,
-										   replorigin_session_origin_timestamp,
-										   remote_xid,
-										   local_origin, local_commit_ts,
-										   rel, localtup,
-										   &oldtup, NULL,
-										   NULL, NULL, NULL,
-										   "DELETE", edata->message);
 			}
 
+			add_entry_to_exception_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid,
+									   local_origin, local_commit_ts,
+									   rel, localtup,
+									   &oldtup, NULL,
+									   NULL, NULL, NULL,
+									   "DELETE", edata->message);
+		}
+		else if (!failed && exception_logging != LOG_NONE &&
+				 (exception_logging == LOG_ALL ||
+				  exception_behaviour == TRANSDISCARD))
+		{
+			RepOriginId		local_origin;
+			TimestampTz		local_commit_ts;
+			TransactionId	xmin;
+			bool			local_origin_found = false;
+
+			localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+			if (localtup != NULL)
+				local_origin_found = get_tuple_origin(rel, localtup,
+													  &(localtup->t_self),
+													  &xmin,
+													  &local_origin,
+													  &local_commit_ts);
+			if (!local_origin_found)
+			{
+				xmin = InvalidTransactionId;
+				local_origin = InvalidRepOriginId;
+				local_commit_ts = 0;
+			}
+			else
+			{
+				if (local_origin == 0)
+				{
+					SpockLocalNode *local_node;
+
+					local_node = get_local_node(false, false);
+					local_origin = local_node->node->id;
+				}
+			}
+
+			add_entry_to_exception_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid,
+									   local_origin, local_commit_ts,
+									   rel, localtup,
+									   &oldtup, NULL,
+									   NULL, NULL, NULL,
+									   "DELETE", NULL);
 		}
 	}
 	else

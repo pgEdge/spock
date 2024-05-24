@@ -89,10 +89,16 @@ static const struct config_enum_entry server_message_level_options[] = {
 	{NULL, 0, false}
 };
 
-static const struct config_enum_entry exception_log_behaviour_options[] = {
-	{"ignore", IGNORE, false},
+static const struct config_enum_entry exception_behaviour_options[] = {
 	{"discard", DISCARD, false},
 	{"transdiscard", TRANSDISCARD, false},
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry exception_logging_options[] = {
+	{"none", LOG_NONE, false},
+	{"discard", LOG_DISCARD, false},
+	{"all", LOG_ALL, false},
 	{NULL, 0, false}
 };
 
@@ -802,13 +808,22 @@ _PG_init(void)
 							 PGC_SUSET, 0,
 							 NULL, NULL, NULL);
 
-	DefineCustomEnumVariable("spock.exception_log_behaviour",
-							 gettext_noop("Sets the default behaviour when an apply worker encounters an error."),
+	DefineCustomEnumVariable("spock.exception_behaviour",
+							 gettext_noop("Sets the behaviour on exception."),
 							 NULL,
-							 &exception_log_behaviour,
+							 &exception_behaviour,
 							 TRANSDISCARD,
-							 exception_log_behaviour_options,
-							 PGC_SUSET, 0,
+							 exception_behaviour_options,
+							 PGC_POSTMASTER, 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomEnumVariable("spock.exception_logging",
+							 gettext_noop("Sets what is logged on exception."),
+							 NULL,
+							 &exception_logging,
+							 LOG_ALL,
+							 exception_logging_options,
+							 PGC_POSTMASTER, 0,
 							 NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.stats_max_entries",

@@ -46,15 +46,23 @@ typedef struct SpockExceptionLog
 	HeapTuple	local_tuple;
 } SpockExceptionLog;
 
-typedef enum SpockExceptionLogBehaviour
+typedef enum SpockExceptionBehaviour
 {
-	IGNORE,
 	DISCARD,
 	TRANSDISCARD
-}			SpockExceptionLogBehaviour;
+} SpockExceptionBehaviour;
 
-extern SpockExceptionLog *exception_log_ptr;
-extern int	exception_log_behaviour;
+typedef enum SpockExceptionLogging
+{
+	LOG_NONE,
+	LOG_DISCARD,
+	LOG_ALL
+} SpockExceptionLogging;
+
+extern SpockExceptionLog   *exception_log_ptr;
+extern int					exception_behaviour;
+extern int					exception_logging;
+extern int					exception_command_counter;
 
 extern void add_entry_to_exception_log(Oid remote_origin,
 									   TimestampTz remote_commit_ts,
