@@ -792,26 +792,20 @@ handle_insert(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/* Exception logging */
-		if (failed && exception_logging != LOG_NONE)
+		/*
+			* Logging exception. In case of error, error message, NULL
+			* otherwise. We can check for value of "failed" as well,
+			* but I feel checking for a valid edata is safer.
+			*/
+		if (exception_logging != LOG_NONE)
 			add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
 									   remote_xid,
 									   0, 0,
 									   rel, localtup, oldtup, &newtup,
 									   NULL, NULL, NULL,
-									   action_name, edata->message);
-		else if (!failed && exception_logging != LOG_NONE &&
-				 (exception_logging == LOG_ALL ||
-				  exception_behaviour == TRANSDISCARD))
-			add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid,
-									   0, 0,
-									   rel, localtup, oldtup, &newtup,
-									   NULL, NULL, NULL,
-									   action_name, NULL);
-
+									   action_name,
+									   (edata) ? edata->message : NULL);
 	}
 	else
 	{
@@ -887,7 +881,7 @@ handle_update(StringInfo s)
 	SpockTupleData oldtup;
 	SpockTupleData newtup;
 	SpockRelation *rel;
-	ErrorData  *edata;
+	ErrorData  *edata = NULL;
 	HeapTuple	localtup;
 	bool		hasoldtup;
 	bool		failed = false;
@@ -935,8 +929,7 @@ handle_update(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/* Exception logging */
-		if (failed && exception_logging != LOG_NONE)
+		if (exception_logging != LOG_NONE)
 		{
 			RepOriginId		local_origin;
 			TimestampTz		local_commit_ts;
@@ -967,56 +960,20 @@ handle_update(StringInfo s)
 				}
 			}
 
+			/*
+			 * Logging exception. In case of error, error message, NULL
+			 * otherwise. We can check for value of "failed" as well,
+			 * but I feel checking for a valid edata is safer.
+			 */
 			add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid,
-									   local_origin, local_commit_ts,
-									   rel, localtup,
-									   hasoldtup ? &oldtup : NULL, &newtup,
-									   NULL, NULL, NULL,
-									   "UPDATE", edata->message);
-		}
-		else if (!failed && exception_logging != LOG_NONE &&
-				 (exception_logging == LOG_ALL ||
-				  exception_behaviour == TRANSDISCARD))
-		{
-			RepOriginId		local_origin;
-			TimestampTz		local_commit_ts;
-			TransactionId	xmin;
-			bool			local_origin_found = false;
-
-			localtup = exception_log_ptr[my_exception_log_index].local_tuple;
-			if (localtup != NULL)
-				local_origin_found = get_tuple_origin(rel, localtup,
-													  &(localtup->t_self),
-													  &xmin,
-													  &local_origin,
-													  &local_commit_ts);
-			if (!local_origin_found)
-			{
-				xmin = InvalidTransactionId;
-				local_origin = InvalidRepOriginId;
-				local_commit_ts = 0;
-			}
-			else
-			{
-				if (local_origin == 0)
-				{
-					SpockLocalNode *local_node;
-
-					local_node = get_local_node(false, false);
-					local_origin = local_node->node->id;
-				}
-			}
-
-			add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid,
-									   local_origin, local_commit_ts,
-									   rel, localtup,
-									   hasoldtup ? &oldtup : NULL, &newtup,
-									   NULL, NULL, NULL,
-									   "UPDATE", NULL);
+									replorigin_session_origin_timestamp,
+									remote_xid,
+									local_origin, local_commit_ts,
+									rel, localtup,
+									hasoldtup ? &oldtup : NULL, &newtup,
+									NULL, NULL, NULL,
+									"UPDATE",
+									(edata) ? edata->message : NULL);
 		}
 	}
 	else
@@ -1081,7 +1038,7 @@ handle_delete(StringInfo s)
 		}
 
 		/* Exception logging */
-		if (failed && exception_logging != LOG_NONE)
+		if (exception_logging != LOG_NONE)
 		{
 			RepOriginId		local_origin;
 			TimestampTz		local_commit_ts;
@@ -1119,49 +1076,8 @@ handle_delete(StringInfo s)
 									   rel, localtup,
 									   &oldtup, NULL,
 									   NULL, NULL, NULL,
-									   "DELETE", edata->message);
-		}
-		else if (!failed && exception_logging != LOG_NONE &&
-				 (exception_logging == LOG_ALL ||
-				  exception_behaviour == TRANSDISCARD))
-		{
-			RepOriginId		local_origin;
-			TimestampTz		local_commit_ts;
-			TransactionId	xmin;
-			bool			local_origin_found = false;
-
-			localtup = exception_log_ptr[my_exception_log_index].local_tuple;
-			if (localtup != NULL)
-				local_origin_found = get_tuple_origin(rel, localtup,
-													  &(localtup->t_self),
-													  &xmin,
-													  &local_origin,
-													  &local_commit_ts);
-			if (!local_origin_found)
-			{
-				xmin = InvalidTransactionId;
-				local_origin = InvalidRepOriginId;
-				local_commit_ts = 0;
-			}
-			else
-			{
-				if (local_origin == 0)
-				{
-					SpockLocalNode *local_node;
-
-					local_node = get_local_node(false, false);
-					local_origin = local_node->node->id;
-				}
-			}
-
-			add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid,
-									   local_origin, local_commit_ts,
-									   rel, localtup,
-									   &oldtup, NULL,
-									   NULL, NULL, NULL,
-									   "DELETE", NULL);
+									   "DELETE",
+									   (edata) ? edata->message : NULL);
 		}
 	}
 	else
