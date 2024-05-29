@@ -177,6 +177,31 @@ static bool parse_bool_param(const char *key, const char *value);
 static void process_syncing_tables(XLogRecPtr end_lsn);
 static void start_sync_worker(Name nspname, Name relname);
 
+static bool should_log_exception(bool failed);
+
+/*
+ * This function returns true when:
+ * - exception_logging is not equal to LOG_NONE, and
+ *   - Subtransaction failed
+ *   OR
+ *   - Subtransaction succeeded, and
+ *   - exception_behaviour is TRANSDISCARD or exception_logging is LOG_ALL
+ */
+static bool
+should_log_exception(bool failed)
+{
+	if (exception_logging != LOG_NONE)
+	{
+		if (failed)
+			return true;
+		else if (exception_logging == LOG_ALL ||
+			 exception_behaviour == TRANSDISCARD)
+			return true;
+	}
+
+	return false;
+}
+
 /*
  * Check if given relation is in process of being synchronized.
  *
@@ -792,12 +817,8 @@ handle_insert(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/*
-			* Logging exception. In case of error, error message, NULL
-			* otherwise. We can check for value of "failed" as well,
-			* but I feel checking for a valid edata is safer.
-			*/
-		if (exception_logging != LOG_NONE)
+		/* Let's create an exception log entry if true. */
+		if (should_log_exception(failed))
 			add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
 									   remote_xid,
@@ -805,7 +826,7 @@ handle_insert(StringInfo s)
 									   rel, localtup, oldtup, &newtup,
 									   NULL, NULL, NULL,
 									   action_name,
-									   (edata) ? edata->message : NULL);
+									   (failed) ? edata->message : NULL);
 	}
 	else
 	{
@@ -929,7 +950,8 @@ handle_update(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		if (exception_logging != LOG_NONE)
+		/* Let's create an exception log entry if true. */
+		if (should_log_exception(failed))
 		{
 			RepOriginId		local_origin;
 			TimestampTz		local_commit_ts;
@@ -960,11 +982,6 @@ handle_update(StringInfo s)
 				}
 			}
 
-			/*
-			 * Logging exception. In case of error, error message, NULL
-			 * otherwise. We can check for value of "failed" as well,
-			 * but I feel checking for a valid edata is safer.
-			 */
 			add_entry_to_exception_log(remote_origin_id,
 									replorigin_session_origin_timestamp,
 									remote_xid,
@@ -973,7 +990,7 @@ handle_update(StringInfo s)
 									hasoldtup ? &oldtup : NULL, &newtup,
 									NULL, NULL, NULL,
 									"UPDATE",
-									(edata) ? edata->message : NULL);
+									(failed) ? edata->message : NULL);
 		}
 	}
 	else
@@ -1037,8 +1054,8 @@ handle_delete(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/* Exception logging */
-		if (exception_logging != LOG_NONE)
+		/* Let's create an exception log entry if true. */
+		if (should_log_exception(failed))
 		{
 			RepOriginId		local_origin;
 			TimestampTz		local_commit_ts;
@@ -1077,7 +1094,7 @@ handle_delete(StringInfo s)
 									   &oldtup, NULL,
 									   NULL, NULL, NULL,
 									   "DELETE",
-									   (edata) ? edata->message : NULL);
+									   (failed) ? edata->message : NULL);
 		}
 	}
 	else
