@@ -325,7 +325,6 @@ begin_replication_step(void)
 	}
 
 	PushActiveSnapshot(GetTransactionSnapshot());
-	MemoryContextSwitchTo(MessageContext);
 
 	return result;
 }
@@ -343,6 +342,8 @@ end_replication_step(void)
 	PopActiveSnapshot();
 
 	CommandCounterIncrement();
+
+	MemoryContextSwitchTo(MessageContext);
 }
 
 static void
