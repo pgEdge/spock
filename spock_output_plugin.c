@@ -83,6 +83,10 @@ static bool pg_decode_origin_filter(LogicalDecodingContext *ctx,
 
 static void send_startup_message(LogicalDecodingContext *ctx,
 		SpockOutputData *data, bool last_message);
+static void maybe_send_schema(LogicalDecodingContext *ctx,
+							  ReorderBufferChange *change,
+							  Relation relation);
+static bool can_replicate_truncate(List *repsets);
 
 static bool startup_message_sent = false;
 
@@ -1000,7 +1004,6 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	int			i;
 	int			nrelids;
 	Oid		   *relids;
-	List	   *repsets;
 
 	/*
 	 * If we are in slot-group skip transaction mode do nothing
@@ -1012,38 +1015,35 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	if (spock_replication_repair_mode)
 		return;
 
+	old = MemoryContextSwitchTo(data->context);
 	relids = palloc0(nrelations * sizeof(Oid));
 	nrelids = 0;
 
 	for (i = 0; i < nrelations; i++)
 	{
-		ListCell   *rlc;
 		Relation	relation = relations[i];
 		Oid			relid = RelationGetRelid(relation);
+		List	   *repsets = get_table_replication_sets(data->local_node_id, relid);
 
-		repsets = get_table_replication_sets(data->local_node_id, relid);
-		foreach(rlc, repsets)
-		{
-			SpockRepSet *repset = (SpockRepSet *) lfirst(rlc);
-
-			if (!repset->replicate_truncate)
-				continue;
-		}
+		if (!can_replicate_truncate(repsets))
+			continue;
 
 		relids[nrelids++] = relid;
 		/* Send relation description */
 		maybe_send_schema(ctx, change, relation);
 	}
 
-	old = MemoryContextSwitchTo(data->context);
-	OutputPluginPrepareWrite(ctx, true);
-	data->api->write_truncate(ctx->out, nrelids, relids,
-							  change->data.truncate.cascade,
-							  change->data.truncate.restart_seqs);
+	if (nrelids > 0)
+	{
+		OutputPluginPrepareWrite(ctx, true);
+		data->api->write_truncate(ctx->out, nrelids, relids,
+									change->data.truncate.cascade,
+									change->data.truncate.restart_seqs);
+		OutputPluginWrite(ctx, true);
+	}
+
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(data->context);
-
-	OutputPluginWrite(ctx, true);
 }
 
 #ifdef HAVE_REPLICATION_ORIGINS
@@ -1552,4 +1552,20 @@ spkReorderBufferCleanSerializedTXNs(const char *slotname)
 		}
 	}
 	FreeDir(spill_dir);
+}
+
+static bool
+can_replicate_truncate(List *repsets)
+{
+    ListCell *rlc;
+
+    foreach(rlc, repsets)
+    {
+        SpockRepSet *repset = (SpockRepSet *) lfirst(rlc);
+
+        if (repset->replicate_truncate)
+            return true;
+    }
+
+    return false;
 }
