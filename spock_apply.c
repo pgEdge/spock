@@ -355,7 +355,6 @@ handle_begin(StringInfo s)
 	TimestampTz commit_time;
 	bool		slot_found = false;
 	int			sub_name_len = strlen(MySubscription->name);
-	int			free_slot_index = -1;
 	char	   *slot_name;
 
 	/*
@@ -429,18 +428,12 @@ handle_begin(StringInfo s)
 				 */
 				break;
 			}
-			else if (free_slot_index < 0 && strlen(slot_name) == 0)
-			{
-				/*
-				 * If we find a free slot in shared memory, remember its index
-				 */
-				free_slot_index = i;
-			}
-
 		}
 
 		if (!slot_found)
 		{
+			int free_slot_index = -1;
+
 			/*
 			 * If we don't find ourselves in shared memory, then we get the
 			 * pointer to the first free slot we remembered earlier, and fill
@@ -448,9 +441,34 @@ handle_begin(StringInfo s)
 			 */
 			MyApplyWorker->use_try_block = false;
 
+			/*
+			 * Let's acquire an exclusive lock to ensure no changes are made
+			 * by another process while we attempt to find an empty slot.
+			 */
+			LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+
+			for (int i = 0; i <= SpockCtx->total_workers; i++)
+			{
+				if (strlen(NameStr(exception_log_ptr[i].slot_name)) == 0)
+				{
+					free_slot_index = i;
+					break;
+				}
+			}
+
+			if (free_slot_index == -1)
+			{
+				/* no free entries found. */
+				elog(ERROR, "SPOCK %s: unable to find an empty exception log slot.",
+					 MySubscription->name);
+			}
+
 			/* TODO: What happens if a subscription is dropped? Memory leak */
 			new_elog_entry = &exception_log_ptr[free_slot_index];
 			namestrcpy(&new_elog_entry->slot_name, MySubscription->name);
+
+			/* We've occupied the free slot. Let's release the lock now. */
+			LWLockRelease(SpockCtx->lock);
 
 			/*
 			 * Redundant, since it's happening below. But we'll have it for
@@ -463,7 +481,6 @@ handle_begin(StringInfo s)
 		}
 	}
 
-	/* FIXME: Is it possible for my_exception_log_index to be -1 here? */
 	/*
 	 * Yes, it is because all of this information should have been
 	 * part of the SpockApplyWorker struct instead its own shared
