@@ -405,22 +405,9 @@ handle_begin(StringInfo s)
 
 			if (strncmp(slot_name, MySubscription->name, sub_name_len) == 0)
 			{
-				/*
-				 * If we find our slot in shared memory, check for commit LSN
-				 */
+				/* We found our slot in shared memory. */
 				slot_found = true;
 				my_exception_log_index = i;
-
-				if (exception_log->commit_lsn == commit_lsn)
-				{
-					MyApplyWorker->use_try_block = true;
-
-					/*
-					 * If we unexpectedly terminate again with error during
-					 * exception handling, don't go into a fast error loop.
-					 */
-					MySpockWorker->restart_delay = restart_delay_default;
-				}
 
 				/*
 				 * Break out out of the loop whether we've found the commit
@@ -443,19 +430,37 @@ handle_begin(StringInfo s)
 
 			/*
 			 * Let's acquire an exclusive lock to ensure no changes are made
-			 * by another process while we attempt to find an empty slot.
+			 * by another process while we attempt to check again subscription
+			 * name exists, if so, we'll take that. Otherwise, remember the
+			 * first free slot index.
 			 */
 			LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
 			for (int i = 0; i <= SpockCtx->total_workers; i++)
 			{
-				if (strlen(NameStr(exception_log_ptr[i].slot_name)) == 0)
+				exception_log = &exception_log_ptr[i];
+				slot_name = NameStr(exception_log->slot_name);
+
+				if (strncmp(slot_name, MySubscription->name, sub_name_len) == 0)
+				{
+					/* We found our slot in shared memory. */
+					slot_found = true;
+					my_exception_log_index = i;
+
+					/*
+					 * Break out out of the loop whether we've found the commit
+					 * LSN or not since we have already found our slot
+					 */
+					break;
+				}
+
+				if (free_slot_index < 0 && strlen(slot_name) == 0)
 				{
 					free_slot_index = i;
-					break;
 				}
 			}
 
+			/* TODO: What to do if we can't find a free slot? */
 			if (free_slot_index == -1)
 			{
 				/* no free entries found. */
@@ -463,21 +468,42 @@ handle_begin(StringInfo s)
 					 MySubscription->name);
 			}
 
-			/* TODO: What happens if a subscription is dropped? Memory leak */
-			new_elog_entry = &exception_log_ptr[free_slot_index];
-			namestrcpy(&new_elog_entry->slot_name, MySubscription->name);
+			/* We didn't find a slot, but we have a valid index. */
+			if (!slot_found)
+			{
+				/* TODO: What happens if a subscription is dropped? Memory leak */
+				new_elog_entry = &exception_log_ptr[free_slot_index];
+				namestrcpy(&new_elog_entry->slot_name, MySubscription->name);
+
+				/*
+				 * Redundant, since it's happening below. But we'll have it for
+				 * now
+				 */
+				new_elog_entry->commit_lsn = commit_lsn;
+				new_elog_entry->local_tuple = NULL;
+
+				my_exception_log_index = free_slot_index;
+			}
 
 			/* We've occupied the free slot. Let's release the lock now. */
 			LWLockRelease(SpockCtx->lock);
+		}
+	}
+
+	if (slot_found)
+	{
+		/*
+		 * If we find our slot in shared memory, check for commit LSN
+		 */
+		if (exception_log->commit_lsn == commit_lsn)
+		{
+			MyApplyWorker->use_try_block = true;
 
 			/*
-			 * Redundant, since it's happening below. But we'll have it for
-			 * now
+			 * If we unexpectedly terminate again with error during
+			 * exception handling, don't go into a fast error loop.
 			 */
-			new_elog_entry->commit_lsn = commit_lsn;
-			new_elog_entry->local_tuple = NULL;
-
-			my_exception_log_index = free_slot_index;
+			MySpockWorker->restart_delay = restart_delay_default;
 		}
 	}
 
