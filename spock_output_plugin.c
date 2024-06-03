@@ -727,8 +727,7 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 					SpockRepSet	   *rs = lfirst(plc);
 
 					/* TODO: this is somewhat ugly. */
-					if (strcmp(queue_set, rs->name) == 0 &&
-						rs->replicate_truncate)
+					if (strcmp(queue_set, rs->name) == 0)
 						return true;
 				}
 			}

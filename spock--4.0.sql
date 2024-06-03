@@ -277,12 +277,18 @@ CREATE TABLE spock.queue (
     message json NOT NULL
 );
 
-CREATE FUNCTION spock.replicate_ddl(command text, replication_sets text[] DEFAULT '{ddl_sql}')
+CREATE FUNCTION spock.replicate_ddl(command text,
+									replication_sets text[] DEFAULT '{ddl_sql}',
+									search_path text DEFAULT '',
+									role text DEFAULT CURRENT_USER)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
 
-CREATE FUNCTION spock.replicate_ddl(command text[], replication_sets text[] DEFAULT '{ddl_sql}')
+CREATE FUNCTION spock.replicate_ddl(command text[],
+									replication_sets text[] DEFAULT '{ddl_sql}',
+									search_path text DEFAULT current_setting('search_path'),
+									role text DEFAULT CURRENT_USER)
 RETURNS SETOF boolean STRICT VOLATILE LANGUAGE sql AS
-    'SELECT spock.replicate_ddl(cmd, $2) FROM (SELECT unnest(command) cmd)';
+    'SELECT spock.replicate_ddl(cmd, $2, $3, $4) FROM (SELECT unnest(command) cmd)';
 
 CREATE FUNCTION spock.node_info(OUT node_id oid, OUT node_name text,
     OUT sysid text, OUT dbname text, OUT replication_sets text,
