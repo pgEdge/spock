@@ -36,6 +36,8 @@ typedef struct SpockRelation
 	char	   *relname; /* Table name */
 	int			natts;
 	char	  **attnames;
+	Oid		   *attrtypes;
+	Oid		   *attrtypmods;
 
 	/* Mapping to local relation, filled as needed. */
 	Oid			reloid;
@@ -51,7 +53,9 @@ typedef struct SpockRelation
 
 extern void spock_relation_cache_update(uint32 remoteid,
 											 char *schemaname, char *relname,
-											 int natts, char **attnames);
+											 int natts, char **attnames,
+											 Oid *attrtypes,
+											 Oid *attrtypmods);
 extern void spock_relation_cache_updater(SpockRemoteRel *remoterel);
 
 extern SpockRelation *spock_relation_open(uint32 remoteid,

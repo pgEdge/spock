@@ -164,7 +164,8 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 void
 spock_relation_cache_update(uint32 remoteid, char *schemaname,
-								 char *relname, int natts, char **attnames)
+								 char *relname, int natts, char **attnames,
+								 Oid *attrtypes, Oid *attrtypmods)
 {
 	MemoryContext		oldcontext;
 	SpockRelation	   *entry;
@@ -189,8 +190,14 @@ spock_relation_cache_update(uint32 remoteid, char *schemaname,
 	entry->relname = pstrdup(relname);
 	entry->natts = natts;
 	entry->attnames = palloc(natts * sizeof(char *));
+	entry->attrtypes = (Oid *) palloc(natts * sizeof(Oid));
+	entry->attrtypmods = (Oid *) palloc(natts * sizeof(Oid));
 	for (i = 0; i < natts; i++)
+	{
 		entry->attnames[i] = pstrdup(attnames[i]);
+		entry->attrtypes[i] = attrtypes[i];
+		entry->attrtypmods[i] = attrtypmods[i];
+	}
 	entry->attmap = palloc(natts * sizeof(int));
 	entry->has_delta_columns = false;
 	entry->delta_apply_functions = palloc0(natts * sizeof(Oid));

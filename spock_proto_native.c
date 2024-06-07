@@ -18,6 +18,7 @@
 #include "nodes/parsenodes.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -39,6 +40,8 @@ static char decide_datum_transfer(Form_pg_attribute att,
 								  bool allow_binary_basetypes);
 
 static void spock_read_attrs(StringInfo in, char ***attrnames,
+								  Oid **attrtypes,
+								  Oid **attrtypmods,
 								  int *nattrnames);
 static void spock_read_tuple(StringInfo in, SpockRelation *rel,
 					  SpockTupleData *tuple);
@@ -149,6 +152,8 @@ spock_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
 		len = strlen(attname) + 1;
 		pq_sendint(out, len, 2);
 		pq_sendbytes(out, attname, len); /* data */
+		pq_sendint32(out, att->atttypid);	/* atttype */
+		pq_sendint32(out, att->atttypmod);	/* atttypmod */
 	}
 
 	bms_free(idattrs);
@@ -737,6 +742,8 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 	for (i = 0; i < natts; i++)
 	{
 		int			attid = rel->attmap[i];
+		Oid			attrtype = rel->attrtypes[i];
+		Oid			attrtypmod = rel->attrtypmods[i];
 		Form_pg_attribute att = TupleDescAttr(desc,attid);
 		char		kind = pq_getmsgbyte(in);
 		const char *data;
@@ -776,15 +783,35 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 
 					len = pq_getmsgint(in, 4); /* read length */
 
-					if (att->attbyval && att->attlen > 0 && len != att->attlen)
+					/*
+					 * From a security standpoint, it doesn't matter whether the input's
+					 * column type matches what we expect: the column type's receive
+					 * function has to be robust enough to cope with invalid data.
+					 * However, from a user-friendliness standpoint, it's nicer to
+					 * complain about type mismatches than to throw "improper binary
+					 * format" errors.  But there's a problem: only built-in types have
+					 * OIDs that are stable enough to believe that a mismatch is a real
+					 * issue.  So complain only if both OIDs are in the built-in range.
+					 * Otherwise, carry on with the column type we "should" be getting.
+					 */
+					if ((att->atttypid != attrtype ||
+						 att->atttypmod != attrtypmod) &&
+						att->atttypid < FirstNormalObjectId &&
+						attrtype < FirstNormalObjectId)
+					{
+						bits16		flags = FORMAT_TYPE_TYPEMOD_GIVEN | FORMAT_TYPE_ALLOW_INVALID;
+
 						ereport(ERROR,
-								(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-								 errmsg("binary data length mismatch"),
-								 errdetail("attribute %s of table %s expects "
-								 		   "%d bytes but %d bytes received",
+								(errcode(ERRCODE_DATATYPE_MISMATCH),
+								 errmsg("binary data has type %u (%s) instead of expected %u (%s)",
+										attrtype,
+										format_type_extended(attrtype, attrtypmod, flags),
+										att->atttypid,
+										format_type_extended(att->atttypid, att->atttypmod, flags)),
+								 errdetail("check attribute '%s' of table '%s'",
 										   NameStr(att->attname),
-										   NameStr(rel->rel->rd_rel->relname),
-										   att->attlen, len)));
+										   NameStr(rel->rel->rd_rel->relname))));
+					}
 
 					getTypeBinaryInputInfo(att->atttypid,
 										   &typreceive, &typioparam);
@@ -800,7 +827,9 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 					if (buf.len != buf.cursor)
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-								 errmsg("incorrect binary data format")));
+								 errmsg("incorrect binary data format for column '%s' of table '%s'",
+										NameStr(att->attname),
+										NameStr(rel->rel->rd_rel->relname))));
 					break;
 				}
 			case 't': /* text format */
@@ -840,6 +869,8 @@ spock_read_rel(StringInfo in)
 	char	   *relname;
 	int			natts;
 	char	  **attrnames;
+	Oid		   *attrtypes;
+	Oid		   *attrtypmods;
 
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
@@ -856,9 +887,9 @@ spock_read_rel(StringInfo in)
 	relname = (char *) pq_getmsgbytes(in, len);
 
 	/* Get attribute description */
-	spock_read_attrs(in, &attrnames, &natts);
+	spock_read_attrs(in, &attrnames, &attrtypes, &attrtypmods, &natts);
 
-	spock_relation_cache_update(relid, schemaname, relname, natts, attrnames);
+	spock_relation_cache_update(relid, schemaname, relname, natts, attrnames, attrtypes, attrtypmods);
 
 	return relid;
 }
@@ -869,11 +900,14 @@ spock_read_rel(StringInfo in)
  * TODO handle flags.
  */
 static void
-spock_read_attrs(StringInfo in, char ***attrnames, int *nattrnames)
+spock_read_attrs(StringInfo in, char ***attrnames, Oid **attrtypes,
+				 Oid **attrtypmods, int *nattrnames)
 {
 	int			i;
 	uint16		nattrs;
 	char	  **attrs;
+	Oid		   *types;
+	Oid		   *typmods;
 	char		blocktype;
 
 	blocktype = pq_getmsgbyte(in);
@@ -882,6 +916,8 @@ spock_read_attrs(StringInfo in, char ***attrnames, int *nattrnames)
 
 	nattrs = pq_getmsgint(in, 2);
 	attrs = palloc(nattrs * sizeof(char *));
+	types = (Oid *) palloc(nattrs * sizeof(Oid));
+	typmods = (Oid *) palloc(nattrs * sizeof(Oid));
 
 	/* read the attributes */
 	for (i = 0; i < nattrs; i++)
@@ -902,9 +938,13 @@ spock_read_attrs(StringInfo in, char ***attrnames, int *nattrnames)
 		len = pq_getmsgint(in, 2);
 		/* the string is NULL terminated */
 		attrs[i] = (char *) pq_getmsgbytes(in, len);
+		types[i] = pq_getmsgint(in, 4);		/* atttype */
+		typmods[i] = pq_getmsgint(in, 4);	/* atttypmod */
 	}
 
 	*attrnames = attrs;
+	*attrtypes = types;
+	*attrtypmods = typmods;
 	*nattrnames = nattrs;
 }
 
