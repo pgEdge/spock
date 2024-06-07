@@ -12,6 +12,8 @@ projects as a solid foundation to build upon for this enterprise-class extension
 * Full re-work of paralell slots implementation to support mixed OLTP workloads
 * Improved support for delta_apply columns to support various data types
 * Improved regression test coverage
+* Support for [Large Object LOgical Replication](https://github.com/pgedge/lolor)
+* Support for pg17beta
 
 Our current production version is v3.3 and includes the following enhancements over v3.2:
 
@@ -20,8 +22,7 @@ Our current production version is v3.3 and includes the following enhancements o
 Our previous production version was v3.2 and includes the following important enhancements beyond Spock v3.1:
 
 * Support for pg14
-* Support for pg17devel
-* Support for [Snowflake Sequences](https://github.com/pgedge/snowflake-sequences)
+* Support for [Snowflake Sequences](https://github.com/pgedge/snowflake)
 * Support for Auto DDL
 * Support for setting a database to ReadOnly
 * A couple small bug fixes from pgLogical
