@@ -47,8 +47,6 @@ CREATE TABLE spock.local_sync_status (
     UNIQUE (sync_subid, sync_nspname, sync_relname)
 );
 
--- TODO: Create a new primary key for this table
--- A single transaction could have multiple erroring rows
 CREATE TABLE spock.exception_log (
 	remote_origin oid NOT NULL,
 	remote_commit_ts timestamptz NOT NULL,
