@@ -966,36 +966,12 @@ operations regardless of the setting.
 
 ### Setting Read-Only Mode
 
-To set the cluster to read-only mode, you need to modify the `postgresql.conf` file or use 
-the `ALTER SYSTEM` command. Here are the steps:
+To set the cluster to read-only mode use `SET` command. Here are the steps:
 
-1. **Using `postgresql.conf`:**
-
-   Add or modify the following line in your `postgresql.conf` file:
-
-   ```conf
-   spock.readonly = on
-    ```
-
-After making this change, reload the configuration:
- 
-  ```sql
-SELECT pg_reload_conf();
-  ```
-
-Using ALTER SYSTEM:
-
-You can also use the ALTER SYSTEM command to set the parameter:
 
   ```sql
-ALTER SYSTEM SET spock.readonly TO on;
+SET spock.readonly TO on;
 ```
-
-Then, reload the configuration:
-
-  ```sql
-SELECT pg_reload_conf();
-  ```
 
 To query the current status of the cluster, you can use the following SQL command:
   
