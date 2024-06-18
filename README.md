@@ -966,8 +966,14 @@ operations regardless of the setting.
 
 ### Setting Read-Only Mode
 
-To set the cluster to read-only mode use `SET` command. Here are the steps:
+This value can be changed using the ALTER SYSTEM command.
 
+  ```sql
+ALTER SYSTEM SET spock.readonly = 'on';
+SELECT pg_reload_conf();
+  ```
+
+To set the cluster to read-only mode for a session, use the `SET` command. Here are the steps:
 
   ```sql
 SET spock.readonly TO on;
