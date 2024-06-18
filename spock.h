@@ -16,6 +16,7 @@
 #include "postmaster/bgworker.h"
 #include "utils/array.h"
 #include "access/xlogdefs.h"
+#include "parser/analyze.h"
 #include "executor/executor.h"
 
 #include "libpq-fe.h"
@@ -52,7 +53,7 @@ extern bool	spock_include_ddl_repset;
 extern bool	allow_ddl_from_functions;
 extern int	restart_delay_default;
 extern int	restart_delay_on_exception;
-
+extern bool spock_readonly;
 extern char *shorten_hash(const char *str, int maxlen);
 
 extern List *textarray_to_list(ArrayType *textarray);
@@ -93,6 +94,10 @@ extern bool in_spock_replicate_ddl_command;
 extern bool in_spock_queue_ddl_command;
 extern void spock_auto_replicate_ddl(const char *query, List *replication_sets,
 									 Oid roleoid, Node *stmt);
+
+/* spock_readonly.c */
+void spock_roExecutorStart(QueryDesc *queryDesc, int eflags);
+void spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
 
 #include "utils/memdebug.h"
 

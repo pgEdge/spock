@@ -62,9 +62,12 @@ static bool			dropping_spock_obj = false;
 static object_access_hook_type next_object_access_hook = NULL;
 
 static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
-extern post_parse_analyze_hook_type prev_post_parse_analyze_hook;
-extern ExecutorStart_hook_type prev_executor_start_hook;
 
+static post_parse_analyze_hook_type prev_post_parse_analyze_hook;
+static ExecutorStart_hook_type prev_executor_start_hook;
+
+void spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
+void spock_ExecutorStart(QueryDesc *queryDesc, int eflags);
 
 EState *
 create_estate_for_relation(Relation rel, bool forwrite)
@@ -566,11 +569,29 @@ spock_executor_init(void)
 	next_object_access_hook = object_access_hook;
 	object_access_hook = spock_object_access;
 
-	/* analyzer hook for spock readonly */
 	prev_post_parse_analyze_hook = post_parse_analyze_hook;
 	post_parse_analyze_hook = spock_post_parse_analyze;
 
-	/* executor hook for spock readonly */
 	prev_executor_start_hook = ExecutorStart_hook;
 	ExecutorStart_hook = spock_ExecutorStart;
+}
+
+void
+spock_ExecutorStart(QueryDesc *queryDesc, int eflags)
+{
+	spock_roExecutorStart(queryDesc, eflags);
+
+    if (prev_executor_start_hook)
+		prev_executor_start_hook(queryDesc, eflags);
+	else
+		standard_ExecutorStart(queryDesc, eflags);
+}
+
+void
+spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
+{
+	spock_ropost_parse_analyze(pstate, query, jstate);
+
+	if (prev_post_parse_analyze_hook)
+		prev_post_parse_analyze_hook(pstate, query, jstate);
 }

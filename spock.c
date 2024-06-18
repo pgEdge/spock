@@ -982,6 +982,16 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
+	DefineCustomBoolVariable("spock.readonly",
+							"Sets the cluster to read-only mode.",
+							NULL,
+							&spock_readonly,
+							false,
+							PGC_SUSET,
+							0,
+							NULL,
+							NULL,
+							NULL);
 
 	if (IsBinaryUpgrade)
 		return;
@@ -1010,5 +1020,5 @@ _PG_init(void)
 
 	RegisterBackgroundWorker(&bgw);
 
-    spock_init_failover_slot();
+	spock_init_failover_slot();
 }
