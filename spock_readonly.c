@@ -64,40 +64,35 @@ spockro_terminate_active_transactions(PG_FUNCTION_ARGS)
 static bool
 spockro_get_readonly_internal(void)
 {
-    return spock_readonly && !superuser();
+    return spock_readonly;
 }
 
 void
 spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 {
     bool command_is_ro = false;
+
 	switch (query->commandType)
 	{
 		case CMD_SELECT:
 			command_is_ro = true;
 			break;
 		case CMD_UTILITY:
-			if (IsA(query->utilityStmt, TransactionStmt) &&
-				((TransactionStmt *) query->utilityStmt)->kind == TRANS_STMT_ROLLBACK)
+			switch (nodeTag(query->utilityStmt))
 			{
-				command_is_ro = true;
-			}
-			else
-			{
-				switch (nodeTag(query->utilityStmt))
-				{
-					case T_ExplainStmt:
-					case T_VariableSetStmt:
-					case T_VariableShowStmt:
-					case T_PrepareStmt:
-					case T_ExecuteStmt:
-					case T_DeallocateStmt:
-						command_is_ro = true;
-						break;
-					default:
-						command_is_ro = false;
-						break;
-				}
+				case T_AlterSystemStmt:
+				case T_DeallocateStmt:
+				case T_ExecuteStmt:
+				case T_ExplainStmt:
+				case T_PrepareStmt:
+				case T_TransactionStmt:
+				case T_VariableSetStmt:
+				case T_VariableShowStmt:
+					command_is_ro = true;
+					break;
+				default:
+					command_is_ro = false;
+					break;
 			}
 			break;
 		default:

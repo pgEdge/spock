@@ -1698,6 +1698,10 @@ replication_handler(StringInfo s)
 	ErrorContextCallback errcallback;
 	char		action = pq_getmsgbyte(s);
 
+	if (spock_readonly)
+		elog(ERROR, "SPOCK %s: cluster is in read-only mode, not performing replication",
+			 MySubscription->name);
+
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
 	errcallback.callback = action_error_callback;
 	errcallback.arg = &errcallback_arg;

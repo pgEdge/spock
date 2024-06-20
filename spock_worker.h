@@ -83,9 +83,6 @@ typedef struct SpockContext {
 	/* Signal that subscription info have changed. */
 	bool		subscriptions_changed;
 
-	/* cluster read-only global flag */
-	bool		cluster_is_readonly;
-
 	/* Spock slot-group data */
 	LWLock				   *slot_group_master_lock;
 	int						slot_ngroups;
