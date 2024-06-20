@@ -789,7 +789,6 @@ spock_worker_shmem_startup(void)
 		SpockCtx->supervisor = NULL;
 		SpockCtx->subscriptions_changed = false;
 		SpockCtx->total_workers = nworkers;
-		SpockCtx->cluster_is_readonly = false;
 		memset(SpockCtx->workers, 0,
 			   sizeof(SpockWorker) * SpockCtx->total_workers);
 	}
