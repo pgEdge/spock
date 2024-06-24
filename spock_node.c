@@ -34,6 +34,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/pg_lsn.h"
 #include "utils/rel.h"
 
 #include "spock_node.h"
@@ -89,7 +90,7 @@ typedef struct SubscriptionTuple
 	NameData	sub_slot_name;
 } SubscriptionTuple;
 
-#define Natts_subscription			12
+#define Natts_subscription			13
 #define Anum_sub_id					1
 #define Anum_sub_name				2
 #define Anum_sub_origin				3
@@ -102,6 +103,7 @@ typedef struct SubscriptionTuple
 #define Anum_sub_forward_origins	10
 #define Anum_sub_apply_delay		11
 #define Anum_sub_force_text_transfer 12
+#define Anum_sub_skip_lsn			13
 
 /*
  * We impose same validation rules as replication slot name validation does.
@@ -797,6 +799,7 @@ create_subscription(SpockSubscription *sub)
 		nulls[Anum_sub_apply_delay - 1] = true;
 
 	values[Anum_sub_force_text_transfer - 1] = BoolGetDatum(sub->force_text_transfer);
+	values[Anum_sub_skip_lsn - 1] = LSNGetDatum(sub->skiplsn);
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
@@ -882,6 +885,7 @@ alter_subscription(SpockSubscription *sub)
 
 	values[Anum_sub_apply_delay - 1] = IntervalPGetDatum(sub->apply_delay);
 	values[Anum_sub_force_text_transfer - 1] = BoolGetDatum(sub->force_text_transfer);
+	values[Anum_sub_skip_lsn - 1] = LSNGetDatum(sub->skiplsn);
 
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 
@@ -991,6 +995,13 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		sub->force_text_transfer = false;
 	else
 		sub->force_text_transfer = DatumGetBool(d);
+
+	/* Get skip_lsn. */
+	d = fastgetattr(tuple, Anum_sub_skip_lsn, desc, &isnull);
+	if (isnull)
+		sub->skiplsn = InvalidXLogRecPtr;
+	else
+		sub->skiplsn = DatumGetLSN(d);
 
 	return sub;
 }

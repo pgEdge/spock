@@ -108,6 +108,7 @@ PG_FUNCTION_INFO_V1(spock_alter_subscription_enable);
 
 PG_FUNCTION_INFO_V1(spock_alter_subscription_add_replication_set);
 PG_FUNCTION_INFO_V1(spock_alter_subscription_remove_replication_set);
+PG_FUNCTION_INFO_V1(spock_alter_subscription_skip_lsn);
 
 PG_FUNCTION_INFO_V1(spock_alter_subscription_synchronize);
 PG_FUNCTION_INFO_V1(spock_alter_subscription_resynchronize_table);
@@ -559,6 +560,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	sub.slot_name = pstrdup(NameStr(slot_name));
 	sub.apply_delay = apply_delay;
 	sub.force_text_transfer = force_text_transfer;
+	sub.skiplsn	= InvalidXLogRecPtr;
 
 	create_subscription(&sub);
 
@@ -825,6 +827,24 @@ Datum spock_alter_subscription_remove_replication_set(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_BOOL(false);
+}
+
+/*
+ * Subscription skip lsn.
+ */
+Datum spock_alter_subscription_skip_lsn(PG_FUNCTION_ARGS)
+{
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	XLogRecPtr	lsn = PG_GETARG_LSN(1);
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
+
+	/* XXX: Only used for locking purposes. */
+	(void)get_local_node(true, false);
+
+	sub->skiplsn = lsn;
+	alter_subscription(sub);
+
+	PG_RETURN_BOOL(true);
 }
 
 /*

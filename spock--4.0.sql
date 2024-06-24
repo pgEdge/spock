@@ -33,7 +33,8 @@ CREATE TABLE spock.subscription (
     sub_replication_sets text[],
     sub_forward_origins text[],
     sub_apply_delay interval NOT NULL DEFAULT '0',
-    sub_force_text_transfer boolean NOT NULL DEFAULT 'f'
+    sub_force_text_transfer boolean NOT NULL DEFAULT 'f',
+	sub_skip_lsn pg_lsn NOT NULL DEFAULT '0/0'
 );
 
 CREATE TABLE spock.local_sync_status (
@@ -101,6 +102,8 @@ CREATE FUNCTION spock.sub_add_repset(subscription_name name, replication_set nam
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_add_replication_set';
 CREATE FUNCTION spock.sub_remove_repset(subscription_name name, replication_set name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_remove_replication_set';
+CREATE FUNCTION spock.sub_alter_skiplsn(subscription_name name, lsn pg_lsn)
+	RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_skip_lsn';
 
 CREATE FUNCTION spock.sub_show_status(subscription_name name DEFAULT NULL,
     OUT subscription_name text, OUT status text, OUT provider_node text,

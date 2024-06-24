@@ -67,6 +67,7 @@
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/pg_lsn.h"
 #include "utils/snapmgr.h"
 
 #include "spock_common.h"
@@ -168,6 +169,23 @@ struct ActionErrCallbackArg
 
 struct ActionErrCallbackArg errcallback_arg;
 TransactionId remote_xid;
+
+/*
+ * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
+ * the subscription if the remote transaction's finish LSN matches the sub_skip_lsn.
+ * Once we start skipping changes, we don't stop it until we skip all changes of
+ * the transaction even if spock.subscription is updated and MySubscription->skiplsn
+ * gets changed or reset during that. The sub_skip_lsn is cleared after successfully
+ * skipping the transaction or applying non-empty transaction. The latter prevents
+ * the mistakenly specified sub_skip_lsn from being left.
+ */
+static XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
+#define is_skipping_changes() (unlikely(!XLogRecPtrIsInvalid(skip_xact_finish_lsn)))
+
+/* Functions for skipping changes */
+static void maybe_start_skipping_changes(XLogRecPtr finish_lsn);
+static void stop_skipping_changes(void);
+static void clear_subscription_skip_lsn(XLogRecPtr finish_lsn);
 
 static void multi_insert_finish(void);
 
@@ -370,6 +388,7 @@ handle_begin(StringInfo s)
 	errcallback_arg.action_name = "BEGIN";
 
 	spock_read_begin(s, &commit_lsn, &commit_time, &remote_xid);
+	maybe_start_skipping_changes(commit_lsn);
 
 	replorigin_session_origin_timestamp = commit_time;
 	replorigin_session_origin_lsn = commit_lsn;
@@ -564,9 +583,27 @@ handle_commit(StringInfo s)
 
 	Assert(commit_time == replorigin_session_origin_timestamp);
 
+	if (is_skipping_changes())
+	{
+		stop_skipping_changes();
+
+		/*
+		 * Start a new transaction to clear the subskiplsn, if not started
+		 * yet.
+		 */
+		if (!IsTransactionState())
+			StartTransactionCommand();
+	}
+
 	if (IsTransactionState())
 	{
 		SPKFlushPosition *flushpos;
+
+		/*
+		 * The transaction is either non-empty or skipped, so we clear the
+		 * subskiplsn.
+		 */
+		clear_subscription_skip_lsn(end_lsn);
 
 		multi_insert_finish();
 
@@ -782,6 +819,12 @@ handle_insert(StringInfo s)
 	bool		failed = false;
 	char	   *action_name = "INSERT";
 
+	/*
+	 * Quick return if we are skipping data modification changes.
+	 */
+	if (is_skipping_changes())
+		return;
+
 	started_tx = begin_replication_step();
 
 	errcallback_arg.action_name = "INSERT";
@@ -951,6 +994,12 @@ handle_update(StringInfo s)
 	bool		hasoldtup;
 	bool		failed = false;
 
+	/*
+	 * Quick return if we are skipping data modification changes.
+	 */
+	if (is_skipping_changes())
+		return;
+
 	begin_replication_step();
 
 	errcallback_arg.action_name = "UPDATE";
@@ -1055,6 +1104,12 @@ handle_delete(StringInfo s)
 	HeapTuple	localtup;
 	ErrorData  *edata;
 	bool		failed = false;
+
+	/*
+	 * Quick return if we are skipping data modification changes.
+	 */
+	if (is_skipping_changes())
+		return;
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
 	xact_action_counter++;
@@ -1167,6 +1222,12 @@ handle_truncate(StringInfo s)
 	List	   *relids_logged = NIL;
 	ListCell   *lc;
 	LOCKMODE	lockmode = AccessExclusiveLock;
+
+	/*
+	 * Quick return if we are skipping data modification changes.
+	 */
+	if (is_skipping_changes())
+		return;
 
 	begin_replication_step();
 
@@ -2138,6 +2199,104 @@ static void
 execute_sql_command_error_cb(void *arg)
 {
 	errcontext("during execution of queued SQL statement: %s", (char *) arg);
+}
+
+/*
+ * Start skipping changes of the transaction if the given LSN matches the
+ * LSN specified by subscription's skiplsn.
+ */
+static void
+maybe_start_skipping_changes(XLogRecPtr finish_lsn)
+{
+	Assert(!is_skipping_changes());
+	Assert(!in_remote_transaction);
+
+	/*
+	 * Quick return if it's not requested to skip this transaction. This
+	 * function is called for every remote transaction and we assume that
+	 * skipping the transaction is not used often.
+	 */
+	if (likely(XLogRecPtrIsInvalid(MySubscription->skiplsn) ||
+			   MySubscription->skiplsn != finish_lsn))
+		return;
+
+	/* Start skipping all changes of this transaction */
+	skip_xact_finish_lsn = finish_lsn;
+
+	ereport(LOG,
+			errmsg("SPOCK %s: logical replication starts skipping transaction at LSN %X/%X",
+				   MySubscription->name, LSN_FORMAT_ARGS(skip_xact_finish_lsn)));
+}
+
+/*
+ * Stop skipping changes by resetting skip_xact_finish_lsn if enabled.
+ */
+static void
+stop_skipping_changes(void)
+{
+	if (!is_skipping_changes())
+		return;
+
+	ereport(LOG,
+			(errmsg("SPOCK %s: logical replication completed skipping transaction at LSN %X/%X",
+					MySubscription->name, LSN_FORMAT_ARGS(skip_xact_finish_lsn))));
+
+	/* Stop skipping changes */
+	skip_xact_finish_lsn = InvalidXLogRecPtr;
+}
+
+/*
+ * Clear sub_skip_lsn of spock.subscription catalog.
+ *
+ * finish_lsn is the transaction's finish LSN that is used to check if the
+ * sub_skip_lsn matches it. If not matched, we raise a warning when clearing the
+ * sub_skip_lsn in order to inform users for cases e.g., where the user mistakenly
+ * specified the wrong sub_skip_lsn.
+ */
+static void
+clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
+{
+	SpockSubscription *sub;
+	XLogRecPtr	myskiplsn = MySubscription->skiplsn;
+	bool		started_tx = false;
+
+	if (likely(XLogRecPtrIsInvalid(myskiplsn)))
+		return;
+
+	if (!IsTransactionState())
+	{
+		StartTransactionCommand();
+		started_tx = true;
+	}
+
+	sub = get_subscription(MySubscription->id);
+
+	/*
+	 * Clear the sub_skip_lsn. If the user has already changed sub_skip_lsn
+	 * before clearing it we don't update the catalog and the replication origin
+	 * state won't get advanced. So in the worst case, if the server crashes
+	 * before sending an acknowledgment of the flush position the transaction
+	 * will be sent again and the user needs to set subskiplsn again. We can
+	 * reduce the possibility by logging a replication origin WAL record to
+	 * advance the origin LSN instead but there is no way to advance the
+	 * origin timestamp and it doesn't seem to be worth doing anything about
+	 * it since it's a very rare case.
+	 */
+	if (sub->skiplsn == myskiplsn)
+	{
+		sub->skiplsn = LSNGetDatum(InvalidXLogRecPtr);
+		alter_subscription(sub);
+
+		if (myskiplsn != finish_lsn)
+			ereport(WARNING,
+					errmsg("skip-LSN of subscription \"%s\" cleared", MySubscription->name),
+					errdetail("Remote transaction's finish WAL location (LSN) %X/%X did not match skip-LSN %X/%X.",
+							  LSN_FORMAT_ARGS(finish_lsn),
+							  LSN_FORMAT_ARGS(myskiplsn)));
+	}
+
+	if (started_tx)
+		CommitTransactionCommand();
 }
 
 /*
