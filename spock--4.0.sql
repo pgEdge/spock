@@ -11,7 +11,7 @@ CREATE TABLE spock.node (
 CREATE TABLE spock.node_interface (
     if_id oid NOT NULL PRIMARY KEY,
     if_name name NOT NULL, -- default same as node name
-    if_nodeid oid REFERENCES node(node_id),
+    if_nodeid oid REFERENCES node(node_id) ON UPDATE CASCADE,
     if_dsn text NOT NULL,
     UNIQUE (if_nodeid, if_name)
 );
@@ -24,8 +24,8 @@ CREATE TABLE spock.local_node (
 CREATE TABLE spock.subscription (
     sub_id oid NOT NULL PRIMARY KEY,
     sub_name name NOT NULL UNIQUE,
-    sub_origin oid NOT NULL REFERENCES node(node_id),
-    sub_target oid NOT NULL REFERENCES node(node_id),
+    sub_origin oid NOT NULL REFERENCES node(node_id) ON UPDATE CASCADE,
+    sub_target oid NOT NULL REFERENCES node(node_id) ON UPDATE CASCADE,
     sub_origin_if oid NOT NULL REFERENCES node_interface(if_id),
     sub_target_if oid NOT NULL REFERENCES node_interface(if_id),
     sub_enabled boolean NOT NULL DEFAULT true,
@@ -113,7 +113,7 @@ RETURNS SETOF record STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_subscri
 
 CREATE TABLE spock.replication_set (
     set_id oid NOT NULL PRIMARY KEY,
-    set_nodeid oid NOT NULL,
+    set_nodeid oid NOT NULL REFERENCES node(node_id) ON UPDATE CASCADE,
     set_name name NOT NULL,
     replicate_insert boolean NOT NULL DEFAULT true,
     replicate_update boolean NOT NULL DEFAULT true,

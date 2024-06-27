@@ -7,7 +7,7 @@ PGFILEDESC = "spock - multi-master replication"
 MODULES = spock_output
 
 DATA = spock--3.2.sql spock--3.3.sql spock--4.0.sql \
-	   spock--3.2--3.3.sql
+	   spock--3.2--3.3.sql spock--3.3--4.0.sql
 
 OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
 			 	spock_conflict.o spock_manager.o \
