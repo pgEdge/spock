@@ -191,5 +191,8 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 	heap_freetuple(tup);
 	table_close(rel, RowExclusiveLock);
 
+	/* Reset the error stack to empty. */
+	FlushErrorState();
+
 	CommandCounterIncrement();
 }
