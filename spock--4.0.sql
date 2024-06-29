@@ -62,7 +62,6 @@ CREATE TABLE spock.exception_log (
 	remote_new_tup jsonb,
 	ddl_statement text,
 	ddl_user text,
-	ddl_search_path text,
 	error_message text NOT NULL,
 	retry_errored_at timestamptz NOT NULL,
 	PRIMARY KEY(remote_origin, remote_commit_ts, command_counter)

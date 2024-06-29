@@ -74,6 +74,5 @@ extern void add_entry_to_exception_log(Oid remote_origin,
 									   SpockTupleData *remoteoldtup,
 									   SpockTupleData *remotenewtup,
 									   char *ddl_statement, char *ddl_user,
-									   char *ddl_search_path,
 									   char *operation,
 									   char *error_message);

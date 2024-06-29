@@ -41,7 +41,7 @@
 #include "spock_exception_handler.h"
 #include "spock_jsonb_utils.h"
 
-#define Natts_exception_table 17
+#define Natts_exception_table 16
 #define Anum_exception_log_remote_origin 1
 #define Anum_exception_log_remote_commit_ts 2
 #define Anum_exception_log_command_counter 3
@@ -56,9 +56,8 @@
 #define Anum_exception_log_remote_new_tup 12
 #define Anum_exception_log_ddl_statement 13
 #define Anum_exception_log_ddl_user 14
-#define Anum_exception_log_ddl_search_path 15
-#define Anum_exception_log_error_message 16
-#define Anum_exception_log_retry_errored_at 17
+#define Anum_exception_log_error_message 15
+#define Anum_exception_log_retry_errored_at 16
 
 #define CATALOG_EXCEPTION_LOG "exception_log"
 
@@ -79,19 +78,18 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 						   HeapTuple localtup, SpockTupleData *remoteoldtup,
 						   SpockTupleData *remotenewtup,
 						   char *ddl_statement, char *ddl_user,
-						   char *ddl_search_path,
 						   char *operation,
 						   char *error_message)
 {
 	RangeVar   *rv;
 	Relation	rel;
 	TupleDesc	tupDesc;
-	TupleDesc	targetTupDesc;
+	TupleDesc	targetTupDesc = NULL;
 	HeapTuple	tup;
 	Datum		values[Natts_exception_table];
 	bool		nulls[Natts_exception_table];
-	char	   *schema = targetrel->nspname;
-	char	   *table = targetrel->relname;
+	char	   *schema = (targetrel == NULL) ? NULL : targetrel->nspname;
+	char	   *table = (targetrel == NULL) ? NULL : targetrel->relname;
 
 	char	   *str_local_tup;
 	char	   *str_remote_old_tup;
@@ -101,7 +99,8 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_EXCEPTION_LOG, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
-	targetTupDesc = RelationGetDescr(targetrel->rel);
+	if (targetrel != NULL)
+		targetTupDesc = RelationGetDescr(targetrel->rel);
 
 	/* Convert the three (possible) tuples into json strings */
 	if (localtup != NULL && localtup->t_data != NULL)
@@ -159,7 +158,6 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 			nulls[Anum_exception_log_remote_new_tup - 1] = 'n';
 		nulls[Anum_exception_log_ddl_statement - 1] = 'n';
 		nulls[Anum_exception_log_ddl_user - 1] = 'n';
-		nulls[Anum_exception_log_ddl_search_path - 1] = 'n';
 	}
 	else
 	{
@@ -173,7 +171,6 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 		nulls[Anum_exception_log_remote_new_tup - 1] = 'n';
 		values[Anum_exception_log_ddl_statement - 1] = CStringGetTextDatum(ddl_statement);
 		values[Anum_exception_log_ddl_user - 1] = CStringGetTextDatum(ddl_user);
-		values[Anum_exception_log_ddl_search_path - 1] = CStringGetTextDatum(ddl_search_path);
 	}
 
 	if (error_message == NULL)

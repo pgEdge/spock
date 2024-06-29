@@ -911,7 +911,7 @@ handle_insert(StringInfo s)
 									   remote_xid,
 									   0, 0,
 									   rel, localtup, oldtup, &newtup,
-									   NULL, NULL, NULL,
+									   NULL, NULL,
 									   action_name,
 									   (failed) ? edata->message : NULL);
 	}
@@ -1081,7 +1081,7 @@ handle_update(StringInfo s)
 									local_origin, local_commit_ts,
 									rel, localtup,
 									hasoldtup ? &oldtup : NULL, &newtup,
-									NULL, NULL, NULL,
+									NULL, NULL,
 									"UPDATE",
 									(failed) ? edata->message : NULL);
 		}
@@ -1191,7 +1191,7 @@ handle_delete(StringInfo s)
 									   local_origin, local_commit_ts,
 									   rel, localtup,
 									   &oldtup, NULL,
-									   NULL, NULL, NULL,
+									   NULL, NULL,
 									   "DELETE",
 									   (failed) ? edata->message : NULL);
 		}
@@ -1662,12 +1662,11 @@ handle_sequence(QueuedMessage *queued_message)
  * Handle SQL message comming via queue table.
  */
 static void
-handle_sql(QueuedMessage *queued_message, bool tx_just_started)
+handle_sql(QueuedMessage *queued_message, bool tx_just_started, char **sql)
 {
 	JsonbIterator *it;
 	JsonbValue	v;
 	int			r;
-	char	   *sql;
 
 	/* Validate the json and extract the SQL string from it. */
 	if (!JB_ROOT_IS_SCALAR(queued_message->message))
@@ -1693,7 +1692,7 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 			 "expected value type %d got %d",
 			 MySubscription->name, jbvString, v.type);
 
-	sql = pnstrdup(v.val.string.val, v.val.string.len);
+	*sql = pnstrdup(v.val.string.val, v.val.string.len);
 
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_END_ARRAY)
@@ -1708,7 +1707,60 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started)
 			 MySubscription->name, r, WJB_DONE);
 
 	/* Run the extracted SQL. */
-	spock_execute_sql_command(sql, queued_message->role, tx_just_started);
+	spock_execute_sql_command(*sql, queued_message->role, tx_just_started);
+}
+
+/*
+ * Handle SQL message comming via queue table.
+ */
+static void
+handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
+{
+	bool		failed = false;
+	char	   *sql = NULL;
+	ErrorData  *edata;
+
+	errcallback_arg.action_name = "SQL";
+
+	if (MyApplyWorker->use_try_block)
+	{
+		PG_TRY();
+		{
+			exception_command_counter++;
+			BeginInternalSubTransaction(NULL);
+			handle_sql(queued_message, tx_just_started, &sql);
+		}
+		PG_CATCH();
+		{
+			failed = true;
+			RollbackAndReleaseCurrentSubTransaction();
+			edata = CopyErrorData();
+		}
+		PG_END_TRY();
+
+		if (!failed)
+		{
+			if (exception_behaviour == TRANSDISCARD)
+				RollbackAndReleaseCurrentSubTransaction();
+			else
+				ReleaseCurrentSubTransaction();
+		}
+
+		/* Let's create an exception log entry if true. */
+		if (should_log_exception(failed))
+			add_entry_to_exception_log(remote_origin_id,
+									   replorigin_session_origin_timestamp,
+									   remote_xid,
+									   0, 0,
+									   NULL, NULL, NULL, NULL,
+									   sql, queued_message->role,
+									   "SQL",
+									   (failed) ? edata->message : NULL);
+	}
+	else
+	{
+		handle_sql(queued_message, tx_just_started, &sql);
+	}
 }
 
 /*
@@ -1732,7 +1784,7 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 			/* fallthrough */
 		case QUEUE_COMMAND_TYPE_SQL:
 			errcallback_arg.action_name = "QUEUED_SQL";
-			handle_sql(queued_message, tx_just_started);
+			handle_sql_or_exception(queued_message, tx_just_started);
 			in_spock_queue_ddl_command = false;
 			break;
 		case QUEUE_COMMAND_TYPE_TABLESYNC:
