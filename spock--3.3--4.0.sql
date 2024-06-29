@@ -29,24 +29,23 @@ ALTER TABLE spock.local_node
 ALTER TABLE spock.replication_set
     ADD CONSTRAINT replication_set_set_nodeid_fkey FOREIGN KEY (set_nodeid) REFERENCES spock.node(node_id) ON UPDATE CASCADE;
 
-CREATE OR REPLACE FUNCTION update_node_ids()
-RETURNS void AS $$
+-- Update the node_id in spock.node to the new encoding style
+DO $$
 DECLARE
     rec RECORD;
 BEGIN
     FOR rec IN SELECT node_id FROM spock.node LOOP
-        -- Generate a new unique node_id
+        -- The new node_id is changed to a uint16 so that it can be used
+		-- in the commit-timestamp data as RepOriginId. We generate this
+		-- by creating a 32-bit CRC and then truncating it to 16 bits.
+		-- Because the old node_id was the full 32-bit CRC, the below
+		-- generates the exact same IDs as the 4.0 code does now.
         UPDATE spock.node
-        SET node_id = (rec.node_id::int8 & 0xffff) +
-            (SELECT MAX(node_id::int8 & 0xffff) + 1 FROM spock.node)
+        SET node_id = (rec.node_id::int8 & 0xffff)
         WHERE node_id = rec.node_id;
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
-
--- Call the function to update the node_ids
-SELECT update_node_ids();
-DROP FUNCTION update_node_ids();
 
 
 -- ----------------------------------------------------------------------
@@ -69,7 +68,6 @@ CREATE TABLE spock.exception_log (
 	remote_new_tup jsonb,
 	ddl_statement text,
 	ddl_user text,
-	ddl_search_path text,
 	error_message text NOT NULL,
 	retry_errored_at timestamptz NOT NULL,
 	PRIMARY KEY(remote_origin, remote_commit_ts, command_counter)
