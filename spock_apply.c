@@ -85,6 +85,7 @@
 #include "spock_apply_spi.h"
 #include "spock_exception_handler.h"
 #include "spock_common.h"
+#include "spock_readonly.h"
 #include "spock.h"
 
 
@@ -1811,7 +1812,7 @@ replication_handler(StringInfo s)
 	ErrorContextCallback errcallback;
 	char		action = pq_getmsgbyte(s);
 
-	if (spock_readonly)
+	if (spock_readonly == READONLY_ALL)
 		elog(ERROR, "SPOCK %s: cluster is in read-only mode, not performing replication",
 			 MySubscription->name);
 

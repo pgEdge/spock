@@ -56,6 +56,7 @@
 #include "spock_worker.h"
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
+#include "spock_readonly.h"
 #include "spock.h"
 
 PG_MODULE_MAGIC;
@@ -99,6 +100,13 @@ static const struct config_enum_entry exception_logging_options[] = {
 	{"none", LOG_NONE, false},
 	{"discard", LOG_DISCARD, false},
 	{"all", LOG_ALL, false},
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry readonly_options[] = {
+	{"off", READONLY_OFF, false},
+	{"user", READONLY_USER, false},
+	{"all", READONLY_ALL, false},
 	{NULL, 0, false}
 };
 
@@ -982,16 +990,15 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
-	DefineCustomBoolVariable("spock.readonly",
-							"Sets the cluster to read-only mode.",
-							NULL,
-							&spock_readonly,
-							false,
-							PGC_SUSET,
-							0,
-							NULL,
-							NULL,
-							NULL);
+
+	DefineCustomEnumVariable("spock.readonly",
+							 gettext_noop("Controls cluster read-only mode."),
+							 NULL,
+							 &spock_readonly,
+							 READONLY_OFF,
+							 readonly_options,
+							 PGC_SUSET, 0,
+							 NULL, NULL, NULL);
 
 	if (IsBinaryUpgrade)
 		return;

@@ -28,10 +28,11 @@
 #include "utils/elog.h"
 #include "executor/executor.h"
 
+#include "spock_readonly.h"
 #include "spock.h"
 
 /* GUC variable */
-bool spock_readonly = false;
+int	spock_readonly = READONLY_OFF;
 
 
 PG_FUNCTION_INFO_V1(spockro_terminate_active_transactions);
@@ -56,15 +57,6 @@ spockro_terminate_active_transactions(PG_FUNCTION_ARGS)
 		elog(LOG, "spock: PID %d signalled", pid);
 	}
 	PG_RETURN_BOOL(true);
-}
-
-/*
- * Get cluster read-only status
- */
-static bool
-spockro_get_readonly_internal(void)
-{
-    return spock_readonly;
 }
 
 void
@@ -99,7 +91,7 @@ spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate
 			command_is_ro = false;
 			break;
 	}
-	if (spockro_get_readonly_internal() && !command_is_ro)
+	if (spock_readonly >= READONLY_USER && !command_is_ro)
 		ereport(ERROR, (errmsg("spock: invalid statement for a read-only cluster")));
 }
 
@@ -119,6 +111,6 @@ spock_roExecutorStart(QueryDesc *queryDesc, int eflags)
 			command_is_ro = false;
 			break;
 	}
-	if (spockro_get_readonly_internal() && !command_is_ro)
+	if (spock_readonly >= READONLY_USER && !command_is_ro)
 		ereport(ERROR, (errmsg("spock: invalid statement for a read-only cluster")));
 }
