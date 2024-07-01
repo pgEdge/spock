@@ -6,8 +6,8 @@ PGFILEDESC = "spock - multi-master replication"
 
 MODULES = spock_output
 
-DATA = spock--3.2.sql spock--3.3.sql spock--4.0.sql \
-	   spock--3.2--3.3.sql spock--3.3--4.0.sql
+DATA = spock--3.2.sql spock--3.3.sql spock--4.0.0.sql \
+	   spock--3.2--3.3.sql spock--3.3--4.0.0.sql
 
 OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
 			 	spock_conflict.o spock_manager.o \
@@ -46,7 +46,7 @@ EXTRA_CLEAN += compat17/spock_compat.o compat17/spock_compat.bc \
 				compat14/spock_compat.o compat14/spock_compat.bc \
 				spock_create_subscriber.o
 
-spock_version=$(shell awk '/\#define SPOCK_VERSION[ \t]+\".*\"/ { print substr($$3,2,length($$3)-2) }' $(realpath $(srcdir)/spock.h) )
+spock_version=$(shell awk '/#define SPOCK_VERSION[ \t]+".*"/ { print substr($$3,2,length($$3)-2) }' $(realpath $(srcdir)/spock.h) )
 
 # For regression checks
 # this makes "make check" give a useful error
