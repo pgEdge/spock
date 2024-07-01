@@ -1,5 +1,5 @@
 diff --git a/src/backend/access/transam/xact.c b/src/backend/access/transam/xact.c
-index 4f4ce75762..0251a5a88a 100644
+index 9bda1aa6bc..baddfc3cb1 100644
 --- a/src/backend/access/transam/xact.c
 +++ b/src/backend/access/transam/xact.c
 @@ -133,6 +133,15 @@ static TransactionId *ParallelCurrentXids;
@@ -60,7 +60,7 @@ index 4f4ce75762..0251a5a88a 100644
  	ShowTransactionState("StartTransaction");
  }
  
-@@ -5781,6 +5811,7 @@ XactLogCommitRecord(TimestampTz commit_time,
+@@ -5768,6 +5798,7 @@ XactLogCommitRecord(TimestampTz commit_time,
  	xl_xact_twophase xl_twophase;
  	xl_xact_origin xl_origin;
  	uint8		info;
@@ -68,7 +68,7 @@ index 4f4ce75762..0251a5a88a 100644
  
  	Assert(CritSectionCount > 0);
  
-@@ -5924,7 +5955,20 @@ XactLogCommitRecord(TimestampTz commit_time,
+@@ -5911,7 +5942,20 @@ XactLogCommitRecord(TimestampTz commit_time,
  	/* we allow filtering by xacts */
  	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
  
@@ -90,7 +90,7 @@ index 4f4ce75762..0251a5a88a 100644
  }
  
  /*
-@@ -6395,3 +6439,60 @@ xact_redo(XLogReaderState *record)
+@@ -6382,3 +6426,60 @@ xact_redo(XLogReaderState *record)
  	else
  		elog(PANIC, "xact_redo: unknown op code %u", info);
  }
@@ -152,7 +152,7 @@ index 4f4ce75762..0251a5a88a 100644
 +	XLogSetLastTransactionStopTimestamp(logical_clock);
 +}
 diff --git a/src/backend/access/transam/xlog.c b/src/backend/access/transam/xlog.c
-index 34a2c71812..4707d44b5c 100644
+index d36272ab4f..0778267515 100644
 --- a/src/backend/access/transam/xlog.c
 +++ b/src/backend/access/transam/xlog.c
 @@ -155,6 +155,16 @@ int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
@@ -282,7 +282,7 @@ index 34a2c71812..4707d44b5c 100644
  	endbytepos = startbytepos + size;
  	prevbytepos = Insert->PrevBytePos;
  
-@@ -9430,3 +9501,15 @@ SetWalWriterSleeping(bool sleeping)
+@@ -9441,3 +9512,15 @@ SetWalWriterSleeping(bool sleeping)
  	XLogCtl->WalWriterSleeping = sleeping;
  	SpinLockRelease(&XLogCtl->info_lck);
  }
@@ -317,7 +317,7 @@ index 6d4439f052..4fc1c96a79 100644
   * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.
   * We don't allow PREPARE TRANSACTION in that case.
 diff --git a/src/include/access/xlog.h b/src/include/access/xlog.h
-index 76787a8267..8843123fdf 100644
+index 1a1f11a943..76c13f830f 100644
 --- a/src/include/access/xlog.h
 +++ b/src/include/access/xlog.h
 @@ -196,6 +196,18 @@ typedef enum WALAvailability
