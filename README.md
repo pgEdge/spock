@@ -23,7 +23,6 @@ Our previous production version was v3.2 and includes the following important en
 
 * Support for pg14
 * Support for [Snowflake Sequences](https://github.com/pgedge/snowflake)
-* Support for Auto DDL
 * Support for setting a database to ReadOnly
 * A couple small bug fixes from pgLogical
 * Native support for Failover Slots via integrating pg_failover_slots extension
