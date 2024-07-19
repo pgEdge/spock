@@ -24,8 +24,10 @@
 #include "catalog/objectaccess.h"
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_extension.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
 
+#include "commands/defrem.h"
 #include "commands/extension.h"
 
 #include "executor/executor.h"
@@ -257,6 +259,8 @@ add_ddl_to_repset(Node *parsetree)
 	SpockLocalNode *node;
 	Oid		reloid = InvalidOid;
 	RangeVar   *relation = NULL;
+	List	   *reloids = NIL;
+	ListCell   *lc;
 
 	/* no need to proceed if spock_include_ddl_repset is off */
 	if (!spock_include_ddl_repset)
@@ -285,6 +289,13 @@ add_ddl_to_repset(Node *parsetree)
 					table_close(indrel, NoLock);
 				}
 			}
+
+			if (!OidIsValid(reloid))
+				return;
+		}
+		else
+		{
+			return;
 		}
 	}
 	else if (nodeTag(parsetree) == T_CreateStmt)
@@ -304,6 +315,28 @@ add_ddl_to_repset(Node *parsetree)
 		}
 		return;
 	}
+	else if (nodeTag(parsetree) == T_ExplainStmt)
+	{
+		ExplainStmt *stmt = (ExplainStmt *) parsetree;
+		bool		analyze = false;
+		ListCell   *lc;
+
+		/* Look through an EXPLAIN ANALYZE to the contained stmt */
+		foreach(lc, stmt->options)
+		{
+			DefElem    *opt = (DefElem *) lfirst(lc);
+
+			if (strcmp(opt->defname, "analyze") == 0)
+				analyze = defGetBoolean(opt);
+			/* don't "break", as explain.c will use the last value */
+		}
+
+		if (analyze &&
+			castNode(Query, stmt->query)->commandType == CMD_UTILITY)
+			add_ddl_to_repset(castNode(Query, stmt->query)->utilityStmt);
+
+		return;
+	}
 	else
 	{
 		/* only tables are added to repset. */
@@ -321,54 +354,68 @@ add_ddl_to_repset(Node *parsetree)
 
 	reloid = RelationGetRelid(targetrel);
 
-	/* UNLOGGED and TEMP relations cannot be part of replication set. */
-	if (!RelationNeedsWAL(targetrel))
-	{
-		/* remove table from the repsets. */
-		remove_table_from_repsets(node->node->id, reloid, false);
-
-		table_close(targetrel, NoLock);
-		return;
-	}
-
-	if (targetrel->rd_indexvalid == 0)
-		RelationGetIndexList(targetrel);
-
-	/* choose the 'default' repset, if table has PK or replica identity defined. */
-	if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
-	{
-		repset = get_replication_set_by_name(node->node->id, DEFAULT_REPSET_NAME, false);
-
-		/*
-		 * remove table from previous repsets, it will be added to 'default'
-		 * down below.
-		 */
-		remove_table_from_repsets(node->node->id, reloid, false);
-	}
+	if (targetrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		reloids = find_all_inheritors(reloid, NoLock, NULL);
 	else
-	{
-		repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
-		/*
-		 * no primary key defined. let's see if the table is part of any other
-		 * repset or not?
-		 */
-		remove_table_from_repsets(node->node->id, reloid, true);
-	}
+		reloids = lappend_oid(reloids, reloid);
+	table_close(targetrel, NoLock);
 
-	if (!OidIsValid(targetrel->rd_replidindex) &&
-		(repset->replicate_update || repset->replicate_delete))
+	foreach (lc, reloids)
 	{
+		reloid = lfirst_oid(lc);
+		targetrel = RelationIdGetRelation(reloid);
+
+		/* UNLOGGED and TEMP relations cannot be part of replication set. */
+		if (!RelationNeedsWAL(targetrel))
+		{
+			/* remove table from the repsets. */
+			remove_table_from_repsets(node->node->id, reloid, false);
+
+			table_close(targetrel, NoLock);
+			return;
+		}
+
+		if (targetrel->rd_indexvalid == 0)
+			RelationGetIndexList(targetrel);
+
+		/* choose the 'default' repset, if table has PK or replica identity defined. */
+		if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
+		{
+			repset = get_replication_set_by_name(node->node->id, DEFAULT_REPSET_NAME, false);
+
+			/*
+			 * remove table from previous repsets, it will be added to 'default'
+			 * down below.
+			 */
+			remove_table_from_repsets(node->node->id, reloid, false);
+		}
+		else
+		{
+			repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
+			/*
+			 * no primary key defined. let's see if the table is part of any other
+			 * repset or not?
+			 */
+			remove_table_from_repsets(node->node->id, reloid, true);
+		}
+
+		if (!OidIsValid(targetrel->rd_replidindex) &&
+			(repset->replicate_update || repset->replicate_delete))
+		{
+			table_close(targetrel, NoLock);
+			return;
+		}
+
 		table_close(targetrel, NoLock);
-		return;
-	}
 
-	/* Add if not already present. */
-	if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
-	{
-		replication_set_add_table(repset->id, reloid, NIL, NULL);
+		/* Add if not already present. */
+		if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
+		{
+			replication_set_add_table(repset->id, reloid, NIL, NULL);
 
-		elog(LOG, "table '%s' was added to '%s' replication set.",
-			 get_rel_name(reloid), repset->name);
+			elog(LOG, "table '%s' was added to '%s' replication set.",
+				 get_rel_name(reloid), repset->name);
+		}
 	}
 
 	table_close(targetrel, NoLock);
