@@ -29,6 +29,7 @@
 #include "catalog/pg_type.h"
 
 #include "commands/dbcommands.h"
+#include "commands/defrem.h"
 #include "commands/event_trigger.h"
 
 #include "executor/spi.h"
@@ -2088,9 +2089,11 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			{
 				CreateTableAsStmt *ctas = castNode(CreateTableAsStmt, stmt);
 
-				if (ctas->into->rel->relpersistence == RELPERSISTENCE_TEMP ||
-					nodeTag(ctas->query) == T_ExecuteStmt)
+				if (ctas->into->rel->relpersistence == RELPERSISTENCE_TEMP)
 					goto skip_ddl;
+				if (castNode(Query, ctas->query)->commandType == CMD_UTILITY &&
+					IsA(castNode(Query, ctas->query)->utilityStmt, ExecuteStmt))
+						goto skip_ddl;
 				warn = true;
 			}
 			break;
@@ -2141,6 +2144,33 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			if (castNode(DropStmt, stmt)->removeType == OBJECT_INDEX &&
 				castNode(DropStmt, stmt)->concurrent)
 				goto skip_ddl;
+			break;
+
+		case T_ExplainStmt:		/* for EXPLAIN ANALYZE only */
+			{
+				ExplainStmt *estmt = (ExplainStmt *) stmt;
+				bool		analyze = false;
+				ListCell   *lc;
+
+				/* Look through an EXPLAIN ANALYZE to the contained stmt */
+				foreach(lc, estmt->options)
+				{
+					DefElem    *opt = (DefElem *) lfirst(lc);
+
+					if (strcmp(opt->defname, "analyze") == 0)
+						analyze = defGetBoolean(opt);
+					/* don't "break", as explain.c will use the last value */
+				}
+
+				if (analyze &&
+					castNode(Query, estmt->query)->commandType == CMD_UTILITY)
+				{
+					spock_auto_replicate_ddl(query, replication_sets, roleoid,
+							castNode(Query, estmt->query)->utilityStmt);
+				}
+
+				return;		/* nothing more to do. */
+			}
 			break;
 
 		default:
