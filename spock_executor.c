@@ -401,7 +401,7 @@ spock_ProcessUtility(
 #endif
 						 QueryCompletion *qc)
 {
-	Node	   *parsetree = pstmt->utilityStmt;
+	Node	   *parsetree = copyObject(pstmt->utilityStmt);
 	static NodeTag toplevel_stmt = T_Invalid;
 #ifndef XCP
 	#define		sentToRemote NULL
@@ -448,6 +448,30 @@ spock_ProcessUtility(
 		(nodeTag(parsetree) == T_DropStmt &&
 		 castNode(DropStmt, parsetree)->removeType == OBJECT_EXTENSION))
 		toplevel_stmt = nodeTag(parsetree);
+
+	/*
+	 * By the time it is checked whether the DropStmt is replicable or not, the object
+	 * may no longer exist. Therefore, perform an early check for this statement and
+	 * store the result to decide the action at a later stage.
+	 */
+	is_drop_stmt_not_replicable = false;
+	if (spock_enable_ddl_replication &&
+		nodeTag(parsetree) == T_DropStmt)
+	{
+		DropStmt *dstmt = castNode(DropStmt, parsetree);
+		ListCell *lc;
+
+		foreach(lc, dstmt->objects)
+		{
+			RangeVar   *rv;
+
+			rv = makeRangeVarFromNameList((List *) lfirst(lc));
+			is_drop_stmt_not_replicable =
+				stmt_not_replicable(rv, dstmt->removeType == OBJECT_TABLE);
+			if (is_drop_stmt_not_replicable)
+				break;
+		}
+	}
 
 	/* There's no reason we should be in a long lived context here */
 	Assert(CurrentMemoryContext != TopMemoryContext
@@ -509,12 +533,11 @@ spock_ProcessUtility(
 			queryString = CleanQuerytext(queryString, &loc, &len);
 			curr_qry = pnstrdup(queryString, len);
 
-			spock_auto_replicate_ddl(curr_qry,
+			if (spock_auto_replicate_ddl(curr_qry,
 									 list_make1(DEFAULT_INSONLY_REPSET_NAME),
 									 roleoid,
-									 parsetree);
-
-			add_ddl_to_repset(parsetree);
+									 parsetree))
+				add_ddl_to_repset(parsetree);
 		}
 	}
 	/* Restore previous session privileges */

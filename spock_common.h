@@ -68,6 +68,10 @@ extern void SPKExecARInsertTriggers(EState *estate,
 								 ResultRelInfo *relinfo,
 								 TupleTableSlot *slot,
 								 List *recheckIndexes);
+extern bool stmt_not_replicable(RangeVar *rv, bool check_in_repset);
+extern bool is_temp_table(char *relname);
+extern bool is_target_in_repset_table(Oid reloid);
+extern bool isQueryUsingTempRelation_walker(Node *node, List **rtes);
 
 
 #endif /* SPOCK_COMMON_H */

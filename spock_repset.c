@@ -83,22 +83,6 @@ typedef struct RepSetSeqTuple
 #define Anum_repset_seq_setid			1
 #define Anum_repset_seq_seqoid			2
 
-typedef struct RepSetTableTuple
-{
-	Oid			setid;
-	Oid			reloid;
-#if 0 /* Only for info here. */
-	text		att_list[1];
-	text		row_filter;
-#endif
-} RepSetTableTuple;
-
-#define Natts_repset_table				4
-#define Anum_repset_table_setid			1
-#define Anum_repset_table_reloid		2
-#define Anum_repset_table_att_list	3
-#define Anum_repset_table_row_filter	4
-
 
 #define REPSETTABLEHASH_INITIAL_SIZE 128
 static HTAB *RepSetTableHash = NULL;

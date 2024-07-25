@@ -49,8 +49,22 @@ typedef struct SpockTableRepInfo
 } SpockTableRepInfo;
 
 /* forward declaration */
-struct RepSetTableTuple;
-typedef struct RepSetTableTuple RepSetTableTuple;
+typedef struct RepSetTableTuple
+{
+	Oid			setid;
+	Oid			reloid;
+#if 0 /* Only for info here. */
+	text		att_list[1];
+	text		row_filter;
+#endif
+} RepSetTableTuple;
+
+#define Natts_repset_table				4
+#define Anum_repset_table_setid			1
+#define Anum_repset_table_reloid		2
+#define Anum_repset_table_att_list		3
+#define Anum_repset_table_row_filter	4
+
 
 extern SpockRepSet *get_replication_set(Oid setid);
 extern SpockRepSet *get_replication_set_by_name(Oid nodeid,

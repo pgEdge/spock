@@ -47,6 +47,7 @@
 #include "parser/parse_collate.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
+#include "parser/parse_type.h"
 
 #include "replication/message.h"
 #include "replication/origin.h"
@@ -78,6 +79,7 @@
 
 #include "pgstat.h"
 
+#include "spock_common.h"
 #include "spock_conflict.h"
 #include "spock_dependency.h"
 #include "spock_executor.h"
@@ -185,6 +187,7 @@ static void gen_slot_name(Name slot_name, char *dbname,
 
 bool in_spock_replicate_ddl_command = false;
 bool in_spock_queue_ddl_command = false;
+bool is_drop_stmt_not_replicable = false;
 
 static SpockLocalNode *
 check_local_node(bool for_update)
@@ -2030,7 +2033,7 @@ Datum spock_replicate_ddl_command(PG_FUNCTION_ARGS)
  * be replicated to connected nodes. It also sends the current
  * search_path along with the query.
  */
-void
+bool
 spock_auto_replicate_ddl(const char *query, List *replication_sets,
 						 Oid roleoid, Node *stmt)
 {
@@ -2078,39 +2081,145 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 		case T_RenameStmt:
-			if (castNode(RenameStmt, stmt)->renameType == OBJECT_DATABASE ||
-				castNode(RenameStmt, stmt)->renameType == OBJECT_SUBSCRIPTION)
-				goto skip_ddl;
-			if (castNode(RenameStmt, stmt)->renameType == OBJECT_TABLESPACE)
-				add_search_path = false;
+			{
+				RenameStmt	   *rstmt;
+				RangeVar	   *rv;
+
+				rstmt = castNode(RenameStmt, stmt);
+				if (rstmt->renameType == OBJECT_DATABASE ||
+					rstmt->renameType == OBJECT_SUBSCRIPTION)
+					goto skip_ddl;
+				if (rstmt->renameType == OBJECT_TABLESPACE)
+					add_search_path = false;
+
+				/*
+				 * The statement is not replicable if:
+				 *  - It is a table and is not part of the replication set.
+				 *  - It is a sequence, view, or index and is a TEMP object.
+				 *
+				 * For all other cases, allow replication. If the objects are not
+				 * TEMP these objects are not TEMP, there is no way to know if they
+				 * exist on the other nodes or not, so we allow them anyway. Assuming
+				 * the schema matches on all nodes.
+				 */
+				switch(rstmt->renameType)
+				{
+					case OBJECT_TABLE:
+					case OBJECT_SEQUENCE:
+					case OBJECT_VIEW:
+					case OBJECT_MATVIEW:
+					case OBJECT_INDEX:
+						rv = makeRangeVar(rstmt->relation->schemaname, rstmt->newname, -1);
+						if (stmt_not_replicable(rv, rstmt->renameType == OBJECT_TABLE))
+							goto skip_ddl;
+						break;
+					default:
+						break;
+				}
+			}
 			break;
 
 		case T_CreateTableAsStmt:
 			{
+				ListCell	*lc;
+				List		*reloids = NIL;
+				Query		*qry;
 				CreateTableAsStmt *ctas = castNode(CreateTableAsStmt, stmt);
 
-				if (ctas->into->rel->relpersistence == RELPERSISTENCE_TEMP)
+				qry = castNode(Query, ctas->query);
+				if (stmt_not_replicable(ctas->into->rel, false))
 					goto skip_ddl;
-				if (castNode(Query, ctas->query)->commandType == CMD_UTILITY &&
-					IsA(castNode(Query, ctas->query)->utilityStmt, ExecuteStmt))
+				if (qry->commandType == CMD_UTILITY &&
+					IsA(qry->utilityStmt, ExecuteStmt))
 						goto skip_ddl;
+				if (isQueryUsingTempRelation_walker((Node *) qry, &reloids))
+					goto skip_ddl;
+
+				/* also see if the target is subscribed for replication */
+				foreach(lc, reloids)
+				{
+					Oid reloid = (Oid) lfirst_oid(lc);
+					if (!is_target_in_repset_table(reloid))
+						goto skip_ddl;
+				}
+
 				warn = true;
 			}
 			break;
 
 		case T_CreateStmt:
-			if (castNode(CreateStmt, stmt)->relation->relpersistence == RELPERSISTENCE_TEMP)
-				goto skip_ddl;
+			{
+				CreateStmt	   *cstmt;
+				ListCell	   *lc;
+
+				cstmt = castNode(CreateStmt, stmt);
+				if (stmt_not_replicable(cstmt->relation, false))
+					goto skip_ddl;
+
+				/*
+				 * In addition, see if tableElts and ColumnDef refer to some
+				 * tables that are not replicable.
+				 */
+				foreach(lc, cstmt->tableElts)
+				{
+					Node	   *element = lfirst(lc);
+
+					if (IsA(element, TableLikeClause))
+					{
+						TableLikeClause *tlc = castNode(TableLikeClause, element);
+
+						if (stmt_not_replicable(tlc->relation, true))
+							goto skip_ddl;
+					}
+					if (IsA(element, ColumnDef))
+					{
+						ColumnDef *cdef = castNode(ColumnDef, element);
+
+						if (!OidIsValid(LookupTypeNameOid(NULL, cdef->typeName, true)))
+						{
+							RangeVar   *rv;
+
+							rv = makeRangeVarFromNameList(cdef->typeName->names);
+							if (stmt_not_replicable(rv, true))
+								goto skip_ddl;
+						}
+					}
+				}
+			}
 			break;
 
 		case T_CreateSeqStmt:
-			if (castNode(CreateSeqStmt, stmt)->sequence->relpersistence == RELPERSISTENCE_TEMP)
+			if (stmt_not_replicable(castNode(CreateSeqStmt, stmt)->sequence, false))
 				goto skip_ddl;
 			break;
 
 		case T_ViewStmt:
-			if (castNode(ViewStmt, stmt)->view->relpersistence == RELPERSISTENCE_TEMP)
-				goto skip_ddl;
+			{
+				RawStmt	   *rawstmt;
+                Query	   *viewParse;
+				ListCell   *lc;
+				List	   *reloids = NIL;
+
+				if (stmt_not_replicable(castNode(ViewStmt, stmt)->view, false))
+					goto skip_ddl;
+
+				/* transform the view query to see its using any TEMP tables */
+                rawstmt = makeNode(RawStmt);
+                rawstmt->stmt = castNode(ViewStmt, stmt)->query;
+                rawstmt->stmt_location = -1;
+                rawstmt->stmt_len = -1;
+
+                viewParse = parse_analyze_fixedparams(rawstmt, query, NULL, 0, NULL);
+				if (isQueryUsingTempRelation_walker((Node *) viewParse, &reloids))
+					goto skip_ddl;
+				/* also see if the target is subscribed for replication */
+				foreach(lc, reloids)
+				{
+					Oid reloid = (Oid) lfirst_oid(lc);
+					if (!is_target_in_repset_table(reloid))
+						goto skip_ddl;
+				}
+			}
 			break;
 
 		case T_CreateTableSpaceStmt:	/* TABLESPACE */
@@ -2125,6 +2234,9 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				ListCell *cell;
 				AlterTableStmt *atstmt = (AlterTableStmt *) stmt;
 
+				if (stmt_not_replicable(castNode(AlterTableStmt, atstmt)->relation, true))
+					goto skip_ddl;
+
 				foreach(cell, atstmt->cmds)
 				{
 					AlterTableCmd *cmd = (AlterTableCmd *) lfirst(cell);
@@ -2136,14 +2248,24 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 		case T_IndexStmt:
-			if (castNode(IndexStmt, stmt)->concurrent)
-				goto skip_ddl;
+			{
+				if (castNode(IndexStmt, stmt)->concurrent)
+					goto skip_ddl;
+
+				if (stmt_not_replicable(castNode(IndexStmt, stmt)->relation, false))
+					goto skip_ddl;
+			}
 			break;
 
 		case T_DropStmt:
-			if (castNode(DropStmt, stmt)->removeType == OBJECT_INDEX &&
-				castNode(DropStmt, stmt)->concurrent)
-				goto skip_ddl;
+			{
+				if (castNode(DropStmt, stmt)->removeType == OBJECT_INDEX &&
+					castNode(DropStmt, stmt)->concurrent)
+					goto skip_ddl;
+
+				if (is_drop_stmt_not_replicable)
+					goto skip_ddl;
+			}
 			break;
 
 		case T_ExplainStmt:		/* for EXPLAIN ANALYZE only */
@@ -2165,11 +2287,9 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				if (analyze &&
 					castNode(Query, estmt->query)->commandType == CMD_UTILITY)
 				{
-					spock_auto_replicate_ddl(query, replication_sets, roleoid,
+					return spock_auto_replicate_ddl(query, replication_sets, roleoid,
 							castNode(Query, estmt->query)->utilityStmt);
 				}
-
-				return;		/* nothing more to do. */
 			}
 			break;
 
@@ -2203,10 +2323,11 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	/* Queue the query for replication. */
 	queue_message(replication_sets, roleoid, QUEUE_COMMAND_TYPE_DDL, cmd.data);
 
-	return;
+	return true;
 
 skip_ddl:
 	elog(WARNING, "This DDL statement will not be replicated.");
+	return false;
 }
 
 
