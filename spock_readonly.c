@@ -9,7 +9,7 @@
  * This file is part of pgEdge, Inc. open source project, licensed under
  * the PostgreSQL license. For license terms, see the LICENSE file.
  *
- * Copyright (c) 2022-2023, pgEdge, Inc.
+ * Copyright (c) 2022-2024, pgEdge, Inc.
  * Copyright (c) 2020, Pierre Forstmann.
  *-------------------------------------------------------------------------
 */
