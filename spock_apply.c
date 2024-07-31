@@ -64,6 +64,7 @@
 #include "utils/builtins.h"
 #endif
 
+#include "utils/acl.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -2410,6 +2411,9 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		Portal		portal;
 		int			save_nestlevel;
 		DestReceiver *receiver;
+		Oid			save_userid;
+		int			save_sec_context;
+
 
 #ifdef PGXC
 		cmdstr = (char *) lfirst(commandSourceQuery_i);
@@ -2425,9 +2429,10 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		 * Set the current role to the user that executed the command on the
 		 * origin server.
 		 */
+		GetUserIdAndSecContext(&save_userid, &save_sec_context);
+		SetUserIdAndSecContext(get_role_oid(role, false),
+							   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 		save_nestlevel = NewGUCNestLevel();
-		SetConfigOption("role", role, PGC_INTERNAL, PGC_S_OVERRIDE);
-
 		commandTag = CreateCommandTag(command);
 
 		/*
@@ -2476,6 +2481,9 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		 * Restore the GUC variables we set above.
 		 */
 		AtEOXact_GUC(true, save_nestlevel);
+
+		/* Restore previous session privileges */
+		SetUserIdAndSecContext(save_userid, save_sec_context);
 
 		MemoryContextSwitchTo(oldcontext);
 	}
