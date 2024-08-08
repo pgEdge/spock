@@ -77,6 +77,7 @@
 
 #include "pgstat.h"
 
+#include "spock_apply.h"
 #include "spock_conflict.h"
 #include "spock_dependency.h"
 #include "spock_executor.h"
@@ -579,6 +580,9 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	sync.subid = sub.id;
 	sync.status = SYNC_STATUS_INIT;
 	create_local_sync_status(&sync);
+
+	/* Create progress entry to track commit ts per local/remote origin */
+	create_progress_entry(localnode->node->id, originif.nodeid, 0);
 
 	PG_RETURN_OID(sub.id);
 }

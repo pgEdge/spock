@@ -351,12 +351,13 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	before_shmem_exit(spock_worker_on_exit, (Datum) 0);
 
 	MySpockWorker = &SpockCtx->workers[slot];
+
 	Assert(MySpockWorker->proc == NULL);
 	Assert(MySpockWorker->worker_type == type);
+
 	MySpockWorker->proc = MyProc;
 	MySpockWorkerGeneration = MySpockWorker->generation;
-	MySpockWorker->worker.apply.replorigin = InvalidRepOriginId;
-	MySpockWorker->worker.apply.last_ts = 0;
+	MySpockWorker->worker.apply.apply_group = NULL;
 
 	elog(DEBUG2, "%s worker [%d] attaching to slot %d generation %hu",
 		 spock_worker_type_name(type), MyProcPid, slot,

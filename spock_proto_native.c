@@ -229,6 +229,25 @@ spock_write_origin(StringInfo out, const RepOriginId origin_id,
 }
 
 /*
+ * Write last commit ts for last process committed transaction
+ * for the slot group.
+ */
+void
+spock_write_commit_order(StringInfo out,
+						TimestampTz last_commit_ts)
+{
+	uint8	flags = 0;
+
+	pq_sendbyte(out, 'L');		/* last commit ts */
+
+	/* send the flags field its self */
+	pq_sendbyte(out, flags);
+
+	/* send timestamp */
+	pq_sendint64(out, last_commit_ts);
+}
+
+/*
  * Write INSERT to the output stream.
  */
 void
@@ -593,6 +612,22 @@ spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
 	return pq_getmsgint(in, sizeof(RepOriginId));
 }
 
+/*
+ * Read LAST commit ts info from the output stream.
+ */
+TimestampTz
+spock_read_commit_order(StringInfo in)
+{
+	uint8	flags;
+
+	/* read the flags */
+	flags = pq_getmsgbyte(in);
+	Assert(flags == 0);
+	(void) flags; /* unused */
+
+	/* read fields */
+	return pq_getmsgint64(in);
+}
 
 /*
  * Read INSERT from stream.

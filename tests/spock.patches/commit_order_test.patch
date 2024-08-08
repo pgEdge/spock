@@ -1,0 +1,162 @@
+diff --git a/spock--4.1.0.sql b/spock--4.1.0.sql
+index 67e5cc5..cd8baa3 100644
+--- a/spock--4.1.0.sql
++++ b/spock--4.1.0.sql
+@@ -74,6 +74,17 @@ CREATE TABLE spock.progress (
+ 	PRIMARY KEY(target_node_id, remote_node_id)
+ ) WITH (user_catalog_table=true, fillfactor=50);
+ 
++CREATE TABLE spock.progress_log (
++	target_node_id oid NOT NULL,
++	remote_node_id oid NOT NULL,
++	slot_name text,
++	required_commit_ts timestamptz,
++	remote_commit_ts timestamptz,
++	current_commit_ts timestamptz,
++	comments text,
++	wait_count int
++) WITH (user_catalog_table=true, fillfactor=50);
++
+ CREATE FUNCTION spock.node_create(node_name name, dsn text,
+     location text DEFAULT NULL, country text DEFAULT NULL,
+     info jsonb DEFAULT NULL)
+diff --git a/spock_apply.c b/spock_apply.c
+index c708f23..cb4d642 100644
+--- a/spock_apply.c
++++ b/spock_apply.c
+@@ -120,6 +120,7 @@ static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
+ static RepOriginId remote_origin_id = InvalidRepOriginId;
+ static TimeOffset apply_delay = 0;
+ static TimestampTz required_commit_ts = 0;
++static int wait_count_for_prev_commit = 0;
+ 
+ static Oid	QueueRelid = InvalidOid;
+ 
+@@ -240,7 +241,11 @@ static TimestampTz get_progress_entry_ts(Oid target_node_id,
+ static void update_progress_entry(Oid target_node_id,
+ 								Oid remote_node_id,
+ 								TimestampTz remote_commit_ts);
+-
++static void create_progress_log_entry(Oid target_node_id,
++								Oid remote_node_id,
++								TimestampTz previous_commit_ts,
++								TimestampTz remote_commit_ts,
++								const char *comments);
+ /*
+  * Install hooks to request shared resources for apply workers
+  */
+@@ -376,6 +381,32 @@ wait_for_previous_transaction(void)
+ 						MyApplyWorker->apply_group->prev_remote_ts,
+ 						required_commit_ts);
+ 
++		if (wait_count_for_prev_commit == 0)
++		{
++			MemoryContext oldctx = CurrentMemoryContext;
++			bool tx_started = false;
++
++			if (!IsTransactionState())
++			{
++				tx_started = true;
++				StartTransactionCommand();
++			}
++
++			create_progress_log_entry(MySubscription->target->id,
++							MySubscription->origin->id,
++							required_commit_ts,
++							replorigin_session_origin_timestamp,
++							"SLEEPING");
++
++			if (tx_started)
++			{
++				CommitTransactionCommand();
++				MemoryContextSwitchTo(oldctx);
++			}
++		}
++
++		wait_count_for_prev_commit++;
++
+ 		/* Latch */
+ 		ConditionVariableSleep(&MyApplyWorker->apply_group->prev_processed_cv,
+ 							   WAIT_EVENT_LOGICAL_APPLY_MAIN);
+@@ -387,6 +418,8 @@ wait_for_previous_transaction(void)
+ static void
+ awake_transaction_waiters(void)
+ {
++	wait_count_for_prev_commit = 0;
++
+ 	ConditionVariableBroadcast(&MyApplyWorker->apply_group->prev_processed_cv);
+ }
+ 
+@@ -3258,6 +3291,63 @@ create_progress_entry(Oid target_node_id,
+ 	/* Clean up */
+ 	heap_freetuple(tup);
+ 	table_close(rel, RowExclusiveLock);
++
++	create_progress_log_entry(target_node_id, remote_node_id, 0, remote_commit_ts, "INSERTED");
++}
++
++static void
++create_progress_log_entry(Oid target_node_id,
++					Oid remote_node_id,
++					TimestampTz required_commit_ts,
++					TimestampTz remote_commit_ts,
++					const char *comments)
++{
++#define Anum_progress_log_target_node_id		1
++#define Anum_progress_log_remote_node_id		2
++#define Anum_progress_log_slot_name				3
++#define Anum_progress_log_required_ts			4
++#define Anum_progress_log_remote_commit_ts		5
++#define Anum_progress_current_commit_ts			6
++#define Anum_progress_log_comments				7
++#define Anum_progress_log_wait_count			8
++#define Natts_progress_log						8
++
++
++	RangeVar	*rv;
++	Relation	rel;
++	TupleDesc	tupDesc;
++	HeapTuple	tup;
++	Datum		values[Natts_progress_log];
++	bool		nulls[Natts_progress_log];
++	const char *slot_name = (MySubscription) ? MySubscription->slot_name : "<NA>";
++	TimestampTz last_commit_ts = (MyApplyWorker && MyApplyWorker->apply_group) ? MyApplyWorker->apply_group->prev_remote_ts : 0;
++
++	rv = makeRangeVar(EXTENSION_NAME, "progress_log", -1);
++	rel = table_openrv(rv, RowExclusiveLock);
++	tupDesc = RelationGetDescr(rel);
++
++	/* Form a tuple */
++	memset(nulls, false, sizeof(nulls));
++
++	if (strcmp(comments, "UPDATED") == 0)
++		nulls[Anum_progress_current_commit_ts - 1] = true;
++
++	values[Anum_progress_log_target_node_id - 1] = ObjectIdGetDatum(target_node_id);
++	values[Anum_progress_log_remote_node_id - 1] = ObjectIdGetDatum(remote_node_id);
++	values[Anum_progress_log_slot_name - 1] = CStringGetTextDatum(slot_name);
++	values[Anum_progress_log_required_ts - 1] = TimestampTzGetDatum(required_commit_ts);
++	values[Anum_progress_log_remote_commit_ts - 1] = TimestampTzGetDatum(remote_commit_ts);
++	values[Anum_progress_current_commit_ts - 1] = TimestampTzGetDatum(last_commit_ts);
++	values[Anum_progress_log_comments - 1] = CStringGetTextDatum(comments);
++	values[Anum_progress_log_wait_count - 1] = Int32GetDatum(wait_count_for_prev_commit);
++
++	tup = heap_form_tuple(tupDesc, values, nulls);
++
++	CatalogTupleInsert(rel, tup);
++
++	/* Clean up */
++	heap_freetuple(tup);
++	table_close(rel, RowExclusiveLock);
+ }
+ 
+ /*
+@@ -3327,6 +3417,8 @@ update_progress_entry(Oid target_node_id,
+ 	heap_freetuple(newtup);
+ 	systable_endscan(scan);
+ 	table_close(rel, RowExclusiveLock);
++
++	create_progress_log_entry(target_node_id, remote_node_id, MyApplyWorker->apply_group->prev_remote_ts, remote_commit_ts, "UPDATED");
+ }
+ 
+ void

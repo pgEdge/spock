@@ -50,6 +50,7 @@
 
 #include "pgstat.h"
 
+#include "spock_apply.h"
 #include "spock_executor.h"
 #include "spock_node.h"
 #include "spock_conflict.h"
@@ -1008,6 +1009,9 @@ _PG_init(void)
 
 	/* Init output plugin shmem */
 	spock_output_plugin_shmem_init();
+
+	/* Init output plugin shmem */
+	spock_apply_group_shmem_init();
 
 	/* Init executor module */
 	spock_executor_init();
