@@ -62,12 +62,17 @@
 PG_MODULE_MAGIC;
 
 static const struct config_enum_entry SpockConflictResolvers[] = {
-	{"error", SPOCK_RESOLVE_ERROR, false},
 #ifndef XCP
+	/*
+	 * Disabled until we can clearly define their desired behavior.
+	 * Jan Wieck 2024-08-12
+	 *
+	{"error", SPOCK_RESOLVE_ERROR, false},
 	{"apply_remote", SPOCK_RESOLVE_APPLY_REMOTE, false},
 	{"keep_local", SPOCK_RESOLVE_KEEP_LOCAL, false},
-	{"last_update_wins", SPOCK_RESOLVE_LAST_UPDATE_WINS, false},
 	{"first_update_wins", SPOCK_RESOLVE_FIRST_UPDATE_WINS, false},
+	*/
+	{"last_update_wins", SPOCK_RESOLVE_LAST_UPDATE_WINS, false},
 #endif
 	{NULL, 0, false}
 };
