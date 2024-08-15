@@ -306,13 +306,13 @@ slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
 		int			remoteattnum = rel->attmap[i];
 		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, remoteattnum);
 
-		Assert(remoteattnum < rel->natts);
-		if (!tupleData->nulls[i])
+		Assert(remoteattnum < natts);
+		if (!tupleData->nulls[remoteattnum])
 		{
 			/*
 			 * Fill in the Datum for this attribute
 			 */
-			slot->tts_values[att->attnum - 1] = tupleData->values[i];
+			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
 			slot->tts_isnull[att->attnum - 1] = false;
 		}
 	}
@@ -340,10 +340,10 @@ slot_store_htup(TupleTableSlot *slot, SpockRelation *rel,
 		int			remoteattnum = rel->attmap[i];
 		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, remoteattnum);
 
-		Assert(remoteattnum < rel->natts);
-		slot->tts_values[att->attnum - 1] = heap_getattr(htup, i + 1,
+		Assert(remoteattnum < natts);
+		slot->tts_values[att->attnum - 1] = heap_getattr(htup, remoteattnum + 1,
 														 slot->tts_tupleDescriptor,
-														 &slot->tts_isnull[i]);
+														 &slot->tts_isnull[remoteattnum]);
 	}
 
 	ExecStoreVirtualTuple(slot);
@@ -387,11 +387,11 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 		int			remoteattnum = rel->attmap[i];
 		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, remoteattnum);
 
-		Assert(remoteattnum < rel->natts);
-		if (!tupleData->nulls[i])
+		Assert(remoteattnum < natts);
+		if (!tupleData->nulls[remoteattnum])
 		{
 			/* Use the value from the NEW remote tuple */
-			slot->tts_values[att->attnum - 1] = tupleData->values[i];
+			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
 			slot->tts_isnull[att->attnum - 1] = false;
 		}
 	}
@@ -534,13 +534,18 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 	Datum		result;
 	bool		loc_isnull;
 
+	memset(deltatup->values, 0, tupdesc->natts * sizeof(Datum));
+	memset(deltatup->nulls, 1, tupdesc->natts * sizeof(bool));
+
 	for (attidx = 0; attidx < tupdesc->natts; attidx++)
 	{
-		if (rel->delta_apply_functions[attidx] == InvalidOid)
+		int			remoteattnum = rel->attmap[attidx];
+
+		if (rel->delta_apply_functions[remoteattnum] == InvalidOid)
 		{
-			deltatup->values[attidx] = 0xdeadbeef;
-			deltatup->nulls[attidx] = true;
-			deltatup->changed[attidx] = false;
+			deltatup->values[remoteattnum] = 0xdeadbeef;
+			deltatup->nulls[remoteattnum] = true;
+			deltatup->changed[remoteattnum] = false;
 			continue;
 		}
 
@@ -559,7 +564,7 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		 * path.
 		 */
 
-		if (oldtup->nulls[attidx])
+		if (oldtup->nulls[remoteattnum])
 		{
 			/*
 			 * This is a special case. Columns for delta apply need to be
@@ -568,19 +573,21 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 			 * to force plain NEW value application. This is useful in case a
 			 * server ever gets out of sync.
 			 */
-			deltatup->values[attidx] = newtup->values[attidx];
-			deltatup->nulls[attidx] = false;
-			deltatup->changed[attidx] = true;
+			deltatup->values[remoteattnum] = newtup->values[remoteattnum];
+			deltatup->nulls[remoteattnum] = false;
+			deltatup->changed[remoteattnum] = true;
 		}
 		else
 		{
-			loc_value = heap_getattr(TTS_TUP(localslot), attidx + 1, tupdesc,
+			loc_value = heap_getattr(TTS_TUP(localslot), remoteattnum + 1, tupdesc,
 									 &loc_isnull);
 
-			result = OidFunctionCall3Coll(rel->delta_apply_functions[attidx], InvalidOid, oldtup->values[attidx], newtup->values[attidx], loc_value);
-			deltatup->values[attidx] = result;
-			deltatup->nulls[attidx] = false;
-			deltatup->changed[attidx] = true;
+			result = OidFunctionCall3Coll(rel->delta_apply_functions[remoteattnum],
+										  InvalidOid, oldtup->values[remoteattnum],
+										  newtup->values[remoteattnum], loc_value);
+			deltatup->values[remoteattnum] = result;
+			deltatup->nulls[remoteattnum] = false;
+			deltatup->changed[remoteattnum] = true;
 		}
 	}
 }
