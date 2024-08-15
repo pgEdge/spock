@@ -293,31 +293,30 @@ static void
 slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
 				SpockTupleData *tupleData)
 {
-	int			natts = slot->tts_tupleDescriptor->natts;
-	int			i;
+        int                     natts = slot->tts_tupleDescriptor->natts;
+        int                     i;
 
-	ExecClearTuple(slot);
-	memset(slot->tts_values, 0, natts * sizeof(Datum));
-	memset(slot->tts_isnull, 1, natts * sizeof(bool));
+        ExecClearTuple(slot);
+        memset(slot->tts_values, 0, natts * sizeof(Datum));
+        memset(slot->tts_isnull, 1, natts * sizeof(bool));
 
-	/* Call the "in" function for each non-dropped, non-null attribute */
-	for (i = 0; i < rel->natts; i++)
-	{
-		int			remoteattnum = rel->attmap[i];
-		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, remoteattnum);
+        /* Call the "in" function for each non-dropped, non-null attribute */
+        for (i = 0; i < rel->natts; i++)
+        {
+                int                     remoteattnum = rel->attmap[i];
 
-		Assert(remoteattnum < natts);
-		if (!tupleData->nulls[remoteattnum])
-		{
-			/*
-			 * Fill in the Datum for this attribute
-			 */
-			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
-			slot->tts_isnull[att->attnum - 1] = false;
-		}
-	}
+                Assert(remoteattnum < natts);
+                if (!tupleData->nulls[remoteattnum])
+                {
+                        /*
+                         * Fill in the Datum for this attribute
+                         */
+                        slot->tts_values[remoteattnum] = tupleData->values[remoteattnum];
+                        slot->tts_isnull[remoteattnum] = false;
+                }
+        }
 
-	ExecStoreVirtualTuple(slot);
+        ExecStoreVirtualTuple(slot);
 }
 
 /*
