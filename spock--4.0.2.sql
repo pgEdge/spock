@@ -51,6 +51,7 @@ CREATE TABLE spock.exception_log (
 	remote_origin oid NOT NULL,
 	remote_commit_ts timestamptz NOT NULL,
 	command_counter integer NOT NULL,
+	retry_errored_at timestamptz NOT NULL,
 	remote_xid bigint NOT NULL,
 	local_origin oid,
 	local_commit_ts timestamptz,
@@ -63,29 +64,32 @@ CREATE TABLE spock.exception_log (
 	ddl_statement text,
 	ddl_user text,
 	error_message text NOT NULL,
-	retry_errored_at timestamptz NOT NULL,
-	PRIMARY KEY(remote_origin, remote_commit_ts, command_counter)
+	PRIMARY KEY(remote_origin, remote_commit_ts,
+				command_counter, retry_errored_at)
 ) WITH (user_catalog_table=true);
 
 CREATE TABLE spock.exception_status (
 	remote_origin oid NOT NULL,
 	remote_commit_ts timestamptz NOT NULL,
+	retry_errored_at timestamptz NOT NULL,
 	remote_xid bigint NOT NULL,
 	status text NOT NULL,
 	resolved_at timestamptz,
 	resolution_details jsonb,
-	PRIMARY KEY(remote_origin, remote_commit_ts)
+	PRIMARY KEY(remote_origin, remote_commit_ts, retry_errored_at)
 ) WITH (user_catalog_table=true);
 
 CREATE TABLE spock.exception_status_detail (
 	remote_origin oid NOT NULL,
     remote_commit_ts timestamptz NOT NULL,
 	command_counter integer NOT NULL,
+	retry_errored_at timestamptz NOT NULL,
 	remote_xid bigint NOT NULL,
 	status text NOT NULL,
 	resolved_at timestamptz,
 	resolution_details jsonb,
-	PRIMARY KEY(remote_origin, remote_commit_ts, command_counter),
+	PRIMARY KEY(remote_origin, remote_commit_ts,
+				command_counter, retry_errored_at),
 	FOREIGN KEY(remote_origin, remote_commit_ts)
 		REFERENCES spock.exception_status
 ) WITH (user_catalog_table=true);
