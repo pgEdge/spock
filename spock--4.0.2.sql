@@ -90,7 +90,7 @@ CREATE TABLE spock.exception_status_detail (
 	resolution_details jsonb,
 	PRIMARY KEY(remote_origin, remote_commit_ts,
 				command_counter, retry_errored_at),
-	FOREIGN KEY(remote_origin, remote_commit_ts)
+	FOREIGN KEY(remote_origin, remote_commit_ts, retry_errored_at)
 		REFERENCES spock.exception_status
 ) WITH (user_catalog_table=true);
 
