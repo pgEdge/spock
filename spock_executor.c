@@ -417,8 +417,6 @@ add_ddl_to_repset(Node *parsetree)
 				 get_rel_name(reloid), repset->name);
 		}
 	}
-
-	table_close(targetrel, NoLock);
 }
 
 static bool
