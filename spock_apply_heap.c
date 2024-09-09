@@ -534,13 +534,15 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 	Datum		result;
 	bool		loc_isnull;
 
+	Assert(rel->natts <= tupdesc->natts);
 	memset(deltatup->values, 0, tupdesc->natts * sizeof(Datum));
 	memset(deltatup->nulls, 1, tupdesc->natts * sizeof(bool));
 
-	for (attidx = 0; attidx < tupdesc->natts; attidx++)
+	for (attidx = 0; attidx < rel->natts; attidx++)
 	{
 		int			remoteattnum = rel->attmap[attidx];
 
+		Assert(remoteattnum < tupdesc->natts);
 		if (rel->delta_apply_functions[remoteattnum] == InvalidOid)
 		{
 			deltatup->values[remoteattnum] = 0xdeadbeef;
