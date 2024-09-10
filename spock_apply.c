@@ -1762,7 +1762,6 @@ static void
 handle_startup(StringInfo s)
 {
 	uint8		msgver = pq_getmsgbyte(s);
-	MemoryContext oldctx;
 
 	if (msgver != 1)
 		elog(ERROR, "SPOCK %s: Expected startup message version 1, but got %u",
@@ -1797,17 +1796,6 @@ handle_startup(StringInfo s)
 
 		handle_startup_param(k, v);
 	} while (!getmsgisend(s));
-
-	oldctx = CurrentMemoryContext;
-	StartTransactionCommand();
-
-	/* Create progress entry to track commit ts per local/remote origin */
-	create_progress_entry(MySubscription->target->id,
-					MySubscription->origin_if->nodeid,
-					0);
-
-	CommitTransactionCommand();
-	MemoryContextSwitchTo(oldctx);
 
 	/* Attach this worker. */
 	spock_apply_worker_attach();
