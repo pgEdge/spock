@@ -126,7 +126,7 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 
 				entry->has_delta_columns = true;
-				entry->delta_apply_functions[i] = dfunc;
+				entry->delta_apply_functions[entry->attmap[i]] = dfunc;
 			}
 		}
 
