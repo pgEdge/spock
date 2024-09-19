@@ -802,11 +802,7 @@ _PG_init(void)
 							 gettext_noop("Sets method used for conflict resolution for resolvable conflicts."),
 							 NULL,
 							 &spock_conflict_resolver,
-#ifdef XCP
-							 SPOCK_RESOLVE_ERROR,
-#else
-							 SPOCK_RESOLVE_APPLY_REMOTE,
-#endif
+							 SPOCK_RESOLVE_LAST_UPDATE_WINS,
 							 SpockConflictResolvers,
 							 PGC_SUSET, 0,
 							 spock_conflict_resolver_check_hook,
