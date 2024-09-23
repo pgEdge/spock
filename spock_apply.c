@@ -2137,6 +2137,12 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 
 	errcallback_arg.action_name = "SQL";
 
+	/*
+	 * This is likely to be a DDL. So let's wait here before we acquire any
+	 * exclusive locks that may conflict with other DDLs.
+	 */
+	wait_for_previous_transaction();
+
 	if (MyApplyWorker->use_try_block)
 	{
 		PG_TRY();
