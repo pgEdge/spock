@@ -81,6 +81,7 @@ typedef struct SpockOutputSlotGroup
 	LWLock	   *lock;
     int         nattached;
     XLogRecPtr  last_lsn;
+    TimestampTz last_commit_ts;
 } SpockOutputSlotGroup;
 
 /*

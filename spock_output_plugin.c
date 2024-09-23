@@ -20,6 +20,7 @@
 #include "replication/logical.h"
 
 #include "miscadmin.h"
+#include "access/commit_ts.h"
 #include "access/xact.h"
 #include "executor/executor.h"
 #include "catalog/namespace.h"
@@ -108,6 +109,9 @@ static int MyWalSenderIdx = 0;
 static bool						slot_group_on_exit_set = false;
 static SpockOutputSlotGroup	   *slot_group = NULL;
 static bool						slot_group_skip_xact = false;
+
+/* ts of the last transaction processed by the slot group */
+static TimestampTz				slot_group_last_commit_ts = 0;
 
 static char					   *MyOutputNodeName = NULL;
 static RepOriginId				MyOutputNodeId = InvalidRepOriginId;
@@ -469,23 +473,50 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	if (slot_group != NULL)
 	{
 		LWLockAcquire(slot_group->lock, LW_EXCLUSIVE);
+
+		/*
+		 * Just do it regardless of whether we are skipping this
+		 * transaction or not. Let's be safe and simply move the
+		 * commit ts forward.
+		 *
+		 * Save the slot_group->last_commit_ts to the static local
+		 * variable to avoid further locking.
+		 */
+		if (slot_group->last_commit_ts < txn->xact_time.commit_time)
+		{
+			slot_group_last_commit_ts = slot_group->last_commit_ts;
+			slot_group->last_commit_ts = txn->xact_time.commit_time;
+		}
+
+		elog(DEBUG1, "SPOCK: slot-group '%s': current transaction %u commit order ts"
+			 "last_commit_ts: " INT64_FORMAT " current:" INT64_FORMAT,
+			 NameStr(slot_group->name),
+			 txn->xid,
+			 slot_group_last_commit_ts,
+			 slot_group->last_commit_ts);
+
 		if (slot_group->last_lsn >= txn->end_lsn)
 		{
-			slot_group_skip_xact = true;
-			elog(DEBUG1, "slot-group '%s' skipping transaction with end_lsn %X/%X"
+			elog(DEBUG1, "SPOCK: slot-group '%s' skipping transaction with end_lsn %X/%X"
 					  " - last_lsn %X/%X",
 				 NameStr(slot_group->name),
 				 (uint32)(txn->end_lsn >> 32),
 				 (uint32)(txn->end_lsn),
 				 (uint32)(slot_group->last_lsn >> 32),
 				 (uint32)(slot_group->last_lsn));
+
 			LWLockRelease(slot_group->lock);
+
+			/* We don't need to protect this variable with a lock. */
+			slot_group_skip_xact = true;
 			return;
 		}
-		elog(DEBUG1, "slot-group '%s' sending transaction with end_lsn %X/%X",
+
+		elog(DEBUG1, "SPOCK: slot-group '%s' sending transaction with end_lsn %X/%X",
 			 NameStr(slot_group->name),
 			 (uint32)(txn->end_lsn >> 32),
 			 (uint32)(txn->end_lsn));
+
 		slot_group->last_lsn = txn->end_lsn;
 		LWLockRelease(slot_group->lock);
 	}
@@ -525,6 +556,20 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 				data->api->write_origin(ctx->out, txn->origin_id,
 										txn->origin_lsn);
 			}
+		}
+
+		/*
+		 * The commit timestamp may be zero, which is fine in case of a
+		 * restart. This information should always follow origin to ensure
+		 * that the origin of the commit ts is known.
+		 */
+		if (data->api->write_commit_order)
+		{
+			/* Message boundary */
+			OutputPluginWrite(ctx, false);
+			OutputPluginPrepareWrite(ctx, true);
+
+			data->api->write_commit_order(ctx->out, slot_group_last_commit_ts);
 		}
 	}
 #endif
@@ -1213,6 +1258,7 @@ spock_output_join_slot_group(NameData slot_name)
 		strcpy(NameStr(slot_group->name), NameStr(group_name));
 		slot_group->nattached = 1;
 		slot_group->last_lsn = InvalidXLogRecPtr;
+		slot_group->last_commit_ts = 0;
 	}
 
 	LWLockRelease(SpockCtx->slot_group_master_lock);
@@ -1232,12 +1278,12 @@ spock_output_leave_slot_group(void)
 	/*
 	 * Remove ourselves from the slot-group
 	 */
-	LWLockAcquire(SpockCtx->slot_group_master_lock, LW_EXCLUSIVE);
+	//LWLockAcquire(SpockCtx->slot_group_master_lock, LW_EXCLUSIVE);
 	slot_group->nattached--;
 	elog(LOG, "removed from slot-group '%s' - nattached=%d",
 		 NameStr(slot_group->name), slot_group->nattached);
 	slot_group = NULL;
-	LWLockRelease(SpockCtx->slot_group_master_lock);
+	//LWLockRelease(SpockCtx->slot_group_master_lock);
 }
 
 /*

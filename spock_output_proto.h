@@ -58,6 +58,8 @@ typedef enum SpockProtoType
 	SpockProtoJson
 } SpockProtoType;
 
+typedef void (*spock_write_commit_order_fn) (StringInfo out,
+											 TimestampTz last_commit_ts);
 typedef void (*spock_write_rel_fn) (StringInfo out, SpockOutputData * data,
 						   Relation rel, Bitmapset *att_list);
 
@@ -88,6 +90,7 @@ typedef void (*spock_write_truncate_fn) (StringInfo out, int nrelids,
 
 typedef struct SpockProtoAPI
 {
+	spock_write_commit_order_fn write_commit_order;
 	spock_write_rel_fn write_rel;
 	spock_write_begin_fn write_begin;
 	spock_write_commit_fn write_commit;

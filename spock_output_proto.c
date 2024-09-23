@@ -28,6 +28,7 @@ spock_init_api(SpockProtoType typ)
 		res->write_begin = spock_json_write_begin;
 		res->write_commit = spock_json_write_commit;
 		res->write_origin = NULL;
+		res->write_commit_order = NULL;
 		res->write_insert = spock_json_write_insert;
 		res->write_update = spock_json_write_update;
 		res->write_delete = spock_json_write_delete;
@@ -40,6 +41,7 @@ spock_init_api(SpockProtoType typ)
 		res->write_begin = spock_write_begin;
 		res->write_commit = spock_write_commit;
 		res->write_origin = spock_write_origin;
+		res->write_commit_order = spock_write_commit_order;
 		res->write_insert = spock_write_insert;
 		res->write_update = spock_write_update;
 		res->write_delete = spock_write_delete;
