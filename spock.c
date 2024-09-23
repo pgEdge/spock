@@ -824,7 +824,7 @@ _PG_init(void)
 							 &exception_behaviour,
 							 TRANSDISCARD,
 							 exception_behaviour_options,
-							 PGC_POSTMASTER, 0,
+							 PGC_SIGHUP, 0,
 							 NULL, NULL, NULL);
 
 	DefineCustomEnumVariable("spock.exception_logging",
@@ -833,7 +833,7 @@ _PG_init(void)
 							 &exception_logging,
 							 LOG_ALL,
 							 exception_logging_options,
-							 PGC_POSTMASTER, 0,
+							 PGC_SIGHUP, 0,
 							 NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.stats_max_entries",
@@ -854,7 +854,7 @@ _PG_init(void)
 							 "Log conflict resolutions to spock."CATALOG_LOGTABLE" table.",
 							 NULL,
 							 &spock_save_resolutions,
-							 false, PGC_POSTMASTER,
+							 false, PGC_SIGHUP,
 							 0,
 							 NULL, NULL, NULL);
 
