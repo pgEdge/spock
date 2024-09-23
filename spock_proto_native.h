@@ -27,6 +27,8 @@ typedef struct SpockTupleData
 	bool	changed[MaxTupleAttributeNumber];
 } SpockTupleData;
 
+extern void spock_write_commit_order(StringInfo out,
+		TimestampTz last_commit_ts);
 extern void spock_write_rel(StringInfo out, SpockOutputData *data,
 		Relation rel, Bitmapset *att_list);
 extern void spock_write_begin(StringInfo out, SpockOutputData *data,
@@ -46,6 +48,7 @@ extern void write_startup_message(StringInfo out, List *msg);
 extern void spock_write_truncate(StringInfo out, int nrelids, Oid relids[],
 								 bool cascade, bool restart_seqs);
 
+extern TimestampTz spock_read_commit_order(StringInfo in);
 extern void spock_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
 					  TimestampTz *committime, TransactionId *remote_xid);
 extern void spock_read_commit(StringInfo in, XLogRecPtr *commit_lsn,

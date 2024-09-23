@@ -12,6 +12,8 @@
 #ifndef SPOCK_APPLY_H
 #define SPOCK_APPLY_H
 
+#include "storage/condition_variable.h"
+
 #include "spock_relcache.h"
 #include "spock_proto_native.h"
 
@@ -35,4 +37,11 @@ typedef void (*spock_apply_mi_finish_fn) (SpockRelation *rel);
  * since it's specific to each apply worker.
  */
 extern int my_exception_log_index;
+
+extern void create_progress_entry(Oid target_node_id,
+								Oid remote_node_id,
+								TimestampTz remote_commit_ts);
+
+extern void spock_apply_group_shmem_init(void);
+
 #endif /* SPOCK_APPLY_H */
