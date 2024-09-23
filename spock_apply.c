@@ -65,6 +65,7 @@
 #endif
 
 #include "utils/acl.h"
+#include "utils/fmgroids.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -89,14 +90,37 @@
 #include "spock_readonly.h"
 #include "spock.h"
 
+#define CATALOG_PROGRESS			"progress"
+
+typedef struct ProgressTuple
+{
+	Oid			node_id;
+	Oid			remote_node_id;
+	TimestampTz	remote_commit_ts;
+} ProgressTuple;
+
+#define Natts_progress			3
+#define Anum_target_node_id		1
+#define Anum_remote_node_id		2
+#define Anum_remote_commit_ts	3
 
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
+
+#if PG_VERSION_NUM >= 150000
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
+#endif
+static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
+
+static void spock_apply_group_shmem_request(void);
+static void spock_apply_group_shmem_startup(void);
+static Size spock_apply_group_shmem_size(int napply_groups);
 
 static bool in_remote_transaction = false;
 static bool first_begin_at_startup = true;
 static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
 static RepOriginId remote_origin_id = InvalidRepOriginId;
 static TimeOffset apply_delay = 0;
+static TimestampTz required_commit_ts = 0;
 
 static Oid	QueueRelid = InvalidOid;
 
@@ -202,8 +226,295 @@ static void handle_startup_param(const char *key, const char *value);
 static bool parse_bool_param(const char *key, const char *value);
 static void process_syncing_tables(XLogRecPtr end_lsn);
 static void start_sync_worker(Name nspname, Name relname);
+static void spock_apply_worker_on_exit(int code, Datum arg);
+static void spock_apply_worker_attach(void);
+static void spock_apply_worker_detach(void);
 
 static bool should_log_exception(bool failed);
+
+static void wait_for_previous_transaction(void);
+static void awake_transaction_waiters(void);
+
+static void set_apply_group_entry(Oid dbid, RepOriginId replorigin);
+static void get_apply_group_entry(Oid dbid,
+							RepOriginId replorigin,
+							int *indexPtr,
+							bool *foundPtr);
+
+static TimestampTz get_progress_entry_ts(Oid target_node_id,
+								Oid remote_node_id,
+								bool *missing);
+static void update_progress_entry(Oid target_node_id,
+								Oid remote_node_id,
+								TimestampTz remote_commit_ts);
+
+/*
+ * Install hooks to request shared resources for apply workers
+ */
+void
+spock_apply_group_shmem_init(void)
+{
+#if PG_VERSION_NUM < 150000
+	spock_apply_group_shmem_request();
+#else
+	prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook = spock_apply_group_shmem_request;
+#endif
+	prev_shmem_startup_hook = shmem_startup_hook;
+	shmem_startup_hook = spock_apply_group_shmem_startup;
+}
+
+/*
+ * Reserve additional shared resources for db-origin management
+ */
+static void
+spock_apply_group_shmem_request(void)
+{
+	int		napply_groups;
+
+#if PG_VERSION_NUM >= 150000
+	if (prev_shmem_request_hook != NULL)
+		prev_shmem_request_hook();
+#endif
+
+	/*
+	 * This is cludge for Windows (Postgres des not define the GUC variable
+	 * as PGDDLIMPORT)
+	 */
+	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
+										  false));
+
+	/*
+	 * Request enough shared memory for napply_groups (dbid and origin id)
+	 */
+	RequestAddinShmemSpace(spock_apply_group_shmem_size(napply_groups));
+
+	/*
+	 * Request the LWlocks needed
+	 */
+	RequestNamedLWLockTranche("spock_apply_groups", napply_groups + 1);
+}
+
+/*
+ * Calculate the shared memory needed for db-origin management
+ */
+static Size
+spock_apply_group_shmem_size(int napply_groups)
+{
+	return(napply_groups * sizeof(SpockApplyGroupData));
+}
+
+/*
+ * Initialize shared resources for db-origin management
+ */
+static void
+spock_apply_group_shmem_startup(void)
+{
+	bool					found;
+	int						napply_groups;
+	SpockApplyGroupData	   *apply_groups;
+
+	if (prev_shmem_startup_hook != NULL)
+		prev_shmem_startup_hook();
+
+	/*
+	 * This is kludge for Windows (Postgres does not define the GUC variable
+	 * as PGDLLIMPORT)
+	 */
+	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
+										  false));
+
+	/* Get the shared resources */
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+
+	apply_groups = ShmemInitStruct("spock_apply_groups",
+								 spock_apply_group_shmem_size(napply_groups),
+								 &found);
+	if (!found)
+	{
+		int i;
+
+		SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche("spock_apply_groups")[0]).lock);
+
+		memset(apply_groups, 0, spock_apply_group_shmem_size(napply_groups));
+
+		/* Let's initialize all attributes */
+		for (i = 0; i < napply_groups; i++)
+		{
+			pg_atomic_init_u32(&(apply_groups[i].nattached), 0);
+
+			ConditionVariableInit(&apply_groups[i].prev_processed_cv);
+		}
+	}
+
+	SpockCtx->napply_groups = napply_groups;
+	SpockCtx->apply_groups = apply_groups;
+
+	LWLockRelease(AddinShmemInitLock);
+}
+
+/* Wrapper for latch for waiting for previous transaction to commit */
+static void
+wait_for_previous_transaction(void)
+{
+	/*
+	 * Sleep on a cv to be woken up once a transaction in our group commits
+	 */
+	for (;;)
+	{
+		/*
+		 * If our immediate predecessor has been processed, then break
+		 * this loop and process this transaction. Otherwise, wait for
+		 * the predecessor to commit.
+		 */
+		if (MyApplyWorker->apply_group->prev_remote_ts == required_commit_ts ||
+			required_commit_ts == 0)
+		{
+			break;
+		}
+
+		/*
+		 * The value of prev_remote_ts might be erroneous as it could have
+		 * changed since we we last checked it.
+		 */
+		elog(DEBUG1, "SPOCK: slot-group '%s' WAIT for ts [current proccessed"
+						", required] [" INT64_FORMAT ", " INT64_FORMAT "]",
+						MySubscription->slot_name,
+						MyApplyWorker->apply_group->prev_remote_ts,
+						required_commit_ts);
+
+		/* Latch */
+		ConditionVariableSleep(&MyApplyWorker->apply_group->prev_processed_cv,
+							   WAIT_EVENT_LOGICAL_APPLY_MAIN);
+	}
+	ConditionVariableCancelSleep();
+}
+
+/* Wrapper to wake up all waiters for previous transaction to commit */
+static void
+awake_transaction_waiters(void)
+{
+	ConditionVariableBroadcast(&MyApplyWorker->apply_group->prev_processed_cv);
+}
+
+/*
+ * Creates an new entry if none exists, otherwise returns the existing one.
+ */
+static void
+set_apply_group_entry(Oid dbid, RepOriginId replorigin)
+{
+	int index = 0;
+	bool found = false;
+	bool missing = false;
+	TimestampTz remote_commit_ts = 0;
+	MemoryContext oldctx;
+
+	Assert(LWLockHeldByMeInMode(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE));
+
+	/* Entry is already set. Simply return. */
+	if (MyApplyWorker->apply_group)
+		return;
+
+	/* Let's see if we can find one our entry in shared memory */
+	get_apply_group_entry(dbid, replorigin, &index, &found);
+
+	if (found)
+	{
+		MyApplyWorker->apply_group = &SpockCtx->apply_groups[index];
+		return;
+	}
+
+	/*
+	 * We didn't find the entry. So, let's create one. Let's find the
+	 * first free entry.
+	 */
+	get_apply_group_entry(InvalidOid, InvalidRepOriginId, &index, &found);
+
+	/* If we can't find a free entry in the array, throw an error */
+	if (!found)
+		elog(ERROR, "SPOCK: no free entries available for apply "
+					"group data in shared memory.");
+
+	/*
+	 * Let's find the entry in the catalog table. No need to create
+	 * one here. That should be done once we commit the transaction.
+	 */
+	oldctx = CurrentMemoryContext;
+
+	StartTransactionCommand();
+	remote_commit_ts = get_progress_entry_ts(
+							MySubscription->target->id,
+							MySubscription->origin->id,
+							&missing);
+
+	/*
+	 * Ensure that if there is no entry in the catalog table,
+	 * we set the ts to zero.
+	 */
+	if (missing)
+	{
+		elog(ERROR, "SPOCK %s: unable to find entry for target"
+					" origin %u and remote origin %u",
+					MySubscription->name,
+					MySubscription->target->id,
+					MySubscription->origin->id);
+	}
+
+	CommitTransactionCommand();
+	MemoryContextSwitchTo(oldctx);
+
+	/* Set the values in shared memory for this dbid-origin */
+	MyApplyWorker->apply_group = &SpockCtx->apply_groups[index];
+
+	MyApplyWorker->apply_group->dbid = dbid;
+	MyApplyWorker->apply_group->replorigin = MySubscription->origin->id;
+	MyApplyWorker->apply_group->prev_remote_ts = remote_commit_ts;
+}
+
+/*
+ * Searches for a given pair of dbid and origin id in the share memory.
+ * If the entry is found, foundPtr is set to true, and the indexPtr is set
+ * to the index in the array. If not found, foundPtr is set to false and
+ * indexPtr is unchanged.
+ *
+ * The caller must hold "apply_group_master_lock" lock in the desired mode.
+ *
+ * If dbid is InvalidOid, it is expected that we want to find the first
+ * empty entry. In that case, we we can either look for:
+ *	- dbid is InvalidOid and target_origin_id is InvalidRepOriginId
+ *  OR
+ *  - dbid is InvalidOid, nattached is zero.
+ *
+ * This strategy attempts to reclaim no-longer-in-use entries.
+ */
+static void
+get_apply_group_entry(Oid dbid, RepOriginId replorigin, int *indexPtr, bool *foundPtr)
+{
+	int i;
+
+	Assert(LWLockHeldByMe(SpockCtx->apply_group_master_lock));
+
+	for (i = 0; i < SpockCtx->napply_groups; i++)
+	{
+		/*
+		 * Check for our entry, or in case dbid is InvalidOid, we want to
+		 * find an empty position. In that case, the caller has an
+		 * exclusive lock, so it's safe to pick one with zero nattached workers.
+		 */
+		if ((SpockCtx->apply_groups[i].dbid == dbid &&
+		     SpockCtx->apply_groups[i].replorigin == replorigin) ||
+			 (dbid == InvalidOid &&
+			  pg_atomic_read_u32(&MyApplyWorker->apply_group->nattached) == 0))
+		{
+			*foundPtr = true;
+			*indexPtr = i;
+
+			return;
+		}
+	}
+
+	*foundPtr = false;
+}
 
 /*
  * This function returns true when:
@@ -405,6 +716,10 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
 
+	elog(LOG, "SPOCK %s: current commit ts is: " INT64_FORMAT,
+			MySubscription->name,
+			replorigin_session_origin_timestamp);
+
 	/*
 	 * We either create a new shared memory struct in the error log for
 	 * ourselves if it doesn't exist, or check the commit lsn of the existing
@@ -577,6 +892,7 @@ handle_commit(StringInfo s)
 	XLogRecPtr	commit_lsn;
 	XLogRecPtr	end_lsn;
 	TimestampTz commit_time;
+	MemoryContext oldctx;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
@@ -726,6 +1042,34 @@ handle_commit(StringInfo s)
 	}
 #endif
 
+	/* Wait for the previous transaction to commit */
+	wait_for_previous_transaction();
+
+	/* Update the entry in the progress table. */
+	elog(DEBUG1, "SPOCK %s: updating progress table for node_id %d" \
+				" and remote node id %d with remote commit ts"  \
+				" to " INT64_FORMAT,
+				MySubscription->name,
+				MySubscription->target->id,
+				MySubscription->origin->id,
+				replorigin_session_origin_timestamp);
+
+	oldctx = CurrentMemoryContext;
+	StartTransactionCommand();
+
+	update_progress_entry(MySubscription->target->id,
+						MySubscription->origin->id,
+						replorigin_session_origin_timestamp);
+
+	CommitTransactionCommand();
+	MemoryContextSwitchTo(oldctx);
+
+	/* Update the value in shared memory */
+	MyApplyWorker->apply_group->prev_remote_ts = replorigin_session_origin_timestamp;
+
+	/* Wakeup all waiters for waiting for the previous transaction to commit */
+	awake_transaction_waiters();
+
 	in_remote_transaction = false;
 
 	/*
@@ -840,6 +1184,35 @@ handle_origin(StringInfo s)
 	 */
 	remote_origin_id = spock_read_origin(s, &remote_origin_lsn);
 	replorigin_session_origin = remote_origin_id;
+}
+
+/*
+ * Handle LAST commit ts message.
+ */
+static void
+handle_commit_order(StringInfo s)
+{
+	/*
+	 * LAST commit ts message can only come inside remote transaction,
+	 * immediately after origin information, and before any actual writes.
+	 */
+	if (!in_remote_transaction || IsTransactionState()
+		|| replorigin_session_origin == InvalidRepOriginId)
+		elog(ERROR, "SPOCK %s: LATEST commit order message sent out of order",
+			 MySubscription->name);
+
+	/*
+	 * Read the message and adjust the locally maintained last commit ts.
+	 * We don't need to track the origin here since we can only apply
+	 * changes from one origin.
+	 */
+	required_commit_ts = spock_read_commit_order(s);
+
+	elog(DEBUG1, "SPOCK: slot-group '%s' previous commit ts received: "
+			INT64_FORMAT " - commit ts " INT64_FORMAT,
+			MySubscription->slot_name,
+			required_commit_ts,
+			replorigin_session_origin_timestamp);
 }
 
 /*
@@ -1389,6 +1762,7 @@ static void
 handle_startup(StringInfo s)
 {
 	uint8		msgver = pq_getmsgbyte(s);
+	MemoryContext oldctx;
 
 	if (msgver != 1)
 		elog(ERROR, "SPOCK %s: Expected startup message version 1, but got %u",
@@ -1423,6 +1797,57 @@ handle_startup(StringInfo s)
 
 		handle_startup_param(k, v);
 	} while (!getmsgisend(s));
+
+	oldctx = CurrentMemoryContext;
+	StartTransactionCommand();
+
+	/* Create progress entry to track commit ts per local/remote origin */
+	create_progress_entry(MySubscription->target->id,
+					MySubscription->origin_if->nodeid,
+					0);
+
+	CommitTransactionCommand();
+	MemoryContextSwitchTo(oldctx);
+
+	/* Attach this worker. */
+	spock_apply_worker_attach();
+
+	/* Register callback for cleaning up */
+	on_proc_exit(spock_apply_worker_on_exit, 0);
+}
+
+/*
+ * Cleanup called on proc_exit
+ */
+static void
+spock_apply_worker_on_exit(int code, Datum arg)
+{
+	spock_apply_worker_detach();
+}
+
+/* Attach a worker to a group. */
+static void
+spock_apply_worker_attach(void)
+{
+	Assert(MyApplyWorker->apply_group == NULL);
+
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
+	/* Set the apply_group to the shmem entry and increment nattached */
+	set_apply_group_entry(MySpockWorker->dboid, MySubscription->origin->id);
+	pg_atomic_add_fetch_u32(&MyApplyWorker->apply_group->nattached, 1);
+
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+}
+
+/* Remove a worker from it's group. */
+static void
+spock_apply_worker_detach(void)
+{
+	if (MyApplyWorker->apply_group)
+		pg_atomic_sub_fetch_u32(&MyApplyWorker->apply_group->nattached, 1);
+
+	MyApplyWorker->apply_group = NULL;
 }
 
 static bool
@@ -1893,6 +2318,10 @@ replication_handler(StringInfo s)
 			/* ORIGIN */
 		case 'O':
 			handle_origin(s);
+			break;
+			/* LAST commit ts */
+		case 'L':
+			handle_commit_order(s);
 			break;
 			/* RELATION */
 		case 'R':
@@ -2851,6 +3280,176 @@ interval_to_timeoffset(const Interval *interval)
 #endif
 
 	return span;
+}
+
+/*
+ * Returns the remote commit ts for the pair of node_id and remote_node_id.
+ * Sets the missing value to true if the required tuple is not found. This
+ * can be then used to insert a new record if desired.
+ */
+static TimestampTz
+get_progress_entry_ts(Oid target_node_id,
+					Oid remote_node_id,
+					bool *missing)
+{
+	RangeVar 	*rv;
+	Relation 	rel;
+	HeapTuple 	tup;
+	TimestampTz	remote_commit_ts;
+	SysScanDesc scan;
+	ScanKeyData key[2];
+
+	Assert(IsTransactionState());
+
+	rv = makeRangeVar(EXTENSION_NAME, CATALOG_PROGRESS, -1);
+	rel = table_openrv(rv, ShareRowExclusiveLock);
+
+	if (!rel)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("spock progress relation not found")));
+	}
+
+	/* Scan for the entry for node_id and remote_node_id */
+	ScanKeyInit(&key[0],
+				Anum_target_node_id,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(target_node_id));
+
+	ScanKeyInit(&key[1],
+				Anum_remote_node_id,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(remote_node_id));
+
+	scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+	tup = systable_getnext(scan);
+
+	/* Set the data */
+	*missing = !HeapTupleIsValid(tup);
+	remote_commit_ts = (*missing) ?
+				0 : ((ProgressTuple *) GETSTRUCT(tup))->remote_commit_ts;
+
+	systable_endscan(scan);
+	table_close(rel, NoLock);
+
+	return remote_commit_ts;
+}
+
+/*
+ * Create an entry in the progress catalog table during the
+ * subscription process so that later apply worker will find
+ * and update it for the remote commit ts.
+ */
+void
+create_progress_entry(Oid target_node_id,
+					Oid remote_node_id,
+					TimestampTz remote_commit_ts)
+{
+	RangeVar		*rv;
+	Relation		rel;
+	TupleDesc		tupDesc;
+	HeapTuple		tup;
+	Datum			values[Natts_progress];
+	bool			nulls[Natts_progress];
+	bool			missing = false;
+
+	Assert(IsTransactionState());
+
+	/* Check if an entry already exists for this combination */
+	get_progress_entry_ts(target_node_id, remote_node_id, &missing);
+
+	/* Found one. Nothing to do, so simply return. */
+	if (!missing)
+		return;
+
+	rv = makeRangeVar(EXTENSION_NAME, CATALOG_PROGRESS, -1);
+	rel = table_openrv(rv, RowExclusiveLock);
+	tupDesc = RelationGetDescr(rel);
+
+	/* Form a tuple */
+	memset(nulls, false, sizeof(nulls));
+
+	values[Anum_target_node_id - 1] = ObjectIdGetDatum(target_node_id);
+	values[Anum_remote_node_id - 1] = ObjectIdGetDatum(remote_node_id);
+	values[Anum_remote_commit_ts - 1] = TimestampTzGetDatum(remote_commit_ts);
+
+	tup = heap_form_tuple(tupDesc, values, nulls);
+
+	CatalogTupleInsert(rel, tup);
+
+	/* Clean up */
+	heap_freetuple(tup);
+	table_close(rel, RowExclusiveLock);
+}
+
+/*
+ * Update remote timestamp for the local and remote node pair.
+ */
+static void
+update_progress_entry(Oid target_node_id,
+					Oid remote_node_id,
+					TimestampTz remote_commit_ts)
+{
+	RangeVar		*rv;
+	Relation		rel;
+	TupleDesc		tupDesc;
+	HeapTuple		oldtup;
+	HeapTuple		newtup;
+	SysScanDesc		scan;
+	ScanKeyData		key[2];
+	Datum			values[Natts_progress];
+	bool			nulls[Natts_progress];
+	bool			replaces[Natts_progress];
+
+	rv = makeRangeVar(EXTENSION_NAME, CATALOG_PROGRESS, -1);
+	rel = table_openrv(rv, RowExclusiveLock);
+	tupDesc = RelationGetDescr(rel);
+
+	/* Scan for the entry for node_id and remote_node_id */
+	ScanKeyInit(&key[0],
+				Anum_target_node_id,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(target_node_id));
+
+	ScanKeyInit(&key[1],
+				Anum_remote_node_id,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(remote_node_id));
+
+	scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+	oldtup = systable_getnext(scan);
+
+	/* We must always have a valid entry for a subscription */
+	if (!HeapTupleIsValid(oldtup))
+	{
+		elog(ERROR, "SPOCK %s: unable to find entry in the progress catalog"
+				"for local node %d and remote node %d",
+				MySubscription->name,
+				target_node_id,
+				remote_node_id);
+	}
+
+	/* Form a tuple */
+	memset(nulls, false, sizeof(nulls));
+	memset(replaces, true, sizeof(replaces));
+
+	/* Ensure the PK is not being updated */
+	replaces[Anum_target_node_id - 1] = false;
+	replaces[Anum_remote_node_id - 1] = false;
+
+	/* Update the remote commit ts */
+	values[Anum_remote_commit_ts - 1] = TimestampTzGetDatum(remote_commit_ts);
+
+	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
+
+	/* Update the tuple in catalog */
+	CatalogTupleUpdate(rel, &oldtup->t_self, newtup);
+
+	/* Cleanup */
+	heap_freetuple(newtup);
+	systable_endscan(scan);
+	table_close(rel, RowExclusiveLock);
 }
 
 void
