@@ -226,13 +226,13 @@ add_ddl_to_repset(Node *parsetree)
 		relation = castNode(CreateTableAsStmt, parsetree)->into->rel;
 	else if (nodeTag(parsetree) == T_CreateSchemaStmt)
 	{
-		ListCell *lc;
+		ListCell *cell;
 		CreateSchemaStmt *cstmt = (CreateSchemaStmt *) parsetree;
 
-		foreach(lc, cstmt->schemaElts)
+		foreach(cell, cstmt->schemaElts)
 		{
-			if (nodeTag(lfirst(lc)) == T_CreateStmt)
-				add_ddl_to_repset(lfirst(lc));
+			if (nodeTag(lfirst(cell)) == T_CreateStmt)
+				add_ddl_to_repset(lfirst(cell));
 		}
 		return;
 	}
@@ -240,12 +240,12 @@ add_ddl_to_repset(Node *parsetree)
 	{
 		ExplainStmt *stmt = (ExplainStmt *) parsetree;
 		bool		analyze = false;
-		ListCell   *lc;
+		ListCell   *cell;
 
 		/* Look through an EXPLAIN ANALYZE to the contained stmt */
-		foreach(lc, stmt->options)
+		foreach(cell, stmt->options)
 		{
-			DefElem    *opt = (DefElem *) lfirst(lc);
+			DefElem    *opt = (DefElem *) lfirst(cell);
 
 			if (strcmp(opt->defname, "analyze") == 0)
 				analyze = defGetBoolean(opt);
