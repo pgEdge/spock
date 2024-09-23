@@ -138,8 +138,8 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 		}
 		else
 		{
-			nulls[Anum_exception_log_local_origin - 1] = 'n';
-			nulls[Anum_exception_log_local_commit_ts - 1] = 'n';
+			nulls[Anum_exception_log_local_origin - 1] = true;
+			nulls[Anum_exception_log_local_commit_ts - 1] = true;
 		}
 		values[Anum_exception_log_schema - 1] = CStringGetTextDatum(schema);
 		values[Anum_exception_log_table - 1] = CStringGetTextDatum(table);
@@ -147,34 +147,38 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 		if (str_local_tup != NULL)
 			values[Anum_exception_log_local_tup - 1] = DirectFunctionCall1(jsonb_in, CStringGetDatum(str_local_tup));
 		else
-			nulls[Anum_exception_log_local_tup - 1] = 'n';
+			nulls[Anum_exception_log_local_tup - 1] = true;
 		if (str_remote_old_tup != NULL)
 			values[Anum_exception_log_remote_old_tup - 1] = DirectFunctionCall1(jsonb_in, CStringGetDatum(str_remote_old_tup));
 		else
-			nulls[Anum_exception_log_remote_old_tup - 1] = 'n';
+			nulls[Anum_exception_log_remote_old_tup - 1] = true;
 		if (str_remote_new_tup != NULL)
 			values[Anum_exception_log_remote_new_tup - 1] = DirectFunctionCall1(jsonb_in, CStringGetDatum(str_remote_new_tup));
 		else
-			nulls[Anum_exception_log_remote_new_tup - 1] = 'n';
-		nulls[Anum_exception_log_ddl_statement - 1] = 'n';
-		nulls[Anum_exception_log_ddl_user - 1] = 'n';
+			nulls[Anum_exception_log_remote_new_tup - 1] = true;
+		nulls[Anum_exception_log_ddl_statement - 1] = true;
+		nulls[Anum_exception_log_ddl_user - 1] = true;
 	}
 	else
 	{
-		nulls[Anum_exception_log_local_origin - 1] = 'n';
-		nulls[Anum_exception_log_local_commit_ts - 1] = 'n';
-		nulls[Anum_exception_log_schema - 1] = 'n';
-		nulls[Anum_exception_log_table - 1] = 'n';
+		nulls[Anum_exception_log_local_origin - 1] = true;
+		nulls[Anum_exception_log_local_commit_ts - 1] = true;
+		nulls[Anum_exception_log_schema - 1] = true;
+		nulls[Anum_exception_log_table - 1] = true;
 		values[Anum_exception_log_operation - 1] = CStringGetTextDatum("DDL");
-		nulls[Anum_exception_log_local_tup - 1] = 'n';
-		nulls[Anum_exception_log_remote_old_tup - 1] = 'n';
-		nulls[Anum_exception_log_remote_new_tup - 1] = 'n';
+		nulls[Anum_exception_log_local_tup - 1] = true;
+		nulls[Anum_exception_log_remote_old_tup - 1] = true;
+		nulls[Anum_exception_log_remote_new_tup - 1] = true;
 		values[Anum_exception_log_ddl_statement - 1] = CStringGetTextDatum(ddl_statement);
 		values[Anum_exception_log_ddl_user - 1] = CStringGetTextDatum(ddl_user);
 	}
 
+	/*
+	 * The error_message column of the spock.exception_log table is marked as NOT NULL,
+	 * but we don't always have a valid error message.
+	 */
 	if (error_message == NULL)
-		nulls[Anum_exception_log_error_message - 1] = 'n';
+		values[Anum_exception_log_error_message - 1] = CStringGetTextDatum("unknown");
 	else
 		values[Anum_exception_log_error_message - 1] = CStringGetTextDatum(error_message);
 	values[Anum_exception_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
