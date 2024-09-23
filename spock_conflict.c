@@ -55,7 +55,7 @@
 #include "spock_node.h"
 #include "spock_worker.h"
 
-int			spock_conflict_resolver = SPOCK_RESOLVE_APPLY_REMOTE;
+int			spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
 int			spock_conflict_log_level = LOG;
 bool		spock_save_resolutions = false;
 

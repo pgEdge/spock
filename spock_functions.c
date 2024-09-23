@@ -2152,14 +2152,14 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 
 		case T_ExplainStmt:		/* for EXPLAIN ANALYZE only */
 			{
+				ListCell   *cell;
 				ExplainStmt *estmt = (ExplainStmt *) stmt;
 				bool		analyze = false;
-				ListCell   *lc;
 
 				/* Look through an EXPLAIN ANALYZE to the contained stmt */
-				foreach(lc, estmt->options)
+				foreach(cell, estmt->options)
 				{
-					DefElem    *opt = (DefElem *) lfirst(lc);
+					DefElem    *opt = (DefElem *) lfirst(cell);
 
 					if (strcmp(opt->defname, "analyze") == 0)
 						analyze = defGetBoolean(opt);
