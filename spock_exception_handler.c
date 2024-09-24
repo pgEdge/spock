@@ -89,8 +89,8 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 	HeapTuple	tup;
 	Datum		values[Natts_exception_table];
 	bool		nulls[Natts_exception_table];
-	char	   *schema = (targetrel == NULL) ? NULL : targetrel->nspname;
-	char	   *table = (targetrel == NULL) ? NULL : targetrel->relname;
+	char	   *schema = (targetrel == NULL) ? "" : targetrel->nspname;
+	char	   *table = (targetrel == NULL) ? "" : targetrel->relname;
 
 	char	   *str_local_tup;
 	char	   *str_remote_old_tup;
