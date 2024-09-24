@@ -2734,12 +2734,12 @@ Datum spock_version_num(PG_FUNCTION_ARGS)
 
 Datum spock_max_proto_version(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT32(SPOCK_MAX_PROTO_VERSION_NUM);
+	PG_RETURN_INT32(SPOCK_PROTO_VERSION_NUM);
 }
 
 Datum spock_min_proto_version(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT32(SPOCK_MIN_PROTO_VERSION_NUM);
+	PG_RETURN_INT32(SPOCK_PROTO_MIN_VERSION_NUM);
 }
 
 /* Dummy functions for backward comptibility. */

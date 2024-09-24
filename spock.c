@@ -536,8 +536,8 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 	/* Basic protocol info. */
 	appendStringInfo(&command, "expected_encoding '%s'",
 					 GetDatabaseEncodingName());
-	appendStringInfo(&command, ", min_proto_version '%d'", SPOCK_MIN_PROTO_VERSION_NUM);
-	appendStringInfo(&command, ", max_proto_version '%d'", SPOCK_MAX_PROTO_VERSION_NUM);
+	appendStringInfo(&command, ", min_proto_version '%d'", SPOCK_PROTO_MIN_VERSION_NUM);
+	appendStringInfo(&command, ", max_proto_version '%d'", SPOCK_PROTO_VERSION_NUM);
 	appendStringInfo(&command, ", startup_params_format '1'");
 
 	/* Binary protocol compatibility. */

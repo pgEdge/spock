@@ -26,8 +26,8 @@
  * have backwards compatibility for. We negotiate protocol versions during the
  * startup handshake. See the protocol documentation for details.
  */
-#define SPOCK_PROTO_VERSION_NUM 2
-#define SPOCK_PROTO_MIN_VERSION_NUM 2
+#define SPOCK_PROTO_VERSION_NUM 3
+#define SPOCK_PROTO_MIN_VERSION_NUM 3
 
 /*
  * The startup parameter format is versioned separately to the rest of the wire

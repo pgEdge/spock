@@ -1763,9 +1763,9 @@ handle_startup(StringInfo s)
 {
 	uint8		msgver = pq_getmsgbyte(s);
 
-	if (msgver != 1)
-		elog(ERROR, "SPOCK %s: Expected startup message version 1, but got %u",
-			 MySubscription->name, msgver);
+	if (msgver != SPOCK_STARTUP_MSG_FORMAT_FLAT)
+		elog(ERROR, "SPOCK %s: Expected startup message version %u, but got %u",
+			 MySubscription->name, SPOCK_STARTUP_MSG_FORMAT_FLAT, msgver);
 
 	/*
 	 * The startup message consists of null-terminated strings as key/value
