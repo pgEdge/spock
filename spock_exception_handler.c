@@ -45,19 +45,19 @@
 #define Anum_exception_log_remote_origin 1
 #define Anum_exception_log_remote_commit_ts 2
 #define Anum_exception_log_command_counter 3
-#define Anum_exception_log_remote_xid 4
-#define Anum_exception_log_local_origin 5
-#define Anum_exception_log_local_commit_ts 6
-#define Anum_exception_log_schema 7
-#define Anum_exception_log_table 8
-#define Anum_exception_log_operation 9
-#define Anum_exception_log_local_tup 10
-#define Anum_exception_log_remote_old_tup 11
-#define Anum_exception_log_remote_new_tup 12
-#define Anum_exception_log_ddl_statement 13
-#define Anum_exception_log_ddl_user 14
-#define Anum_exception_log_error_message 15
-#define Anum_exception_log_retry_errored_at 16
+#define Anum_exception_log_retry_errored_at 4
+#define Anum_exception_log_remote_xid 5
+#define Anum_exception_log_local_origin 6
+#define Anum_exception_log_local_commit_ts 7
+#define Anum_exception_log_schema 8
+#define Anum_exception_log_table 9
+#define Anum_exception_log_operation 10
+#define Anum_exception_log_local_tup 11
+#define Anum_exception_log_remote_old_tup 12
+#define Anum_exception_log_remote_new_tup 13
+#define Anum_exception_log_ddl_statement 14
+#define Anum_exception_log_ddl_user 15
+#define Anum_exception_log_error_message 16
 
 #define CATALOG_EXCEPTION_LOG "exception_log"
 
@@ -88,8 +88,8 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 	HeapTuple	tup;
 	Datum		values[Natts_exception_table];
 	bool		nulls[Natts_exception_table];
-	char	   *schema = (targetrel == NULL) ? NULL : targetrel->nspname;
-	char	   *table = (targetrel == NULL) ? NULL : targetrel->relname;
+	char	   *schema = (targetrel == NULL) ? "" : targetrel->nspname;
+	char	   *table = (targetrel == NULL) ? "" : targetrel->relname;
 
 	char	   *str_local_tup;
 	char	   *str_remote_old_tup;
