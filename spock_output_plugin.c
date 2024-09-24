@@ -239,7 +239,6 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 	 */
 	if (!is_init)
 	{
-		int		params_format;
 		bool	started_tx = false;
 		SpockLocalNode *node;
 		MemoryContext oldctx;
@@ -308,14 +307,8 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 
 		/* Now parse the rest of the params and ERROR if we see any we don't recognise */
 		oldctx = MemoryContextSwitchTo(ctx->context);
-		params_format = process_parameters(ctx->output_plugin_options, data);
+		process_parameters(ctx->output_plugin_options, data);
 		MemoryContextSwitchTo(oldctx);
-
-		if (params_format != 1)
-			ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("client sent startup parameters in format %d but we only support format 1",
-					params_format)));
 
 		if (data->client_min_proto_version > SPOCK_PROTO_VERSION_NUM)
 			ereport(ERROR,

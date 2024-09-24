@@ -519,8 +519,8 @@ prepare_startup_message(SpockOutputData *data)
 {
 	List *l = NIL;
 
-	l = add_startup_msg_s(l, "max_proto_version", "1");
-	l = add_startup_msg_s(l, "min_proto_version", "1");
+	l = add_startup_msg_i(l, "max_proto_version", SPOCK_PROTO_VERSION_NUM);
+	l = add_startup_msg_i(l, "min_proto_version", SPOCK_PROTO_MIN_VERSION_NUM);
 
 	/* We don't support understand column types yet */
 	l = add_startup_msg_b(l, "coltypes", false);
