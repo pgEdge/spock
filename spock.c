@@ -99,6 +99,7 @@ static const struct config_enum_entry server_message_level_options[] = {
 static const struct config_enum_entry exception_behaviour_options[] = {
 	{"discard", DISCARD, false},
 	{"transdiscard", TRANSDISCARD, false},
+	{"sub_disable", SUB_DISABLE, false},
 	{NULL, 0, false}
 };
 

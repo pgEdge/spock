@@ -49,7 +49,8 @@ typedef struct SpockExceptionLog
 typedef enum SpockExceptionBehaviour
 {
 	DISCARD,
-	TRANSDISCARD
+	TRANSDISCARD,
+	SUB_DISABLE
 } SpockExceptionBehaviour;
 
 typedef enum SpockExceptionLogging
