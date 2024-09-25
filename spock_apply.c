@@ -504,7 +504,7 @@ get_apply_group_entry(Oid dbid, RepOriginId replorigin, int *indexPtr, bool *fou
 		if ((SpockCtx->apply_groups[i].dbid == dbid &&
 		     SpockCtx->apply_groups[i].replorigin == replorigin) ||
 			 (dbid == InvalidOid &&
-			  pg_atomic_read_u32(&MyApplyWorker->apply_group->nattached) == 0))
+			  pg_atomic_read_u32(&SpockCtx->apply_groups[i].nattached) == 0))
 		{
 			*foundPtr = true;
 			*indexPtr = i;
@@ -1224,6 +1224,9 @@ handle_commit_order(StringInfo s)
 static void
 handle_relation(StringInfo s)
 {
+	/* Let's wait to avoid concurrent updates to spock cache */
+	wait_for_previous_transaction();
+
 	multi_insert_finish();
 
 	(void) spock_read_rel(s);
