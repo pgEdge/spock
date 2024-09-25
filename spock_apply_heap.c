@@ -759,6 +759,12 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		if (found)
 			break;
 
+		/*
+		 * We didn't find the local tuple. Let's wait here so that any
+		 * impending insert can be processed.
+		 */
+		wait_for_previous_transaction();
+
 		retry++;
 	}
 
@@ -978,6 +984,12 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 										remoteslot, &localslot);
 		if (found)
 			break;
+
+		/*
+		 * We didn't find the local tuple. Let's wait here so that any
+		 * impending insert can be processed.
+		 */
+		wait_for_previous_transaction();
 
 		retry++;
 	}
