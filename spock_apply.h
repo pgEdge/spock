@@ -38,6 +38,9 @@ typedef void (*spock_apply_mi_finish_fn) (SpockRelation *rel);
  */
 extern int my_exception_log_index;
 
+extern void wait_for_previous_transaction(void);
+extern void awake_transaction_waiters(void);
+
 extern void create_progress_entry(Oid target_node_id,
 								Oid remote_node_id,
 								TimestampTz remote_commit_ts);

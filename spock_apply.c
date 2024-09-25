@@ -232,9 +232,6 @@ static void spock_apply_worker_detach(void);
 
 static bool should_log_exception(bool failed);
 
-static void wait_for_previous_transaction(void);
-static void awake_transaction_waiters(void);
-
 static void set_apply_group_entry(Oid dbid, RepOriginId replorigin);
 static void get_apply_group_entry(Oid dbid,
 							RepOriginId replorigin,
@@ -354,7 +351,7 @@ spock_apply_group_shmem_startup(void)
 }
 
 /* Wrapper for latch for waiting for previous transaction to commit */
-static void
+void
 wait_for_previous_transaction(void)
 {
 	/*
@@ -391,7 +388,7 @@ wait_for_previous_transaction(void)
 }
 
 /* Wrapper to wake up all waiters for previous transaction to commit */
-static void
+void
 awake_transaction_waiters(void)
 {
 	ConditionVariableBroadcast(&MyApplyWorker->apply_group->prev_processed_cv);
@@ -716,7 +713,7 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
 
-	elog(LOG, "SPOCK %s: current commit ts is: " INT64_FORMAT,
+	elog(DEBUG1, "SPOCK %s: current commit ts is: " INT64_FORMAT,
 			MySubscription->name,
 			replorigin_session_origin_timestamp);
 
