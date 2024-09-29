@@ -124,6 +124,13 @@ RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_subscri
 CREATE FUNCTION spock.sub_alter_interface(subscription_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_interface';
 
+CREATE FUNCTION spock.sub_create_parallel(subscription_name name, provider_dsn text,
+    replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
+    synchronize_data boolean = false, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
+    force_text_transfer boolean = false,
+	nparallel_slots integer = 1)
+RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription_parallel';
+
 CREATE FUNCTION spock.sub_disable(subscription_name name, immediate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_disable';
 CREATE FUNCTION spock.sub_enable(subscription_name name, immediate boolean DEFAULT false)

@@ -1172,25 +1172,13 @@ spock_output_plugin_shmem_init(void)
 }
 
 /*
- * Join a slot-group if possible
+ * Sets the group name from the slot name if possible. Returns true
+ * on success and false otherwise.
  */
-static void
-spock_output_join_slot_group(NameData slot_name)
+static bool
+spock_set_slot_group_name(NameData slot_name, NameData group_name)
 {
-	SpockOutputSlotGroup   *groups;
-	SpockOutputSlotGroup   *free_group = NULL;
-	int						free_i = 0;
-	NameData				group_name;
-	bool					is_slot_group = false;
-	char				   *cp;
-	int						i;
-
-	/*
-	 * Ensure we are not already a member of a slot-group
-	 */
-	if (slot_group != NULL)
-		elog(ERROR, "slot '%s' is already a slot-group member",
-			 NameStr(slot_name));
+	char *cp;
 
 	/*
 	 * Determine the group name (if possible)
@@ -1203,11 +1191,69 @@ spock_output_join_slot_group(NameData slot_name)
 			&& cp[2] == '\0')
 		{
 			*cp = '\0';
-			is_slot_group = true;
-			break;
+			return true;
 		}
 	}
-	if (!is_slot_group)
+
+	return false;
+}
+
+/* Find the slot group index if found it, otherwise the free index */
+static int
+spock_find_slot_group(NameData group_name, bool *found)
+{
+	int i;
+	int free_i = -1;
+	SpockOutputSlotGroup *groups;
+	groups = SpockCtx->slot_groups;
+
+	Assert(LWLockHeldByMe(SpockCtx->slot_group_master_lock));
+
+	*found = false;
+
+	for (i = 0; i < SpockCtx->slot_ngroups; i++)
+	{
+		if (free_i < 0 && groups[i].nattached == 0)
+		{
+			free_i = i;
+		}
+
+		if (strcmp(NameStr(group_name), NameStr(groups[i].name)) == 0
+			&& groups[i].nattached > 0)
+		{
+			*found = true;
+			return i;
+		}
+	}
+
+	/* If we didn't find an empty index for the group, throw an error */
+	if (free_i < 0)
+	{
+		elog(ERROR, "unable to find an empty index for group name %s",
+			NameStr(group_name));
+	}
+
+	return free_i;
+}
+
+/*
+ * Join a slot-group if possible
+ */
+static void
+spock_output_join_slot_group(NameData slot_name)
+{
+	NameData				group_name;
+	int						group_index = 0;
+	bool					found = false;
+
+	/*
+	 * Ensure we are not already a member of a slot-group
+	 */
+	if (slot_group != NULL)
+		elog(ERROR, "slot '%s' is already a slot-group member",
+			 NameStr(slot_name));
+
+	if (!spock_set_slot_group_name(slot_name, group_name))
 		return;
 
 	/*
@@ -1225,29 +1271,23 @@ spock_output_join_slot_group(NameData slot_name)
 	elog(LOG, "SPOCK join slot-group '%s' for slot '%s'",
 		 NameStr(group_name),
 		 NameStr(slot_name));
+
 	LWLockAcquire(SpockCtx->slot_group_master_lock, LW_EXCLUSIVE);
-	groups = SpockCtx->slot_groups;
-	for (i = 0; i < SpockCtx->slot_ngroups; i++)
+	group_index = spock_find_slot_group(group_name, &found);
+
+	if (found)
 	{
-		if (free_group == NULL && groups[i].nattached == 0)
-		{
-			free_group = &groups[i];
-			free_i = i;
-		}
-		if (strcmp(NameStr(group_name), NameStr(groups[i].name)) == 0
-			&& groups[i].nattached > 0)
-		{
-			slot_group = &groups[i];
-			slot_group->nattached++;
-			elog(LOG, "using existing slot-group %d - nattached=%d", i,
-				 slot_group->nattached);
-			break;
-		}
+		slot_group = &SpockCtx->slot_groups[group_index];
+		slot_group->nattached++;
+
+		elog(LOG, "using existing slot-group %d - nattached=%d", group_index,
+				slot_group->nattached);
 	}
-	if (slot_group == NULL)
+	else
 	{
-		elog(LOG, "using free slot-group %d", free_i);
-		slot_group = free_group;
+		elog(LOG, "using free slot-group %d", group_index);
+
+		slot_group = &SpockCtx->slot_groups[group_index];
 		strcpy(NameStr(slot_group->name), NameStr(group_name));
 		slot_group->nattached = 1;
 		slot_group->last_lsn = InvalidXLogRecPtr;

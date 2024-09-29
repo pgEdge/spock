@@ -105,6 +105,8 @@ PG_FUNCTION_INFO_V1(spock_drop_subscription);
 
 PG_FUNCTION_INFO_V1(spock_alter_subscription_interface);
 
+PG_FUNCTION_INFO_V1(spock_create_subscription_parallel);
+
 PG_FUNCTION_INFO_V1(spock_alter_subscription_disable);
 PG_FUNCTION_INFO_V1(spock_alter_subscription_enable);
 
@@ -183,6 +185,16 @@ PG_FUNCTION_INFO_V1(spock_repair_mode);
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
+static void
+spock_create_subscription_internal(SpockSubscription *sub,
+								   char *sub_name, char *provider_dsn,
+								   ArrayType *rep_set_names,
+								   bool sync_structure, bool sync_data,
+								   ArrayType *forward_origin_names,
+								   Interval *apply_delay,
+								   bool force_text_transfer,
+								   int parallel_slot_index,
+								   bool warn_overlap);
 
 bool in_spock_replicate_ddl_command = false;
 bool in_spock_queue_ddl_command = false;
@@ -434,6 +446,57 @@ Datum spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Connect two existing nodes by creating up to 9 slots in parallel mode.
+ */
+Datum spock_create_subscription_parallel(PG_FUNCTION_ARGS)
+{
+	char *sub_name = NameStr(*PG_GETARG_NAME(0));
+	char *provider_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	ArrayType *rep_set_names = PG_GETARG_ARRAYTYPE_P(2);
+	bool sync_structure = PG_GETARG_BOOL(3);
+	bool sync_data = PG_GETARG_BOOL(4);
+	ArrayType *forward_origin_names = PG_GETARG_ARRAYTYPE_P(5);
+	Interval *apply_delay = PG_GETARG_INTERVAL_P(6);
+	bool force_text_transfer = PG_GETARG_BOOL(7);
+	int nparallel_slots = PG_GETARG_INT32(8);
+	SpockSubscription sub[10];
+	char sub_name_parallel[NAMEDATALEN];
+	int i;
+
+	if (nparallel_slots < 1 || nparallel_slots > 9)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("nparallel_slots value must be between 1 - 9;"
+				        "given %d", nparallel_slots)));
+	}
+
+	/* Parallel slots range from 1 - 9 only. */
+	for (i = 1; i <= nparallel_slots; i++)
+	{
+		/* Shorten hash by 3 to allow for '_<digit>' and string terminator */
+		snprintf(sub_name_parallel, NAMEDATALEN,
+					"%s_%d", shorten_hash(sub_name, NAMEDATALEN - 3), i);
+
+		/*
+		 * Throw the warning only for the first slot, not for others as
+		 * are expected to be the same as the first.
+		 */
+		spock_create_subscription_internal(&sub[i],
+										sub_name_parallel, provider_dsn,
+										rep_set_names,
+										sync_structure, sync_data,
+										forward_origin_names,
+										apply_delay,
+										force_text_transfer,
+										i,
+										(i == 1));
+	}
+
+	PG_RETURN_BOOL(true);
+}
+
+/*
  * Connect two existing nodes.
  */
 Datum spock_create_subscription(PG_FUNCTION_ARGS)
@@ -446,18 +509,44 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	ArrayType *forward_origin_names = PG_GETARG_ARRAYTYPE_P(5);
 	Interval *apply_delay = PG_GETARG_INTERVAL_P(6);
 	bool force_text_transfer = PG_GETARG_BOOL(7);
-	PGconn *conn;
 	SpockSubscription sub;
+
+	/* Create a simple subscription... */
+	spock_create_subscription_internal(&sub,
+										sub_name, provider_dsn,
+										rep_set_names,
+										sync_structure, sync_data,
+										forward_origin_names,
+										apply_delay,
+										force_text_transfer,
+										0,
+										true);
+
+	PG_RETURN_OID(sub.id);
+}
+
+static void
+spock_create_subscription_internal(SpockSubscription *sub,
+								   char *sub_name, char *provider_dsn,
+								   ArrayType *rep_set_names,
+								   bool sync_structure, bool sync_data,
+								   ArrayType *forward_origin_names,
+								   Interval *apply_delay,
+								   bool force_text_transfer,
+								   int parallel_slot_index,
+								   bool warn_overlap)
+{
+	PGconn *conn;
 	SpockSyncStatus sync;
 	SpockNode *origin;
 	SpockNode *existing_origin;
 	SpockInterface originif;
 	SpockLocalNode *localnode;
 	SpockInterface targetif;
-	List *replication_sets;
 	List *other_subs;
 	ListCell *lc;
 	NameData slot_name;
+	List *replication_sets = textarray_to_list(rep_set_names);;
 
 	/* Check that this is actually a node. */
 	localnode = get_local_node(true, false);
@@ -514,30 +603,32 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	 * Note that we can't use exclusion constraints as we use the
 	 * subscriptions table in same manner as system catalog.
 	 */
-	replication_sets = textarray_to_list(rep_set_names);
-	other_subs = get_node_subscriptions(originif.nodeid, true);
-	foreach (lc, other_subs)
+	if (warn_overlap)
 	{
-		SpockSubscription *esub = (SpockSubscription *)lfirst(lc);
-		ListCell *esetcell;
-
-		foreach (esetcell, esub->replication_sets)
+		other_subs = get_node_subscriptions(originif.nodeid, true);
+		foreach (lc, other_subs)
 		{
-			char *existingset = lfirst(esetcell);
-			ListCell *nsetcell;
+			SpockSubscription *esub = (SpockSubscription *)lfirst(lc);
+			ListCell *esetcell;
 
-			foreach (nsetcell, replication_sets)
+			foreach (esetcell, esub->replication_sets)
 			{
-				char *newset = lfirst(nsetcell);
+				char *existingset = lfirst(esetcell);
+				ListCell *nsetcell;
 
-				if (strcmp(newset, existingset) == 0)
-					ereport(WARNING,
-							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							 errmsg("existing subscription \"%s\" to node "
-									"\"%s\" already subscribes to replication "
-									"set \"%s\"",
-									esub->name, origin->name,
-									newset)));
+				foreach (nsetcell, replication_sets)
+				{
+					char *newset = lfirst(nsetcell);
+
+					if (strcmp(newset, existingset) == 0)
+						ereport(WARNING,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								errmsg("existing subscription \"%s\" to node "
+										"\"%s\" already subscribes to replication "
+										"set \"%s\"",
+										esub->name, origin->name,
+										newset)));
+				}
 			}
 		}
 	}
@@ -550,21 +641,24 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	 */
 	targetif.id = localnode->node_if->id;
 	targetif.nodeid = localnode->node->id;
-	sub.id = InvalidOid;
-	sub.name = sub_name;
-	sub.origin_if = &originif;
-	sub.target_if = &targetif;
-	sub.replication_sets = replication_sets;
-	sub.forward_origins = textarray_to_list(forward_origin_names);
-	sub.enabled = true;
+
+	sub->id = InvalidOid;
+	sub->name = sub_name;
+	sub->origin_if = &originif;
+	sub->target_if = &targetif;
+	sub->replication_sets = replication_sets;
+	sub->forward_origins = textarray_to_list(forward_origin_names);
+	sub->enabled = true;
+
 	gen_slot_name(&slot_name, get_database_name(MyDatabaseId),
 				  origin->name, sub_name);
-	sub.slot_name = pstrdup(NameStr(slot_name));
-	sub.apply_delay = apply_delay;
-	sub.force_text_transfer = force_text_transfer;
-	sub.skiplsn	= InvalidXLogRecPtr;
 
-	create_subscription(&sub);
+	sub->slot_name = pstrdup(NameStr(slot_name));
+	sub->apply_delay = apply_delay;
+	sub->force_text_transfer = force_text_transfer;
+	sub->skiplsn	= InvalidXLogRecPtr;
+
+	create_subscription(sub);
 
 	/* Create synchronization status for the subscription. */
 	memset(&sync, 0, sizeof(SpockSyncStatus));
@@ -578,14 +672,12 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	else
 		sync.kind = SYNC_KIND_INIT;
 
-	sync.subid = sub.id;
+	sync.subid = sub->id;
 	sync.status = SYNC_STATUS_INIT;
 	create_local_sync_status(&sync);
 
 	/* Create progress entry to track commit ts per local/remote origin */
 	create_progress_entry(localnode->node->id, originif.nodeid, 0);
-
-	PG_RETURN_OID(sub.id);
 }
 
 /*
