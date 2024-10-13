@@ -389,9 +389,7 @@ static void
 spock_ProcessUtility(
 						 PlannedStmt *pstmt,
 						 const char *queryString,
-#if PG_VERSION_NUM >= 140000
 						 bool readOnlyTree,
-#endif
 						 ProcessUtilityContext context,
 						 ParamListInfo params,
 						 QueryEnvironment *queryEnv,

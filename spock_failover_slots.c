@@ -22,13 +22,7 @@
 #include "pgstat.h"
 
 #include "access/genam.h"
-#if PG_VERSION_NUM >= 120000
 #include "access/table.h"
-#else
-#include "access/heapam.h"
-#define table_open heap_open
-#define table_close heap_close
-#endif
 #include "access/xact.h"
 #if PG_VERSION_NUM >= 150000
 #include "access/xlogrecovery.h"
@@ -38,9 +32,7 @@
 #include "catalog/pg_database.h"
 
 #include "postmaster/bgworker.h"
-#if PG_VERSION_NUM >= 130000
 #include "postmaster/interrupt.h"
-#endif
 
 #include "replication/decode.h"
 #include "replication/logical.h"
@@ -66,11 +58,6 @@
 #include "libpq-fe.h"
 #include "libpq/auth.h"
 #include "libpq/libpq.h"
-
-#if PG_VERSION_NUM < 130000
-#define SignalHandlerForConfigReload PostgresSigHupHandler
-#define GetWalRcvFlushRecPtr GetWalRcvWriteRecPtr
-#endif
 
 #define WORKER_NAP_TIME 60000L
 #define WORKER_WAIT_FEEDBACK 10000L
@@ -266,22 +253,11 @@ remote_get_primary_slot_info(PGconn *conn, List *slot_filter)
 	StringInfoData query;
 
 	initStringInfo(&query);
-	if (PQserverVersion(conn) >= 140000)
-	{
-		appendStringInfoString(
-			&query,
-			"SELECT slot_name, plugin, database, two_phase, catalog_xmin, restart_lsn, confirmed_flush_lsn"
-			"  FROM pg_catalog.pg_replication_slots"
-			" WHERE database IS NOT NULL AND (");
-	}
-	else
-	{
-		appendStringInfoString(
-			&query,
-			"SELECT slot_name, plugin, database, false AS two_phase, catalog_xmin, restart_lsn, confirmed_flush_lsn"
-			"  FROM pg_catalog.pg_replication_slots"
-			" WHERE database IS NOT NULL AND (");
-	}
+	appendStringInfoString(
+		&query,
+		"SELECT slot_name, plugin, database, two_phase, catalog_xmin, restart_lsn, confirmed_flush_lsn"
+		"  FROM pg_catalog.pg_replication_slots"
+		" WHERE database IS NOT NULL AND (");
 
 	foreach (lc, slot_filter)
 	{
@@ -416,14 +392,10 @@ get_database_oid(const char *dbname)
 
 	/* Must copy tuple before releasing buffer */
 	if (HeapTupleIsValid(tuple))
-#if PG_VERSION_NUM < 120000
-		dboid = HeapTupleGetOid(tuple);
-#else
 	{
 		Form_pg_database datForm = (Form_pg_database) GETSTRUCT(tuple);
 		dboid = datForm->oid;
 	}
-#endif
 	else
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_DATABASE),
 						errmsg("database \"%s\" does not exist", dbname)));
@@ -770,11 +742,9 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 							  remote_slot->two_phase,
 							  false,
 							  false);
-#elif PG_VERSION_NUM >= 140000
+#else
 		ReplicationSlotCreate(remote_slot->name, true, RS_EPHEMERAL,
 							  remote_slot->two_phase);
-#else
-		ReplicationSlotCreate(remote_slot->name, true, RS_EPHEMERAL);
 #endif
 		slot = MyReplicationSlot;
 
@@ -1373,32 +1343,11 @@ socket_putmessage_noblock(char msgtype, const char *s, size_t len)
 	OldPqCommMethods->putmessage_noblock(msgtype, s, len);
 }
 
-#if PG_VERSION_NUM < 140000
-static void
-socket_startcopyout(void)
-{
-	OldPqCommMethods->startcopyout();
-}
 
-static void
-socket_endcopyout(bool errorAbort)
-{
-	OldPqCommMethods->endcopyout(errorAbort);
-}
-#endif
-
-
-#if PG_VERSION_NUM >= 120000
 static const
-#else
-static
-#endif
 	PQcommMethods PqCommSocketMethods = {
 		socket_comm_reset,		socket_flush,	   socket_flush_if_writable,
 		socket_is_send_pending, socket_putmessage, socket_putmessage_noblock
-#if PG_VERSION_NUM < 140000
-		, socket_startcopyout, socket_endcopyout
-#endif
 	};
 
 static ClientAuthentication_hook_type original_client_auth_hook = NULL;

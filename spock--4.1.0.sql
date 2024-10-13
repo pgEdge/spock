@@ -454,7 +454,7 @@ BEGIN
 	pgmajor = regexp_replace(regexp_replace(version(), '^PostgreSQL ', ''), '[^0-9].*', '')::integer;
 
 	CASE
-		WHEN pgmajor IN (14, 15, 16, 17) THEN
+		WHEN pgmajor IN (15, 16, 17) THEN
 
 -- ----------------------------------------------------------------------
 -- convert_column_to_int8()

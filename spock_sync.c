@@ -848,11 +848,7 @@ spock_sync_worker_cleanup(SpockSubscription *sub)
 	if (replorigin_session_origin != InvalidRepOriginId)
 	{
 		replorigin_session_reset();
-#if PG_VERSION_NUM >= 140000
 		replorigin_drop_by_name(sub->slot_name, true, true);
-#else
-		replorigin_drop(replorigin_session_origin, true);
-#endif
 		replorigin_session_origin = InvalidRepOriginId;
 	}
 }

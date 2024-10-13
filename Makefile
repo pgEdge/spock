@@ -49,7 +49,6 @@ REGRESS := $(filter-out apply_delay, $(REGRESS))
 EXTRA_CLEAN += compat17/spock_compat.o compat17/spock_compat.bc \
 				compat16/spock_compat.o compat16/spock_compat.bc \
 				compat15/spock_compat.o compat15/spock_compat.bc \
-				compat14/spock_compat.o compat14/spock_compat.bc \
 				spock_create_subscriber.o
 
 spock_version=$(shell grep "^\#define \<SPOCK_VERSION\>" $(realpath $(srcdir)/spock.h) | cut -d'"' -f2)

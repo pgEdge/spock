@@ -606,12 +606,6 @@ init_apply_exec_state(SpockRelation *rel)
 	aestate->resultRelInfo = makeNode(ResultRelInfo);
 	InitResultRelInfo(aestate->resultRelInfo, rel->rel, 1, NULL, 0);
 
-#if PG_VERSION_NUM < 140000
-	aestate->estate->es_result_relations = aestate->resultRelInfo;
-	aestate->estate->es_num_result_relations = 1;
-	aestate->estate->es_result_relation_info = aestate->resultRelInfo;
-#endif
-
 	/* aestate->slot = ExecInitExtraTupleSlot(aestate->estate); */
 	ExecSetSlotDescriptor(aestate->slot, RelationGetDescr(rel->rel));
 
@@ -1175,15 +1169,11 @@ spock_apply_heap_mi_flush(void)
 
 			recheckIndexes =
 				ExecInsertIndexTuples(
-#if PG_VERSION_NUM >= 140000
 									  resultRelInfo,
-#endif
 									  spkmistate->buffered_tuples[i],
 									  spkmistate->aestate->estate
-#if PG_VERSION_NUM >= 140000
 									  ,
 									  false
-#endif
 									  ,
 									  false, NULL, NIL
 #if PG_VERSION_NUM >= 160000
