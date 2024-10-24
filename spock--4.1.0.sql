@@ -99,7 +99,7 @@ CREATE TABLE spock.progress (
 	remote_node_id oid NOT NULL,
 	remote_commit_ts timestamptz NOT NULL,
 	PRIMARY KEY(node_id, remote_node_id)
-) WITH (user_catalog_table=true, fillfactor=50);
+) WITH (fillfactor=50);
 
 CREATE FUNCTION spock.node_create(node_name name, dsn text,
     location text DEFAULT NULL, country text DEFAULT NULL,
