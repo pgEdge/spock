@@ -898,6 +898,9 @@ handle_commit(StringInfo s)
 
 	Assert(commit_time == replorigin_session_origin_timestamp);
 
+	/* Wait for the previous transaction to commit */
+	wait_for_previous_transaction();
+
 	if (is_skipping_changes())
 	{
 		stop_skipping_changes();
@@ -1038,9 +1041,6 @@ handle_commit(StringInfo s)
 		table_close(replorigin_rel, RowExclusiveLock);
 	}
 #endif
-
-	/* Wait for the previous transaction to commit */
-	wait_for_previous_transaction();
 
 	/* Update the entry in the progress table. */
 	elog(DEBUG1, "SPOCK %s: updating progress table for node_id %d" \
