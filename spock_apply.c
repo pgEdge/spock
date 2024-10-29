@@ -355,7 +355,8 @@ void
 wait_for_previous_transaction(void)
 {
 	/*
-	 * Sleep on a cv to be woken up once a transaction in our group commits
+	 * Sleep on a cv to be woken up once our the required predecessor has
+	 * commited.
 	 */
 	for (;;)
 	{
@@ -370,6 +371,14 @@ wait_for_previous_transaction(void)
 			break;
 		}
 
+		CHECK_FOR_INTERRUPTS();
+
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
 		/*
 		 * The value of prev_remote_ts might be erroneous as it could have
 		 * changed since we we last checked it.
@@ -381,8 +390,9 @@ wait_for_previous_transaction(void)
 						required_commit_ts);
 
 		/* Latch */
-		ConditionVariableSleep(&MyApplyWorker->apply_group->prev_processed_cv,
-							   WAIT_EVENT_LOGICAL_APPLY_MAIN);
+		ConditionVariableTimedSleep(&MyApplyWorker->apply_group->prev_processed_cv,
+									1,
+									WAIT_EVENT_LOGICAL_APPLY_MAIN);
 	}
 	ConditionVariableCancelSleep();
 }
