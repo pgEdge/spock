@@ -50,11 +50,13 @@ typedef SpockApplyGroupData *SpockApplyGroup;
 
 typedef struct SpockApplyWorker
 {
-	Oid			subid;				/* Subscription id for apply worker. */
-	XLogRecPtr	replay_stop_lsn;	/* Replay should stop here if defined. */
-	bool		sync_pending;		/* Is there new synchronization info pending?. */
-	bool		use_try_block;		/* Should use try block for apply? */
-	SpockApplyGroup apply_group;	/* Apply group to be used with parallel slots. */
+	Oid			subid;					/* Subscription id for apply worker. */
+	XLogRecPtr	replay_stop_lsn;		/* Replay should stop here if defined. */
+	TimestampTz prev_remote_commit_ts;	/* Commit ts for remote predecessor transaction. */
+	TimestampTz remote_commit_ts;		/* Commit ts for remote transaction. */
+	bool		sync_pending;			/* Is there new synchronization info pending?. */
+	bool		use_try_block;			/* Should use try block for apply? */
+	SpockApplyGroup apply_group;		/* Apply group to be used with parallel slots. */
 } SpockApplyWorker;
 
 typedef struct SpockSyncWorker

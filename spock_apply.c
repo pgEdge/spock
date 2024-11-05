@@ -29,6 +29,7 @@
 
 #include "executor/executor.h"
 
+#include "lib/ilist.h"
 #include "libpq/pqformat.h"
 
 #include "mb/pg_wchar.h"
@@ -70,6 +71,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
+#include "utils/ps_status.h"
 #include "utils/snapmgr.h"
 
 #include "spock_common.h"
@@ -120,7 +122,6 @@ static bool first_begin_at_startup = true;
 static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
 static RepOriginId remote_origin_id = InvalidRepOriginId;
 static TimeOffset apply_delay = 0;
-static TimestampTz required_commit_ts = 0;
 
 static Oid	QueueRelid = InvalidOid;
 
@@ -231,6 +232,10 @@ static void spock_apply_worker_attach(void);
 static void spock_apply_worker_detach(void);
 
 static bool should_log_exception(bool failed);
+
+static bool is_commit_ts_in_future(TimestampTz commit_ts);
+static bool is_commit_ts_in_past(TimestampTz commit_ts);
+static bool is_commit_ts_awaited(TimestampTz commit_ts);
 
 static void set_apply_group_entry(Oid dbid, RepOriginId replorigin);
 static void get_apply_group_entry(Oid dbid,
@@ -350,12 +355,51 @@ spock_apply_group_shmem_startup(void)
 	LWLockRelease(AddinShmemInitLock);
 }
 
+/*
+ * We should use these API to identify position of an apply transaction
+ * in logical replication timeline. This API set improves code readability
+ * whilst keeping the logic in a common maintainable place.
+ */
+
+/* Returns true if the given commit ts is in future. */
+static bool
+is_commit_ts_in_future(TimestampTz commit_ts)
+{
+	return (MyApplyWorker->apply_group->prev_remote_ts < commit_ts);
+}
+
+/* Returns true if the given commit ts is in past. */
+static bool
+is_commit_ts_in_past(TimestampTz commit_ts)
+{
+	return (MyApplyWorker->apply_group->prev_remote_ts > commit_ts);
+}
+
+/* Returns true if the given commit ts the awaited transaction. */
+static bool
+is_commit_ts_awaited(TimestampTz commit_ts)
+{
+	return (MyApplyWorker->apply_group->prev_remote_ts == commit_ts ||
+			commit_ts == 0);
+}
+
 /* Wrapper for latch for waiting for previous transaction to commit */
 void
 wait_for_previous_transaction(void)
 {
+	List	   *workers;
+	ListCell   *wlc;
+	TimestampTz	prev_commit_ts = MyApplyWorker->prev_remote_commit_ts;
+	TimestampTz	commit_ts = MyApplyWorker->remote_commit_ts;
+	TimestampTz	blocked_prev_commit_ts = 0;
+	TimestampTz	blocked_commit_ts = 0;
+	int			blocked_proc_pid = 0;
+	bool 		should_exit = false;
+	bool		ps_suffix_added = false;
+
 	/*
-	 * Sleep on a cv to be woken up once a transaction in our group commits
+	 * Sleep on a cv to be woken up once our the required predecessor has
+	 * commited.
 	 */
 	for (;;)
 	{
@@ -364,27 +408,159 @@ wait_for_previous_transaction(void)
 		 * this loop and process this transaction. Otherwise, wait for
 		 * the predecessor to commit.
 		 */
-		if (MyApplyWorker->apply_group->prev_remote_ts == required_commit_ts ||
-			required_commit_ts == 0)
+		if (is_commit_ts_awaited(prev_commit_ts))
 		{
 			break;
+		}
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
+		/* Get list of existing workers. */
+		LWLockAcquire(SpockCtx->lock, LW_SHARED);
+		workers = spock_apply_find_all(MySpockWorker->dboid);
+
+		/* See if the apply worker  */
+		foreach(wlc, workers)
+		{
+			SpockWorker *blocked_worker;
+			SpockApplyWorker *blocked_apply;
+
+			blocked_worker = (SpockWorker *) lfirst(wlc);
+			blocked_apply = &blocked_worker->worker.apply;
+
+			/* Skip ourself */
+			if (blocked_apply->remote_commit_ts == commit_ts)
+				continue;
+
+			/*
+			 * Only check if we are blocking a transaction that needs to go
+			 * before us.
+			 */
+			if (MyApplyWorker->prev_remote_commit_ts >
+					blocked_apply->prev_remote_commit_ts)
+			{
+				PGPROC *blocked_proc;
+
+				/*
+				 * We need to check if the transaction is waiting on a lock,
+				 * and ensure that it doesn't disappear from underneath.
+				 */
+				LWLockAcquire(ProcArrayLock, LW_SHARED);
+				blocked_proc = blocked_worker->proc;
+
+				if (blocked_proc &&
+					blocked_proc->waitStatus == PROC_WAIT_STATUS_WAITING &&
+					blocked_proc->waitLock)
+				{
+					dlist_iter	proc_iter;
+					PROCLOCK   *curproclock;
+					LockMethod	lockMethodTable;
+					int			conflictMask;
+					int			numLockModes;
+					int			lm;
+
+					lockMethodTable = GetLocksMethodTable(blocked_proc->waitLock);
+					numLockModes = lockMethodTable->numLockModes;
+					conflictMask = lockMethodTable->conflictTab[blocked_proc->waitLockMode];
+
+					dlist_foreach(proc_iter, &blocked_proc->waitLock->procLocks)
+					{
+						curproclock =
+							dlist_container(PROCLOCK, lockLink, proc_iter.cur);
+
+						/* Another apply worker is blocked by me? */
+						if (curproclock->tag.myProc == MyProc)
+						{
+							/* Check if our lock mode hold conflicts */
+							for (lm = 1; lm <= numLockModes; lm++)
+							{
+								if ((curproclock->holdMask & LOCKBIT_ON(lm)) &&
+									(conflictMask & LOCKBIT_ON(lm)))
+								{
+									should_exit = true;
+									blocked_proc_pid = blocked_proc->pid;
+									blocked_commit_ts = blocked_apply->remote_commit_ts;
+									blocked_prev_commit_ts = blocked_apply->prev_remote_commit_ts;
+
+									break;
+								}
+							}
+
+							/* Break the dlist loop as well. */
+							if (should_exit)
+								break;
+						}
+					}
+				}
+				LWLockRelease(ProcArrayLock);
+
+				/* Break the foreach worker loop as well. */
+				if (should_exit)
+					break;
+			}
+		}
+
+		/* We are done with all our work. So safe to release this lock. */
+		LWLockRelease(SpockCtx->lock);
+
+		/* We are blocking a awaited transaction. So must exit. */
+		if (should_exit)
+		{
+			elog(LOG, "SPOCK: slot-group '%s' exiting to allow blocked apply"
+					  "worker to proceed [pid, prev_ts, ts]"
+					  " blocked: "
+					  "[%u, " INT64_FORMAT ", " INT64_FORMAT "] "
+					  " my: "
+					  "[%u, " INT64_FORMAT ", " INT64_FORMAT "]",
+					  MySubscription->slot_name,
+					  blocked_proc_pid,
+					  blocked_prev_commit_ts,
+					  blocked_commit_ts,
+					  MyProc->pid,
+					  prev_commit_ts,
+					  commit_ts);
+
+			proc_exit(0);
 		}
 
 		/*
 		 * The value of prev_remote_ts might be erroneous as it could have
 		 * changed since we we last checked it.
 		 */
-		elog(DEBUG1, "SPOCK: slot-group '%s' WAIT for ts [current proccessed"
-						", required] [" INT64_FORMAT ", " INT64_FORMAT "]",
-						MySubscription->slot_name,
-						MyApplyWorker->apply_group->prev_remote_ts,
-						required_commit_ts);
+		elog(DEBUG3, "SPOCK: slot-group '%s' WAIT for ts [current proccessed"
+					 ", required] [" INT64_FORMAT ", " INT64_FORMAT "]",
+					 MySubscription->slot_name,
+					 MyApplyWorker->apply_group->prev_remote_ts,
+					 MyApplyWorker->prev_remote_commit_ts);
+
+		/* Set a descriptive name of the apply worker. */
+		if (ps_suffix_added == false)
+		{
+			char buff[50];
+			sprintf(buff, "wait for xact: "
+						  "[" INT64_FORMAT ", " INT64_FORMAT "]",
+						  prev_commit_ts,
+						  commit_ts);
+
+			set_ps_display_suffix(buff);
+			ps_suffix_added = true;
+		}
 
 		/* Latch */
-		ConditionVariableSleep(&MyApplyWorker->apply_group->prev_processed_cv,
-							   WAIT_EVENT_LOGICAL_APPLY_MAIN);
+		ConditionVariableTimedSleep(&MyApplyWorker->apply_group->prev_processed_cv,
+									1,
+									WAIT_EVENT_LOGICAL_APPLY_MAIN);
 	}
 	ConditionVariableCancelSleep();
+
+	if (ps_suffix_added)
+		set_ps_display_remove_suffix();
 }
 
 /* Wrapper to wake up all waiters for previous transaction to commit */
@@ -713,6 +889,9 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
 
+	/* Save commit_ts with the apply worker for deadlock resolution */
+	MyApplyWorker->remote_commit_ts = commit_time;
+
 	elog(DEBUG1, "SPOCK %s: current commit ts is: " INT64_FORMAT,
 			MySubscription->name,
 			replorigin_session_origin_timestamp);
@@ -900,6 +1079,13 @@ handle_commit(StringInfo s)
 
 	/* Wait for the previous transaction to commit */
 	wait_for_previous_transaction();
+
+	elog(LOG, "SPOCK %s: HAMID proceeding on with commit - %d, ts [prev, my] ["
+			  INT64_FORMAT ", " INT64_FORMAT "]",
+			  MySubscription->slot_name,
+			  MyProc->pid,
+			  MyApplyWorker->prev_remote_commit_ts,
+			  MyApplyWorker->remote_commit_ts);
 
 	if (is_skipping_changes())
 	{
@@ -1203,12 +1389,12 @@ handle_commit_order(StringInfo s)
 	 * We don't need to track the origin here since we can only apply
 	 * changes from one origin.
 	 */
-	required_commit_ts = spock_read_commit_order(s);
+	MyApplyWorker->prev_remote_commit_ts = spock_read_commit_order(s);
 
 	elog(DEBUG1, "SPOCK: slot-group '%s' previous commit ts received: "
 			INT64_FORMAT " - commit ts " INT64_FORMAT,
 			MySubscription->slot_name,
-			required_commit_ts,
+			MyApplyWorker->prev_remote_commit_ts,
 			replorigin_session_origin_timestamp);
 }
 
