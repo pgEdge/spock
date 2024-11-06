@@ -537,6 +537,30 @@ spock_apply_find_all(Oid dboid)
 }
 
 /*
+ * Find all apply workers for given database and origin.
+ */
+List *
+spock_apply_find_all_by_origin(Oid dboid, RepOriginId replorigin)
+{
+	int			i;
+	List	   *res = NIL;
+
+	Assert(LWLockHeldByMe(SpockCtx->lock));
+
+	for (i = 0; i < SpockCtx->total_workers; i++)
+	{
+		if (SpockCtx->workers[i].worker_type == SPOCK_WORKER_APPLY &&
+			dboid == SpockCtx->workers[i].dboid &&
+			replorigin == SpockCtx->workers[i].worker.apply.replorigin)
+		{
+			res = lappend(res, &SpockCtx->workers[i]);
+		}
+	}
+
+	return res;
+}
+
+/*
  * Find the sync worker for given subscription and table
  */
 SpockWorker *

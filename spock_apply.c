@@ -120,7 +120,6 @@ static Size spock_apply_group_shmem_size(int napply_groups);
 static bool in_remote_transaction = false;
 static bool first_begin_at_startup = true;
 static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
-static RepOriginId remote_origin_id = InvalidRepOriginId;
 static TimeOffset apply_delay = 0;
 
 static Oid	QueueRelid = InvalidOid;
@@ -423,7 +422,8 @@ wait_for_previous_transaction(void)
 
 		/* Get list of existing workers. */
 		LWLockAcquire(SpockCtx->lock, LW_SHARED);
-		workers = spock_apply_find_all(MySpockWorker->dboid);
+		workers = spock_apply_find_all_by_origin(MySpockWorker->dboid,
+								MyApplyWorker->replorigin);
 
 		/* See if the apply worker  */
 		foreach(wlc, workers)
@@ -783,12 +783,12 @@ format_action_description(
 						 replorigin_session_origin);
 	}
 
-	if (remote_origin_id != InvalidRepOriginId)
+	if (MyApplyWorker->replorigin != InvalidRepOriginId)
 	{
 		appendStringInfo(si, " forwarded from commit %X/%X on node %u",
 						 (uint32) (remote_origin_lsn >> 32),
 						 (uint32) remote_origin_lsn,
-						 remote_origin_id);
+						 MyApplyWorker->replorigin);
 	}
 }
 
@@ -887,7 +887,7 @@ handle_begin(StringInfo s)
 
 	replorigin_session_origin_timestamp = commit_time;
 	replorigin_session_origin_lsn = commit_lsn;
-	remote_origin_id = InvalidRepOriginId;
+	MyApplyWorker->replorigin = InvalidRepOriginId;
 
 	/* Save commit_ts with the apply worker for deadlock resolution */
 	MyApplyWorker->remote_commit_ts = commit_time;
@@ -1365,8 +1365,8 @@ handle_origin(StringInfo s)
 	 * roident, which is linked to the slot of the provider and has nothing to
 	 * do with the actual origin of the original transaction.
 	 */
-	remote_origin_id = spock_read_origin(s, &remote_origin_lsn);
-	replorigin_session_origin = remote_origin_id;
+	MyApplyWorker->replorigin = spock_read_origin(s, &remote_origin_lsn);
+	replorigin_session_origin = MyApplyWorker->replorigin;
 }
 
 /*
@@ -1516,7 +1516,7 @@ handle_insert(StringInfo s)
 
 		/* Let's create an exception log entry if true. */
 		if (should_log_exception(failed))
-			add_entry_to_exception_log(remote_origin_id,
+			add_entry_to_exception_log(MyApplyWorker->replorigin,
 									   replorigin_session_origin_timestamp,
 									   remote_xid,
 									   0, 0,
@@ -1687,7 +1687,7 @@ handle_update(StringInfo s)
 				}
 			}
 
-			add_entry_to_exception_log(remote_origin_id,
+			add_entry_to_exception_log(MyApplyWorker->replorigin,
 									replorigin_session_origin_timestamp,
 									remote_xid,
 									local_origin, local_commit_ts,
@@ -1799,7 +1799,7 @@ handle_delete(StringInfo s)
 				}
 			}
 
-			add_entry_to_exception_log(remote_origin_id,
+			add_entry_to_exception_log(MyApplyWorker->replorigin,
 									   replorigin_session_origin_timestamp,
 									   remote_xid,
 									   local_origin, local_commit_ts,
@@ -2410,7 +2410,7 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 
 		/* Let's create an exception log entry if true. */
 		if (should_log_exception(failed))
-			add_entry_to_exception_log(remote_origin_id,
+			add_entry_to_exception_log(MyApplyWorker->replorigin,
 									   replorigin_session_origin_timestamp,
 									   remote_xid,
 									   0, 0,
@@ -2910,7 +2910,7 @@ apply_work(PGconn *streamConn)
 						 MySubscription->name,
 						 LSN_FORMAT_ARGS(replorigin_session_origin_lsn));
 				exception_command_counter++;
-				add_entry_to_exception_log(remote_origin_id,
+				add_entry_to_exception_log(MyApplyWorker->replorigin,
 										   replorigin_session_origin_timestamp,
 										   remote_xid,
 										   0, 0,

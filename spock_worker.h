@@ -52,6 +52,7 @@ typedef struct SpockApplyWorker
 {
 	Oid			subid;					/* Subscription id for apply worker. */
 	XLogRecPtr	replay_stop_lsn;		/* Replay should stop here if defined. */
+	RepOriginId replorigin;				/* Remote origin for this apply worker. */
 	TimestampTz prev_remote_commit_ts;	/* Commit ts for remote predecessor transaction. */
 	TimestampTz remote_commit_ts;		/* Commit ts for remote transaction. */
 	bool		sync_pending;			/* Is there new synchronization info pending?. */
@@ -191,6 +192,7 @@ extern void spock_worker_attach(int slot, SpockWorkerType type);
 extern SpockWorker *spock_manager_find(Oid dboid);
 extern SpockWorker *spock_apply_find(Oid dboid, Oid subscriberid);
 extern List *spock_apply_find_all(Oid dboid);
+extern List *spock_apply_find_all_by_origin(Oid dboid, RepOriginId replorigin);
 
 extern SpockWorker *spock_sync_find(Oid dboid, Oid subid,
 											const char *nspname, const char *relname);
