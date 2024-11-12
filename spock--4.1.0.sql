@@ -98,6 +98,7 @@ CREATE TABLE spock.progress (
 	node_id oid NOT NULL,
 	remote_node_id oid NOT NULL,
 	remote_commit_ts timestamptz NOT NULL,
+	remote_lsn pg_lsn NOT NULL,
 	PRIMARY KEY(node_id, remote_node_id)
 ) WITH (fillfactor=50);
 
@@ -353,11 +354,18 @@ $$ SELECT current_setting('spock.country') $$;
 CREATE FUNCTION
 spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
 RETURNS void LANGUAGE c AS 'spock','spock_wait_slot_confirm_lsn';
+
 CREATE FUNCTION spock.sub_wait_for_sync(subscription_name name)
 RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete';
 
 CREATE FUNCTION spock.table_wait_for_sync(subscription_name name, relation regclass)
 RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete';
+
+CREATE FUNCTION spock.sync()
+RETURNS pg_lsn RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_sync_event';
+
+CREATE FUNCTION spock.wait_for_sync_event(origin oid, lsn pg_lsn, timeout int DEFAULT 0)
+RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_sync_event';
 
 CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" timestamptz, OUT "roident" oid)
 RETURNS record RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_xact_commit_timestamp_origin';

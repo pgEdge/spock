@@ -121,6 +121,9 @@ PG_FUNCTION_INFO_V1(spock_show_subscription_status);
 PG_FUNCTION_INFO_V1(spock_wait_for_subscription_sync_complete);
 PG_FUNCTION_INFO_V1(spock_wait_for_table_sync_complete);
 
+PG_FUNCTION_INFO_V1(spock_wait_for_sync_event);
+PG_FUNCTION_INFO_V1(spock_create_sync_event);
+
 /* Replication set manipulation. */
 PG_FUNCTION_INFO_V1(spock_create_replication_set);
 PG_FUNCTION_INFO_V1(spock_alter_replication_set);
@@ -183,6 +186,9 @@ PG_FUNCTION_INFO_V1(spock_repair_mode);
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
+static void wait_for_sync_event_complete(Oid localnode, Oid origin,
+						XLogRecPtr targetlsn, int timeout);
+
 
 bool in_spock_replicate_ddl_command = false;
 bool in_spock_queue_ddl_command = false;
@@ -3026,12 +3032,126 @@ Datum delta_apply_money(PG_FUNCTION_ARGS)
 Datum
 spock_repair_mode(PG_FUNCTION_ARGS)
 {
-	char				   *prefix = "Spock";
 	SpockWalMessageSimple	message;
 	XLogRecPtr				lsn;
 	bool					enabled = PG_GETARG_BOOL(0);
 
 	message.mtype = (enabled) ? SPOCK_REPAIR_MODE_ON : SPOCK_REPAIR_MODE_OFF;
-	lsn = LogLogicalMessage(prefix, (char *)&message, sizeof(message), true);
+	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *)&message, sizeof(message), true);
 	PG_RETURN_LSN(lsn);
+}
+
+/*
+ * spock_wait_for_sync_event
+ *
+ * This function waits for the specified synchronization event, identified by
+ * its LSN, from the given origin to be marked as complete. It achieves this by
+ * continuously monitoring the spock.progress table for the event's status.
+ *
+ * The function blocks the session until the event arrives or reaches the
+ * desired state. If no timeout is provided, it waits indefinitely. This behavior
+ * ensures precise synchronization across nodes in a distributed system.
+ */
+Datum spock_wait_for_sync_event(PG_FUNCTION_ARGS)
+{
+	SpockLocalNode	*node;
+	Oid			origin = PG_GETARG_OID(0);
+	XLogRecPtr	lsn = PG_GETARG_LSN(1);
+	int			timeout = PG_GETARG_INT32(2);
+
+	node = check_local_node(true);
+
+	wait_for_sync_event_complete(node->node->id, origin, lsn, timeout);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * spock_create_sync_event
+ *
+ * This function creates a synchronization event on the provider. It leverages
+ * the LogLogicalMessage API to log a custom message within the logical
+ * replication framework. By doing so, it generates a unique Log Sequence Number
+ * (LSN) that serves as a marker for synchronization purposes.
+ *
+ * The generated LSN is returned to the caller and can be used by the
+ * spock_wait_for_sync_event function on the subscriber side. Subscribers can
+ * block and wait for this LSN to arrive, ensuring that all changes up to and
+ * including the event have been replicated.
+ *
+ * an LSN is returned to caller.
+ */
+Datum
+spock_create_sync_event(PG_FUNCTION_ARGS)
+{
+	SpockLocalNode		   *node;
+	SpockSyncEventMessage	message;
+	XLogRecPtr				lsn;
+
+	node = check_local_node(true);
+	message.mtype = SPOCK_SYNC_EVENT_MSG;
+	message.eorigin = node->node->id;
+	memset(NameStr(message.ename), 0, NAMEDATALEN);
+
+	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *)&message, sizeof(message), true);
+
+	PG_RETURN_LSN(lsn);
+}
+
+/*
+ * wait_for_sync_event_complete
+ *
+ * This internal function monitors the progress of synchronization events in
+ * the spock.progress table. It uses a polling mechanism to repeatedly check if
+ * target LSN (targetlsn) has been reached for the specified origin node. The
+ * function blocks execution until either the LSN is reached or the specified
+ * timeout period expires.
+ *
+ * Parameters:
+ *   localnode: OID of the local node.
+ *   origin: OID of the origin node whose progress we are monitoring.
+ *   targetlsn: The LSN to wait for. The function returns once this LSN has been reached.
+ *   timeout: Timeout in seconds. If 0 or negative, the function waits indefinitely.
+ */
+static void
+wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, int timeout)
+{
+	TimestampTz	timeout_ts;
+
+	/* Convert timeout to a future timestamp when timeout is expected */
+	timeout_ts = timeout > 0 ? TimestampTzPlusMilliseconds(GetCurrentTimestamp(), timeout * 1000) : 0;
+
+	do
+	{
+		int			rc;
+		XLogRecPtr	currentlsn;
+		bool		missing;
+
+		/* Check if the timeout period has elapsed. */
+		if (timeout_ts > 0 && GetCurrentTimestamp() > timeout_ts)
+			break;
+
+		/* We need to see the latest rows */
+		PushActiveSnapshot(GetLatestSnapshot());
+
+		/* Retrieve the current LSN for the specified origin from spock.progress. */
+		get_progress_entry_ts(localnode, origin, &currentlsn, &missing);
+
+		PopActiveSnapshot();
+
+		/* Exit if the target LSN has been reached. */
+		if (currentlsn >= targetlsn)
+			break;
+
+		CHECK_FOR_INTERRUPTS();
+
+		/* some kind of backoff could be useful here */
+		rc = WaitLatch(&MyProc->procLatch,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, 200L);
+
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
+
+		ResetLatch(&MyProc->procLatch);
+	} while (1);
 }

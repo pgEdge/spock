@@ -44,6 +44,10 @@ extern void awake_transaction_waiters(void);
 extern void create_progress_entry(Oid target_node_id,
 								Oid remote_node_id,
 								TimestampTz remote_commit_ts);
+extern TimestampTz get_progress_entry_ts(Oid target_node_id,
+								Oid remote_node_id,
+								XLogRecPtr *lsn,
+								bool *missing);
 
 extern void spock_apply_group_shmem_init(void);
 

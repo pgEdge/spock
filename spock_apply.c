@@ -99,12 +99,14 @@ typedef struct ProgressTuple
 	Oid			node_id;
 	Oid			remote_node_id;
 	TimestampTz	remote_commit_ts;
+	XLogRecPtr	remote_lsn;
 } ProgressTuple;
 
-#define Natts_progress			3
+#define Natts_progress			4
 #define Anum_target_node_id		1
 #define Anum_remote_node_id		2
 #define Anum_remote_commit_ts	3
+#define Anum_remote_lsn			4
 
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
 
@@ -242,12 +244,10 @@ static void get_apply_group_entry(Oid dbid,
 							int *indexPtr,
 							bool *foundPtr);
 
-static TimestampTz get_progress_entry_ts(Oid target_node_id,
-								Oid remote_node_id,
-								bool *missing);
 static void update_progress_entry(Oid target_node_id,
 								Oid remote_node_id,
-								TimestampTz remote_commit_ts);
+								TimestampTz remote_commit_ts,
+								XLogRecPtr remote_lsn);
 
 /*
  * Install hooks to request shared resources for apply workers
@@ -618,6 +618,7 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
 	remote_commit_ts = get_progress_entry_ts(
 							MySubscription->target->id,
 							MySubscription->origin->id,
+							NULL,
 							&missing);
 
 	/*
@@ -1242,7 +1243,8 @@ handle_commit(StringInfo s)
 
 	update_progress_entry(MySubscription->target->id,
 						MySubscription->origin->id,
-						replorigin_session_origin_timestamp);
+						replorigin_session_origin_timestamp,
+						replorigin_session_origin_lsn);
 
 	CommitTransactionCommand();
 	MemoryContextSwitchTo(oldctx);
@@ -2468,6 +2470,53 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 }
 
 static void
+handle_message(StringInfo s)
+{
+    TransactionId   xid;
+    XLogRecPtr      lsn;
+    bool            transactional;
+    const char     *prefix;
+	const char	   *temp;
+    int32			mtype;
+    Size            sz;
+
+    /* read fields */
+    xid = pq_getmsgint(s, sizeof(int32));
+    (void) xid; /* unused */
+
+    lsn = pq_getmsgint64(s);
+    (void) lsn; /* unused */
+
+    transactional = pq_getmsgbyte(s);
+	(void) transactional; /* unused */
+
+    prefix = pq_getmsgstring(s);
+    Assert(strcmp(prefix, SPOCK_MESSAGE_PREFIX) == 0);
+
+    sz = pq_getmsgint(s, sizeof(int32));
+    temp = (char *) pq_getmsgbytes(s, sz);
+	mtype = ((SpockWalMessageSimple *)temp)->mtype;
+
+	switch(mtype)
+	{
+		case SPOCK_SYNC_EVENT_MSG:
+			{
+				/* consume message data */
+				SpockSyncEventMessage	msg;
+
+				(void) msg; /* unused */
+
+				/* empty message. ignore it for now. */
+			}
+			break;
+
+		default:
+			elog(ERROR, "Spock custom WAL message: unknown message type %d", mtype);
+			break;
+	}
+}
+
+static void
 replication_handler(StringInfo s)
 {
 	ErrorContextCallback errcallback;
@@ -2526,6 +2575,10 @@ replication_handler(StringInfo s)
 			/* STARTUP MESSAGE */
 		case 'S':
 			handle_startup(s);
+			break;
+		/* GENERIC MESSAGE */
+		case 'M':
+			handle_message(s);
 			break;
 		default:
 			elog(ERROR, "SPOCK %s: unknown action of type %c",
@@ -3467,14 +3520,16 @@ interval_to_timeoffset(const Interval *interval)
  * Sets the missing value to true if the required tuple is not found. This
  * can be then used to insert a new record if desired.
  */
-static TimestampTz
+TimestampTz
 get_progress_entry_ts(Oid target_node_id,
 					Oid remote_node_id,
+					XLogRecPtr *remote_lsn,
 					bool *missing)
 {
 	RangeVar 	*rv;
 	Relation 	rel;
 	HeapTuple 	tup;
+	TupleDesc	desc;
 	TimestampTz	remote_commit_ts;
 	SysScanDesc scan;
 	ScanKeyData key[2];
@@ -3482,7 +3537,7 @@ get_progress_entry_ts(Oid target_node_id,
 	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_PROGRESS, -1);
-	rel = table_openrv(rv, ShareRowExclusiveLock);
+	rel = table_openrv(rv, AccessShareLock);
 
 	if (!rel)
 	{
@@ -3504,11 +3559,30 @@ get_progress_entry_ts(Oid target_node_id,
 
 	scan = systable_beginscan(rel, 0, true, NULL, 2, key);
 	tup = systable_getnext(scan);
+	desc = RelationGetDescr(rel);
 
 	/* Set the data */
-	*missing = !HeapTupleIsValid(tup);
-	remote_commit_ts = (*missing) ?
-				0 : ((ProgressTuple *) GETSTRUCT(tup))->remote_commit_ts;
+	remote_commit_ts = 0;
+	if (missing)
+		*missing = !HeapTupleIsValid(tup);
+	if (remote_lsn)
+		*remote_lsn = InvalidXLogRecPtr;
+
+	if (HeapTupleIsValid(tup))
+	{
+		remote_commit_ts = ((ProgressTuple *) GETSTRUCT(tup))->remote_commit_ts;
+
+		if (remote_lsn)
+		{
+			Datum		d;
+			bool		isnull;
+
+			*remote_lsn = InvalidXLogRecPtr;
+			d = fastgetattr(tup, Anum_remote_lsn, desc, &isnull);
+			if (!isnull)
+				*remote_lsn = DatumGetLSN(d);
+		}
+	}
 
 	systable_endscan(scan);
 	table_close(rel, NoLock);
@@ -3537,7 +3611,7 @@ create_progress_entry(Oid target_node_id,
 	Assert(IsTransactionState());
 
 	/* Check if an entry already exists for this combination */
-	get_progress_entry_ts(target_node_id, remote_node_id, &missing);
+	get_progress_entry_ts(target_node_id, remote_node_id, NULL, &missing);
 
 	/* Found one. Nothing to do, so simply return. */
 	if (!missing)
@@ -3553,6 +3627,7 @@ create_progress_entry(Oid target_node_id,
 	values[Anum_target_node_id - 1] = ObjectIdGetDatum(target_node_id);
 	values[Anum_remote_node_id - 1] = ObjectIdGetDatum(remote_node_id);
 	values[Anum_remote_commit_ts - 1] = TimestampTzGetDatum(remote_commit_ts);
+	values[Anum_remote_lsn - 1] = LSNGetDatum(InvalidXLogRecPtr);
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
@@ -3569,7 +3644,8 @@ create_progress_entry(Oid target_node_id,
 static void
 update_progress_entry(Oid target_node_id,
 					Oid remote_node_id,
-					TimestampTz remote_commit_ts)
+					TimestampTz remote_commit_ts,
+					XLogRecPtr remote_lsn)
 {
 	RangeVar		*rv;
 	Relation		rel;
@@ -3620,6 +3696,7 @@ update_progress_entry(Oid target_node_id,
 
 	/* Update the remote commit ts */
 	values[Anum_remote_commit_ts - 1] = TimestampTzGetDatum(remote_commit_ts);
+	values[Anum_remote_lsn - 1] = LSNGetDatum(remote_lsn);
 
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 

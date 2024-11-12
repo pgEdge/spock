@@ -69,5 +69,6 @@ extern void SPKExecARInsertTriggers(EState *estate,
 								 TupleTableSlot *slot,
 								 List *recheckIndexes);
 
+extern char *trim_whitespace(char *str);
 
 #endif /* SPOCK_COMMON_H */
