@@ -91,6 +91,7 @@ extern bool		spock_replication_repair_mode;
 
 #define SPOCK_REPAIR_MODE_ON		1	/* Suppress subsequent DML/DDL */
 #define SPOCK_REPAIR_MODE_OFF		2	/* Resume regular replication */
+#define SPOCK_SYNC_EVENT_MSG		3	/* Sync event message */
 
 typedef struct SpockWalMessageSimple
 {
@@ -102,6 +103,14 @@ typedef union SpockWalMessage
 	int32					mtype;
 	SpockWalMessageSimple	simple;
 } SpockWalMessage;
+
+typedef struct SpockSyncEventMessage
+{
+	int32		mtype;
+
+	Oid			eorigin;	/* event origin */
+	NameData	ename;		/* event name */
+} SpockSyncEventMessage;
 
 extern void spock_output_plugin_shmem_init(void);
 

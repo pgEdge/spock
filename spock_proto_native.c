@@ -517,6 +517,23 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 	}
 }
 
+void
+spock_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
+					bool transactional, const char *prefix, Size sz,
+					const char *message)
+{
+	pq_sendbyte(out, 'M'); /* message type field */
+
+	/* send out message contents */
+	pq_sendint32(out, xid);
+	pq_sendint64(out, lsn);
+
+	pq_sendbyte(out, transactional);
+	pq_sendstring(out, prefix);
+	pq_sendint32(out, sz);
+	pq_sendbytes(out, message, sz);
+}
+
 /*
  * Make the executive decision about which protocol to use.
  */

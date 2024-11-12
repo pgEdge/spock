@@ -674,7 +674,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 	SpockWalMessage	   *msg = (SpockWalMessage *)message;
 
 	/* Ignore messages that are not meant for Spock */
-	if (strcmp(prefix, "Spock") != 0)
+	if (strcmp(prefix, SPOCK_MESSAGE_PREFIX) != 0)
 		return;
 
 	/* Check that we have at least the message type */
@@ -707,6 +707,32 @@ pg_decode_message(LogicalDecodingContext *ctx,
 				return;
 			}
 			spock_replication_repair_mode = false;
+			break;
+
+		case SPOCK_SYNC_EVENT_MSG:
+			{
+				MemoryContext oldctx;
+				SpockOutputData* data = (SpockOutputData*) ctx->output_plugin_private;
+				TransactionId xid = InvalidTransactionId;
+
+				if (txn != NULL)
+					xid = txn->xid;
+
+				oldctx = MemoryContextSwitchTo(data->context);
+
+				OutputPluginPrepareWrite(ctx, true);
+				spock_write_message(ctx->out,
+									xid,
+									message_lsn,
+									true,
+									prefix,
+									message_size,
+									message);
+				OutputPluginWrite(ctx, true);
+
+				Assert(CurrentMemoryContext == data->context);
+				MemoryContextSwitchTo(oldctx);
+			}
 			break;
 
 		default:

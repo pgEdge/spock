@@ -87,6 +87,10 @@ typedef void (*write_startup_message_fn) (StringInfo out, List *msg);
 typedef void (*spock_write_truncate_fn) (StringInfo out, int nrelids,
 										 Oid relids[], bool cascade,
 										 bool restart_seqs);
+typedef void (*spock_write_message_fn) (StringInfo out, TransactionId xid,
+										XLogRecPtr lsn, bool transactional,
+										const char *prefix, Size sz,
+										const char *message);
 
 typedef struct SpockProtoAPI
 {
@@ -100,6 +104,7 @@ typedef struct SpockProtoAPI
 	spock_write_delete_fn write_delete;
 	write_startup_message_fn write_startup_message;
 	spock_write_truncate_fn write_truncate;
+	spock_write_message_fn write_message;
 } SpockProtoAPI;
 
 extern SpockProtoAPI *spock_init_api(SpockProtoType typ);
