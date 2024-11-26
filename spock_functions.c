@@ -3059,6 +3059,7 @@ Datum spock_wait_for_sync_event(PG_FUNCTION_ARGS)
 	XLogRecPtr	lsn = PG_GETARG_LSN(1);
 	int			timeout = PG_GETARG_INT32(2);
 
+	get_node(origin); /* check if origin exists. */
 	node = check_local_node(true);
 
 	wait_for_sync_event_complete(node->node->id, origin, lsn, timeout);

@@ -367,6 +367,10 @@ RETURNS pg_lsn RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAM
 CREATE FUNCTION spock.wait_for_sync_event(origin oid, lsn pg_lsn, timeout int DEFAULT 0)
 RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_sync_event';
 
+CREATE FUNCTION spock.wait_for_sync_event(origin name, lsn pg_lsn, timeout int DEFAULT 0)
+RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE sql AS
+$$ SELECT spock.wait_for_sync_event((select node_id from spock.node where node_name=$1), $2, $3) $$;
+
 CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" timestamptz, OUT "roident" oid)
 RETURNS record RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_xact_commit_timestamp_origin';
 
