@@ -53,6 +53,7 @@
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
+#include "storage/proclist.h"
 
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
@@ -130,6 +131,8 @@ static List *SyncingTables = NIL;
 
 SpockApplyWorker *MyApplyWorker = NULL;
 SpockSubscription *MySubscription = NULL;
+SpockApplyGroup MyApplyGroup = NULL;
+int 		my_ts_index = -1;
 int			my_exception_log_index = -1;
 
 static PGconn *applyconn = NULL;
@@ -204,6 +207,16 @@ struct ActionErrCallbackArg
 struct ActionErrCallbackArg errcallback_arg;
 TransactionId remote_xid;
 
+/* Awake waitings so those may proceed on with transaction application. */
+static void awake_transaction_waiters(void);
+
+/* Duplicate transaction filtering variables and functions */
+static bool skip_duplicate_xact = false;
+
+static void acquire_apply_ts_entry(void);
+static void apply_ts_reset(void);
+static bool is_duplicate_xact(void);
+
 /*
  * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
  * the subscription if the remote transaction's finish LSN matches the sub_skip_lsn.
@@ -234,9 +247,7 @@ static void spock_apply_worker_detach(void);
 
 static bool should_log_exception(bool failed);
 
-static bool is_commit_ts_in_future(TimestampTz commit_ts);
-static bool is_commit_ts_in_past(TimestampTz commit_ts);
-static bool is_commit_ts_awaited(TimestampTz commit_ts);
+static bool is_commit_ts_awaited(TimestampTz prev_commit_ts);
 
 static void set_apply_group_entry(Oid dbid, RepOriginId replorigin);
 static void get_apply_group_entry(Oid dbid,
@@ -284,6 +295,7 @@ spock_apply_group_shmem_request(void)
 	 */
 	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 										  false));
+	napply_groups = SPOCK_MAX_PARALLEL_GROUPS;
 
 	/*
 	 * Request enough shared memory for napply_groups (dbid and origin id)
@@ -293,7 +305,12 @@ spock_apply_group_shmem_request(void)
 	/*
 	 * Request the LWlocks needed
 	 */
-	RequestNamedLWLockTranche("spock_apply_groups", napply_groups + 1);
+	RequestNamedLWLockTranche("Spock_ApplyGroup", 1);
+
+	RequestNamedLWLockTranche("Spock_ApplyWorkersTSMain",
+						SPOCK_MAX_PARALLEL_GROUPS);
+	RequestNamedLWLockTranche("Spock_ApplyWorkersTS",
+						SPOCK_MAX_PARALLEL_GROUPS * SPOCK_MAX_PARALLEL_SLOTS);
 }
 
 /*
@@ -324,6 +341,7 @@ spock_apply_group_shmem_startup(void)
 	 */
 	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 										  false));
+	napply_groups = SPOCK_MAX_PARALLEL_GROUPS;
 
 	/* Get the shared resources */
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
@@ -335,15 +353,23 @@ spock_apply_group_shmem_startup(void)
 	{
 		int i;
 
-		SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche("spock_apply_groups")[0]).lock);
+		SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche("Spock_ApplyGroup")[0]).lock);
 
 		memset(apply_groups, 0, spock_apply_group_shmem_size(napply_groups));
 
 		/* Let's initialize all attributes */
 		for (i = 0; i < napply_groups; i++)
 		{
-			pg_atomic_init_u32(&(apply_groups[i].nattached), 0);
+			int j;
 
+			apply_groups[i].apply_workers_ts_main_lock =
+				&((GetNamedLWLockTranche("Spock_ApplyWorkersTSMain")[i]).lock);
+
+			for (j = 0; j < SPOCK_MAX_PARALLEL_SLOTS; j++)
+				apply_groups[i].apply_workers_ts_locks[j] =
+					&((GetNamedLWLockTranche("Spock_ApplyWorkersTS")[i * SPOCK_MAX_PARALLEL_SLOTS + j]).lock);
+
+			pg_atomic_init_u32(&(apply_groups[i].nattached), 0);
 			ConditionVariableInit(&apply_groups[i].prev_processed_cv);
 		}
 	}
@@ -354,32 +380,12 @@ spock_apply_group_shmem_startup(void)
 	LWLockRelease(AddinShmemInitLock);
 }
 
-/*
- * We should use these API to identify position of an apply transaction
- * in logical replication timeline. This API set improves code readability
- * whilst keeping the logic in a common maintainable place.
- */
-
-/* Returns true if the given commit ts is in future. */
-static bool
-is_commit_ts_in_future(TimestampTz commit_ts)
-{
-	return (MyApplyWorker->apply_group->prev_remote_ts < commit_ts);
-}
-
-/* Returns true if the given commit ts is in past. */
-static bool
-is_commit_ts_in_past(TimestampTz commit_ts)
-{
-	return (MyApplyWorker->apply_group->prev_remote_ts > commit_ts);
-}
-
 /* Returns true if the given commit ts the awaited transaction. */
 static bool
-is_commit_ts_awaited(TimestampTz commit_ts)
+is_commit_ts_awaited(TimestampTz prev_commit_ts)
 {
-	return (MyApplyWorker->apply_group->prev_remote_ts == commit_ts ||
-			commit_ts == 0);
+	return (MyApplyGroup->prev_remote_ts == prev_commit_ts ||
+			prev_commit_ts == 0);
 }
 
 /* Wrapper for latch for waiting for previous transaction to commit */
@@ -395,6 +401,11 @@ wait_for_previous_transaction(void)
 	int			blocked_proc_pid = 0;
 	bool 		should_exit = false;
 	bool		ps_suffix_added = false;
+	int			wait_counter = 0;
+
+	/* Skip if we're a duplciate transaction */
+	if (is_duplicate_xact())
+		return;
 
 	/*
 	 * Sleep on a cv to be woken up once our the required predecessor has
@@ -408,9 +419,7 @@ wait_for_previous_transaction(void)
 		 * the predecessor to commit.
 		 */
 		if (is_commit_ts_awaited(prev_commit_ts))
-		{
 			break;
-		}
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -500,6 +509,10 @@ wait_for_previous_transaction(void)
 				}
 				LWLockRelease(ProcArrayLock);
 
+				/* Have we waited long enough? */
+				wait_counter++;
+				should_exit |= (wait_counter == 2000);
+
 				/* Break the foreach worker loop as well. */
 				if (should_exit)
 					break;
@@ -514,11 +527,13 @@ wait_for_previous_transaction(void)
 		{
 			elog(LOG, "SPOCK: slot-group '%s' exiting to allow blocked apply"
 					  "worker to proceed [pid, prev_ts, ts]"
+					  " wait_counter: [%d]"
 					  " blocked: "
-					  "[%u, " INT64_FORMAT ", " INT64_FORMAT "] "
+					  "[%u, " INT64_FORMAT ", " INT64_FORMAT "]"
 					  " my: "
 					  "[%u, " INT64_FORMAT ", " INT64_FORMAT "]",
 					  MySubscription->slot_name,
+					  wait_counter,
 					  blocked_proc_pid,
 					  blocked_prev_commit_ts,
 					  blocked_commit_ts,
@@ -536,7 +551,7 @@ wait_for_previous_transaction(void)
 		elog(DEBUG3, "SPOCK: slot-group '%s' WAIT for ts [current proccessed"
 					 ", required] [" INT64_FORMAT ", " INT64_FORMAT "]",
 					 MySubscription->slot_name,
-					 MyApplyWorker->apply_group->prev_remote_ts,
+					 MyApplyGroup->prev_remote_ts,
 					 MyApplyWorker->prev_remote_commit_ts);
 
 		/* Set a descriptive name of the apply worker. */
@@ -553,7 +568,7 @@ wait_for_previous_transaction(void)
 		}
 
 		/* Latch */
-		ConditionVariableTimedSleep(&MyApplyWorker->apply_group->prev_processed_cv,
+		ConditionVariableTimedSleep(&MyApplyGroup->prev_processed_cv,
 									1,
 									WAIT_EVENT_LOGICAL_APPLY_MAIN);
 	}
@@ -564,10 +579,226 @@ wait_for_previous_transaction(void)
 }
 
 /* Wrapper to wake up all waiters for previous transaction to commit */
-void
+static void
 awake_transaction_waiters(void)
 {
-	ConditionVariableBroadcast(&MyApplyWorker->apply_group->prev_processed_cv);
+	Assert (my_ts_index > -1 && my_ts_index < SPOCK_MAX_PARALLEL_SLOTS);
+
+	ConditionVariableBroadcast(&MyApplyGroup->prev_processed_cv);
+
+	elog(LOG, "%s: %d: HDE - [f] my_ts_index [%d] free_index [%d] is_dup [%d]"
+			  " commit_ts ["INT64_FORMAT"] apply_workers_ts["INT64_FORMAT"]"
+	          " committed transaction before release",
+			  MySubscription->name,
+			  MyProc->pid,
+			  my_ts_index,
+			  0,
+			  0,
+			  MyApplyWorker->remote_commit_ts,
+			  MyApplyGroup->apply_workers_ts[my_ts_index]);
+
+	MyApplyGroup->apply_workers_ts[my_ts_index] = 0;
+	LWLockRelease(MyApplyGroup->apply_workers_ts_locks[my_ts_index]);
+
+	elog(LOG, "%s: %d: HDE - [g] my_ts_index [%d] free_index [%d] is_dup [%d]"
+			  " commit_ts ["INT64_FORMAT"] apply_workers_ts["INT64_FORMAT"]"
+	          " committed transaction released apply_workers_ts_locks",
+			  MySubscription->name,
+			  MyProc->pid,
+			  my_ts_index,
+			  0,
+			  0,
+			  MyApplyWorker->remote_commit_ts,
+			  MyApplyGroup->apply_workers_ts[my_ts_index]);
+
+	apply_ts_reset();
+}
+
+/* Reset variables related to duplicate transaction filtering */
+static void
+apply_ts_reset(void)
+{
+	my_ts_index = -1;
+	skip_duplicate_xact = false;
+}
+
+/*
+ * This function finds an empty entry in the apply ts array. An entry could
+ * have three states:
+ *
+ * (1) Free (clean)
+ * 		- The ts valid is = 0
+ * 		- The associated LWLock is NOT held.
+ * (2) Free (dirty)
+ * 		- The ts valid is != 0
+ * 		- The associated LWLock is NOT held.
+ * (3) Occupied
+ * 		- The ts valid is != 0
+ * 		- The associated LWLock IS held by another apply worker.
+ *
+ * If the apply worker aborts or gets terminated, the LWLock will be freed
+ * but the ts entry may not get cleaned up. In that case, it's a free (dirty)
+ * entry.
+ *
+ * If the entry is already occupied by another apply worker, say AW-1, so we
+ * we (AW-2) are a duplicate transaction. In this case we are going to wait on
+ * the lock to be freed. The lock is freed either when the AW-1 commits or
+ * aborts. In case it commits, it cleans up the entry so that it can be
+ * occupied by another transaction/apply worker. AW-2 rechecks that its ts
+ * index has a different value now, so the transaction that was previously
+ * holding the lock committed. So we set the duplication transaction flag
+ * and start skipping the transaction.
+ *
+ * NOTE: We use "remote_commit_ts" instead of prev ts as remote_commit_ts
+ * can never be zero.
+ */
+static void
+acquire_apply_ts_entry(void)
+{
+	int i;
+	int free_index = -1;
+	bool is_duplicate = false;
+	bool got_conditional_lock = false;
+
+	Assert (my_ts_index == -1);
+
+	apply_ts_reset();
+
+	/* Check if another apply worker is already processing this ts */
+	LWLockAcquire(MyApplyGroup->apply_workers_ts_main_lock, LW_EXCLUSIVE);
+
+	for (i = 0; i < SPOCK_MAX_PARALLEL_SLOTS; i++)
+	{
+		/* Found a free (clean) entry */
+		if (free_index == -1 && MyApplyGroup->apply_workers_ts[i] == 0)
+		{
+			free_index = i;
+		}
+		else if (MyApplyWorker->remote_commit_ts ==
+				 MyApplyGroup->apply_workers_ts[i])
+		{
+			/* We're a duplicate transaction. */
+			is_duplicate = true;
+			my_ts_index = i;
+
+			break;
+		}
+	}
+
+	if (!is_duplicate)
+	{
+		/* We didn't find a free entry. Let's recheck */
+		if (free_index == -1)
+		{
+			/*
+			 * We couldn't find a clean available entry. Let's rescan but
+			 * additionally for all entries, see if we can acquire a lock.
+			 *
+			 * This could happen if a process was terminated but couldn't
+			 * cleanup the ts value in the array. We can identify that by
+			 * checking if a non-zero ts value not protected by its associated
+			 * lock. If we acquire it, nobody else is holding the lock.
+			 */
+			for (i = 0; i < SPOCK_MAX_PARALLEL_SLOTS; i++)
+			{
+				/* Found a free (clean) entry */
+				if (MyApplyGroup->apply_workers_ts[i] == 0)
+				{
+					free_index = i;
+				}
+				else
+				{
+					/*
+					 * Don't wait if we can't acquire the lock; i.e. it is held
+					 * by another apply worker; i.e. the entry is occupied.
+					 *
+					 * If we get the lock, the previous holder (apply worker)
+					 * died without cleaning up.
+					 */
+					got_conditional_lock = LWLockConditionalAcquire(
+							MyApplyGroup->apply_workers_ts_locks[i],
+							LW_EXCLUSIVE);
+
+					/* Found a free (dirty) entry. Let's take it. */
+					if (got_conditional_lock)
+					{
+						elog(DEBUG1, "SPOCK: '%s': acquired lock on a dirty"
+									  " apply worker ts.",
+									  MySubscription->slot_name);
+
+						my_ts_index = i;
+						break;
+					}
+				}
+			}
+		}
+
+		if (my_ts_index == -1 && free_index > -1)
+			my_ts_index = free_index;
+
+		if (my_ts_index > -1)
+		{
+			MyApplyGroup->apply_workers_ts[my_ts_index] =
+										MyApplyWorker->remote_commit_ts;
+
+		elog(LOG, "%s: %d: HDE - [1]"
+				" my_ts_index [%d] free_index [%d] is_dup [%d]"
+				" commit_ts ["INT64_FORMAT"] apply_workers_ts["INT64_FORMAT"]"
+				"",
+				MySubscription->name,
+				MyProc->pid,
+				my_ts_index,
+				free_index,
+				is_duplicate,
+				MyApplyWorker->remote_commit_ts,
+				MyApplyGroup->apply_workers_ts[my_ts_index]);
+
+			if (got_conditional_lock == false)
+			{
+				/* This should never fail nor should this every go into wait. */
+				LWLockAcquire(MyApplyGroup->apply_workers_ts_locks[my_ts_index],
+									LW_EXCLUSIVE);
+			}
+		}
+	}
+
+	/* We couldn't find a valid index in the commit ts array. */
+	if (my_ts_index == -1)
+	{
+		elog(ERROR, "SPOCK: no free entries available for apply workers ts"
+					"in shared memory.");
+	}
+
+	skip_duplicate_xact = is_duplicate;
+
+	LWLockRelease(MyApplyGroup->apply_workers_ts_main_lock);
+
+	if (is_duplicate)
+	{
+		/* Let's wait on this lock to be released. */
+		LWLockAcquire(MyApplyGroup->apply_workers_ts_locks[my_ts_index], LW_EXCLUSIVE);
+
+		/*
+		 * Has the value changed while we were waiting? This can only happen
+		 * if the transaction holding the lock has committed successfully.
+		 */
+		if (MyApplyGroup->apply_workers_ts[my_ts_index]
+					!= MyApplyWorker->remote_commit_ts)
+		{
+			/* We must release the lock and skip this transaction */
+			LWLockRelease(MyApplyGroup->apply_workers_ts_locks[my_ts_index]);
+			skip_duplicate_xact = true;
+		}
+		else
+		{
+			/*
+			 * Previous transaction either died or errored out. So we can now
+			 * proceed with applying our change.
+			 */
+			elog(DEBUG1, "SPOCK: '%s': duplicate transaction acquired ts lock",
+							MySubscription->slot_name);
+		}
+	}
 }
 
 /*
@@ -580,12 +811,13 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
 	bool found = false;
 	bool missing = false;
 	TimestampTz remote_commit_ts = 0;
+	XLogRecPtr remote_lsn;
 	MemoryContext oldctx;
 
 	Assert(LWLockHeldByMeInMode(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE));
 
 	/* Entry is already set. Simply return. */
-	if (MyApplyWorker->apply_group)
+	if (MyApplyGroup)
 		return;
 
 	/* Let's see if we can find one our entry in shared memory */
@@ -594,6 +826,7 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
 	if (found)
 	{
 		MyApplyWorker->apply_group = &SpockCtx->apply_groups[index];
+		MyApplyGroup = MyApplyWorker->apply_group;
 		return;
 	}
 
@@ -618,7 +851,7 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
 	remote_commit_ts = get_progress_entry_ts(
 							MySubscription->target->id,
 							MySubscription->origin->id,
-							NULL,
+							&remote_lsn,
 							&missing);
 
 	/*
@@ -639,10 +872,12 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
 
 	/* Set the values in shared memory for this dbid-origin */
 	MyApplyWorker->apply_group = &SpockCtx->apply_groups[index];
+	MyApplyGroup = MyApplyWorker->apply_group;
 
-	MyApplyWorker->apply_group->dbid = dbid;
-	MyApplyWorker->apply_group->replorigin = MySubscription->origin->id;
-	MyApplyWorker->apply_group->prev_remote_ts = remote_commit_ts;
+	MyApplyGroup->dbid = dbid;
+	MyApplyGroup->replorigin = MySubscription->origin->id;
+	MyApplyGroup->prev_remote_ts = remote_commit_ts;
+	MyApplyGroup->remote_lsn = remote_lsn;
 }
 
 /*
@@ -799,6 +1034,29 @@ action_error_callback(void *arg)
 	StringInfoData si;
 
 	initStringInfo(&si);
+
+	/*
+	 * If we have a valid ts index, let's release the entry for another apply
+	 * worker to reclaim it only in case of an error.
+	 *
+	 * The LW lock would be automatically released when ERROR is raised.
+	 */
+	if (my_ts_index != -1)
+	{
+		/* TODO: Replace this block with geterrlevel function */
+		ErrorData *edata;
+		MemoryContext oldctx;
+
+		oldctx = MemoryContextSwitchTo(TopMemoryContext);
+		edata = CopyErrorData();
+
+		if (edata->elevel >= ERROR)
+			MyApplyGroup->apply_workers_ts[my_ts_index] = 0;
+
+		FreeErrorData(edata);
+		MemoryContextSwitchTo(oldctx);
+
+	}
 
 	format_action_description(&si,
 							  errcallback_arg.action_name,
@@ -1081,12 +1339,24 @@ handle_commit(StringInfo s)
 	/* Wait for the previous transaction to commit */
 	wait_for_previous_transaction();
 
-	elog(LOG, "SPOCK %s: HAMID proceeding on with commit - %d, ts [prev, my] ["
-			  INT64_FORMAT ", " INT64_FORMAT "]",
-			  MySubscription->slot_name,
-			  MyProc->pid,
-			  MyApplyWorker->prev_remote_commit_ts,
-			  MyApplyWorker->remote_commit_ts);
+	if (!is_duplicate_xact())
+	{
+		elog(DEBUG1, "SPOCK %s: HAMID proceeding on with commit - %d, ts [prev, my] ["
+				INT64_FORMAT ", " INT64_FORMAT "]",
+				MySubscription->slot_name,
+				MyProc->pid,
+				MyApplyWorker->prev_remote_commit_ts,
+				MyApplyWorker->remote_commit_ts);
+	}
+	else
+	{
+		elog(DEBUG1, "SPOCK %s: HAMID proceeding on with commit for skipped xact - %d, ts [prev, my] ["
+				INT64_FORMAT ", " INT64_FORMAT "]",
+				MySubscription->slot_name,
+				MyProc->pid,
+				MyApplyWorker->prev_remote_commit_ts,
+				MyApplyWorker->remote_commit_ts);
+	}
 
 	if (is_skipping_changes())
 	{
@@ -1230,30 +1500,36 @@ handle_commit(StringInfo s)
 #endif
 
 	/* Update the entry in the progress table. */
-	elog(DEBUG1, "SPOCK %s: updating progress table for node_id %d" \
-				" and remote node id %d with remote commit ts"  \
-				" to " INT64_FORMAT,
-				MySubscription->name,
-				MySubscription->target->id,
-				MySubscription->origin->id,
-				replorigin_session_origin_timestamp);
+	if (!is_duplicate_xact())
+	{
+		elog(DEBUG1, "SPOCK %s: updating progress table for node_id %d" \
+					" and remote node id %d with remote commit ts"  \
+					" to " INT64_FORMAT,
+					MySubscription->name,
+					MySubscription->target->id,
+					MySubscription->origin->id,
+					replorigin_session_origin_timestamp);
 
-	oldctx = CurrentMemoryContext;
-	StartTransactionCommand();
+		oldctx = CurrentMemoryContext;
+		StartTransactionCommand();
 
-	update_progress_entry(MySubscription->target->id,
-						MySubscription->origin->id,
-						replorigin_session_origin_timestamp,
-						replorigin_session_origin_lsn);
+		update_progress_entry(MySubscription->target->id,
+							MySubscription->origin->id,
+							replorigin_session_origin_timestamp,
+							replorigin_session_origin_lsn);
 
-	CommitTransactionCommand();
-	MemoryContextSwitchTo(oldctx);
+		/* Update the group LSN */
+		MyApplyGroup->remote_lsn = replorigin_session_origin_lsn;
 
-	/* Update the value in shared memory */
-	MyApplyWorker->apply_group->prev_remote_ts = replorigin_session_origin_timestamp;
+		CommitTransactionCommand();
+		MemoryContextSwitchTo(oldctx);
 
-	/* Wakeup all waiters for waiting for the previous transaction to commit */
-	awake_transaction_waiters();
+		/* Update the value in shared memory */
+		MyApplyGroup->prev_remote_ts = replorigin_session_origin_timestamp;
+
+		/* Wakeup all waiters for waiting for the previous transaction to commit */
+		awake_transaction_waiters();
+	}
 
 	in_remote_transaction = false;
 
@@ -1398,6 +1674,8 @@ handle_commit_order(StringInfo s)
 			MySubscription->slot_name,
 			MyApplyWorker->prev_remote_commit_ts,
 			replorigin_session_origin_timestamp);
+
+	acquire_apply_ts_entry();
 }
 
 /*
@@ -1984,12 +2262,6 @@ handle_startup(StringInfo s)
 
 		handle_startup_param(k, v);
 	} while (!getmsgisend(s));
-
-	/* Attach this worker. */
-	spock_apply_worker_attach();
-
-	/* Register callback for cleaning up */
-	on_proc_exit(spock_apply_worker_on_exit, 0);
 }
 
 /*
@@ -2005,13 +2277,15 @@ spock_apply_worker_on_exit(int code, Datum arg)
 static void
 spock_apply_worker_attach(void)
 {
-	Assert(MyApplyWorker->apply_group == NULL);
+	Assert(MyApplyGroup == NULL);
 
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 
 	/* Set the apply_group to the shmem entry and increment nattached */
 	set_apply_group_entry(MySpockWorker->dboid, MySubscription->origin->id);
-	pg_atomic_add_fetch_u32(&MyApplyWorker->apply_group->nattached, 1);
+	pg_atomic_add_fetch_u32(&MyApplyGroup->nattached, 1);
+
+	Assert (pg_atomic_read_u32(&MyApplyGroup->nattached) < SPOCK_MAX_PARALLEL_SLOTS);
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
@@ -2020,10 +2294,26 @@ spock_apply_worker_attach(void)
 static void
 spock_apply_worker_detach(void)
 {
-	if (MyApplyWorker->apply_group)
-		pg_atomic_sub_fetch_u32(&MyApplyWorker->apply_group->nattached, 1);
+	if (MyApplyGroup)
+	{
+		pg_atomic_sub_fetch_u32(&MyApplyGroup->nattached, 1);
 
-	MyApplyWorker->apply_group = NULL;
+		/*
+		 * We shouldn't check for an assertion here as the process may exit
+		 * before ever acquiring ts index.
+		 */
+		if (my_ts_index != -1)
+		{
+			/*
+			 * Let's free up the ts index so that it can be reused if there are
+			 * no waiters at the moment.
+			 */
+			if (proclist_is_empty(&(MyApplyGroup->apply_workers_ts_locks[my_ts_index]->waiters)))
+				MyApplyGroup->apply_workers_ts[my_ts_index] = 0;
+		}
+	}
+
+	MyApplyGroup = NULL;
 }
 
 static bool
@@ -2534,55 +2824,63 @@ replication_handler(StringInfo s)
 
 	Assert(CurrentMemoryContext == MessageContext);
 
-	switch (action)
+	/* Reset duplicate filtering state for a new transaction. */
+	if (action == 'B')
+		apply_ts_reset();
+
+	/* Don't skip if we're not a duplicate transaction */
+	if (!is_duplicate_xact())
 	{
-			/* BEGIN */
-		case 'B':
-			handle_begin(s);
-			break;
-			/* COMMIT */
-		case 'C':
-			handle_commit(s);
-			break;
-			/* ORIGIN */
-		case 'O':
-			handle_origin(s);
-			break;
-			/* LAST commit ts */
-		case 'L':
-			handle_commit_order(s);
-			break;
-			/* RELATION */
-		case 'R':
-			handle_relation(s);
-			break;
-			/* INSERT */
-		case 'I':
-			handle_insert(s);
-			break;
-			/* UPDATE */
-		case 'U':
-			handle_update(s);
-			break;
-			/* DELETE */
-		case 'D':
-			handle_delete(s);
-			break;
-			/* TRUNCATE */
-		case 'T':
-			handle_truncate(s);
-			break;
-			/* STARTUP MESSAGE */
-		case 'S':
-			handle_startup(s);
-			break;
-		/* GENERIC MESSAGE */
-		case 'M':
-			handle_message(s);
-			break;
-		default:
-			elog(ERROR, "SPOCK %s: unknown action of type %c",
-				 MySubscription->name, action);
+		switch (action)
+		{
+				/* BEGIN */
+			case 'B':
+				handle_begin(s);
+				break;
+				/* COMMIT */
+			case 'C':
+				handle_commit(s);
+				break;
+				/* ORIGIN */
+			case 'O':
+				handle_origin(s);
+				break;
+				/* LAST commit ts */
+			case 'L':
+				handle_commit_order(s);
+				break;
+				/* RELATION */
+			case 'R':
+				handle_relation(s);
+				break;
+				/* INSERT */
+			case 'I':
+				handle_insert(s);
+				break;
+				/* UPDATE */
+			case 'U':
+				handle_update(s);
+				break;
+				/* DELETE */
+			case 'D':
+				handle_delete(s);
+				break;
+				/* TRUNCATE */
+			case 'T':
+				handle_truncate(s);
+				break;
+				/* STARTUP MESSAGE */
+			case 'S':
+				handle_startup(s);
+				break;
+			/* GENERIC MESSAGE */
+			case 'M':
+				handle_message(s);
+				break;
+			default:
+				elog(ERROR, "SPOCK %s: unknown action of type %c",
+					MySubscription->name, action);
+		}
 	}
 
 	Assert(CurrentMemoryContext == MessageContext);
@@ -3128,6 +3426,15 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 
 	if (started_tx)
 		CommitTransactionCommand();
+}
+
+/*
+ * Function for skipping duplicates transactions.
+ */
+static bool
+is_duplicate_xact(void)
+{
+	return skip_duplicate_xact;
 }
 
 /*
@@ -3784,6 +4091,12 @@ spock_apply_main(Datum main_arg)
 	CommitTransactionCommand();
 
 	elog(DEBUG1, "SPOCK %s: starting apply worker", MySubscription->name);
+
+	/* Attach this worker. */
+	spock_apply_worker_attach();
+
+	/* Register callback for cleaning up */
+	on_proc_exit(spock_apply_worker_on_exit, 0);
 
 	/* Set apply delay if any. */
 	if (MySubscription->apply_delay)

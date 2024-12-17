@@ -307,7 +307,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 
 		/* Now parse the rest of the params and ERROR if we see any we don't recognise */
 		oldctx = MemoryContextSwitchTo(ctx->context);
-		process_parameters(ctx->output_plugin_options, data);
+		process_parameters(ctx, data);
 		MemoryContextSwitchTo(oldctx);
 
 		if (data->client_min_proto_version > SPOCK_PROTO_VERSION_NUM)
@@ -453,9 +453,16 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	SpockOutputData* data = (SpockOutputData*)ctx->output_plugin_private;
 	bool send_replication_origin = data->forward_changeset_origins;
 	MemoryContext old_ctx;
+	bool slot_group_updated = false;
+	bool is_resending_xact = false;
+	bool is_catching_up = false;
+	XLogRecPtr slot_group_last_lsn = InvalidXLogRecPtr;
 
 	/* Reset repair mode */
 	spock_replication_repair_mode = false;
+
+	/* Reset skip mode since we are starting a new xact */
+	slot_group_skip_xact = false;
 
 	/*
 	 * Check if we are a member of a replication slot-group and if so,
@@ -465,53 +472,174 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	 */
 	if (slot_group != NULL)
 	{
-		LWLockAcquire(slot_group->lock, LW_EXCLUSIVE);
-
 		/*
-		 * Just do it regardless of whether we are skipping this
-		 * transaction or not. Let's be safe and simply move the
-		 * commit ts forward.
-		 *
 		 * Save the slot_group->last_commit_ts to the static local
 		 * variable to avoid further locking.
 		 */
-		if (slot_group->last_commit_ts < txn->xact_time.commit_time)
+		LWLockAcquire(slot_group->lock, LW_EXCLUSIVE);
+		slot_group_last_lsn = slot_group->last_lsn;
+
+		/* We're either the next xact or the first */
+		if (slot_group->last_commit_ts < txn->xact_time.commit_time ||
+			slot_group->last_commit_ts == 0)
 		{
+			slot_group_updated = true;
 			slot_group_last_commit_ts = slot_group->last_commit_ts;
+
 			slot_group->last_commit_ts = txn->xact_time.commit_time;
+			slot_group->last_lsn = txn->end_lsn;
+		}
+		LWLockRelease(slot_group->lock);
+
+		/* We did not update slot group. We need to skip or resend */
+		if (!slot_group_updated)
+		{
+			if (MyWalSnd->state == WALSNDSTATE_CATCHUP)
+			{
+				static bool just_restarted = true;
+				is_catching_up = true;
+
+				if (just_restarted)
+				{
+			elog(DEBUG1, "SPOCK: HAMID slot '%s' is catching up"
+						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
+						 " slot_group_skip_xact"
+						 " catching up = %d",
+						 NameStr(ctx->slot->data.name),
+						 slot_group_last_commit_ts,
+						 txn->xact_time.commit_time,
+						 is_catching_up);
+
+					just_restarted = false;
+				}
+
+			    /*
+				 * Skip if commit ts is less than or equal to what's already
+				 * applied on the subscriber.
+				 *
+				 * The else if condition ensures that we only set
+				 * slot_group_last_commit_ts for the transaction that immediately
+				 * follows data->progress_commit_ts. This would setup our
+				 * prev commit ts, and commit ts chaining for this apply worker.
+				 */
+/*
+				data->progress_commit_ts = 0
+					when can this happen?
+					resend
+
+				txn->xact_time.commit_time < data->progress_commit_ts
+					skip
+				txn->xact_time.commit_time = data->progress_commit_ts
+					set prev commit ts
+					skip
+				txn->xact_time.commit_time > data->progress_commit_ts
+					resend
+*/
+
+				if (txn->xact_time.commit_time < data->progress_commit_ts)
+				{
+					slot_group_skip_xact = true;
+
+			elog(DEBUG1,   "SPOCK: HAMID slot '%s'"
+						" skipping ts < progress "
+						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
+						 " catching up = %d",
+						 NameStr(ctx->slot->data.name),
+						 slot_group_last_commit_ts,
+						 txn->xact_time.commit_time,
+						 is_catching_up);
+				}
+				else if (txn->xact_time.commit_time == data->progress_commit_ts)
+				{
+					slot_group_last_commit_ts = txn->xact_time.commit_time;
+					slot_group_skip_xact = true;
+
+			elog(DEBUG1,   "SPOCK: HAMID slot '%s'"
+						" skipping ts == progress "
+						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
+						 " catching up = %d",
+						 NameStr(ctx->slot->data.name),
+						 slot_group_last_commit_ts,
+						 txn->xact_time.commit_time,
+						 is_catching_up);
+				}
+				else
+				{
+					is_resending_xact = true;
+
+					/*
+					 * If we are restarting after the progress_commit_ts, we
+					 * won't have a valid previous ts. So, use the progress
+					 * one as the previous ts.
+					 */
+					if (slot_group_last_commit_ts == 0)
+						slot_group_last_commit_ts = data->progress_commit_ts;
+
+					if (data->progress_commit_ts == 0)
+					{
+			elog(DEBUG1,   "SPOCK: HAMID slot '%s'"
+						" resending progress == 0"
+						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
+						 " catching up = %d",
+						 NameStr(ctx->slot->data.name),
+						 slot_group_last_commit_ts,
+						 txn->xact_time.commit_time,
+						 is_catching_up);
+					}
+					else
+			elog(DEBUG1,   "SPOCK: HAMID slot '%s'"
+						" resending ts > progress "
+						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
+						 " catching up = %d",
+						 NameStr(ctx->slot->data.name),
+						 slot_group_last_commit_ts,
+						 txn->xact_time.commit_time,
+						 is_catching_up);
+				}
+			}
+			else
+			{
+			elog(DEBUG1,   "SPOCK: HAMID slot '%s' skipping"
+						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
+						 " catching up = %d",
+						 NameStr(ctx->slot->data.name),
+						 slot_group_last_commit_ts,
+						 txn->xact_time.commit_time,
+						 is_catching_up);
+				slot_group_skip_xact = true;
+			}
 		}
 
-		elog(DEBUG1, "SPOCK: slot-group '%s': current transaction %u commit order ts"
-			 "last_commit_ts: " INT64_FORMAT " current:" INT64_FORMAT,
-			 NameStr(slot_group->name),
-			 txn->xid,
-			 slot_group_last_commit_ts,
-			 slot_group->last_commit_ts);
-
-		if (slot_group->last_lsn >= txn->end_lsn)
+		if (slot_group_skip_xact)
 		{
-			elog(DEBUG1, "SPOCK: slot-group '%s' skipping transaction with end_lsn %X/%X"
-					  " - last_lsn %X/%X",
-				 NameStr(slot_group->name),
-				 (uint32)(txn->end_lsn >> 32),
-				 (uint32)(txn->end_lsn),
-				 (uint32)(slot_group->last_lsn >> 32),
-				 (uint32)(slot_group->last_lsn));
-
-			LWLockRelease(slot_group->lock);
-
-			/* We don't need to protect this variable with a lock. */
-			slot_group_skip_xact = true;
+			elog(DEBUG1, "SPOCK: HAMID slot '%s' skipping transaction with end_lsn %X/%X"
+						 " - last_lsn %X/%X"
+						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
+						 " catching up = %d",
+						 NameStr(ctx->slot->data.name),
+						 LSN_FORMAT_ARGS(txn->end_lsn),
+						 LSN_FORMAT_ARGS(slot_group_last_lsn),
+						 slot_group_last_commit_ts,
+						 txn->xact_time.commit_time,
+						 is_catching_up);
+			/*
+			 * Let's update the previous commit ts to continue the commit ts
+			 * chaining.
+			 */
+			slot_group_last_commit_ts = txn->xact_time.commit_time;
 			return;
 		}
 
-		elog(DEBUG1, "SPOCK: slot-group '%s' sending transaction with end_lsn %X/%X",
-			 NameStr(slot_group->name),
-			 (uint32)(txn->end_lsn >> 32),
-			 (uint32)(txn->end_lsn));
-
-		slot_group->last_lsn = txn->end_lsn;
-		LWLockRelease(slot_group->lock);
+		elog(DEBUG1, "SPOCK: slot '%s' sending transaction with end_lsn %X/%X"
+					 " - last_lsn %X/%X"
+					 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
+					 " resend: %d",
+					 NameStr(ctx->slot->data.name),
+					 LSN_FORMAT_ARGS(txn->end_lsn),
+					 LSN_FORMAT_ARGS(slot_group_last_lsn),
+					 slot_group_last_commit_ts,
+					 txn->xact_time.commit_time,
+					 is_resending_xact);
 	}
 
 	old_ctx = MemoryContextSwitchTo(data->context);
@@ -563,6 +691,13 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 			OutputPluginPrepareWrite(ctx, true);
 
 			data->api->write_commit_order(ctx->out, slot_group_last_commit_ts);
+
+			/*
+			 * Let's update the previous commit ts to continue the commit ts
+			 * chaining.
+			 */
+			if (is_resending_xact)
+				slot_group_last_commit_ts = txn->xact_time.commit_time;
 		}
 	}
 #endif
@@ -592,10 +727,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	 * it here and wait for the next transaction.
 	 */
 	if (slot_group_skip_xact)
-	{
-		slot_group_skip_xact = false;
 		return;
-	}
 
 	old_ctx = MemoryContextSwitchTo(data->context);
 
@@ -1265,6 +1397,10 @@ spock_output_join_slot_group(NameData slot_name)
 		{
 			slot_group = &groups[i];
 			slot_group->nattached++;
+
+			/* Ensure that we never exceed SPOCK_MAX_PARALLEL_SLOTS */
+			Assert (slot_group->nattached < SPOCK_MAX_PARALLEL_SLOTS);
+
 			elog(LOG, "using existing slot-group %d - nattached=%d", i,
 				 slot_group->nattached);
 			break;

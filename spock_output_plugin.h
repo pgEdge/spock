@@ -70,6 +70,10 @@ typedef struct SpockOutputData
 	/* List of SpockRepSet */
 	List	   *replication_sets;
 	RangeVar   *replicate_only_table;
+
+	/* Progress data */
+	TimestampTz progress_commit_ts;
+	XLogRecPtr progress_lsn;
 } SpockOutputData;
 
 /*

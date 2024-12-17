@@ -1,0 +1,40 @@
+diff --git a/src/backend/utils/error/elog.c b/src/backend/utils/error/elog.c
+index 6198fd8712..65b4c4dd30 100644
+--- a/src/backend/utils/error/elog.c
++++ b/src/backend/utils/error/elog.c
+@@ -1406,6 +1406,23 @@ geterrcode(void)
+ 	return edata->sqlerrcode;
+ }
+ 
++/*
++ * geterrlevel --- return the currently set SQLSTATE error level
++ *
++ * This is only intended for use in error callback subroutines, since there
++ * is no other place outside elog.c where the concept is meaningful.
++ */
++int
++geterrlevel(void)
++{
++	ErrorData  *edata = &errordata[errordata_stack_depth];
++
++	/* we don't bother incrementing recursion_depth */
++	CHECK_STACK_DEPTH();
++
++	return edata->elevel;
++}
++
+ /*
+  * geterrposition --- return the currently set error position (0 if none)
+  *
+diff --git a/src/include/utils/elog.h b/src/include/utils/elog.h
+index 561c15e7d1..31832ef5c3 100644
+--- a/src/include/utils/elog.h
++++ b/src/include/utils/elog.h
+@@ -220,6 +220,7 @@ extern int	internalerrquery(const char *query);
+ extern int	err_generic_string(int field, const char *str);
+ 
+ extern int	geterrcode(void);
++extern int	geterrlevel(void);
+ extern int	geterrposition(void);
+ extern int	getinternalerrposition(void);
+ 

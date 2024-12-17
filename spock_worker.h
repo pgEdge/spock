@@ -36,13 +36,35 @@ typedef enum {
  * we must protect it with an LWLock to avoid race conditions..
  *
  * This strategy avoids using LWLocks for cleanup.
+ *
+ * SPOCK_APPLY_GROUP_WORKERS_LOCK_COUNT must always be one more than max
+ * parallel slots. The additional lock will be used to lock the
+ * apply_workers_ts array. This will be the first lock just before the start
+ * of per TS lock; i.e.
+ *    [apply_workers_ts_main_lock, apply_workers_ts_locks[0], ...]
+ *
+ * apply_workers_ts and the LWLocks prevent duplicate transactions. It avoids
+ * race condition that two apply workers may cause by restarting from the
+ * same previous commit ts.
+ *
+ * apply_workers_ts maintains the list of previous commit ts that are currently
+ * being applied. So every incoming transaction must check this list to see
+ * if it's a duplicate or not. If it is not, it can take an exclusive lock for
+ * the associated LWLock and proceed on with transaction processing. Otherwise
+ * it must wait. See acquire_apply_ts_entry function for more details.
  */
+#define SPOCK_APPLY_GROUP_WORKERS_LOCK_COUNT	(SPOCK_MAX_PARALLEL_SLOTS + 1)
+
 typedef struct SpockApplyGroupData
 {
 	Oid dbid;
 	RepOriginId replorigin;
-	pg_atomic_uint32 nattached;
+	pg_atomic_uint32 nattached;		/* Must never exceed SPOCK_MAX_PARALLEL_SLOTS */
+	LWLock *apply_workers_ts_main_lock;
+	LWLock *apply_workers_ts_locks[SPOCK_MAX_PARALLEL_SLOTS];
+	TimestampTz apply_workers_ts[SPOCK_MAX_PARALLEL_SLOTS];
 	TimestampTz prev_remote_ts;
+	XLogRecPtr remote_lsn;
 	ConditionVariable prev_processed_cv;
 } SpockApplyGroupData;
 

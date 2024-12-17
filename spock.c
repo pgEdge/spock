@@ -586,6 +586,15 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 		appendStringInfo(&command, ", \"spock.forward_origins\" %s",
 					 quote_literal_cstr(forward_origins));
 
+	/* Progress related values */
+	elog(DEBUG1, "SPOCK: HAMID %s - progress_lsn = %X/%X",
+					MySubscription->slot_name,
+					LSN_FORMAT_ARGS(MyApplyWorker->apply_group->remote_lsn));
+	appendStringInfo(&command, ", \"spock.progress_commit_ts\" '"INT64_FORMAT"'",
+							   MyApplyWorker->apply_group->prev_remote_ts);
+	appendStringInfo(&command, ", \"spock.progress_lsn\" '%X/%X'",
+							   LSN_FORMAT_ARGS(MyApplyWorker->apply_group->remote_lsn));
+
 	if (replicate_only_table)
 	{
 		/* Send the table name we want to the upstream */
@@ -618,7 +627,7 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 			 command.data, PQresultErrorMessage(res), sqlstate);
 	PQclear(res);
 
-	elog(LOG, "SPOCK %s: connected", MySubscription->name);
+	elog(LOG, "SPOCK %s: connected", MySubscription->slot_name);
 }
 
 /*

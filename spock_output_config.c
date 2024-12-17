@@ -15,10 +15,12 @@
 #include "mb/pg_wchar.h"
 #include "nodes/makefuncs.h"
 #include "replication/reorderbuffer.h"
+#include "replication/logical.h"
 #include "utils/builtins.h"
 #if PG_VERSION_NUM < 150000
 #include "utils/int8.h"
 #endif
+#include "utils/pg_lsn.h"
 
 #include "miscadmin.h"
 
@@ -32,6 +34,8 @@ typedef enum SpockOutputParamType
 	OUTPUT_PARAM_TYPE_BOOL,
 	OUTPUT_PARAM_TYPE_UINT32,
 	OUTPUT_PARAM_TYPE_INT32,
+	OUTPUT_PARAM_TYPE_UINT64,
+	OUTPUT_PARAM_TYPE_INT64,
 	OUTPUT_PARAM_TYPE_STRING,
 	OUTPUT_PARAM_TYPE_QUALIFIED_NAME
 } SpockOutputParamType;
@@ -44,11 +48,15 @@ static Datum get_param(List *options, const char *name, bool missing_ok,
 					   bool null_ok, SpockOutputParamType type,
 					   bool *found);
 static bool parse_param_bool(DefElem *elem);
+
+static int64 parse_param_intxx(DefElem *elem);
 static uint32 parse_param_uint32(DefElem *elem);
 static int32 parse_param_int32(DefElem *elem);
+static uint64 parse_param_uint64(DefElem *elem);
+static int64 parse_param_int64(DefElem *elem);
 
 static void
-process_parameters_v1(List *options, SpockOutputData *data);
+process_parameters_v1(LogicalDecodingContext *ctx, SpockOutputData *data);
 
 enum {
 	PARAM_UNRECOGNISED,
@@ -67,6 +75,8 @@ enum {
 	PARAM_BINARY_WANT_BINARY_BASETYPES,
 	PARAM_BINARY_BASETYPES_MAJOR_VERSION,
 	PARAM_SPOCK_FORWARD_ORIGINS,
+	PARAM_SPOCK_PROGRESS_COMMIT_TS,
+	PARAM_SPOCK_PROGRESS_LSN,
 	PARAM_SPOCK_REPLICATION_SET_NAMES,
 	PARAM_SPOCK_REPLICATE_ONLY_TABLE,
 	PARAM_HOOKS_SETUP_FUNCTION,
@@ -97,6 +107,8 @@ static OutputPluginParam param_lookup[] = {
 	{"binary.want_binary_basetypes", PARAM_BINARY_WANT_BINARY_BASETYPES},
 	{"binary.basetypes_major_version", PARAM_BINARY_BASETYPES_MAJOR_VERSION},
 	{"spock.forward_origins", PARAM_SPOCK_FORWARD_ORIGINS},
+	{"spock.progress_commit_ts", PARAM_SPOCK_PROGRESS_COMMIT_TS},
+	{"spock.progress_lsn", PARAM_SPOCK_PROGRESS_LSN},
 	{"spock.replication_set_names", PARAM_SPOCK_REPLICATION_SET_NAMES},
 	{"spock.replicate_only_table", PARAM_SPOCK_REPLICATE_ONLY_TABLE},
 	{"hooks.setup_function", PARAM_HOOKS_SETUP_FUNCTION},
@@ -125,10 +137,11 @@ get_param_key(const char * const param_name)
 
 
 void
-process_parameters_v1(List *options, SpockOutputData *data)
+process_parameters_v1(LogicalDecodingContext *ctx, SpockOutputData *data)
 {
 	Datum		val;
 	ListCell	*lc;
+	List *options = ctx->output_plugin_options;
 
 	/*
 	 * max_proto_version and min_proto_version are specified
@@ -250,6 +263,33 @@ process_parameters_v1(List *options, SpockOutputData *data)
 					break;
 				}
 
+			case PARAM_SPOCK_PROGRESS_COMMIT_TS:
+				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_INT64);
+				data->progress_commit_ts = DatumGetTimestampTz(val);
+				elog(DEBUG1, "SPOCK: HAMID slot '%s' is parsing params"
+							" progress_commit_ts = "INT64_FORMAT,
+							NameStr(ctx->slot->data.name),
+							data->progress_commit_ts);
+				break;
+
+			case PARAM_SPOCK_PROGRESS_LSN:
+			{
+				bool have_error = false;
+
+				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_STRING);
+				data->progress_lsn = pg_lsn_in_internal(DatumGetCString(val),
+												&have_error);
+
+				if (have_error)
+					elog(ERROR, "Could not parse progress lsn value %s", strVal(elem->arg));
+
+				elog(DEBUG1, "SPOCK: HAMID slot '%s' is parsing params"
+							" progress_lsn = %X/%X",
+							NameStr(ctx->slot->data.name),
+							LSN_FORMAT_ARGS(data->progress_lsn));
+				break;
+			}
+
 			case PARAM_SPOCK_REPLICATION_SET_NAMES:
 				{
 					List *replication_set_names;
@@ -305,10 +345,11 @@ process_parameters_v1(List *options, SpockOutputData *data)
  * by the client are not set.
  */
 int
-process_parameters(List *options, SpockOutputData *data)
+process_parameters(LogicalDecodingContext *ctx, SpockOutputData *data)
 {
 	Datum	val;
 	int		params_format;
+	List *options = ctx->output_plugin_options;
 
 	val = get_param(options, "startup_params_format", false, false,
 					OUTPUT_PARAM_TYPE_UINT32, NULL);
@@ -316,7 +357,7 @@ process_parameters(List *options, SpockOutputData *data)
 	params_format = DatumGetUInt32(val);
 
 	if (params_format == SPOCK_STARTUP_PARAM_FORMAT_FLAT)
-		process_parameters_v1(options, data);
+		process_parameters_v1(ctx, data);
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -346,6 +387,10 @@ get_param_value(DefElem *elem, bool null_ok, SpockOutputParamType type)
 			return UInt32GetDatum(parse_param_uint32(elem));
 		case OUTPUT_PARAM_TYPE_INT32:
 			return Int32GetDatum(parse_param_int32(elem));
+		case OUTPUT_PARAM_TYPE_UINT64:
+			return UInt64GetDatum(parse_param_uint64(elem));
+		case OUTPUT_PARAM_TYPE_INT64:
+			return Int64GetDatum(parse_param_int64(elem));
 		case OUTPUT_PARAM_TYPE_BOOL:
 			return BoolGetDatum(parse_param_bool(elem));
 		case OUTPUT_PARAM_TYPE_STRING:
@@ -412,8 +457,24 @@ parse_param_bool(DefElem *elem)
 	return res;
 }
 
-static uint32
-parse_param_uint32(DefElem *elem)
+/*
+ * To avoid writing type specific functions for int/uint etc, we should
+ * instead use this macro to avoid code duplication.
+ */
+#define PARAM_INT_VALIDATE_RANGE(elem, res, min_val, max_val)				\
+		if (res > max_val || res < min_val)									\
+		ereport(ERROR,														\
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),					\
+				 errmsg("value \"%s\" out of range for parameter \"%s\"",	\
+						strVal(elem->arg), elem->defname)));				\
+
+/*
+ * Helper function for parsing an integer value. Must be used in conjunction
+ * PARAM_INT_VALIDATE_RANGE macro to ensure that the integer falls in the
+ * valid range.
+ */
+static int64
+parse_param_intxx(DefElem *elem)
 {
 	int64		res;
 	char		*str;
@@ -436,46 +497,39 @@ parse_param_uint32(DefElem *elem)
 				 errmsg("could not parse integer value \"%s\" for parameter \"%s\"",
 						str, elem->defname)));
 
-	if (res > PG_UINT32_MAX || res < 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("value \"%s\" out of range for parameter \"%s\"",
-						strVal(elem->arg), elem->defname)));
+	return res;
+}
 
-	return (uint32) res;
+static uint32
+parse_param_uint32(DefElem *elem)
+{
+	uint32 res = parse_param_intxx(elem);
+	PARAM_INT_VALIDATE_RANGE(elem, res, UINT32_C(0), PG_UINT32_MAX);
+	return res;
 }
 
 static int32
 parse_param_int32(DefElem *elem)
 {
-	int64		res;
-	char		*str;
-	bool		error;
-#if PG_VERSION_NUM >= 150000
-	char		*endptr;
-#endif
+	int32 res = parse_param_intxx(elem);
+	PARAM_INT_VALIDATE_RANGE(elem, res, PG_INT32_MIN, PG_INT32_MAX);
+	return res;
+}
 
-	str = strVal(elem->arg);
-#if PG_VERSION_NUM >= 150000
-	res = strtoi64(str, &endptr, 10);
-	error = (str == endptr || *endptr != '\0');
-#else
-	error = (!scanint8(str, true, &res));
-#endif
+static uint64
+parse_param_uint64(DefElem *elem)
+{
+	uint64 res = (uint64)parse_param_intxx(elem);
+	PARAM_INT_VALIDATE_RANGE(elem, res, UINT64_C(0), PG_UINT64_MAX);
+	return res;
+}
 
-	if (error)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("could not parse integer value \"%s\" for parameter \"%s\"",
-						str, elem->defname)));
-
-	if (res > PG_INT32_MAX || res < PG_INT32_MIN)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("value \"%s\" out of range for parameter \"%s\"",
-						strVal(elem->arg), elem->defname)));
-
-	return (int32) res;
+static int64
+parse_param_int64(DefElem *elem)
+{
+	int64 res = parse_param_intxx(elem);
+	PARAM_INT_VALIDATE_RANGE(elem, res, PG_INT64_MIN, PG_INT64_MAX);
+	return res;
 }
 
 static List*

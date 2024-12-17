@@ -55,7 +55,9 @@ server_bigendian(void)
 #endif
 }
 
-extern int process_parameters(List *options, SpockOutputData *data);
+/* Forward declaration to avoid inclusion of logical.h and spock.h */
+typedef struct LogicalDecodingContext LogicalDecodingContext;
+extern int process_parameters(LogicalDecodingContext *ctx, SpockOutputData *data);
 
 extern List *prepare_startup_message(SpockOutputData *data);
 
