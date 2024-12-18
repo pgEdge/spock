@@ -26,8 +26,8 @@
 
 #include "spock_compat.h"
 
-#define SPOCK_VERSION "4.0.7"
-#define SPOCK_VERSION_NUM 40007
+#define SPOCK_VERSION "4.0.8"
+#define SPOCK_VERSION_NUM 40008
 
 #define SPOCK_MIN_PROTO_VERSION_NUM 2
 #define SPOCK_MAX_PROTO_VERSION_NUM 2
