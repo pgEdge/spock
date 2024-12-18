@@ -315,6 +315,13 @@ slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
 			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
 			slot->tts_isnull[att->attnum - 1] = false;
 		}
+                else
+                {
+                        /*
+                         * Set the attribute to NULL
+                         */
+                        slot->tts_isnull[att->attnum - 1] = true;
+                }
 	}
 
 	ExecStoreVirtualTuple(slot);
@@ -394,6 +401,11 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
 			slot->tts_isnull[att->attnum - 1] = false;
 		}
+                else
+                {
+                        /* Set the value to NULL */
+                        slot->tts_isnull[att->attnum - 1] = true;
+                }
 	}
 
 	/* And finally, declare that "slot" contains a valid virtual tuple */
