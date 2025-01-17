@@ -315,6 +315,13 @@ slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
 			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
 			slot->tts_isnull[att->attnum - 1] = false;
 		}
+		else
+		{
+			/*
+			 * Set the attribute to NULL
+			 */
+			slot->tts_isnull[att->attnum - 1] = true;
+		}
 	}
 
 	ExecStoreVirtualTuple(slot);
@@ -388,11 +395,21 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, remoteattnum);
 
 		Assert(remoteattnum < natts);
+
+		/* skip if a column is unchanged */
+		if (!tupleData->changed[remoteattnum])
+			continue;
+
 		if (!tupleData->nulls[remoteattnum])
 		{
 			/* Use the value from the NEW remote tuple */
 			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
 			slot->tts_isnull[att->attnum - 1] = false;
+		}
+		else
+		{
+			/* Set the value to NULL */
+			slot->tts_isnull[att->attnum - 1] = true;
 		}
 	}
 
