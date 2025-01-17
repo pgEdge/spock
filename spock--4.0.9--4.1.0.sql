@@ -10,3 +10,7 @@ CREATE TABLE spock.progress (
 	remote_commit_ts timestamptz NOT NULL,
 	PRIMARY KEY(node_id, remote_node_id)
 ) WITH (fillfactor=50);
+
+INSERT INTO spock.progress (node_id, remote_node_id, remote_commit_ts)
+	SELECT sub_target, sub_origin, 'epoch'::timestamptz
+	FROM spock.subscription;
