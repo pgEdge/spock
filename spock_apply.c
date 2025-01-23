@@ -2782,6 +2782,7 @@ apply_work(PGconn *streamConn)
 		if (!IsTransactionState())
 		{
 			VALGRIND_DO_ADDED_LEAK_CHECK;
+			pgstat_report_stat(true);
 		}
 	}
 	elog(LOG, "SPOCK %s: falling out of apply_work() sigterm=%s",
