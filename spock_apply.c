@@ -91,6 +91,7 @@
 #include "spock.h"
 
 #define CATALOG_PROGRESS			"progress"
+#define CATALOG_PROGRESS_PKEY		"progress_pkey"
 
 typedef struct ProgressTuple
 {
@@ -3297,14 +3298,20 @@ get_progress_entry_ts(Oid target_node_id,
 					Oid remote_node_id,
 					bool *missing)
 {
-	RangeVar 	*rv;
+	RangeVar   *rv;
 	Relation 	rel;
+	RangeVar   *idxRv;
+	Oid			idxId;
 	HeapTuple 	tup;
 	TimestampTz	remote_commit_ts;
+	Snapshot	snap;
 	SysScanDesc scan;
 	ScanKeyData key[2];
 
 	Assert(IsTransactionState());
+
+	idxRv = makeRangeVar(EXTENSION_NAME, CATALOG_PROGRESS_PKEY, -1);
+	idxId = RangeVarGetRelid(idxRv, NoLock, false);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_PROGRESS, -1);
 	rel = table_openrv(rv, ShareRowExclusiveLock);
@@ -3327,7 +3334,14 @@ get_progress_entry_ts(Oid target_node_id,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(remote_node_id));
 
-	scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+	/*
+	 * Scan the progress table using the current transaction snapshot.
+	 * We do not need to Push/Pop that snapshot as the following
+	 * operations are not going to modify that snapshot (like bumping
+	 * the command counter).
+	 */
+	snap = GetTransactionSnapshot();
+	scan = systable_beginscan(rel, idxId, true, snap, 2, key);
 	tup = systable_getnext(scan);
 
 	/* Set the data */
@@ -3398,14 +3412,20 @@ update_progress_entry(Oid target_node_id,
 {
 	RangeVar		*rv;
 	Relation		rel;
+	RangeVar		*idxRv;
+	Oid				idxId;
 	TupleDesc		tupDesc;
 	HeapTuple		oldtup;
 	HeapTuple		newtup;
+	Snapshot		snap;
 	SysScanDesc		scan;
 	ScanKeyData		key[2];
 	Datum			values[Natts_progress];
 	bool			nulls[Natts_progress];
 	bool			replaces[Natts_progress];
+
+	idxRv = makeRangeVar(EXTENSION_NAME, CATALOG_PROGRESS_PKEY, -1);
+	idxId = RangeVarGetRelid(idxRv, NoLock, false);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_PROGRESS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -3422,7 +3442,9 @@ update_progress_entry(Oid target_node_id,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(remote_node_id));
 
-	scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+	/* Scan the progress table using the transaction snapshot */
+	snap = GetTransactionSnapshot();
+	scan = systable_beginscan(rel, idxId, true, snap, 2, key);
 	oldtup = systable_getnext(scan);
 
 	/* We must always have a valid entry for a subscription */
