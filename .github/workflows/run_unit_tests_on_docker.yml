@@ -2,8 +2,6 @@ name: Docker tests
 run-name: ${{ github.actor }} is running the test schedules.
 on:
   push:
-    branches:
-      - main
   pull_request:
     
 
