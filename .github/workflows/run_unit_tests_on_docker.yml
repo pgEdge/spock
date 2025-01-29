@@ -16,7 +16,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-    - name: Checkout snowflake
+    - name: Checkout spock
       uses: actions/checkout@v4
       with:
         ref: ${{ github.ref }}
@@ -26,11 +26,11 @@ jobs:
 
     - name: Build Docker Image
       run: |
-        docker build --build-arg PGVER=${{ matrix.pgver }} -t snowflake .
+        docker build --build-arg PGVER=${{ matrix.pgver }} -t spock .
    
     - name: Run Docker Container
       run: |
-        docker run -d --name snowflake -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 snowflake
+        docker run -d --name spock -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 spock
         sleep 5
 
     - name: Wait for PostgreSQL to be ready
