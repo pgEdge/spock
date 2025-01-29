@@ -10,9 +10,9 @@ RUN apk add --no-cache \
     clang \
     llvm
 
-WORKDIR /home/postgres/snowflake
+WORKDIR /home/postgres/spock
 
-COPY . /home/postgres/snowflake/
+COPY . /home/postgres/spock/
 
 RUN USE_PGXS=1 make && USE_PGXS=1 make install
 
