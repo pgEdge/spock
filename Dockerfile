@@ -14,7 +14,7 @@ WORKDIR /home/postgres/spock
 
 COPY . /home/postgres/spock/
 
-RUN USE_PGXS=1 make && USE_PGXS=1 make install
+#RUN USE_PGXS=1 make && USE_PGXS=1 make install
 
 EXPOSE 5432
 
