@@ -186,7 +186,7 @@ PG_FUNCTION_INFO_V1(spock_repair_mode);
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
-static void wait_for_sync_event_complete(Oid localnode, Oid origin,
+static bool wait_for_sync_event_complete(Oid localnode, Oid origin,
 						XLogRecPtr targetlsn, int timeout);
 
 
@@ -3062,9 +3062,7 @@ Datum spock_wait_for_sync_event(PG_FUNCTION_ARGS)
 	get_node(origin); /* check if origin exists. */
 	node = check_local_node(true);
 
-	wait_for_sync_event_complete(node->node->id, origin, lsn, timeout);
-
-	PG_RETURN_VOID();
+	PG_RETURN_BOOL(wait_for_sync_event_complete(node->node->id, origin, lsn, timeout));
 }
 
 /*
@@ -3113,8 +3111,11 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
  *   origin: OID of the origin node whose progress we are monitoring.
  *   targetlsn: The LSN to wait for. The function returns once this LSN has been reached.
  *   timeout: Timeout in seconds. If 0 or negative, the function waits indefinitely.
+ *
+ * The function returns 'true' if the target LSN is reached and 'false' if it times out.
+ * It blocks execution until one of these conditions is met.
  */
-static void
+static bool
 wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, int timeout)
 {
 	TimestampTz	timeout_ts;
@@ -3130,7 +3131,7 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 
 		/* Check if the timeout period has elapsed. */
 		if (timeout_ts > 0 && GetCurrentTimestamp() > timeout_ts)
-			break;
+			return false;		/* timed out */
 
 		/* We need to see the latest rows */
 		PushActiveSnapshot(GetLatestSnapshot());
@@ -3142,7 +3143,7 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 
 		/* Exit if the target LSN has been reached. */
 		if (currentlsn >= targetlsn)
-			break;
+			return true;		/* target reached */
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -3155,4 +3156,6 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 
 		ResetLatch(&MyProc->procLatch);
 	} while (1);
+
+	return false;		/* keep compiler quiet */
 }

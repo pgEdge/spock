@@ -361,15 +361,27 @@ RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME'
 CREATE FUNCTION spock.table_wait_for_sync(subscription_name name, relation regclass)
 RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete';
 
-CREATE FUNCTION spock.sync()
+CREATE FUNCTION spock.sync_event()
 RETURNS pg_lsn RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_sync_event';
 
 CREATE FUNCTION spock.wait_for_sync_event(origin oid, lsn pg_lsn, timeout int DEFAULT 0)
-RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_sync_event';
+RETURNS bool RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_sync_event';
 
 CREATE FUNCTION spock.wait_for_sync_event(origin name, lsn pg_lsn, timeout int DEFAULT 0)
-RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE sql AS
-$$ SELECT spock.wait_for_sync_event((select node_id from spock.node where node_name=$1), $2, $3) $$;
+RETURNS bool RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE plpgsql AS
+$$
+DECLARE
+    origin_id Oid;
+BEGIN
+    SELECT node_id INTO origin_id FROM spock.node WHERE node_name = origin;
+
+    IF origin_id IS NULL THEN
+        RAISE EXCEPTION 'Origin node ''%'' not found in spock.node', origin;
+    END IF;
+
+    RETURN spock.wait_for_sync_event(origin_id, lsn, timeout);
+END;
+$$;
 
 CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" timestamptz, OUT "roident" oid)
 RETURNS record RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_xact_commit_timestamp_origin';
