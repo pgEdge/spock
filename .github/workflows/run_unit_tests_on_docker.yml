@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        pg_version: [14.15, 15.10, 16.6, 17.2] 
+        pg_version: ["14.15", "15.10", "16.6", "17.2"] 
 
     steps:
       - name: Checkout repository
