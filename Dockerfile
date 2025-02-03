@@ -29,7 +29,7 @@ RUN wget -O postgresql.tar.gz "${PG_SOURCE_URL}" && tar xzvf postgresql.tar.gz -
 COPY patches /usr/src/postgresql/patches/
 
 # Apply all patches matching the version (e.g., pg15_*.patch for PostgreSQL 15)
-RUN PATCH_PREFIX="pg${PG_VERSION%%.*}_" && \
+RUN PATCH_PREFIX="pg${PG_VERSION%%.*}-" && \
     echo "Applying patches with prefix: $PATCH_PREFIX" && \
     for patch in patches/${PATCH_PREFIX}*.patch; do \
         if [ -f "$patch" ]; then \
