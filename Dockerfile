@@ -41,7 +41,7 @@ RUN PATCH_PREFIX="pg${PG_VERSION%%.*}-" && \
     done
 
 # Configure and build PostgreSQL
-RUN ./configure --prefix=/usr/local/pgsql && \
+RUN ./configure --prefix=/usr/local/pgsql --without-icu && \
     make -j$(nproc) && \
     make install
 
