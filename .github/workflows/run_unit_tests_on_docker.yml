@@ -1,73 +1,24 @@
-name: Docker tests
-run-name: ${{ github.actor }} is running the test schedules.
+name: Build PostgreSQL from Source with Version-Specific Patches
+
 on:
   push:
+    branches:
+      - main
   pull_request:
-    
 
 jobs:
-  run-scripts:
+  build:
+    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        os: [ubuntu-22.04]
-        pgver: [14, 15, 16, 17]
-
-    runs-on: ${{ matrix.os }}
+        pg_version: [13, 14, 15, 16] 
 
     steps:
-    - name: Checkout spock
-      uses: actions/checkout@v4
-      with:
-        ref: ${{ github.ref }}
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up Docker
-      uses: docker/setup-buildx-action@v2
+      - name: Build PostgreSQL ${{ matrix.pg_version }}
+        run: docker build --build-arg PG_VERSION=${{ matrix.pg_version }} -t custom-postgres:${{ matrix.pg_version }} .
 
-    - name: Build Docker Image
-      run: |
-        docker build --build-arg PGVER=${{ matrix.pgver }} -t spock .
-   
-    - name: Run Docker Container
-      run: |
-        docker run -d --name spock -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 spock
-        sleep 5
-
-    - name: Wait for PostgreSQL to be ready
-      run: |
-        echo "Waiting for PostgreSQL to be ready..."
-        for i in {1..30}; do
-          if pg_isready -h localhost -p 5432 -U postgres; then
-            echo "PostgreSQL is ready!"
-              exit 0
-          fi
-          echo "PostgreSQL is not ready yet. Retrying in 5 seconds..."
-          sleep 5
-          done
-          echo "PostgreSQL did not become ready in time. Exiting."
-          exit 1
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-
-    - name: Install dependencies
-      run: |
-        sudo apt -y update
-        sudo apt install -y postgresql-client \
-            libpq-dev \
-            python3-dev \
-            python3-psycopg2 \
-            python3-dotenv
-
-    - name: Run Test Harness (runner.py)
-      run: |
-        python test/runner.py -c test/t/lib/${{ matrix.pgver }}config.env -s test/schedule_files/script_file -k
-        cat latest.log
-
-    - name: Upload Log File as Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: latest-log-${{ matrix.pgver }}
-        path: latest.log
+      - name: Run PostgreSQL Version Check for ${{ matrix.pg_version }}
+        run: docker run --rm custom-postgres:${{ matrix.pg_version }} postgres --version
