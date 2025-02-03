@@ -11,8 +11,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     git \
     wget \
-    icu-uc \
-    icu-i18n \
+    libicu-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set PostgreSQL version (passed from GitHub Actions matrix)
