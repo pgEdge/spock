@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
 
 # Set PostgreSQL version (passed from GitHub Actions matrix)
 ARG PG_VERSION
-ARG PG_SOURCE_URL="https://postgresql.org/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz"
+ARG PG_SOURCE_URL="https://postgresql.org/source/postgresql-${PG_VERSION}.tar.gz"
 
 # Create build directory
 WORKDIR /usr/src/postgresql
