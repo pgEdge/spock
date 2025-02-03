@@ -22,8 +22,8 @@ WORKDIR /usr/src/postgresql
 
 # Download and extract PostgreSQL source
 RUN wget -O postgresql.tar.gz "${PG_SOURCE_URL}" && \
-    tar xzf postgresql.tar.gz --strip-components=1 && \
-    rm postgresql.tar.gz
+    tar xzf postgresql.tar.gz --strip-components=1
+    # rm postgresql.tar.gz
 
 # Copy all patches into the container
 COPY patches /usr/src/postgresql/patches/
