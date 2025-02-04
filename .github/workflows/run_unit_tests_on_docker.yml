@@ -27,16 +27,8 @@ jobs:
       - name: Run PostgreSQL Version Check for ${{ matrix.pg_version }}
         run: docker run --rm custom-postgres:${{ matrix.pg_version }} postgres --version
 
-      - name: Wait for PostgreSQL to be ready
+      - name: Verify Database is Live
         run: |
-          echo "Waiting for PostgreSQL to be ready..."
-            for i in {1..30}; do
-              if pg_isready -h localhost -p 5432 -U postgres; then
-                echo "PostgreSQL is ready!"
-                  exit 0
-              fi
-              echo "PostgreSQL is not ready yet. Retrying in 5 seconds..."
-              sleep 5
-              done
-              echo "PostgreSQL did not become ready in time. Exiting."
-              exit 1
+          psql -h localhost -U postgres -d postgres -c 'SELECT 1;'
+
+      
