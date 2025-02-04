@@ -68,4 +68,6 @@ EXPOSE 5432
 # Start PostgreSQL server by default
 CMD ["postgres", "-D", "/var/lib/postgresql/data"]
 
+RUN echo "Started postmaster after exposing 5432"
+
 
