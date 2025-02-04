@@ -24,8 +24,8 @@ jobs:
       - name: Build PostgreSQL ${{ matrix.pg_version }}
         run: docker build --build-arg PG_VERSION=${{ matrix.pg_version }} -t custom-postgres:${{ matrix.pg_version }} .
 
-      - name: Run PostgreSQL Version Check for ${{ matrix.pg_version }}
-        run: docker run --rm custom-postgres:${{ matrix.pg_version }} postgres --version
+      - name: Run PostgreSQL Container
+        run: docker run --rm -d -p 5432:5432 --name custom-postgres custom-postgres:${{ matrix.pg_version }} postgres --version
 
       - name: Verify Database is Live
         run: |
