@@ -59,7 +59,7 @@ USER postgres
 
 RUN initdb -D /var/lib/postgresql/data && \
     pg_ctl -D /var/lib/postgresql/data -l /var/lib/postgresql/logfile start && \
-    createdb postgres && \
+    createdb testdb && \
     pg_ctl -D /var/lib/postgresql/data stop
 
 # Expose PostgreSQL port
