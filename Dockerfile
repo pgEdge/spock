@@ -55,3 +55,12 @@ ENV PATH="/usr/local/pgsql/bin:$PATH"
 # Default command
 CMD ["postgres", "-D", "/var/lib/postgresql/data"]
 
+# Initialize the PostgreSQL cluster
+RUN /usr/local/pgsql/bin/initdb -D /var/lib/postgresql/data
+
+# Start PostgreSQL in the background
+RUN /usr/local/pgsql/bin/pg_ctl -D /var/lib/postgresql/data -l logfile start && \
+    /usr/local/pgsql/bin/createdb postgres && \
+    /usr/local/pgsql/bin/pg_ctl -D /var/lib/postgresql/data stop
+
+
