@@ -27,6 +27,9 @@ jobs:
       - name: Run PostgreSQL Container
         run: docker run --rm -d -p 5432:5432 --name custom-postgres custom-postgres:${{ matrix.pg_version }} postgres --version
 
+      - name: Check Docker Container Status
+        run: docker ps -a
+
       - name: Wait for PostgreSQL to be Ready
         run: |
              until pg_isready -h localhost -p 5432 -U postgres; do
