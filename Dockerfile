@@ -14,6 +14,15 @@ RUN apt-get update && apt-get install -y \
     libicu-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Create a postgres user and data directory
+RUN useradd -m postgres && \
+    mkdir -p /var/lib/postgresql/data && \
+    chown -R postgres:postgres /var/lib/postgresql
+
+# Set environment variables
+ENV PATH="/usr/local/pgsql/bin:$PATH"
+ENV PGDATA="/var/lib/postgresql/data"
+
 # Set PostgreSQL version (passed from GitHub Actions matrix)
 ARG PG_VERSION
 ARG PG_SOURCE_URL="https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz"
@@ -45,22 +54,19 @@ RUN ./configure --prefix=/usr/local/pgsql --without-icu && \
     make -j$(nproc) && \
     make install
 
-# Create PostgreSQL data directory
-RUN mkdir -p /var/lib/postgresql/data && \
-    chown -R root:root /var/lib/postgresql
+# Switch to postgres user for cluster initialization
+USER postgres
 
-# Set PATH for PostgreSQL binaries
-ENV PATH="/usr/local/pgsql/bin:$PATH"
+# Initialize the cluster and create 'postgres' database
+RUN initdb -D /var/lib/postgresql/data && \
+    pg_ctl -D /var/lib/postgresql/data -l logfile start && \
+    createdb postgres && \
+    pg_ctl -D /var/lib/postgresql/data stop
 
-# Default command
+# Expose PostgreSQL port
+EXPOSE 5432
+
+# Start PostgreSQL server by default
 CMD ["postgres", "-D", "/var/lib/postgresql/data"]
-
-# Initialize the PostgreSQL cluster
-RUN /usr/local/pgsql/bin/initdb -D /var/lib/postgresql/data
-
-# Start PostgreSQL in the background
-RUN /usr/local/pgsql/bin/pg_ctl -D /var/lib/postgresql/data -l logfile start && \
-    /usr/local/pgsql/bin/createdb postgres && \
-    /usr/local/pgsql/bin/pg_ctl -D /var/lib/postgresql/data stop
 
 
