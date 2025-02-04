@@ -32,5 +32,4 @@ jobs:
       
       - name: Wait for PostgreSQL to be ready
         run:
-          DOCKER_CONTAINER_NAME="custom-postgres"
-          timeout 90s bash -c "until docker exec $DOCKER_CONTAINER_NAME pg_isready ; do sleep 5 ; done"
+          timeout 90s bash -c 'until docker exec custom-postgres pg_isready ; do sleep 5 ; done'
