@@ -57,9 +57,8 @@ RUN ./configure --prefix=/usr/local/pgsql --without-icu && \
 # Switch to postgres user for cluster initialization
 USER postgres
 
-# Initialize the cluster and create 'postgres' database
 RUN initdb -D /var/lib/postgresql/data && \
-    pg_ctl -D /var/lib/postgresql/data -l logfile start && \
+    pg_ctl -D /var/lib/postgresql/data -l /var/lib/postgresql/logfile start && \
     createdb postgres && \
     pg_ctl -D /var/lib/postgresql/data stop
 
