@@ -57,15 +57,17 @@ RUN ./configure --prefix=/usr/local/pgsql --without-icu && \
 # Switch to postgres user for cluster initialization
 USER postgres
 
-RUN initdb -D /var/lib/postgresql/data && \
-    pg_ctl -D /var/lib/postgresql/data -l /var/lib/postgresql/logfile start && \
-    createdb testdb && \
-    pg_ctl -D /var/lib/postgresql/data stop
+# Initialize the PostgreSQL cluster
+RUN initdb -D /var/lib/postgresql/data
 
-# Expose PostgreSQL port
+# Configure PostgreSQL to listen on all IP addresses and use trust authentication
+RUN echo "listen_addresses='*'" >> /var/lib/postgresql/data/postgresql.conf && \
+    echo "host all all 0.0.0.0/0 trust" >> /var/lib/postgresql/data/pg_hba.conf
+
+# Expose PostgreSQL default port
 EXPOSE 5432
 
-# Start PostgreSQL server by default
+# Start PostgreSQL server with TCP/IP and trust authentication
 CMD ["postgres", "-D", "/var/lib/postgresql/data"]
 
 
