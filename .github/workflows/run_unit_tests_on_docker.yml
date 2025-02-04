@@ -30,3 +30,16 @@ jobs:
       - name: Check Docker Container Status
         run: docker ps -a
       
+      - name: Wait for PostgreSQL to be ready
+        run:
+          echo "Waiting for PostgreSQL to be ready..."
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U postgres; then
+              echo "PostgreSQL is ready!"
+                exit 0
+            fi
+            echo "PostgreSQL is not ready yet. Retrying in 5 seconds..."
+            sleep 5
+            done
+            echo "PostgreSQL did not become ready in time. Exiting."
+            exit 1
