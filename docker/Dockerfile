@@ -35,7 +35,7 @@ RUN wget -O postgresql.tar.gz "${PG_SOURCE_URL}" && tar xzf postgresql.tar.gz --
     # rm postgresql.tar.gz
 
 # Copy patches into the container
-COPY ./patches ./patches
+COPY patches /usr/src/postgresql/patches/
 
 # Apply all patches matching the version (e.g., pg15_*.patch for PostgreSQL 15)
 RUN PATCH_PREFIX="pg${PG_VERSION%%.*}-" && \
