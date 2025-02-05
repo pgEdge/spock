@@ -7,9 +7,9 @@ on:
     - cron: '0 12 * * *'   # Noon UTC
 
   # Run on any push to any branch
-  push:
-    branches:
-      - '**'  # Matches all branches
+  ## push:
+    ## branches:
+      ## - '**'  # Matches all branches
 
   # Run when a pull request is opened, synchronized, or reopened
   pull_request:
@@ -34,15 +34,6 @@ jobs:
     - name: Verify patches directory exists
       run: |
         ls -la
-
-    - name: Check for .dockerignore
-      run: |
-        if [ -f .dockerignore ]; then
-          echo ".dockerignore exists. Contents:"
-          cat .dockerignore
-        else
-          echo "No .dockerignore file found."
-        fi
     
     - name: Set up Docker
       uses: docker/setup-buildx-action@v2
