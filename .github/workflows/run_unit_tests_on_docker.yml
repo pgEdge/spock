@@ -34,8 +34,16 @@ jobs:
     - name: Verify patches directory exists
       run: |
         ls -la
-        ls -la patches
-        
+
+    - name: Check for .dockerignore
+      run: |
+        if [ -f .dockerignore ]; then
+          echo ".dockerignore exists. Contents:"
+          cat .dockerignore
+        else
+          echo "No .dockerignore file found."
+        fi
+    
     - name: Set up Docker
       uses: docker/setup-buildx-action@v2
 
