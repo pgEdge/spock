@@ -34,8 +34,8 @@ WORKDIR /usr/src/postgresql
 RUN wget -O postgresql.tar.gz "${PG_SOURCE_URL}" && tar xzf postgresql.tar.gz --strip-components=1
     # rm postgresql.tar.gz
 
-# Copy all patches into the container
-COPY patches /usr/src/postgresql/patches/
+# Copy patches into the container
+COPY patches ./patches
 
 # Apply all patches matching the version (e.g., pg15_*.patch for PostgreSQL 15)
 RUN PATCH_PREFIX="pg${PG_VERSION%%.*}-" && \
