@@ -67,6 +67,8 @@ RUN echo "listen_addresses='*'" >> /var/lib/postgresql/data/postgresql.conf && \
 # Expose PostgreSQL default port
 EXPOSE 5432
 
+ENTRYPOINT ["docker-entrypoint.sh"]
+
 # Start PostgreSQL server with TCP/IP and trust authentication
 CMD ["postgres", "-D", "/var/lib/postgresql/data"]
 
