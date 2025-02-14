@@ -34,6 +34,7 @@ spock_init_api(SpockProtoType typ)
 		res->write_delete = spock_json_write_delete;
 		res->write_startup_message = json_write_startup_message;
 		res->write_truncate = NULL;
+		res->write_message = NULL;
 	}
 	else
 	{
@@ -47,6 +48,7 @@ spock_init_api(SpockProtoType typ)
 		res->write_delete = spock_write_delete;
 		res->write_startup_message = write_startup_message;
 		res->write_truncate = spock_write_truncate;
+		res->write_message = spock_write_message;
 	}
 
 	return res;
