@@ -2316,6 +2316,7 @@ handle_message(StringInfo s)
 	(void) transactional; /* unused */
 
     prefix = pq_getmsgstring(s);
+	(void) prefix; /* unused unless assert-checking */
     Assert(strcmp(prefix, SPOCK_MESSAGE_PREFIX) == 0);
 
     sz = pq_getmsgint(s, sizeof(int32));
