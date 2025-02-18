@@ -12,8 +12,8 @@ on:
       ## - '**'  # Matches all branches
 
   # Run when a pull request is opened, synchronized, or reopened
-  pull_request:
-    types: [opened, synchronize, reopened]
+  ## pull_request:
+    ## types: [opened, synchronize, reopened]
     
 jobs:
   run-scripts:

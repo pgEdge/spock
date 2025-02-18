@@ -1,3 +1,6 @@
+Copyright (c) 2021-2025, pgEdge, Inc.
+-------------------------------------
+
 ## pgEdge Community License Agreement 1.0
 
 _Please note: this license is derived from the Confluent Community License Agreement 1.0. None of the terms of the Confluent license have been materially changed._
