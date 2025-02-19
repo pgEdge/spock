@@ -853,6 +853,9 @@ handle_begin(StringInfo s)
 		{
 			MyApplyWorker->use_try_block = true;
 
+			elog(LOG, "SPOCK %s: entering exception handling",
+				 MySubscription->name);
+
 			/*
 			 * If we unexpectedly terminate again with error during
 			 * exception handling, don't go into a fast error loop.
@@ -939,10 +942,27 @@ handle_commit(StringInfo s)
 
 		apply_api.on_commit();
 
+		/*
+		 * We need to write end_lsn to the commit record if we
+		 * either had no exception or if we had one in DISCARD
+		 * or TRANSDISCARD mode.
+		 */
 		if (!xact_had_exception)
 		{
-			/* We need to write end_lsn to the commit record. */
 			replorigin_session_origin_lsn = end_lsn;
+		}
+		else {
+			if (exception_behaviour == DISCARD ||
+				exception_behaviour == TRANSDISCARD)
+			{
+				replorigin_session_origin_lsn = end_lsn;
+			}
+			else
+			{
+				elog(ERROR, "SPOCK %s: Unhandled exception_behaviour %d "
+							"in spock_apply.c:handle_commit()",
+					 MySubscription->name, exception_behaviour);
+			}
 		}
 
 		/* Have the commit code adjust our logical clock if needed */
