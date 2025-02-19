@@ -99,6 +99,9 @@ CREATE TABLE spock.progress (
 	remote_node_id oid NOT NULL,
 	remote_commit_ts timestamptz NOT NULL,
 	remote_lsn pg_lsn NOT NULL,
+	remote_insert_lsn pg_lsn NOT NULL,
+	last_updated_ts timestamptz NOT NULL,
+	updated_by_decode bool NOT NULL,
 	PRIMARY KEY(node_id, remote_node_id)
 ) WITH (fillfactor=50);
 
@@ -424,28 +427,26 @@ CREATE VIEW spock.channel_summary_stats AS
   FROM spock.channel_table_stats
   GROUP BY subid, sub_name;
 
-CREATE FUNCTION spock.lag_tracker(
-    OUT slot_name text,
-    OUT commit_lsn pg_lsn,
-    OUT commit_timestamp timestamptz
-)
-RETURNS SETOF record
-AS 'MODULE_PATHNAME', 'lag_tracker_info'
-STRICT LANGUAGE C;
-
-
 CREATE VIEW spock.lag_tracker AS
-    SELECT L.slot_name, L.commit_lsn, L.commit_timestamp,
-		CASE WHEN pg_wal_lsn_diff(pg_catalog.pg_current_wal_insert_lsn(), S.write_lsn) <= 0 
-		THEN '0'::interval
-		ELSE pg_catalog.timeofday()::timestamptz - L.commit_timestamp
-		END AS replication_lag,
-		pg_wal_lsn_diff(pg_catalog.pg_current_wal_insert_lsn(), S.write_lsn) AS replication_lag_bytes
-    FROM spock.lag_tracker() L
-	LEFT JOIN pg_catalog.pg_stat_replication S ON S.application_name = L.slot_name;
+	SELECT
+		origin.node_name AS origin_name,
+		MAX(p.remote_commit_ts) AS commit_timestamp,
+		MAX(p.remote_lsn) AS last_received_lsn,
+		MAX(p.remote_insert_lsn) AS remote_insert_lsn,
+		CASE
+			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN pg_wal_lsn_diff(MAX(p.remote_insert_lsn), MAX(p.remote_lsn))
+			ELSE 0
+		END AS replication_lag_bytes,
+		CASE
+			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN now() - MAX(p.remote_commit_ts)
+			ELSE now() - MAX(p.last_updated_ts)
+		END AS replication_lag
+	FROM spock.progress p
+	LEFT JOIN spock.subscription sub ON (p.node_id = sub.sub_target and p.remote_node_id = sub.sub_origin)
+	LEFT JOIN spock.node origin ON sub.sub_origin = origin.node_id
+	GROUP BY origin.node_name;
 
-
-CREATE FUNCTION spock.md5_agg_sfunc(text, anyelement) 
+CREATE FUNCTION spock.md5_agg_sfunc(text, anyelement)
 	RETURNS text
 	LANGUAGE sql
 AS

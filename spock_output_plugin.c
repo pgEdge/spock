@@ -250,9 +250,6 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 		if (MyWalSnd != NULL)
 			MyWalSenderIdx = (MyWalSnd - WalSndCtl->walsnds) + 1;
 
-		/* Add slot to the hashtable */
-		lag_tracker_entry(NameStr(MyReplicationSlot->data.name), InvalidXLogRecPtr, 0);
-
 		/*
 		 * There's a potential corruption bug in PostgreSQL 10.1, 9.6.6, 9.5.10
 		 * and 9.4.15 that can cause reorder buffers to accumulate duplicated
@@ -632,15 +629,6 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		RESUME_INTERRUPTS();
 	}
 
-	/* Save lsn and time in hash for lag_tracker*/
-	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), commit_lsn,
-#if PG_VERSION_NUM >= 150000
-					  txn->xact_time.commit_time
-#else
-					   txn->commit_time
-#endif
-					   );
-
 	/* update progress */
 	OutputPluginUpdateProgress(ctx, false);
 
@@ -990,15 +978,6 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	/* update progress */
 	OutputPluginUpdateProgress(ctx, false);
-
-	/* Save lsn and time in hash */
-	lag_tracker_entry(NameStr(MyReplicationSlot->data.name), ctx->write_location,
-#if PG_VERSION_NUM >= 150000
-					  txn->xact_time.commit_time
-#else
-					   txn->commit_time
-#endif
-					   );
 
 	/* First check the table filter */
 	if (!spock_change_filter(data, relation, change, &att_list))

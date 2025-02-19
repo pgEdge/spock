@@ -52,7 +52,8 @@ extern TimestampTz spock_read_commit_order(StringInfo in);
 extern void spock_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
 					  TimestampTz *committime, TransactionId *remote_xid);
 extern void spock_read_commit(StringInfo in, XLogRecPtr *commit_lsn,
-					   XLogRecPtr *end_lsn, TimestampTz *committime);
+					   XLogRecPtr *end_lsn, TimestampTz *committime,
+					   XLogRecPtr *remote_insert_lsn);
 extern RepOriginId spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn);
 extern uint32 spock_read_rel(StringInfo in);
 extern SpockRelation *spock_read_insert(StringInfo in, LOCKMODE lockmode,
