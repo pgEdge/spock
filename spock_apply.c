@@ -853,7 +853,7 @@ handle_begin(StringInfo s)
 		{
 			MyApplyWorker->use_try_block = true;
 
-			elog(LOG, "SPOCK %s: entering exception handling",
+			elog(DEBUG1, "SPOCK %s: entering exception handling",
 				 MySubscription->name);
 
 			/*
