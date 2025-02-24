@@ -54,7 +54,6 @@ jobs:
       - name: Create the postgres user and data directory
         if: ${{ matrix.os == 'ubuntu-22.04' }}
         run: |
-            sudo useradd -m postgres && \
             sudo mkdir -p /var/lib/postgresql/data && \
             sudo chown -R postgres:postgres /var/lib/postgresql 
 
