@@ -3043,7 +3043,6 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 	{
 		int			rc;
 		XLogRecPtr	currentlsn;
-		bool		missing;
 
 		/* Check if the timeout period has elapsed. */
 		if (timeout_ts > 0 && GetCurrentTimestamp() > timeout_ts)
@@ -3052,8 +3051,9 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 		/* We need to see the latest rows */
 		PushActiveSnapshot(GetLatestSnapshot());
 
+		Assert(SpockCtx->apply_groups->remote_lsn != InvalidXLogRecPtr);
 		/* Retrieve the current LSN for the specified origin from spock.progress. */
-		get_progress_entry_ts(localnode, origin, &currentlsn, NULL, &missing);
+		currentlsn = SpockCtx->apply_groups->remote_lsn;
 
 		PopActiveSnapshot();
 

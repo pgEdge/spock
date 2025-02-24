@@ -427,6 +427,7 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
 	bool found = false;
 	bool missing = false;
 	TimestampTz remote_commit_ts = 0;
+	XLogRecPtr	remote_lsn;
 	XLogRecPtr	remote_insert_lsn;
 	MemoryContext oldctx;
 
@@ -466,7 +467,7 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
 	remote_commit_ts = get_progress_entry_ts(
 							MySubscription->target->id,
 							MySubscription->origin->id,
-							NULL,
+							&remote_lsn,
 							&remote_insert_lsn,
 							&missing);
 
@@ -492,6 +493,7 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
 	MyApplyWorker->apply_group->dbid = dbid;
 	MyApplyWorker->apply_group->replorigin = MySubscription->origin->id;
 	MyApplyWorker->apply_group->prev_remote_ts = remote_commit_ts;
+	MyApplyWorker->apply_group->remote_lsn = remote_lsn;
 	MyApplyWorker->apply_group->remote_insert_lsn = remote_insert_lsn;
 }
 
@@ -1115,6 +1117,7 @@ handle_commit(StringInfo s)
 
 	/* Update the value in shared memory */
 	MyApplyWorker->apply_group->prev_remote_ts = replorigin_session_origin_timestamp;
+	MyApplyWorker->apply_group->remote_lsn = replorigin_session_origin_lsn;
 	MyApplyWorker->apply_group->remote_insert_lsn = remote_insert_lsn;
 
 	/* Wakeup all waiters for waiting for the previous transaction to commit */
@@ -3665,6 +3668,8 @@ check_and_update_progress(XLogRecPtr last_received_lsn,
         oldctx = CurrentMemoryContext;
         StartTransactionCommand();
 
+		/* Update in shared memory and in the table */
+		MyApplyWorker->apply_group->remote_insert_lsn = last_received_lsn;
         update_progress_entry(MySubscription->target->id,
                               MySubscription->origin->id,
                               0,					/* do not update */
