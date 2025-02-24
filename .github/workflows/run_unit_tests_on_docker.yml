@@ -64,7 +64,7 @@ jobs:
       - name: Apply patches for PostgreSQL ${{ matrix.pgver }}
         run: |
           cd postgres
-          PATCH_DIR="../patches"
+          PATCH_DIR="../spock-private/patches"
           if [ -d "$PATCH_DIR" ]; then
             for patch in $PATCH_DIR/pg${{ matrix.pgver }}_*; do
               if [ -f "$patch" ]; then
