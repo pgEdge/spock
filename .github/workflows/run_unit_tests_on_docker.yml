@@ -1,19 +1,13 @@
 name: Docker tests
 run-name: ${{ github.actor }} is running the test schedules.
+
 on:
-  # Run at midnight (00:00) and noon (12:00) UTC every day
-  # schedule:
-  #   - cron: '0 0 * * *'    # Midnight UTC
+  push:
+    branches:
+      - gh_actions
+  pull_request:
+    types: [opened, synchronize, reopened]
 
-  # Run on any push to any branch
-   push:
-     branches: gh_actions
-      ## - '**'  # Matches all branches
-
-  # Run when a pull request is opened, synchronized, or reopened
-   pull_request:
-     types: [opened, synchronize, reopened]
-    
 jobs:
   run-scripts:
     strategy:
@@ -29,7 +23,6 @@ jobs:
 
       - name: Setup the PGDG APT repo on Linux
         if: ${{ matrix.os == 'ubuntu-22.04' }}
-        
         run: |
           sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
@@ -51,18 +44,6 @@ jobs:
               libicu-dev \
               && sudo rm -rf /var/lib/apt/lists/*
 
-      - name: Create the postgres user and data directory
-        if: ${{ matrix.os == 'ubuntu-22.04' }}
-        run: |
-            sudo mkdir -p /var/lib/postgresql/data && \
-            sudo chown -R postgres:postgres /var/lib/postgresql 
-
-      - name: Create the work directory and move into it
-        if: ${{ matrix.os == 'ubuntu-22.04' }}
-        run: |
-            sudo mkdir /usr/src/postgresql
-            sudo cd /usr/src/postgresql
-            
       - name: Clone the Postgres repo
         run: |
           git clone --depth=1 https://github.com/postgres/postgres.git postgres
@@ -80,17 +61,10 @@ jobs:
           cd postgres
           git checkout $HIGHEST_TAG
 
-      - name: Verify selected PostgreSQL tag
-        run: |
-          echo "Checked out tag: $HIGHEST_TAG"
-
-      - name: List repository files
-        run: ls -la postgres
-
       - name: Apply patches for PostgreSQL ${{ matrix.pgver }}
         run: |
           cd postgres
-          PATCH_DIR="../spock-private/patches"
+          PATCH_DIR="../patches"
           if [ -d "$PATCH_DIR" ]; then
             for patch in $PATCH_DIR/pg${{ matrix.pgver }}_*; do
               if [ -f "$patch" ]; then
@@ -102,31 +76,27 @@ jobs:
             echo "Patch directory not found: $PATCH_DIR"
           fi
 
-      - name: Verify applied patches
+      - name: Initialize and start PostgreSQL
         run: |
-            cd postgres
-            git diff --stat
+          sudo mkdir -p /usr/local/pgsql/data
+          sudo chown $USER:$USER /usr/local/pgsql/data
+          cd postgres
+          initdb -D /usr/local/pgsql/data
+          pg_ctl -D /usr/local/pgsql/data -l logfile start
 
-      - name: Build PostgreSQL
-        run: |
-            cd postgres
-            ./configure --prefix=/usr/local/pgsql
-            make -j$(nproc)
-            make install
-
-      - name: Wait for PostgreSQL to be ready
+      - name: Wait for PostgreSQL
         run: |
           echo "Waiting for PostgreSQL to be ready..."
           for i in {1..30}; do
             if pg_isready -h localhost -p 5432 -U postgres; then
               echo "PostgreSQL is ready!"
-                exit 0
+              exit 0
             fi
             echo "PostgreSQL is not ready yet. Retrying in 5 seconds..."
             sleep 5
-            done
-            echo "PostgreSQL did not become ready in time. Exiting."
-            exit 1
+          done
+          echo "PostgreSQL did not become ready in time. Exiting."
+          exit 1
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -141,5 +111,3 @@ jobs:
               python3-dev \
               python3-psycopg2 \
               python3-dotenv
-
-   
