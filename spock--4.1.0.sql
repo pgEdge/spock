@@ -430,6 +430,7 @@ CREATE VIEW spock.channel_summary_stats AS
 CREATE VIEW spock.lag_tracker AS
 	SELECT
 		origin.node_name AS origin_name,
+		n.node_name AS receiver_name,
 		MAX(p.remote_commit_ts) AS commit_timestamp,
 		MAX(p.remote_lsn) AS last_received_lsn,
 		MAX(p.remote_insert_lsn) AS remote_insert_lsn,
@@ -444,7 +445,8 @@ CREATE VIEW spock.lag_tracker AS
 	FROM spock.progress p
 	LEFT JOIN spock.subscription sub ON (p.node_id = sub.sub_target and p.remote_node_id = sub.sub_origin)
 	LEFT JOIN spock.node origin ON sub.sub_origin = origin.node_id
-	GROUP BY origin.node_name;
+	LEFT JOIN spock.node n ON n.node_id = p.node_id
+	GROUP BY origin.node_name, n.node_name;
 
 CREATE FUNCTION spock.md5_agg_sfunc(text, anyelement)
 	RETURNS text
