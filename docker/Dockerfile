@@ -16,6 +16,10 @@ RUN mkdir -p /var/run/sshd
 # Create the 'postgres' user
 RUN useradd -m -s /bin/bash postgres
 
+# Allow passwordless sudo for the postgres user inside the container
+RUN echo "postgres ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/postgres && \
+    chmod 0440 /etc/sudoers.d/postgres
+
 # Expose SSH port
 EXPOSE 22
 
