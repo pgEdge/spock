@@ -110,7 +110,12 @@ jobs:
         echo 'export PATH="/usr/local/pgsql/bin:$PATH"' >> $GITHUB_ENV
         echo 'export PGDATA="/var/lib/postgresql/data"' >> $GITHUB_ENV
 
-    - name: Clone Postgres from Github
+    - name: Enable Passwordless Sudo for postgres
+      run: |
+        echo "postgres ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/postgres
+        sudo chmod 0440 /etc/sudoers.d/postgres
+
+    - name: Clone Postgres and List Files Without Password
       run: |
         docker exec -u postgres platform_test bash -c "
           sudo apt-get update && sudo apt-get install -y git && \
