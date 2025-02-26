@@ -19,95 +19,86 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.ref }}
 
-      - name: Setup the PGDG APT repo on Linux
-        if: ${{ matrix.os == 'ubuntu-22.04' }}
-        run: |
-          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+    - name: configure passwordless sudo
+      run: |
+        echo "ALL ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/passwordless
+        sudo chmod 0440 /etc/sudoers.d/passwordless
 
-      - name: Install platform dependencies on Linux
-        if: ${{ matrix.os == 'ubuntu-22.04' }}
-        run: |
-          sudo apt-get update && sudo apt-get install -y \
-              build-essential \
-              libreadline-dev \
-              zlib1g-dev \
-              bison \
-              flex \
-              curl \
-              ca-certificates \
-              gcc \
-              git \
-              wget \
-              libicu-dev \
-              && sudo rm -rf /var/lib/apt/lists/*
+    - name: Verify Passwordless Sudo
+      run: |
+        sudo whoami
+        sudo pwd
 
-      - name: Clone the Postgres repo
-        run: |
-          git clone --depth=1 https://github.com/postgres/postgres.git postgres
-          cd postgres
-          git fetch --tags
+    - name: Configure Passwordless SSH
+      run: |
+        mkdir -p ~/.ssh
+        ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -q -N ""
+        cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+        chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
 
-      - name: Find the highest PostgreSQL tag for version ${{ matrix.pgver }}
-        run: |
-          cd postgres
-          HIGHEST_TAG=$(git tag -l "REL_${{ matrix.pgver }}*" | sort -V | tail -n 1)
-          echo "HIGHEST_TAG=$HIGHEST_TAG" >> $GITHUB_ENV
+    - name: Verify Passwordless SSH
+      run: |
+        ssh -o StrictHostKeyChecking=no localhost "echo passwordless SSH configured"
 
-      - name: Checkout highest version tag
-        run: |
-          cd postgres
-          git checkout $HIGHEST_TAG
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update &&
+        sudo apt-get install curl
 
-      - name: Apply patches for PostgreSQL ${{ matrix.pgver }}
-        run: |
-          cd postgres
-          PATCH_DIR="../spock-private/patches"
-          if [ -d "$PATCH_DIR" ]; then
-            for patch in $PATCH_DIR/pg${{ matrix.pgver }}_*; do
-              if [ -f "$patch" ]; then
-                echo "Applying patch: $patch"
-                git apply "$patch" || { echo "Failed to apply $patch"; exit 1; }
-              fi
-            done
-          else
-            echo "Patch directory not found: $PATCH_DIR"
+    - name: Install Python Dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        pip install python-dotenv psycopg2 psycopg 
+
+    - name: Set up Docker
+      uses: docker/setup-buildx-action@v2
+
+    - name: Build Docker Image
+      run: |
+        docker build -t platform_test docker/
+
+    - name: Create Docker Network
+      run: |
+        docker network create pg_network || true
+
+    - name: Run Docker Container
+      run: |
+        docker run -d --name platform_test --network pg_network platform_test
+
+    - name: Wait for SSH to Start
+      run: |
+        echo "Waiting for SSH to start..."
+        for i in {1..10}; do
+          if docker exec platform_test pgrep sshd > /dev/null; then
+            echo "SSHD is running!"
+            exit 0
           fi
+          echo "SSHD not ready, retrying..."
+          sleep 2
+        done
+        echo "SSHD failed to start!"
+        exit 1
 
-      - name: Initialize and start PostgreSQL
-        run: |
-          sudo mkdir -p /usr/local/pgsql/data
-          sudo chown $USER:$USER /usr/local/pgsql/data
-          cd postgres
-          initdb -D /usr/local/pgsql/data
-          pg_ctl -D /usr/local/pgsql/data -l logfile start
+    - name: Verify Container User
+      run: |
+        docker exec platform_test whoami
 
-      - name: Wait for PostgreSQL
-        run: |
-          echo "Waiting for PostgreSQL to be ready..."
-          for i in {1..30}; do
-            if pg_isready -h localhost -p 5432 -U postgres; then
-              echo "PostgreSQL is ready!"
-              exit 0
-            fi
-            echo "PostgreSQL is not ready yet. Retrying in 5 seconds..."
-            sleep 5
-          done
-          echo "PostgreSQL did not become ready in time. Exiting."
-          exit 1
+    - name: Put your test cases here:
+      run: |
+        echo "Current User: $(whoami)" > latest.log
+        echo "Current Path: $(pwd)" >> latest.log
+        cat latest.log
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+    - name: Upload Log File as Artifact
+      if: success() || failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: latest-log-${{ matrix.pgver }}
+        path: latest.log
 
-      - name: Install dependencies
-        run: |
-          sudo apt -y update
-          sudo apt install -y postgresql-client \
-              libpq-dev \
-              python3-dev \
-              python3-psycopg2 \
-              python3-dotenv
+
