@@ -48,7 +48,19 @@ jobs:
     - name: Install System Dependencies
       run: |
         sudo apt-get update &&
-        sudo apt-get install curl
+        sudo apt-get install -y \
+          build-essential \
+          libreadline-dev \
+          zlib1g-dev \
+          bison \
+          flex \
+          curl \
+          ca-certificates \
+          gcc \
+          git \
+          wget \
+          libicu-dev \
+          && sudo rm -rf /var/lib/apt/lists/*
 
     - name: Install Python Dependencies
       run: |
