@@ -105,6 +105,12 @@ jobs:
         sudo mkdir -p /var/lib/postgresql/data
         sudo chown -R postgres:postgres /var/lib/postgresql
 
+    - name: Set PostgreSQL Environment Variables
+      run: |
+        echo 'export PATH="/usr/local/pgsql/bin:$PATH"' >> $GITHUB_ENV
+        echo 'export PGDATA="/var/lib/postgresql/data"' >> $GITHUB_ENV
+
+
     - name: Put your test cases here
       run: |
         echo "Current User: $(whoami)" > latest.log
