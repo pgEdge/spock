@@ -100,6 +100,11 @@ jobs:
       run: |
         docker exec platform_test whoami
 
+    - name: Create PostgreSQL Directories
+      run: |
+        sudo mkdir -p /var/lib/postgresql/data
+        sudo chown -R postgres:postgres /var/lib/postgresql
+
     - name: Put your test cases here
       run: |
         echo "Current User: $(whoami)" > latest.log
