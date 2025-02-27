@@ -149,10 +149,11 @@ jobs:
           cd /home/postgres/postgres-source && \
           git fetch --tags && \
           MATRIX_PGVER=${{ matrix.pgver }} && \
-          LATEST_TAG=\$(git tag -l \"REL_\${MATRIX_PGVER}*\" | sort -V | tail -n 1) && \
+          LATEST_TAG=\$(git tag -l \"REL_\${MATRIX_PGVER}*\" | grep -Eo 'REL_[0-9]+_[0-9]+(_[0-9]+)?' | sort -V | tail -n 1) && \
           git checkout \$LATEST_TAG && \
           echo \"Checked out tag: \$LATEST_TAG\"
         "
+
 
     - name: Clone spock-private and list files
       env:
