@@ -154,12 +154,14 @@ jobs:
           echo \"Checked out tag: \$LATEST_TAG\"
         "
 
-    - name: Clone spock-private into the Container
+    - name: Clone spock-private and list files
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         docker exec -u postgres spock bash -c "
-          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-private.git /home/postgres/spock-private
+          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-private.git /home/postgres/spock-private && \
+          cd /home/postgres/spock-private && \
+          ls -la
         "
 
     - name: Put your test cases here
