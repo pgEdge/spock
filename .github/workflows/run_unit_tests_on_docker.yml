@@ -120,20 +120,14 @@ jobs:
       run: |
         git clone https://github.com/postgres/postgres.git $GITHUB_WORKSPACE/postgres-source
 
-
-    - name: List PostgreSQL Source Directory Inside Container
-      run: |
-        docker exec -u postgres platform_test ls -la /home/postgres/postgres-source
-
     - name: find out what's out here
       run: |
-          ls -la /home/postgres/postgres-source
+          ls -la /home/runner/work/spock-private/spock-private/postgres-source
 
     - name: Checkout Latest PostgreSQL Tag
       run: |
-        cd /home/postgres/postgres-source
-        git checkout $LATEST_TAG
-        echo $LATEST_TAG
+        cd /home/runner/work/spock-private/spock-private/postgres-source
+        git fetch tag
 
     - name: Put your test cases here
       run: |
