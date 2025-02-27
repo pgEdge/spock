@@ -173,18 +173,11 @@ jobs:
           for patch in \$PATCH_DIR/pg\${MATRIX_PGVER}_*; do \
             if [ -f \"\$patch\" ]; then \
               echo \"Applying patch: \$patch\" && \
-              patch -p1 < \"\$patch\" || { echo \"Failed to apply \$patch\"; exit 1; } \
+              patch -p1 < \"\$patch\" && \
+              echo \"Successfully applied: \$patch\" || { echo \"Failed to apply: \$patch\"; exit 1; } \
             fi \
           done
         "
-
-    - name: Show Detailed Patch Differences
-      run: |
-        docker exec -u postgres spock bash -c "
-          cd /home/postgres/postgres-source && \
-          git diff
-        "
-
 
     - name: Put your test cases here
       run: |
