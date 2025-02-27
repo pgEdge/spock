@@ -125,12 +125,12 @@ jobs:
           ls -la
         "
 
-- name: Find Latest PostgreSQL Tag
-        run: |
-          cd /home/postgres/postgres-source
-          git fetch --tags
-          LATEST_TAG=$(git tag -l "REL_${{ matrix.pgver }}*" | sort -V | tail -n 1)
-          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+    - name: Find Latest PostgreSQL Tag
+      run: |
+        cd /home/postgres/postgres-source
+        git fetch --tags
+        LATEST_TAG=$(git tag -l "REL_${{ matrix.pgver }}*" | sort -V | tail -n 1)
+        echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
 
       - name: Checkout Latest PostgreSQL Tag
         run: |
