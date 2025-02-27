@@ -129,6 +129,14 @@ jobs:
       run: |
         docker exec -u postgres platform_test ls -la /home/postgres/postgres-source
 
+    - name: List All Available Tags in Cloned Repository
+      run: |
+        docker exec -u postgres platform_test bash -c "
+          cd /home/postgres/postgres-source && \
+          git fetch --tags && \
+          git tag -l
+        "
+
     - name: Put your test cases here
       run: |
         echo "Current User: $(whoami)" > latest.log
