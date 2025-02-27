@@ -178,6 +178,14 @@ jobs:
           done
         "
 
+    - name: Show Detailed Patch Differences
+      run: |
+        docker exec -u postgres spock bash -c "
+          cd /home/postgres/postgres-source && \
+          git diff
+        "
+
+
     - name: Put your test cases here
       run: |
         echo "Current User: $(whoami)" > latest.log
