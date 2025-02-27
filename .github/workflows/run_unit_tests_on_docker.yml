@@ -116,26 +116,18 @@ jobs:
         sudo chmod 0440 /etc/sudoers.d/postgres
         sudo usermod -aG sudo postgres  # Add postgres user to sudo group
 
-    - name: Clone Postgres and List Files Without Password
+    - name: Clone PostgreSQL Repo in GH Actions Runner
       run: |
-        docker exec -u postgres platform_test bash -c "
-          sudo apt-get update && sudo apt-get install -y git && \
-          git clone https://github.com/postgres/postgres.git /home/postgres/postgres-source && \
-          cd /home/postgres/postgres-source && \
-          ls -la
-        "
+        git clone https://github.com/postgres/postgres.git $GITHUB_WORKSPACE/postgres-source
+
+
+    - name: List PostgreSQL Source Directory Inside Container
+      run: |
+        docker exec -u postgres platform_test ls -la /home/postgres/postgres-source
 
     - name: find out what's out here
       run: |
           ls -la /home/postgres/postgres-source
-          
-
-    - name: Find Latest PostgreSQL Tag
-      run: |
-        docker exec -u postgres platform_test bash -c "
-          cd /home/postgres/postgres-source && \
-          git fetch --tags && \
-        "
 
     - name: Checkout Latest PostgreSQL Tag
       run: |
