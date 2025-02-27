@@ -154,7 +154,6 @@ jobs:
           echo \"Checked out tag: \$LATEST_TAG\"
         "
 
-
     - name: Clone spock-private and list files
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -163,6 +162,20 @@ jobs:
           git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-private.git /home/postgres/spock-private && \
           cd /home/postgres/spock-private && \
           ls -la
+        "
+
+    - name: Apply PostgreSQL Patches for matrix.pgver
+      run: |
+        docker exec -u postgres spock bash -c "
+          cd /home/postgres/postgres-source && \
+          PATCH_DIR=/home/postgres/spock-private/patches && \
+          MATRIX_PGVER=${{ matrix.pgver }} && \
+          for patch in \$PATCH_DIR/pg\${MATRIX_PGVER}_*; do \
+            if [ -f \"\$patch\" ]; then \
+              echo \"Applying patch: \$patch\" && \
+              patch -p1 < \"\$patch\" || { echo \"Failed to apply \$patch\"; exit 1; } \
+            fi \
+          done
         "
 
     - name: Put your test cases here
