@@ -134,10 +134,10 @@ jobs:
         echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
 
     - name: Checkout Latest PostgreSQL Tag
-        run: |
-          cd /home/postgres/postgres-source
-          git checkout $LATEST_TAG
-          echo $LATEST_TAG
+      run: |
+        cd /home/postgres/postgres-source
+        git checkout $LATEST_TAG
+        echo $LATEST_TAG
 
     - name: Put your test cases here
       run: |
