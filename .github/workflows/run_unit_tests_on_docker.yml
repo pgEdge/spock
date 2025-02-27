@@ -125,7 +125,7 @@ jobs:
           ls -la
         "
 
-    - name: Verify Cloned Repository Inside Container
+    - name: Verify Cloned Postgres Repository
       run: |
         docker exec -u postgres spock ls -la /home/postgres/postgres-source
 
@@ -169,7 +169,10 @@ jobs:
         docker exec -u postgres spock bash -c "
           cd /home/postgres/postgres-source && \
           PATCH_DIR=/home/postgres/spock-private/patches && \
+          echo $PATCH_DIR && \
+          ls -la /home/postgres/spock-private/patches && \
           MATRIX_PGVER=${{ matrix.pgver }} && \
+          echo $MATRIX_PGVER && \
           for patch in \$PATCH_DIR/pg\${MATRIX_PGVER}_*; do \
             if [ -f \"\$patch\" ]; then \
               echo \"Applying patch: \$patch\" && \
