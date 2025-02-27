@@ -137,6 +137,13 @@ jobs:
           git tag -l
         "
 
+    - name: Display Current PostgreSQL Version from Matrix
+      run: |
+        echo "Current matrix.pgver: ${{ matrix.pgver }}"
+        whoami
+        pwd
+        ls -la
+
     - name: Put your test cases here
       run: |
         echo "Current User: $(whoami)" > latest.log
