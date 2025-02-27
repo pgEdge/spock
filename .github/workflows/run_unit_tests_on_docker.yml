@@ -157,8 +157,10 @@ jobs:
     - name: Clone spock-private Inside the Running Container
       run: |
         docker exec -u postgres platform_test bash -c "
-          git clone https://github.com/pgedge/spock-private.git /home/postgres/spock-private
+          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/pgedge/spock-private.git /home/postgres/spock-private
         "
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Put your test cases here
       run: |
