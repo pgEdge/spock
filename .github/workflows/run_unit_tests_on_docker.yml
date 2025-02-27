@@ -127,11 +127,13 @@ jobs:
 
     - name: Find Latest PostgreSQL Tag
       run: |
-        cd /home/postgres/postgres-source
-        git fetch --tags
-        MATRIX_PGVER=${{ matrix.pgver }}
-        LATEST_TAG=$(git tag -l "REL_${MATRIX_PGVER}*" | sort -V | tail -n 1)
-        echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+        docker exec -u postgres platform_test bash -c "
+          cd /home/postgres/postgres-source && \
+          git fetch --tags && \
+          MATRIX_PGVER=${{ matrix.pgver }} && \
+          LATEST_TAG=\$(git tag -l \"REL_\${MATRIX_PGVER}*\" | sort -V | tail -n 1) && \
+          echo \"LATEST_TAG=\$LATEST_TAG\" >> /home/postgres/.bashrc
+        "
 
     - name: Checkout Latest PostgreSQL Tag
       run: |
