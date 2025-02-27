@@ -129,10 +129,11 @@ jobs:
       run: |
         cd /home/postgres/postgres-source
         git fetch --tags
-        LATEST_TAG=$(git tag -l "REL_${{ matrix.pgver }}*" | sort -V | tail -n 1)
+        MATRIX_PGVER=${{ matrix.pgver }}
+        LATEST_TAG=$(git tag -l "REL_${MATRIX_PGVER}*" | sort -V | tail -n 1)
         echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
 
-      - name: Checkout Latest PostgreSQL Tag
+    - name: Checkout Latest PostgreSQL Tag
         run: |
           cd /home/postgres/postgres-source
           git checkout $LATEST_TAG
