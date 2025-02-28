@@ -100,6 +100,25 @@ jobs:
       run: |
         docker exec spock whoami
 
+    - name: Install System Dependencies Inside the Container
+      run: |
+        docker exec -u root spock bash -c "
+          apt-get update && \
+          apt-get install -y \
+            build-essential \
+            libreadline-dev \
+            zlib1g-dev \
+            bison \
+            flex \
+            curl \
+            ca-certificates \
+            gcc \
+            git \
+            wget \
+            libicu-dev && \
+          rm -rf /var/lib/apt/lists/*
+        "
+
     - name: Create PostgreSQL Directories
       run: |
         sudo mkdir -p /var/lib/postgresql/data
