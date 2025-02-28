@@ -166,23 +166,25 @@ jobs:
 
     - name: Apply PostgreSQL Patches for matrix.pgver
       run: |
-        docker exec -u postgres spock bash -c "
+        docker exec -u postgres spock bash -c '
           cd /home/postgres/postgres-source && \
-          PATCH_DIR=/home/postgres/spock-private/patches && \
-          echo $PATCH_DIR && \
-          MATRIX_PGVER=${{ matrix.pgver }} && \
-          echo $MATRIX_PGVER && \
-          POSTGRES_DIR=/home/postgres/postgres-source
-          echo $POSTGRES_DIR
+          PATCH_DIR="/home/postgres/spock-private/patches" && \
+          MATRIX_PGVER="${{ matrix.pgver }}" && \
+          POSTGRES_DIR="/home/postgres/postgres-source" && \
+          
+          echo "Patch Directory: $PATCH_DIR"
+          echo "PostgreSQL Version: $MATRIX_PGVER"
+          echo "Postgres Source Directory: $POSTGRES_DIR"
 
-          ls $PATCH_DIR/pg$MATRIX_PGVER
-          for f in *; do
-            echo "File -> $f"
-            $PATCH_NAME=$f
-            echo $POSTGRES_DIR patch -p1 < $PATCH_DIR/$PATCH_NAME       
-            echo "Move along"
+          if compgen -G "$PATCH_DIR/pg${MATRIX_PGVER}_*.patch" > /dev/null; then
+            for PATCH_FILE in $PATCH_DIR/pg${MATRIX_PGVER}_*.patch; do
+              echo "Applying patch: $PATCH_FILE"
+              patch -p1 < "$PATCH_FILE" && echo "Successfully applied: $PATCH_FILE" || { echo "Failed to apply: $PATCH_FILE"; exit 1; }
             done
-        "
+          else
+            echo "No patches found for pg$MATRIX_PGVER."
+          fi
+        '
 
     - name: Put your test cases here
       run: |
