@@ -252,7 +252,7 @@ jobs:
           pg_config 
         "
 
-    - name: Copy COMPAT Directory for matrix.pgver
+    - name: Copy compat Directory for matrix.pgver
       run: |
         docker exec -u postgres spock bash -c '
           SPOCK_DIR="/home/postgres/spock-private/" && \
@@ -263,7 +263,7 @@ jobs:
           echo "PostgreSQL Version: $MATRIX_PGVER" && \
           echo "Postgres Source Directory: $POSTGRES_DIR" && \
 
-          COMPAT_DIR="${SPOCK_DIR}COMPAT${MATRIX_PGVER}" && \
+          COMPAT_DIR="${SPOCK_DIR}compat${MATRIX_PGVER}" && \
           if [ -d "$COMPAT_DIR" ]; then \
             echo "Copying contents of $COMPAT_DIR to $SPOCK_DIR..." && \
             cp -r "$COMPAT_DIR"/* "$SPOCK_DIR" && \
