@@ -175,6 +175,8 @@ jobs:
           echo "Patch Directory: $PATCH_DIR"
           echo "PostgreSQL Version: $MATRIX_PGVER"
           echo "Postgres Source Directory: $POSTGRES_DIR"
+          
+          ls $PATCH_DIR
 
           if compgen -G "$PATCH_DIR/pg${MATRIX_PGVER}_*.patch" > /dev/null; then
             for PATCH_FILE in $PATCH_DIR/pg${MATRIX_PGVER}_*.patch; do
