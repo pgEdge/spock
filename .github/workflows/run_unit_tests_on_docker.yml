@@ -268,11 +268,12 @@ jobs:
             echo "Copying contents of $COMPAT_DIR to $SPOCK_DIR..." && \
             cp -r "$COMPAT_DIR"/* "$SPOCK_DIR" && \
             echo "Successfully copied contents of $COMPAT_DIR." && \
+            ls -la "$COMPAT_DIR"; \
           else \
-            echo "Error: Directory $COMPAT_DIR does not exist!" && exit 1; && \
-            ls -la $COMPAT_DIR && \
-          fi && \
-          ls -la $COMPAT_DIR
+            echo "Error: Directory $COMPAT_DIR does not exist!" && \
+            ls -la "$COMPAT_DIR" || echo "Directory $COMPAT_DIR does not exist"; \
+            exit 1; \
+          fi
         '
 
     - name: Build and Install Spock
