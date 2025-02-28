@@ -237,6 +237,19 @@ jobs:
           /usr/local/pgsql/bin/postmaster -D \$PGDATA > /home/postgres/postgres.log 2>&1 &
         "
 
+    - name: Locate pg_config and Update PATH
+      run: |
+        docker exec -u postgres spock bash -c "
+          PG_CONFIG_PATH=\$(find /usr/local/pgsql -type f -name pg_config | head -n 1) && \
+          if [ -z \"\$PG_CONFIG_PATH\" ]; then
+            echo 'Error: pg_config not found' && exit 1
+          fi && \
+          PG_BIN_DIR=\$(dirname \"\$PG_CONFIG_PATH\") && \
+          echo \"Found pg_config in: \$PG_BIN_DIR\" && \
+          echo \"export PATH=\$PG_BIN_DIR:\$PATH\" >> ~/.bashrc && \
+          export PATH=\$PG_BIN_DIR:\$PATH && \
+          echo \"pg_config location successfully added to PATH\"
+        "
 
     - name: Put your test cases here
       run: |
