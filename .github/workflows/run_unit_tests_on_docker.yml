@@ -173,12 +173,14 @@ jobs:
           MATRIX_PGVER=${{ matrix.pgver }} && \
           echo $MATRIX_PGVER && \
           POSTGRES_DIR=/home/postgres/postgres-source
-          ls /home/postgres/spock-private/patches/pg16*
+          echo $POSTGRES_DIR
+
+          ls $PATCH_DIR/$MATRIX_PGVER
           for f in *; do
             echo "File -> $f"
-            PATCH_NAME-$f
-            POSTGRES_DIR/patch -p1 <../PATCH_DIR/PATCH_NAME       
-            echo "Do the next command"
+            $PATCH_NAME=$f
+            echo $POSTGRES_DIR/patch -p1 <../$PATCH_DIR/$PATCH_NAME       
+            echo "Move along"
             done
         "
 
