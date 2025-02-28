@@ -173,10 +173,11 @@ jobs:
           ls -la /home/postgres/spock-private/patches && \
           MATRIX_PGVER=${{ matrix.pgver }} && \
           echo $MATRIX_PGVER && \
-          for patch in \$PATCH_DIR/pg\${MATRIX_PGVER}_*; do \
-            if [ -f \"\$patch\" ]; then \
+          echo \"Applying patches for PostgreSQL version: \${MATRIX_PGVER}\" && \
+          for patch in \$(ls \$PATCH_DIR | grep -E '^pg'\"\${MATRIX_PGVER}\"'_[^/]+\.patch$'); do \
+            if [ -f \"\$PATCH_DIR/\$patch\" ]; then \
               echo \"Applying patch: \$patch\" && \
-              patch -p1 < \"\$patch\" && \
+              patch -p1 < \"\$PATCH_DIR/\$patch\" && \
               echo \"Successfully applied: \$patch\" || { echo \"Failed to apply: \$patch\"; exit 1; } \
             fi \
           done
