@@ -271,6 +271,7 @@ jobs:
             ls -la "$SPOCK_DIR"; \
           else \
             echo "Error: Directory $COMPAT_DIR does not exist!" && exit 1; \
+            ls -la $COMPAT_DIR
           fi
         '
 
