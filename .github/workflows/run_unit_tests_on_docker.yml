@@ -189,6 +189,15 @@ jobs:
           fi
         '
 
+    - name: Configure, Build, and Install PostgreSQL
+      run: |
+        docker exec -u postgres spock bash -c "
+          cd /home/postgres/postgres-source && \
+          ./configure --prefix=/usr/local/pgsql --without-icu && \
+          make -j\$(nproc) && \
+          sudo make install
+        "
+
     - name: Put your test cases here
       run: |
         echo "Current User: $(whoami)" > latest.log
