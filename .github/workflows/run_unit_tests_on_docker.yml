@@ -175,11 +175,11 @@ jobs:
           POSTGRES_DIR=/home/postgres/postgres-source
           echo $POSTGRES_DIR
 
-          ls $PATCH_DIR/$MATRIX_PGVER
+          ls $PATCH_DIR/pg$MATRIX_PGVER
           for f in *; do
             echo "File -> $f"
             $PATCH_NAME=$f
-            echo $POSTGRES_DIR/patch -p1 <../$PATCH_DIR/$PATCH_NAME       
+            echo $POSTGRES_DIR patch -p1 < $PATCH_DIR/$PATCH_NAME       
             echo "Move along"
             done
         "
