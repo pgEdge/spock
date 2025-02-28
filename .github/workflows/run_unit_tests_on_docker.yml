@@ -249,6 +249,17 @@ jobs:
           echo \"export PATH=\$PG_BIN_DIR:\$PATH\" >> ~/.bashrc && \
           export PATH=\$PG_BIN_DIR:\$PATH && \
           echo \"pg_config location successfully added to PATH\"
+          pg_config 
+        "
+
+    - name: Build and Install Spock
+      run: |
+        docker exec -u postgres spock bash -c "
+          cd /home/postgres/spock-private && \
+          echo 'Building Spock extension...' && \
+          make && \
+          echo 'Installing Spock extension...' && \
+          make install
         "
 
     - name: Put your test cases here
