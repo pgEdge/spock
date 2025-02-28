@@ -177,9 +177,10 @@ jobs:
           echo "Postgres Source Directory: $POSTGRES_DIR"
           
           ls $PATCH_DIR
+          ls $PATCH_DIR/pg${MATRIX_PGVER}-*.diff
 
-          if compgen -G "$PATCH_DIR/pg${MATRIX_PGVER}-*.patch" > /dev/null; then
-            for PATCH_FILE in $PATCH_DIR/pg${MATRIX_PGVER}-*.patch; do
+          if compgen -G "$PATCH_DIR/pg${MATRIX_PGVER}-*.diff" > /dev/null; then
+            for PATCH_FILE in $PATCH_DIR/pg${MATRIX_PGVER}-*.diff; do
               echo "Applying patch: $PATCH_FILE"
               patch -p1 < "$PATCH_FILE" && echo "Successfully applied: $PATCH_FILE" || { echo "Failed to apply: $PATCH_FILE"; exit 1; }
             done
