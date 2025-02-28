@@ -170,17 +170,10 @@ jobs:
           cd /home/postgres/postgres-source && \
           PATCH_DIR=/home/postgres/spock-private/patches && \
           echo $PATCH_DIR && \
-          ls -la /home/postgres/spock-private/patches && \
           MATRIX_PGVER=${{ matrix.pgver }} && \
           echo $MATRIX_PGVER && \
-          echo \"Applying patches for PostgreSQL version: \${MATRIX_PGVER}\" && \
-          for patch in \$(ls \$PATCH_DIR | grep -E '^pg'\"\${MATRIX_PGVER}\"'_[^/]+\.patch$'); do \
-            if [ -f \"\$PATCH_DIR/\$patch\" ]; then \
-              echo \"Applying patch: \$patch\" && \
-              patch -p1 < \"\$PATCH_DIR/\$patch\" && \
-              echo \"Successfully applied: \$patch\" || { echo \"Failed to apply: \$patch\"; exit 1; } \
-            fi \
-          done
+          
+          ls -la /home/postgres/spock-private/patches/pg16*
         "
 
     - name: Put your test cases here
