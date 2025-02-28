@@ -217,11 +217,18 @@ jobs:
           sudo make install
         "
 
-    - name: Initialize a database and start the postmaster
+    - name: Create the PostgreSQL Data Directory
+      run: |
+        docker exec -u root spock bash -c "
+          mkdir -p /var/lib/postgresql/data && \
+          chown -R postgres:postgres /var/lib/postgresql && \
+          chmod 700 /var/lib/postgresql/data
+        "
+
+    - name: Initialize the cluster and start the postmaster
       run: |
         docker exec -u postgres spock bash -c "
           export PGDATA=/var/lib/postgresql/data && \
-          mkdir -p \$PGDATA && \
           if [ ! -f \$PGDATA/PG_VERSION ]; then
             echo 'Initializing PostgreSQL database...'
             /usr/local/pgsql/bin/initdb -D \$PGDATA
@@ -229,6 +236,7 @@ jobs:
           echo 'Starting PostgreSQL postmaster...' && \
           /usr/local/pgsql/bin/postmaster -D \$PGDATA > /home/postgres/postgres.log 2>&1 &
         "
+
 
     - name: Put your test cases here
       run: |
