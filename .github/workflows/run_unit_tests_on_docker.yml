@@ -138,6 +138,7 @@ jobs:
         docker exec -u postgres spock bash -c "
           git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-private.git /home/postgres/spock-private && \
           cd /home/postgres/spock-private && \
+          ls -la
         "
 
     - name: Apply PostgreSQL Patches for matrix.pgver
