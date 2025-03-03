@@ -74,10 +74,6 @@ jobs:
         echo "SSHD failed to start!"
         exit 1
 
-    - name: Verify Container User
-      run: |
-        docker exec spock whoami
-
     - name: Install System Dependencies Inside the Container
       run: |
         docker exec -u root spock bash -c "
@@ -133,12 +129,6 @@ jobs:
           git fetch --tags && \
           git tag -l
         "
-
-    - name: Display Current PostgreSQL Version from Matrix
-      run: |
-        echo "Current matrix.pgver: ${{ matrix.pgver }}"
-        whoami
-        pwd
 
     - name: Checkout Latest PostgreSQL Tag for matrix.pgver
       run: |
