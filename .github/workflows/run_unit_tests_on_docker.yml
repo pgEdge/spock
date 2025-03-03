@@ -196,17 +196,27 @@ jobs:
           chmod 700 /var/lib/postgresql/data
         "
 
-    - name: Initialize the cluster and start the postmaster
+    - name: Initialize PostgreSQL Cluster for matrix.pgver
       run: |
+        PGPORT=$((5400 + ${{ matrix.pgver }}))  # Assign a unique port
+        PGDATA_DIR="/var/lib/postgresql/data-${{ matrix.pgver }}"  # Unique data directory
+
+        echo "Initializing PostgreSQL ${{ matrix.pgver }} Cluster..."
+        echo "Using PGDATA: $PGDATA_DIR"
+        echo "Using PGPORT: $PGPORT"
+
         docker exec -u postgres spock-${{ matrix.pgver }} bash -c "
-          export PGDATA=/var/lib/postgresql/data && \
+          export PGDATA=$PGDATA_DIR && export PGPORT=$PGPORT
+          mkdir -p \$PGDATA
+
           if [ ! -f \$PGDATA/PG_VERSION ]; then
-            echo 'Initializing PostgreSQL database...'
+            echo 'Running initdb for PostgreSQL ${{ matrix.pgver }}...'
             /usr/local/pgsql/bin/initdb -D \$PGDATA
-          fi && \
-          echo 'Starting PostgreSQL postmaster...' && \
-          /usr/local/pgsql/bin/postmaster -D \$PGDATA > /home/postgres/postgres.log 2>&1 &
+          fi
         "
+
+        echo "PGPORT=$PGPORT" >> $GITHUB_ENV
+        echo "PGDATA=$PGDATA_DIR" >> $GITHUB_ENV
 
     - name: Locate pg_config and Update PATH
       run: |
@@ -285,14 +295,22 @@ jobs:
 
     - name: Ensure PostgreSQL is Running & List Available Extensions
       run: |
+        PGPORT=$((5400 + ${{ matrix.pgver }}))  # Match unique port
+        PGDATA_DIR="/var/lib/postgresql/data-${{ matrix.pgver }}"  # Match unique data dir
+    
+        echo "Checking if PostgreSQL is running for PG ${{ matrix.pgver }} at port $PGPORT..."
+
         docker exec -u postgres spock-${{ matrix.pgver }} bash -c "
-          export PGDATA=/var/lib/postgresql/data && \
-          if ! pg_isready -q; then
+          export PGDATA=$PGDATA_DIR && export PGPORT=$PGPORT
+          PATH=/usr/local/pgsql/bin:$PATH  # Ensure pg_isready is available
+
+          if ! /usr/local/pgsql/bin/pg_isready -p $PGPORT; then
             echo 'PostgreSQL is not ready. Starting it now...'
-            /usr/local/pgsql/bin/pg_ctl -D \$PGDATA start && sleep 5
-          fi && \
-          echo 'PostgreSQL is running. Listing extensions:' && \
-          /usr/local/pgsql/bin/psql -d postgres -c 'SELECT * FROM pg_available_extensions;'
+            /usr/local/pgsql/bin/pg_ctl -D \$PGDATA -o \"-p \$PGPORT\" start && sleep 5
+          fi
+      
+          echo 'PostgreSQL is running. Listing extensions:'
+          /usr/local/pgsql/bin/psql -d postgres -p $PGPORT -c 'SELECT * FROM pg_available_extensions;'
         "
 
     - name: Put your test cases here
