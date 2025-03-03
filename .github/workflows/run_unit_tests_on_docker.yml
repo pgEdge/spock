@@ -28,9 +28,6 @@ jobs:
       run: |
         echo "ALL ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/passwordless
         sudo chmod 0440 /etc/sudoers.d/passwordless
-
-    - name: Verify Passwordless Sudo
-      run: |
         sudo whoami
         sudo pwd
 
@@ -40,9 +37,6 @@ jobs:
         ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -q -N ""
         cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
         chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
-
-    - name: Verify Passwordless SSH
-      run: |
         ssh -o StrictHostKeyChecking=no localhost "echo passwordless SSH configured"
 
     - name: Set up Docker
@@ -106,26 +100,25 @@ jobs:
           rm -rf /var/lib/apt/lists/*
         "
 
-    - name: Ensure Passwordless Sudo for postgres
+    - name: Ensure Passwordless sudo for postgres user
       run: |
         echo "postgres ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/postgres
         sudo chmod 0440 /etc/sudoers.d/postgres
         sudo usermod -aG sudo postgres  # Add postgres user to sudo group
 
-    - name: Clone Postgres Repo and List Files
+    - name: Clone the Postgres repo and list the files
       run: |
         docker exec -u postgres spock-${{ matrix.pgver }} bash -c "
           sudo apt-get update && sudo apt-get install -y git && \
           git clone https://github.com/postgres/postgres.git /home/postgres/postgres-source && \
-          cd /home/postgres/postgres-source && \
-          ls -la
+          cd /home/postgres/postgres-source
         "
 
     - name: Verify Cloned Postgres Repository
       run: |
         docker exec -u postgres spock-${{ matrix.pgver }} ls -la /home/postgres/postgres-source
 
-    - name: List All Available Tags in Cloned Repository
+    - name: List all available tags in the cloned Postgres repository
       run: |
         docker exec -u postgres spock-${{ matrix.pgver }} bash -c "
           cd /home/postgres/postgres-source && \
@@ -133,7 +126,7 @@ jobs:
           git tag -l
         "
 
-    - name: Checkout Latest PostgreSQL Tag that matches matrix.pgver
+    - name: Checkout the latest PostgreSQL tag that matches matrix.pgver
       run: |
         docker exec -u postgres spock-${{ matrix.pgver }} bash -c "
           cd /home/postgres/postgres-source && \
@@ -154,7 +147,7 @@ jobs:
           ls -la
         "
 
-    - name: Apply PostgreSQL Patches for matrix.pgver
+    - name: Apply the spock-private repo patches that match matrix.pgver
       run: |
         docker exec -u postgres spock-${{ matrix.pgver }} bash -c '
           cd /home/postgres/postgres-source && \
@@ -179,7 +172,7 @@ jobs:
           fi
         '
 
-    - name: Configure, Build, and Install PostgreSQL
+    - name: Configure, build, and install PostgreSQL
       run: |
         docker exec -u postgres spock-${{ matrix.pgver }} bash -c "
           cd /home/postgres/postgres-source && \
@@ -188,7 +181,7 @@ jobs:
           sudo make install
         "
 
-    - name: Create the PostgreSQL Data Directory
+    - name: Create the PostgreSQL data directory
       run: |
         docker exec -u root spock-${{ matrix.pgver }} bash -c "
           mkdir -p /var/lib/postgresql/data && \
@@ -293,24 +286,27 @@ jobs:
           make install
         "
 
-    - name: Ensure PostgreSQL is Running & List Available Extensions
+    - name: Ensure PostgreSQL is Running, List Extensions, and Create Spock Extension
       run: |
         PGPORT=$((5400 + ${{ matrix.pgver }}))  # Match unique port
         PGDATA_DIR="/var/lib/postgresql/data-${{ matrix.pgver }}"  # Match unique data dir
-    
+
         echo "Checking if PostgreSQL is running for PG ${{ matrix.pgver }} at port $PGPORT..."
 
         docker exec -u postgres spock-${{ matrix.pgver }} bash -c "
           export PGDATA=$PGDATA_DIR && export PGPORT=$PGPORT
           PATH=/usr/local/pgsql/bin:$PATH  # Ensure pg_isready is available
 
-          if ! /usr/local/pgsql/bin/pg_isready -p $PGPORT; then
+          if ! /usr/local/pgsql/bin/pg_isready -p \$PGPORT; then
             echo 'PostgreSQL is not ready. Starting it now...'
             /usr/local/pgsql/bin/pg_ctl -D \$PGDATA -o \"-p \$PGPORT\" start && sleep 5
           fi
-      
-          echo 'PostgreSQL is running. Listing extensions:'
-          /usr/local/pgsql/bin/psql -d postgres -p $PGPORT -c 'SELECT * FROM pg_available_extensions;'
+
+          echo 'PostgreSQL is running. Listing available extensions:'
+          /usr/local/pgsql/bin/psql -d postgres -p \$PGPORT -c 'SELECT * FROM pg_available_extensions;'
+
+          echo 'Creating Spock extension...'
+          /usr/local/pgsql/bin/psql -d postgres -p \$PGPORT -c 'CREATE EXTENSION spock;'
         "
 
     - name: Put your test cases here
