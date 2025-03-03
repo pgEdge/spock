@@ -281,12 +281,16 @@ jobs:
       run: |
         docker exec -u postgres spock bash -c "
           source /home/postgres/.bashrc && \
-          source /home/postgres/.profile && \
-          export PATH=\$PATH && \
           cd /home/postgres/spock-private && \
           echo 'Building Spock extension...' && \
-          make && \
-          echo 'Installing Spock extension...' && \
+          make
+        "
+
+    - name: Install Spock as Root
+      run: |
+        docker exec -u root spock bash -c "
+          cd /home/postgres/spock-private && \
+          echo 'Installing Spock extension as root...' && \
           make install
         "
 
