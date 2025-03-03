@@ -301,6 +301,12 @@ jobs:
     - name: Make Install Spock
       run: |
         docker exec -u root spock bash -c "
+          PG_CONFIG_PATH=\$(find /usr/local/pgsql -type f -name pg_config | head -n 1) && \
+          if [ -z \"\$PG_CONFIG_PATH\" ]; then \
+            echo 'Error: pg_config not found!' && exit 1; \
+          fi && \
+          export PATH=\$(dirname \"\$PG_CONFIG_PATH\"):\$PATH && \
+          echo \"pg_config location successfully added to PATH: \$(dirname \"\$PG_CONFIG_PATH\")\" && \
           cd /home/postgres/spock-private && \
           echo 'Installing Spock extension as root...' && \
           make install
