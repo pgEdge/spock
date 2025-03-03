@@ -58,27 +58,33 @@ jobs:
 
     - name: Run Docker Container with Unique Port
       run: |
-        PGPORT=$((5400 + ${{ matrix.pgver }}))  # Assign a port like 5415, 5416, 5417
-        echo "Using PostgreSQL Port: $PGPORT"
+        PGPORT=$((5400 + ${{ matrix.pgver }}))  # Assign unique ports (5415, 5416, 5417)
+        CONTAINER_NAME=spock-${{ matrix.pgver }}  # Unique container name
     
-        docker run -d --name spock-${{ matrix.pgver }} --network pg_network \
+        echo "Starting PostgreSQL container: $CONTAINER_NAME on port $PGPORT"
+    
+        docker run -d --name $CONTAINER_NAME --network pg_network \
           -e PGPORT=$PGPORT \
           -e POSTGRES_USER=postgres \
           -e POSTGRES_DB=postgres \
-          -p $PGPORT:5432 spock
-
+          -p $PGPORT:5432 spock || { echo "Failed to start container: $CONTAINER_NAME"; exit 1; }
+    
     - name: Wait for SSH to Start
       run: |
-        echo "Waiting for SSH to start..."
+        CONTAINER_NAME=spock-${{ matrix.pgver }}  # Match dynamic container name
+        echo "Waiting for SSH to start in container: $CONTAINER_NAME..."
+    
         for i in {1..10}; do
-          if docker exec spock pgrep sshd > /dev/null; then
+          if docker exec $CONTAINER_NAME pgrep sshd > /dev/null 2>&1; then
             echo "SSHD is running!"
             exit 0
           fi
           echo "SSHD not ready, retrying..."
           sleep 2
         done
-        echo "SSHD failed to start!"
+    
+        echo "SSHD failed to start in $CONTAINER_NAME!"
+        docker logs $CONTAINER_NAME  # Print logs for debugging
         exit 1
 
     - name: Install System Dependencies Inside the Container
