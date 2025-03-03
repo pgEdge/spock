@@ -93,16 +93,6 @@ jobs:
           rm -rf /var/lib/apt/lists/*
         "
 
-    - name: Create PostgreSQL Directories
-      run: |
-        sudo mkdir -p /var/lib/postgresql/data
-        sudo chown -R postgres:postgres /var/lib/postgresql
-
-    - name: Set PostgreSQL Environment Variables
-      run: |
-        echo 'export PATH="/usr/local/pgsql/bin:$PATH"' >> $GITHUB_ENV
-        echo 'export PGDATA="/var/lib/postgresql/data"' >> $GITHUB_ENV
-
     - name: Ensure Passwordless Sudo for postgres
       run: |
         echo "postgres ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/postgres
@@ -130,7 +120,7 @@ jobs:
           git tag -l
         "
 
-    - name: Checkout Latest PostgreSQL Tag for matrix.pgver
+    - name: Checkout Latest PostgreSQL Tag that matches matrix.pgver
       run: |
         docker exec -u postgres spock bash -c "
           cd /home/postgres/postgres-source && \
@@ -148,7 +138,6 @@ jobs:
         docker exec -u postgres spock bash -c "
           git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-private.git /home/postgres/spock-private && \
           cd /home/postgres/spock-private && \
-          ls -la
         "
 
     - name: Apply PostgreSQL Patches for matrix.pgver
