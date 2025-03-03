@@ -56,9 +56,16 @@ jobs:
       run: |
         docker network create pg_network || true
 
-    - name: Run Docker Container
+    - name: Run Docker Container with Unique Port
       run: |
-        docker run -d --name spock --network pg_network spock
+        PGPORT=$((5400 + ${{ matrix.pgver }}))  # Assign a port like 5415, 5416, 5417
+        echo "Using PostgreSQL Port: $PGPORT"
+    
+        docker run -d --name spock-${{ matrix.pgver }} --network pg_network \
+          -e PGPORT=$PGPORT \
+          -e POSTGRES_USER=postgres \
+          -e POSTGRES_DB=postgres \
+          -p $PGPORT:5432 spock
 
     - name: Wait for SSH to Start
       run: |
