@@ -246,10 +246,11 @@ jobs:
           fi && \
           PG_BIN_DIR=\$(dirname \"\$PG_CONFIG_PATH\") && \
           echo \"Found pg_config in: \$PG_BIN_DIR\" && \
-          echo \"export PATH=\$PG_BIN_DIR:\$PATH\" >> ~/.bashrc && \
+          echo \"export PATH=\$PG_BIN_DIR:\$PATH\" >> /home/postgres/.bashrc && \
+          echo \"export PATH=\$PG_BIN_DIR:\$PATH\" >> /home/postgres/.profile && \
+          echo \"pg_config location successfully added to PATH\" && \
           export PATH=\$PG_BIN_DIR:\$PATH && \
-          echo \"pg_config location successfully added to PATH\"
-          pg_config 
+          pg_config
         "
 
     - name: Copy compat Directory for matrix.pgver
@@ -279,6 +280,9 @@ jobs:
     - name: Build and Install Spock
       run: |
         docker exec -u postgres spock bash -c "
+          source /home/postgres/.bashrc && \
+          source /home/postgres/.profile && \
+          export PATH=\$PATH && \
           cd /home/postgres/spock-private && \
           echo 'Building Spock extension...' && \
           make && \
