@@ -270,6 +270,13 @@ jobs:
           make install
         "
 
+    - name: List Available PostgreSQL Extensions
+      run: |
+        docker exec -u postgres spock bash -c "
+          export PGDATA=/var/lib/postgresql/data && \
+          /usr/local/pgsql/bin/psql -d postgres -c 'SELECT * FROM pg_available_extensions;'
+        "
+
     - name: Put your test cases here
       run: |
         echo "Current User: $(whoami)" > latest.log
