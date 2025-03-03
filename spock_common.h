@@ -69,5 +69,4 @@ extern void SPKExecARInsertTriggers(EState *estate,
 								 TupleTableSlot *slot,
 								 List *recheckIndexes);
 
-
 #endif /* SPOCK_COMMON_H */

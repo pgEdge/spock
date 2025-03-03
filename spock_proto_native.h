@@ -62,5 +62,8 @@ extern SpockRelation *spock_read_update(StringInfo in, LOCKMODE lockmode, bool *
 extern SpockRelation *spock_read_delete(StringInfo in, LOCKMODE lockmode,
 												 SpockTupleData *oldtup);
 extern List *spock_read_truncate(StringInfo in, bool *cascade, bool *restart_seqs);
+extern void spock_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
+								bool transactional, const char *prefix, Size sz,
+								const char *message);
 
 #endif /* SPOCK_PROTO_NATIVE_H */

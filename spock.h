@@ -31,7 +31,10 @@
 
 #define EXTENSION_NAME "spock"
 
-#define REPLICATION_ORIGIN_ALL "all"
+#define REPLICATION_ORIGIN_ALL	"all"
+
+/* define prefix for the MESSAGE callback */
+#define SPOCK_MESSAGE_PREFIX	"Spock"
 
 #define HAVE_REPLICATION_ORIGINS
 
