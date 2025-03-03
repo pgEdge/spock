@@ -277,7 +277,7 @@ jobs:
           fi
         '
 
-    - name: Build and Install Spock
+    - name: Make Spock
       run: |
         docker exec -u postgres spock bash -c "
           source /home/postgres/.bashrc && \
@@ -286,7 +286,14 @@ jobs:
           make
         "
 
-    - name: Install Spock as Root
+    - name: Fix PostgreSQL Directory Permissions
+      run: |
+        docker exec -u root spock bash -c "
+          chown -R postgres:postgres /usr/local/pgsql && \
+          chmod -R 775 /usr/local/pgsql
+        "
+
+    - name: Make Install Spock
       run: |
         docker exec -u root spock bash -c "
           cd /home/postgres/spock-private && \
