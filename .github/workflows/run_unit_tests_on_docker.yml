@@ -286,10 +286,10 @@ jobs:
           make install
         "
 
-    - name: Ensure PostgreSQL is Running, List Extensions, and Create Spock Extension
+    - name: Ensure PostgreSQL is running, add Spock to shared_preload_libraries, list extensions, and run CREATE EXTENSION
       run: |
-        PGPORT=$((5400 + ${{ matrix.pgver }}))  # Match unique port
-        PGDATA_DIR="/var/lib/postgresql/data-${{ matrix.pgver }}"  # Match unique data dir
+        PGPORT=$((5400 + ${{ matrix.pgver }}))  # Assign unique port per version
+        PGDATA_DIR="/var/lib/postgresql/data-${{ matrix.pgver }}"  # Unique data dir per version
 
         echo "Checking if PostgreSQL is running for PG ${{ matrix.pgver }} at port $PGPORT..."
 
@@ -301,6 +301,12 @@ jobs:
             echo 'PostgreSQL is not ready. Starting it now...'
             /usr/local/pgsql/bin/pg_ctl -D \$PGDATA -o \"-p \$PGPORT\" start && sleep 5
           fi
+
+          echo 'Ensuring Spock is in shared_preload_libraries...'
+          /usr/local/pgsql/bin/psql -d postgres -p \$PGPORT -c \"ALTER SYSTEM SET shared_preload_libraries TO 'spock';\"
+
+          echo 'Restarting PostgreSQL to apply changes...'
+          /usr/local/pgsql/bin/pg_ctl -D \$PGDATA -o \"-p \$PGPORT\" restart && sleep 5
 
           echo 'PostgreSQL is running. Listing available extensions:'
           /usr/local/pgsql/bin/psql -d postgres -p \$PGPORT -c 'SELECT * FROM pg_available_extensions;'
