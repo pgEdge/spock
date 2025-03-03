@@ -1,77 +1,36 @@
-FROM debian:bullseye
+# Use Ubuntu as the base image
+FROM ubuntu:22.04
 
-# Install dependencies
+# Set non-interactive mode for package installations
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install required dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    libreadline-dev \
-    zlib1g-dev \
-    bison \
-    flex \
-    curl \
-    ca-certificates \
-    git \
-    wget \
-    libicu-dev \
+    sudo \
+    openssh-server \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a postgres user and data directory
-RUN useradd -m postgres && \
-    mkdir -p /var/lib/postgresql/data && \
-    chown -R postgres:postgres /var/lib/postgresql
+# Ensure SSH directory exists
+RUN mkdir -p /var/run/sshd
 
-# Set environment variables
-ENV PATH="/usr/local/pgsql/bin:$PATH"
-ENV PGDATA="/var/lib/postgresql/data"
+# Create the 'postgres' user
+RUN useradd -m -s /bin/bash postgres
 
-# Set PostgreSQL version (passed from GitHub Actions matrix)
-ARG PG_VERSION
-ARG PG_SOURCE_URL="https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz"
+# Allow passwordless sudo for the postgres user inside the container
+RUN echo "postgres ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/postgres && \
+    chmod 0440 /etc/sudoers.d/postgres
 
-# Create build directory
-WORKDIR /usr/src/postgresql
+# Expose SSH port
+EXPOSE 22
 
-# Download and extract PostgreSQL source
-RUN wget -O postgresql.tar.gz "${PG_SOURCE_URL}" && tar xzf postgresql.tar.gz --strip-components=1
-    # rm postgresql.tar.gz
+# Set working directory
+WORKDIR /home/postgres
 
-# Copy patches into the container
-COPY patches /usr/src/postgresql/patches/
+# Allow installation of software from GitHub Actions
+RUN chmod -R 777 /usr/local /opt /var/tmp /tmp
 
-# Apply all patches matching the version (e.g., pg15_*.patch for PostgreSQL 15)
-RUN PATCH_PREFIX="pg${PG_VERSION%%.*}-" && \
-    echo "Applying patches with prefix: $PATCH_PREFIX" && \
-    for patch in patches/${PATCH_PREFIX}*.patch; do \
-        if [ -f "$patch" ]; then \
-            echo "Applying patch: $patch"; \
-            patch -p1 < "$patch"; \
-        else \
-            echo "No patches found for $PATCH_PREFIX"; \
-        fi \
-    done
-
-# Configure and build PostgreSQL
-RUN ./configure --prefix=/usr/local/pgsql --without-icu && \
-    make -j$(nproc) && \
-    make install
-
-# Switch to postgres user for cluster initialization
-USER postgres
-
-# Initialize the PostgreSQL cluster
-RUN initdb -D /var/lib/postgresql/data
-
-# Configure PostgreSQL to listen on all IP addresses and use trust authentication
-RUN echo "listen_addresses='*'" >> /var/lib/postgresql/data/postgresql.conf && \
-    echo "host all all 0.0.0.0/0 trust" >> /var/lib/postgresql/data/pg_hba.conf
-
-# Expose PostgreSQL default port
-EXPOSE 5432
-
-ENTRYPOINT ["docker-entrypoint.sh"]
-
-# Start PostgreSQL server with TCP/IP and trust authentication
-CMD ["postgres", "-D", "/var/lib/postgresql/data"]
-
+# Start SSH service at container startup
+CMD ["/usr/sbin/sshd", "-D"]
 
 
 
