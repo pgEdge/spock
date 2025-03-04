@@ -24,21 +24,6 @@ jobs:
       with:
         ref: ${{ github.ref }}
 
-    - name: Configure Passwordless Sudo
-      run: |
-        echo "ALL ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/passwordless
-        sudo chmod 0440 /etc/sudoers.d/passwordless
-        sudo whoami
-        sudo pwd
-
-    - name: Configure Passwordless SSH
-      run: |
-        mkdir -p ~/.ssh
-        ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -q -N ""
-        cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
-        chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
-        ssh -o StrictHostKeyChecking=no localhost "echo passwordless SSH configured"
-
     - name: Set up Docker
       uses: docker/setup-buildx-action@v2
 
