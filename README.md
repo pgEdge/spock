@@ -36,8 +36,8 @@ Then, build the Spock extension from source code.  Before building the extension
 
 Then, update your PostgreSQL `postgresql.conf` file, setting:
 
-`shared_preload_libraries = 'spock'`
-`track_commit_timestamp = on # needed for conflict resolution`
+  `shared_preload_libraries = 'spock'`
+  `track_commit_timestamp = on # needed for conflict resolution`
 
 Before using the [`CREATE EXTENSION`](https://www.postgresql.org/docs/17/sql-createextension.html) command to install the `spock` extension on each node in the database you wish to replicate:
 
