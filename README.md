@@ -14,7 +14,7 @@
 
 The SPOCK extension provides multi-master replication for PostgreSQL versions 15 and later.
 
-You must install the `spock` extension on each provider and subscriber node in your cluster. After installing the extension, use the command line to `CREATE EXTENSION spock` on every node.  If you're performing a major version upgrades, the old node can be running a recent version of pgLogical2 before upgrading it to become a Spock node.
+You must install the `spock` extension on each provider and subscriber node in your cluster; then, after installing the extension, use the command line to `CREATE EXTENSION spock` on every node.  If you're performing a major version upgrade, the old node can be running a recent version of pgLogical2 before upgrading it to become a Spock node.
 
 All tables on the provider and subscriber must have the same names and reside in the same schema. Tables must also have the same columns, with the samedata types in each column. `CHECK` constraints, `NOT NULL` constraints must be the same or more permissive on the subscriber than the provider.
 
@@ -24,11 +24,22 @@ For more information about the Spock extension's advanced functionality, visit [
 
 ## Building the Spock Extension
 
-You need to use the `spock` extension with a copy of PostgreSQL that is configured for your system with version-specific .diff files from the `patches` directory (also in this repository) [applied before building](https://www.postgresql.org/docs/17/install-make.html#INSTALL-PROCEDURE-MAKE).
+The Spock extension must reside on a version-specific build of PostgreSQL.  When building PostgreSQL from source, you will need to apply version-specific .diff files from the `patches` directory (also in this repository) before building the Postgres server.  To apply a patch, use the command:
 
-After building your copy of PostgreSQL, build the spock extension from source code, using a build process [much like any other PostgreSQL extension](https://www.postgresql.org/docs/17/extend-extensions.html); after downloading the source from this repository, then `make` and `make-install` the code.
+`patch -p1 < path_to_patch/patch_name`
 
-Then, use the [`CREATE EXTENSION`](https://www.postgresql.org/docs/17/sql-createextension.html) command to install the `spock` extension on each node in the database you wish to replicate:
+Then, you can configure, make, and make install the Postgres server as noted in the [PostgreSQL documentation](https://www.postgresql.org/docs/current/installation.html).  When the build completes, add the location of `pg_config` to your `PATH` variable:
+
+`export PATH=path_to_pg_config_file`
+
+Then, build the Spock extension from source code.  Before building the extension, copy the files in the version-specific `compatXX` file (where XX is your Postgres version) in the `spock` repository into the base directory of the repository.  After copying the files, use a build process much like any [other PostgreSQL extension](https://www.postgresql.org/docs/17/extend-extensions.html); you will need to `make` and `make-install` the code.
+
+Then, update your PostgreSQL `postgresql.conf` file, setting:
+
+`shared_preload_libraries = 'spock'`
+`track_commit_timestamp = on # needed for conflict resolution`
+
+Before using the [`CREATE EXTENSION`](https://www.postgresql.org/docs/17/sql-createextension.html) command to install the `spock` extension on each node in the database you wish to replicate:
 
 `CREATE EXTENSION spock;`
 
