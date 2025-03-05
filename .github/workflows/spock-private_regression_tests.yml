@@ -1,5 +1,5 @@
 name: Docker tests
-run-name: ${{ github.actor }} is running the test schedules.
+run-name: ${{ github.actor }} is running the regression tests.
 
 on:
   push:
