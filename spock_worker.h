@@ -34,6 +34,7 @@ typedef struct SpockApplyWorker
 	RepOriginId	replorigin;			/* Remote origin id of apply worker. */
 	TimestampTz	last_ts;			/* Last remote commit timestamp. */
 	bool		use_try_block;		/* Should use try block for apply? */
+	XLogRecPtr  last_synced_lsn;	/* Last LSN that was synced to remote replicas */
 } SpockApplyWorker;
 
 typedef struct SpockSyncWorker
