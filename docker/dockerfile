@@ -30,28 +30,30 @@ RUN apt-get update && apt-get install -y \
     libicu-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone the PostgreSQL repository and checkout the latest tag
-RUN git clone https://github.com/postgres/postgres.git postgres-source && \
-    cd postgres-source && \
+ARG GITHUB_TOKEN
+ENV GITHUB_TOKEN=${GITHUB_TOKEN}
+
+# Clone PostgreSQL source first before applying patches
+RUN git clone https://github.com/postgres/postgres.git /home/postgres/postgres-source && \
+    cd /home/postgres/postgres-source && \
     git fetch --tags && \
     LATEST_TAG=$(git tag -l "REL_${PG_VERSION}*" | grep -Eo 'REL_[0-9]+_[0-9]+(_[0-9]+)?' | sort -V | tail -n 1) && \
     git checkout "$LATEST_TAG"
 
-    # Clone spock-private repository using authentication
-    ARG GITHUB_TOKEN
-    RUN git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-private.git spock-private && \
-        cd spock-private && \
-        ls -la && \
-        cd /home/postgres/postgres-source && \
-        PATCH_DIR="/home/postgres/spock-private/patches" && \
-        if compgen -G "$PATCH_DIR/pg${PG_VERSION}-*.diff" > /dev/null; then \
-          for PATCH_FILE in $PATCH_DIR/pg${PG_VERSION}-*.diff; do \
-            echo "Applying patch with git apply: $PATCH_FILE"; \
-            git apply "$PATCH_FILE" && echo "Successfully applied: $PATCH_FILE" || { echo "Failed to apply: $PATCH_FILE"; exit 1; }; \
-          done; \
-        else \
-          echo "No patches found for pg$PG_VERSION."; \
-        fi
+# Clone spock-private repository and apply patches
+RUN git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-private.git /home/postgres/spock-private && \
+    cd /home/postgres/spock-private && \
+    ls -la && \
+    cd /home/postgres/postgres-source && \
+    PATCH_DIR="/home/postgres/spock-private/patches" && \
+    if compgen -G "$PATCH_DIR/pg${PG_VERSION}-*.diff" > /dev/null; then \
+      for PATCH_FILE in $PATCH_DIR/pg${PG_VERSION}-*.diff; do \
+        echo "Applying patch with git apply: $PATCH_FILE"; \
+        git apply "$PATCH_FILE" && echo "Successfully applied: $PATCH_FILE" || { echo "Failed to apply: $PATCH_FILE"; exit 1; }; \
+      done; \
+    else \
+      echo "No patches found for pg$PG_VERSION."; \
+    fi
 
 # Configure, build, and install PostgreSQL
 RUN cd /home/postgres/postgres-source && \
