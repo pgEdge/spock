@@ -62,6 +62,7 @@ RUN cd /home/postgres/postgres-source && \
     sudo make install
 
 # Create and initialize the PostgreSQL cluster
+USER postgres
 RUN if [ ! -f "$PGDATA/PG_VERSION" ]; then \
       echo "Running initdb for PostgreSQL $PG_VERSION..."; \
       /usr/local/pgsql/bin/initdb -D "$PGDATA"; \
