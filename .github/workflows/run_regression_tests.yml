@@ -1,0 +1,97 @@
+name: Docker tests
+run-name: ${{ github.actor }} is running the regression tests.
+
+on:
+  push:
+    branches:
+      - dockerfile
+
+jobs:
+  run-scripts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04]
+        pgver: [15, 16, 17]  # Testing against multiple PostgreSQL versions
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.ref }}
+
+    - name: Set up Docker
+      uses: docker/setup-buildx-action@v2
+
+    - name: Build and Run PostgreSQL + Spock Container
+      run: |
+        PGPORT=$((5400 + ${{ matrix.pgver }}))  # Assign unique ports (5415, 5416, 5417)
+        CONTAINER_NAME=spock-${{ matrix.pgver }}  # Unique container name
+
+        echo "Building PostgreSQL + Spock Docker Image..."
+        docker build --build-arg PG_VERSION=${{ matrix.pgver }} -t spock docker/
+
+        echo "Creating Docker Network if not exists..."
+        docker network create pg_network || true
+
+        echo "Starting PostgreSQL container: $CONTAINER_NAME on port $PGPORT..."
+        docker run -d --name $CONTAINER_NAME --network pg_network \
+          -e PGPORT=$PGPORT \
+          -p $PGPORT:5432 spock || { echo "Failed to start container: $CONTAINER_NAME"; exit 1; }
+
+        echo "Container $CONTAINER_NAME started successfully!"
+
+    - name: Wait for PostgreSQL to Start
+      run: |
+        PGPORT=$((5400 + ${{ matrix.pgver }}))
+        CONTAINER_NAME=spock-${{ matrix.pgver }}
+        for i in {1..10}; do
+          if docker exec $CONTAINER_NAME /usr/local/pgsql/bin/pg_isready -p $PGPORT; then
+            echo "PostgreSQL is running!"
+            exit 0
+          fi
+          echo "PostgreSQL not ready, retrying..."
+          sleep 2
+        done
+    
+        echo "PostgreSQL failed to start in $CONTAINER_NAME!"
+        docker logs $CONTAINER_NAME  # Print logs for debugging
+        exit 1
+
+    - name: Set environment variables as needed
+      run: |
+        echo "PGPORT=$PGPORT" >> $GITHUB_ENV
+        echo "PGDATA=$PGDATA_DIR" >> $GITHUB_ENV
+        echo "PG_VER = ${{ matrix.pgver }}" >> $PG_VER
+
+- name: Put your test cases here
+      run: |
+        echo "Current User: $(whoami)" > latest.log
+        echo "Current Path: $(pwd)" >> latest.log
+        docker exec $CONTAINER_NAME /usr/local/pgsql/bin/psql -d postgres -p $PGPORT -c "CREATE EXTENSION spock;" >> latest.log
+        docker exec $CONTAINER_NAME /usr/local/pgsql/bin/psql -d postgres -p $PGPORT -c "SELECT * FROM pg_extension WHERE extname = 'spock';" >> latest.log
+        cat latest.log
+
+    - name: Upload Log File as Artifact
+      if: success() || failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: latest-log-${{ matrix.pgver }}
+        path: latest.log
+
+    - name: Upload PostgreSQL Logs as Artifact
+      if: success() || failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: postgres-logs-${{ matrix.pgver }}
+        path: pg_logs_${{ matrix.pgver }}.log
+
+    - name: Stop and Remove Container
+      if: always()
+      run: |
+        CONTAINER_NAME=spock-${{ matrix.pgver }}
+        docker stop $CONTAINER_NAME || true
+        docker rm $CONTAINER_NAME || true
+
