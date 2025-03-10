@@ -77,13 +77,13 @@ RUN if [ ! -f "$PGDATA/PG_VERSION" ]; then \
 # Switch back to root
 USER root
 
-# Ensure pg_config is in PATH
-RUN export PG_CONFIG_PATH=$(find /usr/local/pgsql -type f -name pg_config | head -n 1) && \
+RUN PG_CONFIG_PATH=$(find /usr/local/pgsql -type f -name pg_config | head -n 1) && \
     if [ -z "$PG_CONFIG_PATH" ]; then \
         echo "Error: pg_config not found!" && exit 1; \
-    fi && \
-    export PATH=$(dirname "$PG_CONFIG_PATH"):$PATH && \
-    echo "pg_config found at: $PG_CONFIG_PATH"
+    else \
+        echo "pg_config found at: $PG_CONFIG_PATH"; \
+        echo "export PATH=$(dirname "$PG_CONFIG_PATH"):\$PATH" >> ~/.bashrc; \
+    fi
 
 # Print PATH during build
 RUN echo "Build-time PATH: $PATH"
