@@ -61,12 +61,21 @@ RUN cd /home/postgres/postgres-source && \
     make -j$(nproc) && \
     sudo make install
 
-# Create and initialize the PostgreSQL cluster
+# Create postgres user and group
+RUN groupadd -r postgres && useradd -r -g postgres postgres
+
+# Ensure correct ownership for PostgreSQL data directory
+RUN mkdir -p "$PGDATA" && chown -R postgres:postgres "$PGDATA"
+
+# Switch to postgres user and initialize the database
 USER postgres
 RUN if [ ! -f "$PGDATA/PG_VERSION" ]; then \
       echo "Running initdb for PostgreSQL $PG_VERSION..."; \
       /usr/local/pgsql/bin/initdb -D "$PGDATA"; \
     fi
+
+# Switch back to root
+USER root
 
 # Locate pg_config and add it to the PATH
 RUN PG_CONFIG_PATH=$(find /usr/local/pgsql -type f -name pg_config | head -n 1) && \
