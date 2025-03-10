@@ -31,7 +31,10 @@ jobs:
         CONTAINER_NAME=spock-${{ matrix.pgver }}  # Unique container name
 
         echo "Building PostgreSQL + Spock Docker Image..."
-        docker build --build-arg PG_VERSION=${{ matrix.pgver }} -t spock docker/
+        docker build \
+          --build-arg PG_VERSION=${{ matrix.pgver }} \
+          --build-arg GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} \
+          -t spock docker/
 
         echo "Creating Docker Network if not exists..."
         docker network create pg_network || true
