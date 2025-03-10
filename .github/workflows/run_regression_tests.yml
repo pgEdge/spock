@@ -62,11 +62,11 @@ jobs:
 
     - name: Set environment variables as needed
       run: |
-        echo "PGPORT=$PGPORT" >> $GITHUB_ENV
-        echo "PGDATA=$PGDATA_DIR" >> $GITHUB_ENV
-        echo "PG_VER = ${{ matrix.pgver }}" >> $PG_VER
+        echo "PGPORT=$((5400 + ${{ matrix.pgver }}))" >> $GITHUB_ENV
+        echo "PGDATA=/var/lib/postgresql/data-${{ matrix.pgver }}" >> $GITHUB_ENV
+        echo "PG_VER=${{ matrix.pgver }}" >> $GITHUB_ENV
 
-- name: Put your test cases here
+    - name: Put your test cases here
       run: |
         echo "Current User: $(whoami)" > latest.log
         echo "Current Path: $(pwd)" >> latest.log
