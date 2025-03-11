@@ -47,7 +47,7 @@ RUN git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-pri
     cd /home/postgres/postgres-source && \
     PATCH_DIR="/home/postgres/spock-private/patches" && \
     echo "LOOK HERE !!!!!!!!!!!!!"
-    compgen -G "$PATCH_DIR/pg${PG_VERSION}-*.diff 
+    compgen -G "$PATCH_DIR/pg${PG_VERSION}-*.diff" 
     echo "HERE !!!!!!!!!!!!!"
     if compgen -G "$PATCH_DIR/pg${PG_VERSION}-*.diff" > /dev/null; then \
       for PATCH_FILE in $PATCH_DIR/pg${PG_VERSION}-*.diff; do \
