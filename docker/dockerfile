@@ -15,6 +15,7 @@ ENV PG_VER="${PG_VERSION}"
 # Install required dependencies
 RUN apt-get update && apt-get install -y \
     sudo \
+    compgen \
     openssh-server \
     git \
     patch \
@@ -47,8 +48,8 @@ RUN git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-pri
     cd /home/postgres/postgres-source && \
     PATCH_DIR="/home/postgres/spock-private/patches" && \
     echo "LOOK HERE" && \
-    ls -la "$PATCH_DIR/pg${PG_VERSION}-*.diff" && \ 
-    if true || compgen -G "$PATCH_DIR/pg${PG_VERSION}-*.diff" > /dev/null; then \
+    compgen -G && \
+    if compgen -G "$PATCH_DIR/pg${PG_VERSION}-*.diff" > /dev/null; then \
       for PATCH_FILE in $PATCH_DIR/pg${PG_VERSION}-*.diff; do \
         echo "Applying patch with git apply: $PATCH_FILE"; \
         git apply "$PATCH_FILE" && echo "Successfully applied: $PATCH_FILE" || { echo "Failed to apply: $PATCH_FILE"; exit 1; }; \
