@@ -15,16 +15,20 @@
 #include "spock_relcache.h"
 #include "spock_proto_native.h"
 
+typedef struct ApplyState ApplyState;
 extern void spock_apply_heap_begin(void);
 extern void spock_apply_heap_commit(void);
 
 extern void spock_apply_heap_insert(SpockRelation *rel,
-										SpockTupleData *newtup);
+									SpockTupleData *newtup,
+									ApplyState *astate);
 extern void spock_apply_heap_update(SpockRelation *rel,
-										SpockTupleData *oldtup,
-										SpockTupleData *newtup);
+									SpockTupleData *oldtup,
+									SpockTupleData *newtup,
+									ApplyState *astate);
 extern void spock_apply_heap_delete(SpockRelation *rel,
-										SpockTupleData *oldtup);
+									SpockTupleData *oldtup,
+									ApplyState *astate);
 
 bool spock_apply_heap_can_mi(SpockRelation *rel);
 void spock_apply_heap_mi_add_tuple(SpockRelation *rel,

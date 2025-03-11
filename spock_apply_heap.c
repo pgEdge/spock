@@ -77,13 +77,8 @@
 #include "spock_apply.h"
 #include "spock_exception_handler.h"
 
-typedef struct ApplyExecutionData
-{
-	EState	   *estate;			/* executor state, used to track resources */
 
-	SpockRelation *targetRel;	/* replication target rel */
-	ResultRelInfo *targetRelInfo;	/* ResultRelInfo for same */
-} ApplyExecutionData;
+
 
 typedef struct ApplyExecState
 {
@@ -203,7 +198,7 @@ create_edata_for_relation(SpockRelation *rel)
  * Finish any operations related to the executor state created by
  * create_edata_for_relation().
  */
-static void
+void
 finish_edata(ApplyExecutionData *edata)
 {
 	EState	   *estate = edata->estate;
@@ -664,18 +659,17 @@ finish_apply_exec_state(ApplyExecState *aestate)
  * Handle insert via low level api.
  */
 void
-spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
+spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup, ApplyState *astate)
 {
-	ApplyExecutionData *edata;
 	EState	   *estate;
-	TupleTableSlot *remoteslot;
 	MemoryContext oldctx;
 	UserContext		ucxt;
 
+	astate->state_cleaned = false;
 	/* Initialize the executor state. */
-	edata = create_edata_for_relation(rel);
-	estate = edata->estate;
-	remoteslot = ExecInitExtraTupleSlot(estate,
+	astate->edata = create_edata_for_relation(rel);
+	estate = astate->edata->estate;
+	astate->remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->rel),
 										&TTSOpsVirtual);
 
@@ -694,21 +688,22 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 
 	/* Process and store remote tuple in the slot */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-	slot_store_data(remoteslot, rel, newtup);
-	slot_fill_defaults(rel, estate, remoteslot);
+	slot_store_data(astate->remoteslot, rel, newtup);
+	slot_fill_defaults(rel, estate, astate->remoteslot);
 	MemoryContextSwitchTo(oldctx);
 
 	/* Make sure that any user-supplied code runs as the table owner. */
 	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 	/* Do the actual INSERT */
-	ExecOpenIndices(edata->targetRelInfo, false);
-	ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
-	ExecCloseIndices(edata->targetRelInfo);
+	ExecOpenIndices(astate->edata->targetRelInfo, false);
+	ExecSimpleRelationInsert(astate->edata->targetRelInfo, estate, astate->remoteslot);
+	ExecCloseIndices(astate->edata->targetRelInfo);
 	RestoreUserContext(&ucxt);
 
 	/* Cleanup */
-	finish_edata(edata);
+	finish_edata(astate->edata);
+	astate->state_cleaned = true;
 }
 
 /*
@@ -716,25 +711,24 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
  */
 void
 spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
-						SpockTupleData *newtup)
+						SpockTupleData *newtup, ApplyState *astate)
 {
-	ApplyExecutionData *edata;
 	EState	   *estate;
-	EPQState	epqstate;
-	TupleTableSlot *remoteslot;
-	TupleTableSlot *localslot;
+
 	HeapTuple	remotetuple;
 	MemoryContext oldctx;
 	ResultRelInfo *relinfo;
 	bool		found;
 	int			retry;
-	bool		clear_remoteslot = false;
-	bool		clear_localslot = false;
+
+	astate->state_cleaned = false;
+	astate->clear_remoteslot = false;
+	astate->clear_localslot = false;
 
 	/* Initialize the executor state. */
-	edata = create_edata_for_relation(rel);
-	estate = edata->estate;
-	remoteslot = ExecInitExtraTupleSlot(estate,
+	astate->edata = create_edata_for_relation(rel);
+	estate = astate->edata->estate;
+	astate->remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->rel),
 										&TTSOpsVirtual);
 
@@ -751,22 +745,23 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	 * reconstruct an oldtup based on pkey values and local tuple contents
 	 * because the tuple may not exist locally.
 	 */
-	slot_store_data(remoteslot, rel, oldtup);
+	slot_store_data(astate->remoteslot, rel, oldtup);
 
 	MemoryContextSwitchTo(oldctx);
 
 	/* Find the current local tuple */
-	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
-	ExecOpenIndices(edata->targetRelInfo, false);
+	EvalPlanQualInit(&astate->epqstate, estate, NULL, NIL, -1, NIL);
+	ExecOpenIndices(astate->edata->targetRelInfo, false);
 
-	relinfo = edata->targetRelInfo;
+	relinfo = astate->edata->targetRelInfo;
 
 	retry = 0;
 	while (retry < 5)
 	{
-		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
-										edata->targetRel->idxoid,
-										remoteslot, &localslot);
+		found = FindReplTupleInLocalRel(astate->edata, relinfo->ri_RelationDesc,
+										astate->edata->targetRel->idxoid,
+										astate->remoteslot, &astate->localslot);
+
 		if (found)
 			break;
 
@@ -778,7 +773,6 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 		retry++;
 	}
-
 	if (retry > 0)
 		elog(LOG, "spock_apply_heap_update() retried %d times", retry);
 
@@ -803,20 +797,20 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		/*
 		 * Fetch the contents of the local slot and store it in the error log
 		 */
-		local_tuple = ExecFetchSlotHeapTuple(localslot, true, &clear_localslot);
+		local_tuple = ExecFetchSlotHeapTuple(astate->localslot, true, &astate->clear_localslot);
 		exception_log->local_tuple = local_tuple;
 
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 		MemoryContextSwitchTo(oldctx);
 
-		remotetuple = ExecFetchSlotHeapTuple(remoteslot, true,
-											 &clear_remoteslot);
-		local_origin_found = get_tuple_origin(rel, TTS_TUP(localslot),
-											  &(localslot->tts_tid), &xmin,
+		remotetuple = ExecFetchSlotHeapTuple(astate->remoteslot, true,
+											 &astate->clear_remoteslot);
+		local_origin_found = get_tuple_origin(rel, TTS_TUP(astate->localslot),
+											  &(astate->localslot->tts_tid), &xmin,
 											  &local_origin, &local_ts);
 
-		apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
+		apply = try_resolve_conflict(rel->rel, TTS_TUP(astate->localslot),
 									 remotetuple, &applytuple,
 									 local_origin, local_ts,
 									 &resolution);
@@ -826,12 +820,12 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		 */
 		if (apply && applytuple == remotetuple)
 		{
-			slot_modify_data(remoteslot, localslot, rel, newtup);
+			slot_modify_data(astate->remoteslot, astate->localslot, rel, newtup);
 		}
 		else
 		{
 			spock_report_conflict(CONFLICT_UPDATE_UPDATE, rel,
-								  TTS_TUP(localslot), oldtup,
+								  TTS_TUP(astate->localslot), oldtup,
 								  remotetuple, applytuple, resolution,
 								  xmin, local_origin_found, local_origin,
 								  local_ts, rel->idxoid,
@@ -851,16 +845,16 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			 */
 			if (apply)
 			{
-				currenttuple = ExecFetchSlotHeapTuple(remoteslot, true,
-													  &clear_localslot);
+				currenttuple = ExecFetchSlotHeapTuple(astate->remoteslot, true,
+													  &astate->clear_localslot);
 			}
 			else
 			{
-				currenttuple = ExecFetchSlotHeapTuple(localslot, true,
-													  &clear_localslot);
+				currenttuple = ExecFetchSlotHeapTuple(astate->localslot, true,
+													  &astate->clear_localslot);
 			}
 			oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-			build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
+			build_delta_tuple(rel, oldtup, newtup, &deltatup, astate->localslot);
 			if (!apply)
 			{
 				/*
@@ -879,7 +873,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 										   deltatup.nulls,
 										   deltatup.changed);
 			MemoryContextSwitchTo(oldctx);
-			slot_store_htup(remoteslot, rel, applytuple);
+			slot_store_htup(astate->remoteslot, rel, applytuple);
 		}
 
 		/*
@@ -900,9 +894,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			if (is_delta_apply)
 				BeginInternalSubTransaction("SpockDeltaApply");
 
-			EvalPlanQualSetSlot(&epqstate, remoteslot);
-			ExecSimpleRelationUpdate(edata->targetRelInfo, estate, &epqstate,
-									 localslot, remoteslot);
+			EvalPlanQualSetSlot(&astate->epqstate, astate->remoteslot);
+			ExecSimpleRelationUpdate(astate->edata->targetRelInfo, estate, &astate->epqstate,
+									 astate->localslot, astate->remoteslot);
 
 			if (is_delta_apply)
 			{
@@ -930,37 +924,35 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	}
 
 	/* Cleanup. */
-	if (clear_remoteslot)
-		ExecClearTuple(remoteslot);
-	if (clear_localslot)
-		ExecClearTuple(localslot);
-	ExecCloseIndices(edata->targetRelInfo);
-	EvalPlanQualEnd(&epqstate);
-	finish_edata(edata);
+	if (astate->clear_remoteslot)
+		ExecClearTuple(astate->remoteslot);
+	if (astate->clear_localslot)
+		ExecClearTuple(astate->localslot);
+	ExecCloseIndices(astate->edata->targetRelInfo);
+	EvalPlanQualEnd(&astate->epqstate);
+	finish_edata(astate->edata);
+	astate->state_cleaned = true;
 }
 
 /*
  * Handle delete via low level api.
  */
 void
-spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
+spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup, ApplyState *astate)
 {
-	ApplyExecutionData *edata;
 	EState	   *estate;
-	EPQState	epqstate;
-	TupleTableSlot *remoteslot;
-	TupleTableSlot *localslot;
+
 	MemoryContext oldctx;
 	ResultRelInfo *relinfo;
 	HeapTuple	local_tuple;
 	bool		found;
-	bool		clear_localslot = false;
 	int			retry;
 
+	astate->state_cleaned = false;
 	/* Initialize the executor state. */
-	edata = create_edata_for_relation(rel);
-	estate = edata->estate;
-	remoteslot = ExecInitExtraTupleSlot(estate,
+	astate->edata = create_edata_for_relation(rel);
+	estate = astate->edata->estate;
+	astate->remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->rel),
 										&TTSOpsVirtual);
 
@@ -977,22 +969,22 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	 * reconstruct an oldtup based on pkey values and local tuple contents
 	 * because the tuple may not exist locally.
 	 */
-	slot_store_data(remoteslot, rel, oldtup);
+	slot_store_data(astate->remoteslot, rel, oldtup);
 
 	MemoryContextSwitchTo(oldctx);
 
 	/* Find the current local tuple */
-	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
-	ExecOpenIndices(edata->targetRelInfo, false);
+	EvalPlanQualInit(&astate->epqstate, estate, NULL, NIL, -1, NIL);
+	ExecOpenIndices(astate->edata->targetRelInfo, false);
 
-	relinfo = edata->targetRelInfo;
+	relinfo = astate->edata->targetRelInfo;
 
 	retry = 0;
 	while (retry < 5)
 	{
-		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
-										edata->targetRel->idxoid,
-										remoteslot, &localslot);
+		found = FindReplTupleInLocalRel(astate->edata, relinfo->ri_RelationDesc,
+										astate->edata->targetRel->idxoid,
+										astate->remoteslot, &astate->localslot);
 		if (found)
 			break;
 
@@ -1004,7 +996,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 
 		retry++;
 	}
-	ExecClearTuple(remoteslot);
+	ExecClearTuple(astate->remoteslot);
 
 	if (retry > 0)
 		elog(LOG, "spock_apply_heap_delete() retried %d times", retry);
@@ -1022,16 +1014,16 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		/*
 		 * Fetch the contents of the local slot and store it in the error log
 		 */
-		local_tuple = ExecFetchSlotHeapTuple(localslot, true, &clear_localslot);
+		local_tuple = ExecFetchSlotHeapTuple(astate->localslot, true, &astate->clear_localslot);
 		exception_log->local_tuple = local_tuple;
 
 		/* Make sure that any user-supplied code runs as the table owner. */
 		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 		/* Delete the tuple found */
-		EvalPlanQualSetSlot(&epqstate, remoteslot);
-		ExecSimpleRelationDelete(edata->targetRelInfo, estate, &epqstate,
-								 localslot);
+		EvalPlanQualSetSlot(&astate->epqstate, astate->remoteslot);
+		ExecSimpleRelationDelete(astate->edata->targetRelInfo, estate, &astate->epqstate,
+								 astate->localslot);
 		RestoreUserContext(&ucxt);
 	}
 	else
@@ -1050,9 +1042,10 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	}
 
 	/* Cleanup. */
-	ExecCloseIndices(edata->targetRelInfo);
-	EvalPlanQualEnd(&epqstate);
-	finish_edata(edata);
+	ExecCloseIndices(astate->edata->targetRelInfo);
+	EvalPlanQualEnd(&astate->epqstate);
+	finish_edata(astate->edata);
+	astate->state_cleaned = true;
 }
 
 bool

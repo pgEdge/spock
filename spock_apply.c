@@ -1273,6 +1273,7 @@ handle_insert(StringInfo s)
 	bool		started_tx;
 	bool		failed = false;
 	char	   *action_name = "INSERT";
+	ApplyState astate;
 
 	/*
 	 * Quick return if we are skipping data modification changes.
@@ -1341,7 +1342,7 @@ handle_insert(StringInfo s)
 		{
 			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
-			apply_api.do_insert(rel, &newtup);
+			apply_api.do_insert(rel, &newtup, &astate);
 		}
 		PG_CATCH();
 		{
@@ -1349,6 +1350,12 @@ handle_insert(StringInfo s)
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
 			xact_had_exception = true;
+
+			if (!astate.state_cleaned)
+			{
+				ExecCloseIndices(astate.edata->targetRelInfo);
+				finish_edata(astate.edata);
+			}
 		}
 		PG_END_TRY();
 
@@ -1374,7 +1381,7 @@ handle_insert(StringInfo s)
 	}
 	else
 	{
-		apply_api.do_insert(rel, &newtup);
+		apply_api.do_insert(rel, &newtup, &astate);
 	}
 
 	/* if INSERT was into our queue, process the message. */
@@ -1450,6 +1457,7 @@ handle_update(StringInfo s)
 	HeapTuple	localtup;
 	bool		hasoldtup;
 	bool		failed = false;
+	struct ApplyState	astate;
 
 	/*
 	 * Quick return if we are skipping data modification changes.
@@ -1482,7 +1490,7 @@ handle_update(StringInfo s)
 		{
 			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
-			apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
+			apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup, &astate);
 		}
 		PG_CATCH();
 		{
@@ -1490,6 +1498,17 @@ handle_update(StringInfo s)
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
 			xact_had_exception = true;
+
+			if (!astate.state_cleaned)
+			{
+				if (astate.clear_remoteslot)
+					ExecClearTuple(astate.remoteslot);
+				if (astate.clear_localslot)
+					ExecClearTuple(astate.localslot);
+				ExecCloseIndices(astate.edata->targetRelInfo);
+				EvalPlanQualEnd(&astate.epqstate);
+				finish_edata(astate.edata);
+			}
 		}
 		PG_END_TRY();
 
@@ -1547,7 +1566,7 @@ handle_update(StringInfo s)
 	}
 	else
 	{
-		apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
+		apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup, &astate);
 	}
 
 	spock_relation_close(rel, NoLock);
@@ -1563,6 +1582,7 @@ handle_delete(StringInfo s)
 	HeapTuple	localtup;
 	ErrorData  *edata;
 	bool		failed = false;
+	ApplyState astate;
 
 	/*
 	 * Quick return if we are skipping data modification changes.
@@ -1594,7 +1614,7 @@ handle_delete(StringInfo s)
 		{
 			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
-			apply_api.do_delete(rel, &oldtup);
+			apply_api.do_delete(rel, &oldtup, &astate);
 		}
 		PG_CATCH();
 		{
@@ -1602,6 +1622,13 @@ handle_delete(StringInfo s)
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
 			xact_had_exception = true;
+
+			if (!astate.state_cleaned)
+			{
+				ExecCloseIndices(astate.edata->targetRelInfo);
+				EvalPlanQualEnd(&astate.epqstate);
+				finish_edata(astate.edata);
+			}
 		}
 		PG_END_TRY();
 
@@ -1659,7 +1686,7 @@ handle_delete(StringInfo s)
 	}
 	else
 	{
-		apply_api.do_delete(rel, &oldtup);
+		apply_api.do_delete(rel, &oldtup, &astate);
 	}
 
 	spock_relation_close(rel, NoLock);

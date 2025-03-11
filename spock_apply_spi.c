@@ -41,6 +41,7 @@
 #include "utils/builtins.h"
 
 #include "spock.h"
+#include "spock_apply.h"
 #include "spock_apply_spi.h"
 #include "spock_conflict.h"
 
@@ -107,7 +108,7 @@ spock_apply_spi_commit(void)
  * Handle insert via SPI.
  */
 void
-spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup)
+spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup, ApplyState *astate)
 {
 	TupleDesc		desc = RelationGetDescr(rel->rel);
 	Oid				argtypes[MaxTupleAttributeNumber];
@@ -174,7 +175,7 @@ spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup)
  */
 void
 spock_apply_spi_update(SpockRelation *rel, SpockTupleData *oldtup,
-						   SpockTupleData *newtup)
+						   SpockTupleData *newtup, ApplyState *astate)
 {
 	TupleDesc		desc = RelationGetDescr(rel->rel);
 	Oid				argtypes[MaxTupleAttributeNumber];
@@ -252,7 +253,7 @@ spock_apply_spi_update(SpockRelation *rel, SpockTupleData *oldtup,
  * Handle delete via SPI.
  */
 void
-spock_apply_spi_delete(SpockRelation *rel, SpockTupleData *oldtup)
+spock_apply_spi_delete(SpockRelation *rel, SpockTupleData *oldtup, ApplyState *astate)
 {
 	TupleDesc		desc = RelationGetDescr(rel->rel);
 	Oid				argtypes[MaxTupleAttributeNumber];
