@@ -83,6 +83,24 @@ ENV PATH="/usr/local/pgsql/bin/:${PATH}"
 RUN echo "Just used ENV PATH TO update PATH: $PATH"
 RUN echo "Checking value of pg_ver: $PG_VER"
 
+# We may or may not need to copy the compatXX files to the spock repo
+RUN SPOCK_DIR="/home/postgres/spock-private/" && \
+    POSTGRES_DIR="/home/postgres/postgres-source" && \
+    COMPAT_DIR="${SPOCK_DIR}compat${PG_VERSION}" && \
+    echo "Spock Directory: $SPOCK_DIR" && \
+    echo "PostgreSQL Version: $PG_VERSION" && \
+    echo "Postgres Source Directory: $POSTGRES_DIR" && \
+    if [ -d "$COMPAT_DIR" ]; then \
+        echo "Copying contents of $COMPAT_DIR to $SPOCK_DIR..." && \
+        cp -r "$COMPAT_DIR"/* "$SPOCK_DIR" && \
+        echo "Successfully copied contents of $COMPAT_DIR." && \
+        ls -la "$COMPAT_DIR"; \
+    else \
+        echo "Error: Directory $COMPAT_DIR does not exist!" && \
+        ls -la "$SPOCK_DIR" || echo "Directory $COMPAT_DIR does not exist"; \
+        exit 1; \
+    fi
+
 # Compile and install Spock extension
 RUN cd /home/postgres/spock-private && \
     make && sudo make install
