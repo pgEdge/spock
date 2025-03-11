@@ -78,9 +78,11 @@ RUN if [ ! -f "$PGDATA/PG_VERSION" ]; then \
 USER root
 
 # Print PATH during build
-RUN echo "Build-time PATH: $PATH"
+RUN echo "About to build spock - PATH contains: $PATH"
 RUN ls -la /usr/local/pgsql/bin
 ENV PATH="/usr/local/pgsql/bin/pg_config:${PATH}"
+RUN echo "Just used ENV PATH TO update PATH: $PATH"
+
 
 # Compile and install Spock extension
 RUN cd /home/postgres/spock-private && \
