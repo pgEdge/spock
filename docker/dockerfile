@@ -106,7 +106,8 @@ RUN SPOCK_DIR="/home/postgres/spock-private/" && \
 
 # Compile and install Spock extension
 RUN cd /home/postgres/spock-private && \
-    make
+    make && \
+    make install
 
 # Set shared_preload_libraries and track_commit_timestamp
 RUN /usr/local/pgsql/bin/psql -d postgres -p "$PGPORT" -c "ALTER SYSTEM SET shared_preload_libraries TO 'spock';" && \
