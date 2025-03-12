@@ -52,7 +52,7 @@ RUN git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-pri
         for PATCH_FILE in $PATCH_DIR/pg${PG_VERSION}-*.diff; do \
             [ -f "$PATCH_FILE" ] || continue; \
             echo "Applying patch with git apply: $PATCH_FILE"; \
-            git apply "$PATCH_FILE" && echo "Successfully applied: $PATCH_FILE" || { echo "Failed to apply: $PATCH_FILE"; exit 1; }; \
+            git apply --ignore-space-change --ignore-whitespace "$PATCH_FILE" && echo "Successfully applied: $PATCH_FILE" || { echo "Failed to apply: $PATCH_FILE"; exit 1; }; \
         done; \
     else \
         echo "No patches found for pg$PG_VERSION."; \
