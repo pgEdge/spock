@@ -2341,7 +2341,7 @@ apply_work(PGconn *streamConn)
 					{
 						RemoteSyncPosition *syncpos;
 						TimestampTz now = GetCurrentTimestamp();
-						TimestampTz timeout = TimestampTzPlusMilliseconds(last_receive_timestamp, wal_sender_timeout / 3);
+						TimestampTz timeout = TimestampTzPlusMilliseconds(last_receive_timestamp, wal_sender_timeout / 2);
 
 						LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
 
