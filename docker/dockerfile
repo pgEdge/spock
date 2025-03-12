@@ -81,7 +81,7 @@ RUN if [ ! -f "$PGDATA/PG_VERSION" ]; then \
     fi
 
 # I think we need to start the database
-RUN /usr/local/pgsql/bin/pg_ctl -D /var/lib/postgresql/data-16 -l logfile start
+RUN /usr/local/pgsql/bin/pg_ctl -D /var/lib/postgresql/"$PGDATA" -l /tmp/logfile start
 
 # Switch back to root
 USER root
