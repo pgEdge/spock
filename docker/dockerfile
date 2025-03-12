@@ -77,6 +77,9 @@ RUN if [ ! -f "$PGDATA/PG_VERSION" ]; then \
       /usr/local/pgsql/bin/initdb -D "$PGDATA"; \
     fi
 
+# I think we need to start the database
+RUN /usr/local/pgsql/bin/pg_ctl -D /var/lib/postgresql/data-16 -l logfile start
+
 # Switch back to root
 USER root
 
