@@ -131,6 +131,7 @@ RUN sudo -u postgres bash -c "/usr/local/pgsql/bin/pg_ctl -D '$PGDATA' status" |
     sudo -u postgres /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" start && \
     sleep 5) && \
     /usr/local/pgsql/bin/pg_isready -U postgres -p "$PGPORT" && \
+    /usr/local/pgsql/bin/psql -U postgres -d postgres -p "$PGPORT" -c "SELECT * FROM pg_underscore_extensions;" && \
     /usr/local/pgsql/bin/psql -U postgres -d postgres -p "$PGPORT" -c "CREATE EXTENSION spock;"
 
 # Switch back to root user
