@@ -46,23 +46,6 @@ jobs:
 
         echo "Container $CONTAINER_NAME started successfully!"
 
-    - name: Wait for PostgreSQL to Start
-      run: |
-        PGPORT=$((5400 + ${{ matrix.pgver }}))
-        CONTAINER_NAME=spock-${{ matrix.pgver }}
-        for i in {1..10}; do
-          if docker exec $CONTAINER_NAME /usr/local/pgsql/bin/pg_isready -p $PGPORT; then
-            echo "PostgreSQL is running!"
-            exit 0
-          fi
-          echo "PostgreSQL not ready, retrying..."
-          sleep 2
-        done
-    
-        echo "PostgreSQL failed to start in $CONTAINER_NAME!"
-        docker logs $CONTAINER_NAME  # Print logs for debugging
-        exit 1
-
     - name: Set environment variables as needed
       run: |
         echo "PGPORT=$((5400 + ${{ matrix.pgver }}))" >> $GITHUB_ENV
@@ -73,8 +56,6 @@ jobs:
       run: |
         echo "Current User: $(whoami)" > latest.log
         echo "Current Path: $(pwd)" >> latest.log
-        docker exec $CONTAINER_NAME /usr/local/pgsql/bin/psql -d postgres -p $PGPORT -c "CREATE EXTENSION spock;" >> latest.log
-        docker exec $CONTAINER_NAME /usr/local/pgsql/bin/psql -d postgres -p $PGPORT -c "SELECT * FROM pg_extension WHERE extname = 'spock';" >> latest.log
         cat latest.log
 
     - name: Upload Log File as Artifact

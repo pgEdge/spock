@@ -124,8 +124,6 @@ RUN sudo -u postgres bash -c "/usr/local/pgsql/bin/pg_ctl -D '$PGDATA' status" |
     /usr/local/pgsql/bin/psql -U postgres -d postgres -p "$PGPORT" -c "ALTER SYSTEM SET shared_preload_libraries TO 'spock';" && \
     /usr/local/pgsql/bin/psql -U postgres -d postgres -p "$PGPORT" -c "ALTER SYSTEM SET track_commit_timestamp TO 'on';"
 
-### Now we break here:
-
 RUN sudo -u postgres bash -c "/usr/local/pgsql/bin/pg_ctl -D '$PGDATA' status" || \
     (echo 'Starting Postgres...' && \
     sudo -u postgres /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" start && \
