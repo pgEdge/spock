@@ -117,17 +117,17 @@ RUN cd /home/postgres/spock-private && \
 
 # Check to see if the server is running; start it if it isn't and set parameters for Spock
 RUN sudo -u postgres bash -c "/usr/local/pgsql/bin/pg_ctl -D '$PGDATA' status" || \
-    (echo 'PostgreSQL is not running, starting it now...' && \
+    (echo 'Starting Postgres...' && \
     sudo -u postgres /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" start && \
     sleep 5) && \
-    /usr/local/pgsql/bin/pg_isready -p "$PGPORT" && \
+    /usr/local/pgsql/bin/pg_isready -U postgres -p "$PGPORT" && \
     /usr/local/pgsql/bin/psql -U postgres -d postgres -p "$PGPORT" -c "ALTER SYSTEM SET shared_preload_libraries TO 'spock';" && \
     /usr/local/pgsql/bin/psql -U postgres -d postgres -p "$PGPORT" -c "ALTER SYSTEM SET track_commit_timestamp TO 'on';"
 
 ### Now we break here:
 
 # Restart PostgreSQL to apply changes
-RUN sudo -u /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" restart && sleep 5
+RUN sudo -u postgres bash -c /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" restart && sleep 5
 
 # Verify PostgreSQL is running
 RUN /usr/local/pgsql/bin/pg_isready -p "$PGPORT"
