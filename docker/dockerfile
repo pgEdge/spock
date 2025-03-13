@@ -126,9 +126,9 @@ RUN sudo -u postgres bash -c "/usr/local/pgsql/bin/pg_ctl -D '$PGDATA' status" |
 
 ### Now we break here:
 
-RUN sudo -u postgres bash -c "/usr/local/pgsql/bin/pg_ctl -D '$PGDATA' status" || \
+RUN sudo -U postgres bash -c "/usr/local/pgsql/bin/pg_ctl -D '$PGDATA' status" || \
     (echo 'Starting Postgres...' && \
-    sudo -u postgres /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" start && \
+    sudo -U postgres /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" start && \
     sleep 5) && \
     /usr/local/pgsql/bin/pg_isready -U postgres -p "$PGPORT" && \
     /usr/local/pgsql/bin/psql -U postgres -d postgres -p "$PGPORT" -c "SELECT * FROM pg_available_extensions;" && \
