@@ -46,8 +46,11 @@ RUN git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-pri
     cd /home/postgres/spock-private && \
     echo "CURRENTLY I'M HERE:" && \
     pwd && \
-    echo "Checking for patches in $PATCH_DIR matching pg${PG_VERSION}-*.diff" && \
-    PATCH_FILES=$(ls $PATCH_DIR/pg${PG_VERSION}-*.diff 2>/dev/null || true) && \
+    PATCH_DIR=/home/postgres/spock-private/patches
+    echo "LOOKING FOR patches in $PATCH_DIR matching pg${PG_VERSION}-*.diff" && \
+    # PATCH_FILES=$(ls $PATCH_DIR/pg${PG_VERSION}-*.diff 2>/dev/null || true) && \
+    PATCH_FILES=$(ls $PATCH_DIR/pg${PG_VERSION}-*.diff || true) && \
+    echo "patch_files contains $PATCH_FILES" && \
     if [ -n "$PATCH_FILES" ]; then \
         for PATCH_FILE in $PATCH_DIR/pg${PG_VERSION}-*.diff; do \
             [ -f "$PATCH_FILE" ] || continue; \
