@@ -90,9 +90,6 @@ ENV PATH="/usr/local/pgsql/bin/:${PATH}"
 RUN echo "Just used ENV PATH TO update PATH: $PATH"
 RUN echo "Checking value of pg_ver: $PG_VER"
 
-
-### Now we break here:
-
 # We may or may not need to copy the compatXX files to the spock repo
 RUN SPOCK_DIR="/home/postgres/spock-private/" && \
     POSTGRES_DIR="/home/postgres/postgres-source" && \
@@ -118,9 +115,14 @@ RUN cd /home/postgres/spock-private && \
     make && \
     make install
 
-# Set shared_preload_libraries and track_commit_timestamp
-RUN /usr/local/pgsql/bin/psql -d postgres -p "$PGPORT" -c "ALTER SYSTEM SET shared_preload_libraries TO 'spock';" && \
+### Now we break here:
+
+RUN /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" start && \
+    sleep 5 && \
+    /usr/local/pgsql/bin/pg_isready -p "$PGPORT" && \
+    /usr/local/pgsql/bin/psql -d postgres -p "$PGPORT" -c "ALTER SYSTEM SET shared_preload_libraries TO 'spock';" && \
     /usr/local/pgsql/bin/psql -d postgres -p "$PGPORT" -c "ALTER SYSTEM SET track_commit_timestamp TO 'on';"
+
 
 # Restart PostgreSQL to apply changes
 RUN /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" restart && sleep 5
