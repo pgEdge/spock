@@ -126,11 +126,11 @@ RUN sudo -u postgres bash -c "/usr/local/pgsql/bin/pg_ctl -D '$PGDATA' status" |
 
 ### Now we break here:
 
-# Restart PostgreSQL to apply changes
-RUN sudo -u postgres bash -c /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" restart && sleep 5
-
-# Verify PostgreSQL is running
-RUN /usr/local/pgsql/bin/pg_isready -p "$PGPORT"
+RUN sudo -u postgres bash -c "/usr/local/pgsql/bin/pg_ctl -D '$PGDATA' status" || \
+    (echo 'Starting Postgres...' && \
+    sudo -u postgres /usr/local/pgsql/bin/pg_ctl -D "$PGDATA" -o "-p $PGPORT" start && \
+    sleep 5) && \
+    /usr/local/pgsql/bin/pg_isready -U postgres -p "$PGPORT"
 
 # Create Spock extension
 RUN /usr/local/pgsql/bin/psql -U postgres -d postgres -p "$PGPORT" -c "CREATE EXTENSION spock;"
