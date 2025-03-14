@@ -46,8 +46,6 @@
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 #include "replication/walsender.h"
-#include "replication/syncrep.h"
-#include "replication/walsender_private.h"
 
 #include "rewrite/rewriteHandler.h"
 
@@ -72,6 +70,8 @@
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/snapmgr.h"
+#include "replication/syncrep.h"
+#include "replication/walsender_private.h"
 
 #include "spock_common.h"
 #include "spock_conflict.h"
@@ -90,6 +90,7 @@
 #include "spock_common.h"
 #include "spock_readonly.h"
 #include "spock.h"
+
 
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
 
@@ -159,14 +160,8 @@ typedef struct SPKFlushPosition
 	XLogRecPtr	remote_end;
 } SPKFlushPosition;
 
-typedef struct RemoteSyncPosition
-{
-	dlist_node	node;
-	XLogRecPtr	remote_sync_lsn;
-} RemoteSyncPosition;
-
 dlist_head	lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
-dlist_head	wait_queue_for_replicated_lsn = DLIST_STATIC_INIT(wait_queue_for_replicated_lsn);
+
 typedef struct ApplyExecState
 {
 	EState	   *estate;
@@ -184,6 +179,24 @@ struct ActionErrCallbackArg
 
 struct ActionErrCallbackArg errcallback_arg;
 TransactionId remote_xid;
+
+/*
+ * Structure of RemoteSyncPosition to Save the LSN in case of
+ * Synchronous replica is attached
+ */
+typedef struct RemoteSyncPosition
+{
+	dlist_node  node;
+	XLogRecPtr  recvpos;
+	XLogRecPtr  flushpos;
+	XLogRecPtr  writepos;
+} RemoteSyncPosition;
+
+/*
+ * Queue of structure RemoteSyncPosition to Save the LSN in
+ * case of Synchronous replica is attached
+ */
+dlist_head sync_replica_lsn = DLIST_STATIC_INIT(sync_replica_lsn);
 
 /*
  * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
@@ -236,6 +249,10 @@ should_log_exception(bool failed)
 
 	return false;
 }
+
+static void append_feedback_position(XLogRecPtr recvpos);
+static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos, XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
+
 
 /*
  * Check if given relation is in process of being synchronized.
@@ -610,7 +627,6 @@ handle_commit(StringInfo s)
 	if (IsTransactionState())
 	{
 		SPKFlushPosition *flushpos;
-		RemoteSyncPosition *syncpos;
 
 		/*
 		 * The transaction is either non-empty or skipped, so we clear the
@@ -650,28 +666,12 @@ handle_commit(StringInfo s)
 
 		CommitTransactionCommand();
 
+		if (WalSndCtl->sync_standbys_defined)
+			append_feedback_position(XactLastCommitEnd);
+
 		remoteTransactionStopTimestamp = 0;
 
 		MemoryContextSwitchTo(TopMemoryContext);
-
-		/*
-		 * If a synchronous replica is attached, in code we set synchronous commit off.
-		 * This can be dangerous because feedback might be sent before receiving
-		 * acknowledgment from the remote synchronous replica. To handle this,
-		 * a list of locally committed LSNs is maintained. Feedback is delayed
-		 * until acknowledgment is received from the remote synchronous replica,
-		 * thus avoiding blocking the transaction while ensuring data consistency.
-		 */
-		if (WalSndCtl->sync_standbys_defined)
-		{
-			syncpos = (RemoteSyncPosition *) palloc(sizeof(RemoteSyncPosition));
-			syncpos->remote_sync_lsn = XactLastCommitEnd;
-			dlist_push_tail(&wait_queue_for_replicated_lsn, &syncpos->node);
-
-			elog(DEBUG2, "SPOCK %s: commit locally and added in queue %X/%X",
-				MySubscription->name,
-				(uint32) (XactLastCommitEnd >> 32), (uint32) XactLastCommitEnd);
-		}
 
 		if (xact_had_exception)
 		{
@@ -2043,22 +2043,109 @@ get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
 }
 
 /*
- * Send a Standby Status Update message to server.
- *
- * 'recvpos' is the latest LSN we've received data to, force is set if we need
- * to send a response to avoid timeouts.
+ * If a synchronous replica is attached, in code we set synchronous commit off.
+ * This can be dangerous because feedback might be sent before receiving
+ * acknowledgment from the remote synchronous replica. To handle this,
+ * a list of locally committed LSNs is maintained. Feedback is delayed
+ * until acknowledgment is received from the remote synchronous replica,
+ * thus avoiding blocking the transaction while ensuring data consistency.
  */
+static void
+append_feedback_position(XLogRecPtr recvpos)
+{
+	XLogRecPtr writepos;
+	XLogRecPtr flushpos;
+	RemoteSyncPosition *syncpos;
+	Assert(WalSndCtl->sync_standbys_defined);
+
+	if (get_flush_position(&writepos, &flushpos))
+	{
+		/*
+		 * No outstanding transactions to flush, we can report the latest
+		 * received position. This is important for synchronous replication.
+		 */
+		flushpos = writepos = recvpos;
+	}
+
+	syncpos = (RemoteSyncPosition *) palloc0(sizeof(RemoteSyncPosition));
+	syncpos->recvpos = recvpos;
+	syncpos->writepos = writepos;
+	syncpos->flushpos = flushpos;
+	dlist_push_tail(&sync_replica_lsn, &syncpos->node);
+	elog(DEBUG2, "SPOCK %s: appended feedback to list %X/%X, write %X/%X, flush %X/%X",
+		 MySubscription->name,
+		 (uint32) (recvpos >> 32), (uint32) recvpos,
+		 (uint32) (writepos >> 32), (uint32) writepos,
+		 (uint32) (flushpos >> 32), (uint32) flushpos
+		);
+}
+
+/*
+ * As we have maintained a list of LSNs that are waiting for
+ * acknowledgment from the synchronous replica, we need to get the
+ * feedback position from the list and send it to the Spock node attached to it.
+ * This ensures that we only send feedback that is committed and acknowledged
+ * by the synchronous replica.
+ */
+static void
+get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos, XLogRecPtr *flushpos, XLogRecPtr *max_recvpos)
+{
+	dlist_mutable_iter iter1;
+	RemoteSyncPosition *syncpos;
+
+	Assert(WalSndCtl->sync_standbys_defined);
+	if (dlist_is_empty(&sync_replica_lsn))
+		return;
+
+	/* Acquire lock to update the sync position */
+	LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+
+	/* Iterate through the wait queue and update positions */
+	dlist_foreach_modify(iter1, &sync_replica_lsn)
+	{
+		syncpos = dlist_container(RemoteSyncPosition, node, iter1.cur);
+		if (syncpos == NULL)
+			break;
+
+		if (syncpos->recvpos <= WalSndCtl->lsn[SYNC_REP_WAIT_FLUSH])
+		{
+			*recvpos = syncpos->recvpos;
+			*writepos = syncpos->writepos;
+			*flushpos = syncpos->flushpos;
+			elog(DEBUG2, "SPOCK %s: received feedback %X/%X, "
+				 "write %X/%X, flush %X/%X",
+				 MySubscription->name,
+				 (uint32) (*recvpos >> 32), (uint32) *recvpos,
+				 (uint32) (*writepos >> 32), (uint32) *writepos,
+				 (uint32) (*flushpos >> 32), (uint32) *flushpos
+				);
+			dlist_delete(iter1.cur);
+			pfree(syncpos);
+			syncpos = NULL;
+		}
+		if (syncpos != NULL)
+			*max_recvpos = syncpos->recvpos;
+	}
+	/* Release the lock */
+	LWLockRelease(SyncRepLock);
+}
+
 static bool
 send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 {
 	static StringInfo reply_message = NULL;
 
+	static XLogRecPtr max_recvpos = InvalidXLogRecPtr;
 	static XLogRecPtr last_recvpos = InvalidXLogRecPtr;
 	static XLogRecPtr last_writepos = InvalidXLogRecPtr;
 	static XLogRecPtr last_flushpos = InvalidXLogRecPtr;
 
 	XLogRecPtr	writepos;
 	XLogRecPtr	flushpos;
+
+	/* In case of any syncrounoun replica is attached get the  LSN from the list */
+	if (WalSndCtl->sync_standbys_defined)
+		get_feedback_position(&recvpos, &writepos, &flushpos, &max_recvpos);
 
 	/* It's legal to not pass a recvpos */
 	if (recvpos < last_recvpos)
@@ -2103,11 +2190,12 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 	pq_sendbyte(reply_message, false);	/* replyRequested */
 
 	elog(DEBUG2, "SPOCK %s: sending feedback (force %d) to recv %X/%X, "
-		 "write %X/%X, flush %X/%X",
+		 "write %X/%X, flush %X/%X, max_waiting_lsn %X/%X",
 		 MySubscription->name, force,
 		 (uint32) (recvpos >> 32), (uint32) recvpos,
 		 (uint32) (writepos >> 32), (uint32) writepos,
-		 (uint32) (flushpos >> 32), (uint32) flushpos
+		 (uint32) (flushpos >> 32), (uint32) flushpos,
+		 (uint32) (max_recvpos >> 32), (uint32) max_recvpos
 		);
 
 	if (PQputCopyData(conn, reply_message->data, reply_message->len) <= 0 ||
@@ -2275,6 +2363,7 @@ apply_work(PGconn *streamConn)
 				s.cursor = 0;
 
 				c = pq_getmsgbyte(&s);
+
 				if (c == 'w')
 				{
 					XLogRecPtr	start_lsn;
@@ -2290,119 +2379,34 @@ apply_work(PGconn *streamConn)
 					if (last_received < end_lsn)
 						last_received = end_lsn;
 
-					replication_handler(&s);
-
-					/* Send feedback if wal_sender_timeout/2 has passed */
-					if (TimestampDifferenceExceeds(last_receive_timestamp, GetCurrentTimestamp(), wal_sender_timeout / 2))
+					/*
+					 * Send feedback if wal_sender_timeout/3 has passed, because in case of too many 'w'
+					 * messages we will not be able to service the 'k' message.
+					 */
+					if (TimestampDifferenceExceeds(last_receive_timestamp, GetCurrentTimestamp(), wal_sender_timeout / 3))
 					{
-						send_feedback(applyconn, last_received, GetCurrentTimestamp(), false);
+						/* We are setting force to true to avoid remote wal__sender_timeout */
+						send_feedback(applyconn, last_received, GetCurrentTimestamp(), true);
 						last_receive_timestamp = GetCurrentTimestamp();
 					}
+					replication_handler(&s);
 				}
 				else if (c == 'k')
 				{
-					/*
-					 * Handles 'k' message which is a feedback request.
-					 * If there is no synchronous standby attached:
-					 * - Sends feedback to the upstream server with the end position of the last received message.
-					 * - Updates the last received position if the end position is greater.
-					 *
-					 * If there is a synchronous standby attached:
-					 * - Acquires the SyncRepLock to ensure exclusive access to the synchronization data structures.
-					 * - Iterates through the wait queue for replicated LSNs to check if the remote sync LSN is committed remotely.
-					 * - If the remote sync LSN is less than or equal to the wait flush LSN, updates the last synced LSN and removes the LSN from the wait queue.
-					 * - If the current time exceeds the timeout, breaks the loop.
-					 * - If a reply is not requested but the last synced LSN is different from the last received LSN, sets reply_requested to true.
-					 * - Sends feedback to the upstream server with the last synced LSN and the current timestamp.
-					 * - Updates the last received position to the last synced LSN.
-					 * - Releases the SyncRepLock.
-					 */
 					XLogRecPtr	endpos;
-					bool        reply_requested;
+					bool		reply_requested;
 
-					/* Read the end position and timestamp from the message */
 					endpos = pq_getmsgint64(&s);
-					/* timestamp = */ pq_getmsgint64(&s);
+					 /* timestamp = */ pq_getmsgint64(&s);
 					reply_requested = pq_getmsgbyte(&s);
 
-					/* If there is no synchronous standby attached, act normally and send the locally committed LSN */
-					if (!WalSndCtl->sync_standbys_defined)
-					{
-						/* Send feedback to the upstream server with the end position of the last received message */
-						send_feedback(applyconn, endpos,
-									  GetCurrentTimestamp(),
-									  reply_requested);
+					send_feedback(applyconn, endpos,
+								  GetCurrentTimestamp(),
+								  reply_requested);
 
-						/* Update the last received position if the end position is greater */
-						if (last_received < endpos)
-							last_received = endpos;
-					}
-					else
-					{
-						RemoteSyncPosition *syncpos;
-						TimestampTz now = GetCurrentTimestamp();
-						TimestampTz timeout = TimestampTzPlusMilliseconds(last_receive_timestamp, wal_sender_timeout / 2);
-
-						LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
-
-						dlist_mutable_iter iter;
-						/*
-						 * There is an LSN in the queue, wait for it to be committed remotely.
-						 */
-						dlist_foreach_modify(iter, &wait_queue_for_replicated_lsn)
-						{
-							syncpos = dlist_container(RemoteSyncPosition, node, iter.cur);
-
-							elog(DEBUG2, "SPOCK %s: remote_sync_lsn=%X/%X, wait_flush_lsn=%X/%X, reply_requested=%d",
-								 MySubscription->name,
-								 (uint32) (syncpos->remote_sync_lsn >> 32), (uint32) syncpos->remote_sync_lsn,
-								 (uint32) (WalSndCtl->lsn[SYNC_REP_WAIT_FLUSH] >> 32), (uint32) WalSndCtl->lsn[SYNC_REP_WAIT_FLUSH],
-								 reply_requested);
-
-							/* Check if the remote sync LSN is less than or equal to the wait flush LSN */
-							if (syncpos->remote_sync_lsn <= WalSndCtl->lsn[SYNC_REP_WAIT_FLUSH])
-							{
-								elog(DEBUG2, "SPOCK %s: remote_sync_lsn=%X/%X is committed remotely, reply_requested=%d",
-									 MySubscription->name,
-									 (uint32) (syncpos->remote_sync_lsn >> 32), (uint32) syncpos->remote_sync_lsn,
-									 reply_requested);
-
-								/* LSN is committed remotely, send the feedback and remove it from the list */
-								MyApplyWorker->last_synced_lsn = syncpos->remote_sync_lsn;
-
-								/* Remove the LSN from the wait queue as it has been committed remotely */
-								dlist_delete(iter.cur);
-								pfree(syncpos);
-								break;
-							}
-							else if (now >= timeout)
-							{
-								elog(DEBUG2, "SPOCK %s: breaking loop due to timeout, reply_requested=%d",
-									 MySubscription->name,
-									 reply_requested);
-								break;
-							}
-						}
-						if (reply_requested == false)
-						{
-							if (MyApplyWorker->last_synced_lsn != last_received)
-								reply_requested = true;
-						}
-						elog(DEBUG2, "SPOCK %s: sending feedback to upstream server with last_synced_lsn=%X/%X, reply_requested=%d",
-							 MySubscription->name,
-							 (uint32) (MyApplyWorker->last_synced_lsn >> 32), (uint32) MyApplyWorker->last_synced_lsn,
-							 reply_requested);
-
-						/* LSN is committed remotely, send the feedback */
-						send_feedback(applyconn, MyApplyWorker->last_synced_lsn,
-									  GetCurrentTimestamp(),
-									  reply_requested);
-
-						last_received = MyApplyWorker->last_synced_lsn;
-						LWLockRelease(SyncRepLock);
-					}
+					if (last_received < endpos)
+						last_received = endpos;
 				}
-
 				/* other message types are purposefully ignored */
 
 				/* copybuf is malloc'd not palloc'd */
@@ -3124,6 +3128,9 @@ spock_apply_main(Datum main_arg)
 	VALGRIND_DISABLE_ERROR_REPORTING;
 	VALGRIND_DO_LEAK_CHECK;
 	VALGRIND_ENABLE_ERROR_REPORTING;
+
+	/* Initialize the wait queue for replicated LSNs */
+	dlist_init(&sync_replica_lsn);
 
 	apply_work(streamConn);
 
