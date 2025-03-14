@@ -266,10 +266,6 @@ process_parameters_v1(LogicalDecodingContext *ctx, SpockOutputData *data)
 			case PARAM_SPOCK_PROGRESS_COMMIT_TS:
 				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_INT64);
 				data->progress_commit_ts = DatumGetTimestampTz(val);
-				elog(DEBUG1, "SPOCK: HAMID slot '%s' is parsing params"
-							" progress_commit_ts = "INT64_FORMAT,
-							NameStr(ctx->slot->data.name),
-							data->progress_commit_ts);
 				break;
 
 			case PARAM_SPOCK_PROGRESS_LSN:
@@ -283,10 +279,6 @@ process_parameters_v1(LogicalDecodingContext *ctx, SpockOutputData *data)
 				if (have_error)
 					elog(ERROR, "Could not parse progress lsn value %s", strVal(elem->arg));
 
-				elog(DEBUG1, "SPOCK: HAMID slot '%s' is parsing params"
-							" progress_lsn = %X/%X",
-							NameStr(ctx->slot->data.name),
-							LSN_FORMAT_ARGS(data->progress_lsn));
 				break;
 			}
 

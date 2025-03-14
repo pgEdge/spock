@@ -106,9 +106,11 @@ static MemoryContext RelMetaCacheContext = NULL;
 static int InvalidRelMetaCacheCnt = 0;
 static int MyWalSenderIdx = 0;
 
+static int backend_txn_count = 0;
 static bool						slot_group_on_exit_set = false;
 static SpockOutputSlotGroup	   *slot_group = NULL;
 static bool						slot_group_skip_xact = false;
+static bool						slot_catchup_first_xact = true;
 
 /* ts of the last transaction processed by the slot group */
 static TimestampTz				slot_group_last_commit_ts = 0;
@@ -454,9 +456,6 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	bool send_replication_origin = data->forward_changeset_origins;
 	MemoryContext old_ctx;
 	bool slot_group_updated = false;
-	bool is_resending_xact = false;
-	bool is_catching_up = false;
-	XLogRecPtr slot_group_last_lsn = InvalidXLogRecPtr;
 
 	/* Reset repair mode */
 	spock_replication_repair_mode = false;
@@ -477,7 +476,6 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 		 * variable to avoid further locking.
 		 */
 		LWLockAcquire(slot_group->lock, LW_EXCLUSIVE);
-		slot_group_last_lsn = slot_group->last_lsn;
 
 		/* We're either the next xact or the first */
 		if (slot_group->last_commit_ts < txn->xact_time.commit_time ||
@@ -489,157 +487,62 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 			slot_group->last_commit_ts = txn->xact_time.commit_time;
 			slot_group->last_lsn = txn->end_lsn;
 		}
-		LWLockRelease(slot_group->lock);
 
 		/* We did not update slot group. We need to skip or resend */
 		if (!slot_group_updated)
 		{
 			if (MyWalSnd->state == WALSNDSTATE_CATCHUP)
 			{
-				static bool just_restarted = true;
-				is_catching_up = true;
-
-				if (just_restarted)
+				/* Only resend xacts after the progress_commit_ts */
+				if (txn->xact_time.commit_time <= data->progress_commit_ts)
 				{
-			elog(DEBUG1, "SPOCK: HAMID slot '%s' is catching up"
-						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
-						 " slot_group_skip_xact"
-						 " catching up = %d",
-						 NameStr(ctx->slot->data.name),
-						 slot_group_last_commit_ts,
-						 txn->xact_time.commit_time,
-						 is_catching_up);
+		elog(DEBUG1, "SPOCK: %s: SKIPPED XACT "
+				"[" INT64_FORMAT ", " INT64_FORMAT ", " INT64_FORMAT "]",
+				NameStr(MyReplicationSlot->data.name),
+				data->progress_commit_ts,
+				slot_group_last_commit_ts,
+				txn->xact_time.commit_time);
 
-					just_restarted = false;
+					slot_group_skip_xact = true;
 				}
 
-			    /*
-				 * Skip if commit ts is less than or equal to what's already
-				 * applied on the subscriber.
-				 *
-				 * The else if condition ensures that we only set
-				 * slot_group_last_commit_ts for the transaction that immediately
-				 * follows data->progress_commit_ts. This would setup our
-				 * prev commit ts, and commit ts chaining for this apply worker.
+				/*
+				 * We are already ahead of the progress. There is no
+				 * way we can find prev commit ts. Let the apply worker
+				 * fix it since we're restarting.
 				 */
-/*
-				data->progress_commit_ts = 0
-					when can this happen?
-					resend
-
-				txn->xact_time.commit_time < data->progress_commit_ts
-					skip
-				txn->xact_time.commit_time = data->progress_commit_ts
-					set prev commit ts
-					skip
-				txn->xact_time.commit_time > data->progress_commit_ts
-					resend
-*/
-
-				if (txn->xact_time.commit_time < data->progress_commit_ts)
-				{
-					slot_group_skip_xact = true;
-
-			elog(DEBUG1,   "SPOCK: HAMID slot '%s'"
-						" skipping ts < progress "
-						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
-						 " catching up = %d",
-						 NameStr(ctx->slot->data.name),
-						 slot_group_last_commit_ts,
-						 txn->xact_time.commit_time,
-						 is_catching_up);
-				}
-				else if (txn->xact_time.commit_time == data->progress_commit_ts)
-				{
+				if (slot_catchup_first_xact)
 					slot_group_last_commit_ts = txn->xact_time.commit_time;
-					slot_group_skip_xact = true;
 
-			elog(DEBUG1,   "SPOCK: HAMID slot '%s'"
-						" skipping ts == progress "
-						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
-						 " catching up = %d",
-						 NameStr(ctx->slot->data.name),
-						 slot_group_last_commit_ts,
-						 txn->xact_time.commit_time,
-						 is_catching_up);
-				}
-				else
-				{
-					is_resending_xact = true;
-
-					/*
-					 * If we are restarting after the progress_commit_ts, we
-					 * won't have a valid previous ts. So, use the progress
-					 * one as the previous ts.
-					 */
-					if (slot_group_last_commit_ts == 0)
-						slot_group_last_commit_ts = data->progress_commit_ts;
-
-					if (data->progress_commit_ts == 0)
-					{
-			elog(DEBUG1,   "SPOCK: HAMID slot '%s'"
-						" resending progress == 0"
-						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
-						 " catching up = %d",
-						 NameStr(ctx->slot->data.name),
-						 slot_group_last_commit_ts,
-						 txn->xact_time.commit_time,
-						 is_catching_up);
-					}
-					else
-			elog(DEBUG1,   "SPOCK: HAMID slot '%s'"
-						" resending ts > progress "
-						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
-						 " catching up = %d",
-						 NameStr(ctx->slot->data.name),
-						 slot_group_last_commit_ts,
-						 txn->xact_time.commit_time,
-						 is_catching_up);
-				}
+				slot_catchup_first_xact = false;
 			}
 			else
 			{
-			elog(DEBUG1,   "SPOCK: HAMID slot '%s' skipping"
-						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
-						 " catching up = %d",
-						 NameStr(ctx->slot->data.name),
-						 slot_group_last_commit_ts,
-						 txn->xact_time.commit_time,
-						 is_catching_up);
 				slot_group_skip_xact = true;
 			}
+
+			/* Update previous commit ts to continue the commit ts chaining. */
+			if (slot_group_skip_xact)
+				slot_group_last_commit_ts = txn->xact_time.commit_time;
 		}
 
 		if (slot_group_skip_xact)
 		{
-			elog(DEBUG1, "SPOCK: HAMID slot '%s' skipping transaction with end_lsn %X/%X"
-						 " - last_lsn %X/%X"
-						 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
-						 " catching up = %d",
-						 NameStr(ctx->slot->data.name),
-						 LSN_FORMAT_ARGS(txn->end_lsn),
-						 LSN_FORMAT_ARGS(slot_group_last_lsn),
-						 slot_group_last_commit_ts,
-						 txn->xact_time.commit_time,
-						 is_catching_up);
-			/*
-			 * Let's update the previous commit ts to continue the commit ts
-			 * chaining.
-			 */
+			elog(DEBUG1, "SPOCK: %s: SKIPPED XACT "
+					"[" INT64_FORMAT ", " INT64_FORMAT ", " INT64_FORMAT "]",
+					NameStr(MyReplicationSlot->data.name),
+					data->progress_commit_ts,
+					slot_group_last_commit_ts,
+					txn->xact_time.commit_time);
+		}
+
+		LWLockRelease(slot_group->lock);
+
+		if (slot_group_skip_xact)
+		{
 			slot_group_last_commit_ts = txn->xact_time.commit_time;
 			return;
 		}
-
-		elog(DEBUG1, "SPOCK: slot '%s' sending transaction with end_lsn %X/%X"
-					 " - last_lsn %X/%X"
-					 " and commit ts: [" INT64_FORMAT ", " INT64_FORMAT "]"
-					 " resend: %d",
-					 NameStr(ctx->slot->data.name),
-					 LSN_FORMAT_ARGS(txn->end_lsn),
-					 LSN_FORMAT_ARGS(slot_group_last_lsn),
-					 slot_group_last_commit_ts,
-					 txn->xact_time.commit_time,
-					 is_resending_xact);
 	}
 
 	old_ctx = MemoryContextSwitchTo(data->context);
@@ -690,14 +593,19 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 			OutputPluginWrite(ctx, false);
 			OutputPluginPrepareWrite(ctx, true);
 
+			backend_txn_count++;
 			data->api->write_commit_order(ctx->out, slot_group_last_commit_ts);
 
-			/*
-			 * Let's update the previous commit ts to continue the commit ts
-			 * chaining.
-			 */
-			if (is_resending_xact)
-				slot_group_last_commit_ts = txn->xact_time.commit_time;
+			elog(DEBUG1, "SPOCK: SENDING XACT BEGIN %s: "
+				"[" INT64_FORMAT ", " INT64_FORMAT ", " INT64_FORMAT "]"
+				" backend_txn_count = %d",
+				NameStr(MyReplicationSlot->data.name),
+				data->progress_commit_ts,
+				slot_group_last_commit_ts,
+				txn->xact_time.commit_time,
+				backend_txn_count);
+
+			slot_group_last_commit_ts = txn->xact_time.commit_time;
 		}
 	}
 #endif
@@ -779,6 +687,15 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	OutputPluginPrepareWrite(ctx, true);
 	data->api->write_commit(ctx->out, data, txn, commit_lsn);
 	OutputPluginWrite(ctx, true);
+
+	elog(DEBUG1, "SPOCK: SENDING XACT COMMIT %s: "
+		"[" INT64_FORMAT ", " INT64_FORMAT ", " INT64_FORMAT "]"
+		" backend_txn_count = %d",
+		NameStr(MyReplicationSlot->data.name),
+		data->progress_commit_ts,
+		slot_group_last_commit_ts,
+		txn->xact_time.commit_time,
+		backend_txn_count);
 
 	/*
 	 * Now is a good time to get rid of invalidated relation
@@ -1106,6 +1023,9 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	SpockOutputData *data = ctx->output_plugin_private;
 	MemoryContext	old;
 	Bitmapset	   *att_list = NULL;
+	bool inserted = false;
+	bool updated = false;
+	bool deleted = false;
 
 	/*
 	 * If we are in slot-group skip transaction mode do nothing
@@ -1143,6 +1063,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	switch (change->action)
 	{
 		case REORDER_BUFFER_CHANGE_INSERT:
+			inserted = true;
 			OutputPluginPrepareWrite(ctx, true);
 			data->api->write_insert(ctx->out, data, relation,
 									ReorderBufferChangeHeapTuple(change, newtuple),
@@ -1156,6 +1077,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				HeapTuple oldtuple = change->data.tp.oldtuple ?
 					ReorderBufferChangeHeapTuple(change, oldtuple) : NULL;
 
+				updated = true;
 				OutputPluginPrepareWrite(ctx, true);
 				data->api->write_update(ctx->out, data, relation, oldtuple,
 										ReorderBufferChangeHeapTuple(change, newtuple),
@@ -1168,6 +1090,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		case REORDER_BUFFER_CHANGE_DELETE:
 			if (change->data.tp.oldtuple)
 			{
+				deleted = true;
 				OutputPluginPrepareWrite(ctx, true);
 				data->api->write_delete(ctx->out, data, relation,
 										ReorderBufferChangeHeapTuple(change, oldtuple),
@@ -1182,6 +1105,19 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		default:
 			Assert(false);
 	}
+
+	elog(DEBUG1, "SPOCK: SENDING XACT CHANGE %s: "
+		"[" INT64_FORMAT ", " INT64_FORMAT ", " INT64_FORMAT "]"
+		" backend_txn_count = %d"
+		" inserted = %d, updated =%d, deleted = %d",
+		NameStr(MyReplicationSlot->data.name),
+		data->progress_commit_ts,
+		slot_group_last_commit_ts,
+		txn->xact_time.commit_time,
+		backend_txn_count,
+		inserted,
+		updated,
+		deleted);
 
 cleanup:
 	Assert(CurrentMemoryContext == data->context);

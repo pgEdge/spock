@@ -27,59 +27,52 @@ typedef enum {
 								 * one table. */
 } SpockWorkerType;
 
-/*
- * Apply workers shared memory information per database per origin
- *
- * We want to be able to cleanup on proc exit. However, since MyProc may be
- * NULL during exit, we'd be using group_has_workers atomic variable when
- * decrement attached count, whereas when creating an entry to incrementing,
- * we must protect it with an LWLock to avoid race conditions..
- *
- * This strategy avoids using LWLocks for cleanup.
- *
- * SPOCK_APPLY_GROUP_WORKERS_LOCK_COUNT must always be one more than max
- * parallel slots. The additional lock will be used to lock the
- * apply_workers_ts array. This will be the first lock just before the start
- * of per TS lock; i.e.
- *    [apply_workers_ts_main_lock, apply_workers_ts_locks[0], ...]
- *
- * apply_workers_ts and the LWLocks prevent duplicate transactions. It avoids
- * race condition that two apply workers may cause by restarting from the
- * same previous commit ts.
- *
- * apply_workers_ts maintains the list of previous commit ts that are currently
- * being applied. So every incoming transaction must check this list to see
- * if it's a duplicate or not. If it is not, it can take an exclusive lock for
- * the associated LWLock and proceed on with transaction processing. Otherwise
- * it must wait. See acquire_apply_ts_entry function for more details.
- */
-#define SPOCK_APPLY_GROUP_WORKERS_LOCK_COUNT	(SPOCK_MAX_PARALLEL_SLOTS + 1)
+typedef enum
+{
+	SPOCK_WORKER_RR_NONE,			/* Not restarting or reason unknown. */
+	SPOCK_WORKER_RR_EXCEPTION,		/* Restart because of an exception. */
+	SPOCK_WORKER_RR_DEADLOCK		/* Restart because we caused a deadlock. */
+} SpockWorkerRestartReason;
+
+typedef struct SpockCOrderInfoData
+{
+	TimestampTz prev_commit_ts;		/* Commit ts for remote predecessor transaction. */
+	TimestampTz commit_ts;			/* Commit ts for remote transaction. */
+} SpockCOrderInfoData;
+
+typedef SpockCOrderInfoData *SpockCOrderInfo;
 
 typedef struct SpockApplyGroupData
 {
 	Oid dbid;
 	RepOriginId replorigin;
-	pg_atomic_uint32 nattached;		/* Must never exceed SPOCK_MAX_PARALLEL_SLOTS */
-	LWLock *apply_workers_ts_main_lock;
-	LWLock *apply_workers_ts_locks[SPOCK_MAX_PARALLEL_SLOTS];
-	TimestampTz apply_workers_ts[SPOCK_MAX_PARALLEL_SLOTS];
-	TimestampTz prev_remote_ts;
+	pg_atomic_uint32 nattached;		/* Must never exceed SPOCK_MAX_PARALLEL_APPLY */
+
+	TimestampTz processed_commit_ts;
 	XLogRecPtr remote_lsn;
+
+	Oid corder_subids[SPOCK_MAX_PARALLEL_APPLY];
+	SpockCOrderInfoData corder_data[SPOCK_MAX_PARALLEL_APPLY];
+	SpockWorkerRestartReason restart_reason[SPOCK_MAX_PARALLEL_APPLY]; /* Restart reason if known */
+
 	ConditionVariable prev_processed_cv;
 } SpockApplyGroupData;
 
 typedef SpockApplyGroupData *SpockApplyGroup;
 
+/*
+ * We need to store the pointer to the commit order information for this with
+ * each apply worker so that we can use it during deadlock/block detection.
+ */
 typedef struct SpockApplyWorker
 {
-	Oid			subid;					/* Subscription id for apply worker. */
-	XLogRecPtr	replay_stop_lsn;		/* Replay should stop here if defined. */
-	RepOriginId replorigin;				/* Remote origin for this apply worker. */
-	TimestampTz prev_remote_commit_ts;	/* Commit ts for remote predecessor transaction. */
-	TimestampTz remote_commit_ts;		/* Commit ts for remote transaction. */
-	bool		sync_pending;			/* Is there new synchronization info pending?. */
-	bool		use_try_block;			/* Should use try block for apply? */
-	SpockApplyGroup apply_group;		/* Apply group to be used with parallel slots. */
+	Oid subid;								 /* Subscription id for apply worker. */
+	XLogRecPtr	replay_stop_lsn;			 /* Replay should stop here if defined. */
+	RepOriginId replorigin;					 /* Remote origin for this apply worker. */
+	bool		sync_pending;				 /* Is there new synchronization info pending?. */
+	bool		use_try_block;				 /* Should use try block for apply? */
+	SpockCOrderInfo corder_info;			 /* Needed here for pseudo deadlock detection */
+	SpockApplyGroup apply_group;			 /* Apply group to be used with parallel slots. */
 } SpockApplyWorker;
 
 typedef struct SpockSyncWorker

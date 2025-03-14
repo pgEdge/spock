@@ -587,11 +587,8 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 					 quote_literal_cstr(forward_origins));
 
 	/* Progress related values */
-	elog(DEBUG1, "SPOCK: HAMID %s - progress_lsn = %X/%X",
-					MySubscription->slot_name,
-					LSN_FORMAT_ARGS(MyApplyWorker->apply_group->remote_lsn));
 	appendStringInfo(&command, ", \"spock.progress_commit_ts\" '"INT64_FORMAT"'",
-							   MyApplyWorker->apply_group->prev_remote_ts);
+							   MyApplyWorker->apply_group->processed_commit_ts);
 	appendStringInfo(&command, ", \"spock.progress_lsn\" '%X/%X'",
 							   LSN_FORMAT_ARGS(MyApplyWorker->apply_group->remote_lsn));
 

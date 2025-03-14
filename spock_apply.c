@@ -133,8 +133,11 @@ static List *SyncingTables = NIL;
 SpockApplyWorker *MyApplyWorker = NULL;
 SpockSubscription *MySubscription = NULL;
 SpockApplyGroup MyApplyGroup = NULL;
-int 		my_ts_index = -1;
 int			my_exception_log_index = -1;
+
+/* Commit order related vars */
+SpockCOrderInfoData xact_corder_data;
+int	my_apply_entry_index = -1;
 
 static PGconn *applyconn = NULL;
 
@@ -213,10 +216,10 @@ static void awake_transaction_waiters(void);
 
 /* Duplicate transaction filtering variables and functions */
 static bool skip_duplicate_xact = false;
+#define is_skipping_duplicate() (unlikely(skip_duplicate_xact))
 
-static void acquire_apply_ts_entry(void);
-static void apply_ts_reset(void);
-static bool is_duplicate_xact(void);
+static void maybe_start_skipping_duplicate(TimestampTz commit_ts);
+static void stop_skipping_duplicate(void);
 
 /*
  * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
@@ -307,11 +310,6 @@ spock_apply_group_shmem_request(void)
 	 * Request the LWlocks needed
 	 */
 	RequestNamedLWLockTranche("Spock_ApplyGroup", 1);
-
-	RequestNamedLWLockTranche("Spock_ApplyWorkersTSMain",
-						SPOCK_MAX_PARALLEL_GROUPS);
-	RequestNamedLWLockTranche("Spock_ApplyWorkersTS",
-						SPOCK_MAX_PARALLEL_GROUPS * SPOCK_MAX_PARALLEL_SLOTS);
 }
 
 /*
@@ -355,21 +353,11 @@ spock_apply_group_shmem_startup(void)
 		int i;
 
 		SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche("Spock_ApplyGroup")[0]).lock);
-
 		memset(apply_groups, 0, spock_apply_group_shmem_size(napply_groups));
 
 		/* Let's initialize all attributes */
 		for (i = 0; i < napply_groups; i++)
 		{
-			int j;
-
-			apply_groups[i].apply_workers_ts_main_lock =
-				&((GetNamedLWLockTranche("Spock_ApplyWorkersTSMain")[i]).lock);
-
-			for (j = 0; j < SPOCK_MAX_PARALLEL_SLOTS; j++)
-				apply_groups[i].apply_workers_ts_locks[j] =
-					&((GetNamedLWLockTranche("Spock_ApplyWorkersTS")[i * SPOCK_MAX_PARALLEL_SLOTS + j]).lock);
-
 			pg_atomic_init_u32(&(apply_groups[i].nattached), 0);
 			ConditionVariableInit(&apply_groups[i].prev_processed_cv);
 		}
@@ -385,8 +373,61 @@ spock_apply_group_shmem_startup(void)
 static bool
 is_commit_ts_awaited(TimestampTz prev_commit_ts)
 {
-	return (MyApplyGroup->prev_remote_ts == prev_commit_ts ||
+	return (MyApplyGroup->processed_commit_ts == prev_commit_ts ||
 			prev_commit_ts == 0);
+}
+
+/* */
+static bool
+check_lock_conflicts(PGPROC *blocked_proc, PGPROC *check_proc)
+{
+	dlist_iter	proc_iter;
+	PROCLOCK   *curproclock;
+	LockMethod	lockMethodTable;
+	int			conflictMask;
+	int			numLockModes;
+	int			lm;
+	bool		conflicts = false;
+
+	Assert(LWLockHeldByMeInMode(ProcArrayLock, LW_SHARED));
+
+	lockMethodTable = GetLocksMethodTable(blocked_proc->waitLock);
+	numLockModes = lockMethodTable->numLockModes;
+	conflictMask = lockMethodTable->conflictTab[blocked_proc->waitLockMode];
+
+	dlist_foreach(proc_iter, &blocked_proc->waitLock->procLocks)
+	{
+		curproclock =
+			dlist_container(PROCLOCK, lockLink, proc_iter.cur);
+
+		/* Another apply worker is blocked by check_proc? */
+		if (curproclock->tag.myProc == check_proc)
+		{
+			/* Check if lock mode held conflicts */
+			for (lm = 1; lm <= numLockModes; lm++)
+			{
+				if ((curproclock->holdMask & LOCKBIT_ON(lm)) &&
+					(conflictMask & LOCKBIT_ON(lm)))
+				{
+					conflicts = true;
+					break;
+				}
+			}
+
+			/* Break the dlist loop as well. */
+			if (conflicts)
+				break;
+		}
+	}
+
+	return conflicts;
+}
+
+/* */
+static bool
+check_lock_conflicts_cycle(PGPROC *blocked_proc, PGPROC *check_proc)
+{
+	return false;
 }
 
 /* Wrapper for latch for waiting for previous transaction to commit */
@@ -395,8 +436,6 @@ wait_for_previous_transaction(void)
 {
 	List	   *workers;
 	ListCell   *wlc;
-	TimestampTz	prev_commit_ts = MyApplyWorker->prev_remote_commit_ts;
-	TimestampTz	commit_ts = MyApplyWorker->remote_commit_ts;
 	TimestampTz	blocked_prev_commit_ts = 0;
 	TimestampTz	blocked_commit_ts = 0;
 	int			blocked_proc_pid = 0;
@@ -405,7 +444,7 @@ wait_for_previous_transaction(void)
 	int			wait_counter = 0;
 
 	/* Skip if we're a duplciate transaction */
-	if (is_duplicate_xact())
+	if (is_skipping_duplicate())
 		return;
 
 	/*
@@ -419,7 +458,7 @@ wait_for_previous_transaction(void)
 		 * this loop and process this transaction. Otherwise, wait for
 		 * the predecessor to commit.
 		 */
-		if (is_commit_ts_awaited(prev_commit_ts))
+		if (is_commit_ts_awaited(xact_corder_data.prev_commit_ts))
 			break;
 
 		CHECK_FOR_INTERRUPTS();
@@ -445,15 +484,12 @@ wait_for_previous_transaction(void)
 			blocked_apply = &blocked_worker->worker.apply;
 
 			/* Skip ourself */
-			if (blocked_apply->remote_commit_ts == commit_ts)
+			if (blocked_apply == MyApplyWorker)
 				continue;
 
-			/*
-			 * Only check if we are blocking a transaction that needs to go
-			 * before us.
-			 */
-			if (MyApplyWorker->prev_remote_commit_ts >
-					blocked_apply->prev_remote_commit_ts)
+			/* Only check for apply workers that must preceed us. */
+			if (MyApplyWorker->corder_info->commit_ts >
+					blocked_apply->corder_info->commit_ts)
 			{
 				PGPROC *blocked_proc;
 
@@ -468,51 +504,28 @@ wait_for_previous_transaction(void)
 					blocked_proc->waitStatus == PROC_WAIT_STATUS_WAITING &&
 					blocked_proc->waitLock)
 				{
-					dlist_iter	proc_iter;
-					PROCLOCK   *curproclock;
-					LockMethod	lockMethodTable;
-					int			conflictMask;
-					int			numLockModes;
-					int			lm;
-
-					lockMethodTable = GetLocksMethodTable(blocked_proc->waitLock);
-					numLockModes = lockMethodTable->numLockModes;
-					conflictMask = lockMethodTable->conflictTab[blocked_proc->waitLockMode];
-
-					dlist_foreach(proc_iter, &blocked_proc->waitLock->procLocks)
+					/* Check for a cycle if wait >= DeadlockTimeout */
+					if (wait_counter < DeadlockTimeout)
 					{
-						curproclock =
-							dlist_container(PROCLOCK, lockLink, proc_iter.cur);
+						should_exit = check_lock_conflicts(blocked_proc, MyProc);
+					}
+					else
+					{
+						should_exit = check_lock_conflicts_cycle(blocked_proc, MyProc);
 
-						/* Another apply worker is blocked by me? */
-						if (curproclock->tag.myProc == MyProc)
-						{
-							/* Check if our lock mode hold conflicts */
-							for (lm = 1; lm <= numLockModes; lm++)
-							{
-								if ((curproclock->holdMask & LOCKBIT_ON(lm)) &&
-									(conflictMask & LOCKBIT_ON(lm)))
-								{
-									should_exit = true;
-									blocked_proc_pid = blocked_proc->pid;
-									blocked_commit_ts = blocked_apply->remote_commit_ts;
-									blocked_prev_commit_ts = blocked_apply->prev_remote_commit_ts;
+						/* Reset the wait counter */
+						wait_counter = 0;
+					}
 
-									break;
-								}
-							}
-
-							/* Break the dlist loop as well. */
-							if (should_exit)
-								break;
-						}
+					if (should_exit)
+					{
+						blocked_proc_pid = blocked_proc->pid;
+						blocked_commit_ts = blocked_apply->corder_info->commit_ts;
+						blocked_prev_commit_ts = blocked_apply->corder_info->prev_commit_ts;
 					}
 				}
-				LWLockRelease(ProcArrayLock);
 
-				/* Have we waited long enough? */
-				wait_counter++;
-				should_exit |= (wait_counter == 2000);
+				LWLockRelease(ProcArrayLock);
 
 				/* Break the foreach worker loop as well. */
 				if (should_exit)
@@ -526,6 +539,8 @@ wait_for_previous_transaction(void)
 		/* We are blocking a awaited transaction. So must exit. */
 		if (should_exit)
 		{
+			MyApplyGroup->restart_reason[my_apply_entry_index] = SPOCK_WORKER_RR_DEADLOCK;
+
 			elog(LOG, "SPOCK: slot-group '%s' exiting to allow blocked apply"
 					  "worker to proceed [pid, prev_ts, ts]"
 					  " wait_counter: [%d]"
@@ -539,8 +554,8 @@ wait_for_previous_transaction(void)
 					  blocked_prev_commit_ts,
 					  blocked_commit_ts,
 					  MyProc->pid,
-					  prev_commit_ts,
-					  commit_ts);
+					  xact_corder_data.prev_commit_ts,
+					  xact_corder_data.commit_ts);
 
 			proc_exit(0);
 		}
@@ -549,11 +564,11 @@ wait_for_previous_transaction(void)
 		 * The value of prev_remote_ts might be erroneous as it could have
 		 * changed since we we last checked it.
 		 */
-		elog(DEBUG3, "SPOCK: slot-group '%s' WAIT for ts [current proccessed"
+		elog(DEBUG1, "SPOCK: slot-group '%s' WAIT for ts [current proccessed"
 					 ", required] [" INT64_FORMAT ", " INT64_FORMAT "]",
 					 MySubscription->slot_name,
-					 MyApplyGroup->prev_remote_ts,
-					 MyApplyWorker->prev_remote_commit_ts);
+					 MyApplyGroup->processed_commit_ts,
+					 xact_corder_data.prev_commit_ts);
 
 		/* Set a descriptive name of the apply worker. */
 		if (ps_suffix_added == false)
@@ -561,8 +576,8 @@ wait_for_previous_transaction(void)
 			char buff[50];
 			sprintf(buff, "wait for xact: "
 						  "[" INT64_FORMAT ", " INT64_FORMAT "]",
-						  prev_commit_ts,
-						  commit_ts);
+						  xact_corder_data.prev_commit_ts,
+						  xact_corder_data.commit_ts);
 
 			set_ps_display_suffix(buff);
 			ps_suffix_added = true;
@@ -572,6 +587,8 @@ wait_for_previous_transaction(void)
 		ConditionVariableTimedSleep(&MyApplyGroup->prev_processed_cv,
 									1,
 									WAIT_EVENT_LOGICAL_APPLY_MAIN);
+
+		wait_counter++;
 	}
 	ConditionVariableCancelSleep();
 
@@ -583,223 +600,7 @@ wait_for_previous_transaction(void)
 static void
 awake_transaction_waiters(void)
 {
-	Assert (my_ts_index > -1 && my_ts_index < SPOCK_MAX_PARALLEL_SLOTS);
-
 	ConditionVariableBroadcast(&MyApplyGroup->prev_processed_cv);
-
-	elog(LOG, "%s: %d: HDE - [f] my_ts_index [%d] free_index [%d] is_dup [%d]"
-			  " commit_ts ["INT64_FORMAT"] apply_workers_ts["INT64_FORMAT"]"
-	          " committed transaction before release",
-			  MySubscription->name,
-			  MyProc->pid,
-			  my_ts_index,
-			  0,
-			  0,
-			  MyApplyWorker->remote_commit_ts,
-			  MyApplyGroup->apply_workers_ts[my_ts_index]);
-
-	MyApplyGroup->apply_workers_ts[my_ts_index] = 0;
-	LWLockRelease(MyApplyGroup->apply_workers_ts_locks[my_ts_index]);
-
-	elog(LOG, "%s: %d: HDE - [g] my_ts_index [%d] free_index [%d] is_dup [%d]"
-			  " commit_ts ["INT64_FORMAT"] apply_workers_ts["INT64_FORMAT"]"
-	          " committed transaction released apply_workers_ts_locks",
-			  MySubscription->name,
-			  MyProc->pid,
-			  my_ts_index,
-			  0,
-			  0,
-			  MyApplyWorker->remote_commit_ts,
-			  MyApplyGroup->apply_workers_ts[my_ts_index]);
-
-	apply_ts_reset();
-}
-
-/* Reset variables related to duplicate transaction filtering */
-static void
-apply_ts_reset(void)
-{
-	my_ts_index = -1;
-	skip_duplicate_xact = false;
-}
-
-/*
- * This function finds an empty entry in the apply ts array. An entry could
- * have three states:
- *
- * (1) Free (clean)
- * 		- The ts valid is = 0
- * 		- The associated LWLock is NOT held.
- * (2) Free (dirty)
- * 		- The ts valid is != 0
- * 		- The associated LWLock is NOT held.
- * (3) Occupied
- * 		- The ts valid is != 0
- * 		- The associated LWLock IS held by another apply worker.
- *
- * If the apply worker aborts or gets terminated, the LWLock will be freed
- * but the ts entry may not get cleaned up. In that case, it's a free (dirty)
- * entry.
- *
- * If the entry is already occupied by another apply worker, say AW-1, so we
- * we (AW-2) are a duplicate transaction. In this case we are going to wait on
- * the lock to be freed. The lock is freed either when the AW-1 commits or
- * aborts. In case it commits, it cleans up the entry so that it can be
- * occupied by another transaction/apply worker. AW-2 rechecks that its ts
- * index has a different value now, so the transaction that was previously
- * holding the lock committed. So we set the duplication transaction flag
- * and start skipping the transaction.
- *
- * NOTE: We use "remote_commit_ts" instead of prev ts as remote_commit_ts
- * can never be zero.
- */
-static void
-acquire_apply_ts_entry(void)
-{
-	int i;
-	int free_index = -1;
-	bool is_duplicate = false;
-	bool got_conditional_lock = false;
-
-	Assert (my_ts_index == -1);
-
-	apply_ts_reset();
-
-	/* Check if another apply worker is already processing this ts */
-	LWLockAcquire(MyApplyGroup->apply_workers_ts_main_lock, LW_EXCLUSIVE);
-
-	for (i = 0; i < SPOCK_MAX_PARALLEL_SLOTS; i++)
-	{
-		/* Found a free (clean) entry */
-		if (free_index == -1 && MyApplyGroup->apply_workers_ts[i] == 0)
-		{
-			free_index = i;
-		}
-		else if (MyApplyWorker->remote_commit_ts ==
-				 MyApplyGroup->apply_workers_ts[i])
-		{
-			/* We're a duplicate transaction. */
-			is_duplicate = true;
-			my_ts_index = i;
-
-			break;
-		}
-	}
-
-	if (!is_duplicate)
-	{
-		/* We didn't find a free entry. Let's recheck */
-		if (free_index == -1)
-		{
-			/*
-			 * We couldn't find a clean available entry. Let's rescan but
-			 * additionally for all entries, see if we can acquire a lock.
-			 *
-			 * This could happen if a process was terminated but couldn't
-			 * cleanup the ts value in the array. We can identify that by
-			 * checking if a non-zero ts value not protected by its associated
-			 * lock. If we acquire it, nobody else is holding the lock.
-			 */
-			for (i = 0; i < SPOCK_MAX_PARALLEL_SLOTS; i++)
-			{
-				/* Found a free (clean) entry */
-				if (MyApplyGroup->apply_workers_ts[i] == 0)
-				{
-					free_index = i;
-				}
-				else
-				{
-					/*
-					 * Don't wait if we can't acquire the lock; i.e. it is held
-					 * by another apply worker; i.e. the entry is occupied.
-					 *
-					 * If we get the lock, the previous holder (apply worker)
-					 * died without cleaning up.
-					 */
-					got_conditional_lock = LWLockConditionalAcquire(
-							MyApplyGroup->apply_workers_ts_locks[i],
-							LW_EXCLUSIVE);
-
-					/* Found a free (dirty) entry. Let's take it. */
-					if (got_conditional_lock)
-					{
-						elog(DEBUG1, "SPOCK: '%s': acquired lock on a dirty"
-									  " apply worker ts.",
-									  MySubscription->slot_name);
-
-						my_ts_index = i;
-						break;
-					}
-				}
-			}
-		}
-
-		if (my_ts_index == -1 && free_index > -1)
-			my_ts_index = free_index;
-
-		if (my_ts_index > -1)
-		{
-			MyApplyGroup->apply_workers_ts[my_ts_index] =
-										MyApplyWorker->remote_commit_ts;
-
-		elog(LOG, "%s: %d: HDE - [1]"
-				" my_ts_index [%d] free_index [%d] is_dup [%d]"
-				" commit_ts ["INT64_FORMAT"] apply_workers_ts["INT64_FORMAT"]"
-				"",
-				MySubscription->name,
-				MyProc->pid,
-				my_ts_index,
-				free_index,
-				is_duplicate,
-				MyApplyWorker->remote_commit_ts,
-				MyApplyGroup->apply_workers_ts[my_ts_index]);
-
-			if (got_conditional_lock == false)
-			{
-				/* This should never fail nor should this every go into wait. */
-				LWLockAcquire(MyApplyGroup->apply_workers_ts_locks[my_ts_index],
-									LW_EXCLUSIVE);
-			}
-		}
-	}
-
-	/* We couldn't find a valid index in the commit ts array. */
-	if (my_ts_index == -1)
-	{
-		elog(ERROR, "SPOCK: no free entries available for apply workers ts"
-					"in shared memory.");
-	}
-
-	skip_duplicate_xact = is_duplicate;
-
-	LWLockRelease(MyApplyGroup->apply_workers_ts_main_lock);
-
-	if (is_duplicate)
-	{
-		/* Let's wait on this lock to be released. */
-		LWLockAcquire(MyApplyGroup->apply_workers_ts_locks[my_ts_index], LW_EXCLUSIVE);
-
-		/*
-		 * Has the value changed while we were waiting? This can only happen
-		 * if the transaction holding the lock has committed successfully.
-		 */
-		if (MyApplyGroup->apply_workers_ts[my_ts_index]
-					!= MyApplyWorker->remote_commit_ts)
-		{
-			/* We must release the lock and skip this transaction */
-			LWLockRelease(MyApplyGroup->apply_workers_ts_locks[my_ts_index]);
-			skip_duplicate_xact = true;
-		}
-		else
-		{
-			/*
-			 * Previous transaction either died or errored out. So we can now
-			 * proceed with applying our change.
-			 */
-			elog(DEBUG1, "SPOCK: '%s': duplicate transaction acquired ts lock",
-							MySubscription->slot_name);
-		}
-	}
 }
 
 /*
@@ -877,7 +678,7 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
 
 	MyApplyGroup->dbid = dbid;
 	MyApplyGroup->replorigin = MySubscription->origin->id;
-	MyApplyGroup->prev_remote_ts = remote_commit_ts;
+	MyApplyGroup->processed_commit_ts = remote_commit_ts;
 	MyApplyGroup->remote_lsn = remote_lsn;
 }
 
@@ -1036,29 +837,6 @@ action_error_callback(void *arg)
 
 	initStringInfo(&si);
 
-	/*
-	 * If we have a valid ts index, let's release the entry for another apply
-	 * worker to reclaim it only in case of an error.
-	 *
-	 * The LW lock would be automatically released when ERROR is raised.
-	 */
-	if (my_ts_index != -1)
-	{
-		/* TODO: Replace this block with geterrlevel function */
-		ErrorData *edata;
-		MemoryContext oldctx;
-
-		oldctx = MemoryContextSwitchTo(TopMemoryContext);
-		edata = CopyErrorData();
-
-		if (edata->elevel >= ERROR)
-			MyApplyGroup->apply_workers_ts[my_ts_index] = 0;
-
-		FreeErrorData(edata);
-		MemoryContextSwitchTo(oldctx);
-
-	}
-
 	format_action_description(&si,
 							  errcallback_arg.action_name,
 							  errcallback_arg.rel,
@@ -1124,7 +902,6 @@ handle_begin(StringInfo s)
 	SpockExceptionLog *exception_log;
 	SpockExceptionLog *new_elog_entry;
 	XLogRecPtr	commit_lsn;
-	TimestampTz commit_time;
 	bool		slot_found = false;
 	int			sub_name_len = strlen(MySubscription->name);
 	char	   *slot_name;
@@ -1142,15 +919,15 @@ handle_begin(StringInfo s)
 	xact_had_exception = false;
 	errcallback_arg.action_name = "BEGIN";
 
-	spock_read_begin(s, &commit_lsn, &commit_time, &remote_xid);
-	maybe_start_skipping_changes(commit_lsn);
+	/* Save the commit_ts in the xact_order_data structure */
+	spock_read_begin(s, &commit_lsn, &xact_corder_data.commit_ts, &remote_xid);
 
-	replorigin_session_origin_timestamp = commit_time;
+	maybe_start_skipping_changes(commit_lsn);
+	maybe_start_skipping_duplicate(xact_corder_data.commit_ts);
+
+	replorigin_session_origin_timestamp = xact_corder_data.commit_ts;
 	replorigin_session_origin_lsn = commit_lsn;
 	MyApplyWorker->replorigin = InvalidRepOriginId;
-
-	/* Save commit_ts with the apply worker for deadlock resolution */
-	MyApplyWorker->remote_commit_ts = commit_time;
 
 	elog(DEBUG1, "SPOCK %s: current commit ts is: " INT64_FORMAT,
 			MySubscription->name,
@@ -1208,6 +985,8 @@ handle_begin(StringInfo s)
 			 * in our slot name, commit_lsn and set local_tuple = NULL
 			 */
 			MyApplyWorker->use_try_block = false;
+			MyApplyGroup->restart_reason[my_apply_entry_index] =
+												SPOCK_WORKER_RR_NONE;
 
 			/*
 			 * Let's acquire an exclusive lock to ensure no changes are made
@@ -1275,8 +1054,11 @@ handle_begin(StringInfo s)
 	{
 		/*
 		 * If we find our slot in shared memory, check for commit LSN
+		 * and ensure that we not restarting because of a deadlock caused
+		 * by us.
 		 */
-		if (exception_log->commit_lsn == commit_lsn)
+		if (exception_log->commit_lsn == commit_lsn &&
+		    MyApplyGroup->restart_reason[my_apply_entry_index] != SPOCK_WORKER_RR_DEADLOCK)
 		{
 			MyApplyWorker->use_try_block = true;
 
@@ -1328,7 +1110,6 @@ handle_commit(StringInfo s)
 	XLogRecPtr	commit_lsn;
 	XLogRecPtr	end_lsn;
 	TimestampTz commit_time;
-	MemoryContext oldctx;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
@@ -1339,25 +1120,6 @@ handle_commit(StringInfo s)
 
 	/* Wait for the previous transaction to commit */
 	wait_for_previous_transaction();
-
-	if (!is_duplicate_xact())
-	{
-		elog(DEBUG1, "SPOCK %s: HAMID proceeding on with commit - %d, ts [prev, my] ["
-				INT64_FORMAT ", " INT64_FORMAT "]",
-				MySubscription->slot_name,
-				MyProc->pid,
-				MyApplyWorker->prev_remote_commit_ts,
-				MyApplyWorker->remote_commit_ts);
-	}
-	else
-	{
-		elog(DEBUG1, "SPOCK %s: HAMID proceeding on with commit for skipped xact - %d, ts [prev, my] ["
-				INT64_FORMAT ", " INT64_FORMAT "]",
-				MySubscription->slot_name,
-				MyProc->pid,
-				MyApplyWorker->prev_remote_commit_ts,
-				MyApplyWorker->remote_commit_ts);
-	}
 
 	if (is_skipping_changes())
 	{
@@ -1374,31 +1136,6 @@ handle_commit(StringInfo s)
 	if (IsTransactionState())
 	{
 		SPKFlushPosition *flushpos;
-
-		/*
-		 * The transaction is either non-empty or skipped, so we clear the
-		 * subskiplsn.
-		 */
-		clear_subscription_skip_lsn(end_lsn);
-
-		multi_insert_finish();
-
-		apply_api.on_commit();
-
-		if (!xact_had_exception)
-		{
-			/* We need to write end_lsn to the commit record. */
-			replorigin_session_origin_lsn = end_lsn;
-		}
-
-		/* Have the commit code adjust our logical clock if needed */
-		remoteTransactionStopTimestamp = commit_time;
-
-		CommitTransactionCommand();
-
-		remoteTransactionStopTimestamp = 0;
-
-		MemoryContextSwitchTo(TopMemoryContext);
 
 		if (xact_had_exception)
 		{
@@ -1443,6 +1180,36 @@ handle_commit(StringInfo s)
 					 MySubscription->name);
 			}
 		}
+
+		/*
+		 * The transaction is either non-empty or skipped, so we clear the
+		 * subskiplsn.
+		 */
+		clear_subscription_skip_lsn(end_lsn);
+
+		multi_insert_finish();
+
+		if (!xact_had_exception)
+		{
+			/* We need to write end_lsn to the commit record. */
+			replorigin_session_origin_lsn = end_lsn;
+		}
+
+		/* We've handled all the exceptions now */
+		apply_api.on_commit();
+
+		/* Have the commit code adjust our logical clock if needed */
+		remoteTransactionStopTimestamp = commit_time;
+
+		/*
+		 * TODO: We need to update the progress table here, however, to be
+		 * able to do that, we need to filter out emptry BEGIN/COMMIT
+		 * messages.
+		 */
+		CommitTransactionCommand();
+		MemoryContextSwitchTo(TopMemoryContext);
+
+		remoteTransactionStopTimestamp = 0;
 
 		/* Track commit lsn  */
 		flushpos = (SPKFlushPosition *) palloc(sizeof(SPKFlushPosition));
@@ -1500,18 +1267,16 @@ handle_commit(StringInfo s)
 	}
 #endif
 
-	/* Update the entry in the progress table. */
-	if (!is_duplicate_xact())
+	/* Wakeup all waiters for waiting for the previous transaction to commit */
+	if (!is_skipping_duplicate())
 	{
-		elog(DEBUG1, "SPOCK %s: updating progress table for node_id %d" \
-					" and remote node id %d with remote commit ts"  \
-					" to " INT64_FORMAT,
-					MySubscription->name,
-					MySubscription->target->id,
-					MySubscription->origin->id,
-					replorigin_session_origin_timestamp);
+		elog(DEBUG1, "SPOCK: slot-group '%s' proceeding on with commit: "
+			"[Progress: " INT64_FORMAT ", " INT64_FORMAT ", " INT64_FORMAT "]",
+			MySubscription->name,
+			MyApplyGroup->processed_commit_ts,
+			xact_corder_data.prev_commit_ts,
+			xact_corder_data.commit_ts);
 
-		oldctx = CurrentMemoryContext;
 		StartTransactionCommand();
 
 		update_progress_entry(MySubscription->target->id,
@@ -1519,19 +1284,26 @@ handle_commit(StringInfo s)
 							replorigin_session_origin_timestamp,
 							replorigin_session_origin_lsn);
 
-		/* Update the group LSN */
-		MyApplyGroup->remote_lsn = replorigin_session_origin_lsn;
-
 		CommitTransactionCommand();
-		MemoryContextSwitchTo(oldctx);
+		MemoryContextSwitchTo(MessageContext);
 
-		/* Update the value in shared memory */
-		MyApplyGroup->prev_remote_ts = replorigin_session_origin_timestamp;
+		/* Update the share memory for commit ordering. */
+		MyApplyGroup->remote_lsn = replorigin_session_origin_lsn;
+		MyApplyGroup->processed_commit_ts = replorigin_session_origin_timestamp;
 
-		/* Wakeup all waiters for waiting for the previous transaction to commit */
 		awake_transaction_waiters();
 	}
+	else
+	{
+		elog(DEBUG1, "SPOCK: slot-group '%s' handle_commit skipped: "
+			"[Progress: " INT64_FORMAT ", " INT64_FORMAT ", " INT64_FORMAT "]",
+			MySubscription->name,
+			MyApplyGroup->processed_commit_ts,
+			xact_corder_data.prev_commit_ts,
+			xact_corder_data.commit_ts);
+	}
 
+	stop_skipping_duplicate();
 	in_remote_transaction = false;
 
 	/*
@@ -1597,6 +1369,7 @@ handle_commit(StringInfo s)
 	 * any risk of going into the error deathloop
 	 */
 	MyApplyWorker->use_try_block = false;
+	MyApplyGroup->restart_reason[my_apply_entry_index] = SPOCK_WORKER_RR_NONE;
 
 	process_syncing_tables(end_lsn);
 
@@ -1663,20 +1436,56 @@ handle_commit_order(StringInfo s)
 		elog(ERROR, "SPOCK %s: LATEST commit order message sent out of order",
 			 MySubscription->name);
 
+	/* Read the previous commit ts. */
+	xact_corder_data.prev_commit_ts = spock_read_commit_order(s);
+
 	/*
-	 * Read the message and adjust the locally maintained last commit ts.
-	 * We don't need to track the origin here since we can only apply
-	 * changes from one origin.
+	 * Case of a restart and not knowing prev commit ts. So it's safer
+	 * to grab the previously stored one in shared memory.
 	 */
-	MyApplyWorker->prev_remote_commit_ts = spock_read_commit_order(s);
+	if (unlikely(xact_corder_data.commit_ts == xact_corder_data.prev_commit_ts))
+	{
+		Assert(xact_corder_data.commit_ts <= MyApplyWorker->corder_info->commit_ts);
 
-	elog(DEBUG1, "SPOCK: slot-group '%s' previous commit ts received: "
-			INT64_FORMAT " - commit ts " INT64_FORMAT,
-			MySubscription->slot_name,
-			MyApplyWorker->prev_remote_commit_ts,
-			replorigin_session_origin_timestamp);
+		if (xact_corder_data.commit_ts == MyApplyWorker->corder_info->commit_ts)
+		{
+			xact_corder_data.prev_commit_ts = MyApplyWorker->corder_info->prev_commit_ts;
 
-	acquire_apply_ts_entry();
+			elog(DEBUG1, "SPOCK: slot-group '%s' commit order repaired: "
+					"[Progress: " INT64_FORMAT ", " INT64_FORMAT ", " INT64_FORMAT "]",
+					MySubscription->name,
+					MyApplyGroup->processed_commit_ts,
+					xact_corder_data.prev_commit_ts,
+					xact_corder_data.commit_ts);
+		}
+		else if (xact_corder_data.commit_ts < MyApplyWorker->corder_info->commit_ts)
+		{
+			skip_duplicate_xact = true;
+		}
+		else
+		{
+			/* Should never hit this else block. */
+			elog(ERROR, "SPOCK %s: Received invalid prev and commit ts"
+					"[Progress: " INT64_FORMAT ", " INT64_FORMAT ", "
+					INT64_FORMAT "]",
+					MySubscription->name,
+					MyApplyGroup->processed_commit_ts,
+					xact_corder_data.prev_commit_ts,
+					xact_corder_data.commit_ts);
+		}
+	}
+	else if (!is_skipping_duplicate())
+	{
+		MyApplyWorker->corder_info->commit_ts = xact_corder_data.commit_ts;
+		MyApplyWorker->corder_info->prev_commit_ts = xact_corder_data.prev_commit_ts;
+	}
+
+	elog(DEBUG1, "SPOCK: slot-group '%s' commit order: "
+		"[Progress: " INT64_FORMAT ", " INT64_FORMAT ", " INT64_FORMAT "]",
+		MySubscription->name,
+		MyApplyGroup->processed_commit_ts,
+		xact_corder_data.prev_commit_ts,
+		xact_corder_data.commit_ts);
 }
 
 /*
@@ -1711,7 +1520,7 @@ handle_insert(StringInfo s)
 	/*
 	 * Quick return if we are skipping data modification changes.
 	 */
-	if (is_skipping_changes())
+	if (is_skipping_changes() || is_skipping_duplicate())
 		return;
 
 	started_tx = begin_replication_step();
@@ -1888,7 +1697,7 @@ handle_update(StringInfo s)
 	/*
 	 * Quick return if we are skipping data modification changes.
 	 */
-	if (is_skipping_changes())
+	if (is_skipping_changes() || is_skipping_duplicate())
 		return;
 
 	begin_replication_step();
@@ -2001,7 +1810,7 @@ handle_delete(StringInfo s)
 	/*
 	 * Quick return if we are skipping data modification changes.
 	 */
-	if (is_skipping_changes())
+	if (is_skipping_changes() || is_skipping_duplicate())
 		return;
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
@@ -2121,7 +1930,7 @@ handle_truncate(StringInfo s)
 	/*
 	 * Quick return if we are skipping data modification changes.
 	 */
-	if (is_skipping_changes())
+	if (is_skipping_changes() || is_skipping_duplicate())
 		return;
 
 	begin_replication_step();
@@ -2278,6 +2087,10 @@ spock_apply_worker_on_exit(int code, Datum arg)
 static void
 spock_apply_worker_attach(void)
 {
+	int i;
+	int free_index = -1;
+	bool found = false;
+
 	Assert(MyApplyGroup == NULL);
 
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
@@ -2286,7 +2099,33 @@ spock_apply_worker_attach(void)
 	set_apply_group_entry(MySpockWorker->dboid, MySubscription->origin->id);
 	pg_atomic_add_fetch_u32(&MyApplyGroup->nattached, 1);
 
-	Assert (pg_atomic_read_u32(&MyApplyGroup->nattached) < SPOCK_MAX_PARALLEL_SLOTS);
+	Assert(pg_atomic_read_u32(&MyApplyGroup->nattached) < SPOCK_MAX_PARALLEL_SLOTS);
+
+	for (i = 0; i < SPOCK_MAX_PARALLEL_SLOTS; i++)
+	{
+		if (free_index == -1 && MyApplyGroup->corder_subids[i] == InvalidOid)
+		{
+			free_index = i;
+		}
+		else if (MyApplyGroup->corder_subids[i] == MyApplyWorker->subid)
+		{
+			found = true;
+
+			my_apply_entry_index = i;
+			MyApplyWorker->corder_info = &MyApplyGroup->corder_data[i];
+
+			break;
+		}
+	}
+
+	/* No previous entry found. Occupy the free entry. */
+	if (!found)
+	{
+		my_apply_entry_index = free_index;
+
+		MyApplyGroup->corder_subids[free_index] = MyApplyWorker->subid;
+		MyApplyWorker->corder_info = &MyApplyGroup->corder_data[free_index];
+	}
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
@@ -2296,23 +2135,7 @@ static void
 spock_apply_worker_detach(void)
 {
 	if (MyApplyGroup)
-	{
 		pg_atomic_sub_fetch_u32(&MyApplyGroup->nattached, 1);
-
-		/*
-		 * We shouldn't check for an assertion here as the process may exit
-		 * before ever acquiring ts index.
-		 */
-		if (my_ts_index != -1)
-		{
-			/*
-			 * Let's free up the ts index so that it can be reused if there are
-			 * no waiters at the moment.
-			 */
-			if (proclist_is_empty(&(MyApplyGroup->apply_workers_ts_locks[my_ts_index]->waiters)))
-				MyApplyGroup->apply_workers_ts[my_ts_index] = 0;
-		}
-	}
 
 	MyApplyGroup = NULL;
 }
@@ -2826,62 +2649,55 @@ replication_handler(StringInfo s)
 	Assert(CurrentMemoryContext == MessageContext);
 
 	/* Reset duplicate filtering state for a new transaction. */
-	if (action == 'B')
-		apply_ts_reset();
-
-	/* Don't skip if we're not a duplicate transaction */
-	if (!is_duplicate_xact())
+	switch (action)
 	{
-		switch (action)
-		{
-				/* BEGIN */
-			case 'B':
-				handle_begin(s);
-				break;
-				/* COMMIT */
-			case 'C':
-				handle_commit(s);
-				break;
-				/* ORIGIN */
-			case 'O':
-				handle_origin(s);
-				break;
-				/* LAST commit ts */
-			case 'L':
-				handle_commit_order(s);
-				break;
-				/* RELATION */
-			case 'R':
-				handle_relation(s);
-				break;
-				/* INSERT */
-			case 'I':
-				handle_insert(s);
-				break;
-				/* UPDATE */
-			case 'U':
-				handle_update(s);
-				break;
-				/* DELETE */
-			case 'D':
-				handle_delete(s);
-				break;
-				/* TRUNCATE */
-			case 'T':
-				handle_truncate(s);
-				break;
-				/* STARTUP MESSAGE */
-			case 'S':
-				handle_startup(s);
-				break;
-			/* GENERIC MESSAGE */
-			case 'M':
-				handle_message(s);
-				break;
-			default:
-				elog(ERROR, "SPOCK %s: unknown action of type %c",
-					MySubscription->name, action);
-		}
+			/* BEGIN */
+		case 'B':
+			handle_begin(s);
+			break;
+			/* COMMIT */
+		case 'C':
+			handle_commit(s);
+			break;
+			/* ORIGIN */
+		case 'O':
+			handle_origin(s);
+			break;
+			/* LAST commit ts */
+		case 'L':
+			handle_commit_order(s);
+			break;
+			/* RELATION */
+		case 'R':
+			handle_relation(s);
+			break;
+			/* INSERT */
+		case 'I':
+			handle_insert(s);
+			break;
+			/* UPDATE */
+		case 'U':
+			handle_update(s);
+			break;
+			/* DELETE */
+		case 'D':
+			handle_delete(s);
+			break;
+			/* TRUNCATE */
+		case 'T':
+			handle_truncate(s);
+			break;
+			/* STARTUP MESSAGE */
+		case 'S':
+			handle_startup(s);
+			break;
+		/* GENERIC MESSAGE */
+		case 'M':
+			handle_message(s);
+			break;
+		default:
+			elog(ERROR, "SPOCK %s: unknown action of type %c",
+				MySubscription->name, action);
 	}
 
 	Assert(CurrentMemoryContext == MessageContext);
@@ -3370,6 +3186,54 @@ stop_skipping_changes(void)
 	skip_xact_finish_lsn = InvalidXLogRecPtr;
 }
 
+/* Start skipping duplicate transaction or reset it not skip. */
+static void
+maybe_start_skipping_duplicate(TimestampTz commit_ts)
+{
+	/* Did we receive an old commit ts or a one we've already processed? */
+	skip_duplicate_xact = (MyApplyWorker->corder_info->commit_ts > commit_ts);
+	skip_duplicate_xact |= (MyApplyGroup->processed_commit_ts >= commit_ts);
+
+	/*
+	 * We are not a duplicate, but may be we are processing a transaction that
+	 * is owned by another apply worker.
+	 */
+	if (!skip_duplicate_xact)
+	{
+		int i;
+
+		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
+		for (i = 0; i < SPOCK_MAX_PARALLEL_SLOTS; i++)
+		{
+			/* This commit ts is being processed by another apply worker? */
+			if (MyApplyGroup->corder_subids[i] != MyApplyWorker->subid &&
+				MyApplyGroup->corder_data[i].commit_ts == commit_ts)
+			{
+				skip_duplicate_xact = true;
+
+				elog(DEBUG1, "SPOCK: slot-group '%s' skipping duplicates: %d - "
+						"[Progress: " INT64_FORMAT ", - , " INT64_FORMAT "]",
+						MySubscription->name,
+						skip_duplicate_xact,
+						MyApplyGroup->processed_commit_ts,
+						xact_corder_data.commit_ts);
+
+				break;
+			}
+		}
+
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+	}
+}
+
+/* Stop skipping duplicate transaction. */
+static void
+stop_skipping_duplicate(void)
+{
+	skip_duplicate_xact = false;
+}
+
 /*
  * Clear sub_skip_lsn of spock.subscription catalog.
  *
@@ -3428,15 +3292,6 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 
 	if (started_tx)
 		CommitTransactionCommand();
-}
-
-/*
- * Function for skipping duplicates transactions.
- */
-static bool
-is_duplicate_xact(void)
-{
-	return skip_duplicate_xact;
 }
 
 /*
@@ -4143,6 +3998,8 @@ spock_apply_main(Datum main_arg)
 	elog(DEBUG2, "SPOCK %s: setting up replication origin %s (oid %u)",
 		 MySubscription->name,
 		 MySubscription->slot_name, originid);
+
+	/* TODO: HAMID - This needs to be fixed for parallel slots for PG16 and above! (also in spock_sync.c) */
 	replorigin_session_setup(originid);
 	replorigin_session_origin = originid;
 	origin_startpos = replorigin_session_get_progress(false);

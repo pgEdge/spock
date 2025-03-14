@@ -41,9 +41,12 @@
 /*
  * Maximum number of parallel slots that can exist in one group. Also, this
  * define is used when allocating shared memory for apply groups.
+ *
+ * SPOCK_MAX_PARALLEL_APPLY is added only for improving code readability.
  */
 #define SPOCK_MAX_PARALLEL_GROUPS	10
 #define SPOCK_MAX_PARALLEL_SLOTS	10
+#define SPOCK_MAX_PARALLEL_APPLY	SPOCK_MAX_PARALLEL_SLOTS
 
 /* Min allowed value for restart_delay_default GUC */
 #define SPOCK_RESTART_MIN_DELAY 1
