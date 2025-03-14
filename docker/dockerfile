@@ -47,7 +47,8 @@ RUN git clone https://x-access-token:${GITHUB_TOKEN}@github.com/pgedge/spock-pri
     echo "Cloned spock-private repository. Checking for patches in: $PATCH_DIR" && \
     ls -la $PATCH_DIR && \
     echo "LOOKING FOR PATCHES MATCHING: pg${PG_VERSION}-*.diff" && \
-    PATCH_FILES=$(find "$PATCH_DIR" -maxdepth 1 -type f -name "pg${PG_VERSION}-*.diff") && \
+
+    PATCH_FILES=$(find "$PATCH_DIR" -maxdepth 1 -type f -name "pg${PG_VERSION}-*.diff" | sort -t'-' -k2,2n) && \
     if [ -n "$PATCH_FILES" ]; then \
         echo "Found patches:" && echo "$PATCH_FILES"; \
         cd /home/postgres/postgres-source && \
