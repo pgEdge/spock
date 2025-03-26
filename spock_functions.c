@@ -2976,7 +2976,7 @@ Datum spock_wait_for_sync_event(PG_FUNCTION_ARGS)
 	int			timeout = PG_GETARG_INT32(2);
 
 	get_node(origin); /* check if origin exists. */
-	node = check_local_node(true);
+	node = check_local_node(false);
 
 	PG_RETURN_BOOL(wait_for_sync_event_complete(node->node->id, origin, lsn, timeout));
 }
@@ -3034,44 +3034,45 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 static bool
 wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, int timeout)
 {
+	int			index = -1;
+	bool		found = false;
+	bool		status = false;
 	TimestampTz	timeout_ts;
 
 	/* Convert timeout to a future timestamp when timeout is expected */
 	timeout_ts = timeout > 0 ? TimestampTzPlusMilliseconds(GetCurrentTimestamp(), timeout * 1000) : 0;
 
+	/* Fetch ApplyGroup index based on origin */
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+	get_apply_group_entry(MyDatabaseId, origin, &index, &found);
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+
+	if (!found)
+		elog(ERROR, "node %u not found in apply workers", origin);
+
 	do
 	{
-		int			rc;
 		XLogRecPtr	currentlsn;
 
 		/* Check if the timeout period has elapsed. */
 		if (timeout_ts > 0 && GetCurrentTimestamp() > timeout_ts)
-			return false;		/* timed out */
+			break;		/* timed out */
 
-		/* We need to see the latest rows */
-		PushActiveSnapshot(GetLatestSnapshot());
-
-		Assert(SpockCtx->apply_groups->remote_lsn != InvalidXLogRecPtr);
-		/* Retrieve the current LSN for the specified origin from spock.progress. */
-		currentlsn = SpockCtx->apply_groups->remote_lsn;
-
-		PopActiveSnapshot();
+		currentlsn = SpockCtx->apply_groups[index].remote_lsn;
 
 		/* Exit if the target LSN has been reached. */
 		if (currentlsn >= targetlsn)
-			return true;		/* target reached */
+		{
+			status = true;		/* target reached */
+			break;
+		}
 
-		CHECK_FOR_INTERRUPTS();
-
-		/* some kind of backoff could be useful here */
-		rc = WaitLatch(&MyProc->procLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, 200L);
-
-		if (rc & WL_POSTMASTER_DEATH)
-			proc_exit(1);
-
-		ResetLatch(&MyProc->procLatch);
+		ConditionVariableTimedSleep(&SpockCtx->apply_groups[index].prev_processed_cv,
+				200,
+				WAIT_EVENT_LOGICAL_APPLY_MAIN);
 	} while (1);
 
-	return false;		/* keep compiler quiet */
+	ConditionVariableCancelSleep();
+
+	return status;		/* keep compiler quiet */
 }

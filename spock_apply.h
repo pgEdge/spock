@@ -49,6 +49,10 @@ extern TimestampTz get_progress_entry_ts(Oid target_node_id,
 								XLogRecPtr *lsn,
 								XLogRecPtr *remote_insert_lsn,
 								bool *missing);
+extern void get_apply_group_entry(Oid dbid,
+								RepOriginId replorigin,
+								int *indexPtr,
+								bool *foundPtr);
 
 extern void spock_apply_group_shmem_init(void);
 

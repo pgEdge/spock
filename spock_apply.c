@@ -243,10 +243,6 @@ static void spock_apply_worker_detach(void);
 static bool should_log_exception(bool failed);
 
 static void set_apply_group_entry(Oid dbid, RepOriginId replorigin);
-static void get_apply_group_entry(Oid dbid,
-							RepOriginId replorigin,
-							int *indexPtr,
-							bool *foundPtr);
 
 static void update_progress_entry(Oid target_node_id,
 								Oid remote_node_id,
@@ -513,7 +509,7 @@ set_apply_group_entry(Oid dbid, RepOriginId replorigin)
  *
  * This strategy attempts to reclaim no-longer-in-use entries.
  */
-static void
+void
 get_apply_group_entry(Oid dbid, RepOriginId replorigin, int *indexPtr, bool *foundPtr)
 {
 	int i;
