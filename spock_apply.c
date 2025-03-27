@@ -2855,8 +2855,9 @@ apply_work(PGconn *streamConn)
 
 				if (c == 'w')
 				{
-					XLogRecPtr	start_lsn;
-					XLogRecPtr	end_lsn;
+					XLogRecPtr start_lsn;
+					XLogRecPtr end_lsn;
+					static int w_message_count = 0;
 
 					start_lsn = pq_getmsgint64(&s);
 					end_lsn = pq_getmsgint64(&s);
@@ -2868,15 +2869,23 @@ apply_work(PGconn *streamConn)
 					if (last_received < end_lsn)
 						last_received = end_lsn;
 
+					w_message_count++; // Increment the 'w' message counter
+
 					/*
-					 * Send feedback if wal_sender_timeout/3 has passed, because in case of too many 'w'
-					 * messages we will not be able to service the 'k' message.
+					 * Send feedback if wal_sender_timeout/2 has passed or after 10 'w' messages.
 					 */
-					if (TimestampDifferenceExceeds(last_receive_timestamp, GetCurrentTimestamp(), wal_sender_timeout / 3))
+					if (TimestampDifferenceExceeds(last_receive_timestamp, GetCurrentTimestamp(), wal_sender_timeout / 2) ||
+						w_message_count >= 10)
 					{
-						/* We are setting force to true to avoid remote wal__sender_timeout */
+						elog(DEBUG2, "SPOCK %s: force sending feedback after %d 'w' messages or timeout",
+							 MySubscription->name, w_message_count);
+						/*
+						 * We need to send feedback to the walsender process
+						 * to avoid remote wal_sender_timeout.
+						 */
 						send_feedback(applyconn, last_received, GetCurrentTimestamp(), true);
 						last_receive_timestamp = GetCurrentTimestamp();
+						w_message_count = 0;
 					}
 					replication_handler(&s);
 				}
