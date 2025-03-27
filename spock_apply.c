@@ -2869,7 +2869,7 @@ apply_work(PGconn *streamConn)
 					if (last_received < end_lsn)
 						last_received = end_lsn;
 
-					w_message_count++; // Increment the 'w' message counter
+					w_message_count++;
 
 					/*
 					 * Send feedback if wal_sender_timeout/2 has passed or after 10 'w' messages.
