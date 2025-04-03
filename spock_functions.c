@@ -3042,23 +3042,30 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 	/* Convert timeout to a future timestamp when timeout is expected */
 	timeout_ts = timeout > 0 ? TimestampTzPlusMilliseconds(GetCurrentTimestamp(), timeout * 1000) : 0;
 
-	/* Fetch ApplyGroup index based on origin */
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
-	get_apply_group_entry(MyDatabaseId, origin, &index, &found);
-	LWLockRelease(SpockCtx->apply_group_master_lock);
-
-	if (!found)
-		elog(ERROR, "node %u not found in apply workers", origin);
-
 	do
 	{
-		XLogRecPtr	currentlsn;
+		int			rc;
+		XLogRecPtr	currentlsn = InvalidXLogRecPtr;
 
 		/* Check if the timeout period has elapsed. */
 		if (timeout_ts > 0 && GetCurrentTimestamp() > timeout_ts)
 			break;		/* timed out */
 
-		currentlsn = SpockCtx->apply_groups[index].remote_lsn;
+		/* TODO: concurrent drop or alter subscriptions are not catered for during the wait_for_sync_event. */
+
+		if (index == -1)
+		{
+			/*
+			 * Fetch ApplyGroup index based on origin. It should be sufficient
+			 * to fetch the index once.
+			 */
+			LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+			get_apply_group_entry(MyDatabaseId, origin, &index, &found);
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+		}
+
+		if (found)
+			currentlsn = SpockCtx->apply_groups[index].remote_lsn;
 
 		/* Exit if the target LSN has been reached. */
 		if (currentlsn >= targetlsn)
@@ -3067,12 +3074,13 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 			break;
 		}
 
-		ConditionVariableTimedSleep(&SpockCtx->apply_groups[index].prev_processed_cv,
-				200,
-				WAIT_EVENT_LOGICAL_APPLY_MAIN);
+		/* some kind of backoff could be useful here */
+		rc = WaitLatch(&MyProc->procLatch,
+						WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, 200L);
+
+	    if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
 	} while (1);
 
-	ConditionVariableCancelSleep();
-
-	return status;		/* keep compiler quiet */
+	return status;
 }
