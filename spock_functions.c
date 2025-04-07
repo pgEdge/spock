@@ -167,10 +167,6 @@ PG_FUNCTION_INFO_V1(get_channel_stats);
 PG_FUNCTION_INFO_V1(reset_channel_stats);
 PG_FUNCTION_INFO_V1(prune_conflict_tracking);
 
-/* Lag Tracking */
-PG_FUNCTION_INFO_V1(lag_tracker_info);
-PG_FUNCTION_INFO_V1(lag_tracker_feedback);
-
 /* Generic delta apply functions */
 PG_FUNCTION_INFO_V1(delta_apply_int2);
 PG_FUNCTION_INFO_V1(delta_apply_int4);
@@ -2862,86 +2858,6 @@ Datum reset_channel_stats(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-Datum lag_tracker_info(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
-	TupleDesc tupdesc;
-	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
-	HASH_SEQ_STATUS hash_seq;
-	LagTrackerEntry *hentry;
-
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context "
-						"that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not "
-						"allowed in this context")));
-
-	/* Build a tuple descriptor for our result type */
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
-
-	LWLockAcquire(SpockCtx->lag_lock, LW_EXCLUSIVE);
-
-	hash_seq_init(&hash_seq, LagTrackerHash);
-	while ((hentry = hash_seq_search(&hash_seq)) != NULL)
-	{
-		Datum values[3];
-		bool nulls[3];
-
-		/* Include this entry in the result. */
-		MemSet(values, 0, sizeof(values));
-		MemSet(nulls, 0, sizeof(nulls));
-
-		values[0] = CStringGetTextDatum(hentry->slotname);
-		if (hentry->commit_sample.lsn == InvalidXLogRecPtr)
-			nulls[1] = nulls[2] = true;
-		else
-		{
-			values[1] = LSNGetDatum(hentry->commit_sample.lsn);
-			values[2] = TimestampTzGetDatum(hentry->commit_sample.time);
-		}
-
-		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
-	}
-
-	LWLockRelease(SpockCtx->lag_lock);
-
-	PG_RETURN_VOID();
-}
-
-Datum lag_tracker_feedback(PG_FUNCTION_ARGS)
-{
-	char *slotname;
-	XLogRecPtr last_recvpos;
-	TimestampTz time;
-
-	slotname = NameStr(*PG_GETARG_NAME(0));
-	last_recvpos = PG_GETARG_LSN(1);
-	time = PG_GETARG_TIMESTAMPTZ(2);
-
-	lag_tracker_entry(slotname, last_recvpos, time);
-
-	PG_RETURN_VOID();
-}
-
 /* Generic delta apply functions */
 Datum delta_apply_int2(PG_FUNCTION_ARGS)
 {
@@ -3060,7 +2976,7 @@ Datum spock_wait_for_sync_event(PG_FUNCTION_ARGS)
 	int			timeout = PG_GETARG_INT32(2);
 
 	get_node(origin); /* check if origin exists. */
-	node = check_local_node(true);
+	node = check_local_node(false);
 
 	PG_RETURN_BOOL(wait_for_sync_event_complete(node->node->id, origin, lsn, timeout));
 }
@@ -3118,6 +3034,9 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 static bool
 wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, int timeout)
 {
+	int			index = -1;
+	bool		found = false;
+	bool		status = false;
 	TimestampTz	timeout_ts;
 
 	/* Convert timeout to a future timestamp when timeout is expected */
@@ -3126,36 +3045,44 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 	do
 	{
 		int			rc;
-		XLogRecPtr	currentlsn;
-		bool		missing;
+		XLogRecPtr	currentlsn = InvalidXLogRecPtr;
 
 		/* Check if the timeout period has elapsed. */
 		if (timeout_ts > 0 && GetCurrentTimestamp() > timeout_ts)
-			return false;		/* timed out */
+			break;		/* timed out */
 
-		/* We need to see the latest rows */
-		PushActiveSnapshot(GetLatestSnapshot());
+		/* TODO: concurrent drop or alter subscriptions are not catered for during the wait_for_sync_event. */
 
-		/* Retrieve the current LSN for the specified origin from spock.progress. */
-		get_progress_entry_ts(localnode, origin, &currentlsn, &missing);
+		if (index == -1)
+		{
+			/*
+			 * Fetch ApplyGroup index based on origin. It should be sufficient
+			 * to fetch the index once.
+			 */
+			LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+			get_apply_group_entry(MyDatabaseId, origin, &index, &found);
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+		}
 
-		PopActiveSnapshot();
+		if (found)
+			currentlsn = SpockCtx->apply_groups[index].remote_lsn;
 
 		/* Exit if the target LSN has been reached. */
 		if (currentlsn >= targetlsn)
-			return true;		/* target reached */
+		{
+			status = true;		/* target reached */
+			break;
+		}
 
 		CHECK_FOR_INTERRUPTS();
 
 		/* some kind of backoff could be useful here */
 		rc = WaitLatch(&MyProc->procLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, 200L);
+						WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, 200L);
 
-		if (rc & WL_POSTMASTER_DEATH)
+	    if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
-
-		ResetLatch(&MyProc->procLatch);
 	} while (1);
 
-	return false;		/* keep compiler quiet */
+	return status;
 }

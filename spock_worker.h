@@ -43,6 +43,8 @@ typedef struct SpockApplyGroupData
 	RepOriginId replorigin;
 	pg_atomic_uint32 nattached;
 	TimestampTz prev_remote_ts;
+	XLogRecPtr remote_lsn;
+	XLogRecPtr remote_insert_lsn;
 	ConditionVariable prev_processed_cv;
 } SpockApplyGroupData;
 
@@ -81,6 +83,9 @@ typedef struct SpockWorker {
 
 	/* Database id to connect to. */
 	Oid		dboid;
+
+	/* WAL Insert location on origin */
+	XLogRecPtr	remote_wal_insert_lsn;
 
 	/* Type-specific worker info */
 	union
@@ -147,21 +152,6 @@ typedef struct spockStatsEntry
 	slock_t			mutex;
 } spockStatsEntry;
 
-/* A sample associating a WAL location with the time it was written. */
-typedef struct WalTimeSample
-{
-	XLogRecPtr		lsn;
-	TimestampTz		time;
-} WalTimeSample;
-
-typedef struct LagTrackerEntry
-{
-	char			slotname[NAMEDATALEN];
-	WalTimeSample	commit_sample;
-
-} LagTrackerEntry;
-
-extern HTAB				   *LagTrackerHash;
 extern HTAB				   *SpockHash;
 extern SpockContext		   *SpockCtx;
 extern SpockWorker		   *MySpockWorker;
@@ -202,7 +192,5 @@ extern void spock_worker_kill(SpockWorker *worker);
 extern const char * spock_worker_type_name(SpockWorkerType type);
 extern void handle_stats_counter(Relation relation, Oid subid,
 								spockStatsType typ, int ntup);
-
-extern LagTrackerEntry *lag_tracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts);
 
 #endif /* SPOCK_WORKER_H */

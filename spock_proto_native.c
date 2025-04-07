@@ -205,6 +205,9 @@ spock_write_commit(StringInfo out, SpockOutputData *data,
 #else
 	pq_sendint64(out, txn->commit_time);
 #endif
+
+	/* send latest WAL insert pointer */
+	pq_sendint64(out, GetXLogInsertRecPtr());
 }
 
 /*
@@ -579,7 +582,8 @@ decide_datum_transfer(Form_pg_attribute att, Form_pg_type typclass,
  */
 void
 spock_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
-					  TimestampTz *committime, TransactionId *remote_xid)
+					  TimestampTz *committime,
+					  TransactionId *remote_xid)
 {
 	/* read flags */
 	uint8	flags = pq_getmsgbyte(in);
@@ -597,8 +601,11 @@ spock_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
  * Read transaction COMMIT from the stream.
  */
 void
-spock_read_commit(StringInfo in, XLogRecPtr *commit_lsn,
-					   XLogRecPtr *end_lsn, TimestampTz *committime)
+spock_read_commit(StringInfo in,
+				  XLogRecPtr *commit_lsn,
+				  XLogRecPtr *end_lsn,
+				  TimestampTz *committime,
+				  XLogRecPtr *remote_insert_lsn)
 {
 	/* read flags */
 	uint8	flags = pq_getmsgbyte(in);
@@ -609,6 +616,7 @@ spock_read_commit(StringInfo in, XLogRecPtr *commit_lsn,
 	*commit_lsn = pq_getmsgint64(in);
 	*end_lsn = pq_getmsgint64(in);
 	*committime = pq_getmsgint64(in);
+	*remote_insert_lsn = pq_getmsgint64(in);
 }
 
 /*

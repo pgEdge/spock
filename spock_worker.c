@@ -59,7 +59,6 @@ static List *signal_workers = NIL;
 
 volatile sig_atomic_t got_SIGTERM = false;
 
-HTAB	   *LagTrackerHash = NULL;
 HTAB	   *SpockHash = NULL;
 SpockContext *SpockCtx = NULL;
 SpockWorker *MySpockWorker = NULL;
@@ -464,7 +463,8 @@ spock_worker_detach(bool crash)
 
 		my_manager = spock_manager_find(MySpockWorker->dboid);
 
-		SetLatch(&my_manager->proc->procLatch);
+		if (my_manager != NULL)
+			SetLatch(&my_manager->proc->procLatch);
 	}
 
 	MySpockWorker = NULL;
@@ -718,9 +718,6 @@ worker_shmem_size(int nworkers, bool include_hash)
 		num_bytes = add_size(num_bytes,
 							 hash_estimate_size(spock_stats_max_entries,
 												sizeof(spockStatsEntry)));
-		num_bytes = add_size(num_bytes,
-							 hash_estimate_size(max_replication_slots,
-												sizeof(LagTrackerEntry)));
 	}
 
 	return num_bytes;
@@ -809,15 +806,6 @@ spock_worker_shmem_startup(void)
 							  spock_stats_max_entries,
 							  &hctl,
 							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
-
-	memset(&hctl, 0, sizeof(hctl));
-	hctl.keysize = NAMEDATALEN;
-	hctl.entrysize = sizeof(LagTrackerEntry);
-	LagTrackerHash = ShmemInitHash("spock lag tracker hash",
-								   max_replication_slots,
-								   max_replication_slots,
-								   &hctl,
-								   HASH_ELEM | HASH_STRINGS);
 
 	LWLockRelease(AddinShmemInitLock);
 }
@@ -940,25 +928,4 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 	SpinLockRelease(&entry->mutex);
 
 	LWLockRelease(SpockCtx->lock);
-}
-
-LagTrackerEntry *
-lag_tracker_entry(char *slotname, XLogRecPtr lsn, TimestampTz ts)
-{
-	LagTrackerEntry *hentry;
-	bool		found;
-
-	Assert(LagTrackerHash != NULL);
-	LWLockAcquire(SpockCtx->lag_lock, LW_EXCLUSIVE);
-
-	/* Find lag info, creating if not found */
-	hentry = (LagTrackerEntry *) hash_search(LagTrackerHash,
-											 slotname,
-											 HASH_ENTER, &found);
-	Assert(hentry != NULL);
-	hentry->commit_sample.lsn = lsn;
-	hentry->commit_sample.time = ts;
-
-	LWLockRelease(SpockCtx->lag_lock);
-	return hentry;
 }
