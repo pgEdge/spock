@@ -3074,6 +3074,8 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 			break;
 		}
 
+		CHECK_FOR_INTERRUPTS();
+
 		/* some kind of backoff could be useful here */
 		rc = WaitLatch(&MyProc->procLatch,
 						WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, 200L);
