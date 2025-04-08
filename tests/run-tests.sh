@@ -61,7 +61,7 @@ _EOF_
   sleep 30
   echo "Checking the exception table now..."
   elog_entries=$(PGPASSWORD=$DBPASSWD psql -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "SELECT count(*) from spock.exception_log;")
-  echo $elog_entries > /home/pgedge/spock-private/exception-tests.out
+  echo $elog_entries > /home/pgedge/spock/exception-tests.out
 fi
 
 spockbench -h /tmp -i -s $SCALEFACTOR demo
@@ -73,4 +73,4 @@ psql -U admin -h /tmp -d demo -c "alter table pgbench_tellers alter column tbala
 psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_replication_set', '{public}');"
 # ==========Spockbench tests ========== 
 spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} -s $SCALEFACTOR -T $RUNTIME -R $RATE -P 5 -j $THREADS -c $CONNECTIONS -n --spock-tx-mix=550,225,225 -U admin demo
-spockbench-check -U admin demo > /home/pgedge/spock-private/spockbench-$HOSTNAME.out
+spockbench-check -U admin demo > /home/pgedge/spock/spockbench-$HOSTNAME.out

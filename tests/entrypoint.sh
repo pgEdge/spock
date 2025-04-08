@@ -1,6 +1,31 @@
 #!/bin/bash
 set -e
 
+echo "PGVER=$PGVER"
+LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
+              grep "refs/tags/REL_${PGVER}_" | \
+              sed 's|.*refs/tags/||' | \
+              tr '_' '.' | \
+              sort -V | \
+              tail -n 1 | \
+              tr '.' '_')
+
+echo "Using tag $LATEST_TAG"
+git clone --branch $LATEST_TAG --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres
+sudo chmod -R a+w ~/postgres
+
+echo "Setting up pgedge..."
+cd /home/pgedge
+curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
+sudo -u pgedge python3 /home/pgedge/install.py
+cd pgedge && ./pgedge setup -U admin -P testpass -d demo --pg $PGVER && ./pgedge stop
+
+cd /home/pgedge/postgres
+
+git apply --verbose /home/pgedge/spock/patches/pg${PGVER}*
+
+options="'--prefix=/home/pgedge/pgedge/pg$PGVER' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' 'LLVM_CONFIG=/usr/bin/llvm-config-64' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && eval ./configure $options && make -j4 && make install
+
 cd /home/pgedge
 . /home/pgedge/pgedge/pg16/pg16.env
 echo 'export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg16/lib/$LD_LIBRARY_PATH' >> /home/pgedge/.bashrc
@@ -8,7 +33,7 @@ echo 'export PATH=/home/test/pgedge/pg16/bin:$PATH' >> /home/pgedge/.bashrc
 . /home/pgedge/.bashrc
 
 echo "==========Recompiling Spock=========="
-cd ~/spock-private
+cd ~/spock
 make clean && make -j16 && make install
 
 echo "==========Installing Spockbench=========="
