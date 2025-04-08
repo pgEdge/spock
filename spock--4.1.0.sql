@@ -120,7 +120,8 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_no
 CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
     replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
     synchronize_data boolean = false, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
-    force_text_transfer boolean = false)
+    force_text_transfer boolean = false,
+	enabled boolean = true)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
 CREATE FUNCTION spock.sub_drop(subscription_name name, ifexists boolean DEFAULT false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_subscription';

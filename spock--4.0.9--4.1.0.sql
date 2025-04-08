@@ -38,3 +38,13 @@ CREATE OR REPLACE VIEW spock.lag_tracker AS
 	LEFT JOIN spock.subscription sub ON (p.node_id = sub.sub_target and p.remote_node_id = sub.sub_origin)
 	LEFT JOIN spock.node origin ON sub.sub_origin = origin.node_id
 	GROUP BY origin.node_name;
+
+-- Recreate function spock.sub_create() to add enabled=true argument
+DROP FUNCTION spock.sub_create(name, text, text[], boolean, boolean,
+    text[], interval, boolean, boolean);
+CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
+    replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
+    synchronize_data boolean = false, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
+    force_text_transfer boolean = false,
+    enabled boolean = true)
+RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
