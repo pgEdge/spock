@@ -23,7 +23,7 @@ jobs:
 
       - name: Checkout spockbench
         run: |
-          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/pgedge/spockbench ~/spockbench
+          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/pgedge/spockbench.git ~/spockbench
       
       - name: Add permissions
         run: |
