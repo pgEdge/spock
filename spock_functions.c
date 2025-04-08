@@ -448,6 +448,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	ArrayType *forward_origin_names = PG_GETARG_ARRAYTYPE_P(5);
 	Interval *apply_delay = PG_GETARG_INTERVAL_P(6);
 	bool force_text_transfer = PG_GETARG_BOOL(7);
+	bool enabled = PG_GETARG_BOOL(8);
 	PGconn *conn;
 	SpockSubscription sub;
 	SpockSyncStatus sync;
@@ -558,7 +559,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	sub.target_if = &targetif;
 	sub.replication_sets = replication_sets;
 	sub.forward_origins = textarray_to_list(forward_origin_names);
-	sub.enabled = true;
+	sub.enabled = enabled;
 	gen_slot_name(&slot_name, get_database_name(MyDatabaseId),
 				  origin->name, sub_name);
 	sub.slot_name = pstrdup(NameStr(slot_name));
