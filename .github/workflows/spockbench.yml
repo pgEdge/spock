@@ -1,6 +1,10 @@
 name: Spockbench tests
 run-name: Running Spockbench
 on: [push]
+
+permissions:
+  contents: read
+
 jobs:
   pull-and-test:
     strategy:
