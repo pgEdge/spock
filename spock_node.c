@@ -36,6 +36,9 @@
 #include "utils/lsyscache.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
+#include "fmgr.h"
+#include "funcapi.h"
+
 
 #include "spock_node.h"
 #include "spock_repset.h"
@@ -246,24 +249,30 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 	NodeTuple *nodetup = (NodeTuple *) GETSTRUCT(tuple);
 	Datum	datum;
 	bool	isnull;
-	SpockNode *node
-		= (SpockNode *) palloc0(sizeof(SpockNode));
+
+	SpockNode *node = (SpockNode *) palloc0(sizeof(SpockNode));
 	node->id = nodetup->node_id;
 	node->name = pstrdup(NameStr(nodetup->node_name));
 
+	/* location */
 	datum = heap_getattr(tuple, Anum_node_location, desc, &isnull);
 	if (!isnull)
 		node->location = TextDatumGetCString(datum);
 
+	/* country */
 	datum = heap_getattr(tuple, Anum_node_country, desc, &isnull);
 	if (!isnull)
 		node->country = TextDatumGetCString(datum);
 
+	/* info (JSONB) */
 	datum = heap_getattr(tuple, Anum_node_info, desc, &isnull);
 	if (!isnull)
 	{
-		Datum	value;
-		int32	intval;
+		Datum value;
+		int32 intval;
+		FmgrInfo flinfo;
+		FunctionCallInfo fcinfo;
+		bool isnullval;
 
 		node->info = DatumGetJsonbP(datum);
 
@@ -272,15 +281,33 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 		 * tiebreaker value from that. If it isn't set we
 		 * fallback to the node-id.
 		 */
-		value = DirectFunctionCall2(jsonb_object_field_text, datum,
-								   CStringGetTextDatum("tiebreaker"));
-		if (DatumGetPointer(value) != NULL)
+
+		/* Set up function call info for jsonb_object_field_text(jsonb, text) */
+		fmgr_info(F_JSONB_OBJECT_FIELD_TEXT, &flinfo);
+
+		/* Allocate and initialize the call info structure */
+		fcinfo = palloc0(SizeForFunctionCallInfo(2));
+		InitFunctionCallInfoData(*fcinfo, &flinfo, 2, InvalidOid, NULL, NULL);
+
+		fcinfo->args[0].value = PointerGetDatum(node->info);
+		fcinfo->args[0].isnull = false;
+		fcinfo->args[1].value = CStringGetTextDatum("tiebreaker");
+		fcinfo->args[1].isnull = false;
+
+		value = FunctionCallInvoke(fcinfo);
+		isnullval = fcinfo->isnull;
+
+		if (!isnullval)
 		{
 			intval = pg_strtoint32(TextDatumGetCString(value));
 			node->tiebreaker = intval;
 		}
 		else
+		{
 			node->tiebreaker = node->id;
+		}
+
+		pfree(fcinfo);
 	}
 	else
 	{
@@ -289,6 +316,7 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 
 	return node;
 }
+
 
 /*
  * Load the info for specific node.
