@@ -134,6 +134,8 @@ handle_sub_create_command(int argc, char *argv[])
     char *apply_delay = NULL;
     const char *conninfo;
     PGconn *conn;
+    PGresult *res;
+
     char sql[2048];
     int option_index = 0;
     int c;
@@ -223,12 +225,29 @@ handle_sub_create_command(int argc, char *argv[])
              forward_origins ? forward_origins : "'{}'::text[]",
              apply_delay ? apply_delay : "'0'::interval");
 
-    /* Execute the SQL query */
-    printf("Executing SQL: %s\n", sql);
-    run_sql(conn, sql);
+   /* Execute SQL query */
+   res = PQexec(conn, sql);
+   log_info("SQL: %s", sql);
+   if (PQresultStatus(res) != PGRES_TUPLES_OK)
+   {
+       log_error("SQL command failed: %s", PQerrorMessage(conn));
+       PQclear(res);
+       PQfinish(conn);
+       return EXIT_FAILURE;
+   }
 
-    /* Close the connection */
-    PQfinish(conn);
+   /* Check for NULL result */
+   if (PQntuples(res) == 0 || PQgetvalue(res, 0, 0) == NULL)
+   {
+       log_error("SQL function returned NULL for query: %s", sql);
+       PQclear(res);
+       PQfinish(conn);
+       return EXIT_FAILURE;
+   }
+
+   /* Clean up */
+   PQclear(res);
+   PQfinish(conn);
 
     return EXIT_SUCCESS;
 }
@@ -251,6 +270,8 @@ handle_sub_drop_command(int argc, char *argv[])
     int ifexists = 0;
     const char *conninfo;
     PGconn *conn;
+    PGresult *res;
+
     char sql[1024];
     int option_index = 0;
     int c;
@@ -314,13 +335,29 @@ handle_sub_drop_command(int argc, char *argv[])
              sub_name,
              ifexists ? "true" : "false");
 
-    /* Execute the SQL query */
-    printf("Executing SQL: %s\n", sql);
-    run_sql(conn, sql);
+    /* Execute SQL query */
+    res = PQexec(conn, sql);
+    log_info("SQL: %s", sql);
+    if (PQresultStatus(res) != PGRES_TUPLES_OK)
+    {
+        log_error("SQL command failed: %s", PQerrorMessage(conn));
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
 
-    /* Close the connection */
+    /* Check for NULL result */
+    if (PQntuples(res) == 0 || PQgetvalue(res, 0, 0) == NULL)
+    {
+        log_error("SQL function returned NULL for query: %s", sql);
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
+
+    /* Clean up */
+    PQclear(res);
     PQfinish(conn);
-
     return EXIT_SUCCESS;
 }
 
@@ -342,6 +379,8 @@ handle_sub_enable_command(int argc, char *argv[])
     char *immediate = NULL;
     const char *conninfo;
     PGconn *conn;
+    PGresult *res;
+
     char sql[1024];
     int option_index = 0;
     int c;
@@ -405,11 +444,28 @@ handle_sub_enable_command(int argc, char *argv[])
              sub_name,
              immediate);
 
-    /* Execute the SQL query */
-    printf("Executing SQL: %s\n", sql);
-    run_sql(conn, sql);
+    /* Execute SQL query */
+    res = PQexec(conn, sql);
+    log_info("SQL: %s", sql);
+    if (PQresultStatus(res) != PGRES_TUPLES_OK)
+    {
+        log_error("SQL command failed: %s", PQerrorMessage(conn));
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
 
-    /* Close the connection */
+    /* Check for NULL result */
+    if (PQntuples(res) == 0 || PQgetvalue(res, 0, 0) == NULL)
+    {
+        log_error("SQL function returned NULL for query: %s", sql);
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
+
+    /* Clean up */
+    PQclear(res);
     PQfinish(conn);
 
     return EXIT_SUCCESS;
@@ -433,6 +489,8 @@ handle_sub_disable_command(int argc, char *argv[])
     char *immediate = NULL;
     const char *conninfo;
     PGconn *conn;
+    PGresult *res;
+
     char sql[2048];
     int option_index = 0;
     int c;
@@ -496,11 +554,28 @@ handle_sub_disable_command(int argc, char *argv[])
              sub_name,
              immediate ? immediate : "false");
 
-    /* Execute the SQL query */
-    printf("Executing SQL: %s\n", sql);
-    run_sql(conn, sql);
+    /* Execute SQL query */
+    res = PQexec(conn, sql);
+    log_info("SQL: %s", sql);
+    if (PQresultStatus(res) != PGRES_TUPLES_OK)
+    {
+        log_error("SQL command failed: %s", PQerrorMessage(conn));
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
 
-    /* Close the connection */
+    /* Check for NULL result */
+    if (PQntuples(res) == 0 || PQgetvalue(res, 0, 0) == NULL)
+    {
+        log_error("SQL function returned NULL for query: %s", sql);
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
+
+    /* Clean up */
+    PQclear(res);
     PQfinish(conn);
 
     return EXIT_SUCCESS;
@@ -577,12 +652,13 @@ handle_sub_show_status_command(int argc, char *argv[])
 
     /* Build the SQL query */
     snprintf(sql, sizeof(sql),
-             "SELECT * FROM spock.sub_show_status("
-             "subscription_name := '%s');",
+             "SELECT subscription_name, status, provider_node, provider_dsn, "
+             "slot_name, replication_sets, forward_origins "
+             "FROM spock.sub_show_status(subscription_name := '%s');",
              sub_name);
 
     /* Execute the SQL query */
-    printf("Executing SQL: %s\n", sql);
+    log_info("SQL: %s\n", sql);
     res = PQexec(conn, sql);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -601,9 +677,8 @@ handle_sub_show_status_command(int argc, char *argv[])
     {
         for (int j = 0; j < nfields; j++)
         {
-            printf("%s: %s\n", PQfname(res, j), PQgetvalue(res, i, j));
+            log_info("%s: %s\n", PQfname(res, j), PQgetvalue(res, i, j));
         }
-        printf("\n");
     }
 
     /* Clean up */
@@ -631,6 +706,7 @@ handle_sub_show_table_command(int argc, char *argv[])
     char *db = NULL;
     const char *conninfo;
     PGconn *conn;
+    PGresult *res;
     char sql[2048];
     int option_index = 0;
     int c;
@@ -688,21 +764,39 @@ handle_sub_show_table_command(int argc, char *argv[])
 
     /* Build the SQL query */
     snprintf(sql, sizeof(sql),
-             "SELECT spock.sub_show_table("
-             "node_name := '%s', "
+             "SELECT nspname, relname, status "
+             "FROM spock.sub_show_table("
              "subscription_name := '%s', "
-             "relation_name := '%s', "
-             "database_name := '%s');",
-             node,
+             "relation := '%s'::regclass);",
              sub_name,
-             relation,
-             db);
+             relation);
 
     /* Execute the SQL query */
-    printf("Executing SQL: %s\n", sql);
-    run_sql(conn, sql);
+    res = PQexec(conn, sql);
+    log_info("SQL: %s", sql);
 
-    /* Close the connection */
+    if (PQresultStatus(res) != PGRES_TUPLES_OK)
+    {
+        log_error("SQL command failed: %s", PQerrorMessage(conn));
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
+
+    /* Print the results */
+    int nrows = PQntuples(res);
+    int nfields = PQnfields(res);
+
+    for (int i = 0; i < nrows; i++)
+    {
+        for (int j = 0; j < nfields; j++)
+        {
+            log_info("%s: %s\n", PQfname(res, j), PQgetvalue(res, i, j));
+        }
+    }
+
+    /* Clean up */
+    PQclear(res);
     PQfinish(conn);
 
     return EXIT_SUCCESS;
@@ -801,7 +895,7 @@ handle_sub_resync_table_command(int argc, char *argv[])
              truncate);
 
     /* Execute the SQL query */
-    printf("Executing SQL: %s\n", sql);
+    log_info("SQL: %s\n", sql);
     run_sql(conn, sql);
 
     /* Close the connection */
@@ -892,7 +986,7 @@ handle_sub_add_repset_command(int argc, char *argv[])
              replication_set);
 
     /* Execute the SQL query */
-    printf("Executing SQL: %s\n", sql);
+    log_info("SQL: %s\n", sql);
     run_sql(conn, sql);
 
     /* Close the connection */
@@ -983,7 +1077,7 @@ handle_sub_remove_repset_command(int argc, char *argv[])
              replication_set);
 
     /* Execute the SQL query */
-    printf("Executing SQL: %s\n", sql);
+    log_info("SQL: %s\n", sql);
     run_sql(conn, sql);
 
     /* Close the connection */

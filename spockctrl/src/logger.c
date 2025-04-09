@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+extern int verbose;
 
 void
 log_message_va(const char *color, const char *symbol, const char *format, va_list args)
@@ -25,6 +26,8 @@ log_message(const char *color, const char *symbol, const char *format, ...)
 void
 log_info(const char *format, ...)
 {
+    if (verbose == 0)
+        return;
     va_list args;
     va_start(args, format);
     log_message_va(COLOR_GREEN, "✔", format, args);

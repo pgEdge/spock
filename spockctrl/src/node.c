@@ -29,6 +29,8 @@ static void print_node_drop_interface_help(void);
 
 int get_pg_version(const char *conninfo, char *pg_version);
 
+extern int verbose;
+
 void
 print_node_help(void)
 {
@@ -134,9 +136,7 @@ node_spock_version(int argc, char *argv[])
         print_node_spock_version_help();
         return EXIT_FAILURE;
     }
-
     snprintf(conninfo, sizeof(conninfo), "dbname=%s", db);
-    printf("node_spock_version called with db=%s, node=%s\n", db, node);
     return EXIT_SUCCESS;
 }
 
@@ -192,8 +192,7 @@ node_pg_version(int argc, char *argv[])
         log_error("Failed to get PostgreSQL version for node %s", node);
         return EXIT_FAILURE;
     }
-
-    printf("PostgreSQL version for node %s: %s\n", node, pg_version);
+    log_info("PostgreSQL version for node %s: %s\n", node, pg_version);
     return EXIT_SUCCESS;
 }
 
@@ -241,7 +240,6 @@ node_status(int argc, char *argv[])
     }
 
     snprintf(conninfo, sizeof(conninfo), "dbname=%s", db);
-    printf("node_status called with db=%s, node=%s\n", db, node);
     return EXIT_SUCCESS;
 }
 
@@ -289,7 +287,6 @@ node_gucs(int argc, char *argv[])
     }
 
     snprintf(conninfo, sizeof(conninfo), "dbname=%s", db);
-    printf("node_gucs called with db=%s, node=%s\n", db, node);
     return EXIT_SUCCESS;
 }
 
@@ -385,7 +382,7 @@ handle_node_create_command(int argc, char *argv[])
              country ? "'" : "NULL", country ? country : "", country ? "'" : "NULL",
              info ? "'\"" : "NULL", info ? info : "", info ? "\"'" : "NULL");
 
-    printf("Executing SQL: %s\n", sql);
+    log_info("SQL: %s", sql);
 
     /* Execute SQL query */
     res = PQexec(conn, sql);
@@ -405,7 +402,6 @@ handle_node_create_command(int argc, char *argv[])
         PQfinish(conn);
         return EXIT_FAILURE;
     }
-
     /* Clean up */
     PQclear(res);
     PQfinish(conn);
@@ -483,12 +479,10 @@ handle_node_drop_command(int argc, char *argv[])
              node_name,
              ifexists ? "true" : "false");
 
-    printf("Executing SQL: %s\n", sql);
 
     /* Execute SQL query */
     res = PQexec(conn, sql);
-    log_info("Executing SQL: %s", sql);
-    log_info("Result: %d", PQresultStatus(res)) ;
+    log_info("SQL: %s", sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -590,7 +584,7 @@ handle_node_add_interface_command(int argc, char *argv[])
              interface_name,
              dsn);
 
-    printf("Executing SQL: %s\n", sql);
+    log_info("SQL: %s", sql);
 
     /* Execute SQL query */
     res = PQexec(conn, sql);
@@ -688,7 +682,7 @@ handle_node_drop_interface_command(int argc, char *argv[])
              node_name,
              interface_name);
 
-    printf("Executing SQL: %s\n", sql);
+    log_info("SQL: %s", sql);
 
     /* Execute SQL query */
     res = PQexec(conn, sql);
@@ -812,6 +806,7 @@ get_pg_version(const char *conninfo, char *pg_version)
 {
     PGconn *conn;
     PGresult *res;
+    char sql[256] = "SELECT version();";
 
     conn = connectdb(conninfo);
     if (conn == NULL)
@@ -820,7 +815,7 @@ get_pg_version(const char *conninfo, char *pg_version)
         return EXIT_FAILURE;
     }
 
-    res = PQexec(conn, "SHOW server_version;");
+    res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("Failed to execute query: %s", PQerrorMessage(conn));
@@ -828,8 +823,9 @@ get_pg_version(const char *conninfo, char *pg_version)
         PQfinish(conn);
         return EXIT_FAILURE;
     }
-
-    snprintf(pg_version, 256, "%s", PQgetvalue(res, 0, 0));
+    log_info("SQL: %s", sql);
+    
+    snprintf(pg_version, 256, "\n%s", PQgetvalue(res, 0, 0));
     PQclear(res);
     PQfinish(conn);
     return EXIT_SUCCESS;

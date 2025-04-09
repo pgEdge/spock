@@ -3,49 +3,38 @@
   "description": "This workflow demonstrates the creation of a slot, replication set, and subscription.",
   "steps": [
     {
-      "name": "Create Slot",
-      "description": "Create a replication slot",
-      "command": "CREATE SLOT",
-      "args": [
-        "slot_name",
-        "database_name"
-      ],
-      "options": [
-        "--option1=value1",
-        "--option2=value2"
-      ],
-      "on_success": "Create Replication Set",
-      "on_failure": "Failure Step"
+      "spock": {
+        "name": "Create Slot",
+        "description": "Create a replication slot",
+        "command": "CREATE SLOT",
+        "args": [
+          "slot_name",
+          "database_name"
+        ],
+        "options": [
+          "--option1=value1",
+          "--option2=value2"
+        ],
+        "on_success": "Create Replication Set",
+        "on_failure": "Failure Step"
+      }
     },
     {
-      "name": "Create Replication Set",
-      "description": "Create a replication set",
-      "command": "CREATE REPSET",
-      "args": [
-        "repset_name",
-        "database_name"
-      ],
-      "options": [
-        "--option1=value1",
-        "--option2=value2"
-      ],
-      "on_success": "Create Subscription",
-      "on_failure": "Failure Step"
-    },
-    {
-      "name": "Create Subscription",
-      "description": "Create a subscription",
-      "command": "CREATE SUBSCRIPTION",
-      "args": [
-        "subscription_name",
-        "database_name"
-      ],
-      "options": [
-        "--option1=value1",
-        "--option2=value2"
-      ],
-      "on_success": "Success Step",
-      "on_failure": "Failure Step"
+      "spock": {
+        "name": "Create Replication Set",
+        "description": "Create a replication set",
+        "command": "CREATE REPSET",
+        "args": [
+          "repset_name",
+          "database_name"
+        ],
+        "options": [
+          "--option1=value1",
+          "--option2=value2"
+        ],
+        "on_success": "Create Subscription",
+        "on_failure": "Failure Step"
+      }
     }
   ],
   "success_step": {
