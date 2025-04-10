@@ -3,8 +3,9 @@
 set -e
 
 exception_entries=$(cat ${GITHUB_WORKSPACE}/exception-tests.out)
-echo $exception_entries
-if [ $exception_entries != 3 ];
+echo "Found exception entries=$exception_entries"
+
+if [ "$exception_entries" != 3 ];
 then
   exit 1
 fi

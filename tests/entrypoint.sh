@@ -27,9 +27,9 @@ git apply --verbose /home/pgedge/spock/patches/pg${PGVER}*
 options="'--prefix=/home/pgedge/pgedge/pg$PGVER' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' 'LLVM_CONFIG=/usr/bin/llvm-config-64' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && eval ./configure $options && make -j4 && make install
 
 cd /home/pgedge
-. /home/pgedge/pgedge/pg16/pg16.env
-echo 'export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg16/lib/$LD_LIBRARY_PATH' >> /home/pgedge/.bashrc
-echo 'export PATH=/home/test/pgedge/pg16/bin:$PATH' >> /home/pgedge/.bashrc
+. /home/pgedge/pgedge/pg$PGVER/pg$PGVER.env
+echo "export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg$PGVER/lib/:$LD_LIBRARY_PATH" >> /home/pgedge/.bashrc
+echo "export PATH=/home/test/pgedge/pg$PGVER/bin:$PATH" >> /home/pgedge/.bashrc
 . /home/pgedge/.bashrc
 
 echo "==========Recompiling Spock=========="
@@ -41,8 +41,8 @@ cd ~/spockbench
 sudo python3 setup.py install
 
 cd ~/pgedge
-sed -i '/log_min_messages/s/^#//g' data/pg16/postgresql.conf
-sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg16/postgresql.conf
+sed -i '/log_min_messages/s/^#//g' data/pg$PGVER/postgresql.conf
+sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg$PGVER/postgresql.conf
 ./pgedge restart
 
 while ! pg_isready -h /tmp; do
