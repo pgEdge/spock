@@ -21,15 +21,11 @@ jobs:
         with:
           ref: ${{ github.ref }}
 
-      - name: Inspect GITHUB_TOKEN permissions
-        run: |
-          curl -i -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/user
-
       - name: Checkout spockbench
         uses: actions/checkout@v4
         with:
           repository: pgedge/spockbench
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.READ_SPOCKBENCH_PAT }}
           path: spockbench
           ref: master
 
