@@ -2,43 +2,86 @@
 #include "util.h"
 #include <stdio.h>
 #include <stdarg.h>
+#include <time.h>
 
-extern int verbose;
+LogLevel current_log_level = LOG_LEVEL_NONE;
 
-void
-log_message_va(const char *color, const char *symbol, const char *format, va_list args)
+void log_message(const char *color, const char *symbol, const char *format, va_list args)
 {
-    printf("%s[%s] [%s] ", color, symbol, get_current_timestamp());
-    vprintf(format, args);
-    printf("%s\n", COLOR_RESET);
-    fflush(stdout);
+    time_t now;
+    struct tm *local_time;
+    char time_buffer[20];
+
+    now = time(NULL);
+    local_time = localtime(&now);
+    strftime(time_buffer, sizeof(time_buffer), "%Y-%m-%d %H:%M:%S", local_time);
+
+    fprintf(stderr, "%s[%s] %s", color, time_buffer, symbol);
+    vfprintf(stderr, format, args);
+    fprintf(stderr, "%s\n", COLOR_RESET);
 }
 
-void
-log_message(const char *color, const char *symbol, const char *format, ...)
+void log_info(const char *format, ...)
 {
     va_list args;
-    va_start(args, format);
-    log_message_va(color, symbol, format, args);
+
+    if (current_log_level >= LOG_LEVEL_INFO)
+    {
+        va_start(args, format);
+        log_message(COLOR_GREEN, "[INFO] ", format, args);
+        va_end(args);
+    }
+}
+void log_msg(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    log_message(COLOR_DEFAULT, "", fmt, args);
     va_end(args);
 }
 
-void
-log_info(const char *format, ...)
+void log_error(const char *fmt, ...)
 {
-    if (verbose == 0)
-        return;
     va_list args;
-    va_start(args, format);
-    log_message_va(COLOR_GREEN, "✔", format, args);
+
+    va_start(args, fmt);
+    log_message(COLOR_RED, "[ERROR]: ", fmt, args);
     va_end(args);
 }
 
-void
-log_error(const char *format, ...)
+void log_warning(const char *fmt, ...)
 {
     va_list args;
-    va_start(args, format);
-    log_message_va(COLOR_RED, "✘", format, args);
-    va_end(args);
+
+    if (current_log_level >= LOG_LEVEL_WARNING)
+    {
+        va_start(args, fmt);
+        log_message(COLOR_YELLOW, "[WARN] ", fmt, args);
+        va_end(args);
+    }
+}
+
+void log_debug0(const char *fmt, ...)
+{
+    va_list args;
+
+    if (current_log_level >= LOG_LEVEL_DEBUG0)
+    {
+        va_start(args, fmt);
+        log_message(COLOR_BLUE, "[DEBUG]", fmt, args);
+        va_end(args);
+    }
+}
+
+void log_debug1(const char *fmt, ...)
+{
+    va_list args;
+
+    if (current_log_level >= LOG_LEVEL_DEBUG1)
+    {
+        va_start(args, fmt);
+        log_message(COLOR_BLUE, "[DEBUG]", fmt, args);
+        va_end(args);
+    }
 }

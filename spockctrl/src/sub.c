@@ -9,17 +9,6 @@
 #include "sub.h"
 #include "logger.h"
 
-/* Function declarations */
-int handle_sub_create_command(int argc, char *argv[]);
-int handle_sub_drop_command(int argc, char *argv[]);
-int handle_sub_enable_command(int argc, char *argv[]);
-int handle_sub_disable_command(int argc, char *argv[]);
-int handle_sub_show_status_command(int argc, char *argv[]);
-int handle_sub_show_table_command(int argc, char *argv[]);
-int handle_sub_resync_table_command(int argc, char *argv[]);
-int handle_sub_add_repset_command(int argc, char *argv[]);
-int handle_sub_remove_repset_command(int argc, char *argv[]);
-
 static void print_sub_create_help(void);
 static void print_sub_drop_help(void);
 static void print_sub_enable_help(void);
@@ -74,7 +63,6 @@ handle_sub_command(int argc, char *argv[])
         {"add-repset", 6, handle_sub_add_repset_command},
         {"remove-repset", 6, handle_sub_remove_repset_command},
     };
-
     if (argc < 2)
     {
         log_error("No subcommand provided for sub.");
@@ -110,7 +98,8 @@ int
 handle_sub_create_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
-        {"node", required_argument, 0, 'n'},
+        {"node", required_argument, 0, 't'},
+        {"node_name", required_argument, 0, 'n'},
         {"sub_name", required_argument, 0, 's'},
         {"provider_dsn", required_argument, 0, 'p'},
         {"db", required_argument, 0, 'd'},
@@ -141,11 +130,12 @@ handle_sub_create_command(int argc, char *argv[])
     int c;
 
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "n:s:p:d:r:y:z:f:a:h", long_options, &option_index)) != -1)
+    optind = 1; // Reset optind to ensure proper parsing
+    while ((c = getopt_long(argc, argv, "t:s:p:d:r:y:z:f:a:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
-            case 'n':
+            case 't':
                 node = optarg;
                 break;
             case 's':
@@ -182,10 +172,47 @@ handle_sub_create_command(int argc, char *argv[])
     }
 
     /* Validate required arguments */
-    if (!node || !sub_name || !provider_dsn || !db)
+    if (!node || strlen(node) == 0)
     {
-        log_error("Missing required arguments: --node, --sub_name, --provider_dsn, and --db are mandatory.");
+        log_error("Missing required argument: --node is mandatory.");
         print_sub_create_help();
+        return EXIT_FAILURE;
+    }
+    if (!sub_name)
+    {
+        log_error("Missing required argument: --sub_name is mandatory.");
+        print_sub_create_help();
+        return EXIT_FAILURE;
+    }
+    if (!provider_dsn)
+    {
+        log_error("Missing required argument: --provider_dsn is mandatory.");
+        print_sub_create_help();
+        return EXIT_FAILURE;
+    }
+    if (!db)
+    {
+        log_error("Missing required argument: --db is mandatory.");
+        print_sub_create_help();
+        return EXIT_FAILURE;
+    }
+   
+    /* Validate optional arguments */
+    if (synchronize_structure && strcmp(synchronize_structure, "true") != 0 && strcmp(synchronize_structure, "false") != 0)
+    {
+        log_error("Invalid value for --synchronize_structure: %s. Allowed values are 'true' or 'false'.", synchronize_structure);
+        print_sub_create_help();
+        return EXIT_FAILURE;
+    }
+    if (synchronize_data && strcmp(synchronize_data, "true") != 0 && strcmp(synchronize_data, "false") != 0)
+    {
+        log_error("Invalid value for --synchronize_data: %s. Allowed values are 'true' or 'false'.", synchronize_data);
+        print_sub_create_help();
+        return EXIT_FAILURE;
+    }
+    if (apply_delay && !strchr(apply_delay, ':'))
+    {
+        log_error("Invalid format for --apply_delay: %s. Expected interval format (e.g., '0:00:00').", apply_delay);
         return EXIT_FAILURE;
     }
 
@@ -227,7 +254,7 @@ handle_sub_create_command(int argc, char *argv[])
 
    /* Execute SQL query */
    res = PQexec(conn, sql);
-   log_info("SQL: %s", sql);
+   log_debug0("SQL: %s", sql);
    if (PQresultStatus(res) != PGRES_TUPLES_OK)
    {
        log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -256,7 +283,7 @@ int
 handle_sub_drop_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
-        {"node", required_argument, 0, 'n'},
+        {"node", required_argument, 0, 't'},
         {"sub_name", required_argument, 0, 's'},
         {"db", required_argument, 0, 'd'},
         {"ifexists", no_argument, 0, 'e'},
@@ -276,12 +303,14 @@ handle_sub_drop_command(int argc, char *argv[])
     int option_index = 0;
     int c;
 
+    optind = 1;
+ 
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "n:s:d:eh", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "t:s:d:eh", long_options, &option_index)) != -1)
     {
         switch (c)
         {
-            case 'n':
+            case 't':
                 node = optarg;
                 break;
             case 's':
@@ -302,10 +331,26 @@ handle_sub_drop_command(int argc, char *argv[])
         }
     }
 
-    /* Validate required arguments */
-    if (!node || !sub_name || !db)
+    /* Validate required argument: --node */
+    if (!node)
     {
-        log_error("Missing required arguments: --node, --sub_name, and --db are mandatory.");
+        log_error("Missing required argument: --node is mandatory.");
+        print_sub_drop_help();
+        return EXIT_FAILURE;
+    }
+
+    /* Validate required argument: --sub_name */
+    if (!sub_name)
+    {
+        log_error("Missing required argument: --sub_name is mandatory.");
+        print_sub_drop_help();
+        return EXIT_FAILURE;
+    }
+
+    /* Validate required argument: --db */
+    if (!db)
+    {
+        log_error("Missing required argument: --db is mandatory.");
         print_sub_drop_help();
         return EXIT_FAILURE;
     }
@@ -337,7 +382,7 @@ handle_sub_drop_command(int argc, char *argv[])
 
     /* Execute SQL query */
     res = PQexec(conn, sql);
-    log_info("SQL: %s", sql);
+    log_debug0("SQL: %s", sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -446,7 +491,7 @@ handle_sub_enable_command(int argc, char *argv[])
 
     /* Execute SQL query */
     res = PQexec(conn, sql);
-    log_info("SQL: %s", sql);
+    log_debug0("SQL: %s", sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -556,7 +601,7 @@ handle_sub_disable_command(int argc, char *argv[])
 
     /* Execute SQL query */
     res = PQexec(conn, sql);
-    log_info("SQL: %s", sql);
+    log_debug0("SQL: %s", sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -658,7 +703,7 @@ handle_sub_show_status_command(int argc, char *argv[])
              sub_name);
 
     /* Execute the SQL query */
-    log_info("SQL: %s\n", sql);
+    log_debug0("SQL: %s\n", sql);
     res = PQexec(conn, sql);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -684,7 +729,6 @@ handle_sub_show_status_command(int argc, char *argv[])
     /* Clean up */
     PQclear(res);
     PQfinish(conn);
-
     return EXIT_SUCCESS;
 }
 
@@ -773,7 +817,7 @@ handle_sub_show_table_command(int argc, char *argv[])
 
     /* Execute the SQL query */
     res = PQexec(conn, sql);
-    log_info("SQL: %s", sql);
+    log_debug0("SQL: %s", sql);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
@@ -895,7 +939,7 @@ handle_sub_resync_table_command(int argc, char *argv[])
              truncate);
 
     /* Execute the SQL query */
-    log_info("SQL: %s\n", sql);
+    log_debug0("SQL: %s\n", sql);
     run_sql(conn, sql);
 
     /* Close the connection */
@@ -986,7 +1030,7 @@ handle_sub_add_repset_command(int argc, char *argv[])
              replication_set);
 
     /* Execute the SQL query */
-    log_info("SQL: %s\n", sql);
+    log_debug0("SQL: %s\n", sql);
     run_sql(conn, sql);
 
     /* Close the connection */
@@ -1077,7 +1121,7 @@ handle_sub_remove_repset_command(int argc, char *argv[])
              replication_set);
 
     /* Execute the SQL query */
-    log_info("SQL: %s\n", sql);
+    log_debug0("SQL: %s\n", sql);
     run_sql(conn, sql);
 
     /* Close the connection */

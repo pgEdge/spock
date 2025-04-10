@@ -6,17 +6,26 @@
 #define MAX_ARGS 10
 #define MAX_OPTIONS 10
 
-typedef struct {
-    char *name;
-    char *description;
-    char *command;
-    char *args[MAX_ARGS];
-    char *options[MAX_OPTIONS];
-    char *on_success;
-    char *on_failure;
+/* Step type constants */
+#define STEP_TYPE_SPOCK 1
+#define STEP_TYPE_SQL 2
+#define STEP_TYPE_SHELL 3
+
+typedef struct Step
+{
+    char *name;               // Name of the step
+    char *node;               // Node associated with the step
+    char *description;        // Description of the step
+    char *command;            // Command to execute
+    char *args[MAX_ARGS];     // Arguments for the command
+    char *options[MAX_OPTIONS]; // Options for the command
+    char *on_success;         // JSON string for on_success actions
+    char *on_failure;         // JSON string for on_failure actions
+    int type;                 // Type of the step (e.g., STEP_TYPE_SPOCK, STEP_TYPE_SQL, STEP_TYPE_SHELL)
 } Step;
 
-typedef struct {
+typedef struct Workflow
+{
     char *workflow_name;
     char *description;
     Step *steps;
@@ -25,27 +34,9 @@ typedef struct {
     Step failure_step;
 } Workflow;
 
-/**
- * Parses the JSON content and populates the Workflow structure.
- * 
- * @param json_content The JSON content as a string.
- * @return A pointer to the populated Workflow structure, or NULL on error.
- */
-Workflow* load_workflow(const char *json_content);
-
-/**
- * Frees the memory allocated for the Workflow structure and its steps.
- * 
- * @param workflow A pointer to the Workflow structure to be freed.
- */
+/* Function declarations */
+Workflow *load_workflow(const char *json_file_path);
 void free_workflow(Workflow *workflow);
-
-/**
- * Executes the workflow steps in sequence.
- * 
- * @param workflow A pointer to the Workflow structure to be executed.
- * @return 0 on success, non-zero on failure.
- */
 int run_workflow(Workflow *workflow);
 
 #endif /* WORKFLOW_H */

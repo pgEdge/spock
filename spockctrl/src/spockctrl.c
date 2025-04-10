@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <getopt.h>
+#include <libpq-fe.h>
 #include "logger.h"
 #include "node.h"
 #include "repset.h"
@@ -15,7 +16,7 @@
 
 static void print_help(void);
 char *format = DEFAULT_FORMAT;
-int verbose = 0; // Global verbose flag
+int verbose = 0;
 
 static void
 print_help(void)
@@ -29,7 +30,7 @@ print_help(void)
     printf("  version    Display the version information\n");
     printf("\n");
     printf("Main Options:\n");
-    printf("  -v, --verbose       Enable verbose mode\n");
+    printf("  -v, --verbose       Enable verbose mode (levels: 0, 1, 2, 3)\n");
     printf("  -f, --format        Specify output format (json or table)\n");
     printf("  -c, --config        Specify the configuration file (required)\n");
     printf("  -h, --help          Show this help message\n");
@@ -105,14 +106,46 @@ main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
         {
-            verbose = 1; // Enable verbose mode
+            if (i + 1 < argc)
+            {
+                verbose = atoi(argv[++i]);
+                if (verbose < 0 || verbose > 3)
+                {
+                    log_error("Invalid verbose level specified. Supported levels are: 0, 1, 2, 3");
+                    print_help();
+                    return EXIT_FAILURE;
+                }
+            }
+            else
+            {
+                log_error("Option -v/--verbose requires an argument.");
+                print_help();
+                return EXIT_FAILURE;
+            }
         }
     }
 
-    if (verbose)
+    if (verbose >= 1)
     {
-        log_info("Verbose mode enabled");
+        current_log_level = LOG_LEVEL_WARNING;
+        log_warning("Verbose mode enabled. Level: %d", verbose);
     }
+    if (verbose >= 2)
+    {
+        current_log_level = LOG_LEVEL_INFO;
+        log_info("Log messages will be displayed.");
+    }
+    if (verbose == 3)
+    {
+        current_log_level = LOG_LEVEL_DEBUG0;
+        log_debug0("Debug mode enabled.");
+    }
+    if (verbose == 4)
+    {
+        current_log_level = LOG_LEVEL_DEBUG1;
+        log_debug1("Debug mode enabled.");
+    }
+
 
     if (strcmp(format, "json") != 0 && strcmp(format, "table") != 0)
     {
@@ -154,10 +187,6 @@ main(int argc, char *argv[])
     {
         if (strcmp(command, commands[i].name) == 0)
         {
-            if (verbose)
-            {
-                log_info("Executing command: %s", command);
-            }
             return commands[i].handler(argc - 1, &argv[1]);
         }
     }

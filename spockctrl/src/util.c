@@ -8,6 +8,77 @@
 #include <pwd.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <jansson.h>
+
+int is_valid_json(const char *json_str)
+{
+    if (!json_str || strlen(json_str) == 0)
+    {
+        log_error("Invalid JSON: Input is empty or NULL.");
+        return 0;
+    }
+
+    json_error_t error;
+    json_t *json = json_loads(json_str, JSON_DECODE_ANY, &error);
+    if (!json)
+    {
+        log_error("Invalid JSON: %s (line %d, column %d, position %d). Input: '%s'", 
+                  error.text, error.line, error.column, error.position, json_str);
+        return 0;
+    }
+    json_decref(json);
+    return 1;
+}
+
+/* Function to parse a JSON file into a json_t object */
+json_t *load_json_file(const char *file_path)
+{
+    json_error_t error;
+    json_t *json = json_load_file(file_path, 0, &error);
+    if (!json)
+    {
+        log_error("Error loading JSON file: %s (line %d, column %d).", error.text, error.line, error.column);
+        return NULL;
+    }
+    return json;
+}
+
+/* Function to parse a JSON string into a json_t object */
+json_t *parse_json_string(const char *json_str)
+{
+    json_error_t error;
+    json_t *json = json_loads(json_str, 0, &error);
+    if (!json)
+    {
+        log_error("Error parsing JSON string: %s (line %d, column %d).", error.text, error.line, error.column);
+        return NULL;
+    }
+    return json;
+}
+
+/* Function to safely get a string value from a JSON object */
+char *get_json_string_value(json_t *json, const char *key)
+{
+    json_t *value = json_object_get(json, key);
+    if (!json_is_string(value))
+    {
+        log_error("Error: Key '%s' is not a string in JSON object.", key);
+        return NULL;
+    }
+    return strdup(json_string_value(value));
+}
+
+/* Function to safely get an array from a JSON object */
+json_t *get_json_array(json_t *json, const char *key)
+{
+    json_t *array = json_object_get(json, key);
+    if (!json_is_array(array))
+    {
+        log_error("Error: Key '%s' is not an array in JSON object.", key);
+        return NULL;
+    }
+    return array;
+}
 
 /* Function to get the current timestamp */
 char *

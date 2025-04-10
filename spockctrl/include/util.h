@@ -2,6 +2,14 @@
 #define UTIL_H
 
 #include <stdarg.h>
+#include <jansson.h>
+
+/* JSON utility functions */
+int is_valid_json(const char *json_str);
+json_t *load_json_file(const char *file_path);
+json_t *parse_json_string(const char *json_str);
+char *get_json_string_value(json_t *json, const char *key);
+json_t *get_json_array(json_t *json, const char *key);
 
 /* Function to get the current timestamp */
 char *get_current_timestamp(void);

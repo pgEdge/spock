@@ -17,7 +17,7 @@
                 "postgres_ip": "127.0.0.1",
                 "postgres_port": 5432,
                 "postgres_user": "pgedge",
-                "postgres_password": "pgedge_password"
+                "postgres_password": "pgedge"
             }
         },
         {
@@ -26,7 +26,7 @@
                 "postgres_ip": "127.0.0.1",
                 "postgres_port": 5433,
                 "postgres_user": "pgedge",
-                "postgres_password": "pgedge_password"
+                "postgres_password": "pgedge"
             }
         }
     ]
