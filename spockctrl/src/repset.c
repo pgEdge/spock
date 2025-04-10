@@ -9,16 +9,6 @@
 #include "conf.h"
 #include "logger.h"
 
-// Function declarations
-int handle_repset_create_command(int argc, char *argv[]);
-int handle_repset_alter_command(int argc, char *argv[]);
-int handle_repset_drop_command(int argc, char *argv[]);
-int handle_repset_add_table_command(int argc, char *argv[]);
-int handle_repset_remove_table_command(int argc, char *argv[]);
-int handle_repset_add_partition_command(int argc, char *argv[]);
-int handle_repset_remove_partition_command(int argc, char *argv[]);
-int handle_repset_list_tables_command(int argc, char *argv[]);
-
 static void print_repset_create_help(void);
 static void print_repset_alter_help(void);
 static void print_repset_drop_help(void);
@@ -114,6 +104,9 @@ handle_repset_create_command(int argc, char *argv[])
     char *conninfo_allocated = NULL;
     int option_index = 0;
     int c;
+
+    optind = 1;
+
     while ((c = getopt_long(argc, argv, "n:d:s:i:u:e:t:h", long_options, &option_index)) != -1)
     {
         switch (c)
@@ -148,7 +141,7 @@ handle_repset_create_command(int argc, char *argv[])
         }
     }
 
-    if (!node || !set_name || !replicate_insert || !replicate_update || !replicate_delete || !replicate_truncate)
+    if (!node || !db || !set_name || !replicate_insert || !replicate_update || !replicate_delete || !replicate_truncate)
     {
         log_error("Missing required arguments for repset create.");
         print_repset_create_help();
@@ -244,7 +237,7 @@ handle_repset_alter_command(int argc, char *argv[])
     char *replicate_delete = NULL;
     char *replicate_truncate = NULL;
     const char *conninfo = NULL;
-
+    char *conninfo_allocated = NULL;
 
     int option_index = 0;
     int c;
@@ -288,19 +281,21 @@ handle_repset_alter_command(int argc, char *argv[])
         print_repset_alter_help();
         return EXIT_FAILURE;
     }
-
     conninfo = get_postgres_coninfo(node);
+
     if (conninfo != NULL && db != NULL)
     {
         char conninfo_with_db[512];
         snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
+        conninfo_allocated = strdup(conninfo_with_db);
+        conninfo = conninfo_allocated;
     }
     else if (conninfo != NULL)
     {
         char conninfo_with_default_db[512];
         snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
+        conninfo_allocated = strdup(conninfo_with_default_db);
+        conninfo = conninfo_allocated;
     }
     if (conninfo == NULL)
     {
@@ -312,6 +307,7 @@ handle_repset_alter_command(int argc, char *argv[])
     if (conn == NULL)
     {
         log_error("Failed to connect to the database.");
+        free(conninfo_allocated); // Free allocated memory
         return EXIT_FAILURE;
     }
 
@@ -333,19 +329,13 @@ handle_repset_alter_command(int argc, char *argv[])
         log_error("SQL command failed: %s", PQerrorMessage(conn));
         PQclear(res);
         PQfinish(conn);
-        return EXIT_FAILURE;
-    }
-
-    if (PQntuples(res) == 0 || PQgetvalue(res, 0, 0) == NULL)
-    {
-        log_error("SQL function returned NULL for query: %s", sql);
-        PQclear(res);
-        PQfinish(conn);
+        free(conninfo_allocated); // Free allocated memory
         return EXIT_FAILURE;
     }
 
     PQclear(res);
     PQfinish(conn);
+    free(conninfo_allocated); // Free allocated memory
     return EXIT_SUCCESS;
 }
 
@@ -368,6 +358,7 @@ handle_repset_drop_command(int argc, char *argv[])
 
     int option_index = 0;
     int c;
+    optind = 1;
     while ((c = getopt_long(argc, argv, "n:d:s:h", long_options, &option_index)) != -1)
     {
         switch (c)
@@ -389,6 +380,7 @@ handle_repset_drop_command(int argc, char *argv[])
                 return EXIT_FAILURE;
         }
     }
+
 
     if (!node || !set_name)
     {

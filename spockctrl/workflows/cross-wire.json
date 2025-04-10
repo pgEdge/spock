@@ -79,6 +79,40 @@
         "on_success": {},
         "on_failure": {}
       }
+    },
+    {
+      "spock": {
+        "node": "n1",
+        "command": "CREATE REPSET",
+        "description": "Create a replication set for n1",
+        "args": [
+          "--db=pgedge",
+          "--set_name=test_set",
+          "--replicate_insert=true",
+          "--replicate_update=true",
+          "--replicate_delete=true",
+          "--replicate_truncate=true"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "CREATE REPSET",
+        "description": "Create a replication set for n2",
+        "args": [
+          "--db=pgedge",
+          "--set_name=test_set",
+          "--replicate_insert=true",
+          "--replicate_update=true",
+          "--replicate_delete=true",
+          "--replicate_truncate=true"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
     }
   ]
 }

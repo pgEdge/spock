@@ -5,6 +5,32 @@
     {
       "spock": {
         "node": "n1",
+        "command": "DROP REPLICATION SET",
+        "description": "Drop the replication set for n1",
+        "args": [
+          "--db=pgedge",
+          "--set_name=test_set"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "DROP REPLICATION SET",
+        "description": "Drop the replication set for n2",
+        "args": [
+          "--db=pgedge",
+          "--set_name=test_set"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n1",
         "command": "DROP SUBSCRIPTION",
         "description": "Drop the subscription for n1",
         "args": [

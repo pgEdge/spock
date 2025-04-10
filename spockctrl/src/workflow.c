@@ -7,6 +7,7 @@
 #include "sub.h"
 #include "logger.h"
 #include "util.h"
+#include "repset.h"
 
 /* Function declarations */
 static int prepare_arguments(Step *step, char *argv[], int max_args, const char *default_db);
@@ -538,7 +539,7 @@ handle_spock_command(Step *step)
     /* Debug: Print the prepared arguments */
     for (int i = 0; i < argc; i++)
     {
-        log_debug1("Argument[%d]: %s", i, argv[i]);
+        log_debug0("Argument[%d]: %s", i, argv[i]);
     }
 
     /* Handle specific commands */
@@ -557,6 +558,14 @@ handle_spock_command(Step *step)
     else if (strcmp(step->command, "DROP NODE") == 0)
     {
         return handle_node_drop_command(argc, argv);
+    }
+    else if (strcmp(step->command, "CREATE REPSET") == 0)
+    {
+        return handle_repset_create_command(argc, argv);
+    }
+    else if (strcmp(step->command, "DROP REPLICATION SET") == 0)
+    {
+        return handle_repset_drop_command(argc, argv);
     }
     else
     {
