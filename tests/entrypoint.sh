@@ -18,7 +18,7 @@ echo "Setting up pgedge..."
 cd /home/pgedge
 curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
 sudo -u pgedge python3 /home/pgedge/install.py
-cd pgedge && ./pgedge setup -U admin -P testpass -d demo --pg $PGVER && ./pgedge stop
+cd pgedge && ./pgedge setup -U admin -P testpass -d demo --pg_ver=$PGVER && ./pgedge stop
 
 cd /home/pgedge/postgres
 
