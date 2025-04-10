@@ -15,7 +15,9 @@ peer_names=$1
 # ----
 # Create table and test data on n1
 # ----
-psql -U $DBUSER -d $DBNAME -h /tmp <<_EOF_
+if [[ $(hostname) == "n1" ]];
+then
+  psql -U $DBUSER -d $DBNAME -h /tmp <<_EOF_
   CREATE TABLE t4 (
     id		integer PRIMARY KEY,
     data	text
@@ -30,10 +32,10 @@ psql -U $DBUSER -d $DBNAME -h /tmp <<_EOF_
   );
 _EOF_
 
-# ----
-# Create table and test data on n2
-# ----
-PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} <<_EOF_
+  # ----
+  # Create table and test data on n2
+  # ----
+  PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} <<_EOF_
   CREATE TABLE t4 (
     id		integer PRIMARY KEY,
     data	text
@@ -46,17 +48,19 @@ PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} <<_EOF_
   );
 _EOF_
 
-psql -U $DBUSER -d $DBNAME -h /tmp <<_EOF_
+  psql -U $DBUSER -d $DBNAME -h /tmp <<_EOF_
   INSERT INTO t4 VALUES (1, 'trigger duplicate key');
   UPDATE t4 SET data = 'trigger missing key on UPDATE' WHERE id = 2;
   DELETE FROM t4 WHERE id = 3; -- trigger missing key on DELETE
 _EOF_
 
-echo "Waiting for apply worker timeouts..."
-sleep 30
-echo "Checking the exception table now..."
-elog_entries=$(PGPASSWORD=$DBPASSWD psql -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "SELECT count(*) from spock.exception_log;")
-echo $elog_entries > /home/pgedge/spock/exception-tests.out
+  echo "Waiting for apply worker timeouts..."
+  sleep 30
+  echo "Checking the exception table now..."
+  elog_entries=$(PGPASSWORD=$DBPASSWD psql -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "SELECT count(*) from spock.exception_log;")
+  PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "select * from spock.exception_log;"
+  echo $elog_entries > /home/pgedge/spock/exception-tests.out
+fi
 
 spockbench -h /tmp -i -s $SCALEFACTOR demo
 psql -U admin -h /tmp -d demo -c "select spock.convert_sequence_to_snowflake('pgbench_history_hid_seq');"
