@@ -11,7 +11,7 @@ then
 fi
 
 spockbench_files=$(ls ${GITHUB_WORKSPACE}/spockbench-*.out | wc -l)
-echo $spockbench_files
+echo "Found spockbench files=$spockbench_files"
 
 if [ $spockbench_files != 3 ];
 then
