@@ -33,12 +33,20 @@ jobs:
         run: |
           sudo chmod -R a+w ${GITHUB_WORKSPACE}
 
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Set up docker compose
+        uses: docker/setup-compose-action@v1
+        with:
+          version: latest
+
       - name: Start docker
         run: |
           cd ${GITHUB_WORKSPACE}/tests/
           echo PG_VER=${{ matrix.pgver }} >> pgedge.env
           docker build --build-arg PGVER=${{ matrix.pgver }} -t spock -f Dockerfile.el9 .
-          docker-compose up
+          docker compose up
 
       - name: Check spockbench output
         run: |
