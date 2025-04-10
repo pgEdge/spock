@@ -26,7 +26,8 @@ jobs:
         with:
           repository: pgedge/spockbench
           token: ${{ secrets.GITHUB_TOKEN }}
-          path: ~/spockbench
+          path: spockbench
+          ref: master
 
       - name: Add permissions
         run: |
