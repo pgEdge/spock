@@ -432,6 +432,9 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 		appendStringInfo(&query,
 						 "SELECT pg_catalog.pg_replication_origin_session_setup(%s);\n",
 						 s);
+		appendStringInfo(&query,
+						 "SELECT pg_catalog.pg_replication_origin_xact_setup('0/0', 'epoch');\n",
+						 s);
 		PQfreemem(s);
 	}
 
@@ -476,7 +479,8 @@ finish_copy_target_tx(PGconn *conn)
 	 */
 	if (PQserverVersion(conn) >= 90500)
 	{
-		res = PQexec(conn, "SELECT pg_catalog.pg_replication_origin_session_reset();\n");
+		res = PQexec(conn, "SELECT pg_catalog.pg_replication_origin_xact_reset();\n"
+						   "SELECT pg_catalog.pg_replication_origin_session_reset();\n");
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 			elog(WARNING, "Resetting session origin on target node failed: %s",
 					PQresultErrorMessage(res));
