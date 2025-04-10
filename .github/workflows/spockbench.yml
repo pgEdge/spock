@@ -32,7 +32,6 @@ jobs:
       - name: Add permissions
         run: |
           sudo chmod -R a+w ${GITHUB_WORKSPACE}
-          sudo chmod -R a+w ~/spockbench
 
       - name: Start docker
         run: |
