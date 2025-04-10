@@ -16,7 +16,7 @@ services:
       - '15432:5432'
     volumes:
       - '${GITHUB_WORKSPACE}:/home/pgedge/spock'
-      - '~/spockbench:/home/pgedge/spockbench'
+      - '${GITHUB_WORKSPACE}/spockbench:/home/pgedge/spockbench'
       - './lib-list.txt:/home/pgedge/lib-list.txt'
 
   pgedge-n2:
@@ -33,7 +33,7 @@ services:
       - '15433:5432'
     volumes:
       - '${GITHUB_WORKSPACE}:/home/pgedge/spock'
-      - '~/spockbench:/home/pgedge/spockbench'
+      - '${GITHUB_WORKSPACE}/spockbench:/home/pgedge/spockbench'
       - './lib-list.txt:/home/pgedge/lib-list.txt'
 
   pgedge-n3:
@@ -50,5 +50,5 @@ services:
       - '15434:5432'
     volumes:
       - '${GITHUB_WORKSPACE}:/home/pgedge/spock'
-      - '~/spockbench:/home/pgedge/spockbench'
+      - '${GITHUB_WORKSPACE}/spockbench:/home/pgedge/spockbench'
       - './lib-list.txt:/home/pgedge/lib-list.txt'
