@@ -1,9 +1,19 @@
 name: Spockbench tests
 run-name: Running Spockbench
 on: [push]
+
+permissions:
+  contents: read
+
 jobs:
   pull-and-test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        pgver: [15, 16, 17]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout spock
@@ -12,21 +22,31 @@ jobs:
           ref: ${{ github.ref }}
 
       - name: Checkout spockbench
-        run: |
-          eval $(ssh-agent -s)
-          ssh-add - <<< '${{ secrets.GH_ACTIONS_PRIV_KEY }}'
-          git clone git@github.com:pgedge/spockbench ~/spockbench
-      
+        uses: actions/checkout@v4
+        with:
+          repository: pgedge/spockbench
+          token: ${{ secrets.READ_SPOCKBENCH_PAT }}
+          path: spockbench
+          ref: master
+
       - name: Add permissions
         run: |
           sudo chmod -R a+w ${GITHUB_WORKSPACE}
-          sudo chmod -R a+w ~/spockbench
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up docker compose
+        uses: docker/setup-compose-action@v1
+        with:
+          version: latest
 
       - name: Start docker
         run: |
           cd ${GITHUB_WORKSPACE}/tests/
-          docker-compose build
-          docker-compose up
+          echo PG_VER=${{ matrix.pgver }} >> pgedge.env
+          docker build --build-arg PGVER=${{ matrix.pgver }} -t spock -f Dockerfile.el9 .
+          docker compose up
 
       - name: Check spockbench output
         run: |
