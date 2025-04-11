@@ -34,10 +34,10 @@ jobs:
           sudo chmod -R a+w ${GITHUB_WORKSPACE}
 
       - name: Set up Docker
-        uses: docker/setup-buildx-action@b5ca514
+        uses: docker/setup-buildx-action@v3
 
       - name: Set up docker compose
-        uses: docker/setup-compose-action@364cc21
+        uses: docker/setup-compose-action@v1
         with:
           version: latest
 
