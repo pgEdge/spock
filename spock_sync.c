@@ -351,6 +351,8 @@ retry:
 					  CStringGetDatum(PQgetvalue(res, 0, 1))));
 	snapshot = pstrdup(PQgetvalue(res, 0, 2));
 
+
+
 	PQclear(res);
 
 	return snapshot;
@@ -368,6 +370,116 @@ ensure_replication_origin(char *slot_name)
 		origin = replorigin_create(slot_name);
 
 	return origin;
+}
+
+
+static void
+adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
+{
+	const char	   *originQuery =
+		"SELECT node_id, remote_node_id, remote_commit_ts, "
+		"       remote_lsn, remote_insert_lsn, "
+		"       last_updated_ts, updated_by_decode "
+		"FROM spock.progress "
+		"WHERE node_id = %u AND remote_node_id <> %u";
+	const char	   *updateQuery =
+		"UPDATE spock.progress SET "
+		"    remote_commit_ts = %s, "
+		"    remote_lsn = %s, "
+		"    remote_insert_lsn = %s, "
+		"    last_updated_ts = %s, "
+		"    updated_by_decode = %s "
+		"WHERE node_id = '%d' AND remote_node_id = %s";
+
+	StringInfoData	query;
+	PGresult	   *originRes;
+	PGresult	   *updateRes;
+
+	/*
+	 * Select the current content of the origin's spock.progress table
+	 * where the origin is the target and this node is not the origin.
+	 *
+	 * We use this information to update the target's spock.progress
+	 * table so that START REPLICATION can ask the walsender to skip
+	 * all transactions that have already been applied from other
+	 * existing nodes and are therefore part of the snapshot we are
+	 * copying.
+	 */
+	initStringInfo(&query);
+	appendStringInfo(&query, originQuery, MySubscription->origin->id,
+					 MySubscription->target->id);
+	originRes = PQexec(origin_conn, query.data);
+	if (PQresultStatus(originRes) == PGRES_TUPLES_OK)
+	{
+		int		rno;
+		for (rno = 0; rno < PQntuples(originRes); rno++)
+		{
+			/*
+			 * Update the remote node's progress entry to what our
+			 * sync provider has included in the COPY snapshot.
+			 *
+			 * We assume here that the progress table entry already
+			 * exists. Turning this into an INSERT if not should be
+			 * easy.
+			 */
+			char   *remote_node_id = PQgetvalue(originRes, rno, 1);
+			char   *remote_commit_ts = PQgetvalue(originRes, rno, 2);
+			char   *remote_lsn = PQgetvalue(originRes, rno, 3);
+			char   *remote_insert_lsn = PQgetvalue(originRes, rno, 4);
+			char   *last_updated_ts = PQgetvalue(originRes, rno, 5);
+			char   *updated_by_decode = PQgetvalue(originRes, rno, 6);
+
+			resetStringInfo(&query);
+			appendStringInfo(&query, updateQuery,
+							 PQescapeLiteral(target_conn, remote_commit_ts,
+											 strlen(remote_commit_ts)),
+							 PQescapeLiteral(target_conn, remote_lsn,
+											 strlen(remote_lsn)),
+							 PQescapeLiteral(target_conn, remote_insert_lsn,
+											 strlen(remote_insert_lsn)),
+							 PQescapeLiteral(target_conn, last_updated_ts,
+											 strlen(last_updated_ts)),
+							 PQescapeLiteral(target_conn, updated_by_decode,
+											 strlen(updated_by_decode)),
+							 MySubscription->target->id,
+							 PQescapeLiteral(target_conn, remote_node_id,
+											 strlen(remote_node_id)));
+			updateRes = PQexec(target_conn, query.data);
+
+			if (PQresultStatus(updateRes) != PGRES_COMMAND_OK)
+			{
+				elog(ERROR, "SPOCK: Cannot adjust spock.progress - %s",
+					 PQresultErrorMessage(updateRes));
+			}
+			else if (strcmp(PQcmdTuples(updateRes), "1") != 0)
+			{
+				elog(ERROR, "SPOCK: Cannot adjust spock.progress - "
+					 "tuples updated='%s' query=%s",
+					 PQcmdTuples(updateRes), query.data);
+			}
+			else
+			{
+				elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
+					 "remote_commit_ts='%s' "
+					 "remote_lsn='%s' "
+					 "remote_insert_lsn='%s'",
+					 remote_node_id,
+					 MySubscription->target->id,
+					 remote_commit_ts,
+					 remote_lsn,
+					 remote_insert_lsn);
+			}
+			PQclear(updateRes);
+		}
+	}
+	else
+	{
+		elog(WARNING, "SPOCK: Cannot adjust spock.progress - %s",
+			 PQresultErrorMessage(originRes));
+	}
+	PQclear(originRes);
+
+	resetStringInfo(&query);
 }
 
 
@@ -432,10 +544,9 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 		appendStringInfo(&query,
 						 "SELECT pg_catalog.pg_replication_origin_session_setup(%s);\n",
 						 s);
-		appendStringInfo(&query,
-						 "SELECT pg_catalog.pg_replication_origin_xact_setup('0/0', 'epoch');\n",
-						 s);
 		PQfreemem(s);
+		appendStringInfo(&query,
+						 "SELECT pg_catalog.pg_replication_origin_xact_setup('0/0', 'epoch');");
 	}
 
 	appendStringInfoString(&query, setup_query);
@@ -756,6 +867,8 @@ copy_tables_data(char *sub_name, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
+	adjust_progress_info(origin_conn, target_conn);
+
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
 	finish_copy_target_tx(target_conn);
@@ -808,6 +921,8 @@ copy_replication_sets_data(char *sub_name, const char *origin_dsn,
 
 		CHECK_FOR_INTERRUPTS();
 	}
+
+	adjust_progress_info(origin_conn, target_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);

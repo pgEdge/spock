@@ -582,7 +582,37 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 		sync.kind = SYNC_KIND_INIT;
 
 	sync.subid = sub.id;
-	sync.status = SYNC_STATUS_INIT;
+
+	if (enabled)
+	{
+		sync.status = SYNC_STATUS_INIT;
+	}
+	else
+	{
+		/*
+		 * If we create a subscription in disabled state it is
+		 * meant for Zero-Downtime-Add-Node. This cannot use any
+		 * synchronization and we immediately mark the local
+		 * sync status as READY.
+		 */
+		if (sync_structure || sync_data)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("subscription \"%s\" in disabled state is not "
+							"allowed to synchronize structure or data",
+							sub_name)));
+		sync.status = SYNC_STATUS_READY;
+
+		/*
+		 * TODO: We also need to connect to the origin at this point
+		 * and call
+		 *     pg_create_logical_replication_slot()
+		 * and locally call
+		 *     pg_create_replication_origin()
+		 * so the slot and origin are all ready for picking up
+		 * once we enable the slot for catch-up.
+		 */
+	}
 	create_local_sync_status(&sync);
 
 	/* Create progress entry to track commit ts per local/remote origin */
