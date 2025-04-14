@@ -604,14 +604,11 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 		sync.status = SYNC_STATUS_READY;
 
 		/*
-		 * TODO: We also need to connect to the origin at this point
-		 * and call
-		 *     pg_create_logical_replication_slot()
-		 * and locally call
-		 *     pg_create_replication_origin()
-		 * so the slot and origin are all ready for picking up
-		 * once we enable the slot for catch-up.
+		 * We also create the replication origin entry here because
+		 * the way we setup the subscription causes spock_sync.c not
+		 * to do anything.
 		 */
+		(void) replorigin_create(sub_name);
 	}
 	create_local_sync_status(&sync);
 
