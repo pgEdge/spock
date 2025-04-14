@@ -672,6 +672,14 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	MemoryContext oldctx;
 	UserContext		ucxt;
 
+	EPQState	epqstate;
+	TupleTableSlot *localslot;
+	HeapTuple	remotetuple;
+	ResultRelInfo *relinfo;
+	bool		found;
+	bool		clear_remoteslot = false;
+	bool		clear_localslot = false;
+
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
 	estate = edata->estate;
@@ -683,31 +691,106 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
 						 SPOCK_STATS_INSERT_COUNT, 1);
 
-	/*
-	 * TODO: Spock used to do an all-column UPDATE if row exists on INSERT.
-	 * With the new exception handling we now throw an error on dupkey
-	 * (or anything else going wrong). To either get back to the old
-	 * behavior or present the conflicting local row in the exception_log
-	 * we need to lookup the new pkey and store the row in
-	 * exception_log->local_tuple.
-	 */
-
 	/* Process and store remote tuple in the slot */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 	slot_store_data(remoteslot, rel, newtup);
 	slot_fill_defaults(rel, estate, remoteslot);
 	MemoryContextSwitchTo(oldctx);
 
-	/* Make sure that any user-supplied code runs as the table owner. */
-	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
-
-	/* Do the actual INSERT */
+	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
 	ExecOpenIndices(edata->targetRelInfo, false);
-	ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
-	ExecCloseIndices(edata->targetRelInfo);
-	RestoreUserContext(&ucxt);
+	relinfo = edata->targetRelInfo;
+
+	/*
+	 * TODO: do we need a retry finding a tuple? Also do we need
+	 * wait_for_previous_transaction() call here?
+	 */
+
+	/* Find the current local tuple. */
+	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
+		edata->targetRel->idxoid,
+		remoteslot, &localslot);
+
+	if (found)
+	{
+		TransactionId xmin;
+		TimestampTz local_ts;
+		RepOriginId local_origin;
+		bool		local_origin_found;
+		bool		apply;
+
+		HeapTuple	applytuple;
+		HeapTuple	local_tuple;
+		SpockConflictResolution resolution;
+		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
+
+		/*
+		 * Fetch the contents of the local slot and store it in the error log
+		 */
+		local_tuple = ExecFetchSlotHeapTuple(localslot, true, &clear_localslot);
+		exception_log->local_tuple = local_tuple;
+
+		remotetuple = ExecFetchSlotHeapTuple(remoteslot, true,
+			&clear_remoteslot);
+		local_origin_found = get_tuple_origin(rel, TTS_TUP(localslot),
+			 &(localslot->tts_tid), &xmin,
+			 &local_origin, &local_ts);
+
+		apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
+									 remotetuple, &applytuple,
+									 local_origin, local_ts,
+									 &resolution);
+
+		/*
+		 * If remote tuple won we go forward with that as a base.
+		 */
+		if (apply && applytuple == remotetuple)
+		{
+			slot_modify_data(remoteslot, localslot, rel, newtup);
+		}
+		else
+		{
+			spock_report_conflict(CONFLICT_INSERT_INSERT, rel,
+								  TTS_TUP(localslot), NULL,
+								  remotetuple, applytuple, resolution,
+								  xmin, local_origin_found, local_origin,
+								  local_ts, rel->idxoid,
+								  true /* FIXME: unused in the call chain */ );
+		}
+
+		/*
+		 * Finally do the actual tuple update if needed.
+		 */
+		if (apply)
+		{
+			/* Make sure that any user-supplied code runs as the table owner. */
+			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
+			EvalPlanQualSetSlot(&epqstate, remoteslot);
+			ExecSimpleRelationUpdate(edata->targetRelInfo, estate, &epqstate,
+									 localslot, remoteslot);
+			/* Switch back to the original user */
+			RestoreUserContext(&ucxt);
+		}
+	}
+	else
+	{
+		/* Make sure that any user-supplied code runs as the table owner. */
+		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
+		/* Do the actual INSERT */
+		ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
+		/* Switch back to the original user */
+		RestoreUserContext(&ucxt);
+	}
 
 	/* Cleanup */
+	if (clear_remoteslot)
+		ExecClearTuple(remoteslot);
+	if (clear_localslot)
+		ExecClearTuple(localslot);
+	ExecCloseIndices(edata->targetRelInfo);
+	EvalPlanQualEnd(&epqstate);
 	finish_edata(edata);
 }
 
