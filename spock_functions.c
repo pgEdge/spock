@@ -608,7 +608,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 		 * the way we setup the subscription causes spock_sync.c not
 		 * to do anything.
 		 */
-		(void) replorigin_create(sub_name);
+		(void) replorigin_create(slot_name.data);
 	}
 	create_local_sync_status(&sync);
 
