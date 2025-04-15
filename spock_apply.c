@@ -3,7 +3,7 @@
  * spock_apply.c
  * 		spock apply logic
  *
- * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Copyright (c) 2022-2025, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -145,6 +145,12 @@ static bool use_multi_insert = false;
  */
 static uint32 xact_action_counter;
 
+/*
+ * Flag if trasaction had any exceptions for sub_disable handling
+ * at commit time.
+ */
+static bool xact_had_exception = false;
+
 typedef struct SPKFlushPosition
 {
 	dlist_node	node;
@@ -205,7 +211,8 @@ static bool should_log_exception(bool failed);
  *   - Subtransaction failed
  *   OR
  *   - Subtransaction succeeded, and
- *   - exception_behaviour is TRANSDISCARD or exception_logging is LOG_ALL
+ *   - exception_behaviour is TRANSDISCARD | SUB_DISABLE or
+ *     exception_logging is LOG_ALL
  */
 static bool
 should_log_exception(bool failed)
@@ -215,7 +222,8 @@ should_log_exception(bool failed)
 		if (failed)
 			return true;
 		else if (exception_logging == LOG_ALL ||
-			 exception_behaviour == TRANSDISCARD)
+			     exception_behaviour == TRANSDISCARD ||
+				 exception_behaviour == SUB_DISABLE)
 			return true;
 	}
 
@@ -387,6 +395,7 @@ handle_begin(StringInfo s)
 	MySpockWorker->restart_delay = restart_delay_on_exception;
 
 	xact_action_counter = 1;
+	xact_had_exception = false;
 	errcallback_arg.action_name = "BEGIN";
 
 	spock_read_begin(s, &commit_lsn, &commit_time, &remote_xid);
@@ -520,6 +529,9 @@ handle_begin(StringInfo s)
 		{
 			MyApplyWorker->use_try_block = true;
 
+			elog(DEBUG1, "SPOCK %s: entering exception handling",
+				 MySubscription->name);
+
 			/*
 			 * If we unexpectedly terminate again with error during
 			 * exception handling, don't go into a fast error loop.
@@ -528,17 +540,8 @@ handle_begin(StringInfo s)
 		}
 	}
 
-	/*
-	 * Yes, it is because all of this information should have been
-	 * part of the SpockApplyWorker struct instead its own shared
-	 * memory array. The overall process structure of the supervisor,
-	 * the db-level manager and the apply-worker is taking care of
-	 * this shared memory already.
-	 */
 	exception_log = &exception_log_ptr[my_exception_log_index];
 	exception_log->commit_lsn = commit_lsn;
-
-	VALGRIND_PRINTF("SPOCK_APPLY: begin %u\n", remote_xid);
 
 	/* don't want the overhead otherwise */
 	if (apply_delay > 0)
@@ -611,8 +614,28 @@ handle_commit(StringInfo s)
 
 		apply_api.on_commit();
 
-		/* We need to write end_lsn to the commit record. */
-		replorigin_session_origin_lsn = end_lsn;
+		/*
+		 * We need to write end_lsn to the commit record if we
+		 * either had no exception or if we had one in DISCARD
+		 * or TRANSDISCARD mode.
+		 */
+		if (!xact_had_exception)
+		{
+			replorigin_session_origin_lsn = end_lsn;
+		}
+		else {
+			if (exception_behaviour == DISCARD ||
+				exception_behaviour == TRANSDISCARD)
+			{
+				replorigin_session_origin_lsn = end_lsn;
+			}
+			else
+			{
+				elog(ERROR, "SPOCK %s: Unhandled exception_behaviour %d "
+							"in spock_apply.c:handle_commit()",
+					 MySubscription->name, exception_behaviour);
+			}
+		}
 
 		/* Have the commit code adjust our logical clock if needed */
 		remoteTransactionStopTimestamp = commit_time;
@@ -622,6 +645,50 @@ handle_commit(StringInfo s)
 		remoteTransactionStopTimestamp = 0;
 
 		MemoryContextSwitchTo(TopMemoryContext);
+
+		if (xact_had_exception)
+		{
+			/*
+			 * If we had exception(s) and are in SUB_DISABLE mode then
+			 * the subscription got disabled earlier in the code path.
+			 * We need to exit here to disconnect.
+			 */
+			if (exception_behaviour == SUB_DISABLE)
+			{
+				SpockExceptionLog *exception_log;
+
+				exception_log = &exception_log_ptr[my_exception_log_index];
+				exception_log->commit_lsn = InvalidXLogRecPtr;
+				MySpockWorker->restart_delay = 0;
+				replorigin_session_reset();
+				elog(ERROR, "SPOCK %s: exiting because subscription disabled",
+					 MySubscription->name);
+			}
+		}
+		else
+		{
+			/*
+			 * If we had no exception(s) in exception handling mode then
+			 * the entire transaction would be silently skipped with no
+			 * exception_log entries showing in TRANSDISCARD or SUB_DISABLE
+			 * mode. We need to retry this once more without exception
+			 * handling.
+			 */
+			if (MyApplyWorker->use_try_block &&
+				(exception_behaviour == TRANSDISCARD ||
+				 exception_behaviour == SUB_DISABLE))
+			{
+				SpockExceptionLog *exception_log;
+
+				exception_log = &exception_log_ptr[my_exception_log_index];
+				exception_log->commit_lsn = InvalidXLogRecPtr;
+				MySpockWorker->restart_delay = 0;
+				replorigin_session_reset();
+				elog(ERROR, "SPOCK %s: exception handling had no exception(s) "
+					 "during replay in TRANSDISCARD or SUB_DISABLE mode",
+					 MySubscription->name);
+			}
+		}
 
 		/* Track commit lsn  */
 		flushpos = (SPKFlushPosition *) palloc(sizeof(SPKFlushPosition));
@@ -895,12 +962,14 @@ handle_insert(StringInfo s)
 			failed = true;
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
+			xact_had_exception = true;
 		}
 		PG_END_TRY();
 
 		if (!failed)
 		{
-			if (exception_behaviour == TRANSDISCARD)
+			if (exception_behaviour == TRANSDISCARD ||
+				exception_behaviour == SUB_DISABLE)
 				RollbackAndReleaseCurrentSubTransaction();
 			else
 				ReleaseCurrentSubTransaction();
@@ -1034,12 +1103,14 @@ handle_update(StringInfo s)
 			failed = true;
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
+			xact_had_exception = true;
 		}
 		PG_END_TRY();
 
 		if (!failed)
 		{
-			if (exception_behaviour == TRANSDISCARD)
+			if (exception_behaviour == TRANSDISCARD ||
+				exception_behaviour == SUB_DISABLE)
 				RollbackAndReleaseCurrentSubTransaction();
 			else
 				ReleaseCurrentSubTransaction();
@@ -1144,12 +1215,14 @@ handle_delete(StringInfo s)
 			failed = true;
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
+			xact_had_exception = true;
 		}
 		PG_END_TRY();
 
 		if (!failed)
 		{
-			if (exception_behaviour == TRANSDISCARD)
+			if (exception_behaviour == TRANSDISCARD ||
+				exception_behaviour == SUB_DISABLE)
 				RollbackAndReleaseCurrentSubTransaction();
 			else
 				ReleaseCurrentSubTransaction();
@@ -1737,12 +1810,14 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 			failed = true;
 			RollbackAndReleaseCurrentSubTransaction();
 			edata = CopyErrorData();
+			xact_had_exception = true;
 		}
 		PG_END_TRY();
 
 		if (!failed)
 		{
-			if (exception_behaviour == TRANSDISCARD)
+			if (exception_behaviour == TRANSDISCARD ||
+				exception_behaviour == SUB_DISABLE)
 				RollbackAndReleaseCurrentSubTransaction();
 			else
 				ReleaseCurrentSubTransaction();
@@ -2223,8 +2298,60 @@ apply_work(PGconn *streamConn)
 			CHECK_FOR_INTERRUPTS();
 		}
 
-		/* confirm all writes at once */
-		send_feedback(applyconn, last_received, GetCurrentTimestamp(), false);
+		if (xact_had_exception)
+		{
+			/*
+			 * xact_had_exception implies that we are running under
+			 * use_try_block == true. If this happens in SUB_DISABLE
+			 * exception_behaviour, suspend the subscription here
+			 * and suppress feedback.
+			 */
+			if (exception_behaviour == SUB_DISABLE)
+			{
+				SpockSubscription *sub;
+				char errmsg[1024];
+
+				sub = get_subscription_by_name(MySubscription->name, false);
+				sub->enabled = false;
+				alter_subscription(sub);
+
+				snprintf(errmsg, sizeof(errmsg),
+						 "disabling subscription %s due to exception(s) - "
+						 "skip_lsn = %X/%X",
+						 MySubscription->name,
+						 LSN_FORMAT_ARGS(replorigin_session_origin_lsn));
+				exception_command_counter++;
+				add_entry_to_exception_log(remote_origin_id,
+										   replorigin_session_origin_timestamp,
+										   remote_xid,
+										   0, 0,
+										   NULL, NULL, NULL, NULL,
+										   NULL, NULL,
+										   "SUB_DISABLE",
+										   errmsg);
+				elog(WARNING, "SPOCK %s: disabling subscription due to"
+							  " exceptions - origin_lsn=%X/%X",
+					 MySubscription->name,
+					 LSN_FORMAT_ARGS(replorigin_session_origin_lsn));
+			}
+		}
+		else
+		{
+			/*
+			 * If we did not encounter any exception only send feedback
+			 * if exception_behaviour == DISCARD or we are not using a
+			 * try block at all (default transaction mode). The reason
+			 * for this is that in TRANSDISCARD or SUB_DISABLE modes this
+			 * not having an exception during use_try_block would lead
+			 * to silently skipping the transaction altogether.
+			 */
+			if (!MyApplyWorker->use_try_block ||
+				exception_behaviour == DISCARD)
+			{
+				send_feedback(applyconn, last_received, GetCurrentTimestamp(),
+							  false);
+			}
+		}
 
 		if (!in_remote_transaction)
 			process_syncing_tables(last_received);
@@ -2242,8 +2369,11 @@ apply_work(PGconn *streamConn)
 		if (!IsTransactionState())
 		{
 			VALGRIND_DO_ADDED_LEAK_CHECK;
+			pgstat_report_stat(true);
 		}
 	}
+	elog(LOG, "SPOCK %s: falling out of apply_work() sigterm=%s",
+		 MySubscription->name, (got_SIGTERM) ? "true" : "false");
 }
 
 /*
@@ -2292,8 +2422,8 @@ stop_skipping_changes(void)
 		return;
 
 	ereport(LOG,
-			(errmsg("SPOCK %s: logical replication completed skipping transaction at LSN %X/%X",
-					MySubscription->name, LSN_FORMAT_ARGS(skip_xact_finish_lsn))));
+		(errmsg("SPOCK %s: logical replication completed skipping transaction at LSN %X/%X",
+				MySubscription->name, LSN_FORMAT_ARGS(skip_xact_finish_lsn))));
 
 	/* Stop skipping changes */
 	skip_xact_finish_lsn = InvalidXLogRecPtr;
@@ -2345,6 +2475,12 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 			ereport(WARNING,
 					errmsg("skip-LSN of subscription \"%s\" cleared", MySubscription->name),
 					errdetail("Remote transaction's finish WAL location (LSN) %X/%X did not match skip-LSN %X/%X.",
+							  LSN_FORMAT_ARGS(finish_lsn),
+							  LSN_FORMAT_ARGS(myskiplsn)));
+		else
+			ereport(WARNING,
+					errmsg("skip-LSN of subscription \"%s\" cleared", MySubscription->name),
+					errdetail("Remote transaction's finish WAL location (LSN) %X/%X equals skip-LSN %X/%X.",
 							  LSN_FORMAT_ARGS(finish_lsn),
 							  LSN_FORMAT_ARGS(myskiplsn)));
 	}

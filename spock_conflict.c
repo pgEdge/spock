@@ -3,7 +3,7 @@
  * spock_conflict.c
  * 		Functions for detecting and handling conflicts
  *
- * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Copyright (c) 2022-2025, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -55,7 +55,7 @@
 #include "spock_node.h"
 #include "spock_worker.h"
 
-int			spock_conflict_resolver = SPOCK_RESOLVE_APPLY_REMOTE;
+int			spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
 int			spock_conflict_log_level = LOG;
 bool		spock_save_resolutions = false;
 

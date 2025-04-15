@@ -3,7 +3,7 @@
  * spock.c
  * 		spock initialization and common functionality
  *
- * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Copyright (c) 2022-2025, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -98,6 +98,7 @@ static const struct config_enum_entry server_message_level_options[] = {
 static const struct config_enum_entry exception_behaviour_options[] = {
 	{"discard", DISCARD, false},
 	{"transdiscard", TRANSDISCARD, false},
+	{"sub_disable", SUB_DISABLE, false},
 	{NULL, 0, false}
 };
 
@@ -823,7 +824,7 @@ _PG_init(void)
 							 &exception_behaviour,
 							 TRANSDISCARD,
 							 exception_behaviour_options,
-							 PGC_POSTMASTER, 0,
+							 PGC_SIGHUP, 0,
 							 NULL, NULL, NULL);
 
 	DefineCustomEnumVariable("spock.exception_logging",
@@ -832,7 +833,7 @@ _PG_init(void)
 							 &exception_logging,
 							 LOG_ALL,
 							 exception_logging_options,
-							 PGC_POSTMASTER, 0,
+							 PGC_SIGHUP, 0,
 							 NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.stats_max_entries",
@@ -853,7 +854,7 @@ _PG_init(void)
 							 "Log conflict resolutions to spock."CATALOG_LOGTABLE" table.",
 							 NULL,
 							 &spock_save_resolutions,
-							 false, PGC_POSTMASTER,
+							 false, PGC_SIGHUP,
 							 0,
 							 NULL, NULL, NULL);
 

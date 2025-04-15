@@ -3,7 +3,7 @@
  * spock_output.c
  *		  Logical Replication output plugin
  *
- * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Copyright (c) 2022-2025, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -1177,7 +1177,7 @@ spock_output_join_slot_group(NameData slot_name)
 	 */
 	if (!slot_group_on_exit_set)
 	{
-		on_proc_exit(spock_output_plugin_on_exit, 0);
+		before_shmem_exit(spock_output_plugin_on_exit, 0);
 		slot_group_on_exit_set = true;
 	}
 
@@ -1224,7 +1224,7 @@ spock_output_leave_slot_group(void)
 	/*
 	 * Nothing to do if we are not a member of a slot-group
 	 */
-	if (slot_group == NULL)
+	if (SpockCtx == NULL || slot_group == NULL)
 	{
 		return;
 	}

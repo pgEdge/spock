@@ -3,7 +3,7 @@
  * spock_apply_heap.c
  *             spock apply functions using heap api
  *
- * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Copyright (c) 2022-2025, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -315,6 +315,13 @@ slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
 			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
 			slot->tts_isnull[att->attnum - 1] = false;
 		}
+		else
+		{
+			/*
+			 * Set the attribute to NULL
+			 */
+			slot->tts_isnull[att->attnum - 1] = true;
+		}
 	}
 
 	ExecStoreVirtualTuple(slot);
@@ -388,11 +395,21 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, remoteattnum);
 
 		Assert(remoteattnum < natts);
+
+		/* skip if a column is unchanged */
+		if (!tupleData->changed[remoteattnum])
+			continue;
+
 		if (!tupleData->nulls[remoteattnum])
 		{
 			/* Use the value from the NEW remote tuple */
 			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
 			slot->tts_isnull[att->attnum - 1] = false;
+		}
+		else
+		{
+			/* Set the value to NULL */
+			slot->tts_isnull[att->attnum - 1] = true;
 		}
 	}
 
@@ -787,12 +804,13 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		 * Fetch the contents of the local slot and store it in the error log
 		 */
 		local_tuple = ExecFetchSlotHeapTuple(localslot, true, &clear_localslot);
-		exception_log->local_tuple = local_tuple;
 
-		/* Process and store remote tuple in the slot */
-		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+		/* Save the old tuple in MessageContext for it to available later */
+		oldctx = MemoryContextSwitchTo(MessageContext);
+		exception_log->local_tuple = heap_copytuple(local_tuple);
 		MemoryContextSwitchTo(oldctx);
 
+		/* Process and store remote tuple in the slot */
 		remotetuple = ExecFetchSlotHeapTuple(remoteslot, true,
 											 &clear_remoteslot);
 		local_origin_found = get_tuple_origin(rel, TTS_TUP(localslot),
@@ -1000,7 +1018,11 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		 * Fetch the contents of the local slot and store it in the error log
 		 */
 		local_tuple = ExecFetchSlotHeapTuple(localslot, true, &clear_localslot);
-		exception_log->local_tuple = local_tuple;
+
+		/* Save the old tuple in MessageContext for it to available later */
+		oldctx = MemoryContextSwitchTo(MessageContext);
+		exception_log->local_tuple = heap_copytuple(local_tuple);
+		MemoryContextSwitchTo(oldctx);
 
 		/* Make sure that any user-supplied code runs as the table owner. */
 		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
