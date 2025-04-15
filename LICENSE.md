@@ -1,12 +1,16 @@
-## pgEdge Community License Agreement 1.0
+-------------------------------------------------------------------------
 
-_Please note: this license is derived from the Confluent Community License Agreement 1.0. None of the terms of the Confluent license have been materially changed._
+  Copyright (c) 2021 - 2025, pgEdge, Inc.
 
-This pgEdge Community License Agreement Version 1.0 (the "**Agreement**") sets forth the terms on which pgEdge, Inc. ("**pgEdge**") makes available certain software made available by pgEdge under this Agreement (the "**Software**"). BY INSTALLING, DOWNLOADING, ACCESSING, USING OR DISTRIBUTING ANY OF THE SOFTWARE, YOU AGREE TO THE TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE TO SUCH TERMS AND CONDITIONS, YOU MUST NOT USE THE SOFTWARE. IF YOU ARE RECEIVING THE SOFTWARE ON BEHALF OF A LEGAL ENTITY, YOU REPRESENT AND WARRANT THAT YOU HAVE THE ACTUAL AUTHORITY TO AGREE TO THE TERMS AND CONDITIONS OF THIS AGREEMENT ON BEHALF OF SUCH ENTITY. "**Licensee**" means you, an individual, or the entity on whose behalf you are receiving the Software.
+--------------------------------------------------------------------------
+
+## pgEdge Community License Agreement 1.1
+
+This pgEdge Community License Agreement Version 1.1 (the "**Agreement**") sets forth the terms on which pgEdge, Inc. ("**pgEdge**") makes available certain software made available by pgEdge under this Agreement (the "**Software**"). BY INSTALLING, DOWNLOADING, ACCESSING, USING OR DISTRIBUTING ANY OF THE SOFTWARE, YOU AGREE TO THE TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE TO SUCH TERMS AND CONDITIONS, YOU MUST NOT USE THE SOFTWARE. IF YOU ARE RECEIVING THE SOFTWARE ON BEHALF OF A LEGAL ENTITY, YOU REPRESENT AND WARRANT THAT YOU HAVE THE ACTUAL AUTHORITY TO AGREE TO THE TERMS AND CONDITIONS OF THIS AGREEMENT ON BEHALF OF SUCH ENTITY. "**Licensee**" means you, an individual, or the entity on whose behalf you are receiving the Software.
 
 ### 1. LICENSE GRANT AND CONDITIONS.
 
-**1.1 License**. Subject to the terms and conditions of this Agreement, pgEdge hereby grants to Licensee a non-exclusive, royalty-free, worldwide, non-transferable, non-sublicenseable license during the term of this Agreement to: (a) use the Software; (b) prepare modifications and derivative works of the Software; (c) distribute the Software (including without limitation in source code or object code form); and (d) reproduce copies of the Software (the "**License**"). Licensee is not granted the right to, and Licensee shall not, exercise the License for an Excluded Purpose. For purposes of this Agreement, "**Excluded Purpose**" means making available any software-as-a-service, platform-as-a-service, infrastructure-as-a-service or other similar online service that competes with pgEdge products or services that provide the Software.
+**1.1 License**. Subject to the terms and conditions of this Agreement, pgEdge hereby grants to Licensee a non-exclusive, royalty-free, worldwide, non-transferable, non-sublicenseable license during the term of this Agreement to: (a) use the Software; (b) prepare modifications and derivative works of the Software; (c) distribute the Software (including without limitation in source code or object code form); and (d) reproduce copies of the Software (the "**License**"). Licensee is not granted the right to, and Licensee shall not, exercise the License for an Excluded Purpose. For purposes of this Agreement, "**Excluded Purpose**" means making available any product or service that competes with pgEdge products or services that provide the Software.
 
 **1.2 Conditions**. In consideration of the License, Licensee's distribution of the Software is subject to the following conditions:
 
@@ -14,7 +18,7 @@ This pgEdge Community License Agreement Version 1.0 (the "**Agreement**") sets f
 
 **b.**  On each Software copy, Licensee shall reproduce and not remove or alter all pgEdge or third party copyright or other proprietary notices contained in the Software, and Licensee must provide the notice below with each copy.
 
-"This software is made available by pgEdge, Inc., under the terms of the pgEdge Community License Agreement, Version 1.0 located at https://www.pgEdge.com/communitylicense. BY INSTALLING, DOWNLOADING, ACCESSING, USING OR DISTRIBUTING ANY OF THE SOFTWARE, YOU AGREE TO THE TERMS OF SUCH LICENSE AGREEMENT."
+"This software is made available by pgEdge, Inc., under the terms of the pgEdge Community License Agreement, Version 1.1 located at https://www.pgEdge.com/communitylicense. BY INSTALLING, DOWNLOADING, ACCESSING, USING OR DISTRIBUTING ANY OF THE SOFTWARE, YOU AGREE TO THE TERMS OF SUCH LICENSE AGREEMENT."
 
 **1.3 Licensee Modifications**. Licensee may add its own copyright notices to modifications made by Licensee and may provide additional or different license terms and conditions for use, reproduction, or distribution of Licensee's modifications. While redistributing the Software or modifications thereof, Licensee may choose to offer, for a fee or free of charge, support, warranty, indemnity, or other obligations.Licensee, and not pgEdge, will be responsible for any such obligations.
 
