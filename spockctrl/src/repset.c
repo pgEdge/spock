@@ -1,3 +1,15 @@
+/*-------------------------------------------------------------------------
+ *
+ * repset.c
+ *      replication set management and command handling functions
+ *
+ * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,7 +94,6 @@ handle_repset_create_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
-        {"db", optional_argument, 0, 'd'},
         {"set_name", required_argument, 0, 's'},
         {"replicate_insert", required_argument, 0, 'i'},
         {"replicate_update", required_argument, 0, 'u'},
@@ -92,9 +103,7 @@ handle_repset_create_command(int argc, char *argv[])
         {0, 0, 0, 0}
     };
 
-
     char *node = NULL;
-    char *db = NULL;
     char *set_name = NULL;
     char *replicate_insert = NULL;
     char *replicate_update = NULL;
@@ -107,15 +116,12 @@ handle_repset_create_command(int argc, char *argv[])
 
     optind = 1;
 
-    while ((c = getopt_long(argc, argv, "n:d:s:i:u:e:t:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:s:i:u:e:t:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 'n':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 's':
                 set_name = optarg;
@@ -141,7 +147,7 @@ handle_repset_create_command(int argc, char *argv[])
         }
     }
 
-    if (!node || !db || !set_name || !replicate_insert || !replicate_update || !replicate_delete || !replicate_truncate)
+    if (!node || !set_name || !replicate_insert || !replicate_update || !replicate_delete || !replicate_truncate)
     {
         log_error("Missing required arguments for repset create.");
         print_repset_create_help();
@@ -149,20 +155,6 @@ handle_repset_create_command(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo_allocated = strdup(conninfo_with_db); // Allocate memory
-        conninfo = conninfo_allocated;
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo_allocated = strdup(conninfo_with_default_db); // Allocate memory
-        conninfo = conninfo_allocated;
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -219,7 +211,6 @@ handle_repset_alter_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
-        {"db", optional_argument, 0, 'd'},
         {"set_name", required_argument, 0, 's'},
         {"replicate_insert", required_argument, 0, 'i'},
         {"replicate_update", required_argument, 0, 'u'},
@@ -230,7 +221,6 @@ handle_repset_alter_command(int argc, char *argv[])
     };
 
     char *node = NULL;
-    char *db = NULL;
     char *set_name = NULL;
     char *replicate_insert = NULL;
     char *replicate_update = NULL;
@@ -241,15 +231,12 @@ handle_repset_alter_command(int argc, char *argv[])
 
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "n:d:s:i:u:e:t:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:s:i:u:e:t:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 'n':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 's':
                 set_name = optarg;
@@ -282,21 +269,6 @@ handle_repset_alter_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     conninfo = get_postgres_coninfo(node);
-
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo_allocated = strdup(conninfo_with_db);
-        conninfo = conninfo_allocated;
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo_allocated = strdup(conninfo_with_default_db);
-        conninfo = conninfo_allocated;
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -329,13 +301,13 @@ handle_repset_alter_command(int argc, char *argv[])
         log_error("SQL command failed: %s", PQerrorMessage(conn));
         PQclear(res);
         PQfinish(conn);
-        free(conninfo_allocated); // Free allocated memory
+        free(conninfo_allocated); 
         return EXIT_FAILURE;
     }
 
     PQclear(res);
     PQfinish(conn);
-    free(conninfo_allocated); // Free allocated memory
+    free(conninfo_allocated);
     return EXIT_SUCCESS;
 }
 
@@ -344,30 +316,24 @@ handle_repset_drop_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
-        {"db", optional_argument, 0, 'd'},
         {"set_name", required_argument, 0, 's'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     char *node = NULL;
-    char *db = NULL;
     char *set_name = NULL;
     const char *conninfo = NULL;
-
 
     int option_index = 0;
     int c;
     optind = 1;
-    while ((c = getopt_long(argc, argv, "n:d:s:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:s:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 'n':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 's':
                 set_name = optarg;
@@ -381,7 +347,6 @@ handle_repset_drop_command(int argc, char *argv[])
         }
     }
 
-
     if (!node || !set_name)
     {
         log_error("Missing required arguments for repset drop.");
@@ -390,18 +355,6 @@ handle_repset_drop_command(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -450,7 +403,6 @@ handle_repset_add_table_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
-        {"db", optional_argument, 0, 'd'},
         {"replication_set", required_argument, 0, 'r'},
         {"table", required_argument, 0, 'a'},
         {"synchronize_data", required_argument, 0, 'y'},
@@ -462,7 +414,6 @@ handle_repset_add_table_command(int argc, char *argv[])
     };
 
     char *node = NULL;
-    char *db = NULL;
     char *replication_set = NULL;
     char *table = NULL;
     char *synchronize_data = NULL;
@@ -471,18 +422,14 @@ handle_repset_add_table_command(int argc, char *argv[])
     char *include_partitions = NULL;
     const char *conninfo = NULL;
 
-
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "n:d:r:a:y:c:f:p:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:r:a:y:c:f:p:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 'n':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'r':
                 replication_set = optarg;
@@ -519,18 +466,6 @@ handle_repset_add_table_command(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -584,7 +519,6 @@ handle_repset_remove_table_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
-        {"db", optional_argument, 0, 'd'},
         {"replication_set", required_argument, 0, 'r'},
         {"table", required_argument, 0, 'a'},
         {"help", no_argument, 0, 'h'},
@@ -592,22 +526,18 @@ handle_repset_remove_table_command(int argc, char *argv[])
     };
 
     char *node = NULL;
-    char *db = NULL;
     char *replication_set = NULL;
     char *table = NULL;
     const char *conninfo = NULL;
 
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "n:d:r:a:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:r:a:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 'n':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'r':
                 replication_set = optarg;
@@ -632,18 +562,6 @@ handle_repset_remove_table_command(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -693,7 +611,6 @@ handle_repset_add_partition_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
-        {"db", optional_argument, 0, 'd'},
         {"parent_table", required_argument, 0, 'b'},
         {"partition", required_argument, 0, 'q'},
         {"row_filter", required_argument, 0, 'f'},
@@ -702,24 +619,19 @@ handle_repset_add_partition_command(int argc, char *argv[])
     };
 
     char *node = NULL;
-    char *db = NULL;
     char *parent_table = NULL;
     char *partition = NULL;
     char *row_filter = NULL;
     const char *conninfo = NULL;
 
-
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "n:d:b:q:f:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:b:q:f:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 'n':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'b':
                 parent_table = optarg;
@@ -747,18 +659,6 @@ handle_repset_add_partition_command(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -809,7 +709,6 @@ handle_repset_remove_partition_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
-        {"db", optional_argument, 0, 'd'},
         {"parent_table", required_argument, 0, 'b'},
         {"partition", required_argument, 0, 'q'},
         {"help", no_argument, 0, 'h'},
@@ -817,22 +716,18 @@ handle_repset_remove_partition_command(int argc, char *argv[])
     };
 
     char *node = NULL;
-    char *db = NULL;
     char *parent_table = NULL;
     char *partition = NULL;
     const char *conninfo = NULL;
 
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "n:d:b:q:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:b:q:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 'n':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'b':
                 parent_table = optarg;
@@ -857,18 +752,6 @@ handle_repset_remove_partition_command(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -918,7 +801,6 @@ handle_repset_list_tables_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
-        {"db", optional_argument, 0, 'd'},
         {"schema", required_argument, 0, 'm'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -926,21 +808,16 @@ handle_repset_list_tables_command(int argc, char *argv[])
 
     char *node = NULL;
     char *schema = NULL;
-    char *db = NULL;
     const char *conninfo = NULL;
-
 
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "n:d:m:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:m:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 'n':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'm':
                 schema = optarg;
@@ -962,18 +839,6 @@ handle_repset_list_tables_command(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -988,7 +853,7 @@ handle_repset_list_tables_command(int argc, char *argv[])
     }
 
     char condition[256];
-    snprintf(condition, sizeof(condition), "nspname = '%s' AND relname = '%s'", schema, db);
+    snprintf(condition, sizeof(condition), "nspname = '%s' AND relname = '%s'", schema, node);
 
     char sql[2048];
     snprintf(sql, sizeof(sql),
@@ -1021,12 +886,11 @@ handle_repset_list_tables_command(int argc, char *argv[])
 void
 print_repset_create_help(void)
 {
-    printf("Usage: spockctrl repset create db [OPTIONS]\n");
+    printf("Usage: spockctrl repset create [OPTIONS]\n");
     printf("Create a new replication set\n");
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --set_name            Name of the replication set (required)\n");
-    printf("  --db                  Database name (optional)\n");
     printf("  --replicate_insert    Replicate insert operations (required)\n");
     printf("  --replicate_update    Replicate update operations (required)\n");
     printf("  --replicate_delete    Replicate delete operations (required)\n");
@@ -1037,12 +901,11 @@ print_repset_create_help(void)
 void
 print_repset_alter_help(void)
 {
-    printf("Usage: spockctrl repset alter db [OPTIONS]\n");
+    printf("Usage: spockctrl repset alter [OPTIONS]\n");
     printf("Alter an existing replication set\n");
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --set_name            Name of the replication set (required)\n");
-    printf("  --db                  Database name (optional)\n");
     printf("  --replicate_insert    Replicate insert operations (required)\n");
     printf("  --replicate_update    Replicate update operations (required)\n");
     printf("  --replicate_delete    Replicate delete operations (required)\n");
@@ -1053,25 +916,23 @@ print_repset_alter_help(void)
 void
 print_repset_drop_help(void)
 {
-    printf("Usage: spockctrl repset drop db [OPTIONS]\n");
+    printf("Usage: spockctrl repset drop [OPTIONS]\n");
     printf("Drop a replication set\n");
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --set_name            Name of the replication set (required)\n");
-    printf("  --db                  Database name (optional)\n");
     printf("  --help                Show this help message\n");
 }
 
 void
 print_repset_add_table_help(void)
 {
-    printf("Usage: spockctrl repset add-table db [OPTIONS]\n");
+    printf("Usage: spockctrl repset add-table [OPTIONS]\n");
     printf("Add a table to a replication set\n");
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --replication_set     Name of the replication set (required)\n");
     printf("  --table               Name of the table (required)\n");
-    printf("  --db                  Database name (optional)\n");
     printf("  --synchronize_data    Synchronize data (required)\n");
     printf("  --columns             Columns to replicate (required)\n");
     printf("  --row_filter          Row filter (required)\n");
@@ -1082,25 +943,23 @@ print_repset_add_table_help(void)
 void
 print_repset_remove_table_help(void)
 {
-    printf("Usage: spockctrl repset remove-table db [OPTIONS]\n");
+    printf("Usage: spockctrl repset remove-table [OPTIONS]\n");
     printf("Remove a table from a replication set\n");
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --replication_set     Name of the replication set (required)\n");
     printf("  --table               Name of the table (required)\n");
-    printf("  --db                  Database name (optional)\n");
     printf("  --help                Show this help message\n");
 }
 
 void
 print_repset_add_partition_help(void)
 {
-    printf("Usage: spockctrl repset add-partition db [OPTIONS]\n");
+    printf("Usage: spockctrl repset add-partition [OPTIONS]\n");
     printf("Add a partition to a replication set\n");
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --parent_table        Name of the parent table (required)\n");
-    printf("  --db                  Database name (optional)\n");
     printf("  --partition           Name of the partition (required)\n");
     printf("  --row_filter          Row filter (required)\n");
     printf("  --help                Show this help message\n");
@@ -1109,12 +968,11 @@ print_repset_add_partition_help(void)
 void
 print_repset_remove_partition_help(void)
 {
-    printf("Usage: spockctrl repset remove-partition db [OPTIONS]\n");
+    printf("Usage: spockctrl repset remove-partition [OPTIONS]\n");
     printf("Remove a partition from a replication set\n");
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --parent_table        Name of the parent table (required)\n");
-    printf("  --db                  Database name (optional)\n");
     printf("  --partition           Name of the partition (required)\n");
     printf("  --help                Show this help message\n");
 }
@@ -1122,11 +980,10 @@ print_repset_remove_partition_help(void)
 void
 print_repset_list_tables_help(void)
 {
-    printf("Usage: spockctrl repset list-tables db [OPTIONS]\n");
+    printf("Usage: spockctrl repset list-tables [OPTIONS]\n");
     printf("List tables in a replication set\n");
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --schema              Schema name (required)\n");
-    printf("  --db                  Database name (optional)\n");
     printf("  --help                Show this help message\n");
 }

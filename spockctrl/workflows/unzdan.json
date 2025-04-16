@@ -1,0 +1,34 @@
+{
+  "workflow_name": "Uncross Wire 2 spock Nodes",
+  "description": "Reverse the cross wiring of two spock nodes by dropping subscriptions and nodes.",
+  "steps": [
+    {
+      "spock": {
+        "node": "n2",
+        "command": "DROP SUBSCRIPTION",
+        "description": "Drop the subscription for n3",
+        "args": [
+          "--node=n3",
+          "--db=pgedge",
+          "--sub_name=sub_n2_n3"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n3",
+        "command": "DROP NODE",
+        "description": "Drop the spock node",
+        "args": [
+          "--node=n3",
+          "--db=pgedge",
+          "--node_name=n3"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    }
+  ]
+}

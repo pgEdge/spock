@@ -1,0 +1,172 @@
+{
+  "workflow_name": "Cross Wire 2 spock Nodes",
+  "description": "Cross Wire two spock nodes with replication slots and replication sets.",
+  "steps": [
+    {
+      "spock": {
+        "node": "n3",
+        "command": "CREATE NODE",
+        "description": "Create a spock node n3",
+        "args": [
+          "--node_name=n3",
+          "--dsn=host=127.0.0.1 port=5433 user=pgedge password=pgedge",
+          "--location=Los Angeles",
+          "--country=USA",
+          "--info={\"key\": \"value\"}"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n3",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n3_n1) on (n3) for n3->n1",
+        "sleep": 1,
+        "args": [
+          "--node=n1",
+          "--sub_name=sub_n3_n1",
+          "--provider_dsn=host=127.0.0.1 port=5433 user=pgedge password=spockpass",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='00:00:00'::interval",
+          "--sub_enabled=false",
+          "--sub_force_text_transfer=false",
+          "--sub_skip_lsn='0/0'::pg_lsn"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n3",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n3_n2) on (n3) for n3->n2",
+        "sleep": 1,
+        "args": [
+          "--node=n2",
+          "--sub_name=sub_n3_n2",
+          "--provider_dsn=host=127.0.0.1 port=5433 user=pgedge password=spockpass",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='00:00:00'::interval",
+          "--sub_enabled=false",
+          "--sub_force_text_transfer=false",
+          "--sub_skip_lsn='0/0'::pg_lsn"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription for n3",
+        "sleep": 1,
+        "args": [
+          "--node=n3",
+          "--sub_name=sub_n2_n3",
+          "--provider_dsn=host=127.0.0.1 port=5432 user=pgedge password=spockpass",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='00:00:00'::interval",
+          "--sub_enabled=false",
+          "--sub_force_text_transfer=false",
+          "--sub_skip_lsn='0/0'::pg_lsn"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "CREATE SLOT",
+        "description": "Create a replication slot (slot_n2) on for n2",
+        "args": [
+          "--slot=slot_n2",
+          "--plugin=spock_output",
+          "--temporary"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "WAIT FOR SYNC",
+        "description": "Wait for a sync event on (n2) for n2-n1",
+        "args": [
+          "--node=n1",
+          "--origin-name=n1",
+          "--lsn=0/0",
+          "--timeout=300"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n1",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n1_n3) for n1",
+        "sleep": 1,
+        "args": [
+          "--node=n3",
+          "--sub_name=sub_n1_n3",
+          "--provider_dsn=host=127.0.0.1 port=5431 user=pgedge password=spockpass",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='00:00:00'::interval",
+          "--sub_enabled=true",
+          "--sub_force_text_transfer=false",
+          "--sub_skip_lsn='0/0'::pg_lsn"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n1",
+        "command": "WAIT FOR SYNC",
+        "description": "Wait for a sync event on (n2) for n1-n3",
+        "args": [
+          "--node=n3",
+          "--origin-name=n3",
+          "--lsn=0/0",
+          "--timeout=300"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "ENABLE SUBSCRIPTION",
+        "description": "Enable subscription (sub_n3_n1) on n3",
+        "args": [
+          "--node=n3",
+          "--sub_name=sub_n2_n3",
+          "--immediate=true"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    } 
+  ]
+}

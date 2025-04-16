@@ -1,3 +1,15 @@
+/*-------------------------------------------------------------------------
+ *
+ * util.c
+ *      utility functions for spockctrl
+ *
+ * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
 #include "util.h"
 #include "logger.h"
 #include <stdio.h>

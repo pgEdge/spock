@@ -1,3 +1,15 @@
+/*-------------------------------------------------------------------------
+ *
+ * node.c
+ *      node management and command handling functions
+ *
+ * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +20,7 @@
 #include "util.h"
 #include "conf.h"
 
+/* Function declarations */
 static int node_spock_version(int argc, char *argv[]);
 static int node_pg_version(int argc, char *argv[]);
 static int node_status(int argc, char *argv[]);
@@ -45,19 +58,6 @@ int
 handle_node_command(int argc, char *argv[])
 {
     int i;
-    if (argc < 2)
-    {
-        log_error("No subcommand provided for node.");
-        print_node_help();
-        return EXIT_FAILURE;
-    }
-
-    if (strcmp(argv[0], "--help") == 0)
-    {
-        print_node_help();
-        return EXIT_SUCCESS;
-    }
-
     struct {
         const char *cmd;
         int (*func)(int, char *[]);
@@ -72,6 +72,19 @@ handle_node_command(int argc, char *argv[])
         {"drop-interface", handle_node_drop_interface_command},
     };
 
+    if (argc < 2)
+    {
+        log_error("No subcommand provided for node.");
+        print_node_help();
+        return EXIT_FAILURE;
+    }
+
+    if (strcmp(argv[0], "--help") == 0)
+    {
+        print_node_help();
+        return EXIT_SUCCESS;
+    }
+
     for (i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
     {
         if (strcmp(argv[1], commands[i].cmd) == 0)
@@ -81,7 +94,7 @@ handle_node_command(int argc, char *argv[])
         }
     }
 
-    log_error("Unknown subcommand for node...");
+    log_error("Unknown subcommand for node.");
     print_node_help();
     return EXIT_FAILURE;
 }
@@ -91,13 +104,11 @@ node_spock_version(int argc, char *argv[])
 {
     int option_index = 0;
     int c;
-    const char *db = "postgres";
     const char *conninfo = NULL;
     char       *node = NULL;
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
-        {"db", optional_argument, 0, 'd'},
         {"node", required_argument, 0, 'n'},
         {"config", required_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
@@ -105,13 +116,10 @@ node_spock_version(int argc, char *argv[])
     };
 
     optind = 1;
-    while ((c = getopt_long(argc, argv, "t:d:h:c", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "t:h:c", long_options, &option_index)) != -1)
     {
         switch (c)
         {
-            case 'd':
-                db = optarg;
-                break;
             case 't':
                 node = optarg;
                 break;
@@ -134,19 +142,7 @@ node_spock_version(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
-    if (conninfo == NULL)
+    if (conninfo != NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
         return EXIT_FAILURE;
@@ -160,27 +156,22 @@ node_pg_version(int argc, char *argv[])
 {
     int option_index = 0;
     int c;
-    const char *db = "postgres";
     const char *conninfo = NULL;
     const char *node = NULL;
     char        pg_version[256];
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
-        {"db", optional_argument, 0, 'd'},
         {"config", required_argument, 0, 'c'}, 
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     optind = 1;
-    while ((c = getopt_long(argc, argv, "t:d:h:c", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "t:h:c", long_options, &option_index)) != -1)
     {
         switch (c)
         {
-            case 'd':
-                db = optarg;
-                break;
             case 't':
                 node = optarg;
                 break;
@@ -197,24 +188,12 @@ node_pg_version(int argc, char *argv[])
     printf("node: %s\n", node);
     if (node == NULL)
     {
-        log_error("Node name is required...");
+        log_error("Node name is required.");
         print_node_pg_version_help();
         return EXIT_FAILURE;
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -235,25 +214,20 @@ node_status(int argc, char *argv[])
 {
     int option_index = 0;
     int c;
-    const char *db = "postgres";
     const char *conninfo = NULL;
     const char *node = NULL;
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
-        {"db", optional_argument, 0, 'd'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     optind = 1;
-    while ((c = getopt_long(argc, argv, "t:d:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "t:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
-            case 'd':
-                db = optarg;
-                break;
             case 't':
                 node = optarg;
                 break;
@@ -274,18 +248,6 @@ node_status(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -300,25 +262,20 @@ node_gucs(int argc, char *argv[])
 {
     int option_index = 0;
     int c;
-    const char *db = "postgres";
     const char *conninfo = NULL;
     const char *node = NULL;
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
-        {"db", optional_argument, 0, 'd'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     optind = 1;
-    while ((c = getopt_long(argc, argv, "t:d:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "t:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
-            case 'd':
-                db = optarg;
-                break;
             case 't':
                 node = optarg;
                 break;
@@ -339,18 +296,6 @@ node_gucs(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
@@ -365,7 +310,6 @@ handle_node_create_command(int argc, char *argv[])
 {
     int option_index = 0;
     int c;
-    const char *db = NULL;
     const char *conninfo = NULL;
     char       *node_name = NULL;
     char       *node = NULL;
@@ -379,7 +323,6 @@ handle_node_create_command(int argc, char *argv[])
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
-        {"db", optional_argument, 0, 'b'},
         {"node_name", required_argument, 0, 'n'},
         {"dsn", required_argument, 0, 'd'},
         {"location", optional_argument, 0, 'l'},
@@ -391,7 +334,7 @@ handle_node_create_command(int argc, char *argv[])
 
     optind = 1;
     /* Parse command-line arguments */
-    while ((c = getopt_long(argc, argv, "t:b:n:d:l:c:i:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "t:n:d:l:c:i:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -400,9 +343,6 @@ handle_node_create_command(int argc, char *argv[])
                 break;
             case 'n':
                 node_name = optarg;
-                break;
-            case 'b':
-                db = optarg;
                 break;
             case 'd':
                 dsn = optarg;
@@ -465,18 +405,6 @@ handle_node_create_command(int argc, char *argv[])
 
     /* Get connection info */
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node_name);
@@ -537,7 +465,6 @@ handle_node_drop_command(int argc, char *argv[])
 {
     int option_index = 0;
     int c;
-    const char *db = NULL;
     const char *conninfo = NULL;
     char       *node_name = NULL;
     char       *node = NULL;
@@ -548,7 +475,6 @@ handle_node_drop_command(int argc, char *argv[])
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
-        {"db", optional_argument, 0, 'b'},
         {"node_name", required_argument, 0, 'n'},
         {"ifexists", no_argument, 0, 'e'},
         {"help", no_argument, 0, 'h'},
@@ -564,9 +490,6 @@ handle_node_drop_command(int argc, char *argv[])
         {
             case 't':
                 node = optarg;
-                break;
-            case 'b':
-                db = optarg;
                 break;
            case 'n':
                 node_name = optarg;
@@ -602,18 +525,11 @@ handle_node_drop_command(int argc, char *argv[])
 
    /* Get connection info */
    conninfo = get_postgres_coninfo(node);
-   if (conninfo != NULL && db != NULL)
-   {
-       char conninfo_with_db[512];
-       snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-       conninfo = strdup(conninfo_with_db);
-   }
-   else if (conninfo != NULL)
-   {
-       char conninfo_with_default_db[512];
-       snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-       conninfo = strdup(conninfo_with_default_db);
-   }
+    if (conninfo == NULL)
+    {
+        log_error("Failed to get connection info for node '%s'.", node_name);
+        return EXIT_FAILURE;
+    }
 
     /* Connect to the database */
     conn = connectdb(conninfo);
@@ -662,7 +578,6 @@ handle_node_add_interface_command(int argc, char *argv[])
 {
     int option_index = 0;
     int c;
-    const char *db = NULL;
     const char *conninfo = NULL;
     char       *node_name = NULL;
     char       *node = NULL;
@@ -674,7 +589,6 @@ handle_node_add_interface_command(int argc, char *argv[])
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
-        {"db", optional_argument, 0, 'd'},
         {"node_name", required_argument, 0, 'n'},
         {"interface_name", required_argument, 0, 'i'},
         {"dsn", required_argument, 0, 's'},
@@ -683,15 +597,12 @@ handle_node_add_interface_command(int argc, char *argv[])
     };
 
     /* Parse command-line arguments */
-    while ((c = getopt_long(argc, argv, "t:d:n:i:s:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "t:n:i:s:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 't':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'n':
                 node_name = optarg;
@@ -736,18 +647,6 @@ handle_node_add_interface_command(int argc, char *argv[])
 
     /* Get connection info */
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node_name);
@@ -804,7 +703,6 @@ handle_node_drop_interface_command(int argc, char *argv[])
 {
     int option_index = 0;
     int c;
-    const char *db = NULL;
     const char *conninfo = NULL;
     char       *node_name = NULL;
     char       *node = NULL;
@@ -815,7 +713,6 @@ handle_node_drop_interface_command(int argc, char *argv[])
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
-        {"db", optional_argument, 0, 'd'},
         {"node_name", required_argument, 0, 'n'},
         {"interface_name", required_argument, 0, 'i'},
         {"help", no_argument, 0, 'h'},
@@ -823,15 +720,12 @@ handle_node_drop_interface_command(int argc, char *argv[])
     };
 
     /* Parse command-line arguments */
-    while ((c = getopt_long(argc, argv, "t:d:n:i:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "t:n:i:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
             case 't':
                 node = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'n':
                 node_name = optarg;
@@ -865,18 +759,6 @@ handle_node_drop_interface_command(int argc, char *argv[])
 
     /* Get connection info */
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL && db != NULL)
-    {
-        char conninfo_with_db[512];
-        snprintf(conninfo_with_db, sizeof(conninfo_with_db), "%s dbname=%s", conninfo, db);
-        conninfo = strdup(conninfo_with_db);
-    }
-    else if (conninfo != NULL)
-    {
-        char conninfo_with_default_db[512];
-        snprintf(conninfo_with_default_db, sizeof(conninfo_with_default_db), "%s dbname=postgres", conninfo);
-        conninfo = strdup(conninfo_with_default_db);
-    }
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node_name);
@@ -929,44 +811,40 @@ handle_node_drop_interface_command(int argc, char *argv[])
 static void
 print_node_spock_version_help(void)
 {
-    printf("Usage: spockctrl node spock-version --db=[dbname] --node=[node_name]\n");
-    printf("Show Spock version\n");
+    printf("Usage: spockctrl node spock-version --node=[node_name]\n");
+    printf("Show Spock version.\n");
     printf("Options:\n");
     printf("  --node                Node name (required)\n");
-    printf("  --db                  Database name (optional, default: postgres)\n");
     printf("  --help                Show this help message\n");
 }
 
 static void
 print_node_pg_version_help(void)
 {
-    printf("Usage: spockctrl node pg-version --db=[dbname] --node=[node_name]\n");
-    printf("Show PostgreSQL version\n");
+    printf("Usage: spockctrl node pg-version --node=[node_name]\n");
+    printf("Show PostgreSQL version.\n");
     printf("Options:\n");
     printf("  --node                Node name (required)\n");
-    printf("  --db                  Database name (optional, default: postgres)\n");
     printf("  --help                Show this help message\n");
 }
 
 static void
 print_node_status_help(void)
 {
-    printf("Usage: spockctrl node status --db=[dbname] --node=[node_name]\n");
-    printf("Show node status\n");
+    printf("Usage: spockctrl node status --node=[node_name]\n");
+    printf("Show node status.\n");
     printf("Options:\n");
     printf("  --node                Node name (required)\n");
-    printf("  --db                  Database name (optional, default: postgres)\n");
     printf("  --help                Show this help message\n");
 }
 
 static void
 print_node_gucs_help(void)
 {
-    printf("Usage: spockctrl node gucs --db=[dbname] --node=[node_name]\n");
-    printf("Show node GUCs\n");
+    printf("Usage: spockctrl node gucs --node=[node_name]\n");
+    printf("Show node GUCs.\n");
     printf("Options:\n");
     printf("  --node                Node name (required)\n");
-    printf("  --db                  Database name (optional, default: postgres)\n");
     printf("  --help                Show this help message\n");
 }
 
@@ -974,7 +852,7 @@ static void
 print_node_create_help(void)
 {
     printf("Usage: spockctrl node create --node=[target_node] --node_name=[node_name] --dsn=[dsn] [options]\n");
-    printf("Create a node\n");
+    printf("Create a node.\n");
     printf("Options:\n");
     printf("  --node                Target node (required)\n");
     printf("  --node_name           Node name (required)\n");
@@ -989,7 +867,7 @@ static void
 print_node_drop_help(void)
 {
     printf("Usage: spockctrl node drop --node_name=[node_name] [options]\n");
-    printf("Drop a node\n");
+    printf("Drop a node.\n");
     printf("Options:\n");
     printf("  --node_name           Node name (required)\n");
     printf("  --ifexists            Drop node only if it exists (optional)\n");
@@ -1000,7 +878,7 @@ static void
 print_node_add_interface_help(void)
 {
     printf("Usage: spockctrl node add-interface --node_name=[node_name] --interface_name=[interface_name] --dsn=[dsn]\n");
-    printf("Add an interface to a node\n");
+    printf("Add an interface to a node.\n");
     printf("Options:\n");
     printf("  --node_name           Node name (required)\n");
     printf("  --interface_name      Interface name (required)\n");
@@ -1012,7 +890,7 @@ static void
 print_node_drop_interface_help(void)
 {
     printf("Usage: spockctrl node drop-interface --node_name=[node_name] --interface_name=[interface_name]\n");
-    printf("Drop an interface from a node\n");
+    printf("Drop an interface from a node.\n");
     printf("Options:\n");
     printf("  --node_name           Node name (required)\n");
     printf("  --interface_name      Interface name (required)\n");

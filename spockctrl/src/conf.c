@@ -1,3 +1,15 @@
+/*-------------------------------------------------------------------------
+ *
+ * conf.c
+ *      configuration file parsing and access functions
+ *
+ * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,6 +153,14 @@ load_config(const char *filename)
             log_error("Error: memory allocation failed for postgres_password");
             goto exit_err;
         }
+
+        // Parse postgres_db
+        config.spock_nodes[i].postgres.postgres_db = strdup(json_string_value(json_object_get(postgres, "postgres_db")));
+        if (!config.spock_nodes[i].postgres.postgres_db)
+        {
+            log_error("Error: memory allocation failed for postgres_db");
+            goto exit_err;
+        }
     }
 
     /* Free the JSON root object */
@@ -163,6 +183,7 @@ exit_err:
             if (config.spock_nodes[i].postgres.postgres_ip) free(config.spock_nodes[i].postgres.postgres_ip);
             if (config.spock_nodes[i].postgres.postgres_user) free(config.spock_nodes[i].postgres.postgres_user);
             if (config.spock_nodes[i].postgres.postgres_password) free(config.spock_nodes[i].postgres.postgres_password);
+            if (config.spock_nodes[i].postgres.postgres_db) free(config.spock_nodes[i].postgres.postgres_db);
         }
         free(config.spock_nodes);
     }
@@ -188,6 +209,7 @@ free_config(void)
         free(config.spock_nodes[i].postgres.postgres_ip);
         free(config.spock_nodes[i].postgres.postgres_user);
         free(config.spock_nodes[i].postgres.postgres_password);
+        free(config.spock_nodes[i].postgres.postgres_db);
     }
 
     free(config.spock_nodes);
@@ -249,6 +271,20 @@ get_postgres_password(const char *node_name)
     return NULL;
 }
 
+/* Function to get the PostgreSQL db for a given node name */
+const char *
+get_postgres_db(const char *node_name)
+{
+    for (int i = 0; i < config.spock_node_count; i++)
+    {
+        if (strcmp(config.spock_nodes[i].node_name, node_name) == 0)
+        {
+            return config.spock_nodes[i].postgres.postgres_db;
+        }
+    }
+    return NULL;
+}
+
 const char *
 get_postgres_coninfo(const char *node_name)
 {
@@ -269,19 +305,19 @@ get_postgres_coninfo(const char *node_name)
     int port = get_postgres_port(node_name);
     const char *user = get_postgres_user(node_name);
     const char *password = get_postgres_password(node_name);
+    const char *db = get_postgres_db(node_name);
 
-    if (!ip || port == -1 || !user || !password)
+    if (!ip || port == -1 || !user || !password || !db)
     {
         return NULL;
     }
 
-    // Construct the connection info string
     char *coninfo = malloc(256);
     if (!coninfo)
     {
         log_error("Error: memory allocation failed for connection info");
         return NULL;
     }
-    snprintf(coninfo, 256, "host=%s port=%d user=%s password=%s", ip, port, user, password);
-   return coninfo;
+    snprintf(coninfo, 256, "host=%s port=%d user=%s password=%s dbname=%s", ip, port, user, password, db);
+    return coninfo;
 }

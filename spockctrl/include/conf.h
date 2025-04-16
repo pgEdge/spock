@@ -17,6 +17,7 @@ typedef struct {
     int   postgres_port;
     char *postgres_user;
     char *postgres_password;
+    char *postgres_db;
 } PostgresConfig;
 
 typedef struct {
@@ -40,6 +41,7 @@ const char *get_postgres_ip(const char *node_name);
 int get_postgres_port(const char *node_name);
 const char *get_postgres_user(const char *node_name);
 const char *get_postgres_password(const char *node_name);
+const char *get_postgres_db(const char *node_name); // Added getter
 const char *get_postgres_coninfo(const char *node_name);
 
 #endif /* CONF_H */

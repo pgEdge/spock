@@ -1,3 +1,15 @@
+/*-------------------------------------------------------------------------
+ *
+ * sub.c
+ *      subscription management and command handling functions
+ *
+ * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,15 +65,15 @@ handle_sub_command(int argc, char *argv[])
         int min_args;
         int (*func)(int, char *[]);
     } commands[] = {
-        {"create", 11, handle_sub_create_command},
-        {"drop", 5, handle_sub_drop_command},
-        {"enable", 6, handle_sub_enable_command},
-        {"disable", 6, handle_sub_disable_command},
-        {"show-status", 5, handle_sub_show_status_command},
-        {"show-table", 6, handle_sub_show_table_command},
-        {"resync-table", 7, handle_sub_resync_table_command},
-        {"add-repset", 6, handle_sub_add_repset_command},
-        {"remove-repset", 6, handle_sub_remove_repset_command},
+        {"create", 10, handle_sub_create_command},
+        {"drop", 4, handle_sub_drop_command},
+        {"enable", 5, handle_sub_enable_command},
+        {"disable", 5, handle_sub_disable_command},
+        {"show-status", 4, handle_sub_show_status_command},
+        {"show-table", 5, handle_sub_show_table_command},
+        {"resync-table", 6, handle_sub_resync_table_command},
+        {"add-repset", 5, handle_sub_add_repset_command},
+        {"remove-repset", 5, handle_sub_remove_repset_command},
     };
     if (argc < 2)
     {
@@ -102,7 +114,6 @@ handle_sub_create_command(int argc, char *argv[])
         {"node_name", required_argument, 0, 'n'},
         {"sub_name", required_argument, 0, 's'},
         {"provider_dsn", required_argument, 0, 'p'},
-        {"db", required_argument, 0, 'd'},
         {"replication_sets", optional_argument, 0, 'r'},
         {"synchronize_structure", optional_argument, 0, 'y'},
         {"synchronize_data", optional_argument, 0, 'z'},
@@ -115,13 +126,13 @@ handle_sub_create_command(int argc, char *argv[])
     char *node = NULL;
     char *sub_name = NULL;
     char *provider_dsn = NULL;
-    char *db = NULL;
     char *replication_sets = NULL;
     char *synchronize_structure = NULL;
     char *synchronize_data = NULL;
     char *forward_origins = NULL;
     char *apply_delay = NULL;
     const char *conninfo;
+    const char *db;
     PGconn *conn;
     PGresult *res;
 
@@ -131,7 +142,7 @@ handle_sub_create_command(int argc, char *argv[])
 
     /* Parse command-line options */
     optind = 1; // Reset optind to ensure proper parsing
-    while ((c = getopt_long(argc, argv, "t:s:p:d:r:y:z:f:a:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "t:s:p:r:y:z:f:a:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -143,9 +154,6 @@ handle_sub_create_command(int argc, char *argv[])
                 break;
             case 'p':
                 provider_dsn = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'r':
                 replication_sets = optarg;
@@ -190,13 +198,7 @@ handle_sub_create_command(int argc, char *argv[])
         print_sub_create_help();
         return EXIT_FAILURE;
     }
-    if (!db)
-    {
-        log_error("Missing required argument: --db is mandatory.");
-        print_sub_create_help();
-        return EXIT_FAILURE;
-    }
-   
+
     /* Validate optional arguments */
     if (synchronize_structure && strcmp(synchronize_structure, "true") != 0 && strcmp(synchronize_structure, "false") != 0)
     {
@@ -221,6 +223,14 @@ handle_sub_create_command(int argc, char *argv[])
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
+        print_sub_create_help();
+        return EXIT_FAILURE;
+    }
+
+    db = get_postgres_db(node);
+    if (!db)
+    {
+        log_error("Failed to get database name for node '%s'.", node);
         print_sub_create_help();
         return EXIT_FAILURE;
     }
@@ -285,7 +295,6 @@ handle_sub_drop_command(int argc, char *argv[])
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
         {"sub_name", required_argument, 0, 's'},
-        {"db", required_argument, 0, 'd'},
         {"ifexists", no_argument, 0, 'e'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -293,9 +302,9 @@ handle_sub_drop_command(int argc, char *argv[])
 
     char *node = NULL;
     char *sub_name = NULL;
-    char *db = NULL;
     int ifexists = 0;
     const char *conninfo;
+    const char *db;
     PGconn *conn;
     PGresult *res;
 
@@ -306,7 +315,9 @@ handle_sub_drop_command(int argc, char *argv[])
     optind = 1;
  
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "t:s:d:eh", long_options, &option_index)) != -1)
+    optind = 1; // Reset optind to ensure proper parsing
+
+    while ((c = getopt_long(argc, argv, "t:s:eh", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -315,9 +326,6 @@ handle_sub_drop_command(int argc, char *argv[])
                 break;
             case 's':
                 sub_name = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'e':
                 ifexists = 1;
@@ -347,19 +355,19 @@ handle_sub_drop_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    /* Validate required argument: --db */
-    if (!db)
-    {
-        log_error("Missing required argument: --db is mandatory.");
-        print_sub_drop_help();
-        return EXIT_FAILURE;
-    }
-
     /* Get connection info */
     conninfo = get_postgres_coninfo(node);
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
+        print_sub_drop_help();
+        return EXIT_FAILURE;
+    }
+
+    db = get_postgres_db(node);
+    if (!db)
+    {
+        log_error("Failed to get database name for node '%s'.", node);
         print_sub_drop_help();
         return EXIT_FAILURE;
     }
@@ -412,7 +420,6 @@ handle_sub_enable_command(int argc, char *argv[])
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
         {"sub_name", required_argument, 0, 's'},
-        {"db", required_argument, 0, 'd'},
         {"immediate", required_argument, 0, 'i'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -420,9 +427,9 @@ handle_sub_enable_command(int argc, char *argv[])
 
     char *node = NULL;
     char *sub_name = NULL;
-    char *db = NULL;
     char *immediate = NULL;
     const char *conninfo;
+    const char *db;
     PGconn *conn;
     PGresult *res;
 
@@ -431,7 +438,9 @@ handle_sub_enable_command(int argc, char *argv[])
     int c;
 
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "n:s:d:i:h", long_options, &option_index)) != -1)
+    optind = 1; // Reset optind to ensure proper parsing
+
+    while ((c = getopt_long(argc, argv, "n:s:i:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -440,9 +449,6 @@ handle_sub_enable_command(int argc, char *argv[])
                 break;
             case 's':
                 sub_name = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'i':
                 immediate = optarg;
@@ -457,9 +463,9 @@ handle_sub_enable_command(int argc, char *argv[])
     }
 
     /* Validate required arguments */
-    if (!node || !sub_name || !db || !immediate)
+    if (!node || !sub_name || !immediate)
     {
-        log_error("Missing required arguments: --node, --sub_name, --db, and --immediate are mandatory.");
+        log_error("Missing required arguments: --node, --sub_name, and --immediate are mandatory.");
         print_sub_enable_help();
         return EXIT_FAILURE;
     }
@@ -469,6 +475,14 @@ handle_sub_enable_command(int argc, char *argv[])
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
+        print_sub_enable_help();
+        return EXIT_FAILURE;
+    }
+
+    db = get_postgres_db(node);
+    if (!db)
+    {
+        log_error("Failed to get database name for node '%s'.", node);
         print_sub_enable_help();
         return EXIT_FAILURE;
     }
@@ -522,7 +536,6 @@ handle_sub_disable_command(int argc, char *argv[])
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
         {"sub_name", required_argument, 0, 's'},
-        {"db", required_argument, 0, 'd'},
         {"immediate", required_argument, 0, 'i'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -530,9 +543,9 @@ handle_sub_disable_command(int argc, char *argv[])
 
     char *node = NULL;
     char *sub_name = NULL;
-    char *db = NULL;
     char *immediate = NULL;
     const char *conninfo;
+    const char *db;
     PGconn *conn;
     PGresult *res;
 
@@ -541,7 +554,7 @@ handle_sub_disable_command(int argc, char *argv[])
     int c;
 
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "n:s:d:i:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:s:i:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -550,9 +563,6 @@ handle_sub_disable_command(int argc, char *argv[])
                 break;
             case 's':
                 sub_name = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'i':
                 immediate = optarg;
@@ -567,9 +577,9 @@ handle_sub_disable_command(int argc, char *argv[])
     }
 
     /* Validate required arguments */
-    if (!node || !sub_name || !db)
+    if (!node || !sub_name)
     {
-        log_error("Missing required arguments: --node, --sub_name, and --db are mandatory.");
+        log_error("Missing required arguments: --node and --sub_name are mandatory.");
         print_sub_disable_help();
         return EXIT_FAILURE;
     }
@@ -579,6 +589,14 @@ handle_sub_disable_command(int argc, char *argv[])
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
+        print_sub_disable_help();
+        return EXIT_FAILURE;
+    }
+
+    db = get_postgres_db(node);
+    if (!db)
+    {
+        log_error("Failed to get database name for node '%s'.", node);
         print_sub_disable_help();
         return EXIT_FAILURE;
     }
@@ -632,15 +650,14 @@ handle_sub_show_status_command(int argc, char *argv[])
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
         {"sub_name", required_argument, 0, 's'},
-        {"db", required_argument, 0, 'd'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     char *node = NULL;
     char *sub_name = NULL;
-    char *db = NULL;
     const char *conninfo;
+    const char *db;
     PGconn *conn;
     PGresult *res;
     char sql[2048];
@@ -648,7 +665,7 @@ handle_sub_show_status_command(int argc, char *argv[])
     int c;
 
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "n:s:d:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:s:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -657,9 +674,6 @@ handle_sub_show_status_command(int argc, char *argv[])
                 break;
             case 's':
                 sub_name = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 'h':
                 print_sub_show_status_help();
@@ -671,9 +685,9 @@ handle_sub_show_status_command(int argc, char *argv[])
     }
 
     /* Validate required arguments */
-    if (!node || !sub_name || !db)
+    if (!node || !sub_name)
     {
-        log_error("Missing required arguments: --node, --sub_name, and --db are mandatory.");
+        log_error("Missing required arguments: --node and --sub_name are mandatory.");
         print_sub_show_status_help();
         return EXIT_FAILURE;
     }
@@ -683,6 +697,14 @@ handle_sub_show_status_command(int argc, char *argv[])
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
+        print_sub_show_status_help();
+        return EXIT_FAILURE;
+    }
+
+    db = get_postgres_db(node);
+    if (!db)
+    {
+        log_error("Failed to get database name for node '%s'.", node);
         print_sub_show_status_help();
         return EXIT_FAILURE;
     }
@@ -739,7 +761,6 @@ handle_sub_show_table_command(int argc, char *argv[])
         {"node", required_argument, 0, 'n'},
         {"sub_name", required_argument, 0, 's'},
         {"relation", required_argument, 0, 'r'},
-        {"db", required_argument, 0, 'd'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
@@ -747,8 +768,8 @@ handle_sub_show_table_command(int argc, char *argv[])
     char *node = NULL;
     char *sub_name = NULL;
     char *relation = NULL;
-    char *db = NULL;
     const char *conninfo;
+    const char *db;
     PGconn *conn;
     PGresult *res;
     char sql[2048];
@@ -756,7 +777,7 @@ handle_sub_show_table_command(int argc, char *argv[])
     int c;
 
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "n:s:r:d:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:s:r:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -769,9 +790,6 @@ handle_sub_show_table_command(int argc, char *argv[])
             case 'r':
                 relation = optarg;
                 break;
-            case 'd':
-                db = optarg;
-                break;
             case 'h':
                 print_sub_show_table_help();
                 return EXIT_SUCCESS;
@@ -782,9 +800,9 @@ handle_sub_show_table_command(int argc, char *argv[])
     }
 
     /* Validate required arguments */
-    if (!node || !sub_name || !relation || !db)
+    if (!node || !sub_name || !relation)
     {
-        log_error("Missing required arguments: --node, --sub_name, --relation, and --db are mandatory.");
+        log_error("Missing required arguments: --node, --sub_name, and --relation are mandatory.");
         print_sub_show_table_help();
         return EXIT_FAILURE;
     }
@@ -794,6 +812,14 @@ handle_sub_show_table_command(int argc, char *argv[])
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
+        print_sub_show_table_help();
+        return EXIT_FAILURE;
+    }
+
+    db = get_postgres_db(node);
+    if (!db)
+    {
+        log_error("Failed to get database name for node '%s'.", node);
         print_sub_show_table_help();
         return EXIT_FAILURE;
     }
@@ -853,7 +879,6 @@ handle_sub_resync_table_command(int argc, char *argv[])
         {"node", required_argument, 0, 'n'},
         {"sub_name", required_argument, 0, 's'},
         {"relation", required_argument, 0, 'r'},
-        {"db", required_argument, 0, 'd'},
         {"truncate", required_argument, 0, 't'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -862,16 +887,16 @@ handle_sub_resync_table_command(int argc, char *argv[])
     char *node = NULL;
     char *sub_name = NULL;
     char *relation = NULL;
-    char *db = NULL;
     char *truncate = NULL;
     const char *conninfo;
+    const char *db;
     PGconn *conn;
     char sql[2048];
     int option_index = 0;
     int c;
 
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "n:s:r:d:t:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:s:r:t:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -883,9 +908,6 @@ handle_sub_resync_table_command(int argc, char *argv[])
                 break;
             case 'r':
                 relation = optarg;
-                break;
-            case 'd':
-                db = optarg;
                 break;
             case 't':
                 truncate = optarg;
@@ -900,9 +922,9 @@ handle_sub_resync_table_command(int argc, char *argv[])
     }
 
     /* Validate required arguments */
-    if (!node || !sub_name || !relation || !db || !truncate)
+    if (!node || !sub_name || !relation || !truncate)
     {
-        log_error("Missing required arguments: --node, --sub_name, --relation, --db, and --truncate are mandatory.");
+        log_error("Missing required arguments: --node, --sub_name, --relation, and --truncate are mandatory.");
         print_sub_resync_table_help();
         return EXIT_FAILURE;
     }
@@ -912,6 +934,14 @@ handle_sub_resync_table_command(int argc, char *argv[])
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
+        print_sub_resync_table_help();
+        return EXIT_FAILURE;
+    }
+
+    db = get_postgres_db(node);
+    if (!db)
+    {
+        log_error("Failed to get database name for node '%s'.", node);
         print_sub_resync_table_help();
         return EXIT_FAILURE;
     }
@@ -955,7 +985,6 @@ handle_sub_add_repset_command(int argc, char *argv[])
         {"node", required_argument, 0, 'n'},
         {"sub_name", required_argument, 0, 's'},
         {"replication_set", required_argument, 0, 'r'},
-        {"db", required_argument, 0, 'd'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
@@ -963,15 +992,15 @@ handle_sub_add_repset_command(int argc, char *argv[])
     char *node = NULL;
     char *sub_name = NULL;
     char *replication_set = NULL;
-    char *db = NULL;
     const char *conninfo;
+    const char *db;
     PGconn *conn;
     char sql[2048];
     int option_index = 0;
     int c;
 
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "n:s:r:d:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:s:r:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -984,9 +1013,6 @@ handle_sub_add_repset_command(int argc, char *argv[])
             case 'r':
                 replication_set = optarg;
                 break;
-            case 'd':
-                db = optarg;
-                break;
             case 'h':
                 print_sub_add_repset_help();
                 return EXIT_SUCCESS;
@@ -997,9 +1023,9 @@ handle_sub_add_repset_command(int argc, char *argv[])
     }
 
     /* Validate required arguments */
-    if (!node || !sub_name || !replication_set || !db)
+    if (!node || !sub_name || !replication_set)
     {
-        log_error("Missing required arguments: --node, --sub_name, --replication_set, and --db are mandatory.");
+        log_error("Missing required arguments: --node, --sub_name, and --replication_set are mandatory.");
         print_sub_add_repset_help();
         return EXIT_FAILURE;
     }
@@ -1009,6 +1035,14 @@ handle_sub_add_repset_command(int argc, char *argv[])
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
+        print_sub_add_repset_help();
+        return EXIT_FAILURE;
+    }
+
+    db = get_postgres_db(node);
+    if (!db)
+    {
+        log_error("Failed to get database name for node '%s'.", node);
         print_sub_add_repset_help();
         return EXIT_FAILURE;
     }
@@ -1046,7 +1080,6 @@ handle_sub_remove_repset_command(int argc, char *argv[])
         {"node", required_argument, 0, 'n'},
         {"sub_name", required_argument, 0, 's'},
         {"replication_set", required_argument, 0, 'r'},
-        {"db", required_argument, 0, 'd'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
@@ -1054,15 +1087,15 @@ handle_sub_remove_repset_command(int argc, char *argv[])
     char *node = NULL;
     char *sub_name = NULL;
     char *replication_set = NULL;
-    char *db = NULL;
     const char *conninfo;
+    const char *db;
     PGconn *conn;
     char sql[2048];
     int option_index = 0;
     int c;
 
     /* Parse command-line options */
-    while ((c = getopt_long(argc, argv, "n:s:r:d:h", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:s:r:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -1075,9 +1108,6 @@ handle_sub_remove_repset_command(int argc, char *argv[])
             case 'r':
                 replication_set = optarg;
                 break;
-            case 'd':
-                db = optarg;
-                break;
             case 'h':
                 print_sub_remove_repset_help();
                 return EXIT_SUCCESS;
@@ -1088,9 +1118,9 @@ handle_sub_remove_repset_command(int argc, char *argv[])
     }
 
     /* Validate required arguments */
-    if (!node || !sub_name || !replication_set || !db)
+    if (!node || !sub_name || !replication_set)
     {
-        log_error("Missing required arguments: --node, --sub_name, --replication_set, and --db are mandatory.");
+        log_error("Missing required arguments: --node, --sub_name, and --replication_set are mandatory.");
         print_sub_remove_repset_help();
         return EXIT_FAILURE;
     }
@@ -1100,6 +1130,14 @@ handle_sub_remove_repset_command(int argc, char *argv[])
     if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
+        print_sub_remove_repset_help();
+        return EXIT_FAILURE;
+    }
+
+    db = get_postgres_db(node);
+    if (!db)
+    {
+        log_error("Failed to get database name for node '%s'.", node);
         print_sub_remove_repset_help();
         return EXIT_FAILURE;
     }
@@ -1139,7 +1177,6 @@ print_sub_create_help(void)
     printf("  --node                Name of the node (required)\n");
     printf("  --sub_name            Name of the subscription (required)\n");
     printf("  --provider_dsn        Provider DSN (required)\n");
-    printf("  --db                  Database name (required)\n");
     printf("  --replication_sets    Replication sets (optional)\n");
     printf("  --synchronize_structure Synchronize structure (optional)\n");
     printf("  --synchronize_data    Synchronize data (optional)\n");
@@ -1156,7 +1193,6 @@ print_sub_drop_help(void)
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --db                  Database name (required)\n");
     printf("  --help                Show this help message\n");
 }
 
@@ -1168,7 +1204,6 @@ print_sub_enable_help(void)
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --db                  Database name (required)\n");
     printf("  --immediate           Immediate enable (required)\n");
     printf("  --help                Show this help message\n");
 }
@@ -1181,8 +1216,8 @@ print_sub_disable_help(void)
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --db                  Database name (required)\n");
 }
+
 static void
 print_sub_show_status_help(void)
 {
@@ -1191,7 +1226,6 @@ print_sub_show_status_help(void)
     printf("Options:\n");
     printf("  --node                Name of the node (required)\n");
     printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --db                  Database name (required)\n");
     printf("  --help                Show this help message\n");
 }
 
@@ -1204,7 +1238,6 @@ print_sub_show_table_help(void)
     printf("  --node                Name of the node (required)\n");
     printf("  --sub_name            Name of the subscription (required)\n");
     printf("  --relation            Relation name (required)\n");
-    printf("  --db                  Database name (required)\n");
     printf("  --help                Show this help message\n");
 }
 
@@ -1217,7 +1250,6 @@ print_sub_resync_table_help(void)
     printf("  --node                Name of the node (required)\n");
     printf("  --sub_name            Name of the subscription (required)\n");
     printf("  --relation            Relation name (required)\n");
-    printf("  --db                  Database name (required)\n");
     printf("  --truncate            Truncate table before resync (required)\n");
     printf("  --help                Show this help message\n");
 }
@@ -1231,7 +1263,6 @@ print_sub_add_repset_help(void)
     printf("  --node                Name of the node (required)\n");
     printf("  --sub_name            Name of the subscription (required)\n");
     printf("  --replication_set     Replication set name (required)\n");
-    printf("  --db                  Database name (required)\n");
     printf("  --help                Show this help message\n");
 }
 
@@ -1244,6 +1275,5 @@ print_sub_remove_repset_help(void)
     printf("  --node                Name of the node (required)\n");
     printf("  --sub_name            Name of the subscription (required)\n");
     printf("  --replication_set     Replication set name (required)\n");
-    printf("  --db                  Database name (required)\n");
     printf("  --help                Show this help message\n");
 }

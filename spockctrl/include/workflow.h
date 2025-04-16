@@ -21,6 +21,7 @@ typedef struct Step
     char *options[MAX_OPTIONS]; // Options for the command
     char *on_success;         // JSON string for on_success actions
     char *on_failure;         // JSON string for on_failure actions
+    int sleep;               // Sleep time after the step
     int type;                 // Type of the step (e.g., STEP_TYPE_SPOCK, STEP_TYPE_SQL, STEP_TYPE_SHELL)
 } Step;
 

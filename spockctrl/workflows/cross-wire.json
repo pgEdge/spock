@@ -9,11 +9,10 @@
         "description": "Create a spock node",
         "args": [
           "--node=n1",
-          "--db=pgedge",
           "--node_name=n1",
-          "--dsn=host=127.0.0.1 port=5432 user=pgedge password=pgedge",
-          "--location=location1",
-          "--country=country1",
+          "--dsn=host=127.0.0.1 port=5431 user=pgedge password=pgedge",
+          "--location=New York",
+          "--country=USA",
           "--info={\"key\": \"value\"}"
         ],
         "on_success": {},
@@ -27,11 +26,10 @@
         "description": "Create a spock node",
         "args": [
           "--node=n2",
-          "--db=pgedge",
           "--node_name=n2",
-          "--dsn=host=127.0.0.1 port=5433 user=pgedge password=pgedge",
-          "--location=location2",
-          "--country=country2",
+          "--dsn=host=127.0.0.1 port=5432 user=pgedge password=pgedge",
+          "--location=New Jersey",
+          "--country=USA",
           "--info={\"key\": \"value\"}"
         ],
         "on_success": {},
@@ -40,44 +38,44 @@
     },
     {
       "spock": {
-        "node": "n1",
-        "command": "CREATE SUBSCRIPTION",
-        "description": "Create a subscription for n1",
-        "args": [
-          "--node=n1",
-          "--db=pgedge",
-          "--sub_name=sub1",
-          "--provider_dsn=host=127.0.0.1 port=5433 user=pgedge password=spockpass",
-          "--db=pgedge",
-          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
-          "--synchronize_structure=false",
-          "--synchronize_data=false",
-          "--forward_origins='{}'::text[]",
-          "--apply_delay='0'::interval"
-        ],
-        "on_success": {},
-        "on_failure": {}
+      "node": "n1",
+      "command": "CREATE SUBSCRIPTION",
+      "description": "Create a subscription for n1",
+      "args": [
+        "--node=n1",
+        "--sub_name=spk_pgedge_n2_n1",
+        "--provider_dsn=host=127.0.0.1 port=5432 user=pgedge password=spockpass",
+        "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+        "--synchronize_structure=false",
+        "--synchronize_data=false",
+        "--forward_origins='{}'::text[]",
+        "--apply_delay='0'::interval",
+        "--force_text_transfer=false",
+        "--enabled=true"
+      ],
+      "on_success": {},
+      "on_failure": {}
       }
     },
     {
       "spock": {
-        "node": "n2",
-        "command": "CREATE SUBSCRIPTION",
-        "description": "Create a subscription for n2",
-        "args": [
-          "--node=n2",
-          "--db=pgedge",
-          "--sub_name=sub2",
-          "--provider_dsn=host=127.0.0.1 port=5432 user=pgedge password=pgedge",
-          "--db=pgedge",
-          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
-          "--synchronize_structure=false",
-          "--synchronize_data=false",
-          "--forward_origins='{}'::text[]",
-          "--apply_delay='0'::interval"
-        ],
-        "on_success": {},
-        "on_failure": {}
+      "node": "n2",
+      "command": "CREATE SUBSCRIPTION",
+      "description": "Create a subscription for n2",
+      "args": [
+        "--node=n2",
+        "--sub_name=spk_pgedge_n1_n2",
+        "--provider_dsn=host=127.0.0.1 port=5431 user=pgedge password=pgedge",
+        "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+        "--synchronize_structure=false",
+        "--synchronize_data=false",
+        "--forward_origins='{}'::text[]",
+        "--apply_delay='0'::interval",
+        "--force_text_transfer=false",
+        "--enabled=true"
+      ],
+      "on_success": {},
+      "on_failure": {}
       }
     },
     {
@@ -86,8 +84,7 @@
         "command": "CREATE REPSET",
         "description": "Create a replication set for n1",
         "args": [
-          "--db=pgedge",
-          "--set_name=test_set",
+          "--set_name=n1r1",
           "--replicate_insert=true",
           "--replicate_update=true",
           "--replicate_delete=true",
@@ -103,8 +100,7 @@
         "command": "CREATE REPSET",
         "description": "Create a replication set for n2",
         "args": [
-          "--db=pgedge",
-          "--set_name=test_set",
+          "--set_name=n2r2",
           "--replicate_insert=true",
           "--replicate_update=true",
           "--replicate_delete=true",

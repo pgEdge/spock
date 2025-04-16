@@ -1,12 +1,28 @@
+/*-------------------------------------------------------------------------
+ *
+ * workflow.c
+ *      workflow execution and step parsing functions for spockctrl
+ *
+ * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <jansson.h>
+#include <unistd.h>
 #include "workflow.h"
 #include "node.h"
 #include "sub.h"
 #include "logger.h"
 #include "util.h"
+#include "dbconn.h"
+#include "slot.h"
+#include "spock.h"
 #include "repset.h"
 
 /* Function declarations */
@@ -122,7 +138,7 @@ load_workflow(const char *json_file_path)
 static int
 parse_spock_step(json_t *spock, Step *step)
 {
-    json_t *command, *description, *args, *node, *name;
+    json_t *command, *description, *args, *node, *name, *sleep_val;
     int j;
 
     step->type = STEP_TYPE_SPOCK;
@@ -180,13 +196,20 @@ parse_spock_step(json_t *spock, Step *step)
         step->node = NULL; /* Default to NULL if not provided */
     }
 
+    /* Get the sleep field */
+    sleep_val = json_object_get(spock, "sleep");
+    if (sleep_val && json_is_integer(sleep_val))
+        step->sleep = (int)json_integer_value(sleep_val);
+    else
+        step->sleep = 0;
+
     return 0;
 }
 
 static int
 parse_sql_step(json_t *sql, Step *step)
 {
-    json_t *command, *description, *name;
+    json_t *command, *description, *name, *sleep_val;
 
     step->type = STEP_TYPE_SQL;
 
@@ -219,13 +242,20 @@ parse_sql_step(json_t *sql, Step *step)
     }
     step->description = strdup(json_string_value(description));
 
+    /* Get the sleep field */
+    sleep_val = json_object_get(sql, "sleep");
+    if (sleep_val && json_is_integer(sleep_val))
+        step->sleep = (int)json_integer_value(sleep_val);
+    else
+        step->sleep = 0;
+
     return 0;
 }
 
 static int
 parse_shell_step(json_t *shell, Step *step)
 {
-    json_t *command, *description, *name;
+    json_t *command, *description, *name, *sleep_val;
 
     step->type = STEP_TYPE_SHELL;
 
@@ -257,6 +287,13 @@ parse_shell_step(json_t *shell, Step *step)
         return -1;
     }
     step->description = strdup(json_string_value(description));
+
+    /* Get the sleep field */
+    sleep_val = json_object_get(shell, "sleep");
+    if (sleep_val && json_is_integer(sleep_val))
+        step->sleep = (int)json_integer_value(sleep_val);
+    else
+        step->sleep = 0;
 
     return 0;
 }
@@ -500,6 +537,13 @@ run_workflow(Workflow *workflow)
         {
             log_info("On failure: %s", step->on_failure);
         }
+
+        /* Sleep after step if requested */
+        if (step->sleep > 0)
+        {
+            log_info("Sleeping for %d seconds after step %d...", step->sleep, i + 1);
+            sleep(step->sleep);
+        }
     }
 
     return 0;
@@ -563,10 +607,47 @@ handle_spock_command(Step *step)
     {
         return handle_repset_create_command(argc, argv);
     }
-    else if (strcmp(step->command, "DROP REPLICATION SET") == 0)
+    else if (strcmp(step->command, "DROP REPSET") == 0)
     {
         return handle_repset_drop_command(argc, argv);
     }
+    else if (strcmp(step->command, "CREATE SLOT") == 0)
+    {
+        return handle_slot_create_command(argc, argv);
+    }
+    else if (strcmp(step->command, "DROP SLOT") == 0)
+    {
+        return handle_slot_drop_command(argc, argv);
+    }
+    else if (strcmp(step->command, "ENABLE SLOT") == 0)
+    {
+        return handle_slot_enable_command(argc, argv);
+    }
+    else if (strcmp(step->command, "DISABLE SLOT") == 0)
+    {
+        return handle_slot_disable_command(argc, argv);
+    }
+    else if (strcmp(step->command, "ENABLE SUBSCRIPTION") == 0)
+    {
+        return handle_sub_enable_command(argc, argv);
+    }
+    else if (strcmp(step->command, "DISABLE SUBSCRIPTION") == 0)
+    {
+        return handle_sub_disable_command(argc, argv);
+    }
+    else if (strcmp(step->command, "SHOW SUBSCRIPTION STATUS") == 0)
+    {
+        return handle_sub_show_status_command(argc, argv);
+    }
+    else if (strcmp(step->command, "SHOW SUBSCRIPTION TABLE") == 0)
+    {
+        return handle_sub_show_table_command(argc, argv);
+    }
+    else if (strcmp(step->command, "WAIT FOR SYNC") == 0)
+    {
+        return handle_spock_wait_for_sync_event_command(argc, argv);
+    }
+
     else
     {
         log_error("Unknown command: %s", step->command);
