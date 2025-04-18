@@ -19,6 +19,8 @@
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/xlogrecovery.h"
+#include "access/xlogutils.h"
 
 #include "catalog/catalog.h"
 #include "catalog/heap.h"
@@ -48,6 +50,7 @@
 #include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
 
+#include "replication/logical.h"
 #include "replication/message.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
@@ -178,6 +181,9 @@ PG_FUNCTION_INFO_V1(delta_apply_money);
 
 /* Function to control REPAIR mode */
 PG_FUNCTION_INFO_V1(spock_repair_mode);
+
+/* Function to get a LSN based on commit timestamp */
+PG_FUNCTION_INFO_V1(spock_get_lsn_from_commit_ts);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -3113,4 +3119,148 @@ wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, in
 	} while (1);
 
 	return status;
+}
+
+
+/*
+ * Helper function for finding the endptr for a particular commit timestamp
+ */
+static XLogRecPtr
+spock_logical_replication_slot_scan(TimestampTz committs)
+{
+	LogicalDecodingContext *ctx;
+	ResourceOwner old_resowner = CurrentResourceOwner;
+	XLogRecPtr	retlsn;
+
+	elog(LOG, "wi3ck spock_logical_replication_slot_scan()");
+
+	PG_TRY();
+	{
+		/*
+		 * Create our decoding context in fast_forward mode, passing start_lsn
+		 * as InvalidXLogRecPtr, so that we start processing from my slot's
+		 * confirmed_flush.
+		 */
+		ctx = CreateDecodingContext(InvalidXLogRecPtr,
+									NIL,
+									true,	/* fast_forward */
+									XL_ROUTINE(.page_read = read_local_xlog_page,
+											   .segment_open = wal_segment_open,
+											   .segment_close = wal_segment_close),
+									NULL, NULL, NULL);
+
+		/*
+		 * Start reading at the slot's restart_lsn, which we know to point to
+		 * a valid record.
+		 */
+		XLogBeginRead(ctx->reader, MyReplicationSlot->data.restart_lsn);
+		retlsn = MyReplicationSlot->data.restart_lsn;
+
+		/* invalidate non-timetravel entries */
+		InvalidateSystemCaches();
+
+		/* Decode at least one record, until we run out of records */
+		while (true)
+		{
+			char	   *errm = NULL;
+			XLogRecord *record;
+
+			/*
+			 * Read records.  No changes are generated in fast_forward mode,
+			 * but snapbuilder/slot statuses are updated properly.
+			 */
+			record = XLogReadRecord(ctx->reader, &errm);
+			if (errm)
+				elog(ERROR, "could not find record while advancing replication slot: %s",
+					 errm);
+
+			if (record)
+			{
+				if (record->xl_rmid == RM_XACT_ID)
+				{
+					RepOriginId		nodeid;
+					TimestampTz		ts;
+
+					elog(LOG, "wi3ck xid=%u ReadRecPtr=%X/%X EndRecPtr=%X/%X",
+						 record->xl_xid,
+						 LSN_FORMAT_ARGS(ctx->reader->ReadRecPtr),
+						 LSN_FORMAT_ARGS(ctx->reader->EndRecPtr));
+
+					if (record->xl_xid == InvalidTransactionId)
+						continue;
+
+					TransactionIdGetCommitTsData(record->xl_xid,
+												 &ts, &nodeid);
+
+					if (nodeid == 0 && ts > committs)
+						break;
+
+					if (nodeid == 0)
+						retlsn = ctx->reader->EndRecPtr;
+				}
+			}
+			else
+			{
+				break;
+			}
+
+			CHECK_FOR_INTERRUPTS();
+		}
+
+		/*
+		 * Logical decoding could have clobbered CurrentResourceOwner during
+		 * transaction management, so restore the executor's value.  (This is
+		 * a kluge, but it's not worth cleaning up right now.)
+		 */
+		CurrentResourceOwner = old_resowner;
+
+		/* free context, call shutdown callback */
+		FreeDecodingContext(ctx);
+
+		InvalidateSystemCaches();
+	}
+	PG_CATCH();
+	{
+		/* clear all timetravel entries */
+		InvalidateSystemCaches();
+
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return retlsn;
+}
+
+/*
+ * SQL function for moving the position in a replication slot.
+ */
+Datum
+spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
+{
+	Name		slotname = PG_GETARG_NAME(0);
+	TimestampTz	targettz = PG_GETARG_TIMESTAMPTZ(1);
+	XLogRecPtr	endlsn;
+
+	Assert(!MyReplicationSlot);
+
+	CheckSlotPermissions();
+
+	/* Acquire the slot so we "own" it */
+	ReplicationSlotAcquire(NameStr(*slotname), true);
+
+	/* A slot whose restart_lsn has never been reserved cannot be advanced */
+	if (XLogRecPtrIsInvalid(MyReplicationSlot->data.restart_lsn))
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("replication slot \"%s\" cannot be advanced",
+						NameStr(*slotname)),
+				 errdetail("This slot has never previously reserved WAL, or it has been invalidated.")));
+
+	/* Do the actual slot scanning */
+	if (OidIsValid(MyReplicationSlot->data.database))
+		endlsn = spock_logical_replication_slot_scan(targettz);
+	else
+		elog(ERROR, "not a logical replication slot");
+
+	PG_RETURN_LSN(endlsn);
 }
