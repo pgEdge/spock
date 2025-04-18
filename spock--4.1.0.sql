@@ -689,3 +689,9 @@ RETURNS money LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_money';
 CREATE FUNCTION spock.repair_mode(enabled bool)
 RETURNS pg_catalog.pg_lsn LANGUAGE c
 AS 'MODULE_PATHNAME', 'spock_repair_mode';
+
+-- ----
+-- Function to determine LSN from commit timestamp
+-- ----
+CREATE FUNCTION spock.get_lsn_from_commit_ts(slot_name name, commit_ts timestamptz)
+RETURNS pg_lsn STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_lsn_from_commit_ts';

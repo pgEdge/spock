@@ -48,3 +48,10 @@ CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
     force_text_transfer boolean = false,
     enabled boolean = true)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
+
+-- ----
+-- Function to determine LSN from commit timestamp
+-- ----
+CREATE FUNCTION spock.get_lsn_from_commit_ts(slot_name name, commit_ts timestamptz)
+RETURNS pg_lsn STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_lsn_from_commit_ts';
+
