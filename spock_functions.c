@@ -3132,8 +3132,6 @@ spock_logical_replication_slot_scan(TimestampTz committs)
 	ResourceOwner old_resowner = CurrentResourceOwner;
 	XLogRecPtr	retlsn;
 
-	elog(LOG, "wi3ck spock_logical_replication_slot_scan()");
-
 	PG_TRY();
 	{
 		/*
@@ -3180,11 +3178,6 @@ spock_logical_replication_slot_scan(TimestampTz committs)
 				{
 					RepOriginId		nodeid;
 					TimestampTz		ts;
-
-					elog(LOG, "wi3ck xid=%u ReadRecPtr=%X/%X EndRecPtr=%X/%X",
-						 record->xl_xid,
-						 LSN_FORMAT_ARGS(ctx->reader->ReadRecPtr),
-						 LSN_FORMAT_ARGS(ctx->reader->EndRecPtr));
 
 					if (record->xl_xid == InvalidTransactionId)
 						continue;
