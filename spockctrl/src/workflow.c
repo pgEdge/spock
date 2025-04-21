@@ -24,6 +24,7 @@
 #include "slot.h"
 #include "spock.h"
 #include "repset.h"
+#include "sql.h"
 
 /* Function declarations */
 static int prepare_arguments(Step *step, char *argv[], int max_args, const char *default_db);
@@ -209,7 +210,8 @@ parse_spock_step(json_t *spock, Step *step)
 static int
 parse_sql_step(json_t *sql, Step *step)
 {
-    json_t *command, *description, *name, *sleep_val;
+    json_t *command, *description, *args, *node, *name, *sleep_val;
+    int j;
 
     step->type = STEP_TYPE_SQL;
 
@@ -224,7 +226,7 @@ parse_sql_step(json_t *sql, Step *step)
         step->name = NULL; /* Default to NULL if not provided */
     }
 
-    /* Get the SQL command */
+    /* Get the step command */
     command = json_object_get(sql, "command");
     if (!json_is_string(command))
     {
@@ -241,6 +243,30 @@ parse_sql_step(json_t *sql, Step *step)
         return -1;
     }
     step->description = strdup(json_string_value(description));
+
+    /* Get the step args */
+    args = json_object_get(sql, "args");
+    if (!json_is_array(args))
+    {
+        log_error("Error: sql step args is not an array");
+        return -1;
+    }
+    for (j = 0; j < MAX_ARGS; j++)
+    {
+        json_t *arg = json_array_get(args, j);
+        step->args[j] = arg ? strdup(json_string_value(arg)) : NULL;
+    }
+
+    /* Get the node field */
+    node = json_object_get(sql, "node");
+    if (node && json_is_string(node))
+    {
+        step->node = strdup(json_string_value(node));
+    }
+    else
+    {
+        step->node = NULL; /* Default to NULL if not provided */
+    }
 
     /* Get the sleep field */
     sleep_val = json_object_get(sql, "sleep");
@@ -549,6 +575,29 @@ run_workflow(Workflow *workflow)
     return 0;
 }
 
+int
+handle_sql_command(Step *step)
+{
+    char *argv[MAX_ARGS + 1];
+    int argc;
+
+    /* Prepare arguments for the command */
+    if ((argc = prepare_arguments(step, argv, MAX_ARGS + 1, NULL)) < 0)
+    {
+        log_error("Failed to prepare arguments");
+        return -1;
+    }
+
+
+    /* Debug: Print the prepared arguments */
+    for (int i = 0; i < argc; i++)
+    {
+        log_debug0("Argument[%d]: %s", i, argv[i]);
+    }
+    handle_sql_exec_command(argc, argv);
+    return 0;
+}
+
 static int
 execute_step(Step *step, int step_index)
 {
@@ -559,7 +608,7 @@ execute_step(Step *step, int step_index)
     }
     else if (step->type == STEP_TYPE_SQL)
     {
-        //return handle_sql_command(argc, argv);
+        return handle_sql_command(step);
     }
     else if (step->type == STEP_TYPE_SHELL)
     {
@@ -643,14 +692,10 @@ handle_spock_command(Step *step)
     {
         return handle_sub_show_table_command(argc, argv);
     }
-    else if (strcmp(step->command, "WAIT FOR SYNC") == 0)
-    {
-        return handle_spock_wait_for_sync_event_command(argc, argv);
-    }
-
     else
     {
         log_error("Unknown command: %s", step->command);
         return -1;
     }
+    return 0;
 }

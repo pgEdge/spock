@@ -20,6 +20,7 @@
 #include "repset.h"
 #include "conf.h"
 #include "sub.h"
+#include "sql.h"
 #include "workflow.h"
 
 #define VERSION "1.0.0"
@@ -38,6 +39,7 @@ print_help(void)
     printf("  repset     Replication set management commands\n");
     printf("  sub        Subscription management commands\n");
     printf("  node       Node management commands\n");
+    printf("  sql        Execute SQL commands\n");
     printf("  help       Display this help message\n");
     printf("  version    Display the version information\n");
     printf("\n");
@@ -136,7 +138,6 @@ main(int argc, char *argv[])
             }
         }
     }
-
     if (verbose >= 1)
     {
         current_log_level = LOG_LEVEL_WARNING;
@@ -192,12 +193,13 @@ main(int argc, char *argv[])
         {"repset", handle_repset_command},
         {"sub", handle_sub_command},
         {"node", handle_node_command},
+        {"sql", handle_sql_exec_command},
         {NULL, NULL}
     };
 
     for (int i = 0; commands[i].name != NULL; i++)
     {
-        if (strcmp(command, commands[i].name) == 0)
+        if (strcasecmp(command, commands[i].name) == 0)
         {
             return commands[i].handler(argc - 1, &argv[1]);
         }

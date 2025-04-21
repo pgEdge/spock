@@ -16,7 +16,7 @@ JSON_LIBS = $(shell pkg-config --libs jansson)
 CFLAGS = -Wall -g -pthread -I./include -I$(PG_INCDIR) $(JSON_CFLAGS)
 
 # Source files
-SRCS = src/spockctrl.c src/util.c src/slot.c src/spock.c src/logger.c src/workflow.c src/node.c src/repset.c src/sub.c src/dbconn.c src/conf.c
+SRCS = src/spockctrl.c src/util.c src/sql.c src/slot.c src/logger.c src/workflow.c src/node.c src/repset.c src/sub.c src/dbconn.c src/conf.c
 
 # Object files
 OBJS = $(SRCS:.c=.o)

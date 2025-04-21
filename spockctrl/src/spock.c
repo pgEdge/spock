@@ -34,6 +34,15 @@ static void print_spock_wait_for_sync_event_help(void)
     printf("  --help           Show this help message\n");
 }
 
+static void print_spock_sync_event_help(void)
+{
+    printf("Usage: spockctrl spock sync-event [OPTIONS]\n");
+    printf("Trigger a sync event.\n");
+    printf("Options:\n");
+    printf("  --node           Name of the node (required)\n");
+    printf("  --help           Show this help message\n");
+}
+
 int handle_spock_wait_for_sync_event_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
@@ -170,4 +179,95 @@ int handle_spock_wait_for_sync_event_command(int argc, char *argv[])
     }
     log_debug0("wait_for_sync_event returned: %s", result ? "true" : "false");
     return result ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+int handle_spock_sync_event_command(int argc, char *argv[])
+{
+    static struct option long_options[] = {
+        {"node", required_argument, 0, 'n'},
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    char           *node         = NULL;
+    int             option_index = 0;
+    int             c;
+    const char     *conninfo     = NULL;
+    PGconn         *conn         = NULL;
+    char            sql[512];
+    PGresult       *res          = NULL;
+    int             result       = -1;
+
+    optind = 1;
+    while ((c = getopt_long(argc, argv, "n:h", long_options, &option_index)) != -1)
+    {
+        switch (c)
+        {
+            case 'n':
+                node = optarg;
+                break;
+            case 'h':
+                print_spock_sync_event_help();
+                return EXIT_SUCCESS;
+            default:
+                print_spock_sync_event_help();
+                return EXIT_FAILURE;
+        }
+    }
+
+    if (!node)
+    {
+        log_error("Missing required arguments: --node is mandatory.");
+        print_spock_sync_event_help();
+        return EXIT_FAILURE;
+    }
+
+    conninfo = get_postgres_coninfo(node);
+    if (conninfo == NULL)
+    {
+        log_error("Failed to get connection info for node '%s'.", node);
+        return EXIT_FAILURE;
+    }
+
+    conn = connectdb(conninfo);
+    if (conn == NULL)
+    {
+        log_error("Failed to connect to the database.");
+        return EXIT_FAILURE;
+    }
+
+    if (!conn)
+    {
+        PQfinish(conn);
+        log_error("Invalid arguments for sync_event.");
+        return EXIT_FAILURE;
+    }
+
+    snprintf(sql, sizeof(sql),
+        "SELECT spock.sync_event();");
+
+    res = PQexec(conn, sql);
+    if (PQresultStatus(res) != PGRES_TUPLES_OK)
+    {
+        log_error("SQL error: %s", PQerrorMessage(conn));
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
+
+    if (PQntuples(res) == 1)
+    {
+        const char *val = PQgetvalue(res, 0, 0);
+        result = (strcmp(val, "t") == 0 || strcmp(val, "true") == 0) ? 1 : 0;
+    }
+    PQclear(res);
+    PQfinish(conn);
+
+    if (result == -1)
+    {
+        log_error("sync_event failed.");
+        return EXIT_FAILURE;
+    }
+    log_debug0("sync_event returned: %s", result ? "true" : "false");
+    return EXIT_SUCCESS;
 }

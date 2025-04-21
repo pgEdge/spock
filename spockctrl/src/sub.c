@@ -110,47 +110,49 @@ int
 handle_sub_create_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
-        {"node", required_argument, 0, 't'},
-        {"node_name", required_argument, 0, 'n'},
-        {"sub_name", required_argument, 0, 's'},
+        {"node", required_argument, 0, 'n'},
+        {"subscription_name", required_argument, 0, 's'},
         {"provider_dsn", required_argument, 0, 'p'},
-        {"replication_sets", optional_argument, 0, 'r'},
-        {"synchronize_structure", optional_argument, 0, 'y'},
-        {"synchronize_data", optional_argument, 0, 'z'},
-        {"forward_origins", optional_argument, 0, 'f'},
-        {"apply_delay", optional_argument, 0, 'a'},
+        {"replication_sets", required_argument, 0, 'r'},
+        {"synchronize_structure", required_argument, 0, 'y'},
+        {"synchronize_data", required_argument, 0, 'z'},
+        {"forward_origins", required_argument, 0, 'f'},
+        {"apply_delay", required_argument, 0, 'a'},
+        {"force_text_transfer", required_argument, 0, 'x'},
+        {"enabled", required_argument, 0, 'e'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     char *node = NULL;
-    char *sub_name = NULL;
+    char *subscription_name = NULL;
     char *provider_dsn = NULL;
     char *replication_sets = NULL;
     char *synchronize_structure = NULL;
     char *synchronize_data = NULL;
     char *forward_origins = NULL;
     char *apply_delay = NULL;
+    char *force_text_transfer = NULL;
+    char *enabled = NULL;
     const char *conninfo;
     const char *db;
     PGconn *conn;
     PGresult *res;
 
-    char sql[2048];
+    char sql[4096];
     int option_index = 0;
     int c;
 
-    /* Parse command-line options */
-    optind = 1; // Reset optind to ensure proper parsing
-    while ((c = getopt_long(argc, argv, "t:s:p:r:y:z:f:a:h", long_options, &option_index)) != -1)
+    optind = 1;
+    while ((c = getopt_long(argc, argv, "n:s:p:r:y:z:f:a:x:e:h", long_options, &option_index)) != -1)
     {
         switch (c)
         {
-            case 't':
+            case 'n':
                 node = optarg;
                 break;
             case 's':
-                sub_name = optarg;
+                subscription_name = optarg;
                 break;
             case 'p':
                 provider_dsn = optarg;
@@ -170,6 +172,12 @@ handle_sub_create_command(int argc, char *argv[])
             case 'a':
                 apply_delay = optarg;
                 break;
+            case 'x':
+                force_text_transfer = optarg;
+                break;
+            case 'e':
+                enabled = optarg;
+                break;
             case 'h':
                 print_sub_create_help();
                 return EXIT_SUCCESS;
@@ -186,9 +194,9 @@ handle_sub_create_command(int argc, char *argv[])
         print_sub_create_help();
         return EXIT_FAILURE;
     }
-    if (!sub_name)
+    if (!subscription_name)
     {
-        log_error("Missing required argument: --sub_name is mandatory.");
+        log_error("Missing required argument: --subscription_name is mandatory.");
         print_sub_create_help();
         return EXIT_FAILURE;
     }
@@ -196,25 +204,6 @@ handle_sub_create_command(int argc, char *argv[])
     {
         log_error("Missing required argument: --provider_dsn is mandatory.");
         print_sub_create_help();
-        return EXIT_FAILURE;
-    }
-
-    /* Validate optional arguments */
-    if (synchronize_structure && strcmp(synchronize_structure, "true") != 0 && strcmp(synchronize_structure, "false") != 0)
-    {
-        log_error("Invalid value for --synchronize_structure: %s. Allowed values are 'true' or 'false'.", synchronize_structure);
-        print_sub_create_help();
-        return EXIT_FAILURE;
-    }
-    if (synchronize_data && strcmp(synchronize_data, "true") != 0 && strcmp(synchronize_data, "false") != 0)
-    {
-        log_error("Invalid value for --synchronize_data: %s. Allowed values are 'true' or 'false'.", synchronize_data);
-        print_sub_create_help();
-        return EXIT_FAILURE;
-    }
-    if (apply_delay && !strchr(apply_delay, ':'))
-    {
-        log_error("Invalid format for --apply_delay: %s. Expected interval format (e.g., '0:00:00').", apply_delay);
         return EXIT_FAILURE;
     }
 
@@ -245,46 +234,51 @@ handle_sub_create_command(int argc, char *argv[])
 
     /* Build the SQL query */
     snprintf(sql, sizeof(sql),
-             "SELECT spock.sub_create("
-             "subscription_name := '%s', "
-             "provider_dsn := '%s', "
-             "replication_sets := %s, "
-             "synchronize_structure := %s, "
-             "synchronize_data := %s, "
-             "forward_origins := %s, "
-             "apply_delay := %s, "
-             "force_text_transfer := false);",
-             sub_name,
-             provider_dsn,
-             replication_sets ? replication_sets : "ARRAY['default', 'default_insert_only', 'ddl_sql']",
-             synchronize_structure ? synchronize_structure : "false",
-             synchronize_data ? synchronize_data : "false",
-             forward_origins ? forward_origins : "'{}'::text[]",
-             apply_delay ? apply_delay : "'0'::interval");
+        "SELECT spock.sub_create("
+        "subscription_name := '%s', "
+        "provider_dsn := '%s', "
+        "replication_sets := %s, "
+        "synchronize_structure := %s, "
+        "synchronize_data := %s, "
+        "forward_origins := %s, "
+        "apply_delay := %s, "
+        "force_text_transfer := %s, "
+        "enabled := %s"
+        ");",
+        subscription_name,
+        provider_dsn,
+        replication_sets ? replication_sets : "ARRAY['default','default_insert_only','ddl_sql']",
+        synchronize_structure ? synchronize_structure : "false",
+        synchronize_data ? synchronize_data : "false",
+        forward_origins ? forward_origins : "'{}'::text[]",
+        apply_delay ? apply_delay : "'0'::interval",
+        force_text_transfer ? force_text_transfer : "false",
+        enabled ? enabled : "true"
+    );
 
-   /* Execute SQL query */
-   res = PQexec(conn, sql);
-   log_debug0("SQL: %s", sql);
-   if (PQresultStatus(res) != PGRES_TUPLES_OK)
-   {
-       log_error("SQL command failed: %s", PQerrorMessage(conn));
-       PQclear(res);
-       PQfinish(conn);
-       return EXIT_FAILURE;
-   }
+    /* Execute SQL query */
+    res = PQexec(conn, sql);
+    log_debug0("SQL: %s", sql);
+    if (PQresultStatus(res) != PGRES_TUPLES_OK)
+    {
+        log_error("SQL command failed: %s", PQerrorMessage(conn));
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
 
-   /* Check for NULL result */
-   if (PQntuples(res) == 0 || PQgetvalue(res, 0, 0) == NULL)
-   {
-       log_error("SQL function returned NULL for query: %s", sql);
-       PQclear(res);
-       PQfinish(conn);
-       return EXIT_FAILURE;
-   }
+    /* Check for NULL result */
+    if (PQntuples(res) == 0 || PQgetvalue(res, 0, 0) == NULL)
+    {
+        log_error("SQL function returned NULL for query: %s", sql);
+        PQclear(res);
+        PQfinish(conn);
+        return EXIT_FAILURE;
+    }
 
-   /* Clean up */
-   PQclear(res);
-   PQfinish(conn);
+    /* Clean up */
+    PQclear(res);
+    PQfinish(conn);
 
     return EXIT_SUCCESS;
 }
@@ -1182,6 +1176,8 @@ print_sub_create_help(void)
     printf("  --synchronize_data    Synchronize data (optional)\n");
     printf("  --forward_origins     Forward origins (optional)\n");
     printf("  --apply_delay         Apply delay (optional)\n");
+    printf("  --enabled             Enable subscription (optional)\n");
+    printf("  --force_text_transfer Force text transfer (optional)\n");
     printf("  --help                Show this help message\n");
 }
 
