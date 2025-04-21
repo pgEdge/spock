@@ -3255,5 +3255,7 @@ spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 	else
 		elog(ERROR, "not a logical replication slot");
 
+	ReplicationSlotRelease();
+
 	PG_RETURN_LSN(endlsn);
 }
