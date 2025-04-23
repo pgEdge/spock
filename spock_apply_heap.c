@@ -806,6 +806,46 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	return apply;
 }
 
+static inline Datum
+zero_datum_for_type(Oid typid)
+{
+	switch(typid)
+	{
+		case INT2OID:
+			return Int16GetDatum(0);
+		case INT4OID:
+			return Int32GetDatum(0);
+		case INT8OID:
+			return Int64GetDatum(0);
+		case FLOAT4OID:
+			return Float4GetDatum(0);
+		case FLOAT8OID:
+			return Float8GetDatum(0);
+		case NUMERICOID:
+			return DirectFunctionCall1(int4_numeric, Int32GetDatum(0));
+		case MONEYOID:
+			return Int64GetDatum(0);
+	}
+
+	return (Datum) 0;
+}
+
+static void
+init_tuple_with_defaults(SpockTupleData *oldtup, TupleDesc tupdesc)
+{
+	for (int i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+
+		if (att->attisdropped)
+			continue;
+
+		oldtup->values[i] = zero_datum_for_type(att->atttypid);
+		oldtup->nulls[i] = false;
+		oldtup->changed[i] = false;
+	}
+}
+
 /*
  * Handle insert via low level api.
  */
@@ -857,9 +897,14 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	if (found)
 	{
 		SpockTupleData oldtup;
-		TupleDesc	tupdesc = RelationGetDescr(rel->rel);
 
-		memset(oldtup.nulls, 1, tupdesc->natts * sizeof(bool));
+		/*
+		 * When an INSERT is converted to an UPDATE on conflict, there is no
+		 * existing old tuple. In such cases, we simulate an old tuple by
+		 * initializing each attribute with a default value of 0 for supported
+		 * integral and numeric types.
+		 */
+		init_tuple_with_defaults(&oldtup, RelationGetDescr(rel->rel));
 		spock_handle_conflict_and_apply(rel, estate, localslot, remoteslot,
 										&oldtup, newtup, relinfo, &epqstate,
 										true);
