@@ -1,10 +1,11 @@
-version: '3'
-
 services:
   pgedge-n1:
     container_name: n1
     hostname: n1
-    image: pgedgeinc/spock
+    image: spock
+    build:
+      context: .
+      dockerfile: Dockerfile.el9
     environment:
       - HOSTNAME=n1
       - PEER_NAMES=n2,n3
@@ -14,14 +15,14 @@ services:
     ports:
       - '15432:5432'
     volumes:
-      - '${GITHUB_WORKSPACE}:/home/pgedge/spock-private'
-      - '~/spockbench:/home/pgedge/spockbench'
+      - '${GITHUB_WORKSPACE}:/home/pgedge/spock'
+      - '${GITHUB_WORKSPACE}/spockbench:/home/pgedge/spockbench'
       - './lib-list.txt:/home/pgedge/lib-list.txt'
 
   pgedge-n2:
     container_name: n2
     hostname: n2
-    image: pgedgeinc/spock
+    image: spock
     environment:
       - HOSTNAME=n2
       - PEER_NAMES=n1,n3
@@ -31,14 +32,14 @@ services:
     ports:
       - '15433:5432'
     volumes:
-      - '${GITHUB_WORKSPACE}:/home/pgedge/spock-private'
-      - '~/spockbench:/home/pgedge/spockbench'
+      - '${GITHUB_WORKSPACE}:/home/pgedge/spock'
+      - '${GITHUB_WORKSPACE}/spockbench:/home/pgedge/spockbench'
       - './lib-list.txt:/home/pgedge/lib-list.txt'
 
   pgedge-n3:
     container_name: n3
     hostname: n3
-    image: pgedgeinc/spock
+    image: spock
     environment:
       - HOSTNAME=n3
       - PEER_NAMES=n1,n2
@@ -48,6 +49,6 @@ services:
     ports:
       - '15434:5432'
     volumes:
-      - '${GITHUB_WORKSPACE}:/home/pgedge/spock-private'
-      - '~/spockbench:/home/pgedge/spockbench'
+      - '${GITHUB_WORKSPACE}:/home/pgedge/spock'
+      - '${GITHUB_WORKSPACE}/spockbench:/home/pgedge/spockbench'
       - './lib-list.txt:/home/pgedge/lib-list.txt'
