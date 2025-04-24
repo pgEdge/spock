@@ -1,5 +1,5 @@
 diff --git a/src/backend/executor/execReplication.c b/src/backend/executor/execReplication.c
-index d0a89cd577..4b692f3f80 100644
+index cb1202e4506..4cc143694a4 100644
 --- a/src/backend/executor/execReplication.c
 +++ b/src/backend/executor/execReplication.c
 @@ -267,17 +267,17 @@ retry:
