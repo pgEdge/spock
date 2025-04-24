@@ -927,6 +927,7 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 	tup = heap_form_tuple(logrel->rd_att, values, nulls);
 	CatalogTupleInsert(logrel, tup);
 	heap_freetuple(tup);
+
 	table_close(logrel, RowExclusiveLock);
 }
 
@@ -956,10 +957,14 @@ get_conflict_log_seq(void)
 	if (seqoid == InvalidOid)
 	{
 		Oid			reloid;
+		Relation	rel;
 
 		reloid = get_conflict_log_table_oid();
 #if PG_VERSION_NUM >= 170000
-		seqoid = getIdentitySequence(RelationIdGetRelation(reloid), InvalidAttrNumber, false);
+		rel = RelationIdGetRelation(reloid);
+		seqoid = getIdentitySequence(rel, InvalidAttrNumber, false);
+		RelationClose(rel);
+		rel = NULL;
 #else
 		seqoid = getIdentitySequence(reloid, InvalidAttrNumber, false);
 #endif
