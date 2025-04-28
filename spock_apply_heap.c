@@ -660,6 +660,192 @@ finish_apply_exec_state(ApplyExecState *aestate)
 	pfree(aestate);
 }
 
+static bool
+spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
+								TupleTableSlot *localslot, TupleTableSlot *remoteslot,
+								SpockTupleData *oldtup, SpockTupleData *newtup,
+								ResultRelInfo *relinfo, EPQState *epqstate,
+								bool is_insert)
+{
+	TransactionId xmin;
+	TimestampTz local_ts;
+	RepOriginId local_origin;
+	bool		local_origin_found;
+	bool		apply;
+	HeapTuple	applytuple;
+	HeapTuple	local_tuple;
+	HeapTuple   remotetuple;
+	SpockConflictResolution resolution;
+	bool		is_delta_apply = false;
+	bool		clear_remoteslot = false;
+	bool		clear_localslot = false;
+	MemoryContext   oldctx;
+	SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
+
+	/*
+	 * Fetch the contents of the local slot and store it in the error log
+	 */
+	local_tuple = ExecFetchSlotHeapTuple(localslot, true, &clear_localslot);
+	oldctx = MemoryContextSwitchTo(MessageContext);
+	exception_log->local_tuple = heap_copytuple(local_tuple);
+	MemoryContextSwitchTo(oldctx);
+
+	/* Process and store remote tuple in the slot */
+	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+	remotetuple = ExecFetchSlotHeapTuple(remoteslot, true,
+										 &clear_remoteslot);
+	MemoryContextSwitchTo(oldctx);
+
+	local_origin_found = get_tuple_origin(rel, TTS_TUP(localslot),
+										  &(localslot->tts_tid), &xmin,
+										  &local_origin, &local_ts);
+
+	apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
+								 remotetuple, &applytuple,
+								 local_origin, local_ts,
+								 &resolution);
+
+	/*
+	 * If remote tuple won we go forward with that as a base.
+	 */
+	if (apply && applytuple == remotetuple)
+	{
+		slot_modify_data(remoteslot, localslot, rel, newtup);
+	}
+	else
+	{
+		spock_report_conflict(is_insert ? CONFLICT_INSERT_INSERT : CONFLICT_UPDATE_UPDATE,
+							  rel, TTS_TUP(localslot), oldtup,
+							  remotetuple, applytuple, resolution,
+							  xmin, local_origin_found, local_origin,
+							  local_ts, rel->idxoid,
+							  true /* FIXME: unused in the call chain */ );
+	}
+
+	if (rel->has_delta_columns)
+	{
+		SpockTupleData deltatup;
+		HeapTuple	currenttuple;
+
+		/*
+		 * Depending on previous conflict resolution our final NEW tuple
+		 * will be based on either the incoming remote tuple or the
+		 * existing local one and then the delta processing on top of
+		 * that.
+		 */
+		if (apply)
+		{
+			currenttuple = ExecFetchSlotHeapTuple(remoteslot, true,
+												  &clear_remoteslot);
+		}
+		else
+		{
+			currenttuple = ExecFetchSlotHeapTuple(localslot, true,
+												  &clear_localslot);
+		}
+		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+		build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
+		if (!apply)
+		{
+			/*
+			 * We are overriding apply=false because of delta apply.
+			 */
+			apply = true;
+			is_delta_apply = true;
+
+			/* Count the DCA event in stats */
+			handle_stats_counter(rel->rel, MyApplyWorker->subid,
+								 SPOCK_STATS_DCA_COUNT, 1);
+		}
+		applytuple = heap_modify_tuple(currenttuple,
+									   RelationGetDescr(rel->rel),
+									   deltatup.values,
+									   deltatup.nulls,
+									   deltatup.changed);
+		MemoryContextSwitchTo(oldctx);
+		slot_store_htup(remoteslot, rel, applytuple);
+	}
+
+	/*
+	 * Finally do the actual tuple update if needed.
+	 */
+	if (apply)
+	{
+		UserContext	ucxt;
+
+		/* Make sure that any user-supplied code runs as the table owner. */
+		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
+		/*
+		 * If this is a forced delta-apply we execute it in a
+		 * subtransaction and record the local_ts & local_origin
+		 * for CommitTsData override.
+		 */
+		if (is_delta_apply)
+			BeginInternalSubTransaction("SpockDeltaApply");
+
+		EvalPlanQualSetSlot(epqstate, remoteslot);
+		ExecSimpleRelationUpdate(relinfo, estate, epqstate,
+								 localslot, remoteslot);
+
+		if (is_delta_apply)
+		{
+			SubTransactionIdSetCommitTsData(GetCurrentTransactionId(),
+											local_ts, local_origin);
+			ReleaseCurrentSubTransaction();
+		}
+
+		RestoreUserContext(&ucxt);
+	}
+
+	if (clear_remoteslot)
+		ExecClearTuple(remoteslot);
+	if (clear_localslot)
+		ExecClearTuple(localslot);
+
+	return apply;
+}
+
+static inline Datum
+zero_datum_for_type(Oid typid)
+{
+	switch(typid)
+	{
+		case INT2OID:
+			return Int16GetDatum(0);
+		case INT4OID:
+			return Int32GetDatum(0);
+		case INT8OID:
+			return Int64GetDatum(0);
+		case FLOAT4OID:
+			return Float4GetDatum(0);
+		case FLOAT8OID:
+			return Float8GetDatum(0);
+		case NUMERICOID:
+			return DirectFunctionCall1(int4_numeric, Int32GetDatum(0));
+		case MONEYOID:
+			return Int64GetDatum(0);
+	}
+
+	return (Datum) 0;
+}
+
+static void
+init_tuple_with_defaults(SpockTupleData *oldtup, TupleDesc tupdesc)
+{
+	for (int i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+
+		if (att->attisdropped)
+			continue;
+
+		oldtup->values[i] = zero_datum_for_type(att->atttypid);
+		oldtup->nulls[i] = false;
+		oldtup->changed[i] = false;
+	}
+}
+
 /*
  * Handle insert via low level api.
  */
@@ -672,6 +858,11 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	MemoryContext oldctx;
 	UserContext		ucxt;
 
+	EPQState	epqstate;
+	TupleTableSlot *localslot;
+	ResultRelInfo *relinfo;
+	bool		found;
+
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
 	estate = edata->estate;
@@ -683,31 +874,55 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
 						 SPOCK_STATS_INSERT_COUNT, 1);
 
-	/*
-	 * TODO: Spock used to do an all-column UPDATE if row exists on INSERT.
-	 * With the new exception handling we now throw an error on dupkey
-	 * (or anything else going wrong). To either get back to the old
-	 * behavior or present the conflicting local row in the exception_log
-	 * we need to lookup the new pkey and store the row in
-	 * exception_log->local_tuple.
-	 */
-
 	/* Process and store remote tuple in the slot */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 	slot_store_data(remoteslot, rel, newtup);
 	slot_fill_defaults(rel, estate, remoteslot);
 	MemoryContextSwitchTo(oldctx);
 
-	/* Make sure that any user-supplied code runs as the table owner. */
-	SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
-
-	/* Do the actual INSERT */
+	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
 	ExecOpenIndices(edata->targetRelInfo, false);
-	ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
-	ExecCloseIndices(edata->targetRelInfo);
-	RestoreUserContext(&ucxt);
+	relinfo = edata->targetRelInfo;
+
+	/*
+	 * TODO: do we need a retry finding a tuple? Also do we need
+	 * wait_for_previous_transaction() call here?
+	 */
+
+	/* Find the current local tuple. */
+	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
+									edata->targetRel->idxoid,
+									remoteslot, &localslot);
+
+	if (found)
+	{
+		SpockTupleData oldtup;
+
+		/*
+		 * When an INSERT is converted to an UPDATE on conflict, there is no
+		 * existing old tuple. In such cases, we simulate an old tuple by
+		 * initializing each attribute with a default value of 0 for supported
+		 * integral and numeric types.
+		 */
+		init_tuple_with_defaults(&oldtup, RelationGetDescr(rel->rel));
+		spock_handle_conflict_and_apply(rel, estate, localslot, remoteslot,
+										&oldtup, newtup, relinfo, &epqstate,
+										true);
+	}
+	else
+	{
+		/* Make sure that any user-supplied code runs as the table owner. */
+		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
+		/* Do the actual INSERT */
+		ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
+		/* Switch back to the original user */
+		RestoreUserContext(&ucxt);
+	}
 
 	/* Cleanup */
+	ExecCloseIndices(edata->targetRelInfo);
+	EvalPlanQualEnd(&epqstate);
 	finish_edata(edata);
 }
 
@@ -723,13 +938,10 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	EPQState	epqstate;
 	TupleTableSlot *remoteslot;
 	TupleTableSlot *localslot;
-	HeapTuple	remotetuple;
 	MemoryContext oldctx;
 	ResultRelInfo *relinfo;
 	bool		found;
 	int			retry;
-	bool		clear_remoteslot = false;
-	bool		clear_localslot = false;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -789,130 +1001,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	 */
 	if (found)
 	{
-		TransactionId xmin;
-		TimestampTz local_ts;
-		RepOriginId local_origin;
-		bool		local_origin_found;
-		bool		apply;
-		HeapTuple	applytuple;
-		HeapTuple	local_tuple;
-		SpockConflictResolution resolution;
-		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
-		bool		is_delta_apply = false;
-
-		/*
-		 * Fetch the contents of the local slot and store it in the error log
-		 */
-		local_tuple = ExecFetchSlotHeapTuple(localslot, true, &clear_localslot);
-
-		/* Save the old tuple in MessageContext for it to available later */
-		oldctx = MemoryContextSwitchTo(MessageContext);
-		exception_log->local_tuple = heap_copytuple(local_tuple);
-		MemoryContextSwitchTo(oldctx);
-
-		remotetuple = ExecFetchSlotHeapTuple(remoteslot, true,
-											 &clear_remoteslot);
-		local_origin_found = get_tuple_origin(rel, TTS_TUP(localslot),
-											  &(localslot->tts_tid), &xmin,
-											  &local_origin, &local_ts);
-
-		apply = try_resolve_conflict(rel->rel, TTS_TUP(localslot),
-									 remotetuple, &applytuple,
-									 local_origin, local_ts,
-									 &resolution);
-
-		/*
-		 * If remote tuple won we go forward with that as a base.
-		 */
-		if (apply && applytuple == remotetuple)
-		{
-			slot_modify_data(remoteslot, localslot, rel, newtup);
-		}
-		else
-		{
-			spock_report_conflict(CONFLICT_UPDATE_UPDATE, rel,
-								  TTS_TUP(localslot), oldtup,
-								  remotetuple, applytuple, resolution,
-								  xmin, local_origin_found, local_origin,
-								  local_ts, rel->idxoid,
-								  true /* FIXME: unused in the call chain */ );
-		}
-
-		if (rel->has_delta_columns)
-		{
-			SpockTupleData deltatup;
-			HeapTuple	currenttuple;
-
-			/*
-			 * Depending on previous conflict resolution our final NEW tuple
-			 * will be based on either the incoming remote tuple or the
-			 * existing local one and then the delta processing on top of
-			 * that.
-			 */
-			if (apply)
-			{
-				currenttuple = ExecFetchSlotHeapTuple(remoteslot, true,
-													  &clear_localslot);
-			}
-			else
-			{
-				currenttuple = ExecFetchSlotHeapTuple(localslot, true,
-													  &clear_localslot);
-			}
-			oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-			build_delta_tuple(rel, oldtup, newtup, &deltatup, localslot);
-			if (!apply)
-			{
-				/*
-				 * We are overriding apply=false because of delta apply.
-				 */
-				apply = true;
-				is_delta_apply = true;
-
-				/* Count the DCA event in stats */
-				handle_stats_counter(rel->rel, MyApplyWorker->subid,
-									 SPOCK_STATS_DCA_COUNT, 1);
-			}
-			applytuple = heap_modify_tuple(currenttuple,
-										   RelationGetDescr(rel->rel),
-										   deltatup.values,
-										   deltatup.nulls,
-										   deltatup.changed);
-			MemoryContextSwitchTo(oldctx);
-			slot_store_htup(remoteslot, rel, applytuple);
-		}
-
-		/*
-		 * Finally do the actual tuple update if needed.
-		 */
-		if (apply)
-		{
-			UserContext	ucxt;
-
-			/* Make sure that any user-supplied code runs as the table owner. */
-			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
-
-			/*
-			 * If this is a forced delta-apply we execute it in a
-			 * subtransaction and record the local_ts & local_origin
-			 * for CommitTsData override.
-			 */
-			if (is_delta_apply)
-				BeginInternalSubTransaction("SpockDeltaApply");
-
-			EvalPlanQualSetSlot(&epqstate, remoteslot);
-			ExecSimpleRelationUpdate(edata->targetRelInfo, estate, &epqstate,
-									 localslot, remoteslot);
-
-			if (is_delta_apply)
-			{
-				SubTransactionIdSetCommitTsData(GetCurrentTransactionId(),
-												local_ts, local_origin);
-				ReleaseCurrentSubTransaction();
-			}
-
-			RestoreUserContext(&ucxt);
-		}
+		spock_handle_conflict_and_apply(rel, estate, localslot, remoteslot,
+										oldtup, newtup, relinfo, &epqstate,
+										false);
 	}
 	else
 	{
@@ -930,14 +1021,11 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	}
 
 	/* Cleanup. */
-	if (clear_remoteslot)
-		ExecClearTuple(remoteslot);
-	if (clear_localslot)
-		ExecClearTuple(localslot);
 	ExecCloseIndices(edata->targetRelInfo);
 	EvalPlanQualEnd(&epqstate);
 	finish_edata(edata);
 }
+
 
 /*
  * Handle delete via low level api.

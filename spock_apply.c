@@ -1282,16 +1282,53 @@ handle_relation(StringInfo s)
 }
 
 static void
+log_insert_exception(bool failed, ErrorData *edata, SpockRelation *rel,
+					 SpockTupleData *oldtup, SpockTupleData *newtup,
+					 const char *action_name)
+{
+	RepOriginId		local_origin = InvalidRepOriginId;
+	TimestampTz		local_commit_ts = 0;
+	TransactionId	xmin = InvalidTransactionId;
+	bool			local_origin_found = false;
+	HeapTuple		localtup;
+
+	if (!should_log_exception(failed))
+		return;
+
+	localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+	if (localtup != NULL)
+	{
+		local_origin_found = get_tuple_origin(rel, localtup,
+											  &(localtup->t_self),
+											  &xmin,
+											  &local_origin,
+											  &local_commit_ts);
+
+		if (local_origin_found && local_origin == 0)
+		{
+			SpockLocalNode *local_node = get_local_node(false, false);
+			local_origin = local_node->node->id;
+		}
+	}
+
+	add_entry_to_exception_log(remote_origin_id,
+							   replorigin_session_origin_timestamp,
+							   remote_xid,
+							   local_origin, local_commit_ts,
+							   rel, localtup, oldtup, newtup,
+							   NULL, NULL,
+							   action_name,
+							   (failed && edata) ? edata->message : NULL);
+}
+
+static void
 handle_insert(StringInfo s)
 {
 	SpockTupleData newtup;
-	SpockTupleData *oldtup = NULL;
-	HeapTuple	localtup = NULL;
 	SpockRelation *rel;
 	ErrorData  *edata;
 	bool		started_tx;
 	bool		failed = false;
-	char	   *action_name = "INSERT";
 
 	/*
 	 * Quick return if we are skipping data modification changes.
@@ -1381,15 +1418,7 @@ handle_insert(StringInfo s)
 		}
 
 		/* Let's create an exception log entry if true. */
-		if (should_log_exception(failed))
-			add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid,
-									   0, 0,
-									   rel, localtup, oldtup, &newtup,
-									   NULL, NULL,
-									   action_name,
-									   (failed) ? edata->message : NULL);
+		log_insert_exception(failed, edata, rel, NULL, &newtup, "INSERT");
 	}
 	else
 	{
@@ -1466,7 +1495,6 @@ handle_update(StringInfo s)
 	SpockTupleData newtup;
 	SpockRelation *rel;
 	ErrorData  *edata = NULL;
-	HeapTuple	localtup;
 	bool		hasoldtup;
 	bool		failed = false;
 
@@ -1522,47 +1550,7 @@ handle_update(StringInfo s)
 		}
 
 		/* Let's create an exception log entry if true. */
-		if (should_log_exception(failed))
-		{
-			RepOriginId		local_origin;
-			TimestampTz		local_commit_ts;
-			TransactionId	xmin;
-			bool			local_origin_found = false;
-
-			localtup = exception_log_ptr[my_exception_log_index].local_tuple;
-			if (localtup != NULL)
-				local_origin_found = get_tuple_origin(rel, localtup,
-													  &(localtup->t_self),
-													  &xmin,
-													  &local_origin,
-													  &local_commit_ts);
-			if (!local_origin_found)
-			{
-				xmin = InvalidTransactionId;
-				local_origin = InvalidRepOriginId;
-				local_commit_ts = 0;
-			}
-			else
-			{
-				if (local_origin == 0)
-				{
-					SpockLocalNode *local_node;
-
-					local_node = get_local_node(false, false);
-					local_origin = local_node->node->id;
-				}
-			}
-
-			add_entry_to_exception_log(remote_origin_id,
-									replorigin_session_origin_timestamp,
-									remote_xid,
-									local_origin, local_commit_ts,
-									rel, localtup,
-									hasoldtup ? &oldtup : NULL, &newtup,
-									NULL, NULL,
-									"UPDATE",
-									(failed) ? edata->message : NULL);
-		}
+		log_insert_exception(failed, edata, rel, hasoldtup ? &oldtup : NULL, &newtup, "UPDATE");
 	}
 	else
 	{
@@ -1579,7 +1567,6 @@ handle_delete(StringInfo s)
 {
 	SpockTupleData oldtup;
 	SpockRelation *rel;
-	HeapTuple	localtup;
 	ErrorData  *edata;
 	bool		failed = false;
 
@@ -1634,47 +1621,7 @@ handle_delete(StringInfo s)
 		}
 
 		/* Let's create an exception log entry if true. */
-		if (should_log_exception(failed))
-		{
-			RepOriginId		local_origin;
-			TimestampTz		local_commit_ts;
-			TransactionId	xmin;
-			bool			local_origin_found = false;
-
-			localtup = exception_log_ptr[my_exception_log_index].local_tuple;
-			if (localtup != NULL)
-				local_origin_found = get_tuple_origin(rel, localtup,
-													  &(localtup->t_self),
-													  &xmin,
-													  &local_origin,
-													  &local_commit_ts);
-			if (!local_origin_found)
-			{
-				xmin = InvalidTransactionId;
-				local_origin = InvalidRepOriginId;
-				local_commit_ts = 0;
-			}
-			else
-			{
-				if (local_origin == 0)
-				{
-					SpockLocalNode *local_node;
-
-					local_node = get_local_node(false, false);
-					local_origin = local_node->node->id;
-				}
-			}
-
-			add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid,
-									   local_origin, local_commit_ts,
-									   rel, localtup,
-									   &oldtup, NULL,
-									   NULL, NULL,
-									   "DELETE",
-									   (failed) ? edata->message : NULL);
-		}
+		log_insert_exception(failed, edata, rel, &oldtup, NULL, "DELETE");
 	}
 	else
 	{
