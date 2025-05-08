@@ -54,7 +54,7 @@ static int prepare_arguments(Step *step, char *argv[], int max_args, const char 
     snprintf(argv[argc++], 256, "--node=%s", step->node);
 
     /* Add the step arguments */
-    for (int i = 0; step->args[i] != NULL && argc < max_args - 1; i++)
+    for (int i = 0; step->args[i] != NULL && argc < max_args; i++)
     {
         argv[argc++] = step->args[i];
     }

@@ -124,24 +124,24 @@ handle_sub_create_command(int argc, char *argv[])
         {0, 0, 0, 0}
     };
 
-    char *node = NULL;
-    char *subscription_name = NULL;
-    char *provider_dsn = NULL;
-    char *replication_sets = NULL;
-    char *synchronize_structure = NULL;
-    char *synchronize_data = NULL;
-    char *forward_origins = NULL;
-    char *apply_delay = NULL;
-    char *force_text_transfer = NULL;
-    char *enabled = NULL;
+    char       *node                 = NULL;
+    char       *subscription_name    = NULL;
+    char       *provider_dsn         = NULL;
+    char       *replication_sets     = NULL;
+    char       *synchronize_structure = NULL;
+    char       *synchronize_data     = NULL;
+    char       *forward_origins      = NULL;
+    char       *apply_delay          = NULL;
+    char       *force_text_transfer  = NULL;
+    char       *enabled              = NULL;
     const char *conninfo;
     const char *db;
-    PGconn *conn;
-    PGresult *res;
+    PGconn     *conn;
+    PGresult   *res;
 
-    char sql[4096];
-    int option_index = 0;
-    int c;
+    char        sql[4096];
+    int         option_index         = 0;
+    int         c;
 
     optind = 1;
     while ((c = getopt_long(argc, argv, "n:s:p:r:y:z:f:a:x:e:h", long_options, &option_index)) != -1)
@@ -255,7 +255,6 @@ handle_sub_create_command(int argc, char *argv[])
         force_text_transfer ? force_text_transfer : "false",
         enabled ? enabled : "true"
     );
-
     /* Execute SQL query */
     res = PQexec(conn, sql);
     log_debug0("SQL: %s", sql);
@@ -547,7 +546,7 @@ handle_sub_disable_command(int argc, char *argv[])
     int option_index = 0;
     int c;
 
-    /* Parse command-line options */
+    optind = 1; // Reset optind to ensure proper parsing
     while ((c = getopt_long(argc, argv, "n:s:i:h", long_options, &option_index)) != -1)
     {
         switch (c)

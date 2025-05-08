@@ -33,7 +33,7 @@
           "--forward_origins='{}'::text[]",
           "--apply_delay='0'::interval",
           "--force_text_transfer=false",
-          "--enabled=false"
+          "--enabled=true"
         ],
         "on_success": {},
         "on_failure": {}
@@ -54,7 +54,7 @@
           "--forward_origins='{}'::text[]",
           "--apply_delay='0'::interval",
           "--force_text_transfer=false",
-          "--enabled=false"
+          "--enabled=true"
         ],
         "on_success": {},
         "on_failure": {}
@@ -64,7 +64,7 @@
       "spock": {
         "node": "n3",
         "command": "CREATE SUBSCRIPTION",
-        "description": "Create a subscription (sub_n3_n2) on (n3) for n2->n3",
+        "description": "Create a subscription (sub_n2_n3) on (n3) for n2->n3",
         "sleep": 1,
         "args": [
           "--subscription_name=sub_n2_n3",
@@ -81,6 +81,20 @@
         "on_failure": {}
       }
     },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "CREATE SLOT",
+        "description": "Create a logical replication slot on n2",
+        "args": [
+          "--slot=spk_pgedge_n2_sub_n2_n3",
+          "--plugin=spock_output"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    
     {
       "sql": {
         "node": "n2",
@@ -111,10 +125,10 @@
       "spock": {
         "node": "n3",
         "command": "CREATE SUBSCRIPTION",
-        "description": "Create a subscription (sub_n3_n1) for n1 fpr n3->n1",
+        "description": "Create a subscription (sub_n1_n3) for n1 fpr n3->n1",
         "sleep": 1,
         "args": [
-          "--subscription_name=sub_n3_n1",
+          "--subscription_name=sub_n1_n3",
           "--provider_dsn=host=127.0.0.1 port=5431 user=pgedge password=spockpass",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
           "--synchronize_structure=false",
@@ -162,6 +176,19 @@
         "sleep": 0,
         "args": [
           "--sql=SELECT commit_timestamp FROM spock.lag_tracker WHERE origin_name = 'n2' AND receiver_name = 'n3'"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "sql": {
+        "node": "n2",
+        "command": "SQL",
+        "description": "Advance the replication slot for n2->n3 based on a specific commit timestamp",
+        "sleep": 0,
+        "args": [
+          "--sql=WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_pgedge_n2_sub_n2_n3', '$n3.commit_timestamp'::timestamp) AS lsn) SELECT pg_replication_slot_advance('spk_pgedge_n2_sub_n2_n3', lsn) FROM lsn_cte;"
         ],
         "on_success": {},
         "on_failure": {}

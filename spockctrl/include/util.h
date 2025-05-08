@@ -35,4 +35,13 @@ char *make_select_query(const char *table, const char *columns, const char *cond
 /* Function to create a Spock-specific query with variable parameters */
 char *make_spock_query(const char *command, const char *params_format, ...);
 
+/* Function to create a Spock-specific query with variable parameters */
+void trim_newline(char *str);
+
+/* Function to substitute SQL variables with values from node.out */
+int get_value_from_outfile(const char *node, const char *key, char *value, size_t value_sz);
+
+/* Function to substitute SQL variables in a statement */
+char *substitute_sql_vars(const char *sql_stmt);
+
 #endif /* UTIL_H */
