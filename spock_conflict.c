@@ -608,8 +608,8 @@ conflict_type_to_string(SpockConflictType conflict_type)
 {
 	switch (conflict_type)
 	{
-		case CONFLICT_INSERT_INSERT:
-			return "insert_insert";
+		case CONFLICT_INSERT_EXISTS:
+			return "insert_exists";
 		case CONFLICT_UPDATE_UPDATE:
 			return "update_update";
 		case CONFLICT_UPDATE_DELETE:
@@ -735,12 +735,12 @@ spock_report_conflict(SpockConflictType conflict_type,
 	 */
 	switch (conflict_type)
 	{
-		case CONFLICT_INSERT_INSERT:
+		case CONFLICT_INSERT_EXISTS:
 		case CONFLICT_UPDATE_UPDATE:
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
 					 errmsg("CONFLICT: remote %s on relation %s (local index %s). Resolution: %s.",
-							conflict_type == CONFLICT_INSERT_INSERT ? "INSERT" : "UPDATE",
+							conflict_type == CONFLICT_INSERT_EXISTS ? "INSERT EXISTS" : "UPDATE",
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("existing local tuple {%s} xid=%u,origin=%d,timestamp=%s; remote tuple {%s}%s in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
