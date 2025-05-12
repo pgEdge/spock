@@ -253,6 +253,25 @@ spock_relation_close(SpockRelation * rel, LOCKMODE lockmode)
 	rel->rel = NULL;
 }
 
+void
+spock_relation_cache_reset(void)
+{
+	SpockRelation *entry;
+
+	/* Just to be sure. */
+	if (SpockRelationHash == NULL)
+		return;
+
+	/* invalidate all cache entries */
+	HASH_SEQ_STATUS status;
+
+	hash_seq_init(&status, SpockRelationHash);
+
+	while ((entry = (SpockRelation *) hash_seq_search(&status)) != NULL)
+		entry->reloid = InvalidOid;
+}
+
+
 static void
 spock_relcache_invalidate_callback(Datum arg, Oid reloid)
 {

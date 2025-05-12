@@ -142,6 +142,19 @@ int			my_exception_log_index = -1;
 
 static PGconn *applyconn = NULL;
 
+typedef struct ApplyReplayEntryData ApplyReplayEntry;
+struct ApplyReplayEntryData
+{
+	StringInfoData		copydata;
+	ApplyReplayEntry   *next;
+};
+static MemoryContext		ApplyReplayContext = NULL;
+static ApplyReplayEntry	   *apply_replay_head = NULL;
+static ApplyReplayEntry	   *apply_replay_tail = NULL;
+static ApplyReplayEntry	   *apply_replay_next = NULL;
+static int					apply_replay_bytes = 0;
+static bool					apply_replay_overflow = false;
+
 typedef struct SpockApplyFunctions
 {
 	spock_apply_begin_fn on_begin;
@@ -1184,6 +1197,14 @@ handle_commit(StringInfo s)
 	 * any risk of going into the error deathloop
 	 */
 	MyApplyWorker->use_try_block = false;
+
+	/* Reset the ApplyReplayContext and poiners */
+	apply_replay_head = NULL;
+	apply_replay_tail = NULL;
+	apply_replay_next = NULL;
+	apply_replay_bytes = 0;
+	apply_replay_overflow = false;
+	MemoryContextReset(ApplyReplayContext);
 
 	process_syncing_tables(end_lsn);
 
@@ -2565,12 +2586,18 @@ void
 apply_work(PGconn *streamConn)
 {
 	int			fd;
-	char	   *copybuf = NULL;
 	XLogRecPtr	last_received = InvalidXLogRecPtr;
 	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
+	bool		need_replay;
+	ErrorData  *edata;
 
 	applyconn = streamConn;
 	fd = PQsocket(applyconn);
+
+	/* Init the ApplyReplayContext used to replay after an exception */
+	ApplyReplayContext = AllocSetContextCreate(TopMemoryContext,
+											   "MessageContext",
+											   ALLOCSET_DEFAULT_SIZES);
 
 	/* Init the MessageContext which we use for easier cleanup. */
 	MessageContext = AllocSetContextCreate(TopMemoryContext,
@@ -2581,110 +2608,137 @@ apply_work(PGconn *streamConn)
 
 	/* mark as idle, before starting to loop */
 	pgstat_report_activity(STATE_IDLE, NULL);
-	Assert(CurrentMemoryContext == MessageContext);
 
 	if (MyApplyWorker->apply_group == NULL)
 		spock_apply_worker_attach(); /* Attach this worker. */
 
-	while (!got_SIGTERM)
+stream_replay:
+
+	need_replay = false;
+
+	PG_TRY();
 	{
-		int			rc;
-		int			r;
-
-		/*
-		 * Background workers mustn't call usleep() or any direct equivalent:
-		 * instead, they may wait on their process latch, which sleeps as
-		 * necessary, but is awakened if postmaster dies.  That way the
-		 * background process goes away immediately in an emergency.
-		 */
-		rc = WaitLatchOrSocket(&MyProc->procLatch,
-							   WL_SOCKET_READABLE | WL_LATCH_SET |
-							   WL_TIMEOUT | WL_POSTMASTER_DEATH,
-							   fd, 1000L);
-
-		ResetLatch(&MyProc->procLatch);
-
-		CHECK_FOR_INTERRUPTS();
-
-		Assert(CurrentMemoryContext == MessageContext);
-
-		if (ConfigReloadPending)
+		while (!got_SIGTERM)
 		{
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
-		}
+			int			rc;
+			int			r;
 
-		/* emergency bailout if postmaster has died */
-		if (rc & WL_POSTMASTER_DEATH)
-			proc_exit(1);
+			/*
+			 * Background workers mustn't call usleep() or any direct equivalent
+			 * instead, they may wait on their process latch, which sleeps as
+			 * necessary, but is awakened if postmaster dies.  That way the
+			 * background process goes away immediately in an emergency.
+			 */
+			rc = WaitLatchOrSocket(&MyProc->procLatch,
+								   WL_SOCKET_READABLE | WL_LATCH_SET |
+								   WL_TIMEOUT | WL_POSTMASTER_DEATH,
+								   fd, 1000L);
 
-		if (rc & WL_SOCKET_READABLE)
-			PQconsumeInput(applyconn);
+			ResetLatch(&MyProc->procLatch);
 
-		if (PQstatus(applyconn) == CONNECTION_BAD)
-		{
-			elog(ERROR, "SPOCK %s: connection to other side has died",
-				 MySubscription->name);
-		}
+			CHECK_FOR_INTERRUPTS();
 
-		/*
-		 * The walsender is supposed to ping us for a status update every
-		 * wal_sender_timeout / 2 milliseconds. If we don't get those, we
-		 * assume that we have lost the connection.
-		 *
-		 * Note: keepalive configuration is supposed to cover this but is
-		 * apparently unreliable.
-		 */
-		if (rc & WL_TIMEOUT)
-		{
-			TimestampTz timeout;
-
-			timeout = TimestampTzPlusMilliseconds(last_receive_timestamp,
-												  (wal_sender_timeout * 3) / 2);
-			if (GetCurrentTimestamp() > timeout)
-			{
-				elog(ERROR, "SPOCK %s: terminating apply due to missing "
-					 "walsender ping",
-					 MySubscription->name);
-			}
-		}
-
-		Assert(CurrentMemoryContext == MessageContext);
-
-		for (;;)
-		{
-			if (got_SIGTERM)
-				break;
-
-			/* We must not have fallen out of MessageContext by accident */
 			Assert(CurrentMemoryContext == MessageContext);
 
-			Assert(copybuf == NULL);
-			r = PQgetCopyData(applyconn, &copybuf, 1);
-
-			if (r == -1)
+			if (ConfigReloadPending)
 			{
-				elog(ERROR, "SPOCK %s: data stream ended",
+				ConfigReloadPending = false;
+				ProcessConfigFile(PGC_SIGHUP);
+			}
+
+			/* emergency bailout if postmaster has died */
+			if (rc & WL_POSTMASTER_DEATH)
+				proc_exit(1);
+
+			if (rc & WL_SOCKET_READABLE)
+				PQconsumeInput(applyconn);
+
+			if (PQstatus(applyconn) == CONNECTION_BAD)
+			{
+				elog(ERROR, "SPOCK %s: connection to other side has died",
 					 MySubscription->name);
 			}
-			else if (r == -2)
+
+			/*
+			 * The walsender is supposed to ping us for a status update every
+			 * wal_sender_timeout / 2 milliseconds. If we don't get those, we
+			 * assume that we have lost the connection.
+			 *
+			 * Note: keepalive configuration is supposed to cover this but is
+			 * apparently unreliable.
+			 */
+			if (rc & WL_TIMEOUT)
 			{
-				elog(ERROR, "SPOCK %s: could not read COPY data: %s",
-					 MySubscription->name,
-					 PQerrorMessage(applyconn));
+				TimestampTz timeout;
+
+				timeout = TimestampTzPlusMilliseconds(last_receive_timestamp,
+													  (wal_sender_timeout * 3) / 2);
+				if (GetCurrentTimestamp() > timeout)
+				{
+					elog(ERROR, "SPOCK %s: terminating apply due to missing "
+						 "walsender ping",
+						 MySubscription->name);
+				}
 			}
-			else if (r < 0)
-				elog(ERROR, "SPOCK %s: invalid COPY status %d",
-					 MySubscription->name, r);
-			else if (r == 0)
+
+			Assert(CurrentMemoryContext == MessageContext);
+
+			for (;;)
 			{
-				/* need to wait for new data */
-				break;
-			}
-			else
-			{
-				int			c;
-				StringInfoData s;
+				ApplyReplayEntry   *entry;
+				bool				queue_append = false;
+				StringInfo			msg;
+				int					c;
+
+				if (got_SIGTERM)
+					break;
+
+				if (apply_replay_next == NULL)
+				{
+					/*
+					 * We are not in replay mode so receive from the stream.
+					 * Create a new apply entry in the replay context.
+					 */
+					MemoryContextSwitchTo(ApplyReplayContext);
+					entry = palloc0(sizeof(ApplyReplayEntry));
+					r = PQgetCopyData(applyconn, &entry->copydata.data, 1);
+					entry->copydata.len = r;
+					entry->copydata.maxlen = -1;
+					entry->copydata.cursor = 0;
+					entry->next = NULL;
+					queue_append = true;
+					MemoryContextSwitchTo(MessageContext);
+
+					last_receive_timestamp = GetCurrentTimestamp();
+
+					/* Check for errors */
+					if (r == -1)
+					{
+						elog(ERROR, "SPOCK %s: data stream ended",
+							 MySubscription->name);
+					}
+					else if (r == -2)
+					{
+						elog(ERROR, "SPOCK %s: could not read COPY data: %s",
+							 MySubscription->name,
+							 PQerrorMessage(applyconn));
+					}
+					else if (r < 0)
+						elog(ERROR, "SPOCK %s: invalid COPY status %d",
+							 MySubscription->name, r);
+					else if (r == 0)
+					{
+						/* need to wait for new data */
+						pfree(entry);
+						break;
+					}
+				}
+				else
+				{
+					/* We are in replay mode so present the next queue entry */
+					entry = apply_replay_next;
+					apply_replay_next = apply_replay_next->next;
+				}
 
 				if (ConfigReloadPending)
 				{
@@ -2692,29 +2746,19 @@ apply_work(PGconn *streamConn)
 					ProcessConfigFile(PGC_SIGHUP);
 				}
 
-				last_receive_timestamp = GetCurrentTimestamp();
-
-				/*
-				 * We're using a StringInfo to wrap existing data here, as a
-				 * cursor. We init it manually to avoid a redundant
-				 * allocation.
-				 */
-				memset(&s, 0, sizeof(StringInfoData));
-				s.data = copybuf;
-				s.len = r;
-				s.maxlen = -1;
-				s.cursor = 0;
-
-				c = pq_getmsgbyte(&s);
+				/* Handle the message received or replayed */
+				msg = &entry->copydata;
+				msg->cursor = 0;
+				c = pq_getmsgbyte(msg);
 
 				if (c == 'w')
 				{
 					XLogRecPtr	start_lsn;
 					XLogRecPtr	end_lsn;
 
-					start_lsn = pq_getmsgint64(&s);
-					end_lsn = pq_getmsgint64(&s);
-					pq_getmsgint64(&s); /* sendTime */
+					start_lsn = pq_getmsgint64(msg);
+					end_lsn = pq_getmsgint64(msg);
+					pq_getmsgint64(msg); /* sendTime */
 
 					if (last_received < start_lsn)
 						last_received = start_lsn;
@@ -2722,16 +2766,42 @@ apply_work(PGconn *streamConn)
 					if (last_received < end_lsn)
 						last_received = end_lsn;
 
-					replication_handler(&s);
+					/*
+					 * Append the entry to the end of the replay queue
+					 * if we read it from the stream
+					 */
+					if (queue_append)
+					{
+						apply_replay_bytes += msg->len;
+
+						if (apply_replay_bytes < spock_replay_queue_size)
+						{
+							if (apply_replay_head == NULL)
+								apply_replay_head = apply_replay_tail = entry;
+							else
+								apply_replay_tail->next = entry;
+						}
+						else
+						{
+							apply_replay_overflow = true;
+						}
+					}
+
+					replication_handler(msg);
+
+					if (queue_append && apply_replay_overflow)
+					{
+						MemoryContextReset(ApplyReplayContext);
+					}
 				}
 				else if (c == 'k')
 				{
 					XLogRecPtr	endpos;
 					bool		reply_requested;
 
-					endpos = pq_getmsgint64(&s);
-					 /* timestamp = */ pq_getmsgint64(&s);
-					reply_requested = pq_getmsgbyte(&s);
+					endpos = pq_getmsgint64(msg);
+					 /* timestamp = */ pq_getmsgint64(msg);
+					reply_requested = pq_getmsgbyte(msg);
 
 					send_feedback(applyconn, endpos,
 								  GetCurrentTimestamp(),
@@ -2742,97 +2812,158 @@ apply_work(PGconn *streamConn)
 
 					if (reply_requested)
 						check_and_update_progress(endpos, GetCurrentTimestamp());
-				}
-				/* other message types are purposefully ignored */
 
-				/* copybuf is malloc'd not palloc'd */
-				if (copybuf != NULL)
-				{
-					PQfreemem(copybuf);
-					copybuf = NULL;
+					/* We do not add 'k' messages to the replay queue */
+					pfree(entry);
 				}
+				else
+				{
+					/*
+					 * Other message types are purposefully ignored and
+					 * we don't add them to the replay queue.
+					 */
+					pfree(entry);
+				}
+
+				/* We must not have fallen out of MessageContext by accident */
+				Assert(CurrentMemoryContext == MessageContext);
+
+				CHECK_FOR_INTERRUPTS();
 			}
 
-			/* We must not have fallen out of MessageContext by accident */
-			Assert(CurrentMemoryContext == MessageContext);
-
-			CHECK_FOR_INTERRUPTS();
-		}
-
-		if (xact_had_exception)
-		{
-			/*
-			 * xact_had_exception implies that we are running under
-			 * use_try_block == true. If this happens in SUB_DISABLE
-			 * exception_behaviour, suspend the subscription here
-			 * and suppress feedback.
-			 */
-			if (exception_behaviour == SUB_DISABLE)
+			if (xact_had_exception)
 			{
-				SpockSubscription *sub;
-				char errmsg[1024];
+				/*
+				 * xact_had_exception implies that we are running under
+				 * use_try_block == true. If this happens in SUB_DISABLE
+				 * exception_behaviour, suspend the subscription here
+				 * and suppress feedback.
+				 */
+				if (exception_behaviour == SUB_DISABLE)
+				{
+					SpockSubscription *sub;
+					char errmsg[1024];
 
-				sub = get_subscription_by_name(MySubscription->name, false);
-				sub->enabled = false;
-				alter_subscription(sub);
+					sub = get_subscription_by_name(MySubscription->name, false);
+					sub->enabled = false;
+					alter_subscription(sub);
 
-				snprintf(errmsg, sizeof(errmsg),
-						 "disabling subscription %s due to exception(s) - "
-						 "skip_lsn = %X/%X",
+					snprintf(errmsg, sizeof(errmsg),
+							 "disabling subscription %s due to exception(s) - "
+							 "skip_lsn = %X/%X",
+							 MySubscription->name,
+							 LSN_FORMAT_ARGS(replorigin_session_origin_lsn));
+					exception_command_counter++;
+					add_entry_to_exception_log(remote_origin_id,
+											   replorigin_session_origin_timestamp,
+											   remote_xid,
+											   0, 0,
+											   NULL, NULL, NULL, NULL,
+											   NULL, NULL,
+											   "SUB_DISABLE",
+											   errmsg);
+					elog(WARNING, "SPOCK %s: disabling subscription due to"
+								  " exceptions - origin_lsn=%X/%X",
 						 MySubscription->name,
 						 LSN_FORMAT_ARGS(replorigin_session_origin_lsn));
-				exception_command_counter++;
-				add_entry_to_exception_log(remote_origin_id,
-										   replorigin_session_origin_timestamp,
-										   remote_xid,
-										   0, 0,
-										   NULL, NULL, NULL, NULL,
-										   NULL, NULL,
-										   "SUB_DISABLE",
-										   errmsg);
-				elog(WARNING, "SPOCK %s: disabling subscription due to"
-							  " exceptions - origin_lsn=%X/%X",
-					 MySubscription->name,
-					 LSN_FORMAT_ARGS(replorigin_session_origin_lsn));
+				}
 			}
-		}
-		else
-		{
-			/*
-			 * If we did not encounter any exception only send feedback
-			 * if exception_behaviour == DISCARD or we are not using a
-			 * try block at all (default transaction mode). The reason
-			 * for this is that in TRANSDISCARD or SUB_DISABLE modes this
-			 * not having an exception during use_try_block would lead
-			 * to silently skipping the transaction altogether.
-			 */
-			if (!MyApplyWorker->use_try_block ||
-				exception_behaviour == DISCARD)
+			else
 			{
-				send_feedback(applyconn, last_received, GetCurrentTimestamp(),
-							  false);
+				/*
+				 * If we did not encounter any exception only send feedback
+				 * if exception_behaviour == DISCARD or we are not using a
+				 * try block at all (default transaction mode). The reason
+				 * for this is that in TRANSDISCARD or SUB_DISABLE modes this
+				 * not having an exception during use_try_block would lead
+				 * to silently skipping the transaction altogether.
+				 */
+				if (!MyApplyWorker->use_try_block ||
+					exception_behaviour == DISCARD)
+				{
+					send_feedback(applyconn, last_received, GetCurrentTimestamp(),
+								  false);
+				}
 			}
-		}
 
-		if (!in_remote_transaction)
-			process_syncing_tables(last_received);
+			if (!in_remote_transaction)
+				process_syncing_tables(last_received);
 
-		/* We must not have switched out of MessageContext by mistake */
-		Assert(CurrentMemoryContext == MessageContext);
+			/* We must not have switched out of MessageContext by mistake */
+			Assert(CurrentMemoryContext == MessageContext);
 
-		/* Cleanup the memory. */
-		MemoryContextReset(MessageContext);
+			/* Cleanup the memory. */
+			MemoryContextReset(MessageContext);
 
-		/*
-		 * Only do a leak check if we're between txns; we don't want lots of
-		 * noise due to resources that only exist in a txn.
-		 */
-		if (!IsTransactionState())
-		{
-			VALGRIND_DO_ADDED_LEAK_CHECK;
-			pgstat_report_stat(true);
+			/*
+			 * Only do a leak check if we're between txns; we don't want lots of
+			 * noise due to resources that only exist in a txn.
+			 */
+			if (!IsTransactionState())
+			{
+				VALGRIND_DO_ADDED_LEAK_CHECK;
+				pgstat_report_stat(true);
+			}
 		}
 	}
+	PG_CATCH();
+	{
+		/*
+		 * Exception handling should have caught this in the individual
+		 * action. This indicates an ERROR that is not covered by exception
+		 * handling and we need to bail out.
+		 */
+		if (MyApplyWorker->use_try_block)
+		{
+			elog(LOG, "SPOCK: caught exception while use_try_block=true");
+			PG_RE_THROW();
+		}
+
+		/*
+		 * If we ran out of queue space we also need to bail out.
+		 */
+		if (apply_replay_overflow)
+		{
+			elog(LOG, "SPOCK: caught exception after replay queue overrun "
+				 "- forcing apply worker restart");
+			PG_RE_THROW();
+		}
+
+		/*
+		 * Reaching this point means that we are dealing with the first
+		 * occurrence of an exception in the default, non-exception-handling
+		 * mode. We need to abort the current toplevel transactions and
+		 * reset cache states so that we can retry the transaction in
+		 * exception-handling mode by replaying from the queue.
+		 */
+		AbortOutOfAnyTransaction();
+
+		MemoryContextSwitchTo(MessageContext);
+		edata = CopyErrorData();
+		elog(DEBUG1, "SPOCK: caught exception - %s use_try_block=%s",
+			 edata->message, MyApplyWorker->use_try_block ? "true" : "false");
+		FlushErrorState();
+
+		MemoryContextReset(MessageContext);
+		spock_relation_cache_reset();
+
+		apply_replay_next = apply_replay_head;
+		in_remote_transaction = false;
+		first_begin_at_startup = true;
+		remote_origin_lsn = InvalidXLogRecPtr;
+		remote_origin_id = InvalidRepOriginId;
+
+		/* Don't want to use goto inside of PG_CATCH() */
+		need_replay = true;
+	}
+	PG_END_TRY();
+
+	if (need_replay)
+	{
+		MyApplyWorker->use_try_block = true;
+		goto stream_replay;
+	}
+
 	elog(LOG, "SPOCK %s: falling out of apply_work() sigterm=%s",
 		 MySubscription->name, (got_SIGTERM) ? "true" : "false");
 }
@@ -3641,10 +3772,6 @@ spock_apply_main(Datum main_arg)
 	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
 	Assert(MySpockWorker->worker_type == SPOCK_WORKER_APPLY);
 	MyApplyWorker = &MySpockWorker->worker.apply;
-
-	/* Attach to dsm segment. */
-	Assert(CurrentResourceOwner == NULL);
-	CurrentResourceOwner = ResourceOwnerCreate(NULL, "spock apply");
 
 	/* Load correct apply API. */
 	if (spock_use_spi)
