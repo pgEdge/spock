@@ -1,8 +1,8 @@
 
-/* spock--4.0.9--4.1.0.sql */
+/* spock--4.0.9--5.0.sql */
 
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
-\echo Use "ALTER EXTENSION spock UPDATE TO '4.1.0'" to load this file. \quit
+\echo Use "ALTER EXTENSION spock UPDATE TO '5.0'" to load this file. \quit
 
 CREATE TABLE spock.progress (
 	node_id oid NOT NULL,
