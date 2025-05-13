@@ -473,7 +473,9 @@ FindReplTupleByUCIndex(ApplyExecutionData *edata,
 	ListCell   *lc;
 	bool		found = false;
 
-	Assert(check_all_uc_indexes);
+	if (!check_all_uc_indexes)
+		elog(ERROR, "spock.check_all_uc_indexes must be enabled to call this function");
+
 
 	/* Get the list of index OIDs for the table from the relcache. */
 	indexoidlist = RelationGetIndexList(localrel);
