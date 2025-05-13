@@ -108,7 +108,6 @@ node_spock_version(int argc, char *argv[])
     char       *node = NULL;
 
     static struct option long_options[] = {
-        {"node", required_argument, 0, 't'},
         {"node", required_argument, 0, 'n'},
         {"config", required_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
@@ -116,11 +115,11 @@ node_spock_version(int argc, char *argv[])
     };
 
     optind = 1;
-    while ((c = getopt_long(argc, argv, "t:h:c", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "n:h:c", long_options, &option_index)) != -1)
     {
         switch (c)
         {
-            case 't':
+            case 'n':
                 node = optarg;
                 break;
             case 'c':
@@ -142,7 +141,7 @@ node_spock_version(int argc, char *argv[])
     }
 
     conninfo = get_postgres_coninfo(node);
-    if (conninfo != NULL)
+    if (conninfo == NULL)
     {
         log_error("Failed to get connection info for node '%s'.", node);
         return EXIT_FAILURE;
@@ -185,7 +184,6 @@ node_pg_version(int argc, char *argv[])
                 return EXIT_FAILURE;
         }
     }
-    printf("node: %s\n", node);
     if (node == NULL)
     {
         log_error("Node name is required.");
@@ -205,7 +203,7 @@ node_pg_version(int argc, char *argv[])
         log_error("Failed to get PostgreSQL version for node %s", node);
         return EXIT_FAILURE;
     }
-    log_info("PostgreSQL version for node %s: %s\n", node, pg_version);
+    printf("%s\n", pg_version);
     return EXIT_SUCCESS;
 }
 
@@ -319,7 +317,7 @@ handle_node_create_command(int argc, char *argv[])
     char       *info = NULL;
     PGconn     *conn = NULL;
     PGresult   *res = NULL;
-    char        sql[2048];
+    char        sql[4096];
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
@@ -419,18 +417,38 @@ handle_node_create_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-     snprintf(sql, sizeof(sql),
+    /* Prepare quoted/NULL values for SQL */
+    char location_val[512];
+    char country_val[512];
+    char info_val[1050];
+
+    if (location)
+        snprintf(location_val, sizeof(location_val), "'%s'", location);
+    else
+        snprintf(location_val, sizeof(location_val), "NULL");
+
+    if (country)
+        snprintf(country_val, sizeof(country_val), "'%s'", country);
+    else
+        snprintf(country_val, sizeof(country_val), "NULL");
+
+    if (info)
+        snprintf(info_val, sizeof(info_val), "'%s'", info);
+    else
+        snprintf(info_val, sizeof(info_val), "NULL");
+
+    snprintf(sql, sizeof(sql),
              "SELECT spock.node_create("
              "node_name := '%s', "
              "dsn := '%s', "
-             "location := %s%s%s, "
-             "country := %s%s%s, "
-             "info := %s%s%s::jsonb);",
+             "location := %s, "
+             "country := %s, "
+             "info := %s::jsonb);",
              node_name,
              dsn,
-             location ? "'" : "NULL", location ? location : "", location ? "'" : "NULL",
-             country ? "'" : "NULL", country ? country : "", country ? "'" : "NULL",
-             info ? "'" : "NULL", info ? info : "", info ? "'" : "NULL");
+             location_val,
+             country_val,
+             info_val);
 
     log_debug0("SQL: %s", sql);
 

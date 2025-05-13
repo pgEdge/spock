@@ -127,7 +127,6 @@ int handle_sql_exec_command(int argc, char *argv[])
         {
             for (col = 0; col < ncols; col++)
             {
-                log_debug0("%s%s", PQgetvalue(res, row, col), (col < ncols - 1) ? "\t" : "\n");
                 fprintf(outf, "%s=%s%s", PQfname(res, col), PQgetvalue(res, row, col), (col < ncols - 1) ? "\t" : "\n");
             }
         }

@@ -541,16 +541,20 @@ run_workflow(Workflow *workflow)
     {
         Step *step = &workflow->steps[i];
 
+        /* Print step description before execution */
+        printf("[%s] [Step - %02d] %s ", get_current_timestamp(), i + 1, step->description);
+        fflush(stdout);
+
         int step_result = execute_step(step, i);
 
-        /* Log step result */
+        /* Print result on the same line */
         if (step_result == 0)
         {
-            log_msg("[Step - %d] %s [OK]", i + 1, step->description);
+            printf("[OK]\n");
         }
         else
         {
-            log_error("[Step - %d] %s [FAILED]", i + 1, step->description);
+            printf("[FAILED]\n");
             //return -1; /* Stop execution on failure */
         }
 

@@ -307,8 +307,29 @@ get_postgres_coninfo(const char *node_name)
     const char *password = get_postgres_password(node_name);
     const char *db = get_postgres_db(node_name);
 
-    if (!ip || port == -1 || !user || !password || !db)
+    if (!ip)
     {
+        log_error("Error: IP address not found for node '%s'", node_name);
+        return NULL;
+    }
+    if (port == -1)
+    {
+        log_error("Error: Port not found for node '%s'", node_name);
+        return NULL;
+    }
+    if (!user)
+    {
+        log_error("Error: User not found for node '%s'", node_name);
+        return NULL;
+    }
+    if (!password)
+    {
+        log_error("Error: Password not found for node '%s'", node_name);
+        return NULL;
+    }
+    if (!db)
+    {
+        log_error("Error: Database not found for node '%s'", node_name);
         return NULL;
     }
 

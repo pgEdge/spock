@@ -111,7 +111,7 @@ handle_sub_create_command(int argc, char *argv[])
 {
     static struct option long_options[] = {
         {"node", required_argument, 0, 'n'},
-        {"subscription_name", required_argument, 0, 's'},
+        {"sub_name", required_argument, 0, 's'},
         {"provider_dsn", required_argument, 0, 'p'},
         {"replication_sets", required_argument, 0, 'r'},
         {"synchronize_structure", required_argument, 0, 'y'},
@@ -1167,17 +1167,17 @@ print_sub_create_help(void)
     printf("Usage: spockctrl sub create [OPTIONS]\n");
     printf("Create a new subscription\n");
     printf("Options:\n");
-    printf("  --node                Name of the node (required)\n");
-    printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --provider_dsn        Provider DSN (required)\n");
-    printf("  --replication_sets    Replication sets (optional)\n");
+    printf("  --node                  Name of the node (required)\n");
+    printf("  --sub_name              Name of the subscription (required)\n");
+    printf("  --provider_dsn          Provider DSN (required)\n");
+    printf("  --replication_sets      Replication sets (optional)\n");
     printf("  --synchronize_structure Synchronize structure (optional)\n");
-    printf("  --synchronize_data    Synchronize data (optional)\n");
-    printf("  --forward_origins     Forward origins (optional)\n");
-    printf("  --apply_delay         Apply delay (optional)\n");
-    printf("  --enabled             Enable subscription (optional)\n");
-    printf("  --force_text_transfer Force text transfer (optional)\n");
-    printf("  --help                Show this help message\n");
+    printf("  --synchronize_data      Synchronize data (optional)\n");
+    printf("  --forward_origins       Forward origins (optional)\n");
+    printf("  --apply_delay           Apply delay (optional)\n");
+    printf("  --enabled               Enable subscription (optional)\n");
+    printf("  --force_text_transfer   Force text transfer (optional)\n");
+    printf("  --help                  Show this help message\n");
 }
 
 static void
@@ -1186,9 +1186,9 @@ print_sub_drop_help(void)
     printf("Usage: spockctrl sub drop [OPTIONS]\n");
     printf("Drop a subscription\n");
     printf("Options:\n");
-    printf("  --node                Name of the node (required)\n");
-    printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --help                Show this help message\n");
+    printf("  --node            Name of the node (required)\n");
+    printf("  --sub_name        Name of the subscription (required)\n");
+    printf("  --help            Show this help message\n");
 }
 
 static void
@@ -1197,10 +1197,10 @@ print_sub_enable_help(void)
     printf("Usage: spockctrl sub enable [OPTIONS]\n");
     printf("Enable a subscription\n");
     printf("Options:\n");
-    printf("  --node                Name of the node (required)\n");
-    printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --immediate           Immediate enable (required)\n");
-    printf("  --help                Show this help message\n");
+    printf("  --node            Name of the node (required)\n");
+    printf("  --sub_name        Name of the subscription (required)\n");
+    printf("  --immediate       Immediate enable (required)\n");
+    printf("  --help            Show this help message\n");
 }
 
 static void
@@ -1209,8 +1209,10 @@ print_sub_disable_help(void)
     printf("Usage: spockctrl sub disable [OPTIONS]\n");
     printf("Disable a subscription\n");
     printf("Options:\n");
-    printf("  --node                Name of the node (required)\n");
-    printf("  --sub_name            Name of the subscription (required)\n");
+    printf("  --node            Name of the node (required)\n");
+    printf("  --sub_name        Name of the subscription (required)\n");
+    printf("  --immediate       Immediate disable (optional)\n");
+    printf("  --help            Show this help message\n");
 }
 
 static void
@@ -1219,9 +1221,9 @@ print_sub_show_status_help(void)
     printf("Usage: spockctrl sub show-status [OPTIONS]\n");
     printf("Show the status of a subscription\n");
     printf("Options:\n");
-    printf("  --node                Name of the node (required)\n");
-    printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --help                Show this help message\n");
+    printf("  --node            Name of the node (required)\n");
+    printf("  --sub_name        Name of the subscription (required)\n");
+    printf("  --help            Show this help message\n");
 }
 
 static void
@@ -1230,10 +1232,10 @@ print_sub_show_table_help(void)
     printf("Usage: spockctrl sub show-table [OPTIONS]\n");
     printf("Show the table of a subscription\n");
     printf("Options:\n");
-    printf("  --node                Name of the node (required)\n");
-    printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --relation            Relation name (required)\n");
-    printf("  --help                Show this help message\n");
+    printf("  --node            Name of the node (required)\n");
+    printf("  --sub_name        Name of the subscription (required)\n");
+    printf("  --relation        Relation name (required)\n");
+    printf("  --help            Show this help message\n");
 }
 
 static void
@@ -1242,11 +1244,11 @@ print_sub_resync_table_help(void)
     printf("Usage: spockctrl sub resync-table [OPTIONS]\n");
     printf("Resync a table in a subscription\n");
     printf("Options:\n");
-    printf("  --node                Name of the node (required)\n");
-    printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --relation            Relation name (required)\n");
-    printf("  --truncate            Truncate table before resync (required)\n");
-    printf("  --help                Show this help message\n");
+    printf("  --node            Name of the node (required)\n");
+    printf("  --sub_name        Name of the subscription (required)\n");
+    printf("  --relation        Relation name (required)\n");
+    printf("  --truncate        Truncate table before resync (required)\n");
+    printf("  --help            Show this help message\n");
 }
 
 static void
@@ -1255,10 +1257,10 @@ print_sub_add_repset_help(void)
     printf("Usage: spockctrl sub add-repset [OPTIONS]\n");
     printf("Add a replication set to a subscription\n");
     printf("Options:\n");
-    printf("  --node                Name of the node (required)\n");
-    printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --replication_set     Replication set name (required)\n");
-    printf("  --help                Show this help message\n");
+    printf("  --node            Name of the node (required)\n");
+    printf("  --sub_name        Name of the subscription (required)\n");
+    printf("  --replication_set Replication set name (required)\n");
+    printf("  --help            Show this help message\n");
 }
 
 static void
@@ -1267,8 +1269,8 @@ print_sub_remove_repset_help(void)
     printf("Usage: spockctrl sub remove-repset [OPTIONS]\n");
     printf("Remove a replication set from a subscription\n");
     printf("Options:\n");
-    printf("  --node                Name of the node (required)\n");
-    printf("  --sub_name            Name of the subscription (required)\n");
-    printf("  --replication_set     Replication set name (required)\n");
-    printf("  --help                Show this help message\n");
+    printf("  --node            Name of the node (required)\n");
+    printf("  --sub_name        Name of the subscription (required)\n");
+    printf("  --replication_set Replication set name (required)\n");
+    printf("  --help            Show this help message\n");
 }
