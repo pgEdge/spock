@@ -467,7 +467,8 @@ static bool
 FindReplTupleByUCIndex(ApplyExecutionData *edata,
 					   Relation localrel,
 					   TupleTableSlot *remoteslot,
-					   TupleTableSlot **localslot)
+					   TupleTableSlot **localslot,
+					   Oid *indexoid)
 {
 	List	   *indexoidlist = NIL;
 	ListCell   *lc;
@@ -476,17 +477,18 @@ FindReplTupleByUCIndex(ApplyExecutionData *edata,
 	if (!check_all_uc_indexes)
 		elog(ERROR, "spock.check_all_uc_indexes must be enabled to call this function");
 
-
+	*indexoid = InvalidOid;
 	/* Get the list of index OIDs for the table from the relcache. */
 	indexoidlist = RelationGetIndexList(localrel);
 
 	foreach(lc, indexoidlist)
 	{
 		Relation idxrel;
-		Oid	indexoid = lfirst_oid(lc);
+
+		*indexoid = lfirst_oid(lc);
 
 		/* Open the index. */
-		idxrel = index_open(indexoid, RowExclusiveLock);
+		idxrel = index_open(*indexoid, RowExclusiveLock);
 
 		if (!IsIndexUsableForInsertConflict(idxrel))
 		{
@@ -957,7 +959,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		 * defined on the relation.
 		 */
 		found = FindReplTupleByUCIndex(edata, relinfo->ri_RelationDesc,
-									   remoteslot, &localslot);
+									   remoteslot, &localslot, &rel->idxoid);
 	}
 
 	if (found)
