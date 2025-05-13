@@ -267,6 +267,13 @@ static void update_progress_entry(Oid target_node_id,
 static void check_and_update_progress(XLogRecPtr last_received_lsn,
 								TimestampTz timestamp);
 
+static ApplyReplayEntry *
+apply_replay_entry_create(int r, char *buf);
+static void
+apply_replay_entry_free(ApplyReplayEntry *entry);
+static void
+apply_replay_queue_reset(void);
+
 /*
  * Install hooks to request shared resources for apply workers
  */
@@ -1199,12 +1206,7 @@ handle_commit(StringInfo s)
 	MyApplyWorker->use_try_block = false;
 
 	/* Reset the ApplyReplayContext and poiners */
-	apply_replay_head = NULL;
-	apply_replay_tail = NULL;
-	apply_replay_next = NULL;
-	apply_replay_bytes = 0;
-	apply_replay_overflow = false;
-	MemoryContextReset(ApplyReplayContext);
+	apply_replay_queue_reset();
 
 	process_syncing_tables(end_lsn);
 
@@ -2686,7 +2688,7 @@ stream_replay:
 			for (;;)
 			{
 				ApplyReplayEntry   *entry;
-				bool				queue_append = false;
+				bool				queue_append;
 				StringInfo			msg;
 				int					c;
 
@@ -2695,49 +2697,57 @@ stream_replay:
 
 				if (apply_replay_next == NULL)
 				{
-					/*
-					 * We are not in replay mode so receive from the stream.
-					 * Create a new apply entry in the replay context.
-					 */
-					MemoryContextSwitchTo(ApplyReplayContext);
-					entry = palloc0(sizeof(ApplyReplayEntry));
-					r = PQgetCopyData(applyconn, &entry->copydata.data, 1);
-					entry->copydata.len = r;
-					entry->copydata.maxlen = -1;
-					entry->copydata.cursor = 0;
-					entry->next = NULL;
-					queue_append = true;
-					MemoryContextSwitchTo(MessageContext);
+					char   *buf;
+
+					/* We are not in replay mode so receive from the stream */
+					r = PQgetCopyData(applyconn, &buf, 1);
 
 					last_receive_timestamp = GetCurrentTimestamp();
 
 					/* Check for errors */
 					if (r == -1)
 					{
+						if (buf != NULL)
+							PQfreemem(buf);
 						elog(ERROR, "SPOCK %s: data stream ended",
 							 MySubscription->name);
 					}
 					else if (r == -2)
 					{
+						if (buf != NULL)
+							PQfreemem(buf);
 						elog(ERROR, "SPOCK %s: could not read COPY data: %s",
 							 MySubscription->name,
 							 PQerrorMessage(applyconn));
 					}
 					else if (r < 0)
+					{
+						if (buf != NULL)
+							PQfreemem(buf);
 						elog(ERROR, "SPOCK %s: invalid COPY status %d",
 							 MySubscription->name, r);
+					}
 					else if (r == 0)
 					{
 						/* need to wait for new data */
-						pfree(entry);
+						if (buf != NULL)
+							PQfreemem(buf);
 						break;
 					}
+
+					/*
+					 * We have a valid message, create an apply queue
+					 * entry but don't add it to the queue yet.
+					 */
+					entry = apply_replay_entry_create(r, buf);
+					queue_append = true;
 				}
 				else
 				{
 					/* We are in replay mode so present the next queue entry */
 					entry = apply_replay_next;
 					apply_replay_next = apply_replay_next->next;
+					queue_append = false;
 				}
 
 				if (ConfigReloadPending)
@@ -2768,7 +2778,7 @@ stream_replay:
 
 					/*
 					 * Append the entry to the end of the replay queue
-					 * if we read it from the stream
+					 * if we read it from the stream but check for overflow.
 					 */
 					if (queue_append)
 					{
@@ -2777,9 +2787,14 @@ stream_replay:
 						if (apply_replay_bytes < spock_replay_queue_size)
 						{
 							if (apply_replay_head == NULL)
+							{
 								apply_replay_head = apply_replay_tail = entry;
+							}
 							else
+							{
 								apply_replay_tail->next = entry;
+								apply_replay_tail = entry;
+							}
 						}
 						else
 						{
@@ -2791,7 +2806,7 @@ stream_replay:
 
 					if (queue_append && apply_replay_overflow)
 					{
-						MemoryContextReset(ApplyReplayContext);
+						apply_replay_entry_free(entry);
 					}
 				}
 				else if (c == 'k')
@@ -2814,7 +2829,7 @@ stream_replay:
 						check_and_update_progress(endpos, GetCurrentTimestamp());
 
 					/* We do not add 'k' messages to the replay queue */
-					pfree(entry);
+					apply_replay_entry_free(entry);
 				}
 				else
 				{
@@ -2822,7 +2837,7 @@ stream_replay:
 					 * Other message types are purposefully ignored and
 					 * we don't add them to the replay queue.
 					 */
-					pfree(entry);
+					apply_replay_entry_free(entry);
 				}
 
 				/* We must not have fallen out of MessageContext by accident */
@@ -2940,8 +2955,8 @@ stream_replay:
 
 		MemoryContextSwitchTo(MessageContext);
 		edata = CopyErrorData();
-		elog(DEBUG1, "SPOCK: caught exception - %s use_try_block=%s",
-			 edata->message, MyApplyWorker->use_try_block ? "true" : "false");
+		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
+
 		FlushErrorState();
 
 		MemoryContextReset(MessageContext);
@@ -3889,4 +3904,57 @@ spock_apply_main(Datum main_arg)
 
 	/* We should only get here if we received sigTERM */
 	proc_exit(0);
+}
+
+
+/* Create a new apply reply queue entry in the ApplyReplayContext */
+static ApplyReplayEntry *
+apply_replay_entry_create(int r, char *buf)
+{
+	MemoryContext		oldcontext;
+	ApplyReplayEntry   *entry;
+
+	Assert(r > 0);
+	Assert(buf != NULL);
+
+	oldcontext = MemoryContextSwitchTo(ApplyReplayContext);
+
+	entry = (ApplyReplayEntry *)palloc(sizeof(ApplyReplayEntry));
+	entry->copydata.len = r;
+	entry->copydata.maxlen = -1;
+	entry->copydata.cursor = 0;
+	entry->copydata.data = buf;
+	entry->next = NULL;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	return entry;
+}
+
+/* Free on replay entry (unqueued message type or queue is overflowing) */
+static void
+apply_replay_entry_free(ApplyReplayEntry *entry)
+{
+	PQfreemem(entry->copydata.data);
+	pfree(entry);
+}
+
+/* Free all queued messages and reset the apply replay queue */
+static void
+apply_replay_queue_reset(void)
+{
+	ApplyReplayEntry   *entry;
+
+	for (entry = apply_replay_head; entry != NULL; entry = entry->next)
+	{
+		PQfreemem(entry->copydata.data);
+	}
+
+	apply_replay_head = NULL;
+	apply_replay_tail = NULL;
+	apply_replay_next = NULL;
+	apply_replay_bytes = 0;
+	apply_replay_overflow = false;
+
+	MemoryContextReset(ApplyReplayContext);
 }
