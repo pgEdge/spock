@@ -19,6 +19,7 @@ INSERT INTO spock.progress (node_id, remote_node_id, remote_commit_ts, remote_ls
 	SELECT sub_target, sub_origin, 'epoch'::timestamptz, '0/0', '0/0', 'epoch'::timestamptz, 'f'
 	FROM spock.subscription;
 
+DROP VIEW IF EXISTS spock.lag_tracker;
 DROP FUNCTION spock.lag_tracker();
 CREATE OR REPLACE VIEW spock.lag_tracker AS
 	SELECT
@@ -38,3 +39,72 @@ CREATE OR REPLACE VIEW spock.lag_tracker AS
 	LEFT JOIN spock.subscription sub ON (p.node_id = sub.sub_target and p.remote_node_id = sub.sub_origin)
 	LEFT JOIN spock.node origin ON sub.sub_origin = origin.node_id
 	GROUP BY origin.node_name;
+
+CREATE FUNCTION spock.sync_event()
+RETURNS pg_lsn RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_sync_event';
+
+CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin_id oid, lsn pg_lsn, timeout int DEFAULT 0)
+AS $$
+DECLARE
+	target_id		oid;
+	ms_count		integer := 0;
+	progress_lsn	pg_lsn;
+BEGIN
+	IF origin_id IS NULL THEN
+		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
+	END IF;
+	target_id := node_id FROM spock.node_info();
+
+	WHILE true LOOP
+		SELECT INTO progress_lsn remote_lsn
+			FROM spock.progress
+			WHERE node_id = target_id AND remote_node_id = origin_id;
+		IF progress_lsn >= lsn THEN
+			result = true;
+			RETURN;
+		END IF;
+		ms_count := ms_count + 200;
+		IF timeout <> 0 AND ms_count >= timeout THEN
+			result := false;
+			RETURN;
+		END IF;
+
+		ROLLBACK;
+		PERFORM pg_sleep(0.2);
+	END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin name, lsn pg_lsn, timeout int DEFAULT 0)
+AS $$
+DECLARE
+	origin_id		oid;
+	target_id		oid;
+	ms_count		integer := 0;
+	progress_lsn	pg_lsn;
+BEGIN
+	origin_id := node_id FROM spock.node WHERE node_name = origin;
+	IF origin_id IS NULL THEN
+		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
+	END IF;
+	target_id := node_id FROM spock.node_info();
+
+	WHILE true LOOP
+		SELECT INTO progress_lsn remote_lsn
+			FROM spock.progress
+			WHERE node_id = target_id AND remote_node_id = origin_id;
+		IF progress_lsn >= lsn THEN
+			result = true;
+			RETURN;
+		END IF;
+		ms_count := ms_count + 200;
+		IF timeout <> 0 AND ms_count >= timeout THEN
+			result := false;
+			RETURN;
+		END IF;
+
+		ROLLBACK;
+		PERFORM pg_sleep(0.2);
+	END LOOP;
+END;
+$$ LANGUAGE plpgsql;
