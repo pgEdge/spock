@@ -256,14 +256,13 @@ spock_relation_close(SpockRelation * rel, LOCKMODE lockmode)
 void
 spock_relation_cache_reset(void)
 {
+	/* invalidate all cache entries */
+	HASH_SEQ_STATUS status;
 	SpockRelation *entry;
 
 	/* Just to be sure. */
 	if (SpockRelationHash == NULL)
 		return;
-
-	/* invalidate all cache entries */
-	HASH_SEQ_STATUS status;
 
 	hash_seq_init(&status, SpockRelationHash);
 
