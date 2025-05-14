@@ -64,6 +64,8 @@ extern void spock_relation_close(SpockRelation * rel,
 									  LOCKMODE lockmode);
 extern void spock_relation_invalidate_cb(Datum arg, Oid reloid);
 
+extern void spock_relation_cache_reset(void);
+
 extern Oid spock_lookup_delta_function(char *fname, Oid typeoid);
 
 struct SpockTupleData;

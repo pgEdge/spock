@@ -130,6 +130,7 @@ bool	spock_include_ddl_repset = false;
 bool	allow_ddl_from_functions = false;
 int		restart_delay_default;
 int		restart_delay_on_exception;
+int		spock_replay_queue_size;
 bool	check_all_uc_indexes = false;
 
 
@@ -990,6 +991,19 @@ _PG_init(void)
 							0,
 							INT_MAX,
 							PGC_POSTMASTER,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("spock.exception_replay_queue_size",
+							"apply-worker replay queue size for exception",
+							NULL,
+							&spock_replay_queue_size,
+							4194304,
+							0,
+							INT_MAX,
+							PGC_SIGHUP,
 							0,
 							NULL,
 							NULL,
