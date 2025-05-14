@@ -16,7 +16,8 @@ DATA = spock--5.0.sql \
 	   spock--4.0.6--4.0.7.sql \
 	   spock--4.0.7--4.0.8.sql \
 	   spock--4.0.8--4.0.9.sql \
-	   spock--4.0.9--5.0.sql
+	   spock--4.0.9--4.0.10.sql \
+	   spock--4.0.10--5.0.sql
 
 OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
 		spock_conflict.o spock_manager.o \
