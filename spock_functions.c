@@ -19,6 +19,8 @@
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/xlogrecovery.h"
+#include "access/xlogutils.h"
 
 #include "catalog/catalog.h"
 #include "catalog/heap.h"
@@ -48,6 +50,7 @@
 #include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
 
+#include "replication/logical.h"
 #include "replication/message.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
@@ -177,6 +180,9 @@ PG_FUNCTION_INFO_V1(delta_apply_money);
 
 /* Function to control REPAIR mode */
 PG_FUNCTION_INFO_V1(spock_repair_mode);
+
+/* Function to get a LSN based on commit timestamp */
+PG_FUNCTION_INFO_V1(spock_get_lsn_from_commit_ts);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -445,6 +451,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	ArrayType *forward_origin_names = PG_GETARG_ARRAYTYPE_P(5);
 	Interval *apply_delay = PG_GETARG_INTERVAL_P(6);
 	bool force_text_transfer = PG_GETARG_BOOL(7);
+	bool enabled = PG_GETARG_BOOL(8);
 	PGconn *conn;
 	SpockSubscription sub;
 	SpockSyncStatus sync;
@@ -555,7 +562,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	sub.target_if = &targetif;
 	sub.replication_sets = replication_sets;
 	sub.forward_origins = textarray_to_list(forward_origin_names);
-	sub.enabled = true;
+	sub.enabled = enabled;
 	gen_slot_name(&slot_name, get_database_name(MyDatabaseId),
 				  origin->name, sub_name);
 	sub.slot_name = pstrdup(NameStr(slot_name));
@@ -578,7 +585,34 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 		sync.kind = SYNC_KIND_INIT;
 
 	sync.subid = sub.id;
-	sync.status = SYNC_STATUS_INIT;
+
+	if (enabled)
+	{
+		sync.status = SYNC_STATUS_INIT;
+	}
+	else
+	{
+		/*
+		 * If we create a subscription in disabled state it is
+		 * meant for Zero-Downtime-Add-Node. This cannot use any
+		 * synchronization and we immediately mark the local
+		 * sync status as READY.
+		 */
+		if (sync_structure || sync_data)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("subscription \"%s\" in disabled state is not "
+							"allowed to synchronize structure or data",
+							sub_name)));
+		sync.status = SYNC_STATUS_READY;
+
+		/*
+		 * We also create the replication origin entry here because
+		 * the way we setup the subscription causes spock_sync.c not
+		 * to do anything.
+		 */
+		(void) replorigin_create(slot_name.data);
+	}
 	create_local_sync_status(&sync);
 
 	/* Create progress entry to track commit ts per local/remote origin */
@@ -2984,4 +3018,142 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *)&message, sizeof(message), true);
 
 	PG_RETURN_LSN(lsn);
+}
+
+/*
+ * Helper function for finding the endptr for a particular commit timestamp
+ */
+static XLogRecPtr
+spock_logical_replication_slot_scan(TimestampTz committs)
+{
+	LogicalDecodingContext *ctx;
+	ResourceOwner old_resowner = CurrentResourceOwner;
+	XLogRecPtr	retlsn;
+
+	PG_TRY();
+	{
+		/*
+		 * Create our decoding context in fast_forward mode, passing start_lsn
+		 * as InvalidXLogRecPtr, so that we start processing from my slot's
+		 * confirmed_flush.
+		 */
+		ctx = CreateDecodingContext(InvalidXLogRecPtr,
+									NIL,
+									true,	/* fast_forward */
+									XL_ROUTINE(.page_read = read_local_xlog_page,
+											   .segment_open = wal_segment_open,
+											   .segment_close = wal_segment_close),
+									NULL, NULL, NULL);
+
+		/*
+		 * Start reading at the slot's restart_lsn, which we know to point to
+		 * a valid record.
+		 */
+		XLogBeginRead(ctx->reader, MyReplicationSlot->data.restart_lsn);
+		retlsn = MyReplicationSlot->data.restart_lsn;
+
+		/* invalidate non-timetravel entries */
+		InvalidateSystemCaches();
+
+		/* Decode at least one record, until we run out of records */
+		while (true)
+		{
+			char	   *errm = NULL;
+			XLogRecord *record;
+
+			/*
+			 * Read records.  No changes are generated in fast_forward mode,
+			 * but snapbuilder/slot statuses are updated properly.
+			 */
+			record = XLogReadRecord(ctx->reader, &errm);
+			if (errm)
+				elog(ERROR, "could not find record while advancing replication slot: %s",
+					 errm);
+
+			if (record)
+			{
+				if (record->xl_rmid == RM_XACT_ID)
+				{
+					RepOriginId		nodeid;
+					TimestampTz		ts;
+
+					if (record->xl_xid == InvalidTransactionId)
+						continue;
+
+					TransactionIdGetCommitTsData(record->xl_xid,
+												 &ts, &nodeid);
+
+					if (nodeid == 0 && ts > committs)
+						break;
+
+					if (nodeid == 0)
+						retlsn = ctx->reader->EndRecPtr;
+				}
+			}
+			else
+			{
+				break;
+			}
+
+			CHECK_FOR_INTERRUPTS();
+		}
+
+		/*
+		 * Logical decoding could have clobbered CurrentResourceOwner during
+		 * transaction management, so restore the executor's value.  (This is
+		 * a kluge, but it's not worth cleaning up right now.)
+		 */
+		CurrentResourceOwner = old_resowner;
+
+		/* free context, call shutdown callback */
+		FreeDecodingContext(ctx);
+
+		InvalidateSystemCaches();
+	}
+	PG_CATCH();
+	{
+		/* clear all timetravel entries */
+		InvalidateSystemCaches();
+
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return retlsn;
+}
+
+/*
+ * SQL function for moving the position in a replication slot.
+ */
+Datum
+spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
+{
+	Name		slotname = PG_GETARG_NAME(0);
+	TimestampTz	targettz = PG_GETARG_TIMESTAMPTZ(1);
+	XLogRecPtr	endlsn;
+
+	Assert(!MyReplicationSlot);
+
+	CheckSlotPermissions();
+
+	/* Acquire the slot so we "own" it */
+	ReplicationSlotAcquire(NameStr(*slotname), true);
+
+	/* A slot whose restart_lsn has never been reserved cannot be advanced */
+	if (XLogRecPtrIsInvalid(MyReplicationSlot->data.restart_lsn))
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("replication slot \"%s\" cannot be advanced",
+						NameStr(*slotname)),
+				 errdetail("This slot has never previously reserved WAL, or it has been invalidated.")));
+
+	/* Do the actual slot scanning */
+	if (OidIsValid(MyReplicationSlot->data.database))
+		endlsn = spock_logical_replication_slot_scan(targettz);
+	else
+		elog(ERROR, "not a logical replication slot");
+
+	ReplicationSlotRelease();
+
+	PG_RETURN_LSN(endlsn);
 }
