@@ -69,4 +69,11 @@ extern void SPKExecARInsertTriggers(EState *estate,
 								 TupleTableSlot *slot,
 								 List *recheckIndexes);
 
+extern bool IsIndexUsableForInsertConflict(Relation idxrel);
+extern bool SpockRelationFindReplTupleByIndex(Relation rel,
+								 Relation idxrel,
+								 LockTupleMode lockmode,
+								 TupleTableSlot *searchslot,
+								 TupleTableSlot *outslot);
+
 #endif /* SPOCK_COMMON_H */
