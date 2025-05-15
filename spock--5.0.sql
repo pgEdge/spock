@@ -367,24 +367,71 @@ RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME'
 CREATE FUNCTION spock.sync_event()
 RETURNS pg_lsn RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_sync_event';
 
-CREATE FUNCTION spock.wait_for_sync_event(origin oid, lsn pg_lsn, timeout int DEFAULT 0)
-RETURNS bool RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_sync_event';
-
-CREATE FUNCTION spock.wait_for_sync_event(origin name, lsn pg_lsn, timeout int DEFAULT 0)
-RETURNS bool RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE plpgsql AS
-$$
+CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin_id oid, lsn pg_lsn, timeout int DEFAULT 0)
+AS $$
 DECLARE
-    origin_id Oid;
+	target_id		oid;
+	ms_count		integer := 0;
+	progress_lsn	pg_lsn;
 BEGIN
-    SELECT node_id INTO origin_id FROM spock.node WHERE node_name = origin;
+	IF origin_id IS NULL THEN
+		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
+	END IF;
+	target_id := node_id FROM spock.node_info();
 
-    IF origin_id IS NULL THEN
-        RAISE EXCEPTION 'Origin node ''%'' not found in spock.node', origin;
-    END IF;
+	WHILE true LOOP
+		SELECT INTO progress_lsn remote_lsn
+			FROM spock.progress
+			WHERE node_id = target_id AND remote_node_id = origin_id;
+		IF progress_lsn >= lsn THEN
+			result = true;
+			RETURN;
+		END IF;
+		ms_count := ms_count + 200;
+		IF timeout <> 0 AND ms_count >= timeout THEN
+			result := false;
+			RETURN;
+		END IF;
 
-    RETURN spock.wait_for_sync_event(origin_id, lsn, timeout);
+		ROLLBACK;
+		PERFORM pg_sleep(0.2);
+	END LOOP;
 END;
-$$;
+$$ LANGUAGE plpgsql;
+
+CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin name, lsn pg_lsn, timeout int DEFAULT 0)
+AS $$
+DECLARE
+	origin_id		oid;
+	target_id		oid;
+	ms_count		integer := 0;
+	progress_lsn	pg_lsn;
+BEGIN
+	origin_id := node_id FROM spock.node WHERE node_name = origin;
+	IF origin_id IS NULL THEN
+		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
+	END IF;
+	target_id := node_id FROM spock.node_info();
+
+	WHILE true LOOP
+		SELECT INTO progress_lsn remote_lsn
+			FROM spock.progress
+			WHERE node_id = target_id AND remote_node_id = origin_id;
+		IF progress_lsn >= lsn THEN
+			result = true;
+			RETURN;
+		END IF;
+		ms_count := ms_count + 200;
+		IF timeout <> 0 AND ms_count >= timeout THEN
+			result := false;
+			RETURN;
+		END IF;
+
+		ROLLBACK;
+		PERFORM pg_sleep(0.2);
+	END LOOP;
+END;
+$$ LANGUAGE plpgsql;
 
 CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" timestamptz, OUT "roident" oid)
 RETURNS record RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_xact_commit_timestamp_origin';
