@@ -124,7 +124,6 @@ PG_FUNCTION_INFO_V1(spock_show_subscription_status);
 PG_FUNCTION_INFO_V1(spock_wait_for_subscription_sync_complete);
 PG_FUNCTION_INFO_V1(spock_wait_for_table_sync_complete);
 
-PG_FUNCTION_INFO_V1(spock_wait_for_sync_event);
 PG_FUNCTION_INFO_V1(spock_create_sync_event);
 
 /* Replication set manipulation. */
@@ -188,8 +187,6 @@ PG_FUNCTION_INFO_V1(spock_get_lsn_from_commit_ts);
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
-static bool wait_for_sync_event_complete(Oid localnode, Oid origin,
-						XLogRecPtr targetlsn, int timeout);
 
 
 bool in_spock_replicate_ddl_command = false;
@@ -2992,30 +2989,6 @@ spock_repair_mode(PG_FUNCTION_ARGS)
 }
 
 /*
- * spock_wait_for_sync_event
- *
- * This function waits for the specified synchronization event, identified by
- * its LSN, from the given origin to be marked as complete. It achieves this by
- * continuously monitoring the spock.progress table for the event's status.
- *
- * The function blocks the session until the event arrives or reaches the
- * desired state. If no timeout is provided, it waits indefinitely. This behavior
- * ensures precise synchronization across nodes in a distributed system.
- */
-Datum spock_wait_for_sync_event(PG_FUNCTION_ARGS)
-{
-	SpockLocalNode	*node;
-	Oid			origin = PG_GETARG_OID(0);
-	XLogRecPtr	lsn = PG_GETARG_LSN(1);
-	int			timeout = PG_GETARG_INT32(2);
-
-	get_node(origin); /* check if origin exists. */
-	node = check_local_node(false);
-
-	PG_RETURN_BOOL(wait_for_sync_event_complete(node->node->id, origin, lsn, timeout));
-}
-
-/*
  * spock_create_sync_event
  *
  * This function creates a synchronization event on the provider. It leverages
@@ -3024,7 +2997,7 @@ Datum spock_wait_for_sync_event(PG_FUNCTION_ARGS)
  * (LSN) that serves as a marker for synchronization purposes.
  *
  * The generated LSN is returned to the caller and can be used by the
- * spock_wait_for_sync_event function on the subscriber side. Subscribers can
+ * spock_wait_for_sync_event procedure on the subscriber side. Subscribers can
  * block and wait for this LSN to arrive, ensuring that all changes up to and
  * including the event have been replicated.
  *
@@ -3046,81 +3019,6 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 
 	PG_RETURN_LSN(lsn);
 }
-
-/*
- * wait_for_sync_event_complete
- *
- * This internal function monitors the progress of synchronization events in
- * the spock.progress table. It uses a polling mechanism to repeatedly check if
- * target LSN (targetlsn) has been reached for the specified origin node. The
- * function blocks execution until either the LSN is reached or the specified
- * timeout period expires.
- *
- * Parameters:
- *   localnode: OID of the local node.
- *   origin: OID of the origin node whose progress we are monitoring.
- *   targetlsn: The LSN to wait for. The function returns once this LSN has been reached.
- *   timeout: Timeout in seconds. If 0 or negative, the function waits indefinitely.
- *
- * The function returns 'true' if the target LSN is reached and 'false' if it times out.
- * It blocks execution until one of these conditions is met.
- */
-static bool
-wait_for_sync_event_complete(Oid localnode, Oid origin, XLogRecPtr targetlsn, int timeout)
-{
-	int			index = -1;
-	bool		found = false;
-	bool		status = false;
-	TimestampTz	timeout_ts;
-
-	/* Convert timeout to a future timestamp when timeout is expected */
-	timeout_ts = timeout > 0 ? TimestampTzPlusMilliseconds(GetCurrentTimestamp(), timeout * 1000) : 0;
-
-	do
-	{
-		int			rc;
-		XLogRecPtr	currentlsn = InvalidXLogRecPtr;
-
-		/* Check if the timeout period has elapsed. */
-		if (timeout_ts > 0 && GetCurrentTimestamp() > timeout_ts)
-			break;		/* timed out */
-
-		/* TODO: concurrent drop or alter subscriptions are not catered for during the wait_for_sync_event. */
-
-		if (index == -1)
-		{
-			/*
-			 * Fetch ApplyGroup index based on origin. It should be sufficient
-			 * to fetch the index once.
-			 */
-			LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
-			get_apply_group_entry(MyDatabaseId, origin, &index, &found);
-			LWLockRelease(SpockCtx->apply_group_master_lock);
-		}
-
-		if (found)
-			currentlsn = SpockCtx->apply_groups[index].remote_lsn;
-
-		/* Exit if the target LSN has been reached. */
-		if (currentlsn >= targetlsn)
-		{
-			status = true;		/* target reached */
-			break;
-		}
-
-		CHECK_FOR_INTERRUPTS();
-
-		/* some kind of backoff could be useful here */
-		rc = WaitLatch(&MyProc->procLatch,
-						WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, 200L);
-
-	    if (rc & WL_POSTMASTER_DEATH)
-			proc_exit(1);
-	} while (1);
-
-	return status;
-}
-
 
 /*
  * Helper function for finding the endptr for a particular commit timestamp

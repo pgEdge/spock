@@ -46,7 +46,7 @@ extern bool	spock_save_resolutions;
 
 typedef enum SpockConflictType
 {
-	CONFLICT_INSERT_INSERT,
+	CONFLICT_INSERT_EXISTS,
 	CONFLICT_UPDATE_UPDATE,
 	CONFLICT_UPDATE_DELETE,
 	CONFLICT_DELETE_DELETE
