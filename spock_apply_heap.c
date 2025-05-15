@@ -437,12 +437,14 @@ FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
 
 	if (OidIsValid(localidxoid))
 	{
+#if PG_VERSION_NUM >= 160000	/* GetRelationIdentityOrPK() added in PG16 */
 #ifdef USE_ASSERT_CHECKING
 		Relation	idxrel = index_open(localidxoid, AccessShareLock);
 
 		/* Index must be PK, or RI */
 		Assert(GetRelationIdentityOrPK(localrel) == localidxoid);
 		index_close(idxrel, AccessShareLock);
+#endif
 #endif
 
 		found = RelationFindReplTupleByIndex(localrel, localidxoid,
@@ -452,6 +454,63 @@ FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
 	else
 		found = RelationFindReplTupleSeq(localrel, LockTupleExclusive,
 										 remoteslot, *localslot);
+
+	return found;
+}
+
+/*
+ * Find a matching tuple using all usable unique indexes (excluding PK and RI
+ * indexes)
+ *
+ * This is a fallback mechanism when PK/RI indexes do not match. The caller must
+ * ensure this function is only called in that context.
+ */
+static bool
+FindReplTupleByUCIndex(ApplyExecutionData *edata,
+					   Relation localrel,
+					   TupleTableSlot *remoteslot,
+					   TupleTableSlot **localslot,
+					   Oid *indexoid)
+{
+	List	   *indexoidlist = NIL;
+	ListCell   *lc;
+	bool		found = false;
+
+	if (!check_all_uc_indexes)
+		elog(ERROR, "spock.check_all_uc_indexes must be enabled to call this function");
+
+	*indexoid = InvalidOid;
+	/* Get the list of index OIDs for the table from the relcache. */
+	indexoidlist = RelationGetIndexList(localrel);
+
+	foreach(lc, indexoidlist)
+	{
+		Relation idxrel;
+
+		*indexoid = lfirst_oid(lc);
+
+		/* Open the index. */
+		idxrel = index_open(*indexoid, RowExclusiveLock);
+
+		if (!IsIndexUsableForInsertConflict(idxrel))
+		{
+			index_close(idxrel, RowExclusiveLock);
+			continue;
+		}
+
+		found = SpockRelationFindReplTupleByIndex(localrel, idxrel,
+											 LockTupleExclusive,
+											 remoteslot, *localslot);
+		if (found)
+		{
+			/* Don't release lock until commit. */
+			index_close(idxrel, NoLock);
+			break;
+		}
+		index_close(idxrel, RowExclusiveLock);
+	}
+
+	list_free(indexoidlist);
 
 	return found;
 }
@@ -714,7 +773,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	}
 	else
 	{
-		spock_report_conflict(is_insert ? CONFLICT_INSERT_INSERT : CONFLICT_UPDATE_UPDATE,
+		spock_report_conflict(is_insert ? CONFLICT_INSERT_EXISTS : CONFLICT_UPDATE_UPDATE,
 							  rel, TTS_TUP(localslot), oldtup,
 							  remotetuple, applytuple, resolution,
 							  xmin, local_origin_found, local_origin,
@@ -893,6 +952,17 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
 									edata->targetRel->idxoid,
 									remoteslot, &localslot);
+
+	if (check_all_uc_indexes &&
+		!found)
+	{
+		/*
+		 * Handle the special case of looking through all unique indexes
+		 * defined on the relation.
+		 */
+		found = FindReplTupleByUCIndex(edata, relinfo->ri_RelationDesc,
+									   remoteslot, &localslot, &rel->idxoid);
+	}
 
 	if (found)
 	{

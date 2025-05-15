@@ -130,6 +130,8 @@ bool	spock_include_ddl_repset = false;
 bool	allow_ddl_from_functions = false;
 int		restart_delay_default;
 int		restart_delay_on_exception;
+int		spock_replay_queue_size;
+bool	check_all_uc_indexes = false;
 
 
 void _PG_init(void);
@@ -994,6 +996,19 @@ _PG_init(void)
 							NULL,
 							NULL);
 
+	DefineCustomIntVariable("spock.exception_replay_queue_size",
+							"apply-worker replay queue size for exception",
+							NULL,
+							&spock_replay_queue_size,
+							4194304,
+							0,
+							INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
 	DefineCustomEnumVariable("spock.readonly",
 							 gettext_noop("Controls cluster read-only mode."),
 							 NULL,
@@ -1001,6 +1016,15 @@ _PG_init(void)
 							 READONLY_OFF,
 							 readonly_options,
 							 PGC_SUSET, 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.check_all_uc_indexes",
+							 gettext_noop("Check all valid unique indexes for conflict resolution on INSERT when primary or replica identity index fails."),
+							 NULL,
+							 &check_all_uc_indexes,
+							 false,
+							 PGC_SIGHUP,
+							 0,
 							 NULL, NULL, NULL);
 
 	if (IsBinaryUpgrade)
