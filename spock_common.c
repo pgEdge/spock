@@ -19,12 +19,15 @@
 #include "storage/proc.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 #include "spock_common.h"
 #include "spock_compat.h"
 
+#if PG_VERSION_NUM >= 170000
 static StrategyNumber spock_get_equal_strategy_number(Oid opclass);
+#endif
 static int spock_build_replindex_scan_key(ScanKey skey, Relation rel,
 							Relation idxrel, TupleTableSlot *searchslot);
 
@@ -299,6 +302,7 @@ retry:
 	return found;
 }
 
+#if PG_VERSION_NUM >= 170000
 /*
  * Return the appropriate strategy number which corresponds to the equality
  * operator.
@@ -310,6 +314,7 @@ spock_get_equal_strategy_number(Oid opclass)
 
 	return get_equal_strategy_number_for_am(am);
 }
+#endif
 
 /*
  * Setup a ScanKey for a search in the relation 'rel' for a tuple 'key' that
@@ -327,8 +332,16 @@ spock_build_replindex_scan_key(ScanKey skey, Relation rel, Relation idxrel,
 	oidvector  *opclass;
 	int2vector *indkey = &idxrel->rd_index->indkey;
 
+#if PG_VERSION_NUM < 160000
+	bool        isnull;
+	indclassDatum = SysCacheGetAttr(INDEXRELID, idxrel->rd_indextuple,
+										   Anum_pg_index_indclass, &isnull);
+	Assert(!isnull);
+#else
 	indclassDatum = SysCacheGetAttrNotNull(INDEXRELID, idxrel->rd_indextuple,
 										   Anum_pg_index_indclass);
+#endif
+
 	opclass = (oidvector *) DatumGetPointer(indclassDatum);
 
 	/* Build scankey for every non-expression attribute in the index. */
@@ -357,8 +370,11 @@ spock_build_replindex_scan_key(ScanKey skey, Relation rel, Relation idxrel,
 		 */
 		optype = get_opclass_input_type(opclass->values[index_attoff]);
 		opfamily = get_opclass_family(opclass->values[index_attoff]);
+#if PG_VERSION_NUM < 170000
+		eq_strategy = BTEqualStrategyNumber;
+#else
 		eq_strategy = spock_get_equal_strategy_number(opclass->values[index_attoff]);
-
+#endif
 		operator = get_opfamily_member(opfamily, optype,
 									   optype,
 									   eq_strategy);

@@ -437,12 +437,14 @@ FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
 
 	if (OidIsValid(localidxoid))
 	{
+#if PG_VERSION_NUM >= 160000	/* GetRelationIdentityOrPK() added in PG16 */
 #ifdef USE_ASSERT_CHECKING
 		Relation	idxrel = index_open(localidxoid, AccessShareLock);
 
 		/* Index must be PK, or RI */
 		Assert(GetRelationIdentityOrPK(localrel) == localidxoid);
 		index_close(idxrel, AccessShareLock);
+#endif
 #endif
 
 		found = RelationFindReplTupleByIndex(localrel, localidxoid,

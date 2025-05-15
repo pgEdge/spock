@@ -942,15 +942,12 @@ get_conflict_log_seq(void)
 
 	if (seqoid == InvalidOid)
 	{
-		Oid			reloid;
-		Relation	rel;
-
-		reloid = get_conflict_log_table_oid();
+		Oid			reloid = get_conflict_log_table_oid();
 #if PG_VERSION_NUM >= 170000
-		rel = RelationIdGetRelation(reloid);
+		Relation	rel = RelationIdGetRelation(reloid);
+
 		seqoid = getIdentitySequence(rel, InvalidAttrNumber, false);
 		RelationClose(rel);
-		rel = NULL;
 #else
 		seqoid = getIdentitySequence(reloid, InvalidAttrNumber, false);
 #endif
