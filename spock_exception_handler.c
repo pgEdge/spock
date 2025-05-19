@@ -1,3 +1,14 @@
+/*-------------------------------------------------------------------------
+ *
+ * spock_exception_handler.c
+ *		spock exception handling and related catalog manipulation functions
+ *
+ * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
 
 #include "postgres.h"
 
@@ -197,4 +208,58 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 	FlushErrorState();
 
 	CommandCounterIncrement();
+}
+
+/*
+ * spock_disable_subscription
+ *
+ * Disable the current subscription due to exception_behaviour == SUB_DISABLE.
+ *
+ * This function is invoked when the configured exception handling behavior is
+ * SUB_DISABLE, meaning the subscription must be suspended instead of skipping
+ * or retrying the failing transaction.
+ */
+void
+spock_disable_subscription(SpockSubscription *sub,
+						   RepOriginId remote_origin,
+						   TransactionId remote_xid,
+						   XLogRecPtr lsn,
+						   TimestampTz ts)
+{
+	char errmsg[1024];
+	bool started_tx = false;
+
+	Assert(exception_behaviour == SUB_DISABLE);
+
+	if (!IsTransactionState())
+	{
+		StartTransactionCommand();
+		started_tx = true;
+	}
+
+	sub->enabled = false;
+	alter_subscription(sub);
+
+	snprintf(errmsg, sizeof(errmsg),
+				"disabling subscription %s due to exception(s) - "
+				"skip_lsn = %X/%X",
+				sub->name,
+				LSN_FORMAT_ARGS(lsn));
+	exception_command_counter++;
+	add_entry_to_exception_log(remote_origin,
+								ts,
+								remote_xid,
+								0, 0,
+								NULL, NULL, NULL, NULL,
+								NULL, NULL,
+								"SUB_DISABLE",
+								errmsg);
+
+	elog(WARNING, "SPOCK %s: disabling subscription due to"
+					" exceptions - origin_lsn=%X/%X",
+			sub->name,
+			LSN_FORMAT_ARGS(lsn));
+
+	if (started_tx)
+		CommitTransactionCommand();
 }
