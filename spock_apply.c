@@ -1870,7 +1870,6 @@ handle_startup(StringInfo s)
 static void
 spock_apply_worker_on_exit(int code, Datum arg)
 {
-	/* FIXME: Do we really need to flush the sync_replica_lsn*/
 	spock_apply_worker_detach();
 }
 
