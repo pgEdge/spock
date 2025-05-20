@@ -2582,6 +2582,7 @@ apply_work(PGconn *streamConn)
 	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
 	bool		need_replay;
 	ErrorData  *edata;
+	RepOriginId originid;
 
 	applyconn = streamConn;
 	fd = PQsocket(applyconn);
@@ -2604,6 +2605,7 @@ apply_work(PGconn *streamConn)
 	if (MyApplyWorker->apply_group == NULL)
 		spock_apply_worker_attach(); /* Attach this worker. */
 
+	originid = replorigin_session_origin;
 stream_replay:
 
 	need_replay = false;
@@ -2851,6 +2853,9 @@ stream_replay:
 								remote_xid,
 								replorigin_session_origin_lsn,
 								replorigin_session_origin_timestamp);
+
+					/* reset replication session to avoid reuse of it after error. */
+					replorigin_session_reset();
 				}
 			}
 			else
@@ -2869,6 +2874,12 @@ stream_replay:
 					send_feedback(applyconn, last_received, GetCurrentTimestamp(),
 								  false);
 				}
+
+				/* reset replication session to avoid reuse of it after error. */
+				if (MyApplyWorker->use_try_block &&
+					(exception_behaviour == TRANSDISCARD ||
+					 exception_behaviour == SUB_DISABLE))
+					replorigin_session_reset();
 			}
 
 			if (!in_remote_transaction)
@@ -2893,6 +2904,9 @@ stream_replay:
 	}
 	PG_CATCH();
 	{
+		MemoryContextSwitchTo(MessageContext);
+		edata = CopyErrorData();
+
 		/*
 		 * use_try_block == true indicates either:
 		 * 1. An exception occurred during a DML operation,
@@ -2917,8 +2931,6 @@ stream_replay:
 							replorigin_session_origin_lsn,
 							replorigin_session_origin_timestamp);
 			}
-
-			replorigin_session_reset();
 		}
 		else
 		{
@@ -2957,13 +2969,14 @@ stream_replay:
 		AbortOutOfAnyTransaction();
 
 		MemoryContextSwitchTo(MessageContext);
-		edata = CopyErrorData();
 		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
 
 		FlushErrorState();
 
 		MemoryContextReset(MessageContext);
 		spock_relation_cache_reset();
+		/* reset replication session to avoid reuse of it after error. */
+		replorigin_session_reset();
 
 		apply_replay_next = apply_replay_head;
 		in_remote_transaction = false;
@@ -2979,6 +2992,11 @@ stream_replay:
 	if (need_replay)
 	{
 		MyApplyWorker->use_try_block = true;
+
+		/* Its possible that origin session may have been reset above */
+		replorigin_session_setup(originid);
+		replorigin_session_origin = originid;
+
 		goto stream_replay;
 	}
 
