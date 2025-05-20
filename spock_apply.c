@@ -2545,6 +2545,8 @@ append_feedback_position(XLogRecPtr recvpos)
 	XLogRecPtr writepos;
 	XLogRecPtr flushpos;
 	RemoteSyncPosition *syncpos;
+	MemoryContext oldctx;
+
 	Assert(WalSndCtl->sync_standbys_defined);
 
 	if (get_flush_position(&writepos, &flushpos))
@@ -2556,7 +2558,11 @@ append_feedback_position(XLogRecPtr recvpos)
 		flushpos = writepos = recvpos;
 	}
 
+	/* Ensure that we are allocating in the top memory context */
+	oldctx = MemoryContextSwitchTo(TopMemoryContext);
 	syncpos = (RemoteSyncPosition *) palloc0(sizeof(RemoteSyncPosition));
+	MemoryContextSwitchTo(oldctx);
+
 	syncpos->recvpos = recvpos;
 	syncpos->writepos = writepos;
 	syncpos->flushpos = flushpos;
