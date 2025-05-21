@@ -1,3 +1,17 @@
+/*-------------------------------------------------------------------------
+ *
+ * spock_exception_handler.h
+ *		spock exception handling and related catalog manipulation functions
+ *
+ * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+#ifndef SPOCK_EXCEPTION_HANDLER_H
+#define SPOCK_EXCEPTION_HANDLER_H
+
 #include "postgres.h"
 
 #include "miscadmin.h"
@@ -77,3 +91,10 @@ extern void add_entry_to_exception_log(Oid remote_origin,
 									   char *ddl_statement, char *ddl_user,
 									   const char *operation,
 									   char *error_message);
+extern void spock_disable_subscription(SpockSubscription *sub,
+									   RepOriginId remote_origin,
+									   TransactionId remote_xid,
+									   XLogRecPtr lsn,
+									   TimestampTz ts);
+
+#endif /* SPOCK_EXCEPTION_HANDLER_H */
