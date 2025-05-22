@@ -1,0 +1,45 @@
+{
+    "global": {
+        "spock": {
+            "cluster_name": "pgedge",
+            "version": "1.0.0"
+        },
+        "log": {
+            "log_level": "INFO",
+            "log_destination": "console",
+            "log_file": "/var/log/spockctrl.log"
+        }
+    },
+    "spock-nodes": [
+        {
+            "node_name": "n1",
+            "postgres": {
+                "postgres_ip": "127.0.0.1",
+                "postgres_port": 5431,
+                "postgres_user": "pgedge",
+                "postgres_password": "pgedge",
+                "postgres_db": "pgedge"
+            }
+        },
+        {
+            "node_name": "n2",
+            "postgres": {
+                "postgres_ip": "127.0.0.1",
+                "postgres_port": 5432,
+                "postgres_user": "pgedge",
+                "postgres_password": "pgedge",
+                "postgres_db": "pgedge"
+            }
+        },
+        {
+            "node_name": "n3",
+            "postgres": {
+                "postgres_ip": "127.0.0.1",
+                "postgres_port": 5433,
+                "postgres_user": "pgedge",
+                "postgres_password": "pgedge",
+                "postgres_db": "pgedge"
+            }
+        }
+    ]
+}
