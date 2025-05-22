@@ -3,7 +3,7 @@
 
 #include <jansson.h>
 
-#define MAX_ARGS 10
+#define MAX_ARGS 15
 #define MAX_OPTIONS 10
 
 /* Step type constants */

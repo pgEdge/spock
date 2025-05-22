@@ -39,29 +39,36 @@ static int execute_step(Step *step, int step_index);
 int
 handle_spock_command(Step *step);
 
-/* Helper function to prepare arguments */
 static int prepare_arguments(Step *step, char *argv[], int max_args, const char *default_db)
 {
     int argc = 0;
 
+    if (argc >= max_args - 1) return -1;
     argv[argc++] = "spockctrl";
-    argv[argc] = malloc(256); /* Allocate memory for the string */
+
+    if (argc >= max_args - 1) return -1;
+    argv[argc] = malloc(256);
     if (argv[argc] == NULL)
     {
         log_error("Error: could not allocate memory for argument");
         return -1;
     }
-    snprintf(argv[argc++], 256, "--node=%s", step->node);
+    snprintf(argv[argc++], 256, "--node=%s", step->node ? step->node : "");
 
-    /* Add the step arguments */
-    for (int i = 0; step->args[i] != NULL && argc < max_args; i++)
+    for (int i = 0; i < MAX_ARGS && step->args[i] != NULL; i++)
     {
+        if (argc >= max_args - 1)
+        {
+            log_error("Too many arguments in step: %s", step->name ? step->name : "(unknown)");
+            break;  // don't overflow argv
+        }
         argv[argc++] = step->args[i];
     }
-    argv[argc] = NULL; /* Null-terminate the array */
 
-    return argc; /* Return the argument count */
+    argv[argc] = NULL; /* Null-terminate */
+    return argc;
 }
+
 
 Workflow *
 load_workflow(const char *json_file_path)

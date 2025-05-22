@@ -13,7 +13,7 @@ JSON_CFLAGS = $(shell pkg-config --cflags jansson)
 JSON_LIBS = $(shell pkg-config --libs jansson)
 
 # Compiler flags
-CFLAGS = -Wall -g -pthread -I./include -I$(PG_INCDIR) $(JSON_CFLAGS)
+CFLAGS = -Wall -g3 -O0 -pthread -I./include -I$(PG_INCDIR) $(JSON_CFLAGS)
 
 # Source files
 SRCS = src/spockctrl.c src/util.c src/sql.c src/slot.c src/logger.c src/workflow.c src/node.c src/repset.c src/sub.c src/dbconn.c src/conf.c
