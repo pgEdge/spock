@@ -1845,6 +1845,9 @@ spock_apply_worker_attach(void)
 static void
 spock_apply_worker_detach(void)
 {
+	/* reset replication session to avoid reuse of it after error. */
+	replorigin_session_reset();
+
 	if (MyApplyWorker->apply_group)
 		pg_atomic_sub_fetch_u32(&MyApplyWorker->apply_group->nattached, 1);
 
@@ -2853,9 +2856,6 @@ stream_replay:
 								remote_xid,
 								replorigin_session_origin_lsn,
 								replorigin_session_origin_timestamp);
-
-					/* reset replication session to avoid reuse of it after error. */
-					replorigin_session_reset();
 				}
 			}
 			else
@@ -2874,12 +2874,6 @@ stream_replay:
 					send_feedback(applyconn, last_received, GetCurrentTimestamp(),
 								  false);
 				}
-
-				/* reset replication session to avoid reuse of it after error. */
-				if (MyApplyWorker->use_try_block &&
-					(exception_behaviour == TRANSDISCARD ||
-					 exception_behaviour == SUB_DISABLE))
-					replorigin_session_reset();
 			}
 
 			if (!in_remote_transaction)
@@ -2975,8 +2969,6 @@ stream_replay:
 
 		MemoryContextReset(MessageContext);
 		spock_relation_cache_reset();
-		/* reset replication session to avoid reuse of it after error. */
-		replorigin_session_reset();
 
 		apply_replay_next = apply_replay_head;
 		in_remote_transaction = false;
