@@ -47,7 +47,7 @@ CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin_id oid, lsn p
 AS $$
 DECLARE
 	target_id		oid;
-	ms_count		integer := 0;
+	elapsed_time	numeric := 0;
 	progress_lsn	pg_lsn;
 BEGIN
 	IF origin_id IS NULL THEN
@@ -63,8 +63,8 @@ BEGIN
 			result = true;
 			RETURN;
 		END IF;
-		ms_count := ms_count + 200;
-		IF timeout <> 0 AND ms_count >= timeout THEN
+		elapsed_time := elapsed_time + .2;
+		IF timeout <> 0 AND elapsed_time >= timeout THEN
 			result := false;
 			RETURN;
 		END IF;
@@ -80,7 +80,7 @@ AS $$
 DECLARE
 	origin_id		oid;
 	target_id		oid;
-	ms_count		integer := 0;
+	elapsed_time	numeric := 0;
 	progress_lsn	pg_lsn;
 BEGIN
 	origin_id := node_id FROM spock.node WHERE node_name = origin;
@@ -97,8 +97,8 @@ BEGIN
 			result = true;
 			RETURN;
 		END IF;
-		ms_count := ms_count + 200;
-		IF timeout <> 0 AND ms_count >= timeout THEN
+		elapsed_time := elapsed_time + .2;
+		IF timeout <> 0 AND elapsed_time >= timeout THEN
 			result := false;
 			RETURN;
 		END IF;
