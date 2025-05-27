@@ -976,28 +976,18 @@ handle_commit(StringInfo s)
 
 		apply_api.on_commit();
 
-		/*
-		 * We need to write end_lsn to the commit record if we
-		 * either had no exception or if we had one in DISCARD
-		 * or TRANSDISCARD mode.
-		 */
-		if (!xact_had_exception)
-		{
-			replorigin_session_origin_lsn = end_lsn;
-		}
-		else {
-			if (exception_behaviour == DISCARD ||
-				exception_behaviour == TRANSDISCARD)
-			{
-				replorigin_session_origin_lsn = end_lsn;
-			}
-			else
-			{
-				elog(ERROR, "SPOCK %s: Unhandled exception_behaviour %d "
-							"in spock_apply.c:handle_commit()",
-					 MySubscription->name, exception_behaviour);
-			}
-		}
+
+        /*
+         * Advance the replication origin LSN to end_lsn. This LSN marks the
+         * position from which streaming will resume in case of a crash.
+         *
+         * Previously, this was only updated if there was no exception, or if
+         * the exception behavior was DISCARD or TRANSDISCARD. However, there's
+         * no reason not to advance it for SUB_DISABLE as well. Even in that
+         * case, we want the replication to resume at the same point if the
+         * node restarts, since the subscription will remain disabled.
+         */
+		replorigin_session_origin_lsn = end_lsn;
 
 		/* Have the commit code adjust our logical clock if needed */
 		remoteTransactionStopTimestamp = commit_time;
@@ -1022,7 +1012,7 @@ handle_commit(StringInfo s)
 				exception_log = &exception_log_ptr[my_exception_log_index];
 				exception_log->commit_lsn = InvalidXLogRecPtr;
 				MySpockWorker->restart_delay = 0;
-				replorigin_session_reset();
+
 				elog(ERROR, "SPOCK %s: exiting because subscription disabled",
 					 MySubscription->name);
 			}
@@ -1045,7 +1035,7 @@ handle_commit(StringInfo s)
 				exception_log = &exception_log_ptr[my_exception_log_index];
 				exception_log->commit_lsn = InvalidXLogRecPtr;
 				MySpockWorker->restart_delay = 0;
-				replorigin_session_reset();
+
 				elog(ERROR, "SPOCK %s: exception handling had no exception(s) "
 					 "during replay in TRANSDISCARD or SUB_DISABLE mode",
 					 MySubscription->name);
@@ -1855,6 +1845,9 @@ spock_apply_worker_attach(void)
 static void
 spock_apply_worker_detach(void)
 {
+	/* reset replication session to avoid reuse of it after error. */
+	replorigin_session_reset();
+
 	if (MyApplyWorker->apply_group)
 		pg_atomic_sub_fetch_u32(&MyApplyWorker->apply_group->nattached, 1);
 
@@ -2592,6 +2585,7 @@ apply_work(PGconn *streamConn)
 	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
 	bool		need_replay;
 	ErrorData  *edata;
+	RepOriginId originid;
 
 	applyconn = streamConn;
 	fd = PQsocket(applyconn);
@@ -2614,6 +2608,7 @@ apply_work(PGconn *streamConn)
 	if (MyApplyWorker->apply_group == NULL)
 		spock_apply_worker_attach(); /* Attach this worker. */
 
+	originid = replorigin_session_origin;
 stream_replay:
 
 	need_replay = false;
@@ -2856,31 +2851,11 @@ stream_replay:
 				 */
 				if (exception_behaviour == SUB_DISABLE)
 				{
-					SpockSubscription *sub;
-					char errmsg[1024];
-
-					sub = get_subscription_by_name(MySubscription->name, false);
-					sub->enabled = false;
-					alter_subscription(sub);
-
-					snprintf(errmsg, sizeof(errmsg),
-							 "disabling subscription %s due to exception(s) - "
-							 "skip_lsn = %X/%X",
-							 MySubscription->name,
-							 LSN_FORMAT_ARGS(replorigin_session_origin_lsn));
-					exception_command_counter++;
-					add_entry_to_exception_log(remote_origin_id,
-											   replorigin_session_origin_timestamp,
-											   remote_xid,
-											   0, 0,
-											   NULL, NULL, NULL, NULL,
-											   NULL, NULL,
-											   "SUB_DISABLE",
-											   errmsg);
-					elog(WARNING, "SPOCK %s: disabling subscription due to"
-								  " exceptions - origin_lsn=%X/%X",
-						 MySubscription->name,
-						 LSN_FORMAT_ARGS(replorigin_session_origin_lsn));
+					spock_disable_subscription(MySubscription,
+								remote_origin_id,
+								remote_xid,
+								replorigin_session_origin_lsn,
+								replorigin_session_origin_timestamp);
 				}
 			}
 			else
@@ -2923,15 +2898,49 @@ stream_replay:
 	}
 	PG_CATCH();
 	{
+		MemoryContextSwitchTo(MessageContext);
+		edata = CopyErrorData();
+
 		/*
-		 * Exception handling should have caught this in the individual
-		 * action. This indicates an ERROR that is not covered by exception
-		 * handling and we need to bail out.
+		 * use_try_block == true indicates either:
+		 * 1. An exception occurred during a DML operation,
+		 * 2. Or we were replaying previously failed actions (via need_replay).
+		 *
+		 * If an exception occurs during handle_commit after prior handling,
+		 * we still need to ensure proper cleanup (e.g., disabling the subscription).
 		 */
-		if (MyApplyWorker->use_try_block)
+		if (xact_had_exception)
 		{
-			elog(LOG, "SPOCK: caught exception while use_try_block=true");
-			PG_RE_THROW();
+			/*
+			 * xact_had_exception implies that we are running under
+			 * use_try_block == true. If this happens in SUB_DISABLE
+			 * exception_behaviour, suspend the subscription here
+			 * and suppress feedback.
+			 */
+			if (exception_behaviour == SUB_DISABLE)
+			{
+				spock_disable_subscription(MySubscription,
+							remote_origin_id,
+							remote_xid,
+							replorigin_session_origin_lsn,
+							replorigin_session_origin_timestamp);
+			}
+		}
+		else
+		{
+			/*
+			 * This is the case where xact_had_exception == false, but we were
+			 * inside an exception handling block that completed successfully,
+			 * and an ERROR occurred afterward.
+			 *
+			 * This indicates an ERROR that is outside of the normal exception
+			 * handling and we need to bail out.
+			 */
+			if (MyApplyWorker->use_try_block)
+			{
+				elog(LOG, "SPOCK: caught exception while use_try_block=true");
+				PG_RE_THROW();
+			}
 		}
 
 		/*
@@ -2954,7 +2963,6 @@ stream_replay:
 		AbortOutOfAnyTransaction();
 
 		MemoryContextSwitchTo(MessageContext);
-		edata = CopyErrorData();
 		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
 
 		FlushErrorState();
@@ -2976,6 +2984,11 @@ stream_replay:
 	if (need_replay)
 	{
 		MyApplyWorker->use_try_block = true;
+
+		/* Its possible that origin session may have been reset above */
+		replorigin_session_setup(originid);
+		replorigin_session_origin = originid;
+
 		goto stream_replay;
 	}
 
