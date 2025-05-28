@@ -2529,7 +2529,7 @@ append_feedback_position(XLogRecPtr recvpos)
 	RemoteSyncPosition *syncpos;
 	MemoryContext oldctx;
 
-	Assert(WalSndCtl->sync_standbys_defined);
+	Assert(WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED);
 
 	if (get_flush_position(&writepos, &flushpos))
 	{
@@ -2570,7 +2570,7 @@ get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos, XLogRecPtr *flu
 	dlist_mutable_iter iter1;
 	RemoteSyncPosition *syncpos;
 
-	Assert(WalSndCtl->sync_standbys_defined);
+	Assert(WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED);
 	if (dlist_is_empty(&sync_replica_lsn))
 		return;
 
