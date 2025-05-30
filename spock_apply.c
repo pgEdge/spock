@@ -2965,6 +2965,8 @@ stream_replay:
 		MemoryContextSwitchTo(MessageContext);
 		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
 
+		/* reset replication session to avoid reuse of it after error. */
+		replorigin_session_reset();
 		FlushErrorState();
 
 		MemoryContextReset(MessageContext);
