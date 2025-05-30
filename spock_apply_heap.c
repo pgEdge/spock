@@ -724,6 +724,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 								TupleTableSlot *localslot, TupleTableSlot *remoteslot,
 								SpockTupleData *oldtup, SpockTupleData *newtup,
 								ResultRelInfo *relinfo, EPQState *epqstate,
+								Oid idxused,
 								bool is_insert)
 {
 	TransactionId xmin;
@@ -777,7 +778,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 							  rel, TTS_TUP(localslot), oldtup,
 							  remotetuple, applytuple, resolution,
 							  xmin, local_origin_found, local_origin,
-							  local_ts, rel->idxoid,
+							  local_ts, idxused,
 							  true /* FIXME: unused in the call chain */ );
 	}
 
@@ -921,6 +922,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	TupleTableSlot *localslot;
 	ResultRelInfo *relinfo;
 	bool		found;
+	Oid			idxused;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -942,6 +944,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
 	ExecOpenIndices(edata->targetRelInfo, false);
 	relinfo = edata->targetRelInfo;
+	idxused = edata->targetRel->idxoid;
 
 	/*
 	 * TODO: do we need a retry finding a tuple? Also do we need
@@ -961,7 +964,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		 * defined on the relation.
 		 */
 		found = FindReplTupleByUCIndex(edata, relinfo->ri_RelationDesc,
-									   remoteslot, &localslot, &rel->idxoid);
+									   remoteslot, &localslot, &idxused);
 	}
 
 	if (found)
@@ -977,13 +980,12 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		init_tuple_with_defaults(&oldtup, RelationGetDescr(rel->rel));
 		spock_handle_conflict_and_apply(rel, estate, localslot, remoteslot,
 										&oldtup, newtup, relinfo, &epqstate,
-										true);
+										idxused, true);
 	}
 	else
 	{
 		/* Make sure that any user-supplied code runs as the table owner. */
 		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
-
 		/* Do the actual INSERT */
 		ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
 		/* Switch back to the original user */
@@ -1012,6 +1014,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	ResultRelInfo *relinfo;
 	bool		found;
 	int			retry;
+	Oid			idxused;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -1042,6 +1045,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	ExecOpenIndices(edata->targetRelInfo, false);
 
 	relinfo = edata->targetRelInfo;
+	idxused = edata->targetRel->idxoid;
 
 	retry = 0;
 	while (retry < 5)
@@ -1073,7 +1077,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	{
 		spock_handle_conflict_and_apply(rel, estate, localslot, remoteslot,
 										oldtup, newtup, relinfo, &epqstate,
-										false);
+										idxused, false);
 	}
 	else
 	{
