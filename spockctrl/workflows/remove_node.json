@@ -1,0 +1,66 @@
+{
+  "workflow_name": "Remove Node",
+  "description": "Remove a spock node (n3) and its subscriptions from the cluster.",
+  "steps": [ 
+    {
+      "spock": {
+        "node": "n3",
+        "command": "DROP SUBSCRIPTION",
+        "description": "Drop subscription (sub_n2_n3) on n3",
+        "args": [
+          "--sub_name=sub_n2_n3"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n3",
+        "command": "DROP SUBSCRIPTION",
+        "description": "Drop subscription (sub_n1_n3) on n3",
+        "args": [
+          "--sub_name=sub_n1_n3"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n1",
+        "command": "DROP SUBSCRIPTION",
+        "description": "Drop subscription (sub_n3_n1) on n1",
+        "args": [
+          "--sub_name=sub_n3_n1"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "DROP SUBSCRIPTION",
+        "description": "Drop subscription (sub_n3_n2) on n2",
+        "args": [
+          "--sub_name=sub_n3_n2"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n3",
+        "command": "DROP NODE",
+        "description": "Drop spock node n3",
+        "args": [
+          "--node_name=n3"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    }
+  ]
+}

@@ -27,6 +27,14 @@ typedef enum {
 								 * one table. */
 } SpockWorkerType;
 
+typedef enum {
+	SPOCK_WORKER_STATUS_NONE,		/* Unused slot. */
+	SPOCK_WORKER_STATUS_IDLE,		/* Idle. */
+	SPOCK_WORKER_STATUS_RUNNING,	/* Running. */
+	SPOCK_WORKER_STATUS_STOPPING,	/* Stopping. */
+	SPOCK_WORKER_STATUS_STOPPED,	/* Stopped. */
+	SPOCK_WORKER_STATUS_FAILED,		/* Failed. */
+} SpockWorkerStatus;
 /*
  * Apply workers shared memory information per database per origin
  *
@@ -87,6 +95,7 @@ typedef struct SpockWorker {
 	/* WAL Insert location on origin */
 	XLogRecPtr	remote_wal_insert_lsn;
 
+	SpockWorkerStatus worker_status;
 	/* Type-specific worker info */
 	union
 	{

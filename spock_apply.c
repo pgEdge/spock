@@ -2741,6 +2741,8 @@ stream_replay:
 			int			rc;
 			int			r;
 
+            MySpockWorker->worker_status = SPOCK_WORKER_STATUS_RUNNING;
+
 			/*
 			 * Background workers mustn't call usleep() or any direct equivalent
 			 * instead, they may wait on their process latch, which sleeps as
@@ -2766,13 +2768,16 @@ stream_replay:
 
 			/* emergency bailout if postmaster has died */
 			if (rc & WL_POSTMASTER_DEATH)
-				proc_exit(1);
-
+			{
+				MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
+								proc_exit(1);
+			}	
 			if (rc & WL_SOCKET_READABLE)
 				PQconsumeInput(applyconn);
 
 			if (PQstatus(applyconn) == CONNECTION_BAD)
 			{
+				MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
 				elog(ERROR, "SPOCK %s: connection to other side has died",
 					 MySubscription->name);
 			}
@@ -2793,6 +2798,7 @@ stream_replay:
 													  (wal_sender_timeout * 3) / 2);
 				if (GetCurrentTimestamp() > timeout)
 				{
+					MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
 					elog(ERROR, "SPOCK %s: terminating apply due to missing "
 						 "walsender ping",
 						 MySubscription->name);

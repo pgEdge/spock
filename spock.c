@@ -1059,3 +1059,4 @@ _PG_init(void)
 
 	spock_init_failover_slot();
 }
+

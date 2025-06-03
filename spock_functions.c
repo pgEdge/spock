@@ -3157,3 +3157,100 @@ spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 
 	PG_RETURN_LSN(endlsn);
 }
+
+PG_FUNCTION_INFO_V1(get_apply_worker_status);
+/*
+ * Show info about apply workers.
+ */
+Datum
+get_apply_worker_status(PG_FUNCTION_ARGS)
+{
+    ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+    TupleDesc tupdesc;
+    Tuplestorestate *tupstore;
+    MemoryContext per_query_ctx;
+    MemoryContext oldcontext;
+
+    /* Check if caller supports returning a tuplestore */
+    if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("set-valued function called in context that cannot accept a set")));
+    if (!(rsinfo->allowedModes & SFRM_Materialize))
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("materialize mode required, but it is not allowed in this context")));
+
+    /* Switch to long-lived context */
+    per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+    oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+    /* Build tuple descriptor */
+    tupdesc = CreateTemplateTupleDesc(4);
+    TupleDescInitEntry(tupdesc, (AttrNumber)1, "worker_pid", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, (AttrNumber)2, "worker_dboid", INT4OID, -1, 0);
+    TupleDescInitEntry(tupdesc, (AttrNumber)3, "worker_subid", INT8OID, -1, 0);
+    TupleDescInitEntry(tupdesc, (AttrNumber)4, "worker_status", TEXTOID, -1, 0);
+
+    tupstore = tuplestore_begin_heap(true, false, work_mem);
+    rsinfo->returnMode = SFRM_Materialize;
+    rsinfo->setResult = tupstore;
+    rsinfo->setDesc = tupdesc;
+
+    MemoryContextSwitchTo(oldcontext);
+
+    /* Fetch and emit worker rows */
+    if (SpockCtx == NULL)
+        ereport(ERROR, (errmsg("Spock context is not initialized")));
+
+    LWLockAcquire(SpockCtx->lock, LW_SHARED);
+    for (int i = 0; i < SpockCtx->total_workers; i++)
+    {
+        SpockWorker *worker = &SpockCtx->workers[i];
+
+        if (worker->worker_type == SPOCK_WORKER_APPLY && worker->proc != NULL)
+        {
+            Datum values[4];
+            bool nulls[4] = {false, false, false, false};
+            const char *status_text;
+
+            /* Map worker_status to text */
+            switch (worker->worker_status)
+            {
+                case SPOCK_WORKER_STATUS_NONE:
+                    status_text = "none";
+                    break;
+                case SPOCK_WORKER_STATUS_IDLE:
+                    status_text = "idle";
+                    break;
+                case SPOCK_WORKER_STATUS_RUNNING:
+                    status_text = "running";
+                    break;
+                case SPOCK_WORKER_STATUS_STOPPING:
+                    status_text = "stopping";
+                    break;
+                case SPOCK_WORKER_STATUS_STOPPED:
+                    status_text = "stopped";
+                    break;
+                case SPOCK_WORKER_STATUS_FAILED:
+                    status_text = "failed";
+                    break;
+                default:
+                    status_text = "unknown";
+                    break;
+            }
+
+            values[0] = Int64GetDatum((int64)worker->proc->pid);
+            values[1] = Int32GetDatum(worker->dboid);
+            values[2] = Int64GetDatum((int64)worker->worker.apply.subid);
+            values[3] = CStringGetTextDatum(status_text);
+
+            tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+        }
+    }
+    LWLockRelease(SpockCtx->lock);
+
+    tuplestore_donestoring(tupstore);
+
+    PG_RETURN_VOID();
+}
