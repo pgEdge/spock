@@ -3250,7 +3250,5 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
     }
     LWLockRelease(SpockCtx->lock);
 
-    tuplestore_donestoring(tupstore);
-
     PG_RETURN_VOID();
 }
