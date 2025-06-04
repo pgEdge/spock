@@ -108,3 +108,50 @@ BEGIN
 	END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION spock.get_apply_worker_status(
+    OUT worker_pid bigint, -- Changed from int to bigint
+    OUT worker_dboid int,
+    OUT worker_subid bigint,
+    OUT worker_status text
+)
+RETURNS SETOF record STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'get_apply_worker_status';
+
+CREATE FUNCTION spock.wait_for_apply_worker(p_subbid bigint, timeout int DEFAULT 0)
+RETURNS boolean
+AS $$
+DECLARE
+    start_time timestamptz := clock_timestamp();
+    elapsed_time int := 0;
+    current_status text;
+BEGIN
+    -- Loop until the timeout is reached or the worker is no longer running
+    WHILE true LOOP
+        -- Call spock.get_apply_worker_status to check the worker's status
+        SELECT worker_status
+        INTO current_status
+        FROM spock.get_apply_worker_status()
+        WHERE worker_subid = p_subbid;
+
+        -- If no row is found, return -1
+        IF NOT FOUND THEN
+            RETURN false;
+        END IF;
+
+        -- If the worker is no longer running, return 0
+        IF current_status IS DISTINCT FROM 'running' THEN
+            RETURN false;
+        END IF;
+
+        -- Check if the timeout has been reached
+        elapsed_time := EXTRACT(EPOCH FROM clock_timestamp() - start_time) * 1000;
+        IF timeout > 0 AND elapsed_time >= timeout THEN
+            RETURN true;
+        END IF;
+
+        -- Sleep for a short interval before checking again
+        PERFORM pg_sleep(0.2);
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
