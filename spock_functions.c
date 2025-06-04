@@ -572,6 +572,9 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 
 	create_subscription(&sub);
 
+	/* Create progress entry to track commit ts per local/remote origin */
+	create_progress_entry(localnode->node->id, originif.nodeid, 0);
+
 	/* Create synchronization status for the subscription. */
 	memset(&sync, 0, sizeof(SpockSyncStatus));
 
@@ -614,9 +617,6 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 		(void) replorigin_create(slot_name.data);
 	}
 	create_local_sync_status(&sync);
-
-	/* Create progress entry to track commit ts per local/remote origin */
-	create_progress_entry(localnode->node->id, originif.nodeid, 0);
 
 	PG_RETURN_OID(sub.id);
 }
