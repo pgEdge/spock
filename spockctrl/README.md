@@ -1,11 +1,9 @@
 # Spockctrl Tutorial
 
-## Introduction
-
 `spockctrl` is a command-line utility designed to simplify the management and administration of a Spock multi-master replication setup for PostgreSQL. It provides a convenient interface for common tasks such as:
 
 *   **Node Management**: Creating, dropping, and listing nodes within your Spock cluster.
-*   **Replication Set Management**: Defining and modifying replication sets, which control which data is replicated.
+*   **Replication Set Management**: Defining and modifying the replication sets that control which data is replicated.
 *   **Subscription Management**: Creating, dropping, and managing subscriptions between nodes to initiate and control replication.
 *   **Executing SQL**: Running ad-hoc SQL commands against your database nodes.
 *   **Workflow Automation**: Running predefined sets of operations (workflows) to perform complex tasks like adding a new node to the cluster.
@@ -22,7 +20,7 @@ This tutorial will guide you through the process of building, configuring, and u
     ```
 
 2.  **Build `spockctrl`:**
-    Run the `make` command. This will compile the source files and create the `spockctrl` executable in the current directory.
+    Run the `make` command. This compiles the source files and create the `spockctrl` executable in the current directory.
     ```bash
     make
     ```
@@ -38,21 +36,21 @@ Alternatively, you can run `spockctrl` directly from the `spockctrl` directory b
 
 ## Configuration
 
-`spockctrl` uses a JSON configuration file to store database connection details and other settings. By default, it looks for a file named `spockctrl.json` in the directory where you run the `spockctrl` command. You can also specify a different configuration file using the `-c` or `--config` command-line option.
+`spockctrl` uses a JSON configuration file to store database connection details and other settings. By default, `spockctrl` looks for a file named `spockctrl.json` in the directory where you run the `spockctrl` command. You can also specify a different configuration file using the `-c` or `--config` command-line option.
 
 The configuration file contains information necessary for `spockctrl` to connect to your PostgreSQL instances and manage the Spock extension.
 
 **Key Configuration Elements:**
 
-*   **Database Connection Parameters:** DSN (Data Source Name) strings or individual parameters (host, port, user, password, dbname) for each node involved in the replication.
-*   **Logging Settings:** Configuration for log levels and output.
+*   **Database Connection Parameters:** DSN (Data Source Name) strings or individual parameters (host, port, user, password, dbname) for each node involved in the replication cluster.
+*   **Logging Settings:** Configuration details for log levels and output.
 *   **(Other specific parameters as needed by `spockctrl` operations)**
 
 **Example Configuration File:**
 
 A template or example configuration file named `spockctrl.json` is typically located in the `spockctrl/` directory of the source code. You should copy and modify this file to match your environment.
 
-Here's a conceptual example of what parts of a `spockctrl.json` might look like (refer to the actual `spockctrl/spockctrl.json` for the correct structure):
+Following is a conceptual example of what sections of a `spockctrl.json` might look like; refer to the actual `spockctrl/spockctrl.json` for the complete structure:
 
 ```json
 {
@@ -87,90 +85,90 @@ You can always get help for a specific command by typing `spockctrl <command> --
 
 The `node` command is used to manage the Spock nodes (PostgreSQL instances) that participate in replication.
 
-*   **`spockctrl node create <node_name> --dsn <connection_string>`**: Creates a new Spock node representation within the Spock metadata.
+*   **`spockctrl node create <node_name> --dsn <connection_string>`** creates a new Spock node representation within the Spock metadata.
     *   `<node_name>`: A unique name for the node.
     *   `--dsn`: The connection string for the PostgreSQL instance.
     *   Example: `spockctrl node create provider1 --dsn "host=pg1 port=5432 dbname=testdb user=spock"`
 
-*   **`spockctrl node drop <node_name>`**: Removes a Spock node.
+*   **`spockctrl node drop <node_name>`** removes a Spock node.
     *   Example: `spockctrl node drop provider1`
 
-*   **`spockctrl node list`**: Lists all configured Spock nodes.
+*   **`spockctrl node list`** lists all configured Spock nodes.
     *   Example: `spockctrl node list`
 
-*   **`spockctrl node add-interface <node_name> <interface_name> --dsn <connection_string>`**: Adds an alternative connection interface to a node.
+*   **`spockctrl node add-interface <node_name> <interface_name> --dsn <connection_string>`** adds an alternative connection interface to a node.
     *   Example: `spockctrl node add-interface provider1 secondary_conn --dsn "host=pg1_alt_ip port=5432 dbname=testdb"`
 
-*   **`spockctrl node drop-interface <node_name> <interface_name>`**: Drops an interface from a node.
+*   **`spockctrl node drop-interface <node_name> <interface_name>`** drops an interface from a node.
     *   Example: `spockctrl node drop-interface provider1 secondary_conn`
 
 ### Replication Set Management (`repset`)
 
 The `repset` command manages replication sets, which define groups of tables and sequences to be replicated.
 
-*   **`spockctrl repset create <repset_name> [options]`**: Creates a new replication set.
+*   **`spockctrl repset create <repset_name> [options]`** creates a new replication set.
     *   `<repset_name>`: Name for the replication set (e.g., `default`, `custom_set`).
     *   Options can control DDL replication, DML replication, etc. (e.g., `--replicate_insert=true`, `--replicate_update=false`).
     *   Example: `spockctrl repset create my_tables_repset`
 
-*   **`spockctrl repset drop <repset_name>`**: Drops a replication set.
+*   **`spockctrl repset drop <repset_name>`** drops a replication set.
     *   Example: `spockctrl repset drop my_tables_repset`
 
-*   **`spockctrl repset add-table <repset_name> <table_name> [options]`**: Adds a specific table to a replication set.
-    *   `<table_name>`: The schema-qualified table name (e.g., `public.my_table`).
-    *   Options can include specifying columns to replicate or row filtering conditions.
+*   **`spockctrl repset add-table <repset_name> <table_name> [options]`** adds a specific table to a replication set.
+    *   `<table_name>` is the schema-qualified table name (e.g., `public.my_table`).
+    *   Options allow you to specify which columns to replicate or row filtering conditions.
     *   Example: `spockctrl repset add-table my_tables_repset public.orders --columns "order_id,product_id,quantity"`
 
-*   **`spockctrl repset add-all-tables <repset_name> <schema_name>`**: Adds all tables from a given schema to a replication set.
+*   **`spockctrl repset add-all-tables <repset_name> <schema_name>`** adds all tables from a given schema to a replication set.
     *   `<schema_name>`: The name of the schema (e.g., `public`).
     *   Example: `spockctrl repset add-all-tables default_repset public`
 
-*   **`spockctrl repset add-seq <repset_name> <sequence_name>`**: Adds a sequence to a replication set.
+*   **`spockctrl repset add-seq <repset_name> <sequence_name>`** adds a sequence to a replication set.
     *   Example: `spockctrl repset add-seq default_repset public.my_sequence`
 
-*   **`spockctrl repset add-all-sequences <repset_name> <schema_name>`**: Adds all sequences from a given schema.
+*   **`spockctrl repset add-all-sequences <repset_name> <schema_name>`** adds all sequences from a given schema.
     *   Example: `spockctrl repset add-all-sequences default_repset public`
 
-*   **`spockctrl repset list`**: Lists available replication sets.
+*   **`spockctrl repset list`** lists available replication sets.
 
 ### Subscription Management (`sub`)
 
 The `sub` command manages subscriptions, which connect a subscriber node to a provider node and initiate replication.
 
-*   **`spockctrl sub create <subscription_name> <provider_dsn> [options]`**: Creates a new subscription.
+*   **`spockctrl sub create <subscription_name> <provider_dsn> [options]`** creates a new subscription.
     *   `<subscription_name>`: A unique name for the subscription.
     *   `<provider_dsn>`: The DSN of the provider node to subscribe to.
     *   Options include specifying replication sets, synchronization options, etc.
     *   Example: `spockctrl sub create sub_to_provider1 "host=pg1 port=5432 dbname=testdb user=spock" --repsets "default,my_tables_repset"`
 
-*   **`spockctrl sub drop <subscription_name>`**: Drops a subscription.
+*   **`spockctrl sub drop <subscription_name>`** drops a subscription.
     *   Example: `spockctrl sub drop sub_to_provider1`
 
-*   **`spockctrl sub enable <subscription_name>`**: Enables a disabled subscription.
+*   **`spockctrl sub enable <subscription_name>`** enables a disabled subscription.
     *   Example: `spockctrl sub enable sub_to_provider1`
 
-*   **`spockctrl sub disable <subscription_name>`**: Disables an active subscription, pausing replication.
+*   **`spockctrl sub disable <subscription_name>`** disables an active subscription, pausing replication.
     *   Example: `spockctrl sub disable sub_to_provider1`
 
-*   **`spockctrl sub list`**: Lists all subscriptions.
+*   **`spockctrl sub list`** lists all subscriptions.
 
-*   **`spockctrl sub show-status <subscription_name>`**: Shows the status of a specific subscription.
+*   **`spockctrl sub show-status <subscription_name>`** shows the status of a specific subscription.
     *   Example: `spockctrl sub show-status sub_to_provider1`
 
-*   **`spockctrl sub wait-for-sync <subscription_name>`**: Waits for a subscription to complete its initial data synchronization.
+*   **`spockctrl sub wait-for-sync <subscription_name>`** waits for a subscription to complete its initial data synchronization.
     *   Example: `spockctrl sub wait-for-sync sub_to_provider1`
 
 ### SQL Execution (`sql`)
 
 The `sql` command allows you to execute arbitrary SQL commands on a specified node. This can be useful for administrative tasks or querying Spock-specific metadata.
 
-*   **`spockctrl sql <node_name> <SQL_command_string>`**: Executes an SQL command.
-    *   `<node_name>`: The name of the node (from `spockctrl.json`) on which to execute the command.
-    *   `<SQL_command_string>`: The SQL query or command to run.
+*   **`spockctrl sql <node_name> <SQL_command_string>`** executes a SQL command.
+    *   `<node_name>` is the name of the node (from `spockctrl.json`) on which to execute the command.
+    *   `<SQL_command_string>` is the SQL query or command to run.
     *   Example: `spockctrl sql provider1 "SELECT * FROM spock.node;"`
     *   Example: `spockctrl sql subscriber1 "CALL spock.sub_resync_table('my_subscription', 'public.my_table');"`
 
-**Note:** The exact subcommands and their options might vary slightly based on the `spockctrl` version. Always use `spockctrl <command> --help` for the most accurate and detailed information.
+**Note:** The exact subcommands and their options may vary slightly based on the `spockctrl` version. Always use `spockctrl <command> --help` for the most accurate and detailed information.
 
 ## Workflows
 
@@ -197,71 +195,64 @@ Workflow files are JSON documents that outline the steps to be performed. Each s
 
 **Available Example Workflows:**
 
-The `spockctrl/workflows/` directory in the source distribution contains several example workflows, such as:
+The `spockctrl/workflows/` directory in the source distribution contains several example workflows:
 
-*   `add_node.json`: A workflow to add a new node to an existing Spock replication setup. This might involve creating the node, setting up replication sets, and creating subscriptions.
+*   `add_node.json`: A workflow to add a new node to an existing Spock replication setup. This involves creating the node, setting up replication sets, and creating subscriptions.
 *   `remove_node.json`: A workflow to cleanly remove a node from a replication setup.
-*   `cross-wire.json`: Potentially a workflow to set up bi-directional replication between two nodes (cross-replication).
-*   `uncross-wire.json`: Potentially a workflow to dismantle a bi-directional replication setup.
+*   `cross-wire.json`: A workflow to set up bi-directional replication between two nodes (cross-replication).
+*   `uncross-wire.json`: A workflow to dismantle a bi-directional replication setup.
 
-These example workflows can serve as templates or starting points for creating your own custom automation scripts. Examine their content to understand how they are structured and what operations they perform.
+These sample workflows can serve as templates or starting points for creating your own custom automation scripts. Examine their content to understand how they are structured and what operations they perform.
 
 **When to Use Workflows:**
 
-*   **Standardized Setups:** Ensuring consistent configuration when adding new nodes or setting up replication.
-*   **Complex Operations:** Automating sequences of commands that are prone to manual error.
-*   **Disaster Recovery/Failover:** Scripting procedures for failover or re-configuring replication after an outage (though this would require careful design).
+*   **Standardized Setups** ensure consistent configuration when adding new nodes or setting up replication.
+*   **Complex Operations** are best executed with a workflow that Automates sequences of commands that are prone to manual error.
+*   **Disaster Recovery/Failover** are best managed with scripted procedures for failover or that re-configure replication after an outage.  Please note that this requires careful design!
 
 ## Command-Line Options
 
 `spockctrl` supports several global command-line options that can be used with most commands:
 
-*   **`-c <file>`, `--config <file>`**:
-    Specifies the path to the `spockctrl.json` configuration file. If not provided, `spockctrl` looks for `spockctrl.json` in the current directory.
+*   **`-c <file>`, `--config <file>`** specifies the path to the `spockctrl.json` configuration file. If not provided, `spockctrl` looks for `spockctrl.json` in the current directory.
     *   Example: `spockctrl node list -c /etc/spock/spockctrl.conf`
 
-*   **`-f <format>`, `--format <format>`**:
-    Determines the output format for commands that display data.
+*   **`-f <format>`, `--format <format>`** determines the output format for commands that display data.
     *   `table`: (Default) Outputs data in a human-readable tabular format.
     *   `json`: Outputs data in JSON format, which is useful for scripting or integration with other tools.
     *   Example: `spockctrl sub list --format json`
 
-*   **`-v <level>`, `--verbose <level>`**:
-    Enables verbose logging to provide more detailed output about what `spockctrl` is doing. The verbosity level can be an integer (e.g., 0, 1, 2, 3), with higher numbers typically meaning more detailed logs.
+*   **`-v <level>`, `--verbose <level>`** enables verbose logging to provide more detailed output about what `spockctrl` is doing. The verbosity level can be an integer (e.g., 0, 1, 2, 3), with higher numbers typically meaning more detailed logs.
     *   Level 0: Errors only (or default behavior if not specified).
     *   Level 1: Warnings and errors.
     *   Level 2: Informational messages, warnings, and errors.
     *   Level 3: Debug level messages (most verbose).
     *   Example: `spockctrl --verbose 2 node create mynode ...`
 
-*   **`-w <file>`, `--workflow <file>`**:
-    Executes a predefined workflow from the specified JSON file. When using this option, you typically don't specify other commands like `node` or `sub` directly on the command line, as the workflow file dictates the operations.
+*   **`-w <file>`, `--workflow <file>`** executes a predefined workflow from the specified JSON file. When using this option, you typically don't specify other commands like `node` or `sub` directly on the command line, as the workflow file dictates the operations.
     *   Example: `spockctrl --config myconfig.json --workflow workflows/add_node.json`
 
-*   **`-h`, `--help`**:
-    Displays a general help message listing all available commands, or help for a specific command or subcommand.
+*   **`-h`, `--help`** displays a general help message listing all available commands, or help for a specific command or subcommand.
     *   Example (general help): `spockctrl --help`
     *   Example (help for `node` command): `spockctrl node --help`
     *   Example (help for `node create` subcommand): `spockctrl node create --help`
 
-*   **`--version`**:
-    Displays the version of the `spockctrl` utility.
+*   **`--version`** displays the version of the `spockctrl` utility.
     *   Example: `spockctrl --version`
 
 These options provide flexibility in how you interact with `spockctrl` and how it integrates into your operational procedures.
 
-## Example Scenario: Setting up Two-Node Replication
+## Example: Setting up a Two-Node Replication Scenario
 
-This section provides a simplified walkthrough of using `spockctrl` to set up a basic two-node (provider and subscriber) replication.
+Before using spockctrl to deploy and configure a two-node (provider and subscriber) replication scenarion, you must:
 
-**Prerequisites:**
-
-1.  Two PostgreSQL instances are running and accessible.
-2.  The Spock PostgreSQL extension is installed and created (`CREATE EXTENSION spock;`) on both instances.
-3.  `postgresql.conf` on both nodes is configured for logical replication (e.g., `wal_level = logical`, `shared_preload_libraries = 'spock'`, etc.).
-4.  `pg_hba.conf` allows replication connections between the nodes and from where `spockctrl` is run.
-5.  `spockctrl` is built and accessible.
-6.  A `spockctrl.json` configuration file is prepared.
+1. Install and verify two PostgreSQL instances.
+2. Install and create (using `CREATE EXTENSION spock;`) the Spock extension on both instances.
+3. Configure the `postgresql.conf` file on both nodes for logical replication  
+   (for example, set, set `wal_level = logical`, `shared_preload_libraries = 'spock'`, etc.).
+4. Update the `pg_hba.conf` file on each instance to allow replication connections between the nodes and from the host running `spockctrl`.
+5. Build `spockctrl` in your environment.
+6. Update the `spockctrl.json` file.
 
 **Example `spockctrl.json`:**
 
@@ -295,34 +286,35 @@ Let's assume your `spockctrl.json` looks something like this:
   }
 }
 ```
-*(Note: The actual structure of `spockctrl.json` might differ; this is a conceptual example based on common needs. Refer to `spockctrl/spockctrl.json` for the correct format.)*
+*(Note: The actual structure of your `spockctrl.json` file might differ; this is a conceptual example based on common usage. Refer to `spockctrl/spockctrl.json` for configuration options.)*
 
-**Steps using `spockctrl`:**
 
-(Assuming your `spockctrl.json` is in the current directory or specified with `-c`)
+**Invoking `spockctrl` to Create a Cluster**
+
+Assuming your `spockctrl.json` is in the current directory or is specified with `-c`:
 
 1.  **Create the Provider Node:**
-    This command tells Spock about your provider database instance.
+    The following command tells Spock about your provider database instance:
     ```bash
     spockctrl node create provider_node --dsn "host=pgserver1 port=5432 dbname=salesdb user=spock_user password=securepass"
     ```
     *(If your DSN is already fully defined in `spockctrl.json` for this node, you might not need to specify it again on the command line, depending on `spockctrl`'s design.)*
 
 2.  **Create the Subscriber Node:**
-    This command registers your subscriber database instance.
+    The following command registers your subscriber database instance:
     ```bash
     spockctrl node create subscriber_node --dsn "host=pgserver2 port=5432 dbname=salesdb_replica user=spock_user password=securepass"
     ```
 
 3.  **Create a Replication Set on the Provider:**
-    Define what data to replicate. Let's create a default set.
+    The following command creates a replication data set named default_repset:
     ```bash
     spockctrl repset create default_repset --node provider_node
     ```
     *(The `--node` might be implicit if your config ties repsets to nodes, or it might be needed to specify where the repset is being defined.)*
 
 4.  **Add Tables and Sequences to the Replication Set:**
-    Specify which tables and sequences belong to `default_repset`.
+    The following command adds our tables and sequences to the `default_repset` replication set:
     ```bash
     spockctrl repset add-table default_repset public.orders --node provider_node
     spockctrl repset add-table default_repset public.customers --node provider_node
@@ -334,7 +326,7 @@ Let's assume your `spockctrl.json` looks something like this:
     ```
 
 5.  **Create the Subscription on the Subscriber:**
-    This command initiates the replication process. It tells `subscriber_node` to connect to `provider_node` and subscribe to the specified replication sets.
+    The following command initiates the replication process by telling the subscriber_node to connect to provider_node and subscribe to the specified replication sets:
     ```bash
     spockctrl sub create sales_subscription \
         --provider-dsn "host=pgserver1 port=5432 dbname=salesdb user=spock_user password=securepass" \
@@ -344,16 +336,20 @@ Let's assume your `spockctrl.json` looks something like this:
         --synchronize-data \
         --enable
     ```
-    *(Command arguments might vary. For example, instead of `--provider-dsn`, it might use the node name defined in `spockctrl.json`. `--target-node` specifies where the subscription is created. `--synchronize-data` would handle initial data copy. `--enable` makes it active immediately.)*
+Note that your command arguments will vary. In our example:
+* `--provider-dsn` specifies a connection string, but you might instead use the node name defined in `spockctrl.json`. 
+* `--target-node` specifies where the subscription is created. 
+* `--synchronize-data` instructs spock to perform the initial data copy. 
+* `--enable` makes the subscription active immediately.
 
 6.  **Wait for Initial Synchronization (Optional but Recommended):**
-    Ensure the initial data copy is complete before considering the setup fully operational.
+    The following command confirms that the initial data copy is complete; when the copy is confirmed, replication should be operational:
     ```bash
     spockctrl sub wait-for-sync sales_subscription --node subscriber_node
     ```
 
 7.  **Check Subscription Status:**
-    Verify that the subscription is active and replicating.
+    You can use the following command to verify that the subscription is active and replicating:
     ```bash
     spockctrl sub show-status sales_subscription --node subscriber_node
     ```
@@ -361,9 +357,11 @@ Let's assume your `spockctrl.json` looks something like this:
 
 **Further Actions:**
 
-*   You can now make changes to `public.orders` or `public.customers` on `provider_node`, and they should replicate to `subscriber_node`.
-*   Use `spockctrl sub disable sales_subscription` and `spockctrl sub enable sales_subscription` to pause and resume replication.
-*   If you need to add more tables, modify the replication set on the provider and then, if necessary, resynchronize the relevant tables or the subscription.
+You can now:
+
+*  make changes to public.orders or public.customers on provider_node that will replicate to subscriber_node.
+*  use spockctrl sub disable sales_subscription and spockctrl sub enable sales_subscription to pause and resume replication.
+*  add more tables by modifying the replication set on the provider and then, if necessary, resynchronize the relevant tables or the subscription to the subscriber node.
 
 This example is illustrative. The exact commands, options, and workflow will depend on the specific version of `spockctrl` and the structure of its configuration file. Always refer to `spockctrl --help` and the official documentation for precise usage.
 
