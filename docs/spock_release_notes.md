@@ -1,23 +1,17 @@
-**Version 4.1** is our current version under active development.  It presently includes the following important enhancements beyond v4.0:
-* Hardening Parallel Slots for OLTP production Usage
-  - Commit Order
-  - Skip LSN
-  - Optionally stop replicating in an Error
-* Enhancements to Auto DDL
 
- **Version 4.0** includes the following enhancements over v3.3:
+ **Version 4.0** includes the following features:
 
-* Full re-work of paralell slots implementation to support mixed OLTP workloads
+* Full re-work of parallel slots implementation to support mixed OLTP workloads
 * Improved support for delta_apply columns to support various data types
 * Improved regression test coverage
 * Support for [Large Object LOgical Replication](https://github.com/pgedge/lolor)
 * Support for pg17
 
-Our current production version is v3.3 and includes the following enhancements over v3.2:
+Version is v3.3 includes the following features:
 
 * Automatic replication of DDL statements
 
-**Version 3.2** includes the following important enhancements beyond Spock v3.1:
+**Version 3.2** includes the following features:
 
 * Support for pg14
 * Support for [Snowflake Sequences](https://github.com/pgedge/snowflake)
@@ -35,7 +29,7 @@ Our current production version is v3.3 and includes the following enhancements o
 * Improved and document support for replication and maintaining partitioned tables.
 
 
-**Version 3.0 (Beta)** includes the following important enhancements beyond the BDR/pg_logical base:
+**Version 3.0 (Beta)** includes the following features:
 
 * Support for pg15 (support for pg10 thru pg14 dropped)
 * Support for Asynchronous Multi-Master Replication with conflict resolution

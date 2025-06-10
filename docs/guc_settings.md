@@ -64,7 +64,6 @@ The `spock.replicate_ddl` function instructs Spock to checks the statement type 
 
 **`spock.temp_directory`**
 
-  `spock.temp_directory` defines the system path where temporary files needed for schema synchronization are written. 
-  This path needs to exist and be writable by the user running PostgreSQL. The default is `empty`, which tells Spock to use the default temporary directory based on environment or operating system settings.
+  `spock.temp_directory` defines the system path where temporary files needed for schema synchronization are written. This path needs to exist and be writable by the user running PostgreSQL. The default is `empty`, which tells Spock to use the default temporary directory based on environment or operating system settings.
 
 

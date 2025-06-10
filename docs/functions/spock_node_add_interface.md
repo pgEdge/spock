@@ -11,7 +11,7 @@
 
 Add an additional interface to a spock node. 
     
-When a node is created, the interface is also created using the dsn specified in the create_node command, and with the same name as the node. This interface allows you to add alternative interfaces with different connection strings to an existing node.
+When a node is created, the node interface is also created using the dsn specified in the create_node command, and with the same name as the node. This interface allows you to add alternative interfaces with different connection strings to an existing node.
 
 ### EXAMPLE 
 
