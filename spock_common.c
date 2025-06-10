@@ -17,6 +17,7 @@
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
+#include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
@@ -194,6 +195,55 @@ IsIndexUsableForInsertConflict(Relation idxrel)
 }
 
 /*
+ * Compare the tuples in the slots by checking if they have equal values.
+ */
+static bool
+index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation indexRel,
+			 ScanKey skey, int ncols)
+{
+	int			i;
+	int			attrnum;
+
+	Assert(slot1->tts_tupleDescriptor->natts ==
+		   slot2->tts_tupleDescriptor->natts);
+
+	slot_getallattrs(slot1);
+	slot_getallattrs(slot2);
+
+	/* Check equality of the attributes. */
+	for (i = 0; i < ncols; i++)
+	{
+		Form_pg_attribute att;
+
+		attrnum = indexRel->rd_index->indkey.values[skey[i].sk_attno - 1] - 1;
+
+		att = TupleDescAttr(slot1->tts_tupleDescriptor, attrnum);
+
+		/*
+		 * Ignore dropped and generated columns as the publisher doesn't send
+		 * those
+		 */
+		if (att->attisdropped || att->attgenerated)
+			continue;
+
+		/*
+		 * If one value is NULL and other is not, then they are certainly not
+		 * equal
+		 */
+		if (slot1->tts_isnull[attrnum] != slot2->tts_isnull[attrnum])
+			return false;
+
+		/*
+		 * If both are NULL, As per SQL sementics, they are not equal.
+		 */
+		if (slot1->tts_isnull[attrnum] || slot2->tts_isnull[attrnum])
+			return false;
+	}
+
+	return true;
+}
+
+/*
  * Search the relation 'rel' for tuple using the index.
  *
  * If a matching tuple is found, lock it with lockmode, fill the slot with its
@@ -229,6 +279,9 @@ retry:
 	/* Try to find the tuple */
 	while (index_getnext_slot(scan, ForwardScanDirection, outslot))
 	{
+		if (!index_keys_match(outslot, searchslot, idxrel, skey, skey_attoff))
+			continue;
+
 		ExecMaterializeSlot(outslot);
 
 		xwait = TransactionIdIsValid(snap.xmin) ?
