@@ -237,6 +237,8 @@ spock_disable_subscription(SpockSubscription *sub,
 		started_tx = true;
 	}
 
+	PushActiveSnapshot(GetTransactionSnapshot());
+
 	sub->enabled = false;
 	alter_subscription(sub);
 
@@ -260,6 +262,7 @@ spock_disable_subscription(SpockSubscription *sub,
 			sub->name,
 			LSN_FORMAT_ARGS(lsn));
 
+	PopActiveSnapshot();
 	if (started_tx)
 		CommitTransactionCommand();
 }
