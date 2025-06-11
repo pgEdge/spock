@@ -172,7 +172,7 @@ SPKExecARInsertTriggers(EState *estate,
  * Usable indexes must be:
  * - Valid
  * - Unique and immediate (not deferrable)
- * - Not partial (no predicate)
+ * - Can be partial
  *
  * PK and RI indexes are excluded, as they are already used by default for
  * conflict resolution.
@@ -184,11 +184,10 @@ IsIndexUsableForInsertConflict(Relation idxrel)
 	if (idxrel->rd_index->indisprimary || idxrel->rd_index->indisreplident)
 		return false;
 
-	/* Skip if index is invalid, non-unique, non-immediate, or partial */
+	/* Skip if index is invalid, non-unique, non-immediate */
 	if (!idxrel->rd_index->indisvalid ||
 		!idxrel->rd_index->indisunique ||
-		!idxrel->rd_index->indimmediate ||
-		!heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
+		!idxrel->rd_index->indimmediate)
 		return false;
 
 	return true;
