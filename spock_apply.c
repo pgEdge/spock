@@ -2713,7 +2713,7 @@ apply_work(PGconn *streamConn)
 
 	/* Init the ApplyReplayContext used to replay after an exception */
 	ApplyReplayContext = AllocSetContextCreate(TopMemoryContext,
-											   "MessageContext",
+											   "ApplyReplayContext",
 											   ALLOCSET_DEFAULT_SIZES);
 
 	/* Init the MessageContext which we use for easier cleanup. */
