@@ -4,7 +4,7 @@
 
 * What happens if I set up a column filter on a table with OIDS? Can I filter on xmin?
 
-  Column filters work fine on tables with OIDs, but spock cannot filter on system columns like oid or xmin.
+  Column filters work fine on tables with OIDs, but spock cannot filter on system columns like `oid` or `xmin`.
 
 * What happens if a column being filtered on is dropped?
 

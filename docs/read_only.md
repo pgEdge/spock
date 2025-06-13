@@ -7,10 +7,12 @@ named `spock.readonly`. This parameter can be set to enable or disable the read-
 mode. The read-only mode restricts non-superusers to read-only operations, while 
 superusers can still perform both read and write operations regardless of the setting.
 
-The flag is at cluster level: either all databases are read-only or all databases
-are read-write (the usual setting).
+The flag is set at cluster level; either: 
 
-The read-only mode is implemented by filtering SQL statements:
+* all databases are read-only or 
+* all databases are read-write (the usual setting).
+
+Read-only mode is implemented by filtering SQL statements:
 
 - SELECT statements are allowed if they don't call functions that write.
 - DML (INSERT, UPDATE, DELETE) and DDL statements including TRUNCATE are 
