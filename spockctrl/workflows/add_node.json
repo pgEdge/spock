@@ -1,6 +1,6 @@
 {
-  "workflow_name": "Cross Wire 2 spock Nodes",
-  "description": "Cross Wire two spock nodes with replication slots and replication sets.",
+  "workflow_name": "Add Node",
+  "description": "Adding third node (n3) to two node (n1,n2) cluster.",
   "steps": [
     {
       "spock": {
