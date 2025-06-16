@@ -38,6 +38,7 @@
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
 #include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/builtins.h"
 #include "replication/origin.h"

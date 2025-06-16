@@ -194,10 +194,16 @@ IsIndexUsableForInsertConflict(Relation idxrel)
 }
 
 /*
- * Compare the tuples in the slots by checking if they have equal values.
+ * Check whether the index key attributes in the two tuples are all non-NULL.
+ *
+ * This function does not compare actual values for equality. Instead, it verifies
+ * that all index key columns (excluding dropped and generated ones) are non-NULL
+ * in both tuples.
+ * In SQL semantics, NULLs are not considered equals, even when both sides are
+ * NULLs. so any NULL in a key column implies that they do not match.
  */
 static bool
-index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation indexRel,
+index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation indexRel,
 			 ScanKey skey, int ncols)
 {
 	int			i;
@@ -226,14 +232,8 @@ index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation indexRel
 			continue;
 
 		/*
-		 * If one value is NULL and other is not, then they are certainly not
-		 * equal
-		 */
-		if (slot1->tts_isnull[attrnum] != slot2->tts_isnull[attrnum])
-			return false;
-
-		/*
-		 * If both are NULL, As per SQL sementics, they are not equal.
+		 * If either value is NULL, then according to SQL semantics,
+		 * they are not considered equal, even if both are NULL.
 		 */
 		if (slot1->tts_isnull[attrnum] || slot2->tts_isnull[attrnum])
 			return false;
@@ -278,7 +278,7 @@ retry:
 	/* Try to find the tuple */
 	while (index_getnext_slot(scan, ForwardScanDirection, outslot))
 	{
-		if (!index_keys_match(outslot, searchslot, idxrel, skey, skey_attoff))
+		if (!index_keys_have_nonnulls(outslot, searchslot, idxrel, skey, skey_attoff))
 			continue;
 
 		ExecMaterializeSlot(outslot);
