@@ -44,9 +44,10 @@ print_help(void)
     printf("  version    Display the version information\n");
     printf("\n");
     printf("Main Options:\n");
-    printf("  -v, --verbose       Enable verbose mode (levels: 0, 1, 2, 3)\n");
-    printf("  -f, --format        Specify output format (json or table)\n");
     printf("  -c, --config        Specify the configuration file (required)\n");
+    printf("  -w, --workflow      Specify the workflow to run (json file)\n");
+    printf("  -f, --format        Specify output format (json or table)\n");
+    printf("  -v, --verbose       Enable verbose mode (levels: 0, 1, 2, 3)\n");
     printf("  -h, --help          Show this help message\n");
 }
 
