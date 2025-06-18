@@ -111,7 +111,10 @@ spock_create_subscriber: spock_create_subscriber.o spock_fe.o
 spock.control: spock.control.in spock.h
 	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' $(realpath $(srcdir)/spock.control.in) > $(control_path)
 
-all: spock.control
+spockctrl:
+	$(MAKE) -C spockctrl
+
+all: spock.control spockctrl
 
 GITHASH=$(shell if [ -e .distgitrev ]; then cat .distgitrev; else git rev-parse --short HEAD; fi)
 
@@ -157,7 +160,17 @@ endef
 check_prove:
 	$(prove_check)
 
-.PHONY: all check regresscheck spock.control
+clean: clean-spockctrl
+
+clean-spockctrl:
+	$(MAKE) -C spockctrl clean
+
+install: install-spockctrl
+
+install-spockctrl:
+	$(MAKE) -C spockctrl install
+
+.PHONY: all check regresscheck spock.control spockctrl
 
 define _spk_create_recursive_target
 .PHONY: $(1)-$(2)-recurse
