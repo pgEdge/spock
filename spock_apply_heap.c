@@ -772,15 +772,15 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	{
 		slot_modify_data(remoteslot, localslot, rel, newtup);
 	}
-	else
-	{
-		spock_report_conflict(is_insert ? CONFLICT_INSERT_EXISTS : CONFLICT_UPDATE_UPDATE,
-							  rel, TTS_TUP(localslot), oldtup,
-							  remotetuple, applytuple, resolution,
-							  xmin, local_origin_found, local_origin,
-							  local_ts, idxused,
-							  true /* FIXME: unused in the call chain */ );
-	}
+
+	/*
+	 * Log everything, irrespective of whether the local or remote tuple wins.
+	 */
+	spock_report_conflict(is_insert ? CONFLICT_INSERT_EXISTS : CONFLICT_UPDATE_UPDATE,
+						  rel, TTS_TUP(localslot), oldtup,
+						  remotetuple, applytuple, resolution,
+						  xmin, local_origin_found, local_origin,
+						  local_ts, idxused);
 
 	if (rel->has_delta_columns)
 	{
@@ -1202,17 +1202,21 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	}
 	else
 	{
+		HeapTuple	remotetuple;
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
 		/*
-		 * The tuple to be updated could not be found.  Do nothing except for
-		 * emitting a log message.
+		 * The tuple to be deleted could not be found.  Do nothing except for
+		 * logging it in resolutions table.
 		 */
 		exception_log->local_tuple = NULL;
-		elog(ERROR,
-			 "logical replication did not find row to be deleted "
-			 "in replication target relation (%s.%s)", rel->nspname,
-			 RelationGetRelationName(rel->rel));
+		remotetuple = heap_form_tuple(RelationGetDescr(rel->rel),
+									  oldtup->values, oldtup->nulls);
+		spock_report_conflict(CONFLICT_DELETE_DELETE,
+							  rel, NULL, oldtup,
+							  remotetuple, NULL, SpockResolution_Skip,
+							  InvalidTransactionId, false, InvalidRepOriginId,
+							  (TimestampTz)0, edata->targetRel->idxoid);
 	}
 
 	/* Cleanup. */
