@@ -269,6 +269,7 @@ static void handle_startup_param(const char *key, const char *value);
 static bool parse_bool_param(const char *key, const char *value);
 static void process_syncing_tables(XLogRecPtr end_lsn);
 static void start_sync_worker(Name nspname, Name relname);
+static void spock_apply_worker_shmem_exit(int code, Datum arg);
 static void spock_apply_worker_on_exit(int code, Datum arg);
 static void spock_apply_worker_attach(void);
 static void spock_apply_worker_detach(void);
@@ -1840,7 +1841,23 @@ handle_startup(StringInfo s)
 	spock_apply_worker_attach();
 
 	/* Register callback for cleaning up */
+	before_shmem_exit(spock_apply_worker_shmem_exit, 0);
 	on_proc_exit(spock_apply_worker_on_exit, 0);
+}
+
+/*
+ * Cleanup called on before_shmem_exit
+ */
+static void
+spock_apply_worker_shmem_exit(int code, Datum arg)
+{
+	/*
+	 * Reset replication session to avoid reuse after an error.
+	 * This is done in a before_shmem_exit callback instead of
+	 * on_proc_exit because the backend may also clean up the origin
+	 * in certain cases, and we want to avoid duplicate cleanup.
+	 */
+	replorigin_session_reset();
 }
 
 /*
@@ -1872,9 +1889,6 @@ spock_apply_worker_attach(void)
 static void
 spock_apply_worker_detach(void)
 {
-	/* reset replication session to avoid reuse of it after error. */
-	replorigin_session_reset();
-
 	if (MyApplyWorker->apply_group)
 		pg_atomic_sub_fetch_u32(&MyApplyWorker->apply_group->nattached, 1);
 
@@ -3004,6 +3018,13 @@ stream_replay:
 								remote_xid,
 								replorigin_session_origin_lsn,
 								replorigin_session_origin_timestamp);
+					/*
+					 * The subscription is now disabled, and this apply worker will
+					 * exit shortly. Since the process is terminating, memory contexts
+					 * and replication origin state will be cleaned up automatically,
+					 * so no explicit reset is needed.
+					 */
+					return;
 				}
 			}
 			else
@@ -3072,6 +3093,14 @@ stream_replay:
 							remote_xid,
 							replorigin_session_origin_lsn,
 							replorigin_session_origin_timestamp);
+
+				/*
+				 * The subscription is now disabled, and this apply worker will
+				 * exit shortly. Since the process is terminating, memory contexts
+				 * and replication origin state will be cleaned up automatically,
+				 * so no explicit reset is needed.
+				 */
+				return;
 			}
 		}
 		else
