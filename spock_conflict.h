@@ -82,8 +82,7 @@ extern void spock_report_conflict(SpockConflictType conflict_type,
 						  bool found_local_origin,
 						  RepOriginId local_tuple_origin,
 						  TimestampTz local_tuple_timestamp,
-						  Oid conflict_idx_id,
-						  bool has_before_triggers);
+						  Oid conflict_idx_id);
 
 extern void spock_conflict_log_table(SpockConflictType conflict_type,
 						  SpockRelation *rel,
@@ -96,8 +95,7 @@ extern void spock_conflict_log_table(SpockConflictType conflict_type,
 						  bool found_local_origin,
 						  RepOriginId local_tuple_origin,
 						  TimestampTz local_tuple_timestamp,
-						  Oid conflict_idx_id,
-						  bool has_before_triggers);
+						  Oid conflict_idx_id);
 extern Oid get_conflict_log_table_oid(void);
 extern Oid get_conflict_log_seq(void);
 extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,

@@ -673,8 +673,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 					  bool found_local_origin,
 					  RepOriginId local_tuple_origin,
 					  TimestampTz local_tuple_commit_ts,
-					  Oid conflict_idx_oid,
-					  bool has_before_triggers)
+					  Oid conflict_idx_oid)
 {
 	char		local_tup_ts_str[MAXDATELEN] = "(unset)";
 	StringInfoData localtup,
@@ -682,13 +681,6 @@ spock_report_conflict(SpockConflictType conflict_type,
 	TupleDesc	desc = RelationGetDescr(rel->rel);
 	const char *idxname = "(unknown)";
 	const char *qualrelname;
-
-	/*
-	 * Filter out the conflicts that were resolved by applying the remote
-	 * tuple.
-	 */
-	if (resolution == SpockResolution_ApplyRemote)
-		return;
 
 	/* Count statistics */
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
@@ -699,7 +691,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 							 remotetuple, applytuple, resolution,
 							 local_tuple_xid, found_local_origin,
 							 local_tuple_origin, local_tuple_commit_ts,
-							 conflict_idx_oid, has_before_triggers);
+							 conflict_idx_oid);
 
 	memset(local_tup_ts_str, 0, MAXDATELEN);
 	if (found_local_origin)
@@ -743,11 +735,11 @@ spock_report_conflict(SpockConflictType conflict_type,
 							conflict_type == CONFLICT_INSERT_EXISTS ? "INSERT EXISTS" : "UPDATE",
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
-					 errdetail("existing local tuple {%s} xid=%u,origin=%d,timestamp=%s; remote tuple {%s}%s in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
+					 errdetail("existing local tuple {%s} xid=%u,origin=%d,timestamp=%s; remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
 							   localtup.data, local_tuple_xid,
 							   found_local_origin ? (int) local_tuple_origin : -1,
 							   local_tup_ts_str,
-							   remotetup.data, has_before_triggers ? "*" : "",
+							   remotetup.data,
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
 							   (uint32) (replorigin_session_origin_lsn << 32),
@@ -761,8 +753,8 @@ spock_report_conflict(SpockConflictType conflict_type,
 							conflict_type == CONFLICT_UPDATE_DELETE ? "UPDATE" : "DELETE",
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
-					 errdetail("remote tuple {%s}%s in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
-							   remotetup.data, has_before_triggers ? "*" : "",
+					 errdetail("remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
+							   remotetup.data,
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
 							   (uint32) (replorigin_session_origin_lsn << 32),
@@ -805,8 +797,7 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 						 bool found_local_origin,
 						 RepOriginId local_tuple_origin,
 						 TimestampTz local_tuple_commit_ts,
-						 Oid conflict_idx_oid,
-						 bool has_before_triggers)
+						 Oid conflict_idx_oid)
 {
 	HeapTuple	tup;
 	Datum		values[SPOCK_LOG_TABLE_COLS];
