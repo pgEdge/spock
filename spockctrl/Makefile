@@ -4,6 +4,7 @@ CC = gcc
 # PostgreSQL include and library directories
 PG_INCDIR = $(shell pg_config --includedir)
 PG_LIBDIR = $(shell pg_config --libdir)
+PG_BINDIR = $(shell pg_config --bindir)
 
 # PostgreSQL library
 PG_LIBS = -lpq
@@ -41,4 +42,8 @@ clean:
 
 # Clean up all build files and backups
 clean-all: clean
-	rm -f *~
+	find . \( -name '*~' -o -name '*.o' -o -name 'spockctrl' -o -name '*.log' -o -name '*.tmp' \) -exec rm -f {} +
+
+install:
+	install -d $(PG_BINDIR)
+	install -m 0755 $(EXEC) $(PG_BINDIR)/
