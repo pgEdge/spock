@@ -6,6 +6,8 @@ PG_INCDIR = $(shell pg_config --includedir)
 PG_LIBDIR = $(shell pg_config --libdir)
 PG_BINDIR = $(shell pg_config --bindir)
 
+RPATH = -Wl,--enable-new-dtags,-rpath,$(PG_LIBDIR)
+
 # PostgreSQL library
 PG_LIBS = -lpq
 
@@ -30,7 +32,7 @@ all: $(EXEC)
 
 # Link object files to create executable
 $(EXEC): $(OBJS)
-	$(CC) $(CFLAGS) -L$(PG_LIBDIR) -o $@ $^ $(PG_LIBS) $(JSON_LIBS)
+	$(CC) $(CFLAGS) -L$(PG_LIBDIR) -o $@ $^ $(PG_LIBS) $(JSON_LIBS) $(RPATH)
 
 # Compile source files to object files
 %.o: %.c
