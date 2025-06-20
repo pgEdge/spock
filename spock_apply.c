@@ -2202,6 +2202,7 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started, char **sql)
 	JsonbIterator *it;
 	JsonbValue	v;
 	int			r;
+	MemoryContext oldctx;
 
 	/* Validate the json and extract the SQL string from it. */
 	if (!JB_ROOT_IS_SCALAR(queued_message->message))
@@ -2227,7 +2228,9 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started, char **sql)
 			 "expected value type %d got %d",
 			 MySubscription->name, jbvString, v.type);
 
+	oldctx = MemoryContextSwitchTo(MessageContext);
 	*sql = pnstrdup(v.val.string.val, v.val.string.len);
+	MemoryContextSwitchTo(oldctx);
 
 	r = JsonbIteratorNext(&it, &v, false);
 	if (r != WJB_END_ARRAY)
@@ -2255,6 +2258,10 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 	char	   *sql = NULL;
 	ErrorData  *edata;
 
+	/*
+	 * Start transaction before making any changes to Spock's internal state.
+	 */
+	begin_replication_step();
 	errcallback_arg.action_name = "SQL";
 
 	/*
@@ -2304,6 +2311,8 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 	{
 		handle_sql(queued_message, tx_just_started, &sql);
 	}
+
+	end_replication_step();
 }
 
 /*
