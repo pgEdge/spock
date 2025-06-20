@@ -1002,17 +1002,27 @@ handle_commit(StringInfo s)
 		apply_api.on_commit();
 
 
-        /*
-         * Advance the replication origin LSN to end_lsn. This LSN marks the
-         * position from which streaming will resume in case of a crash.
-         *
-         * Previously, this was only updated if there was no exception, or if
-         * the exception behavior was DISCARD or TRANSDISCARD. However, there's
-         * no reason not to advance it for SUB_DISABLE as well. Even in that
-         * case, we want the replication to resume at the same point if the
-         * node restarts, since the subscription will remain disabled.
-         */
-		replorigin_session_origin_lsn = end_lsn;
+		/*
+		* Advance the replication origin LSN to end_lsn. This LSN marks the
+		* position from which streaming will resume in case of a crash.
+		*
+		* Only update the origin LSN if there was no exception, or if the
+		* exception behavior is DISCARD or TRANSDISCARD. This ensures that
+		* replication resumes correctly without unintentionally skipping data
+		* after restarts or when a disabled subscription is re-enabled.
+		*
+		* Previously, due to an exception-handling change (commit: cfb1f5404d),
+		* replorigin_session_origin_lsn was being advanced even when a transaction
+		* failed. This caused the erroneous transaction to be skipped and made it
+		* unavailable when re-enabling the subscription. Skipping such transactions
+		* should be an explicit user action via spock.sub_alter_skiplsn.
+		*/
+		if (!xact_had_exception ||
+			exception_behaviour == DISCARD ||
+			exception_behaviour == TRANSDISCARD)
+		{
+			replorigin_session_origin_lsn = end_lsn;
+		}
 
 		/* Have the commit code adjust our logical clock if needed */
 		remoteTransactionStopTimestamp = commit_time;
