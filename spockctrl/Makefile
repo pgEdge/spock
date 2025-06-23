@@ -6,6 +6,9 @@ PG_INCDIR = $(shell pg_config --includedir)
 PG_LIBDIR = $(shell pg_config --libdir)
 PG_BINDIR = $(shell pg_config --bindir)
 
+PG_SHAREDIR = $(shell pg_config --sharedir)
+SPOCK_JSONDIR = $(PG_SHAREDIR)/spock
+
 RPATH = -Wl,--enable-new-dtags,-rpath,$(PG_LIBDIR)
 
 # PostgreSQL library
@@ -49,3 +52,5 @@ clean-all: clean
 install:
 	install -d $(PG_BINDIR)
 	install -m 0755 $(EXEC) $(PG_BINDIR)/
+	install -d $(DESTDIR)$(SPOCK_JSONDIR)
+	find . -type f -name '*.json' -exec install -m 644 {} $(DESTDIR)$(SPOCK_JSONDIR)/ \;
