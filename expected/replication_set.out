@@ -50,19 +50,19 @@ ERROR:  replication set nonexisting not found
 SELECT * FROM spock.repset_create('repset_replicate_all');
  repset_create 
 ---------------
-    1767380104
+    2353314786
 (1 row)
 
 SELECT * FROM spock.repset_create('repset_replicate_instrunc', replicate_update := false, replicate_delete := false);
  repset_create 
 ---------------
-     348382733
+    1585236067
 (1 row)
 
 SELECT * FROM spock.repset_create('repset_replicate_insupd', replicate_delete := false, replicate_truncate := false);
  repset_create 
 ---------------
-     128878480
+     384626605
 (1 row)
 
 -- add tables
@@ -107,7 +107,7 @@ SELECT * FROM spock.repset_add_table('repset_replicate_instrunc', 'test_nopkey')
 SELECT * FROM spock.repset_alter('repset_replicate_insupd', replicate_truncate := true);
  repset_alter 
 --------------
-    128878480
+    384626605
 (1 row)
 
 -- fail again
@@ -226,8 +226,8 @@ NOTICE:  drop cascades to 2 other objects
 SELECT * FROM spock.replication_set;
    set_id   | set_nodeid |      set_name       | replicate_insert | replicate_update | replicate_delete | replicate_truncate 
 ------------+------------+---------------------+------------------+------------------+------------------+--------------------
-  828867312 | 1755434425 | default             | t                | t                | t                | t
- 3318003856 | 1755434425 | default_insert_only | t                | f                | f                | t
- 2796587818 | 1755434425 | ddl_sql             | t                | f                | f                | f
+ 1814541545 |      52665 | default             | t                | t                | t                | t
+ 1909385617 |      52665 | default_insert_only | t                | f                | f                | t
+ 2586246310 |      52665 | ddl_sql             | t                | f                | f                | f
 (3 rows)
 
