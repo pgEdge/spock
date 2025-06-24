@@ -4,7 +4,7 @@ SELECT * FROM spock_regress_variables()
 SELECT * FROM spock.repset_create('parallel');
  repset_create 
 ---------------
-    3731651575
+    3827306560
 (1 row)
 
 \c :subscriber_dsn

@@ -20,18 +20,14 @@ BEGIN
 END;$$;
 DO $$
 BEGIN
-        IF version() ~ 'Postgres-XL' THEN
-                CREATE EXTENSION IF NOT EXISTS spock;
-        ELSE
-                CREATE EXTENSION IF NOT EXISTS spock VERSION '3.2';
-        END IF;
+        CREATE EXTENSION IF NOT EXISTS spock;
 END;
 $$;
 ALTER EXTENSION spock UPDATE;
 SELECT * FROM spock.node_create(node_name := 'test_orig_provider', dsn := (SELECT orig_provider_dsn FROM spock_regress_variables()) || ' user=super');
  node_create 
 -------------
-  4029216451
+       63171
 (1 row)
 
 \c :provider_dsn

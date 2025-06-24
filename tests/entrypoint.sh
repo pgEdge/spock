@@ -36,6 +36,9 @@ echo "==========Recompiling Spock=========="
 cd ~/spock
 make clean && make -j16 && make install
 
+echo "==========Verifying Spock=========="
+make regresscheck
+
 echo "==========Installing Spockbench=========="
 cd ~/spockbench
 sudo python3 setup.py install

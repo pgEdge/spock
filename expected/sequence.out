@@ -19,7 +19,7 @@ CREATE SEQUENCE stress;
 SELECT * FROM spock.repset_create('stress_seq');
  repset_create 
 ---------------
-    2261733486
+    3919156387
 (1 row)
 
 SELECT * FROM spock.repset_add_seq('stress_seq', 'stress');
