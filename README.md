@@ -14,7 +14,7 @@
 
 The SPOCK extension provides multi-master replication for PostgreSQL versions 15 and later.
 
-You must install the `spock` extension on each provider and subscriber node in your cluster; then, after installing the extension, use the command line to `CREATE EXTENSION spock` on every node.  If you're performing a major version upgrade, the old node can be running a recent version of pgLogical2 before upgrading it to become a Spock node.
+You must install the `spock` extension on each provider and subscriber node in your cluster; after installing the extension, use the command line to `CREATE EXTENSION spock` on every node.  If you're performing a major version upgrade, the old node can be running a recent version of pgLogical2 before upgrading it to become a Spock node.
 
 All tables on the provider and subscriber must have the same names and reside in the same schema. Tables must also have the same columns, with the samedata types in each column. `CHECK` constraints, `NOT NULL` constraints must be the same or more permissive on the subscriber than the provider.
 

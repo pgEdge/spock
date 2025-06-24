@@ -1,7 +1,6 @@
 ## Finding Cluster Information
 
-The following table describes the informational tables in the `spock` schema; query the tables with the psql
-client to return information about your replication cluster. 
+The following table describes the informational tables in the `spock` schema; query the tables with your choice of client to return information about your replication cluster. 
 
 | Name | Description |
 ---------------------|----------------------------|

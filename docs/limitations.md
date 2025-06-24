@@ -6,14 +6,11 @@ Currently spock replication and administration requires superuser privileges.
 
 ### `UNLOGGED` and `TEMPORARY` tables are not replicated
 
-`UNLOGGED` and `TEMPORARY` tables will not and cannot be replicated, much like
-with physical streaming replication.
+`UNLOGGED` and `TEMPORARY` tables will not and cannot be replicated, much like with physical streaming replication.
 
 ### One database at a time
 
-To replicate multiple databases you must set up individual provider/subscriber
-relationships for each. There is no way to configure replication for all databases
-in a PostgreSQL installation at once.
+To replicate multiple databases you must set up individual provider/subscriber relationships for each. There is no way to configure replication for all databases in a PostgreSQL installation at once.
 
 ### PRIMARY KEY or REPLICA IDENTITY required
 
