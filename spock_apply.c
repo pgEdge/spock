@@ -755,7 +755,7 @@ end_replication_step(void)
 static void
 handle_begin(StringInfo s)
 {
-	SpockExceptionLog *exception_log;
+	SpockExceptionLog *exception_log = NULL;
 	SpockExceptionLog *new_elog_entry;
 	XLogRecPtr	commit_lsn;
 	TimestampTz commit_time;
@@ -907,6 +907,7 @@ handle_begin(StringInfo s)
 		/*
 		 * If we find our slot in shared memory, check for commit LSN
 		 */
+		Assert(exception_log);
 		if (exception_log->commit_lsn == commit_lsn)
 		{
 			MyApplyWorker->use_try_block = true;
@@ -1341,24 +1342,27 @@ log_insert_exception(bool failed, ErrorData *edata, SpockRelation *rel,
 	TimestampTz		local_commit_ts = 0;
 	TransactionId	xmin = InvalidTransactionId;
 	bool			local_origin_found = false;
-	HeapTuple		localtup;
+	HeapTuple		localtup = NULL;
 
 	if (!should_log_exception(failed))
 		return;
 
-	localtup = exception_log_ptr[my_exception_log_index].local_tuple;
-	if (localtup != NULL)
+	if (oldtup)
 	{
-		local_origin_found = get_tuple_origin(rel, localtup,
-											  &(localtup->t_self),
-											  &xmin,
-											  &local_origin,
-											  &local_commit_ts);
-
-		if (local_origin_found && local_origin == 0)
+		localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+		if (localtup != NULL)
 		{
-			SpockLocalNode *local_node = get_local_node(false, false);
-			local_origin = local_node->node->id;
+			local_origin_found = get_tuple_origin(rel, localtup,
+												  &(localtup->t_self),
+												  &xmin,
+												  &local_origin,
+												  &local_commit_ts);
+
+			if (local_origin_found && local_origin == 0)
+			{
+				SpockLocalNode *local_node = get_local_node(false, false);
+				local_origin = local_node->node->id;
+			}
 		}
 	}
 
