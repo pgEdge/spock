@@ -9,6 +9,7 @@ PG_BINDIR = $(shell pg_config --bindir)
 PG_SHAREDIR = $(shell pg_config --sharedir)
 SPOCK_DIR = $(PG_SHAREDIR)/spock
 
+UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
   RPATH = -Wl,--enable-new-dtags,-rpath,$(PG_LIBDIR)
 else ifeq ($(UNAME_S),Darwin)
