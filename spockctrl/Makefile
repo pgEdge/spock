@@ -9,7 +9,13 @@ PG_BINDIR = $(shell pg_config --bindir)
 PG_SHAREDIR = $(shell pg_config --sharedir)
 SPOCK_DIR = $(PG_SHAREDIR)/spock
 
-RPATH = -Wl,--enable-new-dtags,-rpath,$(PG_LIBDIR)
+ifeq ($(UNAME_S),Linux)
+  RPATH = -Wl,--enable-new-dtags,-rpath,$(PG_LIBDIR)
+else ifeq ($(UNAME_S),Darwin)
+  RPATH = -Wl,-rpath,$(PG_LIBDIR)
+else
+  RPATH =
+endif
 
 # PostgreSQL library
 PG_LIBS = -lpq
