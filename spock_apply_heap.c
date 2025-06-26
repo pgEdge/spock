@@ -139,6 +139,7 @@ static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 							  SpockTupleData *newtup, SpockTupleData *deltatup,
 							  TupleTableSlot *localslot);
 #endif
+static bool physatt_in_attmap(SpockRelation *rel, int attid);
 
 /*
  * Executor state preparation for evaluation of constraint expressions,
@@ -234,8 +235,7 @@ static void
 slot_fill_defaults(SpockRelation *rel, EState *estate,
 				   TupleTableSlot *slot)
 {
-#if 0
-	TupleDesc	desc = RelationGetDescr(rel->localrel);
+	TupleDesc	desc = RelationGetDescr(rel->rel);
 	int			num_phys_attrs = desc->natts;
 	int			i;
 	int			attnum,
@@ -247,13 +247,12 @@ slot_fill_defaults(SpockRelation *rel, EState *estate,
 	econtext = GetPerTupleExprContext(estate);
 
 	/* We got all the data via replication, no need to evaluate anything. */
-	if (num_phys_attrs == rel->remoterel.natts)
+	if (num_phys_attrs == rel->natts)
 		return;
 
 	defmap = (int *) palloc(num_phys_attrs * sizeof(int));
 	defexprs = (ExprState **) palloc(num_phys_attrs * sizeof(ExprState *));
 
-	Assert(rel->attrmap->maplen == num_phys_attrs);
 	for (attnum = 0; attnum < num_phys_attrs; attnum++)
 	{
 		Expr	   *defexpr;
@@ -261,10 +260,10 @@ slot_fill_defaults(SpockRelation *rel, EState *estate,
 		if (TupleDescAttr(desc, attnum)->attisdropped || TupleDescAttr(desc, attnum)->attgenerated)
 			continue;
 
-		if (rel->attrmap->attnums[attnum] >= 0)
+		if (physatt_in_attmap(rel, attnum))
 			continue;
 
-		defexpr = (Expr *) build_column_default(rel->localrel, attnum + 1);
+		defexpr = (Expr *) build_column_default(rel->rel, attnum + 1);
 
 		if (defexpr != NULL)
 		{
@@ -281,7 +280,6 @@ slot_fill_defaults(SpockRelation *rel, EState *estate,
 	for (i = 0; i < num_defaults; i++)
 		slot->tts_values[defmap[i]] =
 			ExecEvalExpr(defexprs[i], econtext, &slot->tts_isnull[defmap[i]]);
-#endif
 }
 
 /*
@@ -604,8 +602,7 @@ fill_missing_defaults(SpockRelation *rel, EState *estate,
 	for (i = 0; i < num_defaults; i++)
 		tuple->values[defmap[i]] = ExecEvalExpr(defexprs[i],
 												econtext,
-												&tuple->nulls[defmap[i]],
-												NULL);
+												&tuple->nulls[defmap[i]]);
 }
 
 #ifndef NO_LOG_OLD_VALUE
