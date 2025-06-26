@@ -428,10 +428,11 @@ static bool
 FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
 						Oid localidxoid,
 						TupleTableSlot *remoteslot,
-						TupleTableSlot **localslot)
+						TupleTableSlot **localslot,
+						bool is_insert_stmt)
 {
 	EState	   *estate = edata->estate;
-	bool		found;
+	bool		found = false;
 
 	*localslot = table_slot_create(localrel, &estate->es_tupleTable);
 
@@ -452,8 +453,19 @@ FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
 											 remoteslot, *localslot);
 	}
 	else
-		found = RelationFindReplTupleSeq(localrel, LockTupleExclusive,
-										 remoteslot, *localslot);
+	{
+		/*
+		 * If we don't have a replica identity index, we must use the
+		 * RelationFindReplTupleSeq() function to find the tuple.
+		 * However, for INSERT statements, if there is no PK or RI,
+		 * we do not need to find the tuple using sequential scan.
+		 */
+		if (!is_insert_stmt)
+		{
+			found = RelationFindReplTupleSeq(localrel, LockTupleExclusive,
+											 remoteslot, *localslot);
+		}
+	}
 
 	return found;
 }
@@ -954,7 +966,8 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	/* Find the current local tuple. */
 	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
 									edata->targetRel->idxoid,
-									remoteslot, &localslot);
+									remoteslot, &localslot,
+									true);
 
 	if (check_all_uc_indexes &&
 		!found)
@@ -1052,7 +1065,8 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	{
 		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
 										edata->targetRel->idxoid,
-										remoteslot, &localslot);
+										remoteslot, &localslot,
+										false);
 		if (found)
 			break;
 
@@ -1154,7 +1168,8 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	{
 		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
 										edata->targetRel->idxoid,
-										remoteslot, &localslot);
+										remoteslot, &localslot,
+										false);
 		if (found)
 			break;
 
