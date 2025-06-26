@@ -1342,27 +1342,24 @@ log_insert_exception(bool failed, ErrorData *edata, SpockRelation *rel,
 	TimestampTz		local_commit_ts = 0;
 	TransactionId	xmin = InvalidTransactionId;
 	bool			local_origin_found = false;
-	HeapTuple		localtup = NULL;
+	HeapTuple		localtup;
 
 	if (!should_log_exception(failed))
 		return;
 
-	if (oldtup)
+	localtup = exception_log_ptr[my_exception_log_index].local_tuple;
+	if (localtup != NULL)
 	{
-		localtup = exception_log_ptr[my_exception_log_index].local_tuple;
-		if (localtup != NULL)
-		{
-			local_origin_found = get_tuple_origin(rel, localtup,
-												  &(localtup->t_self),
-												  &xmin,
-												  &local_origin,
-												  &local_commit_ts);
+		local_origin_found = get_tuple_origin(rel, localtup,
+											  &(localtup->t_self),
+											  &xmin,
+											  &local_origin,
+											  &local_commit_ts);
 
-			if (local_origin_found && local_origin == 0)
-			{
-				SpockLocalNode *local_node = get_local_node(false, false);
-				local_origin = local_node->node->id;
-			}
+		if (local_origin_found && local_origin == 0)
+		{
+			SpockLocalNode *local_node = get_local_node(false, false);
+			local_origin = local_node->node->id;
 		}
 	}
 
