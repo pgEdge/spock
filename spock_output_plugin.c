@@ -897,7 +897,7 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 			Datum		res;
 			bool		isnull;
 
-			res = ExecEvalExpr(exprstate, econtext, &isnull, NULL);
+			res = ExecEvalExpr(exprstate, econtext, &isnull);
 
 			/* NULL is same as false for our use. */
 			if (isnull)
