@@ -9,7 +9,7 @@
         "description": "Create a spock node n3",
         "args": [
           "--node_name=n3",
-          "--dsn=host=127.0.0.1 port=5433 user=pgedge password=pgedge",
+          "--dsn=host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=pgedge",
           "--location=Los Angeles",
           "--country=USA",
           "--info={\"key\": \"value\"}"
@@ -26,7 +26,7 @@
         "sleep": 0,
         "args": [
           "--sub_name=sub_n3_n1",
-          "--provider_dsn=host=127.0.0.1 port=5433 user=pgedge password=spockpass",
+          "--provider_dsn=host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=spockpass",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
           "--synchronize_structure=true",
           "--synchronize_data=true",
@@ -47,7 +47,7 @@
         "sleep": 0,
         "args": [
           "--sub_name=sub_n3_n2",
-          "--provider_dsn=host=127.0.0.1 port=5433 user=pgedge password=spockpass",
+          "--provider_dsn=host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=spockpass",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
           "--synchronize_structure=true",
           "--synchronize_data=true",
@@ -82,7 +82,7 @@
         "sleep": 5,
         "args": [
           "--sub_name=sub_n2_n3",
-          "--provider_dsn=host=127.0.0.1 port=5432 user=pgedge password=spockpass",
+          "--provider_dsn=host=127.0.0.1 dbname=pgedge port=5432 user=pgedge password=spockpass",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
           "--synchronize_structure=false",
           "--synchronize_data=false",
@@ -143,7 +143,7 @@
         "sleep": 0,
         "args": [
           "--sub_name=sub_n1_n3",
-          "--provider_dsn=host=127.0.0.1 port=5431 user=pgedge password=spockpass",
+          "--provider_dsn=host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=spockpass",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
           "--synchronize_structure=true",
           "--synchronize_data=true",
@@ -225,7 +225,7 @@
       "sql": {
         "node": "n3",
         "command": "SQL",
-        "description": "Advance the replication slot for n2->n3 based on a specific commit timestamp",
+        "description": "Check the replication lags between nodes.",
         "sleep": 0,
         "args": [
           "--sql=DO $$\nDECLARE\n    lag_n1_n3 interval;\n    lag_n2_n3 interval;\nBEGIN\n    LOOP\n        SELECT now() - commit_timestamp INTO lag_n1_n3\n        FROM spock.lag_tracker\n        WHERE origin_name = 'n1' AND receiver_name = 'n3';\n\n        SELECT now() - commit_timestamp INTO lag_n2_n3\n        FROM spock.lag_tracker\n        WHERE origin_name = 'n2' AND receiver_name = 'n3';\n\n        RAISE NOTICE 'n1 → n3 lag: %, n2 → n3 lag: %',\n                     COALESCE(lag_n1_n3::text, 'NULL'),\n                     COALESCE(lag_n2_n3::text, 'NULL');\n\n        EXIT WHEN lag_n1_n3 IS NOT NULL AND lag_n2_n3 IS NOT NULL\n                  AND extract(epoch FROM lag_n1_n3) < 59\n                  AND extract(epoch FROM lag_n2_n3) < 59;\n\n        PERFORM pg_sleep(1);\n    END LOOP;\nEND\n$$;\n"
