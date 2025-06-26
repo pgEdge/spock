@@ -53,10 +53,6 @@
 #define ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple) \
  	ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, NULL)
 
-#undef ExecEvalExpr
-#define ExecEvalExpr(expr, econtext, isNull, isDone) \
-	((*(expr)->evalfunc) (expr, econtext, isNull))
-
 #define Form_pg_sequence Form_pg_sequence_data
 
 #define ExecARUpdateTriggers(estate, relinfo, tupleid, fdw_trigtuple, newslot, recheckIndexes) \
