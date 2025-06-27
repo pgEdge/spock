@@ -56,7 +56,6 @@
           "--force_text_transfer=false",
           "--enabled=true"
         ],
-        "ignore_errors": false,
         "on_success": {},
         "on_failure": {}
       }
@@ -64,6 +63,7 @@
     {
       "sql": {
         "node": "n2",
+        "ignore_errors": false,
         "command": "SQL",
         "description": "Wait for apply worker on n2 subscription",
         "sleep": 0,
@@ -115,6 +115,7 @@
         "command": "SQL",
         "description": "Trigger a sync event on (n2)",
         "sleep": 10,
+        "ignore_errors": false,
         "args": [
           "--sql=SELECT spock.sync_event();"
         ],
@@ -128,6 +129,7 @@
         "command": "SQL",
         "description": "Wait for a sync event on (n1) for n2-n1",
         "sleep": 0,
+        "ignore_errors": false,
         "args": [
           "--sql=CALL spock.wait_for_sync_event(true, 'n2', '$n2.sync_event'::pg_lsn, 1200000);"
         ],
@@ -161,7 +163,8 @@
         "node": "n1",
         "command": "SQL",
         "description": "Trigger a sync event on (n1)",
-        "sleep": 5,
+        "sleep": 0,
+        "ignore_errors": false,
         "args": [
           "--sql=SELECT spock.sync_event();"
         ],
@@ -174,7 +177,8 @@
         "node": "n3",
         "command": "SQL",
         "description": "Wait for a sync event on (n1) for n1-n3",
-        "sleep": 10,
+        "sleep": 0,
+        "ignore_errors": false,
         "args": [
           "--sql=CALL spock.wait_for_sync_event(true, 'n1', '$n1.sync_event'::pg_lsn, 1200000);"
         ],
@@ -187,7 +191,8 @@
         "node": "n3",
         "command": "SQL",
         "description": "Check commit timestamp for n3 lag",
-        "sleep": 1,
+        "sleep": 0,
+        "ignore_errors": false,
         "args": [
           "--sql=SELECT commit_timestamp FROM spock.lag_tracker WHERE origin_name = 'n2' AND receiver_name = 'n3'"
         ],
@@ -201,6 +206,7 @@
         "command": "SQL",
         "description": "Advance the replication slot for n2->n3 based on a specific commit timestamp",
         "sleep": 0,
+        "ignore_errors": true,
         "args": [
           "--sql=WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_pgedge_n2_sub_n2_n3', '$n3.commit_timestamp'::timestamp) AS lsn) SELECT pg_replication_slot_advance('spk_pgedge_n2_sub_n2_n3', lsn) FROM lsn_cte;"
         ],
@@ -227,6 +233,7 @@
         "command": "SQL",
         "description": "Advance the replication slot for n2->n3 based on a specific commit timestamp",
         "sleep": 0,
+        "ignore_errors": false,
         "args": [
           "--sql=DO $$\nDECLARE\n    lag_n1_n3 interval;\n    lag_n2_n3 interval;\nBEGIN\n    LOOP\n        SELECT now() - commit_timestamp INTO lag_n1_n3\n        FROM spock.lag_tracker\n        WHERE origin_name = 'n1' AND receiver_name = 'n3';\n\n        SELECT now() - commit_timestamp INTO lag_n2_n3\n        FROM spock.lag_tracker\n        WHERE origin_name = 'n2' AND receiver_name = 'n3';\n\n        RAISE NOTICE 'n1 → n3 lag: %, n2 → n3 lag: %',\n                     COALESCE(lag_n1_n3::text, 'NULL'),\n                     COALESCE(lag_n2_n3::text, 'NULL');\n\n        EXIT WHEN lag_n1_n3 IS NOT NULL AND lag_n2_n3 IS NOT NULL\n                  AND extract(epoch FROM lag_n1_n3) < 59\n                  AND extract(epoch FROM lag_n2_n3) < 59;\n\n        PERFORM pg_sleep(1);\n    END LOOP;\nEND\n$$;\n"
         ],

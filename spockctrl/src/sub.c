@@ -302,7 +302,7 @@ handle_sub_create_command(int argc, char *argv[])
         {
             for (col = 0; col < ncols; col++)
             {
-                fprintf(stdout, "%s=%s%s", PQfname(res, col), PQgetvalue(res, row, col), (col < ncols - 1) ? "\t" : "\n");
+                log_debug0("%s=%s%s", PQfname(res, col), PQgetvalue(res, row, col), (col < ncols - 1) ? "\t" : "\n");
                 fprintf(outf, "%s=%s%s", PQfname(res, col), PQgetvalue(res, row, col), (col < ncols - 1) ? "\t" : "\n");
             }
         }

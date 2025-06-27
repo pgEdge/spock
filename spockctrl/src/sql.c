@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <getopt.h>
+#include <stdbool.h>
 #include <libpq-fe.h>
 #include <regex.h>
 #include "dbconn.h"
@@ -29,6 +30,7 @@ int handle_sql_exec_command(int argc, char *argv[])
         {"node", required_argument, 0, 'n'},
         {"sql",  required_argument, 0, 's'},
         {"help", no_argument,       0, 'h'},
+        {"ignore-errors", no_argument, 0, 'i'},
         {0, 0, 0, 0}
     };
 
@@ -45,9 +47,10 @@ int handle_sql_exec_command(int argc, char *argv[])
     int             ncols;
     int             row;
     int             col;
+    bool            ignore_errors = false;
 
     optind = 1;
-    while ((c = getopt_long(argc, argv, "n:s:h", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "n:s:hi", long_options, &option_index)) != -1) {
         switch (c) {
             case 'n':
                 node_name = optarg;
@@ -58,12 +61,14 @@ int handle_sql_exec_command(int argc, char *argv[])
             case 'h':
                 print_sql_help();
                 return EXIT_SUCCESS;
+            case 'i':
+                ignore_errors = true;
+                break;
             default:
                 print_sql_help();
                 return EXIT_FAILURE;
         }
     }
-
     if (!sql_stmt) 
     {
         log_error("SQL statement is required.");
@@ -80,7 +85,7 @@ int handle_sql_exec_command(int argc, char *argv[])
     {
         log_error("Failed to get connection info for node '%s'.", node_name ? node_name : "(default)");
         print_sql_help();
-        return EXIT_FAILURE;
+        return ignore_errors ? EXIT_SUCCESS : EXIT_FAILURE; // Handle ignore-errors
     }
 
     conn = PQconnectdb(conninfo);
@@ -88,16 +93,18 @@ int handle_sql_exec_command(int argc, char *argv[])
     {
         log_error("Connection to database failed: %s", conn ? PQerrorMessage(conn) : "NULL connection");
         if (conn) PQfinish(conn);
-        return EXIT_FAILURE;
+        return ignore_errors ? EXIT_SUCCESS : EXIT_FAILURE; // Handle ignore-errors
     }
+
     res = PQexec(conn, sub_sql);
     if (res == NULL || (PQresultStatus(res) != PGRES_COMMAND_OK && PQresultStatus(res) != PGRES_TUPLES_OK))
     {
-        log_error("Failed to execute SQL: %s", conn != NULL ? PQerrorMessage(conn) : "NULL connection");
+        if (!ignore_errors)
+            log_error("Failed to execute SQL: %s", conn != NULL ? PQerrorMessage(conn) : "NULL connection");
         if (res != NULL)
             PQclear(res);
         PQfinish(conn);
-        return EXIT_FAILURE;
+        return ignore_errors ? EXIT_SUCCESS : EXIT_FAILURE; // Handle ignore-errors
     }
 
     /* Prepare output file name */
@@ -108,7 +115,7 @@ int handle_sql_exec_command(int argc, char *argv[])
         log_error("Could not open output file '%s' for writing.", out_filename);
         PQclear(res);
         PQfinish(conn);
-        return EXIT_FAILURE;
+        return ignore_errors ? EXIT_SUCCESS : EXIT_FAILURE; // Handle ignore-errors
     }
 
     if (PQresultStatus(res) == PGRES_TUPLES_OK)
@@ -127,18 +134,18 @@ int handle_sql_exec_command(int argc, char *argv[])
         {
             for (col = 0; col < ncols; col++)
             {
-                fprintf(stdout, "%s=%s%s", PQfname(res, col), PQgetvalue(res, row, col), (col < ncols - 1) ? "\t" : "\n");
+                log_debug0("%s=%s%s", PQfname(res, col), PQgetvalue(res, row, col), (col < ncols - 1) ? "\t" : "\n");
                 fprintf(outf, "%s=%s%s", PQfname(res, col), PQgetvalue(res, row, col), (col < ncols - 1) ? "\t" : "\n");
             }
         }
     }
     else if (PQresultStatus(res) == PGRES_COMMAND_OK)
     {
-        fprintf(outf, "result=%s\n", PQcmdStatus(res));
+        log_debug0("result=%s\n", PQcmdStatus(res));
     }
     else
     {
-        fprintf(outf, "result=success\n");
+        log_debug0("result=success\n");
     }
 
     fclose(outf);

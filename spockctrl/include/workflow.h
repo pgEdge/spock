@@ -1,6 +1,7 @@
 #ifndef WORKFLOW_H
 #define WORKFLOW_H
 
+#include <stdbool.h>
 #include <jansson.h>
 
 #define MAX_ARGS 15
@@ -23,6 +24,7 @@ typedef struct Step
     char *on_failure;         /* JSON string for on_failure actions */
     int sleep;                /* Sleep time after the step */
     int type;                 /* Type of the step (e.g., STEP_TYPE_SPOCK, STEP_TYPE_SQL, STEP_TYPE_SHELL) */
+    bool ignore_errors; /* Ignore errors for this step */
 } Step;
 
 typedef struct Workflow
