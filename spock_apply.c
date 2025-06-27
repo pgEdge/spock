@@ -755,7 +755,7 @@ end_replication_step(void)
 static void
 handle_begin(StringInfo s)
 {
-	SpockExceptionLog *exception_log;
+	SpockExceptionLog *exception_log = NULL;
 	SpockExceptionLog *new_elog_entry;
 	XLogRecPtr	commit_lsn;
 	TimestampTz commit_time;
@@ -907,6 +907,7 @@ handle_begin(StringInfo s)
 		/*
 		 * If we find our slot in shared memory, check for commit LSN
 		 */
+		Assert(exception_log);
 		if (exception_log->commit_lsn == commit_lsn)
 		{
 			MyApplyWorker->use_try_block = true;

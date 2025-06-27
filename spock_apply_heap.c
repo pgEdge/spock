@@ -994,6 +994,11 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	}
 	else
 	{
+		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
+
+		/* Clear out any old value for when logging it in the resolutions table. */
+		exception_log->local_tuple = NULL;
+
 		/* Make sure that any user-supplied code runs as the table owner. */
 		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 		/* Do the actual INSERT */
