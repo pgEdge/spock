@@ -64,11 +64,20 @@ static int prepare_arguments(Step *step, char *argv[], int max_args, const char 
         }
         argv[argc++] = step->args[i];
     }
+    /* Add the ignore_errors flag if set */
+    if (step->ignore_errors)
+    {
+        if (argc >= max_args - 1)
+        {
+            log_error("Too many arguments in step: %s", step->name ? step->name : "(unknown)");
+            return -1;
+        }
+        argv[argc++] = "--ignore-errors";
+    }
 
     argv[argc] = NULL; /* Null-terminate */
     return argc;
 }
-
 
 Workflow *
 load_workflow(const char *json_file_path)
@@ -146,7 +155,7 @@ load_workflow(const char *json_file_path)
 static int
 parse_spock_step(json_t *spock, Step *step)
 {
-    json_t *command, *description, *args, *node, *name, *sleep_val;
+    json_t *command, *description, *args, *node, *name, *sleep_val, *ignore_errors;
     int j;
 
     step->type = STEP_TYPE_SPOCK;
@@ -211,13 +220,24 @@ parse_spock_step(json_t *spock, Step *step)
     else
         step->sleep = 0;
 
+        /* Parse ignore_errors flag */
+    ignore_errors = json_object_get(spock, "ignore_errors");
+    if (ignore_errors && json_is_boolean(ignore_errors))
+    {
+        step->ignore_errors = json_boolean_value(ignore_errors);
+    }
+    else
+    {
+        step->ignore_errors = false; // Default to false
+    }
+
     return 0;
 }
 
 static int
 parse_sql_step(json_t *sql, Step *step)
 {
-    json_t *command, *description, *args, *node, *name, *sleep_val;
+    json_t *command, *description, *args, *node, *name, *sleep_val, *ignore_errors;
     int j;
 
     step->type = STEP_TYPE_SQL;
@@ -282,6 +302,16 @@ parse_sql_step(json_t *sql, Step *step)
     else
         step->sleep = 0;
 
+    ignore_errors = json_object_get(sql, "ignore_errors");
+    if (ignore_errors && json_is_boolean(ignore_errors))
+    {
+        step->ignore_errors = json_boolean_value(ignore_errors);
+    }
+    else
+    {
+        step->ignore_errors = false; // Default to false
+    }
+    
     return 0;
 }
 
@@ -586,8 +616,7 @@ run_workflow(Workflow *workflow)
     return 0;
 }
 
-int
-handle_sql_command(Step *step)
+int handle_sql_command(Step *step)
 {
     char *argv[MAX_ARGS + 1];
     int argc;
@@ -599,14 +628,23 @@ handle_sql_command(Step *step)
         return -1;
     }
 
-
     /* Debug: Print the prepared arguments */
     for (int i = 0; i < argc; i++)
     {
         log_debug0("Argument[%d]: %s", i, argv[i]);
     }
-    handle_sql_exec_command(argc, argv);
-    return 0;
+
+    /* Execute the SQL command */
+    int result = handle_sql_exec_command(argc, argv);
+
+    /* Handle ignore_errors flag */
+    if (result != 0)
+    {
+        log_warning("SQL command failed, but ignoring errors as per configuration.");
+        return 0; // Treat as success
+    }
+
+    return result;
 }
 
 static int
