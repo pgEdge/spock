@@ -49,7 +49,7 @@
           "--sub_name=sub_n3_n2",
           "--provider_dsn=host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=spockpass",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
-          "--synchronize_structure=true",
+          "--synchronize_structure=false",
           "--synchronize_data=true",
           "--forward_origins='{}'::text[]",
           "--apply_delay='0'::interval",
@@ -141,7 +141,7 @@
       "spock": {
         "node": "n3",
         "command": "CREATE SUBSCRIPTION",
-        "description": "Create a subscription (sub_n1_n3) for n1 fpr n3->n1",
+        "description": "Create a subscription (sub_n1_n3) on n3 for n1->n3",
         "sleep": 0,
         "args": [
           "--sub_name=sub_n1_n3",
