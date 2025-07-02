@@ -71,7 +71,12 @@ main(int argc, char *argv[])
         printf("spockctrl version %s\n", VERSION);
         return EXIT_SUCCESS;
     }
-
+    if (strcmp(command, "--help") == 0 || strcmp(command, "-h") == 0)
+    {
+        print_help();
+        return EXIT_SUCCESS;
+    }
+    
     for (int i = 1; i < argc; i++)
     {
         if (strncmp(argv[i], "--config=", 9) == 0)
