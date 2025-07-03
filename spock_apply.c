@@ -1868,7 +1868,9 @@ spock_apply_worker_shmem_exit(int code, Datum arg)
 	 * on_proc_exit because the backend may also clean up the origin
 	 * in certain cases, and we want to avoid duplicate cleanup.
 	 */
-	replorigin_session_reset();
+	replorigin_session_origin = InvalidRepOriginId;
+	replorigin_session_origin_lsn = InvalidXLogRecPtr;
+	replorigin_session_origin_timestamp = 0;
 }
 
 /*
@@ -2740,7 +2742,6 @@ apply_work(PGconn *streamConn)
 	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
 	bool		need_replay;
 	ErrorData  *edata;
-	RepOriginId originid;
 
 	applyconn = streamConn;
 	fd = PQsocket(applyconn);
@@ -2763,7 +2764,6 @@ apply_work(PGconn *streamConn)
 	if (MyApplyWorker->apply_group == NULL)
 		spock_apply_worker_attach(); /* Attach this worker. */
 
-	originid = replorigin_session_origin;
 stream_replay:
 
 	need_replay = false;
@@ -3162,8 +3162,6 @@ stream_replay:
 		MemoryContextSwitchTo(MessageContext);
 		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
 
-		/* reset replication session to avoid reuse of it after error. */
-		replorigin_session_reset();
 		FlushErrorState();
 
 		MemoryContextReset(MessageContext);
@@ -3183,10 +3181,6 @@ stream_replay:
 	if (need_replay)
 	{
 		MyApplyWorker->use_try_block = true;
-
-		/* Its possible that origin session may have been reset above */
-		replorigin_session_setup(originid);
-		replorigin_session_origin = originid;
 
 		goto stream_replay;
 	}
