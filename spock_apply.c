@@ -288,15 +288,14 @@ static void update_progress_entry(Oid target_node_id,
 static void check_and_update_progress(XLogRecPtr last_received_lsn,
 								TimestampTz timestamp);
 
-static ApplyReplayEntry *
-apply_replay_entry_create(int r, char *buf);
-static void
-apply_replay_entry_free(ApplyReplayEntry *entry);
-static void
-apply_replay_queue_reset(void);
-
+static ApplyReplayEntry *apply_replay_entry_create(int r, char *buf);
+static void apply_replay_entry_free(ApplyReplayEntry *entry);
+static void apply_replay_queue_reset(void);
+static void maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
+								TimestampTz *last_receive_timestamp);
 static void append_feedback_position(XLogRecPtr recvpos);
-static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos, XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
+static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
+								  XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
 
 
 /*
@@ -1868,7 +1867,9 @@ spock_apply_worker_shmem_exit(int code, Datum arg)
 	 * on_proc_exit because the backend may also clean up the origin
 	 * in certain cases, and we want to avoid duplicate cleanup.
 	 */
-	replorigin_session_reset();
+	replorigin_session_origin = InvalidRepOriginId;
+	replorigin_session_origin_lsn = InvalidXLogRecPtr;
+	replorigin_session_origin_timestamp = 0;
 }
 
 /*
@@ -2740,7 +2741,6 @@ apply_work(PGconn *streamConn)
 	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
 	bool		need_replay;
 	ErrorData  *edata;
-	RepOriginId originid;
 
 	applyconn = streamConn;
 	fd = PQsocket(applyconn);
@@ -2763,7 +2763,6 @@ apply_work(PGconn *streamConn)
 	if (MyApplyWorker->apply_group == NULL)
 		spock_apply_worker_attach(); /* Attach this worker. */
 
-	originid = replorigin_session_origin;
 stream_replay:
 
 	need_replay = false;
@@ -2921,37 +2920,25 @@ stream_replay:
 				{
 					XLogRecPtr start_lsn;
 					XLogRecPtr end_lsn;
-					static int w_message_count = 0;
 
 					start_lsn = pq_getmsgint64(msg);
 					end_lsn = pq_getmsgint64(msg);
 					pq_getmsgint64(msg); /* sendTime */
+
+					/*
+					 * Call maybe_send_feedback before last_received is updated.
+					 * This ordering guarantees that feedback LSN never advertises
+					 * a position beyond what has actually been received and processed.
+					 * Prevents skipping over unapplied changes due to premature flush LSN.
+					 */
+					maybe_send_feedback(applyconn, last_received,
+										&last_receive_timestamp);
 
 					if (last_received < start_lsn)
 						last_received = start_lsn;
 
 					if (last_received < end_lsn)
 						last_received = end_lsn;
-
-					w_message_count++;
-
-					/*
-					 * Send feedback if wal_sender_timeout/2 has passed or after 10 'w' messages.
-					 */
-					if (TimestampDifferenceExceeds(last_receive_timestamp, GetCurrentTimestamp(), wal_sender_timeout / 2) ||
-						w_message_count >= 10)
-					{
-						elog(DEBUG2, "SPOCK %s: force sending feedback after %d 'w' messages or timeout",
-							 MySubscription->name, w_message_count);
-						/*
-						 * We need to send feedback to the walsender process
-						 * to avoid remote wal_sender_timeout.
-						 */
-						send_feedback(applyconn, last_received, GetCurrentTimestamp(), true);
-						last_receive_timestamp = GetCurrentTimestamp();
-						w_message_count = 0;
-					}
-
 
 					/*
 					 * Append the entry to the end of the replay queue
@@ -3162,8 +3149,6 @@ stream_replay:
 		MemoryContextSwitchTo(MessageContext);
 		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
 
-		/* reset replication session to avoid reuse of it after error. */
-		replorigin_session_reset();
 		FlushErrorState();
 
 		MemoryContextReset(MessageContext);
@@ -3183,10 +3168,6 @@ stream_replay:
 	if (need_replay)
 	{
 		MyApplyWorker->use_try_block = true;
-
-		/* Its possible that origin session may have been reset above */
-		replorigin_session_setup(originid);
-		replorigin_session_origin = originid;
 
 		goto stream_replay;
 	}
@@ -4172,4 +4153,35 @@ apply_replay_queue_reset(void)
 	apply_replay_overflow = false;
 
 	MemoryContextReset(ApplyReplayContext);
+}
+
+/*
+ * Check if we should send feedback based on message count or timeout.
+ * Resets internal state if feedback is sent.
+ */
+static void
+maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
+					TimestampTz *last_receive_timestamp)
+{
+	static int w_message_count = 0;
+	TimestampTz now = GetCurrentTimestamp();
+
+	w_message_count++;
+
+	/*
+	 * Send feedback if wal_sender_timeout/2 has passed or after 10 'w' messages.
+	 */
+	if (TimestampDifferenceExceeds(*last_receive_timestamp, now, wal_sender_timeout / 2) ||
+		w_message_count >= 10)
+	{
+		elog(DEBUG2, "SPOCK %s: force sending feedback after %d 'w' messages or timeout",
+				MySubscription->name, w_message_count);
+		/*
+		 * We need to send feedback to the walsender process
+		 * to avoid remote wal_sender_timeout.
+		 */
+		send_feedback(applyconn, lsn_to_send, now, true);
+		*last_receive_timestamp = now;
+		w_message_count = 0;
+	}
 }
