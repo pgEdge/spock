@@ -108,3 +108,4 @@ psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_repli
 # ==========Spockbench tests ========== 
 spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} -s $SCALEFACTOR -T $RUNTIME -R $RATE -P 5 -j $THREADS -c $CONNECTIONS -n --spock-tx-mix=550,225,225 -U admin demo
 spockbench-check -U admin demo > /home/pgedge/spock/spockbench-$HOSTNAME.out
+grep -q "ERROR" /home/pgedge/spock/spockbench-*.out && exit 1 || exit 0
