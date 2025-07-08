@@ -34,7 +34,7 @@ echo "export PATH=/home/test/pgedge/pg$PGVER/bin:$PATH" >> /home/pgedge/.bashrc
 
 echo "==========Recompiling Spock=========="
 cd ~/spock
-make clean && make spockctrl && make -j16 && make install
+make -j4 && make install
 
 echo "==========Installing Spockbench=========="
 cd ~/spockbench
