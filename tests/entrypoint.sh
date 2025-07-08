@@ -8,6 +8,21 @@ set -e
 #cd pgedge && ./pgedge setup -U $DBUSER -P $DBPASSWD -d $DBNAME --pg_ver=$PGVER && ./pgedge stop
 #
 
+function wait_for_pg()
+{
+  count=0
+  while ! pg_isready -h /tmp; do
+    if [ $count -ge 24 ]
+    then
+      echo "Gave up waiting for PostgreSQL to become ready..."
+      exit 1
+    fi
+
+    echo "Waiting for PostgreSQL to become ready..."
+    sleep 5
+  done
+}
+
 . /home/pgedge/pgedge/pg$PGVER/pg$PGVER.env
 . /home/pgedge/.bashrc
 
@@ -20,10 +35,7 @@ sed -i '/log_min_messages/s/^#//g' data/pg$PGVER/postgresql.conf
 sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg$PGVER/postgresql.conf
 ./pgedge restart
 
-while ! pg_isready -h /tmp; do
-  echo "Waiting for PostgreSQL to become ready..."
-  sleep 1
-done
+wait_for_pg
 
 psql -h /tmp -U $DBUSER -d $DBNAME -c "drop extension spock;"
 psql -h /tmp -U $DBUSER -d $DBNAME -c "drop schema public cascade;"
@@ -32,10 +44,7 @@ psql -h /tmp -U $DBUSER -d $DBNAME -c "create extension spock;"
 
 ./pgedge restart
 
-while ! pg_isready -h /tmp; do
-  echo "Waiting for PostgreSQL to become ready..."
-  sleep 1
-done
+wait_for_pg
 
 echo "==========Assert Spock version is the latest=========="
 expected_line=$(grep '#define SPOCK_VERSION' /home/pgedge/spock/spock.h)
