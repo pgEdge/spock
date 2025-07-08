@@ -1,8 +1,12 @@
 FROM rockylinux:9
 
 ARG PGVER
+ARG GITHUB_REF
+ARG REPO_URL
 
 ENV PGVER=$PGVER
+ENV GITHUB_REF=$GITHUB_REF
+ENV REPO_URL=$REPO_URL
 
 RUN dnf -y update && dnf -y install sudo && dnf -y groupinstall "Development Tools"
 
@@ -19,9 +23,65 @@ RUN dnf install --allowerasing --enablerepo=crb -y $(cat /home/pgedge/lib-list.t
 RUN ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
     cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys
 
-COPY entrypoint.sh run-tests.sh /home/pgedge
 
-RUN sudo chmod +x /home/pgedge/entrypoint.sh /home/pgedge/run-tests.sh
+#-----------------------------------------
+USER pgedge
+
+WORKDIR /home/pgedge
+RUN echo "Cloning Spock at $GITHUB_REF from $REPO_URL"
+RUN git clone ${REPO_URL}
+
+WORKDIR /home/pgedge/spock
+RUN git checkout ${GITHUB_REF}
+
+WORKDIR /home/pgedge
+
+RUN echo "Determine PostgreSQL tag"
+RUN LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
+				grep "refs/tags/REL_${PGVER}_" | \
+				sed 's|.*refs/tags/||' | \
+				tr '_' '.' | \
+				sort -V | \
+				tail -n 1 | \
+				tr '.' '_') && \
+			echo "Using tag $LATEST_TAG" && \
+			git clone --branch $LATEST_TAG --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres
+
+
+RUN sudo chmod -R a+w ~/postgres
+
+RUN echo "Setting up pgedge..."
+WORKDIR /home/pgedge
+RUN curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
+RUN sudo -u pgedge python3 /home/pgedge/install.py
+
+#RUN ./pgedge setup -U $DBUSER -P $DBPASSWD -d $DBNAME --pg_ver=$PGVER && ./pgedge stop
+
+WORKDIR /home/pgedge/postgres
+
+RUN git apply --verbose /home/pgedge/spock/patches/pg${PGVER}*
+
+RUN echo "==========Compiling Modified PostgreSQL=========="
+RUN options="'--prefix=/home/pgedge/pgedge/pg$PGVER' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' 'LLVM_CONFIG=/usr/bin/llvm-config-64' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && eval ./configure $options && make -j4 && make install
+
+WORKDIR /home/pgedge
+
+# TODO review
+#. /home/pgedge/pgedge/pg$PGVER/pg$PGVER.env
+RUN echo "export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg$PGVER/lib/:$LD_LIBRARY_PATH" >> /home/pgedge/.bashrc
+RUN echo "export PATH=/home/test/pgedge/pg$PGVER/bin:$PATH" >> /home/pgedge/.bashrc
+#. /home/pgedge/.bashrc
+
+RUN echo "==========Recompiling Spock=========="
+WORKDIR /home/pgedge/spock
+RUN . /home/pgedge/.bashrc && export PG_CONFIG=/home/pgedge/pgedge/pg$PGVER/bin/pg_config && export PATH=/home/pgedge/pgedge/pg$PGVER/bin:$PATH && make clean && make -j16 && make install
+
+RUN echo "==========Built Spock=========="
+
+#-----------------------------------------
+COPY entrypoint.sh run-tests.sh run-spock-regress.sh /home/pgedge
+
+RUN sudo chmod +x /home/pgedge/entrypoint.sh /home/pgedge/run-tests.sh /home/pgedge/run-spock-regress.sh
 
 WORKDIR /home/pgedge/
 USER pgedge

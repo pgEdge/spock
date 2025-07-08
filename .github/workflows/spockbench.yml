@@ -41,11 +41,22 @@ jobs:
         with:
           version: latest
 
-      - name: Start docker
+      - name: Build docker container
         run: |
           cd ${GITHUB_WORKSPACE}/tests/
           echo PG_VER=${{ matrix.pgver }} >> pgedge.env
-          docker build --build-arg PGVER=${{ matrix.pgver }} -t spock -f Dockerfile.el9 .
+          docker build \
+            --build-arg PGVER=${{ matrix.pgver }} \
+            --build-arg GITHUB_REF=${{ github.ref }} \
+            --build-arg REPO_URL=https://github.com/${{ github.repository }} \
+            -t spock -f Dockerfile.el9 .
+
+      - name: Run regression tests
+        run: |
+          docker run -it -e PGVER=${{ matrix.pgver }} spock /home/pgedge/run-spock-regress.sh
+
+      - name: Start docker
+        run: |
           docker compose up
 
       - name: Check spockbench output
