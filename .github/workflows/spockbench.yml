@@ -1,5 +1,5 @@
-name: Spockbench tests
-run-name: Running Spockbench
+name: Regression Tests and Spockbench
+run-name: Running Regression Tests and Spockbench
 on: [push]
 
 permissions:
