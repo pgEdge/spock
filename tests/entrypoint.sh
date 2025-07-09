@@ -1,13 +1,6 @@
 #!/bin/bash
 set -e
 
-#echo "Setting up pgedge..."
-#cd /home/pgedge
-#curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
-#sudo -u pgedge python3 /home/pgedge/install.py
-#cd pgedge && ./pgedge setup -U $DBUSER -P $DBPASSWD -d $DBNAME --pg_ver=$PGVER && ./pgedge stop
-#
-
 function wait_for_pg()
 {
   count=0

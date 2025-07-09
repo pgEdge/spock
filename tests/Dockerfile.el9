@@ -56,7 +56,6 @@ RUN curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py > /home/
 RUN sudo -u pgedge python3 /home/pgedge/install.py
 
 WORKDIR /home/pgedge/pgedge
-# TODO see if this step can be avoided
 # Set up according to the environment in pgedge.env file in tests subdir
 RUN . /home/pgedge/spock/tests/pgedge.env && ./pgedge setup -U $DBUSER -P $DBPASSWD -d $DBNAME --pg_ver=$PGVER && ./pgedge stop
 
@@ -69,11 +68,8 @@ RUN options="'--prefix=/home/pgedge/pgedge/pg$PGVER' '--disable-rpath' '--with-z
 
 WORKDIR /home/pgedge
 
-# TODO review
-#. /home/pgedge/pgedge/pg$PGVER/pg$PGVER.env
 RUN echo "export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg$PGVER/lib/:$LD_LIBRARY_PATH" >> /home/pgedge/.bashrc
 RUN echo "export PATH=/home/pgedge/pgedge/pg$PGVER/bin:$PATH" >> /home/pgedge/.bashrc
-#. /home/pgedge/.bashrc
 
 RUN echo "==========Recompiling Spock=========="
 WORKDIR /home/pgedge/spock
