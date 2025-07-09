@@ -109,6 +109,22 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+--
+-- Function definition updated to include new 'enabled' parameter.
+--
+DROP FUNCTION spock.sub_create(name, text, text[], boolean, boolean, text[], interval, boolean);
+CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
+    replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
+    synchronize_data boolean = false, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
+    force_text_transfer boolean = false,
+	enabled boolean = true)
+RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
+
+-- ----
+-- Function to determine LSN from commit timestamp
+-- ----
+CREATE FUNCTION spock.get_lsn_from_commit_ts(slot_name name, commit_ts timestamptz)
+RETURNS pg_lsn STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_lsn_from_commit_ts';
 
 CREATE OR REPLACE FUNCTION spock.get_apply_worker_status(
     OUT worker_pid bigint, -- Changed from int to bigint
