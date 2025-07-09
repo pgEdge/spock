@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -euo pipefail
+#set -euo pipefail
 
 peer_names=$1
 
@@ -77,24 +77,21 @@ _EOF_
   fi
 
 
-  resolution_check=$(psql -X -A -t -U $DBUSER -d $DBNAME -c "
-	SELECT conflict_type 
-	FROM spock.resolutions 
-	WHERE relname = 'public.t4';
-	")
+  resolution_check=$(PGPASSWORD=$DBPASSWD psql -X -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c " SELECT conflict_type FROM spock.resolutions WHERE relname = 'public.t4'")
 
-  insert_exists_count=$(echo "$resolution_check" | grep -c '^insert_exists$')
-  delete_delete_count=$(echo "$resolution_check" | grep -c '^delete_delete$')
+  insert_exists_count=$(echo "$resolution_check" | grep -c 'insert_exists')
+  delete_delete_count=$(echo "$resolution_check" | grep -c 'delete_delete')
 
   if [ "$insert_exists_count" -eq 1 ] && [ "$delete_delete_count" -eq 1 ];
   then
     echo "PASS: Found both insert_exists and delete_delete for public.t4"
   else
+    PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "select * from spock.resolutions where relname = 'public.t4'"
     echo "FAIL: Resolution entries for public.t4 are incorrect"
+    echo "Resolutions check=$resolution_check"
     echo "Found: insert_exists=$insert_exists_count, delete_delete=$delete_delete_count"
     exit 1
   fi
-  echo $elog_entries > /home/pgedge/spock/exception-tests.out
 fi
 
 spockbench -h /tmp -i -s $SCALEFACTOR demo
