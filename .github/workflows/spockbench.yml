@@ -50,11 +50,10 @@ jobs:
 
       - name: Check spockbench output
         run: |
-          bad_containers=$(docker compose ps -a --format json | jq -s '[.[] | select(.ExitCode != 0)] | length')
-
+          bad_containers=$(docker ps -a --format json | jq -s '[.[] | select(.ExitCode != 0)] | length')
           if [ "$bad_containers" -ne 0 ]; then
             echo "FAIL: $bad_containers container(s) exited with non-zero code"
-            docker compose ps -a
+            docker ps -a
             exit 1
           fi
 
