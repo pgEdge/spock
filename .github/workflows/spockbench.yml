@@ -50,10 +50,6 @@ jobs:
 
       - name: Check spockbench output
         run: |
-          bad_containers=$(docker ps -a --format json | jq -s '[.[] | select(.ExitCode != 0)] | length')
-          if [ "$bad_containers" -ne 0 ]; then
-            echo "FAIL: $bad_containers container(s) exited with non-zero code"
-            docker ps -a
-            exit 1
-          fi
+          cd ${GITHUB_WORKSPACE}/tests
+          ./check-outputs.sh
 

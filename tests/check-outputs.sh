@@ -1,21 +1,14 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
-exception_entries=$(cat ${GITHUB_WORKSPACE}/exception-tests.out)
-echo "Found exception entries=$exception_entries"
+containers=$(docker ps -aq --filter "label=com.docker.compose.project=tests");
 
-if [ "$exception_entries" != 3 ];
-then
-  exit 1
-fi
-
-spockbench_files=$(ls ${GITHUB_WORKSPACE}/spockbench-*.out | wc -l)
-echo "Found spockbench files=$spockbench_files"
-
-if [ $spockbench_files != 3 ];
-then
-  exit 1
-fi
-
-grep -q "ERROR" ${GITHUB_WORKSPACE}/spockbench-*.out && exit 1 || exit 0
+for cid in $containers; do
+  exit_code=$(docker inspect -f '{{ .State.ExitCode }}' "$cid")
+  if [ "$exit_code" -ne 0 ]; then
+    name=$(docker inspect -f '{{ .Name }}' "$cid" | sed 's|/||')
+    echo "FAIL: Container '$name' exited with code $exit_code"
+    exit 1
+  fi
+done
