@@ -20,62 +20,6 @@
     },
     {
       "spock": {
-        "node": "n1",
-        "command": "CREATE SUBSCRIPTION",
-        "description": "Create a subscription (sub_n3_n1) on (n1) for n3->n1",
-        "sleep": 0,
-        "args": [
-          "--sub_name=sub_n3_n1",
-          "--provider_dsn=host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=spockpass",
-          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
-          "--synchronize_structure=true",
-          "--synchronize_data=true",
-          "--forward_origins='{}'::text[]",
-          "--apply_delay='0'::interval",
-          "--force_text_transfer=false",
-          "--enabled=true"
-        ],
-        "on_success": {},
-        "on_failure": {}
-      }
-    },
-    {
-      "spock": {
-        "node": "n2",
-        "command": "CREATE SUBSCRIPTION",
-        "description": "Create a subscription (sub_n3_n2) on (n2) for n3->n2",
-        "sleep": 0,
-        "args": [
-          "--sub_name=sub_n3_n2",
-          "--provider_dsn=host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=spockpass",
-          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
-          "--synchronize_structure=false",
-          "--synchronize_data=true",
-          "--forward_origins='{}'::text[]",
-          "--apply_delay='0'::interval",
-          "--force_text_transfer=false",
-          "--enabled=true"
-        ],
-        "on_success": {},
-        "on_failure": {}
-      }
-    },
-    {
-      "sql": {
-        "node": "n2",
-        "ignore_errors": false,
-        "command": "SQL",
-        "description": "Wait for apply worker on n2 subscription",
-        "sleep": 0,
-        "args": [
-          "--sql=SELECT spock.wait_for_apply_worker($n2.sub_create, 1000);"
-        ],
-        "on_success": {},
-        "on_failure": {}
-      }
-    },
-    {
-      "spock": {
         "node": "n3",
         "command": "CREATE SUBSCRIPTION",
         "description": "Create a subscription (sub_n2_n3) on (n3) for n2->n3",
@@ -222,6 +166,48 @@
         "args": [
           "--sub_name=sub_n2_n3",
           "--immediate=true"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n1",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n3_n1) on (n1) for n3->n1",
+        "sleep": 0,
+        "args": [
+          "--sub_name=sub_n3_n1",
+          "--provider_dsn=host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=spockpass",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='0'::interval",
+          "--force_text_transfer=false",
+          "--enabled=true"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n3_n2) on (n2) for n3->n2",
+        "sleep": 0,
+        "args": [
+          "--sub_name=sub_n3_n2",
+          "--provider_dsn=host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=spockpass",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='0'::interval",
+          "--force_text_transfer=false",
+          "--enabled=true"
         ],
         "on_success": {},
         "on_failure": {}
