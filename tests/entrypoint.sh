@@ -34,7 +34,7 @@ echo "export PATH=/home/test/pgedge/pg$PGVER/bin:$PATH" >> /home/pgedge/.bashrc
 
 echo "==========Recompiling Spock=========="
 cd ~/spock
-make clean && make -j16 && make install
+make -j4 && make install
 
 echo "==========Installing Spockbench=========="
 cd ~/spockbench
@@ -61,6 +61,21 @@ while ! pg_isready -h /tmp; do
   echo "Waiting for PostgreSQL to become ready..."
   sleep 1
 done
+
+echo "==========Assert Spock version is the latest=========="
+expected_line=$(grep '#define SPOCK_VERSION' /home/pgedge/spock/spock.h)
+expected_version=$(echo "$expected_line" | grep -oP '"\K[0-9]+\.[0-9]+\.[0-9]+')
+expected_major=${expected_version%%.*}
+actual_version=$(psql -U $DBUSER -d $DBNAME -X -t -A -c "select spock.spock_version()")
+actual_major=${actual_version%%.*}
+
+if (( actual_major >= expected_major )); then
+  echo " Actual major version ($actual_major) >= expected ($expected_major)"
+else
+  echo " Actual major version ($actual_major) is not what we expected ($expected_major)"
+  exit 1
+fi
+
 
 echo "==========Creating tables and repsets=========="
 ./pgedge spock node-create $HOSTNAME "host=$HOSTNAME user=pgedge dbname=$DBNAME" $DBNAME

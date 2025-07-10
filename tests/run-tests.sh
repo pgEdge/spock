@@ -1,5 +1,7 @@
 #!/bin/bash
 
+#set -euo pipefail
+
 peer_names=$1
 
 #========== Exception Log tests ========== 
@@ -55,11 +57,41 @@ _EOF_
 _EOF_
 
   echo "Waiting for apply worker timeouts..."
-  sleep 30
+  sleep 5
   echo "Checking the exception table now..."
-  elog_entries=$(PGPASSWORD=$DBPASSWD psql -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "SELECT count(*) from spock.exception_log;")
-  PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "select * from spock.exception_log;"
-  echo $elog_entries > /home/pgedge/spock/exception-tests.out
+  elog_entries=$(PGPASSWORD=$DBPASSWD psql -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "
+  	SELECT count(*)
+	FROM spock.exception_log e
+	JOIN spock.node n
+	ON e.remote_origin = n.node_id
+	WHERE e.operation = 'UPDATE'
+	AND n.node_name = 'n1'
+	AND e.remote_new_tup::text LIKE '%\"trigger missing key on UPDATE\"%';
+	")
+
+  if [ "$elog_entries" -ne 1 ];
+  then
+	  PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "select * from spock.exception_log;"
+	  echo "Did not find an exception log entry. Exiting..."
+	  exit 1
+  fi
+
+
+  resolution_check=$(PGPASSWORD=$DBPASSWD psql -X -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c " SELECT conflict_type FROM spock.resolutions WHERE relname = 'public.t4'")
+
+  insert_exists_count=$(echo "$resolution_check" | grep -c 'insert_exists')
+  delete_delete_count=$(echo "$resolution_check" | grep -c 'delete_delete')
+
+  if [ "$insert_exists_count" -eq 1 ] && [ "$delete_delete_count" -eq 1 ];
+  then
+    echo "PASS: Found both insert_exists and delete_delete for public.t4"
+  else
+    PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "select * from spock.resolutions where relname = 'public.t4'"
+    echo "FAIL: Resolution entries for public.t4 are incorrect"
+    echo "Resolutions check=$resolution_check"
+    echo "Found: insert_exists=$insert_exists_count, delete_delete=$delete_delete_count"
+    exit 1
+  fi
 fi
 
 spockbench -h /tmp -i -s $SCALEFACTOR demo
@@ -73,3 +105,4 @@ psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_repli
 # ==========Spockbench tests ========== 
 spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} -s $SCALEFACTOR -T $RUNTIME -R $RATE -P 5 -j $THREADS -c $CONNECTIONS -n --spock-tx-mix=550,225,225 -U admin demo
 spockbench-check -U admin demo > /home/pgedge/spock/spockbench-$HOSTNAME.out
+grep -q "ERROR" /home/pgedge/spock/spockbench-*.out && exit 1 || exit 0

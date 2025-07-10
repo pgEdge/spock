@@ -50,6 +50,6 @@ jobs:
 
       - name: Check spockbench output
         run: |
-          cd ${GITHUB_WORKSPACE}/tests/
+          cd ${GITHUB_WORKSPACE}/tests
           ./check-outputs.sh
 

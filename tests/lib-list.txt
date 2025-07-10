@@ -4,6 +4,7 @@ curl
 cyrus-sasl-gssapi
 dnsutils
 flex
+jansson-devel
 krb5-devel
 libicu-devel
 libpq

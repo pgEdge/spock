@@ -4,7 +4,7 @@ ARG PGVER
 
 ENV PGVER=$PGVER
 
-RUN dnf -y install sudo && dnf -y groupinstall "Development Tools"
+RUN dnf -y update && dnf -y install sudo && dnf -y groupinstall "Development Tools"
 
 RUN useradd -m pgedge -s /bin/bash && \
     echo pgedge:asdf | chpasswd && \
