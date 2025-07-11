@@ -1,6 +1,25 @@
 --PRIMARY KEY
 SELECT * FROM spock_regress_variables()
 \gset
+-- This is to ensure that the test runs with the correct configuration
+\c :provider_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = true;
+ALTER SYSTEM SET spock.exception_behaviour = sub_disable;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = true;
+ALTER SYSTEM SET spock.exception_behaviour = sub_disable;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
 \c :provider_dsn
 -- testing update of primary key
 -- create  table with primary key and 3 other tables referencing it
@@ -200,7 +219,7 @@ SELECT * FROM pk_users ORDER BY id;
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
+SELECT quote_literal(pg_current_wal_lsn()) as curr_lsn
 \gset
 SELECT spock.replicate_ddl($$
 CREATE UNIQUE INDEX id_temp_idx ON public.pk_users (id);
@@ -240,10 +259,10 @@ SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_
  address    | f          | f
 (5 rows)
 
-SELECT spock.sub_disable('test_subscription', true);
- sub_disable 
--------------
- t
+select status from spock.sub_show_status();
+  status  
+----------
+ disabled
 (1 row)
 
 \c :provider_dsn
@@ -260,7 +279,8 @@ BEGIN
 	END LOOP;
 END;
 $$;
-SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN json_extract_path(data::json, 'relation') END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '1', 'max_proto_version', '1', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default,ddl_sql');
+SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN json_extract_path(data::json, 'relation') END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '3', 'max_proto_version', '4', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default,ddl_sql')
+WHERE data IS NOT NULL AND data <> '';
  action |       data        
 --------+-------------------
  "S"    | 
@@ -269,19 +289,20 @@ SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 
  "C"    | 
 (4 rows)
 
-SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN data END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '1', 'max_proto_version', '1', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default,ddl_sql');
+SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN data END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '3', 'max_proto_version', '4', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default,ddl_sql')
+WHERE data IS NOT NULL AND data <> '';
  action | data 
 --------+------
 (0 rows)
 
 \c :subscriber_dsn
+DELETE FROM pk_users WHERE id = 4;-- remove the offending entries.
 SELECT spock.sub_enable('test_subscription', true);
  sub_enable 
 ------------
  t
 (1 row)
 
-DELETE FROM pk_users WHERE id = 4;-- remove the offending entries.
 \c :provider_dsn
 DO $$
 BEGIN
@@ -352,27 +373,26 @@ SELECT * FROM spock.repset_remove_table('default', 'pk_users');
 SELECT * FROM spock.repset_add_table('default', 'pk_users');
 ERROR:  table pk_users cannot be added to replication set default
 ROLLBACK;
--- Per 2ndQuadrant/spock_internal#146 this shouldn't be allowed, but
--- currently is. Logical decoding will fail to capture this change and we
--- won't progress with decoding.
 --
--- This will get recorded by logical decoding with no 'oldkey' values,
--- causing spock to fail to apply it with an error like
---
---    CONFLICT: remote UPDATE on relation public.pk_users (tuple not found). Resolution: skip.
+-- Previously this would cause an error on the subscriber:
+--      remote UPDATE on relation public.pk_users (tuple not found).
+-- In Spock's, this will be caught and the subscription will be disabled when
+-- spock.exception_behaviour = sub_disable is set.
 --
 UPDATE pk_users SET id = 91 WHERE id = 90;
--- Catchup will replay the insert and succeed, but the update
--- will be lost.
-BEGIN;
-SET LOCAL statement_timeout = '2s';
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
-ERROR:  canceling statement due to statement timeout
-ROLLBACK;
+-- feth xid of the last 'U' action
+SELECT fetch_last_xid('U') AS remote_xid \gset
 -- To carry on we'll need to make the index on the downstream
--- (which is odd, because logical decoding didn't capture the
---  oldkey of the tuple, so how can we apply it?)
+-- We need to skip the last 'U' action that caused the subscription to be disabled.
+-- Its done by altering the subscription to skip the last 'U' action and the error
+-- message from the exception log is used to find the skip_lsn.
 \c :subscriber_dsn
+SELECT skiplsn_and_enable_sub('test_subscription', :remote_xid);
+ skiplsn_and_enable_sub 
+------------------------
+ 
+(1 row)
+
 ALTER TABLE public.pk_users
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY (id) NOT DEFERRABLE;
 \c :provider_dsn
@@ -439,30 +459,26 @@ SELECT id FROM pk_users WHERE id IN (90, 91, 100, 101) ORDER BY id;
  100
 (2 rows)
 
+SELECT spock.sub_show_status();
+                                                                        sub_show_status                                                                        
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (test_subscription,disabled,test_provider,"dbname=regression user=super",spk_postgres_test_provider_test_sube55bf37,"{default,default_insert_only,ddl_sql}",)
+(1 row)
+
 -- we can recover by re-creating the pk as non-deferrable
 ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
     ADD CONSTRAINT pk_users_pkey PRIMARY KEY (id) NOT DEFERRABLE;
 -- then replay. Toggle the subscription's enabled state
 -- to make it recover faster for a quicker test run.
-SELECT spock.sub_disable('test_subscription', true);
- sub_disable 
--------------
- t
-(1 row)
-
+-- sub is already disabled due to the previous
 SELECT spock.sub_enable('test_subscription', true);
  sub_enable 
 ------------
  t
 (1 row)
 
-\c :provider_dsn
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
- wait_slot_confirm_lsn 
------------------------
- 
-(1 row)
-
+-- \c :provider_dsn
+-- SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 SELECT id FROM pk_users WHERE id IN (90, 91, 100, 101) ORDER BY id;
  id  
@@ -481,6 +497,20 @@ SELECT id FROM pk_users WHERE id IN (90, 91, 100, 101) ORDER BY id;
  101
 (2 rows)
 
+\c :provider_dsn
+-- feth xid of the last 'U' action
+SELECT fetch_last_xid('U') AS remote_xid \gset
+-- To carry on we'll need to make the index on the downstream
+-- We need to skip the last 'U' action that caused the subscription to be disabled.
+-- Its done by altering the subscription to skip the last 'U' action and the error
+-- message from the exception log is used to find the skip_lsn.
+\c :subscriber_dsn
+SELECT skiplsn_and_enable_sub('test_subscription', :remote_xid);
+ skiplsn_and_enable_sub 
+------------------------
+ 
+(1 row)
+
 -- Demonstrate that we properly handle wide conflict rows
 \c :subscriber_dsn
 INSERT INTO pk_users (id, another_id, address)
@@ -495,6 +525,17 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 (1 row)
 
 \c :subscriber_dsn
+-- wait until subscription status updated.
+DO $$
+BEGIN
+	FOR i IN 1..100 LOOP
+		IF (SELECT count(1) FROM spock.subscription WHERE sub_enabled = true) THEN
+			RETURN;
+		END IF;
+		PERFORM pg_sleep(0.1);
+	END LOOP;
+END;
+$$;
 SELECT id, another_id, left(address,30) AS address_abbrev
 FROM pk_users WHERE another_id = 2000;
  id  | another_id |         address_abbrev         
@@ -574,20 +615,51 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  
 (1 row)
 
+\c :subscriber_dsn
+SELECT spock.sub_show_status();
+                                                                         sub_show_status                                                                          
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (test_subscription,replicating,test_provider,"dbname=regression user=super",spk_postgres_test_provider_test_sube55bf37,"{default,default_insert_only,ddl_sql}",)
+(1 row)
+
+SELECT * FROM pk_users ORDER BY id;
+ id | another_id | a_id |     name     | address 
+----+------------+------+--------------+---------
+  1 |         10 |    1 | should_error | 
+  2 |         20 |    0 | sub          | 
+  3 |         11 |    1 | pub          | 
+  4 |         22 |    1 | pub          | 
+(4 rows)
+
 -- UPDATEs to missing rows could either resurrect the row or conclude it
 -- shouldn't exist and discard it. Currently spk unconditionally discards, so
 -- this row's name is a misnomer.
 \c :subscriber_dsn
+SELECT spock.sub_show_status();
+                                                                         sub_show_status                                                                          
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (test_subscription,replicating,test_provider,"dbname=regression user=super",spk_postgres_test_provider_test_sube55bf37,"{default,default_insert_only,ddl_sql}",)
+(1 row)
+
 DELETE FROM pk_users WHERE id = 4 AND another_id = 22;
 \c :provider_dsn
 UPDATE pk_users SET name = 'jesus' WHERE id = 4;
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
- wait_slot_confirm_lsn 
------------------------
+-- fetch xid of the last 'U' action
+SELECT fetch_last_xid('U') AS remote_xid \gset
+--SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+\c :subscriber_dsn
+SELECT spock.sub_show_status();     -- SUB is disabled due to the previous UPDATE
+                                                                        sub_show_status                                                                        
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (test_subscription,disabled,test_provider,"dbname=regression user=super",spk_postgres_test_provider_test_sube55bf37,"{default,default_insert_only,ddl_sql}",)
+(1 row)
+
+SELECT skiplsn_and_enable_sub('test_subscription', :remote_xid);
+ skiplsn_and_enable_sub 
+------------------------
  
 (1 row)
 
-\c :subscriber_dsn
 -- No resurrection here
 SELECT * FROM pk_users ORDER BY id;
  id | another_id | a_id |     name     | address 
@@ -626,7 +698,15 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 ERROR:  canceling statement due to statement timeout
 ROLLBACK;
 -- This time we'll fix it by deleting the conflicting row
+-- Since SUB is disabled, DELETE the row on the subscriber
+-- and then re-enable the subscription.
 \c :subscriber_dsn
+SELECT spock.sub_show_status();
+                                                                        sub_show_status                                                                        
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (test_subscription,disabled,test_provider,"dbname=regression user=super",spk_postgres_test_provider_test_sube55bf37,"{default,default_insert_only,ddl_sql}",)
+(1 row)
+
 SELECT * FROM pk_users ORDER BY id;
  id | another_id | a_id |     name     | address 
 ----+------------+------+--------------+---------
@@ -638,6 +718,12 @@ SELECT * FROM pk_users ORDER BY id;
 (5 rows)
 
 DELETE FROM pk_users WHERE id = 5;
+SELECT spock.sub_enable('test_subscription', true);
+ sub_enable 
+------------
+ t
+(1 row)
+
 \c :provider_dsn
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
  wait_slot_confirm_lsn 
@@ -663,6 +749,25 @@ $$);
 NOTICE:  drop cascades to table public.pk_users membership in replication set default
  replicate_ddl 
 ---------------
+ t
+(1 row)
+
+-- Reset the configuration to the default value
+\c :provider_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = false;
+ALTER SYSTEM SET spock.exception_behaviour = transdiscard;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = false;
+ALTER SYSTEM SET spock.exception_behaviour = transdiscard;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
  t
 (1 row)
 
