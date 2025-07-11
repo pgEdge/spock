@@ -1,40 +1,23 @@
 #!/bin/bash
 set -e
 
-echo "PGVER=$PGVER"
-LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
-              grep "refs/tags/REL_${PGVER}_" | \
-              sed 's|.*refs/tags/||' | \
-              tr '_' '.' | \
-              sort -V | \
-              tail -n 1 | \
-              tr '.' '_')
+function wait_for_pg()
+{
+  count=0
+  while ! pg_isready -h /tmp; do
+    if [ $count -ge 24 ]
+    then
+      echo "Gave up waiting for PostgreSQL to become ready..."
+      exit 1
+    fi
 
-echo "Using tag $LATEST_TAG"
-git clone --branch $LATEST_TAG --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres
-sudo chmod -R a+w ~/postgres
+    echo "Waiting for PostgreSQL to become ready..."
+    sleep 5
+  done
+}
 
-echo "Setting up pgedge..."
-cd /home/pgedge
-curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
-sudo -u pgedge python3 /home/pgedge/install.py
-cd pgedge && ./pgedge setup -U $DBUSER -P $DBPASSWD -d $DBNAME --pg_ver=$PGVER && ./pgedge stop
-
-cd /home/pgedge/postgres
-
-git apply --verbose /home/pgedge/spock/patches/pg${PGVER}*
-
-options="'--prefix=/home/pgedge/pgedge/pg$PGVER' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' 'LLVM_CONFIG=/usr/bin/llvm-config-64' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && eval ./configure $options && make -j4 && make install
-
-cd /home/pgedge
 . /home/pgedge/pgedge/pg$PGVER/pg$PGVER.env
-echo "export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg$PGVER/lib/:$LD_LIBRARY_PATH" >> /home/pgedge/.bashrc
-echo "export PATH=/home/test/pgedge/pg$PGVER/bin:$PATH" >> /home/pgedge/.bashrc
 . /home/pgedge/.bashrc
-
-echo "==========Recompiling Spock=========="
-cd ~/spock
-make -j4 && make install
 
 echo "==========Installing Spockbench=========="
 cd ~/spockbench
@@ -45,10 +28,7 @@ sed -i '/log_min_messages/s/^#//g' data/pg$PGVER/postgresql.conf
 sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg$PGVER/postgresql.conf
 ./pgedge restart
 
-while ! pg_isready -h /tmp; do
-  echo "Waiting for PostgreSQL to become ready..."
-  sleep 1
-done
+wait_for_pg
 
 psql -h /tmp -U $DBUSER -d $DBNAME -c "drop extension spock;"
 psql -h /tmp -U $DBUSER -d $DBNAME -c "drop schema public cascade;"
@@ -57,10 +37,7 @@ psql -h /tmp -U $DBUSER -d $DBNAME -c "create extension spock;"
 
 ./pgedge restart
 
-while ! pg_isready -h /tmp; do
-  echo "Waiting for PostgreSQL to become ready..."
-  sleep 1
-done
+wait_for_pg
 
 echo "==========Assert Spock version is the latest=========="
 expected_line=$(grep '#define SPOCK_VERSION' /home/pgedge/spock/spock.h)
