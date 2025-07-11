@@ -9,6 +9,7 @@
 - [Spock Functions](docs/spock_functions.md)
 - [Using Spock in Read Only Mode](docs/read_only.md)
 - [Tutorial - Adding a Node with Zero Downtime](docs/zodan.md)
+- [Tutorial - Adding a Node with Minimal Downtime with pgBackRest](add_node_pgbackrest.md)
 - [Using spockctrl management functions](docs/spockctrl.md)
 - [Limitations](docs/limitations.md)
 - [FAQ](docs/FAQ.md)
