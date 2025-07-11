@@ -1,41 +1,39 @@
-## Spock Limitations and Restrictions
+## Limitations and restrictions
 
 ### Superuser privileges are required
 
-Currently spock replication and administration requires superuser privileges.
+Currently, the Spock extension requires superuser privileges to configure replication and administration.
 
 ### `UNLOGGED` and `TEMPORARY` tables are not replicated
 
-`UNLOGGED` and `TEMPORARY` tables will not and cannot be replicated, much like with physical streaming replication.
+`UNLOGGED` and `TEMPORARY` tables will not and cannot be replicated, much like
+with physical streaming replication.
 
 ### One database at a time
 
-To replicate multiple databases you must set up individual provider/subscriber relationships for each. There is no way to configure replication for all databases in a PostgreSQL installation at once.
+To replicate multiple databases you must set up individual provider/subscriber
+relationships for each. There is no way to configure replication for all databases
+in a PostgreSQL install at once.
 
 ### PRIMARY KEY or REPLICA IDENTITY required
 
-Spock cannot replicate `UPDATE`s and `DELETE`s for tables that lack a `PRIMARY
+`UPDATE`s and `DELETE`s cannot be replicated for tables that lack a `PRIMARY
 KEY` or other valid replica identity such as using an index, which must be unique,
 not partial, not deferrable, and include only columns marked NOT NULL.
-Without a primary key or replica identity, replication has no way to find the tuple that should be updated/deleted.
+Replication has no way to find the tuple that should be updated/deleted since
+there is no unique identifier.
 
-### `REPLICA IDENTITY FULL` is not yet supported
+`REPLICA IDENTITY FULL` is not supported yet.
 
-### Only one unique index/constraint/PK is allowed
+### Only one unique index/constraint/PK
 
-If more than one upstream is configured or the downstream accepts local writes
-then only one `UNIQUE` index should be present on downstream replicated tables.
-Conflict resolution can only use one index at a time so conflicting rows may
-`ERROR` if a row satisfies the `PRIMARY KEY` but violates a `UNIQUE` constraint
-on the downstream side. This will stop replication until the downstream table
-is modified to remove the violation.
+If more than one upstream is configured or the downstream accepts local writes, only one `UNIQUE` index should be present on downstream replicated tables. Conflict resolution can only use one index at a time, so conflicting rows may `ERROR` if a row satisfies the `PRIMARY KEY` but violates a `UNIQUE` constraint on the downstream side. 
 
-It's fine to have extra unique constraints on an upstream if the downstream only
-gets writes from that upstream and nowhere else. The rule is that the downstream
-constraints must *not be more restrictive* than those on the upstream(s).
+You can have additional unique constraints upstream if the downstream consumer gets writes from that upstream and nowhere else. The rule is that the downstream constraints must *not be more restrictive* than those on the upstream(s).
 
-Partial secondary unique indexes are permitted, but will be ignored for
-conflict resolution purposes.
+Partial secondary unique indexes are permitted, but will be ignored for conflict resolution purposes.
+
+`spock.check_all_uc_indexes` is an experimental GUC that adds `INSERT` conflict resolution by allowing Spock to consider all unique constraints, not just the primary key or replica identity. For more information, see [Configuring Spock](../spock_ext/install_spock.mdx).
 
 ### Unique constraints must not be deferrable
 
@@ -140,31 +138,8 @@ encoding. We recommend using `UTF-8` encoding in all replicated databases.
 ### Large objects
 
 PostgreSQL's logical decoding facility does not support decoding changes
-to [large objects](https://www.postgresql.org/docs/current/largeobjects.html), 
-so spock cannot replicate large objects.
+to [large objects](https://www.postgresql.org/docs/current/largeobjects.html); we recommend instead using the [LOLOR extension](https://github.com/pgEdge/lolor) to manage large objects.
 
-Also any DDL limitations apply so extra care need to be taken when using
+Note that DDL limitations apply, so extra care needs to be taken when using
 `replicate_ddl_command()`.
 
-### Spock read-only support
-
-Spock supports enabling a cluster to be operated in read-only mode.
-
-The read-only status is managed only in (shared) memory with a global flag. SQL
-functions are provided to set the flag, to unset the flag and to query the flag.
-The current functionality does not allow to store the read-only status in a
-permanent way.
-
-The flag is at cluster level: either all databases are read-only or all database
-are read-write (the usual setting).
-
-The read-only mode is implemented by filtering SQL statements:
-
-- SELECT statements are allowed if they don't call functions that write.
-- DML (INSERT, UPDATE, DELETE) and DDL statements including TRUNCATE are forbidden entirely.
-- DCL statements GRANT and REVOKE are also forbidden.
-
-This means that the databases are in read-only mode at SQL level: however, the
-checkpointer, background writer, walwriter and the autovacuum launcher are still
-running; this means that the database files are not read-only and that in some
-cases the database may still write to disk.
