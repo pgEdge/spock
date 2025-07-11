@@ -32,11 +32,7 @@ You can configure some Spock extension behaviors with configuration options that
   Sets the resolution method to `last_update_wins` for any detected conflicts between local data and incoming changes - the version of data with newest commit timestamp is kept. Note that the `track_commit_timestamp` PostgreSQL setting must also be `enabled`. 
 
 - `spock.conflict_log_level`
-  Sets the log level for reporting detected conflicts. The default is `LOG`. If the parameter is set to a value lower than `log_min_messages`, resolved conflicts are not written to the server log. Accepted values are:
-
-    - the same as for the [`log_min_messages`](https://www.postgresql.org/docs/17/runtime-config-logging.html#GUC-LOG-MIN-MESSAGES) PostgreSQL parameter; the default setting is `LOG`.
-
-  This setting is used primarily to suppress logging of conflicts.  The [possible values](https://www.postgresql.org/docs/15/runtime-config-logging.html#RUNTIME-CONFIG-SEVERITY-LEVELS) are the same as for the `log_min_messages` PostgreSQL setting.
+  Sets the log level for reporting detected conflicts. The default is `LOG`. If the parameter is set to a value lower than `log_min_messages`, resolved conflicts are not written to the server log. This setting is used primarily to suppress logging of conflicts.  The [possible values](https://www.postgresql.org/docs/15/runtime-config-logging.html#RUNTIME-CONFIG-SEVERITY-LEVELS) are the same as for the `log_min_messages` PostgreSQL setting.
 
 - `spock.batch_inserts`
   Tells Spock to use a batch insert mechanism if possible. The batch mechanism uses PostgreSQL internal batch insert mode (also used by the `COPY` command).  The default is `on`.
@@ -53,12 +49,10 @@ Extended constraint violation behavior is controlled by the `spock.check_all_uc_
 * Scan all valid unique constraints (as well as the primary key and replica identity).
 * Scan non-null unique constraints (including the primary key / replica identity index) in OID order. 
 * Locate and resolve conflicting rows encountered during an `INSERT` statement.
-
-<Callout type="warning">  
+ 
 If `spock.check_all_uc_indexes` is `enabled`, Spock will resolve only the first conflict identified, using Last-Write-Wins logic. If a second conflict occurs, an exception is recorded in the `spock.resolutions` table as either `Keep-Local` or `Apply-Remote`.
 
-This feature is experimental; enable this feature at your own risk.
-</Callout>
+Note: This feature is experimental; enable this feature at your own risk.
 
 ### Handling `DELETE-RowMissing` Conflicts
 
