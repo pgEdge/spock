@@ -8,6 +8,7 @@
 - [Advanced Configuration Options](docs/guc_settings.md)
 - [Spock Functions](docs/spock_functions.md)
 - [Using Spock in Read Only Mode](docs/read_only.md)
+- [Using spockctrl management functions](docs/spockctrl.md)
 - [Limitations](docs/limitations.md)
 - [FAQ](docs/FAQ.md)
 - [Release Notes](docs/spock_release_notes.md)
