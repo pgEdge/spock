@@ -3,6 +3,7 @@
 ## Table of Contents
 - [Building the Spock Extension](README.md#building-the-spock-extension)
 - [Basic Configuration and Usage](README.md#basic-configuration-and-usage)
+- [Upgrading a Spock Installation](README.md#upgrading)
 - [Advanced Configuration Options](docs/guc_settings.md)
 - [Spock Functions](docs/spock_functions.md)
 - [Using Spock in Read Only Mode](docs/read_only.md)
@@ -87,6 +88,14 @@ Then, create the subscription which will start synchronization and replication o
     );
 
     SELECT spock.sub_wait_for_sync('subscription1');
+
+### Upgrading
+
+You cannot roll back an upgrade because of changes to the catalog tables; before starting an upgrade, make sure you have a current backup of your cluster so you can recreate the original cluster if needed.
+
+Then, to upgrade the version of Spock that you use to manage your replication cluster, you can remove, build, and upgrade the Spock extension like you would any other [PostgreSQL extension](https://www.postgresql.org/docs/17/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
+
+
 
 
 Spock is licensed under the [pgEdge Community License v1.0](PGEDGE-COMMUNITY-LICENSE.md)
