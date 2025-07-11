@@ -4,6 +4,7 @@
 - [Building the Spock Extension](README.md#building-the-spock-extension)
 - [Basic Configuration and Usage](README.md#basic-configuration-and-usage)
 - [Upgrading a Spock Installation](README.md#upgrading)
+- [Conflict Management Options](docs/conflicts.md)
 - [Advanced Configuration Options](docs/guc_settings.md)
 - [Spock Functions](docs/spock_functions.md)
 - [Using Spock in Read Only Mode](docs/read_only.md)
