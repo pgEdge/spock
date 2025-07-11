@@ -3,29 +3,25 @@
 
 In this tutorial, we'll walk you through the process of adding a fourth node to a three-node cluster.  In our example, our cluster nodes are `n1` (the source node), `n2`, `n3`, and our new node is `n4`.
 
-import {Callout} from 'nextra/components'
+* The new node should not be accessible to users while adding the node.
 
-<Callout type="warning">
-The new node should not be accessible to users while adding the node.
+* Do not modify your DDL during node addition.
 
-Do not modify your DDL during node addition.
+* All nodes in your cluster must be available to the Spock extension for the duration of the addition.
 
-All nodes in your cluster must be available to the Spock extension for the duration of the addition.
-
-If the process fails, don't immediately retry a command until you ensure that all artifacts created by the workflow have been removed!
-</Callout>
+* If the process fails, don't immediately retry a command until you ensure that all artifacts created by the workflow have been removed!
 
 If you are not using `spock.node_create` to create the new node, you will need to: 
 
 * Initialize the new node with [`initdb`](https://www.postgresql.org/docs/17/app-initdb.html).
 * Create a Postgres database.
 * Create a database user. 
-* Follow the instructions at the Github repository to build and install the [Spock extension](https://github.com/pgEdge/spock) on the database.
+* Follow the instructions at the Github repository to build and install the Spock extension on the database.
 * Add `spock` to the `shared_preload_library` parameter in the `postgresql.conf` file.
 * Restart the server to update the configuration.
 * Then, use the `CREATE EXTENSION spock` command to create the spock extension.
 
-For our example, we'll create and register a new node with the [`spock.node_create`](../spock_functions/functions/spock_node_create.md) command.  In the example:
+For our example, we'll create and register a new node with the `spock.node_create` command.  In the example:
 
 * Our sample database is named: `inventory`
 * Our database user is named: `alice`
@@ -74,8 +70,6 @@ SELECT pg_create_logical_replication_slot(
 );
 ```
 
-<Callout type="info">
-
 Always provide slot names in the form `spk_database-name_node-name_subscription-name` where:
 
 * `spk` is the prefix of the replication slot name.
@@ -83,7 +77,6 @@ Always provide slot names in the form `spk_database-name_node-name_subscription-
 * `node-name` is the name of the existing replica node.
 * `subscription-name` is the subscription name.
 
-</Callout>
 
 4. On `n4`, create a **disabled** subscription from `n3` to `n4`. We initially want all of the data on our new node (`n4`) to come from our source node (`n1`), so creating the subscription in a disabled state allows us to prepare for replication without actually moving data between nodes:
 
@@ -110,11 +103,9 @@ SELECT pg_create_logical_replication_slot(
 );
 ```
 
-<Callout type="info">
 You need to create a replication slot manually for any subscription that is created in a disabled state.  Create one disabled subscription/replication slot pair for each node in your cluster minus one (the subscription to the source node is created in an enabled state).
-</Callout>
 
-6. In the next step, we use a  [`spock.sync_event`](../spock.sync_event.mdx) to confirm transactions are caught up on our source node; we want to ensure that all of the transactions from `n3` are part of the `n1` data set:
+6. In the next step, we use a `spock.sync_event` to confirm transactions are caught up on our source node; we want to ensure that all of the transactions from `n3` are part of the `n1` data set:
 
 On `n3`:
 
@@ -132,7 +123,7 @@ Use the returned value of the sync event when querying the source node; for exam
 CALL spock.wait_for_sync_event(true, 'n3', '0/19F8A58'::pg_lsn, 1200000)
 ```
 
-7. Next, use a [`spock.sync_event`](../spock.sync_event.mdx) to confirm transactions from `n2` are caught up on our provider node: 
+7. Next, use a `spock.sync_event` to confirm transactions from `n2` are caught up on our provider node: 
 
 On `n2`:
 
@@ -151,9 +142,7 @@ Use the value returned by `spock.sync_event` in the next call to `spock.wait_for
 CALL spock.wait_for_sync_event(true, 'n2', '0/1A67F40'::pg_lsn, 1200000)
 ```
 
-<Callout type ="info">
 Repeat the sync_event and wait_for_sync_event commands between each replica node in your cluster and the source node to ensure that all data is moved to the source node.
-</Callout>
 
 8. Then, to start moving data from our source node (`n1`) to our new node (`n4`), we create an **enabled** subscription named (`sub_n1_n4`) on `n4`:
 
@@ -191,11 +180,9 @@ Use the value returned by `spock.sync_event` in the call to `spock.wait_for_sync
 CALL spock.wait_for_sync_event(true, 'n4', '0/1A7D1E0'::pg_lsn, 1200000)
 ```
 
-<Callout type="info">
 The last argument in the `spock.wait_for_sync_event` command specifies a timeout value (in our example, 1200000 ms.). You can adjust the timeout to meet your network requirements.
-</Callout>
 
-10. Then, on `n4` we check  the [`spock.lag_tracker`](../lag_tracking.mdx) to confirm that all of the content from `n1` has been replicated:
+10. Then, on `n4` we check  the `spock.lag_tracker` to confirm that all of the content from `n1` has been replicated:
 
 ```sql
 SELECT commit_timestamp FROM spock.lag_tracker WHERE origin_name = 'n1' AND receiver_name = 'n4'
@@ -207,7 +194,7 @@ On `n1`, we check for the last LSN that was received; that transaction should al
 WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_inventory_n1_sub_n1_n4', '$n1.commit_timestamp'::timestamp) AS lsn) SELECT pg_replication_slot_advance('spk_inventory_n1_sub_n1_n4', lsn) FROM lsn_cte
 ```
 
-11. On `n1`, [create a subscription](../spock_functions/functions/spock_sub_create.md) (named `sub_n4_n1`) between `n4` and `n1`.  This step prepares our new node to stream transactions received on `n4` to `n1`:  
+11. On `n1`, create a subscription (named `sub_n4_n1`) between `n4` and `n1`.  This step prepares our new node to stream transactions received on `n4` to `n1`:  
 
 ```sql
     SELECT spock.sub_create(
@@ -255,9 +242,7 @@ WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_inventory_n1_sub_n1_n4
     );
 ```
 
-<Callout type="info">
 You need to create a new subscription with the new node as a provider and a pre-existing node as the subscriber for each node in your replication cluster (including the source node).
-</Callout>
 
 14. Then, on `n4`, we enable the subscription on `n2`; this allows any transactions buffered on `n2` (that came in during the node addition) to replicate to `n4`:
 
@@ -277,9 +262,7 @@ SELECT spock.sub_enable(
 );
 ```
 
-<Callout type="info">
 Enable the disabled subscriptions between the new node and each replica node in your cluster except the source node; when creating the subscription for the source node, it is already in an enabled state. 
-</Callout>
 
 16. Finally, on `n4`, we can use a SQL command to verify that [replication lag](../lag_tracking.mdx) is at an acceptable level on all nodes:
 
