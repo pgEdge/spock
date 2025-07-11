@@ -1,4 +1,4 @@
-### Advanced Configuration Options for Spock
+## Advanced Configuration Options for Spock
 
 You can use the following configuration parameters (GUCs) on the psql command line with a `SET` statement or in a PostgreSQL configuration file (like `postgresql.conf`) to configure a Spock installation.
 
