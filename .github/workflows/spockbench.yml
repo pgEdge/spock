@@ -1,7 +1,6 @@
 name: Regression Tests and Spockbench
 run-name: Running Regression Tests and Spockbench
 on:
-  push:
   pull_request:
     types: [opened, synchronize, reopened]
 
