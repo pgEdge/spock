@@ -7,6 +7,7 @@
 - [Using Batch Inserts](features.md#using-batch-inserts)
 - [Filtering](features.md#filtering)
 - [Using Spock with Snowflake Sequences](features.md#using-spock-with-snowflake-sequences)
+- [Managing Large Objects for Logical Replication](features.md#managing-large-objects-for-logical-replication)
 - [Using Spock in Read-Only Mode](features.md#using-spock-in-read-only-mode)
 - [Using a Trigger to Assign Tables to Replication Sets](features.md#automatically-assigning-tables-to-replication-sets)
 - [Lag Tracking](features.md#lag-tracking)
@@ -196,6 +197,23 @@ The Spock extension includes the following functions to help you manage Snowflak
 
 * spock.convert_sequence_to_snowflake
 * spock.convert_column_to_int8
+
+
+## Managing Large Objects for Logical Replication
+
+[lolor](https://github.com/pgEdge/lolor) is a Postgres extension that makes PostgreSQL style Large Objects compatible with Logical Replication.
+
+PostgreSQL supports large objects as related chunks as described in the pg_largeobject table. Large objects provide stream-style access to user data stored in a special large-object structure in the catalog. Large objects stored in catalog tables require special handling during replication; the lolor extension allows for the storage of large objects in non-catalog tables, aiding in replication of large objects.
+
+lolor creates and manages the following large object related tables in the lolor schema:
+
+- lolor.pg_largeobject
+- lolor.pg_largeobject_metadata
+
+PostgreSQL large objects allow for the storage of large files within the database. Each large object is recognised by an OID that is assigned at the time of its creation. lolor stores objects in smaller segments within a separate system table and generates associated OIDs for large objects that are distinct from those of native large objects.
+
+Use of the lolor extension requires PostgreSQL 16 or newer.
+
 
 ## Using Spock in Read-Only Mode
 
