@@ -7,6 +7,7 @@
 - [Using Batch Inserts](features.md#using-batch-inserts)
 - [Filtering](features.md#filtering)
 - [Using Spock with Snowflake Sequences](features.md#using-spock-with-snowflake-sequences)
+- [Using Spock in Read-Only Mode](features.md#using-spock-in-read-only-mode)
 
 The Spock extension is designed to support the following use cases:
 
@@ -59,20 +60,21 @@ During the auto replication process, spock generates messages that provide infor
 
 ## Replicating Partitioned Tables
 
-You can use Spock to replicate partitioned tables; by default, when adding a partitioned table to a replication set, it will include all of its current partitions. If you add partitions later, you will need to use the `spock.partition_add` function to add them to your replication sets. The DDL for the partitioned table and partitions must be present on the subscriber nodes (like a non-partitioned table).
+By default, when you add a partitioned table to a Spock replication set, Spock will include all the current partitions of a partitioned table. If you partition a table, or add partitions to a partitioned table at a later date, you will need to use the `spock.repset_add_partition` function to add them to your replication sets. The DDL for the partitioned table and partitions must reside on the subscriber nodes (like a non-partitioned table).
 
-When you remove a partitioned table from a replication set, by default, the partitions of the table will also be removed.
+When you remove a partitioned table from a replication set, by default, the partitions of the table will also be removed.  You should use `spock.repset_remove_partition` to update the cluster's meta-data.
 
-Replication of partitioned tables is a bit different from normal tables. When doing initial synchronization, we query the partitioned table (or parent) to get all the rows for synchronization purposes and don't synchronize the individual partitions. After the initial sync of data, the normal operations resume and the partitions start replicating like normal tables.
+Replication of partitioned tables is a bit different from normal tables. During an initial synchronization, we query the partitioned table (or parent) to get all the rows for synchronization purposes and don't synchronize the individual partitions. After the initial sync of data, the normal operations resume and the partitions start replicating like normal tables.
 
-If you add individual partitions to the replication set, they will be replicated like regular tables (to the table of the same name as the partition on the subscriber). This has performance advantages when the partitioning definition is the same on both provider and subscriber, as the partitioning logic does not have to be executed.
+If you add individual partitions to a replication set, they will be replicated like regular tables (to the table of the same name as the partition on each subscriber). This has performance advantages if your partitioning definition is the same on both provider and subscriber, as the partitioning logic does not have to be executed with each sync.
 
-**Note:** There is an exception to individual partition replication: individual partitions won't sync up the existing data. It's equivalent to setting `synchronize_data = false`.
+During the initial cluster setup and sync, table partitions are not synced directly. Instead, the parent table is synced with the source with data from all partitions, and the partitions are populated properly on the destination preserving the table structure. This partitioning behavior is equivalent to setting `synchronize_data = false` for individual partitions during the initial sync.
 
-When partitions are replicated through a partitioned table, the exception is the `TRUNCATE` command which always replicates with the list of affected tables or partitions.
+When setup completes (after the initial sync), both the parent table and partitions are monitored for modifications, and changes are replicated as they are made.
 
-Additionally, `row_filter` can also be used with partitioned tables, as well as with individual partitions.
+When partitions are replicated through a partitioned table, `TRUNCATE` commands alway replicate to the complete list of affected tables or partitions.
 
+You can use a `row_filter` clause with a partitioned table, as well as with individual partitions.
 
 ## Conflict-Free Delta-Apply Columns (Conflict Avoidance)
 
@@ -117,17 +119,9 @@ You can configure some aspects of Spock using configuration options in either `p
 
 ## Using Batch Inserts
 
-Using batch inserts improves replication performance for transactions that perform multiple
-inserts into a single table. Spock switches to batch mode when a transaction does 
-more than five `INSERT`s.
+Using batch inserts improves replication performance for transactions that perform multiple inserts into a single table. To enable batch mode, modify the `spock.batch_inserts` parameter, setting it to `true` and `spock.conflict_resolution` parameter, setting it to `error`.  Once enabled, Spock will switch to batch mode when a transaction does more than five `INSERT`s.
 
-- `spock.batch_inserts`
-  Tells Spock to use a batch insert mechanism if possible. The batch mechanism uses the PostgreSQL internal batch insert mode which is also used by `COPY` command.
-
-You can only use batch mode if there are no `INSTEAD OF INSERT` and `BEFORE INSERT` 
-triggers on the table and when there are no defaults with volatile expressions for 
-columns of the table. Also the batch mode will only work when `spock.conflict_resolution` 
-is set to `error`. The default value of `spock.conflict_resolution` is `true`.
+**Note:** You can only use batch mode if there are no `INSTEAD OF INSERT` and `BEFORE INSERT` triggers on the table, and when there are no defaults with volatile expressions for columns of the table. 
 
 
 ## Filtering
@@ -167,3 +161,53 @@ The Spock extension includes the following functions to help you manage Snowflak
 
 * spock.convert_sequence_to_snowflake
 * spock.convert_column_to_int8
+
+## Using Spock in Read-Only Mode
+
+Spock supports operating a cluster in read-only mode.  Read-only status is managed using a GUC (Grand Unified Configuration) parameter named `spock.readonly`. This parameter can be set to enable or disable the read-only mode. Read-only mode restricts non-superusers to read-only operations, while superusers can still perform both read and write operations regardless of the setting.
+
+The flag is at cluster level: either all databases are read-only or all databases
+are read-write (the usual setting).
+
+Read-only mode is implemented by filtering SQL statements:
+
+- `SELECT` statements are allowed if they don't call functions that write.
+- DML (`INSERT`, `UPDATE`, `DELETE`) and DDL statements including `TRUNCATE` are 
+  forbidden entirely.
+- DCL statements `GRANT` and `REVOKE` are also forbidden.
+
+This means that the databases are in read-only mode at SQL level: however, the
+checkpointer, background writer, walwriter, and the autovacuum launcher are still
+running. This means that the database files are not read-only and that in some
+cases the database may still write to disk.
+
+#### Setting Read-Only Mode
+
+You can control read-only mode with the Spock parameter `spock.readonly`; only a superuser can modify this setting. When the cluster is set to read-only mode, non-superusers will be restricted to read-only operations, while superusers will still be able to perform read and write operations regardless of the setting.
+
+This value can be changed using the `ALTER SYSTEM` command.
+
+```sql
+ALTER SYSTEM SET spock.readonly = 'on';
+SELECT pg_reload_conf();
+```
+
+To set the cluster to read-only mode for a session, use the `SET` command. Here are the steps:
+
+```sql
+SET spock.readonly TO on;
+```
+
+To query the current status of the cluster, you can use the following SQL command:
+  
+```sql
+SHOW spock.readonly;
+```
+
+This command will return on if the cluster is in read-only mode and off if it is not.
+
+Notes:
+ - Only superusers can set and unset the `spock.readonly` parameter.
+ - When the cluster is in read-only mode, only non-superusers are restricted to read-only operations. Superusers can continue to perform both read and write operations.
+ - By using a GUC parameter, you can easily manage the cluster's read-only status through standard PostgreSQL configuration mechanisms.
+
