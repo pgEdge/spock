@@ -1,5 +1,5 @@
 
-# Tutorial - Manually Adding a Node to a Cluster with Zero Downtime
+## Manually Adding a Node to a Cluster with Zero Downtime
 
 In this tutorial, we'll walk you through the process of adding a fourth node to a three-node cluster.  In our example, our cluster nodes are `n1` (the source node), `n2`, `n3`, and our new node is `n4`.
 
@@ -210,7 +210,7 @@ WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_inventory_n1_sub_n1_n4
     );
 ```
 
-12. On `n2`, [create a subscription](../spock_functions/functions/spock_sub_create.md) (named `sub_n4_n2`) between `n4` and `n2`.  This step prepares our new node to stream transactions received on `n4` to `n2`:  
+12. On `n2`, create a subscription (named `sub_n4_n2`) between `n4` and `n2`.  This step prepares our new node to stream transactions received on `n4` to `n2`:  
 
 ```sql
     SELECT spock.sub_create(
@@ -226,7 +226,7 @@ WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_inventory_n1_sub_n1_n4
     );
 ```
 
-13. On `n3`, [create a subscription](../spock_functions/functions/spock_sub_create.md) (named `sub_n4_n3`) between `n4` and `n3`. This step prepares our new node to stream transactions received on `n4` to `n3`: 
+13. On `n3`, create a subscription (named `sub_n4_n3`) between `n4` and `n3`. This step prepares our new node to stream transactions received on `n4` to `n3`: 
 
 ```sql
     SELECT spock.sub_create(
@@ -264,7 +264,7 @@ SELECT spock.sub_enable(
 
 Enable the disabled subscriptions between the new node and each replica node in your cluster except the source node; when creating the subscription for the source node, it is already in an enabled state. 
 
-16. Finally, on `n4`, we can use a SQL command to verify that [replication lag](../lag_tracking.mdx) is at an acceptable level on all nodes:
+16. Finally, on `n4`, we can use a SQL command to verify that [replication lag](features.md) is at an acceptable level on all nodes:
 
 ``` sql
 DO $$
@@ -302,5 +302,5 @@ DO $$
     $$;
 ```
 
-In the clause: `extract(epoch FROM lag_n1_n4) < 59`, 59 represents a 59 second timeout; you can adjust this value for your environment.  This step is optional.  You can always check your [replication lag](../monitoring/lag_tracking.mdx) to confirm that it is at an acceptable lag level and adjust your resources as needed. 
+In the clause: `extract(epoch FROM lag_n1_n4) < 59`, 59 represents a 59 second timeout; you can adjust this value for your environment.  This step is optional.  You can always check your [replication lag](features.md) to confirm that it is at an acceptable lag level and adjust your resources as needed. 
 
