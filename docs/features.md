@@ -10,7 +10,7 @@
 - [Using Spock in Read-Only Mode](features.md#using-spock-in-read-only-mode)
 - [Using a Trigger to Assign Tables to Replication Sets](features.md#automatically-assigning-tables-to-replication-sets)
 - [Lag Tracking](features.md#lag-tracking)
-- [Using spock.sync_event to Confirm Synchronization](features.md#using-spock-sync-event-to-confirm-synchronization)
+- [Using spock.sync_event to Confirm Synchronization](features.md#using-spock.sync_event-to-confirm-synchronization)
 
 
 The Spock extension is designed to support the following use cases:
