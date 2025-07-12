@@ -33,7 +33,7 @@ You can have additional unique constraints upstream if the downstream consumer g
 
 Partial secondary unique indexes are permitted, but will be ignored for conflict resolution purposes.
 
-`spock.check_all_uc_indexes` is an experimental GUC that adds `INSERT` conflict resolution by allowing Spock to consider all unique constraints, not just the primary key or replica identity. [For more information, visit](docs/guc_settings.md).
+`spock.check_all_uc_indexes` is an experimental GUC that adds `INSERT` conflict resolution by allowing Spock to consider all unique constraints, not just the primary key or replica identity. [For more information, visit](guc_settings.md).
 
 ### Unique constraints must not be deferrable
 
@@ -86,7 +86,7 @@ not replicated to the replica.
 
 ### Sequences
 
-We strongly recommend that you use pgEdge [Snowflake Sequences](docs/features.md) rather
+We strongly recommend that you use pgEdge [Snowflake Sequences](features.md) rather
 than using the legacy sequences described below.
 
 The state of sequences added to replication sets is replicated periodically
@@ -138,7 +138,7 @@ encoding. We recommend using `UTF-8` encoding in all replicated databases.
 ### Large objects
 
 PostgreSQL's logical decoding facility does not support decoding changes
-to [large objects](https://www.postgresql.org/docs/current/largeobjects.html); we recommend instead using the [LOLOR extension](docs/features.md) to manage large objects.
+to [large objects](https://www.postgresql.org/docs/current/largeobjects.html); we recommend instead using the [LOLOR extension](features.md) to manage large objects.
 
 Note that DDL limitations apply, so extra care needs to be taken when using
 `replicate_ddl_command()`.
