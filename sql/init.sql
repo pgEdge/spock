@@ -96,3 +96,76 @@ SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', '
 \c :provider_dsn
 SELECT plugin, slot_type, active FROM pg_replication_slots;
 SELECT count(*) FROM pg_stat_replication;
+
+CREATE OR REPLACE FUNCTION fetch_last_xid(action char DEFAULT 'U')
+RETURNS xid
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    remote_xid xid;
+    i INTEGER;
+    slot TEXT;
+BEGIN
+    -- Wait up to 10 seconds (100 x 0.1s) for an inactive slot
+    FOR i IN 1..100 LOOP
+        IF EXISTS (SELECT 1 FROM pg_replication_slots WHERE active = false) THEN
+            EXIT;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+
+    -- Get slot name
+    SELECT slot_name INTO slot FROM pg_replication_slots LIMIT 1;
+
+    -- Fetch the remote xid of last UPDATE ('U') action
+    SELECT xid
+    INTO remote_xid
+    FROM pg_logical_slot_peek_changes(
+            slot,
+            NULL,
+            10,
+            'min_proto_version', '3',
+            'max_proto_version', '4',
+            'startup_params_format', '1',
+            'proto_format', 'json',
+            'spock.replication_set_names', 'default,ddl_sql'
+        ) AS changes(lsn, xid, data)
+    WHERE data IS NOT NULL
+      AND data <> ''
+      AND data::json->>'action' = action
+    LIMIT 1;
+
+    RETURN remote_xid;
+END;
+$$;
+
+\c :subscriber_dsn
+CREATE OR REPLACE FUNCTION skiplsn_and_enable_sub(
+    sub_name text,
+    p_remote_xid bigint
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    skiplsn text;
+BEGIN
+    -- Extract skip_lsn from exception_log
+    SELECT quote_literal((regexp_match(error_message, 'skip_lsn = ([0-9A-F/]+)'))[1])
+    INTO skiplsn
+    FROM spock.exception_log
+    WHERE remote_xid = p_remote_xid
+      AND operation = 'SUB_DISABLE'
+    LIMIT 1;
+
+    IF skiplsn IS NULL THEN
+        RAISE EXCEPTION 'skip_lsn not found for remote_xid = %', p_remote_xid;
+    END IF;
+
+    -- Alter subscription to skip the problematic LSN
+    EXECUTE format('SELECT spock.sub_alter_skiplsn(%L, %s)', sub_name, skiplsn);
+
+    -- Re-enable the subscription
+    EXECUTE format('SELECT spock.sub_enable(%L, true)', sub_name);
+END;
+$$;
