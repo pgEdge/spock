@@ -191,7 +191,7 @@ SELECT commit_timestamp FROM spock.lag_tracker WHERE origin_name = 'n1' AND rece
 On `n1`, we check for the last LSN that was received; that transaction should also be present on `n4`:
 
 ```sql
-WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_inventory_n1_sub_n1_n4', '$n1.commit_timestamp'::timestamp) AS lsn) SELECT pg_replication_slot_advance('spk_inventory_n1_sub_n1_n4', lsn) FROM lsn_cte
+WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_inventory_n1_sub_n1_n4', '$n4.commit_timestamp'::timestamp) AS lsn) SELECT pg_replication_slot_advance('spk_inventory_n1_sub_n1_n4', lsn) FROM lsn_cte
 ```
 
 11. On `n1`, create a subscription (named `sub_n4_n1`) between `n4` and `n1`.  This step prepares our new node to stream transactions received on `n4` to `n1`:  
