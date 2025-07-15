@@ -57,8 +57,8 @@ clean-all: clean
 	find . \( -name '*~' -o -name '*.o' -o -name 'spockctrl' -o -name '*.log' -o -name '*.tmp' \) -exec rm -f {} +
 
 install:
-	install -d $(PG_BINDIR)
-	install -m 0755 $(EXEC) $(PG_BINDIR)/
+	install -d $(DESTDIR)$(PG_BINDIR)
+	install -m 0755 $(EXEC) $(DESTDIR)$(PG_BINDIR)/
 	install -d $(DESTDIR)$(SPOCK_DIR)
 	install -d $(DESTDIR)$(SPOCK_DIR)/workflows/
 	find . -type f -name '*.json' ! -name 'spockctrl.json' -exec install -m 644 {} $(DESTDIR)$(SPOCK_DIR)/workflows/ \;
