@@ -1,6 +1,9 @@
 name: Regression Tests and Spockbench
 run-name: Running Regression Tests and Spockbench
-on: [push]
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
 
 permissions:
   contents: read
@@ -43,8 +46,8 @@ jobs:
 
       - name: Build docker container
         run: |
-          cd ${GITHUB_WORKSPACE}/tests/
-          echo PG_VER=${{ matrix.pgver }} >> pgedge.env
+          cd ${GITHUB_WORKSPACE}/
+          echo PG_VER=${{ matrix.pgver }} >> tests/pgedge.env
           docker build \
             --build-arg PGVER=${{ matrix.pgver }} \
             --build-arg GITHUB_REF=${{ github.ref_name }} \
