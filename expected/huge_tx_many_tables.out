@@ -67,7 +67,7 @@ SELECT * FROM create_many_tables(1,200);
 
 SELECT * FROM add_many_tables_to_replication_set(1,200);
  add_many_tables_to_replication_set 
----------------------------
+------------------------------------
  
 (1 row)
 
@@ -98,216 +98,209 @@ SELECT count(*) FROM public.HUGE2;
  100000
 (1 row)
 
-\dtS+ public.HUGE2;
-                     List of relations
- Schema | Name  | Type  |  Owner   |  Size   | Description 
---------+-------+-------+----------+---------+-------------
- public | huge2 | table | postgres | 5128 kB | 
-(1 row)
-
 \c :provider_dsn
 \set VERBOSITY terse
 SELECT * FROM drop_many_tables(1,200);
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
+NOTICE:  drop cascades to table public.huge1 membership in replication set default
+NOTICE:  drop cascades to table public.huge2 membership in replication set default
+NOTICE:  drop cascades to table public.huge3 membership in replication set default
+NOTICE:  drop cascades to table public.huge4 membership in replication set default
+NOTICE:  drop cascades to table public.huge5 membership in replication set default
+NOTICE:  drop cascades to table public.huge6 membership in replication set default
+NOTICE:  drop cascades to table public.huge7 membership in replication set default
+NOTICE:  drop cascades to table public.huge8 membership in replication set default
+NOTICE:  drop cascades to table public.huge9 membership in replication set default
+NOTICE:  drop cascades to table public.huge10 membership in replication set default
+NOTICE:  drop cascades to table public.huge11 membership in replication set default
+NOTICE:  drop cascades to table public.huge12 membership in replication set default
+NOTICE:  drop cascades to table public.huge13 membership in replication set default
+NOTICE:  drop cascades to table public.huge14 membership in replication set default
+NOTICE:  drop cascades to table public.huge15 membership in replication set default
+NOTICE:  drop cascades to table public.huge16 membership in replication set default
+NOTICE:  drop cascades to table public.huge17 membership in replication set default
+NOTICE:  drop cascades to table public.huge18 membership in replication set default
+NOTICE:  drop cascades to table public.huge19 membership in replication set default
+NOTICE:  drop cascades to table public.huge20 membership in replication set default
+NOTICE:  drop cascades to table public.huge21 membership in replication set default
+NOTICE:  drop cascades to table public.huge22 membership in replication set default
+NOTICE:  drop cascades to table public.huge23 membership in replication set default
+NOTICE:  drop cascades to table public.huge24 membership in replication set default
+NOTICE:  drop cascades to table public.huge25 membership in replication set default
+NOTICE:  drop cascades to table public.huge26 membership in replication set default
+NOTICE:  drop cascades to table public.huge27 membership in replication set default
+NOTICE:  drop cascades to table public.huge28 membership in replication set default
+NOTICE:  drop cascades to table public.huge29 membership in replication set default
+NOTICE:  drop cascades to table public.huge30 membership in replication set default
+NOTICE:  drop cascades to table public.huge31 membership in replication set default
+NOTICE:  drop cascades to table public.huge32 membership in replication set default
+NOTICE:  drop cascades to table public.huge33 membership in replication set default
+NOTICE:  drop cascades to table public.huge34 membership in replication set default
+NOTICE:  drop cascades to table public.huge35 membership in replication set default
+NOTICE:  drop cascades to table public.huge36 membership in replication set default
+NOTICE:  drop cascades to table public.huge37 membership in replication set default
+NOTICE:  drop cascades to table public.huge38 membership in replication set default
+NOTICE:  drop cascades to table public.huge39 membership in replication set default
+NOTICE:  drop cascades to table public.huge40 membership in replication set default
+NOTICE:  drop cascades to table public.huge41 membership in replication set default
+NOTICE:  drop cascades to table public.huge42 membership in replication set default
+NOTICE:  drop cascades to table public.huge43 membership in replication set default
+NOTICE:  drop cascades to table public.huge44 membership in replication set default
+NOTICE:  drop cascades to table public.huge45 membership in replication set default
+NOTICE:  drop cascades to table public.huge46 membership in replication set default
+NOTICE:  drop cascades to table public.huge47 membership in replication set default
+NOTICE:  drop cascades to table public.huge48 membership in replication set default
+NOTICE:  drop cascades to table public.huge49 membership in replication set default
+NOTICE:  drop cascades to table public.huge50 membership in replication set default
+NOTICE:  drop cascades to table public.huge51 membership in replication set default
+NOTICE:  drop cascades to table public.huge52 membership in replication set default
+NOTICE:  drop cascades to table public.huge53 membership in replication set default
+NOTICE:  drop cascades to table public.huge54 membership in replication set default
+NOTICE:  drop cascades to table public.huge55 membership in replication set default
+NOTICE:  drop cascades to table public.huge56 membership in replication set default
+NOTICE:  drop cascades to table public.huge57 membership in replication set default
+NOTICE:  drop cascades to table public.huge58 membership in replication set default
+NOTICE:  drop cascades to table public.huge59 membership in replication set default
+NOTICE:  drop cascades to table public.huge60 membership in replication set default
+NOTICE:  drop cascades to table public.huge61 membership in replication set default
+NOTICE:  drop cascades to table public.huge62 membership in replication set default
+NOTICE:  drop cascades to table public.huge63 membership in replication set default
+NOTICE:  drop cascades to table public.huge64 membership in replication set default
+NOTICE:  drop cascades to table public.huge65 membership in replication set default
+NOTICE:  drop cascades to table public.huge66 membership in replication set default
+NOTICE:  drop cascades to table public.huge67 membership in replication set default
+NOTICE:  drop cascades to table public.huge68 membership in replication set default
+NOTICE:  drop cascades to table public.huge69 membership in replication set default
+NOTICE:  drop cascades to table public.huge70 membership in replication set default
+NOTICE:  drop cascades to table public.huge71 membership in replication set default
+NOTICE:  drop cascades to table public.huge72 membership in replication set default
+NOTICE:  drop cascades to table public.huge73 membership in replication set default
+NOTICE:  drop cascades to table public.huge74 membership in replication set default
+NOTICE:  drop cascades to table public.huge75 membership in replication set default
+NOTICE:  drop cascades to table public.huge76 membership in replication set default
+NOTICE:  drop cascades to table public.huge77 membership in replication set default
+NOTICE:  drop cascades to table public.huge78 membership in replication set default
+NOTICE:  drop cascades to table public.huge79 membership in replication set default
+NOTICE:  drop cascades to table public.huge80 membership in replication set default
+NOTICE:  drop cascades to table public.huge81 membership in replication set default
+NOTICE:  drop cascades to table public.huge82 membership in replication set default
+NOTICE:  drop cascades to table public.huge83 membership in replication set default
+NOTICE:  drop cascades to table public.huge84 membership in replication set default
+NOTICE:  drop cascades to table public.huge85 membership in replication set default
+NOTICE:  drop cascades to table public.huge86 membership in replication set default
+NOTICE:  drop cascades to table public.huge87 membership in replication set default
+NOTICE:  drop cascades to table public.huge88 membership in replication set default
+NOTICE:  drop cascades to table public.huge89 membership in replication set default
+NOTICE:  drop cascades to table public.huge90 membership in replication set default
+NOTICE:  drop cascades to table public.huge91 membership in replication set default
+NOTICE:  drop cascades to table public.huge92 membership in replication set default
+NOTICE:  drop cascades to table public.huge93 membership in replication set default
+NOTICE:  drop cascades to table public.huge94 membership in replication set default
+NOTICE:  drop cascades to table public.huge95 membership in replication set default
+NOTICE:  drop cascades to table public.huge96 membership in replication set default
+NOTICE:  drop cascades to table public.huge97 membership in replication set default
+NOTICE:  drop cascades to table public.huge98 membership in replication set default
+NOTICE:  drop cascades to table public.huge99 membership in replication set default
+NOTICE:  drop cascades to table public.huge100 membership in replication set default
+NOTICE:  drop cascades to table public.huge101 membership in replication set default
+NOTICE:  drop cascades to table public.huge102 membership in replication set default
+NOTICE:  drop cascades to table public.huge103 membership in replication set default
+NOTICE:  drop cascades to table public.huge104 membership in replication set default
+NOTICE:  drop cascades to table public.huge105 membership in replication set default
+NOTICE:  drop cascades to table public.huge106 membership in replication set default
+NOTICE:  drop cascades to table public.huge107 membership in replication set default
+NOTICE:  drop cascades to table public.huge108 membership in replication set default
+NOTICE:  drop cascades to table public.huge109 membership in replication set default
+NOTICE:  drop cascades to table public.huge110 membership in replication set default
+NOTICE:  drop cascades to table public.huge111 membership in replication set default
+NOTICE:  drop cascades to table public.huge112 membership in replication set default
+NOTICE:  drop cascades to table public.huge113 membership in replication set default
+NOTICE:  drop cascades to table public.huge114 membership in replication set default
+NOTICE:  drop cascades to table public.huge115 membership in replication set default
+NOTICE:  drop cascades to table public.huge116 membership in replication set default
+NOTICE:  drop cascades to table public.huge117 membership in replication set default
+NOTICE:  drop cascades to table public.huge118 membership in replication set default
+NOTICE:  drop cascades to table public.huge119 membership in replication set default
+NOTICE:  drop cascades to table public.huge120 membership in replication set default
+NOTICE:  drop cascades to table public.huge121 membership in replication set default
+NOTICE:  drop cascades to table public.huge122 membership in replication set default
+NOTICE:  drop cascades to table public.huge123 membership in replication set default
+NOTICE:  drop cascades to table public.huge124 membership in replication set default
+NOTICE:  drop cascades to table public.huge125 membership in replication set default
+NOTICE:  drop cascades to table public.huge126 membership in replication set default
+NOTICE:  drop cascades to table public.huge127 membership in replication set default
+NOTICE:  drop cascades to table public.huge128 membership in replication set default
+NOTICE:  drop cascades to table public.huge129 membership in replication set default
+NOTICE:  drop cascades to table public.huge130 membership in replication set default
+NOTICE:  drop cascades to table public.huge131 membership in replication set default
+NOTICE:  drop cascades to table public.huge132 membership in replication set default
+NOTICE:  drop cascades to table public.huge133 membership in replication set default
+NOTICE:  drop cascades to table public.huge134 membership in replication set default
+NOTICE:  drop cascades to table public.huge135 membership in replication set default
+NOTICE:  drop cascades to table public.huge136 membership in replication set default
+NOTICE:  drop cascades to table public.huge137 membership in replication set default
+NOTICE:  drop cascades to table public.huge138 membership in replication set default
+NOTICE:  drop cascades to table public.huge139 membership in replication set default
+NOTICE:  drop cascades to table public.huge140 membership in replication set default
+NOTICE:  drop cascades to table public.huge141 membership in replication set default
+NOTICE:  drop cascades to table public.huge142 membership in replication set default
+NOTICE:  drop cascades to table public.huge143 membership in replication set default
+NOTICE:  drop cascades to table public.huge144 membership in replication set default
+NOTICE:  drop cascades to table public.huge145 membership in replication set default
+NOTICE:  drop cascades to table public.huge146 membership in replication set default
+NOTICE:  drop cascades to table public.huge147 membership in replication set default
+NOTICE:  drop cascades to table public.huge148 membership in replication set default
+NOTICE:  drop cascades to table public.huge149 membership in replication set default
+NOTICE:  drop cascades to table public.huge150 membership in replication set default
+NOTICE:  drop cascades to table public.huge151 membership in replication set default
+NOTICE:  drop cascades to table public.huge152 membership in replication set default
+NOTICE:  drop cascades to table public.huge153 membership in replication set default
+NOTICE:  drop cascades to table public.huge154 membership in replication set default
+NOTICE:  drop cascades to table public.huge155 membership in replication set default
+NOTICE:  drop cascades to table public.huge156 membership in replication set default
+NOTICE:  drop cascades to table public.huge157 membership in replication set default
+NOTICE:  drop cascades to table public.huge158 membership in replication set default
+NOTICE:  drop cascades to table public.huge159 membership in replication set default
+NOTICE:  drop cascades to table public.huge160 membership in replication set default
+NOTICE:  drop cascades to table public.huge161 membership in replication set default
+NOTICE:  drop cascades to table public.huge162 membership in replication set default
+NOTICE:  drop cascades to table public.huge163 membership in replication set default
+NOTICE:  drop cascades to table public.huge164 membership in replication set default
+NOTICE:  drop cascades to table public.huge165 membership in replication set default
+NOTICE:  drop cascades to table public.huge166 membership in replication set default
+NOTICE:  drop cascades to table public.huge167 membership in replication set default
+NOTICE:  drop cascades to table public.huge168 membership in replication set default
+NOTICE:  drop cascades to table public.huge169 membership in replication set default
+NOTICE:  drop cascades to table public.huge170 membership in replication set default
+NOTICE:  drop cascades to table public.huge171 membership in replication set default
+NOTICE:  drop cascades to table public.huge172 membership in replication set default
+NOTICE:  drop cascades to table public.huge173 membership in replication set default
+NOTICE:  drop cascades to table public.huge174 membership in replication set default
+NOTICE:  drop cascades to table public.huge175 membership in replication set default
+NOTICE:  drop cascades to table public.huge176 membership in replication set default
+NOTICE:  drop cascades to table public.huge177 membership in replication set default
+NOTICE:  drop cascades to table public.huge178 membership in replication set default
+NOTICE:  drop cascades to table public.huge179 membership in replication set default
+NOTICE:  drop cascades to table public.huge180 membership in replication set default
+NOTICE:  drop cascades to table public.huge181 membership in replication set default
+NOTICE:  drop cascades to table public.huge182 membership in replication set default
+NOTICE:  drop cascades to table public.huge183 membership in replication set default
+NOTICE:  drop cascades to table public.huge184 membership in replication set default
+NOTICE:  drop cascades to table public.huge185 membership in replication set default
+NOTICE:  drop cascades to table public.huge186 membership in replication set default
+NOTICE:  drop cascades to table public.huge187 membership in replication set default
+NOTICE:  drop cascades to table public.huge188 membership in replication set default
+NOTICE:  drop cascades to table public.huge189 membership in replication set default
+NOTICE:  drop cascades to table public.huge190 membership in replication set default
+NOTICE:  drop cascades to table public.huge191 membership in replication set default
+NOTICE:  drop cascades to table public.huge192 membership in replication set default
+NOTICE:  drop cascades to table public.huge193 membership in replication set default
+NOTICE:  drop cascades to table public.huge194 membership in replication set default
+NOTICE:  drop cascades to table public.huge195 membership in replication set default
+NOTICE:  drop cascades to table public.huge196 membership in replication set default
+NOTICE:  drop cascades to table public.huge197 membership in replication set default
+NOTICE:  drop cascades to table public.huge198 membership in replication set default
+NOTICE:  drop cascades to table public.huge199 membership in replication set default
+NOTICE:  drop cascades to table public.huge200 membership in replication set default
  drop_many_tables 
 ------------------
  
@@ -329,7 +322,7 @@ SELECT * FROM create_many_tables(1,200);
 
 SELECT * FROM add_many_tables_to_replication_set(1,200);
  add_many_tables_to_replication_set 
----------------------------
+------------------------------------
  
 (1 row)
 
@@ -353,216 +346,209 @@ SELECT count(*) FROM public.HUGE2;
  100000
 (1 row)
 
-\dtS+ public.HUGE2;
-                     List of relations
- Schema | Name  | Type  |  Owner   |  Size   | Description 
---------+-------+-------+----------+---------+-------------
- public | huge2 | table | postgres | 5128 kB | 
-(1 row)
-
 \c :provider_dsn
 \set VERBOSITY terse
 SELECT * FROM drop_many_tables(1,200);
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
+NOTICE:  drop cascades to table public.huge1 membership in replication set default
+NOTICE:  drop cascades to table public.huge2 membership in replication set default
+NOTICE:  drop cascades to table public.huge3 membership in replication set default
+NOTICE:  drop cascades to table public.huge4 membership in replication set default
+NOTICE:  drop cascades to table public.huge5 membership in replication set default
+NOTICE:  drop cascades to table public.huge6 membership in replication set default
+NOTICE:  drop cascades to table public.huge7 membership in replication set default
+NOTICE:  drop cascades to table public.huge8 membership in replication set default
+NOTICE:  drop cascades to table public.huge9 membership in replication set default
+NOTICE:  drop cascades to table public.huge10 membership in replication set default
+NOTICE:  drop cascades to table public.huge11 membership in replication set default
+NOTICE:  drop cascades to table public.huge12 membership in replication set default
+NOTICE:  drop cascades to table public.huge13 membership in replication set default
+NOTICE:  drop cascades to table public.huge14 membership in replication set default
+NOTICE:  drop cascades to table public.huge15 membership in replication set default
+NOTICE:  drop cascades to table public.huge16 membership in replication set default
+NOTICE:  drop cascades to table public.huge17 membership in replication set default
+NOTICE:  drop cascades to table public.huge18 membership in replication set default
+NOTICE:  drop cascades to table public.huge19 membership in replication set default
+NOTICE:  drop cascades to table public.huge20 membership in replication set default
+NOTICE:  drop cascades to table public.huge21 membership in replication set default
+NOTICE:  drop cascades to table public.huge22 membership in replication set default
+NOTICE:  drop cascades to table public.huge23 membership in replication set default
+NOTICE:  drop cascades to table public.huge24 membership in replication set default
+NOTICE:  drop cascades to table public.huge25 membership in replication set default
+NOTICE:  drop cascades to table public.huge26 membership in replication set default
+NOTICE:  drop cascades to table public.huge27 membership in replication set default
+NOTICE:  drop cascades to table public.huge28 membership in replication set default
+NOTICE:  drop cascades to table public.huge29 membership in replication set default
+NOTICE:  drop cascades to table public.huge30 membership in replication set default
+NOTICE:  drop cascades to table public.huge31 membership in replication set default
+NOTICE:  drop cascades to table public.huge32 membership in replication set default
+NOTICE:  drop cascades to table public.huge33 membership in replication set default
+NOTICE:  drop cascades to table public.huge34 membership in replication set default
+NOTICE:  drop cascades to table public.huge35 membership in replication set default
+NOTICE:  drop cascades to table public.huge36 membership in replication set default
+NOTICE:  drop cascades to table public.huge37 membership in replication set default
+NOTICE:  drop cascades to table public.huge38 membership in replication set default
+NOTICE:  drop cascades to table public.huge39 membership in replication set default
+NOTICE:  drop cascades to table public.huge40 membership in replication set default
+NOTICE:  drop cascades to table public.huge41 membership in replication set default
+NOTICE:  drop cascades to table public.huge42 membership in replication set default
+NOTICE:  drop cascades to table public.huge43 membership in replication set default
+NOTICE:  drop cascades to table public.huge44 membership in replication set default
+NOTICE:  drop cascades to table public.huge45 membership in replication set default
+NOTICE:  drop cascades to table public.huge46 membership in replication set default
+NOTICE:  drop cascades to table public.huge47 membership in replication set default
+NOTICE:  drop cascades to table public.huge48 membership in replication set default
+NOTICE:  drop cascades to table public.huge49 membership in replication set default
+NOTICE:  drop cascades to table public.huge50 membership in replication set default
+NOTICE:  drop cascades to table public.huge51 membership in replication set default
+NOTICE:  drop cascades to table public.huge52 membership in replication set default
+NOTICE:  drop cascades to table public.huge53 membership in replication set default
+NOTICE:  drop cascades to table public.huge54 membership in replication set default
+NOTICE:  drop cascades to table public.huge55 membership in replication set default
+NOTICE:  drop cascades to table public.huge56 membership in replication set default
+NOTICE:  drop cascades to table public.huge57 membership in replication set default
+NOTICE:  drop cascades to table public.huge58 membership in replication set default
+NOTICE:  drop cascades to table public.huge59 membership in replication set default
+NOTICE:  drop cascades to table public.huge60 membership in replication set default
+NOTICE:  drop cascades to table public.huge61 membership in replication set default
+NOTICE:  drop cascades to table public.huge62 membership in replication set default
+NOTICE:  drop cascades to table public.huge63 membership in replication set default
+NOTICE:  drop cascades to table public.huge64 membership in replication set default
+NOTICE:  drop cascades to table public.huge65 membership in replication set default
+NOTICE:  drop cascades to table public.huge66 membership in replication set default
+NOTICE:  drop cascades to table public.huge67 membership in replication set default
+NOTICE:  drop cascades to table public.huge68 membership in replication set default
+NOTICE:  drop cascades to table public.huge69 membership in replication set default
+NOTICE:  drop cascades to table public.huge70 membership in replication set default
+NOTICE:  drop cascades to table public.huge71 membership in replication set default
+NOTICE:  drop cascades to table public.huge72 membership in replication set default
+NOTICE:  drop cascades to table public.huge73 membership in replication set default
+NOTICE:  drop cascades to table public.huge74 membership in replication set default
+NOTICE:  drop cascades to table public.huge75 membership in replication set default
+NOTICE:  drop cascades to table public.huge76 membership in replication set default
+NOTICE:  drop cascades to table public.huge77 membership in replication set default
+NOTICE:  drop cascades to table public.huge78 membership in replication set default
+NOTICE:  drop cascades to table public.huge79 membership in replication set default
+NOTICE:  drop cascades to table public.huge80 membership in replication set default
+NOTICE:  drop cascades to table public.huge81 membership in replication set default
+NOTICE:  drop cascades to table public.huge82 membership in replication set default
+NOTICE:  drop cascades to table public.huge83 membership in replication set default
+NOTICE:  drop cascades to table public.huge84 membership in replication set default
+NOTICE:  drop cascades to table public.huge85 membership in replication set default
+NOTICE:  drop cascades to table public.huge86 membership in replication set default
+NOTICE:  drop cascades to table public.huge87 membership in replication set default
+NOTICE:  drop cascades to table public.huge88 membership in replication set default
+NOTICE:  drop cascades to table public.huge89 membership in replication set default
+NOTICE:  drop cascades to table public.huge90 membership in replication set default
+NOTICE:  drop cascades to table public.huge91 membership in replication set default
+NOTICE:  drop cascades to table public.huge92 membership in replication set default
+NOTICE:  drop cascades to table public.huge93 membership in replication set default
+NOTICE:  drop cascades to table public.huge94 membership in replication set default
+NOTICE:  drop cascades to table public.huge95 membership in replication set default
+NOTICE:  drop cascades to table public.huge96 membership in replication set default
+NOTICE:  drop cascades to table public.huge97 membership in replication set default
+NOTICE:  drop cascades to table public.huge98 membership in replication set default
+NOTICE:  drop cascades to table public.huge99 membership in replication set default
+NOTICE:  drop cascades to table public.huge100 membership in replication set default
+NOTICE:  drop cascades to table public.huge101 membership in replication set default
+NOTICE:  drop cascades to table public.huge102 membership in replication set default
+NOTICE:  drop cascades to table public.huge103 membership in replication set default
+NOTICE:  drop cascades to table public.huge104 membership in replication set default
+NOTICE:  drop cascades to table public.huge105 membership in replication set default
+NOTICE:  drop cascades to table public.huge106 membership in replication set default
+NOTICE:  drop cascades to table public.huge107 membership in replication set default
+NOTICE:  drop cascades to table public.huge108 membership in replication set default
+NOTICE:  drop cascades to table public.huge109 membership in replication set default
+NOTICE:  drop cascades to table public.huge110 membership in replication set default
+NOTICE:  drop cascades to table public.huge111 membership in replication set default
+NOTICE:  drop cascades to table public.huge112 membership in replication set default
+NOTICE:  drop cascades to table public.huge113 membership in replication set default
+NOTICE:  drop cascades to table public.huge114 membership in replication set default
+NOTICE:  drop cascades to table public.huge115 membership in replication set default
+NOTICE:  drop cascades to table public.huge116 membership in replication set default
+NOTICE:  drop cascades to table public.huge117 membership in replication set default
+NOTICE:  drop cascades to table public.huge118 membership in replication set default
+NOTICE:  drop cascades to table public.huge119 membership in replication set default
+NOTICE:  drop cascades to table public.huge120 membership in replication set default
+NOTICE:  drop cascades to table public.huge121 membership in replication set default
+NOTICE:  drop cascades to table public.huge122 membership in replication set default
+NOTICE:  drop cascades to table public.huge123 membership in replication set default
+NOTICE:  drop cascades to table public.huge124 membership in replication set default
+NOTICE:  drop cascades to table public.huge125 membership in replication set default
+NOTICE:  drop cascades to table public.huge126 membership in replication set default
+NOTICE:  drop cascades to table public.huge127 membership in replication set default
+NOTICE:  drop cascades to table public.huge128 membership in replication set default
+NOTICE:  drop cascades to table public.huge129 membership in replication set default
+NOTICE:  drop cascades to table public.huge130 membership in replication set default
+NOTICE:  drop cascades to table public.huge131 membership in replication set default
+NOTICE:  drop cascades to table public.huge132 membership in replication set default
+NOTICE:  drop cascades to table public.huge133 membership in replication set default
+NOTICE:  drop cascades to table public.huge134 membership in replication set default
+NOTICE:  drop cascades to table public.huge135 membership in replication set default
+NOTICE:  drop cascades to table public.huge136 membership in replication set default
+NOTICE:  drop cascades to table public.huge137 membership in replication set default
+NOTICE:  drop cascades to table public.huge138 membership in replication set default
+NOTICE:  drop cascades to table public.huge139 membership in replication set default
+NOTICE:  drop cascades to table public.huge140 membership in replication set default
+NOTICE:  drop cascades to table public.huge141 membership in replication set default
+NOTICE:  drop cascades to table public.huge142 membership in replication set default
+NOTICE:  drop cascades to table public.huge143 membership in replication set default
+NOTICE:  drop cascades to table public.huge144 membership in replication set default
+NOTICE:  drop cascades to table public.huge145 membership in replication set default
+NOTICE:  drop cascades to table public.huge146 membership in replication set default
+NOTICE:  drop cascades to table public.huge147 membership in replication set default
+NOTICE:  drop cascades to table public.huge148 membership in replication set default
+NOTICE:  drop cascades to table public.huge149 membership in replication set default
+NOTICE:  drop cascades to table public.huge150 membership in replication set default
+NOTICE:  drop cascades to table public.huge151 membership in replication set default
+NOTICE:  drop cascades to table public.huge152 membership in replication set default
+NOTICE:  drop cascades to table public.huge153 membership in replication set default
+NOTICE:  drop cascades to table public.huge154 membership in replication set default
+NOTICE:  drop cascades to table public.huge155 membership in replication set default
+NOTICE:  drop cascades to table public.huge156 membership in replication set default
+NOTICE:  drop cascades to table public.huge157 membership in replication set default
+NOTICE:  drop cascades to table public.huge158 membership in replication set default
+NOTICE:  drop cascades to table public.huge159 membership in replication set default
+NOTICE:  drop cascades to table public.huge160 membership in replication set default
+NOTICE:  drop cascades to table public.huge161 membership in replication set default
+NOTICE:  drop cascades to table public.huge162 membership in replication set default
+NOTICE:  drop cascades to table public.huge163 membership in replication set default
+NOTICE:  drop cascades to table public.huge164 membership in replication set default
+NOTICE:  drop cascades to table public.huge165 membership in replication set default
+NOTICE:  drop cascades to table public.huge166 membership in replication set default
+NOTICE:  drop cascades to table public.huge167 membership in replication set default
+NOTICE:  drop cascades to table public.huge168 membership in replication set default
+NOTICE:  drop cascades to table public.huge169 membership in replication set default
+NOTICE:  drop cascades to table public.huge170 membership in replication set default
+NOTICE:  drop cascades to table public.huge171 membership in replication set default
+NOTICE:  drop cascades to table public.huge172 membership in replication set default
+NOTICE:  drop cascades to table public.huge173 membership in replication set default
+NOTICE:  drop cascades to table public.huge174 membership in replication set default
+NOTICE:  drop cascades to table public.huge175 membership in replication set default
+NOTICE:  drop cascades to table public.huge176 membership in replication set default
+NOTICE:  drop cascades to table public.huge177 membership in replication set default
+NOTICE:  drop cascades to table public.huge178 membership in replication set default
+NOTICE:  drop cascades to table public.huge179 membership in replication set default
+NOTICE:  drop cascades to table public.huge180 membership in replication set default
+NOTICE:  drop cascades to table public.huge181 membership in replication set default
+NOTICE:  drop cascades to table public.huge182 membership in replication set default
+NOTICE:  drop cascades to table public.huge183 membership in replication set default
+NOTICE:  drop cascades to table public.huge184 membership in replication set default
+NOTICE:  drop cascades to table public.huge185 membership in replication set default
+NOTICE:  drop cascades to table public.huge186 membership in replication set default
+NOTICE:  drop cascades to table public.huge187 membership in replication set default
+NOTICE:  drop cascades to table public.huge188 membership in replication set default
+NOTICE:  drop cascades to table public.huge189 membership in replication set default
+NOTICE:  drop cascades to table public.huge190 membership in replication set default
+NOTICE:  drop cascades to table public.huge191 membership in replication set default
+NOTICE:  drop cascades to table public.huge192 membership in replication set default
+NOTICE:  drop cascades to table public.huge193 membership in replication set default
+NOTICE:  drop cascades to table public.huge194 membership in replication set default
+NOTICE:  drop cascades to table public.huge195 membership in replication set default
+NOTICE:  drop cascades to table public.huge196 membership in replication set default
+NOTICE:  drop cascades to table public.huge197 membership in replication set default
+NOTICE:  drop cascades to table public.huge198 membership in replication set default
+NOTICE:  drop cascades to table public.huge199 membership in replication set default
+NOTICE:  drop cascades to table public.huge200 membership in replication set default
  drop_many_tables 
 ------------------
  
