@@ -34,12 +34,12 @@ OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
 
 SCRIPTS_built = spock_create_subscriber
 
-# FIXME: triggers, row_filter, multiple_upstreams
+# FIXME: triggers, row_filter
 REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
 		  toasted replication_set matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence parallel functions \
 		  row_filter_sampling att_list column_filter apply_delay \
-		  extended node_origin_cascade huge_tx_many_tables drop
+		  extended node_origin_cascade multiple_upstreams drop
 
 # Disabled following tests:
 #	add_table functions
@@ -50,7 +50,7 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondar
 # but occassionaly it is helpful to disable one or more
 # cases while developing.
 
-REGRESS := $(filter-out apply_delay, $(REGRESS))
+#REGRESS := $(filter-out apply_delay, $(REGRESS))
 
 EXTRA_CLEAN += compat17/spock_compat.o compat17/spock_compat.bc \
 				compat16/spock_compat.o compat16/spock_compat.bc \
