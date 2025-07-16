@@ -49,7 +49,7 @@ jobs:
           cd ${GITHUB_WORKSPACE}/
           echo PG_VER=${{ matrix.pgver }} >> tests/pgedge.env
           docker build \
-            --build-arg PGVER=${{ matrix.pgver }}
+            --build-arg PGVER=${{ matrix.pgver }} \
             -t spock -f tests/Dockerfile.el9 .
 
       - name: Run regression tests
