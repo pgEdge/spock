@@ -8,7 +8,7 @@ SELECT E'\'' || current_database() || E'\'' AS subdb;
 
 \c :provider_dsn
 
-SELECT * FROM spock.create_replication_set('delay');
+SELECT * FROM spock.repset_create('delay');
 
 \c :subscriber_dsn
 
@@ -33,7 +33,7 @@ COMMIT;
 
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
 
-SELECT status FROM spock.show_subscription_status() WHERE subscription_name = 'test_subscription_delay';
+SELECT status FROM spock.sub_show_status() WHERE subscription_name = 'test_subscription_delay';
 
 -- Make sure we see the slot and active connection
 \c :provider_dsn
@@ -84,11 +84,11 @@ SELECT round (EXTRACT(EPOCH FROM (SELECT ts from timestamps where id = 'ts3')) -
 
 SELECT * FROM basic_dml1;
 
-SELECT spock.drop_subscription('test_subscription_delay');
+SELECT spock.sub_drop('test_subscription_delay');
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT * FROM spock.drop_replication_set('delay');
+SELECT * FROM spock.repset_drop('delay');
 DROP TABLE public.timestamps CASCADE;
 SELECT spock.replicate_ddl($$
     DROP TABLE public.basic_dml1 CASCADE;

@@ -10,10 +10,10 @@ SELECT E'\'' || current_database() || E'\'' AS subdb;
 
 \gset
 \c :provider_dsn
-SELECT * FROM spock.create_replication_set('delay');
- create_replication_set 
-------------------------
-             3064111751
+SELECT * FROM spock.repset_create('delay');
+ repset_create 
+---------------
+    2635062563
 (1 row)
 
 \c :subscriber_dsn
@@ -30,15 +30,15 @@ SELECT * FROM spock.sub_create(
 	apply_delay := int2interval(2) -- 2 seconds
 );
  sub_create 
----------------------
-          1550781037
+------------
+ 1550781037
 (1 row)
 
 BEGIN;
 SET LOCAL statement_timeout = '30s';
 SELECT spock.sub_wait_for_sync('test_subscription_delay');
  sub_wait_for_sync 
--------------------------------------
+-------------------
  
 (1 row)
 
@@ -50,7 +50,7 @@ SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', '
  f         | 3848008564 |              |              | t
 (2 rows)
 
-SELECT status FROM spock.show_subscription_status() WHERE subscription_name = 'test_subscription_delay';
+SELECT status FROM spock.sub_show_status() WHERE subscription_name = 'test_subscription_delay';
    status    
 -------------
  replicating
@@ -84,7 +84,7 @@ SELECT spock.replicate_ddl($$
     );
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
@@ -98,7 +98,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 INSERT INTO timestamps VALUES ('ts1', CURRENT_TIMESTAMP);
 SELECT * FROM spock.repset_add_table('delay', 'basic_dml1');
  repset_add_table 
----------------------------
+------------------
  t
 (1 row)
 
@@ -147,17 +147,17 @@ SELECT * FROM basic_dml1;
   5 |     1 |      | 
 (5 rows)
 
-SELECT spock.drop_subscription('test_subscription_delay');
- drop_subscription 
--------------------
-                 1
+SELECT spock.sub_drop('test_subscription_delay');
+ sub_drop 
+----------
+        1
 (1 row)
 
 \c :provider_dsn
 \set VERBOSITY terse
-SELECT * FROM spock.drop_replication_set('delay');
- drop_replication_set 
-----------------------
+SELECT * FROM spock.repset_drop('delay');
+ repset_drop 
+-------------
  t
 (1 row)
 
@@ -166,7 +166,7 @@ SELECT spock.replicate_ddl($$
     DROP TABLE public.basic_dml1 CASCADE;
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
