@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest-4-cores]
+        os: [ubuntu-latest]
         pgver: [15, 16, 17]
 
     runs-on: ${{ matrix.os }}
