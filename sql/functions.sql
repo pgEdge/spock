@@ -161,6 +161,8 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 ALTER TABLE public.not_nullcheck_tbl ADD COLUMN id2 integer not null;
 
+-- disable now to use pg_logical_slot_get_changes() later
+SELECT spock.sub_disable('test_subscription', true);
 \c :provider_dsn
 
 SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
@@ -169,15 +171,12 @@ SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
 INSERT INTO public.not_nullcheck_tbl(id,id1,name) VALUES (1,1,'name1');
 INSERT INTO public.not_nullcheck_tbl(id,id1,name) VALUES (2,2,'name2');
 
-SELECT spock.wait_slot_confirm_lsn(NULL, :curr_lsn);
-
 \c :subscriber_dsn
 
 SELECT * FROM public.not_nullcheck_tbl;
 INSERT INTO public.not_nullcheck_tbl(id,id1,name) VALUES (3,3,'name3');
 SELECT * FROM public.not_nullcheck_tbl;
 
-SELECT spock.sub_disable('test_subscription', true);
 
 \c :provider_dsn
 
@@ -192,8 +191,8 @@ BEGIN
 END;
 $$;
 
-SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN data END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '1', 'max_proto_version', '1', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default');
-SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN data END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '1', 'max_proto_version', '1', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default');
+SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN data END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '3', 'max_proto_version', '4', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default') WHERE LENGTH(data) > 0;
+SELECT data::json->'action' as action, CASE WHEN data::json->>'action' IN ('I', 'D', 'U') THEN data END as data FROM pg_logical_slot_get_changes((SELECT slot_name FROM pg_replication_slots), NULL, 1, 'min_proto_version', '3', 'max_proto_version', '4', 'startup_params_format', '1', 'proto_format', 'json', 'spock.replication_set_names', 'default') WHERE LENGTH(data) > 0;
 
 \c :subscriber_dsn
 
@@ -243,11 +242,11 @@ CREATE TABLE public.prime_tbl (
 	num public.prime NOT NULL,
 	PRIMARY KEY(num)
 );
-
-INSERT INTO public.prime_tbl (num) VALUES(17), (31), (79);
 $$);
 
 SELECT * FROM spock.repset_add_table('default', 'public.prime_tbl');
+
+INSERT INTO public.prime_tbl (num) VALUES(17), (31), (79);
 
 DELETE FROM public.prime_tbl WHERE num = 31;
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
