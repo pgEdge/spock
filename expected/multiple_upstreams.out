@@ -23,7 +23,7 @@ CREATE EXTENSION IF NOT EXISTS spock;
 SELECT * FROM spock.node_create(node_name := 'test_provider1', dsn := (SELECT provider1_dsn FROM spock_regress_variables()) || ' user=super');
  node_create 
 -------------
-   866557357
+       40365
 (1 row)
 
 \c :provider_dsn

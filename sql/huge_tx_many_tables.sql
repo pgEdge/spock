@@ -77,7 +77,6 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 
 SELECT count(*) FROM public.HUGE2;
-\dtS+ public.HUGE2;
 
 \c :provider_dsn
 
@@ -98,7 +97,6 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 
 SELECT count(*) FROM public.HUGE2;
-\dtS+ public.HUGE2;
 
 \c :provider_dsn
 

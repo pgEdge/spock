@@ -25,7 +25,6 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT count(*) FROM a_huge;
-\dtS+ a_huge;
 
 \c :provider_dsn
 -- lots of small rows replication with DDL within transaction
@@ -49,7 +48,6 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT count(*) FROM b_huge;
-\dtS+ b_huge;
 
 \c :provider_dsn
 \set VERBOSITY terse

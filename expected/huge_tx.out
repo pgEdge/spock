@@ -12,13 +12,13 @@ SELECT spock.replicate_ddl($$
 	);
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'a_huge');
  repset_add_table 
------------------------
+------------------
  t
 (1 row)
 
@@ -44,13 +44,6 @@ SELECT count(*) FROM a_huge;
  20000000
 (1 row)
 
-\dtS+ a_huge;
-                     List of relations
- Schema |  Name  | Type  |  Owner   |  Size  | Description 
---------+--------+-------+----------+--------+-------------
- public | a_huge | table | postgres | 996 MB | 
-(1 row)
-
 \c :provider_dsn
 -- lots of small rows replication with DDL within transaction
 BEGIN;
@@ -63,13 +56,13 @@ SELECT spock.replicate_ddl($$
 	);
 $$);
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'b_huge');
  repset_add_table 
------------------------
+------------------
  t
 (1 row)
 
@@ -88,23 +81,16 @@ SELECT count(*) FROM b_huge;
  20000000
 (1 row)
 
-\dtS+ b_huge;
-                     List of relations
- Schema |  Name  | Type  |  Owner   |  Size  | Description 
---------+--------+-------+----------+--------+-------------
- public | b_huge | table | postgres | 996 MB | 
-(1 row)
-
 \c :provider_dsn
 \set VERBOSITY terse
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.a_huge CASCADE;
 	DROP TABLE public.b_huge CASCADE;
 $$);
-NOTICE:  drop cascades to 1 other object
-NOTICE:  drop cascades to 1 other object
+NOTICE:  drop cascades to table public.a_huge membership in replication set default
+NOTICE:  drop cascades to table public.b_huge membership in replication set default
  replicate_ddl 
------------------------
+---------------
  t
 (1 row)
 
