@@ -1,6 +1,14 @@
 -- row based filtering
 SELECT * FROM spock_regress_variables()
 \gset
+\c :provider_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = true;
+ALTER SYSTEM SET spock.exception_behaviour = discard;
+SELECT pg_reload_conf();
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = true;
+ALTER SYSTEM SET spock.exception_behaviour = discard;
+SELECT pg_reload_conf();
 
 \c :provider_dsn
 SELECT spock.replicate_ddl($$
@@ -403,3 +411,12 @@ SELECT spock.replicate_ddl($$
 	DROP TABLE public.basic_dml CASCADE;
 	DROP TABLE public.test_jsonb CASCADE;
 $$);
+
+\c :provider_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = fase;
+ALTER SYSTEM SET spock.exception_behaviour = transdiscard;
+SELECT pg_reload_conf();
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = fase;
+ALTER SYSTEM SET spock.exception_behaviour = transdiscard;
+SELECT pg_reload_conf();
