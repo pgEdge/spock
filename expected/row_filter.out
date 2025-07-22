@@ -2,6 +2,24 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = true;
+ALTER SYSTEM SET spock.exception_behaviour = discard;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = true;
+ALTER SYSTEM SET spock.exception_behaviour = discard;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :provider_dsn
 SELECT spock.replicate_ddl($$
 	CREATE TABLE public.basic_dml (
 		id serial primary key,
@@ -739,6 +757,24 @@ NOTICE:  drop cascades to table public.basic_dml membership in replication set d
 NOTICE:  drop cascades to table public.test_jsonb membership in replication set default
  replicate_ddl 
 ---------------
+ t
+(1 row)
+
+\c :provider_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = false;
+ALTER SYSTEM SET spock.exception_behaviour = transdiscard;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = false;
+ALTER SYSTEM SET spock.exception_behaviour = transdiscard;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
  t
 (1 row)
 
