@@ -30,8 +30,8 @@ You can use the following options to override the location of the configuration 
 
 | Option   | Description
 |----------|-------------
-|`--hba-conf` | path to the new pg_hba.conf
-| `--postgresql-conf` | path to the new postgresql.conf
+|`--hba-conf` | path to the new `pg_hba.conf`
+| `--postgresql-conf` | path to the new `postgresql.conf`
 | `--recovery-conf` | path to the template recovery configuration
 
-Unlike `spock.sub_create`'s other data sync options, this method of cloning ignores replication sets and copies all tables on all databases. However, it's often much faster, especially over high-bandwidth links.
+Unlike `spock.sub_create`'s other data sync options, this method of cloning ignores replication sets and copies all tables on all databases. However, it's often much faster, especially over high-bandwidth connections.
