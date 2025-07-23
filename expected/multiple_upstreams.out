@@ -134,7 +134,7 @@ SELECT count(*) FROM pg_stat_replication;
 SELECT spock.replicate_ddl($$
         DROP TABLE public.multi_ups_tbl CASCADE;
 $$);
-NOTICE:  drop cascades to table public.multi_ups_tbl membership in replication set default
+NOTICE:  drop cascades to table multi_ups_tbl membership in replication set default
  replicate_ddl 
 ---------------
  t

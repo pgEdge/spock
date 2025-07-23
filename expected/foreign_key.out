@@ -75,8 +75,8 @@ SELECT spock.replicate_ddl($$
 	DROP TABLE public.f1k_orders CASCADE;
 	DROP TABLE public.f1k_products CASCADE;
 $$);
-NOTICE:  drop cascades to table public.f1k_orders membership in replication set default_insert_only
-NOTICE:  drop cascades to table public.f1k_products membership in replication set default
+NOTICE:  drop cascades to table f1k_orders membership in replication set default_insert_only
+NOTICE:  drop cascades to table f1k_products membership in replication set default
  replicate_ddl 
 ---------------
  t

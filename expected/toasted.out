@@ -80,7 +80,7 @@ SELECT * FROM toasted ORDER BY id;
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.toasted CASCADE;
 $$);
-NOTICE:  drop cascades to table public.toasted membership in replication set default
+NOTICE:  drop cascades to table toasted membership in replication set default
  replicate_ddl 
 ---------------
  t
