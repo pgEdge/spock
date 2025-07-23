@@ -25,7 +25,7 @@ a single row in this table implies that a command to create a subscription on th
 
 You can connect to the database server and query the `spock.node` table to return information about configured nodes:
 
-```json
+```sql
 select * from spock.node;
 -[ RECORD 1 ]--------
 node_id   | 673694252
