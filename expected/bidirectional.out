@@ -116,7 +116,7 @@ SELECT id, other, data, something FROM basic_dml ORDER BY id;
 SELECT spock.replicate_ddl($$
     DROP TABLE public.basic_dml CASCADE;
 $$);
-NOTICE:  drop cascades to table public.basic_dml membership in replication set default
+NOTICE:  drop cascades to table basic_dml membership in replication set default
  replicate_ddl 
 ---------------
  t
