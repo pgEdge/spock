@@ -35,10 +35,9 @@ OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
 
 SCRIPTS_built = spock_create_subscriber
 
-# FIXME: triggers
 REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
 		  toasted replication_set matview bidirectional primary_key \
-		  interfaces foreign_key copy sequence parallel functions row_filter \
+		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay \
 		  extended node_origin_cascade multiple_upstreams drop
 
