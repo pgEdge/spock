@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: pgedge/spockbench
-          token: ${{ secrets.READ_SPOCKBENCH_PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           path: spockbench
           ref: master
 
