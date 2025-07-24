@@ -86,11 +86,7 @@ You can use a `row_filter` clause with a partitioned table, as well as with indi
 
 Conflicts can arise if a node is subscribed to multiple providers, or when local writes happen on a subscriber node.  Without Spock, logical replication can also encounter issues when resolving the value of a running sum (such as a YTD balance). 
 
-import {Callout} from 'nextra/components'
-
-<Callout type="info">
-Suppose that a running bank account sum contains a balance of `$1,000`.   Two transactions "conflict" because they overlap with each from two different multi-master nodes.   Transaction A is a `$1,000` withdrawal from the account.  Transaction B is also a `$1,000` withdrawal from the account.  The correct balance is `$-1,000`.  Our Delta-Apply algorithm fixes this problem and highly conflicting workloads with this scenario (like a tpc-c like benchmark) now run correctly at lightning speeds.
-</Callout>
+*Suppose that a running bank account sum contains a balance of `$1,000`.   Two transactions "conflict" because they overlap with each from two different multi-master nodes.   Transaction A is a `$1,000` withdrawal from the account.  Transaction B is also a `$1,000` withdrawal from the account.  The correct balance is `$-1,000`.  Our Delta-Apply algorithm fixes this problem and highly conflicting workloads with this scenario (like a tpc-c like benchmark) now run correctly at lightning speeds.*
 
  In the past, Postgres users have relied on special data types and numbering schemes to help prevent conflicts. Unlike other solutions, Spock's powerful and simple conflict-free delta-apply columns instead manage data update conflicts with logic:
 
@@ -111,6 +107,7 @@ ALTER TABLE pgbench_tellers ALTER COLUMN tbalance SET (log_old_value=true, delta
 ```
 
 As a special safety-valve feature, if you ever need to re-set a `log_old_value` column you can temporarily alter the column to `log_old_value` is `false`.
+
 
 ### Conflict Configuration Options
 
@@ -191,7 +188,7 @@ process.
 
 We strongly recommend that you use Snowflake Sequences instead of legacy PostgreSQL sequences.
 
-[Snowflake](https://github.com/pgEdge/snowflake-sequences) is a PostgreSQL extension that provides an `int8` and sequence based unique ID solution to optionally replace the PostgreSQL built-in `bigserial` data type. This extension allows Snowflake IDs that are unique within one sequence across multiple PostgreSQL instances in a distributed cluster.
+[Snowflake](https://github.com/pgEdge/snowflake) is a PostgreSQL extension that provides an `int8` and sequence based unique ID solution to optionally replace the PostgreSQL built-in `bigserial` data type. This extension allows Snowflake IDs that are unique within one sequence across multiple PostgreSQL instances in a distributed cluster.
 
 The Spock extension includes the following functions to help you manage Snowflake sequences:
 

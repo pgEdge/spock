@@ -46,7 +46,7 @@ To enable conflict resolution, the `track_commit_timestamp` PostgreSQL setting m
 
 **`spock.enable_ddl_replication`**
 
-`spock.enable_ddl_replication` enables [automatic replication](../spock_ext/managing/spock_autoddl.mdx) of ddl statements through the `default` replication set.
+`spock.enable_ddl_replication` enables [automatic replication](https://github.com/pgEdge/spock/blob/main/docs/features.md#automatic-ddl-replication) of ddl statements through the `default` replication set.
 
 **`spock.exception_behaviour`** 
 

@@ -98,6 +98,4 @@ You cannot roll back an upgrade because of changes to the catalog tables; before
 Then, to upgrade the version of Spock that you use to manage your replication cluster, you can remove, build, and upgrade the Spock extension like you would any other [PostgreSQL extension](https://www.postgresql.org/docs/17/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
 
 
-
-
-Spock is licensed under the [pgEdge Community License v1.0](PGEDGE-COMMUNITY-LICENSE.md)
+To review the Spock license, visit [here](LICENSE.md).

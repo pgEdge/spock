@@ -220,7 +220,7 @@ The following is sample content from a `spockctrl.json` file; customize the `spo
 Spockctrl provides functions to manage different aspects of your Spock replication setup. The functions are grouped by the type of object they manage:
 
 * [Spockctrl node management](#spockctrl-node-management-functions) functions
-* [Spockctrl replication management](#spockctrl-node-management-functions) functions
+* [Spockctrl replication management](#spockctrl-replication-set-management-functions) functions
 * [Spockctrl subscription management](#spockctrl-subscription-management-functions) functions
 * [Spockctrl SQL execution](#spockctrl-sql-execution-functions) functions
 
@@ -921,8 +921,6 @@ After starting replication, we check the lag time between the new node and each 
         "on_failure": {}
       }
     }
-  ]
-}
 ```
 
 The SQL command from the last step (in a more readable format) is:
