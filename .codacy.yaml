@@ -1,0 +1,2 @@
+exclude_paths:
+  - 'sql/*.sql'   # non-standard SQL files with \ directives

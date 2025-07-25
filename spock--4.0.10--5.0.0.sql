@@ -1,6 +1,7 @@
 
 /* spock--4.0.10--5.0.sql */
 
+\echo DELETEME after testing .codacy.yml
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
 \echo Use "ALTER EXTENSION spock UPDATE TO '5.0'" to load this file. \quit
 
