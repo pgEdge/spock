@@ -145,8 +145,8 @@ SELECT * FROM test_mv ORDER BY id;
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.test_tbl CASCADE;
 $$);
-NOTICE:  drop cascades to materialized view public.test_mv
-NOTICE:  drop cascades to table public.test_tbl membership in replication set default
+NOTICE:  drop cascades to materialized view test_mv
+NOTICE:  drop cascades to table test_tbl membership in replication set default
  replicate_ddl 
 ---------------
  t

@@ -87,7 +87,7 @@ DROP FUNCTION funcn_get_bernoulli_sample_count(integer, integer);
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.test_tablesample CASCADE;
 $$);
-NOTICE:  drop cascades to table public.test_tablesample membership in replication set default
+NOTICE:  drop cascades to table test_tablesample membership in replication set default
  replicate_ddl 
 ---------------
  t

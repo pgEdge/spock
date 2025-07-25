@@ -173,9 +173,9 @@ BEGIN;
 SELECT spock.replicate_ddl($$
 DROP TABLE public.test_publicschema;
 $$);
-ERROR:  cannot drop table public.test_publicschema because other objects depend on it
-DETAIL:  table public.test_publicschema membership in replication set default_insert_only depends on table public.test_publicschema
-table public.test_publicschema membership in replication set repset_replicate_all depends on table public.test_publicschema
+ERROR:  cannot drop table test_publicschema because other objects depend on it
+DETAIL:  table test_publicschema membership in replication set default_insert_only depends on table test_publicschema
+table test_publicschema membership in replication set repset_replicate_all depends on table test_publicschema
 HINT:  Use DROP ... CASCADE to drop the dependent objects too.
 CONTEXT:  during execution of queued SQL statement: 
 DROP TABLE public.test_publicschema;
