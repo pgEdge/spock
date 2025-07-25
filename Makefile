@@ -6,8 +6,8 @@ PGFILEDESC = "spock - multi-master replication"
 
 MODULES = spock_output
 
-DATA = spock--6.0.0.devel.sql \
-	   spock--5.0.0--6.0.0.devel.sql \
+DATA = spock--6.0.0-devel.sql \
+	   spock--5.0.0--6.0.0-devel.sql \
 	   spock--5.0.0.sql \
 	   spock--4.0.0--4.0.1.sql \
 	   spock--4.0.1--4.0.2.sql \
