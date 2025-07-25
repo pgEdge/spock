@@ -373,8 +373,7 @@ The `spockctrl/workflows/` directory in the source distribution contains several
 
 *   `add_node.json`: A workflow to add a new node to an existing Spock replication setup. This involves creating the node, setting up replication sets, and creating subscriptions.
 *   `remove_node.json`: A workflow to cleanly remove a node from a replication setup.
-*   `cross-wire.json`: A workflow to set up bi-directional replication between two nodes (cross-replication).
-*   `uncross-wire.json`: A workflow to dismantle a bi-directional replication setup.
+*   `add_4th_node.json`: A workflow to add a 4th node to a 3 node cluster.
 
 These sample workflows can serve as templates or starting points for creating your own custom automation scripts. Examine their content to understand how they are structured and what operations they perform.
 
