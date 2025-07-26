@@ -1,0 +1,339 @@
+{
+  "workflow_name": "Add Fourth Node",
+  "description": "Adding fourth node (n4) to three node (n1,n2,n3) cluster.",
+  "steps": [
+    {
+      "spock": {
+        "node": "n4",
+        "command": "CREATE NODE",
+        "description": "Create a spock node n4",
+        "args": [
+          "--node_name=n4",
+          "--dsn=host=127.0.0.1 port=5435 user=lcuser dbname=pgedge password=pgedge",
+          "--location=Chicago",
+          "--country=USA",
+          "--info={\"key\": \"value\"}"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },  
+    {
+      "spock": {
+        "node": "n4",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n2_n4) on (n4) for n2->n4",
+        "sleep": 5,
+        "args": [
+          "--sub_name=sub_n2_n4",
+          "--provider_dsn=host=127.0.0.1 port=5433 user=lcuser dbname=pgedge password=pgedge",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='0'::interval",
+          "--force_text_transfer=false",
+          "--enabled=false"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "CREATE SLOT",
+        "description": "Create a logical replication slot spk_pgedge_n2_sub_n2_n4 on (n2)",
+        "args": [
+          "--slot=spk_pgedge_n2_sub_n2_n4",
+          "--plugin=spock_output"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n4",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n3_n4) on (n4) for n3->n4",
+        "sleep": 5,
+        "args": [
+          "--sub_name=sub_n3_n4",
+          "--provider_dsn=host=127.0.0.1 port=5434 user=lcuser dbname=pgedge password=pgedge",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='0'::interval",
+          "--force_text_transfer=false",
+          "--enabled=false"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n3",
+        "command": "CREATE SLOT",
+        "description": "Create a logical replication slot spk_pgedge_n3_sub_n3_n4 on (n3)",
+        "args": [
+          "--slot=spk_pgedge_n3_sub_n3_n4",
+          "--plugin=spock_output"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "sql": {
+        "node": "n3",
+        "command": "SQL",
+        "description": "Trigger a sync event on (n3)",
+        "sleep": 10,
+        "args": [
+          "--sql=SELECT spock.sync_event();"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "sql": {
+        "node": "n1",
+        "command": "SQL",
+        "description": "Wait for a sync event on (n1) for n3-n1",
+        "sleep": 0,
+        "args": [
+          "--sql=CALL spock.wait_for_sync_event(true, 'n1', '$n3.sync_event'::pg_lsn, 1200000);"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "sql": {
+        "node": "n2",
+        "command": "SQL",
+        "description": "Trigger a sync event on (n2)",
+        "sleep": 10,
+        "args": [
+          "--sql=SELECT spock.sync_event();"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "sql": {
+        "node": "n1",
+        "command": "SQL",
+        "description": "Wait for a sync event on (n1) for n1-n2",
+        "sleep": 0,
+        "args": [
+          "--sql=CALL spock.wait_for_sync_event(true, 'n2', '$n2.sync_event'::pg_lsn, 1200000);"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n4",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n1_n4) on (n4) for n1->n4",
+        "sleep": 0,
+        "args": [
+          "--sub_name=sub_n1_n4",
+          "--provider_dsn=host=127.0.0.1 port=5432 user=lcuser dbname=pgedge password=pgedge",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=true",
+          "--synchronize_data=true",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='0'::interval",
+          "--force_text_transfer=false",
+          "--enabled=true"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    
+    {
+      "sql": {
+        "node": "n1",
+        "command": "SQL",
+        "description": "Trigger a sync event on (n1)",
+        "sleep": 10,
+        "args": [
+          "--sql=SELECT spock.sync_event();"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "sql": {
+        "node": "n4",
+        "command": "SQL",
+        "description": "Wait for a sync event on (n4) for n1-n4",
+        "sleep": 0,
+        "args": [
+          "--sql=CALL spock.wait_for_sync_event(true, 'n4', '$n1.sync_event'::pg_lsn, 1200000);"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "sql": {
+        "node": "n3",
+        "command": "SQL",
+        "description": "Wait for a sync event on (n3) for n1-n3",
+        "sleep": 0,
+        "args": [
+          "--sql=CALL spock.wait_for_sync_event(true, 'n1', '$n1.sync_event'::pg_lsn, 1200000);"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },    
+    {
+      "sql": {
+        "node": "n4",
+        "command": "SQL",
+        "description": "Check commit timestamp for n4 lag from n1",
+        "sleep": 1,
+        "args": [
+          "--sql=SELECT commit_timestamp FROM spock.lag_tracker WHERE origin_name = 'n1' AND receiver_name = 'n4'"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "sql": {
+        "node": "n1",
+        "command": "SQL",
+        "description": "Advance the replication slot for n1->n4 based on a specific commit timestamp",
+        "sleep": 0,
+        "args": [
+          "--sql=WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_pgedge_n1_sub_n1_n4', '$n4.commit_timestamp'::timestamp) AS lsn) SELECT pg_replication_slot_advance('spk_pgedge_n1_sub_n1_n4', lsn) FROM lsn_cte;"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n1",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n4_n1) on (n1) for n4->n1",
+        "sleep": 0,
+        "args": [
+          "--sub_name=sub_n4_n1",
+          "--provider_dsn=host=127.0.0.1 port=5435 user=lcuser dbname=pgedge password=pgedge",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='0'::interval",
+          "--force_text_transfer=false",
+          "--enabled=true"
+        ],
+        "ignore_errors": false,
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n2",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n4_n2) on (n2) for n4->n2",
+        "sleep": 0,
+        "args": [
+          "--sub_name=sub_n4_n2",
+          "--provider_dsn=host=127.0.0.1 port=5435 user=lcuser dbname=pgedge password=pgedge",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='0'::interval",
+          "--force_text_transfer=false",
+          "--enabled=true"
+        ],
+        "ignore_errors": false,
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n3",
+        "command": "CREATE SUBSCRIPTION",
+        "description": "Create a subscription (sub_n4_n3) on (n3) for n4->n3",
+        "sleep": 0,
+        "args": [
+          "--sub_name=sub_n4_n3",
+          "--provider_dsn=host=127.0.0.1 port=5435 user=lcuser dbname=pgedge password=pgedge",
+          "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
+          "--synchronize_structure=false",
+          "--synchronize_data=false",
+          "--forward_origins='{}'::text[]",
+          "--apply_delay='0'::interval",
+          "--force_text_transfer=false",
+          "--enabled=true"
+        ],
+        "ignore_errors": false,
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n4",
+        "command": "ENABLE SUBSCRIPTION",
+        "description": "Enable subscription (sub_n2_n4) on n4",
+        "args": [
+          "--sub_name=sub_n2_n4",
+          "--immediate=true"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "spock": {
+        "node": "n4",
+        "command": "ENABLE SUBSCRIPTION",
+        "description": "Enable subscription (sub_n3_n4) on n4",
+        "args": [
+          "--sub_name=sub_n3_n4",
+          "--immediate=true"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    },
+    {
+      "sql": {
+        "node": "n4",
+        "command": "SQL",
+        "description": "Monitor replication lag for all connections to n4",
+        "sleep": 0,
+        "args": [
+          "--sql=DO $$\nDECLARE\n    lag_n1_n4 interval;\n    lag_n2_n4 interval;\n    lag_n3_n4 interval;\nBEGIN\n    LOOP\n        SELECT now() - commit_timestamp INTO lag_n1_n4\n        FROM spock.lag_tracker\n        WHERE origin_name = 'n1' AND receiver_name = 'n4';\n\n        SELECT now() - commit_timestamp INTO lag_n2_n4\n        FROM spock.lag_tracker\n        WHERE origin_name = 'n2' AND receiver_name = 'n4';\n\n        SELECT now() - commit_timestamp INTO lag_n3_n4\n        FROM spock.lag_tracker\n        WHERE origin_name = 'n3' AND receiver_name = 'n4';\n\n        RAISE NOTICE 'n1 → n4 lag: %, n2 → n4 lag: %, n3 → n4 lag: %',\n                     COALESCE(lag_n1_n4::text, 'NULL'),\n                     COALESCE(lag_n2_n4::text, 'NULL'),\n                     COALESCE(lag_n3_n4::text, 'NULL');\n\n        EXIT WHEN lag_n1_n4 IS NOT NULL AND lag_n2_n4 IS NOT NULL AND lag_n3_n4 IS NOT NULL\n                  AND extract(epoch FROM lag_n1_n4) < 59\n                  AND extract(epoch FROM lag_n2_n4) < 59\n                  AND extract(epoch FROM lag_n3_n4) < 59;\n\n        PERFORM pg_sleep(1);\n    END LOOP;\nEND\n$$;\n"
+        ],
+        "on_success": {},
+        "on_failure": {}
+      }
+    }
+  ]
+}
+
+
+
+
+    
