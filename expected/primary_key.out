@@ -746,7 +746,7 @@ SELECT * FROM pk_users ORDER BY id;
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.pk_users CASCADE;
 $$);
-NOTICE:  drop cascades to table public.pk_users membership in replication set default
+NOTICE:  drop cascades to table pk_users membership in replication set default
  replicate_ddl 
 ---------------
  t

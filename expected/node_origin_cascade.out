@@ -175,7 +175,7 @@ SELECT id, other, data, something FROM mid_level_tbl ORDER BY id;
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.top_level_tbl CASCADE;
 $$);
-NOTICE:  drop cascades to table public.top_level_tbl membership in replication set default
+NOTICE:  drop cascades to table top_level_tbl membership in replication set default
  replicate_ddl 
 ---------------
  t
@@ -186,7 +186,7 @@ NOTICE:  drop cascades to table public.top_level_tbl membership in replication s
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.mid_level_tbl CASCADE;
 $$);
-NOTICE:  drop cascades to table public.mid_level_tbl membership in replication set default
+NOTICE:  drop cascades to table mid_level_tbl membership in replication set default
  replicate_ddl 
 ---------------
  t
