@@ -318,7 +318,7 @@ CREATE TABLE spock.queue (
 
 CREATE FUNCTION spock.replicate_ddl(command text,
 									replication_sets text[] DEFAULT '{ddl_sql}',
-									search_path text DEFAULT current_setting('search_path'),
+									search_path text DEFAULT '',
 									role text DEFAULT CURRENT_USER)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
 
