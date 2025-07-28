@@ -90,7 +90,7 @@ SELECT * FROM secondary_unique_pred ORDER BY a;
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.secondary_unique_pred CASCADE;
 $$);
-NOTICE:  drop cascades to table public.secondary_unique_pred membership in replication set default
+NOTICE:  drop cascades to table secondary_unique_pred membership in replication set default
  replicate_ddl 
 ---------------
  t

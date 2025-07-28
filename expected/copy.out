@@ -98,7 +98,7 @@ SELECT * FROM x ORDER BY a;
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.x CASCADE;
 $$);
-NOTICE:  drop cascades to table public.x membership in replication set default
+NOTICE:  drop cascades to table x membership in replication set default
  replicate_ddl 
 ---------------
  t
