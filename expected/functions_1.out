@@ -434,12 +434,12 @@ SELECT spock.replicate_ddl($$
 	DROP FUNCTION public.is_prime_lt_100(integer);
 	DROP FUNCTION public.some_prime_numbers();
 $$);
-NOTICE:  drop cascades to table public.funct membership in replication set default_insert_only
-NOTICE:  drop cascades to table public.funct2 membership in replication set default_insert_only
-NOTICE:  drop cascades to table public.funct5 membership in replication set default_insert_only
-NOTICE:  drop cascades to table public.nullcheck_tbl membership in replication set default
-NOTICE:  drop cascades to table public.not_nullcheck_tbl membership in replication set default
-NOTICE:  drop cascades to table public.prime_tbl membership in replication set default
+NOTICE:  drop cascades to table funct membership in replication set default_insert_only
+NOTICE:  drop cascades to table funct2 membership in replication set default_insert_only
+NOTICE:  drop cascades to table funct5 membership in replication set default_insert_only
+NOTICE:  drop cascades to table nullcheck_tbl membership in replication set default
+NOTICE:  drop cascades to table not_nullcheck_tbl membership in replication set default
+NOTICE:  drop cascades to table prime_tbl membership in replication set default
  replicate_ddl 
 -----------------------
  t
