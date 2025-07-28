@@ -70,7 +70,8 @@ extern void SPKExecARInsertTriggers(EState *estate,
 								 List *recheckIndexes);
 
 extern bool IsIndexUsableForInsertConflict(Relation idxrel);
-extern bool SpockRelationFindReplTupleByIndex(Relation rel,
+extern bool SpockRelationFindReplTupleByIndex(EState *estate,
+								 Relation rel,
 								 Relation idxrel,
 								 LockTupleMode lockmode,
 								 TupleTableSlot *searchslot,
