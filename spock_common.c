@@ -203,7 +203,7 @@ IsIndexUsableForInsertConflict(Relation idxrel)
  * NULLs. so any NULL in a key column implies that they do not match.
  */
 static bool
-index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation indexRel,
+index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
 			 ScanKey skey, int ncols)
 {
 	int			i;
@@ -220,7 +220,7 @@ index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation 
 	{
 		Form_pg_attribute att;
 
-		attrnum = indexRel->rd_index->indkey.values[skey[i].sk_attno - 1] - 1;
+		attrnum = idxrel->rd_index->indkey.values[skey[i].sk_attno - 1] - 1;
 
 		att = TupleDescAttr(slot1->tts_tupleDescriptor, attrnum);
 
@@ -237,9 +237,49 @@ index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation 
 		 */
 		if (slot1->tts_isnull[attrnum] || slot2->tts_isnull[attrnum])
 			return false;
+
 	}
 
 	return true;
+}
+
+/*
+ * If the index is partial (has a WHERE clause), prepare the predicate
+ * expression for evaluation.
+ */
+static ExprState *
+SpockPreparePredicateExpr(Relation idxrel, EState *estate)
+{
+	List *predExprList = NIL;
+
+	if (heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
+		return NULL;
+
+	predExprList = RelationGetIndexPredicate(idxrel);
+	if (predExprList == NIL)
+		return NULL;
+
+	return ExecPrepareQual(predExprList, estate);
+}
+
+/*
+ * Check if the predicate matches by evaluating the index predicate on the
+ * given tuple slot. This is used for both remote and local tuples.
+ *
+ * Returns true if the predicate matches, or if the predicate is NULL.
+ */
+static bool
+SpockPredicateMatches(EState *estate, ExprState *predExpr, TupleTableSlot *slot)
+{
+	ExprContext *econtext;
+
+	if (!predExpr)
+		return true;
+
+	ResetPerTupleExprContext(estate);
+	econtext = GetPerTupleExprContext(estate);
+	econtext->ecxt_scantuple = slot;
+	return ExecQual(predExpr, econtext);
 }
 
 /*
@@ -249,7 +289,8 @@ index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation 
  * contents, and return true.  Return false otherwise.
  */
 bool
-SpockRelationFindReplTupleByIndex(Relation rel,
+SpockRelationFindReplTupleByIndex(EState *estate,
+							 Relation rel,
 							 Relation idxrel,
 							 LockTupleMode lockmode,
 							 TupleTableSlot *searchslot,
@@ -261,6 +302,20 @@ SpockRelationFindReplTupleByIndex(Relation rel,
 	SnapshotData snap;
 	TransactionId xwait;
 	bool		found;
+	ExprState *predExpr;
+
+	Assert(idxrel->rd_index->indisunique);
+	predExpr = SpockPreparePredicateExpr(idxrel, estate);
+
+	/*
+	 * Partial unique indexes only apply to rows that satisfy the predicate.
+	 * So if the remote tuple doesn't match the predicate, it's not part of
+	 * the index and can't conflict with anything in it.
+	 *
+	 * We can skip scanning the index entirely in that case.
+	 */
+	if (!SpockPredicateMatches(estate, predExpr, searchslot))
+		return false;
 
 	InitDirtySnapshot(snap);
 
@@ -281,8 +336,11 @@ retry:
 		if (!index_keys_have_nonnulls(outslot, searchslot, idxrel, skey, skey_attoff))
 			continue;
 
-		ExecMaterializeSlot(outslot);
+		/* Skip if local tuple does not satisfy the index predicate */
+		if (!SpockPredicateMatches(estate, predExpr, outslot))
+			continue;
 
+		ExecMaterializeSlot(outslot);
 		xwait = TransactionIdIsValid(snap.xmin) ?
 			snap.xmin : snap.xmax;
 

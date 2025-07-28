@@ -508,7 +508,7 @@ FindReplTupleByUCIndex(ApplyExecutionData *edata,
 			continue;
 		}
 
-		found = SpockRelationFindReplTupleByIndex(localrel, idxrel,
+		found = SpockRelationFindReplTupleByIndex(edata->estate, localrel, idxrel,
 											 LockTupleExclusive,
 											 remoteslot, *localslot);
 		if (found)
