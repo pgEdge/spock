@@ -284,6 +284,14 @@ SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
 \gset
 INSERT INTO public.not_nullcheck_tbl(id,id1,name) VALUES (1,1,'name1');
 INSERT INTO public.not_nullcheck_tbl(id,id1,name) VALUES (2,2,'name2');
+-- spock.wait_slot_confirm_lsn() may wait indefinitely if already caught up
+-- Use pg_sleep() here instead.
+SELECT pg_sleep(10);
+ pg_sleep 
+----------
+ 
+(1 row)
+
 \c :subscriber_dsn
 SELECT * FROM public.not_nullcheck_tbl;
  id | id1 | name | id2 
