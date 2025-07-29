@@ -1,5 +1,7 @@
 # Spock Multi-Master Replication for PostgreSQL
 
+[![Regression Tests and Spockbench](https://github.com/pgEdge/spock/actions/workflows/spockbench.yml/badge.svg)](https://github.com/pgEdge/spock/actions/workflows/spockbench.yml)
+
 ## Table of Contents
 - [Building the Spock Extension](README.md#building-the-spock-extension)
 - [Basic Configuration and Usage](README.md#basic-configuration-and-usage)
