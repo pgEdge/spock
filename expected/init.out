@@ -49,7 +49,7 @@ CREATE EXTENSION IF NOT EXISTS spock;
                List of installed extensions
  Name  | Version | Schema |          Description           
 -------+---------+--------+--------------------------------
- spock | 5.0.0   | spock  | PostgreSQL Logical Replication
+ spock | 5.0.1   | spock  | PostgreSQL Logical Replication
 (1 row)
 
 SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super');
