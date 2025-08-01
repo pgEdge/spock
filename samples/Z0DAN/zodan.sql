@@ -663,54 +663,120 @@ AS
 $$
 DECLARE
     remotesql text;
+    node_query text;
+    node_list text := '';
+    lag_vars text := '';
+    lag_assignments text := '';
+    lag_log text := '';
+    lag_conditions text := '';
+    node_rec record;
+    node_count integer := 0;
 BEGIN
     -- ============================================================================
-    -- Step 1: Build remote SQL for monitoring replication lag
+    -- Step 1: Get all nodes from the remote cluster
     -- ============================================================================
-    remotesql := $sql$
-        DO '
-        DECLARE
-            lag_n1_n4 interval;
-            lag_n2_n4 interval;
-            lag_n3_n4 interval;
-        BEGIN
-            LOOP
-                -- Calculate lag from n1 to n4
-                SELECT now() - commit_timestamp INTO lag_n1_n4
-                FROM spock.lag_tracker
-                WHERE origin_name = ''n1'' AND receiver_name = ''n4'';
+    IF verb THEN
+        RAISE NOTICE '[STEP] Getting nodes from remote cluster: %', node_dsn;
+    END IF;
+    
+    -- Get all nodes except the newest one (assuming it's the receiver)
+    FOR node_rec IN 
+        SELECT * FROM dblink(node_dsn, 'SELECT node_name FROM spock.node ORDER BY node_id') 
+        AS t(node_name text)
+    LOOP
+        node_count := node_count + 1;
+        IF node_count > 1 THEN
+            node_list := node_list || ', ';
+        END IF;
+        node_list := node_list || '''' || node_rec.node_name || '''';
+        
+        -- Build lag variable declarations
+        IF node_count > 1 THEN
+            lag_vars := lag_vars || E'\n            ';
+        END IF;
+        lag_vars := lag_vars || 'lag_' || node_rec.node_name || ' interval;';
+        lag_vars := lag_vars || E'\n            lag_' || node_rec.node_name || '_bytes bigint;';
+        
+        -- Build lag assignments
+        IF node_count > 1 THEN
+            lag_assignments := lag_assignments || E'\n\n                ';
+        END IF;
+        lag_assignments := lag_assignments || '-- Calculate lag from ' || node_rec.node_name || ' to newest node';
+        lag_assignments := lag_assignments || E'\n                SELECT now() - commit_timestamp, replication_lag_bytes INTO lag_' || node_rec.node_name || ', lag_' || node_rec.node_name || '_bytes';
+        lag_assignments := lag_assignments || E'\n                FROM spock.lag_tracker';
+        lag_assignments := lag_assignments || E'\n                WHERE origin_name = ''''' || node_rec.node_name || ''''' AND receiver_name = (SELECT node_name FROM spock.node ORDER BY node_id DESC LIMIT 1);';
+        
+        -- Build lag log message
+        IF node_count > 1 THEN
+            lag_log := lag_log || ', ';
+        END IF;
+        lag_log := lag_log || node_rec.node_name || ' → newest lag: % (bytes: %)';
+        
+        -- Build lag conditions
+        IF node_count > 1 THEN
+            lag_conditions := lag_conditions || E'\n                          AND ';
+        END IF;
+        lag_conditions := lag_conditions || 'lag_' || node_rec.node_name || ' IS NOT NULL';
+        lag_conditions := lag_conditions || E'\n                          AND (extract(epoch FROM lag_' || node_rec.node_name || ') < 59 OR lag_' || node_rec.node_name || '_bytes = 0)';
+    END LOOP;
+    
+    IF node_count <= 1 THEN
+        RAISE NOTICE '[STEP] Only one node found, skipping lag monitoring';
+        RETURN;
+    END IF;
+    
+    -- ============================================================================
+    -- Step 2: Build dynamic remote SQL for monitoring replication lag
+    -- ============================================================================
+    -- Build COALESCE parameters for the log message
+    DECLARE
+        coalesce_params text := '';
+        node_rec2 record;
+    BEGIN
+        FOR node_rec2 IN 
+            SELECT * FROM dblink(node_dsn, 'SELECT node_name FROM spock.node ORDER BY node_id') 
+            AS t(node_name text)
+        LOOP
+            IF coalesce_params != '' THEN
+                coalesce_params := coalesce_params || ', ';
+            END IF;
+            coalesce_params := coalesce_params || 'COALESCE(lag_' || node_rec2.node_name || '::text, ''NULL''), COALESCE(lag_' || node_rec2.node_name || '_bytes::text, ''NULL'')';
+        END LOOP;
+        
+        remotesql := format($sql$
+            DO '
+            DECLARE%s
+            BEGIN
+                LOOP%s
 
-                -- Calculate lag from n2 to n4
-                SELECT now() - commit_timestamp INTO lag_n2_n4
-                FROM spock.lag_tracker
-                WHERE origin_name = ''n2'' AND receiver_name = ''n4'';
+                    -- Log current lag values
+                    RAISE NOTICE ''[MONITOR] %s'',
+                                 %s;
 
-                -- Calculate lag from n3 to n4
-                SELECT now() - commit_timestamp INTO lag_n3_n4
-                FROM spock.lag_tracker
-                WHERE origin_name = ''n3'' AND receiver_name = ''n4'';
+                    -- Exit loop when all lags are below 59 seconds
+                    EXIT WHEN %s;
 
-                -- Log current lag values
-                RAISE NOTICE ''[MONITOR] n1 → n4 lag: %, n2 → n4 lag: %, n3 → n4 lag: %'',
-                             COALESCE(lag_n1_n4::text, ''NULL''),
-                             COALESCE(lag_n2_n4::text, ''NULL''),
-                             COALESCE(lag_n3_n4::text, ''NULL'');
+                    -- Sleep for 1 second before next check
+                    PERFORM pg_sleep(1);
+                END LOOP;
+            END
+            ';
+        $sql$, 
+            lag_vars,
+            lag_assignments,
+            lag_log,
+            coalesce_params,
+            lag_conditions
+        );
+    END;
 
-                -- Exit loop when all lags are below 59 seconds
-                EXIT WHEN lag_n1_n4 IS NOT NULL AND lag_n2_n4 IS NOT NULL AND lag_n3_n4 IS NOT NULL
-                          AND extract(epoch FROM lag_n1_n4) < 59
-                          AND extract(epoch FROM lag_n2_n4) < 59
-                          AND extract(epoch FROM lag_n3_n4) < 59;
-
-                -- Sleep for 1 second before next check
-                PERFORM pg_sleep(1);
-            END LOOP;
-        END
-        ';
-    $sql$;
+    IF verb THEN
+        RAISE NOTICE '[STEP] Generated monitoring SQL for % nodes: %', node_count, node_list;
+        RAISE NOTICE '[QUERY] %', remotesql;
+    END IF;
 
     -- ============================================================================
-    -- Step 2: Execute remote monitoring SQL via dblink
+    -- Step 3: Execute remote monitoring SQL via dblink
     -- ============================================================================
     IF verb THEN
         RAISE NOTICE E'[STEP] monitor_replication_lag: Executing remote monitoring SQL on node: %', node_dsn;
@@ -718,7 +784,7 @@ BEGIN
     PERFORM dblink(node_dsn, remotesql);
 
     -- ============================================================================
-    -- Step 3: Log completion of monitoring
+    -- Step 4: Log completion of monitoring
     -- ============================================================================
     IF verb THEN
         RAISE NOTICE E'[STEP] monitor_replication_lag: Monitoring replication lag completed on remote node: %', node_dsn;
@@ -741,6 +807,7 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     lag_interval interval;
+    lag_bytes bigint;
     start_time timestamp := now();
     elapsed_interval interval;
 BEGIN
@@ -750,8 +817,9 @@ BEGIN
     END IF;
 
     LOOP
-        -- Get current lag
-        SELECT now() - commit_timestamp INTO lag_interval
+        -- Get current lag time and bytes
+        SELECT now() - commit_timestamp, replication_lag_bytes 
+        INTO lag_interval, lag_bytes
         FROM spock.lag_tracker
         WHERE origin_name = origin_node AND receiver_name = receiver_node;
 
@@ -759,23 +827,29 @@ BEGIN
         elapsed_interval := now() - start_time;
 
         IF verb THEN
-            RAISE NOTICE '% → % lag: % (elapsed: %)',
+            RAISE NOTICE '% → % lag: % (bytes: %, elapsed: %)',
                          origin_node, receiver_node,
                          COALESCE(lag_interval::text, 'NULL'),
+                         COALESCE(lag_bytes::text, 'NULL'),
                          elapsed_interval::text;
         END IF;
 
-        -- Exit when lag is within acceptable limits
+        -- Exit when lag is within acceptable limits OR when lag_bytes is zero
         EXIT WHEN lag_interval IS NOT NULL 
-                  AND extract(epoch FROM lag_interval) < max_lag_seconds;
+                  AND (extract(epoch FROM lag_interval) < max_lag_seconds OR lag_bytes = 0);
 
         -- Sleep before next check
         PERFORM pg_sleep(check_interval_seconds);
     END LOOP;
 
     IF verb THEN
-        RAISE NOTICE 'Replication lag from % to % is now within acceptable limits (% seconds)', 
-                     origin_node, receiver_node, max_lag_seconds;
+        IF lag_bytes = 0 THEN
+            RAISE NOTICE 'Replication lag from % to % completed (lag_bytes = 0)', 
+                         origin_node, receiver_node;
+        ELSE
+            RAISE NOTICE 'Replication lag from % to % is now within acceptable limits (% seconds)', 
+                         origin_node, receiver_node, max_lag_seconds;
+        END IF;
     END IF;
 END;
 $$;
@@ -943,6 +1017,7 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     lag_interval interval;
+    lag_bytes bigint;
     max_wait_seconds integer := 60;
     start_time timestamp := now();
     elapsed_interval interval;
@@ -954,24 +1029,26 @@ BEGIN
     LOOP
         loop_count := loop_count + 1;
         lag_sql := format(
-            'SELECT now() - commit_timestamp AS lag_interval FROM spock.lag_tracker WHERE origin_name = %L AND receiver_name = %L',
+            'SELECT now() - commit_timestamp AS lag_interval, replication_lag_bytes AS lag_bytes FROM spock.lag_tracker WHERE origin_name = %L AND receiver_name = %L',
             src_node_name, new_node_name
         );
         -- Use dblink to get lag from remote node
         EXECUTE format(
-            'SELECT * FROM dblink(%L, %L) AS t(lag_interval interval)',
+            'SELECT * FROM dblink(%L, %L) AS t(lag_interval interval, lag_bytes bigint)',
             new_node_dsn, lag_sql
         ) INTO lag_result;
 
         lag_interval := lag_result.lag_interval;
+        lag_bytes := lag_result.lag_bytes;
         elapsed_interval := now() - start_time;
 
-        RAISE NOTICE '% → % lag: % (elapsed: %, loop: %)',
+        RAISE NOTICE '% → % lag: % (bytes: %, elapsed: %, loop: %)',
             src_node_name, new_node_name,
             COALESCE(lag_interval::text, 'NULL'),
+            COALESCE(lag_bytes::text, 'NULL'),
             elapsed_interval::text, loop_count;
 
-        EXIT WHEN lag_interval IS NOT NULL AND extract(epoch FROM lag_interval) < 59;
+        EXIT WHEN lag_interval IS NOT NULL AND (extract(epoch FROM lag_interval) < 59 OR lag_bytes = 0);
         IF extract(epoch FROM elapsed_interval) > max_wait_seconds THEN
             RAISE NOTICE 'Timeout reached (% seconds) - exiting lag monitoring', max_wait_seconds;
             EXIT;
@@ -979,8 +1056,12 @@ BEGIN
         PERFORM pg_sleep(1);
     END LOOP;
 
-    IF lag_interval IS NOT NULL AND extract(epoch FROM lag_interval) < 59 THEN
-        RAISE NOTICE '    ✓ Replication lag monitoring completed';
+    IF lag_interval IS NOT NULL AND (extract(epoch FROM lag_interval) < 59 OR lag_bytes = 0) THEN
+        IF lag_bytes = 0 THEN
+            RAISE NOTICE '    ✓ Replication lag monitoring completed (lag_bytes = 0)';
+        ELSE
+            RAISE NOTICE '    ✓ Replication lag monitoring completed';
+        END IF;
     ELSE
         RAISE NOTICE '    - Replication lag monitoring timed out';
     END IF;
@@ -1311,22 +1392,44 @@ CREATE OR REPLACE PROCEDURE create_sub_on_new_node_to_src_node(
     new_node_dsn    text,  -- New node DSN
     verb            boolean  -- Verbose flag
 ) LANGUAGE plpgsql AS $$
+DECLARE
+    rec RECORD;
+    subscription_count integer := 0;
 BEGIN
-    RAISE NOTICE 'Phase 10: Creating subscription from new node to source node';
-    CALL create_sub(
-        src_dsn,                                      -- Create on source node
-        'sub_' || new_node_name || '_' || src_node_name, -- sub_<new_node>_<src_node>
-        new_node_dsn,                                 -- Provider is new node
-        'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
-        false,                                        -- synchronize_structure
-        false,                                        -- synchronize_data
-        '{}',                                         -- forward_origins
-        '0'::interval,                                -- apply_delay
-        true,                                         -- enabled
-        false,                                        -- force_text_transfer
-        verb                                          -- verbose
-    );
-    RAISE NOTICE '    ✓ %', rpad('Creating subscription sub_' || new_node_name || '_' || src_node_name || ' on node ' || src_node_name || '...', 120, ' ');
+    RAISE NOTICE 'Phase 10: Creating subscriptions from all other nodes to new node';
+    
+    -- Get all existing nodes (excluding new node)
+    CALL get_spock_nodes(src_dsn, verb);
+    
+    -- For each existing node (excluding new node), create subscription TO the new node
+    FOR rec IN SELECT * FROM temp_spock_nodes WHERE node_name != new_node_name LOOP
+        BEGIN
+            CALL create_sub(
+                rec.dsn,                                      -- Create on existing node
+                'sub_' || new_node_name || '_' || rec.node_name, -- sub_<existing_node>_<new_node>
+                new_node_dsn,                                 -- Provider is new node
+                'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
+                false,                                        -- synchronize_structure
+                false,                                        -- synchronize_data
+                '{}',                                         -- forward_origins
+                '0'::interval,                                -- apply_delay
+                true,                                         -- enabled
+                false,                                        -- force_text_transfer
+                verb                                          -- verbose
+            );
+            RAISE NOTICE '    ✓ %', rpad('Creating subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name || '...', 120, ' ');
+            subscription_count := subscription_count + 1;
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE NOTICE '    ✗ %', rpad('Creating subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name || '...', 120, ' ');
+        END;
+    END LOOP;
+    
+    IF subscription_count = 0 THEN
+        RAISE NOTICE '    - No subscriptions created (no other nodes found)';
+    ELSE
+        RAISE NOTICE '    ✓ Created % subscriptions from other nodes to new node', subscription_count;
+    END IF;
 END;
 $$;
 
