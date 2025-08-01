@@ -32,7 +32,8 @@
 -- Usage    : CALL get_spock_nodes('host=... dbname=... user=... password=...', true);
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE get_spock_nodes(remote_dsn text, verb boolean)
+DROP PROCEDURE IF EXISTS get_spock_nodes(text, boolean);
+CREATE OR REPLACE PROCEDURE get_spock_nodes(src_dsn text, verb boolean)
 LANGUAGE plpgsql
 AS
 $$
@@ -42,7 +43,7 @@ BEGIN
     -- to display the results or store them in a temporary table
     
     IF verb THEN
-        RAISE NOTICE E'[STEP] get_spock_nodes: Retrieved nodes from remote DSN: %', remote_dsn;
+        RAISE NOTICE E'[STEP] get_spock_nodes: Retrieved nodes from remote DSN: %', src_dsn;
     END IF;
     
     -- Create a temporary table to store results
@@ -59,10 +60,13 @@ BEGIN
     DELETE FROM temp_spock_nodes;
     
     -- Insert results into temp table
+    IF verb THEN
+        RAISE NOTICE '[QUERY] SELECT n.node_id, n.node_name, n.location, n.country, n.info, i.if_dsn FROM spock.node n JOIN spock.node_interface i ON n.node_id = i.if_nodeid';
+    END IF;
     INSERT INTO temp_spock_nodes
     SELECT *
     FROM dblink(
-        remote_dsn,
+        src_dsn,
         'SELECT n.node_id, n.node_name, n.location, n.country, n.info, i.if_dsn
          FROM spock.node n
          JOIN spock.node_interface i ON n.node_id = i.if_nodeid'
@@ -97,7 +101,8 @@ CREATE TEMP TABLE IF NOT EXISTS temp_spock_nodes (
 -- Procedure to get all spock nodes from the source node
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE get_spock_nodes(
-    src_dsn text  -- Source node DSN to query from
+    src_dsn text,  -- Source node DSN to query from
+    verb boolean DEFAULT false
 )
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -105,6 +110,9 @@ BEGIN
     DELETE FROM temp_spock_nodes;
     
     -- Get all nodes from the source node
+    IF verb THEN
+        RAISE NOTICE '[QUERY] SELECT n.node_id, n.node_name, n.location, n.country, n.info, i.if_dsn FROM spock.node n JOIN spock.node_interface i ON n.node_id = i.if_nodeid';
+    END IF;
     INSERT INTO temp_spock_nodes
     SELECT t.node_id, t.node_name, t.location, t.country, t.info, t.dsn
     FROM dblink(src_dsn, 
@@ -149,8 +157,8 @@ CREATE OR REPLACE PROCEDURE create_sub(
     forward_origins text,
     apply_delay interval,
     enabled boolean,
-    verb boolean,
-    force_text_transfer boolean DEFAULT false
+    force_text_transfer boolean,
+    verb boolean
 )
 LANGUAGE plpgsql
 AS
@@ -184,19 +192,12 @@ BEGIN
     );
 
     IF verb THEN
-        RAISE NOTICE E'
-    [STEP 2] Remote SQL for subscription creation: %
-    ', remotesql;
+        RAISE NOTICE '[QUERY] SQL: %', remotesql;
     END IF;
     
     BEGIN
         SELECT * FROM dblink(node_dsn, remotesql) AS t(sid oid) INTO sid;
 
-        IF verb THEN
-            RAISE NOTICE E'
-        [STEP 3] Subscription "%" created with id % on remote node.
-        ', subscription_name, sid;
-        END IF;
     EXCEPTION
         WHEN OTHERS THEN
             IF verb THEN
@@ -246,9 +247,7 @@ BEGIN
     );
 
     IF verb THEN
-        RAISE NOTICE E'
-    [STEP 1] Remote SQL for slot existence check: %
-    ', remotesql;
+        RAISE NOTICE '[QUERY] %', remotesql;
     END IF;
 
     SELECT * FROM dblink(node_dsn, remotesql) AS t(count int) INTO exists_count;
@@ -272,9 +271,7 @@ BEGIN
     );
 
     IF verb THEN
-        RAISE NOTICE E'
-    [STEP 2] Remote SQL for slot creation: %
-    ', remotesql;
+        RAISE NOTICE '[QUERY] %', remotesql;
     END IF;
 
 
@@ -338,7 +335,7 @@ BEGIN
     remotesql := 'SELECT spock.sync_event();';
 
     IF verb THEN
-        RAISE NOTICE E'[STEP] Remote SQL for sync event: %', remotesql;
+        RAISE NOTICE '[QUERY] %', remotesql;
     END IF;
 
     -- Execute remote SQL and capture the returned LSN
@@ -404,9 +401,7 @@ BEGIN
     );
 
     IF verb THEN
-        RAISE NOTICE E'
-    [STEP 1] Remote SQL for node existence check: %
-    ', remotesql;
+        RAISE NOTICE '[QUERY] %', remotesql;
     END IF;
 
     SELECT * FROM dblink(dsn, remotesql) AS t(count int) INTO exists_count;
@@ -440,9 +435,7 @@ BEGIN
     );
 
     IF verb THEN
-        RAISE NOTICE E'
-    [STEP 2] Remote SQL for node creation: %
-    ', remotesql;
+        RAISE NOTICE '[QUERY] %', remotesql;
     END IF;
 
 
@@ -512,7 +505,7 @@ BEGIN
     );
 
     IF verb THEN
-        RAISE NOTICE E'[STEP] Remote SQL for getting commit timestamp: %', remotesql;
+        RAISE NOTICE '[QUERY] %', remotesql;
     END IF;
 
     -- Execute remote SQL and capture the commit timestamp
@@ -578,9 +571,7 @@ BEGIN
     );
 
     IF verb THEN
-        RAISE NOTICE E'
-    [STEP 2] Remote SQL for advancing replication slot: %
-    ', remotesql;
+        RAISE NOTICE '[QUERY] %', remotesql;
     END IF;
     IF verb THEN
         RAISE NOTICE E'
@@ -637,9 +628,7 @@ BEGIN
     );
 
     IF verb THEN
-        RAISE NOTICE E'
-    [STEP 1] Remote SQL for enabling subscription: %
-    ', remotesql;
+        RAISE NOTICE '[QUERY] %', remotesql;
     END IF;
 
     -- ============================================================================
@@ -1184,7 +1173,7 @@ BEGIN
     RAISE NOTICE 'Phase 4: Creating disabled subscriptions and slots';
     
     -- Get all existing nodes (excluding source and new)
-    CALL get_spock_nodes(src_dsn);
+    CALL get_spock_nodes(src_dsn, verb);
     
     -- Check if there are any "other" nodes (not source, not new)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
@@ -1206,10 +1195,10 @@ BEGIN
             END IF;
             
             PERFORM * FROM dblink(rec.dsn, remotesql) AS t(slot_name text, lsn pg_lsn);
-            RAISE NOTICE '    ✓ %', rpad('Creating replication slot ' || slot_name || '...', 120, ' ');
+            RAISE NOTICE '    ✓ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name, 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Creating replication slot ' || slot_name || '...', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name, 120, ' ');
                 CONTINUE;
         END;
         
@@ -1228,11 +1217,11 @@ BEGIN
                 false,                                        -- force_text_transfer
                 verb                                          -- verbose
             );
-            RAISE NOTICE '    ✓ %', rpad('Creating initial subscription sub_' || rec.node_name || '_' || new_node_name || '...', 120, ' ');
+            RAISE NOTICE '    ✓ %', rpad('Creating initial subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name, 120, ' ');
             subscription_count := subscription_count + 1;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Creating initial subscription sub_' || rec.node_name || '_' || new_node_name || '...', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Creating initial subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name, 120, ' ');
         END;
     END LOOP;
     
@@ -1677,13 +1666,14 @@ $$;
 -- Procedure to present final cluster state
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE present_final_cluster_state(
-    initial_node_count integer
+    initial_node_count integer,
+    verb boolean DEFAULT false
 ) LANGUAGE plpgsql AS $$
 DECLARE
     rec RECORD;
     sub_status text;
     wait_count integer := 0;
-    max_wait_count integer := 300; -- Wait up to 60 seconds
+    max_wait_count integer := 300; -- Wait up to 300 seconds
 BEGIN
     -- Phase 11: Presenting final cluster state
     RAISE NOTICE 'Phase 11: Presenting final cluster state';
@@ -1694,6 +1684,9 @@ BEGIN
         wait_count := wait_count + 1;
         
         -- Check subscription status
+        IF verb THEN
+            RAISE NOTICE '[QUERY] SELECT status FROM spock.sub_show_status() LIMIT 1';
+        END IF;
         SELECT status INTO sub_status FROM spock.sub_show_status() LIMIT 1;
         
         IF sub_status = 'replicating' THEN
@@ -1713,6 +1706,10 @@ BEGIN
     RAISE NOTICE 'Current Spock Nodes:';
     RAISE NOTICE ' node_id | node_name | location | country | info';
     RAISE NOTICE '---------+-----------+----------+---------+------';
+    
+    IF verb THEN
+        RAISE NOTICE '[QUERY] SELECT node_id, node_name, location, country, info FROM spock.node ORDER BY node_id';
+    END IF;
     FOR rec IN SELECT node_id, node_name, location, country, info FROM spock.node ORDER BY node_id LOOP
         RAISE NOTICE ' % | % | % | % | %', 
             rpad(rec.node_id::text, 7, ' '), 
@@ -1725,6 +1722,9 @@ BEGIN
     
     -- Show subscription status
     RAISE NOTICE 'Subscription Status:';
+    IF verb THEN
+        RAISE NOTICE '[QUERY] SELECT * FROM spock.sub_show_status()';
+    END IF;
     FOR rec IN SELECT * FROM spock.sub_show_status() LOOP
         RAISE NOTICE '  %: % (provider: %)', rec.subscription_name, rec.status, rec.provider_node;
     END LOOP;
@@ -1819,7 +1819,7 @@ BEGIN
     CALL create_sub_on_new_node_to_src_node(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
     -- Phase 11: Present final cluster state
-    CALL present_final_cluster_state(initial_node_count);
+    CALL present_final_cluster_state(initial_node_count, verb);
 
     
 
