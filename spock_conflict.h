@@ -43,6 +43,7 @@ typedef enum
 extern int spock_conflict_resolver;
 extern int spock_conflict_log_level;
 extern bool	spock_save_resolutions;
+extern bool	ignore_same_origin_update_conflict;
 
 typedef enum SpockConflictType
 {

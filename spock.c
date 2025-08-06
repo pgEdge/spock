@@ -857,7 +857,16 @@ _PG_init(void)
 							 "Log conflict resolutions to spock."CATALOG_LOGTABLE" table.",
 							 NULL,
 							 &spock_save_resolutions,
-							 false, PGC_SIGHUP,
+							 false, PGC_SUSET,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.ignore_same_origin_update_conflict",
+							 "Ignore 'conflict' when updating tuple with same origin",
+							 "Do not consider it a conflict When applying an update"
+							 "and the origin matches that of the tuple being updated",
+							 &ignore_same_origin_update_conflict,
+							 true, PGC_SUSET,
 							 0,
 							 NULL, NULL, NULL);
 

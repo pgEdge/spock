@@ -58,6 +58,7 @@
 int			spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
 int			spock_conflict_log_level = LOG;
 bool		spock_save_resolutions = false;
+bool		ignore_same_origin_update_conflict = true;
 
 static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
 										bool *ret_isnull);
@@ -681,6 +682,24 @@ spock_report_conflict(SpockConflictType conflict_type,
 	TupleDesc	desc = RelationGetDescr(rel->rel);
 	const char *idxname = "(unknown)";
 	const char *qualrelname;
+
+
+	/* See if we may ignore update-update conflict for same origin */
+	if (ignore_same_origin_update_conflict &&
+			conflict_type == CONFLICT_UPDATE_UPDATE)
+	{
+		/*
+		 * If updating a row that came from the same origin,
+		 * do not report it as a conflict
+		 */
+		if (local_tuple_origin == replorigin_session_origin)
+			return;
+
+		/* If updated in the same transaction, do not report it as a conflict */
+		if (local_tuple_origin == InvalidRepOriginId &&
+			TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
+			return;
+	}
 
 	/* Count statistics */
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
