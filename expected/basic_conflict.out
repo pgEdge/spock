@@ -1,0 +1,121 @@
+-- basic builtin datatypes
+SELECT * FROM spock_regress_variables()
+\gset
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+	CREATE TABLE public.basic_conflict (
+		id int primary key,
+		data text);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'basic_conflict');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO basic_conflict VALUES (1, 'A'), (2, 'B');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM basic_conflict ORDER BY id;
+ id | data 
+----+------
+  1 | A
+  2 | B
+(2 rows)
+
+\c :provider_dsn
+TRUNCATE spock.resolutions;
+UPDATE basic_conflict SET data = 'AAA' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM basic_conflict ORDER BY id;
+ id | data 
+----+------
+  1 | AAA
+  2 | B
+(2 rows)
+
+--- should return nothing
+SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+ relname | conflict_type 
+---------+---------------
+(0 rows)
+
+-- now update row locally to set up an origin difference
+UPDATE basic_conflict SET data = 'sub-A' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :provider_dsn
+-- Update on provider again so subscriber will see
+-- an origin different from its local one
+UPDATE basic_conflict SET data = 'pub-A' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM basic_conflict ORDER BY id;
+ id | data  
+----+-------
+  1 | pub-A
+  2 | B
+(2 rows)
+
+-- We should now see a conflict
+SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+        relname        | conflict_type 
+-----------------------+---------------
+ public.basic_conflict | update_update
+(1 row)
+
+-- Clean
+TRUNCATE spock.resolutions;
+\c :provider_dsn
+-- Do update in same transaction as INSERT
+BEGIN;
+INSERT INTO basic_conflict VALUES (3, 'C');
+UPDATE basic_conflict SET data = 'pub-C' WHERE id = 3;
+COMMIT;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM basic_conflict ORDER BY id;
+ id | data  
+----+-------
+  1 | pub-A
+  2 | B
+  3 | pub-C
+(3 rows)
+
+-- We should not see a conflict
+SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+ relname | conflict_type 
+---------+---------------
+(0 rows)
+
+DROP table basic_conflict;
