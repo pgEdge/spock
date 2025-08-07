@@ -98,39 +98,6 @@ CREATE TEMP TABLE IF NOT EXISTS temp_spock_nodes (
 );
 
 -- ============================================================================
--- Procedure to get all spock nodes from the source node
--- ============================================================================
-CREATE OR REPLACE PROCEDURE get_spock_nodes(
-    src_dsn text,  -- Source node DSN to query from
-    verb boolean DEFAULT false
-)
-LANGUAGE plpgsql AS $$
-BEGIN
-    -- Clear existing data
-    DELETE FROM temp_spock_nodes;
-    
-    -- Get all nodes from the source node
-    IF verb THEN
-        RAISE NOTICE '[QUERY] SELECT n.node_id, n.node_name, n.location, n.country, n.info, i.if_dsn FROM spock.node n JOIN spock.node_interface i ON n.node_id = i.if_nodeid';
-    END IF;
-    INSERT INTO temp_spock_nodes
-    SELECT t.node_id, t.node_name, t.location, t.country, t.info, t.dsn
-    FROM dblink(src_dsn, 
-        'SELECT n.node_id, n.node_name, n.location, n.country, n.info, i.if_dsn
-         FROM spock.node n
-         JOIN spock.node_interface i ON n.node_id = i.if_nodeid'
-    ) AS t(
-        node_id integer,
-        node_name text,
-        location text,
-        country text,
-        info text,
-        dsn text
-    );
-END;
-$$;
-
--- ============================================================================
 -- Procedure: create_sub
 -- Purpose : Creates a Spock subscription on a remote node via dblink.
 -- Arguments:
@@ -143,6 +110,7 @@ $$;
 --   forward_origins       - Text array of origins to forward.
 --   apply_delay           - Interval for apply delay.
 --   enabled               - Whether to enable the subscription (boolean).
+--   force_text_transfer   - Whether to force text transfer (boolean).
 --   verb                  - Verbose output flag
 -- Usage    : CALL create_sub(...);
 -- ============================================================================
@@ -1903,30 +1871,31 @@ BEGIN
     -- Phase 2: Create nodes
     CALL create_nodes_only(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, new_node_location, new_node_country, new_node_info, initial_node_count);
 
-    -- Phase 4: Create disabled subscriptions and slots
+    -- Phase 3: Create disabled subscriptions and slots
     CALL create_disable_subscriptions_and_slots(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 5: Create source to new node subscription
+    -- Phase 4: Create source to new node subscription
     CALL create_source_to_new_subscription(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 6: Trigger sync events on other nodes and wait on source
+    -- Phase 5: Trigger sync events on other nodes and wait on source
     CALL trigger_sync_on_other_nodes_and_wait_on_source(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 8: Check commit timestamp and advance replication slot
+    -- Phase 6: Trigger sync event on source and wait on new node
+    CALL trigger_sync_and_wait(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+
+    -- Phase 7: Check commit timestamp and advance replication slot
     CALL check_commit_timestamp_and_advance_slot(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 9: Enable disabled subscriptions
+    -- Phase 8: Enable disabled subscriptions
     CALL enable_disabled_subscriptions(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 10: Create subscription from new node to source node
+    -- Phase 9: Create subscription from new node to source node
     CALL create_sub_on_new_node_to_src_node(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 11: Present final cluster state
+    -- Phase 10: Present final cluster state
     CALL present_final_cluster_state(initial_node_count, verb);
 
-    
-
-    -- Phase 12: Monitor replication lag
+    -- Phase 11: Monitor replication lag
     CALL monitor_replication_lag(src_node_name, new_node_name, new_node_dsn, verb);
 END;
 $$;
