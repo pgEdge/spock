@@ -2,11 +2,11 @@
 CC = gcc
 
 # PostgreSQL include and library directories
-PG_INCDIR = $(shell pg_config --includedir)
-PG_LIBDIR = $(shell pg_config --libdir)
-PG_BINDIR = $(shell pg_config --bindir)
+PG_INCDIR = $(shell $(PG_CONFIG) --includedir)
+PG_LIBDIR = $(shell $(PG_CONFIG) --libdir)
+PG_BINDIR = $(shell $(PG_CONFIG) --bindir)
 
-PG_SHAREDIR = $(shell pg_config --sharedir)
+PG_SHAREDIR = $(shell $(PG_CONFIG) --sharedir)
 SPOCK_DIR = $(PG_SHAREDIR)/spock
 
 UNAME_S := $(shell uname -s)

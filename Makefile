@@ -64,7 +64,7 @@ spock_version=$(shell grep "^\#define \<SPOCK_VERSION\>" $(realpath $(srcdir)/sp
 abs_top_builddir = .
 NO_TEMP_INSTALL = yes
 
-PG_CONFIG ?= pg_config
+export PG_CONFIG ?= pg_config
 
 PGVER := $(shell $(PG_CONFIG) --version | sed 's/[^0-9]//g' | cut -c 1-2)
 
@@ -114,7 +114,7 @@ spock.control: spock.control.in spock.h
 	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' $(realpath $(srcdir)/spock.control.in) > $(control_path)
 
 spockctrl:
-	$(MAKE) -C spockctrl
+	$(MAKE) -C $(srcdir)/spockctrl
 
 all: spock.control spockctrl
 
@@ -165,12 +165,12 @@ check_prove:
 clean: clean-spockctrl
 
 clean-spockctrl:
-	$(MAKE) -C spockctrl clean
+	$(MAKE) -C $(srcdir)/spockctrl clean
 
 install: install-spockctrl
 
 install-spockctrl:
-	$(MAKE) -C spockctrl install
+	$(MAKE) -C $(srcdir)/spockctrl install
 
 .PHONY: all check regresscheck spock.control spockctrl
 
