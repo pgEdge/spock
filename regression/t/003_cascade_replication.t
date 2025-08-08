@@ -1,4 +1,30 @@
-# test truncate on cascade nodes with different replication sets. RT87453
+# =============================================================================
+# Test: 003_cascade_replication.pl - Cascade Replication Configuration
+# =============================================================================
+# This test verifies cascade replication functionality where data flows
+# through multiple nodes in a chain configuration (A -> B -> C).
+# This is useful for scenarios where you need to replicate data across
+# multiple geographic locations or through intermediate nodes.
+#
+# Test Coverage:
+# - 3-node cluster creation and management (n1, n2, n3)
+# - Cascade replication setup (A -> B -> C)
+# - Data insertion and replication through the chain
+# - Selective replication set management
+# - Data verification at each node in the chain
+# - Truncate operation and selective replication
+# - Subscription management across multiple nodes
+# - Cross-node data consistency verification
+#
+# Expected Results:
+# - All 17 tests should pass
+# - 3-node cascade cluster should be created successfully
+# - Data should replicate correctly through the chain A -> B -> C
+# - Selective replication sets should work properly
+# - Data should be consistent across all nodes
+#
+# Bug Reference: RT87453 - test truncate on cascade nodes with different replication sets
+
 use strict;
 use warnings;
 use Test::More tests => 17;

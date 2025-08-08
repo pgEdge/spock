@@ -4,6 +4,9 @@ use strict;
 use warnings;
 use Exporter 'import';
 use Test::More;
+use TAP::Formatter::Color;
+use TAP::Harness;
+use File::Path qw(make_path);
 
 our @EXPORT_OK = qw(
     create_cluster
@@ -35,6 +38,34 @@ sub {
     die "PostgreSQL binaries not found in PATH. Please ensure psql, initdb, and postgres are available." unless $PG_BIN;
 }->();
 
+# Logging
+my $LOG_FILE = $ENV{SPOCKTEST_LOG_FILE} // "logs/spocktest_$$.log";
+eval { make_path('logs') };
+
+# Redirect all STDERR (from Perl and child processes like backticks) to the per-test log
+{
+    open my $stderr_log, '>>', $LOG_FILE or die "Cannot open log $LOG_FILE: $!";
+    select((select($stderr_log), $| = 1)[0]);
+    open STDERR, '>>&', $stderr_log or die "Cannot dup STDERR: $!";
+}
+
+sub _run_cmd_logged_wait {
+    my (@cmd) = @_;
+    my $pid = fork();
+    if (!defined $pid) {
+        die "fork() failed";
+    }
+    if ($pid == 0) {
+        open my $logfh, '>>', $LOG_FILE or die "Cannot open log $LOG_FILE: $!";
+        open STDOUT, '>&', $logfh or die $!;
+        open STDERR, '>&', $logfh or die $!;
+        exec @cmd;
+        exit 127;
+    }
+    waitpid($pid, 0);
+    return ($? >> 8);
+}
+
 # Data directory base
 my $DATADIR_BASE = '/tmp/tmp_spock_node';
 
@@ -56,28 +87,29 @@ sub get_test_config {
         db_user => $DB_USER,
         db_password => $DB_PASSWORD,
         pg_bin => $PG_BIN,
-        node_datadirs => \@node_datadirs
+        node_datadirs => \@node_datadirs,
+        log_file => $LOG_FILE
     };
 }
 
 # Helper function to run system commands and bail on failure
 sub system_or_bail {
     my @cmd = @_;
-    my $result = system(@cmd);
-    if ($result != 0) {
-        die "Command failed with exit code $result: @cmd";
+    my $rc = _run_cmd_logged_wait(@cmd);
+    if ($rc != 0) {
+        die "Command failed with exit code $rc: @cmd";
     }
 }
 
 # Helper function to run commands and test results
 sub command_ok {
     my ($cmd, $test_name) = @_;
-    my $result = system(@$cmd);
-    if ($result == 0) {
+    my $rc = _run_cmd_logged_wait(@$cmd);
+    if ($rc == 0) {
         pass($test_name);
         return 1;
     } else {
-        fail("$test_name: Command failed with exit code $result");
+        fail("$test_name: Command failed with exit code $rc");
         return 0;
     }
 }
@@ -85,8 +117,8 @@ sub command_ok {
 # Helper function to run commands that might fail (like creating existing users)
 sub system_maybe {
     my @cmd = @_;
-    my $result = system(@cmd);
-    return $result == 0;
+    my $rc = _run_cmd_logged_wait(@cmd);
+    return $rc == 0;
 }
 
 # Create PostgreSQL configuration file
@@ -150,7 +182,7 @@ sub create_cluster {
     
     # Start PostgreSQL instances for all nodes
     for (my $i = 0; $i < $num_nodes; $i++) {
-        system("$PG_BIN/postgres -D $node_datadirs[$i] &");
+        system("$PG_BIN/postgres -D $node_datadirs[$i] >> '$LOG_FILE' 2>&1 &");
     }
     
     # Allow PostgreSQL servers to startup
@@ -250,7 +282,7 @@ sub destroy_cluster {
         
         # Stop PostgreSQL instances
         for (my $i = 0; $i < $node_count; $i++) {
-            system("$PG_BIN/pg_ctl stop -D $node_datadirs[$i] -m immediate &");
+            system("$PG_BIN/pg_ctl stop -D $node_datadirs[$i] -m immediate >> '$LOG_FILE' 2>&1 &");
         }
         
         # Wait for processes to stop

@@ -4,13 +4,29 @@ use Test::More tests => 29;
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config);
 
-# Test basic Spock functionality
-# This test verifies core Spock features:
-# 1. Node creation and management
-# 2. Replication set creation and management
-# 3. Table replication
-# 4. Basic DML operations (INSERT, UPDATE, DELETE)
-# 5. Subscription management
+# =============================================================================
+# Test: 001_basic.pl - Basic Spock Extension Functionality
+# =============================================================================
+# This test verifies the core functionality of the Spock PostgreSQL extension
+# including node management, replication sets, table replication, and basic
+# DML operations across a 2-node cluster.
+#
+# Test Coverage:
+# - Node creation and management (n1, n2)
+# - Spock extension installation verification
+# - Default replication sets validation
+# - Custom replication set creation and management
+# - Table creation and replication setup
+# - Basic DML operations: INSERT, UPDATE, DELETE, TRUNCATE
+# - Subscription creation and management
+# - Data replication verification between nodes
+# - Cleanup and resource management
+#
+# Expected Results:
+# - All 29 tests should pass
+# - 2-node cluster should be created successfully
+# - Data should replicate correctly between provider and subscriber
+# - All DML operations should work and replicate properly
 
 # Create a 2-node cluster
 create_cluster(2, 'Create 2-node basic Spock test cluster');
