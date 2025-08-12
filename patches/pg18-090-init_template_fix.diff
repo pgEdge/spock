@@ -1,8 +1,8 @@
 diff --git a/src/Makefile.global.in b/src/Makefile.global.in
-index 4859343153..1ad94b316d 100644
+index 8b1b357beaa..227004fcd36 100644
 --- a/src/Makefile.global.in
 +++ b/src/Makefile.global.in
-@@ -410,10 +410,15 @@ ld_library_path_var = LD_LIBRARY_PATH
+@@ -425,10 +425,15 @@ ld_library_path_var = LD_LIBRARY_PATH
  # with_temp_install_extra is for individual ports to define if they
  # need something more here. If not defined then the expansion does
  # nothing.
