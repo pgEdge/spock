@@ -279,13 +279,6 @@ SELECT spock.sub_disable('test_subscription', true);
  t
 (1 row)
 
--- Allow time to disable before continuing
-SELECT pg_sleep(5);
- pg_sleep 
-----------
- 
-(1 row)
-
 \c :provider_dsn
 SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
 \gset

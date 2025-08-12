@@ -163,9 +163,6 @@ ALTER TABLE public.not_nullcheck_tbl ADD COLUMN id2 integer not null;
 
 -- disable now to use pg_logical_slot_get_changes() later
 SELECT spock.sub_disable('test_subscription', true);
--- Allow time to disable before continuing
-SELECT pg_sleep(5);
-
 \c :provider_dsn
 
 SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
