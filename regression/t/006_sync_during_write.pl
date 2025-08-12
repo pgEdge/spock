@@ -9,7 +9,7 @@ use Test::More tests => 10;
 use Time::HiRes;
 use Carp;
 use IPC::Run;
-use lib 't';
+use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config);
 
 my $PGBENCH_SCALE = $ENV{PGBENCH_SCALE} // 1;

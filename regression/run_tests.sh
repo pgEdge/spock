@@ -27,43 +27,24 @@
 
 set -euo pipefail
 
-# Export PostgreSQL PATH and current directory for spock tools
-export PATH="/usr/local/pgsql.16/bin:$(pwd):$PATH"
+# Export current directory to PATH for spock tools
+export PATH="$(pwd):$PATH"
 
-# Ensure PostgreSQL binaries are available
+# Ensure PostgreSQL binaries are available in PATH
 if ! command -v psql >/dev/null 2>&1; then
     echo "ERROR: PostgreSQL binaries not found in PATH"
-    echo "Please ensure /usr/local/pgsql.16/bin is in your PATH"
+    echo "Please ensure PostgreSQL is installed and accessible via PATH"
+    echo "  - Add PostgreSQL bin directory to PATH, or"
+    echo "  - Use 'pg_config --bindir' to find the correct path"
     exit 1
 fi
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-# Test configuration
-readonly TEST_DIR="t"
-readonly LOG_DIR="logs"
-readonly CONFIG_FILE="test_config.json"
-readonly SCHEDULE_FILE="schedule"
-
-# Code coverage configuration
-COVERAGE_ENABLED="${COVERAGE_ENABLED:-false}"
-readonly COVERAGE_DIR="coverage"
-readonly COVERAGE_REPORT_DIR="$COVERAGE_DIR/reports"
-readonly COVERAGE_HTML_DIR="$COVERAGE_REPORT_DIR/html"
-readonly COVERAGE_XML_DIR="$COVERAGE_REPORT_DIR/xml"
-readonly COVERAGE_THRESHOLD="${COVERAGE_THRESHOLD:-80}"  # Minimum coverage percentage
-
-# No colors - plain text output
-
-# =============================================================================
-# Test Suite Configuration
-# =============================================================================
-
-# Test suite will be auto-discovered from t/ directory
-TEST_SUITE_IDS=()
-TEST_SUITE_NAMES=()
+# Ensure other required PostgreSQL binaries are available
+if ! command -v initdb >/dev/null 2>&1; then
+    echo "ERROR: initdb not found in PATH"
+    echo "Please ensure PostgreSQL is properly installed"
+    exit 1
+fi
 
 # =============================================================================
 # Utility Functions
@@ -89,6 +70,36 @@ log_test() {
     echo "[TEST] $1"
 }
 
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+# Test configuration
+readonly TEST_DIR="t"
+readonly LOG_DIR="logs"
+readonly CONFIG_FILE="test_config.json"
+readonly SCHEDULE_FILE="schedule"
+readonly TEST_EXTENSION=".pl"
+
+# Code coverage configuration
+COVERAGE_ENABLED="${COVERAGE_ENABLED:-false}"
+readonly COVERAGE_DIR="coverage"
+readonly COVERAGE_REPORT_DIR="$COVERAGE_DIR/reports"
+readonly COVERAGE_HTML_DIR="$COVERAGE_REPORT_DIR/html"
+readonly COVERAGE_XML_DIR="$COVERAGE_REPORT_DIR/xml"
+readonly COVERAGE_THRESHOLD="${COVERAGE_THRESHOLD:-80}"  # Minimum coverage percentage
+
+# No colors - plain text output
+
+# =============================================================================
+# Test Suite Configuration
+# =============================================================================
+
+# Test suite will be auto-discovered from t/ directory
+TEST_SUITE_IDS=()
+TEST_SUITE_NAMES=()
+
 # =============================================================================
 # Test Discovery
 # =============================================================================
@@ -111,11 +122,11 @@ discover_tests() {
                 local test_name=$(echo "$test_id" | sed 's/_/ /g' | sed 's/\b\w/\U&/g')
                 
                             # Check if test file exists
-            if [ -f "$TEST_DIR/${test_id}.t" ]; then
+            if [ -f "$TEST_DIR/${test_id}${TEST_EXTENSION}" ]; then
                 TEST_SUITE_IDS+=("$test_id")
                 TEST_SUITE_NAMES+=("$test_name")
             else
-                log_warning "Test file not found: $TEST_DIR/${test_id}.t (listed in schedule)"
+                log_warning "Test file not found: $TEST_DIR/${test_id}${TEST_EXTENSION} (listed in schedule)"
             fi
             fi
         done < "$SCHEDULE_FILE"
@@ -123,11 +134,11 @@ discover_tests() {
         log_warning "Schedule file not found: $SCHEDULE_FILE, falling back to auto-discovery"
         
         # Fallback to auto-discovery
-        local test_files=($(find "$TEST_DIR" -name "*.t" -type f | sort))
+        local test_files=($(find "$TEST_DIR" -name "*${TEST_EXTENSION}" -type f | sort))
         
         for test_file in "${test_files[@]}"; do
-            local test_id=$(basename "$test_file" .t)
-            local test_name=$(basename "$test_file" .t | sed 's/_/ /g' | sed 's/\b\w/\U&/g')
+            local test_id=$(basename "$test_file" "${TEST_EXTENSION}")
+            local test_name=$(basename "$test_file" "${TEST_EXTENSION}" | sed 's/_/ /g' | sed 's/\b\w/\U&/g')
             
             TEST_SUITE_IDS+=("$test_id")
             TEST_SUITE_NAMES+=("$test_name")
@@ -366,7 +377,7 @@ run_single_test() {
     
     local start_time=$(date +%s.%N)
     
-    echo "┌─ Running $test_name.t..."
+            echo "┌─ Running $test_name${TEST_EXTENSION}..."
     
     # Run test with TAP output and capture timing
     local exit_code
@@ -453,7 +464,7 @@ run_test_suite() {
         local test_description="${TEST_SUITE_NAMES[$i]}"
         # numeric ID only for display
         local test_num=$(echo "$test_id" | sed 's/_.*$//')
-        local test_file="$TEST_DIR/${test_id}.t"
+        local test_file="$TEST_DIR/${test_id}${TEST_EXTENSION}"
         
         if [ -f "$test_file" ]; then
             run_single_test "$test_file" "$test_num" "$test_description" || {
