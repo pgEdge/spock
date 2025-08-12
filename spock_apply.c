@@ -1486,7 +1486,7 @@ handle_insert(StringInfo s)
 	}
 	else
 	{
-		oldcontext = MemoryContextSwitchTo(ApplyOperationContext);
+		MemoryContextSwitchTo(ApplyOperationContext);
 		apply_api.do_insert(rel, &newtup);
 		MemoryContextSwitchTo(oldcontext);
 	}
