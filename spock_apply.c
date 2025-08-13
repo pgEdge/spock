@@ -257,6 +257,12 @@ dlist_head sync_replica_lsn = DLIST_STATIC_INIT(sync_replica_lsn);
 static XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
 #define is_skipping_changes() (unlikely(!XLogRecPtrIsInvalid(skip_xact_finish_lsn)))
 
+/*
+ * Whereas MessageContext is used for the duration of a transaction,
+ * ApplyOperationContext can be used for individual operations
+ */
+MemoryContext ApplyOperationContext = NULL;
+
 /* Functions for skipping changes */
 static void maybe_start_skipping_changes(XLogRecPtr finish_lsn);
 static void stop_skipping_changes(void);
@@ -1378,6 +1384,7 @@ handle_insert(StringInfo s)
 	SpockTupleData newtup;
 	SpockRelation *rel;
 	ErrorData  *edata;
+	MemoryContext	oldcontext;
 	bool		started_tx;
 	bool		failed = false;
 
@@ -1386,6 +1393,8 @@ handle_insert(StringInfo s)
 	 */
 	if (is_skipping_changes())
 		return;
+
+	oldcontext = MemoryContextSwitchTo(ApplyOperationContext);
 
 	started_tx = begin_replication_step();
 
@@ -1400,6 +1409,8 @@ handle_insert(StringInfo s)
 	{
 		spock_relation_close(rel, NoLock);
 		end_replication_step();
+		MemoryContextSwitchTo(oldcontext);
+		MemoryContextReset(ApplyOperationContext);
 		return;
 	}
 
@@ -1418,6 +1429,8 @@ handle_insert(StringInfo s)
 		{
 			apply_api.multi_insert_add_tuple(rel, &newtup);
 			last_insert_rel_cnt++;
+			MemoryContextSwitchTo(oldcontext);
+			MemoryContextReset(ApplyOperationContext);
 			return;
 		}
 	}
@@ -1473,7 +1486,9 @@ handle_insert(StringInfo s)
 	}
 	else
 	{
+		MemoryContextSwitchTo(ApplyOperationContext);
 		apply_api.do_insert(rel, &newtup);
+		MemoryContextSwitchTo(oldcontext);
 	}
 
 	/* if INSERT was into our queue, process the message. */
@@ -1485,7 +1500,7 @@ handle_insert(StringInfo s)
 
 		multi_insert_finish();
 
-		MemoryContextSwitchTo(MessageContext);
+		MemoryContextSwitchTo(ApplyOperationContext);
 
 		ht = heap_form_tuple(RelationGetDescr(rel->rel),
 							 newtup.values, newtup.nulls);
@@ -1515,6 +1530,8 @@ handle_insert(StringInfo s)
 		spock_relation_close(rel, NoLock);
 		end_replication_step();
 	}
+	MemoryContextSwitchTo(MessageContext);
+	MemoryContextReset(ApplyOperationContext);
 }
 
 static void
@@ -2755,6 +2772,11 @@ apply_work(PGconn *streamConn)
 										   "MessageContext",
 										   ALLOCSET_DEFAULT_SIZES);
 
+	/* Init the ApplyOperationContext for individual operations like DML */
+	ApplyOperationContext = AllocSetContextCreate(TopMemoryContext,
+										   "ApplyOperationContext",
+										   ALLOCSET_DEFAULT_SIZES);
+
 	MemoryContextSwitchTo(MessageContext);
 
 	/* mark as idle, before starting to loop */
@@ -3152,6 +3174,7 @@ stream_replay:
 		FlushErrorState();
 
 		MemoryContextReset(MessageContext);
+		MemoryContextReset(ApplyOperationContext);
 		spock_relation_cache_reset();
 
 		apply_replay_next = apply_replay_head;
