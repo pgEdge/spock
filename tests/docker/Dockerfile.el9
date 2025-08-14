@@ -16,6 +16,9 @@ COPY tests/docker/lib-list.txt /home/pgedge/
 
 RUN dnf install --allowerasing --enablerepo=crb -y $(cat /home/pgedge/lib-list.txt)
 
+# Install perl dependencies for running tap tests
+RUN cpanm Test::More
+
 RUN ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
     cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys
 
