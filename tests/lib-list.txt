@@ -25,6 +25,7 @@ openssh-server
 openssl-devel
 pam-devel
 perl
+perl-App-cpanminus
 perl-devel
 perl-IPC-Run
 pkgconfig

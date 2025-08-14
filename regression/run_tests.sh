@@ -30,6 +30,13 @@ set -euo pipefail
 # Export current directory to PATH for spock tools
 export PATH="$(pwd):$PATH"
 
+# These variables are set to defaults for running in github action
+if [[ -v PGVER ]]; then
+    export PG_CONFIG=/home/pgedge/pgedge/pg${PGVER}/bin/pg_config
+    export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg${PGVER}/lib/
+    export PATH="/home/pgedge/pgedge/pg${PGVER}/bin:$PATH"
+fi
+
 # Ensure PostgreSQL binaries are available in PATH
 if ! command -v psql >/dev/null 2>&1; then
     echo "ERROR: PostgreSQL binaries not found in PATH"
@@ -458,6 +465,7 @@ run_single_test() {
 
 run_test_suite() {
     local total_start_time=$(date +%s.%N)
+    local exit_code=0
     
     for i in "${!TEST_SUITE_IDS[@]}"; do
         local test_id="${TEST_SUITE_IDS[$i]}"
@@ -469,6 +477,7 @@ run_test_suite() {
         if [ -f "$test_file" ]; then
             run_single_test "$test_file" "$test_num" "$test_description" || {
                 log_error "Test $test_id failed with exit code $?"
+                exit_code=1
                 continue
             }
         else
@@ -480,6 +489,7 @@ run_test_suite() {
     local total_elapsed=$(echo "$total_end_time - $total_start_time" | bc -l 2>/dev/null || echo "0")
     
     eval "total_elapsed_time=\"$total_elapsed\""
+    return $exit_code
 }
 
 # =============================================================================
@@ -558,6 +568,8 @@ generate_summary() {
 # =============================================================================
 
 main() {
+    local exit_code=0
+
     # Setup environment
     setup_environment
     
@@ -572,6 +584,7 @@ main() {
     
     # Run test suite
     run_test_suite
+    exit_code=$?
     
     # Summary disabled per request
     # generate_summary
@@ -579,7 +592,7 @@ main() {
     # Generate coverage report if enabled
     generate_coverage_report
     
-
+    return $exit_code
 }
 
 # =============================================================================
