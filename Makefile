@@ -1,86 +1,75 @@
 # contrib/spock/Makefile
 
+
+export PG_CONFIG ?= pg_config
+PGVER := $(shell $(PG_CONFIG) --version | sed 's/[^0-9]//g' | cut -c 1-2)
+
 MODULE_big = spock
 EXTENSION = spock
 PGFILEDESC = "spock - multi-master replication"
 
 MODULES = spock_output
 
-DATA = spock--6.0.0-devel.sql \
-	   spock--5.0.1--6.0.0-devel.sql \
-	   spock--5.0.0--5.0.1.sql \
-	   spock--5.0.0.sql \
-	   spock--4.0.0--4.0.1.sql \
-	   spock--4.0.1--4.0.2.sql \
-	   spock--4.0.2--4.0.3.sql \
-	   spock--4.0.3--4.0.4.sql \
-	   spock--4.0.4--4.0.5.sql \
-	   spock--4.0.5--4.0.6.sql \
-	   spock--4.0.6--4.0.7.sql \
-	   spock--4.0.7--4.0.8.sql \
-	   spock--4.0.8--4.0.9.sql \
-	   spock--4.0.9--4.0.10.sql \
-	   spock--4.0.10--5.0.0.sql
+# Lookup source directory
+vpath % src src/compat/$(PGVER)
 
-OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
-		spock_conflict.o spock_manager.o \
-		spock.o spock_node.o spock_relcache.o \
-		spock_repset.o spock_rpc.o spock_functions.o \
-		spock_queue.o spock_fe.o spock_worker.o \
-		spock_sync.o spock_sequences.o spock_executor.o \
-		spock_dependency.o spock_apply_heap.o spock_apply_spi.o \
-		spock_output_config.o spock_output_plugin.o \
-		spock_output_proto.o spock_proto_json.o \
-		spock_proto_native.o spock_monitoring.o spock_failover_slots.o \
-		spock_readonly.o spock_common.o
+DATA = $(wildcard sql/$(EXTENSION)*--*.sql)
+SRCS := $(wildcard src/*.c) \
+        $(wildcard src/compat/$(PGVER)/*.c)
+OBJS = $(filter-out src/spock_output.o, $(SRCS:.c=.o)) \
+       src/compat/$(PGVER)/spock_compat.o
 
+PG_CPPFLAGS += -I$(libpq_srcdir) \
+			   -I$(realpath include) \
+			   -I$(realpath src/compat/$(PGVER)) \
+			   -Werror=implicit-function-declaration
+SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
+ifdef NO_LOG_OLD_VALUE
+PG_CPPFLAGS += -DNO_LOG_OLD_VALUE
+endif
+
+REGRESS := __placeholder__
+EXTRA_CLEAN += $(control_path) spock_compat.bc
+
+# -----------------------------------------------------------------------------
+# PGXS
+# -----------------------------------------------------------------------------
+PGXS = $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+
+# Tell make where the module source is
+spock_output.o: src/spock_output.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
+
+spock_version=$(shell grep "^\#define \<SPOCK_VERSION\>" $(realpath include/spock.h) | cut -d'"' -f2)
+requires =
+control_path = $(abspath $(srcdir))/spock.control
+spock.control: spock.control.in include/spock.h
+	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' $(realpath $(srcdir)/spock.control.in) > $(control_path)
+
+
+all: spock.control spockctrl
+
+# -----------------------------------------------------------------------------
+# Regression tests
+# -----------------------------------------------------------------------------
 REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
 		  toasted replication_set matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay \
 		  extended node_origin_cascade multiple_upstreams drop
 
-# Disabled following tests:
-#	add_table functions
-
 # The following test cases are disabled while developing.
 #
 # Ideally, we should run all test cases listed in $(REGRESS),
 # but occassionaly it is helpful to disable one or more
 # cases while developing.
-
-#REGRESS := $(filter-out apply_delay, $(REGRESS))
-
-EXTRA_CLEAN += compat17/spock_compat.o compat17/spock_compat.bc \
-				compat16/spock_compat.o compat16/spock_compat.bc \
-				compat15/spock_compat.o compat15/spock_compat.bc
-
-spock_version=$(shell grep "^\#define \<SPOCK_VERSION\>" $(realpath $(srcdir)/spock.h) | cut -d'"' -f2)
+REGRESS := $(filter-out add_table, $(REGRESS))
 
 # For regression checks
 # this makes "make check" give a useful error
 abs_top_builddir = .
 NO_TEMP_INSTALL = yes
-
-export PG_CONFIG ?= pg_config
-
-PGVER := $(shell $(PG_CONFIG) --version | sed 's/[^0-9]//g' | cut -c 1-2)
-
-PG_CPPFLAGS += -I$(libpq_srcdir) -I$(realpath $(srcdir)/compat$(PGVER)) -Werror=implicit-function-declaration
-ifdef NO_LOG_OLD_VALUE
-PG_CPPFLAGS += -DNO_LOG_OLD_VALUE
-endif
-SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
-
-OBJS += $(srcdir)/compat$(PGVER)/spock_compat.o
-
-requires =
-control_path = $(abspath $(srcdir))/spock.control
-
-EXTRA_CLEAN += $(control_path)
-
-PGXS = $(shell $(PG_CONFIG) --pgxs)
-include $(PGXS)
 
 # We can't do a normal 'make check' because PGXS doesn't support
 # creating a temp install. We don't want to use a normal PGXS
@@ -93,25 +82,58 @@ include $(PGXS)
 # under a user with write permissions to their production PostgreSQL
 # install (right?)
 # But this is still not ideal.
+_regress=$(patsubst %/,%,$(srcdir))/tests/regress
+REGRESS_OPTS += --dbname=regression \
+				--bindir=$(shell $(PG_CONFIG) --bindir) \
+				--inputdir=$(abspath $(_regress))
+pg_regress_clean_files = $(_regress)/results $(_regress)/regression_output \
+			$(_regress)/regression.diffs $(_regress)/regression.out $(_regress)/tmp_check/ \
+			$(_regress)/tmp_check_iso/ $(_regress)/log/ $(_regress)/output_iso/
 regresscheck:
-	$(MKDIR_P) regression_output
-	$(pg_regress_check) \
-	    --temp-config ./regress-postgresql.conf \
-	    --temp-instance=./tmp_check \
-	    --outputdir=./regression_output \
+	$(MKDIR_P) $(_regress)/regression_output
+	$(pg_regress_check) $(REGRESS_OPTS) \
+	    --temp-config $(_regress)/regress-postgresql.conf \
+	    --temp-instance=$(_regress)/tmp_check \
+	    --outputdir=$(_regress)/regression_output \
 	    --create-role=logical \
 	    $(REGRESS)
 
 check: install regresscheck
 
-spock.control: spock.control.in spock.h
-	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' $(realpath $(srcdir)/spock.control.in) > $(control_path)
+# runs TAP tests
 
+# PGXS doesn't support TAP tests yet.
+# Copy perl modules in postgresql_srcdir/src/test/perl
+# to postgresql_installdir/lib/pgxs/src/test/perl
+
+
+define prove_check
+rm -rf $(CURDIR)/tmp_check/log
+cd $(srcdir)/tests/tap && TESTDIR='$(CURDIR)' $(with_temp_install) PGPORT='6$(DEF_PGPORT)' PG_REGRESS='$(top_builddir)/src/test/regress/pg_regress' $(PROVE) -I t --verbose $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(or $(PROVE_TESTS),t/*.pl)
+endef
+
+check_prove:
+	$(prove_check)
+
+# -----------------------------------------------------------------------------
+# SpockCtrl
+# -----------------------------------------------------------------------------
 spockctrl:
-	$(MAKE) -C $(srcdir)/spockctrl
+	$(MAKE) -C $(srcdir)/utils/spockctrl
 
-all: spock.control spockctrl
+clean: clean-spockctrl
 
+clean-spockctrl:
+	$(MAKE) -C $(srcdir)/utils/spockctrl clean
+
+install: install-spockctrl
+
+install-spockctrl:
+	$(MAKE) -C $(srcdir)/utils/spockctrl install
+
+# -----------------------------------------------------------------------------
+# Dist packaging
+# -----------------------------------------------------------------------------
 GITHASH=$(shell if [ -e .distgitrev ]; then cat .distgitrev; else git rev-parse --short HEAD; fi)
 
 dist-common: clean
@@ -141,32 +163,11 @@ git-dist: wanttag=0
 git-dist: dist-common
 
 
-# runs TAP tests
-
-# PGXS doesn't support TAP tests yet.
-# Copy perl modules in postgresql_srcdir/src/test/perl
-# to postgresql_installdir/lib/pgxs/src/test/perl
-
-
-define prove_check
-rm -rf $(CURDIR)/tmp_check/log
-cd $(srcdir) && TESTDIR='$(CURDIR)' $(with_temp_install) PGPORT='6$(DEF_PGPORT)' PG_REGRESS='$(top_builddir)/src/test/regress/pg_regress' $(PROVE) --verbose $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(or $(PROVE_TESTS),t/*.pl)
-endef
-
-check_prove:
-	$(prove_check)
-
-clean: clean-spockctrl
-
-clean-spockctrl:
-	$(MAKE) -C $(srcdir)/spockctrl clean
-
-install: install-spockctrl
-
-install-spockctrl:
-	$(MAKE) -C $(srcdir)/spockctrl install
-
-.PHONY: all check regresscheck spock.control spockctrl
+# -----------------------------------------------------------------------------
+# PHONY targets
+# -----------------------------------------------------------------------------
+.PHONY: all check regresscheck spock.control spockctrl clean clean-spockctrl \
+        dist git-dist check_prove valgrind-check
 
 define _spk_create_recursive_target
 .PHONY: $(1)-$(2)-recurse
@@ -178,7 +179,9 @@ endef
 
 $(foreach target,$(if $1,$1,$(standard_targets)),$(foreach subdir,$(if $2,$2,$(SUBDIRS)),$(eval $(call _spk_create_recursive_target,$(target),$(subdir),$(if $3,$3,$(target))))))
 
-
+# -----------------------------------------------------------------------------
+# Valgrind wrapper
+# -----------------------------------------------------------------------------
 define VALGRIND_WRAPPER
 #!/bin/bash
 
