@@ -3143,7 +3143,11 @@ spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 	CheckSlotPermissions();
 
 	/* Acquire the slot so we "own" it */
+#if PG_VERSION_NUM >= 180000
+	ReplicationSlotAcquire(NameStr(*slotname), true, true);
+#else
 	ReplicationSlotAcquire(NameStr(*slotname), true);
+#endif
 
 	/* A slot whose restart_lsn has never been reserved cannot be advanced */
 	if (XLogRecPtrIsInvalid(MyReplicationSlot->data.restart_lsn))
