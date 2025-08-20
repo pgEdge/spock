@@ -23,7 +23,7 @@ RESULT=$?
 
 if [ $RESULT -ne 0 ]
 then
-	cat /home/pgedge/spock/regression_output/regression.diffs
+	cat /home/pgedge/spock/tests/regress/regression_output/regression.diffs
 	echo "Errors in regression checks"
 	exit 1
 fi
