@@ -49,10 +49,10 @@ jobs:
       - name: Build docker container
         run: |
           cd ${GITHUB_WORKSPACE}/
-          echo PG_VER=${{ matrix.pgver }} >> tests/pgedge.env
+          echo PG_VER=${{ matrix.pgver }} >> tests/docker/pgedge.env
           docker build \
             --build-arg PGVER=${{ matrix.pgver }} \
-            -t spock -f tests/Dockerfile.el9 .
+            -t spock -f tests/docker/Dockerfile.el9 .
 
       - name: Run regression tests
         run: |
@@ -60,12 +60,12 @@ jobs:
 
       - name: Start docker
         run: |
-          cd ${GITHUB_WORKSPACE}/tests/
+          cd ${GITHUB_WORKSPACE}/tests/docker/
           echo PG_VER=${{ matrix.pgver }} >> pgedge.env
           docker compose up
 
       - name: Check spockbench output
         run: |
-          cd ${GITHUB_WORKSPACE}/tests
+          cd ${GITHUB_WORKSPACE}/tests/docker
           ./check-outputs.sh
 
