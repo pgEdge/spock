@@ -3747,12 +3747,12 @@ get_progress_entry_ts(Oid target_node_id,
 				ObjectIdGetDatum(remote_node_id));
 
 	/*
-	 * Scan the progress table using the current transaction snapshot.
+	 * Scan the progress table using the latest snapshot.
 	 * We do not need to Push/Pop that snapshot as the following
 	 * operations are not going to modify that snapshot (like bumping
 	 * the command counter).
 	 */
-	snap = GetTransactionSnapshot();
+	snap = RegisterSnapshot(GetLatestSnapshot());
 	scan = systable_beginscan(rel, idxId, true, snap, 2, key);
 	tup = systable_getnext(scan);
 	desc = RelationGetDescr(rel);
@@ -3787,6 +3787,8 @@ get_progress_entry_ts(Oid target_node_id,
 
 	systable_endscan(scan);
 	table_close(rel, NoLock);
+
+	UnregisterSnapshot(snap);
 
 	return remote_commit_ts;
 }
@@ -3888,7 +3890,7 @@ update_progress_entry(Oid target_node_id,
 				ObjectIdGetDatum(remote_node_id));
 
 	/* Scan the progress table using the transaction snapshot */
-	snap = GetTransactionSnapshot();
+	snap = RegisterSnapshot(GetLatestSnapshot());
 	scan = systable_beginscan(rel, idxId, true, snap, 2, key);
 	oldtup = systable_getnext(scan);
 
@@ -3934,6 +3936,8 @@ update_progress_entry(Oid target_node_id,
 	heap_freetuple(newtup);
 	systable_endscan(scan);
 	table_close(rel, RowExclusiveLock);
+
+	UnregisterSnapshot(snap);
 }
 
 /*
