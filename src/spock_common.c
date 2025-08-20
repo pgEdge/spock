@@ -26,7 +26,7 @@
 #include "spock_common.h"
 #include "spock_compat.h"
 
-#if PG_VERSION_NUM >= 170000
+#if PG_VERSION_NUM >= 170000 && PG_VERSION_NUM < 180000
 static StrategyNumber spock_get_equal_strategy_number(Oid opclass);
 #endif
 static int spock_build_replindex_scan_key(ScanKey skey, Relation rel,
@@ -412,7 +412,7 @@ retry:
 	return found;
 }
 
-#if PG_VERSION_NUM >= 170000
+#if PG_VERSION_NUM >= 170000 && PG_VERSION_NUM < 180000
 /*
  * Return the appropriate strategy number which corresponds to the equality
  * operator.
@@ -482,8 +482,11 @@ spock_build_replindex_scan_key(ScanKey skey, Relation rel, Relation idxrel,
 		opfamily = get_opclass_family(opclass->values[index_attoff]);
 #if PG_VERSION_NUM < 170000
 		eq_strategy = BTEqualStrategyNumber;
-#else
+#elif PG_VERSION_NUM < 180000
 		eq_strategy = spock_get_equal_strategy_number(opclass->values[index_attoff]);
+#else
+		/* PostgreSQL commit 622f678 */
+		eq_strategy = IndexAmTranslateCompareType(COMPARE_EQ, idxrel->rd_rel->relam, opfamily, false);
 #endif
 		operator = get_opfamily_member(opfamily, optype,
 									   optype,
