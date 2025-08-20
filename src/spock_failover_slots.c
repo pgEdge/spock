@@ -684,7 +684,11 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 	 */
 	if (found)
 	{
+#if PG_VERSION_NUM >= 180000
+		ReplicationSlotAcquire(remote_slot->name, true, true);
+#else
 		ReplicationSlotAcquire(remote_slot->name, true);
+#endif
 
 		/*
 		 * We can't satisfy this remote slot's requirements with our known-safe
