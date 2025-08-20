@@ -60,7 +60,7 @@ jobs:
 
       - name: Run TAP tests
         run: |
-          docker run -e PGVER=${{ matrix.pgver }} --workdir=/home/pgedge/spock/regression \
+          docker run -e PGVER=${{ matrix.pgver }} --workdir=/home/pgedge/spock/tests/tap \
               spock /home/pgedge/spock/tests/tap/run_tests.sh
 
       - name: Start docker
