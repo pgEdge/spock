@@ -468,6 +468,7 @@ run_single_test() {
 
 run_test_suite() {
     local total_start_time=$(date +%s.%N)
+    local exit_code=0
     
     for i in "${!TEST_SUITE_IDS[@]}"; do
         local test_id="${TEST_SUITE_IDS[$i]}"
@@ -494,6 +495,7 @@ run_test_suite() {
     local total_elapsed=$(echo "$total_end_time - $total_start_time" | bc -l 2>/dev/null || echo "0")
     
     eval "total_elapsed_time=\"$total_elapsed\""
+    return $exit_code
 }
 
 # =============================================================================
@@ -583,6 +585,8 @@ generate_summary() {
 # =============================================================================
 
 main() {
+    local exit_code=0
+
     # Setup environment
     setup_environment
     
@@ -597,6 +601,7 @@ main() {
     
     # Run test suite
     run_test_suite
+    exit_code=$?
     
     # Generate test summary
     generate_summary
@@ -604,8 +609,9 @@ main() {
     # Generate coverage report if enabled
     generate_coverage_report
     
-
+    return $exit_code
 }
+
 
 # =============================================================================
 # Script Execution
