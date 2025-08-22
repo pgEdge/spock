@@ -506,7 +506,12 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 				 TransactionId *xmin,
 				 RepOriginId *local_origin, TimestampTz *local_ts)
 {
+	/* Initialize local origin and timestamp */
+	*local_origin = InvalidRepOriginId;
+	*local_ts = 0;
+
 	*xmin = HeapTupleHeaderGetXmin(local_tuple->t_data);
+
 	if (!track_commit_timestamp)
 	{
 		*local_origin = replorigin_session_origin;
@@ -536,17 +541,21 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 		return TransactionIdGetCommitTsData(*xmin, local_ts, local_origin);
 	}
 
-	if (!TransactionIdEquals(*xmin, GetTopTransactionId()) &&
-		!TransactionIdGetCommitTsData(*xmin, local_ts, local_origin))
+	if (TransactionIdEquals(*xmin, GetTopTransactionId()))
 	{
 		/*
-		 * The commit timestamp info for this transaction was trimmed already.
-		 * Nothing much we can do.
+		 * The tuple was created by current xact, no commit timestamp yet.
 		 */
-		return false;
+		*local_origin = replorigin_session_origin;
+		*local_ts = replorigin_session_origin_timestamp;
+		return true;
 	}
 
-	return true;
+	/* Try to get real commit timestamp */
+	if (TransactionIdGetCommitTsData(*xmin, local_ts, local_origin))
+		return true;
+
+	return false;
 }
 
 /*
