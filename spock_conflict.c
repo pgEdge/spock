@@ -880,7 +880,12 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 		nulls[9] = true;
 
 	/* local_timestamp */
-	values[10] = TimestampTzGetDatum(local_tuple_commit_ts);
+   /* local_timestamp. If 0, it is a missing local tuple, so use NULL */
+	if (local_tuple_commit_ts == 0)
+       nulls[10] = true;
+	else
+       values[10] = TimestampTzGetDatum(local_tuple_commit_ts);
+
 	/* remote_origin */
 	values[11] = Int32GetDatum((int) replorigin_session_origin);
 
