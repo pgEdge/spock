@@ -1,0 +1,79 @@
+--Tuple Origin
+SELECT * FROM spock_regress_variables()
+\gset
+\c :provider_dsn
+ALTER SYSTEM SET spock.save_resolutions = on;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+SELECT spock.replicate_ddl($$
+    CREATE TABLE users (id int PRIMARY KEY, mgr_id int);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'users');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+BEGIN;
+INSERT INTO USERS SELECT 1, 5;
+UPDATE USERS SET id = id + 1 WHERE mgr_id < 10; 
+UPDATE USERS SET id = id + 1 WHERE mgr_id < 10;
+END;
+\c :subscriber_dsn
+SELECT * FROM users ORDER BY id;
+ id | mgr_id 
+----+--------
+  3 |      5
+(1 row)
+
+-- Expect 2 rows in spock.resolutions
+SELECT COUNT(*) FROM spock.resolutions
+    WHERE relname='public.users'
+    AND local_timestamp = remote_timestamp;
+ count 
+-------
+     2
+(1 row)
+
+-- DELETE the row from subscriber first, in order to create a conflict
+DELETE FROM users where id = 3;
+\c :provider_dsn
+-- This will create a conflict on the subscriber
+DELETE FROM users where id = 3;
+\c :subscriber_dsn
+-- Expect 1 row in spock.resolutions with NULL local_timestamp
+SELECT COUNT(*) FROM spock.resolutions
+    WHERE relname='public.users'
+    AND local_timestamp IS NULL;
+ count 
+-------
+     1
+(1 row)
+
+-- cleanup
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+    DROP TABLE users CASCADE;
+$$);
+NOTICE:  drop cascades to table users membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+ALTER SYSTEM SET spock.save_resolutions = off;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
