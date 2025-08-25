@@ -50,7 +50,7 @@ static int32 parse_param_int32(DefElem *elem);
 static void
 process_parameters_v1(List *options, SpockOutputData *data);
 
-enum {
+typedef enum OutputPluginParamKey {
 	PARAM_UNRECOGNISED,
 	PARAM_MAX_PROTOCOL_VERSION,
 	PARAM_MIN_PROTOCOL_VERSION,

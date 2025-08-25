@@ -84,7 +84,7 @@ datum_to_json_cstring(Datum val, Oid type, bool isnull)
 		elog(ERROR, "datum_to_json_cstring: SPI query '%s' returned %d",
 			 query, rc);
 	if (SPI_processed != 1)
-		elog(ERROR, "datum_to_json_cstring: query returned %lu tupes - "
+		elog(ERROR, "datum_to_json_cstring: query returned " UINT64_FORMAT " tupes - "
 			 "expected 1", SPI_processed);
 
 	/* Get the binary text datum */
