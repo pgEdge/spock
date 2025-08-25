@@ -32,7 +32,23 @@ spock_rmgr_redo(XLogReaderState *record)
 {
     uint8 info = XLogRecGetInfo(record) & XLR_RMGR_INFO_MASK;
 
-	(void) info;
+	switch(info)
+	{
+		case SPOCK_RMGR_PROGRESS_INFO:
+			{
+				ProgressInfoEntry *entry;
+
+				entry = (ProgressInfoEntry *) XLogRecGetData(record);
+				(void) entry;
+			}
+			break;
+
+		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:
+			break;
+
+		default:
+			elog(PANIC, "spock_rmgr_redo: unknown op code %u", info);
+	}
 }
 
 void
@@ -43,7 +59,15 @@ spock_rmgr_desc(StringInfo buf, XLogReaderState *record)
 	switch(info)
 	{
 		case SPOCK_RMGR_PROGRESS_INFO:
-			appendStringInfo(buf, "spock rmgr: progress info");
+			{
+				ProgressInfoEntry *entry;
+
+				entry = (ProgressInfoEntry *) XLogRecGetData(record);
+				appendStringInfo(buf, "spock rmgr: entry for db %u, node %u, remote_node %u",
+						entry->dbid,
+						entry->node_id,
+						entry->remote_node_id);
+			}
 			break;
 		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:
 			appendStringInfo(buf, "spock rmgr: sub transaction commit ts");
@@ -78,4 +102,10 @@ spock_rmgr_startup(void)
 void
 spock_rmgr_cleanup(void)
 {
+}
+
+bool
+ProgressEntryAddToWAL(ProgressInfoEntry *entry)
+{
+	return true;
 }
