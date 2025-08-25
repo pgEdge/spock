@@ -377,7 +377,7 @@ run_single_test() {
     
     local start_time=$(date +%s.%N)
     
-            echo "┌─ Running $test_name${TEST_EXTENSION}..."
+    echo "┌─ Running $test_name${TEST_EXTENSION}..."
     
     # Run test with TAP output and capture timing
     local exit_code
@@ -396,34 +396,31 @@ run_single_test() {
     echo "Running test..."
     cd "$test_dir"
     
-    # Run test with prove and stream output live to console; also save TAP to tap log
-    # Executable noise is redirected by SpockTest.pm into $log_file
-    prove --timer --trap --verbose "$(basename "$test_file")"
-    
-    # Capture exit code of prove
-    exit_code=${PIPESTATUS[0]}
+    # Run test with prove and capture both output and exit code properly
+    set +e  # Temporarily disable exit on error
+    prove --timer --trap --verbose "$(basename "$test_file")" | tee "$tap_log_file"
+    exit_code=$?
+    set -e  # Re-enable exit on error
     
     cd - > /dev/null
     
     local end_time=$(date +%s.%N)
     local elapsed_time=$(echo "$end_time - $start_time" | bc -l 2>/dev/null || echo "0")
     
-    # Nothing else to append; executables already write to $log_file via SPOCKTEST_LOG_FILE
-    
     # Parse TAP output from tap log and clean variables
     local plan_line total_tests passed_tests failed_tests skipped_tests
-    plan_line=$(grep -E '^1\.\.[0-9]+' "$tap_log_file" | tail -1 || true)
-    total_tests=$(echo "$plan_line" | sed -n 's/^1\.\.\([0-9]\+\).*$/\1/p')
+    plan_line=$(grep -E '^1\.\.[0-9]+' "$tap_log_file" | tail -1 2>/dev/null || true)
+    total_tests=$(echo "$plan_line" | sed -n 's/^1\.\.\([0-9]\+\).*$/\1/p' 2>/dev/null || echo "0")
     [ -z "$total_tests" ] && total_tests=0
-    passed_tests=$(grep -E '^ok ' "$tap_log_file" | wc -l | tr -d ' ')
-    failed_tests=$(grep -E '^not ok ' "$tap_log_file" | wc -l | tr -d ' ')
-    skipped_tests=$(grep -E '^ok .*# SKIP' "$tap_log_file" | wc -l | tr -d ' ')
+    passed_tests=$(grep -cE '^ok ' "$tap_log_file" 2>/dev/null || echo "0")
+    failed_tests=$(grep -cE '^not ok ' "$tap_log_file" 2>/dev/null || echo "0")
+    skipped_tests=$(grep -cE '^ok .*# SKIP' "$tap_log_file" 2>/dev/null || echo "0")
     
-    # Clean variables of any newlines
-    total_tests=$(echo "$total_tests" | tr -d '\n')
-    passed_tests=$(echo "$passed_tests" | tr -d '\n')
-    failed_tests=$(echo "$failed_tests" | tr -d '\n')
-    skipped_tests=$(echo "$skipped_tests" | tr -d '\n')
+    # Clean variables of any whitespace
+    total_tests=$(echo "$total_tests" | tr -d ' \n\r')
+    passed_tests=$(echo "$passed_tests" | tr -d ' \n\r')
+    failed_tests=$(echo "$failed_tests" | tr -d ' \n\r')
+    skipped_tests=$(echo "$skipped_tests" | tr -d ' \n\r')
     
     # Determine test status
     local status
@@ -443,8 +440,6 @@ run_single_test() {
     eval "test_${test_name}_elapsed=\"$elapsed_time\""
     eval "test_${test_name}_log_file=\"$log_file\""
     eval "test_${test_name}_total=\"$total_tests\""
-    
-    # Plan line is already shown in live output; no extra echo here
     
     echo "└─ Log: $log_file (${elapsed_time}s)"
     echo ""
@@ -467,10 +462,14 @@ run_test_suite() {
         local test_file="$TEST_DIR/${test_id}${TEST_EXTENSION}"
         
         if [ -f "$test_file" ]; then
-            run_single_test "$test_file" "$test_num" "$test_description" || {
-                log_error "Test $test_id failed with exit code $?"
-                continue
-            }
+            set +e  # Don't exit on test failure
+            run_single_test "$test_file" "$test_num" "$test_description"
+            local test_exit_code=$?
+            set -e
+            
+            if [ $test_exit_code -ne 0 ]; then
+                log_error "Test $test_id failed with exit code $test_exit_code"
+            fi
         else
             log_warning "Test file not found: $test_file"
         fi
@@ -500,21 +499,27 @@ generate_summary() {
         local test_num=$(echo "$test_id" | sed 's/_.*$//')
         local var_name="test_${test_num}"
         
-        # Get test results
-        eval "status=\"\$${var_name}_status\""
-        eval "passed=\"\$${var_name}_passed\""
-        eval "failed=\"\$${var_name}_failed\""
-        eval "skipped=\"\$${var_name}_skipped\""
-        eval "elapsed=\"\$${var_name}_elapsed\""
+        # Get test results with defaults
+        local status passed failed skipped elapsed
+        eval "status=\"\${${var_name}_status:-UNKNOWN}\""
+        eval "passed=\"\${${var_name}_passed:-0}\""
+        eval "failed=\"\${${var_name}_failed:-0}\""
+        eval "skipped=\"\${${var_name}_skipped:-0}\""
+        eval "elapsed=\"\${${var_name}_elapsed:-0}\""
         
         # Clean variables
-        status=$(echo "$status" | tr -d '\n')
-        passed=$(echo "$passed" | tr -d '\n')
-        failed=$(echo "$failed" | tr -d '\n')
-        skipped=$(echo "$skipped" | tr -d '\n')
-        elapsed=$(echo "$elapsed" | tr -d '\n')
+        status=$(echo "$status" | tr -d '\n\r')
+        passed=$(echo "$passed" | tr -d ' \n\r')
+        failed=$(echo "$failed" | tr -d ' \n\r')
+        skipped=$(echo "$skipped" | tr -d ' \n\r')
+        elapsed=$(echo "$elapsed" | tr -d ' \n\r')
         
-        if [ -n "$status" ]; then
+        # Ensure numeric values
+        passed=${passed:-0}
+        failed=${failed:-0}
+        skipped=${skipped:-0}
+        
+        if [ -n "$status" ] && [ "$status" != "UNKNOWN" ]; then
             case $status in
                 "PASSED")
                     echo "  [ok] $test_id - $passed/$passed test passed, ${elapsed}s"
@@ -546,7 +551,11 @@ generate_summary() {
     echo "  Passed: $total_passed"
     echo "  Failed: $total_failed"
     echo "  Skipped: $total_skipped"
-    echo "  Success Rate: $([ $total_tests -gt 0 ] && echo "$(( (total_passed * 100) / total_tests ))%" || echo "0%")"
+    if [ $total_tests -gt 0 ]; then
+        echo "  Success Rate: $(( (total_passed * 100) / total_tests ))%"
+    else
+        echo "  Success Rate: 0%"
+    fi
     echo "  Total Time: ${total_elapsed_time}s"
     echo ""
     echo "Log files saved in: $LOG_DIR/"
@@ -573,13 +582,12 @@ main() {
     # Run test suite
     run_test_suite
     
-    # Summary disabled per request
-    # generate_summary
+    # Generate test summary
+    generate_summary
     
     # Generate coverage report if enabled
     generate_coverage_report
     
-
 }
 
 # =============================================================================
