@@ -207,7 +207,7 @@ typedef struct SPKFlushPosition
 	XLogRecPtr	remote_end;
 } SPKFlushPosition;
 
-dlist_head	lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
+static dlist_head	lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
 
 typedef struct ApplyExecState
 {
@@ -217,14 +217,14 @@ typedef struct ApplyExecState
 	TupleTableSlot *slot;
 } ApplyExecState;
 
-struct ActionErrCallbackArg
+typedef struct ActionErrCallbackArg
 {
 	const char *action_name;
 	SpockRelation *rel;
 	bool		is_ddl_or_drop;
-};
+} ActionErrCallbackArg;
 
-struct ActionErrCallbackArg errcallback_arg;
+static ActionErrCallbackArg errcallback_arg;
 TransactionId remote_xid;
 
 /*
@@ -243,7 +243,7 @@ typedef struct RemoteSyncPosition
  * Queue of structure RemoteSyncPosition to Save the LSN in
  * case of Synchronous replica is attached
  */
-dlist_head sync_replica_lsn = DLIST_STATIC_INIT(sync_replica_lsn);
+static dlist_head sync_replica_lsn = DLIST_STATIC_INIT(sync_replica_lsn);
 
 /*
  * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
@@ -261,7 +261,7 @@ static XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
  * Whereas MessageContext is used for the duration of a transaction,
  * ApplyOperationContext can be used for individual operations
  */
-MemoryContext ApplyOperationContext = NULL;
+static MemoryContext ApplyOperationContext = NULL;
 
 /* Functions for skipping changes */
 static void maybe_start_skipping_changes(XLogRecPtr finish_lsn);
