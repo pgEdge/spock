@@ -24,13 +24,16 @@ typedef struct ProgressInfoEntry
     bool        updated_by_decode;
 } ProgressInfoEntry;
 
+#if 0
 typedef struct SubTransactionCommitTsEntry
 {
 	TransactionId	xid;
 	TimestampTz		time;
 	RepOriginId		nodeid;
 } SubTransactionCommitTsEntry;
+#endif
 
+/* RMGR function declarations */
 extern void spock_rmgr_init(void);
 extern void spock_rmgr_desc(StringInfo buf, XLogReaderState *record);
 extern const char *spock_rmgr_identify(uint8 info);
@@ -38,5 +41,7 @@ extern void spock_rmgr_redo(XLogReaderState *record);
 extern void spock_rmgr_startup(void);
 extern void spock_rmgr_cleanup(void);
 
+/* Write to WAL function declarations */
+extern bool ProgressEntryAddToWAL(ProgressInfoEntry *entry);
 
 #endif /* SPOCK_RMGR_H */
