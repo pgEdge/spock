@@ -54,6 +54,7 @@
 #include "spock_executor.h"
 #include "spock_node.h"
 #include "spock_conflict.h"
+#include "spock_rmgr.h"
 #include "spock_worker.h"
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
@@ -802,7 +803,7 @@ _PG_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		elog(ERROR, "spock is not in shared_preload_libraries");
 
-	DefineCustomEnumVariable("spock.conflict_resolution",
+    DefineCustomEnumVariable("spock.conflict_resolution",
 							 gettext_noop("Sets method used for conflict resolution for resolvable conflicts."),
 							 NULL,
 							 &spock_conflict_resolver,
@@ -1030,6 +1031,9 @@ _PG_init(void)
 
 	if (IsBinaryUpgrade)
 		return;
+
+	/* Spock resource manager */
+	spock_rmgr_init();
 
 	/* Init workers. */
 	spock_worker_shmem_init();
