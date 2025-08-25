@@ -581,7 +581,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	create_subscription(&sub);
 
 	/* Create progress entry to track commit ts per local/remote origin */
-	create_progress_entry(localnode->node->id, originif.nodeid, GetCurrentIntegerTimestamp());
+	spock_group_attach(MyDatabaseId, localnode->node->id, originif.nodeid, NULL);
 
 
 	/* Create synchronization status for the subscription. */
