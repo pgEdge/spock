@@ -1,5 +1,17 @@
 # Spock Release Notes
 
+## v5.0.1 on Aug 27, 2025
+
+* Bug fix for an incorrect commit timestamp being used for the case of updating a row that was inserted in the same transaction. A consequence was possible incorrect resolution handling for updates.
+* Use the default search_path in the replicate_ddl() function.
+* Prevent false positives for conflict detection when using partial unique indexes.
+* New sample files for adding nodes with zero downtime.
+    * Python example
+    * Added enhanced add node support in stored procedures in samples/zodan.sql
+        * Add a second node when there is only one node.
+        * Extended support for adding 3rd, 4th and subsequent nodes.
+        * Chain adding new nodes off of the previously added new node (eg: add N2 off N1, then add N3 off N2).
+
 ## v5.0 on July 15, 2025
 
 * Spock functions and stored procedures now support node additions and major PostgreSQL version.  This means:
