@@ -7,6 +7,7 @@ use Test::More;
 use TAP::Formatter::Color;
 use TAP::Harness;
 use File::Path qw(make_path);
+use Cwd;
 
 our @EXPORT_OK = qw(
     create_cluster
@@ -126,6 +127,7 @@ sub create_postgresql_conf {
     my ($datadir, $port) = @_;
     
     open(my $conf, '>>', "$datadir/postgresql.conf") or die "Cannot open config file: $!";
+    print $conf "shared_buffers=1GB\n";
     print $conf "shared_preload_libraries='spock'\n";
     print $conf "wal_level=logical\n";
     print $conf "spock.enable_ddl_replication=on\n";
@@ -134,8 +136,32 @@ sub create_postgresql_conf {
     print $conf "spock.exception_behaviour=sub_disable\n";
     print $conf "spock.conflict_resolution=last_update_wins\n";
     print $conf "track_commit_timestamp=on\n";
+    print $conf "spock.exception_replay_queue_size=1MB\n";
+    print $conf "spock.enable_spill=on\n";
     print $conf "port=$port\n";
     print $conf "listen_addresses='*'\n";
+    
+    # Enable logging
+    print $conf "logging_collector=on\n";
+    my $cwd = Cwd::getcwd();
+    my $parent = Cwd::abs_path("$cwd/..");
+    print $conf "log_directory='$parent/logs'\n";
+    print $conf "log_filename='00$port.log'\n";
+    print $conf "log_rotation_age=1d\n";
+    print $conf "log_rotation_size=10MB\n";
+    print $conf "log_min_messages=debug1\n";
+    print $conf "log_statement=all\n";
+    print $conf "log_line_prefix='%m [%p] %q%u@%d '\n";
+    print $conf "log_checkpoints=on\n";
+    print $conf "log_connections=on\n";
+    print $conf "log_disconnections=on\n";
+    print $conf "log_lock_waits=on\n";
+    print $conf "log_temp_files=0\n";
+    print $conf "log_autovacuum_min_duration=0\n";
+    print $conf "log_replication_commands=on\n";
+    print $conf "log_min_duration_statement=0\n";
+    print $conf "log_statement_stats=on\n";
+    
     close($conf);
 }
 
@@ -167,6 +193,12 @@ sub create_cluster {
     for (my $i = 0; $i < $num_nodes; $i++) {
         system_or_bail "$PG_BIN/initdb", '-A', 'trust', '-D', $node_datadirs[$i];
     }
+    
+    # Create logs directory in current working directory
+    my $current_dir = getcwd();
+    my $logs_dir = "$current_dir/logs";
+    system_or_bail 'mkdir', '-p', $logs_dir;
+    system_or_bail 'chmod', '755', $logs_dir;
     
     # Copy configuration files if they exist
     if (-f 'regress-pg_hba.conf') {
@@ -229,16 +261,66 @@ sub create_cluster {
     return 1;
 }
 
-# Cross-wire nodes with subscriptions (full mesh)
+# Cross-wire nodes with subscriptions following the cross-wire.json workflow
+# Takes number of nodes and node names as parameters for flexibility
 sub cross_wire {
-    my ($test_name) = @_;
+    my ($num_nodes, $node_names, $test_name) = @_;
     $test_name //= 'Cross-wire nodes with subscriptions';
+
+    die "No cluster created. Call create_cluster() first." unless $nodes_created;
+    die "Number of nodes cannot exceed cluster size" unless $num_nodes <= $node_count;
+    die "Node names array must match number of nodes" unless @$node_names == $num_nodes;
+
+    # Step 1: Create subscriptions between all nodes (full mesh, skip self)
+    for (my $i = 0; $i < $num_nodes; $i++) {
+        for (my $j = 0; $j < $num_nodes; $j++) {
+            next if $i == $j; # Skip self-subscription
+
+            my $source_node = $node_names->[$i];
+            my $target_node = $node_names->[$j];
+            my $sub_name = "sub_${source_node}_${target_node}";
+
+            # Create subscription from source_node to target_node
+            system_or_bail(
+                "$PG_BIN/psql",
+                '-p', $node_ports[$i],
+                '-d', $DB_NAME,
+                '-c', "SELECT spock.sub_create('$sub_name', 'host=$HOST dbname=$DB_NAME port=$node_ports[$j] user=$DB_USER password=$DB_PASSWORD', ARRAY['default', 'default_insert_only', 'ddl_sql'], true, true)"
+            );
+        }
+    }
+
+    # Step 2: Create replication sets for each node
+    for (my $i = 0; $i < $num_nodes; $i++) {
+        my $node_name = $node_names->[$i];
+        my $repset_name = "${node_name}r" . ($i + 1);
+        
+        system_or_bail(
+            "$PG_BIN/psql",
+            '-p', $node_ports[$i],
+            '-d', $DB_NAME,
+            '-c', "SELECT spock.repset_create('$repset_name', true, true, true, true)"
+        );
+    }
+
+    # Step 3: Wait for cross-wiring to complete
+    system_or_bail 'sleep', '10';
+
+    pass($test_name);
+    return 1;
+}
+
+# Cross-wire only the first 2 nodes (n1 and n2)
+sub cross_wire_first_two {
+    my ($test_name) = @_;
+    $test_name //= 'Cross-wire first 2 nodes (n1 and n2)';
     
     die "No cluster created. Call create_cluster() first." unless $nodes_created;
+    die "Need at least 2 nodes to cross-wire first two" unless $node_count >= 2;
     
-    # Create subscriptions between all nodes (full mesh)
-    for (my $i = 0; $i < $node_count; $i++) {
-        for (my $j = 0; $j < $node_count; $j++) {
+    # Create subscriptions only between the first 2 nodes (n1 and n2)
+    for (my $i = 0; $i < 2; $i++) {
+        for (my $j = 0; $j < 2; $j++) {
             next if $i == $j; # Skip self-subscription
             
             my $source_node = "n" . ($i + 1);
