@@ -58,6 +58,11 @@ jobs:
         run: |
           docker run -e PGVER=${{ matrix.pgver }} spock /home/pgedge/run-spock-regress.sh
 
+      - name: Run TAP tests
+        run: |
+          docker run -e PGVER=${{ matrix.pgver }} --workdir=/home/pgedge/spock/tests/tap \
+              spock /home/pgedge/spock/tests/tap/run_tests.sh
+
       - name: Start docker
         run: |
           cd ${GITHUB_WORKSPACE}/tests/docker/
