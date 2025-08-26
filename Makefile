@@ -6,7 +6,7 @@ PGFILEDESC = "spock - multi-master replication"
 
 MODULES = spock_output
 
-DATA = spock--4.0.10.sql \
+DATA = spock--4.0.11.sql \
 	   spock--3.3--4.0.0.sql \
 	   spock--4.0.0--4.0.1.sql \
 	   spock--4.0.1--4.0.2.sql \
@@ -17,7 +17,8 @@ DATA = spock--4.0.10.sql \
 	   spock--4.0.6--4.0.7.sql \
 	   spock--4.0.7--4.0.8.sql \
 	   spock--4.0.8--4.0.9.sql \
-	   spock--4.0.9--4.0.10.sql
+	   spock--4.0.9--4.0.10.sql \
+	   spock--4.0.10--4.0.11.sql
 
 OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
 		spock_conflict.o spock_manager.o \
