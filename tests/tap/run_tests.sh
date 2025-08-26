@@ -31,7 +31,7 @@ set -euo pipefail
 export PATH="$(pwd):$PATH"
 
 # These variables are set to defaults for running in github action
-if [[ -v PGVER ]]; then
+if [ -n "${PGVER:-}" ]; then
     export PG_CONFIG=/home/pgedge/pgedge/pg${PGVER}/bin/pg_config
     export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg${PGVER}/lib/
     export PATH="/home/pgedge/pgedge/pg${PGVER}/bin:$PATH"
@@ -120,22 +120,26 @@ discover_tests() {
     if [ -f "$SCHEDULE_FILE" ]; then
         while IFS= read -r line; do
             # Skip comments and empty lines
-            [[ "$line" =~ ^[[:space:]]*# ]] && continue
-            [[ -z "${line// }" ]] && continue
+            case "$line" in
+                \#*) continue ;;
+                "") continue ;;
+            esac
             
             # Parse test: lines
-            if [[ "$line" =~ ^[[:space:]]*test:[[:space:]]*([^[:space:]]+) ]]; then
-                local test_id="${BASH_REMATCH[1]}"
-                local test_name=$(echo "$test_id" | sed 's/_/ /g' | sed 's/\b\w/\U&/g')
-                
-                            # Check if test file exists
-            if [ -f "$TEST_DIR/${test_id}${TEST_EXTENSION}" ]; then
-                TEST_SUITE_IDS+=("$test_id")
-                TEST_SUITE_NAMES+=("$test_name")
-            else
-                log_warning "Test file not found: $TEST_DIR/${test_id}${TEST_EXTENSION} (listed in schedule)"
-            fi
-            fi
+            case "$line" in
+                *test:[[:space:]]*)
+                    local test_id=$(echo "$line" | sed 's/.*test:[[:space:]]*\([^[:space:]]*\).*/\1/')
+                    local test_name=$(echo "$test_id" | sed 's/_/ /g' | sed 's/\b\w/\U&/g')
+                    
+                    # Check if test file exists
+                    if [ -f "$TEST_DIR/${test_id}${TEST_EXTENSION}" ]; then
+                        TEST_SUITE_IDS+=("$test_id")
+                        TEST_SUITE_NAMES+=("$test_name")
+                    else
+                        log_warning "Test file not found: $TEST_DIR/${test_id}${TEST_EXTENSION} (listed in schedule)"
+                    fi
+                    ;;
+            esac
         done < "$SCHEDULE_FILE"
     else
         log_warning "Schedule file not found: $SCHEDULE_FILE, falling back to auto-discovery"
@@ -389,11 +393,8 @@ run_single_test() {
     # Run test with TAP output and capture timing
     local exit_code
     
-    # Change to the test directory so the tests can find SpockTest.pm
-    local test_dir=$(dirname "$test_file")
-    
     # Set PERL5LIB to include the test directory so SpockTest.pm can be found
-    export PERL5LIB="$test_dir:${PERL5LIB:-}"
+    export PERL5LIB="$TEST_DIR:${PERL5LIB:-}"
     
     # Prepare per-test logs
     : > "$log_file"     # truncate executables log
@@ -401,15 +402,12 @@ run_single_test() {
     export SPOCKTEST_LOG_FILE="$log_file"
     # Run test using prove for better TAP handling
     echo "Running test..."
-    cd "$test_dir"
     
     # Run test with prove and capture both output and exit code properly
     set +e  # Temporarily disable exit on error
-    prove --timer --trap --verbose "$(basename "$test_file")" | tee "$tap_log_file"
+    prove --timer --trap --verbose "$test_file" > "$tap_log_file" 2>&1
     exit_code=$?
     set -e  # Re-enable exit on error
-    
-    cd - > /dev/null
     
     local end_time=$(date +%s.%N)
     local elapsed_time=$(echo "$end_time - $start_time" | bc -l 2>/dev/null || echo "0")
@@ -423,11 +421,19 @@ run_single_test() {
     failed_tests=$(grep -cE '^not ok ' "$tap_log_file" 2>/dev/null || echo "0")
     skipped_tests=$(grep -cE '^ok .*# SKIP' "$tap_log_file" 2>/dev/null || echo "0")
     
+    # If total_tests is still 0, try alternative parsing
+    if [ "$total_tests" = "0" ] && [ -n "$plan_line" ]; then
+        total_tests=$(echo "$plan_line" | grep -o '[0-9]\+' | tail -1)
+        [ -z "$total_tests" ] && total_tests=0
+    fi
+    
     # Clean variables of any whitespace
     total_tests=$(echo "$total_tests" | tr -d ' \n\r')
     passed_tests=$(echo "$passed_tests" | tr -d ' \n\r')
     failed_tests=$(echo "$failed_tests" | tr -d ' \n\r')
     skipped_tests=$(echo "$skipped_tests" | tr -d ' \n\r')
+    
+
     
     # Determine test status
     local status
@@ -440,13 +446,15 @@ run_single_test() {
     fi
     
     # Store results
-    eval "test_${test_name}_status=\"$status\""
-    eval "test_${test_name}_passed=\"$passed_tests\""
-    eval "test_${test_name}_failed=\"$failed_tests\""
-    eval "test_${test_name}_skipped=\"$skipped_tests\""
-    eval "test_${test_name}_elapsed=\"$elapsed_time\""
-    eval "test_${test_name}_log_file=\"$log_file\""
-    eval "test_${test_name}_total=\"$total_tests\""
+    eval "test_${test_id}_status=\"$status\""
+    eval "test_${test_id}_passed=\"$passed_tests\""
+    eval "test_${test_id}_failed=\"$failed_tests\""
+    eval "test_${test_id}_skipped=\"$skipped_tests\""
+    eval "test_${test_id}_elapsed=\"$elapsed_time\""
+    eval "test_${test_id}_log_file=\"$log_file\""
+    eval "test_${test_id}_total=\"$total_tests\""
+    
+
     
     echo "└─ Log: $log_file (${elapsed_time}s)"
     echo ""
@@ -471,7 +479,7 @@ run_test_suite() {
         
         if [ -f "$test_file" ]; then
             set +e  # Don't exit on test failure
-            run_single_test "$test_file" "$test_num" "$test_description"
+            run_single_test "$test_file" "$test_id" "$test_description"
             local test_exit_code=$?
             set -e
             
@@ -505,8 +513,7 @@ generate_summary() {
     for i in "${!TEST_SUITE_IDS[@]}"; do
         local test_id="${TEST_SUITE_IDS[$i]}"
         local test_description="${TEST_SUITE_NAMES[$i]}"
-        local test_num=$(echo "$test_id" | sed 's/_.*$//')
-        local var_name="test_${test_num}"
+        local var_name="test_${test_id}"
         
         # Get test results with defaults
         local status passed failed skipped elapsed
@@ -515,6 +522,8 @@ generate_summary() {
         eval "failed=\"\${${var_name}_failed:-0}\""
         eval "skipped=\"\${${var_name}_skipped:-0}\""
         eval "elapsed=\"\${${var_name}_elapsed:-0}\""
+        
+
         
         # Clean variables
         status=$(echo "$status" | tr -d '\n\r')
@@ -529,18 +538,18 @@ generate_summary() {
         skipped=${skipped:-0}
         
         if [ -n "$status" ] && [ "$status" != "UNKNOWN" ]; then
-            case $status in
+                            case $status in
                 "PASSED")
-                    echo "  [ok] $test_id - $passed/$passed test passed, ${elapsed}s"
+                    echo "  [ok] $test_id - $passed/$passed tests passed, ${elapsed}s"
                     total_passed=$((total_passed + passed))
                     ;;
                 "PARTIAL")
-                    echo "  [ok] $test_id - $passed/$((passed + failed)) test passed, ${elapsed}s"
+                    echo "  [ok] $test_id - $passed/$((passed + failed)) tests passed, ${elapsed}s"
                     total_passed=$((total_passed + passed))
                     total_failed=$((total_failed + failed))
                     ;;
                 "FAILED")
-                    echo "  [failed] $test_id - $passed/$((passed + failed)) test passed, ${elapsed}s"
+                    echo "  [failed] $test_id - $passed/$((passed + failed)) tests passed, ${elapsed}s"
                     total_passed=$((total_passed + passed))
                     total_failed=$((total_failed + failed))
                     ;;
