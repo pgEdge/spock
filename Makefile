@@ -37,7 +37,7 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondar
 		  toasted replication_set matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel row_filter \
 		  row_filter_sampling att_list column_filter apply_delay multiple_upstreams \
-		  node_origin_cascade drop
+		  node_origin_cascade tuple_origin drop
 
 # Disabled following tests:
 #	extended add_table functions
