@@ -6,7 +6,7 @@ CREATE USER super2 SUPERUSER;
 SELECT * FROM spock.node_add_interface('test_provider', 'super2', (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super2');
  node_add_interface 
 --------------------
-         3319308158
+         1679954453
 (1 row)
 
 SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');

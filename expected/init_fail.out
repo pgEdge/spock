@@ -27,11 +27,10 @@ BEGIN
         IF version() ~ 'Postgres-XL' THEN
                 CREATE EXTENSION IF NOT EXISTS spock;
         ELSE
-                CREATE EXTENSION IF NOT EXISTS spock VERSION '3.2';
+                CREATE EXTENSION IF NOT EXISTS spock VERSION '4.0.11';
         END IF;
 END;
 $$;
-ALTER EXTENSION spock UPDATE;
 -- fail (local node not existing)
 SELECT * FROM spock.sub_create(
     subscription_name := 'test_subscription',
@@ -42,7 +41,7 @@ ERROR:  local spock node not found
 SELECT * FROM spock.node_create(node_name := 'test_subscriber', dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=nonreplica');
  node_create 
 -------------
-  1755434425
+       52665
 (1 row)
 
 -- fail (can't connect to remote)
@@ -72,7 +71,7 @@ ERROR:  could not fetch remote node info: ERROR:  local spock node not found
 SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica');
  node_create 
 -------------
-  2689511696
+       45328
 (1 row)
 
 \c :subscriber_dsn

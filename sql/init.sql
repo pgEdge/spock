@@ -50,16 +50,7 @@ BEGIN
         END IF;
 END;$$;
 
-DO $$
-BEGIN
-	IF version() ~ 'Postgres-XL' THEN
-		CREATE EXTENSION IF NOT EXISTS spock;
-	ELSE
-		CREATE EXTENSION IF NOT EXISTS spock VERSION '3.2';
-	END IF;
-END;
-$$;
-ALTER EXTENSION spock UPDATE;
+CREATE EXTENSION IF NOT EXISTS spock;
 
 \dx spock
 
