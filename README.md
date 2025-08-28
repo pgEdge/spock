@@ -7,11 +7,11 @@ This SPOCK extension provides multi-master replication for PostgreSQL 14+.
 We originally leveraged the [pgLogical](https://github.com/2ndQuadrant/pglogical) and [BDR2](https://github.com/2ndQuadrant/bdr/tree/REL0_9_94b2) 
 projects as a solid foundation to build upon for this enterprise-class extension. 
 
-**Version 5.** is our current version and under active development (please upgrade).
+**Version 5** is our current major version and under active development (please upgrade).
 
 See latest version 5 release notes [here](https://github.com/pgEdge/spock/blob/main/docs/spock_release_notes.md).
 
-**Version 4.** is under active maintenance.
+**Version 4** is under active maintenance.
 
 See latest version 4 release notes [here](spock_release_notes.md).
 
