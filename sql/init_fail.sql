@@ -32,11 +32,10 @@ BEGIN
         IF version() ~ 'Postgres-XL' THEN
                 CREATE EXTENSION IF NOT EXISTS spock;
         ELSE
-                CREATE EXTENSION IF NOT EXISTS spock VERSION '3.2';
+                CREATE EXTENSION IF NOT EXISTS spock VERSION '4.0.11';
         END IF;
 END;
 $$;
-ALTER EXTENSION spock UPDATE;
 
 -- fail (local node not existing)
 SELECT * FROM spock.sub_create(

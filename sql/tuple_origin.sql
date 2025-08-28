@@ -7,7 +7,7 @@ ALTER SYSTEM SET spock.save_resolutions = on;
 SELECT pg_reload_conf();
 
 SELECT spock.replicate_ddl($$
-    CREATE TABLE users (id int PRIMARY KEY, mgr_id int);
+    CREATE TABLE public.users (id int PRIMARY KEY, mgr_id int);
 $$);
 SELECT * FROM spock.repset_add_table('default', 'users');
 
@@ -42,7 +42,7 @@ SELECT COUNT(*) FROM spock.resolutions
 -- cleanup
 \c :provider_dsn
 SELECT spock.replicate_ddl($$
-    DROP TABLE users CASCADE;
+    DROP TABLE public.users CASCADE;
 $$);
 ALTER SYSTEM SET spock.save_resolutions = off;
 SELECT pg_reload_conf();

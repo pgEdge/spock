@@ -8,13 +8,13 @@ CREATE EXTENSION spock;
 SELECT spock.spock_max_proto_version();
  spock_max_proto_version 
 -------------------------
-                       1
+                       2
 (1 row)
 
 SELECT spock.spock_min_proto_version();
  spock_min_proto_version 
 -------------------------
-                       1
+                       2
 (1 row)
 
 -- test extension version
@@ -33,12 +33,11 @@ BEGIN
         IF version() ~ 'Postgres-XL' THEN
                 CREATE EXTENSION IF NOT EXISTS spock;
         ELSE
-                CREATE EXTENSION IF NOT EXISTS spock VERSION '3.2';
+                CREATE EXTENSION IF NOT EXISTS spock VERSION '4.0.10';
         END IF;
 END;
 $$;
 ALTER EXTENSION spock UPDATE;
-NOTICE:  version "3.2" of extension "spock" is already installed
 SELECT spock.spock_version() = extversion
 FROM pg_extension
 WHERE extname = 'spock';

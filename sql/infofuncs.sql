@@ -23,7 +23,7 @@ BEGIN
         IF version() ~ 'Postgres-XL' THEN
                 CREATE EXTENSION IF NOT EXISTS spock;
         ELSE
-                CREATE EXTENSION IF NOT EXISTS spock VERSION '3.2';
+                CREATE EXTENSION IF NOT EXISTS spock VERSION '4.0.10';
         END IF;
 END;
 $$;
