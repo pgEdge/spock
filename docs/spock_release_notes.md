@@ -1,5 +1,9 @@
 # Spock Release Notes
 
+## v5.0.2 on Sep 3, 2025
+
+* Upgrade path from 4.0.11
+
 ## v5.0.1 on Aug 27, 2025
 
 * Bug fix for an incorrect commit timestamp being used for the case of updating a row that was inserted in the same transaction. A consequence was possible incorrect resolution handling for updates.
@@ -36,17 +40,8 @@ This provides a two-phase acknowledgment:
    * Once when the physical replica confirms the commit.
 * The `spock.check_all_uc_indexes` GUC is an experimental feature (`disabled` by default); use this feature at your own risk.  If this GUC is `enabled`, Spock will continue to check unique constraint indexes, after checking the primary key / replica identity index.  Only one conflict will be resolved, using Last-Write-Wins logic.  If a second conflict occurs, an exception is recorded in the `spock.exception_log` table.
 
-
-## Version 4.1
-* Hardening Parallel Slots for OLTP production use.
-  - Commit Order
-  - Skip LSN
-  - Optionally stop replicating in an Error
-* Enhancements to Automatic DDL replication
-
 ## Version 4.0
 
-* Full re-work of paralell slots implementation to support mixed OLTP workloads
 * Improved support for delta_apply columns to support various data types
 * Improved regression test coverage
 * Support for [Large Object LOgical Replication](https://github.com/pgedge/lolor)
