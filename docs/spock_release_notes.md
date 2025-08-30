@@ -7,16 +7,8 @@
 * Backport f8b1147: Fix default column values to use defaults on the subscriber when no values provided from the publisher
 * Backport 3ed5e3c: Fix resource leak
 
-## Version 4.1
-* Hardening Parallel Slots for OLTP production use.
-  - Commit Order
-  - Skip LSN
-  - Optionally stop replicating in an Error
-* Enhancements to Automatic DDL replication
-
 ## Version 4.0
 
-* Full re-work of paralell slots implementation to support mixed OLTP workloads
 * Improved support for delta_apply columns to support various data types
 * Improved regression test coverage
 * Support for [Large Object LOgical Replication](https://github.com/pgedge/lolor)
