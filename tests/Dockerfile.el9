@@ -47,10 +47,6 @@ WORKDIR /home/pgedge
 RUN curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
 RUN sudo -u pgedge python3 /home/pgedge/install.py
 
-WORKDIR /home/pgedge/pgedge
-# Set up according to the environment in pgedge.env file in tests subdir
-RUN . /home/pgedge/spock/tests/pgedge.env && ./pgedge setup -U $DBUSER -P $DBPASSWD -d $DBNAME --pg_ver=$PGVER && ./pgedge stop
-
 WORKDIR /home/pgedge/postgres
 
 RUN git apply --verbose /home/pgedge/spock/patches/pg${PGVER}*

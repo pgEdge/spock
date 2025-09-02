@@ -50,7 +50,7 @@ index 50747c16396..6cdbbe1d0dd 100644
  
  	return (bytea *) build_reloptions(reloptions, validate,
 diff --git a/src/backend/access/heap/heapam.c b/src/backend/access/heap/heapam.c
-index 0dcd6ee817e..49cd71d1a7d 100644
+index 0dcd6ee817e..dcf26167cae 100644
 --- a/src/backend/access/heap/heapam.c
 +++ b/src/backend/access/heap/heapam.c
 @@ -48,6 +48,7 @@
@@ -94,15 +94,20 @@ index 0dcd6ee817e..49cd71d1a7d 100644
  	ItemId		lp;
  	HeapTupleData oldtup;
  	HeapTuple	heaptup;
-@@ -3418,6 +3422,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
- 	modified_attrs = HeapDetermineColumnsInfo(relation, interesting_attrs,
+@@ -3419,6 +3423,12 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
  											  id_attrs, &oldtup,
  											  newtup, &id_has_external);
-+	logged_old_attrs = HeapDetermineLogOldColumns(relation);
  
++	if (!IsCatalogRelationOid(relation->rd_id))
++		logged_old_attrs = HeapDetermineLogOldColumns(relation);
++	else
++		/* No need to log old values for catalog tables */
++		logged_old_attrs = NULL;
++
  	/*
  	 * If we're not updating any "key" column, we can grab a weaker lock type.
-@@ -3692,6 +3697,7 @@ l2:
+ 	 * This allows for more concurrency when we are running simultaneously
+@@ -3692,6 +3702,7 @@ l2:
  		bms_free(key_attrs);
  		bms_free(id_attrs);
  		bms_free(modified_attrs);
@@ -110,7 +115,7 @@ index 0dcd6ee817e..49cd71d1a7d 100644
  		bms_free(interesting_attrs);
  		return result;
  	}
-@@ -4041,6 +4047,7 @@ l2:
+@@ -4041,6 +4052,7 @@ l2:
  	old_key_tuple = ExtractReplicaIdentity(relation, &oldtup,
  										   bms_overlap(modified_attrs, id_attrs) ||
  										   id_has_external,
@@ -118,7 +123,7 @@ index 0dcd6ee817e..49cd71d1a7d 100644
  										   &old_key_copied);
  
  	/* NO EREPORT(ERROR) from here till changes are logged */
-@@ -4207,6 +4214,7 @@ l2:
+@@ -4207,6 +4219,7 @@ l2:
  	bms_free(key_attrs);
  	bms_free(id_attrs);
  	bms_free(modified_attrs);
@@ -126,7 +131,7 @@ index 0dcd6ee817e..49cd71d1a7d 100644
  	bms_free(interesting_attrs);
  
  	return TM_Ok;
-@@ -4379,6 +4387,26 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
+@@ -4379,6 +4392,26 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
  	}
  }
  
@@ -153,7 +158,7 @@ index 0dcd6ee817e..49cd71d1a7d 100644
  /*
   * Check which columns are being updated.
   *
-@@ -9132,6 +9160,7 @@ log_heap_new_cid(Relation relation, HeapTuple tup)
+@@ -9132,6 +9165,7 @@ log_heap_new_cid(Relation relation, HeapTuple tup)
   */
  static HeapTuple
  ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
@@ -161,7 +166,7 @@ index 0dcd6ee817e..49cd71d1a7d 100644
  					   bool *copy)
  {
  	TupleDesc	desc = RelationGetDescr(relation);
-@@ -9164,13 +9193,16 @@ ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
+@@ -9164,13 +9198,16 @@ ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
  	}
  
  	/* if the key isn't required and we're only logging the key, we're done */
