@@ -54,6 +54,14 @@ extern void get_apply_group_entry(Oid dbid,
 								int *indexPtr,
 								bool *foundPtr);
 
+extern void update_progress_entry(Oid target_node_id,
+								Oid remote_node_id,
+								TimestampTz remote_commit_ts,
+								XLogRecPtr remote_lsn,
+								XLogRecPtr remote_insert_lsn,
+								TimestampTz last_updated_ts,
+								bool updated_by_decode);
+
 extern void spock_apply_group_shmem_init(void);
 
 #endif /* SPOCK_APPLY_H */

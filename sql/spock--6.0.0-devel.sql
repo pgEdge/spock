@@ -451,6 +451,42 @@ LANGUAGE c AS 'MODULE_PATHNAME', 'get_channel_stats';
 CREATE FUNCTION spock.reset_channel_stats() RETURNS void
 LANGUAGE c AS 'MODULE_PATHNAME', 'reset_channel_stats';
 
+-- Recovery functions
+CREATE FUNCTION spock.clone_recovery_slot(source_slot text, target_lsn text)
+RETURNS text STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_clone_recovery_slot';
+
+CREATE FUNCTION spock.get_min_unacknowledged_timestamp(failed_node_id oid)
+RETURNS timestamptz STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_min_unacknowledged_timestamp';
+
+CREATE FUNCTION spock.initiate_node_recovery(failed_node_id oid)
+RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_initiate_node_recovery';
+
+CREATE FUNCTION spock.get_recovery_slot_info(
+    OUT local_node_id oid,
+    OUT remote_node_id oid,
+    OUT slot_name text,
+    OUT restart_lsn pg_lsn,
+    OUT confirmed_flush_lsn pg_lsn,
+    OUT min_unacknowledged_ts timestamptz,
+    OUT active boolean,
+    OUT in_recovery boolean,
+    OUT recovery_generation integer)
+RETURNS SETOF record
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_recovery_slot_info';
+
+CREATE FUNCTION spock.detect_failed_nodes(
+    OUT node_id oid,
+    OUT node_name text,
+    OUT failure_reason text)
+RETURNS SETOF record
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_detect_failed_nodes';
+
+CREATE FUNCTION spock.coordinate_cluster_recovery(failed_node_id oid)
+RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_coordinate_cluster_recovery';
+
+CREATE FUNCTION spock.advance_recovery_slot_to_lsn(slot_name text, target_lsn text)
+RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_advance_recovery_slot_to_lsn';
+
 CREATE VIEW spock.channel_table_stats AS
   SELECT H.subid, H.relid,
 	 CASE H.subid

@@ -12,3 +12,4 @@ test: 004_non_default_repset
 # Advanced functionality tests
 # test: 005_daylight_savings
 # test: 006_sync_during_write
+test: 009_recovery_slots_3node
