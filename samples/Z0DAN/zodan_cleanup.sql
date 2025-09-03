@@ -24,6 +24,7 @@ DROP PROCEDURE IF EXISTS monitor_lag_with_dblink(text, text, text, boolean);
 DROP PROCEDURE IF EXISTS verify_node_prerequisites(text, text, text, text, boolean);
 DROP PROCEDURE IF EXISTS create_nodes_only(text, text, text, text, boolean, text, text, jsonb, integer);
 DROP PROCEDURE IF EXISTS create_replication_slots(text, text, text, text, boolean);
+DROP PROCEDURE IF EXISTS create_replication_slot(text, text, text, text, boolean);
 DROP PROCEDURE IF EXISTS create_disable_subscriptions_and_slots(text, text, text, text, boolean);
 DROP PROCEDURE IF EXISTS enable_disabled_subscriptions(text, text, text, text, boolean);
 DROP PROCEDURE IF EXISTS create_sub_on_new_node_to_src_node(text, text, text, text, boolean);
@@ -32,7 +33,7 @@ DROP PROCEDURE IF EXISTS create_source_to_new_subscription(text, text, text, tex
 DROP PROCEDURE IF EXISTS trigger_sync_on_other_nodes_and_wait_on_source(text, text, text, text, boolean);
 DROP PROCEDURE IF EXISTS check_commit_timestamp_and_advance_slot(text, text, text, text, boolean);
 DROP PROCEDURE IF EXISTS check_node_lag(text, text, boolean, interval);
-DROP PROCEDURE IF EXISTS trigger_sync_and_wait(text, text, text, text, boolean);
+DROP PROCEDURE IF EXISTS wait_for_source_node_sync(text, text, text, text, boolean, boolean);
 DROP PROCEDURE IF EXISTS present_final_cluster_state(integer, boolean);
 DROP PROCEDURE IF EXISTS add_node(text, text, text, text, boolean, text, text, jsonb);
 
