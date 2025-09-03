@@ -71,6 +71,7 @@
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/snapmgr.h"
+#include "utils/elog.h"
 #include "replication/syncrep.h"
 #include "replication/walsender_private.h"
 
@@ -156,6 +157,7 @@ static ApplyReplayEntry	   *apply_replay_tail = NULL;
 static ApplyReplayEntry	   *apply_replay_next = NULL;
 static int					apply_replay_bytes = 0;
 static bool					apply_replay_overflow = false;
+static uint32				current_transaction_size = 0;
 
 typedef struct SpockApplyFunctions
 {
@@ -779,6 +781,7 @@ handle_begin(StringInfo s)
 
 	xact_action_counter = 1;
 	xact_had_exception = false;
+	current_transaction_size = 0;  /* Reset transaction size counter for new transaction */
 	errcallback_arg.action_name = "BEGIN";
 
 	spock_read_begin(s, &commit_lsn, &commit_time, &remote_xid);
@@ -2946,6 +2949,32 @@ stream_replay:
 					start_lsn = pq_getmsgint64(msg);
 					end_lsn = pq_getmsgint64(msg);
 					pq_getmsgint64(msg); /* sendTime */
+
+					/* Check transaction size limit */
+					current_transaction_size += msg->len;
+					if (current_transaction_size > spock_max_transaction_size)
+					{
+						ereport(LOG,
+								(errmsg("SPOCK: Transaction size %u bytes exceeds maximum allowed size %u bytes. WAL message rejected. LSN: %X/%X",
+										current_transaction_size, spock_max_transaction_size,
+										LSN_FORMAT_ARGS(end_lsn)),
+								 errhint("Consider increasing spock.max_transaction_size if you expect larger transactions.")));
+
+						/* Skip this WAL message by freeing the entry and continuing */
+						apply_replay_entry_free(entry);
+
+						MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
+						
+						/* Disable the subscription using Spock's method */
+						MySubscription->enabled = false;
+						alter_subscription(MySubscription);
+						
+						elog(WARNING, "SPOCK %s: disabling subscription due to transaction size limit exceeded",
+							 MySubscription->name);
+
+						/* Exit the apply worker since subscription is disabled */
+						return;
+					}
 
 					/*
 					 * Call maybe_send_feedback before last_received is updated.
