@@ -1353,8 +1353,16 @@ replication_set_remove_table(Oid setid, Oid reloid, bool from_drop)
 	if (HeapTupleIsValid(tuple))
 		simple_heap_delete(rel, &tuple->t_self);
 	else if (!from_drop)
-		elog(ERROR, "replication set table mapping %u:%u not found",
-			 setid, reloid);
+	{
+		SpockRepSet *repset;
+		char *relname;
+
+		repset = get_replication_set(setid);
+		relname = get_rel_name(reloid);
+
+		elog(ERROR, "Table %s not found in replication set %s",
+			 relname, repset->name);
+	}
 
 	/* We can only invalidate the relcache when relation still exists. */
 	if (!from_drop)
