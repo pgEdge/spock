@@ -33,6 +33,9 @@
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
+#if PG_VERSION_NUM >= 180000
+#include "commands/publicationcmds.h"
+#endif
 
 #include "executor/spi.h"
 
@@ -1399,6 +1402,11 @@ parse_row_filter(Relation rel, char *row_filter_str)
 	row_filter = transformExpr(pstate, row_filter, EXPR_KIND_CHECK_CONSTRAINT);
 	row_filter = coerce_to_boolean(pstate, row_filter, "row_filter");
 	assign_expr_collations(pstate, row_filter);
+
+#if PG_VERSION_NUM >= 180000
+	/* only allow simple expressions due to 18 strictness */
+	check_simple_rowfilter_expr(row_filter, pstate);
+#endif
 	if (list_length(pstate->p_rtable) != 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
