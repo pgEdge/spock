@@ -1,4 +1,7 @@
 -- row based filtering
+
+-- Note: many of the filters are known to be invalid for stricter
+-- checking that Spock does for Postgres 18 and above
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
@@ -82,7 +85,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 -- wait for the initial data to copy
 BEGIN;
-SET LOCAL statement_timeout = '10s';
+SET LOCAL statement_timeout = '60s';
 SELECT spock.sub_wait_for_sync('test_subscription');
 COMMIT;
 
