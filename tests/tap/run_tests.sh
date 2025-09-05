@@ -92,7 +92,6 @@ readonly TEST_EXTENSION=".pl"
 COVERAGE_ENABLED="${COVERAGE_ENABLED:-false}"
 readonly COVERAGE_DIR="coverage"
 readonly COVERAGE_REPORT_DIR="$COVERAGE_DIR/reports"
-readonly COVERAGE_HTML_DIR="$COVERAGE_REPORT_DIR/html"
 readonly COVERAGE_THRESHOLD="${COVERAGE_THRESHOLD:-80}"  # Minimum coverage percentage
 
 # No colors - plain text output

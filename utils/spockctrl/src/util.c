@@ -327,7 +327,7 @@ substitute_sql_vars(const char *sql_stmt)
 			if (left < strlen(esc) + 3)
 				goto fail;
 			*dst++ = '\''; left--;              /* opening quote */
-			strcpy(dst, esc);
+			snprintf(dst, BUF_SZ, "%s", esc);
 			left -= strlen(esc);
 			dst  += strlen(esc);
 			*dst++ = '\''; left--;              /* closing quote */
