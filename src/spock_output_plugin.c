@@ -1200,7 +1200,7 @@ spock_output_join_slot_group(NameData slot_name)
 	/*
 	 * Determine the group name (if possible)
 	 */
-	strcpy(NameStr(group_name), NameStr(slot_name));
+	strlcpy(NameStr(group_name), NameStr(slot_name), NAMEDATALEN);
 	for(cp = NameStr(group_name); *cp; cp++)
 	{
 		if (cp[0] == '_'
@@ -1253,7 +1253,7 @@ spock_output_join_slot_group(NameData slot_name)
 	{
 		elog(LOG, "using free slot-group %d", free_i);
 		slot_group = free_group;
-		strcpy(NameStr(slot_group->name), NameStr(group_name));
+		strlcpy(NameStr(slot_group->name), NameStr(group_name), NAMEDATALEN);
 		slot_group->nattached = 1;
 		slot_group->last_lsn = InvalidXLogRecPtr;
 		slot_group->last_commit_ts = 0;
@@ -1571,7 +1571,7 @@ spkReorderBufferCleanSerializedTXNs(const char *slotname)
 	struct stat statbuf;
 	char		path[MAXPGPATH * 2 + 12];
 
-	sprintf(path, "pg_replslot/%s", slotname);
+	snprintf(path, sizeof(path), "pg_replslot/%s", slotname);
 
 	/* we're only handling directories here, skip if it's not ours */
 	if (lstat(path, &statbuf) == 0 && !S_ISDIR(statbuf.st_mode))

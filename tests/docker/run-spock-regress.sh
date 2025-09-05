@@ -15,7 +15,6 @@ then
 	exit 1
 fi
 
-CWD=`pwd`
 cd /home/pgedge/spock/
 
 make regresscheck

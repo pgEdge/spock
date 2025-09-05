@@ -704,8 +704,9 @@ spock_report_conflict(SpockConflictType conflict_type,
 
 	memset(local_tup_ts_str, 0, MAXDATELEN);
 	if (found_local_origin)
-		strcpy(local_tup_ts_str,
-			   timestamptz_to_str(local_tuple_commit_ts));
+		strlcpy(local_tup_ts_str,
+			   timestamptz_to_str(local_tuple_commit_ts),
+			   MAXDATELEN);
 
 	initStringInfo(&remotetup);
 	tuple_to_stringinfo(&remotetup, desc, remotetuple);
@@ -1075,7 +1076,7 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 		if (strlen(outputstr) > MAX_CONFLICT_LOG_ATTR_LEN)
 		{
 			/* The null written at the end of strcpy will truncate the string */
-			strcpy(&outputstr[MAX_CONFLICT_LOG_ATTR_LEN - 5], "...");
+			strlcpy(&outputstr[MAX_CONFLICT_LOG_ATTR_LEN - 5], "...", 3);
 		}
 
 		appendStringInfoChar(s, ':');

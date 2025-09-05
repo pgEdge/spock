@@ -169,7 +169,7 @@ spock_worker_register(SpockWorker *worker)
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
-	snprintf(bgw.bgw_library_name, BGW_MAXLEN,
+	snprintf(bgw.bgw_library_name, BGW_MAXLEN, "%s",
 			 EXTENSION_NAME);
 	if (worker->worker_type == SPOCK_WORKER_MANAGER)
 	{
