@@ -243,6 +243,7 @@ spock_disable_subscription(SpockSubscription *sub,
 	sub->enabled = false;
 	alter_subscription(sub);
 
+	// cppcheck-suppress format
 	snprintf(errmsg, sizeof(errmsg),
 				"disabling subscription %s due to exception(s) - "
 				"skip_lsn = %X/%X",

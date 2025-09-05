@@ -238,8 +238,7 @@ get_value_from_outfile(const char *node, const char *key, char *value, size_t va
         trim_newline(eq + 1);
         if (strcmp(line, key) == 0)
         {
-            strncpy(value, eq + 1, value_sz - 1);
-            value[value_sz - 1] = '\0';
+            snprintf(value, value_sz - 1, "%s", eq + 1);
             fclose(f);
             return 0;
         }
