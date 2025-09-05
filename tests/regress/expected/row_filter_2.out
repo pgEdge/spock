@@ -51,17 +51,10 @@ $$ (SELECT EXTRACT(DECADE FROM NOW()):: integer); $$
 language sql volatile;
 -- we allow volatile functions, it's user's responsibility to not do writes
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := 'current_user = data');
- repset_add_table 
-------------------
- t
-(1 row)
-
+ERROR:  invalid publication WHERE expression
+DETAIL:  Only columns, constants, built-in operators, built-in data types, built-in collations, and immutable built-in functions are allowed.
 SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
- repset_remove_table 
----------------------
- t
-(1 row)
-
+ERROR:  Table basic_dml not found in replication set default
 -- fail -- subselect
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := '(SELECT count(*) FROM pg_class) > 1');
 ERROR:  cannot use subquery in check constraint
@@ -100,41 +93,20 @@ SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
 (1 row)
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := $rf$id > funcn_add(1,2) $rf$);
- repset_add_table 
-------------------
- t
-(1 row)
-
+ERROR:  invalid publication WHERE expression
+DETAIL:  User-defined or built-in mutable functions are not allowed.
 SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
- repset_remove_table 
----------------------
- t
-(1 row)
-
+ERROR:  Table basic_dml not found in replication set default
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := $rf$data = funcn_nochange('baz') $rf$);
- repset_add_table 
-------------------
- t
-(1 row)
-
+ERROR:  invalid publication WHERE expression
+DETAIL:  User-defined or built-in mutable functions are not allowed.
 SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
- repset_remove_table 
----------------------
- t
-(1 row)
-
+ERROR:  Table basic_dml not found in replication set default
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false, row_filter := $rf$ other > funcn_get_curr_decade()  $rf$);
- repset_add_table 
-------------------
- t
-(1 row)
-
+ERROR:  invalid publication WHERE expression
+DETAIL:  User-defined or built-in mutable functions are not allowed.
 SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
- repset_remove_table 
----------------------
- t
-(1 row)
-
+ERROR:  Table basic_dml not found in replication set default
 -- use this filter for rest of the test
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', true, row_filter := $rf$id > 1 AND data IS DISTINCT FROM 'baz' AND data IS DISTINCT FROM 'bbb'$rf$);
  repset_add_table 
@@ -490,11 +462,8 @@ SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
 
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_simple(other) = 100 $rf$);
- repset_add_table 
-------------------
- t
-(1 row)
-
+ERROR:  invalid publication WHERE expression
+DETAIL:  User-defined or built-in mutable functions are not allowed.
 -- Should FAIL due to dependency
 --
 -- FIXME: Succeeds incorrectly (RM#5880) leading to
@@ -521,8 +490,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT other FROM basic_dml WHERE other IN (100,101);
  other 
 -------
-   100
-(1 row)
+(0 rows)
 
 \c :provider_dsn
 CREATE FUNCTION func_plpgsql_logic(arg integer)
@@ -538,18 +506,11 @@ BEGIN
 END;
 $$;
 SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
- repset_remove_table 
----------------------
- t
-(1 row)
-
+ERROR:  Table basic_dml not found in replication set default
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_logic(other) = other $rf$);
- repset_add_table 
-------------------
- t
-(1 row)
-
+ERROR:  invalid publication WHERE expression
+DETAIL:  User-defined or built-in mutable functions are not allowed.
 INSERT INTO basic_dml (other) VALUES (200), (201);
 SELECT other FROM basic_dml WHERE other IN (200,201);
  other 
@@ -568,8 +529,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT other FROM basic_dml WHERE other IN (200,201);
  other 
 -------
-   200
-(1 row)
+(0 rows)
 
 \c :provider_dsn
 CREATE FUNCTION func_plpgsql_security_definer(arg integer)
@@ -585,18 +545,11 @@ $$;
 CREATE ROLE temp_owner;
 ALTER FUNCTION func_plpgsql_security_definer(integer) OWNER TO temp_owner;
 SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
- repset_remove_table 
----------------------
- t
-(1 row)
-
+ERROR:  Table basic_dml not found in replication set default
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_security_definer(other) = 300 $rf$);
- repset_add_table 
-------------------
- t
-(1 row)
-
+ERROR:  invalid publication WHERE expression
+DETAIL:  User-defined or built-in mutable functions are not allowed.
 INSERT INTO basic_dml (other) VALUES (300), (301);
 SELECT other FROM basic_dml WHERE other IN (300,301);
  other 
@@ -615,8 +568,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT other FROM basic_dml WHERE other IN (300,301);
  other 
 -------
-   300
-(1 row)
+(0 rows)
 
 \c :provider_dsn
 CREATE FUNCTION func_plpgsql_exception(arg integer)
@@ -634,18 +586,11 @@ BEGIN
 END;
 $$;
 SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
- repset_remove_table 
----------------------
- t
-(1 row)
-
+ERROR:  Table basic_dml not found in replication set default
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_exception(other) = 400 $rf$);
- repset_add_table 
-------------------
- t
-(1 row)
-
+ERROR:  invalid publication WHERE expression
+DETAIL:  User-defined or built-in mutable functions are not allowed.
 INSERT INTO basic_dml (other) VALUES (400), (401);
 SELECT other FROM basic_dml WHERE other IN (400,401);
  other 
@@ -664,8 +609,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT other FROM basic_dml WHERE other IN (400,401);
  other 
 -------
-   400
-(1 row)
+(0 rows)
 
 \c :provider_dsn
 -- Should not be able to use a SETOF or TABLE func directly
@@ -683,14 +627,10 @@ $$;
 -- fails with SRF context error
 BEGIN;
 SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
- repset_remove_table 
----------------------
- t
-(1 row)
-
+ERROR:  Table basic_dml not found in replication set default
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ (func_plpgsql_srf_retq(other)).result = 500 $rf$);
-ERROR:  set-returning functions are not allowed in check constraints
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK;
 CREATE FUNCTION func_plpgsql_call_set(arg integer)
 RETURNS boolean
@@ -701,18 +641,11 @@ BEGIN
 END;
 $$;
 SELECT * FROM spock.repset_remove_table('default', 'basic_dml');
- repset_remove_table 
----------------------
- t
-(1 row)
-
+ERROR:  Table basic_dml not found in replication set default
 SELECT * FROM spock.repset_add_table('default', 'basic_dml', false,
 	row_filter := $rf$ func_plpgsql_call_set(other) $rf$);
- repset_add_table 
-------------------
- t
-(1 row)
-
+ERROR:  invalid publication WHERE expression
+DETAIL:  User-defined or built-in mutable functions are not allowed.
 INSERT INTO basic_dml (other) VALUES (500), (501);
 SELECT other FROM basic_dml WHERE other IN (500,501);
  other 
@@ -731,9 +664,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT other FROM basic_dml WHERE other IN (500,501);
  other 
 -------
-   500
-   501
-(2 rows)
+(0 rows)
 
 \c :provider_dsn
 DROP FUNCTION func_plpgsql_simple(integer);
@@ -755,7 +686,6 @@ SELECT spock.replicate_ddl($$
 	DROP TABLE public.basic_dml CASCADE;
 	DROP TABLE public.test_jsonb CASCADE;
 $$);
-NOTICE:  drop cascades to table basic_dml membership in replication set default
 NOTICE:  drop cascades to table test_jsonb membership in replication set default
  replicate_ddl 
 ---------------

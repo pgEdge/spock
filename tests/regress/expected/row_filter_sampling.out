@@ -2,6 +2,11 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
+-- Do not run for Postgres 18 or higher
+SELECT current_setting('server_version_num') >= '180000' as is_pg18_or_higher \gset
+\if :is_pg18_or_higher
+	\q
+\endif
 -- testing volatile sampling function in row_filter
 SELECT spock.replicate_ddl($$
 	CREATE TABLE public.test_tablesample (id int primary key, name text) WITH (fillfactor=10);
