@@ -2,6 +2,7 @@ exclude_paths:
   - 'tests/regress/sql/*.sql'     # non-standard SQL files with \ directives
   - 'sql/*.sql' # non-standard SQL files with \ directives
 
+# Ignore LOC and complexity for inherited files
 engines:
   metric:
     exclude_paths:
@@ -30,10 +31,8 @@ engines:
       - "src/spock_sequences.c"
       - "src/spock_sync.c"
       - "src/spock_worker.c"
-
-tools:
-   - name: "Lizard"
-     ignore_paths:
+  lizard:
+    exclude_paths:
       - "src/spock_apply.c"
       - "src/spock_apply_heap.c"
       - "src/spock_apply_spi.c"
