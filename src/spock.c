@@ -1050,7 +1050,7 @@ _PG_init(void)
 	spock_output_plugin_shmem_init();
 
 	/* Init output plugin shmem */
-	spock_apply_group_shmem_init();
+	spock_group_shmem_init();
 
 	/* Init executor module */
 	spock_executor_init();

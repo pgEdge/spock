@@ -1,3 +1,14 @@
+/*-------------------------------------------------------------------------
+ *
+ * spock_rmgr.c
+ * 		spock resource manager definitions
+ *
+ * Copyright (c) 2022-2025, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
 #include "postgres.h"
 
 #include "access/xlog.h"
@@ -26,7 +37,6 @@ spock_rmgr_init(void)
     RegisterCustomRmgr(SPOCK_RMGR_ID, &spock_custom_rmgr);
 }
 
-
 void
 spock_rmgr_redo(XLogReaderState *record)
 {
@@ -34,12 +44,16 @@ spock_rmgr_redo(XLogReaderState *record)
 
 	switch(info)
 	{
-		case SPOCK_RMGR_PROGRESS_INFO:
+		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				ProgressInfoEntry *entry;
+				SpockApplyProgress *sap;
 
-				entry = (ProgressInfoEntry *) XLogRecGetData(record);
-				(void) entry;
+				sap = (SpockApplyProgress *) XLogRecGetData(record);
+
+				// LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+
+				spock_group_progress_update(sap);
+				// LWLockRelease(SpockCtx->lock);
 			}
 			break;
 
@@ -58,15 +72,15 @@ spock_rmgr_desc(StringInfo buf, XLogReaderState *record)
 
 	switch(info)
 	{
-		case SPOCK_RMGR_PROGRESS_INFO:
+		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				ProgressInfoEntry *entry;
+				SpockApplyProgress *sap;
 
-				entry = (ProgressInfoEntry *) XLogRecGetData(record);
-				appendStringInfo(buf, "spock rmgr: entry for db %u, node %u, remote_node %u",
-						entry->dbid,
-						entry->node_id,
-						entry->remote_node_id);
+				sap = (SpockApplyProgress *) XLogRecGetData(record);
+				appendStringInfo(buf, "spock apply progress for db %u, node %u, remote_node %u",
+						sap->key.dbid,
+						sap->key.node_id,
+						sap->key.remote_node_id);
 			}
 			break;
 		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:
@@ -83,8 +97,8 @@ spock_rmgr_identify(uint8 info)
 {
 	switch(info)
 	{
-		case SPOCK_RMGR_PROGRESS_INFO:
-			return "PROGRESS_INFO";
+		case SPOCK_RMGR_APPLY_PROGRESS:
+			return "APPLY_PROGRESS";
 			break;
 		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:
 			return "SUBTRANS_COMMIT_TS";
@@ -104,8 +118,16 @@ spock_rmgr_cleanup(void)
 {
 }
 
-bool
-ProgressEntryAddToWAL(ProgressInfoEntry *entry)
+XLogRecPtr
+spock_apply_progress_add_to_wal(const SpockApplyProgress *sap)
 {
-	return true;
+    XLogRecPtr lsn;
+
+	Assert(sap != NULL);
+
+    XLogBeginInsert();
+    XLogRegisterData((char *) sap, sizeof(SpockApplyProgress));
+    lsn = XLogInsert(SPOCK_RMGR_ID, SPOCK_RMGR_APPLY_PROGRESS);
+
+    return lsn;
 }
