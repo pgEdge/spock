@@ -53,7 +53,7 @@ extern bool	spock_include_ddl_repset;
 extern bool	allow_ddl_from_functions;
 extern int	restart_delay_default;
 extern int	restart_delay_on_exception;
-extern int	spock_replay_queue_size;
+extern int	spock_replay_queue_size;  /* Deprecated - no longer used */
 extern bool check_all_uc_indexes;
 extern char *shorten_hash(const char *str, int maxlen);
 
