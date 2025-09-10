@@ -155,7 +155,6 @@ static ApplyReplayEntry	   *apply_replay_head = NULL;
 static ApplyReplayEntry	   *apply_replay_tail = NULL;
 static ApplyReplayEntry	   *apply_replay_next = NULL;
 static int					apply_replay_bytes = 0;
-static bool					apply_replay_overflow = false;
 
 typedef struct SpockApplyFunctions
 {
@@ -4166,7 +4165,6 @@ apply_replay_queue_reset(void)
 	apply_replay_tail = NULL;
 	apply_replay_next = NULL;
 	apply_replay_bytes = 0;
-	apply_replay_overflow = false;
 
 	MemoryContextReset(ApplyReplayContext);
 }
