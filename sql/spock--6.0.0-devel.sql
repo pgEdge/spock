@@ -95,16 +95,24 @@ CREATE TABLE spock.exception_status_detail (
 		REFERENCES spock.exception_status
 ) WITH (user_catalog_table=true);
 
-CREATE TABLE spock.progress (
-	node_id oid NOT NULL,
-	remote_node_id oid NOT NULL,
-	remote_commit_ts timestamptz NOT NULL,
-	remote_lsn pg_lsn NOT NULL,
-	remote_insert_lsn pg_lsn NOT NULL,
-	last_updated_ts timestamptz NOT NULL,
-	updated_by_decode bool NOT NULL,
-	PRIMARY KEY(node_id, remote_node_id)
-) WITH (fillfactor=50);
+CREATE FUNCTION spock.apply_group_progress (
+	OUT dbid oid,
+	OUT node_id oid,
+	OUT remote_node_id oid,
+	OUT remote_commit_ts timestamptz,
+	OUT prev_remote_ts timestamptz,
+	OUT remote_commit_lsn pg_lsn,
+	OUT remote_insert_lsn pg_lsn,
+	OUT last_updated_ts timestamptz,
+	OUT updated_by_decode bool
+) RETURNS SETOF record
+LANGUAGE c AS 'MODULE_PATHNAME', 'get_apply_group_progress';
+
+CREATE VIEW spock.progress AS
+	SELECT node_id, remote_node_id, remote_commit_ts,
+		   remote_commit_lsn AS remote_lsn, remote_insert_lsn,
+		   last_updated_ts, updated_by_decode
+	FROM spock.apply_group_progress();
 
 CREATE FUNCTION spock.node_create(node_name name, dsn text,
     location text DEFAULT NULL, country text DEFAULT NULL,
