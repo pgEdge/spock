@@ -130,7 +130,7 @@ bool	spock_include_ddl_repset = false;
 bool	allow_ddl_from_functions = false;
 int		restart_delay_default;
 int		restart_delay_on_exception;
-int		spock_replay_queue_size;
+int		spock_replay_queue_size;  /* Deprecated - no longer used */
 bool	check_all_uc_indexes = false;
 
 
@@ -997,8 +997,9 @@ _PG_init(void)
 							NULL);
 
 	DefineCustomIntVariable("spock.exception_replay_queue_size",
-							"apply-worker replay queue size for exception",
-							NULL,
+							"DEPRECATED: apply-worker replay queue size (no longer used)",
+							"This setting is deprecated and has no effect. "
+							"The replay queue now dynamically allocates memory as needed.",
 							&spock_replay_queue_size,
 							4194304,
 							0,
