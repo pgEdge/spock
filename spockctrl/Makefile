@@ -1,5 +1,5 @@
 # Compiler
-CC = gcc
+CC = $(shell $(PG_CONFIG) --cc)
 
 # PostgreSQL include and library directories
 PG_INCDIR = $(shell $(PG_CONFIG) --includedir)
