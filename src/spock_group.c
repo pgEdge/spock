@@ -32,7 +32,7 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 #define SPOCK_GROUP_TRANCHE_NAME   "spock_apply_groups"
 
-static HTAB *SpockGroupHash = NULL;
+HTAB	   *SpockGroupHash = NULL;
 
 static void spock_group_shmem_request(void);
 static void spock_group_shmem_startup(void);
