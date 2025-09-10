@@ -80,7 +80,7 @@ find_other_exec_version(const char *argv0, const char *target,
 	}
 	pclose(output);
 
-	if (sscanf(cmd_output, "%*s %*s %d.%d", &pre_dot, &post_dot) < 1)
+	if (sscanf(cmd_output, "%*s %*s %2d.%2d", &pre_dot, &post_dot) < 1)
 	{
 		fprintf(stderr, "find_other_exec_version: couldn't scan result \"%s\" as version\n", cmd_output);
 		return -2;
