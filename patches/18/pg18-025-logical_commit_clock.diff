@@ -152,7 +152,7 @@ index b885513f765..62219cc44eb 100644
 +	XLogSetLastTransactionStopTimestamp(logical_clock);
 +}
 diff --git a/src/backend/access/transam/xlog.c b/src/backend/access/transam/xlog.c
-index 184de54f3a1..91934885af8 100644
+index c9e5daecd5e..f6cb76ded8d 100644
 --- a/src/backend/access/transam/xlog.c
 +++ b/src/backend/access/transam/xlog.c
 @@ -156,6 +156,16 @@ int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
@@ -172,7 +172,7 @@ index 184de54f3a1..91934885af8 100644
  /* Estimated distance between checkpoints, in bytes */
  static double CheckPointDistanceEstimate = 0;
  static double PrevCheckPointDistance = 0;
-@@ -563,6 +573,14 @@ typedef struct XLogCtlData
+@@ -552,6 +562,14 @@ typedef struct XLogCtlData
  	XLogRecPtr	lastFpwDisableRecPtr;
  
  	slock_t		info_lck;		/* locks shared variables shown above */
@@ -187,7 +187,7 @@ index 184de54f3a1..91934885af8 100644
  } XLogCtlData;
  
  /*
-@@ -712,6 +730,7 @@ static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
+@@ -701,6 +719,7 @@ static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
  								XLogRecData *rdata,
  								XLogRecPtr StartPos, XLogRecPtr EndPos,
  								TimeLineID tli);
@@ -195,7 +195,7 @@ index 184de54f3a1..91934885af8 100644
  static void ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos,
  									  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr);
  static bool ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos,
-@@ -790,6 +809,13 @@ XLogInsertRecord(XLogRecData *rdata,
+@@ -779,6 +798,13 @@ XLogInsertRecord(XLogRecData *rdata,
  	if (!XLogInsertAllowed())
  		elog(ERROR, "cannot make new WAL entries during recovery");
  
@@ -209,7 +209,7 @@ index 184de54f3a1..91934885af8 100644
  	/*
  	 * Given that we're not in recovery, InsertTimeLineID is set and can't
  	 * change, so we can read it without a lock.
-@@ -918,6 +944,17 @@ XLogInsertRecord(XLogRecData *rdata,
+@@ -907,6 +933,17 @@ XLogInsertRecord(XLogRecData *rdata,
  
  	if (inserted)
  	{
@@ -227,7 +227,7 @@ index 184de54f3a1..91934885af8 100644
  		/*
  		 * Now that xl_prev has been filled in, calculate CRC of the record
  		 * header.
-@@ -1101,6 +1138,27 @@ XLogInsertRecord(XLogRecData *rdata,
+@@ -1090,6 +1127,27 @@ XLogInsertRecord(XLogRecData *rdata,
  	return EndPos;
  }
  
@@ -241,11 +241,11 @@ index 184de54f3a1..91934885af8 100644
 +XLogRecordCorrectCRC(XLogRecData *rdata)
 +{
 +	XLogRecData    *rdt;
-+	XLogRecord	   *rechdr = (XLogRecord *)rdata->data;
++	XLogRecord	   *rechdr = (XLogRecord *) rdata->data;
 +	pg_crc32c       rdata_crc;
 +
 +	INIT_CRC32C(rdata_crc);
-+	COMP_CRC32C(rdata_crc, rdata->data + SizeOfXLogRecord, rdata->len - SizeOfXLogRecord);
++	COMP_CRC32C(rdata_crc, ((char *) rechdr) + SizeOfXLogRecord, rdata->len - SizeOfXLogRecord);
 +	for (rdt = rdata->next; rdt != NULL; rdt = rdt->next)
 +		COMP_CRC32C(rdata_crc, rdt->data, rdt->len);
 +
@@ -255,7 +255,7 @@ index 184de54f3a1..91934885af8 100644
  /*
   * Reserves the right amount of space for a record of given size from the WAL.
   * *StartPos is set to the beginning of the reserved section, *EndPos to
-@@ -1145,6 +1203,13 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
+@@ -1134,6 +1192,13 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
  	 */
  	SpinLockAcquire(&Insert->insertpos_lck);
  
@@ -269,7 +269,7 @@ index 184de54f3a1..91934885af8 100644
  	startbytepos = Insert->CurrBytePos;
  	endbytepos = startbytepos + size;
  	prevbytepos = Insert->PrevBytePos;
-@@ -1204,6 +1269,12 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
+@@ -1193,6 +1258,12 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
  		return false;
  	}
  
@@ -282,7 +282,7 @@ index 184de54f3a1..91934885af8 100644
  	endbytepos = startbytepos + size;
  	prevbytepos = Insert->PrevBytePos;
  
-@@ -9684,3 +9755,15 @@ SetWalWriterSleeping(bool sleeping)
+@@ -9544,3 +9615,15 @@ SetWalWriterSleeping(bool sleeping)
  	XLogCtl->WalWriterSleeping = sleeping;
  	SpinLockRelease(&XLogCtl->info_lck);
  }
