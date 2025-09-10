@@ -882,7 +882,10 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 			return false;
 		}
 
+#if PG_VERSION_NUM < 180000
+         /* We make row filters stricter for PG 18+, not requiring a snapshot */
 		PushActiveSnapshot(GetTransactionSnapshot());
+#endif
 
 		estate = create_estate_for_relation(relation, false);
 		econtext = prepare_per_tuple_econtext(estate, tupdesc);
@@ -910,7 +913,9 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 		ExecDropSingleTupleTableSlot(econtext->ecxt_scantuple);
 		FreeExecutorState(estate);
 
+#if PG_VERSION_NUM < 180000
 		PopActiveSnapshot();
+#endif
 	}
 
 	/* Make sure caller is aware of any attribute filter. */
