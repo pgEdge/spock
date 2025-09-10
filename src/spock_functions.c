@@ -88,6 +88,7 @@
 #include "spock_node.h"
 #include "spock_output_plugin.h"
 #include "spock_queue.h"
+#include "spock_recovery.h"
 #include "spock_relcache.h"
 #include "spock_repset.h"
 #include "spock_rpc.h"
@@ -168,6 +169,15 @@ PG_FUNCTION_INFO_V1(spock_show_repset_table_info_by_target);
 PG_FUNCTION_INFO_V1(get_channel_stats);
 PG_FUNCTION_INFO_V1(reset_channel_stats);
 PG_FUNCTION_INFO_V1(prune_conflict_tracking);
+
+/* Recovery functions */
+PG_FUNCTION_INFO_V1(spock_clone_recovery_slot);
+PG_FUNCTION_INFO_V1(spock_get_min_unacknowledged_timestamp);
+PG_FUNCTION_INFO_V1(spock_initiate_node_recovery);
+PG_FUNCTION_INFO_V1(spock_get_recovery_slot_info);
+PG_FUNCTION_INFO_V1(spock_detect_failed_nodes);
+PG_FUNCTION_INFO_V1(spock_coordinate_cluster_recovery);
+PG_FUNCTION_INFO_V1(spock_advance_recovery_slot_to_lsn);
 
 /* Generic delta apply functions */
 PG_FUNCTION_INFO_V1(delta_apply_int2);
@@ -575,6 +585,13 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	/* Create progress entry to track commit ts per local/remote origin */
 	create_progress_entry(localnode->node->id, originif.nodeid, GetCurrentIntegerTimestamp());
 
+	/* Create recovery slot for catastrophic node failure handling */
+	if (!create_recovery_slot(localnode->node->id, originif.nodeid))
+	{
+		elog(WARNING, "Failed to create recovery slot for subscription '%s' to node '%s'",
+			 sub_name, origin->name);
+	}
+
 
 	/* Create synchronization status for the subscription. */
 	memset(&sync, 0, sizeof(SpockSyncStatus));
@@ -618,6 +635,17 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 		(void) replorigin_create(slot_name.data);
 	}
 	create_local_sync_status(&sync);
+
+	/* Create recovery slots for this subscription */
+	{
+		Oid local_node_id = get_local_node(true, false)->node->id;
+
+		/* Create recovery slot from local node to remote node */
+		create_recovery_slot(local_node_id, sub.origin->id);
+
+		/* Create recovery slot from remote node to local node */
+		create_recovery_slot(sub.origin->id, local_node_id);
+	}
 
 	PG_RETURN_OID(sub.id);
 }
@@ -722,6 +750,9 @@ Datum spock_drop_subscription(PG_FUNCTION_ARGS)
 
 		/* Drop the origin tracking locally. */
 		replorigin_drop_by_name(sub->slot_name, true, false);
+
+		/* Drop recovery slot for this subscription */
+		drop_recovery_slot(node->node->id, sub->origin->id);
 	}
 
 	PG_RETURN_BOOL(sub != NULL);
@@ -3256,4 +3287,247 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
     LWLockRelease(SpockCtx->lock);
 
     PG_RETURN_VOID();
+}
+
+/*
+ * Clone a recovery slot for rescue operations
+ */
+Datum
+spock_clone_recovery_slot(PG_FUNCTION_ARGS)
+{
+    text       *source_slot_text = PG_GETARG_TEXT_PP(0);
+    text       *target_lsn_text = PG_GETARG_TEXT_PP(1);
+    char       *source_slot;
+    char       *target_lsn_str;
+    char       *clone_name;
+    XLogRecPtr  target_lsn;
+    uint32      high, low;
+
+    source_slot = text_to_cstring(source_slot_text);
+    target_lsn_str = text_to_cstring(target_lsn_text);
+
+    /* Parse the LSN */
+    if (sscanf(target_lsn_str, "%X/%X", &high, &low) != 2)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("invalid LSN format: %s", target_lsn_str)));
+    }
+    target_lsn = ((uint64)high << 32) | low;
+
+    /* Clone the recovery slot */
+    clone_name = clone_recovery_slot(source_slot, target_lsn);
+
+    PG_RETURN_TEXT_P(cstring_to_text(clone_name));
+}
+
+/*
+ * Get minimum unacknowledged timestamp for a failed node
+ */
+Datum
+spock_get_min_unacknowledged_timestamp(PG_FUNCTION_ARGS)
+{
+    Oid         failed_node_id = PG_GETARG_OID(0);
+    TimestampTz min_ts;
+
+    min_ts = get_min_unacknowledged_timestamp(failed_node_id);
+
+    if (min_ts == 0)
+        PG_RETURN_NULL();
+
+    PG_RETURN_TIMESTAMPTZ(min_ts);
+}
+
+/*
+ * Initiate recovery process for a failed node
+ */
+Datum
+spock_initiate_node_recovery(PG_FUNCTION_ARGS)
+{
+    Oid failed_node_id = PG_GETARG_OID(0);
+    bool success;
+
+    success = initiate_node_recovery(failed_node_id);
+
+    PG_RETURN_BOOL(success);
+}
+
+/*
+ * Get information about recovery slots
+ */
+Datum
+spock_get_recovery_slot_info(PG_FUNCTION_ARGS)
+{
+    ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+    TupleDesc   tupdesc;
+    Tuplestorestate *tupstore;
+    MemoryContext per_query_ctx;
+    MemoryContext oldcontext;
+    int         i;
+
+    /* Check to see if caller supports us returning a tuplestore */
+    if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("set-valued function called in context that cannot accept a set")));
+    if (!(rsinfo->allowedModes & SFRM_Materialize))
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("materialize mode required, but it is not allowed in this context")));
+
+    /* Build a tuple descriptor for our result type */
+    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("function returning record called in context that cannot accept type record")));
+
+    per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+    oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+    tupstore = tuplestore_begin_heap(true, false, work_mem);
+    rsinfo->returnMode = SFRM_Materialize;
+    rsinfo->setResult = tupstore;
+    rsinfo->setDesc = tupdesc;
+
+    MemoryContextSwitchTo(oldcontext);
+
+    /* Check if recovery context is initialized */
+    if (!SpockRecoveryCtx)
+    {
+        /* Return empty set if not initialized */
+        tuplestore_donestoring(tupstore);
+        return (Datum) 0;
+    }
+
+    LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
+
+    for (i = 0; i < SpockRecoveryCtx->max_recovery_slots; i++)
+    {
+        SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
+        Datum       values[9];
+        bool        nulls[9] = {false, false, false, false, false, false, false, false, false};
+
+        if (slot->local_node_id == InvalidOid)
+            continue;
+
+        values[0] = ObjectIdGetDatum(slot->local_node_id);
+        values[1] = ObjectIdGetDatum(slot->remote_node_id);
+        values[2] = CStringGetTextDatum(slot->slot_name);
+        values[3] = LSNGetDatum(slot->restart_lsn);
+        values[4] = LSNGetDatum(slot->confirmed_flush_lsn);
+        values[5] = TimestampTzGetDatum(slot->min_unacknowledged_ts);
+        values[6] = BoolGetDatum(slot->active);
+        values[7] = BoolGetDatum(slot->in_recovery);
+        values[8] = UInt32GetDatum(pg_atomic_read_u32(&slot->recovery_generation));
+
+        tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+    }
+
+    LWLockRelease(SpockRecoveryCtx->lock);
+
+    tuplestore_donestoring(tupstore);
+
+    return (Datum) 0;
+}
+
+/*
+ * Detect failed nodes by checking connectivity and heartbeat
+ */
+Datum
+spock_detect_failed_nodes(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc   tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	/* TODO: Implement node failure detection logic */
+	/* This would check connectivity, heartbeat, etc. */
+
+	/* Build a tuple descriptor for our result type */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	/* Build tuple descriptor for (node_id oid, node_name text, failure_reason text) */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("function returning record called in context that cannot accept type record")));
+
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	/* For now, return empty set - in full implementation this would detect failed nodes */
+	tuplestore_donestoring(tupstore);
+
+	return (Datum) 0;
+}
+
+/*
+ * Coordinate cluster-wide recovery orchestration
+ */
+Datum
+spock_coordinate_cluster_recovery(PG_FUNCTION_ARGS)
+{
+	Oid failed_node_id = PG_GETARG_OID(0);
+	bool success = false;
+
+	/* TODO: Implement cluster-wide recovery coordination */
+	/* This would coordinate recovery across all surviving nodes */
+
+	elog(LOG, "Coordinating cluster recovery for failed node %u", failed_node_id);
+
+	/* For now, just initiate recovery on this node */
+	success = initiate_node_recovery(failed_node_id);
+
+	PG_RETURN_BOOL(success);
+}
+
+/*
+ * Advance recovery slot to a specific LSN
+ */
+Datum
+spock_advance_recovery_slot_to_lsn(PG_FUNCTION_ARGS)
+{
+	text	   *slot_name_text = PG_GETARG_TEXT_PP(0);
+	text	   *target_lsn_text = PG_GETARG_TEXT_PP(1);
+	char	   *slot_name;
+	char	   *target_lsn_str;
+	bool		success;
+	uint32      high, low;
+	TimestampTz approx_timestamp;
+
+	slot_name = text_to_cstring(slot_name_text);
+	target_lsn_str = text_to_cstring(target_lsn_text);
+
+	/* Parse the LSN */
+	if (sscanf(target_lsn_str, "%X/%X", &high, &low) != 2)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid LSN format: %s", target_lsn_str)));
+	}
+
+	/* Advance the slot to the target LSN */
+	/* For now, we use a reasonable past timestamp for advancement */
+	approx_timestamp = GetCurrentTimestamp() - 60000000; /* 1 minute ago in PostgreSQL timestamp units */
+	success = advance_recovery_slot_to_timestamp(slot_name, approx_timestamp);
+
+	/* Note: In a full implementation, we would use the actual LSN advancement */
+	/* For now, we use timestamp-based advancement as a proxy */
+
+	PG_RETURN_BOOL(success);
 }

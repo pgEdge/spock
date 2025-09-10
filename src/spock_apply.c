@@ -90,6 +90,7 @@
 #include "spock_exception_handler.h"
 #include "spock_common.h"
 #include "spock_readonly.h"
+#include "spock_recovery.h"
 #include "spock.h"
 
 #define CATALOG_PROGRESS			"progress"
@@ -282,16 +283,13 @@ static void spock_apply_worker_detach(void);
 static bool should_log_exception(bool failed);
 
 static void set_apply_group_entry(Oid dbid, RepOriginId replorigin);
-
-static void update_progress_entry(Oid target_node_id,
-								Oid remote_node_id,
-								TimestampTz remote_commit_ts,
-								XLogRecPtr remote_lsn,
-								XLogRecPtr remote_insert_lsn,
-								TimestampTz last_updated_ts,
-								bool updated_by_decode);
 static void check_and_update_progress(XLogRecPtr last_received_lsn,
 								TimestampTz timestamp);
+
+/* Forward declarations for recovery slot functions */
+static void spock_apply_init_recovery_slots(void);
+static void spock_apply_manage_recovery_slot(Oid local_node_id, Oid remote_node_id);
+static void spock_apply_update_recovery_progress(TimestampTz commit_ts, XLogRecPtr lsn);
 
 static ApplyReplayEntry *apply_replay_entry_create(int r, char *buf);
 static void apply_replay_entry_free(ApplyReplayEntry *entry);
@@ -317,6 +315,7 @@ spock_apply_group_shmem_init(void)
 #endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = spock_apply_group_shmem_startup;
+	
 }
 
 /*
@@ -343,6 +342,8 @@ spock_apply_group_shmem_request(void)
 	 * Request enough shared memory for napply_groups (dbid and origin id)
 	 */
 	RequestAddinShmemSpace(spock_apply_group_shmem_size(napply_groups));
+
+	/* Recovery slots shared memory is now handled by spock_recovery module */
 
 	/*
 	 * Request the LWlocks needed
@@ -1168,6 +1169,14 @@ handle_commit(StringInfo s)
 	MyApplyWorker->apply_group->prev_remote_ts = replorigin_session_origin_timestamp;
 	MyApplyWorker->apply_group->remote_lsn = replorigin_session_origin_lsn;
 	MyApplyWorker->apply_group->remote_insert_lsn = remote_insert_lsn;
+
+	/* Update recovery slot progress if we have one */
+	if (MyApplyWorker->recovery_slot_name[0] != '\0')
+	{
+		update_recovery_slot_progress(MyApplyWorker->recovery_slot_name,
+									 replorigin_session_origin_timestamp,
+									 end_lsn);
+	}
 
 	/* Wakeup all waiters for waiting for the previous transaction to commit */
 	awake_transaction_waiters();
@@ -3836,14 +3845,14 @@ create_progress_entry(Oid target_node_id,
 /*
  * Update remote timestamp for the local and remote node pair.
  */
-static void
+void
 update_progress_entry(Oid target_node_id,
 					Oid remote_node_id,
 					TimestampTz remote_commit_ts,
 					XLogRecPtr remote_lsn,
 					XLogRecPtr remote_insert_lsn,
 					TimestampTz last_updated_ts,
-					bool update_by_decode)
+					bool updated_by_decode)
 {
 	RangeVar		*rv;
 	Relation		rel;
@@ -3885,7 +3894,7 @@ update_progress_entry(Oid target_node_id,
 	/* We must always have a valid entry for a subscription */
 	if (!HeapTupleIsValid(oldtup))
 	{
-		elog(ERROR, "SPOCK %s: unable to find entry in the progress catalog"
+		elog(ERROR, "SPOCK %s: unable to find entry in the progress catalog "
 				"for local node %d and remote node %d",
 				MySubscription->name,
 				target_node_id,
@@ -3913,7 +3922,7 @@ update_progress_entry(Oid target_node_id,
 
 	values[Anum_remote_insert_lsn - 1] = LSNGetDatum(remote_insert_lsn);
 	values[Anum_last_updated_ts - 1] = TimestampTzGetDatum(last_updated_ts);
-	values[Anum_updated_by_decode - 1] = BoolGetDatum(update_by_decode);
+	values[Anum_updated_by_decode - 1] = BoolGetDatum(updated_by_decode);
 
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 
@@ -4051,6 +4060,9 @@ spock_apply_main(Datum main_arg)
 	CommitTransactionCommand();
 
 	elog(DEBUG1, "SPOCK %s: starting apply worker", MySubscription->name);
+
+	/* Initialize recovery slot for this subscription */
+	spock_apply_init_recovery_slots();
 
 	/* Set apply delay if any. */
 	if (MySubscription->apply_delay)
@@ -4197,5 +4209,90 @@ maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 		send_feedback(applyconn, lsn_to_send, now, true);
 		*last_receive_timestamp = now;
 		w_message_count = 0;
+	}
+}
+
+/*
+ * Initialize recovery slots for the current apply worker
+ */
+void
+spock_apply_init_recovery_slots(void)
+{
+	Assert(MySubscription != NULL);
+	Assert(MyApplyWorker != NULL);
+	
+	/* Initialize recovery slot fields */
+	MyApplyWorker->recovery_slot_name[0] = '\0';
+	MyApplyWorker->recovery_mode = false;
+	MyApplyWorker->recovery_target_lsn = InvalidXLogRecPtr;
+	
+	/* Create recovery slot for this subscription */
+	/* Temporarily disabled for debugging */
+	/*
+	spock_apply_manage_recovery_slot(MySubscription->target->id,
+									MySubscription->origin->id);
+	*/
+	
+	/* Store recovery slot name in worker */
+	/* Temporarily disabled for debugging */
+	/*
+	slot_name = get_recovery_slot_name(MySubscription->target->id,
+									  MySubscription->origin->id);
+	strncpy(MyApplyWorker->recovery_slot_name, slot_name, NAMEDATALEN - 1);
+	MyApplyWorker->recovery_slot_name[NAMEDATALEN - 1] = '\0';
+	pfree(slot_name);
+	*/
+	
+	/* Temporarily disabled for debugging */
+	/*
+	elog(DEBUG1, "SPOCK %s: initialized recovery slot '%s'",
+		 MySubscription->name, MyApplyWorker->recovery_slot_name);
+	*/
+}
+
+/*
+ * Manage recovery slot creation and maintenance
+ * Currently unused - will be enabled when recovery slots are fully implemented
+ */
+void
+spock_apply_manage_recovery_slot(Oid local_node_id, Oid remote_node_id)
+{
+	bool		created;
+	
+	/* Create recovery slot if it doesn't exist */
+	PG_TRY();
+	{
+		created = create_recovery_slot(local_node_id, remote_node_id);
+		if (created)
+		{
+			elog(LOG, "SPOCK: Created recovery slot for nodes %u -> %u",
+				 local_node_id, remote_node_id);
+		}
+		else
+		{
+			elog(DEBUG1, "SPOCK: Recovery slot already exists for nodes %u -> %u",
+				 local_node_id, remote_node_id);
+		}
+	}
+	PG_CATCH();
+	{
+		elog(WARNING, "SPOCK: Failed to create recovery slot for nodes %u -> %u",
+			 local_node_id, remote_node_id);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+/*
+ * Update recovery progress tracking
+ * Currently unused - will be enabled when recovery slots are fully implemented
+ */
+void
+spock_apply_update_recovery_progress(TimestampTz commit_ts, XLogRecPtr lsn)
+{
+	if (MyApplyWorker && MyApplyWorker->recovery_slot_name[0] != '\0')
+	{
+		update_recovery_slot_progress(MyApplyWorker->recovery_slot_name,
+									 commit_ts, lsn);
 	}
 }

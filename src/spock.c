@@ -58,6 +58,7 @@
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
 #include "spock_readonly.h"
+#include "spock_recovery.h"
 #include "spock.h"
 
 PG_MODULE_MAGIC;
@@ -1039,6 +1040,9 @@ _PG_init(void)
 
 	/* Init output plugin shmem */
 	spock_apply_group_shmem_init();
+
+	/* Init recovery slots shared memory */
+	spock_recovery_shmem_init();
 
 	/* Init executor module */
 	spock_executor_init();
