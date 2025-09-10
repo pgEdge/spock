@@ -1,5 +1,5 @@
 diff --git a/src/backend/access/rmgrdesc/committsdesc.c b/src/backend/access/rmgrdesc/committsdesc.c
-index a6ab9dd78de..423c236e7cc 100644
+index a6ab9dd78de..45b57d9dade 100644
 --- a/src/backend/access/rmgrdesc/committsdesc.c
 +++ b/src/backend/access/rmgrdesc/committsdesc.c
 @@ -37,6 +37,13 @@ commit_ts_desc(StringInfo buf, XLogReaderState *record)
@@ -10,7 +10,7 @@ index a6ab9dd78de..423c236e7cc 100644
 +	{
 +		SubTransactionCommitTsEntry	*entry = (SubTransactionCommitTsEntry *)rec;
 +
-+		appendStringInfo(buf, "xid %u, time %ld, nodeid %d",
++		appendStringInfo(buf, "xid %u, time "INT64_FORMAT", nodeid %d",
 +						 entry->xid, entry->time, entry->nodeid);
 +	}
  }
