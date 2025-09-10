@@ -85,7 +85,6 @@ log_test() {
 # Test configuration
 readonly TEST_DIR="t"
 readonly LOG_DIR="logs"
-readonly CONFIG_FILE="test_config.json"
 readonly SCHEDULE_FILE="schedule"
 readonly TEST_EXTENSION=".pl"
 
@@ -93,8 +92,6 @@ readonly TEST_EXTENSION=".pl"
 COVERAGE_ENABLED="${COVERAGE_ENABLED:-false}"
 readonly COVERAGE_DIR="coverage"
 readonly COVERAGE_REPORT_DIR="$COVERAGE_DIR/reports"
-readonly COVERAGE_HTML_DIR="$COVERAGE_REPORT_DIR/html"
-readonly COVERAGE_XML_DIR="$COVERAGE_REPORT_DIR/xml"
 readonly COVERAGE_THRESHOLD="${COVERAGE_THRESHOLD:-80}"  # Minimum coverage percentage
 
 # No colors - plain text output
@@ -474,7 +471,6 @@ run_test_suite() {
         local test_id="${TEST_SUITE_IDS[$i]}"
         local test_description="${TEST_SUITE_NAMES[$i]}"
         # numeric ID only for display
-        local test_num=$(echo "$test_id" | sed 's/_.*$//')
         local test_file="$TEST_DIR/${test_id}${TEST_EXTENSION}"
         
         if [ -f "$test_file" ]; then

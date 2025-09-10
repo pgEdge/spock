@@ -510,8 +510,7 @@ spock_identify_system(PGconn *streamConn, uint64* sysid,
 	if (dbname != NULL)
 	{
 		char *remote_dbname = PQgetvalue(res, 0, 3);
-		strncpy(NameStr(**dbname), remote_dbname, NAMEDATALEN);
-		NameStr(**dbname)[NAMEDATALEN-1] = '\0';
+		snprintf(NameStr(**dbname), NAMEDATALEN, "%s", remote_dbname);
 	}
 
 	PQclear(res);
@@ -1047,7 +1046,7 @@ _PG_init(void)
 	bgw.bgw_flags =	BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
-	snprintf(bgw.bgw_library_name, BGW_MAXLEN,
+	snprintf(bgw.bgw_library_name, BGW_MAXLEN, "%s",
 			 EXTENSION_NAME);
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN,
 			 "spock_supervisor_main");
