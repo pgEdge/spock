@@ -2308,6 +2308,7 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 
 		if (!failed)
 		{
+			/* Follow spock.exception_behavior GUC instead of restarting worker */
 			if (exception_behaviour == TRANSDISCARD ||
 				exception_behaviour == SUB_DISABLE)
 				RollbackAndReleaseCurrentSubTransaction();
@@ -2964,36 +2965,28 @@ stream_replay:
 
 					/*
 					 * Append the entry to the end of the replay queue
-					 * if we read it from the stream but check for overflow.
+					 * if we read it from the stream. Dynamic allocation
+					 * means no fixed size limit - queue grows as needed.
+					 * Note: spock_replay_queue_size is deprecated and no longer checked.
 					 */
 					if (queue_append)
 					{
 						apply_replay_bytes += msg->len;
 
-						if (apply_replay_bytes < spock_replay_queue_size)
+						if (apply_replay_head == NULL)
 						{
-							if (apply_replay_head == NULL)
-							{
-								apply_replay_head = apply_replay_tail = entry;
-							}
-							else
-							{
-								apply_replay_tail->next = entry;
-								apply_replay_tail = entry;
-							}
+							apply_replay_head = apply_replay_tail = entry;
 						}
 						else
 						{
-							apply_replay_overflow = true;
+							apply_replay_tail->next = entry;
+							apply_replay_tail = entry;
 						}
 					}
 
 					replication_handler(msg);
 
-					if (queue_append && apply_replay_overflow)
-					{
-						apply_replay_entry_free(entry);
-					}
+					/* Note: No overflow handling needed - dynamic allocation used */
 				}
 				else if (c == 'k')
 				{
@@ -3149,15 +3142,11 @@ stream_replay:
 			}
 		}
 
-		/*
-		 * If we ran out of queue space we also need to bail out.
+		/* 
+		 * Note: Replay queue overflow handling removed - dynamic allocation prevents overflow.
+		 * We no longer kill and restart apply workers for queue overflow.
+		 * Exception handling now follows spock.exception_behavior setting.
 		 */
-		if (apply_replay_overflow)
-		{
-			elog(LOG, "SPOCK: caught exception after replay queue overrun "
-				 "- forcing apply worker restart");
-			PG_RE_THROW();
-		}
 
 		/*
 		 * Reaching this point means that we are dealing with the first
