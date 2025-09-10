@@ -238,8 +238,7 @@ get_value_from_outfile(const char *node, const char *key, char *value, size_t va
         trim_newline(eq + 1);
         if (strcmp(line, key) == 0)
         {
-            strncpy(value, eq + 1, value_sz - 1);
-            value[value_sz - 1] = '\0';
+            snprintf(value, value_sz - 1, "%s", eq + 1);
             fclose(f);
             return 0;
         }
@@ -328,7 +327,7 @@ substitute_sql_vars(const char *sql_stmt)
 			if (left < strlen(esc) + 3)
 				goto fail;
 			*dst++ = '\''; left--;              /* opening quote */
-			strcpy(dst, esc);
+			snprintf(dst, BUF_SZ, "%s", esc);
 			left -= strlen(esc);
 			dst  += strlen(esc);
 			*dst++ = '\''; left--;              /* closing quote */
