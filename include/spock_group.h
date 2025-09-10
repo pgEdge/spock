@@ -23,6 +23,8 @@
 #include "spock_rmgr.h"
 
 
+extern HTAB *SpockGroupHash;
+
 /* Hash Key */
 typedef struct SpockGroupKey
 {
