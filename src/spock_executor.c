@@ -52,6 +52,7 @@
 
 #include "spock_common.h"
 #include "spock_node.h"
+#include "spock_output_plugin.h" /* To check the output plugin state */
 #include "spock_executor.h"
 #include "spock_repset.h"
 #include "spock_queue.h"
@@ -104,7 +105,7 @@ prepare_per_tuple_econtext(EState *estate, TupleDesc tupdesc)
 	econtext = GetPerTupleExprContext(estate);
 
 	oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
-	econtext->ecxt_scantuple = ExecInitExtraTupleSlot(estate, NULL, 
+	econtext->ecxt_scantuple = ExecInitExtraTupleSlot(estate, NULL,
 													  &TTSOpsHeapTuple);
 	MemoryContextSwitchTo(oldContext);
 
@@ -344,6 +345,13 @@ static bool
 autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 					NodeTag stmt)
 {
+	if (spock_replication_repair_mode)
+		/*
+		 * Repair mode means that nothing happened in this state should be
+		 * decoded and sent to any subscriber.
+		 */
+		return false;
+
 	/* Allow all toplevel statements. */
 	if (context == PROCESS_UTILITY_TOPLEVEL)
 		return true;
@@ -422,7 +430,7 @@ spock_ProcessUtility(
 	{
 		/*
 		 * Allow one to drop replication tables without specifying the CASCADE
-		 * option when in auto ddl replicatino mode.
+		 * option when in auto ddl replication mode.
 		 */
 		if (spock_enable_ddl_replication || in_spock_queue_ddl_command)
 			spock_lastDropBehavior = DROP_CASCADE;

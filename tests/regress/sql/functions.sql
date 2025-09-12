@@ -270,3 +270,53 @@ SELECT spock.replicate_ddl($$
 	DROP FUNCTION public.is_prime_lt_100(integer);
 	DROP FUNCTION public.some_prime_numbers();
 $$);
+
+--
+-- REPAIR mode tests
+-- Here, we may check correctness of REPAIR mode for a single backend only
+--
+
+SET spock.enable_ddl_replication = 'on';
+SET spock.include_ddl_repset = 'on';
+
+CREATE TABLE spoc152_1(x integer PRIMARY KEY);
+BEGIN;
+  SELECT spock.repair_mode(true) \gset
+  CREATE TABLE spoc152_2(x integer PRIMARY KEY); -- doesn't replicate DDL
+  SELECT spock.repair_mode(false) \gset
+  CREATE TABLE spoc152_3(x integer PRIMARY KEY); -- replicate DDL
+  SELECT spock.repair_mode(true) \gset
+  CREATE TABLE spoc152_4(x integer PRIMARY KEY); -- doesn't replicate DDL
+
+  -- Check subtransations: nothing here should be replicated.
+  SAVEPOINT s1;
+	CREATE TABLE spoc152_6(x integer PRIMARY KEY);
+  RELEASE SAVEPOINT s1;
+    CREATE TABLE spoc152_7(x integer PRIMARY KEY);
+  SAVEPOINT s2;
+    CREATE TABLE spoc152_8(x integer PRIMARY KEY);
+  ROLLBACK TO SAVEPOINT s2;
+  CREATE TABLE spoc152_9(x integer PRIMARY KEY);
+END;
+CREATE TABLE spoc152_5(x integer PRIMARY KEY); -- replicate DDL
+
+-- Should not see 'not replicated' DDL in this table
+SELECT message FROM spock.queue WHERE message::text LIKE '%spoc152_%'
+ORDER BY queued_at;
+
+-- Wait for remote receiver
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+
+SELECT relname FROM pg_class WHERE relname LIKE '%spoc152_%'
+ORDER BY relname COLLATE "C";
+SELECT message FROM spock.queue WHERE message::text LIKE '%spoc152_%'
+ORDER BY queued_at;
+
+\c :provider_dsn
+-- Cleanup and DROP messages check
+DROP TABLE spoc152_1, spoc152_2, spoc152_3, spoc152_4, spoc152_5 CASCADE;
+
+RESET spock.enable_ddl_replication;
+RESET spock.include_ddl_repset;

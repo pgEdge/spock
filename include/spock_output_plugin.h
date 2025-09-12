@@ -14,6 +14,7 @@
 
 #include "nodes/pg_list.h"
 #include "nodes/primnodes.h"
+#include "replication/logical.h"
 #include "storage/lock.h"
 
 /* summon cross-PG-version compatibility voodoo */
@@ -88,6 +89,7 @@ typedef struct SpockOutputSlotGroup
  * Custom WAL messages
  */
 extern bool		spock_replication_repair_mode;
+extern inline void set_repair_mode(bool is_enabled);
 
 #define SPOCK_REPAIR_MODE_ON		1	/* Suppress subsequent DML/DDL */
 #define SPOCK_REPAIR_MODE_OFF		2	/* Resume regular replication */
@@ -113,5 +115,7 @@ typedef struct SpockSyncEventMessage
 } SpockSyncEventMessage;
 
 extern void spock_output_plugin_shmem_init(void);
+
+extern void	_PG_output_plugin_init(OutputPluginCallbacks *cb);
 
 #endif /* SPOCK_OUTPUT_PLUGIN_H */
