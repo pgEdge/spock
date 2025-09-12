@@ -17,7 +17,6 @@
 #include <dirent.h>
 
 #include "mb/pg_wchar.h"
-#include "replication/logical.h"
 
 #include "miscadmin.h"
 #include "access/commit_ts.h"
@@ -49,8 +48,6 @@
 #ifdef HAVE_REPLICATION_ORIGINS
 #include "replication/origin.h"
 #endif
-
-extern void		_PG_output_plugin_init(OutputPluginCallbacks *cb);
 
 /* Global variables */
 bool	spock_replication_repair_mode = false;
@@ -152,6 +149,29 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->filter_by_origin_cb = pg_decode_origin_filter;
 #endif
 	cb->shutdown_cb = pg_decode_shutdown;
+}
+
+/*
+ * The repair mode influences consistency of the replication. So, it would be
+ * better to centralize management of this feature and LOG each time it is
+ * changed.
+ */
+inline void
+set_repair_mode(bool is_enabled)
+{
+	if (likely(spock_replication_repair_mode == is_enabled))
+		return;
+
+	spock_replication_repair_mode = is_enabled;
+	elog(LOG, "Spock REPAIR mode switched to %s in the Postgres process '%s'",
+		 is_enabled ? "on" : "off",
+		 GetBackendTypeDesc(MyBackendType));
+
+	/*
+	 * For debugging purposes we don't anticipate another process type except
+	 * WALSender and a regular backend.
+	 */
+	Assert(AmRegularBackendProcess() || MyBackendType == B_WAL_SENDER);
 }
 
 static bool
@@ -452,7 +472,7 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	MemoryContext old_ctx;
 
 	/* Reset repair mode */
-	spock_replication_repair_mode = false;
+	set_repair_mode(false);
 
 	/*
 	 * Check if we are a member of a replication slot-group and if so,
@@ -582,7 +602,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	XLogRecPtr			end_lsn = txn->end_lsn - MyWalSenderIdx;
 
 	/* Reset repair mode */
-	spock_replication_repair_mode = false;
+	set_repair_mode(false);
 
 	/*
 	 * If we are in slot-group skip transaction mode, we simply end
@@ -683,7 +703,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 							  "size %lu for simple message", message_size);
 				return;
 			}
-			spock_replication_repair_mode = true;
+			set_repair_mode(true);
 			break;
 
 		case SPOCK_REPAIR_MODE_OFF:
@@ -694,7 +714,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 							  "size %lu for simple message", message_size);
 				return;
 			}
-			spock_replication_repair_mode = false;
+			set_repair_mode(false);
 			break;
 
 		case SPOCK_SYNC_EVENT_MSG:

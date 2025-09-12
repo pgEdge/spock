@@ -890,6 +890,15 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
+	/* May be set only internally */
+	DefineCustomBoolVariable("spock.replication_repair_mode",
+							 "Switch to the repair mode",
+							 NULL,
+							 &spock_replication_repair_mode,
+							 false, PGC_INTERNAL,
+							 0,
+							 NULL, NULL, NULL);
+
 	/*
 	 * We can't use the temp_tablespace safely for our dumps, because Pg's
 	 * crash recovery is very careful to delete only particularly formatted
