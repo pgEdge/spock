@@ -17,7 +17,6 @@
 #include <dirent.h>
 
 #include "mb/pg_wchar.h"
-#include "replication/logical.h"
 
 #include "miscadmin.h"
 #include "access/commit_ts.h"
@@ -49,8 +48,6 @@
 #ifdef HAVE_REPLICATION_ORIGINS
 #include "replication/origin.h"
 #endif
-
-extern void		_PG_output_plugin_init(OutputPluginCallbacks *cb);
 
 /* Global variables */
 bool	spock_replication_repair_mode = false;
@@ -684,6 +681,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 				return;
 			}
 			spock_replication_repair_mode = true;
+			elog(WARNING, "spock_replication_repair_mode set to true");
 			break;
 
 		case SPOCK_REPAIR_MODE_OFF:
@@ -973,7 +971,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	 */
 	if (slot_group_skip_xact)
 		return;
-
+elog(WARNING, "Are we in REPAIR mode? : %d", spock_replication_repair_mode);
 	/* If in repair mode skip these actions */
 	if (spock_replication_repair_mode)
 		return;

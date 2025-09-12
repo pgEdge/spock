@@ -270,3 +270,22 @@ SELECT spock.replicate_ddl($$
 	DROP FUNCTION public.is_prime_lt_100(integer);
 	DROP FUNCTION public.some_prime_numbers();
 $$);
+
+--
+-- REPAIR mode tests
+-- Here, we may check correctness of the output messages, not the replication
+-- behaviour.
+--
+SET spock.enable_ddl_replication = 'on';
+SET spock.include_ddl_repset = 'on';
+CREATE TABLE spoc152_1(x integer PRIMARY KEY);
+INSERT INTO spoc152_1 (x) VALUES (1);
+BEGIN;
+SELECT * FROM spock.repair_mode(true) \gset
+CREATE TABLE spoc152_2(x integer PRIMARY KEY); -- Shouldn't see message 'DDL statement replicated'
+SELECT * FROM spock.repair_mode(false) \gset
+CREATE TABLE spoc152_3(x integer PRIMARY KEY); -- Should see replication message
+END;
+DROP TABLE spoc152_1, spoc152_2, spoc152_3;
+RESET spock.enable_ddl_replication;
+RESET spock.include_ddl_repset;

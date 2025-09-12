@@ -14,6 +14,7 @@
 
 #include "nodes/pg_list.h"
 #include "nodes/primnodes.h"
+#include "replication/logical.h"
 #include "storage/lock.h"
 
 /* summon cross-PG-version compatibility voodoo */
@@ -113,5 +114,7 @@ typedef struct SpockSyncEventMessage
 } SpockSyncEventMessage;
 
 extern void spock_output_plugin_shmem_init(void);
+
+extern void	_PG_output_plugin_init(OutputPluginCallbacks *cb);
 
 #endif /* SPOCK_OUTPUT_PLUGIN_H */
