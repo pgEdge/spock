@@ -2994,6 +2994,19 @@ spock_repair_mode(PG_FUNCTION_ARGS)
 
 	message.mtype = (enabled) ? SPOCK_REPAIR_MODE_ON : SPOCK_REPAIR_MODE_OFF;
 	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *)&message, sizeof(message), true);
+
+	/*
+	 * Set the flag of repair mode till the end of the transaction or another
+	 * call of this function.
+	 * Do so to let the backend part of the Spock remember the repair state as
+	 * well as the walsender. Enables avoiding sending DDL commands to the queue
+	 * and adding tables to the replica set.
+	 * XXX: It doesn't seem to guarantee synchronisation between the backend and
+	 * walsender, does it?
+	 */
+	(void) set_config_option("spock.replication_repair_mode",
+							 (enabled) ? "on" : "off", PGC_INTERNAL,
+							 PGC_S_SESSION, GUC_ACTION_LOCAL, true, 0, false);
 	PG_RETURN_LSN(lsn);
 }
 

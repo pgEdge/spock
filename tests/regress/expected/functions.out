@@ -439,3 +439,78 @@ NOTICE:  drop cascades to table prime_tbl membership in replication set default
  t
 (1 row)
 
+--
+-- REPAIR mode tests
+-- Here, we may check correctness of REPAIR mode for a single backend only
+--
+SET spock.enable_ddl_replication = 'on';
+SET spock.include_ddl_repset = 'on';
+CREATE TABLE spoc152_1(x integer PRIMARY KEY);
+INFO:  DDL statement replicated.
+BEGIN;
+  SELECT spock.repair_mode(true) \gset
+  CREATE TABLE spoc152_2(x integer PRIMARY KEY); -- doesn't replicate DDL
+  SELECT spock.repair_mode(false) \gset
+  CREATE TABLE spoc152_3(x integer PRIMARY KEY); -- replicate DDL
+INFO:  DDL statement replicated.
+  SELECT spock.repair_mode(true) \gset
+  CREATE TABLE spoc152_4(x integer PRIMARY KEY); -- doesn't replicate DDL
+  -- Check subtransations: nothing here should be replicated.
+  SAVEPOINT s1;
+	CREATE TABLE spoc152_6(x integer PRIMARY KEY);
+  RELEASE SAVEPOINT s1;
+    CREATE TABLE spoc152_7(x integer PRIMARY KEY);
+  SAVEPOINT s2;
+    CREATE TABLE spoc152_8(x integer PRIMARY KEY);
+  ROLLBACK TO SAVEPOINT s2;
+  CREATE TABLE spoc152_9(x integer PRIMARY KEY);
+END;
+CREATE TABLE spoc152_5(x integer PRIMARY KEY); -- replicate DDL
+INFO:  DDL statement replicated.
+-- Should not see 'not replicated' DDL in this table
+SELECT message FROM spock.queue WHERE message::text LIKE '%spoc152_%'
+ORDER BY queued_at;
+                                        message                                        
+---------------------------------------------------------------------------------------
+ "SET search_path TO \"$user\", public; CREATE TABLE spoc152_1(x integer PRIMARY KEY)"
+ "SET search_path TO \"$user\", public; CREATE TABLE spoc152_3(x integer PRIMARY KEY)"
+ "SET search_path TO \"$user\", public; CREATE TABLE spoc152_5(x integer PRIMARY KEY)"
+(3 rows)
+
+-- Wait for remote receiver
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT relname FROM pg_class WHERE relname LIKE '%spoc152_%'
+ORDER BY relname COLLATE "C";
+    relname     
+----------------
+ spoc152_1
+ spoc152_1_pkey
+ spoc152_3
+ spoc152_3_pkey
+ spoc152_5
+ spoc152_5_pkey
+(6 rows)
+
+SELECT message FROM spock.queue WHERE message::text LIKE '%spoc152_%'
+ORDER BY queued_at;
+                                        message                                        
+---------------------------------------------------------------------------------------
+ "SET search_path TO \"$user\", public; CREATE TABLE spoc152_1(x integer PRIMARY KEY)"
+ "SET search_path TO \"$user\", public; CREATE TABLE spoc152_3(x integer PRIMARY KEY)"
+ "SET search_path TO \"$user\", public; CREATE TABLE spoc152_5(x integer PRIMARY KEY)"
+(3 rows)
+
+\c :provider_dsn
+-- Cleanup and DROP messages check
+DROP TABLE spoc152_1, spoc152_2, spoc152_3, spoc152_4, spoc152_5 CASCADE;
+NOTICE:  drop cascades to table spoc152_1 membership in replication set default
+NOTICE:  drop cascades to table spoc152_3 membership in replication set default
+NOTICE:  drop cascades to table spoc152_5 membership in replication set default
+RESET spock.enable_ddl_replication;
+RESET spock.include_ddl_repset;
