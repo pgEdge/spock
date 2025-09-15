@@ -27,6 +27,7 @@
 #include "spock_repset.h"
 #include "spock_rpc.h"
 #include "spock.h"
+#include "spock_compat.h"
 
 #define atooid(x)  ((Oid) strtoul((x), NULL, 10))
 

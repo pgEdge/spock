@@ -49,6 +49,7 @@
 #include "spock_queue.h"
 #include "spock_repset.h"
 #include "spock.h"
+#include "spock_compat.h"
 
 #define CATALOG_QUEUE	"queue"
 

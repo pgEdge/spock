@@ -24,6 +24,7 @@
 #include "pgstat.h"
 
 #include "spock.h"
+#include "spock_compat.h"
 
 PG_FUNCTION_INFO_V1(spock_wait_slot_confirm_lsn);
 
