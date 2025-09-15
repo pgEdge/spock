@@ -1,7 +1,12 @@
 /*-------------------------------------------------------------------------
  *
  * spock_compat.h
- *             compatibility functions (mainly with different PG versions) 
+ *             compatibility functions (mainly with different PG versions)
+ *
+ * NOTE:
+ * To avoid compilation conflicts follow the rules:
+ * 1. Include this file into the *.c-files only.
+ * 2. Set it into the last position of the 'include' list.
  *
  * Copyright (c) 2021-2023, pgEdge
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group

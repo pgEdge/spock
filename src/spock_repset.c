@@ -47,6 +47,7 @@
 #include "spock_queue.h"
 #include "spock_repset.h"
 #include "spock.h"
+#include "spock_compat.h"
 
 #define CATALOG_REPSET			"replication_set"
 #define CATALOG_REPSET_SEQ		"replication_set_seq"

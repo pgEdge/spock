@@ -24,8 +24,6 @@
 #include "spock_fe.h"
 #include "spock_node.h"
 
-#include "spock_compat.h"
-
 #define SPOCK_VERSION "6.0.0-devel"
 #define SPOCK_VERSION_NUM 60000
 

@@ -86,6 +86,7 @@
 #include "spock_sync.h"
 #include "spock_repset.h"
 #include "spock.h"
+#include "spock_compat.h"
 
 #define CATALOG_REPSET_RELATION	"depend"
 
