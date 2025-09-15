@@ -32,6 +32,7 @@
 #include "utils/rel.h"
 
 #include "spock.h"
+#include "spock_compat.h"
 #include "spock_queue.h"
 #include "spock_repset.h"
 

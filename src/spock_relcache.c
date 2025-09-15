@@ -24,9 +24,10 @@
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
-#include "spock_common.h"
+#include "utils/varlena.h"
 
 #include "spock.h"
+#include "spock_common.h"
 #include "spock_relcache.h"
 
 #define SPOCKRELATIONHASH_INITIAL_SIZE 128
