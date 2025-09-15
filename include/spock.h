@@ -24,8 +24,6 @@
 #include "spock_fe.h"
 #include "spock_node.h"
 
-#include "spock_compat.h"
-
 #define SPOCK_VERSION "5.0.2"
 #define SPOCK_VERSION_NUM 50002
 
