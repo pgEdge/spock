@@ -17,6 +17,8 @@ our @EXPORT_OK = qw(
     command_ok
     system_maybe
     get_test_config
+    scalar_query
+    psql_or_bail
 );
 
 # Test configuration
@@ -99,6 +101,18 @@ sub system_or_bail {
     my $rc = _run_cmd_logged_wait(@cmd);
     if ($rc != 0) {
         die "Command failed with exit code $rc: @cmd";
+    }
+}
+
+# Helper function to run system commands and bail on failure
+sub psql_or_bail {
+    my ($node_num, $cmd) = @_;
+    my $node_port = ($BASE_PORT + $node_num - 1);
+    my @psql_cmd = ("$PG_BIN/psql", '-p', $node_port, '-d', $DB_NAME, '-t', '-c', $cmd);
+
+    my $rc = _run_cmd_logged_wait(@psql_cmd);
+    if ($rc != 0) {
+        die "Command failed with exit code $rc: @psql_cmd";
     }
 }
 
@@ -383,6 +397,21 @@ sub destroy_cluster {
     
     pass($test_name);
     return 1;
+}
+
+sub run_on_node {
+    my ($node_num, $cmd) = @_;
+    my $node_port = ($BASE_PORT + $node_num - 1);
+    my $result = `$PG_BIN/psql -p $node_port -d $DB_NAME -t -c "$cmd"`;
+    chomp($result);
+    return $result;
+}
+
+sub scalar_query {
+    my ($node_num, $cmd) = @_;
+    my $result = run_on_node($node_num, $cmd);
+    $result =~ s/\s+//g;
+    return $result;
 }
 
 # Ensure cleanup on module destruction
