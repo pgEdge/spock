@@ -77,4 +77,7 @@ extern bool SpockRelationFindReplTupleByIndex(EState *estate,
 								 TupleTableSlot *searchslot,
 								 TupleTableSlot *outslot);
 
+extern void read_buf(int fd, void *buf, size_t nbytes, const char *filename);
+extern void write_buf(int fd, const void *buf, size_t nbytes, const char *filename);
+
 #endif /* SPOCK_COMMON_H */

@@ -22,8 +22,37 @@
 
 #include "spock_rmgr.h"
 
-
 extern HTAB *SpockGroupHash;
+
+/* numeric version to store on disk */
+#define SPOCK_RES_VERSION   202508251
+
+#define SPOCK_RES_DIRNAME   "spock"
+#define SPOCK_RES_DUMPFILE  "resource.dat"
+#define SPOCK_RES_TMPNAME   SPOCK_RES_DUMPFILE ".tmp"
+
+typedef struct SpockResFileHeader
+{
+	/* Identify File format */
+	uint32		version;
+
+	/* Unique system identifier; from pg_control */
+	uint64		system_identifier;
+
+	/* reserved */
+	uint16		flags;
+
+	/* how many ProgressInfoEntry */
+	uint32		entry_count;
+} SpockResFileHeader;
+
+/* context for foreach loop */
+typedef struct DumpCtx
+{
+	int			fd;
+	uint32		count;
+} DumpCtx;
+
 
 /* Hash Key */
 typedef struct SpockGroupKey
@@ -60,6 +89,8 @@ typedef struct SpockGroupEntry
 
 /* shmem setup */
 void		spock_group_shmem_init(void);
+extern void spock_group_shmem_request(void);
+extern void spock_group_shmem_startup(int napply_groups, bool found);
 
 SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id,
 									bool *created);
@@ -75,5 +106,8 @@ SpockGroupEntry *spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id);
 /* Iterate all groups */
 typedef void (*SpockGroupIterCB) (const SpockGroupEntry *e, void *arg);
 void		spock_group_foreach(SpockGroupIterCB cb, void *arg);
+
+void		spock_group_resource_dump(void);
+void		spock_group_resource_load(void);
 
 #endif							/* SPOCK_GROUP_H */

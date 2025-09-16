@@ -10,6 +10,8 @@
  *-------------------------------------------------------------------------
  */
 
+#include <unistd.h>
+
 #include "postgres.h"
 #include "miscadmin.h"
 
@@ -518,4 +520,77 @@ spock_build_replindex_scan_key(ScanKey skey, Relation rel, Relation idxrel,
 	Assert(skey_attoff > 0);
 
 	return skey_attoff;
+}
+
+/*
+ * Read exactly nbytes into buf or ERROR out. Never returns partial.
+ */
+void
+read_buf(int fd, void *buf, size_t nbytes, const char *filename)
+{
+	const char *fname = filename ? filename : "file";
+	size_t off = 0;
+
+	/* Input validation (CWE-20) */
+	if (fd < 0 || buf == NULL || nbytes == 0 || nbytes > (size_t)SSIZE_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid fd/buffer/size for %s", fname)));
+
+	while (off < nbytes)
+	{
+		ssize_t n = read(fd, (char *)buf + off, nbytes - off);
+
+		if (n == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+						errmsg("could not read file \"%s\": read %zu of %zu",
+							fname, off, nbytes)));
+
+			/* One consolidated error path: EOF or hard error */
+		if (n < 0)
+		{
+			if (errno == EINTR)
+				continue; /* retry */
+
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("could not read file \"%s\": %m", fname)));
+
+		}
+		off += (size_t)n;
+	}
+}
+
+
+/*
+ * Write exactly nbytes into file or ERROR out. Never partial.
+ */
+void
+write_buf(int fd, const void *buf, size_t nbytes, const char *filename)
+{
+	const char *fname = filename ? filename : "file";
+	size_t off = 0;
+
+	/* Input validation (CWE-20) */
+	if (fd < 0 || buf == NULL || nbytes == 0 || nbytes > (size_t)SSIZE_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid fd/buffer/size for %s", fname)));
+
+	while (off < nbytes)
+	{
+		ssize_t		n = write(fd, (char *)buf + off, nbytes - off);
+
+		if (n <= 0)
+		{
+			if (errno == EINTR)
+				continue; /* retry */
+
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+						errmsg("could not write file \"%s\": %m", fname)));
+		}
+		off += (size_t)n;
+	}
 }

@@ -13,14 +13,18 @@
 
 #include "miscadmin.h"
 
-#include "utils/guc.h"
-#include "utils/builtins.h"
+#include "common/hashfn.h"
 #include "datatype/timestamp.h"
+#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/shmem.h"
+#include "utils/builtins.h"
+#include "utils/elog.h"
+#include "utils/guc.h"
 #include "utils/hsearch.h"
-#include "common/hashfn.h"
+#include "utils/memutils.h"
 
+#include "spock_common.h"
 #include "spock_worker.h"
 #include "spock_compat.h"
 #include "spock_group.h"
@@ -34,15 +38,13 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 HTAB	   *SpockGroupHash = NULL;
 
-static void spock_group_shmem_request(void);
-static void spock_group_shmem_startup(void);
-
 /*
  * Install hooks to request shared resources for apply workers
  */
 void
 spock_group_shmem_init(void)
 {
+#if 0
 #if PG_VERSION_NUM < 150000
 	spock_group_shmem_request();
 #else
@@ -51,9 +53,10 @@ spock_group_shmem_init(void)
 #endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = spock_group_shmem_startup;
+#endif
 }
 
-static void
+void
 spock_group_shmem_request(void)
 {
 	int			napply_groups;
@@ -65,7 +68,7 @@ spock_group_shmem_request(void)
 #endif
 
 	/*
-	 * This is cludge for Windows (Postgres des not define the GUC variable as
+	 * This is cludge for Windows (Postgres does not define the GUC variable as
 	 * PGDDLIMPORT)
 	 */
 	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
@@ -89,17 +92,18 @@ spock_group_shmem_request(void)
 /*
  * Initialize shared resources for db-origin management
  */
-static void
-spock_group_shmem_startup(void)
+void
+spock_group_shmem_startup(int napply_groups, bool found)
 {
 	HASHCTL		hctl;
-	int			napply_groups;
 
 	if (prev_shmem_startup_hook != NULL)
 		prev_shmem_startup_hook();
 
 	if (SpockGroupHash)
 		return;
+
+#if 0
 
 	/*
 	 * This is kludge for Windows (Postgres does not define the GUC variable
@@ -109,6 +113,7 @@ spock_group_shmem_startup(void)
 											   false));
 	if (napply_groups <= 0)
 		napply_groups = 9;
+#endif
 
 	MemSet(&hctl, 0, sizeof(hctl));
 	hctl.keysize = sizeof(SpockGroupKey);
@@ -131,12 +136,24 @@ spock_group_shmem_startup(void)
 		elog(ERROR, "spock_group_shmem_startup: failed to init group map");
 
 	LWLockRelease(AddinShmemInitLock);
+
+	if (found)
+		return;
+
+	/* First time through, nothing to load */
+	elog(DEBUG1, "spock_group_shmem_startup: initialized apply group data");
+	spock_group_resource_load();
 }
 
 static inline SpockGroupKey
 make_key(Oid dbid, Oid node_id, Oid remote_node_id)
 {
-	SpockGroupKey k = {dbid, node_id, remote_node_id};
+	SpockGroupKey k;
+
+	memset(&k, 0, sizeof(k));
+	k.dbid = dbid;
+	k.node_id = node_id;
+	k.remote_node_id = remote_node_id;
 
 	return k;
 }
@@ -154,9 +171,6 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id, bool *created)
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
 	if (!found)
 	{
-		/* initialize new entry */
-		e->key = key;
-
 		/* initialize key values; Other entries will be updated later */
 		memset(&e->progress, 0, sizeof(e->progress));
 		e->progress.key = e->key;
@@ -211,7 +225,6 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 
 	if (!found)					/* New Entry */
 	{
-		e->key = key;
 		/* Initialize key values; Other entries will be updated later */
 		memset(&e->progress, 0, sizeof(e->progress));
 		e->progress.key = e->key;
@@ -279,4 +292,171 @@ spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
 
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_FIND, NULL);
 	return e;					/* may be NULL */
+}
+
+void
+spock_group_foreach(SpockGroupIterCB cb, void *arg)
+{
+	HASH_SEQ_STATUS it;
+	SpockGroupEntry *e;
+
+	Assert(cb);
+	hash_seq_init(&it, SpockGroupHash);
+	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
+		cb(e, arg);
+}
+
+
+/* --- resource.dat dump/load ---------------------------------------------- */
+
+/* emit one record */
+static void
+dump_one_group_cb(const SpockGroupEntry *e, void *arg)
+{
+	DumpCtx    *ctx = (DumpCtx *) arg;
+
+	/* Only the progress payload goes to disk. It already contains the key. */
+	write_buf(ctx->fd, &e->progress, sizeof(e->progress), SPOCK_RES_DUMPFILE "(data)");
+	ctx->count++;
+}
+
+/*
+ * spock_group_resource_dump
+ *
+ * Write a clean-shutdown snapshot to PGDATA/spock/resource.dat.
+ * - Header: version, system_identifier, flags, entry_count (patched after scan)
+ * - Body:   array of SpockApplyProgress records (struct layout is prefix-stable)
+ * Writes to a temp file, fsyncs, then durable_rename() into place.
+ * Typically invoked via on_shmem_exit() from the main Spock process.
+ */
+void
+spock_group_resource_dump(void)
+{
+	char		pathdir[MAXPGPATH];
+	char		pathtmp[MAXPGPATH];
+	char		pathfin[MAXPGPATH];
+	int			fd = -1;
+
+	SpockResFileHeader hdr = {0};
+	DumpCtx		dctx = {0};
+
+	/* build paths */
+	snprintf(pathdir, sizeof(pathdir), "%s/%s", DataDir, SPOCK_RES_DIRNAME);
+	snprintf(pathtmp, sizeof(pathtmp), "%s/%s", pathdir, SPOCK_RES_TMPNAME);
+	snprintf(pathfin, sizeof(pathfin), "%s/%s", pathdir, SPOCK_RES_DUMPFILE);
+
+	/* ensure directory exists */
+	(void) pg_mkdir_p(pathdir, S_IRWXU);
+
+	/* open temp file */
+	fd = OpenTransientFile(pathtmp, O_CREAT | O_WRONLY | O_TRUNC | PG_BINARY);
+	if (fd < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create \"%s\": %m", pathtmp)));
+
+	/* write header */
+	hdr.version = SPOCK_RES_VERSION;
+	hdr.system_identifier = GetSystemIdentifier();
+	hdr.flags = 0;
+	hdr.entry_count = hash_get_num_entries(SpockGroupHash);
+
+	write_buf(fd, &hdr, sizeof(hdr), SPOCK_RES_DUMPFILE "(header)");
+
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+
+	dctx.fd = fd;
+	dctx.count = 0;
+
+	/* write all entries */
+	spock_group_foreach(dump_one_group_cb, &dctx);
+
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+
+	if (dctx.count != hdr.entry_count)
+		ereport(ERROR,
+				(errmsg("spock resource.dat entry count mismatch: header=%u, actual=%u",
+						hdr.entry_count, dctx.count)));
+
+	/* fsync file */
+	if (pg_fsync(fd) != 0)
+		ereport(data_sync_elevel(ERROR),
+				(errcode_for_file_access(),
+				 errmsg("could not fsync file \"%s\": %m", pathtmp)));
+
+
+	if (CloseTransientFile(fd) != 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not close file \"%s\": %m", pathtmp)));
+
+	/* durable rename temp -> final */
+	if (durable_rename(pathtmp, pathfin, LOG) != 0)
+		ereport(ERROR,
+				(errmsg("could not rename \"%s\" to \"%s\"",
+						pathtmp, pathfin)));
+}
+
+/*
+ * spock_group_resource_load
+ *   Read PGDATA/spock/resource.dat and add entries into shmem.
+ *   Called during extension shmem startup.
+ */
+void
+spock_group_resource_load(void)
+{
+	char		pathfin[MAXPGPATH];
+	int			fd;
+	SpockResFileHeader hdr;
+
+	snprintf(pathfin, sizeof(pathfin), "%s/%s/%s", DataDir, SPOCK_RES_DIRNAME, SPOCK_RES_DUMPFILE);
+
+	fd = OpenTransientFile(pathfin, O_RDONLY | PG_BINARY);
+	if (fd < 0)
+	{
+		if (errno == ENOENT)
+		{
+			/* No snapshot available — normal on first boot or after crash */
+			return;
+		}
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open \"%s\": %m", pathfin)));
+	}
+
+	read_buf(fd, &hdr, sizeof(hdr), SPOCK_RES_DUMPFILE "(header)");
+
+	/* Basic sanity checks */
+	if (hdr.version != SPOCK_RES_VERSION)
+	{
+		CloseTransientFile(fd);
+		ereport(WARNING,
+				(errmsg("spock resource.dat version mismatch (file=%u, expected=%u) — ignoring",
+						hdr.version, SPOCK_RES_VERSION)));
+		return;
+	}
+
+	if (hdr.system_identifier != GetSystemIdentifier())
+	{
+		CloseTransientFile(fd);
+		ereport(WARNING,
+				(errmsg("spock resource.dat system identifier mismatch — ignoring")));
+		return;
+	}
+
+	/* Read each record and upsert */
+	for (uint32 i = 0; i < hdr.entry_count; i++)
+	{
+		SpockApplyProgress sap;
+
+		read_buf(fd, &sap, sizeof(sap), SPOCK_RES_DUMPFILE "(data)");
+
+		/*
+		 * Note: if ever version is changed in SpockApplyProgress and need
+		 * compatibility, it should be translated here. For now, 1:1.
+		 */
+		(void) spock_group_progress_update(&sap);
+	}
+
+	CloseTransientFile(fd);
 }
