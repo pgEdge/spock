@@ -55,6 +55,7 @@ typedef struct SpockSubscription
 	List	   *forward_origins;
 	bool		force_text_transfer;
 	XLogRecPtr	skiplsn;	/* All changes finished at this LSN are skipped */
+	List	   *skip_schema;	/* Array of schema names to skip */
 } SpockSubscription;
 
 extern void create_node(SpockNode *node);

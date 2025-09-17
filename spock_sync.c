@@ -215,6 +215,19 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 		resetStringInfo(&s);
 	}
 
+	/* Skip schemas specified in skip_schema list */
+	if (sub->skip_schema && list_length(sub->skip_schema) > 0)
+	{
+		ListCell   *lc;
+		foreach(lc, sub->skip_schema)
+		{
+			char	   *schema_name = (char *) lfirst(lc);
+			appendStringInfo(&s, "--exclude-schema=%s", schema_name);
+			cmdargv[cmdargc++] = pstrdup(s.data);
+			resetStringInfo(&s);
+		}
+	}
+
 	/* destination file */
 	appendStringInfo(&s, "--file=%s", destfile);
 	cmdargv[cmdargc++] = pstrdup(s.data);
@@ -829,7 +842,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
  * Creates new connection to origin and target.
  */
 static void
-copy_tables_data(char *sub_name, const char *origin_dsn,
+copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 				 const char *target_dsn, const char *origin_snapshot,
 				 List *tables, List *replication_sets,
 				 const char *origin_name)
@@ -839,11 +852,11 @@ copy_tables_data(char *sub_name, const char *origin_dsn,
 	ListCell   *lc;
 
 	/* Connect to origin node. */
-	origin_conn = spock_connect(origin_dsn, sub_name, "copy");
+	origin_conn = spock_connect(origin_dsn, sub->name, "copy");
 	start_copy_origin_tx(origin_conn, origin_snapshot);
 
 	/* Connect to target node. */
-	target_conn = spock_connect(target_dsn, sub_name, "copy");
+	target_conn = spock_connect(target_dsn, sub->name, "copy");
 	start_copy_target_tx(target_conn, origin_name);
 
 	/* Copy every table. */
@@ -883,7 +896,7 @@ copy_tables_data(char *sub_name, const char *origin_dsn,
  * the transaction is bound to a snapshot.
  */
 static List *
-copy_replication_sets_data(char *sub_name, const char *origin_dsn,
+copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 						   const char *target_dsn,
 						   const char *origin_snapshot,
 						   List *replication_sets, const char *origin_name)
@@ -894,15 +907,47 @@ copy_replication_sets_data(char *sub_name, const char *origin_dsn,
 	ListCell   *lc;
 
 	/* Connect to origin node. */
-	origin_conn = spock_connect(origin_dsn, sub_name, "copy");
+	origin_conn = spock_connect(origin_dsn, sub->name, "copy");
 	start_copy_origin_tx(origin_conn, origin_snapshot);
 
 	/* Get tables to copy from origin node. */
 	tables = spock_get_remote_repset_tables(origin_conn,
 												 replication_sets);
 
+	/* Filter out tables from schemas that should be skipped */
+	if (sub->skip_schema && list_length(sub->skip_schema) > 0)
+	{
+		List	   *filtered_tables = NIL;
+		ListCell   *lc_filter;
+
+		foreach (lc_filter, tables)
+		{
+			SpockRemoteRel	*remoterel = lfirst(lc_filter);
+			ListCell   *lc_skip;
+			bool		skip_table = false;
+
+			/* Check if this table's schema should be skipped */
+			foreach (lc_skip, sub->skip_schema)
+			{
+				char	   *skip_schema_name = (char *) lfirst(lc_skip);
+				if (strcmp(remoterel->nspname, skip_schema_name) == 0)
+				{
+					skip_table = true;
+					break;
+				}
+			}
+
+			/* Add table to filtered list if it shouldn't be skipped */
+			if (!skip_table)
+				filtered_tables = lappend(filtered_tables, remoterel);
+		}
+
+		/* Replace the original tables list with the filtered one */
+		tables = filtered_tables;
+	}
+
 	/* Connect to target node. */
-	target_conn = spock_connect(target_dsn, sub_name, "copy");
+	target_conn = spock_connect(target_dsn, sub->name, "copy");
 	start_copy_target_tx(target_conn, origin_name);
 
 	/* Copy every table. */
@@ -1112,7 +1157,7 @@ spock_sync_subscription(SpockSubscription *sub)
 					set_subscription_sync_status(sub->id, status);
 					CommitTransactionCommand();
 
-					tables = copy_replication_sets_data(sub->name,
+					tables = copy_replication_sets_data(sub,
 														sub->origin_if->dsn,
 														sub->target_if->dsn,
 														snapshot,
@@ -1261,7 +1306,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 		CommitTransactionCommand();
 
 		/* Copy data. */
-		copy_tables_data(sub->name, sub->origin_if->dsn,sub->target_if->dsn,
+		copy_tables_data(sub, sub->origin_if->dsn,sub->target_if->dsn,
 						 snapshot, list_make1(table), sub->replication_sets,
 						 sub->slot_name);
 	}

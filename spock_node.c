@@ -93,7 +93,7 @@ typedef struct SubscriptionTuple
 	NameData	sub_slot_name;
 } SubscriptionTuple;
 
-#define Natts_subscription			13
+#define Natts_subscription			14
 #define Anum_sub_id					1
 #define Anum_sub_name				2
 #define Anum_sub_origin				3
@@ -107,6 +107,7 @@ typedef struct SubscriptionTuple
 #define Anum_sub_apply_delay		11
 #define Anum_sub_force_text_transfer 12
 #define Anum_sub_skip_lsn			13
+#define Anum_sub_skip_schema		14
 
 /*
  * We impose same validation rules as replication slot name validation does.
@@ -829,6 +830,12 @@ create_subscription(SpockSubscription *sub)
 	values[Anum_sub_force_text_transfer - 1] = BoolGetDatum(sub->force_text_transfer);
 	values[Anum_sub_skip_lsn - 1] = LSNGetDatum(sub->skiplsn);
 
+	if (list_length(sub->skip_schema) > 0)
+		values[Anum_sub_skip_schema - 1] =
+			PointerGetDatum(strlist_to_textarray(sub->skip_schema));
+	else
+		nulls[Anum_sub_skip_schema - 1] = true;
+
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
 	/* Insert the tuple to the catalog. */
@@ -915,6 +922,12 @@ alter_subscription(SpockSubscription *sub)
 	values[Anum_sub_force_text_transfer - 1] = BoolGetDatum(sub->force_text_transfer);
 	values[Anum_sub_skip_lsn - 1] = LSNGetDatum(sub->skiplsn);
 
+	if (list_length(sub->skip_schema) > 0)
+		values[Anum_sub_skip_schema - 1] =
+			PointerGetDatum(strlist_to_textarray(sub->skip_schema));
+	else
+		nulls[Anum_sub_skip_schema - 1] = true;
+
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 
 	/* Update the tuple in catalog. */
@@ -982,6 +995,7 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 	sub->name = pstrdup(NameStr(subtup->sub_name));
 	sub->enabled = subtup->sub_enabled;
 	sub->slot_name = pstrdup(NameStr(subtup->sub_slot_name));
+	sub->skip_schema = NIL;  /* Initialize to avoid memory corruption */
 
 	sub->origin = get_node(subtup->sub_origin);
 	sub->target = get_node(subtup->sub_target);
@@ -1030,6 +1044,17 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		sub->skiplsn = InvalidXLogRecPtr;
 	else
 		sub->skiplsn = DatumGetLSN(d);
+
+	/* Get skip_schema. */
+	d = heap_getattr(tuple, Anum_sub_skip_schema, desc, &isnull);
+	if (isnull)
+		sub->skip_schema = NIL;
+	else
+	{
+		List		   *skip_schema_names;
+		skip_schema_names = textarray_to_list(DatumGetArrayTypeP(d));
+		sub->skip_schema = skip_schema_names;
+	}
 
 	return sub;
 }

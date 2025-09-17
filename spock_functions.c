@@ -452,6 +452,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	Interval *apply_delay = PG_GETARG_INTERVAL_P(6);
 	bool force_text_transfer = PG_GETARG_BOOL(7);
 	bool enabled = PG_GETARG_BOOL(8);
+	ArrayType *skip_schema_names = PG_GETARG_ARRAYTYPE_P(9);
 	PGconn *conn;
 	SpockSubscription sub;
 	SpockSyncStatus sync;
@@ -569,6 +570,10 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	sub.apply_delay = apply_delay;
 	sub.force_text_transfer = force_text_transfer;
 	sub.skiplsn	= InvalidXLogRecPtr;
+	if (PG_ARGISNULL(9))
+		sub.skip_schema = NIL;
+	else
+		sub.skip_schema = textarray_to_list(skip_schema_names);
 
 	create_subscription(&sub);
 
