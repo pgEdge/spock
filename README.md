@@ -178,20 +178,21 @@ To start replication, we'll add tables with [pgbench](https://www.postgresql.org
 
     /path to pgbench/pgbench -i -s 10 acctg
 
-Then, to confirm replication, you can connect to n2 with psql and check for the tables.
+Then, to confirm replication, you can connect to both `n1` and `n2` with psql and check for pgbench tables.
 
-psql (17.x)
-Type "help" for help.
+    psql (17.x)
+    Type "help" for help.
 
-bench=# \dt
-               List of relations
- Schema |       Name        | Type  |  Owner
---------+-------------------+-------+---------
- public | pgbench_accounts  | table | postgres
- public | pgbench_branches  | table | postgres
- public | pgbench_history   | table | postgres
- public | pgbench_tellers   | table | postgres
-(4 rows)
+    bench=# \dt
+                   List of relations
+     Schema |       Name        | Type  |  Owner
+    --------+-------------------+-------+---------
+     public | pgbench_accounts  | table | postgres
+     public | pgbench_branches  | table | postgres
+     public | pgbench_history   | table | postgres
+     public | pgbench_tellers   | table | postgres
+    (4 rows)
+
 
 **Deploying spock Clusters in Containers and with Ansible**
 
