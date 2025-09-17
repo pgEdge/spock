@@ -830,6 +830,8 @@ replace_symbols(char *strpos)
 	}
 }
 
+#define PSWD_KEYWORD	"password"
+
 /*
  * Spock-specific filters on log messages.
  *
@@ -851,26 +853,55 @@ log_message_filter(ErrorData *edata)
 
 	if (edata->elevel == ERROR)
 	{
-		const char *substr = "password";
 		char	   *strpos;
-		int			len = strlen(substr);
+		const int	len = strlen(PSWD_KEYWORD);
 
 		/*
 		 * Password may bubble up in the error message and query string.
 		 * XXX: Can it be exposed somewhere else - in the detail_log string, for
 		 * example?
 		 */
-		strpos = pg_strcasestr(edata->message, substr);
+		strpos = pg_strcasestr(edata->message, PSWD_KEYWORD);
 		if (strpos != NULL)
 		{
 			strpos += len;
 			replace_symbols(strpos);
 		}
-		strpos = pg_strcasestr(debug_query_string, substr);
+		strpos = pg_strcasestr(debug_query_string, PSWD_KEYWORD);
 		if (strpos != NULL)
 		{
 			strpos += len;
 			replace_symbols(strpos);
+		}
+	}
+
+	/*
+	 * Filter messages that previously needed core patch 'pg18-020-LOG-to-DEBUG1'
+	 */
+	if (edata->elevel == LOG &&
+		edata->sqlerrcode == ERRCODE_T_R_SERIALIZATION_FAILURE)
+	{
+		bool lower_output_level = false;
+
+		if (strstr(edata->message,
+				   "tuple to be locked was already moved to another partition due to concurrent update, retrying") != NULL)
+		{
+			edata->elevel = DEBUG1;
+			lower_output_level = true;
+		}
+		else if (strstr(edata->message, "concurrent delete, retrying") != NULL)
+		{
+			edata->elevel = DEBUG1;
+			lower_output_level = true;
+		}
+
+		if (lower_output_level)
+		{
+			/* Reconsider decision on exposing the message */
+			if (log_min_messages < edata->elevel)
+				edata->output_to_server = false;
+			if (client_min_messages < edata->elevel)
+				edata->output_to_client = false;
 		}
 	}
 }
