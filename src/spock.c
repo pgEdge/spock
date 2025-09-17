@@ -873,6 +873,36 @@ log_message_filter(ErrorData *edata)
 			replace_symbols(strpos);
 		}
 	}
+
+	/*
+	 * Filter messages that previously needed core patch 'pg18-020-LOG-to-DEBUG1'
+	 */
+	if (edata->elevel == LOG &&
+		edata->sqlerrcode == ERRCODE_T_R_SERIALIZATION_FAILURE)
+	{
+		bool lower_output_level = false;
+
+		if (strstr(edata->message,
+				   "tuple to be locked was already moved to another partition due to concurrent update, retrying") != NULL)
+		{
+			edata->elevel = DEBUG1;
+			lower_output_level = true;
+		}
+		else if (strstr(edata->message, "concurrent delete, retrying") != NULL)
+		{
+			edata->elevel = DEBUG1;
+			lower_output_level = true;
+		}
+
+		if (lower_output_level)
+		{
+			/* Reconsider decision on exposing the message */
+			if (log_min_messages < edata->elevel)
+				edata->output_to_server = false;
+			if (client_min_messages < edata->elevel)
+				edata->output_to_client = false;
+		}
+	}
 }
 
 /*
