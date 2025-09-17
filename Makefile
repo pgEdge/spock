@@ -34,8 +34,6 @@ OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
 		spock_proto_native.o spock_monitoring.o spock_failover_slots.o \
 		spock_readonly.o spock_common.o
 
-SCRIPTS_built = spock_create_subscriber
-
 REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
 		  toasted replication_set matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
@@ -56,8 +54,7 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondar
 
 EXTRA_CLEAN += compat17/spock_compat.o compat17/spock_compat.bc \
 				compat16/spock_compat.o compat16/spock_compat.bc \
-				compat15/spock_compat.o compat15/spock_compat.bc \
-				spock_create_subscriber.o
+				compat15/spock_compat.o compat15/spock_compat.bc
 
 spock_version=$(shell grep "^\#define \<SPOCK_VERSION\>" $(realpath $(srcdir)/spock.h) | cut -d'"' -f2)
 
@@ -107,10 +104,6 @@ regresscheck:
 	    $(REGRESS)
 
 check: install regresscheck
-
-spock_create_subscriber: spock_create_subscriber.o spock_fe.o
-	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(libpq_pgport) $(filter-out -lreadline, $(LIBS)) -o $@$(X)
-
 
 spock.control: spock.control.in spock.h
 	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' $(realpath $(srcdir)/spock.control.in) > $(control_path)
