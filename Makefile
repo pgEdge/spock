@@ -7,6 +7,7 @@ PGFILEDESC = "spock - multi-master replication"
 MODULES = spock_output
 
 DATA = spock--5.0.0--5.0.1.sql \
+	   spock--5.0.1--5.0.2.sql \
 	   spock--5.0.0.sql \
 	   spock--4.0.0--4.0.1.sql \
 	   spock--4.0.1--4.0.2.sql \
@@ -18,6 +19,7 @@ DATA = spock--5.0.0--5.0.1.sql \
 	   spock--4.0.7--4.0.8.sql \
 	   spock--4.0.8--4.0.9.sql \
 	   spock--4.0.9--4.0.10.sql \
+	   spock--4.0.10--4.0.11.sql \
 	   spock--4.0.11--5.0.0.sql
 
 OBJS = 	spock_jsonb_utils.o spock_exception_handler.o spock_apply.o \
@@ -64,7 +66,7 @@ spock_version=$(shell grep "^\#define \<SPOCK_VERSION\>" $(realpath $(srcdir)/sp
 abs_top_builddir = .
 NO_TEMP_INSTALL = yes
 
-PG_CONFIG ?= pg_config
+export PG_CONFIG ?= pg_config
 
 PGVER := $(shell $(PG_CONFIG) --version | sed 's/[^0-9]//g' | cut -c 1-2)
 
@@ -114,7 +116,7 @@ spock.control: spock.control.in spock.h
 	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' $(realpath $(srcdir)/spock.control.in) > $(control_path)
 
 spockctrl:
-	$(MAKE) -C spockctrl
+	$(MAKE) -C $(srcdir)/spockctrl
 
 all: spock.control spockctrl
 
@@ -165,12 +167,12 @@ check_prove:
 clean: clean-spockctrl
 
 clean-spockctrl:
-	$(MAKE) -C spockctrl clean
+	$(MAKE) -C $(srcdir)/spockctrl clean
 
 install: install-spockctrl
 
 install-spockctrl:
-	$(MAKE) -C spockctrl install
+	$(MAKE) -C $(srcdir)/spockctrl install
 
 .PHONY: all check regresscheck spock.control spockctrl
 
