@@ -153,6 +153,14 @@ Then, create the subscription which will start synchronization and replication o
     SELECT spock.sub_wait_for_sync('subscription1');
 
 
+**Deploying spock Clusters in Containers and with Ansible**
+
+The pgEdge Github sites hosts repositories that contain artifacts that you can use to simplify spock cluster deployment; for more information, visit: 
+
+* [Deploying spock with Ansible](https://github.com/pgEdge/pgedge-ansible)
+* [Deploying spock in a Container](https://docs.pgedge.com/container)
+
+
 ### Upgrading
 
 You cannot roll back an upgrade because of changes to the catalog tables; before starting an upgrade, make sure you have a current backup of your cluster so you can recreate the original cluster if needed.
