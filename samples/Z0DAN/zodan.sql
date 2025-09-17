@@ -135,7 +135,48 @@ DECLARE
     sid oid;
     remotesql text;
     exists_count int;
+    skip_schema_list text;
+    existing_schemas text;
+    remotesql_schema text;
 BEGIN
+    -- Auto-detect existing schemas on new node when synchronize_structure is true
+    skip_schema_list := 'ARRAY[]::text[]';
+
+    IF synchronize_structure THEN
+        BEGIN
+            -- Query existing schemas on the new node (excluding system schemas)
+            remotesql_schema := 'SELECT string_agg(schema_name, '','') as schemas
+                                FROM information_schema.schemata
+                                WHERE schema_name NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'', ''public'')
+                                AND schema_name NOT LIKE ''pg_temp_%''
+                                AND schema_name NOT LIKE ''pg_toast_temp_%''';
+
+            IF verb THEN
+                RAISE NOTICE '[QUERY] Detecting existing schemas on new node: %', remotesql_schema;
+            END IF;
+
+            SELECT schemas INTO existing_schemas FROM dblink(node_dsn, remotesql_schema) AS t(schemas text);
+
+            IF existing_schemas IS NOT NULL AND existing_schemas != '' THEN
+                skip_schema_list := 'ARRAY[''' || replace(existing_schemas, ',', ''',''') || ''']::text[]';
+                IF verb THEN
+                    RAISE NOTICE '[INFO] Found existing schemas to skip: %', existing_schemas;
+                END IF;
+            ELSE
+                IF verb THEN
+                    RAISE NOTICE '[INFO] No existing user schemas found on new node';
+                END IF;
+            END IF;
+
+        EXCEPTION
+            WHEN OTHERS THEN
+                IF verb THEN
+                    RAISE NOTICE '[WARNING] Failed to detect existing schemas: %', SQLERRM;
+                END IF;
+                skip_schema_list := 'ARRAY[]::text[]';
+        END;
+    END IF;
+
     remotesql := format(
         'SELECT spock.sub_create(
             subscription_name := %L,
@@ -143,10 +184,11 @@ BEGIN
             replication_sets := %s,
             synchronize_structure := %L,
             synchronize_data := %L,
-            forward_origins := %L,
+            forward_origins := %s,
             apply_delay := %L,
             enabled := %L,
-            force_text_transfer := %L
+            force_text_transfer := %L,
+            skip_schema := %s
         )',
         subscription_name,
         provider_dsn,
@@ -156,7 +198,8 @@ BEGIN
         forward_origins,
         apply_delay::text,
         enabled::text,
-        force_text_transfer::text
+        force_text_transfer::text,
+        skip_schema_list
     );
 
     IF verb THEN
@@ -1236,7 +1279,7 @@ BEGIN
                 'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
                 false,                                        -- synchronize_structure
                 false,                                        -- synchronize_data
-                '{}',                                         -- forward_origins
+                'ARRAY[]::text[]',                            -- forward_origins
                 '0'::interval,                                -- apply_delay
                 false,                                        -- enabled (disabled)
                 false,                                        -- force_text_transfer
@@ -1356,7 +1399,7 @@ BEGIN
                 'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
                 false,                                        -- synchronize_structure
                 false,                                        -- synchronize_data
-                '{}',                                         -- forward_origins
+                'ARRAY[]::text[]',                            -- forward_origins
                 '0'::interval,                                -- apply_delay
                 true,                                         -- enabled
                 false,                                        -- force_text_transfer
@@ -1400,7 +1443,7 @@ BEGIN
         'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']',
         false,   -- synchronize_structure
         false,   -- synchronize_data
-        '{}',
+        'ARRAY[]::text[]',
         '0'::interval,
         true,   -- enabled
         false,   -- force_text_transfer
@@ -1432,7 +1475,7 @@ BEGIN
         'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
         true,                                         -- synchronize_structure
         true,                                         -- synchronize_data
-        '{}',                                         -- forward_origins
+        'ARRAY[]::text[]',                            -- forward_origins
         '0'::interval,                                -- apply_delay
         true,                                         -- enabled
         false,                                        -- force_text_transfer
