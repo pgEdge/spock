@@ -161,6 +161,14 @@ SELECT spock.sub_create(
     enabled := true
 );
 ```
+Optionally, include the `skip_schema` parameter and a comma-delimited array of schemas that you would like to omit when synchronizing the database structure.  The parameter can be useful in cases where the source machine contains extensions that you do not wish to propagate to other nodes on your network.
+
+The `skip_schema` parameter is only enforced when `synchronize_structure` is set to `true`.  For example:
+
+```sql
+synchronize_structure = true,
+skip_schema := 'schema-name-1, schema-name-2, schema-name-3',
+```
 
 9. Next, we use a `spock.sync_event` to confirm that all of the transactions have been synced from our provider node (`n1`) to our new subscriber node (`n4`):
 
