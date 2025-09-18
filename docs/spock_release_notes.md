@@ -1,5 +1,14 @@
 # Spock Release Notes
 
+
+## v5.0.2 on Sept 22, 2025
+
+* Zero Downtime Add Node Enhancements
+    * Applicable to both the sample stored procedure and Python example:
+        * Improved logging during Zodan processes.
+        * Add the skip_schema parameter for Zodan, allowing you to exclude specified schemas when adding a node.  This parameter will prevent the add node process from copying over local extension metadata.
+* Spock now uses the Postgres License
+
 ## v5.0.1 on Aug 27, 2025
 
 * Bug fix for an incorrect commit timestamp being used for the case of updating a row that was inserted in the same transaction. A consequence was possible incorrect resolution handling for updates.
