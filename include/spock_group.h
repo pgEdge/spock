@@ -90,22 +90,19 @@ extern void spock_group_shmem_init(void);
 extern void spock_group_shmem_request(void);
 extern void spock_group_shmem_startup(int napply_groups, bool found);
 
-SpockGroupEntry * spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id,
+extern SpockGroupEntry * spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id,
                                      bool *created);
-void spock_group_detach(void);
-bool spock_group_progress_update(const SpockApplyProgress *sap);
-void spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap);
-
-bool spock_group_get_progress(Oid dbid, Oid node_id, Oid remote_node_id,
-                              SpockApplyProgress *out);
+extern void spock_group_detach(void);
+extern bool spock_group_progress_update(const SpockApplyProgress *sap);
+extern void spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap);
 extern SpockApplyProgress *apply_worker_get_progress(void);
-SpockGroupEntry * spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id);
+extern SpockGroupEntry * spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id);
 
 /* Iterate all groups */
 typedef void (*SpockGroupIterCB)(const SpockGroupEntry *e, void *arg);
-void spock_group_foreach(SpockGroupIterCB cb, void *arg);
+extern void spock_group_foreach(SpockGroupIterCB cb, void *arg);
 
-void spock_group_resource_dump(void);
-void spock_group_resource_load(void);
+extern void spock_group_resource_dump(void);
+extern void spock_group_resource_load(void);
 
 #endif /* SPOCK_GROUP_H */

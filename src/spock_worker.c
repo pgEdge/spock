@@ -318,7 +318,7 @@ wait_for_worker_startup(SpockWorker *worker,
 static void
 spock_on_shmem_exit(int code, Datum arg)
 {
-	elog(DEBUG1 "spock_on_shmem_exit: dumping apply group data");
+	elog(DEBUG1, "spock_on_shmem_exit: dumping apply group data");
     spock_group_resource_dump();
 }
 
