@@ -167,7 +167,7 @@ The `skip_schema` parameter is only enforced when `synchronize_structure` is set
 
 ```sql
 synchronize_structure = true,
-skip_schema := 'schema-name-1, schema-name-2, schema-name-3',
+skip_schema := ARRAY['schema-name-1', 'schema-name-2', 'schema-name-3'],
 ```
 
 9. Next, we use a `spock.sync_event` to confirm that all of the transactions have been synced from our provider node (`n1`) to our new subscriber node (`n4`):
