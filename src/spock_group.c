@@ -7,6 +7,32 @@
  * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
+ *
+ * Spock Group Registry (shmem + file snapshot)
+ * --------------------------------------------
+ *
+ * This module owns the in-memory state of apply groups and their persistent
+ * progress snapshots, and the file dump/load used to seed state on clean restart.
+ *
+ *   - SpockGroupHash: shmem hash keyed by (dbid, node_id, remote_node_id).
+ *     Each entry (SpockGroupEntry) contains:
+ *       * key                           -- identity
+ *       * progress (SpockApplyProgress) -- last applied remote commit snapshot
+ *       * nattached, prev_processed_cv  -- apply-worker coordination (runtime)
+ *
+ * Persistence:
+ *   - WAL: authoritative. spock_rmgr_redo() replays progress into this hash.
+ *   - File: PGDATA/spock/resource.dat on clean shutdown (on_shmem_exit).
+ *           Load during shmem_startup_hook to seed shmem quickly. WAL replay
+ *           runs after and overrides stale file contents.
+ *
+ *
+ * Notes:
+ *   - Entries are never deleted during normal operation; pointers returned by
+ *     spock_group_attach() are stable for the lifetime of the postmaster.
+ *   - File header contains version + system_identifier; mismatches cause the
+ *     loader to skip the file.
+ *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
@@ -56,6 +82,17 @@ spock_group_shmem_init(void)
 #endif
 }
 
+/*
+ * spock_group_shmem_request
+ *
+ * Request and initialize the shmem structures backing the group registry.
+ *
+ * - _request: called in _PG_init(); calls RequestAddinShmemSpace() and
+ *   RequestNamedLWLockTranche() for the hash and the gate lock.
+ *
+ * - _init: called from shmem_startup_hook while AddinShmemInitLock is held
+ *   by core. Creates/attaches the shmem hash (SpockGroupHash).
+ */
 void
 spock_group_shmem_request(void)
 {
@@ -103,18 +140,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	if (SpockGroupHash)
 		return;
 
-#if 0
-
-	/*
-	 * This is kludge for Windows (Postgres does not define the GUC variable
-	 * as PGDLLIMPORT)
-	 */
-	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
-											   false));
-	if (napply_groups <= 0)
-		napply_groups = 9;
-#endif
-
 	MemSet(&hctl, 0, sizeof(hctl));
 	hctl.keysize = sizeof(SpockGroupKey);
 	hctl.entrysize = sizeof(SpockGroupEntry);
@@ -160,6 +185,10 @@ make_key(Oid dbid, Oid node_id, Oid remote_node_id)
 
 /*
  * spock_group_attach
+ *
+ * Ensure a group entry exists for (dbid,node_id,remote_node_id) and return a
+ * stable pointer to it. Increment nattached for visibility/metrics. Safe to
+ * call from an apply worker during startup/attach.
  */
 SpockGroupEntry *
 spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id, bool *created)
@@ -194,7 +223,7 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id, bool *created)
 /*
  * spock_group_detach
  *
- * Remove a worker from it's group.
+ * Decrements nattached. Entries are not deleted (stable pointers).
  */
 void
 spock_group_detach(void)
@@ -208,7 +237,9 @@ spock_group_detach(void)
 /*
  * spock_group_progress_update
  *
- * update progress - used by apply worker, REDO, file loader
+ * Update the progress snapshot for (dbid,node_id,remote_node_id).
+ * Uses hash_search(HASH_ENTER) for table access, then copies 'sap' into the
+ * entry's progress payload under the gate lock (writers EXCLUSIVE).
  */
 bool
 spock_group_progress_update(const SpockApplyProgress *sap)
@@ -251,38 +282,28 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
 
 /*
  * apply_worker_get_progress
+ *
+ * Return a pointer to the current apply worker's progress payload, or NULL
  */
 SpockApplyProgress *
 apply_worker_get_progress(void)
 {
-	Assert(MyApplyWorker != NULL);
-	Assert(MyApplyWorker->apply_group != NULL);
-	if (MyApplyWorker && MyApplyWorker->apply_group)
-		return &MyApplyWorker->apply_group->progress;
-	return NULL;
-}
+    Assert(MyApplyWorker != NULL);
+    Assert(MyApplyWorker->apply_group != NULL);
 
-/*
- * spock_group_get_progress
- */
-bool
-spock_group_get_progress(Oid dbid, Oid node_id, Oid remote_node_id,
-						 SpockApplyProgress *out)
-{
-	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
-	SpockGroupEntry *e;
+    if (MyApplyWorker && MyApplyWorker->apply_group)
+        return &MyApplyWorker->apply_group->progress;
 
-	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_FIND, NULL);
-	if (!e)
-		return false;
-
-	if (out)
-		*out = e->progress;
-	return true;
+    return NULL;
 }
 
 /*
  * spock_group_lookup
+ *
+ * Snapshot-read the progress payload for the specified group. Uses HASH_FIND
+ * to locate the entry.
+ *
+ * Returns entry if found, NULL otherwise.
  */
 SpockGroupEntry *
 spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
@@ -294,6 +315,13 @@ spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
 	return e;					/* may be NULL */
 }
 
+/*
+ * spock_group_foreach
+ *
+ * Iterate all entries in the group hash and invoke 'cb(e, arg)' for each.
+ * Caller selects any gating needed for consistency (e.g., take the gate in
+ * SHARED before calling this if you want a coherent snapshot).
+ */
 void
 spock_group_foreach(SpockGroupIterCB cb, void *arg)
 {
@@ -328,6 +356,16 @@ dump_one_group_cb(const SpockGroupEntry *e, void *arg)
  * - Body:   array of SpockApplyProgress records (struct layout is prefix-stable)
  * Writes to a temp file, fsyncs, then durable_rename() into place.
  * Typically invoked via on_shmem_exit() from the main Spock process.
+ */
+/*
+ * spock_group_resource_dump
+ * -------------------------
+ * Write a clean-shutdown snapshot to PGDATA/spock/resource.dat.
+ * - Header: version, system_identifier, flags, entry_count (patched after scan)
+ * - Body:   array of SpockApplyProgress records (struct layout is prefix-stable)
+ * Writes to a temp file, fsyncs, then durable_rename_excl() into place.
+ * Typically invoked via on_shmem_exit() from the main Spock process.
+ *
  */
 void
 spock_group_resource_dump(void)
@@ -399,8 +437,10 @@ spock_group_resource_dump(void)
 
 /*
  * spock_group_resource_load
- *   Read PGDATA/spock/resource.dat and add entries into shmem.
- *   Called during extension shmem startup.
+ *
+ * Load an existing snapshot (if present) during shmem startup. Validates
+ * version and system_identifier, then update each record via
+ * spock_group_progress_update().
  */
 void
 spock_group_resource_load(void)

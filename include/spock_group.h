@@ -97,17 +97,14 @@ SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id,
 void		spock_group_detach(void);
 bool		spock_group_progress_update(const SpockApplyProgress *sap);
 void		spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap);
-
-bool		spock_group_get_progress(Oid dbid, Oid node_id, Oid remote_node_id,
-									 SpockApplyProgress *out /* nullable */ );
-extern SpockApplyProgress *apply_worker_get_progress(void);
+SpockApplyProgress *apply_worker_get_progress(void);
 SpockGroupEntry *spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id);
 
 /* Iterate all groups */
 typedef void (*SpockGroupIterCB) (const SpockGroupEntry *e, void *arg);
 void		spock_group_foreach(SpockGroupIterCB cb, void *arg);
 
-void		spock_group_resource_dump(void);
-void		spock_group_resource_load(void);
+extern void		spock_group_resource_dump(void);
+extern void		spock_group_resource_load(void);
 
 #endif							/* SPOCK_GROUP_H */
