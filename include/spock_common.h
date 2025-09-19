@@ -77,4 +77,7 @@ extern bool SpockRelationFindReplTupleByIndex(EState *estate,
 								 TupleTableSlot *searchslot,
 								 TupleTableSlot *outslot);
 
+extern TimestampTz str_to_timestamptz(const char *s);
+extern XLogRecPtr str_to_lsn(const char *s);
+
 #endif /* SPOCK_COMMON_H */
