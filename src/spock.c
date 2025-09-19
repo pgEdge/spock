@@ -830,6 +830,8 @@ replace_symbols(char *strpos)
 	}
 }
 
+#define PSWD_KEYWORD	"password"
+
 /*
  * Spock-specific filters on log messages.
  *
@@ -851,22 +853,21 @@ log_message_filter(ErrorData *edata)
 
 	if (edata->elevel == ERROR)
 	{
-		const char *substr = "password";
 		char	   *strpos;
-		int			len = strlen(substr);
+		int			len = strlen(PSWD_KEYWORD);
 
 		/*
 		 * Password may bubble up in the error message and query string.
 		 * XXX: Can it be exposed somewhere else - in the detail_log string, for
 		 * example?
 		 */
-		strpos = pg_strcasestr(edata->message, substr);
+		strpos = pg_strcasestr(edata->message, PSWD_KEYWORD);
 		if (strpos != NULL)
 		{
 			strpos += len;
 			replace_symbols(strpos);
 		}
-		strpos = pg_strcasestr(debug_query_string, substr);
+		strpos = pg_strcasestr(debug_query_string, PSWD_KEYWORD);
 		if (strpos != NULL)
 		{
 			strpos += len;
