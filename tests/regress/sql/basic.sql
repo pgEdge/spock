@@ -93,3 +93,20 @@ SELECT id, other, data, something FROM basic_dml ORDER BY id;
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.basic_dml CASCADE;
 $$);
+
+SELECT '''' || provider_dsn || ' password=abc' || '''' AS fakecreds
+FROM spock_regress_variables()
+\gset
+
+-- Check password will not be exposed
+SELECT spock.sub_create(
+  subscription_name := 'subscription1',
+  provider_dsn := :fakecreds);
+
+CREATE FUNCTION call_fn(creds text) RETURNS void AS $$
+  SELECT spock.sub_create(
+    subscription_name := 'subscription1',
+    provider_dsn := creds);
+$$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+
+SELECT call_fn(:fakecreds);
