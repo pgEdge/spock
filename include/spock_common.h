@@ -79,5 +79,7 @@ extern bool SpockRelationFindReplTupleByIndex(EState *estate,
 
 extern void read_buf(int fd, void *buf, size_t nbytes, const char *filename);
 extern void write_buf(int fd, const void *buf, size_t nbytes, const char *filename);
+extern TimestampTz str_to_timestamptz(const char *s);
+extern XLogRecPtr str_to_lsn(const char *s);
 
 #endif /* SPOCK_COMMON_H */

@@ -14,6 +14,7 @@
 
 #include "postgres.h"
 #include "miscadmin.h"
+#include "fmgr.h"
 
 #include "executor/executor.h"
 #include "storage/ipc.h"
@@ -22,6 +23,7 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/pg_lsn.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
@@ -522,6 +524,7 @@ spock_build_replindex_scan_key(ScanKey skey, Relation rel, Relation idxrel,
 	return skey_attoff;
 }
 
+
 /*
  * Read exactly nbytes into buf or ERROR out. Never returns partial.
  */
@@ -593,4 +596,19 @@ write_buf(int fd, const void *buf, size_t nbytes, const char *filename)
 		}
 		off += (size_t)n;
 	}
+}
+
+TimestampTz
+str_to_timestamptz(const char *s)
+{
+	return DatumGetTimestampTz(DirectFunctionCall3(timestamptz_in,
+												   CStringGetDatum(s),
+												   ObjectIdGetDatum(InvalidOid),
+												   Int32GetDatum(-1)));
+}
+
+XLogRecPtr
+str_to_lsn(const char *s)
+{
+	return DatumGetLSN(DirectFunctionCall1(pg_lsn_in, CStringGetDatum(s)));
 }
