@@ -10,7 +10,7 @@ This script provides all the same procedures and functionality as zodan.sql:
 - Error handling and verbose logging
 
 Usage:
-    python zodan.py add_node --src-node-name n1 --src-dsn "host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=pgedge" --verbose
+    python zodan.py add_node --src-node-name n1 --src-dsn "host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=localhost dbname=pgedge port=5433 user=pgedge password=pgedge" --verbose
 """
 
 import subprocess
@@ -24,6 +24,8 @@ import re
 class SpockClusterManager:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
+        self.src_dsn = None
+        self.new_node_dsn = None
         
     def log(self, msg: str):
         """Log a message with timestamp"""
@@ -646,8 +648,7 @@ class SpockClusterManager:
         
         # Check replication status
         sql = "SELECT status FROM spock.sub_show_status() LIMIT 1"
-        status = self.run_psql("host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge", 
-                              sql, fetch=True, return_single=True)
+        status = self.run_psql(self.src_dsn, sql, fetch=True, return_single=True)
         
         if status and "replicating" in status.lower():
             self.notice("    OK: Replication is active (status: replicating)")
@@ -661,8 +662,7 @@ class SpockClusterManager:
         self.notice("---------+-----------+----------+---------+------")
         
         sql = "SELECT node_id, node_name, location, country, info FROM spock.node ORDER BY node_id"
-        nodes = self.run_psql("host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge", 
-                             sql, fetch=True)
+        nodes = self.run_psql(self.src_dsn, sql, fetch=True)
         
         for node in nodes:
             parts = node.split("|")
@@ -673,8 +673,7 @@ class SpockClusterManager:
         self.notice("")
         self.notice("Subscription Status:")
         sql = "SELECT * FROM spock.sub_show_status()"
-        subs = self.run_psql("host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge", 
-                            sql, fetch=True)
+        subs = self.run_psql(self.src_dsn, sql, fetch=True)
         
         for sub in subs:
             self.notice(f" {sub}")
@@ -769,6 +768,10 @@ class SpockClusterManager:
                  new_node_location: str = "NY", new_node_country: str = "USA",
                  new_node_info: str = "{}"):
         """Main add_node procedure - matches zodan.sql exactly"""
+
+        # Store DSN values as instance attributes to avoid hard-coding
+        self.src_dsn = src_dsn
+        self.new_node_dsn = new_node_dsn
 
         # Phase 1: Verify prerequisites for source and new node.
         # Example: Ensure n1 (source) and n4 (new) are ready before adding n4 to cluster n1,n2,n3.
@@ -916,7 +919,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python zodan.py add_node --src-node-name n1 --src-dsn "host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=pgedge" --verbose
+  python zodan.py add_node --src-node-name n1 --src-dsn "host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=localhost dbname=pgedge port=5433 user=pgedge password=pgedge" --verbose
         """
     )
     
