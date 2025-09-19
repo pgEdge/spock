@@ -61,6 +61,7 @@
 #include "utils/rel.h"
 #include "utils/resowner.h"
 
+#include "spock_common.h"
 #include "spock_relcache.h"
 #include "spock_repset.h"
 #include "spock_rpc.h"
@@ -395,18 +396,8 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 		"       last_updated_ts, updated_by_decode "
 		"FROM spock.progress "
 		"WHERE node_id = %u AND remote_node_id <> %u";
-	const char	   *updateQuery =
-		"UPDATE spock.progress SET "
-		"    remote_commit_ts = %s, "
-		"    remote_lsn = %s, "
-		"    remote_insert_lsn = %s, "
-		"    last_updated_ts = %s, "
-		"    updated_by_decode = %s "
-		"WHERE node_id = '%d' AND remote_node_id = '%d'";
-
 	StringInfoData	query;
 	PGresult	   *originRes;
-	PGresult	   *updateRes;
 
 	/*
 	 * Select the current content of the origin's spock.progress table
@@ -437,51 +428,35 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			 */
 			char   *remote_node_id = PQgetvalue(originRes, rno, 1);
 			char   *remote_commit_ts = PQgetvalue(originRes, rno, 2);
-			char   *remote_lsn = PQgetvalue(originRes, rno, 3);
+			char   *remote_commit_lsn = PQgetvalue(originRes, rno, 3);
 			char   *remote_insert_lsn = PQgetvalue(originRes, rno, 4);
 			char   *last_updated_ts = PQgetvalue(originRes, rno, 5);
 			char   *updated_by_decode = PQgetvalue(originRes, rno, 6);
 
-			resetStringInfo(&query);
-			appendStringInfo(&query, updateQuery,
-							 PQescapeLiteral(target_conn, remote_commit_ts,
-											 strlen(remote_commit_ts)),
-							 PQescapeLiteral(target_conn, remote_lsn,
-											 strlen(remote_lsn)),
-							 PQescapeLiteral(target_conn, remote_insert_lsn,
-											 strlen(remote_insert_lsn)),
-							 PQescapeLiteral(target_conn, last_updated_ts,
-											 strlen(last_updated_ts)),
-							 PQescapeLiteral(target_conn, updated_by_decode,
-											 strlen(updated_by_decode)),
-							 MySubscription->target->id,
-							 MySubscription->origin->id);
-			updateRes = PQexec(target_conn, query.data);
+			SpockApplyProgress sap = {
+				.key.dbid              = MyDatabaseId,
+				.key.node_id           = MySubscription->target->id,
+				.key.remote_node_id    = atooid(remote_node_id),
+				.remote_commit_ts  = str_to_timestamptz(remote_commit_ts),
+				.prev_remote_ts    = str_to_timestamptz(remote_commit_ts),
+				.remote_commit_lsn = str_to_lsn(remote_commit_lsn),
+				.remote_insert_lsn = str_to_lsn(remote_insert_lsn),
+				.last_updated_ts   = str_to_timestamptz(last_updated_ts),
+				.updated_by_decode = updated_by_decode[0] == 't',
+			};
 
-			if (PQresultStatus(updateRes) != PGRES_COMMAND_OK)
-			{
-				elog(ERROR, "SPOCK: Cannot adjust spock.progress - %s",
-					 PQresultErrorMessage(updateRes));
-			}
-			else if (strcmp(PQcmdTuples(updateRes), "1") != 0)
-			{
-				elog(ERROR, "SPOCK: Cannot adjust spock.progress - "
-					 "tuples updated='%s' query=%s",
-					 PQcmdTuples(updateRes), query.data);
-			}
-			else
-			{
-				elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
-					 "remote_commit_ts='%s' "
-					 "remote_lsn='%s' "
-					 "remote_insert_lsn='%s'",
-					 remote_node_id,
-					 MySubscription->target->id,
-					 remote_commit_ts,
-					 remote_lsn,
-					 remote_insert_lsn);
-			}
-			PQclear(updateRes);
+			/* Update progress */
+			spock_group_progress_update(&sap);
+
+			elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
+					"remote_commit_ts='%s' "
+					"remote_commit_lsn='%s' "
+					"remote_insert_lsn='%s'",
+					remote_node_id,
+					MySubscription->target->id,
+					remote_commit_ts,
+					remote_commit_lsn,
+					remote_insert_lsn);
 		}
 	}
 	else
