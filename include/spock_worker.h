@@ -65,6 +65,11 @@ typedef struct SpockApplyWorker
 	bool		sync_pending;		/* Is there new synchronization info pending?. */
 	bool		use_try_block;		/* Should use try block for apply? */
 	SpockApplyGroup apply_group;	/* Apply group to be used with parallel slots. */
+	
+	/* Recovery slot management */
+	char		recovery_slot_name[NAMEDATALEN];	/* Recovery slot for this subscription */
+	bool		recovery_mode;		/* True if in recovery mode */
+	XLogRecPtr	recovery_target_lsn;	/* Target LSN for recovery */
 } SpockApplyWorker;
 
 typedef struct SpockSyncWorker
