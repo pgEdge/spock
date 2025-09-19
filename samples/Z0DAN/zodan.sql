@@ -1881,11 +1881,11 @@ BEGIN
     -- Phase 3: Create disabled subscriptions and slots
     CALL spock.create_disable_subscriptions_and_slots(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 4: Create source to new node subscription
-    CALL spock.create_source_to_new_subscription(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
-
-    -- Phase 5: Trigger sync events on other nodes and wait on source
+    -- Phase 4: Trigger sync events on other nodes and wait on source
     CALL spock.trigger_sync_on_other_nodes_and_wait_on_source(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+
+    -- Phase 5: Create source to new node subscription
+    CALL spock.create_source_to_new_subscription(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
     -- Phase 6: Waiting for sync on source and new node
     CALL spock.wait_for_source_node_sync(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, true);
