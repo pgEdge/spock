@@ -92,7 +92,9 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 		rv->schemaname = (char *) entry->nspname;
 		rv->relname = (char *) entry->relname;
-		entry->rel = table_openrv(rv, lockmode);
+		entry->rel = table_openrv_extended(rv, lockmode, true);
+		if (unlikely(entry->rel == NULL))
+			return NULL;
 
 		desc = RelationGetDescr(entry->rel);
 		for (i = 0; i < entry->natts; i++)
@@ -158,7 +160,11 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		}
 	}
 	else if (!entry->rel)
-		entry->rel = table_open(entry->reloid, lockmode);
+	{
+		entry->rel = try_table_open(entry->reloid, lockmode);
+		if (unlikely(entry->rel == NULL))
+			return NULL;
+	}
 
 	return entry;
 }
