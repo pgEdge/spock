@@ -10,7 +10,7 @@ This script provides all the same procedures and functionality as zodan.sql:
 - Error handling and verbose logging
 
 Usage:
-    python zodan.py add_node --src-node-name n1 --src-dsn "host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=pgedge" --verbose
+    python zodan.py add_node --src-node-name n1 --src-dsn "host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=localhost dbname=pgedge port=5433 user=pgedge password=pgedge" --verbose
 """
 
 import subprocess
@@ -24,6 +24,8 @@ import re
 class SpockClusterManager:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
+        self.src_dsn = None
+        self.new_node_dsn = None
         
     def log(self, msg: str):
         """Log a message with timestamp"""
@@ -38,7 +40,7 @@ class SpockClusterManager:
         print(f"NOTICE: {msg}")
         
     def format_notice(self, status: str, message: str, node: str = None):
-        """Format notice message like zodan.sql: ✓/✗ datetime [node] : message"""
+        """Format notice message like zodan.sql: OK:/ERROR datetime [node] : message"""
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if node:
@@ -148,7 +150,7 @@ class SpockClusterManager:
             self.format_notice("✗", f"Checking new node \"{new_node_name}\" already exists")
             raise Exception(f"Exiting add_node: New node {new_node_name} already exists")
         else:
-            self.format_notice("✓", f"Checking new node {new_node_name} does not exist")
+            self.format_notice("OK:", f"Checking new node {new_node_name} does not exist")
             
         # Check if new node has subscriptions
         sql = f"""
@@ -162,7 +164,7 @@ class SpockClusterManager:
             self.format_notice("✗", f"Checking new node \"{new_node_name}\" has subscriptions")
             raise Exception(f"Exiting add_node: New node {new_node_name} has subscriptions")
         else:
-            self.format_notice("✓", f"Checking new node {new_node_name} has no subscriptions")
+            self.format_notice("OK:", f"Checking new node {new_node_name} has no subscriptions")
             
         # Check if new node has replication sets
         sql = f"""
@@ -176,7 +178,7 @@ class SpockClusterManager:
             self.format_notice("✗", f"Checking new node \"{new_node_name}\" has replication sets")
             raise Exception(f"Exiting add_node: New node {new_node_name} has replication sets")
         else:
-            self.format_notice("✓", f"Checking new node {new_node_name} has no replication sets")
+            self.format_notice("OK:", f"Checking new node {new_node_name} has no replication sets")
 
     def create_node(self, node_name: str, dsn: str, location: str = "NY", country: str = "USA", info: str = "{}"):
         """Create a Spock node on a remote cluster"""
@@ -220,15 +222,15 @@ class SpockClusterManager:
         count = self.run_psql(src_dsn, sql, fetch=True, return_single=True)
         
         if count and int(count.strip()) > 0:
-            self.notice("    ✓ Creating source node " + src_node_name + "...")
+            self.notice("    OK: Creating source node " + src_node_name + "...")
         else:
             # Create source node
             self.create_node(src_node_name, src_dsn)
-            self.notice("    ✓ Creating source node " + src_node_name + "...")
+            self.notice("    OK: Creating source node " + src_node_name + "...")
             
         # Create new node
         self.create_node(new_node_name, new_node_dsn, new_node_location, new_node_country, new_node_info)
-        self.notice("    ✓ Creating new node " + new_node_name + "...")
+        self.notice("    OK: Creating new node " + new_node_name + "...")
         
         return 2  # Return initial node count
 
@@ -337,30 +339,38 @@ class SpockClusterManager:
             if self.verbose:
                 self.info(f"Created replication slot '{slot_name}' with plugin '{plugin}' on remote node.")
 
-    def create_disable_subscriptions_and_slots(self, src_node_name: str, src_dsn: str, 
+    def create_disable_subscriptions_and_slots(self, src_node_name: str, src_dsn: str,
                                              new_node_name: str, new_node_dsn: str):
-        """Phase 3: Create disabled subscriptions and slots"""
+        """Phase 3: Create disabled subscriptions and slots with sync events"""
         self.notice("Phase 3: Creating disabled subscriptions and slots")
-        
+
         # Get all nodes from source cluster
         nodes = self.get_spock_nodes(src_dsn)
-        
+
+        # Store sync LSNs for later use when enabling subscriptions
+        self.sync_lsns = {}
+
         for rec in nodes:
             if rec['node_name'] == src_node_name:
                 continue
-                
+
             # Create replication slot
             dbname = "pgedge"  # Default database name
             if "dbname=" in rec['dsn']:
                 dbname = rec['dsn'].split("dbname=")[1].split()[0]
-                
+
             slot_name = f"spk_{dbname}_{rec['node_name']}_sub_{rec['node_name']}_{new_node_name}"
             if len(slot_name) > 64:
                 slot_name = slot_name[:64]
-                
+
             self.create_replication_slot(rec['dsn'], slot_name)
-            self.notice(f"    ✓ Creating replication slot {slot_name} on node {rec['node_name']}")
-            
+            self.notice(f"    OK: Creating replication slot {slot_name} on node {rec['node_name']}")
+
+            # Trigger sync event on origin node and store LSN for later use
+            sync_lsn = self.sync_event(rec['dsn'])
+            self.sync_lsns[rec['node_name']] = sync_lsn
+            self.notice(f"    OK: Triggering sync event on node {rec['node_name']} (LSN: {sync_lsn})")
+
             # Create disabled subscription
             sub_name = f"sub_{rec['node_name']}_{new_node_name}"
             self.create_sub(
@@ -368,7 +378,7 @@ class SpockClusterManager:
                 "ARRAY['default', 'default_insert_only', 'ddl_sql']",
                 False, False, "ARRAY[]::text[]", "00:00:00", False
             )
-            self.notice(f"    ✓ Creating initial subscription {sub_name} on node {rec['node_name']}")
+            self.notice(f"    OK: Creating initial subscription {sub_name} on node {rec['node_name']}")
 
     def create_source_to_new_subscription(self, src_node_name: str, src_dsn: str, 
                                         new_node_name: str, new_node_dsn: str):
@@ -381,7 +391,7 @@ class SpockClusterManager:
             "ARRAY['default', 'default_insert_only', 'ddl_sql']",
             True, True, "ARRAY[]::text[]", "00:00:00", True
         )
-        self.notice(f"    ✓ Creating subscription {sub_name} on node {new_node_name}...")
+        self.notice(f"    OK: Creating subscription {sub_name} on node {new_node_name}...")
 
     def sync_event(self, node_dsn: str) -> str:
         """Trigger a sync event on a remote node and return the LSN"""
@@ -427,40 +437,49 @@ class SpockClusterManager:
                 
             # Trigger sync event on other node
             sync_lsn = self.sync_event(rec['dsn'])
-            self.notice(f"    ✓ Triggering sync event on node {rec['node_name']} (LSN: {sync_lsn})...")
+            self.notice(f"    OK: Triggering sync event on node {rec['node_name']} (LSN: {sync_lsn})...")
             
             # Wait for sync event on source
-            self.wait_for_sync_event(src_dsn, True, rec['node_name'], sync_lsn, 1200000)
-            self.notice(f"    ✓ Waiting for sync event from {rec['node_name']} on source node {src_node_name}...")
+            self.wait_for_sync_event(src_dsn, True, rec['node_name'], sync_lsn, 1200)
+            self.notice(f"    OK: Waiting for sync event from {rec['node_name']} on source node {src_node_name}...")
 
-    def wait_for_source_node_sync(self, src_node_name: str, src_dsn: str, 
+    def wait_for_source_node_sync(self, src_node_name: str, src_dsn: str,
                                  new_node_name: str, new_node_dsn: str, wait_for_all: bool):
-        """Phase 6: Wait for sync on source and new node"""
+        """Phase 6: Wait for sync on source and new node using sync_event and wait_for_sync_event"""
         self.notice("Phase 6: Waiting for sync on source and new node")
-        
-        # Wait for sync on source node
-        dbname = "pgedge"
-        if "dbname=" in src_dsn:
-            dbname = src_dsn.split("dbname=")[1].split()[0]
-            
-        slot_name = f"spk_{dbname}_{src_node_name}_sub_{src_node_name}_{new_node_name}"
-        sql = f"SELECT spock.wait_slot_confirm_lsn('{slot_name}', NULL)"
-        
-        if self.verbose:
-            self.info(f"[QUERY] {sql}")
-            
-        self.run_psql(src_dsn, sql)
-        self.notice("    ✓ Waiting for sync on source node " + src_node_name + "...")
-        
-        # Wait for sync on new node
-        sub_name = f"sub_{src_node_name}_{new_node_name}"
-        sql = f"SELECT spock.sub_wait_for_sync('{sub_name}')"
-        
-        if self.verbose:
-            self.info(f"[QUERY] {sql}")
-            
-        self.run_psql(new_node_dsn, sql)
-        self.notice("    ✓ Waiting for sync on new node " + new_node_name + "...")
+
+        # Trigger sync event on new node and wait for it on source node
+        sync_lsn = None
+        timeout_ms = 1200  # 20 minutes timeout
+
+        try:
+            # Trigger sync event on new node
+            sql = "SELECT spock.sync_event();"
+            if self.verbose:
+                self.info(f"    Remote SQL for sync_event on new node {new_node_name}: {sql}")
+
+            sync_lsn = self.run_psql(new_node_dsn, sql, fetch=True, return_single=True)
+            if sync_lsn:
+                self.format_notice("✓", f"Triggered sync_event on new node {new_node_name} (LSN: {sync_lsn})")
+            else:
+                raise Exception("Failed to get sync LSN from new node")
+
+        except Exception as e:
+            self.format_notice("✗", f"Triggering sync_event on new node {new_node_name} (error: {str(e)})")
+            raise
+
+        try:
+            # Wait for sync event on source node
+            sql = f"CALL spock.wait_for_sync_event(true, '{new_node_name}', '{sync_lsn}'::pg_lsn, {timeout_ms});"
+            if self.verbose:
+                self.info(f"    Remote SQL for wait_for_sync_event on source node {src_node_name}: {sql}")
+
+            self.run_psql(src_dsn, sql)
+            self.format_notice("✓", f"Waiting for sync event from {new_node_name} on source node {src_node_name}")
+
+        except Exception as e:
+            self.format_notice("✗", f"Unable to wait for sync event from {new_node_name} on source node {src_node_name} (error: {str(e)})")
+            raise
 
     def get_commit_timestamp(self, node_dsn: str, origin: str, receiver: str) -> str:
         """Get commit timestamp for lag tracking"""
@@ -506,7 +525,7 @@ class SpockClusterManager:
             # Get commit timestamp
             sync_timestamp = self.get_commit_timestamp(new_node_dsn, src_node_name, rec['node_name'])
             if sync_timestamp:
-                self.notice(f"    ✓ Found commit timestamp for {src_node_name}->{rec['node_name']}: {sync_timestamp}")
+                self.notice(f"    OK: Found commit timestamp for {src_node_name}->{rec['node_name']}: {sync_timestamp}")
                 
                 # Advance replication slot
                 dbname = "pgedge"
@@ -565,22 +584,40 @@ class SpockClusterManager:
         if self.verbose:
             self.info(f"Subscription {sub_name} enabled successfully")
 
-    def enable_disabled_subscriptions(self, src_node_name: str, src_dsn: str, 
+    def enable_disabled_subscriptions(self, src_node_name: str, src_dsn: str,
                                     new_node_name: str, new_node_dsn: str):
-        """Phase 8: Enable disabled subscriptions"""
+        """Phase 8: Enable disabled subscriptions and wait for stored sync events"""
         self.notice("Phase 8: Enabling disabled subscriptions")
-        
+
         # Get all nodes from source cluster
         nodes = self.get_spock_nodes(src_dsn)
-        
+
         for rec in nodes:
             if rec['node_name'] == src_node_name:
                 continue
-                
+
             sub_name = f"sub_{rec['node_name']}_{new_node_name}"
             try:
                 self.enable_sub(new_node_dsn, sub_name, True)
-                self.notice(f"    ✓ Enabling subscription {sub_name}...")
+                self.notice(f"    OK: Enabling subscription {sub_name}...")
+
+                # Wait for the sync event that was captured when subscription was created
+                # This ensures the subscription starts replicating from the correct sync point
+                timeout_ms = 1200  # 20 minutes
+                sync_lsn = self.sync_lsns.get(rec['node_name'])  # Use stored sync LSN from Phase 3
+                if sync_lsn:
+                    self.notice(f"    OK: Using stored sync event from origin node {rec['node_name']} (LSN: {sync_lsn})...")
+
+                    # Wait for this sync event on the new node where the subscription exists
+                    sql = f"CALL spock.wait_for_sync_event(true, '{rec['node_name']}', '{sync_lsn}'::pg_lsn, {timeout_ms});"
+                    if self.verbose:
+                        self.info(f"    Remote SQL for wait_for_sync_event on new node {new_node_name}: {sql}")
+
+                    self.run_psql(new_node_dsn, sql)
+                    self.notice(f"    OK: Waiting for sync event from {rec['node_name']} on new node {new_node_name}...")
+                else:
+                    self.notice(f"    ⚠ No stored sync LSN found for {rec['node_name']}, skipping sync wait")
+
             except Exception as e:
                 self.notice(f"    ✗ Enabling subscription {sub_name}... (error: {e})")
                 raise
@@ -600,9 +637,9 @@ class SpockClusterManager:
                 "ARRAY['default', 'default_insert_only', 'ddl_sql']",
                 False, False, "ARRAY[]::text[]", "00:00:00", True
             )
-            self.notice(f"    ✓ Creating subscription {sub_name} on node {rec['node_name']}...")
+            self.notice(f"    OK: Creating subscription {sub_name} on node {rec['node_name']}...")
             
-        self.notice(f"    ✓ Created {len(nodes)} subscriptions from other nodes to new node")
+        self.notice(f"    OK: Created {len(nodes)} subscriptions from other nodes to new node")
 
     def present_final_cluster_state(self, initial_node_count: int):
         """Phase 10: Present final cluster state"""
@@ -611,11 +648,10 @@ class SpockClusterManager:
         
         # Check replication status
         sql = "SELECT status FROM spock.sub_show_status() LIMIT 1"
-        status = self.run_psql("host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge", 
-                              sql, fetch=True, return_single=True)
+        status = self.run_psql(self.src_dsn, sql, fetch=True, return_single=True)
         
         if status and "replicating" in status.lower():
-            self.notice("    ✓ Replication is active (status: replicating)")
+            self.notice("    OK: Replication is active (status: replicating)")
         else:
             self.notice("    ⚠ Replication status: " + (status or "unknown"))
             
@@ -626,8 +662,7 @@ class SpockClusterManager:
         self.notice("---------+-----------+----------+---------+------")
         
         sql = "SELECT node_id, node_name, location, country, info FROM spock.node ORDER BY node_id"
-        nodes = self.run_psql("host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge", 
-                             sql, fetch=True)
+        nodes = self.run_psql(self.src_dsn, sql, fetch=True)
         
         for node in nodes:
             parts = node.split("|")
@@ -638,8 +673,7 @@ class SpockClusterManager:
         self.notice("")
         self.notice("Subscription Status:")
         sql = "SELECT * FROM spock.sub_show_status()"
-        subs = self.run_psql("host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge", 
-                            sql, fetch=True)
+        subs = self.run_psql(self.src_dsn, sql, fetch=True)
         
         for sub in subs:
             self.notice(f" {sub}")
@@ -664,49 +698,219 @@ class SpockClusterManager:
         else:
             self.notice(f"    {src_node_name} → {new_node_name} lag: No data available")
             
-        self.notice("    ✓ Replication lag monitoring completed")
+        self.notice("    OK: Replication lag monitoring completed")
+
+    def show_all_subscription_status(self, cluster_dsn: str):
+        """Phase 12: Show comprehensive subscription status across all nodes in the cluster"""
+        self.notice("")
+        self.notice("COMPREHENSIVE SUBSCRIPTION STATUS REPORT")
+        self.notice("=========================================")
+
+        # Get all nodes from the cluster
+        nodes = self.get_spock_nodes(cluster_dsn)
+
+        total_subscriptions = 0
+        replicating_count = 0
+        error_count = 0
+
+        for node in nodes:
+            self.notice("")
+            self.notice(f"Node: {node['node_name']} (DSN: {node['dsn']})")
+            self.notice("Subscriptions:")
+
+            # Get all subscriptions from this node
+            sql = "SELECT * FROM spock.sub_show_status() ORDER BY subscription_name"
+            result = self.run_psql(node['dsn'], sql, fetch=True)
+
+            if result:
+                for sub in result:
+                    # Parse the result (assuming it's a string that needs parsing)
+                    # This is a simplified version - you might need to adjust based on actual output format
+                    total_subscriptions += 1
+
+                    # Extract status from the result (this will depend on the actual format)
+                    # For now, we'll use a placeholder approach
+                    if 'replicating' in str(sub).lower():
+                        replicating_count += 1
+                        self.notice(f"  [OK] Subscription is replicating")
+                    elif 'disabled' in str(sub).lower():
+                        self.notice(f"  [DISABLED] Subscription is disabled")
+                    elif 'down' in str(sub).lower():
+                        error_count += 1
+                        self.notice(f"  [ERROR] Subscription is down")
+                    else:
+                        self.notice(f"  [UNKNOWN] Subscription status: {sub}")
+            else:
+                self.notice("  (no subscriptions found)")
+
+        # Summary
+        self.notice("")
+        self.notice("SUBSCRIPTION STATUS SUMMARY")
+        self.notice("=========================================")
+        self.notice(f"Total subscriptions: {total_subscriptions}")
+        self.notice(f"Replicating: {replicating_count}")
+        self.notice(f"With errors/issues: {error_count}")
+
+        if total_subscriptions > 0:
+            success_rate = (replicating_count / total_subscriptions) * 100
+            self.notice(f"Success rate: {success_rate:.1f}%")
+
+        if replicating_count == total_subscriptions and total_subscriptions > 0:
+            self.notice("All subscriptions are replicating successfully!")
+        elif error_count > 0:
+            self.notice("Some subscriptions have issues - check details above")
+        else:
+            self.notice("Subscriptions are in various states - check details above")
+
+        self.notice("=========================================")
 
     def add_node(self, src_node_name: str, src_dsn: str, new_node_name: str, new_node_dsn: str,
-                 new_node_location: str = "NY", new_node_country: str = "USA", 
+                 new_node_location: str = "NY", new_node_country: str = "USA",
                  new_node_info: str = "{}"):
         """Main add_node procedure - matches zodan.sql exactly"""
-        
-        # Phase 1: Verify prerequisites
+
+        # Store DSN values as instance attributes to avoid hard-coding
+        self.src_dsn = src_dsn
+        self.new_node_dsn = new_node_dsn
+
+        # Phase 1: Verify prerequisites for source and new node.
+        # Example: Ensure n1 (source) and n4 (new) are ready before adding n4 to cluster n1,n2,n3.
         self.verify_node_prerequisites(src_node_name, src_dsn, new_node_name, new_node_dsn)
-        
-        # Phase 2: Create nodes
+
+        # Phase 2: Create node objects in the cluster.
+        # Example: Register n4 as a new node alongside n1, n2, n3.
         initial_node_count = self.create_nodes_only(src_node_name, src_dsn, new_node_name, new_node_dsn,
                                                    new_node_location, new_node_country, new_node_info)
-        
-        # Phase 3: Create disabled subscriptions and slots
+
+        # Phase 3: Create disabled subscriptions and replication slots.
+        # Example: Prepare n4 for replication but keep subscriptions disabled initially.
         self.create_disable_subscriptions_and_slots(src_node_name, src_dsn, new_node_name, new_node_dsn)
-        
-        # Phase 4: Create source to new node subscription
-        self.create_source_to_new_subscription(src_node_name, src_dsn, new_node_name, new_node_dsn)
-        
-        # Phase 5: Trigger sync events on other nodes and wait on source
+
+        # Phase 4: Trigger sync events on other nodes and wait on source.
+        # Example: Sync n2 and n3, then wait for n1 to acknowledge before proceeding with n4.
         self.trigger_sync_on_other_nodes_and_wait_on_source(src_node_name, src_dsn, new_node_name, new_node_dsn)
-        
-        # Phase 6: Wait for sync on source and new node
+
+        # Phase 5: Create subscription from source to new node.
+        # Example: Set up n1 to replicate to n4.
+        self.create_source_to_new_subscription(src_node_name, src_dsn, new_node_name, new_node_dsn)
+
+        # Phase 6: Wait for sync on source and new node.
+        # Example: Ensure n1 and n4 are fully synchronized before continuing.
         self.wait_for_source_node_sync(src_node_name, src_dsn, new_node_name, new_node_dsn, True)
-        
-        # Phase 7: Check commit timestamp and advance replication slot
+
+        # Phase 7: Check commit timestamp and advance replication slot.
+        # Example: Confirm n4 is caught up to n1's latest changes.
         self.check_commit_timestamp_and_advance_slot(src_node_name, src_dsn, new_node_name, new_node_dsn)
-        
-        # Phase 8: Enable disabled subscriptions
+
+        # Phase 8: Enable previously disabled subscriptions.
+        # Example: Activate replication paths for n4.
         self.enable_disabled_subscriptions(src_node_name, src_dsn, new_node_name, new_node_dsn)
-        
-        # Phase 9: Create subscription from new node to source node
+
+        # Phase 9: Create subscription from new node to source node.
+        # Example: Set up n4 to replicate back to n1 for bidirectional sync.
         self.create_sub_on_new_node_to_src_node(src_node_name, src_dsn, new_node_name, new_node_dsn)
-        
-        # Phase 10: Present final cluster state
+
+        # Phase 10: Present final cluster state.
+        # Example: Show n1, n2, n3, n4 as fully connected and synchronized.
         self.present_final_cluster_state(initial_node_count)
-        
-        # Phase 11: Monitor replication lag
+
+        # Phase 11: Monitor replication lag.
+        # Example: Check that n4 is keeping up with n1, n2, n3 after joining.
         self.monitor_replication_lag(src_node_name, new_node_name, new_node_dsn)
-        
+
+        # Phase 12: Show comprehensive node status across all nodes.
+        # Example: Display all nodes in n1, n2, n3, n4, n5 cluster.
+        self.show_all_nodes(src_dsn)
+
+        # Phase 13: Show comprehensive subscription status across all nodes.
+        # Example: Display status of all subscriptions in n1, n2, n3, n4, n5 cluster.
+        self.show_all_subscription_status(src_dsn)
+
         self.notice("")
-        self.notice("✅ Node addition completed successfully!")
+        self.notice("Node addition completed successfully!")
+
+    def show_all_nodes(self, cluster_dsn: str):
+        """Phase 12: Show comprehensive node status across all nodes in the cluster"""
+        self.notice("")
+        self.notice("COMPREHENSIVE NODE STATUS REPORT")
+        self.notice("====================================")
+
+        # Get all nodes from the cluster
+        nodes = self.get_spock_nodes(cluster_dsn)
+        total_nodes = len(nodes)
+
+        for node in nodes:
+            # Mask password in DSN for security
+            dsn_masked = node['dsn'].replace(' password=pgedge', ' password=***')
+            self.notice(f"    [NODE] {node['node_name']}: {node['node_id']} ({node['location']}, {node['country']}) - {dsn_masked}")
+
+        self.notice("")
+        self.notice("NODE STATUS SUMMARY")
+        self.notice("===================")
+        self.notice(f"Total nodes: {total_nodes}")
+
+    def show_all_subscription_status(self, cluster_dsn: str):
+        """Phase 13: Show comprehensive subscription status across all nodes in the cluster"""
+        self.notice("")
+        self.notice("COMPREHENSIVE SUBSCRIPTION STATUS REPORT")
+        self.notice("==========================================")
+
+        # Get all nodes from the cluster
+        nodes = self.get_spock_nodes(cluster_dsn)
+        total_subscriptions = 0
+        replicating_count = 0
+        error_count = 0
+
+        for node in nodes:
+            self.notice("")
+            self.notice(f"Node: {node['node_name']} (DSN: {node['dsn']})")
+            self.notice("Subscriptions:")
+
+            # Get subscriptions for this node
+            sql = "SELECT * FROM spock.sub_show_status() ORDER BY subscription_name"
+            subscriptions = self.run_psql(node['dsn'], sql, fetch=True)
+
+            if subscriptions:
+                for sub in subscriptions:
+                    total_subscriptions += 1
+                    status = sub.split('|')[1].strip() if len(sub.split('|')) > 1 else 'unknown'
+
+                    if status == 'replicating':
+                        replicating_count += 1
+                        self.notice(f"  [OK] {sub}")
+                    elif status in ['disabled', 'initializing', 'syncing']:
+                        if status == 'disabled':
+                            self.notice(f"  [DISABLED] {sub}")
+                        elif status in ['initializing', 'syncing']:
+                            self.notice(f"  [INITIALIZING] {sub}")
+                        else:
+                            self.notice(f"  [UNKNOWN] {sub}")
+                    elif status == 'down':
+                        error_count += 1
+                        self.notice(f"  [ERROR] {sub}")
+                    else:
+                        self.notice(f"  [UNKNOWN] {sub}")
+            else:
+                self.notice("  (no subscriptions found)")
+
+        # Summary
+        self.notice("")
+        self.notice("SUBSCRIPTION STATUS SUMMARY")
+        self.notice("===========================")
+        self.notice(f"Total subscriptions: {total_subscriptions}")
+        self.notice(f"Replicating: {replicating_count}")
+        self.notice(f"With errors/issues: {error_count}")
+
+        if total_subscriptions > 0:
+            success_rate = round((replicating_count / total_subscriptions) * 100, 1)
+            self.notice(f"Success rate: {success_rate}%")
+
+        if replicating_count == total_subscriptions and total_subscriptions > 0:
+            self.notice("SUCCESS: All subscriptions are replicating successfully!")
+        elif error_count > 0:
+            self.notice("WARNING: Some subscriptions have issues - check details above")
+        else:
+            self.notice("INFO: Subscriptions are in various states - check details above")
 
 
 def main():
@@ -715,7 +919,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python zodan.py add_node --src-node-name n1 --src-dsn "host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=127.0.0.1 dbname=pgedge port=5433 user=pgedge password=pgedge" --verbose
+  python zodan.py add_node --src-node-name n1 --src-dsn "host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=localhost dbname=pgedge port=5433 user=pgedge password=pgedge" --verbose
         """
     )
     
