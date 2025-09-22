@@ -15,31 +15,11 @@
 #include "postgres.h"
 #include "access/xlogdefs.h"
 #include "utils/timestamp.h"
+#include "storage/lwlock.h"
 
-/* Recovery slot naming convention */
+#define SPOCK_MAX_RECOVERY_SLOTS 64
 #define RECOVERY_SLOT_PREFIX "spock_recovery_"
 #define RECOVERY_SLOT_NAME_FORMAT RECOVERY_SLOT_PREFIX "%u_%u"
-
-/*
- * Enhanced progress tracking structure for Recovery Slots
- * This extends the existing ProgressTuple to include recovery slot metadata
- */
-typedef struct RecoveryProgressTuple
-{
-	Oid			node_id;
-	Oid			remote_node_id;
-	TimestampTz	remote_commit_ts;
-	XLogRecPtr	remote_lsn;
-	XLogRecPtr	remote_insert_lsn;
-	TimestampTz	last_updated_ts;
-	bool		updated_by_decode;
-	
-	/* Recovery slot specific fields */
-	char		recovery_slot_name[NAMEDATALEN];
-	TimestampTz	min_unacknowledged_ts;
-	XLogRecPtr	recovery_slot_lsn;
-	bool		recovery_active;
-} RecoveryProgressTuple;
 
 /*
  * Shared memory structure for tracking recovery slots across all nodes
@@ -70,17 +50,15 @@ typedef struct SpockRecoveryCoordinator
 
 /* Recovery slot management functions */
 extern void spock_recovery_shmem_init(void);
-extern Size spock_recovery_shmem_size(int max_recovery_slots);
+extern Size spock_recovery_shmem_size(void);
 
 extern bool create_recovery_slot(Oid local_node_id, Oid remote_node_id);
 extern void drop_recovery_slot(Oid local_node_id, Oid remote_node_id);
 extern char *get_recovery_slot_name(Oid local_node_id, Oid remote_node_id);
 
-extern void update_recovery_slot_progress(const char *slot_name, 
-										 TimestampTz commit_ts, 
-										 XLogRecPtr lsn);
+extern void update_recovery_slot_progress(const char *slot_name, XLogRecPtr lsn, TimestampTz commit_ts);
 
-extern TimestampTz get_min_unacknowledged_timestamp(Oid failed_node_id);
+extern TimestampTz get_min_unacknowledged_timestamp(Oid local_node_id, Oid remote_node_id);
 extern XLogRecPtr get_recovery_slot_restart_lsn(const char *slot_name);
 
 extern bool advance_recovery_slot_to_timestamp(const char *slot_name, 

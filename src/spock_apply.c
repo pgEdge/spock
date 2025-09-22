@@ -4233,6 +4233,7 @@ maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 
 /*
  * Initialize recovery slots for the current apply worker
+ * Creates ONE recovery slot per remote node (not per subscription)
  */
 void
 spock_apply_init_recovery_slots(void)
@@ -4247,7 +4248,7 @@ spock_apply_init_recovery_slots(void)
 	MyApplyWorker->recovery_mode = false;
 	MyApplyWorker->recovery_target_lsn = InvalidXLogRecPtr;
 	
-	/* Create recovery slot for this subscription */
+	/* Create/ensure recovery slot exists for this remote node */
 	spock_apply_manage_recovery_slot(MySubscription->target->id,
 									MySubscription->origin->id);
 	
@@ -4258,8 +4259,9 @@ spock_apply_init_recovery_slots(void)
 	MyApplyWorker->recovery_slot_name[NAMEDATALEN - 1] = '\0';
 	pfree(slot_name);
 	
-	elog(DEBUG1, "SPOCK %s: initialized recovery slot '%s'",
-		 MySubscription->name, MyApplyWorker->recovery_slot_name);
+	elog(DEBUG1, "SPOCK %s: using shared recovery slot '%s' for remote node %u",
+		 MySubscription->name, MyApplyWorker->recovery_slot_name, 
+		 MySubscription->origin->id);
 }
 
 /*

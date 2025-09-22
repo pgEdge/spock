@@ -788,3 +788,188 @@ BEGIN
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Manual Recovery Functions for DBAs
+CREATE FUNCTION spock.manual_recover_data(source_node_name name, target_node_name name)
+RETURNS boolean LANGUAGE C VOLATILE STRICT 
+AS 'MODULE_PATHNAME', 'spock_manual_recover_data_sql';
+
+CREATE FUNCTION spock.verify_cluster_consistency()
+RETURNS boolean LANGUAGE C VOLATILE
+AS 'MODULE_PATHNAME', 'spock_verify_cluster_consistency_sql';
+
+CREATE FUNCTION spock.list_recovery_recommendations()
+RETURNS text LANGUAGE C VOLATILE
+AS 'MODULE_PATHNAME', 'spock_list_recovery_recommendations_sql';
+
+CREATE FUNCTION spock.get_recovery_slot_status()
+RETURNS TABLE(
+    local_node_id oid,
+    remote_node_id oid, 
+    slot_name text,
+    confirmed_flush_lsn pg_lsn,
+    min_unacknowledged_ts timestamptz,
+    active boolean,
+    in_recovery boolean
+) LANGUAGE C VOLATILE STRICT
+AS 'MODULE_PATHNAME', 'spock_get_recovery_slot_status_sql';
+
+-- Complete node removal procedure with recovery integration
+CREATE OR REPLACE FUNCTION spock.drop_node_with_recovery(node_name_to_drop name)
+RETURNS TABLE(
+    action text,
+    status text,
+    details text
+) 
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    target_node spock.node;
+    sub_record RECORD;
+    repset_record RECORD;
+    recovery_result boolean;
+    consistency_result boolean;
+    action_count integer := 0;
+BEGIN
+    -- Return header
+    RETURN QUERY SELECT 'SPOCK Node Removal with Recovery'::text, 'STARTING'::text, ('Removing node: ' || node_name_to_drop)::text;
+    
+    -- Step 1: Check if node exists
+    BEGIN
+        SELECT * INTO target_node FROM spock.node WHERE node_name = node_name_to_drop;
+        
+        IF NOT FOUND THEN
+            RETURN QUERY SELECT 'ERROR'::text, 'FAILED'::text, ('Node "' || node_name_to_drop || '" not found')::text;
+            RETURN;
+        END IF;
+        
+        RETURN QUERY SELECT 'Node Found'::text, 'SUCCESS'::text, ('Node ID: ' || target_node.node_id || ', Name: ' || target_node.node_name)::text;
+    EXCEPTION WHEN OTHERS THEN
+        RETURN QUERY SELECT 'Node Lookup'::text, 'FAILED'::text, ('Error: ' || SQLERRM)::text;
+        RETURN;
+    END;
+
+    -- Step 2: Drop all subscriptions TO the failed node
+    RETURN QUERY SELECT 'Subscription Cleanup'::text, 'STARTING'::text, 'Dropping subscriptions TO failed node'::text;
+    
+    FOR sub_record IN 
+        SELECT sub_name 
+        FROM spock.subscription 
+        WHERE sub_origin = target_node.node_id
+    LOOP
+        BEGIN
+            PERFORM spock.sub_drop(sub_record.sub_name, true);
+            action_count := action_count + 1;
+            RETURN QUERY SELECT 'Drop Subscription'::text, 'SUCCESS'::text, ('Dropped subscription: ' || sub_record.sub_name)::text;
+        EXCEPTION WHEN OTHERS THEN
+            RETURN QUERY SELECT 'Drop Subscription'::text, 'WARNING'::text, ('Failed to drop subscription ' || sub_record.sub_name || ': ' || SQLERRM)::text;
+        END;
+    END LOOP;
+
+    -- Step 3: Drop all subscriptions FROM the failed node  
+    FOR sub_record IN
+        SELECT sub_name
+        FROM spock.subscription
+        WHERE sub_target = target_node.node_id
+    LOOP
+        BEGIN
+            PERFORM spock.sub_drop(sub_record.sub_name, true);
+            action_count := action_count + 1;
+            RETURN QUERY SELECT 'Drop Subscription'::text, 'SUCCESS'::text, ('Dropped subscription: ' || sub_record.sub_name)::text;
+        EXCEPTION WHEN OTHERS THEN
+            RETURN QUERY SELECT 'Drop Subscription'::text, 'WARNING'::text, ('Failed to drop subscription ' || sub_record.sub_name || ': ' || SQLERRM)::text;
+        END;
+    END LOOP;
+
+    -- Step 4: Drop replication sets associated with the node
+    RETURN QUERY SELECT 'Replication Set Cleanup'::text, 'STARTING'::text, 'Dropping replication sets for failed node'::text;
+    
+    FOR repset_record IN
+        SELECT set_name
+        FROM spock.replication_set
+        WHERE set_nodeid = target_node.node_id
+    LOOP
+        BEGIN
+            PERFORM spock.repset_drop(repset_record.set_name, true);
+            action_count := action_count + 1;
+            RETURN QUERY SELECT 'Drop Replication Set'::text, 'SUCCESS'::text, ('Dropped repset: ' || repset_record.set_name)::text;
+        EXCEPTION WHEN OTHERS THEN
+            RETURN QUERY SELECT 'Drop Replication Set'::text, 'WARNING'::text, ('Failed to drop repset ' || repset_record.set_name || ': ' || SQLERRM)::text;
+        END;
+    END LOOP;
+
+    -- Step 5: Drop the node itself using existing spock.node_drop
+    BEGIN
+        PERFORM spock.node_drop(node_name_to_drop, true);
+        RETURN QUERY SELECT 'Drop Node'::text, 'SUCCESS'::text, ('Dropped node: ' || node_name_to_drop)::text;
+        action_count := action_count + 1;
+    EXCEPTION WHEN OTHERS THEN
+        RETURN QUERY SELECT 'Drop Node'::text, 'FAILED'::text, ('Failed to drop node: ' || SQLERRM)::text;
+        RETURN;
+    END;
+
+    -- Step 6: Get recovery recommendations
+    BEGIN
+        PERFORM spock.list_recovery_recommendations();
+        RETURN QUERY SELECT 'Recovery Recommendations'::text, 'SUCCESS'::text, 'Check PostgreSQL logs for specific recovery recommendations'::text;
+    EXCEPTION WHEN OTHERS THEN
+        RETURN QUERY SELECT 'Recovery Recommendations'::text, 'WARNING'::text, ('Error getting recommendations: ' || SQLERRM)::text;
+    END;
+
+    -- Step 7: Check cluster consistency
+    BEGIN
+        SELECT spock.verify_cluster_consistency() INTO consistency_result;
+        
+        IF consistency_result THEN
+            RETURN QUERY SELECT 'Consistency Check'::text, 'SUCCESS'::text, 'Cluster is consistent - no manual recovery needed'::text;
+        ELSE
+            RETURN QUERY SELECT 'Consistency Check'::text, 'WARNING'::text, 'Cluster inconsistency detected - manual recovery required'::text;
+            RETURN QUERY SELECT 'Next Steps'::text, 'ACTION_REQUIRED'::text, 'Run: SELECT spock.manual_recover_data(source_node, target_node);'::text;
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        RETURN QUERY SELECT 'Consistency Check'::text, 'WARNING'::text, ('Error checking consistency: ' || SQLERRM)::text;
+    END;
+
+    -- Final summary
+    RETURN QUERY SELECT 'SUMMARY'::text, 'COMPLETED'::text, ('Successfully processed ' || action_count || ' cleanup actions for node: ' || node_name_to_drop)::text;
+    
+END;
+$$;
+
+-- Quick health check function
+CREATE OR REPLACE FUNCTION spock.quick_health_check()
+RETURNS TABLE(
+    check_name text,
+    status text,
+    details text
+)
+LANGUAGE plpgsql  
+AS $$
+DECLARE
+    consistent boolean;
+    stale_count integer;
+BEGIN
+    -- Check overall consistency
+    SELECT spock.verify_cluster_consistency() INTO consistent;
+    
+    IF consistent THEN
+        RETURN QUERY SELECT 'Cluster Consistency'::text, 'HEALTHY'::text, 'All nodes are consistent'::text;
+    ELSE
+        RETURN QUERY SELECT 'Cluster Consistency'::text, 'PROBLEM'::text, 'Inconsistencies detected - run recovery procedures'::text;
+    END IF;
+    
+    -- Check for stale recovery slots
+    SELECT COUNT(*) INTO stale_count
+    FROM spock.get_recovery_slot_status()
+    WHERE min_unacknowledged_ts < now() - interval '10 minutes';
+    
+    IF stale_count = 0 THEN
+        RETURN QUERY SELECT 'Recovery Slots'::text, 'HEALTHY'::text, 'All recovery slots are current'::text;
+    ELSE
+        RETURN QUERY SELECT 'Recovery Slots'::text, 'WARNING'::text, (stale_count || ' recovery slots have stale data')::text;
+    END IF;
+    
+    -- Show recommendations
+    RETURN QUERY SELECT 'Recommendations'::text, 'INFO'::text, 'Run spock.list_recovery_recommendations() for specific guidance'::text;
+END;
+$$;

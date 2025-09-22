@@ -357,9 +357,172 @@ Datum spock_drop_node(PG_FUNCTION_ARGS)
 
 		/* Drop the node itself. */
 		drop_node(node->id);
+
+		/* Initiate recovery procedure for remaining nodes */
+		spock_initiate_manual_recovery(node->id);
 	}
 
 	PG_RETURN_BOOL(node != NULL);
+}
+
+/*
+ * Manual data recovery SQL function for DBAs
+ * Usage: SELECT spock.manual_recover_data(source_node_name, target_node_name);
+ */
+Datum 
+spock_manual_recover_data_sql(PG_FUNCTION_ARGS)
+{
+	char *source_node_name = NameStr(*PG_GETARG_NAME(0));
+	char *target_node_name = NameStr(*PG_GETARG_NAME(1));
+	SpockNode *source_node;
+	SpockNode *target_node;
+	bool success = false;
+
+	source_node = get_node_by_name(source_node_name, false);
+	if (!source_node)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("source node \"%s\" not found", source_node_name)));
+
+	target_node = get_node_by_name(target_node_name, false);  
+	if (!target_node)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("target node \"%s\" not found", target_node_name)));
+
+	elog(LOG, "SPOCK Manual Recovery: DBA initiated data recovery from '%s' (node %u) to '%s' (node %u)",
+		 source_node_name, source_node->id, target_node_name, target_node->id);
+
+	/* Call the C function to perform recovery */
+	success = spock_manual_recover_data(source_node->id, target_node->id, 0, 0);
+
+	if (success)
+		elog(LOG, "SPOCK Manual Recovery: Successfully completed data recovery from '%s' to '%s'",
+			 source_node_name, target_node_name);
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("failed to recover data from node \"%s\" to node \"%s\"",
+						source_node_name, target_node_name)));
+
+	PG_RETURN_BOOL(success);
+}
+
+/*
+ * Verify cluster consistency SQL function
+ * Usage: SELECT spock.verify_cluster_consistency();
+ */
+Datum
+spock_verify_cluster_consistency_sql(PG_FUNCTION_ARGS)
+{
+	bool all_consistent;
+
+	elog(LOG, "SPOCK Manual Recovery: DBA initiated cluster consistency verification");
+
+	all_consistent = spock_verify_cluster_consistency();
+
+	if (all_consistent)
+		elog(LOG, "SPOCK Manual Recovery: Cluster consistency verification PASSED");
+	else  
+		elog(WARNING, "SPOCK Manual Recovery: Cluster consistency verification FAILED - inconsistencies detected");
+
+	PG_RETURN_BOOL(all_consistent);
+}
+
+/*
+ * List recovery recommendations SQL function
+ * Usage: SELECT spock.list_recovery_recommendations();
+ */
+Datum
+spock_list_recovery_recommendations_sql(PG_FUNCTION_ARGS)
+{
+	elog(LOG, "SPOCK Manual Recovery: DBA requested recovery recommendations");
+
+	spock_list_recovery_recommendations();
+
+	PG_RETURN_TEXT_P(cstring_to_text("Recovery recommendations logged - check PostgreSQL logs"));
+}
+
+/*
+ * Get recovery slot status SQL function  
+ * Usage: SELECT spock.get_recovery_slot_status();
+ */
+Datum
+spock_get_recovery_slot_status_sql(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	int			i;
+
+	/* Check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	if (!SpockRecoveryCtx)
+	{
+		/* No recovery coordinator - return empty result */
+		tuplestore_donestoring(tupstore);
+		PG_RETURN_VOID();
+	}
+
+	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
+
+	for (i = 0; i < SpockRecoveryCtx->max_recovery_slots; i++)
+	{
+		SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
+		Datum		values[7];
+		bool		nulls[7];
+
+		if (!slot->active)
+			continue;
+
+		memset(values, 0, sizeof(values));
+		memset(nulls, false, sizeof(nulls));
+
+		values[0] = Int32GetDatum(slot->local_node_id);
+		values[1] = Int32GetDatum(slot->remote_node_id);
+		values[2] = CStringGetTextDatum(slot->slot_name);
+		values[3] = LSNGetDatum(slot->confirmed_flush_lsn);
+		
+		if (slot->min_unacknowledged_ts > 0)
+			values[4] = TimestampTzGetDatum(slot->min_unacknowledged_ts);
+		else
+			nulls[4] = true;
+
+		values[5] = BoolGetDatum(slot->active);
+		values[6] = BoolGetDatum(slot->in_recovery);
+
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
+
+	LWLockRelease(SpockRecoveryCtx->lock);
+
+	tuplestore_donestoring(tupstore);
+	PG_RETURN_VOID();
 }
 
 /*
