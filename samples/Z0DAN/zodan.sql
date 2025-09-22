@@ -32,8 +32,8 @@
 -- Usage    : CALL get_spock_nodes('host=... dbname=... user=... password=...', true);
 -- ============================================================================
 
-DROP PROCEDURE IF EXISTS get_spock_nodes(text, boolean);
-CREATE OR REPLACE PROCEDURE get_spock_nodes(src_dsn text, verb boolean)
+DROP PROCEDURE IF EXISTS spock.get_spock_nodes(text, boolean);
+CREATE OR REPLACE PROCEDURE spock.get_spock_nodes(src_dsn text, verb boolean)
 LANGUAGE plpgsql
 AS
 $$
@@ -115,7 +115,7 @@ CREATE TEMP TABLE IF NOT EXISTS temp_spock_nodes (
 -- Usage    : CALL create_sub(...);
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE create_sub(
+CREATE OR REPLACE PROCEDURE spock.create_sub(
     node_dsn text,
     subscription_name text,
     provider_dsn text,
@@ -135,7 +135,48 @@ DECLARE
     sid oid;
     remotesql text;
     exists_count int;
+    skip_schema_list text;
+    existing_schemas text;
+    remotesql_schema text;
 BEGIN
+    -- Auto-detect existing schemas on new node when synchronize_structure is true
+    skip_schema_list := 'ARRAY[]::text[]';
+
+    IF synchronize_structure THEN
+        BEGIN
+            -- Query existing schemas on the new node (excluding system schemas)
+            remotesql_schema := 'SELECT string_agg(schema_name, '','') as schemas
+                                FROM information_schema.schemata
+                                WHERE schema_name NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'', ''public'')
+                                AND schema_name NOT LIKE ''pg_temp_%''
+                                AND schema_name NOT LIKE ''pg_toast_temp_%''';
+
+            IF verb THEN
+                RAISE NOTICE '[QUERY] Detecting existing schemas on new node: %', remotesql_schema;
+            END IF;
+
+            SELECT schemas INTO existing_schemas FROM dblink(node_dsn, remotesql_schema) AS t(schemas text);
+
+            IF existing_schemas IS NOT NULL AND existing_schemas != '' THEN
+                skip_schema_list := 'ARRAY[''' || replace(existing_schemas, ',', ''',''') || ''']::text[]';
+                IF verb THEN
+                    RAISE NOTICE '[INFO] Found existing schemas to skip: %', existing_schemas;
+                END IF;
+            ELSE
+                IF verb THEN
+                    RAISE NOTICE '[INFO] No existing user schemas found on new node';
+                END IF;
+            END IF;
+
+        EXCEPTION
+            WHEN OTHERS THEN
+                IF verb THEN
+                    RAISE NOTICE '[WARNING] Failed to detect existing schemas: %', SQLERRM;
+                END IF;
+                skip_schema_list := 'ARRAY[]::text[]';
+        END;
+    END IF;
+
     remotesql := format(
         'SELECT spock.sub_create(
             subscription_name := %L,
@@ -143,10 +184,11 @@ BEGIN
             replication_sets := %s,
             synchronize_structure := %L,
             synchronize_data := %L,
-            forward_origins := %L,
+            forward_origins := %s,
             apply_delay := %L,
             enabled := %L,
-            force_text_transfer := %L
+            force_text_transfer := %L,
+            skip_schema := %s
         )',
         subscription_name,
         provider_dsn,
@@ -156,7 +198,8 @@ BEGIN
         forward_origins,
         apply_delay::text,
         enabled::text,
-        force_text_transfer::text
+        force_text_transfer::text,
+        skip_schema_list
     );
 
     IF verb THEN
@@ -192,7 +235,7 @@ $$;
 -- Usage    : CALL create_replication_slot(...);
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE create_replication_slot(
+CREATE OR REPLACE PROCEDURE spock.create_replication_slot(
     node_dsn text,
     slot_name text,
     verb boolean,
@@ -287,7 +330,7 @@ $$;
 -- Usage    : CALL sync_event('host=... dbname=... user=... password=...', true, NULL);
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE sync_event(
+CREATE OR REPLACE PROCEDURE spock.sync_event(
     node_dsn text, 
     verb boolean,
     INOUT sync_lsn pg_lsn DEFAULT NULL
@@ -341,7 +384,7 @@ $$;
 -- Usage     : CALL create_node(...);
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE create_node(
+CREATE OR REPLACE PROCEDURE spock.create_node(
     node_name text,
     dsn text,
     verb boolean,
@@ -452,7 +495,7 @@ $$;
 -- Usage    : CALL get_commit_timestamp(node_dsn, 'n1', 'n2', true, NULL);
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE get_commit_timestamp(
+CREATE OR REPLACE PROCEDURE spock.get_commit_timestamp(
     node_dsn text,
     n1 text,
     n2 text,
@@ -502,7 +545,7 @@ $$;
 -- Usage    : CALL advance_replication_slot(node_dsn, slot_name, sync_timestamp, true);
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE advance_replication_slot(
+CREATE OR REPLACE PROCEDURE spock.advance_replication_slot(
     node_dsn text,
     slot_name text,
     sync_timestamp timestamp,
@@ -575,7 +618,7 @@ $$;
 -- Usage    : CALL enable_sub(node_dsn, sub_name, true, true);
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE enable_sub(
+CREATE OR REPLACE PROCEDURE spock.enable_sub(
     node_dsn text,
     sub_name text,
     verb boolean,
@@ -612,9 +655,235 @@ BEGIN
 END;
 $$;
 
+-- ============================================================================
+-- Procedure: verify_subscription_replicating
+-- Purpose : Verifies that a subscription is actively replicating after being enabled
+-- Arguments:
+--   node_dsn           - DSN of the node where subscription exists
+--   subscription_name  - Name of the subscription to verify
+--   verb              - Verbose output flag
+--   max_attempts      - Maximum verification attempts in seconds (default: 120 = 2 minutes)
+-- Usage    : CALL spock.verify_subscription_replicating(node_dsn, 'sub_name', true);
+-- Notes   : Raises exception if subscription fails to reach 'replicating' status within timeout
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE spock.verify_subscription_replicating(
+    node_dsn text,
+    subscription_name text,
+    verb boolean DEFAULT true,
+    max_attempts integer DEFAULT 120  -- 2 minutes (120 seconds)
+) LANGUAGE plpgsql AS $$
+DECLARE
+    sub_status text;
+    verify_count integer := 0;
+BEGIN
+    LOOP
+        verify_count := verify_count + 1;
+
+        -- Check subscription status on the target node
+        SELECT status INTO sub_status
+        FROM dblink(node_dsn,
+            format('SELECT status FROM spock.sub_show_status() WHERE subscription_name = %L',
+                   subscription_name)) AS t(status text);
+
+        IF sub_status = 'replicating' THEN
+            IF verb THEN
+                RAISE NOTICE '    SUCCESS: %', rpad('Verified subscription ' || subscription_name || ' is replicating', 120, ' ');
+            END IF;
+            EXIT;
+        ELSIF verify_count >= max_attempts THEN
+            RAISE EXCEPTION 'Subscription % verification timeout after % seconds (final status: %)',
+                          subscription_name, max_attempts, COALESCE(sub_status, 'unknown');
+        ELSE
+            IF verb THEN
+                RAISE NOTICE '    ⏳ %', rpad('Waiting for subscription ' || subscription_name || ' to start replicating (status: ' || COALESCE(sub_status, 'unknown') || ', attempt ' || verify_count || '/' || max_attempts || ')', 120, ' ');
+            END IF;
+            PERFORM pg_sleep(1);
+        END IF;
+    END LOOP;
+END;
+$$;
 
 -- ============================================================================
+-- Procedure: show_all_nodes
+-- Purpose : Shows comprehensive node status across all nodes in cluster
+-- Arguments:
+--   cluster_dsn - DSN of any node in the cluster to query cluster state
+--   verb        - Verbose output flag
+-- Usage    : CALL spock.show_all_nodes('host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge', true);
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE spock.show_all_nodes(
+    cluster_dsn text,
+    verb boolean DEFAULT true
+) LANGUAGE plpgsql AS $$
+DECLARE
+    node_rec RECORD;
+    total_nodes integer := 0;
+BEGIN
+    IF verb THEN
+        RAISE NOTICE '';
+        RAISE NOTICE 'COMPREHENSIVE NODE STATUS REPORT';
+        RAISE NOTICE '====================================';
+    END IF;
 
+    -- Get all nodes from the cluster using the provided DSN
+    FOR node_rec IN
+        SELECT node_id, node_name, location, country, info, dsn
+        FROM dblink(cluster_dsn, 'SELECT n.node_id, n.node_name, n.location, n.country, n.info, i.if_dsn FROM spock.node n JOIN spock.node_interface i ON n.node_id = i.if_nodeid ORDER BY n.node_name')
+        AS t(node_id integer, node_name text, location text, country text, info text, dsn text)
+    LOOP
+        total_nodes := total_nodes + 1;
+
+        IF verb THEN
+            RAISE NOTICE '    [NODE] %: % (%s, %s) - %s', node_rec.node_name, node_rec.node_id, node_rec.location, node_rec.country, regexp_replace(node_rec.dsn, ' password=pgedge', ' password=***');
+        END IF;
+    END LOOP;
+
+    -- Summary
+    IF verb THEN
+        RAISE NOTICE '';
+        RAISE NOTICE 'NODE STATUS SUMMARY';
+        RAISE NOTICE '==================';
+        RAISE NOTICE 'Total nodes: %', total_nodes;
+    END IF;
+
+    -- Raise exception if no nodes are found
+    IF total_nodes = 0 THEN
+        RAISE EXCEPTION 'No nodes found in the cluster';
+    END IF;
+END;
+$$;
+
+-- ============================================================================
+-- Procedure: show_all_subscription_status
+-- Purpose : Shows comprehensive subscription status across all nodes in the cluster
+-- Arguments:
+--   cluster_dsn - DSN of any node in the cluster to query cluster state
+--   verb        - Verbose output flag
+-- Usage    : CALL spock.show_all_subscription_status('host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge', true);
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE spock.show_all_subscription_status(
+    cluster_dsn text,
+    verb boolean DEFAULT true
+) LANGUAGE plpgsql AS $$
+DECLARE
+    node_rec RECORD;
+    sub_rec RECORD;
+    total_subscriptions integer := 0;
+    replicating_count integer := 0;
+    error_count integer := 0;
+BEGIN
+    IF verb THEN
+        RAISE NOTICE '';
+        RAISE NOTICE 'COMPREHENSIVE SUBSCRIPTION STATUS REPORT';
+        RAISE NOTICE '==========================================';
+    END IF;
+
+    -- Get all nodes from the cluster using the provided DSN
+    FOR node_rec IN
+        SELECT node_id, node_name, location, country, info, dsn
+        FROM dblink(cluster_dsn, 'SELECT n.node_id, n.node_name, n.location, n.country, n.info, i.if_dsn FROM spock.node n JOIN spock.node_interface i ON n.node_id = i.if_nodeid ORDER BY n.node_name')
+        AS t(node_id integer, node_name text, location text, country text, info text, dsn text)
+    LOOP
+        IF verb THEN
+            RAISE NOTICE '';
+            RAISE NOTICE 'Node: % (DSN: %)', node_rec.node_name, node_rec.dsn;
+            RAISE NOTICE 'Subscriptions:';
+        END IF;
+
+        -- Get all subscriptions from this node
+        FOR sub_rec IN
+            SELECT subscription_name, status, provider_node, provider_dsn, slot_name, replication_sets, forward_origins
+            FROM dblink(node_rec.dsn, 'SELECT * FROM spock.sub_show_status() ORDER BY subscription_name')
+            AS t(subscription_name text, status text, provider_node text, provider_dsn text,
+                 slot_name text, replication_sets text[], forward_origins text)
+        LOOP
+            total_subscriptions := total_subscriptions + 1;
+
+            CASE sub_rec.status
+                WHEN 'replicating' THEN
+                    replicating_count := replicating_count + 1;
+                    IF verb THEN
+                        RAISE NOTICE '  [OK] %: % (provider: %, sets: %)',
+                            sub_rec.subscription_name, sub_rec.status,
+                            sub_rec.provider_node,
+                            array_to_string(sub_rec.replication_sets, ',');
+                    END IF;
+                WHEN 'disabled' THEN
+                    IF verb THEN
+                        RAISE NOTICE '  [DISABLED] %: % (provider: %, sets: %)',
+                            sub_rec.subscription_name, sub_rec.status,
+                            sub_rec.provider_node,
+                            array_to_string(sub_rec.replication_sets, ',');
+                    END IF;
+                WHEN 'initializing' THEN
+                    IF verb THEN
+                        RAISE NOTICE '  [INITIALIZING] %: % (provider: %, sets: %)',
+                            sub_rec.subscription_name, sub_rec.status,
+                            sub_rec.provider_node,
+                            array_to_string(sub_rec.replication_sets, ',');
+                    END IF;
+                WHEN 'syncing' THEN
+                    IF verb THEN
+                        RAISE NOTICE '  [INITIALIZING] %: % (provider: %, sets: %)',
+                            sub_rec.subscription_name, sub_rec.status,
+                            sub_rec.provider_node,
+                            array_to_string(sub_rec.replication_sets, ',');
+                    END IF;
+                WHEN 'down' THEN
+                    error_count := error_count + 1;
+                    IF verb THEN
+                        RAISE NOTICE '  [ERROR] %: % (provider: %, sets: %)',
+                            sub_rec.subscription_name, sub_rec.status,
+                            sub_rec.provider_node,
+                            array_to_string(sub_rec.replication_sets, ',');
+                    END IF;
+                ELSE
+                    IF verb THEN
+                        RAISE NOTICE '  [UNKNOWN] %: % (provider: %, sets: %)',
+                            sub_rec.subscription_name, sub_rec.status,
+                            sub_rec.provider_node,
+                            array_to_string(sub_rec.replication_sets, ',');
+                    END IF;
+            END CASE;
+        END LOOP;
+
+        -- Check if node has no subscriptions
+        IF NOT FOUND THEN
+            IF verb THEN
+                RAISE NOTICE '  (no subscriptions found)';
+            END IF;
+        END IF;
+    END LOOP;
+
+    -- Summary
+    IF verb THEN
+        RAISE NOTICE '';
+        RAISE NOTICE 'SUBSCRIPTION STATUS SUMMARY';
+        RAISE NOTICE '==========================';
+        RAISE NOTICE 'Total subscriptions: %', total_subscriptions;
+        RAISE NOTICE 'Replicating: %', replicating_count;
+        RAISE NOTICE 'With errors/issues: %', error_count;
+
+        IF total_subscriptions > 0 THEN
+            RAISE NOTICE 'Success rate: %%%',
+                round((replicating_count::numeric / total_subscriptions::numeric) * 100, 1);
+        END IF;
+
+        IF replicating_count = total_subscriptions AND total_subscriptions > 0 THEN
+            RAISE NOTICE 'SUCCESS: All subscriptions are replicating successfully!';
+        ELSIF error_count > 0 THEN
+            RAISE NOTICE 'WARNING: Some subscriptions have issues - check details above';
+        ELSE
+            RAISE NOTICE 'INFO: Subscriptions are in various states - check details above';
+        END IF;
+    END IF;
+
+    -- Raise exception if no subscriptions are replicating
+    IF total_subscriptions > 0 AND replicating_count = 0 THEN
+        RAISE EXCEPTION 'No subscriptions are in replicating state after node addition';
+    END IF;
+END;
+$$;
 
 -- ============================================================================
 -- Procedure: monitor_replication_lag
@@ -625,7 +894,7 @@ $$;
 -- Usage    : CALL monitor_replication_lag(node_dsn, true);
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE monitor_replication_lag(node_dsn text, verb boolean)
+CREATE OR REPLACE PROCEDURE spock.monitor_replication_lag(node_dsn text, verb boolean)
 LANGUAGE plpgsql
 AS
 $$
@@ -764,7 +1033,7 @@ $$;
 -- Procedure to monitor replication lag between nodes
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE monitor_replication_lag_wait(
+CREATE OR REPLACE PROCEDURE spock.monitor_replication_lag_wait(
     origin_node text,
     receiver_node text,
     max_lag_seconds integer DEFAULT 59,
@@ -826,7 +1095,7 @@ $$;
 -- Procedure to monitor multiple replication paths simultaneously
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE monitor_multiple_replication_lags(
+CREATE OR REPLACE PROCEDURE spock.monitor_multiple_replication_lags(
     lag_configs jsonb,
     max_lag_seconds integer DEFAULT 59,
     check_interval_seconds integer DEFAULT 1,
@@ -943,7 +1212,7 @@ $$;
 -- Example usage procedure (equivalent to the workflow logic)
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE wait_for_n3_sync(
+CREATE OR REPLACE PROCEDURE spock.wait_for_n3_sync(
     max_lag_seconds integer DEFAULT 59,
     check_interval_seconds integer DEFAULT 1,
     verb boolean DEFAULT true
@@ -960,7 +1229,7 @@ BEGIN
     ]'::jsonb;
 
     -- Monitor both paths
-    CALL monitor_multiple_replication_lags(
+    CALL spock.monitor_multiple_replication_lags(
         lag_configs, 
         max_lag_seconds, 
         check_interval_seconds, 
@@ -975,7 +1244,7 @@ $$;
 -- Procedure to monitor lag using dblink
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE monitor_lag_with_dblink(
+CREATE OR REPLACE PROCEDURE spock.monitor_lag_with_dblink(
     src_node_name text,
     new_node_name text,
     new_node_dsn text,
@@ -1026,16 +1295,16 @@ BEGIN
 
     IF lag_interval IS NOT NULL AND (extract(epoch FROM lag_interval) < 59 OR lag_bytes = 0) THEN
         IF lag_bytes = 0 THEN
-            RAISE NOTICE '    ✓ Replication lag monitoring completed (lag_bytes = 0)';
+            RAISE NOTICE '    OK: Replication lag monitoring completed (lag_bytes = 0)';
         ELSE
-            RAISE NOTICE '    ✓ Replication lag monitoring completed';
+            RAISE NOTICE '    OK: Replication lag monitoring completed';
         END IF;
     ELSE
         RAISE NOTICE '    - Replication lag monitoring timed out';
     END IF;
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE '    ✗ Replication lag monitoring failed';
+        RAISE NOTICE '%', '    ✗ Replication lag monitoring failed' || ' (error: ' || SQLERRM || ')';
         RAISE;
 END;
 $$;
@@ -1049,7 +1318,7 @@ $$;
 -- Procedure to verify prerequisites for adding a new node
 -- (Combines Phase 1: Validating source node prerequisites and Phase 2: Validating new node prerequisites)
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE verify_node_prerequisites(
+CREATE OR REPLACE PROCEDURE spock.verify_node_prerequisites(
     src_node_name text,
     src_dsn text,
     new_node_name text,
@@ -1065,52 +1334,28 @@ DECLARE
     new_repset_exists integer;
 BEGIN
     RAISE NOTICE 'Phase 1: Validating source and new node prerequisites';
-    -- Validating source node prerequisites
-    SELECT count(*) INTO src_exists FROM spock.node WHERE node_name = src_node_name;
-    IF src_exists > 0 THEN
-        RAISE NOTICE '    ✗ %', rpad('Checking source node ' || src_node_name || ' already exists', 120, ' ');
-        RAISE EXCEPTION 'Exiting add_node: Source node % already exists', src_node_name;
-    ELSE
-        RAISE NOTICE '    ✓ %', rpad('Checking source node ' || src_node_name || ' does not exist', 120, ' ');
-    END IF;
-
-    SELECT count(*) INTO src_sub_exists FROM spock.subscription s JOIN spock.node n ON s.sub_origin = n.node_id WHERE n.node_name = src_node_name;
-    IF src_sub_exists > 0 THEN
-        RAISE NOTICE '    %[FAILED]', rpad('Checking source node "' || src_node_name || '" has subscriptions', 60, ' ');
-        RAISE EXCEPTION 'Exiting add_node: Source node % has subscriptions', src_node_name;
-    ELSE
-        RAISE NOTICE '    ✓ %', rpad('Checking source node ' || src_node_name || ' has no subscriptions', 120, ' ');
-    END IF;
-
-    SELECT count(*) INTO src_repset_exists FROM spock.replication_set rs JOIN spock.node n ON rs.set_nodeid = n.node_id WHERE n.node_name = src_node_name;
-    IF src_repset_exists > 0 THEN
-        RAISE NOTICE '    %[FAILED]', rpad('Checking source node "' || src_node_name || '" has replication sets', 60, ' ');
-        RAISE EXCEPTION 'Exiting add_node: Source node % has replication sets', src_node_name;
-    ELSE
-        RAISE NOTICE '    ✓ %', rpad('Checking source node ' || src_node_name || ' has no replication sets', 120, ' ');
-    END IF;
-
+    
     -- Validating new node prerequisites
     SELECT count(*) INTO new_exists FROM spock.node WHERE node_name = new_node_name;
     IF new_exists > 0 THEN
         RAISE NOTICE '    %[FAILED]', rpad('Checking new node "' || new_node_name || '" already exists', 60, ' ');
         RAISE EXCEPTION 'Exiting add_node: New node % already exists', new_node_name;
     ELSE
-        RAISE NOTICE '    ✓ %', rpad('Checking new node ' || new_node_name || ' does not exist', 120, ' ');
+        RAISE NOTICE '    OK: %', rpad('Checking new node ' || new_node_name || ' does not exist', 120, ' ');
     END IF;
     SELECT count(*) INTO new_sub_exists FROM spock.subscription s JOIN spock.node n ON s.sub_origin = n.node_id WHERE n.node_name = new_node_name;
     IF new_sub_exists > 0 THEN
         RAISE NOTICE '    %[FAILED]', rpad('Checking new node "' || new_node_name || '" has subscriptions', 60, ' ');
         RAISE EXCEPTION 'Exiting add_node: New node % has subscriptions', new_node_name;
     ELSE
-        RAISE NOTICE '    ✓ %', rpad('Checking new node ' || new_node_name || ' has no subscriptions', 120, ' ');
+        RAISE NOTICE '    OK: %', rpad('Checking new node ' || new_node_name || ' has no subscriptions', 120, ' ');
     END IF;
     SELECT count(*) INTO new_repset_exists FROM spock.replication_set rs JOIN spock.node n ON rs.set_nodeid = n.node_id WHERE n.node_name = new_node_name;
     IF new_repset_exists > 0 THEN
         RAISE NOTICE '    %[FAILED]', rpad('Checking new node "' || new_node_name || '" has replication sets', 60, ' ');
         RAISE EXCEPTION 'Exiting add_node: New node % has replication sets', new_node_name;
     ELSE
-        RAISE NOTICE '    ✓ %', rpad('Checking new node ' || new_node_name || ' has no replication sets', 120, ' ');
+        RAISE NOTICE '    OK: %', rpad('Checking new node ' || new_node_name || ' has no replication sets', 120, ' ');
     END IF;
 END;
 $$;
@@ -1118,7 +1363,7 @@ $$;
 -- ============================================================================
 -- Procedure to create nodes only
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE create_nodes_only(
+CREATE OR REPLACE PROCEDURE spock.create_nodes_only(
     src_node_name text,
     src_dsn text,
     new_node_name text,
@@ -1133,20 +1378,20 @@ BEGIN
     -- Phase 2: Creating nodes
     RAISE NOTICE 'Phase 2: Creating nodes';
     BEGIN
-        CALL create_node(src_node_name, src_dsn, verb);
-        RAISE NOTICE '    ✓ %', rpad('Creating source node ' || src_node_name || '...', 120, ' ');
+        CALL spock.create_node(src_node_name, src_dsn, verb);
+        RAISE NOTICE '    OK: %', rpad('Creating source node ' || src_node_name || '...', 120, ' ');
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ %', rpad('Creating source node ' || src_node_name || '...', 120, ' ');
+            RAISE NOTICE '    ✗ %', rpad('Creating source node ' || src_node_name  || ' (error: ' || SQLERRM || ')', 120, ' ');
             RAISE;
     END;
 
     BEGIN
-        CALL create_node(new_node_name, new_node_dsn, verb, new_node_location, new_node_country, new_node_info);
-        RAISE NOTICE '    ✓ %', rpad('Creating new node ' || new_node_name || '...', 120, ' ');
+        CALL spock.create_node(new_node_name, new_node_dsn, verb, new_node_location, new_node_country, new_node_info);
+        RAISE NOTICE '    OK: %', rpad('Creating new node ' || new_node_name || '...', 120, ' ');
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ %', rpad('Creating new node ' || new_node_name || '...', 120, ' ');
+            RAISE NOTICE '    ✗ %', rpad('Creating new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
             RAISE;
     END;
 
@@ -1160,7 +1405,7 @@ $$;
 -- ============================================================================
 -- Procedure to configure cross-node replication
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE create_replication_slots(
+CREATE OR REPLACE PROCEDURE spock.create_replication_slots(
     src_node_name text,
     src_dsn text,
     new_node_name text,
@@ -1185,17 +1430,17 @@ BEGIN
                 dbname := 'pgedge';
             END IF;
             slot_name := left('spk_' || dbname || '_' || rec.node_name || '_sub_' || rec.node_name || '_' || new_node_name, 64);
-            CALL create_replication_slot(
+            CALL spock.create_replication_slot(
                 rec.dsn,
                 slot_name,
                 verb,
                 'spock_output'
             );
-            RAISE NOTICE '    ✓ %', rpad('Creating replication slot ' || slot_name || '...', 120, ' ');
+            RAISE NOTICE '    OK: %', rpad('Creating replication slot ' || slot_name || '...', 120, ' ');
         END LOOP;
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ Creating replication slots...';
+            RAISE NOTICE '%', '    ✗ Creating replication slots...' || ' (error: ' || SQLERRM || ')';
             RAISE;
     END;
 END;
@@ -1205,7 +1450,7 @@ $$;
 -- ============================================================================
 -- Procedure to create disabled subscriptions and slots
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE create_disable_subscriptions_and_slots(
+CREATE OR REPLACE PROCEDURE spock.create_disable_subscriptions_and_slots(
     src_node_name text,  -- Source node name
     src_dsn text,        -- Source node DSN
     new_node_name text,  -- New node name
@@ -1219,58 +1464,98 @@ DECLARE
     dbname text;
     slot_name text;
 BEGIN
-    RAISE NOTICE 'Phase 4: Creating disabled subscriptions and slots';
+    RAISE NOTICE 'Phase 3: Creating disabled subscriptions and slots';
     
     -- Get all existing nodes (excluding source and new)
-    CALL get_spock_nodes(src_dsn, verb);
+    CALL spock.get_spock_nodes(src_dsn, verb);
     
     -- Check if there are any "other" nodes (not source, not new)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
-        RAISE NOTICE '    - No other nodes exist, skipping disabled subscriptions';
+        -- 2-node scenario: trigger sync event on source node and store it
+        BEGIN
+            SELECT * INTO remotesql
+            FROM dblink(src_dsn, 'SELECT spock.sync_event()') AS t(sync_lsn text);
+
+            -- Store the sync LSN for later use when enabling subscriptions
+            INSERT INTO temp_sync_lsns (origin_node, sync_lsn)
+            VALUES (src_node_name, remotesql)
+            ON CONFLICT (origin_node) DO UPDATE SET sync_lsn = EXCLUDED.sync_lsn;
+
+            RAISE NOTICE '    OK: %', rpad('Triggering sync event on node ' || src_node_name || ' (LSN: ' || remotesql || ')', 120, ' ');
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE NOTICE '    ✗ %', rpad('Triggering sync event on node ' || src_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+        END;
+
+        RAISE NOTICE '    - 2-node scenario: sync event stored, skipping disabled subscriptions';
         RETURN;
     END IF;
     
+    -- Create temporary table to store sync LSNs
+    CREATE TEMP TABLE IF NOT EXISTS temp_sync_lsns (
+        origin_node text PRIMARY KEY,
+        sync_lsn text NOT NULL
+    );
+
     -- For each "other" node (not source, not new), create disabled subscription and slot
     FOR rec IN SELECT * FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name LOOP
+        -- Trigger sync event on origin node and store LSN
+        BEGIN
+            SELECT * INTO remotesql
+            FROM dblink(rec.dsn, 'SELECT spock.sync_event()') AS t(sync_lsn text);
+
+            -- Store the sync LSN for later use when enabling subscriptions
+            INSERT INTO temp_sync_lsns (origin_node, sync_lsn)
+            VALUES (rec.node_name, remotesql)
+            ON CONFLICT (origin_node) DO UPDATE SET sync_lsn = EXCLUDED.sync_lsn;
+
+            RAISE NOTICE '    OK: %', rpad('Triggering sync event on node ' || rec.node_name || ' (LSN: ' || remotesql || ')', 120, ' ');
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE NOTICE '    ✗ %', rpad('Triggering sync event on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+                CONTINUE;
+        END;
+
         -- Create replication slot on the "other" node
         BEGIN
             dbname := substring(rec.dsn from 'dbname=([^\s]+)');
             IF dbname IS NULL THEN dbname := 'pgedge'; END IF;
             slot_name := left('spk_' || dbname || '_' || rec.node_name || '_sub_' || rec.node_name || '_' || new_node_name, 64);
-            
+
             remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'');', slot_name);
             IF verb THEN
                 RAISE NOTICE '    Remote SQL for slot creation: %', remotesql;
             END IF;
-            
+
             PERFORM * FROM dblink(rec.dsn, remotesql) AS t(slot_name text, lsn pg_lsn);
-            RAISE NOTICE '    ✓ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name, 120, ' ');
+            RAISE NOTICE '    OK: %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name, 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name, 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
                 CONTINUE;
         END;
-        
+
         -- Create disabled subscription on new node from "other" node
         BEGIN
-            CALL create_sub(
+            CALL spock.create_sub(
                 new_node_dsn,                                 -- Create on new node
                 'sub_' || rec.node_name || '_' || new_node_name, -- sub_<other_node>_<new_node>
                 rec.dsn,                                      -- Provider is other node
                 'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
                 false,                                        -- synchronize_structure
                 false,                                        -- synchronize_data
-                '{}',                                         -- forward_origins
+                'ARRAY[]::text[]',                            -- forward_origins
                 '0'::interval,                                -- apply_delay
                 false,                                        -- enabled (disabled)
                 false,                                        -- force_text_transfer
                 verb                                          -- verbose
             );
-            RAISE NOTICE '    ✓ %', rpad('Creating initial subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name, 120, ' ');
+            RAISE NOTICE '    OK: %', rpad('Creating initial subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name, 120, ' ');
+            PERFORM pg_sleep(5);
             subscription_count := subscription_count + 1;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Creating initial subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name, 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Creating initial subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
     END LOOP;
     
@@ -1283,7 +1568,7 @@ $$;
 -- ============================================================================
 -- Procedure to enable disabled subscriptions
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE enable_disabled_subscriptions(
+CREATE OR REPLACE PROCEDURE spock.enable_disabled_subscriptions(
     src_node_name text,
     src_dsn text,
     new_node_name text,
@@ -1293,22 +1578,59 @@ CREATE OR REPLACE PROCEDURE enable_disabled_subscriptions(
 DECLARE
     rec RECORD;
 BEGIN
-    RAISE NOTICE 'Phase 9: Enabling disabled subscriptions';
+    RAISE NOTICE 'Phase 8: Enabling disabled subscriptions';
     
     -- Check if this is a 2-node scenario (only source and new node)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
         -- 2-node scenario: enable the disabled subscription from source to new node
         BEGIN
-            CALL enable_sub(
+                    CALL spock.enable_sub(
+            new_node_dsn,
+            'sub_' || src_node_name || '_' || new_node_name,
+            verb,  -- verb
+            true   -- immediate
+        );
+
+            -- Wait for the sync event that was captured when subscription was created
+            -- This ensures the subscription starts replicating from the correct sync point
+            DECLARE
+                sync_lsn text;
+                timeout_ms integer := 1200;  -- 20 minutes
+            BEGIN
+                -- Get the stored sync LSN from when subscription was created
+                SELECT tsl.sync_lsn INTO sync_lsn
+                FROM temp_sync_lsns tsl
+                WHERE tsl.origin_node = src_node_name;
+
+                IF sync_lsn IS NOT NULL THEN
+                    IF verb THEN
+                        RAISE NOTICE '    OK: %', rpad('Using stored sync event from origin node ' || src_node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
+                    END IF;
+
+                    -- Wait for this sync event on the new node where the subscription exists
+                    CALL dblink(new_node_dsn,
+                        format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
+                               src_node_name, sync_lsn, timeout_ms));
+
+                    IF verb THEN
+                        RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || src_node_name || ' on new node ' || new_node_name || '...', 120, ' ');
+                    END IF;
+                ELSE
+                    RAISE NOTICE '    WARNING: %', rpad('No stored sync LSN found for ' || src_node_name || ', skipping sync wait', 120, ' ');
+                END IF;
+            END;
+
+            -- Verify subscription is replicating after enabling (2-node scenario)
+            CALL spock.verify_subscription_replicating(
                 new_node_dsn,
                 'sub_' || src_node_name || '_' || new_node_name,
-                verb,  -- verb
-                true   -- immediate
+                verb
             );
-            RAISE NOTICE '    ✓ %', rpad('Enabling subscription sub_' || src_node_name || '_' || new_node_name || '...', 120, ' ');
+
+            RAISE NOTICE '    OK: %', rpad('Enabling subscription sub_' || src_node_name || '_' || new_node_name || '...', 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Enabling subscription sub_' || src_node_name || '_' || new_node_name || '...', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Enabling subscription sub_' || src_node_name || '_' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
                 RAISE;
         END;
         RETURN;
@@ -1328,13 +1650,50 @@ BEGIN
                     CONTINUE;  -- Skip new node to avoid self-subscription
                 END IF;
                 
-                CALL enable_sub(
+                CALL spock.enable_sub(
                     new_node_dsn,
                     'sub_'|| rec.node_name || '_' || new_node_name,
                     verb,  -- verb
                     true   -- immediate
                 );
-                RAISE NOTICE '    ✓ %', rpad('Enabling subscription sub_' || rec.node_name || '_' || new_node_name || '...', 120, ' ');
+
+                -- Wait for the sync event that was captured when subscription was created
+                -- This ensures the subscription starts replicating from the correct sync point
+                DECLARE
+                    sync_lsn text;
+                    timeout_ms integer := 1200;  -- 20 minutes
+                BEGIN
+                    -- Get the stored sync LSN from when subscription was created
+                    SELECT tsl.sync_lsn INTO sync_lsn
+                    FROM temp_sync_lsns tsl
+                    WHERE tsl.origin_node = rec.node_name;
+
+                    IF sync_lsn IS NOT NULL THEN
+                        IF verb THEN
+                            RAISE NOTICE '    OK: %', rpad('Using stored sync event from origin node ' || rec.node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
+                        END IF;
+
+                        -- Wait for this sync event on the new node where the subscription exists
+                        CALL dblink(new_node_dsn,
+                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
+                                   rec.node_name, sync_lsn, timeout_ms));
+
+                        IF verb THEN
+                            RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || rec.node_name || ' on new node ' || new_node_name || '...', 120, ' ');
+                        END IF;
+                    ELSE
+                        RAISE NOTICE '    WARNING: %', rpad('No stored sync LSN found for ' || rec.node_name || ', skipping sync wait', 120, ' ');
+                    END IF;
+                END;
+
+                -- Verify subscription is replicating after enabling
+                CALL spock.verify_subscription_replicating(
+                    new_node_dsn,
+                    'sub_'|| rec.node_name || '_' || new_node_name,
+                    verb
+                );
+
+                RAISE NOTICE '    OK: %', rpad('Enabling subscription sub_' || rec.node_name || '_' || new_node_name || '...', 120, ' ');
                 subscription_count := subscription_count + 1;
             END LOOP;
             
@@ -1344,7 +1703,7 @@ BEGIN
         END;
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ Enabling disabled subscriptions...';
+            RAISE NOTICE '%', '    ✗ Enabling disabled subscriptions...' || ' (error: ' || SQLERRM || ')';
             RAISE;
     END;
 END;
@@ -1353,7 +1712,7 @@ $$;
 -- ============================================================================
 -- Procedure to create a subscription from new node to source node only
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE create_sub_on_new_node_to_src_node(
+CREATE OR REPLACE PROCEDURE spock.create_sub_on_new_node_to_src_node(
     src_node_name   text,  -- Source node name
     src_dsn         text,  -- Source node DSN
     new_node_name   text,  -- New node name
@@ -1364,39 +1723,40 @@ DECLARE
     rec RECORD;
     subscription_count integer := 0;
 BEGIN
-    RAISE NOTICE 'Phase 10: Creating subscriptions from all other nodes to new node';
+    RAISE NOTICE 'Phase 9: Creating subscriptions from all other nodes to new node';
     
     -- Get all existing nodes (excluding new node)
-    CALL get_spock_nodes(src_dsn, verb);
+    CALL spock.get_spock_nodes(src_dsn, verb);
     
     -- For each existing node (excluding new node), create subscription TO the new node
     FOR rec IN SELECT * FROM temp_spock_nodes WHERE node_name != new_node_name LOOP
         BEGIN
-            CALL create_sub(
+            CALL spock.create_sub(
                 rec.dsn,                                      -- Create on existing node
                 'sub_' || new_node_name || '_' || rec.node_name, -- sub_<existing_node>_<new_node>
                 new_node_dsn,                                 -- Provider is new node
                 'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
                 false,                                        -- synchronize_structure
                 false,                                        -- synchronize_data
-                '{}',                                         -- forward_origins
+                'ARRAY[]::text[]',                            -- forward_origins
                 '0'::interval,                                -- apply_delay
                 true,                                         -- enabled
                 false,                                        -- force_text_transfer
                 verb                                          -- verbose
             );
-            RAISE NOTICE '    ✓ %', rpad('Creating subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name || '...', 120, ' ');
+            RAISE NOTICE '    OK: %', rpad('Creating subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name || '...', 120, ' ');
+            PERFORM pg_sleep(5);
             subscription_count := subscription_count + 1;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Creating subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name || '...', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Creating subscription sub_' || rec.node_name || '_' || new_node_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
     END LOOP;
     
     IF subscription_count = 0 THEN
         RAISE NOTICE '    - No subscriptions created (no other nodes found)';
     ELSE
-        RAISE NOTICE '    ✓ Created % subscriptions from other nodes to new node', subscription_count;
+        RAISE NOTICE '    OK: Created % subscriptions from other nodes to new node', subscription_count;
     END IF;
 END;
 $$;
@@ -1404,7 +1764,7 @@ $$;
 -- ============================================================================
 -- Procedure to create new to source node subscription
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE create_new_to_source_subscription(
+CREATE OR REPLACE PROCEDURE spock.create_new_to_source_subscription(
     src_node_name text,
     src_dsn text,
     new_node_name text,
@@ -1415,27 +1775,28 @@ BEGIN
     RAISE NOTICE 'Phase 10: Creating new to source node subscription';
     
     -- Create subscription from new node to source node (enabled with sync)
-    CALL create_sub(
+    CALL spock.create_sub(
         src_dsn,
         'sub_' || new_node_name || '_' || src_node_name,
         new_node_dsn,
         'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']',
         false,   -- synchronize_structure
         false,   -- synchronize_data
-        '{}',
+        'ARRAY[]::text[]',
         '0'::interval,
         true,   -- enabled
         false,   -- force_text_transfer
         verb
     );
-    RAISE NOTICE '    ✓ %', rpad('Creating subscription sub_' || new_node_name || '_' || src_node_name || ' on node ' || new_node_name || '...', 120, ' ');
+    RAISE NOTICE '    OK: %', rpad('Creating subscription sub_' || new_node_name || '_' || src_node_name || ' on node ' || new_node_name || '...', 120, ' ');
+    PERFORM pg_sleep(5);
 END;
 $$;
 
 -- ============================================================================
 -- Procedure to create source to new node subscription
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE create_source_to_new_subscription(
+CREATE OR REPLACE PROCEDURE spock.create_source_to_new_subscription(
     src_node_name   text,  -- Source node name
     src_dsn         text,  -- Source node DSN
     new_node_name   text,  -- New node name
@@ -1443,30 +1804,31 @@ CREATE OR REPLACE PROCEDURE create_source_to_new_subscription(
     verb            boolean  -- Verbose flag
 ) LANGUAGE plpgsql AS $$
 BEGIN
-    RAISE NOTICE 'Phase 5: Creating source to new node subscription';
+    RAISE NOTICE 'Phase 4: Creating source to new node subscription';
     
     -- Create subscription from source to new node (enabled with sync)
-    CALL create_sub(
+    CALL spock.create_sub(
         new_node_dsn,                                 -- Create on new node
         'sub_' || src_node_name || '_' || new_node_name, -- sub_<src_node>_<new_node>
         src_dsn,                                      -- Provider is source node
         'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
         true,                                         -- synchronize_structure
         true,                                         -- synchronize_data
-        '{}',                                         -- forward_origins
+        'ARRAY[]::text[]',                            -- forward_origins
         '0'::interval,                                -- apply_delay
         true,                                         -- enabled
         false,                                        -- force_text_transfer
         verb                                          -- verbose
     );
-    RAISE NOTICE '    ✓ %', rpad('Creating subscription sub_' || src_node_name || '_' || new_node_name || ' on node ' || new_node_name || '...', 120, ' ');
+    RAISE NOTICE '    OK: %', rpad('Creating subscription sub_' || src_node_name || '_' || new_node_name || ' on node ' || new_node_name || '...', 120, ' ');
+    PERFORM pg_sleep(5);
 END;
 $$;
 
 -- ============================================================================
 -- Procedure to trigger sync events on other nodes and wait on source
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE trigger_sync_on_other_nodes_and_wait_on_source(
+CREATE OR REPLACE PROCEDURE spock.trigger_sync_on_other_nodes_and_wait_on_source(
     src_node_name text,  -- Source node name
     src_dsn text,        -- Source node DSN
     new_node_name text,  -- New node name
@@ -1476,10 +1838,10 @@ CREATE OR REPLACE PROCEDURE trigger_sync_on_other_nodes_and_wait_on_source(
 DECLARE
     rec RECORD;
     sync_lsn pg_lsn;
-    timeout_ms integer := 1200000;  -- 20 minutes timeout
+    timeout_ms integer := 1200;  -- 20 minutes timeout
     remotesql text;
 BEGIN
-    RAISE NOTICE 'Phase 6: Triggering sync events on other nodes and waiting on source';
+    RAISE NOTICE 'Phase 5: Triggering sync events on other nodes and waiting on source';
     
     -- Check if this is a 2-node scenario (only source and new node)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
@@ -1497,10 +1859,10 @@ BEGIN
             END IF;
             
             SELECT * FROM dblink(rec.dsn, remotesql) AS t(lsn pg_lsn) INTO sync_lsn;
-            RAISE NOTICE '    ✓ %', rpad('Triggering sync event on node ' || rec.node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
+            RAISE NOTICE '    OK: %', rpad('Triggering sync event on node ' || rec.node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Triggering sync event on node ' || rec.node_name || '...', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Triggering sync event on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
                 CONTINUE;
         END;
         
@@ -1513,10 +1875,10 @@ BEGIN
             END IF;
             
             PERFORM * FROM dblink(src_dsn, remotesql) AS t(result text);
-            RAISE NOTICE '    ✓ %', rpad('Waiting for sync event from ' || rec.node_name || ' on source node ' || src_node_name || '...', 120, ' ');
+            RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || rec.node_name || ' on source node ' || src_node_name || '...', 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Waiting for sync event from ' || rec.node_name || ' on source node ' || src_node_name || '...', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Waiting for sync event from ' || rec.node_name || ' on source node ' || src_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
     END LOOP;
 END;
@@ -1525,7 +1887,7 @@ $$;
 -- ============================================================================
 -- Procedure to check commit timestamp and advance replication slot
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE check_commit_timestamp_and_advance_slot(
+CREATE OR REPLACE PROCEDURE spock.check_commit_timestamp_and_advance_slot(
     src_node_name text,  -- Source node name
     src_dsn text,        -- Source node DSN
     new_node_name text,  -- New node name
@@ -1539,7 +1901,7 @@ DECLARE
     dbname text;
     remotesql text;
 BEGIN
-    RAISE NOTICE 'Phase 8: Checking commit timestamp and advancing replication slot';
+    RAISE NOTICE 'Phase 7: Checking commit timestamp and advancing replication slot';
     
     -- Check if this is a 2-node scenario (only source and new node)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
@@ -1560,14 +1922,14 @@ BEGIN
             SELECT * FROM dblink(new_node_dsn, remotesql) AS t(ts timestamp) INTO commit_ts;
             
             IF commit_ts IS NOT NULL THEN
-                RAISE NOTICE '    ✓ %', rpad('Found commit timestamp for ' || rec.node_name || '->' || new_node_name || ': ' || commit_ts, 120, ' ');
+                RAISE NOTICE '    OK: %', rpad('Found commit timestamp for ' || rec.node_name || '->' || new_node_name || ': ' || commit_ts, 120, ' ');
             ELSE
                 RAISE NOTICE '    - %', rpad('No commit timestamp found for ' || rec.node_name || '->' || new_node_name, 120, ' ');
                 CONTINUE;
             END IF;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Checking commit timestamp for ' || rec.node_name || '->' || new_node_name, 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Checking commit timestamp for ' || rec.node_name || '->' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
                 CONTINUE;
         END;
         
@@ -1614,7 +1976,7 @@ BEGIN
                 END IF;
                 
                 PERFORM * FROM dblink(rec.dsn, remotesql) AS t(result text);
-                RAISE NOTICE '    ✓ %', rpad('Advanced slot ' || slot_name || ' from ' || current_lsn || ' to ' || target_lsn, 120, ' ');
+                RAISE NOTICE '    OK: %', rpad('Advanced slot ' || slot_name || ' from ' || current_lsn || ' to ' || target_lsn, 120, ' ');
             END;
         EXCEPTION
             WHEN OTHERS THEN
@@ -1629,7 +1991,7 @@ $$;
 -- Simple procedure to check lag between specific nodes (simplified)
 -- ============================================================================
 
-CREATE OR REPLACE PROCEDURE check_node_lag(
+CREATE OR REPLACE PROCEDURE spock.check_node_lag(
     origin_node text,
     receiver_node text,
     verb boolean DEFAULT true,
@@ -1656,78 +2018,48 @@ END;
 $$;
 
 -- ============================================================================
--- Procedure to trigger sync event on source and wait on new node
+-- Procedure to wait for sync on source and new node using sync_event and wait_for_sync_event
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE trigger_sync_and_wait(
+CREATE OR REPLACE PROCEDURE spock.wait_for_source_node_sync(
     src_node_name text,
     src_dsn text,
     new_node_name text,
     new_node_dsn text,
-    verb boolean
+    verb boolean,
+    sync_check_on_new_node boolean DEFAULT false
 ) LANGUAGE plpgsql AS $$
 DECLARE
-    sync_lsn pg_lsn;
-    timeout_ms integer := 1200000;  -- 20 minutes timeout
     remotesql text;
+    sync_lsn pg_lsn;
+    timeout_ms integer := 1200;  -- 20 minutes timeout
 BEGIN
-    RAISE NOTICE 'Phase 7: Triggering sync event on source and waiting on new node';
-    
-    -- Trigger sync event on source node using dblink
+    RAISE NOTICE 'Phase 6: Waiting for sync on source and new node';
+
+    -- Trigger sync event on new node and wait for it on source node
     BEGIN
-        -- First, let's check the current state of replication slots on the source node
-        IF verb THEN
-            remotesql := 'SELECT slot_name, plugin, slot_type, restart_lsn, confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name LIKE ''spk_%'' ORDER BY slot_name;';
-            RAISE NOTICE '    Checking replication slots on source node:';
-            PERFORM * FROM dblink(src_dsn, remotesql) AS t(slot_name text, plugin text, slot_type text, restart_lsn pg_lsn, confirmed_flush_lsn pg_lsn);
-            
-            -- Check replication workers on source node
-            remotesql := 'SELECT pid, application_name, state, sent_lsn, write_lsn, flush_lsn, replay_lsn FROM pg_stat_replication ORDER BY application_name;';
-            RAISE NOTICE '    Checking replication workers on source node:';
-            PERFORM * FROM dblink(src_dsn, remotesql) AS t(pid integer, application_name text, state text, sent_lsn pg_lsn, write_lsn pg_lsn, flush_lsn pg_lsn, replay_lsn pg_lsn);
-        END IF;
-        
         remotesql := 'SELECT spock.sync_event();';
         IF verb THEN
-            RAISE NOTICE '    Remote SQL for sync event: %', remotesql;
+            RAISE NOTICE '    Remote SQL for sync_event on new node %: %', new_node_name, remotesql;
         END IF;
-        
-        SELECT * FROM dblink(src_dsn, remotesql) AS t(lsn pg_lsn) INTO sync_lsn;
-        RAISE NOTICE '    ✓ %', rpad('Triggering sync event on source node ' || src_node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
+        SELECT * FROM dblink(new_node_dsn, remotesql) AS t(lsn pg_lsn) INTO sync_lsn;
+        RAISE NOTICE '    OK: %', rpad('Triggered sync_event on new node ' || new_node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ %', rpad('Triggering sync event on source node ' || src_node_name || '...', 120, ' ');
+            RAISE NOTICE '    ✗ %', rpad('Triggering sync_event on new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
             RAISE;
     END;
-    
-    -- Wait for sync event on new node using dblink
+
+    -- Wait for sync event on source node
     BEGIN
-        -- First, let's check the current state of subscriptions on the new node
+        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s);', new_node_name, sync_lsn, timeout_ms);
         IF verb THEN
-            remotesql := 'SELECT subname, subenabled, subconninfo FROM pg_subscription ORDER BY subname;';
-            RAISE NOTICE '    Checking subscriptions on new node:';
-            PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(subname text, subenabled boolean, subconninfo text);
-            
-            -- Check replication workers on new node
-            remotesql := 'SELECT pid, application_name, state, sent_lsn, write_lsn, flush_lsn, replay_lsn FROM pg_stat_replication ORDER BY application_name;';
-            RAISE NOTICE '    Checking replication workers on new node:';
-            PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(pid integer, application_name text, state text, sent_lsn pg_lsn, write_lsn pg_lsn, flush_lsn pg_lsn, replay_lsn pg_lsn);
+            RAISE NOTICE '    Remote SQL for wait_for_sync_event on source node %: %', src_node_name, remotesql;
         END IF;
-        
-        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s);', 
-                           src_node_name, sync_lsn, timeout_ms);
-        IF verb THEN
-            RAISE NOTICE '    Remote SQL for waiting sync event: %', remotesql;
-        END IF;
-        
-        DECLARE
-            wait_result text;
-        BEGIN
-            SELECT result INTO wait_result FROM dblink(new_node_dsn, remotesql) AS t(result text);
-            RAISE NOTICE '    ✓ %', rpad('Waiting for sync event on new node ' || new_node_name || ' (result: ' || wait_result || ')', 120, ' ');
-        END;
+        PERFORM * FROM dblink(src_dsn, remotesql) AS t(result text);
+        RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || new_node_name || ' on source node ' || src_node_name || '...', 120, ' ');
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ %', rpad('Waiting for sync event on new node ' || new_node_name || '...', 120, ' ');
+            RAISE NOTICE '    ✗ %', rpad('Unable to wait for sync event from ' || new_node_name || ' on source node ' || src_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
             RAISE;
     END;
 END;
@@ -1736,7 +2068,7 @@ $$;
 -- ============================================================================
 -- Procedure to present final cluster state
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE present_final_cluster_state(
+CREATE OR REPLACE PROCEDURE spock.present_final_cluster_state(
     initial_node_count integer,
     verb boolean DEFAULT false
 ) LANGUAGE plpgsql AS $$
@@ -1746,8 +2078,8 @@ DECLARE
     wait_count integer := 0;
     max_wait_count integer := 300; -- Wait up to 300 seconds
 BEGIN
-    -- Phase 11: Presenting final cluster state
-    RAISE NOTICE 'Phase 11: Presenting final cluster state';
+    -- Phase 10: Presenting final cluster state
+    RAISE NOTICE 'Phase 10: Presenting final cluster state';
     
     -- Wait for replication to be active
     RAISE NOTICE '    Waiting for replication to be active...';
@@ -1761,10 +2093,10 @@ BEGIN
         SELECT status INTO sub_status FROM spock.sub_show_status() LIMIT 1;
         
         IF sub_status = 'replicating' THEN
-            RAISE NOTICE '    ✓ Replication is active (status: %)', sub_status;
+            RAISE NOTICE '    OK: Replication is active (status: %)', sub_status;
             EXIT;
         ELSIF wait_count >= max_wait_count THEN
-            RAISE NOTICE '    ⚠ Timeout waiting for replication to be active (current status: %)', sub_status;
+            RAISE NOTICE '    WARNING: Timeout waiting for replication to be active (current status: %)', sub_status;
             EXIT;
         ELSE
             RAISE NOTICE '    Waiting for replication... (status: %, attempt %/%)', sub_status, wait_count, max_wait_count;
@@ -1806,16 +2138,16 @@ $$;
 -- ============================================================================
 -- Procedure to monitor replication lag
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE monitor_replication_lag(
+CREATE OR REPLACE PROCEDURE spock.monitor_replication_lag(
     src_node_name text,
     new_node_name text,
     new_node_dsn text,
     verb boolean
 ) LANGUAGE plpgsql AS $$
 BEGIN
-    -- Phase 12: Monitor replication lag
-    RAISE NOTICE 'Phase 12: Monitoring replication lag';
-    CALL monitor_lag_with_dblink(src_node_name, new_node_name, new_node_dsn, verb);
+    -- Phase 11: Monitor replication lag
+    RAISE NOTICE 'Phase 11: Monitoring replication lag';
+    CALL spock.monitor_lag_with_dblink(src_node_name, new_node_name, new_node_dsn, verb);
 END;
 $$;
 
@@ -1848,7 +2180,7 @@ $$;
  *   - Ensures minimal interruption and consistency using sync + slot advance.
  * =============================================================================
  */
-CREATE OR REPLACE PROCEDURE add_node(
+CREATE OR REPLACE PROCEDURE spock.add_node(
     src_node_name text,
     src_dsn text,
     new_node_name text,
@@ -1864,39 +2196,56 @@ $$
 DECLARE
     initial_node_count integer;
 BEGIN
+    -- Phase 1: Verify prerequisites for source and new node.
+    -- Example: Ensure n1 (source) and n4 (new) are ready before adding n4 to cluster n1,n2,n3.
+    CALL spock.verify_node_prerequisites(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 1: Verify prerequisites (source and new node validation)
-    CALL verify_node_prerequisites(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    -- Phase 2: Create node objects in the cluster.
+    -- Example: Register n4 as a new node alongside n1, n2, n3.
+    CALL spock.create_nodes_only(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, new_node_location, new_node_country, new_node_info, initial_node_count);
 
-    -- Phase 2: Create nodes
-    CALL create_nodes_only(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, new_node_location, new_node_country, new_node_info, initial_node_count);
+    -- Phase 3: Create disabled subscriptions and replication slots.
+    -- Example: Prepare n4 for replication but keep subscriptions disabled initially.
+    CALL spock.create_disable_subscriptions_and_slots(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 3: Create disabled subscriptions and slots
-    CALL create_disable_subscriptions_and_slots(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    -- Phase 4: Trigger sync events on other nodes and wait on source.
+    -- Example: Sync n2 and n3, then wait for n1 to acknowledge before proceeding with n4.
+    CALL spock.trigger_sync_on_other_nodes_and_wait_on_source(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 4: Create source to new node subscription
-    CALL create_source_to_new_subscription(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    -- Phase 5: Create subscription from source to new node.
+    -- Example: Set up n1 to replicate to n4.
+    CALL spock.create_source_to_new_subscription(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 5: Trigger sync events on other nodes and wait on source
-    CALL trigger_sync_on_other_nodes_and_wait_on_source(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    -- Phase 6: Wait for sync on source and new node.
+    -- Example: Ensure n1 and n4 are fully synchronized before continuing.
+    CALL spock.wait_for_source_node_sync(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, true);
 
-    -- Phase 6: Trigger sync event on source and wait on new node
-    CALL trigger_sync_and_wait(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    -- Phase 7: Check commit timestamp and advance replication slot.
+    -- Example: Confirm n4 is caught up to n1's latest changes.
+    CALL spock.check_commit_timestamp_and_advance_slot(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 7: Check commit timestamp and advance replication slot
-    CALL check_commit_timestamp_and_advance_slot(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    -- Phase 8: Enable previously disabled subscriptions.
+    -- Example: Activate replication paths for n4.
+    CALL spock.enable_disabled_subscriptions(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 8: Enable disabled subscriptions
-    CALL enable_disabled_subscriptions(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    -- Phase 9: Create subscription from new node to source node.
+    -- Example: Set up n4 to replicate back to n1 for bidirectional sync.
+    CALL spock.create_sub_on_new_node_to_src_node(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 9: Create subscription from new node to source node
-    CALL create_sub_on_new_node_to_src_node(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    -- Phase 10: Present final cluster state.
+    -- Example: Show n1, n2, n3, n4 as fully connected and synchronized.
+    CALL spock.present_final_cluster_state(initial_node_count, verb);
 
-    -- Phase 10: Present final cluster state
-    CALL present_final_cluster_state(initial_node_count, verb);
+    -- Phase 11: Monitor replication lag.
+    -- Example: Check that n4 is keeping up with n1, n2, n3 after joining.
+    CALL spock.monitor_replication_lag(src_node_name, new_node_name, new_node_dsn, verb);
 
-    -- Phase 11: Monitor replication lag
-    CALL monitor_replication_lag(src_node_name, new_node_name, new_node_dsn, verb);
+    -- Phase 12: Show comprehensive node status across all nodes.
+    -- Example: Display all nodes in n1, n2, n3, n4, n5 cluster.
+    CALL spock.show_all_nodes(src_dsn, verb);
+
+    -- Phase 13: Show comprehensive subscription status across all nodes.
+    -- Example: Display status of all subscriptions in n1, n2, n3, n4, n5 cluster.
+    CALL spock.show_all_subscription_status(src_dsn, verb);
 END;
 $$;
-
