@@ -2,11 +2,13 @@
 
 ## v5.0.2 on Sept 22, 2025
 
-* Zero Downtime Add Node Enchancements
-    * For both the sample stored procedure and Python example
-        * Improved logging during Zodan processes.
-        * Add the skip_schema parameter for Zodan, allowing you to exclude specified schemas when adding a node.  This parameter will prevent the add node process from copying over local extension metadata.
-* Spock now uses the Postgres License
+* Improved logging for all Zodan phases in both the stored procedure and Python examples.
+* You can use the new Zodan skip_schema parameter to exclude schemas when you're adding a node, preventing local extension metadata from being copied.
+    * Added skip_schema option to sub_create. When synchronize_structure = true, schemas listed in skip_schema are not synced.
+    * dblink-based stored procedure for add node leverages skip_schema to skip preexisting schemas on the new node, avoiding failures on already existing schemas.
+    * Python add_node now mirrors stored procedure semantics, including skip_schema handling, structure sync, and logging. It works as a direct alternative to the procedure and no longer requires the dblink extension.
+* Spock has been updated to use the PostgreSQL License.
+
 
 ## v5.0.1 on Aug 27, 2025
 
