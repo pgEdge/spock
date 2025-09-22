@@ -697,6 +697,8 @@ spock_read_insert(StringInfo in, LOCKMODE lockmode, SpockTupleData *newtup)
 
 /*
  * Read UPDATE from stream.
+ *
+ * Cause an ERROR if table is not found. In a try-block just return NULL.
  */
 SpockRelation *
 spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
@@ -722,6 +724,17 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 			 action);
 
 	rel = spock_relation_open(relid, lockmode);
+	if (unlikely(rel == NULL))
+	{
+		if (!MyApplyWorker->use_try_block)
+			/*
+			 * TODO: We may do it smarter and extract table name beforehand to
+			 * show it in the error message.
+			 */
+			elog(ERROR, "Spock can't find relation with oid %u", relid);
+		else
+			return NULL;
+	}
 
 	/* check for old tuple */
 	if (action == 'K' || action == 'O')

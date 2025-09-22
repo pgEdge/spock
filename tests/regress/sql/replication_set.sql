@@ -202,3 +202,53 @@ SELECT
   remote_new_tup,error_message
 FROM spock.exception_log
 ORDER BY command_counter;
+
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g,spoc_102l CASCADE');
+
+--
+-- UPDATE row of an absent relation
+--
+
+SELECT spock.replicate_ddl('CREATE TABLE spoc_102g_u (x integer PRIMARY KEY);');
+SELECT spock.repset_add_table('default', 'spoc_102g_u');
+
+CREATE TABLE spoc_102l_u (x integer PRIMARY KEY); -- local for the publisher
+INSERT INTO spoc_102l_u VALUES (1);
+INSERT INTO spoc_102g_u VALUES (-1), (0);
+SELECT spock.repset_add_table('default', 'spoc_102l_u');
+UPDATE spoc_102g_u SET x = -2 WHERE x = -1;
+UPDATE spoc_102l_u SET x = 2 WHERE x = 1;
+BEGIN;
+UPDATE spoc_102l_u SET x = 3 WHERE x = 2;
+UPDATE spoc_102g_u SET x = -3 WHERE x = -2;
+END;
+UPDATE spoc_102g_u SET x = 1 WHERE x = 0;
+
+\c :subscriber_dsn
+-- Check replication state before the problem fixation
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT * FROM spoc_102g_u ORDER BY x;
+SELECT * FROM spoc_102l_u ORDER BY x; -- ERROR, does not exist yet
+
+-- Now, fix the issue with absent table
+\c :provider_dsn
+SELECT spock.replicate_ddl('CREATE TABLE IF NOT EXISTS spoc_102l_u (x integer PRIMARY KEY)');
+UPDATE spoc_102l_u SET x = -3 WHERE x = 3;
+INSERT INTO spoc_102l_u VALUES (4);
+UPDATE spoc_102l_u SET x = 5 WHERE x = 4;
+
+-- Check that replication works
+\c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT * FROM spoc_102l_u ORDER BY x;
+SELECT * FROM spoc_102g_u ORDER BY x;
+
+SELECT
+  command_counter,table_schema,table_name,operation,
+  remote_new_tup,error_message
+FROM spock.exception_log
+ORDER BY command_counter;
+
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');

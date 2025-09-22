@@ -1596,8 +1596,32 @@ handle_update(StringInfo s)
 
 	multi_insert_finish();
 
-	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup,
-							&newtup);
+	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup, &newtup);
+	if (unlikely(rel == NULL))
+	{
+		Assert(MyApplyWorker->use_try_block);
+
+		/*
+		 * Correctly interrupt the process: set exception flag and log the
+		 * exception itself.
+		 */
+		xact_had_exception = true;
+		exception_command_counter++;
+
+		/*
+		 * NOTE:
+		 * Considering that the apply worker regularly reset MessageContext that
+		 * contains local tuple, it make sense to centralyze management of an
+		 * exception log slot.
+		 */
+		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+
+		log_insert_exception(true, "Spock can't find relation", NULL,
+							 NULL, NULL, "UPDATE");
+		end_replication_step();
+		return;
+	}
+
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */

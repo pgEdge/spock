@@ -429,3 +429,121 @@ ORDER BY command_counter;
                6 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unknown
 (6 rows)
 
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g,spoc_102l CASCADE');
+NOTICE:  drop cascades to table spoc_102g membership in replication set default
+NOTICE:  drop cascades to table spoc_102l membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+--
+-- UPDATE row of an absent relation
+--
+SELECT spock.replicate_ddl('CREATE TABLE spoc_102g_u (x integer PRIMARY KEY);');
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT spock.repset_add_table('default', 'spoc_102g_u');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+CREATE TABLE spoc_102l_u (x integer PRIMARY KEY); -- local for the publisher
+INSERT INTO spoc_102l_u VALUES (1);
+INSERT INTO spoc_102g_u VALUES (-1), (0);
+SELECT spock.repset_add_table('default', 'spoc_102l_u');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+UPDATE spoc_102g_u SET x = -2 WHERE x = -1;
+UPDATE spoc_102l_u SET x = 2 WHERE x = 1;
+BEGIN;
+UPDATE spoc_102l_u SET x = 3 WHERE x = 2;
+UPDATE spoc_102g_u SET x = -3 WHERE x = -2;
+END;
+UPDATE spoc_102g_u SET x = 1 WHERE x = 0;
+\c :subscriber_dsn
+-- Check replication state before the problem fixation
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+SELECT * FROM spoc_102g_u ORDER BY x;
+ x  
+----
+ -3
+  1
+(2 rows)
+
+SELECT * FROM spoc_102l_u ORDER BY x; -- ERROR, does not exist yet
+ERROR:  relation "spoc_102l_u" does not exist at character 15
+-- Now, fix the issue with absent table
+\c :provider_dsn
+SELECT spock.replicate_ddl('CREATE TABLE IF NOT EXISTS spoc_102l_u (x integer PRIMARY KEY)');
+NOTICE:  relation "spoc_102l_u" already exists, skipping
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+UPDATE spoc_102l_u SET x = -3 WHERE x = 3;
+INSERT INTO spoc_102l_u VALUES (4);
+UPDATE spoc_102l_u SET x = 5 WHERE x = 4;
+-- Check that replication works
+\c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+SELECT * FROM spoc_102l_u ORDER BY x;
+ x 
+---
+ 5
+(1 row)
+
+SELECT * FROM spoc_102g_u ORDER BY x;
+ x  
+----
+ -3
+  1
+(2 rows)
+
+SELECT
+  command_counter,table_schema,table_name,operation,
+  remote_new_tup,error_message
+FROM spock.exception_log
+ORDER BY command_counter;
+ command_counter | table_schema | table_name  | operation |                   remote_new_tup                   |                                             error_message                                              
+-----------------+--------------+-------------+-----------+----------------------------------------------------+--------------------------------------------------------------------------------------------------------
+               1 |              |             | INSERT    |                                                    | Spock can't find relation
+               2 |              |             | INSERT    |                                                    | Spock can't find relation
+               3 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unknown
+               4 |              |             | INSERT    |                                                    | Spock can't find relation
+               5 |              |             | INSERT    |                                                    | Spock can't find relation
+               6 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unknown
+               7 |              |             | UPDATE    |                                                    | Spock can't find relation
+               8 |              |             | UPDATE    |                                                    | Spock can't find relation
+               9 | public       | spoc_102g_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | unknown
+              10 | public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
+(10 rows)
+
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');
+NOTICE:  drop cascades to table spoc_102g_u membership in replication set default
+NOTICE:  drop cascades to table spoc_102l_u membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
