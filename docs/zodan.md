@@ -170,7 +170,7 @@ SELECT spock.sub_create(
     provider_dsn := 'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
     replication_sets := ARRAY['default', 'default_insert_only', 'ddl_sql'],
     synchronize_structure := true,
-    skip_schema := ARRAY['management-only'],
+    skip_schema := ARRAY['mgmt-only'],
     synchronize_data := true,
     forward_origins := '{}'::text[],
     apply_delay := '0'::interval,
@@ -181,7 +181,7 @@ SELECT spock.sub_create(
 
 Optionally, include the `skip_schema` parameter and a comma-delimited array of schemas that you would like to omit when synchronizing the database structure.  The parameter can be useful in cases where the source machine contains information or extensions that you do not wish to propagate to other nodes on your network.
 
-The `skip_schema` parameter is only enforced when `synchronize_structure` is set to `true`.  For example, the following code snippet omits a schema named `management-only` from the subscription:
+The `skip_schema` parameter is only enforced when `synchronize_structure` is set to `true`.  For example, the following code snippet omits a schema named `mgmt-only` from the subscription:
 
 ```sql
 synchronize_structure = true,
