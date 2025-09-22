@@ -784,6 +784,17 @@ spock_read_delete(StringInfo in, LOCKMODE lockmode,
 		elog(ERROR, "expected action 'O' or 'K' %c", action);
 
 	rel = spock_relation_open(relid, lockmode);
+	if (unlikely(rel == NULL))
+	{
+		if (!MyApplyWorker->use_try_block)
+			/*
+			 * TODO: We may do it smarter and extract table name beforehand to
+			 * show it in the error message.
+			 */
+			elog(ERROR, "Spock can't find relation with oid %u", relid);
+		else
+			return NULL;
+	}
 
 	spock_read_tuple(in, rel, oldtup);
 

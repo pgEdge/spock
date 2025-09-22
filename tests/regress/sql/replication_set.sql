@@ -252,3 +252,46 @@ ORDER BY command_counter;
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');
+
+--
+-- DELETE row from an absent relation
+--
+
+SELECT spock.replicate_ddl('CREATE TABLE spoc_102g_d (x integer PRIMARY KEY);');
+SELECT spock.repset_add_table('default', 'spoc_102g_d');
+
+CREATE TABLE spoc_102l_d (x integer PRIMARY KEY);
+INSERT INTO spoc_102l_d VALUES (1), (2);
+INSERT INTO spoc_102g_d VALUES (-1), (-2), (-3);
+SELECT spock.repset_add_table('default', 'spoc_102l_d');
+DELETE FROM spoc_102g_d WHERE x = -1;
+DELETE FROM spoc_102l_d WHERE x = 1;
+DELETE FROM spoc_102g_d WHERE x = -2;
+
+-- Check the state of replication on the subscriber node
+\c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT * FROM spoc_102l_d ORDER BY x; -- ERROR, not existed yet.
+SELECT * FROM spoc_102g_d ORDER BY x; -- See one record (-3).
+
+-- Create table where needed
+\c :provider_dsn
+SELECT spock.replicate_ddl('CREATE TABLE IF NOT EXISTS spoc_102l_d (x integer PRIMARY KEY)');
+
+-- Do something with tables to enable replication
+INSERT INTO spoc_102g_d VALUES (-4), (-5);
+INSERT INTO spoc_102l_d VALUES (3), (4);
+UPDATE spoc_102g_d SET x = -6 WHERE x = -4;
+UPDATE spoc_102l_d SET x = 5 WHERE x = 3;
+DELETE FROM spoc_102g_d WHERE x = -3 OR x = -6;
+DELETE FROM spoc_102l_d WHERE x = 1 OR x = 5;
+
+-- Check the state of replication on the subscriber node
+\c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT * FROM spoc_102l_d ORDER BY x; -- See (4)
+SELECT * FROM spoc_102g_d ORDER BY x; -- See (-5).
+
+-- Cleanup
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_d,spoc_102l_d CASCADE');
