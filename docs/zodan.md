@@ -21,6 +21,22 @@ If you are not using `spock.node_create` to create the new node, you will need t
 * Restart the server to update the configuration.
 * Then, use the `CREATE EXTENSION spock` command to create the spock extension.
 
+**Preventing Selected Schemas from Replicating to a New Node**
+
+If your source node contains schemas that you do not wish to copy to the new node, you can include the `skip_schema` parameter in the call to `spock.sub_create()` to omit the specified schemas from replication. This is useful if you have installed extensions or tooling on the source node that isn't required on your new node.
+
+The `skip_schema` parameter is only enforced when `synchronize_structure` is set to `true`. For example:
+
+```json
+synchronize_structure = true,
+skip_schema := ARRAY['schema-name', 'schema-name', 'schema-name'],
+```
+
+Replace the placeholders (`schema-name`) in the comma-delimited array with the names of one or more schemas that you would like to omit from the replication cluster.  For a usage example, see step #8 in the tutorial that follows.
+
+
+## Adding a Node
+
 For our example, we'll create and register a new node with the `spock.node_create` command.  In the example:
 
 * Our sample database is named: `inventory`
@@ -154,6 +170,7 @@ SELECT spock.sub_create(
     provider_dsn := 'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
     replication_sets := ARRAY['default', 'default_insert_only', 'ddl_sql'],
     synchronize_structure := true,
+    skip_schema := ARRAY['management-only'],
     synchronize_data := true,
     forward_origins := '{}'::text[],
     apply_delay := '0'::interval,
@@ -161,13 +178,14 @@ SELECT spock.sub_create(
     enabled := true
 );
 ```
-Optionally, include the `skip_schema` parameter and a comma-delimited array of schemas that you would like to omit when synchronizing the database structure.  The parameter can be useful in cases where the source machine contains extensions that you do not wish to propagate to other nodes on your network.
 
-The `skip_schema` parameter is only enforced when `synchronize_structure` is set to `true`.  For example:
+Optionally, include the `skip_schema` parameter and a comma-delimited array of schemas that you would like to omit when synchronizing the database structure.  The parameter can be useful in cases where the source machine contains information or extensions that you do not wish to propagate to other nodes on your network.
+
+The `skip_schema` parameter is only enforced when `synchronize_structure` is set to `true`.  For example, the following code snippet omits a schema named `management-only` from the subscription:
 
 ```sql
 synchronize_structure = true,
-skip_schema := ARRAY['schema-name-1', 'schema-name-2', 'schema-name-3'],
+skip_schema := ARRAY['mgmt-only'],
 ```
 
 9. Next, we use a `spock.sync_event` to confirm that all of the transactions have been synced from our provider node (`n1`) to our new subscriber node (`n4`):
@@ -185,21 +203,28 @@ SELECT spock.sync_event();
 Use the value returned by `spock.sync_event` in the call to `spock.wait_for_sync_event` on `n4`:
 
 ```sql
-CALL spock.wait_for_sync_event(true, 'n4', '0/1A7D1E0'::pg_lsn, 1200000)
+CALL spock.wait_for_sync_event(true, 'n1', '0/1A7D1E0'::pg_lsn, 1200000)
 ```
 
-The last argument in the `spock.wait_for_sync_event` command specifies a timeout value (in our example, 1200000 ms.). You can adjust the timeout to meet your network requirements.
+<Callout type="info">
+The last argument in the `spock.wait_for_sync_event` command specifies a timeout value (in our example, 1200000 seconds.). You can adjust the timeout to meet your network requirements.
+</Callout>
 
-10. Then, on `n4` we check  the `spock.lag_tracker` to confirm that all of the content from `n1` has been replicated:
+10. Then, we check the [`spock.lag_tracker`](../../spock_ext/monitoring/lag_tracking.mdx) on `n4` for timestamp of the last transaction that replicated from `n1`:
 
 ```sql
 SELECT commit_timestamp FROM spock.lag_tracker WHERE origin_name = 'n1' AND receiver_name = 'n4'
 ```
 
-On `n1`, we check for the last LSN that was received; that transaction should also be present on `n4`:
+On `n1`, we retrieve the last LSN that was received at that timestamp:
 
 ```sql
-WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_inventory_n1_sub_n1_n4', 'timestamp_returned_by_last_command'::timestamp) AS lsn) SELECT pg_replication_slot_advance('spk_inventory_n1_sub_n1_n4', lsn) FROM lsn_cte
+WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_inventory_n1_sub_n1_n4', '$n4.commit_timestamp'::timestamp) AS lsn) 
+```
+Then, we advance the replication slot on `n1` to that LSN, which also advances `n4`: 
+
+```sql
+SELECT pg_replication_slot_advance('spk_inventory_n1_sub_n1_n4', lsn) FROM lsn_cte;
 ```
 
 11. On `n1`, create a subscription (named `sub_n4_n1`) between `n4` and `n1`.  This step prepares our new node to stream transactions received on `n4` to `n1`:  
