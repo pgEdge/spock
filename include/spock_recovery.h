@@ -17,24 +17,22 @@
 #include "utils/timestamp.h"
 #include "storage/lwlock.h"
 
-#define SPOCK_MAX_RECOVERY_SLOTS 64
-#define RECOVERY_SLOT_PREFIX "spock_recovery_"
-#define RECOVERY_SLOT_NAME_FORMAT RECOVERY_SLOT_PREFIX "%u_%u"
+#define RECOVERY_SLOT_PREFIX "spk_recovery_"
+#define RECOVERY_SLOT_NAME_FORMAT RECOVERY_SLOT_PREFIX "%s"
 
 /*
- * Shared memory structure for tracking recovery slots across all nodes
+ * Single recovery slot structure for the entire cluster
+ * ONE recovery slot that tracks unacknowledged transactions from ALL nodes
  */
 typedef struct SpockRecoverySlotData
 {
-	Oid			local_node_id;
-	Oid			remote_node_id;
-	char		slot_name[NAMEDATALEN];
-	XLogRecPtr	restart_lsn;
-	XLogRecPtr	confirmed_flush_lsn;
-	TimestampTz	min_unacknowledged_ts;
-	bool		active;
-	bool		in_recovery;
-	pg_atomic_uint32 recovery_generation;
+	char		slot_name[NAMEDATALEN];		/* PostgreSQL logical replication slot name */
+	XLogRecPtr	restart_lsn;				/* Earliest WAL position needed for recovery */
+	XLogRecPtr	confirmed_flush_lsn;		/* Latest acknowledged WAL position */
+	TimestampTz	min_unacknowledged_ts;		/* Oldest transaction not acknowledged by ANY remote */
+	bool		active;						/* Whether slot is actively being used */
+	bool		in_recovery;				/* Whether slot is currently in recovery process */
+	pg_atomic_uint32 recovery_generation;	/* Atomic counter preventing stale operations */
 } SpockRecoverySlotData;
 
 /*
@@ -43,18 +41,16 @@ typedef struct SpockRecoverySlotData
 typedef struct SpockRecoveryCoordinator
 {
 	LWLock	   *lock;
-	int			max_recovery_slots;
-	int			num_recovery_slots;
-	SpockRecoverySlotData slots[FLEXIBLE_ARRAY_MEMBER];
+	SpockRecoverySlotData recovery_slot;	/* Single recovery slot for entire cluster */
 } SpockRecoveryCoordinator;
 
 /* Recovery slot management functions */
 extern void spock_recovery_shmem_init(void);
 extern Size spock_recovery_shmem_size(void);
 
-extern bool create_recovery_slot(Oid local_node_id, Oid remote_node_id);
-extern void drop_recovery_slot(Oid local_node_id, Oid remote_node_id);
-extern char *get_recovery_slot_name(Oid local_node_id, Oid remote_node_id);
+extern bool create_recovery_slot(const char *database_name);
+extern void drop_recovery_slot(void);
+extern char *get_recovery_slot_name(const char *database_name);
 
 extern void update_recovery_slot_progress(const char *slot_name, XLogRecPtr lsn, TimestampTz commit_ts);
 
@@ -86,5 +82,15 @@ extern void update_recovery_progress_entry(Oid target_node_id,
 
 /* Global recovery coordinator */
 extern SpockRecoveryCoordinator *SpockRecoveryCtx;
+
+/* SQL wrapper functions for recovery operations */
+extern Datum spock_drop_node_with_recovery_sql(PG_FUNCTION_ARGS);
+extern Datum spock_quick_health_check_sql(PG_FUNCTION_ARGS);
+
+/* C function declarations for recovery logic */
+extern bool spock_manual_recover_data(Oid source_node_id, Oid target_node_id, 
+						TimestampTz from_ts, TimestampTz to_ts);
+extern bool spock_verify_cluster_consistency(void);
+extern void spock_list_recovery_recommendations(void);
 
 #endif /* SPOCK_RECOVERY_H */

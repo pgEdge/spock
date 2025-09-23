@@ -26,6 +26,12 @@
 #include "spock_common.h"
 #include "spock_compat.h"
 
+/* Undefine conflicting macros to use actual function calls */
+#undef ExecBRDeleteTriggers
+#undef ExecBRUpdateTriggers
+#undef ExecARDeleteTriggers
+#undef ExecARUpdateTriggers
+
 #if PG_VERSION_NUM >= 170000 && PG_VERSION_NUM < 180000
 static StrategyNumber spock_get_equal_strategy_number(Oid opclass);
 #endif
@@ -85,9 +91,9 @@ SPKExecBRDeleteTriggers(EState *estate,
 	UserContext		ucxt;
 	bool			ret;
 
-	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
-	ret = ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple);
-	RestoreUserContext(&ucxt);
+	SPKSwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+        ret = ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, NULL, NULL, NULL);
+	SPKRestoreUserContext(&ucxt);
 
 	return ret;
 }
@@ -100,9 +106,9 @@ SPKExecARDeleteTriggers(EState *estate,
 {
 	UserContext		ucxt;
 
-	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
-	ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple);
-	RestoreUserContext(&ucxt);
+	SPKSwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+        ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple, NULL, false);
+	SPKRestoreUserContext(&ucxt);
 }
 
 bool
@@ -116,9 +122,9 @@ SPKExecBRUpdateTriggers(EState *estate,
 	UserContext		ucxt;
 	bool			ret;
 
-	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
-	ret = ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot);
-	RestoreUserContext(&ucxt);
+	SPKSwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+	ret = ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot, NULL, NULL);
+	SPKRestoreUserContext(&ucxt);
 
 	return ret;
 }
@@ -133,9 +139,9 @@ SPKExecARUpdateTriggers(EState *estate,
 {
 	UserContext		ucxt;
 
-	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
-	ExecARUpdateTriggers(estate, relinfo, tupleid, fdw_trigtuple, slot, recheckIndexes);
-	RestoreUserContext(&ucxt);
+	SPKSwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+        ExecARUpdateTriggers(estate, relinfo, NULL, NULL, tupleid, fdw_trigtuple, slot, recheckIndexes, NULL, false);
+	SPKRestoreUserContext(&ucxt);
 }
 
 bool
@@ -146,9 +152,9 @@ SPKExecBRInsertTriggers(EState *estate,
 	UserContext		ucxt;
 	bool			ret;
 
-	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+	SPKSwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
 	ret = ExecBRInsertTriggers(estate, relinfo, slot);
-	RestoreUserContext(&ucxt);
+	SPKRestoreUserContext(&ucxt);
 
 	return ret;
 }
@@ -161,9 +167,9 @@ SPKExecARInsertTriggers(EState *estate,
 {
 	UserContext		ucxt;
 
-	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
+	SPKSwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
 	ExecARInsertTriggers(estate, relinfo, slot, recheckIndexes);
-	RestoreUserContext(&ucxt);
+	SPKRestoreUserContext(&ucxt);
 }
 
 /*

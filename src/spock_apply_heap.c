@@ -167,9 +167,8 @@ create_edata_for_relation(SpockRelation *rel)
 	rte->relkind = rel->rel->rd_rel->relkind;
 	rte->rellockmode = AccessShareLock;
 
-	addRTEPermissionInfo(&perminfos, rte);
 
-	ExecInitRangeTable(estate, list_make1(rte), perminfos);
+        ExecInitRangeTable(estate, list_make1(rte), NIL);
 
 	edata->targetRelInfo = resultRelInfo = makeNode(ResultRelInfo);
 
@@ -551,7 +550,6 @@ physatt_in_attmap(SpockRelation *rel, int attid)
 /*
  * Executes default values for columns for which we didn't get any data.
  *
- * TODO: this needs caching, it's not exactly fast.
  */
 static void
 fill_missing_defaults(SpockRelation *rel, EState *estate,
@@ -695,8 +693,7 @@ init_apply_exec_state(SpockRelation *rel)
 	ExecSetSlotDescriptor(aestate->slot, RelationGetDescr(rel->rel));
 
 	if (aestate->resultRelInfo->ri_TrigDesc)
-		EvalPlanQualInit(&aestate->epqstate, aestate->estate, NULL, NIL, -1,
-						 NIL);
+                EvalPlanQualInit(&aestate->epqstate, aestate->estate, NULL, NIL, -1, NIL);
 
 	/* Prepare to catch AFTER triggers. */
 	AfterTriggerBeginQuery();
@@ -843,7 +840,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 		UserContext	ucxt;
 
 		/* Make sure that any user-supplied code runs as the table owner. */
-		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+		SPKSwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 		/*
 		 * If this is a forced delta-apply we execute it in a
@@ -859,12 +856,10 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 
 		if (is_delta_apply)
 		{
-			SubTransactionIdSetCommitTsData(GetCurrentTransactionId(),
-											local_ts, local_origin);
 			ReleaseCurrentSubTransaction();
 		}
 
-		RestoreUserContext(&ucxt);
+		SPKRestoreUserContext(&ucxt);
 	}
 
 	if (clear_remoteslot)
@@ -950,14 +945,12 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	slot_fill_defaults(rel, estate, remoteslot);
 	MemoryContextSwitchTo(oldctx);
 
-	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
+        EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
 	ExecOpenIndices(edata->targetRelInfo, false);
 	relinfo = edata->targetRelInfo;
 	idxused = edata->targetRel->idxoid;
 
 	/*
-	 * TODO: do we need a retry finding a tuple? Also do we need
-	 * wait_for_previous_transaction() call here?
 	 */
 
 	/* Find the current local tuple. */
@@ -1000,11 +993,11 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		exception_log->local_tuple = NULL;
 
 		/* Make sure that any user-supplied code runs as the table owner. */
-		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+		SPKSwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 		/* Do the actual INSERT */
 		ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
 		/* Switch back to the original user */
-		RestoreUserContext(&ucxt);
+		SPKRestoreUserContext(&ucxt);
 	}
 
 	/* Cleanup */
@@ -1056,7 +1049,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	MemoryContextSwitchTo(oldctx);
 
 	/* Find the current local tuple */
-	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
+        EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
 	ExecOpenIndices(edata->targetRelInfo, false);
 
 	relinfo = edata->targetRelInfo;
@@ -1101,7 +1094,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 		/*
 		 * The tuple to be updated could not be found.  Do nothing except for
-		 * emitting a log message. TODO: Add pkey information as well.
+		 * emitting a log message.
 		 */
 		exception_log->local_tuple = NULL;
 		elog(ERROR,
@@ -1160,7 +1153,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	MemoryContextSwitchTo(oldctx);
 
 	/* Find the current local tuple */
-	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
+        EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
 	ExecOpenIndices(edata->targetRelInfo, false);
 
 	relinfo = edata->targetRelInfo;
@@ -1209,13 +1202,13 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		MemoryContextSwitchTo(oldctx);
 
 		/* Make sure that any user-supplied code runs as the table owner. */
-		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+		SPKSwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 		/* Delete the tuple found */
 		EvalPlanQualSetSlot(&epqstate, remoteslot);
 		ExecSimpleRelationDelete(edata->targetRelInfo, estate, &epqstate,
 								 localslot);
-		RestoreUserContext(&ucxt);
+		SPKRestoreUserContext(&ucxt);
 	}
 	else
 	{

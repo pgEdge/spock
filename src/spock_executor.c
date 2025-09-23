@@ -87,8 +87,8 @@ create_estate_for_relation(Relation rel, bool forwrite)
 	/* Initialize executor state. */
 	estate = CreateExecutorState();
 
-	addRTEPermissionInfo(&perminfos, rte);
-	ExecInitRangeTable(estate, list_make1(rte), perminfos);
+	/* addRTEPermissionInfo(&perminfos, rte); */
+	ExecInitRangeTable(estate, list_make1(rte), NIL);
 
 	estate->es_output_cid = GetCurrentCommandId(forwrite);
 

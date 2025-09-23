@@ -630,7 +630,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	}
 
 	/* update progress */
-	OutputPluginUpdateProgress(ctx, false);
+        OutputPluginUpdateProgress(ctx, false);
 
 	OutputPluginPrepareWrite(ctx, true);
 	data->api->write_commit(ctx->out, data, txn, commit_lsn);
@@ -977,7 +977,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	old = MemoryContextSwitchTo(data->context);
 
 	/* update progress */
-	OutputPluginUpdateProgress(ctx, false);
+        OutputPluginUpdateProgress(ctx, false);
 
 	/* First check the table filter */
 	if (!spock_change_filter(data, relation, change, &att_list))

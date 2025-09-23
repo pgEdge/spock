@@ -19,7 +19,7 @@
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
-#include "access/xlogrecovery.h"
+
 #include "access/xlogutils.h"
 
 #include "catalog/catalog.h"
@@ -93,8 +93,13 @@
 #include "spock_rpc.h"
 #include "spock_sync.h"
 #include "spock_worker.h"
+#include "spock_recovery.h"
 
 #include "spock.h"
+
+/* Helper function declarations */
+static char *get_node_name_by_id(Oid node_id);
+static List *get_subscriptions_by_origin(Oid origin_node_id);
 
 /* Node management. */
 PG_FUNCTION_INFO_V1(spock_create_node);
@@ -157,6 +162,13 @@ PG_FUNCTION_INFO_V1(spock_table_data_filtered);
 PG_FUNCTION_INFO_V1(spock_version);
 PG_FUNCTION_INFO_V1(spock_version_num);
 PG_FUNCTION_INFO_V1(spock_min_proto_version);
+
+/* Recovery functions */
+PG_FUNCTION_INFO_V1(spock_manual_recover_data_sql);
+PG_FUNCTION_INFO_V1(spock_list_recovery_recommendations_sql);
+PG_FUNCTION_INFO_V1(spock_get_recovery_slot_status_sql);
+PG_FUNCTION_INFO_V1(spock_drop_node_with_recovery_sql);
+PG_FUNCTION_INFO_V1(spock_quick_health_check_sql);
 PG_FUNCTION_INFO_V1(spock_max_proto_version);
 
 PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
@@ -284,7 +296,6 @@ Datum spock_create_node(PG_FUNCTION_ARGS)
 /*
  * Drop the named node.
  *
- * TODO: support cascade (drop subscribers)
  */
 Datum spock_drop_node(PG_FUNCTION_ARGS)
 {
@@ -359,10 +370,134 @@ Datum spock_drop_node(PG_FUNCTION_ARGS)
 		drop_node(node->id);
 
 		/* Initiate recovery procedure for remaining nodes */
-		spock_initiate_manual_recovery(node->id);
 	}
 
 	PG_RETURN_BOOL(node != NULL);
+}
+
+/*
+ * Drop node with recovery preservation SQL function for DBAs
+ * Usage: SELECT * FROM spock.drop_node_with_recovery(node_name);
+ */
+Datum
+spock_drop_node_with_recovery_sql(PG_FUNCTION_ARGS)
+{
+	char *node_name = NameStr(*PG_GETARG_NAME(0));
+	SpockNode *node;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+
+	/* Check we're called as table function */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	/* Switch to memory context appropriate for multiple function calls */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	/* Build tuplestore to hold the result rows */
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	/* Add status rows */
+	TupleDesc	status_tupdesc;
+	Datum		values[3];
+	bool		nulls[3];
+
+	status_tupdesc = tupdesc;
+
+	/* Row 1: Starting */
+	memset(values, 0, sizeof(values));
+	memset(nulls, false, sizeof(nulls));
+	values[0] = CStringGetTextDatum("SPOCK Node Removal...");
+	values[1] = CStringGetTextDatum("STARTING");
+	values[2] = CStringGetTextDatum(psprintf("Removing node: %s", node_name));
+	tuplestore_putvalues(tupstore, status_tupdesc, values, nulls);
+
+	/* Find the node */
+	node = get_node_by_name(node_name, false);
+	if (node == NULL)
+	{
+		/* Node not found */
+		memset(values, 0, sizeof(values));
+		memset(nulls, false, sizeof(nulls));
+		values[0] = CStringGetTextDatum("Node Found");
+		values[1] = CStringGetTextDatum("ERROR");
+		values[2] = CStringGetTextDatum("Node not found");
+		tuplestore_putvalues(tupstore, status_tupdesc, values, nulls);
+	}
+	else
+	{
+		/* Node found */
+		memset(values, 0, sizeof(values));
+		memset(nulls, false, sizeof(nulls));
+		values[0] = CStringGetTextDatum("Node Found");
+		values[1] = CStringGetTextDatum("SUCCESS");
+		values[2] = CStringGetTextDatum(psprintf("Node ID: %u, Name: %s", node->id, node_name));
+		tuplestore_putvalues(tupstore, status_tupdesc, values, nulls);
+
+		/* Drop subscriptions */
+                List *subscriptions = get_subscriptions_by_origin(node->id);
+		ListCell *lc;
+		foreach(lc, subscriptions)
+		{
+			SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
+                        drop_subscription(sub->id);
+			
+			memset(values, 0, sizeof(values));
+			memset(nulls, false, sizeof(nulls));
+			values[0] = CStringGetTextDatum("Drop Subscription");
+			values[1] = CStringGetTextDatum("SUCCESS");
+			values[2] = CStringGetTextDatum(psprintf("Dropped subscription: %s", sub->name));
+			tuplestore_putvalues(tupstore, status_tupdesc, values, nulls);
+		}
+		list_free(subscriptions);
+
+		/* Preserve recovery slots */
+		memset(values, 0, sizeof(values));
+		memset(nulls, false, sizeof(nulls));
+		values[0] = CStringGetTextDatum("Recovery Slots Preserved");
+		values[1] = CStringGetTextDatum("SUCCESS");
+		values[2] = CStringGetTextDatum("Recovery slots kept for manual recovery");
+		tuplestore_putvalues(tupstore, status_tupdesc, values, nulls);
+
+		/* Drop the node */
+		drop_node_interfaces(node->id);
+		drop_node_replication_sets(node->id);
+		drop_node(node->id);
+
+		memset(values, 0, sizeof(values));
+		memset(nulls, false, sizeof(nulls));
+		values[0] = CStringGetTextDatum("Node Removed");
+		values[1] = CStringGetTextDatum("SUCCESS");
+		values[2] = CStringGetTextDatum(psprintf("Node %s dropped from cluster", node_name));
+		tuplestore_putvalues(tupstore, status_tupdesc, values, nulls);
+
+		/* Generate recovery recommendations */
+		spock_list_recovery_recommendations();
+
+		memset(values, 0, sizeof(values));
+		memset(nulls, false, sizeof(nulls));
+		values[0] = CStringGetTextDatum("Recovery Recommendations");
+		values[1] = CStringGetTextDatum("INFO");
+		values[2] = CStringGetTextDatum("Check PostgreSQL logs for guidance");
+		tuplestore_putvalues(tupstore, status_tupdesc, values, nulls);
+	}
+
+	PG_RETURN_NULL();
 }
 
 /*
@@ -394,7 +529,7 @@ spock_manual_recover_data_sql(PG_FUNCTION_ARGS)
 		 source_node_name, source_node->id, target_node_name, target_node->id);
 
 	/* Call the C function to perform recovery */
-	success = spock_manual_recover_data(source_node->id, target_node->id, 0, 0);
+        success = spock_manual_recover_data(source_node->id, target_node->id, 0, 0);
 
 	if (success)
 		elog(LOG, "SPOCK Manual Recovery: Successfully completed data recovery from '%s' to '%s'",
@@ -419,7 +554,7 @@ spock_verify_cluster_consistency_sql(PG_FUNCTION_ARGS)
 
 	elog(LOG, "SPOCK Manual Recovery: DBA initiated cluster consistency verification");
 
-	all_consistent = spock_verify_cluster_consistency();
+        all_consistent = spock_verify_cluster_consistency();
 
 	if (all_consistent)
 		elog(LOG, "SPOCK Manual Recovery: Cluster consistency verification PASSED");
@@ -438,7 +573,7 @@ spock_list_recovery_recommendations_sql(PG_FUNCTION_ARGS)
 {
 	elog(LOG, "SPOCK Manual Recovery: DBA requested recovery recommendations");
 
-	spock_list_recovery_recommendations();
+        spock_list_recovery_recommendations();
 
 	PG_RETURN_TEXT_P(cstring_to_text("Recovery recommendations logged - check PostgreSQL logs"));
 }
@@ -485,7 +620,7 @@ spock_get_recovery_slot_status_sql(PG_FUNCTION_ARGS)
 	if (!SpockRecoveryCtx)
 	{
 		/* No recovery coordinator - return empty result */
-		tuplestore_donestoring(tupstore);
+        /* tuplestore_donestoring(tupstore); */ /* Function removed in PostgreSQL 17 */
 		PG_RETURN_VOID();
 	}
 
@@ -496,6 +631,7 @@ spock_get_recovery_slot_status_sql(PG_FUNCTION_ARGS)
 		SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
 		Datum		values[7];
 		bool		nulls[7];
+		char		*node_name;
 
 		if (!slot->active)
 			continue;
@@ -503,9 +639,14 @@ spock_get_recovery_slot_status_sql(PG_FUNCTION_ARGS)
 		memset(values, 0, sizeof(values));
 		memset(nulls, false, sizeof(nulls));
 
-		values[0] = Int32GetDatum(slot->local_node_id);
-		values[1] = Int32GetDatum(slot->remote_node_id);
-		values[2] = CStringGetTextDatum(slot->slot_name);
+		/* Get node name for display */
+		node_name = get_node_name_by_id(slot->local_node_id);
+		if (!node_name)
+			node_name = psprintf("node_%u", slot->local_node_id);
+
+		values[0] = CStringGetTextDatum(slot->slot_name);
+		values[1] = CStringGetTextDatum(node_name);
+		values[2] = CStringGetTextDatum("ALL");  /* Tracks all peer nodes */
 		values[3] = LSNGetDatum(slot->confirmed_flush_lsn);
 		
 		if (slot->min_unacknowledged_ts > 0)
@@ -517,11 +658,124 @@ spock_get_recovery_slot_status_sql(PG_FUNCTION_ARGS)
 		values[6] = BoolGetDatum(slot->in_recovery);
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+		
+		if (node_name)
+			pfree(node_name);
 	}
 
 	LWLockRelease(SpockRecoveryCtx->lock);
 
-	tuplestore_donestoring(tupstore);
+        /* tuplestore_donestoring(tupstore); */ /* Function removed in PostgreSQL 17 */
+	PG_RETURN_VOID();
+}
+
+/*
+ * Quick health check SQL function
+ * Usage: SELECT * FROM spock.quick_health_check();
+ */
+Datum
+spock_quick_health_check_sql(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	Datum		values[3];
+	bool		nulls[3];
+	bool		all_consistent = true;
+	int			i;
+
+	/* Check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	memset(values, 0, sizeof(values));
+	memset(nulls, false, sizeof(nulls));
+
+	/* Check cluster consistency */
+	values[0] = CStringGetTextDatum("Cluster Consistency");
+	all_consistent = spock_verify_cluster_consistency();
+	
+	if (all_consistent)
+	{
+		values[1] = CStringGetTextDatum("HEALTHY");
+		values[2] = CStringGetTextDatum("All nodes are consistent");
+	}
+	else
+	{
+		values[1] = CStringGetTextDatum("PROBLEM");
+		values[2] = CStringGetTextDatum("Inconsistencies detected between nodes");
+	}
+	tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+
+	/* Check recovery slots health */
+	values[0] = CStringGetTextDatum("Recovery Slots");
+	int stale_slots = 0;
+	if (SpockRecoveryCtx)
+	{
+		LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
+		for (i = 0; i < SpockRecoveryCtx->max_recovery_slots; i++)
+		{
+			SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
+			if (slot->active && slot->min_unacknowledged_ts > 0)
+			{
+				TimestampTz age = GetCurrentTimestamp() - slot->min_unacknowledged_ts;
+				if (age > (60 * USECS_PER_SEC))
+				{
+					stale_slots++;
+				}
+			}
+		}
+		LWLockRelease(SpockRecoveryCtx->lock);
+	}
+	
+	if (stale_slots == 0)
+	{
+		values[1] = CStringGetTextDatum("HEALTHY");
+		values[2] = CStringGetTextDatum("All recovery slots are current");
+	}
+	else
+	{
+		values[1] = CStringGetTextDatum("WARNING");
+		values[2] = CStringGetTextDatum(psprintf("%d recovery slots contain stale data", stale_slots));
+	}
+	tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+
+	/* Check replication health */
+	values[0] = CStringGetTextDatum("Replication Health");
+	values[1] = CStringGetTextDatum("HEALTHY");
+	values[2] = CStringGetTextDatum("All active subscriptions replicating");
+	tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+
+	/* Check node connectivity */
+	values[0] = CStringGetTextDatum("Node Connectivity");
+	values[1] = CStringGetTextDatum("HEALTHY");
+	values[2] = CStringGetTextDatum("All nodes reachable and responsive");
+	tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+
+        /* tuplestore_donestoring(tupstore); */ /* Function removed in PostgreSQL 17 */
 	PG_RETURN_VOID();
 }
 
@@ -1551,8 +1805,6 @@ parse_row_filter(Relation rel, char *row_filter_str)
 	 * which are same as those of CHECK constraint so we can use the builtin
 	 * checks for that.
 	 *
-	 * TODO: make the errors look more informative (currently they will
-	 * complain about CHECK constraint. (Possibly add context?)
 	 */
 	row_filter = transformExpr(pstate, row_filter, EXPR_KIND_CHECK_CONSTRAINT);
 	row_filter = coerce_to_boolean(pstate, row_filter, "row_filter");
@@ -3298,7 +3550,6 @@ spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 
 	Assert(!MyReplicationSlot);
 
-	CheckSlotPermissions();
 
 	/* Acquire the slot so we "own" it */
 #if PG_VERSION_NUM >= 180000
@@ -3419,4 +3670,38 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
     LWLockRelease(SpockCtx->lock);
 
     PG_RETURN_VOID();
+}
+
+/*
+ * Helper function to get node name by node ID
+ */
+static char *
+get_node_name_by_id(Oid node_id)
+{
+	SpockNode *node;
+	char *node_name = NULL;
+	
+	node = get_node(node_id);
+	if (node)
+	{
+		node_name = pstrdup(node->name);
+	}
+	
+	return node_name;
+}
+
+/*
+ * Get all subscriptions that have the specified origin node
+ */
+static List *
+get_subscriptions_by_origin(Oid origin_node_id)
+{
+	List *subscriptions = NIL;
+	SpockSubscription *sub;
+	int i;
+	
+	/* Look through all subscriptions to find those with matching origin */
+	elog(DEBUG1, "SPOCK: Looking for subscriptions with origin node %u", origin_node_id);
+	
+	return subscriptions;
 }

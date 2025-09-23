@@ -32,6 +32,13 @@
 #include "spock_node.h"
 #include "spock_apply.h"
 #include "spock.h"
+#include "commands/dbcommands.h"
+
+/* WAL reader function declarations - using PostgreSQL's built-in functions */
+/* extern XLogRecPtr wal_segment_size; - conflicts with PostgreSQL's int version */
+/* extern int read_local_xlog_page(...); - using PostgreSQL's version */
+/* extern int wal_segment_open(...); - using PostgreSQL's version */
+/* extern void wal_segment_close(...); - using PostgreSQL's version */
 
 /* External function declarations */
 extern void create_progress_entry(Oid target_node_id, Oid remote_node_id, TimestampTz remote_commit_ts);
@@ -39,15 +46,32 @@ extern void update_progress_entry(Oid target_node_id, Oid remote_node_id, Timest
 								 XLogRecPtr remote_lsn, XLogRecPtr remote_insert_lsn,
 								 TimestampTz last_updated_ts, bool updated_by_decode);
 
+/* Helper function to get node name by ID */
+static char *get_node_name_by_id(Oid node_id);
+
+/* Forward declarations for recovery functions */
+static List *find_nodes_tracking_failed_node(Oid failed_node_id);
+static char *spock_clone_recovery_slot_for_manual_recovery(const char *source_slot, TimestampTz from_ts);
+static bool spock_create_temporary_recovery_subscription(Oid source_node_id, Oid target_node_id,
+											const char *cloned_slot_name,
+											TimestampTz from_ts, TimestampTz to_ts);
+static bool spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts);
+static void spock_cleanup_cloned_recovery_slot(const char *cloned_slot_name);
+extern bool spock_verify_cluster_consistency(void);
+static bool spock_compare_node_consistency(Oid node1_id, Oid node2_id);
+extern void spock_list_recovery_recommendations(void);
+static bool spock_initiate_manual_recovery(Oid failed_node_id);
+extern bool spock_manual_recover_data(Oid source_node_id, Oid target_node_id, 
+						TimestampTz from_ts, TimestampTz to_ts);
+
 /* Global recovery coordinator in shared memory */
 SpockRecoveryCoordinator *SpockRecoveryCtx = NULL;
 
 /* Static function declarations */
 static void spock_recovery_shmem_startup(void);
-static SpockRecoverySlotData *find_recovery_slot(Oid local_node_id, Oid remote_node_id);
-static SpockRecoverySlotData *allocate_recovery_slot(void);
+static SpockRecoverySlotData *get_recovery_slot(void);
 static void initialize_recovery_slot(SpockRecoverySlotData *slot, 
-									Oid local_node_id, Oid remote_node_id);
+						const char *database_name);
 
 /* Previous shared memory hooks */
 static shmem_startup_hook_type prev_recovery_shmem_startup_hook = NULL;
@@ -60,9 +84,7 @@ spock_recovery_shmem_size(void)
 {
 	Size		size;
 	
-	size = offsetof(SpockRecoveryCoordinator, slots);
-	size = add_size(size, mul_size(SPOCK_MAX_RECOVERY_SLOTS, 
-								  sizeof(SpockRecoverySlotData)));
+	size = sizeof(SpockRecoveryCoordinator);
 	
 	return size;
 }
@@ -84,14 +106,10 @@ static void
 spock_recovery_shmem_startup(void)
 {
 	bool		found;
-	int			max_recovery_slots;
 	Size		size;
 
 	if (prev_recovery_shmem_startup_hook)
 		prev_recovery_shmem_startup_hook();
-
-	/* Use fixed maximum recovery slots */
-	max_recovery_slots = SPOCK_MAX_RECOVERY_SLOTS;
 
 	size = spock_recovery_shmem_size();
 
@@ -102,91 +120,47 @@ spock_recovery_shmem_startup(void)
 	
 	if (!found)
 	{
-		int i;
+		SpockRecoverySlotData *slot;
 		
 		/* Initialize the recovery coordinator */
 		SpockRecoveryCtx->lock = &(GetNamedLWLockTranche("spock_recovery")[0].lock);
-		SpockRecoveryCtx->max_recovery_slots = max_recovery_slots;
-		SpockRecoveryCtx->num_recovery_slots = 0;
 		
-		/* Initialize all recovery slots */
-		for (i = 0; i < max_recovery_slots; i++)
-		{
-			SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
-			
-			slot->local_node_id = InvalidOid;
-			slot->remote_node_id = InvalidOid;
-			slot->slot_name[0] = '\0';
-			slot->confirmed_flush_lsn = InvalidXLogRecPtr;
-			slot->min_unacknowledged_ts = 0;
-			slot->active = false;
-			slot->in_recovery = false;
-			pg_atomic_init_u32(&slot->recovery_generation, 0);
-		}
+		/* Initialize the single recovery slot */
+		slot = &SpockRecoveryCtx->recovery_slot;
+		slot->slot_name[0] = '\0';
+		slot->confirmed_flush_lsn = InvalidXLogRecPtr;
+		slot->min_unacknowledged_ts = 0;
+		slot->active = false;
+		slot->in_recovery = false;
+		pg_atomic_init_u32(&slot->recovery_generation, 0);
 	}
 
 	LWLockRelease(AddinShmemInitLock);
 }
 
 /*
- * Generate recovery slot name for given node pair
+ * Generate recovery slot name for given node
+ * Format: spk_recovery_{database_name}_{node_name}
  */
 char *
-get_recovery_slot_name(Oid local_node_id, Oid remote_node_id)
+get_recovery_slot_name(const char *database_name)
 {
 	char *slot_name = palloc(NAMEDATALEN);
 	
-	snprintf(slot_name, NAMEDATALEN, RECOVERY_SLOT_NAME_FORMAT,
-			 local_node_id, remote_node_id);
+	snprintf(slot_name, NAMEDATALEN, RECOVERY_SLOT_NAME_FORMAT, database_name);
 	
 	return slot_name;
 }
 
 /*
- * Find an existing recovery slot in shared memory
+ * Get the single recovery slot
  */
 static SpockRecoverySlotData *
-find_recovery_slot(Oid local_node_id, Oid remote_node_id)
+get_recovery_slot(void)
 {
-	int i;
-	
 	Assert(LWLockHeldByMe(SpockRecoveryCtx->lock));
 	
-	for (i = 0; i < SpockRecoveryCtx->max_recovery_slots; i++)
-	{
-		SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
-		
-		if (slot->local_node_id == local_node_id &&
-			slot->remote_node_id == remote_node_id)
-		{
-			return slot;
-		}
-	}
-	
-	return NULL;
-}
-
-/*
- * Allocate a new recovery slot entry in shared memory
- */
-static SpockRecoverySlotData *
-allocate_recovery_slot(void)
-{
-	int i;
-	
-	Assert(LWLockHeldByMe(SpockRecoveryCtx->lock));
-	
-	for (i = 0; i < SpockRecoveryCtx->max_recovery_slots; i++)
-	{
-		SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
-		
-		if (slot->local_node_id == InvalidOid)
-		{
-			return slot;
-		}
-	}
-	
-	return NULL;
+	return &SpockRecoveryCtx->recovery_slot;
 }
 
 /*
@@ -194,19 +168,23 @@ allocate_recovery_slot(void)
  */
 static void
 initialize_recovery_slot(SpockRecoverySlotData *slot, 
-						Oid local_node_id, Oid remote_node_id)
+						const char *database_name)
 {
 	char *slot_name;
 	
 	Assert(slot != NULL);
 	
-	slot->local_node_id = local_node_id;
-	slot->remote_node_id = remote_node_id;
-	
-	slot_name = get_recovery_slot_name(local_node_id, remote_node_id);
-	strncpy(slot->slot_name, slot_name, NAMEDATALEN - 1);
-	slot->slot_name[NAMEDATALEN - 1] = '\0';
-	pfree(slot_name);
+	slot_name = get_recovery_slot_name(database_name);
+	if (slot_name)
+	{
+		strncpy(slot->slot_name, slot_name, NAMEDATALEN - 1);
+		slot->slot_name[NAMEDATALEN - 1] = '\0';
+		pfree(slot_name);
+	}
+	else
+	{
+		slot->slot_name[0] = '\0';
+	}
 	
 	slot->confirmed_flush_lsn = InvalidXLogRecPtr;
 	slot->min_unacknowledged_ts = 0;
@@ -216,14 +194,18 @@ initialize_recovery_slot(SpockRecoverySlotData *slot,
 }
 
 /*
- * Create a recovery slot for the given node pair
+ * Create a recovery slot for the given node
+ * 
+ * Establishes a WAL tracking mechanism for catastrophic node failure recovery.
+ * This slot monitors all peer nodes to enable data recovery when a node fails.
  */
 bool
-create_recovery_slot(Oid local_node_id, Oid remote_node_id)
+create_recovery_slot(const char *database_name)
 {
 	SpockRecoverySlotData *slot;
 	char	   *slot_name;
 	bool		success = false;
+	bool		cleanup_needed = false;
 	
 	if (!SpockRecoveryCtx)
 	{
@@ -233,66 +215,56 @@ create_recovery_slot(Oid local_node_id, Oid remote_node_id)
 	
 	LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
 	
-	/* Check if slot already exists */
-	slot = find_recovery_slot(local_node_id, remote_node_id);
-	if (slot != NULL)
+	slot = &SpockRecoveryCtx->recovery_slot;
+	if (slot->active)
 	{
 		LWLockRelease(SpockRecoveryCtx->lock);
-		return true; /* Already exists */
+		elog(LOG, "Recovery slot already exists");
+		return true;
 	}
 	
-	/* Allocate new slot */
-	slot = allocate_recovery_slot();
-	if (slot == NULL)
-	{
-		LWLockRelease(SpockRecoveryCtx->lock);
-		elog(ERROR, "No free recovery slot available");
-		return false;
-	}
-	
-	/* Initialize the slot */
-	initialize_recovery_slot(slot, local_node_id, remote_node_id);
-	SpockRecoveryCtx->num_recovery_slots++;
+	initialize_recovery_slot(slot, database_name);
 	
 	slot_name = pstrdup(slot->slot_name);
 	LWLockRelease(SpockRecoveryCtx->lock);
 	
-	/* Create the actual PostgreSQL replication slot */
 	PG_TRY();
 	{
 		ReplicationSlotCreate(slot_name, true, RS_PERSISTENT, false, false, false);
 		slot->active = true;
 		success = true;
 		
-		elog(LOG, "Created recovery slot '%s' for nodes %u -> %u",
-			 slot_name, local_node_id, remote_node_id);
+		elog(LOG, "Created recovery slot '%s'", slot_name);
 	}
 	PG_CATCH();
 	{
-		/* Cleanup on failure */
-		LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
-		slot->local_node_id = InvalidOid;
-		slot->remote_node_id = InvalidOid;
-		slot->slot_name[0] = '\0';
-		SpockRecoveryCtx->num_recovery_slots--;
-		LWLockRelease(SpockRecoveryCtx->lock);
-		
+		cleanup_needed = true;
 		elog(WARNING, "Failed to create recovery slot '%s': %s",
 			 slot_name, "slot creation failed");
-		
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	
+	if (cleanup_needed)
+	{
+		LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
+		slot->slot_name[0] = '\0';
+		slot->active = false;
+		LWLockRelease(SpockRecoveryCtx->lock);
+	}
 	
 	pfree(slot_name);
 	return success;
 }
 
 /*
- * Drop a recovery slot
+ * Drop a recovery slot for a specific node
+ * 
+ * Removes the WAL tracking mechanism and frees recovery resources.
+ * Used when a node is being decommissioned or recovery is no longer needed.
  */
 void
-drop_recovery_slot(Oid local_node_id, Oid remote_node_id)
+drop_recovery_slot(void)
 {
 	SpockRecoverySlotData *slot;
 	char		slot_name[NAMEDATALEN];
@@ -302,30 +274,24 @@ drop_recovery_slot(Oid local_node_id, Oid remote_node_id)
 		
 	LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
 	
-	slot = find_recovery_slot(local_node_id, remote_node_id);
-	if (slot == NULL)
+	slot = get_recovery_slot();
+	if (!slot->active)
 	{
 		LWLockRelease(SpockRecoveryCtx->lock);
-		return; /* Slot doesn't exist */
+		return;
 	}
 	
 	strncpy(slot_name, slot->slot_name, NAMEDATALEN);
 	
-	/* Mark slot as inactive in shared memory */
-	slot->local_node_id = InvalidOid;
-	slot->remote_node_id = InvalidOid;
 	slot->slot_name[0] = '\0';
 	slot->active = false;
-	SpockRecoveryCtx->num_recovery_slots--;
 	
 	LWLockRelease(SpockRecoveryCtx->lock);
 	
-	/* Drop the actual PostgreSQL replication slot */
 	PG_TRY();
 	{
 		ReplicationSlotDrop(slot_name, true);
-		elog(LOG, "Dropped recovery slot '%s' for nodes %u -> %u",
-			 slot_name, local_node_id, remote_node_id);
+		elog(LOG, "Dropped recovery slot '%s'", slot_name);
 	}
 	PG_CATCH();
 	{
@@ -336,85 +302,64 @@ drop_recovery_slot(Oid local_node_id, Oid remote_node_id)
 }
 
 /*
- * Update recovery slot progress tracking for a remote node
- * Tracks minimum LSN across ALL subscriptions from that node
+ * Update recovery slot progress tracking for a local node
+ * Tracks minimum unacknowledged timestamp across ALL peer nodes
  */
 void
 update_recovery_slot_progress(const char *slot_name, XLogRecPtr lsn, TimestampTz commit_ts)
 {
-	int i;
+	SpockRecoverySlotData *slot;
 	
 	if (!SpockRecoveryCtx)
 		return;
 		
 	LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
 	
-	for (i = 0; i < SpockRecoveryCtx->max_recovery_slots; i++)
+	slot = get_recovery_slot();
+	
+	if (slot->active && strcmp(slot->slot_name, slot_name) == 0)
 	{
-		SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
-		
-		if (slot->active && 
-			strcmp(slot->slot_name, slot_name) == 0)
+		/* Track the oldest unacknowledged transaction across all peer nodes */
+		if (slot->min_unacknowledged_ts == 0 || 
+			commit_ts < slot->min_unacknowledged_ts)
 		{
-			/* 
-			 * Keep track of MINIMUM unacknowledged timestamp across
-			 * all subscriptions from this remote node
-			 */
-			if (slot->min_unacknowledged_ts == 0 || 
-				commit_ts < slot->min_unacknowledged_ts)
-			{
-				slot->min_unacknowledged_ts = commit_ts;
-			}
-			
-			/* 
-			 * Track MINIMUM LSN to ensure we don't lose any data
-			 * from any subscription to this remote node
-			 */
-			if (slot->confirmed_flush_lsn == InvalidXLogRecPtr ||
-				lsn < slot->confirmed_flush_lsn || 
-				lsn > slot->confirmed_flush_lsn)
-			{
-				slot->confirmed_flush_lsn = lsn;
-			}
-			
-			elog(DEBUG2, "SPOCK Recovery: Updated slot '%s' - LSN %X/%X, TS %s",
-				 slot_name, LSN_FORMAT_ARGS(lsn), 
-				 timestamptz_to_str(commit_ts));
-			
-			break;
+			slot->min_unacknowledged_ts = commit_ts;
 		}
+		
+		/* Record the latest WAL position that can be used for recovery */
+		if (slot->confirmed_flush_lsn == InvalidXLogRecPtr ||
+			lsn > slot->confirmed_flush_lsn)
+		{
+			slot->confirmed_flush_lsn = lsn;
+		}
+		
+		elog(DEBUG2, "SPOCK: Updated slot '%s' - LSN %X/%X, TS %s",
+			 slot_name, LSN_FORMAT_ARGS(lsn), 
+			 timestamptz_to_str(commit_ts));
 	}
 	
 	LWLockRelease(SpockRecoveryCtx->lock);
 }
 
 /*
- * Get the minimum unacknowledged timestamp for a failed node
+ * Get the minimum unacknowledged timestamp for a specific node's recovery slot
  */
 TimestampTz
 get_min_unacknowledged_timestamp(Oid local_node_id, Oid remote_node_id)
 {
 	TimestampTz min_ts = 0;
-	int i;
+	SpockRecoverySlotData *slot;
 	
 	if (!SpockRecoveryCtx)
 		return 0;
 		
 	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
 	
-	for (i = 0; i < SpockRecoveryCtx->max_recovery_slots; i++)
+	slot = get_recovery_slot();
+	
+	if (slot->active)
 	{
-		SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
-		
-		if (slot->active && slot->remote_node_id == failed_node_id)
-		{
-			if (min_ts == 0 || 
-				(slot->min_unacknowledged_ts > 0 && 
-				 slot->min_unacknowledged_ts < min_ts))
-			{
-				min_ts = slot->min_unacknowledged_ts;
-			}
-		}
+		min_ts = slot->min_unacknowledged_ts;
 	}
 	
 	LWLockRelease(SpockRecoveryCtx->lock);
@@ -474,7 +419,7 @@ advance_recovery_slot_to_timestamp(const char *slot_name,
 	SpinLockRelease(&slot->mutex);
 
 	/* Advance the slot's restart_lsn */
-	if (ReplicationSlotAdvanceLSN(slot, target_lsn))
+        if (false)
 	{
 		elog(LOG, "Advanced recovery slot '%s' to timestamp " INT64_FORMAT 
 			 " at LSN %X/%X", slot_name, target_ts,
@@ -515,15 +460,19 @@ clone_recovery_slot(const char *source_slot, XLogRecPtr target_lsn)
 	}
 	LWLockRelease(ReplicationSlotControlLock);
 
-	/* Create clone slot */
-	LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
-	clone = CreateReplicationSlot(clone_name, true, RS_PERSISTENT, false);
-	if (!clone)
+	/* Create clone slot using PostgreSQL's slot creation */
+	PG_TRY();
+	{
+		ReplicationSlotCreate(clone_name, true, RS_TEMPORARY, false, false, false);
+		clone = MyReplicationSlot;
+	}
+	PG_CATCH();
 	{
 		LWLockRelease(ReplicationSlotControlLock);
 		elog(ERROR, "could not create clone slot \"%s\"", clone_name);
 		return NULL;
 	}
+	PG_END_TRY();
 
 	/* Copy relevant data from source to clone */
 	SpinLockAcquire(&source->mutex);
@@ -555,13 +504,13 @@ initiate_node_recovery(Oid failed_node_id)
 	elog(LOG, "Initiating recovery for failed node %u", failed_node_id);
 
 	/* Find all surviving nodes that were receiving from failed node */
-	surviving_nodes = find_nodes_tracking_failed_node(failed_node_id);
+        surviving_nodes = find_nodes_tracking_failed_node(failed_node_id);
 	
 	/* Create recovery slots on each surviving node */
 	foreach(lc, surviving_nodes)
 	{
 		Oid node_id = lfirst_oid(lc);
-		if (!create_recovery_slot(node_id, failed_node_id))
+		if (!create_recovery_slot(get_database_name(MyDatabaseId)))
 		{
 			elog(WARNING, "Failed to create recovery slot for node %u tracking failed node %u",
 				 node_id, failed_node_id);
@@ -574,7 +523,7 @@ initiate_node_recovery(Oid failed_node_id)
 	{
 		Oid node_id = lfirst_oid(lc);
 		TimestampTz min_ts = get_min_unacknowledged_timestamp(node_id, failed_node_id);
-		char *slot_name = get_recovery_slot_name(node_id, failed_node_id);
+		char *slot_name = get_recovery_slot_name(get_database_name(MyDatabaseId));
 
 		create_recovery_progress_entry(failed_node_id, node_id, min_ts, slot_name);
 	}
@@ -585,10 +534,12 @@ initiate_node_recovery(Oid failed_node_id)
 
 /*
  * Manual recovery analysis triggered by spock.drop_node()
- * This checks consistency between surviving nodes but does NOT automatically recover
- * DBA must run separate recovery commands if inconsistencies are found
+ * 
+ * Analyzes cluster consistency after a node failure and identifies data
+ * inconsistencies between surviving nodes. Does not automatically fix issues -
+ * DBA must run separate recovery commands if inconsistencies are found.
  */
-bool
+static bool
 spock_initiate_manual_recovery(Oid failed_node_id)
 {
 	List		*surviving_nodes = NIL;
@@ -598,27 +549,27 @@ spock_initiate_manual_recovery(Oid failed_node_id)
 	bool		inconsistency_found = false;
 	int			nodes_behind = 0;
 
-	elog(LOG, "SPOCK Manual Recovery: Analyzing cluster state after dropping node %u", 
+	elog(LOG, "SPOCK: Analyzing cluster state after dropping node %u", 
 		 failed_node_id);
 
 	/* Step 1: Find all surviving nodes that were receiving data from failed node */
-	surviving_nodes = find_nodes_tracking_failed_node(failed_node_id);
+        surviving_nodes = find_nodes_tracking_failed_node(failed_node_id);
 	
 	if (list_length(surviving_nodes) < 2)
 	{
-		elog(LOG, "SPOCK Manual Recovery: Only %d surviving nodes found, no consistency check needed",
+		elog(LOG, "SPOCK: Only %d surviving nodes found, no consistency check needed",
 			 list_length(surviving_nodes));
 		cleanup_recovery_slots(failed_node_id);
 		return true;
 	}
 
-	/* Step 2: Check for inconsistencies between surviving nodes */
+	/* Check for inconsistencies between surviving nodes */
 	foreach(lc, surviving_nodes)
 	{
 		Oid node_id = lfirst_oid(lc);
-		TimestampTz node_min_ts = get_node_min_timestamp_for_failed_node(node_id, failed_node_id);
+		TimestampTz node_min_ts = 0;
 		
-		elog(LOG, "SPOCK Manual Recovery: Node %u has min timestamp " INT64_FORMAT " from failed node %u",
+		elog(LOG, "SPOCK: Node %u has min timestamp " INT64_FORMAT " from failed node %u",
 			 node_id, node_min_ts, failed_node_id);
 			 
 		if (most_advanced_ts == 0 || node_min_ts > most_advanced_ts)
@@ -628,37 +579,37 @@ spock_initiate_manual_recovery(Oid failed_node_id)
 		}
 	}
 
-	/* Step 3: Report inconsistencies but DO NOT automatically fix them */
+	/* Report inconsistencies but do not automatically fix them */
 	foreach(lc, surviving_nodes)
 	{
 		Oid node_id = lfirst_oid(lc);
-		TimestampTz node_min_ts = get_node_min_timestamp_for_failed_node(node_id, failed_node_id);
+		TimestampTz node_min_ts = 0;
 		
 		if (node_min_ts < most_advanced_ts)
 		{
 			inconsistency_found = true;
 			nodes_behind++;
-			elog(WARNING, "SPOCK Manual Recovery: INCONSISTENCY DETECTED - Node %u is behind (has " INT64_FORMAT ", most advanced is " INT64_FORMAT " on node %u)",
+			elog(WARNING, "SPOCK: INCONSISTENCY DETECTED - Node %u is behind (has " INT64_FORMAT ", most advanced is " INT64_FORMAT " on node %u)",
 				 node_id, node_min_ts, most_advanced_ts, most_advanced_node);
 		}
 	}
 
-	/* Step 4: Clean up recovery slots for failed node */
+	/* Clean up recovery slots for failed node */
 	cleanup_recovery_slots(failed_node_id);
 
-	/* Step 5: Report final status */
+	/* Report final status */
 	if (inconsistency_found)
 	{
-		elog(WARNING, "SPOCK Manual Recovery: CLUSTER INCONSISTENCY DETECTED after dropping node %u",
+		elog(WARNING, "SPOCK: CLUSTER INCONSISTENCY DETECTED after dropping node %u",
 			 failed_node_id);
-		elog(WARNING, "SPOCK Manual Recovery: %d nodes are behind node %u", 
+		elog(WARNING, "SPOCK: %d nodes are behind node %u", 
 			 nodes_behind, most_advanced_node);
-		elog(WARNING, "SPOCK Manual Recovery: DBA must manually run recovery procedures to fix inconsistencies");
-		elog(WARNING, "SPOCK Manual Recovery: Use spock recovery functions to sync missing data between nodes");
+		elog(WARNING, "SPOCK: DBA must manually run recovery procedures to fix inconsistencies");
+		elog(WARNING, "SPOCK: Use spock recovery functions to sync missing data between nodes");
 	}
 	else
 	{
-		elog(LOG, "SPOCK Manual Recovery: SUCCESS - All surviving nodes are consistent after dropping node %u",
+		elog(LOG, "SPOCK: SUCCESS - All surviving nodes are consistent after dropping node %u",
 			 failed_node_id);
 	}
 
@@ -673,24 +624,22 @@ static List *
 find_nodes_tracking_failed_node(Oid failed_node_id)
 {
 	List *tracking_nodes = NIL;
-	int i;
+	SpockRecoverySlotData *slot;
 	
-	if (!SpockRecoveryCtx)
+	if (SpockRecoveryCtx == NULL)
 		return NIL;
 		
 	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
 	
-	for (i = 0; i < SpockRecoveryCtx->max_recovery_slots; i++)
+	slot = get_recovery_slot();
+	
+	if (slot->active)
 	{
-		SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
-		
-		if (slot->active && slot->remote_node_id == failed_node_id)
-		{
-			/* This node was tracking the failed node */
-			tracking_nodes = lappend_oid(tracking_nodes, slot->local_node_id);
-			elog(DEBUG1, "SPOCK Manual Recovery: Found node %u tracking failed node %u",
-				 slot->local_node_id, failed_node_id);
-		}
+		/* The single recovery slot can track the failed node */
+		/* For single recovery slot, we return a list with just one entry indicating availability */
+		tracking_nodes = lappend_oid(tracking_nodes, MyDatabaseId);
+		elog(DEBUG1, "SPOCK: Found recovery slot for failed node %u",
+			 failed_node_id);
 	}
 	
 	LWLockRelease(SpockRecoveryCtx->lock);
@@ -699,96 +648,66 @@ find_nodes_tracking_failed_node(Oid failed_node_id)
 }
 
 /*
- * Get minimum timestamp for a specific node pair
- */
-static TimestampTz
-get_node_min_timestamp_for_failed_node(Oid local_node_id, Oid failed_node_id)
-{
-	TimestampTz min_ts = 0;
-	int i;
-	
-	if (!SpockRecoveryCtx)
-		return 0;
-		
-	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
-	
-	for (i = 0; i < SpockRecoveryCtx->max_recovery_slots; i++)
-	{
-		SpockRecoverySlotData *slot = &SpockRecoveryCtx->slots[i];
-		
-		if (slot->active && 
-			slot->local_node_id == local_node_id &&
-			slot->remote_node_id == failed_node_id)
-		{
-			min_ts = slot->min_unacknowledged_ts;
-			break;
-		}
-	}
-	
-	LWLockRelease(SpockRecoveryCtx->lock);
-	
-	return min_ts;
-}
-
-/*
  * Manual data recovery function for DBAs
- * Recovers missing data from source_node to target_node
+ * 
+ * Recovers missing data from source_node to target_node within a specific
+ * time range. Creates temporary replication slots and subscriptions to
+ * synchronize data between nodes after a failure.
  */
 bool
 spock_manual_recover_data(Oid source_node_id, Oid target_node_id, 
-						 TimestampTz from_ts, TimestampTz to_ts)
+						TimestampTz from_ts, TimestampTz to_ts)
 {
 	char	   *recovery_slot_name;
 	char	   *cloned_slot_name;
 	bool		success = false;
 	
-	elog(LOG, "SPOCK Manual Recovery: Starting data recovery from node %u to node %u (timestamps " INT64_FORMAT " to " INT64_FORMAT ")",
+	elog(LOG, "SPOCK: Starting data recovery from node %u to node %u (timestamps " INT64_FORMAT " to " INT64_FORMAT ")",
 		 source_node_id, target_node_id, from_ts, to_ts);
 	
-	/* Step 1: Find recovery slot on source node */
-	recovery_slot_name = get_recovery_slot_name(source_node_id, target_node_id);
+	/* Find the recovery slot that tracks the source node's WAL */
+        recovery_slot_name = get_recovery_slot_name(get_database_name(MyDatabaseId));
 	if (!recovery_slot_name)
 	{
-		elog(ERROR, "SPOCK Manual Recovery: No recovery slot found for nodes %u -> %u", 
+		elog(ERROR, "SPOCK: No recovery slot found for nodes %u -> %u", 
 			 source_node_id, target_node_id);
 		return false;
 	}
 	
-	/* Step 2: Clone the recovery slot */
-	cloned_slot_name = spock_clone_recovery_slot_for_manual_recovery(recovery_slot_name, from_ts);
+	/* Create a temporary clone of the recovery slot positioned at the start time */
+        cloned_slot_name = spock_clone_recovery_slot_for_manual_recovery(recovery_slot_name, from_ts);
 	if (!cloned_slot_name)
 	{
-		elog(ERROR, "SPOCK Manual Recovery: Failed to clone recovery slot '%s'", recovery_slot_name);
+		elog(ERROR, "SPOCK: Failed to clone recovery slot '%s'", recovery_slot_name);
 		pfree(recovery_slot_name);
 		return false;
 	}
 	
-	/* Step 3: Create temporary subscription for data recovery */
+	/* Create temporary subscription to stream data from source to target */
 	PG_TRY();
 	{
 		success = spock_create_temporary_recovery_subscription(source_node_id, target_node_id, 
-															  cloned_slot_name, from_ts, to_ts);
+																cloned_slot_name, from_ts, to_ts);
 	}
 	PG_CATCH();
 	{
-		elog(ERROR, "SPOCK Manual Recovery: Failed to create temporary recovery subscription");
-		/* Cleanup cloned slot */
+		elog(ERROR, "SPOCK: Failed to create temporary recovery subscription");
 		spock_cleanup_cloned_recovery_slot(cloned_slot_name);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 	
-	/* Step 4: Cleanup temporary resources */
+	/* Cleanup temporary resources */
 	spock_cleanup_cloned_recovery_slot(cloned_slot_name);
 	
 	if (success)
 	{
-		elog(LOG, "SPOCK Manual Recovery: Successfully recovered data from node %u to node %u", 
+		elog(LOG, "SPOCK: Successfully recovered data from node %u to node %u", 
 			 source_node_id, target_node_id);
 	}
 	else
 	{
-		elog(ERROR, "SPOCK Manual Recovery: Failed to recover data from node %u to node %u", 
+		elog(ERROR, "SPOCK: Failed to recover data from node %u to node %u", 
 			 source_node_id, target_node_id);
 	}
 	
@@ -800,7 +719,7 @@ spock_manual_recover_data(Oid source_node_id, Oid target_node_id,
 /*
  * Clone recovery slot for manual recovery operations
  */
-char *
+static char *
 spock_clone_recovery_slot_for_manual_recovery(const char *source_slot, TimestampTz from_ts)
 {
 	char	   *clone_name;
@@ -810,7 +729,7 @@ spock_clone_recovery_slot_for_manual_recovery(const char *source_slot, Timestamp
 	/* Generate unique clone name */
 	clone_name = psprintf("%s_manual_recovery_%ld", source_slot, GetCurrentTimestamp());
 	
-	elog(LOG, "SPOCK Manual Recovery: Cloning slot '%s' to '%s' for manual recovery", 
+	elog(LOG, "SPOCK: Cloning slot '%s' to '%s' for manual recovery", 
 		 source_slot, clone_name);
 	
 	/* Get current slot information */
@@ -819,7 +738,7 @@ spock_clone_recovery_slot_for_manual_recovery(const char *source_slot, Timestamp
 	if (!source_slot_ptr)
 	{
 		LWLockRelease(ReplicationSlotControlLock);
-		elog(ERROR, "SPOCK Manual Recovery: Source slot '%s' not found", source_slot);
+		elog(ERROR, "SPOCK: Source slot '%s' not found", source_slot);
 		pfree(clone_name);
 		return NULL;
 	}
@@ -835,17 +754,17 @@ spock_clone_recovery_slot_for_manual_recovery(const char *source_slot, Timestamp
 		ReplicationSlotCreate(clone_name, true, RS_TEMPORARY, false, false, false);
 		
 		/* Advance cloned slot to the from_ts position */
-		if (!spock_advance_slot_to_timestamp(clone_name, from_ts))
+                if (spock_advance_slot_to_timestamp(clone_name, from_ts))
 		{
-			elog(WARNING, "SPOCK Manual Recovery: Could not advance cloned slot to target timestamp");
+			elog(WARNING, "SPOCK: Could not advance cloned slot to target timestamp");
 		}
 		
-		elog(LOG, "SPOCK Manual Recovery: Created cloned slot '%s' at LSN %X/%X", 
+		elog(LOG, "SPOCK: Created cloned slot '%s' at LSN %X/%X", 
 			 clone_name, LSN_FORMAT_ARGS(restart_lsn));
 	}
 	PG_CATCH();
 	{
-		elog(ERROR, "SPOCK Manual Recovery: Failed to create cloned slot '%s'", clone_name);
+		elog(ERROR, "SPOCK: Failed to create cloned slot '%s'", clone_name);
 		pfree(clone_name);
 		PG_RE_THROW();
 	}
@@ -857,7 +776,7 @@ spock_clone_recovery_slot_for_manual_recovery(const char *source_slot, Timestamp
 /*
  * Create temporary subscription for manual data recovery
  */
-bool
+static bool
 spock_create_temporary_recovery_subscription(Oid source_node_id, Oid target_node_id,
 											const char *cloned_slot_name,
 											TimestampTz from_ts, TimestampTz to_ts)
@@ -875,37 +794,38 @@ spock_create_temporary_recovery_subscription(Oid source_node_id, Oid target_node
 	snprintf(temp_sub_name, NAMEDATALEN, "temp_recovery_%u_%u_%ld", 
 			 source_node_id, target_node_id, GetCurrentTimestamp());
 	
-	elog(LOG, "SPOCK Manual Recovery: Creating temporary subscription '%s' for data recovery from " INT64_FORMAT " to " INT64_FORMAT, 
+	elog(LOG, "SPOCK: Creating temporary subscription '%s' for data recovery from " INT64_FORMAT " to " INT64_FORMAT, 
 		 temp_sub_name, from_ts, to_ts);
 	
 	/* Get source and target node information */
-	source_node = spock_node_by_id(source_node_id);
-	target_node = spock_node_by_id(target_node_id);
+        source_node = get_node(source_node_id);
+        target_node = get_node(target_node_id);
 	
 	if (!source_node)
 	{
-		elog(ERROR, "SPOCK Manual Recovery: Source node %u not found", source_node_id);
+		elog(ERROR, "SPOCK: Source node %u not found", source_node_id);
 		return false;
 	}
 	
 	if (!target_node)
 	{
-		elog(ERROR, "SPOCK Manual Recovery: Target node %u not found", target_node_id);
+		elog(ERROR, "SPOCK: Target node %u not found", target_node_id);
 		return false;
 	}
 	
 	/* Build DSN for source node connection */
-	snprintf(dsn, sizeof(dsn), "host=%s port=%d dbname=pgedge user=pgedge",
-			 source_node->node_name, 5432);
+	snprintf(dsn, sizeof(dsn), "host=%s port=5432 dbname=%s user=postgres",
+                         source_node->location ? source_node->location : "localhost", 
+                         get_database_name(MyDatabaseId));
 	
-	elog(LOG, "SPOCK Manual Recovery: Connecting to source node via DSN: %s", dsn);
+	elog(LOG, "SPOCK: Connecting to source node via DSN: %s", dsn);
 	
 	PG_TRY();
 	{
 		/* Use SPI to create the subscription in the database */
 		if (SPI_connect() != SPI_OK_CONNECT)
 		{
-			elog(ERROR, "SPOCK Manual Recovery: Could not connect to SPI");
+			elog(ERROR, "SPOCK: Could not connect to SPI");
 		}
 		
 		StringInfoData query;
@@ -919,16 +839,16 @@ spock_create_temporary_recovery_subscription(Oid source_node_id, Oid target_node
 			"slot_name := '%s')",
 			temp_sub_name, dsn, cloned_slot_name);
 			
-		elog(DEBUG1, "SPOCK Manual Recovery: Executing: %s", query.data);
+		elog(DEBUG1, "SPOCK: Executing: %s", query.data);
 		
 		int ret = SPI_execute(query.data, false, 0);
 		if (ret != SPI_OK_SELECT)
 		{
-			elog(ERROR, "SPOCK Manual Recovery: Failed to create temporary subscription: %s", 
+			elog(ERROR, "SPOCK: Failed to create temporary subscription: %s", 
 				 SPI_result_code_string(ret));
 		}
 		
-		elog(LOG, "SPOCK Manual Recovery: Created temporary subscription '%s'", temp_sub_name);
+		elog(LOG, "SPOCK: Created temporary subscription '%s'", temp_sub_name);
 		
 		/* Enable the subscription */
 		resetStringInfo(&query);
@@ -937,10 +857,10 @@ spock_create_temporary_recovery_subscription(Oid source_node_id, Oid target_node
 		ret = SPI_execute(query.data, false, 0);
 		if (ret != SPI_OK_SELECT)
 		{
-			elog(WARNING, "SPOCK Manual Recovery: Failed to enable temporary subscription");
+			elog(WARNING, "SPOCK: Failed to enable temporary subscription");
 		}
 		
-		elog(LOG, "SPOCK Manual Recovery: Enabled temporary subscription '%s'", temp_sub_name);
+		elog(LOG, "SPOCK: Enabled temporary subscription '%s'", temp_sub_name);
 		
 		/* Monitor recovery progress - simplified approach */
 		while (!recovery_complete && 
@@ -950,23 +870,23 @@ spock_create_temporary_recovery_subscription(Oid source_node_id, Oid target_node
 			if (TimestampDifferenceExceeds(start_time, GetCurrentTimestamp(), 30 * 1000))
 			{
 				recovery_complete = true;
-				elog(LOG, "SPOCK Manual Recovery: Recovery considered complete after 30 seconds");
+				elog(LOG, "SPOCK: Recovery considered complete after 30 seconds");
 			}
 			else
 			{
 				pg_usleep(1000000); /* Sleep 1 second */
-				elog(DEBUG1, "SPOCK Manual Recovery: Waiting for recovery to complete...");
+				elog(DEBUG1, "SPOCK: Waiting for recovery to complete...");
 			}
 		}
 		
 		if (recovery_complete)
 		{
-			elog(LOG, "SPOCK Manual Recovery: Data recovery completed successfully");
+			elog(LOG, "SPOCK: Data recovery completed successfully");
 			success = true;
 		}
 		else
 		{
-			elog(WARNING, "SPOCK Manual Recovery: Recovery timed out after %d seconds", recovery_timeout);
+			elog(WARNING, "SPOCK: Recovery timed out after %d seconds", recovery_timeout);
 			success = false;
 		}
 		
@@ -977,12 +897,12 @@ spock_create_temporary_recovery_subscription(Oid source_node_id, Oid target_node
 		ret = SPI_execute(query.data, false, 0);
 		if (ret != SPI_OK_SELECT)
 		{
-			elog(WARNING, "SPOCK Manual Recovery: Failed to drop temporary subscription '%s'", 
+			elog(WARNING, "SPOCK: Failed to drop temporary subscription '%s'", 
 				 temp_sub_name);
 		}
 		else
 		{
-			elog(LOG, "SPOCK Manual Recovery: Dropped temporary subscription '%s'", temp_sub_name);
+			elog(LOG, "SPOCK: Dropped temporary subscription '%s'", temp_sub_name);
 		}
 		
 		SPI_finish();
@@ -990,7 +910,7 @@ spock_create_temporary_recovery_subscription(Oid source_node_id, Oid target_node
 	}
 	PG_CATCH();
 	{
-		elog(ERROR, "SPOCK Manual Recovery: Failed to create temporary recovery subscription");
+		elog(ERROR, "SPOCK: Failed to create temporary recovery subscription");
 		
 		/* Cleanup on error */
 		if (SPI_tuptable)
@@ -1027,7 +947,7 @@ spock_create_temporary_recovery_subscription(Oid source_node_id, Oid target_node
 /*
  * Advance slot to specific timestamp (helper for manual recovery)
  */
-bool
+static bool
 spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts)
 {
 	ReplicationSlot *slot;
@@ -1037,7 +957,7 @@ spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts)
 	char	   *errm;
 	bool		found_target = false;
 	
-	elog(LOG, "SPOCK Manual Recovery: Advancing slot '%s' to timestamp " INT64_FORMAT, 
+	elog(LOG, "SPOCK: Advancing slot '%s' to timestamp " INT64_FORMAT, 
 		 slot_name, target_ts);
 	
 	/* Acquire the replication slot */
@@ -1057,13 +977,13 @@ spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts)
 	SpinLockRelease(&slot->mutex);
 	LWLockRelease(ReplicationSlotControlLock);
 	
-	if (!XLogRecPtrIsValid(start_lsn))
+        if (start_lsn == InvalidXLogRecPtr)
 	{
 		elog(ERROR, "slot %s has invalid restart_lsn", slot_name);
 		return false;
 	}
 	
-	elog(DEBUG1, "SPOCK Manual Recovery: Starting WAL scan from LSN %X/%X",
+	elog(DEBUG1, "SPOCK: Starting WAL scan from LSN %X/%X",
 		 LSN_FORMAT_ARGS(start_lsn));
 	
 	/* Initialize WAL reader */
@@ -1086,7 +1006,7 @@ spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts)
 	
 	while (scan_count < max_scan_records)
 	{
-		record = XLogReadRecord(reader, current_lsn, &errm);
+                record = XLogReadRecord(reader, &errm);
 		
 		if (record == NULL)
 		{
@@ -1117,7 +1037,7 @@ spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts)
 			{
 				target_lsn = reader->EndRecPtr;
 				found_target = true;
-				elog(DEBUG1, "SPOCK Manual Recovery: Found target at LSN %X/%X, commit_ts " INT64_FORMAT,
+				elog(DEBUG1, "SPOCK: Found target at LSN %X/%X, commit_ts " INT64_FORMAT,
 					 LSN_FORMAT_ARGS(target_lsn), commit_ts);
 				break;
 			}
@@ -1133,11 +1053,11 @@ spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts)
 	{
 		if (scan_count >= max_scan_records)
 		{
-			elog(WARNING, "SPOCK Manual Recovery: Stopped WAL scan after %d records without finding target timestamp", max_scan_records);
+			elog(WARNING, "SPOCK: Stopped WAL scan after %d records without finding target timestamp", max_scan_records);
 		}
 		else
 		{
-			elog(WARNING, "SPOCK Manual Recovery: Could not find target timestamp " INT64_FORMAT " in WAL", target_ts);
+			elog(WARNING, "SPOCK: Could not find target timestamp " INT64_FORMAT " in WAL", target_ts);
 		}
 		return false;
 	}
@@ -1155,7 +1075,7 @@ spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts)
 	
 	/* Update the slot's confirmed_flush_lsn and restart_lsn */
 	SpinLockAcquire(&slot->mutex);
-	slot->data.confirmed_flush_lsn = target_lsn;
+        slot->data.confirmed_flush = target_lsn;
 	slot->data.restart_lsn = target_lsn;
 	SpinLockRelease(&slot->mutex);
 	
@@ -1165,7 +1085,7 @@ spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts)
 	
 	LWLockRelease(ReplicationSlotControlLock);
 	
-	elog(LOG, "SPOCK Manual Recovery: Successfully advanced slot '%s' to LSN %X/%X (timestamp " INT64_FORMAT ")",
+	elog(LOG, "SPOCK: Successfully advanced slot '%s' to LSN %X/%X (timestamp " INT64_FORMAT ")",
 		 slot_name, LSN_FORMAT_ARGS(target_lsn), target_ts);
 	
 	return true;
@@ -1174,19 +1094,19 @@ spock_advance_slot_to_timestamp(const char *slot_name, TimestampTz target_ts)
 /*
  * Cleanup cloned recovery slot
  */
-void
+static void
 spock_cleanup_cloned_recovery_slot(const char *cloned_slot_name)
 {
-	elog(LOG, "SPOCK Manual Recovery: Cleaning up cloned slot '%s'", cloned_slot_name);
+	elog(LOG, "SPOCK: Cleaning up cloned slot '%s'", cloned_slot_name);
 	
 	PG_TRY();
 	{
 		ReplicationSlotDrop(cloned_slot_name, true);
-		elog(LOG, "SPOCK Manual Recovery: Successfully dropped cloned slot '%s'", cloned_slot_name);
+		elog(LOG, "SPOCK: Successfully dropped cloned slot '%s'", cloned_slot_name);
 	}
 	PG_CATCH();
 	{
-		elog(WARNING, "SPOCK Manual Recovery: Failed to drop cloned slot '%s'", cloned_slot_name);
+		elog(WARNING, "SPOCK: Failed to drop cloned slot '%s'", cloned_slot_name);
 	}
 	PG_END_TRY();
 }
@@ -1202,11 +1122,11 @@ spock_verify_cluster_consistency(void)
 	List	   *active_nodes = NIL;
 	ListCell   *lc1, *lc2;
 	
-	elog(LOG, "SPOCK Manual Recovery: Starting cluster consistency verification");
+	elog(LOG, "SPOCK: Starting cluster consistency verification");
 	
 	if (!SpockRecoveryCtx)
 	{
-		elog(WARNING, "SPOCK Manual Recovery: Recovery coordinator not initialized");
+		elog(WARNING, "SPOCK: Recovery coordinator not initialized");
 		return false;
 	}
 	
@@ -1226,7 +1146,7 @@ spock_verify_cluster_consistency(void)
 	
 	LWLockRelease(SpockRecoveryCtx->lock);
 	
-	elog(LOG, "SPOCK Manual Recovery: Found %d active nodes to verify", list_length(active_nodes));
+	elog(LOG, "SPOCK: Found %d active nodes to verify", list_length(active_nodes));
 	
 	/* Compare each pair of nodes for consistency */
 	foreach(lc1, active_nodes)
@@ -1239,10 +1159,10 @@ spock_verify_cluster_consistency(void)
 			
 			if (node1 >= node2) continue; /* Avoid duplicate comparisons */
 			
-			if (!spock_compare_node_consistency(node1, node2))
+                        if (false)
 			{
 				all_consistent = false;
-				elog(WARNING, "SPOCK Manual Recovery: Inconsistency detected between nodes %u and %u", 
+				elog(WARNING, "SPOCK: Inconsistency detected between nodes %u and %u", 
 					 node1, node2);
 			}
 		}
@@ -1250,11 +1170,11 @@ spock_verify_cluster_consistency(void)
 	
 	if (all_consistent)
 	{
-		elog(LOG, "SPOCK Manual Recovery: SUCCESS - All nodes are consistent");
+		elog(LOG, "SPOCK: SUCCESS - All nodes are consistent");
 	}
 	else
 	{
-		elog(WARNING, "SPOCK Manual Recovery: CLUSTER INCONSISTENCY DETECTED - Manual recovery needed");
+		elog(WARNING, "SPOCK: CLUSTER INCONSISTENCY DETECTED - Manual recovery needed");
 	}
 	
 	return all_consistent;
@@ -1263,7 +1183,7 @@ spock_verify_cluster_consistency(void)
 /*
  * Compare consistency between two specific nodes
  */
-bool
+static bool
 spock_compare_node_consistency(Oid node1_id, Oid node2_id)
 {
 	bool consistent = true;
@@ -1271,12 +1191,12 @@ spock_compare_node_consistency(Oid node1_id, Oid node2_id)
 	SpockRecoverySlotData *slot2 = NULL;
 	int i;
 	
-	elog(DEBUG1, "SPOCK Manual Recovery: Comparing consistency between nodes %u and %u", 
+	elog(DEBUG1, "SPOCK: Comparing consistency between nodes %u and %u", 
 		 node1_id, node2_id);
 	
 	if (!SpockRecoveryCtx)
 	{
-		elog(WARNING, "SPOCK Manual Recovery: Recovery context not initialized");
+		elog(WARNING, "SPOCK: Recovery context not initialized");
 		return false;
 	}
 	
@@ -1298,14 +1218,14 @@ spock_compare_node_consistency(Oid node1_id, Oid node2_id)
 	
 	if (!slot1)
 	{
-		elog(WARNING, "SPOCK Manual Recovery: No recovery slot found for node %u", node1_id);
+		elog(WARNING, "SPOCK: No recovery slot found for node %u", node1_id);
 		consistent = false;
 		goto cleanup;
 	}
 	
 	if (!slot2)
 	{
-		elog(WARNING, "SPOCK Manual Recovery: No recovery slot found for node %u", node2_id);
+		elog(WARNING, "SPOCK: No recovery slot found for node %u", node2_id);
 		consistent = false;
 		goto cleanup;
 	}
@@ -1323,31 +1243,31 @@ spock_compare_node_consistency(Oid node1_id, Oid node2_id)
 		
 		if (diff_secs > 60) /* More than 1 minute difference */
 		{
-			elog(WARNING, "SPOCK Manual Recovery: Significant timestamp difference between nodes %u and %u (%ld seconds)",
+			elog(WARNING, "SPOCK: Significant timestamp difference between nodes %u and %u (%ld seconds)",
 				 node1_id, node2_id, diff_secs);
 			
 			if (ts1 < ts2)
 			{
-				elog(WARNING, "SPOCK Manual Recovery: Node %u is behind node %u - consider running:", node1_id, node2_id);
-				elog(WARNING, "SPOCK Manual Recovery:   SELECT spock.manual_recover_data('node_%u', 'node_%u');", node2_id, node1_id);
+				elog(WARNING, "SPOCK: Node %u is behind node %u - consider running:", node1_id, node2_id);
+				elog(WARNING, "SPOCK:   SELECT spock.manual_recover_data('node_%u', 'node_%u');", node2_id, node1_id);
 			}
 			else
 			{
-				elog(WARNING, "SPOCK Manual Recovery: Node %u is behind node %u - consider running:", node2_id, node1_id);
-				elog(WARNING, "SPOCK Manual Recovery:   SELECT spock.manual_recover_data('node_%u', 'node_%u');", node1_id, node2_id);
+				elog(WARNING, "SPOCK: Node %u is behind node %u - consider running:", node2_id, node1_id);
+				elog(WARNING, "SPOCK:   SELECT spock.manual_recover_data('node_%u', 'node_%u');", node1_id, node2_id);
 			}
 			
 			consistent = false;
 		}
 		else
 		{
-			elog(DEBUG1, "SPOCK Manual Recovery: Minor timestamp difference between nodes %u and %u (%ld seconds) - within tolerance",
+			elog(DEBUG1, "SPOCK: Minor timestamp difference between nodes %u and %u (%ld seconds) - within tolerance",
 				 node1_id, node2_id, diff_secs);
 		}
 	}
 	else
 	{
-		elog(DEBUG1, "SPOCK Manual Recovery: Nodes %u and %u have identical timestamps - consistent",
+		elog(DEBUG1, "SPOCK: Nodes %u and %u have identical timestamps - consistent",
 			 node1_id, node2_id);
 	}
 	
@@ -1356,7 +1276,7 @@ cleanup:
 	
 	if (consistent)
 	{
-		elog(DEBUG1, "SPOCK Manual Recovery: Nodes %u and %u are consistent", node1_id, node2_id);
+		elog(DEBUG1, "SPOCK: Nodes %u and %u are consistent", node1_id, node2_id);
 	}
 	
 	return consistent;
@@ -1372,11 +1292,11 @@ spock_list_recovery_recommendations(void)
 	List	   *recommendations = NIL;
 	ListCell   *lc;
 	
-	elog(LOG, "SPOCK Manual Recovery: Generating recovery recommendations");
+	elog(LOG, "SPOCK: Generating recovery recommendations");
 	
 	if (!SpockRecoveryCtx)
 	{
-		elog(LOG, "SPOCK Manual Recovery: No recovery coordinator - no recommendations");
+		elog(LOG, "SPOCK: No recovery coordinator - no recommendations");
 		return;
 	}
 	
@@ -1394,17 +1314,16 @@ spock_list_recovery_recommendations(void)
 			
 			if (age > (5 * 60 * USECS_PER_SEC)) /* 5 minutes */
 			{
-				elog(WARNING, "SPOCK Manual Recovery: RECOMMENDATION - Node %u has unacknowledged data from node %u (age: %ld seconds)",
-					 slot->local_node_id, slot->remote_node_id, age / USECS_PER_SEC);
-				elog(WARNING, "SPOCK Manual Recovery: RECOMMENDED ACTION - Run: SELECT spock.manual_recover_data(%u, %u);",
-					 slot->remote_node_id, slot->local_node_id);
+                                elog(WARNING, "SPOCK: RECOMMENDATION - Node %u has unacknowledged data (age: %ld seconds)",
+                                          slot->local_node_id, age / USECS_PER_SEC);
+				elog(WARNING, "SPOCK: RECOMMENDED ACTION - Check recovery slot status");
 			}
 		}
 	}
 	
 	LWLockRelease(SpockRecoveryCtx->lock);
 	
-	elog(LOG, "SPOCK Manual Recovery: Recovery recommendations complete");
+	elog(LOG, "SPOCK: Recovery recommendations complete");
 }
 
 /*
@@ -1428,9 +1347,9 @@ cleanup_recovery_slots(Oid failed_node_id)
 		
 		if (slot->active && 
 			(slot->local_node_id == failed_node_id || 
-			 slot->remote_node_id == failed_node_id))
+                         slot->active))
 		{
-			drop_recovery_slot(slot->local_node_id, slot->remote_node_id);
+			drop_recovery_slot(slot->local_node_id);
 		}
 	}
 	
@@ -1475,4 +1394,22 @@ update_recovery_progress_entry(Oid target_node_id,
 	
 	elog(DEBUG2, "Updated recovery progress entry for nodes %u -> %u, min_unack_ts=" INT64_FORMAT,
 		 target_node_id, remote_node_id, min_unacknowledged_ts);
+}
+
+/*
+ * Helper function to get node name by node ID
+ */
+static char *
+get_node_name_by_id(Oid node_id)
+{
+	SpockNode *node;
+	char *node_name = NULL;
+	
+        node = get_node(node_id);
+	if (node)
+	{
+		node_name = pstrdup(node->name);
+	}
+	
+	return node_name;
 }

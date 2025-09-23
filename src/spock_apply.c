@@ -328,7 +328,6 @@ static void
 spock_apply_group_shmem_request(void)
 {
 	int		napply_groups;
-	int		max_recovery_slots;
 
 #if PG_VERSION_NUM >= 150000
 	if (prev_shmem_request_hook != NULL)
@@ -348,8 +347,7 @@ spock_apply_group_shmem_request(void)
 	RequestAddinShmemSpace(spock_apply_group_shmem_size(napply_groups));
 
 	/* Request shared memory for recovery slots */
-	max_recovery_slots = napply_groups * 2; /* Estimate 2 recovery slots per worker */
-	RequestAddinShmemSpace(spock_recovery_shmem_size(max_recovery_slots));
+        RequestAddinShmemSpace(spock_recovery_shmem_size());
 
 	/*
 	 * Request the LWlocks needed
@@ -623,7 +621,6 @@ should_log_exception(bool failed)
 /*
  * Check if given relation is in process of being synchronized.
  *
- * TODO: performance
  */
 static bool
 should_apply_changes_for_rel(const char *nspname, const char *relname)
@@ -884,7 +881,6 @@ handle_begin(StringInfo s)
 				}
 			}
 
-			/* TODO: What to do if we can't find a free slot? */
 			if (free_slot_index == -1)
 			{
 				/* no free entries found. */
@@ -895,7 +891,6 @@ handle_begin(StringInfo s)
 			/* We didn't find a slot, but we have a valid index. */
 			if (!slot_found)
 			{
-				/* TODO: What happens if a subscription is dropped? Memory leak */
 				new_elog_entry = &exception_log_ptr[free_slot_index];
 				namestrcpy(&new_elog_entry->slot_name, MySubscription->name);
 
@@ -1038,14 +1033,12 @@ handle_commit(StringInfo s)
 		}
 
 		/* Have the commit code adjust our logical clock if needed */
-		remoteTransactionStopTimestamp = commit_time;
 
 		CommitTransactionCommand();
 
 		if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
 			append_feedback_position(XactLastCommitEnd);
 
-		remoteTransactionStopTimestamp = 0;
 
 		MemoryContextSwitchTo(TopMemoryContext);
 
@@ -1812,12 +1805,12 @@ handle_truncate(StringInfo s)
 	 * to replaying changes without further cascading. This might be later
 	 * changeable with a user specified option.
 	 */
-	ExecuteTruncateGuts(rels,
-						relids,
-						relids_logged,
-						DROP_RESTRICT,
-						restart_seqs,
-						false);
+        ExecuteTruncateGuts(rels,
+                                                 relids,
+                                                 relids_logged,
+                                                 DROP_RESTRICT,
+                                                 restart_seqs,
+                                                 false);
 	foreach(lc, remote_rels)
 	{
 		SpockRelation *rel = lfirst(lc);
@@ -4254,7 +4247,7 @@ spock_apply_init_recovery_slots(void)
 	
 	/* Store recovery slot name in worker */
 	slot_name = get_recovery_slot_name(MySubscription->target->id,
-									  MySubscription->origin->id);
+									  get_database_name(MyDatabaseId));
 	strncpy(MyApplyWorker->recovery_slot_name, slot_name, NAMEDATALEN - 1);
 	MyApplyWorker->recovery_slot_name[NAMEDATALEN - 1] = '\0';
 	pfree(slot_name);
@@ -4275,7 +4268,7 @@ spock_apply_manage_recovery_slot(Oid local_node_id, Oid remote_node_id)
 	/* Create recovery slot if it doesn't exist */
 	PG_TRY();
 	{
-		created = create_recovery_slot(local_node_id, remote_node_id);
+		created = create_recovery_slot(local_node_id, get_database_name(MyDatabaseId));
 		if (created)
 		{
 			elog(LOG, "SPOCK: Created recovery slot for nodes %u -> %u",
