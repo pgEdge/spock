@@ -19,7 +19,7 @@
 
 /* Spock resouce manager */
 #define SPOCK_RMGR_NAME             	    "spock_custom_rmgr"
-#define SPOCK_RMGR_ID		    	        RM_EXPERIMENTAL_ID
+#define SPOCK_RMGR_ID		    	        144
 
 /* Spock RMGR tags. */
 #define SPOCK_RMGR_APPLY_PROGRESS			0x10
