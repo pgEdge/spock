@@ -1,0 +1,25 @@
+## Filtering
+
+### Row Filtering
+
+Spock allows row based filtering on both the provider side and the subscriber side.
+
+**Row Filtering on the Provider**
+
+On the provider, you can implement row filtering with the `row_filter` property of the `spock.repset_add_table` function. The `row_filter` is a normal PostgreSQL expression with the same limitations as the `CHECK` constraint.
+
+A simple `row_filter` would look something like `row_filter := 'id > 0'`; this would ensure that only rows where values of `id` column is bigger than zero are replicated.
+
+You can use a volatile function inside `row_filter` but use caution with regard to `writes` as any expression that will do writes could potentially throw an error and stop replication.
+
+It's also worth noting that the `row_filter` is running inside the replication session, so session specific expressions such as `CURRENT_USER` will have the values of the replication session and not the session that did the writes.
+
+
+**Row Filtering on the Subscriber**
+
+On the subscriber the row based filtering can be implemented using standard
+`BEFORE TRIGGER` mechanism.
+
+It is required to mark any such triggers as either `ENABLE REPLICA` or
+`ENABLE ALWAYS` otherwise they will not be executed by the replication
+process.

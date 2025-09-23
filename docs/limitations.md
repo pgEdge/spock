@@ -33,7 +33,7 @@ You can have additional unique constraints upstream if the downstream consumer g
 
 Partial secondary unique indexes are permitted, but will be ignored for conflict resolution purposes.
 
-`spock.check_all_uc_indexes` is an experimental [GUC](https://github.com/pgEdge/spock/blob/main/docs/guc_settings.md) that adds `INSERT` conflict resolution by allowing Spock to consider all unique constraints, not just the primary key or replica identity. 
+`spock.check_all_uc_indexes` is an experimental GUC that adds `INSERT` conflict resolution by allowing Spock to consider all unique constraints, not just the primary key or replica identity. For more information, see [Configuring Spock](../spock_ext/install_spock.mdx).
 
 ### Unique constraints must not be deferrable
 
@@ -78,36 +78,8 @@ would be violated.
 Using `TRUNCATE ... CASCADE` will only apply the `CASCADE` option on the
 provider side.
 
-(Properly handling this would probably require the addition of `ON TRUNCATE CASCADE`
-support for foreign keys in PostgreSQL).
-
 `TRUNCATE ... RESTART IDENTITY` is not supported. The identity restart step is
 not replicated to the replica.
-
-### Sequences
-
-We strongly recommend that you use pgEdge [Snowflake Sequences](https://github.com/pgEdge/snowflake) rather than using the legacy sequences described below.
-
-The state of sequences added to replication sets is replicated periodically
-and not in real-time. Dynamic buffer is used for the value being replicated so
-that the subscribers actually receive future state of the sequence. This
-minimizes the chance of subscriber's notion of sequence's `last_value` falling
-behind but does not completely eliminate the possibility.
-
-It might be desirable to call `sync_sequence` to ensure all subscribers
-have up to date information about given sequence after "big events" in the
-database such as data loading or during the online upgrade.
-
-It's generally recommended to use `bigserial` and `bigint` types for sequences
-on multi-node systems as smaller sequences might reach end of the sequence
-space fast.
-
-Users who want to have independent sequences on provider and subscriber can
-avoid adding sequences to replication sets and create sequences with step
-interval equal to or greater than the number of nodes. And then setting a
-different offset on each node. Use the `INCREMENT BY` option for
-`CREATE SEQUENCE` or `ALTER SEQUENCE`, and use `setval(...)` to set the start
-point.
 
 ### Triggers
 
@@ -133,12 +105,3 @@ Replicating between different minor versions makes no difference at all.
 
 Spock does not support replication between databases with different
 encoding. We recommend using `UTF-8` encoding in all replicated databases.
-
-### Large objects
-
-PostgreSQL's logical decoding facility does not support decoding changes
-to [large objects](https://www.postgresql.org/docs/current/largeobjects.html); we recommend instead using the [LOLOR extension](https://github.com/pgEdge/lolor) to manage large objects.
-
-Note that DDL limitations apply, so extra care needs to be taken when using
-`replicate_ddl_command()`.
-

@@ -1,6 +1,6 @@
 ## Finding Cluster Information
 
-The following table describes the informational tables in the `spock` schema; query the tables with your choice of client to return information about your replication cluster. 
+The following table describes the informational tables in the `spock` schema; you can query these tables with the psql client to return information about your replication cluster. 
 
 | Name | Description |
 ---------------------|----------------------------|
@@ -25,7 +25,7 @@ a single row in this table implies that a command to create a subscription on th
 
 You can connect to the database server and query the `spock.node` table to return information about configured nodes:
 
-```sql
+```json
 select * from spock.node;
 -[ RECORD 1 ]--------
 node_id   | 673694252

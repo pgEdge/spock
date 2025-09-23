@@ -1,6 +1,6 @@
 # Spock Release Notes
 
-## v5.0.2 on Sept 22, 2025
+## v5.0.2 on Sept 23, 2025
 
 * Improved logging for all Zodan phases in both the stored procedure and Python examples.
 * You can use the new Zodan skip_schema parameter to exclude schemas when you're adding a node, preventing local extension metadata from being copied.
@@ -9,28 +9,26 @@
     * Python add_node now mirrors stored procedure semantics, including skip_schema handling, structure sync, and logging. It works as a direct alternative to the procedure and no longer requires the dblink extension.
 * Spock has been updated to use the PostgreSQL License.
 
+## v5.0.1 on Aug 28, 2025
 
-## v5.0.1 on Aug 27, 2025
-
-* Bug fix for an incorrect commit timestamp being used for the case of updating a row that was inserted in the same transaction. A consequence was possible incorrect resolution handling for updates.
-* Use the default search_path in the replicate_ddl() function.
-* Prevent false positives for conflict detection when using partial unique indexes.
-* New sample files for adding nodes with zero downtime.
-    * Python example
-    * Added enhanced add node support in stored procedures in samples/zodan.sql
-        * Add a second node when there is only one node.
-        * Extended support for adding 3rd, 4th and subsequent nodes.
-        * Chain adding new nodes off of the previously added new node (eg: add N2 off N1, then add N3 off N2).
+* Spock 5.0.1 fixes a bug where updating a row that was inserted in the same transaction may use an incorrect timestamp for the inserted row and treat it as being newer than the update, resulting in the update not getting applied on other nodes.
 
 ## v5.0 on July 15, 2025
 
-* Spock functions and stored procedures now support node additions and major PostgreSQL version.  This means:
+Version 5.0 of Spock is available from the `pgedge-download` repository; please note that the current .tgz bundle for the CLI is version 25.1.0, and does not include Spock 5.0. or updated Postgres packages.  You can install Spock version 5.0 with CLI version 25.1.0:
+
+* by specifying `--spock_ver=5.0.0` in the pgEdge setup command.
+* with the command `./pgedge um install spock50`.
+
+Spock 5.0 will be supported as the default version, and available in the offline repository bundle for pgEdge CLI version 25.2.0 and later.
+
+* Spock functions and stored procedures now support node additions and major PostgreSQL version [updates with zero write and read down-time](../spock_ext/modify/zodan_tutorial.mdx).  This means:
     * existing nodes are able to maintain full read and write capability while a new node is populated and added to the cluster.
     * You can perform PostgreSQL major version upgrades as a rolling upgrade by adding a new node with the new major PostgreSQL version, and then removing old nodes hosting the previous version. 
-* Exception handling performance improvements are now managed with the spock.exception_replay_queue_size GUC.
-* Previously, replication lag was estimated on the source node; this meant that if there were no transactions being replicated, the reported lag could continue to increase.  Lag tracking is now calculated at the target node, with improved accuracy.
-* Spock 5.0 implements LSN Checkpointing with `spock.sync()` and `spock.wait_for_sync_event()`.  This feature allows you to identify a checkpoint in the source node WAL files, and watch for the LSN of the checkpoint on a replica node.  This allows you to guarantee that a DDL change, has replicated from the source node to all other nodes before publishing an update. 
-* The `spockctrl` command line utility and sample workflows simplify the management of a Spock multi-master replication setup for PostgreSQL. `spockctrl` provides a convenient interface for:
+* Exception handling performance improvements are now managed with the [spock.exception_replay_queue_size](../spock_ext/install_spock.mdx#spockexception_replay_queue_size) GUC.
+* Previously, replication lag was estimated on the source node; this meant that if there were no transactions being replicated, the reported lag could continue to increase.  [Lag tracking](../spock_ext/monitoring/lag_tracking.mdx) is now calculated at the target node, with improved accuracy.
+* Spock 5.0 implements LSN Checkpointing with [`spock.sync_event()`](../spock_ext/monitoring/spock_sync_event.mdx) and `spock.wait_for_sync_event()`.  This feature allows you to identify a checkpoint in the source node WAL files, and watch for the LSN of the checkpoint on a replica node.  This allows you to guarantee that a DDL change, has replicated from the source node to all other nodes before publishing an update. 
+* The [`spockctrl` command line utility](../spock_ext/modify/spockctrl.mdx) and sample workflows simplify the management of a Spock multi-master replication setup for PostgreSQL. `spockctrl` provides a convenient interface for:
     * node management
     * replication set management
     * subscription management
@@ -44,7 +42,7 @@
 This provides a two-phase acknowledgment:
    * Once when the target node has received and applied the transaction.
    * Once when the physical replica confirms the commit.
-* The `spock.check_all_uc_indexes` GUC is an experimental feature (`disabled` by default); use this feature at your own risk.  If this GUC is `enabled`, Spock will continue to check unique constraint indexes, after checking the primary key / replica identity index.  Only one conflict will be resolved, using Last-Write-Wins logic.  If a second conflict occurs, an exception is recorded in the `spock.exception_log` table.
+* The [`spock.check_all_uc_indexes`](../spock_ext/install_spock.mdx#spockcheck_all_uc_indexes) GUC is an experimental feature (`disabled` by default); use this feature at your own risk.  If this GUC is `enabled`, Spock will continue to check unique constraint indexes, after checking the primary key / replica identity index.  Only one conflict will be resolved, using Last-Write-Wins logic.  If a second conflict occurs, an exception is recorded in the `spock.exception_log` table.
 
 
 ## Version 4.1

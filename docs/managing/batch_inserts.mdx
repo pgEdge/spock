@@ -1,0 +1,9 @@
+## Using Batch Inserts
+
+Using batch inserts improves replication performance for transactions that perform multiple inserts into a single table. To enable batch mode, modify the `spock.batch_inserts` parameter, setting it to `true` and the `spock.conflict_resolution` [parameter](../../spock_ext/install_spock.mdx#advanced-configuration-options-for-spock), setting it to `error`.  Once enabled, Spock will switch to batch mode when a transaction does more than five `INSERT`s.
+
+import {Callout} from 'nextra/components'
+
+<Callout type="info">
+You can only use batch mode if there are no `INSTEAD OF INSERT` and `BEFORE INSERT` triggers on the table, and when there are no defaults with volatile expressions for columns of the table. 
+</Callout>
