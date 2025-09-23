@@ -2,6 +2,23 @@
 
 The Spock extension provides multi-master (active-active) replication for pgEdge Distributed and Enterprise Postgres, versions 15, 16, and 17. The extension leverages the pgLogical and Open Source project as a solid foundation to build upon for this enterprise-class extension.
 
+The Spock extension is designed to support the following use cases:
+
+* Asynchronous multi-active replication with conflict resolution
+* Upgrades between major versions
+* Full database replication
+* Selective replication of sets of tables using replication sets
+* Selective replication of table rows at either publisher or subscriber side (row_filter)
+* Selective replication of partitioned tables
+* Selective replication of table columns at publisher side
+* Data gather/merge from multiple upstream servers
+
+Note that:
+* Spock works on a per-database level instead of a whole server level like physical streaming replication.
+* One provider may feed multiple subscribers without incurring additional disk write overhead
+* One subscriber can merge changes from several origins and detect conflict between changes with automatic and configurable conflict resolution (some, but not all aspects required for multi-master).
+* Cascading replication is implemented in the form of changeset forwarding.
+
 You build, install, and create the extension like any other Postgres extension.  For more information about using Postgres extensions, visit the Postgres [website](https://www.postgresql.org/docs/current/extend-extensions.html).
 
 For more information about the Spock extension, review this section of the documentation and visit the [pgEdge spock Github repo](https://github.com/pgEdge/spock#multi-master-replication-with-conflict-resolution--avoidance).

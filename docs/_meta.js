@@ -10,4 +10,5 @@ export default {
     spock_functions: 'Using Spock Functions',
     spock_release_notes: 'Spock Release Notes',
     limitations: 'Limitations',
+    faq: 'FAQ'
 };
