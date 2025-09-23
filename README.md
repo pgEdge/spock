@@ -211,7 +211,12 @@ Then, to upgrade the version of spock that you use to manage your replication cl
 
 ### Building the Documentation
 
-## Setup
+This repository contains the Spock product documentation and 
+infrastructure for generating the Spock documentation. It is based on 
+[MkDocs](https://www.mkdocs.org), using the 
+[Material theme](https://squidfunk.github.io/mkdocs-material/), along with the
+[multirepo plugin](https://github.com/jdoiro3/mkdocs-multirepo-plugin) which
+allows docs from other repositories to be merged into the site.
 
 1) Create a Python virtual environment:
     ```bash
