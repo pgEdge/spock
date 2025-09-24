@@ -34,7 +34,7 @@ Note that:
 
 ## Automatic DDL Replication
 
-The Spock extension can automatically replicate DDL statements. To enable automatic DDL replication, set the following parameters to `on`: 
+The Spock extension can automatically replicate DDL statements. To enable automatic DDL replication, set the following parameters to `on`:
 
 * `spock.enable_ddl_replication` enables replication of ddl statements through the default replication set. Some DDL statements are intentionally not replicated (like `CREATE DATABASE`).  Other DDL statements are replicated, but can cause lead to replication issues (like the `CREATE TABLE... AS...` statement).  In the case of `CREATE TABLE... AS...`, the DDL statement is replicated before the table is added to the replication set, leading to potential data irregularities.  Some DDL statements are replicated, but might potentially create an issue in a 3+ node cluster (ie. `DROP TABLE`).
 
@@ -58,7 +58,7 @@ During the auto replication process, spock generates messages that provide infor
 
   This warning message is generated when auto replication is active, but the specific DDL is either unsupported or intentionally excluded from replication.
 
-- `table 'test' was added to default replication set.` 
+- `table 'test' was added to default replication set.`
 
   This is a LOG message providing information about the replication set used for a given table when `spock.include_ddl_repset` is set.
 
@@ -84,19 +84,19 @@ You can use a `row_filter` clause with a partitioned table, as well as with indi
 
 ## Conflict-Free Delta-Apply Columns (Conflict Avoidance)
 
-Conflicts can arise if a node is subscribed to multiple providers, or when local writes happen on a subscriber node.  Without Spock, logical replication can also encounter issues when resolving the value of a running sum (such as a YTD balance). 
+Conflicts can arise if a node is subscribed to multiple providers, or when local writes happen on a subscriber node.  Without Spock, logical replication can also encounter issues when resolving the value of a running sum (such as a YTD balance).
 
 *Suppose that a running bank account sum contains a balance of `$1,000`.   Two transactions "conflict" because they overlap with each from two different multi-master nodes.   Transaction A is a `$1,000` withdrawal from the account.  Transaction B is also a `$1,000` withdrawal from the account.  The correct balance is `$-1,000`.  Our Delta-Apply algorithm fixes this problem and highly conflicting workloads with this scenario (like a tpc-c like benchmark) now run correctly at lightning speeds.*
 
  In the past, Postgres users have relied on special data types and numbering schemes to help prevent conflicts. Unlike other solutions, Spock's powerful and simple conflict-free delta-apply columns instead manage data update conflicts with logic:
 
-    - the old value is captured in WAL files. 
+    - the old value is captured in WAL files.
     - a new value comes in from a transaction.
     - before the new value overwrites the old value, a delta value is created from the above two steps; that delta is correctly applied.
 
 To simplify: *local_value + (new_value - old_value)*
 
-Note that on a conflicting transaction, the delta-apply column will be correctly calculated and applied.  
+Note that on a conflicting transaction, the delta-apply column will be correctly calculated and applied.
 
 To make a column a conflict-free delta-apply column, ensuring that the value replicated is the delta of the committed changes (the old value plus or minus any new value) to a given record, you need to apply the following settings to the column:  `log_old_value=true, delta_apply_function=spock.delta_apply`.  For example:
 
@@ -114,7 +114,7 @@ As a special safety-valve feature, if you ever need to re-set a `log_old_value` 
 You can configure some Spock extension behaviors with configuration options that are set in the `postgresql.conf` file or via `ALTER SYSTEM SET`:
 
 - `spock.conflict_resolution = last_update_wins`
-  Sets the resolution method to `last_update_wins` for any detected conflicts between local data and incoming changes - the version of data with newest commit timestamp is kept. Note that the `track_commit_timestamp` PostgreSQL setting must also be `enabled`. 
+  Sets the resolution method to `last_update_wins` for any detected conflicts between local data and incoming changes - the version of data with newest commit timestamp is kept. Note that the `track_commit_timestamp` PostgreSQL setting must also be `enabled`.
 
 - `spock.conflict_log_level`
   Sets the log level for reporting detected conflicts. The default is `LOG`. If the parameter is set to a value lower than `log_min_messages`, resolved conflicts are not written to the server log. Accepted values are:
@@ -136,10 +136,10 @@ By default, when an `INSERT` statement targets a row that already exists, Spock 
 Extended constraint violation behavior is controlled by the `spock.check_all_uc_indexes` parameter. The default value is `off`; when set to `on`, Spock will:
 
 * Scan all valid unique constraints (as well as the primary key and replica identity).
-* Scan non-null unique constraints (including the primary key / replica identity index) in OID order. 
+* Scan non-null unique constraints (including the primary key / replica identity index) in OID order.
 * Locate and resolve conflicting rows encountered during an `INSERT` statement.
 
-<Callout type="warning">  
+<Callout type="warning">
 If `spock.check_all_uc_indexes` is `enabled`, Spock will resolve only the first conflict identified, using Last-Write-Wins logic. If a second conflict occurs, an exception is recorded in the `spock.resolutions` table as either `Keep-Local` or `Apply-Remote`.
 
 This feature is experimental; enable this feature at your own risk.
@@ -147,14 +147,14 @@ This feature is experimental; enable this feature at your own risk.
 
 ### Handling `DELETE-RowMissing` Conflicts
 
-Given that the purpose of the DELETE statement is to remove the row anyway, we do not log these as exceptions, since the desired outcome of removing the row has obviously been achieved, one way or the other. Instead `DELETE-RowMissing` conflicts are automatically written to the `spock.resolutions` table since the desired result has been achieved. 
+Given that the purpose of the DELETE statement is to remove the row anyway, we do not log these as exceptions, since the desired outcome of removing the row has obviously been achieved, one way or the other. Instead `DELETE-RowMissing` conflicts are automatically written to the `spock.resolutions` table since the desired result has been achieved.
 
 
 ## Using Batch Inserts
 
 Using batch inserts improves replication performance for transactions that perform multiple inserts into a single table. To enable batch mode, modify the `spock.batch_inserts` parameter, setting it to `true` and `spock.conflict_resolution` parameter, setting it to `error`.  Once enabled, Spock will switch to batch mode when a transaction does more than five `INSERT`s.
 
-**Note:** You can only use batch mode if there are no `INSTEAD OF INSERT` and `BEFORE INSERT` triggers on the table, and when there are no defaults with volatile expressions for columns of the table. 
+**Note:** You can only use batch mode if there are no `INSTEAD OF INSERT` and `BEFORE INSERT` triggers on the table, and when there are no defaults with volatile expressions for columns of the table.
 
 
 ## Filtering
@@ -190,12 +190,6 @@ We strongly recommend that you use Snowflake Sequences instead of legacy Postgre
 
 [Snowflake](https://github.com/pgEdge/snowflake) is a PostgreSQL extension that provides an `int8` and sequence based unique ID solution to optionally replace the PostgreSQL built-in `bigserial` data type. This extension allows Snowflake IDs that are unique within one sequence across multiple PostgreSQL instances in a distributed cluster.
 
-The Spock extension includes the following functions to help you manage Snowflake sequences:
-
-* spock.convert_sequence_to_snowflake
-* spock.convert_column_to_int8
-
-
 ## Managing Large Objects for Logical Replication
 
 [lolor](https://github.com/pgEdge/lolor) is a Postgres extension that makes PostgreSQL style Large Objects compatible with Logical Replication.
@@ -222,7 +216,7 @@ are read-write (the usual setting).
 Read-only mode is implemented by filtering SQL statements:
 
 - `SELECT` statements are allowed if they don't call functions that write.
-- DML (`INSERT`, `UPDATE`, `DELETE`) and DDL statements including `TRUNCATE` are 
+- DML (`INSERT`, `UPDATE`, `DELETE`) and DDL statements including `TRUNCATE` are
   forbidden entirely.
 - DCL statements `GRANT` and `REVOKE` are also forbidden.
 
@@ -249,7 +243,7 @@ SET spock.readonly TO on;
 ```
 
 To query the current status of the cluster, you can use the following SQL command:
-  
+
 ```sql
 SHOW spock.readonly;
 ```
@@ -275,7 +269,7 @@ Please note that you must ensure that automatic replication of DDL commands is d
 ALTER SYSTEM SET spock.enable_ddl_replication=off;
 ALTER SYSTEM SET spock.include_ddl_repset=off;
 ALTER SYSTEM SET spock.allow_ddl_from_functions=off;
-SELECT pg_reload_conf(); 
+SELECT pg_reload_conf();
 ```
 
 You can use the event trigger facility can be used to describe rules which define replication sets for newly created tables. For example:
@@ -341,7 +335,7 @@ replication_lag       | 00:00:04.014177
 
 ## Using spock.sync_event to Confirm Synchronization
 
-`spock.sync_event` enables event tracking and synchronization between a provider and a subscriber node in a Spock logical replication setup. You can use `spock.sync_event` to ensure that all changes up to a specific point (indicated by the PostgreSQL Log Sequence Number or LSN) on the provider have been received and applied on the subscriber. 
+`spock.sync_event` enables event tracking and synchronization between a provider and a subscriber node in a Spock logical replication setup. You can use `spock.sync_event` to ensure that all changes up to a specific point (indicated by the PostgreSQL Log Sequence Number or LSN) on the provider have been received and applied on the subscriber.
 
 To mark the start of the sync event and return the LSN of the event on the subscriber node, you call a function on the node you have selected to act as a **provider node**:
 
@@ -354,7 +348,7 @@ Then, you monitor a procedure on the node you have selected to act as the **subs
 **Synopsis**
 
 Invoked on the **provider node**, this function returns the current pg_lsn` value, representing a point-in-time value for your replication scenario.  The syntax of `spock.sync_event` is:
- 
+
 `spock.sync_event() RETURNS pg_lsn`
 
 Invoked on a **subscriber node**, `spock.wait_for_sync_event` is available in two flavors - the first uses the origin_id (an `oid`) as an identifier for the node, while the second uses the node name as an identifier:
@@ -374,15 +368,15 @@ Returns:
 `result = true` – LSN has been received and applied.
 `result = false` – Timeout occurred before the LSN was reached.
 
-Example 
+Example
 
 -- On a provider node:
 
-`SELECT spock.sync_event();` 
+`SELECT spock.sync_event();`
 `-- Returns: 0/16342B0 (example output)`
 
 -- On a subscriber node:
 
 `CALL spock.wait_for_sync_event(OUT result, 'provider_node', '0/16342B0', 10);`
-`-- result: true (if applied within 10s), false otherwise` 
+`-- result: true (if applied within 10s), false otherwise`
 
