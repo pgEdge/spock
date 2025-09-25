@@ -1338,7 +1338,7 @@ handle_relation(StringInfo s)
 }
 
 static void
-log_insert_exception(bool failed, ErrorData *edata, SpockRelation *rel,
+log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 					 SpockTupleData *oldtup, SpockTupleData *newtup,
 					 const char *action_name)
 {
@@ -1374,7 +1374,7 @@ log_insert_exception(bool failed, ErrorData *edata, SpockRelation *rel,
 							   rel, localtup, oldtup, newtup,
 							   NULL, NULL,
 							   action_name,
-							   (failed && edata) ? edata->message : NULL);
+							   (failed) ? errmsg : NULL);
 }
 
 static void
@@ -1382,7 +1382,7 @@ handle_insert(StringInfo s)
 {
 	SpockTupleData newtup;
 	SpockRelation *rel;
-	ErrorData  *edata;
+	ErrorData  *edata = NULL;
 	MemoryContext	oldcontext;
 	bool		started_tx;
 	bool		failed = false;
@@ -1397,11 +1397,28 @@ handle_insert(StringInfo s)
 
 	started_tx = begin_replication_step();
 
-	errcallback_arg.action_name = "INSERT";
-	xact_action_counter++;
-
 	rel = spock_read_insert(s, RowExclusiveLock, &newtup);
+	if (unlikely(rel == NULL))
+	{
+		Assert(MyApplyWorker->use_try_block);
+
+		/*
+		 * Correctly interrupt the process: set exception flag and log the
+		 * exception itself.
+		 */
+		xact_had_exception = true;
+		exception_command_counter++;
+		log_insert_exception(true, "Spock can't find relation", NULL,
+							 NULL, NULL, "INSERT");
+		end_replication_step();
+		MemoryContextSwitchTo(oldcontext);
+		MemoryContextReset(ApplyOperationContext);
+		return;
+	}
+
+	errcallback_arg.action_name = "INSERT";
 	errcallback_arg.rel = rel;
+	xact_action_counter++;
 
 	/* If in list of relations which are being synchronized, skip. */
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
@@ -1481,7 +1498,8 @@ handle_insert(StringInfo s)
 		}
 
 		/* Let's create an exception log entry if true. */
-		log_insert_exception(failed, edata, rel, NULL, &newtup, "INSERT");
+		log_insert_exception(failed, edata ? edata->message : NULL, rel,
+							 NULL, &newtup, "INSERT");
 	}
 	else
 	{
@@ -1578,8 +1596,32 @@ handle_update(StringInfo s)
 
 	multi_insert_finish();
 
-	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup,
-							&newtup);
+	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup, &newtup);
+	if (unlikely(rel == NULL))
+	{
+		Assert(MyApplyWorker->use_try_block);
+
+		/*
+		 * Correctly interrupt the process: set exception flag and log the
+		 * exception itself.
+		 */
+		xact_had_exception = true;
+		exception_command_counter++;
+
+		/*
+		 * NOTE:
+		 * Considering that the apply worker regularly reset MessageContext that
+		 * contains local tuple, it make sense to centralyze management of an
+		 * exception log slot.
+		 */
+		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+
+		log_insert_exception(true, "Spock can't find relation", NULL,
+							 NULL, NULL, "UPDATE");
+		end_replication_step();
+		return;
+	}
+
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */
@@ -1617,7 +1659,8 @@ handle_update(StringInfo s)
 		}
 
 		/* Let's create an exception log entry if true. */
-		log_insert_exception(failed, edata, rel, hasoldtup ? &oldtup : NULL, &newtup, "UPDATE");
+		log_insert_exception(failed, edata ? edata->message : NULL, rel,
+							 hasoldtup ? &oldtup : NULL, &newtup, "UPDATE");
 	}
 	else
 	{
@@ -1634,7 +1677,7 @@ handle_delete(StringInfo s)
 {
 	SpockTupleData oldtup;
 	SpockRelation *rel;
-	ErrorData  *edata;
+	ErrorData  *edata = NULL;
 	bool		failed = false;
 
 	/*
@@ -1651,6 +1694,31 @@ handle_delete(StringInfo s)
 	multi_insert_finish();
 
 	rel = spock_read_delete(s, RowExclusiveLock, &oldtup);
+	if (unlikely(rel == NULL))
+	{
+		Assert(MyApplyWorker->use_try_block);
+
+		/*
+		 * Correctly interrupt the process: set exception flag and log the
+		 * exception itself.
+		 */
+		xact_had_exception = true;
+		exception_command_counter++;
+
+		/*
+		 * NOTE:
+		 * Considering that the apply worker regularly reset MessageContext that
+		 * contains local tuple, it make sense to centralyze management of an
+		 * exception log slot.
+		 */
+		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+
+		log_insert_exception(true, "Spock can't find relation", NULL,
+							 NULL, NULL, "DELETE");
+		end_replication_step();
+		return;
+	}
+
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */
@@ -1688,7 +1756,8 @@ handle_delete(StringInfo s)
 		}
 
 		/* Let's create an exception log entry if true. */
-		log_insert_exception(failed, edata, rel, &oldtup, NULL, "DELETE");
+		log_insert_exception(failed, edata ? edata->message : NULL, rel,
+							 &oldtup, NULL, "DELETE");
 	}
 	else
 	{
@@ -2826,7 +2895,7 @@ stream_replay:
 			{
 				MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
 								proc_exit(1);
-			}	
+			}
 			if (rc & WL_SOCKET_READABLE)
 				PQconsumeInput(applyconn);
 
@@ -3136,12 +3205,13 @@ stream_replay:
 			 */
 			if (MyApplyWorker->use_try_block)
 			{
-				elog(LOG, "SPOCK: caught exception while use_try_block=true");
+				elog(LOG, "SPOCK: caught exception while use_try_block=true. The exception was:\n'%s'",
+					 edata->message);
 				PG_RE_THROW();
 			}
 		}
 
-		/* 
+		/*
 		 * Note: Replay queue overflow handling removed - dynamic allocation prevents overflow.
 		 * We no longer kill and restart apply workers for queue overflow.
 		 * Exception handling now follows spock.exception_behavior setting.

@@ -760,7 +760,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	}
 
 	/*
-	 * Log everything, irrespective of whether the local or remote tuple wins.
+	 * See if we need to log any conflict
 	 */
 	spock_report_conflict(is_insert ? CONFLICT_INSERT_EXISTS : CONFLICT_UPDATE_UPDATE,
 						  rel, TTS_TUP(localslot), oldtup,

@@ -41,6 +41,7 @@
 
 #include "storage/ipc.h"
 #include "storage/proc.h"
+#include "tcop/tcopprot.h" /* debug_query_string */
 
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -133,6 +134,7 @@ int		restart_delay_on_exception;
 int		spock_replay_queue_size;  /* Deprecated - no longer used */
 bool	check_all_uc_indexes = false;
 
+static emit_log_hook_type prev_emit_log_hook = NULL;
 
 void _PG_init(void);
 PGDLLEXPORT void spock_supervisor_main(Datum main_arg);
@@ -789,6 +791,120 @@ spock_temp_directory_assing_hook(const char *newval, void *extra)
 				 errmsg("out of memory")));
 }
 
+/*
+ * Case insensitive substring search.
+ * NOTE: No memory allocations is allowed here.
+ */
+static char *
+pg_strcasestr(const char *str, const char *substr)
+{
+	size_t nlen;
+
+	if (str == NULL)
+		return NULL;
+
+    nlen = strlen(substr);
+
+    if (nlen == 0)
+        return (char *) str;
+
+    for (const char *p = str; *p; p++)
+    {
+        if (pg_strncasecmp(p, substr, nlen) == 0)
+            return (char *) p;
+    }
+    return NULL;
+}
+
+/* Replace each following symbol with 'X' until the EOL */
+static void
+replace_symbols(char *strpos)
+{
+	if (strpos == NULL)
+		return;
+
+	while (*strpos != '\0')
+	{
+		*strpos = 'X';
+		strpos++;
+	}
+}
+
+#define PSWD_KEYWORD	"password"
+
+/*
+ * Spock-specific filters on log messages.
+ *
+ * Remember, this function may be called in the case of severe limitations and
+ * shouldn't allocate memory.
+ *
+ * For now, Spock must always be loaded on startup, and it guarantees that this
+ * filter will be applied everywhere.
+ */
+static void
+log_message_filter(ErrorData *edata)
+{
+	if (prev_emit_log_hook)
+		prev_emit_log_hook(edata);
+
+	if (!edata->output_to_client && !edata->output_to_server)
+		/* Previous hook already done this job. */
+		return;
+
+	if (edata->elevel == ERROR)
+	{
+		char	   *strpos;
+		const int	len = strlen(PSWD_KEYWORD);
+
+		/*
+		 * Password may bubble up in the error message and query string.
+		 * XXX: Can it be exposed somewhere else - in the detail_log string, for
+		 * example?
+		 */
+		strpos = pg_strcasestr(edata->message, PSWD_KEYWORD);
+		if (strpos != NULL)
+		{
+			strpos += len;
+			replace_symbols(strpos);
+		}
+		strpos = pg_strcasestr(debug_query_string, PSWD_KEYWORD);
+		if (strpos != NULL)
+		{
+			strpos += len;
+			replace_symbols(strpos);
+		}
+	}
+
+	/*
+	 * Filter messages that previously needed core patch 'pg18-020-LOG-to-DEBUG1'
+	 */
+	if (edata->elevel == LOG &&
+		edata->sqlerrcode == ERRCODE_T_R_SERIALIZATION_FAILURE)
+	{
+		bool lower_output_level = false;
+
+		if (strstr(edata->message,
+				   "tuple to be locked was already moved to another partition due to concurrent update, retrying") != NULL)
+		{
+			edata->elevel = DEBUG1;
+			lower_output_level = true;
+		}
+		else if (strstr(edata->message, "concurrent delete, retrying") != NULL)
+		{
+			edata->elevel = DEBUG1;
+			lower_output_level = true;
+		}
+
+		if (lower_output_level)
+		{
+			/* Reconsider decision on exposing the message */
+			if (log_min_messages < edata->elevel)
+				edata->output_to_server = false;
+			if (client_min_messages < edata->elevel)
+				edata->output_to_client = false;
+		}
+	}
+}
 
 /*
  * Entry point for this module.
@@ -1067,5 +1183,9 @@ _PG_init(void)
 	RegisterBackgroundWorker(&bgw);
 
 	spock_init_failover_slot();
+
+	/* General-purpose message filter */
+	prev_emit_log_hook = emit_log_hook;
+	emit_log_hook = log_message_filter;
 }
 

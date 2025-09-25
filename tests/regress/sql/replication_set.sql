@@ -99,3 +99,199 @@ $$);
 
 \c :subscriber_dsn
 SELECT * FROM spock.replication_set;
+
+-- Issue SPOC-102
+
+-- Being on subscriber, set the exception behaviour to transdiscard
+ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard';
+SELECT pg_reload_conf();
+
+\c :provider_dsn
+
+ -- Table spoc_102g must be on each node and inside the replication set.
+SELECT spock.replicate_ddl('CREATE TABLE spoc_102g (x integer PRIMARY KEY);');
+SELECT spock.repset_add_table('default', 'spoc_102g');
+
+-- Must be disabled
+SHOW spock.enable_ddl_replication;
+SHOW spock.include_ddl_repset;
+
+CREATE TABLE spoc_102l (x integer PRIMARY KEY); -- local for the publisher
+INSERT INTO spoc_102l VALUES (1); -- Should be invisible for the subscriber node.
+INSERT INTO spoc_102g VALUES (-1);
+SELECT spock.repset_add_table('default', 'spoc_102l');
+INSERT INTO spoc_102g VALUES (-2);
+INSERT INTO spoc_102l VALUES (2); -- Should cause an error that will be just skipped
+INSERT INTO spoc_102g VALUES (-3);
+BEGIN; -- All its changes must be skipped
+INSERT INTO spoc_102l VALUES (3);
+INSERT INTO spoc_102g VALUES (-4); -- NOT replicated
+END;
+INSERT INTO spoc_102g VALUES (-5);
+
+\c :subscriber_dsn
+-- Check replication state before the problem fixation
+SELECT * FROM spoc_102g ORDER BY x;
+SELECT * FROM spoc_102l ORDER BY x; -- ERROR, does not exist yet
+
+-- Now, fix the issue with absent table
+BEGIN;
+SELECT spock.repair_mode(true) \gset
+CREATE TABLE spoc_102l (x integer PRIMARY KEY);
+END;
+
+-- Check that replication works
+INSERT INTO spoc_102l VALUES (4);
+-- XXX: Why we don't synchronize the state of the table and don't see rows
+-- publisher has added before?
+SELECT * FROM spoc_102l ORDER BY x;
+
+-- Return to provider and check that it doesn't see value (4).
+-- Afterwards, add value 5 that must be replicated
+\c :provider_dsn
+SELECT * FROM spoc_102l ORDER BY x;
+INSERT INTO spoc_102l VALUES (5);
+
+-- Re-check that subscription works properly
+\c :subscriber_dsn
+SELECT * FROM spoc_102l ORDER BY x;
+
+--
+-- Now, let's check the 'discard' mode
+--
+
+ALTER SYSTEM SET spock.exception_behaviour = 'discard';
+SELECT pg_reload_conf();
+
+\c :provider_dsn
+TRUNCATE spoc_102g;
+SELECT spock.replicate_ddl('DROP TABLE spoc_102l CASCADE');
+
+CREATE TABLE spoc_102l (x integer PRIMARY KEY); -- local for the publisher
+INSERT INTO spoc_102l VALUES (1);
+INSERT INTO spoc_102g VALUES (-1);
+SELECT spock.repset_add_table('default', 'spoc_102l');
+INSERT INTO spoc_102g VALUES (-2);
+INSERT INTO spoc_102l VALUES (2); -- table does not exist yet, skip
+INSERT INTO spoc_102g VALUES (-3);
+BEGIN; -- Skip INSERT to spoc_102l and apply INSERT to spoc_102g
+INSERT INTO spoc_102l VALUES (3);
+INSERT INTO spoc_102g VALUES (-4);
+END;
+INSERT INTO spoc_102g VALUES (-5);
+
+\c :subscriber_dsn
+-- Check replication state before the problem fixation
+SELECT * FROM spoc_102g ORDER BY x;
+SELECT * FROM spoc_102l ORDER BY x; -- ERROR, does not exist yet
+
+-- Now, fix the issue with absent table. Use 'IF NOT EXISTS' hack to create
+-- the table where it is absent.
+\c :provider_dsn
+SELECT spock.replicate_ddl('CREATE TABLE IF NOT EXISTS spoc_102l (x integer PRIMARY KEY)');
+INSERT INTO spoc_102l VALUES (4);
+INSERT INTO spoc_102g VALUES (-6);
+
+\c :subscriber_dsn
+SELECT * FROM spoc_102g ORDER BY x;
+SELECT * FROM spoc_102l ORDER BY x;
+
+-- Check exception log format
+SELECT
+  command_counter,table_schema,table_name,operation,
+  remote_new_tup,error_message
+FROM spock.exception_log
+ORDER BY command_counter;
+
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g,spoc_102l CASCADE');
+
+--
+-- UPDATE row of an absent relation
+--
+
+SELECT spock.replicate_ddl('CREATE TABLE spoc_102g_u (x integer PRIMARY KEY);');
+SELECT spock.repset_add_table('default', 'spoc_102g_u');
+
+CREATE TABLE spoc_102l_u (x integer PRIMARY KEY); -- local for the publisher
+INSERT INTO spoc_102l_u VALUES (1);
+INSERT INTO spoc_102g_u VALUES (-1), (0);
+SELECT spock.repset_add_table('default', 'spoc_102l_u');
+UPDATE spoc_102g_u SET x = -2 WHERE x = -1;
+UPDATE spoc_102l_u SET x = 2 WHERE x = 1;
+BEGIN;
+UPDATE spoc_102l_u SET x = 3 WHERE x = 2;
+UPDATE spoc_102g_u SET x = -3 WHERE x = -2;
+END;
+UPDATE spoc_102g_u SET x = 1 WHERE x = 0;
+
+\c :subscriber_dsn
+-- Check replication state before the problem fixation
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT * FROM spoc_102g_u ORDER BY x;
+SELECT * FROM spoc_102l_u ORDER BY x; -- ERROR, does not exist yet
+
+-- Now, fix the issue with absent table
+\c :provider_dsn
+SELECT spock.replicate_ddl('CREATE TABLE IF NOT EXISTS spoc_102l_u (x integer PRIMARY KEY)');
+UPDATE spoc_102l_u SET x = -3 WHERE x = 3;
+INSERT INTO spoc_102l_u VALUES (4);
+UPDATE spoc_102l_u SET x = 5 WHERE x = 4;
+
+-- Check that replication works
+\c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT * FROM spoc_102l_u ORDER BY x;
+SELECT * FROM spoc_102g_u ORDER BY x;
+
+SELECT
+  command_counter,table_schema,table_name,operation,
+  remote_new_tup,error_message
+FROM spock.exception_log
+ORDER BY command_counter;
+
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');
+
+--
+-- DELETE row from an absent relation
+--
+
+SELECT spock.replicate_ddl('CREATE TABLE spoc_102g_d (x integer PRIMARY KEY);');
+SELECT spock.repset_add_table('default', 'spoc_102g_d');
+
+CREATE TABLE spoc_102l_d (x integer PRIMARY KEY);
+INSERT INTO spoc_102l_d VALUES (1), (2);
+INSERT INTO spoc_102g_d VALUES (-1), (-2), (-3);
+SELECT spock.repset_add_table('default', 'spoc_102l_d');
+DELETE FROM spoc_102g_d WHERE x = -1;
+DELETE FROM spoc_102l_d WHERE x = 1;
+DELETE FROM spoc_102g_d WHERE x = -2;
+
+-- Check the state of replication on the subscriber node
+\c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT * FROM spoc_102l_d ORDER BY x; -- ERROR, not existed yet.
+SELECT * FROM spoc_102g_d ORDER BY x; -- See one record (-3).
+
+-- Create table where needed
+\c :provider_dsn
+SELECT spock.replicate_ddl('CREATE TABLE IF NOT EXISTS spoc_102l_d (x integer PRIMARY KEY)');
+
+-- Do something with tables to enable replication
+INSERT INTO spoc_102g_d VALUES (-4), (-5);
+INSERT INTO spoc_102l_d VALUES (3), (4);
+UPDATE spoc_102g_d SET x = -6 WHERE x = -4;
+UPDATE spoc_102l_d SET x = 5 WHERE x = 3;
+DELETE FROM spoc_102g_d WHERE x = -3 OR x = -6;
+DELETE FROM spoc_102l_d WHERE x = 1 OR x = 5;
+
+-- Check the state of replication on the subscriber node
+\c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT * FROM spoc_102l_d ORDER BY x; -- See (4)
+SELECT * FROM spoc_102g_d ORDER BY x; -- See (-5).
+
+-- Cleanup
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_d,spoc_102l_d CASCADE');
