@@ -89,18 +89,17 @@ typedef struct FailoverSlotFilter
 /* Used for physical-before-logical ordering */
 static char *standby_slot_names_raw;
 static char *standby_slot_names_string = NULL;
-List *pg_standby_slot_names = NIL;
-int standby_slots_min_confirmed;
-XLogRecPtr standby_slot_names_oldest_flush_lsn = InvalidXLogRecPtr;
+static List *pg_standby_slot_names = NIL;
+static int standby_slots_min_confirmed;
+static XLogRecPtr standby_slot_names_oldest_flush_lsn = InvalidXLogRecPtr;
 
 /* Slots to sync */
-char *spock_failover_slots_dsn;
-char *spock_failover_slot_names;
+static char *spock_failover_slots_dsn;
+static char *spock_failover_slot_names;
 static char *spock_failover_slot_names_str = NULL;
 static List *spock_failover_slot_names_list = NIL;
 static bool spock_failover_slots_drop = true;
 
-char *spock_failover_slots_version_str;
 void spock_init_failover_slot(void);
 
 PGDLLEXPORT void spock_failover_slots_main(Datum main_arg);
@@ -684,7 +683,11 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 	 */
 	if (found)
 	{
+#if PG_VERSION_NUM >= 180000
+		ReplicationSlotAcquire(remote_slot->name, true, true);
+#else
 		ReplicationSlotAcquire(remote_slot->name, true);
+#endif
 
 		/*
 		 * We can't satisfy this remote slot's requirements with our known-safe

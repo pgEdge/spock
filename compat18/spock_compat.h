@@ -50,17 +50,14 @@
 #define CreateCommandTag(raw_parsetree) \
 	CreateCommandTag(raw_parsetree->stmt)
 
-#define PortalRun(portal, count, isTopLevel, dest, altdest, qc) \
-	PortalRun(portal, count, isTopLevel, true, dest, altdest, qc)
-
 #define ExecAlterExtensionStmt(stmt) \
 	ExecAlterExtensionStmt(NULL, stmt)
 
 #define ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple) \
-	ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, NULL, NULL, NULL)
+	ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, NULL, NULL, NULL, false)
 
 #define ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot) \
-	ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot, NULL, NULL)
+	ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot, NULL, NULL, false)
 
 #define Form_pg_sequence Form_pg_sequence_data
 
@@ -118,5 +115,16 @@
 /* Must use this interface for access HeapTuple in ReorderBufferChange */
 #define ReorderBufferChangeHeapTuple(change, tuple_type) \
 	change->data.tp.tuple_type
+
+/* IndexScanInstrumentation parameter may be NULL */
+#define index_beginscan(heapRelation, indexRelation, snapshot, nkeys, norderbys) \
+	index_beginscan(heapRelation, indexRelation, snapshot, NULL, nkeys, norderbys)
+
+/* Deferrable true is ok */
+#define RelationGetPrimaryKeyIndex(relation) \
+	RelationGetPrimaryKeyIndex(relation, true)
+
+#define ExecInitRangeTable(estate, rangeTable, permInfos) \
+	ExecInitRangeTable(estate, rangeTable, permInfos, bms_make_singleton(1))
 
 #endif

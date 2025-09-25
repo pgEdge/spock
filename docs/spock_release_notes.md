@@ -1,5 +1,11 @@
 # Spock Release Notes
 
+## v5.0.3 on Sept 26, 2025
+
+* Spock support for Postgres 18
+    * When using row filters with Postgres 18 such as in the functions spock.repset_add_table() or spock.repset_add_partition(), allowable filters are now stricter. Expressions may not use UDFs nor reference another table, similar to native logical replication in Postgres.
+
+
 ## v5.0.2 on Sept 22, 2025
 
 * Improved logging for all Zodan phases in both the stored procedure and Python examples.

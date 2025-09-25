@@ -207,7 +207,7 @@ typedef struct SPKFlushPosition
 	XLogRecPtr	remote_end;
 } SPKFlushPosition;
 
-dlist_head	lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
+static dlist_head	lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
 
 typedef struct ApplyExecState
 {
@@ -217,14 +217,14 @@ typedef struct ApplyExecState
 	TupleTableSlot *slot;
 } ApplyExecState;
 
-struct ActionErrCallbackArg
+typedef struct ActionErrCallbackArg
 {
 	const char *action_name;
 	SpockRelation *rel;
 	bool		is_ddl_or_drop;
-};
+} ActionErrCallbackArg;
 
-struct ActionErrCallbackArg errcallback_arg;
+static ActionErrCallbackArg errcallback_arg;
 TransactionId remote_xid;
 
 /*
@@ -243,7 +243,7 @@ typedef struct RemoteSyncPosition
  * Queue of structure RemoteSyncPosition to Save the LSN in
  * case of Synchronous replica is attached
  */
-dlist_head sync_replica_lsn = DLIST_STATIC_INIT(sync_replica_lsn);
+static dlist_head sync_replica_lsn = DLIST_STATIC_INIT(sync_replica_lsn);
 
 /*
  * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
@@ -3724,12 +3724,12 @@ get_progress_entry_ts(Oid target_node_id,
 				ObjectIdGetDatum(remote_node_id));
 
 	/*
-	 * Scan the progress table using the current transaction snapshot.
+	 * Scan the progress table using the latest snapshot.
 	 * We do not need to Push/Pop that snapshot as the following
 	 * operations are not going to modify that snapshot (like bumping
 	 * the command counter).
 	 */
-	snap = GetTransactionSnapshot();
+	snap = RegisterSnapshot(GetLatestSnapshot());
 	scan = systable_beginscan(rel, idxId, true, snap, 2, key);
 	tup = systable_getnext(scan);
 	desc = RelationGetDescr(rel);
@@ -3764,6 +3764,8 @@ get_progress_entry_ts(Oid target_node_id,
 
 	systable_endscan(scan);
 	table_close(rel, NoLock);
+
+	UnregisterSnapshot(snap);
 
 	return remote_commit_ts;
 }
@@ -3865,7 +3867,7 @@ update_progress_entry(Oid target_node_id,
 				ObjectIdGetDatum(remote_node_id));
 
 	/* Scan the progress table using the transaction snapshot */
-	snap = GetTransactionSnapshot();
+	snap = RegisterSnapshot(GetLatestSnapshot());
 	scan = systable_beginscan(rel, idxId, true, snap, 2, key);
 	oldtup = systable_getnext(scan);
 
@@ -3911,6 +3913,8 @@ update_progress_entry(Oid target_node_id,
 	heap_freetuple(newtup);
 	systable_endscan(scan);
 	table_close(rel, RowExclusiveLock);
+
+	UnregisterSnapshot(snap);
 }
 
 /*

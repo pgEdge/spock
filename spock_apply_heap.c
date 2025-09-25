@@ -107,29 +107,6 @@ typedef struct ApplyMIState
 	int			nbuffered_tuples;
 } ApplyMIState;
 
-typedef struct ApplyErrorCallbackArg
-{
-	LogicalRepMsgType command;	/* 0 if invalid */
-	LogicalRepRelMapEntry *rel;
-
-	/* Remote node information */
-	int			remote_attnum;	/* -1 if invalid */
-	TransactionId remote_xid;
-	XLogRecPtr	finish_lsn;
-	char	   *origin_name;
-} ApplyErrorCallbackArg;
-
-/* errcontext tracker */
-ApplyErrorCallbackArg apply_error_callback_arg =
-{
-	.command = 0,
-	.rel = NULL,
-	.remote_attnum = -1,
-	.remote_xid = InvalidTransactionId,
-	.finish_lsn = InvalidXLogRecPtr,
-	.origin_name = NULL,
-};
-
 #define TTS_TUP(slot) (((HeapTupleTableSlot *)slot)->tuple)
 
 static ApplyMIState *spkmistate = NULL;
