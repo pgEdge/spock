@@ -26,8 +26,8 @@
 
 #include "spock_compat.h"
 
-#define SPOCK_VERSION "5.0.2"
-#define SPOCK_VERSION_NUM 50002
+#define SPOCK_VERSION "5.0.3"
+#define SPOCK_VERSION_NUM 50003
 
 #define EXTENSION_NAME "spock"
 
