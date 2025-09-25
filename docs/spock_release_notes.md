@@ -26,10 +26,10 @@
 
 * Spock functions and stored procedures now support node additions and major PostgreSQL version.  This means:
     * existing nodes are able to maintain full read and write capability while a new node is populated and added to the cluster.
-    * You can perform PostgreSQL major version upgrades as a rolling upgrade by adding a new node with the new major PostgreSQL version, and then removing old nodes hosting the previous version. 
+    * You can perform PostgreSQL major version upgrades as a rolling upgrade by adding a new node with the new major PostgreSQL version, and then removing old nodes hosting the previous version.
 * Exception handling performance improvements are now managed with the spock.exception_replay_queue_size GUC.
 * Previously, replication lag was estimated on the source node; this meant that if there were no transactions being replicated, the reported lag could continue to increase.  Lag tracking is now calculated at the target node, with improved accuracy.
-* Spock 5.0 implements LSN Checkpointing with `spock.sync()` and `spock.wait_for_sync_event()`.  This feature allows you to identify a checkpoint in the source node WAL files, and watch for the LSN of the checkpoint on a replica node.  This allows you to guarantee that a DDL change, has replicated from the source node to all other nodes before publishing an update. 
+* Spock 5.0 implements LSN Checkpointing with `spock.sync()` and `spock.wait_for_sync_event()`.  This feature allows you to identify a checkpoint in the source node WAL files, and watch for the LSN of the checkpoint on a replica node.  This allows you to guarantee that a DDL change, has replicated from the source node to all other nodes before publishing an update.
 * The `spockctrl` command line utility and sample workflows simplify the management of a Spock multi-master replication setup for PostgreSQL. `spockctrl` provides a convenient interface for:
     * node management
     * replication set management
@@ -37,7 +37,7 @@
     * ad-hoc SQL execution
     * workflow automation
 * Previously, replicated `DELETE` statements that attempted to delete a *missing* row were logged as exceptions.  Since the purpose of a `DELETE` statement is to remove a row, we no longer log these as exceptions. Instead these are now logged in the `Resolutions` table.
-* `INSERT` conflicts resulting from a duplicate primary key or identity replica are now transformed into an `UPDATE` that updates all columns of the existing row, using Last-Write-Wins (LWW) logic.  The transaction is then logged in the node’s `Resolutions` table, as either: 
+* `INSERT` conflicts resulting from a duplicate primary key or identity replica are now transformed into an `UPDATE` that updates all columns of the existing row, using Last-Write-Wins (LWW) logic.  The transaction is then logged in the node’s `Resolutions` table, as either:
     * `keep local` if the local node’s `INSERT` has a later timestamp than the arriving `INSERT`
     * `apply remote` if the arriving `INSERT` from the remote node had a later timestamp
 * In a cluster composed of distributed and physical replica nodes, Spock 5.0 improves performance by tracking the Log Sequence Numbers (LSNs) of transactions that have been applied locally but are still waiting for confirmation from physical replicas.  A final `COMMIT` confirmation is provided only after those LSNs are confirmed on the physical replica.
@@ -66,7 +66,7 @@ Our current production version is v3.3 and includes the following enhancements o
 
 * Automatic replication of DDL statements
 
-## Version 3.2 
+## Version 3.2
 
 * Support for pg14
 * Support for [Snowflake Sequences](https://github.com/pgedge/snowflake)
@@ -89,7 +89,7 @@ Our current production version is v3.3 and includes the following enhancements o
 * Support for pg15 (support for pg10 thru pg14 dropped)
 * Support for Asynchronous Multi-Master Replication with conflict resolution
 * Conflict-free delta-apply columns
-* Replication of partitioned tables (to help support geo-sharding) 
+* Replication of partitioned tables (to help support geo-sharding)
 * Making database clusters location aware (to help support geo-sharding)
 * Better error handling for conflict resolution
 * Better management & monitoring stats and integration

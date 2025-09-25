@@ -4,18 +4,19 @@
 
 ## Table of Contents
 - [Building the Spock Extension](README.md#building-the-spock-extension)
+- [Building the Spock Documentation](README.md#building-the-spock-documentation)
 - [Basic Configuration and Usage](README.md#basic-configuration-and-usage)
-- [Upgrading a Spock Installation](README.md#upgrading)
+- [Upgrading a Spock Installation](docs/managing/upgrading_spock)
 - [Advanced Configuration Options](docs/guc_settings.md)
-- [Spock Management Features](docs/features.md)
-- [Modifying a Cluster](docs/modify.md)
+- [Spock Management Features](docs/managing/index.md)
+- [Modifying a Cluster](docs/modify/index.md)
 - [Spock Functions](docs/spock_functions.md)
-- [Using spockctrl Management Functions](docs/spockctrl.md)
+- [Using spockctrl Management Functions](docs/modify/spockctrl/index.md)
 - [Limitations](docs/limitations.md)
 - [FAQ](docs/FAQ.md)
 - [Release Notes](docs/spock_release_notes.md)
 
-# Spock Multi-Master Replication for PostgreSQL - Prerequisites and Requirements
+## Spock Multi-Master Replication for PostgreSQL - Prerequisites and Requirements
 
 The Spock extension provides multi-master replication for PostgreSQL versions 15 and later.  Take the following requirements into consideration as you design your cluster:
 
@@ -30,7 +31,7 @@ For example:
 ```sql
 lcdb=# \d
                List of relations
- Schema |      Name      |   Type   |  Owner   
+ Schema |      Name      |   Type   |  Owner
 --------+----------------+----------+----------
  public | table_a        | table    | ec2-user
  public | table_a_id_seq | sequence | ec2-user
@@ -47,23 +48,23 @@ lcdb=# \d
 ```sql
 lcdb=# \d public.*
                                    Table "public.table_a"
-   Column   |           Type           | Collation | Nullable |           Default            
+   Column   |           Type           | Collation | Nullable |           Default
 ------------+--------------------------+-----------+----------+------------------------------
  id         | bigint                   |           | not null | generated always as identity
- name       | text                     |           | not null | 
- qty        | integer                  |           | not null | 
+ name       | text                     |           | not null |
+ qty        | integer                  |           | not null |
  created_at | timestamp with time zone |           | not null | now()
 Indexes:
     "table_a_pkey" PRIMARY KEY, btree (id)
 
                        Sequence "public.table_a_id_seq"
-  Type  | Start | Minimum |       Maximum       | Increment | Cycles? | Cache 
+  Type  | Start | Minimum |       Maximum       | Increment | Cycles? | Cache
 --------+-------+---------+---------------------+-----------+---------+-------
  bigint |     1 |       1 | 9223372036854775807 |         1 | no      |     1
 Sequence for identity column: public.table_a.id
 
      Index "public.table_a_pkey"
- Column |  Type  | Key? | Definition 
+ Column |  Type  | Key? | Definition
 --------+--------+------+------------
  id     | bigint | yes  | id
 primary key, btree, for table "public.table_a"
@@ -85,9 +86,9 @@ You will need to build the Spock extension on a patched PostgreSQL source tree t
 
   `patch -p1 < path_to_patch/patch_name`
 
-   Note that you must apply the patches in the numerical order designated by their prefixes in the `spock` repository (for example, `pg16-015-patch-name`, then `pg16-020-patch-name`, then `pg16-025-patch-name`). 
-  
-3. `configure`, `make`, and `make install` the Postgres server as described in the [PostgreSQL documentation](https://www.postgresql.org/docs/current/install-make.html). 
+   Note that you must apply the patches in the numerical order designated by their prefixes in the `spock` repository (for example, `pg16-015-patch-name`, then `pg16-020-patch-name`, then `pg16-025-patch-name`).
+
+3. `configure`, `make`, and `make install` the Postgres server as described in the [PostgreSQL documentation](https://www.postgresql.org/docs/current/install-make.html).
 
 4. When the build completes, add the location of your `pg_config` file to your `PATH` variable:
 
@@ -102,7 +103,7 @@ You will need to build the Spock extension on a patched PostgreSQL source tree t
 7. Then, update your Postgres `postgresql.conf` file, setting:
 
    ```bash
-   shared_preload_libraries = 'spock' 
+   shared_preload_libraries = 'spock'
    track_commit_timestamp = on # needed for conflict resolution
    ```
 
@@ -110,15 +111,47 @@ You will need to build the Spock extension on a patched PostgreSQL source tree t
 
    `CREATE EXTENSION spock;`
 
+## Building the Spock Documentation
+
+The Spock documentation uses [MkDocs](https://www.mkdocs.org) with the [Material theme](https://squidfunk.github.io/mkdocs-material/) to generate styled static HTML documentation from Markdown files in the `docs` directory.
+
+To build the documentation, and run a development server for live previewing:
+
+1) Create a Python virtual environment:
+    ```bash
+    python3 -m venv spock-docs-venv
+    ```
+
+2) Activate the virtual environment:
+    ```bash
+    source spock-docs-venv/bin/activate
+    ```
+
+3) Install MkDocs:
+    ```bash
+    pip install mkdocs mkdocs-material
+    ```
+
+4) Run the local MkDocs server for testing:
+    ```bash
+    mkdocs serve
+    INFO    -  Building documentation...
+    INFO    -  Multirepo plugin importing docs...
+    INFO    -  Cleaning site directory
+    INFO    -  Multirepo plugin is cleaning up temp_dir/
+    INFO    -  Documentation built in 0.18 seconds
+    INFO    -  [14:32:14] Watching paths for changes: 'docs', 'mkdocs.yml'
+    INFO    -  [14:32:14] Serving on http://127.0.0.1:8000/
+    ```
 
 ### Basic Configuration and Usage
 
-Before configuring a replication cluster, you will need to perform the following steps on each node of the cluster: 
+Before configuring a replication cluster, you will need to perform the following steps on each node of the cluster:
 
-* build Postgres and spock, and create the spock extension
-* initialize identical databases 
-* modify the `postgresql.conf` file to support logical decoding automatic ddl replication
-* modify the `pg_hba.conf` file and any firewalls to ensure you have connectivity between nodes
+* build Postgres and Spock, and create the Spock extension.
+* initialize identical databases.
+* modify the `postgresql.conf` file to support logical decoding automatic DDL replication.
+* modify the `pg_hba.conf` file and any firewalls to ensure you have connectivity between nodes.
 
 **Configuration Settings**
 
@@ -194,9 +227,9 @@ Then, to confirm replication, you can connect to both `n1` and `n2` with psql an
     (4 rows)
 
 
-**Deploying spock Clusters in Containers and with Ansible**
+**Deploying Spock Clusters in Containers and with Ansible**
 
-The pgEdge Github sites hosts repositories that contain artifacts that you can use to simplify spock cluster deployment; for more information, visit: 
+The pgEdge Github sites hosts repositories that contain artifacts that you can use to simplify spock cluster deployment; for more information, visit:
 
 * [Deploying spock with Ansible](https://github.com/pgEdge/pgedge-ansible)
 * [Deploying spock in a Container](https://docs.pgedge.com/container)
