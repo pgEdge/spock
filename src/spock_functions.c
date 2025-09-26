@@ -217,7 +217,8 @@ check_local_node(bool for_update)
 /*
  * Create new node
  */
-Datum spock_create_node(PG_FUNCTION_ARGS)
+Datum
+spock_create_node(PG_FUNCTION_ARGS)
 {
 	char *node_name;
 	char *node_dsn;

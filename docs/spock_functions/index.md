@@ -44,7 +44,6 @@ The following user functions are available via the Spock extension:
 | spock.spock_version | Returns the Spock version in a major/minor version form: `4.0.10`.
 | spock.spock_version_num | Returns the Spock version in a single numeric form: `40010`.
 | spock.get_channel_stats | Returns tuple traffic statistics.
-| spock.get_country | Returns the country code if explicitly set; returns `??` if not set.
 | spock.lag_tracker | Returns a list of slots, with commit_lsn and commit_timestamp for each.
 | spock.repair_mode | Used to manage the state of replication - If set to `true`, stops replicating statements; when `false`, resumes replication.
 | spock.replicate_ddl | Replicate a specific statement.
