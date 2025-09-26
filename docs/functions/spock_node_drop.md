@@ -5,14 +5,14 @@
 ### SYNOPSIS
 
 `spock.node_drop (node_name name, ifexists bool)`
- 
-### DESCRIPTION
-    Drop a spock node. 
 
-### EXAMPLE 
+### DESCRIPTION
+    Drop a spock node. Beforehand, any subscriptions on remote spock nodes must be deleted by the 'sub_drop' function as well as any subscriptions on the dropping node.
+
+### EXAMPLE
 
 `spock.node_drop ('n1')`
- 
+
 ### POSITIONAL ARGUMENTS
     node_name
         The name of the node. Example: n1
