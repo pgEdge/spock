@@ -27,13 +27,13 @@ there is no unique identifier.
 
 ### Only one unique index/constraint/PK
 
-If more than one upstream is configured or the downstream accepts local writes, only one `UNIQUE` index should be present on downstream replicated tables. Conflict resolution can only use one index at a time, so conflicting rows may `ERROR` if a row satisfies the `PRIMARY KEY` but violates a `UNIQUE` constraint on the downstream side. 
+If more than one upstream is configured or the downstream accepts local writes, only one `UNIQUE` index should be present on downstream replicated tables. Conflict resolution can only use one index at a time, so conflicting rows may `ERROR` if a row satisfies the `PRIMARY KEY` but violates a `UNIQUE` constraint on the downstream side.
 
 You can have additional unique constraints upstream if the downstream consumer gets writes from that upstream and nowhere else. The rule is that the downstream constraints must *not be more restrictive* than those on the upstream(s).
 
 Partial secondary unique indexes are permitted, but will be ignored for conflict resolution purposes.
 
-`spock.check_all_uc_indexes` is an experimental [GUC](https://github.com/pgEdge/spock/blob/main/docs/guc_settings.md) that adds `INSERT` conflict resolution by allowing Spock to consider all unique constraints, not just the primary key or replica identity. 
+`spock.check_all_uc_indexes` is an experimental [GUC](https://github.com/pgEdge/spock/blob/main/docs/guc_settings.md) that adds `INSERT` conflict resolution by allowing Spock to consider all unique constraints, not just the primary key or replica identity.
 
 ### Unique constraints must not be deferrable
 

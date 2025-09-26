@@ -1,0 +1,13 @@
+# Using Batch Inserts
+
+Using batch inserts improves replication performance for transactions that perform multiple inserts into a single table. To enable batch mode, modify the `postgresql.conf` file, setting:
+
+* the `spock.batch_inserts` parameter to `true`.
+* the `spock.conflict_resolution` parameter to `error`.
+
+Once enabled, Spock will switch to batch mode when a transaction does more than five `INSERT`s.
+
+!!! info
+
+    You can only use batch mode if there are no `INSTEAD OF INSERT` and `BEFORE INSERT` triggers on the table, and when there are no defaults with volatile expressions for columns of the table.
+
