@@ -1,5 +1,9 @@
 # Spock Release Notes
 
+## v5.0.3 on Sep 26, 2025
+
+Spock 5.0.3 adds support for Postgres 18.
+
 ## v5.0.2 on Sept 22, 2025
 
 * Improved logging for all Zodan phases in both the stored procedure and Python examples.

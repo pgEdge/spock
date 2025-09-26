@@ -9,17 +9,8 @@ In this tutorial, we'll walk you through the process of adding a fourth node to 
 
 * All nodes in your cluster must be available to the Spock extension for the duration of the addition.
 
-* If the process fails, don't immediately retry a command until you ensure that all artifacts created by the workflow have been removed!
+* If the process fails, don't immediately retry a command until you ensure that **all** artifacts created by the workflow have been removed!
 
-If you are not using `spock.node_create` to create the new node, you will need to: 
-
-* Initialize the new node with [`initdb`](https://www.postgresql.org/docs/17/app-initdb.html).
-* Create a Postgres database.
-* Create a database user. 
-* Follow the instructions at the Github repository to build and install the Spock extension on the database.
-* Add `spock` to the `shared_preload_library` parameter in the `postgresql.conf` file.
-* Restart the server to update the configuration.
-* Then, use the `CREATE EXTENSION spock` command to create the spock extension.
 
 **Preventing Selected Schemas from Replicating to a New Node**
 

@@ -16,9 +16,9 @@
 
 The Spock extension is designed to support the following use cases:
 
+* Full database replication on Postgres versions 15, 16, 17, and 18
 * Asynchronous multi-active replication with conflict resolution
 * Upgrades between major versions
-* Full database replication
 * Selective replication of sets of tables using replication sets
 * Selective replication of table rows at either publisher or subscriber side (row_filter)
 * Selective replication of partitioned tables
@@ -119,7 +119,7 @@ You can configure some Spock extension behaviors with configuration options that
 - `spock.conflict_log_level`
   Sets the log level for reporting detected conflicts. The default is `LOG`. If the parameter is set to a value lower than `log_min_messages`, resolved conflicts are not written to the server log. Accepted values are:
 
-    - the same as for the [`log_min_messages`](https://www.postgresql.org/docs/17/runtime-config-logging.html#GUC-LOG-MIN-MESSAGES) PostgreSQL parameter; the default setting is `LOG`.
+    - the same as for the [`log_min_messages`](https://www.postgresql.org/docs/current/runtime-config-logging.html#GUC-LOG-MIN-MESSAGES) PostgreSQL parameter; the default setting is `LOG`.
 
   This setting is used primarily to suppress logging of conflicts.  The [possible values](https://www.postgresql.org/docs/15/runtime-config-logging.html#RUNTIME-CONFIG-SEVERITY-LEVELS) are the same as for the `log_min_messages` PostgreSQL setting.
 
