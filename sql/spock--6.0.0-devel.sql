@@ -141,6 +141,14 @@ RETURNS oid
 AS 'MODULE_PATHNAME', 'spock_create_subscription'
 LANGUAGE C STRICT VOLATILE;
 
+CREATE FUNCTION spock.sub_drop(
+	subscription_name name,
+	ifexists boolean DEFAULT false
+)
+RETURNS oid
+AS 'MODULE_PATHNAME', 'spock_drop_subscription'
+LANGUAGE C STRICT VOLATILE;
+
 CREATE FUNCTION spock.node_drop(node_name name, ifexists boolean DEFAULT false)
 RETURNS boolean
 AS 'MODULE_PATHNAME', 'spock_drop_node'
@@ -150,9 +158,6 @@ CREATE FUNCTION spock.node_add_interface(node_name name, interface_name name, ds
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_add_interface';
 CREATE FUNCTION spock.node_drop_interface(node_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface';
-
-CREATE FUNCTION spock.sub_drop(subscription_name name, ifexists boolean DEFAULT false)
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_subscription';
 
 CREATE FUNCTION spock.sub_alter_interface(subscription_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_interface';
