@@ -125,6 +125,22 @@ RETURNS oid CALLED ON NULL INPUT VOLATILE
 AS 'MODULE_PATHNAME', 'spock_create_node'
 LANGUAGE C;
 
+CREATE FUNCTION spock.sub_create(
+	subscription_name name,
+	provider_dsn text,
+    replication_sets text[] = '{default,default_insert_only,ddl_sql}',
+	synchronize_structure boolean = false,
+    synchronize_data boolean = false,
+	forward_origins text[] = '{}',
+	apply_delay interval DEFAULT '0',
+    force_text_transfer boolean = false,
+	enabled boolean = true,
+	skip_schema text[] = '{}'
+)
+RETURNS oid
+AS 'MODULE_PATHNAME', 'spock_create_subscription'
+LANGUAGE C STRICT VOLATILE;
+
 CREATE FUNCTION spock.node_drop(node_name name, ifexists boolean DEFAULT false)
 RETURNS boolean
 AS 'MODULE_PATHNAME', 'spock_drop_node'
@@ -135,12 +151,6 @@ RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_a
 CREATE FUNCTION spock.node_drop_interface(node_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface';
 
-CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
-    replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
-    synchronize_data boolean = false, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
-    force_text_transfer boolean = false,
-	enabled boolean = true, skip_schema text[] = '{}')
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
 CREATE FUNCTION spock.sub_drop(subscription_name name, ifexists boolean DEFAULT false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_subscription';
 

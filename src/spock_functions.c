@@ -294,7 +294,8 @@ spock_create_node(PG_FUNCTION_ARGS)
  *
  * TODO: support cascade (drop subscribers)
  */
-Datum spock_drop_node(PG_FUNCTION_ARGS)
+Datum
+spock_drop_node(PG_FUNCTION_ARGS)
 {
 	char *node_name = NameStr(*PG_GETARG_NAME(0));
 	bool ifexists = PG_GETARG_BOOL(1);
@@ -449,7 +450,8 @@ Datum spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 /*
  * Connect two existing nodes.
  */
-Datum spock_create_subscription(PG_FUNCTION_ARGS)
+Datum
+spock_create_subscription(PG_FUNCTION_ARGS)
 {
 	char *sub_name = NameStr(*PG_GETARG_NAME(0));
 	char *provider_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
@@ -497,7 +499,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	existing_origin = get_node_by_name(origin->name, true);
 
 	/*
-	 * If not found, crate local representation of remote node and interface.
+	 * If not found, create local representation of remote node and interface.
 	 */
 	if (!existing_origin)
 	{
