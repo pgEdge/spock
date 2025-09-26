@@ -6,7 +6,7 @@
 - [Building the Spock Extension](README.md#building-the-spock-extension)
 - [Building the Spock Documentation](README.md#building-the-spock-documentation)
 - [Basic Configuration and Usage](README.md#basic-configuration-and-usage)
-- [Upgrading a Spock Installation](docs/upgrading_spock)
+- [Upgrading a Spock Installation](docs/upgrading_spock.md)
 - [Advanced Configuration Options](docs/install_spock.md#advanced-configuration-options-for-spock)
 - [Spock Management Features](docs/managing/index.md)
 - [Modifying a Cluster](docs/modify/index.md)
