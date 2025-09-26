@@ -106,12 +106,21 @@ CREATE TABLE spock.progress (
 	PRIMARY KEY(node_id, remote_node_id)
 ) WITH (fillfactor=50);
 
-CREATE FUNCTION spock.node_create(node_name name, dsn text,
-    location text DEFAULT NULL, country text DEFAULT NULL,
-    info jsonb DEFAULT NULL)
-RETURNS oid CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_node';
+CREATE FUNCTION spock.node_create(
+	node_name name,
+	dsn text,
+	location text DEFAULT NULL,
+	country text DEFAULT NULL,
+    info jsonb DEFAULT NULL
+)
+RETURNS oid CALLED ON NULL INPUT VOLATILE
+AS 'MODULE_PATHNAME', 'spock_create_node'
+LANGUAGE C;
+
 CREATE FUNCTION spock.node_drop(node_name name, ifexists boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_node';
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_drop_node'
+LANGUAGE C STRICT VOLATILE;
 
 CREATE FUNCTION spock.node_add_interface(node_name name, interface_name name, dsn text)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_add_interface';
@@ -351,10 +360,6 @@ LANGUAGE c AS 'MODULE_PATHNAME';
 
 CREATE FUNCTION spock_min_proto_version() RETURNS integer
 LANGUAGE c AS 'MODULE_PATHNAME';
-
-CREATE FUNCTION spock.get_country() RETURNS text
-LANGUAGE sql AS
-$$ SELECT current_setting('spock.country') $$;
 
 CREATE FUNCTION
 spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
