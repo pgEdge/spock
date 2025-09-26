@@ -1,0 +1,125 @@
+site_name: The Spock Extension
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+
+plugins:
+  - search
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+
+  logo_dark_mode: 'img/logo-dark.png'
+  logo_light_mode: 'img/logo-light.png'
+
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.prune
+    - navigation.top
+    - toc.follow
+
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: white
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+extra:
+  generator: false
+
+copyright: Copyright &copy; 2023 - 2025 pgEdge, Inc
+repo_url: https://github.com/pgEdge/spock
+
+nav:
+  - Introduction: index.md
+  - Installing and Configuring Spock: install_spock.md
+  - Creating a Two-Node Cluster: two_node_cluster.md
+  - Upgrading a Spock Installation: upgrading_spock.md
+  - Spock's Conflict Avoidance Options: conflicts.md
+  - Spock's Management Features:
+    - Managing a Spock Installation: managing/index.md
+    - Replicating Partitioned Tables: managing/partition_mgmt.md
+    - Using Batch Inserts: managing/batch_inserts.md
+    - Filtering Data: managing/filtering.md
+    - Using Spock in Read-Only Mode: managing/read_only.md
+    - Using a Trigger to Manage Replication Set Membership: managing/repset_trigger.md
+    - Using Snowflake Sequences: managing/snowflake.md
+    - Using Lolor to Manage Large Objects: managing/lolor.md
+    - Using Automatic DDL Replication: managing/spock_autoddl.md
+  - Adding a Node to a Cluster:
+    - Using Spock to Add a Node to a Cluster: modify/index.md
+    - Adding a Node with Zero Downtime: modify/zodan_tutorial.md
+    - Adding a Node with Minimal Downtime with pgBackRest: modify/add_node_pgbackrest.md
+    - Using Spockctrl:
+      - Managing your Cluster with Spockctrl: modify/spockctrl/index.md
+      - Using Spockctrl Functions: modify/spockctrl/spockctrl_functions.md
+      - Populating the spockctrl.json Filtering: modify/spockctrl/spockctrl_json.md
+      - Using a Workflow File to Modify a Cluster: modify/spockctrl/spockctrl_workflow.md
+  - Monitoring a Cluster:
+    - Monitoring the Configuration and Health of a Cluster: monitoring/index.md
+    - Finding Cluster Information: monitoring/spock_info.md
+    - Using Lag Tracking to Evaluate your Cluster: monitoring/lag_tracking.md
+    - Using a Sync Event to Monitor Node Content: monitoring/spock_sync_event.md
+  - Using Spock Functions:
+    - Function List: spock_functions/index.md
+    - Node Mgmt Functions: spock_functions/node_mgmt.md
+    - Replication Set Mgmt Functions: spock_functions/repset_mgmt.md
+    - Subscription Mgmt Functions: spock_functions/sub_mgmt.md
+    - Cluster Mgmt Functions: spock_functions/gen_mgmt.md
+    - Function Reference:
+      - spock.node_add_interface(): spock_functions/functions/spock_node_add_interface.md
+      - spock.node_create(): spock_functions/functions/spock_node_create.md
+      - spock.node_drop(): spock_functions/functions/spock_node_drop.md
+      - spock.node_drop_interface(): spock_functions/functions/spock_node_drop_interface.md
+      - spock.replicate_ddl(): spock_functions/functions/spock_replicate_ddl.md
+      - spock.repset_add_seq(): spock_functions/functions/spock_repset_add_seq.md
+      - spock.repset_add_table(): spock_functions/functions/spock_repset_add_table.md
+      - spock.repset_add_all_seqs(): spock_functions/functions/spock_repset_add_all_seqs.md
+      - spock.repset_add_all_tables(): spock_functions/functions/spock_repset_add_all_tables.md
+      - spock.repset_add_partition(): spock_functions/functions/spock_repset_add_partition.md
+      - spock.repset_alter(): spock_functions/functions/spock_repset_alter.md
+      - spock.repset_create(): spock_functions/functions/spock_repset_create.md
+      - spock.repset_drop(): spock_functions/functions/spock_repset_drop.md
+      - spock.repset_list_tables(): spock_functions/functions/spock_repset_list_tables.md
+      - spock.repset_remove_partition(): spock_functions/functions/spock_repset_remove_partition.md
+      - spock.repset_remove_seq(): spock_functions/functions/spock_repset_remove_seq.md
+      - spock.repset_remove_table(): spock_functions/functions/spock_repset_remove_table.md
+      - spock.table_wait_for_sync(): spock_functions/functions/spock_table_wait_for_sync.md
+      - spock.seq_sync(): spock_functions/functions/spock_seq_sync.md
+      - spock.sub_add_repset(): spock_functions/functions/spock_sub_add_repset.md
+      - spock.sub_alter_interface(): spock_functions/functions/spock_sub_alter_interface.md
+      - spock.sub_create(): spock_functions/functions/spock_sub_create.md
+      - spock.sub_disable(): spock_functions/functions/spock_sub_disable.md
+      - spock.sub_drop(): spock_functions/functions/spock_sub_drop.md
+      - spock.sub_enable(): spock_functions/functions/spock_sub_enable.md
+      - spock.sub_remove_repset(): spock_functions/functions/spock_sub_remove_repset.md
+      - spock.sub_resync_table(): spock_functions/functions/spock_sub_resync_table.md
+      - spock.sub_show_status(): spock_functions/functions/spock_sub_show_status.md
+      - spock.sub_show_table: spock_functions/functions/spock_sub_show_table.md
+      - spock.sub_sync(): spock_functions/functions/spock_sub_sync.md
+      - spock.sub_wait_for_sync(): spock_functions/functions/spock_sub_wait_for_sync.md
+  - Limitations: limitations.md
+  - FAQ: FAQ.md
+  - Release Notes: spock_release_notes.md
+  - Internals:
+    - Design: internals-doc/DESIGN.md
+    - Output Plugin: internals-doc/OUTPUT.md
+    - Protocol: internals-doc/protocol.txt

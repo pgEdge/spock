@@ -1,4 +1,4 @@
-## Using Spock in Read-Only Mode
+# Using Spock in Read-Only Mode
 
 Spock supports operating a cluster in read-only mode.  Read-only status is managed using a GUC (Grand Unified Configuration) parameter named `spock.readonly`. This parameter can be set to enable or disable the read-only mode. Read-only mode restricts non-superusers to read-only operations, while superusers can still perform both read and write operations regardless of the setting.
 
@@ -8,8 +8,7 @@ are read-write (the usual setting).
 Read-only mode is implemented by filtering SQL statements:
 
 - `SELECT` statements are allowed if they don't call functions that write.
-- DML (`INSERT`, `UPDATE`, `DELETE`) and DDL statements including `TRUNCATE` are 
-  forbidden entirely.
+- DML (`INSERT`, `UPDATE`, `DELETE`) and DDL statements including `TRUNCATE` are forbidden entirely.
 - DCL statements `GRANT` and `REVOKE` are also forbidden.
 
 This means that the databases are in read-only mode at SQL level: however, the
@@ -17,7 +16,7 @@ checkpointer, background writer, walwriter, and the autovacuum launcher are stil
 running. This means that the database files are not read-only and that in some
 cases the database may still write to disk.
 
-#### Setting Read-Only Mode
+## Setting Read-Only Mode
 
 You can control read-only mode with the Spock parameter `spock.readonly`; only a superuser can modify this setting. When the cluster is set to read-only mode, non-superusers will be restricted to read-only operations, while superusers will still be able to perform read and write operations regardless of the setting.
 
@@ -35,7 +34,7 @@ SET spock.readonly TO on;
 ```
 
 To query the current status of the cluster, you can use the following SQL command:
-  
+
 ```sql
 SHOW spock.readonly;
 ```

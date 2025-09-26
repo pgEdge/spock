@@ -23,13 +23,13 @@
   Yes, `row_filter` behavior works fine for table with OIDs, but spock cannot filter on system columns (like `xmin`).
 
 * What types of functions can we execute in a `row_filter`? Can we use a volatile sampling function, for example?
-  
+
   We can execute immutable, stable and volatile functions in a `row_filter`. Exercise caution with regard to writes as any expression which will do writes can potentially throw an error and stop replication.
 
   Volatile sampling function in `row_filter`: This would not work in practice as it would not get correct snapshot of the data in live system. Theoretically with static data, it works.
 
 * Can we test a JSONB datatype that includes some form of attribute filtering?
- 
+
   Yes, a `row_filter` on attributes of JSONB datatype works fine.
 
 ### Using apply_delay with time changes
