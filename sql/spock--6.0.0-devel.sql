@@ -114,6 +114,10 @@ CREATE VIEW spock.progress AS
 		   last_updated_ts, updated_by_decode
 	FROM spock.apply_group_progress();
 
+--
+-- Node Management Functions
+--
+
 CREATE FUNCTION spock.node_create(
 	node_name name,
 	dsn text,
@@ -124,6 +128,31 @@ CREATE FUNCTION spock.node_create(
 RETURNS oid CALLED ON NULL INPUT VOLATILE
 AS 'MODULE_PATHNAME', 'spock_create_node'
 LANGUAGE C;
+
+CREATE FUNCTION spock.node_drop(
+	node_name name,
+	ifexists boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_drop_node'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.node_info(
+	OUT node_id oid,
+	OUT node_name text,
+    OUT sysid text,
+	OUT dbname text,
+	OUT replication_sets text,
+    OUT location text,
+	OUT country text,
+	OUT info jsonb)
+RETURNS record
+AS 'MODULE_PATHNAME', 'spock_node_info'
+LANGUAGE C STABLE STRICT;
+
+--
+-- SSubscription Management Functions
+--
 
 CREATE FUNCTION spock.sub_create(
 	subscription_name name,
@@ -149,23 +178,64 @@ RETURNS oid
 AS 'MODULE_PATHNAME', 'spock_drop_subscription'
 LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.node_drop(node_name name, ifexists boolean DEFAULT false)
+CREATE FUNCTION spock.sub_disable(
+	subscription_name name,
+	immediate boolean DEFAULT false
+)
 RETURNS boolean
-AS 'MODULE_PATHNAME', 'spock_drop_node'
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_disable'
 LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.node_add_interface(node_name name, interface_name name, dsn text)
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_add_interface';
-CREATE FUNCTION spock.node_drop_interface(node_name name, interface_name name)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface';
+CREATE FUNCTION spock.sub_enable(
+	subscription_name name,
+	immediate boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_enable'
+LANGUAGE C  STRICT VOLATILE;
 
-CREATE FUNCTION spock.sub_alter_interface(subscription_name name, interface_name name)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_interface';
+CREATE FUNCTION spock.sub_show_status(
+	subscription_name name DEFAULT NULL,
+    OUT subscription_name text,
+	OUT status text,
+	OUT provider_node text,
+    OUT provider_dsn text,
+	OUT slot_name text,
+	OUT replication_sets text[],
+    OUT forward_origins text[]
+)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'spock_show_subscription_status'
+LANGUAGE C STABLE;
 
-CREATE FUNCTION spock.sub_disable(subscription_name name, immediate boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_disable';
-CREATE FUNCTION spock.sub_enable(subscription_name name, immediate boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_enable';
+--
+-- Additional interface management routines for complex network configurations
+--
+
+CREATE FUNCTION spock.node_add_interface(
+	node_name name,
+	interface_name name,
+	dsn text
+)
+RETURNS oid
+AS 'MODULE_PATHNAME', 'spock_alter_node_add_interface'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.sub_alter_interface(
+	subscription_name name,
+	interface_name name
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_interface'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.node_drop_interface(
+	node_name name,
+	interface_name name
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface'
+LANGUAGE C STRICT VOLATILE;
 
 CREATE FUNCTION spock.sub_add_repset(subscription_name name, replication_set name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_add_replication_set';
@@ -173,12 +243,6 @@ CREATE FUNCTION spock.sub_remove_repset(subscription_name name, replication_set 
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_remove_replication_set';
 CREATE FUNCTION spock.sub_alter_skiplsn(subscription_name name, lsn pg_lsn)
 	RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_skip_lsn';
-
-CREATE FUNCTION spock.sub_show_status(subscription_name name DEFAULT NULL,
-    OUT subscription_name text, OUT status text, OUT provider_node text,
-    OUT provider_dsn text, OUT slot_name text, OUT replication_sets text[],
-    OUT forward_origins text[])
-RETURNS SETOF record STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_subscription_status';
 
 CREATE TABLE spock.replication_set (
     set_id oid NOT NULL PRIMARY KEY,
@@ -288,6 +352,10 @@ CREATE VIEW spock.TABLES AS
       FROM user_tables t
      WHERE t.oid NOT IN (SELECT set_reloid FROM set_relations);
 
+--
+-- Replication Set Management Functions
+--
+
 CREATE FUNCTION spock.repset_create(set_name name,
     replicate_insert boolean = true, replicate_update boolean = true,
     replicate_delete boolean = true, replicate_truncate boolean = true)
@@ -361,12 +429,6 @@ CREATE FUNCTION spock.replicate_ddl(command text[],
 									role text DEFAULT CURRENT_USER)
 RETURNS SETOF boolean STRICT VOLATILE LANGUAGE sql AS
     'SELECT spock.replicate_ddl(cmd, $2, $3, $4) FROM (SELECT unnest(command) cmd)';
-
-CREATE FUNCTION spock.node_info(OUT node_id oid, OUT node_name text,
-    OUT sysid text, OUT dbname text, OUT replication_sets text,
-    OUT location text, OUT country text, OUT info jsonb)
-RETURNS record
-STABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME', 'spock_node_info';
 
 CREATE FUNCTION spock.spock_gen_slot_name(name, name, name)
 RETURNS name

@@ -640,7 +640,8 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 /*
  * Remove subscribption.
  */
-Datum spock_drop_subscription(PG_FUNCTION_ARGS)
+Datum
+spock_drop_subscription(PG_FUNCTION_ARGS)
 {
 	char *sub_name = NameStr(*PG_GETARG_NAME(0));
 	bool ifexists = PG_GETARG_BOOL(1);
@@ -745,14 +746,15 @@ Datum spock_drop_subscription(PG_FUNCTION_ARGS)
 /*
  * Disable subscription.
  */
-Datum spock_alter_subscription_disable(PG_FUNCTION_ARGS)
+Datum
+spock_alter_subscription_disable(PG_FUNCTION_ARGS)
 {
 	char *sub_name = NameStr(*PG_GETARG_NAME(0));
 	bool immediate = PG_GETARG_BOOL(1);
 	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
 
 	/* XXX: Only used for locking purposes. */
-	(void)get_local_node(true, false);
+	(void) get_local_node(true, false);
 
 	sub->enabled = false;
 
@@ -1121,7 +1123,8 @@ Datum spock_show_subscription_table(PG_FUNCTION_ARGS)
 /*
  * Show info about subscribtion.
  */
-Datum spock_show_subscription_status(PG_FUNCTION_ARGS)
+Datum
+spock_show_subscription_status(PG_FUNCTION_ARGS)
 {
 	List *subscriptions;
 	ListCell *lc;
@@ -2276,7 +2279,8 @@ Datum spock_dependency_check_trigger(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-Datum spock_node_info(PG_FUNCTION_ARGS)
+Datum
+spock_node_info(PG_FUNCTION_ARGS)
 {
 	TupleDesc tupdesc;
 	Datum values[8];

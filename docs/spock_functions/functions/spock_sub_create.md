@@ -36,6 +36,6 @@ Use `spock.sub_wait_for_sync(subscription_name)` to wait for the subscription to
     force_text_transfer
         Force the provider to replicate all columns using a text representation (which is slower, but may be used to change the type of a replicated column on the subscriber). The default is false.
 	enabled
-		If true, it signals replication machinery to activate synchronisation of schema/data from the publisher. If false, the node synchronisation status is set to ready, no active sync The default is true.
+		If true, it signals replication machinery to activate synchronisation of schema/data from the publisher. If false, the node synchronisation status is set to ready, no synchronization will be made (TODO: refer to a correct use case). The default is true.
 	skip_schema
 		Array of schema names that will be skipped during the structure synchronisation. Data from any table, included in these schemas will be filtered at initial data synchronisation. The default is NULL.

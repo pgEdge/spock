@@ -195,7 +195,7 @@ set -e -u -x
 # If you don't want leak checking, use --leak-check=no
 #
 # When just doing leak checking and not looking for detailed memory error reports you don't need:
-# 	--track-origins=yes --read-var-info=yes --malloc-fill=8f --free-fill=9f 
+# 	--track-origins=yes --read-var-info=yes --malloc-fill=8f --free-fill=9f
 #
 SUPP=$(POSTGRES_SRC)/src/tools/valgrind.supp
 
