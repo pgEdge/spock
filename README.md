@@ -10,11 +10,12 @@
 - [Advanced Configuration Options](docs/install_spock.md#advanced-configuration-options-for-spock)
 - [Spock Management Features](docs/managing/index.md)
 - [Modifying a Cluster](docs/modify/index.md)
+- [Monitoring your Cluster](docs/monitoring/index.md)
 - [Spock Functions](docs/spock_functions/index.md)
 - [Using spockctrl Management Functions](docs/modify/spockctrl/index.md)
+- [Release Notes](docs/spock_release_notes.md)
 - [Limitations](docs/limitations.md)
 - [FAQ](docs/FAQ.md)
-- [Release Notes](docs/spock_release_notes.md)
 
 ## Spock Multi-Master Replication for PostgreSQL - Prerequisites and Requirements
 
