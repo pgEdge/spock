@@ -58,12 +58,50 @@ jobs:
 
       - name: Run regression tests
         run: |
-          docker run -e PGVER=${{ matrix.pgver }} spock /home/pgedge/run-spock-regress.sh
+          REG_CT_NAME="spock-regress-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "REG_CT_NAME=$REG_CT_NAME" >> "$GITHUB_ENV"
+          docker run --name "$REG_CT_NAME" -e PGVER=${{ matrix.pgver }} spock /home/pgedge/run-spock-regress.sh
+
+      - name: Collect regression artifacts (from container)
+        if: ${{ always() }}
+        run: |
+          docker cp "$REG_CT_NAME":/home/pgedge/spock/tests/regress/regression_output "${GITHUB_WORKSPACE}/tests/regress/" || true
+          docker rm -f "$REG_CT_NAME" || true
+
+      - name: Upload regression artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: regress-${{ matrix.pgver }}
+          path: |
+            tests/regress/regression_output/**
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Run TAP tests
         run: |
-          docker run -e PGVER=${{ matrix.pgver }} --workdir=/home/pgedge/spock/tests/tap \
-              spock /home/pgedge/spock/tests/tap/run_tests.sh
+          TAP_CT_NAME="spock-tap-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "TAP_CT_NAME=$TAP_CT_NAME" >> "$GITHUB_ENV"
+          docker run --name "$TAP_CT_NAME" -e PGVER=${{ matrix.pgver }} --workdir=/home/pgedge/spock/tests/tap \
+            spock /home/pgedge/spock/tests/tap/run_tests.sh
+
+      - name: Collect TAP artifacts (from container)
+        if: ${{ always() }}
+        run: |
+          docker cp "$TAP_CT_NAME":/home/pgedge/spock/tests/tap/logs "${GITHUB_WORKSPACE}/tests/tap/logs" || true
+          docker cp "$TAP_CT_NAME":/home/pgedge/spock/tests/logs "${GITHUB_WORKSPACE}/tests/logs" || true
+          docker rm -f "$TAP_CT_NAME" || true
+
+      - name: Upload TAP artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tap-${{ matrix.pgver }}
+          path: |
+            tests/tap/logs/**
+            tests/logs/**
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Start docker
         run: |
