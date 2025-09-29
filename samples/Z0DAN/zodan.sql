@@ -2018,9 +2018,9 @@ END;
 $$;
 
 -- ============================================================================
--- Procedure to wait for sync on source and new node using sync_event and wait_for_sync_event
+-- Procedure to trigger sync on source node and wait for it on new node using sync_event and wait_for_sync_event
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE spock.wait_for_source_node_sync(
+CREATE OR REPLACE PROCEDURE spock.trigger_source_sync_and_wait_on_new_node(
     src_node_name text,
     src_dsn text,
     new_node_name text,
@@ -2033,33 +2033,33 @@ DECLARE
     sync_lsn pg_lsn;
     timeout_ms integer := 1200;  -- 20 minutes timeout
 BEGIN
-    RAISE NOTICE 'Phase 6: Waiting for sync on source and new node';
+    RAISE NOTICE 'Phase 6: Triggering sync on source node and waiting on new node';
 
-    -- Trigger sync event on new node and wait for it on source node
+    -- Trigger sync event on source node and wait for it on new node
     BEGIN
         remotesql := 'SELECT spock.sync_event();';
         IF verb THEN
-            RAISE NOTICE '    Remote SQL for sync_event on new node %: %', new_node_name, remotesql;
+            RAISE NOTICE '    Remote SQL for sync_event on source node %: %', src_node_name, remotesql;
         END IF;
-        SELECT * FROM dblink(new_node_dsn, remotesql) AS t(lsn pg_lsn) INTO sync_lsn;
-        RAISE NOTICE '    OK: %', rpad('Triggered sync_event on new node ' || new_node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
+        SELECT * FROM dblink(src_dsn, remotesql) AS t(lsn pg_lsn) INTO sync_lsn;
+        RAISE NOTICE '    OK: %', rpad('Triggered sync_event on source node ' || src_node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ %', rpad('Triggering sync_event on new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+            RAISE NOTICE '    ✗ %', rpad('Triggering sync_event on source node ' || src_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
             RAISE;
     END;
 
-    -- Wait for sync event on source node
+    -- Wait for sync event on new node
     BEGIN
-        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s);', new_node_name, sync_lsn, timeout_ms);
+        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s);', src_node_name, sync_lsn, timeout_ms);
         IF verb THEN
-            RAISE NOTICE '    Remote SQL for wait_for_sync_event on source node %: %', src_node_name, remotesql;
+            RAISE NOTICE '    Remote SQL for wait_for_sync_event on new node %: %', new_node_name, remotesql;
         END IF;
-        PERFORM * FROM dblink(src_dsn, remotesql) AS t(result text);
-        RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || new_node_name || ' on source node ' || src_node_name || '...', 120, ' ');
+        PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(result text);
+        RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || src_node_name || ' on new node ' || new_node_name || '...', 120, ' ');
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ %', rpad('Unable to wait for sync event from ' || new_node_name || ' on source node ' || src_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+            RAISE NOTICE '    ✗ %', rpad('Unable to wait for sync event from ' || src_node_name || ' on new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
             RAISE;
     END;
 END;
@@ -2216,9 +2216,9 @@ BEGIN
     -- Example: Set up n1 to replicate to n4.
     CALL spock.create_source_to_new_subscription(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 6: Wait for sync on source and new node.
+    -- Phase 6: Trigger sync on source node and wait on new node.
     -- Example: Ensure n1 and n4 are fully synchronized before continuing.
-    CALL spock.wait_for_source_node_sync(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, true);
+    CALL spock.trigger_source_sync_and_wait_on_new_node(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, true);
 
     -- Phase 7: Check commit timestamp and advance replication slot.
     -- Example: Confirm n4 is caught up to n1's latest changes.
