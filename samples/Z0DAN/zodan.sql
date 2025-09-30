@@ -1,3 +1,8 @@
+-- ============================================================================
+-- ZODAN (Zero Downtime Add Node) - Spock Extension
+-- Version: 1.0.0
+-- Required Spock Version: 6.0.0-devel
+-- ============================================================================
 -- Adds a new node to the cluster of Spock.
 
 -- Usage:
@@ -22,6 +27,82 @@
 
 -- ============================================================================
 
+-- ============================================================================
+-- Procedure: check_spock_version_compatibility
+-- Purpose: Verify all nodes have the same Spock version before adding a node
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE spock.check_spock_version_compatibility(
+    src_dsn text,
+    new_node_dsn text,
+    verb boolean DEFAULT false
+) LANGUAGE plpgsql AS $$
+DECLARE
+    required_version text := '6.0.0-devel';
+    src_version text;
+    new_version text;
+    node_rec RECORD;
+    remotesql text;
+    node_version text;
+    version_mismatch boolean := false;
+BEGIN
+    -- Get source node Spock version
+    remotesql := 'SELECT extversion FROM pg_extension WHERE extname = ''spock''';
+    IF verb THEN
+        RAISE NOTICE 'Checking Spock version on source node';
+    END IF;
+    SELECT * FROM dblink(src_dsn, remotesql) AS t(version text) INTO src_version;
+    
+    IF src_version IS NULL THEN
+        RAISE EXCEPTION 'Spock extension not found on source node';
+    END IF;
+    
+    -- Check source node has required version
+    IF src_version != required_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: source node has version %, but required version is %. Please upgrade all nodes to %.', 
+            src_version, required_version, required_version;
+    END IF;
+    
+    -- Get new node Spock version
+    IF verb THEN
+        RAISE NOTICE 'Checking Spock version on new node';
+    END IF;
+    SELECT * FROM dblink(new_node_dsn, remotesql) AS t(version text) INTO new_version;
+    
+    IF new_version IS NULL THEN
+        RAISE EXCEPTION 'Spock extension not found on new node';
+    END IF;
+    
+    -- Check new node has required version
+    IF new_version != required_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but required version is %. Please upgrade all nodes to %.', 
+            new_version, required_version, required_version;
+    END IF;
+    
+    -- Check all existing nodes in cluster
+    FOR node_rec IN 
+        SELECT node_name, if_dsn 
+        FROM dblink(src_dsn, 
+            'SELECT n.node_name, i.if_dsn FROM spock.node n JOIN spock.node_interface i ON n.node_id = i.if_nodeid'
+        ) AS t(node_name text, if_dsn text)
+    LOOP
+        SELECT * FROM dblink(node_rec.if_dsn, remotesql) AS t(version text) INTO node_version;
+        
+        IF node_version IS NULL THEN
+            RAISE EXCEPTION 'Spock extension not found on node %', node_rec.node_name;
+        END IF;
+        
+        IF node_version != required_version THEN
+            version_mismatch := true;
+            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is %. All nodes must have version %.', 
+                node_rec.node_name, node_version, required_version, required_version;
+        END IF;
+    END LOOP;
+    
+    IF verb THEN
+        RAISE NOTICE 'Version check passed: All nodes running Spock version %', required_version;
+    END IF;
+END;
+$$;
 
 -- ============================================================================
 -- Procedure: get_spock_nodes
@@ -2241,6 +2322,10 @@ $$
 DECLARE
     initial_node_count integer;
 BEGIN
+    -- Phase 0: Check Spock version compatibility across all nodes
+    -- Example: Ensure all nodes are running the same Spock version before proceeding
+    CALL spock.check_spock_version_compatibility(src_dsn, new_node_dsn, verb);
+
     -- Phase 1: Verify prerequisites for source and new node.
     -- Example: Ensure n1 (source) and n4 (new) are ready before adding n4 to cluster n1,n2,n3.
     CALL spock.verify_node_prerequisites(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
