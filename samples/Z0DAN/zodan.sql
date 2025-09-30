@@ -1596,27 +1596,42 @@ BEGIN
             DECLARE
                 sync_lsn text;
                 timeout_ms integer := 1200;  -- 20 minutes
+                temp_table_exists boolean;
             BEGIN
-                -- Get the stored sync LSN from when subscription was created
-                SELECT tsl.sync_lsn INTO sync_lsn
-                FROM temp_sync_lsns tsl
-                WHERE tsl.origin_node = src_node_name;
+                -- Check if temp_sync_lsns table exists
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_tables 
+                    WHERE tablename = 'temp_sync_lsns' 
+                    AND schemaname = 'pg_temp'
+                ) INTO temp_table_exists;
 
-                IF sync_lsn IS NOT NULL THEN
-                    IF verb THEN
-                        RAISE NOTICE '    OK: %', rpad('Using stored sync event from origin node ' || src_node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
-                    END IF;
+                IF temp_table_exists THEN
+                    -- Get the stored sync LSN from when subscription was created
+                    SELECT tsl.sync_lsn INTO sync_lsn
+                    FROM temp_sync_lsns tsl
+                    WHERE tsl.origin_node = src_node_name;
 
-                    -- Wait for this sync event on the new node where the subscription exists
-                    CALL dblink(new_node_dsn,
-                        format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
-                               src_node_name, sync_lsn, timeout_ms));
+                    IF sync_lsn IS NOT NULL THEN
+                        IF verb THEN
+                            RAISE NOTICE '    OK: %', rpad('Using stored sync event from origin node ' || src_node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
+                        END IF;
 
-                    IF verb THEN
-                        RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || src_node_name || ' on new node ' || new_node_name || '...', 120, ' ');
+                        -- Wait for this sync event on the new node where the subscription exists
+                        PERFORM * FROM dblink(new_node_dsn,
+                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
+                                   src_node_name, sync_lsn, timeout_ms)) AS t(result text);
+
+                        IF verb THEN
+                            RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || src_node_name || ' on new node ' || new_node_name || '...', 120, ' ');
+                        END IF;
+                    ELSE
+                        RAISE NOTICE '    WARNING: %', rpad('No stored sync LSN found for ' || src_node_name || ', skipping sync wait', 120, ' ');
                     END IF;
                 ELSE
-                    RAISE NOTICE '    WARNING: %', rpad('No stored sync LSN found for ' || src_node_name || ', skipping sync wait', 120, ' ');
+                    -- For 2-node scenario where temp_sync_lsns doesn't exist, skip sync wait
+                    IF verb THEN
+                        RAISE NOTICE '    INFO: %', rpad('2-node scenario detected, no sync LSN table available, skipping sync wait', 120, ' ');
+                    END IF;
                 END IF;
             END;
 
@@ -1674,9 +1689,9 @@ BEGIN
                         END IF;
 
                         -- Wait for this sync event on the new node where the subscription exists
-                        CALL dblink(new_node_dsn,
+                        PERFORM * FROM dblink(new_node_dsn,
                             format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
-                                   rec.node_name, sync_lsn, timeout_ms));
+                                   rec.node_name, sync_lsn, timeout_ms)) AS t(result text);
 
                         IF verb THEN
                             RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || rec.node_name || ' on new node ' || new_node_name || '...', 120, ' ');
