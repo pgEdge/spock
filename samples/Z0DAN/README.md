@@ -61,7 +61,7 @@ The SQL-based implementation utilizes PostgreSQL’s `dblink` extension to handl
 Execute the following command in your PostgreSQL session:
 
 ```sql
-CALL add_node(
+CALL spock.add_node(
   'source_node_name',
   'source_node_dsn',
   'new_node_name',
@@ -75,7 +75,7 @@ CALL add_node(
 #### Example
 
 ```sql
-CALL add_node(
+CALL spock.add_node(
   'n1',
   'host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge',
   'n4',

@@ -2374,6 +2374,7 @@ BEGIN
     -- Example: Prepare n4 for replication but keep subscriptions disabled initially.
     CALL spock.create_disable_subscriptions_and_slots(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
+
     -- Phase 4: Trigger sync events on other nodes and wait on source.
     -- Example: Sync n2 and n3, then wait for n1 to acknowledge before proceeding with n4.
     CALL spock.trigger_sync_on_other_nodes_and_wait_on_source(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
