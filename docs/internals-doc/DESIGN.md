@@ -108,8 +108,8 @@ plugin is instead delegated to pluggable hooks. Replication origin filtering
 for example.
 
 That's because spock_output tries hard not to know anything about the
-topology of the replication cluster and leave that to applications using the
-plugin. It doesn't 
+topology of the replication cluster and leaves that to applications using the
+plugin.
 
 
 ## Hook entry point as a SQL function

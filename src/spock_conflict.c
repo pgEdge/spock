@@ -691,6 +691,23 @@ spock_report_conflict(SpockConflictType conflict_type,
 	const char *idxname = "(unknown)";
 	const char *qualrelname;
 
+
+	/* Ignore update-update conflict for same origin */
+	if (conflict_type == CONFLICT_UPDATE_UPDATE)
+	{
+		/*
+		 * If updating a row that came from the same origin,
+		 * do not report it as a conflict
+		 */
+		if (local_tuple_origin == replorigin_session_origin)
+			return;
+
+		/* If updated in the same transaction, do not report it as a conflict */
+		if (local_tuple_origin == InvalidRepOriginId &&
+				TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
+			return;
+	}
+
 	/* Count statistics */
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
 						 SPOCK_STATS_CONFLICT_COUNT, 1);

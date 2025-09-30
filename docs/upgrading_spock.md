@@ -1,0 +1,56 @@
+# Upgrading the Spock Extension
+
+If you are using the Spock extension to manage replication for a pgEdge Distributed Postgres: VM Edition (CLI) installation, you can use the CLI to perform an upgrade. The upgrade steps are slightly different for a major version upgrade than for a minor version upgrade, but the CLI tooling simplifies both upgrade paths.
+
+!!! note
+
+    You cannot roll back an upgrade; before starting an upgrade, make sure you have a current backup of your cluster.
+
+
+If you don't use the CLI to manage your replication cluster, you can remove, build, and upgrade the Spock extension like you would any other [Postgres extension](https://www.postgresql.org/docs/17/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
+
+**Performing a Minor Version Upgrade with the CLI**
+
+You can use the CLI Upgrade Manager (UM) module to perform a minor version upgrade of Spock.  To upgrade the installed version of Spock, navigate into the installation directory and invoke the command:
+
+`./pgedge um upgrade spockXX`
+
+Where `XX` specifies the Spock version.
+
+!!! tip
+
+    To use the CLI to review a list of available versions, use the command: `./pgedge um list`
+
+
+**Performing a Major Version Upgrade with the CLI**
+
+During a major version upgrade with the CLI, your Postgres server will be stopped on all cluster nodes.  Before starting a major version upgrade, you should:
+
+* ensure that you are using the most-recent version of Spock (currently 4.0.10).
+* take a fresh back up your cluster.
+* if enabled, disable automatic ddl updates (autoddl) with the commands:
+
+    ```sql
+    ALTER SYSTEM SET spock.enable_ddl_replication=off;
+    ALTER SYSTEM SET spock.include_ddl_repset=off;
+    ALTER SYSTEM SET spock.allow_ddl_from_functions=off;
+    SELECT pg_reload_conf();
+    ```
+
+Then, to perform a major Spock version upgrade, use the psql command line to invoke the following commands on each node.  First, stop the node with the command:
+
+`./pgedge stop`
+
+Then, use the Update Manager to remove the old version of Spock; for example, the following command removes the latest version of Spock:
+
+`./pgedge um remove spock40`
+
+**Note:** This command does not remove the underlying installed extension; it only deletes the associated files and configuration.
+
+Then, install the new version of Spock; the following command installs Spock 5.0:
+
+`./pgedge um install spock50`
+
+The CLI installs the upgrade and restarts the database server. When the installation has completed, you can confirm the installed version with the CLI command:
+
+`./pgedge um list`

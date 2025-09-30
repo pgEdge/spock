@@ -1,4 +1,4 @@
-## Adding a Node with pgBackRest
+# Adding a Node with pgBackRest
 
 You can use a pgBackRest backup to populate a new cluster node, and then add that node to your cluster with the Spock extension.  In the following high-level walkthrough, we'll walk through the steps you can use to add a fourth node (`n4`) to a three-node cluster (`n1`, `n2`, and `n3`).
 
