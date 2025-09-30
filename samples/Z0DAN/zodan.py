@@ -146,6 +146,36 @@ class SpockClusterManager:
         """Phase 1: Verify prerequisites (source and new node validation)"""
         self.notice("Phase 1: Validating source and new node prerequisites")
         
+        # Check if database specified in new_node_dsn exists on new node
+        import re
+        db_match = re.search(r'dbname=([^\s]+)', new_node_dsn)
+        if db_match:
+            new_db_name = db_match.group(1).strip("'\"")
+        else:
+            new_db_name = 'pgedge'
+        
+        try:
+            self.run_psql(new_node_dsn, "SELECT 1;", fetch=True, return_single=True)
+            self.format_notice("OK:", f"Checking database {new_db_name} exists on new node")
+        except Exception as e:
+            self.format_notice("✗", f"Database {new_db_name} does not exist on new node")
+            raise Exception(f"Exiting add_node: Database {new_db_name} does not exist on new node. Please create it first.")
+        
+        # Check if database has user-created tables
+        sql = """
+        SELECT count(*) FROM pg_tables 
+        WHERE schemaname NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'spock') 
+        AND schemaname NOT LIKE 'pg_temp_%' 
+        AND schemaname NOT LIKE 'pg_toast_temp_%';
+        """
+        user_table_count = self.run_psql(new_node_dsn, sql, fetch=True, return_single=True)
+        
+        if user_table_count and int(user_table_count.strip()) > 0:
+            self.format_notice("✗", f"Database {new_db_name} has {user_table_count.strip()} user-created tables")
+            raise Exception(f"Exiting add_node: Database {new_db_name} on new node has user-created tables. It must be a freshly created database with no user tables (only system and extension tables allowed).")
+        else:
+            self.format_notice("OK:", f"Checking database {new_db_name} has no user-created tables")
+        
         # Check if new node already exists
         sql = f"SELECT count(*) FROM spock.node WHERE node_name = '{new_node_name}';"
         count = self.run_psql(new_node_dsn, sql, fetch=True, return_single=True)
