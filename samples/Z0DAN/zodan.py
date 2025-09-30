@@ -804,11 +804,12 @@ class SpockClusterManager:
         required_version = self.REQUIRED_SPOCK_VERSION
         
         # Get source node version
-        src_version_result = self.run_query(src_dsn, 
-            "SELECT extversion FROM pg_extension WHERE extname = 'spock'")
-        if not src_version_result or not src_version_result[0]:
+        src_version = self.run_psql(src_dsn, 
+            "SELECT extversion FROM pg_extension WHERE extname = 'spock';",
+            fetch=True, return_single=True)
+        if not src_version:
             raise Exception("Spock extension not found on source node")
-        src_version = src_version_result[0][0]
+        src_version = src_version.strip()
         
         # Check source node has required version
         if src_version != required_version:
@@ -816,11 +817,12 @@ class SpockClusterManager:
                           f"but required version is {required_version}. Please upgrade all nodes to {required_version}.")
         
         # Get new node version
-        new_version_result = self.run_query(new_node_dsn,
-            "SELECT extversion FROM pg_extension WHERE extname = 'spock'")
-        if not new_version_result or not new_version_result[0]:
+        new_version = self.run_psql(new_node_dsn,
+            "SELECT extversion FROM pg_extension WHERE extname = 'spock';",
+            fetch=True, return_single=True)
+        if not new_version:
             raise Exception("Spock extension not found on new node")
-        new_version = new_version_result[0][0]
+        new_version = new_version.strip()
         
         # Check new node has required version
         if new_version != required_version:
@@ -828,22 +830,18 @@ class SpockClusterManager:
                           f"but required version is {required_version}. Please upgrade all nodes to {required_version}.")
         
         # Check all existing nodes in cluster
-        nodes_query = """
-            SELECT n.node_name, i.if_dsn 
-            FROM spock.node n 
-            JOIN spock.node_interface i ON n.node_id = i.if_nodeid
-        """
-        nodes = self.run_query(src_dsn, nodes_query)
+        nodes = self.get_spock_nodes(src_dsn)
         
-        for node_name, node_dsn in nodes:
-            node_version_result = self.run_query(node_dsn,
-                "SELECT extversion FROM pg_extension WHERE extname = 'spock'")
-            if not node_version_result or not node_version_result[0]:
-                raise Exception(f"Spock extension not found on node {node_name}")
-            node_version = node_version_result[0][0]
+        for node in nodes:
+            node_version = self.run_psql(node['dsn'],
+                "SELECT extversion FROM pg_extension WHERE extname = 'spock';",
+                fetch=True, return_single=True)
+            if not node_version:
+                raise Exception(f"Spock extension not found on node {node['node_name']}")
+            node_version = node_version.strip()
             
             if node_version != required_version:
-                raise Exception(f"Spock version mismatch: node {node_name} has version {node_version}, "
+                raise Exception(f"Spock version mismatch: node {node['node_name']} has version {node_version}, "
                               f"but required version is {required_version}. "
                               f"All nodes must have version {required_version}.")
         
@@ -917,6 +915,152 @@ class SpockClusterManager:
 
         self.notice("")
         self.notice("Node addition completed successfully!")
+
+    def health_check(self, src_node_name: str, src_dsn: str, new_node_name: str = None, new_node_dsn: str = None, check_type: str = "pre"):
+        """
+        Validate cluster health before or after Z0DAN node addition
+        Similar to pg_upgrade -c (check) option
+        
+        check_type: 'pre' (before add_node) or 'post' (after add_node)
+        """
+        self.notice("")
+        self.notice("=" * 80)
+        self.notice(f"ZODAN CLUSTER HEALTH CHECK ({check_type.upper()}-CHECK)")
+        self.notice("=" * 80)
+        
+        checks_passed = 0
+        checks_failed = 0
+        
+        # Check 1: Spock version compatibility
+        if new_node_dsn:
+            try:
+                self.check_spock_version_compatibility(src_dsn, new_node_dsn)
+                self.format_notice("PASS:", "Spock version compatibility check")
+                checks_passed += 1
+            except Exception as e:
+                self.format_notice("FAIL:", f"Spock version compatibility - {str(e)}")
+                checks_failed += 1
+        
+        # Check 2: Node connectivity
+        try:
+            self.run_psql(src_dsn, "SELECT 1;", fetch=True, return_single=True)
+            self.format_notice("PASS:", f"Source node {src_node_name} connectivity")
+            checks_passed += 1
+        except Exception as e:
+            self.format_notice("FAIL:", f"Source node {src_node_name} connectivity - {str(e)}")
+            checks_failed += 1
+        
+        if new_node_dsn:
+            try:
+                self.run_psql(new_node_dsn, "SELECT 1;", fetch=True, return_single=True)
+                self.format_notice("PASS:", f"New node {new_node_name} connectivity")
+                checks_passed += 1
+            except Exception as e:
+                self.format_notice("FAIL:", f"New node {new_node_name} connectivity - {str(e)}")
+                checks_failed += 1
+        
+        # Check 3: Spock extension installation
+        try:
+            result = self.run_psql(src_dsn, "SELECT extversion FROM pg_extension WHERE extname = 'spock';", fetch=True, return_single=True)
+            if result:
+                self.format_notice("PASS:", f"Spock extension on source node (version {result.strip()})")
+                checks_passed += 1
+            else:
+                self.format_notice("FAIL:", "Spock extension not installed on source node")
+                checks_failed += 1
+        except Exception as e:
+            self.format_notice("FAIL:", f"Spock extension check on source - {str(e)}")
+            checks_failed += 1
+        
+        if new_node_dsn:
+            try:
+                result = self.run_psql(new_node_dsn, "SELECT extversion FROM pg_extension WHERE extname = 'spock';", fetch=True, return_single=True)
+                if result:
+                    self.format_notice("PASS:", f"Spock extension on new node (version {result.strip()})")
+                    checks_passed += 1
+                else:
+                    self.format_notice("FAIL:", "Spock extension not installed on new node")
+                    checks_failed += 1
+            except Exception as e:
+                self.format_notice("FAIL:", f"Spock extension check on new node - {str(e)}")
+                checks_failed += 1
+        
+        # Check 4: Replication status (for existing cluster nodes)
+        try:
+            nodes = self.get_spock_nodes(src_dsn)
+            self.format_notice("PASS:", f"Cluster has {len(nodes)} nodes")
+            checks_passed += 1
+            
+            # Check subscriptions are healthy
+            for node in nodes:
+                try:
+                    sub_count = self.run_psql(node['dsn'], 
+                        "SELECT count(*) FROM spock.subscription WHERE sub_enabled = true;", 
+                        fetch=True, return_single=True)
+                    self.format_notice("PASS:", f"Node {node['node_name']} has {sub_count.strip() if sub_count else '0'} active subscriptions")
+                    checks_passed += 1
+                except Exception as e:
+                    self.format_notice("FAIL:", f"Node {node['node_name']} subscription check - {str(e)}")
+                    checks_failed += 1
+        except Exception as e:
+            self.format_notice("FAIL:", f"Cluster node enumeration - {str(e)}")
+            checks_failed += 1
+        
+        # Check 5: Database prerequisites (for pre-check only)
+        if check_type == "pre" and new_node_dsn:
+            # Check database is empty
+            try:
+                sql = """
+                SELECT count(*) FROM pg_tables 
+                WHERE schemaname NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'spock') 
+                AND schemaname NOT LIKE 'pg_temp_%' 
+                AND schemaname NOT LIKE 'pg_toast_temp_%';
+                """
+                user_table_count = self.run_psql(new_node_dsn, sql, fetch=True, return_single=True)
+                
+                if user_table_count and int(user_table_count.strip()) == 0:
+                    self.format_notice("PASS:", f"New node database is empty (fresh database)")
+                    checks_passed += 1
+                else:
+                    self.format_notice("FAIL:", f"New node database has {user_table_count.strip()} user-created tables")
+                    checks_failed += 1
+            except Exception as e:
+                self.format_notice("FAIL:", f"Database emptiness check - {str(e)}")
+                checks_failed += 1
+        
+        # Check 6: Replication lag (for post-check only)
+        if check_type == "post" and new_node_name:
+            try:
+                # Check if new node is replicating
+                sql = f"SELECT count(*) FROM spock.subscription WHERE sub_enabled = true;"
+                sub_count = self.run_psql(new_node_dsn, sql, fetch=True, return_single=True)
+                
+                if sub_count and int(sub_count.strip()) > 0:
+                    self.format_notice("PASS:", f"New node {new_node_name} has active subscriptions")
+                    checks_passed += 1
+                else:
+                    self.format_notice("FAIL:", f"New node {new_node_name} has no active subscriptions")
+                    checks_failed += 1
+            except Exception as e:
+                self.format_notice("FAIL:", f"Post-addition replication check - {str(e)}")
+                checks_failed += 1
+        
+        # Summary
+        self.notice("")
+        self.notice("=" * 80)
+        self.notice(f"HEALTH CHECK SUMMARY")
+        self.notice("=" * 80)
+        self.notice(f"Checks Passed: {checks_passed}")
+        self.notice(f"Checks Failed: {checks_failed}")
+        self.notice(f"Total Checks:  {checks_passed + checks_failed}")
+        self.notice("")
+        
+        if checks_failed > 0:
+            self.notice("RESULT: FAILED - Please resolve issues before proceeding")
+            return False
+        else:
+            self.notice("RESULT: PASSED - Cluster is ready for Z0DAN node addition")
+            return True
 
     def show_all_nodes(self, cluster_dsn: str):
         """Phase 12: Show comprehensive node status across all nodes in the cluster"""
@@ -1008,11 +1152,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Pre-check cluster health before adding a node
+  python zodan.py health-check --src-node-name n1 --src-dsn "host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=localhost dbname=pgedge port=5433 user=pgedge password=pgedge" --check-type pre --verbose
+
+  # Add a new node to the cluster
   python zodan.py add_node --src-node-name n1 --src-dsn "host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=localhost dbname=pgedge port=5433 user=pgedge password=pgedge" --verbose
+
+  # Post-check cluster health after adding a node
+  python zodan.py health-check --src-node-name n1 --src-dsn "host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge" --new-node-name n3 --new-node-dsn "host=localhost dbname=pgedge port=5433 user=pgedge password=pgedge" --check-type post --verbose
         """
     )
     
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # Health check command
+    health_check_parser = subparsers.add_parser('health-check', help='Validate cluster health before or after Z0DAN node addition')
+    health_check_parser.add_argument('--src-node-name', required=True, help='Source node name')
+    health_check_parser.add_argument('--src-dsn', required=True, help='Source node DSN')
+    health_check_parser.add_argument('--new-node-name', help='New node name (optional for cluster-wide check)')
+    health_check_parser.add_argument('--new-node-dsn', help='New node DSN (optional for cluster-wide check)')
+    health_check_parser.add_argument('--check-type', choices=['pre', 'post'], default='pre', help='Check type: pre (before add_node) or post (after add_node)')
+    health_check_parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
     
     # Add node command
     add_node_parser = subparsers.add_parser('add_node', help='Add a new node to the Spock cluster')
@@ -1030,8 +1190,23 @@ Examples:
     if not args.command:
         parser.print_help()
         return
+    
+    if args.command == 'health-check':
+        manager = SpockClusterManager(verbose=args.verbose)
+        try:
+            result = manager.health_check(
+                args.src_node_name,
+                args.src_dsn,
+                args.new_node_name,
+                args.new_node_dsn,
+                args.check_type
+            )
+            sys.exit(0 if result else 1)
+        except Exception as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
         
-    if args.command == 'add_node':
+    elif args.command == 'add_node':
         manager = SpockClusterManager(verbose=args.verbose)
         try:
             manager.add_node(
