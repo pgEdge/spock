@@ -1,3 +1,8 @@
+-- ============================================================================
+-- ZODAN (Zero Downtime Add Node) - Spock Extension
+-- Version: 1.0.0
+-- Required Spock Version: 6.0.0-devel
+-- ============================================================================
 -- Adds a new node to the cluster of Spock.
 
 -- Usage:
@@ -22,6 +27,82 @@
 
 -- ============================================================================
 
+-- ============================================================================
+-- Procedure: check_spock_version_compatibility
+-- Purpose: Verify all nodes have the same Spock version before adding a node
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE spock.check_spock_version_compatibility(
+    src_dsn text,
+    new_node_dsn text,
+    verb boolean DEFAULT false
+) LANGUAGE plpgsql AS $$
+DECLARE
+    required_version text := '6.0.0-devel';
+    src_version text;
+    new_version text;
+    node_rec RECORD;
+    remotesql text;
+    node_version text;
+    version_mismatch boolean := false;
+BEGIN
+    -- Get source node Spock version
+    remotesql := 'SELECT extversion FROM pg_extension WHERE extname = ''spock''';
+    IF verb THEN
+        RAISE NOTICE 'Checking Spock version on source node';
+    END IF;
+    SELECT * FROM dblink(src_dsn, remotesql) AS t(version text) INTO src_version;
+    
+    IF src_version IS NULL THEN
+        RAISE EXCEPTION 'Spock extension not found on source node';
+    END IF;
+    
+    -- Check source node has required version
+    IF src_version != required_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: source node has version %, but required version is %. Please upgrade all nodes to %.', 
+            src_version, required_version, required_version;
+    END IF;
+    
+    -- Get new node Spock version
+    IF verb THEN
+        RAISE NOTICE 'Checking Spock version on new node';
+    END IF;
+    SELECT * FROM dblink(new_node_dsn, remotesql) AS t(version text) INTO new_version;
+    
+    IF new_version IS NULL THEN
+        RAISE EXCEPTION 'Spock extension not found on new node';
+    END IF;
+    
+    -- Check new node has required version
+    IF new_version != required_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but required version is %. Please upgrade all nodes to %.', 
+            new_version, required_version, required_version;
+    END IF;
+    
+    -- Check all existing nodes in cluster
+    FOR node_rec IN 
+        SELECT node_name, if_dsn 
+        FROM dblink(src_dsn, 
+            'SELECT n.node_name, i.if_dsn FROM spock.node n JOIN spock.node_interface i ON n.node_id = i.if_nodeid'
+        ) AS t(node_name text, if_dsn text)
+    LOOP
+        SELECT * FROM dblink(node_rec.if_dsn, remotesql) AS t(version text) INTO node_version;
+        
+        IF node_version IS NULL THEN
+            RAISE EXCEPTION 'Spock extension not found on node %', node_rec.node_name;
+        END IF;
+        
+        IF node_version != required_version THEN
+            version_mismatch := true;
+            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is %. All nodes must have version %.', 
+                node_rec.node_name, node_version, required_version, required_version;
+        END IF;
+    END LOOP;
+    
+    IF verb THEN
+        RAISE NOTICE 'Version check passed: All nodes running Spock version %', required_version;
+    END IF;
+END;
+$$;
 
 -- ============================================================================
 -- Procedure: get_spock_nodes
@@ -1332,8 +1413,44 @@ DECLARE
     new_exists integer;
     new_sub_exists integer;
     new_repset_exists integer;
+    new_db_name text;
+    new_db_exists boolean;
 BEGIN
     RAISE NOTICE 'Phase 1: Validating source and new node prerequisites';
+    
+    -- Check if database specified in new_node_dsn exists on new node
+    new_db_name := substring(new_node_dsn from 'dbname=([^\s]+)');
+    IF new_db_name IS NOT NULL THEN
+        new_db_name := TRIM(BOTH '''' FROM new_db_name);
+    END IF;
+    IF new_db_name IS NULL THEN
+        new_db_name := 'pgedge';
+    END IF;
+    
+    BEGIN
+        SELECT EXISTS(SELECT 1 FROM dblink(new_node_dsn, 'SELECT 1') AS t(dummy int)) INTO new_db_exists;
+        RAISE NOTICE '    OK: %', rpad('Checking database ' || new_db_name || ' exists on new node', 120, ' ');
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE NOTICE '    [FAILED] %', rpad('Database ' || new_db_name || ' does not exist on new node', 60, ' ');
+            RAISE EXCEPTION 'Exiting add_node: Database % does not exist on new node. Please create it first.', new_db_name;
+    END;
+    
+    -- Check if database has user-created tables in user-created schemas
+    DECLARE
+        user_table_count integer;
+        remotesql text;
+    BEGIN
+        remotesql := 'SELECT count(*) FROM pg_tables WHERE schemaname NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'') AND schemaname NOT LIKE ''pg_temp_%'' AND schemaname NOT LIKE ''pg_toast_temp_%''';
+        SELECT * FROM dblink(new_node_dsn, remotesql) AS t(count integer) INTO user_table_count;
+        
+        IF user_table_count > 0 THEN
+            RAISE NOTICE '    [FAILED] %', rpad('Database ' || new_db_name || ' has ' || user_table_count || ' user-created tables', 60, ' ');
+            RAISE EXCEPTION 'Exiting add_node: Database % on new node has user-created tables. It must be a freshly created database with no user tables (only system and extension tables allowed).', new_db_name;
+        ELSE
+            RAISE NOTICE '    OK: %', rpad('Checking database ' || new_db_name || ' has no user-created tables', 120, ' ');
+        END IF;
+    END;
     
     -- Validating new node prerequisites
     SELECT count(*) INTO new_exists FROM spock.node WHERE node_name = new_node_name;
@@ -1425,7 +1542,17 @@ BEGIN
             IF rec.node_name = src_node_name THEN
                 CONTINUE;
             END IF;
-            dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+            -- Extract dbname and handle both quoted and unquoted values
+            -- Extract dbname and handle both quoted and unquoted values
+        dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+        -- Remove single quotes if present
+        IF dbname IS NOT NULL THEN
+            dbname := TRIM(BOTH '''' FROM dbname);
+        END IF;
+            -- Remove single quotes if present
+            IF dbname IS NOT NULL THEN
+                dbname := TRIM(BOTH '''' FROM dbname);
+            END IF;
             IF dbname IS NULL THEN
                 dbname := 'pgedge';
             END IF;
@@ -1518,7 +1645,17 @@ BEGIN
 
         -- Create replication slot on the "other" node
         BEGIN
-            dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+            -- Extract dbname and handle both quoted and unquoted values
+            -- Extract dbname and handle both quoted and unquoted values
+        dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+        -- Remove single quotes if present
+        IF dbname IS NOT NULL THEN
+            dbname := TRIM(BOTH '''' FROM dbname);
+        END IF;
+            -- Remove single quotes if present
+            IF dbname IS NOT NULL THEN
+                dbname := TRIM(BOTH '''' FROM dbname);
+            END IF;
             IF dbname IS NULL THEN dbname := 'pgedge'; END IF;
             slot_name := left('spk_' || dbname || '_' || rec.node_name || '_sub_' || rec.node_name || '_' || new_node_name, 64);
 
@@ -1950,7 +2087,17 @@ BEGIN
         
         -- Advance replication slot based on commit timestamp
         BEGIN
-            dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+            -- Extract dbname and handle both quoted and unquoted values
+            -- Extract dbname and handle both quoted and unquoted values
+        dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+        -- Remove single quotes if present
+        IF dbname IS NOT NULL THEN
+            dbname := TRIM(BOTH '''' FROM dbname);
+        END IF;
+            -- Remove single quotes if present
+            IF dbname IS NOT NULL THEN
+                dbname := TRIM(BOTH '''' FROM dbname);
+            END IF;
             IF dbname IS NULL THEN dbname := 'pgedge'; END IF;
             slot_name := left('spk_' || dbname || '_' || rec.node_name || '_sub_' || rec.node_name || '_' || new_node_name, 64);
             
@@ -2211,6 +2358,10 @@ $$
 DECLARE
     initial_node_count integer;
 BEGIN
+    -- Phase 0: Check Spock version compatibility across all nodes
+    -- Example: Ensure all nodes are running the same Spock version before proceeding
+    CALL spock.check_spock_version_compatibility(src_dsn, new_node_dsn, verb);
+
     -- Phase 1: Verify prerequisites for source and new node.
     -- Example: Ensure n1 (source) and n4 (new) are ready before adding n4 to cluster n1,n2,n3.
     CALL spock.verify_node_prerequisites(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
