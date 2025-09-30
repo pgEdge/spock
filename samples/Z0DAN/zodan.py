@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 ZODAN - Spock Cluster Management Tool (Python Version)
+Version: 1.0.0
 100% matches zodan.sql functionality but uses direct psql connections instead of dblink.
 
 This script provides all the same procedures and functionality as zodan.sql:
@@ -22,6 +23,9 @@ import argparse
 import re
 
 class SpockClusterManager:
+    VERSION = "1.0.0"
+    REQUIRED_SPOCK_VERSION = "6.0.0-devel"
+    
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
         self.src_dsn = None
@@ -764,6 +768,57 @@ class SpockClusterManager:
 
         self.notice("=========================================")
 
+    def check_spock_version_compatibility(self, src_dsn: str, new_node_dsn: str):
+        """Check that all nodes have the required Spock version"""
+        self.info("Checking Spock version compatibility across all nodes")
+        required_version = self.REQUIRED_SPOCK_VERSION
+        
+        # Get source node version
+        src_version_result = self.run_query(src_dsn, 
+            "SELECT extversion FROM pg_extension WHERE extname = 'spock'")
+        if not src_version_result or not src_version_result[0]:
+            raise Exception("Spock extension not found on source node")
+        src_version = src_version_result[0][0]
+        
+        # Check source node has required version
+        if src_version != required_version:
+            raise Exception(f"Spock version mismatch: source node has version {src_version}, "
+                          f"but required version is {required_version}. Please upgrade all nodes to {required_version}.")
+        
+        # Get new node version
+        new_version_result = self.run_query(new_node_dsn,
+            "SELECT extversion FROM pg_extension WHERE extname = 'spock'")
+        if not new_version_result or not new_version_result[0]:
+            raise Exception("Spock extension not found on new node")
+        new_version = new_version_result[0][0]
+        
+        # Check new node has required version
+        if new_version != required_version:
+            raise Exception(f"Spock version mismatch: new node has version {new_version}, "
+                          f"but required version is {required_version}. Please upgrade all nodes to {required_version}.")
+        
+        # Check all existing nodes in cluster
+        nodes_query = """
+            SELECT n.node_name, i.if_dsn 
+            FROM spock.node n 
+            JOIN spock.node_interface i ON n.node_id = i.if_nodeid
+        """
+        nodes = self.run_query(src_dsn, nodes_query)
+        
+        for node_name, node_dsn in nodes:
+            node_version_result = self.run_query(node_dsn,
+                "SELECT extversion FROM pg_extension WHERE extname = 'spock'")
+            if not node_version_result or not node_version_result[0]:
+                raise Exception(f"Spock extension not found on node {node_name}")
+            node_version = node_version_result[0][0]
+            
+            if node_version != required_version:
+                raise Exception(f"Spock version mismatch: node {node_name} has version {node_version}, "
+                              f"but required version is {required_version}. "
+                              f"All nodes must have version {required_version}.")
+        
+        self.notice(f"Version check passed: All nodes running Spock version {required_version}")
+
     def add_node(self, src_node_name: str, src_dsn: str, new_node_name: str, new_node_dsn: str,
                  new_node_location: str = "NY", new_node_country: str = "USA",
                  new_node_info: str = "{}"):
@@ -772,6 +827,10 @@ class SpockClusterManager:
         # Store DSN values as instance attributes to avoid hard-coding
         self.src_dsn = src_dsn
         self.new_node_dsn = new_node_dsn
+
+        # Phase 0: Check Spock version compatibility across all nodes
+        # Example: Ensure all nodes are running the same Spock version before proceeding
+        self.check_spock_version_compatibility(src_dsn, new_node_dsn)
 
         # Phase 1: Verify prerequisites for source and new node.
         # Example: Ensure n1 (source) and n4 (new) are ready before adding n4 to cluster n1,n2,n3.
