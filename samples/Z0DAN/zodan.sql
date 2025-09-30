@@ -1413,8 +1413,44 @@ DECLARE
     new_exists integer;
     new_sub_exists integer;
     new_repset_exists integer;
+    new_db_name text;
+    new_db_exists boolean;
 BEGIN
     RAISE NOTICE 'Phase 1: Validating source and new node prerequisites';
+    
+    -- Check if database specified in new_node_dsn exists on new node
+    new_db_name := substring(new_node_dsn from 'dbname=([^\s]+)');
+    IF new_db_name IS NOT NULL THEN
+        new_db_name := TRIM(BOTH '''' FROM new_db_name);
+    END IF;
+    IF new_db_name IS NULL THEN
+        new_db_name := 'pgedge';
+    END IF;
+    
+    BEGIN
+        SELECT EXISTS(SELECT 1 FROM dblink(new_node_dsn, 'SELECT 1') AS t(dummy int)) INTO new_db_exists;
+        RAISE NOTICE '    OK: %', rpad('Checking database ' || new_db_name || ' exists on new node', 120, ' ');
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE NOTICE '    [FAILED] %', rpad('Database ' || new_db_name || ' does not exist on new node', 60, ' ');
+            RAISE EXCEPTION 'Exiting add_node: Database % does not exist on new node. Please create it first.', new_db_name;
+    END;
+    
+    -- Check if database has user-created tables in user-created schemas
+    DECLARE
+        user_table_count integer;
+        remotesql text;
+    BEGIN
+        remotesql := 'SELECT count(*) FROM pg_tables WHERE schemaname NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'') AND schemaname NOT LIKE ''pg_temp_%'' AND schemaname NOT LIKE ''pg_toast_temp_%''';
+        SELECT * FROM dblink(new_node_dsn, remotesql) AS t(count integer) INTO user_table_count;
+        
+        IF user_table_count > 0 THEN
+            RAISE NOTICE '    [FAILED] %', rpad('Database ' || new_db_name || ' has ' || user_table_count || ' user-created tables', 60, ' ');
+            RAISE EXCEPTION 'Exiting add_node: Database % on new node has user-created tables. It must be a freshly created database with no user tables (only system and extension tables allowed).', new_db_name;
+        ELSE
+            RAISE NOTICE '    OK: %', rpad('Checking database ' || new_db_name || ' has no user-created tables', 120, ' ');
+        END IF;
+    END;
     
     -- Validating new node prerequisites
     SELECT count(*) INTO new_exists FROM spock.node WHERE node_name = new_node_name;
