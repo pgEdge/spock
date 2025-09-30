@@ -1,6 +1,6 @@
-## Finding Cluster Information
+# Finding Cluster Information
 
-The following table describes the informational tables in the `spock` schema; query the tables with your choice of client to return information about your replication cluster. 
+The following table describes the informational tables in the `spock` schema; you can query these tables with the psql client to return information about your replication cluster.
 
 | Name | Description |
 ---------------------|----------------------------|
@@ -15,17 +15,15 @@ The following table describes the informational tables in the `spock` schema; qu
 | `subscription` | This table contains one row per subscription. It contains the `sub_id`, `sub_name`, `sub_origin`, `sub_target`, `sub_origin_if`, `sub_target_if`, `sub_enabled`, `sub_slot_name`, `sub_replication_sets` (an array of replication sets that have been added to the subscription), `sub_forward_origins`, `sub_apply_delay`, and `sub_force_text_transfer`. |
 | `resolutions` | This table contains one row per resolution made on this node. It contains the `id`, `node_name`, `log_time`, `relname`, `idxname`, `conflict_type` (`update_update`), `conflict_resolution` (`keep_local`), `local_origin`, `local_tuple`, `local_xid, local_timestamp`, `remote_origin`, `remote_tuple`, `remote_xid`, `remote_timestamp`, `remote_lsn`. |
 
-### Examples
+## Examples
 
 **Example:** Validating Spock Configuration for a Two Node Cluster
 
-You can use the Spock extension to confirm that nodes are created and replication is happening. If a 
-command returns a result set with no records, it implies that a command to create the node has not yet been run;
-a single row in this table implies that a command to create a subscription on the node has not been executed. 
+You can use the Spock extension to confirm that nodes are created and replication is happening. If a command returns a result set with no records, it implies that a command to create the node has not yet been run; a single row in this table implies that a command to create a subscription on the node has not been executed.
 
 You can connect to the database server and query the `spock.node` table to return information about configured nodes:
 
-```sql
+```json
 select * from spock.node;
 -[ RECORD 1 ]--------
 node_id   | 673694252
@@ -43,8 +41,7 @@ info  	|
 
 **Example:** Confirming that a Functioning Subscription Exists
 
-You can connect to the database server and query the `spock.subscription` table to return information 
-about a subscription:
+You can connect to the database server and query the `spock.subscription` table to return information about a subscription:
 
 ```sql
 select * from spock.subscription;
@@ -66,11 +63,10 @@ Note that the value of `sub_enabled` is `t` if the subscription is currently rep
 
 **Example:** Listing Tables that are Part of a Replication Scenario
 
-You can connect to the database server and query the `spock.subscription_set_table` table to return 
-similar information:
+You can connect to the database server and query the `spock.subscription_set_table` table to return similar information:
 
 ```sql
-select * from spock.replication_set_table ;                            	
+select * from spock.replication_set_table;
 -[ RECORD 1 ]--+-----------------
 set_id     	| 2403235102
 set_reloid 	| pgbench_accounts
@@ -90,8 +86,7 @@ set_row_filter |
 
 ### Listing Tables that are not Part of a Replication Cluster
 
-You can query the `spock.tables` table to identify tables that are not yet part of a replication set; if 
-the set name is `null`, the table is not part of a replication set.
+You can query the `spock.tables` table to identify tables that are not yet part of a replication set; if the set name is `null`, the table is not part of a replication set.
 
 ```sql
 select * from spock.tables where set_name is null;

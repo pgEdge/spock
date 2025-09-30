@@ -9,6 +9,9 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
+\c :subscriber_dsn
+TRUNCATE spock.resolutions;
+\c :provider_dsn
 SELECT spock.replicate_ddl($$
     CREATE TABLE users (id int PRIMARY KEY, mgr_id int);
 $$);
@@ -35,13 +38,13 @@ SELECT * FROM users ORDER BY id;
   3 |      5
 (1 row)
 
--- Expect 2 rows in spock.resolutions
+-- Expect 0 rows in spock.resolutions since the origin is the same
 SELECT COUNT(*) FROM spock.resolutions
     WHERE relname='public.users'
     AND local_timestamp = remote_timestamp;
  count 
 -------
-     2
+     0
 (1 row)
 
 -- DELETE the row from subscriber first, in order to create a conflict
@@ -59,12 +62,150 @@ SELECT COUNT(*) FROM spock.resolutions
      1
 (1 row)
 
+-- More tests
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+	CREATE TABLE basic_conflict (
+		id int primary key,
+		data text);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'basic_conflict');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO basic_conflict VALUES (1, 'A'), (2, 'B');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+TRUNCATE spock.resolutions;
+SELECT * FROM basic_conflict ORDER BY id;
+ id | data 
+----+------
+  1 | A
+  2 | B
+(2 rows)
+
+\c :provider_dsn
+UPDATE basic_conflict SET data = 'AAA' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM basic_conflict ORDER BY id;
+ id | data 
+----+------
+  1 | AAA
+  2 | B
+(2 rows)
+
+--- should return nothing
+SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+ relname | conflict_type 
+---------+---------------
+(0 rows)
+
+-- now update row locally to set up an origin difference
+UPDATE basic_conflict SET data = 'sub-A' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :provider_dsn
+-- Update on provider again so subscriber will see
+-- an origin different from its local one
+UPDATE basic_conflict SET data = 'pub-A' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM basic_conflict ORDER BY id;
+ id | data  
+----+-------
+  1 | pub-A
+  2 | B
+(2 rows)
+
+-- We should now see a conflict
+SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+        relname        | conflict_type 
+-----------------------+---------------
+ public.basic_conflict | update_update
+(1 row)
+
+-- Clean
+TRUNCATE spock.resolutions;
+\c :provider_dsn
+-- Do update in same transaction as INSERT
+BEGIN;
+INSERT INTO basic_conflict VALUES (3, 'C');
+UPDATE basic_conflict SET data = 'pub-C' WHERE id = 3;
+COMMIT;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM basic_conflict ORDER BY id;
+ id | data  
+----+-------
+  1 | pub-A
+  2 | B
+  3 | pub-C
+(3 rows)
+
+-- We should not see a conflict
+SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+ relname | conflict_type 
+---------+---------------
+(0 rows)
+
+\c :provider_dsn
 -- cleanup
 \c :provider_dsn
+SELECT * FROM spock.repset_remove_table('default', 'users');
+ repset_remove_table 
+---------------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_remove_table('default', 'basic_conflict');
+ repset_remove_table 
+---------------------
+ t
+(1 row)
+
 SELECT spock.replicate_ddl($$
     DROP TABLE users CASCADE;
 $$);
-NOTICE:  drop cascades to table users membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT spock.replicate_ddl($$
+	DROP TABLE basic_conflict;
+$$);
  replicate_ddl 
 ---------------
  t
