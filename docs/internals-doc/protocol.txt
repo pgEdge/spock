@@ -379,7 +379,7 @@ null-terminated strings, e.g.
 |(parameters)|null-terminated key/value pairs|See table below for parameter definitions.
 |===
 
-=== Startup message parameters 
+=== Startup message parameters
 
 Since all parameter values are sent as strings, the value types given below specify what the value must be reasonably interpretable as.
 
@@ -402,7 +402,7 @@ Since all parameter values are sent as strings, the value types given below spec
 
 
 The ‘binary’ parameter set:
-== 
+==
 |===
 |*Key name*|*Value type*|*Description*
 
