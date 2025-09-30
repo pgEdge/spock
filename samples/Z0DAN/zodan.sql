@@ -1425,7 +1425,17 @@ BEGIN
             IF rec.node_name = src_node_name THEN
                 CONTINUE;
             END IF;
-            dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+            -- Extract dbname and handle both quoted and unquoted values
+            -- Extract dbname and handle both quoted and unquoted values
+        dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+        -- Remove single quotes if present
+        IF dbname IS NOT NULL THEN
+            dbname := TRIM(BOTH '''' FROM dbname);
+        END IF;
+            -- Remove single quotes if present
+            IF dbname IS NOT NULL THEN
+                dbname := TRIM(BOTH '''' FROM dbname);
+            END IF;
             IF dbname IS NULL THEN
                 dbname := 'pgedge';
             END IF;
@@ -1518,7 +1528,17 @@ BEGIN
 
         -- Create replication slot on the "other" node
         BEGIN
-            dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+            -- Extract dbname and handle both quoted and unquoted values
+            -- Extract dbname and handle both quoted and unquoted values
+        dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+        -- Remove single quotes if present
+        IF dbname IS NOT NULL THEN
+            dbname := TRIM(BOTH '''' FROM dbname);
+        END IF;
+            -- Remove single quotes if present
+            IF dbname IS NOT NULL THEN
+                dbname := TRIM(BOTH '''' FROM dbname);
+            END IF;
             IF dbname IS NULL THEN dbname := 'pgedge'; END IF;
             slot_name := left('spk_' || dbname || '_' || rec.node_name || '_sub_' || rec.node_name || '_' || new_node_name, 64);
 
@@ -1950,7 +1970,17 @@ BEGIN
         
         -- Advance replication slot based on commit timestamp
         BEGIN
-            dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+            -- Extract dbname and handle both quoted and unquoted values
+            -- Extract dbname and handle both quoted and unquoted values
+        dbname := substring(rec.dsn from 'dbname=([^\s]+)');
+        -- Remove single quotes if present
+        IF dbname IS NOT NULL THEN
+            dbname := TRIM(BOTH '''' FROM dbname);
+        END IF;
+            -- Remove single quotes if present
+            IF dbname IS NOT NULL THEN
+                dbname := TRIM(BOTH '''' FROM dbname);
+            END IF;
             IF dbname IS NULL THEN dbname := 'pgedge'; END IF;
             slot_name := left('spk_' || dbname || '_' || rec.node_name || '_sub_' || rec.node_name || '_' || new_node_name, 64);
             
