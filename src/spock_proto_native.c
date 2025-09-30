@@ -23,6 +23,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#include "spock_worker.h"
 #include "spock_output_plugin.h"
 #include "spock_output_proto.h"
 #include "spock_proto_native.h"
@@ -660,8 +661,7 @@ spock_read_commit_order(StringInfo in)
  * Fills the new tuple.
  */
 SpockRelation *
-spock_read_insert(StringInfo in, LOCKMODE lockmode,
-					   SpockTupleData *newtup)
+spock_read_insert(StringInfo in, LOCKMODE lockmode, SpockTupleData *newtup)
 {
 	char		action;
 	uint32		relid;
@@ -682,6 +682,13 @@ spock_read_insert(StringInfo in, LOCKMODE lockmode,
 			 action);
 
 	rel = spock_relation_open(relid, lockmode);
+	if (unlikely(rel == NULL))
+	{
+		if (!MyApplyWorker->use_try_block)
+			elog(ERROR, "Spock can't find relation with oid %u", relid);
+		else
+			return NULL;
+	}
 
 	spock_read_tuple(in, rel, newtup);
 
@@ -690,6 +697,8 @@ spock_read_insert(StringInfo in, LOCKMODE lockmode,
 
 /*
  * Read UPDATE from stream.
+ *
+ * Cause an ERROR if table is not found. In a try-block just return NULL.
  */
 SpockRelation *
 spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
@@ -715,6 +724,17 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 			 action);
 
 	rel = spock_relation_open(relid, lockmode);
+	if (unlikely(rel == NULL))
+	{
+		if (!MyApplyWorker->use_try_block)
+			/*
+			 * TODO: We may do it smarter and extract table name beforehand to
+			 * show it in the error message.
+			 */
+			elog(ERROR, "Spock can't find relation with oid %u", relid);
+		else
+			return NULL;
+	}
 
 	/* check for old tuple */
 	if (action == 'K' || action == 'O')
@@ -764,6 +784,17 @@ spock_read_delete(StringInfo in, LOCKMODE lockmode,
 		elog(ERROR, "expected action 'O' or 'K' %c", action);
 
 	rel = spock_relation_open(relid, lockmode);
+	if (unlikely(rel == NULL))
+	{
+		if (!MyApplyWorker->use_try_block)
+			/*
+			 * TODO: We may do it smarter and extract table name beforehand to
+			 * show it in the error message.
+			 */
+			elog(ERROR, "Spock can't find relation with oid %u", relid);
+		else
+			return NULL;
+	}
 
 	spock_read_tuple(in, rel, oldtup);
 
