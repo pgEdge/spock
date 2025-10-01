@@ -1804,6 +1804,11 @@ handle_truncate(StringInfo s)
 		Oid			relid = lfirst_oid(lc);
 
 		rel = spock_relation_open(relid, lockmode);
+		if (rel == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_TABLE),
+					 errmsg("Spock can't find relation with oid %u", relid)));
+
 		errcallback_arg.rel = rel;
 
 		/* If in list of relations which are being synchronized, skip. */

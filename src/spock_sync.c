@@ -678,6 +678,12 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	oldctx = MemoryContextSwitchTo(curctx);
 	spock_relation_cache_updater(remoterel);
 	rel = spock_relation_open(remoterel->relid, AccessShareLock);
+	if (rel == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_TABLE),
+				 errmsg("relation \"%s.%s\" does not exist",
+						remoterel->nspname, remoterel->relname)));
+
 	attnamelist = make_copy_attnamelist(rel);
 
 	initStringInfo(&attlist);
