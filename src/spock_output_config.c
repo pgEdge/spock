@@ -16,9 +16,6 @@
 #include "nodes/makefuncs.h"
 #include "replication/reorderbuffer.h"
 #include "utils/builtins.h"
-#if PG_VERSION_NUM < 150000
-#include "utils/int8.h"
-#endif
 
 #include "miscadmin.h"
 
@@ -418,17 +415,11 @@ parse_param_uint32(DefElem *elem)
 	int64		res;
 	char		*str;
 	bool		error;
-#if PG_VERSION_NUM >= 150000
 	char		*endptr;
-#endif
 
 	str = strVal(elem->arg);
-#if PG_VERSION_NUM >= 150000
 	res = strtoi64(str, &endptr, 10);
 	error = (str == endptr || *endptr != '\0');
-#else
-	error = (!scanint8(str, true, &res));
-#endif
 
 	if (error)
 		ereport(ERROR,
@@ -448,20 +439,14 @@ parse_param_uint32(DefElem *elem)
 static int32
 parse_param_int32(DefElem *elem)
 {
-	int64		res;
-	char		*str;
-	bool		error;
-#if PG_VERSION_NUM >= 150000
-	char		*endptr;
-#endif
+	int64	res;
+	char   *str;
+	bool	error;
+	char   *endptr;
 
 	str = strVal(elem->arg);
-#if PG_VERSION_NUM >= 150000
 	res = strtoi64(str, &endptr, 10);
 	error = (str == endptr || *endptr != '\0');
-#else
-	error = (!scanint8(str, true, &res));
-#endif
 
 	if (error)
 		ereport(ERROR,

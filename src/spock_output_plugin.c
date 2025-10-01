@@ -113,9 +113,7 @@ static TimestampTz				slot_group_last_commit_ts = 0;
 static char					   *MyOutputNodeName = NULL;
 static RepOriginId				MyOutputNodeId = InvalidRepOriginId;
 
-#if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
-#endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 static void spock_output_join_slot_group(NameData slot_name);
@@ -436,16 +434,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 			data->allow_binary_basetypes = true;
 		}
 
-		/*
-		 * 9.4 lacks origins info so don't forward it.
-		 *
-		 * There's currently no knob for clients to use to suppress
-		 * this info and it's sent if it's supported and available.
-		 */
-		if (PG_VERSION_NUM/100 == 904)
-			data->forward_changeset_origins = false;
-		else
-			data->forward_changeset_origins = true;
+		data->forward_changeset_origins = true;
 
 		if (started_tx)
 			CommitTransactionCommand();
@@ -1191,12 +1180,8 @@ pg_decode_shutdown(LogicalDecodingContext * ctx)
 void
 spock_output_plugin_shmem_init(void)
 {
-#if PG_VERSION_NUM < 150000
-	spock_output_plugin_shmem_request();
-#else
 	prev_shmem_request_hook = shmem_request_hook;
 	shmem_request_hook = spock_output_plugin_shmem_request;
-#endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = spock_output_plugin_shmem_startup;
 }
@@ -1317,10 +1302,8 @@ spock_output_plugin_shmem_request(void)
 {
 	int		nworkers;
 
-#if PG_VERSION_NUM >= 150000
 	if (prev_shmem_request_hook != NULL)
 		prev_shmem_request_hook();
-#endif
 
 	/*
 	 * This is cludge for Windows (Postgres des not define the GUC variable
@@ -1462,14 +1445,7 @@ relmetacache_init(MemoryContext decoding_context)
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(struct SPKRelMetaCacheEntry);
 		ctl.hcxt = RelMetaCacheContext;
-
-#if PG_VERSION_NUM >= 90500
 		hash_flags |= HASH_BLOBS;
-#else
-		ctl.hash = tag_hash;
-		hash_flags |= HASH_FUNCTION;
-#endif
-
 		old_ctxt = MemoryContextSwitchTo(RelMetaCacheContext);
 		RelMetaCache = hash_create("spock relation metadata cache",
 								   RELMETACACHE_INITIAL_SIZE,

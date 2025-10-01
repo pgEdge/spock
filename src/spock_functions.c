@@ -2109,9 +2109,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		case T_CreatedbStmt:	/* DATABASE */
 		case T_DropdbStmt:
 		case T_AlterDatabaseStmt:
-#if PG_VERSION_NUM >= 150000
 		case T_AlterDatabaseRefreshCollStmt:
-#endif
 		case T_AlterDatabaseSetStmt:
 		case T_AlterSystemStmt:		/* ALTER SYSTEM */
 		case T_CreateSubscriptionStmt:	/* SUBSCRIPTION */

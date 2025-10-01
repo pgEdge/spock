@@ -71,9 +71,7 @@ bool		spock_stats_hash_full = false;
 static bool xacthook_signal_workers = false;
 static bool xact_cb_installed = false;
 
-#if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
-#endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 static void spock_worker_detach(bool crash);
@@ -731,12 +729,8 @@ spock_worker_shmem_request(void)
 {
 	int			nworkers;
 
-#if PG_VERSION_NUM >= 150000
 	if (prev_shmem_request_hook != NULL)
 		prev_shmem_request_hook();
-#else
-	Assert(process_shared_preload_libraries_in_progress);
-#endif
 
 	/*
 	 * This is cludge for Windows (Postgres des not define the GUC variable as
@@ -837,12 +831,8 @@ spock_worker_shmem_init(void)
 	SpockCtx = NULL;
 	MySpockWorker = NULL;
 
-#if PG_VERSION_NUM < 150000
-	spock_worker_shmem_request();
-#else
 	prev_shmem_request_hook = shmem_request_hook;
 	shmem_request_hook = spock_worker_shmem_request;
-#endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = spock_worker_shmem_startup;
 }
