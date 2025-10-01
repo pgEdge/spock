@@ -982,16 +982,17 @@ Datum spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 /*
  * Resynchronize one existing table.
  */
-Datum spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
+Datum
+spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 {
-	char *sub_name = NameStr(*PG_GETARG_NAME(0));
-	Oid reloid = PG_GETARG_OID(1);
-	bool truncate = PG_GETARG_BOOL(2);
-	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
-	SpockSyncStatus *oldsync;
-	Relation rel;
-	char *nspname,
-		*relname;
+	char			   *sub_name = NameStr(*PG_GETARG_NAME(0));
+	Oid					reloid = PG_GETARG_OID(1);
+	bool				truncate = PG_GETARG_BOOL(2);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSyncStatus	   *oldsync;
+	Relation			rel;
+	char			   *nspname;
+	char			   *relname;
 
 	rel = table_open(reloid, AccessShareLock);
 
