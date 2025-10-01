@@ -37,6 +37,8 @@ CREATE TABLE spock.subscription (
 	sub_skip_lsn pg_lsn NOT NULL DEFAULT '0/0',
 	sub_skip_schema text[]
 );
+-- Source for sub_id values.
+CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1 OWNED BY spock.subscription.sub_id;
 
 CREATE TABLE spock.local_sync_status (
     sync_kind "char" NOT NULL CHECK (sync_kind IN ('i', 's', 'd', 'f')),
