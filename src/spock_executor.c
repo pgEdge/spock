@@ -57,6 +57,7 @@
 #include "spock_queue.h"
 #include "spock_dependency.h"
 #include "spock.h"
+#include "spock_compat.h"
 
 
 static DropBehavior	spock_lastDropBehavior = DROP_RESTRICT;
