@@ -42,7 +42,7 @@ SELECT * FROM spock.sub_create(
 	forward_origins := '{}');
  sub_create 
 ------------
- 3575176667
+          2
 (1 row)
 
 COMMIT;
@@ -64,7 +64,7 @@ SELECT subscription_name, status, provider_node, replication_sets, forward_origi
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
  sync_kind | sync_subid | sync_nspname | sync_relname | ?column? 
 -----------+------------+--------------+--------------+----------
- d         | 3575176667 |              |              | t
+ d         |          2 |              |              | t
 (1 row)
 
 -- Make sure we see the slot and active connection

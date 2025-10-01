@@ -46,10 +46,10 @@ BEGIN
 END;$$;
 CREATE EXTENSION IF NOT EXISTS spock;
 \dx spock
-                 List of installed extensions
- Name  |   Version   | Schema |          Description           
--------+-------------+--------+--------------------------------
- spock | 6.0.0-devel | spock  | PostgreSQL Logical Replication
+                          List of installed extensions
+ Name  |   Version   | Default version | Schema |          Description           
+-------+-------------+-----------------+--------+--------------------------------
+ spock | 6.0.0-devel | 6.0.0-devel     | spock  | PostgreSQL Logical Replication
 (1 row)
 
 SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super');
@@ -82,7 +82,7 @@ SELECT * FROM spock.sub_create(
 	forward_origins := '{}');
  sub_create 
 ------------
- 3848008564
+          1
 (1 row)
 
 /*
@@ -104,7 +104,7 @@ COMMIT;
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
  sync_kind | sync_subid | sync_nspname | sync_relname | ?column? 
 -----------+------------+--------------+--------------+----------
- f         | 3848008564 |              |              | t
+ f         |          1 |              |              | t
 (1 row)
 
 -- Make sure we see the slot and active connection
