@@ -81,12 +81,12 @@ system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "
 system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "SELECT spock.repset_remove_table('default', 'basic_dml1')";
 
 # Check if table is already in delay replication set, if not add it
-my $table_in_delay = `$pg_bin/psql -p $node_ports->[0] -d $dbname -t -c "SELECT EXISTS (SELECT 1 FROM spock.repset_table WHERE set_name = 'delay' AND set_relname = 'basic_dml1')"`;
+my $table_in_delay = `$pg_bin/psql -p $node_ports->[0] -d $dbname -t -c "SELECT EXISTS (SELECT 1 FROM spock.tables WHERE set_name = 'delay' AND relname = 'basic_dml1')"`;
 chomp($table_in_delay);
 $table_in_delay =~ s/\s+//g;
 
 if ($table_in_delay eq 'f') {
-    system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "SELECT spock.repset_add_table('delay', 'basic_dml1')";
+    system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "SELECT spock.repset_add_table('delay', 'basic_dml1', true)";
 }
 
 # Check subscription status after DDL
@@ -94,9 +94,6 @@ my $sub_status_after_ddl = `$pg_bin/psql -p $node_ports->[1] -d $dbname -t -c "S
 chomp($sub_status_after_ddl);
 $sub_status_after_ddl =~ s/\s+//g;
 is($sub_status_after_ddl, "replicating", 'subscription still replicating after DDL');
-
-# Add table to the 'delay' replication set
-system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "SELECT * FROM spock.repset_add_table('delay', 'basic_dml1', true)";
 
 # Wait for sync to complete
 system_or_bail 'sleep', '10';
