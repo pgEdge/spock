@@ -28,8 +28,8 @@
 #define DEFAULT_FORMAT "table"
 
 static void print_help(void);
-char *format = DEFAULT_FORMAT;
-int verbose = 0;
+static char *format = DEFAULT_FORMAT;
+static int verbose = 0;
 
 static void
 print_help(void)
@@ -54,10 +54,21 @@ print_help(void)
 int
 main(int argc, char *argv[])
 {
-    char *config_file = CONFIG_FILE;
-    char *workflow_file = NULL;
+    char	   *config_file = CONFIG_FILE;
+    char	   *workflow_file = NULL;
     const char *command;
-    Workflow *workflow = NULL;
+    Workflow   *workflow = NULL;
+
+    struct {
+        const char *name;
+        int			(*handler)(int, char **);
+    } commands[] = {
+        {"repset", handle_repset_command},
+        {"sub", handle_sub_command},
+        {"node", handle_node_command},
+        {"sql", handle_sql_exec_command},
+        {NULL, NULL}
+    };
 
     if (argc < 2)
     {
@@ -76,7 +87,7 @@ main(int argc, char *argv[])
         print_help();
         return EXIT_SUCCESS;
     }
-    
+
     for (int i = 1; i < argc; i++)
     {
         if (strncmp(argv[i], "--config=", 9) == 0)
@@ -191,17 +202,6 @@ main(int argc, char *argv[])
         run_workflow(workflow);
         return EXIT_SUCCESS;
     }
-
-    struct {
-        const char *name;
-        int (*handler)(int, char **);
-    } commands[] = {
-        {"repset", handle_repset_command},
-        {"sub", handle_sub_command},
-        {"node", handle_node_command},
-        {"sql", handle_sql_exec_command},
-        {NULL, NULL}
-    };
 
     for (int i = 0; commands[i].name != NULL; i++)
     {

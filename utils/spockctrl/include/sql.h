@@ -3,5 +3,6 @@
 
 int handle_sql_exec_command(int argc, char *argv[]);
 void print_sql_help(void);
+void print_sql_exec_help(void);
 
 #endif /* SPOCKCTRL_SQL_H */

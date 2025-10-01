@@ -49,6 +49,20 @@ int
 handle_repset_command(int argc, char *argv[])
 {
     int i;
+	struct {
+		const char *cmd;
+		int			(*func)(int, char *[]);
+	} commands[] = {
+		{"create", handle_repset_create_command},
+		{"alter", handle_repset_alter_command},
+		{"drop", handle_repset_drop_command},
+		{"add-table", handle_repset_add_table_command},
+		{"remove-table", handle_repset_remove_table_command},
+		{"add-partition", handle_repset_add_partition_command},
+		{"remove-partition", handle_repset_remove_partition_command},
+		{"list-tables", handle_repset_list_tables_command}
+	};
+
     if (argc < 3)
     {
         log_error("No subcommand provided for repset.");
@@ -61,20 +75,6 @@ handle_repset_command(int argc, char *argv[])
         print_repset_help();
         return EXIT_SUCCESS;
     }
-
-    struct {
-        const char *cmd;
-        int (*func)(int, char *[]);
-    } commands[] = {
-        {"create", handle_repset_create_command},
-        {"alter", handle_repset_alter_command},
-        {"drop", handle_repset_drop_command},
-        {"add-table", handle_repset_add_table_command},
-        {"remove-table", handle_repset_remove_table_command},
-        {"add-partition", handle_repset_add_partition_command},
-        {"remove-partition", handle_repset_remove_partition_command},
-        {"list-tables", handle_repset_list_tables_command}    
-    };
 
     for (i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
     {
@@ -113,6 +113,9 @@ handle_repset_create_command(int argc, char *argv[])
     char *conninfo_allocated = NULL;
     int option_index = 0;
     int c;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
 
     optind = 1;
 
@@ -161,7 +164,7 @@ handle_repset_create_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    PGconn *conn = connectdb(conninfo);
+    conn = connectdb(conninfo);
     if (conn == NULL)
     {
         log_error("Failed to connect to the database.");
@@ -169,7 +172,6 @@ handle_repset_create_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    char sql[2048];
     snprintf(sql, sizeof(sql),
              "SELECT spock.repset_create("
              "set_name := '%s', "
@@ -181,7 +183,7 @@ handle_repset_create_command(int argc, char *argv[])
 
     log_debug0("SQL: %s", sql);
 
-    PGresult *res = PQexec(conn, sql);
+	res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -231,6 +233,10 @@ handle_repset_alter_command(int argc, char *argv[])
 
     int option_index = 0;
     int c;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
+
     while ((c = getopt_long(argc, argv, "n:s:i:u:e:t:h", long_options, &option_index)) != -1)
     {
         switch (c)
@@ -275,7 +281,7 @@ handle_repset_alter_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    PGconn *conn = connectdb(conninfo);
+    conn = connectdb(conninfo);
     if (conn == NULL)
     {
         log_error("Failed to connect to the database.");
@@ -283,7 +289,6 @@ handle_repset_alter_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    char sql[2048];
     snprintf(sql, sizeof(sql),
              "SELECT spock.repset_alter("
              "set_name := '%s', "
@@ -295,13 +300,13 @@ handle_repset_alter_command(int argc, char *argv[])
 
     log_debug0("SQL: %s", sql);
 
-    PGresult *res = PQexec(conn, sql);
+	res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
         PQclear(res);
         PQfinish(conn);
-        free(conninfo_allocated); 
+        free(conninfo_allocated);
         return EXIT_FAILURE;
     }
 
@@ -327,6 +332,10 @@ handle_repset_drop_command(int argc, char *argv[])
 
     int option_index = 0;
     int c;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
+
     optind = 1;
     while ((c = getopt_long(argc, argv, "n:s:h", long_options, &option_index)) != -1)
     {
@@ -361,14 +370,13 @@ handle_repset_drop_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    PGconn *conn = connectdb(conninfo);
+    conn = connectdb(conninfo);
     if (conn == NULL)
     {
         log_error("Failed to connect to the database.");
         return EXIT_FAILURE;
     }
 
-    char sql[2048];
     snprintf(sql, sizeof(sql),
              "SELECT spock.repset_drop("
              "set_name := '%s');",
@@ -376,7 +384,7 @@ handle_repset_drop_command(int argc, char *argv[])
 
     log_debug0("SQL: %s", sql);
 
-    PGresult *res = PQexec(conn, sql);
+	res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -424,6 +432,10 @@ handle_repset_add_table_command(int argc, char *argv[])
 
     int option_index = 0;
     int c;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
+
     while ((c = getopt_long(argc, argv, "n:r:a:y:c:f:p:h", long_options, &option_index)) != -1)
     {
         switch (c)
@@ -472,14 +484,13 @@ handle_repset_add_table_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    PGconn *conn = connectdb(conninfo);
+	conn = connectdb(conninfo);
     if (conn == NULL)
     {
         log_error("Failed to connect to the database.");
         return EXIT_FAILURE;
     }
 
-    char sql[2048];
     snprintf(sql, sizeof(sql),
              "SELECT spock.repset_add_table("
              "replication_set := '%s', "
@@ -492,7 +503,7 @@ handle_repset_add_table_command(int argc, char *argv[])
 
     log_debug0("SQL: %s", sql);
 
-    PGresult *res = PQexec(conn, sql);
+	res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -532,6 +543,10 @@ handle_repset_remove_table_command(int argc, char *argv[])
 
     int option_index = 0;
     int c;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
+
     while ((c = getopt_long(argc, argv, "n:r:a:h", long_options, &option_index)) != -1)
     {
         switch (c)
@@ -568,14 +583,13 @@ handle_repset_remove_table_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    PGconn *conn = connectdb(conninfo);
+	conn = connectdb(conninfo);
     if (conn == NULL)
     {
         log_error("Failed to connect to the database.");
         return EXIT_FAILURE;
     }
 
-    char sql[2048];
     snprintf(sql, sizeof(sql),
              "SELECT spock.repset_remove_table("
              "replication_set := '%s', "
@@ -584,7 +598,7 @@ handle_repset_remove_table_command(int argc, char *argv[])
 
     log_debug0("SQL: %s", sql);
 
-    PGresult *res = PQexec(conn, sql);
+	res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -626,6 +640,10 @@ handle_repset_add_partition_command(int argc, char *argv[])
 
     int option_index = 0;
     int c;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
+
     while ((c = getopt_long(argc, argv, "n:b:q:f:h", long_options, &option_index)) != -1)
     {
         switch (c)
@@ -665,14 +683,13 @@ handle_repset_add_partition_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    PGconn *conn = connectdb(conninfo);
+	conn = connectdb(conninfo);
     if (conn == NULL)
     {
         log_error("Failed to connect to the database.");
         return EXIT_FAILURE;
     }
 
-    char sql[2048];
     snprintf(sql, sizeof(sql),
              "SELECT spock.repset_add_partition("
              "parent_table := '%s', "
@@ -682,7 +699,7 @@ handle_repset_add_partition_command(int argc, char *argv[])
 
     log_debug0("SQL: %s", sql);
 
-    PGresult *res = PQexec(conn, sql);
+	res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -722,6 +739,10 @@ handle_repset_remove_partition_command(int argc, char *argv[])
 
     int option_index = 0;
     int c;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
+
     while ((c = getopt_long(argc, argv, "n:b:q:h", long_options, &option_index)) != -1)
     {
         switch (c)
@@ -758,14 +779,13 @@ handle_repset_remove_partition_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    PGconn *conn = connectdb(conninfo);
+	conn = connectdb(conninfo);
     if (conn == NULL)
     {
         log_error("Failed to connect to the database.");
         return EXIT_FAILURE;
     }
 
-    char sql[2048];
     snprintf(sql, sizeof(sql),
              "SELECT spock.repset_remove_partition("
              "parent_table := '%s', "
@@ -774,7 +794,7 @@ handle_repset_remove_partition_command(int argc, char *argv[])
 
     log_debug0("SQL: %s", sql);
 
-    PGresult *res = PQexec(conn, sql);
+	res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
@@ -812,6 +832,11 @@ handle_repset_list_tables_command(int argc, char *argv[])
 
     int option_index = 0;
     int c;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
+	char		condition[256];
+
     while ((c = getopt_long(argc, argv, "n:m:h", long_options, &option_index)) != -1)
     {
         switch (c)
@@ -845,23 +870,21 @@ handle_repset_list_tables_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    PGconn *conn = connectdb(conninfo);
+	conn = connectdb(conninfo);
     if (conn == NULL)
     {
         log_error("Failed to connect to the database.");
         return EXIT_FAILURE;
     }
 
-    char condition[256];
     snprintf(condition, sizeof(condition), "nspname = '%s' AND relname = '%s'", schema, node);
 
-    char sql[2048];
     snprintf(sql, sizeof(sql),
              "SELECT * FROM spock.TABLES WHERE %s;", condition);
 
     log_debug0("SQL: %s", sql);
 
-    PGresult *res = PQexec(conn, sql);
+	res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
     {
         log_error("SQL command failed: %s", PQerrorMessage(conn));
