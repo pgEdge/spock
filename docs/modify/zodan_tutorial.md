@@ -2,18 +2,22 @@
 
 In this tutorial, we'll walk you through the process of adding a fourth node to a three-node cluster.  In our example, our cluster nodes are `n1` (the source node), `n2`, `n3`, and our new node is `n4`.
 
+Throughout this tutorial:
+
+* The *new node* or *target node* is the node you are adding to the cluster.
+* The *source node* is the node that contains the database you are copying to the new node.
 
 !!! info
 
-    The new node should not be accessible to users while adding the node.
+    The new node must not be accessible to users while adding the node.
 
-    [Disable auto_ddl](../managing/spock_autoddl.md) on all cluster nodes.
+    Before adding a new node, you must create any users with access to the source database on the target node; the permissions must be *identical* for all users on both the source and target nodes.
 
-    Do not modify your DDL during node addition.
+    Any configuration on the new node must be match the configuration on the source node - the `postgresql.conf` and `postgresql.auto.conf` files must be identical on both nodes.
+
+    You must [disable auto_ddl](../managing/spock_autoddl.md) on all cluster nodes; do not modify your DDL during the node addition process.
 
     All nodes in your cluster must be available to the Spock extension for the duration of the addition.
-
-    Prepare the new node to meet the prerequisites described [here](https://docs.pgedge.com/platform/prerequisites).
 
     If the process fails, don't immediately retry a command until you ensure that all artifacts created by the workflow have been removed!
 
