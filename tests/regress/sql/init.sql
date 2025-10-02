@@ -52,7 +52,14 @@ END;$$;
 
 CREATE EXTENSION IF NOT EXISTS spock;
 
-\dx spock
+-- Check default settings of installed Spock extension
+SELECT
+  extnamespace::regnamespace,
+  extrelocatable,
+  extconfig,
+  extcondition,
+  obj_description(oid) AS comment
+FROM pg_extension WHERE extname = 'spock';
 
 SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super');
 
