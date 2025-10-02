@@ -2091,24 +2091,8 @@ truncate_table(char *nspname, char *relname)
 	truncate->restart_seqs = false;
 	truncate->behavior = DROP_CASCADE;
 
-	/*
-	 * We use standard_ProcessUtility to process the truncate statement. This
-	 * allows us to let Postgres-XL do the correct things in order to truncate
-	 * the table from the remote nodes.
-	 *
-	 * Except the query string, most other parameters are made-up. This is OK
-	 * for TruncateStmt, but if we ever decide to use standard_ProcessUtility
-	 * for other utility statements, then we must take a careful relook.
-	 */
-#ifdef PGXC
-	standard_ProcessUtility((Node *)truncate,
-			sql.data, PROCESS_UTILITY_TOPLEVEL, NULL, NULL,
-			false,
-			NULL
-			);
-#else
 	ExecuteTruncate(truncate);
-#endif
+
 	/* release memory allocated to create SQL statement */
 	pfree(sql.data);
 

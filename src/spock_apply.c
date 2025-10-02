@@ -3339,10 +3339,7 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 	const char *save_debug_query_string = debug_query_string;
 	List	   *commands;
 	ListCell   *command_i;
-#ifdef PGXC
-	List	   *commandSourceQueries;
-	ListCell   *commandSourceQuery_i;
-#endif
+
 	MemoryContext oldcontext;
 	ErrorContextCallback errcallback;
 
@@ -3354,17 +3351,7 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 	error_context_stack = &errcallback;
 
 	debug_query_string = cmdstr;
-
-	/*
-	 * XL distributes individual statements using just executing them as plain
-	 * SQL query and can't handle multistatements this way so we need to get
-	 * individual statements using API provided by XL itself.
-	 */
-#ifdef PGXC
-	commands = pg_parse_query_get_source(cmdstr, &commandSourceQueries);
-#else
 	commands = pg_parse_query(cmdstr);
-#endif
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -3375,11 +3362,7 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 	 */
 	isTopLevel = isTopLevel && (list_length(commands) == 1);
 
-#ifdef PGXC
-	forboth(command_i, commands, commandSourceQuery_i, commandSourceQueries)
-#else
 	foreach(command_i, commands)
-#endif
 	{
 		List	   *plantree_list;
 		List	   *querytree_list;
@@ -3390,12 +3373,6 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		DestReceiver *receiver;
 		Oid			save_userid;
 		int			save_sec_context;
-
-
-#ifdef PGXC
-		cmdstr = (char *) lfirst(commandSourceQuery_i);
-		errcallback.arg = cmdstr;
-#endif
 
 		/* temporarily push snapshot for parse analysis/planning */
 		PushActiveSnapshot(GetTransactionSnapshot());
