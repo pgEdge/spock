@@ -24,8 +24,8 @@
 #include "spock_fe.h"
 #include "spock_node.h"
 
-#define SPOCK_VERSION "5.0.2"
-#define SPOCK_VERSION_NUM 50002
+#define SPOCK_VERSION "5.0.4"
+#define SPOCK_VERSION_NUM 50004
 
 #define EXTENSION_NAME "spock"
 
