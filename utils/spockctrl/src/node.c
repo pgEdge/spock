@@ -123,7 +123,7 @@ node_spock_version(int argc, char *argv[])
                 node = optarg;
                 break;
             case 'c':
-                break;    
+                break;
             case 'h':
                 print_node_spock_version_help();
                 return EXIT_SUCCESS;
@@ -161,7 +161,7 @@ node_pg_version(int argc, char *argv[])
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
-        {"config", required_argument, 0, 'c'}, 
+        {"config", required_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
@@ -178,7 +178,7 @@ node_pg_version(int argc, char *argv[])
                 print_node_pg_version_help();
                 return EXIT_SUCCESS;
             case 'c':
-                break;    
+                break;
             default:
                 print_node_pg_version_help();
                 return EXIT_FAILURE;
@@ -306,8 +306,8 @@ node_gucs(int argc, char *argv[])
 int
 handle_node_create_command(int argc, char *argv[])
 {
-    int option_index = 0;
-    int c;
+    int			option_index = 0;
+    int			c;
     const char *conninfo = NULL;
     char       *node_name = NULL;
     char       *node = NULL;
@@ -318,6 +318,9 @@ handle_node_create_command(int argc, char *argv[])
     PGconn     *conn = NULL;
     PGresult   *res = NULL;
     char        sql[4096];
+	char		location_val[512];
+    char		country_val[512];
+    char		info_val[1050];
 
     static struct option long_options[] = {
         {"node", required_argument, 0, 't'},
@@ -371,7 +374,7 @@ handle_node_create_command(int argc, char *argv[])
         print_node_create_help();
         return EXIT_FAILURE;
     }
-    
+
     /* Validate required arguments */
     if (!node_name || !dsn)
     {
@@ -394,7 +397,7 @@ handle_node_create_command(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-  
+
     if (info && !is_valid_json(info))
     {
         log_error("The --info parameter is not valid JSON: '%s'", info);
@@ -418,9 +421,6 @@ handle_node_create_command(int argc, char *argv[])
     }
 
     /* Prepare quoted/NULL values for SQL */
-    char location_val[512];
-    char country_val[512];
-    char info_val[1050];
 
     if (location)
         snprintf(location_val, sizeof(location_val), "'%s'", location);
@@ -938,7 +938,7 @@ get_pg_version(const char *conninfo, char *pg_version)
         return EXIT_FAILURE;
     }
     log_debug0("SQL: %s", sql);
-    
+
     snprintf(pg_version, 256, "\n%s", PQgetvalue(res, 0, 0));
     PQclear(res);
     PQfinish(conn);

@@ -24,10 +24,7 @@
 #include "access/genam.h"
 #include "access/table.h"
 #include "access/xact.h"
-#if PG_VERSION_NUM >= 150000
 #include "access/xlogrecovery.h"
-#endif
-
 #include "catalog/indexing.h"
 #include "catalog/pg_database.h"
 

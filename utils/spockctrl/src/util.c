@@ -26,22 +26,24 @@
 
 int is_valid_json(const char *json_str)
 {
+	json_error_t	error;
+	json_t		   *json;
+
     if (!json_str || strlen(json_str) == 0)
     {
         log_error("Invalid JSON: Input is empty or NULL.");
         return 0;
     }
 
-    json_error_t error;
-    json_t *json = json_loads(json_str, JSON_DECODE_ANY, &error);
-    if (!json)
-    {
-        log_error("Invalid JSON: %s (line %d, column %d, position %d). Input: '%s'", 
+	json = json_loads(json_str, JSON_DECODE_ANY, &error);
+	if (!json)
+	{
+		log_error("Invalid JSON: %s (line %d, column %d, position %d). Input: '%s'",
                   error.text, error.line, error.column, error.position, json_str);
-        return 0;
-    }
-    json_decref(json);
-    return 1;
+		return 0;
+	}
+	json_decref(json);
+	return 1;
 }
 
 /* Function to parse a JSON file into a json_t object */
@@ -161,10 +163,11 @@ str_to_upper(char *str)
 char *
 make_sql(const char *format, ...)
 {
-    va_list args;
+	char   *sql = malloc(1024);
+    va_list	args;
+
     va_start(args, format);
 
-    char *sql = malloc(1024);
     if (sql == NULL)
     {
         va_end(args);
@@ -188,19 +191,21 @@ make_select_query(const char *table, const char *columns, const char *condition)
 char *
 make_spock_query(const char *command, const char *params_format, ...)
 {
-    char *query = malloc(1024);
+    va_list	args;
+    char   *query = malloc(1024);
+	char   *final_query;
+
     if (!query)
     {
         log_error("Memory allocation failed for Spock query.");
         return NULL;
     }
 
-    va_list args;
     va_start(args, params_format);
     vsnprintf(query, 1024, params_format, args);
     va_end(args);
 
-    char *final_query = malloc(1024);
+    final_query = malloc(1024);
     if (!final_query)
     {
         log_error("Memory allocation failed for final Spock query.");
@@ -281,6 +286,10 @@ substitute_sql_vars(const char *sql_stmt)
 	char            key[KEY_MAX];
 	char            val[VAL_MAX];
 	char            esc[ESC_MAX];
+	size_t			pre;
+	int				nlen;
+	int				klen;
+	int				quoted;
 
 	buf[0] = '\0';
 	if (regcomp(&re, pat, REG_EXTENDED) != 0)
@@ -300,7 +309,7 @@ substitute_sql_vars(const char *sql_stmt)
 		}
 
 		/* copy text before match */
-		size_t pre = (size_t) m[0].rm_so;
+		pre = (size_t) m[0].rm_so;
 		if (pre >= left)
 			pre = left - 1;
 		memcpy(dst, src, pre);
@@ -308,8 +317,8 @@ substitute_sql_vars(const char *sql_stmt)
 		left -= pre;
 
 		/* parse identifiers */
-		int nlen = m[1].rm_eo - m[1].rm_so;
-		int klen = m[2].rm_eo - m[2].rm_so;
+		nlen = m[1].rm_eo - m[1].rm_so;
+		klen = m[2].rm_eo - m[2].rm_so;
 		if (nlen >= NODE_MAX || klen >= KEY_MAX)
 			goto fail;
 		memcpy(node, src + m[1].rm_so, nlen); node[nlen] = '\0';
@@ -319,7 +328,7 @@ substitute_sql_vars(const char *sql_stmt)
 		escape_quotes(val, esc, sizeof(esc));
 
 		/* detect if placeholder is already enclosed in single quotes */
-		int quoted = (m[0].rm_so > 0 && src[m[0].rm_so - 1] == '\'' &&
+		quoted = (m[0].rm_so > 0 && src[m[0].rm_so - 1] == '\'' &&
 				    src[m[0].rm_eo]     == '\'');
 
 		if (!quoted)

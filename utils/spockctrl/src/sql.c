@@ -48,6 +48,7 @@ int handle_sql_exec_command(int argc, char *argv[])
     int             row;
     int             col;
     bool            ignore_errors = false;
+	char		   *sub_sql;
 
     optind = 1;
     while ((c = getopt_long(argc, argv, "n:s:hi", long_options, &option_index)) != -1) {
@@ -69,14 +70,14 @@ int handle_sql_exec_command(int argc, char *argv[])
                 return EXIT_FAILURE;
         }
     }
-    if (!sql_stmt) 
+    if (!sql_stmt)
     {
         log_error("SQL statement is required.");
         print_sql_help();
         return EXIT_FAILURE;
     }
 
-    char *sub_sql = substitute_sql_vars(sql_stmt);
+    sub_sql = substitute_sql_vars(sql_stmt);
     if (sub_sql == NULL || strlen(sub_sql) == 0)
         sub_sql = (char *)sql_stmt;
 

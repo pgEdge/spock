@@ -23,6 +23,7 @@
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -37,10 +38,6 @@
 #include "spock_output_plugin.h"
 #include "spock_proto_json.h"
 
-#ifdef HAVE_REPLICATION_ORIGINS
-#include "replication/origin.h"
-#endif
-
 static void
 json_write_tuple(StringInfo out, Relation rel, HeapTuple tuple,
 				 Bitmapset *att_list);
@@ -49,36 +46,30 @@ json_write_tuple(StringInfo out, Relation rel, HeapTuple tuple,
  * Write BEGIN to the output stream.
  */
 void
-spock_json_write_begin(StringInfo out, SpockOutputData *data, ReorderBufferTXN *txn)
+spock_json_write_begin(StringInfo out, SpockOutputData *data,
+					   ReorderBufferTXN *txn)
 {
 	appendStringInfoChar(out, '{');
 	appendStringInfoString(out, "\"action\":\"B\"");
 	appendStringInfo(out, ", \"has_catalog_changes\":\"%c\"",
-		rbtxn_has_catalog_changes(txn) ? 't' : 'f');
-#ifdef HAVE_REPLICATION_ORIGINS
+					 rbtxn_has_catalog_changes(txn) ? 't' : 'f');
+
 	if (txn->origin_id != InvalidRepOriginId)
 		appendStringInfo(out, ", \"origin_id\":\"%u\"", txn->origin_id);
-#endif
+
 	if (!data->client_no_txinfo)
 	{
 		appendStringInfo(out, ", \"xid\":\"%u\"", txn->xid);
 		appendStringInfo(out, ", \"first_lsn\":\"%X/%X\"",
-			(uint32)(txn->first_lsn >> 32), (uint32)(txn->first_lsn));
-#ifdef HAVE_REPLICATION_ORIGINS
+						 (uint32)(txn->first_lsn >> 32),
+						 (uint32)(txn->first_lsn));
 		appendStringInfo(out, ", \"origin_lsn\":\"%X/%X\"",
-			(uint32)(txn->origin_lsn >> 32), (uint32)(txn->origin_lsn));
-#endif
-#if PG_VERSION_NUM >= 150000
+						 (uint32)(txn->origin_lsn >> 32),
+						 (uint32)(txn->origin_lsn));
+
 		if (txn->xact_time.commit_time != 0)
-#else
-		if (txn->commit_time != 0)
-#endif
-		appendStringInfo(out, ", \"commit_time\":\"%s\"",
-#if PG_VERSION_NUM >= 150000
-			timestamptz_to_str(txn->xact_time.commit_time));
-#else
-			timestamptz_to_str(txn->commit_time));
-#endif
+			appendStringInfo(out, ", \"commit_time\":\"%s\"",
+							 timestamptz_to_str(txn->xact_time.commit_time));
 	}
 	appendStringInfoChar(out, '}');
 }

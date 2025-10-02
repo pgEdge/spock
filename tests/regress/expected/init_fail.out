@@ -24,11 +24,7 @@ BEGIN
 END;$$;
 DO $$
 BEGIN
-        IF version() ~ 'Postgres-XL' THEN
-                CREATE EXTENSION IF NOT EXISTS spock;
-        ELSE
-                CREATE EXTENSION IF NOT EXISTS spock VERSION '6.0.0-devel';
-        END IF;
+  CREATE EXTENSION IF NOT EXISTS spock VERSION '6.0.0-devel';
 END;
 $$;
 ALTER EXTENSION spock UPDATE;

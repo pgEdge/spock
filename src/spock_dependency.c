@@ -26,9 +26,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
-#if PG_VERSION_NUM >= 150000
 #include "catalog/catalog.h"
-#endif
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
@@ -370,7 +368,6 @@ findDependentObjects(const ObjectAddress *object,
 	if (object_address_present_add_flags(object, flags, targetObjects))
 		return;
 
-#if PG_VERSION_NUM >= 150000
 	/*
 	 * If the target object is pinned, we can just error out immediately; it
 	 * won't have any objects recorded as depending on it.
@@ -380,7 +377,6 @@ findDependentObjects(const ObjectAddress *object,
 				(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
 				 errmsg("cannot drop %s because it is required by the database system",
 						spock_getObjectDescription(object))));
-#endif
 
 	/*
 	 * The target object might be internally dependent on some other object
@@ -553,18 +549,6 @@ findDependentObjects(const ObjectAddress *object,
 				/* And we're done here. */
 				systable_endscan(scan);
 				return;
-
-#if PG_VERSION_NUM < 150000
-			case DEPENDENCY_PIN:
-
-				/*
-				 * Should not happen; PIN dependencies should have zeroes in
-				 * the depender fields...
-				 */
-				elog(ERROR, "incorrect use of PIN dependency with %s",
-					 spock_getObjectDescription(object));
-				break;
-#endif
 			default:
 				elog(ERROR, "unrecognized dependency type '%c' for %s",
 					 foundDep->deptype, spock_getObjectDescription(object));
@@ -649,20 +633,6 @@ findDependentObjects(const ObjectAddress *object,
 			case DEPENDENCY_EXTENSION:
 				subflags = DEPFLAG_EXTENSION;
 				break;
-#if PG_VERSION_NUM < 150000
-			case DEPENDENCY_PIN:
-
-				/*
-				 * For a PIN dependency we just ereport immediately; there
-				 * won't be any others to report.
-				 */
-				ereport(ERROR,
-						(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
-						 errmsg("cannot drop %s because it is required by the database system",
-								spock_getObjectDescription(object))));
-				subflags = 0;	/* keep compiler quiet */
-				break;
-#endif
 			default:
 				elog(ERROR, "unrecognized dependency type '%c' for %s",
 					 foundDep->deptype, spock_getObjectDescription(object));

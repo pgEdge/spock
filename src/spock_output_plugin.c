@@ -45,10 +45,6 @@
 #include "spock_repset.h"
 #include "spock_worker.h"
 
-#ifdef HAVE_REPLICATION_ORIGINS
-#include "replication/origin.h"
-#endif
-
 /* Global variables */
 bool	spock_replication_repair_mode = false;
 
@@ -74,10 +70,8 @@ static void pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *tx
 							   int nrelations, Relation relations[],
 							   ReorderBufferChange *change);
 
-#ifdef HAVE_REPLICATION_ORIGINS
 static bool pg_decode_origin_filter(LogicalDecodingContext *ctx,
-						RepOriginId origin_id);
-#endif
+									RepOriginId origin_id);
 
 static void send_startup_message(LogicalDecodingContext *ctx,
 		SpockOutputData *data, bool last_message);
@@ -113,9 +107,7 @@ static TimestampTz				slot_group_last_commit_ts = 0;
 static char					   *MyOutputNodeName = NULL;
 static RepOriginId				MyOutputNodeId = InvalidRepOriginId;
 
-#if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
-#endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 static void spock_output_join_slot_group(NameData slot_name);
@@ -145,9 +137,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->commit_cb = pg_decode_commit_txn;
 	cb->message_cb = pg_decode_message;
 	cb->truncate_cb = pg_decode_truncate;
-#ifdef HAVE_REPLICATION_ORIGINS
 	cb->filter_by_origin_cb = pg_decode_origin_filter;
-#endif
 	cb->shutdown_cb = pg_decode_shutdown;
 }
 
@@ -436,16 +426,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 			data->allow_binary_basetypes = true;
 		}
 
-		/*
-		 * 9.4 lacks origins info so don't forward it.
-		 *
-		 * There's currently no knob for clients to use to suppress
-		 * this info and it's sent if it's supported and available.
-		 */
-		if (PG_VERSION_NUM/100 == 904)
-			data->forward_changeset_origins = false;
-		else
-			data->forward_changeset_origins = true;
+		data->forward_changeset_origins = true;
 
 		if (started_tx)
 			CommitTransactionCommand();
@@ -541,7 +522,6 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	OutputPluginPrepareWrite(ctx, !send_replication_origin);
 	data->api->write_begin(ctx->out, data, txn);
 
-#ifdef HAVE_REPLICATION_ORIGINS
 	if (send_replication_origin)
 	{
 		/* Message boundary */
@@ -582,7 +562,6 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 			data->api->write_commit_order(ctx->out, slot_group_last_commit_ts);
 		}
 	}
-#endif
 
 	OutputPluginWrite(ctx, true);
 
@@ -1113,7 +1092,6 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	MemoryContextReset(data->context);
 }
 
-#ifdef HAVE_REPLICATION_ORIGINS
 /*
  * Decide if the whole transaction with specific origin should be filtered out.
  */
@@ -1138,7 +1116,6 @@ pg_decode_origin_filter(LogicalDecodingContext *ctx,
 
 	return ret;
 }
-#endif
 
 static void
 send_startup_message(LogicalDecodingContext *ctx,
@@ -1191,12 +1168,8 @@ pg_decode_shutdown(LogicalDecodingContext * ctx)
 void
 spock_output_plugin_shmem_init(void)
 {
-#if PG_VERSION_NUM < 150000
-	spock_output_plugin_shmem_request();
-#else
 	prev_shmem_request_hook = shmem_request_hook;
 	shmem_request_hook = spock_output_plugin_shmem_request;
-#endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = spock_output_plugin_shmem_startup;
 }
@@ -1317,10 +1290,8 @@ spock_output_plugin_shmem_request(void)
 {
 	int		nworkers;
 
-#if PG_VERSION_NUM >= 150000
 	if (prev_shmem_request_hook != NULL)
 		prev_shmem_request_hook();
-#endif
 
 	/*
 	 * This is cludge for Windows (Postgres des not define the GUC variable
@@ -1462,14 +1433,7 @@ relmetacache_init(MemoryContext decoding_context)
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(struct SPKRelMetaCacheEntry);
 		ctl.hcxt = RelMetaCacheContext;
-
-#if PG_VERSION_NUM >= 90500
 		hash_flags |= HASH_BLOBS;
-#else
-		ctl.hash = tag_hash;
-		hash_flags |= HASH_FUNCTION;
-#endif
-
 		old_ctxt = MemoryContextSwitchTo(RelMetaCacheContext);
 		RelMetaCache = hash_create("spock relation metadata cache",
 								   RELMETACACHE_INITIAL_SIZE,

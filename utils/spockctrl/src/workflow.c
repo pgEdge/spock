@@ -311,7 +311,7 @@ parse_sql_step(json_t *sql, Step *step)
     {
         step->ignore_errors = false; // Default to false
     }
-    
+
     return 0;
 }
 
@@ -572,7 +572,8 @@ free_workflow(Workflow *workflow)
 int
 run_workflow(Workflow *workflow)
 {
-    int i;
+    int	i;
+	int	step_result;
 
     for (i = 0; i < workflow->step_count; i++)
     {
@@ -582,7 +583,7 @@ run_workflow(Workflow *workflow)
         printf("[%s] [Step - %02d] %s ", get_current_timestamp(), i + 1, step->description);
         fflush(stdout);
 
-        int step_result = execute_step(step, i);
+        step_result = execute_step(step, i);
 
         /* Print result on the same line */
         if (step_result == 0)
@@ -616,10 +617,12 @@ run_workflow(Workflow *workflow)
     return 0;
 }
 
-int handle_sql_command(Step *step)
+static int
+handle_sql_command(Step *step)
 {
-    char *argv[MAX_ARGS + 1];
-    int argc;
+    char   *argv[MAX_ARGS + 1];
+    int		argc;
+	int		result;
 
     /* Prepare arguments for the command */
     if ((argc = prepare_arguments(step, argv, MAX_ARGS + 1, NULL)) < 0)
@@ -635,7 +638,7 @@ int handle_sql_command(Step *step)
     }
 
     /* Execute the SQL command */
-    int result = handle_sql_exec_command(argc, argv);
+    result = handle_sql_exec_command(argc, argv);
 
     /* Handle ignore_errors flag */
     if (result != 0)

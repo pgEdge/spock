@@ -58,11 +58,7 @@
 
 #include "utils/builtins.h"
 
-#if PG_VERSION_NUM < 150000
-#include "utils/int8.h"
-#else
 #include "utils/builtins.h"
-#endif
 
 #include "utils/acl.h"
 #include "utils/fmgroids.h"
@@ -118,9 +114,7 @@ typedef struct ProgressTuple
 
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
 
-#if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
-#endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 static void spock_apply_group_shmem_request(void);
@@ -309,12 +303,8 @@ static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
 void
 spock_apply_group_shmem_init(void)
 {
-#if PG_VERSION_NUM < 150000
-	spock_apply_group_shmem_request();
-#else
 	prev_shmem_request_hook = shmem_request_hook;
 	shmem_request_hook = spock_apply_group_shmem_request;
-#endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = spock_apply_group_shmem_startup;
 }
@@ -327,10 +317,8 @@ spock_apply_group_shmem_request(void)
 {
 	int		napply_groups;
 
-#if PG_VERSION_NUM >= 150000
 	if (prev_shmem_request_hook != NULL)
 		prev_shmem_request_hook();
-#endif
 
 	/*
 	 * This is cludge for Windows (Postgres des not define the GUC variable
@@ -1242,27 +1230,6 @@ handle_commit(StringInfo s)
 	apply_replay_queue_reset();
 
 	process_syncing_tables(end_lsn);
-
-	/*
-	 * Ensure any pending signals/self-notifies are sent out.
-	 *
-	 * Note that there is a possibility that this will result in an ERROR,
-	 * which will result in the apply worker being killed and restarted. As
-	 * the notification queues have already been flushed, the same error won't
-	 * occur again, however if errors continue, they will dramatically slow
-	 * down - but not stop - replication.
-	 *
-	 * For PG15 and above, such notifications are sent at transaction commit.
-	 * (This is also true of previous version branches that received a fix[1]
-	 * but where ProcessCompletedNotifies() was converted to a no-op routine
-	 * to avoid breaking ABI.)
-	 *
-	 * [1] -- Discussion:
-	 * https://www.postgresql.org/message-id/flat/153243441449.1404.2274116228506175596@wrigleys.postgresql.org
-	 */
-#if PG_VERSION_NUM < 150000
-	ProcessCompletedNotifies();
-#endif
 
 	pgstat_report_activity(STATE_IDLE, NULL);
 }
@@ -2275,11 +2242,7 @@ handle_sequence(QueuedMessage *queued_message)
 
 	nspoid = get_namespace_oid(nspname, false);
 	reloid = get_relname_relid(relname, nspoid);
-#if PG_VERSION_NUM < 150000
-	scanint8(last_value_raw, false, &last_value);
-#else
 	last_value = pg_strtoint64(last_value_raw);
-#endif
 
 	DirectFunctionCall2(setval_oid, ObjectIdGetDatum(reloid),
 						Int64GetDatum(last_value));
@@ -2600,12 +2563,9 @@ replication_handler(StringInfo s)
 static bool
 get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
 {
-	dlist_mutable_iter iter;
-#if PG_VERSION_NUM < 150000
-	XLogRecPtr	local_flush = GetFlushRecPtr();
-#else
-	XLogRecPtr	local_flush = GetFlushRecPtr(NULL);
-#endif
+	dlist_mutable_iter	iter;
+	XLogRecPtr			local_flush = GetFlushRecPtr(NULL);
+
 	*write = InvalidXLogRecPtr;
 	*flush = InvalidXLogRecPtr;
 
@@ -3384,10 +3344,7 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 	const char *save_debug_query_string = debug_query_string;
 	List	   *commands;
 	ListCell   *command_i;
-#ifdef PGXC
-	List	   *commandSourceQueries;
-	ListCell   *commandSourceQuery_i;
-#endif
+
 	MemoryContext oldcontext;
 	ErrorContextCallback errcallback;
 
@@ -3399,17 +3356,7 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 	error_context_stack = &errcallback;
 
 	debug_query_string = cmdstr;
-
-	/*
-	 * XL distributes individual statements using just executing them as plain
-	 * SQL query and can't handle multistatements this way so we need to get
-	 * individual statements using API provided by XL itself.
-	 */
-#ifdef PGXC
-	commands = pg_parse_query_get_source(cmdstr, &commandSourceQueries);
-#else
 	commands = pg_parse_query(cmdstr);
-#endif
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -3420,11 +3367,7 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 	 */
 	isTopLevel = isTopLevel && (list_length(commands) == 1);
 
-#ifdef PGXC
-	forboth(command_i, commands, commandSourceQuery_i, commandSourceQueries)
-#else
 	foreach(command_i, commands)
-#endif
 	{
 		List	   *plantree_list;
 		List	   *querytree_list;
@@ -3435,12 +3378,6 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		DestReceiver *receiver;
 		Oid			save_userid;
 		int			save_sec_context;
-
-
-#ifdef PGXC
-		cmdstr = (char *) lfirst(commandSourceQuery_i);
-		errcallback.arg = cmdstr;
-#endif
 
 		/* temporarily push snapshot for parse analysis/planning */
 		PushActiveSnapshot(GetTransactionSnapshot());
@@ -3568,24 +3505,10 @@ process_syncing_tables(XLogRecPtr end_lsn)
 	/* Process currently pending sync tables. */
 	if (list_length(SyncingTables) > 0)
 	{
-#if PG_VERSION_NUM < 130000
-		ListCell   *prev = NULL;
-		ListCell   *next;
-#endif
-
-#if PG_VERSION_NUM >= 130000
 		foreach(lc, SyncingTables)
-#else
-		for (lc = list_head(SyncingTables); lc; lc = next)
-#endif
 		{
 			SpockSyncStatus *sync = (SpockSyncStatus *) lfirst(lc);
 			SpockSyncStatus *newsync;
-
-#if PG_VERSION_NUM < 130000
-			/* We might delete the cell so advance it now. */
-			next = lnext(lc);
-#endif
 
 			StartTransactionCommand();
 			newsync = get_table_sync_status(MyApplyWorker->subid,
@@ -3670,18 +3593,8 @@ process_syncing_tables(XLogRecPtr end_lsn)
 			/* Ready? Remove it from local cache. */
 			if (sync->status == SYNC_STATUS_READY)
 			{
-#if PG_VERSION_NUM >= 130000
 				SyncingTables = foreach_delete_current(SyncingTables, lc);
-#else
-				SyncingTables = list_delete_cell(SyncingTables, lc, prev);
-#endif
 				pfree(sync);
-			}
-			else
-			{
-#if PG_VERSION_NUM < 130000
-				prev = lc;
-#endif
 			}
 		}
 	}

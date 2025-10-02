@@ -34,8 +34,6 @@
 /* define prefix for the MESSAGE callback */
 #define SPOCK_MESSAGE_PREFIX	"Spock"
 
-#define HAVE_REPLICATION_ORIGINS
-
 /* Min allowed value for restart_delay_default GUC */
 #define SPOCK_RESTART_MIN_DELAY 1
 
