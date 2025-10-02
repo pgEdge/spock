@@ -2674,18 +2674,17 @@ Datum spock_wait_for_table_sync_complete(PG_FUNCTION_ARGS)
  * Like pg_xact_commit_timestamp but extended for replorigin
  * too.
  */
-Datum spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
+Datum
+spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 {
-#ifdef HAVE_REPLICATION_ORIGINS
-	TransactionId xid = PG_GETARG_UINT32(0);
-	TimestampTz ts;
-	RepOriginId origin;
-	bool found;
-#endif
-	TupleDesc tupdesc;
-	Datum values[2];
-	bool nulls[2] = {false, false};
-	HeapTuple tup;
+	TransactionId	xid = PG_GETARG_UINT32(0);
+	TimestampTz		ts;
+	RepOriginId		origin;
+	bool			found;
+	TupleDesc		tupdesc;
+	Datum			values[2];
+	bool			nulls[2] = {false, false};
+	HeapTuple		tup;
 
 	/*
 	 * Construct a tuple descriptor for the result row. Must match the
@@ -2698,7 +2697,6 @@ Datum spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 					   OIDOID, -1, 0);
 	tupdesc = BlessTupleDesc(tupdesc);
 
-#ifdef HAVE_REPLICATION_ORIGINS
 	found = TransactionIdGetCommitTsData(xid, &ts, &origin);
 
 	if (found)
@@ -2707,7 +2705,6 @@ Datum spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 		values[1] = ObjectIdGetDatum(origin);
 	}
 	else
-#endif
 	{
 		values[0] = (Datum)0;
 		nulls[0] = true;

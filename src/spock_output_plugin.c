@@ -45,10 +45,6 @@
 #include "spock_repset.h"
 #include "spock_worker.h"
 
-#ifdef HAVE_REPLICATION_ORIGINS
-#include "replication/origin.h"
-#endif
-
 /* Global variables */
 bool	spock_replication_repair_mode = false;
 
@@ -74,10 +70,8 @@ static void pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *tx
 							   int nrelations, Relation relations[],
 							   ReorderBufferChange *change);
 
-#ifdef HAVE_REPLICATION_ORIGINS
 static bool pg_decode_origin_filter(LogicalDecodingContext *ctx,
-						RepOriginId origin_id);
-#endif
+									RepOriginId origin_id);
 
 static void send_startup_message(LogicalDecodingContext *ctx,
 		SpockOutputData *data, bool last_message);
@@ -143,9 +137,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->commit_cb = pg_decode_commit_txn;
 	cb->message_cb = pg_decode_message;
 	cb->truncate_cb = pg_decode_truncate;
-#ifdef HAVE_REPLICATION_ORIGINS
 	cb->filter_by_origin_cb = pg_decode_origin_filter;
-#endif
 	cb->shutdown_cb = pg_decode_shutdown;
 }
 
@@ -530,7 +522,6 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	OutputPluginPrepareWrite(ctx, !send_replication_origin);
 	data->api->write_begin(ctx->out, data, txn);
 
-#ifdef HAVE_REPLICATION_ORIGINS
 	if (send_replication_origin)
 	{
 		/* Message boundary */
@@ -571,7 +562,6 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 			data->api->write_commit_order(ctx->out, slot_group_last_commit_ts);
 		}
 	}
-#endif
 
 	OutputPluginWrite(ctx, true);
 
@@ -1102,7 +1092,6 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	MemoryContextReset(data->context);
 }
 
-#ifdef HAVE_REPLICATION_ORIGINS
 /*
  * Decide if the whole transaction with specific origin should be filtered out.
  */
@@ -1127,7 +1116,6 @@ pg_decode_origin_filter(LogicalDecodingContext *ctx,
 
 	return ret;
 }
-#endif
 
 static void
 send_startup_message(LogicalDecodingContext *ctx,
