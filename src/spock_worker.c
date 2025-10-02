@@ -310,14 +310,31 @@ wait_for_worker_startup(SpockWorker *worker,
 
 /*
  * Cleanup function.
- *
- * Called on process exit.
+ */
+
+/*
+ * Called on shmem exit.
+ */
+static void
+spock_on_shmem_exit(int code, Datum arg)
+{
+	/* Only dump data if exiting cleanly */
+	if (code != 0)
+		return;
+
+	elog(DEBUG1, "spock_on_shmem_exit: dumping apply group data");
+	spock_group_resource_dump();
+}
+
+/*
+ * Called for worker process exit.
  */
 static void
 spock_worker_on_exit(int code, Datum arg)
 {
 	spock_worker_detach(code != 0);
 }
+
 
 /*
  * Attach the current master process to the SpockCtx.
@@ -750,6 +767,9 @@ spock_worker_shmem_request(void)
 
 	/* Allocate the number of LW-locks needed for Spock. */
 	RequestNamedLWLockTranche("spock", 2);
+
+	/* Request shmem for Apply Group */
+	spock_group_shmem_request();
 }
 
 /*
@@ -764,6 +784,9 @@ spock_worker_shmem_startup(void)
 
 	if (prev_shmem_startup_hook != NULL)
 		prev_shmem_startup_hook();
+
+	if (!IsUnderPostmaster)
+		on_shmem_exit(spock_on_shmem_exit, (Datum) 0);
 
 	/*
 	 * This is kludge for Windows (Postgres does not define the GUC variable
@@ -808,6 +831,9 @@ spock_worker_shmem_startup(void)
 							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
 
 	LWLockRelease(AddinShmemInitLock);
+
+	/* Apply Group shmem startup */
+	spock_group_shmem_startup(nworkers, found);
 }
 
 /*
