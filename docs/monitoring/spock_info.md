@@ -21,7 +21,7 @@ The following table describes the informational tables in the `spock` schema; yo
 | `replication_set_seq` | This table contains one row per replication set sequence. It contains `set_id` and `set_seqoid`. |
 | `replication_set_table` | This table contains one row per table that is in any replication set. It contains the `set_id`, `set_reloid` (the table name), `set_att_list`,  and `set_row_filter`. The last two columns contain the row and column filters on that table for replication. |
 | `resolutions` | This table contains one row per resolution made on this node. It contains the `id`, `node_name`, `log_time`, `relname`, `idxname`, `conflict_type` (`update_update`), `conflict_resolution` (`keep_local`), `local_origin`, `local_tuple`, `local_xid, local_timestamp`, `remote_origin`, `remote_tuple`, `remote_xid`, `remote_timestamp`, `remote_lsn`. |
-| sequence_state | The table includes the following information columns:  | 
+| `sequence_state` | The table includes the following information columns: `seqoid`, `cache_size`, `last_value` | 
 | `subscription` | This table contains one row per subscription. It contains the `sub_id`, `sub_name`, `sub_origin`, `sub_target`, `sub_origin_if`, `sub_target_if`, `sub_enabled`, `sub_slot_name`, `sub_replication_sets` (an array of replication sets that have been added to the subscription), `sub_forward_origins`, `sub_apply_delay`, and `sub_force_text_transfer`. |
 | `tables` | This table contains one row per table in the database. It contains the `relid`, `nspname` (the schema), `relname` (the tablename), and `set_name` (null if that table is not added to any replication set). |
 
