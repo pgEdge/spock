@@ -37,11 +37,6 @@
 #include "nodes/parsenodes.h"
 
 #include "optimizer/planner.h"
-
-#ifdef XCP
-#include "pgxc/pgxcnode.h"
-#endif
-
 #include "postmaster/interrupt.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
@@ -4028,14 +4023,6 @@ spock_apply_main(Datum main_arg)
 	MySubscription = get_subscription(MyApplyWorker->subid);
 	MemoryContextSwitchTo(saved_ctx);
 
-#ifdef XCP
-
-	/*
-	 * When runnin under XL, initialise the XL executor so that the datanode
-	 * and coordinator information is initialised properly.
-	 */
-	InitMultinodeExecutor(false);
-#endif
 	CommitTransactionCommand();
 
 	elog(DEBUG1, "SPOCK %s: starting apply worker", MySubscription->name);
