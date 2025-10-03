@@ -19,9 +19,19 @@ Spock is open-source and available for review at [Github](https://github.com/pgE
 !!! info
     pgEdge Postgres deployments also provide a simplified upgrade path so you can take advantage of important new features quickly and easily.
 
-### Creating the Extension from Source
 
-Spock is available as an [open-source project](https://github.com/pgEdge/spock) that you can build from source code distributed at the Github project page.  The Spock extension must be built on a version-specific build of Postgres that is patched to provide 'hooks' so `spock` can access the Postgres engine. When building Spock from source, you'll need to first build the Postgres database from the source available at the [Postgres project](https://www.postgresql.org/ftp/source/), applying version-specific `.diff` files from the `patches` directory (also in the `spock` repository). To apply a patch, use the command:
+For detailed information about using Spock to create a two-node cluster, visit [here](/two_node_cluster.md)).
+
+
+### Building the Extension from Source
+
+Spock is available as an [open-source project](https://github.com/pgEdge/spock) that you can build from source code distributed at the Github project page.  The Spock extension must be built on a version-specific build of Postgres that is patched to provide 'hooks' so `spock` can access the Postgres engine. 
+
+To patch the Postgres source code, download the source code from the [Postgres project](https://www.postgresql.org/ftp/source/), and move into the source directory.  Then, clone the `spock` directory:
+
+`git clone https://github.com/pgEdge/spock.git`
+
+Then, apply the `.diff` files from the `spock/patches/version` directory that match your build version. To apply a patch, use the command:
 
   `patch -p1 < path_to_patch/patch_name`
 
@@ -29,18 +39,27 @@ After applying version-specific patches, you can configure, `make`, and `make in
 
   `export PATH=path_to_pg_config_file`
 
-Then, build the Spock extension from source code. Before building the extension, copy the files in the version-specific `compatXX` file (where XX is your Postgres version) in the spock repository into the base directory of the repository. After copying the files, use a build process much like any other Postgres extension; you will need to make and make-install the code.
+Then, move into the `spock` directory and build the Spock extension from source code. Before invoking `make` and `make install`, install the following package to meet spock prerequisites:
 
-Then, update your `postgresql.conf` file, setting:
+`sudo dnf [jansson](https://jansson.readthedocs.io/en/1.1/gettingstarted.html)`
+
+Then, use a build process much like any other Postgres extension; you will need to: 
+
+`make`
+
+`make-install` 
+
+Then, After initializing the database, update your `postgresql.conf` file, setting:
 
 ```bash
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
 ```
 
-Then, connect to the server and use the `CREATE EXTENSION` command to install the Spock extension on each node in the database you wish to replicate:
+Then, connect to the database with psql, and use the `CREATE EXTENSION` command to create the Spock extension:
 
   `CREATE EXTENSION spock;`
+
 
 ### Basic Configuration and Usage
 
