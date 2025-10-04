@@ -13,11 +13,6 @@
 
 #include "miscadmin.h"
 
-#include "access/hash.h"
-#include "access/htup_details.h"
-#include "access/xact.h"
-#include "access/xlog.h"
-
 #include "catalog/dependency.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
@@ -25,8 +20,6 @@
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_extension.h"
 #include "catalog/pg_inherits.h"
-#include "catalog/pg_type.h"
-
 #include "commands/defrem.h"
 #include "commands/extension.h"
 
@@ -41,14 +34,9 @@
 #include "parser/parse_relation.h"
 
 #include "tcop/utility.h"
-
-#include "utils/builtins.h"
-#include "utils/fmgroids.h"
-#include "utils/json.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 
 #include "spock_common.h"
 #include "spock_node.h"
@@ -62,6 +50,7 @@
 
 static DropBehavior	spock_lastDropBehavior = DROP_RESTRICT;
 static bool			dropping_spock_obj = false;
+static bool			spock_related_utility = false;
 static object_access_hook_type next_object_access_hook = NULL;
 
 static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
@@ -352,6 +341,19 @@ autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 		 */
 		return false;
 
+	if (spock_related_utility)
+	{
+		elog(LOG, "Spock-related DDL is executed only locally");
+		/*
+		 * Skip global opearions on the DDL if it causes CREATE, DROP and ALTER
+		 * Spock operation(s). It should be done locally.
+		 * XXX: what about skipping the ALTER? It seems we need it to upgrade
+		 * the extension ... But in this case we could invent
+		 * an 'online_upgrade' flag and change binaries.
+		 */
+		return false;
+	}
+
 	/* Allow all toplevel statements. */
 	if (context == PROCESS_UTILITY_TOPLEVEL)
 		return true;
@@ -532,16 +534,124 @@ spock_ProcessUtility(
 }
 
 /*
+ * Check if the statement is not allowed to replicate.
+ *
+ * This technique is based on a trivial node comparison and scrutinising its
+ * content.
+ *
+ * NOTE:
+ * Another approach exists: Spock may analyse the changed object inside the
+ * 'spock_object_access', check the object's dependencies
+ * (findDependentObjects), and determine if Spock is in this list. It basically
+ * works and provides very detailed control over objects. However, it is
+ * obviously more expensive than proposed in this commit. It may be implemented
+ * later if necessary.
+ */
+static bool
+is_forbidden_ddl(Node *parsetree)
+{
+	if (nodeTag(parsetree) == T_CreateExtensionStmt)
+	{
+		CreateExtensionStmt *stmt = (CreateExtensionStmt *) parsetree;
+
+		if (strcmp(stmt->extname, EXTENSION_NAME) == 0)
+			return true;
+	}
+	/* ALTER EXTENSION UPDATE */
+	else if (nodeTag(parsetree) == T_AlterExtensionStmt)
+	{
+		AlterExtensionStmt *stmt = (AlterExtensionStmt *) parsetree;
+
+		if (strcmp(stmt->extname, EXTENSION_NAME) == 0)
+			return true;
+	}
+	/* ALTER EXTENSION ... */
+	else if (nodeTag(parsetree) == T_AlterExtensionContentsStmt)
+	{
+		AlterExtensionContentsStmt *stmt =
+									(AlterExtensionContentsStmt *) parsetree;
+
+		if (strcmp(stmt->extname, EXTENSION_NAME) == 0)
+			return true;
+	}
+	/* Disable Spock comment. Just to be nitpicky. */
+	else if (nodeTag(parsetree) == T_CommentStmt)
+	{
+		CommentStmt *stmt = (CommentStmt *) parsetree;
+
+		if (stmt->objtype == OBJECT_EXTENSION)
+		{
+			Relation		relation;
+			ObjectAddress	address;
+
+			address = get_object_address(stmt->objtype, stmt->object,
+										 &relation, AccessShareLock, true);
+			if (relation != NULL)
+			{
+				relation_close(relation, AccessShareLock);
+			}
+			else if (address.objectId == get_extension_oid(EXTENSION_NAME, true))
+			{
+				/* This is a comment to the Spock extension. */
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+static int utility_nesting_level = 0;
+
+/*
+ * Wrapper over the main spock logic on processing utility statements. It is
+ * needed solely to control recursion and make initialisation and finalisation
+ * stuff on the zero level of this recursion.
+ */
+static void
+spock_ProcessUtility_recursive(PlannedStmt *pstmt, const char *queryString,
+							   bool readOnlyTree, ProcessUtilityContext context,
+							   ParamListInfo params, QueryEnvironment *queryEnv,
+							   DestReceiver *dest, QueryCompletion *qc)
+{
+	if (utility_nesting_level == 0)
+	{
+		/*
+		 * Cleanup global flags indicating that a spock-related operations
+		 * happened during execution of this command (or somewhere inside the
+		 * recursion).
+		 */
+		spock_related_utility = false;
+	}
+
+	/*
+	 * This code may be moved into the spock_ProcessUtility. Placed here to be
+	 * closer to the initialisation.
+	 */
+	if (is_forbidden_ddl(pstmt->utilityStmt))
+		spock_related_utility = true;
+
+	utility_nesting_level++;
+	PG_TRY();
+	{
+		spock_ProcessUtility(pstmt, queryString, readOnlyTree, context,
+							 params, queryEnv, dest, qc);
+	}
+	PG_FINALLY();
+	{
+		utility_nesting_level--;
+	}
+	PG_END_TRY();
+}
+
+/*
  * Handle object drop.
  *
  * Calls to dependency tracking code.
  */
 static void
 spock_object_access(ObjectAccessType access,
-						Oid classId,
-						Oid objectId,
-						int subId,
-						void *arg)
+					Oid classId, Oid objectId, int subId, void *arg)
 {
 	Oid		save_userid = 0;
 	int		save_sec_context = 0;
@@ -618,7 +728,7 @@ void
 spock_executor_init(void)
 {
 	next_ProcessUtility_hook = ProcessUtility_hook;
-	ProcessUtility_hook = spock_ProcessUtility;
+	ProcessUtility_hook = spock_ProcessUtility_recursive;
 
 	/* Object access hook */
 	next_object_access_hook = object_access_hook;
