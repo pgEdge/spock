@@ -23,7 +23,7 @@ SELECT * FROM spock.sub_create(
     forward_origins := '{}');
  sub_create 
 ------------
- 4269973126
+          1
 (1 row)
 
 BEGIN;
