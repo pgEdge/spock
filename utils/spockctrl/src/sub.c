@@ -340,7 +340,7 @@ handle_sub_drop_command(int argc, char *argv[])
     int c;
 
     optind = 1;
- 
+
     /* Parse command-line options */
     optind = 1; // Reset optind to ensure proper parsing
 
@@ -681,15 +681,17 @@ handle_sub_show_status_command(int argc, char *argv[])
         {0, 0, 0, 0}
     };
 
-    char *node = NULL;
-    char *sub_name = NULL;
-    const char *conninfo;
-    const char *db;
-    PGconn *conn;
-    PGresult *res;
-    char sql[2048];
-    int option_index = 0;
-    int c;
+	char	   *node = NULL;
+	char	   *sub_name = NULL;
+	const char *conninfo;
+	const char *db;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
+	int			option_index = 0;
+	int			c;
+	int			nrows;
+	int			nfields;
 
     /* Parse command-line options */
     while ((c = getopt_long(argc, argv, "n:s:h", long_options, &option_index)) != -1)
@@ -764,8 +766,8 @@ handle_sub_show_status_command(int argc, char *argv[])
     }
 
     /* Print the results */
-    int nrows = PQntuples(res);
-    int nfields = PQnfields(res);
+	nrows = PQntuples(res);
+	nfields = PQnfields(res);
 
     for (int i = 0; i < nrows; i++)
     {
@@ -792,16 +794,18 @@ handle_sub_show_table_command(int argc, char *argv[])
         {0, 0, 0, 0}
     };
 
-    char *node = NULL;
-    char *sub_name = NULL;
-    char *relation = NULL;
-    const char *conninfo;
-    const char *db;
-    PGconn *conn;
-    PGresult *res;
-    char sql[2048];
-    int option_index = 0;
-    int c;
+	char	   *node = NULL;
+	char	   *sub_name = NULL;
+	char	   *relation = NULL;
+	const char *conninfo;
+	const char *db;
+	PGconn	   *conn;
+	PGresult   *res;
+	char		sql[2048];
+	int			option_index = 0;
+	int			c;
+	int			nrows;
+	int			nfields;
 
     /* Parse command-line options */
     while ((c = getopt_long(argc, argv, "n:s:r:h", long_options, &option_index)) != -1)
@@ -881,8 +885,8 @@ handle_sub_show_table_command(int argc, char *argv[])
     }
 
     /* Print the results */
-    int nrows = PQntuples(res);
-    int nfields = PQnfields(res);
+	nrows = PQntuples(res);
+	nfields = PQnfields(res);
 
     for (int i = 0; i < nrows; i++)
     {
