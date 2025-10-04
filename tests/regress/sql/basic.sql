@@ -110,3 +110,18 @@ CREATE FUNCTION call_fn(creds text) RETURNS void AS $$
 $$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
 
 SELECT call_fn(:fakecreds);
+
+--
+-- Check that spock-related commands aren't came to the queue.
+--
+
+SET spock.enable_ddl_replication = 'on';
+
+CREATE EXTENSION IF NOT EXISTS spock;
+COMMENT ON EXTENSION spock IS 'test comment';
+ALTER EXTENSION spock ADD FUNCTION call_fn(creds text);
+
+-- Zero records should be found here
+SELECT count(*) FROM spock.queue WHERE message::text LIKE '%spock%';
+
+RESET spock.enable_ddl_replication;
