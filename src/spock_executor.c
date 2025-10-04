@@ -356,6 +356,10 @@ autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 	if (context == PROCESS_UTILITY_TOPLEVEL)
 		return true;
 
+	/* Guard against CREATE EXTENSION subcommands */
+	if (creating_extension)
+		return false;
+
 	/*
 	 * Indicates a portion of a query. These statements should be handled by the
 	 * corresponding top-level query.
