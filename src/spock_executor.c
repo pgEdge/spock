@@ -343,7 +343,7 @@ autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 
 	if (spock_related_utility)
 	{
-		elog(LOG, "Spock-related DDL is executed only locally");
+		elog(LOG, "An unsafe DDL is executed only locally");
 		/*
 		 * Skip global opearions on the DDL if it causes CREATE, DROP and ALTER
 		 * Spock operation(s). It should be done locally.
@@ -357,10 +357,6 @@ autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 	/* Allow all toplevel statements. */
 	if (context == PROCESS_UTILITY_TOPLEVEL)
 		return true;
-
-	/* Guard against CREATE EXTENSION subcommands */
-	if (creating_extension)
-		return false;
 
 	/*
 	 * Indicates a portion of a query. These statements should be handled by the
