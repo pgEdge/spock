@@ -1,5 +1,23 @@
 # Spock Release Notes
 
+## Spock 5.0.4 on Oct 8, 2025
+
+* Reduce memory usage for transactions with many inserts.
+* When a subscriber’s apply worker updates a row that came from the same origin, spock will no longer log it in the `spock.resolutions` table, reversing behavior that has been in place since 5.0.0.
+  - Improved handling to block replicating DDL when adding an extension.
+  - Improved documentation
+  - Zero Downtime Add Node Improvements:
+    - New health checks and verifications (ex: version compatibility) before and during the add node process.
+    - New remove node SQL procedure (`spock.remove_node()` in samples/Z0DAN/zodrn.sql) and python script (samples/Z0DAN/zodrn.py). This also handles removing nodes that were partially added when the user decided to undo this work.
+    - Handle DSN strings that contain quotes.
+
+- Bug fixes:
+    - Log messages containing credentials will now obfuscate password information.
+    - Fix bug when the subscriber receives DML for tables that do not exist. This case will be handled according to the configured `spock.exception_behaviour` setting (`SUB_DISABLE`, `DISCARD`, `TRANSDISCARD`).
+    - Fix bug where spock incorrectly outputs a message that DDL was replicated when a transaction is executing in repair mode.
+
+
+
 ## v5.0.3 on Sep 26, 2025
 
 * Spock 5.0.3 adds support for Postgres 18.
