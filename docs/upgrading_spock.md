@@ -1,6 +1,6 @@
-# Upgrading the Spock Extension from 5.0
+# Upgrading the Spock Extension
 
-!!! info
+!!!
 
     If you build the Spock extension from source, you can remove, build, and upgrade the Spock extension like you would any other [Postgres extension](https://www.postgresql.org/docs/17/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
 
