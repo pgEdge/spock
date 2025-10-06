@@ -1,56 +1,151 @@
-# Upgrading the Spock Extension
+# Upgrading the Spock Extension from 5.0
 
-If you are using the Spock extension to manage replication for a pgEdge Distributed Postgres: VM Edition (CLI) installation, you can use the CLI to perform an upgrade. The upgrade steps are slightly different for a major version upgrade than for a minor version upgrade, but the CLI tooling simplifies both upgrade paths.
+!!! info
 
-!!! note
+    If you build the Spock extension from source, you can remove, build, and upgrade the Spock extension like you would any other [Postgres extension](https://www.postgresql.org/docs/17/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
 
-    You cannot roll back an upgrade; before starting an upgrade, make sure you have a current backup of your cluster.
+If you're upgrading a secure production environment, please shut down each node sequentially and perform the following steps:
+
+1. Disable auto-DDL.
+2. Stop the Postgres server.
+3. Build and install the updated Spock binaries.
+4. Restart the Postgres server.
+5. Use the psql command line to update the Spock version in use.
+6. Verify the node status.
+7. Enable Auto-DDL and restart the service on each node.
+
+A detailed description of each step in the upgrade process is provided below.
+
+**Step 1. Disabling Auto-DDL**
+
+Before stopping a node, disable DDL replication to prevent schema changes during the upgrade. 
+
+Connect to each node and run:
+
+`SELECT spock.replicate_ddl('SET spock.enable_ddl_replication = off');`
+
+Or set the following parameter in `postgresql.conf` on each node:
+
+`spock.enable_ddl_replication = off`
+
+Then, reload the configuration:
+
+`SELECT pg_reload_conf();`
+
+*Alert: This step is essential if old and new versions are incompatible.*
+
+**Step 2. Stop the Postgres Server**
+
+Before upgrading the Spock binary, stop the Postmaster on the server that you're working on:
+
+`pg_ctl -D /path/to/data1 stop -m fast`
+
+*Alert: This step is essential if old and new versions are incompatible.*
+
+**Step 3. Build and Install the New Spock Binaries**
+
+Before building the extension, you'll need to obtain updated Spock source code.  If you regularly build the Spock extension from source code (available at https://github.com/pgEdge/spock), use git to obtain an updated source set; then:
+
+```bash
+cd /path/to/spock-5.0.1
+make clean
+make
+sudo make install
+
+- `spock.so` → `$(pg_config --pkglibdir)/`
+- `spock.control` → `$(pg_config --sharedir)/extension/`
+- `spock--5.0.1.sql` and `spock--5.0.0--5.0.1.sql` → `$(pg_config --sharedir)/extension/`
+```
+
+Next, you should verify that the updated Spock files are installed.  You can use the following commands to confirm the version update:
+
+Check the library timestamp:
+
+`ls -l $(pg_config --pkglibdir)/spock.so`
+
+Check the control file:
+
+`ls -l $(pg_config --sharedir)/extension/spock.control`
+
+Check that an upgraded .sql file exists; for example:
+
+`ls -l $(pg_config --sharedir)/extension/spock--5.0.0--5.0.1.sql`
 
 
-If you don't use the CLI to manage your replication cluster, you can remove, build, and upgrade the Spock extension like you would any other [Postgres extension](https://www.postgresql.org/docs/17/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
+**Step 4. Restart the Postgres Server**
 
-**Performing a Minor Version Upgrade with the CLI**
+After performing the upgrade, use pg_ctl to restart the Postgres postmaster process:
 
-You can use the CLI Upgrade Manager (UM) module to perform a minor version upgrade of Spock.  To upgrade the installed version of Spock, navigate into the installation directory and invoke the command:
+`pg_ctl -D /path/to/data1 start`
 
-`./pgedge um upgrade spockXX`
+**Step 5. Upgrade the Extension Version in Use**
 
-Where `XX` specifies the Spock version.
+After building the extension, you need to update the Spock version in use; use the psql command line to modify the Spock version in use and confirm the node status:
 
-!!! tip
+Connect to the database with psql:
 
-    To use the CLI to review a list of available versions, use the command: `./pgedge um list`
+`psql -d postgres -p port1`
+
+Check the current version:
+
+`SELECT extname, extversion FROM pg_extension WHERE extname = 'spock';`
+
+Upgrade the extension version in use:
+
+`ALTER EXTENSION spock UPDATE TO '5.0.1';`
+
+Verify the new version:
+
+`SELECT extname, extversion FROM pg_extension WHERE extname = 'spock';`
+
+**Step 6. Verify the Node Status**
+
+Then, verify that the node is replicating:
+
+Check that subscriptions are active:
+
+`SELECT sub_name, sub_enabled, sub_slot_name, sub_replication_sets FROM spock.subscription;`
+
+Check the replication slots:
+
+`SELECT slot_name, active, restart_lsn FROM pg_replication_slots;`
+
+Check the node status:
+
+`SELECT * FROM spock.node;`
+
+**Step 7. Enable Auto-DDL and restart the Service on Each Node**
+
+After all of the nodes in your cluster have been upgraded successfully, connect to each node with psql and enable DDL replication:
+
+On each node, enable automatic DDL replication:
+
+`SELECT spock.replicate_ddl('SET spock.enable_ddl_replication = on');`
+
+Or you can modify the parameter in the `postgresql.conf` file:
+
+`spock.enable_ddl_replication = on`
+
+Reload the configuration:
+
+`SELECT pg_reload_conf();`
+
+Then, on each node, restart the service:
+
+`pg_ctl -D /path/to/data1 start`
+
+**Final Verification**
+
+After performing the steps listed above on each server in the cluster, use the following command to verify the replication status of each node:
+
+`SELECT application_name, state, sync_state, write_lag, flush_lag, replay_lag FROM pg_stat_replication;`
+
+You should confirm that:
+
+* All nodes report consistent versions (5.0.1).
+* Replication lag is minimal or zero.
+* No errors appear in PostgreSQL or Spock logs.
 
 
-**Performing a Major Version Upgrade with the CLI**
 
-During a major version upgrade with the CLI, your Postgres server will be stopped on all cluster nodes.  Before starting a major version upgrade, you should:
 
-* ensure that you are using the most-recent version of Spock (currently 4.0.10).
-* take a fresh back up your cluster.
-* if enabled, disable automatic ddl updates (autoddl) with the commands:
-
-    ```sql
-    ALTER SYSTEM SET spock.enable_ddl_replication=off;
-    ALTER SYSTEM SET spock.include_ddl_repset=off;
-    ALTER SYSTEM SET spock.allow_ddl_from_functions=off;
-    SELECT pg_reload_conf();
-    ```
-
-Then, to perform a major Spock version upgrade, use the psql command line to invoke the following commands on each node.  First, stop the node with the command:
-
-`./pgedge stop`
-
-Then, use the Update Manager to remove the old version of Spock; for example, the following command removes the latest version of Spock:
-
-`./pgedge um remove spock40`
-
-**Note:** This command does not remove the underlying installed extension; it only deletes the associated files and configuration.
-
-Then, install the new version of Spock; the following command installs Spock 5.0:
-
-`./pgedge um install spock50`
-
-The CLI installs the upgrade and restarts the database server. When the installation has completed, you can confirm the installed version with the CLI command:
-
-`./pgedge um list`
