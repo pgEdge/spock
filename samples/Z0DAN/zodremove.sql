@@ -1,5 +1,5 @@
 -- ============================================================================
--- ZODAN - Node Removal Script (zodrn.sql)
+-- ZODAN - Node Removal Script (zodremove.sql)
 -- Purpose: Systematically remove a node from Spock cluster
 -- Order: repset -> subscription -> slots -> node
 -- ============================================================================

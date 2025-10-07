@@ -8,7 +8,7 @@
   - Improved documentation
   - Zero Downtime Add Node Improvements:
     - New health checks and verifications (ex: version compatibility) before and during the add node process.
-    - New remove node SQL procedure (`spock.remove_node()` in samples/Z0DAN/zodrn.sql) and python script (samples/Z0DAN/zodrn.py). This also handles removing nodes that were partially added when the user decided to undo this work.
+    - New remove node SQL procedure (`spock.remove_node()` in samples/Z0DAN/zodremove.sql) and python script (samples/Z0DAN/zodremove.py). This also handles removing nodes that were partially added when the user decided to undo this work.
     - Handle DSN strings that contain quotes.
 
 - Bug fixes:

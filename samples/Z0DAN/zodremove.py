@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
 ZODRN - Spock Node Removal Tool (Python Version)
-100% matches zodrn.sql functionality but uses direct psql connections instead of dblink.
+100% matches zodremove.sql functionality but uses direct psql connections instead of dblink.
 
-This script provides all the same procedures and functionality as zodrn.sql:
+This script provides all the same procedures and functionality as zodremove.sql:
 - remove_node: Complete node removal with all 7 phases
 - Schema detection and skipping functionality
 - All validation, removal, and monitoring procedures
 - Error handling and verbose logging
 
 Usage:
-    python zodrn.py remove_node --target-node-name n4 --target-node-dsn "host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=pgedge" --verbose
+    python zodremove.py remove_node --target-node-name n4 --target-node-dsn "host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=pgedge" --verbose
 """
 
 import subprocess
@@ -38,7 +38,7 @@ class SpockClusterManager:
         print(f"NOTICE: {msg}")
 
     def format_notice(self, status: str, message: str, node: str = None):
-        """Format notice message like zodrn.sql: ✓/✗ datetime [node] : message"""
+        """Format notice message like zodremove.sql: ✓/✗ datetime [node] : message"""
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if node:
@@ -341,7 +341,7 @@ class SpockClusterManager:
         self.format_notice("✓", "Node removal process completed")
 
     def remove_node(self, target_node_name: str, target_node_dsn: str):
-        """Main remove_node procedure - matches zodrn.sql exactly"""
+        """Main remove_node procedure - matches zodremove.sql exactly"""
         self.notice(f"STARTING NODE REMOVAL PROCESS")
         self.notice(f"Node: {target_node_name}")
 
@@ -381,7 +381,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python zodrn.py remove_node --target-node-name n4 --target-node-dsn "host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=pgedge" --verbose
+  python zodremove.py remove_node --target-node-name n4 --target-node-dsn "host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=pgedge" --verbose
 
 Arguments:
   --target-node-name    Name of the node to remove (e.g., n4)
