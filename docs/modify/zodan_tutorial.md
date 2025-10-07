@@ -59,9 +59,9 @@ psql -d inventory -c "CREATE EXTENSION spock;"
 psql -d inventory -c "CREATE EXTENSION dblink;"
 ```
 
-## Using Z0DAN to Add a Node in Zero Downtime 
+**Using the Z0DAN Procedure to Add a Node** 
 
-After creating a node, you can use Z0DAN scripts to simplify adding a node to a cluster.  To use the script, connect to any existing node:
+After creating the node, you can use Z0DAN scripts to simplify adding a node to a cluster.  To use the script, connect to any existing node:
 ```bash
 psql -h 127.0.0.1 -p 5432 -d inventory -U pgedge
 ```
@@ -88,6 +88,9 @@ CALL spock.add_node(
 
 The script executes the steps required to add a node to the cluster; a detailed explanation of the steps performed by the Z0DAN script follows.
 
+## Manually adding a Node to a Cluster
+
+The steps that follow outline the process the Z0DAN procedure goes through when adding a node.  You can manually perform the same steps to add a node to a cluster.
 
 ### Check the Spock Version Compatibility
 
