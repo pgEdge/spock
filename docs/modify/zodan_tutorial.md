@@ -1,16 +1,19 @@
-# Tutorial - Manually Adding a Node to a Cluster with Zero Downtime
+# Tutorial - Adding a Node to a Cluster with Zero Downtime
 
-In this detailed walk through, we'll add a fourth node to a three-node cluster. In our example, our cluster nodes are `n1` (the source node), `n2`, `n3`, and our new node is `n4`.
+In this detailed walk through, we'll add a fourth node to a three-node cluster with zero downtime. In our example, our cluster nodes are `n1` (the source node), `n2`, `n3`, and our new node is `n4`.
 
-**Important Prerequisites and Warnings**
+!!! Warning
 
-- The new node should not be accessible to users while adding the node
-- Disable `auto_ddl` on all cluster nodes
-- Do not modify your DDL during node addition
-- Before adding a new node, you must create any users with access to the source database on the target node; the permissions must be *identical* for all users on both the source and target nodes.
-- All nodes in your cluster must be available to the Spock extension for the duration of the addition
-- Prepare the new node to meet the prerequisites described here
-- If the process fails, don't immediately retry a command until you ensure that all artifacts created by the workflow have been removed
+    **Important Prerequisites and Warnings**
+
+        - The new node should not be accessible to users while adding the node.
+        - Disable `auto_ddl` on all cluster nodes.
+        - Do not modify your DDL during node addition.
+        - Before adding a new node, you must create any users with access to the source database on the target node; the permissions must be *identical* for all users on both the source and target nodes.
+        - All nodes in your cluster must be available to the Spock extension for the duration of the node addition.
+        - Prepare the new node to meet the prerequisites described here.
+    
+    If the process fails, don't immediately retry a command until you ensure that all artifacts created by the workflow have been removed!
 
 **Creating a Node Manually**
 
@@ -56,7 +59,7 @@ psql -d inventory -c "CREATE EXTENSION spock;"
 psql -d inventory -c "CREATE EXTENSION dblink;"
 ```
 
-## Quick Start: Using the ZODAN Procedure
+## Using Z0DAN to Add a Node in Zero Downtime 
 
 Connect to any existing node:
 ```bash
@@ -68,7 +71,8 @@ Load the ZODAN procedures:
 \i /path/to/zodan.sql
 ```
 
-Run add_node:
+Then, run add_node to create the node definition:
+
 ```sql
 CALL spock.add_node(
     src_node_name := 'n1',
@@ -524,9 +528,9 @@ FROM dblink(
 -- Returns: 'mgmt_tools,monitoring' (if any exist)
 ```
 
-**Create enabled subscription on n4 from n1**
+**Create an enabled subscription on n4 from n1**
 
-Create subscription sub_n1_n4 on n4, pointing to n1 as the provider.
+Create a subscription (`sub_n1_n4`) on n4, pointing to n1 as the provider.
 
 Key parameters:
 - synchronize_structure := true - Dump and restore schema from n1
@@ -591,7 +595,7 @@ FROM dblink(
 
 **Wait for sync event on n4**
 
-On n4, wait for the sync marker with LSN 0/1E1F620 to arrive and be processed. This is a blocking call - it won't return until n4's subscription from n1 has replicated up to this LSN. The timeout (1200000 milliseconds = 20 minutes) prevents waiting forever if something goes wrong.
+On n4, wait for the sync marker that matches the returned LSN (0/1E1F620) to arrive and be processed. This is a blocking call - it won't return until n4's subscription from n1 has replicated up to this LSN. The timeout (1200000 milliseconds = 20 minutes) prevents waiting forever if something goes wrong.
 
 ```sql
 SELECT * 
@@ -606,13 +610,14 @@ FROM dblink(
 
 !!! info
 
-    This is a critical optimization phase!
+    This is a critical optimization step!
     
         - Earlier, n4 received a full copy of all data from n1, which includes data that originally came from n2 and n3.  Those nodes now have disabled subscriptions waiting to activate (sub_n2_n4 and sub_n3_n4).  The replication slots on n2 and n3 have been buffering changes since Phase 3.
 
         - Problem: If we enable those subscriptions now, n4 would receive duplicate data (it already has n2's data via n1, then would get it again directly from n2).
         - Solution: Use the lag_tracker to find the EXACT timestamp when n4 last received data from n2 (even though it came via n1).  Then advance n2's replication slot to skip past all data up to that timestamp.  When enabling sub_n2_n4 later, it only sends NEW changes that happened after the sync, not old data n4 that already exists.
-    Steps for each replica node: Check n4's lag_tracker to get the commit_timestamp for the last change from n2 → On n2, convert that timestamp to an LSN using get_lsn_from_commit_ts() → Advance n2's replication slot to that LSN → Repeat for n3
+    
+    Steps for each replica node: Check n4's lag_tracker to get the commit_timestamp for the last change from n2. On n2, convert that timestamp to an LSN using get_lsn_from_commit_ts(). Then, advance n2's replication slot to that LSN. Repeat these steps for n3.
 
 **Get the commit timestamp for n2 → n4**
 
@@ -745,7 +750,7 @@ FROM dblink(
 --  sub_n2_n4         | replicating | n2
 ```
 
-#### 9.4: Repeat for sub_n3_n4
+**Repeat the steps for sub_n3_n4**
 
 ```sql
 -- Enable subscription
@@ -871,9 +876,9 @@ Next, we'll verify that n4 is keeping up with n1.
 * **What happens:** We monitor the lag_tracker table on n4 to ensure replication from n1 is keeping up. The lag_tracker shows the time difference between when a transaction was committed on n1 and when it was applied on n4.
 
 * **Why this matters:** If lag is growing (e.g., 5 seconds, then 10 seconds, then 30 seconds), it means n4 can't keep up with the write load from n1. This could indicate:
-- Network bandwidth issues
-- n4's hardware is slower than n1
-- Long-running transactions blocking replication
+- Network bandwidth issues.
+- n4's hardware is slower than n1.
+- Long-running transactions blocking replication.
 
 * **Target:** We want lag under 59 seconds, or lag_bytes=0 (meaning n4 has processed everything). If lag stays consistently low, n4 is successfully integrated.
 
@@ -918,7 +923,7 @@ $$;
 
 ### Show All Nodes
 
-Next, we'll verify that all nodes are registered in the cluster.
+Next, we'll verify that all of the nodes are registered in the cluster.
 
 ```sql
 SELECT n.node_id, n.node_name, n.location, n.country, i.if_dsn
@@ -1016,7 +1021,8 @@ SELECT * FROM test_replication;
 -- Expected: Row appears on n4
 ```
 
-### Test Replication n4 → n1
+### Test Replication between n4 and n1
+
 ```sql
 -- On n4
 INSERT INTO test_replication (data) VALUES ('Test from n4');
