@@ -71,7 +71,7 @@ nav:
     - Using Spockctrl:
       - Managing your Cluster with Spockctrl: modify/spockctrl/index.md
       - Using Spockctrl Functions: modify/spockctrl/spockctrl_functions.md
-      - Populating the spockctrl.json Filtering: modify/spockctrl/spockctrl_json.md
+      - Populating the spockctrl.json File: modify/spockctrl/spockctrl_json.md
       - Using a Workflow File to Modify a Cluster: modify/spockctrl/spockctrl_workflow.md
   - Monitoring a Cluster:
     - Monitoring the Configuration and Health of a Cluster: monitoring/index.md
