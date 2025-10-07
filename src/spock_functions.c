@@ -190,6 +190,7 @@ PG_FUNCTION_INFO_V1(spock_get_lsn_from_commit_ts);
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
+static XLogRecPtr skip_wal_records_decoding(bool enable);
 
 
 bool in_spock_replicate_ddl_command = false;
@@ -973,16 +974,17 @@ Datum spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 /*
  * Resynchronize one existing table.
  */
-Datum spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
+Datum
+spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 {
-	char *sub_name = NameStr(*PG_GETARG_NAME(0));
-	Oid reloid = PG_GETARG_OID(1);
-	bool truncate = PG_GETARG_BOOL(2);
-	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
-	SpockSyncStatus *oldsync;
-	Relation rel;
-	char *nspname,
-		*relname;
+	char			   *sub_name = NameStr(*PG_GETARG_NAME(0));
+	Oid					reloid = PG_GETARG_OID(1);
+	bool				truncate = PG_GETARG_BOOL(2);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSyncStatus	   *oldsync;
+	Relation			rel;
+	char			   *nspname;
+	char			   *relname;
 
 	rel = table_open(reloid, AccessShareLock);
 
@@ -1017,8 +1019,12 @@ Datum spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 
 	table_close(rel, NoLock);
 
+	skip_wal_records_decoding(true);
+
 	if (truncate)
 		truncate_table(nspname, relname);
+
+	skip_wal_records_decoding(false);
 
 	/* Tell apply to re-read sync statuses. */
 	spock_subscription_changed(sub->id, false);
@@ -2977,23 +2983,19 @@ Datum delta_apply_money(PG_FUNCTION_ARGS)
 }
 
 /*
- * Function to control REPAIR mode
+ * Stop decoding messages till the end of the transaction.
  *
- * The Spock output plugin with suppress all DML messages after decoding
- * the SPOCK_REPAIR_MODE_ON message. Normal operation will resume after
- * receiving the SPOCK_REPAIR_MODE_OFF message or on transaction end.
- *
- * This is equivalent to session_replication_role=local.
+ * It is a general tool to perform operations, local for current spock node.
  */
-Datum
-spock_repair_mode(PG_FUNCTION_ARGS)
+static XLogRecPtr
+skip_wal_records_decoding(bool enabled)
 {
 	SpockWalMessageSimple	message;
 	XLogRecPtr				lsn;
-	bool					enabled = PG_GETARG_BOOL(0);
 
 	message.mtype = (enabled) ? SPOCK_REPAIR_MODE_ON : SPOCK_REPAIR_MODE_OFF;
-	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *)&message, sizeof(message), true);
+	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *) &message,
+							sizeof(message), true);
 
 	/*
 	 * Set the flag of repair mode till the end of the transaction or another
@@ -3007,6 +3009,25 @@ spock_repair_mode(PG_FUNCTION_ARGS)
 	(void) set_config_option("spock.replication_repair_mode",
 							 (enabled) ? "on" : "off", PGC_INTERNAL,
 							 PGC_S_SESSION, GUC_ACTION_LOCAL, true, 0, false);
+}
+
+/*
+ * Function to control REPAIR mode
+ *
+ * The Spock output plugin with suppress all DML messages after decoding
+ * the SPOCK_REPAIR_MODE_ON message. Normal operation will resume after
+ * receiving the SPOCK_REPAIR_MODE_OFF message or on transaction end.
+ *
+ * This is equivalent to session_replication_role=local.
+ */
+Datum
+spock_repair_mode(PG_FUNCTION_ARGS)
+{
+	XLogRecPtr				lsn;
+	bool					enabled = PG_GETARG_BOOL(0);
+
+	lsn = skip_wal_records_decoding(enabled);
+
 	PG_RETURN_LSN(lsn);
 }
 

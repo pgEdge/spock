@@ -131,6 +131,7 @@ INSERT INTO spoc_102g VALUES (-5);
 
 \c :subscriber_dsn
 -- Check replication state before the problem fixation
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM spoc_102g ORDER BY x;
 SELECT * FROM spoc_102l ORDER BY x; -- ERROR, does not exist yet
 
@@ -149,11 +150,13 @@ SELECT * FROM spoc_102l ORDER BY x;
 -- Return to provider and check that it doesn't see value (4).
 -- Afterwards, add value 5 that must be replicated
 \c :provider_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM spoc_102l ORDER BY x;
 INSERT INTO spoc_102l VALUES (5);
 
 -- Re-check that subscription works properly
 \c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM spoc_102l ORDER BY x;
 
 --
@@ -182,6 +185,7 @@ INSERT INTO spoc_102g VALUES (-5);
 
 \c :subscriber_dsn
 -- Check replication state before the problem fixation
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM spoc_102g ORDER BY x;
 SELECT * FROM spoc_102l ORDER BY x; -- ERROR, does not exist yet
 
@@ -193,6 +197,7 @@ INSERT INTO spoc_102l VALUES (4);
 INSERT INTO spoc_102g VALUES (-6);
 
 \c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM spoc_102g ORDER BY x;
 SELECT * FROM spoc_102l ORDER BY x;
 

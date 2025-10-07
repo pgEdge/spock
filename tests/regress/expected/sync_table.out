@@ -1,0 +1,162 @@
+/* First test whether a table's replication set can be properly manipulated */
+SELECT * FROM spock_regress_variables()
+\gset
+\c :provider_dsn
+--
+-- Test resynchronization
+--
+SELECT spock.replicate_ddl('CREATE TABLE test_sync(x integer primary key)');
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'test_sync');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO test_sync (x) SELECT value FROM generate_series(1,10) AS value;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+SELECT sum(x), count(*) FROM test_sync;
+ sum | count 
+-----+-------
+  55 |    10
+(1 row)
+
+\c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+SELECT sum(x), count(*) FROM test_sync;
+ sum | count 
+-----+-------
+  55 |    10
+(1 row)
+
+SELECT * FROM spock.local_sync_status;
+ sync_kind | sync_subid | sync_nspname | sync_relname | sync_status | sync_statuslsn 
+-----------+------------+--------------+--------------+-------------+----------------
+ f         | 3848008564 |              |              | r           | 0/0
+(1 row)
+
+SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
+ sub_resync_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+SELECT sum(x), count(*) FROM test_sync;
+ sum | count 
+-----+-------
+  55 |    10
+(1 row)
+
+SELECT * FROM spock.local_sync_status;
+ sync_kind | sync_subid | sync_nspname | sync_relname | sync_status | sync_statuslsn 
+-----------+------------+--------------+--------------+-------------+----------------
+ f         | 3848008564 |              |              | r           | 0/0
+ d         | 3848008564 | public       | test_sync    | u           | 0/30294C0
+(2 rows)
+
+SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
+ERROR:  table public.test_sync is already being synchronized
+SELECT sum(x), count(*) FROM test_sync;
+ sum | count 
+-----+-------
+  55 |    10
+(1 row)
+
+SELECT * FROM spock.local_sync_status;
+ sync_kind | sync_subid | sync_nspname | sync_relname | sync_status | sync_statuslsn 
+-----------+------------+--------------+--------------+-------------+----------------
+ f         | 3848008564 |              |              | r           | 0/0
+ d         | 3848008564 | public       | test_sync    | u           | 0/30294C0
+(2 rows)
+
+\c :provider_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+SELECT sum(x), count(*) FROM test_sync;
+ sum | count 
+-----+-------
+  55 |    10
+(1 row)
+
+-- Add more values and check they were added
+INSERT INTO test_sync (x) SELECT -value FROM generate_series(1,10) AS value;
+SELECT sum(x), count(*) FROM test_sync;
+ sum | count 
+-----+-------
+   0 |    20
+(1 row)
+
+\c :subscriber_dsn
+-- Restart syncing this specific table, wait until the process finish and check
+-- all the data stay consistent
+SELECT * FROM spock.local_sync_status;
+ sync_kind | sync_subid | sync_nspname | sync_relname | sync_status | sync_statuslsn 
+-----------+------------+--------------+--------------+-------------+----------------
+ f         | 3848008564 |              |              | r           | 0/0
+ d         | 3848008564 | public       | test_sync    | r           | 0/30316E8
+(2 rows)
+
+SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
+ sub_resync_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+SELECT sum(x), count(*) FROM test_sync;
+ sum | count 
+-----+-------
+     |     0
+(1 row)
+
+SELECT * FROM spock.local_sync_status;
+ sync_kind | sync_subid | sync_nspname | sync_relname | sync_status | sync_statuslsn 
+-----------+------------+--------------+--------------+-------------+----------------
+ f         | 3848008564 |              |              | r           | 0/0
+ d         | 3848008564 | public       | test_sync    | i           | 0/0
+(2 rows)
+
+-- Last check all data still in place
+\c :provider_dsn
+SELECT sum(x), count(*) FROM test_sync;
+ sum | count 
+-----+-------
+   0 |    20
+(1 row)
+
+SELECT spock.repset_remove_table('default', 'test_sync', true);
+ repset_remove_table 
+---------------------
+ t
+(1 row)
+
+DROP TABLE test_sync;
