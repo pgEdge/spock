@@ -138,7 +138,7 @@ FROM dblink(
 
         - n4 must have the database and Spock extension installed.
         - n4 must have no user data or existing replication configuration.
-        - Verify that a node named "n4" doesn't already exist in the cluster.
+        - Verify that a node named n4 doesn't already exist in the cluster.
 
     If any prerequisite fails, the process aborts to prevent conflicts.
 
@@ -173,7 +173,7 @@ FROM dblink(
 
 **Confirm that n4 doesn't exist in the cluster**
 
-Check if a node with the name "n4" is already registered in the cluster. If it exists, ZODAN aborts to prevent duplicate node names.
+Check if a node with the name n4 is already registered in the cluster. If it exists, ZODAN aborts to prevent duplicate node names.
 
 ```sql
 -- On orchestrator node (connected to n1)
