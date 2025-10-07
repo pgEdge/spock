@@ -4,11 +4,11 @@ There are several ways to add a node to a cluster; the way that you choose shoul
 
 * **Manually Adding a Node with Zero Downtime**
 
-You can manually add a node to your cluster with zero downtime; follow the steps [outlined here](https://docs.pgedge.com/spock_ext/modify/zodan_tutorial) for details.
+You can manually add a node to your cluster with zero downtime; to review a detailed walk-through, follow the steps [outlined here](zodan_tutorial.md) for details.
 
 * **Adding a Node to a Replicating Cluster with Minimal Downtime**
 
-You can safely add a node to a replicating cluster with minimal interruption to your cluster with pgBackRest; the technique is outlined [here](https://docs.pgedge.com/spock_ext/modify/add_node_pgbackrest).
+You can safely add a node to a replicating cluster with minimal interruption to your cluster with pgBackRest; the technique is outlined [here](add_node_pgbackrest.md).
 
 * **Adding a Node to a Replicating Cluster with spockctrl**
 
