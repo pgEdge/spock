@@ -1116,5 +1116,5 @@ WHERE slot_name LIKE 'spk_%';
 
 - [pgEdge ZODAN Tutorial](https://docs.pgedge.com/spock_ext/modify/zodan_tutorial)
 - [Spock Documentation](https://github.com/pgEdge/spock)
-- ZODAN Implementation: `samples/Z0DAN/zodan.sql`
+- ZODAN Implementation: [samples/Z0DAN/zodan.sql](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
 
