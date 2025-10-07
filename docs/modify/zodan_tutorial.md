@@ -9,7 +9,7 @@ In this detailed walk through, we'll add a fourth node to a three-node cluster w
         - The new node should not be accessible to users while adding the node.
         - Disable `auto_ddl` on all cluster nodes.
         - Do not modify your DDL during node addition.
-        - Before adding a new node, you must create any users with access to the source database on the target node; the permissions must be *identical* for all users on both the source and target nodes.
+        - The users must be identical on the source and target node.  You must create any users on the target node before proceeding; the permissions must be *identical* for all users on both the source and target nodes.
         - All nodes in your cluster must be available to the Spock extension for the duration of the node addition.
         - Prepare the new node to meet the prerequisites described here.
     
@@ -61,7 +61,7 @@ psql -d inventory -c "CREATE EXTENSION dblink;"
 
 ## Using Z0DAN to Add a Node in Zero Downtime 
 
-Connect to any existing node:
+After creating a node, you can use Z0DAN scripts to simplify adding a node to a cluster.  To use the script, connect to any existing node:
 ```bash
 psql -h 127.0.0.1 -p 5432 -d inventory -U pgedge
 ```
@@ -85,6 +85,9 @@ CALL spock.add_node(
     new_node_info := '{"key": "value"}'::jsonb
 );
 ```
+
+The script executes the steps required to add a node to the cluster; a detailed explanation of the steps performed by the Z0DAN script follows.
+
 
 ### Check the Spock Version Compatibility
 
@@ -236,7 +239,7 @@ FROM dblink(
 --    16389
 ```
 
-**Get the initial node count**
+**Confirm the initial node count**
 
 ```sql
 SELECT count(*) 
@@ -689,7 +692,7 @@ FROM dblink(
 
 In this step, we activate subscriptions from replica nodes to new node using stored sync LSNs.
 
-*  **What happens:** Remember way back when we created disabled subscriptions and stored sync LSNs? Now we bring it all together. We enable those subscriptions (sub_n2_n4 and sub_n3_n4), and use the STORED LSNs from to verify they start from the correct position.
+*  **What happens:** Remember when we created disabled subscriptions and stored sync LSNs? Now we bring it all together. We enable those subscriptions (sub_n2_n4 and sub_n3_n4), and use the STORED LSNs from to verify they start from the correct position.
 
 *  **Why the stored LSNs matter:** When we created sub_n2_n4 and triggered sync_event on n2, we got LSN 0/1A7D1E0. That LSN marked the exact moment we created the replication slot. Between then and now, hours may have passed. The replication slot has been buffering changes. But we need to ensure the subscription starts processing from that original bookmark point, not skipping ahead.
 
@@ -715,7 +718,7 @@ FROM dblink(
 
 **Wait for stored sync event from n2**
 
-Then, retrieve the LSN we stored (0/1A7D1E0) and use it in wait_for_sync_event(). This is the key to the entire ZODAN approach: we're verifying that the subscription has caught up to the sync point we marked hours ago when we first set things up. This guarantees data consistency.
+Then, retrieve the LSN we stored (0/1A7D1E0) and use it in wait_for_sync_event(). This is the key to the entire ZODAN approach: we're verifying that the subscription has caught up to the sync point we marked when we first set things up. This guarantees data consistency.
 
 ```sql
 -- Retrieve stored LSN
