@@ -11,6 +11,7 @@ In this detailed walk through, we'll add a fourth node to a three-node cluster w
         - Do not modify your DDL during node addition.
         - The users must be identical on the source and target node.  You must create any users on the target node before proceeding; the permissions must be *identical* for all users on both the source and target nodes.
         - All nodes in your cluster must be available to the Spock extension for the duration of the node addition.
+        - The dblink extension must be installed on the node from which commands like `SELECT spock.add_node()` are being run
         - Prepare the new node to meet the prerequisites described here.
     
     If the process fails, don't immediately retry a command until you ensure that all artifacts created by the workflow have been removed!
@@ -86,11 +87,11 @@ CALL spock.add_node(
 );
 ```
 
-The script executes the steps required to add a node to the cluster; a detailed explanation of the steps performed by the Z0DAN script follows.
+The `spock.add_node` function executes the steps required to add a node to the cluster; a detailed explanation of the steps performed follows below.
 
 ## Manually adding a Node to a Cluster
 
-The steps that follow outline the process the Z0DAN procedure goes through when adding a node.  You can manually perform the same steps to add a node to a cluster.
+The steps that follow outline the process the Z0DAN procedure goes through when adding a node.  You can manually perform the same steps to add a node to a cluster instead of using `spock.add_node` above.
 
 ### Check the Spock Version Compatibility
 
