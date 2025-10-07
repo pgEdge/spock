@@ -176,6 +176,40 @@ class SpockClusterManager:
         else:
             self.format_notice("OK:", f"Checking database {new_db_name} has no user-created tables")
         
+        # Check that new node has all users that source node has
+        src_users_sql = """
+        SELECT rolname FROM pg_roles 
+        WHERE rolcanlogin = true 
+        AND rolname NOT IN ('postgres', 'rdsadmin', 'rdsrepladmin', 'rds_superuser') 
+        ORDER BY rolname;
+        """
+        
+        try:
+            src_users_result = self.run_psql(src_dsn, src_users_sql, fetch=True)
+            if src_users_result:
+                src_users = [line.strip() for line in src_users_result.strip().split('\n') if line.strip()]
+                missing_users = []
+                
+                for user in src_users:
+                    check_user_sql = f"SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = '{user}' AND rolcanlogin = true);"
+                    user_exists = self.run_psql(new_node_dsn, check_user_sql, fetch=True, return_single=True)
+                    
+                    if not user_exists or user_exists.strip() != 't':
+                        missing_users.append(user)
+                
+                if missing_users:
+                    missing_users_str = ', '.join(missing_users)
+                    self.format_notice("✗", f"New node missing users: {missing_users_str}")
+                    raise Exception(f"Exiting add_node: New node is missing the following users that exist on source node: {missing_users_str}. Please create these users on the new node before adding it to the cluster.")
+                else:
+                    self.format_notice("OK:", "Checking new node has all source node users")
+        except Exception as e:
+            if "missing users" in str(e):
+                raise
+            else:
+                self.format_notice("✗", f"Failed to check user compatibility: {str(e)}")
+                raise Exception(f"Exiting add_node: Failed to verify user compatibility between source and new node: {str(e)}")
+        
         # Check if new node already exists
         sql = f"SELECT count(*) FROM spock.node WHERE node_name = '{new_node_name}';"
         count = self.run_psql(new_node_dsn, sql, fetch=True, return_single=True)
