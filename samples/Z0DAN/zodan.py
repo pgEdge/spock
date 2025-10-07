@@ -24,7 +24,7 @@ import re
 
 class SpockClusterManager:
     VERSION = "1.0.0"
-    REQUIRED_SPOCK_VERSION = "6.0.0-devel"
+    REQUIRED_SPOCK_VERSION = "5.0.4"
     
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
