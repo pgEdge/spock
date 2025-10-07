@@ -287,7 +287,7 @@ FROM dblink(
 
 **For n2 → n4 (Trigger sync event on n2 and store LSN)**
 
-We call `sync_event()` on n2, which inserts a special marker into n2's replication stream and returns the LSN where it was inserted. We store this LSN (0/1A7D1E0) in a temp table. Later, when we enable the sub_n2_n4 subscription in Phase 9, we'll use this stored LSN to ensure the subscription starts from exactly this point - guaranteeing no data loss.
+We call `sync_event()` on n2, which inserts a special marker into n2's replication stream and returns the LSN where it was inserted. We store this LSN (0/1A7D1E0) in a temp table. Later, when we enable the sub_n2_n4 subscription, we'll use this stored LSN to ensure the subscription starts from exactly this point - guaranteeing no data loss.
 
 ```sql
 -- Trigger sync event on n2
@@ -408,7 +408,7 @@ FROM dblink(
     Now we'll prepare for replication directing the data flow *FROM* n4 TO the replica nodes (n2, n3):
 
         - Create replication slots on n2 and n3 that will hold changes from n4.
-        - These slots will be used later (in Phase 10) when creating subscriptions for n2 and n3 to receive data from n4.
+        - These slots will be used later when creating subscriptions for n2 and n3 to receive data from n4.
         - We create these slots early so they start buffering any changes from n4 immediately, even before the subscriptions are created.
     
     This prevents data loss if n4 receives writes during the setup process.
@@ -416,7 +416,7 @@ FROM dblink(
 
 **Create a slot on n2 for a future subscription (sub_n4_n2)**
 
-Create a replication slot on n2 named `spk_inventory_n2_sub_n4_n2`. This slot will queue up changes from n4 that need to be sent to n2. The slot is ready, but there's no subscription using it yet - that comes in Phase 10.
+Create a replication slot on n2 named `spk_inventory_n2_sub_n4_n2`. This slot will queue up changes from n4 that need to be sent to n2. The slot is ready, but there's no subscription using it yet - that comes later.
 
 ```sql
 SELECT * 
@@ -509,7 +509,7 @@ FROM dblink(
         - This causes: Spock to dump the entire schema (tables, indexes, constraints, etc.) from n1 → Restore that schema on n4 → Copy ALL table data from n1 to n4.
         - Before creating the subscription, detect if n4 has any existing schemas that should be omitted from the sync (like monitoring tools, management schemas).  Build a skip_schema` array with these schema names.  When Spock syncs the structure, it excludes these schemas using `pg_dump --exclude-schema`.  When copying data, Spock also skips tables in these schemas.  This prevents overwriting local tools/extensions on n4.
     
-    This phase can take minutes to hours depending on database size (a 100GB database might take 30+ minutes to sync)
+    This can take minutes to hours depending on database size (a 100GB database might take 30+ minutes to sync)
 
 **Detect existing schemas on n4**
 
@@ -573,9 +573,9 @@ FROM dblink(
 
 !!! info 
     
-    After the initial bulk data copy in Phase 6, there might be a small lag (to recover changes that happened on n1 while the copy was in progress).
+    After the initial bulk data copy, there might be a small lag (to recover changes that happened on n1 while the copy was in progress).
 
-        - This phase confirms that n4 has caught up completely with n1 before proceeding.
+        - This confirms that n4 has caught up completely with n1 before proceeding.
         - Trigger a sync_event on n1 (marking the current position in n1's stream); then, wait on n4 for that marker to arrive.  When it arrives, n4 has received and applied everything from n1 up to this point.
         
     For example: We start copying 100GB at 10:00 AM, but while copying, users insert 1000 rows on n1 between 10:00-10:30.  The copy completes at 10:30, but those 1000 rows are still being streamed - we have to wait until all 1000 rows have been applied on n4 so we don't lose data.
@@ -612,7 +612,7 @@ FROM dblink(
 
     This is a critical optimization step!
     
-        - Earlier, n4 received a full copy of all data from n1, which includes data that originally came from n2 and n3.  Those nodes now have disabled subscriptions waiting to activate (sub_n2_n4 and sub_n3_n4).  The replication slots on n2 and n3 have been buffering changes since Phase 3.
+        - Earlier, n4 received a full copy of all data from n1, which includes data that originally came from n2 and n3.  Those nodes now have disabled subscriptions waiting to activate (sub_n2_n4 and sub_n3_n4).  The replication slots on n2 and n3 have been buffering changes.
 
         - Problem: If we enable those subscriptions now, n4 would receive duplicate data (it already has n2's data via n1, then would get it again directly from n2).
         - Solution: Use the lag_tracker to find the EXACT timestamp when n4 last received data from n2 (even though it came via n1).  Then advance n2's replication slot to skip past all data up to that timestamp.  When enabling sub_n2_n4 later, it only sends NEW changes that happened after the sync, not old data n4 that already exists.
@@ -689,13 +689,13 @@ FROM dblink(
 
 In this step, we activate subscriptions from replica nodes to new node using stored sync LSNs.
 
-*  **What happens:** Remember way back in Phase 3 when we created disabled subscriptions and stored sync LSNs? Now we bring it all together. We enable those subscriptions (sub_n2_n4 and sub_n3_n4), and use the STORED LSNs from Phase 3 to verify they start from the correct position.
+*  **What happens:** Remember way back when we created disabled subscriptions and stored sync LSNs? Now we bring it all together. We enable those subscriptions (sub_n2_n4 and sub_n3_n4), and use the STORED LSNs from to verify they start from the correct position.
 
-*  **Why the stored LSNs matter:** When we created sub_n2_n4 in Phase 3 and triggered sync_event on n2, we got LSN 0/1A7D1E0. That LSN marked the exact moment we created the replication slot. Between Phase 3 and now (Phase 9), hours may have passed. The replication slot has been buffering changes. But we need to ensure the subscription starts processing from that original bookmark point, not skipping ahead.
+*  **Why the stored LSNs matter:** When we created sub_n2_n4 and triggered sync_event on n2, we got LSN 0/1A7D1E0. That LSN marked the exact moment we created the replication slot. Between then and now, hours may have passed. The replication slot has been buffering changes. But we need to ensure the subscription starts processing from that original bookmark point, not skipping ahead.
 
 *  **The verification:** After enabling each subscription, we call wait_for_sync_event() with the stored LSN. This confirms that the subscription has processed up to at least that sync point before we continue.
 
-* **After Phase 8's slot advancement:** The slots were advanced in Phase 8 to skip duplicate data. Now when we enable the subscriptions, they'll only send NEW changes that happened after the initial sync - exactly what we want.
+* **After the slot advancement:** The slots were advanced to skip duplicate data. Now when we enable the subscriptions, they'll only send NEW changes that happened after the initial sync - exactly what we want.
 
 **Enable sub_n2_n4 on n4**
 
@@ -715,10 +715,10 @@ FROM dblink(
 
 **Wait for stored sync event from n2**
 
-Then, retrieve the LSN we stored in Phase 3 (0/1A7D1E0) and use it in wait_for_sync_event(). This is the key to the entire ZODAN approach: we're verifying that the subscription has caught up to the sync point we marked hours ago when we first set things up. This guarantees data consistency.
+Then, retrieve the LSN we stored (0/1A7D1E0) and use it in wait_for_sync_event(). This is the key to the entire ZODAN approach: we're verifying that the subscription has caught up to the sync point we marked hours ago when we first set things up. This guarantees data consistency.
 
 ```sql
--- Retrieve stored LSN from Phase 3
+-- Retrieve stored LSN
 SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = 'n2';
 -- Returns: 0/1A7D1E0
 
@@ -763,7 +763,7 @@ FROM dblink(
     )'
 ) AS t(result text);
 
--- Retrieve stored LSN from Phase 3
+-- Retrieve stored LSN
 SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = 'n3';
 -- Returns: 0/1B8E2F0
 
@@ -791,11 +791,11 @@ This will enable bidirectional replication from n4 to all other nodes.
 
 * **What happens:** Up to this point, data has been flowing TO n4 from other nodes. Now we set up the reverse paths - data flowing FROM n4 TO other nodes. We create subscriptions on n1, n2, and n3 that subscribe FROM n4.
 
-* **Why now and not earlier?** We waited until n4 was fully populated with data (Phase 6-9) before allowing other nodes to subscribe to it. If we had created these subscriptions earlier, the other nodes would try to sync from an empty n4, which would cause problems.
+* **Why now and not earlier?** We waited until n4 was fully populated with data before allowing other nodes to subscribe to it. If we had created these subscriptions earlier, the other nodes would try to sync from an empty n4, which would cause problems.
 
 * **Key point - no data sync:** These subscriptions have `synchronize_structure=false` and `synchronize_data=false` because n1, n2, and n3 already have all the data. We only want them to receive NEW changes that happen ON n4 from now on, not copy existing data.
 
-* **The result:** After this phase, the cluster is fully bidirectional:
+* **The result:** After this, the cluster is fully bidirectional:
     
     - n1 sends to n4, n4 sends to n1
     - n2 sends to n4, n4 sends to n2
@@ -1092,7 +1092,7 @@ WHERE slot_name LIKE 'spk_%';
 
 ## Key Differences from the Manual Process
 
-1. **Sync LSN Storage:** ZODAN stores sync LSNs and uses them later to ensuring subscriptions start from the correct point even if hours pass between phases.
+1. **Sync LSN Storage:** ZODAN stores sync LSNs and uses them later to ensuring subscriptions start from the correct point even if hours pass between steps.
 
 2. **Auto Schema Detection:** ZODAN automatically detects existing schemas on n4 and populates `skip_schema` parameter, preventing conflicts during structure sync.
 
