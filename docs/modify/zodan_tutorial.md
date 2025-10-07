@@ -22,7 +22,7 @@ If you are not using `spock.node_create` to create the new node, you will need t
 - Initialize the new node with `initdb`
 - Create a database
 - Create a database user
-- Follow the instructions at the Github repository to build and install the Spock extension on the database
+- Follow the instructions at the [Github repository](https://github.com/pgEdge/spock) to build and install the Spock extension on the database
 - Add `spock` to the `shared_preload_library` parameter in the `postgresql.conf` file
 - Restart the server to update the configuration
 - Then, use the `CREATE EXTENSION spock` command to create the spock extension
@@ -252,12 +252,12 @@ FROM dblink(
 
 !!! info
 
-    This is the critical "bookmarking" phase; during this phase, we'll:
+    This is the critical "bookmarking" stage; during this stage, we'll:
 
         - Create subscriptions from n2→n4 and n3→n4, but keep them DISABLED.
         - Before creating each subscription, trigger a sync_event() which returns an LSN (log sequence number).  You can think of the LSN as a bookmark in the replication stream.
         - Save these bookmarks in a temporary table for later use.
-        - When enabling these subscriptions later (in Phase 9), transactions will start from exactly the right position.  This ensures no data is missed or duplicated.
+        - When enabling these subscriptions later, transactions will start from exactly the right position.  This ensures no data is missed or duplicated.
         - Subscriptions remain disabled because n4 should get ALL its initial data from n1 (the source) in one clean sync.
         
     The n2→n4 and n3→n4 subscriptions are just being prepared now, but won't start moving data until later
