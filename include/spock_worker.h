@@ -15,7 +15,7 @@
 #include "storage/lock.h"
 
 #include "spock.h"
-#include "spock_apply.h"			/* for SpockApplyGroupData */
+#include "spock_group.h"			/* for SpockApplyGroupData */
 #include "spock_output_plugin.h"	/* for SpockOutputSlotGroup */
 #include "spock_proto_native.h"
 
@@ -35,28 +35,6 @@ typedef enum {
 	SPOCK_WORKER_STATUS_STOPPED,	/* Stopped. */
 	SPOCK_WORKER_STATUS_FAILED,		/* Failed. */
 } SpockWorkerStatus;
-/*
- * Apply workers shared memory information per database per origin
- *
- * We want to be able to cleanup on proc exit. However, since MyProc may be
- * NULL during exit, we'd be using group_has_workers atomic variable when
- * decrement attached count, whereas when creating an entry to incrementing,
- * we must protect it with an LWLock to avoid race conditions..
- *
- * This strategy avoids using LWLocks for cleanup.
- */
-typedef struct SpockApplyGroupData
-{
-	Oid dbid;
-	RepOriginId replorigin;
-	pg_atomic_uint32 nattached;
-	TimestampTz prev_remote_ts;
-	XLogRecPtr remote_lsn;
-	XLogRecPtr remote_insert_lsn;
-	ConditionVariable prev_processed_cv;
-} SpockApplyGroupData;
-
-typedef SpockApplyGroupData *SpockApplyGroup;
 
 typedef struct SpockApplyWorker
 {
@@ -64,7 +42,7 @@ typedef struct SpockApplyWorker
 	XLogRecPtr	replay_stop_lsn;	/* Replay should stop here if defined. */
 	bool		sync_pending;		/* Is there new synchronization info pending?. */
 	bool		use_try_block;		/* Should use try block for apply? */
-	SpockApplyGroup apply_group;	/* Apply group to be used with parallel slots. */
+	SpockGroupEntry *apply_group;	/* Apply group to be used with parallel slots. */
 } SpockApplyWorker;
 
 typedef struct SpockSyncWorker
@@ -125,8 +103,6 @@ typedef struct SpockContext {
 
 	/* Spock apply db-origin data */
 	LWLock				   *apply_group_master_lock;
-	int						napply_groups;
-	SpockApplyGroupData	   *apply_groups;
 
 	/* Background workers. */
 	int			total_workers;

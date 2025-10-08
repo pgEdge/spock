@@ -12,3 +12,4 @@ spock_create_subscriber
 /postgres
 spock.control
 tags
+.vscode

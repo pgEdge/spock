@@ -96,6 +96,7 @@
 #include "spock_rpc.h"
 #include "spock_sync.h"
 #include "spock_worker.h"
+#include "spock_group.h"
 
 #include "spock.h"
 
@@ -186,6 +187,9 @@ PG_FUNCTION_INFO_V1(spock_repair_mode);
 
 /* Function to get a LSN based on commit timestamp */
 PG_FUNCTION_INFO_V1(spock_get_lsn_from_commit_ts);
+
+/* Apply Group */
+PG_FUNCTION_INFO_V1(get_apply_group_progress);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -581,7 +585,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	create_subscription(&sub);
 
 	/* Create progress entry to track commit ts per local/remote origin */
-	create_progress_entry(localnode->node->id, originif.nodeid, GetCurrentIntegerTimestamp());
+	spock_group_attach(MyDatabaseId, localnode->node->id, originif.nodeid, NULL);
 
 
 	/* Create synchronization status for the subscription. */
@@ -3277,4 +3281,80 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
     LWLockRelease(SpockCtx->lock);
 
     PG_RETURN_VOID();
+}
+
+/*
+ * get_apply_group_progress
+ *
+ * SQL function to show info about apply group progress.
+ */
+Datum
+get_apply_group_progress(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	HASH_SEQ_STATUS it;
+	SpockGroupEntry *e;
+
+	if (!SpockCtx || !SpockHash)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("spock must be loaded via shared_preload_libraries")));
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not "
+						"allowed in this context")));
+
+
+	/* Switch into long-lived context to construct returned data structures */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	/* Build the tuple descriptor from caller’s column definition list */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+
+	/* Iterate the hash and emit rows */
+	hash_seq_init(&it, SpockGroupHash);
+	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
+	{
+		Datum		values[9];
+		bool		nulls[9] = {false};
+
+		values[0] = ObjectIdGetDatum(e->progress.key.dbid);
+		values[1] = ObjectIdGetDatum(e->progress.key.node_id);
+		values[2] = ObjectIdGetDatum(e->progress.key.remote_node_id);
+		values[3] = TimestampTzGetDatum(e->progress.remote_commit_ts);
+		values[4] = TimestampTzGetDatum(e->progress.prev_remote_ts);
+		values[5] = LSNGetDatum(e->progress.remote_commit_lsn);
+		values[6] = LSNGetDatum(e->progress.remote_insert_lsn);
+		values[7] = TimestampTzGetDatum(e->progress.last_updated_ts);
+		values[8] = BoolGetDatum(e->progress.updated_by_decode);
+
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
+
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+
+	return (Datum) 0;
 }
