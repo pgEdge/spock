@@ -66,6 +66,11 @@ typedef struct SpockOutputData
 	bool		client_binary_intdatetimes;
 	bool		client_no_txinfo;
 
+	/* Spock version related parameters. */
+	int			startup_params_format;
+	const char *spock_version;
+	int			spock_version_num;
+
 	/* List of origin names */
     List	   *forward_origins;
 	/* List of SpockRepSet */

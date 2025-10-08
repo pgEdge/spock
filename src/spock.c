@@ -56,6 +56,7 @@
 #include "spock_node.h"
 #include "spock_conflict.h"
 #include "spock_worker.h"
+#include "spock_output_config.h"
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
 #include "spock_readonly.h"
@@ -560,19 +561,9 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 #endif
 					 );
 	appendStringInfo(&command, ", \"binary.float4_byval\" '%d'",
-#ifdef USE_FLOAT4_BYVAL
-					 true
-#else
-					 false
-#endif
-					 );
+					 server_float4_byval());
 	appendStringInfo(&command, ", \"binary.float8_byval\" '%d'",
-#ifdef USE_FLOAT8_BYVAL
-					 true
-#else
-					 false
-#endif
-					 );
+					 server_float8_byval());
 	appendStringInfo(&command, ", \"binary.integer_datetimes\" '%d'",
 #ifdef USE_INTEGER_DATETIMES
 					 true
@@ -603,14 +594,10 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 		appendStringInfoString(&command, quote_literal_cstr(replication_sets));
 	}
 
-	/* Tell the upstream that we want unbounded metadata cache size */
-	appendStringInfoString(&command, ", \"relmeta_cache_size\" '-1'");
-
 	/* general info about the downstream */
 	appendStringInfo(&command, ", pg_version '%u'", PG_VERSION_NUM);
 	appendStringInfo(&command, ", spock_version '%s'", SPOCK_VERSION);
 	appendStringInfo(&command, ", spock_version_num '%d'", SPOCK_VERSION_NUM);
-	appendStringInfo(&command, ", spock_apply_pid '%d'", MyProcPid);
 
 	appendStringInfoChar(&command, ')');
 
