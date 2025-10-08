@@ -10,6 +10,7 @@ In this detailed walk through, we'll add a fourth node to a three-node cluster w
         - Disable `auto_ddl` on all cluster nodes.
         - Do not modify your DDL during node addition.
         - The users must be identical on the source and target node.  You must create any users on the target node before proceeding; the permissions must be *identical* for all users on both the source and target nodes.
+        - The spock configuration must be *identical* on both the source and the target node.
         - All nodes in your cluster must be available to the Spock extension for the duration of the node addition.
         - The dblink extension must be installed on the node from which commands like `SELECT spock.add_node()` are being run
         - Prepare the new node to meet the prerequisites described here.
