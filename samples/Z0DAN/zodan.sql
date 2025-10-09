@@ -1452,6 +1452,40 @@ BEGIN
         END IF;
     END;
     
+    -- Check that new node has all users that source node has
+    DECLARE
+        missing_users text := '';
+        user_rec RECORD;
+        user_exists boolean;
+        src_users_sql text;
+        check_user_sql text;
+    BEGIN
+        src_users_sql := 'SELECT rolname FROM pg_roles WHERE rolcanlogin = true AND rolname NOT IN (''postgres'', ''rdsadmin'', ''rdsrepladmin'', ''rds_superuser'') ORDER BY rolname';
+        
+        FOR user_rec IN 
+            SELECT * FROM dblink(src_dsn, src_users_sql) AS t(rolname text)
+        LOOP
+            -- Build the SQL with the rolname embedded (properly escaped)
+            check_user_sql := format('SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = %L AND rolcanlogin = true)', user_rec.rolname);
+            SELECT * FROM dblink(new_node_dsn, check_user_sql) AS t(exists boolean) INTO user_exists;
+            
+            IF NOT user_exists THEN
+                IF missing_users = '' THEN
+                    missing_users := user_rec.rolname;
+                ELSE
+                    missing_users := missing_users || ', ' || user_rec.rolname;
+                END IF;
+            END IF;
+        END LOOP;
+        
+        IF missing_users != '' THEN
+            RAISE NOTICE '    [FAILED] %', rpad('New node missing users: ' || missing_users, 60, ' ');
+            RAISE EXCEPTION 'Exiting add_node: New node is missing the following users that exist on source node: %. Please create these users on the new node before adding it to the cluster.', missing_users;
+        ELSE
+            RAISE NOTICE '    OK: %', rpad('Checking new node has all source node users', 120, ' ');
+        END IF;
+    END;
+    
     -- Validating new node prerequisites
     SELECT count(*) INTO new_exists FROM spock.node WHERE node_name = new_node_name;
     IF new_exists > 0 THEN
