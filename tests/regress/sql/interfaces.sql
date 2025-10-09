@@ -8,6 +8,22 @@ CREATE USER super2 SUPERUSER;
 \c :subscriber_dsn
 SELECT * FROM spock.node_add_interface('test_provider', 'super2', (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super2');
 
+-- Check that the signal_worker_xact_callback routine process subscription
+-- change in a right way, considering abortion and prepared transactions.
+BEGIN;
+SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
+ROLLBACK;
+BEGIN;
+SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
+PREPARE TRANSACTION 't1';
+ABORT PREPARED 't1'; -- ERROR between preparation and abortion
+ROLLBACK PREPARED 't1';
+BEGIN;
+SAVEPOINT s1;
+SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
+ROLLBACK TO SAVEPOINT s1;
+COMMIT;
+
 SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
 
 DO $$

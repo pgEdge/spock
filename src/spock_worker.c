@@ -68,7 +68,6 @@ int			spock_stats_max_entries;
 bool		spock_stats_hash_full = false;
 
 
-static bool xacthook_signal_workers = false;
 static bool xact_cb_installed = false;
 
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
@@ -643,12 +642,36 @@ spock_worker_kill(SpockWorker *worker)
 static void
 signal_worker_xact_callback(XactEvent event, void *arg)
 {
-	if (event == XACT_EVENT_COMMIT && xacthook_signal_workers)
-	{
-		SpockWorker *w;
-		ListCell   *l;
+	if (list_length(signal_workers) == 0)
+		return;
 
-		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+	if (event == XACT_EVENT_PARALLEL_COMMIT ||
+		event == XACT_EVENT_PARALLEL_ABORT ||
+		event == XACT_EVENT_PARALLEL_PRE_COMMIT)
+		/*
+		 * Subscription changing code is volatile and can't be executed inside
+		 * a parallel worker. Just ignore the case.
+		 */
+		return;
+
+	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_PRE_PREPARE ||
+		event == XACT_EVENT_PREPARE)
+		/*
+		 * It is too early for us, because worker still can't see the changes
+		 * have made. Skip until COMMIT/ABORT will come.
+		 */
+		return;
+
+	/*
+	 * Now, worker may see the Spock catalog changes that this backend has made.
+	 * COMMIT and ABORT will release resources right after this call. So, we
+	 * need to manage the signal_workers right here.
+	 */
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+	if (event == XACT_EVENT_COMMIT)
+	{
+		SpockWorker	   *w;
+		ListCell	   *l;
 
 		foreach(l, signal_workers)
 		{
@@ -675,17 +698,28 @@ signal_worker_xact_callback(XactEvent event, void *arg)
 		if (SpockCtx->supervisor)
 			SetLatch(&SpockCtx->supervisor->procLatch);
 
-		LWLockRelease(SpockCtx->lock);
-
 		list_free_deep(signal_workers);
 		signal_workers = NIL;
-
-		xacthook_signal_workers = false;
 	}
+	else if (event == XACT_EVENT_ABORT)
+	{
+		/*
+		 * Don't have an information about what specifically was aborted. So,
+		 * just clean whole list before this abort reset the memory context.
+		 */
+		list_free_deep(signal_workers);
+		signal_workers = NIL;
+	}
+	LWLockRelease(SpockCtx->lock);
 }
 
 /*
  * Enqueue signal for supervisor/manager at COMMIT.
+ *
+ * NOTE:
+ * Here is not fully transactional behaviour: if something will be changed (and
+ * aborted) inside a subtransaction, we still call the action on the transaction
+ * COMMIT.
  */
 void
 spock_subscription_changed(Oid subid, bool kill)
@@ -701,7 +735,12 @@ spock_subscription_changed(Oid subid, bool kill)
 		MemoryContext oldcxt;
 		signal_worker_item *item;
 
-		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+		/*
+		 * Use TopMemoryContext to simplify corner cases, like PREPARE
+		 * TRANSACTION that clears resources allocated by transaction and still
+		 * not committed.
+		 */
+		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
 		item = palloc(sizeof(signal_worker_item));
 		item->subid = subid;
@@ -711,8 +750,6 @@ spock_subscription_changed(Oid subid, bool kill)
 
 		MemoryContextSwitchTo(oldcxt);
 	}
-
-	xacthook_signal_workers = true;
 }
 
 static Size

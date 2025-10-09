@@ -9,6 +9,39 @@ SELECT * FROM spock.node_add_interface('test_provider', 'super2', (SELECT provid
          1679954453
 (1 row)
 
+-- Check that the signal_worker_xact_callback routine process subscription
+-- change in a right way, considering abortion and prepared transactions.
+BEGIN;
+SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
+ sub_alter_interface 
+---------------------
+ t
+(1 row)
+
+ROLLBACK;
+BEGIN;
+SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
+ sub_alter_interface 
+---------------------
+ t
+(1 row)
+
+PREPARE TRANSACTION 't1';
+ABORT PREPARED 't1'; -- ERROR between preparation and abortion
+ERROR:  syntax error at or near "PREPARED"
+LINE 1: ABORT PREPARED 't1';
+              ^
+ROLLBACK PREPARED 't1';
+BEGIN;
+SAVEPOINT s1;
+SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
+ sub_alter_interface 
+---------------------
+ t
+(1 row)
+
+ROLLBACK TO SAVEPOINT s1;
+COMMIT;
 SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
  sub_alter_interface 
 ---------------------
