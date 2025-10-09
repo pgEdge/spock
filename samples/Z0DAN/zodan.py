@@ -191,7 +191,9 @@ class SpockClusterManager:
                 missing_users = []
                 
                 for user in src_users:
-                    check_user_sql = f"SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = '{user}' AND rolcanlogin = true);"
+                    # Use proper SQL escaping by replacing single quotes with two single quotes
+                    escaped_user = user.replace("'", "''")
+                    check_user_sql = f"SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = '{escaped_user}' AND rolcanlogin = true);"
                     user_exists = self.run_psql(new_node_dsn, check_user_sql, fetch=True, return_single=True)
                     
                     if not user_exists or user_exists.strip() != 't':

@@ -1461,12 +1461,13 @@ BEGIN
         check_user_sql text;
     BEGIN
         src_users_sql := 'SELECT rolname FROM pg_roles WHERE rolcanlogin = true AND rolname NOT IN (''postgres'', ''rdsadmin'', ''rdsrepladmin'', ''rds_superuser'') ORDER BY rolname';
-        check_user_sql := 'SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1 AND rolcanlogin = true)';
         
         FOR user_rec IN 
             SELECT * FROM dblink(src_dsn, src_users_sql) AS t(rolname text)
         LOOP
-            SELECT * FROM dblink(new_node_dsn, check_user_sql, ARRAY[user_rec.rolname]) AS t(exists boolean) INTO user_exists;
+            -- Build the SQL with the rolname embedded (properly escaped)
+            check_user_sql := format('SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = %L AND rolcanlogin = true)', user_rec.rolname);
+            SELECT * FROM dblink(new_node_dsn, check_user_sql) AS t(exists boolean) INTO user_exists;
             
             IF NOT user_exists THEN
                 IF missing_users = '' THEN
