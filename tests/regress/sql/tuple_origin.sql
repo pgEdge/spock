@@ -17,10 +17,12 @@ SELECT * FROM spock.repset_add_table('default', 'users');
 
 BEGIN;
 INSERT INTO USERS SELECT 1, 5;
-UPDATE USERS SET id = id + 1 WHERE mgr_id < 10; 
+UPDATE USERS SET id = id + 1 WHERE mgr_id < 10;
 UPDATE USERS SET id = id + 1 WHERE mgr_id < 10;
 END;
 
+-- Ensure that DDL and updates is confirmed as flushed to the subscriber
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 SELECT * FROM users ORDER BY id;
 
