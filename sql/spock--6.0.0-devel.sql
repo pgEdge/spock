@@ -797,3 +797,56 @@ BEGIN
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Recovery Slot Status and Management Functions
+
+CREATE FUNCTION spock.get_recovery_slot_status()
+RETURNS TABLE(
+    slot_name text,
+    restart_lsn pg_lsn,
+    confirmed_flush_lsn pg_lsn,
+    min_unacknowledged_ts timestamptz,
+    active boolean,
+    in_recovery boolean
+) LANGUAGE C VOLATILE STRICT
+AS 'MODULE_PATHNAME', 'spock_get_recovery_slot_status_sql';
+
+CREATE OR REPLACE FUNCTION spock.quick_health_check()
+RETURNS TABLE(
+    check_name text,
+    status text,
+    details text
+)
+LANGUAGE plpgsql  
+AS $$
+DECLARE
+    recovery_slot_exists boolean := false;
+    recovery_slot_name text;
+    db_name text := current_database();
+BEGIN
+    -- Check if recovery slot exists
+    SELECT EXISTS (
+        SELECT 1 FROM spock.get_recovery_slot_status() WHERE active = true
+    ) INTO recovery_slot_exists;
+    
+    IF recovery_slot_exists THEN
+        RETURN QUERY SELECT 'Recovery Slot'::text, 'HEALTHY'::text, 'Recovery slot exists and is active'::text;
+    ELSE
+        -- Try to recreate the recovery slot
+        BEGIN
+            PERFORM spock_create_recovery_slot(db_name);
+            RETURN QUERY SELECT 'Recovery Slot'::text, 'RECREATED'::text, 'Recovery slot was missing and has been recreated'::text;
+        EXCEPTION WHEN OTHERS THEN
+            RETURN QUERY SELECT 'Recovery Slot'::text, 'ERROR'::text, 'Failed to recreate recovery slot: ' || SQLERRM;
+        END;
+    END IF;
+    
+    RETURN;
+END;
+$$;
+
+-- Helper function to manually create recovery slot
+CREATE OR REPLACE FUNCTION spock_create_recovery_slot(database_name text)
+RETURNS boolean
+LANGUAGE C VOLATILE STRICT  
+AS 'MODULE_PATHNAME', 'spock_create_recovery_slot_sql';

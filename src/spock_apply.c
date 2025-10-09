@@ -86,6 +86,7 @@
 #include "spock_exception_handler.h"
 #include "spock_common.h"
 #include "spock_readonly.h"
+#include "spock_recovery.h"
 #include "spock.h"
 
 
@@ -3670,3 +3671,4 @@ maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 		w_message_count = 0;
 	}
 }
+

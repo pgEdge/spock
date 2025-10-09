@@ -29,6 +29,7 @@
 
 #include "spock_node.h"
 #include "spock_worker.h"
+#include "spock_recovery.h"
 #include "spock.h"
 
 PGDLLEXPORT void spock_manager_main(Datum main_arg);
@@ -204,6 +205,36 @@ spock_manager_main(Datum main_arg)
 	elog(LOG, "starting spock database manager for database %s",
 		 get_database_name(MyDatabaseId));
 
+	CommitTransactionCommand();
+
+	/*
+	 * Create the database-wide recovery slot for catastrophic failure recovery.
+	 *
+	 * The recovery slot is an inactive logical replication slot that preserves
+	 * WAL for all subscriptions in this database. It enables data recovery when
+	 * a peer node fails without requiring cluster rebuild.
+	 *
+	 * Created here because manager runs once per database, ensuring a single
+	 * shared slot for all subscriptions.
+	 */
+	StartTransactionCommand();
+	PG_TRY();
+	{
+		if (create_recovery_slot(get_database_name(MyDatabaseId)))
+		{
+			char *slot_name = get_recovery_slot_name(get_database_name(MyDatabaseId));
+			elog(LOG, "created recovery slot '%s' for database %s",
+				 slot_name, get_database_name(MyDatabaseId));
+			pfree(slot_name);
+		}
+	}
+	PG_CATCH();
+	{
+		elog(WARNING, "failed to create recovery slot for database %s",
+			 get_database_name(MyDatabaseId));
+		/* Continue anyway - recovery slot is optional */
+	}
+	PG_END_TRY();
 	CommitTransactionCommand();
 
 	/* Use separate transaction to avoid lock escalation. */
