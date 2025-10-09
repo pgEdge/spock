@@ -302,9 +302,14 @@ RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spoc
 CREATE FUNCTION spock.sub_alter_sync(subscription_name name, truncate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';
 
-CREATE FUNCTION spock.sub_resync_table(subscription_name name, relation regclass,
-	truncate boolean DEFAULT true)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table';
+CREATE FUNCTION spock.sub_resync_table(
+	subscription_name name,
+	relation          regclass,
+	truncate          boolean DEFAULT true
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table'
+LANGUAGE C STRICT VOLATILE;
 
 CREATE FUNCTION spock.sync_seq(relation regclass)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_synchronize_sequence';
