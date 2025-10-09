@@ -156,6 +156,8 @@ get_pg_executable(char *cmdname, char *cmdbuf)
 			 PG_VERSION_NUM / 100 / 100, PG_VERSION_NUM / 100 % 100);
 }
 
+#define ARGV_MAX_NUM	(22)
+
 static void
 dump_structure(SpockSubscription *sub, const char *destfile,
 			   const char *snapshot)
@@ -163,7 +165,7 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	char	   *dsn;
 	char	   *err_msg;
 	char		pg_dump[MAXPGPATH];
-	char	   *cmdargv[20];
+	char	   *cmdargv[ARGV_MAX_NUM];
 	int			cmdargc = 0;
 	bool		has_spk_origin;
 	bool		has_snowflake;
@@ -194,7 +196,11 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	appendStringInfo(&s, "--exclude-schema=%s", EXTENSION_NAME);
 	cmdargv[cmdargc++] = pstrdup(s.data);
 	resetStringInfo(&s);
-
+#if PG_VERSION_NUM >= 180000
+	appendStringInfo(&s, "--exclude-extension=%s", EXTENSION_NAME);
+	cmdargv[cmdargc++] = pstrdup(s.data);
+	resetStringInfo(&s);
+#endif
 	/* Skip the spock_origin and snowflake if it exists locally. */
 	StartTransactionCommand();
 	has_spk_origin = OidIsValid(LookupExplicitNamespace("spock_origin",
@@ -214,6 +220,11 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 		appendStringInfo(&s, "--exclude-schema=%s", "snowflake");
 		cmdargv[cmdargc++] = pstrdup(s.data);
 		resetStringInfo(&s);
+#if PG_VERSION_NUM >= 180000
+		appendStringInfo(&s, "--exclude-extension=%s", "snowflake");
+		cmdargv[cmdargc++] = pstrdup(s.data);
+		resetStringInfo(&s);
+#endif
 	}
 
 	/* Skip schemas specified in skip_schema list */
@@ -241,6 +252,8 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	free(dsn);
 
 	cmdargv[cmdargc++] = NULL;
+
+	Assert(cmdargc < ARGV_MAX_NUM);
 
 	if (exec_cmd(pg_dump, cmdargv) != 0)
 		ereport(ERROR,
