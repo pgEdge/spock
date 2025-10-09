@@ -163,6 +163,14 @@ ALTER TABLE public.not_nullcheck_tbl ADD COLUMN id2 integer not null;
 
 -- disable now to use pg_logical_slot_get_changes() later
 SELECT spock.sub_disable('test_subscription', true);
+-- Wait for the end of this operation
+DO $$
+BEGIN
+    WHILE EXISTS (SELECT 1 FROM pg_replication_slots WHERE active = 'true')
+	LOOP
+    END LOOP;
+END;$$;
+
 \c :provider_dsn
 
 SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
