@@ -1,7 +1,7 @@
 -- ============================================================================
 -- ZODAN (Zero Downtime Add Node) - Spock Extension
 -- Version: 1.0.0
--- Required Spock Version: 6.0.0-devel
+-- Required Spock Version: 5.0.4
 -- ============================================================================
 -- Adds a new node to the cluster of Spock.
 
@@ -37,7 +37,7 @@ CREATE OR REPLACE PROCEDURE spock.check_spock_version_compatibility(
     verb boolean DEFAULT false
 ) LANGUAGE plpgsql AS $$
 DECLARE
-    required_version text := '6.0.0-devel';
+    required_version text := '5.0.4';
     src_version text;
     new_version text;
     node_rec RECORD;
