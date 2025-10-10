@@ -408,6 +408,26 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 			data->field_datum_encoding = wanted_encoding;
 		}
 
+		/* Check subscriber's Spock version and complain softly if differs */
+
+		if (data->startup_params_format == 0)
+			elog(LOG, "Client doesn't set protocol parameter 'startup_params_format'");
+		else if (data->startup_params_format != 1)
+			elog(LOG, "client's startup_params_format (%d) differs from the server's one",
+				 data->startup_params_format);
+
+		if (data->spock_version == NULL)
+			elog(LOG, "Client doesn't set protocol parameter 'spock_version'");
+		else if (strcmp(data->spock_version, SPOCK_VERSION) != 0)
+			elog(LOG, "client's spock_version (%s) differs from the server's one (%s)",
+				 data->spock_version, SPOCK_VERSION);
+
+		if (data->spock_version_num == 0)
+			elog(LOG, "Client doesn't set protocol parameter 'spock_version_num'");
+		else if (data->spock_version_num != SPOCK_VERSION_NUM)
+			elog(LOG, "client's spock_version_num (%d) differs from the server's one (%d)",
+				 data->spock_version_num, SPOCK_VERSION_NUM);
+
 		/*
 		 * It's obviously not possible to send binary representation of data
 		 * unless we use the binary output.

@@ -68,7 +68,10 @@ typedef enum OutputPluginParamKey {
 	PARAM_SPOCK_REPLICATE_ONLY_TABLE,
 	PARAM_HOOKS_SETUP_FUNCTION,
 	PARAM_PG_VERSION,
-	PARAM_NO_TXINFO
+	PARAM_NO_TXINFO,
+	PARAM_STARTUP_FORMAT,
+	PARAM_SPOCK_VERSION,
+	PARAM_SPOCK_VERSION_NUM
 } OutputPluginParamKey;
 
 typedef struct OutputPluginParam
@@ -99,6 +102,9 @@ static OutputPluginParam param_lookup[] = {
 	{"hooks.setup_function", PARAM_HOOKS_SETUP_FUNCTION},
 	{"pg_version", PARAM_PG_VERSION},
 	{"no_txinfo", PARAM_NO_TXINFO},
+	{"startup_params_format", PARAM_STARTUP_FORMAT},
+	{"spock_version", PARAM_SPOCK_VERSION},
+	{"spock_version_num", PARAM_SPOCK_VERSION_NUM},
 	{NULL, PARAM_UNRECOGNISED}
 };
 
@@ -181,8 +187,8 @@ process_parameters_v1(List *options, SpockOutputData *data)
 
 			case PARAM_BINARY_FLOAT8BYVAL:
 				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_BOOL);
-				data->client_binary_float4byval_set = true;
-				data->client_binary_float4byval = DatumGetBool(val);
+				data->client_binary_float8byval_set = true;
+				data->client_binary_float8byval = DatumGetBool(val);
 				break;
 
 			case PARAM_BINARY_INTEGER_DATETIMES:
@@ -281,13 +287,34 @@ process_parameters_v1(List *options, SpockOutputData *data)
 				data->client_no_txinfo = DatumGetBool(val);
 				break;
 
+			case PARAM_STARTUP_FORMAT:
+				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_UINT32);
+				data->startup_params_format = DatumGetUInt32(val);
+				break;
+
+			case PARAM_SPOCK_VERSION:
+				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_STRING);
+				data->spock_version = DatumGetCString(val);
+				break;
+
+			case PARAM_SPOCK_VERSION_NUM:
+				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_UINT32);
+				data->spock_version_num = DatumGetUInt32(val);
+				break;
+
 			/* Backwards compat. */
 			case PARAM_HOOKS_SETUP_FUNCTION:
 				break;
 
 			case PARAM_UNRECOGNISED:
-				ereport(DEBUG1,
-						(errmsg("Unrecognised spock parameter %s ignored", elem->defname)));
+				/*
+				 * In case of upgrade we may find unrecognised parameter - so,
+				 * no error here. But to avoid lost code tails we should
+				 * complain more loudly when just a DEBUG message.
+				 */
+				ereport(LOG,
+						(errmsg("Unrecognised spock parameter %s ignored",
+						elem->defname)));
 				break;
 		}
 	}
@@ -525,10 +552,8 @@ prepare_startup_message(SpockOutputData *data)
 	l = add_startup_msg_i(l, "walsender_pid", MyProcPid);
 
 	/* and ourselves */
-	l = add_startup_msg_s(l, "spock_version",
-			SPOCK_VERSION);
-	l = add_startup_msg_i(l, "spock_version_num",
-			SPOCK_VERSION_NUM);
+	l = add_startup_msg_s(l, "spock_version", SPOCK_VERSION);
+	l = add_startup_msg_i(l, "spock_version_num", SPOCK_VERSION_NUM);
 
 	/* binary options enabled */
 	l = add_startup_msg_b(l, "binary.internal_basetypes",
@@ -547,8 +572,7 @@ prepare_startup_message(SpockOutputData *data)
 	l = add_startup_msg_b(l, "binary.float8_byval", server_float8_byval());
 	l = add_startup_msg_b(l, "binary.integer_datetimes", server_integer_datetimes());
 	/* We don't know how to send in anything except our host's format */
-	l = add_startup_msg_i(l, "binary.binary_pg_version",
-			PG_VERSION_NUM/100);
+	l = add_startup_msg_i(l, "binary.binary_pg_version", PG_VERSION_NUM/100);
 
 	l = add_startup_msg_b(l, "no_txinfo", data->client_no_txinfo);
 
