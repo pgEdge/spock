@@ -7,12 +7,6 @@ SELECT E'\'' || current_database() || E'\'' AS pubdb;
 \gset
 
 \c :provider_dsn
-DO $$
-BEGIN
-	IF (SELECT setting::integer/100 FROM pg_settings WHERE name = 'server_version_num') = 904 THEN
-		CREATE EXTENSION IF NOT EXISTS spock_origin;
-	END IF;
-END;$$;
 
 SELECT * FROM spock.sub_create(
     subscription_name := 'test_bidirectional',
@@ -73,7 +67,6 @@ $$);
 SELECT spock.sub_drop('test_bidirectional');
 
 SET client_min_messages = 'warning';
-DROP EXTENSION IF EXISTS spock_origin;
 
 \c :subscriber_dsn
 \a
