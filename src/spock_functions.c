@@ -217,7 +217,8 @@ check_local_node(bool for_update)
 /*
  * Create new node
  */
-Datum spock_create_node(PG_FUNCTION_ARGS)
+Datum
+spock_create_node(PG_FUNCTION_ARGS)
 {
 	char *node_name;
 	char *node_dsn;
@@ -293,7 +294,8 @@ Datum spock_create_node(PG_FUNCTION_ARGS)
  *
  * TODO: support cascade (drop subscribers)
  */
-Datum spock_drop_node(PG_FUNCTION_ARGS)
+Datum
+spock_drop_node(PG_FUNCTION_ARGS)
 {
 	char *node_name = NameStr(*PG_GETARG_NAME(0));
 	bool ifexists = PG_GETARG_BOOL(1);
@@ -448,7 +450,8 @@ Datum spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 /*
  * Connect two existing nodes.
  */
-Datum spock_create_subscription(PG_FUNCTION_ARGS)
+Datum
+spock_create_subscription(PG_FUNCTION_ARGS)
 {
 	char *sub_name = NameStr(*PG_GETARG_NAME(0));
 	char *provider_dsn = text_to_cstring(PG_GETARG_TEXT_PP(1));
@@ -496,7 +499,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	existing_origin = get_node_by_name(origin->name, true);
 
 	/*
-	 * If not found, crate local representation of remote node and interface.
+	 * If not found, create local representation of remote node and interface.
 	 */
 	if (!existing_origin)
 	{
@@ -637,7 +640,8 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 /*
  * Remove subscribption.
  */
-Datum spock_drop_subscription(PG_FUNCTION_ARGS)
+Datum
+spock_drop_subscription(PG_FUNCTION_ARGS)
 {
 	char *sub_name = NameStr(*PG_GETARG_NAME(0));
 	bool ifexists = PG_GETARG_BOOL(1);
@@ -742,14 +746,15 @@ Datum spock_drop_subscription(PG_FUNCTION_ARGS)
 /*
  * Disable subscription.
  */
-Datum spock_alter_subscription_disable(PG_FUNCTION_ARGS)
+Datum
+spock_alter_subscription_disable(PG_FUNCTION_ARGS)
 {
 	char *sub_name = NameStr(*PG_GETARG_NAME(0));
 	bool immediate = PG_GETARG_BOOL(1);
 	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
 
 	/* XXX: Only used for locking purposes. */
-	(void)get_local_node(true, false);
+	(void) get_local_node(true, false);
 
 	sub->enabled = false;
 
@@ -977,16 +982,17 @@ Datum spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 /*
  * Resynchronize one existing table.
  */
-Datum spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
+Datum
+spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 {
-	char *sub_name = NameStr(*PG_GETARG_NAME(0));
-	Oid reloid = PG_GETARG_OID(1);
-	bool truncate = PG_GETARG_BOOL(2);
-	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
-	SpockSyncStatus *oldsync;
-	Relation rel;
-	char *nspname,
-		*relname;
+	char			   *sub_name = NameStr(*PG_GETARG_NAME(0));
+	Oid					reloid = PG_GETARG_OID(1);
+	bool				truncate = PG_GETARG_BOOL(2);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSyncStatus	   *oldsync;
+	Relation			rel;
+	char			   *nspname;
+	char			   *relname;
 
 	rel = table_open(reloid, AccessShareLock);
 
@@ -1118,7 +1124,8 @@ Datum spock_show_subscription_table(PG_FUNCTION_ARGS)
 /*
  * Show info about subscribtion.
  */
-Datum spock_show_subscription_status(PG_FUNCTION_ARGS)
+Datum
+spock_show_subscription_status(PG_FUNCTION_ARGS)
 {
 	List *subscriptions;
 	ListCell *lc;
@@ -2273,7 +2280,8 @@ Datum spock_dependency_check_trigger(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-Datum spock_node_info(PG_FUNCTION_ARGS)
+Datum
+spock_node_info(PG_FUNCTION_ARGS)
 {
 	TupleDesc tupdesc;
 	Datum values[8];
