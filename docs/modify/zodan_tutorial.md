@@ -66,7 +66,7 @@ psql -d inventory -c "CREATE EXTENSION dblink;"
 
 **Using the Z0DAN Procedure to Add a Node** 
 
-After creating the node, you can use Z0DAN scripts to simplify adding a node to a cluster.  To use the script, connect to any existing node:
+After creating the node, you can use Z0DAN scripts to simplify adding a node to a cluster.  To use the script, connect to the new node that you are adding:
 ```bash
 psql -h 127.0.0.1 -p 5432 -d inventory -U pgedge
 ```
@@ -76,7 +76,7 @@ Load the ZODAN procedures:
 \i /path/to/zodan.sql
 ```
 
-Then, run add_node to create the node definition:
+Then, use `spock.add_node()` from the new node to create the node definition:
 
 ```sql
 CALL spock.add_node(
