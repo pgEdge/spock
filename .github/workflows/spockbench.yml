@@ -54,7 +54,7 @@ jobs:
           echo PG_VER=${{ matrix.pgver }} >> tests/docker/pgedge.env
           docker build \
             --build-arg PGVER=${{ matrix.pgver }} \
-            -t spock -f tests/docker/Dockerfile.el9 .
+            -t spock -f tests/docker/Dockerfile-step-1.el9 .
 
       - name: Run regression tests
         run: |
