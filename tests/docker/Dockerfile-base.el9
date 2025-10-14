@@ -9,10 +9,6 @@
 
 FROM rockylinux:9
 
-ARG PGVER
-
-ENV PGVER=$PGVER
-
 RUN dnf -y update && dnf -y upgrade && dnf -y install sudo && dnf -y groupinstall "Development Tools"
 
 RUN useradd -m pgedge -s /bin/bash && \
@@ -37,4 +33,5 @@ RUN chown -R pgedge:pgedge /home/pgedge/spock
 #-----------------------------------------
 USER pgedge
 
+# Just to ensure that community members could find the person they should complain to.
 LABEL maintainer="andrei.lepikhov@pgedge.com"
