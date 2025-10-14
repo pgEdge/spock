@@ -165,12 +165,12 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE PROCEDURE spock.validate_node_removal_prerequisites(
     target_node_name text,    -- Name of the node to remove
     target_node_dsn text,     -- DSN of the node to remove
-    verbose boolean DEFAULT true
-) LANGUAGE plpgsql AS $$
+    verbose_mode boolean DEFAULT true
+) AS $$
 DECLARE
     node_count integer;
 BEGIN
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE 'Phase 1: Validating node removal prerequisites';
     END IF;
 
@@ -182,7 +182,7 @@ BEGIN
     -- Get total node count in cluster
     SELECT count(*) INTO node_count FROM spock.node;
 
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE '    ✓ Node % exists in cluster', target_node_name;
         RAISE NOTICE '    ✓ Total nodes in cluster: %', node_count;
     END IF;
@@ -192,7 +192,7 @@ BEGIN
         RAISE EXCEPTION 'Cannot remove the last node from cluster';
     END IF;
 
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE '    ✓ Node removal validation passed';
     END IF;
 END;
@@ -203,10 +203,10 @@ $$ LANGUAGE plpgsql;
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE spock.gather_cluster_info_for_removal(
     target_node_name text,    -- Name of the node to remove
-    verbose boolean DEFAULT true
-) LANGUAGE plpgsql AS $$
+    verbose_mode boolean DEFAULT true
+) AS $$
 BEGIN
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE 'Phase 2: Gathering cluster information';
     END IF;
 
@@ -220,7 +220,7 @@ BEGIN
     JOIN spock.node_interface ni ON ni.if_nodeid = n.node_id
     WHERE n.node_name != target_node_name;
 
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE '    ✓ Gathered information for % nodes', (SELECT count(*) FROM temp_spock_nodes);
         RAISE NOTICE '    ✓ Cluster information ready for node removal';
     END IF;
@@ -233,18 +233,18 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE PROCEDURE spock.remove_node_replication_sets(
     target_node_name text,    -- Name of the node to remove
     target_node_dsn text,     -- DSN of the node to remove
-    verbose boolean DEFAULT true
-) LANGUAGE plpgsql AS $$
+    verbose_mode boolean DEFAULT true
+) AS $$
 DECLARE
     repset_rec RECORD;
 BEGIN
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE 'Phase 3: Removing replication sets';
     END IF;
 
     FOR repset_rec IN SELECT * FROM spock.get_node_repsets(target_node_name) LOOP
         BEGIN
-            IF verbose THEN
+            IF verbose_mode THEN
                 RAISE NOTICE '  Checking replication set: %', repset_rec.repset_name;
             END IF;
 
@@ -256,14 +256,14 @@ BEGIN
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
                 VALUES ('repset', repset_rec.repset_name, 'REMOVED', 'Successfully removed from target node');
 
-                IF verbose THEN
+                IF verbose_mode THEN
                     RAISE NOTICE '    ✓ Removed replication set: %', repset_rec.repset_name;
                 END IF;
             ELSE
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
                 VALUES ('repset', repset_rec.repset_name, 'NOT_FOUND', 'Replication set not found on target node');
 
-                IF verbose THEN
+                IF verbose_mode THEN
                     RAISE NOTICE '    - Replication set % not found on target node', repset_rec.repset_name;
                 END IF;
             END IF;
@@ -272,13 +272,13 @@ BEGIN
             INSERT INTO temp_removal_status (component_type, component_name, status, message)
             VALUES ('repset', repset_rec.repset_name, 'ERROR', SQLERRM);
 
-            IF verbose THEN
+            IF verbose_mode THEN
                 RAISE NOTICE '    ✗ Error removing replication set %: %', repset_rec.repset_name, SQLERRM;
             END IF;
         END;
     END LOOP;
 
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE '    ✓ Replication set removal phase completed';
     END IF;
 END;
@@ -290,18 +290,18 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE PROCEDURE spock.remove_node_subscriptions(
     target_node_name text,    -- Name of the node to remove
     target_node_dsn text,     -- DSN of the node to remove
-    verbose boolean DEFAULT true
-) LANGUAGE plpgsql AS $$
+    verbose_mode boolean DEFAULT true
+) AS $$
 DECLARE
     sub_rec RECORD;
 BEGIN
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE 'Phase 4: Removing subscriptions';
     END IF;
 
     FOR sub_rec IN SELECT * FROM spock.get_node_subscriptions(target_node_name) LOOP
         BEGIN
-            IF verbose THEN
+            IF verbose_mode THEN
                 RAISE NOTICE '  Checking subscription: %', sub_rec.subscription_name;
             END IF;
 
@@ -313,14 +313,14 @@ BEGIN
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
                 VALUES ('subscription', sub_rec.subscription_name, 'REMOVED', 'Successfully removed from target node');
 
-                IF verbose THEN
+                IF verbose_mode THEN
                     RAISE NOTICE '    ✓ Removed subscription: %', sub_rec.subscription_name;
                 END IF;
             ELSE
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
                 VALUES ('subscription', sub_rec.subscription_name, 'NOT_FOUND', 'Subscription not found on target node');
 
-                IF verbose THEN
+                IF verbose_mode THEN
                     RAISE NOTICE '    - Subscription % not found on target node', sub_rec.subscription_name;
                 END IF;
             END IF;
@@ -329,13 +329,13 @@ BEGIN
             INSERT INTO temp_removal_status (component_type, component_name, status, message)
             VALUES ('subscription', sub_rec.subscription_name, 'ERROR', SQLERRM);
 
-            IF verbose THEN
+            IF verbose_mode THEN
                 RAISE NOTICE '    ✗ Error removing subscription %: %', sub_rec.subscription_name, SQLERRM;
             END IF;
         END;
     END LOOP;
 
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE '    ✓ Subscription removal phase completed';
     END IF;
 END;
@@ -347,18 +347,18 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE PROCEDURE spock.remove_node_replication_slots(
     target_node_name text,    -- Name of the node to remove
     target_node_dsn text,     -- DSN of the node to remove
-    verbose boolean DEFAULT true
-) LANGUAGE plpgsql AS $$
+    verbose_mode boolean DEFAULT true
+) AS $$
 DECLARE
     slot_rec RECORD;
 BEGIN
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE 'Phase 5: Removing replication slots';
     END IF;
 
     FOR slot_rec IN SELECT * FROM spock.get_node_slots(target_node_name) LOOP
         BEGIN
-            IF verbose THEN
+            IF verbose_mode THEN
                 RAISE NOTICE '  Checking replication slot: %', slot_rec.slot_name;
             END IF;
 
@@ -371,14 +371,14 @@ BEGIN
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
                 VALUES ('slot', slot_rec.slot_name, 'REMOVED', 'Successfully removed from target node');
 
-                IF verbose THEN
+                IF verbose_mode THEN
                     RAISE NOTICE '    ✓ Removed replication slot: %', slot_rec.slot_name;
                 END IF;
             ELSE
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
                 VALUES ('slot', slot_rec.slot_name, 'NOT_FOUND', 'Replication slot not found on target node');
 
-                IF verbose THEN
+                IF verbose_mode THEN
                     RAISE NOTICE '    - Replication slot % not found on target node', slot_rec.slot_name;
                 END IF;
             END IF;
@@ -387,13 +387,13 @@ BEGIN
             INSERT INTO temp_removal_status (component_type, component_name, status, message)
             VALUES ('slot', slot_rec.slot_name, 'ERROR', SQLERRM);
 
-            IF verbose THEN
+            IF verbose_mode THEN
                 RAISE NOTICE '    ✗ Error removing replication slot %: %', slot_rec.slot_name, SQLERRM;
             END IF;
         END;
     END LOOP;
 
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE '    ✓ Replication slot removal phase completed';
     END IF;
 END;
@@ -404,10 +404,10 @@ $$ LANGUAGE plpgsql;
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE spock.remove_node_from_cluster_registry(
     target_node_name text,    -- Name of the node to remove
-    verbose boolean DEFAULT true
-) LANGUAGE plpgsql AS $$
+    verbose_mode boolean DEFAULT true
+) AS $$
 BEGIN
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE 'Phase 6: Removing node from cluster registry';
     END IF;
 
@@ -419,14 +419,14 @@ BEGIN
             INSERT INTO temp_removal_status (component_type, component_name, status, message)
             VALUES ('node', target_node_name, 'REMOVED', 'Successfully removed from cluster');
 
-            IF verbose THEN
+            IF verbose_mode THEN
                 RAISE NOTICE '    ✓ Removed node: %', target_node_name;
             END IF;
         ELSE
             INSERT INTO temp_removal_status (component_type, component_name, status, message)
             VALUES ('node', target_node_name, 'NOT_FOUND', 'Node not found in cluster');
 
-            IF verbose THEN
+            IF verbose_mode THEN
                 RAISE NOTICE '    - Node % not found in cluster', target_node_name;
             END IF;
         END IF;
@@ -435,12 +435,12 @@ BEGIN
         INSERT INTO temp_removal_status (component_type, component_name, status, message)
         VALUES ('node', target_node_name, 'ERROR', SQLERRM);
 
-        IF verbose THEN
+        IF verbose_mode THEN
             RAISE NOTICE '    ✗ Error removing node %: %', target_node_name, SQLERRM;
         END IF;
     END;
 
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE '    ✓ Node removal phase completed';
     END IF;
 END;
@@ -451,15 +451,15 @@ $$ LANGUAGE plpgsql;
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE spock.finalize_node_removal(
     target_node_name text,    -- Name of the node to remove
-    verbose boolean DEFAULT true
-) LANGUAGE plpgsql AS $$
+    verbose_mode boolean DEFAULT true
+) AS $$
 DECLARE
     total_processed integer;
     successfully_removed integer;
     errors_encountered integer;
     status_rec RECORD;
 BEGIN
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE 'Phase 7: Final cleanup and status report';
     END IF;
 
@@ -469,7 +469,7 @@ BEGIN
     FROM temp_removal_status;
 
     -- Display summary
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE 'NODE REMOVAL SUMMARY';
         RAISE NOTICE 'Node removed: %', target_node_name;
         RAISE NOTICE 'Total components processed: %', total_processed;
@@ -483,7 +483,7 @@ BEGIN
         END LOOP;
     END IF;
 
-    IF verbose THEN
+    IF verbose_mode THEN
         RAISE NOTICE '    ✓ Node removal process completed';
     END IF;
 END;
@@ -496,43 +496,43 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE PROCEDURE spock.remove_node(
     target_node_name text,    -- Name of the node to remove
     target_node_dsn text,     -- DSN of the node to remove
-    verbose boolean DEFAULT true
-) LANGUAGE plpgsql AS $$
+    verbose_mode boolean DEFAULT true
+) AS $$
 BEGIN
     -- Phase 1: Validate prerequisites.
     -- Ensure node n4 is eligible for removal (e.g., not a provider for others).
     -- Example: Check n4 is safe to remove from cluster n1,n2,n3,n4.
-    CALL spock.validate_node_removal_prerequisites(target_node_name, target_node_dsn, verbose);
+    CALL spock.validate_node_removal_prerequisites(target_node_name, target_node_dsn, verbose_mode);
 
     -- Phase 2: Gather cluster information.
     -- Collect all relevant cluster metadata and dependencies for n4.
     -- Example: Gather info about n4's subscriptions, slots, and sets in n1,n2,n3,n4.
-    CALL spock.gather_cluster_info_for_removal(target_node_name, verbose);
+    CALL spock.gather_cluster_info_for_removal(target_node_name, verbose_mode);
 
     -- Phase 3: Remove replication sets.
     -- Drop replication sets associated with n4 to prevent further data flow.
     -- Example: Remove n4's replication sets from cluster n1,n2,n3,n4.
-    CALL spock.remove_node_replication_sets(target_node_name, target_node_dsn, verbose);
+    CALL spock.remove_node_replication_sets(target_node_name, target_node_dsn, verbose_mode);
 
     -- Phase 4: Remove subscriptions.
     -- Unsubscribe n4 from all providers and remove its own subscriptions.
     -- Example: Remove all subscriptions to and from n4 in n1,n2,n3,n4.
-    CALL spock.remove_node_subscriptions(target_node_name, target_node_dsn, verbose);
+    CALL spock.remove_node_subscriptions(target_node_name, target_node_dsn, verbose_mode);
 
     -- Phase 5: Remove replication slots.
     -- Drop replication slots for n4 to clean up WAL sender resources.
     -- Example: Remove n4's replication slots from all nodes in n1,n2,n3,n4.
-    CALL spock.remove_node_replication_slots(target_node_name, target_node_dsn, verbose);
+    CALL spock.remove_node_replication_slots(target_node_name, target_node_dsn, verbose_mode);
 
     -- Phase 6: Remove node from cluster registry.
     -- Delete n4 from the Spock node registry so it is no longer part of the cluster.
     -- Example: Remove n4 from the node list in n1,n2,n3,n4.
-    CALL spock.remove_node_from_cluster_registry(target_node_name, verbose);
+    CALL spock.remove_node_from_cluster_registry(target_node_name, verbose_mode);
 
     -- Phase 7: Final cleanup and status report.
     -- Summarize the removal process and report any errors or issues.
     -- Example: Show summary of n4 removal from cluster n1,n2,n3,n4.
-    CALL spock.finalize_node_removal(target_node_name, verbose);
+    CALL spock.finalize_node_removal(target_node_name, verbose_mode);
 
 END;
 $$ LANGUAGE plpgsql;
