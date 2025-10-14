@@ -114,7 +114,7 @@ FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT extversion FROM pg_extension WHERE extname = ''spock'''
 ) AS t(version text);
--- Expected: 6.0.0-devel
+-- Expected: 5.0.4
 
 -- Check new node version
 SELECT extversion 
@@ -122,7 +122,7 @@ FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT extversion FROM pg_extension WHERE extname = ''spock'''
 ) AS t(version text);
--- Expected: 6.0.0-devel
+-- Expected: 5.0.4
 
 -- Check all existing cluster nodes (n2, n3)
 SELECT node_name, version
@@ -136,9 +136,9 @@ FROM dblink(
 -- Expected output:
 --  node_name |   version    
 -- -----------+--------------
---  n1        | 6.0.0-devel
---  n2        | 6.0.0-devel
---  n3        | 6.0.0-devel
+--  n1        | 5.0.4
+--  n2        | 5.0.4
+--  n3        | 5.0.4
 ```
 
 ### Validate Prerequisites
