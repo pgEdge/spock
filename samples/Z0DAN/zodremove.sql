@@ -8,37 +8,6 @@
 CREATE EXTENSION IF NOT EXISTS dblink;
 
 -- ============================================================================
--- Temporary table for tracking removal status
--- ============================================================================
-CREATE TEMP TABLE IF NOT EXISTS temp_removal_status (
-    component_type text,
-    component_name text,
-    status text,
-    message text,
-    removed_at timestamp DEFAULT now()
-);
-
--- ============================================================================
--- Temporary table to store spock nodes information
--- ============================================================================
-CREATE TEMP TABLE IF NOT EXISTS temp_spock_nodes (
-    node_id integer,
-    node_name text,
-    location text,
-    country text,
-    info text,
-    dsn text
-);
-
--- ============================================================================
--- Temporary table to store sync events information
--- ============================================================================
-CREATE TEMP TABLE IF NOT EXISTS temp_sync_events (
-    node_name text,
-    sync_lsn pg_lsn
-);
-
--- ============================================================================
 -- Function to check if replication set exists on a node
 -- ============================================================================
 CREATE OR REPLACE FUNCTION spock.check_repset_exists_on_node(
@@ -105,7 +74,7 @@ CREATE OR REPLACE FUNCTION spock.check_node_exists(
     node_name text
 ) RETURNS boolean AS $$
 BEGIN
-    RETURN EXISTS (SELECT 1 FROM spock.node WHERE node_name = check_node_exists.node_name);
+    RETURN EXISTS (SELECT 1 FROM spock.node WHERE spock.node.node_name = check_node_exists.node_name);
 EXCEPTION
     WHEN OTHERS THEN
         RETURN false;
@@ -115,17 +84,18 @@ $$ LANGUAGE plpgsql;
 -- ============================================================================
 -- Function to get all replication sets for a node
 -- ============================================================================
-CREATE OR REPLACE FUNCTION spock.get_node_repsets(
+CREATE OR REPLACE FUNCTION spock.get_repsets_on_node(
+    node_dsn text,
     node_name text
 ) RETURNS TABLE(repset_name text) AS $$
+DECLARE
+    remotesql text;
 BEGIN
-    RETURN QUERY
-    SELECT DISTINCT rs.set_name::text
-    FROM spock.node n
-    JOIN spock.subscription sub ON sub.sub_provider = n.node_id
-    JOIN spock.subscription_replication_set sub_rs ON sub_rs.srs_s_id = sub.sub_id
-    JOIN spock.replication_set rs ON rs.set_id = sub_rs.srs_set_id
-    WHERE n.node_name = get_node_repsets.node_name;
+    -- TODO:
+    remotesql := format('SELECT DISTINCT rs.set_name::text FROM spock.node n JOIN spock.subscription sub ON sub.sub_origin = n.node_id JOIN spock.replication_set rs ON rs.set_name = ANY (sub.sub_replication_sets) AND rs.set_nodeid = sub.sub_target WHERE n.node_name = %L', node_name);
+
+    SELECT * FROM dblink(node_dsn, remotesql) AS t(exists boolean) INTO result;
+    RETURN result;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -137,9 +107,10 @@ CREATE OR REPLACE FUNCTION spock.get_node_subscriptions(
 ) RETURNS TABLE(subscription_name text) AS $$
 BEGIN
     RETURN QUERY
+    -- TODO: join with node_interface and get the remote DSN, too
     SELECT sub.sub_name::text
     FROM spock.node n
-    JOIN spock.subscription sub ON sub.sub_provider = n.node_id
+    JOIN spock.subscription sub ON sub.sub_origin = n.node_id
     WHERE n.node_name = get_node_subscriptions.node_name;
 END;
 $$ LANGUAGE plpgsql;
@@ -154,7 +125,7 @@ BEGIN
     RETURN QUERY
     SELECT slot_name::text
     FROM spock.node n
-    JOIN spock.subscription sub ON sub.sub_provider = n.node_id
+    JOIN spock.subscription sub ON sub.sub_origin = n.node_id
     WHERE n.node_name = get_node_slots.node_name;
 END;
 $$ LANGUAGE plpgsql;
@@ -211,11 +182,11 @@ BEGIN
     END IF;
 
     -- Clear existing temp tables
-    TRUNCATE temp_spock_nodes, temp_removal_status, temp_sync_events;
+    TRUNCATE temp_spock_nodes, temp_removal_status;
 
     -- Gather all nodes in cluster except the target node
     INSERT INTO temp_spock_nodes (node_id, node_name, location, country, info, dsn)
-    SELECT n.node_id, n.node_name, n.location, n.country, n.info, ni.dsn
+    SELECT n.node_id, n.node_name, n.location, n.country, n.info, ni.if_dsn
     FROM spock.node n
     JOIN spock.node_interface ni ON ni.if_nodeid = n.node_id
     WHERE n.node_name != target_node_name;
@@ -228,7 +199,78 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ============================================================================
--- Phase 3: Remove replication sets
+-- Phase 3: Remove subscriptions
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE spock.remove_node_subscriptions(
+    target_node_name text,    -- Name of the node to remove
+    target_node_dsn text,     -- DSN of the node to remove
+    verbose_mode boolean DEFAULT true
+) AS $$
+DECLARE
+    sub_rec RECORD;
+BEGIN
+    IF verbose_mode THEN
+        RAISE NOTICE 'Phase 3: Removing subscriptions';
+    END IF;
+
+--TODO: the subscription is named differently on the remote node.
+--      We want the name from the remote node (eg, it is sub_n1_n2, not sub_n2_n1,
+--      if we are trying to remove n2).
+--      We should loop through all of the nodes that we subscribe to,
+--      first removing their subscription to us, then us to them, to be idempotent.
+
+
+--TODO: it looks like spock.sub_drop() (calls spoc_drop_subscription in spock_functions.c)
+--      may do a lot of work for us, including
+--      removing the slot and the remote node id. We may be able to simplify this process
+--
+--    SELECT n.node_id, n.node_name, n.location, n.country, n.info, ni.if_dsn
+    FOR sub_rec IN SELECT * FROM spock.temp_spock_nodes LOOP
+-- TODO: left off here
+        BEGIN
+            IF verbose_mode THEN
+                RAISE NOTICE '  Checking subscription: %', sub_rec.subscription_name;
+            END IF;
+
+--TODO: the subscription is named differently on the remote node.
+            -- Check if subscription exists on target node
+            IF spock.check_subscription_exists_on_node(target_node_dsn, sub_rec.subscription_name) THEN
+                -- Remove subscription from target node
+                PERFORM spock.sub_drop(sub_rec.subscription_name, true);
+
+                INSERT INTO temp_removal_status (component_type, component_name, status, message)
+                VALUES ('subscription', sub_rec.subscription_name, 'REMOVED', 'Successfully removed from target node');
+
+                IF verbose_mode THEN
+                    RAISE NOTICE '    ✓ Removed subscription: %', sub_rec.subscription_name;
+                END IF;
+            ELSE
+                INSERT INTO temp_removal_status (component_type, component_name, status, message)
+                VALUES ('subscription', sub_rec.subscription_name, 'NOT_FOUND', 'Subscription not found on target node');
+
+                IF verbose_mode THEN
+                    RAISE NOTICE '    - Subscription % not found on target node', sub_rec.subscription_name;
+                END IF;
+            END IF;
+
+        EXCEPTION WHEN OTHERS THEN
+            INSERT INTO temp_removal_status (component_type, component_name, status, message)
+            VALUES ('subscription', sub_rec.subscription_name, 'ERROR', SQLERRM);
+
+            IF verbose_mode THEN
+                RAISE NOTICE '    ✗ Error removing subscription %: %', sub_rec.subscription_name, SQLERRM;
+            END IF;
+        END;
+    END LOOP;
+
+    IF verbose_mode THEN
+        RAISE NOTICE '    ✓ Subscription removal phase completed';
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- Phase 4: Remove replication sets
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE spock.remove_node_replication_sets(
     target_node_name text,    -- Name of the node to remove
@@ -239,10 +281,10 @@ DECLARE
     repset_rec RECORD;
 BEGIN
     IF verbose_mode THEN
-        RAISE NOTICE 'Phase 3: Removing replication sets';
+        RAISE NOTICE 'Phase 4: Removing replication sets';
     END IF;
 
-    FOR repset_rec IN SELECT * FROM spock.get_node_repsets(target_node_name) LOOP
+    FOR repset_rec IN SELECT * FROM spock.get_repsets_on_node(target_node_dsn) LOOP
         BEGIN
             IF verbose_mode THEN
                 RAISE NOTICE '  Checking replication set: %', repset_rec.repset_name;
@@ -284,62 +326,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ============================================================================
--- Phase 4: Remove subscriptions
--- ============================================================================
-CREATE OR REPLACE PROCEDURE spock.remove_node_subscriptions(
-    target_node_name text,    -- Name of the node to remove
-    target_node_dsn text,     -- DSN of the node to remove
-    verbose_mode boolean DEFAULT true
-) AS $$
-DECLARE
-    sub_rec RECORD;
-BEGIN
-    IF verbose_mode THEN
-        RAISE NOTICE 'Phase 4: Removing subscriptions';
-    END IF;
-
-    FOR sub_rec IN SELECT * FROM spock.get_node_subscriptions(target_node_name) LOOP
-        BEGIN
-            IF verbose_mode THEN
-                RAISE NOTICE '  Checking subscription: %', sub_rec.subscription_name;
-            END IF;
-
-            -- Check if subscription exists on target node
-            IF spock.check_subscription_exists_on_node(target_node_dsn, sub_rec.subscription_name) THEN
-                -- Remove subscription from target node
-                PERFORM spock.sub_drop(sub_rec.subscription_name, true);
-
-                INSERT INTO temp_removal_status (component_type, component_name, status, message)
-                VALUES ('subscription', sub_rec.subscription_name, 'REMOVED', 'Successfully removed from target node');
-
-                IF verbose_mode THEN
-                    RAISE NOTICE '    ✓ Removed subscription: %', sub_rec.subscription_name;
-                END IF;
-            ELSE
-                INSERT INTO temp_removal_status (component_type, component_name, status, message)
-                VALUES ('subscription', sub_rec.subscription_name, 'NOT_FOUND', 'Subscription not found on target node');
-
-                IF verbose_mode THEN
-                    RAISE NOTICE '    - Subscription % not found on target node', sub_rec.subscription_name;
-                END IF;
-            END IF;
-
-        EXCEPTION WHEN OTHERS THEN
-            INSERT INTO temp_removal_status (component_type, component_name, status, message)
-            VALUES ('subscription', sub_rec.subscription_name, 'ERROR', SQLERRM);
-
-            IF verbose_mode THEN
-                RAISE NOTICE '    ✗ Error removing subscription %: %', sub_rec.subscription_name, SQLERRM;
-            END IF;
-        END;
-    END LOOP;
-
-    IF verbose_mode THEN
-        RAISE NOTICE '    ✓ Subscription removal phase completed';
-    END IF;
-END;
-$$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- Phase 5: Remove replication slots
@@ -393,6 +379,8 @@ BEGIN
         END;
     END LOOP;
 
+    -- TODO: we also need to drop slots on the other nodes for target node
+
     IF verbose_mode THEN
         RAISE NOTICE '    ✓ Replication slot removal phase completed';
     END IF;
@@ -411,6 +399,9 @@ BEGIN
         RAISE NOTICE 'Phase 6: Removing node from cluster registry';
     END IF;
 
+    --TODO: need to remove from all of the other nodes. should do remote first,
+    --      so it can be idempotent and rerun and still find local node entry
+    --      if something went wrong
     BEGIN
         IF spock.check_node_exists(target_node_name) THEN
             -- Remove node from cluster
@@ -499,6 +490,30 @@ CREATE OR REPLACE PROCEDURE spock.remove_node(
     verbose_mode boolean DEFAULT true
 ) AS $$
 BEGIN
+
+    -- ============================================================================
+    -- Temporary table for tracking removal status
+    -- ============================================================================
+    CREATE TEMP TABLE IF NOT EXISTS temp_removal_status (
+        component_type text,
+        component_name text,
+        status text,
+        message text,
+        removed_at timestamp DEFAULT now()
+    );
+
+    -- ============================================================================
+    -- Temporary table to store spock nodes information
+    -- ============================================================================
+    CREATE TEMP TABLE IF NOT EXISTS temp_spock_nodes (
+        node_id integer,
+        node_name text,
+        location text,
+        country text,
+        info text,
+        dsn text
+    );
+
     -- Phase 1: Validate prerequisites.
     -- Ensure node n4 is eligible for removal (e.g., not a provider for others).
     -- Example: Check n4 is safe to remove from cluster n1,n2,n3,n4.
@@ -509,15 +524,22 @@ BEGIN
     -- Example: Gather info about n4's subscriptions, slots, and sets in n1,n2,n3,n4.
     CALL spock.gather_cluster_info_for_removal(target_node_name, verbose_mode);
 
-    -- Phase 3: Remove replication sets.
+    -- Phase 3: Remove subscriptions (before removing replication sets).
+    -- Unsubscribe n4 from all providers and remove its own subscriptions.
+    -- Example: Remove all subscriptions to and from n4 in n1,n2,n3,n4.
+    CALL spock.remove_node_subscriptions(target_node_name, target_node_dsn, verbose_mode);
+
+    -- TODO: Check if associated with the source node, and if there are multiple nodes,
+    -- we may want to NOT delete the replication set? Not sure IIUC, but set_nodeid looks
+    -- like it is associated with the local node. If there were only two nodes and we
+    -- are removing the last one, perhaps only then it is ok to delete
+
+    -- Phase 4: Remove replication sets.
     -- Drop replication sets associated with n4 to prevent further data flow.
     -- Example: Remove n4's replication sets from cluster n1,n2,n3,n4.
     CALL spock.remove_node_replication_sets(target_node_name, target_node_dsn, verbose_mode);
 
-    -- Phase 4: Remove subscriptions.
-    -- Unsubscribe n4 from all providers and remove its own subscriptions.
-    -- Example: Remove all subscriptions to and from n4 in n1,n2,n3,n4.
-    CALL spock.remove_node_subscriptions(target_node_name, target_node_dsn, verbose_mode);
+    -- TODO: these might get deleted in spock.sub_drop() via spock_drop_subscription() already
 
     -- Phase 5: Remove replication slots.
     -- Drop replication slots for n4 to clean up WAL sender resources.
