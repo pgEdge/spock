@@ -322,7 +322,9 @@ BEGIN
         RAISE NOTICE 'Phase 4: Removing replication sets';
     END IF;
 
-    FOR repset_rec IN SELECT * FROM spock.get_repsets_on_node(target_node_dsn) LOOP
+    -- Replication sets are local to each node, so we only need to drop them
+    -- directly on the target node.
+    FOR repset_rec IN SELECT set_name AS repset_name FROM spock.replication_set LOOP
         BEGIN
             IF verbose_mode THEN
                 RAISE NOTICE '  Checking replication set: %', repset_rec.repset_name;
@@ -334,14 +336,14 @@ BEGIN
                 PERFORM spock.repset_drop(repset_rec.repset_name, true);
 
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
-                VALUES ('repset', repset_rec.repset_name, 'REMOVED', 'Successfully removed from target node');
+                    VALUES ('repset', repset_rec.repset_name, 'REMOVED', 'Successfully removed from target node');
 
                 IF verbose_mode THEN
                     RAISE NOTICE '    ✓ Removed replication set: %', repset_rec.repset_name;
                 END IF;
             ELSE
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
-                VALUES ('repset', repset_rec.repset_name, 'NOT_FOUND', 'Replication set not found on target node');
+                    VALUES ('repset', repset_rec.repset_name, 'NOT_FOUND', 'Replication set not found on target node');
 
                 IF verbose_mode THEN
                     RAISE NOTICE '    - Replication set % not found on target node', repset_rec.repset_name;
@@ -579,10 +581,9 @@ BEGIN
 
     -- TODO: these might get deleted in spock.sub_drop() via spock_drop_subscription() already
 
-    -- Phase 5: Remove replication slots.
-    -- Drop replication slots for n4 to clean up WAL sender resources.
-    -- Example: Remove n4's replication slots from all nodes in n1,n2,n3,n4.
-    CALL spock.remove_node_replication_slots(target_node_name, target_node_dsn, verbose_mode);
+    -- Replication slots were already removed as part of remove_node_subscriptions,
+    -- both on the target node and from other nodes pointing to it.
+    -- DEPRECATED: Phase 5 (explicit slot removal) is no longer necessary.
 
     -- Phase 6: Remove node from cluster registry.
     -- Delete n4 from the Spock node registry so it is no longer part of the cluster.
