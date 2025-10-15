@@ -94,8 +94,8 @@ BEGIN
     -- TODO:
     remotesql := format('SELECT DISTINCT rs.set_name::text FROM spock.node n JOIN spock.subscription sub ON sub.sub_origin = n.node_id JOIN spock.replication_set rs ON rs.set_name = ANY (sub.sub_replication_sets) AND rs.set_nodeid = sub.sub_target WHERE n.node_name = %L', node_name);
 
-    SELECT * FROM dblink(node_dsn, remotesql) AS t(exists boolean) INTO result;
-    RETURN result;
+    RETURN QUERY
+        SELECT * FROM dblink(node_dsn, remotesql) AS t(set_name text);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -208,57 +208,95 @@ CREATE OR REPLACE PROCEDURE spock.remove_node_subscriptions(
 ) AS $$
 DECLARE
     sub_rec RECORD;
+    result bool := false;
+    remotesql text;
+    subscription_name text;
 BEGIN
     IF verbose_mode THEN
         RAISE NOTICE 'Phase 3: Removing subscriptions';
     END IF;
 
---TODO: the subscription is named differently on the remote node.
---      We want the name from the remote node (eg, it is sub_n1_n2, not sub_n2_n1,
---      if we are trying to remove n2).
---      We should loop through all of the nodes that we subscribe to,
---      first removing their subscription to us, then us to them, to be idempotent.
+    -- Fetch sub_name(s) from remote nodes
+    -- Loop through these remote nodes and drop subscriptions on them first
+    -- Then drop local subscriptions on the target node
 
-
---TODO: it looks like spock.sub_drop() (calls spoc_drop_subscription in spock_functions.c)
---      may do a lot of work for us, including
---      removing the slot and the remote node id. We may be able to simplify this process
---
---    SELECT n.node_id, n.node_name, n.location, n.country, n.info, ni.if_dsn
-    FOR sub_rec IN SELECT * FROM spock.temp_spock_nodes LOOP
--- TODO: left off here
+    FOR sub_rec IN SELECT * FROM temp_spock_nodes LOOP
         BEGIN
+            -- get subscription name from remote nodes
+            remotesql := format(
+                'SELECT sub.sub_name AS sub_name
+                FROM spock.subscription sub
+                JOIN spock.node n
+                ON sub.sub_target = n.node_id
+                WHERE sub.sub_origin = (
+                    SELECT node_id FROM spock.node WHERE node_name = %L
+                )
+                AND n.node_name = %L',
+                target_node_name,
+                sub_rec.node_name
+            );
+
+            SELECT t.sub_name INTO subscription_name
+                FROM dblink(sub_rec.dsn, remotesql) AS t(sub_name text);
+
             IF verbose_mode THEN
-                RAISE NOTICE '  Checking subscription: %', sub_rec.subscription_name;
+                RAISE NOTICE '  Checking subscription: %', subscription_name;
             END IF;
 
---TODO: the subscription is named differently on the remote node.
-            -- Check if subscription exists on target node
-            IF spock.check_subscription_exists_on_node(target_node_dsn, sub_rec.subscription_name) THEN
-                -- Remove subscription from target node
-                PERFORM spock.sub_drop(sub_rec.subscription_name, true);
+            -- Remove subscription from remote nodes
+            remotesql := format('SELECT spock.sub_drop(%L, true)', subscription_name);
+            SELECT t.result INTO result
+                FROM dblink(sub_rec.dsn, remotesql) AS t(result boolean);
 
+            IF result THEN
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
-                VALUES ('subscription', sub_rec.subscription_name, 'REMOVED', 'Successfully removed from target node');
+                    VALUES ('subscription', subscription_name, 'REMOVED', 'Successfully removed from target node');
 
                 IF verbose_mode THEN
-                    RAISE NOTICE '    ✓ Removed subscription: %', sub_rec.subscription_name;
+                    RAISE NOTICE '    ✓ Removed subscription: %', subscription_name;
                 END IF;
             ELSE
                 INSERT INTO temp_removal_status (component_type, component_name, status, message)
-                VALUES ('subscription', sub_rec.subscription_name, 'NOT_FOUND', 'Subscription not found on target node');
+                    VALUES ('subscription', subscription_name, 'NOT_FOUND', 'Subscription not found on target node');
 
                 IF verbose_mode THEN
-                    RAISE NOTICE '    - Subscription % not found on target node', sub_rec.subscription_name;
+                    RAISE NOTICE '    - Subscription % not found on target node', subscription_name;
                 END IF;
             END IF;
 
         EXCEPTION WHEN OTHERS THEN
             INSERT INTO temp_removal_status (component_type, component_name, status, message)
-            VALUES ('subscription', sub_rec.subscription_name, 'ERROR', SQLERRM);
+            VALUES ('subscription', subscription_name, 'ERROR', SQLERRM);
 
             IF verbose_mode THEN
-                RAISE NOTICE '    ✗ Error removing subscription %: %', sub_rec.subscription_name, SQLERRM;
+                RAISE NOTICE '    ✗ Error removing subscription %: %', subscription_name, SQLERRM;
+            END IF;
+        END;
+    END LOOP;
+
+    -- Now drop local subscriptions on the target node
+    FOR sub_rec IN select sub_name from spock.subscription LOOP
+        BEGIN
+            IF verbose_mode THEN
+                RAISE NOTICE '  Checking local subscription: %', sub_rec.sub_name;
+            END IF;
+
+            -- Remove local subscription
+            PERFORM spock.sub_drop(sub_rec.sub_name, true);
+
+            INSERT INTO temp_removal_status (component_type, component_name, status, message)
+                VALUES ('subscription', sub_rec.sub_name, 'REMOVED', 'Successfully removed from local node');
+
+            IF verbose_mode THEN
+                RAISE NOTICE '    ✓ Removed local subscription: %', sub_rec.sub_name;
+            END IF;
+
+        EXCEPTION WHEN OTHERS THEN
+            INSERT INTO temp_removal_status (component_type, component_name, status, message)
+            VALUES ('subscription', sub_rec.sub_name, 'ERROR', SQLERRM);
+
+            IF verbose_mode THEN
+                RAISE NOTICE '    ✗ Error removing local subscription %: %', sub_rec.sub_name, SQLERRM;
             END IF;
         END;
     END LOOP;
