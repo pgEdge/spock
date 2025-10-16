@@ -126,6 +126,7 @@ bool	spock_use_spi = false;
 bool	spock_batch_inserts = true;
 static char *spock_temp_directory_config;
 bool	spock_ch_stats = true;
+static char *spock_country_code;
 bool	spock_deny_ddl = false;
 bool	spock_enable_ddl_replication = false;
 bool	spock_include_ddl_repset = false;
@@ -1034,6 +1035,16 @@ _PG_init(void)
 							   PGC_BACKEND,
 							   0,
 							   NULL, NULL, NULL);
+
+	DefineCustomStringVariable("spock.country",
+							   "Sets the country code",
+							   NULL,
+							   &spock_country_code,
+							   "??", PGC_SIGHUP,
+							   0,
+							   NULL,
+							   NULL,
+							   NULL);
 
 	DefineCustomBoolVariable("spock.deny_all_ddl",
 							   "Deny All DDL statements",

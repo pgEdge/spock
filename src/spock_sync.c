@@ -1236,7 +1236,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	if (sync->status != SYNC_STATUS_READY)
 	{
 		elog(ERROR,
-			 "subscriber %s is not ready, cannot synchronize individual tables", sub->name);
+			 "subscriber %s is not ready, cannot synchronzie individual tables", sub->name);
 	}
 
 	/* Check current state of the table. */

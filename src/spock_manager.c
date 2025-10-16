@@ -93,7 +93,7 @@ manage_apply_workers(void)
 		if (!wlc)
 			apply = NULL;
 
-		/* Skip if the worker was already registered. */
+		/* Skip if the worker was alrady registered. */
 		if (spock_worker_running(apply))
 			continue;
 
