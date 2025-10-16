@@ -1179,4 +1179,3 @@ _PG_init(void)
 	prev_emit_log_hook = emit_log_hook;
 	emit_log_hook = log_message_filter;
 }
-
