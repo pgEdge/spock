@@ -413,6 +413,11 @@ CREATE OR REPLACE PROCEDURE spock.remove_node(
 ) AS $$
 BEGIN
 
+    -- Do not allow removing the node if script is run on a different node
+    IF (spock.node_info()).node_name != target_node_name THEN
+        RAISE EXCEPTION 'This procedure must be run on the node being removed (%). Current node is %', target_node_name, (spock.node_info()).node_name;
+    END IF;
+
     -- ============================================================================
     -- Temporary table for tracking removal status
     -- ============================================================================
