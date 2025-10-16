@@ -151,7 +151,6 @@ $$ LANGUAGE plpgsql;
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE spock.remove_node_subscriptions(
     target_node_name text,    -- Name of the node to remove
-    target_node_dsn text,     -- DSN of the node to remove
     verbose_mode boolean DEFAULT true
 ) AS $$
 DECLARE
@@ -259,7 +258,6 @@ $$ LANGUAGE plpgsql;
 -- Phase 4: Remove replication sets
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE spock.remove_node_replication_sets(
-    target_node_name text,    -- Name of the node to remove
     target_node_dsn text,     -- DSN of the node to remove
     verbose_mode boolean DEFAULT true
 ) AS $$
@@ -453,12 +451,12 @@ BEGIN
     -- and node interface info if no other subscription relies on it.
     -- Unsubscribe n4 from all providers and remove its own subscriptions.
     -- Example: Remove all subscriptions to and from n4 in n1,n2,n3,n4.
-    CALL spock.remove_node_subscriptions(target_node_name, target_node_dsn, verbose_mode);
+    CALL spock.remove_node_subscriptions(target_node_name, verbose_mode);
 
     -- Phase 4: Remove replication sets.
     -- Drop replication sets associated with n4 to prevent further data flow.
     -- Example: Remove n4's replication sets from cluster n1,n2,n3,n4.
-    CALL spock.remove_node_replication_sets(target_node_name, target_node_dsn, verbose_mode);
+    CALL spock.remove_node_replication_sets(target_node_dsn, verbose_mode);
 
     -- Phase 5: Remove node from cluster registry.
     -- Delete n4 from the Spock node registry so it is no longer part of the cluster.
