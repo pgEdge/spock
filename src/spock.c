@@ -66,7 +66,6 @@
 PG_MODULE_MAGIC;
 
 static const struct config_enum_entry SpockConflictResolvers[] = {
-#ifndef XCP
 	/*
 	 * Disabled until we can clearly define their desired behavior.
 	 * Jan Wieck 2024-08-12
@@ -77,7 +76,6 @@ static const struct config_enum_entry SpockConflictResolvers[] = {
 	{"first_update_wins", SPOCK_RESOLVE_FIRST_UPDATE_WINS, false},
 	*/
 	{"last_update_wins", SPOCK_RESOLVE_LAST_UPDATE_WINS, false},
-#endif
 	{NULL, 0, false}
 };
 
@@ -976,11 +974,7 @@ _PG_init(void)
 							 "Use SPI instead of low-level API for applying changes",
 							 NULL,
 							 &spock_use_spi,
-#ifdef XCP
-							 true,
-#else
 							 false,
-#endif
 							 PGC_POSTMASTER,
 							 0,
 							 NULL, NULL, NULL);

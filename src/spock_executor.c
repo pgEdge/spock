@@ -398,27 +398,16 @@ autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 }
 
 static void
-spock_ProcessUtility(
-						 PlannedStmt *pstmt,
-						 const char *queryString,
-						 bool readOnlyTree,
-						 ProcessUtilityContext context,
-						 ParamListInfo params,
-						 QueryEnvironment *queryEnv,
-						 DestReceiver *dest,
-#ifdef XCP
-						 bool sentToRemote,
-#endif
-						 QueryCompletion *qc)
+spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+					 bool readOnlyTree, ProcessUtilityContext context,
+					 ParamListInfo params, QueryEnvironment *queryEnv,
+					 DestReceiver *dest, QueryCompletion *qc)
 {
-	Node	   *parsetree = pstmt->utilityStmt;
-	static NodeTag toplevel_stmt = T_Invalid;
-#ifndef XCP
-	#define		sentToRemote NULL
-#endif
-	Oid			roleoid = InvalidOid;
-	Oid			save_userid = 0;
-	int			save_sec_context = 0;
+	Node		   *parsetree = pstmt->utilityStmt;
+	static NodeTag	toplevel_stmt = T_Invalid;
+	Oid				roleoid = InvalidOid;
+	Oid				save_userid = 0;
+	int				save_sec_context = 0;
 
 	dropping_spock_obj = false;
 
@@ -464,15 +453,11 @@ spock_ProcessUtility(
 		   && CurrentMemoryContext != CacheMemoryContext);
 
 	if (next_ProcessUtility_hook)
-		SPKnext_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context, params,
-									queryEnv, dest,
-									sentToRemote,
-									qc);
+		next_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context,
+								 params, queryEnv, dest, qc);
 	else
-		SPKstandard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
-								   queryEnv, dest,
-								   sentToRemote,
-								   qc);
+		standard_ProcessUtility(pstmt, queryString, readOnlyTree, context,
+								params, queryEnv, dest, qc);
 
 	roleoid = GetUserId();
 
