@@ -62,6 +62,7 @@
 #include "utils/resowner.h"
 
 #include "spock_common.h"
+#include "spock_exception_handler.h"
 #include "spock_relcache.h"
 #include "spock_repset.h"
 #include "spock_rpc.h"
@@ -297,11 +298,15 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
 
 	cmdargv[cmdargc++] = NULL;
 
+	/*
+	 * TODO: misleading error message takes place here if an error
+	 * is interrupted execution.
+	 */
 	if (exec_cmd(pg_restore, cmdargv) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not execute pg_restore (\"%s\"): %m",
-						pg_restore)));
+				 errmsg("could not execute pg_restore (\"%s\"): %m", pg_restore),
+				 errhint("explore error log to realise the origin of the issue")));
 }
 
 /*
@@ -1021,6 +1026,7 @@ spock_sync_subscription(SpockSubscription *sub)
 	char			status;
 	MemoryContext	myctx,
 					oldctx;
+	RepOriginId		originid;
 
 	/* We need our own context for keeping things between transactions. */
 	myctx = AllocSetContextCreate(CurrentMemoryContext,
@@ -1045,10 +1051,36 @@ spock_sync_subscription(SpockSubscription *sub)
 		case SYNC_STATUS_INIT:
 		case SYNC_STATUS_CATCHUP:
 			break;
+		/*
+		 * If the 'apply worker' is found in a state where it can't continue, it
+		 * forcibly disables the subscription and logs a complaint, providing as
+		 * much information as possible.
+		 * At this stage, we only have the origin_id to display. May we add
+		 * something to the log to facilitate the resolution of the issue?
+		 *
+		 * NOTE:
+		 * A transaction is required since the exception_log is a database table.
+		 */
 		default:
-			elog(ERROR,
-				 "subscriber %s initialization failed during nonrecoverable step (%c), please try the setup again",
-				 sub->name, status);
+		{
+			int	old_exception_behaviour = exception_behaviour;
+
+			StartTransactionCommand();
+			originid = replorigin_by_name(sub->slot_name, true);
+			exception_behaviour = SUB_DISABLE;
+			spock_disable_subscription(sub, originid, InvalidTransactionId,
+									   InvalidXLogRecPtr, 0);
+			exception_behaviour = old_exception_behaviour;
+			CommitTransactionCommand();
+
+			ereport(FATAL,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Spock's subscriber %s initialization failed during"
+							" nonrecoverable step (%c). Subscription disabled.",
+							sub->name, status),
+					 errhint("Check server errors and 'exception_log', fix "
+							 "the issue and try the setup again")));
+		}
 			break;
 	}
 
@@ -1056,7 +1088,6 @@ spock_sync_subscription(SpockSubscription *sub)
 	{
 		PGconn	   *origin_conn;
 		PGconn	   *origin_conn_repl;
-		RepOriginId	originid;
 		char	   *snapshot;
 		bool		use_failover_slot;
 
