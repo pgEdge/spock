@@ -500,3 +500,13 @@ spock_group_resource_load(void)
 
 	CloseTransientFile(fd);
 }
+
+void
+spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
+{
+	if ((flags & (CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_END_OF_RECOVERY)) == 0)
+		return;
+
+	/* Dump group progress to resource.dat */
+	spock_group_resource_dump();
+}
