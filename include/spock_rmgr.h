@@ -26,6 +26,7 @@
 #define SPOCK_RMGR_SUBTRANS_COMMIT_TS       0x20
 
 typedef struct SpockApplyProgress SpockApplyProgress;
+typedef struct SpockGroupEntry SpockGroupEntry;
 
 #if 0
 typedef struct SubTransactionCommitTsEntry
@@ -46,6 +47,6 @@ extern void spock_rmgr_cleanup(void);
 
 /* WAL helpers */
 extern XLogRecPtr spock_apply_progress_add_to_wal(const SpockApplyProgress *sap);
-
+extern void spock_group_emit_progress_wal_cb(const SpockGroupEntry *e, void *arg);
 
 #endif							/* SPOCK_RMGR_H */
