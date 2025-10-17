@@ -1630,10 +1630,17 @@ BEGIN
     -- Get all existing nodes (excluding source and new)
     CALL spock.get_spock_nodes(src_dsn, verb);
     
+    -- Create temporary table to store sync LSNs
+    CREATE TEMP TABLE IF NOT EXISTS temp_sync_lsns (
+        origin_node text PRIMARY KEY,
+        sync_lsn text NOT NULL
+    );
+
     -- Check if there are any "other" nodes (not source, not new)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
         -- 2-node scenario: trigger sync event on source node and store it
         BEGIN
+            RAISE NOTICE '    - 2-node scenario';
             SELECT * INTO remotesql
             FROM dblink(src_dsn, 'SELECT spock.sync_event()') AS t(sync_lsn text);
 
@@ -1652,16 +1659,11 @@ BEGIN
         RETURN;
     END IF;
     
-    -- Create temporary table to store sync LSNs
-    CREATE TEMP TABLE IF NOT EXISTS temp_sync_lsns (
-        origin_node text PRIMARY KEY,
-        sync_lsn text NOT NULL
-    );
-
     -- For each "other" node (not source, not new), create disabled subscription and slot
     FOR rec IN SELECT * FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name LOOP
         -- Trigger sync event on origin node and store LSN
         BEGIN
+            RAISE NOTICE '    - 3+ node scenario: sync event stored, skipping disabled subscriptions';
             SELECT * INTO remotesql
             FROM dblink(rec.dsn, 'SELECT spock.sync_event()') AS t(sync_lsn text);
 
