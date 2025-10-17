@@ -77,6 +77,11 @@ BEGIN
         RAISE EXCEPTION 'Spock version mismatch: new node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
             new_version, min_required_version, min_required_version;
     END IF;
+
+    IF new_version != src_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. Please ensure that they match.',
+            new_version, src_version;
+    END IF;
     
     -- Check all existing nodes in cluster
     FOR node_rec IN 
@@ -95,6 +100,11 @@ BEGIN
             version_mismatch := true;
             RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is at least %. All nodes must have version % or later.'
                 node_rec.node_name, node_version, min_required_version, min_required_version;
+        END IF;
+
+        IF node_version != new_version THEN
+            RAISE EXCEPTION 'Spock version mismatch: new node has version %, but found node version %. Please ensure that they match.',
+                new_version, node_version;
         END IF;
     END LOOP;
     

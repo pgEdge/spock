@@ -865,6 +865,10 @@ class SpockClusterManager:
             raise Exception(f"Spock version mismatch: new node has version {new_version}, "
                           f"but minimum required version is {min_required_version}. Please upgrade all nodes to at least {min_required_version}.")
         
+        if new_version != src_version:
+            raise Exception(f"Spock version mismatch: new node has version {new_version}, "
+                          f"but source version is {src_version}. Please ensure they are the same.")
+
         # Check all existing nodes in cluster
         nodes = self.get_spock_nodes(src_dsn)
         
@@ -880,7 +884,11 @@ class SpockClusterManager:
                 raise Exception(f"Spock version mismatch: node {node['node_name']} has version {node_version}, "
                               f"but minimum required version is {min_required_version}. "
                               f"All nodes must have version {min_required_version}.")
-        
+
+            if node_version != new_version:
+                raise Exception(f"Spock version mismatch: new node has version {new_version}, "
+                              f"but node version is {node_version}. Please ensure they are the same.")
+
         self.notice(f"Version check passed: All nodes running at least Spock version {min_required_version}. Source node {src_version}, new node {new_version}")
 
     def add_node(self, src_node_name: str, src_dsn: str, new_node_name: str, new_node_dsn: str,
