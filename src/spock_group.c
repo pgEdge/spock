@@ -500,3 +500,18 @@ spock_group_resource_load(void)
 
 	CloseTransientFile(fd);
 }
+
+void
+spock_checkpoint_hook(int flags)
+{
+	/* Dump group progress to resource.dat */
+	spock_group_resource_dump();
+
+	/* Emit progress WAL records for all groups */
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+
+	/* write all entries to WAL */
+	spock_group_foreach(spock_group_emit_progress_wal_cb, NULL);
+
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+}
