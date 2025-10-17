@@ -181,3 +181,14 @@ spock_apply_progress_add_to_wal(const SpockApplyProgress *sap)
 
 	return lsn;
 }
+
+/*
+ * spock_group_emit_progress_wal_cb
+ *
+ * Foreach callback, emit a group's apply-progress to WAL.
+ */
+void
+spock_group_emit_progress_wal_cb(const SpockGroupEntry *e, void *arg)
+{
+	spock_apply_progress_add_to_wal(&e->progress);
+}
