@@ -1,7 +1,7 @@
 -- ============================================================================
 -- ZODAN (Zero Downtime Add Node) - Spock Extension
 -- Version: 1.0.0
--- Required Spock Version: 5.0.4
+-- Required Spock Version: 5.0.4 or later
 -- ============================================================================
 -- Adds a new node to the cluster of Spock.
 
@@ -37,7 +37,7 @@ CREATE OR REPLACE PROCEDURE spock.check_spock_version_compatibility(
     verb boolean DEFAULT false
 ) LANGUAGE plpgsql AS $$
 DECLARE
-    required_version text := '5.0.4';
+    min_required_version text := '5.0.4';
     src_version text;
     new_version text;
     node_rec RECORD;
@@ -57,9 +57,9 @@ BEGIN
     END IF;
     
     -- Check source node has required version
-    IF src_version != required_version THEN
-        RAISE EXCEPTION 'Spock version mismatch: source node has version %, but required version is %. Please upgrade all nodes to %.', 
-            src_version, required_version, required_version;
+    IF src_version < min_required_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: source node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
+            src_version, min_required_version, min_required_version;
     END IF;
     
     -- Get new node Spock version
@@ -73,9 +73,14 @@ BEGIN
     END IF;
     
     -- Check new node has required version
-    IF new_version != required_version THEN
-        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but required version is %. Please upgrade all nodes to %.', 
-            new_version, required_version, required_version;
+    IF new_version != min_required_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
+            new_version, min_required_version, min_required_version;
+    END IF;
+
+    IF new_version != src_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. Please ensure that they match.',
+            new_version, src_version;
     END IF;
     
     -- Check all existing nodes in cluster
@@ -91,15 +96,20 @@ BEGIN
             RAISE EXCEPTION 'Spock extension not found on node %', node_rec.node_name;
         END IF;
         
-        IF node_version != required_version THEN
+        IF node_version != min_required_version THEN
             version_mismatch := true;
-            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is %. All nodes must have version %.', 
-                node_rec.node_name, node_version, required_version, required_version;
+            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is at least %. All nodes must have version % or later.'
+                node_rec.node_name, node_version, min_required_version, min_required_version;
+        END IF;
+
+        IF node_version != new_version THEN
+            RAISE EXCEPTION 'Spock version mismatch: new node has version %, but found node version %. Please ensure that they match.',
+                new_version, node_version;
         END IF;
     END LOOP;
     
     IF verb THEN
-        RAISE NOTICE 'Version check passed: All nodes running Spock version %', required_version;
+        RAISE NOTICE 'Version check passed: All nodes running Spock version % or later. Source version is %, new node version is %', min_required_version, src_version, new_version;
     END IF;
 END;
 $$;
@@ -1630,10 +1640,17 @@ BEGIN
     -- Get all existing nodes (excluding source and new)
     CALL spock.get_spock_nodes(src_dsn, verb);
     
+    -- Create temporary table to store sync LSNs
+    CREATE TEMP TABLE IF NOT EXISTS temp_sync_lsns (
+        origin_node text PRIMARY KEY,
+        sync_lsn text NOT NULL
+    );
+
     -- Check if there are any "other" nodes (not source, not new)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
         -- 2-node scenario: trigger sync event on source node and store it
         BEGIN
+            RAISE NOTICE '    - 2-node scenario';
             SELECT * INTO remotesql
             FROM dblink(src_dsn, 'SELECT spock.sync_event()') AS t(sync_lsn text);
 
@@ -1652,16 +1669,11 @@ BEGIN
         RETURN;
     END IF;
     
-    -- Create temporary table to store sync LSNs
-    CREATE TEMP TABLE IF NOT EXISTS temp_sync_lsns (
-        origin_node text PRIMARY KEY,
-        sync_lsn text NOT NULL
-    );
-
     -- For each "other" node (not source, not new), create disabled subscription and slot
     FOR rec IN SELECT * FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name LOOP
         -- Trigger sync event on origin node and store LSN
         BEGIN
+            RAISE NOTICE '    - 3+ node scenario: sync event stored, skipping disabled subscriptions';
             SELECT * INTO remotesql
             FROM dblink(rec.dsn, 'SELECT spock.sync_event()') AS t(sync_lsn text);
 
