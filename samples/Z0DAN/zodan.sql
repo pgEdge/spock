@@ -1,7 +1,7 @@
 -- ============================================================================
 -- ZODAN (Zero Downtime Add Node) - Spock Extension
 -- Version: 1.0.0
--- Required Spock Version: 5.0.4
+-- Required Spock Version: 5.0.4 or later
 -- ============================================================================
 -- Adds a new node to the cluster of Spock.
 
@@ -37,7 +37,7 @@ CREATE OR REPLACE PROCEDURE spock.check_spock_version_compatibility(
     verb boolean DEFAULT false
 ) LANGUAGE plpgsql AS $$
 DECLARE
-    required_version text := '5.0.4';
+    min_required_version text := '5.0.4';
     src_version text;
     new_version text;
     node_rec RECORD;
@@ -57,9 +57,9 @@ BEGIN
     END IF;
     
     -- Check source node has required version
-    IF src_version != required_version THEN
-        RAISE EXCEPTION 'Spock version mismatch: source node has version %, but required version is %. Please upgrade all nodes to %.', 
-            src_version, required_version, required_version;
+    IF src_version < min_required_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: source node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
+            src_version, min_required_version, min_required_version;
     END IF;
     
     -- Get new node Spock version
@@ -73,9 +73,14 @@ BEGIN
     END IF;
     
     -- Check new node has required version
-    IF new_version != required_version THEN
-        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but required version is %. Please upgrade all nodes to %.', 
-            new_version, required_version, required_version;
+    IF new_version != min_required_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
+            new_version, min_required_version, min_required_version;
+    END IF;
+
+    IF new_version != src_version THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. Please ensure that they match.',
+            new_version, src_version;
     END IF;
     
     -- Check all existing nodes in cluster
@@ -91,15 +96,20 @@ BEGIN
             RAISE EXCEPTION 'Spock extension not found on node %', node_rec.node_name;
         END IF;
         
-        IF node_version != required_version THEN
+        IF node_version != min_required_version THEN
             version_mismatch := true;
-            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is %. All nodes must have version %.', 
-                node_rec.node_name, node_version, required_version, required_version;
+            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is at least %. All nodes must have version % or later.'
+                node_rec.node_name, node_version, min_required_version, min_required_version;
+        END IF;
+
+        IF node_version != new_version THEN
+            RAISE EXCEPTION 'Spock version mismatch: new node has version %, but found node version %. Please ensure that they match.',
+                new_version, node_version;
         END IF;
     END LOOP;
     
     IF verb THEN
-        RAISE NOTICE 'Version check passed: All nodes running Spock version %', required_version;
+        RAISE NOTICE 'Version check passed: All nodes running Spock version % or later. Source version is %, new node version is %', min_required_version, src_version, new_version;
     END IF;
 END;
 $$;
