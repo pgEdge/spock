@@ -169,7 +169,7 @@ To enable conflict resolution, the `track_commit_timestamp` setting must be enab
 
 `spock.enable_ddl_replication` enables [automatic replication](managing/spock_autoddl.md) of ddl statements through the `default` replication set.
 
-#### `spock.exception_behaviour`
+#### <a name="spock-exception_behaviour"></a>`spock.exception_behaviour`
 
 Use this GUC to specify the commit behavior of Postgres when it encounters an ERROR within a transaction:
 
@@ -187,9 +187,13 @@ Use this GUC to specify which operations/transactions are written to the excepti
 * `discard` - Add a row to the `spock.exception_log` table for any discarded operation; successful transactions are not logged.
 * `none` - Instructs the server to not log any operation or transactions to the exception log table.
 
-#### `spock.exception_replay_queue_size`
+#### `spock.exception_replay_queue_size` - DEPRECATED
+
+This parameter will not be supported after version 5.X.
 
 When Spock encounters a replication exception, it attempts to resolve the exception by entering exception-handling mode, based on the value of `spock.exception_behaviour`.  Spock then writes any transaction up to a default size of `4MB` to memory, and the apply worker replays the transaction from memory.  This provides a massive speed and performance increase in the handling of the vast majority of exceptions.  The memory size is configurable with `spock.exception_replay_queue_size`.
+
+Now, Spock performs as specified by the [`spock.exception_behaviour`](#spock-exception_behaviour) parameter.
 
 #### `spock.extra_connection_options`
 
