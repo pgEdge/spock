@@ -20,7 +20,7 @@ Spock is open-source and available for review at [Github](https://github.com/pgE
     pgEdge Postgres deployments also provide a simplified upgrade path so you can take advantage of important new features quickly and easily.
 
 
-For detailed information about using Spock to create a two-node cluster, visit [here](/two_node_cluster.md)).
+For detailed information about using Spock to create a two-node cluster, visit [here](/two_node_cluster.md).
 
 
 ### Building the Extension from Source
