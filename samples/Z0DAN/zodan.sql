@@ -56,8 +56,8 @@ BEGIN
         RAISE EXCEPTION 'Spock extension not found on source node';
     END IF;
     
-    -- Check source node has required version
-    IF src_version < min_required_version THEN
+    -- Check source node has required version (strip -devel suffix for comparison)
+    IF regexp_replace(src_version, '-devel$', '') < min_required_version THEN
         RAISE EXCEPTION 'Spock version mismatch: source node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
             src_version, min_required_version, min_required_version;
     END IF;
@@ -72,13 +72,13 @@ BEGIN
         RAISE EXCEPTION 'Spock extension not found on new node';
     END IF;
     
-    -- Check new node has required version
-    IF new_version != min_required_version THEN
+    -- Check new node has required version (strip -devel suffix for comparison)
+    IF regexp_replace(new_version, '-devel$', '') < min_required_version THEN
         RAISE EXCEPTION 'Spock version mismatch: new node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
             new_version, min_required_version, min_required_version;
     END IF;
 
-    IF new_version != src_version THEN
+    IF regexp_replace(new_version, '-devel$', '') != regexp_replace(src_version, '-devel$', '') THEN
         RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. Please ensure that they match.',
             new_version, src_version;
     END IF;
@@ -96,13 +96,13 @@ BEGIN
             RAISE EXCEPTION 'Spock extension not found on node %', node_rec.node_name;
         END IF;
         
-        IF node_version != min_required_version THEN
+        IF regexp_replace(node_version, '-devel$', '') < min_required_version THEN
             version_mismatch := true;
-            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is at least %. All nodes must have version % or later.'
+            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is at least %. All nodes must have version % or later.',
                 node_rec.node_name, node_version, min_required_version, min_required_version;
         END IF;
 
-        IF node_version != new_version THEN
+        IF regexp_replace(node_version, '-devel$', '') != regexp_replace(new_version, '-devel$', '') THEN
             RAISE EXCEPTION 'Spock version mismatch: new node has version %, but found node version %. Please ensure that they match.',
                 new_version, node_version;
         END IF;
