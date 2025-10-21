@@ -37,9 +37,9 @@ cross_wire(2, ['n1', 'n2'], 'Cross-wire first 2 nodes (n1 and n2)');
 pass('3-node cluster created, first 2 nodes cross-wired');
 
 # Install dblink extension on all nodes (required for zodan procedures)
-system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
-system_or_bail "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
-system_or_bail "$pg_bin/psql", '-p', $node_ports->[2], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
+system_maybe "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
+system_maybe "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
+system_maybe "$pg_bin/psql", '-p', $node_ports->[2], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
 
 pass('dblink extension installed on n1, n2, and n3');
 
@@ -131,23 +131,39 @@ if ($dblink_check_n3 eq 't') {
 
 pass('dblink extension verified on all three nodes (n1, n2, n3)');
 
-# Step 4: Create procedure on n1 (load zodan procedures)
+# Step 4: Create procedure on n3 (load zodan procedures on the new node)
 my $zodan_sql = '../../samples/Z0DAN/zodan.sql';
 if (-f $zodan_sql) {
-    system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-f', $zodan_sql;
-    pass('Zodan procedures loaded on n1');
+    system_or_bail "$pg_bin/psql", '-p', $new_port, '-d', $dbname, '-f', $zodan_sql;
+    
+    # Verify the procedure was created in spock schema
+    my $proc_check = `$pg_bin/psql -p $new_port -d $dbname -t -c "SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE p.proname = 'check_spock_version_compatibility' AND n.nspname = 'spock'"`;
+    chomp($proc_check);
+    $proc_check =~ s/\s+//g;
+    if ($proc_check > 0) {
+        pass('Zodan procedures loaded and verified on n3');
+    } else {
+        # Try checking all procedures in spock schema
+        my $alt_check = `$pg_bin/psql -p $new_port -d $dbname -t -c "SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = 'spock' AND p.proname LIKE '%compatibility%'"`;
+        chomp($alt_check);
+        if ($alt_check) {
+            pass("Zodan procedures loaded on n3 (found: $alt_check)");
+        } else {
+            fail('Zodan procedures loaded but check_spock_version_compatibility not found');
+        }
+    }
 } else {
     skip('Zodan SQL file not found, skipping procedure loading', 1);
 }
 
-# Step 5: Add node 3 using n1 as source
-pass('Attempting to add node 3 using n1 as source');
+# Step 5: Add node 3 using n3 as source (called from n3)
+pass('Attempting to add node 3 using n3 as source (called from n3)');
 
 # Call the zodan add_node procedure and show real-time output
 print "=== STARTING ADD_NODE PROCEDURE - LIVE OUTPUT ===\n";
 
 # Use open with pipe to see real-time output
-my $add_node_cmd = "$pg_bin/psql -p $node_ports->[0] -d $dbname -c \"
+my $add_node_cmd = "$pg_bin/psql -p $new_port -d $dbname -c \"
     CALL spock.add_node(
         'n1',
         'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',

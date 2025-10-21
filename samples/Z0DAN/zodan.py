@@ -847,8 +847,9 @@ class SpockClusterManager:
             raise Exception("Spock extension not found on source node")
         src_version = src_version.strip()
         
-        # Check source node has required version
-        if src_version < min_required_version:
+        # Check source node has required version (strip -devel suffix for comparison)
+        src_version_clean = src_version.replace('-devel', '')
+        if src_version_clean < min_required_version:
             raise Exception(f"Spock version mismatch: source node has version {src_version}, "
                           f"but minimum required version is {min_required_version}. Please upgrade all nodes to at least {min_required_version}.")
         
@@ -860,12 +861,13 @@ class SpockClusterManager:
             raise Exception("Spock extension not found on new node")
         new_version = new_version.strip()
         
-        # Check new node has required version
-        if new_version < min_required_version:
+        # Check new node has required version (strip -devel suffix for comparison)
+        new_version_clean = new_version.replace('-devel', '')
+        if new_version_clean < min_required_version:
             raise Exception(f"Spock version mismatch: new node has version {new_version}, "
                           f"but minimum required version is {min_required_version}. Please upgrade all nodes to at least {min_required_version}.")
         
-        if new_version != src_version:
+        if new_version_clean != src_version_clean:
             raise Exception(f"Spock version mismatch: new node has version {new_version}, "
                           f"but source version is {src_version}. Please ensure they are the same.")
 
@@ -880,12 +882,13 @@ class SpockClusterManager:
                 raise Exception(f"Spock extension not found on node {node['node_name']}")
             node_version = node_version.strip()
             
-            if node_version < min_required_version:
+            node_version_clean = node_version.replace('-devel', '')
+            if node_version_clean < min_required_version:
                 raise Exception(f"Spock version mismatch: node {node['node_name']} has version {node_version}, "
                               f"but minimum required version is {min_required_version}. "
                               f"All nodes must have version {min_required_version}.")
 
-            if node_version != new_version:
+            if node_version_clean != new_version_clean:
                 raise Exception(f"Spock version mismatch: new node has version {new_version}, "
                               f"but node version is {node_version}. Please ensure they are the same.")
 
