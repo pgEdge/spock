@@ -96,7 +96,7 @@ $sub_status_after_ddl =~ s/\s+//g;
 is($sub_status_after_ddl, "replicating", 'subscription still replicating after DDL');
 
 # Wait for sync to complete
-system_or_bail 'sleep', '10';
+system_or_bail 'sleep', '20';
 
 # Test that table doesn't exist on subscriber (as expected for non-default replication set)
 my $table_check = `$pg_bin/psql -p $node_ports->[1] -d $dbname -t -c "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'basic_dml1')"`;
