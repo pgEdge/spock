@@ -49,6 +49,7 @@
 bool	spock_replication_repair_mode = false;
 
 /* Local functions */
+static inline void set_repair_mode(bool is_enabled);
 static void pg_decode_startup(LogicalDecodingContext * ctx,
 							  OutputPluginOptions *opt, bool is_init);
 static void pg_decode_shutdown(LogicalDecodingContext * ctx);
@@ -146,7 +147,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
  * better to centralize management of this feature and LOG each time it is
  * changed.
  */
-inline void
+static inline void
 set_repair_mode(bool is_enabled)
 {
 	if (likely(spock_replication_repair_mode == is_enabled))

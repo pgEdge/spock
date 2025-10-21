@@ -94,7 +94,6 @@ typedef struct SpockOutputSlotGroup
  * Custom WAL messages
  */
 extern bool		spock_replication_repair_mode;
-extern inline void set_repair_mode(bool is_enabled);
 
 #define SPOCK_REPAIR_MODE_ON		1	/* Suppress subsequent DML/DDL */
 #define SPOCK_REPAIR_MODE_OFF		2	/* Resume regular replication */
