@@ -88,7 +88,6 @@ typedef struct SpockGroupEntry
 } SpockGroupEntry;
 
 /* shmem setup */
-void		spock_group_shmem_init(void);
 extern void spock_group_shmem_request(void);
 extern void spock_group_shmem_startup(int napply_groups, bool found);
 

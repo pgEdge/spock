@@ -45,7 +45,7 @@
 #include "spock_worker.h"
 #include "spock_apply.h"
 
-const RmgrData spock_custom_rmgr = {
+static RmgrData spock_custom_rmgr = {
 	.rm_name = SPOCK_RMGR_NAME,
 	.rm_redo = spock_rmgr_redo,
 	.rm_desc = spock_rmgr_desc,
