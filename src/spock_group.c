@@ -65,24 +65,6 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 HTAB	   *SpockGroupHash = NULL;
 
 /*
- * Install hooks to request shared resources for apply workers
- */
-void
-spock_group_shmem_init(void)
-{
-#if 0
-#if PG_VERSION_NUM < 150000
-	spock_group_shmem_request();
-#else
-	prev_shmem_request_hook = shmem_request_hook;
-	shmem_request_hook = spock_group_shmem_request;
-#endif
-	prev_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook = spock_group_shmem_startup;
-#endif
-}
-
-/*
  * spock_group_shmem_request
  *
  * Request and initialize the shmem structures backing the group registry.
@@ -352,20 +334,10 @@ dump_one_group_cb(const SpockGroupEntry *e, void *arg)
  * spock_group_resource_dump
  *
  * Write a clean-shutdown snapshot to PGDATA/spock/resource.dat.
- * - Header: version, system_identifier, flags, entry_count (patched after scan)
- * - Body:   array of SpockApplyProgress records (struct layout is prefix-stable)
+ * - Header: version, system_identifier, flags, entry_count
+ * - Body:   array of SpockApplyProgress records
  * Writes to a temp file, fsyncs, then durable_rename() into place.
  * Typically invoked via on_shmem_exit() from the main Spock process.
- */
-/*
- * spock_group_resource_dump
- * -------------------------
- * Write a clean-shutdown snapshot to PGDATA/spock/resource.dat.
- * - Header: version, system_identifier, flags, entry_count (patched after scan)
- * - Body:   array of SpockApplyProgress records (struct layout is prefix-stable)
- * Writes to a temp file, fsyncs, then durable_rename_excl() into place.
- * Typically invoked via on_shmem_exit() from the main Spock process.
- *
  */
 void
 spock_group_resource_dump(void)
