@@ -386,10 +386,7 @@ static void
 adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 {
 	const char *originQuery =
-		"SELECT node_id, remote_node_id, remote_commit_ts, "
-		"       remote_lsn, remote_insert_lsn, "
-		"       last_updated_ts, updated_by_decode "
-		"FROM spock.progress "
+		"SELECT * FROM spock.progress "
 		"WHERE node_id = %u AND remote_node_id <> %u";
 	StringInfoData query;
 	PGresult   *originRes;
@@ -420,12 +417,12 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			 * We assume here that the progress table entry already exists.
 			 * Turning this into an INSERT if not should be easy.
 			 */
-			char	   *remote_node_id = PQgetvalue(originRes, rno, 1);
-			char	   *remote_commit_ts = PQgetvalue(originRes, rno, 2);
-			char	   *remote_commit_lsn = PQgetvalue(originRes, rno, 3);
-			char	   *remote_insert_lsn = PQgetvalue(originRes, rno, 4);
-			char	   *last_updated_ts = PQgetvalue(originRes, rno, 5);
-			char	   *updated_by_decode = PQgetvalue(originRes, rno, 6);
+			char	   *remote_node_id = PQgetvalue(originRes, rno, GP_REMOTE_NODE_ID);
+			char	   *remote_commit_ts = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_TS);
+			char	   *remote_commit_lsn = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_LSN);
+			char	   *remote_insert_lsn = PQgetvalue(originRes, rno, GP_REMOTE_INSERT_LSN);
+			char	   *last_updated_ts;
+			char	   *updated_by_decode = PQgetvalue(originRes, rno, GP_UPDATED_BY_DECODE);
 
 			SpockApplyProgress sap = {
 				.key.dbid = MyDatabaseId,
@@ -435,9 +432,15 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 				.prev_remote_ts = str_to_timestamptz(remote_commit_ts),
 				.remote_commit_lsn = str_to_lsn(remote_commit_lsn),
 				.remote_insert_lsn = str_to_lsn(remote_insert_lsn),
-				.last_updated_ts = str_to_timestamptz(last_updated_ts),
+				.last_updated_ts = 0,
 				.updated_by_decode = updated_by_decode[0] == 't',
 			};
+
+			if (!PQgetisnull(originRes, rno, 5))
+			{
+				last_updated_ts = PQgetvalue(originRes, rno, GP_LAST_UPDATED_TS);
+				sap.last_updated_ts = str_to_timestamptz(last_updated_ts);
+			}
 
 			/* Update progress */
 			spock_group_progress_update(&sap);

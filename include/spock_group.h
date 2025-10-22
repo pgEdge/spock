@@ -87,6 +87,19 @@ typedef struct SpockGroupEntry
 	ConditionVariable prev_processed_cv;
 } SpockGroupEntry;
 
+typedef enum
+{
+	GP_DBOID = 0,
+	GP_NODE_ID,
+	GP_REMOTE_NODE_ID,
+	GP_REMOTE_COMMIT_TS,
+	GP_PREV_REMOTE_TS,
+	GP_REMOTE_COMMIT_LSN,
+	GP_REMOTE_INSERT_LSN,
+	GP_LAST_UPDATED_TS,
+	GP_UPDATED_BY_DECODE
+} GroupProgressTupDescColumns;
+
 /* shmem setup */
 void		spock_group_shmem_init(void);
 extern void spock_group_shmem_request(void);

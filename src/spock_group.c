@@ -308,11 +308,17 @@ apply_worker_get_progress(void)
 SpockGroupEntry *
 spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
 {
-	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
-	SpockGroupEntry *e;
+	SpockGroupKey		key = make_key(dbid, node_id, remote_node_id);
+	SpockGroupEntry	   *e;
+	bool				found;
 
-	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_FIND, NULL);
-	return e;					/* may be NULL */
+	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_FIND, &found);
+
+	if (!found)
+		return NULL;
+
+	Assert(e != NULL);
+	return e;
 }
 
 /*
