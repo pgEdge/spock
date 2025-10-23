@@ -96,6 +96,7 @@
 #include "spock_rpc.h"
 #include "spock_sync.h"
 #include "spock_worker.h"
+#include "spock_recovery.h"
 #include "spock_group.h"
 
 #include "spock.h"
@@ -162,6 +163,9 @@ PG_FUNCTION_INFO_V1(spock_version);
 PG_FUNCTION_INFO_V1(spock_version_num);
 PG_FUNCTION_INFO_V1(spock_min_proto_version);
 PG_FUNCTION_INFO_V1(spock_max_proto_version);
+
+/* Recovery Slot functions */
+PG_FUNCTION_INFO_V1(spock_get_recovery_slot_status_sql);
 
 PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 
@@ -3384,3 +3388,83 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 
 	return (Datum) 0;
 }
+
+/*
+ * Get recovery slot status SQL function  
+ * Usage: SELECT * FROM spock.get_recovery_slot_status();
+ */
+Datum
+spock_get_recovery_slot_status_sql(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	Datum		values[6];
+	bool		nulls[6];
+	SpockRecoverySlotData *slot;
+	char		lsn_str[32];
+
+	/* Check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+
+	/* Build tuple descriptor */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	if (!SpockRecoveryCtx)
+	{
+		elog(WARNING, "Recovery coordinator not initialized");
+		PG_RETURN_VOID();
+	}
+
+	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
+
+	slot = &SpockRecoveryCtx->recovery_slot;
+	
+	if (slot->active)
+	{
+		memset(nulls, 0, sizeof(nulls));
+
+		values[0] = CStringGetTextDatum(slot->slot_name);
+		
+		if (slot->restart_lsn != InvalidXLogRecPtr)
+			values[1] = LSNGetDatum(slot->restart_lsn);
+		else
+			nulls[1] = true;
+
+		if (slot->confirmed_flush_lsn != InvalidXLogRecPtr)
+			values[2] = LSNGetDatum(slot->confirmed_flush_lsn);
+		else
+			nulls[2] = true;
+
+		if (slot->min_unacknowledged_ts > 0)
+			values[3] = TimestampTzGetDatum(slot->min_unacknowledged_ts);
+		else
+			nulls[3] = true;
+
+		values[4] = BoolGetDatum(slot->active);
+		values[5] = BoolGetDatum(slot->in_recovery);
+
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
+
+	LWLockRelease(SpockRecoveryCtx->lock);
+
+	PG_RETURN_VOID();
+}
+

@@ -3674,3 +3674,4 @@ maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 		w_message_count = 0;
 	}
 }
+

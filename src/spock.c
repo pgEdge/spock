@@ -61,6 +61,7 @@
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
 #include "spock_readonly.h"
+#include "spock_recovery.h"
 #include "spock.h"
 
 PG_MODULE_MAGIC;
@@ -133,6 +134,7 @@ int		restart_delay_default;
 int		restart_delay_on_exception;
 int		spock_replay_queue_size;  /* Deprecated - no longer used */
 bool	check_all_uc_indexes = false;
+bool	spock_enable_recovery_slots = true;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
 
@@ -1130,6 +1132,15 @@ _PG_init(void)
 							 NULL,
 							 &check_all_uc_indexes,
 							 false,
+							 PGC_SIGHUP,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.enable_recovery_slots",
+							 gettext_noop("Enable automatic creation of recovery slots for catastrophic failure recovery."),
+							 gettext_noop("When enabled, Spock automatically creates recovery slots to preserve WAL for catastrophic failure recovery."),
+							 &spock_enable_recovery_slots,
+							 true,
 							 PGC_SIGHUP,
 							 0,
 							 NULL, NULL, NULL);
