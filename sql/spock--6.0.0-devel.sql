@@ -832,21 +832,15 @@ BEGIN
     IF recovery_slot_exists THEN
         RETURN QUERY SELECT 'Recovery Slot'::text, 'HEALTHY'::text, 'Recovery slot exists and is active'::text;
     ELSE
-        -- Try to recreate the recovery slot
-        BEGIN
-            PERFORM spock_create_recovery_slot(db_name);
-            RETURN QUERY SELECT 'Recovery Slot'::text, 'RECREATED'::text, 'Recovery slot was missing and has been recreated'::text;
-        EXCEPTION WHEN OTHERS THEN
-            RETURN QUERY SELECT 'Recovery Slot'::text, 'ERROR'::text, 'Failed to recreate recovery slot: ' || SQLERRM;
-        END;
+        -- Check if recovery slots are enabled via GUC
+        IF current_setting('spock.enable_recovery_slots', true)::boolean THEN
+            RETURN QUERY SELECT 'Recovery Slot'::text, 'MISSING'::text, 'Recovery slot is missing but should be created automatically by the manager process'::text;
+        ELSE
+            RETURN QUERY SELECT 'Recovery Slot'::text, 'DISABLED'::text, 'Recovery slot is disabled via spock.enable_recovery_slots = off'::text;
+        END IF;
     END IF;
     
     RETURN;
 END;
 $$;
 
--- Helper function to manually create recovery slot
-CREATE OR REPLACE FUNCTION spock_create_recovery_slot(database_name text)
-RETURNS boolean
-LANGUAGE C VOLATILE STRICT  
-AS 'MODULE_PATHNAME', 'spock_create_recovery_slot_sql';

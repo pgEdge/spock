@@ -69,7 +69,7 @@ extern SpockRecoveryCoordinator *SpockRecoveryCtx;
  * Shared memory management functions
  */
 extern Size spock_recovery_shmem_size(void);
-extern void spock_recovery_shmem_init(void);
+extern void spock_recovery_shmem_startup(void);
 
 /*
  * Recovery slot management functions

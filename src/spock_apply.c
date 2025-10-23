@@ -86,7 +86,6 @@
 #include "spock_exception_handler.h"
 #include "spock_common.h"
 #include "spock_readonly.h"
-#include "spock_recovery.h"
 #include "spock.h"
 
 

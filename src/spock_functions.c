@@ -166,7 +166,6 @@ PG_FUNCTION_INFO_V1(spock_max_proto_version);
 
 /* Recovery Slot functions */
 PG_FUNCTION_INFO_V1(spock_get_recovery_slot_status_sql);
-PG_FUNCTION_INFO_V1(spock_create_recovery_slot_sql);
 
 PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 
@@ -3443,22 +3442,3 @@ spock_get_recovery_slot_status_sql(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-/*
- * Manually create recovery slot SQL function
- * Usage: SELECT spock_create_recovery_slot('dbname');
- */
-Datum
-spock_create_recovery_slot_sql(PG_FUNCTION_ARGS)
-{
-	char	   *database_name;
-	bool		result;
-	
-	if (PG_ARGISNULL(0))
-		PG_RETURN_NULL();
-		
-	database_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	
-	result = create_recovery_slot(database_name);
-	
-	PG_RETURN_BOOL(result);
-}

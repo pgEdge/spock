@@ -872,6 +872,9 @@ spock_worker_shmem_startup(void)
 
 	/* Apply Group shmem startup */
 	spock_group_shmem_startup(nworkers, found);
+
+	/* Recovery slots shmem startup */
+	spock_recovery_shmem_startup();
 }
 
 /*

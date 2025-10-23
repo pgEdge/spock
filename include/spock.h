@@ -47,6 +47,7 @@ extern bool	spock_deny_ddl;
 extern bool	spock_enable_ddl_replication;
 extern bool	spock_include_ddl_repset;
 extern bool	allow_ddl_from_functions;
+extern bool	spock_enable_recovery_slots;
 extern int	restart_delay_default;
 extern int	restart_delay_on_exception;
 extern int	spock_replay_queue_size;  /* Deprecated - no longer used */

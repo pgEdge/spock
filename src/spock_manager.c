@@ -216,26 +216,30 @@ spock_manager_main(Datum main_arg)
 	 *
 	 * Created here because manager runs once per database, ensuring a single
 	 * shared slot for all subscriptions.
+	 *
+	 * Only create if recovery slots are enabled via GUC.
 	 */
-	StartTransactionCommand();
-	PG_TRY();
+	if (spock_enable_recovery_slots)
 	{
-		if (create_recovery_slot(get_database_name(MyDatabaseId)))
+		StartTransactionCommand();
+		PG_TRY();
 		{
-			char *slot_name = get_recovery_slot_name(get_database_name(MyDatabaseId));
-			elog(LOG, "created recovery slot '%s' for database %s",
-				 slot_name, get_database_name(MyDatabaseId));
-			pfree(slot_name);
+			if (create_recovery_slot(get_database_name(MyDatabaseId)))
+			{
+				char *slot_name = get_recovery_slot_name(get_database_name(MyDatabaseId));
+				elog(LOG, "created recovery slot '%s' for database %s",
+					 slot_name, get_database_name(MyDatabaseId));
+				pfree(slot_name);
+			}
 		}
+		PG_CATCH();
+		{
+			elog(ERROR, "failed to create recovery slot for database %s",
+				 get_database_name(MyDatabaseId));
+		}
+		PG_END_TRY();
+		CommitTransactionCommand();
 	}
-	PG_CATCH();
-	{
-		elog(WARNING, "failed to create recovery slot for database %s",
-			 get_database_name(MyDatabaseId));
-		/* Continue anyway - recovery slot is optional */
-	}
-	PG_END_TRY();
-	CommitTransactionCommand();
 
 	/* Use separate transaction to avoid lock escalation. */
 	StartTransactionCommand();

@@ -54,11 +54,9 @@
 /* Global recovery coordinator in shared memory */
 SpockRecoveryCoordinator *SpockRecoveryCtx = NULL;
 
-/* Hook for shared memory startup */
-static shmem_startup_hook_type prev_recovery_shmem_startup_hook = NULL;
+/* Hook for shared memory startup - no longer needed since integrated with worker shmem */
 
 /* Internal function prototypes */
-static void spock_recovery_shmem_startup(void);
 static SpockRecoverySlotData *get_recovery_slot(void);
 static void initialize_recovery_slot(SpockRecoverySlotData *slot,
 									 const char *database_name);
@@ -85,19 +83,6 @@ spock_recovery_shmem_size(void)
 	return size;
 }
 
-/*
- * spock_recovery_shmem_init
- *
- * Initialize shared memory for recovery slot management.
- * Registers our startup hook to be called during shared memory initialization.
- */
-void
-spock_recovery_shmem_init(void)
-{
-	/* Chain to previous hook if any */
-	prev_recovery_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook = spock_recovery_shmem_startup;
-}
 
 /*
  * spock_recovery_shmem_startup
@@ -107,15 +92,13 @@ spock_recovery_shmem_init(void)
  *
  * Called during postmaster startup while holding AddinShmemInitLock.
  */
-static void
+void
 spock_recovery_shmem_startup(void)
 {
 	bool		found;
 	Size		size;
 
-	/* Call previous hook if any */
-	if (prev_recovery_shmem_startup_hook)
-		prev_recovery_shmem_startup_hook();
+	/* No hook chaining needed - called directly from spock_worker_shmem_startup() */
 
 	size = spock_recovery_shmem_size();
 
@@ -267,15 +250,13 @@ initialize_recovery_slot(SpockRecoverySlotData *slot,
  *
  * Returns:
  *		true if slot exists (created now or previously)
- *		false on error (logged as WARNING, not fatal)
+ *		Never returns false - exits on error since recovery slots are controlled by GUC
  */
 bool
 create_recovery_slot(const char *database_name)
 {
 	SpockRecoverySlotData *slot;
 	char	   *slot_name;
-	bool		success = false;
-	bool		cleanup_needed = false;
 
 	if (!SpockRecoveryCtx)
 	{
@@ -318,46 +299,21 @@ create_recovery_slot(const char *database_name)
 	 * - false: not two-phase (we don't need prepared transaction support)
 	 * - false: not failover (recovery slots don't need failover)
 	 * - false: not synced (recovery slots are local only)
+	 *
+	 * Since recovery slots are controlled by GUC, failure to create should be fatal.
 	 */
-	PG_TRY();
-	{
-		ReplicationSlotCreate(slot_name, true, RS_PERSISTENT, false, false, false);
-		success = true;
+	ReplicationSlotCreate(slot_name, true, RS_PERSISTENT, false, false, false);
 
-		elog(LOG, "created recovery slot '%s' (INACTIVE - for catastrophic failure recovery only)",
-			 slot_name);
-	}
-	PG_CATCH();
-	{
-		/* Log the error but don't fail - recovery slots are optional */
-		cleanup_needed = true;
-		elog(WARNING, "failed to create recovery slot '%s'", slot_name);
-	}
-	PG_END_TRY();
+	elog(LOG, "created recovery slot '%s' (INACTIVE - for catastrophic failure recovery only)",
+		 slot_name);
 
-	/* Update slot state based on creation result */
-	if (success)
-	{
-		/* Mark slot as active in shared memory */
-		LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
-		slot->active = true;
-		LWLockRelease(SpockRecoveryCtx->lock);
-	}
-	else if (cleanup_needed)
-	{
-		/* Reset slot to initial state on failure */
-		LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
-		slot->slot_name[0] = '\0';
-		slot->restart_lsn = InvalidXLogRecPtr;
-		slot->confirmed_flush_lsn = InvalidXLogRecPtr;
-		slot->min_unacknowledged_ts = 0;
-		slot->active = false;
-		slot->in_recovery = false;
-		LWLockRelease(SpockRecoveryCtx->lock);
-	}
+	/* Mark slot as active in shared memory after successful creation */
+	LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
+	slot->active = true;
+	LWLockRelease(SpockRecoveryCtx->lock);
 
 	pfree(slot_name);
-	return success;
+	return true;
 }
 
 /*
@@ -472,10 +428,9 @@ update_recovery_slot_progress(const char *slot_name, XLogRecPtr lsn,
 
 		/*
 		 * Track the restart LSN (earliest position needed).
-		 * This would be updated by WAL advancement logic.
+		 * Initialize to the first LSN we see, as LSNs are monotonically increasing.
 		 */
-		if (slot->restart_lsn == InvalidXLogRecPtr ||
-			lsn < slot->restart_lsn)
+		if (slot->restart_lsn == InvalidXLogRecPtr)
 		{
 			slot->restart_lsn = lsn;
 		}
