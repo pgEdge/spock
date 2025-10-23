@@ -187,10 +187,6 @@ Use this GUC to specify which operations/transactions are written to the excepti
 * `discard` - Add a row to the `spock.exception_log` table for any discarded operation; successful transactions are not logged.
 * `none` - Instructs the server to not log any operation or transactions to the exception log table.
 
-#### `spock.exception_replay_queue_size`
-
-When Spock encounters a replication exception, it attempts to resolve the exception by entering exception-handling mode, based on the value of `spock.exception_behaviour`.  Spock then writes any transaction up to a default size of `4MB` to memory, and the apply worker replays the transaction from memory.  This provides a massive speed and performance increase in the handling of the vast majority of exceptions.  The memory size is configurable with `spock.exception_replay_queue_size`.
-
 #### `spock.extra_connection_options`
 
 You can use the `spock.extra_connection_options` parameter in the `postgresql.conf` file to assign connection options that apply to all connections made by Spock. This can be a useful place to set up custom keepalive options, etc.
