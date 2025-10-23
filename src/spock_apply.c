@@ -871,9 +871,6 @@ handle_commit(StringInfo s)
 	{
 		/* build new/update entry */
 		SpockApplyProgress sap = {
-			.key.dbid = MyDatabaseId,
-			.key.node_id = MySubscription->target->id,
-			.key.remote_node_id = MySubscription->origin->id,
 			.remote_commit_ts = replorigin_session_origin_timestamp,
 			.prev_remote_ts = replorigin_session_origin_timestamp,
 			.remote_commit_lsn = replorigin_session_origin_lsn,
@@ -888,7 +885,13 @@ handle_commit(StringInfo s)
 		if (MyApplyWorker && MyApplyWorker->apply_group)
 			spock_group_progress_update_ptr(MyApplyWorker->apply_group, &sap);
 		else
-			spock_group_progress_update(&sap);
+		{
+			SpockGroupKey key = make_key(MyDatabaseId,
+										 MySubscription->target->id,
+										 MySubscription->origin->id);
+
+			spock_group_progress_update(&key, &sap);
+		}
 	}
 
 	/* Wakeup all waiters for waiting for the previous transaction to commit */
@@ -1013,6 +1016,7 @@ handle_commit_order(StringInfo s)
 	 * changes from one origin.
 	 */
 	required_commit_ts = spock_read_commit_order(s);
+	Assert(IS_VALID_TIMESTAMP(required_commit_ts));
 
 	elog(DEBUG1, "SPOCK: slot-group '%s' previous commit ts received: "
 			INT64_FORMAT " - commit ts " INT64_FORMAT,
@@ -1638,12 +1642,12 @@ handle_startup(StringInfo s)
 		handle_startup_param(k, v);
 	} while (!getmsgisend(s));
 
-	/* Attach this worker. */
-	spock_apply_worker_attach();
-
 	/* Register callback for cleaning up */
 	before_shmem_exit(spock_apply_worker_shmem_exit, 0);
 	on_proc_exit(spock_apply_worker_on_exit, 0);
+
+	/* Attach this worker. */
+	spock_apply_worker_attach();
 }
 
 /*
@@ -1676,20 +1680,13 @@ spock_apply_worker_on_exit(int code, Datum arg)
 static void
 spock_apply_worker_attach(void)
 {
-	bool		created;
-
 	if(MyApplyWorker->apply_group != NULL)
 		return;
-
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 
 		/* Set the values in shared memory for this dbid-origin */
 	MyApplyWorker->apply_group = spock_group_attach(MySpockWorker->dboid,
 					   MySubscription->target->id,
-					   MySubscription->origin->id,
-					   &created);
-
-	LWLockRelease(SpockCtx->apply_group_master_lock);
+					   MySubscription->origin->id);
 }
 
 /* Remove a worker from it's group. */
@@ -3441,8 +3438,21 @@ check_and_update_progress(XLogRecPtr last_received_lsn,
 
     if (update_needed)
     {
+		SpockGroupKey	key = make_key(MyDatabaseId, MySubscription->target->id,
+									   MySubscription->origin->id);
+		bool			ret;
+
+//		MySpockWorker->dboid,
+//					   MySubscription->target->id,
+//					   MySubscription->origin->id
+
 		/* Update in shared memory and in the table */
 		sap->remote_insert_lsn = last_received_lsn;
+		ret = spock_group_progress_update(&key, sap);
+		if (!ret)
+			elog(ERROR, "Spock progress entry doesn't exist for (%u, %u, %u)",
+				 MyDatabaseId, MySubscription->target->id,
+				 MySubscription->origin->id);
     }
 }
 

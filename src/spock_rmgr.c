@@ -72,7 +72,7 @@ spock_rmgr_init(void)
  *
  * Redo handler for Spock WAL records. For APPLY_PROGRESS records, decode the
  * payload (SpockApplyProgress) and upsert into the shmem group registry via
- * spock_group_update_progress(). This runs during recovery and overwrites any
+ * spock_group_progress_update(). This runs during recovery and overwrites any
  * shmem contents previously seeded by file load.
  */
 void
@@ -84,14 +84,10 @@ spock_rmgr_redo(XLogReaderState *record)
 	{
 		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				SpockApplyProgress *sap;
+				spock_xl_apply_progress *rec;
 
-				sap = (SpockApplyProgress *) XLogRecGetData(record);
-
-				/* LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE); */
-
-				spock_group_progress_update(sap);
-				/* LWLockRelease(SpockCtx->lock); */
+				rec = (spock_xl_apply_progress *) XLogRecGetData(record);
+				spock_group_progress_update(&rec->key, &rec->progress);
 			}
 			break;
 
@@ -112,13 +108,13 @@ spock_rmgr_desc(StringInfo buf, XLogReaderState *record)
 	{
 		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				SpockApplyProgress *sap;
+				spock_xl_apply_progress *rec;
 
-				sap = (SpockApplyProgress *) XLogRecGetData(record);
+				rec = (spock_xl_apply_progress *) XLogRecGetData(record);
 				appendStringInfo(buf, "spock apply progress for db %u, node %u, remote_node %u",
-								 sap->key.dbid,
-								 sap->key.node_id,
-								 sap->key.remote_node_id);
+								 rec->key.dbid,
+								 rec->key.node_id,
+								 rec->key.remote_node_id);
 			}
 			break;
 		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:

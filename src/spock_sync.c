@@ -390,6 +390,8 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 		"WHERE node_id = %u AND remote_node_id <> %u";
 	StringInfoData query;
 	PGresult   *originRes;
+	HASH_SEQ_STATUS		it;
+	SpockGroupEntry	   *entry;
 
 	/*
 	 * Select the current content of the origin's spock.progress table where
@@ -400,6 +402,19 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 	 * that have already been applied from other existing nodes and are
 	 * therefore part of the snapshot we are copying.
 	 */
+/*
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+	hash_seq_init(&it, SpockGroupHash);
+	while ((entry = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
+	{
+		if (entry->key.node_id == MySubscription->origin->id &&
+			entry->key.remote_node_id <> MySubscription->target->id)
+		{
+
+		}
+	}
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+*/
 	initStringInfo(&query);
 	appendStringInfo(&query, originQuery, MySubscription->origin->id,
 					 MySubscription->target->id);
@@ -418,32 +433,39 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			 * Turning this into an INSERT if not should be easy.
 			 */
 			char	   *remote_node_id = PQgetvalue(originRes, rno, GP_REMOTE_NODE_ID);
-			char	   *remote_commit_ts = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_TS);
+			char	   *remote_commit_ts = 0;
 			char	   *remote_commit_lsn = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_LSN);
 			char	   *remote_insert_lsn = PQgetvalue(originRes, rno, GP_REMOTE_INSERT_LSN);
-			char	   *last_updated_ts;
+			char	   *last_updated_ts = 0;
 			char	   *updated_by_decode = PQgetvalue(originRes, rno, GP_UPDATED_BY_DECODE);
+			SpockGroupKey key = make_key(MyDatabaseId,
+										 MySubscription->target->id,
+										 atooid(remote_node_id));
 
 			SpockApplyProgress sap = {
-				.key.dbid = MyDatabaseId,
-				.key.node_id = MySubscription->target->id,
-				.key.remote_node_id = atooid(remote_node_id),
-				.remote_commit_ts = str_to_timestamptz(remote_commit_ts),
-				.prev_remote_ts = str_to_timestamptz(remote_commit_ts),
+				.remote_commit_ts = 0,
+				.prev_remote_ts = 0,
 				.remote_commit_lsn = str_to_lsn(remote_commit_lsn),
 				.remote_insert_lsn = str_to_lsn(remote_insert_lsn),
 				.last_updated_ts = 0,
 				.updated_by_decode = updated_by_decode[0] == 't',
 			};
 
-			if (!PQgetisnull(originRes, rno, 5))
+			if (!PQgetisnull(originRes, rno, GP_REMOTE_COMMIT_TS))
+			{
+				remote_commit_ts = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_TS);
+				sap.remote_commit_ts = str_to_timestamptz(remote_commit_ts);
+				sap.prev_remote_ts = sap.remote_commit_ts;
+			}
+
+			if (!PQgetisnull(originRes, rno, GP_LAST_UPDATED_TS))
 			{
 				last_updated_ts = PQgetvalue(originRes, rno, GP_LAST_UPDATED_TS);
 				sap.last_updated_ts = str_to_timestamptz(last_updated_ts);
 			}
 
 			/* Update progress */
-			spock_group_progress_update(&sap);
+			spock_group_progress_update(&key, &sap);
 
 			elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
 				 "remote_commit_ts='%s' "
@@ -857,7 +879,7 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	adjust_progress_info(origin_conn, target_conn);
+	//adjust_progress_info(origin_conn, target_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
@@ -944,7 +966,7 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	adjust_progress_info(origin_conn, target_conn);
+//	adjust_progress_info(origin_conn, target_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);

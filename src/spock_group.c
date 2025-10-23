@@ -147,7 +147,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	hctl.num_partitions = 16;
 
 	/* Get the shared resources */
-	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 	SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
 	SpockGroupHash = ShmemInitHash("spock group hash",
 								   napply_groups,
@@ -160,8 +159,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	if (!SpockGroupHash)
 		elog(ERROR, "spock_group_shmem_startup: failed to init group map");
 
-	LWLockRelease(AddinShmemInitLock);
-
 	if (found)
 		return;
 
@@ -170,7 +167,7 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	spock_group_resource_load();
 }
 
-static inline SpockGroupKey
+SpockGroupKey
 make_key(Oid dbid, Oid node_id, Oid remote_node_id)
 {
 	SpockGroupKey k;
@@ -184,6 +181,26 @@ make_key(Oid dbid, Oid node_id, Oid remote_node_id)
 }
 
 /*
+ * Static value to use to initialize newly created progress entry.
+ *
+ * Follow the CommitTsShmemInit() code as an example how to initialize such data
+ * types in shared memory. Keep the order according to the SpockApplyProgress
+ * declaration.
+ *
+ * The main purpose to introduce this standard initialization is to identify
+ * empty (not initialized) values to avoid weird calculations.
+ */
+static const SpockApplyProgress init_apply_progress =
+{
+	.remote_commit_ts = 0,
+	.prev_remote_ts = 0,
+	.remote_commit_lsn = InvalidXLogRecPtr,
+	.remote_insert_lsn = InvalidXLogRecPtr,
+	.last_updated_ts = 0,
+	.updated_by_decode = false
+};
+
+/*
  * spock_group_attach
  *
  * Ensure a group entry exists for (dbid,node_id,remote_node_id) and return a
@@ -191,32 +208,26 @@ make_key(Oid dbid, Oid node_id, Oid remote_node_id)
  * call from an apply worker during startup/attach.
  */
 SpockGroupEntry *
-spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id, bool *created)
+spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 {
-	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
-	SpockGroupEntry *e;
-	bool		found;
+	SpockGroupKey		key = make_key(dbid, node_id, remote_node_id);
+	SpockGroupEntry	   *e;
+	bool				found;
+
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
 	if (!found)
 	{
 		/* initialize key values; Other entries will be updated later */
-		memset(&e->progress, 0, sizeof(e->progress));
-		e->progress.key = e->key;
+		e->progress = init_apply_progress;
 
 		pg_atomic_init_u32(&e->nattached, 0);
 		ConditionVariableInit(&e->prev_processed_cv);
-		if (created)
-			*created = true;
-	}
-	else
-	{
-		if (created)
-			*created = false;
 	}
 
 	pg_atomic_add_fetch_u32(&e->nattached, 1);
-
+	LWLockRelease(SpockCtx->apply_group_master_lock);
 	return e;
 }
 
@@ -237,37 +248,35 @@ spock_group_detach(void)
 /*
  * spock_group_progress_update
  *
- * Update the progress snapshot for (dbid,node_id,remote_node_id).
+ * Update the progress state for (dbid,node_id,remote_node_id).
  * Uses hash_search(HASH_ENTER) for table access, then copies 'sap' into the
  * entry's progress payload under the gate lock (writers EXCLUSIVE).
+ *
+ * Returns true if the entry already exists, false otherwise.
  */
 bool
-spock_group_progress_update(const SpockApplyProgress *sap)
+spock_group_progress_update(const SpockGroupKey *key,
+							const SpockApplyProgress *progress)
 {
-	SpockGroupKey key;
-	SpockGroupEntry *e;
-	bool		found;
+	SpockGroupEntry	   *entry;
+	bool				found;
 
-	if (!sap)
-		return false;
+	Assert(key && progress);
 
-	key = make_key(sap->key.dbid, sap->key.node_id, sap->key.remote_node_id);
-	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
+	entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &key,
+											HASH_ENTER, &found);
 
 	if (!found)					/* New Entry */
 	{
-		/* Initialize key values; Other entries will be updated later */
-		memset(&e->progress, 0, sizeof(e->progress));
-		e->progress.key = e->key;
-
-		pg_atomic_init_u32(&e->nattached, 0);
-		ConditionVariableInit(&e->prev_processed_cv);
+		pg_atomic_init_u32(&entry->nattached, 0);
+		ConditionVariableInit(&entry->prev_processed_cv);
 	}
 
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
-	e->progress = *sap;
+	entry->progress = *progress;
 	LWLockRelease(SpockCtx->apply_group_master_lock);
-	return true;
+	return found;
 }
 
 /* Fast update when you already hold the pointer (apply hot path) */
@@ -280,10 +289,15 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
 
+static SpockApplyProgress apply_progress = init_apply_progress;
+
 /*
  * apply_worker_get_progress
  *
- * Return a pointer to the current apply worker's progress payload, or NULL
+ * Quick look into the progress state.
+ * Because it lies in the shared memory we can't just check it without a lock.
+ * For the sake of performance, copy state into the static variable and return
+ * the pointer.
  */
 SpockApplyProgress *
 apply_worker_get_progress(void)
@@ -291,10 +305,11 @@ apply_worker_get_progress(void)
     Assert(MyApplyWorker != NULL);
     Assert(MyApplyWorker->apply_group != NULL);
 
-    if (MyApplyWorker && MyApplyWorker->apply_group)
-        return &MyApplyWorker->apply_group->progress;
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+	apply_progress = MyApplyWorker->apply_group->progress;
+	LWLockRelease(SpockCtx->apply_group_master_lock);
 
-    return NULL;
+    return &apply_progress;
 }
 
 /*
@@ -347,10 +362,15 @@ spock_group_foreach(SpockGroupIterCB cb, void *arg)
 static void
 dump_one_group_cb(const SpockGroupEntry *e, void *arg)
 {
-	DumpCtx    *ctx = (DumpCtx *) arg;
+	DumpCtx					   *ctx = (DumpCtx *) arg;
+	spock_xl_apply_progress		rec;
+
+	rec.key = e->key;
+	rec.progress = e->progress;
 
 	/* Only the progress payload goes to disk. It already contains the key. */
-	write_buf(ctx->fd, &e->progress, sizeof(e->progress), SPOCK_RES_DUMPFILE "(data)");
+	write_buf(ctx->fd, &rec, sizeof(spock_xl_apply_progress),
+			  SPOCK_RES_DUMPFILE "(data)");
 	ctx->count++;
 }
 
@@ -384,6 +404,8 @@ spock_group_resource_dump(void)
 	SpockResFileHeader hdr = {0};
 	DumpCtx		dctx = {0};
 
+	Assert(!IsUnderPostmaster);
+
 	/* build paths */
 	snprintf(pathdir, sizeof(pathdir), "%s/%s", DataDir, SPOCK_RES_DIRNAME);
 	snprintf(pathtmp, sizeof(pathtmp), "%s/%s", pathdir, SPOCK_RES_TMPNAME);
@@ -407,15 +429,13 @@ spock_group_resource_dump(void)
 
 	write_buf(fd, &hdr, sizeof(hdr), SPOCK_RES_DUMPFILE "(header)");
 
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+	/* We are inside the postmaster without any backends. No lock needed */
 
 	dctx.fd = fd;
 	dctx.count = 0;
 
 	/* write all entries */
 	spock_group_foreach(dump_one_group_cb, &dctx);
-
-	LWLockRelease(SpockCtx->apply_group_master_lock);
 
 	if (dctx.count != hdr.entry_count)
 		ereport(ERROR,
@@ -493,15 +513,18 @@ spock_group_resource_load(void)
 	/* Read each record and upsert */
 	for (uint32 i = 0; i < hdr.entry_count; i++)
 	{
-		SpockApplyProgress sap;
+		spock_xl_apply_progress		rec;
+		bool						ret;
 
-		read_buf(fd, &sap, sizeof(sap), SPOCK_RES_DUMPFILE "(data)");
+		read_buf(fd, &rec, sizeof(spock_xl_apply_progress),
+				 SPOCK_RES_DUMPFILE "(data)");
 
 		/*
 		 * Note: if ever version is changed in SpockApplyProgress and need
 		 * compatibility, it should be translated here. For now, 1:1.
 		 */
-		(void) spock_group_progress_update(&sap);
+		ret = spock_group_progress_update(&rec.key, &rec.progress);
+		Assert(!ret);
 	}
 
 	CloseTransientFile(fd);
