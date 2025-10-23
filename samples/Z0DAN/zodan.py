@@ -187,7 +187,7 @@ class SpockClusterManager:
         try:
             src_users_result = self.run_psql(src_dsn, src_users_sql, fetch=True)
             if src_users_result:
-                src_users = [line.strip() for line in src_users_result.strip().split('\n') if line.strip()]
+                src_users = [line.strip() for line in src_users_result if line.strip()]
                 missing_users = []
                 
                 for user in src_users:
@@ -452,8 +452,8 @@ class SpockClusterManager:
 
     def create_source_to_new_subscription(self, src_node_name: str, src_dsn: str, 
                                         new_node_name: str, new_node_dsn: str):
-        """Phase 4: Create source to new node subscription"""
-        self.notice("Phase 4: Creating source to new node subscription")
+        """Phase 5: Create source to new node subscription"""
+        self.notice("Phase 5: Creating source to new node subscription")
         
         sub_name = f"sub_{src_node_name}_{new_node_name}"
         self.create_sub(
@@ -495,8 +495,8 @@ class SpockClusterManager:
 
     def trigger_sync_on_other_nodes_and_wait_on_source(self, src_node_name: str, src_dsn: str, 
                                                       new_node_name: str, new_node_dsn: str):
-        """Phase 5: Trigger sync events on other nodes and wait on source"""
-        self.notice("Phase 5: Triggering sync events on other nodes and waiting on source")
+        """Phase 4: Trigger sync events on other nodes and wait on source"""
+        self.notice("Phase 4: Triggering sync events on other nodes and waiting on source")
         
         # Get all nodes from source cluster
         nodes = self.get_spock_nodes(src_dsn)
@@ -513,12 +513,12 @@ class SpockClusterManager:
             self.wait_for_sync_event(src_dsn, True, rec['node_name'], sync_lsn, 1200)
             self.notice(f"    OK: Waiting for sync event from {rec['node_name']} on source node {src_node_name}...")
 
-    def wait_for_source_node_sync(self, src_node_name: str, src_dsn: str,
-                                 new_node_name: str, new_node_dsn: str, wait_for_all: bool):
+    def trigger_source_sync_and_wait_on_new_node(self, src_node_name: str, src_dsn: str,
+                                 new_node_name: str, new_node_dsn: str):
         """Phase 6: Wait for sync on source and new node using sync_event and wait_for_sync_event"""
         self.notice("Phase 6: Waiting for sync on source and new node")
 
-        # Trigger sync event on new node and wait for it on source node
+        # Trigger sync event on source node and wait for it on new node
         sync_lsn = None
         timeout_ms = 1200  # 20 minutes timeout
 
@@ -526,30 +526,31 @@ class SpockClusterManager:
             # Trigger sync event on new node
             sql = "SELECT spock.sync_event();"
             if self.verbose:
-                self.info(f"    Remote SQL for sync_event on new node {new_node_name}: {sql}")
+                self.info(f"    Remote SQL for sync_event on source node {src_node_name}: {sql}")
 
             sync_lsn = self.run_psql(new_node_dsn, sql, fetch=True, return_single=True)
             if sync_lsn:
-                self.format_notice("✓", f"Triggered sync_event on new node {new_node_name} (LSN: {sync_lsn})")
+                self.format_notice("✓", f"Triggered sync_event on new node {src_node_name} (LSN: {sync_lsn})")
             else:
-                raise Exception("Failed to get sync LSN from new node")
+                raise Exception("Failed to get sync LSN from source node")
 
         except Exception as e:
-            self.format_notice("✗", f"Triggering sync_event on new node {new_node_name} (error: {str(e)})")
+            self.format_notice("✗", f"Triggering sync_event on source node {src_node_name} (error: {str(e)})")
             raise
 
         try:
-            # Wait for sync event on source node
-            sql = f"CALL spock.wait_for_sync_event(true, '{new_node_name}', '{sync_lsn}'::pg_lsn, {timeout_ms});"
+            # Wait for sync event on new node
+            sql = f"CALL spock.wait_for_sync_event(true, '{src_node_name}', '{sync_lsn}'::pg_lsn, {timeout_ms});"
             if self.verbose:
-                self.info(f"    Remote SQL for wait_for_sync_event on source node {src_node_name}: {sql}")
+                self.info(f"    Remote SQL for wait_for_sync_event on new node {new_node_name}: {sql}")
 
-            self.run_psql(src_dsn, sql)
-            self.format_notice("✓", f"Waiting for sync event from {new_node_name} on source node {src_node_name}")
+            self.run_psql(new_node_dsn, sql)
+            self.format_notice("✓", f"Waiting for sync event from {src_node_name} on new node {new_node_name}")
 
         except Exception as e:
-            self.format_notice("✗", f"Unable to wait for sync event from {new_node_name} on source node {src_node_name} (error: {str(e)})")
+            self.format_notice("✗", f"Unable to wait for sync event from {src_node_name} on new node {new_node_name} (error: {str(e)})")
             raise
+
 
     def get_commit_timestamp(self, node_dsn: str, origin: str, receiver: str) -> str:
         """Get commit timestamp for lag tracking"""
@@ -930,7 +931,7 @@ class SpockClusterManager:
 
         # Phase 6: Wait for sync on source and new node.
         # Example: Ensure n1 and n4 are fully synchronized before continuing.
-        self.wait_for_source_node_sync(src_node_name, src_dsn, new_node_name, new_node_dsn, True)
+        self.trigger_source_sync_and_wait_on_new_node(src_node_name, src_dsn, new_node_name, new_node_dsn)
 
         # Phase 7: Check commit timestamp and advance replication slot.
         # Example: Confirm n4 is caught up to n1's latest changes.
