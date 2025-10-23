@@ -50,26 +50,25 @@ SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
 
 DO $$
 BEGIN
-    FOR i IN 1..100 LOOP
-        IF EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status != 'down') THEN
-            EXIT;
-        END IF;
-        PERFORM pg_sleep(0.1);
+    WHILE EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status = 'down')
+	LOOP
     END LOOP;
 END;$$;
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
-SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.sub_show_status();
+SELECT
+  subscription_name, status, provider_node, replication_sets, forward_origins
+FROM spock.sub_show_status();
  subscription_name |   status    | provider_node |           replication_sets            | forward_origins 
 -------------------+-------------+---------------+---------------------------------------+-----------------
  test_subscription | replicating | test_provider | {default,default_insert_only,ddl_sql} | 
 (1 row)
 
 \c :provider_dsn
+DO $$
+BEGIN
+    WHILE EXISTS (SELECT 1 FROM pg_replication_slots WHERE active = 'false')
+	LOOP
+    END LOOP;
+END;$$;
 SELECT plugin, slot_type, active FROM pg_replication_slots;
     plugin    | slot_type | active 
 --------------+-----------+--------
@@ -90,20 +89,16 @@ SELECT * FROM spock.sub_alter_interface('test_subscription', 'test_provider');
 
 DO $$
 BEGIN
-    FOR i IN 1..100 LOOP
-        IF EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status != 'down') THEN
-            EXIT;
-        END IF;
-        PERFORM pg_sleep(0.1);
+    WHILE EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status = 'down')
+	LOOP
+	-- TODO: The multimaster testing buildfarm should have a general parameter
+	-- like 'wait_change_timeout' that may be used to take control over infinite
+	-- waiting cycles.
     END LOOP;
 END;$$;
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
-SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.sub_show_status();
+SELECT
+  subscription_name, status, provider_node, replication_sets, forward_origins
+FROM spock.sub_show_status();
  subscription_name |   status    | provider_node |           replication_sets            | forward_origins 
 -------------------+-------------+---------------+---------------------------------------+-----------------
  test_subscription | replicating | test_provider | {default,default_insert_only,ddl_sql} | 
@@ -111,6 +106,13 @@ SELECT subscription_name, status, provider_node, replication_sets, forward_origi
 
 \c :provider_dsn
 DROP USER super2;
+-- Creation of a slot needs some time. Just wait.
+DO $$
+BEGIN
+    WHILE EXISTS (SELECT 1 FROM pg_replication_slots WHERE active = 'false')
+	LOOP
+    END LOOP;
+END;$$;
 SELECT plugin, slot_type, active FROM pg_replication_slots;
     plugin    | slot_type | active 
 --------------+-----------+--------
