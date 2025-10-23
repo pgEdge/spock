@@ -1,5 +1,15 @@
 # Spock Release Notes
 
+## Spock 5.1 on xxx
+
+This release deprecates the spock.exception_replay_queue_size GUC. Previously Spock restored transaction changes up to the size defined by the spock.exception_replay_queue_size GUC. If an error occurred, the transaction was replayed, and if the size was less than the exception queue, the cache was used. If the size was greater than the limit, it was resent from the origin.
+
+Now no restriction exists. Spock will use memory until memory is exhausted (improving performance for huge transactions). If an allocation fails, Spock performs as specified by the spock.exception_behavior GUC:
+- 'discard': Skip failed transaction and continue
+- 'transdiscard': Rollback transaction and continue
+- 'sub_disable': Disable subscription and exit cleanly
+
+
 ## Spock 5.0.4 on Oct 8, 2025
 
 * Reduce memory usage for transactions with many inserts.
@@ -15,7 +25,6 @@
     - Log messages containing credentials will now obfuscate password information.
     - Fix bug when the subscriber receives DML for tables that do not exist. This case will be handled according to the configured `spock.exception_behaviour` setting (`SUB_DISABLE`, `DISCARD`, `TRANSDISCARD`).
     - Fix bug where spock incorrectly outputs a message that DDL was replicated when a transaction is executing in repair mode.
-
 
 
 ## v5.0.3 on Sep 26, 2025
