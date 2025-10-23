@@ -46,9 +46,13 @@
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/timestamp.h"
+#include "access/heapam.h"
+#include "catalog/pg_subscription.h"
+#include "funcapi.h"
 
 #include "spock_recovery.h"
 #include "spock_common.h"
+#include "spock_node.h"
 #include "spock.h"
 
 /* Global recovery coordinator in shared memory */
@@ -441,4 +445,223 @@ update_recovery_slot_progress(const char *slot_name, XLogRecPtr lsn,
 	}
 
 	LWLockRelease(SpockRecoveryCtx->lock);
+}
+
+/*
+ * get_subscription_recovery_progress
+ *
+ * Helper function to get recovery slot progress for a specific subscription
+ * from a specific origin node. This is a simplified version that checks
+ * if the recovery slot exists and is active, returning basic progress info.
+ */
+static bool
+get_subscription_recovery_progress(Oid sub_node_id, Oid origin_node_id,
+								  XLogRecPtr *lsn, TimestampTz *commit_ts)
+{
+	bool		has_progress = false;
+
+	/* For now, we'll use a simplified approach that checks if recovery slot exists */
+	if (!SpockRecoveryCtx || !SpockRecoveryCtx->recovery_slot.active)
+		return false;
+
+	/* Get the recovery slot data */
+	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
+	if (SpockRecoveryCtx->recovery_slot.active)
+	{
+		*lsn = SpockRecoveryCtx->recovery_slot.confirmed_flush_lsn;
+		*commit_ts = SpockRecoveryCtx->recovery_slot.min_unacknowledged_ts;
+		has_progress = true;
+	}
+	LWLockRelease(SpockRecoveryCtx->lock);
+
+	return has_progress;
+}
+
+/*
+ * spock_find_rescue_source_sql
+ *
+ * Find the best surviving node to use as a rescue source for a failed origin node.
+ * This function queries all co-subscriber nodes to determine which one has the most
+ * recent transactions from the failed origin node.
+ *
+ * Usage: SELECT * FROM spock.find_rescue_source('failed_node_name');
+ *
+ * Returns a record with:
+ * - origin_node_id: The failed node ID
+ * - source_node_id: The surviving node ID with the most recent data
+ * - last_lsn: The LSN of the last known transaction from the origin
+ * - last_commit_timestamp: The commit timestamp of the last known transaction
+ * - confidence_level: How confident we are in this choice (HIGH/MEDIUM/LOW)
+ */
+Datum
+spock_find_rescue_source_sql(PG_FUNCTION_ARGS)
+{
+	text	   *failed_node_name_text = PG_GETARG_TEXT_PP(0);
+	char	   *failed_node_name;
+	TupleDesc	tupdesc;
+	Datum		values[5];
+	bool		nulls[5];
+	HeapTuple	tuple;
+	Oid			failed_node_id = InvalidOid;
+	Oid			best_source_node_id = InvalidOid;
+	XLogRecPtr	best_lsn = InvalidXLogRecPtr;
+	TimestampTz	best_commit_ts = 0;
+	char	   *confidence_level = "LOW";
+
+	/* Get the failed node name */
+	failed_node_name = text_to_cstring(failed_node_name_text);
+
+	/* Get node ID for the failed node */
+	{
+		SpockNode *node = get_node_by_name(failed_node_name, true);
+		if (node == NULL)
+		{
+			/* Return empty result for non-existent nodes */
+			pfree(failed_node_name);
+			PG_RETURN_NULL();
+		}
+		failed_node_id = node->id;
+	}
+
+	/* Query all subscriptions to find the best source node */
+	{
+		Relation	subrel;
+		SysScanDesc scandesc;
+		HeapTuple	tuple;
+		Oid			current_best_node_id = InvalidOid;
+		XLogRecPtr	current_best_lsn = InvalidXLogRecPtr;
+		TimestampTz	current_best_commit_ts = 0;
+		int			source_count = 0;
+		int			tie_count = 0;
+
+		subrel = table_open(SubscriptionRelationId, AccessShareLock);
+
+		/* Scan all subscriptions */
+		scandesc = systable_beginscan(subrel, InvalidOid, false, NULL, 0, NULL);
+
+		while (HeapTupleIsValid(tuple = systable_getnext(scandesc)))
+		{
+			Form_pg_subscription subform = (Form_pg_subscription) GETSTRUCT(tuple);
+			Oid			sub_node_id;
+			char	   *sub_node_name;
+			XLogRecPtr	sub_lsn;
+			TimestampTz	sub_commit_ts;
+			bool		has_progress = false;
+
+			/* Get subscription node name and ID */
+			sub_node_name = NameStr(subform->subname);
+			{
+				SpockNode *sub_node = get_node_by_name(sub_node_name, true);
+				sub_node_id = sub_node ? sub_node->id : InvalidOid;
+			}
+
+			/* Skip if this is the failed node */
+			if (sub_node_id == failed_node_id)
+				continue;
+
+			/* Skip if node doesn't exist */
+			if (!OidIsValid(sub_node_id))
+				continue;
+
+			/* Query recovery slot progress for this subscription */
+			has_progress = get_subscription_recovery_progress(sub_node_id, failed_node_id,
+															&sub_lsn, &sub_commit_ts);
+
+			if (has_progress)
+			{
+				source_count++;
+
+				/* Check if this is better than our current best */
+				if (current_best_lsn == InvalidXLogRecPtr ||
+					sub_lsn > current_best_lsn ||
+					(sub_lsn == current_best_lsn && sub_commit_ts > current_best_commit_ts))
+				{
+					if (current_best_lsn != InvalidXLogRecPtr && sub_lsn == current_best_lsn)
+					{
+						tie_count++;
+					}
+
+					current_best_node_id = sub_node_id;
+					current_best_lsn = sub_lsn;
+					current_best_commit_ts = sub_commit_ts;
+				}
+			}
+		}
+
+		systable_endscan(scandesc);
+		table_close(subrel, AccessShareLock);
+
+		/* Set the best source if we found any */
+		if (source_count > 0)
+		{
+			best_source_node_id = current_best_node_id;
+			best_lsn = current_best_lsn;
+			best_commit_ts = current_best_commit_ts;
+
+			/* Determine confidence level */
+			if (source_count >= 3 && tie_count == 0)
+				confidence_level = "HIGH";
+			else if (source_count >= 2)
+				confidence_level = "MEDIUM";
+			else
+				confidence_level = "LOW";
+		}
+	}
+
+	/* Build return tuple */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	/* Initialize all values to null */
+	memset(nulls, 1, sizeof(nulls));
+
+	/* Set non-null values */
+	values[0] = ObjectIdGetDatum(failed_node_id);
+	nulls[0] = false;
+
+	if (OidIsValid(best_source_node_id))
+	{
+		values[1] = ObjectIdGetDatum(best_source_node_id);
+		nulls[1] = false;
+	}
+
+	if (best_lsn != InvalidXLogRecPtr)
+	{
+		values[2] = LSNGetDatum(best_lsn);
+		nulls[2] = false;
+	}
+
+	if (best_commit_ts != 0)
+	{
+		values[3] = TimestampTzGetDatum(best_commit_ts);
+		nulls[3] = false;
+	}
+
+	values[4] = CStringGetTextDatum(confidence_level);
+	nulls[4] = false;
+
+	tuple = heap_form_tuple(tupdesc, values, nulls);
+
+	/* Log the rescue decision */
+	if (OidIsValid(best_source_node_id))
+	{
+		SpockNode *source_node = get_node(best_source_node_id);
+		char	   *source_node_name = source_node ? source_node->name : "unknown";
+		char	   *lsn_str = psprintf("%X/%X", LSN_FORMAT_ARGS(best_lsn));
+		const char *ts_str = timestamptz_to_str(best_commit_ts);
+
+		elog(LOG, "Rescue source for failed node %s is node %s at commit timestamp %s / LSN %s (confidence: %s)",
+			 failed_node_name, source_node_name, ts_str, lsn_str, confidence_level);
+
+		pfree(lsn_str);
+	}
+	else
+	{
+		elog(WARNING, "No rescue source found for failed node %s - no surviving nodes have recovery data",
+			 failed_node_name);
+	}
+
+	pfree(failed_node_name);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
 }

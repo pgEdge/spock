@@ -656,3 +656,14 @@ BEGIN
 END;
 $$;
 
+-- Rescue coordinator function to find the best surviving node for recovery
+CREATE OR REPLACE FUNCTION spock.find_rescue_source(failed_node_name text)
+RETURNS TABLE (
+    origin_node_id oid,
+    source_node_id oid,
+    last_lsn pg_lsn,
+    last_commit_timestamp timestamptz,
+    confidence_level text
+)
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_find_rescue_source';
+
