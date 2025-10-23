@@ -611,3 +611,50 @@ BEGIN
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Recovery Slot Status and Management Functions
+
+CREATE FUNCTION spock.get_recovery_slot_status()
+RETURNS TABLE(
+    slot_name text,
+    restart_lsn pg_lsn,
+    confirmed_flush_lsn pg_lsn,
+    min_unacknowledged_ts timestamptz,
+    active boolean,
+    in_recovery boolean
+) LANGUAGE C VOLATILE STRICT
+AS 'MODULE_PATHNAME', 'spock_get_recovery_slot_status_sql';
+
+CREATE OR REPLACE FUNCTION spock.quick_health_check()
+RETURNS TABLE(
+    check_name text,
+    status text,
+    details text
+)
+LANGUAGE plpgsql  
+AS $$
+DECLARE
+    recovery_slot_exists boolean := false;
+    recovery_slot_name text;
+    db_name text := current_database();
+BEGIN
+    -- Check if recovery slot exists
+    SELECT EXISTS (
+        SELECT 1 FROM spock.get_recovery_slot_status() WHERE active = true
+    ) INTO recovery_slot_exists;
+    
+    IF recovery_slot_exists THEN
+        RETURN QUERY SELECT 'Recovery Slot'::text, 'HEALTHY'::text, 'Recovery slot exists and is active'::text;
+    ELSE
+        -- Check if recovery slots are enabled via GUC
+        IF current_setting('spock.enable_recovery_slots', true)::boolean THEN
+            RETURN QUERY SELECT 'Recovery Slot'::text, 'MISSING'::text, 'Recovery slot is missing but should be created automatically by the manager process'::text;
+        ELSE
+            RETURN QUERY SELECT 'Recovery Slot'::text, 'DISABLED'::text, 'Recovery slot is disabled via spock.enable_recovery_slots = off'::text;
+        END IF;
+    END IF;
+    
+    RETURN;
+END;
+$$;
+

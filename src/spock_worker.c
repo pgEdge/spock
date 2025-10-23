@@ -49,6 +49,7 @@
 #include "spock_conflict.h"
 #include "spock_relcache.h"
 #include "spock_exception_handler.h"
+#include "spock_recovery.h"
 
 typedef struct signal_worker_item
 {
@@ -804,8 +805,14 @@ spock_worker_shmem_request(void)
 	/* Allocate the number of LW-locks needed for Spock. */
 	RequestNamedLWLockTranche("spock", 2);
 
+	/* Request LWLock for recovery slot coordination */
+	RequestNamedLWLockTranche("spock_recovery", 1);
+
 	/* Request shmem for Apply Group */
 	spock_group_shmem_request();
+
+	/* Request shmem for Recovery Slots */
+	RequestAddinShmemSpace(spock_recovery_shmem_size());
 }
 
 /*
@@ -869,7 +876,8 @@ spock_worker_shmem_startup(void)
 	/* Apply Group shmem startup */
 	spock_group_shmem_startup(nworkers, found);
 
-	LWLockRelease(AddinShmemInitLock);
+	/* Recovery slots shmem startup */
+	spock_recovery_shmem_startup();
 }
 
 /*
