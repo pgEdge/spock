@@ -62,6 +62,14 @@ typedef struct SpockGroupKey
 	Oid			remote_node_id;
 } SpockGroupKey;
 
+/*
+ * Store the progress, obtaining from the remote node.
+ *
+ * NOTE:
+ * Field remote_commit_lsn is a LSN of the COMMIT command with the
+ * remote_commit_ts timestamp. There fields are coupled and this shouldn't be
+ * changed for the sake of consistenty.
+ */
 typedef struct SpockApplyProgress
 {
 	SpockGroupKey key;			/* common elements */
@@ -92,8 +100,7 @@ void		spock_group_shmem_init(void);
 extern void spock_group_shmem_request(void);
 extern void spock_group_shmem_startup(int napply_groups, bool found);
 
-SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id,
-									bool *created);
+SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id);
 void		spock_group_detach(void);
 bool		spock_group_progress_update(const SpockApplyProgress *sap);
 void		spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap);
