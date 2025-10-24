@@ -91,8 +91,7 @@ typedef struct SpockGroupEntry
 extern void spock_group_shmem_request(void);
 extern void spock_group_shmem_startup(int napply_groups, bool found);
 
-SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id,
-									bool *created);
+SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id);
 void		spock_group_detach(void);
 bool		spock_group_progress_update(const SpockApplyProgress *sap);
 void		spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap);

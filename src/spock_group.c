@@ -173,7 +173,7 @@ make_key(Oid dbid, Oid node_id, Oid remote_node_id)
  * call from an apply worker during startup/attach.
  */
 SpockGroupEntry *
-spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id, bool *created)
+spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 {
 	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
 	SpockGroupEntry *e;
@@ -188,13 +188,6 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id, bool *created)
 
 		pg_atomic_init_u32(&e->nattached, 0);
 		ConditionVariableInit(&e->prev_processed_cv);
-		if (created)
-			*created = true;
-	}
-	else
-	{
-		if (created)
-			*created = false;
 	}
 
 	pg_atomic_add_fetch_u32(&e->nattached, 1);

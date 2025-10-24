@@ -886,10 +886,9 @@ handle_commit(StringInfo s)
 		/* WAL after commit, then to shmem */
 		spock_apply_progress_add_to_wal(&sap);
 
-		if (MyApplyWorker && MyApplyWorker->apply_group)
-			spock_group_progress_update_ptr(MyApplyWorker->apply_group, &sap);
-		else
-			spock_group_progress_update(&sap);
+		Assert(MyApplyWorker && MyApplyWorker->apply_group);
+
+		spock_group_progress_update_ptr(MyApplyWorker->apply_group, &sap);
 	}
 
 	/* Wakeup all waiters for waiting for the previous transaction to commit */
@@ -1639,8 +1638,7 @@ handle_startup(StringInfo s)
 		handle_startup_param(k, v);
 	} while (!getmsgisend(s));
 
-	/* Attach this worker. */
-	spock_apply_worker_attach();
+	Assert(MyApplyWorker->apply_group != NULL);
 
 	/* Register callback for cleaning up */
 	before_shmem_exit(spock_apply_worker_shmem_exit, 0);
@@ -1677,8 +1675,6 @@ spock_apply_worker_on_exit(int code, Datum arg)
 static void
 spock_apply_worker_attach(void)
 {
-	bool		created;
-
 	if(MyApplyWorker->apply_group != NULL)
 		return;
 
@@ -1687,9 +1683,9 @@ spock_apply_worker_attach(void)
 		/* Set the values in shared memory for this dbid-origin */
 	MyApplyWorker->apply_group = spock_group_attach(MySpockWorker->dboid,
 					   MySubscription->target->id,
-					   MySubscription->origin->id,
-					   &created);
+					   MySubscription->origin->id);
 
+	Assert(MyApplyWorker->apply_group != NULL);
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
 
