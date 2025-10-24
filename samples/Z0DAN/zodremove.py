@@ -14,12 +14,9 @@ Usage:
 """
 
 import subprocess
-import json
-import time
 import sys
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 import argparse
-import re
 
 class SpockClusterManager:
     def __init__(self, verbose: bool = False):
@@ -155,43 +152,35 @@ class SpockClusterManager:
             return True
         return False
 
-    def get_node_repsets(self, target_node_name: str, dsn: str) -> List[str]:
+    def get_node_repsets(self, dsn: str) -> List[str]:
         """Get all replication sets for a node"""
-        sql = f"""
-        SELECT DISTINCT rs.set_name::text
-        FROM spock.node n
-        JOIN spock.subscription sub ON sub.sub_provider = n.node_id
-        JOIN spock.subscription_replication_set sub_rs ON sub_rs.srs_s_id = sub.sub_id
-        JOIN spock.replication_set rs ON rs.set_id = sub_rs.srs_set_id
-        WHERE n.node_name = '{target_node_name}';
-        """
+        sql = "SELECT DISTINCT set_name::text FROM spock.replication_set"
 
         result = self.run_psql(dsn, sql, fetch=True)
         return [line.strip() for line in result] if result else []
 
-    def get_node_subscriptions(self, target_node_name: str, dsn: str) -> List[str]:
+    def get_node_subscriptions(self, dsn: str) -> List[str]:
         """Get all subscriptions for a node"""
-        sql = f"""
-        SELECT sub.sub_name::text
-        FROM spock.node n
-        JOIN spock.subscription sub ON sub.sub_provider = n.node_id
-        WHERE n.node_name = '{target_node_name}';
-        """
+        sql = "SELECT sub_name::text FROM spock.subscription"
 
         result = self.run_psql(dsn, sql, fetch=True)
         return [line.strip() for line in result] if result else []
 
-    def get_node_slots(self, target_node_name: str, dsn: str) -> List[str]:
-        """Get all replication slots for a node"""
+    def get_remote_subscription_name(self, target_node_name: str, other_node_name: str, dsn: str) -> str:
+        """Get remote subscription name"""
         sql = f"""
-        SELECT slot_name::text
-        FROM spock.node n
-        JOIN spock.subscription sub ON sub.sub_provider = n.node_id
-        WHERE n.node_name = '{target_node_name}';
+        SELECT sub.sub_name AS sub_name
+        FROM spock.subscription sub
+        JOIN spock.node n
+        ON sub.sub_target = n.node_id
+        WHERE sub.sub_origin = (
+            SELECT node_id FROM spock.node WHERE node_name = '{target_node_name}'
+        )
+        AND n.node_name = '{other_node_name}';
         """
+        result = self.run_psql(dsn, sql, fetch=True, return_single=True)
 
-        result = self.run_psql(dsn, sql, fetch=True)
-        return [line.strip() for line in result] if result else []
+        return result
 
     def validate_node_removal_prerequisites(self, target_node_name: str, target_node_dsn: str):
         """Phase 1: Validate node removal prerequisites"""
@@ -233,14 +222,57 @@ class SpockClusterManager:
 
         return other_nodes
 
-    def remove_node_replication_sets(self, target_node_name: str, target_node_dsn: str):
-        """Phase 3: Remove replication sets"""
-        self.notice("Phase 3: Removing replication sets")
+    def remove_node_subscriptions(self, target_node_name: str, target_node_dsn: str, cluster_info):
+        """Phase 3: Remove subscriptions"""
+        self.notice("Phase 3: Removing subscriptions")
 
-        repsets = self.get_node_repsets(target_node_name, target_node_dsn)
+        for sub_rec in cluster_info:
+            # get subscription name from remote nodes
+            sub_name = self.get_remote_subscription_name(
+                    target_node_name, sub_rec['node_name'], sub_rec['dsn'])
 
-        for repset_name in repsets:
+            if sub_name is None:
+                self.format_notice("-", f"Subscription not found for {sub_rec['node_name']} and {sub_rec['dsn']}")
+            else:
+                if self.verbose:
+                    self.info(f"Checking subscription: {sub_name}")
+
+                try:
+                    # Remove subscription
+                    sql = f"SELECT spock.sub_drop('{sub_name}', true);"
+                    self.run_psql(sub_rec['dsn'], sql)
+
+                    self.format_notice("✓", f"Removed subscription '{sub_name}'")
+
+                except Exception as e:
+                    self.format_notice("✗", f"Error removing subscription '{sub_name}': {str(e)}")
+
+        # Now drop local subscriptions on the target node
+        for sub_name in self.get_node_subscriptions(target_node_dsn):
+
             try:
+                #TODO sub_name = subscription[0]
+
+                if self.verbose:
+                    self.info(f"Checking local subscription: {sub_name}")
+
+                sql = f"SELECT spock.sub_drop('{sub_name}', true);"
+                self.run_psql(target_node_dsn, sql)
+
+                self.format_notice("✓", f"Removed local subscription '{sub_name}'")
+
+            except Exception as e:
+                self.format_notice("✗", f"Error removing subscription '{sub_name}': {str(e)}")
+
+        self.format_notice("✓", "Subscription removal phase completed")
+
+    def remove_node_replication_sets(self, target_node_dsn: str):
+        """Phase 4: Remove replication sets"""
+        self.notice("Phase 4: Removing replication sets")
+
+        for repset_name in self.get_node_repsets(target_node_dsn):
+            try:
+
                 if self.verbose:
                     self.info(f"Checking replication set: {repset_name}")
 
@@ -257,57 +289,9 @@ class SpockClusterManager:
 
         self.format_notice("✓", "Replication set removal phase completed")
 
-    def remove_node_subscriptions(self, target_node_name: str, target_node_dsn: str):
-        """Phase 4: Remove subscriptions"""
-        self.notice("Phase 4: Removing subscriptions")
-
-        subscriptions = self.get_node_subscriptions(target_node_name, target_node_dsn)
-
-        for sub_name in subscriptions:
-            try:
-                if self.verbose:
-                    self.info(f"Checking subscription: {sub_name}")
-
-                # Check if subscription exists
-                if self.check_component_exists(target_node_dsn, 'subscription', sub_name):
-                    # Remove subscription
-                    sql = f"SELECT spock.sub_drop('{sub_name}', true);"
-                    self.run_psql(target_node_dsn, sql)
-                    self.format_notice("✓", f"Removed subscription '{sub_name}'")
-                else:
-                    self.format_notice("-", f"Subscription '{sub_name}' not found")
-            except Exception as e:
-                self.format_notice("✗", f"Error removing subscription '{sub_name}': {str(e)}")
-
-        self.format_notice("✓", "Subscription removal phase completed")
-
-    def remove_node_replication_slots(self, target_node_name: str, target_node_dsn: str):
-        """Phase 5: Remove replication slots"""
-        self.notice("Phase 5: Removing replication slots")
-
-        slots = self.get_node_slots(target_node_name, target_node_dsn)
-
-        for slot_name in slots:
-            try:
-                if self.verbose:
-                    self.info(f"Checking replication slot: {slot_name}")
-
-                # Check if slot exists
-                if self.check_component_exists(target_node_dsn, 'slot', slot_name):
-                    # Remove slot
-                    sql = f"SELECT pg_drop_replication_slot('{slot_name}');"
-                    self.run_psql(target_node_dsn, sql)
-                    self.format_notice("✓", f"Removed replication slot '{slot_name}'")
-                else:
-                    self.format_notice("-", f"Replication slot '{slot_name}' not found")
-            except Exception as e:
-                self.format_notice("✗", f"Error removing replication slot '{slot_name}': {str(e)}")
-
-        self.format_notice("✓", "Replication slot removal phase completed")
-
     def remove_node_from_cluster_registry(self, target_node_name: str, target_node_dsn: str):
-        """Phase 6: Remove node from cluster registry"""
-        self.notice("Phase 6: Removing node from cluster registry")
+        """Phase 5: Remove node from cluster registry"""
+        self.notice("Phase 5: Removing node from cluster registry")
 
         try:
             # Check if node exists before removal
@@ -324,8 +308,8 @@ class SpockClusterManager:
         self.format_notice("✓", "Node removal phase completed")
 
     def finalize_node_removal(self, target_node_name: str, target_node_dsn: str):
-        """Phase 7: Final cleanup and status report"""
-        self.notice("Phase 7: Final cleanup and status report")
+        """Phase 6: Final cleanup and status report"""
+        self.notice("Phase 6: Final cleanup and status report")
 
         # Get final cluster state
         nodes = self.get_spock_nodes(target_node_dsn)
@@ -342,7 +326,7 @@ class SpockClusterManager:
 
     def remove_node(self, target_node_name: str, target_node_dsn: str):
         """Main remove_node procedure - matches zodremove.sql exactly"""
-        self.notice(f"STARTING NODE REMOVAL PROCESS")
+        self.notice("STARTING NODE REMOVAL PROCESS")
         self.notice(f"Node: {target_node_name}")
 
         try:
@@ -352,19 +336,16 @@ class SpockClusterManager:
             # Phase 2: Gather cluster information
             cluster_info = self.gather_cluster_info_for_removal(target_node_name, target_node_dsn)
 
-            # Phase 3: Remove replication sets
-            self.remove_node_replication_sets(target_node_name, target_node_dsn)
+            # Phase 3: Remove subscriptions
+            self.remove_node_subscriptions(target_node_name, target_node_dsn, cluster_info)
 
-            # Phase 4: Remove subscriptions
-            self.remove_node_subscriptions(target_node_name, target_node_dsn)
+            # Phase 4: Remove replication sets
+            self.remove_node_replication_sets(target_node_dsn)
 
-            # Phase 5: Remove replication slots
-            self.remove_node_replication_slots(target_node_name, target_node_dsn)
-
-            # Phase 6: Remove node from cluster registry
+            # Phase 5: Remove node from cluster registry
             self.remove_node_from_cluster_registry(target_node_name, target_node_dsn)
 
-            # Phase 7: Final cleanup and status report
+            # Phase 6: Final cleanup and status report
             self.finalize_node_removal(target_node_name, target_node_dsn)
 
             self.notice("")

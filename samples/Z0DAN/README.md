@@ -63,9 +63,10 @@ Execute the following command in your PostgreSQL session:
 ```sql
 CALL spock.add_node(
   'source_node_name',
-  'source_node_dsn',
+  'src_dsn',
   'new_node_name',
   'new_node_dsn',
+  'verb',			    -- optional
   'new_node_location',  -- optional
   'new_node_country',   -- optional
   '{}'::jsonb           -- optional info

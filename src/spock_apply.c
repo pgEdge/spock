@@ -37,11 +37,6 @@
 #include "nodes/parsenodes.h"
 
 #include "optimizer/planner.h"
-
-#ifdef XCP
-#include "pgxc/pgxcnode.h"
-#endif
-
 #include "postmaster/interrupt.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
@@ -3284,10 +3279,20 @@ process_syncing_tables(XLogRecPtr end_lsn)
 										 NameStr(sync->nspname),
 										 NameStr(sync->relname));
 
+				/*
+				 * TODO:
+				 * What if the SYNC worker has gone? It may be any trivial
+				 * ERROR - memory allocation, or network connection, for
+				 * example. We need to restart syncing process from the scratch.
+				 * For now, suppose that it should be always exist in testing
+				 * environment.
+				 */
+				Assert(spock_worker_running(worker));
+
 				if (spock_worker_running(worker) &&
-					end_lsn >= worker->worker.apply.replay_stop_lsn)
+					replorigin_session_origin_lsn >= worker->worker.apply.replay_stop_lsn)
 				{
-					worker->worker.apply.replay_stop_lsn = end_lsn;
+					worker->worker.apply.replay_stop_lsn = replorigin_session_origin_lsn;
 					sync->status = SYNC_STATUS_CATCHUP;
 
 					StartTransactionCommand();
@@ -3309,6 +3314,13 @@ process_syncing_tables(XLogRecPtr end_lsn)
 													SYNC_STATUS_SYNCDONE,
 													&sync->statuslsn))
 						sync->status = SYNC_STATUS_SYNCDONE;
+					else
+						/*
+						 * TODO:
+						 * Here, should be a more sophisticated logic in case if
+						 * worker exited on error or status record has lost.
+						 */
+						elog(ERROR, "a table synchronisation operation is failed");
 				}
 				else
 					LWLockRelease(SpockCtx->lock);
@@ -3511,14 +3523,6 @@ spock_apply_main(Datum main_arg)
 	MySubscription = get_subscription(MyApplyWorker->subid);
 	MemoryContextSwitchTo(saved_ctx);
 
-#ifdef XCP
-
-	/*
-	 * When runnin under XL, initialise the XL executor so that the datanode
-	 * and coordinator information is initialised properly.
-	 */
-	InitMultinodeExecutor(false);
-#endif
 	CommitTransactionCommand();
 
 	elog(DEBUG1, "SPOCK %s: starting apply worker", MySubscription->name);

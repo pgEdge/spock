@@ -166,6 +166,7 @@ PG_FUNCTION_INFO_V1(spock_max_proto_version);
 
 /* Recovery Slot functions */
 PG_FUNCTION_INFO_V1(spock_get_recovery_slot_status_sql);
+PG_FUNCTION_INFO_V1(spock_find_rescue_source);
 
 PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 
@@ -198,6 +199,7 @@ PG_FUNCTION_INFO_V1(get_apply_group_progress);
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
+static XLogRecPtr skip_wal_records_decoding(bool enable);
 
 
 bool in_spock_replicate_ddl_command = false;
@@ -981,16 +983,25 @@ Datum spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 /*
  * Resynchronize one existing table.
  */
-Datum spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
+Datum
+spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 {
-	char *sub_name = NameStr(*PG_GETARG_NAME(0));
-	Oid reloid = PG_GETARG_OID(1);
-	bool truncate = PG_GETARG_BOOL(2);
-	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
-	SpockSyncStatus *oldsync;
-	Relation rel;
-	char *nspname,
-		*relname;
+	char			   *sub_name = NameStr(*PG_GETARG_NAME(0));
+	Oid					reloid = PG_GETARG_OID(1);
+	bool				truncate = PG_GETARG_BOOL(2);
+	SpockSubscription  *sub = get_subscription_by_name(sub_name, false);
+	SpockSyncStatus	   *oldsync;
+	Relation			rel;
+	char			   *nspname;
+	char			   *relname;
+
+	/*
+	 * Don't need to replicate any WAL generated here.
+	 * If any error will happen in the middle of the process, rollback machinery
+	 * return the state of the GUC in the backend as well, as an ABORT operator
+	 * return default state in the walsender.
+	 */
+	skip_wal_records_decoding(true);
 
 	rel = table_open(reloid, AccessShareLock);
 
@@ -1031,6 +1042,7 @@ Datum spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	/* Tell apply to re-read sync statuses. */
 	spock_subscription_changed(sub->id, false);
 
+	skip_wal_records_decoding(false);
 	PG_RETURN_BOOL(true);
 }
 
@@ -2985,23 +2997,19 @@ Datum delta_apply_money(PG_FUNCTION_ARGS)
 }
 
 /*
- * Function to control REPAIR mode
+ * Stop decoding messages till the end of the transaction.
  *
- * The Spock output plugin with suppress all DML messages after decoding
- * the SPOCK_REPAIR_MODE_ON message. Normal operation will resume after
- * receiving the SPOCK_REPAIR_MODE_OFF message or on transaction end.
- *
- * This is equivalent to session_replication_role=local.
+ * It is a general tool to perform operations, local for current spock node.
  */
-Datum
-spock_repair_mode(PG_FUNCTION_ARGS)
+static XLogRecPtr
+skip_wal_records_decoding(bool enable)
 {
 	SpockWalMessageSimple	message;
 	XLogRecPtr				lsn;
-	bool					enabled = PG_GETARG_BOOL(0);
 
-	message.mtype = (enabled) ? SPOCK_REPAIR_MODE_ON : SPOCK_REPAIR_MODE_OFF;
-	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *)&message, sizeof(message), true);
+	message.mtype = (enable) ? SPOCK_REPAIR_MODE_ON : SPOCK_REPAIR_MODE_OFF;
+	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *) &message,
+							sizeof(message), true);
 
 	/*
 	 * Set the flag of repair mode till the end of the transaction or another
@@ -3013,8 +3021,27 @@ spock_repair_mode(PG_FUNCTION_ARGS)
 	 * walsender, does it?
 	 */
 	(void) set_config_option("spock.replication_repair_mode",
-							 (enabled) ? "on" : "off", PGC_INTERNAL,
+							 (enable) ? "on" : "off", PGC_INTERNAL,
 							 PGC_S_SESSION, GUC_ACTION_LOCAL, true, 0, false);
+	return lsn;
+}
+
+/*
+ * Function to control REPAIR mode
+ *
+ * The Spock output plugin with suppress all DML messages after decoding
+ * the SPOCK_REPAIR_MODE_ON message. Normal operation will resume after
+ * receiving the SPOCK_REPAIR_MODE_OFF message or on transaction end.
+ *
+ * This is equivalent to session_replication_role=local.
+ */
+Datum
+spock_repair_mode(PG_FUNCTION_ARGS)
+{
+	XLogRecPtr	lsn;
+	bool		enabled = PG_GETARG_BOOL(0);
+
+	lsn = skip_wal_records_decoding(enabled);
 	PG_RETURN_LSN(lsn);
 }
 
@@ -3440,5 +3467,16 @@ spock_get_recovery_slot_status_sql(PG_FUNCTION_ARGS)
 	LWLockRelease(SpockRecoveryCtx->lock);
 
 	PG_RETURN_VOID();
+}
+
+/*
+ * spock_find_rescue_source
+ *
+ * SQL-callable wrapper for the rescue source finding functionality.
+ */
+Datum
+spock_find_rescue_source(PG_FUNCTION_ARGS)
+{
+	return spock_find_rescue_source_sql(fcinfo);
 }
 

@@ -45,3 +45,7 @@ CREATE VIEW spock.lag_tracker AS
 	LEFT JOIN spock.node origin ON sub.sub_origin = origin.node_id
 	LEFT JOIN spock.node n ON n.node_id = p.node_id
 	GROUP BY origin.node_name, n.node_name;
+
+-- Source for sub_id values.
+CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1
+OWNED BY spock.subscription.sub_id;

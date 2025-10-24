@@ -1,0 +1,57 @@
+name: Update base OS image
+run-name: Updating the base OS and install necessary extra packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  pull-and-test:
+    strategy:
+      fail-fast: true
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Add permissions
+        run: |
+          sudo chmod -R a+w ${GITHUB_WORKSPACE}
+
+      # See https://github.com/orgs/community/discussions/27086
+      - name: set lower case owner name
+        run: |
+          echo "OWNER_LC=${OWNER,,}" >> ${GITHUB_ENV}
+        env:
+          OWNER: '${{ github.repository_owner }}'
+
+      - name: Set up Docker
+        # Codacy wants us to use full commit SHA. This is for v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      # Login to GHCR
+      - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
+        with:
+          registry: ghcr.io
+          username: $OWNER_LC
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Prepare cached version of the base image
+      - name: Build and push base system image
+        uses: docker/build-push-action@c382f710d39a5bb4e430307530a720f50c2d3318
+        with:
+          context: .
+          file: tests/docker/Dockerfile-base.el9
+          push: true
+          tags: ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest
+          cache-from: type=gha,scope=base
+          cache-to: type=gha,mode=max,scope=base
+
+# And we have a base image. Check: https://github.com/pgedge/spock/pkgs/container/base-test-image

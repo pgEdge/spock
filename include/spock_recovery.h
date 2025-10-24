@@ -81,4 +81,9 @@ extern void update_recovery_slot_progress(const char *slot_name,
 										  XLogRecPtr lsn,
 										  TimestampTz commit_ts);
 
+/*
+ * Rescue coordinator functions
+ */
+extern Datum spock_find_rescue_source_sql(PG_FUNCTION_ARGS);
+
 #endif							/* SPOCK_RECOVERY_H */
