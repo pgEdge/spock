@@ -21,7 +21,7 @@ LANGUAGE c AS 'MODULE_PATHNAME', 'get_apply_group_progress';
 
 CREATE VIEW spock.progress AS
 	SELECT node_id, remote_node_id, remote_commit_ts,
-		   remote_commit_lsn AS remote_lsn, remote_insert_lsn,
+		   remote_commit_lsn, remote_insert_lsn,
 		   last_updated_ts, updated_by_decode
 	FROM spock.apply_group_progress();
 
@@ -30,10 +30,10 @@ CREATE VIEW spock.lag_tracker AS
 		origin.node_name AS origin_name,
 		n.node_name AS receiver_name,
 		MAX(p.remote_commit_ts) AS commit_timestamp,
-		MAX(p.remote_lsn) AS last_received_lsn,
+		MAX(p.remote_commit_lsn) AS commit_lsn,
 		MAX(p.remote_insert_lsn) AS remote_insert_lsn,
 		CASE
-			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN pg_wal_lsn_diff(MAX(p.remote_insert_lsn), MAX(p.remote_lsn))
+			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN pg_wal_lsn_diff(MAX(p.remote_insert_lsn), MAX(p.remote_commit_lsn))
 			ELSE 0
 		END AS replication_lag_bytes,
 		CASE

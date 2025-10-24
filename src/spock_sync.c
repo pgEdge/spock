@@ -400,7 +400,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 {
 	const char *originQuery =
 		"SELECT node_id, remote_node_id, remote_commit_ts, "
-		"       remote_lsn, remote_insert_lsn, "
+		"       remote_commit_lsn, remote_insert_lsn, "
 		"       last_updated_ts, updated_by_decode "
 		"FROM spock.progress "
 		"WHERE node_id = %u AND remote_node_id <> %u";
