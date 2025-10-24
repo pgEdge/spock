@@ -402,7 +402,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 		"    remote_insert_lsn = %s, "
 		"    last_updated_ts = %s, "
 		"    updated_by_decode = %s "
-		"WHERE node_id = '%d' AND remote_node_id = '%d'";
+		"WHERE node_id = '%d' AND remote_node_id = '%s'";
 
 	StringInfoData	query;
 	PGresult	   *originRes;
@@ -455,7 +455,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 							 PQescapeLiteral(target_conn, updated_by_decode,
 											 strlen(updated_by_decode)),
 							 MySubscription->target->id,
-							 MySubscription->origin->id);
+							 remote_node_id);
 			updateRes = PQexec(target_conn, query.data);
 
 			if (PQresultStatus(updateRes) != PGRES_COMMAND_OK)
