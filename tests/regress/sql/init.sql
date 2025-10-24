@@ -43,28 +43,21 @@ SELECT E'\'' || current_database() || E'\'' AS subdb;
 \c :provider_dsn
 SET client_min_messages = 'warning';
 
-DO $$
-BEGIN
-        IF (SELECT setting::integer/100 FROM pg_settings WHERE name = 'server_version_num') = 904 THEN
-                CREATE EXTENSION IF NOT EXISTS spock_origin;
-        END IF;
-END;$$;
-
 CREATE EXTENSION IF NOT EXISTS spock;
 
-\dx spock
+-- Check default settings of installed Spock extension
+SELECT
+  extnamespace::regnamespace,
+  extrelocatable,
+  extconfig,
+  extcondition,
+  obj_description(oid) AS comment
+FROM pg_extension WHERE extname = 'spock';
 
 SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super');
 
 \c :subscriber_dsn
 SET client_min_messages = 'warning';
-
-DO $$
-BEGIN
-        IF (SELECT setting::integer/100 FROM pg_settings WHERE name = 'server_version_num') = 904 THEN
-                CREATE EXTENSION IF NOT EXISTS spock_origin;
-        END IF;
-END;$$;
 
 CREATE EXTENSION IF NOT EXISTS spock;
 

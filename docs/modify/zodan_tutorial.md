@@ -9,10 +9,14 @@ In this detailed walk through, we'll add a fourth node to a three-node cluster w
         - The new node should not be accessible to users while adding the node.
         - Disable `auto_ddl` on all cluster nodes.
         - Do not modify your DDL during node addition.
-        - The users must be identical on the source and target node.  You must create any users on the target node before proceeding; the permissions must be *identical* for all users on both the source and target nodes.
+        - The users must be identical on the source and target node. You must create any users on the target node
+          before proceeding; the permissions must be *identical* for all users on both the source and target nodes.
+          The ZODAN process now validates that all users from the source node exist on the new node before proceeding
+          with cluster addition. This prevents replication failures caused by missing user permissions.
         - The spock configuration must be *identical* on both the source and the target node.
         - All nodes in your cluster must be available to the Spock extension for the duration of the node addition.
-        - The dblink extension must be installed on the node from which commands like `SELECT spock.add_node()` are being run
+        - The procedure should be performed on the new node being added
+        - The dblink extension must be installed on the new node from which commands like `SELECT spock.add_node()` are being run
         - Prepare the new node to meet the prerequisites described here.
     
     If the process fails, don't immediately retry a command until you ensure that all artifacts created by the workflow have been removed!
@@ -63,7 +67,7 @@ psql -d inventory -c "CREATE EXTENSION dblink;"
 
 **Using the Z0DAN Procedure to Add a Node** 
 
-After creating the node, you can use Z0DAN scripts to simplify adding a node to a cluster.  To use the script, connect to any existing node:
+After creating the node, you can use Z0DAN scripts to simplify adding a node to a cluster. To use the SQL script, connect to the new node that you wish to add to the pgedge cluster:
 ```bash
 psql -h 127.0.0.1 -p 5432 -d inventory -U pgedge
 ```
@@ -73,7 +77,7 @@ Load the ZODAN procedures:
 \i /path/to/zodan.sql
 ```
 
-Then, run add_node to create the node definition:
+Then, use `spock.add_node()` from the new node to create the node definition:
 
 ```sql
 CALL spock.add_node(
@@ -89,6 +93,8 @@ CALL spock.add_node(
 ```
 
 The `spock.add_node` function executes the steps required to add a node to the cluster; a detailed explanation of the steps performed follows below.
+
+Should a problem occur during this process, you can source the `zodremove.sql` script and call the `spock.remove_node` procedure to remove the node or reverse partially completed steps. `spock.remove_node` should be called on the node being removed.
 
 ## Manually adding a Node to a Cluster
 

@@ -58,7 +58,7 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondar
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay \
 		  extended node_origin_cascade multiple_upstreams tuple_origin autoddl \
-		  drop
+		  sync_table drop
 
 # The following test cases are disabled while developing.
 #
@@ -195,7 +195,7 @@ set -e -u -x
 # If you don't want leak checking, use --leak-check=no
 #
 # When just doing leak checking and not looking for detailed memory error reports you don't need:
-# 	--track-origins=yes --read-var-info=yes --malloc-fill=8f --free-fill=9f 
+# 	--track-origins=yes --read-var-info=yes --malloc-fill=8f --free-fill=9f
 #
 SUPP=$(POSTGRES_SRC)/src/tools/valgrind.supp
 

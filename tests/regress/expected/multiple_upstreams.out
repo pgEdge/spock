@@ -13,12 +13,6 @@ SELECT E'\'' || current_database() || E'\'' AS subdb;
 SET client_min_messages = 'warning';
 GRANT ALL ON SCHEMA public TO nonsuper;
 SET client_min_messages = 'warning';
-DO $$
-BEGIN
-        IF (SELECT setting::integer/100 FROM pg_settings WHERE name = 'server_version_num') = 904 THEN
-                CREATE EXTENSION IF NOT EXISTS spock_origin;
-        END IF;
-END;$$;
 CREATE EXTENSION IF NOT EXISTS spock;
 SELECT * FROM spock.node_create(node_name := 'test_provider1', dsn := (SELECT provider1_dsn FROM spock_regress_variables()) || ' user=super');
  node_create 
@@ -74,7 +68,7 @@ SELECT * FROM spock.sub_create(
 	forward_origins := '{}');
  sub_create 
 ------------
- 3102546391
+          4
 (1 row)
 
 BEGIN;
@@ -96,10 +90,10 @@ SELECT subscription_name, status, provider_node, replication_sets, forward_origi
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
  sync_kind | sync_subid | sync_nspname | sync_relname  | ?column? 
 -----------+------------+--------------+---------------+----------
- f         | 3102546391 | public       | multi_ups_tbl | t
- d         | 3102546391 |              |               | t
- d         | 3848008564 | public       | multi_ups_tbl | t
- f         | 3848008564 |              |               | t
+ d         |          1 | public       | multi_ups_tbl | t
+ f         |          1 |              |               | t
+ f         |          4 | public       | multi_ups_tbl | t
+ d         |          4 |              |               | t
 (4 rows)
 
 SELECT * from multi_ups_tbl ORDER BY id;

@@ -24,12 +24,13 @@ Config config;
 int
 load_config(const char *filename)
 {
-    json_t *root = NULL;
-    json_error_t error;
-    json_t *global = NULL;
-    json_t *raled = NULL;
-    json_t *log = NULL;
-    json_t *spock_nodes = NULL;
+	json_t		   *root = NULL;
+	json_error_t	error;
+	json_t		   *global = NULL;
+	json_t		   *raled = NULL;
+	json_t		   *log = NULL;
+	json_t		   *spock_nodes = NULL;
+	json_t		   *postgres;
 
     /* Load the JSON file */
     root = json_load_file(filename, 0, &error);
@@ -54,7 +55,7 @@ load_config(const char *filename)
         goto exit_err;
     }
 
-    
+
     config.raled.cluster_name = strdup(json_string_value(json_object_get(raled, "cluster_name")));
     if (!config.raled.cluster_name)
     {
@@ -124,7 +125,7 @@ load_config(const char *filename)
             goto exit_err;
         }
 
-        json_t *postgres = json_object_get(node, "postgres");
+		postgres = json_object_get(node, "postgres");
         if (!postgres)
         {
             log_error("Error: postgres object not found in node");
@@ -288,7 +289,14 @@ get_postgres_db(const char *node_name)
 const char *
 get_postgres_coninfo(const char *node_name)
 {
-    bool found = false;
+	bool		found = false;
+	const char *ip;
+	int			port;
+	const char *user;
+	const char *password;
+	const char *db;
+	char	   *coninfo;
+
     for (int i = 0; i < config.spock_node_count; i++)
     {
         if (strcmp(config.spock_nodes[i].node_name, node_name) == 0)
@@ -301,11 +309,12 @@ get_postgres_coninfo(const char *node_name)
         log_error("Error: node '%s' not found in configuration", node_name);
         return NULL;
     }
-    const char *ip = get_postgres_ip(node_name);
-    int port = get_postgres_port(node_name);
-    const char *user = get_postgres_user(node_name);
-    const char *password = get_postgres_password(node_name);
-    const char *db = get_postgres_db(node_name);
+
+	ip = get_postgres_ip(node_name);
+	port = get_postgres_port(node_name);
+	user = get_postgres_user(node_name);
+	password = get_postgres_password(node_name);
+	db = get_postgres_db(node_name);
 
     if (!ip)
     {
@@ -333,7 +342,7 @@ get_postgres_coninfo(const char *node_name)
         return NULL;
     }
 
-    char *coninfo = malloc(256);
+    coninfo = malloc(256);
     if (!coninfo)
     {
         log_error("Error: memory allocation failed for connection info");

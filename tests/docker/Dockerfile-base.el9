@@ -1,0 +1,37 @@
+# ##############################################################################
+#
+# Transient docker image to avoid unnecessary actions.
+#
+# Includes fresh updates of the base OS plus all extra packages needed to
+# Postgres, Spock and testing facilities.
+#
+# ##############################################################################
+
+FROM rockylinux:9
+
+RUN dnf -y update && dnf -y upgrade && dnf -y install sudo && dnf -y groupinstall "Development Tools"
+
+RUN useradd -m pgedge -s /bin/bash && \
+    echo pgedge:asdf | chpasswd && \
+    echo "pgedge ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/pgedge && \
+    chmod 0440 /etc/sudoers.d/pgedge && \
+    chown -R pgedge:pgedge /home/pgedge
+
+COPY tests/docker/lib-list.txt /home/pgedge/
+
+RUN dnf install --allowerasing --enablerepo=crb -y $(cat /home/pgedge/lib-list.txt)
+
+# Install perl dependencies for running tap tests
+RUN cpanm Test::More
+
+RUN ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
+    cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys
+
+
+COPY . /home/pgedge/spock
+RUN chown -R pgedge:pgedge /home/pgedge/spock
+#-----------------------------------------
+USER pgedge
+
+# Just to ensure that community members could find the person they should complain to.
+LABEL maintainer="andrei.lepikhov@pgedge.com"

@@ -25,7 +25,7 @@
 #include "catalog/pg_type.h"
 
 #include "commands/dbcommands.h"
-
+#include "commands/sequence.h"
 #include "miscadmin.h"
 
 #include "nodes/makefuncs.h"
@@ -48,6 +48,7 @@
 #define CATALOG_NODE			"node"
 #define CATALOG_LOCAL_NODE		"local_node"
 #define CATALOG_NODE_INTERFACE	"node_interface"
+#define CATALOG_SUBSCRIPTION_ID	"sub_id_generator"
 #define CATALOG_SUBSCRIPTION	"subscription"
 
 typedef struct NodeTuple
@@ -766,6 +767,40 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 }
 
 /*
+ * Generate subscription ID.
+ *
+ * Emulate behaviour of Oid type: don't allow negative and zero values here.
+ * In principle, the sub_id type should be changed to int32 or int64. However,
+ * it would immediately cause numerous changes throughout the code. And what's
+ * worse, it will cause the Spock UI change, which may need changes to the CLI
+ * and other components...
+ * Therefore, simply change the value generator from hash_any to a safer and
+ * more stable sequence.
+ *
+ * NOTE:
+ * We can't reuse standard routine getIdentitySequence here because
+ * OWNED BY clause creates normal dependency. Identity sequence expects AUTO or
+ * INTERNAL dependency type.
+ */
+static inline Oid
+generate_subscription_id()
+{
+	RangeVar   *rv;
+	Relation	rel;
+	int64		val;
+
+	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION_ID, -1);
+	rel = table_openrv(rv, RowExclusiveLock);
+
+	val = nextval_internal(RelationGetRelid(rel), false);
+	Assert(val > 0 && val <= UINT_MAX);
+
+	table_close(rel, RowExclusiveLock);
+
+	return (Oid) val;
+}
+
+/*
  * Add new subscription to catalog.
  */
 void
@@ -786,18 +821,15 @@ create_subscription(SpockSubscription *sub)
 	if (get_subscription_by_name(sub->name, true) != NULL)
 		elog(ERROR, "subscription %s already exists", sub->name);
 
-	/* Generate new id unless one was already specified. */
-	if (sub->id == InvalidOid)
-		sub->id =
-			DatumGetObjectId(hash_any((const unsigned char *) sub->name,
-									  strlen(sub->name)));
-
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	/* Form a tuple. */
 	memset(nulls, false, sizeof(nulls));
+
+	if (sub->id == InvalidOid)
+		sub->id = generate_subscription_id();
 
 	values[Anum_sub_id - 1] = ObjectIdGetDatum(sub->id);
 	namestrcpy(&sub_name, sub->name);
