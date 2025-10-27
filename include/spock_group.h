@@ -63,6 +63,26 @@ typedef struct SpockGroupKey
 } SpockGroupKey;
 
 /*
+ * Columns for the UI routine get_apply_group_progress.
+ */
+typedef enum
+{
+	GP_DBOID = 0,
+	GP_NODE_ID,
+	GP_REMOTE_NODE_ID,
+	GP_REMOTE_COMMIT_TS,
+	GP_PREV_REMOTE_TS,
+	GP_REMOTE_COMMIT_LSN,
+	GP_REMOTE_INSERT_LSN,
+	GP_RECEIVED_LSN,
+	GP_LAST_UPDATED_TS,
+	GP_UPDATED_BY_DECODE,
+
+	/* The last value */
+	_GP_LAST_
+} GroupProgressTupDescColumns;
+
+/*
  * Store the progress, obtaining from the remote node.
  *
  * NOTE:

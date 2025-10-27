@@ -62,6 +62,7 @@
 #include "utils/resowner.h"
 
 #include "spock_common.h"
+#include "spock_group.h"
 #include "spock_exception_handler.h"
 #include "spock_relcache.h"
 #include "spock_repset.h"
@@ -399,11 +400,10 @@ static void
 adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 {
 	const char *originQuery =
-		"SELECT node_id, remote_node_id, remote_commit_ts, "
-		"       remote_commit_lsn, remote_insert_lsn, "
-		"       last_updated_ts, updated_by_decode "
-		"FROM spock.progress "
-		"WHERE node_id = %u AND remote_node_id <> %u";
+		"SELECT * FROM spock.progress "
+		"WHERE dbid = (SELECT oid FROM pg_database "
+		"  WHERE datname = current_database()) AND "
+		"node_id = %u AND remote_node_id <> %u";
 	StringInfoData query;
 	PGresult   *originRes;
 
@@ -426,6 +426,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 
 		for (rno = 0; rno < PQntuples(originRes); rno++)
 		{
+			SpockApplyProgress sap;
 			/*
 			 * Update the remote node's progress entry to what our sync
 			 * provider has included in the COPY snapshot.
@@ -433,31 +434,42 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			 * We assume here that the progress table entry already exists.
 			 * Turning this into an INSERT if not should be easy.
 			 */
-			char	   *remote_node_id = PQgetvalue(originRes, rno, 1);
-			char	   *remote_commit_ts = PQgetvalue(originRes, rno, 2);
-			char	   *remote_commit_lsn = PQgetvalue(originRes, rno, 3);
-			char	   *remote_insert_lsn = PQgetvalue(originRes, rno, 4);
-			char	   *last_updated_ts = PQgetvalue(originRes, rno, 5);
-			char	   *updated_by_decode = PQgetvalue(originRes, rno, 6);
+			char	   *remote_node_id = PQgetvalue(originRes, rno, GP_REMOTE_NODE_ID);
+			char	   *remote_commit_ts = NULL;
+			char	   *remote_commit_lsn = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_LSN);
+			char	   *remote_insert_lsn = PQgetvalue(originRes, rno, GP_REMOTE_INSERT_LSN);
+			char	   *last_updated_ts = NULL;
+			char	   *updated_by_decode = PQgetvalue(originRes, rno, GP_UPDATED_BY_DECODE);
 
-			SpockApplyProgress sap = {
-				.key.dbid = MyDatabaseId,
-				.key.node_id = MySubscription->target->id,
-				.key.remote_node_id = atooid(remote_node_id),
-				.remote_commit_ts = str_to_timestamptz(remote_commit_ts),
-				.prev_remote_ts = str_to_timestamptz(remote_commit_ts),
-				.remote_commit_lsn = str_to_lsn(remote_commit_lsn),
-				.remote_insert_lsn = str_to_lsn(remote_insert_lsn),
-				/*
-				 * We don't actually received a single WAL record - just assume
-				 * we've got the last commit only. Don't set it to the Invalid
-				 * value in case someone uses tracking data in state monitoring
-				 * scripts.
-				 */
-				.received_lsn = str_to_lsn(remote_commit_lsn),
-				.last_updated_ts = str_to_timestamptz(last_updated_ts),
-				.updated_by_decode = updated_by_decode[0] == 't',
-			};
+			sap.key.dbid = MyDatabaseId;
+			sap.key.node_id = MySubscription->target->id;
+			sap.key.remote_node_id = atooid(remote_node_id);
+			if (!PQgetisnull(originRes, rno, GP_REMOTE_COMMIT_TS))
+			{
+				remote_commit_ts = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_TS);
+				sap.remote_commit_ts = str_to_timestamptz(remote_commit_ts);
+				Assert(IS_VALID_TIMESTAMP(sap.remote_commit_ts));
+			}
+			sap.prev_remote_ts = sap.remote_commit_ts;
+
+			sap.remote_commit_lsn = str_to_lsn(remote_commit_lsn);
+			sap.remote_insert_lsn = str_to_lsn(remote_insert_lsn);
+
+			/*
+			 * We don't actually received a single WAL record - just assume
+			 * we've got the last commit only. Don't set it to the Invalid
+			 * value in case someone uses tracking data in state monitoring
+			 * scripts.
+			 */
+			sap.received_lsn = str_to_lsn(remote_commit_lsn);
+
+			if (!PQgetisnull(originRes, rno, GP_LAST_UPDATED_TS))
+			{
+				last_updated_ts = PQgetvalue(originRes, rno, GP_LAST_UPDATED_TS);
+				sap.last_updated_ts = str_to_timestamptz(last_updated_ts);
+				Assert(IS_VALID_TIMESTAMP(sap.last_updated_ts));
+			}
+			sap.updated_by_decode = updated_by_decode[0] == 't',
 
 			/* Update progress */
 			spock_group_progress_update(&sap);

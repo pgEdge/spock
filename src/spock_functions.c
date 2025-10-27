@@ -3309,27 +3309,13 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
     PG_RETURN_VOID();
 }
 
-typedef enum
-{
-	GP_DBOID = 0,
-	GP_NODE_ID,
-	GP_REMOTE_NODE_ID,
-	GP_REMOTE_COMMIT_TS,
-	GP_PREV_REMOTE_TS,
-	GP_REMOTE_COMMIT_LSN,
-	GP_REMOTE_INSERT_LSN,
-	GP_RECEIVED_LSN,
-	GP_LAST_UPDATED_TS,
-	GP_UPDATED_BY_DECODE,
-
-	/* The last value */
-	_GP_LAST_
-} GroupProgressTupDescColumns;
-
 /*
  * get_apply_group_progress
  *
  * SQL function to show info about apply group progress.
+ *
+ * NOTE: In case when a timestamp is not initialized yet (zero), it returns
+ * NULL value for corresponding column.
  */
 Datum
 get_apply_group_progress(PG_FUNCTION_ARGS)
@@ -3354,15 +3340,55 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 		Datum	values[_GP_LAST_];
 		bool	nulls[_GP_LAST_] = {0};
 
+		/*
+		 * Centralise conversion of local representation of the progress data
+		 * to an external representation.
+		 * This is a good place to check correctness of each value (valid oid
+		 * and timestamps).
+		 */
+		Assert(OidIsValid(e->key.dbid) && OidIsValid(e->key.node_id) &&
+			   OidIsValid(e->key.remote_node_id));
+
 		values[GP_DBOID] = ObjectIdGetDatum(e->progress.key.dbid);
 		values[GP_NODE_ID] = ObjectIdGetDatum(e->progress.key.node_id);
 		values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(e->progress.key.remote_node_id);
-		values[GP_REMOTE_COMMIT_TS] = TimestampTzGetDatum(e->progress.remote_commit_ts);
-		values[GP_PREV_REMOTE_TS] = TimestampTzGetDatum(e->progress.prev_remote_ts);
+
+		if (e->progress.remote_commit_ts != 0)
+		{
+			Assert(IS_VALID_TIMESTAMP(e->progress.remote_commit_ts));
+			values[GP_REMOTE_COMMIT_TS] =
+							TimestampTzGetDatum(e->progress.remote_commit_ts);
+		}
+		else
+			nulls[GP_REMOTE_COMMIT_TS] = true;
+
+		if (e->progress.prev_remote_ts != 0)
+		{
+			Assert(IS_VALID_TIMESTAMP(e->progress.prev_remote_ts));
+			values[GP_PREV_REMOTE_TS] =
+								TimestampTzGetDatum(e->progress.prev_remote_ts);
+		}
+		else
+			nulls[GP_PREV_REMOTE_TS] = true;
+
+		/*
+		 * There is quite typical situation to calculate a diff between zero
+		 * and the current LSN. Moreover, LSN=0 physically makes sense.
+		 * So, don't introduce NULL value for these LSN fields.
+		 */
 		values[GP_REMOTE_COMMIT_LSN] = LSNGetDatum(e->progress.remote_commit_lsn);
 		values[GP_REMOTE_INSERT_LSN] = LSNGetDatum(e->progress.remote_insert_lsn);
 		values[GP_RECEIVED_LSN] = LSNGetDatum(e->progress.received_lsn);
-		values[GP_LAST_UPDATED_TS] = TimestampTzGetDatum(e->progress.last_updated_ts);
+
+		if (e->progress.last_updated_ts != 0)
+		{
+			Assert(IS_VALID_TIMESTAMP(e->progress.last_updated_ts));
+			values[GP_LAST_UPDATED_TS] =
+							TimestampTzGetDatum(e->progress.last_updated_ts);
+		}
+		else
+			nulls[GP_LAST_UPDATED_TS] = true;
+
 		values[GP_UPDATED_BY_DECODE] = BoolGetDatum(e->progress.updated_by_decode);
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
