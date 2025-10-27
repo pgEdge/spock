@@ -3317,46 +3317,16 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
 Datum
 get_apply_group_progress(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc	tupdesc;
-	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
-	HASH_SEQ_STATUS it;
-	SpockGroupEntry *e;
+	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	HASH_SEQ_STATUS		it;
+	SpockGroupEntry	   *e;
 
 	if (!SpockCtx || !SpockHash)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("spock must be loaded via shared_preload_libraries")));
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not "
-						"allowed in this context")));
-
-
-	/* Switch into long-lived context to construct returned data structures */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/* Build the tuple descriptor from caller’s column definition list */
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	InitMaterializedSRF(fcinfo, 0);
 
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
 
@@ -3377,7 +3347,7 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 		values[7] = TimestampTzGetDatum(e->progress.last_updated_ts);
 		values[8] = BoolGetDatum(e->progress.updated_by_decode);
 
-		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);
