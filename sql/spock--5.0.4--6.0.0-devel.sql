@@ -6,6 +6,7 @@
 DROP VIEW IF EXISTS spock.lag_tracker;
 DROP TABLE IF EXISTS spock.progress;
 
+DROP FUNCTION IF EXISTS spock.apply_group_progress;
 CREATE FUNCTION spock.apply_group_progress (
 	OUT dbid oid,
 	OUT node_id oid,
@@ -14,16 +15,14 @@ CREATE FUNCTION spock.apply_group_progress (
 	OUT prev_remote_ts timestamptz,
 	OUT remote_commit_lsn pg_lsn,
 	OUT remote_insert_lsn pg_lsn,
+	OUT received_lsn pg_lsn,
 	OUT last_updated_ts timestamptz,
 	OUT updated_by_decode bool
 ) RETURNS SETOF record
 LANGUAGE c AS 'MODULE_PATHNAME', 'get_apply_group_progress';
 
 CREATE VIEW spock.progress AS
-	SELECT node_id, remote_node_id, remote_commit_ts,
-		   remote_commit_lsn, remote_insert_lsn,
-		   last_updated_ts, updated_by_decode
-	FROM spock.apply_group_progress();
+	SELECT * FROM spock.apply_group_progress();
 
 CREATE VIEW spock.lag_tracker AS
 	SELECT

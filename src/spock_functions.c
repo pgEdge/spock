@@ -3309,6 +3309,23 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
     PG_RETURN_VOID();
 }
 
+typedef enum
+{
+	GP_DBOID = 0,
+	GP_NODE_ID,
+	GP_REMOTE_NODE_ID,
+	GP_REMOTE_COMMIT_TS,
+	GP_PREV_REMOTE_TS,
+	GP_REMOTE_COMMIT_LSN,
+	GP_REMOTE_INSERT_LSN,
+	GP_RECEIVED_LSN,
+	GP_LAST_UPDATED_TS,
+	GP_UPDATED_BY_DECODE,
+
+	/* The last value */
+	_GP_LAST_
+} GroupProgressTupDescColumns;
+
 /*
  * get_apply_group_progress
  *
@@ -3334,18 +3351,19 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 	hash_seq_init(&it, SpockGroupHash);
 	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
 	{
-		Datum		values[9];
-		bool		nulls[9] = {false};
+		Datum	values[_GP_LAST_];
+		bool	nulls[_GP_LAST_] = {0};
 
-		values[0] = ObjectIdGetDatum(e->progress.key.dbid);
-		values[1] = ObjectIdGetDatum(e->progress.key.node_id);
-		values[2] = ObjectIdGetDatum(e->progress.key.remote_node_id);
-		values[3] = TimestampTzGetDatum(e->progress.remote_commit_ts);
-		values[4] = TimestampTzGetDatum(e->progress.prev_remote_ts);
-		values[5] = LSNGetDatum(e->progress.remote_commit_lsn);
-		values[6] = LSNGetDatum(e->progress.remote_insert_lsn);
-		values[7] = TimestampTzGetDatum(e->progress.last_updated_ts);
-		values[8] = BoolGetDatum(e->progress.updated_by_decode);
+		values[GP_DBOID] = ObjectIdGetDatum(e->progress.key.dbid);
+		values[GP_NODE_ID] = ObjectIdGetDatum(e->progress.key.node_id);
+		values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(e->progress.key.remote_node_id);
+		values[GP_REMOTE_COMMIT_TS] = TimestampTzGetDatum(e->progress.remote_commit_ts);
+		values[GP_PREV_REMOTE_TS] = TimestampTzGetDatum(e->progress.prev_remote_ts);
+		values[GP_REMOTE_COMMIT_LSN] = LSNGetDatum(e->progress.remote_commit_lsn);
+		values[GP_REMOTE_INSERT_LSN] = LSNGetDatum(e->progress.remote_insert_lsn);
+		values[GP_RECEIVED_LSN] = LSNGetDatum(e->progress.received_lsn);
+		values[GP_LAST_UPDATED_TS] = TimestampTzGetDatum(e->progress.last_updated_ts);
+		values[GP_UPDATED_BY_DECODE] = BoolGetDatum(e->progress.updated_by_decode);
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}

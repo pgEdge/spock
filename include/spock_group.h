@@ -82,6 +82,13 @@ typedef struct SpockApplyProgress
 	TimestampTz prev_remote_ts;
 	XLogRecPtr	remote_commit_lsn;	/* LSN of remote commit on origin */
 	XLogRecPtr	remote_insert_lsn;	/* origin insert/end LSN reported */
+
+	/*
+	 * The largest received LSN by the group.
+	 * It is more or equal to the remote_commit_lsn.
+	 */
+	XLogRecPtr	received_lsn;
+
 	TimestampTz last_updated_ts;	/* when we set this */
 	bool		updated_by_decode;	/* set by decode or apply */
 } SpockApplyProgress;
