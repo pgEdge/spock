@@ -1446,6 +1446,23 @@ BEGIN
             RAISE EXCEPTION 'Exiting add_node: Database % does not exist on new node. Please create it first.', new_db_name;
     END;
 
+    -- Check if they previously installed lolor on the destination.
+    -- They should not have run CREATE EXTENSION yet
+    DECLARE
+        user_table_count integer;
+        remotesql text;
+    BEGIN
+        remotesql := 'SELECT count(*) FROM pg_tables WHERE schemaname = ''lolor''';
+        SELECT * FROM dblink(new_node_dsn, remotesql) AS t(count integer) INTO user_table_count;
+
+        IF user_table_count > 0 THEN
+            RAISE NOTICE '    [FAILED] %', rpad('Database ' || new_db_name || ' has the lolor extension installed or remaining lolor data.', 120, ' ');
+            RAISE EXCEPTION 'Exiting add_node: Database % has the lolor extension installed or remaining lolor user data.', new_db_name;
+        ELSE
+            RAISE NOTICE '    OK: %', rpad('Checking database ' || new_db_name || ' to ensure lolor is not installed', 120, ' ');
+        END IF;
+    END;
+
     -- Check if database has user-created tables in user-created schemas
     DECLARE
         user_table_count integer;
