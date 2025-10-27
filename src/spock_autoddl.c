@@ -35,9 +35,10 @@
 #include "spock_output_plugin.h"
 #include "spock.h"
 
-static void remove_table_from_repsets(Oid nodeid, Oid reloid, bool only_for_update);
-static void add_ddl_to_repset(Node *parsetree);
-static bool autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt, NodeTag stmt);
+static void remove_table_from_repsets(Oid nodeid, Oid reloid,
+									  bool only_for_update);
+static bool autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
+								NodeTag toplevel_stmt);
 
 /*
  * spock_autoddl_process
@@ -53,12 +54,16 @@ void
 spock_autoddl_process(PlannedStmt *pstmt,
 					  const char *queryString,
 					  ProcessUtilityContext context,
-					  NodeTag *toplevel_stmt)
+					  NodeTag toplevel_stmt)
 {
 	Oid			roleoid = InvalidOid;
 	Oid			save_userid = 0;
 	int			save_sec_context = 0;
+	const char *curr_qry;
+	int			loc = pstmt->stmt_location;
+	int			len = pstmt->stmt_len;
 	Node	   *parsetree = pstmt->utilityStmt;
+
 
 	roleoid = GetUserId();
 
@@ -71,48 +76,22 @@ spock_autoddl_process(PlannedStmt *pstmt,
 	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
 						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 
-	/*
-	 * we don't want to replicate if it's coming from spock.queue. But we do
-	 * add tables to repset whenever there is one.
-	 */
-	if (in_spock_queue_ddl_command || in_spock_replicate_ddl_command)
+	if (!autoddl_can_proceed(parsetree, context, toplevel_stmt))
 	{
-		/* if DDL is from spoc.queue, add it to the repset. */
-		if (in_spock_queue_ddl_command &&
-			autoddl_can_proceed(context, *toplevel_stmt, nodeTag(parsetree)))
-		{
-			*toplevel_stmt = T_Invalid;
-			add_ddl_to_repset(parsetree);
-		}
-
-		/*
-		 * Do Nothing else. Hook was called as a result of
-		 * spock.replicate_ddl(). The action has already been taken, so no
-		 * need for the duplication.
-		 */
+		/* Restore previous session privileges */
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+		return;
 	}
-	else if (GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
-			 spock_enable_ddl_replication &&
-			 get_local_node(false, true))
-	{
-		if (autoddl_can_proceed(context, *toplevel_stmt, nodeTag(parsetree)))
-		{
-			const char *curr_qry;
-			int			loc = pstmt->stmt_location;
-			int			len = pstmt->stmt_len;
 
-			*toplevel_stmt = T_Invalid;
-			queryString = CleanQuerytext(queryString, &loc, &len);
-			curr_qry = pnstrdup(queryString, len);
+	/* Replicate DDL statement */
+	queryString = CleanQuerytext(queryString, &loc, &len);
+	curr_qry = pnstrdup(queryString, len);
 
-			spock_auto_replicate_ddl(curr_qry,
-									 list_make1(DEFAULT_INSONLY_REPSET_NAME),
-									 roleoid,
-									 parsetree);
-
-			add_ddl_to_repset(parsetree);
-		}
-	}
+	spock_auto_replicate_ddl(curr_qry,
+							 list_make1(DEFAULT_INSONLY_REPSET_NAME),
+							 roleoid,
+							 parsetree);
+	add_ddl_to_repset(parsetree);
 
 	/* Restore previous session privileges */
 	SetUserIdAndSecContext(save_userid, save_sec_context);
@@ -124,7 +103,7 @@ spock_autoddl_process(PlannedStmt *pstmt,
  * now only tables are added). The function also checks whether the table has
  * needed indexes to be added to replication set. If not, they are ignored.
  */
-static void
+void
 add_ddl_to_repset(Node *parsetree)
 {
 	Relation	targetrel;
@@ -322,8 +301,8 @@ remove_table_from_repsets(Oid nodeid, Oid reloid, bool only_for_update)
 }
 
 static bool
-autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
-					NodeTag stmt)
+autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
+					NodeTag toplevel_stmt)
 {
 	if (spock_replication_repair_mode)
 
@@ -331,6 +310,22 @@ autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 		 * Repair mode means that nothing happened in this state should be
 		 * decoded and sent to any subscriber.
 		 */
+		return false;
+
+	/* Only process DDL statements */
+	if (GetCommandLogLevel(parsetree) != LOGSTMT_DDL)
+		return false;
+
+	/* If DDL replication is disabled, do nothing */
+	if (!spock_enable_ddl_replication)
+		return false;
+
+	/* Not a Spock node, do nothing */
+	if (get_local_node(false, true) == NULL)
+		return false;
+
+	/* If we are already processing a queued DDL, do nothing */
+	if (in_spock_queue_ddl_command || in_spock_replicate_ddl_command)
 		return false;
 
 	/* Allow all toplevel statements. */
@@ -349,31 +344,20 @@ autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 		return false;
 
 	/*
-	 * When the ProcessUtility hook is invoked due to a function call (enabled
-	 * by allow_ddl_from_functions) or a query from the queue (with
-	 * in_spock_queue_ddl_command set to true), the context is rarely
-	 * PROCESS_UTILITY_TOPLEVEL. Handling the context when it is
-	 * PROCESS_UTILITY_TOPLEVEL is straightforward. In other cases, our
-	 * objective is to filter out CREATE|DROP EXTENSION and CREATE SCHEMA
-	 * statements, which execute scripts or subcommands lacking top-level
-	 * status. Therefore, we need to filter out these internal commands.
-	 *
-	 * The purpose of this filtering is to include only the main statement (or
-	 * query provided by the client) in autoddl. To achieve this, we store the
-	 * nodetag of these statements in 'toplevel_stmt' and verify if the
-	 * current statement matches it. If not, it indicates the invocation of
-	 * subcommands, which we disregard.
-	 *
-	 * All other statements are allowed without filtering.
+	 * Allow DDL from functions except for CREATE|DROP EXTENSION and CREATE
+	 * SCHEMA
 	 */
-	if (context != PROCESS_UTILITY_TOPLEVEL &&
-		(allow_ddl_from_functions || in_spock_queue_ddl_command))
+	if (context == PROCESS_UTILITY_QUERY && allow_ddl_from_functions)
 	{
-		if (toplevel_stmt != T_Invalid)
-			return toplevel_stmt == stmt;
+		if (toplevel_stmt != T_CreateExtensionStmt &&
+			toplevel_stmt != T_CreateSchemaStmt &&
+			!(toplevel_stmt == T_DropStmt &&
+			  castNode(DropStmt, parsetree)->removeType == OBJECT_EXTENSION))
+			return true;
 
-		return true;
+		return false;
 	}
 
+	/* In all other cases, disallow DDL replication. */
 	return false;
 }

@@ -150,7 +150,7 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 					 DestReceiver *dest, QueryCompletion *qc)
 {
 	Node		   *parsetree = pstmt->utilityStmt;
-	static NodeTag	toplevel_stmt = T_Invalid;
+	NodeTag			toplevel_stmt = nodeTag(parsetree);
 
 	dropping_spock_obj = false;
 
@@ -174,23 +174,6 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 			spock_lastDropBehavior = ((DropStmt *)parsetree)->behavior;
 	}
 
-	/*
-	 * When the context is not PROCESS_UTILITY_TOPLEVEL, it becomes
-	 * challenging to differentiate between scripted commands and subcommands
-	 * generated as a result of CREATE|DROP EXTENSION and CREATE SCHEMA
-	 * statements. In autoddl, we only include statements that directly
-	 * originate from the client. To accomplish this, we store the nodetag of
-	 * the top-level statements for later comparison in the
-	 * autoddl_can_proceed() function. If the tags do not match, it indicates
-	 * that the statement did not originate from the client but rather is a
-	 * subcommand generated internally.
-	 */
-	if (nodeTag(parsetree) == T_CreateExtensionStmt ||
-		nodeTag(parsetree) == T_CreateSchemaStmt ||
-		(nodeTag(parsetree) == T_DropStmt &&
-		 castNode(DropStmt, parsetree)->removeType == OBJECT_EXTENSION))
-		toplevel_stmt = nodeTag(parsetree);
-
 	/* There's no reason we should be in a long lived context here */
 	Assert(CurrentMemoryContext != TopMemoryContext
 		   && CurrentMemoryContext != CacheMemoryContext);
@@ -202,9 +185,8 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 		standard_ProcessUtility(pstmt, queryString, readOnlyTree, context,
 								params, queryEnv, dest, qc);
 
-
 	/* Check for AutoDDL */
-	spock_autoddl_process(pstmt, queryString, context, &toplevel_stmt);
+	spock_autoddl_process(pstmt, queryString, context, toplevel_stmt);
  }
 
 /*
