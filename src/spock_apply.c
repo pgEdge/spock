@@ -879,6 +879,7 @@ handle_commit(StringInfo s)
 			.prev_remote_ts = replorigin_session_origin_timestamp,
 			.remote_commit_lsn = replorigin_session_origin_lsn,
 			.remote_insert_lsn = remote_insert_lsn,
+			/* Don't need to change received_lsn - it is done earlier */
 			.last_updated_ts = GetCurrentTimestamp(),
 			.updated_by_decode = true,
 		};
@@ -2514,6 +2515,37 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 }
 
 /*
+ * Static value to track local progress.
+ *
+ * Follow the CommitTsShmemInit() code as an example how to initialize such data
+ * types in shared memory. Keep the order according to the SpockApplyProgress
+ * declaration.
+ *
+ * NOTE: we initialize empty timestamp with 0 because of multiple places where
+ * semantics assumes empty timestamp is 0.
+ */
+static SpockApplyProgress apply_progress =
+{
+	.remote_commit_ts = 0,
+	.prev_remote_ts = 0,
+	.remote_commit_lsn = InvalidXLogRecPtr,
+	.remote_insert_lsn = InvalidXLogRecPtr,
+	.received_lsn = InvalidXLogRecPtr,
+	.last_updated_ts = 0,
+	.updated_by_decode = false
+};
+
+/*
+ * Update frequently changing statistics of the apply group
+ */
+static void
+UpdateWorkerStats(XLogRecPtr last_received)
+{
+	apply_progress.received_lsn = last_received;
+	spock_group_progress_update_ptr(MyApplyWorker->apply_group, &apply_progress);
+}
+
+/*
  * Apply main loop.
  */
 void
@@ -2544,6 +2576,12 @@ apply_work(PGconn *streamConn)
 										   ALLOCSET_DEFAULT_SIZES);
 
 	MemoryContextSwitchTo(MessageContext);
+
+	/* Initialize our static progress variable */
+	memset(&apply_progress.key, 0, sizeof(SpockGroupKey));
+	apply_progress.key.dbid = MyDatabaseId;
+	apply_progress.key.node_id = MySubscription->target->id;
+	apply_progress.key.remote_node_id = MySubscription->origin->id;
 
 	/* mark as idle, before starting to loop */
 	pgstat_report_activity(STATE_IDLE, NULL);
@@ -2750,6 +2788,7 @@ stream_replay:
 					}
 
 					replication_handler(msg);
+					UpdateWorkerStats(last_received);
 
 					/* Note: No overflow handling needed - dynamic allocation used */
 				}
@@ -2768,6 +2807,15 @@ stream_replay:
 
 					if (last_received < endpos)
 						last_received = endpos;
+
+					/*
+					 * It is important to update received_lsn on a keepalive
+					 * message: last_received tells us the last WAL position
+					 * that was processed by the remote walsender, even if that
+					 * data has never be sent to our replica.
+					 * It allows Spock to maintain LSN lag statistic.
+					 */
+					UpdateWorkerStats(last_received);
 
 					if (reply_requested)
 						check_and_update_progress(endpos, GetCurrentTimestamp());

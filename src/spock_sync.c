@@ -448,6 +448,13 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 				.prev_remote_ts = str_to_timestamptz(remote_commit_ts),
 				.remote_commit_lsn = str_to_lsn(remote_commit_lsn),
 				.remote_insert_lsn = str_to_lsn(remote_insert_lsn),
+				/*
+				 * We don't actually received a single WAL record - just assume
+				 * we've got the last commit only. Don't set it to the Invalid
+				 * value in case someone uses tracking data in state monitoring
+				 * scripts.
+				 */
+				.received_lsn = str_to_lsn(remote_commit_lsn),
 				.last_updated_ts = str_to_timestamptz(last_updated_ts),
 				.updated_by_decode = updated_by_decode[0] == 't',
 			};
