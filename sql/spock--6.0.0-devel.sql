@@ -497,12 +497,16 @@ CREATE VIEW spock.lag_tracker AS
 		MAX(p.remote_commit_lsn) AS commit_lsn,
 		MAX(p.remote_insert_lsn) AS remote_insert_lsn,
 		CASE
-			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN pg_wal_lsn_diff(MAX(p.remote_insert_lsn), MAX(p.remote_commit_lsn))
+			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool)
+			  THEN pg_wal_lsn_diff(MAX(p.remote_insert_lsn), MAX(p.remote_commit_lsn))
 			ELSE 0
 		END AS replication_lag_bytes,
 		CASE
-			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN now() - MAX(p.remote_commit_ts)
-			ELSE now() - MAX(p.last_updated_ts)
+			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool)
+              THEN clock_timestamp() - MAX(p.remote_commit_ts)
+            WHEN MAX(p.last_updated_ts) IS NULL
+              THEN '0'::Interval
+            ELSE clock_timestamp() - MAX(p.last_updated_ts)
 		END AS replication_lag
 	FROM spock.progress p
 	LEFT JOIN spock.subscription sub ON (p.node_id = sub.sub_target and p.remote_node_id = sub.sub_origin)
