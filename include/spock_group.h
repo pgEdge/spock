@@ -83,12 +83,25 @@ typedef enum
 } GroupProgressTupDescColumns;
 
 /*
- * Store the progress, obtaining from the remote node.
+ * Logical Replication Progress has made by a group of apply workers.
  *
- * NOTE:
- * Field remote_commit_lsn is a LSN of the COMMIT command with the
- * remote_commit_ts timestamp. There fields are coupled and this shouldn't be
- * changed for the sake of consistenty.
+ * remote_commit_ts - the most advanced timestamp of COMMIT commands, already
+ * applied by the replication group. In fact, an apply worker may finish
+ * the COMMIT apply if only all other commits with smaller timestamps have
+ * already been committed by other workers. So, this value tells us about
+ * the real progress.
+ * prev_remote_ts - obsolete value. TODO: Should be removed in further commits.
+ * remote_commit_lsn - LSN of the COMMIT corresponding to the remote_commit_ts.
+ * remote_insert_lsn - an LSN of the most advanced WAL record written to
+ * the WAL on the remote side. Replication protocol attempts to update it as
+ * frequently as possible, but it still be a little stale.
+ * received_lsn - an LSN of the most advanced WAL record that was received by
+ * the group.
+ * last_updated_ts - timestamp when remote COMMIT command (identified by the
+ * remote_commit_ts and remote_commit_lsn) was applied locally.
+ * Spock employs this value to calculate replication_lag.
+ * updated_by_decode - obsolete value. It was needed to decide on the LR lag
+ * that seems not needed if we have NULL value for a timestamp column.
  */
 typedef struct SpockApplyProgress
 {
