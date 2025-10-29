@@ -866,10 +866,10 @@ spock_worker_shmem_startup(void)
 							  &hctl,
 							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
 
-	LWLockRelease(AddinShmemInitLock);
-
 	/* Apply Group shmem startup */
 	spock_group_shmem_startup(nworkers, found);
+
+	LWLockRelease(AddinShmemInitLock);
 }
 
 /*

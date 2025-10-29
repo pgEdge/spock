@@ -686,13 +686,12 @@ handle_commit(StringInfo s)
 {
 	XLogRecPtr	commit_lsn;
 	XLogRecPtr	end_lsn;
-	XLogRecPtr	remote_insert_lsn;
 	TimestampTz commit_time;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
 
-	spock_read_commit(s, &commit_lsn, &end_lsn, &commit_time, &remote_insert_lsn);
+	spock_read_commit(s, &commit_lsn, &end_lsn, &commit_time);
 
 	Assert(commit_time == replorigin_session_origin_timestamp);
 
@@ -875,11 +874,10 @@ handle_commit(StringInfo s)
 			.key.dbid = MyDatabaseId,
 			.key.node_id = MySubscription->target->id,
 			.key.remote_node_id = MySubscription->origin->id,
-			.remote_commit_ts = replorigin_session_origin_timestamp,
+			.remote_commit_ts = commit_time,
 			.prev_remote_ts = replorigin_session_origin_timestamp,
-			.remote_commit_lsn = replorigin_session_origin_lsn,
-			.remote_insert_lsn = remote_insert_lsn,
-			/* Don't need to change received_lsn - it is done earlier */
+			.remote_commit_lsn = commit_lsn,
+			/* Don't need to change remote_insert_lsn and received_lsn - it is done earlier */
 			.last_updated_ts = GetCurrentTimestamp(),
 			.updated_by_decode = true,
 		};
@@ -2197,8 +2195,8 @@ handle_message(StringInfo s)
 static void
 replication_handler(StringInfo s)
 {
-	ErrorContextCallback errcallback;
-	char		action = pq_getmsgbyte(s);
+	ErrorContextCallback	errcallback;
+	char					action = pq_getmsgbyte(s);
 
 	if (spock_readonly == READONLY_ALL)
 		elog(ERROR, "SPOCK %s: cluster is in read-only mode, not performing replication",
@@ -2539,9 +2537,10 @@ static SpockApplyProgress apply_progress =
  * Update frequently changing statistics of the apply group
  */
 static void
-UpdateWorkerStats(XLogRecPtr last_received)
+UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted)
 {
 	apply_progress.received_lsn = last_received;
+	apply_progress.remote_insert_lsn = last_inserted;
 	spock_group_progress_update_ptr(MyApplyWorker->apply_group, &apply_progress);
 }
 
@@ -2553,6 +2552,7 @@ apply_work(PGconn *streamConn)
 {
 	int			fd;
 	XLogRecPtr	last_received = InvalidXLogRecPtr;
+	XLogRecPtr	last_inserted = InvalidXLogRecPtr;
 	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
 	bool		need_replay;
 	ErrorData  *edata;
@@ -2787,9 +2787,14 @@ stream_replay:
 						}
 					}
 
-					replication_handler(msg);
-					UpdateWorkerStats(last_received);
+					/*
+					 * Update statistics before applying the record to let the
+					 * apply machinery to check consistency of these values.
+					 */
+					last_inserted = pq_getmsgint64(msg);
+					UpdateWorkerStats(last_received, last_inserted);
 
+					replication_handler(msg);
 					/* Note: No overflow handling needed - dynamic allocation used */
 				}
 				else if (c == 'k')
@@ -2814,8 +2819,12 @@ stream_replay:
 					 * that was processed by the remote walsender, even if that
 					 * data has never be sent to our replica.
 					 * It allows Spock to maintain LSN lag statistic.
+					 *
+					 * NOTE: we can't change the keepalive message format, so
+					 * just apply the same last_inserted. It may cause negative
+					 * delta, but it seems not important.
 					 */
-					UpdateWorkerStats(last_received);
+					UpdateWorkerStats(last_received, last_inserted);
 
 					if (reply_requested)
 						check_and_update_progress(endpos, GetCurrentTimestamp());
