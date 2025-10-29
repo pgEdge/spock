@@ -500,32 +500,25 @@ query_node_recovery_progress(const char *node_dsn, const char *origin_node_name,
 
 			if (lsn_str && strlen(lsn_str) > 0)
 			{
-				uint32		xlogid;
-				uint32		xrecoff;
+				*remote_lsn = str_to_lsn(lsn_str);
 
-				/* Parse LSN from string format (X/X) */
-				if (sscanf(lsn_str, "%X/%X", &xlogid, &xrecoff) == 2)
+				/* Parse timestamp if available */
+				if (ts_str && strlen(ts_str) > 0 && !PQgetisnull(res, 0, 1))
 				{
-					*remote_lsn = ((uint64) xlogid << 32) | xrecoff;
-
-					/* Parse timestamp if available */
-					if (ts_str && strlen(ts_str) > 0 && !PQgetisnull(res, 0, 1))
-					{
-						/* Convert ISO timestamp string to TimestampTz */
-						Datum		ts_datum;
-						ts_datum = DirectFunctionCall3(timestamptz_in,
-													  CStringGetDatum(ts_str),
-													  ObjectIdGetDatum(InvalidOid),
-													  Int32GetDatum(-1));
-						*remote_ts = DatumGetTimestampTz(ts_datum);
-					}
-					else
-					{
-						*remote_ts = 0;
-					}
-
-					success = true;
+					/* Convert ISO timestamp string to TimestampTz */
+					Datum		ts_datum;
+					ts_datum = DirectFunctionCall3(timestamptz_in,
+												  CStringGetDatum(ts_str),
+												  ObjectIdGetDatum(InvalidOid),
+												  Int32GetDatum(-1));
+					*remote_ts = DatumGetTimestampTz(ts_datum);
 				}
+				else
+				{
+					*remote_ts = 0;
+				}
+
+				success = true;
 			}
 		}
 		else if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -756,14 +749,11 @@ spock_find_rescue_source_sql(PG_FUNCTION_ARGS)
 	if (OidIsValid(best_source_node_id))
 	{
 		SpockNode *source_node = get_node(best_source_node_id);
-		char	   *source_node_name = source_node ? source_node->name : "unknown";
-		char	   *lsn_str = psprintf("%X/%X", LSN_FORMAT_ARGS(best_lsn));
+		char	   *source_node_name = source_node->name;
 		const char *ts_str = timestamptz_to_str(best_commit_ts);
 
-		elog(LOG, "Rescue source for failed node %s is node %s at commit timestamp %s / LSN %s (confidence: %s)",
-			 failed_node_name, source_node_name, ts_str, lsn_str, confidence_level);
-
-		pfree(lsn_str);
+		elog(LOG, "Rescue source for failed node %s is node %s at commit timestamp %s / LSN %X/%X (confidence: %s)",
+			 failed_node_name, source_node_name, ts_str, LSN_FORMAT_ARGS(best_lsn), confidence_level);
 	}
 	else
 	{
