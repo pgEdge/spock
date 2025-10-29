@@ -129,7 +129,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	hctl.num_partitions = 16;
 
 	/* Get the shared resources */
-	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 	SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
 	SpockGroupHash = ShmemInitHash("spock group hash",
 								   napply_groups,
@@ -141,8 +140,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 
 	if (!SpockGroupHash)
 		elog(ERROR, "spock_group_shmem_startup: failed to init group map");
-
-	LWLockRelease(AddinShmemInitLock);
 
 	if (found)
 		return;
@@ -249,7 +246,7 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 	if (dest->remote_insert_lsn < src->remote_insert_lsn)
 		dest->remote_insert_lsn = src->remote_insert_lsn;
 	if (dest->received_lsn < src->received_lsn)
-		/* XXX: do we need to also track the most lagging worker? */
+		/* XXX: do we need to also track the most lagging worker of the group? */
 		dest->received_lsn = src->received_lsn;
 }
 
@@ -296,6 +293,10 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
 	Assert(e && sap);
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 	progress_update_struct(&e->progress, sap);
+
+	/* Insert LSN can't be less than the end of an inserted record */
+	Assert(e->progress.remote_commit_lsn <= e->progress.remote_insert_lsn);
+
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
 
