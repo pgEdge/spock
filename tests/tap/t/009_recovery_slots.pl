@@ -21,10 +21,11 @@ use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail comman
 # - Slot persistence across PostgreSQL restart
 #
 # Expected Results:
-# - All 12 tests should pass
+# - All 19 tests should pass
 # - Each node should have exactly ONE recovery slot
 # - Slots should be inactive (active=t but not used for replication)
 # - SQL functions should return correct status
+# - Rescue coordinator should find best surviving node for failed nodes
 
 # Create a 2-node cluster (creates nodes, installs extension)
 create_cluster(2, 'Create 2-node cluster for recovery slot testing');
@@ -114,6 +115,41 @@ is($health_n1, 'HEALTHY', 'Node 1: Health check reports HEALTHY');
 my $health_n2 = scalar_query(2, 
     "SELECT status FROM spock.quick_health_check()");
 is($health_n2, 'HEALTHY', 'Node 2: Health check reports HEALTHY');
+
+# =============================================================================
+# Rescue Coordinator Tests
+# =============================================================================
+
+# Test rescue coordinator functionality
+# Note: This is a basic test since we can't easily simulate node failures in this test
+# In a real scenario, this would be used when a node fails to determine the best
+# surviving node to use as a recovery source
+
+# Test that the function exists and can be called
+my $rescue_result = scalar_query(1, 
+    "SELECT COUNT(*) FROM spock.find_rescue_source('n2')");
+is($rescue_result, 1, 'Node 1: Rescue coordinator function exists and returns result');
+
+# Test that the function returns the expected columns
+my $rescue_columns = scalar_query(1, 
+    "SELECT COUNT(*) FROM spock.find_rescue_source('n2') WHERE origin_node_id IS NOT NULL");
+is($rescue_columns, 1, 'Node 1: Rescue coordinator returns origin_node_id');
+
+# Test that the function handles non-existent nodes gracefully
+my $rescue_error = scalar_query(1, 
+    "SELECT COUNT(*) FROM spock.find_rescue_source('nonexistent') WHERE origin_node_id IS NULL");
+# This should return 1 row with NULL values since the node doesn't exist
+is($rescue_error, 1, 'Node 1: Rescue coordinator handles non-existent nodes gracefully');
+
+# Test rescue coordinator from node 2
+my $rescue_result_n2 = scalar_query(2, 
+    "SELECT COUNT(*) FROM spock.find_rescue_source('n1')");
+is($rescue_result_n2, 1, 'Node 2: Rescue coordinator function works from node 2');
+
+# Test that rescue coordinator returns confidence level
+my $confidence = scalar_query(1, 
+    "SELECT confidence_level FROM spock.find_rescue_source('n2') WHERE confidence_level IS NOT NULL");
+is($confidence, 'LOW', 'Node 1: Rescue coordinator returns confidence level (LOW for single source)');
 
 # =============================================================================
 # Cleanup
