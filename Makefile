@@ -9,6 +9,7 @@ EXTENSION = spock
 PGFILEDESC = "spock - multi-master replication"
 
 MODULES = spock_output
+SUBDIRS = utils/spock_create_subscriber
 
 # Lookup source directory
 vpath % src src/compat/$(PGVER)
