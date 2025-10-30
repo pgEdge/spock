@@ -34,22 +34,29 @@
  */
 #include "postgres.h"
 
-#include "miscadmin.h"
+#include "access/heapam.h"
 #include "access/xlog.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_subscription.h"
 #include "commands/dbcommands.h"
+#include "executor/spi.h"
+#include "funcapi.h"
+#include "libpq-fe.h"
+#include "miscadmin.h"
 #include "replication/slot.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/builtins.h"
+#include "utils/elog.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/timestamp.h"
 
-#include "spock_recovery.h"
-#include "spock_common.h"
 #include "spock.h"
+#include "spock_common.h"
+#include "spock_node.h"
+#include "spock_recovery.h"
 
 /* Global recovery coordinator in shared memory */
 SpockRecoveryCoordinator *SpockRecoveryCtx = NULL;
@@ -441,4 +448,320 @@ update_recovery_slot_progress(const char *slot_name, XLogRecPtr lsn,
 	}
 
 	LWLockRelease(SpockRecoveryCtx->lock);
+}
+
+/*
+ * query_node_recovery_progress
+ *
+ * Query a remote node via libpq to get its recovery slot progress for the failed origin node.
+ * This queries the remote node's pg_replication_origin_status to find the latest LSN/timestamp
+ * it has received from the failed origin.
+ */
+static bool
+query_node_recovery_progress(const char *node_dsn, const char *origin_node_name,
+							XLogRecPtr *remote_lsn, TimestampTz *remote_ts)
+{
+	PGconn	   *conn = NULL;
+	PGresult   *res = NULL;
+	StringInfoData query;
+	bool		success = false;
+	const char *param_values[1];
+	Oid			param_types[1] = { TEXTOID };
+
+	if (!node_dsn || !origin_node_name)
+		return false;
+
+	PG_TRY();
+	{
+		/* Connect to the remote node using spock's connection helper */
+		conn = spock_connect(node_dsn, "rescue_coord", "query");
+		
+		/* Build parameterized query to get replication origin status from remote node */
+		initStringInfo(&query);
+		appendStringInfo(&query,
+			"SELECT pos.remote_lsn, "
+			"       CASE WHEN pos.remote_lsn = '0/0'::pg_lsn THEN NULL "
+			"            ELSE pg_catalog.pg_xact_commit_timestamp(pos.local_id) "
+			"       END as remote_timestamp "
+			"FROM spock.node n "
+			"JOIN pg_replication_origin_status pos "
+			"  ON pos.external_id = spock.spock_origin_name(n.node_id) "
+			"WHERE n.node_name = $1");
+
+		/* Use parameterized query for safety */
+		param_values[0] = origin_node_name;
+		res = PQexecParams(conn, query.data, 1, param_types,
+						  param_values, NULL, NULL, 0);
+
+		if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0)
+		{
+			char	   *lsn_str = PQgetvalue(res, 0, 0);
+			char	   *ts_str = PQgetvalue(res, 0, 1);
+
+			if (lsn_str && strlen(lsn_str) > 0)
+			{
+				*remote_lsn = str_to_lsn(lsn_str);
+
+				/* Parse timestamp if available */
+				if (ts_str && strlen(ts_str) > 0 && !PQgetisnull(res, 0, 1))
+				{
+					/* Convert ISO timestamp string to TimestampTz */
+					Datum		ts_datum;
+					ts_datum = DirectFunctionCall3(timestamptz_in,
+												  CStringGetDatum(ts_str),
+												  ObjectIdGetDatum(InvalidOid),
+												  Int32GetDatum(-1));
+					*remote_ts = DatumGetTimestampTz(ts_datum);
+				}
+				else
+				{
+					*remote_ts = 0;
+				}
+
+				success = true;
+			}
+		}
+		else if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			elog(DEBUG1, "Query failed on remote node: %s", PQerrorMessage(conn));
+		}
+
+		pfree(query.data);
+	}
+	PG_CATCH();
+	{
+		/* Clean up on error and log, but don't propagate */
+		ErrorData  *edata;
+		
+		edata = CopyErrorData();
+		FlushErrorState();
+		
+		elog(DEBUG1, "Failed to query node %s: %s", node_dsn, edata->message);
+		FreeErrorData(edata);
+		
+		success = false;
+	}
+	PG_END_TRY();
+
+	if (res)
+		PQclear(res);
+	if (conn)
+		PQfinish(conn);
+
+	return success;
+}
+
+/*
+ * spock_find_rescue_source_sql
+ *
+ * Find the best surviving node to use as a rescue source for a failed origin node.
+ * This function queries all co-subscriber nodes to determine which one has the most
+ * recent transactions from the failed origin node.
+ *
+ * Usage: SELECT * FROM spock.find_rescue_source('failed_node_name');
+ *
+ * Returns a record with:
+ * - origin_node_id: The failed node ID
+ * - source_node_id: The surviving node ID with the most recent data
+ * - last_lsn: The LSN of the last known transaction from the origin
+ * - last_commit_timestamp: The commit timestamp of the last known transaction
+ * - confidence_level: How confident we are in this choice (HIGH/MEDIUM/LOW)
+ */
+Datum
+spock_find_rescue_source_sql(PG_FUNCTION_ARGS)
+{
+	text	   *failed_node_name_text = PG_GETARG_TEXT_PP(0);
+	char	   *failed_node_name;
+	TupleDesc	tupdesc;
+	Datum		values[5];
+	bool		nulls[5];
+	HeapTuple	tuple;
+	Oid			failed_node_id = InvalidOid;
+	Oid			best_source_node_id = InvalidOid;
+	XLogRecPtr	best_lsn = InvalidXLogRecPtr;
+	TimestampTz	best_commit_ts = 0;
+	char	   *confidence_level = "LOW";
+
+	/* Get the failed node name */
+	failed_node_name = text_to_cstring(failed_node_name_text);
+
+	/* Get node ID for the failed node */
+	{
+		SpockNode *node = get_node_by_name(failed_node_name, true);
+		if (node == NULL)
+		{
+			/* Return empty result for non-existent nodes */
+			pfree(failed_node_name);
+			PG_RETURN_NULL();
+		}
+		failed_node_id = node->id;
+	}
+
+	/* Query all nodes in the cluster to find the best source node */
+	{
+		Oid			current_best_node_id = InvalidOid;
+		XLogRecPtr	current_best_lsn = InvalidXLogRecPtr;
+		TimestampTz	current_best_commit_ts = 0;
+		int			source_count = 0;
+		int			tie_count = 0;
+		int			ret;
+		int			i;
+
+		/* Connect to SPI to query all nodes */
+		if (SPI_connect() != SPI_OK_CONNECT)
+			elog(ERROR, "SPI_connect failed");
+
+		/* Get all nodes and their interfaces from the spock schema */
+		ret = SPI_execute("SELECT n.node_id, n.node_name, i.if_dsn "
+						  "FROM spock.node n "
+						  "JOIN spock.node_interface i ON i.if_nodeid = n.node_id "
+						  "WHERE i.if_name = 'default'",
+						  true, 0);
+
+		if (ret == SPI_OK_SELECT && SPI_processed > 0)
+		{
+			TupleDesc	tupdesc = SPI_tuptable->tupdesc;
+
+			/* Query each surviving node to see what data it has from the failed origin */
+			for (i = 0; i < SPI_processed; i++)
+			{
+				HeapTuple	tuple = SPI_tuptable->vals[i];
+				Oid			node_id;
+				char	   *node_name;
+				char	   *node_dsn;
+				XLogRecPtr	remote_lsn = InvalidXLogRecPtr;
+				TimestampTz	remote_ts = 0;
+				bool		has_progress = false;
+				bool		isnull;
+
+				/* Get node information */
+				node_id = DatumGetObjectId(SPI_getbinval(tuple, tupdesc, 1, &isnull));
+				if (isnull)
+					continue;
+
+				node_name = SPI_getvalue(tuple, tupdesc, 2);
+				if (!node_name)
+					continue;
+
+				node_dsn = SPI_getvalue(tuple, tupdesc, 3);
+				if (!node_dsn)
+					continue;
+
+				/* Skip if this is the failed node */
+				if (node_id == failed_node_id)
+					continue;
+
+				elog(DEBUG1, "Querying node %s (dsn: %s) for data from failed node %s",
+					 node_name, node_dsn, failed_node_name);
+
+				/* Query this node to see what data it has from the failed origin */
+				has_progress = query_node_recovery_progress(node_dsn, failed_node_name,
+														   &remote_lsn, &remote_ts);
+
+				if (!has_progress)
+				{
+					elog(DEBUG1, "Node %s did not return valid recovery data for %s",
+						 node_name, failed_node_name);
+				}
+
+				if (has_progress && remote_lsn != InvalidXLogRecPtr)
+				{
+					source_count++;
+
+					elog(DEBUG1, "Node %s has LSN %X/%X from failed node %s",
+						 node_name, LSN_FORMAT_ARGS(remote_lsn), failed_node_name);
+
+					/* Check if this is better than our current best */
+					if (current_best_lsn == InvalidXLogRecPtr ||
+						remote_lsn > current_best_lsn ||
+						(remote_lsn == current_best_lsn && remote_ts > current_best_commit_ts))
+					{
+						if (current_best_lsn != InvalidXLogRecPtr && remote_lsn == current_best_lsn)
+						{
+							tie_count++;
+						}
+
+						current_best_node_id = node_id;
+						current_best_lsn = remote_lsn;
+						current_best_commit_ts = remote_ts;
+
+						elog(DEBUG1, "Node %s is now the best candidate (LSN: %X/%X)",
+							 node_name, LSN_FORMAT_ARGS(remote_lsn));
+					}
+				}
+			}
+		}
+
+		SPI_finish();
+
+		/* Set the best source if we found any */
+		if (source_count > 0)
+		{
+			best_source_node_id = current_best_node_id;
+			best_lsn = current_best_lsn;
+			best_commit_ts = current_best_commit_ts;
+
+			/* Determine confidence level */
+			if (source_count >= 3 && tie_count == 0)
+				confidence_level = "HIGH";
+			else if (source_count >= 2)
+				confidence_level = "MEDIUM";
+			else
+				confidence_level = "LOW";
+		}
+	}
+
+	/* Build return tuple */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	/* Initialize all values to null */
+	memset(nulls, 1, sizeof(nulls));
+
+	/* Set non-null values */
+	values[0] = ObjectIdGetDatum(failed_node_id);
+	nulls[0] = false;
+
+	if (OidIsValid(best_source_node_id))
+	{
+		values[1] = ObjectIdGetDatum(best_source_node_id);
+		nulls[1] = false;
+	}
+
+	if (best_lsn != InvalidXLogRecPtr)
+	{
+		values[2] = LSNGetDatum(best_lsn);
+		nulls[2] = false;
+	}
+
+	if (best_commit_ts != 0)
+	{
+		values[3] = TimestampTzGetDatum(best_commit_ts);
+		nulls[3] = false;
+	}
+
+	values[4] = CStringGetTextDatum(confidence_level);
+	nulls[4] = false;
+
+	tuple = heap_form_tuple(tupdesc, values, nulls);
+
+	/* Log the rescue decision */
+	if (OidIsValid(best_source_node_id))
+	{
+		SpockNode *source_node = get_node(best_source_node_id);
+		char	   *source_node_name = source_node->name;
+		const char *ts_str = timestamptz_to_str(best_commit_ts);
+
+		elog(LOG, "Rescue source for failed node %s is node %s at commit timestamp %s / LSN %X/%X (confidence: %s)",
+			 failed_node_name, source_node_name, ts_str, LSN_FORMAT_ARGS(best_lsn), confidence_level);
+	}
+	else
+	{
+		elog(WARNING, "No rescue source found for failed node %s - no surviving nodes have recovery data",
+			 failed_node_name);
+	}
+
+	pfree(failed_node_name);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
 }
