@@ -65,7 +65,8 @@ nav:
     - Using Lolor to Manage Large Objects: managing/lolor.md
     - Using Automatic DDL Replication: managing/spock_autoddl.md
   - Modifying a Cluster:
-    - Using Z0DAN - Modifying a Cluster with Zero Downtime:
+    - Using Z0DAN:  
+      - Using Z0DAN - Modifying a Cluster with Zero Downtime: modify/index.md
       - Using Z0DAN scripts to Modify a Cluster: samples/Z0DAN/README.md
       - Tutorial - Adding a Node with Zero Downtime: modify/zodan_tutorial.md
     - Adding a Node with Minimal Downtime with pgBackRest: modify/add_node_pgbackrest.md
