@@ -64,9 +64,10 @@ nav:
     - Using Snowflake Sequences: managing/snowflake.md
     - Using Lolor to Manage Large Objects: managing/lolor.md
     - Using Automatic DDL Replication: managing/spock_autoddl.md
-  - Adding a Node to a Cluster:
-    - Using Spock to Add a Node to a Cluster: modify/index.md
-    - Adding a Node with Zero Downtime: modify/zodan_tutorial.md
+  - Modifying a Cluster:
+    - Using Z0DAN - Modifying a Cluster with Zero Downtime:
+      - Using Z0DAN scripts to Modify a Cluster: samples/Z0DAN/README.md
+      - Tutorial - Adding a Node with Zero Downtime: modify/zodan_tutorial.md
     - Adding a Node with Minimal Downtime with pgBackRest: modify/add_node_pgbackrest.md
     - Using Spockctrl:
       - Managing your Cluster with Spockctrl: modify/spockctrl/index.md
