@@ -477,7 +477,7 @@ spock_worker_detach(bool crash)
 
 		my_manager = spock_manager_find(MySpockWorker->dboid);
 
-		if (my_manager != NULL)
+		if (spock_worker_running(my_manager))
 			SetLatch(&my_manager->proc->procLatch);
 	}
 
@@ -488,6 +488,11 @@ spock_worker_detach(bool crash)
 
 /*
  * Find the manager worker for given database.
+ *
+ * NOTE: Manager may be in multiple states at the moment. For example, it may
+ * be already killed and passed through the cleanup procedures (see the
+ * spock_worker_detach). So, it is on caller to check that it is in
+ * a consistent state (see spock_worker_running).
  */
 SpockWorker *
 spock_manager_find(Oid dboid)
@@ -861,10 +866,10 @@ spock_worker_shmem_startup(void)
 							  &hctl,
 							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
 
-	LWLockRelease(AddinShmemInitLock);
-
 	/* Apply Group shmem startup */
 	spock_group_shmem_startup(nworkers, found);
+
+	LWLockRelease(AddinShmemInitLock);
 }
 
 /*

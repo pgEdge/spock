@@ -586,7 +586,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	create_subscription(&sub);
 
 	/* Create progress entry to track commit ts per local/remote origin */
-	spock_group_attach(MyDatabaseId, localnode->node->id, originif.nodeid, NULL);
+	spock_group_attach(MyDatabaseId, localnode->node->id, originif.nodeid);
 
 
 	/* Create synchronization status for the subscription. */
@@ -3313,50 +3313,23 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
  * get_apply_group_progress
  *
  * SQL function to show info about apply group progress.
+ *
+ * NOTE: In case when a timestamp is not initialized yet (zero), it returns
+ * NULL value for corresponding column.
  */
 Datum
 get_apply_group_progress(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc	tupdesc;
-	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
-	HASH_SEQ_STATUS it;
-	SpockGroupEntry *e;
+	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	HASH_SEQ_STATUS		it;
+	SpockGroupEntry	   *e;
 
 	if (!SpockCtx || !SpockHash)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("spock must be loaded via shared_preload_libraries")));
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not "
-						"allowed in this context")));
-
-
-	/* Switch into long-lived context to construct returned data structures */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/* Build the tuple descriptor from caller’s column definition list */
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	InitMaterializedSRF(fcinfo, 0);
 
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
 
@@ -3364,20 +3337,61 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 	hash_seq_init(&it, SpockGroupHash);
 	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
 	{
-		Datum		values[9];
-		bool		nulls[9] = {false};
+		Datum	values[_GP_LAST_];
+		bool	nulls[_GP_LAST_] = {0};
 
-		values[0] = ObjectIdGetDatum(e->progress.key.dbid);
-		values[1] = ObjectIdGetDatum(e->progress.key.node_id);
-		values[2] = ObjectIdGetDatum(e->progress.key.remote_node_id);
-		values[3] = TimestampTzGetDatum(e->progress.remote_commit_ts);
-		values[4] = TimestampTzGetDatum(e->progress.prev_remote_ts);
-		values[5] = LSNGetDatum(e->progress.remote_commit_lsn);
-		values[6] = LSNGetDatum(e->progress.remote_insert_lsn);
-		values[7] = TimestampTzGetDatum(e->progress.last_updated_ts);
-		values[8] = BoolGetDatum(e->progress.updated_by_decode);
+		/*
+		 * Centralise conversion of local representation of the progress data
+		 * to an external representation.
+		 * This is a good place to check correctness of each value (valid oid
+		 * and timestamps).
+		 */
+		Assert(OidIsValid(e->key.dbid) && OidIsValid(e->key.node_id) &&
+			   OidIsValid(e->key.remote_node_id));
 
-		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+		values[GP_DBOID] = ObjectIdGetDatum(e->progress.key.dbid);
+		values[GP_NODE_ID] = ObjectIdGetDatum(e->progress.key.node_id);
+		values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(e->progress.key.remote_node_id);
+
+		if (e->progress.remote_commit_ts != 0)
+		{
+			Assert(IS_VALID_TIMESTAMP(e->progress.remote_commit_ts));
+			values[GP_REMOTE_COMMIT_TS] =
+							TimestampTzGetDatum(e->progress.remote_commit_ts);
+		}
+		else
+			nulls[GP_REMOTE_COMMIT_TS] = true;
+
+		if (e->progress.prev_remote_ts != 0)
+		{
+			Assert(IS_VALID_TIMESTAMP(e->progress.prev_remote_ts));
+			values[GP_PREV_REMOTE_TS] =
+								TimestampTzGetDatum(e->progress.prev_remote_ts);
+		}
+		else
+			nulls[GP_PREV_REMOTE_TS] = true;
+
+		/*
+		 * There is quite typical situation to calculate a diff between zero
+		 * and the current LSN. Moreover, LSN=0 physically makes sense.
+		 * So, don't introduce NULL value for these LSN fields.
+		 */
+		values[GP_REMOTE_COMMIT_LSN] = LSNGetDatum(e->progress.remote_commit_lsn);
+		values[GP_REMOTE_INSERT_LSN] = LSNGetDatum(e->progress.remote_insert_lsn);
+		values[GP_RECEIVED_LSN] = LSNGetDatum(e->progress.received_lsn);
+
+		if (e->progress.last_updated_ts != 0)
+		{
+			Assert(IS_VALID_TIMESTAMP(e->progress.last_updated_ts));
+			values[GP_LAST_UPDATED_TS] =
+							TimestampTzGetDatum(e->progress.last_updated_ts);
+		}
+		else
+			nulls[GP_LAST_UPDATED_TS] = true;
+
+		values[GP_UPDATED_BY_DECODE] = BoolGetDatum(e->progress.updated_by_decode);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);

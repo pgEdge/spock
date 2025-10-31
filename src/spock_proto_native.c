@@ -64,6 +64,7 @@ spock_write_rel(StringInfo out, SpockOutputData *data, Relation rel,
 	uint8		relnamelen;
 	uint8		flags = 0;
 
+	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'R');		/* sending RELATION */
 
 	/* send the flags field */
@@ -169,6 +170,7 @@ spock_write_begin(StringInfo out, SpockOutputData *data,
 {
 	uint8	flags = 0;
 
+	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'B');		/* BEGIN */
 
 	/* send the flags field its self */
@@ -189,6 +191,7 @@ spock_write_commit(StringInfo out, SpockOutputData *data,
 {
 	uint8 flags = 0;
 
+	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'C');		/* sending COMMIT */
 
 	/* send the flags field */
@@ -198,9 +201,6 @@ spock_write_commit(StringInfo out, SpockOutputData *data,
 	pq_sendint64(out, commit_lsn);
 	pq_sendint64(out, txn->end_lsn);
 	pq_sendint64(out, txn->xact_time.commit_time);
-
-	/* send latest WAL insert pointer */
-	pq_sendint64(out, GetXLogInsertRecPtr());
 }
 
 /*
@@ -214,6 +214,7 @@ spock_write_origin(StringInfo out, const RepOriginId origin_id,
 
 	Assert(origin_id != InvalidRepOriginId);
 
+	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'O');		/* ORIGIN */
 
 	/* send the flags field its self */
@@ -234,6 +235,7 @@ spock_write_commit_order(StringInfo out,
 {
 	uint8	flags = 0;
 
+	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'L');		/* last commit ts */
 
 	/* send the flags field its self */
@@ -252,6 +254,8 @@ spock_write_insert(StringInfo out, SpockOutputData *data,
 						Bitmapset *att_list)
 {
 	uint8 flags = 0;
+
+	pq_sendint64(out, GetXLogWriteRecPtr());
 
 	pq_sendbyte(out, 'I');		/* action INSERT */
 
@@ -274,6 +278,8 @@ spock_write_update(StringInfo out, SpockOutputData *data,
 						Bitmapset *att_list)
 {
 	uint8 flags = 0;
+
+	pq_sendint64(out, GetXLogWriteRecPtr());
 
 	pq_sendbyte(out, 'U');		/* action UPDATE */
 
@@ -313,6 +319,8 @@ spock_write_delete(StringInfo out, SpockOutputData *data,
 {
 	uint8 flags = 0;
 
+	pq_sendint64(out, GetXLogWriteRecPtr());
+
 	pq_sendbyte(out, 'D');		/* action DELETE */
 
 	/* send the flags field */
@@ -339,6 +347,7 @@ write_startup_message(StringInfo out, List *msg)
 {
 	ListCell *lc;
 
+	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'S');	/* message type field */
 	pq_sendbyte(out, SPOCK_STARTUP_MSG_FORMAT_FLAT); 	/* startup message version */
 	foreach (lc, msg)
@@ -518,6 +527,7 @@ spock_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
 					bool transactional, const char *prefix, Size sz,
 					const char *message)
 {
+	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'M'); /* message type field */
 
 	/* send out message contents */
@@ -597,8 +607,7 @@ void
 spock_read_commit(StringInfo in,
 				  XLogRecPtr *commit_lsn,
 				  XLogRecPtr *end_lsn,
-				  TimestampTz *committime,
-				  XLogRecPtr *remote_insert_lsn)
+				  TimestampTz *committime)
 {
 	/* read flags */
 	uint8	flags = pq_getmsgbyte(in);
@@ -609,7 +618,6 @@ spock_read_commit(StringInfo in,
 	*commit_lsn = pq_getmsgint64(in);
 	*end_lsn = pq_getmsgint64(in);
 	*committime = pq_getmsgint64(in);
-	*remote_insert_lsn = pq_getmsgint64(in);
 }
 
 /*
@@ -1041,6 +1049,7 @@ spock_write_truncate(StringInfo out, int nrelids, Oid relids[], bool cascade,
 	int			i;
 	uint8		flags = 0;
 
+	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'T');
 
 	pq_sendint32(out, nrelids);
