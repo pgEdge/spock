@@ -60,6 +60,7 @@ jobs:
           REG_CT_NAME="spock-regress-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "REG_CT_NAME=$REG_CT_NAME" >> "$GITHUB_ENV"
           docker run --name "$REG_CT_NAME" -e PGVER=${{ matrix.pgver }} spock /home/pgedge/run-spock-regress.sh
+        timeout-minutes: 15
 
       - name: Collect regression artifacts (from container)
         if: ${{ always() }}
@@ -83,6 +84,7 @@ jobs:
           echo "TAP_CT_NAME=$TAP_CT_NAME" >> "$GITHUB_ENV"
           docker run --name "$TAP_CT_NAME" -e PGVER=${{ matrix.pgver }} --workdir=/home/pgedge/spock/tests/tap \
             spock /home/pgedge/spock/tests/tap/run_tests.sh
+        timeout-minutes: 15
 
       - name: Collect TAP artifacts (from container)
         if: ${{ always() }}
