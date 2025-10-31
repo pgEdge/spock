@@ -147,7 +147,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	hctl.num_partitions = 16;
 
 	/* Get the shared resources */
-	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 	SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
 	SpockGroupHash = ShmemInitHash("spock group hash",
 								   napply_groups,
@@ -159,8 +158,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 
 	if (!SpockGroupHash)
 		elog(ERROR, "spock_group_shmem_startup: failed to init group map");
-
-	LWLockRelease(AddinShmemInitLock);
 
 	if (found)
 		return;
@@ -191,7 +188,7 @@ make_key(Oid dbid, Oid node_id, Oid remote_node_id)
  * call from an apply worker during startup/attach.
  */
 SpockGroupEntry *
-spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id, bool *created)
+spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 {
 	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
 	SpockGroupEntry *e;
@@ -206,13 +203,6 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id, bool *created)
 
 		pg_atomic_init_u32(&e->nattached, 0);
 		ConditionVariableInit(&e->prev_processed_cv);
-		if (created)
-			*created = true;
-	}
-	else
-	{
-		if (created)
-			*created = false;
 	}
 
 	pg_atomic_add_fetch_u32(&e->nattached, 1);
@@ -235,6 +225,60 @@ spock_group_detach(void)
 }
 
 /*
+ * To have fresh statistics we need to update subsets of these fields in
+ * different situations. For example, we need remote_insert_lsn more frequently
+ * than just on a commit.
+ *
+ * This function allows us to control update behaviour and write only the most
+ * recent data (remember, members of the group work simultaneously).
+ */
+static void
+progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
+{
+	/*
+	 * Good place to check the invariant.
+	 * It must be true in case of re-written entry and a new one.
+	 */
+	Assert(dest->key.dbid == src->key.dbid);
+	Assert(dest->key.node_id == src->key.node_id);
+	Assert(dest->key.remote_node_id == src->key.remote_node_id);
+
+	if (dest->remote_commit_ts < src->remote_commit_ts)
+	{
+		/*
+		 * This is the most advanced commit. Save its progress.
+		 *
+		 * NOTE: According to apply group machinery their commit order should
+		 * follow the timestamp order. That means there are no way for a commit
+		 * to come with an oldest commit timestamp except we don't update this
+		 * commit's part of the data at all.
+		 */
+		dest->remote_commit_ts = src->remote_commit_ts;
+		dest->prev_remote_ts = src->prev_remote_ts;
+		dest->remote_commit_lsn = src->remote_commit_lsn;
+		dest->last_updated_ts = src->last_updated_ts;
+		dest->updated_by_decode = src->updated_by_decode;
+	}
+
+	/* Here is more frequent statistics to update */
+	if (dest->remote_insert_lsn < src->remote_insert_lsn)
+		dest->remote_insert_lsn = src->remote_insert_lsn;
+	if (dest->received_lsn < src->received_lsn)
+		/* XXX: do we need to also track the most lagging worker of the group? */
+		dest->received_lsn = src->received_lsn;
+
+	/* It is a good place to check the entry consistency */
+	Assert(dest->remote_insert_lsn >= dest->remote_commit_lsn);
+	Assert(dest->received_lsn >= dest->remote_commit_lsn);
+	/*
+	 * Value of the received_lsn potentially can exceed remote_insert_lsn
+	 * because it is reported more frequently (by keepalive messages).
+	 */
+	Assert(!(dest->remote_commit_ts == 0 ^ dest->last_updated_ts == 0));
+	Assert(dest->remote_commit_ts >= 0 && dest->last_updated_ts >= 0);
+}
+
+/*
  * spock_group_progress_update
  *
  * Update the progress snapshot for (dbid,node_id,remote_node_id).
@@ -244,9 +288,9 @@ spock_group_detach(void)
 bool
 spock_group_progress_update(const SpockApplyProgress *sap)
 {
-	SpockGroupKey key;
-	SpockGroupEntry *e;
-	bool		found;
+	SpockGroupKey		key;
+	SpockGroupEntry	   *e;
+	bool				found;
 
 	if (!sap)
 		return false;
@@ -265,7 +309,7 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 	}
 
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
-	e->progress = *sap;
+	progress_update_struct(&e->progress, sap);
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 	return true;
 }
@@ -276,7 +320,11 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
 {
 	Assert(e && sap);
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
-	e->progress = *sap;
+	progress_update_struct(&e->progress, sap);
+
+	/* Insert LSN can't be less than the end of an inserted record */
+	Assert(e->progress.remote_commit_lsn <= e->progress.remote_insert_lsn);
+
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
 

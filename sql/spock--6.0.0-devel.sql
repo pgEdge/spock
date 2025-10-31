@@ -105,16 +105,14 @@ CREATE FUNCTION spock.apply_group_progress (
 	OUT prev_remote_ts timestamptz,
 	OUT remote_commit_lsn pg_lsn,
 	OUT remote_insert_lsn pg_lsn,
+	OUT received_lsn pg_lsn,
 	OUT last_updated_ts timestamptz,
 	OUT updated_by_decode bool
 ) RETURNS SETOF record
 LANGUAGE c AS 'MODULE_PATHNAME', 'get_apply_group_progress';
 
 CREATE VIEW spock.progress AS
-	SELECT node_id, remote_node_id, remote_commit_ts,
-		   remote_commit_lsn AS remote_lsn, remote_insert_lsn,
-		   last_updated_ts, updated_by_decode
-	FROM spock.apply_group_progress();
+	SELECT * FROM spock.apply_group_progress();
 
 CREATE FUNCTION spock.node_create(node_name name, dsn text,
     location text DEFAULT NULL, country text DEFAULT NULL,
@@ -397,7 +395,7 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
-		SELECT INTO progress_lsn remote_lsn
+		SELECT INTO progress_lsn remote_commit_lsn
 			FROM spock.progress
 			WHERE node_id = target_id AND remote_node_id = origin_id;
 		IF progress_lsn >= lsn THEN
@@ -431,7 +429,7 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
-		SELECT INTO progress_lsn remote_lsn
+		SELECT INTO progress_lsn remote_commit_lsn
 			FROM spock.progress
 			WHERE node_id = target_id AND remote_node_id = origin_id;
 		IF progress_lsn >= lsn THEN
@@ -496,15 +494,18 @@ CREATE VIEW spock.lag_tracker AS
 		origin.node_name AS origin_name,
 		n.node_name AS receiver_name,
 		MAX(p.remote_commit_ts) AS commit_timestamp,
-		MAX(p.remote_lsn) AS last_received_lsn,
+		MAX(p.remote_commit_lsn) AS commit_lsn,
 		MAX(p.remote_insert_lsn) AS remote_insert_lsn,
+		MAX(p.received_lsn) AS received_lsn,
 		CASE
-			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN pg_wal_lsn_diff(MAX(p.remote_insert_lsn), MAX(p.remote_lsn))
-			ELSE 0
+			WHEN MAX(p.remote_insert_lsn) IS NOT NULL AND MAX(p.remote_commit_lsn) IS NOT NULL
+			  THEN MAX(pg_wal_lsn_diff(p.remote_insert_lsn, p.remote_commit_lsn))
+			ELSE NULL
 		END AS replication_lag_bytes,
 		CASE
-			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN now() - MAX(p.remote_commit_ts)
-			ELSE now() - MAX(p.last_updated_ts)
+			WHEN MAX(p.remote_commit_ts) IS NOT NULL AND MAX(p.last_updated_ts) IS NOT NULL
+              THEN MAX(p.last_updated_ts - p.remote_commit_ts)
+            ELSE NULL
 		END AS replication_lag
 	FROM spock.progress p
 	LEFT JOIN spock.subscription sub ON (p.node_id = sub.sub_target and p.remote_node_id = sub.sub_origin)

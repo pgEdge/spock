@@ -685,13 +685,12 @@ handle_commit(StringInfo s)
 {
 	XLogRecPtr	commit_lsn;
 	XLogRecPtr	end_lsn;
-	XLogRecPtr	remote_insert_lsn;
 	TimestampTz commit_time;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
 
-	spock_read_commit(s, &commit_lsn, &end_lsn, &commit_time, &remote_insert_lsn);
+	spock_read_commit(s, &commit_lsn, &end_lsn, &commit_time);
 
 	Assert(commit_time == replorigin_session_origin_timestamp);
 
@@ -874,21 +873,23 @@ handle_commit(StringInfo s)
 			.key.dbid = MyDatabaseId,
 			.key.node_id = MySubscription->target->id,
 			.key.remote_node_id = MySubscription->origin->id,
-			.remote_commit_ts = replorigin_session_origin_timestamp,
+			.remote_commit_ts = commit_time,
 			.prev_remote_ts = replorigin_session_origin_timestamp,
-			.remote_commit_lsn = replorigin_session_origin_lsn,
-			.remote_insert_lsn = remote_insert_lsn,
-			.last_updated_ts = GetCurrentTimestamp(),
+			.remote_commit_lsn = commit_lsn,
+			/* Don't need to change remote_insert_lsn and received_lsn - it is done earlier */
+			.last_updated_ts = GetCurrentTimestamp(), /* XXX: Could we use commit_ts value instead? */
 			.updated_by_decode = true,
 		};
+
+		/* XXX: Don't care in production yet */
+		Assert(sap.last_updated_ts >= sap.remote_commit_ts);
 
 		/* WAL after commit, then to shmem */
 		spock_apply_progress_add_to_wal(&sap);
 
-		if (MyApplyWorker && MyApplyWorker->apply_group)
-			spock_group_progress_update_ptr(MyApplyWorker->apply_group, &sap);
-		else
-			spock_group_progress_update(&sap);
+		Assert(MyApplyWorker && MyApplyWorker->apply_group);
+
+		spock_group_progress_update_ptr(MyApplyWorker->apply_group, &sap);
 	}
 
 	/* Wakeup all waiters for waiting for the previous transaction to commit */
@@ -1638,8 +1639,7 @@ handle_startup(StringInfo s)
 		handle_startup_param(k, v);
 	} while (!getmsgisend(s));
 
-	/* Attach this worker. */
-	spock_apply_worker_attach();
+	Assert(MyApplyWorker->apply_group != NULL);
 
 	/* Register callback for cleaning up */
 	before_shmem_exit(spock_apply_worker_shmem_exit, 0);
@@ -1676,8 +1676,6 @@ spock_apply_worker_on_exit(int code, Datum arg)
 static void
 spock_apply_worker_attach(void)
 {
-	bool		created;
-
 	if(MyApplyWorker->apply_group != NULL)
 		return;
 
@@ -1686,9 +1684,9 @@ spock_apply_worker_attach(void)
 		/* Set the values in shared memory for this dbid-origin */
 	MyApplyWorker->apply_group = spock_group_attach(MySpockWorker->dboid,
 					   MySubscription->target->id,
-					   MySubscription->origin->id,
-					   &created);
+					   MySubscription->origin->id);
 
+	Assert(MyApplyWorker->apply_group != NULL);
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
 
@@ -2199,8 +2197,8 @@ handle_message(StringInfo s)
 static void
 replication_handler(StringInfo s)
 {
-	ErrorContextCallback errcallback;
-	char		action = pq_getmsgbyte(s);
+	ErrorContextCallback	errcallback;
+	char					action = pq_getmsgbyte(s);
 
 	if (spock_readonly == READONLY_ALL)
 		elog(ERROR, "SPOCK %s: cluster is in read-only mode, not performing replication",
@@ -2517,6 +2515,38 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 }
 
 /*
+ * Static value to track local progress.
+ *
+ * Follow the CommitTsShmemInit() code as an example how to initialize such data
+ * types in shared memory. Keep the order according to the SpockApplyProgress
+ * declaration.
+ *
+ * NOTE: we initialize empty timestamp with 0 because of multiple places where
+ * semantics assumes empty timestamp is 0.
+ */
+static SpockApplyProgress apply_progress =
+{
+	.remote_commit_ts = 0,
+	.prev_remote_ts = 0,
+	.remote_commit_lsn = InvalidXLogRecPtr,
+	.remote_insert_lsn = InvalidXLogRecPtr,
+	.received_lsn = InvalidXLogRecPtr,
+	.last_updated_ts = 0,
+	.updated_by_decode = false
+};
+
+/*
+ * Update frequently changing statistics of the apply group
+ */
+static void
+UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted)
+{
+	apply_progress.received_lsn = last_received;
+	apply_progress.remote_insert_lsn = last_inserted;
+	spock_group_progress_update_ptr(MyApplyWorker->apply_group, &apply_progress);
+}
+
+/*
  * Apply main loop.
  */
 void
@@ -2524,6 +2554,7 @@ apply_work(PGconn *streamConn)
 {
 	int			fd;
 	XLogRecPtr	last_received = InvalidXLogRecPtr;
+	XLogRecPtr	last_inserted = InvalidXLogRecPtr;
 	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
 	bool		need_replay;
 	ErrorData  *edata;
@@ -2547,6 +2578,12 @@ apply_work(PGconn *streamConn)
 										   ALLOCSET_DEFAULT_SIZES);
 
 	MemoryContextSwitchTo(MessageContext);
+
+	/* Initialize our static progress variable */
+	memset(&apply_progress.key, 0, sizeof(SpockGroupKey));
+	apply_progress.key.dbid = MyDatabaseId;
+	apply_progress.key.node_id = MySubscription->target->id;
+	apply_progress.key.remote_node_id = MySubscription->origin->id;
 
 	/* mark as idle, before starting to loop */
 	pgstat_report_activity(STATE_IDLE, NULL);
@@ -2752,8 +2789,14 @@ stream_replay:
 						}
 					}
 
-					replication_handler(msg);
+					/*
+					 * Update statistics before applying the record to let the
+					 * apply machinery to check consistency of these values.
+					 */
+					last_inserted = pq_getmsgint64(msg);
+					UpdateWorkerStats(last_received, last_inserted);
 
+					replication_handler(msg);
 					/* Note: No overflow handling needed - dynamic allocation used */
 				}
 				else if (c == 'k')
@@ -2771,6 +2814,19 @@ stream_replay:
 
 					if (last_received < endpos)
 						last_received = endpos;
+
+					/*
+					 * It is important to update received_lsn on a keepalive
+					 * message: last_received tells us the last WAL position
+					 * that was processed by the remote walsender, even if that
+					 * data has never be sent to our replica.
+					 * It allows Spock to maintain LSN lag statistic.
+					 *
+					 * NOTE: we can't change the keepalive message format, so
+					 * just apply the same last_inserted. It may cause negative
+					 * delta, but it seems not important.
+					 */
+					UpdateWorkerStats(last_received, last_inserted);
 
 					if (reply_requested)
 						check_and_update_progress(endpos, GetCurrentTimestamp());
