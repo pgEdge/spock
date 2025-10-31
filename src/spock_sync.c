@@ -467,7 +467,19 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			{
 				last_updated_ts = PQgetvalue(originRes, rno, GP_LAST_UPDATED_TS);
 				sap.last_updated_ts = str_to_timestamptz(last_updated_ts);
+
 				Assert(IS_VALID_TIMESTAMP(sap.last_updated_ts));
+
+				if (sap.last_updated_ts < sap.remote_commit_ts)
+					/* Complaining at the end of the sync we shouldn't flood the log */
+					ereport(WARNING,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							errmsg("transaction apply time precedes its original commit time"),
+							errdetail("Commit time %s (node ID %d), but it was applied at %s on the replica (node ID %d)",
+									  remote_commit_ts, sap.key.remote_node_id,
+									  last_updated_ts,
+									  MySubscription->origin->id),
+							errhint("usually it means that the server's clocks are out of sync.")));
 			}
 			sap.updated_by_decode = updated_by_decode[0] == 't',
 

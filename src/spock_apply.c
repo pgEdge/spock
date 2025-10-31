@@ -875,9 +875,12 @@ handle_commit(StringInfo s)
 			.prev_remote_ts = replorigin_session_origin_timestamp,
 			.remote_commit_lsn = commit_lsn,
 			/* Don't need to change remote_insert_lsn and received_lsn - it is done earlier */
-			.last_updated_ts = GetCurrentTimestamp(),
+			.last_updated_ts = GetCurrentTimestamp(), /* XXX: Could we use commit_ts value instead? */
 			.updated_by_decode = true,
 		};
+
+		/* XXX: Don't care in production yet */
+		Assert(sap.last_updated_ts >= sap.remote_commit_ts);
 
 		/* WAL after commit, then to shmem */
 		spock_apply_progress_add_to_wal(&sap);
