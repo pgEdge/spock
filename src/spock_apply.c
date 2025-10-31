@@ -65,6 +65,7 @@
 #include "replication/syncrep.h"
 #include "replication/walsender_private.h"
 
+#include "spock_autoddl.h"
 #include "spock_common.h"
 #include "spock_conflict.h"
 #include "spock_executor.h"
@@ -3096,11 +3097,18 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 	MemoryContextSwitchTo(oldcontext);
 
 	/*
-	 * Do a limited amount of safety checking against CONCURRENTLY commands
-	 * executed in situations where they aren't allowed. The sender side
-	 * should provide protection, but better be safe than sorry.
+	 * When executing statements coming from spock.queue on subscribers,
+	 * force top-level from caller, so ProcessUtility sees a top-level context.
 	 */
-	isTopLevel = isTopLevel && (list_length(commands) == 1);
+	if (!in_spock_queue_ddl_command)
+	{
+		/*
+		* Do a limited amount of safety checking against CONCURRENTLY commands
+		* executed in situations where they aren't allowed. The sender side
+		* should provide protection, but better be safe than sorry.
+		*/
+		isTopLevel = isTopLevel && (list_length(commands) == 1);
+	}
 
 	foreach(command_i, commands)
 	{
@@ -3166,6 +3174,22 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 						 receiver, receiver,
 						 NULL);
 		(*receiver->rDestroy) (receiver);
+
+		/*
+		 * If we are applying queued SQL on subscriber, register
+		 * newly created/altered relations explicitly here after execution.
+		 * Skip variable SET commands (e.g., SET search_path).
+		 */
+		if (in_spock_queue_ddl_command &&
+			!IsA(command->stmt, VariableSetStmt))
+		{
+			PlannedStmt *pstmt = linitial_node(PlannedStmt, plantree_list);
+			/*
+			 * By the time SQL is in the queue it has already been filtered on
+			 * origin, so we can just add it to the replication set here.
+			 */
+			add_ddl_to_repset(pstmt->utilityStmt);
+		}
 
 		PortalDrop(portal, false);
 
