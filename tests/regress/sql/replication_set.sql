@@ -129,6 +129,7 @@ INSERT INTO spoc_102g VALUES (-4); -- NOT replicated
 END;
 INSERT INTO spoc_102g VALUES (-5);
 
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 -- Check replication state before the problem fixation
 SELECT * FROM spoc_102g ORDER BY x;
@@ -148,11 +149,13 @@ SELECT * FROM spoc_102l ORDER BY x;
 
 -- Return to provider and check that it doesn't see value (4).
 -- Afterwards, add value 5 that must be replicated
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :provider_dsn
 SELECT * FROM spoc_102l ORDER BY x;
 INSERT INTO spoc_102l VALUES (5);
 
 -- Re-check that subscription works properly
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 SELECT * FROM spoc_102l ORDER BY x;
 
@@ -180,6 +183,7 @@ INSERT INTO spoc_102g VALUES (-4);
 END;
 INSERT INTO spoc_102g VALUES (-5);
 
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 -- Check replication state before the problem fixation
 SELECT * FROM spoc_102g ORDER BY x;
@@ -192,6 +196,7 @@ SELECT spock.replicate_ddl('CREATE TABLE IF NOT EXISTS spoc_102l (x integer PRIM
 INSERT INTO spoc_102l VALUES (4);
 INSERT INTO spoc_102g VALUES (-6);
 
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL); -- required after changes
 \c :subscriber_dsn
 SELECT * FROM spoc_102g ORDER BY x;
 SELECT * FROM spoc_102l ORDER BY x;
@@ -225,9 +230,9 @@ UPDATE spoc_102g_u SET x = -3 WHERE x = -2;
 END;
 UPDATE spoc_102g_u SET x = 1 WHERE x = 0;
 
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 -- Check replication state before the problem fixation
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM spoc_102g_u ORDER BY x;
 SELECT * FROM spoc_102l_u ORDER BY x; -- ERROR, does not exist yet
 
@@ -239,6 +244,7 @@ INSERT INTO spoc_102l_u VALUES (4);
 UPDATE spoc_102l_u SET x = 5 WHERE x = 4;
 
 -- Check that replication works
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL); -- required
 \c :subscriber_dsn
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM spoc_102l_u ORDER BY x;
@@ -269,8 +275,8 @@ DELETE FROM spoc_102l_d WHERE x = 1;
 DELETE FROM spoc_102g_d WHERE x = -2;
 
 -- Check the state of replication on the subscriber node
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL); -- required
 \c :subscriber_dsn
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM spoc_102l_d ORDER BY x; -- ERROR, not existed yet.
 SELECT * FROM spoc_102g_d ORDER BY x; -- See one record (-3).
 
@@ -287,8 +293,8 @@ DELETE FROM spoc_102g_d WHERE x = -3 OR x = -6;
 DELETE FROM spoc_102l_d WHERE x = 1 OR x = 5;
 
 -- Check the state of replication on the subscriber node
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL); -- required
 \c :subscriber_dsn
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM spoc_102l_d ORDER BY x; -- See (4)
 SELECT * FROM spoc_102g_d ORDER BY x; -- See (-5).
 
