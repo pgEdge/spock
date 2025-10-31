@@ -248,6 +248,16 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 	if (dest->received_lsn < src->received_lsn)
 		/* XXX: do we need to also track the most lagging worker of the group? */
 		dest->received_lsn = src->received_lsn;
+
+	/* It is a good place to check the entry consistency */
+	Assert(dest->remote_insert_lsn >= dest->remote_commit_lsn);
+	Assert(dest->received_lsn >= dest->remote_commit_lsn);
+	/*
+	 * Value of the received_lsn potentially can exceed remote_insert_lsn
+	 * because it is reported more frequently (by keepalive messages).
+	 */
+	Assert(!(dest->remote_commit_ts == 0 ^ dest->last_updated_ts == 0));
+	Assert(dest->remote_commit_ts >= 0 && dest->last_updated_ts >= 0);
 }
 
 /*
@@ -260,9 +270,9 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 bool
 spock_group_progress_update(const SpockApplyProgress *sap)
 {
-	SpockGroupKey key;
-	SpockGroupEntry *e;
-	bool		found;
+	SpockGroupKey		key;
+	SpockGroupEntry	   *e;
+	bool				found;
 
 	if (!sap)
 		return false;

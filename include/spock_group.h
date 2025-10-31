@@ -124,7 +124,7 @@ typedef struct SpockApplyProgress
 	XLogRecPtr	received_lsn;
 
 	TimestampTz last_updated_ts;	/* when we set this */
-	bool		updated_by_decode;	/* set by decode or apply */
+	bool		updated_by_decode;	/* set by decode or apply. OBSOLETE. Used in versions <=5.x.x only */
 } SpockApplyProgress;
 
 /* Hash entry: one per group (stable pointer; not moved by dynahash) */
