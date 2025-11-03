@@ -14,6 +14,7 @@
 
 #include "datatype/timestamp.h"
 #include "utils/jsonb.h"
+#include "utils/hsearch.h"
 
 typedef struct SpockNode
 {
@@ -85,5 +86,10 @@ extern SpockSubscription *get_subscription(Oid subid);
 extern SpockSubscription *get_subscription_by_name(const char *name,
 													   bool missing_ok);
 extern List *get_node_subscriptions(Oid nodeid, bool origin);
+
+extern void spock_suspend_subscription_for_rescue(SpockSubscription *sub);
+extern void spock_resume_subscription_post_rescue(SpockSubscription *sub);
+extern void spock_suspend_all_peer_subs_for_rescue(Oid node_id, Oid failed_node_id);
+extern void spock_resume_all_peer_subs_post_rescue(Oid node_id);
 
 #endif /* SPOCK_NODE_H */

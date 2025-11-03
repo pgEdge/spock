@@ -38,7 +38,14 @@
 #include "utils/rel.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "utils/hsearch.h"
 
+/* Internal hash and type for rescue suspension tracking (file scoped). */
+typedef struct RescueSuspendKey {
+	Oid subid;
+} RescueSuspendKey;
+
+static HTAB *RescueSuspendHash = NULL;
 
 #include "spock_node.h"
 #include "spock_repset.h"
@@ -1213,4 +1220,80 @@ get_node_subscriptions(Oid nodeid, bool origin)
 	table_close(rel, RowExclusiveLock);
 
 	return res;
+}
+
+static void rescue_suspend_hash_init(void)
+{
+	if (!RescueSuspendHash) {
+		HASHCTL ctl;
+		memset(&ctl, 0, sizeof(ctl));
+		ctl.keysize = sizeof(RescueSuspendKey);
+		ctl.entrysize = sizeof(RescueSuspendKey);
+		RescueSuspendHash = hash_create("Spock Rescue Suspended Subs",
+							 128, &ctl, HASH_ELEM | HASH_BLOBS);
+	}
+}
+
+static bool is_sub_rescue_suspended(Oid subid)
+{
+	RescueSuspendKey key;
+	if (!RescueSuspendHash) return false;
+	key.subid = subid;
+	return (hash_search(RescueSuspendHash, &key, HASH_FIND, NULL) != NULL);
+}
+
+static void mark_sub_rescue_suspended(Oid subid)
+{
+	RescueSuspendKey key;
+	bool found;
+	rescue_suspend_hash_init();
+	key.subid = subid;
+	(void)hash_search(RescueSuspendHash, &key, HASH_ENTER, &found);
+}
+
+static void unmark_sub_rescue_suspended(Oid subid)
+{
+	RescueSuspendKey key;
+	if (!RescueSuspendHash) return;
+	key.subid = subid;
+	hash_search(RescueSuspendHash, &key, HASH_REMOVE, NULL);
+}
+
+/*
+ * spock_suspend_subscription_for_rescue --
+ *   Temporarily disables a subscription and records it as rescue-suspended.
+ *   This prevents replication during disaster recovery/rescue workflows and
+ *   ensures peer-to-peer data movement is paused until the operation completes.
+ */
+void
+spock_suspend_subscription_for_rescue(SpockSubscription *sub)
+{
+	if (!sub) return;
+	if (is_sub_rescue_suspended(sub->id))
+		return;
+	sub->enabled = false;
+	alter_subscription(sub);
+	mark_sub_rescue_suspended(sub->id);
+	elog(LOG,
+		 "SPOCK: Suspended subscription '%s' for rescue/recovery (id %u)",
+		 sub->name, sub->id);
+}
+
+/*
+ * spock_resume_subscription_post_rescue --
+ *   Re-enables a previously rescue-suspended subscription after recovery.
+ *   Allows normal peer-to-peer replication to resume from the last safe state.
+ */
+void
+spock_resume_subscription_post_rescue(SpockSubscription *sub)
+{
+	if (!sub) return;
+	if (sub->enabled || !is_sub_rescue_suspended(sub->id))
+		return;
+	sub->enabled = true;
+	alter_subscription(sub);
+	unmark_sub_rescue_suspended(sub->id);
+	elog(LOG,
+		 "SPOCK: Resumed subscription '%s' after rescue/recovery (id %u)",
+		 sub->name, sub->id);
 }
