@@ -241,9 +241,6 @@ static void spock_apply_worker_detach(void);
 
 static bool should_log_exception(bool failed);
 
-static void check_and_update_progress(XLogRecPtr last_received_lsn,
-								TimestampTz timestamp);
-
 static ApplyReplayEntry *apply_replay_entry_create(int r, char *buf);
 static void apply_replay_entry_free(ApplyReplayEntry *entry);
 static void apply_replay_queue_reset(void);
@@ -2826,9 +2823,6 @@ stream_replay:
 					 */
 					UpdateWorkerStats(last_received, last_inserted);
 
-					if (reply_requested)
-						check_and_update_progress(endpos, GetCurrentTimestamp());
-
 					/* We do not add 'k' messages to the replay queue */
 					apply_replay_entry_free(entry);
 				}
@@ -3500,44 +3494,6 @@ interval_to_timeoffset(const Interval *interval)
 #endif
 
 	return span;
-}
-
-/*
- * Checks whether the spock.progress table needs to be updated and performs the update if required.
- *
- * This function retrieves the current WAL insert location from the subscription's origin.
- * It compares the local progress with the provided 'last_received_lsn' to determine if an update is necessary.
- * If the local progress is behind, the function updates the spock.progress table with the new progress information.
- * The update also includes adjusting the timestamp if it's earlier than the previous remote timestamp.
- */
-static void
-check_and_update_progress(XLogRecPtr last_received_lsn,
-						  TimestampTz timestamp)
-{
-	bool			 update_needed = false;
-	SpockApplyProgress *sap = apply_worker_get_progress();
-
-	if (last_received_lsn > sap->remote_insert_lsn)
-	{
-		/*
-		 * This function is invoked in response to a walsender keepalive, which
-		 * can send either the "write" or "sent" WAL location. These locations can
-		 * sometimes be behind the actual progress. To avoid a negative replication
-		 * lag, we ensure that last_received_lsn is never smaller than the stored
-		 * value.
-		 */
-		last_received_lsn = sap->remote_insert_lsn;
-		update_needed = true;
-	}
-
-	if (timestamp > sap->prev_remote_ts)
-		update_needed = true;
-
-    if (update_needed)
-    {
-		/* Update in shared memory and in the table */
-		sap->remote_insert_lsn = last_received_lsn;
-    }
 }
 
 void
