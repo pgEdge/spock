@@ -667,3 +667,14 @@ RETURNS TABLE (
 )
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_find_rescue_source';
 
+-- Recovery slot cloning function for disaster recovery workflows
+CREATE OR REPLACE FUNCTION spock.clone_recovery_slot()
+RETURNS TABLE (
+    cloned_slot_name text,
+    original_slot_name text,
+    restart_lsn pg_lsn,
+    success boolean,
+    message text
+)
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_clone_recovery_slot';
+

@@ -167,6 +167,7 @@ PG_FUNCTION_INFO_V1(spock_max_proto_version);
 /* Recovery Slot functions */
 PG_FUNCTION_INFO_V1(spock_get_recovery_slot_status_sql);
 PG_FUNCTION_INFO_V1(spock_find_rescue_source);
+PG_FUNCTION_INFO_V1(spock_clone_recovery_slot);
 
 PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 
@@ -3478,5 +3479,16 @@ Datum
 spock_find_rescue_source(PG_FUNCTION_ARGS)
 {
 	return spock_find_rescue_source_sql(fcinfo);
+}
+
+/*
+ * spock_clone_recovery_slot
+ *
+ * SQL-callable wrapper for recovery slot cloning.
+ */
+Datum
+spock_clone_recovery_slot(PG_FUNCTION_ARGS)
+{
+    return spock_clone_recovery_slot_sql(fcinfo);
 }
 

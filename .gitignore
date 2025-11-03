@@ -13,3 +13,17 @@ spock_create_subscriber
 spock.control
 tags
 .vscode
+# Additional ignores for build/test artifacts and logs
+*.orig
+*.log
+*.dylib
+sql/*.orig
+src/*.orig
+include/*.orig
+tests/logs/
+tests/tap/data1/
+tests/tap/data2/
+tests/tap/spock_cluster.log
+utils/spockctrl/spockctrl
+spock_cluster.log
+spock_output.dylib
