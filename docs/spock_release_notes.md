@@ -9,7 +9,10 @@ Now no restriction exists. Spock will use memory until memory is exhausted (impr
 - 'transdiscard': Rollback transaction and continue
 - 'sub_disable': Disable subscription and exit cleanly
 
-
+* Change Spock replication health tracking routines and views: apply_group_progress, spock.progress, and spock.lag_tracker.
+  - rename last_received_lsn with commit_lsn to more precisely identify the underlying value.
+  - introduce received_lsn - points to the last LSN, sent by the publisher, exactly like pgoutput protocol do.
+  - remote_insert_lsn reported more frequently, on each incoming WAL record, not only on a COMMIT, as it was before.
 ## Spock 5.0.4 on Oct 8, 2025
 
 * Reduce memory usage for transactions with many inserts.

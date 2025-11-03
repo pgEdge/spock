@@ -90,7 +90,8 @@ typedef enum
  * the COMMIT apply if only all other commits with smaller timestamps have
  * already been committed by other workers. So, this value tells us about
  * the real progress.
- * prev_remote_ts - obsolete value. TODO: Should be removed in further commits.
+ * prev_remote_ts - XXX: It seems do nothing at the moment and should
+ * be considered to be removed.
  * remote_commit_lsn - LSN of the COMMIT corresponding to the remote_commit_ts.
  * remote_insert_lsn - an LSN of the most advanced WAL record written to
  * the WAL on the remote side. Replication protocol attempts to update it as
