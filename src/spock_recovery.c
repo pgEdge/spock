@@ -52,6 +52,7 @@
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/timestamp.h"
+#include <ctype.h>
 
 #include "spock.h"
 #include "spock_common.h"
@@ -762,6 +763,187 @@ spock_find_rescue_source_sql(PG_FUNCTION_ARGS)
 	}
 
 	pfree(failed_node_name);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
+ * spock_clone_recovery_slot_sql
+ *
+ * Clone an existing inactive Recovery Slot into a new, temporary active slot
+ * for disaster recovery operations. The cloned slot can be used for selective
+ * replay of unacknowledged transactions.
+ *
+ * This function clones the local recovery slot to create a temporary slot
+ * that can be used for disaster recovery without modifying the original.
+ *
+ * Usage: SELECT * FROM spock.clone_recovery_slot();
+ *
+ * Returns a record with:
+ * - cloned_slot_name: Name of the newly created active slot
+ * - original_slot_name: Name of the original recovery slot
+ * - restart_lsn: LSN position to start replay from
+ * - success: Whether the cloning was successful
+ * - message: Status message about the operation
+ */
+Datum
+spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[5];
+	bool		nulls[5];
+	HeapTuple	tuple;
+	char	   *cloned_slot_name = NULL;
+	char	   *original_slot_name = NULL;
+	XLogRecPtr	restart_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	confirmed_flush_lsn = InvalidXLogRecPtr;
+	bool		success = false;
+	char	   *message = NULL;
+
+	/* Validate that recovery slot exists and is active */
+	if (!SpockRecoveryCtx || !SpockRecoveryCtx->recovery_slot.active)
+	{
+		message = pstrdup("No active recovery slot found for cloning");
+		goto cleanup;
+	}
+
+	/* Get recovery slot information */
+	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
+	original_slot_name = pstrdup(SpockRecoveryCtx->recovery_slot.slot_name);
+	LWLockRelease(SpockRecoveryCtx->lock);
+
+	/* Generate deterministic cloned slot name */
+	{
+		TimestampTz now = GetCurrentTimestamp();
+		const char *timestamp_str = timestamptz_to_str(now);
+		char	   *clean_timestamp = pstrdup(timestamp_str);
+		
+		/* Clean up timestamp string for use in slot name */
+		for (int i = 0; clean_timestamp[i]; i++)
+		{
+			if (clean_timestamp[i] == ' ' || clean_timestamp[i] == ':' || 
+				clean_timestamp[i] == '-' || clean_timestamp[i] == '.')
+				clean_timestamp[i] = '_';
+		}
+		
+		cloned_slot_name = psprintf("spock_rescue_clone_%s", clean_timestamp);
+		pfree(clean_timestamp);
+	}
+
+	/* Clone the recovery slot */
+	PG_TRY();
+	{
+		ReplicationSlot *original_slot;
+		ReplicationSlot *cloned_slot;
+
+		/* Get the original recovery slot */
+		original_slot = SearchNamedReplicationSlot(original_slot_name, true);
+		if (!original_slot)
+		{
+			message = psprintf("Original recovery slot '%s' not found", original_slot_name);
+			goto cleanup_clone;
+		}
+
+		/* Read LSN positions from the original slot */
+		SpinLockAcquire(&original_slot->mutex);
+		confirmed_flush_lsn = original_slot->data.confirmed_flush;
+		restart_lsn = original_slot->data.restart_lsn;
+		SpinLockRelease(&original_slot->mutex);
+
+		/* Create the cloned slot */
+		ReplicationSlotCreate(cloned_slot_name, true, RS_PERSISTENT, false, false, false);
+
+		/* Get the cloned slot and set its position */
+		cloned_slot = SearchNamedReplicationSlot(cloned_slot_name, true);
+		if (cloned_slot)
+		{
+			/* Set the slot's positions to match the original */
+			SpinLockAcquire(&cloned_slot->mutex);
+			cloned_slot->data.confirmed_flush = confirmed_flush_lsn;
+			cloned_slot->data.restart_lsn = restart_lsn;
+			SpinLockRelease(&cloned_slot->mutex);
+
+			/* Mark slot as active */
+			ReplicationSlotMarkDirty();
+
+			success = true;
+			message = psprintf("Successfully cloned recovery slot '%s' to '%s'", 
+							  original_slot_name, cloned_slot_name);
+		}
+		else
+		{
+			message = psprintf("Failed to create cloned slot '%s'", cloned_slot_name);
+		}
+
+cleanup_clone:
+		;
+	}
+	PG_CATCH();
+	{
+		message = psprintf("Error creating cloned slot '%s': %s", 
+						  cloned_slot_name, "slot creation failed");
+	}
+	PG_END_TRY();
+
+cleanup:
+	/* Build return tuple */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	/* Initialize all values to null */
+	memset(nulls, 1, sizeof(nulls));
+
+	/* Set non-null values */
+	if (cloned_slot_name)
+	{
+		values[0] = CStringGetTextDatum(cloned_slot_name);
+		nulls[0] = false;
+	}
+
+	if (original_slot_name)
+	{
+		values[1] = CStringGetTextDatum(original_slot_name);
+		nulls[1] = false;
+	}
+
+	if (restart_lsn != InvalidXLogRecPtr)
+	{
+		values[2] = LSNGetDatum(restart_lsn);
+		nulls[2] = false;
+	}
+
+	values[3] = BoolGetDatum(success);
+	nulls[3] = false;
+
+	if (message)
+	{
+		values[4] = CStringGetTextDatum(message);
+		nulls[4] = false;
+	}
+
+	tuple = heap_form_tuple(tupdesc, values, nulls);
+
+	/* Log the cloning operation */
+	if (success)
+	{
+		elog(LOG,
+			 "Recovery slot cloned: original='%s', cloned='%s', reason='disaster recovery'",
+			 original_slot_name, cloned_slot_name);
+	}
+	else
+	{
+		elog(WARNING,
+			 "Recovery slot cloning failed: reason='%s'",
+			 message ? message : "unknown error");
+	}
+
+	/* Cleanup */
+	if (cloned_slot_name)
+		pfree(cloned_slot_name);
+	if (original_slot_name)
+		pfree(original_slot_name);
+	if (message)
+		pfree(message);
 
 	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
 }
