@@ -774,7 +774,10 @@ spock_find_rescue_source_sql(PG_FUNCTION_ARGS)
  * for disaster recovery operations. The cloned slot can be used for selective
  * replay of unacknowledged transactions.
  *
- * Usage: SELECT * FROM spock.clone_recovery_slot('origin_node', 'target_node');
+ * This function clones the local recovery slot to create a temporary slot
+ * that can be used for disaster recovery without modifying the original.
+ *
+ * Usage: SELECT * FROM spock.clone_recovery_slot();
  *
  * Returns a record with:
  * - cloned_slot_name: Name of the newly created active slot
@@ -786,10 +789,6 @@ spock_find_rescue_source_sql(PG_FUNCTION_ARGS)
 Datum
 spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
 {
-	text	   *origin_node_text = PG_GETARG_TEXT_PP(0);
-	text	   *target_node_text = PG_GETARG_TEXT_PP(1);
-	char	   *origin_node_name;
-	char	   *target_node_name;
 	TupleDesc	tupdesc;
 	Datum		values[5];
 	bool		nulls[5];
@@ -797,12 +796,9 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
 	char	   *cloned_slot_name = NULL;
 	char	   *original_slot_name = NULL;
 	XLogRecPtr	restart_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	confirmed_flush_lsn = InvalidXLogRecPtr;
 	bool		success = false;
 	char	   *message = NULL;
-
-	/* Get the node names */
-	origin_node_name = text_to_cstring(origin_node_text);
-	target_node_name = text_to_cstring(target_node_text);
 
 	/* Validate that recovery slot exists and is active */
 	if (!SpockRecoveryCtx || !SpockRecoveryCtx->recovery_slot.active)
@@ -814,7 +810,6 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
 	/* Get recovery slot information */
 	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
 	original_slot_name = pstrdup(SpockRecoveryCtx->recovery_slot.slot_name);
-	restart_lsn = SpockRecoveryCtx->recovery_slot.restart_lsn;
 	LWLockRelease(SpockRecoveryCtx->lock);
 
 	/* Generate deterministic cloned slot name */
@@ -831,56 +826,64 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
 				clean_timestamp[i] = '_';
 		}
 		
-		cloned_slot_name = psprintf("spock_rescue_%s_%s_%s", 
-								   origin_node_name, target_node_name, clean_timestamp);
+		cloned_slot_name = psprintf("spock_rescue_clone_%s", clean_timestamp);
 		pfree(clean_timestamp);
 	}
 
 	/* Clone the recovery slot */
+	PG_TRY();
 	{
-		ReplicationSlot *slot;
-		XLogRecPtr	confirmed_flush_lsn;
+		ReplicationSlot *original_slot;
+		ReplicationSlot *cloned_slot;
 
-		/* Get the confirmed flush LSN from the original slot */
-		LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
-		confirmed_flush_lsn = SpockRecoveryCtx->recovery_slot.confirmed_flush_lsn;
-		LWLockRelease(SpockRecoveryCtx->lock);
+		/* Get the original recovery slot */
+		original_slot = SearchNamedReplicationSlot(original_slot_name, true);
+		if (!original_slot)
+		{
+			message = psprintf("Original recovery slot '%s' not found", original_slot_name);
+			goto cleanup_clone;
+		}
+
+		/* Read LSN positions from the original slot */
+		SpinLockAcquire(&original_slot->mutex);
+		confirmed_flush_lsn = original_slot->data.confirmed_flush;
+		restart_lsn = original_slot->data.restart_lsn;
+		SpinLockRelease(&original_slot->mutex);
 
 		/* Create the cloned slot */
-		PG_TRY();
+		ReplicationSlotCreate(cloned_slot_name, true, RS_PERSISTENT, false, false, false);
+
+		/* Get the cloned slot and set its position */
+		cloned_slot = SearchNamedReplicationSlot(cloned_slot_name, true);
+		if (cloned_slot)
 		{
-			ReplicationSlotCreate(cloned_slot_name, true, RS_PERSISTENT, false, false, false);
+			/* Set the slot's positions to match the original */
+			SpinLockAcquire(&cloned_slot->mutex);
+			cloned_slot->data.confirmed_flush = confirmed_flush_lsn;
+			cloned_slot->data.restart_lsn = restart_lsn;
+			SpinLockRelease(&cloned_slot->mutex);
 
-			/* Get the slot and set its position */
-			slot = SearchNamedReplicationSlot(cloned_slot_name, true);
-			if (slot)
-			{
-				/* Set the slot's confirmed flush LSN to the recovery slot's position */
-				SpinLockAcquire(&slot->mutex);
-				slot->data.confirmed_flush = confirmed_flush_lsn;
-				if (restart_lsn != InvalidXLogRecPtr)
-					slot->data.restart_lsn = restart_lsn;
-				SpinLockRelease(&slot->mutex);
+			/* Mark slot as active */
+			ReplicationSlotMarkDirty();
 
-				/* Mark slot as active */
-				ReplicationSlotMarkDirty();
-
-				success = true;
-				message = psprintf("Successfully cloned recovery slot '%s' to '%s'", 
-								  original_slot_name, cloned_slot_name);
-			}
-			else
-			{
-				message = psprintf("Failed to create cloned slot '%s'", cloned_slot_name);
-			}
+			success = true;
+			message = psprintf("Successfully cloned recovery slot '%s' to '%s'", 
+							  original_slot_name, cloned_slot_name);
 		}
-		PG_CATCH();
+		else
 		{
-			message = psprintf("Error creating cloned slot '%s': %s", 
-							  cloned_slot_name, "slot creation failed");
+			message = psprintf("Failed to create cloned slot '%s'", cloned_slot_name);
 		}
-		PG_END_TRY();
+
+cleanup_clone:
+		;
 	}
+	PG_CATCH();
+	{
+		message = psprintf("Error creating cloned slot '%s': %s", 
+						  cloned_slot_name, "slot creation failed");
+	}
+	PG_END_TRY();
 
 cleanup:
 	/* Build return tuple */
@@ -923,24 +926,18 @@ cleanup:
 	/* Log the cloning operation */
 	if (success)
 	{
-        elog(LOG,
-             "Recovery slot cloned: original='%s', cloned='%s', "
-             "origin_node='%s', target_node='%s', reason='disaster recovery'",
-             original_slot_name, cloned_slot_name,
-             origin_node_name, target_node_name);
+		elog(LOG,
+			 "Recovery slot cloned: original='%s', cloned='%s', reason='disaster recovery'",
+			 original_slot_name, cloned_slot_name);
 	}
 	else
 	{
-        elog(WARNING,
-             "Recovery slot cloning failed: origin_node='%s', target_node='%s', "
-             "reason='%s'",
-             origin_node_name, target_node_name,
-             message ? message : "unknown error");
+		elog(WARNING,
+			 "Recovery slot cloning failed: reason='%s'",
+			 message ? message : "unknown error");
 	}
 
 	/* Cleanup */
-	pfree(origin_node_name);
-	pfree(target_node_name);
 	if (cloned_slot_name)
 		pfree(cloned_slot_name);
 	if (original_slot_name)
