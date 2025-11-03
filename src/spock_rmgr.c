@@ -45,7 +45,7 @@
 #include "spock_worker.h"
 #include "spock_apply.h"
 
-const RmgrData spock_custom_rmgr = {
+static RmgrData spock_custom_rmgr = {
 	.rm_name = SPOCK_RMGR_NAME,
 	.rm_redo = spock_rmgr_redo,
 	.rm_desc = spock_rmgr_desc,
@@ -180,4 +180,15 @@ spock_apply_progress_add_to_wal(const SpockApplyProgress *sap)
 	lsn = XLogInsert(SPOCK_RMGR_ID, SPOCK_RMGR_APPLY_PROGRESS);
 
 	return lsn;
+}
+
+/*
+ * spock_group_emit_progress_wal_cb
+ *
+ * Foreach callback, emit a group's apply-progress to WAL.
+ */
+void
+spock_group_emit_progress_wal_cb(const SpockGroupEntry *e, void *arg)
+{
+	spock_apply_progress_add_to_wal(&e->progress);
 }
