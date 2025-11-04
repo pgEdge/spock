@@ -15,3 +15,4 @@ test: 004_non_default_repset
 test: 008_rmgr
 test: 009_zodan_add_remove_nodes
 test: 010_zodan_add_remove_python
+test: 011_zodan_sync_third
