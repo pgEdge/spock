@@ -1,0 +1,4 @@
+\set aid random(1, 50000)
+
+UPDATE pgbench_accounts SET abalance = abalance + :aid WHERE aid = :aid;
+UPDATE pgbench_accounts SET abalance = abalance - :aid WHERE aid = :aid;
