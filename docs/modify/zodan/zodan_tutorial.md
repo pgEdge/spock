@@ -68,7 +68,7 @@ psql -d inventory -c "CREATE EXTENSION dblink;"
 
 **Using the Zodan Procedure to Add a Node** 
 
-After creating the node, you can use [Zodan scripts](/zodan_readme.md) to simplify adding a node to a cluster. To use the SQL script, connect to the new node that you wish to add to the pgedge cluster:
+After creating the node, you can use [Zodan scripts](zodan_readme.md) to simplify adding a node to a cluster. To use the SQL script, connect to the new node that you wish to add to the pgedge cluster:
 ```bash
 psql -h 127.0.0.1 -p 5432 -d inventory -U pgedge
 ```
@@ -1125,8 +1125,8 @@ WHERE slot_name LIKE 'spk_%';
 
 ## References
 
-- [Using Zodan](/zodan_readme.md)
-- [Zodan Tutorial](/zodan_tutorial.md)
+- [Using Zodan](zodan_readme.md)
+- [Zodan Tutorial](zodan_tutorial.md)
 - [Zodan Scripts and Workflows](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
 - [Spock Documentation](https://docs.pgedge.com/spock-v5/)
 

@@ -29,7 +29,7 @@ Alternatively, you can invoke `spockctrl` directly from the `spockctrl` director
 
 Spockctrl uses a JSON configuration file to store database connection details and other settings. By default, `spockctrl` looks for a file named `spockctrl.json` in the directory where you run the `spockctrl` command. You can also specify a different configuration file using the `-c` or `--config=<path_to_spockctrl.json>` command-line option.
 
-The configuration file contains the information necessary for `spockctrl` to connect to your Postgres instances and manage the Spock extension.  Refer to the `spockctrl/spockctrl.json` file in the [source distribution](https://github.com/pgEdge/spock/blob/main/spockctrl/spockctrl.json) for the most up-to-date structure and available options.
+The configuration file contains the information necessary for `spockctrl` to connect to your Postgres instances and manage the Spock extension.  Refer to the `spockctrl/spockctrl.json` file in the [source distribution](https://github.com/pgEdge/spock/blob/main/utils/spockctrl/spockctrl.json) for the most up-to-date structure and available options.
 
 !!! warning
 
