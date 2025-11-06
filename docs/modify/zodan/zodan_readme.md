@@ -1,38 +1,13 @@
 # Zodan: Zero-Downtime Node Addition for Spock
 
-Zodan provides tools to add or remove a node **with zero downtime**.
+Zodan provides tools to add or remove a node **with zero downtime**. The scripts are located in the [samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN) directory of the [Spock Github](https://github.com/pgEdge/spock) repository.
 
-## Overview
+Zodan's workflows and scripts streamline the process of adding a node to or removing a node from a Spock cluster. Zodan features the following scripts and workflows:
 
-Zodan is designed to streamline the process of adding a node to or removing a node from a Spock cluster. 
-
-Zodan seamlessly manages creation of the new node, subscription management (both to and from the node), replication slot creation, data synchronization, replication slot advancement, and final activation of subscriptions.
-
-Zodan also simplifies removing fully-functional or failed nodes from a cluster. When you remove a node from a cluster, the removal does not delete Postgres artifacts (the database, data directory, log files, etc.).
-
-!!! hint
-
-Zodan simplifies removing partially added nodes created during failed node add operations. Additional clean up steps may be required before attempting another node deployment on the target host.
-
-Zodan includes the following scripts and workflows:
-
-- **[zodan.py](zodan.py)**: A Python CLI script that uses `psql` to perform automated node addition.
-- **[zodan.sql](zodan.sql)**: A complete SQL-based workflow that uses `dblink` to perform the same add node operations from within Postgres.
-- **[zodremove.py](zodremove.py)**: A Python CLI script that uses `psql` to perform node removal.
-- **[zodremove.sql](zodremove.sql)**: A complete SQL-based workflow that uses `dblink` to perform the same removal operations from within Postgres.
-
-!!! note
-
-    Each script must be run from the target node being added or removed.
-
-**Zodan Use Cases**
-
-| Use Case                           | Use `zodan.py` & `zodremove.py` | Use `zodan.sql` & `zodremove.sql` |
-| ---------------------------------- | :-----------------------------: | :-------------------------------: |
-| CLI automation / scripting         | ✅                              |                                   |
-| SQL-only environments              |                                 | ✅                                |
-| No Python or shell access          |                                 | ✅                                |
-| Postgres extension workflows       | ✅                              | ✅                                |
+- **[zodan.py](#the-zodanpy-python-script)**: A Python CLI script that uses `psql` to perform automated node addition.
+- **[zodan.sql](#using-the-zodansql-sql-workflow)**: A complete SQL-based workflow that uses `dblink` to perform the same add node operations from within Postgres.
+- **[zodremove.py](#the-zodremovepy-python-script)**: A Python CLI script that uses `psql` to perform node removal.
+- **[zodremove.sql](#the-zodremovesql-workflow)**: A complete SQL-based workflow that uses `dblink` to perform the same removal operations from within Postgres.
 
 
 ## Components
@@ -41,7 +16,7 @@ The following scripts and workflows are available via Zodan.
 
 ### The zodan.py Python Script
 
-This Python script leverages `psql` and is intended for use in environments where you have shell and Python access.
+This Python script leverages `psql` and is intended for use in environments where you have shell and Python access. The script is located in the [samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN) directory of the [Spock Github](https://github.com/pgEdge/spock) repository.
 
 The script has three execution modes:
 
@@ -112,7 +87,6 @@ After performing a health check, you can use the following command to add a node
 - `--new-node-info`: A JSON string with additional metadata (default: "{}").
 - `--verbose`: Provide verbose output for debugging.
 
-
 ### Using the zodan.sql SQL Workflow
 
 The SQL-based implementation utilizes the Postgres `dblink` extension to handle node addition directly from within the database. This method is ideal for environments where you may not have access to a shell or Python.
@@ -153,10 +127,11 @@ CALL spock.add_node(
 );
 ```
 
-
 ### The zodremove.py Python Script
 
 This Python script leverages `psql` and is intended for use in environments where you have shell and Python access. The script can safely remove fully or partially added nodes.
+
+The script is located in the [samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN) directory of the [Spock Github](https://github.com/pgEdge/spock) repository.
 
 **Prerequisites**
 
@@ -192,6 +167,8 @@ Within the workflow, SQL commands orchestrate a:
 - **sub_drop**: Manages removing subscriptions. Also removes the replication slot if there are no remaining subscriptions.
 - **repset_drop**: Removes published repsets on the node we are removing.
 - **node_drop**: Removes node from cluster
+
+The workflow is located in the [samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN) directory of the [Spock Github](https://github.com/pgEdge/spock) repository.
 
 To use the workflow, execute the following command in your Postgres session:
 
