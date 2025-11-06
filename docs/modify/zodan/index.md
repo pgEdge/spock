@@ -1,4 +1,4 @@
-# Zodan
+# Modifying a Cluster with Zodan
 
 Zodan provides tools to add or remove a node **with zero downtime**. The scripts are located in the [samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN) directory of the [Spock Github](https://github.com/pgEdge/spock) repository.
 
