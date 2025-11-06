@@ -64,12 +64,15 @@ nav:
     - Using Snowflake Sequences: managing/snowflake.md
     - Using Lolor to Manage Large Objects: managing/lolor.md
     - Using Automatic DDL Replication: managing/spock_autoddl.md
-  - Adding a Node to a Cluster:
-    - Using Spock to Add a Node to a Cluster: modify/index.md
-    - Adding a Node with Zero Downtime: modify/zodan_tutorial.md
+  - Adding or Removing Nodes:
+    - Using Spock to Modify a Cluster: modify/index.md
+    - Using Z0DAN:
+      - Modifying your Cluster with Zodan: modify/zodan/index.md
+      - Using Zodan Scripts and Workflows: modify/zodan/zodan_readme.md
+      - Adding a Node with Zero Downtime: modify/zodan/zodan_tutorial.md
     - Adding a Node with Minimal Downtime with pgBackRest: modify/add_node_pgbackrest.md
     - Using Spockctrl:
-      - Managing your Cluster with Spockctrl: modify/spockctrl/index.md
+      - Modifying your Cluster with Spockctrl: modify/spockctrl/index.md
       - Using Spockctrl Functions: modify/spockctrl/spockctrl_functions.md
       - Populating the spockctrl.json File: modify/spockctrl/spockctrl_json.md
       - Using a Workflow File to Modify a Cluster: modify/spockctrl/spockctrl_workflow.md
