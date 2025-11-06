@@ -65,7 +65,7 @@ nav:
     - Using Lolor to Manage Large Objects: managing/lolor.md
     - Using Automatic DDL Replication: managing/spock_autoddl.md
   - Adding or Removing Nodes:
-    - Using Spock to Modify a Cluster: modify/index.md
+    - Modifying a Cluster: modify/index.md
     - Using Z0DAN:
       - Modifying your Cluster with Zodan: modify/zodan/index.md
       - Using Zodan Scripts and Workflows: modify/zodan/zodan_readme.md
