@@ -35,7 +35,8 @@ CREATE TABLE spock.subscription (
     sub_apply_delay interval NOT NULL DEFAULT '0',
     sub_force_text_transfer boolean NOT NULL DEFAULT 'f',
 	sub_skip_lsn pg_lsn NOT NULL DEFAULT '0/0',
-	sub_skip_schema text[]
+	sub_skip_schema text[],
+	sub_rescue_suspended boolean NOT NULL DEFAULT false
 );
 -- Source for sub_id values.
 CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1 OWNED BY spock.subscription.sub_id;

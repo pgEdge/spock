@@ -35,6 +35,42 @@
 PGDLLEXPORT void spock_manager_main(Datum main_arg);
 
 /*
+ * Suspend all peer-to-peer subscriptions during rescue between surviving nodes,
+ * excluding any that touch the failed node.
+ * Params: node_id = the id of local cluster node; failed_node_id = the id of failed node.
+ */
+void
+spock_suspend_all_peer_subs_for_rescue(Oid node_id, Oid failed_node_id)
+{
+	List *subs = get_node_subscriptions(node_id, false);
+	ListCell *lc;
+	foreach (lc, subs)
+	{
+		SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
+		if (sub->origin->id != failed_node_id &&
+		    sub->target->id != failed_node_id)
+			spock_suspend_subscription_for_rescue(sub);
+	}
+	list_free_deep(subs);
+}
+
+/*
+ * Resume all subs previously suspended for rescue.
+ */
+void
+spock_resume_all_peer_subs_post_rescue(Oid node_id)
+{
+	List *subs = get_node_subscriptions(node_id, false);
+	ListCell *lc;
+	foreach (lc, subs)
+	{
+		SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
+		spock_resume_subscription_post_rescue(sub);
+	}
+	list_free_deep(subs);
+}
+
+/*
  * Manage the apply workers - start new ones, kill old ones.
  */
 static long
