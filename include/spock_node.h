@@ -14,7 +14,6 @@
 
 #include "datatype/timestamp.h"
 #include "utils/jsonb.h"
-#include "utils/hsearch.h"
 
 typedef struct SpockNode
 {
@@ -57,6 +56,7 @@ typedef struct SpockSubscription
 	bool		force_text_transfer;
 	XLogRecPtr	skiplsn;	/* All changes finished at this LSN are skipped */
 	List	   *skip_schema;	/* Array of schema names to skip */
+	bool		rescue_suspended;	/* True if suspended for rescue/recovery */
 } SpockSubscription;
 
 extern void create_node(SpockNode *node);

@@ -38,14 +38,8 @@
 #include "utils/rel.h"
 #include "fmgr.h"
 #include "funcapi.h"
-#include "utils/hsearch.h"
 
-/* Internal hash and type for rescue suspension tracking (file scoped). */
-typedef struct RescueSuspendKey {
-	Oid subid;
-} RescueSuspendKey;
-
-static HTAB *RescueSuspendHash = NULL;
+/* Rescue suspension is now tracked via sub_rescue_suspended column in catalog */
 
 #include "spock_node.h"
 #include "spock_repset.h"
@@ -101,7 +95,7 @@ typedef struct SubscriptionTuple
 	NameData	sub_slot_name;
 } SubscriptionTuple;
 
-#define Natts_subscription			14
+#define Natts_subscription			15
 #define Anum_sub_id					1
 #define Anum_sub_name				2
 #define Anum_sub_origin				3
@@ -116,6 +110,7 @@ typedef struct SubscriptionTuple
 #define Anum_sub_force_text_transfer 12
 #define Anum_sub_skip_lsn			13
 #define Anum_sub_skip_schema		14
+#define Anum_sub_rescue_suspended	15
 
 /*
  * We impose same validation rules as replication slot name validation does.
@@ -875,6 +870,8 @@ create_subscription(SpockSubscription *sub)
 	else
 		nulls[Anum_sub_skip_schema - 1] = true;
 
+	values[Anum_sub_rescue_suspended - 1] = BoolGetDatum(sub->rescue_suspended);
+
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
 	/* Insert the tuple to the catalog. */
@@ -967,6 +964,8 @@ alter_subscription(SpockSubscription *sub)
 	else
 		nulls[Anum_sub_skip_schema - 1] = true;
 
+	values[Anum_sub_rescue_suspended - 1] = BoolGetDatum(sub->rescue_suspended);
+
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 
 	/* Update the tuple in catalog. */
@@ -1035,6 +1034,7 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 	sub->enabled = subtup->sub_enabled;
 	sub->slot_name = pstrdup(NameStr(subtup->sub_slot_name));
 	sub->skip_schema = NIL;  /* Initialize to avoid memory corruption */
+	sub->rescue_suspended = false;  /* Initialize, will be set from catalog */
 
 	sub->origin = get_node(subtup->sub_origin);
 	sub->target = get_node(subtup->sub_target);
@@ -1094,6 +1094,13 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		skip_schema_names = textarray_to_list(DatumGetArrayTypeP(d));
 		sub->skip_schema = skip_schema_names;
 	}
+
+	/* Get rescue_suspended. */
+	d = heap_getattr(tuple, Anum_sub_rescue_suspended, desc, &isnull);
+	if (isnull)
+		sub->rescue_suspended = false;
+	else
+		sub->rescue_suspended = DatumGetBool(d);
 
 	return sub;
 }
@@ -1222,58 +1229,34 @@ get_node_subscriptions(Oid nodeid, bool origin)
 	return res;
 }
 
-static void rescue_suspend_hash_init(void)
-{
-	if (!RescueSuspendHash) {
-		HASHCTL ctl;
-		memset(&ctl, 0, sizeof(ctl));
-		ctl.keysize = sizeof(RescueSuspendKey);
-		ctl.entrysize = sizeof(RescueSuspendKey);
-		RescueSuspendHash = hash_create("Spock Rescue Suspended Subs",
-							 128, &ctl, HASH_ELEM | HASH_BLOBS);
-	}
-}
-
-static bool is_sub_rescue_suspended(Oid subid)
-{
-	RescueSuspendKey key;
-	if (!RescueSuspendHash) return false;
-	key.subid = subid;
-	return (hash_search(RescueSuspendHash, &key, HASH_FIND, NULL) != NULL);
-}
-
-static void mark_sub_rescue_suspended(Oid subid)
-{
-	RescueSuspendKey key;
-	bool found;
-	rescue_suspend_hash_init();
-	key.subid = subid;
-	(void)hash_search(RescueSuspendHash, &key, HASH_ENTER, &found);
-}
-
-static void unmark_sub_rescue_suspended(Oid subid)
-{
-	RescueSuspendKey key;
-	if (!RescueSuspendHash) return;
-	key.subid = subid;
-	hash_search(RescueSuspendHash, &key, HASH_REMOVE, NULL);
-}
-
 /*
  * spock_suspend_subscription_for_rescue --
- *   Temporarily disables a subscription and records it as rescue-suspended.
- *   This prevents replication during disaster recovery/rescue workflows and
- *   ensures peer-to-peer data movement is paused until the operation completes.
+ *   Temporarily disables a subscription and records it as rescue-suspended
+ *   in the catalog. This prevents replication during disaster recovery/rescue
+ *   workflows and ensures peer-to-peer data movement is paused until the
+ *   operation completes.
+ *
+ *   Uses the same approach as sub_disable: sets enabled=false and updates
+ *   the catalog, but also sets rescue_suspended=true to track the reason.
  */
 void
 spock_suspend_subscription_for_rescue(SpockSubscription *sub)
 {
 	if (!sub) return;
-	if (is_sub_rescue_suspended(sub->id))
+
+	/* Reload subscription to get current state from catalog */
+	sub = get_subscription(sub->id);
+	if (!sub) return;
+
+	/* Already suspended for rescue, nothing to do */
+	if (sub->rescue_suspended)
 		return;
+
+	/* Disable subscription and mark as rescue-suspended */
 	sub->enabled = false;
+	sub->rescue_suspended = true;
 	alter_subscription(sub);
-	mark_sub_rescue_suspended(sub->id);
+
 	elog(LOG,
 		 "SPOCK: Suspended subscription '%s' for rescue/recovery (id %u)",
 		 sub->name, sub->id);
@@ -1283,16 +1266,39 @@ spock_suspend_subscription_for_rescue(SpockSubscription *sub)
  * spock_resume_subscription_post_rescue --
  *   Re-enables a previously rescue-suspended subscription after recovery.
  *   Allows normal peer-to-peer replication to resume from the last safe state.
+ *
+ *   Uses the same approach as sub_enable: sets enabled=true and updates
+ *   the catalog, but also clears rescue_suspended flag.
  */
 void
 spock_resume_subscription_post_rescue(SpockSubscription *sub)
 {
 	if (!sub) return;
-	if (sub->enabled || !is_sub_rescue_suspended(sub->id))
+
+	/* Reload subscription to get current state from catalog */
+	sub = get_subscription(sub->id);
+	if (!sub) return;
+
+	/* Only resume if it was actually rescue-suspended */
+	if (!sub->rescue_suspended)
 		return;
+
+	/* Already enabled, just clear the flag */
+	if (sub->enabled)
+	{
+		sub->rescue_suspended = false;
+		alter_subscription(sub);
+		elog(LOG,
+			 "SPOCK: Cleared rescue flag for subscription '%s' (id %u)",
+			 sub->name, sub->id);
+		return;
+	}
+
+	/* Enable subscription and clear rescue-suspended flag */
 	sub->enabled = true;
+	sub->rescue_suspended = false;
 	alter_subscription(sub);
-	unmark_sub_rescue_suspended(sub->id);
+
 	elog(LOG,
 		 "SPOCK: Resumed subscription '%s' after rescue/recovery (id %u)",
 		 sub->name, sub->id);
