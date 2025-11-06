@@ -588,6 +588,7 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 		sub.skip_schema = NIL;
 	else
 		sub.skip_schema = textarray_to_list(skip_schema_names);
+	sub.rescue_suspended = false;
 
 	create_subscription(&sub);
 
