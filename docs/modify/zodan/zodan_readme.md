@@ -1,6 +1,6 @@
 # Zodan: Zero-Downtime Node Addition for Spock
 
-Zodan provides tools to add or remove a node **without any downtime**.
+Zodan provides tools to add or remove a node **with zero downtime**.
 
 ## Overview
 
@@ -14,12 +14,12 @@ Zodan also simplifies removing fully-functional or failed nodes from a cluster. 
 
 Zodan simplifies removing partially added nodes created during failed node add operations. Additional clean up steps may be required before attempting another node deployment on the target host.
 
-Z0DAN includes the following scripts and workflows:
+Zodan includes the following scripts and workflows:
 
 - **[zodan.py](zodan.py)**: A Python CLI script that uses `psql` to perform automated node addition.
-- **[zodan.sql](zodan.sql)**: A complete SQL-based workflow that uses `dblink` to perform the same add node operations from within PostgreSQL.
+- **[zodan.sql](zodan.sql)**: A complete SQL-based workflow that uses `dblink` to perform the same add node operations from within Postgres.
 - **[zodremove.py](zodremove.py)**: A Python CLI script that uses `psql` to perform node removal.
-- **[zodremove.sql](zodremove.sql)**: A complete SQL-based workflow that uses `dblink` to perform the same removal operations from within PostgreSQL.
+- **[zodremove.sql](zodremove.sql)**: A complete SQL-based workflow that uses `dblink` to perform the same removal operations from within Postgres.
 
 !!! note
 
@@ -27,12 +27,12 @@ Z0DAN includes the following scripts and workflows:
 
 **Zodan Use Cases**
 
-| Use Case                           | Use zodan.py & zodremove.py | Use zodan.sql & zodremove.sql |
-| ---------------------------------- | :-------------------------: | :---------------------------: |
-| CLI automation / scripting         | ✅                          |                              |
-| SQL-only environments              |                             | ✅                           |
-| No Python or shell access          |                             | ✅                           |
-| PostgreSQL extension workflows     | ✅                          |              ✅              |
+| Use Case                           | Use `zodan.py` & `zodremove.py` | Use `zodan.sql` & `zodremove.sql` |
+| ---------------------------------- | :-----------------------------: | :-------------------------------: |
+| CLI automation / scripting         | ✅                              |                                   |
+| SQL-only environments              |                                 | ✅                                |
+| No Python or shell access          |                                 | ✅                                |
+| Postgres extension workflows       | ✅                              | ✅                                |
 
 
 ## Components
@@ -55,7 +55,7 @@ After adding the new node, you can use health checks on your cluster to ensure t
 
 **Prerequisites**
 
-- PostgreSQL 15 or later
+- Postgres 15 or later
 - Spock extension installed and configured
 - dblink extension enabled on all nodes
 - Python 3
@@ -160,7 +160,7 @@ This Python script leverages `psql` and is intended for use in environments wher
 
 **Prerequisites**
 
-- PostgreSQL 15 or later
+- Postgres 15 or later
 - Spock extension installed and configured
 - dblink extension enabled on all nodes
 - Python 3

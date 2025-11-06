@@ -52,7 +52,7 @@ The steps used to configure our new node (n4) are:
 # Initialize database
 initdb -D /path/to/data
 
-# Start PostgreSQL
+# Start Postgres
 pg_ctl -D /path/to/data start
 
 # Create database and user
@@ -65,14 +65,14 @@ psql -d inventory -c "CREATE EXTENSION spock;"
 psql -d inventory -c "CREATE EXTENSION dblink;"
 ```
 
-**Using the Z0DAN Procedure to Add a Node** 
+**Using the Zodan Procedure to Add a Node** 
 
-After creating the node, you can use Z0DAN scripts to simplify adding a node to a cluster. To use the SQL script, connect to the new node that you wish to add to the pgedge cluster:
+After creating the node, you can use Zodan scripts to simplify adding a node to a cluster. To use the SQL script, connect to the new node that you wish to add to the pgedge cluster:
 ```bash
 psql -h 127.0.0.1 -p 5432 -d inventory -U pgedge
 ```
 
-Load the ZODAN procedures:
+Load the Zodan procedures:
 ```sql
 \i /path/to/zodan.sql
 ```
@@ -98,7 +98,7 @@ Should a problem occur during this process, you can source the `zodremove.sql` s
 
 ## Manually adding a Node to a Cluster
 
-The steps that follow outline the process the Z0DAN procedure goes through when adding a node.  You can manually perform the same steps to add a node to a cluster instead of using `spock.add_node` above.
+The steps that follow outline the process the Zodan procedure goes through when adding a node.  You can manually perform the same steps to add a node to a cluster instead of using `spock.add_node` above.
 
 ### Check the Spock Version Compatibility
 
@@ -1106,19 +1106,18 @@ WHERE slot_name LIKE 'spk_%';
 
 ## Key Differences from the Manual Process
 
-1. **Sync LSN Storage:** ZODAN stores sync LSNs and uses them later to ensuring subscriptions start from the correct point even if hours pass between steps.
+1. **Sync LSN Storage:** Zodan stores sync LSNs and uses them later to ensuring subscriptions start from the correct point even if hours pass between steps.
 
-2. **Auto Schema Detection:** ZODAN automatically detects existing schemas on n4 and populates `skip_schema` parameter, preventing conflicts during structure sync.
+2. **Auto Schema Detection:** Zodan automatically detects existing schemas on n4 and populates `skip_schema` parameter, preventing conflicts during structure sync.
 
-3. **Version Compatibility Check:** ZODAN verifies all nodes run the same Spock version before starting.
+3. **Version Compatibility Check:** Zodan verifies all nodes run the same Spock version before starting.
 
-4. **Verification Steps:** ZODAN includes `verify_subscription_replicating()` after enabling subscriptions to ensure they reach 'replicating' status.
+4. **Verification Steps:** Zodan includes `verify_subscription_replicating()` after enabling subscriptions to ensure they reach 'replicating' status.
 
-5. **2-node vs Multi-node Logic:** ZODAN handles 2-node scenarios differently (no disabled subscriptions needed when adding to single-node cluster).
+5. **2-node vs Multi-node Logic:** Zodan handles 2-node scenarios differently (no disabled subscriptions needed when adding to single-node cluster).
 
-6. **Comprehensive Status:** ZODAN shows final status of all nodes and subscriptions across entire cluster, not just the new node.
+6. **Comprehensive Status:** Zodan shows final status of all nodes and subscriptions across entire cluster, not just the new node.
 
----
 
 ## References
 
