@@ -139,7 +139,7 @@ sub system_maybe {
 # Create PostgreSQL configuration file
 sub create_postgresql_conf {
     my ($datadir, $port) = @_;
-    
+
     open(my $conf, '>>', "$datadir/postgresql.conf") or die "Cannot open config file: $!";
     print $conf "shared_buffers=1GB\n";
     print $conf "shared_preload_libraries='spock'\n";
@@ -154,7 +154,7 @@ sub create_postgresql_conf {
     print $conf "spock.enable_spill=on\n";
     print $conf "port=$port\n";
     print $conf "listen_addresses='*'\n";
-    
+
     # Enable logging
     print $conf "logging_collector=on\n";
     my $cwd = Cwd::getcwd();
@@ -175,7 +175,7 @@ sub create_postgresql_conf {
     print $conf "log_replication_commands=on\n";
     print $conf "log_min_duration_statement=0\n";
     print $conf "log_statement_stats=on\n";
-    
+
     close($conf);
 }
 
@@ -184,12 +184,12 @@ sub create_cluster {
     my ($num_nodes, $test_name) = @_;
     $num_nodes //= 2;
     $test_name //= "Create $num_nodes-node Spock cluster";
-    
+
     # Initialize arrays
     @node_ports = ();
     @node_datadirs = ();
     $node_count = $num_nodes;
-    
+
     # Generate ports and datadirs for all nodes
     for (my $i = 0; $i < $num_nodes; $i++) {
         my $port = $BASE_PORT + $i;
@@ -197,80 +197,80 @@ sub create_cluster {
         push @node_ports, $port;
         push @node_datadirs, $datadir;
     }
-    
+
     # Clean up any existing test directories
     for my $datadir (@node_datadirs) {
         system_or_bail 'rm', '-rf', $datadir;
     }
-    
+
     # Initialize PostgreSQL data directories for all nodes
     for (my $i = 0; $i < $num_nodes; $i++) {
         system_or_bail "$PG_BIN/initdb", '-A', 'trust', '-D', $node_datadirs[$i];
     }
-    
+
     # Create logs directory in current working directory
     my $current_dir = getcwd();
     my $logs_dir = "$current_dir/logs";
     system_or_bail 'mkdir', '-p', $logs_dir;
     system_or_bail 'chmod', '755', $logs_dir;
-    
+
     # Copy configuration files if they exist
     if (-f 'regress-pg_hba.conf') {
         for my $datadir (@node_datadirs) {
             system_or_bail 'cp', 'regress-pg_hba.conf', "$datadir/pg_hba.conf";
         }
     }
-    
+
     # Create PostgreSQL configuration for all nodes
     for (my $i = 0; $i < $num_nodes; $i++) {
         create_postgresql_conf($node_datadirs[$i], $node_ports[$i]);
     }
-    
+
     # Start PostgreSQL instances for all nodes
     for (my $i = 0; $i < $num_nodes; $i++) {
         system("$PG_BIN/postgres -D $node_datadirs[$i] >> '$LOG_FILE' 2>&1 &");
     }
-    
+
     # Allow PostgreSQL servers to startup
     system_or_bail 'sleep', '17';
-    
+
     # Create superuser on all nodes (ignore if already exists)
     for (my $i = 0; $i < $num_nodes; $i++) {
         system_maybe "$PG_BIN/psql", '-p', $node_ports[$i], '-d', 'postgres', '-c', "CREATE USER super SUPERUSER";
     }
-    
+
     # Create database and user for testing on all nodes (ignore if already exists)
     for (my $i = 0; $i < $num_nodes; $i++) {
         system_maybe "$PG_BIN/psql", '-p', $node_ports[$i], '-d', 'postgres', '-c', "CREATE DATABASE $DB_NAME";
         system_maybe "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "CREATE USER $DB_USER SUPERUSER";
     }
-    
+
     # Install Spock extension on all nodes
     for (my $i = 0; $i < $num_nodes; $i++) {
         system_or_bail "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "CREATE EXTENSION IF NOT EXISTS spock";
         system_or_bail "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "ALTER EXTENSION spock UPDATE";
     }
-    
+
     # Test if PostgreSQL instances are running
     for (my $i = 0; $i < $num_nodes; $i++) {
         my $node_name = "n" . ($i + 1);
         command_ok([ "$PG_BIN/pg_isready", '-h', $HOST, '-p', $node_ports[$i], '-U', $DB_USER ], "$node_name is running");
     }
-    
+
     # Test Spock extension on all nodes
     for (my $i = 0; $i < $num_nodes; $i++) {
         my $node_name = "n" . ($i + 1);
         command_ok([ "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "SELECT 1 FROM pg_extension WHERE extname = 'spock'" ], "Check Spock extension on $node_name");
     }
-    
+
     # Create nodes
     for (my $i = 0; $i < $num_nodes; $i++) {
         my $node_name = "n" . ($i + 1);
         system_or_bail "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "SELECT spock.node_create('$node_name', 'host=$HOST dbname=$DB_NAME port=$node_ports[$i] user=$DB_USER password=$DB_PASSWORD')";
     }
-    
+
     $nodes_created = 1;
-    
+
     pass($test_name);
     return 1;
 }
@@ -308,7 +308,7 @@ sub cross_wire {
     for (my $i = 0; $i < $num_nodes; $i++) {
         my $node_name = $node_names->[$i];
         my $repset_name = "${node_name}r" . ($i + 1);
-        
+
         system_or_bail(
             "$PG_BIN/psql",
             '-p', $node_ports[$i],
@@ -328,26 +328,26 @@ sub cross_wire {
 sub cross_wire_first_two {
     my ($test_name) = @_;
     $test_name //= 'Cross-wire first 2 nodes (n1 and n2)';
-    
+
     die "No cluster created. Call create_cluster() first." unless $nodes_created;
     die "Need at least 2 nodes to cross-wire first two" unless $node_count >= 2;
-    
+
     # Create subscriptions only between the first 2 nodes (n1 and n2)
     for (my $i = 0; $i < 2; $i++) {
         for (my $j = 0; $j < 2; $j++) {
             next if $i == $j; # Skip self-subscription
-            
+
             my $source_node = "n" . ($i + 1);
             my $target_node = "n" . ($j + 1);
             my $sub_name = "sub_${source_node}_${target_node}";
-            
+
             system_or_bail "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "SELECT spock.sub_create('$sub_name', 'host=$HOST dbname=$DB_NAME port=$node_ports[$j] user=$DB_USER password=$DB_PASSWORD', ARRAY['default', 'default_insert_only', 'ddl_sql'], true, true)";
         }
     }
-    
+
     # Wait for cross-wiring to complete
     system_or_bail 'sleep', '10';
-    
+
     pass($test_name);
     return 1;
 }
@@ -356,45 +356,40 @@ sub cross_wire_first_two {
 sub destroy_cluster {
     my ($test_name) = @_;
     $test_name //= 'Destroy multi-node Spock cluster';
-    
+
     if ($nodes_created) {
         # Cleanup subscriptions and nodes (ignore errors for subscriptions that don't exist)
         for (my $i = 0; $i < $node_count; $i++) {
-            for (my $j = 0; $j < $node_count; $j++) {
-                next if $i == $j; # Skip self-subscription
-                
-                my $source_node = "n" . ($i + 1);
-                my $target_node = "n" . ($j + 1);
-                my $sub_name = "sub_${source_node}_${target_node}";
-                
-                system_maybe "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "SELECT spock.sub_drop('$sub_name')";
-            }
+			# Remove each subscription, created on the node
+            system_maybe "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c',
+			  "SELECT sub_name AS deleted_subscriptions,sub_origin,sub_target
+			  FROM spock.subscription s, LATERAL spock.sub_drop(s.sub_name)";
         }
-        
+
         for (my $i = 0; $i < $node_count; $i++) {
             my $node_name = "n" . ($i + 1);
             system_or_bail "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "SELECT spock.node_drop('$node_name')";
         }
-        
+
         # Stop PostgreSQL instances
         for (my $i = 0; $i < $node_count; $i++) {
             system("$PG_BIN/pg_ctl stop -D $node_datadirs[$i] -m immediate >> '$LOG_FILE' 2>&1 &");
         }
-        
+
         # Wait for processes to stop
         system_or_bail 'sleep', '5';
-        
+
         # Clean up test directories
         for my $datadir (@node_datadirs) {
             system_or_bail 'rm', '-rf', $datadir;
         }
-        
+
         $nodes_created = 0;
         $node_count = 0;
         @node_ports = ();
         @node_datadirs = ();
     }
-    
+
     pass($test_name);
     return 1;
 }
