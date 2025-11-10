@@ -1,4 +1,9 @@
 \set aid random(50001, 100000)
 
-UPDATE pgbench_accounts SET abalance = abalance + :aid WHERE aid = :aid;
-UPDATE pgbench_accounts SET abalance = abalance - :aid WHERE aid = :aid;
+UPDATE pgbench_accounts SET abalance = abalance + 1 WHERE aid = :aid;
+UPDATE pgbench_accounts SET abalance = abalance - 1 WHERE aid = :aid;
+
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+UPDATE pgbench_accounts SET abalance = abalance + 2 WHERE aid = :aid;
+UPDATE pgbench_accounts SET abalance = abalance - 2 WHERE aid = :aid;
+END;
