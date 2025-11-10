@@ -29,9 +29,15 @@
 PG_FUNCTION_INFO_V1(spock_wait_slot_confirm_lsn);
 
 /*
- * Wait for the confirmed_flush_lsn of the specified slot, or all logical slots
- * if none given, to pass the supplied value. If no position is supplied the
- * write position is used.
+ * Having been called on an LR publisher, it waits for the subscriber's LSN
+ * confirmation on the specified slot, or all logical slots if none are given,
+ * to pass the supplied value. If no position is given, the latest commit LSN is
+ * used. If the instance has no committed transactions, the latest WAL insert
+ * position is used.
+ *
+ * It may get stuck in an infinite loop if no replication slots available.
+ * Do not throw an error to allow cases when LR restarts or just starts after
+ * this wait function.
  *
  * No timeout is offered, use a statement_timeout.
  */
@@ -63,9 +69,9 @@ spock_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
 
 	do
 	{
-		XLogRecPtr oldest_confirmed_lsn = InvalidXLogRecPtr;
-		int oldest_slot_pos = -1;
-		int rc;
+		XLogRecPtr	oldest_confirmed_lsn = InvalidXLogRecPtr;
+		int			oldest_slot_pos = -1;
+		int			rc;
 
 		LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 		for (i = 0; i < max_replication_slots; i++)
