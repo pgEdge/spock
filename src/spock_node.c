@@ -95,7 +95,7 @@ typedef struct SubscriptionTuple
 	NameData	sub_slot_name;
 } SubscriptionTuple;
 
-#define Natts_subscription			15
+#define Natts_subscription			20
 #define Anum_sub_id					1
 #define Anum_sub_name				2
 #define Anum_sub_origin				3
@@ -111,6 +111,11 @@ typedef struct SubscriptionTuple
 #define Anum_sub_skip_lsn			13
 #define Anum_sub_skip_schema		14
 #define Anum_sub_rescue_suspended	15
+#define Anum_sub_rescue_temporary	16
+#define Anum_sub_rescue_stop_lsn	17
+#define Anum_sub_rescue_stop_time	18
+#define Anum_sub_rescue_cleanup_pending 19
+#define Anum_sub_rescue_failed		20
 
 /*
  * We impose same validation rules as replication slot name validation does.
@@ -871,6 +876,22 @@ create_subscription(SpockSubscription *sub)
 		nulls[Anum_sub_skip_schema - 1] = true;
 
 	values[Anum_sub_rescue_suspended - 1] = BoolGetDatum(sub->rescue_suspended);
+	values[Anum_sub_rescue_temporary - 1] = BoolGetDatum(sub->rescue_temporary);
+
+	if (XLogRecPtrIsInvalid(sub->rescue_stop_lsn))
+		nulls[Anum_sub_rescue_stop_lsn - 1] = true;
+	else
+		values[Anum_sub_rescue_stop_lsn - 1] = LSNGetDatum(sub->rescue_stop_lsn);
+
+	if (sub->rescue_stop_time == 0)
+		nulls[Anum_sub_rescue_stop_time - 1] = true;
+	else
+		values[Anum_sub_rescue_stop_time - 1] =
+			TimestampTzGetDatum(sub->rescue_stop_time);
+
+	values[Anum_sub_rescue_cleanup_pending - 1] =
+		BoolGetDatum(sub->rescue_cleanup_pending);
+	values[Anum_sub_rescue_failed - 1] = BoolGetDatum(sub->rescue_failed);
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
@@ -954,7 +975,10 @@ alter_subscription(SpockSubscription *sub)
 	else
 		nulls[Anum_sub_forward_origins - 1] = true;
 
-	values[Anum_sub_apply_delay - 1] = IntervalPGetDatum(sub->apply_delay);
+	if (sub->apply_delay)
+		values[Anum_sub_apply_delay - 1] = IntervalPGetDatum(sub->apply_delay);
+	else
+		nulls[Anum_sub_apply_delay - 1] = true;
 	values[Anum_sub_force_text_transfer - 1] = BoolGetDatum(sub->force_text_transfer);
 	values[Anum_sub_skip_lsn - 1] = LSNGetDatum(sub->skiplsn);
 
@@ -965,6 +989,22 @@ alter_subscription(SpockSubscription *sub)
 		nulls[Anum_sub_skip_schema - 1] = true;
 
 	values[Anum_sub_rescue_suspended - 1] = BoolGetDatum(sub->rescue_suspended);
+	values[Anum_sub_rescue_temporary - 1] = BoolGetDatum(sub->rescue_temporary);
+
+	if (XLogRecPtrIsInvalid(sub->rescue_stop_lsn))
+		nulls[Anum_sub_rescue_stop_lsn - 1] = true;
+	else
+		values[Anum_sub_rescue_stop_lsn - 1] = LSNGetDatum(sub->rescue_stop_lsn);
+
+	if (sub->rescue_stop_time == 0)
+		nulls[Anum_sub_rescue_stop_time - 1] = true;
+	else
+		values[Anum_sub_rescue_stop_time - 1] =
+			TimestampTzGetDatum(sub->rescue_stop_time);
+
+	values[Anum_sub_rescue_cleanup_pending - 1] =
+		BoolGetDatum(sub->rescue_cleanup_pending);
+	values[Anum_sub_rescue_failed - 1] = BoolGetDatum(sub->rescue_failed);
 
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 
@@ -1035,6 +1075,11 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 	sub->slot_name = pstrdup(NameStr(subtup->sub_slot_name));
 	sub->skip_schema = NIL;  /* Initialize to avoid memory corruption */
 	sub->rescue_suspended = false;  /* Initialize, will be set from catalog */
+	sub->rescue_temporary = false;
+	sub->rescue_stop_lsn = InvalidXLogRecPtr;
+	sub->rescue_stop_time = 0;
+	sub->rescue_cleanup_pending = false;
+	sub->rescue_failed = false;
 
 	sub->origin = get_node(subtup->sub_origin);
 	sub->target = get_node(subtup->sub_target);
@@ -1101,6 +1146,31 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		sub->rescue_suspended = false;
 	else
 		sub->rescue_suspended = DatumGetBool(d);
+
+	/* Get rescue_temporary. */
+	d = heap_getattr(tuple, Anum_sub_rescue_temporary, desc, &isnull);
+	if (!isnull)
+		sub->rescue_temporary = DatumGetBool(d);
+
+	/* Get rescue_stop_lsn. */
+	d = heap_getattr(tuple, Anum_sub_rescue_stop_lsn, desc, &isnull);
+	if (!isnull)
+		sub->rescue_stop_lsn = DatumGetLSN(d);
+
+	/* Get rescue_stop_time. */
+	d = heap_getattr(tuple, Anum_sub_rescue_stop_time, desc, &isnull);
+	if (!isnull)
+		sub->rescue_stop_time = DatumGetTimestampTz(d);
+
+	/* Get rescue_cleanup_pending. */
+	d = heap_getattr(tuple, Anum_sub_rescue_cleanup_pending, desc, &isnull);
+	if (!isnull)
+		sub->rescue_cleanup_pending = DatumGetBool(d);
+
+	/* Get rescue_failed. */
+	d = heap_getattr(tuple, Anum_sub_rescue_failed, desc, &isnull);
+	if (!isnull)
+		sub->rescue_failed = DatumGetBool(d);
 
 	return sub;
 }
@@ -1302,4 +1372,57 @@ spock_resume_subscription_post_rescue(SpockSubscription *sub)
 	elog(LOG,
 		 "SPOCK: Resumed subscription '%s' after rescue/recovery (id %u)",
 		 sub->name, sub->id);
+}
+
+/*
+ * spock_set_rescue_cleanup_state
+ *   Mark a rescue subscription as pending cleanup after success/failure.
+ *
+ * This disables the subscription to prevent worker restarts, persists any
+ * reached LSN/timestamp, and records whether cleanup is due to failure.
+ */
+void
+spock_set_rescue_cleanup_state(Oid subid, bool failed,
+							   XLogRecPtr reached_lsn,
+							   TimestampTz reached_ts)
+{
+	SpockSubscription *sub;
+	bool		started_tx = false;
+
+	if (!OidIsValid(subid))
+		return;
+
+	if (!IsTransactionState())
+	{
+		StartTransactionCommand();
+		started_tx = true;
+	}
+
+	sub = get_subscription(subid);
+
+	if (!sub->rescue_temporary)
+	{
+		if (started_tx)
+			CommitTransactionCommand();
+		return;
+	}
+
+	sub->enabled = false;
+	sub->rescue_cleanup_pending = true;
+	sub->rescue_failed = failed;
+
+	if (!XLogRecPtrIsInvalid(reached_lsn))
+		sub->rescue_stop_lsn = reached_lsn;
+
+	if (reached_ts != 0)
+		sub->rescue_stop_time = reached_ts;
+
+	alter_subscription(sub);
+
+	elog(LOG,
+		 "SPOCK: Marked rescue subscription '%s' (id %u) for cleanup (failed=%s)",
+		 sub->name, sub->id, failed ? "true" : "false");
+
+	if (started_tx)
+		CommitTransactionCommand();
 }

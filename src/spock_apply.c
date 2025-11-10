@@ -92,6 +92,7 @@ static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
 static RepOriginId remote_origin_id = InvalidRepOriginId;
 static TimeOffset apply_delay = 0;
 static TimestampTz required_commit_ts = 0;
+static bool rescue_cleanup_marked = false;
 
 static Oid	QueueRelid = InvalidOid;
 
@@ -251,6 +252,11 @@ static void maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 static void append_feedback_position(XLogRecPtr recvpos);
 static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
 								  XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
+static void mark_rescue_cleanup(bool failed, XLogRecPtr reached_lsn,
+								TimestampTz reached_ts);
+static void finish_rescue_subscription(bool failed, XLogRecPtr reached_lsn,
+									   TimestampTz reached_ts, PGconn *conn,
+									   XLogRecPtr end_lsn);
 
 /* Wrapper for latch for waiting for previous transaction to commit */
 void
@@ -911,42 +917,25 @@ handle_commit(StringInfo s)
 						(uint32) (end_lsn >> 32), (uint32) end_lsn,
 						(uint32) (MyApplyWorker->replay_stop_lsn >> 32),
 						(uint32) MyApplyWorker->replay_stop_lsn)));
+		finish_rescue_subscription(false, replorigin_session_origin_lsn,
+								   replorigin_session_origin_timestamp,
+								   applyconn, end_lsn);
+	}
 
-		/*
-		 * If this is sync worker, update syncing table state to done.
-		 */
-		if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
-		{
-			StartTransactionCommand();
-			set_table_sync_status(MyApplyWorker->subid,
-								  NameStr(MySpockWorker->worker.sync.nspname),
-								  NameStr(MySpockWorker->worker.sync.relname),
-								  SYNC_STATUS_SYNCDONE, end_lsn);
-			CommitTransactionCommand();
-		}
+	if (MySubscription->rescue_temporary &&
+		MySubscription->rescue_stop_time != 0 &&
+		replorigin_session_origin_timestamp >= MySubscription->rescue_stop_time)
+	{
+		const char *target_ts = timestamptz_to_str(MySubscription->rescue_stop_time);
+		const char *commit_ts = timestamptz_to_str(replorigin_session_origin_timestamp);
 
-		/*
-		 * Flush all writes so the latest position can be reported back to the
-		 * sender.
-		 */
-		XLogFlush(GetXLogWriteRecPtr());
+		elog(LOG,
+			 "SPOCK %s: rescue replay reached target timestamp %s (commit at %s)",
+			 MySubscription->name, target_ts, commit_ts);
 
-		/*
-		 * Disconnect.
-		 *
-		 * This needs to happen before the spock_sync_worker_finish() call
-		 * otherwise slot drop will fail.
-		 */
-		PQfinish(applyconn);
-
-		/*
-		 * If this is sync worker, finish it.
-		 */
-		if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
-			spock_sync_worker_finish();
-
-		/* Stop gracefully */
-		proc_exit(0);
+		finish_rescue_subscription(false, replorigin_session_origin_lsn,
+								   replorigin_session_origin_timestamp,
+								   applyconn, end_lsn);
 	}
 
 	VALGRIND_PRINTF("SPOCK_APPLY: commit %u\n", remote_xid);
@@ -2860,6 +2849,9 @@ stream_replay:
 		MemoryContextSwitchTo(MessageContext);
 		edata = CopyErrorData();
 
+		if (MySubscription && MySubscription->rescue_temporary)
+			mark_rescue_cleanup(true, InvalidXLogRecPtr, 0);
+
 		/*
 		 * use_try_block == true indicates either:
 		 * 1. An exception occurred during a DML operation,
@@ -3068,6 +3060,48 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 
 	if (started_tx)
 		CommitTransactionCommand();
+}
+
+static void
+mark_rescue_cleanup(bool failed, XLogRecPtr reached_lsn, TimestampTz reached_ts)
+{
+	if (rescue_cleanup_marked)
+		return;
+
+	if (!MySubscription || !MySubscription->rescue_temporary)
+		return;
+
+	spock_set_rescue_cleanup_state(MySubscription->id, failed,
+								   reached_lsn, reached_ts);
+	rescue_cleanup_marked = true;
+}
+
+static void
+finish_rescue_subscription(bool failed, XLogRecPtr reached_lsn,
+						   TimestampTz reached_ts, PGconn *conn,
+						   XLogRecPtr end_lsn)
+{
+	mark_rescue_cleanup(failed, reached_lsn, reached_ts);
+
+	if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
+	{
+		StartTransactionCommand();
+		set_table_sync_status(MyApplyWorker->subid,
+							  NameStr(MySpockWorker->worker.sync.nspname),
+							  NameStr(MySpockWorker->worker.sync.relname),
+							  SYNC_STATUS_SYNCDONE, end_lsn);
+		CommitTransactionCommand();
+	}
+
+	XLogFlush(GetXLogWriteRecPtr());
+
+	if (conn)
+		PQfinish(conn);
+
+	if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
+		spock_sync_worker_finish();
+
+	proc_exit(0);
 }
 
 /*

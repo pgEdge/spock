@@ -12,6 +12,7 @@
 #ifndef SPOCK_NODE_H
 #define SPOCK_NODE_H
 
+#include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
 #include "utils/jsonb.h"
 
@@ -57,6 +58,11 @@ typedef struct SpockSubscription
 	XLogRecPtr	skiplsn;	/* All changes finished at this LSN are skipped */
 	List	   *skip_schema;	/* Array of schema names to skip */
 	bool		rescue_suspended;	/* True if suspended for rescue/recovery */
+	bool		rescue_temporary;	/* True if this is a rescue-only subscription */
+	XLogRecPtr	rescue_stop_lsn;	/* Target LSN to stop replay at */
+	TimestampTz	rescue_stop_time;	/* Optional target time to stop replay */
+	bool		rescue_cleanup_pending; /* Needs cleanup (drop) after rescue */
+	bool		rescue_failed;		/* Rescue attempt failed */
 } SpockSubscription;
 
 extern void create_node(SpockNode *node);
@@ -91,5 +97,8 @@ extern void spock_suspend_subscription_for_rescue(SpockSubscription *sub);
 extern void spock_resume_subscription_post_rescue(SpockSubscription *sub);
 extern void spock_suspend_all_peer_subs_for_rescue(Oid node_id, Oid failed_node_id);
 extern void spock_resume_all_peer_subs_post_rescue(Oid node_id);
+extern void spock_set_rescue_cleanup_state(Oid subid, bool failed,
+										   XLogRecPtr reached_lsn,
+										   TimestampTz reached_ts);
 
 #endif /* SPOCK_NODE_H */

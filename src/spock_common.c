@@ -17,6 +17,8 @@
 #include "fmgr.h"
 
 #include "executor/executor.h"
+#include "catalog/index.h"
+#include "access/hash.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
@@ -426,7 +428,14 @@ spock_get_equal_strategy_number(Oid opclass)
 {
 	Oid			am = get_opclass_method(opclass);
 
-	return get_equal_strategy_number_for_am(am);
+	if (am == BTREE_AM_OID)
+		return BTEqualStrategyNumber;
+#ifdef HASH_AM_OID
+	if (am == HASH_AM_OID)
+		return HASHEqualStrategyNumber;
+#endif
+	/* Default to btree equality semantics for other AMs */
+	return BTEqualStrategyNumber;
 }
 #endif
 

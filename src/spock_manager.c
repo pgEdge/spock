@@ -18,12 +18,17 @@
 #include "commands/dbcommands.h"
 #include "commands/extension.h"
 
+#include "executor/spi.h"
+
 #include "storage/ipc.h"
 #include "storage/proc.h"
 
 #include "utils/memutils.h"
+#include "utils/builtins.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
+
+#include "lib/stringinfo.h"
 
 #include "pgstat.h"
 
@@ -33,6 +38,8 @@
 #include "spock.h"
 
 PGDLLEXPORT void spock_manager_main(Datum main_arg);
+
+static void cleanup_rescue_subscriptions(List *cleanup_list);
 
 /*
  * Suspend all peer-to-peer subscriptions during rescue between surviving nodes,
@@ -71,6 +78,50 @@ spock_resume_all_peer_subs_post_rescue(Oid node_id)
 }
 
 /*
+ * Drop temporary rescue subscriptions that have completed or failed.
+ */
+static void
+cleanup_rescue_subscriptions(List *cleanup_list)
+{
+	ListCell   *lc;
+	int			ret;
+
+	if (cleanup_list == NIL)
+		return;
+
+	ret = SPI_connect();
+	if (ret != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed while cleaning rescue subscriptions");
+
+	foreach(lc, cleanup_list)
+	{
+		SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
+		StringInfoData cmd;
+
+		if (!sub || !sub->name)
+			continue;
+
+		initStringInfo(&cmd);
+		appendStringInfo(&cmd,
+						 "SELECT spock.sub_drop(%s, true)",
+						 quote_literal_cstr(sub->name));
+
+		ret = SPI_execute(cmd.data, false, 0);
+		if (ret != SPI_OK_SELECT)
+			elog(WARNING,
+				 "SPOCK: failed to drop rescue subscription \"%s\" (SPI code %d)",
+				 sub->name, ret);
+		else
+			elog(LOG,
+				 "SPOCK: dropped rescue subscription \"%s\" after cleanup",
+				 sub->name);
+	}
+
+	SPI_finish();
+	list_free(cleanup_list);
+}
+
+/*
  * Manage the apply workers - start new ones, kill old ones.
  */
 static long
@@ -80,6 +131,7 @@ manage_apply_workers(void)
 	List	   *subscriptions;
 	List	   *workers;
 	List	   *subs_to_start = NIL;
+	List	   *cleanup_subs = NIL;
 	ListCell   *slc,
 			   *wlc;
 	long		ret = restart_delay_default;
@@ -104,6 +156,15 @@ manage_apply_workers(void)
 	{
 		SpockSubscription  *sub = (SpockSubscription *) lfirst(slc);
 		SpockWorker		   *apply = NULL;
+
+		if (sub->rescue_temporary)
+		{
+			if (!sub->enabled || sub->rescue_cleanup_pending)
+			{
+				cleanup_subs = lappend(cleanup_subs, sub);
+				continue;
+			}
+		}
 
 		/*
 		 * Skip if subscription not enabled.
@@ -175,6 +236,8 @@ manage_apply_workers(void)
 		subs_to_start = lappend(subs_to_start, sub);
 	}
 
+	cleanup_rescue_subscriptions(cleanup_subs);
+
 	foreach (slc, subs_to_start)
 	{
 		SpockSubscription  *sub = (SpockSubscription *) lfirst(slc);
@@ -185,7 +248,11 @@ manage_apply_workers(void)
 		apply.dboid = MySpockWorker->dboid;
 		apply.worker.apply.subid = sub->id;
 		apply.worker.apply.sync_pending = true;
-		apply.worker.apply.replay_stop_lsn = InvalidXLogRecPtr;
+		if (sub->rescue_temporary &&
+			!XLogRecPtrIsInvalid(sub->rescue_stop_lsn))
+			apply.worker.apply.replay_stop_lsn = sub->rescue_stop_lsn;
+		else
+			apply.worker.apply.replay_stop_lsn = InvalidXLogRecPtr;
 
 		spock_worker_register(&apply);
 	}

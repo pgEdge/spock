@@ -6,6 +6,17 @@
 DROP VIEW IF EXISTS spock.lag_tracker;
 DROP TABLE IF EXISTS spock.progress;
 
+ALTER TABLE spock.subscription
+	ADD COLUMN IF NOT EXISTS sub_rescue_temporary boolean NOT NULL DEFAULT false;
+ALTER TABLE spock.subscription
+	ADD COLUMN IF NOT EXISTS sub_rescue_stop_lsn pg_lsn;
+ALTER TABLE spock.subscription
+	ADD COLUMN IF NOT EXISTS sub_rescue_stop_time timestamptz;
+ALTER TABLE spock.subscription
+	ADD COLUMN IF NOT EXISTS sub_rescue_cleanup_pending boolean NOT NULL DEFAULT false;
+ALTER TABLE spock.subscription
+	ADD COLUMN IF NOT EXISTS sub_rescue_failed boolean NOT NULL DEFAULT false;
+
 CREATE FUNCTION spock.apply_group_progress (
 	OUT dbid oid,
 	OUT node_id oid,

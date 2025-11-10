@@ -168,6 +168,7 @@ PG_FUNCTION_INFO_V1(spock_max_proto_version);
 PG_FUNCTION_INFO_V1(spock_get_recovery_slot_status_sql);
 PG_FUNCTION_INFO_V1(spock_find_rescue_source);
 PG_FUNCTION_INFO_V1(spock_clone_recovery_slot);
+PG_FUNCTION_INFO_V1(spock_create_rescue_subscription);
 
 PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 
@@ -589,6 +590,11 @@ Datum spock_create_subscription(PG_FUNCTION_ARGS)
 	else
 		sub.skip_schema = textarray_to_list(skip_schema_names);
 	sub.rescue_suspended = false;
+	sub.rescue_temporary = false;
+	sub.rescue_stop_lsn = InvalidXLogRecPtr;
+	sub.rescue_stop_time = 0;
+	sub.rescue_cleanup_pending = false;
+	sub.rescue_failed = false;
 
 	create_subscription(&sub);
 
@@ -3407,7 +3413,6 @@ spock_get_recovery_slot_status_sql(PG_FUNCTION_ARGS)
 	Datum		values[6];
 	bool		nulls[6];
 	SpockRecoverySlotData *slot;
-	char		lsn_str[32];
 
 	/* Check to see if caller supports us returning a tuplestore */
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
@@ -3491,5 +3496,16 @@ Datum
 spock_clone_recovery_slot(PG_FUNCTION_ARGS)
 {
     return spock_clone_recovery_slot_sql(fcinfo);
+}
+
+/*
+ * spock_create_rescue_subscription
+ *
+ * SQL-callable wrapper for creating rescue subscriptions.
+ */
+Datum
+spock_create_rescue_subscription(PG_FUNCTION_ARGS)
+{
+	return spock_create_rescue_subscription_sql(fcinfo);
 }
 

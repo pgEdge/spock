@@ -42,6 +42,7 @@
 #include "executor/spi.h"
 #include "funcapi.h"
 #include "libpq-fe.h"
+#include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "replication/slot.h"
 #include "storage/ipc.h"
@@ -57,7 +58,9 @@
 #include "spock.h"
 #include "spock_common.h"
 #include "spock_node.h"
+#include "spock_group.h"
 #include "spock_recovery.h"
+#include "spock_sync.h"
 
 /* Global recovery coordinator in shared memory */
 SpockRecoveryCoordinator *SpockRecoveryCtx = NULL;
@@ -68,6 +71,9 @@ SpockRecoveryCoordinator *SpockRecoveryCtx = NULL;
 static SpockRecoverySlotData *get_recovery_slot(void);
 static void initialize_recovery_slot(SpockRecoverySlotData *slot,
 									 const char *database_name);
+static void append_sanitized_token(StringInfo buf, const char *token);
+static char *build_rescue_subscription_name(const char *target, const char *source);
+static void validate_rescue_slot_name(const char *slot_name);
 
 /*
  * spock_recovery_shmem_size
@@ -239,6 +245,97 @@ initialize_recovery_slot(SpockRecoverySlotData *slot,
 
 	/* Increment generation counter (atomic operation, no lock needed) */
 	pg_atomic_add_fetch_u32(&slot->recovery_generation, 1);
+}
+
+/*
+ * Helper to sanitize node names into subscription-safe tokens.
+ */
+static void
+append_sanitized_token(StringInfo buf, const char *token)
+{
+	int			i;
+
+	if (token == NULL || token[0] == '\0')
+	{
+		appendStringInfoString(buf, "unknown");
+		return;
+	}
+
+	for (i = 0; token[i] != '\0'; i++)
+	{
+		unsigned char c = (unsigned char) token[i];
+
+		if (c >= 'A' && c <= 'Z')
+			appendStringInfoChar(buf, (char) tolower(c));
+		else if ((c >= 'a' && c <= 'z') ||
+				 (c >= '0' && c <= '9'))
+			appendStringInfoChar(buf, (char) c);
+		else if (c == '_')
+			appendStringInfoChar(buf, '_');
+		else
+			appendStringInfoChar(buf, '_');
+	}
+}
+
+/*
+ * Build deterministic subscription name for rescue subscriptions.
+ */
+static char *
+build_rescue_subscription_name(const char *target, const char *source)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	appendStringInfoString(&buf, "spock_rescue_sub_");
+	append_sanitized_token(&buf, target);
+	appendStringInfoChar(&buf, '_');
+	append_sanitized_token(&buf, source);
+
+	if (buf.len >= NAMEDATALEN)
+		ereport(ERROR,
+				(errcode(ERRCODE_NAME_TOO_LONG),
+				 errmsg("generated rescue subscription name \"%s\" is too long",
+						buf.data)));
+
+	return buf.data;
+}
+
+/*
+ * Validate cloned slot name for rescue subscription.
+ */
+static void
+validate_rescue_slot_name(const char *slot_name)
+{
+	size_t		len;
+	int			i;
+
+	if (slot_name == NULL || slot_name[0] == '\0')
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("cloned slot name must not be empty")));
+
+	len = strlen(slot_name);
+	if (len >= NAMEDATALEN)
+		ereport(ERROR,
+				(errcode(ERRCODE_NAME_TOO_LONG),
+				 errmsg("cloned slot name \"%s\" is too long", slot_name)));
+
+	for (i = 0; slot_name[i] != '\0'; i++)
+	{
+		unsigned char c = (unsigned char) slot_name[i];
+
+		if ((c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_')
+			continue;
+
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_NAME),
+				 errmsg("cloned slot name \"%s\" contains invalid character \"%c\"",
+						slot_name, slot_name[i]),
+				 errhint("Slot names may only contain lower case letters, "
+						 "numbers, and the underscore character.")));
+	}
 }
 
 /*
@@ -946,4 +1043,165 @@ cleanup:
 		pfree(message);
 
 	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
+ * spock_create_rescue_subscription_sql
+ *
+ * Create a temporary rescue subscription from the current (lagging) node to a
+ * cloned recovery slot on a more advanced peer. The subscription uses the
+ * cloned slot, optionally skips already processed transactions, and stops at a
+ * known-safe LSN/timestamp to allow automatic cleanup.
+ */
+Datum
+spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
+{
+	Name		target_name = PG_GETARG_NAME(0);
+	Name		source_name = PG_GETARG_NAME(1);
+	char	   *cloned_slot_name = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	XLogRecPtr	skip_lsn = PG_ARGISNULL(3) ? InvalidXLogRecPtr : PG_GETARG_LSN(3);
+	XLogRecPtr	stop_lsn = PG_ARGISNULL(4) ? InvalidXLogRecPtr : PG_GETARG_LSN(4);
+	TimestampTz	stop_timestamp = PG_ARGISNULL(5) ? 0 : PG_GETARG_TIMESTAMPTZ(5);
+	SpockLocalNode *localnode;
+	SpockNode  *origin;
+	SpockInterface *originif;
+	SpockInterface	targetif;
+	SpockSubscription sub;
+	SpockSyncStatus sync;
+	List	   *repsets = NIL;
+	Interval   *apply_delay;
+	char	   *sub_name = NULL;
+	Oid			subid = InvalidOid;
+	bool		sub_created = false;
+
+	/* Require at least one stopping condition (LSN or timestamp). */
+	if (XLogRecPtrIsInvalid(stop_lsn) && stop_timestamp == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("rescue subscription requires stop LSN or stop timestamp"),
+				 errdetail("Provide stop_lsn, stop_timestamp, or both.")));
+
+	if (!XLogRecPtrIsInvalid(skip_lsn) && !XLogRecPtrIsInvalid(stop_lsn) &&
+		skip_lsn >= stop_lsn)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("skip LSN must be lower than stop LSN"),
+				 errdetail("Provided skip_lsn %X/%X is not less than stop_lsn %X/%X."),
+				 LSN_FORMAT_ARGS(skip_lsn), LSN_FORMAT_ARGS(stop_lsn)));
+
+	validate_rescue_slot_name(cloned_slot_name);
+
+	localnode = get_local_node(true, false);
+	if (!localnode || !localnode->node || !localnode->node_if)
+		elog(ERROR, "local node not initialized");
+
+	if (strcmp(NameStr(*target_name), localnode->node->name) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("target node \"%s\" does not match local node \"%s\"",
+						NameStr(*target_name), localnode->node->name)));
+
+	origin = get_node_by_name(NameStr(*source_name), false);
+
+	originif = get_node_interface_by_name(origin->id, "default", true);
+	if (originif == NULL)
+		originif = get_node_interface_by_name(origin->id, origin->name, false);
+
+	/* Verify connectivity to provider node. */
+	PG_TRY();
+	{
+		PGconn *conn = spock_connect(originif->dsn, "rescue_sub", "create");
+		PQfinish(conn);
+
+		conn = spock_connect_replica(originif->dsn, "rescue_sub", "create");
+		PQfinish(conn);
+	}
+	PG_CATCH();
+	{
+		FlushErrorState();
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("failed to connect to provider DSN \"%s\"", originif->dsn),
+				 errhint("Verify network connectivity and authentication.")));
+	}
+	PG_END_TRY();
+
+	sub_name = build_rescue_subscription_name(localnode->node->name,
+											  NameStr(*source_name));
+
+	memset(&sub, 0, sizeof(SpockSubscription));
+	sub.id = InvalidOid;
+	sub.name = sub_name;
+	sub.origin_if = originif;
+
+	targetif.id = localnode->node_if->id;
+	targetif.name = localnode->node_if->name;
+	targetif.nodeid = localnode->node->id;
+	targetif.dsn = localnode->node_if->dsn;
+	sub.target_if = &targetif;
+
+	sub.enabled = true;
+	sub.slot_name = pstrdup(cloned_slot_name);
+
+	repsets = lappend(repsets, pstrdup("default"));
+	repsets = lappend(repsets, pstrdup("default_insert_only"));
+	repsets = lappend(repsets, pstrdup("ddl_sql"));
+	sub.replication_sets = repsets;
+	sub.forward_origins = NIL;
+
+	apply_delay = (Interval *) palloc0(sizeof(Interval));
+	sub.apply_delay = apply_delay;
+	sub.force_text_transfer = false;
+	sub.skiplsn = skip_lsn;
+	sub.skip_schema = NIL;
+	sub.rescue_suspended = false;
+	sub.rescue_temporary = true;
+	sub.rescue_stop_lsn = stop_lsn;
+	sub.rescue_stop_time = stop_timestamp;
+	sub.rescue_cleanup_pending = false;
+	sub.rescue_failed = false;
+
+	PG_TRY();
+	{
+		create_subscription(&sub);
+		sub_created = true;
+		subid = sub.id;
+
+		spock_group_attach(MyDatabaseId, localnode->node->id,
+						   originif->nodeid, NULL);
+
+		memset(&sync, 0, sizeof(SpockSyncStatus));
+		sync.kind = SYNC_KIND_INIT;
+		sync.subid = sub.id;
+		sync.status = SYNC_STATUS_INIT;
+		create_local_sync_status(&sync);
+	}
+	PG_CATCH();
+	{
+		ErrorData *edata = CopyErrorData();
+
+		if (sub_created && OidIsValid(subid))
+		{
+			PG_TRY();
+			{
+				drop_subscription_sync_status(subid);
+				drop_subscription(subid);
+			}
+			PG_CATCH();
+			{
+				FlushErrorState();
+			}
+			PG_END_TRY();
+		}
+
+		FlushErrorState();
+		ReThrowError(edata);
+	}
+	PG_END_TRY();
+
+	elog(LOG,
+		 "SPOCK: created rescue subscription \"%s\" (id %u) using slot \"%s\"",
+		 sub_name, sub.id, cloned_slot_name);
+
+	PG_RETURN_OID(sub.id);
 }

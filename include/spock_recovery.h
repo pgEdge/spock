@@ -90,5 +90,6 @@ extern Datum spock_find_rescue_source_sql(PG_FUNCTION_ARGS);
  * Recovery slot cloning functions
  */
 extern Datum spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS);
+extern Datum spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS);
 
 #endif							/* SPOCK_RECOVERY_H */
