@@ -12,6 +12,12 @@ SELECT * FROM spock.sub_drop('test_subscription');
 SELECT * FROM spock.node_drop(node_name := 'test_subscriber');
 
 \c :provider_dsn
+
+-- Check corner-case of wait function when no replication slots exist.
+SELECT slot_name FROM pg_replication_slots; -- must be empty
+SET statement_timeout = '100ms';
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL); -- trigger the statement_timeout ERROR
+
 SELECT * FROM spock.node_drop(node_name := 'test_provider');
 
 \c :subscriber_dsn

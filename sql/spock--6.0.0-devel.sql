@@ -371,9 +371,10 @@ CREATE FUNCTION spock.get_country() RETURNS text
 LANGUAGE sql AS
 $$ SELECT current_setting('spock.country') $$;
 
-CREATE FUNCTION
-spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
-RETURNS void LANGUAGE c AS 'spock','spock_wait_slot_confirm_lsn';
+CREATE FUNCTION spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
+RETURNS void
+AS 'spock','spock_wait_slot_confirm_lsn'
+LANGUAGE C;
 
 CREATE FUNCTION spock.sub_wait_for_sync(subscription_name name)
 RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete';
