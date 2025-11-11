@@ -55,7 +55,7 @@ BEGIN
     IF src_version IS NULL THEN
         RAISE EXCEPTION 'Spock extension not found on source node';
     END IF;
-    
+
     -- Check source node has required version (strip -devel suffix for comparison)
     IF regexp_replace(src_version, '-devel$', '') < min_required_version THEN
         RAISE EXCEPTION 'Spock version mismatch: source node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
@@ -71,7 +71,7 @@ BEGIN
     IF new_version IS NULL THEN
         RAISE EXCEPTION 'Spock extension not found on new node';
     END IF;
-    
+
     -- Check new node has required version (strip -devel suffix for comparison)
     IF regexp_replace(new_version, '-devel$', '') < min_required_version THEN
         RAISE EXCEPTION 'Spock version mismatch: new node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
@@ -95,7 +95,7 @@ BEGIN
         IF node_version IS NULL THEN
             RAISE EXCEPTION 'Spock extension not found on node %', node_rec.node_name;
         END IF;
-        
+
         IF regexp_replace(node_version, '-devel$', '') < min_required_version THEN
             version_mismatch := true;
             RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is at least %. All nodes must have version % or later.',
@@ -1402,8 +1402,32 @@ $$;
 
 -- ============================================================================
 
+--
+-- Utility routine to correctly extract database name from the DSN string.
+--
+-- The purpose here is to centralise this specific logic: people may complain
+-- about more flexibility in writing the DSN: using upper-case letters in
+-- keywords, as an example.
+--
+CREATE OR REPLACE FUNCTION spock.extract_dbname_from_dsn(dsn text)
+RETURNS text AS $$
+DECLARE
+	dbname text;
+BEGIN
+	dbname := substring(dsn from 'dbname=([^\s]+)');
+    IF dbname IS NOT NULL THEN
+        dbname := TRIM(BOTH '''' FROM dbname);
+    END IF;
+    IF dbname IS NULL THEN
+		-- We can't rely on the PGDATABASE environment variable here.
+		-- Also, it seems unreliable to guess or use a default name.
+		-- So, complain.
+        RAISE EXCEPTION 'Exiting add_node: Database name must be explicitly included into the DSN string %', dsn;
+    END IF;
 
-
+	RETURN dbname;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 -- ============================================================================
 -- Procedure to verify prerequisites for adding a new node
@@ -1429,14 +1453,8 @@ BEGIN
     RAISE NOTICE 'Phase 1: Validating source and new node prerequisites';
 
     -- Check if database specified in new_node_dsn exists on new node
-    new_db_name := substring(new_node_dsn from 'dbname=([^\s]+)');
-    IF new_db_name IS NOT NULL THEN
-        new_db_name := TRIM(BOTH '''' FROM new_db_name);
-    END IF;
-    IF new_db_name IS NULL THEN
-        new_db_name := 'pgedge';
-    END IF;
 
+    SELECT spock.extract_dbname_from_dsn(new_node_dsn) INTO new_db_name;
     BEGIN
         SELECT EXISTS(SELECT 1 FROM dblink(new_node_dsn, 'SELECT 1') AS t(dummy int)) INTO new_db_exists;
         RAISE NOTICE '    OK: %', rpad('Checking database ' || new_db_name || ' exists on new node', 120, ' ');
@@ -1604,7 +1622,7 @@ BEGIN
             END IF;
 
 		    -- Extract dbname and handle both quoted and unquoted values
-            dbname := TRIM(BOTH '''' FROM substring(rec.dsn from 'dbname=([^\s]+)'));
+			SELECT spock.extract_dbname_from_dsn(rec.dsn) INTO dbname;
 
 		    -- Remove single quotes if present
             IF dbname IS NOT NULL THEN
@@ -1719,7 +1737,7 @@ BEGIN
         -- Create replication slot on the "other" node
         BEGIN
             -- Extract dbname and handle both quoted and unquoted values
-            dbname := TRIM(BOTH '''' FROM substring(rec.dsn from 'dbname=([^\s]+)'));
+            SELECT spock.extract_dbname_from_dsn(rec.dsn) INTO dbname;
 
             -- Remove single quotes if present
             IF dbname IS NOT NULL THEN
@@ -2164,7 +2182,7 @@ BEGIN
         -- Advance replication slot based on commit timestamp
         BEGIN
             -- Extract dbname and handle both quoted and unquoted values
-            dbname := TRIM(BOTH '''' FROM substring(rec.dsn from 'dbname=([^\s]+)'));
+            SELECT spock.extract_dbname_from_dsn(rec.dsn) INTO dbname;
 
             -- Remove single quotes if present
             IF dbname IS NOT NULL THEN
