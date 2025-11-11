@@ -1108,11 +1108,11 @@ _PG_init(void)
 							"This setting is deprecated and has no effect. "
 							"The replay queue now dynamically allocates memory as needed.",
 							&spock_replay_queue_size,
-							4194304,
+							4,
 							0,
-							INT_MAX,
+							MAX_KILOBYTES / 1024,
 							PGC_SIGHUP,
-							0,
+							GUC_UNIT_MB,
 							NULL,
 							NULL,
 							NULL);
