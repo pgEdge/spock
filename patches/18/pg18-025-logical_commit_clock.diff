@@ -152,7 +152,7 @@ index b885513f765..62219cc44eb 100644
 +	XLogSetLastTransactionStopTimestamp(logical_clock);
 +}
 diff --git a/src/backend/access/transam/xlog.c b/src/backend/access/transam/xlog.c
-index c9e5daecd5e..f6cb76ded8d 100644
+index 596d2ca5836..ee52552a79f 100644
 --- a/src/backend/access/transam/xlog.c
 +++ b/src/backend/access/transam/xlog.c
 @@ -156,6 +156,16 @@ int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
@@ -282,7 +282,7 @@ index c9e5daecd5e..f6cb76ded8d 100644
  	endbytepos = startbytepos + size;
  	prevbytepos = Insert->PrevBytePos;
  
-@@ -9544,3 +9615,15 @@ SetWalWriterSleeping(bool sleeping)
+@@ -9564,3 +9635,15 @@ SetWalWriterSleeping(bool sleeping)
  	XLogCtl->WalWriterSleeping = sleeping;
  	SpinLockRelease(&XLogCtl->info_lck);
  }
@@ -317,7 +317,7 @@ index b2bc10ee041..0ab9948b4cf 100644
   * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.
   * We don't allow PREPARE TRANSACTION in that case.
 diff --git a/src/include/access/xlog.h b/src/include/access/xlog.h
-index d313099c027..5d6e6831a08 100644
+index adddac6710e..99864217c5c 100644
 --- a/src/include/access/xlog.h
 +++ b/src/include/access/xlog.h
 @@ -199,6 +199,18 @@ typedef enum WALAvailability
@@ -339,8 +339,8 @@ index d313099c027..5d6e6831a08 100644
  extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
  								   XLogRecPtr fpw_lsn,
  								   uint8 flags,
-@@ -271,6 +283,14 @@ extern void SetInstallXLogFileSegmentActive(void);
- extern bool IsInstallXLogFileSegmentActive(void);
+@@ -272,6 +284,14 @@ extern bool IsInstallXLogFileSegmentActive(void);
+ extern void ResetInstallXLogFileSegmentActive(void);
  extern void XLogShutdownWalRcv(void);
  
 +/*
