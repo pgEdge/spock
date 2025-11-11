@@ -1,0 +1,82 @@
+use strict;
+use warnings;
+use Test::More;
+use lib '.';
+use lib 't';
+use SpockTest qw(create_cluster destroy_cluster get_test_config psql_or_bail scalar_query);
+
+my ($result);
+
+create_cluster(3, 'Create basic Spock test cluster');
+
+# Get cluster configuration
+my $config = get_test_config();
+my $node_count = $config->{node_count};
+my $node_ports = $config->{node_ports};
+my $host = $config->{host};
+my $dbname = $config->{db_name};
+my $db_user = $config->{db_user};
+my $db_password = $config->{db_password};
+my $pg_bin = $config->{pg_bin};
+
+psql_or_bail(2, "SELECT spock.node_drop('n2')");
+psql_or_bail(3, "SELECT spock.node_drop('n3')");
+psql_or_bail(1, "CREATE EXTENSION snowflake");
+psql_or_bail(1, "CREATE EXTENSION lolor");
+psql_or_bail(1, "CREATE EXTENSION amcheck");
+psql_or_bail(2, "CREATE EXTENSION dblink");
+psql_or_bail(3, "CREATE EXTENSION dblink");
+psql_or_bail(2, "\\i ../../samples/Z0DAN/zodan.sql");
+psql_or_bail(3, "\\i ../../samples/Z0DAN/zodan.sql");
+psql_or_bail(1, "CREATE TABLE test(x serial PRIMARY KEY)");
+psql_or_bail(1, "INSERT INTO test DEFAULT VALUES");
+
+print STDERR "All supporting stuff has been installed\n";
+
+print STDERR "Call Z0DAN: n2 => n1";
+psql_or_bail(2, "
+    CALL spock.add_node(
+        src_node_name := 'n1',
+        src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        new_node_name := 'n2',
+        new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+        verb := false
+    )");
+print STDERR "Z0DAN (n2 => n1) has finished the attach process\n";
+$result = scalar_query(2, "SELECT x FROM test");
+print STDERR "Check result: $result\n";
+ok($result eq '1', "Check state of the test table after the attachment");
+
+psql_or_bail(1, "SELECT spock.sub_disable('sub_n1_n2')");
+
+print STDERR "Call Z0DAN: n3 => n2\n";
+
+scalar_query(3, "
+	CALL spock.add_node(
+		src_node_name := 'n2',
+		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+		new_node_name := 'n3', new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+		verb := false)");
+
+$result = scalar_query(3, "SELECT count(*) FROM spock.local_node");
+ok($result eq '0', "N3 is not in the cluster yet");
+print STDERR "Z0DAN should fail because of a disabled subscription\n";
+
+psql_or_bail(1, "SELECT spock.sub_enable('sub_n1_n2')");
+scalar_query(3, "
+	CALL spock.add_node(
+		src_node_name := 'n2',
+		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+		new_node_name := 'n3', new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+		verb := true)");
+
+$result = scalar_query(3, "SELECT count(*) FROM spock.local_node");
+ok($result eq '1', "N3 is in the cluster");
+$result = scalar_query(3, "SELECT x FROM test");
+print STDERR "Check result: $result\n";
+ok($result eq '1', "Check state of the test table on N3 after the attachment");
+print STDERR "Z0DAN should add N3 to the cluster\n";
+
+# Clean up
+destroy_cluster('Destroy test cluster');
+done_testing();
