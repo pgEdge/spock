@@ -152,7 +152,7 @@ index 4cecf630060..d28e4904956 100644
 +	XLogSetLastTransactionStopTimestamp(logical_clock);
 +}
 diff --git a/src/backend/access/transam/xlog.c b/src/backend/access/transam/xlog.c
-index c1dd8b54328..efd60f97fd0 100644
+index 17b88ff6453..cfe303ac156 100644
 --- a/src/backend/access/transam/xlog.c
 +++ b/src/backend/access/transam/xlog.c
 @@ -156,6 +156,16 @@ int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
@@ -187,7 +187,7 @@ index c1dd8b54328..efd60f97fd0 100644
  } XLogCtlData;
  
  /*
-@@ -701,6 +719,7 @@ static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
+@@ -702,6 +720,7 @@ static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
  								XLogRecData *rdata,
  								XLogRecPtr StartPos, XLogRecPtr EndPos,
  								TimeLineID tli);
@@ -195,7 +195,7 @@ index c1dd8b54328..efd60f97fd0 100644
  static void ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos,
  									  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr);
  static bool ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos,
-@@ -779,6 +798,13 @@ XLogInsertRecord(XLogRecData *rdata,
+@@ -780,6 +799,13 @@ XLogInsertRecord(XLogRecData *rdata,
  	if (!XLogInsertAllowed())
  		elog(ERROR, "cannot make new WAL entries during recovery");
  
@@ -209,7 +209,7 @@ index c1dd8b54328..efd60f97fd0 100644
  	/*
  	 * Given that we're not in recovery, InsertTimeLineID is set and can't
  	 * change, so we can read it without a lock.
-@@ -907,6 +933,17 @@ XLogInsertRecord(XLogRecData *rdata,
+@@ -908,6 +934,17 @@ XLogInsertRecord(XLogRecData *rdata,
  
  	if (inserted)
  	{
@@ -227,7 +227,7 @@ index c1dd8b54328..efd60f97fd0 100644
  		/*
  		 * Now that xl_prev has been filled in, calculate CRC of the record
  		 * header.
-@@ -1087,6 +1124,27 @@ XLogInsertRecord(XLogRecData *rdata,
+@@ -1088,6 +1125,27 @@ XLogInsertRecord(XLogRecData *rdata,
  	return EndPos;
  }
  
@@ -255,7 +255,7 @@ index c1dd8b54328..efd60f97fd0 100644
  /*
   * Reserves the right amount of space for a record of given size from the WAL.
   * *StartPos is set to the beginning of the reserved section, *EndPos to
-@@ -1131,6 +1189,13 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
+@@ -1132,6 +1190,13 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
  	 */
  	SpinLockAcquire(&Insert->insertpos_lck);
  
@@ -269,7 +269,7 @@ index c1dd8b54328..efd60f97fd0 100644
  	startbytepos = Insert->CurrBytePos;
  	endbytepos = startbytepos + size;
  	prevbytepos = Insert->PrevBytePos;
-@@ -1190,6 +1255,12 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
+@@ -1191,6 +1256,12 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
  		return false;
  	}
  
@@ -282,7 +282,7 @@ index c1dd8b54328..efd60f97fd0 100644
  	endbytepos = startbytepos + size;
  	prevbytepos = Insert->PrevBytePos;
  
-@@ -9500,3 +9571,15 @@ SetWalWriterSleeping(bool sleeping)
+@@ -9546,3 +9617,15 @@ SetWalWriterSleeping(bool sleeping)
  	XLogCtl->WalWriterSleeping = sleeping;
  	SpinLockRelease(&XLogCtl->info_lck);
  }
@@ -317,7 +317,7 @@ index 6d4439f0524..4fc1c96a79d 100644
   * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.
   * We don't allow PREPARE TRANSACTION in that case.
 diff --git a/src/include/access/xlog.h b/src/include/access/xlog.h
-index 2c507ea618c..19a6fa6d992 100644
+index 9c2d101c570..03ffc3064ec 100644
 --- a/src/include/access/xlog.h
 +++ b/src/include/access/xlog.h
 @@ -196,6 +196,18 @@ typedef enum WALAvailability
@@ -339,8 +339,8 @@ index 2c507ea618c..19a6fa6d992 100644
  extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
  								   XLogRecPtr fpw_lsn,
  								   uint8 flags,
-@@ -267,6 +279,14 @@ extern void SetInstallXLogFileSegmentActive(void);
- extern bool IsInstallXLogFileSegmentActive(void);
+@@ -268,6 +280,14 @@ extern bool IsInstallXLogFileSegmentActive(void);
+ extern void ResetInstallXLogFileSegmentActive(void);
  extern void XLogShutdownWalRcv(void);
  
 +/*
