@@ -1,5 +1,5 @@
 diff --git a/src/backend/access/transam/xact.c b/src/backend/access/transam/xact.c
-index 7a3d9b4b01..b8aaecccce 100644
+index 7a3d9b4b012..b8aaeccccef 100644
 --- a/src/backend/access/transam/xact.c
 +++ b/src/backend/access/transam/xact.c
 @@ -134,6 +134,15 @@ static TransactionId *ParallelCurrentXids;
@@ -152,10 +152,10 @@ index 7a3d9b4b01..b8aaecccce 100644
 +	XLogSetLastTransactionStopTimestamp(logical_clock);
 +}
 diff --git a/src/backend/access/transam/xlog.c b/src/backend/access/transam/xlog.c
-index 32cc0ddb7f..b55a1e307f 100644
+index 0528ac38d59..22ee4fcedd5 100644
 --- a/src/backend/access/transam/xlog.c
 +++ b/src/backend/access/transam/xlog.c
-@@ -156,6 +156,16 @@ int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
+@@ -157,6 +157,16 @@ int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
   */
  int			CheckPointSegments;
  
@@ -172,7 +172,7 @@ index 32cc0ddb7f..b55a1e307f 100644
  /* Estimated distance between checkpoints, in bytes */
  static double CheckPointDistanceEstimate = 0;
  static double PrevCheckPointDistance = 0;
-@@ -553,6 +563,14 @@ typedef struct XLogCtlData
+@@ -554,6 +564,14 @@ typedef struct XLogCtlData
  	XLogRecPtr	lastFpwDisableRecPtr;
  
  	slock_t		info_lck;		/* locks shared variables shown above */
@@ -187,7 +187,7 @@ index 32cc0ddb7f..b55a1e307f 100644
  } XLogCtlData;
  
  static XLogCtlData *XLogCtl = NULL;
-@@ -680,6 +698,7 @@ static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
+@@ -682,6 +700,7 @@ static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
  								XLogRecData *rdata,
  								XLogRecPtr StartPos, XLogRecPtr EndPos,
  								TimeLineID tli);
@@ -195,7 +195,7 @@ index 32cc0ddb7f..b55a1e307f 100644
  static void ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos,
  									  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr);
  static bool ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos,
-@@ -830,6 +849,13 @@ XLogInsertRecord(XLogRecData *rdata,
+@@ -832,6 +851,13 @@ XLogInsertRecord(XLogRecData *rdata,
  		return InvalidXLogRecPtr;
  	}
  
@@ -209,7 +209,7 @@ index 32cc0ddb7f..b55a1e307f 100644
  	/*
  	 * Reserve space for the record in the WAL. This also sets the xl_prev
  	 * pointer.
-@@ -845,6 +871,17 @@ XLogInsertRecord(XLogRecData *rdata,
+@@ -847,6 +873,17 @@ XLogInsertRecord(XLogRecData *rdata,
  
  	if (inserted)
  	{
@@ -227,7 +227,7 @@ index 32cc0ddb7f..b55a1e307f 100644
  		/*
  		 * Now that xl_prev has been filled in, calculate CRC of the record
  		 * header.
-@@ -1025,6 +1062,27 @@ XLogInsertRecord(XLogRecData *rdata,
+@@ -1027,6 +1064,27 @@ XLogInsertRecord(XLogRecData *rdata,
  	return EndPos;
  }
  
@@ -255,7 +255,7 @@ index 32cc0ddb7f..b55a1e307f 100644
  /*
   * Reserves the right amount of space for a record of given size from the WAL.
   * *StartPos is set to the beginning of the reserved section, *EndPos to
-@@ -1065,6 +1123,13 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
+@@ -1067,6 +1125,13 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
  	 */
  	SpinLockAcquire(&Insert->insertpos_lck);
  
@@ -269,7 +269,7 @@ index 32cc0ddb7f..b55a1e307f 100644
  	startbytepos = Insert->CurrBytePos;
  	endbytepos = startbytepos + size;
  	prevbytepos = Insert->PrevBytePos;
-@@ -1124,6 +1189,12 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
+@@ -1126,6 +1191,12 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
  		return false;
  	}
  
@@ -282,7 +282,7 @@ index 32cc0ddb7f..b55a1e307f 100644
  	endbytepos = startbytepos + size;
  	prevbytepos = Insert->PrevBytePos;
  
-@@ -8917,3 +8988,15 @@ SetWalWriterSleeping(bool sleeping)
+@@ -8982,3 +9053,15 @@ SetWalWriterSleeping(bool sleeping)
  	XLogCtl->WalWriterSleeping = sleeping;
  	SpinLockRelease(&XLogCtl->info_lck);
  }
@@ -299,7 +299,7 @@ index 32cc0ddb7f..b55a1e307f 100644
 +	XLogCtl->lastTransactionStopTimestamp = ts;
 +}
 diff --git a/src/include/access/xact.h b/src/include/access/xact.h
-index 8d46a781bb..a665662ebf 100644
+index 8d46a781bbd..a665662ebfd 100644
 --- a/src/include/access/xact.h
 +++ b/src/include/access/xact.h
 @@ -95,6 +95,13 @@ extern PGDLLIMPORT bool bsysscan;
@@ -317,7 +317,7 @@ index 8d46a781bb..a665662ebf 100644
   * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.
   * We don't allow PREPARE TRANSACTION in that case.
 diff --git a/src/include/access/xlog.h b/src/include/access/xlog.h
-index 6af943a43a..a0f94dd7b8 100644
+index e81a9d6aec9..24aece75182 100644
 --- a/src/include/access/xlog.h
 +++ b/src/include/access/xlog.h
 @@ -192,6 +192,18 @@ typedef enum WALAvailability
@@ -339,8 +339,8 @@ index 6af943a43a..a0f94dd7b8 100644
  extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
  								   XLogRecPtr fpw_lsn,
  								   uint8 flags,
-@@ -260,6 +272,14 @@ extern void SetInstallXLogFileSegmentActive(void);
- extern bool IsInstallXLogFileSegmentActive(void);
+@@ -260,6 +272,14 @@ extern bool IsInstallXLogFileSegmentActive(void);
+ extern void ResetInstallXLogFileSegmentActive(void);
  extern void XLogShutdownWalRcv(void);
  
 +/*
