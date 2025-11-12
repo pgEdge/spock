@@ -31,9 +31,15 @@ psql_or_bail(3, "\\i ../../samples/Z0DAN/zodan.sql");
 psql_or_bail(1, "CREATE TABLE test(x serial PRIMARY KEY)");
 psql_or_bail(1, "INSERT INTO test DEFAULT VALUES");
 
-print STDERR "All supporting stuff has been installed\n";
+print STDERR "All supporting stuff has been installed successfully\n";
 
-print STDERR "Call Z0DAN: n2 => n1";
+# ##############################################################################
+#
+# Basic check that Z0DAN correctly add node to the single-node cluster
+#
+# ##############################################################################
+
+print STDERR "Call Z0DAN: n2 => n1\n";
 psql_or_bail(2, "
     CALL spock.add_node(
         src_node_name := 'n1',
@@ -49,8 +55,13 @@ ok($result eq '1', "Check state of the test table after the attachment");
 
 psql_or_bail(1, "SELECT spock.sub_disable('sub_n1_n2')");
 
-print STDERR "Call Z0DAN: n3 => n2\n";
+# ##############################################################################
+#
+# Z0DAN reject node addition if some subscriptions are disabled
+#
+# ##############################################################################
 
+print STDERR "Call Z0DAN: n3 => n2\n";
 scalar_query(3, "
 	CALL spock.add_node(
 		src_node_name := 'n2',
@@ -63,7 +74,7 @@ ok($result eq '0', "N3 is not in the cluster yet");
 print STDERR "Z0DAN should fail because of a disabled subscription\n";
 
 psql_or_bail(1, "SELECT spock.sub_enable('sub_n1_n2')");
-scalar_query(3, "
+psql_or_bail(3, "
 	CALL spock.add_node(
 		src_node_name := 'n2',
 		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
@@ -76,6 +87,40 @@ $result = scalar_query(3, "SELECT x FROM test");
 print STDERR "Check result: $result\n";
 ok($result eq '1', "Check state of the test table on N3 after the attachment");
 print STDERR "Z0DAN should add N3 to the cluster\n";
+
+# ##############################################################################
+#
+# Test that Z0DAN correctly doesn't add node to the cluster if something happens
+# during the SYNC process.
+#
+# ##############################################################################
+
+# Remove node from the cluster and data leftovers.
+psql_or_bail(3, "\\i ../../samples/Z0DAN/zodremove.sql");
+psql_or_bail(3, "CALL spock.remove_node(target_node_name := 'n3',
+	target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+	verbose_mode := true)");
+psql_or_bail(3, "DROP TABLE test");
+psql_or_bail(3, "DROP EXTENSION lolor");
+
+psql_or_bail(1, "CREATE FUNCTION fake_fn() RETURNS integer LANGUAGE sql AS \$\$ SELECT 1\$\$");
+psql_or_bail(3, "CREATE FUNCTION fake_fn() RETURNS integer LANGUAGE sql AS \$\$ SELECT 1\$\$");
+scalar_query(3, "
+	CALL spock.add_node(
+		src_node_name := 'n2',
+		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+		new_node_name := 'n3', new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+		verb := true)");
+
+# TODO:
+# It seems that add_node keeps remnants after unsuccessful execution. It is
+# happened because we have commited some intermediate results before.
+# It would be better to keep remote transaction opened until the end of the
+# operation or just remove these remnants at the end pretending to be a
+# distributed transaction.
+#
+# $result = scalar_query(3, "SELECT count(*) FROM spock.local_node");
+# ok($result eq '0', "N3 is not in the cluster");
 
 # Clean up
 destroy_cluster('Destroy test cluster');
