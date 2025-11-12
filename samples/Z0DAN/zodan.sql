@@ -2351,8 +2351,7 @@ BEGIN
         RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || src_node_name || ' on new node ' || new_node_name || '...', 120, ' ');
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ %', rpad('Unable to wait for sync event from ' || src_node_name || ' on new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
-            RAISE;
+            RAISE EXCEPTION '    ✗ %', rpad('Unable to wait for sync event from ' || src_node_name || ' on new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
     END;
 END;
 $$;
