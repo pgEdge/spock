@@ -1083,7 +1083,7 @@ class SpockClusterManager:
                     self.format_notice("PASS:", f"Destination database does not have signs of lolor being installed")
                     checks_passed += 1
                 else:
-                    self.format_notice("FAIL", f"Destination database has the lolor extension installed or remaining lolor user data in the lolor schema.")
+                    self.format_notice("FAIL:", f"Destination database has the lolor extension installed or remaining lolor user data in the lolor schema.")
                     checks_failed += 1
             except Exception as e:
                 self.format_notice("FAIL:", f"lolor extension check - {str(e)}")
