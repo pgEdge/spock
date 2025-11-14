@@ -99,7 +99,7 @@ You will need to build the Spock extension on a patched PostgreSQL source tree t
 
    `git clone https://github.com/pgEdge/spock.git`
 
-6. Next, `make` and then `make-install` spock.
+6. Next, `make` and then `make install` spock.
 
 7. Then, update your Postgres `postgresql.conf` file, setting:
 
