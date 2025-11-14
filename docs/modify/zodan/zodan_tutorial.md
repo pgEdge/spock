@@ -711,7 +711,7 @@ In this step, we activate subscriptions from replica nodes to new node using sto
 
 *  **Why the stored LSNs matter:** When we created sub_n2_n4 and triggered sync_event on n2, we got LSN 0/1A7D1E0. That LSN marked the exact moment we created the replication slot. Between then and now, hours may have passed. The replication slot has been buffering changes. But we need to ensure the subscription starts processing from that original bookmark point, not skipping ahead.
 
-*  **The verification:** After enabling each subscription, `we call wait_for_sync_event()` with the stored LSN. This confirms that the subscription has processed up to at least that sync point before we continue.
+*  **The verification:** After enabling each subscription, we call `wait_for_sync_event()` with the stored LSN. This confirms that the subscription has processed up to at least that sync point before we continue.
 
 * **After the slot advancement:** The slots were advanced to skip duplicate data. Now when we enable the subscriptions, they'll only send NEW changes that happened after the initial sync - exactly what we want.
 
