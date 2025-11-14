@@ -1,16 +1,16 @@
 # Adding a Node to a Replicating Cluster
 
-There are several ways to add a node to a cluster; the way that you choose should depend on the use and state of your cluster:
+There are several tools and scripts you can use to add a node to a cluster; the way that you choose should depend on the use and state of your cluster:
 
-* **Manually Adding a Node with Zero Downtime**
+* **Use Z0DAN to Add or Remove a Node with Zero Downtime**
 
-You can manually add a node to your cluster with zero downtime; to review a detailed walk-through, follow the steps [outlined here](zodan_tutorial.md) for details.
+[Z0DAN](../modify/zodan/index.md) is a spock utility that provides scripts that you can use to seamlessly add or remove a node from your cluster with zero downtime.
 
-* **Adding a Node to a Replicating Cluster with Minimal Downtime**
+* **Use pgBackRest to Add a Node to a Replicating Cluster with Minimal Downtime**
 
-You can safely add a node to a replicating cluster with minimal interruption to your cluster with pgBackRest; the technique is outlined [here](add_node_pgbackrest.md).
+[pgBackRest](add_node_pgbackrest.md) is an open-source tool that you can use add a node to a replicating cluster with minimal interruption.
 
-* **Adding a Node to a Replicating Cluster with spockctrl**
+* **Use Spockctrl to manage aspects of your Spock replication setup.**
 
-You can use the [Spockctrl utility](https://docs.pgedge.com/spock_ext/modify/spockctrl) to add a node to a production cluster with zero-downtime.  This method is appropriate for production clusters that can't be taken out of production, but that need to replace nodes or expand their cluster to include new nodes.
+The [Spockctrl utility](../modify/spockctrl/index.md) is appropriate for use in production clusters that can't be taken out of production.
 
