@@ -9,15 +9,16 @@ In this detailed walk through, we'll add a fourth node to a three-node cluster w
         - The new node should not be accessible to users while adding the node.
         - Disable `auto_ddl` on all cluster nodes.
         - Do not modify your DDL during node addition.
-        - The users must be identical on the source and target node. You must create any users on the target node
-          before proceeding; the permissions must be *identical* for all users on both the source and target nodes.
+        - The users must be identical on the source and target node. You must create any users on the target node before proceeding; the permissions must be *identical* for all users on both the source and target nodes.
+          
           The ZODAN process now validates that all users from the source node exist on the new node before proceeding
           with cluster addition. This prevents replication failures caused by missing user permissions.
+        
         - The spock configuration must be *identical* on both the source and the target node.
         - All nodes in your cluster must be available to the Spock extension for the duration of the node addition.
-        - The procedure should be performed on the new node being added
-        - The dblink extension must be installed on the new node from which commands like `SELECT spock.add_node()` are being run
-        - Prepare the new node to meet the prerequisites described here.
+        - The procedure should be performed on the new node being added.
+        - The dblink extension must be installed on the node from which commands like `SELECT spock.add_node()` are being run.
+        - Prepare the new node to meet *all* of the prerequisites described here.
     
     If the process fails, don't immediately retry a command until you ensure that all artifacts created by the workflow have been removed!
 
@@ -52,7 +53,7 @@ The steps used to configure our new node (n4) are:
 # Initialize database
 initdb -D /path/to/data
 
-# Start PostgreSQL
+# Start Postgres
 pg_ctl -D /path/to/data start
 
 # Create database and user
@@ -65,14 +66,14 @@ psql -d inventory -c "CREATE EXTENSION spock;"
 psql -d inventory -c "CREATE EXTENSION dblink;"
 ```
 
-**Using the Z0DAN Procedure to Add a Node** 
+**Using the Zodan Procedure to Add a Node** 
 
-After creating the node, you can use Z0DAN scripts to simplify adding a node to a cluster. To use the SQL script, connect to the new node that you wish to add to the pgedge cluster:
+After creating the node, you can use [Zodan scripts](zodan_readme.md) to simplify adding a node to a cluster. To use the SQL script, connect to the new node that you wish to add to the pgedge cluster:
 ```bash
 psql -h 127.0.0.1 -p 5432 -d inventory -U pgedge
 ```
 
-Load the ZODAN procedures:
+Load the Zodan procedures:
 ```sql
 \i /path/to/zodan.sql
 ```
@@ -98,7 +99,7 @@ Should a problem occur during this process, you can source the `zodremove.sql` s
 
 ## Manually adding a Node to a Cluster
 
-The steps that follow outline the process the Z0DAN procedure goes through when adding a node.  You can manually perform the same steps to add a node to a cluster instead of using `spock.add_node` above.
+The steps that follow outline the process the Zodan procedure goes through when adding a node.  You can manually perform the same steps to add a node to a cluster instead of using `spock.add_node` above.
 
 ### Check the Spock Version Compatibility
 
@@ -146,6 +147,8 @@ FROM dblink(
 
 ### Validate Prerequisites
 
+You should ensure that the new node is in good condition before adding it to your replicating cluster.
+
 !!! info
 
     Perform safety checks to ensure node `n4` is a clean slate:
@@ -156,7 +159,7 @@ FROM dblink(
 
     If any prerequisite fails, the process aborts to prevent conflicts.
 
-**Confirm that the database exists on n4**
+**Confirm that the Database Exists on n4**
 
 Try to connect to the database on n4. If this fails, the database doesn't exist and needs to be created first.
 
@@ -169,7 +172,7 @@ FROM dblink(
 -- If no error, database exists
 ```
 
-**Confirm that n4 has no user-created tables**
+**Confirm that n4 has no User-created Tables**
 
 The new node must be empty - there can be no user tables in user schemas (system tables and extension tables are OK). If user tables exist, ZODAN will abort because syncing would overwrite existing data.
 
@@ -185,7 +188,7 @@ FROM dblink(
 -- Expected: 0
 ```
 
-**Confirm that n4 doesn't exist in the cluster**
+**Confirm that n4 Doesn't Exist in the Cluster**
 
 Check if a node with the name n4 is already registered in the cluster. If it exists, ZODAN aborts to prevent duplicate node names.
 
@@ -195,7 +198,7 @@ SELECT count(*) FROM spock.node WHERE node_name = 'n4';
 -- Expected: 0
 ```
 
-**Confirm that n4 contains no subscriptions**
+**Confirm that n4 Contains no Subscriptions**
 
 ```sql
 SELECT count(*) 
@@ -205,7 +208,7 @@ WHERE n.node_name = 'n4';
 -- Expected: 0
 ```
 
-**Confirm that n4 contains no replication sets**
+**Confirm that n4 Contains no Replication Sets**
 
 ```sql
 SELECT count(*) 
@@ -217,6 +220,8 @@ WHERE n.node_name = 'n4';
 
 ### Create a Replication Node on n4
 
+After confirming the state of the new node, you can add it to your cluster.
+
 !!! info
 
     In this step, you will create a Spock node object on n4:
@@ -226,7 +231,7 @@ WHERE n.node_name = 'n4';
         
     After this step, n4 is visible in the spock.node table on all nodes
 
-**Create a node on n4**
+**Create a Node on n4**
 
 Using `dblink`, we connect to n4 and run `spock.node_create()` to register the node. The DSN tells other nodes how to connect to n4.
 
@@ -250,7 +255,7 @@ FROM dblink(
 --    16389
 ```
 
-**Confirm the initial node count**
+**Confirm the Initial Node Count**
 
 ```sql
 SELECT count(*) 
@@ -277,7 +282,7 @@ FROM dblink(
     The n2→n4 and n3→n4 subscriptions are just being prepared now, but won't start moving data until later
 
 
-**Identify all existing nodes**
+**Identify all Existing Nodes**
 
 Query the cluster to find all of the nodes (n1, n2, n3, n4) and their connection strings.
 
@@ -323,7 +328,7 @@ VALUES ('n2', '0/1A7D1E0')
 ON CONFLICT (origin_node) DO UPDATE SET sync_lsn = EXCLUDED.sync_lsn;
 ```
 
-**Create a replication slot on n2**
+**Create a Replication Slot on n2**
 
 A replication slot is like a queue that holds all changes from n2 that need to be sent to n4. Even though the subscription is *disabled*, the slot starts collecting changes immediately. This ensures no data is lost between now and when we enable the subscription.
 
@@ -345,7 +350,7 @@ FROM dblink(
 --  spk_inventory_n2_sub_n2_n4 | 0/1A7D1E8
 ```
 
-**Create disabled subscription on n4 from n2**
+**Create Disabled Subscription on n4 from n2**
 
 We create the subscription object on n4, but with `enabled := false`. This tells n4 *you will eventually subscribe to n2, but not yet*. The subscription knows about the slot on n2 but isn't actively pulling data yet.
 
@@ -369,7 +374,7 @@ FROM dblink(
 ) AS t(subscription_id oid);
 ```
 
-**Repeat the previous steps for n3 → n4**
+**Repeat the Previous Steps for n3 → n4**
 
 ```sql
 -- Trigger sync event on n3
@@ -428,7 +433,7 @@ FROM dblink(
     This prevents data loss if n4 receives writes during the setup process.
 
 
-**Create a slot on n2 for a future subscription (sub_n4_n2)**
+**Create a Slot on n2 for a Future Subscription (sub_n4_n2)**
 
 Create a replication slot on n2 named `spk_inventory_n2_sub_n4_n2`. This slot will queue up changes from n4 that need to be sent to n2. The slot is ready, but there's no subscription using it yet - that comes later.
 
@@ -444,7 +449,7 @@ FROM dblink(
 ) AS t(slot_name text, lsn pg_lsn);
 ```
 
-**Create a slot on n3 for a future subscription (sub_n4_n3)**
+**Create a Slot on n3 for a Future Subscription (sub_n4_n3)**
 
 ```sql
 SELECT * 
@@ -525,7 +530,7 @@ FROM dblink(
     
     This can take minutes to hours depending on database size (a 100GB database might take 30+ minutes to sync)
 
-**Detect existing schemas on n4**
+**Detect Existing Schemas on n4**
 
 Query n4's information_schema to find all user-created schemas (excluding system schemas like pg_catalog, information_schema, spock, public). If schemas like "mgmt_tools" or "monitoring" are found, they'll be excluded from replication.
 
@@ -542,7 +547,7 @@ FROM dblink(
 -- Returns: 'mgmt_tools,monitoring' (if any exist)
 ```
 
-**Create an enabled subscription on n4 from n1**
+**Create an Enabled Subscription on n4 from n1**
 
 Create a subscription (`sub_n1_n4`) on n4, pointing to n1 as the provider.
 
@@ -582,7 +587,6 @@ FROM dblink(
 ) AS t(subscription_id oid);
 ```
 
-
 ### Trigger a Sync on the Source Node and Wait on the New Node
 
 !!! info 
@@ -594,7 +598,7 @@ FROM dblink(
         
     For example: We start copying 100GB at 10:00 AM, but while copying, users insert 1000 rows on n1 between 10:00-10:30.  The copy completes at 10:30, but those 1000 rows are still being streamed - we have to wait until all 1000 rows have been applied on n4 so we don't lose data.
 
-**Trigger sync event on n1**
+**Trigger Sync Event on n1**
 
 Insert a sync marker into n1's replication stream at the current position. The LSN returned (0/1E1F620) represents *this exact moment in n1's transaction log*.
 
@@ -607,7 +611,7 @@ FROM dblink(
 -- Returns: 0/1E1F620
 ```
 
-**Wait for sync event on n4**
+**Wait for Sync Event on n4**
 
 On n4, wait for the sync marker that matches the returned LSN (0/1E1F620) to arrive and be processed. This is a blocking call - it won't return until n4's subscription from n1 has replicated up to this LSN. The timeout (1200000 milliseconds = 20 minutes) prevents waiting forever if something goes wrong.
 
@@ -633,9 +637,9 @@ FROM dblink(
     
     Steps for each replica node: Check n4's lag_tracker to get the commit_timestamp for the last change from n2. On n2, convert that timestamp to an LSN using get_lsn_from_commit_ts(). Then, advance n2's replication slot to that LSN. Repeat these steps for n3.
 
-**Get the commit timestamp for n2 → n4**
+**Get the Commit Timestamp for n2 → n4**
 
-Query n4's lag_tracker table, which tracks replication progress. Find the row where origin_name='n2' and receiver_name='n4'. The commit_timestamp tells us "the last time n4 received a change that originated from n2". Even though the change came through n1, lag_tracker tracks the original source.
+Query n4's lag_tracker table, which tracks replication progress to find the row where origin_name='n2' and receiver_name='n4'. The commit_timestamp tells us *the last time n4 received a change that originated from n2*. Even though the change came through n1, lag_tracker tracks the original source.
 
 ```sql
 SELECT commit_timestamp 
@@ -648,7 +652,7 @@ FROM dblink(
 -- Returns: 2025-01-15 10:30:45.123456
 ```
 
-**Advance the slot on n2**
+**Advance the Slot on n2**
 
 This is a two-step process: Use `spock.get_lsn_from_commit_ts()` to convert the timestamp (2025-01-15 10:30:45.123456) into an LSN that corresponds to that point in n2's transaction log. Then, use `pg_replication_slot_advance()` to move the slot's `restart_lsn` forward to that position.
 
@@ -707,7 +711,7 @@ In this step, we activate subscriptions from replica nodes to new node using sto
 
 *  **Why the stored LSNs matter:** When we created sub_n2_n4 and triggered sync_event on n2, we got LSN 0/1A7D1E0. That LSN marked the exact moment we created the replication slot. Between then and now, hours may have passed. The replication slot has been buffering changes. But we need to ensure the subscription starts processing from that original bookmark point, not skipping ahead.
 
-*  **The verification:** After enabling each subscription, we call wait_for_sync_event() with the stored LSN. This confirms that the subscription has processed up to at least that sync point before we continue.
+*  **The verification:** After enabling each subscription, we call `wait_for_sync_event()` with the stored LSN. This confirms that the subscription has processed up to at least that sync point before we continue.
 
 * **After the slot advancement:** The slots were advanced to skip duplicate data. Now when we enable the subscriptions, they'll only send NEW changes that happened after the initial sync - exactly what we want.
 
@@ -727,7 +731,7 @@ FROM dblink(
 ) AS t(result text);
 ```
 
-**Wait for stored sync event from n2**
+**Wait for Stored Sync Event from n2**
 
 Then, retrieve the LSN we stored (0/1A7D1E0) and use it in wait_for_sync_event(). This is the key to the entire ZODAN approach: we're verifying that the subscription has caught up to the sync point we marked when we first set things up. This guarantees data consistency.
 
@@ -744,7 +748,7 @@ FROM dblink(
 ) AS t(result text);
 ```
 
-**Verify the subscription is replicating**
+**Verify the Subscription is Replicating**
 
 Check the subscription status using `sub_show_status()`. We want to see `status='replicating'`, which means the subscription worker is active, connected to n2, and successfully applying changes. Any other status (down, initializing) would indicate a problem.
 
@@ -764,7 +768,7 @@ FROM dblink(
 --  sub_n2_n4         | replicating | n2
 ```
 
-**Repeat the steps for sub_n3_n4**
+**Repeat the Steps for sub_n3_n4**
 
 ```sql
 -- Enable subscription
@@ -894,7 +898,7 @@ Next, we'll verify that n4 is keeping up with n1.
 - n4's hardware is slower than n1.
 - Long-running transactions blocking replication.
 
-* **Target:** We want lag under 59 seconds, or lag_bytes=0 (meaning n4 has processed everything). If lag stays consistently low, n4 is successfully integrated.
+* **Our goal:** We want lag under 59 seconds, or lag_bytes=0 (meaning n4 has processed everything). If lag stays consistently low, n4 is successfully integrated.
 
 ```sql
 -- Monitor lag from n1 → n4 on n4
@@ -1063,14 +1067,14 @@ SELECT * FROM test_replication;
 ```
 
 **All nodes are bidirectionally replicating:**
+
 - n1 ↔ n2 ↔ n3 ↔ n4
 - Total subscriptions: 12 (each node subscribes to 3 others)
 
----
 
 ## Troubleshooting
 
-### Subscription stuck in 'initializing' or 'down'
+### Subscription Status Stuck in 'initializing' or 'down'
 
 ```sql
 -- Check subscription status
@@ -1083,7 +1087,7 @@ SELECT * FROM spock.sub_show_table(subscription_name);
 SELECT * FROM pg_stat_replication;
 ```
 
-### Replication lag too high
+### Replication Lag Too High
 
 ```sql
 -- Check lag on receiver node
@@ -1094,7 +1098,7 @@ FROM spock.lag_tracker
 ORDER BY lag DESC;
 ```
 
-### Slot not advancing
+### Slot Not Advancing
 
 ```sql
 -- Check slot status
@@ -1106,23 +1110,23 @@ WHERE slot_name LIKE 'spk_%';
 
 ## Key Differences from the Manual Process
 
-1. **Sync LSN Storage:** ZODAN stores sync LSNs and uses them later to ensuring subscriptions start from the correct point even if hours pass between steps.
+1. **Sync LSN Storage:** Zodan stores sync LSNs and uses them later to ensuring subscriptions start from the correct point even if hours pass between steps.
 
-2. **Auto Schema Detection:** ZODAN automatically detects existing schemas on n4 and populates `skip_schema` parameter, preventing conflicts during structure sync.
+2. **Auto Schema Detection:** Zodan automatically detects existing schemas on n4 and populates `skip_schema` parameter, preventing conflicts during structure sync.
 
-3. **Version Compatibility Check:** ZODAN verifies all nodes run the same Spock version before starting.
+3. **Version Compatibility Check:** Zodan verifies all nodes run the same Spock version before starting.
 
-4. **Verification Steps:** ZODAN includes `verify_subscription_replicating()` after enabling subscriptions to ensure they reach 'replicating' status.
+4. **Verification Steps:** Zodan includes `verify_subscription_replicating()` after enabling subscriptions to ensure they reach 'replicating' status.
 
-5. **2-node vs Multi-node Logic:** ZODAN handles 2-node scenarios differently (no disabled subscriptions needed when adding to single-node cluster).
+5. **2-node vs Multi-node Logic:** Zodan handles 2-node scenarios differently (no disabled subscriptions needed when adding to single-node cluster).
 
-6. **Comprehensive Status:** ZODAN shows final status of all nodes and subscriptions across entire cluster, not just the new node.
+6. **Comprehensive Status:** Zodan shows final status of all nodes and subscriptions across entire cluster, not just the new node.
 
----
 
 ## References
 
-- [pgEdge ZODAN Tutorial](https://docs.pgedge.com/spock_ext/modify/zodan_tutorial)
-- [Spock Documentation](https://github.com/pgEdge/spock)
-- ZODAN Implementation: [samples/Z0DAN/zodan.sql](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
+- [Using Zodan](zodan_readme.md)
+- [Zodan Tutorial](zodan_tutorial.md)
+- [Zodan Scripts and Workflows](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
+- [Spock Documentation](https://docs.pgedge.com/spock-v5/)
 
