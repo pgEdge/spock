@@ -171,7 +171,7 @@ class SpockClusterManager:
 
         if user_table_count and int(user_table_count.strip()) > 0:
             self.format_notice("✗", f"Checking database {new_db_name} to ensure lolor is not installed")
-            raise Exception(f"Exiting add_node: Database {new_db_name} has the lolor extension installed or remaining lolor user data. The new node should not have the lolor extension installed")
+            raise Exception(f"Exiting add_node: Destination database {new_db_name} has the lolor extension installed or remaining lolor user data. The new node should not have the lolor extension installed")
         else:
             self.format_notice("OK:", f"Checking database {new_db_name} to ensure lolor is not installed")
 
@@ -1070,6 +1070,25 @@ class SpockClusterManager:
         
         # Check 5: Database prerequisites (for pre-check only)
         if check_type == "pre" and new_node_dsn:
+            # Check if they previously installed lolor on the destination.
+            # They should not have run CREATE EXTENSION lolor yet
+            try:
+                sql = """
+                SELECT count(*) FROM pg_tables
+                WHERE schemaname = 'lolor'
+                """
+                user_table_count = self.run_psql(new_node_dsn, sql, fetch=True, return_single=True)
+
+                if user_table_count and int(user_table_count.strip()) == 0:
+                    self.format_notice("PASS:", f"Destination database does not have signs of lolor being installed")
+                    checks_passed += 1
+                else:
+                    self.format_notice("FAIL:", f"Destination database has the lolor extension installed or remaining lolor user data in the lolor schema.")
+                    checks_failed += 1
+            except Exception as e:
+                self.format_notice("FAIL:", f"lolor extension check - {str(e)}")
+                checks_failed += 1
+
             # Check database is empty
             try:
                 sql = """
