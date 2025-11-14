@@ -28,7 +28,7 @@ RUN sudo -u pgedge python3 /home/pgedge/install.py
 WORKDIR /home/pgedge/postgres
 
 RUN for patchfile in /home/pgedge/spock/patches/${PGVER}/*; do \
-		patch -p1 --vebose < $patchfile; \
+		patch -p1 --verbose < $patchfile; \
 	done
 
 RUN echo "==========Compiling Modified PostgreSQL=========="
