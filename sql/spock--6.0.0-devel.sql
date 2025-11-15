@@ -383,8 +383,12 @@ RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME'
 CREATE FUNCTION spock.sync_event()
 RETURNS pg_lsn RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_sync_event';
 
-CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin_id oid, lsn pg_lsn, timeout int DEFAULT 0)
-AS $$
+CREATE PROCEDURE spock.wait_for_sync_event(
+	OUT result bool,
+	origin_id  oid,
+	lsn        pg_lsn,
+	timeout    int DEFAULT 0
+) AS $$
 DECLARE
 	target_id		oid;
 	elapsed_time	numeric := 0;
@@ -396,6 +400,17 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
+		-- If an unresolvable issue occurs with the apply worker, the LR
+		-- progress gets stuck, and we need to check the subscription's state
+		-- carefully.
+		IF NOT EXISTS (SELECT * FROM spock.subscription
+					  WHERE sub_origin = origin_id AND
+							sub_target = target_id AND
+							sub_enabled = true) THEN
+			RAISE EXCEPTION 'Replication % => % does not have any enabled subscription yet',
+							origin_id, target_id;
+		END IF;
+
 		SELECT INTO progress_lsn remote_commit_lsn
 			FROM spock.progress
 			WHERE node_id = target_id AND remote_node_id = origin_id;
@@ -415,8 +430,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin name, lsn pg_lsn, timeout int DEFAULT 0)
-AS $$
+CREATE PROCEDURE spock.wait_for_sync_event(
+	OUT result bool,
+	origin     name,
+	lsn        pg_lsn,
+	timeout    int DEFAULT 0
+) AS $$
 DECLARE
 	origin_id		oid;
 	target_id		oid;
@@ -430,6 +449,17 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
+		-- If an unresolvable issue occurs with the apply worker, the LR
+		-- progress gets stuck, and we need to check the subscription's state
+		-- carefully.
+		IF NOT EXISTS (SELECT * FROM spock.subscription
+					  WHERE sub_origin = origin_id AND
+							sub_target = target_id AND
+							sub_enabled = true) THEN
+			RAISE EXCEPTION 'Replication % => % does not have any enabled subscription yet',
+							origin_id, target_id;
+		END IF;
+
 		SELECT INTO progress_lsn remote_commit_lsn
 			FROM spock.progress
 			WHERE node_id = target_id AND remote_node_id = origin_id;
