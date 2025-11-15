@@ -401,9 +401,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 {
 	const char *originQuery =
 		"SELECT * FROM spock.progress "
-		"WHERE dbid = (SELECT oid FROM pg_database "
-		"  WHERE datname = current_database()) AND "
-		"node_id = %u AND remote_node_id <> %u";
+		"WHERE node_id = %u AND remote_node_id <> %u";
 	StringInfoData query;
 	PGresult   *originRes;
 
@@ -423,6 +421,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 	if (PQresultStatus(originRes) == PGRES_TUPLES_OK)
 	{
 		int			rno;
+		char	   *dbid_str = NULL;
 
 		for (rno = 0; rno < PQntuples(originRes); rno++)
 		{
@@ -440,6 +439,15 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			char	   *remote_insert_lsn = PQgetvalue(originRes, rno, GP_REMOTE_INSERT_LSN);
 			char	   *last_updated_ts = NULL;
 			char	   *updated_by_decode = PQgetvalue(originRes, rno, GP_UPDATED_BY_DECODE);
+
+			/* Check: we view only values related to a single database */
+			Assert(!PQgetisnull(originRes, rno, GP_DBOID));
+			if (dbid_str == NULL)
+				dbid_str = PQgetvalue(originRes, rno, GP_DBOID);
+			else
+			{
+				Assert(strcmp(dbid_str, PQgetvalue(originRes, rno, GP_DBOID)) == 0);
+			}
 
 			sap.key.dbid = MyDatabaseId;
 			sap.key.node_id = MySubscription->target->id;
