@@ -36,7 +36,12 @@ CREATE TABLE spock.subscription (
     sub_force_text_transfer boolean NOT NULL DEFAULT 'f',
 	sub_skip_lsn pg_lsn NOT NULL DEFAULT '0/0',
 	sub_skip_schema text[],
-	sub_rescue_suspended boolean NOT NULL DEFAULT false
+	sub_rescue_suspended boolean NOT NULL DEFAULT false,
+	sub_rescue_temporary boolean NOT NULL DEFAULT false,
+	sub_rescue_stop_lsn pg_lsn,
+	sub_rescue_stop_time timestamptz,
+	sub_rescue_cleanup_pending boolean NOT NULL DEFAULT false,
+	sub_rescue_failed boolean NOT NULL DEFAULT false
 );
 -- Source for sub_id values.
 CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1 OWNED BY spock.subscription.sub_id;
@@ -680,4 +685,15 @@ RETURNS TABLE (
     message text
 )
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_clone_recovery_slot';
+
+CREATE FUNCTION spock.create_rescue_subscription(
+    target_node name,
+    source_node name,
+    cloned_slot text,
+    skip_lsn pg_lsn DEFAULT NULL,
+    stop_lsn pg_lsn DEFAULT NULL,
+    stop_timestamp timestamptz DEFAULT NULL
+)
+RETURNS oid
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_rescue_subscription';
 
