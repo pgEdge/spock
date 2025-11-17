@@ -836,8 +836,10 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 
 		if (is_delta_apply)
 		{
+#ifdef COMMIT_TS_SUBTRANS_TS
 			SubTransactionIdSetCommitTsData(GetCurrentTransactionId(),
 											local_ts, local_origin);
+#endif
 			ReleaseCurrentSubTransaction();
 		}
 
