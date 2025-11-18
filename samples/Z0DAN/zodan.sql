@@ -302,11 +302,8 @@ BEGIN
 
     EXCEPTION
         WHEN OTHERS THEN
-            IF verb THEN
-                RAISE EXCEPTION E'
-            [STEP 3] Subscription "%" creation failed on remote node! Error: %
-            ', subscription_name, SQLERRM;
-            END IF;
+            RAISE EXCEPTION '[STEP 3] Subscription "%" creation failed on remote node! Error: %',
+				subscription_name, SQLERRM;
     END;
 END;
 $$;
@@ -1794,8 +1791,10 @@ BEGIN
             RAISE NOTICE '    OK: %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name, 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
-                CONTINUE;
+				-- A replication slot with the same name exists on the node.
+				-- It may happen in case if previous add_node attempt has been
+				-- failed. Anyway, it seems unsafe to re-use this slot.
+                RAISE EXCEPTION '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
 
         -- Create disabled subscription on new node from "other" node
@@ -1818,7 +1817,7 @@ BEGIN
             subscription_count := subscription_count + 1;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Creating initial subscription ' || sub_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+                RAISE EXCEPTION '    ✗ %', rpad('Creating initial subscription ' || sub_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 220, ' ');
         END;
     END LOOP;
 

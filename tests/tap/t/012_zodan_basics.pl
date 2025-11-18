@@ -3,7 +3,7 @@ use warnings;
 use Test::More;
 use lib '.';
 use lib 't';
-use SpockTest qw(create_cluster destroy_cluster get_test_config psql_or_bail scalar_query);
+use SpockTest qw(create_cluster destroy_cluster get_test_config psql_or_bail system_or_bail scalar_query);
 
 my ($result);
 
@@ -105,12 +105,16 @@ psql_or_bail(3, "DROP EXTENSION lolor");
 
 psql_or_bail(1, "CREATE FUNCTION fake_fn() RETURNS integer LANGUAGE sql AS \$\$ SELECT 1\$\$");
 psql_or_bail(3, "CREATE FUNCTION fake_fn() RETURNS integer LANGUAGE sql AS \$\$ SELECT 1\$\$");
+print STDERR "### Test: a conflicting object may break add_node ###\n";
 scalar_query(3, "
 	CALL spock.add_node(
 		src_node_name := 'n2',
 		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
 		new_node_name := 'n3', new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
 		verb := true)");
+
+$result = scalar_query(3, "SELECT oid FROM pg_class WHERE relname = 'test'");
+ok($result eq '', "Check that test table isn't replicated"); # It is not OK, but for the demo
 
 # TODO:
 # It seems that add_node keeps remnants after unsuccessful execution. It is
@@ -121,6 +125,67 @@ scalar_query(3, "
 #
 # $result = scalar_query(3, "SELECT count(*) FROM spock.local_node");
 # ok($result eq '0', "N3 is not in the cluster");
+
+# Remove all remnants left after the unsuccessful add_node.
+# First, we need to drop the Spock extension: it removes relevant subscriptions
+# that is requirement for a drop database command.
+psql_or_bail(3, "DROP EXTENSION spock CASCADE");
+system_or_bail "$pg_bin/psql", '-p', $node_ports->[2], '-d', 'postgres', '-c',
+										"DROP DATABASE $dbname WITH (FORCE)";
+system_or_bail "$pg_bin/psql", '-p', $node_ports->[2], '-d', 'postgres', '-c',
+													"CREATE DATABASE $dbname";
+psql_or_bail(3, "CREATE EXTENSION spock");
+psql_or_bail(3, "CREATE EXTENSION dblink");
+psql_or_bail(3, "\\i ../../samples/Z0DAN/zodan.sql");
+
+# ##############################################################################
+#
+# Check how Z0DAN works in presence of different extensions.
+#
+# ##############################################################################
+
+# Install an arbitrary extension in the origin and target databases and try to
+# add node by the Z0DAN protocol.
+psql_or_bail(3, "CREATE EXTENSION amcheck");
+
+# Should fail at the moment because pg_restore fails and causes the sync worker
+# to stop.
+print STDERR "### Test: a conflicting extension may break add_node ###\n";
+scalar_query(3, "
+	CALL spock.add_node(
+		src_node_name := 'n2',
+		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+		new_node_name := 'n3', new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+		verb := true)");
+
+$result = scalar_query(3, "SELECT oid FROM pg_class WHERE relname = 'test'");
+ok($result eq '', "Check that test table isn't replicated"); # It is not OK, but for the demo
+
+# Show, that in absence of interfering objects the add_node works fine
+psql_or_bail(3, "DROP EXTENSION spock CASCADE");
+# XXX: This is necessary step until we invent a procedure to detect anf clean up
+# Z0DAN remnants - remember, the procedure may fail at each step just because of
+# a network failure. Here we do this boring job to show up how much remnants may
+# be left after a failed operation.
+psql_or_bail(1, "SELECT pg_drop_replication_slot('spk_regression_n1_sub_n1_n3')");
+psql_or_bail(1, "SELECT spock.sub_drop('sub_n1_n3')");
+system_or_bail "$pg_bin/psql", '-p', $node_ports->[2], '-d', 'postgres', '-c',
+										"DROP DATABASE $dbname WITH (FORCE)";
+system_or_bail "$pg_bin/psql", '-p', $node_ports->[2], '-d', 'postgres', '-c',
+													"CREATE DATABASE $dbname";
+psql_or_bail(3, "CREATE EXTENSION spock");
+psql_or_bail(3, "CREATE EXTENSION dblink");
+psql_or_bail(3, "\\i ../../samples/Z0DAN/zodan.sql");
+print STDERR "### Test: add_node works on an empty database ###\n";
+psql_or_bail(3, "
+	CALL spock.add_node(
+		src_node_name := 'n2',
+		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+		new_node_name := 'n3', new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+		verb := true)");
+
+$result = scalar_query(3, "SELECT x FROM test");
+ok($result eq '1', "Check that test table is replicated");
 
 # Clean up
 destroy_cluster('Destroy test cluster');
