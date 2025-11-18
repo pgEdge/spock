@@ -156,25 +156,25 @@ sub create_postgresql_conf {
     print $conf "listen_addresses='*'\n";
 
     # Enable logging
-    print $conf "logging_collector=on\n";
+    #print $conf "logging_collector=on\n";
     my $cwd = Cwd::getcwd();
     my $parent = Cwd::abs_path("$cwd/..");
     print $conf "log_directory='$parent/logs'\n";
     print $conf "log_filename='00$port.log'\n";
     print $conf "log_rotation_age=1d\n";
     print $conf "log_rotation_size=10MB\n";
-    print $conf "log_min_messages=debug1\n";
-    print $conf "log_statement=all\n";
+    #print $conf "log_min_messages=debug1\n";
+    #print $conf "log_statement=all\n";
     print $conf "log_line_prefix='%m [%p] %q%u@%d '\n";
-    print $conf "log_checkpoints=on\n";
-    print $conf "log_connections=on\n";
-    print $conf "log_disconnections=on\n";
-    print $conf "log_lock_waits=on\n";
-    print $conf "log_temp_files=0\n";
-    print $conf "log_autovacuum_min_duration=0\n";
-    print $conf "log_replication_commands=on\n";
-    print $conf "log_min_duration_statement=0\n";
-    print $conf "log_statement_stats=on\n";
+    #print $conf "log_checkpoints=on\n";
+    #print $conf "log_connections=on\n";
+    #print $conf "log_disconnections=on\n";
+    #print $conf "log_lock_waits=on\n";
+    #print $conf "log_temp_files=0\n";
+    #print $conf "log_autovacuum_min_duration=0\n";
+    #print $conf "log_replication_commands=on\n";
+    #print $conf "log_min_duration_statement=0\n";
+    #print $conf "log_statement_stats=on\n";
 
     close($conf);
 }
