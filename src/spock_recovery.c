@@ -1379,7 +1379,7 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
 		subid = sub.id;
 
 		spock_group_attach(MyDatabaseId, localnode->node->id,
-						   originif->nodeid, NULL);
+						   originif->nodeid);
 
 		memset(&sync, 0, sizeof(SpockSyncStatus));
 		sync.kind = SYNC_KIND_INIT;
