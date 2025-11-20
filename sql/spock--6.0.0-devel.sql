@@ -676,7 +676,9 @@ RETURNS TABLE (
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_find_rescue_source';
 
 -- Recovery slot cloning function for disaster recovery workflows
-CREATE OR REPLACE FUNCTION spock.clone_recovery_slot()
+CREATE OR REPLACE FUNCTION spock.clone_recovery_slot(
+    target_restart_lsn pg_lsn DEFAULT NULL
+)
 RETURNS TABLE (
     cloned_slot_name text,
     original_slot_name text,
@@ -696,4 +698,17 @@ CREATE FUNCTION spock.create_rescue_subscription(
 )
 RETURNS oid
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_rescue_subscription';
+
+CREATE FUNCTION spock.suspend_all_peer_subs_for_rescue(
+    node_id oid,
+    failed_node_id oid
+)
+RETURNS boolean
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_suspend_all_peer_subs_for_rescue_sql';
+
+CREATE FUNCTION spock.resume_all_peer_subs_post_rescue(
+    node_id oid
+)
+RETURNS boolean
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_resume_all_peer_subs_post_rescue_sql';
 

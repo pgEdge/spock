@@ -44,6 +44,7 @@
 #include "libpq-fe.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
+#include "replication/origin.h"
 #include "replication/slot.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
@@ -405,9 +406,41 @@ create_recovery_slot(const char *database_name)
 	 * - false: not failover (recovery slots don't need failover)
 	 * - false: not synced (recovery slots are local only)
 	 *
-	 * Since recovery slots are controlled by GUC, failure to create should be fatal.
+	 * If the slot already exists at PostgreSQL level (e.g., after restart),
+	 * we just mark it as active in shared memory and continue.
 	 */
-	ReplicationSlotCreate(slot_name, true, RS_PERSISTENT, false, false, false);
+	PG_TRY();
+	{
+		ReplicationSlotCreate(slot_name, true, RS_PERSISTENT, false, false, false);
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+		
+		MemoryContextSwitchTo(ErrorContext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		
+		/* If slot already exists, that's OK - just mark it active */
+		if (edata->sqlerrcode == ERRCODE_DUPLICATE_OBJECT)
+		{
+			elog(LOG, "recovery slot '%s' already exists at PostgreSQL level, reusing it", slot_name);
+			FreeErrorData(edata);
+			
+			/* Mark slot as active in shared memory */
+			LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
+			slot->active = true;
+			LWLockRelease(SpockRecoveryCtx->lock);
+			
+			pfree(slot_name);
+			return true;
+		}
+		
+		/* For other errors, re-throw */
+		FreeErrorData(edata);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	elog(LOG, "created recovery slot '%s' (INACTIVE - for catastrophic failure recovery only)",
 		 slot_name);
@@ -475,6 +508,137 @@ drop_recovery_slot(void)
 		elog(WARNING, "failed to drop recovery slot '%s'", slot_name);
 	}
 	PG_END_TRY();
+}
+
+/*
+ * advance_recovery_slot_to_min_position
+ *
+ * Advance the recovery slot's confirmed_flush_lsn to the minimum position
+ * across all active peer subscriptions. This ensures the slot stays behind
+ * the slowest subscriber, allowing historical replay for rescue operations.
+ *
+ * This function should be called periodically by the manager worker.
+ */
+void
+advance_recovery_slot_to_min_position(void)
+{
+	SpockRecoverySlotData *slot_data;
+	ReplicationSlot *recovery_slot;
+	char slot_name[NAMEDATALEN];
+	XLogRecPtr min_remote_lsn = InvalidXLogRecPtr;
+	XLogRecPtr current_slot_lsn;
+	List *subscriptions;
+	ListCell *lc;
+
+	if (!SpockRecoveryCtx)
+		return;
+
+	/* Get recovery slot info from shared memory */
+	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
+	slot_data = get_recovery_slot();
+	if (!slot_data->active)
+	{
+		LWLockRelease(SpockRecoveryCtx->lock);
+		return;
+	}
+	strlcpy(slot_name, slot_data->slot_name, NAMEDATALEN);
+	LWLockRelease(SpockRecoveryCtx->lock);
+
+	/* Start a transaction to query subscriptions */
+	StartTransactionCommand();
+
+	/* Get all active non-rescue subscriptions */
+	subscriptions = get_node_subscriptions(InvalidOid, false);
+
+	/*
+	 * Find the minimum remote_lsn across all peer subscriptions.
+	 * This represents the slowest subscriber's position.
+	 */
+	foreach(lc, subscriptions)
+	{
+		SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
+		Oid origin_id;
+		XLogRecPtr remote_lsn;
+		char origin_name[NAMEDATALEN];
+
+		/* Skip rescue subscriptions */
+		if (sub->rescue_temporary)
+			continue;
+
+		/* Skip disabled subscriptions */
+		if (!sub->enabled)
+			continue;
+
+		/* Build origin name for this subscription */
+		snprintf(origin_name, NAMEDATALEN, "spk_pgedge_%s_sub_%s_%s",
+				 sub->origin->name, sub->origin->name, sub->target->name);
+
+		/* Look up replication origin */
+		origin_id = replorigin_by_name(origin_name, true);
+		if (origin_id == InvalidRepOriginId)
+			continue;
+
+		/* Get remote LSN from origin status */
+		replorigin_session_setup(origin_id, 0);
+		replorigin_session_reset();
+		remote_lsn = replorigin_session_get_progress(false);
+
+		if (remote_lsn != InvalidXLogRecPtr)
+		{
+			if (min_remote_lsn == InvalidXLogRecPtr || remote_lsn < min_remote_lsn)
+			{
+				min_remote_lsn = remote_lsn;
+				elog(DEBUG2, "recovery slot: subscription %s at remote_lsn %X/%X",
+					 sub->name, LSN_FORMAT_ARGS(remote_lsn));
+			}
+		}
+	}
+
+	CommitTransactionCommand();
+
+	/* If we found a minimum position, advance the slot to it */
+	if (min_remote_lsn != InvalidXLogRecPtr)
+	{
+		/* Acquire the recovery slot */
+		recovery_slot = SearchNamedReplicationSlot(slot_name, false);
+		if (recovery_slot)
+		{
+			ReplicationSlotAcquire(slot_name, true, false);
+
+			SpinLockAcquire(&recovery_slot->mutex);
+			current_slot_lsn = recovery_slot->data.confirmed_flush;
+			SpinLockRelease(&recovery_slot->mutex);
+
+			/*
+			 * Only advance if the new position is ahead of current position.
+			 * Never move backwards as that could cause WAL to be deleted.
+			 */
+			if (current_slot_lsn == InvalidXLogRecPtr || min_remote_lsn > current_slot_lsn)
+			{
+				SpinLockAcquire(&recovery_slot->mutex);
+				recovery_slot->data.confirmed_flush = min_remote_lsn;
+				recovery_slot->data.restart_lsn = min_remote_lsn;
+				SpinLockRelease(&recovery_slot->mutex);
+
+				ReplicationSlotMarkDirty();
+				ReplicationSlotSave();
+
+				elog(LOG, "advanced recovery slot '%s' to minimum peer position %X/%X",
+					 slot_name, LSN_FORMAT_ARGS(min_remote_lsn));
+			}
+			else
+			{
+				elog(DEBUG2, "recovery slot '%s' already at or ahead of minimum position %X/%X (current: %X/%X)",
+					 slot_name, LSN_FORMAT_ARGS(min_remote_lsn), LSN_FORMAT_ARGS(current_slot_lsn));
+			}
+
+			ReplicationSlotRelease();
+		}
+	}
+	else
+	{
+		elog(DEBUG2, "no peer subscriptions found for recovery slot advancement");
+	}
 }
 
 /*
@@ -580,11 +744,17 @@ query_node_recovery_progress(const char *node_dsn, const char *origin_node_name,
 			"SELECT pos.remote_lsn, "
 			"       CASE WHEN pos.remote_lsn = '0/0'::pg_lsn THEN NULL "
 			"            ELSE pg_catalog.pg_xact_commit_timestamp(pos.local_id) "
-			"       END as remote_timestamp "
-			"FROM spock.node n "
+			"       END AS remote_timestamp "
+			"FROM spock.subscription s "
+			"JOIN spock.node o ON o.node_id = s.sub_origin "
 			"JOIN pg_replication_origin_status pos "
-			"  ON pos.external_id = spock.spock_origin_name(n.node_id) "
-			"WHERE n.node_name = $1");
+			"  ON pos.external_id = spock.spock_gen_slot_name("
+			"         current_database()::name, "
+			"         o.node_name::name, "
+			"         s.sub_name)::text "
+			"WHERE o.node_name = $1 "
+			"ORDER BY pos.remote_lsn DESC "
+			"LIMIT 1");
 
 		/* Use parameterized query for safety */
 		param_values[0] = origin_node_name;
@@ -874,7 +1044,12 @@ spock_find_rescue_source_sql(PG_FUNCTION_ARGS)
  * This function clones the local recovery slot to create a temporary slot
  * that can be used for disaster recovery without modifying the original.
  *
- * Usage: SELECT * FROM spock.clone_recovery_slot();
+ * Usage: SELECT * FROM spock.clone_recovery_slot(target_restart_lsn);
+ *
+ * Args:
+ * - target_restart_lsn (optional): If provided, set the cloned slot's restart_lsn
+ *   to this position instead of copying from the original slot. This allows
+ *   replaying from an earlier position to recover missing transactions.
  *
  * Returns a record with:
  * - cloned_slot_name: Name of the newly created active slot
@@ -894,8 +1069,13 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
 	char	   *original_slot_name = NULL;
 	XLogRecPtr	restart_lsn = InvalidXLogRecPtr;
 	XLogRecPtr	confirmed_flush_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	target_restart_lsn = InvalidXLogRecPtr;
 	bool		success = false;
 	char	   *message = NULL;
+
+	/* Get optional target_restart_lsn parameter */
+	if (PG_NARGS() > 0 && !PG_ARGISNULL(0))
+		target_restart_lsn = PG_GETARG_LSN(0);
 
 	/* Validate that recovery slot exists and is active */
 	if (!SpockRecoveryCtx || !SpockRecoveryCtx->recovery_slot.active)
@@ -913,18 +1093,12 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
 	{
 		TimestampTz now = GetCurrentTimestamp();
 		const char *timestamp_str = timestamptz_to_str(now);
-		char	   *clean_timestamp = pstrdup(timestamp_str);
-		
-		/* Clean up timestamp string for use in slot name */
-		for (int i = 0; clean_timestamp[i]; i++)
-		{
-			if (clean_timestamp[i] == ' ' || clean_timestamp[i] == ':' || 
-				clean_timestamp[i] == '-' || clean_timestamp[i] == '.')
-				clean_timestamp[i] = '_';
-		}
-		
-		cloned_slot_name = psprintf("spock_rescue_clone_%s", clean_timestamp);
-		pfree(clean_timestamp);
+		StringInfoData namebuf;
+
+		initStringInfo(&namebuf);
+		appendStringInfoString(&namebuf, "spock_rescue_clone_");
+		append_sanitized_token(&namebuf, timestamp_str);
+		cloned_slot_name = namebuf.data;
 	}
 
 	/* Clone the recovery slot */
@@ -947,38 +1121,68 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
 		restart_lsn = original_slot->data.restart_lsn;
 		SpinLockRelease(&original_slot->mutex);
 
-		/* Create the cloned slot */
-		ReplicationSlotCreate(cloned_slot_name, true, RS_PERSISTENT, false, false, false);
+		/*
+		 * Some recovery slots may not yet have a restart LSN recorded. Fall back
+		 * to the confirmed flush position so callers have a sensible default.
+		 */
+		if (XLogRecPtrIsInvalid(restart_lsn) && !XLogRecPtrIsInvalid(confirmed_flush_lsn))
+			restart_lsn = confirmed_flush_lsn;
 
-		/* Get the cloned slot and set its position */
-		cloned_slot = SearchNamedReplicationSlot(cloned_slot_name, true);
-		if (cloned_slot)
+		/*
+		 * If caller provided a target_restart_lsn, use that instead.
+		 * This allows creating a cloned slot that starts from an earlier position
+		 * to replay missing transactions for disaster recovery.
+		 */
+		if (!XLogRecPtrIsInvalid(target_restart_lsn))
 		{
-			/* Set the slot's positions to match the original */
-			SpinLockAcquire(&cloned_slot->mutex);
-			cloned_slot->data.confirmed_flush = confirmed_flush_lsn;
-			cloned_slot->data.restart_lsn = restart_lsn;
-			SpinLockRelease(&cloned_slot->mutex);
-
-			/* Mark slot as active */
-			ReplicationSlotMarkDirty();
-
-			success = true;
-			message = psprintf("Successfully cloned recovery slot '%s' to '%s'", 
-							  original_slot_name, cloned_slot_name);
+			restart_lsn = target_restart_lsn;
+			confirmed_flush_lsn = target_restart_lsn;
+			elog(LOG, "Cloning recovery slot with custom restart_lsn %X/%X for disaster recovery",
+				 LSN_FORMAT_ARGS(target_restart_lsn));
 		}
-		else
+
+		/* Create the cloned logical slot using the Spock output plugin */
+		ReplicationSlotCreate(cloned_slot_name, true, RS_PERSISTENT,
+							  false, true, false);
+		cloned_slot = MyReplicationSlot;
+		if (cloned_slot == NULL)
 		{
 			message = psprintf("Failed to create cloned slot '%s'", cloned_slot_name);
+			goto cleanup_clone;
 		}
+
+		/* Configure cloned slot metadata to match expectations of Spock */
+		SpinLockAcquire(&cloned_slot->mutex);
+		cloned_slot->data.database = MyDatabaseId;
+		strlcpy(NameStr(cloned_slot->data.plugin), "spock_output", NAMEDATALEN);
+		cloned_slot->data.confirmed_flush = confirmed_flush_lsn;
+		cloned_slot->data.restart_lsn = restart_lsn;
+		SpinLockRelease(&cloned_slot->mutex);
+
+		ReplicationSlotMarkDirty();
+		ReplicationSlotSave();
+		ReplicationSlotRelease();
+
+		success = true;
+		message = psprintf("Successfully cloned recovery slot '%s' to '%s'",
+						   original_slot_name, cloned_slot_name);
 
 cleanup_clone:
 		;
 	}
 	PG_CATCH();
 	{
-		message = psprintf("Error creating cloned slot '%s': %s", 
-						  cloned_slot_name, "slot creation failed");
+		ErrorData  *edata;
+
+		edata = CopyErrorData();
+		FlushErrorState();
+
+		message = psprintf("Error creating cloned slot '%s': %s",
+						  cloned_slot_name ? cloned_slot_name : "<unspecified>",
+						  edata && edata->message ? edata->message : "slot creation failed");
+
+		if (edata)
+			FreeErrorData(edata);
 	}
 	PG_END_TRY();
 
@@ -1086,8 +1290,8 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("skip LSN must be lower than stop LSN"),
-				 errdetail("Provided skip_lsn %X/%X is not less than stop_lsn %X/%X."),
-				 LSN_FORMAT_ARGS(skip_lsn), LSN_FORMAT_ARGS(stop_lsn)));
+				 errdetail("Provided skip_lsn %X/%X is not less than stop_lsn %X/%X.",
+						   LSN_FORMAT_ARGS(skip_lsn), LSN_FORMAT_ARGS(stop_lsn))));
 
 	validate_rescue_slot_name(cloned_slot_name);
 
@@ -1147,7 +1351,14 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
 	repsets = lappend(repsets, pstrdup("default_insert_only"));
 	repsets = lappend(repsets, pstrdup("ddl_sql"));
 	sub.replication_sets = repsets;
-	sub.forward_origins = NIL;
+	
+	/*
+	 * Forward ALL origins in rescue subscriptions. This is necessary because
+	 * the lagging node needs to receive transactions that originated from the
+	 * failed node but were forwarded through the rescue source node.
+	 * Using "all" means forward transactions regardless of origin.
+	 */
+	sub.forward_origins = list_make1(pstrdup("all"));
 
 	apply_delay = (Interval *) palloc0(sizeof(Interval));
 	sub.apply_delay = apply_delay;

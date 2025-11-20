@@ -1511,12 +1511,21 @@ stringlist_to_identifierstr(List *strings)
 
 	foreach (lc, strings)
 	{
+		char *str = (char *)lfirst(lc);
+		
 		if (first)
 			first = false;
 		else
 			appendStringInfoChar(&res, ',');
 
-		appendStringInfoString(&res, quote_identifier((char *)lfirst(lc)));
+		/*
+		 * Special case: "all" is a keyword for forward_origins and should
+		 * not be quoted. For everything else, use quote_identifier.
+		 */
+		if (strcmp(str, "all") == 0)
+			appendStringInfoString(&res, str);
+		else
+			appendStringInfoString(&res, quote_identifier(str));
 	}
 
 	return res.data;

@@ -751,14 +751,18 @@ handle_commit(StringInfo s)
 		}
 
 		/* Have the commit code adjust our logical clock if needed */
+#if PG_VERSION_NUM >= 180000
 		remoteTransactionStopTimestamp = commit_time;
+#endif
 
 		CommitTransactionCommand();
 
 		if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
 			append_feedback_position(XactLastCommitEnd);
 
+#if PG_VERSION_NUM >= 180000
 		remoteTransactionStopTimestamp = 0;
+#endif
 
 		MemoryContextSwitchTo(TopMemoryContext);
 
@@ -978,6 +982,19 @@ handle_origin(StringInfo s)
 	 */
 	remote_origin_id = spock_read_origin(s, &remote_origin_lsn);
 	replorigin_session_origin = remote_origin_id;
+	
+	/*
+	 * For rescue subscriptions, apply all transactions as local (without origin
+	 * tracking) to avoid conflicts with existing replication origins on the target.
+	 * This is critical because the target node may already have tracked these
+	 * transactions' origins, causing PostgreSQL to skip them as duplicates.
+	 */
+	if (MySubscription->rescue_temporary)
+	{
+		replorigin_session_origin = InvalidRepOriginId;
+		elog(DEBUG1, "SPOCK %s: rescue subscription bypassing origin tracking (original origin_id=%u)",
+			 MySubscription->name, remote_origin_id);
+	}
 }
 
 /*
@@ -989,9 +1006,11 @@ handle_commit_order(StringInfo s)
 	/*
 	 * LAST commit ts message can only come inside remote transaction,
 	 * immediately after origin information, and before any actual writes.
+	 * For rescue subscriptions, we bypass origin tracking but still need
+	 * to accept commit order messages, so check remote_origin_id instead.
 	 */
 	if (!in_remote_transaction || IsTransactionState()
-		|| replorigin_session_origin == InvalidRepOriginId)
+		|| (remote_origin_id == InvalidRepOriginId && !MySubscription->rescue_temporary))
 		elog(ERROR, "SPOCK %s: LATEST commit order message sent out of order",
 			 MySubscription->name);
 

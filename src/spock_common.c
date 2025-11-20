@@ -432,7 +432,13 @@ spock_get_equal_strategy_number(Oid opclass)
 		return BTEqualStrategyNumber;
 #ifdef HASH_AM_OID
 	if (am == HASH_AM_OID)
+	{
+#ifdef HASHEqualStrategyNumber
 		return HASHEqualStrategyNumber;
+#else
+		return 1;	/* hash indexes use strategy 1 for equality */
+#endif
+	}
 #endif
 	/* Default to btree equality semantics for other AMs */
 	return BTEqualStrategyNumber;

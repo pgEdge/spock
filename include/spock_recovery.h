@@ -77,6 +77,7 @@ extern void spock_recovery_shmem_startup(void);
 extern char *get_recovery_slot_name(const char *database_name);
 extern bool create_recovery_slot(const char *database_name);
 extern void drop_recovery_slot(void);
+extern void advance_recovery_slot_to_min_position(void);
 extern void update_recovery_slot_progress(const char *slot_name,
 										  XLogRecPtr lsn,
 										  TimestampTz commit_ts);

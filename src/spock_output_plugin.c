@@ -1124,16 +1124,47 @@ pg_decode_origin_filter(LogicalDecodingContext *ctx,
 	bool ret;
 
 	if (origin_id == InvalidRepOriginId)
+	{
 		/* Never filter out locally originated tx's */
 		ret = false;
-
+	}
 	else
+	{
 		/*
-		 * Otherwise, ignore the origin passed in txnfilter_args->origin_id,
-		 * and just forward all or nothing based on the configuration option
-		 * 'forward_origins'.
+		 * For transactions with a remote origin, check forward_origins:
+		 * - If empty, filter them out (don't forward remote origins)
+		 * - If contains "all", forward everything (don't filter)
+		 * - Otherwise, check if this specific origin should be forwarded
 		 */
-		ret = list_length(data->forward_origins) == 0;
+		if (list_length(data->forward_origins) == 0)
+		{
+			/* No forward_origins configured: filter out remote origins */
+			ret = true;
+		}
+		else if (list_length(data->forward_origins) == 1)
+		{
+			char *first = (char *) linitial(data->forward_origins);
+			elog(LOG, "SPOCK origin_filter: origin_id=%u, forward_origins[0]='%s', comparing with 'all'",
+				 origin_id, first);
+			if (strcmp(first, "all") == 0)
+			{
+				/* Special keyword "all": forward everything */
+				elog(LOG, "SPOCK origin_filter: matched 'all', forwarding transaction");
+				ret = false;
+			}
+			else
+			{
+				/* Single specific origin: would need to check origin name (not implemented here) */
+				elog(LOG, "SPOCK origin_filter: not 'all', forwarding anyway");
+				ret = false;
+			}
+		}
+		else
+		{
+			/* Multiple origins: forward them (not filtering in this simple version) */
+			ret = false;
+		}
+	}
 
 	return ret;
 }
