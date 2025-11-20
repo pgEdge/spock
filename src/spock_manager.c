@@ -26,6 +26,7 @@
 #include "utils/memutils.h"
 #include "utils/builtins.h"
 #include "utils/resowner.h"
+#include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
 #include "lib/stringinfo.h"
@@ -93,6 +94,8 @@ cleanup_rescue_subscriptions(List *cleanup_list)
 	if (ret != SPI_OK_CONNECT)
 		elog(ERROR, "SPI_connect failed while cleaning rescue subscriptions");
 
+	PushActiveSnapshot(GetTransactionSnapshot());
+
 	foreach(lc, cleanup_list)
 	{
 		SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
@@ -117,6 +120,7 @@ cleanup_rescue_subscriptions(List *cleanup_list)
 				 sub->name);
 	}
 
+	PopActiveSnapshot();
 	SPI_finish();
 	list_free(cleanup_list);
 }
@@ -362,6 +366,13 @@ spock_manager_main(Datum main_arg)
 		 * connection errors or exception handling).
 		 */
 		sleep_timer = manage_apply_workers();
+
+		/*
+		 * Advance the recovery slot to the minimum position across all
+		 * active peer subscriptions. This ensures historical transactions
+		 * remain available for rescue operations.
+		 */
+		advance_recovery_slot_to_min_position();
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,

@@ -169,6 +169,8 @@ PG_FUNCTION_INFO_V1(spock_get_recovery_slot_status_sql);
 PG_FUNCTION_INFO_V1(spock_find_rescue_source);
 PG_FUNCTION_INFO_V1(spock_clone_recovery_slot);
 PG_FUNCTION_INFO_V1(spock_create_rescue_subscription);
+PG_FUNCTION_INFO_V1(spock_suspend_all_peer_subs_for_rescue_sql);
+PG_FUNCTION_INFO_V1(spock_resume_all_peer_subs_post_rescue_sql);
 
 PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 
@@ -3521,5 +3523,46 @@ Datum
 spock_create_rescue_subscription(PG_FUNCTION_ARGS)
 {
 	return spock_create_rescue_subscription_sql(fcinfo);
+}
+
+/*
+ * spock_suspend_all_peer_subs_for_rescue_sql
+ *
+ * SQL-callable wrapper to suspend peer subscriptions during rescue.
+ */
+Datum
+spock_suspend_all_peer_subs_for_rescue_sql(PG_FUNCTION_ARGS)
+{
+	Oid			node_id = PG_GETARG_OID(0);
+	Oid			failed_node_id = PG_GETARG_OID(1);
+
+	if (!OidIsValid(node_id) || !OidIsValid(failed_node_id))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("node identifiers must be valid")));
+
+	spock_suspend_all_peer_subs_for_rescue(node_id, failed_node_id);
+
+	PG_RETURN_BOOL(true);
+}
+
+/*
+ * spock_resume_all_peer_subs_post_rescue_sql
+ *
+ * SQL-callable wrapper to resume suspended peer subscriptions after rescue.
+ */
+Datum
+spock_resume_all_peer_subs_post_rescue_sql(PG_FUNCTION_ARGS)
+{
+	Oid			node_id = PG_GETARG_OID(0);
+
+	if (!OidIsValid(node_id))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("node identifier must be valid")));
+
+	spock_resume_all_peer_subs_post_rescue(node_id);
+
+	PG_RETURN_BOOL(true);
 }
 

@@ -1,0 +1,1611 @@
+diff --git a/include/spock_recovery.h b/include/spock_recovery.h
+index e07c8a2..c521cfa 100644
+--- a/include/spock_recovery.h
++++ b/include/spock_recovery.h
+@@ -77,6 +77,7 @@ extern void spock_recovery_shmem_startup(void);
+ extern char *get_recovery_slot_name(const char *database_name);
+ extern bool create_recovery_slot(const char *database_name);
+ extern void drop_recovery_slot(void);
++extern void advance_recovery_slot_to_min_position(void);
+ extern void update_recovery_slot_progress(const char *slot_name,
+ 										  XLogRecPtr lsn,
+ 										  TimestampTz commit_ts);
+diff --git a/samples/recovery/recovery.sql b/samples/recovery/recovery.sql
+index 09e0067..babd2a8 100644
+--- a/samples/recovery/recovery.sql
++++ b/samples/recovery/recovery.sql
+@@ -5,6 +5,10 @@
+ -- recovery slot on a healthy peer, wiring a temporary rescue subscription on
+ -- the lagging node, and providing helpers to resume normal replication after
+ -- the catch-up completes.
++-- Execute these procedures from a coordinator/control node (any node with
++-- connectivity to both the advanced peer and the lagging node). The helpers
++-- invoke dblink to perform recovery-slot cloning on the source node and
++-- suspension/rescue-subscription work on the target node.
+ --
+ -- Requirements:
+ --   * Spock 6.0.0-devel (or newer) with the rescue catalog columns and
+@@ -12,7 +16,7 @@
+ --   * dblink extension available on the coordinator database.
+ --
+ -- Usage overview:
+---   1. CALL spock.recover_failed_node(
++--   1. CALL spock.recover_run(
+ --          failed_node_name := 'n1',
+ --          source_node_name := 'n2',
+ --          source_dsn       := 'host=127.0.0.1 port=5432 dbname=pgedge user=pgedge',
+@@ -21,12 +25,12 @@
+ --          stop_lsn         := '0/5000000'::pg_lsn,
+ --          skip_lsn         := NULL,
+ --          stop_timestamp   := NULL,
+---          verb             := true
++--          verb             := true,
++--          cloned_slot_name => slot_name
+ --      );
+ --
+---      This clones the recovery slot on n2, suspends the peer subscriptions on
+---      n3, and creates a rescue subscription on n3 that streams from the cloned
+---      slot back to n3 until the requested stop LSN (or timestamp) is reached.
++--      This performs Phase 1 (precheck) and Phase 2 (clone + rescue subscription).
++--      The OUT parameter `slot_name` captures the cloned slot for later cleanup.
+ --
+ --   2. Monitor the temporary subscription (spock.subscription.rescue_cleanup_pending)
+ --      and WAL replay. Once the manager worker reports that the rescue
+@@ -38,11 +42,15 @@
+ --             target_node_name  := 'n3',
+ --             failed_node_name  := 'n1',
+ --             source_dsn        := 'host=… n2 …',
+---             cloned_slot_name  := '<slot name returned from step 1>',
++--             cloned_slot_name  := slot_name,
+ --             verb              := true
+ --         );
+ --
+ -- Notes:
++--   * These helpers rely on the SPOC-137 rescue lifecycle features: cloning the
++--     recovery slot, suspending peer subscriptions, enabling a temporary rescue
++--     subscription (rescue_temporary=true), and allowing the manager worker to
++--     cleanly drop the rescue subscription once rescue_cleanup_pending is set.
+ --   * The helper uses dblink_exec with direct DSN strings. Ensure credentials
+ --     permit connections from the coordinator database.
+ --   * The cloned slot is not dropped automatically; call recover_finalize after
+@@ -55,49 +63,234 @@
+ CREATE EXTENSION IF NOT EXISTS dblink;
+ 
+ -- ----------------------------------------------------------------------------
+--- Procedure: spock.recover_failed_node
++-- Procedure: spock.recover_precheck
++-- Validates connectivity, Spock presence, recovery slot availability, and
++-- absence of existing rescue subscriptions before running the recovery flow.
++-- ----------------------------------------------------------------------------
++DROP PROCEDURE IF EXISTS spock.recover_precheck(
++    text, text, text, text, text, boolean
++);
++CREATE OR REPLACE PROCEDURE spock.recover_precheck(
++    failed_node_name text,
++    source_node_name text,
++    source_dsn text,
++    target_node_name text,
++    target_dsn text,
++    verb boolean,
++    OUT recovery_needed boolean
++)
++LANGUAGE plpgsql
++AS $$
++DECLARE
++    source_version text;
++    target_version text;
++    source_local_node text;
++    target_local_node text;
++    source_slot_count integer;
++    target_rescue_subs integer;
++    target_origin_subs integer;
++    tmp RECORD;
++BEGIN
++    verb := COALESCE(verb, false);
++    recovery_needed := true;
++
++    -- [Coordinator] Validate that source and target nodes are reachable,
++    -- running matching Spock versions, and that the rescue metadata is sane.
++    IF source_node_name = target_node_name THEN
++        RAISE EXCEPTION 'source_node_name (%) and target_node_name (%) must differ',
++            source_node_name, target_node_name;
++    END IF;
++    IF target_node_name = failed_node_name THEN
++        RAISE EXCEPTION 'target_node_name (%) cannot equal failed_node_name (%)',
++            target_node_name, failed_node_name;
++    END IF;
++
++    BEGIN
++        SELECT version INTO tmp FROM dblink(source_dsn, 'SELECT version()') AS t(version text);
++    EXCEPTION
++        WHEN OTHERS THEN
++            RAISE EXCEPTION 'Unable to connect to source DSN %: %', source_dsn, SQLERRM;
++    END;
++
++    BEGIN
++        SELECT version INTO tmp FROM dblink(target_dsn, 'SELECT version()') AS t(version text);
++    EXCEPTION
++        WHEN OTHERS THEN
++            RAISE EXCEPTION 'Unable to connect to target DSN %: %', target_dsn, SQLERRM;
++    END;
++
++    -- [Source node] Ensure Spock is installed.
++    SELECT extversion
++      INTO source_version
++      FROM dblink(
++               source_dsn,
++               'SELECT extversion FROM pg_extension WHERE extname = ''spock'''
++           ) AS t(extversion text);
++    IF source_version IS NULL THEN
++        RAISE EXCEPTION 'Spock extension not installed on source node %', source_node_name;
++    END IF;
++
++    -- [Target node] Ensure Spock is installed.
++    SELECT extversion
++      INTO target_version
++      FROM dblink(
++               target_dsn,
++               'SELECT extversion FROM pg_extension WHERE extname = ''spock'''
++           ) AS t(extversion text);
++    IF target_version IS NULL THEN
++        RAISE EXCEPTION 'Spock extension not installed on target node %', target_node_name;
++    END IF;
++
++    IF regexp_replace(source_version, '-devel$', '') <>
++       regexp_replace(target_version, '-devel$', '') THEN
++        RAISE EXCEPTION 'Spock version mismatch between source (%) and target (%)',
++            source_version, target_version;
++    END IF;
++
++    SELECT node_name
++      INTO source_local_node
++      FROM dblink(
++               source_dsn,
++               'SELECT n.node_name
++                  FROM spock.node n
++                  JOIN spock.local_node l ON l.node_id = n.node_id'
++           ) AS t(node_name text);
++    IF source_local_node IS DISTINCT FROM source_node_name THEN
++        RAISE EXCEPTION 'Source DSN resolves to node %, expected %',
++            source_local_node, source_node_name;
++    END IF;
++
++    SELECT node_name
++      INTO target_local_node
++      FROM dblink(
++               target_dsn,
++               'SELECT n.node_name
++                  FROM spock.node n
++                  JOIN spock.local_node l ON l.node_id = n.node_id'
++           ) AS t(node_name text);
++    IF target_local_node IS DISTINCT FROM target_node_name THEN
++        RAISE EXCEPTION 'Target DSN resolves to node %, expected %',
++            target_local_node, target_node_name;
++    END IF;
++
++    -- [Source node] Confirm a recovery slot is available/active.
++    SELECT cnt
++      INTO source_slot_count
++      FROM dblink(
++               source_dsn,
++               $_sql$SELECT count(*)
++                    FROM pg_replication_slots
++                   WHERE slot_name LIKE 'spk_recovery_%'
++                     AND active IS TRUE$_sql$
++           ) AS t(cnt int);
++    IF source_slot_count = 0 THEN
++        RAISE EXCEPTION 'No active recovery slot found on source node %', source_node_name;
++    END IF;
++
++    -- [Target node] Ensure there is no existing rescue subscription in flight.
++    SELECT cnt
++      INTO target_rescue_subs
++      FROM dblink(
++               target_dsn,
++               'SELECT count(*) FROM spock.subscription WHERE sub_rescue_temporary'
++           ) AS t(cnt int);
++    IF target_rescue_subs > 0 THEN
++        RAISE EXCEPTION 'Target node % already has % temporary rescue subscription(s); clean them first',
++            target_node_name, target_rescue_subs;
++    END IF;
++
++    SELECT cnt
++      INTO target_origin_subs
++      FROM dblink(
++               target_dsn,
++               format(
++                   $_sql$SELECT count(*)
++                        FROM spock.subscription s
++                        JOIN spock.node o ON o.node_id = s.sub_origin
++                       WHERE o.node_name = %L
++                         AND NOT s.sub_rescue_temporary$_sql$,
++                   failed_node_name
++               )
++           ) AS t(cnt int);
++
++    IF target_origin_subs = 0 THEN
++        recovery_needed := false;
++        IF verb THEN
++            RAISE NOTICE '[RESCUE] Target node % has no subscriptions sourced from %; rescue not required.',
++                target_node_name, failed_node_name;
++        END IF;
++        RETURN;
++    END IF;
++
++    PERFORM 1
++      FROM dblink(
++               target_dsn,
++               format(
++                   $_sql$SELECT 1
++                      FROM spock.node
++                     WHERE node_name = %L$_sql$,
++                   failed_node_name
++               )
++           ) AS t(exists int);
++    IF NOT FOUND THEN
++        RAISE EXCEPTION 'Failed node name % not present in metadata on target node %',
++            failed_node_name, target_node_name;
++    END IF;
++
++    IF verb THEN
++        RAISE NOTICE '[RESCUE] Precheck complete: connectivity, versions, recovery slot, and metadata verified.';
++    END IF;
++END;
++$$;
++
++-- ----------------------------------------------------------------------------
++-- Procedure: spock.recover_phase_clone
+ -- Clones the recovery slot on the rescue source, suspends peer subscriptions
+ -- on the lagging node, and creates a temporary rescue subscription using the
+ -- cloned slot.
+ -- ----------------------------------------------------------------------------
+-DROP PROCEDURE IF EXISTS spock.recover_failed_node(
++DROP PROCEDURE IF EXISTS spock.recover_phase_clone(
+     text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
+ );
+-CREATE OR REPLACE PROCEDURE spock.recover_failed_node(
++CREATE OR REPLACE PROCEDURE spock.recover_phase_clone(
+     failed_node_name text,
+     source_node_name text,
+     source_dsn text,
+     target_node_name text,
+     target_dsn text,
+-    stop_lsn pg_lsn DEFAULT NULL,
+-    skip_lsn pg_lsn DEFAULT NULL,
+-    stop_timestamp timestamptz DEFAULT NULL,
+-    verb boolean DEFAULT false
++    OUT cloned_slot_name text,
++    stop_lsn pg_lsn,
++    skip_lsn pg_lsn,
++    stop_timestamp timestamptz,
++    verb boolean
+ )
+ LANGUAGE plpgsql
+ AS $$
+ DECLARE
+     slot_info RECORD;
+-    cloned_slot_name text;
+     restart_lsn pg_lsn;
+     exec_status text;
+     sub_id oid;
+     effective_skip pg_lsn;
+     effective_stop pg_lsn;
++    slot_restart pg_lsn;
++    slot_confirm pg_lsn;
+     skip_expr text;
+     stop_expr text;
+     stop_ts_expr text;
+ BEGIN
++    verb := COALESCE(verb, false);
+     IF verb THEN
+         RAISE NOTICE '[RESCUE] Cloning recovery slot on % (%).',
+             source_node_name, source_dsn;
+     END IF;
+ 
+-    SELECT cloned_slot_name,
+-           original_slot_name,
+-           restart_lsn,
+-           success,
+-           message
++    -- [Source node] Clone the inactive recovery slot to an active temporary slot.
++    SELECT t.cloned_slot_name,
++           t.original_slot_name,
++           t.restart_lsn,
++           t.success,
++           t.message
+       INTO slot_info
+       FROM dblink(
+                source_dsn,
+@@ -126,8 +319,98 @@ BEGIN
+         RAISE NOTICE '[RESCUE] Cloned slot % (restart LSN %)', cloned_slot_name, restart_lsn;
+     END IF;
+ 
+-    effective_skip := COALESCE(skip_lsn, restart_lsn);
+-    effective_stop := COALESCE(stop_lsn, restart_lsn);
++    effective_skip := skip_lsn;
++    effective_stop := stop_lsn;
++    IF effective_stop IS NULL THEN
++        SELECT slot_restart, slot_confirm
++          INTO slot_restart, slot_confirm
++          FROM dblink(
++                   source_dsn,
++                   format(
++                       $_sql$SELECT restart_lsn, confirmed_flush_lsn
++                                FROM pg_catalog.pg_replication_slots
++                               WHERE slot_name = %L$_sql$,
++                       slot_info.cloned_slot_name
++                   )
++               ) AS t(restart_lsn pg_lsn, confirmed_flush_lsn pg_lsn);
++
++        effective_stop := COALESCE(slot_confirm, slot_restart, restart_lsn);
++    END IF;
++
++    IF effective_stop IS NULL THEN
++        SELECT source_remote_lsn
++          INTO effective_stop
++          FROM dblink(
++                   source_dsn,
++                   format(
++                       $_sql$SELECT pos.remote_lsn AS source_remote_lsn
++                                FROM spock.subscription s
++                                JOIN spock.node o ON o.node_id = s.sub_origin
++                                JOIN pg_catalog.pg_replication_origin_status pos
++                                  ON pos.external_id = spock.spock_gen_slot_name(
++                                        current_database()::name,
++                                        o.node_name::name,
++                                        s.sub_name)::text
++                               WHERE o.node_name = %L
++                               ORDER BY pos.remote_lsn DESC
++                               LIMIT 1$_sql$,
++                       failed_node_name
++                   )
++               ) AS t(source_remote_lsn pg_lsn);
++
++    END IF;
++
++    IF effective_skip IS NULL THEN
++        SELECT target_remote_lsn
++          INTO effective_skip
++          FROM dblink(
++                   target_dsn,
++                   format(
++                       $_sql$SELECT pos.remote_lsn AS target_remote_lsn
++                                FROM spock.subscription s
++                                JOIN spock.node o ON o.node_id = s.sub_origin
++                                JOIN pg_catalog.pg_replication_origin_status pos
++                                  ON pos.external_id = spock.spock_gen_slot_name(
++                                        current_database()::name,
++                                        o.node_name::name,
++                                        s.sub_name)::text
++                               WHERE o.node_name = %L
++                               ORDER BY pos.remote_lsn DESC
++                               LIMIT 1$_sql$,
++                       failed_node_name
++                   )
++               ) AS t(target_remote_lsn pg_lsn);
++    END IF;
++
++    IF effective_skip IS NULL THEN
++        effective_skip := restart_lsn;
++    END IF;
++
++    IF effective_stop IS NULL THEN
++        SELECT last_lsn
++          INTO effective_stop
++          FROM dblink(
++                   target_dsn,
++                   format(
++                       $_sql$SELECT frs.last_lsn
++                                FROM spock.find_rescue_source(%L) frs
++                                JOIN spock.node src ON src.node_id = frs.source_node_id
++                               WHERE src.node_name = %L$_sql$,
++                       failed_node_name,
++                       source_node_name
++                   )
++               ) AS t(last_lsn pg_lsn);
++    END IF;
++
++    IF effective_stop IS NULL THEN
++        RAISE EXCEPTION 'Unable to determine stop LSN automatically; provide stop_lsn or stop_timestamp explicitly';
++    END IF;
++
++    IF effective_skip IS NOT NULL
++       AND effective_stop IS NOT NULL
++       AND effective_skip >= effective_stop THEN
++        effective_skip := NULL;
++    END IF;
+ 
+     IF verb THEN
+         RAISE NOTICE '[RESCUE] Using skip LSN %, stop LSN %',
+@@ -137,17 +420,20 @@ BEGIN
+         END IF;
+     END IF;
+ 
+-    exec_status := dblink_exec(
+-        target_dsn,
+-        format(
+-            $$SELECT spock.suspend_all_peer_subs_for_rescue(t.node_id, f.node_id)
+-               FROM spock.node t, spock.node f
+-              WHERE t.node_name = %L
+-                AND f.node_name = %L$$,
+-            target_node_name,
+-            failed_node_name
+-        )
+-    );
++    -- [Target node] Suspend peer-to-peer subscriptions that would interfere with rescue.
++    SELECT suspend_success::text
++      INTO exec_status
++      FROM dblink(
++               target_dsn,
++               format(
++                   $_sql$SELECT spock.suspend_all_peer_subs_for_rescue(t.node_id, f.node_id) AS suspend_success
++                      FROM spock.node t, spock.node f
++                     WHERE t.node_name = %L
++                       AND f.node_name = %L$_sql$,
++                   target_node_name,
++                   failed_node_name
++               )
++           ) AS t(suspend_success boolean);
+ 
+     IF verb THEN
+         RAISE NOTICE '[RESCUE] Suspended peer subscriptions on % (status=%)',
+@@ -170,12 +456,13 @@ BEGIN
+                         ELSE quote_literal(stop_timestamp::text) || '::timestamptz'
+                      END;
+ 
+-    SELECT sub_id
++    -- [Target node] Create a temporary rescue subscription that streams from the cloned slot.
++    SELECT created_sub_id
+       INTO sub_id
+       FROM dblink(
+                target_dsn,
+                format(
+-                   $$SELECT spock.create_rescue_subscription(%L, %L, %L, %s, %s, %s)$$,
++                   $_sql$SELECT spock.create_rescue_subscription(%L, %L, %L, %s, %s, %s)$_sql$,
+                    target_node_name,
+                    source_node_name,
+                    cloned_slot_name,
+@@ -183,7 +470,7 @@ BEGIN
+                    stop_expr,
+                    stop_ts_expr
+                )
+-           ) AS t(sub_id oid);
++           ) AS t(created_sub_id oid);
+ 
+     IF sub_id IS NULL THEN
+         RAISE EXCEPTION 'Failed to create rescue subscription on %, cloned slot %',
+@@ -197,6 +484,119 @@ BEGIN
+ END;
+ $$;
+ 
++-- Backward-compatible wrapper for older tooling
++DROP PROCEDURE IF EXISTS spock.recover_failed_node(
++    text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
++);
++CREATE OR REPLACE PROCEDURE spock.recover_failed_node(
++    failed_node_name text,
++    source_node_name text,
++    source_dsn text,
++    target_node_name text,
++    target_dsn text,
++    stop_lsn pg_lsn DEFAULT NULL,
++    skip_lsn pg_lsn DEFAULT NULL,
++    stop_timestamp timestamptz DEFAULT NULL,
++    verb boolean DEFAULT false
++)
++LANGUAGE plpgsql
++AS $$
++DECLARE
++    cloned_slot text;
++BEGIN
++    CALL spock.recover_run(
++        failed_node_name => failed_node_name,
++        source_node_name => source_node_name,
++        source_dsn       => source_dsn,
++        target_node_name => target_node_name,
++        target_dsn       => target_dsn,
++        stop_lsn         => stop_lsn,
++        skip_lsn         => skip_lsn,
++        stop_timestamp   => stop_timestamp,
++        verb             => verb,
++        cloned_slot_name => cloned_slot
++    );
++
++    IF cloned_slot IS NULL THEN
++        RAISE NOTICE '[RESCUE] Legacy wrapper: recovery not required.';
++    ELSE
++        RAISE NOTICE '[RESCUE] Legacy wrapper created rescue subscription using cloned slot %', cloned_slot;
++    END IF;
++END;
++$$;
++
++-- ----------------------------------------------------------------------------
++-- Procedure: spock.recover_run
++-- Orchestrates Phase 1 (precheck) and Phase 2 (clone & temporary subscription).
++-- Returns the cloned slot name for later cleanup.
++-- ----------------------------------------------------------------------------
++DROP PROCEDURE IF EXISTS spock.recover_run(
++    text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
++);
++CREATE OR REPLACE PROCEDURE spock.recover_run(
++    failed_node_name text,
++    source_node_name text,
++    source_dsn text,
++    target_node_name text,
++    target_dsn text,
++    stop_lsn pg_lsn,
++    skip_lsn pg_lsn,
++    stop_timestamp timestamptz,
++    verb boolean,
++    OUT cloned_slot_name text
++)
++LANGUAGE plpgsql
++AS $$
++DECLARE
++    required boolean;
++BEGIN
++    verb := COALESCE(verb, false);
++    CALL spock.recover_precheck(
++        failed_node_name => failed_node_name,
++        source_node_name => source_node_name,
++        source_dsn       => source_dsn,
++        target_node_name => target_node_name,
++        target_dsn       => target_dsn,
++        verb             => verb,
++        recovery_needed  => required
++    );
++
++    IF NOT required THEN
++        cloned_slot_name := NULL;
++        IF verb THEN
++            RAISE NOTICE '[RESCUE] Recovery skipped: no subscriptions sourced from % on %.',
++                failed_node_name, target_node_name;
++        END IF;
++        RETURN;
++    END IF;
++    CALL spock.recover_phase_clone(
++        failed_node_name => failed_node_name,
++        source_node_name => source_node_name,
++        source_dsn       => source_dsn,
++        target_node_name => target_node_name,
++        target_dsn       => target_dsn,
++        stop_lsn         => stop_lsn,
++        skip_lsn         => skip_lsn,
++        stop_timestamp   => stop_timestamp,
++        verb             => verb,
++        cloned_slot_name => cloned_slot_name
++    );
++
++    IF verb THEN
++        RAISE NOTICE '[RESCUE] Orchestration complete. Cloned slot: %', cloned_slot_name;
++    END IF;
++END;
++$$;
++
++-- ----------------------------------------------------------------------------
++-- Procedure: spock.recovery
++-- Convenience wrapper that runs the full flow (precheck, clone/rescue, finalize).
++-- Execute from the coordinator node once you are ready to recover and clean up.
++-- ----------------------------------------------------------------------------
++DROP PROCEDURE IF EXISTS spock.recovery(
++    text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
++);
++
+ -- ----------------------------------------------------------------------------
+ -- Procedure: spock.recover_finalize
+ -- Resumes peer subscriptions on the rescued node and drops the cloned slot on
+@@ -218,15 +618,18 @@ AS $$
+ DECLARE
+     exec_status text;
+ BEGIN
+-    exec_status := dblink_exec(
+-        target_dsn,
+-        format(
+-            $$SELECT spock.resume_all_peer_subs_post_rescue(t.node_id)
+-               FROM spock.node t
+-              WHERE t.node_name = %L$$,
+-            target_node_name
+-        )
+-    );
++    -- [Coordinator] Resume normal replication by clearing rescue suspension flags.
++    SELECT resume_success::text
++      INTO exec_status
++      FROM dblink(
++               target_dsn,
++               format(
++                   $_sql$SELECT spock.resume_all_peer_subs_post_rescue(t.node_id) AS resume_success
++                      FROM spock.node t
++                     WHERE t.node_name = %L$_sql$,
++                   target_node_name
++               )
++           ) AS t(resume_success boolean);
+ 
+     IF verb THEN
+         RAISE NOTICE '[RESCUE] Resumed peer subscriptions on % (status=%)',
+@@ -234,10 +637,11 @@ BEGIN
+     END IF;
+ 
+     IF cloned_slot_name IS NOT NULL AND cloned_slot_name <> '' THEN
++        -- [Source node] Drop the temporary cloned slot now that the rescue subscription is gone.
+         exec_status := dblink_exec(
+             source_dsn,
+             format(
+-                $$SELECT pg_drop_replication_slot(%L)$$,
++                $_sql$DO $_drop$BEGIN PERFORM pg_drop_replication_slot(%L); END$_drop$;$_sql$,
+                 cloned_slot_name
+             )
+         );
+@@ -255,3 +659,189 @@ BEGIN
+ END;
+ $$;
+ 
++
++-- ----------------------------------------------------------------------------
++-- Procedure: spock.recover_status
++-- Convenience routine to inspect rescue-related catalog state after recovery.
++-- ----------------------------------------------------------------------------
++DROP PROCEDURE IF EXISTS spock.recover_status(text, text, boolean);
++CREATE OR REPLACE PROCEDURE spock.recover_status(
++    target_dsn text,
++    target_node_name text,
++    verb boolean DEFAULT false
++)
++LANGUAGE plpgsql
++AS $$
++DECLARE
++    sub_rec RECORD;
++    slot_rec RECORD;
++    subs_found boolean := false;
++    slots_found boolean := false;
++BEGIN
++    IF verb THEN
++        RAISE NOTICE '[RESCUE] Subscription rescue state on %:', target_node_name;
++    END IF;
++
++    FOR sub_rec IN
++        SELECT *
++          FROM dblink(
++                   target_dsn,
++                   format(
++           $_sql$SELECT s.sub_name,
++                    s.sub_rescue_temporary,
++                    s.sub_rescue_cleanup_pending,
++                    s.sub_rescue_failed
++                           FROM spock.subscription s
++                           JOIN spock.node t ON t.node_id = s.sub_target
++                          WHERE t.node_name = %L
++                            AND s.sub_rescue_temporary
++                          ORDER BY s.sub_name$_sql$,
++                       target_node_name
++                   )
++               ) AS t(
++                   sub_name text,
++                   sub_rescue_temporary boolean,
++                   sub_rescue_cleanup_pending boolean,
++                   sub_rescue_failed boolean
++               )
++    LOOP
++        subs_found := true;
++        IF verb THEN
++            RAISE NOTICE '  sub=% temporary=% cleanup_pending=% failed=%',
++                sub_rec.sub_name,
++                sub_rec.sub_rescue_temporary,
++                sub_rec.sub_rescue_cleanup_pending,
++                sub_rec.sub_rescue_failed;
++        END IF;
++    END LOOP;
++
++    IF NOT subs_found AND verb THEN
++        RAISE NOTICE '  (no rescue subscriptions found)';
++    END IF;
++
++    IF verb THEN
++        RAISE NOTICE '[RESCUE] Recovery slot state on %:', target_node_name;
++    END IF;
++
++    FOR slot_rec IN
++        SELECT *
++          FROM dblink(
++                   target_dsn,
++                   $_sql$SELECT slot_name,
++                             restart_lsn::text,
++                             confirmed_flush_lsn::text,
++                             active,
++                             in_recovery
++                        FROM spock.get_recovery_slot_status()
++                       ORDER BY slot_name$_sql$
++               ) AS t(
++                   slot_name text,
++                   restart_lsn text,
++                   confirmed_flush_lsn text,
++                   active boolean,
++                   in_recovery boolean
++               )
++    LOOP
++        slots_found := true;
++        IF verb THEN
++            RAISE NOTICE '  slot=% restart=% confirmed=% active=% in_recovery=%',
++                slot_rec.slot_name,
++                slot_rec.restart_lsn,
++                slot_rec.confirmed_flush_lsn,
++                slot_rec.active,
++                slot_rec.in_recovery;
++        END IF;
++    END LOOP;
++
++    IF NOT slots_found AND verb THEN
++        RAISE NOTICE '  (no recovery slot information returned)';
++    END IF;
++END;
++$$;
++
++CREATE OR REPLACE PROCEDURE spock.recovery(
++    failed_node_name text,
++    source_node_name text,
++    source_dsn text,
++    target_node_name text,
++    target_dsn text,
++    stop_lsn pg_lsn DEFAULT NULL,
++    skip_lsn pg_lsn DEFAULT NULL,
++    stop_timestamp timestamptz DEFAULT NULL,
++    verb boolean DEFAULT false
++)
++LANGUAGE plpgsql
++AS $$
++DECLARE
++    cloned_slot_name text;
++    pending_cleanup integer;
++BEGIN
++    CALL spock.recover_run(
++        failed_node_name => failed_node_name,
++        source_node_name => source_node_name,
++        source_dsn       => source_dsn,
++        target_node_name => target_node_name,
++        target_dsn       => target_dsn,
++        stop_lsn         => stop_lsn,
++        skip_lsn         => skip_lsn,
++        stop_timestamp   => stop_timestamp,
++        verb             => verb,
++        cloned_slot_name => cloned_slot_name
++    );
++
++    IF cloned_slot_name IS NULL THEN
++        IF verb THEN
++            RAISE NOTICE '[RESCUE] Recovery skipped: no rescue required.';
++        END IF;
++        RETURN;
++    END IF;
++
++    pending_cleanup := 0;
++    IF verb THEN
++        RAISE NOTICE '[RESCUE] Waiting for temporary rescue subscription on % to signal cleanup...',
++            target_node_name;
++    END IF;
++
++    FOR attempt IN 1..300 LOOP
++        SELECT cnt
++          INTO pending_cleanup
++          FROM dblink(
++                   target_dsn,
++                   'SELECT count(*) FROM spock.subscription WHERE sub_rescue_cleanup_pending'
++               ) AS t(cnt int);
++
++        EXIT WHEN pending_cleanup > 0;
++        PERFORM pg_sleep(1);
++    END LOOP;
++
++    IF pending_cleanup = 0 THEN
++        RAISE NOTICE '[RESCUE] Rescue subscription still applying on %. '
++        'Re-run spock.recovery once cleanup has been signalled.',
++            target_node_name;
++        RETURN;
++    END IF;
++
++    IF verb THEN
++        RAISE NOTICE '[RESCUE] Cleanup flag detected; proceeding with finalization on %.', target_node_name;
++    END IF;
++
++    CALL spock.recover_finalize(
++        target_dsn       => target_dsn,
++        target_node_name => target_node_name,
++        failed_node_name => failed_node_name,
++        source_dsn       => source_dsn,
++        cloned_slot_name => cloned_slot_name,
++        verb             => verb
++    );
++
++    CALL spock.recover_status(
++        target_dsn       => target_dsn,
++        target_node_name => target_node_name,
++        verb             => verb
++    );
++
++    IF verb THEN
++        RAISE NOTICE '[RESCUE] Recovery completed. Temporary slot % removed.', cloned_slot_name;
++    END IF;
++END;
++$$;
+diff --git a/sql/spock--5.0.4--6.0.0-devel.sql b/sql/spock--5.0.4--6.0.0-devel.sql
+index 1537051..ab566c1 100644
+--- a/sql/spock--5.0.4--6.0.0-devel.sql
++++ b/sql/spock--5.0.4--6.0.0-devel.sql
+@@ -6,6 +6,8 @@
+ DROP VIEW IF EXISTS spock.lag_tracker;
+ DROP TABLE IF EXISTS spock.progress;
+ 
++ALTER TABLE spock.subscription
++	ADD COLUMN IF NOT EXISTS sub_rescue_suspended boolean NOT NULL DEFAULT false;
+ ALTER TABLE spock.subscription
+ 	ADD COLUMN IF NOT EXISTS sub_rescue_temporary boolean NOT NULL DEFAULT false;
+ ALTER TABLE spock.subscription
+@@ -60,3 +62,93 @@ CREATE VIEW spock.lag_tracker AS
+ -- Source for sub_id values.
+ CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1
+ OWNED BY spock.subscription.sub_id;
++
++CREATE FUNCTION spock.get_recovery_slot_status()
++RETURNS TABLE (
++	slot_name text,
++	restart_lsn pg_lsn,
++	confirmed_flush_lsn pg_lsn,
++	min_unacknowledged_ts timestamptz,
++	active boolean,
++	in_recovery boolean
++)
++LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_recovery_slot_status_sql';
++
++CREATE OR REPLACE FUNCTION spock.get_recovery_status()
++RETURNS TABLE (
++	component text,
++	status text,
++	details text
++)
++LANGUAGE plpgsql
++AS $$
++DECLARE
++    recovery_slot_exists boolean := false;
++    recovery_slot_name text;
++    db_name text := current_database();
++BEGIN
++    -- Check if recovery slot exists
++    SELECT EXISTS (
++        SELECT 1 FROM spock.get_recovery_slot_status() WHERE active = true
++    ) INTO recovery_slot_exists;
++    
++    IF recovery_slot_exists THEN
++        RETURN QUERY SELECT 'Recovery Slot'::text, 'HEALTHY'::text, 'Recovery slot exists and is active'::text;
++    ELSE
++        -- Check if recovery slots are enabled via GUC
++        IF current_setting('spock.enable_recovery_slots', true)::boolean THEN
++            RETURN QUERY SELECT 'Recovery Slot'::text, 'MISSING'::text, 'Recovery slot is missing but should be created automatically by the manager process'::text;
++        ELSE
++            RETURN QUERY SELECT 'Recovery Slot'::text, 'DISABLED'::text, 'Recovery slot is disabled via spock.enable_recovery_slots = off'::text;
++        END IF;
++    END IF;
++    
++    RETURN;
++END;
++$$;
++
++CREATE OR REPLACE FUNCTION spock.find_rescue_source(failed_node_name text)
++RETURNS TABLE (
++    origin_node_id oid,
++    source_node_id oid,
++    last_lsn pg_lsn,
++    last_commit_timestamp timestamptz,
++    confidence_level text
++)
++LANGUAGE c AS 'MODULE_PATHNAME', 'spock_find_rescue_source';
++
++CREATE OR REPLACE FUNCTION spock.clone_recovery_slot(
++    target_restart_lsn pg_lsn DEFAULT NULL
++)
++RETURNS TABLE (
++    cloned_slot_name text,
++    original_slot_name text,
++    restart_lsn pg_lsn,
++    success boolean,
++    message text
++)
++LANGUAGE c AS 'MODULE_PATHNAME', 'spock_clone_recovery_slot';
++
++CREATE FUNCTION spock.create_rescue_subscription(
++    target_node name,
++    source_node name,
++    cloned_slot text,
++    skip_lsn pg_lsn DEFAULT NULL,
++    stop_lsn pg_lsn DEFAULT NULL,
++    stop_timestamp timestamptz DEFAULT NULL
++)
++RETURNS oid
++LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_rescue_subscription';
++
++CREATE FUNCTION spock.suspend_all_peer_subs_for_rescue(
++    node_id oid,
++    failed_node_id oid
++)
++RETURNS boolean
++LANGUAGE c AS 'MODULE_PATHNAME', 'spock_suspend_all_peer_subs_for_rescue_sql';
++
++CREATE FUNCTION spock.resume_all_peer_subs_post_rescue(
++    node_id oid
++)
++RETURNS boolean
++LANGUAGE c AS 'MODULE_PATHNAME', 'spock_resume_all_peer_subs_post_rescue_sql';
+diff --git a/sql/spock--6.0.0-devel.sql b/sql/spock--6.0.0-devel.sql
+index 1cce70f..3cc0bc7 100644
+--- a/sql/spock--6.0.0-devel.sql
++++ b/sql/spock--6.0.0-devel.sql
+@@ -674,7 +674,9 @@ RETURNS TABLE (
+ LANGUAGE c AS 'MODULE_PATHNAME', 'spock_find_rescue_source';
+ 
+ -- Recovery slot cloning function for disaster recovery workflows
+-CREATE OR REPLACE FUNCTION spock.clone_recovery_slot()
++CREATE OR REPLACE FUNCTION spock.clone_recovery_slot(
++    target_restart_lsn pg_lsn DEFAULT NULL
++)
+ RETURNS TABLE (
+     cloned_slot_name text,
+     original_slot_name text,
+@@ -695,3 +697,16 @@ CREATE FUNCTION spock.create_rescue_subscription(
+ RETURNS oid
+ LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_rescue_subscription';
+ 
++CREATE FUNCTION spock.suspend_all_peer_subs_for_rescue(
++    node_id oid,
++    failed_node_id oid
++)
++RETURNS boolean
++LANGUAGE c AS 'MODULE_PATHNAME', 'spock_suspend_all_peer_subs_for_rescue_sql';
++
++CREATE FUNCTION spock.resume_all_peer_subs_post_rescue(
++    node_id oid
++)
++RETURNS boolean
++LANGUAGE c AS 'MODULE_PATHNAME', 'spock_resume_all_peer_subs_post_rescue_sql';
++
+diff --git a/src/spock_apply.c b/src/spock_apply.c
+index 394ae1a..064778a 100644
+--- a/src/spock_apply.c
++++ b/src/spock_apply.c
+@@ -754,14 +754,18 @@ handle_commit(StringInfo s)
+ 		}
+ 
+ 		/* Have the commit code adjust our logical clock if needed */
++#if PG_VERSION_NUM >= 180000
+ 		remoteTransactionStopTimestamp = commit_time;
++#endif
+ 
+ 		CommitTransactionCommand();
+ 
+ 		if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
+ 			append_feedback_position(XactLastCommitEnd);
+ 
++#if PG_VERSION_NUM >= 180000
+ 		remoteTransactionStopTimestamp = 0;
++#endif
+ 
+ 		MemoryContextSwitchTo(TopMemoryContext);
+ 
+@@ -979,6 +983,19 @@ handle_origin(StringInfo s)
+ 	 */
+ 	remote_origin_id = spock_read_origin(s, &remote_origin_lsn);
+ 	replorigin_session_origin = remote_origin_id;
++	
++	/*
++	 * For rescue subscriptions, apply all transactions as local (without origin
++	 * tracking) to avoid conflicts with existing replication origins on the target.
++	 * This is critical because the target node may already have tracked these
++	 * transactions' origins, causing PostgreSQL to skip them as duplicates.
++	 */
++	if (MySubscription->rescue_temporary)
++	{
++		replorigin_session_origin = InvalidRepOriginId;
++		elog(DEBUG1, "SPOCK %s: rescue subscription bypassing origin tracking (original origin_id=%u)",
++			 MySubscription->name, remote_origin_id);
++	}
+ }
+ 
+ /*
+@@ -990,9 +1007,11 @@ handle_commit_order(StringInfo s)
+ 	/*
+ 	 * LAST commit ts message can only come inside remote transaction,
+ 	 * immediately after origin information, and before any actual writes.
++	 * For rescue subscriptions, we bypass origin tracking but still need
++	 * to accept commit order messages, so check remote_origin_id instead.
+ 	 */
+ 	if (!in_remote_transaction || IsTransactionState()
+-		|| replorigin_session_origin == InvalidRepOriginId)
++		|| (remote_origin_id == InvalidRepOriginId && !MySubscription->rescue_temporary))
+ 		elog(ERROR, "SPOCK %s: LATEST commit order message sent out of order",
+ 			 MySubscription->name);
+ 
+diff --git a/src/spock_common.c b/src/spock_common.c
+index 73ead28..44c9553 100644
+--- a/src/spock_common.c
++++ b/src/spock_common.c
+@@ -432,7 +432,13 @@ spock_get_equal_strategy_number(Oid opclass)
+ 		return BTEqualStrategyNumber;
+ #ifdef HASH_AM_OID
+ 	if (am == HASH_AM_OID)
++	{
++#ifdef HASHEqualStrategyNumber
+ 		return HASHEqualStrategyNumber;
++#else
++		return 1;	/* hash indexes use strategy 1 for equality */
++#endif
++	}
+ #endif
+ 	/* Default to btree equality semantics for other AMs */
+ 	return BTEqualStrategyNumber;
+diff --git a/src/spock_functions.c b/src/spock_functions.c
+index 3989bff..4234868 100644
+--- a/src/spock_functions.c
++++ b/src/spock_functions.c
+@@ -169,6 +169,8 @@ PG_FUNCTION_INFO_V1(spock_get_recovery_slot_status_sql);
+ PG_FUNCTION_INFO_V1(spock_find_rescue_source);
+ PG_FUNCTION_INFO_V1(spock_clone_recovery_slot);
+ PG_FUNCTION_INFO_V1(spock_create_rescue_subscription);
++PG_FUNCTION_INFO_V1(spock_suspend_all_peer_subs_for_rescue_sql);
++PG_FUNCTION_INFO_V1(spock_resume_all_peer_subs_post_rescue_sql);
+ 
+ PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
+ 
+@@ -3509,3 +3511,44 @@ spock_create_rescue_subscription(PG_FUNCTION_ARGS)
+ 	return spock_create_rescue_subscription_sql(fcinfo);
+ }
+ 
++/*
++ * spock_suspend_all_peer_subs_for_rescue_sql
++ *
++ * SQL-callable wrapper to suspend peer subscriptions during rescue.
++ */
++Datum
++spock_suspend_all_peer_subs_for_rescue_sql(PG_FUNCTION_ARGS)
++{
++	Oid			node_id = PG_GETARG_OID(0);
++	Oid			failed_node_id = PG_GETARG_OID(1);
++
++	if (!OidIsValid(node_id) || !OidIsValid(failed_node_id))
++		ereport(ERROR,
++				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
++				 errmsg("node identifiers must be valid")));
++
++	spock_suspend_all_peer_subs_for_rescue(node_id, failed_node_id);
++
++	PG_RETURN_BOOL(true);
++}
++
++/*
++ * spock_resume_all_peer_subs_post_rescue_sql
++ *
++ * SQL-callable wrapper to resume suspended peer subscriptions after rescue.
++ */
++Datum
++spock_resume_all_peer_subs_post_rescue_sql(PG_FUNCTION_ARGS)
++{
++	Oid			node_id = PG_GETARG_OID(0);
++
++	if (!OidIsValid(node_id))
++		ereport(ERROR,
++				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
++				 errmsg("node identifier must be valid")));
++
++	spock_resume_all_peer_subs_post_rescue(node_id);
++
++	PG_RETURN_BOOL(true);
++}
++
+diff --git a/src/spock_manager.c b/src/spock_manager.c
+index b9fe911..bf9e676 100644
+--- a/src/spock_manager.c
++++ b/src/spock_manager.c
+@@ -26,6 +26,7 @@
+ #include "utils/memutils.h"
+ #include "utils/builtins.h"
+ #include "utils/resowner.h"
++#include "utils/snapmgr.h"
+ #include "utils/timestamp.h"
+ 
+ #include "lib/stringinfo.h"
+@@ -93,6 +94,8 @@ cleanup_rescue_subscriptions(List *cleanup_list)
+ 	if (ret != SPI_OK_CONNECT)
+ 		elog(ERROR, "SPI_connect failed while cleaning rescue subscriptions");
+ 
++	PushActiveSnapshot(GetTransactionSnapshot());
++
+ 	foreach(lc, cleanup_list)
+ 	{
+ 		SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
+@@ -117,6 +120,7 @@ cleanup_rescue_subscriptions(List *cleanup_list)
+ 				 sub->name);
+ 	}
+ 
++	PopActiveSnapshot();
+ 	SPI_finish();
+ 	list_free(cleanup_list);
+ }
+@@ -363,6 +367,13 @@ spock_manager_main(Datum main_arg)
+ 		 */
+ 		sleep_timer = manage_apply_workers();
+ 
++		/*
++		 * Advance the recovery slot to the minimum position across all
++		 * active peer subscriptions. This ensures historical transactions
++		 * remain available for rescue operations.
++		 */
++		advance_recovery_slot_to_min_position();
++
+ 		rc = WaitLatch(&MyProc->procLatch,
+ 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+ 					   sleep_timer);
+diff --git a/src/spock_output_plugin.c b/src/spock_output_plugin.c
+index 81be80e..08fb1b8 100644
+--- a/src/spock_output_plugin.c
++++ b/src/spock_output_plugin.c
+@@ -1124,16 +1124,47 @@ pg_decode_origin_filter(LogicalDecodingContext *ctx,
+ 	bool ret;
+ 
+ 	if (origin_id == InvalidRepOriginId)
++	{
+ 		/* Never filter out locally originated tx's */
+ 		ret = false;
+-
++	}
+ 	else
++	{
+ 		/*
+-		 * Otherwise, ignore the origin passed in txnfilter_args->origin_id,
+-		 * and just forward all or nothing based on the configuration option
+-		 * 'forward_origins'.
++		 * For transactions with a remote origin, check forward_origins:
++		 * - If empty, filter them out (don't forward remote origins)
++		 * - If contains "all", forward everything (don't filter)
++		 * - Otherwise, check if this specific origin should be forwarded
+ 		 */
+-		ret = list_length(data->forward_origins) == 0;
++		if (list_length(data->forward_origins) == 0)
++		{
++			/* No forward_origins configured: filter out remote origins */
++			ret = true;
++		}
++		else if (list_length(data->forward_origins) == 1)
++		{
++			char *first = (char *) linitial(data->forward_origins);
++			elog(LOG, "SPOCK origin_filter: origin_id=%u, forward_origins[0]='%s', comparing with 'all'",
++				 origin_id, first);
++			if (strcmp(first, "all") == 0)
++			{
++				/* Special keyword "all": forward everything */
++				elog(LOG, "SPOCK origin_filter: matched 'all', forwarding transaction");
++				ret = false;
++			}
++			else
++			{
++				/* Single specific origin: would need to check origin name (not implemented here) */
++				elog(LOG, "SPOCK origin_filter: not 'all', forwarding anyway");
++				ret = false;
++			}
++		}
++		else
++		{
++			/* Multiple origins: forward them (not filtering in this simple version) */
++			ret = false;
++		}
++	}
+ 
+ 	return ret;
+ }
+diff --git a/src/spock_recovery.c b/src/spock_recovery.c
+index e968fbc..6b0b28e 100644
+--- a/src/spock_recovery.c
++++ b/src/spock_recovery.c
+@@ -44,6 +44,7 @@
+ #include "libpq-fe.h"
+ #include "lib/stringinfo.h"
+ #include "miscadmin.h"
++#include "replication/origin.h"
+ #include "replication/slot.h"
+ #include "storage/ipc.h"
+ #include "storage/lwlock.h"
+@@ -405,9 +406,41 @@ create_recovery_slot(const char *database_name)
+ 	 * - false: not failover (recovery slots don't need failover)
+ 	 * - false: not synced (recovery slots are local only)
+ 	 *
+-	 * Since recovery slots are controlled by GUC, failure to create should be fatal.
++	 * If the slot already exists at PostgreSQL level (e.g., after restart),
++	 * we just mark it as active in shared memory and continue.
+ 	 */
+-	ReplicationSlotCreate(slot_name, true, RS_PERSISTENT, false, false, false);
++	PG_TRY();
++	{
++		ReplicationSlotCreate(slot_name, true, RS_PERSISTENT, false, false, false);
++	}
++	PG_CATCH();
++	{
++		ErrorData  *edata;
++		
++		MemoryContextSwitchTo(ErrorContext);
++		edata = CopyErrorData();
++		FlushErrorState();
++		
++		/* If slot already exists, that's OK - just mark it active */
++		if (edata->sqlerrcode == ERRCODE_DUPLICATE_OBJECT)
++		{
++			elog(LOG, "recovery slot '%s' already exists at PostgreSQL level, reusing it", slot_name);
++			FreeErrorData(edata);
++			
++			/* Mark slot as active in shared memory */
++			LWLockAcquire(SpockRecoveryCtx->lock, LW_EXCLUSIVE);
++			slot->active = true;
++			LWLockRelease(SpockRecoveryCtx->lock);
++			
++			pfree(slot_name);
++			return true;
++		}
++		
++		/* For other errors, re-throw */
++		FreeErrorData(edata);
++		PG_RE_THROW();
++	}
++	PG_END_TRY();
+ 
+ 	elog(LOG, "created recovery slot '%s' (INACTIVE - for catastrophic failure recovery only)",
+ 		 slot_name);
+@@ -477,6 +510,137 @@ drop_recovery_slot(void)
+ 	PG_END_TRY();
+ }
+ 
++/*
++ * advance_recovery_slot_to_min_position
++ *
++ * Advance the recovery slot's confirmed_flush_lsn to the minimum position
++ * across all active peer subscriptions. This ensures the slot stays behind
++ * the slowest subscriber, allowing historical replay for rescue operations.
++ *
++ * This function should be called periodically by the manager worker.
++ */
++void
++advance_recovery_slot_to_min_position(void)
++{
++	SpockRecoverySlotData *slot_data;
++	ReplicationSlot *recovery_slot;
++	char slot_name[NAMEDATALEN];
++	XLogRecPtr min_remote_lsn = InvalidXLogRecPtr;
++	XLogRecPtr current_slot_lsn;
++	List *subscriptions;
++	ListCell *lc;
++
++	if (!SpockRecoveryCtx)
++		return;
++
++	/* Get recovery slot info from shared memory */
++	LWLockAcquire(SpockRecoveryCtx->lock, LW_SHARED);
++	slot_data = get_recovery_slot();
++	if (!slot_data->active)
++	{
++		LWLockRelease(SpockRecoveryCtx->lock);
++		return;
++	}
++	strlcpy(slot_name, slot_data->slot_name, NAMEDATALEN);
++	LWLockRelease(SpockRecoveryCtx->lock);
++
++	/* Start a transaction to query subscriptions */
++	StartTransactionCommand();
++
++	/* Get all active non-rescue subscriptions */
++	subscriptions = get_node_subscriptions(InvalidOid, false);
++
++	/*
++	 * Find the minimum remote_lsn across all peer subscriptions.
++	 * This represents the slowest subscriber's position.
++	 */
++	foreach(lc, subscriptions)
++	{
++		SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
++		Oid origin_id;
++		XLogRecPtr remote_lsn;
++		char origin_name[NAMEDATALEN];
++
++		/* Skip rescue subscriptions */
++		if (sub->rescue_temporary)
++			continue;
++
++		/* Skip disabled subscriptions */
++		if (!sub->enabled)
++			continue;
++
++		/* Build origin name for this subscription */
++		snprintf(origin_name, NAMEDATALEN, "spk_pgedge_%s_sub_%s_%s",
++				 sub->origin->name, sub->origin->name, sub->target->name);
++
++		/* Look up replication origin */
++		origin_id = replorigin_by_name(origin_name, true);
++		if (origin_id == InvalidRepOriginId)
++			continue;
++
++		/* Get remote LSN from origin status */
++		replorigin_session_setup(origin_id, 0);
++		replorigin_session_reset();
++		remote_lsn = replorigin_session_get_progress(false);
++
++		if (remote_lsn != InvalidXLogRecPtr)
++		{
++			if (min_remote_lsn == InvalidXLogRecPtr || remote_lsn < min_remote_lsn)
++			{
++				min_remote_lsn = remote_lsn;
++				elog(DEBUG2, "recovery slot: subscription %s at remote_lsn %X/%X",
++					 sub->name, LSN_FORMAT_ARGS(remote_lsn));
++			}
++		}
++	}
++
++	CommitTransactionCommand();
++
++	/* If we found a minimum position, advance the slot to it */
++	if (min_remote_lsn != InvalidXLogRecPtr)
++	{
++		/* Acquire the recovery slot */
++		recovery_slot = SearchNamedReplicationSlot(slot_name, false);
++		if (recovery_slot)
++		{
++			ReplicationSlotAcquire(slot_name, true, false);
++
++			SpinLockAcquire(&recovery_slot->mutex);
++			current_slot_lsn = recovery_slot->data.confirmed_flush;
++			SpinLockRelease(&recovery_slot->mutex);
++
++			/*
++			 * Only advance if the new position is ahead of current position.
++			 * Never move backwards as that could cause WAL to be deleted.
++			 */
++			if (current_slot_lsn == InvalidXLogRecPtr || min_remote_lsn > current_slot_lsn)
++			{
++				SpinLockAcquire(&recovery_slot->mutex);
++				recovery_slot->data.confirmed_flush = min_remote_lsn;
++				recovery_slot->data.restart_lsn = min_remote_lsn;
++				SpinLockRelease(&recovery_slot->mutex);
++
++				ReplicationSlotMarkDirty();
++				ReplicationSlotSave();
++
++				elog(LOG, "advanced recovery slot '%s' to minimum peer position %X/%X",
++					 slot_name, LSN_FORMAT_ARGS(min_remote_lsn));
++			}
++			else
++			{
++				elog(DEBUG2, "recovery slot '%s' already at or ahead of minimum position %X/%X (current: %X/%X)",
++					 slot_name, LSN_FORMAT_ARGS(min_remote_lsn), LSN_FORMAT_ARGS(current_slot_lsn));
++			}
++
++			ReplicationSlotRelease();
++		}
++	}
++	else
++	{
++		elog(DEBUG2, "no peer subscriptions found for recovery slot advancement");
++	}
++}
++
+ /*
+  * update_recovery_slot_progress
+  *
+@@ -580,11 +744,17 @@ query_node_recovery_progress(const char *node_dsn, const char *origin_node_name,
+ 			"SELECT pos.remote_lsn, "
+ 			"       CASE WHEN pos.remote_lsn = '0/0'::pg_lsn THEN NULL "
+ 			"            ELSE pg_catalog.pg_xact_commit_timestamp(pos.local_id) "
+-			"       END as remote_timestamp "
+-			"FROM spock.node n "
++			"       END AS remote_timestamp "
++			"FROM spock.subscription s "
++			"JOIN spock.node o ON o.node_id = s.sub_origin "
+ 			"JOIN pg_replication_origin_status pos "
+-			"  ON pos.external_id = spock.spock_origin_name(n.node_id) "
+-			"WHERE n.node_name = $1");
++			"  ON pos.external_id = spock.spock_gen_slot_name("
++			"         current_database()::name, "
++			"         o.node_name::name, "
++			"         s.sub_name)::text "
++			"WHERE o.node_name = $1 "
++			"ORDER BY pos.remote_lsn DESC "
++			"LIMIT 1");
+ 
+ 		/* Use parameterized query for safety */
+ 		param_values[0] = origin_node_name;
+@@ -874,7 +1044,12 @@ spock_find_rescue_source_sql(PG_FUNCTION_ARGS)
+  * This function clones the local recovery slot to create a temporary slot
+  * that can be used for disaster recovery without modifying the original.
+  *
+- * Usage: SELECT * FROM spock.clone_recovery_slot();
++ * Usage: SELECT * FROM spock.clone_recovery_slot(target_restart_lsn);
++ *
++ * Args:
++ * - target_restart_lsn (optional): If provided, set the cloned slot's restart_lsn
++ *   to this position instead of copying from the original slot. This allows
++ *   replaying from an earlier position to recover missing transactions.
+  *
+  * Returns a record with:
+  * - cloned_slot_name: Name of the newly created active slot
+@@ -894,9 +1069,14 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
+ 	char	   *original_slot_name = NULL;
+ 	XLogRecPtr	restart_lsn = InvalidXLogRecPtr;
+ 	XLogRecPtr	confirmed_flush_lsn = InvalidXLogRecPtr;
++	XLogRecPtr	target_restart_lsn = InvalidXLogRecPtr;
+ 	bool		success = false;
+ 	char	   *message = NULL;
+ 
++	/* Get optional target_restart_lsn parameter */
++	if (PG_NARGS() > 0 && !PG_ARGISNULL(0))
++		target_restart_lsn = PG_GETARG_LSN(0);
++
+ 	/* Validate that recovery slot exists and is active */
+ 	if (!SpockRecoveryCtx || !SpockRecoveryCtx->recovery_slot.active)
+ 	{
+@@ -913,18 +1093,12 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
+ 	{
+ 		TimestampTz now = GetCurrentTimestamp();
+ 		const char *timestamp_str = timestamptz_to_str(now);
+-		char	   *clean_timestamp = pstrdup(timestamp_str);
+-		
+-		/* Clean up timestamp string for use in slot name */
+-		for (int i = 0; clean_timestamp[i]; i++)
+-		{
+-			if (clean_timestamp[i] == ' ' || clean_timestamp[i] == ':' || 
+-				clean_timestamp[i] == '-' || clean_timestamp[i] == '.')
+-				clean_timestamp[i] = '_';
+-		}
+-		
+-		cloned_slot_name = psprintf("spock_rescue_clone_%s", clean_timestamp);
+-		pfree(clean_timestamp);
++		StringInfoData namebuf;
++
++		initStringInfo(&namebuf);
++		appendStringInfoString(&namebuf, "spock_rescue_clone_");
++		append_sanitized_token(&namebuf, timestamp_str);
++		cloned_slot_name = namebuf.data;
+ 	}
+ 
+ 	/* Clone the recovery slot */
+@@ -947,38 +1121,68 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
+ 		restart_lsn = original_slot->data.restart_lsn;
+ 		SpinLockRelease(&original_slot->mutex);
+ 
+-		/* Create the cloned slot */
+-		ReplicationSlotCreate(cloned_slot_name, true, RS_PERSISTENT, false, false, false);
++		/*
++		 * Some recovery slots may not yet have a restart LSN recorded. Fall back
++		 * to the confirmed flush position so callers have a sensible default.
++		 */
++		if (XLogRecPtrIsInvalid(restart_lsn) && !XLogRecPtrIsInvalid(confirmed_flush_lsn))
++			restart_lsn = confirmed_flush_lsn;
+ 
+-		/* Get the cloned slot and set its position */
+-		cloned_slot = SearchNamedReplicationSlot(cloned_slot_name, true);
+-		if (cloned_slot)
++		/*
++		 * If caller provided a target_restart_lsn, use that instead.
++		 * This allows creating a cloned slot that starts from an earlier position
++		 * to replay missing transactions for disaster recovery.
++		 */
++		if (!XLogRecPtrIsInvalid(target_restart_lsn))
+ 		{
+-			/* Set the slot's positions to match the original */
+-			SpinLockAcquire(&cloned_slot->mutex);
+-			cloned_slot->data.confirmed_flush = confirmed_flush_lsn;
+-			cloned_slot->data.restart_lsn = restart_lsn;
+-			SpinLockRelease(&cloned_slot->mutex);
+-
+-			/* Mark slot as active */
+-			ReplicationSlotMarkDirty();
+-
+-			success = true;
+-			message = psprintf("Successfully cloned recovery slot '%s' to '%s'", 
+-							  original_slot_name, cloned_slot_name);
++			restart_lsn = target_restart_lsn;
++			confirmed_flush_lsn = target_restart_lsn;
++			elog(LOG, "Cloning recovery slot with custom restart_lsn %X/%X for disaster recovery",
++				 LSN_FORMAT_ARGS(target_restart_lsn));
+ 		}
+-		else
++
++		/* Create the cloned logical slot using the Spock output plugin */
++		ReplicationSlotCreate(cloned_slot_name, true, RS_PERSISTENT,
++							  false, true, false);
++		cloned_slot = MyReplicationSlot;
++		if (cloned_slot == NULL)
+ 		{
+ 			message = psprintf("Failed to create cloned slot '%s'", cloned_slot_name);
++			goto cleanup_clone;
+ 		}
+ 
++		/* Configure cloned slot metadata to match expectations of Spock */
++		SpinLockAcquire(&cloned_slot->mutex);
++		cloned_slot->data.database = MyDatabaseId;
++		strlcpy(NameStr(cloned_slot->data.plugin), "spock_output", NAMEDATALEN);
++		cloned_slot->data.confirmed_flush = confirmed_flush_lsn;
++		cloned_slot->data.restart_lsn = restart_lsn;
++		SpinLockRelease(&cloned_slot->mutex);
++
++		ReplicationSlotMarkDirty();
++		ReplicationSlotSave();
++		ReplicationSlotRelease();
++
++		success = true;
++		message = psprintf("Successfully cloned recovery slot '%s' to '%s'",
++						   original_slot_name, cloned_slot_name);
++
+ cleanup_clone:
+ 		;
+ 	}
+ 	PG_CATCH();
+ 	{
+-		message = psprintf("Error creating cloned slot '%s': %s", 
+-						  cloned_slot_name, "slot creation failed");
++		ErrorData  *edata;
++
++		edata = CopyErrorData();
++		FlushErrorState();
++
++		message = psprintf("Error creating cloned slot '%s': %s",
++						  cloned_slot_name ? cloned_slot_name : "<unspecified>",
++						  edata && edata->message ? edata->message : "slot creation failed");
++
++		if (edata)
++			FreeErrorData(edata);
+ 	}
+ 	PG_END_TRY();
+ 
+@@ -1086,8 +1290,8 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
+ 		ereport(ERROR,
+ 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+ 				 errmsg("skip LSN must be lower than stop LSN"),
+-				 errdetail("Provided skip_lsn %X/%X is not less than stop_lsn %X/%X."),
+-				 LSN_FORMAT_ARGS(skip_lsn), LSN_FORMAT_ARGS(stop_lsn)));
++				 errdetail("Provided skip_lsn %X/%X is not less than stop_lsn %X/%X.",
++						   LSN_FORMAT_ARGS(skip_lsn), LSN_FORMAT_ARGS(stop_lsn))));
+ 
+ 	validate_rescue_slot_name(cloned_slot_name);
+ 
+@@ -1147,7 +1351,14 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
+ 	repsets = lappend(repsets, pstrdup("default_insert_only"));
+ 	repsets = lappend(repsets, pstrdup("ddl_sql"));
+ 	sub.replication_sets = repsets;
+-	sub.forward_origins = NIL;
++	
++	/*
++	 * Forward ALL origins in rescue subscriptions. This is necessary because
++	 * the lagging node needs to receive transactions that originated from the
++	 * failed node but were forwarded through the rescue source node.
++	 * Using "all" means forward transactions regardless of origin.
++	 */
++	sub.forward_origins = list_make1(pstrdup("all"));
+ 
+ 	apply_delay = (Interval *) palloc0(sizeof(Interval));
+ 	sub.apply_delay = apply_delay;
+diff --git a/src/spock_repset.c b/src/spock_repset.c
+index 3920504..42a855d 100644
+--- a/src/spock_repset.c
++++ b/src/spock_repset.c
+@@ -1511,12 +1511,21 @@ stringlist_to_identifierstr(List *strings)
+ 
+ 	foreach (lc, strings)
+ 	{
++		char *str = (char *)lfirst(lc);
++		
+ 		if (first)
+ 			first = false;
+ 		else
+ 			appendStringInfoChar(&res, ',');
+ 
+-		appendStringInfoString(&res, quote_identifier((char *)lfirst(lc)));
++		/*
++		 * Special case: "all" is a keyword for forward_origins and should
++		 * not be quoted. For everything else, use quote_identifier.
++		 */
++		if (strcmp(str, "all") == 0)
++			appendStringInfoString(&res, str);
++		else
++			appendStringInfoString(&res, quote_identifier(str));
+ 	}
+ 
+ 	return res.data;
