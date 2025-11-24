@@ -20,4 +20,24 @@ WHERE extname = 'spock';
  t
 (1 row)
 
+-- Check that security label is cleaned up on the extension drop
+CREATE TABLE slabel (x money, y text PRIMARY KEY);
+SELECT spock.delta_apply('slabel', 'x', false);
+ delta_apply 
+-------------
+ t
+(1 row)
+
+SELECT objname, label FROM pg_seclabels;
+ objname  |    label    
+----------+-------------
+ slabel.x | delta_apply
+(1 row)
+
 DROP EXTENSION spock;
+SELECT objname, label FROM pg_seclabels;
+ objname | label 
+---------+-------
+(0 rows)
+
+DROP TABLE slabel;

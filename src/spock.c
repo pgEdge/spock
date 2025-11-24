@@ -25,6 +25,7 @@
 #include "catalog/pg_type.h"
 
 #include "commands/extension.h"
+#include "commands/seclabel.h"
 
 #include "executor/executor.h"
 
@@ -901,6 +902,32 @@ log_message_filter(ErrorData *edata)
 }
 
 /*
+ * Spock security label hook.
+ *
+ * Just to be sure user adds a proper label: only table columns may be applied.
+ */
+static void
+spock_object_relabel(const ObjectAddress *object, const char *seclabel)
+{
+	Oid				extoid;
+
+	extoid = get_extension_oid(EXTENSION_NAME, true);
+	if (!OidIsValid(extoid))
+		elog(ERROR, "spock extension is not created yet");
+
+	/*
+	 * Check: classId must be pg_class, objectId should an existing table and
+	 * attnum must be more than 0.
+	 */
+	if (object->classId != RelationRelationId || object->objectSubId <= 0 ||
+		!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(object->objectId)))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("spock provider does not support labels on %s",
+						getObjectTypeDescription(object, false))));
+}
+
+/*
  * Entry point for this module.
  */
 void
@@ -1171,4 +1198,7 @@ _PG_init(void)
 	/* General-purpose message filter */
 	prev_emit_log_hook = emit_log_hook;
 	emit_log_hook = log_message_filter;
+
+	/* Security label provider hook */
+	register_label_provider(spock_SECLABEL_PROVIDER, spock_object_relabel);
 }
