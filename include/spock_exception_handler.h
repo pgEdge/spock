@@ -74,10 +74,10 @@ typedef enum SpockExceptionLogging
 	LOG_ALL
 } SpockExceptionLogging;
 
-extern SpockExceptionLog   *exception_log_ptr;
-extern int					exception_behaviour;
-extern int					exception_logging;
-extern int					exception_command_counter;
+extern SpockExceptionLog *exception_log_ptr;
+extern int	exception_behaviour;
+extern int	exception_logging;
+extern int	exception_command_counter;
 
 extern void add_entry_to_exception_log(Oid remote_origin,
 									   TimestampTz remote_commit_ts,
@@ -97,4 +97,4 @@ extern void spock_disable_subscription(SpockSubscription *sub,
 									   XLogRecPtr lsn,
 									   TimestampTz ts);
 
-#endif /* SPOCK_EXCEPTION_HANDLER_H */
+#endif							/* SPOCK_EXCEPTION_HANDLER_H */

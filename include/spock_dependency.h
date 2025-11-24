@@ -13,23 +13,23 @@
 #define SPOCK_DEPENDENCY_H
 
 extern void spock_recordDependencyOn(const ObjectAddress *depender,
-				   const ObjectAddress *referenced,
-				   DependencyType behavior);
+									 const ObjectAddress *referenced,
+									 DependencyType behavior);
 
 extern void spock_recordMultipleDependencies(const ObjectAddress *depender,
-						   const ObjectAddress *referenced,
-						   int nreferenced,
-						   DependencyType behavior);
+											 const ObjectAddress *referenced,
+											 int nreferenced,
+											 DependencyType behavior);
 
 extern void spock_recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
-								Node *expr, Oid relId,
-								DependencyType behavior,
-								DependencyType self_behavior);
+												  Node *expr, Oid relId,
+												  DependencyType behavior,
+												  DependencyType self_behavior);
 
 extern void spock_tryDropDependencies(const ObjectAddress *object,
-										  DropBehavior behavior);
-
-extern void spock_checkDependency(const ObjectAddress *object,
 									  DropBehavior behavior);
 
-#endif /* SPOCK_DEPENDENCY_H */
+extern void spock_checkDependency(const ObjectAddress *object,
+								  DropBehavior behavior);
+
+#endif							/* SPOCK_DEPENDENCY_H */

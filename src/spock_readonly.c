@@ -32,7 +32,7 @@
 #include "spock.h"
 
 /* GUC variable */
-int	spock_readonly = READONLY_OFF;
+int			spock_readonly = READONLY_OFF;
 
 
 PG_FUNCTION_INFO_V1(spockro_terminate_active_transactions);
@@ -44,9 +44,9 @@ Datum
 spockro_terminate_active_transactions(PG_FUNCTION_ARGS)
 {
 	VirtualTransactionId *tvxid;
-	int nvxids;
-	int i;
-	pid_t pid;
+	int			nvxids;
+	int			i;
+	pid_t		pid;
 
 	elog(LOG, "spock: terminating all active transactions ...");
 
@@ -62,7 +62,7 @@ spockro_terminate_active_transactions(PG_FUNCTION_ARGS)
 void
 spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 {
-    bool command_is_ro = false;
+	bool		command_is_ro = false;
 
 	switch (query->commandType)
 	{
@@ -98,7 +98,8 @@ spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate
 void
 spock_roExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-	bool command_is_ro = false;
+	bool		command_is_ro = false;
+
 	switch (queryDesc->operation)
 	{
 		case CMD_SELECT:

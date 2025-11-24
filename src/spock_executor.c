@@ -53,7 +53,7 @@
 #include "spock_autoddl.h"
 #include "spock_common.h"
 #include "spock_node.h"
-#include "spock_output_plugin.h" /* To check the output plugin state */
+#include "spock_output_plugin.h"	/* To check the output plugin state */
 #include "spock_executor.h"
 #include "spock_repset.h"
 #include "spock_queue.h"
@@ -61,8 +61,8 @@
 #include "spock.h"
 
 
-static DropBehavior	spock_lastDropBehavior = DROP_RESTRICT;
-static bool			dropping_spock_obj = false;
+static DropBehavior spock_lastDropBehavior = DROP_RESTRICT;
+static bool dropping_spock_obj = false;
 static object_access_hook_type next_object_access_hook = NULL;
 
 static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
@@ -70,8 +70,8 @@ static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook;
 static ExecutorStart_hook_type prev_executor_start_hook;
 
-void spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
-void spock_ExecutorStart(QueryDesc *queryDesc, int eflags);
+void		spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
+void		spock_ExecutorStart(QueryDesc *queryDesc, int eflags);
 
 EState *
 create_estate_for_relation(Relation rel, bool forwrite)
@@ -100,8 +100,8 @@ create_estate_for_relation(Relation rel, bool forwrite)
 ExprContext *
 prepare_per_tuple_econtext(EState *estate, TupleDesc tupdesc)
 {
-	ExprContext	   *econtext;
-	MemoryContext	oldContext;
+	ExprContext *econtext;
+	MemoryContext oldContext;
 
 	econtext = GetPerTupleExprContext(estate);
 
@@ -123,7 +123,7 @@ spock_prepare_row_filter(Node *row_filter)
 	Oid			exprtype;
 
 	exprtype = exprType(row_filter);
-	expr = (Expr *) coerce_to_target_type(NULL,	/* no UNKNOWN params here */
+	expr = (Expr *) coerce_to_target_type(NULL, /* no UNKNOWN params here */
 										  row_filter, exprtype,
 										  BOOLOID, -1,
 										  COERCION_ASSIGNMENT,
@@ -135,7 +135,7 @@ spock_prepare_row_filter(Node *row_filter)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("cannot cast the row_filter to boolean"),
-			   errhint("You will need to rewrite the row_filter.")));
+				 errhint("You will need to rewrite the row_filter.")));
 
 	expr = expression_planner(expr);
 	exprstate = ExecInitExpr(expr, NULL);
@@ -149,8 +149,8 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 					 ParamListInfo params, QueryEnvironment *queryEnv,
 					 DestReceiver *dest, QueryCompletion *qc)
 {
-	Node		   *parsetree = pstmt->utilityStmt;
-	NodeTag			toplevel_stmt = nodeTag(parsetree);
+	Node	   *parsetree = pstmt->utilityStmt;
+	NodeTag		toplevel_stmt = nodeTag(parsetree);
 
 	dropping_spock_obj = false;
 
@@ -171,7 +171,7 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 		if (spock_enable_ddl_replication || in_spock_queue_ddl_command)
 			spock_lastDropBehavior = DROP_CASCADE;
 		else
-			spock_lastDropBehavior = ((DropStmt *)parsetree)->behavior;
+			spock_lastDropBehavior = ((DropStmt *) parsetree)->behavior;
 	}
 
 	/* There's no reason we should be in a long lived context here */
@@ -187,7 +187,7 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 
 	/* Check for AutoDDL */
 	spock_autoddl_process(pstmt, queryString, context, toplevel_stmt);
- }
+}
 
 /*
  * Handle object drop.
@@ -196,22 +196,22 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
  */
 static void
 spock_object_access(ObjectAccessType access,
-						Oid classId,
-						Oid objectId,
-						int subId,
-						void *arg)
+					Oid classId,
+					Oid objectId,
+					int subId,
+					void *arg)
 {
-	Oid		save_userid = 0;
-	int		save_sec_context = 0;
+	Oid			save_userid = 0;
+	int			save_sec_context = 0;
 
 	if (next_object_access_hook)
 		(*next_object_access_hook) (access, classId, objectId, subId, arg);
 
 	if (access == OAT_DROP)
 	{
-		ObjectAccessDrop   *drop_arg = (ObjectAccessDrop *) arg;
-		ObjectAddress		object;
-		DropBehavior		behavior;
+		ObjectAccessDrop *drop_arg = (ObjectAccessDrop *) arg;
+		ObjectAddress object;
+		DropBehavior behavior;
 
 		/* No need to check for internal deletions. */
 		if ((drop_arg->dropflags & PERFORM_DELETION_INTERNAL) != 0)
@@ -220,7 +220,7 @@ spock_object_access(ObjectAccessType access,
 		/* Dropping spock itself? */
 		if (classId == ExtensionRelationId &&
 			objectId == get_extension_oid(EXTENSION_NAME, true) &&
-			objectId != InvalidOid /* Should not happen but check anyway */)
+			objectId != InvalidOid /* Should not happen but check anyway */ )
 			dropping_spock_obj = true;
 
 		/* Dropping relation within spock? */
@@ -237,22 +237,21 @@ spock_object_access(ObjectAccessType access,
 		}
 
 		/*
-		 * Don't do extra dependency checks for internal objects, those
-		 * should be handled by Postgres.
+		 * Don't do extra dependency checks for internal objects, those should
+		 * be handled by Postgres.
 		 */
 		if (dropping_spock_obj)
 			return;
 
 		/*
-		 * Check that we have a local node. We need to elevate access
-		 * because this is called as an executor DROP hook under the
-		 * session user, who not necessarily has access permission to
-		 * Spock extension objects.
+		 * Check that we have a local node. We need to elevate access because
+		 * this is called as an executor DROP hook under the session user, who
+		 * not necessarily has access permission to Spock extension objects.
 		 */
 		GetUserIdAndSecContext(&save_userid, &save_sec_context);
 		SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
 							   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-		if(!get_local_node(false, true))
+		if (!get_local_node(false, true))
 		{
 			SetUserIdAndSecContext(save_userid, save_sec_context);
 			return;
@@ -294,7 +293,7 @@ spock_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
 	spock_roExecutorStart(queryDesc, eflags);
 
-    if (prev_executor_start_hook)
+	if (prev_executor_start_hook)
 		prev_executor_start_hook(queryDesc, eflags);
 	else
 		standard_ExecutorStart(queryDesc, eflags);

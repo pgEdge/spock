@@ -61,12 +61,12 @@
 
 typedef struct RemoteSlot
 {
-	char *name;
-	char *plugin;
-	char *database;
-	bool two_phase;
-	XLogRecPtr restart_lsn;
-	XLogRecPtr confirmed_lsn;
+	char	   *name;
+	char	   *plugin;
+	char	   *database;
+	bool		two_phase;
+	XLogRecPtr	restart_lsn;
+	XLogRecPtr	confirmed_lsn;
 	TransactionId catalog_xmin;
 } RemoteSlot;
 
@@ -80,14 +80,14 @@ typedef enum FailoverSlotFilterKey
 typedef struct FailoverSlotFilter
 {
 	FailoverSlotFilterKey key;
-	char *val; /* eg: test_decoding */
+	char	   *val;			/* eg: test_decoding */
 } FailoverSlotFilter;
 
 /* Used for physical-before-logical ordering */
 static char *standby_slot_names_raw;
 static char *standby_slot_names_string = NULL;
 static List *pg_standby_slot_names = NIL;
-static int standby_slots_min_confirmed;
+static int	standby_slots_min_confirmed;
 static XLogRecPtr standby_slot_names_oldest_flush_lsn = InvalidXLogRecPtr;
 
 /* Slots to sync */
@@ -97,16 +97,16 @@ static char *spock_failover_slot_names_str = NULL;
 static List *spock_failover_slot_names_list = NIL;
 static bool spock_failover_slots_drop = true;
 
-void spock_init_failover_slot(void);
+void		spock_init_failover_slot(void);
 
 PGDLLEXPORT void spock_failover_slots_main(Datum main_arg);
 
 static bool
 check_failover_slot_names(char **newval, void **extra, GucSource source)
 {
-	List *namelist = NIL;
-	char *rawname = pstrdup(*newval);
-	bool valid;
+	List	   *namelist = NIL;
+	char	   *rawname = pstrdup(*newval);
+	bool		valid;
 
 	valid = SplitIdentifierString(rawname, ',', &namelist);
 
@@ -123,15 +123,15 @@ static void
 assign_failover_slot_names(const char *newval, void *extra)
 {
 	MemoryContext old_ctx;
-	List *slot_names_list = NIL;
-	ListCell *lc;
+	List	   *slot_names_list = NIL;
+	ListCell   *lc;
 
 	/* cleanup memory to prevent leaking or SET/config reload */
 	if (spock_failover_slot_names_str)
 		pfree(spock_failover_slot_names_str);
 	if (spock_failover_slot_names_list)
 	{
-		foreach (lc, spock_failover_slot_names_list)
+		foreach(lc, spock_failover_slot_names_list)
 		{
 			FailoverSlotFilter *filter = lfirst(lc);
 
@@ -149,10 +149,10 @@ assign_failover_slot_names(const char *newval, void *extra)
 	spock_failover_slot_names_str = pstrdup(newval);
 	SplitIdentifierString(spock_failover_slot_names_str, ',', &slot_names_list);
 
-	foreach (lc, slot_names_list)
+	foreach(lc, slot_names_list)
 	{
-		char *raw_val = lfirst(lc);
-		char *key = strtok(raw_val, ":");
+		char	   *raw_val = lfirst(lc);
+		char	   *key = strtok(raw_val, ":");
 		FailoverSlotFilter *filter = palloc(sizeof(FailoverSlotFilter));
 
 		filter->val = strtok(NULL, ":");
@@ -171,19 +171,19 @@ assign_failover_slot_names(const char *newval, void *extra)
 			filter->key = FAILOVERSLOT_FILTER_PLUGIN;
 		else
 			ereport(
-				ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg(
-					 "unrecognized synchronize_failover_slot_names key \"%s\"",
-					 key)));
+					ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg(
+							"unrecognized synchronize_failover_slot_names key \"%s\"",
+							key)));
 
 		/* Check that there was just one ':' */
 		if (strtok(NULL, ":"))
 			ereport(
-				ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg(
-					 "unrecognized synchronize_failover_slot_names format")));
+					ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg(
+							"unrecognized synchronize_failover_slot_names format")));
 
 		spock_failover_slot_names_list =
 			lappend(spock_failover_slot_names_list, filter);
@@ -197,9 +197,9 @@ assign_failover_slot_names(const char *newval, void *extra)
 static bool
 check_standby_slot_names(char **newval, void **extra, GucSource source)
 {
-	List *namelist = NIL;
-	char *rawname = pstrdup(*newval);
-	bool valid;
+	List	   *namelist = NIL;
+	char	   *rawname = pstrdup(*newval);
+	bool		valid;
 
 	valid = SplitIdentifierString(rawname, ',', &namelist);
 
@@ -241,21 +241,21 @@ assign_standby_slot_names(const char *newval, void *extra)
 static List *
 remote_get_primary_slot_info(PGconn *conn, List *slot_filter)
 {
-	PGresult *res;
-	int i;
-	char *op = "";
-	List *slots = NIL;
-	ListCell *lc;
+	PGresult   *res;
+	int			i;
+	char	   *op = "";
+	List	   *slots = NIL;
+	ListCell   *lc;
 	StringInfoData query;
 
 	initStringInfo(&query);
 	appendStringInfoString(
-		&query,
-		"SELECT slot_name, plugin, database, two_phase, catalog_xmin, restart_lsn, confirmed_flush_lsn"
-		"  FROM pg_catalog.pg_replication_slots"
-		" WHERE database IS NOT NULL AND (");
+						   &query,
+						   "SELECT slot_name, plugin, database, two_phase, catalog_xmin, restart_lsn, confirmed_flush_lsn"
+						   "  FROM pg_catalog.pg_replication_slots"
+						   " WHERE database IS NOT NULL AND (");
 
-	foreach (lc, slot_filter)
+	foreach(lc, slot_filter)
 	{
 		FailoverSlotFilter *filter = lfirst(lc);
 
@@ -263,18 +263,18 @@ remote_get_primary_slot_info(PGconn *conn, List *slot_filter)
 		{
 			case FAILOVERSLOT_FILTER_NAME:
 				appendStringInfo(
-					&query, " %s slot_name OPERATOR(pg_catalog.=) %s", op,
-					PQescapeLiteral(conn, filter->val, strlen(filter->val)));
+								 &query, " %s slot_name OPERATOR(pg_catalog.=) %s", op,
+								 PQescapeLiteral(conn, filter->val, strlen(filter->val)));
 				break;
 			case FAILOVERSLOT_FILTER_NAME_LIKE:
 				appendStringInfo(
-					&query, " %s slot_name LIKE %s", op,
-					PQescapeLiteral(conn, filter->val, strlen(filter->val)));
+								 &query, " %s slot_name LIKE %s", op,
+								 PQescapeLiteral(conn, filter->val, strlen(filter->val)));
 				break;
 			case FAILOVERSLOT_FILTER_PLUGIN:
 				appendStringInfo(
-					&query, " %s plugin OPERATOR(pg_catalog.=) %s", op,
-					PQescapeLiteral(conn, filter->val, strlen(filter->val)));
+								 &query, " %s plugin OPERATOR(pg_catalog.=) %s", op,
+								 PQescapeLiteral(conn, filter->val, strlen(filter->val)));
 				break;
 			default:
 				Assert(0);
@@ -302,18 +302,18 @@ remote_get_primary_slot_info(PGconn *conn, List *slot_filter)
 		slot->database = pstrdup(PQgetvalue(res, i, 2));
 		parse_bool(PQgetvalue(res, i, 3), &slot->two_phase);
 		slot->catalog_xmin = !PQgetisnull(res, i, 4) ?
-								 atoi(PQgetvalue(res, i, 4)) :
-								 InvalidTransactionId;
+			atoi(PQgetvalue(res, i, 4)) :
+			InvalidTransactionId;
 		slot->restart_lsn =
 			!PQgetisnull(res, i, 5) ?
-				DatumGetLSN(DirectFunctionCall1(
-					pg_lsn_in, CStringGetDatum(PQgetvalue(res, i, 5)))) :
-				InvalidXLogRecPtr;
+			DatumGetLSN(DirectFunctionCall1(
+											pg_lsn_in, CStringGetDatum(PQgetvalue(res, i, 5)))) :
+			InvalidXLogRecPtr;
 		slot->confirmed_lsn =
 			!PQgetisnull(res, i, 6) ?
-				DatumGetLSN(DirectFunctionCall1(
-					pg_lsn_in, CStringGetDatum(PQgetvalue(res, i, 6)))) :
-				InvalidXLogRecPtr;
+			DatumGetLSN(DirectFunctionCall1(
+											pg_lsn_in, CStringGetDatum(PQgetvalue(res, i, 6)))) :
+			InvalidXLogRecPtr;
 
 		slots = lappend(slots, slot);
 	}
@@ -326,8 +326,8 @@ remote_get_primary_slot_info(PGconn *conn, List *slot_filter)
 static XLogRecPtr
 remote_get_physical_slot_lsn(PGconn *conn, const char *slot_name)
 {
-	PGresult *res;
-	XLogRecPtr lsn;
+	PGresult   *res;
+	XLogRecPtr	lsn;
 	StringInfoData query;
 
 	initStringInfo(&query);
@@ -349,7 +349,7 @@ remote_get_physical_slot_lsn(PGconn *conn, const char *slot_name)
 		lsn = InvalidXLogRecPtr;
 	else
 		lsn = DatumGetLSN(DirectFunctionCall1(
-			pg_lsn_in, CStringGetDatum(PQgetvalue(res, 0, 0))));
+											  pg_lsn_in, CStringGetDatum(PQgetvalue(res, 0, 0))));
 
 	PQclear(res);
 
@@ -363,11 +363,11 @@ remote_get_physical_slot_lsn(PGconn *conn, const char *slot_name)
 static Oid
 get_database_oid(const char *dbname)
 {
-	HeapTuple tuple;
-	Relation relation;
+	HeapTuple	tuple;
+	Relation	relation;
 	SysScanDesc scan;
 	ScanKeyData key[1];
-	Oid dboid = InvalidOid;
+	Oid			dboid = InvalidOid;
 
 	/*
 	 * form a scan key
@@ -390,6 +390,7 @@ get_database_oid(const char *dbname)
 	if (HeapTupleIsValid(tuple))
 	{
 		Form_pg_database datForm = (Form_pg_database) GETSTRUCT(tuple);
+
 		dboid = datForm->oid;
 	}
 	else
@@ -436,8 +437,8 @@ static PGconn *
 remote_connect(const char *connstr, const char *appname)
 {
 #define CONN_PARAM_ARRAY_SIZE 8
-	int i = 0;
-	PGconn *conn;
+	int			i = 0;
+	PGconn	   *conn;
 	const char *keys[CONN_PARAM_ARRAY_SIZE];
 	const char *vals[CONN_PARAM_ARRAY_SIZE];
 	StringInfoData s;
@@ -472,8 +473,8 @@ remote_connect(const char *connstr, const char *appname)
 	Assert(i <= CONN_PARAM_ARRAY_SIZE);
 
 	/*
-	 * We use the expand_dbname parameter to process the connection string
-	 * (or URI), and pass some extra options.
+	 * We use the expand_dbname parameter to process the connection string (or
+	 * URI), and pass some extra options.
 	 */
 	conn = PQconnectdbParams(keys, vals, /* expand_dbname = */ true);
 	if (PQstatus(conn) != CONNECTION_OK)
@@ -504,24 +505,25 @@ remote_connect(const char *connstr, const char *appname)
 static bool
 wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 {
-	List *slots;
-	PGconn *conn;
+	List	   *slots;
+	PGconn	   *conn;
 	StringInfoData connstr;
 	TimestampTz cb_wait_start =
-		0; /* first invocation should happen immediately */
+		0;						/* first invocation should happen immediately */
 
 	elog(
-		LOG,
-		"waiting for remote slot %s lsn (%X/%X) and catalog xmin (%u) to pass local slot lsn (%X/%X) and catalog xmin (%u)",
-		remote_slot->name, (uint32) (remote_slot->restart_lsn >> 32),
-		(uint32) (remote_slot->restart_lsn), remote_slot->catalog_xmin,
-		(uint32) (slot->data.restart_lsn >> 32),
-		(uint32) (slot->data.restart_lsn), slot->data.catalog_xmin);
+		 LOG,
+		 "waiting for remote slot %s lsn (%X/%X) and catalog xmin (%u) to pass local slot lsn (%X/%X) and catalog xmin (%u)",
+		 remote_slot->name, (uint32) (remote_slot->restart_lsn >> 32),
+		 (uint32) (remote_slot->restart_lsn), remote_slot->catalog_xmin,
+		 (uint32) (slot->data.restart_lsn >> 32),
+		 (uint32) (slot->data.restart_lsn), slot->data.catalog_xmin);
 
 	initStringInfo(&connstr);
+
 	/*
-	 * Append the dbname of the remote slot. We don't use a generic db
-	 * like postgres here because plugin callback bellow might want to invoke
+	 * Append the dbname of the remote slot. We don't use a generic db like
+	 * postgres here because plugin callback bellow might want to invoke
 	 * extension functions.
 	 */
 	make_sync_failover_slots_dsn(&connstr, remote_slot->database);
@@ -532,24 +534,24 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 	for (;;)
 	{
 		RemoteSlot *new_slot;
-		int rc;
+		int			rc;
 		FailoverSlotFilter *filter = palloc(sizeof(FailoverSlotFilter));
-		XLogRecPtr receivePtr;
+		XLogRecPtr	receivePtr;
 
 		CHECK_FOR_INTERRUPTS();
 
 		if (!RecoveryInProgress())
 		{
 			/*
-			 * The remote slot didn't pass the locally reserved position
-			 * at the time of local promotion, so it's not safe to use.
+			 * The remote slot didn't pass the locally reserved position at
+			 * the time of local promotion, so it's not safe to use.
 			 */
 			ereport(
-				WARNING,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg(
-					 "replication slot sync wait for slot %s interrupted by promotion",
-					 remote_slot->name)));
+					WARNING,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg(
+							"replication slot sync wait for slot %s interrupted by promotion",
+							remote_slot->name)));
 			PQfinish(conn);
 			return false;
 		}
@@ -590,18 +592,18 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 		 * Invoke any callbacks that will help move the slots along
 		 */
 		if (TimestampDifferenceExceeds(
-				cb_wait_start, GetCurrentTimestamp(),
-				Min(wal_retrieve_retry_interval * 5, PG_WAIT_EXTENSION)))
+									   cb_wait_start, GetCurrentTimestamp(),
+									   Min(wal_retrieve_retry_interval * 5, PG_WAIT_EXTENSION)))
 		{
 			if (cb_wait_start > 0)
 				elog(
-					LOG,
-					"still waiting for remote slot %s lsn (%X/%X) and catalog xmin (%u) to pass local slot lsn (%X/%X) and catalog xmin (%u)",
-					remote_slot->name, (uint32) (new_slot->restart_lsn >> 32),
-					(uint32) (new_slot->restart_lsn), new_slot->catalog_xmin,
-					(uint32) (slot->data.restart_lsn >> 32),
-					(uint32) (slot->data.restart_lsn),
-					slot->data.catalog_xmin);
+					 LOG,
+					 "still waiting for remote slot %s lsn (%X/%X) and catalog xmin (%u) to pass local slot lsn (%X/%X) and catalog xmin (%u)",
+					 remote_slot->name, (uint32) (new_slot->restart_lsn >> 32),
+					 (uint32) (new_slot->restart_lsn), new_slot->catalog_xmin,
+					 (uint32) (slot->data.restart_lsn >> 32),
+					 (uint32) (slot->data.restart_lsn),
+					 slot->data.catalog_xmin);
 
 			cb_wait_start = GetCurrentTimestamp();
 		}
@@ -634,17 +636,17 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 static void
 synchronize_one_slot(RemoteSlot *remote_slot)
 {
-	int i;
-	bool found = false;
+	int			i;
+	bool		found = false;
 
 	if (!RecoveryInProgress())
 	{
 		/* Should only happen when promotion occurs at the same time we sync */
 		ereport(
-			WARNING,
-			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-			 errmsg(
-				 "attempted to sync slot from master when not in recovery")));
+				WARNING,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg(
+						"attempted to sync slot from master when not in recovery")));
 		return;
 	}
 
@@ -687,8 +689,8 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 #endif
 
 		/*
-		 * We can't satisfy this remote slot's requirements with our known-safe
-		 * local restart_lsn, catalog_xmin and xmin.
+		 * We can't satisfy this remote slot's requirements with our
+		 * known-safe local restart_lsn, catalog_xmin and xmin.
 		 *
 		 * This shouldn't happen for existing slots unless someone else messed
 		 * with our physical replication slot on the master.
@@ -698,9 +700,9 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 								  MyReplicationSlot->data.catalog_xmin))
 		{
 			elog(
-				WARNING,
-				"not synchronizing slot %s; synchronization would move it backward",
-				remote_slot->name);
+				 WARNING,
+				 "not synchronizing slot %s; synchronization would move it backward",
+				 remote_slot->name);
 
 			ReplicationSlotRelease();
 			PopActiveSnapshot();
@@ -717,11 +719,12 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		ReplicationSlotSave();
 
 		elog(
-			DEBUG2,
-			"synchronized existing slot %s to lsn (%X/%X) and catalog xmin (%u)",
-			remote_slot->name, (uint32) (remote_slot->restart_lsn >> 32),
-			(uint32) (remote_slot->restart_lsn), remote_slot->catalog_xmin);
+			 DEBUG2,
+			 "synchronized existing slot %s to lsn (%X/%X) and catalog xmin (%u)",
+			 remote_slot->name, (uint32) (remote_slot->restart_lsn >> 32),
+			 (uint32) (remote_slot->restart_lsn), remote_slot->catalog_xmin);
 	}
+
 	/*
 	 * Otherwise create the local slot and initialize it to the state of the
 	 * upstream slot. There's a race here where the slot could've been
@@ -754,10 +757,10 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		SpinLockRelease(&slot->mutex);
 
 		/*
-		 * Stop our physical slot from advancing past the position needed
-		 * by the new remote slot by making its reservations locally
-		 * effective. It's OK if we can't guarantee their safety yet,
-		 * the slot isn't visible to anyone else at this point.
+		 * Stop our physical slot from advancing past the position needed by
+		 * the new remote slot by making its reservations locally effective.
+		 * It's OK if we can't guarantee their safety yet, the slot isn't
+		 * visible to anyone else at this point.
 		 */
 		ReplicationSlotReserveWal();
 
@@ -789,7 +792,8 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		{
 			if (!wait_for_primary_slot_catchup(MyReplicationSlot, remote_slot))
 			{
-				/* Provider slot didn't catch up to locally reserved position
+				/*
+				 * Provider slot didn't catch up to locally reserved position
 				 */
 				ReplicationSlotRelease();
 				PopActiveSnapshot();
@@ -850,13 +854,13 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 static long
 synchronize_failover_slots(long sleep_time)
 {
-	List *slots;
-	ListCell *lc;
-	PGconn *conn;
-	XLogRecPtr safe_lsn;
-	XLogRecPtr lsn = InvalidXLogRecPtr;
+	List	   *slots;
+	ListCell   *lc;
+	PGconn	   *conn;
+	XLogRecPtr	safe_lsn;
+	XLogRecPtr	lsn = InvalidXLogRecPtr;
 	static bool was_lsn_safe = false;
-	bool is_lsn_safe = false;
+	bool		is_lsn_safe = false;
 	StringInfoData connstr;
 
 	if (!WalRcv || !HotStandbyActive() ||
@@ -866,17 +870,17 @@ synchronize_failover_slots(long sleep_time)
 	/* XXX should these be errors or just soft return like above? */
 	if (!hot_standby_feedback)
 		elog(
-			ERROR,
-			"cannot synchronize replication slot positions because hot_standby_feedback is off");
+			 ERROR,
+			 "cannot synchronize replication slot positions because hot_standby_feedback is off");
 	if (WalRcv->slotname[0] == '\0')
 		elog(
-			ERROR,
-			"cannot synchronize replication slot positions because primary_slot_name is not set");
+			 ERROR,
+			 "cannot synchronize replication slot positions because primary_slot_name is not set");
 
 	elog(DEBUG1, "starting replication slot synchronization from primary");
 
 	initStringInfo(&connstr);
-	make_sync_failover_slots_dsn(&connstr, NULL /* Use default db name */);
+	make_sync_failover_slots_dsn(&connstr, NULL /* Use default db name */ );
 	conn = remote_connect(connstr.data, "spock_failover_slots");
 
 	/*
@@ -884,15 +888,15 @@ synchronize_failover_slots(long sleep_time)
 	 *
 	 * WAL decoder slots are used to produce LCRs. These LCRs are not
 	 * synchronized on a physical standby after initial backup and hence are
-	 * not included in the base backup. Thus WAL decoder slots, if synchronized
-	 * on physical standby, do not reflect the status of LCR directory as they
-	 * do on primary.
+	 * not included in the base backup. Thus WAL decoder slots, if
+	 * synchronized on physical standby, do not reflect the status of LCR
+	 * directory as they do on primary.
 	 *
 	 * There are other slots whose WAL senders use LCRs. These other slots are
 	 * synchronized and used after promotion. Since the WAL decoder slots are
-	 * ahead of these other slots, the WAL decoder when started after promotion
-	 * might miss LCRs required by WAL senders of the other slots.  This would
-	 * cause data inconsistency after promotion.
+	 * ahead of these other slots, the WAL decoder when started after
+	 * promotion might miss LCRs required by WAL senders of the other slots.
+	 * This would cause data inconsistency after promotion.
 	 *
 	 * Hence do not synchronize WAL decoder slot. Those will be created after
 	 * promotion
@@ -905,15 +909,15 @@ synchronize_failover_slots(long sleep_time)
 	 */
 	for (;;)
 	{
-		int i;
-		char *dropslot = NULL;
+		int			i;
+		char	   *dropslot = NULL;
 
 		LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 		for (i = 0; i < max_replication_slots; i++)
 		{
 			ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
-			bool active;
-			bool found = false;
+			bool		active;
+			bool		found = false;
 
 			active = (s->active_pid != 0);
 
@@ -926,7 +930,7 @@ synchronize_failover_slots(long sleep_time)
 				continue;
 
 			/* Try to find slot in slots returned by primary. */
-			foreach (lc, slots)
+			foreach(lc, slots)
 			{
 				RemoteSlot *remote_slot = lfirst(lc);
 
@@ -966,7 +970,7 @@ synchronize_failover_slots(long sleep_time)
 	}
 
 	/* Find oldest restart_lsn still needed by any failover slot. */
-	foreach (lc, slots)
+	foreach(lc, slots)
 	{
 		RemoteSlot *remote_slot = lfirst(lc);
 
@@ -978,9 +982,9 @@ synchronize_failover_slots(long sleep_time)
 		WalRcv->latestWalEnd == InvalidXLogRecPtr)
 	{
 		ereport(
-			WARNING,
-			(errmsg(
-				"cannot synchronize replication slot positions yet because feedback was not sent yet")));
+				WARNING,
+				(errmsg(
+						"cannot synchronize replication slot positions yet because feedback was not sent yet")));
 		was_lsn_safe = false;
 		PQfinish(conn);
 		return Min(sleep_time, WORKER_WAIT_FEEDBACK);
@@ -988,21 +992,21 @@ synchronize_failover_slots(long sleep_time)
 	else if (WalRcv->latestWalEnd < lsn)
 	{
 		ereport(
-			WARNING,
-			(errmsg(
-				"requested slot synchronization point %X/%X is ahead of the standby position %X/%X, not synchronizing slots",
-				(uint32) (lsn >> 32), (uint32) (lsn),
-				(uint32) (WalRcv->latestWalEnd >> 32),
-				(uint32) (WalRcv->latestWalEnd))));
+				WARNING,
+				(errmsg(
+						"requested slot synchronization point %X/%X is ahead of the standby position %X/%X, not synchronizing slots",
+						(uint32) (lsn >> 32), (uint32) (lsn),
+						(uint32) (WalRcv->latestWalEnd >> 32),
+						(uint32) (WalRcv->latestWalEnd))));
 		was_lsn_safe = false;
 		PQfinish(conn);
 		return Min(sleep_time, WORKER_WAIT_FEEDBACK);
 	}
 
-	foreach (lc, slots)
+	foreach(lc, slots)
 	{
 		RemoteSlot *remote_slot = lfirst(lc);
-		XLogRecPtr receivePtr;
+		XLogRecPtr	receivePtr;
 
 		/*
 		 * If we haven't received WAL for a remote slot's current
@@ -1015,10 +1019,10 @@ synchronize_failover_slots(long sleep_time)
 		 * received from the provider before failover. We can't detect or
 		 * prevent that as the same fast forward is normal when we lost slot
 		 * state in a provider crash after subscriber committed but before we
-		 * saved the new confirmed flush lsn. The master will also fast forward
-		 * the slot over irrelevant changes and then the subscriber will update
-		 * its confirmed_flush_lsn in response to master standby status
-		 * updates.
+		 * saved the new confirmed flush lsn. The master will also fast
+		 * forward the slot over irrelevant changes and then the subscriber
+		 * will update its confirmed_flush_lsn in response to master standby
+		 * status updates.
 		 */
 		receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
 		if (remote_slot->confirmed_lsn > receivePtr)
@@ -1065,8 +1069,8 @@ spock_failover_slots_main(Datum main_arg)
 	/* Main wait loop. */
 	while (true)
 	{
-		int rc;
-		long sleep_time = WORKER_NAP_TIME;
+		int			rc;
+		long		sleep_time = WORKER_NAP_TIME;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -1097,10 +1101,11 @@ spock_failover_slots_main(Datum main_arg)
 static bool
 list_member_str(List *l, const char *str)
 {
-	ListCell *lc;
-	foreach (lc, l)
+	ListCell   *lc;
+
+	foreach(lc, l)
 		if (strcmp((const char *) lfirst(lc), str) == 0)
-			return true;
+		return true;
 	return false;
 }
 
@@ -1122,8 +1127,8 @@ skip_standby_slot_names(XLogRecPtr commit_lsn)
 			{
 				standby_slots_min_confirmed = 0;
 				elog(
-					DEBUG1,
-					"found my slot in spock_failover_slots.pg_standby_slot_names, no need to wait for confirmations");
+					 DEBUG1,
+					 "found my slot in spock_failover_slots.pg_standby_slot_names, no need to wait for confirmations");
 			}
 		}
 
@@ -1155,7 +1160,7 @@ skip_standby_slot_names(XLogRecPtr commit_lsn)
 static void
 wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 {
-	XLogRecPtr flush_pos = InvalidXLogRecPtr;
+	XLogRecPtr	flush_pos = InvalidXLogRecPtr;
 	TimestampTz wait_start = GetCurrentTimestamp();
 
 	if (skip_standby_slot_names(commit_lsn))
@@ -1163,24 +1168,25 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 
 	while (1)
 	{
-		int i;
-		int wait_slots_remaining;
-		XLogRecPtr oldest_flush_pos = InvalidXLogRecPtr;
-		int rc;
+		int			i;
+		int			wait_slots_remaining;
+		XLogRecPtr	oldest_flush_pos = InvalidXLogRecPtr;
+		int			rc;
 
 		if (standby_slots_min_confirmed == -1)
 		{
 			/*
-			 * Default spock_failover_slots.standby_slots_min_confirmed (-1) is to
-			 * wait for all entries in spock_failover_slots.pg_standby_slot_names.
+			 * Default spock_failover_slots.standby_slots_min_confirmed (-1)
+			 * is to wait for all entries in
+			 * spock_failover_slots.pg_standby_slot_names.
 			 */
 			wait_slots_remaining = list_length(pg_standby_slot_names);
 		}
 		else
 		{
 			/*
-			 * spock_failover_slots.standby_slots_min_confirmed cannot wait for
-			 * more slots than are named in the
+			 * spock_failover_slots.standby_slots_min_confirmed cannot wait
+			 * for more slots than are named in the
 			 * spock_failover_slots.pg_standby_slot_names.
 			 */
 			wait_slots_remaining = Min(standby_slots_min_confirmed,
@@ -1204,8 +1210,11 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 			SpinLockAcquire(&s->mutex);
 
 			if (s->data.database == InvalidOid)
-				/* Physical slots advance restart_lsn on flush and ignore
-				 * confirmed_flush_lsn */
+
+				/*
+				 * Physical slots advance restart_lsn on flush and ignore
+				 * confirmed_flush_lsn
+				 */
 				flush_pos = s->data.restart_lsn;
 			else
 				/* For logical slots we must wait for commit and flush */
@@ -1227,8 +1236,8 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 		{
 			/*
 			 * If the oldest slot pos across all named slots advanced, update
-			 * the cache so we can skip future calls. It'll be invalidated
-			 * if the GUCs change.
+			 * the cache so we can skip future calls. It'll be invalidated if
+			 * the GUCs change.
 			 */
 			if (standby_slot_names_oldest_flush_lsn < oldest_flush_pos)
 				standby_slot_names_oldest_flush_lsn = oldest_flush_pos;
@@ -1241,9 +1250,9 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 		 * advance past the point of interest, but that'll require some core
 		 * patching. For now, poll.
 		 *
-		 * We don't test for postmaster death here because it turns out to
-		 * be really slow. The postmaster should kill us, we'll notice when
-		 * we time out, and it's not a long sleep.
+		 * We don't test for postmaster death here because it turns out to be
+		 * really slow. The postmaster should kill us, we'll notice when we
+		 * time out, and it's not a long sleep.
 		 *
 		 * TODO some degree of backoff on sleeps?
 		 */
@@ -1260,12 +1269,12 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 
 		if (wal_sender_timeout > 0 &&
 			GetCurrentTimestamp() >
-				TimestampTzPlusMilliseconds(wait_start, wal_sender_timeout))
+			TimestampTzPlusMilliseconds(wait_start, wal_sender_timeout))
 		{
 			ereport(
-				COMMERROR,
-				(errmsg(
-					"terminating walsender process due to spock_failover_slots.pg_standby_slot_names replication timeout")));
+					COMMERROR,
+					(errmsg(
+							"terminating walsender process due to spock_failover_slots.pg_standby_slot_names replication timeout")));
 			proc_exit(0);
 		}
 
@@ -1328,7 +1337,8 @@ socket_putmessage_noblock(char msgtype, const char *s, size_t len)
 	{
 		if (s[0] == 'w')
 		{
-			XLogRecPtr lsn;
+			XLogRecPtr	lsn;
+
 			/*
 			 * Extract the lsn from the wal message, and convert it from
 			 * network byte order.
@@ -1345,10 +1355,10 @@ socket_putmessage_noblock(char msgtype, const char *s, size_t len)
 
 
 static const
-	PQcommMethods PqCommSocketMethods = {
-		socket_comm_reset,		socket_flush,	   socket_flush_if_writable,
-		socket_is_send_pending, socket_putmessage, socket_putmessage_noblock
-	};
+PQcommMethods PqCommSocketMethods = {
+	socket_comm_reset, socket_flush, socket_flush_if_writable,
+	socket_is_send_pending, socket_putmessage, socket_putmessage_noblock
+};
 
 static ClientAuthentication_hook_type original_client_auth_hook = NULL;
 
@@ -1374,50 +1384,50 @@ spock_init_failover_slot(void)
 	BackgroundWorker bgw;
 
 	DefineCustomStringVariable(
-		"spock.pg_standby_slot_names",
-		"list of names of slot that must confirm changes before they're sent by the decoding plugin",
-		"List of physical replication slots that must confirm durable "
-		"flush of a given lsn before commits up to that lsn may be "
-		"replicated to logical peers by the output plugin. "
-		"Imposes ordering of physical replication before logical "
-		"replication.",
-		&standby_slot_names_raw, "", PGC_SIGHUP, GUC_LIST_INPUT,
-		check_standby_slot_names, assign_standby_slot_names, NULL);
+							   "spock.pg_standby_slot_names",
+							   "list of names of slot that must confirm changes before they're sent by the decoding plugin",
+							   "List of physical replication slots that must confirm durable "
+							   "flush of a given lsn before commits up to that lsn may be "
+							   "replicated to logical peers by the output plugin. "
+							   "Imposes ordering of physical replication before logical "
+							   "replication.",
+							   &standby_slot_names_raw, "", PGC_SIGHUP, GUC_LIST_INPUT,
+							   check_standby_slot_names, assign_standby_slot_names, NULL);
 
 
 	DefineCustomIntVariable(
-		"spock.standby_slots_min_confirmed",
-		"Number of slots from spock_failover_slots.pg_standby_slot_names that must confirm lsn",
-		"Modifies behaviour of spock_failover_slots.pg_standby_slot_names so to allow "
-		"logical replication of a transaction after at least "
-		"spock_failover_slots.standby_slots_min_confirmed physical peers have confirmed "
-		"the transaction as durably flushed. "
-		"The value -1 (default) means all entries in spock_failover_slots.pg_standby_slot_names"
-		"must confirm the write. The value 0 causes "
-		"spock_failover_slots.standby_slots_min_confirmedto be effectively ignored.",
-		&standby_slots_min_confirmed, -1, -1, 100, PGC_SIGHUP, 0, NULL, NULL,
-		NULL);
+							"spock.standby_slots_min_confirmed",
+							"Number of slots from spock_failover_slots.pg_standby_slot_names that must confirm lsn",
+							"Modifies behaviour of spock_failover_slots.pg_standby_slot_names so to allow "
+							"logical replication of a transaction after at least "
+							"spock_failover_slots.standby_slots_min_confirmed physical peers have confirmed "
+							"the transaction as durably flushed. "
+							"The value -1 (default) means all entries in spock_failover_slots.pg_standby_slot_names"
+							"must confirm the write. The value 0 causes "
+							"spock_failover_slots.standby_slots_min_confirmedto be effectively ignored.",
+							&standby_slots_min_confirmed, -1, -1, 100, PGC_SIGHUP, 0, NULL, NULL,
+							NULL);
 
 	DefineCustomStringVariable(
-		"spock.synchronize_slot_names",
-		"list of slots to synchronize from primary to physical standby", "",
-		&spock_failover_slot_names, "name_like:%%",
-		PGC_SIGHUP, /* Sync ALL slots by default */
-		GUC_LIST_INPUT, check_failover_slot_names, assign_failover_slot_names,
-		NULL);
+							   "spock.synchronize_slot_names",
+							   "list of slots to synchronize from primary to physical standby", "",
+							   &spock_failover_slot_names, "name_like:%%",
+							   PGC_SIGHUP,	/* Sync ALL slots by default */
+							   GUC_LIST_INPUT, check_failover_slot_names, assign_failover_slot_names,
+							   NULL);
 
 
 	DefineCustomBoolVariable(
-		"spock.drop_extra_slots",
-		"whether to drop extra slots on standby that don't match spock_failover_slots.synchronize_slot_names",
-		NULL, &spock_failover_slots_drop, true, PGC_SIGHUP, 0, NULL, NULL, NULL);
+							 "spock.drop_extra_slots",
+							 "whether to drop extra slots on standby that don't match spock_failover_slots.synchronize_slot_names",
+							 NULL, &spock_failover_slots_drop, true, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	DefineCustomStringVariable(
-		"spock.primary_dsn",
-		"connection string to the primary server for synchronization logical slots on standby",
-		"if empty, uses the defaults to primary_conninfo",
-		&spock_failover_slots_dsn, "", PGC_SIGHUP, GUC_SUPERUSER_ONLY, NULL, NULL,
-		NULL);
+							   "spock.primary_dsn",
+							   "connection string to the primary server for synchronization logical slots on standby",
+							   "if empty, uses the defaults to primary_conninfo",
+							   &spock_failover_slots_dsn, "", PGC_SIGHUP, GUC_SUPERUSER_ONLY, NULL, NULL,
+							   NULL);
 
 
 	if (IsBinaryUpgrade)

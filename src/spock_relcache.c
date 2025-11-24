@@ -35,7 +35,7 @@ static HTAB *SpockRelationHash = NULL;
 
 
 static void spock_relcache_init(void);
-static int tupdesc_get_att_by_name(TupleDesc desc, const char *attname);
+static int	tupdesc_get_att_by_name(TupleDesc desc, const char *attname);
 
 static void
 relcache_free_entry(SpockRelation *entry)
@@ -45,7 +45,7 @@ relcache_free_entry(SpockRelation *entry)
 
 	if (entry->natts > 0)
 	{
-		int	i;
+		int			i;
 
 		for (i = 0; i < entry->natts; i++)
 			pfree(entry->attnames[i]);
@@ -85,10 +85,10 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	/* Need to update the local cache? */
 	if (!OidIsValid(entry->reloid))
 	{
-		RangeVar	   *rv = makeNode(RangeVar);
-		int				i;
-		TupleDesc		desc;
-		ResultRelInfo  *relinfo;
+		RangeVar   *rv = makeNode(RangeVar);
+		int			i;
+		TupleDesc	desc;
+		ResultRelInfo *relinfo;
 
 		rv->schemaname = (char *) entry->nspname;
 		rv->relname = (char *) entry->relname;
@@ -99,9 +99,10 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		desc = RelationGetDescr(entry->rel);
 		for (i = 0; i < entry->natts; i++)
 		{
-			AttributeOpts  *aopt;
+			AttributeOpts *aopt;
 
 			entry->attmap[i] = tupdesc_get_att_by_name(desc, entry->attnames[i]);
+
 			/*
 			 * If we find attribute options for this column and the
 			 * delta_apply_function is set, lookup the oid for it.
@@ -110,9 +111,9 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 										 entry->attmap[i] + 1);
 			if (aopt != NULL && aopt->delta_apply_function != 0)
 			{
-				char			   *fname;
-				Form_pg_attribute	att;
-				Oid					dfunc;
+				char	   *fname;
+				Form_pg_attribute att;
+				Oid			dfunc;
 
 				att = TupleDescAttr(desc, entry->attmap[i]);
 				fname = pstrdup(GET_STRING_RELOPTION(aopt,
@@ -142,11 +143,11 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		entry->hasTriggers = false;
 		if (entry->rel->trigdesc != NULL)
 		{
-			TriggerDesc	   *trigdesc = entry->rel->trigdesc;
+			TriggerDesc *trigdesc = entry->rel->trigdesc;
 
 			for (i = 0; i < trigdesc->numtriggers; i++)
 			{
-				Trigger *trigger = &trigdesc->triggers[i];
+				Trigger    *trigger = &trigdesc->triggers[i];
 
 				/* We only fire replica triggers on rows */
 				if (!(trigger->tgenabled == TRIGGER_FIRES_ON_ORIGIN ||
@@ -171,13 +172,13 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 void
 spock_relation_cache_update(uint32 remoteid, char *schemaname,
-								 char *relname, int natts, char **attnames,
-								 Oid *attrtypes, Oid *attrtypmods)
+							char *relname, int natts, char **attnames,
+							Oid *attrtypes, Oid *attrtypmods)
 {
-	MemoryContext		oldcontext;
-	SpockRelation	   *entry;
-	bool				found;
-	int					i;
+	MemoryContext oldcontext;
+	SpockRelation *entry;
+	bool		found;
+	int			i;
 
 	if (SpockRelationHash == NULL)
 		spock_relcache_init();
@@ -218,10 +219,10 @@ spock_relation_cache_update(uint32 remoteid, char *schemaname,
 void
 spock_relation_cache_updater(SpockRemoteRel *remoterel)
 {
-	MemoryContext		oldcontext;
-	SpockRelation  *entry;
-	bool				found;
-	int					i;
+	MemoryContext oldcontext;
+	SpockRelation *entry;
+	bool		found;
+	int			i;
 
 	if (SpockRelationHash == NULL)
 		spock_relcache_init();
@@ -254,7 +255,7 @@ spock_relation_cache_updater(SpockRemoteRel *remoterel)
 }
 
 void
-spock_relation_close(SpockRelation * rel, LOCKMODE lockmode)
+spock_relation_close(SpockRelation *rel, LOCKMODE lockmode)
 {
 	table_close(rel->rel, lockmode);
 	rel->rel = NULL;
@@ -331,8 +332,8 @@ spock_relcache_init(void)
 	hashflags |= HASH_BLOBS;
 
 	SpockRelationHash = hash_create("spock relation cache",
-                                            SPOCKRELATIONHASH_INITIAL_SIZE,
-                                            &ctl, hashflags);
+									SPOCKRELATIONHASH_INITIAL_SIZE,
+									&ctl, hashflags);
 
 	/* Watch for invalidation events. */
 	CacheRegisterRelcacheCallback(spock_relcache_invalidate_callback,
@@ -346,11 +347,11 @@ spock_relcache_init(void)
 static int
 tupdesc_get_att_by_name(TupleDesc desc, const char *attname)
 {
-	int		i;
+	int			i;
 
 	for (i = 0; i < desc->natts; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(desc,i);
+		Form_pg_attribute att = TupleDescAttr(desc, i);
 
 		if (strcmp(NameStr(att->attname), attname) == 0)
 			return i;
@@ -367,12 +368,12 @@ tupdesc_get_att_by_name(TupleDesc desc, const char *attname)
 Oid
 spock_lookup_delta_function(char *fname, Oid typeoid)
 {
-	List			   *namelist;
-	List			   *namestrings = NIL;
-	ListCell		   *l;
-	FuncCandidateList	candidates;
-	FuncCandidateList	fc;
-	Oid					funcoid = InvalidOid;
+	List	   *namelist;
+	List	   *namestrings = NIL;
+	ListCell   *l;
+	FuncCandidateList candidates;
+	FuncCandidateList fc;
+	Oid			funcoid = InvalidOid;
 
 	/* Split the function name into [schema.][funcname] */
 	if (!SplitIdentifierString(fname, '.', &namelist))
@@ -383,7 +384,7 @@ spock_lookup_delta_function(char *fname, Oid typeoid)
 	/* Convert that into strings usable by FuncnameGetCandidates() */
 	foreach(l, namelist)
 	{
-		char   *n = (char *)lfirst(l);
+		char	   *n = (char *) lfirst(l);
 
 		namestrings = lappend(namestrings, makeString(pstrdup(n)));
 	}

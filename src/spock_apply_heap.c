@@ -431,9 +431,9 @@ FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
 	{
 		/*
 		 * If we don't have a replica identity index, we must use the
-		 * RelationFindReplTupleSeq() function to find the tuple.
-		 * However, for INSERT statements, if there is no PK or RI,
-		 * we do not need to find the tuple using sequential scan.
+		 * RelationFindReplTupleSeq() function to find the tuple. However, for
+		 * INSERT statements, if there is no PK or RI, we do not need to find
+		 * the tuple using sequential scan.
 		 */
 		if (!is_insert_stmt)
 		{
@@ -472,7 +472,7 @@ FindReplTupleByUCIndex(ApplyExecutionData *edata,
 
 	foreach(lc, indexoidlist)
 	{
-		Relation idxrel;
+		Relation	idxrel;
 
 		*indexoid = lfirst_oid(lc);
 
@@ -486,8 +486,8 @@ FindReplTupleByUCIndex(ApplyExecutionData *edata,
 		}
 
 		found = SpockRelationFindReplTupleByIndex(edata->estate, localrel, idxrel,
-											 LockTupleExclusive,
-											 remoteslot, *localslot);
+												  LockTupleExclusive,
+												  remoteslot, *localslot);
 		if (found)
 		{
 			/* Don't release lock until commit. */
@@ -720,12 +720,12 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	bool		apply;
 	HeapTuple	applytuple;
 	HeapTuple	local_tuple;
-	HeapTuple   remotetuple;
+	HeapTuple	remotetuple;
 	SpockConflictResolution resolution;
 	bool		is_delta_apply = false;
 	bool		clear_remoteslot = false;
 	bool		clear_localslot = false;
-	MemoryContext   oldctx;
+	MemoryContext oldctx;
 	SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
 	/*
@@ -774,10 +774,9 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 		HeapTuple	currenttuple;
 
 		/*
-		 * Depending on previous conflict resolution our final NEW tuple
-		 * will be based on either the incoming remote tuple or the
-		 * existing local one and then the delta processing on top of
-		 * that.
+		 * Depending on previous conflict resolution our final NEW tuple will
+		 * be based on either the incoming remote tuple or the existing local
+		 * one and then the delta processing on top of that.
 		 */
 		if (apply)
 		{
@@ -817,15 +816,14 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	 */
 	if (apply)
 	{
-		UserContext	ucxt;
+		UserContext ucxt;
 
 		/* Make sure that any user-supplied code runs as the table owner. */
 		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 		/*
-		 * If this is a forced delta-apply we execute it in a
-		 * subtransaction and record the local_ts & local_origin
-		 * for CommitTsData override.
+		 * If this is a forced delta-apply we execute it in a subtransaction
+		 * and record the local_ts & local_origin for CommitTsData override.
 		 */
 		if (is_delta_apply)
 			BeginInternalSubTransaction("SpockDeltaApply");
@@ -855,7 +853,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 static inline Datum
 zero_datum_for_type(Oid typid)
 {
-	switch(typid)
+	switch (typid)
 	{
 		case INT2OID:
 			return Int16GetDatum(0);
@@ -902,7 +900,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	EState	   *estate;
 	TupleTableSlot *remoteslot;
 	MemoryContext oldctx;
-	UserContext		ucxt;
+	UserContext ucxt;
 
 	EPQState	epqstate;
 	TupleTableSlot *localslot;
@@ -973,7 +971,10 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	{
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
-		/* Clear out any old value for when logging it in the resolutions table. */
+		/*
+		 * Clear out any old value for when logging it in the resolutions
+		 * table.
+		 */
 		exception_log->local_tuple = NULL;
 
 		/* Make sure that any user-supplied code runs as the table owner. */
@@ -1172,7 +1173,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	 */
 	if (found)
 	{
-		UserContext		ucxt;
+		UserContext ucxt;
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
 		/*
@@ -1210,7 +1211,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 							  rel, NULL, oldtup,
 							  remotetuple, NULL, SpockResolution_Skip,
 							  InvalidTransactionId, false, InvalidRepOriginId,
-							  (TimestampTz)0, edata->targetRel->idxoid);
+							  (TimestampTz) 0, edata->targetRel->idxoid);
 	}
 
 	/* Cleanup. */
@@ -1379,8 +1380,8 @@ spock_apply_heap_mi_flush(void)
 		for (i = 0; i < spkmistate->nbuffered_tuples; i++)
 		{
 			SPKExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
-								 spkmistate->buffered_tuples[i],
-								 NIL);
+									spkmistate->buffered_tuples[i],
+									NIL);
 		}
 	}
 

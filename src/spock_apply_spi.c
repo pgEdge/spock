@@ -50,20 +50,20 @@
 /* State related to bulk insert */
 typedef struct spock_copyState
 {
-	SpockRelation  *rel;
+	SpockRelation *rel;
 
-	StringInfo		copy_stmt;
-	List		   *copy_parsetree;
-	File			copy_file;
-	char			copy_mechanism;
-	FILE		   *copy_read_file;
-	FILE		   *copy_write_file;
-	StringInfo		msgbuf;
-	MemoryContext	rowcontext;
-	FmgrInfo	   *out_functions;
-	List		   *attnumlist;
-	int				copy_buffered_tuples;
-	size_t			copy_buffered_size;
+	StringInfo	copy_stmt;
+	List	   *copy_parsetree;
+	File		copy_file;
+	char		copy_mechanism;
+	FILE	   *copy_read_file;
+	FILE	   *copy_write_file;
+	StringInfo	msgbuf;
+	MemoryContext rowcontext;
+	FmgrInfo   *out_functions;
+	List	   *attnumlist;
+	int			copy_buffered_tuples;
+	size_t		copy_buffered_size;
 } spock_copyState;
 
 static spock_copyState *spkcstate = NULL;
@@ -74,12 +74,12 @@ static void spock_start_copy(SpockRelation *rel);
 static void spock_proccess_copy(spock_copyState *spkcstate);
 
 static void spock_copySendData(spock_copyState *spkcstate,
-								   const void *databuf, int datasize);
+							   const void *databuf, int datasize);
 static void spock_copySendEndOfRow(spock_copyState *spkcstate);
 static void spock_copySendInt32(spock_copyState *spkcstate, int32 val);
 static void spock_copySendInt16(spock_copyState *spkcstate, int16 val);
 static void spock_copyOneRowTo(spock_copyState *spkcstate,
-								   Datum *values, bool *nulls);
+							   Datum *values, bool *nulls);
 
 /*
  * Handle begin (connect SPI).
@@ -109,13 +109,13 @@ spock_apply_spi_commit(void)
 void
 spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup)
 {
-	TupleDesc		desc = RelationGetDescr(rel->rel);
-	Oid				argtypes[MaxTupleAttributeNumber];
-	Datum			values[MaxTupleAttributeNumber];
-	char			nulls[MaxTupleAttributeNumber];
-	StringInfoData	cmd;
-	int	att,
-		narg;
+	TupleDesc	desc = RelationGetDescr(rel->rel);
+	Oid			argtypes[MaxTupleAttributeNumber];
+	Datum		values[MaxTupleAttributeNumber];
+	char		nulls[MaxTupleAttributeNumber];
+	StringInfoData cmd;
+	int			att,
+				narg;
 
 	initStringInfo(&cmd);
 	appendStringInfo(&cmd, "INSERT INTO %s (",
@@ -123,7 +123,7 @@ spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup)
 
 	for (att = 0, narg = 0; att < desc->natts; att++)
 	{
-		if (TupleDescAttr(desc,att)->attisdropped)
+		if (TupleDescAttr(desc, att)->attisdropped)
 			continue;
 
 		if (!newtup->changed[att])
@@ -131,10 +131,10 @@ spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup)
 
 		if (narg > 0)
 			appendStringInfo(&cmd, ", %s",
-					quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)));
+							 quote_identifier(NameStr(TupleDescAttr(desc, att)->attname)));
 		else
 			appendStringInfo(&cmd, "%s",
-					quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)));
+							 quote_identifier(NameStr(TupleDescAttr(desc, att)->attname)));
 		narg++;
 	}
 
@@ -142,7 +142,7 @@ spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup)
 
 	for (att = 0, narg = 0; att < desc->natts; att++)
 	{
-		if (TupleDescAttr(desc,att)->attisdropped)
+		if (TupleDescAttr(desc, att)->attisdropped)
 			continue;
 
 		if (!newtup->changed[att])
@@ -153,7 +153,7 @@ spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup)
 		else
 			appendStringInfo(&cmd, "$%u", narg + 1);
 
-		argtypes[narg] = TupleDescAttr(desc,att)->atttypid;
+		argtypes[narg] = TupleDescAttr(desc, att)->atttypid;
 		values[narg] = newtup->values[att];
 		nulls[narg] = newtup->nulls[att] ? 'n' : ' ';
 		narg++;
@@ -174,17 +174,17 @@ spock_apply_spi_insert(SpockRelation *rel, SpockTupleData *newtup)
  */
 void
 spock_apply_spi_update(SpockRelation *rel, SpockTupleData *oldtup,
-						   SpockTupleData *newtup)
+					   SpockTupleData *newtup)
 {
-	TupleDesc		desc = RelationGetDescr(rel->rel);
-	Oid				argtypes[MaxTupleAttributeNumber];
-	Datum			values[MaxTupleAttributeNumber];
-	char			nulls[MaxTupleAttributeNumber];
-	StringInfoData	cmd;
-	Bitmapset	   *id_attrs;
-	int	att,
-		narg,
-		firstarg;
+	TupleDesc	desc = RelationGetDescr(rel->rel);
+	Oid			argtypes[MaxTupleAttributeNumber];
+	Datum		values[MaxTupleAttributeNumber];
+	char		nulls[MaxTupleAttributeNumber];
+	StringInfoData cmd;
+	Bitmapset  *id_attrs;
+	int			att,
+				narg,
+				firstarg;
 
 	id_attrs = RelationGetIndexAttrBitmap(rel->rel,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
@@ -195,7 +195,7 @@ spock_apply_spi_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 	for (att = 0, narg = 0; att < desc->natts; att++)
 	{
-		if (TupleDescAttr(desc,att)->attisdropped)
+		if (TupleDescAttr(desc, att)->attisdropped)
 			continue;
 
 		if (!newtup->changed[att])
@@ -203,14 +203,14 @@ spock_apply_spi_update(SpockRelation *rel, SpockTupleData *oldtup,
 
 		if (narg > 0)
 			appendStringInfo(&cmd, ", %s = $%u",
-							 quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)),
+							 quote_identifier(NameStr(TupleDescAttr(desc, att)->attname)),
 							 narg + 1);
 		else
 			appendStringInfo(&cmd, "%s = $%u",
-							 quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)),
+							 quote_identifier(NameStr(TupleDescAttr(desc, att)->attname)),
 							 narg + 1);
 
-		argtypes[narg] = TupleDescAttr(desc,att)->atttypid;
+		argtypes[narg] = TupleDescAttr(desc, att)->atttypid;
 		values[narg] = newtup->values[att];
 		nulls[narg] = newtup->nulls[att] ? 'n' : ' ';
 		narg++;
@@ -221,20 +221,20 @@ spock_apply_spi_update(SpockRelation *rel, SpockTupleData *oldtup,
 	firstarg = narg;
 	for (att = 0; att < desc->natts; att++)
 	{
-		if (!bms_is_member(TupleDescAttr(desc,att)->attnum - FirstLowInvalidHeapAttributeNumber,
+		if (!bms_is_member(TupleDescAttr(desc, att)->attnum - FirstLowInvalidHeapAttributeNumber,
 						   id_attrs))
 			continue;
 
 		if (narg > firstarg)
 			appendStringInfo(&cmd, " AND %s = $%u",
-							 quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)),
+							 quote_identifier(NameStr(TupleDescAttr(desc, att)->attname)),
 							 narg + 1);
 		else
 			appendStringInfo(&cmd, " %s = $%u",
-							 quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)),
+							 quote_identifier(NameStr(TupleDescAttr(desc, att)->attname)),
 							 narg + 1);
 
-		argtypes[narg] = TupleDescAttr(desc,att)->atttypid;
+		argtypes[narg] = TupleDescAttr(desc, att)->atttypid;
 		values[narg] = oldtup->values[att];
 		nulls[narg] = oldtup->nulls[att] ? 'n' : ' ';
 		narg++;
@@ -254,14 +254,14 @@ spock_apply_spi_update(SpockRelation *rel, SpockTupleData *oldtup,
 void
 spock_apply_spi_delete(SpockRelation *rel, SpockTupleData *oldtup)
 {
-	TupleDesc		desc = RelationGetDescr(rel->rel);
-	Oid				argtypes[MaxTupleAttributeNumber];
-	Datum			values[MaxTupleAttributeNumber];
-	char			nulls[MaxTupleAttributeNumber];
-	StringInfoData	cmd;
-	Bitmapset	   *id_attrs;
-	int	att,
-		narg;
+	TupleDesc	desc = RelationGetDescr(rel->rel);
+	Oid			argtypes[MaxTupleAttributeNumber];
+	Datum		values[MaxTupleAttributeNumber];
+	char		nulls[MaxTupleAttributeNumber];
+	StringInfoData cmd;
+	Bitmapset  *id_attrs;
+	int			att,
+				narg;
 
 	id_attrs = RelationGetIndexAttrBitmap(rel->rel,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
@@ -272,20 +272,20 @@ spock_apply_spi_delete(SpockRelation *rel, SpockTupleData *oldtup)
 
 	for (att = 0, narg = 0; att < desc->natts; att++)
 	{
-		if (!bms_is_member(TupleDescAttr(desc,att)->attnum - FirstLowInvalidHeapAttributeNumber,
+		if (!bms_is_member(TupleDescAttr(desc, att)->attnum - FirstLowInvalidHeapAttributeNumber,
 						   id_attrs))
 			continue;
 
 		if (narg > 0)
 			appendStringInfo(&cmd, " AND %s = $%u",
-							 quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)),
+							 quote_identifier(NameStr(TupleDescAttr(desc, att)->attname)),
 							 narg + 1);
 		else
 			appendStringInfo(&cmd, " %s = $%u",
-							 quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)),
+							 quote_identifier(NameStr(TupleDescAttr(desc, att)->attname)),
 							 narg + 1);
 
-		argtypes[narg] = TupleDescAttr(desc,att)->atttypid;
+		argtypes[narg] = TupleDescAttr(desc, att)->atttypid;
 		values[narg] = oldtup->values[att];
 		nulls[narg] = oldtup->nulls[att] ? 'n' : ' ';
 		narg++;
@@ -312,16 +312,17 @@ spock_apply_spi_can_mi(SpockRelation *rel)
 
 void
 spock_apply_spi_mi_add_tuple(SpockRelation *rel,
-								 SpockTupleData *tup)
+							 SpockTupleData *tup)
 {
-	Datum	*values;
-	bool	*nulls;
+	Datum	   *values;
+	bool	   *nulls;
 
 	/* Start COPY if not already done so */
 	spock_start_copy(rel);
 
 #define MAX_BUFFERED_TUPLES		10000
 #define MAX_BUFFER_SIZE			60000
+
 	/*
 	 * If sufficient work is pending, process that first
 	 */
@@ -348,12 +349,12 @@ static void
 spock_start_copy(SpockRelation *rel)
 {
 	MemoryContext oldcontext;
-	TupleDesc		desc;
-	ListCell	   *cur;
-	int				num_phys_attrs;
-	char		   *delim;
-	StringInfoData  attrnames;
-	int				i;
+	TupleDesc	desc;
+	ListCell   *cur;
+	int			num_phys_attrs;
+	char	   *delim;
+	StringInfoData attrnames;
+	int			i;
 
 	/* We are already doing COPY for requested relation, nothing to do. */
 	if (spkcstate && spkcstate->rel == rel)
@@ -397,17 +398,17 @@ spock_start_copy(SpockRelation *rel)
 	 */
 	foreach(cur, spkcstate->attnumlist)
 	{
-		int         attnum = lfirst_int(cur);
-		Oid         out_func_oid;
-		bool        isvarlena;
+		int			attnum = lfirst_int(cur);
+		Oid			out_func_oid;
+		bool		isvarlena;
 
-		getTypeBinaryOutputInfo(TupleDescAttr(desc,attnum)->atttypid,
+		getTypeBinaryOutputInfo(TupleDescAttr(desc, attnum)->atttypid,
 								&out_func_oid,
 								&isvarlena);
 		fmgr_info(out_func_oid, &spkcstate->out_functions[attnum]);
 		appendStringInfo(&attrnames, "%s %s",
 						 delim,
-						 quote_identifier(NameStr(TupleDescAttr(desc,attnum)->attname)));
+						 quote_identifier(NameStr(TupleDescAttr(desc, attnum)->attname)));
 		delim = ", ";
 
 	}
@@ -422,10 +423,10 @@ spock_start_copy(SpockRelation *rel)
 
 
 	/*
-	 * This is a bit of kludge to let COPY FROM read from the STDIN. In
-	 * spock, the apply worker is accumulating tuples received from the
-	 * publisher and queueing them for a bulk load. But the COPY API can only
-	 * deal with either a file or a PROGRAM or STDIN.
+	 * This is a bit of kludge to let COPY FROM read from the STDIN. In spock,
+	 * the apply worker is accumulating tuples received from the publisher and
+	 * queueing them for a bulk load. But the COPY API can only deal with
+	 * either a file or a PROGRAM or STDIN.
 	 *
 	 * We could either use pipe-based implementation where the apply worker
 	 * first writes to one end of the pipe and later reads from the other end.
@@ -436,8 +437,8 @@ spock_start_copy(SpockRelation *rel)
 	 * disadvantage being that the data may get written to the disk and that
 	 * may cause performance issues.
 	 *
-	 * A more ideal solution would be to teach COPY to write to and read from a
-	 * buffer. But that will require changes to the in-core COPY
+	 * A more ideal solution would be to teach COPY to write to and read from
+	 * a buffer. But that will require changes to the in-core COPY
 	 * infrastructure. Instead, we setup things such that a pipe is created
 	 * between STDIN and a unnamed stream. The tuples are written to the one
 	 * end of the pipe and read back from the other end. Since we can fiddle
@@ -460,7 +461,7 @@ spock_start_copy(SpockRelation *rel)
 	MemoryContextSwitchTo(oldcontext);
 
 	spock_copySendData(spkcstate, BinarySignature,
-						   sizeof(BinarySignature));
+					   sizeof(BinarySignature));
 	spock_copySendInt32(spkcstate, 0);
 	spock_copySendInt32(spkcstate, 0);
 }
@@ -468,8 +469,8 @@ spock_start_copy(SpockRelation *rel)
 static void
 spock_proccess_copy(spock_copyState *spkcstate)
 {
-	uint64	processed;
-	FILE	*save_stdin;
+	uint64		processed;
+	FILE	   *save_stdin;
 
 	if (!spkcstate->copy_parsetree || !spkcstate->copy_buffered_tuples)
 		return;
@@ -500,16 +501,16 @@ spock_proccess_copy(spock_copyState *spkcstate)
 
 	/*
 	 * The COPY statement previously crafted will read from STDIN. So we
-	 * override the 'stdin' stream to point to the read end of the pipe created
-	 * for this relation. Before that we save the current 'stdin' stream and
-	 * restore it back when the COPY is done
+	 * override the 'stdin' stream to point to the read end of the pipe
+	 * created for this relation. Before that we save the current 'stdin'
+	 * stream and restore it back when the COPY is done
 	 */
 	save_stdin = stdin;
 	stdin = spkcstate->copy_read_file;
 
 	/* Initiate the actual COPY */
-	SPKDoCopy((CopyStmt*)((RawStmt *)linitial(spkcstate->copy_parsetree))->stmt,
-		spkcstate->copy_stmt->data, &processed);
+	SPKDoCopy((CopyStmt *) ((RawStmt *) linitial(spkcstate->copy_parsetree))->stmt,
+			  spkcstate->copy_stmt->data, &processed);
 
 	fclose(spkcstate->copy_read_file);
 	spkcstate->copy_read_file = NULL;
@@ -606,7 +607,7 @@ spock_copySendInt16(spock_copyState *spkcstate, int16 val)
  */
 static void
 spock_copySendData(spock_copyState *spkcstate, const void *databuf,
-					   int datasize)
+				   int datasize)
 {
 	appendBinaryStringInfo(spkcstate->msgbuf, databuf, datasize);
 }
@@ -617,8 +618,8 @@ spock_copySendEndOfRow(spock_copyState *spkcstate)
 	StringInfo	msgbuf = spkcstate->msgbuf;
 
 	if (fwrite(msgbuf->data, msgbuf->len, 1,
-				spkcstate->copy_write_file) != 1 ||
-			ferror(spkcstate->copy_write_file))
+			   spkcstate->copy_write_file) != 1 ||
+		ferror(spkcstate->copy_write_file))
 	{
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -633,7 +634,7 @@ spock_copySendEndOfRow(spock_copyState *spkcstate)
  */
 static void
 spock_copyOneRowTo(spock_copyState *spkcstate, Datum *values,
-					   bool *nulls)
+				   bool *nulls)
 {
 	FmgrInfo   *out_functions = spkcstate->out_functions;
 	MemoryContext oldcontext;
@@ -661,7 +662,7 @@ spock_copyOneRowTo(spock_copyState *spkcstate, Datum *values,
 										   value);
 			spock_copySendInt32(spkcstate, VARSIZE(outputbytes) - VARHDRSZ);
 			spock_copySendData(spkcstate, VARDATA(outputbytes),
-						 VARSIZE(outputbytes) - VARHDRSZ);
+							   VARSIZE(outputbytes) - VARHDRSZ);
 		}
 	}
 
@@ -673,7 +674,7 @@ spock_copyOneRowTo(spock_copyState *spkcstate, Datum *values,
 	MemoryContextSwitchTo(oldcontext);
 }
 
-#else /* WIN32 */
+#else							/* WIN32 */
 
 bool
 spock_apply_spi_can_mi(SpockRelation *rel)
@@ -683,7 +684,7 @@ spock_apply_spi_can_mi(SpockRelation *rel)
 
 void
 spock_apply_spi_mi_add_tuple(SpockRelation *rel,
-								 SpockTupleData *tup)
+							 SpockTupleData *tup)
 {
 	elog(ERROR, "spock_apply_spi_mi_add_tuple called unexpectedly");
 }
@@ -694,4 +695,4 @@ spock_apply_spi_mi_finish(SpockRelation *rel)
 	elog(ERROR, "spock_apply_spi_mi_finish called unexpectedly");
 }
 
-#endif /* WIN32 */
+#endif							/* WIN32 */

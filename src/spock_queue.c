@@ -62,7 +62,7 @@
 
 typedef struct QueueTuple
 {
-	TimestampTz	queued_at;
+	TimestampTz queued_at;
 	NameData	replication_set;
 	NameData	role;
 	char		message_type;
@@ -85,7 +85,7 @@ queue_message(List *replication_sets, Oid roleoid, char message_type,
 	const char *role;
 	TimestampTz ts = GetCurrentTimestamp();
 
-	role =  GetUserNameFromId(roleoid, false);
+	role = GetUserNameFromId(roleoid, false);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_QUEUE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -161,7 +161,7 @@ queued_message_from_tuple(HeapTuple queue_tup)
 	Assert(!isnull);
 	/* Parse the json inside the message into Jsonb object. */
 	res->message = DatumGetJsonb(
-		DirectFunctionCall1(jsonb_in, DirectFunctionCall1(json_out, d)));
+								 DirectFunctionCall1(jsonb_in, DirectFunctionCall1(json_out, d)));
 
 	/* Close the relation. */
 	table_close(rel, NoLock);

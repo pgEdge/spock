@@ -42,11 +42,11 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 	List	   *tables = NIL;
 	ListCell   *lc;
 	bool		first = true;
-	StringInfoData	query;
-	StringInfoData	repsetarr;
+	StringInfoData query;
+	StringInfoData repsetarr;
 
 	initStringInfo(&repsetarr);
-	foreach (lc, replication_sets)
+	foreach(lc, replication_sets)
 	{
 		char	   *repset_name = lfirst(lc);
 
@@ -113,15 +113,15 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
  */
 SpockRemoteRel *
 spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
-								   List *replication_sets)
+							  List *replication_sets)
 {
 	SpockRemoteRel *remoterel = palloc0(sizeof(SpockRemoteRel));
 	PGresult   *res;
 	ListCell   *lc;
 	bool		first = true;
-	StringInfoData	query;
-	StringInfoData	repsetarr;
-	StringInfoData	relname;
+	StringInfoData query;
+	StringInfoData repsetarr;
+	StringInfoData relname;
 
 	initStringInfo(&relname);
 	appendStringInfo(&relname, "%s.%s",
@@ -129,7 +129,7 @@ spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 					 PQescapeIdentifier(conn, rv->relname, strlen(rv->relname)));
 
 	initStringInfo(&repsetarr);
-	foreach (lc, replication_sets)
+	foreach(lc, replication_sets)
 	{
 		char	   *repset_name = lfirst(lc);
 
@@ -192,10 +192,10 @@ spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 bool
 spock_remote_slot_active(PGconn *conn, const char *slot_name)
 {
-	PGresult	   *res;
-	const char	   *values[1];
-	Oid				types[1] = { TEXTOID };
-	bool			ret;
+	PGresult   *res;
+	const char *values[1];
+	Oid			types[1] = {TEXTOID};
+	bool		ret;
 
 	values[0] = slot_name;
 
@@ -242,9 +242,9 @@ spock_remote_slot_active(PGconn *conn, const char *slot_name)
 void
 spock_drop_remote_slot(PGconn *conn, const char *slot_name)
 {
-	PGresult	   *res;
-	const char	   *values[1];
-	Oid				types[1] = { TEXTOID };
+	PGresult   *res;
+	const char *values[1];
+	Oid			types[1] = {TEXTOID};
 
 	values[0] = slot_name;
 
@@ -300,10 +300,10 @@ spock_drop_remote_slot(PGconn *conn, const char *slot_name)
  * Read replication info about remote connection
  */
 SpockNode *
-spock_remote_node_info(PGconn* conn, char **sysid, char **dbname, char **replication_sets)
+spock_remote_node_info(PGconn *conn, char **sysid, char **dbname, char **replication_sets)
 {
-	SpockNode	   *node = (SpockNode *)palloc0(sizeof(SpockNode));
-	PGresult	   *res;
+	SpockNode  *node = (SpockNode *) palloc0(sizeof(SpockNode));
+	PGresult   *res;
 
 	res = PQexec(conn, "SELECT * FROM spock.node_info()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -330,7 +330,7 @@ spock_remote_node_info(PGconn* conn, char **sysid, char **dbname, char **replica
 		node->country = pstrdup(PQgetvalue(res, 0, 6));
 	if (!PQgetisnull(res, 0, 7))
 		node->info = DatumGetJsonb(DirectFunctionCall1(jsonb_in,
-				CStringGetDatum(PQgetvalue(res, 0, 7))));
+													   CStringGetDatum(PQgetvalue(res, 0, 7))));
 
 	PQclear(res);
 	return node;
@@ -338,13 +338,13 @@ spock_remote_node_info(PGconn* conn, char **sysid, char **dbname, char **replica
 
 bool
 spock_remote_function_exists(PGconn *conn, const char *nspname,
-								 const char *proname, int nargs, char *argname)
+							 const char *proname, int nargs, char *argname)
 {
-	PGresult	   *res;
-	const char	   *values[2];
-	Oid				types[2] = { TEXTOID, TEXTOID };
-	bool			ret;
-	StringInfoData	query;
+	PGresult   *res;
+	const char *values[2];
+	Oid			types[2] = {TEXTOID, TEXTOID};
+	bool		ret;
+	StringInfoData query;
 
 	values[0] = proname;
 	values[1] = nspname;
@@ -371,7 +371,7 @@ spock_remote_function_exists(PGconn *conn, const char *nspname,
 
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		elog(ERROR, "could not fetch remote function info: %s\n",
-			PQerrorMessage(conn));
+			 PQerrorMessage(conn));
 
 	ret = PQntuples(res) > 0;
 

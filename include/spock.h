@@ -42,40 +42,40 @@ extern char *spock_temp_directory;
 extern bool spock_use_spi;
 extern bool spock_batch_inserts;
 extern char *spock_extra_connection_options;
-extern bool	spock_ch_stats;
-extern bool	spock_deny_ddl;
-extern bool	spock_enable_ddl_replication;
-extern bool	spock_include_ddl_repset;
-extern bool	allow_ddl_from_functions;
+extern bool spock_ch_stats;
+extern bool spock_deny_ddl;
+extern bool spock_enable_ddl_replication;
+extern bool spock_include_ddl_repset;
+extern bool allow_ddl_from_functions;
 extern int	restart_delay_default;
 extern int	restart_delay_on_exception;
-extern int	spock_replay_queue_size;  /* Deprecated - no longer used */
+extern int	spock_replay_queue_size;	/* Deprecated - no longer used */
 extern bool check_all_uc_indexes;
 extern char *shorten_hash(const char *str, int maxlen);
 
 extern List *textarray_to_list(ArrayType *textarray);
 extern bool parsePGArray(const char *atext, char ***itemarray, int *nitems);
 
-extern Oid get_spock_table_oid(const char *table);
+extern Oid	get_spock_table_oid(const char *table);
 
 extern void spock_execute_sql_command(char *cmdstr, char *role,
-										  bool isTopLevel);
+									  bool isTopLevel);
 
 extern PGconn *spock_connect(const char *connstring, const char *connname,
-								 const char *suffix);
+							 const char *suffix);
 extern PGconn *spock_connect_replica(const char *connstring,
-										 const char *connname,
-										 const char *suffix);
-extern void spock_identify_system(PGconn *streamConn, uint64* sysid,
-									  TimeLineID *timeline, XLogRecPtr *xlogpos,
-									  Name *dbname);
+									 const char *connname,
+									 const char *suffix);
+extern void spock_identify_system(PGconn *streamConn, uint64 *sysid,
+								  TimeLineID *timeline, XLogRecPtr *xlogpos,
+								  Name *dbname);
 extern void spock_start_replication(PGconn *streamConn,
-										const char *slot_name,
-										XLogRecPtr start_pos,
-										const char *forward_origins,
-										const char *replication_sets,
-										const char *replicate_only_table,
-										bool force_text_transfer);
+									const char *slot_name,
+									XLogRecPtr start_pos,
+									const char *forward_origins,
+									const char *replication_sets,
+									const char *replicate_only_table,
+									bool force_text_transfer);
 
 extern void spock_manage_extension(void);
 
@@ -93,8 +93,8 @@ extern void spock_auto_replicate_ddl(const char *query, List *replication_sets,
 									 Oid roleoid, Node *stmt);
 
 /* spock_readonly.c */
-void spock_roExecutorStart(QueryDesc *queryDesc, int eflags);
-void spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
+void		spock_roExecutorStart(QueryDesc *queryDesc, int eflags);
+void		spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
 
 #include "utils/memdebug.h"
 
@@ -116,10 +116,13 @@ void spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *j
  * the worker type, etc, prefixed by SPOCK:, in the Valgrind logs. We
  * need to stub it out if we aren't using valgrind.
  */
-pg_attribute_printf(1, 2) pg_attribute_unused() static inline void VALGRIND_PRINTF(const char *format, ...) {}
+pg_attribute_printf(1, 2) pg_attribute_unused() static inline void
+VALGRIND_PRINTF(const char *format,...)
+{
+}
 
 #endif
 
 extern void spock_init_failover_slot(void);
 
-#endif /* SPOCK_H */
+#endif							/* SPOCK_H */

@@ -32,8 +32,8 @@ typedef struct SpockRelation
 {
 	/* Info coming from the remote side. */
 	uint32		remoteid;
-	char	   *nspname; /* Schema name */
-	char	   *relname; /* Table name */
+	char	   *nspname;		/* Schema name */
+	char	   *relname;		/* Table name */
 	int			natts;
 	char	  **attnames;
 	Oid		   *attrtypes;
@@ -52,22 +52,22 @@ typedef struct SpockRelation
 } SpockRelation;
 
 extern void spock_relation_cache_update(uint32 remoteid,
-											 char *schemaname, char *relname,
-											 int natts, char **attnames,
-											 Oid *attrtypes,
-											 Oid *attrtypmods);
+										char *schemaname, char *relname,
+										int natts, char **attnames,
+										Oid *attrtypes,
+										Oid *attrtypmods);
 extern void spock_relation_cache_updater(SpockRemoteRel *remoterel);
 
 extern SpockRelation *spock_relation_open(uint32 remoteid,
-												   LOCKMODE lockmode);
-extern void spock_relation_close(SpockRelation * rel,
-									  LOCKMODE lockmode);
+										  LOCKMODE lockmode);
+extern void spock_relation_close(SpockRelation *rel,
+								 LOCKMODE lockmode);
 extern void spock_relation_invalidate_cb(Datum arg, Oid reloid);
 
 extern void spock_relation_cache_reset(void);
 
-extern Oid spock_lookup_delta_function(char *fname, Oid typeoid);
+extern Oid	spock_lookup_delta_function(char *fname, Oid typeoid);
 
 struct SpockTupleData;
 
-#endif /* SPOCK_RELCACHE_H */
+#endif							/* SPOCK_RELCACHE_H */

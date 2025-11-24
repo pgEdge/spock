@@ -2,4 +2,4 @@
 #define SPOCKCTRL_H
 
 
-#endif /* SPOCKCTRL_H */
+#endif							/* SPOCKCTRL_H */

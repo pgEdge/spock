@@ -30,7 +30,7 @@
 
 #include "spock_fe.h"
 
-static char *PQconninfoParamsToConnstr(const char *const * keywords, const char *const * values);
+static char *PQconninfoParamsToConnstr(const char *const *keywords, const char *const *values);
 static void appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str);
 
 /*
@@ -43,7 +43,7 @@ find_other_exec_version(const char *argv0, const char *target,
 {
 	char		cmd[MAXPGPATH];
 	char		cmd_output[1024];
-	FILE       *output;
+	FILE	   *output;
 	int			pre_dot = 0,
 				post_dot = 0;
 
@@ -69,7 +69,8 @@ find_other_exec_version(const char *argv0, const char *target,
 
 	if (fgets(cmd_output, sizeof(cmd_output), output) == NULL)
 	{
-		int ret = pclose(output);
+		int			ret = pclose(output);
+
 		if (WIFEXITED(ret))
 			fprintf(stderr, "find_other_exec_version: couldn't read output of \"%s\": %d (exited with return code %d)\n", cmd, ret, WEXITSTATUS(ret));
 		else if (WIFSIGNALED(ret))
@@ -87,13 +88,11 @@ find_other_exec_version(const char *argv0, const char *target,
 	}
 
 	/*
-	  similar to version number exposed by "server_version_num" but without
-	  the minor :
-	  9.6.1 -> 90601  -> 90600
-	  10.1  -> 100001 -> 100000)
-	*/
+	 * similar to version number exposed by "server_version_num" but without
+	 * the minor : 9.6.1 -> 90601  -> 90600 10.1  -> 100001 -> 100000)
+	 */
 	*version = (pre_dot < 10) ?
-	  (pre_dot * 100 + post_dot) * 100 : pre_dot * 100 * 100;
+		(pre_dot * 100 + post_dot) * 100 : pre_dot * 100 * 100;
 
 	return 0;
 }
@@ -106,7 +105,7 @@ find_other_exec_version(const char *argv0, const char *target,
 char *
 spk_get_connstr(char *connstr, char *dbname, char *options, char **errmsg)
 {
-	char		*ret;
+	char	   *ret;
 	int			argcount = 1;	/* dbname */
 	int			i;
 	const char **keywords;
@@ -115,8 +114,8 @@ spk_get_connstr(char *connstr, char *dbname, char *options, char **errmsg)
 	PQconninfoOption *conn_opt;
 
 	/*
-	 * Merge the connection info inputs given in form of connection string
-	 * and options
+	 * Merge the connection info inputs given in form of connection string and
+	 * options
 	 */
 	i = 0;
 	if (connstr &&
@@ -161,8 +160,8 @@ spk_get_connstr(char *connstr, char *dbname, char *options, char **errmsg)
 		memset(values, 0, (argcount + 2) * sizeof(*values));
 
 		/*
-		 * If connstr was provided but it's not in connection string format and
-		 * the dbname wasn't provided then connstr is actually dbname.
+		 * If connstr was provided but it's not in connection string format
+		 * and the dbname wasn't provided then connstr is actually dbname.
 		 */
 		if (connstr && !dbname)
 			dbname = connstr;
@@ -197,11 +196,11 @@ spk_get_connstr(char *connstr, char *dbname, char *options, char **errmsg)
  * Convert PQconninfoOption array into conninfo string
  */
 static char *
-PQconninfoParamsToConnstr(const char *const * keywords, const char *const * values)
+PQconninfoParamsToConnstr(const char *const *keywords, const char *const *values)
 {
-	PQExpBuffer	 retbuf = createPQExpBuffer();
-	char		*ret;
-	int			 i = 0;
+	PQExpBuffer retbuf = createPQExpBuffer();
+	char	   *ret;
+	int			i = 0;
 
 	for (i = 0; keywords[i] != NULL; i++)
 	{

@@ -264,8 +264,8 @@ wait_for_worker_startup(SpockWorker *worker,
 			 * on registration to tell the difference. If the generation
 			 * counter has increased we know the our worker must've exited
 			 * cleanly (setting the worker type back to NONE) or self-reported
-			 * a crash (setting terminated_at), then the slot re-used by another
-			 * manager.
+			 * a crash (setting terminated_at), then the slot re-used by
+			 * another manager.
 			 */
 			if (worker->worker_type != SPOCK_WORKER_NONE
 				&& worker->generation == generation
@@ -417,7 +417,7 @@ spock_worker_attach(int slot, SpockWorkerType type)
 static void
 spock_worker_detach(bool crash)
 {
-	bool	signal_manager = false;
+	bool		signal_manager = false;
 
 	/* Nothing to detach. */
 	if (MySpockWorker == NULL)
@@ -455,9 +455,8 @@ spock_worker_detach(bool crash)
 
 		/*
 		 * If a database manager terminates, inform the Spock supervisor.
-		 * Otherwise inform the Spock manager for this database so that
-		 * it can restart terminated apply-workers immediately (if
-		 * necessary).
+		 * Otherwise inform the Spock manager for this database so that it can
+		 * restart terminated apply-workers immediately (if necessary).
 		 */
 		if (MySpockWorker->worker_type == SPOCK_WORKER_MANAGER)
 			SpockCtx->subscriptions_changed = true;
@@ -473,7 +472,7 @@ spock_worker_detach(bool crash)
 
 	if (signal_manager)
 	{
-		SpockWorker	   *my_manager;
+		SpockWorker *my_manager;
 
 		my_manager = spock_manager_find(MySpockWorker->dboid);
 
@@ -653,6 +652,7 @@ signal_worker_xact_callback(XactEvent event, void *arg)
 	if (event == XACT_EVENT_PARALLEL_COMMIT ||
 		event == XACT_EVENT_PARALLEL_ABORT ||
 		event == XACT_EVENT_PARALLEL_PRE_COMMIT)
+
 		/*
 		 * Subscription changing code is volatile and can't be executed inside
 		 * a parallel worker. Just ignore the case.
@@ -661,6 +661,7 @@ signal_worker_xact_callback(XactEvent event, void *arg)
 
 	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_PRE_PREPARE ||
 		event == XACT_EVENT_PREPARE)
+
 		/*
 		 * It is too early for us, because worker still can't see the changes
 		 * have made. Skip until COMMIT/ABORT will come.
@@ -668,15 +669,15 @@ signal_worker_xact_callback(XactEvent event, void *arg)
 		return;
 
 	/*
-	 * Now, worker may see the Spock catalog changes that this backend has made.
-	 * COMMIT and ABORT will release resources right after this call. So, we
-	 * need to manage the signal_workers right here.
+	 * Now, worker may see the Spock catalog changes that this backend has
+	 * made. COMMIT and ABORT will release resources right after this call.
+	 * So, we need to manage the signal_workers right here.
 	 */
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 	if (event == XACT_EVENT_COMMIT)
 	{
-		SpockWorker	   *w;
-		ListCell	   *l;
+		SpockWorker *w;
+		ListCell   *l;
 
 		foreach(l, signal_workers)
 		{
@@ -742,8 +743,8 @@ spock_subscription_changed(Oid subid, bool kill)
 
 		/*
 		 * Use TopMemoryContext to simplify corner cases, like PREPARE
-		 * TRANSACTION that clears resources allocated by transaction and still
-		 * not committed.
+		 * TRANSACTION that clears resources allocated by transaction and
+		 * still not committed.
 		 */
 		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
@@ -851,7 +852,7 @@ spock_worker_shmem_startup(void)
 	}
 
 	exception_log_ptr = ShmemInitStruct("spock_exception_log_ptr",
-									worker_shmem_size(nworkers, false), &found);
+										worker_shmem_size(nworkers, false), &found);
 
 	if (!found)
 		memset(exception_log_ptr, 0, sizeof(SpockExceptionLog) * nworkers);

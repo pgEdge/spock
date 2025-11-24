@@ -86,10 +86,10 @@
 
 PGDLLEXPORT void spock_sync_main(Datum main_arg);
 
-static SpockSyncWorker	   *MySyncWorker = NULL;
+static SpockSyncWorker *MySyncWorker = NULL;
 
 #ifdef WIN32
-static int exec_cmd_win32(const char *cmd, char *cmdargv[]);
+static int	exec_cmd_win32(const char *cmd, char *cmdargv[]);
 #endif
 
 
@@ -170,7 +170,7 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	char	   *cmdargv[ARGV_MAX_NUM];
 	int			cmdargc = 0;
 	bool		has_snowflake;
-	StringInfoData	s;
+	StringInfoData s;
 
 	dsn = spk_get_connstr((char *) sub->origin_if->dsn, NULL, NULL, &err_msg);
 	if (dsn == NULL)
@@ -223,9 +223,11 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	if (sub->skip_schema && list_length(sub->skip_schema) > 0)
 	{
 		ListCell   *lc;
+
 		foreach(lc, sub->skip_schema)
 		{
 			char	   *schema_name = (char *) lfirst(lc);
+
 			appendStringInfo(&s, "--exclude-schema=%s", schema_name);
 			cmdargv[cmdargc++] = pstrdup(s.data);
 			resetStringInfo(&s);
@@ -263,7 +265,7 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
 	char		pg_restore[MAXPGPATH];
 	char	   *cmdargv[20];
 	int			cmdargc = 0;
-	StringInfoData	s;
+	StringInfoData s;
 
 	dsn = spk_get_connstr((char *) sub->target_if->dsn, NULL,
 						  "-cspock.subscription_schema_restore=true",
@@ -303,8 +305,8 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
 	cmdargv[cmdargc++] = NULL;
 
 	/*
-	 * TODO: misleading error message takes place here if an error
-	 * is interrupted execution.
+	 * TODO: misleading error message takes place here if an error is
+	 * interrupted execution.
 	 */
 	if (exec_cmd(pg_restore, cmdargv) != 0)
 		ereport(ERROR,
@@ -326,9 +328,9 @@ ensure_replication_slot_snapshot(PGconn *sql_conn, PGconn *repl_conn,
 								 char *slot_name, bool use_failover_slot,
 								 XLogRecPtr *lsn)
 {
-	PGresult	   *res;
-	StringInfoData	query;
-	char		   *snapshot;
+	PGresult   *res;
+	StringInfoData query;
+	char	   *snapshot;
 
 retry:
 	initStringInfo(&query);
@@ -336,10 +338,10 @@ retry:
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
 	/* TODO: Should we ever use FAILOVER here? */
+
 	/*
-	if (use_failover_slot)
-		appendStringInfo(&query, " FAILOVER");
-	*/
+	 * if (use_failover_slot) appendStringInfo(&query, " FAILOVER");
+	 */
 
 
 	res = PQexec(repl_conn, query.data);
@@ -350,11 +352,11 @@ retry:
 
 		/*
 		 * If our slot already exist but is not used, it's leftover from
-		 * previous unsucessful attempt to synchronize table, try dropping
-		 * it and recreating.
+		 * previous unsucessful attempt to synchronize table, try dropping it
+		 * and recreating.
 		 */
 		if (sqlstate &&
-			strcmp(sqlstate, "42710" /*ERRCODE_DUPLICATE_OBJECT*/) == 0 &&
+			strcmp(sqlstate, "42710" /* ERRCODE_DUPLICATE_OBJECT */ ) == 0 &&
 			!spock_remote_slot_active(sql_conn, slot_name))
 		{
 			pfree(query.data);
@@ -366,12 +368,12 @@ retry:
 		}
 
 		elog(ERROR, "could not create replication slot on provider: %s\n"
-		     "query: %s",
+			 "query: %s",
 			 PQresultErrorMessage(res), query.data);
 	}
 
 	*lsn = DatumGetLSN(DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,
-					  CStringGetDatum(PQgetvalue(res, 0, 1))));
+											   CStringGetDatum(PQgetvalue(res, 0, 1))));
 	snapshot = pstrdup(PQgetvalue(res, 0, 2));
 
 
@@ -426,6 +428,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 		for (rno = 0; rno < PQntuples(originRes); rno++)
 		{
 			SpockApplyProgress sap;
+
 			/*
 			 * Update the remote node's progress entry to what our sync
 			 * provider has included in the COPY snapshot.
@@ -479,20 +482,24 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 				Assert(IS_VALID_TIMESTAMP(sap.last_updated_ts));
 
 				if (sap.last_updated_ts < sap.remote_commit_ts)
-					/* Complaining at the end of the sync we shouldn't flood the log */
+
+					/*
+					 * Complaining at the end of the sync we shouldn't flood
+					 * the log
+					 */
 					ereport(WARNING,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							errmsg("transaction apply time precedes its original commit time"),
-							errdetail("Commit time %s (node ID %d), but it was applied at %s on the replica (node ID %d)",
-									  remote_commit_ts, sap.key.remote_node_id,
-									  last_updated_ts,
-									  MySubscription->origin->id),
-							errhint("usually it means that the server's clocks are out of sync.")));
+							 errmsg("transaction apply time precedes its original commit time"),
+							 errdetail("Commit time %s (node ID %d), but it was applied at %s on the replica (node ID %d)",
+									   remote_commit_ts, sap.key.remote_node_id,
+									   last_updated_ts,
+									   MySubscription->origin->id),
+							 errhint("usually it means that the server's clocks are out of sync.")));
 			}
 			sap.updated_by_decode = updated_by_decode[0] == 't',
 
 			/* Update progress */
-			spock_group_progress_update(&sap);
+				spock_group_progress_update(&sap);
 
 			elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
 				 "remote_commit_ts='%s' "
@@ -522,16 +529,16 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 static void
 start_copy_origin_tx(PGconn *conn, const char *snapshot)
 {
-	PGresult	   *res;
-	char		   *s;
-	const char	   *setup_query =
+	PGresult   *res;
+	char	   *s;
+	const char *setup_query =
 		"BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n"
 		"SET DATESTYLE = ISO;\n"
 		"SET INTERVALSTYLE = POSTGRES;\n"
 		"SET extra_float_digits TO 3;\n"
 		"SET statement_timeout = 0;\n"
 		"SET lock_timeout = 0;\n";
-	StringInfoData	query;
+	StringInfoData query;
 
 	initStringInfo(&query);
 	appendStringInfoString(&query, setup_query);
@@ -545,16 +552,16 @@ start_copy_origin_tx(PGconn *conn, const char *snapshot)
 	res = PQexec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		elog(ERROR, "BEGIN on origin node failed: %s",
-				PQresultErrorMessage(res));
+			 PQresultErrorMessage(res));
 	PQclear(res);
 }
 
 static void
 start_copy_target_tx(PGconn *conn, const char *origin_name)
 {
-	PGresult	   *res;
-	char		   *s;
-	const char	   *setup_query =
+	PGresult   *res;
+	char	   *s;
+	const char *setup_query =
 		"BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;\n"
 		"SET session_replication_role = 'replica';\n"
 		"SET DATESTYLE = ISO;\n"
@@ -562,14 +569,14 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 		"SET extra_float_digits TO 3;\n"
 		"SET statement_timeout = 0;\n"
 		"SET lock_timeout = 0;\n";
-	StringInfoData	query;
+	StringInfoData query;
 
 	initStringInfo(&query);
 
 	/*
-	 * Set correct origin if target db supports it.
-	 * We must do this before starting the transaction otherwise the status
-	 * code bellow would get much more complicated.
+	 * Set correct origin if target db supports it. We must do this before
+	 * starting the transaction otherwise the status code bellow would get
+	 * much more complicated.
 	 */
 	if (PQserverVersion(conn) >= 90500)
 	{
@@ -587,7 +594,7 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 	res = PQexec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		elog(ERROR, "BEGIN on target node failed: %s",
-				PQresultErrorMessage(res));
+			 PQresultErrorMessage(res));
 	PQclear(res);
 }
 
@@ -600,7 +607,7 @@ finish_copy_origin_tx(PGconn *conn)
 	res = PQexec(conn, "ROLLBACK");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		elog(WARNING, "ROLLBACK on origin node failed: %s",
-				PQresultErrorMessage(res));
+			 PQresultErrorMessage(res));
 	PQclear(res);
 	PQfinish(conn);
 }
@@ -614,7 +621,7 @@ finish_copy_target_tx(PGconn *conn)
 	res = PQexec(conn, "COMMIT");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		elog(ERROR, "COMMIT on target node failed: %s",
-				PQresultErrorMessage(res));
+			 PQresultErrorMessage(res));
 	PQclear(res);
 
 	/*
@@ -624,10 +631,10 @@ finish_copy_target_tx(PGconn *conn)
 	if (PQserverVersion(conn) >= 90500)
 	{
 		res = PQexec(conn, "SELECT pg_catalog.pg_replication_origin_xact_reset();\n"
-						   "SELECT pg_catalog.pg_replication_origin_session_reset();\n");
+					 "SELECT pg_catalog.pg_replication_origin_session_reset();\n");
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 			elog(WARNING, "Resetting session origin on target node failed: %s",
-					PQresultErrorMessage(res));
+				 PQresultErrorMessage(res));
 		PQclear(res);
 	}
 
@@ -659,10 +666,10 @@ make_copy_attnamelist(SpockRelation *rel)
 
 	for (attnum = 0; attnum < desc->natts; attnum++)
 	{
-		int		remoteattnum = physatt_in_attmap(rel, attnum);
+		int			remoteattnum = physatt_in_attmap(rel, attnum);
 
 		/* Skip dropped attributes. */
-		if (TupleDescAttr(desc,attnum)->attisdropped)
+		if (TupleDescAttr(desc, attnum)->attisdropped)
 			continue;
 
 		if (remoteattnum < 0)
@@ -689,10 +696,10 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	List	   *attnamelist;
 	ListCell   *lc;
 	bool		first;
-	StringInfoData	query;
-	StringInfoData	attlist;
-	MemoryContext	curctx = CurrentMemoryContext,
-					oldctx;
+	StringInfoData query;
+	StringInfoData attlist;
+	MemoryContext curctx = CurrentMemoryContext,
+				oldctx;
 
 	/* Build the relation map. */
 	StartTransactionCommand();
@@ -709,9 +716,10 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 
 	initStringInfo(&attlist);
 	first = true;
-	foreach (lc, attnamelist)
+	foreach(lc, attnamelist)
 	{
-		char *attname = strVal(lfirst(lc));
+		char	   *attname = strVal(lfirst(lc));
+
 		if (first)
 			first = false;
 		else
@@ -729,13 +737,13 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	appendStringInfoString(&query, "COPY ");
 
 	/*
-	 * If the table is row-filtered we need to run query over the table
-	 * to execute the filter.
+	 * If the table is row-filtered we need to run query over the table to
+	 * execute the filter.
 	 */
 	if (remoterel->hasRowFilter)
 	{
-		StringInfoData	relname;
-		StringInfoData	repsetarr;
+		StringInfoData relname;
+		StringInfoData repsetarr;
 
 		initStringInfo(&relname);
 		appendStringInfo(&relname, "%s.%s",
@@ -746,7 +754,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 
 		initStringInfo(&repsetarr);
 		first = true;
-		foreach (lc, replication_sets)
+		foreach(lc, replication_sets)
 		{
 			char	   *repset_name = lfirst(lc);
 
@@ -775,17 +783,17 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 			appendStringInfo(&query, "(SELECT %s FROM %s.%s) ",
 							 list_length(attnamelist) ? attlist.data : "*",
 							 PQescapeIdentifier(origin_conn, remoterel->nspname,
-											strlen(remoterel->nspname)),
+												strlen(remoterel->nspname)),
 							 PQescapeIdentifier(origin_conn, remoterel->relname,
-											strlen(remoterel->relname)));
+												strlen(remoterel->relname)));
 		}
 		else
 		{
 			/* Otherwise just copy the table. */
 			appendStringInfo(&query, "%s.%s ",
-							PQescapeIdentifier(origin_conn, remoterel->nspname,
+							 PQescapeIdentifier(origin_conn, remoterel->nspname,
 												strlen(remoterel->nspname)),
-							PQescapeIdentifier(origin_conn, remoterel->relname,
+							 PQescapeIdentifier(origin_conn, remoterel->relname,
 												strlen(remoterel->relname)));
 
 			if (list_length(attnamelist))
@@ -802,7 +810,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		ereport(ERROR,
 				(errmsg("table copy failed"),
 				 errdetail("Query '%s': %s", query.data,
-					 PQerrorMessage(origin_conn))));
+						   PQerrorMessage(origin_conn))));
 	}
 
 	/* Build COPY FROM query. */
@@ -823,7 +831,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		ereport(ERROR,
 				(errmsg("table copy failed"),
 				 errdetail("Query '%s': %s", query.data,
-					 PQerrorMessage(origin_conn))));
+						   PQerrorMessage(origin_conn))));
 	}
 
 	while ((bytes = PQgetCopyData(origin_conn, &copybuf, false)) > 0)
@@ -833,7 +841,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 			ereport(ERROR,
 					(errmsg("writing to target table failed"),
 					 errdetail("destination connection reported: %s",
-						 PQerrorMessage(target_conn))));
+							   PQerrorMessage(target_conn))));
 		}
 		PQfreemem(copybuf);
 
@@ -845,7 +853,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		ereport(ERROR,
 				(errmsg("reading from origin table failed"),
 				 errdetail("source connection returned %d: %s",
-					bytes, PQerrorMessage(origin_conn))));
+						   bytes, PQerrorMessage(origin_conn))));
 	}
 
 	/* Send local finish */
@@ -854,7 +862,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		ereport(ERROR,
 				(errmsg("sending copy-completion to destination connection failed"),
 				 errdetail("destination connection reported: %s",
-					 PQerrorMessage(target_conn))));
+						   PQerrorMessage(target_conn))));
 	}
 
 	PQclear(res);
@@ -887,18 +895,18 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 	start_copy_target_tx(target_conn, origin_name);
 
 	/* Copy every table. */
-	foreach (lc, tables)
+	foreach(lc, tables)
 	{
-		RangeVar	*rv = lfirst(lc);
-		SpockRemoteRel	*remoterel;
+		RangeVar   *rv = lfirst(lc);
+		SpockRemoteRel *remoterel;
 
 		remoterel = spock_get_remote_repset_table(origin_conn, rv,
-													   replication_sets);
+												  replication_sets);
 
 		/*
 		 * In case of table partitioning, we synchronize the partitioned
-		 * (parent) table and skip the partitions. Other tables are synchronized
-		 * normally.
+		 * (parent) table and skip the partitions. Other tables are
+		 * synchronized normally.
 		 */
 		if (!remoterel->ispartition)
 			copy_table_data(origin_conn, target_conn, remoterel, replication_sets);
@@ -939,7 +947,7 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 
 	/* Get tables to copy from origin node. */
 	tables = spock_get_remote_repset_tables(origin_conn,
-												 replication_sets);
+											replication_sets);
 
 	/* Filter out tables from schemas that should be skipped */
 	if (sub->skip_schema && list_length(sub->skip_schema) > 0)
@@ -947,16 +955,17 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		List	   *filtered_tables = NIL;
 		ListCell   *lc_filter;
 
-		foreach (lc_filter, tables)
+		foreach(lc_filter, tables)
 		{
-			SpockRemoteRel	*remoterel = lfirst(lc_filter);
+			SpockRemoteRel *remoterel = lfirst(lc_filter);
 			ListCell   *lc_skip;
 			bool		skip_table = false;
 
 			/* Check if this table's schema should be skipped */
-			foreach (lc_skip, sub->skip_schema)
+			foreach(lc_skip, sub->skip_schema)
 			{
 				char	   *skip_schema_name = (char *) lfirst(lc_skip);
+
 				if (strcmp(remoterel->nspname, skip_schema_name) == 0)
 				{
 					skip_table = true;
@@ -978,14 +987,14 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	start_copy_target_tx(target_conn, origin_name);
 
 	/* Copy every table. */
-	foreach (lc, tables)
+	foreach(lc, tables)
 	{
-		SpockRemoteRel	*remoterel = lfirst(lc);
+		SpockRemoteRel *remoterel = lfirst(lc);
 
 		/*
 		 * In case of table partitioning, we synchronize the partitioned
-		 * (parent) table and skip the partitions. Other tables are synchronized
-		 * normally.
+		 * (parent) table and skip the partitions. Other tables are
+		 * synchronized normally.
 		 */
 		if (!remoterel->ispartition)
 			copy_table_data(origin_conn, target_conn, remoterel, replication_sets);
@@ -1005,15 +1014,15 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 static void
 spock_sync_worker_cleanup(SpockSubscription *sub)
 {
-	PGconn			   *origin_conn;
+	PGconn	   *origin_conn;
 
 	/* Drop the slot on the remote side. */
 	origin_conn = spock_connect(sub->origin_if->dsn, sub->name,
-									"cleanup");
+								"cleanup");
 	/* Wait for slot to be free. */
 	while (!got_SIGTERM)
 	{
-		int	rc;
+		int			rc;
 
 		if (!spock_remote_slot_active(origin_conn, sub->slot_name))
 			break;
@@ -1022,7 +1031,7 @@ spock_sync_worker_cleanup(SpockSubscription *sub)
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 					   1000L);
 
-        ResetLatch(&MyProc->procLatch);
+		ResetLatch(&MyProc->procLatch);
 
 		/* emergency bailout if postmaster has died */
 		if (rc & WL_POSTMASTER_DEATH)
@@ -1046,7 +1055,8 @@ spock_sync_worker_cleanup(SpockSubscription *sub)
 static void
 spock_sync_worker_cleanup_error_cb(int code, Datum arg)
 {
-	SpockSubscription  *sub = (SpockSubscription *) DatumGetPointer(arg);
+	SpockSubscription *sub = (SpockSubscription *) DatumGetPointer(arg);
+
 	spock_sync_worker_cleanup(sub);
 }
 
@@ -1064,16 +1074,16 @@ void
 spock_sync_subscription(SpockSubscription *sub)
 {
 	SpockSyncStatus *sync;
-	XLogRecPtr		lsn;
-	char			status;
-	MemoryContext	myctx,
-					oldctx;
-	RepOriginId		originid;
+	XLogRecPtr	lsn;
+	char		status;
+	MemoryContext myctx,
+				oldctx;
+	RepOriginId originid;
 
 	/* We need our own context for keeping things between transactions. */
 	myctx = AllocSetContextCreate(CurrentMemoryContext,
-								   "spock_sync_subscription cxt",
-								   ALLOCSET_DEFAULT_SIZES);
+								  "spock_sync_subscription cxt",
+								  ALLOCSET_DEFAULT_SIZES);
 
 	StartTransactionCommand();
 	oldctx = MemoryContextSwitchTo(myctx);
@@ -1085,44 +1095,45 @@ spock_sync_subscription(SpockSubscription *sub)
 
 	switch (status)
 	{
-		/* Already synced, nothing to do except cleanup. */
+			/* Already synced, nothing to do except cleanup. */
 		case SYNC_STATUS_READY:
 			MemoryContextDelete(myctx);
 			return;
-		/* We can recover from crashes during these. */
+			/* We can recover from crashes during these. */
 		case SYNC_STATUS_INIT:
 		case SYNC_STATUS_CATCHUP:
 			break;
-		/*
-		 * If the 'apply worker' is found in a state where it can't continue, it
-		 * forcibly disables the subscription and logs a complaint, providing as
-		 * much information as possible.
-		 * At this stage, we only have the origin_id to display. May we add
-		 * something to the log to facilitate the resolution of the issue?
-		 *
-		 * NOTE:
-		 * A transaction is required since the exception_log is a database table.
-		 */
+
+			/*
+			 * If the 'apply worker' is found in a state where it can't
+			 * continue, it forcibly disables the subscription and logs a
+			 * complaint, providing as much information as possible. At this
+			 * stage, we only have the origin_id to display. May we add
+			 * something to the log to facilitate the resolution of the issue?
+			 *
+			 * NOTE: A transaction is required since the exception_log is a
+			 * database table.
+			 */
 		default:
-		{
-			int	old_exception_behaviour = exception_behaviour;
+			{
+				int			old_exception_behaviour = exception_behaviour;
 
-			StartTransactionCommand();
-			originid = replorigin_by_name(sub->slot_name, true);
-			exception_behaviour = SUB_DISABLE;
-			spock_disable_subscription(sub, originid, InvalidTransactionId,
-									   InvalidXLogRecPtr, 0);
-			exception_behaviour = old_exception_behaviour;
-			CommitTransactionCommand();
+				StartTransactionCommand();
+				originid = replorigin_by_name(sub->slot_name, true);
+				exception_behaviour = SUB_DISABLE;
+				spock_disable_subscription(sub, originid, InvalidTransactionId,
+										   InvalidXLogRecPtr, 0);
+				exception_behaviour = old_exception_behaviour;
+				CommitTransactionCommand();
 
-			ereport(FATAL,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Spock's subscriber %s initialization failed during"
-							" nonrecoverable step (%c). Subscription disabled.",
-							sub->name, status),
-					 errhint("Check server errors and 'exception_log', fix "
-							 "the issue and try the setup again")));
-		}
+				ereport(FATAL,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Spock's subscriber %s initialization failed during"
+								" nonrecoverable step (%c). Subscription disabled.",
+								sub->name, status),
+						 errhint("Check server errors and 'exception_log', fix "
+								 "the issue and try the setup again")));
+			}
 			break;
 	}
 
@@ -1136,16 +1147,16 @@ spock_sync_subscription(SpockSubscription *sub)
 		elog(INFO, "initializing subscriber %s", sub->name);
 
 		origin_conn = spock_connect(sub->origin_if->dsn,
-										sub->name, "snap");
+									sub->name, "snap");
 
 		/* 2QPG9.6 and 2QPG11 support failover slots */
 		use_failover_slot =
 			spock_remote_function_exists(origin_conn, "pg_catalog",
-											 "pg_create_logical_replication_slot",
-											 -1,
-											 "failover");
+										 "pg_create_logical_replication_slot",
+										 -1,
+										 "failover");
 		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
-													 sub->name, "snap");
+												 sub->name, "snap");
 
 		snapshot = ensure_replication_slot_snapshot(origin_conn,
 													origin_conn_repl,
@@ -1157,23 +1168,23 @@ spock_sync_subscription(SpockSubscription *sub)
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
 		{
-			char	tmpfile[MAXPGPATH];
+			char		tmpfile[MAXPGPATH];
 
 			snprintf(tmpfile, MAXPGPATH, "%s/spock-%d.dump",
 					 spock_temp_directory, MyProcPid);
 			canonicalize_path(tmpfile);
 
 			PG_ENSURE_ERROR_CLEANUP_SUFFIX(spock_sync_tmpfile_cleanup_cb,
-									CStringGetDatum(tmpfile), _suf);
+										   CStringGetDatum(tmpfile), _suf);
 			{
-				Relation replorigin_rel;
+				Relation	replorigin_rel;
 
 				StartTransactionCommand();
 
 				originid = ensure_replication_origin(sub->slot_name);
 				elog(DEBUG3, "advancing origin with oid %u for forwarded row to %X/%X during subscription sync",
-					originid,
-					(uint32)(XactLastCommitEnd>>32), (uint32)XactLastCommitEnd);
+					 originid,
+					 (uint32) (XactLastCommitEnd >> 32), (uint32) XactLastCommitEnd);
 				replorigin_rel = table_open(ReplicationOriginRelationId, RowExclusiveLock);
 				replorigin_advance(originid, lsn, XactLastCommitEnd, true,
 								   true);
@@ -1219,10 +1230,10 @@ spock_sync_subscription(SpockSubscription *sub)
 
 					/* Store info about all the synchronized tables. */
 					StartTransactionCommand();
-					foreach (lc, tables)
+					foreach(lc, tables)
 					{
-						SpockRemoteRel	   *remoterel = lfirst(lc);
-						SpockSyncStatus	   *oldsync;
+						SpockRemoteRel *remoterel = lfirst(lc);
+						SpockSyncStatus *oldsync;
 
 						oldsync = get_table_sync_status(sub->id,
 														remoterel->nspname,
@@ -1236,7 +1247,7 @@ spock_sync_subscription(SpockSubscription *sub)
 						}
 						else
 						{
-							SpockSyncStatus	   newsync;
+							SpockSyncStatus newsync;
 
 							newsync.kind = SYNC_KIND_FULL;
 							newsync.subid = sub->id;
@@ -1264,9 +1275,9 @@ spock_sync_subscription(SpockSubscription *sub)
 				}
 			}
 			PG_END_ENSURE_ERROR_CLEANUP_SUFFIX(spock_sync_tmpfile_cleanup_cb,
-										CStringGetDatum(tmpfile), _suf);
+											   CStringGetDatum(tmpfile), _suf);
 			spock_sync_tmpfile_cleanup_cb(0,
-											  CStringGetDatum(tmpfile));
+										  CStringGetDatum(tmpfile));
 		}
 		PG_END_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 									PointerGetDatum(sub));
@@ -1295,12 +1306,13 @@ spock_sync_subscription(SpockSubscription *sub)
 
 char
 spock_sync_table(SpockSubscription *sub, RangeVar *table,
-					 XLogRecPtr *status_lsn)
+				 XLogRecPtr *status_lsn)
 {
-	PGconn	   *origin_conn_repl, *origin_conn;
-	RepOriginId	originid;
+	PGconn	   *origin_conn_repl,
+			   *origin_conn;
+	RepOriginId originid;
 	char	   *snapshot;
-	SpockSyncStatus	   *sync;
+	SpockSyncStatus *sync;
 
 	StartTransactionCommand();
 
@@ -1329,7 +1341,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	CommitTransactionCommand();
 
 	origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
-												 sub->name, "copy");
+											 sub->name, "copy");
 
 	origin_conn = spock_connect(sub->origin_if->dsn, sub->name, "copy_slot");
 	snapshot = ensure_replication_slot_snapshot(origin_conn, origin_conn_repl,
@@ -1341,13 +1353,13 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 							PointerGetDatum(sub));
 	{
-		Relation replorigin_rel;
+		Relation	replorigin_rel;
 
 		StartTransactionCommand();
 		originid = ensure_replication_origin(sub->slot_name);
 		elog(DEBUG2, "advancing origin %s (oid %u) for forwarded row to %X/%X after sync error",
-			MySubscription->slot_name, originid,
-			(uint32)(XactLastCommitEnd>>32), (uint32)XactLastCommitEnd);
+			 MySubscription->slot_name, originid,
+			 (uint32) (XactLastCommitEnd >> 32), (uint32) XactLastCommitEnd);
 
 		replorigin_rel = table_open(ReplicationOriginRelationId, RowExclusiveLock);
 		replorigin_advance(originid, *status_lsn, XactLastCommitEnd, true,
@@ -1359,7 +1371,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 		CommitTransactionCommand();
 
 		/* Copy data. */
-		copy_tables_data(sub, sub->origin_if->dsn,sub->target_if->dsn,
+		copy_tables_data(sub, sub->origin_if->dsn, sub->target_if->dsn,
 						 snapshot, list_make1(table), sub->replication_sets,
 						 sub->slot_name);
 	}
@@ -1374,7 +1386,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 void
 spock_sync_worker_finish(void)
 {
-	SpockWorker	   *apply;
+	SpockWorker *apply;
 
 	/*
 	 * Commit any outstanding transaction. This is the usual case, unless
@@ -1394,12 +1406,12 @@ spock_sync_worker_finish(void)
 	CommitTransactionCommand();
 
 	/*
-	 * In case there is apply process running, it might be waiting
-	 * for the table status change so tell it to check.
+	 * In case there is apply process running, it might be waiting for the
+	 * table status change so tell it to check.
 	 */
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 	apply = spock_apply_find(MySpockWorker->dboid,
-								 MyApplyWorker->subid);
+							 MyApplyWorker->subid);
 	if (spock_worker_running(apply))
 		SetLatch(&apply->proc->procLatch);
 	LWLockRelease(SpockCtx->lock);
@@ -1412,16 +1424,16 @@ spock_sync_worker_finish(void)
 void
 spock_sync_main(Datum main_arg)
 {
-	int				slot = DatumGetInt32(main_arg);
-	PGconn		   *streamConn;
-	RepOriginId		originid;
-	XLogRecPtr		lsn;
-	XLogRecPtr		status_lsn;
-	StringInfoData	slot_name;
-	RangeVar	   *copytable = NULL;
-	MemoryContext	saved_ctx;
-	char		   *tablename;
-	char			status;
+	int			slot = DatumGetInt32(main_arg);
+	PGconn	   *streamConn;
+	RepOriginId originid;
+	XLogRecPtr	lsn;
+	XLogRecPtr	status_lsn;
+	StringInfoData slot_name;
+	RangeVar   *copytable = NULL;
+	MemoryContext saved_ctx;
+	char	   *tablename;
+	char		status;
 
 	/* Setup shmem. */
 	spock_worker_attach(slot, SPOCK_WORKER_SYNC);
@@ -1439,7 +1451,7 @@ spock_sync_main(Datum main_arg)
 
 	/* Run as replica session replication role. */
 	SetConfigOption("session_replication_role", "replica",
-					PGC_SUSET, PGC_S_OVERRIDE);	/* other context? */
+					PGC_SUSET, PGC_S_OVERRIDE); /* other context? */
 
 	/*
 	 * Disable function body checks during replay. That's necessary because a)
@@ -1497,14 +1509,14 @@ spock_sync_main(Datum main_arg)
 	StartTransactionCommand();
 	originid = replorigin_by_name(MySubscription->slot_name, false);
 	elog(DEBUG2, "setting origin %s (oid %u) for subscription sync",
-		MySubscription->slot_name, originid);
+		 MySubscription->slot_name, originid);
 	replorigin_session_setup(originid);
 	replorigin_session_origin = originid;
 	Assert(status_lsn == replorigin_session_get_progress(false));
 
 	/*
-	 * In case there is nothing to catchup, finish immediately.
-	 * Note spock_sync_worker_finish() will commit.
+	 * In case there is nothing to catchup, finish immediately. Note
+	 * spock_sync_worker_finish() will commit.
 	 */
 	if (status_lsn >= MyApplyWorker->replay_stop_lsn)
 	{
@@ -1521,17 +1533,17 @@ spock_sync_main(Datum main_arg)
 
 	/* Start the replication. */
 	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
-										   MySubscription->name, "catchup");
+									   MySubscription->name, "catchup");
 
 	/*
-	 * IDENTIFY_SYSTEM sets up some internal state on walsender so call it even
-	 * if we don't (yet) want to use any of the results.
-     */
+	 * IDENTIFY_SYSTEM sets up some internal state on walsender so call it
+	 * even if we don't (yet) want to use any of the results.
+	 */
 	spock_identify_system(streamConn, NULL, NULL, NULL, NULL);
 
 	spock_start_replication(streamConn, MySubscription->slot_name,
-								status_lsn, "all", NULL, tablename,
-								MySubscription->force_text_transfer);
+							status_lsn, "all", NULL, tablename,
+							MySubscription->force_text_transfer);
 
 	/* Leave it to standard apply code to do the replication. */
 	apply_work(streamConn);
@@ -1539,8 +1551,8 @@ spock_sync_main(Datum main_arg)
 	PQfinish(streamConn);
 
 	/*
-	 * We should only get here if we received sigTERM, which in case of
-	 * sync worker is not expected.
+	 * We should only get here if we received sigTERM, which in case of sync
+	 * worker is not expected.
 	 */
 	proc_exit(1);
 }
@@ -1596,11 +1608,11 @@ create_local_sync_status(SpockSyncStatus *sync)
 void
 drop_subscription_sync_status(Oid subid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1624,9 +1636,9 @@ drop_subscription_sync_status(Oid subid)
 static SpockSyncStatus *
 syncstatus_fromtuple(HeapTuple tuple, TupleDesc desc)
 {
-	SpockSyncStatus	   *sync;
-	Datum					d;
-	bool					isnull;
+	SpockSyncStatus *sync;
+	Datum		d;
+	bool		isnull;
 
 	sync = (SpockSyncStatus *) palloc0(sizeof(SpockSyncStatus));
 
@@ -1661,13 +1673,13 @@ syncstatus_fromtuple(HeapTuple tuple, TupleDesc desc)
 SpockSyncStatus *
 get_subscription_sync_status(Oid subid, bool missing_ok)
 {
-	SpockSyncStatus	   *sync;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	TupleDesc		tupDesc;
+	SpockSyncStatus *sync;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	TupleDesc	tupDesc;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1710,16 +1722,16 @@ get_subscription_sync_status(Oid subid, bool missing_ok)
 void
 set_subscription_sync_status(Oid subid, char status)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	TupleDesc		tupDesc;
-	SysScanDesc		scan;
-	HeapTuple		oldtup,
-					newtup;
-	ScanKeyData		key[1];
-	Datum			values[Natts_local_sync_state];
-	bool			nulls[Natts_local_sync_state];
-	bool			replaces[Natts_local_sync_state];
+	RangeVar   *rv;
+	Relation	rel;
+	TupleDesc	tupDesc;
+	SysScanDesc scan;
+	HeapTuple	oldtup,
+				newtup;
+	ScanKeyData key[1];
+	Datum		values[Natts_local_sync_state];
+	bool		nulls[Natts_local_sync_state];
+	bool		replaces[Natts_local_sync_state];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1764,11 +1776,11 @@ set_subscription_sync_status(Oid subid, char status)
 void
 drop_table_sync_status(const char *nspname, const char *relname)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[2];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[2];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1798,11 +1810,11 @@ void
 drop_table_sync_status_for_sub(Oid subid, const char *nspname,
 							   const char *relname)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[3];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[3];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1837,23 +1849,23 @@ SpockSyncStatus *
 get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 					  bool missing_ok)
 {
-	SpockSyncStatus	   *sync;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[3];
-	TupleDesc		tupDesc;
-	Oid				idxoid = InvalidOid;
-	List		   *indexes;
-	ListCell	   *l;
+	SpockSyncStatus *sync;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[3];
+	TupleDesc	tupDesc;
+	Oid			idxoid = InvalidOid;
+	List	   *indexes;
+	ListCell   *l;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Find an index we can use to scan this catalog. */
 	indexes = RelationGetIndexList(rel);
-	foreach (l, indexes)
+	foreach(l, indexes)
 	{
 		Relation	idx = index_open(lfirst_oid(l), AccessShareLock);
 
@@ -1914,14 +1926,14 @@ get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 List *
 get_unsynced_tables(Oid subid)
 {
-	SpockSyncStatus	   *sync;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	List		   *res = NIL;
-	TupleDesc		tupDesc;
+	SpockSyncStatus *sync;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	List	   *res = NIL;
+	TupleDesc	tupDesc;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1955,14 +1967,14 @@ get_unsynced_tables(Oid subid)
 List *
 get_subscription_tables(Oid subid)
 {
-	SpockSyncStatus	   *sync;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	List		   *res = NIL;
-	TupleDesc		tupDesc;
+	SpockSyncStatus *sync;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	List	   *res = NIL;
+	TupleDesc	tupDesc;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1996,16 +2008,16 @@ void
 set_table_sync_status(Oid subid, const char *nspname, const char *relname,
 					  char status, XLogRecPtr statuslsn)
 {
-	RangeVar	   *rv;
-	Relation		rel;
+	RangeVar   *rv;
+	Relation	rel;
 	TupleDesc	tupDesc;
-	SysScanDesc		scan;
-	HeapTuple		oldtup,
-					newtup;
-	ScanKeyData		key[3];
-	Datum			values[Natts_local_sync_state];
-	bool			nulls[Natts_local_sync_state];
-	bool			replaces[Natts_local_sync_state];
+	SysScanDesc scan;
+	HeapTuple	oldtup,
+				newtup;
+	ScanKeyData key[3];
+	Datum		values[Natts_local_sync_state];
+	bool		nulls[Natts_local_sync_state];
+	bool		replaces[Natts_local_sync_state];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -2063,9 +2075,9 @@ bool
 wait_for_sync_status_change(Oid subid, const char *nspname, const char *relname,
 							char desired_state, XLogRecPtr *lsn)
 {
-	int rc;
+	int			rc;
 	MemoryContext old_ctx = CurrentMemoryContext;
-	bool ret = false;
+	bool		ret = false;
 
 	*lsn = InvalidXLogRecPtr;
 
@@ -2073,8 +2085,8 @@ wait_for_sync_status_change(Oid subid, const char *nspname, const char *relname,
 
 	while (!got_SIGTERM)
 	{
-		SpockWorker		   *worker;
-		SpockSyncStatus	   *sync;
+		SpockWorker *worker;
+		SpockSyncStatus *sync;
 
 		StartTransactionCommand();
 		sync = get_table_sync_status(subid, nspname, relname, true);
@@ -2104,7 +2116,7 @@ wait_for_sync_status_change(Oid subid, const char *nspname, const char *relname,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 					   60000L);
 
-        ResetLatch(&MyProc->procLatch);
+		ResetLatch(&MyProc->procLatch);
 
 		/* emergency bailout if postmaster has died */
 		if (rc & WL_POSTMASTER_DEATH)
@@ -2123,10 +2135,10 @@ wait_for_sync_status_change(Oid subid, const char *nspname, const char *relname,
 void
 truncate_table(char *nspname, char *relname)
 {
-	RangeVar	   *rv;
-	Oid				relid;
-	TruncateStmt   *truncate;
-	StringInfoData	sql;
+	RangeVar   *rv;
+	Oid			relid;
+	TruncateStmt *truncate;
+	StringInfoData sql;
 
 	rv = makeRangeVar(nspname, relname, -1);
 
@@ -2136,7 +2148,7 @@ truncate_table(char *nspname, char *relname)
 
 	initStringInfo(&sql);
 	appendStringInfo(&sql, "TRUNCATE TABLE %s",
-			quote_qualified_identifier(rv->schemaname, rv->relname));
+					 quote_qualified_identifier(rv->schemaname, rv->relname));
 
 	/* Truncate the table. */
 	truncate = makeNode(TruncateStmt);
@@ -2165,17 +2177,19 @@ truncate_table(char *nspname, char *relname)
 static char *
 PglGetLastWin32Error(void)
 {
-	LPVOID lpMsgBuf;
-	DWORD dw = GetLastError();
-	char * pgstr = NULL;
+	LPVOID		lpMsgBuf;
+	DWORD		dw = GetLastError();
+	char	   *pgstr = NULL;
 
 	if (dw != ERROR_SUCCESS)
 	{
 		FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-				NULL, dw, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR) &lpMsgBuf, 0, NULL);
+					  NULL, dw, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR) &lpMsgBuf, 0, NULL);
 		pgstr = pstrdup((LPTSTR) lpMsgBuf);
 		LocalFree(lpMsgBuf);
-	} else {
+	}
+	else
+	{
 		pgstr = pstrdup("Unknown error or no recent error");
 	}
 
@@ -2192,15 +2206,16 @@ static void
 QuoteWindowsArgvElement(StringInfo cmdline, const char *arg, bool force)
 {
 	if (!force && *arg != '\0'
-			&& strchr(arg, ' ') == NULL
-			&& strchr(arg, '\t') == NULL
-			&& strchr(arg, '\n') == NULL
-			&& strchr(arg, '\v') == NULL
-			&& strchr(arg, '"') == NULL)
-    {
+		&& strchr(arg, ' ') == NULL
+		&& strchr(arg, '\t') == NULL
+		&& strchr(arg, '\n') == NULL
+		&& strchr(arg, '\v') == NULL
+		&& strchr(arg, '"') == NULL)
+	{
 		appendStringInfoString(cmdline, arg);
-    }
-    else {
+	}
+	else
+	{
 		const char *it;
 
 		/* Begin quoted argument */
@@ -2211,60 +2226,63 @@ QuoteWindowsArgvElement(StringInfo cmdline, const char *arg, bool force)
 		 * documentation we are now "in quotes".
 		 */
 
-        for (it = arg; *it != '\0'; it++)
+		for (it = arg; *it != '\0'; it++)
 		{
-            unsigned int NumberBackslashes = 0;
+			unsigned int NumberBackslashes = 0;
 
 			/*
-			 * Accumulate runs of backslashes. They may or may not have special
-			 * meaning depending on what follows them.
+			 * Accumulate runs of backslashes. They may or may not have
+			 * special meaning depending on what follows them.
 			 */
-            while (*it != '\0' && *it == '\\')
+			while (*it != '\0' && *it == '\\')
 			{
-                ++it;
-                ++NumberBackslashes;
-            }
+				++it;
+				++NumberBackslashes;
+			}
 
-            if (*it == '\0')
+			if (*it == '\0')
 			{
 				/*
-				 * Handle command line arguments ending with or consisting only
-				 * of backslashes.  Particularly important for Windows, given
-				 * its backslash paths.
+				 * Handle command line arguments ending with or consisting
+				 * only of backslashes.  Particularly important for Windows,
+				 * given its backslash paths.
 				 *
-				 * We want NumberBackSlashes * 2 backslashes here to prevent the
-				 * final backslash from escaping the quote we'll append at the
-				 * end of the argument.
+				 * We want NumberBackSlashes * 2 backslashes here to prevent
+				 * the final backslash from escaping the quote we'll append at
+				 * the end of the argument.
 				 */
 				for (; NumberBackslashes > 0; NumberBackslashes--)
 					appendStringInfoString(cmdline, "\\\\");
 				break;
-            }
-            else if (*it == '"') {
+			}
+			else if (*it == '"')
+			{
 				/*
 				 * Escape all accumulated backslashes, then append escaped
 				 * quotation mark.
 				 *
 				 * We want NumberBackSlashes * 2 + 1 backslashes to prevent
-				 * the backslashes from escaping the backslash we have to append
-				 * to escape the quote char that's part of the argument itself.
+				 * the backslashes from escaping the backslash we have to
+				 * append to escape the quote char that's part of the argument
+				 * itself.
 				 */
 				for (; NumberBackslashes > 0; NumberBackslashes--)
 					appendStringInfoString(cmdline, "\\\\");
-                appendStringInfoString(cmdline, "\\\"");
+				appendStringInfoString(cmdline, "\\\"");
 			}
-            else {
+			else
+			{
 				/*
 				 * A series of backslashes followed by something other than a
-				 * double quote is not special to the CommandLineToArgvW parser
-				 * in MSVCRT and must be appended literally.
+				 * double quote is not special to the CommandLineToArgvW
+				 * parser in MSVCRT and must be appended literally.
 				 */
 				for (; NumberBackslashes > 0; NumberBackslashes--)
 					appendStringInfoChar(cmdline, '\\');
 				/* Finally any normal char */
-                appendStringInfoChar(cmdline, *it);
-            }
-        }
+				appendStringInfoChar(cmdline, *it);
+			}
+		}
 
 		/* End quoted argument */
 		appendStringInfoChar(cmdline, '"');
@@ -2273,7 +2291,7 @@ QuoteWindowsArgvElement(StringInfo cmdline, const char *arg, bool force)
 		 * In terms of the algorithm described in CommandLineToArgvW's
 		 * documentation we are now "not in quotes".
 		 */
-    }
+	}
 }
 
 /*
@@ -2287,7 +2305,7 @@ QuoteWindowsArgvElement(StringInfo cmdline, const char *arg, bool force)
  * abuse of PqExpBuffer.)
  */
 static void
-QuoteWindowsArgv(StringInfo cmdline, const char * argv[])
+QuoteWindowsArgv(StringInfo cmdline, const char *argv[])
 {
 	/* argv0 is required */
 	Assert(*argv != NULL && **argv != '\0');
@@ -2324,17 +2342,17 @@ QuoteWindowsArgv(StringInfo cmdline, const char * argv[])
 static int
 exec_cmd_win32(const char *cmd, char *cmdargv[])
 {
-	BOOL					ret;
-	int						exitcode = -1;
-	PROCESS_INFORMATION 	pi;
+	BOOL		ret;
+	int			exitcode = -1;
+	PROCESS_INFORMATION pi;
 
 	elog(DEBUG1, "trying to launch \"%s\"", cmd);
 
 	/* Launch the process */
 	{
-		STARTUPINFO 			si;
-		StringInfoData 			cmdline;
-		char 				   *cmd_tmp;
+		STARTUPINFO si;
+		StringInfoData cmdline;
+		char	   *cmd_tmp;
 
 		/* Deal with insane windows command line quoting */
 		initStringInfo(&cmdline);
@@ -2347,22 +2365,23 @@ exec_cmd_win32(const char *cmd, char *cmdargv[])
 		 * STARTUPINFO contains various extra options for the process that are
 		 * not passed as CreateProcess flags, and is required.
 		 */
-		ZeroMemory( &si, sizeof(si) );
+		ZeroMemory(&si, sizeof(si));
 		si.cb = sizeof(si);
 
 		/*
 		 * PROCESS_INFORMATION accepts the returned process handle.
 		 */
-		ZeroMemory( &pi, sizeof(pi) );
+		ZeroMemory(&pi, sizeof(pi));
 		ret = CreateProcess(cmd_tmp, cmdline.data,
-				NULL /* default process attributes */,
-				NULL /* default thread attributes */,
-				TRUE /* handles (fds) are inherited, to match execv */,
-				CREATE_NO_WINDOW    /* process creation flags */,
-				NULL /* inherit environment variables */,
-				NULL /* inherit working directory */,
-				&si,
-				&pi);
+							NULL /* default process attributes */ ,
+							NULL /* default thread attributes */ ,
+							TRUE	/* handles (fds) are inherited, to match
+							  * execv */ ,
+							CREATE_NO_WINDOW /* process creation flags */ ,
+							NULL /* inherit environment variables */ ,
+							NULL /* inherit working directory */ ,
+							&si,
+							&pi);
 
 		pfree(cmd_tmp);
 		pfree(cmdline.data);
@@ -2370,11 +2389,12 @@ exec_cmd_win32(const char *cmd, char *cmdargv[])
 
 	if (!ret)
 	{
-		char *winerr = PglGetLastWin32Error();
+		char	   *winerr = PglGetLastWin32Error();
+
 		ereport(LOG,
 				(errcode_for_file_access(),
 				 errmsg("failed to launch \"%s\": %s",
-					 	cmd, winerr)));
+						cmd, winerr)));
 		pfree(winerr);
 	}
 	else
@@ -2385,14 +2405,15 @@ exec_cmd_win32(const char *cmd, char *cmdargv[])
 		 *
 		 * Wait for it to exit, while responding to interrupts. Ideally we
 		 * should be able to use WaitEventSetWait here since Windows sees a
-		 * process handle much like a socket, but the Pg API for it won't
-		 * let us, so we have to DIY.
+		 * process handle much like a socket, but the Pg API for it won't let
+		 * us, so we have to DIY.
 		 */
 
 		elog(DEBUG1, "process launched, waiting");
 
-		do {
-			ret = WaitForSingleObject( pi.hProcess, 500 /* timeout in ms */ );
+		do
+		{
+			ret = WaitForSingleObject(pi.hProcess, 500 /* timeout in ms */ );
 
 			/*
 			 * Note that if we elog(ERROR) or elog(FATAL) as a result of a
@@ -2405,18 +2426,20 @@ exec_cmd_win32(const char *cmd, char *cmdargv[])
 
 			if (ret != WAIT_OBJECT_0)
 			{
-				char *winerr = PglGetLastWin32Error();
+				char	   *winerr = PglGetLastWin32Error();
+
 				ereport(DEBUG1,
 						(errcode_for_file_access(),
 						 errmsg("unexpected WaitForSingleObject() return code %d while waiting for child process \"%s\": %s",
-							 ret, cmd, winerr)));
+								ret, cmd, winerr)));
 				pfree(winerr);
 				/* Try to get the exit code anyway */
 			}
 
-			if (!GetExitCodeProcess( pi.hProcess, &exitcode))
+			if (!GetExitCodeProcess(pi.hProcess, &exitcode))
 			{
-				char *winerr = PglGetLastWin32Error();
+				char	   *winerr = PglGetLastWin32Error();
+
 				ereport(DEBUG1,
 						(errcode_for_file_access(),
 						 errmsg("failed to get exit code from process \"%s\": %s",
@@ -2433,15 +2456,16 @@ exec_cmd_win32(const char *cmd, char *cmdargv[])
 					continue;
 
 				/*
-				 * Process must've exited, so code is a value from ExitProcess,
-				 * TerminateProcess, main or WinMain.
+				 * Process must've exited, so code is a value from
+				 * ExitProcess, TerminateProcess, main or WinMain.
 				 */
 				ereport(DEBUG1,
 						(errmsg("process \"%s\" exited with code %d",
 								cmd, exitcode)));
 
 				/*
-				 * Adapt exit code to WEXITSTATUS form to behave like waitpid().
+				 * Adapt exit code to WEXITSTATUS form to behave like
+				 * waitpid().
 				 *
 				 * The lower 8 bits are the terminating signal, with 0 for no
 				 * signal.
@@ -2452,8 +2476,8 @@ exec_cmd_win32(const char *cmd, char *cmdargv[])
 			}
 		} while (true);
 
-		CloseHandle( pi.hProcess );
-		CloseHandle( pi.hThread );
+		CloseHandle(pi.hProcess);
+		CloseHandle(pi.hThread);
 	}
 
 	elog(DEBUG1, "exec_cmd_win32 for \"%s\" exiting with %d", cmd, exitcode);

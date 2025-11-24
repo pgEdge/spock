@@ -19,16 +19,16 @@ extern void spock_apply_spi_begin(void);
 extern void spock_apply_spi_commit(void);
 
 extern void spock_apply_spi_insert(SpockRelation *rel,
-									   SpockTupleData *newtup);
+								   SpockTupleData *newtup);
 extern void spock_apply_spi_update(SpockRelation *rel,
-									   SpockTupleData *oldtup,
-									   SpockTupleData *newtup);
+								   SpockTupleData *oldtup,
+								   SpockTupleData *newtup);
 extern void spock_apply_spi_delete(SpockRelation *rel,
-									   SpockTupleData *oldtup);
+								   SpockTupleData *oldtup);
 
 extern bool spock_apply_spi_can_mi(SpockRelation *rel);
 extern void spock_apply_spi_mi_add_tuple(SpockRelation *rel,
-											 SpockTupleData *tup);
+										 SpockTupleData *tup);
 extern void spock_apply_spi_mi_finish(SpockRelation *rel);
 
-#endif /* SPOCK_APPLY_SPI_H */
+#endif							/* SPOCK_APPLY_SPI_H */
