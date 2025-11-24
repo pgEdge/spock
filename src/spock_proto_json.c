@@ -39,8 +39,8 @@
 #include "spock_proto_json.h"
 
 static void
-json_write_tuple(StringInfo out, Relation rel, HeapTuple tuple,
-				 Bitmapset *att_list);
+			json_write_tuple(StringInfo out, Relation rel, HeapTuple tuple,
+							 Bitmapset *att_list);
 
 /*
  * Write BEGIN to the output stream.
@@ -61,11 +61,11 @@ spock_json_write_begin(StringInfo out, SpockOutputData *data,
 	{
 		appendStringInfo(out, ", \"xid\":\"%u\"", txn->xid);
 		appendStringInfo(out, ", \"first_lsn\":\"%X/%X\"",
-						 (uint32)(txn->first_lsn >> 32),
-						 (uint32)(txn->first_lsn));
+						 (uint32) (txn->first_lsn >> 32),
+						 (uint32) (txn->first_lsn));
 		appendStringInfo(out, ", \"origin_lsn\":\"%X/%X\"",
-						 (uint32)(txn->origin_lsn >> 32),
-						 (uint32)(txn->origin_lsn));
+						 (uint32) (txn->origin_lsn >> 32),
+						 (uint32) (txn->origin_lsn));
 
 		if (txn->xact_time.commit_time != 0)
 			appendStringInfo(out, ", \"commit_time\":\"%s\"",
@@ -86,9 +86,9 @@ spock_json_write_commit(StringInfo out, SpockOutputData *data, ReorderBufferTXN 
 	if (!data->client_no_txinfo)
 	{
 		appendStringInfo(out, ", \"final_lsn\":\"%X/%X\"",
-			(uint32)(txn->final_lsn >> 32), (uint32)(txn->final_lsn));
+						 (uint32) (txn->final_lsn >> 32), (uint32) (txn->final_lsn));
 		appendStringInfo(out, ", \"end_lsn\":\"%X/%X\"",
-			(uint32)(txn->end_lsn >> 32), (uint32)(txn->end_lsn));
+						 (uint32) (txn->end_lsn >> 32), (uint32) (txn->end_lsn));
 	}
 	appendStringInfoChar(out, '}');
 }
@@ -101,8 +101,8 @@ spock_json_write_commit(StringInfo out, SpockOutputData *data, ReorderBufferTXN 
  */
 static void
 spock_json_write_change(StringInfo out, const char *change, Relation rel,
-							HeapTuple oldtuple, HeapTuple newtuple,
-							Bitmapset *att_list)
+						HeapTuple oldtuple, HeapTuple newtuple,
+						Bitmapset *att_list)
 {
 	appendStringInfoChar(out, '{');
 	appendStringInfo(out, "\"action\":\"%s\",\"relation\":[\"%s\",\"%s\"]",
@@ -128,8 +128,8 @@ spock_json_write_change(StringInfo out, const char *change, Relation rel,
  */
 void
 spock_json_write_insert(StringInfo out, SpockOutputData *data,
-							Relation rel, HeapTuple newtuple,
-							Bitmapset *att_list)
+						Relation rel, HeapTuple newtuple,
+						Bitmapset *att_list)
 {
 	spock_json_write_change(out, "I", rel, NULL, newtuple, att_list);
 }
@@ -139,8 +139,8 @@ spock_json_write_insert(StringInfo out, SpockOutputData *data,
  */
 void
 spock_json_write_update(StringInfo out, SpockOutputData *data,
-							Relation rel, HeapTuple oldtuple,
-							HeapTuple newtuple, Bitmapset *att_list)
+						Relation rel, HeapTuple oldtuple,
+						HeapTuple newtuple, Bitmapset *att_list)
 {
 	spock_json_write_change(out, "U", rel, oldtuple, newtuple, att_list);
 }
@@ -150,8 +150,8 @@ spock_json_write_update(StringInfo out, SpockOutputData *data,
  */
 void
 spock_json_write_delete(StringInfo out, SpockOutputData *data,
-							Relation rel, HeapTuple oldtuple,
-							Bitmapset *att_list)
+						Relation rel, HeapTuple oldtuple,
+						Bitmapset *att_list)
 {
 	spock_json_write_change(out, "D", rel, oldtuple, NULL, att_list);
 }
@@ -163,13 +163,14 @@ spock_json_write_delete(StringInfo out, SpockOutputData *data,
 void
 json_write_startup_message(StringInfo out, List *msg)
 {
-	ListCell *lc;
-	bool first = true;
+	ListCell   *lc;
+	bool		first = true;
 
 	appendStringInfoString(out, "{\"action\":\"S\", \"params\": {");
-	foreach (lc, msg)
+	foreach(lc, msg)
 	{
-		DefElem *param = (DefElem*)lfirst(lc);
+		DefElem    *param = (DefElem *) lfirst(lc);
+
 		Assert(IsA(param->arg, String) && strVal(param->arg) != NULL);
 		if (first)
 			first = false;
@@ -218,16 +219,16 @@ typedef enum					/* type categories for datum_to_json */
 } JsonTypeCategory;
 
 static void composite_to_json(Datum composite, StringInfo result,
-				  bool use_line_feeds);
+							  bool use_line_feeds);
 static void array_dim_to_json(StringInfo result, int dim, int ndims, int *dims,
-				  Datum *vals, bool *nulls, int *valcount,
-				  JsonTypeCategory tcategory, Oid outfuncoid,
-				  bool use_line_feeds);
+							  Datum *vals, bool *nulls, int *valcount,
+							  JsonTypeCategory tcategory, Oid outfuncoid,
+							  bool use_line_feeds);
 static void array_to_json_internal(Datum array, StringInfo result,
-					   bool use_line_feeds);
+								   bool use_line_feeds);
 static void json_categorize_type(Oid typoid,
-					 JsonTypeCategory *tcategory,
-					 Oid *outfuncoid);
+								 JsonTypeCategory *tcategory,
+								 Oid *outfuncoid);
 
 static void
 json_categorize_type(Oid typoid,
@@ -286,7 +287,7 @@ json_categorize_type(Oid typoid,
 			if (OidIsValid(get_element_type(typoid)) || typoid == ANYARRAYOID
 				|| typoid == RECORDARRAYOID)
 				*tcategory = JSONTYPE_ARRAY;
-			else if (type_is_rowtype(typoid)) /* includes RECORDOID */
+			else if (type_is_rowtype(typoid))	/* includes RECORDOID */
 				*tcategory = JSONTYPE_COMPOSITE;
 			else
 			{
@@ -357,7 +358,7 @@ datum_to_json(Datum val, bool is_null, StringInfo result,
 		 tcategory == JSONTYPE_CAST))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-		 errmsg("key value must be scalar, not array, composite, or json")));
+				 errmsg("key value must be scalar, not array, composite, or json")));
 
 	switch (tcategory)
 	{
@@ -521,7 +522,7 @@ static void
 array_to_json_internal(Datum array, StringInfo result, bool use_line_feeds)
 {
 	ArrayType  *v = DatumGetArrayTypeP(array);
-	Oid			element_type = ARR_ELEMTYPE(v);
+	Oid element_type = ARR_ELEMTYPE(v);
 	int		   *dim;
 	int			ndim;
 	int			nitems;
@@ -601,14 +602,14 @@ composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 		JsonTypeCategory tcategory;
 		Oid			outfuncoid;
 
-		if (TupleDescAttr(tupdesc,i)->attisdropped)
+		if (TupleDescAttr(tupdesc, i)->attisdropped)
 			continue;
 
 		if (needsep)
 			appendStringInfoString(result, sep);
 		needsep = true;
 
-		attname = NameStr(TupleDescAttr(tupdesc,i)->attname);
+		attname = NameStr(TupleDescAttr(tupdesc, i)->attname);
 		escape_json(result, attname);
 		appendStringInfoChar(result, ':');
 
@@ -620,7 +621,7 @@ composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 			outfuncoid = InvalidOid;
 		}
 		else
-			json_categorize_type(TupleDescAttr(tupdesc,i)->atttypid,
+			json_categorize_type(TupleDescAttr(tupdesc, i)->atttypid,
 								 &tcategory, &outfuncoid);
 
 		datum_to_json(val, isnull, result, tcategory, outfuncoid, false);
@@ -655,7 +656,7 @@ json_write_tuple(StringInfo out, Relation rel, HeapTuple tuple,
 
 	for (i = 0; i < tupdesc->natts; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc,i);
+		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
 		JsonTypeCategory tcategory;
 		Oid			outfuncoid;
 

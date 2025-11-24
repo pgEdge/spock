@@ -33,8 +33,8 @@
 #if PG_VERSION_NUM >= 170000 && PG_VERSION_NUM < 180000
 static StrategyNumber spock_get_equal_strategy_number(Oid opclass);
 #endif
-static int spock_build_replindex_scan_key(ScanKey skey, Relation rel,
-							Relation idxrel, TupleTableSlot *searchslot);
+static int	spock_build_replindex_scan_key(ScanKey skey, Relation rel,
+										   Relation idxrel, TupleTableSlot *searchslot);
 
 /*
  * Temporarily switch to a new user ID.
@@ -45,21 +45,21 @@ static int spock_build_replindex_scan_key(ScanKey skey, Relation rel,
 void
 SPKSwitchToUntrustedUser(Oid userid, UserContext *context)
 {
-    int     sec_context;
+	int			sec_context;
 
 	/* Get the current user ID and security context. */
 	GetUserIdAndSecContext(&context->save_userid,
 						   &context->save_sec_context);
 	sec_context = context->save_sec_context;
 
-    /*
-     * This user can SET ROLE to the target user, but not the other way
-     * around, so protect ourselves against the target user by setting
-     * SECURITY_RESTRICTED_OPERATION to prevent certain changes to the
-     * session state. Also set up a new GUC nest level, so that we can
-     * roll back any GUC changes that may be made by code running as the
-     * target user, inasmuch as they could be malicious.
-     */
+	/*
+	 * This user can SET ROLE to the target user, but not the other way
+	 * around, so protect ourselves against the target user by setting
+	 * SECURITY_RESTRICTED_OPERATION to prevent certain changes to the session
+	 * state. Also set up a new GUC nest level, so that we can roll back any
+	 * GUC changes that may be made by code running as the target user,
+	 * inasmuch as they could be malicious.
+	 */
 	sec_context |= SECURITY_RESTRICTED_OPERATION;
 	SetUserIdAndSecContext(userid, sec_context);
 	context->save_nestlevel = NewGUCNestLevel();
@@ -86,8 +86,8 @@ SPKExecBRDeleteTriggers(EState *estate,
 						ItemPointer tupleid,
 						HeapTuple fdw_trigtuple)
 {
-	UserContext		ucxt;
-	bool			ret;
+	UserContext ucxt;
+	bool		ret;
 
 	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
 	ret = ExecBRDeleteTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple);
@@ -102,7 +102,7 @@ SPKExecARDeleteTriggers(EState *estate,
 						ItemPointer tupleid,
 						HeapTuple fdw_trigtuple)
 {
-	UserContext		ucxt;
+	UserContext ucxt;
 
 	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
 	ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple);
@@ -117,8 +117,8 @@ SPKExecBRUpdateTriggers(EState *estate,
 						HeapTuple fdw_trigtuple,
 						TupleTableSlot *slot)
 {
-	UserContext		ucxt;
-	bool			ret;
+	UserContext ucxt;
+	bool		ret;
 
 	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
 	ret = ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot);
@@ -135,7 +135,7 @@ SPKExecARUpdateTriggers(EState *estate,
 						TupleTableSlot *slot,
 						List *recheckIndexes)
 {
-	UserContext		ucxt;
+	UserContext ucxt;
 
 	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
 	ExecARUpdateTriggers(estate, relinfo, tupleid, fdw_trigtuple, slot, recheckIndexes);
@@ -147,8 +147,8 @@ SPKExecBRInsertTriggers(EState *estate,
 						ResultRelInfo *relinfo,
 						TupleTableSlot *slot)
 {
-	UserContext		ucxt;
-	bool			ret;
+	UserContext ucxt;
+	bool		ret;
 
 	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
 	ret = ExecBRInsertTriggers(estate, relinfo, slot);
@@ -163,7 +163,7 @@ SPKExecARInsertTriggers(EState *estate,
 						TupleTableSlot *slot,
 						List *recheckIndexes)
 {
-	UserContext		ucxt;
+	UserContext ucxt;
 
 	SwitchToUntrustedUser(relinfo->ri_RelationDesc->rd_rel->relowner, &ucxt);
 	ExecARInsertTriggers(estate, relinfo, slot, recheckIndexes);
@@ -208,7 +208,7 @@ IsIndexUsableForInsertConflict(Relation idxrel)
  */
 static bool
 index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
-			 ScanKey skey, int ncols)
+						 ScanKey skey, int ncols)
 {
 	int			i;
 	int			attrnum;
@@ -236,8 +236,8 @@ index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation 
 			continue;
 
 		/*
-		 * If either value is NULL, then according to SQL semantics,
-		 * they are not considered equal, even if both are NULL.
+		 * If either value is NULL, then according to SQL semantics, they are
+		 * not considered equal, even if both are NULL.
 		 */
 		if (slot1->tts_isnull[attrnum] || slot2->tts_isnull[attrnum])
 			return false;
@@ -254,7 +254,7 @@ index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation 
 static ExprState *
 SpockPreparePredicateExpr(Relation idxrel, EState *estate)
 {
-	List *predExprList = NIL;
+	List	   *predExprList = NIL;
 
 	if (heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
 		return NULL;
@@ -294,11 +294,11 @@ SpockPredicateMatches(EState *estate, ExprState *predExpr, TupleTableSlot *slot)
  */
 bool
 SpockRelationFindReplTupleByIndex(EState *estate,
-							 Relation rel,
-							 Relation idxrel,
-							 LockTupleMode lockmode,
-							 TupleTableSlot *searchslot,
-							 TupleTableSlot *outslot)
+								  Relation rel,
+								  Relation idxrel,
+								  LockTupleMode lockmode,
+								  TupleTableSlot *searchslot,
+								  TupleTableSlot *outslot)
 {
 	ScanKeyData skey[INDEX_MAX_KEYS];
 	int			skey_attoff;
@@ -306,7 +306,7 @@ SpockRelationFindReplTupleByIndex(EState *estate,
 	SnapshotData snap;
 	TransactionId xwait;
 	bool		found;
-	ExprState *predExpr;
+	ExprState  *predExpr;
 
 	Assert(idxrel->rd_index->indisunique);
 	predExpr = SpockPreparePredicateExpr(idxrel, estate);
@@ -438,7 +438,7 @@ spock_get_equal_strategy_number(Oid opclass)
  */
 static int
 spock_build_replindex_scan_key(ScanKey skey, Relation rel, Relation idxrel,
-						 TupleTableSlot *searchslot)
+							   TupleTableSlot *searchslot)
 {
 	int			index_attoff;
 	int			skey_attoff = 0;
@@ -447,9 +447,10 @@ spock_build_replindex_scan_key(ScanKey skey, Relation rel, Relation idxrel,
 	int2vector *indkey = &idxrel->rd_index->indkey;
 
 #if PG_VERSION_NUM < 160000
-	bool        isnull;
+	bool		isnull;
+
 	indclassDatum = SysCacheGetAttr(INDEXRELID, idxrel->rd_indextuple,
-										   Anum_pg_index_indclass, &isnull);
+									Anum_pg_index_indclass, &isnull);
 	Assert(!isnull);
 #else
 	indclassDatum = SysCacheGetAttrNotNull(INDEXRELID, idxrel->rd_indextuple,
@@ -532,36 +533,36 @@ void
 read_buf(int fd, void *buf, size_t nbytes, const char *filename)
 {
 	const char *fname = filename ? filename : "file";
-	size_t off = 0;
+	size_t		off = 0;
 
 	/* Input validation (CWE-20) */
-	if (fd < 0 || buf == NULL || nbytes == 0 || nbytes > (size_t)SSIZE_MAX)
+	if (fd < 0 || buf == NULL || nbytes == 0 || nbytes > (size_t) SSIZE_MAX)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid fd/buffer/size for %s", fname)));
 
 	while (off < nbytes)
 	{
-		ssize_t n = read(fd, (char *)buf + off, nbytes - off);
+		ssize_t		n = read(fd, (char *) buf + off, nbytes - off);
 
 		if (n == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-						errmsg("could not read file \"%s\": read %zu of %zu",
+					 errmsg("could not read file \"%s\": read %zu of %zu",
 							fname, off, nbytes)));
 
-			/* One consolidated error path: EOF or hard error */
+		/* One consolidated error path: EOF or hard error */
 		if (n < 0)
 		{
 			if (errno == EINTR)
-				continue; /* retry */
+				continue;		/* retry */
 
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("could not read file \"%s\": %m", fname)));
 
 		}
-		off += (size_t)n;
+		off += (size_t) n;
 	}
 }
 
@@ -573,28 +574,28 @@ void
 write_buf(int fd, const void *buf, size_t nbytes, const char *filename)
 {
 	const char *fname = filename ? filename : "file";
-	size_t off = 0;
+	size_t		off = 0;
 
 	/* Input validation (CWE-20) */
-	if (fd < 0 || buf == NULL || nbytes == 0 || nbytes > (size_t)SSIZE_MAX)
+	if (fd < 0 || buf == NULL || nbytes == 0 || nbytes > (size_t) SSIZE_MAX)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid fd/buffer/size for %s", fname)));
 
 	while (off < nbytes)
 	{
-		ssize_t		n = write(fd, (char *)buf + off, nbytes - off);
+		ssize_t		n = write(fd, (char *) buf + off, nbytes - off);
 
 		if (n <= 0)
 		{
 			if (errno == EINTR)
-				continue; /* retry */
+				continue;		/* retry */
 
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-						errmsg("could not write file \"%s\": %m", fname)));
+					 errmsg("could not write file \"%s\": %m", fname)));
 		}
-		off += (size_t)n;
+		off += (size_t) n;
 	}
 }
 

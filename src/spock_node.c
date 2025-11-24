@@ -88,7 +88,7 @@ typedef struct SubscriptionTuple
 	NameData	sub_name;
 	Oid			sub_origin;
 	Oid			sub_target;
-    Oid			sub_origin_if;
+	Oid			sub_origin_if;
 	Oid			sub_target_if;
 	bool		sub_enabled;
 	NameData	sub_slot_name;
@@ -212,11 +212,11 @@ create_node(SpockNode *node)
 void
 drop_node(Oid nodeid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -248,11 +248,12 @@ drop_node(Oid nodeid)
 static SpockNode *
 node_fromtuple(HeapTuple tuple, TupleDesc desc)
 {
-	NodeTuple *nodetup = (NodeTuple *) GETSTRUCT(tuple);
-	Datum	datum;
-	bool	isnull;
+	NodeTuple  *nodetup = (NodeTuple *) GETSTRUCT(tuple);
+	Datum		datum;
+	bool		isnull;
 
-	SpockNode *node = (SpockNode *) palloc0(sizeof(SpockNode));
+	SpockNode  *node = (SpockNode *) palloc0(sizeof(SpockNode));
+
 	node->id = nodetup->node_id;
 	node->name = pstrdup(NameStr(nodetup->node_name));
 
@@ -270,18 +271,17 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 	datum = heap_getattr(tuple, Anum_node_info, desc, &isnull);
 	if (!isnull)
 	{
-		Datum value;
-		int32 intval;
-		FmgrInfo flinfo;
+		Datum		value;
+		int32		intval;
+		FmgrInfo	flinfo;
 		FunctionCallInfo fcinfo;
-		bool isnullval;
+		bool		isnullval;
 
 		node->info = DatumGetJsonbP(datum);
 
 		/*
-		 * The node entry has jsonb info, try to extract the
-		 * tiebreaker value from that. If it isn't set we
-		 * fallback to the node-id.
+		 * The node entry has jsonb info, try to extract the tiebreaker value
+		 * from that. If it isn't set we fallback to the node-id.
 		 */
 
 		/* Set up function call info for jsonb_object_field_text(jsonb, text) */
@@ -327,11 +327,11 @@ SpockNode *
 get_node(Oid nodeid)
 {
 	SpockNode  *node;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -363,11 +363,11 @@ SpockNode *
 get_node_by_name(const char *name, bool missing_ok)
 {
 	SpockNode  *node;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -446,10 +446,10 @@ create_local_node(Oid nodeid, Oid ifid)
 void
 drop_local_node(void)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_NODE, -1);
 	rel = table_openrv(rv, AccessExclusiveLock);
@@ -480,20 +480,20 @@ drop_local_node(void)
 SpockLocalNode *
 get_local_node(bool for_update, bool missing_ok)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	TupleDesc		desc;
-	Oid				nodeid;
-	Oid				nodeifid;
-	bool			isnull;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TupleDesc	desc;
+	Oid			nodeid;
+	Oid			nodeifid;
+	bool		isnull;
 	SpockLocalNode *res;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_NODE, -1);
 	rel = table_openrv_extended(rv, for_update ?
-							   ShareUpdateExclusiveLock : RowExclusiveLock,
-							   true);
+								ShareUpdateExclusiveLock : RowExclusiveLock,
+								true);
 
 	if (!rel)
 	{
@@ -516,7 +516,7 @@ get_local_node(bool for_update, bool missing_ok)
 		{
 			systable_endscan(scan);
 			table_close(rel, for_update ?
-					   NoLock : RowExclusiveLock);
+						NoLock : RowExclusiveLock);
 			return NULL;
 		}
 
@@ -559,7 +559,7 @@ create_node_interface(SpockInterface *nodeif)
 	/* Generate new id unless one was already specified. */
 	if (nodeif->id == InvalidOid)
 	{
-		uint32	hashinput[2];
+		uint32		hashinput[2];
 
 		hashinput[0] = nodeif->nodeid;
 		hashinput[1] = DatumGetUInt32(hash_any((const unsigned char *) nodeif->name,
@@ -600,11 +600,11 @@ create_node_interface(SpockInterface *nodeif)
 void
 drop_node_interface(Oid ifid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -637,11 +637,11 @@ drop_node_interface(Oid ifid)
 void
 drop_node_interfaces(Oid nodeid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -671,11 +671,11 @@ drop_node_interfaces(Oid nodeid)
 SpockInterface *
 get_node_interface(Oid ifid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 	NodeInterfaceTuple *iftup;
 	SpockInterface *nodeif;
 
@@ -714,11 +714,11 @@ get_node_interface(Oid ifid)
 SpockInterface *
 get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[2];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[2];
 	NodeInterfaceTuple *iftup;
 	SpockInterface *nodeif;
 
@@ -891,11 +891,11 @@ alter_subscription(SpockSubscription *sub)
 	RangeVar   *rv;
 	Relation	rel;
 	TupleDesc	tupDesc;
-	SysScanDesc	scan;
-	SubscriptionTuple	*oldsub;
+	SysScanDesc scan;
+	SubscriptionTuple *oldsub;
 	HeapTuple	oldtup,
 				newtup;
-	ScanKeyData	key[1];
+	ScanKeyData key[1];
 	Datum		values[Natts_subscription];
 	bool		nulls[Natts_subscription];
 	bool		replaces[Natts_subscription];
@@ -981,11 +981,11 @@ alter_subscription(SpockSubscription *sub)
 void
 drop_subscription(Oid subid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1014,7 +1014,7 @@ drop_subscription(Oid subid)
 	spock_subscription_changed(subid, true);
 }
 
-static SpockSubscription*
+static SpockSubscription *
 subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 {
 	SubscriptionTuple *subtup = (SubscriptionTuple *) GETSTRUCT(tuple);
@@ -1023,11 +1023,12 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 
 	SpockSubscription *sub =
 		(SpockSubscription *) palloc(sizeof(SpockSubscription));
+
 	sub->id = subtup->sub_id;
 	sub->name = pstrdup(NameStr(subtup->sub_name));
 	sub->enabled = subtup->sub_enabled;
 	sub->slot_name = pstrdup(NameStr(subtup->sub_slot_name));
-	sub->skip_schema = NIL;  /* Initialize to avoid memory corruption */
+	sub->skip_schema = NIL;		/* Initialize to avoid memory corruption */
 
 	sub->origin = get_node(subtup->sub_origin);
 	sub->target = get_node(subtup->sub_target);
@@ -1040,7 +1041,8 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		sub->replication_sets = NIL;
 	else
 	{
-		List		   *repset_names;
+		List	   *repset_names;
+
 		repset_names = textarray_to_list(DatumGetArrayTypeP(d));
 		sub->replication_sets = repset_names;
 	}
@@ -1051,7 +1053,8 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		sub->forward_origins = NIL;
 	else
 	{
-		List		   *forward_origin_names;
+		List	   *forward_origin_names;
+
 		forward_origin_names = textarray_to_list(DatumGetArrayTypeP(d));
 		sub->forward_origins = forward_origin_names;
 	}
@@ -1083,7 +1086,8 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		sub->skip_schema = NIL;
 	else
 	{
-		List		   *skip_schema_names;
+		List	   *skip_schema_names;
+
 		skip_schema_names = textarray_to_list(DatumGetArrayTypeP(d));
 		sub->skip_schema = skip_schema_names;
 	}
@@ -1097,13 +1101,13 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 SpockSubscription *
 get_subscription(Oid subid)
 {
-	SpockSubscription    *sub;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	TupleDesc		desc;
-	ScanKeyData		key[1];
+	SpockSubscription *sub;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TupleDesc	desc;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1135,13 +1139,13 @@ get_subscription(Oid subid)
 SpockSubscription *
 get_subscription_by_name(const char *name, bool missing_ok)
 {
-	SpockSubscription    *sub;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	TupleDesc		desc;
-	ScanKeyData		key[1];
+	SpockSubscription *sub;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TupleDesc	desc;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1182,14 +1186,14 @@ get_subscription_by_name(const char *name, bool missing_ok)
 List *
 get_node_subscriptions(Oid nodeid, bool origin)
 {
-	SpockSubscription    *sub;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	TupleDesc		desc;
-	ScanKeyData		key[1];
-	List		   *res = NIL;
+	SpockSubscription *sub;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TupleDesc	desc;
+	ScanKeyData key[1];
+	List	   *res = NIL;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
 	rel = table_openrv(rv, RowExclusiveLock);

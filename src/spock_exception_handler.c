@@ -187,8 +187,8 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 	}
 
 	/*
-	 * The error_message column of the spock.exception_log table is marked as NOT NULL,
-	 * but we don't always have a valid error message.
+	 * The error_message column of the spock.exception_log table is marked as
+	 * NOT NULL, but we don't always have a valid error message.
 	 */
 	if (error_message == NULL)
 		values[Anum_exception_log_error_message - 1] = CStringGetTextDatum("unknown");
@@ -227,8 +227,8 @@ spock_disable_subscription(SpockSubscription *sub,
 						   XLogRecPtr lsn,
 						   TimestampTz ts)
 {
-	char errmsg[1024];
-	bool started_tx = false;
+	char		errmsg[1024];
+	bool		started_tx = false;
 
 	Assert(exception_behaviour == SUB_DISABLE);
 
@@ -243,25 +243,25 @@ spock_disable_subscription(SpockSubscription *sub,
 	sub->enabled = false;
 	alter_subscription(sub);
 
-	// cppcheck-suppress format
+	/* cppcheck-suppress format */
 	snprintf(errmsg, sizeof(errmsg),
-				"disabling subscription %s due to exception(s) - skip_lsn = %X/%X",
-				sub->name,
-				LSN_FORMAT_ARGS(lsn));
+			 "disabling subscription %s due to exception(s) - skip_lsn = %X/%X",
+			 sub->name,
+			 LSN_FORMAT_ARGS(lsn));
 	exception_command_counter++;
 	add_entry_to_exception_log(remote_origin,
-								ts,
-								remote_xid,
-								0, 0,
-								NULL, NULL, NULL, NULL,
-								NULL, NULL,
-								"SUB_DISABLE",
-								errmsg);
+							   ts,
+							   remote_xid,
+							   0, 0,
+							   NULL, NULL, NULL, NULL,
+							   NULL, NULL,
+							   "SUB_DISABLE",
+							   errmsg);
 
 	elog(WARNING, "SPOCK %s: disabling subscription due to"
-					" exceptions - origin_lsn=%X/%X",
-			sub->name,
-			LSN_FORMAT_ARGS(lsn));
+		 " exceptions - origin_lsn=%X/%X",
+		 sub->name,
+		 LSN_FORMAT_ARGS(lsn));
 
 	PopActiveSnapshot();
 	if (started_tx)

@@ -55,7 +55,7 @@ server_bigendian(void)
 #endif
 }
 
-extern int process_parameters(List *options, SpockOutputData *data);
+extern int	process_parameters(List *options, SpockOutputData *data);
 
 extern List *prepare_startup_message(SpockOutputData *data);
 

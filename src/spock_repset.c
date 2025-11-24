@@ -88,7 +88,7 @@ typedef struct RepSetTableTuple
 {
 	Oid			setid;
 	Oid			reloid;
-#if 0 /* Only for info here. */
+#if 0							/* Only for info here. */
 	text		att_list[1];
 	text		row_filter;
 #endif
@@ -110,12 +110,12 @@ static HTAB *RepSetTableHash = NULL;
 SpockRepSet *
 get_replication_set(Oid setid)
 {
-	SpockRepSet    *repset;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	SpockRepSet *repset;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	Assert(IsTransactionState());
 
@@ -148,12 +148,12 @@ get_replication_set(Oid setid)
 SpockRepSet *
 get_replication_set_by_name(Oid nodeid, const char *setname, bool missing_ok)
 {
-	SpockRepSet    *repset;
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[2];
+	SpockRepSet *repset;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[2];
 
 	Assert(IsTransactionState());
 
@@ -205,6 +205,7 @@ repset_relcache_invalidate_callback(Datum arg, Oid reloid)
 	if (reloid == InvalidOid)
 	{
 		HASH_SEQ_STATUS status;
+
 		hash_seq_init(&status, RepSetTableHash);
 
 		while ((entry = hash_seq_search(&status)) != NULL)
@@ -235,7 +236,7 @@ static void
 repset_relcache_init(void)
 {
 	HASHCTL		ctl;
-	int hashflags;
+	int			hashflags;
 
 	/* Make sure we've initialized CacheMemoryContext. */
 	if (CacheMemoryContext == NULL)
@@ -250,8 +251,8 @@ repset_relcache_init(void)
 	hashflags |= HASH_BLOBS;
 
 	RepSetTableHash = hash_create("spock repset table cache",
-                                      REPSETTABLEHASH_INITIAL_SIZE, &ctl,
-                                      hashflags);
+								  REPSETTABLEHASH_INITIAL_SIZE, &ctl,
+								  hashflags);
 
 	/*
 	 * Watch for invalidation events fired when the relcache changes.
@@ -268,12 +269,12 @@ repset_relcache_init(void)
 List *
 get_node_replication_sets(Oid nodeid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	List		   *replication_sets = NIL;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	List	   *replication_sets = NIL;
 
 	Assert(IsTransactionState());
 
@@ -289,8 +290,9 @@ get_node_replication_sets(Oid nodeid)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		RepSetTuple	*t = (RepSetTuple *) GETSTRUCT(tuple);
-		SpockRepSet	    *repset = get_replication_set(t->id);
+		RepSetTuple *t = (RepSetTuple *) GETSTRUCT(tuple);
+		SpockRepSet *repset = get_replication_set(t->id);
+
 		replication_sets = lappend(replication_sets, repset);
 	}
 
@@ -303,11 +305,11 @@ get_node_replication_sets(Oid nodeid)
 List *
 get_replication_sets(Oid nodeid, List *replication_set_names, bool missing_ok)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	ListCell	   *lc;
-	ScanKeyData		key[2];
-	List		   *replication_sets = NIL;
+	RangeVar   *rv;
+	Relation	rel;
+	ListCell   *lc;
+	ScanKeyData key[2];
+	List	   *replication_sets = NIL;
 
 	Assert(IsTransactionState());
 
@@ -322,9 +324,9 @@ get_replication_sets(Oid nodeid, List *replication_set_names, bool missing_ok)
 
 	foreach(lc, replication_set_names)
 	{
-		char		   *setname = lfirst(lc);
-		SysScanDesc		scan;
-		HeapTuple		tuple;
+		char	   *setname = lfirst(lc);
+		SysScanDesc scan;
+		HeapTuple	tuple;
 
 		/* Search for repset record. */
 		ScanKeyInit(&key[1],
@@ -365,16 +367,16 @@ get_table_replication_info(Oid nodeid, Relation table,
 						   List *subs_replication_sets)
 {
 	SpockTableRepInfo *entry;
-	bool			found;
-	RangeVar	   *rv;
-	Oid				reloid = RelationGetRelid(table);
-	Oid				repset_reloid;
-	Relation		repset_rel;
-	ScanKeyData		key[1];
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	TupleDesc		table_desc,
-					repset_rel_desc;
+	bool		found;
+	RangeVar   *rv;
+	Oid			reloid = RelationGetRelid(table);
+	Oid			repset_reloid;
+	Relation	repset_rel;
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TupleDesc	table_desc,
+				repset_rel_desc;
 
 	if (RepSetTableHash == NULL)
 		repset_relcache_init();
@@ -408,8 +410,8 @@ get_table_replication_info(Oid nodeid, Relation table,
 	 *
 	 * Note that tables can have no replication sets. This will be commonly
 	 * true for example for internal tables which are created during table
-	 * rewrites, so if we'll want to support replicating those, we'll have
-	 * to have special handling for them.
+	 * rewrites, so if we'll want to support replicating those, we'll have to
+	 * have special handling for them.
 	 */
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_TABLE, -1);
 	repset_reloid = RangeVarGetRelid(rv, RowExclusiveLock, true);
@@ -438,14 +440,14 @@ get_table_replication_info(Oid nodeid, Relation table,
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		RepSetTableTuple   *t = (RepSetTableTuple *) GETSTRUCT(tuple);
-		ListCell		   *lc;
+		RepSetTableTuple *t = (RepSetTableTuple *) GETSTRUCT(tuple);
+		ListCell   *lc;
 
-		foreach (lc, subs_replication_sets)
+		foreach(lc, subs_replication_sets)
 		{
-			SpockRepSet	   *repset = lfirst(lc);
-			bool				isnull;
-			Datum				d;
+			SpockRepSet *repset = lfirst(lc);
+			bool		isnull;
+			Datum		d;
 
 			if (t->setid == repset->id)
 			{
@@ -465,7 +467,8 @@ get_table_replication_info(Oid nodeid, Relation table,
 				if (!isnull)
 				{
 					Datum	   *elems;
-					int			nelems, i;
+					int			nelems,
+								i;
 
 					deconstruct_array(DatumGetArrayTypePCopy(d),
 									  TEXTOID, -1, false, 'i',
@@ -478,8 +481,9 @@ get_table_replication_info(Oid nodeid, Relation table,
 																 attname);
 
 						MemoryContext olctx = MemoryContextSwitchTo(CacheMemoryContext);
+
 						entry->att_list = bms_add_member(entry->att_list,
-								attnum - FirstLowInvalidHeapAttributeNumber);
+														 attnum - FirstLowInvalidHeapAttributeNumber);
 						MemoryContextSwitchTo(olctx);
 					}
 				}
@@ -490,7 +494,8 @@ get_table_replication_info(Oid nodeid, Relation table,
 				if (!isnull)
 				{
 					MemoryContext olctx = MemoryContextSwitchTo(CacheMemoryContext);
-					Node   *row_filter = stringToNode(TextDatumGetCString(d));
+					Node	   *row_filter = stringToNode(TextDatumGetCString(d));
+
 					entry->row_filter = lappend(entry->row_filter, row_filter);
 					MemoryContextSwitchTo(olctx);
 				}
@@ -505,18 +510,18 @@ get_table_replication_info(Oid nodeid, Relation table,
 	return entry;
 }
 
-RepSetTableTuple*
+RepSetTableTuple *
 get_table_replication_row(Oid repsetid, Oid reloid,
 						  List **att_list, Node **row_filter)
 {
-	Oid				repset_reloid;
-	Oid				repset_indoid;
-	Relation		repset_rel;
-	ScanKeyData		key[2];
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	TupleDesc		repset_rel_desc;
-	RepSetTableTuple	*reptuple = NULL;
+	Oid			repset_reloid;
+	Oid			repset_indoid;
+	Relation	repset_rel;
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TupleDesc	repset_rel_desc;
+	RepSetTableTuple *reptuple = NULL;
 
 	repset_reloid = get_replication_set_table_rel_oid();
 	repset_rel = table_open(repset_reloid, RowExclusiveLock);
@@ -537,15 +542,15 @@ get_table_replication_row(Oid repsetid, Oid reloid,
 
 	if (HeapTupleIsValid(tuple))
 	{
-		bool				isnull;
-		Datum				d;
+		bool		isnull;
+		Datum		d;
 
 		reptuple = (RepSetTableTuple *) GETSTRUCT(tuple);
 		/* Update replicated column map. */
 		if (att_list != NULL)
 		{
 			d = heap_getattr(tuple, Anum_repset_table_att_list,
-								repset_rel_desc, &isnull);
+							 repset_rel_desc, &isnull);
 			if (!isnull)
 				*att_list = textarray_to_list(DatumGetArrayTypePCopy(d));
 		}
@@ -554,10 +559,11 @@ get_table_replication_row(Oid repsetid, Oid reloid,
 		{
 			/* Add row filter if any. */
 			d = heap_getattr(tuple, Anum_repset_table_row_filter,
-								repset_rel_desc, &isnull);
+							 repset_rel_desc, &isnull);
 			if (!isnull)
 			{
 				MemoryContext olctx = MemoryContextSwitchTo(CacheMemoryContext);
+
 				*row_filter = stringToNode(TextDatumGetCString(d));
 				MemoryContextSwitchTo(olctx);
 			}
@@ -572,13 +578,13 @@ get_table_replication_row(Oid repsetid, Oid reloid,
 List *
 get_table_replication_sets(Oid nodeid, Oid reloid)
 {
-	RangeVar	   *rv;
-	Oid				relid;
-	Relation		rel;
-	ScanKeyData		key[1];
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	List		   *replication_sets = NIL;
+	RangeVar   *rv;
+	Oid			relid;
+	Relation	rel;
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	List	   *replication_sets = NIL;
 
 	Assert(IsTransactionState());
 
@@ -607,8 +613,8 @@ get_table_replication_sets(Oid nodeid, Oid reloid)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		RepSetSeqTuple		*t = (RepSetSeqTuple *) GETSTRUCT(tuple);
-		SpockRepSet	    *repset = get_replication_set(t->id);
+		RepSetSeqTuple *t = (RepSetSeqTuple *) GETSTRUCT(tuple);
+		SpockRepSet *repset = get_replication_set(t->id);
 
 		if (repset->nodeid != nodeid)
 			continue;
@@ -625,12 +631,12 @@ get_table_replication_sets(Oid nodeid, Oid reloid)
 static bool
 sequence_has_replication_sets(Oid nodeid, Oid seqoid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	ScanKeyData		key[1];
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	bool			res = false;
+	RangeVar   *rv;
+	Relation	rel;
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	bool		res = false;
 
 	Assert(IsTransactionState());
 
@@ -657,12 +663,12 @@ sequence_has_replication_sets(Oid nodeid, Oid seqoid)
 List *
 get_seq_replication_sets(Oid nodeid, Oid seqoid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	ScanKeyData		key[1];
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	List		   *replication_sets = NIL;
+	RangeVar   *rv;
+	Relation	rel;
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	List	   *replication_sets = NIL;
 
 	Assert(IsTransactionState());
 
@@ -679,8 +685,8 @@ get_seq_replication_sets(Oid nodeid, Oid seqoid)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		RepSetSeqTuple		*t = (RepSetSeqTuple *) GETSTRUCT(tuple);
-		SpockRepSet	    *repset = get_replication_set(t->id);
+		RepSetSeqTuple *t = (RepSetSeqTuple *) GETSTRUCT(tuple);
+		SpockRepSet *repset = get_replication_set(t->id);
 
 		if (repset->nodeid != nodeid)
 			continue;
@@ -721,7 +727,7 @@ create_replication_set(SpockRepSet *repset)
 	 */
 	if (repset->id == InvalidOid)
 	{
-		uint32	hashinput[2];
+		uint32		hashinput[2];
 
 		hashinput[0] = repset->nodeid;
 		hashinput[1] = DatumGetUInt32(hash_any((const unsigned char *) repset->name,
@@ -769,16 +775,16 @@ create_replication_set(SpockRepSet *repset)
 void
 alter_replication_set(SpockRepSet *repset)
 {
-	RangeVar	   *rv;
-	SysScanDesc		scan;
-	ScanKeyData		key[1];
-	Relation		rel;
-	TupleDesc		tupDesc;
-	HeapTuple		oldtup,
-					newtup;
-	Datum			values[Natts_repset];
-	bool			nulls[Natts_repset];
-	bool			replaces[Natts_repset];
+	RangeVar   *rv;
+	SysScanDesc scan;
+	ScanKeyData key[1];
+	Relation	rel;
+	TupleDesc	tupDesc;
+	HeapTuple	oldtup,
+				newtup;
+	Datum		values[Natts_repset];
+	bool		nulls[Natts_repset];
+	bool		replaces[Natts_repset];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -797,16 +803,16 @@ alter_replication_set(SpockRepSet *repset)
 		elog(ERROR, "replication set %u not found", repset->id);
 
 	/*
-	 * Validate that replication is not being changed to replicate UPDATEs
-	 * and DELETEs if it contains any tables without replication identity.
+	 * Validate that replication is not being changed to replicate UPDATEs and
+	 * DELETEs if it contains any tables without replication identity.
 	 */
 	if (repset->replicate_update || repset->replicate_delete)
 	{
-		RangeVar	   *tablesrv;
-		Relation		tablesrel;
-		SysScanDesc		tablesscan;
-		HeapTuple		tablestup;
-		ScanKeyData		tableskey[1];
+		RangeVar   *tablesrv;
+		Relation	tablesrel;
+		SysScanDesc tablesscan;
+		HeapTuple	tablestup;
+		ScanKeyData tableskey[1];
 
 		tablesrv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_TABLE, -1);
 		tablesrel = table_openrv(tablesrv, RowExclusiveLock);
@@ -822,8 +828,8 @@ alter_replication_set(SpockRepSet *repset)
 		/* Process every individual table in the set. */
 		while (HeapTupleIsValid(tablestup = systable_getnext(tablesscan)))
 		{
-			RepSetTableTuple   *t = (RepSetTableTuple *) GETSTRUCT(tablestup);
-			Relation			targetrel;
+			RepSetTableTuple *t = (RepSetTableTuple *) GETSTRUCT(tablestup);
+			Relation	targetrel;
 
 			targetrel = table_open(t->reloid, AccessShareLock);
 
@@ -884,12 +890,12 @@ alter_replication_set(SpockRepSet *repset)
 static void
 replication_set_remove_tables(Oid setid, Oid nodeid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	ObjectAddress	myself;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	ObjectAddress myself;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_TABLE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -907,8 +913,8 @@ replication_set_remove_tables(Oid setid, Oid nodeid)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		RepSetTableTuple   *t = (RepSetTableTuple *) GETSTRUCT(tuple);
-		Oid					reloid = t->reloid;
+		RepSetTableTuple *t = (RepSetTableTuple *) GETSTRUCT(tuple);
+		Oid			reloid = t->reloid;
 
 		/* Remove the tuple. */
 		simple_heap_delete(rel, &tuple->t_self);
@@ -930,12 +936,12 @@ replication_set_remove_tables(Oid setid, Oid nodeid)
 static void
 replication_set_remove_seqs(Oid setid, Oid nodeid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	ObjectAddress	myself;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	ObjectAddress myself;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_SEQ, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -953,8 +959,8 @@ replication_set_remove_seqs(Oid setid, Oid nodeid)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		RepSetSeqTuple	   *t = (RepSetSeqTuple *) GETSTRUCT(tuple);
-		Oid					seqoid = t->seqoid;
+		RepSetSeqTuple *t = (RepSetSeqTuple *) GETSTRUCT(tuple);
+		Oid			seqoid = t->seqoid;
 
 		/* Remove the tuple. */
 		simple_heap_delete(rel, &tuple->t_self);
@@ -983,12 +989,12 @@ replication_set_remove_seqs(Oid setid, Oid nodeid)
 void
 drop_replication_set(Oid setid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	RepSetTuple	   *repset;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	RepSetTuple *repset;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1025,11 +1031,11 @@ drop_replication_set(Oid setid)
 void
 drop_node_replication_sets(Oid nodeid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	Assert(IsTransactionState());
 
@@ -1046,7 +1052,7 @@ drop_node_replication_sets(Oid nodeid)
 	/* Remove matching tuples. */
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		RepSetTuple		*repset = (RepSetTuple *) GETSTRUCT(tuple);
+		RepSetTuple *repset = (RepSetTuple *) GETSTRUCT(tuple);
 
 		/* Remove all tables and sequences associated with the repset. */
 		replication_set_remove_tables(repset->id, repset->nodeid);
@@ -1079,8 +1085,8 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	Datum		values[Natts_repset_table];
 	bool		nulls[Natts_repset_table];
 	SpockRepSet *repset = get_replication_set(setid);
-	ObjectAddress	referenced;
-	ObjectAddress	myself;
+	ObjectAddress referenced;
+	ObjectAddress myself;
 
 	/* Open the relation. */
 	targetrel = table_open(reloid, ShareRowExclusiveLock);
@@ -1152,8 +1158,8 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	if (row_filter)
 	{
 		spock_recordDependencyOnSingleRelExpr(&myself, row_filter,
-												  reloid, DEPENDENCY_NORMAL,
-												  DEPENDENCY_NORMAL);
+											  reloid, DEPENDENCY_NORMAL,
+											  DEPENDENCY_NORMAL);
 	}
 
 	table_close(rel, RowExclusiveLock);
@@ -1175,8 +1181,8 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 	Datum		values[Natts_repset_table];
 	bool		nulls[Natts_repset_table];
 	SpockRepSet *repset = get_replication_set(setid);
-	ObjectAddress	referenced;
-	ObjectAddress	myself;
+	ObjectAddress referenced;
+	ObjectAddress myself;
 
 	/* Open the relation. */
 	targetrel = table_open(seqoid, ShareRowExclusiveLock);
@@ -1234,12 +1240,12 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 List *
 replication_set_get_tables(Oid setid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	List		   *res = NIL;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	List	   *res = NIL;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_TABLE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1255,7 +1261,7 @@ replication_set_get_tables(Oid setid)
 	/* Build the list from the table. */
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		RepSetTableTuple   *t = (RepSetTableTuple *) GETSTRUCT(tuple);
+		RepSetTableTuple *t = (RepSetTableTuple *) GETSTRUCT(tuple);
 
 		res = lappend_oid(res, t->reloid);
 	}
@@ -1273,12 +1279,12 @@ replication_set_get_tables(Oid setid)
 List *
 replication_set_get_seqs(Oid setid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	List		   *res = NIL;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	List	   *res = NIL;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_SEQ, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1294,7 +1300,7 @@ replication_set_get_seqs(Oid setid)
 	/* Build the list from the table. */
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		RepSetSeqTuple	   *s = (RepSetSeqTuple *) GETSTRUCT(tuple);
+		RepSetSeqTuple *s = (RepSetSeqTuple *) GETSTRUCT(tuple);
 
 		res = lappend_oid(res, s->seqoid);
 	}
@@ -1312,12 +1318,12 @@ replication_set_get_seqs(Oid setid)
 void
 replication_set_remove_table(Oid setid, Oid reloid, bool from_drop)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[2];
-	ObjectAddress	myself;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[2];
+	ObjectAddress myself;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_TABLE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1344,7 +1350,7 @@ replication_set_remove_table(Oid setid, Oid reloid, bool from_drop)
 	else if (!from_drop)
 	{
 		SpockRepSet *repset;
-		char *relname;
+		char	   *relname;
 
 		repset = get_replication_set(setid);
 		relname = get_rel_name(reloid);
@@ -1377,12 +1383,12 @@ replication_set_remove_table(Oid setid, Oid reloid, bool from_drop)
 void
 replication_set_remove_seq(Oid setid, Oid seqoid, bool from_drop)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[2];
-	ObjectAddress	myself;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[2];
+	ObjectAddress myself;
 	SpockRepSet *repset = get_replication_set(setid);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_SEQ, -1);
@@ -1402,8 +1408,8 @@ replication_set_remove_seq(Oid setid, Oid seqoid, bool from_drop)
 	tuple = systable_getnext(scan);
 
 	/*
-	 * Remove the tuple if found, if not found report error uless this function
-	 * was called as result of table drop.
+	 * Remove the tuple if found, if not found report error uless this
+	 * function was called as result of table drop.
 	 */
 	if (HeapTupleIsValid(tuple))
 		simple_heap_delete(rel, &tuple->t_self);
@@ -1434,11 +1440,12 @@ replication_set_remove_seq(Oid setid, Oid seqoid, bool from_drop)
 /*
  * Utility functions for working with SpockRepSet struct.
  */
-SpockRepSet*
+SpockRepSet *
 replication_set_from_tuple(HeapTuple tuple)
 {
 	RepSetTuple *repsettup = (RepSetTuple *) GETSTRUCT(tuple);
 	SpockRepSet *repset = (SpockRepSet *) palloc(sizeof(SpockRepSet));
+
 	repset->id = repsettup->id;
 	repset->nodeid = repsettup->nodeid;
 	repset->name = pstrdup(NameStr(repsettup->name));
@@ -1503,20 +1510,20 @@ get_replication_set_seq_rel_oid(void)
 char *
 stringlist_to_identifierstr(List *strings)
 {
-	ListCell *lc;
+	ListCell   *lc;
 	StringInfoData res;
-	bool first = true;
+	bool		first = true;
 
 	initStringInfo(&res);
 
-	foreach (lc, strings)
+	foreach(lc, strings)
 	{
 		if (first)
 			first = false;
 		else
 			appendStringInfoChar(&res, ',');
 
-		appendStringInfoString(&res, quote_identifier((char *)lfirst(lc)));
+		appendStringInfoString(&res, quote_identifier((char *) lfirst(lc)));
 	}
 
 	return res.data;
@@ -1533,13 +1540,13 @@ stringlist_to_identifierstr(List *strings)
 char *
 repsetslist_to_identifierstr(List *repsets)
 {
-	ListCell *lc;
+	ListCell   *lc;
 	StringInfoData res;
-	bool first = true;
+	bool		first = true;
 
 	initStringInfo(&res);
 
-	foreach (lc, repsets)
+	foreach(lc, repsets)
 	{
 		SpockRepSet *repset = lfirst(lc);
 
@@ -1557,15 +1564,15 @@ repsetslist_to_identifierstr(List *repsets)
 int
 get_att_num_by_name(TupleDesc desc, const char *attname)
 {
-	int		i;
+	int			i;
 
 	for (i = 0; i < desc->natts; i++)
 	{
-		if (TupleDescAttr(desc,i)->attisdropped)
+		if (TupleDescAttr(desc, i)->attisdropped)
 			continue;
 
-		if (namestrcmp(&(TupleDescAttr(desc,i)->attname), attname) == 0)
-			return TupleDescAttr(desc,i)->attnum;
+		if (namestrcmp(&(TupleDescAttr(desc, i)->attname), attname) == 0)
+			return TupleDescAttr(desc, i)->attnum;
 	}
 
 	return FirstLowInvalidHeapAttributeNumber;

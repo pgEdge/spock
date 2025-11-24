@@ -6,7 +6,7 @@
 
 #include "spock_proto_native.h"
 
-typedef enum					/* type categories for datum_to_jsonb */
+typedef enum JsonbTypeCategory	/* type categories for datum_to_jsonb */
 {
 	JSONBTYPE_NULL,				/* null, so we didn't bother to identify */
 	JSONBTYPE_BOOL,				/* boolean (built-in types only) */
@@ -20,7 +20,7 @@ typedef enum					/* type categories for datum_to_jsonb */
 	JSONBTYPE_COMPOSITE,		/* composite */
 	JSONBTYPE_JSONCAST,			/* something with an explicit cast to JSON */
 	JSONBTYPE_OTHER				/* all else */
-}			JsonbTypeCategory;
+} JsonbTypeCategory;
 
 typedef struct JsonbInState
 {

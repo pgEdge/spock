@@ -60,28 +60,28 @@ typedef enum SpockProtoType
 
 typedef void (*spock_write_commit_order_fn) (StringInfo out,
 											 TimestampTz last_commit_ts);
-typedef void (*spock_write_rel_fn) (StringInfo out, SpockOutputData * data,
-						   Relation rel, Bitmapset *att_list);
+typedef void (*spock_write_rel_fn) (StringInfo out, SpockOutputData *data,
+									Relation rel, Bitmapset *att_list);
 
-typedef void (*spock_write_begin_fn) (StringInfo out, SpockOutputData * data,
-													  ReorderBufferTXN *txn);
-typedef void (*spock_write_commit_fn) (StringInfo out, SpockOutputData * data,
-							   ReorderBufferTXN *txn, XLogRecPtr commit_lsn);
+typedef void (*spock_write_begin_fn) (StringInfo out, SpockOutputData *data,
+									  ReorderBufferTXN *txn);
+typedef void (*spock_write_commit_fn) (StringInfo out, SpockOutputData *data,
+									   ReorderBufferTXN *txn, XLogRecPtr commit_lsn);
 
 typedef void (*spock_write_origin_fn) (StringInfo out,
 									   const RepOriginId origin_id,
 									   XLogRecPtr origin_lsn);
 
-typedef void (*spock_write_insert_fn) (StringInfo out, SpockOutputData * data,
-										   Relation rel, HeapTuple newtuple,
-										   Bitmapset *att_list);
-typedef void (*spock_write_update_fn) (StringInfo out, SpockOutputData * data,
-											Relation rel, HeapTuple oldtuple,
-											HeapTuple newtuple,
-											Bitmapset *att_list);
-typedef void (*spock_write_delete_fn) (StringInfo out, SpockOutputData * data,
-										   Relation rel, HeapTuple oldtuple,
-										   Bitmapset *att_list);
+typedef void (*spock_write_insert_fn) (StringInfo out, SpockOutputData *data,
+									   Relation rel, HeapTuple newtuple,
+									   Bitmapset *att_list);
+typedef void (*spock_write_update_fn) (StringInfo out, SpockOutputData *data,
+									   Relation rel, HeapTuple oldtuple,
+									   HeapTuple newtuple,
+									   Bitmapset *att_list);
+typedef void (*spock_write_delete_fn) (StringInfo out, SpockOutputData *data,
+									   Relation rel, HeapTuple oldtuple,
+									   Bitmapset *att_list);
 
 typedef void (*write_startup_message_fn) (StringInfo out, List *msg);
 typedef void (*spock_write_truncate_fn) (StringInfo out, int nrelids,
@@ -109,4 +109,4 @@ typedef struct SpockProtoAPI
 
 extern SpockProtoAPI *spock_init_api(SpockProtoType typ);
 
-#endif /* SPOCK_OUTPUT_PROTO_H */
+#endif							/* SPOCK_OUTPUT_PROTO_H */

@@ -87,8 +87,8 @@ spock_group_shmem_request(void)
 #endif
 
 	/*
-	 * This is cludge for Windows (Postgres does not define the GUC variable as
-	 * PGDDLIMPORT)
+	 * This is cludge for Windows (Postgres does not define the GUC variable
+	 * as PGDDLIMPORT)
 	 */
 	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 											   false));
@@ -218,8 +218,8 @@ static void
 progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 {
 	/*
-	 * Good place to check the invariant.
-	 * It must be true in case of re-written entry and a new one.
+	 * Good place to check the invariant. It must be true in case of
+	 * re-written entry and a new one.
 	 */
 	Assert(dest->key.dbid == src->key.dbid);
 	Assert(dest->key.node_id == src->key.node_id);
@@ -231,9 +231,9 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 		 * This is the most advanced commit. Save its progress.
 		 *
 		 * NOTE: According to apply group machinery their commit order should
-		 * follow the timestamp order. That means there are no way for a commit
-		 * to come with an oldest commit timestamp except we don't update this
-		 * commit's part of the data at all.
+		 * follow the timestamp order. That means there are no way for a
+		 * commit to come with an oldest commit timestamp except we don't
+		 * update this commit's part of the data at all.
 		 */
 		dest->remote_commit_ts = src->remote_commit_ts;
 		dest->prev_remote_ts = src->prev_remote_ts;
@@ -252,6 +252,7 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 	/* It is a good place to check the entry consistency */
 	Assert(dest->remote_insert_lsn >= dest->remote_commit_lsn);
 	Assert(dest->received_lsn >= dest->remote_commit_lsn);
+
 	/*
 	 * Value of the received_lsn potentially can exceed remote_insert_lsn
 	 * because it is reported more frequently (by keepalive messages).
@@ -270,9 +271,9 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 bool
 spock_group_progress_update(const SpockApplyProgress *sap)
 {
-	SpockGroupKey		key;
-	SpockGroupEntry	   *e;
-	bool				found;
+	SpockGroupKey key;
+	SpockGroupEntry *e;
+	bool		found;
 
 	if (!sap)
 		return false;
@@ -318,13 +319,13 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
 SpockApplyProgress *
 apply_worker_get_progress(void)
 {
-    Assert(MyApplyWorker != NULL);
-    Assert(MyApplyWorker->apply_group != NULL);
+	Assert(MyApplyWorker != NULL);
+	Assert(MyApplyWorker->apply_group != NULL);
 
-    if (MyApplyWorker && MyApplyWorker->apply_group)
-        return &MyApplyWorker->apply_group->progress;
+	if (MyApplyWorker && MyApplyWorker->apply_group)
+		return &MyApplyWorker->apply_group->progress;
 
-    return NULL;
+	return NULL;
 }
 
 /*
@@ -491,7 +492,7 @@ spock_group_resource_load(void)
 	{
 		CloseTransientFile(fd);
 		ereport(WARNING,
-				(errmsg("spock resource.dat version mismatch (file=%u, expected=%u) — ignoring",
+				(errmsg("spock resource.dat version mismatch (file=%u, expected=%u) - ignoring",
 						hdr.version, SPOCK_RES_VERSION)));
 		return;
 	}
@@ -500,7 +501,7 @@ spock_group_resource_load(void)
 	{
 		CloseTransientFile(fd);
 		ereport(WARNING,
-				(errmsg("spock resource.dat system identifier mismatch — ignoring")));
+				(errmsg("spock resource.dat system identifier mismatch - ignoring")));
 		return;
 	}
 

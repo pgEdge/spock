@@ -41,10 +41,11 @@
 #define SEQUENCE_REPLICATION_MIN_CACHE	1000
 #define SEQUENCE_REPLICATION_MAX_CACHE	1000000
 
-typedef struct SeqStateTuple {
-	Oid		seqoid;
-	int32	cache_size;
-	int64	last_value;
+typedef struct SeqStateTuple
+{
+	Oid			seqoid;
+	int32		cache_size;
+	int64		last_value;
 } SeqStateTuple;
 
 #define Natts_sequence_state			3
@@ -57,11 +58,11 @@ typedef struct SeqStateTuple {
 int64
 sequence_get_last_value(Oid seqoid)
 {
-	Relation            seqrel;
-	SysScanDesc		scan;
-	HeapTuple			tup;
-	int64				last_value;
-	Form_pg_sequence	seq;
+	Relation	seqrel;
+	SysScanDesc scan;
+	HeapTuple	tup;
+	int64		last_value;
+	Form_pg_sequence seq;
 
 	seqrel = table_open(seqoid, AccessShareLock);
 	scan = systable_beginscan(seqrel, 0, false, NULL, 0, NULL);
@@ -82,12 +83,12 @@ sequence_get_last_value(Oid seqoid)
 bool
 synchronize_sequences(void)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	SpockLocalNode	   *local_node;
-	bool			ret = true;
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	SpockLocalNode *local_node;
+	bool		ret = true;
 
 	StartTransactionCommand();
 
@@ -106,16 +107,16 @@ synchronize_sequences(void)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		SeqStateTuple  *oldseq = (SeqStateTuple *) GETSTRUCT(tuple);
-		SeqStateTuple  *newseq;
-		int64			last_value;
-		HeapTuple		newtup;
-		List		   *repsets;
-		List		   *repset_names;
-		ListCell	   *lc;
-		char		   *nspname;
-		char		   *relname;
-		StringInfoData	json;
+		SeqStateTuple *oldseq = (SeqStateTuple *) GETSTRUCT(tuple);
+		SeqStateTuple *newseq;
+		int64		last_value;
+		HeapTuple	newtup;
+		List	   *repsets;
+		List	   *repset_names;
+		ListCell   *lc;
+		char	   *nspname;
+		char	   *relname;
+		StringInfoData json;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -143,9 +144,10 @@ synchronize_sequences(void)
 		repsets = get_seq_replication_sets(local_node->node->id,
 										   oldseq->seqoid);
 		repset_names = NIL;
-		foreach (lc, repsets)
+		foreach(lc, repsets)
 		{
-			SpockRepSet	    *repset = (SpockRepSet *) lfirst(lc);
+			SpockRepSet *repset = (SpockRepSet *) lfirst(lc);
+
 			repset_names = lappend(repset_names, pstrdup(repset->name));
 		}
 
@@ -157,7 +159,7 @@ synchronize_sequences(void)
 		escape_json(&json, nspname);
 		appendStringInfoString(&json, ",\"sequence_name\": ");
 		escape_json(&json, relname);
-		appendStringInfo(&json, ",\"last_value\": \""INT64_FORMAT"\"",
+		appendStringInfo(&json, ",\"last_value\": \"" INT64_FORMAT "\"",
 						 newseq->last_value);
 		appendStringInfo(&json, "}");
 
@@ -180,22 +182,22 @@ synchronize_sequences(void)
 void
 synchronize_sequence(Oid seqoid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	Relation		seqrel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
-	SeqStateTuple  *newseq;
-	int64			last_value;
-	HeapTuple		newtup;
-	List		   *repsets;
-	List		   *repset_names;
-	ListCell	   *lc;
-	char		   *nspname;
-	char		   *relname;
-	StringInfoData	json;
-	SpockLocalNode	   *local_node = get_local_node(true, false);
+	RangeVar   *rv;
+	Relation	rel;
+	Relation	seqrel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+	SeqStateTuple *newseq;
+	int64		last_value;
+	HeapTuple	newtup;
+	List	   *repsets;
+	List	   *repset_names;
+	ListCell   *lc;
+	char	   *nspname;
+	char	   *relname;
+	StringInfoData json;
+	SpockLocalNode *local_node = get_local_node(true, false);
 
 	/* Check if the oid points to actual sequence. */
 	seqrel = table_open(seqoid, AccessShareLock);
@@ -235,9 +237,10 @@ synchronize_sequence(Oid seqoid)
 
 	repsets = get_seq_replication_sets(local_node->node->id, seqoid);
 	repset_names = NIL;
-	foreach (lc, repsets)
+	foreach(lc, repsets)
 	{
-		SpockRepSet	    *repset = (SpockRepSet *) lfirst(lc);
+		SpockRepSet *repset = (SpockRepSet *) lfirst(lc);
+
 		repset_names = lappend(repset_names, pstrdup(repset->name));
 	}
 
@@ -249,7 +252,7 @@ synchronize_sequence(Oid seqoid)
 	escape_json(&json, nspname);
 	appendStringInfoString(&json, ",\"sequence_name\": ");
 	escape_json(&json, relname);
-	appendStringInfo(&json, ",\"last_value\": \""INT64_FORMAT"\"",
+	appendStringInfo(&json, ",\"last_value\": \"" INT64_FORMAT "\"",
 					 newseq->last_value);
 	appendStringInfo(&json, "}");
 
@@ -268,11 +271,11 @@ synchronize_sequence(Oid seqoid)
 void
 spock_create_sequence_state_record(Oid seqoid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_STATE, -1);
 
@@ -322,11 +325,11 @@ spock_create_sequence_state_record(Oid seqoid)
 void
 spock_drop_sequence_state_record(Oid seqoid)
 {
-	RangeVar	   *rv;
-	Relation		rel;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	ScanKeyData		key[1];
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_STATE, -1);
 
