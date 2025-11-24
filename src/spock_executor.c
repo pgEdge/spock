@@ -20,16 +20,18 @@
 
 #include "catalog/dependency.h"
 #include "catalog/index.h"
+#include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_extension.h"
 #include "catalog/pg_inherits.h"
+#include "catalog/pg_seclabel.h"
 #include "catalog/pg_type.h"
 
 #include "commands/defrem.h"
 #include "commands/extension.h"
-
+#include "commands/seclabel.h"
 #include "executor/executor.h"
 
 #include "nodes/nodeFuncs.h"
@@ -190,6 +192,40 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 }
 
 /*
+ * Derived from the core DeleteSecurityLabel routine
+ */
+static void
+DeleteSecurityLabels(const char *provider)
+{
+	Relation	pg_seclabel;
+	SysScanDesc scan;
+	HeapTuple	htup;
+
+	pg_seclabel = table_open(SecLabelRelationId, RowExclusiveLock);
+
+	scan = systable_beginscan(pg_seclabel, InvalidOid, false, NULL, 0, NULL);
+	while (HeapTupleIsValid(htup = systable_getnext(scan)))
+	{
+		Datum		datum;
+		bool		isnull;
+		char	   *provider;
+
+		datum = heap_getattr(htup, Anum_pg_seclabel_provider,
+							 RelationGetDescr(pg_seclabel), &isnull);
+		Assert(!isnull);
+		provider = TextDatumGetCString(datum);
+
+		if (strcmp(provider, spock_SECLABEL_PROVIDER) != 0)
+			continue;
+
+		CatalogTupleDelete(pg_seclabel, &htup->t_self);
+	}
+
+	systable_endscan(scan);
+	table_close(pg_seclabel, RowExclusiveLock);
+}
+
+/*
  * Handle object drop.
  *
  * Calls to dependency tracking code.
@@ -203,6 +239,7 @@ spock_object_access(ObjectAccessType access,
 {
 	Oid			save_userid = 0;
 	int			save_sec_context = 0;
+	ObjectAddress	object;
 
 	if (next_object_access_hook)
 		(*next_object_access_hook) (access, classId, objectId, subId, arg);
@@ -241,7 +278,11 @@ spock_object_access(ObjectAccessType access,
 		 * be handled by Postgres.
 		 */
 		if (dropping_spock_obj)
+		{
+			/* Need to drop any security labels created by the extension */
+			DeleteSecurityLabels(spock_SECLABEL_PROVIDER);
 			return;
+		}
 
 		/*
 		 * Check that we have a local node. We need to elevate access because
@@ -268,6 +309,28 @@ spock_object_access(ObjectAccessType access,
 
 		/* Restore previous session privileges */
 		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	/* SECURITY LABEL related section (see delta_apply for more details) */
+	else if (access == OAT_POST_ALTER && subId > 0)
+	{
+		char *label;
+
+		/*
+		 * Something changes in the definition of the column. We have not enough
+		 * data at the moment to check if the column will satisfy delta_apply
+		 * type requirements. So, just warn and drop security label, if exists.
+		 * TODO: the direction of further improvement is discovery of syscache
+		 * or querying the table definition in attempt to identify the new type.
+		 */
+		ObjectAddressSubSet(object, classId, objectId, subId);
+		label = GetSecurityLabel(&object, "spock");
+		if (label != NULL)
+		{
+			DeleteSecurityLabel(&object);
+			elog(WARNING, "the alter column statement removes spock security label '%s' on this column",
+				 label);
+			pfree(label);
+		}
 	}
 }
 

@@ -633,3 +633,57 @@ BEGIN
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Set delta_apply security label on specific column
+CREATE FUNCTION spock.delta_apply(
+  rel regclass,
+  att_name name,
+  to_drop boolean DEFAULT false
+) RETURNS boolean AS $$
+DECLARE
+  label    text;
+  atttype  name;
+  attdata  record;
+  ctypname name;
+BEGIN
+  IF (to_drop = true) THEN
+    DELETE FROM pg_seclabel WHERE objoid = rel AND
+	                              classoid = 'pg_class'::regclass AND
+								  objsubid > 0 AND provider = 'spock';
+	IF NOT FOUND THEN
+      RETURN false;
+    END IF;
+
+    RETURN true;
+  END IF;
+
+  --
+  -- Find proper delta_apply function for the column type or ERROR
+  --
+
+  SELECT t.typname,t.typinput,t.typoutput
+  FROM pg_catalog.pg_attribute a, pg_type t
+  WHERE a.attrelid = rel AND a.attname = att_name AND (a.atttypid = t.oid)
+  INTO attdata;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'column % does not exist in the table %', att_name, rel;
+  END IF;
+
+  SELECT typname FROM pg_type WHERE
+    typname IN ('int2','int4','int8','float4','float8','numeric','money') AND
+    typinput = attdata.typinput AND typoutput = attdata.typoutput
+  INTO ctypname;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'type "%" can not be used in delta_apply conflict resolution',
+          attdata.typname;
+  END IF;
+
+  --
+  -- Create security label on the column
+  --
+  EXECUTE format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L' ,
+                 rel, att_name, 'delta_apply');
+
+  RETURN true;
+END;
+$$ LANGUAGE plpgsql STRICT VOLATILE;
