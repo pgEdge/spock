@@ -219,6 +219,7 @@ DROP FUNCTION call_fn;
 -- A label creation checks
 CREATE TABLE slabel (x integer, y text PRIMARY KEY);
 SELECT spock.delta_apply('slabel', 'x');
+WARNING:  delta_apply setting has not been propagated to other spock nodes
  delta_apply 
 -------------
  t
@@ -229,6 +230,7 @@ ERROR:  type "text" can not be used in delta_apply conflict resolution
 SELECT spock.delta_apply('slabel', 'z'); -- ERROR
 ERROR:  column z does not exist in the table slabel
 SELECT spock.delta_apply('slabel', 'x'); -- repeating call do nothing
+WARNING:  delta_apply setting has not been propagated to other spock nodes
  delta_apply 
 -------------
  t
@@ -240,25 +242,26 @@ SELECT objname, label FROM pg_seclabels;
  slabel.x | delta_apply
 (1 row)
 
+-- Short round trip to check that subscriber has no security labels
+\c :subscriber_dsn
+SELECT objname, label FROM pg_seclabels;
+ objname | label 
+---------+-------
+(0 rows)
+
+\c :provider_dsn
 -- Label drop checks
 SELECT spock.delta_apply('slabel', 'x', true);
+WARNING:  delta_apply setting has not been propagated to other spock nodes
  delta_apply 
 -------------
  t
 (1 row)
 
 SELECT spock.delta_apply('slabel', 'y', true);
- delta_apply 
--------------
- f
-(1 row)
-
+ERROR:  type "text" can not be used in delta_apply conflict resolution
 SELECT spock.delta_apply('slabel', 'z', true);
- delta_apply 
--------------
- f
-(1 row)
-
+ERROR:  column z does not exist in the table slabel
 SELECT objname, label FROM pg_seclabels;
  objname | label 
 ---------+-------
@@ -266,6 +269,7 @@ SELECT objname, label FROM pg_seclabels;
 
 -- Dependencies
 SELECT spock.delta_apply('slabel', 'x', false);
+WARNING:  delta_apply setting has not been propagated to other spock nodes
  delta_apply 
 -------------
  t
@@ -281,6 +285,7 @@ SELECT objname, label FROM pg_seclabels;
 ALTER TABLE slabel DROP COLUMN x;
 ALTER TABLE slabel ADD COLUMN x numeric;
 SELECT spock.delta_apply('slabel', 'x', false);
+WARNING:  delta_apply setting has not been propagated to other spock nodes
  delta_apply 
 -------------
  t
