@@ -641,22 +641,13 @@ CREATE FUNCTION spock.delta_apply(
   to_drop boolean DEFAULT false
 ) RETURNS boolean AS $$
 DECLARE
-  label    text;
-  atttype  name;
-  attdata  record;
-  ctypname name;
+  label     text;
+  atttype   name;
+  attdata   record;
+  ctypname  name;
+  sqlstring text;
+  status    boolean;
 BEGIN
-  IF (to_drop = true) THEN
-    DELETE FROM pg_seclabel WHERE objoid = rel AND
-	                              classoid = 'pg_class'::regclass AND
-								  objsubid > 0 AND provider = 'spock';
-	IF NOT FOUND THEN
-      RETURN false;
-    END IF;
-
-    RETURN true;
-  END IF;
-
   --
   -- Find proper delta_apply function for the column type or ERROR
   --
@@ -681,8 +672,24 @@ BEGIN
   --
   -- Create security label on the column
   --
-  EXECUTE format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L' ,
-                 rel, att_name, 'delta_apply');
+  IF (to_drop = true) THEN
+    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS NULL;' ,
+                        rel, att_name);
+  ELSE
+  sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L;' ,
+                      rel, att_name, 'delta_apply');
+  END IF;
+
+  EXECUTE sqlstring;
+
+  /*
+   * Auto replication will propagate security label if needed. Just warn if it's
+   * not - the structure sync pg_dump call would copy security labels, isn't it?
+   */
+  SELECT pg_catalog.current_setting('spock.enable_ddl_replication') INTO status;
+  IF EXISTS (SELECT 1 FROM spock.local_node) AND status = false THEN
+    raise WARNING 'delta_apply setting has not been propagated to other spock nodes';
+  END IF;
 
   RETURN true;
 END;

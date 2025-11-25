@@ -65,10 +65,29 @@ CREATE INDEX test_383_y_idx ON test_383 (a);
 CLUSTER test_383 USING test_383_y_idx; -- Should not be replicated
 DROP TABLE test_383 CASCADE;
 
+\c :provider_dsn
+\set VERBOSITY terse
+-- Check propagation of security labels
+CREATE TABLE slabel1 (x integer, y text PRIMARY KEY);
+
+SELECT spock.delta_apply('slabel1', 'x');
+SELECT spock.delta_apply('slabel1', 'y'); -- ERROR
+SELECT spock.delta_apply('slabel1', 'z'); -- ERROR
+SELECT spock.delta_apply('slabel1', 'x'); -- repeating call do nothing
+SELECT objname, label FROM pg_seclabels;
+
+-- Short round trip to check that subscriber has the security label
 \c :subscriber_dsn
+SELECT objname, label FROM pg_seclabels;
+\c :provider_dsn
+
+SELECT spock.delta_apply('slabel1', 'x', true);
+-- Short round trip to check that subscriber has removed the security label too
+\c :subscriber_dsn
+SELECT objname, label FROM pg_seclabels;
+\c :provider_dsn
 
 -- Reset the configuration to the default value
-\c :provider_dsn
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';
 ALTER SYSTEM SET spock.include_ddl_repset = 'off';
 ALTER SYSTEM SET spock.allow_ddl_from_functions = 'off';
