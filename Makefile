@@ -23,9 +23,6 @@ PG_CPPFLAGS += -I$(libpq_srcdir) \
 			   -I$(realpath src/compat/$(PGVER)) \
 			   -Werror=implicit-function-declaration
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
-ifdef NO_LOG_OLD_VALUE
-PG_CPPFLAGS += -DNO_LOG_OLD_VALUE
-endif
 
 REGRESS := __placeholder__
 EXTRA_CLEAN += $(control_path) spock_compat.bc
