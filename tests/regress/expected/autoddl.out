@@ -107,6 +107,7 @@ CREATE TABLE slabel1 (x integer, y text PRIMARY KEY);
 INFO:  DDL statement replicated.
 SELECT spock.delta_apply('slabel1', 'x');
 INFO:  DDL statement replicated.
+INFO:  DDL statement replicated.
  delta_apply 
 -------------
  t
@@ -118,27 +119,29 @@ SELECT spock.delta_apply('slabel1', 'z'); -- ERROR
 ERROR:  column z does not exist in the table slabel1
 SELECT spock.delta_apply('slabel1', 'x'); -- repeating call do nothing
 INFO:  DDL statement replicated.
+INFO:  DDL statement replicated.
  delta_apply 
 -------------
  t
 (1 row)
 
 SELECT objname, label FROM pg_seclabels;
-  objname  |    label    
------------+-------------
- slabel1.x | delta_apply
+  objname  |       label       
+-----------+-------------------
+ slabel1.x | spock.delta_apply
 (1 row)
 
 -- Short round trip to check that subscriber has the security label
 \c :subscriber_dsn
 SELECT objname, label FROM pg_seclabels;
-  objname  |    label    
------------+-------------
- slabel1.x | delta_apply
+  objname  |       label       
+-----------+-------------------
+ slabel1.x | spock.delta_apply
 (1 row)
 
 \c :provider_dsn
 SELECT spock.delta_apply('slabel1', 'x', true);
+INFO:  DDL statement replicated.
 INFO:  DDL statement replicated.
  delta_apply 
 -------------
