@@ -16,7 +16,7 @@
 
 #include "catalog/namespace.h"
 #include "catalog/pg_trigger.h"
-
+#include "commands/seclabel.h"
 #include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -57,11 +57,14 @@ relcache_free_entry(SpockRelation *entry)
 		pfree(entry->attmap);
 	if (entry->delta_apply_functions)
 		pfree(entry->delta_apply_functions);
+	if (entry->delta_functions)
+		pfree(entry->delta_functions);
 
 	entry->natts = 0;
 	entry->reloid = InvalidOid;
 	entry->rel = NULL;
 	entry->has_delta_columns = false;
+	entry->has_delta_apply = false;
 }
 
 
@@ -99,7 +102,10 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		desc = RelationGetDescr(entry->rel);
 		for (i = 0; i < entry->natts; i++)
 		{
-			AttributeOpts *aopt;
+			AttributeOpts	   *aopt;
+			Form_pg_attribute	att;
+			ObjectAddress		object;
+			char			   *seclabel;
 
 			entry->attmap[i] = tupdesc_get_att_by_name(desc, entry->attnames[i]);
 
@@ -107,15 +113,15 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			 * If we find attribute options for this column and the
 			 * delta_apply_function is set, lookup the oid for it.
 			 */
+			att = TupleDescAttr(desc, entry->attmap[i]);
 			aopt = get_attribute_options(entry->rel->rd_id,
 										 entry->attmap[i] + 1);
 			if (aopt != NULL && aopt->delta_apply_function != 0)
 			{
-				char	   *fname;
-				Form_pg_attribute att;
-				Oid			dfunc;
+				char			   *fname;
+				Form_pg_attribute	att;
+				Oid					dfunc;
 
-				att = TupleDescAttr(desc, entry->attmap[i]);
 				fname = pstrdup(GET_STRING_RELOPTION(aopt,
 													 delta_apply_function));
 				dfunc = spock_lookup_delta_function(fname, att->atttypid);
@@ -132,12 +138,53 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 				entry->has_delta_columns = true;
 				entry->delta_apply_functions[entry->attmap[i]] = dfunc;
 			}
+
+			if (entry->rel->rd_rel->relreplident != REPLICA_IDENTITY_FULL)
+				continue;
+
+			/*
+			 * Read security labels for each attname. For each such an attribute
+			 * choose corresponding delta function.
+			 *
+			 * XXX: What about non-existing columns on remote side?
+			 */
+			object.classId = RelationRelationId;
+			object.objectId = RelationGetRelid(entry->rel);
+			object.objectSubId = entry->attmap[i] + 1;
+			seclabel = GetSecurityLabel(&object, spock_SECLABEL_PROVIDER);
+			if (seclabel != NULL)
+			{
+				entry->has_delta_apply = true;
+				entry->delta_functions[entry->attmap[i]] =
+						spock_lookup_delta_function(seclabel, att->atttypid);
+				Assert(entry->delta_functions[entry->attmap[i]] != InvalidOid);
+			}
+			else
+			{
+				/* Main case */
+				entry->delta_functions[entry->attmap[i]] = InvalidOid;
+			}
 		}
 
 		relinfo = makeNode(ResultRelInfo);
 		InitResultRelInfo(relinfo, entry->rel, 1, NULL, 0);
 		entry->reloid = RelationGetRelid(entry->rel);
-		entry->idxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
+		if (entry->has_delta_apply)
+		{
+			/*
+			 * It looks like a hack — which, in fact, it is.
+			 * We assume that delta_apply may be used for the DEFAULT identity
+			 * only and will be immediately removed after altering the table.
+			 * Also, if an ERROR happens here we will stay with an inconsistent
+			 * value of the relreplident field. But it is just a cache ...
+			 */
+			relinfo->ri_RelationDesc->rd_rel->relreplident = REPLICA_IDENTITY_DEFAULT;
+			entry->idxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
+			Assert(entry->idxoid != InvalidOid);
+			relinfo->ri_RelationDesc->rd_rel->relreplident = REPLICA_IDENTITY_FULL;
+		}
+		else
+			entry->idxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
 
 		/* Cache trigger info. */
 		entry->hasTriggers = false;
@@ -209,6 +256,8 @@ spock_relation_cache_update(uint32 remoteid, char *schemaname,
 	entry->attmap = palloc(natts * sizeof(int));
 	entry->has_delta_columns = false;
 	entry->delta_apply_functions = palloc0(natts * sizeof(Oid));
+	entry->has_delta_apply = false;
+	entry->delta_functions = (Oid *) palloc0(entry->natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
 
 	/* XXX Should we validate the relation against local schema here? */
@@ -247,6 +296,8 @@ spock_relation_cache_updater(SpockRemoteRel *remoterel)
 	entry->attmap = palloc(remoterel->natts * sizeof(int));
 	entry->has_delta_columns = false;
 	entry->delta_apply_functions = palloc0(remoterel->natts * sizeof(Oid));
+	entry->has_delta_apply = false;
+	entry->delta_functions = (Oid *) palloc0(entry->natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
 
 	/* XXX Should we validate the relation against local schema here? */

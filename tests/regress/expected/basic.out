@@ -218,6 +218,9 @@ DROP FUNCTION call_fn;
 --
 -- A label creation checks
 CREATE TABLE slabel (x integer, y text PRIMARY KEY);
+CREATE TABLE slabel_ri (x integer NOT NULL, y text);
+CREATE UNIQUE INDEX slabel_ri_idx ON slabel_ri(x);
+ALTER TABLE slabel_ri REPLICA IDENTITY USING INDEX slabel_ri_idx;
 SELECT spock.delta_apply('slabel', 'x');
 WARNING:  delta_apply setting has not been propagated to other spock nodes
  delta_apply 
@@ -236,12 +239,15 @@ WARNING:  delta_apply setting has not been propagated to other spock nodes
  t
 (1 row)
 
+SELECT spock.delta_apply('slabel_ri', 'x'); -- ERROR
+ERROR:  spock can apply delta_apply feature to the DEFAULT replica identity type only. This table holds "i" idenity
 SELECT objname, label FROM pg_seclabels;
- objname  |    label    
-----------+-------------
- slabel.x | delta_apply
+ objname  |       label       
+----------+-------------------
+ slabel.x | spock.delta_apply
 (1 row)
 
+DROP TABLE slabel_ri CASCADE;
 -- Short round trip to check that subscriber has no security labels
 \c :subscriber_dsn
 SELECT objname, label FROM pg_seclabels;
@@ -276,7 +282,7 @@ WARNING:  delta_apply setting has not been propagated to other spock nodes
 (1 row)
 
 ALTER TABLE slabel ALTER COLUMN x TYPE text; -- just warn
-WARNING:  the alter column statement removes spock security label 'delta_apply' on this column
+WARNING:  the alter column statement removes spock security label 'spock.delta_apply' on this column
 SELECT objname, label FROM pg_seclabels;
  objname | label 
 ---------+-------

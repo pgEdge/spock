@@ -561,19 +561,33 @@ CREATE FUNCTION spock.terminate_active_transactions() RETURNS bool
 -- Generic delta apply functions for all numeric data types
 -- ----
 CREATE FUNCTION spock.delta_apply(int2, int2, int2)
-RETURNS int2 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int2';
+RETURNS int2
+AS 'MODULE_PATHNAME', 'delta_apply_int2'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(int4, int4, int4)
-RETURNS int4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int4';
+RETURNS int4
+AS 'MODULE_PATHNAME', 'delta_apply_int4'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(int8, int8, int8)
-RETURNS int8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int8';
+RETURNS int8
+AS 'MODULE_PATHNAME', 'delta_apply_int8'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(float4, float4, float4)
-RETURNS float4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float4';
+RETURNS float4
+AS 'MODULE_PATHNAME', 'delta_apply_float4'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(float8, float8, float8)
-RETURNS float8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float8';
+RETURNS float8
+AS 'MODULE_PATHNAME', 'delta_apply_float8'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(numeric, numeric, numeric)
-RETURNS numeric LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_numeric';
+RETURNS numeric
+AS 'MODULE_PATHNAME', 'delta_apply_numeric'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(money, money, money)
-RETURNS money LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_money';
+RETURNS money
+AS 'MODULE_PATHNAME', 'delta_apply_money'
+LANGUAGE C;
 
 -- ----
 -- Function to control REPAIR mode
@@ -644,13 +658,31 @@ DECLARE
   label     text;
   atttype   name;
   attdata   record;
-  ctypname  name;
   sqlstring text;
   status    boolean;
+  relreplident char (1);
+  ctypname  name;
 BEGIN
-  --
-  -- Find proper delta_apply function for the column type or ERROR
-  --
+
+  /*
+   * regclass input type guarantees we see this table, no 'not found' check
+   * is needed.
+   */
+  SELECT c.relreplident FROM pg_class c WHERE oid = rel INTO relreplident;
+  /*
+   * Allow only DEFAULT type of replica identity. FULL type means we have
+   * already requested delta_apply feature on this table.
+   * Avoid INDEX type because indexes may have different names on the nodes and
+   * it would be better to stay paranoid than afraid of consequences.
+   */
+  IF (relreplident <> 'd' AND relreplident <> 'f')
+  THEN
+    RAISE EXCEPTION 'spock can apply delta_apply feature to the DEFAULT replica identity type only. This table holds "%" idenity', relreplident;
+  END IF;
+
+  /*
+   * Find proper delta_apply function for the column type or ERROR
+   */
 
   SELECT t.typname,t.typinput,t.typoutput
   FROM pg_catalog.pg_attribute a, pg_type t
@@ -676,8 +708,8 @@ BEGIN
     sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS NULL;' ,
                         rel, att_name);
   ELSE
-  sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L;' ,
-                      rel, att_name, 'delta_apply');
+    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L;' ,
+                        rel, att_name, 'spock.delta_apply');
   END IF;
 
   EXECUTE sqlstring;
@@ -689,6 +721,24 @@ BEGIN
   SELECT pg_catalog.current_setting('spock.enable_ddl_replication') INTO status;
   IF EXISTS (SELECT 1 FROM spock.local_node) AND status = false THEN
     raise WARNING 'delta_apply setting has not been propagated to other spock nodes';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_seclabel
+			 WHERE objoid = rel AND classoid = 'pg_class'::regclass AND
+			       provider = 'spock') THEN
+    /*
+     * Call it each time to trigger relcache invalidation callback that causes
+     * refresh of the SpockRelation entry and guarantees actual state of the
+     * delta_apply columns.
+     */
+    EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', rel);
+  ELSIF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+			 WHERE c.oid = rel AND c.relreplident = 'f') THEN
+    /*
+	 * Have removed he last security label. Revert this spock hack change,
+	 * if needed.
+	 */
+	EXECUTE format('ALTER TABLE %I REPLICA IDENTITY DEFAULT', rel);
   END IF;
 
   RETURN true;
