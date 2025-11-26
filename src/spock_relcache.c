@@ -55,15 +55,12 @@ relcache_free_entry(SpockRelation *entry)
 
 	if (entry->attmap)
 		pfree(entry->attmap);
-	if (entry->delta_apply_functions)
-		pfree(entry->delta_apply_functions);
 	if (entry->delta_functions)
 		pfree(entry->delta_functions);
 
 	entry->natts = 0;
 	entry->reloid = InvalidOid;
 	entry->rel = NULL;
-	entry->has_delta_columns = false;
 	entry->has_delta_apply = false;
 }
 
@@ -99,45 +96,17 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		if (unlikely(entry->rel == NULL))
 			return NULL;
 
-		desc = RelationGetDescr(entry->rel);
+
 		for (i = 0; i < entry->natts; i++)
 		{
 			AttributeOpts	   *aopt;
 			Form_pg_attribute	att;
 			ObjectAddress		object;
 			char			   *seclabel;
+			TupleDesc			desc;
 
+			desc = RelationGetDescr(entry->rel);
 			entry->attmap[i] = tupdesc_get_att_by_name(desc, entry->attnames[i]);
-
-			/*
-			 * If we find attribute options for this column and the
-			 * delta_apply_function is set, lookup the oid for it.
-			 */
-			att = TupleDescAttr(desc, entry->attmap[i]);
-			aopt = get_attribute_options(entry->rel->rd_id,
-										 entry->attmap[i] + 1);
-			if (aopt != NULL && aopt->delta_apply_function != 0)
-			{
-				char			   *fname;
-				Form_pg_attribute	att;
-				Oid					dfunc;
-
-				fname = pstrdup(GET_STRING_RELOPTION(aopt,
-													 delta_apply_function));
-				dfunc = spock_lookup_delta_function(fname, att->atttypid);
-				pfree(fname);
-
-				if (dfunc == InvalidOid)
-					elog(ERROR, "SPOCK: column %s.%s.%s is configured for "
-						 "delta_apply_function %s - function not found",
-						 entry->nspname, entry->relname,
-						 entry->attnames[i],
-						 GET_STRING_RELOPTION(aopt, delta_apply_function));
-
-
-				entry->has_delta_columns = true;
-				entry->delta_apply_functions[entry->attmap[i]] = dfunc;
-			}
 
 			if (entry->rel->rd_rel->relreplident != REPLICA_IDENTITY_FULL)
 				continue;
@@ -148,16 +117,27 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			 *
 			 * XXX: What about non-existing columns on remote side?
 			 */
-			object.classId = RelationRelationId;
-			object.objectId = RelationGetRelid(entry->rel);
-			object.objectSubId = entry->attmap[i] + 1;
+			ObjectAddressSubSet(object, RelationRelationId,
+								RelationGetRelid(entry->rel),
+								entry->attmap[i] + 1);
 			seclabel = GetSecurityLabel(&object, spock_SECLABEL_PROVIDER);
 			if (seclabel != NULL)
 			{
-				entry->has_delta_apply = true;
-				entry->delta_functions[entry->attmap[i]] =
-						spock_lookup_delta_function(seclabel, att->atttypid);
+				Form_pg_attribute	att;
+				Oid					dfunc;
+
+				att = TupleDescAttr(desc, entry->attmap[i]);
+				dfunc = spock_lookup_delta_function(seclabel, att->atttypid);
+
+				if (dfunc == InvalidOid)
+					elog(ERROR, "SPOCK: column %s.%s.%s is configured for "
+						 "delta_apply function %s - function not found",
+						 entry->nspname, entry->relname,
+						 entry->attnames[i], seclabel);
+
+				entry->delta_functions[entry->attmap[i]] = dfunc;
 				Assert(entry->delta_functions[entry->attmap[i]] != InvalidOid);
+				entry->has_delta_apply = true;
 			}
 			else
 			{
@@ -254,8 +234,6 @@ spock_relation_cache_update(uint32 remoteid, char *schemaname,
 		entry->attrtypmods[i] = attrtypmods[i];
 	}
 	entry->attmap = palloc(natts * sizeof(int));
-	entry->has_delta_columns = false;
-	entry->delta_apply_functions = palloc0(natts * sizeof(Oid));
 	entry->has_delta_apply = false;
 	entry->delta_functions = (Oid *) palloc0(entry->natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
@@ -294,8 +272,6 @@ spock_relation_cache_updater(SpockRemoteRel *remoterel)
 	for (i = 0; i < remoterel->natts; i++)
 		entry->attnames[i] = pstrdup(remoterel->attnames[i]);
 	entry->attmap = palloc(remoterel->natts * sizeof(int));
-	entry->has_delta_columns = false;
-	entry->delta_apply_functions = palloc0(remoterel->natts * sizeof(Oid));
 	entry->has_delta_apply = false;
 	entry->delta_functions = (Oid *) palloc0(entry->natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
