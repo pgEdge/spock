@@ -897,7 +897,6 @@ spock_shmem_init_internal(int nworkers)
 		{
 			/* First time - initialize the structure */
 			SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
-			SpockCtx->lag_lock = &((GetNamedLWLockTranche("spock")[1]).lock);
 			SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
 			SpockCtx->supervisor = NULL;
 			SpockCtx->subscriptions_changed = false;
