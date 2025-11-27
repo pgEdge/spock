@@ -15,4 +15,18 @@ test: 004_non_default_repset
 test: 008_rmgr
 test: 009_zodan_add_remove_nodes
 test: 010_zodan_add_remove_python
-test: 011_zodan_sync_third
+
+# Tests, consuming too much time to be launched on each check:
+#test: 011_zodan_sync_third
+#
+# Use GitHub Actions to launch them (see workflows/zodan_sync.yml for an example
+# Also, it may be run locally by a bash script like the following:
+#
+# for i in {1..1000}; do
+#    env PROVE_TESTS="t/011_zodan_sync_third.pl" make check_prove 1>out.txt 2>err.txt
+#    status=$?
+#    if [ $status -ne 0 ]; then
+#        echo "make check failed with status $status on iteration $i"
+#        break
+#    fi
+# done
