@@ -1,0 +1,76 @@
+# Keep its logic in sync with spockbench.yml!
+
+name: Z0DAN Sync long-lasting test
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 22 * * 6'  # Saturday, 22:00 (UTC)
+
+permissions:
+  contents: read
+
+jobs:
+  pull-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        pgver: [15, 16, 17, 18]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Add permissions
+        run: |
+          sudo chmod -R a+w ${GITHUB_WORKSPACE}
+
+      - name: Set up Docker
+        # Codacy wants us to use full commit SHA. This is for v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      - name: Set up docker compose
+        # Codacy wants us to use full commit SHA. This is for v1
+        uses: docker/setup-compose-action@364cc21a5de5b1ee4a7f5f9d3fa374ce0ccde746 # v1
+        with:
+          version: latest
+
+      - name: Build docker container
+        run: |
+          cd ${GITHUB_WORKSPACE}/
+          ls -la
+          ls -la sql
+          ls -la tests/
+          ls -la tests/tap
+          ls -la tests/tap/t
+          cat tests/tap/t/011_zodan_sync_third.pl
+          docker build \
+            --build-arg PGVER=${{ matrix.pgver }} \
+            -t spock -f tests/docker/Dockerfile-step-1.el9 .
+
+      - name: Run picked TAP tests
+        run: |
+          TAP_CT_NAME="spock-tap-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "TAP_CT_NAME=$TAP_CT_NAME" >> "$GITHUB_ENV"
+          docker run --name "$TAP_CT_NAME" -e PGVER=${{ matrix.pgver }} spock /home/pgedge/run-spock-tap.sh "t/011_zodan_sync_third.pl" 10
+        timeout-minutes: 1440
+
+      - name: Collect TAP artifacts (from container)
+        if: ${{ always() }}
+        run: |
+          docker cp "$TAP_CT_NAME":/home/pgedge/spock/ "$GITHUB_WORKSPACE/results" || true
+          docker rm -f "$TAP_CT_NAME" || true
+
+      - name: Upload TAP artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tap-${{ matrix.pgver }}
+          path: |
+            ${{ github.workspace }}/results
+          if-no-files-found: ignore
+          retention-days: 7
