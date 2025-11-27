@@ -87,9 +87,6 @@ typedef struct SpockContext {
 	/* Write lock for the entire context. */
 	LWLock	   *lock;
 
-	/* Access lock for Lag Tracking Hash. */
-	LWLock	   *lag_lock;
-
 	/* Supervisor process. */
 	PGPROC	   *supervisor;
 

@@ -842,7 +842,6 @@ spock_worker_shmem_startup(void)
 	if (!found)
 	{
 		SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
-		SpockCtx->lag_lock = &((GetNamedLWLockTranche("spock")[1]).lock);
 		SpockCtx->supervisor = NULL;
 		SpockCtx->subscriptions_changed = false;
 		SpockCtx->total_workers = nworkers;
