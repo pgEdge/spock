@@ -52,15 +52,6 @@ typedef enum SpockConflictType
 	CONFLICT_DELETE_DELETE
 } SpockConflictType;
 
-extern bool spock_tuple_find_replidx(ResultRelInfo *relinfo,
-										 SpockTupleData *tuple,
-										 TupleTableSlot *oldslot,
-										 Oid *idxrelid);
-
-extern Oid spock_tuple_find_conflict(ResultRelInfo *relinfo,
-										 SpockTupleData *tuple,
-										 TupleTableSlot *oldslot);
-
 extern bool get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple,
 							 ItemPointer tid, TransactionId *xmin,
 							 RepOriginId *local_origin, TimestampTz *local_ts);
