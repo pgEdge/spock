@@ -48,6 +48,7 @@
 #include "replication/slot.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
+#include "storage/proc.h"
 #include "storage/shmem.h"
 #include "utils/builtins.h"
 #include "utils/elog.h"
@@ -114,10 +115,9 @@ spock_recovery_shmem_startup(void)
 	Size		size;
 
 	/* No hook chaining needed - called directly from spock_worker_shmem_startup() */
+	/* Note: AddinShmemInitLock is already held by caller (spock_worker_shmem_startup) */
 
 	size = spock_recovery_shmem_size();
-
-	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
 	/* Create or attach to recovery coordinator in shared memory */
 	SpockRecoveryCtx = ShmemInitStruct("spock_recovery_coordinator",
@@ -141,7 +141,7 @@ spock_recovery_shmem_startup(void)
 		pg_atomic_init_u32(&slot->recovery_generation, 0);
 	}
 
-	LWLockRelease(AddinShmemInitLock);
+	/* Note: AddinShmemInitLock is released by caller (spock_worker_shmem_startup) */
 }
 
 /*
@@ -408,16 +408,34 @@ create_recovery_slot(const char *database_name)
 	 *
 	 * If the slot already exists at PostgreSQL level (e.g., after restart),
 	 * we just mark it as active in shared memory and continue.
+	 *
+	 * IMPORTANT: ReplicationSlotCreate may need to wait (for locks, etc.),
+	 * which requires MyProc to be fully initialized. This should only be
+	 * called from a fully initialized backend process (e.g., background worker).
+	 * Check if we're in a context where we can wait by verifying MyProc exists.
 	 */
+	if (!IsUnderPostmaster || MyProc == NULL)
+	{
+		elog(ERROR, "cannot create recovery slot: not in a fully initialized backend process");
+		pfree(slot_name);
+		return false;
+	}
+
 	PG_TRY();
 	{
+#if PG_VERSION_NUM >= 170000
 		ReplicationSlotCreate(slot_name, true, RS_PERSISTENT, false, false, false);
+#else
+		ReplicationSlotCreate(slot_name, true, RS_PERSISTENT, false);
+#endif
 	}
 	PG_CATCH();
 	{
 		ErrorData  *edata;
+		MemoryContext oldcontext;
 		
-		MemoryContextSwitchTo(ErrorContext);
+		/* Switch to TopMemoryContext to avoid ErrorContext assertion */
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 		edata = CopyErrorData();
 		FlushErrorState();
 		
@@ -438,6 +456,7 @@ create_recovery_slot(const char *database_name)
 		
 		/* For other errors, re-throw */
 		FreeErrorData(edata);
+		MemoryContextSwitchTo(oldcontext);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -603,7 +622,11 @@ advance_recovery_slot_to_min_position(void)
 		recovery_slot = SearchNamedReplicationSlot(slot_name, false);
 		if (recovery_slot)
 		{
-			ReplicationSlotAcquire(slot_name, true, false);
+#if PG_VERSION_NUM >= 180000
+			ReplicationSlotAcquire(slot_name, true, true);
+#else
+			ReplicationSlotAcquire(slot_name, true);
+#endif
 
 			SpinLockAcquire(&recovery_slot->mutex);
 			current_slot_lsn = recovery_slot->data.confirmed_flush;
@@ -800,12 +823,16 @@ query_node_recovery_progress(const char *node_dsn, const char *origin_node_name,
 	{
 		/* Clean up on error and log, but don't propagate */
 		ErrorData  *edata;
+		MemoryContext oldcontext;
 		
+		/* Switch to TopMemoryContext to avoid ErrorContext assertion */
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 		edata = CopyErrorData();
 		FlushErrorState();
 		
 		elog(DEBUG1, "Failed to query node %s: %s", node_dsn, edata->message);
 		FreeErrorData(edata);
+		MemoryContextSwitchTo(oldcontext);
 		
 		success = false;
 	}
@@ -1142,8 +1169,12 @@ spock_clone_recovery_slot_sql(PG_FUNCTION_ARGS)
 		}
 
 		/* Create the cloned logical slot using the Spock output plugin */
+#if PG_VERSION_NUM >= 170000
 		ReplicationSlotCreate(cloned_slot_name, true, RS_PERSISTENT,
 							  false, true, false);
+#else
+		ReplicationSlotCreate(cloned_slot_name, true, RS_PERSISTENT, false);
+#endif
 		cloned_slot = MyReplicationSlot;
 		if (cloned_slot == NULL)
 		{
@@ -1173,7 +1204,10 @@ cleanup_clone:
 	PG_CATCH();
 	{
 		ErrorData  *edata;
+		MemoryContext oldcontext;
 
+		/* Switch to TopMemoryContext to avoid ErrorContext assertion */
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 		edata = CopyErrorData();
 		FlushErrorState();
 
@@ -1183,6 +1217,7 @@ cleanup_clone:
 
 		if (edata)
 			FreeErrorData(edata);
+		MemoryContextSwitchTo(oldcontext);
 	}
 	PG_END_TRY();
 
@@ -1336,12 +1371,14 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
 	memset(&sub, 0, sizeof(SpockSubscription));
 	sub.id = InvalidOid;
 	sub.name = sub_name;
+	sub.origin = origin;  /* Set origin node pointer */
 	sub.origin_if = originif;
 
 	targetif.id = localnode->node_if->id;
 	targetif.name = localnode->node_if->name;
 	targetif.nodeid = localnode->node->id;
 	targetif.dsn = localnode->node_if->dsn;
+	sub.target = localnode->node;  /* Set target node pointer */
 	sub.target_if = &targetif;
 
 	sub.enabled = true;
@@ -1378,8 +1415,9 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
 		sub_created = true;
 		subid = sub.id;
 
-		spock_group_attach(MyDatabaseId, localnode->node->id,
-						   originif->nodeid);
+		/* Rescue subscriptions don't need hash table - they track progress via
+		 * pg_replication_origin_status instead. This avoids hash table corruption issues. */
+		/* spock_group_attach() not needed for rescue subscriptions */
 
 		memset(&sync, 0, sizeof(SpockSyncStatus));
 		sync.kind = SYNC_KIND_INIT;
@@ -1389,7 +1427,13 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		ErrorData *edata = CopyErrorData();
+		ErrorData *edata;
+		MemoryContext oldcontext;
+		
+		/* Switch to TopMemoryContext to avoid ErrorContext assertion */
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		edata = CopyErrorData();
+		FlushErrorState();
 
 		if (sub_created && OidIsValid(subid))
 		{
@@ -1405,7 +1449,8 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
 			PG_END_TRY();
 		}
 
-		FlushErrorState();
+		/* ReThrowError will handle freeing edata, so restore context first */
+		MemoryContextSwitchTo(oldcontext);
 		ReThrowError(edata);
 	}
 	PG_END_TRY();

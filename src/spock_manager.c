@@ -64,6 +64,7 @@ spock_suspend_all_peer_subs_for_rescue(Oid node_id, Oid failed_node_id)
 
 /*
  * Resume all subs previously suspended for rescue.
+ * Also enables regular subscriptions that were disabled (not rescue-suspended).
  */
 void
 spock_resume_all_peer_subs_post_rescue(Oid node_id)
@@ -73,7 +74,24 @@ spock_resume_all_peer_subs_post_rescue(Oid node_id)
 	foreach (lc, subs)
 	{
 		SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
+		
+		/* Resume rescue-suspended subscriptions */
 		spock_resume_subscription_post_rescue(sub);
+		
+		/* Also enable regular subscriptions that were disabled (not rescue-suspended) */
+		if (!sub->rescue_temporary && !sub->enabled && !sub->rescue_suspended)
+		{
+			/* Reload to get current state */
+			sub = get_subscription(sub->id);
+			if (sub && !sub->enabled && !sub->rescue_suspended)
+			{
+				sub->enabled = true;
+				alter_subscription(sub);
+				elog(LOG,
+					 "SPOCK: Enabled subscription '%s' after recovery (id %u)",
+					 sub->name, sub->id);
+			}
+		}
 	}
 	list_free_deep(subs);
 }
@@ -325,9 +343,22 @@ spock_manager_main(Datum main_arg)
 	 * shared slot for all subscriptions.
 	 *
 	 * Only create if recovery slots are enabled via GUC.
+	 *
+	 * IMPORTANT: Defer slot creation until after we've completed initial
+	 * transaction setup to ensure MyProc and transaction state are fully
+	 * initialized. ReplicationSlotCreate may need to wait, which requires
+	 * a fully initialized PGPROC structure.
 	 */
 	if (spock_enable_recovery_slots)
 	{
+		/* Ensure transaction system is ready before creating slots */
+		/* Start a transaction to ensure we're in a proper state */
+		StartTransactionCommand();
+		
+		/* Commit to ensure transaction state is fully initialized */
+		CommitTransactionCommand();
+		
+		/* Now start a fresh transaction for slot creation */
 		StartTransactionCommand();
 		PG_TRY();
 		{
@@ -341,8 +372,29 @@ spock_manager_main(Datum main_arg)
 		}
 		PG_CATCH();
 		{
-			elog(ERROR, "failed to create recovery slot for database %s",
-				 get_database_name(MyDatabaseId));
+			ErrorData *edata;
+			MemoryContext oldcontext;
+			
+			/* Switch to TopMemoryContext to avoid ErrorContext assertion */
+			oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+			
+			/* Copy error data while we're in a safe context */
+			edata = CopyErrorData();
+			
+			/* Flush the error state */
+			FlushErrorState();
+			
+			/* Now we can safely log the error */
+			elog(WARNING, "failed to create recovery slot for database %s: %s",
+				 get_database_name(MyDatabaseId),
+				 edata ? edata->message : "unknown error");
+			
+			/* Free the error data */
+			if (edata)
+				FreeErrorData(edata);
+			
+			/* Restore previous memory context */
+			MemoryContextSwitchTo(oldcontext);
 		}
 		PG_END_TRY();
 		CommitTransactionCommand();
