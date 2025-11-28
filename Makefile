@@ -24,6 +24,11 @@ PG_CPPFLAGS += -I$(libpq_srcdir) \
 			   -I$(realpath src/compat/$(PGVER)) \
 			   -Werror=implicit-function-declaration
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
+# Link against gcov if coverage is enabled (check for various coverage flags)
+# Check CFLAGS for coverage-related flags
+ifneq ($(filter --coverage -fprofile-arcs -ftest-coverage,$(CFLAGS)),)
+SHLIB_LINK += -lgcov
+endif
 ifdef NO_LOG_OLD_VALUE
 PG_CPPFLAGS += -DNO_LOG_OLD_VALUE
 endif
