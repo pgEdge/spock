@@ -137,7 +137,13 @@ bool	check_all_uc_indexes = false;
 bool	spock_enable_recovery_slots = true;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
+#if HAVE_CHECKPOINT_HOOK
 static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
+#else
+/* Define type when hook not available */
+typedef void (*Checkpoint_hook_type)(XLogRecPtr checkPointRedo, int flags);
+static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
+#endif
 
 void _PG_init(void);
 PGDLLEXPORT void spock_supervisor_main(Datum main_arg);
@@ -1149,8 +1155,12 @@ _PG_init(void)
 	if (IsBinaryUpgrade)
 		return;
 
+#if HAVE_CHECKPOINT_HOOK
 	prev_Checkpoint_hook = Checkpoint_hook;
 	Checkpoint_hook = spock_checkpoint_hook;
+#else
+	/* Checkpoint_hook not available in this PostgreSQL version */
+#endif
 
 	/* Spock resource manager */
 	spock_rmgr_init();
