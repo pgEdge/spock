@@ -1,6 +1,7 @@
 # Keep its logic in sync with spockbench.yml!
 
 name: Z0DAN Sync long-lasting test
+run-name: Add new node into highly loaded multi-master configuration
 on:
   workflow_dispatch:
   schedule:
