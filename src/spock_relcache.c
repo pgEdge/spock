@@ -105,7 +105,15 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			/*
 			 * If we find attribute options for this column and the
 			 * delta_apply_function is set, lookup the oid for it.
+			 * Note: delta_apply_function requires the pg18-015-attoptions patch
+			 * to be applied to PostgreSQL. If the patch is not applied, this
+			 * feature is disabled.
 			 */
+			/* delta_apply_function support requires PostgreSQL patch */
+			/* Disabled if patch not applied - check for member existence would fail at compile time */
+			/* To enable: apply patches/18/pg18-015-attoptions.diff to PostgreSQL source */
+#if 0
+			/* This code requires the pg18-015-attoptions patch */
 			aopt = get_attribute_options(entry->rel->rd_id,
 										 entry->attmap[i] + 1);
 			if (aopt != NULL && aopt->delta_apply_function != 0)
@@ -127,10 +135,11 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 						 entry->attnames[i],
 						 GET_STRING_RELOPTION(aopt, delta_apply_function));
 
-
 				entry->has_delta_columns = true;
 				entry->delta_apply_functions[entry->attmap[i]] = dfunc;
 			}
+#endif
+			(void) aopt; /* Suppress unused variable warning when feature disabled */
 		}
 
 		relinfo = makeNode(ResultRelInfo);
