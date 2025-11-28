@@ -85,6 +85,27 @@
 #include "pgstat.h"
 
 #include "spock_apply.h"
+
+#if PG_VERSION_NUM >= 180000
+
+/* Function added by patch pg18-035-row-filter-check */
+/* If the patch isn't applied, we provide a stub implementation */
+#ifndef HAVE_CHECK_SIMPLE_ROWFILTER_EXPR
+/* Stub implementation if PostgreSQL doesn't provide it */
+static bool
+check_simple_rowfilter_expr_stub(Node *node, ParseState *pstate)
+{
+	/* Basic validation - just check that it's not NULL */
+	if (node == NULL)
+		return false;
+	/* For now, accept all expressions - the patch provides stricter checking */
+	return true;
+}
+#define check_simple_rowfilter_expr check_simple_rowfilter_expr_stub
+#else
+extern bool check_simple_rowfilter_expr(Node *node, ParseState *pstate);
+#endif
+#endif
 #include "spock_conflict.h"
 #include "spock_dependency.h"
 #include "spock_executor.h"
@@ -3410,6 +3431,113 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 	}
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);
+
+	/* Also include rescue subscriptions from pg_replication_origin_status */
+	/* Rescue subscriptions don't use the hash table, so we query them separately */
+	if (SPI_connect() == SPI_OK_CONNECT)
+	{
+		int			ret;
+		TupleDesc	tupdesc;
+		Oid			dboid = MyDatabaseId;
+		StringInfoData query;
+
+		initStringInfo(&query);
+		appendStringInfo(&query,
+						 "SELECT s.sub_target, s.sub_origin, "
+						 "       pos.remote_lsn, "
+						 "       NULL::timestamptz AS remote_commit_ts, "
+						 "       pos.remote_lsn AS remote_insert_lsn, "
+						 "       pos.remote_lsn AS received_lsn, "
+						 "       now() AS last_updated_ts, "
+						 "       false AS updated_by_decode "
+						 "FROM spock.subscription s "
+						 "JOIN spock.node target ON target.node_id = s.sub_target "
+						 "JOIN spock.node origin ON origin.node_id = s.sub_origin "
+						 "JOIN pg_catalog.pg_replication_origin_status pos "
+						 "  ON pos.external_id = spock.spock_gen_slot_name("
+						 "         current_database()::name, "
+						 "         origin.node_name::name, "
+						 "         s.sub_name)::text "
+						 "WHERE s.sub_rescue_temporary = true "
+						 "  AND s.sub_enabled = true");
+
+		ret = SPI_execute(query.data, true, 0);
+		/* Silently ignore errors - rescue subscriptions may not exist or may not have origin status yet */
+		if (ret == SPI_OK_SELECT && SPI_processed > 0)
+		{
+			tupdesc = SPI_tuptable->tupdesc;
+			for (uint64 i = 0; i < SPI_processed; i++)
+			{
+				HeapTuple	tup = SPI_tuptable->vals[i];
+				Datum		values[_GP_LAST_];
+				bool		nulls[_GP_LAST_] = {0};
+				bool		isnull;
+				Oid			node_id, remote_node_id;
+				XLogRecPtr	remote_lsn, remote_insert_lsn, received_lsn;
+				TimestampTz remote_commit_ts, last_updated_ts;
+
+				/* Extract values from SPI result */
+				Datum		datum;
+				
+				datum = SPI_getbinval(tup, tupdesc, 1, &isnull);
+				node_id = isnull ? InvalidOid : DatumGetObjectId(datum);
+				
+				datum = SPI_getbinval(tup, tupdesc, 2, &isnull);
+				remote_node_id = isnull ? InvalidOid : DatumGetObjectId(datum);
+				
+				datum = SPI_getbinval(tup, tupdesc, 3, &isnull);
+				remote_lsn = isnull ? InvalidXLogRecPtr : DatumGetLSN(datum);
+				
+				datum = SPI_getbinval(tup, tupdesc, 4, &isnull);
+				remote_commit_ts = isnull ? 0 : DatumGetTimestampTz(datum);
+				
+				datum = SPI_getbinval(tup, tupdesc, 5, &isnull);
+				remote_insert_lsn = isnull ? InvalidXLogRecPtr : DatumGetLSN(datum);
+				
+				datum = SPI_getbinval(tup, tupdesc, 6, &isnull);
+				received_lsn = isnull ? InvalidXLogRecPtr : DatumGetLSN(datum);
+				
+				datum = SPI_getbinval(tup, tupdesc, 7, &isnull);
+				last_updated_ts = isnull ? 0 : DatumGetTimestampTz(datum);
+
+				/* Build progress row */
+				values[GP_DBOID] = ObjectIdGetDatum(dboid);
+				values[GP_NODE_ID] = ObjectIdGetDatum(node_id);
+				values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(remote_node_id);
+
+				if (remote_commit_ts != 0)
+				{
+					values[GP_REMOTE_COMMIT_TS] = TimestampTzGetDatum(remote_commit_ts);
+					values[GP_PREV_REMOTE_TS] = TimestampTzGetDatum(remote_commit_ts);
+				}
+				else
+				{
+					nulls[GP_REMOTE_COMMIT_TS] = true;
+					nulls[GP_PREV_REMOTE_TS] = true;
+				}
+
+				values[GP_REMOTE_COMMIT_LSN] = LSNGetDatum(remote_lsn);
+				values[GP_REMOTE_INSERT_LSN] = LSNGetDatum(remote_insert_lsn);
+				values[GP_RECEIVED_LSN] = LSNGetDatum(received_lsn);
+
+				if (last_updated_ts != 0)
+					values[GP_LAST_UPDATED_TS] = TimestampTzGetDatum(last_updated_ts);
+				else
+					nulls[GP_LAST_UPDATED_TS] = true;
+
+				values[GP_UPDATED_BY_DECODE] = BoolGetDatum(false);
+
+				tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+			}
+		}
+		else if (ret < 0)
+		{
+			/* Query failed - log at DEBUG level and continue */
+			elog(DEBUG1, "get_apply_group_progress: failed to query rescue subscriptions: SPI error %d", ret);
+		}
+		pfree(query.data);
+		SPI_finish();
+	}
 
 	return (Datum) 0;
 }

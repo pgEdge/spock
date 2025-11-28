@@ -53,8 +53,6 @@
 
 #include "utils/builtins.h"
 
-#include "utils/builtins.h"
-
 #include "utils/acl.h"
 #include "utils/fmgroids.h"
 #include "utils/jsonb.h"
@@ -80,10 +78,21 @@
 #include "spock_apply_heap.h"
 #include "spock_apply_spi.h"
 #include "spock_exception_handler.h"
-#include "spock_common.h"
 #include "spock_readonly.h"
 #include "spock.h"
 
+#if PG_VERSION_NUM >= 180000
+/* Variable added by patch pg18-025-logical_commit_clock */
+/* If the patch isn't applied, we define it ourselves */
+/* Check if it's already defined in PostgreSQL headers */
+#ifndef remoteTransactionStopTimestamp
+/* Define it ourselves if PostgreSQL doesn't provide it */
+PGDLLIMPORT TimestampTz remoteTransactionStopTimestamp = 0;
+#else
+/* Use the one from PostgreSQL */
+extern PGDLLIMPORT TimestampTz remoteTransactionStopTimestamp;
+#endif
+#endif
 
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
 
@@ -260,22 +269,35 @@ static void finish_rescue_subscription(bool failed, XLogRecPtr reached_lsn,
 void
 wait_for_previous_transaction(void)
 {
+	/* Rescue subscriptions don't use hash table coordination - skip commit order waiting */
+	if (MySubscription && MySubscription->rescue_temporary)
+		return;
+
+	/* For regular subscriptions, apply_group should already be attached during worker startup.
+	 * If it's NULL, it means the hash table isn't available (e.g., during recovery or corruption).
+	 * In that case, skip commit order waiting to avoid blocking DDL replication. */
+	if (!MyApplyWorker || !MyApplyWorker->apply_group)
+		return;
+
 	/*
 	 * Sleep on a cv to be woken up once our the required predecessor has
 	 * commited.
 	 */
 	for (;;)
 	{
+		SpockApplyProgress *progress = apply_worker_get_progress();
+		if (!progress)
+			break;
+
 		/*
 		 * If our immediate predecessor has been processed, then break
 		 * this loop and process this transaction. Otherwise, wait for
 		 * the predecessor to commit.
 		 */
-		if (apply_worker_get_progress()->prev_remote_ts == required_commit_ts ||
-			required_commit_ts == 0)
-		{
+		if (progress->prev_remote_ts == required_commit_ts ||
+			required_commit_ts == 0 ||
+			progress->prev_remote_ts == 0)
 			break;
-		}
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -292,7 +314,7 @@ wait_for_previous_transaction(void)
 		elog(DEBUG1, "SPOCK: slot-group '%s' WAIT for ts [current proccessed"
 						", required] [" INT64_FORMAT ", " INT64_FORMAT "]",
 						MySubscription->slot_name,
-						apply_worker_get_progress()->prev_remote_ts,
+						progress->prev_remote_ts,
 						required_commit_ts);
 
 		/* Latch */
@@ -307,7 +329,9 @@ wait_for_previous_transaction(void)
 void
 awake_transaction_waiters(void)
 {
-	ConditionVariableBroadcast(&MyApplyWorker->apply_group->prev_processed_cv);
+	/* Rescue subscriptions don't use hash table coordination */
+	if (MyApplyWorker->apply_group)
+		ConditionVariableBroadcast(&MyApplyWorker->apply_group->prev_processed_cv);
 }
 
 /*
@@ -877,13 +901,34 @@ handle_commit(StringInfo s)
 
 	{
 		/* build new/update entry */
-		SpockApplyProgress sap = {
+		/* For forwarded transactions, commit_lsn may be 0/0, so use end_lsn or session origin LSN */
+		XLogRecPtr effective_commit_lsn;
+		SpockApplyProgress sap;
+		TimestampTz prev_ts;
+
+		effective_commit_lsn = commit_lsn;
+		if (XLogRecPtrIsInvalid(effective_commit_lsn) || effective_commit_lsn == 0)
+		{
+			/* Use end_lsn if commit_lsn is invalid, or fall back to session origin LSN */
+			if (!XLogRecPtrIsInvalid(end_lsn) && end_lsn != 0)
+				effective_commit_lsn = end_lsn;
+			else if (!XLogRecPtrIsInvalid(replorigin_session_origin_lsn))
+				effective_commit_lsn = replorigin_session_origin_lsn;
+		}
+
+		/* In the main branch, prev_remote_ts is set to the current transaction's timestamp.
+		 * This allows the next transaction to check if the previous transaction (with this timestamp)
+		 * has been processed. The wait condition checks if prev_remote_ts == required_commit_ts,
+		 * where required_commit_ts is the previous transaction's timestamp. */
+		prev_ts = replorigin_session_origin_timestamp;
+
+		sap = (SpockApplyProgress) {
 			.key.dbid = MyDatabaseId,
 			.key.node_id = MySubscription->target->id,
 			.key.remote_node_id = MySubscription->origin->id,
 			.remote_commit_ts = commit_time,
-			.prev_remote_ts = replorigin_session_origin_timestamp,
-			.remote_commit_lsn = commit_lsn,
+			.prev_remote_ts = prev_ts,
+			.remote_commit_lsn = effective_commit_lsn,
 			/* Don't need to change remote_insert_lsn and received_lsn - it is done earlier */
 			.last_updated_ts = GetCurrentTimestamp(), /* XXX: Could we use commit_ts value instead? */
 			.updated_by_decode = true,
@@ -895,9 +940,11 @@ handle_commit(StringInfo s)
 		/* WAL after commit, then to shmem */
 		spock_apply_progress_add_to_wal(&sap);
 
-		Assert(MyApplyWorker && MyApplyWorker->apply_group);
-
-		spock_group_progress_update_ptr(MyApplyWorker->apply_group, &sap);
+		/* Rescue subscriptions don't use hash table - they track progress internally
+		 * via pg_replication_origin_status (which is what PostgreSQL uses natively).
+		 * Regular subscriptions use the hash table for progress tracking. */
+		if (MyApplyWorker && MyApplyWorker->apply_group && !MySubscription->rescue_temporary)
+			spock_group_progress_update_ptr(MyApplyWorker->apply_group, &sap);
 	}
 
 	/* Wakeup all waiters for waiting for the previous transaction to commit */
@@ -908,16 +955,19 @@ handle_commit(StringInfo s)
 	/*
 	 * Stop replay if we're doing limited replay and we've replayed up to the
 	 * last record we're supposed to process.
+	 * Use replorigin_session_origin_lsn (source LSN) for comparison, not end_lsn,
+	 * to ensure we've actually replicated all transactions up to the stop LSN.
 	 */
 	if (MyApplyWorker->replay_stop_lsn != InvalidXLogRecPtr
-		&& MyApplyWorker->replay_stop_lsn <= end_lsn)
+		&& !XLogRecPtrIsInvalid(replorigin_session_origin_lsn)
+		&& MyApplyWorker->replay_stop_lsn <= replorigin_session_origin_lsn)
 	{
 		ereport(LOG,
 				(errmsg("SPOCK %s: %s finished processing; replayed "
-						"to %X/%X of required %X/%X",
+						"to %X/%X (origin LSN) of required %X/%X",
 						MySubscription->name,
 						MySpockWorker->worker_type == SPOCK_WORKER_SYNC ? "sync" : "apply",
-						(uint32) (end_lsn >> 32), (uint32) end_lsn,
+						(uint32) (replorigin_session_origin_lsn >> 32), (uint32) replorigin_session_origin_lsn,
 						(uint32) (MyApplyWorker->replay_stop_lsn >> 32),
 						(uint32) MyApplyWorker->replay_stop_lsn)));
 		finish_rescue_subscription(false, replorigin_session_origin_lsn,
@@ -1645,7 +1695,9 @@ handle_startup(StringInfo s)
 		handle_startup_param(k, v);
 	} while (!getmsgisend(s));
 
-	Assert(MyApplyWorker->apply_group != NULL);
+	/* Rescue subscriptions don't use hash table - apply_group can be NULL for them */
+	if (!MySubscription->rescue_temporary)
+		Assert(MyApplyWorker->apply_group != NULL);
 
 	/* Register callback for cleaning up */
 	before_shmem_exit(spock_apply_worker_shmem_exit, 0);
@@ -1685,6 +1737,13 @@ spock_apply_worker_attach(void)
 	if(MyApplyWorker->apply_group != NULL)
 		return;
 
+	/* Ensure SpockCtx and apply_group_master_lock are initialized */
+	if (!SpockCtx || !SpockCtx->apply_group_master_lock)
+	{
+		elog(ERROR, "SPOCK: SpockCtx or apply_group_master_lock not initialized");
+		return;
+	}
+
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 
 		/* Set the values in shared memory for this dbid-origin */
@@ -1692,7 +1751,10 @@ spock_apply_worker_attach(void)
 					   MySubscription->target->id,
 					   MySubscription->origin->id);
 
-	Assert(MyApplyWorker->apply_group != NULL);
+	/* Rescue subscriptions don't use hash table - apply_group is NULL for them */
+	if (MyApplyWorker->apply_group == NULL && !MySubscription->rescue_temporary)
+		elog(ERROR, "SPOCK %s: apply_group is NULL and subscription is not a rescue subscription",
+			 MySubscription->name);
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
 
@@ -2549,7 +2611,10 @@ UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted)
 {
 	apply_progress.received_lsn = last_received;
 	apply_progress.remote_insert_lsn = last_inserted;
-	spock_group_progress_update_ptr(MyApplyWorker->apply_group, &apply_progress);
+	/* Rescue subscriptions don't use hash table - skip progress update for them.
+	 * They track progress via pg_replication_origin_status instead. */
+	if (MyApplyWorker->apply_group && !MySubscription->rescue_temporary)
+		spock_group_progress_update_ptr(MyApplyWorker->apply_group, &apply_progress);
 }
 
 /*
@@ -2588,14 +2653,26 @@ apply_work(PGconn *streamConn)
 	/* Initialize our static progress variable */
 	memset(&apply_progress.key, 0, sizeof(SpockGroupKey));
 	apply_progress.key.dbid = MyDatabaseId;
+	
+	/* Ensure target and origin are initialized before accessing them */
+	if (!MySubscription->target || !MySubscription->origin)
+	{
+		elog(ERROR, "SPOCK %s: subscription target or origin not initialized",
+			 MySubscription->name);
+	}
+	
 	apply_progress.key.node_id = MySubscription->target->id;
 	apply_progress.key.remote_node_id = MySubscription->origin->id;
 
 	/* mark as idle, before starting to loop */
 	pgstat_report_activity(STATE_IDLE, NULL);
 
-	if (MyApplyWorker->apply_group == NULL)
+	/* Rescue subscriptions don't use hash table - they track progress via
+	 * pg_replication_origin_status. Skip hash table attachment for rescue subscriptions. */
+	if (MyApplyWorker->apply_group == NULL && !MySubscription->rescue_temporary)
+	{
 		spock_apply_worker_attach(); /* Attach this worker. */
+	}
 
 stream_replay:
 
@@ -2669,6 +2746,38 @@ stream_replay:
 					elog(ERROR, "SPOCK %s: terminating apply due to missing "
 						 "walsender ping",
 						 MySubscription->name);
+				}
+
+				/*
+				 * For rescue subscriptions, periodically check if we've reached
+				 * the stop LSN by checking replication origin status, even when
+				 * there are no active transactions.
+				 * 
+				 * NOTE: We can only check if we have a valid session origin LSN.
+				 * replorigin_by_name() requires transaction state, so we skip
+				 * the check if session LSN is invalid (it will be checked during
+				 * the next commit when transaction state is available).
+				 */
+				if (MySubscription && MySubscription->rescue_temporary &&
+					MyApplyWorker->replay_stop_lsn != InvalidXLogRecPtr &&
+					!XLogRecPtrIsInvalid(replorigin_session_origin_lsn))
+				{
+					XLogRecPtr current_origin_lsn = replorigin_session_origin_lsn;
+
+					/* Check if we've reached or passed the stop LSN */
+					if (MyApplyWorker->replay_stop_lsn <= current_origin_lsn)
+					{
+						ereport(LOG,
+								(errmsg("SPOCK %s: rescue subscription reached stop LSN "
+										"during timeout check; replayed to %X/%X of required %X/%X",
+										MySubscription->name,
+										(uint32) (current_origin_lsn >> 32), (uint32) current_origin_lsn,
+										(uint32) (MyApplyWorker->replay_stop_lsn >> 32),
+										(uint32) MyApplyWorker->replay_stop_lsn)));
+						finish_rescue_subscription(false, current_origin_lsn,
+												   replorigin_session_origin_timestamp,
+												   applyconn, last_received);
+					}
 				}
 			}
 

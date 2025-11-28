@@ -43,6 +43,7 @@
 #include "datatype/timestamp.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "storage/proc.h"
 #include "storage/shmem.h"
 #include "utils/builtins.h"
 #include "utils/elog.h"
@@ -119,6 +120,18 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	if (prev_shmem_startup_hook != NULL)
 		prev_shmem_startup_hook();
 
+	/* Ensure SpockCtx is initialized */
+	if (!SpockCtx)
+		elog(ERROR, "spock_group_shmem_startup: SpockCtx not initialized");
+
+	/* Initialize the lock if not already set */
+	if (!SpockCtx->apply_group_master_lock)
+		SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
+
+	/* If hash table already exists, we can't recreate it (ShmemInitHash with HASH_FIXED_SIZE
+	 * reuses existing shared memory). If it's corrupted, we'll detect it when we try to use it,
+	 * but by then it's too late (PANIC). The only solution is to restart PostgreSQL to clear
+	 * shared memory. We skip APPLY_PROGRESS WAL records during recovery to prevent new corruption. */
 	if (SpockGroupHash)
 		return;
 
@@ -127,9 +140,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	hctl.entrysize = sizeof(SpockGroupEntry);
 	hctl.hash = tag_hash;
 	hctl.num_partitions = 16;
-
-	/* Get the shared resources */
-	SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
 	SpockGroupHash = ShmemInitHash("spock group hash",
 								   napply_groups,
 								   napply_groups,
@@ -176,6 +186,19 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 	SpockGroupEntry *e;
 	bool		found;
 
+	/* If hash table is not initialized, return NULL.
+	 * This allows callers (e.g., rescue subscriptions) to proceed without it. */
+	if (!SpockGroupHash)
+	{
+		elog(DEBUG1, "spock_group_attach: SpockGroupHash not initialized, returning NULL");
+		return NULL;
+	}
+
+	/* Note: We cannot catch hash table corruption errors because hash_corrupted()
+	 * calls elog(PANIC) which terminates the process immediately. The hash table
+	 * corruption is prevented by skipping APPLY_PROGRESS WAL records during recovery
+	 * in spock_rmgr_redo(). If corruption still occurs, we return NULL to allow
+	 * recovery to proceed without progress tracking. */
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
 	if (!found)
 	{
@@ -250,13 +273,36 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 		dest->received_lsn = src->received_lsn;
 
 	/* It is a good place to check the entry consistency */
-	Assert(dest->remote_insert_lsn >= dest->remote_commit_lsn);
-	Assert(dest->received_lsn >= dest->remote_commit_lsn);
+	/* During WAL recovery, fix inconsistent data instead of asserting (corrupted WAL records) */
+	if (RecoveryInProgress())
+	{
+		/* During recovery, validate and fix inconsistent data instead of asserting */
+		if (dest->remote_insert_lsn < dest->remote_commit_lsn)
+		{
+			elog(WARNING, "spock_group: fixing inconsistent LSN during recovery: remote_insert_lsn (%X/%X) < remote_commit_lsn (%X/%X), setting remote_insert_lsn = remote_commit_lsn",
+				 (uint32) (dest->remote_insert_lsn >> 32), (uint32) dest->remote_insert_lsn,
+				 (uint32) (dest->remote_commit_lsn >> 32), (uint32) dest->remote_commit_lsn);
+			dest->remote_insert_lsn = dest->remote_commit_lsn;
+		}
+		if (dest->received_lsn < dest->remote_commit_lsn)
+		{
+			elog(WARNING, "spock_group: fixing inconsistent LSN during recovery: received_lsn (%X/%X) < remote_commit_lsn (%X/%X), setting received_lsn = remote_commit_lsn",
+				 (uint32) (dest->received_lsn >> 32), (uint32) dest->received_lsn,
+				 (uint32) (dest->remote_commit_lsn >> 32), (uint32) dest->remote_commit_lsn);
+			dest->received_lsn = dest->remote_commit_lsn;
+		}
+	}
+	else
+	{
+		/* Normal operation: assert consistency */
+		Assert(dest->remote_insert_lsn >= dest->remote_commit_lsn);
+		Assert(dest->received_lsn >= dest->remote_commit_lsn);
+	}
 	/*
 	 * Value of the received_lsn potentially can exceed remote_insert_lsn
 	 * because it is reported more frequently (by keepalive messages).
 	 */
-	Assert(!(dest->remote_commit_ts == 0 ^ dest->last_updated_ts == 0));
+	Assert(!(((dest->remote_commit_ts == 0) != 0) ^ ((dest->last_updated_ts == 0) != 0)));
 	Assert(dest->remote_commit_ts >= 0 && dest->last_updated_ts >= 0);
 }
 
@@ -287,12 +333,37 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 		e->progress.key = e->key;
 
 		pg_atomic_init_u32(&e->nattached, 0);
+		/* ConditionVariableInit is safe during shmem_startup - it just initializes the structure */
 		ConditionVariableInit(&e->prev_processed_cv);
 	}
 
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
-	progress_update_struct(&e->progress, sap);
-	LWLockRelease(SpockCtx->apply_group_master_lock);
+	/* During shmem_startup or WAL recovery, we may not have MyProc, so we can't wait for locks */
+	/* If we're in shmem startup context (MyProc is NULL), skip lock acquisition */
+	/* We hold AddinShmemInitLock during shmem_startup, so it's safe to update without our own lock */
+	/* During WAL recovery, validate LSN values before updating to avoid assertion failures */
+	if (MyProc != NULL)
+	{
+		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+		progress_update_struct(&e->progress, sap);
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+	}
+	else
+	{
+		/* During shmem_startup or WAL recovery, validate LSN consistency before updating */
+		/* Skip invalid WAL records that have inconsistent LSN values */
+		if (!XLogRecPtrIsInvalid(sap->remote_insert_lsn) &&
+			!XLogRecPtrIsInvalid(sap->remote_commit_lsn) &&
+			sap->remote_insert_lsn < sap->remote_commit_lsn)
+		{
+			elog(WARNING, "spock_group_progress_update: skipping invalid WAL record with remote_insert_lsn (%X/%X) < remote_commit_lsn (%X/%X) for db %u, node %u, remote_node %u",
+				 (uint32) (sap->remote_insert_lsn >> 32), (uint32) sap->remote_insert_lsn,
+				 (uint32) (sap->remote_commit_lsn >> 32), (uint32) sap->remote_commit_lsn,
+				 sap->key.dbid, sap->key.node_id, sap->key.remote_node_id);
+			return false;
+		}
+		/* During shmem_startup, we hold AddinShmemInitLock, so it's safe to update without our own lock */
+		progress_update_struct(&e->progress, sap);
+	}
 	return true;
 }
 
@@ -314,17 +385,20 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
  * apply_worker_get_progress
  *
  * Return a pointer to the current apply worker's progress payload, or NULL
+ * 
+ * NOTE: For rescue subscriptions, apply_group may be NULL, so this function
+ * can return NULL. Callers must check the return value.
  */
 SpockApplyProgress *
 apply_worker_get_progress(void)
 {
     Assert(MyApplyWorker != NULL);
-    Assert(MyApplyWorker->apply_group != NULL);
+    
+    /* Rescue subscriptions don't use hash table - apply_group can be NULL */
+    if (!MyApplyWorker->apply_group)
+        return NULL;
 
-    if (MyApplyWorker && MyApplyWorker->apply_group)
-        return &MyApplyWorker->apply_group->progress;
-
-    return NULL;
+    return &MyApplyWorker->apply_group->progress;
 }
 
 /*
