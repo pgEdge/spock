@@ -110,3 +110,46 @@ CREATE FUNCTION call_fn(creds text) RETURNS void AS $$
 $$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
 
 SELECT call_fn(:fakecreds);
+DROP FUNCTION call_fn;
+
+--
+-- Basic SECURITY LABEL tests. Fix limits of acceptable behavior.
+-- Remember, these tests still check intra-node behaviour.
+--
+
+-- A label creation checks
+CREATE TABLE slabel (x integer, y text PRIMARY KEY);
+CREATE TABLE slabel_ri (x integer NOT NULL, y text);
+CREATE UNIQUE INDEX slabel_ri_idx ON slabel_ri(x);
+ALTER TABLE slabel_ri REPLICA IDENTITY USING INDEX slabel_ri_idx;
+
+SELECT spock.delta_apply('slabel', 'x');
+SELECT spock.delta_apply('slabel', 'y'); -- ERROR
+SELECT spock.delta_apply('slabel', 'z'); -- ERROR
+SELECT spock.delta_apply('slabel', 'x'); -- repeating call do nothing
+SELECT spock.delta_apply('slabel_ri', 'x'); -- ERROR
+SELECT objname, label FROM pg_seclabels;
+DROP TABLE slabel_ri CASCADE;
+
+-- Short round trip to check that subscriber has no security labels
+\c :subscriber_dsn
+SELECT objname, label FROM pg_seclabels;
+\c :provider_dsn
+
+-- Label drop checks
+SELECT spock.delta_apply('slabel', 'x', true);
+SELECT spock.delta_apply('slabel', 'y', true);
+SELECT spock.delta_apply('slabel', 'z', true);
+SELECT objname, label FROM pg_seclabels;
+
+-- Dependencies
+SELECT spock.delta_apply('slabel', 'x', false);
+ALTER TABLE slabel ALTER COLUMN x TYPE text; -- just warn
+SELECT objname, label FROM pg_seclabels;
+ALTER TABLE slabel DROP COLUMN x;
+ALTER TABLE slabel ADD COLUMN x numeric;
+SELECT spock.delta_apply('slabel', 'x', false);
+ALTER TABLE slabel DROP COLUMN x;
+SELECT objname, label FROM pg_seclabels;
+
+DROP TABLE slabel;

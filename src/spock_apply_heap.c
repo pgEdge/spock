@@ -111,11 +111,9 @@ typedef struct ApplyMIState
 
 static ApplyMIState *spkmistate = NULL;
 
-#ifndef NO_LOG_OLD_VALUE
 static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 							  SpockTupleData *newtup, SpockTupleData *deltatup,
 							  TupleTableSlot *localslot);
-#endif
 static bool physatt_in_attmap(SpockRelation *rel, int attid);
 
 /*
@@ -582,8 +580,6 @@ fill_missing_defaults(SpockRelation *rel, EState *estate,
 												&tuple->nulls[defmap[i]]);
 }
 
-#ifndef NO_LOG_OLD_VALUE
-
 static void
 build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 				  SpockTupleData *newtup,
@@ -605,7 +601,7 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		int			remoteattnum = rel->attmap[attidx];
 
 		Assert(remoteattnum < tupdesc->natts);
-		if (rel->delta_apply_functions[remoteattnum] == InvalidOid)
+		if (rel->delta_functions[remoteattnum] == InvalidOid)
 		{
 			deltatup->values[remoteattnum] = 0xdeadbeef;
 			deltatup->nulls[remoteattnum] = true;
@@ -632,8 +628,7 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		{
 			/*
 			 * This is a special case. Columns for delta apply need to be
-			 * marked NOT NULL and LOG_OLD_VALUE=true. During this remote
-			 * UPDATE LOG_OLD_VALUE setting was false. We use this as a flag
+			 * marked NOT NULL. We use this as a flag
 			 * to force plain NEW value application. This is useful in case a
 			 * server ever gets out of sync.
 			 */
@@ -646,7 +641,7 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 			loc_value = heap_getattr(TTS_TUP(localslot), remoteattnum + 1, tupdesc,
 									 &loc_isnull);
 
-			result = OidFunctionCall3Coll(rel->delta_apply_functions[remoteattnum],
+			result = OidFunctionCall3Coll(rel->delta_functions[remoteattnum],
 										  InvalidOid, oldtup->values[remoteattnum],
 										  newtup->values[remoteattnum], loc_value);
 			deltatup->values[remoteattnum] = result;
@@ -655,7 +650,6 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		}
 	}
 }
-#endif							/* NO_LOG_OLD_VALUE */
 
 static ApplyExecState *
 init_apply_exec_state(SpockRelation *rel)
@@ -768,7 +762,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 						  xmin, local_origin_found, local_origin,
 						  local_ts, idxused);
 
-	if (rel->has_delta_columns)
+	if (rel->has_delta_apply)
 	{
 		SpockTupleData deltatup;
 		HeapTuple	currenttuple;

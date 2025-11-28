@@ -146,11 +146,10 @@ sub create_postgresql_conf {
     print $conf "wal_level=logical\n";
     print $conf "spock.enable_ddl_replication=on\n";
     print $conf "spock.include_ddl_repset=on\n";
-    print $conf "spock.allow_ddl_from_functions=on\n";
-    print $conf "spock.exception_behaviour=sub_disable\n";
+    print $conf "spock.allow_ddl_from_functions=off\n";
+    print $conf "spock.exception_behaviour=transdiscard\n";
     print $conf "spock.conflict_resolution=last_update_wins\n";
     print $conf "track_commit_timestamp=on\n";
-    print $conf "spock.exception_replay_queue_size=1MB\n";
     print $conf "spock.enable_spill=on\n";
     print $conf "port=$port\n";
     print $conf "listen_addresses='*'\n";
@@ -163,18 +162,18 @@ sub create_postgresql_conf {
     print $conf "log_filename='00$port.log'\n";
     print $conf "log_rotation_age=1d\n";
     print $conf "log_rotation_size=10MB\n";
-    print $conf "log_min_messages=debug1\n";
-    print $conf "log_statement=all\n";
+    print $conf "log_min_messages=log\n";
+    print $conf "log_statement=none\n";
     print $conf "log_line_prefix='%m [%p] %q%u@%d '\n";
-    print $conf "log_checkpoints=on\n";
-    print $conf "log_connections=on\n";
-    print $conf "log_disconnections=on\n";
-    print $conf "log_lock_waits=on\n";
+    print $conf "log_checkpoints=off\n";
+    print $conf "log_connections=off\n";
+    print $conf "log_disconnections=off\n";
+    print $conf "log_lock_waits=off\n";
     print $conf "log_temp_files=0\n";
     print $conf "log_autovacuum_min_duration=0\n";
     print $conf "log_replication_commands=on\n";
     print $conf "log_min_duration_statement=0\n";
-    print $conf "log_statement_stats=on\n";
+    print $conf "log_statement_stats=off\n";
 
     close($conf);
 }

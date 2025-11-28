@@ -69,8 +69,63 @@ SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3')
      2
 (1 row)
 
--- Reset the configuration to the default value
 \c :provider_dsn
+\set VERBOSITY terse
+-- Check propagation of security labels
+CREATE TABLE slabel1 (x integer, y text PRIMARY KEY);
+INFO:  DDL statement replicated.
+SELECT spock.delta_apply('slabel1', 'x');
+INFO:  DDL statement replicated.
+INFO:  DDL statement replicated.
+ delta_apply 
+-------------
+ t
+(1 row)
+
+SELECT spock.delta_apply('slabel1', 'y'); -- ERROR
+ERROR:  type "text" can not be used in delta_apply conflict resolution
+SELECT spock.delta_apply('slabel1', 'z'); -- ERROR
+ERROR:  column z does not exist in the table slabel1
+SELECT spock.delta_apply('slabel1', 'x'); -- repeating call do nothing
+INFO:  DDL statement replicated.
+INFO:  DDL statement replicated.
+ delta_apply 
+-------------
+ t
+(1 row)
+
+SELECT objname, label FROM pg_seclabels;
+  objname  |       label       
+-----------+-------------------
+ slabel1.x | spock.delta_apply
+(1 row)
+
+-- Short round trip to check that subscriber has the security label
+\c :subscriber_dsn
+SELECT objname, label FROM pg_seclabels;
+  objname  |       label       
+-----------+-------------------
+ slabel1.x | spock.delta_apply
+(1 row)
+
+\c :provider_dsn
+SELECT spock.delta_apply('slabel1', 'x', true);
+INFO:  DDL statement replicated.
+INFO:  DDL statement replicated.
+ delta_apply 
+-------------
+ t
+(1 row)
+
+-- Short round trip to check that subscriber has removed the security label too
+\c :subscriber_dsn
+SELECT objname, label FROM pg_seclabels;
+ objname | label 
+---------+-------
+(0 rows)
+
+\c :provider_dsn
+-- Reset the configuration to the default value
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';
 WARNING:  This DDL statement will not be replicated.
 ALTER SYSTEM SET spock.include_ddl_repset = 'off';

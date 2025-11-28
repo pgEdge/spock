@@ -44,11 +44,12 @@ typedef struct SpockRelation
 	Oid			idxoid;
 	Relation	rel;
 	int		   *attmap;
-	bool		has_delta_columns;
-	Oid		   *delta_apply_functions;
 
 	/* Additional cache, only valid as long as relation mapping is. */
 	bool		hasTriggers;
+
+	Oid		   *delta_functions;
+	bool		has_delta_apply;
 } SpockRelation;
 
 extern void spock_relation_cache_update(uint32 remoteid,
