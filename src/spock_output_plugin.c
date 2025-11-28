@@ -719,18 +719,17 @@ pg_decode_message(LogicalDecodingContext *ctx,
 
 		case SPOCK_SYNC_EVENT_MSG:
 			{
-				MemoryContext oldctx;
-				SpockOutputData* data = (SpockOutputData*) ctx->output_plugin_private;
-				TransactionId xid = InvalidTransactionId;
+				MemoryContext		oldctx;
+				SpockOutputData	   *data;
 
-				if (txn != NULL)
-					xid = txn->xid;
+				Assert(txn != NULL);
 
+				data = (SpockOutputData*) ctx->output_plugin_private;
 				oldctx = MemoryContextSwitchTo(data->context);
 
 				OutputPluginPrepareWrite(ctx, true);
 				spock_write_message(ctx->out,
-									xid,
+									txn->xid,
 									message_lsn,
 									true,
 									prefix,
@@ -748,7 +747,6 @@ pg_decode_message(LogicalDecodingContext *ctx,
 				 msg->mtype);
 			return;
 	}
-
 }
 
 static bool

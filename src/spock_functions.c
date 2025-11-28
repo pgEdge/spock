@@ -3067,7 +3067,8 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	message.eorigin = node->node->id;
 	memset(NameStr(message.ename), 0, NAMEDATALEN);
 
-	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *)&message, sizeof(message), true);
+	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *) &message,
+							sizeof(message), true);
 
 	PG_RETURN_LSN(lsn);
 }
