@@ -88,7 +88,7 @@ spock_autoddl_process(PlannedStmt *pstmt,
 	curr_qry = pnstrdup(queryString, len);
 
 	spock_auto_replicate_ddl(curr_qry,
-							 list_make1(DEFAULT_INSONLY_REPSET_NAME),
+							 list_make1(DDL_SQL_REPSET_NAME),
 							 roleoid,
 							 parsetree);
 	add_ddl_to_repset(parsetree);

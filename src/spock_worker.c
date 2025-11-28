@@ -878,6 +878,8 @@ spock_worker_shmem_startup(void)
 
 	/* Recovery slots shmem startup */
 	spock_recovery_shmem_startup();
+
+	LWLockRelease(AddinShmemInitLock);
 }
 
 /*
