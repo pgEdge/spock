@@ -1,71 +1,70 @@
 -- ============================================================================
--- Spock Rescue Workflow Helpers
+-- Spock Recovery Procedures
 --
--- This script orchestrates catastrophic node failure recovery by cloning a
--- recovery slot on a healthy peer, wiring a temporary rescue subscription on
--- the lagging node, and providing helpers to resume normal replication after
--- the catch-up completes.
--- Execute these procedures from a coordinator/control node (any node with
--- connectivity to both the advanced peer and the lagging node). The helpers
--- invoke dblink to perform recovery-slot cloning on the source node and
--- suspension/rescue-subscription work on the target node.
+-- Orchestrates catastrophic node failure recovery by cloning a recovery slot
+-- on a healthy peer, creating a temporary rescue subscription on the lagging
+-- node, and resuming normal replication after catch-up completes.
 --
 -- Requirements:
---   * Spock 6.0.0-devel (or newer) with the rescue catalog columns and
---     spock.create_rescue_subscription() installed.
---   * dblink extension available on the coordinator database.
+--   * Spock 6.0.0-devel or newer with rescue catalog columns
+--   * dblink extension on the coordinator database
 --
--- Usage overview:
---   1. CALL spock.recover_run(
---          failed_node_name := 'n1',
---          source_node_name := 'n2',
---          source_dsn       := 'host=127.0.0.1 port=5432 dbname=pgedge user=pgedge',
---          target_node_name := 'n3',
---          target_dsn       := 'host=127.0.0.1 port=5433 dbname=pgedge user=pgedge',
---          stop_lsn         := '0/5000000'::pg_lsn,
---          skip_lsn         := NULL,
---          stop_timestamp   := NULL,
---          verb             := true,
---          cloned_slot_name => slot_name
---      );
+-- Usage:
 --
---      This performs Phase 1 (precheck) and Phase 2 (clone + rescue subscription).
---      The OUT parameter `slot_name` captures the cloned slot for later cleanup.
+-- Step 1: Run recovery (clones slot and creates rescue subscription)
+--   CALL spock.recover_run(
+--       failed_node_name := 'n1',
+--       source_node_name := 'n2',
+--       source_dsn       := 'host=localhost port=5452 dbname=pgedge user=<user>',
+--       target_node_name := 'n3',
+--       target_dsn       := 'host=localhost port=5453 dbname=pgedge user=<user>',
+--       stop_lsn         := NULL,  -- Optional: specific LSN to stop at
+--       skip_lsn         := NULL,  -- Optional: LSN to skip to
+--       stop_timestamp   := NULL,  -- Optional: timestamp to stop at
+--       verb             := true,
+--       cloned_slot_name => slot_name  -- OUT: cloned slot name for cleanup
+--   );
 --
---   2. Monitor the temporary subscription (spock.subscription.rescue_cleanup_pending)
---      and WAL replay. Once the manager worker reports that the rescue
---      subscription was dropped, finish by resuming the suspended peer
---      subscriptions and dropping the cloned recovery slot:
+-- Step 2: Monitor rescue subscription until cleanup_pending flag is set
+--   SELECT sub_name, sub_rescue_cleanup_pending
+--     FROM spock.subscription
+--    WHERE sub_rescue_temporary;
 --
---         CALL spock.recover_finalize(
---             target_dsn        := 'host=… n3 …',
---             target_node_name  := 'n3',
---             failed_node_name  := 'n1',
---             source_dsn        := 'host=… n2 …',
---             cloned_slot_name  := slot_name,
---             verb              := true
---         );
+-- Step 3: Finalize recovery (resume subscriptions and drop cloned slot)
+--   CALL spock.recover_finalize(
+--       target_dsn       := 'host=localhost port=5453 dbname=pgedge user=<user>',
+--       target_node_name := 'n3',
+--       failed_node_name := 'n1',
+--       source_dsn       := 'host=localhost port=5452 dbname=pgedge user=<user>',
+--       cloned_slot_name := slot_name,  -- From Step 1
+--       verb             := true
+--   );
 --
--- Notes:
---   * These helpers rely on the SPOC-137 rescue lifecycle features: cloning the
---     recovery slot, suspending peer subscriptions, enabling a temporary rescue
---     subscription (rescue_temporary=true), and allowing the manager worker to
---     cleanly drop the rescue subscription once rescue_cleanup_pending is set.
---   * The helper uses dblink_exec with direct DSN strings. Ensure credentials
---     permit connections from the coordinator database.
---   * The cloned slot is not dropped automatically; call recover_finalize after
---     verifying that the rescue subscription completed successfully.
---   * The stop_lsn parameter defaults to the restart_lsn of the cloned slot.
---     Provide a higher stop_lsn or a stop_timestamp if you need to replay past
---     the restart point.
+-- Alternative: Full automated recovery with LSN sync checks
+--   Performs precheck with INFO messages, checks lag_tracker and subscription LSNs,
+--   skips recovery if all LSNs are synced, otherwise proceeds with full recovery
+--   (waits for cleanup, then finalizes).
+--   CALL spock.recovery(
+--       failed_node_name := 'n1',
+--       source_node_name := 'n2',
+--       source_dsn       := 'host=localhost port=5452 dbname=pgedge user=<user>',
+--       target_node_name := 'n3',
+--       target_dsn       := 'host=localhost port=5453 dbname=pgedge user=<user>',
+--       stop_lsn         := NULL,
+--       skip_lsn         := NULL,
+--       stop_timestamp   := NULL,
+--       verb             := true
+--   );
 -- ============================================================================
 
 CREATE EXTENSION IF NOT EXISTS dblink;
 
 -- ----------------------------------------------------------------------------
 -- Procedure: spock.recover_precheck
--- Validates connectivity, Spock presence, recovery slot availability, and
--- absence of existing rescue subscriptions before running the recovery flow.
+-- Validates connectivity, Spock versions, recovery slot availability, and
+-- absence of existing rescue subscriptions.
+-- NOTE: This procedure is READ-ONLY - it does NOT create, modify, or delete
+-- anything. It only performs SELECT queries for validation.
 -- ----------------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS spock.recover_precheck(
     text, text, text, text, text, boolean
@@ -88,14 +87,19 @@ DECLARE
     target_local_node text;
     source_slot_count integer;
     target_rescue_subs integer;
+    target_rescue_cleanup_pending integer;
+    target_rescue_failed integer;
     target_origin_subs integer;
+    source_lag_lsn pg_lsn;
+    target_lag_lsn pg_lsn;
     tmp RECORD;
 BEGIN
     verb := COALESCE(verb, false);
     recovery_needed := true;
 
-    -- [Coordinator] Validate that source and target nodes are reachable,
-    -- running matching Spock versions, and that the rescue metadata is sane.
+    -- READ-ONLY VALIDATION: This procedure does not create, modify, or delete anything
+    RAISE INFO '[CHECK] - : Starting precheck validation (read-only checks only)...';
+
     IF source_node_name = target_node_name THEN
         RAISE EXCEPTION 'source_node_name (%) and target_node_name (%) must differ',
             source_node_name, target_node_name;
@@ -104,9 +108,11 @@ BEGIN
         RAISE EXCEPTION 'target_node_name (%) cannot equal failed_node_name (%)',
             target_node_name, failed_node_name;
     END IF;
+    RAISE INFO '[CHECK] - : Node name validation passed';
 
     BEGIN
         SELECT version INTO tmp FROM dblink(source_dsn, 'SELECT version()') AS t(version text);
+        RAISE INFO '[CHECK] - : Source connection successful: %', source_dsn;
     EXCEPTION
         WHEN OTHERS THEN
             RAISE EXCEPTION 'Unable to connect to source DSN %: %', source_dsn, SQLERRM;
@@ -114,12 +120,12 @@ BEGIN
 
     BEGIN
         SELECT version INTO tmp FROM dblink(target_dsn, 'SELECT version()') AS t(version text);
+        RAISE INFO '[CHECK] - : Target connection successful: %', target_dsn;
     EXCEPTION
         WHEN OTHERS THEN
             RAISE EXCEPTION 'Unable to connect to target DSN %: %', target_dsn, SQLERRM;
     END;
 
-    -- [Source node] Ensure Spock is installed.
     SELECT extversion
       INTO source_version
       FROM dblink(
@@ -129,8 +135,8 @@ BEGIN
     IF source_version IS NULL THEN
         RAISE EXCEPTION 'Spock extension not installed on source node %', source_node_name;
     END IF;
+    RAISE INFO '[CHECK] - : Source Spock version: %', source_version;
 
-    -- [Target node] Ensure Spock is installed.
     SELECT extversion
       INTO target_version
       FROM dblink(
@@ -140,12 +146,14 @@ BEGIN
     IF target_version IS NULL THEN
         RAISE EXCEPTION 'Spock extension not installed on target node %', target_node_name;
     END IF;
+    RAISE INFO '[CHECK] - : Target Spock version: %', target_version;
 
     IF regexp_replace(source_version, '-devel$', '') <>
        regexp_replace(target_version, '-devel$', '') THEN
         RAISE EXCEPTION 'Spock version mismatch between source (%) and target (%)',
             source_version, target_version;
     END IF;
+    RAISE INFO '[CHECK] - : Spock version compatibility verified';
 
     SELECT node_name
       INTO source_local_node
@@ -159,6 +167,7 @@ BEGIN
         RAISE EXCEPTION 'Source DSN resolves to node %, expected %',
             source_local_node, source_node_name;
     END IF;
+    RAISE INFO '[CHECK] - : Source node name verified: %', source_local_node;
 
     SELECT node_name
       INTO target_local_node
@@ -172,8 +181,8 @@ BEGIN
         RAISE EXCEPTION 'Target DSN resolves to node %, expected %',
             target_local_node, target_node_name;
     END IF;
+    RAISE INFO '[CHECK] - : Target node name verified: %', target_local_node;
 
-    -- [Source node] Confirm a recovery slot is available/active.
     SELECT cnt
       INTO source_slot_count
       FROM dblink(
@@ -186,18 +195,42 @@ BEGIN
     IF source_slot_count = 0 THEN
         RAISE EXCEPTION 'No active recovery slot found on source node %', source_node_name;
     END IF;
+    RAISE INFO '[CHECK] - : Source recovery slot found: % active slot(s)', source_slot_count;
 
-    -- [Target node] Ensure there is no existing rescue subscription in flight.
-    SELECT cnt
-      INTO target_rescue_subs
+    -- Check for existing rescue subscriptions and their status
+    SELECT cnt, cleanup_pending_cnt, failed_cnt
+      INTO target_rescue_subs, target_rescue_cleanup_pending, target_rescue_failed
       FROM dblink(
                target_dsn,
-               'SELECT count(*) FROM spock.subscription WHERE sub_rescue_temporary'
-           ) AS t(cnt int);
+               $_sql$SELECT 
+                        count(*) as cnt,
+                        count(*) FILTER (WHERE sub_rescue_cleanup_pending) as cleanup_pending_cnt,
+                        count(*) FILTER (WHERE sub_rescue_failed) as failed_cnt
+                   FROM spock.subscription 
+                  WHERE sub_rescue_temporary$_sql$
+           ) AS t(cnt int, cleanup_pending_cnt int, failed_cnt int);
+    
     IF target_rescue_subs > 0 THEN
-        RAISE EXCEPTION 'Target node % already has % temporary rescue subscription(s); clean them first',
-            target_node_name, target_rescue_subs;
+        -- Check if rescue subscription is waiting for cleanup
+        IF target_rescue_cleanup_pending > 0 THEN
+            RAISE INFO '[CHECK] - : Target node % has % rescue subscription(s) waiting for cleanup',
+                target_node_name, target_rescue_subs;
+            RAISE INFO '[CHECK] - : Run spock.recover_finalize() to complete the previous recovery first';
+            recovery_needed := false;
+            RETURN;
+        ELSIF target_rescue_failed > 0 THEN
+            RAISE WARNING '[CHECK] - : Target node % has % failed rescue subscription(s)',
+                target_node_name, target_rescue_subs;
+            RAISE EXCEPTION 'Target node % has failed rescue subscription(s); clean them up manually first',
+                target_node_name;
+        ELSE
+            RAISE INFO '[CHECK] - : Target node % has % active rescue subscription(s)',
+                target_node_name, target_rescue_subs;
+            RAISE EXCEPTION 'Target node % already has % active temporary rescue subscription(s); wait for completion or clean them first',
+                target_node_name, target_rescue_subs;
+        END IF;
     END IF;
+    RAISE INFO '[CHECK] - : Target has no existing rescue subscriptions';
 
     SELECT cnt
       INTO target_origin_subs
@@ -215,12 +248,11 @@ BEGIN
 
     IF target_origin_subs = 0 THEN
         recovery_needed := false;
-        IF verb THEN
-            RAISE NOTICE '[RESCUE] Target node % has no subscriptions sourced from %; rescue not required.',
-                target_node_name, failed_node_name;
-        END IF;
+        RAISE INFO '[CHECK] - : Target node % has no subscriptions sourced from %; rescue not required.',
+            target_node_name, failed_node_name;
         RETURN;
     END IF;
+    RAISE INFO '[CHECK] - : Target has % subscription(s) sourced from %', target_origin_subs, failed_node_name;
 
     PERFORM 1
       FROM dblink(
@@ -236,18 +268,85 @@ BEGIN
         RAISE EXCEPTION 'Failed node name % not present in metadata on target node %',
             failed_node_name, target_node_name;
     END IF;
+    RAISE INFO '[CHECK] - : Failed node % present in target metadata', failed_node_name;
 
-    IF verb THEN
-        RAISE NOTICE '[RESCUE] Precheck complete: connectivity, versions, recovery slot, and metadata verified.';
+    RAISE INFO '[CHECK] - : All precheck validations passed';
+
+    -- Print lag_tracker LSNs from failed node to source and target
+    BEGIN
+        SELECT commit_lsn INTO source_lag_lsn
+          FROM dblink(
+                   source_dsn,
+                   format(
+                       $_sql$SELECT commit_lsn
+                                FROM spock.lag_tracker
+                               WHERE origin_name = %L
+                                 AND receiver_name = %L$_sql$,
+                       failed_node_name,
+                       source_node_name
+                   )
+               ) AS t(commit_lsn pg_lsn);
+        IF source_lag_lsn IS NOT NULL THEN
+            RAISE INFO '[CHECK] - : Source lag_tracker LSN (n1->n2): %', source_lag_lsn;
+        ELSE
+            RAISE INFO '[CHECK] - : Source lag_tracker LSN (n1->n2): NULL';
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE INFO '[CHECK] - : Could not get source lag_tracker LSN: %', SQLERRM;
+    END;
+
+    BEGIN
+        SELECT commit_lsn INTO target_lag_lsn
+          FROM dblink(
+                   target_dsn,
+                   format(
+                       $_sql$SELECT commit_lsn
+                                FROM spock.lag_tracker
+                               WHERE origin_name = %L
+                                 AND receiver_name = %L$_sql$,
+                       failed_node_name,
+                       target_node_name
+                   )
+               ) AS t(commit_lsn pg_lsn);
+        IF target_lag_lsn IS NOT NULL THEN
+            RAISE INFO '[CHECK] - : Target lag_tracker LSN (n1->n3): %', target_lag_lsn;
+        ELSE
+            RAISE INFO '[CHECK] - : Target lag_tracker LSN (n1->n3): NULL';
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE INFO '[CHECK] - : Could not get target lag_tracker LSN: %', SQLERRM;
+    END;
+
+    -- Check lag_tracker LSN comparison
+    IF source_lag_lsn IS NOT NULL AND target_lag_lsn IS NOT NULL THEN
+        IF source_lag_lsn = target_lag_lsn THEN
+            recovery_needed := false;
+            RAISE INFO '[CHECK] - : LSN on source node [%] and target node [%] are same, no need of recovery.', 
+                source_node_name, target_node_name;
+            RETURN;
+        ELSIF source_lag_lsn > target_lag_lsn THEN
+            -- Source is ahead of target - target needs recovery
+            RAISE INFO '[CHECK] - : Source lag_tracker LSN (%) > Target lag_tracker LSN (%) - recovery required', 
+                source_lag_lsn, target_lag_lsn;
+            -- Continue with recovery
+        ELSIF target_lag_lsn > source_lag_lsn THEN
+            -- Target is ahead of source - wrong direction, need to run on source
+            RAISE WARNING '[CHECK] - : Target lag_tracker LSN (%) > Source lag_tracker LSN (%)', 
+                target_lag_lsn, source_lag_lsn;
+            RAISE WARNING '[CHECK] - : Target is ahead of source. Run recovery script on source node with proper parameters and exit.';
+            recovery_needed := false;
+            RETURN;
+        END IF;
     END IF;
 END;
 $$;
 
 -- ----------------------------------------------------------------------------
 -- Procedure: spock.recover_phase_clone
--- Clones the recovery slot on the rescue source, suspends peer subscriptions
--- on the lagging node, and creates a temporary rescue subscription using the
--- cloned slot.
+-- Clones the recovery slot on the source node, suspends peer subscriptions
+-- on the target node, and creates a temporary rescue subscription.
 -- ----------------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS spock.recover_phase_clone(
     text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
@@ -281,11 +380,10 @@ DECLARE
 BEGIN
     verb := COALESCE(verb, false);
     IF verb THEN
-        RAISE NOTICE '[RESCUE] Cloning recovery slot on % (%).',
+        RAISE INFO '[RECOVERY] - : Cloning recovery slot on % (%)',
             source_node_name, source_dsn;
     END IF;
 
-    -- [Source node] Clone the inactive recovery slot to an active temporary slot.
     SELECT t.cloned_slot_name,
            t.original_slot_name,
            t.restart_lsn,
@@ -315,8 +413,34 @@ BEGIN
     cloned_slot_name := slot_info.cloned_slot_name;
     restart_lsn := slot_info.restart_lsn;
 
+    -- Verify cloned slot actually exists
+    IF cloned_slot_name IS NULL OR cloned_slot_name = '' THEN
+        RAISE EXCEPTION 'Cloned slot name is NULL or empty from %', source_node_name;
+    END IF;
+
+    -- Verify cloned slot exists (may need a small delay for commit)
+    FOR attempt IN 1..5 LOOP
+        PERFORM 1
+          FROM dblink(
+                   source_dsn,
+                   format(
+                       $_sql$SELECT 1
+                          FROM pg_replication_slots
+                         WHERE slot_name = %L$_sql$,
+                       cloned_slot_name
+                   )
+               ) AS t(exists int);
+        EXIT WHEN FOUND;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+    
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Cloned slot % not found on source node % after creation',
+            cloned_slot_name, source_node_name;
+    END IF;
+
     IF verb THEN
-        RAISE NOTICE '[RESCUE] Cloned slot % (restart LSN %)', cloned_slot_name, restart_lsn;
+        RAISE INFO '[RECOVERY] - : Cloned slot % (restart LSN %)', cloned_slot_name, restart_lsn;
     END IF;
 
     effective_skip := skip_lsn;
@@ -338,48 +462,42 @@ BEGIN
     END IF;
 
     IF effective_stop IS NULL THEN
-        SELECT source_remote_lsn
+        -- Use lag_tracker which includes both regular and rescue subscriptions
+        SELECT commit_lsn
           INTO effective_stop
           FROM dblink(
                    source_dsn,
                    format(
-                       $_sql$SELECT pos.remote_lsn AS source_remote_lsn
-                                FROM spock.subscription s
-                                JOIN spock.node o ON o.node_id = s.sub_origin
-                                JOIN pg_catalog.pg_replication_origin_status pos
-                                  ON pos.external_id = spock.spock_gen_slot_name(
-                                        current_database()::name,
-                                        o.node_name::name,
-                                        s.sub_name)::text
-                               WHERE o.node_name = %L
-                               ORDER BY pos.remote_lsn DESC
+                       $_sql$SELECT commit_lsn
+                                FROM spock.lag_tracker
+                               WHERE origin_name = %L
+                                 AND receiver_name = %L
+                               ORDER BY commit_lsn DESC
                                LIMIT 1$_sql$,
-                       failed_node_name
+                       failed_node_name,
+                       source_node_name
                    )
-               ) AS t(source_remote_lsn pg_lsn);
+               ) AS t(commit_lsn pg_lsn);
 
     END IF;
 
     IF effective_skip IS NULL THEN
-        SELECT target_remote_lsn
+        -- Use lag_tracker which includes both regular and rescue subscriptions
+        SELECT commit_lsn
           INTO effective_skip
           FROM dblink(
                    target_dsn,
                    format(
-                       $_sql$SELECT pos.remote_lsn AS target_remote_lsn
-                                FROM spock.subscription s
-                                JOIN spock.node o ON o.node_id = s.sub_origin
-                                JOIN pg_catalog.pg_replication_origin_status pos
-                                  ON pos.external_id = spock.spock_gen_slot_name(
-                                        current_database()::name,
-                                        o.node_name::name,
-                                        s.sub_name)::text
-                               WHERE o.node_name = %L
-                               ORDER BY pos.remote_lsn DESC
+                       $_sql$SELECT commit_lsn
+                                FROM spock.lag_tracker
+                               WHERE origin_name = %L
+                                 AND receiver_name = %L
+                               ORDER BY commit_lsn DESC
                                LIMIT 1$_sql$,
-                       failed_node_name
+                       failed_node_name,
+                       target_node_name
                    )
-               ) AS t(target_remote_lsn pg_lsn);
+               ) AS t(commit_lsn pg_lsn);
     END IF;
 
     IF effective_skip IS NULL THEN
@@ -387,19 +505,23 @@ BEGIN
     END IF;
 
     IF effective_stop IS NULL THEN
-        SELECT last_lsn
+        -- Use lag_tracker which includes both regular and rescue subscriptions
+        -- This is more accurate and consistent than querying pg_replication_origin_status directly
+        SELECT commit_lsn
           INTO effective_stop
           FROM dblink(
-                   target_dsn,
+                   source_dsn,
                    format(
-                       $_sql$SELECT frs.last_lsn
-                                FROM spock.find_rescue_source(%L) frs
-                                JOIN spock.node src ON src.node_id = frs.source_node_id
-                               WHERE src.node_name = %L$_sql$,
+                       $_sql$SELECT commit_lsn
+                                FROM spock.lag_tracker
+                               WHERE origin_name = %L
+                                 AND receiver_name = %L
+                               ORDER BY commit_lsn DESC
+                               LIMIT 1$_sql$,
                        failed_node_name,
                        source_node_name
                    )
-               ) AS t(last_lsn pg_lsn);
+               ) AS t(commit_lsn pg_lsn);
     END IF;
 
     IF effective_stop IS NULL THEN
@@ -413,14 +535,13 @@ BEGIN
     END IF;
 
     IF verb THEN
-        RAISE NOTICE '[RESCUE] Using skip LSN %, stop LSN %',
+        RAISE INFO '[RECOVERY] - : Using skip LSN %, stop LSN %',
             effective_skip, effective_stop;
         IF stop_timestamp IS NOT NULL THEN
-            RAISE NOTICE '[RESCUE] Stop timestamp requested: %', stop_timestamp;
+            RAISE INFO '[RECOVERY] - : Stop timestamp requested: %', stop_timestamp;
         END IF;
     END IF;
 
-    -- [Target node] Suspend peer-to-peer subscriptions that would interfere with rescue.
     SELECT suspend_success::text
       INTO exec_status
       FROM dblink(
@@ -436,7 +557,7 @@ BEGIN
            ) AS t(suspend_success boolean);
 
     IF verb THEN
-        RAISE NOTICE '[RESCUE] Suspended peer subscriptions on % (status=%)',
+        RAISE INFO '[RECOVERY] - % : Suspended peer subscriptions (status=%)',
             target_node_name, exec_status;
     END IF;
 
@@ -456,35 +577,346 @@ BEGIN
                         ELSE quote_literal(stop_timestamp::text) || '::timestamptz'
                      END;
 
-    -- [Target node] Create a temporary rescue subscription that streams from the cloned slot.
-    SELECT created_sub_id
-      INTO sub_id
-      FROM dblink(
-               target_dsn,
-               format(
-                   $_sql$SELECT spock.create_rescue_subscription(%L, %L, %L, %s, %s, %s)$_sql$,
-                   target_node_name,
-                   source_node_name,
-                   cloned_slot_name,
-                   skip_expr,
-                   stop_expr,
-                   stop_ts_expr
-               )
-           ) AS t(created_sub_id oid);
+    -- Create rescue subscription
+    BEGIN
+        SELECT created_sub_id
+          INTO sub_id
+          FROM dblink(
+                   target_dsn,
+                   format(
+                       $_sql$SELECT spock.create_rescue_subscription(%L, %L, %L, %s, %s, %s)$_sql$,
+                       target_node_name,
+                       source_node_name,
+                       cloned_slot_name,
+                       skip_expr,
+                       stop_expr,
+                       stop_ts_expr
+                   )
+               ) AS t(created_sub_id oid);
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE EXCEPTION 'Failed to create rescue subscription on %: %',
+                target_node_name, SQLERRM;
+    END;
 
-    IF sub_id IS NULL THEN
-        RAISE EXCEPTION 'Failed to create rescue subscription on %, cloned slot %',
+    IF sub_id IS NULL OR sub_id = 0 THEN
+        RAISE EXCEPTION 'Failed to create rescue subscription on %, cloned slot %: function returned NULL or invalid OID',
             target_node_name, cloned_slot_name;
     END IF;
 
-    RAISE NOTICE 'Rescue subscription created on %, slot %, subscription id %.',
+    -- Verify subscription was actually created
+    PERFORM 1
+      FROM dblink(
+               target_dsn,
+               format(
+                   $_sql$SELECT 1
+                      FROM spock.subscription
+                     WHERE sub_id = %L
+                       AND sub_rescue_temporary$_sql$,
+                   sub_id
+               )
+           ) AS t(exists int);
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Rescue subscription with id % was not found after creation on %',
+            sub_id, target_node_name;
+    END IF;
+
+    -- Verify cloned slot exists on source (may need a small delay for visibility via dblink)
+    FOR attempt IN 1..5 LOOP
+        PERFORM 1
+          FROM dblink(
+                   source_dsn,
+                   format(
+                       $_sql$SELECT 1
+                          FROM pg_replication_slots
+                         WHERE slot_name = %L$_sql$,
+                       cloned_slot_name
+                   )
+               ) AS t(exists int);
+        EXIT WHEN FOUND;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+    
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Cloned slot % not found on source node %',
+            cloned_slot_name, source_node_name;
+    END IF;
+
+    RAISE INFO '[RECOVERY] - % : Rescue subscription created, slot %, subscription id %',
         target_node_name, cloned_slot_name, sub_id;
-    RAISE NOTICE 'Monitor the apply worker on % until the temporary subscription is removed.', target_node_name;
-    RAISE NOTICE 'Remember to record the cloned slot name "%".', cloned_slot_name;
+    RAISE INFO '[RECOVERY] - % : Monitor the apply worker until the temporary subscription is removed', target_node_name;
+    RAISE INFO '[RECOVERY] - % : Remember to record the cloned slot name "%"', target_node_name, cloned_slot_name;
 END;
 $$;
 
--- Backward-compatible wrapper for older tooling
+-- ----------------------------------------------------------------------------
+-- Procedure: spock.recover_run
+-- Orchestrates precheck, clone, wait for completion, cleanup, and verification.
+-- Automatically removes rescue subscription and cloned slot when recovery completes.
+-- ----------------------------------------------------------------------------
+DROP PROCEDURE IF EXISTS spock.recover_run(
+    text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
+);
+CREATE OR REPLACE PROCEDURE spock.recover_run(
+    failed_node_name text,
+    source_node_name text,
+    source_dsn text,
+    target_node_name text,
+    target_dsn text,
+    stop_lsn pg_lsn,
+    skip_lsn pg_lsn,
+    stop_timestamp timestamptz,
+    verb boolean
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    required boolean;
+    cloned_slot_name text;
+    pending_cleanup integer;
+    n2_lsn pg_lsn;
+    n3_lsn pg_lsn;
+    lag_rec RECORD;
+BEGIN
+    verb := COALESCE(verb, false);
+    CALL spock.recover_precheck(
+        failed_node_name => failed_node_name,
+        source_node_name => source_node_name,
+        source_dsn       => source_dsn,
+        target_node_name => target_node_name,
+        target_dsn       => target_dsn,
+        verb             => verb,
+        recovery_needed  => required
+    );
+
+    IF NOT required THEN
+        RETURN;
+    END IF;
+    
+    CALL spock.recover_phase_clone(
+        failed_node_name => failed_node_name,
+        source_node_name => source_node_name,
+        source_dsn       => source_dsn,
+        target_node_name => target_node_name,
+        target_dsn       => target_dsn,
+        stop_lsn         => stop_lsn,
+        skip_lsn         => skip_lsn,
+        stop_timestamp   => stop_timestamp,
+        verb             => verb,
+        cloned_slot_name => cloned_slot_name
+    );
+
+    IF verb THEN
+        RAISE INFO '[RECOVERY] - : Orchestration complete. Cloned slot: %', cloned_slot_name;
+        RAISE INFO '[RECOVERY] - : Waiting for rescue subscription to complete...';
+    END IF;
+
+    -- Verify subscription exists before waiting
+    BEGIN
+        PERFORM 1
+          FROM dblink(
+                   target_dsn,
+                   'SELECT 1 FROM spock.subscription WHERE sub_rescue_temporary LIMIT 1'
+               ) AS t(exists int);
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Rescue subscription not found on % after creation. Recovery failed.',
+                target_node_name;
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE EXCEPTION 'Could not verify rescue subscription on %: %',
+                target_node_name, SQLERRM;
+    END;
+
+    -- Wait for rescue subscription to signal cleanup
+    pending_cleanup := 0;
+    FOR attempt IN 1..300 LOOP
+        BEGIN
+            SELECT cnt
+              INTO pending_cleanup
+              FROM dblink(
+                       target_dsn,
+                       'SELECT count(*) FROM spock.subscription WHERE sub_rescue_cleanup_pending'
+                   ) AS t(cnt int);
+        EXCEPTION
+            WHEN OTHERS THEN
+                -- Check if it's a connection error
+                IF SQLERRM LIKE '%could not establish connection%' OR
+                   SQLERRM LIKE '%connection%' OR
+                   SQLERRM LIKE '%server closed%' THEN
+                    RAISE WARNING '[RESCUE] Cannot connect to target node %: %. Target node may be down. Recovery cannot proceed.',
+                        target_node_name, SQLERRM;
+                    -- Exit after a few failed attempts to avoid infinite loop
+                    IF attempt >= 5 THEN
+                        RAISE EXCEPTION 'Target node % is not accessible after % attempts. Recovery cannot proceed.',
+                            target_node_name, attempt;
+                    END IF;
+                ELSE
+                    RAISE WARNING '[RESCUE] Error checking cleanup status: %', SQLERRM;
+                END IF;
+                pending_cleanup := 0;
+        END;
+
+        EXIT WHEN pending_cleanup > 0;
+        
+        -- Check if subscription still exists
+        BEGIN
+            PERFORM 1
+              FROM dblink(
+                       target_dsn,
+                       'SELECT 1 FROM spock.subscription WHERE sub_rescue_temporary LIMIT 1'
+                   ) AS t(exists int);
+            IF NOT FOUND THEN
+                RAISE WARNING '[RESCUE] Rescue subscription disappeared during wait. Recovery may have completed or failed.';
+                EXIT;
+            END IF;
+        EXCEPTION
+            WHEN OTHERS THEN
+                -- If connection fails, check if we should exit
+                IF SQLERRM LIKE '%could not establish connection%' OR
+                   SQLERRM LIKE '%connection%' OR
+                   SQLERRM LIKE '%server closed%' THEN
+                    IF attempt >= 5 THEN
+                        RAISE EXCEPTION 'Target node % is not accessible. Recovery cannot proceed.',
+                            target_node_name;
+                    END IF;
+                END IF;
+                -- Continue waiting for other errors
+                NULL;
+        END;
+        
+        PERFORM pg_sleep(1);
+    END LOOP;
+
+    IF pending_cleanup = 0 THEN
+        -- Check if subscription still exists
+        BEGIN
+            PERFORM 1
+              FROM dblink(
+                       target_dsn,
+                       'SELECT 1 FROM spock.subscription WHERE sub_rescue_temporary LIMIT 1'
+                   ) AS t(exists int);
+            IF FOUND THEN
+                RAISE WARNING '[RESCUE] Rescue subscription still applying on %. '
+                'Recovery may not be complete. Check subscription status manually.',
+                    target_node_name;
+            ELSE
+                RAISE INFO '[RESCUE] Rescue subscription no longer exists. Recovery may have completed.';
+            END IF;
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE WARNING '[RESCUE] Could not verify subscription status: %', SQLERRM;
+        END;
+        RETURN;
+    END IF;
+
+    IF verb THEN
+        RAISE INFO '[RECOVERY] - : Cleanup flag detected; proceeding with finalization...';
+    END IF;
+
+    -- Finalize: cleanup rescue subscription and cloned slot
+    CALL spock.recover_finalize(
+        target_dsn       => target_dsn,
+        target_node_name => target_node_name,
+        failed_node_name => failed_node_name,
+        source_dsn       => source_dsn,
+        cloned_slot_name => cloned_slot_name,
+        verb             => verb
+    );
+
+    -- Print LSN verification from lag_tracker
+    RAISE NOTICE '';
+    RAISE NOTICE '=== Recovery Complete - LSN Verification ===';
+    
+    FOR lag_rec IN
+        SELECT 
+            receiver_name,
+            commit_lsn,
+            replication_lag_bytes,
+            replication_lag
+        FROM dblink(
+                 target_dsn,
+                 format(
+                     $_sql$SELECT 
+                         receiver_name,
+                         commit_lsn,
+                         replication_lag_bytes,
+                         replication_lag
+                     FROM spock.lag_tracker
+                     WHERE origin_name = %L
+                       AND receiver_name IN (%L, %L)
+                     ORDER BY receiver_name$_sql$,
+                     failed_node_name,
+                     target_node_name,
+                     source_node_name
+                 )
+             ) AS t(
+                 receiver_name text,
+                 commit_lsn pg_lsn,
+                 replication_lag_bytes bigint,
+                 replication_lag interval
+             )
+    LOOP
+        RAISE NOTICE '  %: commit_lsn=%, lag_bytes=%, lag_time=%',
+            lag_rec.receiver_name,
+            lag_rec.commit_lsn,
+            COALESCE(lag_rec.replication_lag_bytes::text, 'NULL'),
+            COALESCE(lag_rec.replication_lag::text, 'NULL');
+    END LOOP;
+
+    -- Verify sync
+    BEGIN
+        SELECT commit_lsn INTO n2_lsn
+        FROM dblink(
+                 target_dsn,
+                 format(
+                     $_sql$SELECT commit_lsn
+                      FROM spock.lag_tracker
+                     WHERE origin_name = %L AND receiver_name = %L$_sql$,
+                     failed_node_name,
+                     target_node_name
+                 )
+             ) AS t(commit_lsn pg_lsn);
+        
+        SELECT commit_lsn INTO n3_lsn
+        FROM dblink(
+                 source_dsn,
+                 format(
+                     $_sql$SELECT commit_lsn
+                      FROM spock.lag_tracker
+                     WHERE origin_name = %L AND receiver_name = %L$_sql$,
+                     failed_node_name,
+                     source_node_name
+                 )
+             ) AS t(commit_lsn pg_lsn);
+        
+        IF n2_lsn IS NULL OR n3_lsn IS NULL THEN
+            RAISE WARNING 'One or both LSNs are NULL: n2_lsn=%, n3_lsn=%', n2_lsn, n3_lsn;
+        ELSIF n2_lsn = n3_lsn THEN
+            RAISE NOTICE '✓ SYNCED: % and % have the same LSN from %: %',
+                target_node_name, source_node_name, failed_node_name, n2_lsn;
+        ELSIF n2_lsn > n3_lsn THEN
+            RAISE WARNING '% is ahead: %_lsn=%, %_lsn=%, lag=% bytes',
+                target_node_name, target_node_name, n2_lsn, source_node_name, n3_lsn,
+                pg_wal_lsn_diff(n2_lsn, n3_lsn);
+        ELSE
+            RAISE WARNING '% is ahead: %_lsn=%, %_lsn=%, lag=% bytes',
+                source_node_name, source_node_name, n3_lsn, target_node_name, n2_lsn,
+                pg_wal_lsn_diff(n3_lsn, n2_lsn);
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE WARNING 'Could not verify LSN sync: %', SQLERRM;
+    END;
+    
+    RAISE NOTICE '==========================================';
+END;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- Procedure: spock.recover_failed_node
+-- Backward-compatible wrapper for spock.recover_run.
+-- ----------------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS spock.recover_failed_node(
     text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
 );
@@ -501,8 +933,6 @@ CREATE OR REPLACE PROCEDURE spock.recover_failed_node(
 )
 LANGUAGE plpgsql
 AS $$
-DECLARE
-    cloned_slot text;
 BEGIN
     CALL spock.recover_run(
         failed_node_name => failed_node_name,
@@ -513,94 +943,16 @@ BEGIN
         stop_lsn         => stop_lsn,
         skip_lsn         => skip_lsn,
         stop_timestamp   => stop_timestamp,
-        verb             => verb,
-        cloned_slot_name => cloned_slot
+        verb             => verb
     );
 
-    IF cloned_slot IS NULL THEN
-        RAISE NOTICE '[RESCUE] Legacy wrapper: recovery not required.';
-    ELSE
-        RAISE NOTICE '[RESCUE] Legacy wrapper created rescue subscription using cloned slot %', cloned_slot;
-    END IF;
+    RAISE INFO '[RECOVERY] - : Legacy wrapper: recovery procedure completed';
 END;
 $$;
-
--- ----------------------------------------------------------------------------
--- Procedure: spock.recover_run
--- Orchestrates Phase 1 (precheck) and Phase 2 (clone & temporary subscription).
--- Returns the cloned slot name for later cleanup.
--- ----------------------------------------------------------------------------
-DROP PROCEDURE IF EXISTS spock.recover_run(
-    text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
-);
-CREATE OR REPLACE PROCEDURE spock.recover_run(
-    failed_node_name text,
-    source_node_name text,
-    source_dsn text,
-    target_node_name text,
-    target_dsn text,
-    stop_lsn pg_lsn,
-    skip_lsn pg_lsn,
-    stop_timestamp timestamptz,
-    verb boolean,
-    OUT cloned_slot_name text
-)
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    required boolean;
-BEGIN
-    verb := COALESCE(verb, false);
-    CALL spock.recover_precheck(
-        failed_node_name => failed_node_name,
-        source_node_name => source_node_name,
-        source_dsn       => source_dsn,
-        target_node_name => target_node_name,
-        target_dsn       => target_dsn,
-        verb             => verb,
-        recovery_needed  => required
-    );
-
-    IF NOT required THEN
-        cloned_slot_name := NULL;
-        IF verb THEN
-            RAISE NOTICE '[RESCUE] Recovery skipped: no subscriptions sourced from % on %.',
-                failed_node_name, target_node_name;
-        END IF;
-        RETURN;
-    END IF;
-    CALL spock.recover_phase_clone(
-        failed_node_name => failed_node_name,
-        source_node_name => source_node_name,
-        source_dsn       => source_dsn,
-        target_node_name => target_node_name,
-        target_dsn       => target_dsn,
-        stop_lsn         => stop_lsn,
-        skip_lsn         => skip_lsn,
-        stop_timestamp   => stop_timestamp,
-        verb             => verb,
-        cloned_slot_name => cloned_slot_name
-    );
-
-    IF verb THEN
-        RAISE NOTICE '[RESCUE] Orchestration complete. Cloned slot: %', cloned_slot_name;
-    END IF;
-END;
-$$;
-
--- ----------------------------------------------------------------------------
--- Procedure: spock.recovery
--- Convenience wrapper that runs the full flow (precheck, clone/rescue, finalize).
--- Execute from the coordinator node once you are ready to recover and clean up.
--- ----------------------------------------------------------------------------
-DROP PROCEDURE IF EXISTS spock.recovery(
-    text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
-);
 
 -- ----------------------------------------------------------------------------
 -- Procedure: spock.recover_finalize
--- Resumes peer subscriptions on the rescued node and drops the cloned slot on
--- the rescue source once catch-up is confirmed.
+-- Resumes peer subscriptions on the rescued node and drops the cloned slot.
 -- ----------------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS spock.recover_finalize(
     text, text, text, text, text, boolean
@@ -617,8 +969,9 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     exec_status text;
+    enabled_count integer;
 BEGIN
-    -- [Coordinator] Resume normal replication by clearing rescue suspension flags.
+    -- Resume rescue-suspended subscriptions
     SELECT resume_success::text
       INTO exec_status
       FROM dblink(
@@ -632,12 +985,76 @@ BEGIN
            ) AS t(resume_success boolean);
 
     IF verb THEN
-        RAISE NOTICE '[RESCUE] Resumed peer subscriptions on % (status=%)',
+        RAISE INFO '[RECOVERY] - % : Resumed peer subscriptions (status=%)',
             target_node_name, exec_status;
     END IF;
 
+    -- Also enable regular subscriptions from failed node that were disabled
+    SELECT enabled_count
+      INTO enabled_count
+      FROM dblink(
+               target_dsn,
+               format(
+                   $_sql$SELECT count(*) as enabled_count
+                      FROM spock.subscription s
+                      JOIN spock.node o ON o.node_id = s.sub_origin
+                      JOIN spock.node t ON t.node_id = s.sub_target
+                     WHERE o.node_name = %L
+                       AND t.node_name = %L
+                       AND NOT s.sub_rescue_temporary
+                       AND NOT s.sub_enabled$_sql$,
+                   failed_node_name,
+                   target_node_name
+               )
+           ) AS t(enabled_count integer);
+
+    IF enabled_count > 0 THEN
+        PERFORM dblink_exec(
+            target_dsn,
+            format(
+                $_sql$UPDATE spock.subscription s
+                          SET sub_enabled = true
+                        FROM spock.node o, spock.node t
+                       WHERE o.node_id = s.sub_origin
+                         AND t.node_id = s.sub_target
+                         AND o.node_name = %L
+                         AND t.node_name = %L
+                         AND NOT s.sub_rescue_temporary
+                         AND NOT s.sub_enabled$_sql$,
+                failed_node_name,
+                target_node_name
+            )
+        );
+        IF verb THEN
+            RAISE INFO '[RECOVERY] - % : Enabled % regular subscription(s) from % to %',
+                target_node_name, enabled_count, failed_node_name, target_node_name;
+        END IF;
+    END IF;
+
+    -- Drop rescue subscriptions that are marked for cleanup
+    -- (Manager process also does this, but we do it explicitly for immediate cleanup)
+    BEGIN
+        PERFORM dblink_exec(
+            target_dsn,
+            format(
+                $_sql$SELECT spock.sub_drop(s.sub_name, true)
+                       FROM spock.subscription s
+                       WHERE s.sub_rescue_temporary
+                         AND s.sub_rescue_cleanup_pending$_sql$
+            )
+        );
+        IF verb THEN
+            RAISE INFO '[RECOVERY] - % : Dropped rescue subscription(s) marked for cleanup', target_node_name;
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF verb THEN
+                RAISE WARNING '[RECOVERY] - % : Could not drop rescue subscription(s): %', target_node_name, SQLERRM;
+                RAISE INFO '[RECOVERY] - % : Manager process will clean up rescue subscriptions automatically', target_node_name;
+            END IF;
+    END;
+
     IF cloned_slot_name IS NOT NULL AND cloned_slot_name <> '' THEN
-        -- [Source node] Drop the temporary cloned slot now that the rescue subscription is gone.
         exec_status := dblink_exec(
             source_dsn,
             format(
@@ -646,12 +1063,12 @@ BEGIN
             )
         );
         IF verb THEN
-            RAISE NOTICE '[RESCUE] Dropped cloned slot % on source (status=%)',
+            RAISE INFO '[RECOVERY] - : Dropped cloned slot % on source (status=%)',
                 cloned_slot_name, exec_status;
         END IF;
     ELSE
         IF verb THEN
-            RAISE NOTICE '[RESCUE] No cloned slot supplied, skipping drop.';
+            RAISE INFO '[RECOVERY] - : No cloned slot supplied, skipping drop';
         END IF;
     END IF;
 
@@ -659,10 +1076,9 @@ BEGIN
 END;
 $$;
 
-
 -- ----------------------------------------------------------------------------
 -- Procedure: spock.recover_status
--- Convenience routine to inspect rescue-related catalog state after recovery.
+-- Inspects rescue-related catalog state after recovery.
 -- ----------------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS spock.recover_status(text, text, boolean);
 CREATE OR REPLACE PROCEDURE spock.recover_status(
@@ -679,7 +1095,7 @@ DECLARE
     slots_found boolean := false;
 BEGIN
     IF verb THEN
-        RAISE NOTICE '[RESCUE] Subscription rescue state on %:', target_node_name;
+        RAISE INFO '[RECOVERY] - % : Subscription rescue state', target_node_name;
     END IF;
 
     FOR sub_rec IN
@@ -720,7 +1136,7 @@ BEGIN
     END IF;
 
     IF verb THEN
-        RAISE NOTICE '[RESCUE] Recovery slot state on %:', target_node_name;
+        RAISE INFO '[RECOVERY] - % : Recovery slot state', target_node_name;
     END IF;
 
     FOR slot_rec IN
@@ -759,6 +1175,14 @@ BEGIN
 END;
 $$;
 
+-- ----------------------------------------------------------------------------
+-- Procedure: spock.recovery
+-- Full automated recovery: runs precheck with INFO messages, checks LSN sync,
+-- and proceeds with recovery if target is behind source.
+-- ----------------------------------------------------------------------------
+DROP PROCEDURE IF EXISTS spock.recovery(
+    text, text, text, text, text, pg_lsn, pg_lsn, timestamptz, boolean
+);
 CREATE OR REPLACE PROCEDURE spock.recovery(
     failed_node_name text,
     source_node_name text,
@@ -775,7 +1199,200 @@ AS $$
 DECLARE
     cloned_slot_name text;
     pending_cleanup integer;
+    required boolean;
+    source_lag_lsn pg_lsn;
+    target_lag_lsn pg_lsn;
+    source_sub_lsn pg_lsn;
+    target_sub_lsn pg_lsn;
+    source_slot_lsn pg_lsn;
+    target_slot_lsn pg_lsn;
+    n2_lsn pg_lsn;
+    n3_lsn pg_lsn;
+    lag_rec RECORD;
+    sub_rec RECORD;
+    slot_rec RECORD;
 BEGIN
+    verb := COALESCE(verb, false);
+
+    -- Run precheck with INFO messages - will raise exception on any failure
+    CALL spock.recover_precheck(
+        failed_node_name => failed_node_name,
+        source_node_name => source_node_name,
+        source_dsn       => source_dsn,
+        target_node_name => target_node_name,
+        target_dsn       => target_dsn,
+        verb             => verb,
+        recovery_needed  => required
+    );
+
+    IF NOT required THEN
+        RAISE INFO '[CHECK] - % : No recovery needed: target has no subscriptions from failed node', target_node_name;
+        RETURN;
+    END IF;
+
+    -- Check lag_tracker LSNs first
+    RAISE INFO '[CHECK] - % : Checking lag_tracker LSNs from failed node to source and target...', source_node_name;
+    
+    BEGIN
+        SELECT commit_lsn INTO source_lag_lsn
+          FROM dblink(
+                   source_dsn,
+                   format(
+                       $_sql$SELECT commit_lsn
+                                FROM spock.lag_tracker
+                               WHERE origin_name = %L
+                                 AND receiver_name = %L$_sql$,
+                       failed_node_name,
+                       source_node_name
+                   )
+               ) AS t(commit_lsn pg_lsn);
+    EXCEPTION
+        WHEN OTHERS THEN
+            source_lag_lsn := NULL;
+            RAISE INFO '[CHECK] - % : Could not get source lag_tracker LSN: %', source_node_name, SQLERRM;
+    END;
+
+    BEGIN
+        SELECT commit_lsn INTO target_lag_lsn
+          FROM dblink(
+                   target_dsn,
+                   format(
+                       $_sql$SELECT commit_lsn
+                                FROM spock.lag_tracker
+                               WHERE origin_name = %L
+                                 AND receiver_name = %L$_sql$,
+                       failed_node_name,
+                       target_node_name
+                   )
+               ) AS t(commit_lsn pg_lsn);
+    EXCEPTION
+        WHEN OTHERS THEN
+            target_lag_lsn := NULL;
+            RAISE INFO '[CHECK] - % : Could not get target lag_tracker LSN: %', target_node_name, SQLERRM;
+    END;
+
+    -- Check subscription LSNs from failed node to source and target
+    RAISE INFO '[CHECK] - % : Checking subscription LSNs from failed node to source and target...', source_node_name;
+    
+    BEGIN
+        -- Use lag_tracker which includes both regular and rescue subscriptions
+        SELECT commit_lsn INTO source_sub_lsn
+          FROM dblink(
+                   source_dsn,
+                   format(
+                       $_sql$SELECT commit_lsn
+                                FROM spock.lag_tracker
+                               WHERE origin_name = %L
+                                 AND receiver_name = %L
+                               ORDER BY commit_lsn DESC
+                               LIMIT 1$_sql$,
+                       failed_node_name,
+                       source_node_name
+                   )
+               ) AS t(commit_lsn pg_lsn);
+    EXCEPTION
+        WHEN OTHERS THEN
+            source_sub_lsn := NULL;
+            RAISE INFO '[CHECK] - % : Could not get source subscription LSN: %', source_node_name, SQLERRM;
+    END;
+
+    BEGIN
+        -- Use lag_tracker which includes both regular and rescue subscriptions
+        SELECT commit_lsn INTO target_sub_lsn
+          FROM dblink(
+                   target_dsn,
+                   format(
+                       $_sql$SELECT commit_lsn
+                                FROM spock.lag_tracker
+                               WHERE origin_name = %L
+                                 AND receiver_name = %L
+                               ORDER BY commit_lsn DESC
+                               LIMIT 1$_sql$,
+                       failed_node_name,
+                       target_node_name
+                   )
+               ) AS t(commit_lsn pg_lsn);
+    EXCEPTION
+        WHEN OTHERS THEN
+            target_sub_lsn := NULL;
+            RAISE INFO '[CHECK] - % : Could not get target subscription LSN: %', target_node_name, SQLERRM;
+    END;
+
+    -- Check slot LSNs from failed node to source and target
+    RAISE INFO '[CHECK] - % : Checking slot LSNs from failed node to source and target...', source_node_name;
+    
+    BEGIN
+        SELECT rs.confirmed_flush_lsn INTO source_slot_lsn
+          FROM dblink(
+                   source_dsn,
+                   format(
+                       $_sql$SELECT rs.confirmed_flush_lsn
+                                FROM pg_catalog.pg_replication_slots rs
+                                JOIN spock.subscription s ON rs.slot_name = spock.spock_gen_slot_name(
+                                        current_database()::name,
+                                        o.node_name::name,
+                                        s.sub_name)::text
+                                JOIN spock.node o ON o.node_id = s.sub_origin
+                               WHERE o.node_name = %L
+                               ORDER BY rs.confirmed_flush_lsn DESC NULLS LAST
+                               LIMIT 1$_sql$,
+                       failed_node_name
+                   )
+               ) AS t(confirmed_flush_lsn pg_lsn);
+    EXCEPTION
+        WHEN OTHERS THEN
+            source_slot_lsn := NULL;
+            RAISE INFO '[CHECK] - % : Could not get source slot LSN: %', source_node_name, SQLERRM;
+    END;
+
+    BEGIN
+        SELECT rs.confirmed_flush_lsn INTO target_slot_lsn
+          FROM dblink(
+                   target_dsn,
+                   format(
+                       $_sql$SELECT rs.confirmed_flush_lsn
+                                FROM pg_catalog.pg_replication_slots rs
+                                JOIN spock.subscription s ON rs.slot_name = spock.spock_gen_slot_name(
+                                        current_database()::name,
+                                        o.node_name::name,
+                                        s.sub_name)::text
+                                JOIN spock.node o ON o.node_id = s.sub_origin
+                               WHERE o.node_name = %L
+                               ORDER BY rs.confirmed_flush_lsn DESC NULLS LAST
+                               LIMIT 1$_sql$,
+                       failed_node_name
+                   )
+               ) AS t(confirmed_flush_lsn pg_lsn);
+    EXCEPTION
+        WHEN OTHERS THEN
+            target_slot_lsn := NULL;
+            RAISE INFO '[CHECK] - % : Could not get target slot LSN: %', target_node_name, SQLERRM;
+    END;
+
+    -- Print all LSNs
+    RAISE INFO '[CHECK] - % : LSN Summary:', source_node_name;
+    RAISE INFO '[CHECK] - % :   lag_tracker:   source (%->%) = %, target (%->%) = %', 
+        source_node_name, failed_node_name, source_node_name, COALESCE(source_lag_lsn::text, 'NULL'),
+        failed_node_name, target_node_name, COALESCE(target_lag_lsn::text, 'NULL');
+    RAISE INFO '[CHECK] - % :   subscription:   source (%->%) = %, target (%->%) = %', 
+        source_node_name, failed_node_name, source_node_name, COALESCE(source_sub_lsn::text, 'NULL'),
+        failed_node_name, target_node_name, COALESCE(target_sub_lsn::text, 'NULL');
+    RAISE INFO '[CHECK] - % :   slot:           source (%->%) = %, target (%->%) = %', 
+        source_node_name, failed_node_name, source_node_name, COALESCE(source_slot_lsn::text, 'NULL'),
+        failed_node_name, target_node_name, COALESCE(target_slot_lsn::text, 'NULL');
+
+    -- Check if all LSNs are synced - if so, recovery not required, quit
+    IF (source_lag_lsn IS NOT NULL AND target_lag_lsn IS NOT NULL AND source_lag_lsn = target_lag_lsn)
+       AND (source_sub_lsn IS NOT NULL AND target_sub_lsn IS NOT NULL AND source_sub_lsn = target_sub_lsn)
+       AND (source_slot_lsn IS NOT NULL AND target_slot_lsn IS NOT NULL AND source_slot_lsn = target_slot_lsn) THEN
+        RAISE INFO '[CHECK] - % : All LSNs are synced - recovery not required', source_node_name;
+        RETURN;
+    END IF;
+
+    -- If we get here, recovery is needed
+    RAISE INFO '[CHECK] - % : LSNs are not synced - recovery required', source_node_name;
+
+    -- Proceed with recovery
     CALL spock.recover_run(
         failed_node_name => failed_node_name,
         source_node_name => source_node_name,
@@ -785,20 +1402,29 @@ BEGIN
         stop_lsn         => stop_lsn,
         skip_lsn         => skip_lsn,
         stop_timestamp   => stop_timestamp,
-        verb             => verb,
-        cloned_slot_name => cloned_slot_name
+        verb             => verb
     );
 
+    -- Get cloned slot name from source node for finalization
+    SELECT slot_name INTO cloned_slot_name
+      FROM dblink(
+               source_dsn,
+               $_sql$SELECT slot_name
+                        FROM pg_replication_slots
+                       WHERE slot_name LIKE 'spock_rescue_clone_%'
+                         AND active = true
+                       ORDER BY slot_name DESC
+                       LIMIT 1$_sql$
+           ) AS t(slot_name text);
+
     IF cloned_slot_name IS NULL THEN
-        IF verb THEN
-            RAISE NOTICE '[RESCUE] Recovery skipped: no rescue required.';
-        END IF;
+        RAISE INFO '[CHECK] - % : Recovery skipped: no rescue required.', target_node_name;
         RETURN;
     END IF;
 
     pending_cleanup := 0;
     IF verb THEN
-        RAISE NOTICE '[RESCUE] Waiting for temporary rescue subscription on % to signal cleanup...',
+        RAISE INFO '[RECOVERY] - % : Waiting for temporary rescue subscription to signal cleanup...',
             target_node_name;
     END IF;
 
@@ -815,14 +1441,13 @@ BEGIN
     END LOOP;
 
     IF pending_cleanup = 0 THEN
-        RAISE NOTICE '[RESCUE] Rescue subscription still applying on %. '
-        'Re-run spock.recovery once cleanup has been signalled.',
+        RAISE INFO '[RECOVERY] - % : Rescue subscription still applying. Re-run spock.recovery once cleanup has been signalled',
             target_node_name;
         RETURN;
     END IF;
 
     IF verb THEN
-        RAISE NOTICE '[RESCUE] Cleanup flag detected; proceeding with finalization on %.', target_node_name;
+        RAISE INFO '[RECOVERY] - % : Cleanup flag detected; proceeding with finalization', target_node_name;
     END IF;
 
     CALL spock.recover_finalize(
@@ -834,14 +1459,91 @@ BEGIN
         verb             => verb
     );
 
-    CALL spock.recover_status(
-        target_dsn       => target_dsn,
-        target_node_name => target_node_name,
-        verb             => verb
-    );
+    -- Print LSN verification from lag_tracker
+    RAISE NOTICE '';
+    RAISE NOTICE '=== Recovery Complete - LSN Verification ===';
+    
+    FOR lag_rec IN
+        SELECT 
+            receiver_name,
+            commit_lsn,
+            replication_lag_bytes,
+            replication_lag
+        FROM dblink(
+                 target_dsn,
+                 format(
+                     $_sql$SELECT 
+                         receiver_name,
+                         commit_lsn,
+                         replication_lag_bytes,
+                         replication_lag
+                     FROM spock.lag_tracker
+                     WHERE origin_name = %L
+                       AND receiver_name IN (%L, %L)
+                     ORDER BY receiver_name$_sql$,
+                     failed_node_name,
+                     target_node_name,
+                     source_node_name
+                 )
+             ) AS t(
+                 receiver_name text,
+                 commit_lsn pg_lsn,
+                 replication_lag_bytes bigint,
+                 replication_lag interval
+             )
+    LOOP
+        RAISE NOTICE '  %: commit_lsn=%, lag_bytes=%, lag_time=%',
+            lag_rec.receiver_name,
+            lag_rec.commit_lsn,
+            COALESCE(lag_rec.replication_lag_bytes::text, 'NULL'),
+            COALESCE(lag_rec.replication_lag::text, 'NULL');
+    END LOOP;
 
-    IF verb THEN
-        RAISE NOTICE '[RESCUE] Recovery completed. Temporary slot % removed.', cloned_slot_name;
-    END IF;
+    -- Verify sync
+    BEGIN
+        SELECT commit_lsn INTO n2_lsn
+        FROM dblink(
+                 target_dsn,
+                 format(
+                     $_sql$SELECT commit_lsn
+                      FROM spock.lag_tracker
+                     WHERE origin_name = %L AND receiver_name = %L$_sql$,
+                     failed_node_name,
+                     target_node_name
+                 )
+             ) AS t(commit_lsn pg_lsn);
+        
+        SELECT commit_lsn INTO n3_lsn
+        FROM dblink(
+                 source_dsn,
+                 format(
+                     $_sql$SELECT commit_lsn
+                      FROM spock.lag_tracker
+                     WHERE origin_name = %L AND receiver_name = %L$_sql$,
+                     failed_node_name,
+                     source_node_name
+                 )
+             ) AS t(commit_lsn pg_lsn);
+        
+        IF n2_lsn IS NULL OR n3_lsn IS NULL THEN
+            RAISE WARNING 'One or both LSNs are NULL: n2_lsn=%, n3_lsn=%', n2_lsn, n3_lsn;
+        ELSIF n2_lsn = n3_lsn THEN
+            RAISE NOTICE '✓ SYNCED: % and % have the same LSN from %: %',
+                target_node_name, source_node_name, failed_node_name, n2_lsn;
+        ELSIF n2_lsn > n3_lsn THEN
+            RAISE WARNING '% is ahead: %_lsn=%, %_lsn=%, lag=% bytes',
+                target_node_name, target_node_name, n2_lsn, source_node_name, n3_lsn,
+                pg_wal_lsn_diff(n2_lsn, n3_lsn);
+        ELSE
+            RAISE WARNING '% is ahead: %_lsn=%, %_lsn=%, lag=% bytes',
+                source_node_name, source_node_name, n3_lsn, target_node_name, n2_lsn,
+                pg_wal_lsn_diff(n3_lsn, n2_lsn);
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE WARNING 'Could not verify LSN sync: %', SQLERRM;
+    END;
+    
+    RAISE NOTICE '==========================================';
 END;
 $$;
