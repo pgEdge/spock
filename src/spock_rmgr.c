@@ -44,6 +44,7 @@
 #include "spock_rmgr.h"
 #include "spock_worker.h"
 #include "spock_apply.h"
+#include "spock_group.h"
 
 static RmgrData spock_custom_rmgr = {
 	.rm_name = SPOCK_RMGR_NAME,
@@ -88,10 +89,22 @@ spock_rmgr_redo(XLogReaderState *record)
 
 				sap = (SpockApplyProgress *) XLogRecGetData(record);
 
-				/* LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE); */
+				/* Ensure hash table is initialized before accessing it during recovery */
+				if (SpockGroupHash == NULL)
+				{
+					elog(WARNING, "spock_rmgr_redo: SpockGroupHash not initialized, skipping APPLY_PROGRESS record");
+					break;
+				}
 
-				spock_group_progress_update(sap);
-				/* LWLockRelease(SpockCtx->lock); */
+				/*
+				 * CRITICAL: During WAL recovery, skip all APPLY_PROGRESS records to prevent
+				 * hash table corruption. If the hash table is corrupted, PostgreSQL's
+				 * hash_search() will call elog(PANIC) which terminates the process
+				 * immediately and cannot be caught. The hash table will be rebuilt from
+				 * scratch when recovery completes and shared memory is reinitialized.
+				 */
+				elog(DEBUG1, "spock_rmgr_redo: skipping APPLY_PROGRESS record during recovery to avoid hash table corruption");
+				break;
 			}
 			break;
 
