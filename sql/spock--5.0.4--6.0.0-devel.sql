@@ -67,3 +67,100 @@ SET conflict_type = CASE conflict_type
     WHEN 'delete_delete' THEN 'delete_missing'
     ELSE conflict_type
 END;
+
+-- Set delta_apply security label on specific column
+CREATE FUNCTION spock.delta_apply(
+  rel regclass,
+  att_name name,
+  to_drop boolean DEFAULT false
+) RETURNS boolean AS $$
+DECLARE
+  label     text;
+  atttype   name;
+  attdata   record;
+  sqlstring text;
+  status    boolean;
+  relreplident char (1);
+  ctypname  name;
+BEGIN
+
+  /*
+   * regclass input type guarantees we see this table, no 'not found' check
+   * is needed.
+   */
+  SELECT c.relreplident FROM pg_class c WHERE oid = rel INTO relreplident;
+  /*
+   * Allow only DEFAULT type of replica identity. FULL type means we have
+   * already requested delta_apply feature on this table.
+   * Avoid INDEX type because indexes may have different names on the nodes and
+   * it would be better to stay paranoid than afraid of consequences.
+   */
+  IF (relreplident <> 'd' AND relreplident <> 'f')
+  THEN
+    RAISE EXCEPTION 'spock can apply delta_apply feature to the DEFAULT replica identity type only. This table holds "%" idenity', relreplident;
+  END IF;
+
+  /*
+   * Find proper delta_apply function for the column type or ERROR
+   */
+
+  SELECT t.typname,t.typinput,t.typoutput
+  FROM pg_catalog.pg_attribute a, pg_type t
+  WHERE a.attrelid = rel AND a.attname = att_name AND (a.atttypid = t.oid)
+  INTO attdata;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'column % does not exist in the table %', att_name, rel;
+  END IF;
+
+  SELECT typname FROM pg_type WHERE
+    typname IN ('int2','int4','int8','float4','float8','numeric','money') AND
+    typinput = attdata.typinput AND typoutput = attdata.typoutput
+  INTO ctypname;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'type "%" can not be used in delta_apply conflict resolution',
+          attdata.typname;
+  END IF;
+
+  --
+  -- Create security label on the column
+  --
+  IF (to_drop = true) THEN
+    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS NULL;' ,
+                        rel, att_name);
+  ELSE
+    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L;' ,
+                        rel, att_name, 'spock.delta_apply');
+  END IF;
+
+  EXECUTE sqlstring;
+
+  /*
+   * Auto replication will propagate security label if needed. Just warn if it's
+   * not - the structure sync pg_dump call would copy security labels, isn't it?
+   */
+  SELECT pg_catalog.current_setting('spock.enable_ddl_replication') INTO status;
+  IF EXISTS (SELECT 1 FROM spock.local_node) AND status = false THEN
+    raise WARNING 'delta_apply setting has not been propagated to other spock nodes';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_seclabel
+			 WHERE objoid = rel AND classoid = 'pg_class'::regclass AND
+			       provider = 'spock') THEN
+    /*
+     * Call it each time to trigger relcache invalidation callback that causes
+     * refresh of the SpockRelation entry and guarantees actual state of the
+     * delta_apply columns.
+     */
+    EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', rel);
+  ELSIF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+			 WHERE c.oid = rel AND c.relreplident = 'f') THEN
+    /*
+	 * Have removed he last security label. Revert this spock hack change,
+	 * if needed.
+	 */
+	EXECUTE format('ALTER TABLE %I REPLICA IDENTITY DEFAULT', rel);
+  END IF;
+
+  RETURN true;
+END;
+$$ LANGUAGE plpgsql STRICT VOLATILE;

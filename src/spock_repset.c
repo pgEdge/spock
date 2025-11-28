@@ -45,6 +45,7 @@
 #include "spock_dependency.h"
 #include "spock_node.h"
 #include "spock_queue.h"
+#include "spock_relcache.h"
 #include "spock_repset.h"
 #include "spock.h"
 #include "spock_compat.h"
@@ -1099,7 +1100,7 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 
 	if (targetrel->rd_indexvalid == 0)
 		RelationGetIndexList(targetrel);
-	if (!OidIsValid(targetrel->rd_replidindex) &&
+	if (!OidIsValid(get_replication_identity(targetrel)) &&
 		(repset->replicate_update || repset->replicate_delete))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
