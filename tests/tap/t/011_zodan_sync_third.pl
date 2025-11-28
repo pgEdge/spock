@@ -24,7 +24,7 @@ use SpockTest qw(create_cluster destroy_cluster system_or_bail get_test_config c
 create_cluster(3, 'Create initial 2-node Spock test cluster');
 
 
-my ($ret1, $ret2, $ret3);
+my ($ret1, $ret2, $ret3, $lsn1, $lsn2, $lsn3);
 
 # Get cluster configuration
 my $config = get_test_config();
@@ -264,7 +264,7 @@ $pid = $pgbench_handle2->{KIDS}[0]{PID};
 $alive = kill 0, $pid;
 ok($alive eq 1, "pgbench load to N2 still exists");
 
-print STDERR "Kill pgbench process to reduce test time";
+print STDERR "Kill pgbench process to reduce test time\n";
 $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 $pgbench_handle1->kill_kill;
@@ -363,40 +363,30 @@ print STDERR $pgbench_stdout1;
 print STDERR $pgbench_stdout2;
 print STDERR "##### end of output #####\n";
 
-# We need such a trick: the wait_slot_confirm_lsn routine gets Last Committed
-# LSN position and waits for the confirmations on the remote side. But if there
-# a conflict has happened, feedback will not be sent and we will wait forever.
-psql_or_bail(1, "SELECT spock.sync_event()");
-psql_or_bail(2, "SELECT spock.sync_event()");
-psql_or_bail(3, "SELECT spock.sync_event()");
+#
+# Wait for the end of apply process
+#
+print STDERR "Wait for the end of LR caused by the pgbench load\n";
+$lsn1 = scalar_query(1, "SELECT spock.sync_event()");
+$lsn2 = scalar_query(2, "SELECT spock.sync_event()");
+$lsn3 = scalar_query(3, "SELECT spock.sync_event()");
+print STDERR "DEBUGGING. LSNs: N1: $lsn1, N2: $lsn2, N3: $lsn3\n";
 
-psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
-psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+print STDERR "Wait for the N2 -> N1 sync message ...\n";
+psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 600)");
+print STDERR "Wait for the N1 -> N2 sync message ...\n";
+psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 600)");
+print STDERR "Wait for the N1 -> N3 sync message ...\n";
+psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 600)");
+print STDERR "Wait for the N2 -> N3 sync message ...\n";
+psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 600)");
+print STDERR "LR messages from active nodes has arrived to the new one\n";
 
-print STDERR "Wait for the end of N3->N1, N3->N2 decoding process that means the actual start of LR\n";
-psql_or_bail(3, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
-
-print STDERR "Wait until the end of replication ..\n";
-$lag = scalar_query(1, "SELECT * FROM wait_subscription(remote_node_name := 'n2',
-														   report_it := true,
-														   timeout := '10 minutes',
-														   delay := 1.)");
-ok($lag  <= 0, "Replication N2 => N1 has been finished successfully");
-$lag = scalar_query(2, "SELECT * FROM wait_subscription(remote_node_name := 'n1',
-														   report_it := true,
-														   timeout := '10 minutes',
-														   delay := 1.)");
-ok($lag  <= 0, "Replication N1 => N2 has been finished successfully");
-$lag = scalar_query(3, "SELECT * FROM wait_subscription(remote_node_name := 'n1',
-														   report_it := true,
-														   timeout := '10 minutes',
-														   delay := 1.)");
-ok($lag  <= 0, "Replication N1 => N3 has been finished successfully");
-$lag = scalar_query(3, "SELECT * FROM wait_subscription(remote_node_name := 'n2',
-														   report_it := true,
-														   timeout := '10 minutes',
-														   delay := 1.)");
-ok($lag  <= 0, "Replication N2 => N3 has been finished successfully");
+print STDERR "Wait for the N3 -> N1 sync message ...\n";
+psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600)");
+print STDERR "Wait for the N3 -> N2 sync message ...\n";
+psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600)");
+print STDERR "First LR transaction has arrived from new node to the active ones\n";
 
 print STDERR "Check the data consistency.\n";
 $ret1 = scalar_query(1, "SELECT sum(abalance), sum(aid), count(*) FROM pgbench_accounts");

@@ -28,7 +28,7 @@ RUN ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
     cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys
 
 
-COPY . /home/pgedge/spock
+RUN mkdir -p /home/pgedge/spock
 RUN chown -R pgedge:pgedge /home/pgedge/spock
 #-----------------------------------------
 USER pgedge
