@@ -21,7 +21,7 @@
 
 #include "commands/defrem.h"
 #include "commands/extension.h"
-
+#include "commands/seclabel.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -30,6 +30,7 @@
 #include "spock_autoddl.h"
 #include "spock_executor.h"
 #include "spock_queue.h"
+#include "spock_relcache.h"
 #include "spock_repset.h"
 #include "spock_node.h"
 #include "spock_output_plugin.h"
@@ -270,7 +271,8 @@ add_ddl_to_repset(Node *parsetree)
 		}
 
 		if (!OidIsValid(targetrel->rd_replidindex) &&
-			(repset->replicate_update || repset->replicate_delete))
+			(repset->replicate_update || repset->replicate_delete) &&
+			!OidIsValid(get_replication_identity(targetrel)))
 		{
 			table_close(targetrel, NoLock);
 			return;

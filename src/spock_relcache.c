@@ -430,3 +430,44 @@ spock_lookup_delta_function(char *fname, Oid typeoid)
 
 	return funcoid;
 }
+
+/*
+ * Detect if the FULL identity is just covering delta_apply
+ * feature underpinned by PK.
+ * This is quite a rare case. Don't afraid overhead.
+ */
+Oid
+get_replication_identity(Relation rel)
+{
+	TupleDesc	tupDesc = RelationGetDescr(rel);
+	int			i = 0;
+
+	if (OidIsValid(rel->rd_replidindex))
+		return rel->rd_replidindex;
+
+	if (rel->rd_rel->relreplident != REPLICA_IDENTITY_FULL ||
+		!OidIsValid(rel->rd_pkindex))
+		return InvalidOid;
+
+	for (i = 0; i < tupDesc->natts; i++)
+	{
+		char		   *seclabel;
+		ObjectAddress	object;
+
+		ObjectAddressSubSet(object, RelationRelationId,
+							RelationGetRelid(rel), i + 1);
+		seclabel = GetSecurityLabel(&object, spock_SECLABEL_PROVIDER);
+
+		if (seclabel != NULL)
+		{
+			/*
+			 * Relation has at least on security label on it. Treat it as a
+			 * delta_apply feature.
+			 */
+			pfree(seclabel);
+			return rel->rd_pkindex;
+		}
+	}
+
+	return InvalidOid;
+}
