@@ -52,7 +52,8 @@ extern TimestampTz spock_read_commit_order(StringInfo in);
 extern void spock_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
 							 TimestampTz *committime, TransactionId *remote_xid);
 extern void spock_read_commit(StringInfo in, XLogRecPtr *commit_lsn,
-							  XLogRecPtr *end_lsn, TimestampTz *committime);
+							  XLogRecPtr *end_lsn, TimestampTz *committime,
+							  XLogRecPtr *remote_insert_lsn);
 extern RepOriginId spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn);
 extern uint32 spock_read_rel(StringInfo in);
 extern SpockRelation *spock_read_insert(StringInfo in, LOCKMODE lockmode,
@@ -66,4 +67,13 @@ extern void spock_write_message(StringInfo out, TransactionId xid, XLogRecPtr ls
 								bool transactional, const char *prefix, Size sz,
 								const char *message);
 
+/* Protocol version management for publisher */
+extern void spock_set_proto_version(uint32 version);
+extern uint32 spock_get_proto_version(void);
+
+/* Protocol version management for subscriber */
+extern void spock_apply_set_proto_version(uint32 version);
+extern uint32 spock_apply_get_proto_version(void);
+
 #endif							/* SPOCK_PROTO_NATIVE_H */
+

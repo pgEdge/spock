@@ -71,6 +71,9 @@ typedef struct SpockOutputData
 	const char *spock_version;
 	int			spock_version_num;
 
+	/* Protocol version negotiation */
+	uint32		negotiated_proto_version;
+
 	/* List of origin names */
 	List	   *forward_origins;
 	/* List of SpockRepSet */

@@ -30,6 +30,50 @@
 
 #define IS_REPLICA_IDENTITY 1
 
+/*
+ * Static variables to track negotiated protocol versions
+ *
+ * spock_negotiated_proto_version: Used by the publisher to track the
+ * negotiated protocol version. Set during protocol negotiation.
+ *
+ * spock_apply_proto_version: Used by the subscriber to track the protocol
+ * version received from the publisher via the startup message.
+ * Defaults to SPOCK_PROTO_MIN_VERSION_NUM for backward compatibility with
+ * older publishers (< 5.0.5) that don't send proto_version in startup message.
+ */
+static uint32 spock_negotiated_proto_version = SPOCK_PROTO_VERSION_NUM;
+static uint32 spock_apply_proto_version = SPOCK_PROTO_MIN_VERSION_NUM;
+
+/*
+ * Protocol version management functions for publisher
+ */
+void
+spock_set_proto_version(uint32 version)
+{
+	spock_negotiated_proto_version = version;
+}
+
+uint32
+spock_get_proto_version(void)
+{
+	return spock_negotiated_proto_version;
+}
+
+/*
+ * Protocol version management functions for subscriber
+ */
+void
+spock_apply_set_proto_version(uint32 version)
+{
+	spock_apply_proto_version = version;
+}
+
+uint32
+spock_apply_get_proto_version(void)
+{
+	return spock_apply_proto_version;
+}
+
 static void spock_write_attrs(StringInfo out, Relation rel,
 							  Bitmapset *att_list);
 static void spock_write_tuple(StringInfo out, SpockOutputData *data,
@@ -64,7 +108,10 @@ spock_write_rel(StringInfo out, SpockOutputData *data, Relation rel,
 	uint8		relnamelen;
 	uint8		flags = 0;
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, GetXLogWriteRecPtr());
+
 	pq_sendbyte(out, 'R');		/* sending RELATION */
 
 	/* send the flags field */
@@ -170,7 +217,10 @@ spock_write_begin(StringInfo out, SpockOutputData *data,
 {
 	uint8		flags = 0;
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, GetXLogWriteRecPtr());
+
 	pq_sendbyte(out, 'B');		/* BEGIN */
 
 	/* send the flags field its self */
@@ -190,8 +240,16 @@ spock_write_commit(StringInfo out, SpockOutputData *data,
 				   ReorderBufferTXN *txn, XLogRecPtr commit_lsn)
 {
 	uint8		flags = 0;
+	XLogRecPtr	remote_insert_lsn = GetXLogWriteRecPtr();
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/*
+	 * Protocol version 5+ includes remote_insert_lsn at the beginning of all
+	 * messages. Protocol version 4 includes it at the end of COMMIT messages
+	 * only.
+	 */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, remote_insert_lsn);
+
 	pq_sendbyte(out, 'C');		/* sending COMMIT */
 
 	/* send the flags field */
@@ -201,6 +259,10 @@ spock_write_commit(StringInfo out, SpockOutputData *data,
 	pq_sendint64(out, commit_lsn);
 	pq_sendint64(out, txn->end_lsn);
 	pq_sendint64(out, txn->xact_time.commit_time);
+
+	/* Protocol version 4 includes remote_insert_lsn at the end */
+	if (spock_get_proto_version() == 4)
+		pq_sendint64(out, remote_insert_lsn);
 }
 
 /*
@@ -214,7 +276,10 @@ spock_write_origin(StringInfo out, const RepOriginId origin_id,
 
 	Assert(origin_id != InvalidRepOriginId);
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, GetXLogWriteRecPtr());
+
 	pq_sendbyte(out, 'O');		/* ORIGIN */
 
 	/* send the flags field its self */
@@ -235,7 +300,10 @@ spock_write_commit_order(StringInfo out,
 {
 	uint8		flags = 0;
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, GetXLogWriteRecPtr());
+
 	pq_sendbyte(out, 'L');		/* last commit ts */
 
 	/* send the flags field its self */
@@ -255,7 +323,9 @@ spock_write_insert(StringInfo out, SpockOutputData *data,
 {
 	uint8		flags = 0;
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, GetXLogWriteRecPtr());
 
 	pq_sendbyte(out, 'I');		/* action INSERT */
 
@@ -279,7 +349,9 @@ spock_write_update(StringInfo out, SpockOutputData *data,
 {
 	uint8		flags = 0;
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, GetXLogWriteRecPtr());
 
 	pq_sendbyte(out, 'U');		/* action UPDATE */
 
@@ -318,7 +390,9 @@ spock_write_delete(StringInfo out, SpockOutputData *data,
 {
 	uint8		flags = 0;
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, GetXLogWriteRecPtr());
 
 	pq_sendbyte(out, 'D');		/* action DELETE */
 
@@ -340,13 +414,19 @@ spock_write_delete(StringInfo out, SpockOutputData *data,
 /*
  * Most of the brains for startup message creation lives in
  * spock_config.c, so this presently just sends the set of key/value pairs.
+ *
+ * NOTE: The startup message NEVER includes remote_insert_lsn, even for
+ * protocol 5+. This is because the startup message is the mechanism by which
+ * the subscriber learns the negotiated protocol version. The subscriber cannot
+ * know to read remote_insert_lsn before it processes the startup message.
  */
 void
 write_startup_message(StringInfo out, List *msg)
 {
 	ListCell   *lc;
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/* Startup message never includes remote_insert_lsn - see comment above */
+
 	pq_sendbyte(out, 'S');		/* message type field */
 	pq_sendbyte(out, SPOCK_STARTUP_MSG_FORMAT_FLAT);	/* startup message
 														 * version */
@@ -529,8 +609,11 @@ spock_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
 					bool transactional, const char *prefix, Size sz,
 					const char *message)
 {
-	pq_sendint64(out, GetXLogWriteRecPtr());
-	pq_sendbyte(out, 'M');		/* message type field */
+	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, GetXLogWriteRecPtr());
+
+	pq_sendbyte(out, 'M'); /* message type field */
 
 	/* send out message contents */
 	pq_sendint32(out, xid);
@@ -606,12 +689,20 @@ spock_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
 
 /*
  * Read transaction COMMIT from the stream.
+ *
+ * For protocol version 4, remote_insert_lsn is read from the end of the COMMIT
+ * message and returned to the caller. For protocol version 5+, remote_insert_lsn
+ * is sent at the beginning of all messages (handled in apply_work), so this
+ * function sets *remote_insert_lsn to InvalidXLogRecPtr.
+ *
+ * Callers must check if *remote_insert_lsn != InvalidXLogRecPtr before using it.
  */
 void
 spock_read_commit(StringInfo in,
 				  XLogRecPtr *commit_lsn,
 				  XLogRecPtr *end_lsn,
-				  TimestampTz *committime)
+				  TimestampTz *committime,
+				  XLogRecPtr *remote_insert_lsn)
 {
 	/* read flags */
 	uint8		flags = pq_getmsgbyte(in);
@@ -623,6 +714,16 @@ spock_read_commit(StringInfo in,
 	*commit_lsn = pq_getmsgint64(in);
 	*end_lsn = pq_getmsgint64(in);
 	*committime = pq_getmsgint64(in);
+
+	/*
+	 * Protocol version 4 includes remote_insert_lsn at the end of COMMIT
+	 * messages. Protocol version 5+ includes it at the beginning of ALL
+	 * messages (handled in apply_work).
+	 */
+	if (spock_apply_get_proto_version() == 4)
+		*remote_insert_lsn = pq_getmsgint64(in);
+	else
+		*remote_insert_lsn = InvalidXLogRecPtr;
 }
 
 /*
@@ -1059,7 +1160,10 @@ spock_write_truncate(StringInfo out, int nrelids, Oid relids[], bool cascade,
 	int			i;
 	uint8		flags = 0;
 
-	pq_sendint64(out, GetXLogWriteRecPtr());
+	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
+	if (spock_get_proto_version() >= 5)
+		pq_sendint64(out, GetXLogWriteRecPtr());
+
 	pq_sendbyte(out, 'T');
 
 	pq_sendint32(out, nrelids);
