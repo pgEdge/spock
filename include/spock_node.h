@@ -56,14 +56,6 @@ typedef struct SpockSubscription
 	bool		force_text_transfer;
 	XLogRecPtr	skiplsn;	/* All changes finished at this LSN are skipped */
 	List	   *skip_schema;	/* Array of schema names to skip */
-	/* Rescue subscription fields */
-	bool		rescue_suspended;
-	bool		rescue_temporary;
-	XLogRecPtr	rescue_start_lsn;
-	XLogRecPtr	rescue_stop_lsn;
-	TimestampTz rescue_stop_time;
-	bool		rescue_cleanup_pending;
-	bool		rescue_failed;
 } SpockSubscription;
 
 extern void create_node(SpockNode *node);

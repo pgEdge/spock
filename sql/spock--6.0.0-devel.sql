@@ -35,14 +35,7 @@ CREATE TABLE spock.subscription (
     sub_apply_delay interval NOT NULL DEFAULT '0',
     sub_force_text_transfer boolean NOT NULL DEFAULT 'f',
 	sub_skip_lsn pg_lsn NOT NULL DEFAULT '0/0',
-	sub_skip_schema text[],
-	sub_rescue_suspended boolean NOT NULL DEFAULT false,
-	sub_rescue_temporary boolean NOT NULL DEFAULT false,
-	sub_rescue_start_lsn pg_lsn,
-	sub_rescue_stop_lsn pg_lsn,
-	sub_rescue_stop_time timestamptz,
-	sub_rescue_cleanup_pending boolean NOT NULL DEFAULT false,
-	sub_rescue_failed boolean NOT NULL DEFAULT false
+	sub_skip_schema text[]
 );
 -- Source for sub_id values.
 CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1 OWNED BY spock.subscription.sub_id;
@@ -619,24 +612,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Recovery Slot Status and Management Functions
-
-CREATE FUNCTION spock.get_recovery_slot_status()
-RETURNS TABLE(
-    slot_name text,
-    restart_lsn pg_lsn,
-    confirmed_flush_lsn pg_lsn,
-    min_unacknowledged_ts timestamptz,
-    active boolean,
-    in_recovery boolean
-) LANGUAGE C VOLATILE STRICT
-AS 'MODULE_PATHNAME', 'spock_get_recovery_slot_status_sql';
-
-CREATE FUNCTION spock.advance_recovery_slot()
-RETURNS void
-LANGUAGE C VOLATILE
-AS 'MODULE_PATHNAME', 'spock_advance_recovery_slot_sql';
-
 CREATE OR REPLACE FUNCTION spock.quick_health_check()
 RETURNS TABLE(
     check_name text,
@@ -645,78 +620,12 @@ RETURNS TABLE(
 )
 LANGUAGE plpgsql  
 AS $$
-DECLARE
-    recovery_slot_exists boolean := false;
-    recovery_slot_name text;
-    db_name text := current_database();
 BEGIN
-    -- Check if recovery slot exists
-    SELECT EXISTS (
-        SELECT 1 FROM spock.get_recovery_slot_status() WHERE active = true
-    ) INTO recovery_slot_exists;
-    
-    IF recovery_slot_exists THEN
-        RETURN QUERY SELECT 'Recovery Slot'::text, 'HEALTHY'::text, 'Recovery slot exists and is active'::text;
-    ELSE
-        -- Check if recovery slots are enabled via GUC
-        IF current_setting('spock.enable_recovery_slots', true)::boolean THEN
-            RETURN QUERY SELECT 'Recovery Slot'::text, 'MISSING'::text, 'Recovery slot is missing but should be created automatically by the manager process'::text;
-        ELSE
-            RETURN QUERY SELECT 'Recovery Slot'::text, 'DISABLED'::text, 'Recovery slot is disabled via spock.enable_recovery_slots = off'::text;
-        END IF;
-    END IF;
-    
+    -- Basic health check function
+    -- Additional checks can be added here as needed
     RETURN;
 END;
 $$;
-
--- Rescue coordinator function to find the best surviving node for recovery
-CREATE OR REPLACE FUNCTION spock.find_rescue_source(failed_node_name text)
-RETURNS TABLE (
-    origin_node_id oid,
-    source_node_id oid,
-    last_lsn pg_lsn,
-    last_commit_timestamp timestamptz,
-    confidence_level text
-)
-LANGUAGE c AS 'MODULE_PATHNAME', 'spock_find_rescue_source';
-
--- Recovery slot cloning function for disaster recovery workflows
-CREATE OR REPLACE FUNCTION spock.clone_recovery_slot(
-    target_restart_lsn pg_lsn DEFAULT NULL
-)
-RETURNS TABLE (
-    cloned_slot_name text,
-    original_slot_name text,
-    restart_lsn pg_lsn,
-    success boolean,
-    message text
-)
-LANGUAGE c AS 'MODULE_PATHNAME', 'spock_clone_recovery_slot';
-
-CREATE FUNCTION spock.create_rescue_subscription(
-    target_node name,
-    source_node name,
-    cloned_slot text,
-    skip_lsn pg_lsn DEFAULT NULL,
-    stop_lsn pg_lsn DEFAULT NULL,
-    stop_timestamp timestamptz DEFAULT NULL
-)
-RETURNS oid
-LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_rescue_subscription';
-
-CREATE FUNCTION spock.suspend_all_peer_subs_for_rescue(
-    node_id oid,
-    failed_node_id oid
-)
-RETURNS boolean
-LANGUAGE c AS 'MODULE_PATHNAME', 'spock_suspend_all_peer_subs_for_rescue_sql';
-
-CREATE FUNCTION spock.resume_all_peer_subs_post_rescue(
-    node_id oid
-)
-RETURNS boolean
-LANGUAGE c AS 'MODULE_PATHNAME', 'spock_resume_all_peer_subs_post_rescue_sql';
 
 -- ============================================================================
 -- Forwarding-Based Recovery Function

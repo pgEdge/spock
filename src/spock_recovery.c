@@ -738,10 +738,6 @@ advance_recovery_slot_to_min_position(void)
 		XLogRecPtr remote_lsn;
 		char origin_name[NAMEDATALEN];
 
-		/* Skip rescue subscriptions */
-		if (sub->rescue_temporary)
-			continue;
-
 		/* Skip disabled subscriptions */
 		if (!sub->enabled)
 			continue;
@@ -1836,13 +1832,6 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
 		}
 	}
 	sub.skip_schema = NIL;
-	sub.rescue_suspended = false;
-	sub.rescue_temporary = true;
-	sub.rescue_start_lsn = skip_lsn;  /* Transactions before this will be skipped */
-	sub.rescue_stop_lsn = stop_lsn;    /* Transactions after this will be stopped */
-	sub.rescue_stop_time = stop_timestamp;
-	sub.rescue_cleanup_pending = false;
-	sub.rescue_failed = false;
 
 	PG_TRY();
 	{
@@ -1882,18 +1871,6 @@ spock_create_rescue_subscription_sql(PG_FUNCTION_ARGS)
 	elog(LOG,
 		 "SPOCK: created rescue subscription \"%s\" (id %u) using slot \"%s\"",
 		 sub_name, sub.id, cloned_slot_name);
-	
-	elog(INFO, "[RECOVERY_DEBUG] Created rescue subscription '%s' (id %u): enabled=%d, cleanup_pending=%d, failed=%d, stop_lsn=%X/%X, start_lsn=%X/%X, slot_name='%s'",
-		 sub_name,
-		 sub.id,
-		 sub.enabled ? 1 : 0,
-		 sub.rescue_cleanup_pending ? 1 : 0,
-		 sub.rescue_failed ? 1 : 0,
-		 !XLogRecPtrIsInvalid(sub.rescue_stop_lsn) ? (uint32) (sub.rescue_stop_lsn >> 32) : 0,
-		 !XLogRecPtrIsInvalid(sub.rescue_stop_lsn) ? (uint32) sub.rescue_stop_lsn : 0,
-		 !XLogRecPtrIsInvalid(sub.rescue_start_lsn) ? (uint32) (sub.rescue_start_lsn >> 32) : 0,
-		 !XLogRecPtrIsInvalid(sub.rescue_start_lsn) ? (uint32) sub.rescue_start_lsn : 0,
-		 cloned_slot_name);
 
 	PG_RETURN_OID(sub.id);
 }
