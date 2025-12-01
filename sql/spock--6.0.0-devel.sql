@@ -35,7 +35,14 @@ CREATE TABLE spock.subscription (
     sub_apply_delay interval NOT NULL DEFAULT '0',
     sub_force_text_transfer boolean NOT NULL DEFAULT 'f',
 	sub_skip_lsn pg_lsn NOT NULL DEFAULT '0/0',
-	sub_skip_schema text[]
+	sub_skip_schema text[],
+	sub_rescue_suspended boolean NOT NULL DEFAULT false,
+	sub_rescue_temporary boolean NOT NULL DEFAULT false,
+	sub_rescue_start_lsn pg_lsn,
+	sub_rescue_stop_lsn pg_lsn,
+	sub_rescue_stop_time timestamptz,
+	sub_rescue_cleanup_pending boolean NOT NULL DEFAULT false,
+	sub_rescue_failed boolean NOT NULL DEFAULT false
 );
 -- Source for sub_id values.
 CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1 OWNED BY spock.subscription.sub_id;
@@ -98,27 +105,21 @@ CREATE TABLE spock.exception_status_detail (
 ) WITH (user_catalog_table=true);
 
 CREATE FUNCTION spock.apply_group_progress (
-	OUT dbid              oid,
-	OUT node_id           oid,
-	OUT remote_node_id    oid,
-	OUT remote_commit_ts  timestamptz,
-	OUT prev_remote_ts    timestamptz,
+	OUT dbid oid,
+	OUT node_id oid,
+	OUT remote_node_id oid,
+	OUT remote_commit_ts timestamptz,
+	OUT prev_remote_ts timestamptz,
 	OUT remote_commit_lsn pg_lsn,
 	OUT remote_insert_lsn pg_lsn,
-	OUT received_lsn      pg_lsn,
-	OUT last_updated_ts   timestamptz,
+	OUT received_lsn pg_lsn,
+	OUT last_updated_ts timestamptz,
 	OUT updated_by_decode bool
 ) RETURNS SETOF record
 LANGUAGE c AS 'MODULE_PATHNAME', 'get_apply_group_progress';
 
--- Show the Spock apply progress for the current database
--- Columns prev_remote_ts, last_updated_ts, and updated_by_decode is dedicated
--- for internal use only.
 CREATE VIEW spock.progress AS
-	SELECT * FROM spock.apply_group_progress()
-      WHERE dbid = (
-        SELECT oid FROM pg_database WHERE datname = current_database()
-      );
+	SELECT * FROM spock.apply_group_progress();
 
 CREATE FUNCTION spock.node_create(node_name name, dsn text,
     location text DEFAULT NULL, country text DEFAULT NULL,
@@ -617,3 +618,254 @@ BEGIN
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Recovery Slot Status and Management Functions
+
+CREATE FUNCTION spock.get_recovery_slot_status()
+RETURNS TABLE(
+    slot_name text,
+    restart_lsn pg_lsn,
+    confirmed_flush_lsn pg_lsn,
+    min_unacknowledged_ts timestamptz,
+    active boolean,
+    in_recovery boolean
+) LANGUAGE C VOLATILE STRICT
+AS 'MODULE_PATHNAME', 'spock_get_recovery_slot_status_sql';
+
+CREATE FUNCTION spock.advance_recovery_slot()
+RETURNS void
+LANGUAGE C VOLATILE
+AS 'MODULE_PATHNAME', 'spock_advance_recovery_slot_sql';
+
+CREATE OR REPLACE FUNCTION spock.quick_health_check()
+RETURNS TABLE(
+    check_name text,
+    status text,
+    details text
+)
+LANGUAGE plpgsql  
+AS $$
+DECLARE
+    recovery_slot_exists boolean := false;
+    recovery_slot_name text;
+    db_name text := current_database();
+BEGIN
+    -- Check if recovery slot exists
+    SELECT EXISTS (
+        SELECT 1 FROM spock.get_recovery_slot_status() WHERE active = true
+    ) INTO recovery_slot_exists;
+    
+    IF recovery_slot_exists THEN
+        RETURN QUERY SELECT 'Recovery Slot'::text, 'HEALTHY'::text, 'Recovery slot exists and is active'::text;
+    ELSE
+        -- Check if recovery slots are enabled via GUC
+        IF current_setting('spock.enable_recovery_slots', true)::boolean THEN
+            RETURN QUERY SELECT 'Recovery Slot'::text, 'MISSING'::text, 'Recovery slot is missing but should be created automatically by the manager process'::text;
+        ELSE
+            RETURN QUERY SELECT 'Recovery Slot'::text, 'DISABLED'::text, 'Recovery slot is disabled via spock.enable_recovery_slots = off'::text;
+        END IF;
+    END IF;
+    
+    RETURN;
+END;
+$$;
+
+-- Rescue coordinator function to find the best surviving node for recovery
+CREATE OR REPLACE FUNCTION spock.find_rescue_source(failed_node_name text)
+RETURNS TABLE (
+    origin_node_id oid,
+    source_node_id oid,
+    last_lsn pg_lsn,
+    last_commit_timestamp timestamptz,
+    confidence_level text
+)
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_find_rescue_source';
+
+-- Recovery slot cloning function for disaster recovery workflows
+CREATE OR REPLACE FUNCTION spock.clone_recovery_slot(
+    target_restart_lsn pg_lsn DEFAULT NULL
+)
+RETURNS TABLE (
+    cloned_slot_name text,
+    original_slot_name text,
+    restart_lsn pg_lsn,
+    success boolean,
+    message text
+)
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_clone_recovery_slot';
+
+CREATE FUNCTION spock.create_rescue_subscription(
+    target_node name,
+    source_node name,
+    cloned_slot text,
+    skip_lsn pg_lsn DEFAULT NULL,
+    stop_lsn pg_lsn DEFAULT NULL,
+    stop_timestamp timestamptz DEFAULT NULL
+)
+RETURNS oid
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_rescue_subscription';
+
+CREATE FUNCTION spock.suspend_all_peer_subs_for_rescue(
+    node_id oid,
+    failed_node_id oid
+)
+RETURNS boolean
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_suspend_all_peer_subs_for_rescue_sql';
+
+CREATE FUNCTION spock.resume_all_peer_subs_post_rescue(
+    node_id oid
+)
+RETURNS boolean
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_resume_all_peer_subs_post_rescue_sql';
+
+-- ============================================================================
+-- Forwarding-Based Recovery Function
+-- ============================================================================
+-- Recovery mechanism using forward_origins to cascade transactions
+-- from a source node to a target node after a node failure.
+--
+-- This function configures the target node's subscription to the source node
+-- to forward transactions from the failed node's origin by setting
+-- forward_origins to {all}.
+--
+-- Advantages:
+--   * No recovery slots needed
+--   * No WAL retention requirements
+--   * No catalog_xmin filtering issues
+--   * Works regardless of time gap
+--   * Simple implementation - just updates subscription settings
+--
+-- Usage:
+--   CALL spock.recover_run(
+--       failed_node_name := 'n1',
+--       source_node_name := 'n3',
+--       source_dsn       := 'host=localhost port=5453 dbname=pgedge user=pge',
+--       target_node_name := 'n2',
+--       target_dsn       := 'host=localhost port=5452 dbname=pgedge user=pge',
+--       verb             := true
+--   );
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE spock.recover_run(
+    failed_node_name text,
+    source_node_name text,
+    source_dsn text,
+    target_node_name text,
+    target_dsn text,
+    verb boolean DEFAULT false
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    failed_node_id oid;
+    source_node_id oid;
+    target_node_id oid;
+    current_forward_origins text[];
+    recovery_sub_name text;
+BEGIN
+    -- Validate inputs
+    IF failed_node_name IS NULL OR source_node_name IS NULL OR 
+       target_node_name IS NULL OR source_dsn IS NULL OR target_dsn IS NULL THEN
+        RAISE EXCEPTION 'All parameters must be provided';
+    END IF;
+
+    IF verb THEN
+        RAISE INFO '[RECOVERY] Starting recovery: failed=%, source=%, target=%',
+            failed_node_name, source_node_name, target_node_name;
+    END IF;
+
+    -- Get node IDs
+    SELECT node_id INTO failed_node_id
+    FROM spock.node WHERE node_name = failed_node_name;
+    
+    IF failed_node_id IS NULL THEN
+        RAISE EXCEPTION 'Failed node % does not exist', failed_node_name;
+    END IF;
+
+    SELECT node_id INTO source_node_id
+    FROM spock.node WHERE node_name = source_node_name;
+    
+    IF source_node_id IS NULL THEN
+        RAISE EXCEPTION 'Source node % does not exist', source_node_name;
+    END IF;
+
+    SELECT node_id INTO target_node_id
+    FROM spock.node WHERE node_name = target_node_name;
+    
+    IF target_node_id IS NULL THEN
+        RAISE EXCEPTION 'Target node % does not exist', target_node_name;
+    END IF;
+
+    -- Verify this function is being called on the target node
+    IF NOT EXISTS (
+        SELECT 1 FROM spock.local_node WHERE node_id = target_node_id
+    ) THEN
+        RAISE EXCEPTION 'This function must be called on the target node (%), not on the current node',
+            target_node_name;
+    END IF;
+
+    -- Find subscription from target to source
+    SELECT sub_name INTO recovery_sub_name
+    FROM spock.subscription
+    WHERE sub_target = target_node_id
+      AND sub_origin = source_node_id;
+    
+    IF recovery_sub_name IS NULL THEN
+        RAISE EXCEPTION 'No subscription found from target % to source %',
+            target_node_name, source_node_name;
+    END IF;
+
+    IF verb THEN
+        RAISE INFO '[RECOVERY] Found subscription: %', recovery_sub_name;
+    END IF;
+
+    -- Get current forward_origins
+    SELECT sub_forward_origins INTO current_forward_origins
+    FROM spock.subscription
+    WHERE sub_name = recovery_sub_name;
+
+    -- Update forward_origins to forward all origins
+    -- This ensures transactions from the failed node (and any other node) are forwarded
+    IF current_forward_origins IS NULL OR NOT ('all' = ANY(current_forward_origins)) THEN
+        UPDATE spock.subscription
+        SET sub_forward_origins = ARRAY['all']::text[]
+        WHERE sub_name = recovery_sub_name;
+        
+        IF verb THEN
+            RAISE INFO '[RECOVERY] Updated subscription % forward_origins to {all}',
+                recovery_sub_name;
+        END IF;
+    ELSE
+        IF verb THEN
+            RAISE INFO '[RECOVERY] Subscription % already forwards all origins',
+                recovery_sub_name;
+        END IF;
+    END IF;
+
+    -- Enable subscription if disabled
+    IF NOT EXISTS (
+        SELECT 1 FROM spock.subscription 
+        WHERE sub_name = recovery_sub_name AND sub_enabled = true
+    ) THEN
+        PERFORM spock.sub_enable(recovery_sub_name);
+        IF verb THEN
+            RAISE INFO '[RECOVERY] Enabled subscription %', recovery_sub_name;
+        END IF;
+    END IF;
+
+    IF verb THEN
+        RAISE INFO '[RECOVERY] Recovery configuration complete';
+        RAISE INFO '[RECOVERY] Subscription % will forward all transactions (including from origin %)',
+            recovery_sub_name, failed_node_name;
+        RAISE INFO '[RECOVERY] Recovery will proceed automatically via normal replication';
+        RAISE INFO '[RECOVERY] Monitor progress using: SELECT * FROM spock.sub_show_status(%)',
+            recovery_sub_name;
+    END IF;
+
+    -- Note: Recovery happens automatically via the subscription
+    -- The subscription will forward transactions from the failed node's origin
+    -- No need to wait here - recovery is asynchronous
+    -- Users should monitor subscription status and data consistency separately
+
+END;
+$$;
+
