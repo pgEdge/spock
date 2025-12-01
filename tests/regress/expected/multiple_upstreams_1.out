@@ -93,7 +93,7 @@ BEGIN
 	END LOOP;
 END;
 $$;
-SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.show_subscription_status();
+SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.show_subscription_status() ORDER BY 1,2;
  subscription_name  |   status    | provider_node  |                 replication_sets                  | forward_origins 
 --------------------+-------------+----------------+-----------------------------------------+-----------------
  test_subscription  | replicating | test_provider  | {default_insert_only,ddl_sql,repset_test,default} | 

@@ -70,6 +70,7 @@
 #include "spock_conflict.h"
 #include "spock_executor.h"
 #include "spock_node.h"
+#include "spock_proto_native.h"
 #include "spock_queue.h"
 #include "spock_relcache.h"
 #include "spock_repset.h"
@@ -224,6 +225,7 @@ static void maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 static void append_feedback_position(XLogRecPtr recvpos);
 static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
 								  XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
+static void UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted);
 
 /* Wrapper for latch for waiting for previous transaction to commit */
 void
@@ -661,11 +663,20 @@ handle_commit(StringInfo s)
 	XLogRecPtr	commit_lsn;
 	XLogRecPtr	end_lsn;
 	TimestampTz commit_time;
+	XLogRecPtr	remote_insert_lsn;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
 
-	spock_read_commit(s, &commit_lsn, &end_lsn, &commit_time);
+	spock_read_commit(s, &commit_lsn, &end_lsn, &commit_time, &remote_insert_lsn);
+
+	/*
+	 * For protocol version 4, remote_insert_lsn is read from the end of
+	 * COMMIT message. For protocol version 5+, it's read at the beginning of
+	 * all messages in apply_work.
+	 */
+	if (remote_insert_lsn != InvalidXLogRecPtr)
+		UpdateWorkerStats(end_lsn, remote_insert_lsn);
 
 	Assert(commit_time == replorigin_session_origin_timestamp);
 
@@ -1722,6 +1733,32 @@ handle_startup_param(const char *key, const char *value)
 		/* FIXME: Store this somewhere */
 		elog(DEBUG1, "SPOCK %s: changeset origin forwarding enabled: %s",
 			 MySubscription->name, fwd ? "t" : "f");
+	}
+
+	/*
+	 * Extract the negotiated protocol version from the publisher. This is the
+	 * protocol version the publisher decided to use based on what both sides
+	 * support. The subscriber must use this version when reading messages.
+	 */
+	if (strcmp(key, "proto_version") == 0)
+	{
+		uint32		proto_version;
+		char	   *endptr;
+
+		errno = 0;
+		proto_version = strtoul(value, &endptr, 10);
+
+		if (errno != 0 || *endptr != '\0')
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("SPOCK %s: invalid proto_version value: %s",
+							MySubscription->name, value)));
+
+		/* Set the protocol version for the subscriber */
+		spock_apply_set_proto_version(proto_version);
+
+		elog(LOG, "SPOCK %s: using protocol version %u from publisher",
+			 MySubscription->name, proto_version);
 	}
 
 	/*
@@ -2791,8 +2828,16 @@ stream_replay:
 					/*
 					 * Update statistics before applying the record to let the
 					 * apply machinery to check consistency of these values.
+					 *
+					 * Protocol version 5+ includes remote_insert_lsn at the
+					 * beginning of all messages. Protocol version 4 only
+					 * includes it at the end of COMMIT messages (handled in
+					 * handle_commit).
 					 */
-					last_inserted = pq_getmsgint64(msg);
+					if (spock_apply_get_proto_version() >= 5)
+						last_inserted = pq_getmsgint64(msg);
+					else
+						last_inserted = last_received;
 					UpdateWorkerStats(last_received, last_inserted);
 
 					replication_handler(msg);

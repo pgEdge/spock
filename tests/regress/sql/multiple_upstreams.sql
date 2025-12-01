@@ -56,7 +56,7 @@ SET LOCAL statement_timeout = '10s';
 SELECT spock.sub_wait_for_sync('test_subscription1');
 COMMIT;
 
-SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.sub_show_status();
+SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.sub_show_status() ORDER BY 1,2;
 
 SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
 

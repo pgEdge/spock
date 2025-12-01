@@ -25,9 +25,14 @@
  * we can support. SPOCK_PROTO_MIN_VERSION_NUM is the oldest version we
  * have backwards compatibility for. We negotiate protocol versions during the
  * startup handshake. See the protocol documentation for details.
+ *
+ * SPOCK_MIN_VERSION_NUM_FOR_MULTI_PROTO is the minimum Spock version that
+ * supports multi-protocol mode (protocol versions 4 and 5). Both nodes must
+ * be at least this version to use protocol version 4.
  */
-#define SPOCK_PROTO_VERSION_NUM 4
-#define SPOCK_PROTO_MIN_VERSION_NUM 3
+#define SPOCK_PROTO_VERSION_NUM 5
+#define SPOCK_PROTO_MIN_VERSION_NUM 4
+#define SPOCK_MIN_VERSION_NUM_FOR_MULTI_PROTO 50000
 
 /*
  * The startup parameter format is versioned separately to the rest of the wire

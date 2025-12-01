@@ -41,6 +41,7 @@
 #include "spock_executor.h"
 #include "spock_node.h"
 #include "spock_output_proto.h"
+#include "spock_proto_native.h"
 #include "spock_queue.h"
 #include "spock_repset.h"
 #include "spock_worker.h"
@@ -239,7 +240,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 										  ALLOCSET_DEFAULT_SIZES);
 	data->allow_internal_basetypes = false;
 	data->allow_binary_basetypes = false;
-
+	data->negotiated_proto_version = SPOCK_PROTO_VERSION_NUM;
 
 	ctx->output_plugin_private = data;
 
@@ -330,6 +331,58 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("client sent max_proto_version=%d but we only support protocol %d or higher",
 							data->client_max_proto_version, SPOCK_PROTO_MIN_VERSION_NUM)));
+
+		/*
+		 * Negotiate protocol version.
+		 *
+		 * The negotiated protocol version is the minimum of what the server
+		 * supports (SPOCK_PROTO_VERSION_NUM) and what the client can handle
+		 * (client_max_proto_version).
+		 */
+		data->negotiated_proto_version = Min(SPOCK_PROTO_VERSION_NUM,
+											 data->client_max_proto_version);
+
+		/* Validate the negotiated version is within acceptable range */
+		if (data->negotiated_proto_version < SPOCK_PROTO_MIN_VERSION_NUM)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot negotiate acceptable protocol version"),
+					 errdetail("Client supports versions %d-%d, server supports %d-%d",
+							   data->client_min_proto_version,
+							   data->client_max_proto_version,
+							   SPOCK_PROTO_MIN_VERSION_NUM,
+							   SPOCK_PROTO_VERSION_NUM)));
+
+		/*
+		 * Protocol version 4 requires both nodes to be at least Spock 5.0.0
+		 * (SPOCK_MIN_VERSION_NUM_FOR_MULTI_PROTO) because that's when
+		 * multi-protocol support was added. This ensures both sides can
+		 * handle the protocol correctly.
+		 */
+		if (data->negotiated_proto_version == 4)
+		{
+			if (SPOCK_VERSION_NUM < SPOCK_MIN_VERSION_NUM_FOR_MULTI_PROTO ||
+				data->spock_version_num < SPOCK_MIN_VERSION_NUM_FOR_MULTI_PROTO)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("protocol version 4 requires both nodes to be at least Spock 5.0.0"),
+						 errdetail("Server version: %d, client version: %d, required: %d",
+								   SPOCK_VERSION_NUM,
+								   data->spock_version_num,
+								   SPOCK_MIN_VERSION_NUM_FOR_MULTI_PROTO)));
+		}
+
+		/* Set the negotiated protocol version for the publisher */
+		spock_set_proto_version(data->negotiated_proto_version);
+
+		elog(DEBUG1, "spock negotiated protocol version %d (server: %d-%d, client: %d-%d, spock client: %d, spock server: %d)",
+			 data->negotiated_proto_version,
+			 SPOCK_PROTO_MIN_VERSION_NUM,
+			 SPOCK_PROTO_VERSION_NUM,
+			 data->client_min_proto_version,
+			 data->client_max_proto_version,
+			 data->spock_version_num,
+			 SPOCK_VERSION_NUM);
 
 		/*
 		 * Set correct protocol format.

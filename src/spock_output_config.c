@@ -539,6 +539,9 @@ prepare_startup_message(SpockOutputData *data)
 	l = add_startup_msg_i(l, "max_proto_version", SPOCK_PROTO_VERSION_NUM);
 	l = add_startup_msg_i(l, "min_proto_version", SPOCK_PROTO_MIN_VERSION_NUM);
 
+	/* Send the negotiated protocol version to the subscriber */
+	l = add_startup_msg_i(l, "proto_version", data->negotiated_proto_version);
+
 	/* We don't support understand column types yet */
 	l = add_startup_msg_b(l, "coltypes", false);
 

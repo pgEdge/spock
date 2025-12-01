@@ -2,13 +2,13 @@ CREATE EXTENSION spock;
 SELECT spock.spock_max_proto_version();
  spock_max_proto_version 
 -------------------------
-                       4
+                       5
 (1 row)
 
 SELECT spock.spock_min_proto_version();
  spock_min_proto_version 
 -------------------------
-                       3
+                       4
 (1 row)
 
 -- test extension version

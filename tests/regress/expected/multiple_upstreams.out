@@ -80,7 +80,7 @@ SELECT spock.sub_wait_for_sync('test_subscription1');
 (1 row)
 
 COMMIT;
-SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.sub_show_status();
+SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.sub_show_status() ORDER BY 1,2;
  subscription_name  |   status    | provider_node  |           replication_sets            | forward_origins 
 --------------------+-------------+----------------+---------------------------------------+-----------------
  test_subscription  | replicating | test_provider  | {default,default_insert_only,ddl_sql} | 

@@ -142,8 +142,8 @@ BEGIN
             slot,
             NULL,
             10,
-            'min_proto_version', '3',
-            'max_proto_version', '4',
+            'min_proto_version', '4',
+            'max_proto_version', '5',
             'startup_params_format', '1',
             'proto_format', 'json',
             'spock.replication_set_names', 'default,ddl_sql'
