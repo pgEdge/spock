@@ -48,7 +48,7 @@ SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3')
 \c :provider_dsn
 \set VERBOSITY terse
 -- Check propagation of security labels
-CREATE TABLE slabel1 (x integer, y text PRIMARY KEY);
+CREATE TABLE slabel1 (x integer NOT NULL, y text PRIMARY KEY);
 
 SELECT spock.delta_apply('slabel1', 'x');
 SELECT spock.delta_apply('slabel1', 'y'); -- ERROR
