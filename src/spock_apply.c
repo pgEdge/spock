@@ -78,7 +78,6 @@
 #include "spock_worker.h"
 #include "spock_apply.h"
 #include "spock_apply_heap.h"
-#include "spock_apply_spi.h"
 #include "spock_exception_handler.h"
 #include "spock_common.h"
 #include "spock_readonly.h"
@@ -115,30 +114,6 @@ static ApplyReplayEntry	   *apply_replay_head = NULL;
 static ApplyReplayEntry	   *apply_replay_tail = NULL;
 static ApplyReplayEntry	   *apply_replay_next = NULL;
 static int					apply_replay_bytes = 0;
-
-typedef struct SpockApplyFunctions
-{
-	spock_apply_begin_fn on_begin;
-	spock_apply_commit_fn on_commit;
-	spock_apply_insert_fn do_insert;
-	spock_apply_update_fn do_update;
-	spock_apply_delete_fn do_delete;
-	spock_apply_can_mi_fn can_multi_insert;
-	spock_apply_mi_add_tuple_fn multi_insert_add_tuple;
-	spock_apply_mi_finish_fn multi_insert_finish;
-} SpockApplyFunctions;
-
-static SpockApplyFunctions apply_api =
-{
-	.on_begin = spock_apply_heap_begin,
-	.on_commit = spock_apply_heap_commit,
-	.do_insert = spock_apply_heap_insert,
-	.do_update = spock_apply_heap_update,
-	.do_delete = spock_apply_heap_delete,
-	.can_multi_insert = spock_apply_heap_can_mi,
-	.multi_insert_add_tuple = spock_apply_heap_mi_add_tuple,
-	.multi_insert_finish = spock_apply_heap_mi_finish
-};
 
 /* Number of tuples inserted after which we switch to multi-insert. */
 #define MIN_MULTI_INSERT_TUPLES 5
@@ -447,7 +422,7 @@ begin_replication_step(void)
 	if (!IsTransactionState())
 	{
 		StartTransactionCommand();
-		apply_api.on_begin();
+		spock_apply_heap_begin();
 		result = true;
 	}
 
@@ -719,7 +694,7 @@ handle_commit(StringInfo s)
 
 		multi_insert_finish();
 
-		apply_api.on_commit();
+		spock_apply_heap_commit();
 
 
 		/*
@@ -1143,7 +1118,7 @@ handle_insert(StringInfo s)
 		}
 		else
 		{
-			apply_api.multi_insert_add_tuple(rel, &newtup);
+			spock_apply_heap_mi_add_tuple(rel, &newtup);
 			last_insert_rel_cnt++;
 			MemoryContextSwitchTo(oldcontext);
 			MemoryContextReset(ApplyOperationContext);
@@ -1152,8 +1127,7 @@ handle_insert(StringInfo s)
 	}
 	else if (spock_batch_inserts &&
 			 RelationGetRelid(rel->rel) != QueueRelid &&
-			 apply_api.can_multi_insert &&
-			 apply_api.can_multi_insert(rel) &&
+			 spock_apply_heap_can_mi(rel) &&
 			 MyApplyWorker->use_try_block == false)
 	{
 		if (rel != last_insert_rel)
@@ -1177,7 +1151,7 @@ handle_insert(StringInfo s)
 		{
 			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
-			apply_api.do_insert(rel, &newtup);
+			spock_apply_heap_insert(rel, &newtup);
 		}
 		PG_CATCH();
 		{
@@ -1204,7 +1178,7 @@ handle_insert(StringInfo s)
 	else
 	{
 		MemoryContextSwitchTo(ApplyOperationContext);
-		apply_api.do_insert(rel, &newtup);
+		spock_apply_heap_insert(rel, &newtup);
 		MemoryContextSwitchTo(oldcontext);
 	}
 
@@ -1227,7 +1201,7 @@ handle_insert(StringInfo s)
 
 		end_replication_step();
 
-		apply_api.on_commit();
+		spock_apply_heap_commit();
 
 		handle_queued_message(ht, started_tx);
 
@@ -1239,7 +1213,7 @@ handle_insert(StringInfo s)
 
 		table_close(qrel, NoLock);
 
-		apply_api.on_begin();
+		spock_apply_heap_begin();
 		MemoryContextSwitchTo(MessageContext);
 	}
 	else
@@ -1262,7 +1236,7 @@ multi_insert_finish(void)
 		errcallback_arg.action_name = "multi INSERT";
 		errcallback_arg.rel = last_insert_rel;
 
-		apply_api.multi_insert_finish(last_insert_rel);
+		spock_apply_heap_mi_finish(last_insert_rel);
 		spock_relation_close(last_insert_rel, NoLock);
 		use_multi_insert = false;
 		last_insert_rel = NULL;
@@ -1338,7 +1312,7 @@ handle_update(StringInfo s)
 		{
 			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
-			apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
+			spock_apply_heap_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 		}
 		PG_CATCH();
 		{
@@ -1364,7 +1338,7 @@ handle_update(StringInfo s)
 	}
 	else
 	{
-		apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
+		spock_apply_heap_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 	}
 
 	spock_relation_close(rel, NoLock);
@@ -1435,7 +1409,7 @@ handle_delete(StringInfo s)
 		{
 			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
-			apply_api.do_delete(rel, &oldtup);
+			spock_apply_heap_delete(rel, &oldtup);
 		}
 		PG_CATCH();
 		{
@@ -1461,7 +1435,7 @@ handle_delete(StringInfo s)
 	}
 	else
 	{
-		apply_api.do_delete(rel, &oldtup);
+		spock_apply_heap_delete(rel, &oldtup);
 	}
 
 	spock_relation_close(rel, NoLock);
@@ -3514,26 +3488,6 @@ spock_apply_main(Datum main_arg)
 	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
 	Assert(MySpockWorker->worker_type == SPOCK_WORKER_APPLY);
 	MyApplyWorker = &MySpockWorker->worker.apply;
-
-	/* Load correct apply API. */
-	if (spock_use_spi)
-	{
-		if (spock_conflict_resolver != SPOCK_RESOLVE_ERROR)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("SPOCK %s: spock.use_spi can only be used when "
-							"spock.conflict_resolution is set to 'error'",
-							MySubscription->name)));
-
-		apply_api.on_begin = spock_apply_spi_begin;
-		apply_api.on_commit = spock_apply_spi_commit;
-		apply_api.do_insert = spock_apply_spi_insert;
-		apply_api.do_update = spock_apply_spi_update;
-		apply_api.do_delete = spock_apply_spi_delete;
-		apply_api.can_multi_insert = spock_apply_spi_can_mi;
-		apply_api.multi_insert_add_tuple = spock_apply_spi_mi_add_tuple;
-		apply_api.multi_insert_finish = spock_apply_spi_mi_finish;
-	}
 
 	/* Setup synchronous commit according to the user's wishes */
 	SetConfigOption("synchronous_commit",
