@@ -104,12 +104,27 @@ BEGIN
    * Find proper delta_apply function for the column type or ERROR
    */
 
-  SELECT t.typname,t.typinput,t.typoutput
+ SELECT t.typname,t.typinput,t.typoutput, a.attnotnull
   FROM pg_catalog.pg_attribute a, pg_type t
   WHERE a.attrelid = rel AND a.attname = att_name AND (a.atttypid = t.oid)
   INTO attdata;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'column % does not exist in the table %', att_name, rel;
+  END IF;
+
+  IF (attdata.attnotnull = false) THEN
+    /*
+	 * TODO: Here is a case where the table has different constraints on nodes.
+	 * Using prepared transactions, we might be sure this operation will finish
+	 * if only each node satisfies the rule. But we need to add support for 2PC
+	 * commit beforehand.
+	 */
+    RAISE NOTICE USING
+	  MESSAGE = format('delta_apply feature can not be applied to nullable column %L of the table %I',
+						att_name, rel),
+	  HINT = 'Set NOT NULL constraint on the column',
+	  ERRCODE = 'object_not_in_prerequisite_state';
+	RETURN false;
   END IF;
 
   SELECT typname FROM pg_type WHERE
