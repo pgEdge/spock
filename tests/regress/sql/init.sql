@@ -120,7 +120,6 @@ BEGIN
             'min_proto_version', '3',
             'max_proto_version', '4',
             'startup_params_format', '1',
-            'proto_format', 'json',
             'spock.replication_set_names', 'default,ddl_sql'
         ) AS changes(lsn, xid, data)
     WHERE data IS NOT NULL
