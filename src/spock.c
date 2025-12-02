@@ -120,7 +120,6 @@ static const struct config_enum_entry readonly_options[] = {
 
 bool	spock_synchronous_commit = false;
 char   *spock_temp_directory = "";
-bool	spock_use_spi = false;
 bool	spock_batch_inserts = true;
 static char *spock_temp_directory_config;
 bool	spock_ch_stats = true;
@@ -968,15 +967,6 @@ _PG_init(void)
 							 NULL,
 							 &spock_synchronous_commit,
 							 false, PGC_POSTMASTER,
-							 0,
-							 NULL, NULL, NULL);
-
-	DefineCustomBoolVariable("spock.use_spi",
-							 "Use SPI instead of low-level API for applying changes",
-							 NULL,
-							 &spock_use_spi,
-							 false,
-							 PGC_POSTMASTER,
 							 0,
 							 NULL, NULL, NULL);
 

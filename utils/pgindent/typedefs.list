@@ -4174,7 +4174,6 @@ ObjectAddressExtra
 ObjectAddressStack
 find_expr_references_context
 RemoteInfo
-SpockApplyFunctions
 SPKFlushPosition
 ApplyExecState
 NodeTuple

@@ -18,7 +18,7 @@
 #include "conf.h"
 #include "logger.h"
 
-Config config;
+static Config config;
 
 /* Function to parse the JSON configuration file */
 int
