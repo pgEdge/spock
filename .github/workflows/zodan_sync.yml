@@ -42,14 +42,7 @@ jobs:
 
       - name: Build docker container
         run: |
-          cd ${GITHUB_WORKSPACE}/
-          ls -la
-          ls -la sql
-          ls -la tests/
-          ls -la tests/tap
-          ls -la tests/tap/t
-          cat tests/tap/t/011_zodan_sync_third.pl
-          docker build \
+            docker build \
             --build-arg PGVER=${{ matrix.pgver }} \
             -t spock -f tests/docker/Dockerfile-step-1.el9 .
 
