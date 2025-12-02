@@ -330,43 +330,6 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 				 errmsg("client sent max_proto_version=%d but we only support protocol %d or higher",
 					data->client_max_proto_version, SPOCK_PROTO_MIN_VERSION_NUM)));
 
-		/*
-		 * Set correct protocol format.
-		 *
-		 * This is the output plugin protocol format, this is different
-		 * from the individual fields binary vs textual format.
-		 */
-		if (data->client_protocol_format != NULL
-				&& strcmp(data->client_protocol_format, "json") == 0)
-		{
-			oldctx = MemoryContextSwitchTo(ctx->context);
-			data->api = spock_init_api(SpockProtoJson);
-			opt->output_type = OUTPUT_PLUGIN_TEXTUAL_OUTPUT;
-			MemoryContextSwitchTo(oldctx);
-		}
-		else if ((data->client_protocol_format != NULL
-				 && strcmp(data->client_protocol_format, "native") == 0)
-				 || data->client_protocol_format == NULL)
-		{
-			oldctx = MemoryContextSwitchTo(ctx->context);
-			data->api = spock_init_api(SpockProtoNative);
-			opt->output_type = OUTPUT_PLUGIN_BINARY_OUTPUT;
-
-			if (data->client_no_txinfo)
-			{
-				elog(WARNING, "no_txinfo option ignored for protocols other than json");
-				data->client_no_txinfo = false;
-			}
-			MemoryContextSwitchTo(oldctx);
-		}
-		else
-		{
-			ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("client requested protocol %s but only \"json\" or \"native\" are supported",
-					data->client_protocol_format)));
-		}
-
 		/* check for encoding match if specific encoding demanded by client */
 		if (data->client_expected_encoding != NULL
 				&& strlen(data->client_expected_encoding) != 0)
@@ -541,7 +504,7 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 		send_startup_message(ctx, data, false /* can't be last message */);
 
 	OutputPluginPrepareWrite(ctx, !send_replication_origin);
-	data->api->write_begin(ctx->out, data, txn);
+	spock_write_begin(ctx->out, data, txn);
 
 	if (send_replication_origin)
 	{
@@ -555,33 +518,22 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 		 * that we forward will have the node.id of what we got from
 		 * the remote, which is the real origin of the transaction.
 		 */
-		if (data->api->write_origin)
-		{
-			if (txn->origin_id == InvalidRepOriginId)
-			{
-				data->api->write_origin(ctx->out, MyOutputNodeId,
-										txn->origin_lsn);
-			}
-			else
-			{
-				data->api->write_origin(ctx->out, txn->origin_id,
-										txn->origin_lsn);
-			}
-		}
+		if (txn->origin_id == InvalidRepOriginId)
+			spock_write_origin(ctx->out, MyOutputNodeId, txn->origin_lsn);
+		else
+			spock_write_origin(ctx->out, txn->origin_id, txn->origin_lsn);
 
 		/*
 		 * The commit timestamp may be zero, which is fine in case of a
 		 * restart. This information should always follow origin to ensure
 		 * that the origin of the commit ts is known.
 		 */
-		if (data->api->write_commit_order)
-		{
-			/* Message boundary */
-			OutputPluginWrite(ctx, false);
-			OutputPluginPrepareWrite(ctx, true);
 
-			data->api->write_commit_order(ctx->out, slot_group_last_commit_ts);
-		}
+		/* Message boundary */
+		OutputPluginWrite(ctx, false);
+		OutputPluginPrepareWrite(ctx, true);
+
+		spock_write_commit_order(ctx->out, slot_group_last_commit_ts);
 	}
 
 	OutputPluginWrite(ctx, true);
@@ -653,7 +605,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	OutputPluginUpdateProgress(ctx, false);
 
 	OutputPluginPrepareWrite(ctx, true);
-	data->api->write_commit(ctx->out, data, txn, commit_lsn);
+	spock_write_commit(ctx->out, data, txn, commit_lsn);
 	OutputPluginWrite(ctx, true);
 
 	/*
@@ -961,8 +913,6 @@ maybe_send_schema(LogicalDecodingContext *ctx, ReorderBufferChange *change,
 	 *
 	 * TODO: track hit/miss stats
 	 */
-	if (data->api->write_rel == NULL)
-		return;
 
 	cached_relmeta = relmetacache_get_relation(data, relation);
 	if (!cached_relmeta->is_cached)
@@ -974,7 +924,7 @@ maybe_send_schema(LogicalDecodingContext *ctx, ReorderBufferChange *change,
 
 
 		OutputPluginPrepareWrite(ctx, false);
-		data->api->write_rel(ctx->out, data, relation, tblinfo->att_list);
+		spock_write_rel(ctx->out, data, relation, tblinfo->att_list);
 		OutputPluginWrite(ctx, false);
 		cached_relmeta->is_cached = true;
 	}
@@ -1016,9 +966,9 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	{
 		case REORDER_BUFFER_CHANGE_INSERT:
 			OutputPluginPrepareWrite(ctx, true);
-			data->api->write_insert(ctx->out, data, relation,
-									ReorderBufferChangeHeapTuple(change, newtuple),
-									att_list);
+			spock_write_insert(ctx->out, data, relation,
+							   ReorderBufferChangeHeapTuple(change, newtuple),
+						 att_list);
 			OutputPluginWrite(ctx, true);
 			handle_stats_counter(relation, InvalidOid,
 								 SPOCK_STATS_INSERT_COUNT, 1);
@@ -1029,9 +979,9 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					ReorderBufferChangeHeapTuple(change, oldtuple) : NULL;
 
 				OutputPluginPrepareWrite(ctx, true);
-				data->api->write_update(ctx->out, data, relation, oldtuple,
-										ReorderBufferChangeHeapTuple(change, newtuple),
-										att_list);
+				spock_write_update(ctx->out, data, relation, oldtuple,
+							 ReorderBufferChangeHeapTuple(change, newtuple),
+							 att_list);
 				OutputPluginWrite(ctx, true);
 				handle_stats_counter(relation, InvalidOid,
 									 SPOCK_STATS_UPDATE_COUNT, 1);
@@ -1041,9 +991,9 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			if (change->data.tp.oldtuple)
 			{
 				OutputPluginPrepareWrite(ctx, true);
-				data->api->write_delete(ctx->out, data, relation,
-										ReorderBufferChangeHeapTuple(change, oldtuple),
-										att_list);
+				spock_write_delete(ctx->out, data, relation,
+								   ReorderBufferChangeHeapTuple(change, oldtuple),
+							 att_list);
 				OutputPluginWrite(ctx, true);
 				handle_stats_counter(relation, InvalidOid,
 									 SPOCK_STATS_DELETE_COUNT, 1);
@@ -1103,9 +1053,9 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	if (nrelids > 0)
 	{
 		OutputPluginPrepareWrite(ctx, true);
-		data->api->write_truncate(ctx->out, nrelids, relids,
-									change->data.truncate.cascade,
-									change->data.truncate.restart_seqs);
+		spock_write_truncate(ctx->out, nrelids, relids,
+							 change->data.truncate.cascade,
+							 change->data.truncate.restart_seqs);
 		OutputPluginWrite(ctx, true);
 	}
 
@@ -1156,7 +1106,7 @@ send_startup_message(LogicalDecodingContext *ctx,
 	 */
 
 	OutputPluginPrepareWrite(ctx, last_message);
-	data->api->write_startup_message(ctx->out, msg);
+	write_startup_message(ctx->out, msg);
 	OutputPluginWrite(ctx, last_message);
 
 	list_free_deep(msg);

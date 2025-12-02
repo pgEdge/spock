@@ -25,8 +25,6 @@ typedef struct SpockOutputData
 {
 	MemoryContext context;
 
-	struct SpockProtoAPI *api;
-
 	/* Cached node id */
 	Oid			local_node_id;
 
@@ -47,7 +45,6 @@ typedef struct SpockOutputData
 	uint32		client_max_proto_version;
 	uint32		client_min_proto_version;
 	const char *client_expected_encoding;
-	const char *client_protocol_format;
 	uint32		client_binary_basetypes_major_version;
 	bool		client_want_internal_basetypes_set;
 	bool		client_want_internal_basetypes;

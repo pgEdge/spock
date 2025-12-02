@@ -4180,7 +4180,6 @@ ApplyExecState
 NodeTuple
 NodeInterfaceTuple
 SubscriptionTuple
-SpockProtoAPI
 SpockSyncStatus
 SPKRelMetaCacheEntry
 QueuedMessage
