@@ -611,44 +611,31 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		}
 
 		/*
-		 * Column is marked LOG_OLD_VALUE=true. We use that as flag to apply
-		 * the delta between the remote old and new instead of the plain new
-		 * value.
-		 *
-		 * To perform the actual delta math we need the functions behind the
-		 * '+' and '-' operators for the data type.
-		 *
-		 * XXX: This is currently hardcoded for the builtin data types we
-		 * support. Ideally we would lookup those operators in the system
-		 * cache, but that isn't straight forward and we get into all sorts of
-		 * trouble when it comes to user defined data types and the search
-		 * path.
+		 * This shouldn't happen: creating delta_apply column we must check that
+		 * NOT NULL constraint is set on this column or reject. But just to
+		 * survive in case of a bug we complain and send the apply worker to
+		 * exception behavior path way.
 		 */
+		if (oldtup->nulls[remoteattnum] || newtup->nulls[remoteattnum])
+			ereport(ERROR,
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+					errmsg("delta apply column can't operate NULL values"),
+					errdetail("attribute %d for remote tuple is %s, and for the local tuple is %s",
+							  remoteattnum + 1,
+							  newtup->nulls[remoteattnum] ? "NULL" : "NOT NULL",
+							  oldtup->nulls[remoteattnum] ? "NULL" : "NOT NULL"
+							  )));
 
-		if (oldtup->nulls[remoteattnum])
-		{
-			/*
-			 * This is a special case. Columns for delta apply need to be
-			 * marked NOT NULL. We use this as a flag
-			 * to force plain NEW value application. This is useful in case a
-			 * server ever gets out of sync.
-			 */
-			deltatup->values[remoteattnum] = newtup->values[remoteattnum];
-			deltatup->nulls[remoteattnum] = false;
-			deltatup->changed[remoteattnum] = true;
-		}
-		else
-		{
-			loc_value = heap_getattr(TTS_TUP(localslot), remoteattnum + 1, tupdesc,
-									 &loc_isnull);
+		loc_value = heap_getattr(TTS_TUP(localslot), remoteattnum + 1, tupdesc,
+								 &loc_isnull);
+		Assert(!loc_isnull);
 
-			result = OidFunctionCall3Coll(rel->delta_functions[remoteattnum],
-										  InvalidOid, oldtup->values[remoteattnum],
-										  newtup->values[remoteattnum], loc_value);
-			deltatup->values[remoteattnum] = result;
-			deltatup->nulls[remoteattnum] = false;
-			deltatup->changed[remoteattnum] = true;
-		}
+		result = OidFunctionCall3Coll(rel->delta_functions[remoteattnum],
+									  InvalidOid, oldtup->values[remoteattnum],
+									  newtup->values[remoteattnum], loc_value);
+		deltatup->values[remoteattnum] = result;
+		deltatup->nulls[remoteattnum] = false;
+		deltatup->changed[remoteattnum] = true;
 	}
 }
 

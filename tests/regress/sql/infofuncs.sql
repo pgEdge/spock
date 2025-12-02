@@ -10,7 +10,7 @@ FROM pg_extension
 WHERE extname = 'spock';
 
 -- Check that security label is cleaned up on the extension drop
-CREATE TABLE slabel (x money, y text PRIMARY KEY);
+CREATE TABLE slabel (x money NOT NULL, y text PRIMARY KEY);
 SELECT spock.delta_apply('slabel', 'x', false);
 SELECT objname, label FROM pg_seclabels;
 

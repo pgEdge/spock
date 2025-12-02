@@ -118,8 +118,8 @@ DROP FUNCTION call_fn;
 --
 
 -- A label creation checks
-CREATE TABLE slabel (x integer, y text PRIMARY KEY);
-CREATE TABLE slabel_ri (x integer NOT NULL, y text);
+CREATE TABLE slabel (x integer NOT NULL, y text PRIMARY KEY);
+CREATE TABLE slabel_ri (x integer NOT NULL, y text, z text);
 CREATE UNIQUE INDEX slabel_ri_idx ON slabel_ri(x);
 ALTER TABLE slabel_ri REPLICA IDENTITY USING INDEX slabel_ri_idx;
 
@@ -147,7 +147,7 @@ SELECT spock.delta_apply('slabel', 'x', false);
 ALTER TABLE slabel ALTER COLUMN x TYPE text; -- just warn
 SELECT objname, label FROM pg_seclabels;
 ALTER TABLE slabel DROP COLUMN x;
-ALTER TABLE slabel ADD COLUMN x numeric;
+ALTER TABLE slabel ADD COLUMN x numeric NOT NULL;
 SELECT spock.delta_apply('slabel', 'x', false);
 ALTER TABLE slabel DROP COLUMN x;
 SELECT objname, label FROM pg_seclabels;
