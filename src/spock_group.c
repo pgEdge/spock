@@ -60,7 +60,6 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 #endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
-#define SPOCK_GROUP_TRANCHE_NAME   "spock_apply_groups"
 
 HTAB	   *SpockGroupHash = NULL;
 
@@ -128,8 +127,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	hctl.hash = tag_hash;
 	hctl.num_partitions = 16;
 
-	/* Get the shared resources */
-	SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
 	SpockGroupHash = ShmemInitHash("spock group hash",
 								   napply_groups,
 								   napply_groups,
@@ -141,11 +138,25 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	if (!SpockGroupHash)
 		elog(ERROR, "spock_group_shmem_startup: failed to init group map");
 
+	/*
+	 * If the shared memory structures already existed (found = true), then
+	 * we're a background process attaching to structures created by the
+	 * postmaster. The hash was already seeded from the file during postmaster
+	 * startup, so skip loading.
+	 *
+	 * If found = false, we're the postmaster doing initial setup. Load the
+	 * file to quickly seed the hash, then WAL recovery will run afterward
+	 * and provide authoritative updates.
+	 *
+	 * Note: ShmemInitHash() doesn't have a 'found' output parameter like
+	 * ShmemInitStruct(), so we rely on the 'found' status of other Spock
+	 * structures (SpockCtx, etc.) as a proxy since they're all created
+	 * together.
+	 */
 	if (found)
 		return;
 
-	/* First time through, nothing to load */
-	elog(DEBUG1, "spock_group_shmem_startup: initialized apply group data");
+	elog(DEBUG1, "spock_group_shmem_startup: loading resource file to seed hash");
 	spock_group_resource_load();
 }
 
@@ -249,9 +260,18 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 		/* XXX: do we need to also track the most lagging worker of the group? */
 		dest->received_lsn = src->received_lsn;
 
-	/* It is a good place to check the entry consistency */
-	Assert(dest->remote_insert_lsn >= dest->remote_commit_lsn);
-	Assert(dest->received_lsn >= dest->remote_commit_lsn);
+	/*
+	 * It is a good place to check the entry consistency, But only do so
+	 * after all fields are updated. During partial updates some fields
+	 * might still be InvalidXLogRecPtr (0) while others have been set.
+	 */
+	Assert(dest->remote_insert_lsn == InvalidXLogRecPtr ||
+	       dest->remote_commit_lsn == InvalidXLogRecPtr ||
+	       dest->remote_insert_lsn >= dest->remote_commit_lsn);
+
+	Assert(dest->received_lsn == InvalidXLogRecPtr ||
+	       dest->remote_commit_lsn == InvalidXLogRecPtr ||
+	       dest->received_lsn >= dest->remote_commit_lsn);
 	/*
 	 * Value of the received_lsn potentially can exceed remote_insert_lsn
 	 * because it is reported more frequently (by keepalive messages).
@@ -276,6 +296,12 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 
 	if (!sap)
 		return false;
+
+	if (!SpockGroupHash || !SpockCtx)
+	{
+		elog(WARNING, "spock_group_progress_update: SpockGroupHash not initialized");
+		return false;
+	}
 
 	key = make_key(sap->key.dbid, sap->key.node_id, sap->key.remote_node_id);
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
@@ -305,7 +331,9 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
 	progress_update_struct(&e->progress, sap);
 
 	/* Insert LSN can't be less than the end of an inserted record */
-	Assert(e->progress.remote_commit_lsn <= e->progress.remote_insert_lsn);
+	Assert(e->progress.remote_insert_lsn == InvalidXLogRecPtr ||
+	       e->progress.remote_commit_lsn == InvalidXLogRecPtr ||
+	       e->progress.remote_commit_lsn <= e->progress.remote_insert_lsn);
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
@@ -397,6 +425,17 @@ spock_group_resource_dump(void)
 
 	SpockResFileHeader hdr = {0};
 	DumpCtx		dctx = {0};
+
+	/*
+	 * Safety check: if shared memory isn't initialized, we can't dump.
+	 * This shouldn't happen if spock_checkpoint_hook() called
+	 * spock_shmem_attach() first, but check anyway.
+	 */
+	if (!SpockCtx || !SpockGroupHash)
+	{
+		elog(WARNING, "spock_group_resource_dump: shared memory not initialized, skipping dump");
+		return;
+	}
 
 	/* build paths */
 	snprintf(pathdir, sizeof(pathdir), "%s/%s", DataDir, SPOCK_RES_DIRNAME);
@@ -526,6 +565,15 @@ spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
 {
 	if ((flags & (CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_END_OF_RECOVERY)) == 0)
 		return;
+
+	/*
+	 * Ensure we're attached to shared memory before accessing it.
+	 *
+	 * spock_shmem_attach() is idempotent - it tracks attachment per process
+	 * and only does the actual work once, so it's safe to call on every
+	 * qualifying checkpoint.
+	 */
+	spock_shmem_attach();
 
 	/* Dump group progress to resource.dat */
 	spock_group_resource_dump();

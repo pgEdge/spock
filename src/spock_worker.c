@@ -49,6 +49,7 @@
 #include "spock_conflict.h"
 #include "spock_relcache.h"
 #include "spock_exception_handler.h"
+#include "spock_group.h"
 
 typedef struct signal_worker_item
 {
@@ -78,6 +79,7 @@ static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
 static void signal_worker_xact_callback(XactEvent event, void *arg);
 static uint32 spock_ch_stats_hash(const void *key, Size keysize);
+static bool spock_shmem_init_internal(int nworkers);
 
 
 void
@@ -342,6 +344,15 @@ spock_worker_on_exit(int code, Datum arg)
 void
 spock_worker_attach(int slot, SpockWorkerType type)
 {
+	/*
+	 * Ensure shared memory is attached before using SpockCtx.
+	 *
+	 * Background workers inherit global variables from the postmaster but
+	 * the pointers may not be valid. Always call spock_shmem_attach() which
+	 * is idempotent and handles proper re-initialization.
+	 */
+	spock_shmem_attach();
+
 	Assert(slot >= 0);
 	Assert(slot < SpockCtx->total_workers);
 
@@ -814,9 +825,7 @@ spock_worker_shmem_request(void)
 static void
 spock_worker_shmem_startup(void)
 {
-	bool		found;
 	int			nworkers;
-	HASHCTL		hctl;
 
 	if (prev_shmem_startup_hook != NULL)
 		prev_shmem_startup_hook();
@@ -831,43 +840,16 @@ spock_worker_shmem_startup(void)
 	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 										  false));
 	SpockCtx = NULL;
-	/* avoid possible race-conditions, when initializing the shared memory. */
+
+	/* Avoid possible race-conditions when initializing shared memory. */
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
-	/* Init signaling context for the various processes. */
-	SpockCtx = ShmemInitStruct("spock_context",
-							   worker_shmem_size(nworkers, false), &found);
-
-
-	if (!found)
-	{
-		SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
-		SpockCtx->lag_lock = &((GetNamedLWLockTranche("spock")[1]).lock);
-		SpockCtx->supervisor = NULL;
-		SpockCtx->subscriptions_changed = false;
-		SpockCtx->total_workers = nworkers;
-		memset(SpockCtx->workers, 0,
-			   sizeof(SpockWorker) * SpockCtx->total_workers);
-	}
-
-	exception_log_ptr = ShmemInitStruct("spock_exception_log_ptr",
-									worker_shmem_size(nworkers, false), &found);
-
-	if (!found)
-		memset(exception_log_ptr, 0, sizeof(SpockExceptionLog) * nworkers);
-
-	memset(&hctl, 0, sizeof(hctl));
-	hctl.keysize = sizeof(spockStatsKey);
-	hctl.entrysize = sizeof(spockStatsEntry);
-	hctl.hash = spock_ch_stats_hash;
-	SpockHash = ShmemInitHash("spock channel stats hash",
-							  spock_stats_max_entries,
-							  spock_stats_max_entries,
-							  &hctl,
-							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
-
-	/* Apply Group shmem startup */
-	spock_group_shmem_startup(nworkers, found);
+	/*
+	 * Initialize all shared memory structures (including SpockGroupHash).
+	 * This internally calls spock_group_shmem_startup() to handle group
+	 * initialization and file loading.
+	 */
+	(void) spock_shmem_init_internal(nworkers);
 
 	LWLockRelease(AddinShmemInitLock);
 }
@@ -884,6 +866,152 @@ spock_ch_stats_hash(const void *key, Size keysize)
 
 	return hash_uint32((uint32) k->dboid) ^
 		hash_uint32((uint32) k->relid);
+}
+
+/*
+ * spock_shmem_init_internal
+ *
+ * Common function to initialize or attach to shared memory structures.
+ * Returns true if structures already existed (found), false if newly created.
+ *
+ * This centralizes the logic for setting up all Spock shared memory pointers,
+ * which is used by both the initial startup hook and the attach function.
+ */
+static bool
+spock_shmem_init_internal(int nworkers)
+{
+	HASHCTL		hctl;
+	bool		found;
+	bool		all_found = true;
+
+
+	/* Init signaling context for the various processes. */
+	if (!SpockCtx)
+	{
+		SpockCtx = ShmemInitStruct("spock_context",
+								   worker_shmem_size(nworkers, false), &found);
+		if (!SpockCtx)
+			elog(ERROR, "failed to initialize spock_context");
+
+		if (!found)
+		{
+			/* First time - initialize the structure */
+			SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
+			SpockCtx->lag_lock = &((GetNamedLWLockTranche("spock")[1]).lock);
+			SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
+			SpockCtx->supervisor = NULL;
+			SpockCtx->subscriptions_changed = false;
+			SpockCtx->total_workers = nworkers;
+			memset(SpockCtx->workers, 0,
+				   sizeof(SpockWorker) * SpockCtx->total_workers);
+			all_found = false;
+		}
+	}
+
+	/*
+	 * Initialize exception log pointer array.
+	 */
+	if (!exception_log_ptr)
+	{
+		exception_log_ptr = ShmemInitStruct("spock_exception_log_ptr",
+											worker_shmem_size(nworkers, false), &found);
+		if (!exception_log_ptr)
+			elog(ERROR, "failed to initialize spock_exception_log_ptr");
+
+		if (!found)
+		{
+			memset(exception_log_ptr, 0, sizeof(SpockExceptionLog) * nworkers);
+			all_found = false;
+		}
+	}
+
+	/*
+	 * Initialize SpockHash - channel stats hash.
+	 */
+	if (!SpockHash)
+	{
+		memset(&hctl, 0, sizeof(hctl));
+		hctl.keysize = sizeof(spockStatsKey);
+		hctl.entrysize = sizeof(spockStatsEntry);
+		hctl.hash = spock_ch_stats_hash;
+		SpockHash = ShmemInitHash("spock channel stats hash",
+								  spock_stats_max_entries,
+								  spock_stats_max_entries,
+								  &hctl,
+								  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
+		if (!SpockHash)
+			elog(ERROR, "failed to initialize spock channel stats hash");
+	}
+
+	/*
+	 * Initialize SpockGroupHash via the spock_group module.
+	 * This handles both creation/attachment and file loading if needed.
+	 *
+	 * Note: We pass 'all_found' to indicate whether this is first-time
+	 * setup or attachment to existing structures.
+	 */
+	spock_group_shmem_startup(nworkers, all_found);
+
+	return all_found;
+}
+
+/*
+ * spock_shmem_attach
+ *
+ * Attach (or re-attach) to existing shared memory structures.
+ *
+ * This is called from processes that need to access Spock's shared memory:
+ * - Startup process (via spock_rmgr_startup) - once per recovery
+ * - Checkpointer (via spock_checkpoint_hook) - once per process lifetime
+ * - Background workers (via spock_worker_attach) - once per worker
+ *
+ * IMPORTANT: Auxiliary processes (startup, checkpointer) inherit global
+ * variable values from the postmaster, but these pointers might not be valid
+ * in their address space.
+ *
+ * This function uses a static flag to ensure we only attach once per process,
+ * avoiding redundant shared memory lookups on subsequent calls.
+ *
+ * Unlike spock_worker_shmem_startup(), this doesn't acquire AddinShmemInitLock
+ * or register hooks - it just looks up and attaches to existing structures.
+ */
+void
+spock_shmem_attach(void)
+{
+	static bool attached = false;
+	int			nworkers;
+
+	/* If already attached in this process, nothing to do */
+	if (attached)
+		return;
+
+	/*
+	 * Reset globals to NULL to force proper attachment.
+	 *
+	 * This is critical for auxiliary processes (startup, checkpointer) that
+	 * inherit invalid global values from the postmaster.
+	 */
+	SpockCtx = NULL;
+	SpockHash = NULL;
+	SpockGroupHash = NULL;
+	exception_log_ptr = NULL;
+
+	/*
+	 * Get max_worker_processes to know the size of structures.
+	 */
+	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL, false));
+	if (nworkers <= 0)
+		nworkers = 9;
+
+	/*
+	 * Attach to all structures using the common initialization logic.
+	 * Returns true if structures were found (normal case), false if
+	 * they had to be created (shouldn't happen but harmless).
+	 */
+	(void) spock_shmem_init_internal(nworkers);
+
+	/* Mark as attached to avoid redundant work on subsequent calls */
+	attached = true;
 }
 
 /*
