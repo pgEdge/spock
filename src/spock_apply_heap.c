@@ -705,6 +705,10 @@ finish_apply_exec_state(ApplyExecState *aestate)
 	pfree(aestate);
 }
 
+/**
+ * This is called when there is a potential conflict that may be able to be resolved
+ * according to resolution rules
+ */
 static bool
 spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 								TupleTableSlot *localslot, TupleTableSlot *remoteslot,
@@ -760,9 +764,10 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	}
 
 	/*
-	 * See if we need to log any conflict
+	 * See if we need to log any conflict to the server log and spock.resolutions
+	 * Calling this does not necessarily mean that there is a conflict
 	 */
-	spock_report_conflict(is_insert ? CONFLICT_INSERT_EXISTS : CONFLICT_UPDATE_UPDATE,
+	spock_report_conflict(is_insert ? CT_INSERT_EXISTS : CT_UPDATE_EXISTS,
 						  rel, TTS_TUP(localslot), oldtup,
 						  remotetuple, applytuple, resolution,
 						  xmin, local_origin_found, local_origin,
@@ -1066,6 +1071,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	 * Perform the UPDATE if Tuple found.
 	 *
 	 * Note this will fail if there are other conflicting unique indexes.
+	 *
+	 * spock_handle_conflict_and_apply is a misnomer as it is called for
+	 * the normal UPDATE case, too.
 	 */
 	if (found)
 	{
@@ -1075,6 +1083,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	}
 	else
 	{
+		/* CT_UPDATE_MISSING case gets logged in exception_log, not resolutions */
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
 		/*
@@ -1207,7 +1216,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		exception_log->local_tuple = NULL;
 		remotetuple = heap_form_tuple(RelationGetDescr(rel->rel),
 									  oldtup->values, oldtup->nulls);
-		spock_report_conflict(CONFLICT_DELETE_DELETE,
+		spock_report_conflict(CT_DELETE_MISSING,
 							  rel, NULL, oldtup,
 							  remotetuple, NULL, SpockResolution_Skip,
 							  InvalidTransactionId, false, InvalidRepOriginId,

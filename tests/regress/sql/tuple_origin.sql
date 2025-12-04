@@ -33,18 +33,33 @@ SELECT COUNT(*) FROM spock.resolutions
 
 -- DELETE the row from subscriber first, in order to create a conflict
 DELETE FROM users where id = 3;
+TRUNCATE spock.resolutions;
+TRUNCATE spock.exception_log;
+
+\c :provider_dsn
+-- This will create a update_missing conflict on the subscriber, row does not exist
+UPDATE users SET mgr_id = 99 WHERE id = 3;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+-- Expect 0 rows in spock.resolutions
+SELECT COUNT(*) FROM spock.resolutions;
+-- Expect 1 row in spock.exception_log
+SELECT operation, table_name FROM spock.exception_log;
 
 \c :provider_dsn
 -- This will create a conflict on the subscriber
 DELETE FROM users where id = 3;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 -- Expect 1 row in spock.resolutions with NULL local_timestamp
-SELECT COUNT(*) FROM spock.resolutions
+SELECT conflict_type FROM spock.resolutions
     WHERE relname='public.users'
     AND local_timestamp IS NULL;
 
 -- More tests
+
 \c :provider_dsn
 SELECT spock.replicate_ddl($$
 	CREATE TABLE basic_conflict (
@@ -111,7 +126,18 @@ SELECT * FROM basic_conflict ORDER BY id;
 -- We should not see a conflict
 SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
 
+-- insert_exists check. Add a row to conflict with
+TRUNCATE spock.exception_log;
+TRUNCATE spock.resolutions;
+INSERT INTO basic_conflict VALUES (4, 'D');
+
 \c :provider_dsn
+INSERT INTO basic_conflict VALUES (4, 'DD');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+-- The insert gets converted into an update, conflict type insert_exists
+SELECT conflict_type, conflict_resolution, remote_tuple FROM spock.resolutions;
 
 -- cleanup
 \c :provider_dsn

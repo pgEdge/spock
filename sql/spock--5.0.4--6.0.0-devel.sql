@@ -57,3 +57,13 @@ CREATE VIEW spock.lag_tracker AS
 -- Source for sub_id values.
 CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1
 OWNED BY spock.subscription.sub_id;
+
+-- Migrate spock.resolutions to the new conflict types
+-- insert_exists stays the same
+UPDATE spock.resolutions
+SET conflict_type = CASE conflict_type
+    WHEN 'update_update' THEN 'update_exists'
+    WHEN 'update_delete' THEN 'update_missing'
+    WHEN 'delete_delete' THEN 'delete_missing'
+    ELSE conflict_type
+END;
