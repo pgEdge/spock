@@ -9,11 +9,10 @@
  *
  *-------------------------------------------------------------------------
  */
-#ifndef SPOCK_CONGLICT_H
-#define SPOCK_CONGLICT_H
+#ifndef SPOCK_CONFLICT_H
+#define SPOCK_CONFLICT_H
 
 #include "nodes/execnodes.h"
-
 #include "utils/guc.h"
 
 #include "spock_proto_native.h"
@@ -44,13 +43,45 @@ extern int	spock_conflict_resolver;
 extern int	spock_conflict_log_level;
 extern bool spock_save_resolutions;
 
-typedef enum SpockConflictType
+/* Avoid conflicts with PG's conflict.h via pgstat.h */
+#ifndef CONFLICT_H
+/*
+ * From include/replication/conflict.h in PostgreSQL
+ * Once we only support >= PG17, we may just include it.
+ *
+ * Conflict types that could occur while applying remote changes.
+ */
+typedef enum
 {
-	CONFLICT_INSERT_EXISTS,
-	CONFLICT_UPDATE_UPDATE,
-	CONFLICT_UPDATE_DELETE,
-	CONFLICT_DELETE_DELETE
-} SpockConflictType;
+    /* The row to be inserted violates unique constraint */
+    CT_INSERT_EXISTS,
+
+    /* The row to be updated was modified by a different origin */
+    CT_UPDATE_ORIGIN_DIFFERS,
+
+    /* The updated row value violates unique constraint */
+    CT_UPDATE_EXISTS,
+
+    /* The row to be updated is missing */
+    CT_UPDATE_MISSING,
+
+    /* The row to be deleted was modified by a different origin */
+    CT_DELETE_ORIGIN_DIFFERS,
+
+    /* The row to be deleted is missing */
+    CT_DELETE_MISSING
+
+    /*
+     * Other conflicts, such as exclusion constraint violations, involve more
+     * complex rules than simple equality checks. These conflicts are left for
+     * future improvements.
+     */
+} ConflictType;
+#endif
+
+extern int spock_conflict_resolver;
+extern int spock_conflict_log_level;
+extern bool	spock_save_resolutions;
 
 extern bool get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple,
 							 ItemPointer tid, TransactionId *xmin,
@@ -61,8 +92,7 @@ extern bool try_resolve_conflict(Relation rel, HeapTuple localtuple,
 								 RepOriginId local_origin, TimestampTz local_ts,
 								 SpockConflictResolution *resolution);
 
-
-extern void spock_report_conflict(SpockConflictType conflict_type,
+extern void spock_report_conflict(ConflictType conflict_type,
 								  SpockRelation *rel,
 								  HeapTuple localtuple,
 								  SpockTupleData *oldkey,
@@ -75,7 +105,7 @@ extern void spock_report_conflict(SpockConflictType conflict_type,
 								  TimestampTz local_tuple_timestamp,
 								  Oid conflict_idx_id);
 
-extern void spock_conflict_log_table(SpockConflictType conflict_type,
+extern void spock_conflict_log_table(ConflictType conflict_type,
 									 SpockRelation *rel,
 									 HeapTuple localtuple,
 									 SpockTupleData *oldkey,
@@ -95,4 +125,4 @@ extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 extern void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 								HeapTuple tuple);
 
-#endif							/* SPOCK_CONGLICT_H */
+#endif /* SPOCK_CONFLICT_H */

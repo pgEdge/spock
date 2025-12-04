@@ -55,6 +55,18 @@
 #include "spock_node.h"
 #include "spock_worker.h"
 
+
+/* From src/backend/replication/logical/conflict.c */
+static const char *const ConflictTypeNames[] = {
+	[CT_INSERT_EXISTS] = "insert_exists",
+	[CT_UPDATE_ORIGIN_DIFFERS] = "update_origin_differs",
+	[CT_UPDATE_EXISTS] = "update_exists",
+	[CT_UPDATE_MISSING] = "update_missing",
+	[CT_DELETE_ORIGIN_DIFFERS] = "delete_origin_differs",
+	[CT_DELETE_MISSING] = "delete_missing"
+};
+
+
 int			spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
 int			spock_conflict_log_level = LOG;
 bool		spock_save_resolutions = false;
@@ -275,25 +287,6 @@ try_resolve_conflict(Relation rel, HeapTuple localtuple, HeapTuple remotetuple,
 }
 
 static char *
-conflict_type_to_string(SpockConflictType conflict_type)
-{
-	switch (conflict_type)
-	{
-		case CONFLICT_INSERT_EXISTS:
-			return "insert_exists";
-		case CONFLICT_UPDATE_UPDATE:
-			return "update_update";
-		case CONFLICT_UPDATE_DELETE:
-			return "update_delete";
-		case CONFLICT_DELETE_DELETE:
-			return "delete_delete";
-	}
-
-	/* Unreachable */
-	return NULL;
-}
-
-static char *
 conflict_resolution_to_string(SpockConflictResolution resolution)
 {
 	switch (resolution)
@@ -312,6 +305,8 @@ conflict_resolution_to_string(SpockConflictResolution resolution)
 
 /*
  * Log the conflict to server log.
+ *
+ * If configured to do so, also log to the spock.resolutions table
  *
  * There are number of tuples passed:
  *
@@ -333,7 +328,7 @@ conflict_resolution_to_string(SpockConflictResolution resolution)
  * we still try to free the big chunks as we go.
  */
 void
-spock_report_conflict(SpockConflictType conflict_type,
+spock_report_conflict(ConflictType conflict_type,
 					  SpockRelation *rel,
 					  HeapTuple localtuple,
 					  SpockTupleData *oldkey,
@@ -355,7 +350,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 
 
 	/* Ignore update-update conflict for same origin */
-	if (conflict_type == CONFLICT_UPDATE_UPDATE)
+	if (conflict_type == CT_UPDATE_EXISTS)
 	{
 		/*
 		 * If updating a row that came from the same origin, do not report it
@@ -368,13 +363,16 @@ spock_report_conflict(SpockConflictType conflict_type,
 		if (local_tuple_origin == InvalidRepOriginId &&
 			TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
 			return;
+
+		/* Differing origin */
+		conflict_type = CT_UPDATE_ORIGIN_DIFFERS;
 	}
 
 	/* Count statistics */
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
 						 SPOCK_STATS_CONFLICT_COUNT, 1);
 
-	/* If configured log resolution to table */
+	/* If configured log resolution to spock.resolutions table */
 	spock_conflict_log_table(conflict_type, rel, localtuple, oldkey,
 							 remotetuple, applytuple, resolution,
 							 local_tuple_xid, found_local_origin,
@@ -388,7 +386,10 @@ spock_report_conflict(SpockConflictType conflict_type,
 				MAXDATELEN);
 
 	initStringInfo(&remotetup);
-	tuple_to_stringinfo(&remotetup, desc, remotetuple);
+
+	/* Check for old tuple to in case handling DELETE case */
+	if (remotetuple)
+		tuple_to_stringinfo(&remotetup, desc, remotetuple);
 
 	if (localtuple != NULL)
 	{
@@ -413,15 +414,18 @@ spock_report_conflict(SpockConflictType conflict_type,
 	 * This deliberately somewhat overlaps with the context info we log with
 	 * log_error_verbosity=verbose because we don't necessarily have all that
 	 * info enabled.
+	 *
+	 * Handling for CT_DELETE_ORIGIN_DIFFERS will be added separately.
 	 */
 	switch (conflict_type)
 	{
-		case CONFLICT_INSERT_EXISTS:
-		case CONFLICT_UPDATE_UPDATE:
+		case CT_INSERT_EXISTS:
+		case CT_UPDATE_EXISTS:
+		case CT_UPDATE_ORIGIN_DIFFERS:
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
 					 errmsg("CONFLICT: remote %s on relation %s (local index %s). Resolution: %s.",
-							conflict_type == CONFLICT_INSERT_EXISTS ? "INSERT EXISTS" : "UPDATE",
+							ConflictTypeNames[conflict_type],
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("existing local tuple {%s} xid=%u,origin=%d,timestamp=%s; remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
@@ -434,12 +438,12 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   (uint32) (replorigin_session_origin_lsn << 32),
 							   (uint32) replorigin_session_origin_lsn)));
 			break;
-		case CONFLICT_UPDATE_DELETE:
-		case CONFLICT_DELETE_DELETE:
+		case CT_UPDATE_MISSING:
+		case CT_DELETE_MISSING:
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
 					 errmsg("CONFLICT: remote %s on relation %s replica identity index %s (tuple not found). Resolution: %s.",
-							conflict_type == CONFLICT_UPDATE_DELETE ? "UPDATE" : "DELETE",
+							ConflictTypeNames[conflict_type],
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
@@ -448,6 +452,9 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
 							   (uint32) (replorigin_session_origin_lsn << 32),
 							   (uint32) replorigin_session_origin_lsn)));
+			break;
+		case CT_DELETE_ORIGIN_DIFFERS:
+			/* keep compiler happy; handling will be added separately */
 			break;
 	}
 }
@@ -475,7 +482,7 @@ spock_report_conflict(SpockConflictType conflict_type,
  * we still try to free the big chunks as we go.
  */
 void
-spock_conflict_log_table(SpockConflictType conflict_type,
+spock_conflict_log_table(ConflictType conflict_type,
 						 SpockRelation *rel,
 						 HeapTuple localtuple,
 						 SpockTupleData *oldkey,
@@ -536,7 +543,7 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 		nulls[4] = true;
 
 	/* conflict type */
-	values[5] = CStringGetTextDatum(conflict_type_to_string(conflict_type));
+	values[5] = CStringGetTextDatum(ConflictTypeNames[conflict_type]);
 	/* conflict_resolution */
 	values[6] = CStringGetTextDatum(conflict_resolution_to_string(resolution));
 	/* local_origin */
