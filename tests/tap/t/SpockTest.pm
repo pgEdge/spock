@@ -147,7 +147,7 @@ sub create_postgresql_conf {
     print $conf "spock.enable_ddl_replication=on\n";
     print $conf "spock.include_ddl_repset=on\n";
     print $conf "spock.allow_ddl_from_functions=on\n";
-    print $conf "spock.exception_behaviour=sub_disable\n";
+    # print $conf "spock.exception_behaviour=sub_disable\n";
     print $conf "spock.conflict_resolution=last_update_wins\n";
     print $conf "track_commit_timestamp=on\n";
     print $conf "spock.exception_replay_queue_size=1MB\n";
