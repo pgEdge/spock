@@ -2,6 +2,7 @@
 # This file lists all test cases to be run by the test suite
 
 # Basic functionality tests
+test: 014_zodan_runaway_row
 test: 001_basic
 test: 002_create_subscriber
 
