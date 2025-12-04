@@ -187,7 +187,12 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 	SpockGroupEntry *e;
 	bool		found;
 
+	if (!SpockGroupHash)
+		elog(ERROR, "spock_group_attach: SpockGroupHash not initialized");
+
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
+	if (!e)
+		elog(ERROR, "spock_group_attach: hash_search failed");
 	if (!found)
 	{
 		/* initialize key values; Other entries will be updated later */
@@ -211,6 +216,14 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 void
 spock_group_detach(void)
 {
+	/*
+	 * Only apply workers ever attach to a group. Be defensive so that a
+	 * caller in some other context (or a partially-initialized worker)
+	 * does not dereference a NULL MyApplyWorker.
+	 */
+	if (MyApplyWorker == NULL)
+		return;
+
 	if (MyApplyWorker->apply_group)
 		pg_atomic_sub_fetch_u32(&MyApplyWorker->apply_group->nattached, 1);
 
@@ -297,14 +310,25 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 	if (!sap)
 		return false;
 
-	if (!SpockGroupHash || !SpockCtx)
+	/*
+	 * Safety check: WAL redo and other callers must attach to shared memory
+	 * before updating the progress hash.
+	 */
+	if (!SpockCtx || !SpockGroupHash)
 	{
-		elog(WARNING, "spock_group_progress_update: SpockGroupHash not initialized");
+		elog(WARNING,
+			 "spock_group_progress_update: shared memory not initialized");
 		return false;
 	}
 
 	key = make_key(sap->key.dbid, sap->key.node_id, sap->key.remote_node_id);
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
+
+	if (!e)
+	{
+		elog(ERROR, "spock_group_progress_update: hash_search failed");
+		return false;
+	}
 
 	if (!found)					/* New Entry */
 	{
@@ -327,6 +351,13 @@ void
 spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap)
 {
 	Assert(e && sap);
+
+	if (!SpockCtx)
+	{
+		elog(WARNING, "spock_group_progress_update_ptr: SpockCtx not initialized");
+		return;
+	}
+
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 	progress_update_struct(&e->progress, sap);
 
@@ -342,17 +373,15 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
  * apply_worker_get_progress
  *
  * Return a pointer to the current apply worker's progress payload, or NULL
+ * if the worker is not attached to a group.
  */
 SpockApplyProgress *
 apply_worker_get_progress(void)
 {
-    Assert(MyApplyWorker != NULL);
-    Assert(MyApplyWorker->apply_group != NULL);
+	if (MyApplyWorker && MyApplyWorker->apply_group)
+		return &MyApplyWorker->apply_group->progress;
 
-    if (MyApplyWorker && MyApplyWorker->apply_group)
-        return &MyApplyWorker->apply_group->progress;
-
-    return NULL;
+	return NULL;
 }
 
 /*
@@ -368,6 +397,9 @@ spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
 {
 	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
 	SpockGroupEntry *e;
+
+	if (!SpockGroupHash)
+		return NULL;
 
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_FIND, NULL);
 	return e;					/* may be NULL */
@@ -387,6 +419,13 @@ spock_group_foreach(SpockGroupIterCB cb, void *arg)
 	SpockGroupEntry *e;
 
 	Assert(cb);
+
+	if (!SpockGroupHash)
+	{
+		elog(WARNING, "spock_group_foreach: SpockGroupHash not initialized");
+		return;
+	}
+
 	hash_seq_init(&it, SpockGroupHash);
 	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
 		cb(e, arg);
@@ -427,13 +466,14 @@ spock_group_resource_dump(void)
 	DumpCtx		dctx = {0};
 
 	/*
-	 * Safety check: if shared memory isn't initialized, we can't dump.
-	 * This shouldn't happen if spock_checkpoint_hook() called
-	 * spock_shmem_attach() first, but check anyway.
+	 * Safety check: if shared memory is not initialized, we cannot dump any
+	 * state.  This should not normally happen, but it is better to skip the
+	 * dump than risk dereferencing invalid pointers.
 	 */
 	if (!SpockCtx || !SpockGroupHash)
 	{
-		elog(WARNING, "spock_group_resource_dump: shared memory not initialized, skipping dump");
+		elog(WARNING,
+			 "spock_group_resource_dump: shared memory not initialized, skipping dump");
 		return;
 	}
 
@@ -470,8 +510,15 @@ spock_group_resource_dump(void)
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 
+	/*
+	 * The number of entries in the shared hash can legitimately change
+	 * while we are dumping it because WAL replay and apply workers may
+	 * create new groups concurrently. Treat any mismatch as a soft
+	 * warning only; WAL is authoritative and a stale or partial
+	 * resource.dat snapshot will be corrected by redo.
+	 */
 	if (dctx.count != hdr.entry_count)
-		ereport(ERROR,
+		ereport(WARNING,
 				(errmsg("spock resource.dat entry count mismatch: header=%u, actual=%u",
 						hdr.entry_count, dctx.count)));
 

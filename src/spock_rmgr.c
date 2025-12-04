@@ -163,6 +163,11 @@ spock_rmgr_startup(void)
 void
 spock_rmgr_cleanup(void)
 {
+	/*
+	 * During WAL recovery the startup process must attach to the Spock
+	 * shared memory structures that were created by the postmaster.
+	 */
+	spock_shmem_attach();
 }
 
 /*

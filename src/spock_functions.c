@@ -2906,7 +2906,8 @@ Datum reset_channel_stats(PG_FUNCTION_ARGS)
 	hash_seq_init(&hash_seq, SpockHash);
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
-		hash_search(SpockHash, &entry->key, HASH_REMOVE, NULL);
+		if (hash_search(SpockHash, &entry->key, HASH_REMOVE, NULL) == NULL)
+			elog(WARNING, "spock hash table corrupted during stats reset");
 	}
 
 	LWLockRelease(SpockCtx->lock);
@@ -3324,7 +3325,7 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 	HASH_SEQ_STATUS		it;
 	SpockGroupEntry	   *e;
 
-	if (!SpockCtx || !SpockHash)
+	if (!SpockCtx || !SpockHash || !SpockGroupHash)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("spock must be loaded via shared_preload_libraries")));

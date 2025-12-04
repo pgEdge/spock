@@ -13,3 +13,9 @@ spock_create_subscriber
 spock.control
 tags
 .vscode
+*.dylib
+*.orig
+pg.log
+regression.diffs
+regression.out
+utils/spockctrl/spockctrl

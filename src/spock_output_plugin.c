@@ -1529,7 +1529,15 @@ relmetacache_flush(void)
 			if (hash_search(RelMetaCache,
 							(void *) &hentry->relid,
 							HASH_REMOVE, NULL) == NULL)
-				elog(ERROR, "hash table corrupted");
+				/*
+				 * HASH_REMOVE is not expected to fail for an entry we just
+				 * obtained from hash_seq_search().  If it ever does, dynahash
+				 * bookkeeping is already inconsistent, but report it as a
+				 * WARNING so we abort this backend instead of panicking the
+				 * whole postmaster.
+				 */
+				elog(WARNING,
+					 "spock relation metadata hash table corrupted during flush");
 		}
 	}
 }
@@ -1562,7 +1570,14 @@ relmetacache_prune(void)
 			if (hash_search(RelMetaCache,
 							(void *) &hentry->relid,
 							HASH_REMOVE, NULL) == NULL)
-				elog(ERROR, "hash table corrupted");
+				/*
+				 * As in relmetacache_flush(), HASH_REMOVE should always be
+				 * able to delete an entry we just saw from hash_seq_search().
+				 * Treat failure as a soft warning so we can surface the issue
+				 * without forcing a PANIC.
+				 */
+				elog(WARNING,
+					 "spock relation metadata hash table corrupted during prune");
 		}
 	}
 
