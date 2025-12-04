@@ -30,6 +30,7 @@ extern HTAB *SpockGroupHash;
 #define SPOCK_RES_DIRNAME   "spock"
 #define SPOCK_RES_DUMPFILE  "resource.dat"
 #define SPOCK_RES_TMPNAME   SPOCK_RES_DUMPFILE ".tmp"
+#define SPOCK_GROUP_TRANCHE_NAME   "spock_apply_groups"
 
 typedef struct SpockResFileHeader
 {

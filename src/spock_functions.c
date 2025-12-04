@@ -3329,6 +3329,11 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("spock must be loaded via shared_preload_libraries")));
 
+	if (!SpockGroupHash)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("spock group hash not initialized")));
+
 	InitMaterializedSRF(fcinfo, 0);
 
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
