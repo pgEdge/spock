@@ -16,8 +16,7 @@ vpath % src src/compat/$(PGVER)
 DATA = $(wildcard sql/$(EXTENSION)*--*.sql)
 SRCS := $(wildcard src/*.c) \
         $(wildcard src/compat/$(PGVER)/*.c)
-OBJS = $(filter-out src/spock_output.o, $(SRCS:.c=.o)) \
-       src/compat/$(PGVER)/spock_compat.o
+OBJS = $(filter-out src/spock_output.o, $(SRCS:.c=.o))
 
 PG_CPPFLAGS += -I$(libpq_srcdir) \
 			   -I$(realpath include) \

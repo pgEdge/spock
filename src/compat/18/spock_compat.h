@@ -126,4 +126,7 @@
 #define ExecInitRangeTable(estate, rangeTable, permInfos) \
 	ExecInitRangeTable(estate, rangeTable, permInfos, bms_make_singleton(1))
 
+#include "parser/parse_node.h"
+extern bool check_simple_rowfilter_expr(Node *node, ParseState *pstate);
+
 #endif
