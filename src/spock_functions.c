@@ -3396,6 +3396,7 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 			nulls[GP_LAST_UPDATED_TS] = true;
 
 		values[GP_UPDATED_BY_DECODE] = BoolGetDatum(e->progress.updated_by_decode);
+		values[GP_LOCAL_LSN] = LSNGetDatum(e->progress.local_lsn);
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}

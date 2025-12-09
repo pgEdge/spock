@@ -17,7 +17,8 @@ CREATE FUNCTION spock.apply_group_progress (
 	OUT remote_insert_lsn pg_lsn,
 	OUT received_lsn      pg_lsn,
 	OUT last_updated_ts   timestamptz,
-	OUT updated_by_decode bool
+	OUT updated_by_decode bool,
+	OUT local_lsn         pg_lsn
 ) RETURNS SETOF record
 LANGUAGE c AS 'MODULE_PATHNAME', 'get_apply_group_progress';
 

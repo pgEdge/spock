@@ -60,6 +60,8 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 #endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
+/* Iterate all groups */
+typedef void (*SpockGroupIterCB) (const SpockGroupEntry *e, void *arg);
 
 HTAB	   *SpockGroupHash = NULL;
 
@@ -251,6 +253,7 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 		dest->remote_commit_lsn = src->remote_commit_lsn;
 		dest->last_updated_ts = src->last_updated_ts;
 		dest->updated_by_decode = src->updated_by_decode;
+		dest->local_lsn = src->local_lsn;
 	}
 
 	/* Here is more frequent statistics to update */
@@ -322,6 +325,35 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 	return true;
 }
 
+void
+spock_group_progress_update_list(List *lst)
+{
+	ListCell *lc;
+
+	foreach (lc, lst)
+	{
+		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
+
+		sap->local_lsn = spock_apply_progress_add_to_wal(sap);
+		Assert(!XLogRecPtrIsInvalid(sap->local_lsn));
+
+		spock_group_progress_update(sap);
+
+		elog(LOG, "SPOCK: adjust spock.progress %d->%d to "
+			 "remote_commit_ts='%s' "
+			 "remote_commit_lsn=%llX remote_insert_lsn=%llX",
+			 sap->key.remote_node_id, MySubscription->target->id,
+			 timestamptz_to_str(sap->remote_commit_ts),
+			 sap->remote_commit_lsn, sap->remote_insert_lsn);
+	}
+
+	/*
+	 * Free the list and each object. Be careful here because it is inside
+	 * a memory context that is rarely reset.
+	 */
+	list_free_deep(lst);
+}
+
 /* Fast update when you already hold the pointer (apply hot path) */
 void
 spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap)
@@ -356,31 +388,13 @@ apply_worker_get_progress(void)
 }
 
 /*
- * spock_group_lookup
- *
- * Snapshot-read the progress payload for the specified group. Uses HASH_FIND
- * to locate the entry.
- *
- * Returns entry if found, NULL otherwise.
- */
-SpockGroupEntry *
-spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
-{
-	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
-	SpockGroupEntry *e;
-
-	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_FIND, NULL);
-	return e;					/* may be NULL */
-}
-
-/*
  * spock_group_foreach
  *
  * Iterate all entries in the group hash and invoke 'cb(e, arg)' for each.
  * Caller selects any gating needed for consistency (e.g., take the gate in
  * SHARED before calling this if you want a coherent snapshot).
  */
-void
+static void
 spock_group_foreach(SpockGroupIterCB cb, void *arg)
 {
 	HASH_SEQ_STATUS it;

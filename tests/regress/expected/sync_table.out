@@ -44,7 +44,8 @@ SELECT sum(x), count(*) FROM test_sync;
 (1 row)
 
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
  sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
 -----------+--------------+--------------+-------------+----------
  f         |              |              | r           | f
@@ -69,11 +70,12 @@ SELECT sum(x), count(*) FROM test_sync;
 (1 row)
 
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
  sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
 -----------+--------------+--------------+-------------+----------
- f         |              |              | r           | f
  d         | public       | test_sync    | r           | t
+ f         |              |              | r           | f
 (2 rows)
 
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
@@ -95,11 +97,12 @@ SELECT sum(x), count(*) FROM test_sync;
 (1 row)
 
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
  sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
 -----------+--------------+--------------+-------------+----------
- f         |              |              | r           | f
  d         | public       | test_sync    | r           | t
+ f         |              |              | r           | f
 (2 rows)
 
 \c :provider_dsn
@@ -127,11 +130,12 @@ SELECT sum(x), count(*) FROM test_sync;
 -- Restart syncing this specific table, wait until the process finish and check
 -- all the data stay consistent
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
  sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
 -----------+--------------+--------------+-------------+----------
- f         |              |              | r           | f
  d         | public       | test_sync    | r           | t
+ f         |              |              | r           | f
 (2 rows)
 
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
@@ -153,11 +157,12 @@ SELECT sum(x), count(*) FROM test_sync;
 (1 row)
 
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
  sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
 -----------+--------------+--------------+-------------+----------
- f         |              |              | r           | f
  d         | public       | test_sync    | r           | t
+ f         |              |              | r           | f
 (2 rows)
 
 -- Check all data still in place

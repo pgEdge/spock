@@ -1,0 +1,149 @@
+-- basic builtin datatypes
+SELECT * FROM spock_regress_variables()
+\gset
+-- Check any progress interface changes
+\df spock.apply_group_progress
+                                                                                                                                                                                          List of functions
+ Schema |         Name         | Result data type |                                                                                                                                                            Argument data types                                                                                                                                                            | Type 
+--------+----------------------+------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------
+ spock  | apply_group_progress | SETOF record     | OUT dbid oid, OUT node_id oid, OUT remote_node_id oid, OUT remote_commit_ts timestamp with time zone, OUT prev_remote_ts timestamp with time zone, OUT remote_commit_lsn pg_lsn, OUT remote_insert_lsn pg_lsn, OUT received_lsn pg_lsn, OUT last_updated_ts timestamp with time zone, OUT updated_by_decode boolean, OUT local_lsn pg_lsn | func
+(1 row)
+
+\d spock.progress
+                             View "spock.progress"
+      Column       |           Type           | Collation | Nullable | Default 
+-------------------+--------------------------+-----------+----------+---------
+ dbid              | oid                      |           |          | 
+ node_id           | oid                      |           |          | 
+ remote_node_id    | oid                      |           |          | 
+ remote_commit_ts  | timestamp with time zone |           |          | 
+ prev_remote_ts    | timestamp with time zone |           |          | 
+ remote_commit_lsn | pg_lsn                   |           |          | 
+ remote_insert_lsn | pg_lsn                   |           |          | 
+ received_lsn      | pg_lsn                   |           |          | 
+ last_updated_ts   | timestamp with time zone |           |          | 
+ updated_by_decode | boolean                  |           |          | 
+ local_lsn         | pg_lsn                   |           |          | 
+
+\d spock.lag_tracker
+                             View "spock.lag_tracker"
+        Column         |           Type           | Collation | Nullable | Default 
+-----------------------+--------------------------+-----------+----------+---------
+ origin_name           | name                     |           |          | 
+ receiver_name         | name                     |           |          | 
+ commit_timestamp      | timestamp with time zone |           |          | 
+ commit_lsn            | pg_lsn                   |           |          | 
+ remote_insert_lsn     | pg_lsn                   |           |          | 
+ received_lsn          | pg_lsn                   |           |          | 
+ replication_lag_bytes | numeric                  |           |          | 
+ replication_lag       | interval                 |           |          | 
+
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+	CREATE TABLE public.test_progress (
+		id serial primary key,
+		value integer
+	);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'test_progress');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO test_progress (value) VALUES (42);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+SELECT count(*) FROM spock.progress; -- Should be zero
+ count 
+-------
+     0
+(1 row)
+
+\c :subscriber_dsn
+SELECT
+  remote_commit_ts > 'epoch', prev_remote_ts > 'epoch',
+  remote_commit_lsn > '0/0'::pg_lsn, remote_insert_lsn > '0/0'::pg_lsn,
+  received_lsn > '0/0'::pg_lsn, last_updated_ts > 'epoch',
+  updated_by_decode = 't', local_lsn > '0/0'::pg_lsn
+FROM spock.progress;
+ ?column? | ?column? | ?column? | ?column? | ?column? | ?column? | ?column? | ?column? 
+----------+----------+----------+----------+----------+----------+----------+----------
+ t        | t        | t        | t        | t        | t        | t        | t
+(1 row)
+
+SELECT * FROM test_progress;
+ id | value 
+----+-------
+  1 |    42
+(1 row)
+
+UPDATE test_progress SET value = 43;
+\c :provider_dsn
+INSERT INTO test_progress (value) VALUES (44);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+-- Check that nothing changes in the progress table after a resync
+CREATE TEMP TABLE cmp (x1 pg_lsn, x2 pg_lsn, x3 pg_lsn);
+INSERT INTO cmp SELECT remote_commit_lsn, remote_insert_lsn, local_lsn
+  FROM spock.progress;
+SELECT spock.sub_resync_table('test_subscription', 'test_progress', false);
+ sub_resync_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO cmp SELECT remote_commit_lsn, remote_insert_lsn, local_lsn
+  FROM spock.progress;
+SELECT count(*) FROM (SELECT * FROM cmp GROUP BY (x1,x2,x3)); -- Should be 1
+ count 
+-------
+     1
+(1 row)
+
+DROP TABLE cmp;
+-- Check subscription and the table state
+SELECT sub_name,sub_enabled FROM spock.subscription;
+     sub_name      | sub_enabled 
+-------------------+-------------
+ test_subscription | t
+(1 row)
+
+SELECT * FROM test_progress;
+ id | value 
+----+-------
+  1 |    43
+  2 |    44
+(2 rows)
+
+\c :provider_dsn
+-- Just to fix that resync doesn't actually sunchronize the data unless we
+-- truncate the subscriber's table.
+SELECT * FROM test_progress;
+ id | value 
+----+-------
+  1 |    42
+  2 |    44
+(2 rows)
+
+SELECT spock.replicate_ddl($$DROP TABLE test_progress CASCADE;$$);
+NOTICE:  drop cascades to table test_progress membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+

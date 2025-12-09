@@ -78,6 +78,7 @@ typedef enum
 	GP_RECEIVED_LSN,
 	GP_LAST_UPDATED_TS,
 	GP_UPDATED_BY_DECODE,
+	GP_LOCAL_LSN,
 
 	/* The last value */
 	_GP_LAST_
@@ -126,6 +127,7 @@ typedef struct SpockApplyProgress
 
 	TimestampTz last_updated_ts;	/* when we set this */
 	bool		updated_by_decode;	/* set by decode or apply. OBSOLETE. Used in versions <=5.x.x only */
+	XLogRecPtr	local_lsn;
 } SpockApplyProgress;
 
 /* Hash entry: one per group (stable pointer; not moved by dynahash) */
@@ -141,17 +143,14 @@ typedef struct SpockGroupEntry
 extern void spock_group_shmem_request(void);
 extern void spock_group_shmem_startup(int napply_groups, bool found);
 
-SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id);
-void		spock_group_detach(void);
-bool		spock_group_progress_update(const SpockApplyProgress *sap);
-void		spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap);
-SpockApplyProgress *apply_worker_get_progress(void);
-SpockGroupEntry *spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id);
-
-/* Iterate all groups */
-typedef void (*SpockGroupIterCB) (const SpockGroupEntry *e, void *arg);
-void		spock_group_foreach(SpockGroupIterCB cb, void *arg);
-
+extern SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id,
+										   Oid remote_node_id);
+extern void spock_group_detach(void);
+extern bool spock_group_progress_update(const SpockApplyProgress *sap);
+extern void spock_group_progress_update_list(List *lst);
+extern void spock_group_progress_update_ptr(SpockGroupEntry *e,
+											const SpockApplyProgress *sap);
+extern SpockApplyProgress *apply_worker_get_progress(void);
 extern void		spock_group_resource_dump(void);
 extern void		spock_group_resource_load(void);
 extern void		spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);

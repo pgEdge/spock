@@ -396,7 +396,7 @@ ensure_replication_origin(char *slot_name)
 }
 
 
-static void
+static List *
 adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 {
 	const char *originQuery =
@@ -404,6 +404,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 		"WHERE node_id = %u AND remote_node_id <> %u";
 	StringInfoData query;
 	PGresult   *originRes;
+	List	   *resultList = NIL;
 
 	/*
 	 * Select the current content of the origin's spock.progress table where
@@ -425,7 +426,11 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 
 		for (rno = 0; rno < PQntuples(originRes); rno++)
 		{
-			SpockApplyProgress sap;
+			SpockApplyProgress *sap =
+								MemoryContextAlloc(CacheMemoryContext,
+												   sizeof(SpockApplyProgress));
+			MemoryContext		oldctx;
+
 			/*
 			 * Update the remote node's progress entry to what our sync
 			 * provider has included in the COPY snapshot.
@@ -449,19 +454,25 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 				Assert(strcmp(dbid_str, PQgetvalue(originRes, rno, GP_DBOID)) == 0);
 			}
 
-			sap.key.dbid = MyDatabaseId;
-			sap.key.node_id = MySubscription->target->id;
-			sap.key.remote_node_id = atooid(remote_node_id);
+			sap->key.dbid = MyDatabaseId;
+			sap->key.node_id = MySubscription->target->id;
+			sap->key.remote_node_id = atooid(remote_node_id);
 			if (!PQgetisnull(originRes, rno, GP_REMOTE_COMMIT_TS))
 			{
 				remote_commit_ts = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_TS);
-				sap.remote_commit_ts = str_to_timestamptz(remote_commit_ts);
-				Assert(IS_VALID_TIMESTAMP(sap.remote_commit_ts));
+				sap->remote_commit_ts = str_to_timestamptz(remote_commit_ts);
+				Assert(IS_VALID_TIMESTAMP(sap->remote_commit_ts));
 			}
-			sap.prev_remote_ts = sap.remote_commit_ts;
+			sap->prev_remote_ts = sap->remote_commit_ts;
 
-			sap.remote_commit_lsn = str_to_lsn(remote_commit_lsn);
-			sap.remote_insert_lsn = str_to_lsn(remote_insert_lsn);
+			sap->remote_commit_lsn = str_to_lsn(remote_commit_lsn);
+			/*
+			 * No sense to use remote value here. It must be initialised later,
+			 * on insertion.
+			 */
+			sap->local_lsn = InvalidXLogRecPtr;
+
+			sap->remote_insert_lsn = str_to_lsn(remote_insert_lsn);
 
 			/*
 			 * We don't actually received a single WAL record - just assume
@@ -469,40 +480,31 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			 * value in case someone uses tracking data in state monitoring
 			 * scripts.
 			 */
-			sap.received_lsn = str_to_lsn(remote_commit_lsn);
+			sap->received_lsn = str_to_lsn(remote_commit_lsn);
 
 			if (!PQgetisnull(originRes, rno, GP_LAST_UPDATED_TS))
 			{
 				last_updated_ts = PQgetvalue(originRes, rno, GP_LAST_UPDATED_TS);
-				sap.last_updated_ts = str_to_timestamptz(last_updated_ts);
+				sap->last_updated_ts = str_to_timestamptz(last_updated_ts);
 
-				Assert(IS_VALID_TIMESTAMP(sap.last_updated_ts));
+				Assert(IS_VALID_TIMESTAMP(sap->last_updated_ts));
 
-				if (sap.last_updated_ts < sap.remote_commit_ts)
+				if (sap->last_updated_ts < sap->remote_commit_ts)
 					/* Complaining at the end of the sync we shouldn't flood the log */
 					ereport(WARNING,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							errmsg("transaction apply time precedes its original commit time"),
 							errdetail("Commit time %s (node ID %d), but it was applied at %s on the replica (node ID %d)",
-									  remote_commit_ts, sap.key.remote_node_id,
+									  remote_commit_ts, sap->key.remote_node_id,
 									  last_updated_ts,
 									  MySubscription->origin->id),
 							errhint("usually it means that the server's clocks are out of sync.")));
 			}
-			sap.updated_by_decode = updated_by_decode[0] == 't',
+			sap->updated_by_decode = updated_by_decode[0] == 't',
 
-			/* Update progress */
-			spock_group_progress_update(&sap);
-
-			elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
-				 "remote_commit_ts='%s' "
-				 "remote_commit_lsn='%s' "
-				 "remote_insert_lsn='%s'",
-				 remote_node_id,
-				 MySubscription->target->id,
-				 remote_commit_ts,
-				 remote_commit_lsn,
-				 remote_insert_lsn);
+			oldctx = MemoryContextSwitchTo(CacheMemoryContext);
+			resultList = lappend(resultList, sap);
+			MemoryContextSwitchTo(oldctx);
 		}
 	}
 	else
@@ -513,6 +515,8 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 	PQclear(originRes);
 
 	resetStringInfo(&query);
+
+	return resultList;
 }
 
 
@@ -877,6 +881,7 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 	PGconn	   *origin_conn;
 	PGconn	   *target_conn;
 	ListCell   *lc;
+	List	   *progress_entries_list = NIL;
 
 	/* Connect to origin node. */
 	origin_conn = spock_connect(origin_dsn, sub->name, "copy");
@@ -906,11 +911,13 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	adjust_progress_info(origin_conn, target_conn);
+	progress_entries_list = adjust_progress_info(origin_conn, target_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
 	finish_copy_target_tx(target_conn);
+
+	spock_group_progress_update_list(progress_entries_list);
 }
 
 /*
@@ -932,6 +939,7 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	PGconn	   *target_conn;
 	List	   *tables;
 	ListCell   *lc;
+	List	   *progress_entries_list = NIL;
 
 	/* Connect to origin node. */
 	origin_conn = spock_connect(origin_dsn, sub->name, "copy");
@@ -993,11 +1001,16 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	adjust_progress_info(origin_conn, target_conn);
+	progress_entries_list = adjust_progress_info(origin_conn, target_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
 	finish_copy_target_tx(target_conn);
+
+	/*
+	 * Update replication progress. We must do it after commit of the COPY.
+	 */
+	spock_group_progress_update_list(progress_entries_list);
 
 	return tables;
 }
