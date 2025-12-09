@@ -878,7 +878,8 @@ handle_commit(StringInfo s)
 		Assert(sap.last_updated_ts >= sap.remote_commit_ts);
 
 		/* WAL after commit, then to shmem */
-		spock_apply_progress_add_to_wal(&sap);
+		sap.local_lsn = spock_apply_progress_add_to_wal(&sap);
+		Assert(!XLogRecPtrIsInvalid(sap.local_lsn));
 
 		Assert(MyApplyWorker && MyApplyWorker->apply_group);
 
@@ -2565,7 +2566,8 @@ static SpockApplyProgress apply_progress =
 	.remote_insert_lsn = InvalidXLogRecPtr,
 	.received_lsn = InvalidXLogRecPtr,
 	.last_updated_ts = 0,
-	.updated_by_decode = false
+	.updated_by_decode = false,
+	.local_lsn = InvalidXLogRecPtr
 };
 
 /*

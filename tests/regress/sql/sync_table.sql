@@ -18,20 +18,23 @@ SELECT sum(x), count(*) FROM test_sync;
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT sum(x), count(*) FROM test_sync;
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
 
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
 SELECT spock.table_wait_for_sync('test_subscription', 'test_sync');
 SELECT sum(x), count(*) FROM test_sync;
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
 
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
 SELECT spock.table_wait_for_sync('test_subscription', 'test_sync');
 
 SELECT sum(x), count(*) FROM test_sync;
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
 
 \c :provider_dsn
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
@@ -45,12 +48,14 @@ SELECT sum(x), count(*) FROM test_sync;
 -- Restart syncing this specific table, wait until the process finish and check
 -- all the data stay consistent
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
 SELECT spock.table_wait_for_sync('test_subscription', 'test_sync');
 SELECT sum(x), count(*) FROM test_sync;
 SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+FROM spock.local_sync_status
+ORDER BY sync_kind,sync_nspname,sync_relname DESC;
 
 -- Check all data still in place
 \c :provider_dsn

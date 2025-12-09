@@ -52,7 +52,7 @@ all: spock.control spockctrl
 # -----------------------------------------------------------------------------
 # Regression tests
 # -----------------------------------------------------------------------------
-REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
+REGRESS = preseed infofuncs init_fail init progress preseed_check basic conflict_secondary_unique \
 		  toasted replication_set matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay \

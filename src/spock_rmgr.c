@@ -87,11 +87,8 @@ spock_rmgr_redo(XLogReaderState *record)
 				SpockApplyProgress *sap;
 
 				sap = (SpockApplyProgress *) XLogRecGetData(record);
-
-				/* LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE); */
-
+				sap->local_lsn = record->EndRecPtr;
 				spock_group_progress_update(sap);
-				/* LWLockRelease(SpockCtx->lock); */
 			}
 			break;
 
