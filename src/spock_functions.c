@@ -156,6 +156,7 @@ PG_FUNCTION_INFO_V1(spock_gen_slot_name);
 PG_FUNCTION_INFO_V1(spock_node_info);
 PG_FUNCTION_INFO_V1(spock_show_repset_table_info);
 PG_FUNCTION_INFO_V1(spock_table_data_filtered);
+PG_FUNCTION_INFO_V1(spock_get_distributed_state);
 
 /* Information */
 PG_FUNCTION_INFO_V1(spock_version);
@@ -3402,6 +3403,94 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 	}
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);
+
+	return (Datum) 0;
+}
+
+/*
+ * Takes a snapshot on the calling node labelled 'donor' and calculates an array
+ * of LSN values. Each i-th element of this array is a starting LR point on the
+ * i-th Spock node corresponding to the snapshot returned by
+ * the CREATE_REPLICATION_SLOT command.
+ * Such an LSN may be consistently used for start replication if the subscriber
+ * has already copied data from the donor node using the snapshot.
+ */
+Datum
+spock_get_distributed_state(PG_FUNCTION_ARGS)
+{
+	StringInfoData	cmd;
+	char		   *slot_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char		   *query;
+	uint64			nvals;
+	SPITupleTable  *spi_tuptable;
+	TupleDesc		spi_tupdesc;
+	uint64			i;
+
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed");
+
+	/*
+	 * Stage 1: extract current state of replication on the donor node (where
+	 * this function is called).
+	 */
+	initStringInfo(&cmd);
+	appendStringInfo(&cmd, "SELECT remote_node_id,remote_commit_lsn,local_lsn "
+						   "FROM spock.progress");
+
+	if (SPI_execute(cmd.data, false, 0) != SPI_OK_SELECT)
+		elog(ERROR, "SPI_execute failed: %s", cmd.data);
+
+	nvals = SPI_processed;
+
+	if (nvals == 0)
+		goto finish;
+
+	spi_tuptable = SPI_tuptable;
+	spi_tupdesc = spi_tuptable->tupdesc;
+
+	/*
+	 * The provided categories SQL query must always return one column:
+	 * category - the label or identifier for each column
+	 */
+	if (spi_tupdesc->natts != 3)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid query result"),
+				 errdetail("The query must return three columns.")));
+
+	for (i = 0; i < nvals; i++)
+	{
+		HeapTuple	htup;
+
+		/* get the next sql result tuple */
+		htup = spi_tuptable->vals[i];
+
+		/* get the category from the current sql result tuple */
+		state[i].nodeId = SPI_getvalue(htup, spi_tupdesc, 1);
+		state[i].remote_lsn = SPI_getvalue(htup, spi_tupdesc, 2);
+		state[i].local_lsn = SPI_getvalue(htup, spi_tupdesc, 3);
+	}
+
+	pfree(cmd.data);
+	resetStringInfo(cmd);
+
+	/*
+	 * Create replication slot and get consistent donor's LSN.
+	 */
+	initStringInfo(&cmd);
+	appendStringInfo(&cmd, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
+					 slot_name, "spock_output");
+
+	if (SPI_execute(cmd.data, false, 0) != SPI_OK_SELECT)
+		elog(ERROR, "SPI_execute failed: %s", cmd.data);
+
+finish:
+	pfree(cmd.data);
+	resetStringInfo(cmd);
+
+	if (SPI_finish() != SPI_OK_FINISH)
+		elog(ERROR, "SPI_finish failed");
+
 
 	return (Datum) 0;
 }

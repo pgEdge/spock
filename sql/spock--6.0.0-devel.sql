@@ -634,3 +634,12 @@ BEGIN
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE FUNCTION spock.get_distributed_state(
+  IN sub_name  name,
+  OUT snapshot name,
+  OUT lsns     pg_lsn[]
+)
+RETURNS record
+AS 'MODULE_PATHNAME', 'spock_get_distributed_state'
+LANGUAGE C STRICT VOLATILE;
