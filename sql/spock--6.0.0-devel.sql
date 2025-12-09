@@ -381,16 +381,28 @@ AS 'spock','spock_wait_slot_confirm_lsn'
 LANGUAGE C;
 
 CREATE FUNCTION spock.sub_wait_for_sync(subscription_name name)
-RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete';
+RETURNS void RETURNS NULL ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete'
+LANGUAGE C VOLATILE;
 
-CREATE FUNCTION spock.table_wait_for_sync(subscription_name name, relation regclass)
-RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete';
+CREATE FUNCTION spock.table_wait_for_sync(
+	subscription_name name,
+	relation          regclass
+) RETURNS void RETURNS NULL ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete'
+LANGUAGE C VOLATILE;
 
 CREATE FUNCTION spock.sync_event()
-RETURNS pg_lsn RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_sync_event';
+RETURNS pg_lsn RETURNS NULL ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_create_sync_event'
+LANGUAGE C VOLATILE;
 
-CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin_id oid, lsn pg_lsn, timeout int DEFAULT 0)
-AS $$
+CREATE PROCEDURE spock.wait_for_sync_event(
+	OUT result bool,
+	origin_id  oid,
+	lsn        pg_lsn,
+	timeout    int DEFAULT 0
+) AS $$
 DECLARE
 	target_id		oid;
 	elapsed_time	numeric := 0;
@@ -421,8 +433,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin name, lsn pg_lsn, timeout int DEFAULT 0)
-AS $$
+CREATE PROCEDURE spock.wait_for_sync_event(
+	OUT result bool,
+	origin     name,
+	lsn        pg_lsn,
+	timeout    int DEFAULT 0
+) AS $$
 DECLARE
 	origin_id		oid;
 	target_id		oid;

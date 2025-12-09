@@ -2134,18 +2134,20 @@ handle_message(StringInfo s)
     (void) xid; /* unused */
 
     lsn = pq_getmsgint64(s);
-    (void) lsn; /* unused */
-
     transactional = pq_getmsgbyte(s);
-	(void) transactional; /* unused */
-
     prefix = pq_getmsgstring(s);
-	(void) prefix; /* unused unless assert-checking */
-    Assert(strcmp(prefix, SPOCK_MESSAGE_PREFIX) == 0);
+	if (lsn == InvalidXLogRecPtr || !transactional ||
+		strcmp(prefix, SPOCK_MESSAGE_PREFIX) != 0)
+		/*
+		 * Should never happen. It means the protocol breach. Stop replication
+		 * immediately. Do not send the instance into reboot to let applications
+		 * be served.
+		 */
+		elog(FATAL, "incorrect spock message");
 
     sz = pq_getmsgint(s, sizeof(int32));
     temp = (char *) pq_getmsgbytes(s, sz);
-	mtype = ((SpockWalMessageSimple *)temp)->mtype;
+	mtype = ((SpockWalMessageSimple *) temp)->mtype;
 
 	switch(mtype)
 	{
@@ -2156,7 +2158,14 @@ handle_message(StringInfo s)
 
 				(void) msg; /* unused */
 
-				/* empty message. ignore it for now. */
+				/*
+				 * Do nothing. The main idea is to update the progress status.
+				 * This message must be transactional. That means if we see it
+				 * here, the transaction has been committed on the publisher and
+				 * delivered to the subscriber (note: not exactly for streaming
+				 * mode). The progress status will eventually be updated in the
+				 * commit section of this transaction.
+				 */
 			}
 			break;
 
