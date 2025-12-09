@@ -45,8 +45,29 @@ SELECT count(*) FROM spock.tables where nspname = 'hollywood' AND set_name IS NO
 SELECT count(*) FROM spock.tables where relname = 'test1' AND set_name IS NOT NULL;
 SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3') AND set_name IS NOT NULL;
 
--- Reset the configuration to the default value
 \c :provider_dsn
+\set VERBOSITY terse
+-- Check propagation of security labels
+CREATE TABLE slabel1 (x integer NOT NULL, y text PRIMARY KEY);
+
+SELECT spock.delta_apply('slabel1', 'x');
+SELECT spock.delta_apply('slabel1', 'y'); -- ERROR
+SELECT spock.delta_apply('slabel1', 'z'); -- ERROR
+SELECT spock.delta_apply('slabel1', 'x'); -- repeating call do nothing
+SELECT objname, label FROM pg_seclabels;
+
+-- Short round trip to check that subscriber has the security label
+\c :subscriber_dsn
+SELECT objname, label FROM pg_seclabels;
+\c :provider_dsn
+
+SELECT spock.delta_apply('slabel1', 'x', true);
+-- Short round trip to check that subscriber has removed the security label too
+\c :subscriber_dsn
+SELECT objname, label FROM pg_seclabels;
+\c :provider_dsn
+
+-- Reset the configuration to the default value
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';
 ALTER SYSTEM SET spock.include_ddl_repset = 'off';
 ALTER SYSTEM SET spock.allow_ddl_from_functions = 'off';
