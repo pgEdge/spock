@@ -542,7 +542,7 @@ class SpockClusterManager:
             if self.verbose:
                 self.info(f"    Remote SQL for sync_event on source node {src_node_name}: {sql}")
 
-            sync_lsn = self.run_psql(new_node_dsn, sql, fetch=True, return_single=True)
+            sync_lsn = self.run_psql(src_dsn, sql, fetch=True, return_single=True)
             if sync_lsn:
                 self.format_notice("✓", f"Triggered sync_event on new node {src_node_name} (LSN: {sync_lsn})")
             else:
