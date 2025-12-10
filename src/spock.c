@@ -41,7 +41,7 @@
 
 #include "storage/ipc.h"
 #include "storage/proc.h"
-#include "tcop/tcopprot.h" /* debug_query_string */
+#include "tcop/tcopprot.h"		/* debug_query_string */
 
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -67,14 +67,14 @@ PG_MODULE_MAGIC;
 
 static const struct config_enum_entry SpockConflictResolvers[] = {
 	/*
-	 * Disabled until we can clearly define their desired behavior.
-	 * Jan Wieck 2024-08-12
+	 * Disabled until we can clearly define their desired behavior. Jan Wieck
+	 * 2024-08-12
 	 *
-	{"error", SPOCK_RESOLVE_ERROR, false},
-	{"apply_remote", SPOCK_RESOLVE_APPLY_REMOTE, false},
-	{"keep_local", SPOCK_RESOLVE_KEEP_LOCAL, false},
-	{"first_update_wins", SPOCK_RESOLVE_FIRST_UPDATE_WINS, false},
-	*/
+	 * {"error", SPOCK_RESOLVE_ERROR, false}, {"apply_remote",
+	 * SPOCK_RESOLVE_APPLY_REMOTE, false}, {"keep_local",
+	 * SPOCK_RESOLVE_KEEP_LOCAL, false}, {"first_update_wins",
+	 * SPOCK_RESOLVE_FIRST_UPDATE_WINS, false},
+	 */
 	{"last_update_wins", SPOCK_RESOLVE_LAST_UPDATE_WINS, false},
 	{NULL, 0, false}
 };
@@ -118,32 +118,32 @@ static const struct config_enum_entry readonly_options[] = {
 	{NULL, 0, false}
 };
 
-bool	spock_synchronous_commit = false;
-char   *spock_temp_directory = "";
-bool	spock_batch_inserts = true;
+bool		spock_synchronous_commit = false;
+char	   *spock_temp_directory = "";
+bool		spock_batch_inserts = true;
 static char *spock_temp_directory_config;
-bool	spock_ch_stats = true;
+bool		spock_ch_stats = true;
 static char *spock_country_code;
-bool	spock_deny_ddl = false;
-bool	spock_enable_ddl_replication = false;
-bool	spock_include_ddl_repset = false;
-bool	allow_ddl_from_functions = false;
-int		restart_delay_default;
-int		restart_delay_on_exception;
-int		spock_replay_queue_size;  /* Deprecated - no longer used */
-bool	check_all_uc_indexes = false;
+bool		spock_deny_ddl = false;
+bool		spock_enable_ddl_replication = false;
+bool		spock_include_ddl_repset = false;
+bool		allow_ddl_from_functions = false;
+int			restart_delay_default;
+int			restart_delay_on_exception;
+int			spock_replay_queue_size;	/* Deprecated - no longer used */
+bool		check_all_uc_indexes = false;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
 static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
 
-void _PG_init(void);
+void		_PG_init(void);
 PGDLLEXPORT void spock_supervisor_main(Datum main_arg);
-char *spock_extra_connection_options;
+char	   *spock_extra_connection_options;
 
-static PGconn * spock_connect_base(const char *connstr,
-									   const char *appname,
-									   const char *suffix,
-									   bool replication);
+static PGconn *spock_connect_base(const char *connstr,
+								  const char *appname,
+								  const char *suffix,
+								  bool replication);
 
 /*
  * Ensure string is not longer than maxlen.
@@ -157,8 +157,8 @@ static PGconn * spock_connect_base(const char *connstr,
 char *
 shorten_hash(const char *str, int maxlen)
 {
-	char   *ret;
-	int		len = strlen(str);
+	char	   *ret;
+	int			len = strlen(str);
 
 	Assert(maxlen >= 8);
 
@@ -181,9 +181,10 @@ shorten_hash(const char *str, int maxlen)
 List *
 textarray_to_list(ArrayType *textarray)
 {
-	Datum		   *elems;
-	int				nelems, i;
-	List		   *res = NIL;
+	Datum	   *elems;
+	int			nelems,
+				i;
+	List	   *res = NIL;
 
 	deconstruct_array(textarray,
 					  TEXTOID, -1, false, 'i',
@@ -262,9 +263,9 @@ parsePGArray(const char *atext, char ***itemarray, int *nitems)
 					{
 						atext++;
 						if (*atext == '\0')
-							return false;		/* premature end of string */
+							return false;	/* premature end of string */
 					}
-					*strings++ = *atext++;		/* copy quoted data */
+					*strings++ = *atext++;	/* copy quoted data */
 				}
 				atext++;
 			}
@@ -304,12 +305,12 @@ get_spock_table_oid(const char *table)
 
 static PGconn *
 spock_connect_base(const char *connstr, const char *appname,
-					   const char *suffix, bool replication)
+				   const char *suffix, bool replication)
 {
-	int				i=0;
-	PGconn		   *conn;
-	const char	   *keys[CONN_PARAM_ARRAY_SIZE];
-	const char	   *vals[CONN_PARAM_ARRAY_SIZE];
+	int			i = 0;
+	PGconn	   *conn;
+	const char *keys[CONN_PARAM_ARRAY_SIZE];
+	const char *vals[CONN_PARAM_ARRAY_SIZE];
 	StringInfoData s;
 
 	initStringInfo(&s);
@@ -323,11 +324,12 @@ spock_connect_base(const char *connstr, const char *appname,
 	keys[i] = "application_name";
 	if (suffix)
 	{
-		char	s[NAMEDATALEN];
+		char		s[NAMEDATALEN];
+
 		snprintf(s, NAMEDATALEN,
-			 "%s_%s",
-			 shorten_hash(appname, NAMEDATALEN - strlen(suffix) - 2),
-			 suffix);
+				 "%s_%s",
+				 shorten_hash(appname, NAMEDATALEN - strlen(suffix) - 2),
+				 suffix);
 		vals[i] = s;
 	}
 	else
@@ -357,8 +359,8 @@ spock_connect_base(const char *connstr, const char *appname,
 	Assert(i <= CONN_PARAM_ARRAY_SIZE);
 
 	/*
-	 * We use the expand_dbname parameter to process the connection string
-	 * (or URI), and pass some extra options.
+	 * We use the expand_dbname parameter to process the connection string (or
+	 * URI), and pass some extra options.
 	 */
 	conn = PQconnectdbParams(keys, vals, /* expand_dbname = */ true);
 	if (PQstatus(conn) != CONNECTION_OK)
@@ -381,7 +383,7 @@ spock_connect_base(const char *connstr, const char *appname,
  */
 PGconn *
 spock_connect(const char *connstring, const char *connname,
-				  const char *suffix)
+			  const char *suffix)
 {
 	return spock_connect_base(connstring, connname, suffix, false);
 }
@@ -391,7 +393,7 @@ spock_connect(const char *connstring, const char *connname,
  */
 PGconn *
 spock_connect_replica(const char *connstring, const char *connname,
-						  const char *suffix)
+					  const char *suffix)
 {
 	return spock_connect_base(connstring, connname, suffix, true);
 }
@@ -462,11 +464,11 @@ spock_manage_extension(void)
  * Call IDENTIFY_SYSTEM on the connection and report its results.
  */
 void
-spock_identify_system(PGconn *streamConn, uint64* sysid,
-							TimeLineID *timeline, XLogRecPtr *xlogpos,
-							Name *dbname)
+spock_identify_system(PGconn *streamConn, uint64 *sysid,
+					  TimeLineID *timeline, XLogRecPtr *xlogpos,
+					  Name *dbname)
 {
-	PGresult	   *res;
+	PGresult   *res;
 
 	res = PQexec(streamConn, "IDENTIFY_SYSTEM");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -489,6 +491,7 @@ spock_identify_system(PGconn *streamConn, uint64* sysid,
 	if (sysid != NULL)
 	{
 		const char *remote_sysid = PQgetvalue(res, 0, 0);
+
 		if (sscanf(remote_sysid, UINT64_FORMAT, sysid) != 1)
 			elog(ERROR, "could not parse remote sysid %s", remote_sysid);
 	}
@@ -496,6 +499,7 @@ spock_identify_system(PGconn *streamConn, uint64* sysid,
 	if (timeline != NULL)
 	{
 		const char *remote_tlid = PQgetvalue(res, 0, 1);
+
 		if (sscanf(remote_tlid, "%u", timeline) != 1)
 			elog(ERROR, "could not parse remote tlid %s", remote_tlid);
 	}
@@ -503,15 +507,18 @@ spock_identify_system(PGconn *streamConn, uint64* sysid,
 	if (xlogpos != NULL)
 	{
 		const char *remote_xlogpos = PQgetvalue(res, 0, 2);
-		uint32 xlogpos_low, xlogpos_high;
+		uint32		xlogpos_low,
+					xlogpos_high;
+
 		if (sscanf(remote_xlogpos, "%X/%X", &xlogpos_high, &xlogpos_low) != 2)
 			elog(ERROR, "could not parse remote xlogpos %s", remote_xlogpos);
-		*xlogpos = (((XLogRecPtr)xlogpos_high)<<32) + xlogpos_low;
+		*xlogpos = (((XLogRecPtr) xlogpos_high) << 32) + xlogpos_low;
 	}
 
 	if (dbname != NULL)
 	{
-		char *remote_dbname = PQgetvalue(res, 0, 3);
+		char	   *remote_dbname = PQgetvalue(res, 0, 3);
+
 		snprintf(NameStr(**dbname), NAMEDATALEN, "%s", remote_dbname);
 	}
 
@@ -520,15 +527,15 @@ spock_identify_system(PGconn *streamConn, uint64* sysid,
 
 void
 spock_start_replication(PGconn *streamConn, const char *slot_name,
-							XLogRecPtr start_pos, const char *forward_origins,
-							const char *replication_sets,
-							const char *replicate_only_table,
-							bool force_text_transfer)
+						XLogRecPtr start_pos, const char *forward_origins,
+						const char *replication_sets,
+						const char *replicate_only_table,
+						bool force_text_transfer)
 {
-	StringInfoData	command;
-	PGresult	   *res;
-	char		   *sqlstate;
-	const char	   *want_binary = (force_text_transfer ? "0" : "1");
+	StringInfoData command;
+	PGresult   *res;
+	char	   *sqlstate;
+	const char *want_binary = (force_text_transfer ? "0" : "1");
 
 	initStringInfo(&command);
 	appendStringInfo(&command, "START_REPLICATION SLOT \"%s\" LOGICAL %X/%X (",
@@ -547,7 +554,7 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 	appendStringInfo(&command, ", \"binary.want_internal_basetypes\" '%s'", want_binary);
 	appendStringInfo(&command, ", \"binary.want_binary_basetypes\" '%s'", want_binary);
 	appendStringInfo(&command, ", \"binary.basetypes_major_version\" '%u'",
-					 PG_VERSION_NUM/100);
+					 PG_VERSION_NUM / 100);
 	appendStringInfo(&command, ", \"binary.sizeof_datum\" '%zu'",
 					 sizeof(Datum));
 	appendStringInfo(&command, ", \"binary.sizeof_int\" '%zu'", sizeof(int));
@@ -558,7 +565,7 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 #else
 					 false
 #endif
-					 );
+		);
 	appendStringInfo(&command, ", \"binary.float4_byval\" '%d'",
 					 server_float4_byval());
 	appendStringInfo(&command, ", \"binary.float8_byval\" '%d'",
@@ -569,7 +576,7 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 #else
 					 false
 #endif
-					 );
+		);
 
 	/* We don't care about this anymore but spock 1.x expects this. */
 	appendStringInfoString(&command,
@@ -577,7 +584,7 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 
 	if (forward_origins)
 		appendStringInfo(&command, ", \"spock.forward_origins\" %s",
-					 quote_literal_cstr(forward_origins));
+						 quote_literal_cstr(forward_origins));
 
 	if (replicate_only_table)
 	{
@@ -637,9 +644,9 @@ start_manager_workers(void)
 
 	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
 	{
-		Form_pg_database	pgdatabase = (Form_pg_database) GETSTRUCT(tup);
-		Oid					dboid = pgdatabase->oid;
-		SpockWorker		worker;
+		Form_pg_database pgdatabase = (Form_pg_database) GETSTRUCT(tup);
+		Oid			dboid = pgdatabase->oid;
+		SpockWorker worker;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -705,8 +712,8 @@ spock_supervisor_main(Datum main_arg)
 
 	/* Main wait loop. */
 	while (!got_SIGTERM)
-    {
-		int rc;
+	{
+		int			rc;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -727,10 +734,10 @@ spock_supervisor_main(Datum main_arg)
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 					   180000L);
 
-        ResetLatch(&MyProc->procLatch);
+		ResetLatch(&MyProc->procLatch);
 
-        /* emergency bailout if postmaster has died */
-        if (rc & WL_POSTMASTER_DEATH)
+		/* emergency bailout if postmaster has died */
+		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
 	}
 
@@ -784,22 +791,22 @@ spock_temp_directory_assing_hook(const char *newval, void *extra)
 static char *
 pg_strcasestr(const char *str, const char *substr)
 {
-	size_t nlen;
+	size_t		nlen;
 
 	if (str == NULL)
 		return NULL;
 
-    nlen = strlen(substr);
+	nlen = strlen(substr);
 
-    if (nlen == 0)
-        return (char *) str;
+	if (nlen == 0)
+		return (char *) str;
 
-    for (const char *p = str; *p; p++)
-    {
-        if (pg_strncasecmp(p, substr, nlen) == 0)
-            return (char *) p;
-    }
-    return NULL;
+	for (const char *p = str; *p; p++)
+	{
+		if (pg_strncasecmp(p, substr, nlen) == 0)
+			return (char *) p;
+	}
+	return NULL;
 }
 
 /* Replace each following symbol with 'X' until the EOL */
@@ -843,8 +850,8 @@ log_message_filter(ErrorData *edata)
 		const int	len = strlen(PSWD_KEYWORD);
 
 		/*
-		 * Password may bubble up in the error message and query string.
-		 * XXX: Can it be exposed somewhere else - in the detail_log string, for
+		 * Password may bubble up in the error message and query string. XXX:
+		 * Can it be exposed somewhere else - in the detail_log string, for
 		 * example?
 		 */
 		strpos = pg_strcasestr(edata->message, PSWD_KEYWORD);
@@ -862,12 +869,13 @@ log_message_filter(ErrorData *edata)
 	}
 
 	/*
-	 * Filter messages that previously needed core patch 'pg18-020-LOG-to-DEBUG1'
+	 * Filter messages that previously needed core patch
+	 * 'pg18-020-LOG-to-DEBUG1'
 	 */
 	if (edata->elevel == LOG &&
 		edata->sqlerrcode == ERRCODE_T_R_SERIALIZATION_FAILURE)
 	{
-		bool lower_output_level = false;
+		bool		lower_output_level = false;
 
 		if (strstr(edata->message,
 				   "tuple to be locked was already moved to another partition due to concurrent update, retrying") != NULL)
@@ -903,7 +911,7 @@ _PG_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		elog(ERROR, "spock is not in shared_preload_libraries");
 
-    DefineCustomEnumVariable("spock.conflict_resolution",
+	DefineCustomEnumVariable("spock.conflict_resolution",
 							 gettext_noop("Sets method used for conflict resolution for resolvable conflicts."),
 							 NULL,
 							 &spock_conflict_resolver,
@@ -955,7 +963,7 @@ _PG_init(void)
 							NULL);
 
 	DefineCustomBoolVariable("spock.save_resolutions",
-							 "Log conflict resolutions to spock."CATALOG_LOGTABLE" table.",
+							 "Log conflict resolutions to spock." CATALOG_LOGTABLE " table.",
 							 NULL,
 							 &spock_save_resolutions,
 							 false, PGC_SIGHUP,
@@ -1013,13 +1021,13 @@ _PG_init(void)
 							   NULL, NULL, NULL);
 
 	DefineCustomBoolVariable("spock.channel_counters",
-							   "Enable spock statistics information collection",
-							   NULL,
-							   &spock_ch_stats,
-							   true,
-							   PGC_BACKEND,
-							   0,
-							   NULL, NULL, NULL);
+							 "Enable spock statistics information collection",
+							 NULL,
+							 &spock_ch_stats,
+							 true,
+							 PGC_BACKEND,
+							 0,
+							 NULL, NULL, NULL);
 
 	DefineCustomStringVariable("spock.country",
 							   "Sets the country code",
@@ -1032,40 +1040,40 @@ _PG_init(void)
 							   NULL);
 
 	DefineCustomBoolVariable("spock.deny_all_ddl",
-							   "Deny All DDL statements",
-							   NULL,
-							   &spock_deny_ddl,
-							   false,
-							   PGC_SUSET,
-							   0,
-							   NULL, NULL, NULL);
+							 "Deny All DDL statements",
+							 NULL,
+							 &spock_deny_ddl,
+							 false,
+							 PGC_SUSET,
+							 0,
+							 NULL, NULL, NULL);
 
 	DefineCustomBoolVariable("spock.enable_ddl_replication",
-							   "Replicate All DDL statements automatically",
-							   NULL,
-							   &spock_enable_ddl_replication,
-							   false,
-							   PGC_USERSET,
-							   0,
-							   NULL, NULL, NULL);
+							 "Replicate All DDL statements automatically",
+							 NULL,
+							 &spock_enable_ddl_replication,
+							 false,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
 
 	DefineCustomBoolVariable("spock.include_ddl_repset",
-							   "Add tables to the replication set while doing ddl replication",
-							   NULL,
-							   &spock_include_ddl_repset,
-							   false,
-							   PGC_USERSET,
-							   0,
-							   NULL, NULL, NULL);
+							 "Add tables to the replication set while doing ddl replication",
+							 NULL,
+							 &spock_include_ddl_repset,
+							 false,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
 
 	DefineCustomBoolVariable("spock.allow_ddl_from_functions",
-							   "Allow replication of DDL statements from within functions",
-							   NULL,
-							   &allow_ddl_from_functions,
-							   false,
-							   PGC_USERSET,
-							   0,
-							   NULL, NULL, NULL);
+							 "Allow replication of DDL statements from within functions",
+							 NULL,
+							 &allow_ddl_from_functions,
+							 false,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.restart_delay_default",
 							"Default apply-worker restart delay in ms",
@@ -1145,7 +1153,7 @@ _PG_init(void)
 
 	/* Run the supervisor. */
 	memset(&bgw, 0, sizeof(bgw));
-	bgw.bgw_flags =	BGWORKER_SHMEM_ACCESS |
+	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, BGW_MAXLEN, "%s",

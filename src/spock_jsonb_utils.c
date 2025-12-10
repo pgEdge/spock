@@ -117,8 +117,8 @@ spock_tuple_to_json_cstring(SpockTupleData *tuple, TupleDesc tupleDesc)
 	Oid			typid;
 	int			rc;
 
-	StringInfoData	s;
-	bool			add_comma = false;
+	StringInfoData s;
+	bool		add_comma = false;
 
 	initStringInfo(&s);
 	appendStringInfoString(&s, "[");
@@ -186,10 +186,10 @@ spock_tuple_to_json_cstring(SpockTupleData *tuple, TupleDesc tupleDesc)
 char *
 heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupleDesc)
 {
-	int				natt;
-	bool			add_comma = false;
-	StringInfoData	s;
-	int				rc;
+	int			natt;
+	bool		add_comma = false;
+	StringInfoData s;
+	int			rc;
 
 	initStringInfo(&s);
 	appendStringInfo(&s, "[");

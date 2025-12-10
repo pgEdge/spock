@@ -19,16 +19,16 @@ extern void spock_apply_heap_begin(void);
 extern void spock_apply_heap_commit(void);
 
 extern void spock_apply_heap_insert(SpockRelation *rel,
-										SpockTupleData *newtup);
+									SpockTupleData *newtup);
 extern void spock_apply_heap_update(SpockRelation *rel,
-										SpockTupleData *oldtup,
-										SpockTupleData *newtup);
+									SpockTupleData *oldtup,
+									SpockTupleData *newtup);
 extern void spock_apply_heap_delete(SpockRelation *rel,
-										SpockTupleData *oldtup);
+									SpockTupleData *oldtup);
 
-bool spock_apply_heap_can_mi(SpockRelation *rel);
-void spock_apply_heap_mi_add_tuple(SpockRelation *rel,
-									   SpockTupleData *tup);
-void spock_apply_heap_mi_finish(SpockRelation *rel);
+bool		spock_apply_heap_can_mi(SpockRelation *rel);
+void		spock_apply_heap_mi_add_tuple(SpockRelation *rel,
+										  SpockTupleData *tup);
+void		spock_apply_heap_mi_finish(SpockRelation *rel);
 
-#endif /* SPOCK_APPLY_HEAP_H */
+#endif							/* SPOCK_APPLY_HEAP_H */

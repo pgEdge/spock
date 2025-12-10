@@ -46,20 +46,20 @@
 #include "spock_worker.h"
 
 /* Global variables */
-bool	spock_replication_repair_mode = false;
+bool		spock_replication_repair_mode = false;
 
 /* Local functions */
 static inline void set_repair_mode(bool is_enabled);
-static void pg_decode_startup(LogicalDecodingContext * ctx,
+static void pg_decode_startup(LogicalDecodingContext *ctx,
 							  OutputPluginOptions *opt, bool is_init);
-static void pg_decode_shutdown(LogicalDecodingContext * ctx);
+static void pg_decode_shutdown(LogicalDecodingContext *ctx);
 static void pg_decode_begin_txn(LogicalDecodingContext *ctx,
-					ReorderBufferTXN *txn);
+								ReorderBufferTXN *txn);
 static void pg_decode_commit_txn(LogicalDecodingContext *ctx,
-					 ReorderBufferTXN *txn, XLogRecPtr commit_lsn);
+								 ReorderBufferTXN *txn, XLogRecPtr commit_lsn);
 static void pg_decode_change(LogicalDecodingContext *ctx,
-				 ReorderBufferTXN *txn, Relation rel,
-				 ReorderBufferChange *change);
+							 ReorderBufferTXN *txn, Relation rel,
+							 ReorderBufferChange *change);
 static void pg_decode_message(LogicalDecodingContext *ctx,
 							  ReorderBufferTXN *txn,
 							  XLogRecPtr message_lsn,
@@ -75,7 +75,7 @@ static bool pg_decode_origin_filter(LogicalDecodingContext *ctx,
 									RepOriginId origin_id);
 
 static void send_startup_message(LogicalDecodingContext *ctx,
-		SpockOutputData *data, bool last_message);
+								 SpockOutputData *data, bool last_message);
 static void maybe_send_schema(LogicalDecodingContext *ctx,
 							  ReorderBufferChange *change,
 							  Relation relation);
@@ -85,28 +85,28 @@ static bool startup_message_sent = false;
 
 typedef struct SPKRelMetaCacheEntry
 {
-	Oid relid;
+	Oid			relid;
 	/* Does the client have this relation cached? */
-	bool is_cached;
+	bool		is_cached;
 	/* Entry is valid and not due to be purged */
-	bool is_valid;
+	bool		is_valid;
 } SPKRelMetaCacheEntry;
 
 #define RELMETACACHE_INITIAL_SIZE 128
 static HTAB *RelMetaCache = NULL;
 static MemoryContext RelMetaCacheContext = NULL;
-static int InvalidRelMetaCacheCnt = 0;
-static int MyWalSenderIdx = 0;
+static int	InvalidRelMetaCacheCnt = 0;
+static int	MyWalSenderIdx = 0;
 
-static bool						slot_group_on_exit_set = false;
-static SpockOutputSlotGroup	   *slot_group = NULL;
-static bool						slot_group_skip_xact = false;
+static bool slot_group_on_exit_set = false;
+static SpockOutputSlotGroup *slot_group = NULL;
+static bool slot_group_skip_xact = false;
 
 /* ts of the last transaction processed by the slot group */
-static TimestampTz				slot_group_last_commit_ts = 0;
+static TimestampTz slot_group_last_commit_ts = 0;
 
-static char					   *MyOutputNodeName = NULL;
-static RepOriginId				MyOutputNodeId = InvalidRepOriginId;
+static char *MyOutputNodeName = NULL;
+static RepOriginId MyOutputNodeId = InvalidRepOriginId;
 
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
@@ -225,10 +225,10 @@ check_binary_compatibility(SpockOutputData *data)
 
 /* initialize this plugin */
 static void
-pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
+pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 				  bool is_init)
 {
-	SpockOutputData	   *data = palloc0(sizeof(SpockOutputData));
+	SpockOutputData *data = palloc0(sizeof(SpockOutputData));
 
 	/* Join our slot-group if possible */
 	spock_output_join_slot_group(ctx->slot->data.name);
@@ -250,25 +250,25 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 	 */
 	if (!is_init)
 	{
-		bool	started_tx = false;
+		bool		started_tx = false;
 		SpockLocalNode *node;
 		MemoryContext oldctx;
 
 		/*
-		 * Discover our WalSender slot index. We use this to work around a problem
-		 * in SyncRepWaitForLSN() later.
+		 * Discover our WalSender slot index. We use this to work around a
+		 * problem in SyncRepWaitForLSN() later.
 		 */
 		if (MyWalSnd != NULL)
 			MyWalSenderIdx = (MyWalSnd - WalSndCtl->walsnds) + 1;
 
 		/*
-		 * There's a potential corruption bug in PostgreSQL 10.1, 9.6.6, 9.5.10
-		 * and 9.4.15 that can cause reorder buffers to accumulate duplicated
-		 * transactions. See
-		 *	 https://www.postgresql.org/message-id/CAMsr+YHdX=XECbZshDZ2CZNWGTyw-taYBnzqVfx4JzM4ExP5xg@mail.gmail.com
+		 * There's a potential corruption bug in PostgreSQL 10.1, 9.6.6,
+		 * 9.5.10 and 9.4.15 that can cause reorder buffers to accumulate
+		 * duplicated transactions. See
+		 * https://www.postgresql.org/message-id/CAMsr+YHdX=XECbZshDZ2CZNWGTyw-taYBnzqVfx4JzM4ExP5xg@mail.gmail.com
 		 *
-		 * We can defend against this by doing our own cleanup of any serialized
-		 * txns in the reorder buffer on startup.
+		 * We can defend against this by doing our own cleanup of any
+		 * serialized txns in the reorder buffer on startup.
 		 */
 		spkReorderBufferCleanSerializedTXNs(NameStr(MyReplicationSlot->data.name));
 
@@ -278,7 +278,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 			started_tx = true;
 		}
 		node = get_local_node(false, false);
-		data->local_node_id	= node->node->id;
+		data->local_node_id = node->node->id;
 
 		/*
 		 * Remember our own node.name for quick access out write_origin().
@@ -289,55 +289,56 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 		MemoryContextSwitchTo(oldctx);
 
 		/*
-		 * Ideally we'd send the startup message immediately. That way
-		 * it'd arrive before any error we emit if we see incompatible
-		 * options sent by the client here. That way the client could
-		 * possibly adjust its options and reconnect. It'd also make
-		 * sure the client gets the startup message in a timely way if
-		 * the server is idle, since otherwise it could be a while
-		 * before the next callback.
+		 * Ideally we'd send the startup message immediately. That way it'd
+		 * arrive before any error we emit if we see incompatible options sent
+		 * by the client here. That way the client could possibly adjust its
+		 * options and reconnect. It'd also make sure the client gets the
+		 * startup message in a timely way if the server is idle, since
+		 * otherwise it could be a while before the next callback.
 		 *
-		 * The decoding plugin API doesn't let us write to the stream
-		 * from here, though, so we have to delay the startup message
-		 * until the first change processed on the stream, in a begin
-		 * callback.
+		 * The decoding plugin API doesn't let us write to the stream from
+		 * here, though, so we have to delay the startup message until the
+		 * first change processed on the stream, in a begin callback.
 		 *
-		 * If we ERROR there, the startup message is buffered but not
-		 * sent since the callback didn't finish. So we'd have to send
-		 * the startup message, finish the callback and check in the
-		 * next callback if we need to ERROR.
+		 * If we ERROR there, the startup message is buffered but not sent
+		 * since the callback didn't finish. So we'd have to send the startup
+		 * message, finish the callback and check in the next callback if we
+		 * need to ERROR.
 		 *
-		 * That's a bit much hoop jumping, so for now ERRORs are
-		 * immediate. A way to emit a message from the startup callback
-		 * is really needed to change that.
+		 * That's a bit much hoop jumping, so for now ERRORs are immediate. A
+		 * way to emit a message from the startup callback is really needed to
+		 * change that.
 		 */
 		startup_message_sent = false;
 
-		/* Now parse the rest of the params and ERROR if we see any we don't recognise */
+		/*
+		 * Now parse the rest of the params and ERROR if we see any we don't
+		 * recognise
+		 */
 		oldctx = MemoryContextSwitchTo(ctx->context);
 		process_parameters(ctx->output_plugin_options, data);
 		MemoryContextSwitchTo(oldctx);
 
 		if (data->client_min_proto_version > SPOCK_PROTO_VERSION_NUM)
 			ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("client sent min_proto_version=%d but we only support protocol %d or lower",
-					 data->client_min_proto_version, SPOCK_PROTO_VERSION_NUM)));
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("client sent min_proto_version=%d but we only support protocol %d or lower",
+							data->client_min_proto_version, SPOCK_PROTO_VERSION_NUM)));
 
 		if (data->client_max_proto_version < SPOCK_PROTO_MIN_VERSION_NUM)
 			ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("client sent max_proto_version=%d but we only support protocol %d or higher",
-					data->client_max_proto_version, SPOCK_PROTO_MIN_VERSION_NUM)));
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("client sent max_proto_version=%d but we only support protocol %d or higher",
+							data->client_max_proto_version, SPOCK_PROTO_MIN_VERSION_NUM)));
 
 		/*
 		 * Set correct protocol format.
 		 *
-		 * This is the output plugin protocol format, this is different
-		 * from the individual fields binary vs textual format.
+		 * This is the output plugin protocol format, this is different from
+		 * the individual fields binary vs textual format.
 		 */
 		if (data->client_protocol_format != NULL
-				&& strcmp(data->client_protocol_format, "json") == 0)
+			&& strcmp(data->client_protocol_format, "json") == 0)
 		{
 			oldctx = MemoryContextSwitchTo(ctx->context);
 			data->api = spock_init_api(SpockProtoJson);
@@ -345,7 +346,7 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 			MemoryContextSwitchTo(oldctx);
 		}
 		else if ((data->client_protocol_format != NULL
-				 && strcmp(data->client_protocol_format, "native") == 0)
+				  && strcmp(data->client_protocol_format, "native") == 0)
 				 || data->client_protocol_format == NULL)
 		{
 			oldctx = MemoryContextSwitchTo(ctx->context);
@@ -362,16 +363,16 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 		else
 		{
 			ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("client requested protocol %s but only \"json\" or \"native\" are supported",
-					data->client_protocol_format)));
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("client requested protocol %s but only \"json\" or \"native\" are supported",
+							data->client_protocol_format)));
 		}
 
 		/* check for encoding match if specific encoding demanded by client */
 		if (data->client_expected_encoding != NULL
-				&& strlen(data->client_expected_encoding) != 0)
+			&& strlen(data->client_expected_encoding) != 0)
 		{
-			int wanted_encoding = pg_char_to_encoding(data->client_expected_encoding);
+			int			wanted_encoding = pg_char_to_encoding(data->client_expected_encoding);
 
 			if (wanted_encoding == -1)
 				ereport(ERROR,
@@ -395,15 +396,15 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 			{
 				/*
 				 * currently in the binary protocol we can only emit encoded
-				 * datums in the server encoding. There's no support for encoding
-				 * conversion.
+				 * datums in the server encoding. There's no support for
+				 * encoding conversion.
 				 */
 				if (wanted_encoding != GetDatabaseEncoding())
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("encoding conversion for binary datum not supported yet"),
 							 errdetail("expected_encoding %s must be unset or match server_encoding %s",
-								 data->client_expected_encoding, GetDatabaseEncodingName())));
+									   data->client_expected_encoding, GetDatabaseEncodingName())));
 			}
 
 			data->field_datum_encoding = wanted_encoding;
@@ -469,30 +470,28 @@ pg_decode_startup(LogicalDecodingContext * ctx, OutputPluginOptions *opt,
 static void
 pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 {
-	SpockOutputData* data = (SpockOutputData*)ctx->output_plugin_private;
-	bool send_replication_origin = data->forward_changeset_origins;
+	SpockOutputData *data = (SpockOutputData *) ctx->output_plugin_private;
+	bool		send_replication_origin = data->forward_changeset_origins;
 	MemoryContext old_ctx;
 
 	/* Reset repair mode */
 	set_repair_mode(false);
 
 	/*
-	 * Check if we are a member of a replication slot-group and if so,
-	 * if another member is already working on this transaction. If
-	 * nobody does, then claim this transaction for us and start
-	 * working.
+	 * Check if we are a member of a replication slot-group and if so, if
+	 * another member is already working on this transaction. If nobody does,
+	 * then claim this transaction for us and start working.
 	 */
 	if (slot_group != NULL)
 	{
 		LWLockAcquire(slot_group->lock, LW_EXCLUSIVE);
 
 		/*
-		 * Just do it regardless of whether we are skipping this
-		 * transaction or not. Let's be safe and simply move the
-		 * commit ts forward.
+		 * Just do it regardless of whether we are skipping this transaction
+		 * or not. Let's be safe and simply move the commit ts forward.
 		 *
-		 * Save the slot_group->last_commit_ts to the static local
-		 * variable to avoid further locking.
+		 * Save the slot_group->last_commit_ts to the static local variable to
+		 * avoid further locking.
 		 */
 		if (slot_group->last_commit_ts < txn->xact_time.commit_time)
 		{
@@ -510,12 +509,12 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 		if (slot_group->last_lsn >= txn->end_lsn)
 		{
 			elog(DEBUG1, "SPOCK: slot-group '%s' skipping transaction with end_lsn %X/%X"
-					  " - last_lsn %X/%X",
+				 " - last_lsn %X/%X",
 				 NameStr(slot_group->name),
-				 (uint32)(txn->end_lsn >> 32),
-				 (uint32)(txn->end_lsn),
-				 (uint32)(slot_group->last_lsn >> 32),
-				 (uint32)(slot_group->last_lsn));
+				 (uint32) (txn->end_lsn >> 32),
+				 (uint32) (txn->end_lsn),
+				 (uint32) (slot_group->last_lsn >> 32),
+				 (uint32) (slot_group->last_lsn));
 
 			LWLockRelease(slot_group->lock);
 
@@ -526,8 +525,8 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 
 		elog(DEBUG1, "SPOCK: slot-group '%s' sending transaction with end_lsn %X/%X",
 			 NameStr(slot_group->name),
-			 (uint32)(txn->end_lsn >> 32),
-			 (uint32)(txn->end_lsn));
+			 (uint32) (txn->end_lsn >> 32),
+			 (uint32) (txn->end_lsn));
 
 		slot_group->last_lsn = txn->end_lsn;
 		LWLockRelease(slot_group->lock);
@@ -538,7 +537,7 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	VALGRIND_DO_ADDED_LEAK_CHECK;
 
 	if (!startup_message_sent)
-		send_startup_message(ctx, data, false /* can't be last message */);
+		send_startup_message(ctx, data, false /* can't be last message */ );
 
 	OutputPluginPrepareWrite(ctx, !send_replication_origin);
 	data->api->write_begin(ctx->out, data, txn);
@@ -550,10 +549,10 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 		OutputPluginPrepareWrite(ctx, true);
 
 		/*
-		 * On transactions that originated locally generate the origin
-		 * message with our own and node.id. Remote transactions
-		 * that we forward will have the node.id of what we got from
-		 * the remote, which is the real origin of the transaction.
+		 * On transactions that originated locally generate the origin message
+		 * with our own and node.id. Remote transactions that we forward will
+		 * have the node.id of what we got from the remote, which is the real
+		 * origin of the transaction.
 		 */
 		if (data->api->write_origin)
 		{
@@ -597,16 +596,16 @@ static void
 pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					 XLogRecPtr commit_lsn)
 {
-	SpockOutputData	   *data = (SpockOutputData*)ctx->output_plugin_private;
-	MemoryContext		old_ctx;
-	XLogRecPtr			end_lsn = txn->end_lsn - MyWalSenderIdx;
+	SpockOutputData *data = (SpockOutputData *) ctx->output_plugin_private;
+	MemoryContext old_ctx;
+	XLogRecPtr	end_lsn = txn->end_lsn - MyWalSenderIdx;
 
 	/* Reset repair mode */
 	set_repair_mode(false);
 
 	/*
-	 * If we are in slot-group skip transaction mode, we simply end
-	 * it here and wait for the next transaction.
+	 * If we are in slot-group skip transaction mode, we simply end it here
+	 * and wait for the next transaction.
 	 */
 	if (slot_group_skip_xact)
 	{
@@ -617,30 +616,29 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	old_ctx = MemoryContextSwitchTo(data->context);
 
 	/*
-	 * If we are configured for synchronous replication we must wait
-	 * for this end_lsn to be confirmed according to the configuration
-	 * of synchronous_standby_names before sending it to the subscriber.
-	 * A failover to the synchronous standby may otherwise forget a
-	 * transaction already sent to a Spock node.
+	 * If we are configured for synchronous replication we must wait for this
+	 * end_lsn to be confirmed according to the configuration of
+	 * synchronous_standby_names before sending it to the subscriber. A
+	 * failover to the synchronous standby may otherwise forget a transaction
+	 * already sent to a Spock node.
 	 *
-	 * There currently is a problem in SyncRepWaitForLSN() in that it
-	 * expects the wait queue to be sorted by LSN and that there are
-	 * no duplicate LSNs in it. There is no good reason for uniqueness
-	 * in that list, but the corresponding Assert code will TRAP if
-	 * we don't use a unique LSN. We therefore use our WalSndCtl->walsnds
-	 * slot number +1 and subtract that from the end_lsn. This works as
-	 * long as that offset is smaller than the size of the commit record
-	 * itself.
+	 * There currently is a problem in SyncRepWaitForLSN() in that it expects
+	 * the wait queue to be sorted by LSN and that there are no duplicate LSNs
+	 * in it. There is no good reason for uniqueness in that list, but the
+	 * corresponding Assert code will TRAP if we don't use a unique LSN. We
+	 * therefore use our WalSndCtl->walsnds slot number +1 and subtract that
+	 * from the end_lsn. This works as long as that offset is smaller than the
+	 * size of the commit record itself.
 	 */
 	if (MyWalSenderIdx == 0)
 	{
 		elog(LOG, "Spock: don't have a walsender idx - "
-				  " not calling SyncRepWaitForLSN()");
+			 " not calling SyncRepWaitForLSN()");
 	}
 	else if (end_lsn <= commit_lsn)
 	{
 		elog(LOG, "Spock: walsender idx too big (%d) - "
-				  " not calling SyncRepWaitForLSN()", MyWalSenderIdx);
+			 " not calling SyncRepWaitForLSN()", MyWalSenderIdx);
 	}
 	else
 	{
@@ -657,9 +655,8 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	OutputPluginWrite(ctx, true);
 
 	/*
-	 * Now is a good time to get rid of invalidated relation
-	 * metadata entries since nothing will be referencing them
-	 * at the moment.
+	 * Now is a good time to get rid of invalidated relation metadata entries
+	 * since nothing will be referencing them at the moment.
 	 */
 	relmetacache_prune();
 
@@ -679,7 +676,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 				  bool transactional, const char *prefix,
 				  Size message_size, const char *message)
 {
-	SpockWalMessage	   *msg = (SpockWalMessage *)message;
+	SpockWalMessage *msg = (SpockWalMessage *) message;
 
 	/* Ignore messages that are not meant for Spock */
 	if (strcmp(prefix, SPOCK_MESSAGE_PREFIX) != 0)
@@ -700,7 +697,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 			if (message_size != sizeof(SpockWalMessageSimple))
 			{
 				elog(WARNING, "Spock custom WAL message: wrong message "
-							  "size %lu for simple message", message_size);
+					 "size %lu for simple message", message_size);
 				return;
 			}
 			set_repair_mode(true);
@@ -711,7 +708,7 @@ pg_decode_message(LogicalDecodingContext *ctx,
 			if (message_size != sizeof(SpockWalMessageSimple))
 			{
 				elog(WARNING, "Spock custom WAL message: wrong message "
-							  "size %lu for simple message", message_size);
+					 "size %lu for simple message", message_size);
 				return;
 			}
 			set_repair_mode(false);
@@ -719,12 +716,12 @@ pg_decode_message(LogicalDecodingContext *ctx,
 
 		case SPOCK_SYNC_EVENT_MSG:
 			{
-				MemoryContext		oldctx;
-				SpockOutputData	   *data;
+				MemoryContext oldctx;
+				SpockOutputData *data;
 
 				Assert(txn != NULL);
 
-				data = (SpockOutputData*) ctx->output_plugin_private;
+				data = (SpockOutputData *) ctx->output_plugin_private;
 				oldctx = MemoryContextSwitchTo(data->context);
 
 				OutputPluginPrepareWrite(ctx, true);
@@ -751,30 +748,29 @@ pg_decode_message(LogicalDecodingContext *ctx,
 
 static bool
 spock_change_filter(SpockOutputData *data, Relation relation,
-						ReorderBufferChange *change, Bitmapset **att_list)
+					ReorderBufferChange *change, Bitmapset **att_list)
 {
 	SpockTableRepInfo *tblinfo;
-	ListCell	   *lc;
+	ListCell   *lc;
 
 	if (data->replicate_only_table)
 	{
 		/*
-		 * Special case - we are catching up just one table.
-		 * TODO: performance
+		 * Special case - we are catching up just one table. TODO: performance
 		 */
 		return strcmp(RelationGetRelationName(relation),
 					  data->replicate_only_table->relname) == 0 &&
 			RelationGetNamespace(relation) ==
-				get_namespace_oid(data->replicate_only_table->schemaname, true);
+			get_namespace_oid(data->replicate_only_table->schemaname, true);
 	}
 	else if (RelationGetRelid(relation) == get_queue_table_oid())
 	{
 		/* Special case - queue table */
 		if (change->action == REORDER_BUFFER_CHANGE_INSERT)
 		{
-			HeapTuple		tup = ReorderBufferChangeHeapTuple(change, newtuple);
-			QueuedMessage  *q;
-			ListCell	   *qlc;
+			HeapTuple	tup = ReorderBufferChangeHeapTuple(change, newtuple);
+			QueuedMessage *q;
+			ListCell   *qlc;
 
 			LockRelation(relation, AccessShareLock);
 			q = queued_message_from_tuple(tup);
@@ -787,14 +783,14 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 			if (q->replication_sets == NULL)
 				return true;
 
-			foreach (qlc, q->replication_sets)
+			foreach(qlc, q->replication_sets)
 			{
 				char	   *queue_set = (char *) lfirst(qlc);
 				ListCell   *plc;
 
-				foreach (plc, data->replication_sets)
+				foreach(plc, data->replication_sets)
 				{
-					SpockRepSet	   *rs = lfirst(plc);
+					SpockRepSet *rs = lfirst(plc);
 
 					/* TODO: this is somewhat ugly. */
 					if (strcmp(queue_set, rs->name) == 0)
@@ -813,28 +809,28 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 		 * We can use this to update our cached replication set info, without
 		 * having to deal with cache invalidation callbacks.
 		 */
-		HeapTuple			tup;
-		SpockRepSet	   *replicated_set;
-		ListCell		   *plc;
+		HeapTuple	tup;
+		SpockRepSet *replicated_set;
+		ListCell   *plc;
 
 		if (change->action == REORDER_BUFFER_CHANGE_UPDATE)
-			 tup = ReorderBufferChangeHeapTuple(change, newtuple);
+			tup = ReorderBufferChangeHeapTuple(change, newtuple);
 		else if (change->action == REORDER_BUFFER_CHANGE_DELETE)
-			 tup = ReorderBufferChangeHeapTuple(change, oldtuple);
+			tup = ReorderBufferChangeHeapTuple(change, oldtuple);
 		else
 			return false;
 
 		replicated_set = replication_set_from_tuple(tup);
-		foreach (plc, data->replication_sets)
+		foreach(plc, data->replication_sets)
 		{
-			SpockRepSet	   *rs = lfirst(plc);
+			SpockRepSet *rs = lfirst(plc);
 
 			/* Check if the changed repset is used by us. */
 			if (rs->id == replicated_set->id)
 			{
 				/*
-				 * In case this was delete, somebody deleted one of our
-				 * rep sets, bail here and let reconnect logic handle any
+				 * In case this was delete, somebody deleted one of our rep
+				 * sets, bail here and let reconnect logic handle any
 				 * potential issues.
 				 */
 				if (change->action == REORDER_BUFFER_CHANGE_DELETE)
@@ -876,21 +872,21 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 		default:
 			elog(ERROR, "Unhandled reorder buffer change type %d",
 				 change->action);
-			return false; /* shut compiler up */
+			return false;		/* shut compiler up */
 	}
 
 	/*
-	 * Proccess row filters.
-	 * XXX: we could probably cache some of the executor stuff.
+	 * Proccess row filters. XXX: we could probably cache some of the executor
+	 * stuff.
 	 */
 	if (list_length(tblinfo->row_filter) > 0)
 	{
-		EState		   *estate;
-		ExprContext	   *econtext;
-		TupleDesc		tupdesc = RelationGetDescr(relation);
-		HeapTuple		oldtup = change->data.tp.oldtuple ?
+		EState	   *estate;
+		ExprContext *econtext;
+		TupleDesc	tupdesc = RelationGetDescr(relation);
+		HeapTuple	oldtup = change->data.tp.oldtuple ?
 			ReorderBufferChangeHeapTuple(change, oldtuple) : NULL;
-		HeapTuple		newtup = change->data.tp.newtuple ?
+		HeapTuple	newtup = change->data.tp.newtuple ?
 			ReorderBufferChangeHeapTuple(change, newtuple) : NULL;
 
 		/* Skip empty changes. */
@@ -901,7 +897,7 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 		}
 
 #if PG_VERSION_NUM < 180000
-         /* We make row filters stricter for PG 18+, not requiring a snapshot */
+		/* We make row filters stricter for PG 18+, not requiring a snapshot */
 		PushActiveSnapshot(GetTransactionSnapshot());
 #endif
 
@@ -911,7 +907,7 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 		ExecStoreHeapTuple(newtup ? newtup : oldtup, econtext->ecxt_scantuple, false);
 
 		/* Next try the row_filters if there are any. */
-		foreach (lc, tblinfo->row_filter)
+		foreach(lc, tblinfo->row_filter)
 		{
 			Node	   *row_filter = (Node *) lfirst(lc);
 			ExprState  *exprstate = spock_prepare_row_filter(row_filter);
@@ -947,15 +943,15 @@ spock_change_filter(SpockOutputData *data, Relation relation,
  */
 static void
 maybe_send_schema(LogicalDecodingContext *ctx, ReorderBufferChange *change,
-			Relation relation)
+				  Relation relation)
 {
 	SpockOutputData *data = ctx->output_plugin_private;
 	SPKRelMetaCacheEntry *cached_relmeta;
 
 	/*
 	 * If the protocol wants to write relation information and the client
-	 * isn't known to have metadata cached for this relation already,
-	 * send relation metadata.
+	 * isn't known to have metadata cached for this relation already, send
+	 * relation metadata.
 	 *
 	 * TODO: track hit/miss stats
 	 */
@@ -968,7 +964,7 @@ maybe_send_schema(LogicalDecodingContext *ctx, ReorderBufferChange *change,
 		SpockTableRepInfo *tblinfo;
 
 		tblinfo = get_table_replication_info(data->local_node_id, relation,
-										data->replication_sets);
+											 data->replication_sets);
 
 
 		OutputPluginPrepareWrite(ctx, false);
@@ -983,8 +979,8 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				 Relation relation, ReorderBufferChange *change)
 {
 	SpockOutputData *data = ctx->output_plugin_private;
-	MemoryContext	old;
-	Bitmapset	   *att_list = NULL;
+	MemoryContext old;
+	Bitmapset  *att_list = NULL;
 
 	/*
 	 * If we are in slot-group skip transaction mode do nothing
@@ -1023,7 +1019,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			break;
 		case REORDER_BUFFER_CHANGE_UPDATE:
 			{
-				HeapTuple oldtuple = change->data.tp.oldtuple ?
+				HeapTuple	oldtuple = change->data.tp.oldtuple ?
 					ReorderBufferChangeHeapTuple(change, oldtuple) : NULL;
 
 				OutputPluginPrepareWrite(ctx, true);
@@ -1064,7 +1060,7 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				   int nrelations, Relation relations[],
 				   ReorderBufferChange *change)
 {
-	SpockOutputData *data = (SpockOutputData*)ctx->output_plugin_private;
+	SpockOutputData *data = (SpockOutputData *) ctx->output_plugin_private;
 	MemoryContext old;
 	int			i;
 	int			nrelids;
@@ -1102,8 +1098,8 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	{
 		OutputPluginPrepareWrite(ctx, true);
 		data->api->write_truncate(ctx->out, nrelids, relids,
-									change->data.truncate.cascade,
-									change->data.truncate.restart_seqs);
+								  change->data.truncate.cascade,
+								  change->data.truncate.restart_seqs);
 		OutputPluginWrite(ctx, true);
 	}
 
@@ -1119,13 +1115,14 @@ pg_decode_origin_filter(LogicalDecodingContext *ctx,
 						RepOriginId origin_id)
 {
 	SpockOutputData *data = ctx->output_plugin_private;
-	bool ret;
+	bool		ret;
 
 	if (origin_id == InvalidRepOriginId)
 		/* Never filter out locally originated tx's */
 		ret = false;
 
 	else
+
 		/*
 		 * Otherwise, ignore the origin passed in txnfilter_args->origin_id,
 		 * and just forward all or nothing based on the configuration option
@@ -1138,9 +1135,9 @@ pg_decode_origin_filter(LogicalDecodingContext *ctx,
 
 static void
 send_startup_message(LogicalDecodingContext *ctx,
-		SpockOutputData *data, bool last_message)
+					 SpockOutputData *data, bool last_message)
 {
-	List *msg;
+	List	   *msg;
 
 	Assert(!startup_message_sent);
 
@@ -1167,7 +1164,7 @@ send_startup_message(LogicalDecodingContext *ctx,
  * Shutdown callback.
  */
 static void
-pg_decode_shutdown(LogicalDecodingContext * ctx)
+pg_decode_shutdown(LogicalDecodingContext *ctx)
 {
 	relmetacache_flush();
 
@@ -1199,13 +1196,13 @@ spock_output_plugin_shmem_init(void)
 static void
 spock_output_join_slot_group(NameData slot_name)
 {
-	SpockOutputSlotGroup   *groups;
-	SpockOutputSlotGroup   *free_group = NULL;
-	int						free_i = 0;
-	NameData				group_name;
-	bool					is_slot_group = false;
-	char				   *cp;
-	int						i;
+	SpockOutputSlotGroup *groups;
+	SpockOutputSlotGroup *free_group = NULL;
+	int			free_i = 0;
+	NameData	group_name;
+	bool		is_slot_group = false;
+	char	   *cp;
+	int			i;
 
 	/*
 	 * Ensure we are not already a member of a slot-group
@@ -1218,7 +1215,7 @@ spock_output_join_slot_group(NameData slot_name)
 	 * Determine the group name (if possible)
 	 */
 	strlcpy(NameStr(group_name), NameStr(slot_name), NAMEDATALEN);
-	for(cp = NameStr(group_name); *cp; cp++)
+	for (cp = NameStr(group_name); *cp; cp++)
 	{
 		if (cp[0] == '_'
 			&& (cp[1] >= '0' && cp[1] <= '9')
@@ -1293,12 +1290,12 @@ spock_output_leave_slot_group(void)
 	/*
 	 * Remove ourselves from the slot-group
 	 */
-	//LWLockAcquire(SpockCtx->slot_group_master_lock, LW_EXCLUSIVE);
+	/* LWLockAcquire(SpockCtx->slot_group_master_lock, LW_EXCLUSIVE); */
 	slot_group->nattached--;
 	elog(LOG, "removed from slot-group '%s' - nattached=%d",
 		 NameStr(slot_group->name), slot_group->nattached);
 	slot_group = NULL;
-	//LWLockRelease(SpockCtx->slot_group_master_lock);
+	/* LWLockRelease(SpockCtx->slot_group_master_lock); */
 }
 
 /*
@@ -1307,14 +1304,14 @@ spock_output_leave_slot_group(void)
 static void
 spock_output_plugin_shmem_request(void)
 {
-	int		nworkers;
+	int			nworkers;
 
 	if (prev_shmem_request_hook != NULL)
 		prev_shmem_request_hook();
 
 	/*
-	 * This is cludge for Windows (Postgres des not define the GUC variable
-	 * as PGDDLIMPORT)
+	 * This is cludge for Windows (Postgres des not define the GUC variable as
+	 * PGDDLIMPORT)
 	 */
 	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 										  false));
@@ -1336,10 +1333,10 @@ spock_output_plugin_shmem_request(void)
 static void
 spock_output_plugin_shmem_startup(void)
 {
-	bool					found;
-	int						nworkers;
-	SpockOutputSlotGroup   *slot_groups;
-	int						i;
+	bool		found;
+	int			nworkers;
+	SpockOutputSlotGroup *slot_groups;
+	int			i;
 
 	if (prev_shmem_startup_hook != NULL)
 		prev_shmem_startup_hook();
@@ -1356,8 +1353,8 @@ spock_output_plugin_shmem_startup(void)
 	SpockCtx->slot_group_master_lock = &((GetNamedLWLockTranche("spock_slot_groups")[0]).lock);
 	SpockCtx->slot_ngroups = nworkers;
 	slot_groups = ShmemInitStruct("spock_slot_groups",
-								 spock_output_plugin_shmem_size(nworkers),
-								 &found);
+								  spock_output_plugin_shmem_size(nworkers),
+								  &found);
 	if (!found)
 	{
 		memset(slot_groups, 0, spock_output_plugin_shmem_size(nworkers));
@@ -1377,7 +1374,7 @@ spock_output_plugin_shmem_startup(void)
 static Size
 spock_output_plugin_shmem_size(int nworkers)
 {
-	return(nworkers * sizeof(SpockOutputSlotGroup));
+	return (nworkers * sizeof(SpockOutputSlotGroup));
 }
 
 /*
@@ -1396,9 +1393,10 @@ spock_output_plugin_on_exit(int code, Datum arg)
  */
 static void
 relmetacache_invalidation_cb(Datum arg, Oid relid)
- {
+{
 	struct SPKRelMetaCacheEntry *hentry;
-	Assert (RelMetaCache != NULL);
+
+	Assert(RelMetaCache != NULL);
 
 	/*
 	 * Nobody keeps pointers to entries in this hash table around outside
@@ -1409,8 +1407,8 @@ relmetacache_invalidation_cb(Datum arg, Oid relid)
 	 * safe point.
 	 *
 	 * Getting invalidations for relations that aren't in the table is
-	 * entirely normal, since there's no way to unregister for an
-	 * invalidation event. So we don't care if it's found or not.
+	 * entirely normal, since there's no way to unregister for an invalidation
+	 * event. So we don't care if it's found or not.
 	 */
 	hentry = (struct SPKRelMetaCacheEntry *)
 		hash_search(RelMetaCache, &relid, HASH_FIND, NULL);
@@ -1432,8 +1430,8 @@ relmetacache_invalidation_cb(Datum arg, Oid relid)
 static void
 relmetacache_init(MemoryContext decoding_context)
 {
-	HASHCTL	ctl;
-	int		hash_flags;
+	HASHCTL		ctl;
+	int			hash_flags;
 
 	InvalidRelMetaCacheCnt = 0;
 
@@ -1442,8 +1440,8 @@ relmetacache_init(MemoryContext decoding_context)
 		MemoryContext old_ctxt;
 
 		RelMetaCacheContext = AllocSetContextCreate(TopMemoryContext,
-											  "spock output relmetacache",
-											  ALLOCSET_DEFAULT_SIZES);
+													"spock output relmetacache",
+													ALLOCSET_DEFAULT_SIZES);
 
 		/* Make a new hash table for the cache */
 		hash_flags = HASH_ELEM | HASH_CONTEXT;
@@ -1461,7 +1459,7 @@ relmetacache_init(MemoryContext decoding_context)
 
 		Assert(RelMetaCache != NULL);
 
-		CacheRegisterRelcacheCallback(relmetacache_invalidation_cb, (Datum)0);
+		CacheRegisterRelcacheCallback(relmetacache_invalidation_cb, (Datum) 0);
 	}
 }
 
@@ -1480,14 +1478,14 @@ relmetacache_get_relation(struct SpockOutputData *data,
 						  Relation rel)
 {
 	struct SPKRelMetaCacheEntry *hentry;
-	bool found;
+	bool		found;
 	MemoryContext old_mctx;
 
 	/* Find cached function info, creating if not found */
 	old_mctx = MemoryContextSwitchTo(RelMetaCacheContext);
-	hentry = (struct SPKRelMetaCacheEntry*) hash_search(RelMetaCache,
-										 (void *)(&RelationGetRelid(rel)),
-										 HASH_ENTER, &found);
+	hentry = (struct SPKRelMetaCacheEntry *) hash_search(RelMetaCache,
+														 (void *) (&RelationGetRelid(rel)),
+														 HASH_ENTER, &found);
 	(void) MemoryContextSwitchTo(old_mctx);
 
 	/* If not found or not valid, it can't be cached. */
@@ -1522,7 +1520,7 @@ relmetacache_flush(void)
 	{
 		hash_seq_init(&status, RelMetaCache);
 
-		while ((hentry = (struct SPKRelMetaCacheEntry*) hash_seq_search(&status)) != NULL)
+		while ((hentry = (struct SPKRelMetaCacheEntry *) hash_seq_search(&status)) != NULL)
 		{
 			if (hash_search(RelMetaCache,
 							(void *) &hentry->relid,
@@ -1545,15 +1543,15 @@ relmetacache_prune(void)
 	struct SPKRelMetaCacheEntry *hentry;
 
 	/*
-	 * Since the pruning can be expensive, do it only if ig we invalidated
-	 * at least half of initial cache size.
+	 * Since the pruning can be expensive, do it only if ig we invalidated at
+	 * least half of initial cache size.
 	 */
-	if (InvalidRelMetaCacheCnt < RELMETACACHE_INITIAL_SIZE/2)
+	if (InvalidRelMetaCacheCnt < RELMETACACHE_INITIAL_SIZE / 2)
 		return;
 
 	hash_seq_init(&status, RelMetaCache);
 
-	while ((hentry = (struct SPKRelMetaCacheEntry*) hash_seq_search(&status)) != NULL)
+	while ((hentry = (struct SPKRelMetaCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
 		if (!hentry->is_valid)
 		{
@@ -1608,15 +1606,15 @@ spkReorderBufferCleanSerializedTXNs(const char *slotname)
 static bool
 can_replicate_truncate(List *repsets)
 {
-    ListCell *rlc;
+	ListCell   *rlc;
 
-    foreach(rlc, repsets)
-    {
-        SpockRepSet *repset = (SpockRepSet *) lfirst(rlc);
+	foreach(rlc, repsets)
+	{
+		SpockRepSet *repset = (SpockRepSet *) lfirst(rlc);
 
-        if (repset->replicate_truncate)
-            return true;
-    }
+		if (repset->replicate_truncate)
+			return true;
+	}
 
-    return false;
+	return false;
 }

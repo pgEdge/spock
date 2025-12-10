@@ -20,7 +20,7 @@
 SpockProtoAPI *
 spock_init_api(SpockProtoType typ)
 {
-	SpockProtoAPI  *res = palloc0(sizeof(SpockProtoAPI));
+	SpockProtoAPI *res = palloc0(sizeof(SpockProtoAPI));
 
 	if (typ == SpockProtoJson)
 	{

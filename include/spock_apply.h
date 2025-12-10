@@ -28,15 +28,15 @@ typedef void (*spock_apply_delete_fn) (SpockRelation *rel,
 
 typedef bool (*spock_apply_can_mi_fn) (SpockRelation *rel);
 typedef void (*spock_apply_mi_add_tuple_fn) (SpockRelation *rel,
-												 SpockTupleData *tup);
+											 SpockTupleData *tup);
 typedef void (*spock_apply_mi_finish_fn) (SpockRelation *rel);
 
 /* my_exception_log_index belongs here, and not in the exception handler
  * since it's specific to each apply worker.
  */
-extern int my_exception_log_index;
+extern int	my_exception_log_index;
 
 extern void wait_for_previous_transaction(void);
 extern void awake_transaction_waiters(void);
 
-#endif /* SPOCK_APPLY_H */
+#endif							/* SPOCK_APPLY_H */

@@ -35,7 +35,7 @@ typedef enum SpockOutputParamType
 
 /* param parsing */
 static Datum get_param_value(DefElem *elem, bool null_ok,
-		SpockOutputParamType type);
+							 SpockOutputParamType type);
 
 static Datum get_param(List *options, const char *name, bool missing_ok,
 					   bool null_ok, SpockOutputParamType type,
@@ -45,9 +45,10 @@ static uint32 parse_param_uint32(DefElem *elem);
 static int32 parse_param_int32(DefElem *elem);
 
 static void
-process_parameters_v1(List *options, SpockOutputData *data);
+			process_parameters_v1(List *options, SpockOutputData *data);
 
-typedef enum OutputPluginParamKey {
+typedef enum OutputPluginParamKey
+{
 	PARAM_UNRECOGNISED,
 	PARAM_MAX_PROTOCOL_VERSION,
 	PARAM_MIN_PROTOCOL_VERSION,
@@ -76,8 +77,8 @@ typedef enum OutputPluginParamKey {
 
 typedef struct OutputPluginParam
 {
-	const char * const paramname;
-	int paramkey;
+	const char *const paramname;
+	int			paramkey;
 } OutputPluginParam;
 
 /* Oh, if only C had switch on strings */
@@ -113,11 +114,12 @@ static OutputPluginParam param_lookup[] = {
  * param, or PARAM_UNRECOGNISED if not found.
  */
 static int
-get_param_key(const char * const param_name)
+get_param_key(const char *const param_name)
 {
 	OutputPluginParam *param = &param_lookup[0];
 
-	do {
+	do
+	{
 		if (strcmp(param->paramname, param_name) == 0)
 			return param->paramkey;
 		param++;
@@ -131,14 +133,14 @@ void
 process_parameters_v1(List *options, SpockOutputData *data)
 {
 	Datum		val;
-	ListCell	*lc;
+	ListCell   *lc;
 
 	/*
-	 * max_proto_version and min_proto_version are specified
-	 * as required, and must be parsed before anything else.
+	 * max_proto_version and min_proto_version are specified as required, and
+	 * must be parsed before anything else.
 	 *
-	 * TODO: We should still parse them as optional and
-	 * delay the ERROR until after the startup reply.
+	 * TODO: We should still parse them as optional and delay the ERROR until
+	 * after the startup reply.
 	 */
 	val = get_param(options, "max_proto_version", false, false,
 					OUTPUT_PARAM_TYPE_UINT32, NULL);
@@ -156,7 +158,7 @@ process_parameters_v1(List *options, SpockOutputData *data)
 		Assert(elem->arg == NULL || IsA(elem->arg, String));
 
 		/* Check each param, whether or not we recognise it */
-		switch(get_param_key(elem->defname))
+		switch (get_param_key(elem->defname))
 		{
 			case PARAM_BINARY_BIGENDIAN:
 				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_BOOL);
@@ -233,14 +235,15 @@ process_parameters_v1(List *options, SpockOutputData *data)
 
 			case PARAM_SPOCK_FORWARD_ORIGINS:
 				{
-					List		   *forward_origin_names;
-					ListCell	   *lc2;
+					List	   *forward_origin_names;
+					ListCell   *lc2;
+
 					val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_STRING);
 
 					if (!SplitIdentifierString(DatumGetCString(val), ',', &forward_origin_names))
 						elog(ERROR, "Could not parse forward origin name list %s", DatumGetCString(val));
 
-					foreach (lc2, forward_origin_names)
+					foreach(lc2, forward_origin_names)
 					{
 						char	   *origin_name = (char *) lfirst(lc2);
 
@@ -255,7 +258,8 @@ process_parameters_v1(List *options, SpockOutputData *data)
 
 			case PARAM_SPOCK_REPLICATION_SET_NAMES:
 				{
-					List *replication_set_names;
+					List	   *replication_set_names;
+
 					val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_STRING);
 
 					if (!SplitIdentifierString(strVal(elem->arg), ',', &replication_set_names))
@@ -270,7 +274,7 @@ process_parameters_v1(List *options, SpockOutputData *data)
 
 			case PARAM_SPOCK_REPLICATE_ONLY_TABLE:
 				{
-					List *replicate_only_table;
+					List	   *replicate_only_table;
 
 					val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_STRING);
 
@@ -302,11 +306,12 @@ process_parameters_v1(List *options, SpockOutputData *data)
 				data->spock_version_num = DatumGetUInt32(val);
 				break;
 
-			/* Backwards compat. */
+				/* Backwards compat. */
 			case PARAM_HOOKS_SETUP_FUNCTION:
 				break;
 
 			case PARAM_UNRECOGNISED:
+
 				/*
 				 * In case of upgrade we may find unrecognised parameter - so,
 				 * no error here. But to avoid lost code tails we should
@@ -314,7 +319,7 @@ process_parameters_v1(List *options, SpockOutputData *data)
 				 */
 				ereport(LOG,
 						(errmsg("Unrecognised spock parameter %s ignored",
-						elem->defname)));
+								elem->defname)));
 				break;
 		}
 	}
@@ -331,8 +336,8 @@ process_parameters_v1(List *options, SpockOutputData *data)
 int
 process_parameters(List *options, SpockOutputData *data)
 {
-	Datum	val;
-	int		params_format;
+	Datum		val;
+	int			params_format;
 
 	val = get_param(options, "startup_params_format", false, false,
 					OUTPUT_PARAM_TYPE_UINT32, NULL);
@@ -345,7 +350,7 @@ process_parameters(List *options, SpockOutputData *data)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("startup_params_format %d not supported, only version %d supported",
-					 params_format, SPOCK_STARTUP_PARAM_FORMAT_FLAT)));
+						params_format, SPOCK_STARTUP_PARAM_FORMAT_FLAT)));
 
 	return params_format;
 }
@@ -391,7 +396,7 @@ static Datum
 get_param(List *options, const char *name, bool missing_ok, bool null_ok,
 		  SpockOutputParamType type, bool *found)
 {
-	ListCell	   *option;
+	ListCell   *option;
 
 	if (found != NULL)
 		*found = false;
@@ -440,9 +445,9 @@ static uint32
 parse_param_uint32(DefElem *elem)
 {
 	int64		res;
-	char		*str;
+	char	   *str;
 	bool		error;
-	char		*endptr;
+	char	   *endptr;
 
 	str = strVal(elem->arg);
 	res = strtoi64(str, &endptr, 10);
@@ -466,10 +471,10 @@ parse_param_uint32(DefElem *elem)
 static int32
 parse_param_int32(DefElem *elem)
 {
-	int64	res;
-	char   *str;
-	bool	error;
-	char   *endptr;
+	int64		res;
+	char	   *str;
+	bool		error;
+	char	   *endptr;
 
 	str = strVal(elem->arg);
 	res = strtoi64(str, &endptr, 10);
@@ -490,22 +495,22 @@ parse_param_int32(DefElem *elem)
 	return (int32) res;
 }
 
-static List*
+static List *
 add_startup_msg_s(List *l, char *key, char *val)
 {
-	return lappend(l, makeDefElem(key, (Node*)makeString(val), -1));
+	return lappend(l, makeDefElem(key, (Node *) makeString(val), -1));
 }
 
-static List*
+static List *
 add_startup_msg_i(List *l, char *key, int val)
 {
-	return lappend(l, makeDefElem(key, (Node*)makeString(psprintf("%d", val)), -1));
+	return lappend(l, makeDefElem(key, (Node *) makeString(psprintf("%d", val)), -1));
 }
 
-static List*
+static List *
 add_startup_msg_b(List *l, char *key, bool val)
 {
-	return lappend(l, makeDefElem(key, (Node*)makeString(val ? "t" : "f"), -1));
+	return lappend(l, makeDefElem(key, (Node *) makeString(val ? "t" : "f"), -1));
 }
 
 /*
@@ -529,7 +534,7 @@ add_startup_msg_b(List *l, char *key, bool val)
 List *
 prepare_startup_message(SpockOutputData *data)
 {
-	List *l = NIL;
+	List	   *l = NIL;
 
 	l = add_startup_msg_i(l, "max_proto_version", SPOCK_PROTO_VERSION_NUM);
 	l = add_startup_msg_i(l, "min_proto_version", SPOCK_PROTO_MIN_VERSION_NUM);
@@ -542,12 +547,12 @@ prepare_startup_message(SpockOutputData *data)
 	l = add_startup_msg_s(l, "pg_version", PG_VERSION);
 	l = add_startup_msg_i(l, "pg_catversion", CATALOG_VERSION_NO);
 
-	l = add_startup_msg_s(l, "database_encoding", (char*)GetDatabaseEncodingName());
+	l = add_startup_msg_s(l, "database_encoding", (char *) GetDatabaseEncodingName());
 
-	l = add_startup_msg_s(l, "encoding", (char*)pg_encoding_to_char(data->field_datum_encoding));
+	l = add_startup_msg_s(l, "encoding", (char *) pg_encoding_to_char(data->field_datum_encoding));
 
 	l = add_startup_msg_b(l, "forward_changeset_origins",
-			data->forward_changeset_origins);
+						  data->forward_changeset_origins);
 
 	l = add_startup_msg_i(l, "walsender_pid", MyProcPid);
 
@@ -557,12 +562,12 @@ prepare_startup_message(SpockOutputData *data)
 
 	/* binary options enabled */
 	l = add_startup_msg_b(l, "binary.internal_basetypes",
-			data->allow_internal_basetypes);
+						  data->allow_internal_basetypes);
 	l = add_startup_msg_b(l, "binary.binary_basetypes",
-			data->allow_binary_basetypes);
+						  data->allow_binary_basetypes);
 
 	/* Binary format characteristics of server */
-	l = add_startup_msg_i(l, "binary.basetypes_major_version", PG_VERSION_NUM/100);
+	l = add_startup_msg_i(l, "binary.basetypes_major_version", PG_VERSION_NUM / 100);
 	l = add_startup_msg_i(l, "binary.sizeof_int", sizeof(int));
 	l = add_startup_msg_i(l, "binary.sizeof_long", sizeof(long));
 	l = add_startup_msg_i(l, "binary.sizeof_datum", sizeof(Datum));
@@ -572,7 +577,7 @@ prepare_startup_message(SpockOutputData *data)
 	l = add_startup_msg_b(l, "binary.float8_byval", server_float8_byval());
 	l = add_startup_msg_b(l, "binary.integer_datetimes", server_integer_datetimes());
 	/* We don't know how to send in anything except our host's format */
-	l = add_startup_msg_i(l, "binary.binary_pg_version", PG_VERSION_NUM/100);
+	l = add_startup_msg_i(l, "binary.binary_pg_version", PG_VERSION_NUM / 100);
 
 	l = add_startup_msg_b(l, "no_txinfo", data->client_no_txinfo);
 

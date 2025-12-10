@@ -119,13 +119,14 @@ typedef struct SpockApplyProgress
 	XLogRecPtr	remote_insert_lsn;	/* origin insert/end LSN reported */
 
 	/*
-	 * The largest received LSN by the group.
-	 * It is more or equal to the remote_commit_lsn.
+	 * The largest received LSN by the group. It is more or equal to the
+	 * remote_commit_lsn.
 	 */
 	XLogRecPtr	received_lsn;
 
 	TimestampTz last_updated_ts;	/* when we set this */
-	bool		updated_by_decode;	/* set by decode or apply. OBSOLETE. Used in versions <=5.x.x only */
+	bool		updated_by_decode;	/* set by decode or apply. OBSOLETE. Used
+									 * in versions <=5.x.x only */
 } SpockApplyProgress;
 
 /* Hash entry: one per group (stable pointer; not moved by dynahash) */
@@ -152,8 +153,8 @@ SpockGroupEntry *spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id);
 typedef void (*SpockGroupIterCB) (const SpockGroupEntry *e, void *arg);
 void		spock_group_foreach(SpockGroupIterCB cb, void *arg);
 
-extern void		spock_group_resource_dump(void);
-extern void		spock_group_resource_load(void);
-extern void		spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);
+extern void spock_group_resource_dump(void);
+extern void spock_group_resource_load(void);
+extern void spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);
 
 #endif							/* SPOCK_GROUP_H */

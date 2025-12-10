@@ -32,20 +32,19 @@ typedef struct SpockRepSet
 /* This is only valid within one output plugin instance/walsender. */
 typedef struct SpockTableRepInfo
 {
-	Oid				reloid;				/* key */
+	Oid			reloid;			/* key */
 
-	bool			isvalid;			/* is this entry valid? */
+	bool		isvalid;		/* is this entry valid? */
 
-	bool			replicate_insert;	/* should insert be replicated? */
-	bool			replicate_update;	/* should update be replicated? */
-	bool			replicate_delete;	/* should delete be replicated? */
-	bool			replicate_truncate;	/* should truncate be replicated? */
+	bool		replicate_insert;	/* should insert be replicated? */
+	bool		replicate_update;	/* should update be replicated? */
+	bool		replicate_delete;	/* should delete be replicated? */
+	bool		replicate_truncate; /* should truncate be replicated? */
 
-	Bitmapset	   *att_list;			/* column filter
-										   NULL if everything is replicated
-										   otherwise each replicated column
-										   is a member */
-	List		   *row_filter;			/* compiled row_filter nodes */
+	Bitmapset  *att_list;		/* column filter NULL if everything is
+								 * replicated otherwise each replicated column
+								 * is a member */
+	List	   *row_filter;		/* compiled row_filter nodes */
 } SpockTableRepInfo;
 
 /* forward declaration */
@@ -54,17 +53,17 @@ typedef struct RepSetTableTuple RepSetTableTuple;
 
 extern SpockRepSet *get_replication_set(Oid setid);
 extern SpockRepSet *get_replication_set_by_name(Oid nodeid,
-													const char *setname,
-													bool missing_ok);
+												const char *setname,
+												bool missing_ok);
 
 extern List *get_node_replication_sets(Oid nodeid);
 extern List *get_replication_sets(Oid nodeid, List *replication_set_names,
 								  bool missing_ok);
 
 extern SpockTableRepInfo *get_table_replication_info(Oid nodeid,
-						   Relation table, List *subs_replication_sets);
+													 Relation table, List *subs_replication_sets);
 extern RepSetTableTuple *get_table_replication_row(Oid repsetid, Oid reloid,
-							List **att_list, Node **row_filter);
+												   List **att_list, Node **row_filter);
 
 extern void create_replication_set(SpockRepSet *repset);
 extern void alter_replication_set(SpockRepSet *repset);
@@ -72,7 +71,7 @@ extern void drop_replication_set(Oid setid);
 extern void drop_node_replication_sets(Oid nodeid);
 
 extern void replication_set_add_table(Oid setid, Oid reloid,
-						  List *att_list, Node *row_filter);
+									  List *att_list, Node *row_filter);
 extern void replication_set_add_seq(Oid setid, Oid seqoid);
 extern List *replication_set_get_tables(Oid setid);
 extern List *replication_set_get_seqs(Oid setid);
@@ -86,12 +85,12 @@ extern List *get_seq_replication_sets(Oid nodeid, Oid seqoid);
 
 extern SpockRepSet *replication_set_from_tuple(HeapTuple tuple);
 
-extern Oid get_replication_set_rel_oid(void);
-extern Oid get_replication_set_table_rel_oid(void);
-extern Oid get_replication_set_seq_rel_oid(void);
+extern Oid	get_replication_set_rel_oid(void);
+extern Oid	get_replication_set_table_rel_oid(void);
+extern Oid	get_replication_set_seq_rel_oid(void);
 
 extern char *stringlist_to_identifierstr(List *strings);
 extern char *repsetslist_to_identifierstr(List *repsets);
-extern int get_att_num_by_name(TupleDesc desc, const char *attname);
+extern int	get_att_num_by_name(TupleDesc desc, const char *attname);
 
-#endif /* SPOCK_REPSET_H */
+#endif							/* SPOCK_REPSET_H */

@@ -40,14 +40,15 @@ typedef struct SpockSyncStatus
 	(kind == SYNC_KIND_FULL || kind == SYNC_KIND_STRUCTURE)
 
 #define SYNC_STATUS_NONE		'\0'	/* No sync. */
-#define SYNC_STATUS_INIT		'i'		/* Ask for sync. */
-#define SYNC_STATUS_STRUCTURE	's'     /* Sync structure */
-#define SYNC_STATUS_DATA		'd'		/* Data sync. */
-#define SYNC_STATUS_CONSTRAINTS	'c'		/* Constraint sync (post-data structure). */
-#define SYNC_STATUS_SYNCWAIT	'w'		/* Table sync is waiting to get OK from main thread. */
-#define SYNC_STATUS_CATCHUP		'u'		/* Catching up. */
-#define SYNC_STATUS_SYNCDONE	'y'		/* Synchronization finished (at lsn). */
-#define SYNC_STATUS_READY		'r'		/* Done. */
+#define SYNC_STATUS_INIT		'i' /* Ask for sync. */
+#define SYNC_STATUS_STRUCTURE	's' /* Sync structure */
+#define SYNC_STATUS_DATA		'd' /* Data sync. */
+#define SYNC_STATUS_CONSTRAINTS	'c' /* Constraint sync (post-data structure). */
+#define SYNC_STATUS_SYNCWAIT	'w' /* Table sync is waiting to get OK from
+									 * main thread. */
+#define SYNC_STATUS_CATCHUP		'u' /* Catching up. */
+#define SYNC_STATUS_SYNCDONE	'y' /* Synchronization finished (at lsn). */
+#define SYNC_STATUS_READY		'r' /* Done. */
 
 extern void spock_sync_worker_finish(void);
 
@@ -58,24 +59,25 @@ extern void create_local_sync_status(SpockSyncStatus *sync);
 extern void drop_subscription_sync_status(Oid subid);
 
 extern SpockSyncStatus *get_subscription_sync_status(Oid subid,
-														 bool missing_ok);
+													 bool missing_ok);
 extern void set_subscription_sync_status(Oid subid, char status);
 
 extern void drop_table_sync_status(const char *nspname, const char *relname);
 extern void drop_table_sync_status_for_sub(Oid subid, const char *nspname,
-							   const char *relname);
+										   const char *relname);
 
 extern SpockSyncStatus *get_table_sync_status(Oid subid,
-												  const char *schemaname,
-												  const char *relname,
-												  bool missing_ok);
+											  const char *schemaname,
+											  const char *relname,
+											  bool missing_ok);
 extern void set_table_sync_status(Oid subid, const char *schemaname,
 								  const char *relname, char status,
 								  XLogRecPtr status_lsn);
 extern List *get_unsynced_tables(Oid subid);
 
 /* For interface compat with spk3 */
-inline static void free_sync_status(SpockSyncStatus *sync)
+inline static void
+free_sync_status(SpockSyncStatus *sync)
 {
 	pfree(sync);
 }
@@ -88,8 +90,7 @@ extern void truncate_table(char *nspname, char *relname);
 extern List *get_subscription_tables(Oid subid);
 
 #ifdef WIN32
-extern void QuoteWindowsArgv(StringInfo cmdline, const char * argv[]);
+extern void QuoteWindowsArgv(StringInfo cmdline, const char *argv[]);
 #endif
 
-#endif /* SPOCK_SYNC_H */
-
+#endif							/* SPOCK_SYNC_H */

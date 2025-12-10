@@ -29,4 +29,4 @@ extern void spock_ExecutorStart(QueryDesc *queryDesc, int eflags);
 
 extern void spock_executor_init(void);
 
-#endif /* SPOCK_EXECUTOR_H */
+#endif							/* SPOCK_EXECUTOR_H */
