@@ -31,4 +31,6 @@ test: 010_zodan_add_remove_python
 #    fi
 # done
 
+# Exception handling tests
+test: 013_exception_handling
 # test: 014_rolling_upgrade

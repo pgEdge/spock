@@ -600,6 +600,12 @@ handle_begin(StringInfo s)
 			/* We've occupied the free slot. Let's release the lock now. */
 			LWLockRelease(SpockCtx->lock);
 		}
+
+		/*
+		 * After first BEGIN, my_exception_log_index must be valid. This
+		 * ensures exception handling can safely access exception_log_ptr.
+		 */
+		Assert(my_exception_log_index >= 0);
 	}
 
 	if (slot_found)
@@ -733,6 +739,98 @@ handle_commit(StringInfo s)
 			replorigin_session_origin_lsn = end_lsn;
 		}
 
+		/*
+		 * Check if we're in TRANSDISCARD/SUB_DISABLE mode with no exceptions
+		 * during replay. In this case, all DML operations were rolled back in
+		 * their subtransactions (even successful retries), and we need to
+		 * discard the entire transaction by aborting it instead of
+		 * committing.
+		 *
+		 * This must be checked BEFORE committing the transaction.
+		 */
+		if (!xact_had_exception &&
+			MyApplyWorker->use_try_block &&
+			(exception_behaviour == TRANSDISCARD ||
+			 exception_behaviour == SUB_DISABLE))
+		{
+			SpockExceptionLog *exception_log;
+			char		errmsg[512];
+
+			exception_log = &exception_log_ptr[my_exception_log_index];
+
+			/*
+			 * All operations were already rolled back in subtransactions (by
+			 * RollbackAndReleaseCurrentSubTransaction in handle_insert/
+			 * update/delete). Abort the parent transaction to discard it
+			 * entirely.
+			 */
+			AbortCurrentTransaction();
+
+			/*
+			 * Start a new transaction to log the discard and update progress.
+			 */
+			StartTransactionCommand();
+			PushActiveSnapshot(GetTransactionSnapshot());
+
+			/*
+			 * Log this transaction as discarded to the exception_log so
+			 * there's an audit trail. Include the original error message if
+			 * we have it.
+			 */
+			snprintf(errmsg, sizeof(errmsg),
+					 "%s at LSN %X/%X%s%s",
+					 (exception_behaviour == TRANSDISCARD)
+					 ? "Transaction discarded in TRANSDISCARD mode"
+					 : "Transaction failed, subscription will be disabled",
+					 LSN_FORMAT_ARGS(end_lsn),
+					 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
+					 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
+
+			add_entry_to_exception_log(remote_origin_id,
+									   commit_time,
+									   remote_xid,
+									   0, 0,
+									   NULL, NULL, NULL, NULL,
+									   NULL, NULL,
+									   exception_log->initial_operation,
+									   errmsg);
+
+			elog(LOG, "SPOCK %s: %s", MySubscription->name, errmsg);
+
+			/*
+			 * Clear the exception state so we don't enter exception handling
+			 * mode again on the next transaction.
+			 */
+			exception_log->commit_lsn = InvalidXLogRecPtr;
+			exception_log->initial_error_message[0] = '\0';
+			MySpockWorker->restart_delay = 0;
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+
+			/*
+			 * For SUB_DISABLE mode, throw an error to trigger subscription
+			 * disable in the parent PG_CATCH block. The transaction failure
+			 * is already logged above.
+			 */
+			if (exception_behaviour == SUB_DISABLE)
+			{
+				elog(ERROR, "SPOCK %s: disabling subscription due to exception in SUB_DISABLE mode",
+					 MySubscription->name);
+			}
+
+			/*
+			 * Switch to MessageContext before continuing. The progress
+			 * tracking code at transdiscard_skip_commit expects
+			 * MessageContext.
+			 */
+			MemoryContextSwitchTo(MessageContext);
+
+			/*
+			 * Skip the normal commit path - jump to progress tracking.
+			 */
+			goto transdiscard_skip_commit;
+		}
+
 		/* Have the commit code adjust our logical clock if needed */
 		remoteTransactionStopTimestamp = commit_time;
 
@@ -764,29 +862,16 @@ handle_commit(StringInfo s)
 					 MySubscription->name);
 			}
 		}
-		else
+		else if (MyApplyWorker->use_try_block &&
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0')
 		{
 			/*
-			 * If we had no exception(s) in exception handling mode then the
-			 * entire transaction would be silently skipped with no
-			 * exception_log entries showing in TRANSDISCARD or SUB_DISABLE
-			 * mode. We need to retry this once more without exception
-			 * handling.
+			 * In DISCARD mode with no exceptions, we don't log anything
+			 * special (only operation-level failures are logged), but we
+			 * should clear the saved error message to prevent it from leaking
+			 * into future transactions.
 			 */
-			if (MyApplyWorker->use_try_block &&
-				(exception_behaviour == TRANSDISCARD ||
-				 exception_behaviour == SUB_DISABLE))
-			{
-				SpockExceptionLog *exception_log;
-
-				exception_log = &exception_log_ptr[my_exception_log_index];
-				exception_log->commit_lsn = InvalidXLogRecPtr;
-				MySpockWorker->restart_delay = 0;
-
-				elog(ERROR, "SPOCK %s: exception handling had no exception(s) "
-					 "during replay in TRANSDISCARD or SUB_DISABLE mode",
-					 MySubscription->name);
-			}
+			exception_log_ptr[my_exception_log_index].initial_error_message[0] = '\0';
 		}
 
 		/* Track commit lsn  */
@@ -845,6 +930,7 @@ handle_commit(StringInfo s)
 	}
 #endif
 
+transdiscard_skip_commit:
 	/* Update the entry in the progress table. */
 	elog(DEBUG1, "SPOCK %s: updating progress table for node_id %d" \
 		 " and remote node id %d with remote commit ts" \
@@ -863,14 +949,11 @@ handle_commit(StringInfo s)
 			.remote_commit_ts = commit_time,
 			.prev_remote_ts = replorigin_session_origin_timestamp,
 			.remote_commit_lsn = commit_lsn,
-
-			/*
-			 * Don't need to change remote_insert_lsn and received_lsn - it is
-			 * done earlier
-			 */
-			.last_updated_ts = GetCurrentTimestamp(),	/* XXX: Could we use
-														 * commit_ts value
-														 * instead? */
+			/* Ensure invariant: received_lsn >= remote_commit_lsn */
+			.received_lsn = end_lsn,
+			/* Don't need to change remote_insert_lsn - it is done earlier */
+			/* XXX: Could we use commit_ts value instead? */
+			.last_updated_ts = GetCurrentTimestamp(),
 			.updated_by_decode = true,
 		};
 
@@ -968,6 +1051,8 @@ handle_commit(StringInfo s)
 static void
 handle_origin(StringInfo s)
 {
+	errcallback_arg.action_name = "ORIGIN";
+
 	/*
 	 * ORIGIN message can only come inside remote transaction and before any
 	 * actual writes.
@@ -992,6 +1077,8 @@ handle_origin(StringInfo s)
 static void
 handle_commit_order(StringInfo s)
 {
+	errcallback_arg.action_name = "COMMIT_ORDER";
+
 	/*
 	 * LAST commit ts message can only come inside remote transaction,
 	 * immediately after origin information, and before any actual writes.
@@ -1024,6 +1111,8 @@ handle_commit_order(StringInfo s)
 static void
 handle_relation(StringInfo s)
 {
+	errcallback_arg.action_name = "RELATION";
+
 	/* Let's wait to avoid concurrent updates to spock cache */
 	wait_for_previous_transaction();
 
@@ -1070,7 +1159,7 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 							   rel, localtup, oldtup, newtup,
 							   NULL, NULL,
 							   action_name,
-							   (failed) ? errmsg : NULL);
+							   errmsg);
 }
 
 static void
@@ -1192,9 +1281,18 @@ handle_insert(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/* Let's create an exception log entry if true. */
-		log_insert_exception(failed, edata ? edata->message : NULL, rel,
-							 NULL, &newtup, "INSERT");
+		/*
+		 * Log the exception. If this operation succeeded but we have an
+		 * initial error message (from a previous attempt), use that instead
+		 * of NULL to provide context for why we're logging this.
+		 */
+		{
+			char	   *error_msg = edata ? edata->message :
+				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
+
+			log_insert_exception(failed, error_msg, rel, NULL, &newtup, "INSERT");
+		}
 	}
 	else
 	{
@@ -1352,9 +1450,19 @@ handle_update(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/* Let's create an exception log entry if true. */
-		log_insert_exception(failed, edata ? edata->message : NULL, rel,
-							 hasoldtup ? &oldtup : NULL, &newtup, "UPDATE");
+		/*
+		 * Log the exception. If this operation succeeded but we have an
+		 * initial error message (from a previous attempt), use that instead
+		 * of NULL to provide context for why we're logging this.
+		 */
+		{
+			char	   *error_msg = edata ? edata->message :
+				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
+
+			log_insert_exception(failed, error_msg, rel,
+								 hasoldtup ? &oldtup : NULL, &newtup, "UPDATE");
+		}
 	}
 	else
 	{
@@ -1381,6 +1489,7 @@ handle_delete(StringInfo s)
 		return;
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
+	errcallback_arg.action_name = "DELETE";
 	xact_action_counter++;
 
 	begin_replication_step();
@@ -1448,9 +1557,19 @@ handle_delete(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/* Let's create an exception log entry if true. */
-		log_insert_exception(failed, edata ? edata->message : NULL, rel,
-							 &oldtup, NULL, "DELETE");
+		/*
+		 * Log the exception. If this operation succeeded but we have an
+		 * initial error message (from a previous attempt), use that instead
+		 * of NULL to provide context for why we're logging this.
+		 */
+		{
+			char	   *error_msg = edata ? edata->message :
+				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
+
+			log_insert_exception(failed, error_msg, rel,
+								 &oldtup, NULL, "DELETE");
+		}
 	}
 	else
 	{
@@ -1594,7 +1713,11 @@ getmsgisend(StringInfo msg)
 static void
 handle_startup(StringInfo s)
 {
-	uint8		msgver = pq_getmsgbyte(s);
+	uint8		msgver;
+
+	errcallback_arg.action_name = "STARTUP";
+
+	msgver = pq_getmsgbyte(s);
 
 	if (msgver != SPOCK_STARTUP_MSG_FORMAT_FLAT)
 		elog(ERROR, "SPOCK %s: Expected startup message version %u, but got %u",
@@ -2061,7 +2184,7 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 {
 	bool		failed = false;
 	char	   *sql = NULL;
-	ErrorData  *edata;
+	ErrorData  *edata = NULL;
 
 	/*
 	 * Start transaction before making any changes to Spock's internal state.
@@ -2107,6 +2230,17 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 
 		/* Let's create an exception log entry if true. */
 		if (should_log_exception(failed))
+		{
+			/*
+			 * Use current error message if operation failed, otherwise use
+			 * initial_error_message for context (e.g., in DISCARD mode when
+			 * SQL succeeds but we're logging it because of a previous error).
+			 */
+			char	   *error_msg = failed ? edata->message :
+				(my_exception_log_index >= 0 &&
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0' ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
+
 			add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
 									   remote_xid,
@@ -2114,7 +2248,8 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 									   NULL, NULL, NULL, NULL,
 									   sql, queued_message->role,
 									   "SQL",
-									   (failed) ? edata->message : NULL);
+									   error_msg);
+		}
 	}
 	else
 	{
@@ -2176,6 +2311,8 @@ handle_message(StringInfo s)
 	const char *temp;
 	int32		mtype;
 	Size		sz;
+
+	errcallback_arg.action_name = "MESSAGE";
 
 	/* read fields */
 	xid = pq_getmsgint(s, sizeof(int32));
@@ -2590,7 +2727,7 @@ apply_work(PGconn *streamConn)
 	XLogRecPtr	last_inserted = InvalidXLogRecPtr;
 	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
 	bool		need_replay;
-	ErrorData  *edata;
+	ErrorData  *edata = NULL;
 
 	applyconn = streamConn;
 	fd = PQsocket(applyconn);
@@ -2964,55 +3101,58 @@ stream_replay:
 		edata = CopyErrorData();
 
 		/*
-		 * use_try_block == true indicates either: 1. An exception occurred
-		 * during a DML operation, 2. Or we were replaying previously failed
+		 * use_try_block == true indicates either that an exception occurred
+		 * during a DML operation, or that we were replaying previously failed
 		 * actions (via need_replay).
 		 *
 		 * If an exception occurs during handle_commit after prior handling,
 		 * we still need to ensure proper cleanup (e.g., disabling the
 		 * subscription).
+		 *
+		 * Handle SUB_DISABLE mode for both cases: xact_had_exception means DML
+		 * operations failed during exception handling, while use_try_block
+		 * without xact_had_exception means an error occurred after successful
+		 * retry (e.g., TRANSDISCARD throwing ERROR).
+		 *
+		 * Note: spock_disable_subscription() handles transaction management
+		 * internally, so no need to wrap it in StartTransactionCommand().
 		 */
-		if (xact_had_exception)
+		if (exception_behaviour == SUB_DISABLE &&
+			(xact_had_exception || MyApplyWorker->use_try_block))
 		{
-			/*
-			 * xact_had_exception implies that we are running under
-			 * use_try_block == true. If this happens in SUB_DISABLE
-			 * exception_behaviour, suspend the subscription here and suppress
-			 * feedback.
-			 */
-			if (exception_behaviour == SUB_DISABLE)
-			{
-				spock_disable_subscription(MySubscription,
-										   remote_origin_id,
-										   remote_xid,
-										   replorigin_session_origin_lsn,
-										   replorigin_session_origin_timestamp);
+			spock_disable_subscription(MySubscription,
+									   remote_origin_id,
+									   remote_xid,
+									   replorigin_session_origin_lsn,
+									   replorigin_session_origin_timestamp);
 
-				/*
-				 * The subscription is now disabled, and this apply worker
-				 * will exit shortly. Since the process is terminating, memory
-				 * contexts and replication origin state will be cleaned up
-				 * automatically, so no explicit reset is needed.
-				 */
-				return;
-			}
-		}
-		else
-		{
 			/*
-			 * This is the case where xact_had_exception == false, but we were
-			 * inside an exception handling block that completed successfully,
-			 * and an ERROR occurred afterward.
-			 *
-			 * This indicates an ERROR that is outside of the normal exception
-			 * handling and we need to bail out.
+			 * The subscription is now disabled, and this apply worker will
+			 * exit shortly. Since the process is terminating, memory contexts
+			 * and replication origin state will be cleaned up automatically,
+			 * so no explicit reset is needed.
 			 */
-			if (MyApplyWorker->use_try_block)
-			{
-				elog(LOG, "SPOCK: caught exception while use_try_block=true. The exception was:\n'%s'",
-					 edata->message);
-				PG_RE_THROW();
-			}
+			return;
+		}
+
+		/*
+		 * For other exceptions with use_try_block, where xact_had_exception
+		 * is false, this indicates an ERROR occurred during exception handling
+		 * (e.g., connection died, CommitTransactionCommand failure during
+		 * TRANSDISCARD logging, etc.).
+		 *
+		 * We log the error and re-throw to exit the worker. The background
+		 * worker infrastructure will restart the worker automatically. This
+		 * handles both transient errors (connection failures) and system
+		 * errors (out of memory, disk full) uniformly.
+		 */
+		if (!xact_had_exception && MyApplyWorker->use_try_block)
+		{
+			elog(LOG, "SPOCK %s: error during exception handling: %s",
+				 MySubscription->name, edata->message);
+			elog(LOG, "SPOCK %s: exiting to allow worker restart",
+				 MySubscription->name);
+			PG_RE_THROW();
 		}
 
 		/*
@@ -3033,6 +3173,27 @@ stream_replay:
 
 		MemoryContextSwitchTo(MessageContext);
 		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
+
+		/*
+		 * Save the initial exception message and operation type so we can
+		 * include them in the exception_log if operations succeed on retry.
+		 * Store in the exception_log structure for this transaction.
+		 */
+		if (exception_log_ptr != NULL)
+		{
+			snprintf(exception_log_ptr[my_exception_log_index].initial_error_message,
+					 sizeof(exception_log_ptr[my_exception_log_index].initial_error_message),
+					 "%s", edata->message);
+
+			/*
+			 * Capture the operation that caused the initial exception. Use
+			 * errcallback_arg.action_name if available, otherwise "UNKNOWN".
+			 */
+			snprintf(exception_log_ptr[my_exception_log_index].initial_operation,
+					 sizeof(exception_log_ptr[my_exception_log_index].initial_operation),
+					 "%s",
+					 errcallback_arg.action_name ? errcallback_arg.action_name : "UNKNOWN");
+		}
 
 		FlushErrorState();
 
