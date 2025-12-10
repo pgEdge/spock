@@ -28,15 +28,15 @@ typedef struct SpockNode
 
 typedef struct SpockInterface
 {
-	Oid				id;
-	const char	   *name;
-	Oid				nodeid;
-	const char	   *dsn;
+	Oid			id;
+	const char *name;
+	Oid			nodeid;
+	const char *dsn;
 } SpockInterface;
 
 typedef struct SpockLocalNode
 {
-	SpockNode	*node;
+	SpockNode  *node;
 	SpockInterface *node_if;
 } SpockLocalNode;
 
@@ -44,8 +44,8 @@ typedef struct SpockSubscription
 {
 	Oid			id;
 	char	   *name;
-	SpockNode	   *origin;
-   	SpockNode	   *target;
+	SpockNode  *origin;
+	SpockNode  *target;
 	SpockInterface *origin_if;
 	SpockInterface *target_if;
 	bool		enabled;
@@ -54,7 +54,8 @@ typedef struct SpockSubscription
 	List	   *replication_sets;
 	List	   *forward_origins;
 	bool		force_text_transfer;
-	XLogRecPtr	skiplsn;	/* All changes finished at this LSN are skipped */
+	XLogRecPtr	skiplsn;		/* All changes finished at this LSN are
+								 * skipped */
 	List	   *skip_schema;	/* Array of schema names to skip */
 } SpockSubscription;
 
@@ -69,8 +70,8 @@ extern void drop_node_interface(Oid ifid);
 extern void drop_node_interfaces(Oid nodeid);
 extern SpockInterface *get_node_interface(Oid ifid);
 extern SpockInterface *get_node_interface_by_name(Oid nodeid,
-													  const char *name,
-													  bool missing_ok);
+												  const char *name,
+												  bool missing_ok);
 
 extern void create_local_node(Oid nodeid, Oid ifid);
 extern void drop_local_node(void);
@@ -83,7 +84,7 @@ extern void drop_subscription(Oid subid);
 
 extern SpockSubscription *get_subscription(Oid subid);
 extern SpockSubscription *get_subscription_by_name(const char *name,
-													   bool missing_ok);
+												   bool missing_ok);
 extern List *get_node_subscriptions(Oid nodeid, bool origin);
 
-#endif /* SPOCK_NODE_H */
+#endif							/* SPOCK_NODE_H */

@@ -63,15 +63,15 @@ manage_apply_workers(void)
 	subscriptions = get_node_subscriptions(node->node->id, false);
 
 	/* Check for active workers for each subscription. */
-	foreach (slc, subscriptions)
+	foreach(slc, subscriptions)
 	{
-		SpockSubscription  *sub = (SpockSubscription *) lfirst(slc);
-		SpockWorker		   *apply = NULL;
+		SpockSubscription *sub = (SpockSubscription *) lfirst(slc);
+		SpockWorker *apply = NULL;
 
 		/*
-		 * Skip if subscription not enabled.
-		 * This must be called before the following search loop because
-		 * we want to kill any workers for disabled subscription.
+		 * Skip if subscription not enabled. This must be called before the
+		 * following search loop because we want to kill any workers for
+		 * disabled subscription.
 		 */
 		if (!sub->enabled)
 			continue;
@@ -98,31 +98,31 @@ manage_apply_workers(void)
 			continue;
 
 		/*
-		 * Check if this is a terminated worker and if we want to restart
-		 * it now.
+		 * Check if this is a terminated worker and if we want to restart it
+		 * now.
 		 */
 		if (apply)
 		{
 			if (apply->terminated_at != 0)
 			{
-				TimestampTz	restart_time;
+				TimestampTz restart_time;
 				TimestampTz now = GetCurrentTimestamp();
 
 				/*
-				 * The requested restart time is restart_delay ms after
-				 * the apply-worker had terminated.
+				 * The requested restart time is restart_delay ms after the
+				 * apply-worker had terminated.
 				 */
 				restart_time = TimestampTzPlusMilliseconds(apply->terminated_at,
 														   apply->restart_delay);
 
 				/*
-				 * If it is not time to restart this apply-worker yet
-				 * then skip it, but adjust the return value to the
-				 * lowest ms when this function needs to be called again.
+				 * If it is not time to restart this apply-worker yet then
+				 * skip it, but adjust the return value to the lowest ms when
+				 * this function needs to be called again.
 				 */
 				if (restart_time >= now)
 				{
-					long delay;
+					long		delay;
 
 					delay = TimestampDifferenceMilliseconds(now,
 															restart_time);
@@ -138,10 +138,10 @@ manage_apply_workers(void)
 		subs_to_start = lappend(subs_to_start, sub);
 	}
 
-	foreach (slc, subs_to_start)
+	foreach(slc, subs_to_start)
 	{
-		SpockSubscription  *sub = (SpockSubscription *) lfirst(slc);
-		SpockWorker			apply;
+		SpockSubscription *sub = (SpockSubscription *) lfirst(slc);
+		SpockWorker apply;
 
 		memset(&apply, 0, sizeof(SpockWorker));
 		apply.worker_type = SPOCK_WORKER_APPLY;
@@ -157,16 +157,17 @@ manage_apply_workers(void)
 
 	/* Kill any remaining running workers that should not be running. */
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
-	foreach (wlc, workers)
+	foreach(wlc, workers)
 	{
 		SpockWorker *worker = (SpockWorker *) lfirst(wlc);
+
 		spock_worker_kill(worker);
 
 		/* Cleanup old info about crashed apply workers. */
 		if (worker && worker->terminated_at != 0)
 		{
 			elog(DEBUG2, "cleaning spock worker slot %zu",
-			     (worker - &SpockCtx->workers[0]));
+				 (worker - &SpockCtx->workers[0]));
 			worker->worker_type = SPOCK_WORKER_NONE;
 			worker->terminated_at = 0;
 		}
@@ -174,8 +175,8 @@ manage_apply_workers(void)
 	LWLockRelease(SpockCtx->lock);
 
 	/*
-	 * Let's guard against a zero restart delay so that an
-	 * external latch would have some timeout.
+	 * Let's guard against a zero restart delay so that an external latch
+	 * would have some timeout.
 	 */
 	return Max(ret, SPOCK_RESTART_MIN_DELAY);
 }
@@ -213,15 +214,15 @@ spock_manager_main(Datum main_arg)
 
 	/* Main wait loop. */
 	while (!got_SIGTERM)
-    {
-		int		rc;
-		int		sleep_timer;
+	{
+		int			rc;
+		int			sleep_timer;
 
 		/*
-		 * Launch or restart apply-workers. This determines how long
-		 * we have to wait before doing this again based on the restart
-		 * delay of any abnormally terminated worker (possibly due to
-		 * connection errors or exception handling).
+		 * Launch or restart apply-workers. This determines how long we have
+		 * to wait before doing this again based on the restart delay of any
+		 * abnormally terminated worker (possibly due to connection errors or
+		 * exception handling).
 		 */
 		sleep_timer = manage_apply_workers();
 
@@ -229,10 +230,10 @@ spock_manager_main(Datum main_arg)
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 					   sleep_timer);
 
-        ResetLatch(&MyProc->procLatch);
+		ResetLatch(&MyProc->procLatch);
 
-        /* emergency bailout if postmaster has died */
-        if (rc & WL_POSTMASTER_DEATH)
+		/* emergency bailout if postmaster has died */
+		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
 
 		CHECK_FOR_INTERRUPTS();

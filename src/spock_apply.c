@@ -106,14 +106,14 @@ static PGconn *applyconn = NULL;
 typedef struct ApplyReplayEntryData ApplyReplayEntry;
 struct ApplyReplayEntryData
 {
-	StringInfoData		copydata;
-	ApplyReplayEntry   *next;
+	StringInfoData copydata;
+	ApplyReplayEntry *next;
 };
-static MemoryContext		ApplyReplayContext = NULL;
-static ApplyReplayEntry	   *apply_replay_head = NULL;
-static ApplyReplayEntry	   *apply_replay_tail = NULL;
-static ApplyReplayEntry	   *apply_replay_next = NULL;
-static int					apply_replay_bytes = 0;
+static MemoryContext ApplyReplayContext = NULL;
+static ApplyReplayEntry * apply_replay_head = NULL;
+static ApplyReplayEntry * apply_replay_tail = NULL;
+static ApplyReplayEntry * apply_replay_next = NULL;
+static int	apply_replay_bytes = 0;
 
 /* Number of tuples inserted after which we switch to multi-insert. */
 #define MIN_MULTI_INSERT_TUPLES 5
@@ -141,7 +141,7 @@ typedef struct SPKFlushPosition
 	XLogRecPtr	remote_end;
 } SPKFlushPosition;
 
-static dlist_head	lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
+static dlist_head lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
 
 typedef struct ApplyExecState
 {
@@ -167,10 +167,10 @@ TransactionId remote_xid;
  */
 typedef struct RemoteSyncPosition
 {
-	dlist_node  node;
-	XLogRecPtr  recvpos;
-	XLogRecPtr  flushpos;
-	XLogRecPtr  writepos;
+	dlist_node	node;
+	XLogRecPtr	recvpos;
+	XLogRecPtr	flushpos;
+	XLogRecPtr	writepos;
 } RemoteSyncPosition;
 
 /*
@@ -216,8 +216,8 @@ static void spock_apply_worker_detach(void);
 
 static bool should_log_exception(bool failed);
 
-static ApplyReplayEntry *apply_replay_entry_create(int r, char *buf);
-static void apply_replay_entry_free(ApplyReplayEntry *entry);
+static ApplyReplayEntry * apply_replay_entry_create(int r, char *buf);
+static void apply_replay_entry_free(ApplyReplayEntry * entry);
 static void apply_replay_queue_reset(void);
 static void maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 								TimestampTz *last_receive_timestamp);
@@ -236,9 +236,9 @@ wait_for_previous_transaction(void)
 	for (;;)
 	{
 		/*
-		 * If our immediate predecessor has been processed, then break
-		 * this loop and process this transaction. Otherwise, wait for
-		 * the predecessor to commit.
+		 * If our immediate predecessor has been processed, then break this
+		 * loop and process this transaction. Otherwise, wait for the
+		 * predecessor to commit.
 		 */
 		if (apply_worker_get_progress()->prev_remote_ts == required_commit_ts ||
 			required_commit_ts == 0)
@@ -259,10 +259,10 @@ wait_for_previous_transaction(void)
 		 * changed since we we last checked it.
 		 */
 		elog(DEBUG1, "SPOCK: slot-group '%s' WAIT for ts [current proccessed"
-						", required] [" INT64_FORMAT ", " INT64_FORMAT "]",
-						MySubscription->slot_name,
-						apply_worker_get_progress()->prev_remote_ts,
-						required_commit_ts);
+			 ", required] [" INT64_FORMAT ", " INT64_FORMAT "]",
+			 MySubscription->slot_name,
+			 apply_worker_get_progress()->prev_remote_ts,
+			 required_commit_ts);
 
 		/* Latch */
 		ConditionVariableTimedSleep(&MyApplyWorker->apply_group->prev_processed_cv,
@@ -296,7 +296,7 @@ should_log_exception(bool failed)
 		if (failed)
 			return true;
 		else if (exception_logging == LOG_ALL ||
-			     exception_behaviour == TRANSDISCARD ||
+				 exception_behaviour == TRANSDISCARD ||
 				 exception_behaviour == SUB_DISABLE)
 			return true;
 	}
@@ -460,11 +460,10 @@ handle_begin(StringInfo s)
 	char	   *slot_name;
 
 	/*
-	 * To get here we must have connected successfully and the
-	 * replication stream is delivering the first transaction.
-	 * At this point we switch to restart_delay_on_exception
-	 * assuming that we are just replicating a transaction without
-	 * exception handling.
+	 * To get here we must have connected successfully and the replication
+	 * stream is delivering the first transaction. At this point we switch to
+	 * restart_delay_on_exception assuming that we are just replicating a
+	 * transaction without exception handling.
 	 */
 	MySpockWorker->restart_delay = restart_delay_on_exception;
 
@@ -480,8 +479,8 @@ handle_begin(StringInfo s)
 	remote_origin_id = InvalidRepOriginId;
 
 	elog(DEBUG1, "SPOCK %s: current commit ts is: " INT64_FORMAT,
-			MySubscription->name,
-			replorigin_session_origin_timestamp);
+		 MySubscription->name,
+		 replorigin_session_origin_timestamp);
 
 	/*
 	 * We either create a new shared memory struct in the error log for
@@ -527,7 +526,7 @@ handle_begin(StringInfo s)
 
 		if (!slot_found)
 		{
-			int free_slot_index = -1;
+			int			free_slot_index = -1;
 
 			/*
 			 * If we don't find ourselves in shared memory, then we get the
@@ -556,8 +555,8 @@ handle_begin(StringInfo s)
 					my_exception_log_index = i;
 
 					/*
-					 * Break out out of the loop whether we've found the commit
-					 * LSN or not since we have already found our slot
+					 * Break out out of the loop whether we've found the
+					 * commit LSN or not since we have already found our slot
 					 */
 					break;
 				}
@@ -579,13 +578,16 @@ handle_begin(StringInfo s)
 			/* We didn't find a slot, but we have a valid index. */
 			if (!slot_found)
 			{
-				/* TODO: What happens if a subscription is dropped? Memory leak */
+				/*
+				 * TODO: What happens if a subscription is dropped? Memory
+				 * leak
+				 */
 				new_elog_entry = &exception_log_ptr[free_slot_index];
 				namestrcpy(&new_elog_entry->slot_name, MySubscription->name);
 
 				/*
-				 * Redundant, since it's happening below. But we'll have it for
-				 * now
+				 * Redundant, since it's happening below. But we'll have it
+				 * for now
 				 */
 				new_elog_entry->commit_lsn = commit_lsn;
 				new_elog_entry->local_tuple = NULL;
@@ -612,8 +614,8 @@ handle_begin(StringInfo s)
 				 MySubscription->name);
 
 			/*
-			 * If we unexpectedly terminate again with error during
-			 * exception handling, don't go into a fast error loop.
+			 * If we unexpectedly terminate again with error during exception
+			 * handling, don't go into a fast error loop.
 			 */
 			MySpockWorker->restart_delay = restart_delay_default;
 		}
@@ -698,20 +700,21 @@ handle_commit(StringInfo s)
 
 
 		/*
-		* Advance the replication origin LSN to end_lsn. This LSN marks the
-		* position from which streaming will resume in case of a crash.
-		*
-		* Only update the origin LSN if there was no exception, or if the
-		* exception behavior is DISCARD or TRANSDISCARD. This ensures that
-		* replication resumes correctly without unintentionally skipping data
-		* after restarts or when a disabled subscription is re-enabled.
-		*
-		* Previously, due to an exception-handling change (commit: cfb1f5404d),
-		* replorigin_session_origin_lsn was being advanced even when a transaction
-		* failed. This caused the erroneous transaction to be skipped and made it
-		* unavailable when re-enabling the subscription. Skipping such transactions
-		* should be an explicit user action via spock.sub_alter_skiplsn.
-		*/
+		 * Advance the replication origin LSN to end_lsn. This LSN marks the
+		 * position from which streaming will resume in case of a crash.
+		 *
+		 * Only update the origin LSN if there was no exception, or if the
+		 * exception behavior is DISCARD or TRANSDISCARD. This ensures that
+		 * replication resumes correctly without unintentionally skipping data
+		 * after restarts or when a disabled subscription is re-enabled.
+		 *
+		 * Previously, due to an exception-handling change (commit:
+		 * cfb1f5404d), replorigin_session_origin_lsn was being advanced even
+		 * when a transaction failed. This caused the erroneous transaction to
+		 * be skipped and made it unavailable when re-enabling the
+		 * subscription. Skipping such transactions should be an explicit user
+		 * action via spock.sub_alter_skiplsn.
+		 */
 		if (!xact_had_exception ||
 			exception_behaviour == DISCARD ||
 			exception_behaviour == TRANSDISCARD)
@@ -734,9 +737,9 @@ handle_commit(StringInfo s)
 		if (xact_had_exception)
 		{
 			/*
-			 * If we had exception(s) and are in SUB_DISABLE mode then
-			 * the subscription got disabled earlier in the code path.
-			 * We need to exit here to disconnect.
+			 * If we had exception(s) and are in SUB_DISABLE mode then the
+			 * subscription got disabled earlier in the code path. We need to
+			 * exit here to disconnect.
 			 */
 			if (exception_behaviour == SUB_DISABLE)
 			{
@@ -753,8 +756,8 @@ handle_commit(StringInfo s)
 		else
 		{
 			/*
-			 * If we had no exception(s) in exception handling mode then
-			 * the entire transaction would be silently skipped with no
+			 * If we had no exception(s) in exception handling mode then the
+			 * entire transaction would be silently skipped with no
 			 * exception_log entries showing in TRANSDISCARD or SUB_DISABLE
 			 * mode. We need to retry this once more without exception
 			 * handling.
@@ -849,8 +852,14 @@ handle_commit(StringInfo s)
 			.remote_commit_ts = commit_time,
 			.prev_remote_ts = replorigin_session_origin_timestamp,
 			.remote_commit_lsn = commit_lsn,
-			/* Don't need to change remote_insert_lsn and received_lsn - it is done earlier */
-			.last_updated_ts = GetCurrentTimestamp(), /* XXX: Could we use commit_ts value instead? */
+
+			/*
+			 * Don't need to change remote_insert_lsn and received_lsn - it is
+			 * done earlier
+			 */
+			.last_updated_ts = GetCurrentTimestamp(),	/* XXX: Could we use
+														 * commit_ts value
+														 * instead? */
 			.updated_by_decode = true,
 		};
 
@@ -982,17 +991,17 @@ handle_commit_order(StringInfo s)
 			 MySubscription->name);
 
 	/*
-	 * Read the message and adjust the locally maintained last commit ts.
-	 * We don't need to track the origin here since we can only apply
-	 * changes from one origin.
+	 * Read the message and adjust the locally maintained last commit ts. We
+	 * don't need to track the origin here since we can only apply changes
+	 * from one origin.
 	 */
 	required_commit_ts = spock_read_commit_order(s);
 
 	elog(DEBUG1, "SPOCK: slot-group '%s' previous commit ts received: "
-			INT64_FORMAT " - commit ts " INT64_FORMAT,
-			MySubscription->slot_name,
-			required_commit_ts,
-			replorigin_session_origin_timestamp);
+		 INT64_FORMAT " - commit ts " INT64_FORMAT,
+		 MySubscription->slot_name,
+		 required_commit_ts,
+		 replorigin_session_origin_timestamp);
 }
 
 /*
@@ -1017,11 +1026,11 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 					 SpockTupleData *oldtup, SpockTupleData *newtup,
 					 const char *action_name)
 {
-	RepOriginId		local_origin = InvalidRepOriginId;
-	TimestampTz		local_commit_ts = 0;
-	TransactionId	xmin = InvalidTransactionId;
-	bool			local_origin_found = false;
-	HeapTuple		localtup;
+	RepOriginId local_origin = InvalidRepOriginId;
+	TimestampTz local_commit_ts = 0;
+	TransactionId xmin = InvalidTransactionId;
+	bool		local_origin_found = false;
+	HeapTuple	localtup;
 
 	if (!should_log_exception(failed))
 		return;
@@ -1038,6 +1047,7 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 		if (local_origin_found && local_origin == 0)
 		{
 			SpockLocalNode *local_node = get_local_node(false, false);
+
 			local_origin = local_node->node->id;
 		}
 	}
@@ -1058,7 +1068,7 @@ handle_insert(StringInfo s)
 	SpockTupleData newtup;
 	SpockRelation *rel;
 	ErrorData  *edata = NULL;
-	MemoryContext	oldcontext;
+	MemoryContext oldcontext;
 	bool		started_tx;
 	bool		failed = false;
 
@@ -1283,10 +1293,9 @@ handle_update(StringInfo s)
 		exception_command_counter++;
 
 		/*
-		 * NOTE:
-		 * Considering that the apply worker regularly reset MessageContext that
-		 * contains local tuple, it make sense to centralyze management of an
-		 * exception log slot.
+		 * NOTE: Considering that the apply worker regularly reset
+		 * MessageContext that contains local tuple, it make sense to
+		 * centralyze management of an exception log slot.
 		 */
 		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
 
@@ -1380,10 +1389,9 @@ handle_delete(StringInfo s)
 		exception_command_counter++;
 
 		/*
-		 * NOTE:
-		 * Considering that the apply worker regularly reset MessageContext that
-		 * contains local tuple, it make sense to centralyze management of an
-		 * exception log slot.
+		 * NOTE: Considering that the apply worker regularly reset
+		 * MessageContext that contains local tuple, it make sense to
+		 * centralyze management of an exception log slot.
 		 */
 		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
 
@@ -1625,10 +1633,10 @@ static void
 spock_apply_worker_shmem_exit(int code, Datum arg)
 {
 	/*
-	 * Reset replication session to avoid reuse after an error.
-	 * This is done in a before_shmem_exit callback instead of
-	 * on_proc_exit because the backend may also clean up the origin
-	 * in certain cases, and we want to avoid duplicate cleanup.
+	 * Reset replication session to avoid reuse after an error. This is done
+	 * in a before_shmem_exit callback instead of on_proc_exit because the
+	 * backend may also clean up the origin in certain cases, and we want to
+	 * avoid duplicate cleanup.
 	 */
 	replorigin_session_origin = InvalidRepOriginId;
 	replorigin_session_origin_lsn = InvalidXLogRecPtr;
@@ -1648,15 +1656,15 @@ spock_apply_worker_on_exit(int code, Datum arg)
 static void
 spock_apply_worker_attach(void)
 {
-	if(MyApplyWorker->apply_group != NULL)
+	if (MyApplyWorker->apply_group != NULL)
 		return;
 
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 
-		/* Set the values in shared memory for this dbid-origin */
+	/* Set the values in shared memory for this dbid-origin */
 	MyApplyWorker->apply_group = spock_group_attach(MySpockWorker->dboid,
-					   MySubscription->target->id,
-					   MySubscription->origin->id);
+													MySubscription->target->id,
+													MySubscription->origin->id);
 
 	Assert(MyApplyWorker->apply_group != NULL);
 	LWLockRelease(SpockCtx->apply_group_master_lock);
@@ -2049,7 +2057,10 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 
 		if (!failed)
 		{
-			/* Follow spock.exception_behavior GUC instead of restarting worker */
+			/*
+			 * Follow spock.exception_behavior GUC instead of restarting
+			 * worker
+			 */
 			if (exception_behaviour == TRANSDISCARD ||
 				exception_behaviour == SUB_DISABLE)
 				RollbackAndReleaseCurrentSubTransaction();
@@ -2121,50 +2132,51 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 static void
 handle_message(StringInfo s)
 {
-    TransactionId   xid;
-    XLogRecPtr      lsn;
-    bool            transactional;
-    const char     *prefix;
-	const char	   *temp;
-    int32			mtype;
-    Size            sz;
+	TransactionId xid;
+	XLogRecPtr	lsn;
+	bool		transactional;
+	const char *prefix;
+	const char *temp;
+	int32		mtype;
+	Size		sz;
 
-    /* read fields */
-    xid = pq_getmsgint(s, sizeof(int32));
-    (void) xid; /* unused */
+	/* read fields */
+	xid = pq_getmsgint(s, sizeof(int32));
+	(void) xid;					/* unused */
 
-    lsn = pq_getmsgint64(s);
-    transactional = pq_getmsgbyte(s);
-    prefix = pq_getmsgstring(s);
+	lsn = pq_getmsgint64(s);
+	transactional = pq_getmsgbyte(s);
+	prefix = pq_getmsgstring(s);
 	if (lsn == InvalidXLogRecPtr || !transactional ||
 		strcmp(prefix, SPOCK_MESSAGE_PREFIX) != 0)
+
 		/*
 		 * Should never happen. It means the protocol breach. Stop replication
-		 * immediately. Do not send the instance into reboot to let applications
-		 * be served.
+		 * immediately. Do not send the instance into reboot to let
+		 * applications be served.
 		 */
 		elog(FATAL, "incorrect spock message");
 
-    sz = pq_getmsgint(s, sizeof(int32));
-    temp = (char *) pq_getmsgbytes(s, sz);
+	sz = pq_getmsgint(s, sizeof(int32));
+	temp = (char *) pq_getmsgbytes(s, sz);
 	mtype = ((SpockWalMessageSimple *) temp)->mtype;
 
-	switch(mtype)
+	switch (mtype)
 	{
 		case SPOCK_SYNC_EVENT_MSG:
 			{
 				/* consume message data */
-				SpockSyncEventMessage	msg;
+				SpockSyncEventMessage msg;
 
-				(void) msg; /* unused */
+				(void) msg;		/* unused */
 
 				/*
 				 * Do nothing. The main idea is to update the progress status.
 				 * This message must be transactional. That means if we see it
-				 * here, the transaction has been committed on the publisher and
-				 * delivered to the subscriber (note: not exactly for streaming
-				 * mode). The progress status will eventually be updated in the
-				 * commit section of this transaction.
+				 * here, the transaction has been committed on the publisher
+				 * and delivered to the subscriber (note: not exactly for
+				 * streaming mode). The progress status will eventually be
+				 * updated in the commit section of this transaction.
 				 */
 			}
 			break;
@@ -2178,8 +2190,8 @@ handle_message(StringInfo s)
 static void
 replication_handler(StringInfo s)
 {
-	ErrorContextCallback	errcallback;
-	char					action = pq_getmsgbyte(s);
+	ErrorContextCallback errcallback;
+	char		action = pq_getmsgbyte(s);
 
 	if (spock_readonly == READONLY_ALL)
 		elog(ERROR, "SPOCK %s: cluster is in read-only mode, not performing replication",
@@ -2235,7 +2247,7 @@ replication_handler(StringInfo s)
 		case 'S':
 			handle_startup(s);
 			break;
-		/* GENERIC MESSAGE */
+			/* GENERIC MESSAGE */
 		case 'M':
 			handle_message(s);
 			break;
@@ -2277,8 +2289,8 @@ replication_handler(StringInfo s)
 static bool
 get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
 {
-	dlist_mutable_iter	iter;
-	XLogRecPtr			local_flush = GetFlushRecPtr(NULL);
+	dlist_mutable_iter iter;
+	XLogRecPtr	local_flush = GetFlushRecPtr(NULL);
 
 	*write = InvalidXLogRecPtr;
 	*flush = InvalidXLogRecPtr;
@@ -2324,8 +2336,8 @@ get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
 static void
 append_feedback_position(XLogRecPtr recvpos)
 {
-	XLogRecPtr writepos;
-	XLogRecPtr flushpos;
+	XLogRecPtr	writepos;
+	XLogRecPtr	flushpos;
 	RemoteSyncPosition *syncpos;
 	MemoryContext oldctx;
 
@@ -2420,7 +2432,10 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 	XLogRecPtr	writepos;
 	XLogRecPtr	flushpos;
 
-	/* In case of any syncrounoun replica is attached get the  LSN from the list */
+	/*
+	 * In case of any syncrounoun replica is attached get the  LSN from the
+	 * list
+	 */
 	if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
 		get_feedback_position(&recvpos, &writepos, &flushpos, &max_recvpos);
 
@@ -2555,8 +2570,8 @@ apply_work(PGconn *streamConn)
 
 	/* Init the ApplyOperationContext for individual operations like DML */
 	ApplyOperationContext = AllocSetContextCreate(TopMemoryContext,
-										   "ApplyOperationContext",
-										   ALLOCSET_DEFAULT_SIZES);
+												  "ApplyOperationContext",
+												  ALLOCSET_DEFAULT_SIZES);
 
 	MemoryContextSwitchTo(MessageContext);
 
@@ -2570,7 +2585,7 @@ apply_work(PGconn *streamConn)
 	pgstat_report_activity(STATE_IDLE, NULL);
 
 	if (MyApplyWorker->apply_group == NULL)
-		spock_apply_worker_attach(); /* Attach this worker. */
+		spock_apply_worker_attach();	/* Attach this worker. */
 
 stream_replay:
 
@@ -2583,13 +2598,14 @@ stream_replay:
 			int			rc;
 			int			r;
 
-            MySpockWorker->worker_status = SPOCK_WORKER_STATUS_RUNNING;
+			MySpockWorker->worker_status = SPOCK_WORKER_STATUS_RUNNING;
 
 			/*
-			 * Background workers mustn't call usleep() or any direct equivalent
-			 * instead, they may wait on their process latch, which sleeps as
-			 * necessary, but is awakened if postmaster dies.  That way the
-			 * background process goes away immediately in an emergency.
+			 * Background workers mustn't call usleep() or any direct
+			 * equivalent instead, they may wait on their process latch, which
+			 * sleeps as necessary, but is awakened if postmaster dies.  That
+			 * way the background process goes away immediately in an
+			 * emergency.
 			 */
 			rc = WaitLatchOrSocket(&MyProc->procLatch,
 								   WL_SOCKET_READABLE | WL_LATCH_SET |
@@ -2612,7 +2628,7 @@ stream_replay:
 			if (rc & WL_POSTMASTER_DEATH)
 			{
 				MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
-								proc_exit(1);
+				proc_exit(1);
 			}
 			if (rc & WL_SOCKET_READABLE)
 				PQconsumeInput(applyconn);
@@ -2651,17 +2667,17 @@ stream_replay:
 
 			for (;;)
 			{
-				ApplyReplayEntry   *entry;
-				bool				queue_append;
-				StringInfo			msg;
-				int					c;
+				ApplyReplayEntry *entry;
+				bool		queue_append;
+				StringInfo	msg;
+				int			c;
 
 				if (got_SIGTERM)
 					break;
 
 				if (apply_replay_next == NULL)
 				{
-					char   *buf;
+					char	   *buf;
 
 					/* We are not in replay mode so receive from the stream */
 					r = PQgetCopyData(applyconn, &buf, 1);
@@ -2700,8 +2716,8 @@ stream_replay:
 					}
 
 					/*
-					 * We have a valid message, create an apply queue
-					 * entry but don't add it to the queue yet.
+					 * We have a valid message, create an apply queue entry
+					 * but don't add it to the queue yet.
 					 */
 					entry = apply_replay_entry_create(r, buf);
 					queue_append = true;
@@ -2727,18 +2743,19 @@ stream_replay:
 
 				if (c == 'w')
 				{
-					XLogRecPtr start_lsn;
-					XLogRecPtr end_lsn;
+					XLogRecPtr	start_lsn;
+					XLogRecPtr	end_lsn;
 
 					start_lsn = pq_getmsgint64(msg);
 					end_lsn = pq_getmsgint64(msg);
-					pq_getmsgint64(msg); /* sendTime */
+					pq_getmsgint64(msg);	/* sendTime */
 
 					/*
-					 * Call maybe_send_feedback before last_received is updated.
-					 * This ordering guarantees that feedback LSN never advertises
-					 * a position beyond what has actually been received and processed.
-					 * Prevents skipping over unapplied changes due to premature flush LSN.
+					 * Call maybe_send_feedback before last_received is
+					 * updated. This ordering guarantees that feedback LSN
+					 * never advertises a position beyond what has actually
+					 * been received and processed. Prevents skipping over
+					 * unapplied changes due to premature flush LSN.
 					 */
 					maybe_send_feedback(applyconn, last_received,
 										&last_receive_timestamp);
@@ -2750,10 +2767,11 @@ stream_replay:
 						last_received = end_lsn;
 
 					/*
-					 * Append the entry to the end of the replay queue
-					 * if we read it from the stream. Dynamic allocation
-					 * means no fixed size limit - queue grows as needed.
-					 * Note: spock_replay_queue_size is deprecated and no longer checked.
+					 * Append the entry to the end of the replay queue if we
+					 * read it from the stream. Dynamic allocation means no
+					 * fixed size limit - queue grows as needed. Note:
+					 * spock_replay_queue_size is deprecated and no longer
+					 * checked.
 					 */
 					if (queue_append)
 					{
@@ -2778,7 +2796,11 @@ stream_replay:
 					UpdateWorkerStats(last_received, last_inserted);
 
 					replication_handler(msg);
-					/* Note: No overflow handling needed - dynamic allocation used */
+
+					/*
+					 * Note: No overflow handling needed - dynamic allocation
+					 * used
+					 */
 				}
 				else if (c == 'k')
 				{
@@ -2799,13 +2821,13 @@ stream_replay:
 					/*
 					 * It is important to update received_lsn on a keepalive
 					 * message: last_received tells us the last WAL position
-					 * that was processed by the remote walsender, even if that
-					 * data has never be sent to our replica.
-					 * It allows Spock to maintain LSN lag statistic.
+					 * that was processed by the remote walsender, even if
+					 * that data has never be sent to our replica. It allows
+					 * Spock to maintain LSN lag statistic.
 					 *
 					 * NOTE: we can't change the keepalive message format, so
-					 * just apply the same last_inserted. It may cause negative
-					 * delta, but it seems not important.
+					 * just apply the same last_inserted. It may cause
+					 * negative delta, but it seems not important.
 					 */
 					UpdateWorkerStats(last_received, last_inserted);
 
@@ -2815,8 +2837,8 @@ stream_replay:
 				else
 				{
 					/*
-					 * Other message types are purposefully ignored and
-					 * we don't add them to the replay queue.
+					 * Other message types are purposefully ignored and we
+					 * don't add them to the replay queue.
 					 */
 					apply_replay_entry_free(entry);
 				}
@@ -2832,21 +2854,23 @@ stream_replay:
 				/*
 				 * xact_had_exception implies that we are running under
 				 * use_try_block == true. If this happens in SUB_DISABLE
-				 * exception_behaviour, suspend the subscription here
-				 * and suppress feedback.
+				 * exception_behaviour, suspend the subscription here and
+				 * suppress feedback.
 				 */
 				if (exception_behaviour == SUB_DISABLE)
 				{
 					spock_disable_subscription(MySubscription,
-								remote_origin_id,
-								remote_xid,
-								replorigin_session_origin_lsn,
-								replorigin_session_origin_timestamp);
+											   remote_origin_id,
+											   remote_xid,
+											   replorigin_session_origin_lsn,
+											   replorigin_session_origin_timestamp);
+
 					/*
-					 * The subscription is now disabled, and this apply worker will
-					 * exit shortly. Since the process is terminating, memory contexts
-					 * and replication origin state will be cleaned up automatically,
-					 * so no explicit reset is needed.
+					 * The subscription is now disabled, and this apply worker
+					 * will exit shortly. Since the process is terminating,
+					 * memory contexts and replication origin state will be
+					 * cleaned up automatically, so no explicit reset is
+					 * needed.
 					 */
 					return;
 				}
@@ -2854,12 +2878,12 @@ stream_replay:
 			else
 			{
 				/*
-				 * If we did not encounter any exception only send feedback
-				 * if exception_behaviour == DISCARD or we are not using a
-				 * try block at all (default transaction mode). The reason
-				 * for this is that in TRANSDISCARD or SUB_DISABLE modes this
-				 * not having an exception during use_try_block would lead
-				 * to silently skipping the transaction altogether.
+				 * If we did not encounter any exception only send feedback if
+				 * exception_behaviour == DISCARD or we are not using a try
+				 * block at all (default transaction mode). The reason for
+				 * this is that in TRANSDISCARD or SUB_DISABLE modes this not
+				 * having an exception during use_try_block would lead to
+				 * silently skipping the transaction altogether.
 				 */
 				if (!MyApplyWorker->use_try_block ||
 					exception_behaviour == DISCARD)
@@ -2879,8 +2903,8 @@ stream_replay:
 			MemoryContextReset(MessageContext);
 
 			/*
-			 * Only do a leak check if we're between txns; we don't want lots of
-			 * noise due to resources that only exist in a txn.
+			 * Only do a leak check if we're between txns; we don't want lots
+			 * of noise due to resources that only exist in a txn.
 			 */
 			if (!IsTransactionState())
 			{
@@ -2895,34 +2919,35 @@ stream_replay:
 		edata = CopyErrorData();
 
 		/*
-		 * use_try_block == true indicates either:
-		 * 1. An exception occurred during a DML operation,
-		 * 2. Or we were replaying previously failed actions (via need_replay).
+		 * use_try_block == true indicates either: 1. An exception occurred
+		 * during a DML operation, 2. Or we were replaying previously failed
+		 * actions (via need_replay).
 		 *
 		 * If an exception occurs during handle_commit after prior handling,
-		 * we still need to ensure proper cleanup (e.g., disabling the subscription).
+		 * we still need to ensure proper cleanup (e.g., disabling the
+		 * subscription).
 		 */
 		if (xact_had_exception)
 		{
 			/*
 			 * xact_had_exception implies that we are running under
 			 * use_try_block == true. If this happens in SUB_DISABLE
-			 * exception_behaviour, suspend the subscription here
-			 * and suppress feedback.
+			 * exception_behaviour, suspend the subscription here and suppress
+			 * feedback.
 			 */
 			if (exception_behaviour == SUB_DISABLE)
 			{
 				spock_disable_subscription(MySubscription,
-							remote_origin_id,
-							remote_xid,
-							replorigin_session_origin_lsn,
-							replorigin_session_origin_timestamp);
+										   remote_origin_id,
+										   remote_xid,
+										   replorigin_session_origin_lsn,
+										   replorigin_session_origin_timestamp);
 
 				/*
-				 * The subscription is now disabled, and this apply worker will
-				 * exit shortly. Since the process is terminating, memory contexts
-				 * and replication origin state will be cleaned up automatically,
-				 * so no explicit reset is needed.
+				 * The subscription is now disabled, and this apply worker
+				 * will exit shortly. Since the process is terminating, memory
+				 * contexts and replication origin state will be cleaned up
+				 * automatically, so no explicit reset is needed.
 				 */
 				return;
 			}
@@ -2946,16 +2971,17 @@ stream_replay:
 		}
 
 		/*
-		 * Note: Replay queue overflow handling removed - dynamic allocation prevents overflow.
-		 * We no longer kill and restart apply workers for queue overflow.
-		 * Exception handling now follows spock.exception_behavior setting.
+		 * Note: Replay queue overflow handling removed - dynamic allocation
+		 * prevents overflow. We no longer kill and restart apply workers for
+		 * queue overflow. Exception handling now follows
+		 * spock.exception_behavior setting.
 		 */
 
 		/*
 		 * Reaching this point means that we are dealing with the first
 		 * occurrence of an exception in the default, non-exception-handling
-		 * mode. We need to abort the current toplevel transactions and
-		 * reset cache states so that we can retry the transaction in
+		 * mode. We need to abort the current toplevel transactions and reset
+		 * cache states so that we can retry the transaction in
 		 * exception-handling mode by replaying from the queue.
 		 */
 		AbortOutOfAnyTransaction();
@@ -3037,8 +3063,8 @@ stop_skipping_changes(void)
 		return;
 
 	ereport(LOG,
-		(errmsg("SPOCK %s: logical replication completed skipping transaction at LSN %X/%X",
-				MySubscription->name, LSN_FORMAT_ARGS(skip_xact_finish_lsn))));
+			(errmsg("SPOCK %s: logical replication completed skipping transaction at LSN %X/%X",
+					MySubscription->name, LSN_FORMAT_ARGS(skip_xact_finish_lsn))));
 
 	/* Stop skipping changes */
 	skip_xact_finish_lsn = InvalidXLogRecPtr;
@@ -3072,14 +3098,14 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 
 	/*
 	 * Clear the sub_skip_lsn. If the user has already changed sub_skip_lsn
-	 * before clearing it we don't update the catalog and the replication origin
-	 * state won't get advanced. So in the worst case, if the server crashes
-	 * before sending an acknowledgment of the flush position the transaction
-	 * will be sent again and the user needs to set subskiplsn again. We can
-	 * reduce the possibility by logging a replication origin WAL record to
-	 * advance the origin LSN instead but there is no way to advance the
-	 * origin timestamp and it doesn't seem to be worth doing anything about
-	 * it since it's a very rare case.
+	 * before clearing it we don't update the catalog and the replication
+	 * origin state won't get advanced. So in the worst case, if the server
+	 * crashes before sending an acknowledgment of the flush position the
+	 * transaction will be sent again and the user needs to set subskiplsn
+	 * again. We can reduce the possibility by logging a replication origin
+	 * WAL record to advance the origin LSN instead but there is no way to
+	 * advance the origin timestamp and it doesn't seem to be worth doing
+	 * anything about it since it's a very rare case.
 	 */
 	if (sub->skiplsn == myskiplsn)
 	{
@@ -3130,16 +3156,17 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 	MemoryContextSwitchTo(oldcontext);
 
 	/*
-	 * When executing statements coming from spock.queue on subscribers,
-	 * force top-level from caller, so ProcessUtility sees a top-level context.
+	 * When executing statements coming from spock.queue on subscribers, force
+	 * top-level from caller, so ProcessUtility sees a top-level context.
 	 */
 	if (!in_spock_queue_ddl_command)
 	{
 		/*
-		* Do a limited amount of safety checking against CONCURRENTLY commands
-		* executed in situations where they aren't allowed. The sender side
-		* should provide protection, but better be safe than sorry.
-		*/
+		 * Do a limited amount of safety checking against CONCURRENTLY
+		 * commands executed in situations where they aren't allowed. The
+		 * sender side should provide protection, but better be safe than
+		 * sorry.
+		 */
 		isTopLevel = isTopLevel && (list_length(commands) == 1);
 	}
 
@@ -3209,14 +3236,15 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		(*receiver->rDestroy) (receiver);
 
 		/*
-		 * If we are applying queued SQL on subscriber, register
-		 * newly created/altered relations explicitly here after execution.
-		 * Skip variable SET commands (e.g., SET search_path).
+		 * If we are applying queued SQL on subscriber, register newly
+		 * created/altered relations explicitly here after execution. Skip
+		 * variable SET commands (e.g., SET search_path).
 		 */
 		if (in_spock_queue_ddl_command &&
 			!IsA(command->stmt, VariableSetStmt))
 		{
 			PlannedStmt *pstmt = linitial_node(PlannedStmt, plantree_list);
+
 			/*
 			 * By the time SQL is in the queue it has already been filtered on
 			 * origin, so we can just add it to the replication set here.
@@ -3337,12 +3365,11 @@ process_syncing_tables(XLogRecPtr end_lsn)
 										 NameStr(sync->relname));
 
 				/*
-				 * TODO:
-				 * What if the SYNC worker has gone? It may be any trivial
-				 * ERROR - memory allocation, or network connection, for
-				 * example. We need to restart syncing process from the scratch.
-				 * For now, suppose that it should be always exist in testing
-				 * environment.
+				 * TODO: What if the SYNC worker has gone? It may be any
+				 * trivial ERROR - memory allocation, or network connection,
+				 * for example. We need to restart syncing process from the
+				 * scratch. For now, suppose that it should be always exist in
+				 * testing environment.
 				 */
 				Assert(spock_worker_running(worker));
 
@@ -3372,10 +3399,11 @@ process_syncing_tables(XLogRecPtr end_lsn)
 													&sync->statuslsn))
 						sync->status = SYNC_STATUS_SYNCDONE;
 					else
+
 						/*
-						 * TODO:
-						 * Here, should be a more sophisticated logic in case if
-						 * worker exited on error or status record has lost.
+						 * TODO: Here, should be a more sophisticated logic in
+						 * case if worker exited on error or status record has
+						 * lost.
 						 */
 						elog(ERROR, "a table synchronisation operation is failed");
 				}
@@ -3596,15 +3624,15 @@ spock_apply_main(Datum main_arg)
 static ApplyReplayEntry *
 apply_replay_entry_create(int r, char *buf)
 {
-	MemoryContext		oldcontext;
-	ApplyReplayEntry   *entry;
+	MemoryContext oldcontext;
+	ApplyReplayEntry *entry;
 
 	Assert(r > 0);
 	Assert(buf != NULL);
 
 	oldcontext = MemoryContextSwitchTo(ApplyReplayContext);
 
-	entry = (ApplyReplayEntry *)palloc(sizeof(ApplyReplayEntry));
+	entry = (ApplyReplayEntry *) palloc(sizeof(ApplyReplayEntry));
 	entry->copydata.len = r;
 	entry->copydata.maxlen = -1;
 	entry->copydata.cursor = 0;
@@ -3618,7 +3646,7 @@ apply_replay_entry_create(int r, char *buf)
 
 /* Free on replay entry (unqueued message type or queue is overflowing) */
 static void
-apply_replay_entry_free(ApplyReplayEntry *entry)
+apply_replay_entry_free(ApplyReplayEntry * entry)
 {
 	PQfreemem(entry->copydata.data);
 	pfree(entry);
@@ -3628,7 +3656,7 @@ apply_replay_entry_free(ApplyReplayEntry *entry)
 static void
 apply_replay_queue_reset(void)
 {
-	ApplyReplayEntry   *entry;
+	ApplyReplayEntry *entry;
 
 	for (entry = apply_replay_head; entry != NULL; entry = entry->next)
 	{
@@ -3651,22 +3679,24 @@ static void
 maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 					TimestampTz *last_receive_timestamp)
 {
-	static int w_message_count = 0;
+	static int	w_message_count = 0;
 	TimestampTz now = GetCurrentTimestamp();
 
 	w_message_count++;
 
 	/*
-	 * Send feedback if wal_sender_timeout/2 has passed or after 10 'w' messages.
+	 * Send feedback if wal_sender_timeout/2 has passed or after 10 'w'
+	 * messages.
 	 */
 	if (TimestampDifferenceExceeds(*last_receive_timestamp, now, wal_sender_timeout / 2) ||
 		w_message_count >= 10)
 	{
 		elog(DEBUG2, "SPOCK %s: force sending feedback after %d 'w' messages or timeout",
-				MySubscription->name, w_message_count);
+			 MySubscription->name, w_message_count);
+
 		/*
-		 * We need to send feedback to the walsender process
-		 * to avoid remote wal_sender_timeout.
+		 * We need to send feedback to the walsender process to avoid remote
+		 * wal_sender_timeout.
 		 */
 		send_feedback(applyconn, lsn_to_send, now, true);
 		*last_receive_timestamp = now;

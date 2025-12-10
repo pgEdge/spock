@@ -266,8 +266,8 @@ wait_for_worker_startup(SpockWorker *worker,
 			 * on registration to tell the difference. If the generation
 			 * counter has increased we know the our worker must've exited
 			 * cleanly (setting the worker type back to NONE) or self-reported
-			 * a crash (setting terminated_at), then the slot re-used by another
-			 * manager.
+			 * a crash (setting terminated_at), then the slot re-used by
+			 * another manager.
 			 */
 			if (worker->worker_type != SPOCK_WORKER_NONE
 				&& worker->generation == generation
@@ -347,9 +347,9 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	/*
 	 * Ensure shared memory is attached before using SpockCtx.
 	 *
-	 * Background workers inherit global variables from the postmaster but
-	 * the pointers may not be valid. Always call spock_shmem_attach() which
-	 * is idempotent and handles proper re-initialization.
+	 * Background workers inherit global variables from the postmaster but the
+	 * pointers may not be valid. Always call spock_shmem_attach() which is
+	 * idempotent and handles proper re-initialization.
 	 */
 	spock_shmem_attach();
 
@@ -428,7 +428,7 @@ spock_worker_attach(int slot, SpockWorkerType type)
 static void
 spock_worker_detach(bool crash)
 {
-	bool	signal_manager = false;
+	bool		signal_manager = false;
 
 	/* Nothing to detach. */
 	if (MySpockWorker == NULL)
@@ -466,9 +466,8 @@ spock_worker_detach(bool crash)
 
 		/*
 		 * If a database manager terminates, inform the Spock supervisor.
-		 * Otherwise inform the Spock manager for this database so that
-		 * it can restart terminated apply-workers immediately (if
-		 * necessary).
+		 * Otherwise inform the Spock manager for this database so that it can
+		 * restart terminated apply-workers immediately (if necessary).
 		 */
 		if (MySpockWorker->worker_type == SPOCK_WORKER_MANAGER)
 			SpockCtx->subscriptions_changed = true;
@@ -484,7 +483,7 @@ spock_worker_detach(bool crash)
 
 	if (signal_manager)
 	{
-		SpockWorker	   *my_manager;
+		SpockWorker *my_manager;
 
 		my_manager = spock_manager_find(MySpockWorker->dboid);
 
@@ -664,6 +663,7 @@ signal_worker_xact_callback(XactEvent event, void *arg)
 	if (event == XACT_EVENT_PARALLEL_COMMIT ||
 		event == XACT_EVENT_PARALLEL_ABORT ||
 		event == XACT_EVENT_PARALLEL_PRE_COMMIT)
+
 		/*
 		 * Subscription changing code is volatile and can't be executed inside
 		 * a parallel worker. Just ignore the case.
@@ -672,6 +672,7 @@ signal_worker_xact_callback(XactEvent event, void *arg)
 
 	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_PRE_PREPARE ||
 		event == XACT_EVENT_PREPARE)
+
 		/*
 		 * It is too early for us, because worker still can't see the changes
 		 * have made. Skip until COMMIT/ABORT will come.
@@ -679,15 +680,15 @@ signal_worker_xact_callback(XactEvent event, void *arg)
 		return;
 
 	/*
-	 * Now, worker may see the Spock catalog changes that this backend has made.
-	 * COMMIT and ABORT will release resources right after this call. So, we
-	 * need to manage the signal_workers right here.
+	 * Now, worker may see the Spock catalog changes that this backend has
+	 * made. COMMIT and ABORT will release resources right after this call.
+	 * So, we need to manage the signal_workers right here.
 	 */
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 	if (event == XACT_EVENT_COMMIT)
 	{
-		SpockWorker	   *w;
-		ListCell	   *l;
+		SpockWorker *w;
+		ListCell   *l;
 
 		foreach(l, signal_workers)
 		{
@@ -753,8 +754,8 @@ spock_subscription_changed(Oid subid, bool kill)
 
 		/*
 		 * Use TopMemoryContext to simplify corner cases, like PREPARE
-		 * TRANSACTION that clears resources allocated by transaction and still
-		 * not committed.
+		 * TRANSACTION that clears resources allocated by transaction and
+		 * still not committed.
 		 */
 		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
@@ -943,11 +944,11 @@ spock_shmem_init_internal(int nworkers)
 	}
 
 	/*
-	 * Initialize SpockGroupHash via the spock_group module.
-	 * This handles both creation/attachment and file loading if needed.
+	 * Initialize SpockGroupHash via the spock_group module. This handles both
+	 * creation/attachment and file loading if needed.
 	 *
-	 * Note: We pass 'all_found' to indicate whether this is first-time
-	 * setup or attachment to existing structures.
+	 * Note: We pass 'all_found' to indicate whether this is first-time setup
+	 * or attachment to existing structures.
 	 */
 	spock_group_shmem_startup(nworkers, all_found);
 
@@ -1003,9 +1004,9 @@ spock_shmem_attach(void)
 		nworkers = 9;
 
 	/*
-	 * Attach to all structures using the common initialization logic.
-	 * Returns true if structures were found (normal case), false if
-	 * they had to be created (shouldn't happen but harmless).
+	 * Attach to all structures using the common initialization logic. Returns
+	 * true if structures were found (normal case), false if they had to be
+	 * created (shouldn't happen but harmless).
 	 */
 	(void) spock_shmem_init_internal(nworkers);
 

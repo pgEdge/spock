@@ -125,7 +125,7 @@ typedef FormData_spock_depend *Form_spock_depend;
 #define Anum_spock_depend_deptype		7
 
 static Oid
-get_spock_depend_rel_oid(void);
+			get_spock_depend_rel_oid(void);
 
 /*
  * Deletion processing requires additional state for each ObjectAddress that
@@ -139,12 +139,12 @@ typedef struct ObjectAddressExtra
 } ObjectAddressExtra;
 
 /* ObjectAddressExtra flag bits */
-#define DEPFLAG_ORIGINAL	0x0001		/* an original deletion target */
-#define DEPFLAG_NORMAL		0x0002		/* reached via normal dependency */
-#define DEPFLAG_AUTO		0x0004		/* reached via auto dependency */
-#define DEPFLAG_INTERNAL	0x0008		/* reached via internal dependency */
-#define DEPFLAG_EXTENSION	0x0010		/* reached via extension dependency */
-#define DEPFLAG_REVERSE		0x0020		/* reverse internal/extension link */
+#define DEPFLAG_ORIGINAL	0x0001	/* an original deletion target */
+#define DEPFLAG_NORMAL		0x0002	/* reached via normal dependency */
+#define DEPFLAG_AUTO		0x0004	/* reached via auto dependency */
+#define DEPFLAG_INTERNAL	0x0008	/* reached via internal dependency */
+#define DEPFLAG_EXTENSION	0x0010	/* reached via extension dependency */
+#define DEPFLAG_REVERSE		0x0020	/* reverse internal/extension link */
 
 
 /* expansible list of ObjectAddresses */
@@ -174,32 +174,32 @@ typedef struct find_expr_references_context
 } find_expr_references_context;
 
 static void findDependentObjects(const ObjectAddress *object,
-					 int flags,
-					 ObjectAddressStack *stack,
-					 ObjectAddresses *targetObjects,
-					 const ObjectAddresses *pendingObjects,
-					 Relation *depRel);
+								 int flags,
+								 ObjectAddressStack *stack,
+								 ObjectAddresses *targetObjects,
+								 const ObjectAddresses *pendingObjects,
+								 Relation *depRel);
 static void reportDependentObjects(const ObjectAddresses *targetObjects,
-					   DropBehavior behavior,
-					   int msglevel,
-					   const ObjectAddress *origObject);
+								   DropBehavior behavior,
+								   int msglevel,
+								   const ObjectAddress *origObject);
 static void SPKAcquireDeletionLock(const ObjectAddress *object, int flags);
 static void SPKReleaseDeletionLock(const ObjectAddress *object);
 static bool find_expr_references_walker(Node *node,
-							find_expr_references_context *context);
+										find_expr_references_context *context);
 static void eliminate_duplicate_dependencies(ObjectAddresses *addrs);
 static int	object_address_comparator(const void *a, const void *b);
 static void add_object_address(Oid objectclassId, Oid objectId, int32 subId,
-				   ObjectAddresses *addrs);
-static void add_exact_object_address_extra(const ObjectAddress *object,
-							   const ObjectAddressExtra *extra,
 							   ObjectAddresses *addrs);
+static void add_exact_object_address_extra(const ObjectAddress *object,
+										   const ObjectAddressExtra *extra,
+										   ObjectAddresses *addrs);
 static bool object_address_present_add_flags(const ObjectAddress *object,
-								 int flags,
-								 ObjectAddresses *addrs);
+											 int flags,
+											 ObjectAddresses *addrs);
 static bool stack_address_present_add_flags(const ObjectAddress *object,
-								int flags,
-								ObjectAddressStack *stack);
+											int flags,
+											ObjectAddressStack *stack);
 
 static void deleteOneObjectDepencencyRecord(const ObjectAddress *object, Relation *depRel);
 static void deleteOneObject(const ObjectAddress *object, Relation *depRel);
@@ -236,8 +236,8 @@ deleteObjectsInList(ObjectAddresses *targetObjects, Relation *depRel)
  */
 void
 spock_recordDependencyOn(const ObjectAddress *depender,
-				   const ObjectAddress *referenced,
-				   DependencyType behavior)
+						 const ObjectAddress *referenced,
+						 DependencyType behavior)
 {
 	spock_recordMultipleDependencies(depender, referenced, 1, behavior);
 }
@@ -248,9 +248,9 @@ spock_recordDependencyOn(const ObjectAddress *depender,
  */
 void
 spock_recordMultipleDependencies(const ObjectAddress *depender,
-						   const ObjectAddress *referenced,
-						   int nreferenced,
-						   DependencyType behavior)
+								 const ObjectAddress *referenced,
+								 int nreferenced,
+								 DependencyType behavior)
 {
 	Relation	dependDesc;
 	HeapTuple	tup;
@@ -262,15 +262,15 @@ spock_recordMultipleDependencies(const ObjectAddress *depender,
 		return;					/* nothing to do */
 
 	dependDesc = table_open(get_spock_depend_rel_oid(),
-						   RowExclusiveLock);
+							RowExclusiveLock);
 
 	memset(nulls, false, sizeof(nulls));
 
 	for (i = 0; i < nreferenced; i++, referenced++)
 	{
 		/*
-		 * Record the Dependency.  Note we don't bother to check for
-		 * duplicate dependencies; there's no harm in them.
+		 * Record the Dependency.  Note we don't bother to check for duplicate
+		 * dependencies; there's no harm in them.
 		 */
 		values[Anum_spock_depend_classid - 1] = ObjectIdGetDatum(depender->classId);
 		values[Anum_spock_depend_objid - 1] = ObjectIdGetDatum(depender->objectId);
@@ -385,8 +385,8 @@ findDependentObjects(const ObjectAddress *object,
 	 * have to transform this deletion request into a deletion request of the
 	 * owning object.  (We'll eventually recurse back to this object, but the
 	 * owning object has to be visited first so it will be deleted after.) The
-	 * way to find out about this is to scan the spock_depend entries that show
-	 * what this object depends on.
+	 * way to find out about this is to scan the spock_depend entries that
+	 * show what this object depends on.
 	 */
 	ScanKeyInit(&key[0],
 				Anum_spock_depend_classid,
@@ -465,14 +465,17 @@ findDependentObjects(const ObjectAddress *object,
 					 * well as corner cases such as dropping a transient
 					 * object created within such a script.
 					 *
-					 * Note that spock currently does not care about
-					 * extension dependencies and CurrentExtensionObject is
-					 * not PGDLLIMPORTed so we relax this and just skip any
+					 * Note that spock currently does not care about extension
+					 * dependencies and CurrentExtensionObject is not
+					 * PGDLLIMPORTed so we relax this and just skip any
 					 * extension dependencies.
 					 */
 					if (creating_extension &&
-						otherObject.classId == ExtensionRelationId /*&&
-						otherObject.objectId == CurrentExtensionObject*/)
+						otherObject.classId == ExtensionRelationId	/* &&
+																	 * otherObject.objectId
+																	 * ==
+																	 * CurrentExtensionObject
+						  * */ )
 						break;
 
 					/* No exception applies, so throw the error */
@@ -827,8 +830,8 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 		if (origObject)
 			ereport(ERROR,
 					(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
-				  errmsg("cannot drop %s because other objects depend on it",
-						 spock_getObjectDescription(origObject)),
+					 errmsg("cannot drop %s because other objects depend on it",
+							spock_getObjectDescription(origObject)),
 					 errdetail("%s", clientdetail.data),
 					 errdetail_log("%s", logdetail.data),
 					 errhint("Use DROP ... CASCADE to drop the dependent objects too.")));
@@ -924,9 +927,9 @@ SPKReleaseDeletionLock(const ObjectAddress *object)
  */
 void
 spock_recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
-								Node *expr, Oid relId,
-								DependencyType behavior,
-								DependencyType self_behavior)
+									  Node *expr, Oid relId,
+									  DependencyType behavior,
+									  DependencyType self_behavior)
 {
 	find_expr_references_context context;
 	RangeTblEntry rte;
@@ -938,7 +941,7 @@ spock_recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
 	rte.type = T_RangeTblEntry;
 	rte.rtekind = RTE_RELATION;
 	rte.relid = relId;
-	rte.relkind = RELKIND_RELATION;		/* no need for exactness here */
+	rte.relkind = RELKIND_RELATION; /* no need for exactness here */
 
 	context.rtables = list_make1(list_make1(&rte));
 
@@ -982,16 +985,16 @@ spock_recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
 
 		/* Record the self-dependencies */
 		spock_recordMultipleDependencies(depender,
-								   self_addrs->refs, self_addrs->numrefs,
-								   self_behavior);
+										 self_addrs->refs, self_addrs->numrefs,
+										 self_behavior);
 
 		free_object_addresses(self_addrs);
 	}
 
 	/* Record the external dependencies */
 	spock_recordMultipleDependencies(depender,
-							   context.addrs->refs, context.addrs->numrefs,
-							   behavior);
+									 context.addrs->refs, context.addrs->numrefs,
+									 behavior);
 
 	free_object_addresses(context.addrs);
 }
@@ -1320,8 +1323,8 @@ find_expr_references_walker(Node *node,
 						   context->addrs);
 
 		/*
-		 * elemfuncid and coerceexpr are gone, replaced by elemexprstate
-		 * as part of arrays-over-domains support; see Pg commit c12d570fa14
+		 * elemfuncid and coerceexpr are gone, replaced by elemexprstate as
+		 * part of arrays-over-domains support; see Pg commit c12d570fa14
 		 */
 		/* the collation might not be referenced anywhere else, either */
 		if (OidIsValid(acoerce->resultcollid) &&
@@ -1473,7 +1476,7 @@ find_expr_references_walker(Node *node,
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
 
 					if (tle->resjunk)
-						continue;		/* ignore junk tlist items */
+						continue;	/* ignore junk tlist items */
 					add_object_address(RelationRelationId, rte->relid, tle->resno,
 									   context->addrs);
 				}
@@ -1820,8 +1823,9 @@ stack_address_present_add_flags(const ObjectAddress *object,
 /*
  * Drop dependencies if possible, error if not.
  */
-void spock_tryDropDependencies(const ObjectAddress *object,
-								   DropBehavior behavior)
+void
+spock_tryDropDependencies(const ObjectAddress *object,
+						  DropBehavior behavior)
 {
 	Relation	depRel;
 	ObjectAddresses *targetObjects;
@@ -1854,9 +1858,9 @@ void spock_tryDropDependencies(const ObjectAddress *object,
 						   object);
 
 	/*
-	 * Unlike the builtin dependency tracking, we don't actually drop
-	 * the original object here as it has already been dropped by the time
-	 * this function has been called so remove it from the array.
+	 * Unlike the builtin dependency tracking, we don't actually drop the
+	 * original object here as it has already been dropped by the time this
+	 * function has been called so remove it from the array.
 	 */
 	if (targetObjects->numrefs)
 		targetObjects->numrefs--;
@@ -1937,11 +1941,11 @@ deleteOneObject(const ObjectAddress *object, Relation *depRel)
 	doDeletion(object);
 
 	/*
-	 * Now remove any spock_depend records that link from this object to others.
-	 * (Any records linking to this object should be gone already.)
+	 * Now remove any spock_depend records that link from this object to
+	 * others. (Any records linking to this object should be gone already.)
 	 *
-	 * When dropping a whole object (subId = 0), remove all spock_depend records
-	 * for its sub-objects too.
+	 * When dropping a whole object (subId = 0), remove all spock_depend
+	 * records for its sub-objects too.
 	 */
 	deleteOneObjectDepencencyRecord(object, depRel);
 
@@ -1968,7 +1972,7 @@ doDeletion(const ObjectAddress *object)
 		drop_replication_set(object->objectId);
 	else if (object->classId == get_replication_set_table_rel_oid())
 		replication_set_remove_table(object->objectId, object->objectSubId,
-										 true);
+									 true);
 	else if (object->classId == get_replication_set_seq_rel_oid())
 		replication_set_remove_seq(object->objectId, object->objectSubId,
 								   true);
@@ -2000,11 +2004,12 @@ get_spock_depend_rel_oid(void)
 static char *
 spock_getObjectDescription(const ObjectAddress *object)
 {
-	StringInfoData	objdesc;
+	StringInfoData objdesc;
 
 	if (object->classId == get_replication_set_rel_oid())
 	{
 		SpockRepSet *repset;
+
 		repset = get_replication_set(object->objectId);
 
 		initStringInfo(&objdesc);
@@ -2015,7 +2020,7 @@ spock_getObjectDescription(const ObjectAddress *object)
 	else if (object->classId == get_replication_set_table_rel_oid() ||
 			 object->classId == get_replication_set_seq_rel_oid())
 	{
-		ObjectAddress	tbladdr;
+		ObjectAddress tbladdr;
 		SpockRepSet *repset;
 
 		tbladdr.classId = RelationRelationId;
@@ -2039,8 +2044,8 @@ spock_getObjectDescription(const ObjectAddress *object)
 void
 spock_checkDependency(const ObjectAddress *object, DropBehavior behavior)
 {
-	HeapTuple		tp;
-	Form_pg_class	reltup;
+	HeapTuple	tp;
+	Form_pg_class reltup;
 
 	if (object->classId != RelationRelationId)
 		return;

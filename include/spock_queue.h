@@ -21,7 +21,7 @@
 
 typedef struct QueuedMessage
 {
-	TimestampTz	queued_at;
+	TimestampTz queued_at;
 	List	   *replication_sets;
 	char	   *role;
 	char		message_type;
@@ -33,6 +33,6 @@ extern void queue_message(List *replication_sets, Oid roleoid,
 
 extern QueuedMessage *queued_message_from_tuple(HeapTuple queue_tup);
 
-extern Oid get_queue_table_oid(void);
+extern Oid	get_queue_table_oid(void);
 
-#endif /* SPOCK_NODE_H */
+#endif							/* SPOCK_NODE_H */

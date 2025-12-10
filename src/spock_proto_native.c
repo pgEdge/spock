@@ -31,21 +31,21 @@
 #define IS_REPLICA_IDENTITY 1
 
 static void spock_write_attrs(StringInfo out, Relation rel,
-								  Bitmapset *att_list);
+							  Bitmapset *att_list);
 static void spock_write_tuple(StringInfo out, SpockOutputData *data,
-								  Relation rel, HeapTuple tuple,
-								  Bitmapset *att_list);
+							  Relation rel, HeapTuple tuple,
+							  Bitmapset *att_list);
 static char decide_datum_transfer(Form_pg_attribute att,
 								  Form_pg_type typclass,
 								  bool allow_internal_basetypes,
 								  bool allow_binary_basetypes);
 
 static void spock_read_attrs(StringInfo in, char ***attrnames,
-								  Oid **attrtypes,
-								  Oid **attrtypmods,
-								  int *nattrnames);
+							 Oid **attrtypes,
+							 Oid **attrtypmods,
+							 int *nattrnames);
 static void spock_read_tuple(StringInfo in, SpockRelation *rel,
-					  SpockTupleData *tuple);
+							 SpockTupleData *tuple);
 
 /*
  * Write functions
@@ -56,7 +56,7 @@ static void spock_read_tuple(StringInfo in, SpockRelation *rel,
  */
 void
 spock_write_rel(StringInfo out, SpockOutputData *data, Relation rel,
-					Bitmapset *att_list)
+				Bitmapset *att_list)
 {
 	char	   *nspname;
 	uint8		nspnamelen;
@@ -82,10 +82,10 @@ spock_write_rel(StringInfo out, SpockOutputData *data, Relation rel,
 	relname = NameStr(rel->rd_rel->relname);
 	relnamelen = strlen(relname) + 1;
 
-	pq_sendbyte(out, nspnamelen);		/* schema name length */
+	pq_sendbyte(out, nspnamelen);	/* schema name length */
 	pq_sendbytes(out, nspname, nspnamelen);
 
-	pq_sendbyte(out, relnamelen);		/* table name length */
+	pq_sendbyte(out, relnamelen);	/* table name length */
 	pq_sendbytes(out, relname, relnamelen);
 
 	/* send the attribute info */
@@ -107,12 +107,12 @@ spock_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
 
 	desc = RelationGetDescr(rel);
 
-	pq_sendbyte(out, 'A');			/* sending ATTRS */
+	pq_sendbyte(out, 'A');		/* sending ATTRS */
 
 	/* send number of live attributes */
 	for (i = 0; i < desc->natts; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(desc,i);
+		Form_pg_attribute att = TupleDescAttr(desc, i);
 
 		if (att->attisdropped)
 			continue;
@@ -130,10 +130,10 @@ spock_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
 	/* send the attributes */
 	for (i = 0; i < desc->natts; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(desc,i);
-		uint8			flags = 0;
-		uint16			len;
-		const char	   *attname;
+		Form_pg_attribute att = TupleDescAttr(desc, i);
+		uint8		flags = 0;
+		uint16		len;
+		const char *attname;
 
 		if (att->attisdropped)
 			continue;
@@ -146,14 +146,14 @@ spock_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
 						  idattrs))
 			flags |= IS_REPLICA_IDENTITY;
 
-		pq_sendbyte(out, 'C');		/* column definition follows */
+		pq_sendbyte(out, 'C');	/* column definition follows */
 		pq_sendbyte(out, flags);
 
-		pq_sendbyte(out, 'N');		/* column name block follows */
+		pq_sendbyte(out, 'N');	/* column name block follows */
 		attname = NameStr(att->attname);
 		len = strlen(attname) + 1;
 		pq_sendint(out, len, 2);
-		pq_sendbytes(out, attname, len); /* data */
+		pq_sendbytes(out, attname, len);	/* data */
 		pq_sendint32(out, att->atttypid);	/* atttype */
 		pq_sendint32(out, att->atttypmod);	/* atttypmod */
 	}
@@ -166,9 +166,9 @@ spock_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
  */
 void
 spock_write_begin(StringInfo out, SpockOutputData *data,
-					  ReorderBufferTXN *txn)
+				  ReorderBufferTXN *txn)
 {
-	uint8	flags = 0;
+	uint8		flags = 0;
 
 	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'B');		/* BEGIN */
@@ -187,9 +187,9 @@ spock_write_begin(StringInfo out, SpockOutputData *data,
  */
 void
 spock_write_commit(StringInfo out, SpockOutputData *data,
-					   ReorderBufferTXN *txn, XLogRecPtr commit_lsn)
+				   ReorderBufferTXN *txn, XLogRecPtr commit_lsn)
 {
-	uint8 flags = 0;
+	uint8		flags = 0;
 
 	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'C');		/* sending COMMIT */
@@ -210,7 +210,7 @@ void
 spock_write_origin(StringInfo out, const RepOriginId origin_id,
 				   XLogRecPtr origin_lsn)
 {
-	uint8	flags = 0;
+	uint8		flags = 0;
 
 	Assert(origin_id != InvalidRepOriginId);
 
@@ -231,9 +231,9 @@ spock_write_origin(StringInfo out, const RepOriginId origin_id,
  */
 void
 spock_write_commit_order(StringInfo out,
-						TimestampTz last_commit_ts)
+						 TimestampTz last_commit_ts)
 {
-	uint8	flags = 0;
+	uint8		flags = 0;
 
 	pq_sendint64(out, GetXLogWriteRecPtr());
 	pq_sendbyte(out, 'L');		/* last commit ts */
@@ -250,10 +250,10 @@ spock_write_commit_order(StringInfo out,
  */
 void
 spock_write_insert(StringInfo out, SpockOutputData *data,
-						Relation rel, HeapTuple newtuple,
-						Bitmapset *att_list)
+				   Relation rel, HeapTuple newtuple,
+				   Bitmapset *att_list)
 {
-	uint8 flags = 0;
+	uint8		flags = 0;
 
 	pq_sendint64(out, GetXLogWriteRecPtr());
 
@@ -274,10 +274,10 @@ spock_write_insert(StringInfo out, SpockOutputData *data,
  */
 void
 spock_write_update(StringInfo out, SpockOutputData *data,
-						Relation rel, HeapTuple oldtuple, HeapTuple newtuple,
-						Bitmapset *att_list)
+				   Relation rel, HeapTuple oldtuple, HeapTuple newtuple,
+				   Bitmapset *att_list)
 {
-	uint8 flags = 0;
+	uint8		flags = 0;
 
 	pq_sendint64(out, GetXLogWriteRecPtr());
 
@@ -292,12 +292,11 @@ spock_write_update(StringInfo out, SpockOutputData *data,
 	/*
 	 * TODO: support whole tuple (O tuple type)
 	 *
-	 * Right now we can only write the key-part since logical decoding
-	 * doesn't know how to record the whole old tuple for us in WAL.
-	 * We can't use REPLICA IDENTITY FULL for this, since that makes
-	 * the key-part the whole tuple, causing issues with conflict
-	 * resultion and index lookups. We need a separate decoding option
-	 * to record whole tuples.
+	 * Right now we can only write the key-part since logical decoding doesn't
+	 * know how to record the whole old tuple for us in WAL. We can't use
+	 * REPLICA IDENTITY FULL for this, since that makes the key-part the whole
+	 * tuple, causing issues with conflict resultion and index lookups. We
+	 * need a separate decoding option to record whole tuples.
 	 */
 	if (oldtuple != NULL)
 	{
@@ -314,10 +313,10 @@ spock_write_update(StringInfo out, SpockOutputData *data,
  */
 void
 spock_write_delete(StringInfo out, SpockOutputData *data,
-						Relation rel, HeapTuple oldtuple,
-						Bitmapset *att_list)
+				   Relation rel, HeapTuple oldtuple,
+				   Bitmapset *att_list)
 {
-	uint8 flags = 0;
+	uint8		flags = 0;
 
 	pq_sendint64(out, GetXLogWriteRecPtr());
 
@@ -334,7 +333,7 @@ spock_write_delete(StringInfo out, SpockOutputData *data,
 	 *
 	 * See notes on update for details
 	 */
-	pq_sendbyte(out, 'K');	/* old key follows */
+	pq_sendbyte(out, 'K');		/* old key follows */
 	spock_write_tuple(out, data, rel, oldtuple, att_list);
 }
 
@@ -345,14 +344,16 @@ spock_write_delete(StringInfo out, SpockOutputData *data,
 void
 write_startup_message(StringInfo out, List *msg)
 {
-	ListCell *lc;
+	ListCell   *lc;
 
 	pq_sendint64(out, GetXLogWriteRecPtr());
-	pq_sendbyte(out, 'S');	/* message type field */
-	pq_sendbyte(out, SPOCK_STARTUP_MSG_FORMAT_FLAT); 	/* startup message version */
-	foreach (lc, msg)
+	pq_sendbyte(out, 'S');		/* message type field */
+	pq_sendbyte(out, SPOCK_STARTUP_MSG_FORMAT_FLAT);	/* startup message
+														 * version */
+	foreach(lc, msg)
 	{
-		DefElem *param = (DefElem*)lfirst(lc);
+		DefElem    *param = (DefElem *) lfirst(lc);
+
 		Assert(IsA(param->arg, String) && strVal(param->arg) != NULL);
 		/* null-terminated key and value pairs, in client_encoding */
 		pq_sendstring(out, param->defname);
@@ -365,7 +366,7 @@ write_startup_message(StringInfo out, List *msg)
  */
 static void
 spock_write_tuple(StringInfo out, SpockOutputData *data,
-					  Relation rel, HeapTuple tuple, Bitmapset *att_list)
+				  Relation rel, HeapTuple tuple, Bitmapset *att_list)
 {
 	TupleDesc	desc;
 	Datum		values[MaxTupleAttributeNumber];
@@ -375,11 +376,11 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 
 	desc = RelationGetDescr(rel);
 
-	pq_sendbyte(out, 'T');			/* sending TUPLE */
+	pq_sendbyte(out, 'T');		/* sending TUPLE */
 
 	for (i = 0; i < desc->natts; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(desc,i);
+		Form_pg_attribute att = TupleDescAttr(desc, i);
 
 		if (att->attisdropped)
 			continue;
@@ -406,7 +407,7 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 	{
 		HeapTuple	typtup;
 		Form_pg_type typclass;
-		Form_pg_attribute att = TupleDescAttr(desc,i);
+		Form_pg_attribute att = TupleDescAttr(desc, i);
 		char		transfer_type;
 
 		/* skip dropped columns */
@@ -445,7 +446,7 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 				/* pass by value */
 				if (att->attbyval)
 				{
-					pq_sendint(out, att->attlen, 4); /* length */
+					pq_sendint(out, att->attlen, 4);	/* length */
 
 					enlargeStringInfo(out, att->attlen);
 					store_att_byval(out->data + out->len, values[i],
@@ -456,7 +457,7 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 				/* fixed length non-varlena pass-by-reference type */
 				else if (att->attlen > 0)
 				{
-					pq_sendint(out, att->attlen, 4); /* length */
+					pq_sendint(out, att->attlen, 4);	/* length */
 
 					appendBinaryStringInfo(out, DatumGetPointer(values[i]),
 										   att->attlen);
@@ -464,19 +465,20 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 				/* varlena type */
 				else if (att->attlen == -1)
 				{
-					char *data = DatumGetPointer(values[i]);
+					char	   *data = DatumGetPointer(values[i]);
 
 					/* send indirect datums inline */
 					if (VARATT_IS_EXTERNAL_INDIRECT(values[i]))
 					{
 						struct varatt_indirect redirect;
+
 						VARATT_EXTERNAL_GET_POINTER(redirect, data);
 						data = (char *) redirect.pointer;
 					}
 
 					Assert(!VARATT_IS_EXTERNAL(data));
 
-					pq_sendint(out, VARSIZE_ANY(data), 4); /* length */
+					pq_sendint(out, VARSIZE_ANY(data), 4);	/* length */
 
 					appendBinaryStringInfo(out, data, VARSIZE_ANY(data));
 				}
@@ -496,24 +498,24 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 													  values[i]);
 
 					len = VARSIZE(outputbytes) - VARHDRSZ;
-					pq_sendint(out, len, 4); /* length */
-					pq_sendbytes(out, VARDATA(outputbytes), len); /* data */
+					pq_sendint(out, len, 4);	/* length */
+					pq_sendbytes(out, VARDATA(outputbytes), len);	/* data */
 					pfree(outputbytes);
 				}
 				break;
 
 			default:
 				{
-					char   	   *outputstr;
+					char	   *outputstr;
 					int			len;
 
 					pq_sendbyte(out, 't');	/* 'text' data follows */
 
-					outputstr =	OidOutputFunctionCall(typclass->typoutput,
+					outputstr = OidOutputFunctionCall(typclass->typoutput,
 													  values[i]);
 					len = strlen(outputstr) + 1;
-					pq_sendint(out, len, 4); /* length */
-					appendBinaryStringInfo(out, outputstr, len); /* data */
+					pq_sendint(out, len, 4);	/* length */
+					appendBinaryStringInfo(out, outputstr, len);	/* data */
 					pfree(outputstr);
 				}
 		}
@@ -528,7 +530,7 @@ spock_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
 					const char *message)
 {
 	pq_sendint64(out, GetXLogWriteRecPtr());
-	pq_sendbyte(out, 'M'); /* message type field */
+	pq_sendbyte(out, 'M');		/* message type field */
 
 	/* send out message contents */
 	pq_sendint32(out, xid);
@@ -558,6 +560,7 @@ decide_datum_transfer(Form_pg_attribute att, Form_pg_type typclass,
 	{
 		return 'i';
 	}
+
 	/*
 	 * Use send/recv, if allowed, if the type is plain or builtin.
 	 *
@@ -585,13 +588,14 @@ decide_datum_transfer(Form_pg_attribute att, Form_pg_type typclass,
  */
 void
 spock_read_begin(StringInfo in, XLogRecPtr *remote_lsn,
-					  TimestampTz *committime,
-					  TransactionId *remote_xid)
+				 TimestampTz *committime,
+				 TransactionId *remote_xid)
 {
 	/* read flags */
-	uint8	flags = pq_getmsgbyte(in);
+	uint8		flags = pq_getmsgbyte(in);
+
 	Assert(flags == 0);
-	(void) flags; /* unused */
+	(void) flags;				/* unused */
 
 	/* read fields */
 	*remote_lsn = pq_getmsgint64(in);
@@ -610,9 +614,10 @@ spock_read_commit(StringInfo in,
 				  TimestampTz *committime)
 {
 	/* read flags */
-	uint8	flags = pq_getmsgbyte(in);
+	uint8		flags = pq_getmsgbyte(in);
+
 	Assert(flags == 0);
-	(void) flags; /* unused */
+	(void) flags;				/* unused */
 
 	/* read fields */
 	*commit_lsn = pq_getmsgint64(in);
@@ -626,12 +631,12 @@ spock_read_commit(StringInfo in,
 RepOriginId
 spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
 {
-	uint8	flags;
+	uint8		flags;
 
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
-	(void) flags; /* unused */
+	(void) flags;				/* unused */
 
 	/* read fields */
 	*origin_lsn = pq_getmsgint64(in);
@@ -644,12 +649,12 @@ spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
 TimestampTz
 spock_read_commit_order(StringInfo in)
 {
-	uint8	flags;
+	uint8		flags;
 
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
-	(void) flags; /* unused */
+	(void) flags;				/* unused */
 
 	/* read fields */
 	return pq_getmsgint64(in);
@@ -671,7 +676,7 @@ spock_read_insert(StringInfo in, LOCKMODE lockmode, SpockTupleData *newtup)
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
-	(void) flags; /* unused */
+	(void) flags;				/* unused */
 
 	/* read the relation id */
 	relid = pq_getmsgint(in, 4);
@@ -702,7 +707,7 @@ spock_read_insert(StringInfo in, LOCKMODE lockmode, SpockTupleData *newtup)
  */
 SpockRelation *
 spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
-					   SpockTupleData *oldtup, SpockTupleData *newtup)
+				  SpockTupleData *oldtup, SpockTupleData *newtup)
 {
 	char		action;
 	Oid			relid;
@@ -712,7 +717,7 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
-	(void) flags; /* unused */
+	(void) flags;				/* unused */
 
 	/* read the relation id */
 	relid = pq_getmsgint(in, 4);
@@ -727,6 +732,7 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 	if (unlikely(rel == NULL))
 	{
 		if (!MyApplyWorker->use_try_block)
+
 			/*
 			 * TODO: We may do it smarter and extract table name beforehand to
 			 * show it in the error message.
@@ -763,7 +769,7 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
  */
 SpockRelation *
 spock_read_delete(StringInfo in, LOCKMODE lockmode,
-					   SpockTupleData *oldtup)
+				  SpockTupleData *oldtup)
 {
 	char		action;
 	Oid			relid;
@@ -773,7 +779,7 @@ spock_read_delete(StringInfo in, LOCKMODE lockmode,
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
-	(void) flags; /* unused */
+	(void) flags;				/* unused */
 
 	/* read the relation id */
 	relid = pq_getmsgint(in, 4);
@@ -787,6 +793,7 @@ spock_read_delete(StringInfo in, LOCKMODE lockmode,
 	if (unlikely(rel == NULL))
 	{
 		if (!MyApplyWorker->use_try_block)
+
 			/*
 			 * TODO: We may do it smarter and extract table name beforehand to
 			 * show it in the error message.
@@ -809,7 +816,7 @@ spock_read_delete(StringInfo in, LOCKMODE lockmode,
  */
 static void
 spock_read_tuple(StringInfo in, SpockRelation *rel,
-					  SpockTupleData *tuple)
+				 SpockTupleData *tuple)
 {
 	int			i;
 	int			natts;
@@ -835,26 +842,27 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 		int			attid = rel->attmap[i];
 		Oid			attrtype = rel->attrtypes[i];
 		Oid			attrtypmod = rel->attrtypmods[i];
-		Form_pg_attribute att = TupleDescAttr(desc,attid);
+		Form_pg_attribute att = TupleDescAttr(desc, attid);
 		char		kind = pq_getmsgbyte(in);
 		const char *data;
 		int			len;
 
 		switch (kind)
 		{
-			case 'n': /* null */
+			case 'n':			/* null */
 				/* already marked as null */
 				tuple->values[attid] = 0xdeadbeef;
 				tuple->changed[attid] = true;
 				break;
-			case 'u': /* unchanged column */
-				tuple->values[attid] = 0xfbadbeef; /* make bad usage more obvious */
+			case 'u':			/* unchanged column */
+				tuple->values[attid] = 0xfbadbeef;	/* make bad usage more
+													 * obvious */
 				break;
-			case 'i': /* internal binary format */
+			case 'i':			/* internal binary format */
 				tuple->nulls[attid] = false;
 				tuple->changed[attid] = true;
 
-				len = pq_getmsgint(in, 4); /* read length */
+				len = pq_getmsgint(in, 4);	/* read length */
 				data = pq_getmsgbytes(in, len);
 
 				/* and data */
@@ -863,27 +871,29 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 				else
 					tuple->values[attid] = PointerGetDatum(data);
 				break;
-			case 'b': /* binary send/recv format */
+			case 'b':			/* binary send/recv format */
 				{
-					Oid typreceive;
-					Oid typioparam;
+					Oid			typreceive;
+					Oid			typioparam;
 					StringInfoData buf;
 
 					tuple->nulls[attid] = false;
 					tuple->changed[attid] = true;
 
-					len = pq_getmsgint(in, 4); /* read length */
+					len = pq_getmsgint(in, 4);	/* read length */
 
 					/*
-					 * From a security standpoint, it doesn't matter whether the input's
-					 * column type matches what we expect: the column type's receive
-					 * function has to be robust enough to cope with invalid data.
-					 * However, from a user-friendliness standpoint, it's nicer to
-					 * complain about type mismatches than to throw "improper binary
-					 * format" errors.  But there's a problem: only built-in types have
-					 * OIDs that are stable enough to believe that a mismatch is a real
-					 * issue.  So complain only if both OIDs are in the built-in range.
-					 * Otherwise, carry on with the column type we "should" be getting.
+					 * From a security standpoint, it doesn't matter whether
+					 * the input's column type matches what we expect: the
+					 * column type's receive function has to be robust enough
+					 * to cope with invalid data. However, from a
+					 * user-friendliness standpoint, it's nicer to complain
+					 * about type mismatches than to throw "improper binary
+					 * format" errors.  But there's a problem: only built-in
+					 * types have OIDs that are stable enough to believe that
+					 * a mismatch is a real issue.  So complain only if both
+					 * OIDs are in the built-in range. Otherwise, carry on
+					 * with the column type we "should" be getting.
 					 */
 					if ((att->atttypid != attrtype ||
 						 att->atttypmod != attrtypmod) &&
@@ -913,7 +923,7 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 					buf.data = (char *) pq_getmsgbytes(in, len);
 					buf.len = len;
 					tuple->values[attid] = OidReceiveFunctionCall(
-						typreceive, &buf, typioparam, att->atttypmod);
+																  typreceive, &buf, typioparam, att->atttypmod);
 
 					if (buf.len != buf.cursor)
 						ereport(ERROR,
@@ -923,21 +933,21 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 										NameStr(rel->rel->rd_rel->relname))));
 					break;
 				}
-			case 't': /* text format */
+			case 't':			/* text format */
 				{
-					Oid typinput;
-					Oid typioparam;
+					Oid			typinput;
+					Oid			typioparam;
 
 					tuple->nulls[attid] = false;
 					tuple->changed[attid] = true;
 
-					len = pq_getmsgint(in, 4); /* read length */
+					len = pq_getmsgint(in, 4);	/* read length */
 
 					getTypeInputInfo(att->atttypid, &typinput, &typioparam);
 					/* and data */
 					data = (char *) pq_getmsgbytes(in, len);
 					tuple->values[attid] = OidInputFunctionCall(
-						typinput, (char *) data, typioparam, att->atttypmod);
+																typinput, (char *) data, typioparam, att->atttypmod);
 				}
 				break;
 			default:
@@ -966,7 +976,7 @@ spock_read_rel(StringInfo in)
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
-	(void) flags; /* unused */
+	(void) flags;				/* unused */
 
 	relid = pq_getmsgint(in, 4);
 
@@ -1013,15 +1023,15 @@ spock_read_attrs(StringInfo in, char ***attrnames, Oid **attrtypes,
 	/* read the attributes */
 	for (i = 0; i < nattrs; i++)
 	{
-		uint16			len;
+		uint16		len;
 
-		blocktype = pq_getmsgbyte(in);		/* column definition follows */
+		blocktype = pq_getmsgbyte(in);	/* column definition follows */
 		if (blocktype != 'C')
 			elog(ERROR, "expected COLUMN, got %c", blocktype);
 		/* read flags (we ignore them so far) */
 		(void) pq_getmsgbyte(in);
 
-		blocktype = pq_getmsgbyte(in);		/* column name block follows */
+		blocktype = pq_getmsgbyte(in);	/* column name block follows */
 		if (blocktype != 'N')
 			elog(ERROR, "expected NAME, got %c", blocktype);
 
@@ -1029,7 +1039,7 @@ spock_read_attrs(StringInfo in, char ***attrnames, Oid **attrtypes,
 		len = pq_getmsgint(in, 2);
 		/* the string is NULL terminated */
 		attrs[i] = (char *) pq_getmsgbytes(in, len);
-		types[i] = pq_getmsgint(in, 4);		/* atttype */
+		types[i] = pq_getmsgint(in, 4); /* atttype */
 		typmods[i] = pq_getmsgint(in, 4);	/* atttypmod */
 	}
 

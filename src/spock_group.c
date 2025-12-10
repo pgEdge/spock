@@ -86,8 +86,8 @@ spock_group_shmem_request(void)
 #endif
 
 	/*
-	 * This is cludge for Windows (Postgres does not define the GUC variable as
-	 * PGDDLIMPORT)
+	 * This is cludge for Windows (Postgres does not define the GUC variable
+	 * as PGDDLIMPORT)
 	 */
 	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
 											   false));
@@ -145,8 +145,8 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	 * startup, so skip loading.
 	 *
 	 * If found = false, we're the postmaster doing initial setup. Load the
-	 * file to quickly seed the hash, then WAL recovery will run afterward
-	 * and provide authoritative updates.
+	 * file to quickly seed the hash, then WAL recovery will run afterward and
+	 * provide authoritative updates.
 	 *
 	 * Note: ShmemInitHash() doesn't have a 'found' output parameter like
 	 * ShmemInitStruct(), so we rely on the 'found' status of other Spock
@@ -229,8 +229,8 @@ static void
 progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 {
 	/*
-	 * Good place to check the invariant.
-	 * It must be true in case of re-written entry and a new one.
+	 * Good place to check the invariant. It must be true in case of
+	 * re-written entry and a new one.
 	 */
 	Assert(dest->key.dbid == src->key.dbid);
 	Assert(dest->key.node_id == src->key.node_id);
@@ -242,9 +242,9 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 		 * This is the most advanced commit. Save its progress.
 		 *
 		 * NOTE: According to apply group machinery their commit order should
-		 * follow the timestamp order. That means there are no way for a commit
-		 * to come with an oldest commit timestamp except we don't update this
-		 * commit's part of the data at all.
+		 * follow the timestamp order. That means there are no way for a
+		 * commit to come with an oldest commit timestamp except we don't
+		 * update this commit's part of the data at all.
 		 */
 		dest->remote_commit_ts = src->remote_commit_ts;
 		dest->prev_remote_ts = src->prev_remote_ts;
@@ -261,17 +261,18 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 		dest->received_lsn = src->received_lsn;
 
 	/*
-	 * It is a good place to check the entry consistency, But only do so
-	 * after all fields are updated. During partial updates some fields
-	 * might still be InvalidXLogRecPtr (0) while others have been set.
+	 * It is a good place to check the entry consistency, But only do so after
+	 * all fields are updated. During partial updates some fields might still
+	 * be InvalidXLogRecPtr (0) while others have been set.
 	 */
 	Assert(dest->remote_insert_lsn == InvalidXLogRecPtr ||
-	       dest->remote_commit_lsn == InvalidXLogRecPtr ||
-	       dest->remote_insert_lsn >= dest->remote_commit_lsn);
+		   dest->remote_commit_lsn == InvalidXLogRecPtr ||
+		   dest->remote_insert_lsn >= dest->remote_commit_lsn);
 
 	Assert(dest->received_lsn == InvalidXLogRecPtr ||
-	       dest->remote_commit_lsn == InvalidXLogRecPtr ||
-	       dest->received_lsn >= dest->remote_commit_lsn);
+		   dest->remote_commit_lsn == InvalidXLogRecPtr ||
+		   dest->received_lsn >= dest->remote_commit_lsn);
+
 	/*
 	 * Value of the received_lsn potentially can exceed remote_insert_lsn
 	 * because it is reported more frequently (by keepalive messages).
@@ -290,9 +291,9 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 bool
 spock_group_progress_update(const SpockApplyProgress *sap)
 {
-	SpockGroupKey		key;
-	SpockGroupEntry	   *e;
-	bool				found;
+	SpockGroupKey key;
+	SpockGroupEntry *e;
+	bool		found;
 
 	if (!sap)
 		return false;
@@ -332,8 +333,8 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
 
 	/* Insert LSN can't be less than the end of an inserted record */
 	Assert(e->progress.remote_insert_lsn == InvalidXLogRecPtr ||
-	       e->progress.remote_commit_lsn == InvalidXLogRecPtr ||
-	       e->progress.remote_commit_lsn <= e->progress.remote_insert_lsn);
+		   e->progress.remote_commit_lsn == InvalidXLogRecPtr ||
+		   e->progress.remote_commit_lsn <= e->progress.remote_insert_lsn);
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
@@ -346,13 +347,13 @@ spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sa
 SpockApplyProgress *
 apply_worker_get_progress(void)
 {
-    Assert(MyApplyWorker != NULL);
-    Assert(MyApplyWorker->apply_group != NULL);
+	Assert(MyApplyWorker != NULL);
+	Assert(MyApplyWorker->apply_group != NULL);
 
-    if (MyApplyWorker && MyApplyWorker->apply_group)
-        return &MyApplyWorker->apply_group->progress;
+	if (MyApplyWorker && MyApplyWorker->apply_group)
+		return &MyApplyWorker->apply_group->progress;
 
-    return NULL;
+	return NULL;
 }
 
 /*
@@ -427,9 +428,9 @@ spock_group_resource_dump(void)
 	DumpCtx		dctx = {0};
 
 	/*
-	 * Safety check: if shared memory isn't initialized, we can't dump.
-	 * This shouldn't happen if spock_checkpoint_hook() called
-	 * spock_shmem_attach() first, but check anyway.
+	 * Safety check: if shared memory isn't initialized, we can't dump. This
+	 * shouldn't happen if spock_checkpoint_hook() called spock_shmem_attach()
+	 * first, but check anyway.
 	 */
 	if (!SpockCtx || !SpockGroupHash)
 	{
@@ -530,7 +531,7 @@ spock_group_resource_load(void)
 	{
 		CloseTransientFile(fd);
 		ereport(WARNING,
-				(errmsg("spock resource.dat version mismatch (file=%u, expected=%u) — ignoring",
+				(errmsg("spock resource.dat version mismatch (file=%u, expected=%u) - ignoring",
 						hdr.version, SPOCK_RES_VERSION)));
 		return;
 	}
@@ -539,7 +540,7 @@ spock_group_resource_load(void)
 	{
 		CloseTransientFile(fd);
 		ereport(WARNING,
-				(errmsg("spock resource.dat system identifier mismatch — ignoring")));
+				(errmsg("spock resource.dat system identifier mismatch - ignoring")));
 		return;
 	}
 

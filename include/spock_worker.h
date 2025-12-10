@@ -15,60 +15,64 @@
 #include "storage/lock.h"
 
 #include "spock.h"
-#include "spock_group.h"			/* for SpockApplyGroupData */
+#include "spock_group.h"		/* for SpockApplyGroupData */
 #include "spock_output_plugin.h"	/* for SpockOutputSlotGroup */
 #include "spock_proto_native.h"
 
-typedef enum {
-	SPOCK_WORKER_NONE,		/* Unused slot. */
-	SPOCK_WORKER_MANAGER,	/* Manager. */
-	SPOCK_WORKER_APPLY,		/* Apply. */
-	SPOCK_WORKER_SYNC		/* Special type of Apply that synchronizes
-								 * one table. */
+typedef enum
+{
+	SPOCK_WORKER_NONE,			/* Unused slot. */
+	SPOCK_WORKER_MANAGER,		/* Manager. */
+	SPOCK_WORKER_APPLY,			/* Apply. */
+	SPOCK_WORKER_SYNC			/* Special type of Apply that synchronizes one
+								 * table. */
 } SpockWorkerType;
 
-typedef enum {
-	SPOCK_WORKER_STATUS_NONE,		/* Unused slot. */
-	SPOCK_WORKER_STATUS_IDLE,		/* Idle. */
+typedef enum
+{
+	SPOCK_WORKER_STATUS_NONE,	/* Unused slot. */
+	SPOCK_WORKER_STATUS_IDLE,	/* Idle. */
 	SPOCK_WORKER_STATUS_RUNNING,	/* Running. */
 	SPOCK_WORKER_STATUS_STOPPING,	/* Stopping. */
 	SPOCK_WORKER_STATUS_STOPPED,	/* Stopped. */
-	SPOCK_WORKER_STATUS_FAILED,		/* Failed. */
+	SPOCK_WORKER_STATUS_FAILED, /* Failed. */
 } SpockWorkerStatus;
 
 typedef struct SpockApplyWorker
 {
-	Oid			subid;				/* Subscription id for apply worker. */
+	Oid			subid;			/* Subscription id for apply worker. */
 	XLogRecPtr	replay_stop_lsn;	/* Replay should stop here if defined. */
-	bool		sync_pending;		/* Is there new synchronization info pending?. */
-	bool		use_try_block;		/* Should use try block for apply? */
-	SpockGroupEntry *apply_group;	/* Apply group to be used with parallel slots. */
+	bool		sync_pending;	/* Is there new synchronization info pending?. */
+	bool		use_try_block;	/* Should use try block for apply? */
+	SpockGroupEntry *apply_group;	/* Apply group to be used with parallel
+									 * slots. */
 } SpockApplyWorker;
 
 typedef struct SpockSyncWorker
 {
-	SpockApplyWorker	apply; /* Apply worker info, must be first. */
-	NameData	nspname;	/* Name of the schema of table to copy if any. */
-	NameData	relname;	/* Name of the table to copy if any. */
+	SpockApplyWorker apply;		/* Apply worker info, must be first. */
+	NameData	nspname;		/* Name of the schema of table to copy if any. */
+	NameData	relname;		/* Name of the table to copy if any. */
 } SpockSyncWorker;
 
-typedef struct SpockWorker {
-	SpockWorkerType	worker_type;
+typedef struct SpockWorker
+{
+	SpockWorkerType worker_type;
 
 	/* Generation counter incremented at each registration */
-	uint16 generation;
+	uint16		generation;
 
 	/* Pointer to proc array. NULL if not running. */
-	PGPROC *proc;
+	PGPROC	   *proc;
 
 	/* Time at which worker crashed (normally 0). */
-	TimestampTz	terminated_at;
+	TimestampTz terminated_at;
 
 	/* Interval for restart delay in ms */
-	int restart_delay;
+	int			restart_delay;
 
 	/* Database id to connect to. */
-	Oid		dboid;
+	Oid			dboid;
 
 	/* WAL Insert location on origin */
 	XLogRecPtr	remote_wal_insert_lsn;
@@ -79,11 +83,12 @@ typedef struct SpockWorker {
 	{
 		SpockApplyWorker apply;
 		SpockSyncWorker sync;
-	} worker;
+	}			worker;
 
 } SpockWorker;
 
-typedef struct SpockContext {
+typedef struct SpockContext
+{
 	/* Write lock for the entire context. */
 	LWLock	   *lock;
 
@@ -94,16 +99,16 @@ typedef struct SpockContext {
 	bool		subscriptions_changed;
 
 	/* Spock slot-group data */
-	LWLock				   *slot_group_master_lock;
-	int						slot_ngroups;
-	SpockOutputSlotGroup   *slot_groups;
+	LWLock	   *slot_group_master_lock;
+	int			slot_ngroups;
+	SpockOutputSlotGroup *slot_groups;
 
 	/* Spock apply db-origin data */
-	LWLock				   *apply_group_master_lock;
+	LWLock	   *apply_group_master_lock;
 
 	/* Background workers. */
 	int			total_workers;
-	SpockWorker  workers[FLEXIBLE_ARRAY_MEMBER];
+	SpockWorker workers[FLEXIBLE_ARRAY_MEMBER];
 } SpockContext;
 
 
@@ -121,27 +126,27 @@ typedef enum spockStatsType
 typedef struct spockStatsKey
 {
 	/* hash key */
-	Oid			dboid;		/* Database Oid */
-	Oid			subid;		/* Subscription (InvalidOid for sender) */
-	Oid			relid;		/* Table Oid */
+	Oid			dboid;			/* Database Oid */
+	Oid			subid;			/* Subscription (InvalidOid for sender) */
+	Oid			relid;			/* Table Oid */
 } spockStatsKey;
 
 typedef struct spockStatsEntry
 {
-	spockStatsKey	key;	/* hash key */
+	spockStatsKey key;			/* hash key */
 
-	int64			counter[SPOCK_STATS_NUM_COUNTERS];
-	slock_t			mutex;
+	int64		counter[SPOCK_STATS_NUM_COUNTERS];
+	slock_t		mutex;
 } spockStatsEntry;
 
-extern HTAB				   *SpockHash;
-extern SpockContext		   *SpockCtx;
-extern SpockWorker		   *MySpockWorker;
-extern SpockApplyWorker	   *MyApplyWorker;
-extern SpockSubscription   *MySubscription;
-extern int					spock_stats_max_entries_conf;
-extern int					spock_stats_max_entries;
-extern bool					spock_stats_hash_full;
+extern HTAB *SpockHash;
+extern SpockContext *SpockCtx;
+extern SpockWorker *MySpockWorker;
+extern SpockApplyWorker *MyApplyWorker;
+extern SpockSubscription *MySubscription;
+extern int	spock_stats_max_entries_conf;
+extern int	spock_stats_max_entries;
+extern bool spock_stats_hash_full;
 
 #define SPOCK_STATS_MAX_ENTRIES(_nworkers) \
 	(spock_stats_max_entries_conf < 0 ? (1000 * _nworkers) \
@@ -156,7 +161,7 @@ extern void spock_subscription_changed(Oid subid, bool kill);
 extern void spock_worker_shmem_init(void);
 extern void spock_shmem_attach(void);
 
-extern int spock_worker_register(SpockWorker *worker);
+extern int	spock_worker_register(SpockWorker *worker);
 extern void spock_worker_attach(int slot, SpockWorkerType type);
 
 extern SpockWorker *spock_manager_find(Oid dboid);
@@ -164,7 +169,7 @@ extern SpockWorker *spock_apply_find(Oid dboid, Oid subscriberid);
 extern List *spock_apply_find_all(Oid dboid);
 
 extern SpockWorker *spock_sync_find(Oid dboid, Oid subid,
-											const char *nspname, const char *relname);
+									const char *nspname, const char *relname);
 extern List *spock_sync_find_all(Oid dboid, Oid subscriberid);
 
 extern SpockWorker *spock_get_worker(int slot);
@@ -172,8 +177,8 @@ extern bool spock_worker_running(SpockWorker *w);
 extern bool spock_worker_terminating(SpockWorker *w);
 extern void spock_worker_kill(SpockWorker *worker);
 
-extern const char * spock_worker_type_name(SpockWorkerType type);
+extern const char *spock_worker_type_name(SpockWorkerType type);
 extern void handle_stats_counter(Relation relation, Oid subid,
-								spockStatsType typ, int ntup);
+								 spockStatsType typ, int ntup);
 
-#endif /* SPOCK_WORKER_H */
+#endif							/* SPOCK_WORKER_H */

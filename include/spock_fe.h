@@ -12,9 +12,9 @@
 #ifndef SPOCK_FE_H
 #define SPOCK_FE_H
 
-extern int find_other_exec_version(const char *argv0, const char *target,
-								   uint32 *version, char *retpath);
+extern int	find_other_exec_version(const char *argv0, const char *target,
+									uint32 *version, char *retpath);
 
 extern char *spk_get_connstr(char *connstr, char *dbname, char *options, char **errmsg);
 
-#endif /* SPOCK_FE_H */
+#endif							/* SPOCK_FE_H */

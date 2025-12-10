@@ -20,7 +20,7 @@ typedef enum					/* type categories for datum_to_jsonb */
 	JSONBTYPE_COMPOSITE,		/* composite */
 	JSONBTYPE_JSONCAST,			/* something with an explicit cast to JSON */
 	JSONBTYPE_OTHER				/* all else */
-}			JsonbTypeCategory;
+} JsonbTypeCategory;
 
 typedef struct JsonbInState
 {

@@ -71,7 +71,7 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 							  TimestampTz local_ts,
 							  TimestampTz remote_ts,
 							  bool last_update_wins,
-							  SpockConflictResolution * resolution)
+							  SpockConflictResolution *resolution)
 {
 	int			cmp;
 
@@ -229,7 +229,7 @@ bool
 try_resolve_conflict(Relation rel, HeapTuple localtuple, HeapTuple remotetuple,
 					 HeapTuple *resulttuple,
 					 RepOriginId local_origin, TimestampTz local_ts,
-					 SpockConflictResolution * resolution)
+					 SpockConflictResolution *resolution)
 {
 	bool		apply = false;
 
@@ -358,15 +358,15 @@ spock_report_conflict(SpockConflictType conflict_type,
 	if (conflict_type == CONFLICT_UPDATE_UPDATE)
 	{
 		/*
-		 * If updating a row that came from the same origin,
-		 * do not report it as a conflict
+		 * If updating a row that came from the same origin, do not report it
+		 * as a conflict
 		 */
 		if (local_tuple_origin == replorigin_session_origin)
 			return;
 
 		/* If updated in the same transaction, do not report it as a conflict */
 		if (local_tuple_origin == InvalidRepOriginId &&
-				TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
+			TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
 			return;
 	}
 
@@ -384,8 +384,8 @@ spock_report_conflict(SpockConflictType conflict_type,
 	memset(local_tup_ts_str, 0, MAXDATELEN);
 	if (found_local_origin)
 		strlcpy(local_tup_ts_str,
-			   timestamptz_to_str(local_tuple_commit_ts),
-			   MAXDATELEN);
+				timestamptz_to_str(local_tuple_commit_ts),
+				MAXDATELEN);
 
 	initStringInfo(&remotetup);
 	tuple_to_stringinfo(&remotetup, desc, remotetuple);
@@ -560,11 +560,11 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 		nulls[9] = true;
 
 	/* local_timestamp */
-   /* local_timestamp. If 0, it is a missing local tuple, so use NULL */
+	/* local_timestamp. If 0, it is a missing local tuple, so use NULL */
 	if (local_tuple_commit_ts == 0)
-       nulls[10] = true;
+		nulls[10] = true;
 	else
-       values[10] = TimestampTzGetDatum(local_tuple_commit_ts);
+		values[10] = TimestampTzGetDatum(local_tuple_commit_ts);
 
 	/* remote_origin */
 	values[11] = Int32GetDatum((int) replorigin_session_origin);

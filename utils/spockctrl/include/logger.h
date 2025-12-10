@@ -15,23 +15,24 @@
 #define COLOR_BLUE "\033[0;34m"
 #define COLOR_DEFAULT "\033[0m"
 
-typedef enum {
-    LOG_LEVEL_NONE,
-    LOG_LEVEL_WARNING,
-    LOG_LEVEL_INFO,
-    LOG_LEVEL_ERROR,
-    LOG_LEVEL_DEBUG0,
-    LOG_LEVEL_DEBUG1
+typedef enum
+{
+	LOG_LEVEL_NONE,
+	LOG_LEVEL_WARNING,
+	LOG_LEVEL_INFO,
+	LOG_LEVEL_ERROR,
+	LOG_LEVEL_DEBUG0,
+	LOG_LEVEL_DEBUG1
 } LogLevel;
 
-void log_message(const char *color, const char *symbol, const char *format, va_list args);
-void log_info(const char *format, ...);
-void log_msg(const char *fmt, ...);
-void log_error(const char *fmt, ...);
-void log_warning(const char *fmt, ...);
-void log_debug0(const char *fmt, ...);
-void log_debug1(const char *fmt, ...);
+void		log_message(const char *color, const char *symbol, const char *format, va_list args);
+void		log_info(const char *format,...);
+void		log_msg(const char *fmt,...);
+void		log_error(const char *fmt,...);
+void		log_warning(const char *fmt,...);
+void		log_debug0(const char *fmt,...);
+void		log_debug1(const char *fmt,...);
 
 extern LogLevel current_log_level;
 
-#endif // LOGGER_H
+#endif							/* // LOGGER_H */
