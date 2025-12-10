@@ -58,6 +58,8 @@ typedef struct SpockExceptionLog
 	NameData	slot_name;
 	XLogRecPtr	commit_lsn;
 	HeapTuple	local_tuple;
+	char		initial_error_message[1024];
+	char		initial_operation[16];
 } SpockExceptionLog;
 
 typedef enum SpockExceptionBehaviour
