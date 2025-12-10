@@ -85,6 +85,7 @@
 #include "pgstat.h"
 
 #include "spock_apply.h"
+#include "spock_common.h"
 #include "spock_conflict.h"
 #include "spock_dependency.h"
 #include "spock_executor.h"
@@ -3414,83 +3415,124 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
  * the CREATE_REPLICATION_SLOT command.
  * Such an LSN may be consistently used for start replication if the subscriber
  * has already copied data from the donor node using the snapshot.
+ *
+ * TODO: there are a lot of optimisations inside this routine can be made later.
  */
 Datum
 spock_get_distributed_state(PG_FUNCTION_ARGS)
 {
-	StringInfoData	cmd;
-	char		   *slot_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	char		   *query;
-	uint64			nvals;
-	SPITupleTable  *spi_tuptable;
-	TupleDesc		spi_tupdesc;
-	uint64			i;
+	Oid						dest_node_id = PG_GETARG_OID(0);
+	Name					slotname = PG_GETARG_NAME(1);
+	char				   *slot_name = NameStr(*slotname);
+	StringInfoData			cmd;
+	SPITupleTable		   *tupTable;
+	TupleDesc				spi_tupDesc;
+	HeapTuple				htup;
+	TupleDesc				tupDesc;
+	Datum					result;
+	char				   *snapshot;
+	Datum					values[3];
+	bool					nulls[3] = {0};
+	SpockApplyProgress	   *sap;
+	List				   *progressList = NIL;
+	HASH_SEQ_STATUS it;
+	SpockGroupEntry *e;
+	SpockLocalNode *node;
+	XLogRecPtr	start_lsn;
+	XLogRecPtr	recent_lsn = InvalidXLogRecPtr;
 
-	if (SPI_connect() != SPI_OK_CONNECT)
-		elog(ERROR, "SPI_connect failed");
+	Assert(SpockGroupHash);
+
+	if (get_call_result_type(fcinfo, NULL, &tupDesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
 
 	/*
 	 * Stage 1: extract current state of replication on the donor node (where
 	 * this function is called).
 	 */
-	initStringInfo(&cmd);
-	appendStringInfo(&cmd, "SELECT remote_node_id,remote_commit_lsn,local_lsn "
-						   "FROM spock.progress");
 
-	if (SPI_execute(cmd.data, false, 0) != SPI_OK_SELECT)
-		elog(ERROR, "SPI_execute failed: %s", cmd.data);
+	node = get_local_node(false, false);
+	Assert(node && node->node);
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+	hash_seq_init(&it, SpockGroupHash);
 
-	nvals = SPI_processed;
-
-	if (nvals == 0)
-		goto finish;
-
-	spi_tuptable = SPI_tuptable;
-	spi_tupdesc = spi_tuptable->tupdesc;
-
-	/*
-	 * The provided categories SQL query must always return one column:
-	 * category - the label or identifier for each column
-	 */
-	if (spi_tupdesc->natts != 3)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid query result"),
-				 errdetail("The query must return three columns.")));
-
-	for (i = 0; i < nvals; i++)
+	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
 	{
-		HeapTuple	htup;
+		/*
+		 * Skip data related to other databases. Also, don't account for the
+		 * node that requested the state - it is expected that this node will
+		 * COPY data from the donor and must operate under the COPY snapshot and
+		 * the corresponding consistent LSN.
+		 */
+		if (e->key.dbid != MyDatabaseId || e->key.remote_node_id == dest_node_id)
+			continue;
 
-		/* get the next sql result tuple */
-		htup = spi_tuptable->vals[i];
+		/* This table contains only subscriptions for this node */
+		Assert(e->key.node_id == node->node->id);
 
-		/* get the category from the current sql result tuple */
-		state[i].nodeId = SPI_getvalue(htup, spi_tupdesc, 1);
-		state[i].remote_lsn = SPI_getvalue(htup, spi_tupdesc, 2);
-		state[i].local_lsn = SPI_getvalue(htup, spi_tupdesc, 3);
+		sap = palloc(sizeof(SpockApplyProgress));
+		memcpy(sap, &e->progress, sizeof(SpockApplyProgress));
+
+		if (recent_lsn < sap->local_lsn)
+			recent_lsn = sap->local_lsn;
+
+		progressList = lappend(progressList, sap);
 	}
-
-	pfree(cmd.data);
-	resetStringInfo(cmd);
+	LWLockRelease(SpockCtx->apply_group_master_lock);
 
 	/*
-	 * Create replication slot and get consistent donor's LSN.
+	 * Stage 2: Create replication slot and get donor's snapshot name and
+	 * corresponding consistent LSN.
 	 */
+
 	initStringInfo(&cmd);
-	appendStringInfo(&cmd, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
+	appendStringInfo(&cmd, "SELECT * FROM pg_create_logical_replication_slot('%s', '%s')",
 					 slot_name, "spock_output");
 
-	if (SPI_execute(cmd.data, false, 0) != SPI_OK_SELECT)
-		elog(ERROR, "SPI_execute failed: %s", cmd.data);
-
-finish:
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed");
+elog(LOG, "START 4.1 - %s", cmd.data);
+{
+	int r = SPI_exec(cmd.data, 0);
+	if (r != SPI_OK_SELECT)
+		elog(LOG, "SPI_execute failed: %s", cmd.data);
+}
+elog(LOG, "START 5");
+	tupTable = SPI_tuptable;
+	spi_tupDesc = tupTable->tupdesc;
+	Assert(SPI_processed == 1 && spi_tupDesc->natts == 2);
+	htup = tupTable->vals[0];
+	snapshot = pstrdup(SPI_getvalue(htup, tupDesc, 2));
+	start_lsn = str_to_lsn(SPI_getvalue(htup, tupDesc, 1));
 	pfree(cmd.data);
-	resetStringInfo(cmd);
-
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
+elog(LOG, "START 6 %llX - %s",start_lsn, snapshot);
+	/* XXX: Is it always true? */
+	Assert(XLogRecPtrIsValid(start_lsn) && recent_lsn <= start_lsn);
 
+	/*
+	 * TODO: Stage 3: Examine the WAL in between [state[1..nvals] .. state[0]]
+	 * to find out any commits that could be applied in-the-middle.
+	 */
 
-	return (Datum) 0;
+	/*
+	 * Now, prepare output data.
+	 *
+	 * Function returns snapshot name, consistent LSN and a JSON array
+	 * containing consistent progress state of replication from other nodes to
+	 * the donor node.
+	 */
+
+	values[0] = CStringGetDatum(snapshot);
+	values[1] = LSNGetDatum(start_lsn);
+	if (list_length(progressList) == 0)
+		nulls[2] = true;
+	else
+		values[2] = JsonbPGetDatum(spock_progress_to_jsonb(progressList));
+elog(LOG, "START 7");
+	htup = heap_form_tuple(tupDesc, values, nulls);
+	result = HeapTupleGetDatum(htup);
+elog(LOG, "START 8");
+	PG_RETURN_DATUM(result);
 }

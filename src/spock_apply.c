@@ -3499,7 +3499,7 @@ spock_apply_main(Datum main_arg)
 	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
 	Assert(MySpockWorker->worker_type == SPOCK_WORKER_APPLY);
 	MyApplyWorker = &MySpockWorker->worker.apply;
-
+elog(LOG, "--> spock_apply_main");
 	/* Setup synchronous commit according to the user's wishes */
 	SetConfigOption("synchronous_commit",
 					spock_synchronous_commit ? "local" : "off",
@@ -3532,11 +3532,11 @@ spock_apply_main(Datum main_arg)
 	if (MySubscription->apply_delay)
 		apply_delay =
 			interval_to_timeoffset(MySubscription->apply_delay) / 1000;
-
+elog(LOG, "--> spock_apply_main1");
 	/* If the subscription isn't initialized yet, initialize it. */
 	spock_sync_subscription(MySubscription);
 
-	elog(DEBUG1, "SPOCK %s: connecting to provider %s, dsn %s",
+	elog(LOG, "SPOCK %s: connecting to provider %s, dsn %s",
 		 MySubscription->name,
 		 MySubscription->origin->name, MySubscription->origin_if->dsn);
 
@@ -3547,7 +3547,7 @@ spock_apply_main(Datum main_arg)
 	QueueRelid = get_queue_table_oid();
 
 	originid = replorigin_by_name(MySubscription->slot_name, false);
-	elog(DEBUG2, "SPOCK %s: setting up replication origin %s (oid %u)",
+	elog(LOG, "SPOCK %s: setting up replication origin %s (oid %u)",
 		 MySubscription->name,
 		 MySubscription->slot_name, originid);
 	replorigin_session_setup(originid);

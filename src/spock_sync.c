@@ -323,61 +323,53 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
  */
 static char *
 ensure_replication_slot_snapshot(PGconn *sql_conn, PGconn *repl_conn,
-								 char *slot_name, bool use_failover_slot,
-								 XLogRecPtr *lsn)
+								 SpockSubscription *sub, XLogRecPtr *lsn,
+								 List **progressList)
 {
-	PGresult	   *res;
+	PGresult	   *res = NULL;
 	StringInfoData	query;
-	char		   *snapshot;
-
+	char		   *snapshot = NULL;
+elog(LOG, "--> Success 0");
 retry:
 	initStringInfo(&query);
 
-	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
-					 slot_name, "spock_output");
-	/* TODO: Should we ever use FAILOVER here? */
+	Assert(sub && sub->target && sub->slot_name);
+
 	/*
-	if (use_failover_slot)
-		appendStringInfo(&query, " FAILOVER");
-	*/
-
-
+	 * This is replication stuff. So, assume that MySubscription is properly
+	 * initialised already.
+	 */
+	appendStringInfo(&query,
+		"SELECT snapshot, lsn, progress FROM spock.get_distributed_state(%u::Oid, '%s'::name)",
+		sub->target->id, sub->slot_name);
+elog(LOG, "--> Success 1");
 	res = PQexec(repl_conn, query.data);
-
+elog(LOG, "--> Success 2.1");
+Assert(res != NULL);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
-		const char *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
-
-		/*
-		 * If our slot already exist but is not used, it's leftover from
-		 * previous unsucessful attempt to synchronize table, try dropping
-		 * it and recreating.
-		 */
-		if (sqlstate &&
-			strcmp(sqlstate, "42710" /*ERRCODE_DUPLICATE_OBJECT*/) == 0 &&
-			!spock_remote_slot_active(sql_conn, slot_name))
-		{
-			pfree(query.data);
-			PQclear(res);
-
-			spock_drop_remote_slot(sql_conn, slot_name);
-
-			goto retry;
-		}
-
-		elog(ERROR, "could not create replication slot on provider: %s\n"
-		     "query: %s",
-			 PQresultErrorMessage(res), query.data);
+		elog(ERROR, "smth %d", PQresultStatus(res));
 	}
+elog(LOG, "--> Success 3");
+	{
+		Jsonb   *data = NULL;
 
-	*lsn = DatumGetLSN(DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,
-					  CStringGetDatum(PQgetvalue(res, 0, 1))));
-	snapshot = pstrdup(PQgetvalue(res, 0, 2));
+		Assert(PQntuples(res) == 1 && PQnfields(res) == 3 &&
+			   !PQgetisnull(res, 0, 1) && !PQgetisnull(res, 0, 2));
 
+		elog(LOG, "--> %s %s", PQgetvalue(res, 0, 1), PQgetvalue(res, 0, 2));
+		snapshot = pstrdup(PQgetvalue(res, 0, 1));
+		*lsn = DatumGetLSN(DirectFunctionCall1(pg_lsn_in,
+									CStringGetDatum(PQgetvalue(res, 0, 2))));
+		if (!PQgetisnull(res, 0, 3))
+			data = DatumGetJsonbP(
+				DirectFunctionCall1(jsonb_in,
+									CStringGetDatum(PQgetvalue(res, 0, 3))));
 
-
+		*progressList = spock_progress_from_jsonb(data);
+	}
+elog(LOG, "--> Success 4");
 	PQclear(res);
-
 	return snapshot;
 }
 
@@ -881,7 +873,6 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 	PGconn	   *origin_conn;
 	PGconn	   *target_conn;
 	ListCell   *lc;
-	List	   *progress_entries_list = NIL;
 
 	/* Connect to origin node. */
 	origin_conn = spock_connect(origin_dsn, sub->name, "copy");
@@ -911,13 +902,9 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	progress_entries_list = adjust_progress_info(origin_conn, target_conn);
-
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
 	finish_copy_target_tx(target_conn);
-
-	spock_group_progress_update_list(progress_entries_list);
 }
 
 /*
@@ -939,7 +926,6 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	PGconn	   *target_conn;
 	List	   *tables;
 	ListCell   *lc;
-	List	   *progress_entries_list = NIL;
 
 	/* Connect to origin node. */
 	origin_conn = spock_connect(origin_dsn, sub->name, "copy");
@@ -1001,16 +987,9 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	progress_entries_list = adjust_progress_info(origin_conn, target_conn);
-
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
 	finish_copy_target_tx(target_conn);
-
-	/*
-	 * Update replication progress. We must do it after commit of the COPY.
-	 */
-	spock_group_progress_update_list(progress_entries_list);
 
 	return tables;
 }
@@ -1077,7 +1056,6 @@ void
 spock_sync_subscription(SpockSubscription *sub)
 {
 	SpockSyncStatus *sync;
-	XLogRecPtr		lsn;
 	char			status;
 	MemoryContext	myctx,
 					oldctx;
@@ -1144,27 +1122,19 @@ spock_sync_subscription(SpockSubscription *sub)
 		PGconn	   *origin_conn;
 		PGconn	   *origin_conn_repl;
 		char	   *snapshot;
-		bool		use_failover_slot;
+		XLogRecPtr	lsn;
+		List	   *progressList;
 
 		elog(INFO, "initializing subscriber %s", sub->name);
 
-		origin_conn = spock_connect(sub->origin_if->dsn,
-										sub->name, "snap");
-
-		/* 2QPG9.6 and 2QPG11 support failover slots */
-		use_failover_slot =
-			spock_remote_function_exists(origin_conn, "pg_catalog",
-											 "pg_create_logical_replication_slot",
-											 -1,
-											 "failover");
+		origin_conn = spock_connect(sub->origin_if->dsn, sub->name, "snap");
 		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
-													 sub->name, "snap");
+												 sub->name, "snap");
 
 		snapshot = ensure_replication_slot_snapshot(origin_conn,
 													origin_conn_repl,
-													sub->slot_name,
-													use_failover_slot, &lsn);
-
+													sub, &lsn, &progressList);
+		Assert(snapshot != NULL);
 		PQfinish(origin_conn);
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
@@ -1278,13 +1248,18 @@ spock_sync_subscription(SpockSubscription *sub)
 			}
 			PG_END_ENSURE_ERROR_CLEANUP_SUFFIX(spock_sync_tmpfile_cleanup_cb,
 										CStringGetDatum(tmpfile), _suf);
-			spock_sync_tmpfile_cleanup_cb(0,
-											  CStringGetDatum(tmpfile));
+			spock_sync_tmpfile_cleanup_cb(0, CStringGetDatum(tmpfile));
 		}
 		PG_END_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 									PointerGetDatum(sub));
 
 		PQfinish(origin_conn_repl);
+
+		/*
+		 * Update replication progress. We must do it after commit of the COPY
+		 * and before the CATCHUP starts.
+		 */
+		spock_group_progress_update_list(progressList);
 
 		status = SYNC_STATUS_CATCHUP;
 		StartTransactionCommand();
@@ -1313,6 +1288,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	PGconn	   *origin_conn_repl, *origin_conn;
 	RepOriginId	originid;
 	char	   *snapshot;
+	List	   *progressList;
 	SpockSyncStatus	   *sync;
 
 	StartTransactionCommand();
@@ -1346,8 +1322,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 
 	origin_conn = spock_connect(sub->origin_if->dsn, sub->name, "copy_slot");
 	snapshot = ensure_replication_slot_snapshot(origin_conn, origin_conn_repl,
-												sub->slot_name, false,
-												status_lsn);
+												sub, status_lsn, &progressList);
 	PQfinish(origin_conn);
 
 	/* Make sure we cleanup the slot if something goes wrong. */
@@ -1380,6 +1355,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 								PointerGetDatum(sub));
 
 	PQfinish(origin_conn_repl);
+	spock_group_progress_update_list(progressList);
 
 	return SYNC_STATUS_SYNCWAIT;
 }

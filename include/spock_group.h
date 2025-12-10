@@ -19,6 +19,7 @@
 #include "storage/lwlock.h"
 #include "storage/spin.h"
 #include "utils/hsearch.h"
+#include "utils/jsonb.h"
 
 #include "spock_rmgr.h"
 
@@ -154,5 +155,7 @@ extern SpockApplyProgress *apply_worker_get_progress(void);
 extern void		spock_group_resource_dump(void);
 extern void		spock_group_resource_load(void);
 extern void		spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);
+extern Jsonb *spock_progress_to_jsonb(List *progressList);
+extern List *spock_progress_from_jsonb(Jsonb *jsonb_array);
 
 #endif							/* SPOCK_GROUP_H */

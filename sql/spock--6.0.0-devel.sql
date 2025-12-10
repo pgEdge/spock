@@ -635,10 +635,24 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+/*
+ * Returns snapshot and LSN on the 'donor' node, and a set of Spock nodes LSN's.
+ *
+ * INPUT:
+ * - dest_node_id - Spock node identificator which will use resulting snapshot
+ *	 and LSNs to restore the state of the distributed Spock configuration.
+ * - slot_name - name for replication slot to be created.
+ *
+ * OUTPUT:
+ * progress - JSONB array, containing jsonb-objects describing the current state
+ * of LR progress in the Spock configuration.
+ */
 CREATE FUNCTION spock.get_distributed_state(
-  IN sub_name  name,
-  OUT snapshot name,
-  OUT lsns     pg_lsn[]
+  IN dest_node_id Oid,
+  IN slot_name    name,
+  OUT snapshot    name,
+  OUT lsn         pg_lsn,
+  OUT progress    jsonb
 )
 RETURNS record
 AS 'MODULE_PATHNAME', 'spock_get_distributed_state'

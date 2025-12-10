@@ -329,22 +329,34 @@ void
 spock_group_progress_update_list(List *lst)
 {
 	ListCell *lc;
-
+elog(WARNING, "--> spock_group_progress_update_list");
 	foreach (lc, lst)
 	{
 		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
+
+		/* Guide devs to not make mistakes */
+		Assert(OidIsValid(sap->key.remote_node_id) &&
+			   !OidIsValid(sap->key.node_id) && !OidIsValid(sap->key.dbid));
+		Assert(sap->remote_commit_lsn != InvalidXLogRecPtr);
+
+		sap->key.dbid = MyDatabaseId;
+		sap->key.node_id = MySubscription->target->id;
+		sap->remote_insert_lsn = InvalidXLogRecPtr;
+		sap->last_updated_ts = 0;
+		sap->prev_remote_ts = 0;
+		sap->received_lsn = InvalidXLogRecPtr;
+		sap->updated_by_decode = false;
 
 		sap->local_lsn = spock_apply_progress_add_to_wal(sap);
 		Assert(!XLogRecPtrIsInvalid(sap->local_lsn));
 
 		spock_group_progress_update(sap);
 
-		elog(LOG, "SPOCK: adjust spock.progress %d->%d to "
-			 "remote_commit_ts='%s' "
-			 "remote_commit_lsn=%llX remote_insert_lsn=%llX",
+		elog(LOG, "SPOCK: adjust spock.progress %u->%u to "
+			 "remote_commit_ts='%s', remote_commit_lsn=%X/%X",
 			 sap->key.remote_node_id, MySubscription->target->id,
 			 timestamptz_to_str(sap->remote_commit_ts),
-			 sap->remote_commit_lsn, sap->remote_insert_lsn);
+			 LSN_FORMAT_ARGS(sap->remote_commit_lsn));
 	}
 
 	/*
@@ -591,4 +603,152 @@ spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
 
 	/* Dump group progress to resource.dat */
 	spock_group_resource_dump();
+}
+
+#include "utils/builtins.h"
+#include "utils/pg_lsn.h"
+
+/*
+ * Convert a list of apply progress states to a portable format.
+ *
+ * This function saves only values necessary to find consistent point in an LR
+ * slot.
+ */
+Jsonb *
+spock_progress_to_jsonb(List *progressList)
+{
+	ListCell		   *lc;
+	JsonbParseState	   *state = NULL;
+	JsonbValue		   *result;
+
+	Assert(list_length(progressList) != 0);
+
+	pushJsonbValue(&state, WJB_BEGIN_ARRAY, NULL);
+
+	foreach (lc, progressList)
+	{
+		SpockApplyProgress	   *sap = (SpockApplyProgress *) lfirst(lc);
+		JsonbValue				key;
+		JsonbValue				val;
+
+		pushJsonbValue(&state, WJB_BEGIN_OBJECT, NULL);
+
+		key.type = jbvString;
+		key.val.string.len = strlen("remote_node_id");
+		key.val.string.val = "remote_node_id";
+		pushJsonbValue(&state, WJB_KEY, &key);
+		val.type = jbvNumeric;
+		val.val.numeric = DatumGetNumeric(DirectFunctionCall1(int4_numeric,
+									ObjectIdGetDatum(sap->key.remote_node_id)));
+		pushJsonbValue(&state, WJB_VALUE, &val);
+
+		key.type = jbvString;
+		key.val.string.len = strlen("remote_commit_lsn");
+		key.val.string.val = "remote_commit_lsn";
+		pushJsonbValue(&state, WJB_KEY, &key);
+		val.type = jbvNumeric;
+		val.val.numeric = DatumGetNumeric(DirectFunctionCall1(int8_numeric,
+									LSNGetDatum(sap->remote_commit_lsn)));
+		pushJsonbValue(&state, WJB_VALUE, &val);
+
+		/*
+		 * Maybe commit timestamp is not necessary, but we save it to let
+		 * a receiver to check replication consistency and potentially simplify
+		 * some procedures.
+		 */
+		key.type = jbvString;
+		key.val.string.len = strlen("remote_commit_ts");
+		key.val.string.val = "remote_commit_ts";
+		pushJsonbValue(&state, WJB_KEY, &key);
+		val.type = jbvNumeric;
+		val.val.numeric = DatumGetNumeric(DirectFunctionCall1(int8_numeric,
+								TimestampTzGetDatum(sap->remote_commit_ts)));
+		pushJsonbValue(&state, WJB_VALUE, &val);
+
+		pushJsonbValue(&state, WJB_END_OBJECT, NULL);
+	}
+
+	result = pushJsonbValue(&state, WJB_END_ARRAY, NULL);
+	return JsonbValueToJsonb(result);
+}
+
+/*
+ * Returns empty list on an empty input.
+ */
+List *
+spock_progress_from_jsonb(Jsonb *jsonb_array)
+{
+	List			   *progressList = NIL;
+	JsonbIterator	   *it;
+	JsonbValue			v;
+	JsonbIteratorToken	token;
+
+	if (jsonb_array == NULL)
+		return NIL;
+
+	it = JsonbIteratorInit(&jsonb_array->root);
+
+	/* Skip WJB_BEGIN_ARRAY token */
+	token = JsonbIteratorNext(&it, &v, false);
+	if (token != WJB_BEGIN_ARRAY)
+		elog(ERROR, "expected JSONB array");
+
+	/* Iterate through array elements */
+	while ((token = JsonbIteratorNext(&it, &v, false)) != WJB_END_ARRAY)
+	{
+		SpockApplyProgress *sap;
+		JsonbIterator	   *it_obj;
+		JsonbValue			v_obj;
+		JsonbIteratorToken	tok_obj;
+		char			   *key_name = NULL;
+
+		Assert(token == WJB_ELEM);
+
+		sap = (SpockApplyProgress *) palloc0(sizeof(SpockApplyProgress));
+		if (v.type != jbvBinary)
+			elog(ERROR, "expected JSONB object in array");
+
+		it_obj = JsonbIteratorInit((JsonbContainer *) v.val.binary.data);
+		tok_obj = JsonbIteratorNext(&it_obj, &v_obj, false);
+
+		while ((tok_obj = JsonbIteratorNext(&it_obj, &v_obj, false)) != WJB_END_OBJECT)
+		{
+			Assert(tok_obj == WJB_KEY);
+
+			key_name = pnstrdup(v_obj.val.string.val, v_obj.val.string.len);
+			tok_obj = JsonbIteratorNext(&it_obj, &v_obj, false);
+
+			if (v_obj.type != jbvNumeric)
+				elog(ERROR, "expected numeric value for key %s", key_name);
+
+			if (strcmp(key_name, "remote_node_id") == 0)
+			{
+				sap->key.remote_node_id =
+									DatumGetObjectId(
+										DirectFunctionCall1(numeric_int4,
+										NumericGetDatum(v_obj.val.numeric)));
+			}
+			else if (strcmp(key_name, "remote_commit_lsn") == 0)
+			{
+				sap->remote_commit_lsn = DatumGetLSN(
+					DirectFunctionCall1(numeric_int8,
+										NumericGetDatum(v_obj.val.numeric)));
+			}
+			else if (strcmp(key_name, "remote_commit_ts") == 0)
+			{
+				sap->remote_commit_ts =
+					DatumGetTimestampTz(
+						DirectFunctionCall1(numeric_int8,
+											NumericGetDatum(v_obj.val.numeric)));
+			}
+			else
+				elog(ERROR, "unexpected key name %s", key_name);
+
+			pfree(key_name);
+		}
+
+		progressList = lappend(progressList, sap);
+	}
+
+	return progressList;
 }
