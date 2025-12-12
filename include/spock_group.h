@@ -128,7 +128,6 @@ typedef struct SpockApplyProgress
 	TimestampTz last_updated_ts;	/* when we set this */
 	bool		updated_by_decode;	/* set by decode or apply. OBSOLETE. Used
 									 * in versions <=5.x.x only */
-	bool		updated_by_decode;	/* set by decode or apply. OBSOLETE. Used in versions <=5.x.x only */
 	XLogRecPtr	local_lsn;
 } SpockApplyProgress;
 
@@ -145,11 +144,14 @@ typedef struct SpockGroupEntry
 extern void spock_group_shmem_request(void);
 extern void spock_group_shmem_startup(int napply_groups, bool found);
 
-SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id);
-void		spock_group_detach(void);
-bool		spock_group_progress_update(const SpockApplyProgress *sap);
-void		spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap);
-SpockApplyProgress *apply_worker_get_progress(void);
+extern SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id,
+										   Oid remote_node_id);
+extern void		spock_group_detach(void);
+extern bool		spock_group_progress_update(const SpockApplyProgress *sap);
+extern void		spock_group_progress_update_ptr(SpockGroupEntry *e,
+												const SpockApplyProgress *sap);
+extern void spock_group_progress_update_list(List *lst);
+extern SpockApplyProgress *apply_worker_get_progress(void);
 extern void spock_group_resource_dump(void);
 extern void spock_group_resource_load(void);
 extern void spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);

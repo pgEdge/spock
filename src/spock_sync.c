@@ -399,7 +399,7 @@ ensure_replication_origin(char *slot_name)
 
 
 static List *
-adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
+adjust_progress_info(PGconn *origin_conn)
 {
 	const char *originQuery =
 		"SELECT * FROM spock.progress "
@@ -918,7 +918,7 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	progress_entries_list = adjust_progress_info(origin_conn, target_conn);
+	progress_entries_list = adjust_progress_info(origin_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
@@ -946,7 +946,6 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	PGconn	   *target_conn;
 	List	   *tables;
 	ListCell   *lc;
-	List	   *progress_entries_list = NIL;
 
 	/* Connect to origin node. */
 	origin_conn = spock_connect(origin_dsn, sub->name, "copy");
@@ -1009,16 +1008,9 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	progress_entries_list = adjust_progress_info(origin_conn, target_conn);
-
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
 	finish_copy_target_tx(target_conn);
-
-	/*
-	 * Update replication progress. We must do it after commit of the COPY.
-	 */
-	spock_group_progress_update_list(progress_entries_list);
 
 	return tables;
 }
@@ -1155,6 +1147,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		PGconn	   *origin_conn_repl;
 		char	   *snapshot;
 		bool		use_failover_slot;
+		List	   *progress_entries_list = NIL;
 
 		elog(INFO, "initializing subscriber %s", sub->name);
 
@@ -1170,6 +1163,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
 												 sub->name, "snap");
 
+		progress_entries_list = adjust_progress_info(origin_conn);
 		snapshot = ensure_replication_slot_snapshot(origin_conn,
 													origin_conn_repl,
 													sub->slot_name,
@@ -1288,13 +1282,19 @@ spock_sync_subscription(SpockSubscription *sub)
 			}
 			PG_END_ENSURE_ERROR_CLEANUP_SUFFIX(spock_sync_tmpfile_cleanup_cb,
 											   CStringGetDatum(tmpfile), _suf);
-			spock_sync_tmpfile_cleanup_cb(0,
-										  CStringGetDatum(tmpfile));
+
+			spock_sync_tmpfile_cleanup_cb(0, CStringGetDatum(tmpfile));
 		}
 		PG_END_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 									PointerGetDatum(sub));
 
 		PQfinish(origin_conn_repl);
+
+		/*
+		 * Update replication progress. We must do it after commit of the all
+		 * syncing operations.
+		 */
+		spock_group_progress_update_list(progress_entries_list);
 
 		status = SYNC_STATUS_CATCHUP;
 		StartTransactionCommand();
