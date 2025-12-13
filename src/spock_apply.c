@@ -691,7 +691,26 @@ handle_commit(StringInfo s)
 
 	if (is_skipping_changes())
 	{
+		SpockExceptionLog *exception_log;
+
 		stop_skipping_changes();
+
+		/*
+		 * Clear exception handling state since we successfully skipped the
+		 * transaction. This prevents the code from treating the skipped
+		 * transaction as a failure in SUB_DISABLE mode.
+		 */
+		if (MyApplyWorker->use_try_block)
+		{
+			exception_log = &exception_log_ptr[my_exception_log_index];
+			exception_log->commit_lsn = InvalidXLogRecPtr;
+			exception_log->initial_error_message[0] = '\0';
+			MyApplyWorker->use_try_block = false;
+			MySpockWorker->restart_delay = 0;
+
+			elog(DEBUG1, "SPOCK %s: cleared exception handling state after successful skip",
+				 MySubscription->name);
+		}
 
 		/*
 		 * Start a new transaction to clear the subskiplsn, if not started
@@ -707,9 +726,9 @@ handle_commit(StringInfo s)
 
 		/*
 		 * The transaction is either non-empty or skipped, so we clear the
-		 * subskiplsn.
+		 * subskiplsn. Use replorigin_session_origin_lsn (BEGIN commit_lsn).
 		 */
-		clear_subscription_skip_lsn(end_lsn);
+		clear_subscription_skip_lsn(replorigin_session_origin_lsn);
 
 		multi_insert_finish();
 
