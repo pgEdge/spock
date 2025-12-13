@@ -446,17 +446,23 @@ SELECT * FROM spoc_102l ORDER BY x;
 -- Check exception log format
 SELECT
   command_counter,table_schema,table_name,operation,
-  remote_new_tup,error_message
+  remote_new_tup,
+  -- Replace OIDs with <OID> placeholder for deterministic test output
+  regexp_replace(
+    regexp_replace(error_message,
+      'oid \d+', 'oid <OID>', 'g'),
+    'OID \d+', 'OID <OID>', 'g'
+  ) AS error_message
 FROM spock.exception_log
 ORDER BY command_counter;
- command_counter | table_schema | table_name | operation |                   remote_new_tup                   |       error_message       
------------------+--------------+------------+-----------+----------------------------------------------------+---------------------------
+ command_counter | table_schema | table_name | operation |                   remote_new_tup                   |              error_message               
+-----------------+--------------+------------+-----------+----------------------------------------------------+------------------------------------------
                1 |              |            | INSERT    |                                                    | Spock can't find relation
                2 |              |            | INSERT    |                                                    | Spock can't find relation
-               3 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unknown
+               3 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
                4 |              |            | INSERT    |                                                    | Spock can't find relation
                5 |              |            | INSERT    |                                                    | Spock can't find relation
-               6 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unknown
+               6 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
 (6 rows)
 
 \c :provider_dsn
@@ -557,20 +563,26 @@ SELECT * FROM spoc_102g_u ORDER BY x;
 
 SELECT
   command_counter,table_schema,table_name,operation,
-  remote_new_tup,error_message
+  remote_new_tup,
+  -- Replace OIDs with <OID> placeholder for deterministic test output
+  regexp_replace(
+    regexp_replace(error_message,
+      'oid \d+', 'oid <OID>', 'g'),
+    'OID \d+', 'OID <OID>', 'g'
+  ) AS error_message
 FROM spock.exception_log
 ORDER BY command_counter;
  command_counter | table_schema | table_name  | operation |                   remote_new_tup                   |                                             error_message                                              
 -----------------+--------------+-------------+-----------+----------------------------------------------------+--------------------------------------------------------------------------------------------------------
                1 |              |             | INSERT    |                                                    | Spock can't find relation
                2 |              |             | INSERT    |                                                    | Spock can't find relation
-               3 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unknown
+               3 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
                4 |              |             | INSERT    |                                                    | Spock can't find relation
                5 |              |             | INSERT    |                                                    | Spock can't find relation
-               6 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unknown
+               6 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
                7 |              |             | UPDATE    |                                                    | Spock can't find relation
                8 |              |             | UPDATE    |                                                    | Spock can't find relation
-               9 | public       | spoc_102g_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | unknown
+               9 | public       | spoc_102g_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
               10 | public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
 (10 rows)
 

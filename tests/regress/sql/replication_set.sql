@@ -204,7 +204,13 @@ SELECT * FROM spoc_102l ORDER BY x;
 -- Check exception log format
 SELECT
   command_counter,table_schema,table_name,operation,
-  remote_new_tup,error_message
+  remote_new_tup,
+  -- Replace OIDs with <OID> placeholder for deterministic test output
+  regexp_replace(
+    regexp_replace(error_message,
+      'oid \d+', 'oid <OID>', 'g'),
+    'OID \d+', 'OID <OID>', 'g'
+  ) AS error_message
 FROM spock.exception_log
 ORDER BY command_counter;
 
@@ -252,7 +258,13 @@ SELECT * FROM spoc_102g_u ORDER BY x;
 
 SELECT
   command_counter,table_schema,table_name,operation,
-  remote_new_tup,error_message
+  remote_new_tup,
+  -- Replace OIDs with <OID> placeholder for deterministic test output
+  regexp_replace(
+    regexp_replace(error_message,
+      'oid \d+', 'oid <OID>', 'g'),
+    'OID \d+', 'OID <OID>', 'g'
+  ) AS error_message
 FROM spock.exception_log
 ORDER BY command_counter;
 
