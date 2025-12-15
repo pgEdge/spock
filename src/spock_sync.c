@@ -57,6 +57,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
@@ -1164,6 +1165,16 @@ spock_sync_subscription(SpockSubscription *sub)
 												 sub->name, "snap");
 
 		progress_entries_list = adjust_progress_info(origin_conn);
+
+		/*
+		 * Testing facility.
+		 * Infinite waiting between taking progress state and LR snapshot on a
+		 * 'donor' node. May be used to delay initial start of a subscription or
+		 * to detect races when adding one more LR subscriber node into
+		 * a system of 2+ actively working (applying DML) nodes.
+		 */
+		INJECTION_POINT("spock-before-replication-slot-snapshot", "wait");
+
 		snapshot = ensure_replication_slot_snapshot(origin_conn,
 													origin_conn_repl,
 													sub->slot_name,

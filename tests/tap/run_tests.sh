@@ -112,7 +112,7 @@ discover_tests() {
     # Clear arrays
     TEST_SUITE_IDS=()
     TEST_SUITE_NAMES=()
-    
+
     # Read test cases from schedule file
     if [ -f "$SCHEDULE_FILE" ]; then
         while IFS= read -r line; do
@@ -121,13 +121,13 @@ discover_tests() {
                 \#*) continue ;;
                 "") continue ;;
             esac
-            
+
             # Parse test: lines
             case "$line" in
                 *test:[[:space:]]*)
                     local test_id=$(echo "$line" | sed 's/.*test:[[:space:]]*\([^[:space:]]*\).*/\1/')
                     local test_name=$(echo "$test_id" | sed 's/_/ /g' | sed 's/\b\w/\U&/g')
-                    
+
                     # Check if test file exists
                     if [ -f "$TEST_DIR/${test_id}${TEST_EXTENSION}" ]; then
                         TEST_SUITE_IDS+=("$test_id")
@@ -140,14 +140,14 @@ discover_tests() {
         done < "$SCHEDULE_FILE"
     else
         log_warning "Schedule file not found: $SCHEDULE_FILE, falling back to auto-discovery"
-        
+
         # Fallback to auto-discovery
         local test_files=($(find "$TEST_DIR" -name "*${TEST_EXTENSION}" -type f | sort))
-        
+
         for test_file in "${test_files[@]}"; do
             local test_id=$(basename "$test_file" "${TEST_EXTENSION}")
             local test_name=$(basename "$test_file" "${TEST_EXTENSION}" | sed 's/_/ /g' | sed 's/\b\w/\U&/g')
-            
+
             TEST_SUITE_IDS+=("$test_id")
             TEST_SUITE_NAMES+=("$test_name")
         done
@@ -161,7 +161,7 @@ discover_tests() {
 setup_coverage() {
     if [ "$COVERAGE_ENABLED" = "true" ]; then
         log_info "Setting up code coverage..."
-        
+
         # Check for coverage tools
         local missing_tools=()
         if ! command -v lcov >/dev/null 2>&1; then
@@ -170,24 +170,24 @@ setup_coverage() {
         if ! command -v genhtml >/dev/null 2>&1; then
             missing_tools+=("genhtml")
         fi
-        
+
         if [ ${#missing_tools[@]} -gt 0 ]; then
             log_warning "Coverage tools not found: ${missing_tools[*]}"
             log_warning "Code coverage disabled - required tools not available"
             log_info "Install missing tools: brew install lcov (macOS) or apt-get install lcov (Linux)"
             return 1
         fi
-        
+
         # All tools available, proceed with coverage setup
         mkdir -p "$COVERAGE_DIR"
         mkdir -p "$COVERAGE_REPORT_DIR"
-        
+
         # Enable PostgreSQL coverage
         export PG_COVERAGE=1
         local coverage_data_dir="$COVERAGE_DIR/data"
         export COVERAGE_DATA_DIR="$coverage_data_dir"
         mkdir -p "$coverage_data_dir"
-        
+
         log_info "Code coverage enabled. Data will be saved to $coverage_data_dir"
         return 0
     fi
@@ -197,7 +197,7 @@ setup_coverage() {
 generate_coverage_report() {
     if [ "$COVERAGE_ENABLED" = "true" ]; then
         log_info "Generating code coverage report..."
-        
+
         # Check if coverage data exists
         if [ -d "$COVERAGE_DATA_DIR" ] && [ "$(ls -A "$COVERAGE_DATA_DIR" 2>/dev/null)" ]; then
             # Generate HTML report if genhtml is available
@@ -207,7 +207,7 @@ generate_coverage_report() {
             else
                 log_warning "genhtml not found - HTML coverage report not generated"
             fi
-            
+
             # Generate text report if lcov is available
             if command -v lcov >/dev/null 2>&1; then
                 lcov --summary "$COVERAGE_DATA_DIR"/*.info > "$COVERAGE_REPORT_DIR/summary.txt" 2>/dev/null || true
@@ -215,7 +215,7 @@ generate_coverage_report() {
             else
                 log_warning "lcov not found - coverage summary not generated"
             fi
-            
+
             # Show basic coverage stats
             echo ""
             echo "Code Coverage Summary:"
@@ -239,13 +239,13 @@ generate_coverage_report() {
 setup_environment() {
     # Create logs directory
     mkdir -p "$LOG_DIR"
-    
+
     # Setup coverage if enabled
     if ! setup_coverage; then
         # Coverage setup failed, disable it
         COVERAGE_ENABLED="false"
     fi
-    
+
     # Clean up any running processes
     pkill -f postgres 2>/dev/null || true
     sleep 2
@@ -264,11 +264,11 @@ get_system_info() {
     local arch=$(uname -m)
     local hostname=$(hostname)
     local user=$(whoami)
-    
+
     # Get PostgreSQL version and PATH
     local pg_version=$(psql --version 2>/dev/null | head -1 | sed 's/psql (PostgreSQL) //' | sed 's/ .*//')
     local pg_bin_path=$(which psql 2>/dev/null | sed 's|/psql$||')
-    
+
     # Get coverage tool versions
     local lcov_version=""
     local genhtml_version=""
@@ -282,44 +282,44 @@ get_system_info() {
     if command -v prove >/dev/null 2>&1; then
         prove_version=$(prove --version 2>/dev/null | head -1 | sed 's/.*version //' | sed 's/ .*//')
     fi
-    
+
     echo "╔══════════════════════════════════════════════════════════════╗"
     echo "║                    Spock Test Suite Runner                   ║"
     echo "╠══════════════════════════════════════════════════════════════╣"
     echo "║  Operating System: $os_name $os_version ($arch)"
     echo "║  Hostname: $hostname"
     echo "║  User: $user"
-    
+
     if [ -n "$pg_version" ]; then
         echo "║  PostgreSQL Version: $pg_version"
     else
         echo "║  PostgreSQL Version: Not found in PATH"
     fi
-    
+
     if [ -n "$pg_bin_path" ]; then
         echo "║  PostgreSQL Bin Path: $pg_bin_path"
     else
         echo "║  PostgreSQL Bin Path: Not found in PATH"
     fi
-    
+
     if [ -n "$lcov_version" ]; then
         echo "║  LCOV Version: $lcov_version"
     else
         echo "║  LCOV Version: Not available"
     fi
-    
+
     if [ -n "$genhtml_version" ]; then
         echo "║  GenHTML Version: $genhtml_version"
     else
         echo "║  GenHTML Version: Not available"
     fi
-    
+
     if [ -n "$prove_version" ]; then
         echo "║  Prove Version: $prove_version"
     else
         echo "║  Prove Version: Not available"
     fi
-    
+
     echo "║  Test Date: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "║  Log Directory: $LOG_DIR/"
     echo "║  Test Framework: Spock Testing Framework (TAP)"
@@ -333,31 +333,31 @@ get_system_info() {
 
 check_tap_dependencies() {
     local missing_deps=()
-    
+
     # Check for prove
     if ! command -v prove >/dev/null 2>&1; then
         missing_deps+=("prove")
     fi
-    
+
     # Check for Test::More
     if ! perl -MTest::More -e "1" 2>/dev/null; then
         missing_deps+=("Test::More")
     fi
-    
+
     # Check for Test::Harness
     if ! perl -MTest::Harness -e "1" 2>/dev/null; then
         missing_deps+=("Test::Harness")
     fi
-    
+
     # Check for TAP::Harness
     if ! perl -MTAP::Harness -e "1" 2>/dev/null; then
         missing_deps+=("TAP::Harness")
     fi
-    
+
     if [ ${#missing_deps[@]} -gt 0 ]; then
         log_warning "Missing TAP dependencies: ${missing_deps[*]}"
         log_info "Installing missing dependencies..."
-        
+
         for dep in "${missing_deps[@]}"; do
             if [ "$dep" = "prove" ]; then
                 log_info "prove is usually included with Perl. Check your Perl installation."
@@ -382,33 +382,42 @@ run_single_test() {
     local test_description="$3"
     local log_file="$LOG_DIR/${test_name}.log"       # executables log
     local tap_log_file="$LOG_DIR/${test_name}.tap"   # TAP/prove output log
-    
+
     local start_time=$(date +%s.%N)
-    
+
     echo "┌─ Running $test_name${TEST_EXTENSION}..."
-    
+
     # Run test with TAP output and capture timing
     local exit_code
-    
+
     # Set PERL5LIB to include the test directory so SpockTest.pm can be found
     export PERL5LIB="$TEST_DIR:${PERL5LIB:-}"
-    
+
     # Prepare per-test logs
     : > "$log_file"     # truncate executables log
     : > "$tap_log_file" # truncate tap log
     export SPOCKTEST_LOG_FILE="$log_file"
+
+	# Detect if injection points exists and may be used in tests
+	configure_options=$($PG_CONFIG --configure)
+	if echo "$configure_options" | grep -q -- 'enable-injection-points'; then
+		export enable_injection_points="yes"
+	else
+		export enable_injection_points="no"
+	fi
+
     # Run test using prove for better TAP handling
     echo "Running test..."
-    
+
     # Run test with prove and capture both output and exit code properly
     set +e  # Temporarily disable exit on error
     prove --timer --trap --verbose "$test_file" > "$tap_log_file" 2>&1
     exit_code=$?
     set -e  # Re-enable exit on error
-    
+
     local end_time=$(date +%s.%N)
     local elapsed_time=$(echo "$end_time - $start_time" | bc -l 2>/dev/null || echo "0")
-    
+
     # Parse TAP output from tap log and clean variables
     local plan_line total_tests passed_tests failed_tests skipped_tests
     plan_line=$(grep -E '^1\.\.[0-9]+' "$tap_log_file" | tail -1 2>/dev/null || true)
@@ -417,21 +426,21 @@ run_single_test() {
     passed_tests=$(grep -cE '^ok ' "$tap_log_file" 2>/dev/null || echo "0")
     failed_tests=$(grep -cE '^not ok ' "$tap_log_file" 2>/dev/null || echo "0")
     skipped_tests=$(grep -cE '^ok .*# SKIP' "$tap_log_file" 2>/dev/null || echo "0")
-    
+
     # If total_tests is still 0, try alternative parsing
     if [ "$total_tests" = "0" ] && [ -n "$plan_line" ]; then
         total_tests=$(echo "$plan_line" | grep -o '[0-9]\+' | tail -1)
         [ -z "$total_tests" ] && total_tests=0
     fi
-    
+
     # Clean variables of any whitespace
     total_tests=$(echo "$total_tests" | tr -d ' \n\r')
     passed_tests=$(echo "$passed_tests" | tr -d ' \n\r')
     failed_tests=$(echo "$failed_tests" | tr -d ' \n\r')
     skipped_tests=$(echo "$skipped_tests" | tr -d ' \n\r')
-    
 
-    
+
+
     # Determine test status
     local status
     if [ "$exit_code" -eq 0 ] && [ "$failed_tests" -eq 0 ]; then
@@ -441,7 +450,7 @@ run_single_test() {
     else
         status="FAILED"
     fi
-    
+
     # Store results
     eval "test_${test_id}_status=\"$status\""
     eval "test_${test_id}_passed=\"$passed_tests\""
@@ -450,12 +459,12 @@ run_single_test() {
     eval "test_${test_id}_elapsed=\"$elapsed_time\""
     eval "test_${test_id}_log_file=\"$log_file\""
     eval "test_${test_id}_total=\"$total_tests\""
-    
 
-    
+
+
     echo "└─ Log: $log_file (${elapsed_time}s)"
     echo ""
-    
+
     return $exit_code
 }
 
@@ -466,19 +475,19 @@ run_single_test() {
 run_test_suite() {
     local total_start_time=$(date +%s.%N)
     local exit_code=0
-    
+
     for i in "${!TEST_SUITE_IDS[@]}"; do
         local test_id="${TEST_SUITE_IDS[$i]}"
         local test_description="${TEST_SUITE_NAMES[$i]}"
         # numeric ID only for display
         local test_file="$TEST_DIR/${test_id}${TEST_EXTENSION}"
-        
+
         if [ -f "$test_file" ]; then
             set +e  # Don't exit on test failure
             run_single_test "$test_file" "$test_id" "$test_description"
             local test_exit_code=$?
             set -e
-            
+
             if [ $test_exit_code -ne 0 ]; then
                 log_error "Test $test_id failed with exit code $test_exit_code"
             fi
@@ -486,10 +495,10 @@ run_test_suite() {
             log_warning "Test file not found: $test_file"
         fi
     done
-    
+
     local total_end_time=$(date +%s.%N)
     local total_elapsed=$(echo "$total_end_time - $total_start_time" | bc -l 2>/dev/null || echo "0")
-    
+
     eval "total_elapsed_time=\"$total_elapsed\""
     return $exit_code
 }
@@ -500,17 +509,17 @@ run_test_suite() {
 
 generate_summary() {
     echo "Test Results Summary"
-    
+
     local total_tests=0
     local total_passed=0
     local total_failed=0
     local total_skipped=0
-    
+
     for i in "${!TEST_SUITE_IDS[@]}"; do
         local test_id="${TEST_SUITE_IDS[$i]}"
         local test_description="${TEST_SUITE_NAMES[$i]}"
         local var_name="test_${test_id}"
-        
+
         # Get test results with defaults
         local status passed failed skipped elapsed
         eval "status=\"\${${var_name}_status:-UNKNOWN}\""
@@ -518,21 +527,21 @@ generate_summary() {
         eval "failed=\"\${${var_name}_failed:-0}\""
         eval "skipped=\"\${${var_name}_skipped:-0}\""
         eval "elapsed=\"\${${var_name}_elapsed:-0}\""
-        
 
-        
+
+
         # Clean variables
         status=$(echo "$status" | tr -d '\n\r')
         passed=$(echo "$passed" | tr -d ' \n\r')
         failed=$(echo "$failed" | tr -d ' \n\r')
         skipped=$(echo "$skipped" | tr -d ' \n\r')
         elapsed=$(echo "$elapsed" | tr -d ' \n\r')
-        
+
         # Ensure numeric values
         passed=${passed:-0}
         failed=${failed:-0}
         skipped=${skipped:-0}
-        
+
         if [ -n "$status" ] && [ "$status" != "UNKNOWN" ]; then
                             case $status in
                 "PASSED")
@@ -550,15 +559,15 @@ generate_summary() {
                     total_failed=$((total_failed + failed))
                     ;;
             esac
-            
+
             if [ "$skipped" -gt 0 ]; then
                 total_skipped=$((total_skipped + skipped))
             fi
-            
+
             total_tests=$((total_tests + passed + failed + skipped))
         fi
     done
-    
+
     echo ""
     echo "Overall Statistics:"
     echo "  Total Tests: $total_tests"
@@ -585,26 +594,26 @@ main() {
 
     # Setup environment
     setup_environment
-    
+
     # Display system information
     get_system_info
-    
+
     # Check TAP dependencies
     check_tap_dependencies
-    
+
     # Discover test files
     discover_tests
-    
+
     # Run test suite
     run_test_suite
     exit_code=$?
-    
+
     # Generate test summary
     generate_summary
-    
+
     # Generate coverage report if enabled
     generate_coverage_report
-    
+
     return $exit_code
 }
 
