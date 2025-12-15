@@ -695,7 +695,7 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 	int			my_log_min_messages;
 
 	/*
-	 * This is cludge for Windows (Postgres des not define the GUC variables
+	 * This is kludge for Windows (Postgres does not define the GUC variables
 	 * as PGDDLIMPORT)
 	 */
 	my_client_min_messages = atoi(GetConfigOptionByName("client_min_messages",

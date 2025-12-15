@@ -430,7 +430,7 @@ spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 	if (oldif == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("interface \"%s\" for node node \"%s\" not found",
+				 errmsg("interface \"%s\" for node \"%s\" not found",
 						if_name, node_name)));
 
 	other_subs = get_node_subscriptions(node->id, true);

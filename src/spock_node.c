@@ -121,7 +121,7 @@ validate_subscription_name(const char *name)
 	if (strlen(name) == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_NAME),
-				 errmsg("subscription  name \"%s\" is too short", name)));
+				 errmsg("subscription name \"%s\" is too short", name)));
 
 	if (strlen(name) >= NAMEDATALEN)
 		ereport(ERROR,
@@ -748,7 +748,7 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 			return NULL;
 		}
 		else
-			elog(ERROR, "node interface \"%s\" not found for nod %u",
+			elog(ERROR, "node interface \"%s\" not found for node %u",
 				 name, nodeid);
 	}
 

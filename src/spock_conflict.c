@@ -78,7 +78,7 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 	cmp = timestamptz_cmp_internal(remote_ts, local_ts);
 
 	/*
-	 * The logic bellow assumes last update wins, we invert the logic by
+	 * The logic below assumes last update wins, we invert the logic by
 	 * inverting result of timestamp comparison if first update wins was
 	 * requested.
 	 */
@@ -134,14 +134,14 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 
 		if (loc_node->tiebreaker < rmt_node->tiebreaker)
 		{
-			/* TODO: Need diagnostig logging for ACE here */
+			/* TODO: Need diagnostic logging for ACE here */
 			elog(LOG, "CONFLICT: current node=%d wins over %d by tiebreaker", loc_node->id, rmt_node->id);
 			*resolution = SpockResolution_KeepLocal;
 			return false;
 		}
 		else
 		{
-			/* TODO: Need diagnostig logging for ACE here */
+			/* TODO: Need diagnostic logging for ACE here */
 			elog(LOG, "CONFLICT: remote  node=%d wins over %d by tiebreaker", rmt_node->id, loc_node->id);
 			*resolution = SpockResolution_ApplyRemote;
 			return true;

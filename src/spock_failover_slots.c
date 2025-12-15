@@ -523,7 +523,7 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 
 	/*
 	 * Append the dbname of the remote slot. We don't use a generic db like
-	 * postgres here because plugin callback bellow might want to invoke
+	 * postgres here because plugin callback below might want to invoke
 	 * extension functions.
 	 */
 	make_sync_failover_slots_dsn(&connstr, remote_slot->database);

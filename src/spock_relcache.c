@@ -294,7 +294,7 @@ spock_relcache_invalidate_callback(Datum arg, Oid reloid)
 
 		hash_seq_init(&status, SpockRelationHash);
 
-		/* TODO, use inverse lookup hastable */
+		/* TODO, use inverse lookup hashtable */
 		while ((entry = (SpockRelation *) hash_seq_search(&status)) != NULL)
 		{
 			if (entry->reloid == reloid)
