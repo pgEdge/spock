@@ -270,7 +270,7 @@ spock_drop_remote_slot(PGconn *conn, const char *slot_name)
 		return;
 	}
 
-	/* Slot found, validate that it's BDR slot */
+	/* Slot found, validate that it's spock slot */
 	if (PQgetisnull(res, 0, 0))
 		elog(ERROR, "Unexpectedly null field %s", PQfname(res, 0));
 

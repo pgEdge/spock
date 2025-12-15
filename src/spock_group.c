@@ -86,7 +86,7 @@ spock_group_shmem_request(void)
 #endif
 
 	/*
-	 * This is cludge for Windows (Postgres does not define the GUC variable
+	 * This is kludge for Windows (Postgres does not define the GUC variable
 	 * as PGDDLIMPORT)
 	 */
 	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,

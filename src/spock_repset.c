@@ -1408,7 +1408,7 @@ replication_set_remove_seq(Oid setid, Oid seqoid, bool from_drop)
 	tuple = systable_getnext(scan);
 
 	/*
-	 * Remove the tuple if found, if not found report error uless this
+	 * Remove the tuple if found, if not found report error unless this
 	 * function was called as result of table drop.
 	 */
 	if (HeapTupleIsValid(tuple))

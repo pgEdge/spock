@@ -1363,7 +1363,7 @@ spock_output_plugin_shmem_request(void)
 		prev_shmem_request_hook();
 
 	/*
-	 * This is cludge for Windows (Postgres des not define the GUC variable as
+	 * This is kludge for Windows (Postgres does not define the GUC variable as
 	 * PGDDLIMPORT)
 	 */
 	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,

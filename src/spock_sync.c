@@ -305,14 +305,14 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
 	cmdargv[cmdargc++] = NULL;
 
 	/*
-	 * TODO: misleading error message takes place here if an error is
-	 * interrupted execution.
+	 * TODO: misleading error message can occur if an error interrupts
+	 * execution.
 	 */
 	if (exec_cmd(pg_restore, cmdargv) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not execute pg_restore (\"%s\"): %m", pg_restore),
-				 errhint("explore error log to realise the origin of the issue")));
+				 errhint("check the error log to determine the cause of the issue")));
 }
 
 /*
@@ -351,8 +351,8 @@ retry:
 		const char *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
 
 		/*
-		 * If our slot already exist but is not used, it's leftover from
-		 * previous unsucessful attempt to synchronize table, try dropping it
+		 * If our slot already exists but is not used, it's leftover from
+		 * previous unsuccessful attempt to synchronize table, try dropping it
 		 * and recreating.
 		 */
 		if (sqlstate &&
@@ -467,7 +467,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			sap.remote_insert_lsn = str_to_lsn(remote_insert_lsn);
 
 			/*
-			 * We don't actually received a single WAL record - just assume
+			 * We don't actually receive a single WAL record - just assume
 			 * we've got the last commit only. Don't set it to the Invalid
 			 * value in case someone uses tracking data in state monitoring
 			 * scripts.
@@ -575,7 +575,7 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 
 	/*
 	 * Set correct origin if target db supports it. We must do this before
-	 * starting the transaction otherwise the status code bellow would get
+	 * starting the transaction otherwise the status code below would get
 	 * much more complicated.
 	 */
 	if (PQserverVersion(conn) >= 90500)
