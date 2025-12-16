@@ -1,3 +1,12 @@
+/*-------------------------------------------------------------------------
+ *
+ * sql.c
+ * 		spockctrl SQL execution utilities
+ *
+ * Copyright (c) 2022-2025, pgEdge, Inc.
+ *
+ *-------------------------------------------------------------------------
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

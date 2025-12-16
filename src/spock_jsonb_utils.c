@@ -1,4 +1,12 @@
-
+/*-------------------------------------------------------------------------
+ *
+ * spock_jsonb_utils.c
+ * 		spock JSONB utility functions
+ *
+ * Copyright (c) 2022-2025, pgEdge, Inc.
+ *
+ *-------------------------------------------------------------------------
+ */
 #include "postgres.h"
 
 #include "miscadmin.h"
