@@ -602,7 +602,8 @@ composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 		JsonTypeCategory tcategory;
 		Oid			outfuncoid;
 
-		if (TupleDescAttr(tupdesc, i)->attisdropped)
+		if (TupleDescAttr(tupdesc, i)->attisdropped ||
+			TupleDescAttr(tupdesc, i)->attgenerated)
 			continue;
 
 		if (needsep)
@@ -661,7 +662,7 @@ json_write_tuple(StringInfo out, Relation rel, HeapTuple tuple,
 		Oid			outfuncoid;
 
 		/* skip dropped columns */
-		if (att->attisdropped)
+		if (att->attisdropped || att->attgenerated)
 			continue;
 		if (att_list &&
 			!bms_is_member(att->attnum - FirstLowInvalidHeapAttributeNumber,

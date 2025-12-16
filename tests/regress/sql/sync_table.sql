@@ -64,8 +64,32 @@ SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
 SELECT spock.table_wait_for_sync('test_subscription', 'test_sync');
 SELECT sum(x), count(*) FROM test_sync;
 
+-- Generated columns
 \c :provider_dsn
+SELECT spock.replicate_ddl('
+CREATE TABLE g1(col1 INT PRIMARY KEY, col2 INT NOT NULL, col3 int,
+ col4 int generated always as (col3 + 1) stored);
+');
+INSERT INTO g1 (col1, col2, col3) VALUES (1, 10, 100);
+SELECT * FROM spock.repset_add_table('default', 'g1');
+INSERT INTO g1 (col1, col2, col3) VALUES (2, 20, 200);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+SELECT spock.sub_resync_table('test_subscription', 'g1', true);
+SELECT spock.table_wait_for_sync('test_subscription', 'g1');
+SELECT * FROM g1;
+
+-- Test UPDATE and DELETE with generated columns
+\c :provider_dsn
+UPDATE g1 SET col3 = 150 WHERE col1 = 1;
+DELETE FROM g1 WHERE col1 = 2;
+INSERT INTO g1 (col1, col2, col3) VALUES (3, 30, 300);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+SELECT * FROM g1 ORDER BY col1;
 
 -- Cleanup
-SELECT spock.repset_remove_table('default', 'test_sync', true);
-DROP TABLE test_sync;
+\c :provider_dsn
+DROP TABLE test_sync, g1 CASCADE;

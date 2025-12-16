@@ -556,7 +556,8 @@ fill_missing_defaults(SpockRelation *rel, EState *estate,
 	{
 		Expr	   *defexpr;
 
-		if (TupleDescAttr(desc, attnum)->attisdropped)
+		if (TupleDescAttr(desc, attnum)->attisdropped ||
+			TupleDescAttr(desc, attnum)->attgenerated)
 			continue;
 
 		if (physatt_in_attmap(rel, attnum))
