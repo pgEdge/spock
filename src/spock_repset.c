@@ -1572,7 +1572,15 @@ get_att_num_by_name(TupleDesc desc, const char *attname)
 			continue;
 
 		if (namestrcmp(&(TupleDescAttr(desc, i)->attname), attname) == 0)
-			return TupleDescAttr(desc, i)->attnum;
+		{
+			if (TupleDescAttr(desc, i)->attgenerated)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("column %s cannot be declared as generated",
+								attname)));
+			else
+				return TupleDescAttr(desc, i)->attnum;
+		}
 	}
 
 	return FirstLowInvalidHeapAttributeNumber;

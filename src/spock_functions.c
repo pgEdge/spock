@@ -2420,8 +2420,8 @@ spock_show_repset_table_info(PG_FUNCTION_ARGS)
 	{
 		Form_pg_attribute att = TupleDescAttr(reldesc, i);
 
-		/* Skip dropped columns. */
-		if (att->attisdropped)
+		/* Skip dropped and generated columns. */
+		if (att->attisdropped || att->attgenerated)
 			continue;
 
 		/* Skip filtered columns if any. */

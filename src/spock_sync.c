@@ -668,8 +668,9 @@ make_copy_attnamelist(SpockRelation *rel)
 	{
 		int			remoteattnum = physatt_in_attmap(rel, attnum);
 
-		/* Skip dropped attributes. */
-		if (TupleDescAttr(desc, attnum)->attisdropped)
+		/* Skip dropped and generated attributes. */
+		if (TupleDescAttr(desc, attnum)->attisdropped ||
+			TupleDescAttr(desc, attnum)->attgenerated)
 			continue;
 
 		if (remoteattnum < 0)

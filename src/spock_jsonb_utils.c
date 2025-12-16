@@ -149,7 +149,7 @@ spock_tuple_to_json_cstring(SpockTupleData *tuple, TupleDesc tupleDesc)
 		 * don't print dropped columns, we can't be sure everything is
 		 * available for them
 		 */
-		if (attr->attisdropped)
+		if (attr->attisdropped || attr->attgenerated)
 			continue;
 
 		/*
@@ -224,7 +224,7 @@ heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupleDesc)
 		 * don't print dropped columns, we can't be sure everything is
 		 * available for them
 		 */
-		if (attr->attisdropped)
+		if (attr->attisdropped || attr->attgenerated)
 			continue;
 
 		/*
