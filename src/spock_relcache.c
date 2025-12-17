@@ -85,10 +85,9 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	/* Need to update the local cache? */
 	if (!OidIsValid(entry->reloid))
 	{
-		RangeVar   *rv = makeNode(RangeVar);
-		int			i;
-		TupleDesc	desc;
-		ResultRelInfo *relinfo;
+		RangeVar	   *rv = makeNode(RangeVar);
+		int				i;
+		ResultRelInfo  *relinfo;
 
 		rv->schemaname = (char *) entry->nspname;
 		rv->relname = (char *) entry->relname;
@@ -99,8 +98,6 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 		for (i = 0; i < entry->natts; i++)
 		{
-			AttributeOpts	   *aopt;
-			Form_pg_attribute	att;
 			ObjectAddress		object;
 			char			   *seclabel;
 			TupleDesc			desc;
