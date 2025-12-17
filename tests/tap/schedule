@@ -15,7 +15,6 @@ test: 004_non_default_repset
 test: 008_rmgr
 test: 009_zodan_add_remove_nodes
 test: 010_zodan_add_remove_python
-test: 013_delta_apply
 
 # Tests, consuming too much time to be launched on each check:
 #test: 011_zodan_sync_third
@@ -31,7 +30,7 @@ test: 013_delta_apply
 #        break
 #    fi
 # done
-
+test: 012_delta_apply
 # Exception handling tests
 test: 013_exception_handling
 # test: 014_rolling_upgrade
