@@ -45,13 +45,27 @@ SELECT count(*) FROM spock.tables where nspname = 'hollywood' AND set_name IS NO
 SELECT count(*) FROM spock.tables where relname = 'test1' AND set_name IS NOT NULL;
 SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3') AND set_name IS NOT NULL;
 
+\c :provider_dsn
+
 -- auto-ddl and transaction state: check that auto-ddl initiates a new
 -- transaction if it is not inside one.
 CREATE TABLE test_380 (x serial PRIMARY KEY, y integer);
 CREATE INDEX test_380_y_idx ON test_380 (y);
 ALTER TABLE test_380 CLUSTER ON test_380_y_idx;
-CLUSTER; -- Should call utility hook outside of transaction state
+CLUSTER; -- Do not replicate
+CLUSTER test_380 USING test_380_y_idx; -- Replicate
 DROP TABLE test_380 CASCADE;
+
+-- CLUSTER on partitioned table can't be performed inside a transaction.
+-- Check this special use case.
+CREATE TABLE test_383 (a int) PARTITION BY RANGE (a);
+CREATE TABLE test_383_1 PARTITION OF clstrpart FOR VALUES FROM (1) TO (10);
+CREATE TABLE test_383_2 PARTITION OF clstrpart1 FOR VALUES FROM (1) TO (5);
+CREATE INDEX test_383_y_idx ON test_383 (a);
+CLUSTER test_383 USING test_383_y_idx; -- Should not be replicated
+DROP TABLE test_383 CASCADE;
+
+\c :subscriber_dsn
 
 -- Reset the configuration to the default value
 \c :provider_dsn

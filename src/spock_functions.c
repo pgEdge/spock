@@ -2151,9 +2151,32 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		(void) get_replication_set_by_name(node->node->id, setname, false);
 	}
 
-	/* not all objects require search path setting. */
+	/*
+	 * Filter local commands and decide on search path setting.
+	 *
+	 * We label command as 'local' sometimes to state the fact that the protocol
+	 * still not support its replication.
+	 */
 	switch (nodeTag(stmt))
 	{
+		/* Purely local commands */
+		case T_FetchStmt:
+		case T_NotifyStmt:
+		case T_ListenStmt:
+		case T_UnlistenStmt:
+			goto skip_ddl;
+			break;
+
+		/*
+		 * We don't want to replicate them because it means to be out of
+		 * transaction
+		 */
+		case T_CreateTableSpaceStmt:
+		case T_DropTableSpaceStmt:
+		case T_VacuumStmt:
+			goto skip_ddl;
+			break;
+
 		case T_CreatedbStmt:	/* DATABASE */
 		case T_DropdbStmt:
 		case T_AlterDatabaseStmt:
@@ -2210,10 +2233,37 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				goto skip_ddl;
 			break;
 
-		case T_CreateTableSpaceStmt:	/* TABLESPACE */
-		case T_DropTableSpaceStmt:
+		case T_ClusterStmt:
+		{
+			ClusterStmt	   *cstmt = (ClusterStmt *) stmt;
+			bool			skip_cluster = true;
+
+			if (cstmt->relation != NULL)
+			{
+				Relation	rel;
+				Oid			tableOid;
+
+				/*
+				 * Single relation case may be allowed if it is not a
+				 * partitioned table. Don't care about errors - if we replicate
+				 * this command it means everything must be ok, or we are in
+				 * trouble and deserve an ERROR.
+				 */
+				tableOid = RangeVarGetRelidExtended(cstmt->relation,
+												AccessShareLock, 0, NULL, NULL);
+				rel = table_open(tableOid, NoLock);
+				skip_cluster = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
+				table_close(rel, AccessShareLock);
+			}
+
+			if (skip_cluster)
+				goto skip_ddl;
+
+			add_search_path = false;
+		}
+			break;
+
 		case T_AlterTableSpaceOptionsStmt:
-		case T_ClusterStmt:		/* CLUSTER */
 			add_search_path = false;
 			break;
 
@@ -2236,6 +2286,24 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		case T_IndexStmt:
 			if (castNode(IndexStmt, stmt)->concurrent)
 				goto skip_ddl;
+			break;
+		case T_ReindexStmt:
+		{
+			ReindexStmt	   *rstmt = (ReindexStmt *) stmt;
+			bool			concurrently = false;
+
+			foreach(lc, rstmt->params)
+			{
+				DefElem    *opt = (DefElem *) lfirst(lc);
+
+				if (strcmp(opt->defname, "concurrently") != 0)
+					continue;
+				concurrently = defGetBoolean(opt);
+			}
+
+			if (concurrently)
+				goto skip_ddl;
+		}
 			break;
 
 		case T_DropStmt:

@@ -69,6 +69,7 @@ SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3')
      2
 (1 row)
 
+\c :provider_dsn
 -- auto-ddl and transaction state: check that auto-ddl initiates a new
 -- transaction if it is not inside one.
 CREATE TABLE test_380 (x serial PRIMARY KEY, y integer);
@@ -77,11 +78,29 @@ CREATE INDEX test_380_y_idx ON test_380 (y);
 INFO:  DDL statement replicated.
 ALTER TABLE test_380 CLUSTER ON test_380_y_idx;
 INFO:  DDL statement replicated.
-CLUSTER; -- Should call utility hook outside of transaction state
+CLUSTER; -- Do not replicate
+WARNING:  This DDL statement will not be replicated.
+CLUSTER test_380 USING test_380_y_idx; -- Replicate
 INFO:  DDL statement replicated.
 DROP TABLE test_380 CASCADE;
 NOTICE:  drop cascades to table test_380 membership in replication set default
 INFO:  DDL statement replicated.
+-- CLUSTER on partitioned table can't be performed inside a transaction.
+-- Check this special use case.
+CREATE TABLE test_383 (a int) PARTITION BY RANGE (a);
+INFO:  DDL statement replicated.
+CREATE TABLE test_383_1 PARTITION OF clstrpart FOR VALUES FROM (1) TO (10);
+ERROR:  relation "clstrpart" does not exist
+CREATE TABLE test_383_2 PARTITION OF clstrpart1 FOR VALUES FROM (1) TO (5);
+ERROR:  relation "clstrpart1" does not exist
+CREATE INDEX test_383_y_idx ON test_383 (a);
+INFO:  DDL statement replicated.
+CLUSTER test_383 USING test_383_y_idx; -- Should not be replicated
+WARNING:  This DDL statement will not be replicated.
+DROP TABLE test_383 CASCADE;
+NOTICE:  drop cascades to table test_383 membership in replication set default_insert_only
+INFO:  DDL statement replicated.
+\c :subscriber_dsn
 -- Reset the configuration to the default value
 \c :provider_dsn
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';
