@@ -108,6 +108,8 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 	char	   *str_remote_old_tup;
 	char	   *str_remote_new_tup;
 
+	Assert(IsTransactionState());
+
 	/* Get the tuple descriptors */
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_EXCEPTION_LOG, -1);
 	rel = table_openrv(rv, RowExclusiveLock);

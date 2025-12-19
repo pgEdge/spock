@@ -83,8 +83,11 @@ queue_message(List *replication_sets, Oid roleoid, char message_type,
 	Datum		values[Natts_queue];
 	bool		nulls[Natts_queue];
 	const char *role;
-	TimestampTz ts = GetCurrentTimestamp();
+	TimestampTz ts;
 
+	Assert(IsTransactionState());
+
+	ts = GetCurrentTimestamp();
 	role = GetUserNameFromId(roleoid, false);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_QUEUE, -1);
@@ -131,6 +134,8 @@ queued_message_from_tuple(HeapTuple queue_tup)
 	bool		isnull;
 	Datum		d;
 	QueuedMessage *res;
+
+	Assert(IsTransactionState());
 
 	/* Open relation to get the tuple descriptor. */
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_QUEUE, -1);

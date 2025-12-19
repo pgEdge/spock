@@ -1571,6 +1571,8 @@ create_local_sync_status(SpockSyncStatus *sync)
 	Datum		values[Natts_local_sync_state];
 	bool		nulls[Natts_local_sync_state];
 
+	Assert(IsTransactionState());
+
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
@@ -1613,6 +1615,8 @@ drop_subscription_sync_status(Oid subid)
 	SysScanDesc scan;
 	HeapTuple	tuple;
 	ScanKeyData key[1];
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1680,6 +1684,8 @@ get_subscription_sync_status(Oid subid, bool missing_ok)
 	HeapTuple	tuple;
 	ScanKeyData key[1];
 	TupleDesc	tupDesc;
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1782,6 +1788,8 @@ drop_table_sync_status(const char *nspname, const char *relname)
 	HeapTuple	tuple;
 	ScanKeyData key[2];
 
+	Assert(IsTransactionState());
+
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 
@@ -1815,6 +1823,8 @@ drop_table_sync_status_for_sub(Oid subid, const char *nspname,
 	SysScanDesc scan;
 	HeapTuple	tuple;
 	ScanKeyData key[3];
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1859,6 +1869,8 @@ get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 	Oid			idxoid = InvalidOid;
 	List	   *indexes;
 	ListCell   *l;
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1935,6 +1947,8 @@ get_unsynced_tables(Oid subid)
 	List	   *res = NIL;
 	TupleDesc	tupDesc;
 
+	Assert(IsTransactionState());
+
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
@@ -1975,6 +1989,8 @@ get_subscription_tables(Oid subid)
 	ScanKeyData key[1];
 	List	   *res = NIL;
 	TupleDesc	tupDesc;
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
