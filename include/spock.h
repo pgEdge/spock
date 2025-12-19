@@ -52,6 +52,8 @@ extern int	restart_delay_default;
 extern int	restart_delay_on_exception;
 extern int	spock_replay_queue_size;	/* Deprecated - no longer used */
 extern bool check_all_uc_indexes;
+extern bool	spock_enable_quiet_mode;
+
 extern char *shorten_hash(const char *str, int maxlen);
 
 extern List *textarray_to_list(ArrayType *textarray);
