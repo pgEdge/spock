@@ -56,32 +56,39 @@ spock_autoddl_process(PlannedStmt *pstmt,
 					  ProcessUtilityContext context,
 					  NodeTag toplevel_stmt)
 {
-	Oid			roleoid = InvalidOid;
 	Oid			save_userid = 0;
 	int			save_sec_context = 0;
 	const char *curr_qry;
 	int			loc = pstmt->stmt_location;
 	int			len = pstmt->stmt_len;
 	Node	   *parsetree = pstmt->utilityStmt;
+	bool		needTx = false;
+	bool		needSnapshot = false;
 
+	if (!autoddl_can_proceed(parsetree, context, toplevel_stmt))
+	{
+		/* Fast path */
+		return;
+	}
 
-	roleoid = GetUserId();
+	needTx = !IsTransactionState();
+	if (needTx)
+		StartTransactionCommand();
+	needSnapshot = !HaveRegisteredOrActiveSnapshot();
+	if (needSnapshot)
+		PushActiveSnapshot(GetTransactionSnapshot());
 
 	/*
-	 * Check that we have a local node. We need to elevate access because this
-	 * is called as an executor Utility hook under the session user, who not
-	 * necessarily has access permission to Spock extension objects.
+	 * Elevate access rights: Utility hook is called under the session user, who
+	 * does not necessarily have access permission to Spock extension objects.
 	 */
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
 						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 
-	if (!autoddl_can_proceed(parsetree, context, toplevel_stmt))
-	{
-		/* Restore previous session privileges */
-		SetUserIdAndSecContext(save_userid, save_sec_context);
-		return;
-	}
+	/* Not a Spock node, do nothing */
+	if (get_local_node(false, true) == NULL)
+		goto end;
 
 	/* Replicate DDL statement */
 	queryString = CleanQuerytext(queryString, &loc, &len);
@@ -89,12 +96,19 @@ spock_autoddl_process(PlannedStmt *pstmt,
 
 	spock_auto_replicate_ddl(curr_qry,
 							 list_make1(DEFAULT_INSONLY_REPSET_NAME),
-							 roleoid,
+							 GetUserId(),
 							 parsetree);
 	add_ddl_to_repset(parsetree);
 
+end:
 	/* Restore previous session privileges */
 	SetUserIdAndSecContext(save_userid, save_sec_context);
+
+	/* Clean up transaction and snapshot if we started them */
+	if (needSnapshot)
+		PopActiveSnapshot();
+	if (needTx)
+		CommitTransactionCommand();
 }
 
 /*
@@ -300,6 +314,11 @@ remove_table_from_repsets(Oid nodeid, Oid reloid, bool only_for_update)
 	}
 }
 
+/*
+ * Quick precheck if auto-ddl may proceed further.
+ *
+ * Must be trivial and does not call anything that may need a transaction.
+ */
 static bool
 autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
 					NodeTag toplevel_stmt)
