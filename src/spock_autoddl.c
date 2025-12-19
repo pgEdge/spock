@@ -339,10 +339,6 @@ autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
 	if (!spock_enable_ddl_replication)
 		return false;
 
-	/* Not a Spock node, do nothing */
-	if (get_local_node(false, true) == NULL)
-		return false;
-
 	/* If we are already processing a queued DDL, do nothing */
 	if (in_spock_queue_ddl_command || in_spock_replicate_ddl_command)
 		return false;
