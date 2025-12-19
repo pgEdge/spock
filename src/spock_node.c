@@ -369,6 +369,8 @@ get_node_by_name(const char *name, bool missing_ok)
 	HeapTuple	tuple;
 	ScanKeyData key[1];
 
+	Assert(IsTransactionState());
+
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 
@@ -414,6 +416,8 @@ create_local_node(Oid nodeid, Oid ifid)
 	Datum		values[Natts_local_node];
 	bool		nulls[Natts_local_node];
 
+	Assert(IsTransactionState());
+
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_NODE, -1);
 	rel = table_openrv(rv, AccessExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
@@ -450,6 +454,8 @@ drop_local_node(void)
 	Relation	rel;
 	SysScanDesc scan;
 	HeapTuple	tuple;
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_NODE, -1);
 	rel = table_openrv(rv, AccessExclusiveLock);
@@ -489,6 +495,8 @@ get_local_node(bool for_update, bool missing_ok)
 	Oid			nodeifid;
 	bool		isnull;
 	SpockLocalNode *res;
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_NODE, -1);
 	rel = table_openrv_extended(rv, for_update ?
@@ -679,6 +687,8 @@ get_node_interface(Oid ifid)
 	NodeInterfaceTuple *iftup;
 	SpockInterface *nodeif;
 
+	Assert(IsTransactionState());
+
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 
@@ -721,6 +731,8 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 	ScanKeyData key[2];
 	NodeInterfaceTuple *iftup;
 	SpockInterface *nodeif;
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -788,6 +800,8 @@ generate_subscription_id()
 	RangeVar   *rv;
 	Relation	rel;
 	int64		val;
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION_ID, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -901,6 +915,8 @@ alter_subscription(SpockSubscription *sub)
 	bool		replaces[Natts_subscription];
 	NameData	sub_slot_name;
 
+	Assert(IsTransactionState());
+
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
@@ -986,6 +1002,8 @@ drop_subscription(Oid subid)
 	SysScanDesc scan;
 	HeapTuple	tuple;
 	ScanKeyData key[1];
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1108,6 +1126,8 @@ get_subscription(Oid subid)
 	HeapTuple	tuple;
 	TupleDesc	desc;
 	ScanKeyData key[1];
+
+	Assert(IsTransactionState());
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
