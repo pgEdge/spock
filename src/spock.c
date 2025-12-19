@@ -133,6 +133,7 @@ int			restart_delay_default;
 int			restart_delay_on_exception;
 int			spock_replay_queue_size;	/* Deprecated - no longer used */
 bool		check_all_uc_indexes = false;
+bool		spock_enable_quiet_mode = false;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
 static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
@@ -993,6 +994,17 @@ _PG_init(void)
 							 "Log conflict resolutions to spock." CATALOG_LOGTABLE " table.",
 							 NULL,
 							 &spock_save_resolutions,
+							 false, PGC_SIGHUP,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.enable_quiet_mode",
+							 "Reduce message verbosity for cleaner output",
+							 "When enabled, downgrades DDL replication INFO/WARNING messages to LOG level "
+							 "and suppresses dependent object reporting in DROP CASCADE operations. "
+							 "Useful for regression tests and production environments where less verbose "
+							 "output is desired.",
+							 &spock_enable_quiet_mode,
 							 false, PGC_SIGHUP,
 							 0,
 							 NULL, NULL, NULL);
