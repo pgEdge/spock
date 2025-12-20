@@ -2155,7 +2155,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	 * Filter local commands and decide on search path setting.
 	 *
 	 * We label command as 'local' sometimes to state the fact that the protocol
-	 * still not support its replication.
+	 * does not support its replication.
 	 */
 	switch (nodeTag(stmt))
 	{
