@@ -26,7 +26,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
-
+#include "utils/snapmgr.h"
 #include "spock_autoddl.h"
 #include "spock_executor.h"
 #include "spock_queue.h"
