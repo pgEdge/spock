@@ -2168,7 +2168,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 		/*
-		 * We don't want to replicate them because it means to be out of
+		 * We don't want to replicate statements that run outside of transactions
 		 * transaction
 		 */
 		case T_CreateTableSpaceStmt:
