@@ -355,9 +355,13 @@ CREATE FUNCTION spock.node_info(OUT node_id oid, OUT node_name text,
 RETURNS record
 STABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME', 'spock_node_info';
 
-CREATE FUNCTION spock.spock_gen_slot_name(name, name, name)
-RETURNS name
-IMMUTABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME';
+CREATE FUNCTION spock.spock_gen_slot_name(
+  dbname        name,
+  provider_node name,
+  subscription  name
+) RETURNS name
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 CREATE FUNCTION spock_version() RETURNS text
 LANGUAGE c AS 'MODULE_PATHNAME';
@@ -538,16 +542,14 @@ CREATE VIEW spock.lag_tracker AS
 
 CREATE FUNCTION spock.md5_agg_sfunc(text, anyelement)
 	RETURNS text
-	LANGUAGE sql
-AS
-$$
-	SELECT md5($1 || $2::text)
-$$;
+AS $$ SELECT md5($1 || $2::text) $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE;
 CREATE  AGGREGATE spock.md5_agg (ORDER BY anyelement)
 (
 	STYPE = text,
 	SFUNC = spock.md5_agg_sfunc,
-	INITCOND = ''
+	INITCOND = '',
+	PARALLEL = SAFE
 );
 
 -- ----------------------------------------------------------------------
