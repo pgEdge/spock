@@ -1088,9 +1088,18 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	SpockRepSet *repset = get_replication_set(setid);
 	ObjectAddress referenced;
 	ObjectAddress myself;
+	LOCKTAG			tag;
 
 	/* Open the relation. */
-	targetrel = table_open(reloid, ShareRowExclusiveLock);
+	SET_LOCKTAG_RELATION(tag, MyDatabaseId, reloid);
+#if PG_VERSION_NUM < 170000
+	if (!LockOrStrongerHeldByMe(&tag, AccessShareLock))
+#else
+	if (!LockHeldByMe(&tag, AccessShareLock, true))
+#endif
+		targetrel = table_open(reloid, AccessShareLock);
+	else
+		targetrel = table_open(reloid, NoLock);
 
 	/* UNLOGGED and TEMP relations cannot be part of replication set. */
 	if (!RelationNeedsWAL(targetrel))
@@ -1184,9 +1193,18 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 	SpockRepSet *repset = get_replication_set(setid);
 	ObjectAddress referenced;
 	ObjectAddress myself;
+	LOCKTAG			tag;
 
 	/* Open the relation. */
-	targetrel = table_open(seqoid, ShareRowExclusiveLock);
+	SET_LOCKTAG_RELATION(tag, MyDatabaseId, seqoid);
+#if PG_VERSION_NUM < 170000
+	if (!LockOrStrongerHeldByMe(&tag, AccessShareLock))
+#else
+	if (!LockHeldByMe(&tag, AccessShareLock, true))
+#endif
+		targetrel = table_open(seqoid, AccessShareLock);
+	else
+		targetrel = table_open(seqoid, NoLock);
 
 	/* UNLOGGED and TEMP relations cannot be part of replication set. */
 	if (!RelationNeedsWAL(targetrel))
