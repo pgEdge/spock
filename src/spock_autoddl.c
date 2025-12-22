@@ -121,13 +121,14 @@ end:
 void
 add_ddl_to_repset(Node *parsetree)
 {
-	Relation	targetrel;
-	SpockRepSet *repset;
+	Relation		targetrel;
+	SpockRepSet	   *repset;
 	SpockLocalNode *node;
-	Oid			reloid = InvalidOid;
-	RangeVar   *relation = NULL;
-	List	   *reloids = NIL;
-	ListCell   *lc;
+	Oid				reloid = InvalidOid;
+	RangeVar	   *relation = NULL;
+	List		   *reloids = NIL;
+	ListCell	   *lc;
+	bool			missing_ok = false;
 
 	/* no need to proceed if spock_include_ddl_repset is off */
 	if (!spock_include_ddl_repset)
@@ -164,6 +165,8 @@ add_ddl_to_repset(Node *parsetree)
 		{
 			return;
 		}
+
+		missing_ok = ((AlterTableStmt *) parsetree)->missing_ok;
 	}
 	else if (nodeTag(parsetree) == T_CreateStmt)
 		relation = castNode(CreateStmt, parsetree)->relation;
@@ -217,7 +220,15 @@ add_ddl_to_repset(Node *parsetree)
 	if (OidIsValid(reloid))
 		targetrel = RelationIdGetRelation(reloid);
 	else
-		targetrel = table_openrv(relation, AccessShareLock);
+	{
+		targetrel = table_openrv_extended(relation, AccessShareLock, missing_ok);
+		if (targetrel == NULL)
+		/*
+		 * If relation doesn't exist - quietly exit. It is assumed that the core
+		 * already produced an INFO message.
+		 */
+			return;
+	}
 
 	reloid = RelationGetRelid(targetrel);
 
