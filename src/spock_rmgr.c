@@ -84,14 +84,18 @@ spock_rmgr_redo(XLogReaderState *record)
 	{
 		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				SpockApplyProgress *sap;
+				xl_progress		   *rec;
 
-				sap = (SpockApplyProgress *) XLogRecGetData(record);
+				rec = (xl_progress *) XLogRecGetData(record);
 
-				/* LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE); */
-
-				spock_group_progress_update(sap);
-				/* LWLockRelease(SpockCtx->lock); */
+				/*
+				 * According to the common rule (c6d76d7) we have to acquire
+				 * the lock, guarding our HTAB. It will be done inside the
+				 * update routine.
+				 */
+				(void) spock_group_progress_update(rec->dbid, rec->node_id,
+												   rec->remote_node_id,
+												   &rec->sap);
 			}
 			break;
 
@@ -112,13 +116,16 @@ spock_rmgr_desc(StringInfo buf, XLogReaderState *record)
 	{
 		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				SpockApplyProgress *sap;
+				xl_progress	*rec;
 
-				sap = (SpockApplyProgress *) XLogRecGetData(record);
-				appendStringInfo(buf, "spock apply progress for db %u, node %u, remote_node %u",
-								 sap->key.dbid,
-								 sap->key.node_id,
-								 sap->key.remote_node_id);
+				rec = (xl_progress *) XLogRecGetData(record);
+				appendStringInfo(buf, "spock apply progress for dbid %u, node_id %u, remote_node_id %u",
+								 rec->dbid,
+								 rec->node_id,
+								 rec->remote_node_id);
+				/*
+				 * TODO: print progress values too and mull over the test
+				 */
 			}
 			break;
 		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:
@@ -178,26 +185,21 @@ spock_rmgr_cleanup(void)
  * Returns: the LSN of the inserted record.
  */
 XLogRecPtr
-spock_apply_progress_add_to_wal(const SpockApplyProgress *sap)
+spock_apply_progress_add_to_wal(Oid dbId, Oid nodeId, Oid remoteNodeId,
+								const SpockApplyProgress *sap)
 {
+	xl_progress rec;
 	XLogRecPtr	lsn;
 
 	Assert(sap != NULL);
 
+	rec.dbid = dbId;
+	rec.node_id = nodeId;
+	rec.remote_node_id = remoteNodeId;
+
 	XLogBeginInsert();
-	XLogRegisterData((char *) sap, sizeof(SpockApplyProgress));
+	XLogRegisterData((char *) &rec, sizeof(xl_progress));
 	lsn = XLogInsert(SPOCK_RMGR_ID, SPOCK_RMGR_APPLY_PROGRESS);
 
 	return lsn;
-}
-
-/*
- * spock_group_emit_progress_wal_cb
- *
- * Foreach callback, emit a group's apply-progress to WAL.
- */
-void
-spock_group_emit_progress_wal_cb(const SpockGroupEntry *e, void *arg)
-{
-	spock_apply_progress_add_to_wal(&e->progress);
 }

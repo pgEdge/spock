@@ -107,7 +107,6 @@ typedef enum
  */
 typedef struct SpockApplyProgress
 {
-	SpockGroupKey key;			/* common elements */
 	TimestampTz remote_commit_ts;	/* committed remote txn ts */
 
 	/*
@@ -129,13 +128,30 @@ typedef struct SpockApplyProgress
 									 * in versions <=5.x.x only */
 } SpockApplyProgress;
 
+/*
+ * Spock Resource Manager (RM) WAL record type for storing the apply progress
+ * of a group. Keep it in sync with SpockApplyProgress.
+ * NOTE on node ID:
+ * Since we have stored long-living WAL records containing node ID value, we
+ * can't be very flexible with node creation/removal. It seems each node
+ * operation starting from now must be WAL-logged too.
+ */
+typedef struct xl_progress
+{
+	Oid					dbid;
+	Oid					node_id;
+	Oid					remote_node_id;
+
+	SpockApplyProgress	sap;
+} xl_progress;
+
 /* Hash entry: one per group (stable pointer; not moved by dynahash) */
 typedef struct SpockGroupEntry
 {
-	SpockGroupKey key;			/* hash key */
-	SpockApplyProgress progress;
-	pg_atomic_uint32 nattached;
-	ConditionVariable prev_processed_cv;
+	SpockGroupKey		key;			/* hash key */
+	SpockApplyProgress	progress;
+	pg_atomic_uint32	nattached;
+	ConditionVariable	prev_processed_cv;
 } SpockGroupEntry;
 
 /* shmem setup */
@@ -144,8 +160,10 @@ extern void spock_group_shmem_startup(int napply_groups, bool found);
 
 SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id);
 void		spock_group_detach(void);
-bool		spock_group_progress_update(const SpockApplyProgress *sap);
-void		spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap);
+extern bool spock_group_progress_update(Oid dbId, Oid nodeId, Oid remoteNodeId,
+										const SpockApplyProgress *sap);
+extern void spock_group_progress_update_ptr(SpockGroupEntry *entry,
+											const SpockApplyProgress *sap);
 SpockApplyProgress *apply_worker_get_progress(void);
 SpockGroupEntry *spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id);
 
@@ -154,7 +172,6 @@ typedef void (*SpockGroupIterCB) (const SpockGroupEntry *e, void *arg);
 void		spock_group_foreach(SpockGroupIterCB cb, void *arg);
 
 extern void spock_group_resource_dump(void);
-extern void spock_group_resource_load(void);
 extern void spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);
 
 #endif							/* SPOCK_GROUP_H */
