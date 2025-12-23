@@ -2704,35 +2704,20 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 }
 
 /*
- * Static value to track local progress.
- *
- * Follow the CommitTsShmemInit() code as an example how to initialize such data
- * types in shared memory. Keep the order according to the SpockApplyProgress
- * declaration.
- *
- * NOTE: we initialize empty timestamp with 0 because of multiple places where
- * semantics assumes empty timestamp is 0.
- */
-static SpockApplyProgress apply_progress =
-{
-	.remote_commit_ts = 0,
-	.prev_remote_ts = 0,
-	.remote_commit_lsn = InvalidXLogRecPtr,
-	.remote_insert_lsn = InvalidXLogRecPtr,
-	.received_lsn = InvalidXLogRecPtr,
-	.last_updated_ts = 0,
-	.updated_by_decode = false
-};
-
-/*
  * Update frequently changing statistics of the apply group
  */
 static void
 UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted)
 {
-	apply_progress.received_lsn = last_received;
-	apply_progress.remote_insert_lsn = last_inserted;
-	spock_group_progress_update_ptr(MyApplyWorker->apply_group, &apply_progress);
+	SpockApplyProgress sap = {0};
+
+	sap.key.dbid = MyDatabaseId;
+	sap.key.node_id = MySubscription->target->id;
+	sap.key.remote_node_id = MySubscription->origin->id;
+
+	sap.received_lsn = last_received;
+	sap.remote_insert_lsn = last_inserted;
+	spock_group_progress_update_ptr(MyApplyWorker->apply_group, &sap);
 }
 
 /*
@@ -2767,12 +2752,6 @@ apply_work(PGconn *streamConn)
 												  ALLOCSET_DEFAULT_SIZES);
 
 	MemoryContextSwitchTo(MessageContext);
-
-	/* Initialize our static progress variable */
-	memset(&apply_progress.key, 0, sizeof(SpockGroupKey));
-	apply_progress.key.dbid = MyDatabaseId;
-	apply_progress.key.node_id = MySubscription->target->id;
-	apply_progress.key.remote_node_id = MySubscription->origin->id;
 
 	/* mark as idle, before starting to loop */
 	pgstat_report_activity(STATE_IDLE, NULL);

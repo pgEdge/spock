@@ -63,6 +63,40 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 HTAB	   *SpockGroupHash = NULL;
 
+static void spock_group_resource_load(void);
+
+/*
+ * Initialize a SpockApplyProgress structure.
+ *
+ * The key must already be set (it's the hash key). This function zeros out
+ * all other fields following PostgreSQL conventions for shared memory
+ * initialization (see CommitTsShmemInit for similar pattern).
+ *
+ * We use C99 designated initializers to be explicit about what we're
+ * initializing and to avoid fragile pointer arithmetic.
+ */
+static inline void
+init_progress_fields(SpockApplyProgress *progress)
+{
+	/* Key should already be set by hash_search or caller */
+	Assert(OidIsValid(progress->key.dbid));
+	Assert(OidIsValid(progress->key.node_id));
+	Assert(OidIsValid(progress->key.remote_node_id));
+
+	/*
+	 * Initialize all non-key fields to zero/invalid values.
+	 * Using 0 for timestamps follows PostgreSQL convention where
+	 * timestamp 0 represents "not set" (see CommitTsShmemInit).
+	 */
+	progress->remote_commit_ts = 0;
+	progress->prev_remote_ts = 0;
+	progress->remote_commit_lsn = InvalidXLogRecPtr;
+	progress->remote_insert_lsn = InvalidXLogRecPtr;
+	progress->received_lsn = InvalidXLogRecPtr;
+	progress->last_updated_ts = 0;
+	progress->updated_by_decode = false;
+}
+
 /*
  * spock_group_shmem_request
  *
@@ -122,7 +156,7 @@ spock_group_shmem_startup(int napply_groups, bool found)
 		return;
 
 	MemSet(&hctl, 0, sizeof(hctl));
-	hctl.keysize = sizeof(SpockGroupKey);
+	hctl.keysize = sizeof(SpockProgressKey);
 	hctl.entrysize = sizeof(SpockGroupEntry);
 	hctl.hash = tag_hash;
 	hctl.num_partitions = 16;
@@ -160,10 +194,22 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	spock_group_resource_load();
 }
 
-static inline SpockGroupKey
+/*
+ * make_key
+ *
+ * Construct a SpockProgressKey from component OIDs.
+ *
+ * TODO: Implement custom hash and comparison functions for SpockProgressKey
+ * to avoid undefined behavior from comparing padding bytes. Currently we
+ * zero the entire struct to ensure reproducible comparisons, but the C
+ * standard doesn't guarantee padding byte values are preserved during struct
+ * assignment. A proper fix would be to provide hash_func and match_func
+ * callbacks to hash_create() that only compare the actual OID fields.
+ */
+static inline SpockProgressKey
 make_key(Oid dbid, Oid node_id, Oid remote_node_id)
 {
-	SpockGroupKey k;
+	SpockProgressKey k;
 
 	memset(&k, 0, sizeof(k));
 	k.dbid = dbid;
@@ -183,24 +229,27 @@ make_key(Oid dbid, Oid node_id, Oid remote_node_id)
 SpockGroupEntry *
 spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 {
-	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
-	SpockGroupEntry *e;
+	SpockProgressKey key = make_key(dbid, node_id, remote_node_id);
+	SpockGroupEntry *entry;
 	bool		found;
 
-	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
+	entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &key,
+											HASH_ENTER, &found);
 	if (!found)
 	{
-		/* initialize key values; Other entries will be updated later */
-		memset(&e->progress, 0, sizeof(e->progress));
-		e->progress.key = e->key;
+		/*
+		 * New entry: the hash table already copied 'key' into
+		 * entry->progress.key, now initialize the remaining progress fields.
+		 */
+		init_progress_fields(&entry->progress);
 
-		pg_atomic_init_u32(&e->nattached, 0);
-		ConditionVariableInit(&e->prev_processed_cv);
+		pg_atomic_init_u32(&entry->nattached, 0);
+		ConditionVariableInit(&entry->prev_processed_cv);
 	}
 
-	pg_atomic_add_fetch_u32(&e->nattached, 1);
+	pg_atomic_add_fetch_u32(&entry->nattached, 1);
 
-	return e;
+	return entry;
 }
 
 /*
@@ -287,45 +336,66 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
  * Update the progress snapshot for (dbid,node_id,remote_node_id).
  * Uses hash_search(HASH_ENTER) for table access, then copies 'sap' into the
  * entry's progress payload under the gate lock (writers EXCLUSIVE).
+ *
+ * Returns: true if the record already existed (updated), false if newly inserted.
  */
 bool
 spock_group_progress_update(const SpockApplyProgress *sap)
 {
-	SpockGroupKey key;
-	SpockGroupEntry *e;
-	bool		found;
+	SpockGroupEntry	   *entry;
+	bool				found;
 
-	if (!sap)
-		return false;
+	Assert(OidIsValid(sap->key.dbid) && OidIsValid(sap->key.node_id) &&
+		   OidIsValid(sap->key.remote_node_id));
+	Assert(sap != NULL);
 
 	if (!SpockGroupHash || !SpockCtx)
 	{
-		elog(WARNING, "spock_group_progress_update: SpockGroupHash not initialized");
+		/*
+		 * This should never happen in normal operation. The shared memory
+		 * structures are initialized during postmaster startup via
+		 * shmem_startup_hook. If we hit this, it likely indicates:
+		 * 1. A bug in initialization ordering, or
+		 * 2. Corruption of shared memory pointers
+		 *
+		 * We return false to allow callers to continue (best-effort recovery),
+		 * but this progress update is lost.
+		 *
+		 * TODO: Add a test case that deliberately calls this function before
+		 * shared memory initialization (e.g., from a backend that loads spock
+		 * extension late) to verify the warning fires and doesn't crash.
+		 */
+		elog(WARNING, "SpockGroupHash is not initialized; progress update skipped");
 		return false;
 	}
 
-	key = make_key(sap->key.dbid, sap->key.node_id, sap->key.remote_node_id);
-	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
+	/* Potential hash table change needs an exclusive lock */
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 
-	if (!found)					/* New Entry */
+	entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &sap->key,
+											HASH_ENTER, &found);
+
+	if (!found)
 	{
-		/* Initialize key values; Other entries will be updated later */
-		memset(&e->progress, 0, sizeof(e->progress));
-		e->progress.key = e->key;
+		/*
+		 * New entry: the hash table already copied sap->key into
+		 * entry->progress.key, now initialize the remaining fields.
+		 */
+		init_progress_fields(&entry->progress);
 
-		pg_atomic_init_u32(&e->nattached, 0);
-		ConditionVariableInit(&e->prev_processed_cv);
+		pg_atomic_init_u32(&entry->nattached, 0);
+		ConditionVariableInit(&entry->prev_processed_cv);
 	}
 
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
-	progress_update_struct(&e->progress, sap);
+	progress_update_struct(&entry->progress, sap);
 	LWLockRelease(SpockCtx->apply_group_master_lock);
-	return true;
+	return found;
 }
 
 /* Fast update when you already hold the pointer (apply hot path) */
 void
-spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap)
+spock_group_progress_update_ptr(SpockGroupEntry *e,
+								const SpockApplyProgress *sap)
 {
 	Assert(e && sap);
 	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
@@ -367,7 +437,7 @@ apply_worker_get_progress(void)
 SpockGroupEntry *
 spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
 {
-	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
+	SpockProgressKey key = make_key(dbid, node_id, remote_node_id);
 	SpockGroupEntry *e;
 
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_FIND, NULL);
@@ -398,12 +468,13 @@ spock_group_foreach(SpockGroupIterCB cb, void *arg)
 
 /* emit one record */
 static void
-dump_one_group_cb(const SpockGroupEntry *e, void *arg)
+dump_one_group_cb(const SpockGroupEntry *entry, void *arg)
 {
-	DumpCtx    *ctx = (DumpCtx *) arg;
+	DumpCtx	   *ctx = (DumpCtx *) arg;
 
 	/* Only the progress payload goes to disk. It already contains the key. */
-	write_buf(ctx->fd, &e->progress, sizeof(e->progress), SPOCK_RES_DUMPFILE "(data)");
+	write_buf(ctx->fd, &entry->progress, sizeof(SpockApplyProgress),
+												SPOCK_RES_DUMPFILE "(data)");
 	ctx->count++;
 }
 
@@ -419,19 +490,19 @@ dump_one_group_cb(const SpockGroupEntry *e, void *arg)
 void
 spock_group_resource_dump(void)
 {
-	char		pathdir[MAXPGPATH];
-	char		pathtmp[MAXPGPATH];
-	char		pathfin[MAXPGPATH];
-	int			fd = -1;
-
-	SpockResFileHeader hdr = {0};
-	DumpCtx		dctx = {0};
+	char				pathdir[MAXPGPATH];
+	char				pathtmp[MAXPGPATH];
+	char				pathfin[MAXPGPATH];
+	int					fd = -1;
+	SpockResFileHeader	hdr = {0};
+	DumpCtx				dctx = {0};
 
 	/*
 	 * Safety check: if shared memory isn't initialized, we can't dump. This
-	 * shouldn't happen if spock_checkpoint_hook() called spock_shmem_attach()
-	 * first, but check anyway.
+	 * shouldn't happen but check anyway.
+	 * Do not tolerate it in development.
 	 */
+	Assert(SpockCtx && SpockGroupHash);
 	if (!SpockCtx || !SpockGroupHash)
 	{
 		elog(WARNING, "spock_group_resource_dump: shared memory not initialized, skipping dump");
@@ -502,14 +573,29 @@ spock_group_resource_dump(void)
  * version and system_identifier, then update each record via
  * spock_group_progress_update().
  */
-void
+static void
 spock_group_resource_load(void)
 {
-	char		pathfin[MAXPGPATH];
-	int			fd;
-	SpockResFileHeader hdr;
+	char				pathfin[MAXPGPATH];
+	int					fd;
+	SpockResFileHeader	hdr;
 
-	snprintf(pathfin, sizeof(pathfin), "%s/%s/%s", DataDir, SPOCK_RES_DIRNAME, SPOCK_RES_DUMPFILE);
+	/*
+	 * Check that we are actually inside shmem startup or recovery that
+	 * guarantees we are alone.
+	 */
+	Assert(LWLockHeldByMe(AddinShmemInitLock));
+	Assert(hash_get_num_entries(SpockGroupHash) == 0);
+
+	snprintf(pathfin, sizeof(pathfin), "%s/%s/%s",
+			 DataDir, SPOCK_RES_DIRNAME, SPOCK_RES_DUMPFILE);
+
+	/*
+	 * Locking note: We're called during shmem startup while holding
+	 * AddinShmemInitLock, so no other process can access SpockGroupHash yet.
+	 * The spock_group_progress_update() calls below will acquire
+	 * apply_group_master_lock according to redo's convention.
+	 */
 
 	fd = OpenTransientFile(pathfin, O_RDONLY | PG_BINARY);
 	if (fd < 0)
@@ -547,15 +633,26 @@ spock_group_resource_load(void)
 	/* Read each record and upsert */
 	for (uint32 i = 0; i < hdr.entry_count; i++)
 	{
-		SpockApplyProgress sap;
+		SpockApplyProgress	rec;
+		bool				ret;
 
-		read_buf(fd, &sap, sizeof(sap), SPOCK_RES_DUMPFILE "(data)");
+		/* XXX: Do we need any kind of CRC here? */
+		read_buf(fd, &rec, sizeof(SpockApplyProgress),
+												SPOCK_RES_DUMPFILE "(data)");
 
 		/*
 		 * Note: if ever version is changed in SpockApplyProgress and need
 		 * compatibility, it should be translated here. For now, 1:1.
 		 */
-		(void) spock_group_progress_update(&sap);
+		ret = spock_group_progress_update(&rec);
+		/*
+		 * Should never happen in real life, but be tolerant in production as
+		 * much as possible.
+		 */
+		Assert(!ret);
+		if (ret)
+			elog(WARNING, "restoring the replication state (dbid=%u, node_id=%u, remote_node_id=%u) spock found a duplicate",
+				 rec.key.dbid, rec.key.node_id, rec.key.remote_node_id);
 	}
 
 	CloseTransientFile(fd);
