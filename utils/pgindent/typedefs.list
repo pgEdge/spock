@@ -4376,7 +4376,7 @@ SpockTupleData
 SpockSyncStatus
 SpockResFileHeader
 DumpCtx
-SpockGroupKey
+SpockProgressKey
 SpockApplyProgress
 SpockGroupEntry
 SpockExceptionLog
@@ -4461,7 +4461,7 @@ SpockTupleData
 SpockSyncStatus
 SpockResFileHeader
 DumpCtx
-SpockGroupKey
+SpockProgressKey
 SpockApplyProgress
 SpockGroupEntry
 SpockExceptionLog
@@ -4532,7 +4532,7 @@ SpockTupleData
 SpockSyncStatus
 SpockResFileHeader
 DumpCtx
-SpockGroupKey
+SpockProgressKey
 SpockApplyProgress
 SpockGroupEntry
 SpockExceptionLog
@@ -4616,7 +4616,7 @@ SpockTupleData
 SpockSyncStatus
 SpockResFileHeader
 DumpCtx
-SpockGroupKey
+SpockProgressKey
 SpockApplyProgress
 SpockGroupEntry
 SpockExceptionLog

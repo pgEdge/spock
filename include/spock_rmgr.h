@@ -47,6 +47,5 @@ extern void spock_rmgr_cleanup(void);
 
 /* WAL helpers */
 extern XLogRecPtr spock_apply_progress_add_to_wal(const SpockApplyProgress *sap);
-extern void spock_group_emit_progress_wal_cb(const SpockGroupEntry *e, void *arg);
 
 #endif							/* SPOCK_RMGR_H */
