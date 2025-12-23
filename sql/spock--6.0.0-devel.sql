@@ -414,9 +414,17 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
-		SELECT INTO progress_lsn remote_commit_lsn
-			FROM spock.progress
-			WHERE node_id = target_id AND remote_node_id = origin_id;
+		SELECT	INTO progress_lsn ros.remote_lsn
+		FROM	spock.subscription s
+				INNER JOIN pg_replication_origin_status ros
+				ON ros.external_id = s.sub_slot_name
+		WHERE	s.sub_origin = origin_id
+		AND		s.sub_target = target_id;
+
+		IF progress_lsn IS NULL THEN
+			RAISE EXCEPTION 'Could not fetch progress for origin ''%''', origin;
+		END IF;
+
 		IF progress_lsn >= lsn THEN
 			result = true;
 			RETURN;
@@ -452,13 +460,22 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
-		SELECT INTO progress_lsn remote_commit_lsn
-			FROM spock.progress
-			WHERE node_id = target_id AND remote_node_id = origin_id;
+		SELECT	INTO progress_lsn ros.remote_lsn
+		FROM	spock.subscription s
+				INNER JOIN pg_replication_origin_status ros
+				ON ros.external_id = s.sub_slot_name
+		WHERE	s.sub_origin = origin_id
+		AND		s.sub_target = target_id;
+
+		IF progress_lsn IS NULL THEN
+			RAISE EXCEPTION 'Could not fetch progress for origin ''%''', origin;
+		END IF;
+
 		IF progress_lsn >= lsn THEN
 			result = true;
 			RETURN;
 		END IF;
+
 		elapsed_time := elapsed_time + .2;
 		IF timeout <> 0 AND elapsed_time >= timeout THEN
 			result := false;
