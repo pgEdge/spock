@@ -158,8 +158,10 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	if (found)
 		return;
 
-	elog(DEBUG1, "spock_group_shmem_startup: loading resource file to seed hash");
 	spock_group_resource_load();
+	elog(DEBUG1,
+		 "spock_group_shmem_startup: loading resource file to seed hash. loaded records: %lu",
+		 hash_get_num_entries(SpockGroupHash));
 }
 
 /*
@@ -453,8 +455,7 @@ spock_group_resource_dump(void)
 
 	/*
 	 * Safety check: if shared memory isn't initialized, we can't dump. This
-	 * shouldn't happen if spock_checkpoint_hook() called spock_shmem_attach()
-	 * first, but check anyway.
+	 * shouldn't happen but check anyway.
 	 * Do not tolerate it in development.
 	 */
 	Assert(SpockCtx && SpockGroupHash);
@@ -539,7 +540,7 @@ spock_group_resource_load(void)
 	 * Check that we are actually inside shmem startup or recovery that
 	 * guarantees we are alone.
 	 */
-	Assert(LWLockHeldByMe(AddinShmemInitLock) || RecoveryInProgress());
+	Assert(LWLockHeldByMe(AddinShmemInitLock));
 	Assert(hash_get_num_entries(SpockGroupHash) == 0);
 
 	snprintf(pathfin, sizeof(pathfin), "%s/%s/%s",
@@ -618,15 +619,6 @@ spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
 {
 	if ((flags & (CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_END_OF_RECOVERY)) == 0)
 		return;
-
-	/*
-	 * Ensure we're attached to shared memory before accessing it.
-	 *
-	 * spock_shmem_attach() is idempotent - it tracks attachment per process
-	 * and only does the actual work once, so it's safe to call on every
-	 * qualifying checkpoint.
-	 */
-	spock_shmem_attach();
 
 	/* Dump group progress to resource.dat */
 	spock_group_resource_dump();

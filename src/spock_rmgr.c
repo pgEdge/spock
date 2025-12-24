@@ -156,15 +156,6 @@ spock_rmgr_identify(uint8 info)
 void
 spock_rmgr_startup(void)
 {
-	/*
-	 * During WAL recovery in the startup process, we need to attach to the
-	 * shared memory structure (SpockGroupHash) that was created by the
-	 * postmaster's shmem_startup_hook.
-	 *
-	 * spock_shmem_attach() handles resetting inherited globals and properly
-	 * re-attaching to shared memory before WAL replay begins.
-	 */
-	spock_shmem_attach();
 }
 
 void

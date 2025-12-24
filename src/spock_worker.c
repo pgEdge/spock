@@ -344,15 +344,6 @@ spock_worker_on_exit(int code, Datum arg)
 void
 spock_worker_attach(int slot, SpockWorkerType type)
 {
-	/*
-	 * Ensure shared memory is attached before using SpockCtx.
-	 *
-	 * Background workers inherit global variables from the postmaster but the
-	 * pointers may not be valid. Always call spock_shmem_attach() which is
-	 * idempotent and handles proper re-initialization.
-	 */
-	spock_shmem_attach();
-
 	Assert(slot >= 0);
 	Assert(slot < SpockCtx->total_workers);
 
@@ -838,9 +829,18 @@ spock_worker_shmem_startup(void)
 	 * This is kludge for Windows (Postgres does not define the GUC variable
 	 * as PGDLLIMPORT)
 	 */
-	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
-										  false));
+	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL, false));
+
+	/*
+	 * Reset in case this is a restart within the postmaster
+	 * Spock extension must be loaded on startup. In case of a fatal error and
+	 * further restart, postmaster clean up shared memory but local variables
+	 * stay the same. So, we need to clean outdated pointers in advance.
+	 */
 	SpockCtx = NULL;
+	SpockHash = NULL;
+	SpockGroupHash = NULL;
+	exception_log_ptr = NULL;
 
 	/* Avoid possible race-conditions when initializing shared memory. */
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
@@ -953,65 +953,6 @@ spock_shmem_init_internal(int nworkers)
 	spock_group_shmem_startup(nworkers, all_found);
 
 	return all_found;
-}
-
-/*
- * spock_shmem_attach
- *
- * Attach (or re-attach) to existing shared memory structures.
- *
- * This is called from processes that need to access Spock's shared memory:
- * - Startup process (via spock_rmgr_startup) - once per recovery
- * - Checkpointer (via spock_checkpoint_hook) - once per process lifetime
- * - Background workers (via spock_worker_attach) - once per worker
- *
- * IMPORTANT: Auxiliary processes (startup, checkpointer) inherit global
- * variable values from the postmaster, but these pointers might not be valid
- * in their address space.
- *
- * This function uses a static flag to ensure we only attach once per process,
- * avoiding redundant shared memory lookups on subsequent calls.
- *
- * Unlike spock_worker_shmem_startup(), this doesn't acquire AddinShmemInitLock
- * or register hooks - it just looks up and attaches to existing structures.
- */
-void
-spock_shmem_attach(void)
-{
-	static bool attached = false;
-	int			nworkers;
-
-	/* If already attached in this process, nothing to do */
-	if (attached)
-		return;
-
-	/*
-	 * Reset globals to NULL to force proper attachment.
-	 *
-	 * This is critical for auxiliary processes (startup, checkpointer) that
-	 * inherit invalid global values from the postmaster.
-	 */
-	SpockCtx = NULL;
-	SpockHash = NULL;
-	SpockGroupHash = NULL;
-	exception_log_ptr = NULL;
-
-	/*
-	 * Get max_worker_processes to know the size of structures.
-	 */
-	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL, false));
-	if (nworkers <= 0)
-		nworkers = 9;
-
-	/*
-	 * Attach to all structures using the common initialization logic. Returns
-	 * true if structures were found (normal case), false if they had to be
-	 * created (shouldn't happen but harmless).
-	 */
-	(void) spock_shmem_init_internal(nworkers);
-
-	/* Mark as attached to avoid redundant work on subsequent calls */
-	attached = true;
 }
 
 /*
