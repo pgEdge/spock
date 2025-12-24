@@ -151,16 +151,11 @@ extern void spock_group_shmem_request(void);
 extern void spock_group_shmem_startup(int napply_groups);
 
 SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id);
-void		spock_group_detach(void);
+extern void spock_group_detach(void);
 extern bool spock_group_progress_update(const SpockApplyProgress *sap);
 extern void spock_group_progress_update_ptr(SpockGroupEntry *entry,
 											const SpockApplyProgress *sap);
-SpockApplyProgress *apply_worker_get_progress(void);
-SpockGroupEntry *spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id);
-
-/* Iterate all groups */
-typedef void (*SpockGroupIterCB) (const SpockGroupEntry *e, void *arg);
-void		spock_group_foreach(SpockGroupIterCB cb, void *arg);
+extern SpockApplyProgress *apply_worker_get_progress(void);
 
 extern void spock_group_resource_dump(void);
 extern void spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);
