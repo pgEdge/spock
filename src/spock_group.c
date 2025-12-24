@@ -394,18 +394,32 @@ spock_group_progress_update_ptr(SpockGroupEntry *e,
 /*
  * apply_worker_get_progress
  *
- * Return a pointer to the current apply worker's progress payload, or NULL
+ * Return a pointer to the snapshot of the current apply worker's progress.
  */
 SpockApplyProgress *
 apply_worker_get_progress(void)
 {
+	static SpockApplyProgress sap;
+
 	Assert(MyApplyWorker != NULL);
 	Assert(MyApplyWorker->apply_group != NULL);
 
 	if (MyApplyWorker && MyApplyWorker->apply_group)
-		return &MyApplyWorker->apply_group->progress;
+	{
+		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
 
-	return NULL;
+		memcpy(&sap, &MyApplyWorker->apply_group->progress,
+			   sizeof(SpockApplyProgress));
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+	}
+	else
+		/*
+		 * Should never happen. In production just send the worker into
+		 * exception behaviour without crash.
+		 */
+		elog(ERROR, "apply worker has not been fully initialised yet");
+
+	return &sap;
 }
 
 /* Iterate all groups */
