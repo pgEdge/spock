@@ -30,7 +30,6 @@ extern HTAB *SpockGroupHash;
 #define SPOCK_RES_DIRNAME   "spock"
 #define SPOCK_RES_DUMPFILE  "resource.dat"
 #define SPOCK_RES_TMPNAME   SPOCK_RES_DUMPFILE ".tmp"
-#define SPOCK_GROUP_TRANCHE_NAME   "spock_apply_groups"
 
 typedef struct SpockResFileHeader
 {
@@ -155,8 +154,8 @@ typedef struct SpockGroupEntry
 } SpockGroupEntry;
 
 /* shmem setup */
-extern void spock_group_shmem_request(void);
-extern void spock_group_shmem_startup(int napply_groups, bool found);
+extern Size spock_group_shmem_size(int nworkers);
+extern void spock_group_shmem_startup(int napply_groups);
 
 SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id);
 void		spock_group_detach(void);

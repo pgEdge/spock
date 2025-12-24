@@ -65,63 +65,26 @@ HTAB	   *SpockGroupHash = NULL;
 
 static void spock_group_resource_load(void);
 
-/*
- * spock_group_shmem_request
- *
- * Request and initialize the shmem structures backing the group registry.
- *
- * - _request: called in _PG_init(); calls RequestAddinShmemSpace() and
- *   RequestNamedLWLockTranche() for the hash and the gate lock.
- *
- * - _init: called from shmem_startup_hook while AddinShmemInitLock is held
- *   by core. Creates/attaches the shmem hash (SpockGroupHash).
- */
-void
-spock_group_shmem_request(void)
+Size
+spock_group_shmem_size(int nworkers)
 {
-	int			napply_groups;
-	Size		size;
+	Size size;
 
-#if PG_VERSION_NUM >= 150000
-	if (prev_shmem_request_hook != NULL)
-		prev_shmem_request_hook();
-#endif
-
-	/*
-	 * This is kludge for Windows (Postgres does not define the GUC variable
-	 * as PGDDLIMPORT)
-	 */
-	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
-											   false));
-	if (napply_groups <= 0)
-		napply_groups = 9;
-
-	/*
-	 * Request enough shared memory for napply_groups (dbid and origin id)
-	 */
-	size = hash_estimate_size(napply_groups, sizeof(SpockGroupEntry));
+	size = hash_estimate_size(nworkers, sizeof(SpockGroupEntry));
 	size += mul_size(16, sizeof(LWLockPadded));
-	RequestAddinShmemSpace(size);
 
-	/*
-	 * Request the LWlocks needed
-	 */
-	RequestNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME, napply_groups + 1);
+	return size;
 }
 
 /*
  * Initialize shared resources for db-origin management
  */
 void
-spock_group_shmem_startup(int napply_groups, bool found)
+spock_group_shmem_startup(int napply_groups)
 {
 	HASHCTL		hctl;
 
-	if (prev_shmem_startup_hook != NULL)
-		prev_shmem_startup_hook();
-
-	if (SpockGroupHash)
-		return;
+	Assert(SpockGroupHash == NULL);
 
 	MemSet(&hctl, 0, sizeof(hctl));
 	hctl.keysize = sizeof(SpockGroupKey);
@@ -136,27 +99,6 @@ spock_group_shmem_startup(int napply_groups, bool found)
 								   HASH_ELEM | HASH_BLOBS |
 								   HASH_SHARED_MEM | HASH_PARTITION |
 								   HASH_FIXED_SIZE);
-
-	if (!SpockGroupHash)
-		elog(ERROR, "spock_group_shmem_startup: failed to init group map");
-
-	/*
-	 * If the shared memory structures already existed (found = true), then
-	 * we're a background process attaching to structures created by the
-	 * postmaster. The hash was already seeded from the file during postmaster
-	 * startup, so skip loading.
-	 *
-	 * If found = false, we're the postmaster doing initial setup. Load the
-	 * file to quickly seed the hash, then WAL recovery will run afterward and
-	 * provide authoritative updates.
-	 *
-	 * Note: ShmemInitHash() doesn't have a 'found' output parameter like
-	 * ShmemInitStruct(), so we rely on the 'found' status of other Spock
-	 * structures (SpockCtx, etc.) as a proxy since they're all created
-	 * together.
-	 */
-	if (found)
-		return;
 
 	spock_group_resource_load();
 	elog(DEBUG1,

@@ -121,8 +121,7 @@ typedef struct SpockSyncEventMessage
 	NameData	ename;			/* event name */
 } SpockSyncEventMessage;
 
-extern void spock_output_plugin_shmem_init(void);
-
 extern void _PG_output_plugin_init(OutputPluginCallbacks *cb);
+extern Size spock_output_plugin_shmem_size(int nworkers);
 
 #endif							/* SPOCK_OUTPUT_PLUGIN_H */

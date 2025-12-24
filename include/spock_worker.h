@@ -159,6 +159,7 @@ extern void handle_sigterm(SIGNAL_ARGS);
 extern void spock_subscription_changed(Oid subid, bool kill);
 
 extern void spock_worker_shmem_init(void);
+extern Size worker_shmem_size(int nworkers, bool include_hash);
 
 extern int	spock_worker_register(SpockWorker *worker);
 extern void spock_worker_attach(int slot, SpockWorkerType type);

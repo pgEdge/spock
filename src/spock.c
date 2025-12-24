@@ -136,6 +136,9 @@ bool		check_all_uc_indexes = false;
 static emit_log_hook_type prev_emit_log_hook = NULL;
 static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
 
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
+static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
+
 void		_PG_init(void);
 PGDLLEXPORT void spock_supervisor_main(Datum main_arg);
 char	   *spock_extra_connection_options;
@@ -901,6 +904,150 @@ log_message_filter(ErrorData *edata)
 }
 
 /*
+ * Reserve additional shared resources for slot-group management
+ */
+static void
+spock_shmem_request(void)
+{
+	int			nworkers;
+
+	if (prev_shmem_request_hook != NULL)
+		prev_shmem_request_hook();
+
+	/*
+	 * This is kludge for Windows (Postgres does not define the GUC variable as
+	 * PGDDLIMPORT)
+	 */
+	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
+										  false));
+
+	/*
+	 * Request shared memory used by output plugin.
+	 * NOTE: slot groups requests must be the same for the publisher (output
+	 * plugin) and subscriber (apply workers).
+	 */
+
+	/* Request enough shared memory for nworkers slot-groups (worst case) */
+	RequestAddinShmemSpace(spock_output_plugin_shmem_size(nworkers));
+	/* Request the LWlocks needed */
+	RequestNamedLWLockTranche("spock_slot_groups", nworkers + 1);
+
+	/*
+	 * Request shared memory used by apply workers
+	 */
+
+	/* Allocate enough shmem for the worker limit ... */
+	RequestAddinShmemSpace(worker_shmem_size(nworkers, true));
+	/* Allocate the number of LW-locks needed for Spock. */
+	RequestNamedLWLockTranche("spock", 2);
+	/* Request shmem for Apply Group */
+	RequestNamedLWLockTranche("spock_apply_groups", nworkers + 1);
+	RequestAddinShmemSpace(spock_group_shmem_size(nworkers));
+}
+
+/*
+ * Initialize shared resources for slot-group management
+ */
+static void
+spock_shmem_startup(void)
+{
+	bool					found;
+	int						nworkers;
+	SpockOutputSlotGroup   *slot_groups;
+	int						i;
+	HASHCTL					hctl;
+
+	/*
+	 * Reset in case this is a restart within the postmaster
+	 * Spock extension must be loaded on startup. In case of a fatal error and
+	 * further restart, postmaster clean up shared memory but local variables
+	 * stay the same. So, we need to clean outdated pointers in advance.
+	 */
+	SpockCtx = NULL;
+	MySpockWorker = NULL;
+	SpockHash = NULL;
+	SpockGroupHash = NULL;
+	exception_log_ptr = NULL;
+
+	if (prev_shmem_startup_hook != NULL)
+		prev_shmem_startup_hook();
+
+	/*
+	 * This is kludge for Windows (Postgres does not define the GUC variable
+	 * as PGDLLIMPORT)
+	 */
+	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
+										  false));
+
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+
+	SpockCtx = ShmemInitStruct("spock_context",
+							   worker_shmem_size(nworkers, false), &found);
+	if (!found)
+	{
+		/* First time - initialize the structure */
+		SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
+		SpockCtx->apply_group_master_lock =
+					&((GetNamedLWLockTranche("spock_apply_groups"))->lock);
+		SpockCtx->slot_group_master_lock = &((GetNamedLWLockTranche("spock_slot_groups"))->lock);
+		SpockCtx->slot_ngroups = nworkers;
+		SpockCtx->supervisor = NULL;
+		SpockCtx->subscriptions_changed = false;
+		SpockCtx->total_workers = nworkers;
+		memset(SpockCtx->workers, 0,
+			   sizeof(SpockWorker) * SpockCtx->total_workers);
+	}
+
+	exception_log_ptr = ShmemInitStruct("spock_exception_log_ptr",
+										worker_shmem_size(nworkers, false),
+										&found);
+	if (!found)
+		memset(exception_log_ptr, 0, sizeof(SpockExceptionLog) * nworkers);
+
+	/*
+	 * Initialize SpockHash - channel stats hash.
+	 */
+	memset(&hctl, 0, sizeof(hctl));
+	hctl.keysize = sizeof(spockStatsKey);
+	hctl.entrysize = sizeof(spockStatsEntry);
+	hctl.hash = spock_ch_stats_hash;
+	SpockHash = ShmemInitHash("spock channel stats hash",
+							  spock_stats_max_entries,
+							  spock_stats_max_entries,
+							  &hctl,
+							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
+
+	/* Output plugin related allocations of static shared memory */
+
+	slot_groups = ShmemInitStruct("spock_slot_groups",
+								  spock_output_plugin_shmem_size(nworkers),
+								  &found);
+	if (!found)
+	{
+		memset(slot_groups, 0, spock_output_plugin_shmem_size(nworkers));
+		SpockCtx->slot_groups = slot_groups;
+		for (i = 0; i < nworkers; i++)
+		{
+			slot_groups[i].lock = &((GetNamedLWLockTranche("spock_slot_groups")[i + 1]).lock);
+		}
+	}
+
+	LWLockRelease(AddinShmemInitLock);
+}
+
+/*
+ * Install hooks to request shared resources for slot-group management
+ */
+static void
+spock_shmem_init(void)
+{
+	prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook = spock_shmem_request;
+	prev_shmem_startup_hook = shmem_startup_hook;
+	shmem_startup_hook = spock_shmem_startup;
+}
+
+/*
  * Entry point for this module.
  */
 void
@@ -1146,7 +1293,7 @@ _PG_init(void)
 	spock_worker_shmem_init();
 
 	/* Init output plugin shmem */
-	spock_output_plugin_shmem_init();
+	spock_shmem_init();
 
 	/* Init executor module */
 	spock_executor_init();

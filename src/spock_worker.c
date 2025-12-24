@@ -71,9 +71,6 @@ bool		spock_stats_hash_full = false;
 
 static bool xact_cb_installed = false;
 
-static shmem_request_hook_type prev_shmem_request_hook = NULL;
-static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-
 static void spock_worker_detach(bool crash);
 static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
@@ -760,7 +757,7 @@ spock_subscription_changed(Oid subid, bool kill)
 	}
 }
 
-static Size
+Size
 worker_shmem_size(int nworkers, bool include_hash)
 {
 	Size		num_bytes = 0;
@@ -781,34 +778,6 @@ worker_shmem_size(int nworkers, bool include_hash)
 	}
 
 	return num_bytes;
-}
-
-/*
- * Requests any additional shared memory required for spock.
- */
-static void
-spock_worker_shmem_request(void)
-{
-	int			nworkers;
-
-	if (prev_shmem_request_hook != NULL)
-		prev_shmem_request_hook();
-
-	/*
-	 * This is kludge for Windows (Postgres does not define the GUC variable as
-	 * PGDDLIMPORT)
-	 */
-	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
-										  false));
-
-	/* Allocate enough shmem for the worker limit ... */
-	RequestAddinShmemSpace(worker_shmem_size(nworkers, true));
-
-	/* Allocate the number of LW-locks needed for Spock. */
-	RequestNamedLWLockTranche("spock", 2);
-
-	/* Request shmem for Apply Group */
-	spock_group_shmem_request();
 }
 
 /*
@@ -883,65 +852,38 @@ spock_shmem_init_internal(int nworkers)
 {
 	HASHCTL		hctl;
 	bool		found;
-	bool		all_found = true;
 
-
-	/* Init signaling context for the various processes. */
-	if (!SpockCtx)
+	if (!found)
 	{
-		SpockCtx = ShmemInitStruct("spock_context",
-								   worker_shmem_size(nworkers, false), &found);
-		if (!SpockCtx)
-			elog(ERROR, "failed to initialize spock_context");
-
-		if (!found)
-		{
-			/* First time - initialize the structure */
-			SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
-			SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
-			SpockCtx->supervisor = NULL;
-			SpockCtx->subscriptions_changed = false;
-			SpockCtx->total_workers = nworkers;
-			memset(SpockCtx->workers, 0,
-				   sizeof(SpockWorker) * SpockCtx->total_workers);
-			all_found = false;
-		}
+		/* First time - initialize the structure */
+		SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
+		SpockCtx->apply_group_master_lock =
+					&((GetNamedLWLockTranche("spock_apply_groups"))->lock);
+		SpockCtx->supervisor = NULL;
+		SpockCtx->subscriptions_changed = false;
+		SpockCtx->total_workers = nworkers;
+		memset(SpockCtx->workers, 0,
+			   sizeof(SpockWorker) * SpockCtx->total_workers);
 	}
 
-	/*
-	 * Initialize exception log pointer array.
-	 */
-	if (!exception_log_ptr)
-	{
-		exception_log_ptr = ShmemInitStruct("spock_exception_log_ptr",
-											worker_shmem_size(nworkers, false), &found);
-		if (!exception_log_ptr)
-			elog(ERROR, "failed to initialize spock_exception_log_ptr");
-
-		if (!found)
-		{
-			memset(exception_log_ptr, 0, sizeof(SpockExceptionLog) * nworkers);
-			all_found = false;
-		}
-	}
+	exception_log_ptr = ShmemInitStruct("spock_exception_log_ptr",
+										worker_shmem_size(nworkers, false),
+										&found);
+	if (!found)
+		memset(exception_log_ptr, 0, sizeof(SpockExceptionLog) * nworkers);
 
 	/*
 	 * Initialize SpockHash - channel stats hash.
 	 */
-	if (!SpockHash)
-	{
-		memset(&hctl, 0, sizeof(hctl));
-		hctl.keysize = sizeof(spockStatsKey);
-		hctl.entrysize = sizeof(spockStatsEntry);
-		hctl.hash = spock_ch_stats_hash;
-		SpockHash = ShmemInitHash("spock channel stats hash",
-								  spock_stats_max_entries,
-								  spock_stats_max_entries,
-								  &hctl,
-								  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
-		if (!SpockHash)
-			elog(ERROR, "failed to initialize spock channel stats hash");
-	}
+	memset(&hctl, 0, sizeof(hctl));
+	hctl.keysize = sizeof(spockStatsKey);
+	hctl.entrysize = sizeof(spockStatsEntry);
+	hctl.hash = spock_ch_stats_hash;
+	SpockHash = ShmemInitHash("spock channel stats hash",
+							  spock_stats_max_entries,
+							  spock_stats_max_entries,
+							  &hctl,
+							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
 
 	/*
 	 * Initialize SpockGroupHash via the spock_group module. This handles both
@@ -950,9 +892,9 @@ spock_shmem_init_internal(int nworkers)
 	 * Note: We pass 'all_found' to indicate whether this is first-time setup
 	 * or attachment to existing structures.
 	 */
-	spock_group_shmem_startup(nworkers, all_found);
+	spock_group_shmem_startup(nworkers);
 
-	return all_found;
+	return true;
 }
 
 /*
@@ -961,15 +903,8 @@ spock_shmem_init_internal(int nworkers)
 void
 spock_worker_shmem_init(void)
 {
-	/*
-	 * Whether this is a first startup or crash recovery, we'll be re-initing
-	 * the bgworkers.
-	 */
-	SpockCtx = NULL;
-	MySpockWorker = NULL;
 
-	prev_shmem_request_hook = shmem_request_hook;
-	shmem_request_hook = spock_worker_shmem_request;
+
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = spock_worker_shmem_startup;
 }
