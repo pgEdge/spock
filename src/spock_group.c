@@ -408,23 +408,8 @@ apply_worker_get_progress(void)
 	return NULL;
 }
 
-/*
- * spock_group_lookup
- *
- * Snapshot-read the progress payload for the specified group. Uses HASH_FIND
- * to locate the entry.
- *
- * Returns entry if found, NULL otherwise.
- */
-SpockGroupEntry *
-spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
-{
-	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
-	SpockGroupEntry *e;
-
-	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_FIND, NULL);
-	return e;					/* may be NULL */
-}
+/* Iterate all groups */
+typedef void (*SpockGroupIterCB) (const SpockGroupEntry *e, void *arg);
 
 /*
  * spock_group_foreach
@@ -433,7 +418,7 @@ spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
  * Caller selects any gating needed for consistency (e.g., take the gate in
  * SHARED before calling this if you want a coherent snapshot).
  */
-void
+static void
 spock_group_foreach(SpockGroupIterCB cb, void *arg)
 {
 	HASH_SEQ_STATUS it;
