@@ -10,7 +10,7 @@ ENV PG_CONFIG="/home/pgedge/pgedge/pg${PGVER}/bin/pg_config"
 COPY . /home/pgedge/spock
 WORKDIR /home/pgedge
 
-RUN echo "Determine PostgreSQL tag"
+# Determine PostgreSQL version and clone repository
 RUN LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
 				grep "refs/tags/REL_${PGVER}_" | \
 				sed 's|.*refs/tags/||' | \
@@ -18,16 +18,14 @@ RUN LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git |
 				sort -V | \
 				tail -n 1 | \
 				tr '.' '_') && \
-			echo "Using tag $LATEST_TAG" && \
-			git clone --branch $LATEST_TAG --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres
+			echo "Using PostgreSQL tag: $LATEST_TAG" && \
+			git clone --branch $LATEST_TAG --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres && \
+			chmod -R a+w /home/pgedge/postgres
 
-
-RUN sudo chmod -R a+w ~/postgres
-
-RUN echo "Setting up pgedge..."
-WORKDIR /home/pgedge
-RUN curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
-RUN sudo -u pgedge python3 /home/pgedge/install.py
+# Install pgedge
+RUN echo "Setting up pgedge..." && \
+    curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py -o /home/pgedge/install.py && \
+    sudo -u pgedge python3 /home/pgedge/install.py
 
 WORKDIR /home/pgedge/postgres
 
@@ -35,8 +33,9 @@ RUN for patchfile in /home/pgedge/spock/patches/${PGVER}/*; do \
 		patch -p1 --verbose < $patchfile; \
 	done
 
-RUN echo "==========Compiling Modified PostgreSQL=========="
-RUN ./configure \
+# Compile PostgreSQL
+RUN echo "==========Compiling Modified PostgreSQL==========" && \
+    ./configure \
         --prefix="/home/pgedge/pgedge/pg${PGVER}" \
         --disable-rpath \
         --with-zstd \
@@ -64,13 +63,13 @@ RUN ./configure \
     make install && \
     make -C contrib install
 
-WORKDIR /home/pgedge
-
-RUN echo "==========Recompiling Spock=========="
+# Compile Spock
 WORKDIR /home/pgedge/spock
-RUN make clean && make -j16 && make install
-
-RUN echo "==========Built Spock=========="
+RUN echo "==========Compiling Spock==========" && \
+    make clean && \
+    make -j16 && \
+    make install && \
+    echo "==========Spock build complete=========="
 
 #-----------------------------------------
 COPY tests/docker/*.sh /home/pgedge/
