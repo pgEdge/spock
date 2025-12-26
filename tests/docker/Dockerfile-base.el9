@@ -1,37 +1,94 @@
 # ##############################################################################
 #
-# Transient docker image to avoid unnecessary actions.
+# Base test image for pgEdge Spock development and testing.
 #
-# Includes fresh updates of the base OS plus all extra packages needed to
-# Postgres, Spock and testing facilities.
+# This image includes:
+# - Rocky Linux 9 base with development tools
+# - PostgreSQL build dependencies (LLVM, ICU, SSL, etc.)
+# - Testing tools (Perl Test::More, SSH)
+# - pgedge user with sudo access
+#
+# Built and published to: ghcr.io/pgedge/base-test-image:latest
 #
 # ##############################################################################
 
 FROM rockylinux:9
 
-RUN dnf -y update && dnf -y upgrade && dnf -y install sudo && dnf -y groupinstall "Development Tools"
+# Update system and install base development tools
+RUN dnf -y update && \
+    dnf -y upgrade && \
+    dnf -y install sudo && \
+    dnf -y groupinstall "Development Tools"
 
+# Create pgedge user with sudo privileges
 RUN useradd -m pgedge -s /bin/bash && \
     echo pgedge:asdf | chpasswd && \
     echo "pgedge ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/pgedge && \
     chmod 0440 /etc/sudoers.d/pgedge && \
     chown -R pgedge:pgedge /home/pgedge
 
-COPY tests/docker/lib-list.txt /home/pgedge/
+# Install PostgreSQL build dependencies and testing tools
+# Note: List inlined to avoid requiring build context with external files
+RUN dnf install --allowerasing --enablerepo=crb -y \
+    bison \
+    clang \
+    curl \
+    cyrus-sasl-gssapi \
+    dnsutils \
+    flex \
+    jansson-devel \
+    krb5-devel \
+    libicu-devel \
+    libpq \
+    libpq-devel \
+    libuuid \
+    libuuid-devel \
+    libxslt \
+    libxslt-devel \
+    llvm \
+    llvm-devel \
+    lz4 \
+    lz4-devel \
+    nc \
+    openldap \
+    openldap-devel \
+    openssh-clients \
+    openssh-server \
+    openssl-devel \
+    pam-devel \
+    perl \
+    perl-App-cpanminus \
+    perl-devel \
+    perl-IPC-Run \
+    pkgconfig \
+    procps \
+    python3 \
+    python3-devel \
+    sudo \
+    systemd-devel \
+    unzip \
+    uuid \
+    uuid-devel \
+    vim \
+    zlib \
+    zlib-devel && \
+    dnf clean all
 
-RUN dnf install --allowerasing --enablerepo=crb -y $(cat /home/pgedge/lib-list.txt)
-
-# Install perl dependencies for running tap tests
+# Install Perl testing dependencies
 RUN cpanm Test::More
 
-RUN ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
-    cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys
-
-
-RUN mkdir -p /home/pgedge/spock
-RUN chown -R pgedge:pgedge /home/pgedge/spock
-#-----------------------------------------
+# Setup SSH for pgedge user (not root!)
+# This allows SSH-based testing as the pgedge user
 USER pgedge
+RUN mkdir -p ~/.ssh && \
+    ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
+    cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys && \
+    chmod 700 ~/.ssh && \
+    chmod 600 ~/.ssh/authorized_keys
 
-# Just to ensure that community members could find the person they should complain to.
+# Set default working directory
+WORKDIR /home/pgedge
+
+# Metadata
 LABEL maintainer="andrei.lepikhov@pgedge.com"
+LABEL description="Base image for pgEdge Spock PostgreSQL extension development and testing"
