@@ -1,6 +1,7 @@
 FROM ghcr.io/pgedge/base-test-image:latest
 
 ARG PGVER
+ARG MAKE_JOBS=4
 
 ENV PGVER=$PGVER
 ENV PATH="/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}"
@@ -58,8 +59,8 @@ RUN echo "==========Compiling Modified PostgreSQL==========" && \
         PYTHON=/usr/bin/python3.9 \
         BITCODE_CFLAGS="-gdwarf-5 -O0 -fforce-dwarf-frame" \
         CFLAGS="-g -O0" && \
-    make -j4 && \
-    make -C contrib -j4 && \
+    make -j${MAKE_JOBS} && \
+    make -C contrib -j${MAKE_JOBS} && \
     make install && \
     make -C contrib install
 
@@ -67,7 +68,7 @@ RUN echo "==========Compiling Modified PostgreSQL==========" && \
 WORKDIR /home/pgedge/spock
 RUN echo "==========Compiling Spock==========" && \
     make clean && \
-    make -j16 && \
+    make -j${MAKE_JOBS} && \
     make install && \
     echo "==========Spock build complete=========="
 
