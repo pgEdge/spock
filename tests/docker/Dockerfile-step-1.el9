@@ -73,8 +73,7 @@ RUN echo "==========Compiling Spock==========" && \
     echo "==========Spock build complete=========="
 
 #-----------------------------------------
-COPY tests/docker/*.sh /home/pgedge/
-RUN sudo chmod +x /home/pgedge/*.sh
+COPY --chmod=755 tests/docker/*.sh /home/pgedge/
 
 WORKDIR /home/pgedge/
 USER pgedge
