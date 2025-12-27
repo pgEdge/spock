@@ -116,7 +116,7 @@ queue_message(List *replication_sets, Oid roleoid, char message_type,
 
 	/* Cleanup. */
 	heap_freetuple(tup);
-	table_close(rel, NoLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 

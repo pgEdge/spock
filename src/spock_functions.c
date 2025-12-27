@@ -2343,10 +2343,15 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 	}
 
+	/*
+	 * Report replication status. In quiet mode, downgrade INFO/WARNING to
+	 * LOG level to reduce output verbosity.
+	 */
 	if (warn)
-		elog(WARNING, "DDL statement replicated, but could be unsafe.");
+		elog(spock_enable_quiet_mode ? LOG : WARNING,
+			 "DDL statement replicated, but could be unsafe.");
 	else
-		elog(INFO, "DDL statement replicated.");
+		elog(spock_enable_quiet_mode ? LOG : INFO, "DDL statement replicated.");
 
 	initStringInfo(&q);
 	if (add_search_path)
@@ -2371,7 +2376,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	return;
 
 skip_ddl:
-	elog(WARNING, "This DDL statement will not be replicated.");
+	elog(spock_enable_quiet_mode ? LOG : WARNING, "This DDL statement will not be replicated.");
 }
 
 

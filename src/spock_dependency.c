@@ -707,14 +707,17 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 	 * If no error is to be thrown, and the msglevel is too low to be shown to
 	 * either client or server log, there's no need to do any of the work.
 	 *
+	 * In quiet mode (spock.enable_quiet_mode), skip reporting dependent
+	 * objects to reduce output verbosity.
+	 *
 	 * Note: this code doesn't know all there is to be known about elog
 	 * levels, but it works for NOTICE and DEBUG2, which are the only values
 	 * msglevel can currently have.  We also assume we are running in a normal
 	 * operating environment.
 	 */
-	if (behavior == DROP_CASCADE &&
+	if (spock_enable_quiet_mode || (behavior == DROP_CASCADE &&
 		msglevel < my_client_min_messages &&
-		(msglevel < my_log_min_messages || my_log_min_messages == LOG))
+		(msglevel < my_log_min_messages || my_log_min_messages == LOG)))
 		return;
 
 	/*
