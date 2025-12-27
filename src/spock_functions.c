@@ -3483,9 +3483,9 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 		Assert(OidIsValid(e->key.dbid) && OidIsValid(e->key.node_id) &&
 			   OidIsValid(e->key.remote_node_id));
 
-		values[GP_DBOID] = ObjectIdGetDatum(e->progress.key.dbid);
-		values[GP_NODE_ID] = ObjectIdGetDatum(e->progress.key.node_id);
-		values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(e->progress.key.remote_node_id);
+		values[GP_DBOID] = ObjectIdGetDatum(e->key.dbid);
+		values[GP_NODE_ID] = ObjectIdGetDatum(e->key.node_id);
+		values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(e->key.remote_node_id);
 
 		if (e->progress.remote_commit_ts != 0)
 		{
