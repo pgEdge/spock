@@ -1403,8 +1403,6 @@ spock_output_plugin_shmem_startup(void)
 
 	/* Get the shared resources */
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
-	SpockCtx->slot_group_master_lock = &((GetNamedLWLockTranche("spock_slot_groups")[0]).lock);
-	SpockCtx->slot_ngroups = nworkers;
 	slot_groups = ShmemInitStruct("spock_slot_groups",
 								  spock_output_plugin_shmem_size(nworkers),
 								  &found);
