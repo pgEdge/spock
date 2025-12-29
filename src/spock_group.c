@@ -648,3 +648,31 @@ spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
 	/* Dump group progress to resource.dat */
 	spock_group_resource_dump();
 }
+
+void
+spock_group_progress_update_list(List *lst)
+{
+	ListCell *lc;
+
+	foreach (lc, lst)
+	{
+		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
+
+		spock_apply_progress_add_to_wal(sap);
+
+		spock_group_progress_update(sap);
+
+		elog(LOG, "SPOCK: adjust spock.progress %d->%d to "
+			 "remote_commit_ts='%s' "
+			 "remote_commit_lsn=%llX remote_insert_lsn=%llX",
+			 sap->key.remote_node_id, MySubscription->target->id,
+			 timestamptz_to_str(sap->remote_commit_ts),
+			 sap->remote_commit_lsn, sap->remote_insert_lsn);
+	}
+
+	/*
+	 * Free the list and each object. Be careful here because it is inside
+	 * a memory context that is rarely reset.
+	 */
+	list_free_deep(lst);
+}

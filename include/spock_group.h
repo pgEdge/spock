@@ -160,5 +160,6 @@ extern SpockApplyProgress *apply_worker_get_progress(void);
 
 extern void spock_group_resource_dump(void);
 extern void spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);
+extern void spock_group_progress_update_list(List *lst);
 
 #endif							/* SPOCK_GROUP_H */
