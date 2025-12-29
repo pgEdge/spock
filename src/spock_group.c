@@ -145,15 +145,12 @@ spock_group_shmem_request(void)
  * Initialize shared resources for db-origin management
  */
 void
-spock_group_shmem_startup(int napply_groups, bool found)
+spock_group_shmem_startup(int napply_groups)
 {
 	HASHCTL		hctl;
 
 	if (prev_shmem_startup_hook != NULL)
 		prev_shmem_startup_hook();
-
-	if (SpockGroupHash)
-		return;
 
 	MemSet(&hctl, 0, sizeof(hctl));
 	hctl.keysize = sizeof(SpockProgressKey);
@@ -172,26 +169,11 @@ spock_group_shmem_startup(int napply_groups, bool found)
 	if (!SpockGroupHash)
 		elog(ERROR, "spock_group_shmem_startup: failed to init group map");
 
-	/*
-	 * If the shared memory structures already existed (found = true), then
-	 * we're a background process attaching to structures created by the
-	 * postmaster. The hash was already seeded from the file during postmaster
-	 * startup, so skip loading.
-	 *
-	 * If found = false, we're the postmaster doing initial setup. Load the
-	 * file to quickly seed the hash, then WAL recovery will run afterward and
-	 * provide authoritative updates.
-	 *
-	 * Note: ShmemInitHash() doesn't have a 'found' output parameter like
-	 * ShmemInitStruct(), so we rely on the 'found' status of other Spock
-	 * structures (SpockCtx, etc.) as a proxy since they're all created
-	 * together.
-	 */
-	if (found)
-		return;
-
-	elog(DEBUG1, "spock_group_shmem_startup: loading resource file to seed hash");
 	spock_group_resource_load();
+
+	elog(DEBUG1,
+		 "spock_group_shmem_startup: hash initialized with %lu entries from resource file",
+		 hash_get_num_entries(SpockGroupHash));
 }
 
 /*
@@ -663,15 +645,6 @@ spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
 {
 	if ((flags & (CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_END_OF_RECOVERY)) == 0)
 		return;
-
-	/*
-	 * Ensure we're attached to shared memory before accessing it.
-	 *
-	 * spock_shmem_attach() is idempotent - it tracks attachment per process
-	 * and only does the actual work once, so it's safe to call on every
-	 * qualifying checkpoint.
-	 */
-	spock_shmem_attach();
 
 	/* Dump group progress to resource.dat */
 	spock_group_resource_dump();
