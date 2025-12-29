@@ -399,7 +399,7 @@ ensure_replication_origin(char *slot_name)
 
 
 static void
-adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
+adjust_progress_info(PGconn *origin_conn)
 {
 	const char *originQuery =
 		"SELECT * FROM spock.progress "
@@ -917,7 +917,7 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	adjust_progress_info(origin_conn, target_conn);
+	adjust_progress_info(origin_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
@@ -1005,7 +1005,7 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	adjust_progress_info(origin_conn, target_conn);
+	adjust_progress_info(origin_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
