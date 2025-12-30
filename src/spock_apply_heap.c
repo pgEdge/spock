@@ -602,7 +602,7 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		int			remoteattnum = rel->attmap[attidx];
 
 		Assert(remoteattnum < tupdesc->natts);
-		if (rel->delta_functions[remoteattnum] == InvalidOid)
+		if (rel->delta_apply_functions[remoteattnum] == InvalidOid)
 		{
 			deltatup->values[remoteattnum] = 0xdeadbeef;
 			deltatup->nulls[remoteattnum] = true;
@@ -630,7 +630,7 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 								 &loc_isnull);
 		Assert(!loc_isnull);
 
-		result = OidFunctionCall3Coll(rel->delta_functions[remoteattnum],
+		result = OidFunctionCall3Coll(rel->delta_apply_functions[remoteattnum],
 									  InvalidOid, oldtup->values[remoteattnum],
 									  newtup->values[remoteattnum], loc_value);
 		deltatup->values[remoteattnum] = result;
@@ -755,7 +755,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 						  xmin, local_origin_found, local_origin,
 						  local_ts, idxused);
 
-	if (rel->has_delta_apply)
+	if (rel->has_delta_columns)
 	{
 		SpockTupleData deltatup;
 		HeapTuple	currenttuple;
