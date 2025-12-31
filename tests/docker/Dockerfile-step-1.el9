@@ -18,16 +18,28 @@ RUN chown -R pgedge:pgedge /home/pgedge/spock
 WORKDIR /home/pgedge
 
 # Determine PostgreSQL version and clone repository
-RUN LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
+RUN set -x && \
+	echo "PGVER is set to: ${PGVER}" && \
+	if [ -z "${PGVER}" ]; then \
+		echo "ERROR: PGVER build argument is not set!"; \
+		exit 1; \
+	fi && \
+	LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
 				grep "refs/tags/REL_${PGVER}_" | \
 				sed 's|.*refs/tags/||' | \
 				tr '_' '.' | \
 				sort -V | \
 				tail -n 1 | \
 				tr '.' '_') && \
-			echo "Using PostgreSQL tag: $LATEST_TAG" && \
-			git clone --branch $LATEST_TAG --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres && \
-			chmod -R a+w /home/pgedge/postgres
+	if [ -z "$LATEST_TAG" ]; then \
+		echo "ERROR: Could not find PostgreSQL tag for version ${PGVER}"; \
+		echo "Available REL_${PGVER}_ tags:"; \
+		git ls-remote --tags https://github.com/postgres/postgres.git | grep "refs/tags/REL_${PGVER}_" | head -10; \
+		exit 1; \
+	fi && \
+	echo "Using PostgreSQL tag: $LATEST_TAG" && \
+	git clone --branch "$LATEST_TAG" --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres && \
+	chmod -R a+w /home/pgedge/postgres
 
 # Install pgedge (run as pgedge user, not root)
 RUN echo "Setting up pgedge..." && \
