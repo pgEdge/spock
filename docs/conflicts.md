@@ -19,15 +19,15 @@ Conflicts can arise if a node is subscribed to multiple providers, or when local
 
 Note that on a conflicting transaction, the delta-apply column will be correctly calculated and applied.
 
-To make a column a conflict-free delta-apply column, ensuring that the value replicated is the delta of the committed changes (the old value plus or minus any new value) to a given record, you need to apply the following settings to the column:  `log_old_value=true, delta_apply_function=spock.delta_apply`.  For example:
+To make a column a conflict-free delta-apply column, ensuring that the value replicated is the delta of the committed changes (the old value plus or minus any new value) to a given record, you need to use the `spock.delta_apply()` function. For example:
 
 ```sql
-ALTER TABLE pgbench_accounts ALTER COLUMN abalance SET (log_old_value=true, delta_apply_function=spock.delta_apply);
-ALTER TABLE pgbench_branches ALTER COLUMN bbalance SET (log_old_value=true, delta_apply_function=spock.delta_apply);
-ALTER TABLE pgbench_tellers ALTER COLUMN tbalance SET (log_old_value=true, delta_apply_function=spock.delta_apply);
+SELECT spock.delta_apply('pgbench_accounts', 'abalance');
+SELECT spock.delta_apply('pgbench_branches', 'bbalance');
+SELECT spock.delta_apply('pgbench_tellers', 'tbalance');
 ```
 
-As a special safety-valve feature, if you ever need to re-set a `log_old_value` column you can temporarily alter the column to `log_old_value` is `false`.
+The function signature is `spock.delta_apply(table_name text, column_name text, warn boolean DEFAULT true)`. The optional `warn` parameter controls whether to emit a warning if the setting has not been propagated to other nodes.
 
 ### Conflict Configuration Options
 

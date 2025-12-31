@@ -95,9 +95,9 @@ _EOF_
 fi
 
 spockbench -h /tmp -i -s $SCALEFACTOR demo
-psql -U admin -h /tmp -d demo -c "alter table pgbench_accounts alter column abalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
-psql -U admin -h /tmp -d demo -c "alter table pgbench_branches alter column bbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
-psql -U admin -h /tmp -d demo -c "alter table pgbench_tellers alter column tbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
+psql -U admin -h /tmp -d demo -c "select spock.delta_apply('pgbench_accounts', 'abalance');"
+psql -U admin -h /tmp -d demo -c "select spock.delta_apply('pgbench_branches', 'bbalance');"
+psql -U admin -h /tmp -d demo -c "select spock.delta_apply('pgbench_tellers', 'tbalance');"
 
 psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_replication_set', '{public}');"
 

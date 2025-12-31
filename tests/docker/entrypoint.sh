@@ -92,7 +92,7 @@ done
 
 psql -U $DBUSER -h /tmp -d $DBNAME -c "create table t1 (id serial primary key, data int8);"
 psql -U $DBUSER -h /tmp -d $DBNAME -c "create table t2 (id serial primary key, data int8);"
-psql -U $DBUSER -h /tmp -d $DBNAME -c "alter table t1 alter column data set (log_old_value=true, delta_apply_function=spock.delta_apply);"
+psql -U $DBUSER -h /tmp -d $DBNAME -c "select spock.delta_apply('t1', 'data');"
 
 ./pgedge spock sub-add-repset sub_${peer_names[0]}$HOSTNAME demo_replication_set $DBNAME
 #./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_1 demo_replication_set $DBNAME
