@@ -100,7 +100,7 @@ pg${PGVER}/bin/pg_ctl -D data/pg${PGVER} restart -l data/pg${PGVER}/logfile
 wait_for_pg
 
 echo "==========Assert Spock version is the latest=========="
-expected_line=$(grep '#define SPOCK_VERSION' /home/pgedge/spock/include/spock.h)
+expected_line=$(grep '#define SPOCK_VERSION' ${SPOCK_SOURCE_DIR}/include/spock.h)
 expected_version=$(echo "$expected_line" | grep -oP '"\K[0-9]+\.[0-9]+\.[0-9]+')
 expected_major=${expected_version%%.*}
 actual_version=$(psql -U $DBUSER -d $DBNAME -X -t -A -c "SELECT spock.spock_version()")

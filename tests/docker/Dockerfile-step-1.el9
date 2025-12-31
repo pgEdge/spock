@@ -10,10 +10,11 @@ ENV PGVER=$PGVER
 ENV PATH="/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}"
 ENV LD_LIBRARY_PATH="/home/pgedge/pgedge/pg${PGVER}/lib:${LD_LIBRARY_PATH}"
 ENV PG_CONFIG="/home/pgedge/pgedge/pg${PGVER}/bin/pg_config"
+ENV SPOCK_SOURCE_DIR="/home/pgedge/spock"
 
 # Copy spock source code and set proper ownership
-COPY . /home/pgedge/spock
-RUN chown -R pgedge:pgedge /home/pgedge/spock
+COPY . ${SPOCK_SOURCE_DIR}
+RUN chown -R pgedge:pgedge ${SPOCK_SOURCE_DIR}
 
 WORKDIR /home/pgedge
 
@@ -37,7 +38,7 @@ RUN echo "Setting up pgedge..." && \
 
 WORKDIR /home/pgedge/postgres
 
-RUN for patchfile in /home/pgedge/spock/patches/${PGVER}/*; do \
+RUN for patchfile in ${SPOCK_SOURCE_DIR}/patches/${PGVER}/*; do \
 		patch -p1 --verbose < $patchfile; \
 	done
 
@@ -72,7 +73,7 @@ RUN echo "==========Compiling Modified PostgreSQL==========" && \
     make -C contrib install
 
 # Compile Spock
-WORKDIR /home/pgedge/spock
+WORKDIR ${SPOCK_SOURCE_DIR}
 RUN echo "==========Compiling Spock==========" && \
     make clean && \
     make -j${MAKE_JOBS} && \
