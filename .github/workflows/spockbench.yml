@@ -48,6 +48,13 @@ jobs:
         with:
           version: latest
 
+      - name: Build docker container
+        run: |
+          cd ${GITHUB_WORKSPACE}/
+          docker build \
+            --build-arg PGVER=${{ matrix.pgver }} \
+            -t spock -f tests/docker/Dockerfile-step-1.el9 .
+
       - name: Start Spockbench
         run: |
           cd ${GITHUB_WORKSPACE}/tests/docker/
@@ -59,12 +66,11 @@ jobs:
           cd ${GITHUB_WORKSPACE}/tests/docker
           ./check-outputs.sh
 
-      - name: Build docker container
+      - name: Stop Spockbench containers
+        if: ${{ always() }}
         run: |
-          cd ${GITHUB_WORKSPACE}/
-          docker build \
-            --build-arg PGVER=${{ matrix.pgver }} \
-            -t spock -f tests/docker/Dockerfile-step-1.el9 .
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          docker compose down -v || true
 
       - name: Run regression tests
         run: |

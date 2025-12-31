@@ -3,11 +3,6 @@ services:
     container_name: n1
     hostname: n1
     image: spock
-    build:
-      context: ../..
-      dockerfile: tests/docker/Dockerfile-step-1.el9
-      args:
-        PGVER: ${PG_VER}
     environment:
       - HOSTNAME=n1
       - PEER_NAMES=n2,n3
@@ -25,11 +20,6 @@ services:
     container_name: n2
     hostname: n2
     image: spock
-    build:
-      context: ../..
-      dockerfile: tests/docker/Dockerfile-step-1.el9
-      args:
-        PGVER: ${PG_VER}
     environment:
       - HOSTNAME=n2
       - PEER_NAMES=n1,n3
@@ -47,11 +37,6 @@ services:
     container_name: n3
     hostname: n3
     image: spock
-    build:
-      context: ../..
-      dockerfile: tests/docker/Dockerfile-step-1.el9
-      args:
-        PGVER: ${PG_VER}
     environment:
       - HOSTNAME=n3
       - PEER_NAMES=n1,n2
