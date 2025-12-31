@@ -90,7 +90,7 @@ fi
 export DBUSER=${DBUSER:-pgedge}
 export DBNAME=${DBNAME:-demo}
 
-psql -h /tmp -U $DBUSER -d $DBNAME -c "drop extension spock;"
+psql -h /tmp -U $DBUSER -d $DBNAME -c "drop extension if exists spock;"
 psql -h /tmp -U $DBUSER -d $DBNAME -c "drop schema public cascade;"
 psql -h /tmp -U $DBUSER -d $DBNAME -c "create schema public;"
 psql -h /tmp -U $DBUSER -d $DBNAME -c "create extension spock;"
