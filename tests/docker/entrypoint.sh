@@ -23,6 +23,7 @@ cd ~/spockbench
 sudo python3 setup.py install
 
 cd ~/pgedge
+
 sed -i '/log_min_messages/s/^#//g' data/pg$PGVER/postgresql.conf
 sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg$PGVER/postgresql.conf
 ./pgedge restart

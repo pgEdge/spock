@@ -59,6 +59,7 @@ jobs:
         run: |
           cd ${GITHUB_WORKSPACE}/tests/docker/
           echo PG_VER=${{ matrix.pgver }} >> pgedge.env
+          docker compose build --build-arg PGVER=${{ matrix.pgver }}
           docker compose up
 
       - name: Check spockbench output
