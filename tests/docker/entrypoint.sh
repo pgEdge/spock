@@ -90,10 +90,9 @@ fi
 export DBUSER=${DBUSER:-pgedge}
 export DBNAME=${DBNAME:-demo}
 
-psql -h /tmp -U $DBUSER -d $DBNAME -c "drop extension if exists spock;"
-psql -h /tmp -U $DBUSER -d $DBNAME -c "drop schema public cascade;"
-psql -h /tmp -U $DBUSER -d $DBNAME -c "create schema public;"
-psql -h /tmp -U $DBUSER -d $DBNAME -c "create extension spock;"
+# This code executes on a fresh system that means we have a clean Postgres
+# instance.
+psql -h /tmp -U $DBUSER -d $DBNAME -c "CREATE EXTENSION spock;"
 
 # Restart PostgreSQL to apply all settings
 pg${PGVER}/bin/pg_ctl -D data/pg${PGVER} restart -l data/pg${PGVER}/logfile
@@ -101,10 +100,10 @@ pg${PGVER}/bin/pg_ctl -D data/pg${PGVER} restart -l data/pg${PGVER}/logfile
 wait_for_pg
 
 echo "==========Assert Spock version is the latest=========="
-expected_line=$(grep '#define SPOCK_VERSION' /home/pgedge/spock/spock.h)
+expected_line=$(grep '#define SPOCK_VERSION' /home/pgedge/spock/include/spock.h)
 expected_version=$(echo "$expected_line" | grep -oP '"\K[0-9]+\.[0-9]+\.[0-9]+')
 expected_major=${expected_version%%.*}
-actual_version=$(psql -U $DBUSER -d $DBNAME -X -t -A -c "select spock.spock_version()")
+actual_version=$(psql -U $DBUSER -d $DBNAME -X -t -A -c "SELECT spock.spock_version()")
 actual_major=${actual_version%%.*}
 
 if (( actual_major >= expected_major )); then
