@@ -16,7 +16,6 @@ function wait_for_pg()
   done
 }
 
-. /home/pgedge/pgedge/pg$PGVER/pg$PGVER.env
 . /home/pgedge/.bashrc
 
 echo "==========Installing Spockbench=========="

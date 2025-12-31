@@ -55,6 +55,17 @@ jobs:
             --build-arg PGVER=${{ matrix.pgver }} \
             -t spock -f tests/docker/Dockerfile-step-1.el9 .
 
+      - name: Start docker
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          echo PG_VER=${{ matrix.pgver }} >> pgedge.env
+          docker compose up
+
+      - name: Check spockbench output
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker
+          ./check-outputs.sh
+
       - name: Run regression tests
         run: |
           REG_CT_NAME="spock-regress-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
@@ -103,15 +114,4 @@ jobs:
             tests/logs/**
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: Start docker
-        run: |
-          cd ${GITHUB_WORKSPACE}/tests/docker/
-          echo PG_VER=${{ matrix.pgver }} >> pgedge.env
-          docker compose up
-
-      - name: Check spockbench output
-        run: |
-          cd ${GITHUB_WORKSPACE}/tests/docker
-          ./check-outputs.sh
 
