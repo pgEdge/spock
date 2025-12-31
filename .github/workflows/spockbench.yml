@@ -48,6 +48,17 @@ jobs:
         with:
           version: latest
 
+      - name: Start Spockbench
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          echo PG_VER=${{ matrix.pgver }} >> pgedge.env
+          docker compose up
+
+      - name: Check spockbench output
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker
+          ./check-outputs.sh
+
       - name: Build docker container
         run: |
           cd ${GITHUB_WORKSPACE}/
@@ -103,15 +114,4 @@ jobs:
             tests/logs/**
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: Start docker
-        run: |
-          cd ${GITHUB_WORKSPACE}/tests/docker/
-          echo PG_VER=${{ matrix.pgver }} >> pgedge.env
-          docker compose up
-
-      - name: Check spockbench output
-        run: |
-          cd ${GITHUB_WORKSPACE}/tests/docker
-          ./check-outputs.sh
 
