@@ -3195,6 +3195,7 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	SpockLocalNode *node;
 	SpockSyncEventMessage message;
 	XLogRecPtr	lsn;
+	int			res;
 
 	node = check_local_node(true);
 	message.mtype = SPOCK_SYNC_EVENT_MSG;
@@ -3203,6 +3204,29 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 
 	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *) &message,
 							sizeof(message), true);
+
+	/*
+	 * Force a transaction to happen to advance the commit LSN.
+	 * In practice this is used rarely, just when administering Spock.
+	 */
+	SPI_connect();
+	PG_TRY();
+	{
+		res = SPI_execute("COMMENT ON TABLE spock.node IS 'spock'", false, 0);
+	}
+	PG_CATCH();
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("cannot comment on table for sync event"),
+				 errhint("verify permission")));
+	}
+	PG_END_TRY();
+
+	if (res != SPI_OK_UTILITY)
+		elog(ERROR, "SPI query failed: %d", res);
+
+	SPI_finish();
 
 	PG_RETURN_LSN(lsn);
 }

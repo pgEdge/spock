@@ -1844,6 +1844,12 @@ BEGIN
                             RAISE NOTICE '    OK: %', rpad('Using stored sync event from origin node ' || src_node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
                         END IF;
 
+                        -- Do a transaction to advance the commit LSN in case the node is idle
+                        PERFORM dblink_exec(src_dsn, 'COMMENT ON TABLE spock.node IS ''spock''');
+                        IF verb THEN
+                            RAISE NOTICE '    OK: %', rpad('Remote SQL for triggering transaction on enabling node for ' || new_node_name || ' ' || sql, 120, ' ');
+                        END IF;
+
                         -- Wait for this sync event on the new node where the subscription exists
                         PERFORM * FROM dblink(new_node_dsn,
                             format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
@@ -1912,6 +1918,9 @@ BEGIN
                         IF verb THEN
                             RAISE NOTICE '    OK: %', rpad('Using stored sync event from origin node ' || rec.node_name || ' (LSN: ' || sync_lsn || ')...', 120, ' ');
                         END IF;
+
+                        -- Do a transaction to advance the commit LSN in case the node is idle
+                        PERFORM dblink_exec(rec.dsn, 'COMMENT ON TABLE spock.node IS ''spock''');
 
                         -- Wait for this sync event on the new node where the subscription exists
                         PERFORM * FROM dblink(new_node_dsn,

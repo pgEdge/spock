@@ -693,6 +693,12 @@ class SpockClusterManager:
                 if sync_lsn:
                     self.notice(f"    OK: Using stored sync event from origin node {rec['node_name']} (LSN: {sync_lsn})...")
 
+                    # Trigger a new transaction in case idle to advance LSN
+                    sql = "COMMENT ON TABLE spock.node IS 'spock'"
+                    if self.verbose:
+                        self.info(f"    Remote SQL for triggering transaction on enabling node for {new_node_name}: {sql}")
+                    self.run_psql(rec['dsn'], sql, fetch=True)
+
                     # Wait for this sync event on the new node where the subscription exists
                     sql = f"CALL spock.wait_for_sync_event(true, '{rec['node_name']}', '{sync_lsn}'::pg_lsn, {timeout_ms});"
                     if self.verbose:
