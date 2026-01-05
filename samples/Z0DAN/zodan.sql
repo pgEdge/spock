@@ -1195,6 +1195,7 @@ DECLARE
     dbname             text;
     slot_name          text;
 	sub_name           text;
+    _commit_lsn        pg_lsn;
 BEGIN
     RAISE NOTICE 'Phase 3: Creating disabled subscriptions and slots';
 
@@ -1204,7 +1205,8 @@ BEGIN
     -- Create temporary table to store sync LSNs
     CREATE TEMP TABLE IF NOT EXISTS temp_sync_lsns (
         origin_node text PRIMARY KEY,
-        sync_lsn text NOT NULL
+        sync_lsn text NOT NULL,
+        commit_lsn pg_lsn
     );
 
     -- Check if there are any "other" nodes (not source, not new)
@@ -1276,8 +1278,11 @@ BEGIN
                 RAISE NOTICE '    Remote SQL for slot creation: %', remotesql;
             END IF;
 
-            PERFORM * FROM dblink(rec.dsn, remotesql) AS t(slot_name text, lsn pg_lsn);
-            RAISE NOTICE '    OK: %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name, 120, ' ');
+            SELECT lsn INTO _commit_lsn
+                FROM dblink(rec.dsn, remotesql) AS t(slot_name text, lsn pg_lsn);
+            UPDATE temp_sync_lsns SET commit_lsn = _commit_lsn
+                WHERE origin_node = rec.node_name;
+            RAISE NOTICE '    OK: %', rpad('Creating replication slot ' || slot_name || ' (LSN: ' || _commit_lsn || ')' || ' on node ' || rec.node_name, 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
                 RAISE NOTICE '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
@@ -1662,7 +1667,7 @@ CREATE OR REPLACE PROCEDURE spock.check_commit_timestamp_and_advance_slot(
 ) LANGUAGE plpgsql AS $$
 DECLARE
     rec RECORD;
-	start_point record;
+    commit_lsn pg_lsn;
     slot_name text;
     dbname text;
     remotesql text;
@@ -1677,27 +1682,23 @@ BEGIN
 
     -- Multi-node scenario: check commit timestamp for "other" nodes to new node
     FOR rec IN SELECT * FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name LOOP
-        -- Check commit timestamp for lag from "other" node to new node
         BEGIN
-            remotesql := format('SELECT commit_lsn, commit_timestamp
-								 FROM spock.lag_tracker
-								 WHERE origin_name = %L AND receiver_name = %L',
-                                rec.node_name, new_node_name);
-            IF verb THEN
-                RAISE NOTICE '    Remote SQL for commit timestamp check: %', remotesql;
-            END IF;
+            IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'temp_sync_lsns' AND relpersistence = 't') THEN
+                -- Get the stored sync LSN from when subscription was created
+                SELECT tsl.commit_lsn INTO commit_lsn
+                FROM temp_sync_lsns tsl
+                WHERE tsl.origin_node = rec.node_name;
 
-            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(lsn pg_lsn, ts timestamp) INTO start_point;
-
-            IF start_point.ts IS NOT NULL THEN
-                RAISE NOTICE '    OK: %', rpad('Found commit timestamp for ' || rec.node_name || '->' || new_node_name || ': ' || start_point.ts, 120, ' ');
-            ELSE
-                RAISE NOTICE '    - %', rpad('No commit timestamp found for ' || rec.node_name || '->' || new_node_name, 120, ' ');
-                CONTINUE;
+                IF commit_lsn IS NOT NULL THEN
+                    RAISE NOTICE '    OK: %', rpad('Found commit LSN for ' || rec.node_name || ' (LSN: ' || commit_lsn || ')...', 120, ' ');
+                ELSE
+                    RAISE NOTICE '    - %', rpad('No commit LSN found for ' || rec.node_name || '->' || new_node_name, 120, ' ');
+                    CONTINUE;
+                END IF;
             END IF;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Checking commit timestamp for ' || rec.node_name || '->' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Checking commit LSN for ' || rec.node_name || '->' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
                 CONTINUE;
         END;
 
@@ -1727,6 +1728,7 @@ BEGIN
 
             DECLARE
                 current_lsn pg_lsn;
+                target_lsn pg_lsn;
             BEGIN
                 SELECT * FROM dblink(rec.dsn, remotesql) AS t(lsn pg_lsn) INTO current_lsn;
 
@@ -1735,23 +1737,24 @@ BEGIN
                     CONTINUE;
                 END IF;
 
-                IF start_point.lsn IS NULL OR start_point.lsn <= current_lsn THEN
-                    RAISE NOTICE '    - Slot % already at or beyond target LSN (current: %, target: %)', slot_name, current_lsn, start_point.lsn;
+                target_lsn := commit_lsn;
+                IF target_lsn IS NULL OR target_lsn <= current_lsn THEN
+                    RAISE NOTICE '    - Slot % already at or beyond target LSN (current: %, target: %)', slot_name, current_lsn, target_lsn;
                     CONTINUE;
                 END IF;
 
                 -- Advance the slot
-                remotesql := format('SELECT pg_replication_slot_advance(%L, %L::pg_lsn)', slot_name, start_point.lsn);
+                remotesql := format('SELECT pg_replication_slot_advance(%L, %L::pg_lsn)', slot_name, target_lsn);
                 IF verb THEN
                     RAISE NOTICE '    Remote SQL for slot advancement: %', remotesql;
                 END IF;
 
                 PERFORM * FROM dblink(rec.dsn, remotesql) AS t(result text);
-                RAISE NOTICE '    OK: %', rpad('Advanced slot ' || slot_name || ' from ' || current_lsn || ' to ' || start_point.lsn, 120, ' ');
+                RAISE NOTICE '    OK: %', rpad('Advanced slot ' || slot_name || ' from ' || current_lsn || ' to ' || target_lsn, 120, ' ');
             END;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Advancing slot ' || slot_name || ' to timestamp ' || start_point.ts || ' (error: ' || SQLERRM || ')', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Advancing slot ' || slot_name || ' to LSN ' || commit_lsn || ' (error: ' || SQLERRM || ')', 120, ' ');
                 -- Continue with other nodes even if this one fails
         END;
     END LOOP;
