@@ -23,26 +23,87 @@ cd ~/spockbench
 sudo python3 setup.py install
 
 cd ~/pgedge
-sed -i '/log_min_messages/s/^#//g' data/pg$PGVER/postgresql.conf
-sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg$PGVER/postgresql.conf
-./pgedge restart
 
-wait_for_pg
+# Initialize PostgreSQL if not already done
+if [ ! -d "data/pg$PGVER" ]; then
+  echo "==========Initializing PostgreSQL $PGVER=========="
 
-psql -h /tmp -U $DBUSER -d $DBNAME -c "drop extension spock;"
-psql -h /tmp -U $DBUSER -d $DBNAME -c "drop schema public cascade;"
-psql -h /tmp -U $DBUSER -d $DBNAME -c "create schema public;"
-psql -h /tmp -U $DBUSER -d $DBNAME -c "create extension spock;"
+  # Initialize the database cluster
+  pg${PGVER}/bin/initdb -D data/pg${PGVER} --encoding=UTF8 --locale=C
 
-./pgedge restart
+  # Configure PostgreSQL with settings from regress-postgresql.conf
+  cat >> data/pg${PGVER}/postgresql.conf <<EOF
+
+# Spock configuration
+shared_preload_libraries = 'spock'
+wal_level = logical
+max_wal_senders = 20
+max_replication_slots = 20
+max_worker_processes = 20
+track_commit_timestamp = on
+max_locks_per_transaction = 1000
+
+# Connection settings
+unix_socket_directories = '/tmp'
+listen_addresses = '*'
+port = 5432
+
+# Logging
+log_line_prefix = '[%m] [%p] [%d] '
+log_min_messages = debug1
+
+# Performance (for testing)
+fsync = off
+
+# Spock settings
+spock.synchronous_commit = true
+EOF
+
+  # Configure pg_hba.conf for network access
+  cat >> data/pg${PGVER}/pg_hba.conf <<EOF
+
+# Allow replication connections
+host    replication     all             0.0.0.0/0               trust
+host    all             all             0.0.0.0/0               trust
+EOF
+
+  # Start PostgreSQL
+  pg${PGVER}/bin/pg_ctl -D data/pg${PGVER} -l data/pg${PGVER}/logfile.log start
+
+  wait_for_pg
+
+  # Create database and user
+  export DBUSER=${DBUSER:-pgedge}
+  export DBNAME=${DBNAME:-demo}
+
+  pg${PGVER}/bin/createuser -h /tmp -s $DBUSER 2>/dev/null || true
+  pg${PGVER}/bin/createdb -h /tmp -O $DBUSER $DBNAME 2>/dev/null || true
+
+  echo "==========PostgreSQL $PGVER initialized successfully=========="
+else
+  # PostgreSQL already initialized, just start it
+  pg${PGVER}/bin/pg_ctl -D data/pg${PGVER} -l data/pg${PGVER}/logfile.log start
+  wait_for_pg
+fi
+
+# Ensure environment variables are set
+export DBUSER=${DBUSER:-pgedge}
+export DBNAME=${DBNAME:-demo}
+
+# This code executes on a fresh system that means we have a clean Postgres
+# instance.
+psql -h /tmp -U $DBUSER -d $DBNAME -c "CREATE EXTENSION spock;"
+
+# Restart PostgreSQL to apply all settings
+pg${PGVER}/bin/pg_ctl -D data/pg${PGVER} restart -l data/pg${PGVER}/logfile.log
 
 wait_for_pg
 
 echo "==========Assert Spock version is the latest=========="
-expected_line=$(grep '#define SPOCK_VERSION' /home/pgedge/spock/spock.h)
+expected_line=$(grep '#define SPOCK_VERSION' ${SPOCK_SOURCE_DIR}/include/spock.h)
 expected_version=$(echo "$expected_line" | grep -oP '"\K[0-9]+\.[0-9]+\.[0-9]+')
 expected_major=${expected_version%%.*}
-actual_version=$(psql -U $DBUSER -d $DBNAME -X -t -A -c "select spock.spock_version()")
+actual_version=$(psql -U $DBUSER -d $DBNAME -X -t -A -c "SELECT spock.spock_version()")
 actual_major=${actual_version%%.*}
 
 if (( actual_major >= expected_major )); then
