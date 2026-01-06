@@ -16,6 +16,12 @@ function wait_for_pg()
   done
 }
 
+ls -la /home/pgedge/
+ls -la /home/pgedge/pgedge
+. pg${PG_VER}/pg${PG_VER}.env
+echo 'export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg${PG_VER}/lib:$LD_LIBRARY_PATH' >> /home/pgedge/.bashrc
+echo 'export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH' >> /home/pgedge/.bashrc
+echo 'export PATH=/home/pgedge/pgedge/pg${PG_VER}/bin:$PATH' >> /home/pgedge/.bashrc
 . /home/pgedge/.bashrc
 
 echo "==========Installing Spockbench=========="
@@ -44,7 +50,7 @@ track_commit_timestamp = on
 max_locks_per_transaction = 1000
 
 # Connection settings
-unix_socket_directories = '/tmp'
+#unix_socket_directories = '/tmp'
 listen_addresses = '*'
 port = 5432
 
