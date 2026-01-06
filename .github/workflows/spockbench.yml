@@ -54,13 +54,20 @@ jobs:
           docker build \
             --build-arg PGVER=${{ matrix.pgver }} \
             -t spock -f tests/docker/Dockerfile-step-1.el9 .
+            ls /home/pgedge/
+            ls /home/pgedge/pgedge
+            ls /home/pgedge/pgedge/pg${{ matrix.pgver }}
 
       - name: Start docker
         run: |
           cd ${GITHUB_WORKSPACE}/tests/docker/
+          # XXX: Do we really need PG_VER variable and pgedge.env here?
           echo PG_VER=${{ matrix.pgver }} >> pgedge.env
           docker compose build --build-arg PGVER=${{ matrix.pgver }}
           docker compose up
+          ls /home/pgedge/
+          ls /home/pgedge/pgedge
+          ls /home/pgedge/pgedge/pg${{ matrix.pgver }}
 
       - name: Check spockbench output
         run: |
