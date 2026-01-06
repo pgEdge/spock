@@ -669,6 +669,64 @@ class SpockClusterManager:
         if self.verbose:
             self.info(f"Subscription {sub_name} enabled successfully")
 
+    def verify_subscription_replicating(self, node_dsn: str, subscription_name: str,
+                                    verb: bool = True, max_attempts: int = 120):
+         """
+         Verifies that a subscription is actively replicating after being enabled
+
+         Arguments:
+             node_dsn: DSN of the node where subscription exists
+             subscription_name: Name of the subscription to verify
+             verb: Verbose output flag (default: True)
+             max_attempts: Maximum verification attempts in seconds (default: 120 = 2 minutes)
+
+         Usage:
+             manager.verify_subscription_replicating(node_dsn, 'sub_name', True)
+
+         Notes:
+             Raises exception if subscription fails to reach 'replicating' status within timeout
+
+         Example:
+             # Verify subscription is replicating with 2 minute timeout
+             self.verify_subscription_replicating(
+                 new_node_dsn,
+                 'sub_n1_n3',
+                 verb=True,
+                 max_attempts=120
+             )
+         """
+         verify_count = 0
+
+         while True:
+             verify_count += 1
+
+             # Check subscription status on the target node
+             sql = f"SELECT status FROM spock.sub_show_status() WHERE subscription_name = '{subscription_name}'"
+
+             if self.verbose and verb:
+                 self.info(f"[QUERY] {sql}")
+
+             sub_status = self.run_psql(node_dsn, sql, fetch=True, return_single=True)
+
+             if sub_status and sub_status.strip() == 'replicating':
+                 if verb:
+                     msg = f"Verified subscription {subscription_name} is replicating"
+                     self.notice(f"    SUCCESS: {msg.ljust(120)}")
+                 break
+             elif verify_count >= max_attempts:
+                 status_display = sub_status.strip() if sub_status else 'unknown'
+                 raise Exception(
+                     f"Subscription {subscription_name} verification timeout after {max_attempts} seconds "
+                     f"(final status: {status_display})"
+                 )
+             else:
+                 if verb:
+                     status_display = sub_status.strip() if sub_status else 'unknown'
+                     msg = (f"Waiting for subscription {subscription_name} to start replicating "
+                           f"(status: {status_display}, attempt {verify_count}/{max_attempts})")
+                     self.notice(f"    ⏳ {msg.ljust(120)}")
+                 time.sleep(1)
+
     def enable_disabled_subscriptions(self, src_node_name: str, src_dsn: str,
                                     new_node_name: str, new_node_dsn: str):
         """Phase 8: Enable disabled subscriptions and wait for stored sync events"""
@@ -702,6 +760,13 @@ class SpockClusterManager:
                     self.notice(f"    OK: Waiting for sync event from {rec['node_name']} on new node {new_node_name}...")
                 else:
                     self.notice(f"    ⚠ No stored sync LSN found for {rec['node_name']}, skipping sync wait")
+                # Verify it's replicating
+                self.verify_subscription_replicating(
+                    node_dsn=new_node_dsn,
+                    subscription_name=sub_name,
+                    verb=True,
+                    max_attempts=120  # 2 minutes
+                )
 
             except Exception as e:
                 self.notice(f"    ✗ Enabling subscription {sub_name}... (error: {e})")

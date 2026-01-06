@@ -2513,3 +2513,260 @@ BEGIN
 END;
 $$;
 
+-- ============================================================================
+-- Procedure: health_check
+-- Purpose : Validate cluster health before or after ZODAN node addition
+--           Similar to pg_upgrade -c (check) option
+-- Arguments:
+--   src_node_name  - Source node name
+--   src_dsn        - Source node DSN
+--   new_node_name  - New node name (optional for cluster-wide check)
+--   new_node_dsn   - New node DSN (optional for cluster-wide check)
+--   check_type     - Check type: 'pre' (before add_node) or 'post' (after add_node)
+--   verb           - Verbose output flag
+-- Usage    :
+--   -- Pre-check before adding a node
+--   CALL spock.health_check('n1', 'host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge',
+--                           'n3', 'host=localhost dbname=pgedge port=5433 user=pgedge password=pgedge',
+--                           'pre', true);
+--
+--   -- Post-check after adding a node
+--   CALL spock.health_check('n1', 'host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge',
+--                           'n3', 'host=localhost dbname=pgedge port=5433 user=pgedge password=pgedge',
+--                           'post', true);
+--
+--   -- Cluster-wide check (no new node)
+--   CALL spock.health_check('n1', 'host=localhost dbname=pgedge port=5431 user=pgedge password=pgedge',
+--                           NULL, NULL, 'pre', true);
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE spock.health_check(
+    src_node_name text,
+    src_dsn text,
+    new_node_name text DEFAULT NULL,
+    new_node_dsn text DEFAULT NULL,
+    check_type text DEFAULT 'pre',
+    verb boolean DEFAULT false
+) LANGUAGE plpgsql AS $$
+DECLARE
+    checks_passed integer := 0;
+    checks_failed integer := 0;
+    check_result text;
+    node_rec RECORD;
+    remotesql text;
+    result_value text;
+    result_count integer;
+    src_version text;
+    new_version text;
+    sub_count text;
+    user_table_count text;
+BEGIN
+    RAISE NOTICE '';
+    RAISE NOTICE '================================================================================';
+    RAISE NOTICE 'ZODAN CLUSTER HEALTH CHECK (%-CHECK)', upper(check_type);
+    RAISE NOTICE '================================================================================';
+
+    -- ========================================================================
+    -- Check 1: Spock version compatibility (if new node provided)
+    -- ========================================================================
+    IF new_node_dsn IS NOT NULL THEN
+        BEGIN
+            -- Call existing check_spock_version_compatibility procedure
+            CALL spock.check_spock_version_compatibility(src_dsn, new_node_dsn, false);
+            RAISE NOTICE 'PASS: Spock version compatibility check';
+            checks_passed := checks_passed + 1;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'FAIL: Spock version compatibility - %', SQLERRM;
+            checks_failed := checks_failed + 1;
+        END;
+    END IF;
+
+    -- ========================================================================
+    -- Check 2: Node connectivity - Source node
+    -- ========================================================================
+    BEGIN
+        remotesql := 'SELECT 1';
+        SELECT * FROM dblink(src_dsn, remotesql) AS t(result integer) INTO result_value;
+        RAISE NOTICE 'PASS: Source node % connectivity', src_node_name;
+        checks_passed := checks_passed + 1;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'FAIL: Source node % connectivity - %', src_node_name, SQLERRM;
+        checks_failed := checks_failed + 1;
+    END;
+
+    -- ========================================================================
+    -- Check 3: Node connectivity - New node (if provided)
+    -- ========================================================================
+    IF new_node_dsn IS NOT NULL THEN
+        BEGIN
+            remotesql := 'SELECT 1';
+            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(result integer) INTO result_value;
+            RAISE NOTICE 'PASS: New node % connectivity', new_node_name;
+            checks_passed := checks_passed + 1;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'FAIL: New node % connectivity - %', new_node_name, SQLERRM;
+            checks_failed := checks_failed + 1;
+        END;
+    END IF;
+
+    -- ========================================================================
+    -- Check 4: Spock extension installation - Source node
+    -- ========================================================================
+    BEGIN
+        remotesql := 'SELECT extversion FROM pg_extension WHERE extname = ''spock''';
+        SELECT * FROM dblink(src_dsn, remotesql) AS t(version text) INTO src_version;
+        IF src_version IS NOT NULL THEN
+            RAISE NOTICE 'PASS: Spock extension on source node (version %)', src_version;
+            checks_passed := checks_passed + 1;
+        ELSE
+            RAISE NOTICE 'FAIL: Spock extension not installed on source node';
+            checks_failed := checks_failed + 1;
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'FAIL: Spock extension check on source - %', SQLERRM;
+        checks_failed := checks_failed + 1;
+    END;
+
+    -- ========================================================================
+    -- Check 5: Spock extension installation - New node (if provided)
+    -- ========================================================================
+    IF new_node_dsn IS NOT NULL THEN
+        BEGIN
+            remotesql := 'SELECT extversion FROM pg_extension WHERE extname = ''spock''';
+            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(version text) INTO new_version;
+            IF new_version IS NOT NULL THEN
+                RAISE NOTICE 'PASS: Spock extension on new node (version %)', new_version;
+                checks_passed := checks_passed + 1;
+            ELSE
+                RAISE NOTICE 'FAIL: Spock extension not installed on new node';
+                checks_failed := checks_failed + 1;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'FAIL: Spock extension check on new node - %', SQLERRM;
+            checks_failed := checks_failed + 1;
+        END;
+    END IF;
+
+    -- ========================================================================
+    -- Check 6: Cluster node enumeration
+    -- ========================================================================
+    BEGIN
+        remotesql := 'SELECT count(*) FROM spock.node';
+        SELECT * FROM dblink(src_dsn, remotesql) AS t(node_count integer) INTO result_count;
+        RAISE NOTICE 'PASS: Cluster has % nodes', result_count;
+        checks_passed := checks_passed + 1;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'FAIL: Cluster node enumeration - %', SQLERRM;
+        checks_failed := checks_failed + 1;
+    END;
+
+    -- ========================================================================
+    -- Check 7: Active subscriptions on each node
+    -- ========================================================================
+    BEGIN
+        FOR node_rec IN
+            SELECT node_name, if_dsn
+            FROM dblink(src_dsn,
+                'SELECT n.node_name, i.if_dsn FROM spock.node n JOIN spock.node_interface i ON n.node_id = i.if_nodeid'
+            ) AS t(node_name text, if_dsn text)
+        LOOP
+            BEGIN
+                remotesql := 'SELECT count(*) FROM spock.subscription WHERE sub_enabled = true';
+                SELECT * FROM dblink(node_rec.if_dsn, remotesql) AS t(sub_count text) INTO sub_count;
+                RAISE NOTICE 'PASS: Node % has % active subscriptions', node_rec.node_name, COALESCE(sub_count, '0');
+                checks_passed := checks_passed + 1;
+            EXCEPTION WHEN OTHERS THEN
+                RAISE NOTICE 'FAIL: Node % subscription check - %', node_rec.node_name, SQLERRM;
+                checks_failed := checks_failed + 1;
+            END;
+        END LOOP;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'FAIL: Cluster subscription check - %', SQLERRM;
+        checks_failed := checks_failed + 1;
+    END;
+
+    -- ========================================================================
+    -- Check 8: Database prerequisites (pre-check only)
+    -- ========================================================================
+    IF check_type = 'pre' AND new_node_dsn IS NOT NULL THEN
+        -- Check 8a: Verify lolor extension is not installed
+        BEGIN
+            remotesql := 'SELECT count(*) FROM pg_tables WHERE schemaname = ''lolor''';
+            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(table_count text) INTO user_table_count;
+
+            IF user_table_count IS NOT NULL AND user_table_count::integer = 0 THEN
+                RAISE NOTICE 'PASS: Destination database does not have signs of lolor being installed';
+                checks_passed := checks_passed + 1;
+            ELSE
+                RAISE NOTICE 'FAIL: Destination database has the lolor extension installed or remaining lolor user data in the lolor schema';
+                checks_failed := checks_failed + 1;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'FAIL: lolor extension check - %', SQLERRM;
+            checks_failed := checks_failed + 1;
+        END;
+
+        -- Check 8b: Verify database is empty (no user tables)
+        BEGIN
+            remotesql := $pg_tables$
+                SELECT count(*) FROM pg_tables
+                WHERE schemaname NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'spock')
+                AND schemaname NOT LIKE 'pg_temp_%'
+                AND schemaname NOT LIKE 'pg_toast_temp_%'
+            $pg_tables$;
+            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(table_count text) INTO user_table_count;
+
+            IF user_table_count IS NOT NULL AND user_table_count::integer = 0 THEN
+                RAISE NOTICE 'PASS: New node database is empty (fresh database)';
+                checks_passed := checks_passed + 1;
+            ELSE
+                RAISE NOTICE 'FAIL: New node database has % user-created tables', user_table_count;
+                checks_failed := checks_failed + 1;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'FAIL: Database emptiness check - %', SQLERRM;
+            checks_failed := checks_failed + 1;
+        END;
+    END IF;
+
+    -- ========================================================================
+    -- Check 9: Replication status (post-check only)
+    -- ========================================================================
+    IF check_type = 'post' AND new_node_name IS NOT NULL AND new_node_dsn IS NOT NULL THEN
+        BEGIN
+            remotesql := 'SELECT count(*) FROM spock.subscription WHERE sub_enabled = true';
+            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(sub_count text) INTO sub_count;
+
+            IF sub_count IS NOT NULL AND sub_count::integer > 0 THEN
+                RAISE NOTICE 'PASS: New node % has active subscriptions', new_node_name;
+                checks_passed := checks_passed + 1;
+            ELSE
+                RAISE NOTICE 'FAIL: New node % has no active subscriptions', new_node_name;
+                checks_failed := checks_failed + 1;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'FAIL: Post-addition replication check - %', SQLERRM;
+            checks_failed := checks_failed + 1;
+        END;
+    END IF;
+
+    -- ========================================================================
+    -- Summary
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '================================================================================';
+    RAISE NOTICE 'HEALTH CHECK SUMMARY';
+    RAISE NOTICE '================================================================================';
+    RAISE NOTICE 'Checks Passed: %', checks_passed;
+    RAISE NOTICE 'Checks Failed: %', checks_failed;
+    RAISE NOTICE 'Total Checks:  %', checks_passed + checks_failed;
+    RAISE NOTICE '';
+
+    IF checks_failed > 0 THEN
+        RAISE NOTICE 'RESULT: FAILED - Please resolve issues before proceeding';
+        RAISE EXCEPTION 'Health check failed with % failed checks', checks_failed;
+    ELSE
+        RAISE NOTICE 'RESULT: PASSED - Cluster is ready for ZODAN node addition';
+    END IF;
+END;
+$$;
+
