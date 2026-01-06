@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 33;  # Fixed test count to match actual tests
+use Test::More tests => 35;  # Fixed test count to match actual tests
 use lib '.';
 use lib 't';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config cross_wire system_maybe);
@@ -146,6 +146,37 @@ system_maybe "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c', "CREATE EXTENS
 pass('n3 database instance created and configured');
 
 # Step 4: Add node n3 using zodan.py(called from n3)
+pass('Pre health check for node n3 (called from n3)');
+
+my $health_pre_cmd = "../../samples/Z0DAN/zodan.py \\
+    health-check \\
+    --src-node-name n1 \\
+    --src-dsn 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password' \\
+    --new-node-name n3 \\
+    --new-node-dsn 'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password' \\
+    --check-type pre \\
+    --verbose
+";
+
+print "Executing: $health_pre_cmd\n";
+print "---\n";
+
+open(my $pipe, "$health_pre_cmd 2>&1 |") or die "Cannot open pipe: $!";
+while (my $line = <$pipe>) {
+    print $line;
+}
+close($pipe);
+my $health_pre_result = $? >> 8;
+
+print "---\n";
+print "=== PRE HEALTH CHECK PROCEDURE COMPLETED (exit code: $health_pre_result) ===\n";
+
+if ($health_pre_result == 0) {
+    pass('zodan.py pre health check executed successfully');
+} else {
+    fail("zodan.py pre health check failed with exit code: $health_pre_result");
+}
+
 pass('Adding node n3 using zodan.py (called from n3)');
 
 print "=== STARTING ADD_NODE PROCEDURE ===\n";

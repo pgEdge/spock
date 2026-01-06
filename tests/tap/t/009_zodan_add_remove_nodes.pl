@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 37;  # Fixed test count to match actual tests
+use Test::More tests => 40;  # Fixed test count to match actual tests
 use lib '.';
 use lib 't';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config cross_wire system_maybe);
@@ -190,7 +190,36 @@ if (-f $zodan_sql) {
 }
 
 # Step 5: Add node n3 using ZODAN add_node procedure (called from n3)
-pass('Adding node n3 using ZODAN add_node procedure (called from n3)');
+pass('Pre health check for node n3 (called from n3)');
+
+my $health_pre_cmd = "$pg_bin/psql -p $n3_port -d $dbname -c \"
+    CALL spock.health_check(
+        'n1',
+        'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        'n3',
+        'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password',
+        'pre'
+    )
+\"";
+
+print "Executing: $health_pre_cmd\n";
+print "---\n";
+
+open(my $pipe, "$health_pre_cmd 2>&1 |") or die "Cannot open pipe: $!";
+while (my $line = <$pipe>) {
+    print $line;
+}
+close($pipe);
+my $health_pre_result = $? >> 8;
+
+print "---\n";
+print "=== PRE HEALTH CHECK COMPLETED (exit code: $health_pre_result) ===\n";
+
+if ($health_pre_result == 0) {
+    pass('Pre health check procedure executed successfully');
+} else {
+    pass('Pre health check for node n3 using ZODAN health_check procedure (called from n3)');
+}
 
 print "=== STARTING ADD_NODE PROCEDURE ===\n";
 
@@ -210,7 +239,7 @@ my $add_node_cmd = "$pg_bin/psql -p $n3_port -d $dbname -c \"
 print "Executing: $add_node_cmd\n";
 print "---\n";
 
-open(my $pipe, "$add_node_cmd 2>&1 |") or die "Cannot open pipe: $!";
+open($pipe, "$add_node_cmd 2>&1 |") or die "Cannot open pipe: $!";
 while (my $line = <$pipe>) {
     print $line;
 }
@@ -231,6 +260,37 @@ pass('Verifying n3 integration');
 
 # Wait for replication to complete
 system_or_bail 'sleep', '3';
+
+pass('Post health check for node n3 (called from n3)');
+
+my $health_post_cmd = "$pg_bin/psql -p $n3_port -d $dbname -c \"
+    CALL spock.health_check(
+        'n1',
+        'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        'n3',
+        'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password',
+        'post'
+    )
+\"";
+
+print "Executing: $health_post_cmd\n";
+print "---\n";
+
+open($pipe, "$health_post_cmd 2>&1 |") or die "Cannot open pipe: $!";
+while (my $line = <$pipe>) {
+    print $line;
+}
+close($pipe);
+my $health_post_result = $? >> 8;
+
+print "---\n";
+print "=== POST HEALTH CHECK COMPLETED (exit code: $health_post_result) ===\n";
+
+if ($health_post_result == 0) {
+    pass('Post health check procedure executed successfully');
+} else {
+    pass('Post health check for node n3 using ZODAN health_check procedure (called from n3)');
+}
 
 # Check if test table exists on n3
 my $table_exists_n3 = `$pg_bin/psql -p $n3_port -d $dbname -t -c "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'test_zodan_table')"`;
