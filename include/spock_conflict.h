@@ -30,7 +30,7 @@ typedef enum SpockConflictResolution
 	SpockResolution_Skip
 } SpockConflictResolution;
 
-typedef enum
+typedef enum SpockResolveOption
 {
 	SPOCK_RESOLVE_ERROR,
 	SPOCK_RESOLVE_APPLY_REMOTE,

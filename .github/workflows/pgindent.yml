@@ -1,0 +1,40 @@
+name: pgindent formatting check
+run-name: Check pgindent formatting
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  pgindent-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Docker
+        # Codacy wants us to use full commit SHA. This is for v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      - name: Build docker image (PG 18)
+        run: |
+          docker build \
+            --build-arg PGVER=18 \
+            -t spock-pgindent -f tests/docker/Dockerfile-step-1.el9 .
+
+      - name: Run pgindent --check
+        run: |
+          docker run --rm spock-pgindent bash -c '
+            source ~/.bashrc
+            make -C $PG_SRCDIR/src/tools/pg_bsd_indent > /dev/null
+            export PATH="$PG_SRCDIR/src/tools/pgindent:$PG_SRCDIR/src/tools/pg_bsd_indent:$PATH"
+            cd ~/spock/utils/pgindent
+            ./run-pgindent.sh --check
+          '
