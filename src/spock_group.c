@@ -153,7 +153,7 @@ spock_group_shmem_startup(int napply_groups)
 		prev_shmem_startup_hook();
 
 	MemSet(&hctl, 0, sizeof(hctl));
-	hctl.keysize = sizeof(SpockProgressKey);
+	hctl.keysize = sizeof(SpockGroupKey);
 	hctl.entrysize = sizeof(SpockGroupEntry);
 	hctl.hash = tag_hash;
 	hctl.num_partitions = 16;
@@ -179,19 +179,19 @@ spock_group_shmem_startup(int napply_groups)
 /*
  * make_key
  *
- * Construct a SpockProgressKey from component OIDs.
+ * Construct a SpockGroupKey from component OIDs.
  *
- * TODO: Implement custom hash and comparison functions for SpockProgressKey
+ * TODO: Implement custom hash and comparison functions for SpockGroupKey
  * to avoid undefined behavior from comparing padding bytes. Currently we
  * zero the entire struct to ensure reproducible comparisons, but the C
  * standard doesn't guarantee padding byte values are preserved during struct
  * assignment. A proper fix would be to provide hash_func and match_func
  * callbacks to hash_create() that only compare the actual OID fields.
  */
-static inline SpockProgressKey
+static inline SpockGroupKey
 make_key(Oid dbid, Oid node_id, Oid remote_node_id)
 {
-	SpockProgressKey k;
+	SpockGroupKey k;
 
 	memset(&k, 0, sizeof(k));
 	k.dbid = dbid;
@@ -211,7 +211,7 @@ make_key(Oid dbid, Oid node_id, Oid remote_node_id)
 SpockGroupEntry *
 spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 {
-	SpockProgressKey key = make_key(dbid, node_id, remote_node_id);
+	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
 	SpockGroupEntry *entry;
 	bool		found;
 
@@ -419,7 +419,7 @@ apply_worker_get_progress(void)
 SpockGroupEntry *
 spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id)
 {
-	SpockProgressKey key = make_key(dbid, node_id, remote_node_id);
+	SpockGroupKey key = make_key(dbid, node_id, remote_node_id);
 	SpockGroupEntry *e;
 
 	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_FIND, NULL);

@@ -56,12 +56,12 @@ typedef struct DumpCtx
 
 
 /* Hash Key */
-typedef struct SpockProgressKey
+typedef struct SpockGroupKey
 {
 	Oid			dbid;
 	Oid			node_id;
 	Oid			remote_node_id;
-} SpockProgressKey;
+} SpockGroupKey;
 
 /*
  * Columns for the UI routine get_apply_group_progress.
@@ -87,7 +87,7 @@ typedef enum
  * Logical Replication Progress made by a group of apply workers.
  *
  * IMPORTANT: The 'key' field must remain the first member of this structure
- * because the hash table uses SpockProgressKey as its hash key type. The
+ * because the hash table uses SpockGroupKey as its hash key type. The
  * dynahash code accesses the key portion directly, so changing this layout
  * would break the hash table operations.
  *
@@ -115,7 +115,7 @@ typedef enum
  */
 typedef struct SpockApplyProgress
 {
-	SpockProgressKey	key;			/* MUST be first field */
+	SpockGroupKey	key;			/* MUST be first field */
 
 	TimestampTz			remote_commit_ts;	/* committed remote txn ts */
 
