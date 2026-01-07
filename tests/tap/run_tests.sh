@@ -88,6 +88,9 @@ readonly LOG_DIR="logs"
 readonly SCHEDULE_FILE="schedule"
 readonly TEST_EXTENSION=".pl"
 
+# Export TESTLOGDIR for SpockTest.pm to use (absolute path)
+export TESTLOGDIR="$(pwd)/$LOG_DIR"
+
 # Code coverage configuration
 COVERAGE_ENABLED="${COVERAGE_ENABLED:-false}"
 readonly COVERAGE_DIR="coverage"
@@ -239,13 +242,13 @@ generate_coverage_report() {
 setup_environment() {
     # Create logs directory
     mkdir -p "$LOG_DIR"
-    
+
     # Setup coverage if enabled
     if ! setup_coverage; then
         # Coverage setup failed, disable it
         COVERAGE_ENABLED="false"
     fi
-    
+
     # Clean up any running processes
     pkill -f postgres 2>/dev/null || true
     sleep 2
