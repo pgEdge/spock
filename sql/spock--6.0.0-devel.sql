@@ -540,18 +540,6 @@ CREATE VIEW spock.lag_tracker AS
 	LEFT JOIN spock.node n ON n.node_id = p.node_id
 	GROUP BY origin.node_name, n.node_name;
 
-CREATE FUNCTION spock.md5_agg_sfunc(text, anyelement)
-	RETURNS text
-AS $$ SELECT md5($1 || $2::text) $$
-LANGUAGE sql IMMUTABLE PARALLEL SAFE;
-CREATE  AGGREGATE spock.md5_agg (ORDER BY anyelement)
-(
-	STYPE = text,
-	SFUNC = spock.md5_agg_sfunc,
-	INITCOND = '',
-	PARALLEL = SAFE
-);
-
 -- ----------------------------------------------------------------------
 -- Spock Read Only
 -- ----------------------------------------------------------------------
