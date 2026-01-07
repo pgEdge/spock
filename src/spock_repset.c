@@ -1088,7 +1088,7 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	SpockRepSet *repset = get_replication_set(setid);
 	ObjectAddress referenced;
 	ObjectAddress myself;
-	LOCKTAG			tag;
+	LOCKTAG		tag;
 
 	/* Open the relation. */
 	SET_LOCKTAG_RELATION(tag, MyDatabaseId, reloid);
@@ -1193,7 +1193,7 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 	SpockRepSet *repset = get_replication_set(setid);
 	ObjectAddress referenced;
 	ObjectAddress myself;
-	LOCKTAG			tag;
+	LOCKTAG		tag;
 
 	/* Open the relation. */
 	SET_LOCKTAG_RELATION(tag, MyDatabaseId, seqoid);

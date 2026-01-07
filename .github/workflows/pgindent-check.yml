@@ -46,8 +46,10 @@ jobs:
 
       - name: Check for formatting changes
         run: |
+          # Ignore changes in typedefs.list (it's expected to update)
+          git checkout utils/pgindent/typedefs.list
           if ! git diff --quiet; then
-            echo "::error::Code formatting issues detected. Please run gen-typedefs.sh locally."
+            echo "::error::Code formatting issues detected. Please run run-pgindent.sh locally."
             git diff
             exit 1
           fi

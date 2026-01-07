@@ -3128,10 +3128,10 @@ stream_replay:
 		 * we still need to ensure proper cleanup (e.g., disabling the
 		 * subscription).
 		 *
-		 * Handle SUB_DISABLE mode for both cases: xact_had_exception means DML
-		 * operations failed during exception handling, while use_try_block
-		 * without xact_had_exception means an error occurred after successful
-		 * retry (e.g., TRANSDISCARD throwing ERROR).
+		 * Handle SUB_DISABLE mode for both cases: xact_had_exception means
+		 * DML operations failed during exception handling, while
+		 * use_try_block without xact_had_exception means an error occurred
+		 * after successful retry (e.g., TRANSDISCARD throwing ERROR).
 		 *
 		 * Note: spock_disable_subscription() handles transaction management
 		 * internally, so no need to wrap it in StartTransactionCommand().
@@ -3156,9 +3156,9 @@ stream_replay:
 
 		/*
 		 * For other exceptions with use_try_block, where xact_had_exception
-		 * is false, this indicates an ERROR occurred during exception handling
-		 * (e.g., connection died, CommitTransactionCommand failure during
-		 * TRANSDISCARD logging, etc.).
+		 * is false, this indicates an ERROR occurred during exception
+		 * handling (e.g., connection died, CommitTransactionCommand failure
+		 * during TRANSDISCARD logging, etc.).
 		 *
 		 * We log the error and re-throw to exit the worker. The background
 		 * worker infrastructure will restart the worker automatically. This
@@ -3424,9 +3424,8 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 
 		/*
 		 * check if it's a DDL statement. we only do this for
-		 * in_spock_replicate_ddl_command
-		 * SECURITY LABEL command is not a DDL, just an utility one. Hence, let
-		 * spock execute this command.
+		 * in_spock_replicate_ddl_command SECURITY LABEL command is not a DDL,
+		 * just an utility one. Hence, let spock execute this command.
 		 */
 		if (in_spock_replicate_ddl_command &&
 			GetCommandLogLevel(command->stmt) != LOGSTMT_DDL &&

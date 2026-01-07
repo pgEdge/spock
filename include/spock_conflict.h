@@ -37,7 +37,7 @@ typedef enum
 	SPOCK_RESOLVE_KEEP_LOCAL,
 	SPOCK_RESOLVE_LAST_UPDATE_WINS,
 	SPOCK_RESOLVE_FIRST_UPDATE_WINS
-} SpockResolveOption;
+}			SpockResolveOption;
 
 extern int	spock_conflict_resolver;
 extern int	spock_conflict_log_level;
@@ -53,35 +53,35 @@ extern bool spock_save_resolutions;
  */
 typedef enum
 {
-    /* The row to be inserted violates unique constraint */
-    CT_INSERT_EXISTS,
+	/* The row to be inserted violates unique constraint */
+	CT_INSERT_EXISTS,
 
-    /* The row to be updated was modified by a different origin */
-    CT_UPDATE_ORIGIN_DIFFERS,
+	/* The row to be updated was modified by a different origin */
+	CT_UPDATE_ORIGIN_DIFFERS,
 
-    /* The updated row value violates unique constraint */
-    CT_UPDATE_EXISTS,
+	/* The updated row value violates unique constraint */
+	CT_UPDATE_EXISTS,
 
-    /* The row to be updated is missing */
-    CT_UPDATE_MISSING,
+	/* The row to be updated is missing */
+	CT_UPDATE_MISSING,
 
-    /* The row to be deleted was modified by a different origin */
-    CT_DELETE_ORIGIN_DIFFERS,
+	/* The row to be deleted was modified by a different origin */
+	CT_DELETE_ORIGIN_DIFFERS,
 
-    /* The row to be deleted is missing */
-    CT_DELETE_MISSING
+	/* The row to be deleted is missing */
+	CT_DELETE_MISSING
 
-    /*
-     * Other conflicts, such as exclusion constraint violations, involve more
-     * complex rules than simple equality checks. These conflicts are left for
-     * future improvements.
-     */
+	/*
+	 * Other conflicts, such as exclusion constraint violations, involve more
+	 * complex rules than simple equality checks. These conflicts are left for
+	 * future improvements.
+	 */
 } ConflictType;
 #endif
 
-extern int spock_conflict_resolver;
-extern int spock_conflict_log_level;
-extern bool	spock_save_resolutions;
+extern int	spock_conflict_resolver;
+extern int	spock_conflict_log_level;
+extern bool spock_save_resolutions;
 
 extern bool get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple,
 							 ItemPointer tid, TransactionId *xmin,
@@ -125,4 +125,4 @@ extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 extern void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 								HeapTuple tuple);
 
-#endif /* SPOCK_CONFLICT_H */
+#endif							/* SPOCK_CONFLICT_H */

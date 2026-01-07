@@ -81,7 +81,7 @@ typedef enum
 
 	/* The last value */
 	_GP_LAST_
-} GroupProgressTupDescColumns;
+}			GroupProgressTupDescColumns;
 
 /*
  * Logical Replication Progress has made by a group of apply workers.

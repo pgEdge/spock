@@ -613,7 +613,7 @@ spock_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
 	if (spock_get_proto_version() >= 5)
 		pq_sendint64(out, GetXLogWriteRecPtr());
 
-	pq_sendbyte(out, 'M'); /* message type field */
+	pq_sendbyte(out, 'M');		/* message type field */
 
 	/* send out message contents */
 	pq_sendint32(out, xid);
