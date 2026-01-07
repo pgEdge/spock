@@ -38,11 +38,11 @@ jobs:
           echo "/tmp/postgresql/src/tools/pgindent" >> $GITHUB_PATH
           echo "/tmp/postgresql/src/tools/pg_bsd_indent" >> $GITHUB_PATH
 
-      - name: Run gen-typedefs.sh and check formatting
+      - name: Run pgindent and check formatting
         working-directory: utils/pgindent
         run: |
-          chmod +x gen-typedefs.sh
-          ./gen-typedefs.sh
+          chmod +x run-pgindent.sh
+          ./run-pgindent.sh
 
       - name: Check for formatting changes
         run: |
