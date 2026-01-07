@@ -30,6 +30,9 @@ RUN useradd -m pgedge -s /bin/bash && \
 # Install PostgreSQL build dependencies and testing tools
 # Note: List inlined to avoid requiring build context with external files
 RUN dnf install --allowerasing --enablerepo=crb -y \
+    epel-release  \
+    make \
+	gcc \
     bison \
     clang \
     curl \

@@ -1,14 +1,16 @@
-FROM ghcr.io/pgedge/base-test-image:latest
+FROM spock1
 
 # Base image ends as USER pgedge, but we need root for installation
 USER root
 
 ARG PGVER
+ARG DBUSER
 ARG MAKE_JOBS=4
 
 ENV PGVER=$PGVER
-ENV PATH="/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}"
-ENV LD_LIBRARY_PATH="/home/pgedge/pgedge/pg${PGVER}/lib:${LD_LIBRARY_PATH}"
+ENV DBUSER=$DBUSER
+ENV PATH="/home/pgedge/pgedge:/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/home/pgedge/pgedge/pg${PGVER}/lib"
 ENV PG_CONFIG="/home/pgedge/pgedge/pg${PGVER}/bin/pg_config"
 
 # Copy spock source code and set proper ownership
@@ -16,6 +18,7 @@ COPY . /home/pgedge/spock
 RUN chown -R pgedge:pgedge /home/pgedge/spock
 
 WORKDIR /home/pgedge
+USER pgedge
 
 # Determine PostgreSQL version and clone repository
 RUN LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
@@ -29,11 +32,22 @@ RUN LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git |
 			git clone --branch $LATEST_TAG --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres && \
 			chmod -R a+w /home/pgedge/postgres
 
-# Install pgedge (run as pgedge user, not root)
+# Install pgedge CLI (run as pgedge user, not root)
 RUN echo "Setting up pgedge..." && \
-    curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py -o /home/pgedge/install.py && \
-    chown pgedge:pgedge /home/pgedge/install.py && \
-    su - pgedge -c "python3 /home/pgedge/install.py"
+    curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py -o /home/pgedge/install.py
+
+	#\
+    #python3 /home/pgedge/install.py
+
+RUN sudo -u pgedge python3 /home/pgedge/install.py
+RUN cd pgedge && ./pgedge setup -U admin -P password -d demo --pg_ver=17
+
+# RUN cd pgedge && ./pgedge setup -U=${DBUSER} -P=testpass -d=demo --pg_ver=${PGVER}
+
+# This code changes quite rarely and is a potential candidate on caching
+# TODO: To ensure downloading correct version it needs a convention based on branch name, tag or something else.
+RUN git clone --branch master --depth 1 https://github.com/pgEdge/spockbench.git /home/pgedge/spockbench && \
+			chmod -R a+w /home/pgedge/spockbench
 
 WORKDIR /home/pgedge/postgres
 
@@ -81,10 +95,8 @@ RUN echo "==========Compiling Spock==========" && \
 
 #-----------------------------------------
 # Copy test scripts and switch to pgedge user for runtime
-COPY --chmod=755 tests/docker/*.sh /home/pgedge/
+#COPY --chmod=755 tests/docker/*.sh /home/pgedge/
 
 WORKDIR /home/pgedge/
 # Switch back to pgedge user for container runtime (testing, etc.)
 USER pgedge
-
-CMD ["/home/pgedge/entrypoint.sh"]

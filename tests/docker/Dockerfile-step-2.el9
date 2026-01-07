@@ -1,0 +1,22 @@
+FROM spock2
+
+# Base image ends as USER pgedge, but we need root for installation
+USER root
+
+ARG PGVER
+ARG MAKE_JOBS=4
+
+ENV PGVER=$PGVER
+ENV PATH="/home/pgedge/pgedge:/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/home/pgedge/pgedge/pg${PGVER}/lib"
+ENV PG_CONFIG="/home/pgedge/pgedge/pg${PGVER}/bin/pg_config"
+
+#-----------------------------------------
+# Copy test scripts and switch to pgedge user for runtime
+COPY --chmod=755 tests/docker/*.sh /home/pgedge/
+
+WORKDIR /home/pgedge/
+# Switch back to pgedge user for container runtime (testing, etc.)
+USER pgedge
+
+CMD ["/home/pgedge/entrypoint.sh"]
