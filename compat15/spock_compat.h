@@ -1,7 +1,12 @@
 /*-------------------------------------------------------------------------
  *
  * spock_compat.h
- *             compatibility functions (mainly with different PG versions) 
+ *             compatibility functions (mainly with different PG versions)
+ *
+ * NOTE:
+ * To avoid compilation conflicts follow the rules:
+ * 1. Include this file into the *.c-files only.
+ * 2. Set it into the last position of the 'include' list.
  *
  * Copyright (c) 2021-2023, pgEdge
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -56,10 +61,6 @@
 #define ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot) \
 	ExecBRUpdateTriggers(estate, epqstate, relinfo, tupleid, fdw_trigtuple, slot, NULL)
 
-#undef ExecEvalExpr
-#define ExecEvalExpr(expr, econtext, isNull, isDone) \
-	((*(expr)->evalfunc) (expr, econtext, isNull))
-
 #define Form_pg_sequence Form_pg_sequence_data
 
 #define ExecARUpdateTriggers(estate, relinfo, tupleid, fdw_trigtuple, newslot, recheckIndexes) \
@@ -70,12 +71,6 @@
 
 #define ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple) \
 	ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple, NULL, false)
-
-#define SPKstandard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, sentToRemote, qc) \
-	standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
-
-#define SPKnext_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, sentToRemote, qc) \
-	next_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
 
 #define SPKCreateTrigger(stmt, queryString, relOid, refRelOid, constraintOid, indexOid, isInternal) \
 	CreateTrigger(stmt, queryString, relOid, refRelOid, constraintOid, indexOid, InvalidOid, InvalidOid, NULL, isInternal, false);
