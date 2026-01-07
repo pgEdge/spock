@@ -399,8 +399,8 @@ class SpockClusterManager:
         if self.verbose:
             self.info(f"Subscription {subscription_name} created remotely")
 
-    def create_replication_slot(self, node_dsn: str, slot_name: str, plugin: str = "spock_output"):
-        """Create a logical replication slot on a remote node"""
+    def create_replication_slot(self, node_dsn: str, slot_name: str, plugin: str = "spock_output") -> Optional[str]:
+        """Create a logical replication slot on a remote node and return the LSN"""
         # Check if slot already exists
         sql = f"SELECT count(*) FROM pg_replication_slots WHERE slot_name = '{slot_name}';"
         count = self.run_psql(node_dsn, sql, fetch=True, return_single=True)
@@ -408,20 +408,24 @@ class SpockClusterManager:
         if count and int(count.strip()) > 0:
             if self.verbose:
                 self.info(f"Replication slot '{slot_name}' already exists. Skipping creation.")
-            return
-            
-        sql = f"SELECT slot_name, lsn FROM pg_create_logical_replication_slot('{slot_name}', '{plugin}');"
-        
+            return None
+
+        sql = f"SELECT lsn FROM pg_create_logical_replication_slot('{slot_name}', '{plugin}');"
+
         if self.verbose:
             self.info(f"[QUERY] {sql}")
-            
-        result = self.run_psql(node_dsn, sql)
+
+        # Fetch the result to get the LSN
+        result = self.run_psql(node_dsn, sql, fetch=True, return_single=True)
         if result is None:
             if self.verbose:
                 self.info(f"Replication slot '{slot_name}' may already exist or creation failed.")
+            return None
         else:
+            lsn = result.strip()
             if self.verbose:
-                self.info(f"Created replication slot '{slot_name}' with plugin '{plugin}' on remote node.")
+                self.info(f"Created replication slot '{slot_name}' with plugin '{plugin}' on remote node (LSN: {lsn}).")
+            return lsn
 
     def create_disable_subscriptions_and_slots(self, src_node_name: str, src_dsn: str,
                                              new_node_name: str, new_node_dsn: str):
@@ -438,7 +442,7 @@ class SpockClusterManager:
             if rec['node_name'] == src_node_name:
                 continue
 
-            # Create replication slot
+            # Create replication slot and capture the commit LSN
             dbname = "pgedge"  # Default database name
             if "dbname=" in rec['dsn']:
                 dbname = rec['dsn'].split("dbname=")[1].split()[0]
@@ -447,12 +451,17 @@ class SpockClusterManager:
             if len(slot_name) > 64:
                 slot_name = slot_name[:64]
 
-            self.create_replication_slot(rec['dsn'], slot_name)
-            self.notice(f"    OK: Creating replication slot {slot_name} on node {rec['node_name']}")
+            commit_lsn = self.create_replication_slot(rec['dsn'], slot_name)
+            self.notice(f"    OK: Creating replication slot {slot_name} (LSN: {commit_lsn}) on node {rec['node_name']}")
 
             # Trigger sync event on origin node and store LSN for later use
             sync_lsn = self.sync_event(rec['dsn'])
-            self.sync_lsns[rec['node_name']] = sync_lsn
+
+            # Store both sync_lsn and commit_lsn
+            self.sync_lsns[rec['node_name']] = {
+                'sync_lsn': sync_lsn,
+                'commit_lsn': commit_lsn
+            }
             self.notice(f"    OK: Triggering sync event on node {rec['node_name']} (LSN: {sync_lsn})")
 
             # Create disabled subscription
@@ -576,42 +585,38 @@ class SpockClusterManager:
         result = self.run_psql(node_dsn, sql, fetch=True, return_single=True)
         return result
 
-    def advance_replication_slot(self, node_dsn: str, slot_name: str, sync_timestamp: str):
-        """Advance a replication slot to a specific timestamp"""
-        if not sync_timestamp:
+    def advance_replication_slot(self, node_dsn: str, slot_name: str, target_lsn: str):
+        """Advance a replication slot to a specific LSN"""
+        if not target_lsn:
             if self.verbose:
-                self.info(f"Commit timestamp is NULL, skipping slot advance for slot '{slot_name}'.")
+                self.info(f"Target LSN is NULL, skipping slot advance for slot '{slot_name}'.")
             return
-            
-        sql = f"""
-        WITH lsn_cte AS (
-            SELECT spock.get_lsn_from_commit_ts('{slot_name}', '{sync_timestamp}') AS lsn
-        )
-        SELECT pg_replication_slot_advance('{slot_name}', lsn) FROM lsn_cte;
-        """
-        
+
+        sql = f"SELECT pg_replication_slot_advance('{slot_name}', '{target_lsn}'::pg_lsn);"
+
         if self.verbose:
             self.info(f"[QUERY] {sql}")
             
         self.run_psql(node_dsn, sql)
 
-    def check_commit_timestamp_and_advance_slot(self, src_node_name: str, src_dsn: str, 
+    def check_commit_timestamp_and_advance_slot(self, src_node_name: str, src_dsn: str,
                                                new_node_name: str, new_node_dsn: str):
-        """Phase 7: Check commit timestamp and advance replication slot"""
-        self.notice("Phase 7: Checking commit timestamp and advancing replication slot")
-        
+        """Phase 7: Check commit LSN and advance replication slot"""
+        self.notice("Phase 7: Checking commit LSN and advancing replication slot")
+
         # Get all nodes from source cluster
         nodes = self.get_spock_nodes(src_dsn)
         
         for rec in nodes:
             if rec['node_name'] == src_node_name:
                 continue
-                
-            # Get commit timestamp
-            sync_timestamp = self.get_commit_timestamp(new_node_dsn, src_node_name, rec['node_name'])
-            if sync_timestamp:
-                self.notice(f"    OK: Found commit timestamp for {src_node_name}->{rec['node_name']}: {sync_timestamp}")
-                
+
+            # Get the stored commit LSN from when subscription was created
+            commit_lsn = self.sync_lsns[rec['node_name']]['commit_lsn']
+
+            if commit_lsn:
+                self.notice(f"    OK: Found commit LSN for {rec['node_name']} (LSN: {commit_lsn})...")
+
                 # Advance replication slot
                 dbname = "pgedge"
                 if "dbname=" in rec['dsn']:
@@ -625,18 +630,15 @@ class SpockClusterManager:
                     self.info(f"[QUERY] {sql}")
                     
                 current_lsn = self.run_psql(rec['dsn'], sql, fetch=True, return_single=True)
-                
-                # Get target LSN
-                sql = f"SELECT spock.get_lsn_from_commit_ts('{slot_name}', '{sync_timestamp}')"
-                if self.verbose:
-                    self.info(f"[QUERY] {sql}")
-                    
-                target_lsn = self.run_psql(rec['dsn'], sql, fetch=True, return_single=True)
-                
+
+                target_lsn = commit_lsn
+
                 if current_lsn and target_lsn and current_lsn >= target_lsn:
                     self.notice(f"    - Slot {slot_name} already at or beyond target LSN (current: {current_lsn}, target: {target_lsn})")
                 else:
-                    self.advance_replication_slot(rec['dsn'], slot_name, sync_timestamp)
+                    self.advance_replication_slot(rec['dsn'], slot_name, target_lsn)
+            else:
+                self.notice(f"    - No commit LSN found for {rec['node_name']}->{new_node_name}")
 
     def enable_sub(self, node_dsn: str, sub_name: str, immediate: bool = True):
         """Enable a subscription on a remote node"""
@@ -747,7 +749,8 @@ class SpockClusterManager:
                 # Wait for the sync event that was captured when subscription was created
                 # This ensures the subscription starts replicating from the correct sync point
                 timeout_ms = 1200  # 20 minutes
-                sync_lsn = self.sync_lsns.get(rec['node_name'])  # Use stored sync LSN from Phase 3
+                sync_lsn = self.sync_lsns[rec['node_name']]['sync_lsn']  # Use stored sync LSN from Phase 3
+
                 if sync_lsn:
                     self.notice(f"    OK: Using stored sync event from origin node {rec['node_name']} (LSN: {sync_lsn})...")
 
