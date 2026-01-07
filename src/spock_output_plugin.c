@@ -1568,19 +1568,60 @@ relmetacache_flush(void)
 {
 	HASH_SEQ_STATUS status;
 	struct SPKRelMetaCacheEntry *hentry;
+	Oid		   *relids;
+	int			num_entries;
+	int			i;
+	int			idx;
 
-	if (RelMetaCache != NULL)
+	if (RelMetaCache == NULL)
+		return;
+
+	/*
+	 * We must not call hash_search(HASH_REMOVE) while iterating through the
+	 * hash table with hash_seq_search(), because removing entries corrupts
+	 * the internal iterator state maintained by HASH_SEQ_STATUS. The hash
+	 * table implementation uses a bucket-based structure, and when an entry
+	 * is removed, it may cause bucket reorganization or entry relocation that
+	 * invalidates the iterator's current position. This can lead to:
+	 *
+	 * 1. Iterator skipping entries that should be visited
+	 * 2. Iterator visiting the same entry multiple times
+	 * 3. Iterator dereferencing freed memory (crash)
+	 * 4. Infinite loops or premature iteration termination
+	 *
+	 * The correct pattern is to collect all keys/OIDs to be removed during
+	 * the first pass (iteration), then perform all removals in a second pass
+	 * after the iteration completes. This ensures the iterator completes its
+	 * scan over a stable hash table structure.
+	 *
+	 * We allocate an array sized to the current number of entries, which is
+	 * safe because we're removing all entries (no entry will be skipped).
+	 * The palloc is temporary and freed at function exit.
+	 */
+	num_entries = hash_get_num_entries(RelMetaCache);
+	if (num_entries == 0)
+		return;
+
+	relids = (Oid *) palloc(num_entries * sizeof(Oid));
+	idx = 0;
+
+	/* First pass: collect all relids while iterating */
+	hash_seq_init(&status, RelMetaCache);
+	while ((hentry = (struct SPKRelMetaCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
-		hash_seq_init(&status, RelMetaCache);
-
-		while ((hentry = (struct SPKRelMetaCacheEntry *) hash_seq_search(&status)) != NULL)
-		{
-			if (hash_search(RelMetaCache,
-							(void *) &hentry->relid,
-							HASH_REMOVE, NULL) == NULL)
-				elog(ERROR, "hash table corrupted");
-		}
+		relids[idx++] = hentry->relid;
 	}
+
+	/* Second pass: remove all entries now that iteration is complete */
+	for (i = 0; i < idx; i++)
+	{
+		if (hash_search(RelMetaCache,
+						(void *) &relids[i],
+						HASH_REMOVE, NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
+	}
+
+	pfree(relids);
 }
 
 /*
@@ -1594,27 +1635,70 @@ relmetacache_prune(void)
 {
 	HASH_SEQ_STATUS status;
 	struct SPKRelMetaCacheEntry *hentry;
+	Oid		   *relids_to_remove;
+	int			num_entries;
+	int			i;
+	int			idx;
 
 	/*
-	 * Since the pruning can be expensive, do it only if ig we invalidated at
+	 * Since the pruning can be expensive, do it only if we invalidated at
 	 * least half of initial cache size.
 	 */
 	if (InvalidRelMetaCacheCnt < RELMETACACHE_INITIAL_SIZE / 2)
 		return;
 
-	hash_seq_init(&status, RelMetaCache);
+	/*
+	 * We must not call hash_search(HASH_REMOVE) while iterating through the
+	 * hash table with hash_seq_search(), because removing entries corrupts
+	 * the internal iterator state maintained by HASH_SEQ_STATUS. The hash
+	 * table uses bucket-based open addressing with chaining, and when an
+	 * entry is removed, it may trigger:
+	 *
+	 * 1. Bucket chain reorganization (moving entries within the chain)
+	 * 2. Bucket splitting or merging (if dynamic hashing is enabled)
+	 * 3. Memory deallocation of the removed entry
+	 *
+	 * Any of these operations can invalidate the iterator's cached position
+	 * (current bucket index and chain pointer), leading to undefined behavior
+	 * such as visiting wrong entries, skipping valid entries, or accessing
+	 * freed memory resulting in segmentation faults.
+	 *
+	 * The standard PostgreSQL pattern is a two-pass approach: first, iterate
+	 * through the hash table and collect keys of entries to be removed;
+	 * second, after iteration completes, remove all collected entries. This
+	 * guarantees iterator stability because the hash table structure remains
+	 * unchanged during iteration.
+	 *
+	 * We allocate space for num_entries even though we'll only remove invalid
+	 * entries. This wastes some memory temporarily but simplifies the code
+	 * and avoids a second pass to count invalid entries. The array is freed
+	 * immediately after removal completes.
+	 */
+	num_entries = hash_get_num_entries(RelMetaCache);
+	if (num_entries == 0)
+		return;
 
+	relids_to_remove = (Oid *) palloc(num_entries * sizeof(Oid));
+	idx = 0;
+
+	/* First pass: collect relids of invalid entries while iterating */
+	hash_seq_init(&status, RelMetaCache);
 	while ((hentry = (struct SPKRelMetaCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
 		if (!hentry->is_valid)
-		{
-			if (hash_search(RelMetaCache,
-							(void *) &hentry->relid,
-							HASH_REMOVE, NULL) == NULL)
-				elog(ERROR, "hash table corrupted");
-		}
+			relids_to_remove[idx++] = hentry->relid;
 	}
 
+	/* Second pass: remove all invalid entries now that iteration is complete */
+	for (i = 0; i < idx; i++)
+	{
+		if (hash_search(RelMetaCache,
+						(void *) &relids_to_remove[i],
+						HASH_REMOVE, NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
+	}
+
+	pfree(relids_to_remove);
 	InvalidRelMetaCacheCnt = 0;
 }
 
