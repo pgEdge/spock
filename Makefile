@@ -25,7 +25,8 @@ PG_CPPFLAGS += -I$(libpq_srcdir) \
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
 
 REGRESS := __placeholder__
-EXTRA_CLEAN += $(control_path) spock_compat.bc
+EXTRA_CLEAN += $(control_path) spock_compat.bc \
+	tests/logs tests/tap/logs tests/tap/t/logs
 
 # -----------------------------------------------------------------------------
 # PGXS
@@ -114,10 +115,21 @@ check: install regresscheck
 # Copy perl modules in postgresql_srcdir/src/test/perl
 # to postgresql_installdir/lib/pgxs/src/test/perl
 
+TESTLOGDIR := $(CURDIR)/tests/tap/logs
+SCHEDULE_FILE := $(srcdir)/tests/tap/schedule
+TAPS_REGRESS := $(shell awk '/^[[:space:]]*test:/ {print "t/" $$2 ".pl"}' $(SCHEDULE_FILE))
 
 define prove_check
-rm -rf $(CURDIR)/tmp_check/log
-cd $(srcdir)/tests/tap && TESTDIR='$(CURDIR)' $(with_temp_install) PGPORT='6$(DEF_PGPORT)' PG_REGRESS='$(top_builddir)/src/test/regress/pg_regress' $(PROVE) -I t --verbose $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(or $(PROVE_TESTS),t/*.pl)
+rm -rf $(TESTLOGDIR)
+mkdir -p $(TESTLOGDIR)
+cd $(srcdir)/tests/tap && \
+    TESTDIR='$(CURDIR)' \
+    TESTLOGDIR='$(TESTLOGDIR)' \
+    PATH="$(shell $(PG_CONFIG) --bindir):$$PATH" \
+    PGPORT='6$(DEF_PGPORT)' \
+    PG_REGRESS='$(top_builddir)/src/test/regress/pg_regress' \
+    $(PROVE) -I t -v --timer $(PG_PROVE_FLAGS) $(PROVE_FLAGS) \
+    $(or $(PROVE_TESTS),$(TAPS_REGRESS))
 endef
 
 check_prove:
