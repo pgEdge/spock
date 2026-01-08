@@ -415,7 +415,7 @@ spock_worker_detach(bool crash)
 
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
-	Assert(MySpockWorker->proc = MyProc);
+	Assert(MySpockWorker->proc == MyProc);
 	Assert(MySpockWorker->generation == MySpockWorkerGeneration);
 	MySpockWorker->proc = NULL;
 

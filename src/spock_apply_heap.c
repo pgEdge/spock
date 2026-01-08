@@ -1210,7 +1210,8 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 							  rel, NULL, oldtup,
 							  remotetuple, NULL, SpockResolution_Skip,
 							  InvalidTransactionId, false, InvalidRepOriginId,
-							  (TimestampTz)0, edata->targetRel->idxoid);
+							  (TimestampTz) 0, edata->targetRel->idxoid);
+		heap_freetuple(remotetuple);
 	}
 
 	/* Cleanup. */
