@@ -1490,8 +1490,6 @@ relmetacache_init(MemoryContext decoding_context)
 
 	if (RelMetaCache == NULL)
 	{
-		MemoryContext old_ctxt;
-
 		RelMetaCacheContext = AllocSetContextCreate(TopMemoryContext,
 													"spock output relmetacache",
 													ALLOCSET_DEFAULT_SIZES);
@@ -1504,11 +1502,9 @@ relmetacache_init(MemoryContext decoding_context)
 		ctl.entrysize = sizeof(struct SPKRelMetaCacheEntry);
 		ctl.hcxt = RelMetaCacheContext;
 		hash_flags |= HASH_BLOBS;
-		old_ctxt = MemoryContextSwitchTo(RelMetaCacheContext);
 		RelMetaCache = hash_create("spock relation metadata cache",
 								   RELMETACACHE_INITIAL_SIZE,
 								   &ctl, hash_flags);
-		(void) MemoryContextSwitchTo(old_ctxt);
 
 		Assert(RelMetaCache != NULL);
 
@@ -1532,14 +1528,11 @@ relmetacache_get_relation(struct SpockOutputData *data,
 {
 	struct SPKRelMetaCacheEntry *hentry;
 	bool		found;
-	MemoryContext old_mctx;
 
 	/* Find cached function info, creating if not found */
-	old_mctx = MemoryContextSwitchTo(RelMetaCacheContext);
 	hentry = (struct SPKRelMetaCacheEntry *) hash_search(RelMetaCache,
 														 (void *) (&RelationGetRelid(rel)),
 														 HASH_ENTER, &found);
-	(void) MemoryContextSwitchTo(old_mctx);
 
 	/* If not found or not valid, it can't be cached. */
 	if (!found || !hentry->is_valid)
