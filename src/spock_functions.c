@@ -3036,66 +3036,25 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
 	/*
-	 * Reset all channel statistics by removing all entries from SpockHash.
-	 *
-	 * CRITICAL: We must not call hash_search(HASH_REMOVE) during iteration
-	 * with hash_seq_search(). The PostgreSQL hash table API maintains
-	 * iteration state in HASH_SEQ_STATUS, which includes:
-	 *
-	 * 1. Current bucket index being scanned
-	 * 2. Pointer to current entry in the bucket's chain
-	 * 3. Pointer to next entry to visit
-	 *
-	 * When hash_search(HASH_REMOVE) is called, it physically removes the
-	 * entry from the hash table, which may:
-	 *
-	 * a) Free the memory pointed to by the iterator's current entry pointer
-	 * b) Reorganize the bucket chain, invalidating the next-entry pointer
-	 * c) Trigger dynamic hash table resizing (if bucket count changes)
-	 * d) Modify bucket links that the iterator depends on for traversal
-	 *
-	 * Any of these consequences breaks the iterator's invariants, leading to:
-	 * - Segmentation faults (accessing freed entry memory)
-	 * - Skipped entries (iterator loses track of position)
-	 * - Duplicate visits (iterator revisits reorganized entries)
-	 * - Infinite loops (corrupted chain pointers creating cycles)
-	 *
-	 * The correct and safe pattern used here is:
-	 *
-	 * Pass 1 (Iteration): Scan the entire hash table with hash_seq_search()
-	 *                     while the structure is stable, collecting all keys
-	 *                     into a temporary array. The keys are copied (by
-	 *                     value), so we have no dangling pointers.
-	 *
-	 * Pass 2 (Removal):   After iteration completes and the iterator is no
-	 *                     longer active, remove all entries using the
-	 *                     collected keys. Hash table modifications are now
-	 *                     safe because no iteration is in progress.
-	 *
-	 * Note: We hold LW_EXCLUSIVE lock during both passes to prevent
-	 * concurrent modifications by other processes, ensuring atomicity of the
-	 * reset operation. The two-pass approach only protects against corruption
-	 * from our own modifications during iteration, not concurrent access
-	 * (which the lock handles).
+	 * Cannot call hash_search(HASH_REMOVE) during hash_seq_search iteration
+	 * because removing entries invalidates the iterator state (bucket chain
+	 * pointers, memory references), causing crashes or skipped entries.
+	 * Use two-pass approach: collect keys during iteration, then remove.
 	 */
 	num_entries = hash_get_num_entries(SpockHash);
 	if (num_entries > 0)
 	{
-		/*
-		 * Allocate space for all keys. We copy the entire spockStatsKey
-		 * structure (containing dboid, subid, relid) for each entry.
-		 */
 		keys_to_remove = (spockStatsKey *) palloc(num_entries * sizeof(spockStatsKey));
 		idx = 0;
 
-		/* First pass: collect all keys while iterating over stable hash table */
+		/* First pass: collect keys */
 		hash_seq_init(&hash_seq, SpockHash);
 		while ((entry = hash_seq_search(&hash_seq)) != NULL)
 		{
 			keys_to_remove[idx++] = entry->key;
 		}
 
-		/* Second pass: remove all entries now that iteration is complete */
+		/* Second pass: remove entries */
 		for (i = 0; i < idx; i++)
 		{
 			hash_search(SpockHash, &keys_to_remove[i], HASH_REMOVE, NULL);
