@@ -1100,6 +1100,18 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 
 		entry = (spockStatsEntry *) hash_search(SpockHash, &key,
 												HASH_ENTER, &found);
+
+		/*
+		 * HASH_FIXED_SIZE hash tables can return NULL when full. Check for
+		 * this to prevent dereferencing NULL pointer.
+		 */
+		if (entry == NULL)
+		{
+			LWLockRelease(SpockCtx->lock);
+			elog(WARNING, "SpockHash is full, cannot add stats entry");
+			spock_stats_hash_full = true;
+			return;
+		}
 	}
 
 	if (!found)

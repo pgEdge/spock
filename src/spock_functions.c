@@ -3002,8 +3002,16 @@ get_channel_stats(PG_FUNCTION_ARGS)
 		values[i++] = ObjectIdGetDatum(entry->key.subid);
 		values[i++] = ObjectIdGetDatum(entry->key.relid);
 
+		/*
+		 * Acquire spinlock before reading counter values to prevent torn
+		 * reads. The writer (handle_stats_counter) uses entry->mutex to
+		 * protect counter updates, so we must use the same lock for reads
+		 * to ensure atomic access to 64-bit counter values.
+		 */
+		SpinLockAcquire(&entry->mutex);
 		for (j = 0; j < SPOCK_STATS_NUM_COUNTERS; j++)
 			values[i++] = Int64GetDatum(entry->counter[j]);
+		SpinLockRelease(&entry->mutex);
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
