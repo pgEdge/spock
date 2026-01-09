@@ -1,6 +1,13 @@
 name: Update base OS image
 run-name: Updating the base OS and install necessary extra packages
 
+# This workflow builds the pgEdge base test image with full reproducibility metadata:
+# - Captures build timestamp, git commit SHA, branch, and Rocky Linux version
+# - Embeds build information in /etc/pgedge/build-info.txt within the image
+# - Tags images with both :latest and :${GIT_COMMIT} for version tracking
+# - Adds OCI labels for standard metadata inspection
+# - Prints all build metadata to workflow output for issue reproduction
+
 on:
   workflow_dispatch:
 
@@ -32,6 +39,25 @@ jobs:
         env:
           OWNER: '${{ github.repository_owner }}'
 
+      # Capture build metadata for reproducibility
+      - name: Capture build metadata
+        id: meta
+        run: |
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> ${GITHUB_ENV}
+          echo "GIT_COMMIT=$(git rev-parse HEAD)" >> ${GITHUB_ENV}
+          echo "GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)" >> ${GITHUB_ENV}
+          echo "ROCKYLINUX_VERSION=$(docker run --rm rockylinux:9 cat /etc/rocky-release)" >> ${GITHUB_ENV}
+
+          # Print build information
+          echo "========================================="
+          echo "pgEdge Base Image Build Information"
+          echo "========================================="
+          echo "Build Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "Git Commit: $(git rev-parse HEAD)"
+          echo "Git Branch: $(git rev-parse --abbrev-ref HEAD)"
+          echo "Rocky Linux: $(docker run --rm rockylinux:9 cat /etc/rocky-release)"
+          echo "========================================="
+
       - name: Set up Docker
         # Codacy wants us to use full commit SHA. This is for v3
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
@@ -43,15 +69,61 @@ jobs:
           username: $OWNER_LC
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Prepare cached version of the base image
+      # Prepare cached version of the base image with build metadata
       - name: Build and push base system image
         uses: docker/build-push-action@c382f710d39a5bb4e430307530a720f50c2d3318
         with:
           context: .
           file: tests/docker/Dockerfile-base.el9
           push: true
-          tags: ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest
+          tags: |
+            ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest
+            ghcr.io/${{ env.OWNER_LC }}/base-test-image:${{ env.GIT_COMMIT }}
+          build-args: |
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            GIT_COMMIT=${{ env.GIT_COMMIT }}
+            GIT_BRANCH=${{ env.GIT_BRANCH }}
+            ROCKYLINUX_VERSION=${{ env.ROCKYLINUX_VERSION }}
           cache-from: type=gha,scope=base
           cache-to: type=gha,mode=max,scope=base
 
-# And we have a base image. Check: https://github.com/pgedge/spock/pkgs/container/base-test-image
+      # Verify and display build information from the image
+      - name: Display build information
+        run: |
+          echo ""
+          echo "========================================="
+          echo "Image Built Successfully!"
+          echo "========================================="
+          echo "Image Tags:"
+          echo "  - ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest"
+          echo "  - ghcr.io/${{ env.OWNER_LC }}/base-test-image:${{ env.GIT_COMMIT }}"
+          echo ""
+          echo "To pull this specific build:"
+          echo "  docker pull ghcr.io/${{ env.OWNER_LC }}/base-test-image:${{ env.GIT_COMMIT }}"
+          echo ""
+          echo "To view build info from the image:"
+          echo "  docker run --rm ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest cat /etc/pgedge/build-info.txt"
+          echo ""
+          echo "To inspect image labels:"
+          echo "  docker inspect ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest | jq '.[0].Config.Labels'"
+          echo "========================================="
+
+# ==============================================================================
+# Build Complete!
+# ==============================================================================
+# The base image is available at:
+#   https://github.com/pgedge/spock/pkgs/container/base-test-image
+#
+# Each build includes comprehensive reproducibility metadata:
+#   1. /etc/pgedge/build-info.txt - Embedded build information file
+#   2. OCI image labels with build timestamp, commit SHA, and branch
+#   3. Commit-specific tag (:<commit-sha>) for immutable references
+#   4. Workflow output with all build parameters
+#
+# To reproduce any build:
+#   1. Check workflow output or image labels for git commit SHA
+#   2. Checkout that commit: git checkout <sha>
+#   3. Run the docker build command shown in /etc/pgedge/build-info.txt
+#
+# Documentation: tests/docker/Dockerfile-base.md
+# ==============================================================================
