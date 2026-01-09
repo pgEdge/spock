@@ -1,110 +1,137 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 
-function wait_for_pg()
-{
-  count=0
-  while ! pg_isready -h /tmp; do
-    if [ $count -ge 24 ]
-    then
-      echo "Gave up waiting for PostgreSQL to become ready..."
-      exit 1
-    fi
+# Load PostgreSQL environment variables
+# Temporarily disable -u (unbound variable check) to avoid issues with system bashrc
+set +u
+source "${HOME}/.bashrc"
+set -u
 
-    echo "Waiting for PostgreSQL to become ready..."
-    sleep 5
-  done
-}
+echo "=========================================="
+echo "Initializing PostgreSQL for Spock Testing"
+echo "=========================================="
 
-. /home/pgedge/pgedge/pg$PGVER/pg$PGVER.env
-. /home/pgedge/.bashrc
-
-echo "==========Installing Spockbench=========="
-cd ~/spockbench
-sudo python3 setup.py install
-
-cd ~/pgedge
-sed -i '/log_min_messages/s/^#//g' data/pg$PGVER/postgresql.conf
-sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg$PGVER/postgresql.conf
-./pgedge restart
-
-wait_for_pg
-
-psql -h /tmp -U $DBUSER -d $DBNAME -c "drop extension spock;"
-psql -h /tmp -U $DBUSER -d $DBNAME -c "drop schema public cascade;"
-psql -h /tmp -U $DBUSER -d $DBNAME -c "create schema public;"
-psql -h /tmp -U $DBUSER -d $DBNAME -c "create extension spock;"
-
-./pgedge restart
-
-wait_for_pg
-
-echo "==========Assert Spock version is the latest=========="
-expected_line=$(grep '#define SPOCK_VERSION' /home/pgedge/spock/spock.h)
-expected_version=$(echo "$expected_line" | grep -oP '"\K[0-9]+\.[0-9]+\.[0-9]+')
-expected_major=${expected_version%%.*}
-actual_version=$(psql -U $DBUSER -d $DBNAME -X -t -A -c "select spock.spock_version()")
-actual_major=${actual_version%%.*}
-
-if (( actual_major >= expected_major )); then
-  echo " Actual major version ($actual_major) >= expected ($expected_major)"
+# Configure core dumps for crash debugging
+if [ -d "/cores" ]; then
+	echo "Configuring core dumps..."
+	# Try to set core pattern to write to /cores directory
+	# Note: /proc/sys/kernel/core_pattern is host-level and usually read-only in Docker
+	# Format: core.<hostname>.<executable>.<pid>.<timestamp>
+	if echo "/cores/core.${HOSTNAME}.%e.%p.%t" > /proc/sys/kernel/core_pattern 2>/dev/null; then
+		echo "✓ Core pattern set successfully"
+	else
+		echo "Note: Cannot set core_pattern (host-level setting)"
+		echo "	  Core dumps will use host pattern but ulimit is unlimited"
+	fi
+	# Verify ulimit
+	ulimit -c unlimited
+	echo "Core dumps enabled: $(ulimit -c)"
+	echo "Core pattern: $(cat /proc/sys/kernel/core_pattern 2>/dev/null || echo 'Unable to read')"
+	echo "Core dumps will be saved with debug symbols (-g -O0)"
 else
-  echo " Actual major version ($actual_major) is not what we expected ($expected_major)"
-  exit 1
+	echo "Warning: /cores directory not mounted - core dumps may not persist"
 fi
 
+# Ensure data directory exists and has correct permissions
+echo "Checking data directory permissions..."
+PGDATA_PARENT=$(dirname "${PGDATA}")
+if [ ! -d "${PGDATA_PARENT}" ]; then
+	echo "Creating parent directory: ${PGDATA_PARENT}"
+	mkdir -p "${PGDATA_PARENT}"
+fi
 
-echo "==========Creating tables and repsets=========="
-./pgedge spock node-create $HOSTNAME "host=$HOSTNAME user=pgedge dbname=$DBNAME" $DBNAME
-./pgedge spock repset-create demo_replication_set $DBNAME
+# Check if we can write to the directory
+if [ ! -w "${PGDATA_PARENT}" ]; then
+	echo "ERROR: Cannot write to ${PGDATA_PARENT}"
+	echo "Current user: $(whoami) (UID: $(id -u))"
+	echo "Directory ownership: $(ls -ld ${PGDATA_PARENT})"
+	exit 1
+fi
+echo "Data directory permissions OK"
 
-IFS=',' read -r -a peer_names <<< "$PEER_NAMES"
+# Initialize PostgreSQL cluster
+if [ ! -d "${PGDATA}" ]; then
+	echo "Initializing PostgreSQL ${PGVER} cluster..."
+	mkdir -p "${PGDATA}"
+	initdb -D "${PGDATA}" -U "${PGUSER}" --encoding=UTF8 --locale=C
 
-for PEER_HOSTNAME in "${peer_names[@]}";
-do
-  while :
-    do
-      mapfile -t node_array < <(psql -A -t $DBNAME -h $PEER_HOSTNAME -c "SELECT node_name FROM spock.node;")
-      for element in "${node_array[@]}";
-      do
-        if [[ "$element" == "$PEER_HOSTNAME" ]]; then
-            break 2
-        fi
-      done
-      sleep 1
-      echo "Waiting for $PEER_HOSTNAME..."
-    done
-done
+	# Configure PostgreSQL for logical replication
+	cat >> "${PGDATA}/postgresql.conf" <<EOF
+# Core setting specific for the Spock
+wal_level = logical
+track_commit_timestamp = 'on'
+max_worker_processes = 32
+max_replication_slots = 32
+max_wal_senders = 32
+log_min_messages = debug1
 
-# TODO: Re-introduce parallel slots at a later point when the apply worker restarts are handled correctly
-# and transactions are not skipped on restart in parallel mode
-./pgedge spock sub-create sub_${peer_names[0]}$HOSTNAME   "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
-#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_1 "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
-#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_2 "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
-#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_3 "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
-#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_4 "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+# Network configuration for multi-node cluster
+listen_addresses = '*'
 
-./pgedge spock sub-create sub_${peer_names[1]}$HOSTNAME   "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
-#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_1 "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
-#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_2 "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
-#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_3 "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
-#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_4 "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+# Spock Configuration
+shared_preload_libraries = 'spock'
+spock.conflict_resolution = 'last_update_wins'
+EOF
 
-psql -U $DBUSER -h /tmp -d $DBNAME -c "create table t1 (id serial primary key, data int8);"
-psql -U $DBUSER -h /tmp -d $DBNAME -c "create table t2 (id serial primary key, data int8);"
-psql -U $DBUSER -h /tmp -d $DBNAME -c "alter table t1 alter column data set (log_old_value=true, delta_apply_function=spock.delta_apply);"
+	# Configure client authentication for Docker network
+	cat >> "${PGDATA}/pg_hba.conf" <<EOF
+# Allow connections from Docker network (all containers)
+host    all             all             0.0.0.0/0               trust
+EOF
+	echo "PostgreSQL cluster initialized"
 
-./pgedge spock sub-add-repset sub_${peer_names[0]}$HOSTNAME demo_replication_set $DBNAME
-#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_1 demo_replication_set $DBNAME
-#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_2 demo_replication_set $DBNAME
-#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_3 demo_replication_set $DBNAME
-#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_4 demo_replication_set $DBNAME
+	# Start PostgreSQL in background for initialization
+	echo "Starting PostgreSQL for initialization..."
+	pg_ctl -D "${PGDATA}" -l "${HOME}/logfile.log" -o "-k /tmp" -w start
 
-./pgedge spock sub-add-repset sub_${peer_names[1]}$HOSTNAME demo_replication_set $DBNAME
-#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_1 demo_replication_set $DBNAME
-#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_2 demo_replication_set $DBNAME
-#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_3 demo_replication_set $DBNAME
-#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_4 demo_replication_set $DBNAME
+	# Solely for DEBUGGING purposes
+	cat ${HOME}/logfile.log
 
+	createdb -h /tmp "${PGDATABASE}"
 
-cd /home/pgedge && ./run-tests.sh $peer_names
+	# Create spock extension and node only if HOSTNAME and PEER_NAMES are set
+	if [ -n "${HOSTNAME:-}" ] && [ -n "${PEER_NAMES:-}" ]; then
+		echo ""
+		echo "=========================================="
+		echo "Setting up Spock Node"
+		echo "=========================================="
+		echo "Node Name: ${HOSTNAME}"
+		echo "Peers: ${PEER_NAMES}"
+		echo ""
+
+		psql -h /tmp -c "CREATE EXTENSION spock"
+
+		if [[ $(HOSTNAME) == "n1" ]]; then
+		  # First node specific action
+		  psql -h /tmp -c "
+		    SELECT spock.node_create(
+				node_name := '${HOSTNAME}',
+				dsn := 'host=n1 port=${PGPORT} dbname=${PGDATABASE} user=${PGUSER}',
+				country := 'ESP', location := 'Madrid',
+				info := '{\"tiebreaker\" : \"1\"}')"
+		else
+		  # Add node to the existing cluster using Z0DAN
+		  psql -h /tmp -c "CREATE EXTENSION dblink"
+		  psql -h /tmp -f ${SPOCK_SOURCE_DIR}/samples/Z0DAN/zodan.sql
+		  psql -h /tmp -c "CALL spock.add_node(
+			src_node_name := 'n1',
+			src_dsn := 'host=n1 dbname=${PGDATABASE} user=${PGUSER}',
+            new_node_name := '${HOSTNAME}',
+			new_node_dsn := 'dbname=${PGDATABASE} user=${PGUSER}',
+			verb := true,
+			new_node_country := 'USA',
+			new_node_location := 'NYC',
+			new_node_info := '{}');"
+		fi
+	else
+		echo "HOSTNAME and/or PEER_NAMES not set"
+		exit 1
+	fi
+
+	# Stop PostgreSQL gracefully using smart mode
+	# This waits for all connections to close - if it hangs, it indicates a problem
+	# that should be fixed (e.g., forgotten connection, long transaction)
+	pg_ctl -D "${PGDATA}" -m smart -t 60 stop
+else
+	echo "Using existing PostgreSQL cluster at ${PGDATA}"
+fi
