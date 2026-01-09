@@ -67,7 +67,7 @@ static const char *const ConflictTypeNames[] = {
 };
 
 
-int			spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
+SpockResolveOption spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
 int			spock_conflict_log_level = LOG;
 bool		spock_save_resolutions = false;
 

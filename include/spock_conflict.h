@@ -30,16 +30,16 @@ typedef enum SpockConflictResolution
 	SpockResolution_Skip
 } SpockConflictResolution;
 
-typedef enum
+typedef enum SpockResolveOption
 {
 	SPOCK_RESOLVE_ERROR,
 	SPOCK_RESOLVE_APPLY_REMOTE,
 	SPOCK_RESOLVE_KEEP_LOCAL,
 	SPOCK_RESOLVE_LAST_UPDATE_WINS,
 	SPOCK_RESOLVE_FIRST_UPDATE_WINS
-}			SpockResolveOption;
+} SpockResolveOption;
 
-extern int	spock_conflict_resolver;
+extern SpockResolveOption spock_conflict_resolver;
 extern int	spock_conflict_log_level;
 extern bool spock_save_resolutions;
 
@@ -78,10 +78,6 @@ typedef enum
 	 */
 } ConflictType;
 #endif
-
-extern int	spock_conflict_resolver;
-extern int	spock_conflict_log_level;
-extern bool spock_save_resolutions;
 
 extern bool get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple,
 							 ItemPointer tid, TransactionId *xmin,

@@ -1426,6 +1426,7 @@ GroupingSetKind
 GroupingSetsPath
 GroupPath
 GroupPathExtraData
+GroupProgressTupDescColumns
 GroupResultPath
 GroupState
 GroupVarInfo
@@ -3643,6 +3644,7 @@ SpockRelation
 SpockRemoteRel
 SpockRepSet
 SpockResFileHeader
+SpockResolveOption
 spockStatsEntry
 spockStatsKey
 spockStatsType

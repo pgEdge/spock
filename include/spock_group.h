@@ -66,7 +66,7 @@ typedef struct SpockGroupKey
 /*
  * Columns for the UI routine get_apply_group_progress.
  */
-typedef enum
+typedef enum GroupProgressTupDescColumns
 {
 	GP_DBOID = 0,
 	GP_NODE_ID,
@@ -81,7 +81,7 @@ typedef enum
 
 	/* The last value */
 	_GP_LAST_
-}			GroupProgressTupDescColumns;
+} GroupProgressTupDescColumns;
 
 /*
  * Logical Replication Progress has made by a group of apply workers.
