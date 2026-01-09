@@ -43,49 +43,49 @@ LABEL org.opencontainers.image.title="pgEdge Dev Base Test Image" \
 # ==============================================================================
 # Build Information for Reproducibility
 # ==============================================================================
-RUN set -eux; \
-    mkdir -p /etc/pgedge; \
-    printf "pgEdge Base Test Image Build Information\n" > /etc/pgedge/build-info.txt; \
-    printf "=========================================\n\n" >> /etc/pgedge/build-info.txt; \
-    printf "Build Date: %s\n" "${BUILD_DATE:-unknown}" >> /etc/pgedge/build-info.txt; \
-    printf "Git Commit: %s\n" "${GIT_COMMIT:-unknown}" >> /etc/pgedge/build-info.txt; \
-    printf "Git Branch: %s\n" "${GIT_BRANCH:-unknown}" >> /etc/pgedge/build-info.txt; \
-    printf "Rocky Linux: %s\n" "${ROCKYLINUX_VERSION:-unknown}" >> /etc/pgedge/build-info.txt; \
-    printf "\nTo reproduce this exact build:\n" >> /etc/pgedge/build-info.txt; \
-    printf "  git clone https://github.com/pgedge/spock.git\n" >> /etc/pgedge/build-info.txt; \
-    printf "  git checkout %s\n" "${GIT_COMMIT:-unknown}" >> /etc/pgedge/build-info.txt; \
-    printf "  docker build -f tests/docker/Dockerfile-base.el9 \\\\\n" >> /etc/pgedge/build-info.txt; \
-    printf "    --build-arg BUILD_DATE=%s \\\\\n" "${BUILD_DATE:-unknown}" >> /etc/pgedge/build-info.txt; \
-    printf "    --build-arg GIT_COMMIT=%s \\\\\n" "${GIT_COMMIT:-unknown}" >> /etc/pgedge/build-info.txt; \
-    printf "    --build-arg GIT_BRANCH=%s .\n" "${GIT_BRANCH:-unknown}" >> /etc/pgedge/build-info.txt; \
-    printf "\n" >> /etc/pgedge/build-info.txt; \
+RUN set -eux && \
+    mkdir -p /etc/pgedge && \
+    printf "pgEdge Base Test Image Build Information\n" > /etc/pgedge/build-info.txt && \
+    printf "=========================================\n\n" >> /etc/pgedge/build-info.txt && \
+    printf "Build Date: %s\n" "${BUILD_DATE:-unknown}" >> /etc/pgedge/build-info.txt && \
+    printf "Git Commit: %s\n" "${GIT_COMMIT:-unknown}" >> /etc/pgedge/build-info.txt && \
+    printf "Git Branch: %s\n" "${GIT_BRANCH:-unknown}" >> /etc/pgedge/build-info.txt && \
+    printf "Rocky Linux: %s\n" "${ROCKYLINUX_VERSION:-unknown}" >> /etc/pgedge/build-info.txt && \
+    printf "\nTo reproduce this exact build:\n" >> /etc/pgedge/build-info.txt && \
+    printf "  git clone https://github.com/pgedge/spock.git\n" >> /etc/pgedge/build-info.txt && \
+    printf "  git checkout %s\n" "${GIT_COMMIT:-unknown}" >> /etc/pgedge/build-info.txt && \
+    printf "  docker build -f tests/docker/Dockerfile-base.el9 \\\\\n" >> /etc/pgedge/build-info.txt && \
+    printf "    --build-arg BUILD_DATE=%s \\\\\n" "${BUILD_DATE:-unknown}" >> /etc/pgedge/build-info.txt && \
+    printf "    --build-arg GIT_COMMIT=%s \\\\\n" "${GIT_COMMIT:-unknown}" >> /etc/pgedge/build-info.txt && \
+    printf "    --build-arg GIT_BRANCH=%s .\n" "${GIT_BRANCH:-unknown}" >> /etc/pgedge/build-info.txt && \
+    printf "\n" >> /etc/pgedge/build-info.txt && \
     cat /etc/pgedge/build-info.txt
 
 # ==============================================================================
 # System Update and Base Development Tools Installation
 # ==============================================================================
-RUN set -eux; \
-    dnf -y update; \
-    dnf -y upgrade; \
-    dnf -y groupinstall "Development Tools"; \
-    dnf clean all; \
+RUN set -eux && \
+    dnf -y upgrade && \
+    dnf -y install sudo && \
+    dnf -y groupinstall "Development Tools" && \
+    dnf clean all && \
     rm -rf /var/cache/dnf/*
 
 # ==============================================================================
 # User Creation and Configuration
 # ==============================================================================
-RUN set -eux; \
-    useradd -m -s /bin/bash ${PGEDGE_USER}; \
-    echo "${PGEDGE_USER}:asdf" | chpasswd; \
-    echo "${PGEDGE_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${PGEDGE_USER}; \
-    chmod 0440 /etc/sudoers.d/${PGEDGE_USER}; \
+RUN set -eux && \
+    useradd -m -s /bin/bash ${PGEDGE_USER} && \
+    echo "${PGEDGE_USER}:asdf" | chpasswd && \
+    echo "${PGEDGE_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${PGEDGE_USER} && \
+    chmod 0440 /etc/sudoers.d/${PGEDGE_USER} && \
     chown -R ${PGEDGE_USER}:${PGEDGE_USER} /home/${PGEDGE_USER}
 
 # ==============================================================================
 # PostgreSQL Build Dependencies and Testing Tools
 # ==============================================================================
 # Install all required packages in a single RUN to minimize layers
-RUN set -eux; \
+RUN set -eux && \
     dnf install --allowerasing --enablerepo=crb -y \
         bind-utils \
         bison \
@@ -114,42 +114,32 @@ RUN set -eux; \
         openssl-devel \
         pam-devel \
         perl \
-        perl-App-cpanminus \
         perl-devel \
         perl-IPC-Run \
+        perl-Test-Simple \
         pkgconfig \
         procps \
         python3 \
         python3-devel \
         readline-devel \
-        sudo \
         systemd-devel \
         unzip \
         uuid-devel \
-        vim \
         zlib-devel \
-        zstd-devel; \
-    dnf clean all; \
+        libzstd-devel && \
+    dnf clean all && \
     rm -rf /var/cache/dnf/* /tmp/* /var/tmp/*
-
-# ==============================================================================
-# Perl Testing Dependencies
-# ==============================================================================
-# Note: perl-IPC-Run is already installed via dnf above, only installing Test::More
-RUN set -eux; \
-    cpanm Test::More; \
-    rm -rf /root/.cpanm
 
 # ==============================================================================
 # SSH Configuration for Testing
 # ==============================================================================
 # Switch to pgedge user for SSH setup (security best practice)
 USER ${PGEDGE_USER}
-RUN set -eux; \
-    mkdir -p ~/.ssh; \
-    ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 -C "${PGEDGE_USER}@localhost"; \
-    cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys; \
-    chmod 700 ~/.ssh; \
+RUN set -eux && \
+    mkdir -p ~/.ssh && \
+    ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 -C "${PGEDGE_USER}@localhost" && \
+    cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys && \
+    chmod 700 ~/.ssh && \
     chmod 600 ~/.ssh/authorized_keys ~/.ssh/id_ed25519
 
 # ==============================================================================
