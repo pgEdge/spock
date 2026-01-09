@@ -3,7 +3,7 @@
  * spock_worker.h
  *              spock worker helper functions
  *
- * Copyright (c) 2022-2024, pgEdge, Inc.
+ * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -159,7 +159,6 @@ extern void handle_sigterm(SIGNAL_ARGS);
 extern void spock_subscription_changed(Oid subid, bool kill);
 
 extern void spock_worker_shmem_init(void);
-extern void spock_shmem_attach(void);
 
 extern int	spock_worker_register(SpockWorker *worker);
 extern void spock_worker_attach(int slot, SpockWorkerType type);

@@ -3,7 +3,7 @@
  * spock_group.h
  * 		spock group function declarations
  *
- * Copyright (c) 2022-2025, pgEdge, Inc.
+ * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -84,68 +84,77 @@ typedef enum
 } GroupProgressTupDescColumns;
 
 /*
- * Logical Replication Progress has made by a group of apply workers.
+ * Logical Replication Progress made by a group of apply workers.
  *
+ * IMPORTANT: The 'key' field must remain the first member of this structure
+ * because the hash table uses SpockGroupKey as its hash key type. The
+ * dynahash code accesses the key portion directly, so changing this layout
+ * would break the hash table operations.
+ *
+ * Field descriptions:
+ * key - Identifies the replication group (dbid, node_id, remote_node_id).
+ *       MUST be first field for hash table compatibility.
  * remote_commit_ts - the most advanced timestamp of COMMIT commands, already
- * applied by the replication group. In fact, an apply worker may finish
- * the COMMIT apply if only all other commits with smaller timestamps have
- * already been committed by other workers. So, this value tells us about
- * the real progress.
+ *       applied by the replication group. In fact, an apply worker may finish
+ *       the COMMIT apply if only all other commits with smaller timestamps have
+ *       already been committed by other workers. So, this value tells us about
+ *       the real progress.
  * prev_remote_ts - XXX: It seems do nothing at the moment and should
- * be considered to be removed.
+ *       be considered to be removed.
  * remote_commit_lsn - LSN of the COMMIT corresponding to the remote_commit_ts.
  * remote_insert_lsn - an LSN of the most advanced WAL record written to
- * the WAL on the remote side. Replication protocol attempts to update it as
- * frequently as possible, but it still be a little stale.
+ *       the WAL on the remote side. Replication protocol attempts to update it as
+ *       frequently as possible, but it still be a little stale.
  * received_lsn - an LSN of the most advanced WAL record that was received by
- * the group.
+ *       the group.
  * last_updated_ts - timestamp when remote COMMIT command (identified by the
- * remote_commit_ts and remote_commit_lsn) was applied locally.
- * Spock employs this value to calculate replication_lag.
+ *       remote_commit_ts and remote_commit_lsn) was applied locally.
+ *       Spock employs this value to calculate replication_lag.
  * updated_by_decode - obsolete value. It was needed to decide on the LR lag
- * that seems not needed if we have NULL value for a timestamp column.
+ *       that seems not needed if we have NULL value for a timestamp column.
  */
 typedef struct SpockApplyProgress
 {
-	SpockGroupKey key;			/* common elements */
-	TimestampTz remote_commit_ts;	/* committed remote txn ts */
+	SpockGroupKey	key;			/* MUST be first field */
+
+	TimestampTz			remote_commit_ts;	/* committed remote txn ts */
 
 	/*
 	 * Bit of duplication of remote_commit_ts. Serves the same purpose, except
 	 * keep the last updated value
 	 */
-	TimestampTz prev_remote_ts;
-	XLogRecPtr	remote_commit_lsn;	/* LSN of remote commit on origin */
-	XLogRecPtr	remote_insert_lsn;	/* origin insert/end LSN reported */
+	TimestampTz			prev_remote_ts;
+	XLogRecPtr			remote_commit_lsn;	/* LSN of remote commit on origin */
+	XLogRecPtr			remote_insert_lsn;	/* origin insert/end LSN reported */
 
 	/*
 	 * The largest received LSN by the group. It is more or equal to the
 	 * remote_commit_lsn.
 	 */
-	XLogRecPtr	received_lsn;
+	XLogRecPtr			received_lsn;
 
-	TimestampTz last_updated_ts;	/* when we set this */
-	bool		updated_by_decode;	/* set by decode or apply. OBSOLETE. Used
+	TimestampTz			last_updated_ts;	/* when we set this */
+	bool				updated_by_decode;	/* set by decode or apply. OBSOLETE. Used
 									 * in versions <=5.x.x only */
 } SpockApplyProgress;
 
 /* Hash entry: one per group (stable pointer; not moved by dynahash) */
 typedef struct SpockGroupEntry
 {
-	SpockGroupKey key;			/* hash key */
-	SpockApplyProgress progress;
-	pg_atomic_uint32 nattached;
-	ConditionVariable prev_processed_cv;
+	SpockApplyProgress	progress;
+	pg_atomic_uint32	nattached;
+	ConditionVariable	prev_processed_cv;
 } SpockGroupEntry;
 
 /* shmem setup */
 extern void spock_group_shmem_request(void);
-extern void spock_group_shmem_startup(int napply_groups, bool found);
+extern void spock_group_shmem_startup(int napply_groups);
 
 SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id);
 void		spock_group_detach(void);
-bool		spock_group_progress_update(const SpockApplyProgress *sap);
-void		spock_group_progress_update_ptr(SpockGroupEntry *e, const SpockApplyProgress *sap);
+extern bool spock_group_progress_update(const SpockApplyProgress *sap);
+extern void spock_group_progress_update_ptr(SpockGroupEntry *entry,
+											const SpockApplyProgress *sap);
 SpockApplyProgress *apply_worker_get_progress(void);
 SpockGroupEntry *spock_group_lookup(Oid dbid, Oid node_id, Oid remote_node_id);
 
@@ -154,7 +163,6 @@ typedef void (*SpockGroupIterCB) (const SpockGroupEntry *e, void *arg);
 void		spock_group_foreach(SpockGroupIterCB cb, void *arg);
 
 extern void spock_group_resource_dump(void);
-extern void spock_group_resource_load(void);
 extern void spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);
 
 #endif							/* SPOCK_GROUP_H */

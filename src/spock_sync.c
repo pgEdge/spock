@@ -3,7 +3,7 @@
  * spock_sync.c
  *		table synchronization functions
  *
- * Copyright (c) 2022-2025, pgEdge, Inc.
+ * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -443,6 +443,11 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			char	   *last_updated_ts = NULL;
 			char	   *updated_by_decode = PQgetvalue(originRes, rno, GP_UPDATED_BY_DECODE);
 
+			sap.key.dbid = MyDatabaseId;
+			sap.key.node_id = MySubscription->target->id;
+			sap.key.remote_node_id = atooid(remote_node_id);
+			Assert(OidIsValid(sap.key.remote_node_id));
+
 			/* Check: we view only values related to a single database */
 			Assert(!PQgetisnull(originRes, rno, GP_DBOID));
 			if (dbid_str == NULL)
@@ -452,9 +457,6 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 				Assert(strcmp(dbid_str, PQgetvalue(originRes, rno, GP_DBOID)) == 0);
 			}
 
-			sap.key.dbid = MyDatabaseId;
-			sap.key.node_id = MySubscription->target->id;
-			sap.key.remote_node_id = atooid(remote_node_id);
 			if (!PQgetisnull(originRes, rno, GP_REMOTE_COMMIT_TS))
 			{
 				remote_commit_ts = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_TS);
@@ -490,8 +492,8 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 					ereport(WARNING,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("transaction apply time precedes its original commit time"),
-							 errdetail("Commit time %s (node ID %d), but it was applied at %s on the replica (node ID %d)",
-									   remote_commit_ts, sap.key.remote_node_id,
+							 errdetail("Commit time %s (node ID %s), but it was applied at %s on the replica (node ID %d)",
+									   remote_commit_ts, remote_node_id,
 									   last_updated_ts,
 									   MySubscription->origin->id),
 							 errhint("usually it means that the server's clocks are out of sync.")));
@@ -499,7 +501,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			sap.updated_by_decode = updated_by_decode[0] == 't',
 
 			/* Update progress */
-				spock_group_progress_update(&sap);
+			spock_group_progress_update(&sap);
 
 			elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
 				 "remote_commit_ts='%s' "

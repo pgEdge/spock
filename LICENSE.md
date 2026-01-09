@@ -1,6 +1,6 @@
 The PostgreSQL License
 
-Copyright (c) 2021 - 2025, pgEdge, Inc.
+Copyright (c) 2021 - 2026, pgEdge, Inc.
 
 Portions Copyright (c) 1996-2019, The PostgreSQL Global Development Group
 

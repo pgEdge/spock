@@ -3,7 +3,7 @@
  * spock_output.c
  *		  Logical Replication output plugin
  *
- * Copyright (c) 2022-2025, pgEdge, Inc.
+ * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -1403,8 +1403,6 @@ spock_output_plugin_shmem_startup(void)
 
 	/* Get the shared resources */
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
-	SpockCtx->slot_group_master_lock = &((GetNamedLWLockTranche("spock_slot_groups")[0]).lock);
-	SpockCtx->slot_ngroups = nworkers;
 	slot_groups = ShmemInitStruct("spock_slot_groups",
 								  spock_output_plugin_shmem_size(nworkers),
 								  &found);

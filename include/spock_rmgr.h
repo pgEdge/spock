@@ -3,7 +3,7 @@
  * spock_rmgr.h
  * 		spock resource manager declarations
  *
- * Copyright (c) 2022-2025, pgEdge, Inc.
+ * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -47,6 +47,5 @@ extern void spock_rmgr_cleanup(void);
 
 /* WAL helpers */
 extern XLogRecPtr spock_apply_progress_add_to_wal(const SpockApplyProgress *sap);
-extern void spock_group_emit_progress_wal_cb(const SpockGroupEntry *e, void *arg);
 
 #endif							/* SPOCK_RMGR_H */

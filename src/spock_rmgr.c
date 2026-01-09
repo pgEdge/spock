@@ -3,7 +3,7 @@
  * spock_rmgr.c
  * 		spock resource manager definitions
  *
- * Copyright (c) 2022-2025, pgEdge, Inc.
+ * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -84,14 +84,17 @@ spock_rmgr_redo(XLogReaderState *record)
 	{
 		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				SpockApplyProgress *sap;
+				SpockApplyProgress   *rec;
 
-				sap = (SpockApplyProgress *) XLogRecGetData(record);
+				rec = (SpockApplyProgress *) XLogRecGetData(record);
 
-				/* LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE); */
-
-				spock_group_progress_update(sap);
-				/* LWLockRelease(SpockCtx->lock); */
+				/*
+				 * During WAL replay, we must acquire locks when accessing
+				 * shared hash tables (per commit c6d76d7 in PostgreSQL core).
+				 * The spock_group_progress_update() function acquires
+				 * apply_group_master_lock internally for us.
+				 */
+				(void) spock_group_progress_update(rec);
 			}
 			break;
 
@@ -112,13 +115,17 @@ spock_rmgr_desc(StringInfo buf, XLogReaderState *record)
 	{
 		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				SpockApplyProgress *sap;
+				SpockApplyProgress   *rec;
 
-				sap = (SpockApplyProgress *) XLogRecGetData(record);
-				appendStringInfo(buf, "spock apply progress for db %u, node %u, remote_node %u",
-								 sap->key.dbid,
-								 sap->key.node_id,
-								 sap->key.remote_node_id);
+				rec = (SpockApplyProgress *) XLogRecGetData(record);
+				appendStringInfo(buf, "spock apply progress for dbid %u, node_id %u, remote_node_id %u; "
+								 "remote_commit_lsn %X/%X, remote_insert_lsn %X/%X, received_lsn %X/%X",
+								 rec->key.dbid,
+								 rec->key.node_id,
+								 rec->key.remote_node_id,
+								 LSN_FORMAT_ARGS(rec->remote_commit_lsn),
+								 LSN_FORMAT_ARGS(rec->remote_insert_lsn),
+								 LSN_FORMAT_ARGS(rec->received_lsn));
 			}
 			break;
 		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:
@@ -149,15 +156,6 @@ spock_rmgr_identify(uint8 info)
 void
 spock_rmgr_startup(void)
 {
-	/*
-	 * During WAL recovery in the startup process, we need to attach to the
-	 * shared memory structure (SpockGroupHash) that was created by the
-	 * postmaster's shmem_startup_hook.
-	 *
-	 * spock_shmem_attach() handles resetting inherited globals and properly
-	 * re-attaching to shared memory before WAL replay begins.
-	 */
-	spock_shmem_attach();
 }
 
 void
@@ -180,7 +178,7 @@ spock_rmgr_cleanup(void)
 XLogRecPtr
 spock_apply_progress_add_to_wal(const SpockApplyProgress *sap)
 {
-	XLogRecPtr	lsn;
+	XLogRecPtr			lsn;
 
 	Assert(sap != NULL);
 
@@ -188,16 +186,13 @@ spock_apply_progress_add_to_wal(const SpockApplyProgress *sap)
 	XLogRegisterData((char *) sap, sizeof(SpockApplyProgress));
 	lsn = XLogInsert(SPOCK_RMGR_ID, SPOCK_RMGR_APPLY_PROGRESS);
 
-	return lsn;
-}
+	/*
+	 * Force the WAL record to disk immediately. This ensures that progress
+	 * is durably recorded before we update the in-memory state and continue
+	 * processing. If we crash after updating memory but before the WAL
+	 * flushes, we could lose progress tracking and replay would be incorrect.
+	 */
+	XLogFlush(lsn);
 
-/*
- * spock_group_emit_progress_wal_cb
- *
- * Foreach callback, emit a group's apply-progress to WAL.
- */
-void
-spock_group_emit_progress_wal_cb(const SpockGroupEntry *e, void *arg)
-{
-	spock_apply_progress_add_to_wal(&e->progress);
+	return lsn;
 }

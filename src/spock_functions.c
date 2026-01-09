@@ -3,7 +3,7 @@
  * spock_functions.c
  *		spock SQL visible interfaces
  *
- * Copyright (c) 2022-2025, pgEdge, Inc.
+ * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
  *
@@ -3511,35 +3511,36 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 	hash_seq_init(&it, SpockGroupHash);
 	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
 	{
-		Datum		values[_GP_LAST_];
-		bool		nulls[_GP_LAST_] = {0};
+		SpockApplyProgress *sap = &e->progress;
+		Datum				values[_GP_LAST_];
+		bool				nulls[_GP_LAST_] = {0};
 
 		/*
 		 * Centralise conversion of local representation of the progress data
 		 * to an external representation. This is a good place to check
 		 * correctness of each value (valid oid and timestamps).
 		 */
-		Assert(OidIsValid(e->key.dbid) && OidIsValid(e->key.node_id) &&
-			   OidIsValid(e->key.remote_node_id));
+		Assert(OidIsValid(sap->key.dbid) && OidIsValid(sap->key.node_id) &&
+			   OidIsValid(sap->key.remote_node_id));
 
-		values[GP_DBOID] = ObjectIdGetDatum(e->progress.key.dbid);
-		values[GP_NODE_ID] = ObjectIdGetDatum(e->progress.key.node_id);
-		values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(e->progress.key.remote_node_id);
+		values[GP_DBOID] = ObjectIdGetDatum(sap->key.dbid);
+		values[GP_NODE_ID] = ObjectIdGetDatum(sap->key.node_id);
+		values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(sap->key.remote_node_id);
 
-		if (e->progress.remote_commit_ts != 0)
+		if (sap->remote_commit_ts != 0)
 		{
-			Assert(IS_VALID_TIMESTAMP(e->progress.remote_commit_ts));
+			Assert(IS_VALID_TIMESTAMP(sap->remote_commit_ts));
 			values[GP_REMOTE_COMMIT_TS] =
-				TimestampTzGetDatum(e->progress.remote_commit_ts);
+				TimestampTzGetDatum(sap->remote_commit_ts);
 		}
 		else
 			nulls[GP_REMOTE_COMMIT_TS] = true;
 
-		if (e->progress.prev_remote_ts != 0)
+		if (sap->prev_remote_ts != 0)
 		{
-			Assert(IS_VALID_TIMESTAMP(e->progress.prev_remote_ts));
+			Assert(IS_VALID_TIMESTAMP(sap->prev_remote_ts));
 			values[GP_PREV_REMOTE_TS] =
-				TimestampTzGetDatum(e->progress.prev_remote_ts);
+				TimestampTzGetDatum(sap->prev_remote_ts);
 		}
 		else
 			nulls[GP_PREV_REMOTE_TS] = true;
@@ -3549,20 +3550,20 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 		 * and the current LSN. Moreover, LSN=0 physically makes sense. So,
 		 * don't introduce NULL value for these LSN fields.
 		 */
-		values[GP_REMOTE_COMMIT_LSN] = LSNGetDatum(e->progress.remote_commit_lsn);
-		values[GP_REMOTE_INSERT_LSN] = LSNGetDatum(e->progress.remote_insert_lsn);
-		values[GP_RECEIVED_LSN] = LSNGetDatum(e->progress.received_lsn);
+		values[GP_REMOTE_COMMIT_LSN] = LSNGetDatum(sap->remote_commit_lsn);
+		values[GP_REMOTE_INSERT_LSN] = LSNGetDatum(sap->remote_insert_lsn);
+		values[GP_RECEIVED_LSN] = LSNGetDatum(sap->received_lsn);
 
-		if (e->progress.last_updated_ts != 0)
+		if (sap->last_updated_ts != 0)
 		{
-			Assert(IS_VALID_TIMESTAMP(e->progress.last_updated_ts));
+			Assert(IS_VALID_TIMESTAMP(sap->last_updated_ts));
 			values[GP_LAST_UPDATED_TS] =
-				TimestampTzGetDatum(e->progress.last_updated_ts);
+				TimestampTzGetDatum(sap->last_updated_ts);
 		}
 		else
 			nulls[GP_LAST_UPDATED_TS] = true;
 
-		values[GP_UPDATED_BY_DECODE] = BoolGetDatum(e->progress.updated_by_decode);
+		values[GP_UPDATED_BY_DECODE] = BoolGetDatum(sap->updated_by_decode);
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}

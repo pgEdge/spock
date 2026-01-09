@@ -45,7 +45,7 @@ theme:
 extra:
   generator: false
 
-copyright: Copyright &copy; 2023 - 2025 pgEdge, Inc
+copyright: Copyright &copy; 2023 - 2026 pgEdge, Inc
 repo_url: https://github.com/pgEdge/spock
 
 nav:

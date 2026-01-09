@@ -3,7 +3,7 @@
  * sql.c
  * 		spockctrl SQL execution utilities
  *
- * Copyright (c) 2022-2025, pgEdge, Inc.
+ * Copyright (c) 2022-2026, pgEdge, Inc.
  *
  *-------------------------------------------------------------------------
  */
