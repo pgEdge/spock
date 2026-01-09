@@ -407,9 +407,7 @@ apply_worker_get_progress(void)
 	if (MyApplyWorker && MyApplyWorker->apply_group)
 	{
 		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
-
-		memcpy(&sap, &MyApplyWorker->apply_group->progress,
-			   sizeof(SpockApplyProgress));
+		sap = MyApplyWorker->apply_group->progress;
 		LWLockRelease(SpockCtx->apply_group_master_lock);
 	}
 	else
