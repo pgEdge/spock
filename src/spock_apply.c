@@ -242,7 +242,7 @@ wait_for_previous_transaction(void)
 		 * loop and process this transaction. Otherwise, wait for the
 		 * predecessor to commit.
 		 */
-		if (apply_worker_get_progress()->prev_remote_ts == required_commit_ts ||
+		if (apply_worker_get_prev_remote_ts() == required_commit_ts ||
 			required_commit_ts == 0)
 		{
 			break;
@@ -263,7 +263,7 @@ wait_for_previous_transaction(void)
 		elog(DEBUG1, "SPOCK: slot-group '%s' WAIT for ts [current proccessed"
 			 ", required] [" INT64_FORMAT ", " INT64_FORMAT "]",
 			 MySubscription->slot_name,
-			 apply_worker_get_progress()->prev_remote_ts,
+			 apply_worker_get_prev_remote_ts(),
 			 required_commit_ts);
 
 		/* Latch */

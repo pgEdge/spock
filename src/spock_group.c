@@ -304,7 +304,7 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 	 * Value of the received_lsn potentially can exceed remote_insert_lsn
 	 * because it is reported more frequently (by keepalive messages).
 	 */
-	Assert(!(dest->remote_commit_ts == 0 ^ dest->last_updated_ts == 0));
+	Assert(!((dest->remote_commit_ts == 0) ^ (dest->last_updated_ts == 0)));
 	Assert(dest->remote_commit_ts >= 0 && dest->last_updated_ts >= 0);
 }
 
@@ -401,14 +401,15 @@ spock_group_progress_update_ptr(SpockGroupEntry *e,
 }
 
 /*
- * apply_worker_get_progress
+ * apply_worker_get_prev_remote_ts
  *
- * Return a pointer to the snapshot of the current apply worker's progress.
+ * Get the previous remote timestamp for our apply worker
+ *
  */
-SpockApplyProgress *
-apply_worker_get_progress(void)
+TimestampTz
+apply_worker_get_prev_remote_ts(void)
 {
-	static SpockApplyProgress sap;
+	TimestampTz	prev_remote_ts;
 
 	Assert(MyApplyWorker != NULL);
 	Assert(MyApplyWorker->apply_group != NULL);
@@ -416,7 +417,7 @@ apply_worker_get_progress(void)
 	if (MyApplyWorker && MyApplyWorker->apply_group)
 	{
 		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
-		sap = MyApplyWorker->apply_group->progress;
+		prev_remote_ts = MyApplyWorker->apply_group->progress.prev_remote_ts;
 		LWLockRelease(SpockCtx->apply_group_master_lock);
 	}
 	else
@@ -426,7 +427,7 @@ apply_worker_get_progress(void)
 		 */
 		elog(ERROR, "apply worker has not been fully initialised yet");
 
-	return &sap;
+	return prev_remote_ts;
 }
 
 /* Iterate all groups */
@@ -516,11 +517,13 @@ spock_group_resource_dump(void)
 	hdr.version = SPOCK_RES_VERSION;
 	hdr.system_identifier = GetSystemIdentifier();
 	hdr.flags = 0;
+
+	/* Acquire lock before reading hash table to ensure consistency */
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+
 	hdr.entry_count = hash_get_num_entries(SpockGroupHash);
 
 	write_buf(fd, &hdr, sizeof(hdr), SPOCK_RES_DUMPFILE "(header)");
-
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
 
 	dctx.fd = fd;
 	dctx.count = 0;
@@ -671,10 +674,11 @@ spock_group_progress_update_list(List *lst)
 
 		elog(LOG, "SPOCK: adjust spock.progress %d->%d to "
 			 "remote_commit_ts='%s' "
-			 "remote_commit_lsn=%llX remote_insert_lsn=%llX",
+			 "remote_commit_lsn=%X/%X remote_insert_lsn=%X/%X",
 			 sap->key.remote_node_id, MySubscription->target->id,
 			 timestamptz_to_str(sap->remote_commit_ts),
-			 sap->remote_commit_lsn, sap->remote_insert_lsn);
+			 LSN_FORMAT_ARGS(sap->remote_commit_lsn),
+			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
 	}
 
 	/*
