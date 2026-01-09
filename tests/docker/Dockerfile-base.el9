@@ -1,94 +1,128 @@
-# ##############################################################################
-#
-# Base test image for pgEdge Spock development and testing.
-#
-# This image includes:
-# - Rocky Linux 9 base with development tools
-# - PostgreSQL build dependencies (LLVM, ICU, SSL, etc.)
-# - Testing tools (Perl Test::More, SSH)
-# - pgedge user with sudo access
-#
-# Built and published to: ghcr.io/pgedge/base-test-image:latest
-#
-# ##############################################################################
+# syntax=docker/dockerfile:1
 
+# ==============================================================================
+# Base Test Image for pgEdge Products Development and Testing
+# ==============================================================================
+#
+# Description:
+#   This image provides a Rocky Linux 9 base with all necessary dependencies
+#   for building and testing PostgreSQL extensions, specifically pgEdge Spock.
+#
+# Included Components:
+#   - Rocky Linux 9 base OS with development tools
+#   - PostgreSQL build dependencies (compilers, libraries, etc.)
+#   - Testing frameworks (Perl Test::More)
+#   - SSH server for testing connectivity
+#   - pgedge user with sudo privileges
+#
+# Build Target: ghcr.io/pgedge/base-test-image:latest
+# ==============================================================================
+
+# Use the latest Rocky Linux 9 base image
 FROM rockylinux:9
 
-# Update system and install base development tools
-RUN dnf -y update && \
-    dnf -y upgrade && \
-    dnf -y install sudo && \
-    dnf -y groupinstall "Development Tools"
+# Define build arguments for customization
+ARG PGEDGE_USER=pgedge
 
-# Create pgedge user with sudo privileges
-RUN useradd -m pgedge -s /bin/bash && \
-    echo pgedge:asdf | chpasswd && \
-    echo "pgedge ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/pgedge && \
-    chmod 0440 /etc/sudoers.d/pgedge && \
-    chown -R pgedge:pgedge /home/pgedge
+# Set metadata labels
+LABEL org.opencontainers.image.title="pgEdge Dev Base Test Image" \
+      org.opencontainers.image.description="Base image for pgEdge development and testing" \
+      org.opencontainers.image.vendor="pgEdge" \
+      org.opencontainers.image.maintainer="andrei.lepikhov@pgedge.com" \
+      org.opencontainers.image.licenses="BSD"
 
-# Install PostgreSQL build dependencies and testing tools
-# Note: List inlined to avoid requiring build context with external files
-RUN dnf install --allowerasing --enablerepo=crb -y \
-    bison \
-    clang \
-    curl \
-    cyrus-sasl-gssapi \
-    dnsutils \
-    flex \
-    jansson-devel \
-    krb5-devel \
-    libicu-devel \
-    libpq \
-    libpq-devel \
-    libuuid \
-    libuuid-devel \
-    libxslt \
-    libxslt-devel \
-    llvm \
-    llvm-devel \
-    lz4 \
-    lz4-devel \
-    nc \
-    openldap \
-    openldap-devel \
-    openssh-clients \
-    openssh-server \
-    openssl-devel \
-    pam-devel \
-    perl \
-    perl-App-cpanminus \
-    perl-devel \
-    perl-IPC-Run \
-    pkgconfig \
-    procps \
-    python3 \
-    python3-devel \
-    sudo \
-    systemd-devel \
-    unzip \
-    uuid \
-    uuid-devel \
-    vim \
-    zlib \
-    zlib-devel && \
-    dnf clean all
+# ==============================================================================
+# System Update and Base Development Tools Installation
+# ==============================================================================
+RUN set -eux; \
+    dnf -y update; \
+    dnf -y upgrade; \
+    dnf -y groupinstall "Development Tools"; \
+    dnf clean all; \
+    rm -rf /var/cache/dnf/*
 
-# Install Perl testing dependencies
-RUN cpanm Test::More
+# ==============================================================================
+# User Creation and Configuration
+# ==============================================================================
+RUN set -eux; \
+    useradd -m -s /bin/bash ${PGEDGE_USER}; \
+    echo "${PGEDGE_USER}:asdf" | chpasswd; \
+    echo "${PGEDGE_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${PGEDGE_USER}; \
+    chmod 0440 /etc/sudoers.d/${PGEDGE_USER}; \
+    chown -R ${PGEDGE_USER}:${PGEDGE_USER} /home/${PGEDGE_USER}
 
-# Setup SSH for pgedge user (not root!)
-# This allows SSH-based testing as the pgedge user
-USER pgedge
-RUN mkdir -p ~/.ssh && \
-    ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
-    cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys && \
-    chmod 700 ~/.ssh && \
-    chmod 600 ~/.ssh/authorized_keys
+# ==============================================================================
+# PostgreSQL Build Dependencies and Testing Tools
+# ==============================================================================
+# Install all required packages in a single RUN to minimize layers
+RUN set -eux; \
+    dnf install --allowerasing --enablerepo=crb -y \
+        bind-utils \
+        bison \
+        clang \
+        curl \
+        cyrus-sasl-gssapi \
+        flex \
+        gcc \
+        git \
+        jansson-devel \
+        krb5-devel \
+        libicu-devel \
+        libpq \
+        libpq-devel \
+        libuuid-devel \
+        libxml2-devel \
+        libxslt-devel \
+        llvm \
+        llvm-devel \
+        lz4-devel \
+        make \
+        nc \
+        openldap-devel \
+        openssh-clients \
+        openssh-server \
+        openssl-devel \
+        pam-devel \
+        perl \
+        perl-App-cpanminus \
+        perl-devel \
+        perl-IPC-Run \
+        pkgconfig \
+        procps \
+        python3 \
+        python3-devel \
+        readline-devel \
+        sudo \
+        systemd-devel \
+        unzip \
+        uuid-devel \
+        vim \
+        zlib-devel \
+        zstd-devel; \
+    dnf clean all; \
+    rm -rf /var/cache/dnf/* /tmp/* /var/tmp/*
 
-# Set default working directory
-WORKDIR /home/pgedge
+# ==============================================================================
+# Perl Testing Dependencies
+# ==============================================================================
+# Note: perl-IPC-Run is already installed via dnf above, only installing Test::More
+RUN set -eux; \
+    cpanm Test::More; \
+    rm -rf /root/.cpanm
 
-# Metadata
-LABEL maintainer="andrei.lepikhov@pgedge.com"
-LABEL description="Base image for pgEdge Spock PostgreSQL extension development and testing"
+# ==============================================================================
+# SSH Configuration for Testing
+# ==============================================================================
+# Switch to pgedge user for SSH setup (security best practice)
+USER ${PGEDGE_USER}
+RUN set -eux; \
+    mkdir -p ~/.ssh; \
+    ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 -C "${PGEDGE_USER}@localhost"; \
+    cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys; \
+    chmod 700 ~/.ssh; \
+    chmod 600 ~/.ssh/authorized_keys ~/.ssh/id_ed25519
+
+# ==============================================================================
+# Working Directory and Final Setup
+# ==============================================================================
+WORKDIR /home/${PGEDGE_USER}
