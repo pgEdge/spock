@@ -52,6 +52,7 @@ CREATE OR REPLACE PROCEDURE spock.recover_cluster(
     p_dry_run boolean DEFAULT false,
     p_verbose boolean DEFAULT true,
     p_auto_repair boolean DEFAULT true,
+    p_delete_extra_rows boolean DEFAULT false,  -- Delete rows that exist on target but not on source
     p_fire_triggers boolean DEFAULT false,
     p_include_schemas text[] DEFAULT ARRAY['public'],  -- Schemas to include (NULL for all)
     p_exclude_schemas text[] DEFAULT ARRAY['pg_catalog', 'information_schema', 'spock']  -- Schemas to exclude
@@ -82,10 +83,14 @@ DECLARE
     v_tables_still_need_recovery int := 0;
     v_tables_with_errors int := 0;
     v_total_rows_recovered bigint := 0;
+    v_total_rows_deleted bigint := 0;
+    v_extra_rows bigint;
+    v_rows_deleted bigint := 0;
     v_pk_cols text[];
     v_all_cols text[];
     v_col_types text;
     v_pk_col_list text;
+    v_pk_col_types text;
     v_all_col_list text;
     v_insert_sql text;
     v_temp_table_name text;
@@ -140,6 +145,8 @@ BEGIN
             CASE WHEN p_dry_run THEN 'ENABLED' ELSE 'DISABLED' END;
         RAISE NOTICE '  Auto Repair: % (automatically repair tables)', 
             CASE WHEN p_auto_repair THEN 'ENABLED' ELSE 'DISABLED' END;
+        RAISE NOTICE '  Delete Extra Rows: % (delete rows on target not present on source)', 
+            CASE WHEN p_delete_extra_rows THEN 'ENABLED' ELSE 'DISABLED' END;
         RAISE NOTICE '';
     END IF;
     
@@ -290,7 +297,8 @@ BEGIN
         source_origin_rows bigint,  -- Only populated in origin-aware mode
         target_rows_before bigint,
         target_rows_after bigint,
-        rows_affected bigint,
+        rows_affected bigint,  -- Rows inserted
+        rows_deleted bigint,  -- Rows deleted
         status text,
         details text,
         time_taken interval,
@@ -402,17 +410,21 @@ BEGIN
                 v_replicated_tables.schema_name, v_replicated_tables.table_name
             ) INTO v_target_count;
             
-            -- Calculate missing rows
+            -- Calculate missing rows and extra rows
             IF v_recovery_mode = 'origin-aware' THEN
                 -- For origin-aware, we only care about origin rows
                 v_missing_rows := GREATEST(0, v_source_origin_count - v_target_count);
+                -- For extra rows in origin-aware mode, we need to count target rows from origin
+                -- that don't exist on source. This is complex, so we'll calculate it during delete phase.
+                v_extra_rows := NULL;  -- Will be calculated during delete phase if needed
             ELSE
                 -- For comprehensive, compare total counts
-                v_missing_rows := v_source_count - v_target_count;
+                v_missing_rows := GREATEST(0, v_source_count - v_target_count);
+                v_extra_rows := GREATEST(0, v_target_count - v_source_count);
             END IF;
             
             -- Determine status
-            IF v_missing_rows > 0 THEN
+            IF v_missing_rows > 0 AND (v_extra_rows IS NULL OR v_extra_rows = 0) THEN
                 v_status := 'NEEDS_RECOVERY';
                 IF v_recovery_mode = 'origin-aware' THEN
                     v_details := format('%s rows from origin %s missing (source: %s origin-rows, target: %s rows)', 
@@ -421,9 +433,13 @@ BEGIN
                     v_details := format('%s rows missing (source: %s, target: %s)', 
                         v_missing_rows, v_source_count, v_target_count);
                 END IF;
-            ELSIF v_missing_rows < 0 THEN
-                v_status := 'WARNING';
-                v_details := format('Target has %s more rows than source', -v_missing_rows);
+            ELSIF v_missing_rows = 0 AND v_extra_rows > 0 THEN
+                v_status := CASE WHEN p_delete_extra_rows THEN 'NEEDS_DELETE' ELSE 'WARNING' END;
+                v_details := format('Target has %s extra rows not present on source', v_extra_rows);
+            ELSIF v_missing_rows > 0 AND v_extra_rows > 0 THEN
+                v_status := CASE WHEN p_delete_extra_rows THEN 'NEEDS_RECOVERY_AND_DELETE' ELSE 'NEEDS_RECOVERY' END;
+                v_details := format('%s rows missing, %s extra rows (source: %s, target: %s)', 
+                    v_missing_rows, v_extra_rows, v_source_count, v_target_count);
             ELSE
                 v_status := 'OK';
                 IF v_recovery_mode = 'origin-aware' THEN
@@ -438,6 +454,7 @@ BEGIN
                 v_recovery_report_id, v_replicated_tables.schema_name, v_replicated_tables.table_name,
                 v_source_count, v_source_origin_count, v_target_count, v_target_count, 
                 CASE WHEN v_missing_rows > 0 THEN v_missing_rows ELSE 0 END,
+                COALESCE(v_extra_rows, 0),
                 v_status, v_details, clock_timestamp() - v_start_time, NULL
             );
             
@@ -505,14 +522,14 @@ BEGIN
         IF p_verbose THEN
             RAISE NOTICE '========================================================================';
             RAISE NOTICE 'Phase 3: Recovery - Repairing Tables';
-            RAISE NOTICE '  Purpose: Insert missing rows from source node to target node';
+            RAISE NOTICE '  Purpose: UPSERT rows from source to target (INSERT missing + UPDATE modified)';
             RAISE NOTICE '';
         END IF;
         
         FOR v_replicated_tables IN 
             SELECT * FROM recovery_report 
             WHERE report_id = v_recovery_report_id 
-            AND status = 'NEEDS_RECOVERY' 
+            AND status IN ('NEEDS_RECOVERY', 'OK', 'NEEDS_DELETE', 'NEEDS_RECOVERY_AND_DELETE')
             ORDER BY COALESCE(rows_affected, 0) DESC
         LOOP
             v_start_time := clock_timestamp();
@@ -548,13 +565,13 @@ BEGIN
                 v_all_col_list := array_to_string(v_all_cols, ', ');
                 v_temp_table_name := 'missing_rows_' || md5(v_table_full_name);
                 
-                -- Build query to find missing rows
+                -- Build query to get ALL rows from source (not just missing ones)
+                -- This allows UPSERT to handle both INSERT and UPDATE
                 IF v_recovery_mode = 'origin-aware' THEN
                     -- Origin-aware: filter by origin node
                     v_insert_sql := format($sql$
                         CREATE TEMP TABLE %I AS
                         SELECT * FROM dblink(%L, %L) AS remote(%s)
-                        WHERE (%s) NOT IN (SELECT %s FROM %s)
                     $sql$,
                         v_temp_table_name,
                         v_conn_name_source,
@@ -562,44 +579,76 @@ BEGIN
                             SELECT * FROM %I.%I
                             WHERE (to_json(spock.xact_commit_timestamp_origin(xmin))->>'roident')::oid = %L
                         $remote$, v_replicated_tables.table_schema, v_replicated_tables.table_name, v_origin_node_id),
-                        v_col_types,
-                        v_pk_col_list,
-                        v_pk_col_list,
-                        v_table_full_name
+                        v_col_types
                     );
                 ELSE
-                    -- Comprehensive: get all missing rows
+                    -- Comprehensive: get ALL rows from source
                     v_insert_sql := format($sql$
                         CREATE TEMP TABLE %I AS
                         SELECT * FROM dblink(%L, %L) AS remote(%s)
-                        WHERE (%s) NOT IN (SELECT %s FROM %s)
                     $sql$,
                         v_temp_table_name,
                         v_conn_name_source,
                         format('SELECT * FROM %I.%I', v_replicated_tables.table_schema, v_replicated_tables.table_name),
-                        v_col_types,
-                        v_pk_col_list,
-                        v_pk_col_list,
-                        v_table_full_name
+                        v_col_types
                     );
                 END IF;
                 
                 IF p_dry_run THEN
                     -- Dry run: just show what would be done
                     v_rows_affected := v_replicated_tables.rows_affected;  -- Estimated
-                    v_details := format('DRY RUN: Would insert %s rows', v_rows_affected);
+                    v_details := format('DRY RUN: Would upsert %s rows (INSERT missing + UPDATE modified)', v_rows_affected);
                     v_status := 'DRY_RUN';
                 ELSE
                     -- Execute the recovery
                     EXECUTE v_insert_sql;
                     
-                    -- Insert missing rows
-                    EXECUTE format('INSERT INTO %s SELECT * FROM %I', v_table_full_name, v_temp_table_name);
-                    GET DIAGNOSTICS v_rows_affected = ROW_COUNT;
+                    -- Build UPSERT statement (INSERT ... ON CONFLICT DO UPDATE SET)
+                    -- This handles both INSERT (missing rows) and UPDATE (modified rows)
+                    DECLARE
+                        v_upsert_sql text;
+                        v_non_pk_cols text[];
+                        v_set_clauses text[];
+                        v_set_clause text;
+                    BEGIN
+                        -- Get non-PK columns for UPDATE clause
+                        SELECT ARRAY_AGG(a.attname ORDER BY a.attnum)
+                        INTO v_non_pk_cols
+                        FROM pg_attribute a
+                        WHERE a.attrelid = (v_table_full_name)::regclass
+                        AND a.attnum > 0 
+                        AND NOT a.attisdropped
+                        AND a.attname != ALL(v_pk_cols);
+                        
+                        -- Build SET clauses for UPDATE
+                        v_set_clauses := ARRAY(
+                            SELECT format('%I = EXCLUDED.%I', col, col)
+                            FROM unnest(v_non_pk_cols) AS col
+                        );
+                        v_set_clause := array_to_string(v_set_clauses, ', ');
+                        
+                        -- Build UPSERT SQL
+                        v_upsert_sql := format(
+                            'INSERT INTO %s SELECT * FROM %I ON CONFLICT (%s) DO UPDATE SET %s',
+                            v_table_full_name,
+                            v_temp_table_name,
+                            v_pk_col_list,
+                            v_set_clause
+                        );
+                        
+                        -- Execute UPSERT
+                        EXECUTE v_upsert_sql;
+                        GET DIAGNOSTICS v_rows_affected = ROW_COUNT;
+                    END;
                     
                     v_total_rows_recovered := v_total_rows_recovered + v_rows_affected;
-                    v_details := format('Successfully inserted %s rows', v_rows_affected);
-                    v_status := 'RECOVERED';
+                    v_details := format('Successfully upserted %s rows (INSERT+UPDATE)', v_rows_affected);
+                    -- Preserve DELETE status if table needs deletion
+                    IF v_replicated_tables.status IN ('NEEDS_DELETE', 'NEEDS_RECOVERY_AND_DELETE') THEN
+                        v_status := 'RECOVERED_NEEDS_DELETE';
+                    ELSE
+                        v_status := 'RECOVERED';
+                    END IF;
                     v_tables_recovered := v_tables_recovered + 1;
                 END IF;
                 
@@ -616,10 +665,10 @@ BEGIN
                 
                 IF p_verbose THEN
                     IF v_status = 'RECOVERED' THEN
-                        RAISE NOTICE '  ✓ Recovered % rows in %', 
+                        RAISE NOTICE '  ✓ Upserted % rows in % (INSERT+UPDATE)', 
                             v_rows_affected, clock_timestamp() - v_start_time;
                     ELSE
-                        RAISE NOTICE '  [DRY_RUN] Would recover % rows', v_rows_affected;
+                        RAISE NOTICE '  [DRY_RUN] Would upsert % rows', v_rows_affected;
                     END IF;
                 END IF;
                 
@@ -645,6 +694,177 @@ BEGIN
     ELSE
         IF p_verbose THEN
             RAISE NOTICE 'Auto-repair disabled. Skipping Phase 3.';
+            RAISE NOTICE '';
+        END IF;
+    END IF;
+    
+    -- PHASE 3b: Delete Extra Rows
+    IF p_auto_repair AND p_delete_extra_rows THEN
+        IF p_verbose THEN
+            RAISE NOTICE '========================================================================';
+            RAISE NOTICE 'Phase 3b: Delete Extra Rows - Removing Rows Not Present on Source';
+            RAISE NOTICE '  Purpose: Delete rows that exist on target but not on source node';
+            RAISE NOTICE '';
+        END IF;
+        
+        FOR v_replicated_tables IN 
+            SELECT * FROM recovery_report 
+            WHERE report_id = v_recovery_report_id 
+            AND (status = 'NEEDS_DELETE' OR status = 'NEEDS_RECOVERY_AND_DELETE' OR status = 'RECOVERED_NEEDS_DELETE' 
+                 OR (status = 'WARNING' AND rows_deleted > 0))
+            ORDER BY COALESCE(rows_deleted, 0) DESC
+        LOOP
+            v_start_time := clock_timestamp();
+            v_table_full_name := format('%I.%I', v_replicated_tables.table_schema, v_replicated_tables.table_name);
+            v_rows_deleted := 0;
+            
+            IF p_verbose THEN
+                RAISE NOTICE 'Deleting extra rows from table: %', v_table_full_name;
+            END IF;
+            
+            BEGIN
+                -- Get primary key columns
+                SELECT ARRAY_AGG(a.attname ORDER BY array_position(i.indkey, a.attnum))
+                INTO v_pk_cols
+                FROM pg_index i
+                JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                WHERE i.indrelid = (v_table_full_name)::regclass
+                AND i.indisprimary;
+                
+                IF v_pk_cols IS NULL OR array_length(v_pk_cols, 1) = 0 THEN
+                    IF p_verbose THEN
+                        RAISE NOTICE '  [SKIPPED] Table has no primary key - cannot delete without unique identifier';
+                    END IF;
+                    CONTINUE;
+                END IF;
+                
+                v_pk_col_list := array_to_string(v_pk_cols, ', ');
+                v_temp_table_name := 'extra_rows_' || md5(v_table_full_name);
+                
+                -- Get column definitions for PK columns (needed for dblink)
+                SELECT string_agg(format('%I %s', a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod)), ', ' ORDER BY array_position(v_pk_cols, a.attname))
+                INTO v_pk_col_types
+                FROM pg_attribute a
+                WHERE a.attrelid = (v_table_full_name)::regclass
+                  AND a.attname = ANY(v_pk_cols);
+                
+                -- Build query to find extra rows
+                IF v_recovery_mode = 'origin-aware' THEN
+                    -- Origin-aware: find rows on target that originated from specified node
+                    -- but don't exist on source
+                    EXECUTE format($sql$
+                        CREATE TEMP TABLE %I AS
+                        SELECT %s FROM %s t
+                        WHERE (to_json(spock.xact_commit_timestamp_origin(t.xmin))->>'roident')::oid = %L
+                          AND (%s) NOT IN (
+                            SELECT %s FROM dblink(%L, %L) AS remote(%s)
+                          )
+                    $sql$,
+                        v_temp_table_name,
+                        v_pk_col_list,
+                        v_table_full_name,
+                        v_origin_node_id,
+                        v_pk_col_list,
+                        v_pk_col_list,
+                        v_conn_name_source,
+                        format($remote$
+                            SELECT %s FROM %I.%I
+                            WHERE (to_json(spock.xact_commit_timestamp_origin(xmin))->>'roident')::oid = %L
+                        $remote$, v_pk_col_list, v_replicated_tables.table_schema, v_replicated_tables.table_name, v_origin_node_id),
+                        v_pk_col_types
+                    );
+                ELSE
+                    -- Comprehensive: find rows on target that don't exist on source
+                    EXECUTE format($sql$
+                        CREATE TEMP TABLE %I AS
+                        SELECT %s FROM %s
+                        WHERE (%s) NOT IN (
+                            SELECT %s FROM dblink(%L, %L) AS remote(%s)
+                        )
+                    $sql$,
+                        v_temp_table_name,
+                        v_pk_col_list,
+                        v_table_full_name,
+                        v_pk_col_list,
+                        v_pk_col_list,
+                        v_conn_name_source,
+                        format('SELECT %s FROM %I.%I', v_pk_col_list, v_replicated_tables.table_schema, v_replicated_tables.table_name),
+                        v_pk_col_types
+                    );
+                END IF;
+                
+                IF p_dry_run THEN
+                    -- Dry run: count what would be deleted
+                    EXECUTE format('SELECT COUNT(*) FROM %I', v_temp_table_name) INTO v_rows_deleted;
+                    v_details := format('DRY RUN: Would delete %s rows', v_rows_deleted);
+                    v_status := CASE 
+                        WHEN v_replicated_tables.status = 'NEEDS_RECOVERY_AND_DELETE' THEN 'DRY_RUN_INSERT_AND_DELETE'
+                        ELSE 'DRY_RUN_DELETE'
+                    END;
+                ELSE
+                    -- Execute the deletion
+                    EXECUTE format('DELETE FROM %s WHERE (%s) IN (SELECT %s FROM %I)', 
+                        v_table_full_name, v_pk_col_list, v_pk_col_list, v_temp_table_name);
+                    GET DIAGNOSTICS v_rows_deleted = ROW_COUNT;
+                    
+                    v_total_rows_deleted := v_total_rows_deleted + v_rows_deleted;
+                    v_details := format('Successfully deleted %s rows', v_rows_deleted);
+                    v_status := CASE 
+                        WHEN v_replicated_tables.status = 'NEEDS_RECOVERY_AND_DELETE' OR 
+                             (SELECT status FROM recovery_report WHERE report_id = v_recovery_report_id 
+                              AND table_schema = v_replicated_tables.table_schema 
+                              AND table_name = v_replicated_tables.table_name) = 'RECOVERED' THEN 'RECOVERED_INSERT_AND_DELETE'
+                        ELSE 'RECOVERED_DELETE'
+                    END;
+                END IF;
+                
+                -- Update report
+                UPDATE recovery_report
+                SET status = v_status,
+                    rows_deleted = v_rows_deleted,
+                    target_rows_after = target_rows_after - v_rows_deleted,
+                    details = COALESCE(details, '') || CASE WHEN details IS NOT NULL AND details != '' THEN '; ' ELSE '' END || v_details,
+                    time_taken = time_taken + (clock_timestamp() - v_start_time)
+                WHERE report_id = v_recovery_report_id
+                AND table_schema = v_replicated_tables.table_schema
+                AND table_name = v_replicated_tables.table_name;
+                
+                IF p_verbose THEN
+                    IF p_dry_run THEN
+                        RAISE NOTICE '  [DRY_RUN] Would delete % rows', v_rows_deleted;
+                    ELSE
+                        RAISE NOTICE '  ✓ Deleted % rows in %', 
+                            v_rows_deleted, clock_timestamp() - v_start_time;
+                    END IF;
+                END IF;
+                
+                -- Clean up temp table
+                EXECUTE format('DROP TABLE IF EXISTS %I', v_temp_table_name);
+                
+            EXCEPTION WHEN OTHERS THEN
+                UPDATE recovery_report
+                SET error_message = COALESCE(error_message, '') || CASE WHEN error_message IS NOT NULL THEN '; ' ELSE '' END || 'DELETE failed: ' || SQLERRM,
+                    time_taken = time_taken + (clock_timestamp() - v_start_time)
+                WHERE report_id = v_recovery_report_id
+                AND table_schema = v_replicated_tables.table_schema
+                AND table_name = v_replicated_tables.table_name;
+                
+                v_tables_with_errors := v_tables_with_errors + 1;
+                
+                IF p_verbose THEN
+                    RAISE NOTICE '  ✗ DELETE_FAILED: %', SQLERRM;
+                END IF;
+            END;
+        END LOOP;
+        
+        IF p_verbose THEN
+            RAISE NOTICE '';
+            RAISE NOTICE 'Phase 3b Complete: Delete operations finished';
+            RAISE NOTICE '';
+        END IF;
+    ELSIF p_delete_extra_rows AND NOT p_auto_repair THEN
+        IF p_verbose THEN
+            RAISE NOTICE 'Delete extra rows requested but auto-repair is disabled. Skipping Phase 3b.';
             RAISE NOTICE '';
         END IF;
     END IF;
@@ -678,37 +898,54 @@ BEGIN
             SELECT 
                 status,
                 COUNT(*) as table_count,
-                SUM(COALESCE(rows_affected, 0)) as total_rows
+                SUM(COALESCE(rows_affected, 0)) as total_rows_inserted,
+                SUM(COALESCE(rows_deleted, 0)) as total_rows_deleted
             FROM recovery_report
             WHERE report_id = v_recovery_report_id
             GROUP BY status
             ORDER BY 
                 CASE status 
                     WHEN 'RECOVERED' THEN 1
+                    WHEN 'RECOVERED_INSERT_AND_DELETE' THEN 1
+                    WHEN 'RECOVERED_DELETE' THEN 1
                     WHEN 'DRY_RUN' THEN 2
+                    WHEN 'DRY_RUN_INSERT_AND_DELETE' THEN 2
+                    WHEN 'DRY_RUN_DELETE' THEN 2
                     WHEN 'OK' THEN 3
                     WHEN 'NEEDS_RECOVERY' THEN 4
+                    WHEN 'NEEDS_DELETE' THEN 4
+                    WHEN 'NEEDS_RECOVERY_AND_DELETE' THEN 4
                     WHEN 'WARNING' THEN 5
                     WHEN 'ERROR' THEN 6
                     ELSE 7
                 END
         LOOP
-            RAISE NOTICE '  %: % tables, % rows affected', 
-                rpad(v_replicated_tables.status, 20),
-                v_replicated_tables.table_count,
-                v_replicated_tables.total_rows;
+            IF v_replicated_tables.total_rows_deleted > 0 THEN
+                RAISE NOTICE '  %: % tables, % rows inserted, % rows deleted', 
+                    rpad(v_replicated_tables.status, 20),
+                    v_replicated_tables.table_count,
+                    v_replicated_tables.total_rows_inserted,
+                    v_replicated_tables.total_rows_deleted;
+            ELSE
+                RAISE NOTICE '  %: % tables, % rows affected', 
+                    rpad(v_replicated_tables.status, 20),
+                    v_replicated_tables.table_count,
+                    v_replicated_tables.total_rows_inserted;
+            END IF;
         END LOOP;
         
         RAISE NOTICE '';
         RAISE NOTICE 'Detailed Recovery Report:';
-        RAISE NOTICE '  Table Name                          Status            Source  Target Before  Target After  Details';
-        RAISE NOTICE '  --------------------------------------------------------------------------------------------------------------------';
+        RAISE NOTICE '  Table Name                          Status            Source  Target Before  Target After  Inserted  Deleted  Details';
+        RAISE NOTICE '  ----------------------------------------------------------------------------------------------------------------------------------------';
         FOR v_replicated_tables IN
             SELECT 
                 table_schema || '.' || table_name as table_name,
                 COALESCE(source_total_rows::text, 'N/A') as src,
                 COALESCE(target_rows_before::text, 'N/A') as tgt_before,
                 COALESCE(target_rows_after::text, 'N/A') as tgt_after,
+                COALESCE(rows_affected::text, '0') as rows_inserted,
+                COALESCE(rows_deleted::text, '0') as rows_deleted,
                 status,
                 COALESCE(details, error_message, '') as info,
                 COALESCE(time_taken::text, '') as time
@@ -717,8 +954,14 @@ BEGIN
             ORDER BY 
                 CASE status 
                     WHEN 'RECOVERED' THEN 1
+                    WHEN 'RECOVERED_INSERT_AND_DELETE' THEN 1
+                    WHEN 'RECOVERED_DELETE' THEN 1
                     WHEN 'DRY_RUN' THEN 2
+                    WHEN 'DRY_RUN_INSERT_AND_DELETE' THEN 2
+                    WHEN 'DRY_RUN_DELETE' THEN 2
                     WHEN 'NEEDS_RECOVERY' THEN 3
+                    WHEN 'NEEDS_DELETE' THEN 3
+                    WHEN 'NEEDS_RECOVERY_AND_DELETE' THEN 3
                     WHEN 'WARNING' THEN 4
                     WHEN 'ERROR' THEN 5
                     WHEN 'OK' THEN 6
@@ -726,14 +969,16 @@ BEGIN
                 END,
                 table_schema, table_name
         LOOP
-            RAISE NOTICE '  % % % % % %',
+            RAISE NOTICE '  % % % % % % % %',
                 rpad(v_replicated_tables.table_name, 35),
                 rpad(v_replicated_tables.status, 18),
                 lpad(v_replicated_tables.src, 8),
                 lpad(v_replicated_tables.tgt_before, 15),
                 lpad(v_replicated_tables.tgt_after, 14),
+                lpad(v_replicated_tables.rows_inserted, 9),
+                lpad(v_replicated_tables.rows_deleted, 8),
                 CASE 
-                    WHEN length(v_replicated_tables.info) > 50 THEN substring(v_replicated_tables.info, 1, 47) || '...'
+                    WHEN length(v_replicated_tables.info) > 40 THEN substring(v_replicated_tables.info, 1, 37) || '...'
                     ELSE v_replicated_tables.info
                 END;
         END LOOP;
@@ -746,7 +991,10 @@ BEGIN
         RAISE NOTICE '  ✓ Tables Already Synchronized: %', v_tables_already_ok;
         RAISE NOTICE '  ⚠ Tables Still Requiring Recovery: %', v_tables_still_need_recovery;
         RAISE NOTICE '  ✗ Tables With Errors: %', v_tables_with_errors;
-        RAISE NOTICE '  Total Rows Recovered: %', v_total_rows_recovered;
+        RAISE NOTICE '  Total Rows Inserted: %', v_total_rows_recovered;
+        IF p_delete_extra_rows THEN
+            RAISE NOTICE '  Total Rows Deleted: %', v_total_rows_deleted;
+        END IF;
         RAISE NOTICE '  Total Recovery Time: %', v_time_taken;
         RAISE NOTICE '';
         
@@ -760,7 +1008,10 @@ BEGIN
             RAISE NOTICE '========================================================================';
             RAISE NOTICE '                  RECOVERY COMPLETE - SUCCESS';
             RAISE NOTICE '  All tables have been successfully recovered and synchronized.';
-            RAISE NOTICE '  Total rows recovered: %', v_total_rows_recovered;
+            RAISE NOTICE '  Total rows inserted: %', v_total_rows_recovered;
+            IF p_delete_extra_rows AND v_total_rows_deleted > 0 THEN
+                RAISE NOTICE '  Total rows deleted: %', v_total_rows_deleted;
+            END IF;
             RAISE NOTICE '========================================================================';
         ELSE
             RAISE NOTICE '========================================================================';
@@ -814,9 +1065,24 @@ COMMENT ON PROCEDURE spock.recover_cluster IS 'Unified recovery procedure with c
 \echo '       p_origin_node_name := ''n1'''
 \echo '   );'
 \echo ''
-\echo '3. Dry Run (preview changes without applying):'
+\echo '3. Comprehensive Recovery with DELETE (insert missing + delete extra):'
 \echo '   CALL spock.recover_cluster('
 \echo '       p_source_dsn := ''host=localhost port=5453 dbname=pgedge user=pgedge'','
+\echo '       p_delete_extra_rows := true'
+\echo '   );'
+\echo ''
+\echo '4. Origin-Aware Recovery with DELETE (only n1 transactions):'
+\echo '   CALL spock.recover_cluster('
+\echo '       p_source_dsn := ''host=localhost port=5453 dbname=pgedge user=pgedge'','
+\echo '       p_recovery_mode := ''origin-aware'','
+\echo '       p_origin_node_name := ''n1'','
+\echo '       p_delete_extra_rows := true'
+\echo '   );'
+\echo ''
+\echo '5. Dry Run (preview changes without applying):'
+\echo '   CALL spock.recover_cluster('
+\echo '       p_source_dsn := ''host=localhost port=5453 dbname=pgedge user=pgedge'','
+\echo '       p_delete_extra_rows := true,'
 \echo '       p_dry_run := true'
 \echo '   );'
 \echo ''

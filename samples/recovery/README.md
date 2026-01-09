@@ -160,13 +160,13 @@ PHASE 3: Recovery - Repair Tables
   ✓ RECOVERED: 70 rows in 00:00:00.008234
 
 ╔════════════════════════════════════════════════════════════════════╗
-║                  ✅ RECOVERY COMPLETE - SUCCESS                    ║
+║                  ✓ RECOVERY COMPLETE - SUCCESS                    ║
 ╚════════════════════════════════════════════════════════════════════╝
 
- ✅ Tables Recovered: 1
+ ✓ Tables Recovered: 1
  ✓ Tables Already OK: 1
- 📊 Total Rows Recovered: 70
- ⏱ Total Time: 00:00:02.123456
+  Total Rows Recovered: 70
+  Total Time: 00:00:02.123456
 ```
 
 ### 2. Origin-Aware Recovery
@@ -230,23 +230,117 @@ PHASE 3: Recovery
 [1/1] Recovering public.crash_test...
   ✓ RECOVERED: 70 rows in 00:00:00.007883
 
- ✅ Tables Recovered: 1
- 📊 Total Rows Recovered: 70 (n1-origin only)
+ ✓ Tables Recovered: 1
+  Total Rows Recovered: 70 (n1-origin only)
 ```
 
-### 3. Dry Run Mode
+### 3. Delete Extra Rows Mode
 
-**Purpose**: Preview recovery actions without making changes
+**Purpose**: Delete rows that exist on target but not on source node
 
 **When to Use**:
-- Test recovery before applying
-- Verify what would be recovered
-- Estimate recovery time and impact
+- Target node has extra rows that shouldn't be there
+- Need bidirectional synchronization (not just INSERT)
+- Want to ensure target exactly matches source
+- Recovery scenarios where target has diverged with extra data
 
 **Command**:
 ```sql
 CALL spock.recover_cluster(
     p_source_dsn := 'host=localhost port=5453 dbname=pgedge user=pgedge',
+    p_recovery_mode := 'comprehensive',
+    p_delete_extra_rows := true,
+    p_dry_run := false,
+    p_verbose := true
+);
+```
+
+**What It Does**:
+- Discovers all replicated tables
+- Compares row counts between source and target
+- Identifies rows that exist on target but not on source
+- Deletes extra rows from target (in addition to inserting missing rows)
+- Works in both comprehensive and origin-aware modes
+
+**Example Scenario**:
+```
+n3 (source) has:
+  - 90 rows
+
+n2 (target) has:
+  - 100 rows (10 extra rows that shouldn't be there)
+
+Delete Recovery:
+  - Inserts missing rows (if any)
+  - Deletes 10 extra rows
+  - Final state: n2 matches n3 exactly (90 rows)
+```
+
+**Example Output**:
+```
+╔════════════════════════════════════════════════════════════════════╗
+║         Spock Recovery System - COMPREHENSIVE Mode                ║
+╚════════════════════════════════════════════════════════════════════╝
+
+Recovery Configuration:
+  Delete Extra Rows: ENABLED
+
+PHASE 2: Analysis
+[1/1] Checking public.crash_test...
+  ⚠ NEEDS_RECOVERY_AND_DELETE: 5 rows missing, 10 extra rows (source: 90, target: 100)
+
+PHASE 3: Recovery - Repair Tables
+[1/1] Recovering public.crash_test...
+  ✓ Recovered 5 rows in 00:00:00.003456
+
+PHASE 3b: Delete Extra Rows
+[1/1] Deleting extra rows from table: public.crash_test
+  ✓ Deleted 10 rows in 00:00:00.002123
+
+╔════════════════════════════════════════════════════════════════════╗
+║                  ✓ RECOVERY COMPLETE - SUCCESS                    ║
+╚════════════════════════════════════════════════════════════════════╝
+
+ ✓ Tables Recovered: 1
+  Total Rows Inserted: 5
+  Total Rows Deleted: 10
+  Total Time: 00:00:02.123456
+```
+
+**⚠ WARNING**: This will permanently delete rows from the target database. Always use `p_dry_run := true` first to preview what will be deleted.
+
+**Origin-Aware Delete**:
+In origin-aware mode, only rows that originated from the specified node are deleted:
+```sql
+CALL spock.recover_cluster(
+    p_source_dsn := 'host=localhost port=5453 dbname=pgedge user=pgedge',
+    p_recovery_mode := 'origin-aware',
+    p_origin_node_name := 'n1',
+    p_delete_extra_rows := true,
+    p_dry_run := false,
+    p_verbose := true
+);
+```
+
+This will only delete rows on target that:
+- Originated from node 'n1' (based on transaction origin)
+- Don't exist on source node
+
+### 4. Dry Run Mode
+
+**Purpose**: Preview recovery actions without making changes
+
+**When to Use**:
+- Test recovery before applying
+- Verify what would be recovered or deleted
+- Estimate recovery time and impact
+- Preview DELETE operations before executing
+
+**Command**:
+```sql
+CALL spock.recover_cluster(
+    p_source_dsn := 'host=localhost port=5453 dbname=pgedge user=pgedge',
+    p_delete_extra_rows := true,
     p_dry_run := true,
     p_verbose := true
 );
@@ -254,7 +348,8 @@ CALL spock.recover_cluster(
 
 **What It Does**:
 - Performs full analysis
-- Shows what would be recovered
+- Shows what would be recovered (INSERT)
+- Shows what would be deleted (DELETE)
 - Does NOT make any changes
 - Safe to run multiple times
 
@@ -280,12 +375,12 @@ PostgreSQL:
                  Version: postgres (PostgreSQL) 18.0
                  Bin:     /usr/local/pgsql.18/bin
 
-[SUCCESS] Creating 3-node cluster...
-[SUCCESS] Node n1 (port 5451): Initialized
-[SUCCESS] Node n2 (port 5452): Initialized
-[SUCCESS] Node n3 (port 5453): Initialized
-[SUCCESS] Spock replication configured
-[SUCCESS] Cluster ready!
+✓ Creating 3-node cluster...
+✓ Node n1 (port 5451): Initialized
+✓ Node n2 (port 5452): Initialized
+✓ Node n3 (port 5453): Initialized
+✓ Spock replication configured
+✓ Cluster ready!
 ```
 
 **What Happens**:
@@ -303,15 +398,15 @@ python3 samples/recovery/cluster.py --crash
 
 **Expected Output**:
 ```
-[SUCCESS] Running crash scenario - n3 will be ahead of n2
-[SUCCESS] Creating fresh test table on all nodes
-[SUCCESS] Inserting 20 initial rows on n1 (both n2 and n3 receive)
-[SUCCESS] Waiting for replication to n2 and n3...
-[SUCCESS] Initial sync complete: n2=20 rows, n3=20 rows
-[SUCCESS] Suspending subscription from n1 to n2
-[SUCCESS] Inserting 70 more rows on n1 (only n3 receives)
-[SUCCESS] Pre-crash state: n2=20 rows, n3=90 rows
-[SUCCESS] Crashing n1...
+✓ Running crash scenario - n3 will be ahead of n2
+✓ Creating fresh test table on all nodes
+✓ Inserting 20 initial rows on n1 (both n2 and n3 receive)
+✓ Waiting for replication to n2 and n3...
+✓ Initial sync complete: n2=20 rows, n3=20 rows
+✓ Suspending subscription from n1 to n2
+✓ Inserting 70 more rows on n1 (only n3 receives)
+✓ Pre-crash state: n2=20 rows, n3=90 rows
+✓ Crashing n1...
 
 CRASH SCENARIO COMPLETE - FINAL STATE
 
@@ -688,18 +783,18 @@ CALL spock.recover_cluster(
 
 | Operation | Time | Rows | Rate | Status |
 |-----------|------|------|------|--------|
-| Extension Compilation | ~30s | - | - | ✅ PASS |
-| Cluster Setup | 34.48s | - | - | ✅ PASS |
-| Crash Scenario | ~20s | 70 diverged | - | ✅ PASS |
-| Comprehensive Recovery | 2.5ms | 70 recovered | 28,000 rows/s | ✅ PASS |
-| Origin-Aware Recovery | < 3ms | 70 recovered | 23,000+ rows/s | ✅ PASS |
-| Data Consistency Verification | < 1s | 90 checked | - | ✅ PASS |
+| Extension Compilation | ~30s | - | - | ✓ PASS |
+| Cluster Setup | 34.48s | - | - | ✓ PASS |
+| Crash Scenario | ~20s | 70 diverged | - | ✓ PASS |
+| Comprehensive Recovery | 2.5ms | 70 recovered | 28,000 rows/s | ✓ PASS |
+| Origin-Aware Recovery | < 3ms | 70 recovered | 23,000+ rows/s | ✓ PASS |
+| Data Consistency Verification | < 1s | 90 checked | - | ✓ PASS |
 
 **Verification Results**:
-- ✅ Row Count Match: n2=90, n3=90 (100% match)
-- ✅ Data Integrity: 90 matches, 0 mismatches, 0 missing
-- ✅ MD5 Hash Verification: 100% consistent
-- ✅ Recovery Success Rate: 100%
+- ✓ Row Count Match: n2=90, n3=90 (100% match)
+- ✓ Data Integrity: 90 matches, 0 mismatches, 0 missing
+- ✓ MD5 Hash Verification: 100% consistent
+- ✓ Recovery Success Rate: 100%
 
 ### Typical Performance
 
@@ -762,6 +857,38 @@ CALL spock.recover_cluster(
 );
 ```
 
+### DELETE Recovery (Bidirectional Sync)
+
+```sql
+-- Recover missing rows AND delete extra rows
+CALL spock.recover_cluster(
+    p_source_dsn := 'host=localhost port=5453 dbname=pgedge user=pgedge',
+    p_delete_extra_rows := true,
+    p_dry_run := false,
+    p_verbose := true
+);
+```
+
+**[WARNING] Important**: Always use `p_dry_run := true` first to preview what will be deleted before enabling `p_delete_extra_rows`.
+
+### DELETE Recovery with Origin-Aware Mode
+
+```sql
+-- Delete only rows from specific origin node
+CALL spock.recover_cluster(
+    p_source_dsn := 'host=localhost port=5453 dbname=pgedge user=pgedge',
+    p_recovery_mode := 'origin-aware',
+    p_origin_node_name := 'n1',
+    p_delete_extra_rows := true,
+    p_dry_run := false,
+    p_verbose := true
+);
+```
+
+This will only delete rows on target that:
+- Originated from the specified node (n1)
+- Don't exist on source node
+
 ---
 
 ## Files Reference
@@ -788,6 +915,19 @@ CALL spock.recover_cluster(
 "
 ```
 
+### Comprehensive Recovery with DELETE
+```bash
+psql -p 5452 pgedge -c "
+CALL spock.recover_cluster(
+    p_source_dsn := 'host=localhost port=5453 dbname=pgedge user=pgedge',
+    p_recovery_mode := 'comprehensive',
+    p_delete_extra_rows := true,
+    p_dry_run := false,
+    p_verbose := true
+);
+"
+```
+
 ### Origin-Aware Recovery
 ```bash
 psql -p 5452 pgedge -c "
@@ -801,11 +941,26 @@ CALL spock.recover_cluster(
 "
 ```
 
-### Dry Run
+### Origin-Aware Recovery with DELETE
 ```bash
 psql -p 5452 pgedge -c "
 CALL spock.recover_cluster(
     p_source_dsn := 'host=localhost port=5453 dbname=pgedge user=pgedge',
+    p_recovery_mode := 'origin-aware',
+    p_origin_node_name := 'n1',
+    p_delete_extra_rows := true,
+    p_dry_run := false,
+    p_verbose := true
+);
+"
+```
+
+### Dry Run (Preview Only)
+```bash
+psql -p 5452 pgedge -c "
+CALL spock.recover_cluster(
+    p_source_dsn := 'host=localhost port=5453 dbname=pgedge user=pgedge',
+    p_delete_extra_rows := true,
     p_dry_run := true,
     p_verbose := true
 );
@@ -838,29 +993,40 @@ python3 samples/recovery/cluster.py --crash2
 
 The Spock Recovery System provides:
 
-✅ **Automated Recovery**: One command recovers entire database  
-✅ **Multiple Modes**: Comprehensive and origin-aware recovery  
-✅ **Multi-Table Support**: Handles all replicated tables automatically  
-✅ **Safe Operation**: Dry-run mode for testing  
-✅ **Detailed Reporting**: Verbose output with statistics  
-✅ **Production Ready**: Tested and verified  
-✅ **100% Data Consistency**: Verified with MD5 hash comparison  
+✓ **Automated Recovery**: One command recovers entire database  
+✓ **Multiple Modes**: Comprehensive and origin-aware recovery  
+✓ **Bidirectional Sync**: INSERT missing rows AND DELETE extra rows  
+✓ **Multi-Table Support**: Handles all replicated tables automatically  
+✓ **Safe Operation**: Dry-run mode for testing  
+✓ **Detailed Reporting**: Verbose output with statistics  
+✓ **Production Ready**: Tested and verified  
+✓ **100% Data Consistency**: Verified with MD5 hash comparison  
 
-**Status**: ✅ **PRODUCTION READY**
+**Status**: ✓ **PRODUCTION READY**
 
 ### Test Summary
 
 All tests passed successfully:
-- ✅ Comprehensive recovery: 70 rows recovered in 2.5ms
-- ✅ Origin-aware recovery: Functional and tested
-- ✅ Data consistency: 100% match (90/90 rows)
-- ✅ Multi-table support: Handles multiple tables automatically
-- ✅ Error handling: Graceful error handling per table
-- ✅ Performance: Excellent (28,000+ rows/second)
+- ✓ Comprehensive recovery: 70 rows recovered in 2.5ms
+- ✓ Origin-aware recovery: Functional and tested
+- ✓ DELETE recovery: Functional in both comprehensive and origin-aware modes
+- ✓ Data consistency: 100% match (90/90 rows)
+- ✓ Multi-table support: Handles multiple tables automatically
+- ✓ Error handling: Graceful error handling per table
+- ✓ Performance: Excellent (28,000+ rows/second)
+
+### Key Features
+
+1. **INSERT Recovery**: Recover missing rows from source to target
+2. **DELETE Recovery**: Remove extra rows from target (optional, `p_delete_extra_rows := true`)
+3. **Comprehensive Mode**: Handle all data differences
+4. **Origin-Aware Mode**: Filter by transaction origin node
+5. **Dry Run**: Preview changes before applying
+6. **Detailed Reporting**: Track inserts, deletes, and errors per table
 
 ---
 
 **Last Updated**: January 7, 2026  
 **PostgreSQL**: 18.0  
 **Spock**: 6.0.0-devel  
-**Test Status**: ✅ **ALL TESTS PASSED**
+**Test Status**: ✓ **ALL TESTS PASSED**

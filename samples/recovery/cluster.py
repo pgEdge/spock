@@ -1518,6 +1518,95 @@ def _run_crash_scenario(pg_manager, spock_setup, config, formatter, port_start, 
         conn_n1.close()
         time.sleep(5)  # Wait for n3 to receive all rows
         
+        # Step 7.5: Create DELETE and UPDATE inconsistencies
+        # This creates rows on n2 that don't exist on n3 (DELETE scenario)
+        # and updates rows on n2 to have different values than n3 (UPDATE scenario)
+        if not freeze_xids:
+            formatter.success("Creating DELETE and UPDATE inconsistencies on n2", port=None, indent=1)
+            
+            # Suspend n2->n3 subscription temporarily so extra rows on n2 don't replicate to n3
+            conn_n3_temp = pg_manager.connect(port_n3)
+            sub_n2_n3_result = pg_manager.fetch_sql(conn_n3_temp, """
+                SELECT s.sub_id, s.sub_name
+                FROM spock.subscription s
+                JOIN spock.node o ON s.sub_origin = o.node_id
+                WHERE o.node_name = 'n2' AND s.sub_target = (SELECT node_id FROM spock.node WHERE node_name = 'n3');
+            """)
+            if sub_n2_n3_result and sub_n2_n3_result[0]:
+                sub_id, sub_name = sub_n2_n3_result[0]
+                pg_manager.execute_sql(conn_n3_temp, f"UPDATE spock.subscription SET sub_enabled = false WHERE sub_id = {sub_id};")
+                formatter.success("  Temporarily suspended n2->n3 subscription to prevent extra rows from replicating", port=None, indent=2)
+            conn_n3_temp.close()
+            time.sleep(2)  # Wait for subscription to stop
+            
+            conn_n2 = pg_manager.connect(port_n2)
+            
+            # DELETE scenario: Insert extra rows directly on n2 (won't replicate to n3)
+            # These rows exist on n2 but not on n3 - should be deleted during recovery
+            # Use high IDs (starting from 10000) to avoid conflicts
+            formatter.success("  Inserting extra rows on n2 (DELETE scenario)", port=None, indent=2)
+            
+            # Get max IDs from n3 to ensure we use IDs that definitely don't exist on n3
+            conn_n3_check = pg_manager.connect(port_n3)
+            max_crash_n3 = pg_manager.fetch_sql(conn_n3_check, "SELECT COALESCE(MAX(id), 0) FROM crash_test;")[0][0]
+            max_t1_n3 = pg_manager.fetch_sql(conn_n3_check, "SELECT COALESCE(MAX(id), 0) FROM recovery_table_1;")[0][0]
+            max_t2_n3 = pg_manager.fetch_sql(conn_n3_check, "SELECT COALESCE(MAX(id), 0) FROM recovery_table_2;")[0][0]
+            max_t3_n3 = pg_manager.fetch_sql(conn_n3_check, "SELECT COALESCE(MAX(id), 0) FROM recovery_table_3;")[0][0]
+            conn_n3_check.close()
+            
+            # Use IDs starting from 10000 to ensure they don't exist on n3
+            # crash_test: 5 extra rows on n2
+            for i in range(5):
+                pg_manager.execute_sql(conn_n2, f"INSERT INTO crash_test (id, data) VALUES (10000 + {i}, 'extra_n2_only_{i+1}');")
+            
+            # recovery_table_1: 3 extra rows on n2
+            for i in range(3):
+                pg_manager.execute_sql(conn_n2, f"INSERT INTO recovery_table_1 (id, name, value, status) VALUES (10000 + {i}, 'extra_n2_{i+1}', 9999, 'orphaned');")
+            
+            # recovery_table_2: 2 extra rows on n2
+            for i in range(2):
+                pg_manager.execute_sql(conn_n2, f"INSERT INTO recovery_table_2 (id, category, amount) VALUES (10000 + {i}, 'extra_n2_{i+1}', 999.99);")
+            
+            # recovery_table_3: 2 extra rows on n2
+            for i in range(2):
+                pg_manager.execute_sql(conn_n2, f"INSERT INTO recovery_table_3 (id, user_id, action) VALUES (10000 + {i}, 9999, 'extra_n2_{i+1}');")
+            
+            conn_n2.close()
+            time.sleep(1)  # Brief wait after inserting extra rows
+            
+            # Re-enable n2->n3 subscription
+            conn_n3_temp = pg_manager.connect(port_n3)
+            if sub_n2_n3_result and sub_n2_n3_result[0]:
+                sub_id, sub_name = sub_n2_n3_result[0]
+                pg_manager.execute_sql(conn_n3_temp, f"UPDATE spock.subscription SET sub_enabled = true WHERE sub_id = {sub_id};")
+                formatter.success("  Re-enabled n2->n3 subscription", port=None, indent=2)
+            conn_n3_temp.close()
+            time.sleep(2)  # Wait for any pending replication
+            
+            # UPDATE scenario: Update existing rows on n2 to have different values than n3
+            conn_n2 = pg_manager.connect(port_n2)
+            # These rows exist on both but have different data - source should win during recovery
+            formatter.success("  Updating existing rows on n2 with different values (UPDATE scenario)", port=None, indent=2)
+            
+            # crash_test: Update first 3 rows to have different data
+            for i in range(1, 4):  # IDs 1, 2, 3
+                pg_manager.execute_sql(conn_n2, f"UPDATE crash_test SET data = 'modified_on_n2_{i}' WHERE id = {i};")
+            
+            # recovery_table_1: Update first 3 rows
+            for i in range(1, 4):  # IDs 1, 2, 3
+                pg_manager.execute_sql(conn_n2, f"UPDATE recovery_table_1 SET value = 9999, status = 'modified_n2' WHERE id = {i};")
+            
+            # recovery_table_2: Update first 2 rows
+            for i in range(1, 3):  # IDs 1, 2
+                pg_manager.execute_sql(conn_n2, f"UPDATE recovery_table_2 SET amount = 999.99, category = 'modified_n2' WHERE id = {i};")
+            
+            # recovery_table_3: Update first 2 rows
+            for i in range(1, 3):  # IDs 1, 2
+                pg_manager.execute_sql(conn_n2, f"UPDATE recovery_table_3 SET action = 'modified_n2_{i}' WHERE id = {i};")
+            
+            conn_n2.close()
+            time.sleep(2)  # Brief wait after creating inconsistencies
+        
         # Step 8: Verify n3 is ahead of n2 for all tables
         conn_n2 = pg_manager.connect(port_n2)
         n2_crash = pg_manager.fetch_sql(conn_n2, "SELECT count(*) FROM crash_test;")[0][0]
@@ -1624,9 +1713,12 @@ def _run_crash_scenario(pg_manager, spock_setup, config, formatter, port_start, 
         # Step 12: Final state verification and reporting (leave subscriptions as-is for recovery testing)
         formatter.success("Final state verification", port=None, indent=1)
         
-        # Get n2 state
+        # Get n2 state for all tables
         conn_n2 = pg_manager.connect(port_n2)
-        n2_final = pg_manager.fetch_sql(conn_n2, "SELECT count(*) FROM crash_test;")[0][0]
+        n2_crash_final = pg_manager.fetch_sql(conn_n2, "SELECT count(*) FROM crash_test;")[0][0]
+        n2_t1_final = pg_manager.fetch_sql(conn_n2, "SELECT count(*) FROM recovery_table_1;")[0][0]
+        n2_t2_final = pg_manager.fetch_sql(conn_n2, "SELECT count(*) FROM recovery_table_2;")[0][0]
+        n2_t3_final = pg_manager.fetch_sql(conn_n2, "SELECT count(*) FROM recovery_table_3;")[0][0]
         n2_lag = pg_manager.fetch_sql(conn_n2, 
             "SELECT commit_lsn FROM spock.lag_tracker WHERE origin_name = 'n1' AND receiver_name = 'n2';")
         n2_lsn_final = n2_lag[0][0] if n2_lag and n2_lag[0] else None
@@ -1638,9 +1730,12 @@ def _run_crash_scenario(pg_manager, spock_setup, config, formatter, port_start, 
         """)
         conn_n2.close()
         
-        # Get n3 state
+        # Get n3 state for all tables
         conn_n3 = pg_manager.connect(port_n3)
-        n3_final = pg_manager.fetch_sql(conn_n3, "SELECT count(*) FROM crash_test;")[0][0]
+        n3_crash_final = pg_manager.fetch_sql(conn_n3, "SELECT count(*) FROM crash_test;")[0][0]
+        n3_t1_final = pg_manager.fetch_sql(conn_n3, "SELECT count(*) FROM recovery_table_1;")[0][0]
+        n3_t2_final = pg_manager.fetch_sql(conn_n3, "SELECT count(*) FROM recovery_table_2;")[0][0]
+        n3_t3_final = pg_manager.fetch_sql(conn_n3, "SELECT count(*) FROM recovery_table_3;")[0][0]
         n3_lag = pg_manager.fetch_sql(conn_n3, 
             "SELECT commit_lsn FROM spock.lag_tracker WHERE origin_name = 'n1' AND receiver_name = 'n3';")
         n3_lsn_final = n3_lag[0][0] if n3_lag and n3_lag[0] else None
@@ -1689,13 +1784,31 @@ def _run_crash_scenario(pg_manager, spock_setup, config, formatter, port_start, 
         formatter.success(f"    recovery_table_1: {n3_t1_final} rows", port=None, indent=2)
         formatter.success(f"    recovery_table_2: {n3_t2_final} rows", port=None, indent=2)
         formatter.success(f"    recovery_table_3: {n3_t3_final} rows", port=None, indent=2)
-        formatter.success(f"  n2 (behind) - TARGET for recovery:", port=None, indent=1)
-        formatter.success(f"    crash_test: {n2_crash_final} rows (missing {n3_crash_final - n2_crash_final})", port=None, indent=2)
-        formatter.success(f"    recovery_table_1: {n2_t1_final} rows (missing {n3_t1_final - n2_t1_final})", port=None, indent=2)
-        formatter.success(f"    recovery_table_2: {n2_t2_final} rows (missing {n3_t2_final - n2_t2_final})", port=None, indent=2)
-        formatter.success(f"    recovery_table_3: {n2_t3_final} rows (missing {n3_t3_final - n2_t3_final})", port=None, indent=2)
-        total_missing = (n3_crash_final - n2_crash_final) + (n3_t1_final - n2_t1_final) + (n3_t2_final - n2_t2_final) + (n3_t3_final - n2_t3_final)
-        formatter.success(f"  Total missing rows on n2: {total_missing}", port=None, indent=1)
+        formatter.success(f"  n2 (diverged) - TARGET for recovery:", port=None, indent=1)
+        
+        # Calculate INSERT, DELETE, and UPDATE inconsistencies
+        n2_extra_crash = max(0, n2_crash_final - n3_crash_final)
+        n2_missing_crash = max(0, n3_crash_final - n2_crash_final)
+        n2_extra_t1 = max(0, n2_t1_final - n3_t1_final)
+        n2_missing_t1 = max(0, n3_t1_final - n2_t1_final)
+        n2_extra_t2 = max(0, n2_t2_final - n3_t2_final)
+        n2_missing_t2 = max(0, n3_t2_final - n2_t2_final)
+        n2_extra_t3 = max(0, n2_t3_final - n3_t3_final)
+        n2_missing_t3 = max(0, n3_t3_final - n2_t3_final)
+        
+        formatter.success(f"    crash_test: {n2_crash_final} rows (missing {n2_missing_crash} INSERT, extra {n2_extra_crash} DELETE, ~3 UPDATE)", port=None, indent=2)
+        formatter.success(f"    recovery_table_1: {n2_t1_final} rows (missing {n2_missing_t1} INSERT, extra {n2_extra_t1} DELETE, ~3 UPDATE)", port=None, indent=2)
+        formatter.success(f"    recovery_table_2: {n2_t2_final} rows (missing {n2_missing_t2} INSERT, extra {n2_extra_t2} DELETE, ~2 UPDATE)", port=None, indent=2)
+        formatter.success(f"    recovery_table_3: {n2_t3_final} rows (missing {n2_missing_t3} INSERT, extra {n2_extra_t3} DELETE, ~2 UPDATE)", port=None, indent=2)
+        
+        total_missing = n2_missing_crash + n2_missing_t1 + n2_missing_t2 + n2_missing_t3
+        total_extra = n2_extra_crash + n2_extra_t1 + n2_extra_t2 + n2_extra_t3
+        total_updates = 3 + 3 + 2 + 2  # Approximate number of UPDATE inconsistencies
+        
+        formatter.success(f"  Total inconsistencies on n2:", port=None, indent=1)
+        formatter.success(f"    Missing rows (INSERT): {total_missing}", port=None, indent=2)
+        formatter.success(f"    Extra rows (DELETE): {total_extra}", port=None, indent=2)
+        formatter.success(f"    Modified rows (UPDATE): ~{total_updates}", port=None, indent=2)
         
         # Verify and test n2-n3 and n3-n2 subscriptions
         formatter.success("Verifying n2-n3 and n3-n2 subscriptions:", port=None, indent=1)
@@ -1943,15 +2056,37 @@ def _run_crash_scenario(pg_manager, spock_setup, config, formatter, port_start, 
         print(f"       p_verbose := true")
         print(f"   );\"")
         print()
-        print("3. Dry Run (preview changes without applying):")
+        print("3. Comprehensive Recovery with DELETE (insert missing + delete extra):")
         print(f"   psql -p {port_n2} {config.DB_NAME} -c \"")
         print(f"   CALL spock.recover_cluster(")
         print(f"       p_source_dsn := 'host=localhost port={port_n3} dbname={config.DB_NAME} user={config.DB_USER}',")
+        print(f"       p_recovery_mode := 'comprehensive',")
+        print(f"       p_delete_extra_rows := true,")
+        print(f"       p_dry_run := false,")
+        print(f"       p_verbose := true")
+        print(f"   );\"")
+        print()
+        print("4. Origin-Aware Recovery with DELETE (only n1-origin transactions):")
+        print(f"   psql -p {port_n2} {config.DB_NAME} -c \"")
+        print(f"   CALL spock.recover_cluster(")
+        print(f"       p_source_dsn := 'host=localhost port={port_n3} dbname={config.DB_NAME} user={config.DB_USER}',")
+        print(f"       p_recovery_mode := 'origin-aware',")
+        print(f"       p_origin_node_name := 'n1',")
+        print(f"       p_delete_extra_rows := true,")
+        print(f"       p_dry_run := false,")
+        print(f"       p_verbose := true")
+        print(f"   );\"")
+        print()
+        print("5. Dry Run (preview changes without applying):")
+        print(f"   psql -p {port_n2} {config.DB_NAME} -c \"")
+        print(f"   CALL spock.recover_cluster(")
+        print(f"       p_source_dsn := 'host=localhost port={port_n3} dbname={config.DB_NAME} user={config.DB_USER}',")
+        print(f"       p_delete_extra_rows := true,")
         print(f"       p_dry_run := true,")
         print(f"       p_verbose := true")
         print(f"   );\"")
         print()
-        print("4. Load recovery.sql and run interactively:")
+        print("6. Load recovery.sql and run interactively:")
         print(f"   psql -p {port_n2} {config.DB_NAME} -f samples/recovery/recovery.sql")
         print()
         print("=" * 72)
