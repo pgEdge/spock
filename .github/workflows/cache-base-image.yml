@@ -1,5 +1,5 @@
 name: Update base OS image
-run-name: Updating the base OS and install necessary extra packages
+run-name: Updating the base OS and install necessary extra packages (multiplatform)
 
 # This workflow builds the pgEdge base test image with full reproducibility metadata:
 # - Captures build timestamp, git commit SHA, branch, and Rocky Linux version
@@ -56,11 +56,20 @@ jobs:
           echo "Git Commit: $(git rev-parse HEAD)"
           echo "Git Branch: $(git rev-parse --abbrev-ref HEAD)"
           echo "Rocky Linux: $(docker run --rm rockylinux:9 cat /etc/rocky-release)"
+          echo "Platforms: linux/amd64, linux/arm64"
           echo "========================================="
 
-      - name: Set up Docker
+      # Set up QEMU for multiplatform builds
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
         # Codacy wants us to use full commit SHA. This is for v3
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+        with:
+          platforms: linux/amd64,linux/arm64
 
       # Login to GHCR
       - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
@@ -70,11 +79,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Prepare cached version of the base image with build metadata
-      - name: Build and push base system image
+      - name: Build and push multiplatform base system image
         uses: docker/build-push-action@c382f710d39a5bb4e430307530a720f50c2d3318
         with:
           context: .
           file: tests/docker/Dockerfile-base.el9
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest
@@ -86,20 +96,33 @@ jobs:
             ROCKYLINUX_VERSION=${{ env.ROCKYLINUX_VERSION }}
           cache-from: type=gha,scope=base
           cache-to: type=gha,mode=max,scope=base
+          provenance: false
+          sbom: false
+
+      # Verify multiplatform manifest
+      - name: Inspect multiplatform manifest
+        run: |
+          docker buildx imagetools inspect ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest
 
       # Verify and display build information from the image
       - name: Display build information
         run: |
           echo ""
           echo "========================================="
-          echo "Image Built Successfully!"
+          echo "Multiplatform Image Built Successfully!"
           echo "========================================="
+          echo "Platforms: linux/amd64, linux/arm64"
+          echo ""
           echo "Image Tags:"
           echo "  - ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest"
           echo "  - ghcr.io/${{ env.OWNER_LC }}/base-test-image:${{ env.GIT_COMMIT }}"
           echo ""
           echo "To pull this specific build:"
           echo "  docker pull ghcr.io/${{ env.OWNER_LC }}/base-test-image:${{ env.GIT_COMMIT }}"
+          echo ""
+          echo "Docker will automatically select the correct architecture:"
+          echo "  - linux/amd64 for Intel/AMD systems"
+          echo "  - linux/arm64 for Apple Silicon Macs (M1/M2/M3/M4)"
           echo ""
           echo "To view build info from the image:"
           echo "  docker run --rm ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest cat /etc/pgedge/build-info.txt"

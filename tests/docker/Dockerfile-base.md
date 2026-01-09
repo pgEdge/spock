@@ -6,7 +6,7 @@ This document describes the **pgEdge Base Test Image** (`ghcr.io/pgedge/base-tes
 
 **Image Registry**: `ghcr.io/pgedge/base-test-image:latest`
 **Base OS**: Rocky Linux 9
-**Platforms**: linux/amd64 (x86_64)
+**Platforms**: linux/amd64 (x86_64), linux/arm64 (Apple Silicon)
 **Purpose**: Development and testing environment for PostgreSQL extension development
 
 ## Purpose
@@ -166,19 +166,30 @@ jobs:
 
 ## Platform Support
 
-The image is currently built for **linux/amd64** (x86_64) architecture.
+The image is built as a **multiplatform manifest** supporting:
+- **linux/amd64** - Intel/AMD x86_64 systems
+- **linux/arm64** - Apple Silicon Macs (M1/M2/M3/M4), AWS Graviton
 
-### Usage on ARM64 Systems
-
-On ARM64 systems (Apple Silicon Macs, AWS Graviton, etc.), Docker will use QEMU emulation to run the amd64 image. While this works, performance will be slower than a native ARM64 build.
+Docker automatically selects the appropriate architecture when pulling the image:
 
 ```bash
-# Pull and run on any platform (emulated on ARM64)
+# Docker automatically selects correct architecture
 docker pull ghcr.io/pgedge/base-test-image:latest
+
+# On Apple Silicon Mac → pulls linux/arm64 (native performance)
+# On Intel/AMD → pulls linux/amd64 (native performance)
 docker run -it ghcr.io/pgedge/base-test-image:latest /bin/bash
 ```
 
-**Note**: For native ARM64 support, the build workflow would need to be enhanced with Docker Buildx multiplatform capabilities and QEMU setup.
+To explicitly pull a specific platform:
+
+```bash
+# Force ARM64 variant
+docker pull --platform linux/arm64 ghcr.io/pgedge/base-test-image:latest
+
+# Force AMD64 variant
+docker pull --platform linux/amd64 ghcr.io/pgedge/base-test-image:latest
+```
 
 ## Build Reproducibility
 
