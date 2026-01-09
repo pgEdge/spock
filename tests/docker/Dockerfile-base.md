@@ -180,6 +180,78 @@ docker run -it ghcr.io/pgedge/base-test-image:latest /bin/bash
 
 **Note**: For native ARM64 support, the build workflow would need to be enhanced with Docker Buildx multiplatform capabilities and QEMU setup.
 
+## Build Reproducibility
+
+Every image build includes comprehensive metadata for exact reproduction:
+
+### Build Information Embedded in Image
+
+Each image contains a `/etc/pgedge/build-info.txt` file with:
+- Build timestamp (ISO 8601 format)
+- Git commit SHA used to build the image
+- Git branch name
+- Rocky Linux version
+- Exact reproduction commands
+
+View this information from any image:
+```bash
+docker run --rm ghcr.io/pgedge/base-test-image:latest cat /etc/pgedge/build-info.txt
+```
+
+### OCI Image Labels
+
+Images include standard OCI labels and custom metadata:
+```bash
+docker inspect ghcr.io/pgedge/base-test-image:latest | jq '.[0].Config.Labels'
+```
+
+Labels include:
+- `org.opencontainers.image.created` - Build timestamp
+- `org.opencontainers.image.revision` - Git commit SHA
+- `org.opencontainers.image.source` - Source repository URL
+- `com.pgedge.base-os.version` - Rocky Linux version
+- `com.pgedge.git.branch` - Git branch name
+
+### Commit-Tagged Images
+
+Each build is tagged with both:
+- `:latest` - Always points to the most recent build
+- `:${GIT_COMMIT}` - Immutable tag referencing the exact git commit
+
+Pull a specific build:
+```bash
+# Replace with actual commit SHA from build output
+docker pull ghcr.io/pgedge/base-test-image:a1b2c3d4e5f6...
+```
+
+### Reproducing a Build
+
+To reproduce an image exactly:
+
+1. **Find the git commit** from the image:
+   ```bash
+   docker inspect ghcr.io/pgedge/base-test-image:latest | \
+     jq -r '.[0].Config.Labels."org.opencontainers.image.revision"'
+   ```
+
+2. **Checkout that commit**:
+   ```bash
+   git clone https://github.com/pgedge/spock.git
+   cd spock
+   git checkout <commit-sha>
+   ```
+
+3. **Build with the same parameters**:
+   ```bash
+   docker build -f tests/docker/Dockerfile-base.el9 \
+     --build-arg BUILD_DATE=<timestamp> \
+     --build-arg GIT_COMMIT=<commit> \
+     --build-arg GIT_BRANCH=<branch> \
+     --build-arg ROCKYLINUX_VERSION=<version> .
+   ```
+
+The exact build command is also printed in `/etc/pgedge/build-info.txt` within the image.
+
 ## Maintenance and Updates
 
 ### Rebuild Strategy
