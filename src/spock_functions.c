@@ -3031,10 +3031,6 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 {
 	HASH_SEQ_STATUS hash_seq;
 	spockStatsEntry *entry;
-	spockStatsKey *keys_to_remove;
-	int			num_entries;
-	int			i;
-	int			idx;
 
 	if (!SpockCtx || !SpockHash)
 		ereport(ERROR,
@@ -3044,31 +3040,18 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
 	/*
-	 * Cannot call hash_search(HASH_REMOVE) during hash_seq_search iteration
-	 * because removing entries invalidates the iterator state (bucket chain
-	 * pointers, memory references), causing crashes or skipped entries.
-	 * Use two-pass approach: collect keys during iteration, then remove.
+	 * In principle we could reset only specific channel statistics; but that
+	 * would be more complicated, and it's probably not worth the trouble.
+	 * So for now, just reset all entries.
 	 */
-	num_entries = hash_get_num_entries(SpockHash);
-	if (num_entries > 0)
+	hash_seq_init(&hash_seq, SpockHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
-		keys_to_remove = (spockStatsKey *) palloc(num_entries * sizeof(spockStatsKey));
-		idx = 0;
-
-		/* First pass: collect keys */
-		hash_seq_init(&hash_seq, SpockHash);
-		while ((entry = hash_seq_search(&hash_seq)) != NULL)
-		{
-			keys_to_remove[idx++] = entry->key;
-		}
-
-		/* Second pass: remove entries */
-		for (i = 0; i < idx; i++)
-		{
-			hash_search(SpockHash, &keys_to_remove[i], HASH_REMOVE, NULL);
-		}
-
-		pfree(keys_to_remove);
+		if (hash_search(SpockHash,
+						&entry->key,
+						HASH_REMOVE,
+						NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
 	}
 
 	LWLockRelease(SpockCtx->lock);

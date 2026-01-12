@@ -1559,44 +1559,24 @@ relmetacache_flush(void)
 {
 	HASH_SEQ_STATUS status;
 	struct SPKRelMetaCacheEntry *hentry;
-	Oid		   *relids;
-	int			num_entries;
-	int			i;
-	int			idx;
 
 	if (RelMetaCache == NULL)
 		return;
 
 	/*
-	 * Cannot call hash_search(HASH_REMOVE) during hash_seq_search iteration
-	 * because removing entries corrupts the iterator state (bucket pointers,
-	 * freed memory), causing crashes or skipped entries. Use two-pass
-	 * approach: collect relids during iteration, then remove.
+	 * In principle we could flush only cache entries relating to specific
+	 * relations; but that would be more complicated, and it's probably not
+	 * worth the trouble. So for now, just flush all entries.
 	 */
-	num_entries = hash_get_num_entries(RelMetaCache);
-	if (num_entries == 0)
-		return;
-
-	relids = (Oid *) palloc(num_entries * sizeof(Oid));
-	idx = 0;
-
-	/* First pass: collect relids */
 	hash_seq_init(&status, RelMetaCache);
 	while ((hentry = (struct SPKRelMetaCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
-		relids[idx++] = hentry->relid;
-	}
-
-	/* Second pass: remove entries */
-	for (i = 0; i < idx; i++)
-	{
 		if (hash_search(RelMetaCache,
-						(void *) &relids[i],
-						HASH_REMOVE, NULL) == NULL)
+						(void *) &hentry->relid,
+						HASH_REMOVE,
+						NULL) == NULL)
 			elog(ERROR, "hash table corrupted");
 	}
-
-	pfree(relids);
 }
 
 /*
