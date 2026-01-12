@@ -10,6 +10,17 @@ run-name: Updating the base OS and install necessary extra packages (multiplatfo
 
 on:
   workflow_dispatch:
+    inputs:
+      image_name:
+        description: 'Base image name (without registry/owner prefix)'
+        required: false
+        default: 'base-test-image'
+        type: string
+      image_tag:
+        description: 'Additional custom tag (besides :latest and :<commit-sha>)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -47,11 +58,14 @@ jobs:
           echo "GIT_COMMIT=$(git rev-parse HEAD)" >> ${GITHUB_ENV}
           echo "GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)" >> ${GITHUB_ENV}
           echo "ROCKYLINUX_VERSION=$(docker run --rm rockylinux:9 cat /etc/rocky-release)" >> ${GITHUB_ENV}
+          echo "IMAGE_NAME=${{ inputs.image_name || 'base-test-image' }}" >> ${GITHUB_ENV}
 
           # Print build information
           echo "========================================="
           echo "pgEdge Base Image Build Information"
           echo "========================================="
+          echo "Image Name: ${{ inputs.image_name || 'base-test-image' }}"
+          echo "Custom Tag: ${{ inputs.image_tag }}"
           echo "Build Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           echo "Git Commit: $(git rev-parse HEAD)"
           echo "Git Branch: $(git rev-parse --abbrev-ref HEAD)"
@@ -87,8 +101,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest
-            ghcr.io/${{ env.OWNER_LC }}/base-test-image:${{ env.GIT_COMMIT }}
+            ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:${{ env.GIT_COMMIT }}
+            ${{ inputs.image_tag && format('ghcr.io/{0}/{1}:{2}', env.OWNER_LC, env.IMAGE_NAME, inputs.image_tag) || '' }}
           build-args: |
             BUILD_DATE=${{ env.BUILD_DATE }}
             GIT_COMMIT=${{ env.GIT_COMMIT }}
@@ -102,7 +117,7 @@ jobs:
       # Verify multiplatform manifest
       - name: Inspect multiplatform manifest
         run: |
-          docker buildx imagetools inspect ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest
+          docker buildx imagetools inspect ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:latest
 
       # Verify and display build information from the image
       - name: Display build information
@@ -111,37 +126,46 @@ jobs:
           echo "========================================="
           echo "Multiplatform Image Built Successfully!"
           echo "========================================="
+          echo "Image Name: ${{ env.IMAGE_NAME }}"
           echo "Platforms: linux/amd64, linux/arm64"
           echo ""
           echo "Image Tags:"
-          echo "  - ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest"
-          echo "  - ghcr.io/${{ env.OWNER_LC }}/base-test-image:${{ env.GIT_COMMIT }}"
+          echo "  - ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:latest"
+          echo "  - ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:${{ env.GIT_COMMIT }}"
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "  - ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}"
+          fi
           echo ""
           echo "To pull this specific build:"
-          echo "  docker pull ghcr.io/${{ env.OWNER_LC }}/base-test-image:${{ env.GIT_COMMIT }}"
+          echo "  docker pull ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:${{ env.GIT_COMMIT }}"
           echo ""
           echo "Docker will automatically select the correct architecture:"
           echo "  - linux/amd64 for Intel/AMD systems"
           echo "  - linux/arm64 for Apple Silicon Macs (M1/M2/M3/M4)"
           echo ""
           echo "To view build info from the image:"
-          echo "  docker run --rm ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest cat /etc/pgedge/build-info.txt"
+          echo "  docker run --rm ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:latest cat /etc/pgedge/build-info.txt"
           echo ""
           echo "To inspect image labels:"
-          echo "  docker inspect ghcr.io/${{ env.OWNER_LC }}/base-test-image:latest | jq '.[0].Config.Labels'"
+          echo "  docker inspect ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:latest | jq '.[0].Config.Labels'"
           echo "========================================="
 
 # ==============================================================================
 # Build Complete!
 # ==============================================================================
 # The base image is available at:
-#   https://github.com/pgedge/spock/pkgs/container/base-test-image
+#   https://github.com/pgedge/spock/pkgs/container/<image-name>
+#
+# Workflow Inputs (configurable through Actions UI):
+#   - image_name: Base image name (default: 'base-test-image')
+#   - image_tag: Optional custom tag in addition to :latest and :<commit-sha>
 #
 # Each build includes comprehensive reproducibility metadata:
 #   1. /etc/pgedge/build-info.txt - Embedded build information file
 #   2. OCI image labels with build timestamp, commit SHA, and branch
 #   3. Commit-specific tag (:<commit-sha>) for immutable references
-#   4. Workflow output with all build parameters
+#   4. Optional custom tag (:<custom-tag>) if provided
+#   5. Workflow output with all build parameters
 #
 # To reproduce any build:
 #   1. Check workflow output or image labels for git commit SHA
