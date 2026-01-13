@@ -215,13 +215,13 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 	SpockGroupEntry *entry;
 	bool		found;
 
-	e = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
+	entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &key, HASH_ENTER, &found);
 
 	/*
 	 * HASH_FIXED_SIZE hash tables can return NULL when full. Check for this
 	 * to prevent dereferencing NULL pointer.
 	 */
-	if (e == NULL)
+	if (entry == NULL)
 	{
 		elog(ERROR, "SpockGroupHash is full, cannot attach to group "
 			 "(dbid=%u, node_id=%u, remote_node_id=%u)",
@@ -373,7 +373,7 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 	 * HASH_FIXED_SIZE hash tables can return NULL when full. Check for this
 	 * to prevent dereferencing NULL pointer.
 	 */
-	if (e == NULL)
+	if (entry == NULL)
 	{
 		elog(WARNING, "SpockGroupHash is full, cannot update progress for group "
 			 "(dbid=%u, node_id=%u, remote_node_id=%u)",
