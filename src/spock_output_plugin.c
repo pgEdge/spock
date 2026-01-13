@@ -1488,8 +1488,6 @@ relmetacache_init(MemoryContext decoding_context)
 
 	if (RelMetaCache == NULL)
 	{
-		MemoryContext old_ctxt;
-
 		RelMetaCacheContext = AllocSetContextCreate(TopMemoryContext,
 													"spock output relmetacache",
 													ALLOCSET_DEFAULT_SIZES);
@@ -1502,11 +1500,9 @@ relmetacache_init(MemoryContext decoding_context)
 		ctl.entrysize = sizeof(struct SPKRelMetaCacheEntry);
 		ctl.hcxt = RelMetaCacheContext;
 		hash_flags |= HASH_BLOBS;
-		old_ctxt = MemoryContextSwitchTo(RelMetaCacheContext);
 		RelMetaCache = hash_create("spock relation metadata cache",
 								   RELMETACACHE_INITIAL_SIZE,
 								   &ctl, hash_flags);
-		(void) MemoryContextSwitchTo(old_ctxt);
 
 		Assert(RelMetaCache != NULL);
 
@@ -1530,14 +1526,11 @@ relmetacache_get_relation(struct SpockOutputData *data,
 {
 	struct SPKRelMetaCacheEntry *hentry;
 	bool		found;
-	MemoryContext old_mctx;
 
 	/* Find cached function info, creating if not found */
-	old_mctx = MemoryContextSwitchTo(RelMetaCacheContext);
 	hentry = (struct SPKRelMetaCacheEntry *) hash_search(RelMetaCache,
 														 (void *) (&RelationGetRelid(rel)),
 														 HASH_ENTER, &found);
-	(void) MemoryContextSwitchTo(old_mctx);
 
 	/* If not found or not valid, it can't be cached. */
 	if (!found || !hentry->is_valid)
@@ -1567,17 +1560,22 @@ relmetacache_flush(void)
 	HASH_SEQ_STATUS status;
 	struct SPKRelMetaCacheEntry *hentry;
 
-	if (RelMetaCache != NULL)
-	{
-		hash_seq_init(&status, RelMetaCache);
+	if (RelMetaCache == NULL)
+		return;
 
-		while ((hentry = (struct SPKRelMetaCacheEntry *) hash_seq_search(&status)) != NULL)
-		{
-			if (hash_search(RelMetaCache,
-							(void *) &hentry->relid,
-							HASH_REMOVE, NULL) == NULL)
-				elog(ERROR, "hash table corrupted");
-		}
+	/*
+	 * In principle we could flush only cache entries relating to specific
+	 * relations; but that would be more complicated, and it's probably not
+	 * worth the trouble. So for now, just flush all entries.
+	 */
+	hash_seq_init(&status, RelMetaCache);
+	while ((hentry = (struct SPKRelMetaCacheEntry *) hash_seq_search(&status)) != NULL)
+	{
+		if (hash_search(RelMetaCache,
+						(void *) &hentry->relid,
+						HASH_REMOVE,
+						NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
 	}
 }
 
@@ -1592,27 +1590,49 @@ relmetacache_prune(void)
 {
 	HASH_SEQ_STATUS status;
 	struct SPKRelMetaCacheEntry *hentry;
+	Oid		   *relids_to_remove;
+	int			num_entries;
+	int			i;
+	int			idx;
 
 	/*
-	 * Since the pruning can be expensive, do it only if ig we invalidated at
+	 * Since the pruning can be expensive, do it only if we invalidated at
 	 * least half of initial cache size.
 	 */
 	if (InvalidRelMetaCacheCnt < RELMETACACHE_INITIAL_SIZE / 2)
 		return;
 
-	hash_seq_init(&status, RelMetaCache);
+	/*
+	 * Cannot call hash_search(HASH_REMOVE) during hash_seq_search iteration
+	 * because removing entries corrupts the iterator state (bucket pointers,
+	 * freed memory), causing crashes or skipped entries. Use two-pass
+	 * approach: collect relids of invalid entries, then remove.
+	 */
+	num_entries = hash_get_num_entries(RelMetaCache);
+	if (num_entries == 0)
+		return;
 
+	relids_to_remove = (Oid *) palloc(num_entries * sizeof(Oid));
+	idx = 0;
+
+	/* First pass: collect invalid entries */
+	hash_seq_init(&status, RelMetaCache);
 	while ((hentry = (struct SPKRelMetaCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
 		if (!hentry->is_valid)
-		{
-			if (hash_search(RelMetaCache,
-							(void *) &hentry->relid,
-							HASH_REMOVE, NULL) == NULL)
-				elog(ERROR, "hash table corrupted");
-		}
+			relids_to_remove[idx++] = hentry->relid;
 	}
 
+	/* Second pass: remove entries */
+	for (i = 0; i < idx; i++)
+	{
+		if (hash_search(RelMetaCache,
+						(void *) &relids_to_remove[i],
+						HASH_REMOVE, NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
+	}
+
+	pfree(relids_to_remove);
 	InvalidRelMetaCacheCnt = 0;
 }
 

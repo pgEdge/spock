@@ -3002,8 +3002,16 @@ get_channel_stats(PG_FUNCTION_ARGS)
 		values[i++] = ObjectIdGetDatum(entry->key.subid);
 		values[i++] = ObjectIdGetDatum(entry->key.relid);
 
+		/*
+		 * Acquire spinlock before reading counter values to prevent torn
+		 * reads. The writer (handle_stats_counter) uses entry->mutex to
+		 * protect counter updates, so we must use the same lock for reads
+		 * to ensure atomic access to 64-bit counter values.
+		 */
+		SpinLockAcquire(&entry->mutex);
 		for (j = 0; j < SPOCK_STATS_NUM_COUNTERS; j++)
 			values[i++] = Int64GetDatum(entry->counter[j]);
+		SpinLockRelease(&entry->mutex);
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
@@ -3031,10 +3039,19 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
-	hash_seq_init(&hash_seq, SpockHash);
-	while ((entry = hash_seq_search(&hash_seq)) != NULL)
-	{
-		hash_search(SpockHash, &entry->key, HASH_REMOVE, NULL);
+	/*
+	 * In principle we could reset only specific channel statistics; but that
+	 * would be more complicated, and it's probably not worth the trouble.
+	 * So for now, just reset all entries.
+	 */
+		hash_seq_init(&hash_seq, SpockHash);
+		while ((entry = hash_seq_search(&hash_seq)) != NULL)
+		{
+		if (hash_search(SpockHash,
+						&entry->key,
+						HASH_REMOVE,
+						NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
 	}
 
 	LWLockRelease(SpockCtx->lock);
