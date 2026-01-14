@@ -355,13 +355,9 @@ CREATE FUNCTION spock.node_info(OUT node_id oid, OUT node_name text,
 RETURNS record
 STABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME', 'spock_node_info';
 
-CREATE FUNCTION spock.spock_gen_slot_name(
-  dbname        name,
-  provider_node name,
-  subscription  name
-) RETURNS name
-AS 'MODULE_PATHNAME'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION spock.spock_gen_slot_name(name, name, name)
+RETURNS name
+IMMUTABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME';
 
 CREATE FUNCTION spock_version() RETURNS text
 LANGUAGE c AS 'MODULE_PATHNAME';
@@ -542,14 +538,16 @@ CREATE VIEW spock.lag_tracker AS
 
 CREATE FUNCTION spock.md5_agg_sfunc(text, anyelement)
 	RETURNS text
-AS $$ SELECT md5($1 || $2::text) $$
-LANGUAGE sql IMMUTABLE PARALLEL SAFE;
+	LANGUAGE sql
+AS
+$$
+	SELECT md5($1 || $2::text)
+$$;
 CREATE  AGGREGATE spock.md5_agg (ORDER BY anyelement)
 (
 	STYPE = text,
 	SFUNC = spock.md5_agg_sfunc,
-	INITCOND = '',
-	PARALLEL = SAFE
+	INITCOND = ''
 );
 
 -- ----------------------------------------------------------------------
@@ -563,33 +561,19 @@ CREATE FUNCTION spock.terminate_active_transactions() RETURNS bool
 -- Generic delta apply functions for all numeric data types
 -- ----
 CREATE FUNCTION spock.delta_apply(int2, int2, int2)
-RETURNS int2
-AS 'MODULE_PATHNAME', 'delta_apply_int2'
-LANGUAGE C;
+RETURNS int2 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int2';
 CREATE FUNCTION spock.delta_apply(int4, int4, int4)
-RETURNS int4
-AS 'MODULE_PATHNAME', 'delta_apply_int4'
-LANGUAGE C;
+RETURNS int4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int4';
 CREATE FUNCTION spock.delta_apply(int8, int8, int8)
-RETURNS int8
-AS 'MODULE_PATHNAME', 'delta_apply_int8'
-LANGUAGE C;
+RETURNS int8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int8';
 CREATE FUNCTION spock.delta_apply(float4, float4, float4)
-RETURNS float4
-AS 'MODULE_PATHNAME', 'delta_apply_float4'
-LANGUAGE C;
+RETURNS float4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float4';
 CREATE FUNCTION spock.delta_apply(float8, float8, float8)
-RETURNS float8
-AS 'MODULE_PATHNAME', 'delta_apply_float8'
-LANGUAGE C;
+RETURNS float8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float8';
 CREATE FUNCTION spock.delta_apply(numeric, numeric, numeric)
-RETURNS numeric
-AS 'MODULE_PATHNAME', 'delta_apply_numeric'
-LANGUAGE C;
+RETURNS numeric LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_numeric';
 CREATE FUNCTION spock.delta_apply(money, money, money)
-RETURNS money
-AS 'MODULE_PATHNAME', 'delta_apply_money'
-LANGUAGE C;
+RETURNS money LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_money';
 
 -- ----
 -- Function to control REPAIR mode
@@ -650,114 +634,557 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Set delta_apply security label on specific column
-CREATE FUNCTION spock.delta_apply(
-  rel regclass,
-  att_name name,
-  to_drop boolean DEFAULT false
-) RETURNS boolean AS $$
+-- ============================================================================
+-- TABLE CONSISTENCY CHECK AND REPAIR - TYPES
+-- ============================================================================
+
+-- Table row with metadata
+CREATE TYPE spock.table_row AS (
+    pk_values text[],
+    all_values text[],
+    commit_ts timestamptz,
+    node_origin text
+);
+
+-- Diff result row
+CREATE TYPE spock.diff_row AS (
+    diff_type text,              -- 'only_local', 'only_remote', 'modified'
+    pk_values text[],
+    local_values text[],
+    remote_values text[],
+    local_commit_ts timestamptz,
+    remote_commit_ts timestamptz,
+    columns_changed text[]
+);
+
+-- Repair operation result
+CREATE TYPE spock.repair_operation AS (
+    operation text,              -- 'DELETE', 'INSERT', 'UPDATE'
+    table_name regclass,
+    pk_values text[],
+    sql_statement text,
+    rows_affected bigint,
+    success boolean,
+    error_msg text,
+    execution_time_ms numeric
+);
+
+-- Subscription health status
+CREATE TYPE spock.subscription_health AS (
+    subscription_name name,
+    status text,                 -- 'healthy', 'lagging', 'down', 'error'
+    provider_dsn text,
+    slot_name name,
+    replication_lag_bytes bigint,
+    replication_lag_seconds numeric,
+    last_received_lsn pg_lsn,
+    worker_pid int,
+    error_count bigint,
+    last_error text,
+    last_error_time timestamptz
+);
+
+-- Node health status
+CREATE TYPE spock.node_health AS (
+    node_name name,
+    node_id oid,
+    is_local boolean,
+    connection_status text,      -- 'ok', 'timeout', 'failed'
+    response_time_ms numeric,
+    database_size bigint,
+    active_connections int,
+    replication_slots int,
+    subscriptions int,
+    status_detail jsonb
+);
+
+-- Table health information
+CREATE TYPE spock.table_health AS (
+    schema_name name,
+    table_name name,
+    has_primary_key boolean,
+    row_count_estimate bigint,
+    table_size bigint,
+    last_vacuum timestamptz,
+    last_analyze timestamptz,
+    n_dead_tup bigint,
+    in_replication_set boolean,
+    issues text[]
+);
+
+-- ============================================================================
+-- TABLE CONSISTENCY CHECK AND REPAIR - HELPER FUNCTIONS
+-- ============================================================================
+
+-- Get table metadata (schema, table, PK columns, all columns)
+CREATE FUNCTION spock.get_table_info(
+    p_relation regclass,
+    OUT schema_name name,
+    OUT table_name name,
+    OUT primary_key_cols name[],
+    OUT all_cols name[],
+    OUT col_types text[]
+)
+RETURNS record
+LANGUAGE c
+STRICT
+STABLE
+AS 'MODULE_PATHNAME', 'spock_get_table_info';
+
+-- Get primary key columns only
+CREATE FUNCTION spock.get_primary_key_columns(p_relation regclass)
+RETURNS text[]
+LANGUAGE c
+STRICT
+STABLE
+AS 'MODULE_PATHNAME', 'spock_get_primary_key_columns';
+
+-- Get all columns
+CREATE FUNCTION spock.get_all_columns(p_relation regclass)
+RETURNS text[]
+LANGUAGE c
+STRICT
+STABLE
+AS 'MODULE_PATHNAME', 'spock_get_all_columns';
+
+-- Fetch local table rows with metadata (PL/pgSQL implementation)
+CREATE FUNCTION spock.fetch_table_rows(
+    p_relation regclass,
+    p_filter text DEFAULT NULL
+)
+RETURNS SETOF spock.table_row
+LANGUAGE plpgsql
+STABLE
+AS $$
 DECLARE
-  label     text;
-  atttype   name;
-  attdata   record;
-  sqlstring text;
-  status    boolean;
-  relreplident char (1);
-  ctypname  name;
+    v_pk_cols text[];
+    v_all_cols text[];
+    v_sql text;
+    v_pk_list text;
+    v_all_list text;
 BEGIN
-
-  /*
-   * regclass input type guarantees we see this table, no 'not found' check
-   * is needed.
-   */
-  SELECT c.relreplident FROM pg_class c WHERE oid = rel INTO relreplident;
-  /*
-   * Allow only DEFAULT type of replica identity. FULL type means we have
-   * already requested delta_apply feature on this table.
-   * Avoid INDEX type because indexes may have different names on the nodes and
-   * it would be better to stay paranoid than afraid of consequences.
-   */
-  IF (relreplident <> 'd' AND relreplident <> 'f')
-  THEN
-    RAISE EXCEPTION 'spock can apply delta_apply feature to the DEFAULT replica identity type only. This table holds "%" idenity', relreplident;
-  END IF;
-
-  /*
-   * Find proper delta_apply function for the column type or ERROR
-   */
-
-  SELECT t.typname,t.typinput,t.typoutput, a.attnotnull
-  FROM pg_catalog.pg_attribute a, pg_type t
-  WHERE a.attrelid = rel AND a.attname = att_name AND (a.atttypid = t.oid)
-  INTO attdata;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'column % does not exist in the table %', att_name, rel;
-  END IF;
-
-  IF (attdata.attnotnull = false) THEN
-    /*
-	 * TODO: Here is a case where the table has different constraints on nodes.
-	 * Using prepared transactions, we might be sure this operation will finish
-	 * if only each node satisfies the rule. But we need to add support for 2PC
-	 * commit beforehand.
-	 */
-    RAISE NOTICE USING
-	  MESSAGE = format('delta_apply feature can not be applied to nullable column %L of the table %I',
-						att_name, rel),
-	  HINT = 'Set NOT NULL constraint on the column',
-	  ERRCODE = 'object_not_in_prerequisite_state';
-	RETURN false;
-  END IF;
-
-  SELECT typname FROM pg_type WHERE
-    typname IN ('int2','int4','int8','float4','float8','numeric','money') AND
-    typinput = attdata.typinput AND typoutput = attdata.typoutput
-  INTO ctypname;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'type "%" can not be used in delta_apply conflict resolution',
-          attdata.typname;
-  END IF;
-
-  --
-  -- Create security label on the column
-  --
-  IF (to_drop = true) THEN
-    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS NULL;' ,
-                        rel, att_name);
-  ELSE
-    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L;' ,
-                        rel, att_name, 'spock.delta_apply');
-  END IF;
-
-  EXECUTE sqlstring;
-
-  /*
-   * Auto replication will propagate security label if needed. Just warn if it's
-   * not - the structure sync pg_dump call would copy security labels, isn't it?
-   */
-  SELECT pg_catalog.current_setting('spock.enable_ddl_replication') INTO status;
-  IF EXISTS (SELECT 1 FROM spock.local_node) AND status = false THEN
-    raise WARNING 'delta_apply setting has not been propagated to other spock nodes';
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM pg_catalog.pg_seclabel
-			 WHERE objoid = rel AND classoid = 'pg_class'::regclass AND
-			       provider = 'spock') THEN
-    /*
-     * Call it each time to trigger relcache invalidation callback that causes
-     * refresh of the SpockRelation entry and guarantees actual state of the
-     * delta_apply columns.
-     */
-    EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', rel);
-  ELSIF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
-			 WHERE c.oid = rel AND c.relreplident = 'f') THEN
-    /*
-	 * Have removed he last security label. Revert this spock hack change,
-	 * if needed.
-	 */
-	EXECUTE format('ALTER TABLE %I REPLICA IDENTITY DEFAULT', rel);
-  END IF;
-
-  RETURN true;
+    -- Get column arrays and cast to text[]
+    v_pk_cols := (SELECT spock.get_primary_key_columns(p_relation))::text[];
+    v_all_cols := (SELECT spock.get_all_columns(p_relation))::text[];
+    
+    IF v_all_cols IS NULL OR array_length(v_all_cols, 1) IS NULL THEN
+        RAISE EXCEPTION 'Table % not found or has no columns', p_relation;
+    END IF;
+    
+    -- Handle empty PK case
+    IF v_pk_cols IS NULL OR array_length(v_pk_cols, 1) IS NULL THEN
+        v_pk_list := 'NULL::text';
+    ELSE
+        v_pk_list := (
+            SELECT string_agg(quote_ident(col) || '::text', ', ')
+            FROM unnest(v_pk_cols) AS col
+        );
+    END IF;
+    
+    -- Build all columns list
+    v_all_list := (
+        SELECT string_agg(quote_ident(col) || '::text', ', ')
+        FROM unnest(v_all_cols) AS col
+    );
+    
+    -- Build and execute query
+    v_sql := format(
+        'SELECT ARRAY[%s]::text[] as pk_values, ARRAY[%s]::text[] as all_values, NULL::timestamptz as commit_ts, ''local''::text as node_origin FROM %s',
+        COALESCE(v_pk_list, 'NULL::text'),
+        v_all_list,
+        p_relation::text
+    );
+    
+    IF p_filter IS NOT NULL THEN
+        v_sql := v_sql || ' WHERE ' || p_filter;
+    END IF;
+    
+    RETURN QUERY EXECUTE v_sql;
 END;
-$$ LANGUAGE plpgsql STRICT VOLATILE;
+$$;
+
+-- Fetch rows in batches (PL/pgSQL implementation)
+CREATE FUNCTION spock.fetch_table_rows_batch(
+    p_relation regclass,
+    p_filter text DEFAULT NULL,
+    p_batch_size int DEFAULT NULL
+)
+RETURNS SETOF spock.table_row
+LANGUAGE plpgsql
+STABLE
+AS $$
+BEGIN
+    -- For now, just call fetch_table_rows
+    -- In future, could implement cursor-based batching
+    RETURN QUERY SELECT * FROM spock.fetch_table_rows(p_relation, p_filter);
+END;
+$$;
+
+-- Get changed column names between two value arrays
+CREATE FUNCTION spock.get_changed_columns(
+    p_local_values text[],
+    p_remote_values text[],
+    p_all_cols text[]
+)
+RETURNS text[]
+LANGUAGE c
+STRICT
+IMMUTABLE
+AS 'MODULE_PATHNAME', 'spock_get_changed_columns';
+
+-- Generate DELETE SQL statement
+CREATE FUNCTION spock.generate_delete_sql(
+    p_relation regclass,
+    p_pk_values text[]
+)
+RETURNS text
+LANGUAGE c
+STRICT
+IMMUTABLE
+AS 'MODULE_PATHNAME', 'spock_generate_delete_sql';
+
+-- Generate INSERT...ON CONFLICT (UPSERT) SQL statement
+CREATE FUNCTION spock.generate_upsert_sql(
+    p_relation regclass,
+    p_pk_values text[],
+    p_all_values text[],
+    p_insert_only boolean DEFAULT false
+)
+RETURNS text
+LANGUAGE c
+STRICT
+IMMUTABLE
+AS 'MODULE_PATHNAME', 'spock_generate_upsert_sql';
+
+-- Check subscription health
+CREATE FUNCTION spock.check_subscription_health(p_subscription_name name DEFAULT NULL)
+RETURNS SETOF spock.subscription_health
+LANGUAGE c
+CALLED ON NULL INPUT
+STABLE
+AS 'MODULE_PATHNAME', 'spock_check_subscription_health';
+
+-- Check table health
+CREATE FUNCTION spock.check_table_health(p_relation regclass DEFAULT NULL)
+RETURNS SETOF spock.table_health
+LANGUAGE c
+CALLED ON NULL INPUT
+STABLE
+AS 'MODULE_PATHNAME', 'spock_check_table_health';
+
+-- ============================================================================
+-- ADDITIONAL CONSISTENCY CHECK FUNCTIONS
+-- ============================================================================
+
+-- Compare spock configuration across multiple DSNs
+CREATE FUNCTION spock.compare_spock_config(p_dsn_list text[])
+RETURNS TABLE(
+    comparison_key text,
+    node_values jsonb
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_dsn text;
+    v_conn_name text;
+    v_node_name text;
+    v_result record;
+    v_all_configs jsonb := '{}'::jsonb;
+BEGIN
+    -- Collect config from each node
+    FOREACH v_dsn IN ARRAY p_dsn_list
+    LOOP
+        v_conn_name := 'config_check_' || pg_backend_pid();
+        
+        BEGIN
+            PERFORM dblink_connect(v_conn_name, v_dsn);
+            
+            -- Get node name
+            SELECT node_name INTO v_node_name
+            FROM dblink(v_conn_name, 'SELECT node_name FROM spock.node LIMIT 1')
+            AS t(node_name name);
+            
+            IF v_node_name IS NULL THEN
+                v_node_name := v_dsn;
+            END IF;
+            
+            -- Collect subscriptions
+            v_all_configs := jsonb_set(
+                v_all_configs,
+                ARRAY[v_node_name, 'subscriptions'],
+                (SELECT jsonb_agg(sub_info)
+                 FROM dblink(v_conn_name,
+                     'SELECT sub_name, sub_enabled, sub_replication_sets 
+                      FROM spock.subscription'
+                 ) AS t(sub_name name, sub_enabled boolean, sub_replication_sets text[])
+                 sub_info),
+                true
+            );
+            
+            -- Collect replication sets
+            v_all_configs := jsonb_set(
+                v_all_configs,
+                ARRAY[v_node_name, 'replication_sets'],
+                (SELECT jsonb_agg(rs_info)
+                 FROM dblink(v_conn_name,
+                     'SELECT set_name, COUNT(*) as table_count
+                      FROM spock.replication_set rs
+                      LEFT JOIN spock.replication_set_table rst ON rst.set_id = rs.set_id
+                      GROUP BY set_name'
+                 ) AS t(set_name name, table_count bigint)
+                 rs_info),
+                true
+            );
+            
+            PERFORM dblink_disconnect(v_conn_name);
+        EXCEPTION WHEN OTHERS THEN
+            BEGIN
+                PERFORM dblink_disconnect(v_conn_name);
+            EXCEPTION WHEN OTHERS THEN
+                NULL;
+            END;
+            RAISE WARNING 'Failed to collect config from %: %', v_dsn, SQLERRM;
+        END;
+    END LOOP;
+    
+    -- Return comparison results
+    RETURN QUERY
+    SELECT 
+        'node_config'::text as comparison_key,
+        v_all_configs as node_values;
+END;
+$$;
+
+COMMENT ON FUNCTION spock.compare_spock_config IS
+'Compare spock configuration (nodes, subscriptions, replication sets) across multiple database instances.';
+
+-- List all tables in a replication set
+CREATE FUNCTION spock.get_repset_tables(p_repset_name name)
+RETURNS TABLE(
+    schema_name name,
+    table_name name,
+    reloid oid
+)
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT 
+        n.nspname,
+        c.relname,
+        c.oid
+    FROM spock.replication_set rs
+    JOIN spock.replication_set_table rst ON rst.set_id = rs.set_id
+    JOIN pg_class c ON c.oid = rst.set_reloid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE rs.set_name = p_repset_name
+    ORDER BY n.nspname, c.relname;
+$$;
+
+COMMENT ON FUNCTION spock.get_repset_tables IS
+'Get all tables in a replication set with their schema and OID.';
+
+-- List all tables in a schema
+CREATE FUNCTION spock.get_schema_tables(p_schema_name name)
+RETURNS TABLE(
+    table_name name,
+    reloid oid,
+    has_primary_key boolean,
+    row_count_estimate bigint
+)
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT 
+        c.relname,
+        c.oid,
+        (SELECT COUNT(*) > 0 FROM pg_constraint 
+         WHERE conrelid = c.oid AND contype = 'p'),
+        pg_stat_get_live_tuples(c.oid)
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = p_schema_name
+      AND c.relkind = 'r'
+    ORDER BY c.relname;
+$$;
+
+COMMENT ON FUNCTION spock.get_schema_tables IS
+'Get all tables in a schema with metadata (PK status, estimated row count).';
+
+-- Compare schema objects between nodes
+CREATE FUNCTION spock.compare_schema_objects(
+    p_dsn_list text[],
+    p_schema_name name
+)
+RETURNS TABLE(
+    node_name text,
+    tables text[],
+    views text[],
+    functions text[],
+    indexes text[]
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_dsn text;
+    v_conn_name text;
+    v_node text;
+BEGIN
+    FOREACH v_dsn IN ARRAY p_dsn_list
+    LOOP
+        v_conn_name := 'schema_compare_' || pg_backend_pid();
+        
+        BEGIN
+            PERFORM dblink_connect(v_conn_name, v_dsn);
+            
+            -- Get node identifier
+            SELECT COALESCE(
+                (SELECT node_name FROM dblink(v_conn_name, 
+                 'SELECT node_name FROM spock.node LIMIT 1') 
+                 AS t(node_name name)),
+                v_dsn
+            ) INTO v_node;
+            
+            -- Get tables
+            RETURN QUERY
+            SELECT 
+                v_node,
+                ARRAY(SELECT table_name FROM dblink(v_conn_name,
+                    format('SELECT relname FROM pg_class c 
+                            JOIN pg_namespace n ON n.oid = c.relnamespace 
+                            WHERE n.nspname = %L AND c.relkind = ''r'' 
+                            ORDER BY relname', p_schema_name)
+                ) AS t(table_name text)),
+                ARRAY(SELECT view_name FROM dblink(v_conn_name,
+                    format('SELECT relname FROM pg_class c 
+                            JOIN pg_namespace n ON n.oid = c.relnamespace 
+                            WHERE n.nspname = %L AND c.relkind = ''v'' 
+                            ORDER BY relname', p_schema_name)
+                ) AS t(view_name text)),
+                ARRAY(SELECT func_name FROM dblink(v_conn_name,
+                    format('SELECT p.proname FROM pg_proc p 
+                            JOIN pg_namespace n ON n.oid = p.pronamespace 
+                            WHERE n.nspname = %L 
+                            ORDER BY proname', p_schema_name)
+                ) AS t(func_name text)),
+                ARRAY(SELECT idx_name FROM dblink(v_conn_name,
+                    format('SELECT i.relname FROM pg_class i 
+                            JOIN pg_namespace n ON n.oid = i.relnamespace 
+                            WHERE n.nspname = %L AND i.relkind = ''i'' 
+                            ORDER BY relname', p_schema_name)
+                ) AS t(idx_name text));
+            
+            PERFORM dblink_disconnect(v_conn_name);
+        EXCEPTION WHEN OTHERS THEN
+            BEGIN
+                PERFORM dblink_disconnect(v_conn_name);
+            EXCEPTION WHEN OTHERS THEN
+                NULL;
+            END;
+            RAISE WARNING 'Failed to compare schema on %: %', v_dsn, SQLERRM;
+        END;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON FUNCTION spock.compare_schema_objects IS
+'Compare database objects (tables, views, functions, indexes) in a schema across multiple nodes.';
+
+-- ============================================================================
+-- SYSTEM VIEWS
+-- ============================================================================
+
+-- View all Spock GUC configuration
+CREATE VIEW spock.v_config AS
+SELECT 
+    name,
+    setting,
+    unit,
+    category,
+    short_desc,
+    extra_desc,
+    context,
+    vartype,
+    source,
+    min_val,
+    max_val,
+    enumvals,
+    boot_val,
+    reset_val
+FROM pg_settings
+WHERE name LIKE 'spock.%'
+ORDER BY name;
+
+-- View all subscriptions with status
+CREATE VIEW spock.v_subscription_status AS
+SELECT 
+    s.sub_name,
+    s.sub_enabled,
+    n.node_name as provider_node,
+    s.sub_slot_name,
+    s.sub_replication_sets,
+    w.worker_pid,
+    w.worker_status
+FROM spock.subscription s
+LEFT JOIN spock.node n ON n.node_id = s.sub_origin
+LEFT JOIN LATERAL (
+    SELECT * FROM spock.get_apply_worker_status() 
+    WHERE worker_subid = s.sub_id
+) w ON true;
+
+-- View all tables in replication sets
+CREATE VIEW spock.v_replicated_tables AS
+SELECT 
+    n.nspname as schema_name,
+    c.relname as table_name,
+    rs.set_name as replication_set,
+    rst.set_reloid as reloid
+FROM spock.replication_set rs
+JOIN spock.replication_set_table rst ON rst.set_id = rs.set_id
+JOIN pg_class c ON c.oid = rst.set_reloid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+ORDER BY n.nspname, c.relname, rs.set_name;
+
+-- View replication health summary
+CREATE VIEW spock.v_replication_health AS
+SELECT 
+    sub_name,
+    CASE 
+        WHEN NOT sub_enabled THEN 'disabled'
+        WHEN worker_pid IS NULL THEN 'down'
+        WHEN worker_status = 'running' THEN 'healthy'
+        ELSE worker_status
+    END as health_status,
+    worker_pid
+FROM spock.v_subscription_status;
+
+-- View table health (tables without PK, large tables, bloat, etc)
+CREATE VIEW spock.v_table_health AS
+SELECT 
+    n.nspname as schema_name,
+    c.relname as table_name,
+    pg_size_pretty(pg_relation_size(c.oid)) as table_size,
+    (SELECT COUNT(*) FROM pg_constraint 
+     WHERE conrelid = c.oid AND contype = 'p') > 0 as has_primary_key,
+    pg_stat_get_live_tuples(c.oid) as live_tuples,
+    pg_stat_get_dead_tuples(c.oid) as dead_tuples,
+    (SELECT vrt.replication_set FROM spock.v_replicated_tables vrt 
+     WHERE vrt.schema_name = n.nspname AND vrt.table_name = c.relname 
+     LIMIT 1) as in_replication_set,
+    ARRAY(
+        SELECT issue FROM (
+            SELECT 'no_primary_key' as issue 
+            WHERE (SELECT COUNT(*) FROM pg_constraint 
+                   WHERE conrelid = c.oid AND contype = 'p') = 0
+            UNION ALL
+            SELECT 'large_table'
+            WHERE pg_relation_size(c.oid) > 10737418240  -- 10GB
+            UNION ALL
+            SELECT 'high_dead_tuples'
+            WHERE pg_stat_get_dead_tuples(c.oid) > pg_stat_get_live_tuples(c.oid) * 0.2
+        ) issues
+    ) as issues
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r'
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'spock')
+ORDER BY pg_relation_size(c.oid) DESC;
