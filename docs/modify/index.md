@@ -10,7 +10,3 @@ There are several tools and scripts you can use to add a node to a cluster; the 
 
 [pgBackRest](add_node_pgbackrest.md) is an open-source tool that you can use add a node to a replicating cluster with minimal interruption.
 
-* **Use Spockctrl to manage aspects of your Spock replication setup.**
-
-The [Spockctrl utility](../modify/spockctrl/index.md) is appropriate for use in production clusters that can't be taken out of production.
-

@@ -12,7 +12,6 @@
 - [Modifying a Cluster](docs/modify/index.md)
 - [Monitoring your Cluster](docs/monitoring/index.md)
 - [Spock Functions](docs/spock_functions/index.md)
-- [Using spockctrl Management Functions](docs/modify/spockctrl/index.md)
 - [Release Notes](docs/spock_release_notes.md)
 - [Limitations](docs/limitations.md)
 - [FAQ](docs/FAQ.md)

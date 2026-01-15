@@ -1,0 +1,65 @@
+# using postmaster on Unix socket, port 5432
+not ok 1     - preseed                                    15 ms
+# (test process exited with exit code 2)
+ok 2         - infofuncs                                  33 ms
+not ok 3     - init_fail                                   9 ms
+# (test process exited with exit code 2)
+not ok 4     - init                                        8 ms
+# (test process exited with exit code 2)
+not ok 5     - preseed_check                               8 ms
+# (test process exited with exit code 2)
+not ok 6     - basic                                       9 ms
+# (test process exited with exit code 2)
+not ok 7     - conflict_secondary_unique                   9 ms
+# (test process exited with exit code 2)
+not ok 8     - toasted                                     9 ms
+# (test process exited with exit code 2)
+not ok 9     - replication_set                             9 ms
+# (test process exited with exit code 2)
+not ok 10    - matview                                     9 ms
+# (test process exited with exit code 2)
+not ok 11    - bidirectional                               8 ms
+# (test process exited with exit code 2)
+not ok 12    - primary_key                                 9 ms
+# (test process exited with exit code 2)
+not ok 13    - interfaces                                  9 ms
+# (test process exited with exit code 2)
+not ok 14    - foreign_key                                 9 ms
+# (test process exited with exit code 2)
+not ok 15    - copy                                        9 ms
+# (test process exited with exit code 2)
+not ok 16    - sequence                                   10 ms
+not ok 17    - triggers                                    8 ms
+# (test process exited with exit code 2)
+not ok 18    - parallel                                    9 ms
+# (test process exited with exit code 2)
+not ok 19    - functions                                   9 ms
+# (test process exited with exit code 2)
+not ok 20    - row_filter                                  8 ms
+# (test process exited with exit code 2)
+not ok 21    - row_filter_sampling                         8 ms
+# (test process exited with exit code 2)
+not ok 22    - att_list                                    8 ms
+# (test process exited with exit code 2)
+not ok 23    - column_filter                               8 ms
+# (test process exited with exit code 2)
+not ok 24    - apply_delay                                 8 ms
+# (test process exited with exit code 2)
+not ok 25    - extended                                    8 ms
+# (test process exited with exit code 2)
+not ok 26    - node_origin_cascade                        12 ms
+# (test process exited with exit code 2)
+not ok 27    - multiple_upstreams                          9 ms
+# (test process exited with exit code 2)
+not ok 28    - tuple_origin                                8 ms
+# (test process exited with exit code 2)
+not ok 29    - autoddl                                     8 ms
+# (test process exited with exit code 2)
+not ok 30    - sync_table                                  8 ms
+# (test process exited with exit code 2)
+not ok 31    - drop                                        8 ms
+# (test process exited with exit code 2)
+1..31
+# 30 of 31 tests failed.
+# The differences that caused some tests to fail can be viewed in the file "/Users/pgedge/pgedge/spock-ibrar/regression.diffs".
+# A copy of the test summary that you see above is saved in the file "/Users/pgedge/pgedge/spock-ibrar/regression.out".
