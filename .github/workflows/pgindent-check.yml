@@ -1,0 +1,56 @@
+name: pgindent check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  pgindent:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            build-essential \
+            libreadline-dev \
+            zlib1g-dev \
+            flex \
+            bison \
+            libxml2-dev \
+            libxslt1-dev \
+            libssl-dev
+
+      - name: Clone and build pg_bsd_indent
+        run: |
+          git clone https://git.postgresql.org/git/postgresql.git --depth 1 --branch master /tmp/postgresql
+          cd /tmp/postgresql
+          ./configure --prefix=/tmp/pg-build > /dev/null
+          cd src/tools/pg_bsd_indent
+          make > /dev/null
+          echo "$GITHUB_WORKSPACE/pg-install/bin" >> $GITHUB_PATH
+          echo "/tmp/postgresql/src/tools/pgindent" >> $GITHUB_PATH
+          echo "/tmp/postgresql/src/tools/pg_bsd_indent" >> $GITHUB_PATH
+
+      - name: Run pgindent and check formatting
+        working-directory: utils/pgindent
+        run: |
+          chmod +x run-pgindent.sh
+          ./run-pgindent.sh
+
+      - name: Check for formatting changes
+        run: |
+          # Ignore changes in typedefs.list (it's expected to update)
+          git checkout utils/pgindent/typedefs.list
+          if ! git diff --quiet; then
+            echo "::error::Code formatting issues detected. Please run run-pgindent.sh locally."
+            git diff
+            exit 1
+          fi
+          echo "All files are properly formatted."

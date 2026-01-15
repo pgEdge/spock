@@ -582,8 +582,8 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 
 	/*
 	 * Set correct origin if target db supports it. We must do this before
-	 * starting the transaction otherwise the status code below would get
-	 * much more complicated.
+	 * starting the transaction otherwise the status code below would get much
+	 * more complicated.
 	 */
 	if (PQserverVersion(conn) >= 90500)
 	{

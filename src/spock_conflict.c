@@ -67,7 +67,7 @@ static const char *const ConflictTypeNames[] = {
 };
 
 
-int			spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
+SpockResolveOption spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
 int			spock_conflict_log_level = LOG;
 bool		spock_save_resolutions = false;
 
@@ -700,8 +700,8 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 		attr = TupleDescAttr(tupdesc, natt);
 
 		/*
-		 * don't print dropped or generated columns, we can't be sure everything
-		 * is available for them
+		 * don't print dropped or generated columns, we can't be sure
+		 * everything is available for them
 		 */
 		if (attr->attisdropped || attr->attgenerated)
 			continue;
