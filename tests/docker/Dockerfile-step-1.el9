@@ -1,5 +1,7 @@
 FROM ghcr.io/pgedge/base-test-image:latest
 
+# Base image already has Rocky Linux, PostgreSQL, and pgedge installed
+# We only need to compile Spock extension against the existing PostgreSQL
 # Base image ends as USER pgedge, but we need root for installation
 USER root
 
@@ -10,6 +12,7 @@ ENV PGVER=$PGVER
 ENV PATH="/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}"
 ENV LD_LIBRARY_PATH="/home/pgedge/pgedge/pg${PGVER}/lib:${LD_LIBRARY_PATH}"
 ENV PG_CONFIG="/home/pgedge/pgedge/pg${PGVER}/bin/pg_config"
+ENV SPOCK_SOURCE_DIR="/home/pgedge/spock"
 
 # Copy spock source code and set proper ownership
 COPY . /home/pgedge/spock
