@@ -2,7 +2,7 @@
 
 The Spock extension can be installed with pgEdge Postgres packages
 or built from source. pgEdge Postgres deployments provide a simplified
-upgrade path that allows you to take advantage of important new features
+upgrade path that allows you to take advantage of new features
 quickly and easily.
 
 Spock is open-source, with code available for review at
