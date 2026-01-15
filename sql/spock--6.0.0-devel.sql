@@ -418,6 +418,17 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
+		-- If an unresolvable issue occurs with the apply worker, the LR
+		-- progress gets stuck, and we need to check the subscription's state
+		-- carefully.
+		IF NOT EXISTS (SELECT * FROM spock.subscription
+					  WHERE sub_origin = origin_id AND
+							sub_target = target_id AND
+							sub_enabled = true) THEN
+			RAISE EXCEPTION 'Replication % => % does not have any enabled subscription yet',
+							origin_id, target_id;
+		END IF;
+
 		SELECT INTO progress_lsn remote_commit_lsn
 			FROM spock.progress
 			WHERE node_id = target_id AND remote_node_id = origin_id;
@@ -456,6 +467,17 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
+		-- If an unresolvable issue occurs with the apply worker, the LR
+		-- progress gets stuck, and we need to check the subscription's state
+		-- carefully.
+		IF NOT EXISTS (SELECT * FROM spock.subscription
+					  WHERE sub_origin = origin_id AND
+							sub_target = target_id AND
+							sub_enabled = true) THEN
+			RAISE EXCEPTION 'Replication % => % does not have any enabled subscription yet',
+							origin_id, target_id;
+		END IF;
+
 		SELECT INTO progress_lsn remote_commit_lsn
 			FROM spock.progress
 			WHERE node_id = target_id AND remote_node_id = origin_id;

@@ -1051,6 +1051,40 @@ BEGIN
         END IF;
     END;
 
+    -- Check: all nodes, included in the cluster, have only enabled subscriptions.
+	--
+	-- Connect to each node in the cluster and pass through the spock.subscription
+	-- table to check subscriptions statuses. Using it we try to avoid cases
+	-- when somewhere in the middle a crash or disconnection happens that may
+	-- be aggravated by add_node.
+    DECLARE
+		status_rec     record;
+		dsn_rec        record;
+		dsns_sql       text;
+		sub_status_sql text;
+    BEGIN
+        dsns_sql := 'SELECT if_dsn,node_name
+					 FROM spock.node JOIN spock.node_interface
+					 ON (if_nodeid = node_id)
+					 WHERE node_id NOT IN (SELECT node_id FROM spock.local_node)';
+		sub_status_sql := 'SELECT sub_name, sub_enabled FROM spock.subscription';
+
+        FOR dsn_rec IN SELECT * FROM dblink(src_dsn, dsns_sql)
+													AS t(dsn text, node name)
+		LOOP
+			FOR status_rec IN SELECT * FROM dblink(dsn_rec.dsn, sub_status_sql)
+													AS t(name text, status text)
+			LOOP
+			    IF status_rec.status != 't' THEN
+                    RAISE EXCEPTION '    [FAILED] %', rpad('Node ' || dsn_rec.node || ' has disabled subscription ' || status_rec.name, 60, ' ');
+                ELSIF verb THEN
+                    RAISE NOTICE '    OK: %', rpad('Node with DSN ' || dsn_rec.dsn || ' has enabled subscription ' || status_rec.name, 120, ' ');
+                END IF;
+			END LOOP;
+        END LOOP;
+		RAISE NOTICE '    OK: %', rpad('Checking each Spock node has only active subscriptions', 120, ' ');
+    END;
+
     -- Validating new node prerequisites
     SELECT count(*) INTO new_exists FROM spock.node WHERE node_name = new_node_name;
     IF new_exists > 0 THEN
@@ -1803,8 +1837,7 @@ BEGIN
         RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || src_node_name || ' on new node ' || new_node_name || '...', 120, ' ');
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ %', rpad('Unable to wait for sync event from ' || src_node_name || ' on new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
-            RAISE;
+            RAISE EXCEPTION '    ✗ %', rpad('Unable to wait for sync event from ' || src_node_name || ' on new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
     END;
 END;
 $$;
