@@ -35,27 +35,33 @@ The image includes **all** libraries required to build PostgreSQL with maximum f
 
 | Library | Purpose | Configure Flag |
 |---------|---------|----------------|
-| `zstd-devel` | Zstandard compression | `--with-zstd` |
+| `libzstd-devel` | Zstandard compression | `--with-zstd` |
 | `lz4-devel` | LZ4 compression | `--with-lz4` |
 | `libicu-devel` | Unicode and internationalization | `--with-icu` |
 | `libxml2-devel` | XML support | `--with-libxml` |
 | `libxslt-devel` | XSLT transformations | `--with-libxslt` |
 | `openssl-devel` | SSL/TLS connections | `--with-openssl` |
 | `krb5-devel` | Kerberos authentication | `--with-gssapi` |
+| `cyrus-sasl-gssapi` | SASL GSSAPI support | Related to GSSAPI |
 | `openldap-devel` | LDAP authentication | `--with-ldap` |
 | `pam-devel` | PAM authentication | `--with-pam` |
 | `systemd-devel` | Systemd integration | `--with-systemd` |
 | `python3-devel` | PL/Python language | `--with-python` |
 | `readline-devel` | Enhanced psql CLI | Built-in |
 | `llvm-devel` | JIT compilation | `--with-llvm` |
-| `libuuid-devel` | UUID generation | `--with-uuid=ossp` |
+| `libuuid-devel`, `uuid-devel` | UUID generation | `--with-uuid=ossp` |
+| `libpq`, `libpq-devel` | PostgreSQL client library | Development headers |
+| `jansson-devel` | JSON parsing | For extensions |
+| `zlib-devel` | Compression library | Built-in |
+| `pkgconfig` | Package config tool | Build system helper |
 
 ### 3. Testing Infrastructure
 
-- **Perl Testing Framework**: `perl-IPC-Run`, `Test::More` for PostgreSQL TAP tests
-- **SSH Configuration**: Pre-configured SSH keys for multi-node testing scenarios
+- **Perl Testing Framework**: `perl-IPC-Run`, `perl-Test-Simple` (includes Test::More) for PostgreSQL TAP tests
+- **SSH Configuration**: Pre-configured SSH keys and `openssh-clients`, `openssh-server` for multi-node testing scenarios
 - **Network Tools**: `nc` (netcat), `bind-utils` (dig, nslookup) for connectivity testing
 - **Process Tools**: `procps` for monitoring and debugging
+- **Utility Tools**: `curl`, `unzip` for downloading and extracting archives
 
 ### 4. User Configuration
 
@@ -77,10 +83,7 @@ The image includes **all** libraries required to build PostgreSQL with maximum f
 1. **System Packages** (~500MB compressed):
    - Rocky Linux 9 base system updates
    - Development Tools group install
-   - 40+ development packages and their dependencies
-
-2. **Perl Modules** (via CPAN):
-   - `Test::More` - PostgreSQL TAP test framework
+   - 40+ development packages and their dependencies (all installed via dnf)
 
 ## Image Size and Optimization
 
@@ -96,7 +99,6 @@ This large size is **intentional and appropriate** for a development/testing bas
 ```dockerfile
 dnf clean all
 rm -rf /var/cache/dnf/* /tmp/* /var/tmp/*
-rm -rf /root/.cpanm
 ```
 
 ## Usage Examples

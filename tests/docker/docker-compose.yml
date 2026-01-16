@@ -29,8 +29,9 @@ services:
     # Mount volume for core dumps (persists across container restarts)
     volumes:
       - ./cores/n1:/cores
+      - .:/home/pgedge/tests
     healthcheck:
-      test: ["CMD", "pg_isready", "-h", "/tmp", "-U", "admin"]
+      test: ["CMD-SHELL", "pg_isready -h /tmp -p $$DBPORT -U $$DBUSER -d $$DBNAME && test -f /tmp/spock_init_complete"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -69,8 +70,9 @@ services:
     # Mount volume for core dumps (persists across container restarts)
     volumes:
       - ./cores/n2:/cores
+      - .:/home/pgedge/tests
     healthcheck:
-      test: ["CMD", "pg_isready", "-h", "/tmp", "-U", "admin"]
+      test: ["CMD-SHELL", "pg_isready -h /tmp -p $$DBPORT -U $$DBUSER -d $$DBNAME && test -f /tmp/spock_init_complete"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -109,8 +111,9 @@ services:
     # Mount volume for core dumps (persists across container restarts)
     volumes:
       - ./cores/n3:/cores
+      - .:/home/pgedge/tests
     healthcheck:
-      test: ["CMD", "pg_isready", "-h", "/tmp", "-U", "admin"]
+      test: ["CMD-SHELL", "pg_isready -h /tmp -p $$DBPORT -U $$DBUSER -d $$DBNAME && test -f /tmp/spock_init_complete"]
       interval: 10s
       timeout: 5s
       retries: 5
