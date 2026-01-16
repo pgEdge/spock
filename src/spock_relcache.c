@@ -156,6 +156,7 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			 * value of the relreplident field. But it is just a cache ...
 			 */
 			relinfo->ri_RelationDesc->rd_rel->relreplident = REPLICA_IDENTITY_DEFAULT;
+			relinfo->ri_RelationDesc->rd_indexvalid = false;
 			entry->idxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
 			Assert(entry->idxoid != InvalidOid);
 			relinfo->ri_RelationDesc->rd_rel->relreplident = REPLICA_IDENTITY_FULL;
