@@ -3,10 +3,7 @@
 ### Run selected TAP tests iteratively
 ###
 
-
-export PG_CONFIG=/home/pgedge/pgedge/pg${PGVER}/bin/pg_config
-export PATH=/home/pgedge/pgedge/pg${PGVER}/bin:$PATH
-export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg${PGVER}/lib/:$LD_LIBRARY_PATH
+source "${HOME}/.bashrc"
 
 # PGVER should be previously set in the environment
 if [ -z "${PGVER}" ]

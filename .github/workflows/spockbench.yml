@@ -50,11 +50,84 @@ jobs:
       - name: Build docker container
         run: |
           cd ${GITHUB_WORKSPACE}/
+          # Build docker image once for specific version, needed for this test
           docker build \
             --build-arg PGVER=${{ matrix.pgver }} \
             -t spock -f tests/docker/Dockerfile-step-1.el9 .
 
+      - name: Start docker cluster
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          echo PG_VER=${{ matrix.pgver }} >> pgedge.env
+          docker compose up --wait -d
+        timeout-minutes: 20
+
+      - name: Run tests on all nodes
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+
+          # Launch tests in background with per-node timeout and capture PIDs
+          docker compose exec -T pgedge-n1 bash -c "~/tests/run-tests.sh" &
+          PID1=$!
+          docker compose exec -T pgedge-n2 bash -c "~/tests/run-tests.sh" &
+          PID2=$!
+          docker compose exec -T pgedge-n3 bash -c "~/tests/run-tests.sh" &
+          PID3=$!
+
+          # Wait for all jobs and capture their exit codes
+          wait $PID1
+          EXIT1=$?
+          wait $PID2
+          EXIT2=$?
+          wait $PID3
+          EXIT3=$?
+
+          # Fail if any node failed
+          if [ $EXIT1 -ne 0 ] || [ $EXIT2 -ne 0 ] || [ $EXIT3 -ne 0 ]; then
+            echo "ERROR: One or more nodes failed"
+            exit 1
+          fi
+
+          echo "All nodes completed successfully"
+        timeout-minutes: 10
+
+      - name: Collect node logs
+        if: ${{ always() }}
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          mkdir -p node-logs
+
+          # Collect PostgreSQL logs and spockbench output from each node
+          for node in n1 n2 n3; do
+            echo "Collecting logs from $node..."
+            docker compose cp pgedge-$node:/home/pgedge/pgedge/data/pg${{ matrix.pgver }}/log node-logs/$node-pg-log/ || true
+            docker compose cp pgedge-$node:/home/pgedge/spock/spockbench-$node.out node-logs/ || true
+            docker compose logs pgedge-$node > node-logs/$node-container.log 2>&1 || true
+          done
+
+      - name: Upload node logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: spockbench-node-logs-${{ matrix.pgver }}
+          path: tests/docker/node-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Check spockbench output
+        if: ${{ always() }}
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker
+          ./check-outputs.sh || true
+
+      - name: Cleanup spockbench docker container
+        if: ${{ always() }}
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          docker compose down || true
+
       - name: Run regression tests
+        if: ${{ always() }}
         run: |
           REG_CT_NAME="spock-regress-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "REG_CT_NAME=$REG_CT_NAME" >> "$GITHUB_ENV"
@@ -78,6 +151,7 @@ jobs:
           retention-days: 7
 
       - name: Run TAP tests
+        if: ${{ always() }}
         run: |
           TAP_CT_NAME="spock-tap-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "TAP_CT_NAME=$TAP_CT_NAME" >> "$GITHUB_ENV"
@@ -102,15 +176,3 @@ jobs:
             tests/logs/**
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: Start docker
-        run: |
-          cd ${GITHUB_WORKSPACE}/tests/docker/
-          echo PG_VER=${{ matrix.pgver }} >> pgedge.env
-          docker compose up
-
-      - name: Check spockbench output
-        run: |
-          cd ${GITHUB_WORKSPACE}/tests/docker
-          ./check-outputs.sh
-

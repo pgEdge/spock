@@ -1,8 +1,39 @@
 #!/bin/bash
 
+source "${HOME}/.bashrc"
+
 #set -euo pipefail
 
-peer_names=$1
+IFS=',' read -r -a peer_names <<< "$PEER_NAMES"
+
+function wait_for_pg()
+{
+  local max_attempts=${1:-24}
+  local sleep_seconds=${2:-5}
+
+  # Build list of all hosts to check: local node + all peers
+  local hosts=("/tmp")
+  for peer in "${peer_names[@]}"; do
+    hosts+=("$peer")
+  done
+
+  for host in "${hosts[@]}"; do
+    count=0
+    while ! pg_isready -h "$host"; do
+      if [ $count -ge $max_attempts ]; then
+        echo "Gave up waiting for PostgreSQL on $host to become ready..."
+        exit 1
+      fi
+
+      echo "Waiting for PostgreSQL on $host to become ready..."
+      sleep $sleep_seconds
+      ((count++))
+    done
+    echo "PostgreSQL on $host is ready"
+  done
+}
+
+wait_for_pg 10 1
 
 #========== Exception Log tests ==========
 
@@ -19,7 +50,7 @@ peer_names=$1
 # ----
 if [[ $(hostname) == "n1" ]];
 then
-  psql -U $DBUSER -d $DBNAME -h /tmp <<_EOF_
+  psql -h /tmp <<_EOF_
   CREATE TABLE t4 (
     id		integer PRIMARY KEY,
     data	text
@@ -29,7 +60,7 @@ then
   INSERT INTO t4 VALUES (3, 'missing row on DELETE');
 
   SELECT spock.repset_add_table(
-    set_name := 'demo_replication_set',
+    set_name := 'default',
     relation := 't4'
   );
 _EOF_
@@ -37,7 +68,7 @@ _EOF_
   # ----
   # Create table and test data on n2
   # ----
-  PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} <<_EOF_
+  psql -h ${peer_names[0]} <<_EOF_
   CREATE TABLE t4 (
     id		integer PRIMARY KEY,
     data	text
@@ -45,21 +76,26 @@ _EOF_
 
   INSERT INTO t4 VALUES (1, 'duplicate key on INSERT');
   SELECT spock.repset_add_table(
-    set_name := 'demo_replication_set',
+    set_name := 'default',
     relation := 't4'
   );
 _EOF_
 
-  psql -U $DBUSER -d $DBNAME -h /tmp <<_EOF_
+  psql -h /tmp <<_EOF_
   INSERT INTO t4 VALUES (1, 'trigger duplicate key');
   UPDATE t4 SET data = 'trigger missing key on UPDATE' WHERE id = 2;
   DELETE FROM t4 WHERE id = 3; -- trigger missing key on DELETE
 _EOF_
 
-  echo "Waiting for apply worker timeouts..."
-  sleep 5
+  # To be sure that conflict resolution has happened we need to wait until the
+  # following transaction arrives
+  lsn1=$(psql -A -t -h /tmp -c "SELECT spock.sync_event()")
+  echo "Wait until XLogRecord $lsn1 arrive and applies from $HOSTNAME to ${peer_names[0]}"
+  psql -A -t -h ${peer_names[0]} -c \
+    "CALL spock.wait_for_sync_event(true, '$HOSTNAME', '$lsn1'::pg_lsn, 30)"
+
   echo "Checking the exception table now..."
-  elog_entries=$(PGPASSWORD=$DBPASSWD psql -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "
+  elog_entries=$(psql -A -t -h ${peer_names[0]} -c "
   	SELECT count(*)
 	FROM spock.exception_log e
 	JOIN spock.node n
@@ -71,37 +107,63 @@ _EOF_
 
   if [ "$elog_entries" -ne 1 ];
   then
-	  PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "select * from spock.exception_log;"
+	  psql -h ${peer_names[0]} -c "select * from spock.exception_log;"
 	  echo "Did not find an exception log entry. Exiting..."
 	  exit 1
   fi
 
-
-  resolution_check=$(PGPASSWORD=$DBPASSWD psql -X -A -t -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c " SELECT conflict_type FROM spock.resolutions WHERE relname = 'public.t4'")
+  resolution_check=$(psql -X -A -t -h ${peer_names[0]} -c \
+    "SELECT conflict_type FROM spock.resolutions WHERE relname = 'public.t4'")
 
   insert_exists_count=$(echo "$resolution_check" | grep -c 'insert_exists')
-  delete_delete_count=$(echo "$resolution_check" | grep -c 'delete_delete')
+  delete_missing_count=$(echo "$resolution_check" | grep -c 'delete_missing')
 
-  if [ "$insert_exists_count" -eq 1 ] && [ "$delete_delete_count" -eq 1 ];
+  if [ "$insert_exists_count" -eq 1 ] && [ "$delete_missing_count" -eq 1 ];
   then
-    echo "PASS: Found both insert_exists and delete_delete for public.t4"
+    echo "PASS: Found both insert_exists and delete_missing for public.t4"
   else
-    PGPASSWORD=$DBPASSWD psql -U $DBUSER -d $DBNAME -h ${peer_names[0]} -c "select * from spock.resolutions where relname = 'public.t4'"
+    psql -h ${peer_names[0]} -c "SELECT * FROM spock.resolutions WHERE relname = 'public.t4'"
     echo "FAIL: Resolution entries for public.t4 are incorrect"
     echo "Resolutions check=$resolution_check"
-    echo "Found: insert_exists=$insert_exists_count, delete_delete=$delete_delete_count"
+    echo "Found: insert_exists=$insert_exists_count, delete_missing=$delete_missing_count"
     exit 1
   fi
 fi
 
-spockbench -h /tmp -i -s $SCALEFACTOR demo
-psql -U admin -h /tmp -d demo -c "alter table pgbench_accounts alter column abalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
-psql -U admin -h /tmp -d demo -c "alter table pgbench_branches alter column bbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
-psql -U admin -h /tmp -d demo -c "alter table pgbench_tellers alter column tbalance set(log_old_value=true, delta_apply_function=spock.delta_apply);"
+# The Auto-DDL LR is disabled So, we create the same tables and data on each node
+spockbench -h /tmp -i -s $SCALEFACTOR --spock-node=${HOSTNAME:0-1} $PGDATABASE
 
-psql -U admin -h /tmp -d demo -c "select spock.repset_add_all_tables('demo_replication_set', '{public}');"
+psql -h /tmp <<_EOF_
+  /*
+   * Each node adds test tables to replication sets. Hence, further DML will be
+   * propagated by LR to other nodes
+   */
+  SELECT spock.repset_add_all_tables('default', '{public}');
+_EOF_
 
 # ==========Spockbench tests ==========
-spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} -s $SCALEFACTOR -T $RUNTIME -R $RATE -P 5 -j $THREADS -c $CONNECTIONS -n --spock-tx-mix=550,225,225 -U admin demo
-spockbench-check -U admin demo > /home/pgedge/spock/spockbench-$HOSTNAME.out
-grep -q "ERROR" /home/pgedge/spock/spockbench-*.out && exit 1 || exit 0
+
+# By default, spockbench enables delta apply and setup this option on the
+# 'balance' columns.
+spockbench -h /tmp --spock-num-nodes=3 --spock-node=${HOSTNAME:0-1} \
+	-s $SCALEFACTOR -T $RUNTIME -R $RATE -P 5 -j $THREADS -c $CONNECTIONS \
+	-n --spock-tx-mix=550,225,225 $PGDATABASE
+
+# To be sure each spockbench client finalised their job
+# There are still races possible. Should it be OK for our testing purposes?
+sleep 5
+
+# To be sure that conflict resolution has happened we need to wait until the
+# following transaction arrives
+echo "Begin after-Spockbench sync"
+for peer in "${peer_names[@]}"; do
+  lsn=$(psql -A -t -h $peer -c "SELECT spock.sync_event()")
+  echo "Wait until XLogRecord $lsn arrives and applies from $peer to $HOSTNAME"
+  psql -A -t -h /tmp -c \
+  "CALL spock.wait_for_sync_event(true, '$peer', '$lsn'::pg_lsn, 30)"
+done
+echo "Finish after-Spockbench sync"
+
+spockbench-check $PGDATABASE > /home/pgedge/spock/spockbench-$HOSTNAME.out
+# Check only this node's output file, not all nodes
+grep -q "ERROR" /home/pgedge/spock/spockbench-$HOSTNAME.out && exit 1 || exit 0
