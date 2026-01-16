@@ -37,7 +37,7 @@
 #	further details.
 # ==============================================================================
 
-ARG BASE_IMAGE=base-test-image:latest
+ARG BASE_IMAGE=ghcr.io/pgedge/base-test-image:latest
 FROM ${BASE_IMAGE}
 
 # ==============================================================================
@@ -92,6 +92,22 @@ RUN set -eux && \
 COPY . /home/pgedge/spock
 COPY --chmod=755 tests/docker/*.sh /home/pgedge/
 
+# ==============================================================================
+# Clone & Install Spockbench Testing Framework (needs root privileges)
+# ==============================================================================
+
+# Clone spockbench for testing workloads
+# TODO: Pin to specific tag/commit for reproducibility
+RUN set -eux && \
+    git clone --branch delta-apply-update --depth 1 \
+        https://github.com/pgEdge/spockbench.git /home/pgedge/spockbench && \
+	echo "export SPOCKBENCH_SOURCE_DIR=/home/pgedge/spockbench" >> /home/pgedge/.bashrc
+
+RUN set -eux && \
+    cd /home/pgedge/spockbench && \
+    python3 setup.py install && \
+    echo "Spockbench installation complete"
+
 # Set proper ownership
 RUN chown -R pgedge:pgedge /home/pgedge/
 
@@ -118,17 +134,6 @@ RUN set -eux && \
     echo "Cloning PostgreSQL tag: ${LATEST_TAG}" && \
     git clone --branch "${LATEST_TAG}" --depth 1 \
         https://github.com/postgres/postgres.git /home/pgedge/postgres
-
-# ==============================================================================
-# Clone Spockbench Testing Framework
-# ==============================================================================
-
-# Clone spockbench for testing workloads
-# TODO: Pin to specific tag/commit for reproducibility
-RUN set -eux && \
-    git clone --branch master --depth 1 \
-        https://github.com/pgEdge/spockbench.git /home/pgedge/spockbench && \
-	echo "export SPOCKBENCH_SOURCE_DIR=/home/pgedge/spockbench" >> /home/pgedge/.bashrc
 
 # ==============================================================================
 # Apply Spock Patches to PostgreSQL
@@ -183,13 +188,13 @@ RUN set -eux && \
     echo "========================================" && \
     echo "Building PostgreSQL (${MAKE_JOBS} jobs)" && \
     echo "========================================" && \
-    make -j${MAKE_JOBS} && \
-    make -C contrib -j${MAKE_JOBS} && \
+    make -j${MAKE_JOBS} > /dev/null && \
+    make -C contrib -j${MAKE_JOBS} > /dev/null && \
     echo "========================================" && \
     echo "Installing PostgreSQL" && \
     echo "========================================" && \
-    make install && \
-    make -C contrib install && \
+    make install > /dev/null && \
+    make -C contrib install > /dev/null && \
     echo "PostgreSQL installation complete"
 
 # ==============================================================================
@@ -202,20 +207,11 @@ RUN set -eux && \
     echo "========================================" && \
     echo "Building Spock Extension" && \
     echo "========================================" && \
-    make clean && \
-    make -j${MAKE_JOBS} && \
-    make install && \
+    make clean > /dev/null && \
+    make -j${MAKE_JOBS} > /dev/null && \
+    make install > /dev/null && \
 	echo "export SPOCK_SOURCE_DIR=/home/pgedge/spock" >> /home/pgedge/.bashrc && \
     echo "Spock installation complete"
-
-# ==============================================================================
-# Install spockbench
-# ==============================================================================
-
-RUN set -eux && \
-    cd /home/pgedge/spockbench && \
-    python3 setup.py install --user && \
-    echo "Spockbench installation complete"
 
 # ==============================================================================
 # Runtime Configuration
