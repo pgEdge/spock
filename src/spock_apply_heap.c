@@ -928,8 +928,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 									remoteslot, &localslot,
 									true);
 
-	if (check_all_uc_indexes &&
-		!found)
+	if (check_all_uc_indexes && !found)
 	{
 		/*
 		 * Handle the special case of looking through all unique indexes
