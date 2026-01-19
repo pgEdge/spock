@@ -55,12 +55,6 @@
 #include "spock_compat.h"
 #include "spock_group.h"
 
-#if PG_VERSION_NUM >= 150000
-static shmem_request_hook_type prev_shmem_request_hook = NULL;
-#endif
-static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-
-
 HTAB	   *SpockGroupHash = NULL;
 
 static void spock_group_resource_load(void);
@@ -109,48 +103,36 @@ init_progress_fields(SpockApplyProgress *progress)
  *   by core. Creates/attaches the shmem hash (SpockGroupHash).
  */
 void
-spock_group_shmem_request(void)
+spock_group_shmem_request(int nworkers)
 {
-	int			napply_groups;
 	Size		size;
-
-#if PG_VERSION_NUM >= 150000
-	if (prev_shmem_request_hook != NULL)
-		prev_shmem_request_hook();
-#endif
-
-	/*
-	 * This is kludge for Windows (Postgres does not define the GUC variable
-	 * as PGDDLIMPORT)
-	 */
-	napply_groups = atoi(GetConfigOptionByName("max_worker_processes", NULL,
-											   false));
-	if (napply_groups <= 0)
-		napply_groups = 9;
 
 	/*
 	 * Request enough shared memory for napply_groups (dbid and origin id)
 	 */
-	size = hash_estimate_size(napply_groups, sizeof(SpockGroupEntry));
-	size += mul_size(16, sizeof(LWLockPadded));
+	size = hash_estimate_size(nworkers, sizeof(SpockGroupEntry));
 	RequestAddinShmemSpace(size);
 
 	/*
 	 * Request the LWlocks needed
 	 */
-	RequestNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME, napply_groups + 1);
+	RequestNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME, 1);
 }
 
 /*
  * Initialize shared resources for db-origin management
  */
 void
-spock_group_shmem_startup(int napply_groups)
+spock_group_shmem_startup(bool found)
 {
 	HASHCTL		hctl;
+	int			nworkers = SpockCtx->total_workers;
 
-	if (prev_shmem_startup_hook != NULL)
-		prev_shmem_startup_hook();
+	/* Check code paths consistency */
+	Assert(LWLockHeldByMeInMode(AddinShmemInitLock, LW_EXCLUSIVE));
+	Assert(SpockCtx != NULL);
+
+	SpockGroupHash = NULL;
 
 	MemSet(&hctl, 0, sizeof(hctl));
 	hctl.keysize = sizeof(SpockGroupKey);
@@ -159,21 +141,22 @@ spock_group_shmem_startup(int napply_groups)
 	hctl.num_partitions = 16;
 
 	SpockGroupHash = ShmemInitHash("spock group hash",
-								   napply_groups,
-								   napply_groups,
+								   nworkers,
+								   nworkers,
 								   &hctl,
 								   HASH_ELEM | HASH_BLOBS |
 								   HASH_SHARED_MEM | HASH_PARTITION |
 								   HASH_FIXED_SIZE);
 
-	if (!SpockGroupHash)
-		elog(ERROR, "spock_group_shmem_startup: failed to init group map");
+	if (!found)
+	{
+		SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
+		spock_group_resource_load();
 
-	spock_group_resource_load();
-
-	elog(DEBUG1,
-		 "spock_group_shmem_startup: hash initialized with %lu entries from resource file",
-		 hash_get_num_entries(SpockGroupHash));
+		elog(DEBUG1,
+			 "spock_group_shmem_startup: hash initialized with %lu entries from resource file",
+			 hash_get_num_entries(SpockGroupHash));
+	}
 }
 
 /*

@@ -45,6 +45,7 @@
 #include "spock_queue.h"
 #include "spock_repset.h"
 #include "spock_worker.h"
+#include "spock_shmem.h"
 
 /* Global variables */
 bool		spock_replication_repair_mode = false;
@@ -110,14 +111,8 @@ static TimestampTz slot_group_last_commit_ts = 0;
 static char *MyOutputNodeName = NULL;
 static RepOriginId MyOutputNodeId = InvalidRepOriginId;
 
-static shmem_request_hook_type prev_shmem_request_hook = NULL;
-static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-
 static void spock_output_join_slot_group(NameData slot_name);
 static void spock_output_leave_slot_group(void);
-static void spock_output_plugin_shmem_request(void);
-static void spock_output_plugin_shmem_startup(void);
-static Size spock_output_plugin_shmem_size(int nworkers);
 static void spock_output_plugin_on_exit(int code, Datum arg);
 
 static void relmetacache_init(MemoryContext decoding_context);
@@ -1237,16 +1232,12 @@ pg_decode_shutdown(LogicalDecodingContext *ctx)
 }
 
 /*
- * Install hooks to request shared resources for slot-group management
+ * NOTE: The old spock_output_plugin_shmem_init() function has been removed.
+ * Hook registration is now handled centrally by spock_shmem_init() in
+ * spock_shmem.c. The spock_output_plugin_shmem_request() and
+ * spock_output_plugin_shmem_startup() functions are called directly from
+ * the central hooks.
  */
-void
-spock_output_plugin_shmem_init(void)
-{
-	prev_shmem_request_hook = shmem_request_hook;
-	shmem_request_hook = spock_output_plugin_shmem_request;
-	prev_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook = spock_output_plugin_shmem_startup;
-}
 
 /*
  * Join a slot-group if possible
@@ -1357,80 +1348,73 @@ spock_output_leave_slot_group(void)
 }
 
 /*
- * Reserve additional shared resources for slot-group management
- */
-static void
-spock_output_plugin_shmem_request(void)
-{
-	int			nworkers;
-
-	if (prev_shmem_request_hook != NULL)
-		prev_shmem_request_hook();
-
-	/*
-	 * This is kludge for Windows (Postgres does not define the GUC variable as
-	 * PGDDLIMPORT)
-	 */
-	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
-										  false));
-
-	/*
-	 * Request enough shared memory for nworkers slot-groups (worst case)
-	 */
-	RequestAddinShmemSpace(spock_output_plugin_shmem_size(nworkers));
-
-	/*
-	 * Request the LWlocks needed
-	 */
-	RequestNamedLWLockTranche("spock_slot_groups", nworkers + 1);
-}
-
-/*
- * Initialize shared resources for slot-group management
- */
-static void
-spock_output_plugin_shmem_startup(void)
-{
-	bool		found;
-	int			nworkers;
-	SpockOutputSlotGroup *slot_groups;
-	int			i;
-
-	if (prev_shmem_startup_hook != NULL)
-		prev_shmem_startup_hook();
-
-	/*
-	 * This is kludge for Windows (Postgres does not define the GUC variable
-	 * as PGDLLIMPORT)
-	 */
-	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
-										  false));
-
-	/* Get the shared resources */
-	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
-	slot_groups = ShmemInitStruct("spock_slot_groups",
-								  spock_output_plugin_shmem_size(nworkers),
-								  &found);
-	if (!found)
-	{
-		memset(slot_groups, 0, spock_output_plugin_shmem_size(nworkers));
-		SpockCtx->slot_groups = slot_groups;
-		for (i = 0; i < nworkers; i++)
-		{
-			slot_groups[i].lock = &((GetNamedLWLockTranche("spock_slot_groups")[i + 1]).lock);
-		}
-	}
-
-	LWLockRelease(AddinShmemInitLock);
-}
-
-/*
  * Calculate the shared memory needed for slot-group management
  */
 static Size
 spock_output_plugin_shmem_size(int nworkers)
 {
 	return (nworkers * sizeof(SpockOutputSlotGroup));
+}
+
+/*
+ * Reserve additional shared resources for slot-group management.
+ *
+ * Note: This function is called from the centralized spock_shmem_request()
+ * hook in spock_shmem.c. It should NOT chain to prev_shmem_request_hook
+ * as that is handled by the central hook.
+ */
+void
+spock_output_plugin_shmem_request(int nworkers)
+{
+	/*
+	 * Request enough shared memory for nworkers slot-groups (worst case)
+	 */
+	RequestAddinShmemSpace(spock_output_plugin_shmem_size(nworkers));
+
+	/*
+	 * Request the LWlocks needed:master lock and per-slot lock
+	 */
+	RequestNamedLWLockTranche(SPOCK_SLOT_GROUPS_TRANCHE_NAME, nworkers + 1);
+}
+
+/*
+ * Initialize shared resources for slot-group management.
+ *
+ * Note: This function is called from the centralized spock_shmem_startup()
+ * hook in spock_shmem.c. It should NOT:
+ * - Chain to prev_shmem_startup_hook (handled by central hook)
+ * - Acquire AddinShmemInitLock (already held by central hook)
+ */
+void
+spock_output_plugin_shmem_startup(bool found)
+{
+	bool					is_found;
+	SpockOutputSlotGroup   *slot_groups;
+	int						i;
+	int						nworkers = SpockCtx->total_workers;
+
+	/* Check code paths consistency */
+	Assert(LWLockHeldByMeInMode(AddinShmemInitLock, LW_EXCLUSIVE));
+	Assert(SpockCtx != NULL);
+
+	/* Get the shared resources (lock already held by caller) */
+	slot_groups = ShmemInitStruct("spock_slot_groups",
+								  spock_output_plugin_shmem_size(nworkers),
+								  &is_found);
+	Assert(found == is_found);
+
+	if (!found)
+	{
+		memset(slot_groups, 0, spock_output_plugin_shmem_size(nworkers));
+		SpockCtx->slot_ngroups = nworkers;
+		SpockCtx->slot_groups = slot_groups;
+		SpockCtx->slot_group_master_lock = &((GetNamedLWLockTranche(SPOCK_SLOT_GROUPS_TRANCHE_NAME)[0]).lock);
+		for (i = 0; i < nworkers; i++)
+		{
+			slot_groups[i].lock =
+					&((GetNamedLWLockTranche(SPOCK_SLOT_GROUPS_TRANCHE_NAME)[i + 1]).lock);
+		}
+	}
 }
 
 /*
