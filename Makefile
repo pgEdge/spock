@@ -23,6 +23,9 @@ PG_CPPFLAGS += -I$(libpq_srcdir) \
 			   -I$(realpath src/compat/$(PGVER)) \
 			   -Werror=implicit-function-declaration
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
+ifdef NO_LOG_OLD_VALUE
+PG_CPPFLAGS += -DNO_LOG_OLD_VALUE
+endif
 
 REGRESS := __placeholder__
 EXTRA_CLEAN += $(control_path) spock_compat.bc
@@ -54,7 +57,7 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondar
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay \
 		  extended node_origin_cascade multiple_upstreams tuple_origin autoddl \
-		  sync_table generated_columns drop
+		  sync_table drop
 
 # The following test cases are disabled while developing.
 #

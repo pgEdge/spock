@@ -135,6 +135,16 @@ int			spock_replay_queue_size;	/* Deprecated - no longer used */
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 
+/* Table consistency check and repair GUCs */
+int			spock_diff_batch_size = 10000;
+int			spock_diff_max_rows = 100000;
+int			spock_repair_batch_size = 1000;
+bool		spock_repair_fire_triggers = false;
+bool		spock_diff_include_timestamps = true;
+int			spock_health_check_timeout_ms = 5000;
+int			spock_health_check_replication_lag_threshold_mb = 100;
+bool		spock_health_check_enabled = true;
+
 static emit_log_hook_type prev_emit_log_hook = NULL;
 static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
 
@@ -1169,6 +1179,89 @@ _PG_init(void)
 							 &check_all_uc_indexes,
 							 false,
 							 PGC_SIGHUP,
+							 0,
+							 NULL, NULL, NULL);
+
+	/* Table consistency check and repair configuration */
+	DefineCustomIntVariable("spock.diff_batch_size",
+							"Number of rows to fetch per batch during table diff",
+							NULL,
+							&spock_diff_batch_size,
+							10000,
+							100,
+							1000000,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.diff_max_rows",
+							"Maximum number of diff rows to return (0 = unlimited)",
+							NULL,
+							&spock_diff_max_rows,
+							100000,
+							0,
+							INT_MAX,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.repair_batch_size",
+							"Number of rows per repair batch",
+							NULL,
+							&spock_repair_batch_size,
+							1000,
+							1,
+							65535,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.repair_fire_triggers",
+							 "Whether to fire triggers during repair operations",
+							 NULL,
+							 &spock_repair_fire_triggers,
+							 false,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.diff_include_timestamps",
+							 "Include commit timestamps and node origins in diff results",
+							 NULL,
+							 &spock_diff_include_timestamps,
+							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.health_check_timeout_ms",
+							"Timeout for health checks in milliseconds",
+							NULL,
+							&spock_health_check_timeout_ms,
+							5000,
+							100,
+							60000,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.health_check_replication_lag_threshold_mb",
+							"Replication lag threshold in MB for health warnings",
+							NULL,
+							&spock_health_check_replication_lag_threshold_mb,
+							100,
+							1,
+							10000,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.health_check_enabled",
+							 "Enable automatic health checks",
+							 NULL,
+							 &spock_health_check_enabled,
+							 true,
+							 PGC_USERSET,
 							 0,
 							 NULL, NULL, NULL);
 
