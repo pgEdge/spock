@@ -147,8 +147,8 @@ typedef struct SpockGroupEntry
 } SpockGroupEntry;
 
 /* shmem setup */
-extern void spock_group_shmem_request(void);
-extern void spock_group_shmem_startup(int napply_groups);
+extern void spock_group_shmem_request(int nworkers);
+extern void spock_group_shmem_startup(bool found);
 
 extern SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id,
 										   Oid remote_node_id);

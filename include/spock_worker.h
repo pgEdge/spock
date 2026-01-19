@@ -103,7 +103,7 @@ typedef struct SpockContext
 	int			slot_ngroups;
 	SpockOutputSlotGroup *slot_groups;
 
-	/* Spock apply db-origin data */
+	/* Manages access to SpockGroupHash */
 	LWLock	   *apply_group_master_lock;
 
 	/* Background workers. */
@@ -158,8 +158,6 @@ extern void handle_sigterm(SIGNAL_ARGS);
 
 extern void spock_subscription_changed(Oid subid, bool kill);
 
-extern void spock_worker_shmem_init(void);
-
 extern int	spock_worker_register(SpockWorker *worker);
 extern void spock_worker_attach(int slot, SpockWorkerType type);
 
@@ -179,5 +177,7 @@ extern void spock_worker_kill(SpockWorker *worker);
 extern const char *spock_worker_type_name(SpockWorkerType type);
 extern void handle_stats_counter(Relation relation, Oid subid,
 								 spockStatsType typ, int ntup);
+extern void spock_worker_shmem_startup(bool found);
+extern void spock_worker_shmem_request(int nworkers);
 
 #endif							/* SPOCK_WORKER_H */

@@ -101,6 +101,7 @@ extern bool spock_replication_repair_mode;
 #define SPOCK_REPAIR_MODE_ON		1	/* Suppress subsequent DML/DDL */
 #define SPOCK_REPAIR_MODE_OFF		2	/* Resume regular replication */
 #define SPOCK_SYNC_EVENT_MSG		3	/* Sync event message */
+#define SPOCK_SLOT_GROUPS_TRANCHE_NAME   "spock_slot_groups"
 
 typedef struct SpockWalMessageSimple
 {
@@ -121,8 +122,8 @@ typedef struct SpockSyncEventMessage
 	NameData	ename;			/* event name */
 } SpockSyncEventMessage;
 
-extern void spock_output_plugin_shmem_init(void);
-
 extern void _PG_output_plugin_init(OutputPluginCallbacks *cb);
+extern void spock_output_plugin_shmem_request(int nworkers);
+extern void spock_output_plugin_shmem_startup(bool found);
 
 #endif							/* SPOCK_OUTPUT_PLUGIN_H */

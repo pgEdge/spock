@@ -62,6 +62,7 @@
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
 #include "spock_readonly.h"
+#include "spock_shmem.h"
 #include "spock.h"
 
 PG_MODULE_MAGIC;
@@ -1181,11 +1182,8 @@ _PG_init(void)
 	/* Spock resource manager */
 	spock_rmgr_init();
 
-	/* Init workers. */
-	spock_worker_shmem_init();
-
-	/* Init output plugin shmem */
-	spock_output_plugin_shmem_init();
+	/* Init shared memory for all subsystems needed it */
+	spock_shmem_init();
 
 	/* Init executor module */
 	spock_executor_init();
