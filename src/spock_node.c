@@ -19,12 +19,13 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
-
+#include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_type.h"
 
 #include "commands/dbcommands.h"
+#include "commands/extension.h"
 #include "commands/sequence.h"
 #include "miscadmin.h"
 
@@ -1256,4 +1257,55 @@ get_node_subscriptions(Oid nodeid, bool origin)
 	table_close(rel, RowExclusiveLock);
 
 	return res;
+}
+
+/*
+ * TODO: lookup subscriptions, including this schema, and check
+ * their 'skip_schema' lists too.
+ */
+void
+EnsureRelationNotIgnored(Relation rel)
+{
+	int		i;
+	char   *nspname;
+	Oid		extoid;
+
+	nspname = get_namespace_name(RelationGetNamespace(rel));
+
+	for (i = 0; skip_schema[i] != NULL; i++)
+	{
+		if (strcmp(skip_schema[i], nspname) != 0)
+			continue;
+
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("table %s cannot be added to any replication set",
+						RelationGetRelationName(rel)),
+				 errdetail("table is in the ignored schema %s",
+						   skip_schema[i]),
+				 errhint("Move this relation to a schema allowed for replication")));
+	}
+
+	extoid = getExtensionOfObject(RelationRelationId, RelationGetRelid(rel));
+	if (!OidIsValid(extoid))
+		return;
+
+	for (i = 0; skip_extension[i] != NULL; i++)
+	{
+		/*
+		 * Detect if extension includes this relation.
+		 * XXX: Should we check if the relation doesn't belong to the extension
+		 * but depends on it?
+		 */
+		if (extoid != get_extension_oid(skip_extension[i], true))
+			continue;
+
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("table %s cannot be added to any replication set",
+						RelationGetRelationName(rel)),
+				 errdetail("table belongs to the ignored extension %s",
+						   skip_extension[i]),
+				 errhint("Move this relation to an extension allowed for replication")));
+	}
 }
