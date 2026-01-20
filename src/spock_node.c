@@ -111,6 +111,25 @@ typedef struct SubscriptionTuple
 #define Anum_sub_skip_schema		14
 
 /*
+ * List of extensions and schemas that we should skip globally.
+ * By-default, it is spock, lolor, and snowflake related objects.
+ * Don't merge it with subscription-specific skip-schema list to avoid cases
+ * when user drops 'sub->skip_schema' and violates these restrictions.
+ */
+const char *const skip_schema[] = {
+	"lolor",
+	"snowflake",
+	"spock",
+	NULL  /* sentinel */
+};
+const char *const skip_extension[] = {
+	"lolor",
+	"snowflake",
+	"spock",
+	NULL  /* sentinel */
+};
+
+/*
  * We impose same validation rules as replication slot name validation does.
  */
 static void
