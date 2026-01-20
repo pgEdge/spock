@@ -43,11 +43,13 @@ SELECT sum(x), count(*) FROM test_sync;
   55 |    10
 (1 row)
 
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
- sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
------------+--------------+--------------+-------------+----------
- f         |              |              | r           | f
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
+ sync_kind |     sub_name      | sync_nspname | sync_relname | sync_status | ?column? 
+-----------+-------------------+--------------+--------------+-------------+----------
+ f         | test_subscription |              |              | r           | f
 (1 row)
 
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
@@ -68,12 +70,14 @@ SELECT sum(x), count(*) FROM test_sync;
   55 |    10
 (1 row)
 
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
- sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
------------+--------------+--------------+-------------+----------
- f         |              |              | r           | f
- d         | public       | test_sync    | r           | t
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
+ sync_kind |     sub_name      | sync_nspname | sync_relname | sync_status | ?column? 
+-----------+-------------------+--------------+--------------+-------------+----------
+ d         | test_subscription | public       | test_sync    | r           | t
+ f         | test_subscription |              |              | r           | f
 (2 rows)
 
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
@@ -94,12 +98,14 @@ SELECT sum(x), count(*) FROM test_sync;
   55 |    10
 (1 row)
 
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
- sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
------------+--------------+--------------+-------------+----------
- f         |              |              | r           | f
- d         | public       | test_sync    | r           | t
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
+ sync_kind |     sub_name      | sync_nspname | sync_relname | sync_status | ?column? 
+-----------+-------------------+--------------+--------------+-------------+----------
+ d         | test_subscription | public       | test_sync    | r           | t
+ f         | test_subscription |              |              | r           | f
 (2 rows)
 
 \c :provider_dsn
@@ -126,12 +132,14 @@ SELECT sum(x), count(*) FROM test_sync;
 \c :subscriber_dsn
 -- Restart syncing this specific table, wait until the process finish and check
 -- all the data stay consistent
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
- sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
------------+--------------+--------------+-------------+----------
- f         |              |              | r           | f
- d         | public       | test_sync    | r           | t
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
+ sync_kind |     sub_name      | sync_nspname | sync_relname | sync_status | ?column? 
+-----------+-------------------+--------------+--------------+-------------+----------
+ d         | test_subscription | public       | test_sync    | r           | t
+ f         | test_subscription |              |              | r           | f
 (2 rows)
 
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
@@ -152,12 +160,14 @@ SELECT sum(x), count(*) FROM test_sync;
    0 |    20
 (1 row)
 
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
- sync_kind | sync_nspname | sync_relname | sync_status | ?column? 
------------+--------------+--------------+-------------+----------
- f         |              |              | r           | f
- d         | public       | test_sync    | r           | t
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
+ sync_kind |     sub_name      | sync_nspname | sync_relname | sync_status | ?column? 
+-----------+-------------------+--------------+--------------+-------------+----------
+ d         | test_subscription | public       | test_sync    | r           | t
+ f         | test_subscription |              |              | r           | f
 (2 rows)
 
 -- Check all data still in place

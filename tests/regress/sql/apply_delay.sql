@@ -16,7 +16,7 @@ CREATE or REPLACE function int2interval (x integer) returns interval as
 $$ select $1*'1 sec'::interval $$
 language sql;
 
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_subscription_delay',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	replication_sets := '{delay}',
@@ -31,7 +31,10 @@ SET LOCAL statement_timeout = '30s';
 SELECT spock.sub_wait_for_sync('test_subscription_delay');
 COMMIT;
 
-SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
+SELECT sync_kind, sub_name, sync_nspname, sync_relname, sync_status IN ('y', 'r')
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name COLLATE "C";
 
 SELECT status FROM spock.sub_show_status() WHERE subscription_name = 'test_subscription_delay';
 
