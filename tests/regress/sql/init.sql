@@ -64,7 +64,7 @@ CREATE EXTENSION IF NOT EXISTS spock;
 SELECT * FROM spock.node_create(node_name := 'test_subscriber', dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=super');
 
 BEGIN;
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := true,
