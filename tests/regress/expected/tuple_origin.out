@@ -101,6 +101,80 @@ SELECT conflict_type FROM spock.resolutions
  delete_missing
 (1 row)
 
+-- Clear out for next test
+TRUNCATE spock.resolutions;
+TRUNCATE spock.exception_log;
+\c :provider_dsn
+INSERT INTO users VALUES (3, 33);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+-- Set up test.
+-- Delete on n1 with delay, update on n2, wait, query to see conflict
+-- Add 2000ms delay to the output plugin
+ALTER SYSTEM SET spock.output_delay = 2000;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+-- Let it take effect
+SELECT pg_sleep(1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+DELETE FROM users WHERE id = 3;
+\c :subscriber_dsn
+-- With the 2 second delay, we should see the row
+SELECT * FROM users;
+ id | mgr_id 
+----+--------
+  3 |     33
+(1 row)
+
+UPDATE users SET mgr_id = 333 WHERE id = 3;
+-- Wait for delay time to pass with a 1 second buffer
+-- so that the delayed DELETE finally arrives (late)
+SELECT pg_sleep(3);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+-- We should see one resolution, delete_late
+SELECT conflict_type, local_tuple FROM spock.resolutions;
+ conflict_type |      local_tuple      
+---------------+-----------------------
+ delete_late   | {"id":3,"mgr_id":333}
+(1 row)
+
+-- Empty
+SELECT COUNT(1) thecount FROM spock.exception_log;
+ thecount 
+----------
+        0
+(1 row)
+
+SHOW spock.output_delay;
+ spock.output_delay 
+--------------------
+ 2000
+(1 row)
+
+-- Reset delay
+ALTER SYSTEM SET spock.output_delay = 0;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
 -- More tests
 \c :provider_dsn
 SELECT spock.replicate_ddl($$

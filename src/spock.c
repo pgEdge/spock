@@ -1172,6 +1172,19 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
+	DefineCustomIntVariable("spock.output_delay",
+							"For testing conflicts, delay in output plugin in ms",
+							"For testing conflicts, delay in output plugin in milliseconds",
+							&spock_output_delay,
+							0,
+							0,
+							60000,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
 	if (IsBinaryUpgrade)
 		return;
 

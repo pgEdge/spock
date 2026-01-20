@@ -48,6 +48,7 @@
 
 /* Global variables */
 bool		spock_replication_repair_mode = false;
+int			spock_output_delay = 0;
 
 /* Local functions */
 static inline void set_repair_mode(bool is_enabled);
@@ -584,6 +585,10 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 		slot_group->last_lsn = txn->end_lsn;
 		LWLockRelease(slot_group->lock);
 	}
+
+	/* Sleep if set for testing */
+	if (spock_output_delay)
+		pg_usleep(1000 * spock_output_delay);
 
 	old_ctx = MemoryContextSwitchTo(data->context);
 
