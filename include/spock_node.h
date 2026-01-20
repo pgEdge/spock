@@ -90,5 +90,6 @@ extern SpockSubscription *get_subscription(Oid subid);
 extern SpockSubscription *get_subscription_by_name(const char *name,
 												   bool missing_ok);
 extern List *get_node_subscriptions(Oid nodeid, bool origin);
+extern void EnsureRelationNotIgnored(Relation rel);
 
 #endif							/* SPOCK_NODE_H */
