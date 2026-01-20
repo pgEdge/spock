@@ -59,6 +59,10 @@ typedef struct SpockSubscription
 	List	   *skip_schema;	/* Array of schema names to skip */
 } SpockSubscription;
 
+/* NULL-terminated arrays */
+extern const char *const skip_schema[];
+extern const char *const skip_extension[];
+
 extern void create_node(SpockNode *node);
 extern void drop_node(Oid nodeid);
 
