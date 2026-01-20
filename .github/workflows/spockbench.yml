@@ -118,13 +118,13 @@ jobs:
         if: ${{ always() }}
         run: |
           cd ${GITHUB_WORKSPACE}/tests/docker
-          ./check-outputs.sh || true
+          ./check-outputs.sh
 
       - name: Cleanup spockbench docker container
         if: ${{ always() }}
         run: |
           cd ${GITHUB_WORKSPACE}/tests/docker/
-          docker compose down || true
+          docker compose down
 
       - name: Run regression tests
         if: ${{ always() }}
