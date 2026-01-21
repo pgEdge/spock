@@ -63,7 +63,10 @@ track_commit_timestamp = 'on'
 max_worker_processes = 32
 max_replication_slots = 32
 max_wal_senders = 32
+
+# To be changed on purpose
 log_min_messages = log
+log_statement = 'none'
 
 # Network configuration for multi-node cluster
 listen_addresses = '*'

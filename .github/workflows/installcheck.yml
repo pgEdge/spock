@@ -1,0 +1,145 @@
+#
+# Installcheck Tests Workflow
+#
+# This workflow runs installcheck tests on node n1 of a three-node Spock cluster.
+# Environment variables are loaded from tests/docker/pgedge.env
+#
+# NOTES:
+# The 'security_label' test has no chance to pass without extra coding. So, just
+# skip it for now. This decision may be revised later if something is changed
+# in the PostgreSQL core.
+# The sad fact is that n2 and n3 can't pass these tests without errors, because
+# the LR is limited and doesn't support many features. That turns their logs
+# into a mess, but we still save them to detect any potential issues.
+#
+
+name: Installcheck Tests (Three-Node Cluster)
+run-name: Running installcheck tests on three-node Spock cluster
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  installcheck:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        pgver: [15, 16, 17, 18]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Add permissions
+        run: |
+          sudo chmod -R a+w ${GITHUB_WORKSPACE}
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      - name: Set up docker compose
+        uses: docker/setup-compose-action@364cc21a5de5b1ee4a7f5f9d3fa374ce0ccde746 # v1
+        with:
+          version: latest
+
+      - name: Start docker cluster
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          # To minimize regression tests difference, override pgedge.env with
+          # standard PostgreSQL regression test defaults
+          sed -i 's/^DBUSER=.*/DBUSER=regression/' pgedge.env
+          sed -i 's/^DBNAME=.*/DBNAME=regression/' pgedge.env
+          # Build and start the cluster
+          PGVER=${{ matrix.pgver }} DBUSER=regression DBNAME=regression \
+            docker compose up --build --wait -d
+        timeout-minutes: 20
+
+      - name: Run installcheck on node n1
+        id: installcheck
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+
+          # Run installcheck on n1 and capture output
+          docker compose exec -T pgedge-n1 bash -c '~/run-installcheck.sh' \
+            | tee installcheck_output.txt || true
+
+          # Analyze the output for test failures
+          echo "Analyzing test results..."
+
+          # Check for 'exited with exit code' which indicates a crash or abnormal termination
+          if grep -q "exited with exit code" installcheck_output.txt; then
+            echo "ERROR: Found 'exited with exit code' in output - indicates abnormal termination"
+            echo "test_result=failed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check for 'not ok' test results, excluding 'security_label'
+          # Extract all 'not ok' lines and filter out security_label
+          FAILED_TESTS=$(grep "not ok" installcheck_output.txt | grep -v "security_label" || true)
+
+          if [ -n "$FAILED_TESTS" ]; then
+            echo "ERROR: Found failing tests (excluding security_label):"
+            echo "$FAILED_TESTS"
+            echo "test_result=failed" >> $GITHUB_OUTPUT
+          else
+            echo "All tests passed (security_label failures are expected and ignored)"
+            echo "test_result=passed" >> $GITHUB_OUTPUT
+          fi
+        timeout-minutes: 30
+
+      - name: Collect installcheck artifacts
+        if: ${{ always() }}
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          mkdir -p installcheck-logs
+
+          # Copy the output file we captured
+          cp installcheck_output.txt installcheck-logs/
+
+          # Copy regression output from n1 (where tests run)
+          # pg_regress outputs to /home/pgedge/installcheck-output/
+          docker compose cp pgedge-n1:/home/pgedge/installcheck-output/regression.diffs installcheck-logs/
+          docker compose cp pgedge-n1:/home/pgedge/installcheck-output/regression.out installcheck-logs/ || true
+          docker compose cp pgedge-n1:/home/pgedge/installcheck-output/results installcheck-logs/results/ || true
+
+          # Collect PostgreSQL logs from all nodes
+          for node in n1 n2 n3; do
+            echo "Collecting logs from $node..."
+            # PostgreSQL log file (from pg_ctl -l in entrypoint.sh)
+            docker compose cp pgedge-$node:/home/pgedge/logfile.log installcheck-logs/$node-logfile.log || true
+            # Container logs
+            docker compose logs pgedge-$node > installcheck-logs/$node-container.log 2>&1 || true
+          done
+
+      - name: Upload installcheck artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installcheck-logs-pg${{ matrix.pgver }}
+          path: tests/docker/installcheck-logs/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Cleanup docker cluster
+        if: ${{ always() }}
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          docker compose down
+
+      - name: Check test result
+        run: |
+          if [ "${{ steps.installcheck.outputs.test_result }}" = "failed" ]; then
+            echo "Installcheck tests failed (see artifacts for details)"
+            exit 1
+          fi
+          echo "Installcheck tests passed successfully"
