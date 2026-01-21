@@ -53,16 +53,16 @@ ARG MAKE_JOBS=4
 
 # Export as environment variables for build-time and runtime
 ENV PGVER=${PGVER} \
-    DBUSER=${DBUSER} \
-    DBPASSWD=${DBPASSWD} \
-    DBNAME=${DBNAME} \
-    DBPORT=${DBPORT}
+	DBUSER=${DBUSER} \
+	DBPASSWD=${DBPASSWD} \
+	DBNAME=${DBNAME} \
+	DBPORT=${DBPORT}
 
 # PostgreSQL paths
 ENV PATH="/home/pgedge/pgedge:/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}" \
-    LD_LIBRARY_PATH="/home/pgedge/pgedge/pg${PGVER}/lib" \
-    PG_CONFIG="/home/pgedge/pgedge/pg${PGVER}/bin/pg_config" \
-    PGDATA="/home/pgedge/pgedge/data/pg${PGVER}"
+	LD_LIBRARY_PATH="/home/pgedge/pgedge/pg${PGVER}/lib" \
+	PG_CONFIG="/home/pgedge/pgedge/pg${PGVER}/bin/pg_config" \
+	PGDATA="/home/pgedge/pgedge/data/pg${PGVER}"
 
 # Document exposed port
 EXPOSE 5432
@@ -75,18 +75,18 @@ USER root
 
 # Write PostgreSQL environment to .bashrc for interactive shells and entrypoint
 RUN set -eux && \
-    { \
-        echo "# PostgreSQL Environment"; \
-        echo "export PGVER=${PGVER}"; \
-        echo "export PGUSER=${DBUSER}"; \
-        echo "export PGPASSWORD=${DBPASSWD}"; \
-        echo "export PGDATABASE=${DBNAME}"; \
-        echo "export PGPORT=${DBPORT}"; \
-        echo "export PG_CONFIG=${PG_CONFIG}"; \
-        echo "export PATH=${PATH}"; \
-        echo "export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"; \
-        echo "export PGDATA=${PGDATA}"; \
-    } >> /home/pgedge/.bashrc
+	{ \
+	echo "# PostgreSQL Environment"; \
+	echo "export PGVER=${PGVER}"; \
+	echo "export PGUSER=${DBUSER}"; \
+	echo "export PGPASSWORD=${DBPASSWD}"; \
+	echo "export PGDATABASE=${DBNAME}"; \
+	echo "export PGPORT=${DBPORT}"; \
+	echo "export PG_CONFIG=${PG_CONFIG}"; \
+	echo "export PATH=${PATH}"; \
+	echo "export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"; \
+	echo "export PGDATA=${PGDATA}"; \
+	} >> /home/pgedge/.bashrc
 
 # Copy Spock source code and test scripts
 COPY . /home/pgedge/spock
@@ -99,14 +99,14 @@ COPY --chmod=755 tests/docker/*.sh /home/pgedge/
 # Clone spockbench for testing workloads
 # TODO: Pin to specific tag/commit for reproducibility
 RUN set -eux && \
-    git clone --branch delta-apply-update --depth 1 \
-        https://github.com/pgEdge/spockbench.git /home/pgedge/spockbench && \
+	git clone --branch delta-apply-update --depth 1 \
+	https://github.com/pgEdge/spockbench.git /home/pgedge/spockbench && \
 	echo "export SPOCKBENCH_SOURCE_DIR=/home/pgedge/spockbench" >> /home/pgedge/.bashrc
 
 RUN set -eux && \
-    cd /home/pgedge/spockbench && \
-    python3 setup.py install && \
-    echo "Spockbench installation complete"
+	cd /home/pgedge/spockbench && \
+	python3 setup.py install && \
+	echo "Spockbench installation complete"
 
 # Set proper ownership
 RUN chown -R pgedge:pgedge /home/pgedge/
@@ -124,16 +124,18 @@ WORKDIR /home/pgedge
 
 # Determine the latest stable tag for the requested PostgreSQL major version
 RUN set -eux && \
-    LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
-        grep "refs/tags/REL_${PGVER}_" | \
-        sed 's|.*refs/tags/||' | \
-        tr '_' '.' | \
-        sort -V | \
-        tail -n 1 | \
-        tr '.' '_') && \
-    echo "Cloning PostgreSQL tag: ${LATEST_TAG}" && \
-    git clone --branch "${LATEST_TAG}" --depth 1 \
-        https://github.com/postgres/postgres.git /home/pgedge/postgres
+	LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
+	grep "refs/tags/REL_${PGVER}_" | \
+	sed 's|.*refs/tags/||' | \
+	tr '_' '.' | \
+	sort -V | \
+	tail -n 1 | \
+	tr '.' '_') && \
+	echo "Cloning PostgreSQL tag: ${LATEST_TAG}" && \
+	git clone --branch "${LATEST_TAG}" --depth 1 \
+	https://github.com/postgres/postgres.git /home/pgedge/postgres && \
+	echo "export PG_SRCDIR=/home/pgedge/postgres" >> /home/pgedge/.bashrc
+
 
 # ==============================================================================
 # Apply Spock Patches to PostgreSQL
@@ -142,60 +144,60 @@ RUN set -eux && \
 WORKDIR /home/pgedge/postgres
 
 RUN set -eux && \
-    PATCH_DIR="/home/pgedge/spock/patches/${PGVER}" && \
-    if [ -d "${PATCH_DIR}" ] && [ -n "$(ls -A "${PATCH_DIR}" 2>/dev/null)" ]; then \
-        echo "Applying Spock patches for PostgreSQL ${PGVER}:"; \
-        for patchfile in "${PATCH_DIR}"/*; do \
-            echo "  - $(basename "${patchfile}")"; \
-            patch -p1 --verbose < "${patchfile}"; \
-        done; \
-        echo "All patches applied successfully"; \
-    else \
-        echo "No patches found for PostgreSQL ${PGVER}, continuing with vanilla source"; \
-    fi
+	PATCH_DIR="/home/pgedge/spock/patches/${PGVER}" && \
+	if [ -d "${PATCH_DIR}" ] && [ -n "$(ls -A "${PATCH_DIR}" 2>/dev/null)" ]; then \
+	echo "Applying Spock patches for PostgreSQL ${PGVER}:"; \
+	for patchfile in "${PATCH_DIR}"/*; do \
+	echo "  - $(basename "${patchfile}")"; \
+	patch -p1 --verbose < "${patchfile}"; \
+	done; \
+	echo "All patches applied successfully"; \
+	else \
+	echo "No patches found for PostgreSQL ${PGVER}, continuing with vanilla source"; \
+	fi
 
 # ==============================================================================
 # Compile and Install PostgreSQL
 # ==============================================================================
 
 RUN set -eux && \
-    echo "========================================" && \
-    echo "Configuring PostgreSQL ${PGVER}" && \
-    echo "========================================" && \
-    ./configure \
-        --prefix="/home/pgedge/pgedge/pg${PGVER}" \
-        --disable-rpath \
-        --with-zstd \
-        --with-lz4 \
-        --with-icu \
-        --with-libxslt \
-        --with-libxml \
-        --with-uuid=ossp \
-        --with-gssapi \
-        --with-ldap \
-        --with-pam \
-        --with-openssl \
-        --with-systemd \
-        --with-llvm \
-        --with-python \
-        --enable-debug \
-        --enable-dtrace \
-        --enable-cassert \
-        --enable-tap-tests \
-        PYTHON=/usr/bin/python3 \
-        CFLAGS="-g -O0" \
-        BITCODE_CFLAGS="-gdwarf-5 -O0 -fforce-dwarf-frame" && \
-    echo "========================================" && \
-    echo "Building PostgreSQL (${MAKE_JOBS} jobs)" && \
-    echo "========================================" && \
-    make -j${MAKE_JOBS} > /dev/null && \
-    make -C contrib -j${MAKE_JOBS} > /dev/null && \
-    echo "========================================" && \
-    echo "Installing PostgreSQL" && \
-    echo "========================================" && \
-    make install > /dev/null && \
-    make -C contrib install > /dev/null && \
-    echo "PostgreSQL installation complete"
+	echo "========================================" && \
+	echo "Configuring PostgreSQL ${PGVER}" && \
+	echo "========================================" && \
+	./configure \
+	--prefix="/home/pgedge/pgedge/pg${PGVER}" \
+	--disable-rpath \
+	--with-zstd \
+	--with-lz4 \
+	--with-icu \
+	--with-libxslt \
+	--with-libxml \
+	--with-uuid=ossp \
+	--with-gssapi \
+	--with-ldap \
+	--with-pam \
+	--with-openssl \
+	--with-systemd \
+	--with-llvm \
+	--with-python \
+	--enable-debug \
+	--enable-dtrace \
+	--enable-cassert \
+	--enable-tap-tests \
+	PYTHON=/usr/bin/python3 \
+	CFLAGS="-g -O0" \
+	BITCODE_CFLAGS="-gdwarf-5 -O0 -fforce-dwarf-frame" && \
+	echo "========================================" && \
+	echo "Building PostgreSQL (${MAKE_JOBS} jobs)" && \
+	echo "========================================" && \
+	make -j${MAKE_JOBS} > /dev/null && \
+	make -C contrib -j${MAKE_JOBS} > /dev/null && \
+	echo "========================================" && \
+	echo "Installing PostgreSQL" && \
+	echo "========================================" && \
+	make install > /dev/null && \
+	make -C contrib install > /dev/null && \
+	echo "PostgreSQL installation complete"
 
 # ==============================================================================
 # Compile and Install Spock Extension
@@ -204,14 +206,14 @@ RUN set -eux && \
 WORKDIR /home/pgedge/spock
 
 RUN set -eux && \
-    echo "========================================" && \
-    echo "Building Spock Extension" && \
-    echo "========================================" && \
-    make clean > /dev/null && \
-    make -j${MAKE_JOBS} > /dev/null && \
-    make install > /dev/null && \
+	echo "========================================" && \
+	echo "Building Spock Extension" && \
+	echo "========================================" && \
+	make clean > /dev/null && \
+	make -j${MAKE_JOBS} > /dev/null && \
+	make install > /dev/null && \
 	echo "export SPOCK_SOURCE_DIR=/home/pgedge/spock" >> /home/pgedge/.bashrc && \
-    echo "Spock installation complete"
+	echo "Spock installation complete"
 
 # ==============================================================================
 # Runtime Configuration
