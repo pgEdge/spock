@@ -8,8 +8,10 @@ services:
       dockerfile: tests/docker/Dockerfile-step-1.el9
       args:
         - PGVER=${PGVER:-17}
+        - DBUSER=${DBUSER:-admin}
+        - DBNAME=${DBNAME:-demo}
         - MAKE_JOBS=${MAKE_JOBS:-4}
-        - BASE_IMAGE=${BASE_IMAGE:-base-test-image:latest}
+        - BASE_IMAGE=${BASE_IMAGE:-ghcr.io/pgedge/base-test-image:latest}
     environment:
       - HOSTNAME=n1
       - PEER_NAMES=n2,n3
@@ -20,8 +22,8 @@ services:
       - '15432:5432'
     # Enable core dumps for crash debugging
     cap_add:
-      - SYS_PTRACE    # Required for debugging with gdb
-      - SYS_ADMIN     # Required to set /proc/sys/kernel/core_pattern
+      - SYS_PTRACE # Required for debugging with gdb
+      - SYS_ADMIN # Required to set /proc/sys/kernel/core_pattern
     ulimits:
       core:
         soft: -1
@@ -31,7 +33,7 @@ services:
       - ./cores/n1:/cores
       - .:/home/pgedge/tests
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h /tmp -p $$DBPORT -U $$DBUSER -d $$DBNAME && test -f /tmp/spock_init_complete"]
+      test: [ "CMD-SHELL", "pg_isready -h /tmp -p $$DBPORT -U $$DBUSER -d $$DBNAME && test -f /tmp/spock_init_complete" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -49,8 +51,10 @@ services:
       dockerfile: tests/docker/Dockerfile-step-1.el9
       args:
         - PGVER=${PGVER:-17}
+        - DBUSER=${DBUSER:-admin}
+        - DBNAME=${DBNAME:-demo}
         - MAKE_JOBS=${MAKE_JOBS:-4}
-        - BASE_IMAGE=${BASE_IMAGE:-base-test-image:latest}
+        - BASE_IMAGE=${BASE_IMAGE:-ghcr.io/pgedge/base-test-image:latest}
     environment:
       - HOSTNAME=n2
       - PEER_NAMES=n1,n3
@@ -61,8 +65,8 @@ services:
       - '15433:5432'
     # Enable core dumps for crash debugging
     cap_add:
-      - SYS_PTRACE    # Required for debugging with gdb
-      - SYS_ADMIN     # Required to set /proc/sys/kernel/core_pattern
+      - SYS_PTRACE # Required for debugging with gdb
+      - SYS_ADMIN # Required to set /proc/sys/kernel/core_pattern
     ulimits:
       core:
         soft: -1
@@ -72,7 +76,7 @@ services:
       - ./cores/n2:/cores
       - .:/home/pgedge/tests
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h /tmp -p $$DBPORT -U $$DBUSER -d $$DBNAME && test -f /tmp/spock_init_complete"]
+      test: [ "CMD-SHELL", "pg_isready -h /tmp -p $$DBPORT -U $$DBUSER -d $$DBNAME && test -f /tmp/spock_init_complete" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,8 +94,10 @@ services:
       dockerfile: tests/docker/Dockerfile-step-1.el9
       args:
         - PGVER=${PGVER:-17}
+        - DBUSER=${DBUSER:-admin}
+        - DBNAME=${DBNAME:-demo}
         - MAKE_JOBS=${MAKE_JOBS:-4}
-        - BASE_IMAGE=${BASE_IMAGE:-base-test-image:latest}
+        - BASE_IMAGE=${BASE_IMAGE:-ghcr.io/pgedge/base-test-image:latest}
     environment:
       - HOSTNAME=n3
       - PEER_NAMES=n1,n2
@@ -102,8 +108,8 @@ services:
       - '15434:5432'
     # Enable core dumps for crash debugging
     cap_add:
-      - SYS_PTRACE    # Required for debugging with gdb
-      - SYS_ADMIN     # Required to set /proc/sys/kernel/core_pattern
+      - SYS_PTRACE # Required for debugging with gdb
+      - SYS_ADMIN # Required to set /proc/sys/kernel/core_pattern
     ulimits:
       core:
         soft: -1
@@ -113,7 +119,7 @@ services:
       - ./cores/n3:/cores
       - .:/home/pgedge/tests
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h /tmp -p $$DBPORT -U $$DBUSER -d $$DBNAME && test -f /tmp/spock_init_complete"]
+      test: [ "CMD-SHELL", "pg_isready -h /tmp -p $$DBPORT -U $$DBUSER -d $$DBNAME && test -f /tmp/spock_init_complete" ]
       interval: 10s
       timeout: 5s
       retries: 5
