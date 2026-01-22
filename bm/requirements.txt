@@ -1,0 +1,25 @@
+# Spock Benchmark Suite Dependencies
+
+# ProxMox API client
+proxmoxer>=2.0.0
+
+# SSH client
+paramiko>=3.0.0
+
+# Configuration file parsing
+PyYAML>=6.0
+
+# Standard library dependencies (included for reference):
+# - argparse (built-in)
+# - subprocess (built-in)
+# - json (built-in)
+# - time (built-in)
+# - logging (built-in)
+# - pathlib (built-in)
+# - typing (built-in)
+# - concurrent.futures (built-in)
+# - threading (built-in)
+# - re (built-in)
+# - tarfile (built-in)
+# - tempfile (built-in)
+# - csv (built-in)

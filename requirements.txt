@@ -1,0 +1,11 @@
+# Spock Benchmark Suite Dependencies
+# Install with: pip install -r requirements.txt
+
+# ProxMox API client
+proxmoxer>=2.0.0
+
+# SSH client
+paramiko>=3.0.0
+
+# Configuration file parsing
+PyYAML>=6.0
