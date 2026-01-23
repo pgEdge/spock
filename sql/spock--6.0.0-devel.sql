@@ -281,9 +281,18 @@ RETURNS oid CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spoc
 CREATE FUNCTION spock.repset_drop(set_name name, ifexists boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_replication_set';
 
-CREATE FUNCTION spock.repset_add_table(set_name name, relation regclass, synchronize_data boolean DEFAULT false,
-	columns text[] DEFAULT NULL, row_filter text DEFAULT NULL, include_partitions boolean default true)
-RETURNS boolean CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_table';
+CREATE FUNCTION spock.repset_add_table(
+  set_name           name,
+  relation           regclass,
+  synchronize_data   boolean DEFAULT false,
+  columns            text[] DEFAULT NULL,
+  row_filter         text DEFAULT NULL,
+  include_partitions boolean default true
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_replication_set_add_table'
+LANGUAGE C CALLED ON NULL INPUT VOLATILE;
+
 CREATE FUNCTION spock.repset_add_all_tables(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_tables';
 CREATE FUNCTION spock.repset_remove_table(set_name name, relation regclass, include_partitions boolean default true)
@@ -674,9 +683,9 @@ $$ LANGUAGE plpgsql;
 
 -- Set delta_apply security label on specific column
 CREATE FUNCTION spock.delta_apply(
-  rel regclass,
+  rel      regclass,
   att_name name,
-  to_drop boolean DEFAULT false
+  to_drop  boolean DEFAULT false
 ) RETURNS boolean AS $$
 DECLARE
   label     text;

@@ -349,7 +349,6 @@ spock_report_conflict(SpockConflictType conflict_type,
 	const char *idxname = "(unknown)";
 	const char *qualrelname;
 
-
 	/* Ignore update-update conflict for same origin */
 	if (conflict_type == SPOCK_CT_UPDATE_EXISTS)
 	{

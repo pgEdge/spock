@@ -1,90 +1,228 @@
-FROM ghcr.io/pgedge/base-test-image:latest
+# syntax=docker/dockerfile:1
 
-# Base image ends as USER pgedge, but we need root for installation
-USER root
+# ==============================================================================
+# PostgreSQL + Spock + Spockbench
+# ==============================================================================
+#
+# Description:
+#   Builds PostgreSQL from source with Spock-specific patches, compiles
+#   the Spock logical replication extension for testing and development,
+#	installs spockbench.
+#	Source and installation paths declared in the ${HOME}/.bashrc
+#
+# Versions:
+#	- Postgres version to be used is identified by the PGVER variable.
+#	- Spockbench is built from the top commit on the 'master' branch.
+#	- Spock code comes from the parent docker directory
+#
+# Base Image:
+#	Defined by the BASE_IMAGE environment variable.
+#
+# Build Arguments (defaults aligned with the pgedge.env file):
+#	BASE_IMAGE - Base image to use
+#	PGVER      - PostgreSQL major version
+#	DBUSER     - PostgreSQL superuser name
+#	DBPASSWD   - PostgreSQL superuser password
+#	DBNAME     - Default database name
+#	DBPORT     - PostgreSQL port
+#	MAKE_JOBS  - Parallel make jobs
+#
+# Runtime:
+#	Runs entrypoint.sh which initializes PostgreSQL and loads environment
+#	variables from /home/pgedge/.bashrc. On restart, entrypoint runs again
+#	but skips initialization if PGDATA already exists.
+#
+# References:
+#	See Dockerfile-base.el9, docker-compose.yml, and cache-base-image.yml for
+#	further details.
+# ==============================================================================
 
-ARG PGVER
+ARG BASE_IMAGE=ghcr.io/pgedge/base-test-image:latest
+FROM ${BASE_IMAGE}
+
+# ==============================================================================
+# Build Arguments and Environment Variables
+# ==============================================================================
+
+ARG PGVER=17
+ARG DBUSER=admin
+ARG DBPASSWD=testpass
+ARG DBNAME=demo
+ARG DBPORT=5432
 ARG MAKE_JOBS=4
 
-ENV PGVER=$PGVER
-ENV PATH="/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}"
-ENV LD_LIBRARY_PATH="/home/pgedge/pgedge/pg${PGVER}/lib:${LD_LIBRARY_PATH}"
-ENV PG_CONFIG="/home/pgedge/pgedge/pg${PGVER}/bin/pg_config"
+# Export as environment variables for build-time and runtime
+ENV PGVER=${PGVER} \
+	DBUSER=${DBUSER} \
+	DBPASSWD=${DBPASSWD} \
+	DBNAME=${DBNAME} \
+	DBPORT=${DBPORT}
 
-# Copy spock source code and set proper ownership
+# PostgreSQL paths
+ENV PATH="/home/pgedge/pgedge:/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}" \
+	LD_LIBRARY_PATH="/home/pgedge/pgedge/pg${PGVER}/lib" \
+	PG_CONFIG="/home/pgedge/pgedge/pg${PGVER}/bin/pg_config" \
+	PGDATA="/home/pgedge/pgedge/data/pg${PGVER}"
+
+# Document exposed port
+EXPOSE 5432
+
+# ==============================================================================
+# User Configuration and Source Code Setup
+# ==============================================================================
+
+USER root
+
+# Write PostgreSQL environment to .bashrc for interactive shells and entrypoint
+RUN set -eux && \
+	{ \
+	echo "# PostgreSQL Environment"; \
+	echo "export PGVER=${PGVER}"; \
+	echo "export PGUSER=${DBUSER}"; \
+	echo "export PGPASSWORD=${DBPASSWD}"; \
+	echo "export PGDATABASE=${DBNAME}"; \
+	echo "export PGPORT=${DBPORT}"; \
+	echo "export PG_CONFIG=${PG_CONFIG}"; \
+	echo "export PATH=${PATH}"; \
+	echo "export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"; \
+	echo "export PGDATA=${PGDATA}"; \
+	} >> /home/pgedge/.bashrc
+
+# Copy Spock source code and test scripts
 COPY . /home/pgedge/spock
-RUN chown -R pgedge:pgedge /home/pgedge/spock
+COPY --chmod=755 tests/docker/*.sh /home/pgedge/
 
+# ==============================================================================
+# Clone & Install Spockbench Testing Framework (needs root privileges)
+# ==============================================================================
+
+# Clone spockbench for testing workloads
+# TODO: Pin to specific tag/commit for reproducibility
+RUN set -eux && \
+	git clone --branch delta-apply-update --depth 1 \
+	https://github.com/pgEdge/spockbench.git /home/pgedge/spockbench && \
+	echo "export SPOCKBENCH_SOURCE_DIR=/home/pgedge/spockbench" >> /home/pgedge/.bashrc
+
+RUN set -eux && \
+	cd /home/pgedge/spockbench && \
+	python3 setup.py install && \
+	echo "Spockbench installation complete"
+
+# Set proper ownership
+RUN chown -R pgedge:pgedge /home/pgedge/
+
+# ==============================================================================
+# Switch to Non-Root User for Builds
+# ==============================================================================
+
+USER pgedge
 WORKDIR /home/pgedge
 
-# Determine PostgreSQL version and clone repository
-RUN LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
-				grep "refs/tags/REL_${PGVER}_" | \
-				sed 's|.*refs/tags/||' | \
-				tr '_' '.' | \
-				sort -V | \
-				tail -n 1 | \
-				tr '.' '_') && \
-			echo "Using PostgreSQL tag: $LATEST_TAG" && \
-			git clone --branch $LATEST_TAG --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres && \
-			chmod -R a+w /home/pgedge/postgres
+# ==============================================================================
+# Clone PostgreSQL Source
+# ==============================================================================
 
-# Install pgedge (run as pgedge user, not root)
-RUN echo "Setting up pgedge..." && \
-    curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py -o /home/pgedge/install.py && \
-    chown pgedge:pgedge /home/pgedge/install.py && \
-    su - pgedge -c "python3 /home/pgedge/install.py"
+# Determine the latest stable tag for the requested PostgreSQL major version
+RUN set -eux && \
+	LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
+	grep "refs/tags/REL_${PGVER}_" | \
+	sed 's|.*refs/tags/||' | \
+	tr '_' '.' | \
+	sort -V | \
+	tail -n 1 | \
+	tr '.' '_') && \
+	echo "Cloning PostgreSQL tag: ${LATEST_TAG}" && \
+	git clone --branch "${LATEST_TAG}" --depth 1 \
+	https://github.com/postgres/postgres.git /home/pgedge/postgres && \
+	echo "export PG_SRCDIR=/home/pgedge/postgres" >> /home/pgedge/.bashrc
+
+
+# ==============================================================================
+# Apply Spock Patches to PostgreSQL
+# ==============================================================================
 
 WORKDIR /home/pgedge/postgres
 
-RUN for patchfile in /home/pgedge/spock/patches/${PGVER}/*; do \
-		patch -p1 --verbose < $patchfile; \
-	done
+RUN set -eux && \
+	PATCH_DIR="/home/pgedge/spock/patches/${PGVER}" && \
+	if [ -d "${PATCH_DIR}" ] && [ -n "$(ls -A "${PATCH_DIR}" 2>/dev/null)" ]; then \
+	echo "Applying Spock patches for PostgreSQL ${PGVER}:"; \
+	for patchfile in "${PATCH_DIR}"/*; do \
+	echo "  - $(basename "${patchfile}")"; \
+	patch -p1 --verbose < "${patchfile}"; \
+	done; \
+	echo "All patches applied successfully"; \
+	else \
+	echo "No patches found for PostgreSQL ${PGVER}, continuing with vanilla source"; \
+	fi
 
-# Compile PostgreSQL
-RUN echo "==========Compiling Modified PostgreSQL==========" && \
-    ./configure \
-        --prefix="/home/pgedge/pgedge/pg${PGVER}" \
-        --disable-rpath \
-        --with-zstd \
-        --with-lz4 \
-        --with-icu \
-        --with-libxslt \
-        --with-libxml \
-        --with-uuid=ossp \
-        --with-gssapi \
-        --with-ldap \
-        --with-pam \
-        --enable-debug \
-        --enable-dtrace \
-        --with-llvm \
-        --with-openssl \
-        --with-systemd \
-        --enable-tap-tests \
-        --with-python \
-        --enable-cassert \
-        PYTHON=/usr/bin/python3.9 \
-        BITCODE_CFLAGS="-gdwarf-5 -O0 -fforce-dwarf-frame" \
-        CFLAGS="-g -O0" && \
-    make -j${MAKE_JOBS} && \
-    make -C contrib -j${MAKE_JOBS} && \
-    make install && \
-    make -C contrib install
+# ==============================================================================
+# Compile and Install PostgreSQL
+# ==============================================================================
 
-# Compile Spock
+RUN set -eux && \
+	echo "========================================" && \
+	echo "Configuring PostgreSQL ${PGVER}" && \
+	echo "========================================" && \
+	./configure \
+	--prefix="/home/pgedge/pgedge/pg${PGVER}" \
+	--disable-rpath \
+	--with-zstd \
+	--with-lz4 \
+	--with-icu \
+	--with-libxslt \
+	--with-libxml \
+	--with-uuid=ossp \
+	--with-gssapi \
+	--with-ldap \
+	--with-pam \
+	--with-openssl \
+	--with-systemd \
+	--with-llvm \
+	--with-python \
+	--enable-debug \
+	--enable-dtrace \
+	--enable-cassert \
+	--enable-tap-tests \
+	PYTHON=/usr/bin/python3 \
+	CFLAGS="-g -O0" \
+	BITCODE_CFLAGS="-gdwarf-5 -O0 -fforce-dwarf-frame" && \
+	echo "========================================" && \
+	echo "Building PostgreSQL (${MAKE_JOBS} jobs)" && \
+	echo "========================================" && \
+	make -j${MAKE_JOBS} > /dev/null && \
+	make -C contrib -j${MAKE_JOBS} > /dev/null && \
+	echo "========================================" && \
+	echo "Installing PostgreSQL" && \
+	echo "========================================" && \
+	make install > /dev/null && \
+	make -C contrib install > /dev/null && \
+	echo "PostgreSQL installation complete"
+
+# ==============================================================================
+# Compile and Install Spock Extension
+# ==============================================================================
+
 WORKDIR /home/pgedge/spock
-RUN echo "==========Compiling Spock==========" && \
-    make clean && \
-    make -j${MAKE_JOBS} && \
-    make install && \
-    echo "==========Spock build complete=========="
 
-#-----------------------------------------
-# Copy test scripts and switch to pgedge user for runtime
-COPY --chmod=755 tests/docker/*.sh /home/pgedge/
+RUN set -eux && \
+	echo "========================================" && \
+	echo "Building Spock Extension" && \
+	echo "========================================" && \
+	make clean > /dev/null && \
+	make -j${MAKE_JOBS} > /dev/null && \
+	make install > /dev/null && \
+	echo "export SPOCK_SOURCE_DIR=/home/pgedge/spock" >> /home/pgedge/.bashrc && \
+	echo "Spock installation complete"
 
-WORKDIR /home/pgedge/
-# Switch back to pgedge user for container runtime (testing, etc.)
-USER pgedge
+# ==============================================================================
+# Runtime Configuration
+# ==============================================================================
 
-CMD ["/home/pgedge/entrypoint.sh"]
+WORKDIR /home/pgedge
+
+# Container initialization and startup:
+# 1. entrypoint.sh initializes PostgreSQL cluster and creates Spock nodes
+# 2. After entrypoint completes, postgres runs in foreground as PID 1
+# This makes the container lifecycle tied to PostgreSQL - if postgres crashes, container stops
+CMD ["/bin/bash", "-c", "/home/pgedge/entrypoint.sh && exec postgres -D $PGDATA -k /tmp"]
