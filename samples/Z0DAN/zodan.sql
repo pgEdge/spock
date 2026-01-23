@@ -1271,7 +1271,10 @@ BEGIN
                 dbname := TRIM(BOTH '''' FROM dbname);
             END IF;
             IF dbname IS NULL THEN dbname := 'pgedge'; END IF;
-            slot_name := left('spk_' || dbname || '_' || rec.node_name || '_sub_' || rec.node_name || '_' || new_node_name, 64);
+
+			slot_name := spock.spock_gen_slot_name(
+							dbname, rec.node_name,
+							'sub_' || rec.node_name || '_' || new_node_name);
 
             remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'');', slot_name);
             IF verb THEN
