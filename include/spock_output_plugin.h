@@ -93,14 +93,17 @@ typedef struct SpockOutputSlotGroup
 	TimestampTz last_commit_ts;
 } SpockOutputSlotGroup;
 
-/*
- * Custom WAL messages
- */
 extern bool spock_replication_repair_mode;
 
 #define SPOCK_REPAIR_MODE_ON		1	/* Suppress subsequent DML/DDL */
 #define SPOCK_REPAIR_MODE_OFF		2	/* Resume regular replication */
 #define SPOCK_SYNC_EVENT_MSG		3	/* Sync event message */
+
+extern int spock_output_delay;
+
+/*
+ * Custom WAL messages
+ */
 
 typedef struct SpockWalMessageSimple
 {

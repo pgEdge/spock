@@ -58,6 +58,50 @@ SELECT conflict_type FROM spock.resolutions
     WHERE relname='public.users'
     AND local_timestamp IS NULL;
 
+-- Clear out for next test
+TRUNCATE spock.resolutions;
+TRUNCATE spock.exception_log;
+
+\c :provider_dsn
+
+INSERT INTO users VALUES (3, 33);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+-- Set up test.
+-- Delete on n1 with delay, update on n2, wait, query to see conflict
+
+-- Add 2000ms delay to the output plugin
+ALTER SYSTEM SET spock.output_delay = 2000;
+SELECT pg_reload_conf();
+
+-- Let it take effect
+SELECT pg_sleep(1);
+
+DELETE FROM users WHERE id = 3;
+
+\c :subscriber_dsn
+
+-- With the 2 second delay, we should see the row
+SELECT * FROM users;
+
+UPDATE users SET mgr_id = 333 WHERE id = 3;
+
+-- Wait for delay time to pass with a 1 second buffer
+-- so that the delayed DELETE finally arrives (late)
+SELECT pg_sleep(3);
+
+-- We should see one resolution, delete_late
+SELECT conflict_type, local_tuple FROM spock.resolutions;
+
+-- Empty
+SELECT COUNT(1) thecount FROM spock.exception_log;
+
+SHOW spock.output_delay;
+
+-- Reset delay
+ALTER SYSTEM SET spock.output_delay = 0;
+SELECT pg_reload_conf();
+
 -- More tests
 
 \c :provider_dsn
