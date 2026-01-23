@@ -44,7 +44,7 @@ spock.control: spock.control.in include/spock.h
 	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' $(realpath $(srcdir)/spock.control.in) > $(control_path)
 
 
-all: spock.control spockctrl
+all: spock.control
 
 # -----------------------------------------------------------------------------
 # Regression tests
@@ -113,22 +113,6 @@ check_prove:
 	$(prove_check)
 
 # -----------------------------------------------------------------------------
-# SpockCtrl
-# -----------------------------------------------------------------------------
-spockctrl:
-	$(MAKE) -C $(srcdir)/utils/spockctrl
-
-clean: clean-spockctrl
-
-clean-spockctrl:
-	$(MAKE) -C $(srcdir)/utils/spockctrl clean
-
-install: install-spockctrl
-
-install-spockctrl:
-	$(MAKE) -C $(srcdir)/utils/spockctrl install
-
-# -----------------------------------------------------------------------------
 # Dist packaging
 # -----------------------------------------------------------------------------
 GITHASH=$(shell if [ -e .distgitrev ]; then cat .distgitrev; else git rev-parse --short HEAD; fi)
@@ -163,7 +147,7 @@ git-dist: dist-common
 # -----------------------------------------------------------------------------
 # PHONY targets
 # -----------------------------------------------------------------------------
-.PHONY: all check regresscheck spock.control spockctrl clean clean-spockctrl \
+.PHONY: all check regresscheck spock.control clean \
         dist git-dist check_prove valgrind-check
 
 define _spk_create_recursive_target
