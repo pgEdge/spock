@@ -9,15 +9,15 @@ SELECT E'\'' || current_database() || E'\'' AS pubdb;
 
 \gset
 \c :provider_dsn
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_bidirectional',
     provider_dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=super',
     synchronize_structure := false,
     synchronize_data := false,
     forward_origins := '{}');
- sub_create 
-------------
-          1
+ ?column? 
+----------
+        1
 (1 row)
 
 BEGIN;

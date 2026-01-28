@@ -23,7 +23,7 @@ $$;
 ALTER EXTENSION spock UPDATE;
 
 -- fail (local node not existing)
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica',
 	forward_origins := '{}');
@@ -34,7 +34,7 @@ SELECT * FROM spock.node_create(node_name := 'test_subscriber', dsn := (SELECT s
 -- fail (can't connect to remote)
 DO $$
 BEGIN
-    SELECT * FROM spock.sub_create(
+    SELECT 1 FROM spock.sub_create(
         subscription_name := 'test_subscription',
         provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonexisting',
         forward_origins := '{}');
@@ -45,7 +45,7 @@ END;
 $$;
 
 -- fail (remote node not existing)
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_subscription',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica',
 	forward_origins := '{}');
@@ -60,7 +60,7 @@ SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT pro
 -- fail (can't connect with replication connection to remote)
 DO $$
 BEGIN
-    SELECT * FROM spock.sub_create(
+    SELECT 1 FROM spock.sub_create(
         subscription_name := 'test_subscription',
         provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=nonreplica',
             forward_origins := '{}');

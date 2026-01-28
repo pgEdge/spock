@@ -35,6 +35,7 @@
 #include "catalog/namespace.h"
 
 #include "commands/dbcommands.h"
+#include "commands/extension.h"
 #include "commands/tablecmds.h"
 
 #include "lib/stringinfo.h"
@@ -158,7 +159,65 @@ get_pg_executable(char *cmdname, char *cmdbuf)
 			 PG_VERSION_NUM / 100 / 100, PG_VERSION_NUM / 100 % 100);
 }
 
-#define ARGV_MAX_NUM	(22)
+/*
+ * Couple of helper functions to centralise the extension and schema skipping
+ * logic. Test existence of the object before adding it to the list to avoid
+ * noisy WARNINGs.
+ * The sub->skip_schema typically doesn't include our globally-skipped objects.
+ * So, don't care about duplicates.
+ */
+
+static List *
+build_exclude_extension_string(void)
+{
+	List   *lst = NIL;
+	char   *arg;
+	int		i;
+
+	for (i = 0; skip_extension[i] != NULL; i++)
+	{
+		if (!OidIsValid(get_extension_oid(skip_extension[i], true)))
+			continue;
+
+		arg = psprintf("--exclude-extension=%s", skip_extension[i]);
+		lst = lappend(lst, arg);
+	}
+	return lst;
+}
+
+static List *
+build_exclude_schema_string(SpockSubscription *sub)
+{
+	List	   *lst = NIL;
+	char	   *arg;
+	int			i;
+	ListCell   *lc;
+
+	for (i = 0; skip_schema[i] != NULL; i++)
+	{
+		if (!OidIsValid(LookupExplicitNamespace(skip_schema[i], true)))
+			continue;
+
+		arg = psprintf("--exclude-schema=%s", skip_schema[i]);
+		lst = lappend(lst, arg);
+	}
+
+	if (sub)
+	{
+		foreach(lc, sub->skip_schema)
+		{
+			const char   *schema_name = (const char *) lfirst(lc);
+
+			if (!OidIsValid(LookupExplicitNamespace(schema_name, true)))
+				continue;
+
+			arg = psprintf("--exclude-schema=%s", schema_name);
+			lst = lappend(lst, arg);
+		}
+	}
+
+	return lst;
+}
 
 static void
 dump_structure(SpockSubscription *sub, const char *destfile,
@@ -167,10 +226,11 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	char	   *dsn;
 	char	   *err_msg;
 	char		pg_dump[MAXPGPATH];
-	char	   *cmdargv[ARGV_MAX_NUM];
+	char	  **cmdargv;
 	int			cmdargc = 0;
-	bool		has_snowflake;
-	StringInfoData s;
+	List	   *args = NIL;
+	char	   *arg;
+	ListCell   *lc;
 
 	dsn = spk_get_connstr((char *) sub->origin_if->dsn, NULL, NULL, &err_msg);
 	if (dsn == NULL)
@@ -179,81 +239,48 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 
 	get_pg_executable(PGDUMP_BINARY, pg_dump);
 
-	cmdargv[cmdargc++] = pg_dump;
+	args = lappend(args, pg_dump);
+	args = lappend(args, "-Fc"); /* custom format */
+	args = lappend(args, "-s"); /* schema only */
 
-	/* custom format */
-	cmdargv[cmdargc++] = "-Fc";
+	arg = psprintf("--snapshot=%s", snapshot);
+	args = lappend(args, arg);
 
-	/* schema only */
-	cmdargv[cmdargc++] = "-s";
-
-	/* snapshot */
-	initStringInfo(&s);
-	appendStringInfo(&s, "--snapshot=%s", snapshot);
-	cmdargv[cmdargc++] = pstrdup(s.data);
-	resetStringInfo(&s);
-
-	/* Dumping database, filter out our extension. */
-	appendStringInfo(&s, "--exclude-schema=%s", EXTENSION_NAME);
-	cmdargv[cmdargc++] = pstrdup(s.data);
-	resetStringInfo(&s);
+	/* Filter out schemas and extensions, skipped globally. */
+	args = list_concat(args, build_exclude_schema_string(sub));
 #if PG_VERSION_NUM >= 180000
-	appendStringInfo(&s, "--exclude-extension=%s", EXTENSION_NAME);
-	cmdargv[cmdargc++] = pstrdup(s.data);
-	resetStringInfo(&s);
+	args = list_concat(args, build_exclude_extension_string());
 #endif
-	/* Skip snowflake if it exists locally. */
-	StartTransactionCommand();
-	has_snowflake = OidIsValid(LookupExplicitNamespace("snowflake", true));
-	CommitTransactionCommand();
-
-	if (has_snowflake)
-	{
-		appendStringInfo(&s, "--exclude-schema=%s", "snowflake");
-		cmdargv[cmdargc++] = pstrdup(s.data);
-		resetStringInfo(&s);
-#if PG_VERSION_NUM >= 180000
-		appendStringInfo(&s, "--exclude-extension=%s", "snowflake");
-		cmdargv[cmdargc++] = pstrdup(s.data);
-		resetStringInfo(&s);
-#endif
-	}
-
-	/* Skip schemas specified in skip_schema list */
-	if (sub->skip_schema && list_length(sub->skip_schema) > 0)
-	{
-		ListCell   *lc;
-
-		foreach(lc, sub->skip_schema)
-		{
-			char	   *schema_name = (char *) lfirst(lc);
-
-			appendStringInfo(&s, "--exclude-schema=%s", schema_name);
-			cmdargv[cmdargc++] = pstrdup(s.data);
-			resetStringInfo(&s);
-		}
-	}
 
 	/* destination file */
-	appendStringInfo(&s, "--file=%s", destfile);
-	cmdargv[cmdargc++] = pstrdup(s.data);
-	resetStringInfo(&s);
-
+	arg = psprintf("--file=%s", destfile);
+	args = lappend(args, arg);
 	/* connection string */
-	appendStringInfo(&s, "--dbname=%s", dsn);
-	cmdargv[cmdargc++] = pstrdup(s.data);
-	resetStringInfo(&s);
+	arg = psprintf("--dbname=%s", dsn);
+	args = lappend(args, arg);
 	free(dsn);
 
+	/* build args' array for the execv call */
+	cmdargv = palloc((list_length(args) + 1) * sizeof(char *));
+	foreach(lc, args)
+	{
+		arg = (char *) lfirst(lc);
+		cmdargv[cmdargc++] = arg;
+	}
 	cmdargv[cmdargc++] = NULL;
-
-	Assert(cmdargc < ARGV_MAX_NUM);
 
 	if (exec_cmd(pg_dump, cmdargv) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not execute pg_dump (\"%s\"): %m",
 						pg_dump)));
+
+	/*
+	 * Allocations have been made in the transaction context. Hence, don't bother
+	 * freeing memory - it will be released soon.
+	 * Also, some elements in the args list are string literals, so freeing
+	 * the list would be unsafe anyway.
+	 */
 }
 
 static void
@@ -1220,11 +1247,16 @@ spock_sync_subscription(SpockSubscription *sub)
 					set_subscription_sync_status(sub->id, status);
 					CommitTransactionCommand();
 
+					/* Need catalog lookups, hence, transactional context */
+					StartTransactionCommand();
+
 					/* Dump structure to temp storage. */
 					dump_structure(sub, tmpfile, snapshot);
 
 					/* Restore base pre-data structure (types, tables, etc). */
 					restore_structure(sub, tmpfile, "pre-data");
+
+					CommitTransactionCommand();
 				}
 
 				/* Copy data. */

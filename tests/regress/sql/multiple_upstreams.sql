@@ -44,7 +44,7 @@ SELECT * FROM spock.repset_add_table('default', 'multi_ups_tbl');
 
 -- We'll use the already existing spock node
 -- notice synchronize_structure as false when table definition already exists
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_subscription1',
     provider_dsn := (SELECT provider1_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := false,
@@ -58,7 +58,10 @@ COMMIT;
 
 SELECT subscription_name, status, provider_node, replication_sets, forward_origins FROM spock.sub_show_status() ORDER BY 1,2;
 
-SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
+SELECT sync_kind, sub_name, sync_nspname, sync_relname, sync_status IN ('y', 'r')
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
 
 SELECT * from multi_ups_tbl ORDER BY id;
 

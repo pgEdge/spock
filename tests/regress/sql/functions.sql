@@ -173,7 +173,7 @@ END;$$;
 
 \c :provider_dsn
 
-SELECT quote_literal(pg_current_xlog_location()) as curr_lsn
+SELECT quote_literal(spock.pg_current_xlog_location()) as curr_lsn
 \gset
 
 INSERT INTO public.not_nullcheck_tbl(id,id1,name) VALUES (1,1,'name1');

@@ -8,7 +8,7 @@ SELECT E'\'' || current_database() || E'\'' AS pubdb;
 
 \c :provider_dsn
 
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_bidirectional',
     provider_dsn := (SELECT subscriber_dsn FROM spock_regress_variables()) || ' user=super',
     synchronize_structure := false,

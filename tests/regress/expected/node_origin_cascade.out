@@ -28,15 +28,15 @@ SELECT * FROM spock.node_create(node_name := 'test_orig_provider', dsn := (SELEC
 SET client_min_messages = 'warning';
 -- test_provider spock node already exists here.
 BEGIN;
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_orig_subscription',
     provider_dsn := (SELECT orig_provider_dsn FROM spock_regress_variables()) || ' user=super',
 	synchronize_structure := false,
         synchronize_data := true,
 	forward_origins := '{}');
- sub_create 
-------------
-          2
+ ?column? 
+----------
+        1
 (1 row)
 
 COMMIT;

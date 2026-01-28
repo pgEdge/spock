@@ -9,7 +9,7 @@ SELECT * FROM spock.repset_create('parallel');
 
 \c :subscriber_dsn
 -- FIXME: The statment below is commented out temporarily.
--- SELECT * FROM spock.sub_create(
+-- SELECT 1 FROM spock.sub_create(
 --     subscription_name := 'test_subscription_parallel',
 --     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 -- 	replication_sets := '{parallel,default}',
@@ -17,7 +17,7 @@ SELECT * FROM spock.repset_create('parallel');
 -- 	synchronize_structure := false,
 -- 	synchronize_data := false
 -- );
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_subscription_parallel',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	replication_sets := '{parallel}',
@@ -25,9 +25,9 @@ SELECT * FROM spock.sub_create(
 	synchronize_structure := false,
 	synchronize_data := false
 );
- sub_create 
-------------
-          2
+ ?column? 
+----------
+        1
 (1 row)
 
 BEGIN;
@@ -39,14 +39,17 @@ SELECT spock.sub_wait_for_sync('test_subscription_parallel');
 (1 row)
 
 COMMIT;
-SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
- sync_kind | sync_subid | sync_nspname | sync_relname | ?column? 
------------+------------+--------------+--------------+----------
- f         |          1 |              |              | t
- i         |          2 |              |              | t
+SELECT sync_kind, sub_name, sync_nspname, sync_relname, sync_status IN ('y', 'r')
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name COLLATE "C";
+ sync_kind |          sub_name          | sync_nspname | sync_relname | ?column? 
+-----------+----------------------------+--------------+--------------+----------
+ f         | test_subscription          |              |              | t
+ i         | test_subscription_parallel |              |              | t
 (2 rows)
 
-SELECT * FROM spock.sub_show_status();
+SELECT * FROM spock.sub_show_status() ORDER BY subscription_name COLLATE "C";
      subscription_name      |   status    | provider_node |         provider_dsn         |                 slot_name                  |           replication_sets            | forward_origins 
 ----------------------------+-------------+---------------+------------------------------+--------------------------------------------+---------------------------------------+-----------------
  test_subscription          | replicating | test_provider | dbname=regression user=super | spk_postgres_test_provider_test_sube55bf37 | {default,default_insert_only,ddl_sql} | 

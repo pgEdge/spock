@@ -33,7 +33,7 @@
 #include "nodes/makefuncs.h"
 
 #include "replication/reorderbuffer.h"
-
+#include "storage/lmgr.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -1088,14 +1088,15 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	SpockRepSet *repset = get_replication_set(setid);
 	ObjectAddress referenced;
 	ObjectAddress myself;
-	LOCKTAG			tag;
 
 	/* Open the relation. */
-	SET_LOCKTAG_RELATION(tag, MyDatabaseId, reloid);
 #if PG_VERSION_NUM < 170000
+	LOCKTAG			tag;
+
+	SET_LOCKTAG_RELATION(tag, MyDatabaseId, reloid);
 	if (!LockOrStrongerHeldByMe(&tag, AccessShareLock))
 #else
-	if (!LockHeldByMe(&tag, AccessShareLock, true))
+	if (!CheckRelationOidLockedByMe(reloid, AccessShareLock, true))
 #endif
 		targetrel = table_open(reloid, AccessShareLock);
 	else
@@ -1119,6 +1120,8 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 						   "replication set is configured to replicate "
 						   "UPDATEs and/or DELETEs"),
 				 errhint("Add a PRIMARY KEY to the table")));
+
+	EnsureRelationNotIgnored(targetrel);
 
 	table_close(targetrel, NoLock);
 
@@ -1193,14 +1196,15 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 	SpockRepSet *repset = get_replication_set(setid);
 	ObjectAddress referenced;
 	ObjectAddress myself;
-	LOCKTAG			tag;
 
 	/* Open the relation. */
-	SET_LOCKTAG_RELATION(tag, MyDatabaseId, seqoid);
 #if PG_VERSION_NUM < 170000
+	LOCKTAG			tag;
+
+	SET_LOCKTAG_RELATION(tag, MyDatabaseId, seqoid);
 	if (!LockOrStrongerHeldByMe(&tag, AccessShareLock))
 #else
-	if (!LockHeldByMe(&tag, AccessShareLock, true))
+	if (!CheckRelationOidLockedByMe(seqoid, AccessShareLock, true))
 #endif
 		targetrel = table_open(seqoid, AccessShareLock);
 	else
@@ -1211,6 +1215,8 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("UNLOGGED and TEMP sequences cannot be replicated")));
+
+	EnsureRelationNotIgnored(targetrel);
 
 	/* Ensure track the state of the sequence. */
 	spock_create_sequence_state_record(seqoid);
