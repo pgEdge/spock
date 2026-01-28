@@ -1169,6 +1169,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		PGconn	   *origin_conn;
 		PGconn	   *origin_conn_repl;
 		char	   *snapshot;
+		List	   *progress_entries_list = NIL;
 		bool		use_failover_slot;
 
 		elog(INFO, "initializing subscriber %s", sub->name);
@@ -1185,6 +1186,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
 												 sub->name, "snap");
 
+		progress_entries_list = adjust_progress_info(origin_conn);
 		snapshot = ensure_replication_slot_snapshot(origin_conn,
 													origin_conn_repl,
 													sub->slot_name,

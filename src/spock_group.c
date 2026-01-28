@@ -504,13 +504,13 @@ spock_group_resource_dump(void)
 				(errcode_for_file_access(),
 				 errmsg("could not create \"%s\": %m", pathtmp)));
 
+	Assert(LWLockHeldByMeInMode (SpockCtx->apply_group_master_lock, LW_SHARED));
+
 	/* write header */
 	hdr.version = SPOCK_RES_VERSION;
 	hdr.system_identifier = GetSystemIdentifier();
 	hdr.flags = 0;
 
-	/* Acquire lock before reading hash table to ensure consistency */
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
 	hdr.entry_count = hash_get_num_entries(SpockGroupHash);
 
 	write_buf(fd, &hdr, sizeof(hdr), SPOCK_RES_DUMPFILE "(header)");
@@ -664,10 +664,11 @@ spock_group_progress_update_list(List *lst)
 
 		elog(LOG, "SPOCK: adjust spock.progress %d->%d to "
 			 "remote_commit_ts='%s' "
-			 "remote_commit_lsn=%lX remote_insert_lsn=%lX",
+			 "remote_commit_lsn=%X/%X remote_insert_lsn=%X/%X",
 			 sap->key.remote_node_id, MySubscription->target->id,
 			 timestamptz_to_str(sap->remote_commit_ts),
-			 sap->remote_commit_lsn, sap->remote_insert_lsn);
+			 LSN_FORMAT_ARGS(sap->remote_commit_lsn),
+			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
 	}
 
 	/*
