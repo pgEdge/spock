@@ -68,6 +68,16 @@ REGRESS := $(filter-out add_table, $(REGRESS))
 abs_top_builddir = .
 NO_TEMP_INSTALL = yes
 
+# Override with_temp_install for extension testing.
+# This allows spock tests to run without the pg*-090-init_template_fix.diff
+# patch applied to PostgreSQL. Changes from default PGXS with_temp_install:
+# 1. Remove INITDB_TEMPLATE - we don't use a temp install template
+# 2. Use actual bindir/libdir - we use the installed PostgreSQL, not tmp_install
+with_temp_install = \
+	PATH="$(bindir):$(CURDIR):$$PATH" \
+	$(call add_to_path,$(strip $(ld_library_path_var)),$(libdir)) \
+	$(with_temp_install_extra)
+
 # We can't do a normal 'make check' because PGXS doesn't support
 # creating a temp install. We don't want to use a normal PGXS
 # 'installcheck' though, because it's a pain to set up a temp install
