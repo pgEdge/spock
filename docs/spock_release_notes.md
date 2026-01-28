@@ -65,6 +65,12 @@ Now no restriction exists. Spock will use memory until memory is exhausted (impr
 * Exception handling performance improvements are now managed with the spock.exception_replay_queue_size GUC.
 * Previously, replication lag was estimated on the source node; this meant that if there were no transactions being replicated, the reported lag could continue to increase.  Lag tracking is now calculated at the target node, with improved accuracy.
 * Spock 5.0 implements LSN Checkpointing with `spock.sync()` and `spock.wait_for_sync_event()`.  This feature allows you to identify a checkpoint in the source node WAL files, and watch for the LSN of the checkpoint on a replica node.  This allows you to guarantee that a DDL change, has replicated from the source node to all other nodes before publishing an update.
+* The `spockctrl` command line utility and sample workflows simplify the management of a Spock multi-master replication setup for PostgreSQL. `spockctrl` provides a convenient interface for:
+    * node management
+    * replication set management
+    * subscription management
+    * ad-hoc SQL execution
+    * workflow automation
 * Previously, replicated `DELETE` statements that attempted to delete a *missing* row were logged as exceptions.  Since the purpose of a `DELETE` statement is to remove a row, we no longer log these as exceptions. Instead these are now logged in the `Resolutions` table.
 * `INSERT` conflicts resulting from a duplicate primary key or identity replica are now transformed into an `UPDATE` that updates all columns of the existing row, using Last-Write-Wins (LWW) logic.  The transaction is then logged in the node’s `Resolutions` table, as either:
     * `keep local` if the local node’s `INSERT` has a later timestamp than the arriving `INSERT`
