@@ -113,7 +113,7 @@ Enables a disabled subscription.
 
 Parameters:
 - `subscription_name` is the name of the existing subscription.
-- `immediate` tells Spock when to stop the subscription. If set to `true`, the subscription is stopped immediately; if set to `false` (the default), it will be only stopped at the end of current transaction.
+- `immediate` tells Spock when to start the subscription. If set to `true`, the subscription is started immediately; if set to `false` (the default), it will only be started at the end of the current transaction.
 
 ### spock.sub_alter_interface
 
