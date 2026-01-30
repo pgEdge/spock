@@ -111,7 +111,8 @@ Also, you will need to configure your `pg_hba.conf` file to allow logical
 replication connections from localhost. Logical replication connections are
 treated by `pg_hba.conf` as regular connections to the provider database.
 
-Then, use the `spock.node_create` command to create the provider node:
+Then, connect to the psql command line of the first provider node, and use 
+the `spock.node_create` command to create the provider node:
 
 ```sql
     SELECT spock.node_create(
