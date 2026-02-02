@@ -39,9 +39,6 @@
 #include "commands/tablecmds.h"
 
 #include "lib/stringinfo.h"
-
-#include "utils/memutils.h"
-
 #include "nodes/makefuncs.h"
 #include "nodes/parsenodes.h"
 
@@ -58,6 +55,8 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
+#include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
@@ -160,30 +159,178 @@ get_pg_executable(char *cmdname, char *cmdbuf)
 }
 
 /*
- * Couple of helper functions to centralise the extension and schema skipping
- * logic. Test existence of the object before adding it to the list to avoid
+ * Helper functions to centralise the extension and schema skipping logic.
+ * Test existence of the object before adding it to the list to avoid
  * noisy WARNINGs.
  * The sub->skip_schema typically doesn't include our globally-skipped objects.
  * So, don't care about duplicates.
+ *
+ * For PG 17+, we use the --filter option with a temporary file.
+ * For older versions, we use individual --exclude-schema arguments.
  */
 
-static List *
-build_exclude_extension_string(void)
+#if PG_VERSION_NUM >= 170000
+/*
+ * Build a filter file for pg_dump --filter option.
+ *
+ * Uses input subscription to form schema exclusions and table filter.
+ * Throws an ERROR if a repset contains table from excluded schema.
+ *
+ * Returns the pg_dump argument string "--filter=<path>".
+ * The caller is responsible for removing the filter file after use.
+ */
+static char *
+build_filter_file(SpockSubscription *sub)
 {
-	List   *lst = NIL;
-	char   *arg;
-	int		i;
+	StringInfoData	content;
+	FILE		   *fp;
+	int				i;
+	ListCell	   *lc;
+	char			filterfile[MAXPGPATH];
+	Oid				nspoid;
+	List		   *skip_nsp_oids = NIL;
 
+	Assert(sub != NULL);
+
+	initStringInfo(&content);
+
+	/* Add globally-skipped schemas */
+	for (i = 0; skip_schema[i] != NULL; i++)
+	{
+		nspoid = LookupExplicitNamespace(skip_schema[i], true);
+		if (!OidIsValid(nspoid))
+			continue;
+
+		skip_nsp_oids = lappend_oid(skip_nsp_oids, nspoid);
+		appendStringInfo(&content, "exclude schema %s\n",
+						 quote_identifier(skip_schema[i]));
+	}
+
+	/* Add subscription-specific schemas */
+	foreach(lc, sub->skip_schema)
+	{
+		const char *schema_name = (const char *) lfirst(lc);
+
+		nspoid = LookupExplicitNamespace(schema_name, true);
+		if (!OidIsValid(nspoid))
+			continue;
+
+		skip_nsp_oids = lappend_oid(skip_nsp_oids, nspoid);
+		appendStringInfo(&content, "exclude schema %s\n",
+						 quote_identifier(schema_name));
+	}
+
+#if PG_VERSION_NUM >= 180000
+	/* Add globally-skipped extensions (--exclude-extension requires PG 18+) */
 	for (i = 0; skip_extension[i] != NULL; i++)
 	{
 		if (!OidIsValid(get_extension_oid(skip_extension[i], true)))
 			continue;
 
-		arg = psprintf("--exclude-extension=%s", skip_extension[i]);
-		lst = lappend(lst, arg);
+		appendStringInfo(&content, "exclude extension %s\n",
+						 quote_identifier(skip_extension[i]));
 	}
-	return lst;
+#endif
+
+	/* Create temporary filter file */
+	snprintf(filterfile, MAXPGPATH, "%s/spock_filter_%d.txt",
+			 spock_temp_directory, MyProcPid);
+	canonicalize_path(filterfile);
+
+	fp = fopen(filterfile, "w");
+	if (fp == NULL)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create filter file \"%s\": %m", filterfile)));
+
+	if (content.len > 0 &&
+		fwrite(content.data, 1, content.len, fp) != content.len)
+	{
+		fclose(fp);
+		unlink(filterfile);
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write to filter file \"%s\": %m", filterfile)));
+	}
+	pfree(content.data);
+
+	initStringInfo(&content);
+
+	/*
+	 * Now, pass through the replication sets and include to the filter each
+	 * mentioned table.
+	 * Don't check table duplication across replication sets keeping in mind
+	 * that some schemas may contain tens of thousands of tables. Let pg_dump
+	 * manage this case.
+	 */
+	foreach(lc, sub->replication_sets)
+	{
+		SpockRepSet *rset = (SpockRepSet *) lfirst(lc);
+		List		*tbloids;
+
+		Assert(OidIsValid(rset->id));
+
+		tbloids = replication_set_get_tables(rset->id);
+
+		/*
+		 * Add replicated tables to the filter file.
+		 * Don't care about memory allocations here - it will be cleaned up
+		 * at the end of transaction.
+		 */
+		foreach_oid(tbloid, tbloids)
+		{
+			Oid		relnamespace = get_rel_namespace(tbloid);
+			char   *nspname = get_namespace_name(relnamespace);
+			char   *tblname = get_rel_name(tbloid);
+
+			/*
+			 * Spock shouldn't allow tables from skipped schemas to be in
+			 * a replication set. Be paranoid and re-check this. Complain
+			 * if such inconsistency has been found.
+			 */
+			if (list_member_oid(skip_nsp_oids, relnamespace))
+			{
+				fclose(fp);
+				unlink(filterfile);
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("table \"%s.%s\" is in schema \"%s\" which is excluded from replication",
+								nspname, tblname, nspname),
+						 errdetail("Replication set \"%s\" contains a table in an excluded schema.",
+								   rset->name),
+						 errhint("Remove the table from the replication set or move it to a different schema.")));
+			}
+
+			appendStringInfo(&content, "include table_and_children %s.%s\n",
+							 quote_identifier(nspname),
+							 quote_identifier(tblname));
+		}
+	}
+
+	if (content.len > 0 &&
+		fwrite(content.data, 1, content.len, fp) != content.len)
+	{
+		fclose(fp);
+		unlink(filterfile);
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write to filter file \"%s\": %m",
+						filterfile)));
+	}
+	pfree(content.data);
+
+	if (fclose(fp) != 0)
+	{
+		unlink(filterfile);
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not close filter file \"%s\": %m", filterfile)));
+	}
+
+	return psprintf("--filter=%s", filterfile);
 }
+
+#else /* PG_VERSION_NUM < 170000 */
 
 static List *
 build_exclude_schema_string(SpockSubscription *sub)
@@ -218,6 +365,7 @@ build_exclude_schema_string(SpockSubscription *sub)
 
 	return lst;
 }
+#endif /* PG_VERSION_NUM >= 170000 */
 
 static void
 dump_structure(SpockSubscription *sub, const char *destfile,
@@ -231,6 +379,9 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	List	   *args = NIL;
 	char	   *arg;
 	ListCell   *lc;
+#if PG_VERSION_NUM >= 170000
+	char	   *filterfile = NULL;
+#endif
 
 	dsn = spk_get_connstr((char *) sub->origin_if->dsn, NULL, NULL, &err_msg);
 	if (dsn == NULL)
@@ -247,9 +398,11 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	args = lappend(args, arg);
 
 	/* Filter out schemas and extensions, skipped globally. */
+#if PG_VERSION_NUM >= 170000
+	arg = build_filter_file(sub);
+	args = lappend(args, arg);
+#else
 	args = list_concat(args, build_exclude_schema_string(sub));
-#if PG_VERSION_NUM >= 180000
-	args = list_concat(args, build_exclude_extension_string());
 #endif
 
 	/* destination file */
@@ -270,10 +423,22 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	cmdargv[cmdargc++] = NULL;
 
 	if (exec_cmd(pg_dump, cmdargv) != 0)
+	{
+#if PG_VERSION_NUM >= 170000
+		if (filterfile)
+			unlink(filterfile);
+#endif
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not execute pg_dump (\"%s\"): %m",
 						pg_dump)));
+	}
+
+#if PG_VERSION_NUM >= 170000
+	/* Clean up the temporary filter file */
+	if (filterfile)
+		unlink(filterfile);
+#endif
 
 	/*
 	 * Allocations have been made in the transaction context. Hence, don't bother
