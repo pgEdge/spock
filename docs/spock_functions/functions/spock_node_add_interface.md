@@ -5,37 +5,50 @@
 
 ### SYNOPSIS
 
-`spock.node_add_interface (node_name name, interface_name name, dsn text)` 
+spock.node_add_interface (node_name name, interface_name name, dsn text)
+
+### RETURNS
+
+The OID of the newly created interface.
 
 ### DESCRIPTION
 
-Use spock.nod_add_interface to add an additional interface to a spock node. 
-    
-When a node is created, the interface is also created using the dsn specified
-in the create_node command, and with the same name as the node. This interface
-allows you to add alternative interfaces with different connection strings to
-an existing node.
+Adds a new network interface definition to an existing Spock node.
 
-### EXAMPLE 
+Interfaces allow a single node to be reachable through multiple connection
+endpoints. This is commonly used in environments where nodes are accessible
+through different hostnames, IP addresses, private networks, public networks,
+or load balancers.
 
-`spock.node_add_interface ('n1', 'n1_2', 'host=10.1.2.5 user=rocky')`
+The interface definition consists of a name and a PostgreSQL DSN string that
+describes how other nodes should connect to this node.
 
-### POSITIONAL ARGUMENTS
+This function writes metadata into the Spock catalogs but does not modify
+PostgreSQL server configuration or networking settings.
 
-    `node_name`
+Returns NULL if any argument is NULL.
 
-        The name of the node. Should reference the node already created in this
-        database. Example: n1
-    
-    `interface_name`
+This command must be executed by a superuser.
 
-        The interface name to add to the node. The interface created by default
-        matches the node name, add a new interface with a unique name. Example:
-        n1_2
-    
-    `dsn`
-        
-        The additional connection string to the node. The user in this string
-        should equal the OS user. This connection string should be reachable
-        from outside and match the one used later in the sub-create command.
-        Example: host=10.1.2.5 port= 5432 user=rocky
+### ARGUMENTS
+
+node_name
+
+    The name of an existing Spock node.
+
+interface_name
+
+    A unique name for this interface on the node.
+
+dsn
+
+    A PostgreSQL connection string that other nodes will use to connect to
+    this node. The user in this string should equal the OS user. This
+    connection string should be reachable from outside and match the one used
+    later in the sub-create command. Example: host=10.1.2.5 port= 5432
+    user=rocky
+
+### EXAMPLE
+
+SELECT spock.node_add_interface('n1', 'private_net',
+    'host=10.0.0.10 port=5432 dbname=postgres');

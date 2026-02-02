@@ -4,35 +4,59 @@ spock.node_create()
 
 ### SYNOPSIS
 
-`spock.node_create (node_name name, dsn text, location text, country text,
-info jsonb)`
- 
+spock.node_create (node_name name, dsn text, location text DEFAULT NULL,
+country text DEFAULT NULL, info jsonb DEFAULT NULL)
+
+### RETURNS
+
+The OID of the newly created Spock node.
+
 ### DESCRIPTION
 
-Create a spock node. 
- 
-### POSITIONAL ARGUMENTS
+Creates a new Spock node definition.
 
-    node_name
-        The name of the node. Only one node is allowed per database, and each
-        node in a cluster must have a unique name. To use the Snowflake
-        extension, use the convention n1,n2, etc. Example: n1
+A node represents a PostgreSQL instance that participates in Spock
+replication. The node definition includes the connection information that
+other nodes will use to communicate with this node.
 
-    dsn
-        The connection string to the node. The user in this string should equal
-        the OS user. This connection string should be reachable from outside
-        and match the one used later in the sub-create command. Example:
-        host=10.1.2.5 port= 5432 user=rocky dbname=demo
+Optional metadata fields such as location, country, and info can be provided
+to describe the node for organizational or management purposes. These values
+are stored in the Spock catalogs but are not required for replication to
+function.
 
-    location
-        The default is NULL.
-        
-    country
-        The default is NULL.
+This function writes metadata into the Spock catalogs but does not modify
+PostgreSQL server configuration or networking settings.
 
-    info
-        The default is NULL.
+Returns NULL if any argument is NULL.
 
-### EXAMPLE 
+This command must be executed by a superuser.
 
-SELECT spock.node_create ('n1', 'host=10.1.2.5 user=rocky dbname=demo')
+### ARGUMENTS
+
+node_name
+
+    A unique name for the Spock node.
+
+dsn
+
+    A PostgreSQL connection string that other nodes will use to
+    connect to this node.
+
+location
+
+    Optional descriptive text indicating the physical or logical
+    location of the node.
+
+country
+
+    Optional country code or name associated with the node.
+
+info
+
+    Optional JSONB field for storing arbitrary metadata about
+    the node.
+
+### EXAMPLE
+
+SELECT spock.node_create('n1',
+    'host=10.0.0.10 port=5432 dbname=postgres');

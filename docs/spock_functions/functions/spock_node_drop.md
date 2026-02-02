@@ -1,20 +1,51 @@
 ## NAME
 
-`spock.node_drop()`
+spock.node_drop()
 
 ### SYNOPSIS
 
-`spock.node_drop (node_name name, ifexists bool)`
- 
+spock.node_drop (node_name name, ifexists boolean DEFAULT false)
+
+### RETURNS
+
+  - true if the node was dropped successfully.
+
+  - false if the node did not exist and ifexists was set to true.
+
+  - ERROR if the call has invalid parameters, insufficient privileges, or
+    the node cannot be removed due to existing dependencies.
+
 ### DESCRIPTION
-    Drop a spock node. 
 
-### EXAMPLE 
+Removes an existing Spock node from the cluster metadata.
 
-`spock.node_drop ('n1')`
- 
-### POSITIONAL ARGUMENTS
-    node_name
-        The name of the node. Example: n1
-    ifexists
-        `ifexists` specifies the Spock extension behavior with regards to error messages. If `true`, an error is not thrown when the specified node does not exist. The default is `false`.
+This function deletes the node definition and all associated metadata from the
+Spock catalogs. It does not remove any PostgreSQL data directory or stop
+the PostgreSQL server; it only removes Spock’s logical representation of the
+node.
+
+If ifexists is set to false (default), an error is raised when the specified
+node does not exist. If ifexists is true, the function returns false
+instead of raising an error.
+
+Returns NULL if any argument is NULL.
+
+This command must be executed by a superuser and modifies Spock catalog
+tables.
+
+### EXAMPLE
+
+SELECT spock.node_drop('n1');
+
+SELECT spock.node_drop('n1', true);
+
+### ARGUMENTS
+
+node_name
+
+    The name of the existing Spock node to remove.
+
+ifexists
+
+    If true, do not raise an error when the node does not exist; return
+    false instead. Default is false.
