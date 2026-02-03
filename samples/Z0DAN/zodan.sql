@@ -790,7 +790,7 @@ BEGIN
                     END IF;
                 WHEN 'syncing' THEN
                     IF verb THEN
-                        RAISE NOTICE '  [INITIALIZING] %: % (provider: %, sets: %)',
+                        RAISE NOTICE '  [SYNCING] %: % (provider: %, sets: %)',
                             sub_rec.subscription_name, sub_rec.status,
                             sub_rec.provider_node,
                             array_to_string(sub_rec.replication_sets, ',');
@@ -1849,15 +1849,20 @@ $$;
 -- Procedure to present final cluster state
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE spock.present_final_cluster_state(
+    src_dsn            text,
     initial_node_count integer,
     verb boolean DEFAULT false
 ) LANGUAGE plpgsql AS $$
 DECLARE
+    node_rec RECORD;
+    sub_rec  RECORD;
     rec RECORD;
-    sub_status text;
     wait_count integer := 0;
     max_wait_count integer := 300; -- Wait up to 300 seconds
 BEGIN
+    -- Let remote subscriptions update their subscription's state.
+    COMMIT;
+
     -- Phase 10: Presenting final cluster state
     RAISE NOTICE 'Phase 10: Presenting final cluster state';
 
@@ -1865,21 +1870,36 @@ BEGIN
     RAISE NOTICE '    Waiting for replication to be active...';
     LOOP
         wait_count := wait_count + 1;
+        sub_rec := NULL;
 
-        -- Check subscription status
-        IF verb THEN
-            RAISE NOTICE '[QUERY] SELECT status FROM spock.sub_show_status() LIMIT 1';
-        END IF;
-        SELECT status INTO sub_status FROM spock.sub_show_status() LIMIT 1;
+        -- Pass through all subscriptions and detect if some of them is not
+		-- replicating.
+        FOR node_rec IN SELECT dsn
+            FROM dblink(src_dsn, '
+                        SELECT i.if_dsn
+                        FROM spock.node n JOIN spock.node_interface i
+                        ON n.node_id = i.if_nodeid ORDER BY n.node_name'
+            ) AS t(dsn text)
+        LOOP
+            SELECT sub_name, status INTO sub_rec
+                FROM dblink(node_rec.dsn, '
+                            SELECT subscription_name, status
+                            FROM spock.sub_show_status()
+                            WHERE status <> ''replicating''
+                            ORDER BY subscription_name LIMIT 1'
+                ) AS t(sub_name text, status text);
+            EXIT WHEN sub_rec IS NOT NULL;
+        END LOOP;
 
-        IF sub_status = 'replicating' THEN
-            RAISE NOTICE '    OK: Replication is active (status: %)', sub_status;
+        IF sub_rec IS NULL THEN
+            RAISE NOTICE '    OK: Replication is active';
             EXIT;
         ELSIF wait_count >= max_wait_count THEN
-            RAISE NOTICE '    WARNING: Timeout waiting for replication to be active (current status: %)', sub_status;
+            RAISE NOTICE '    WARNING: Timeout waiting for subscription % to become active (current status: %)', sub_rec.sub_name, sub_rec.status;
             EXIT;
         ELSE
-            RAISE NOTICE '    Waiting for replication... (status: %, attempt %/%)', sub_status, wait_count, max_wait_count;
+            RAISE NOTICE '    Waiting for replication... (subscription: %, status: %, attempt %/%)',
+                sub_rec.sub_name, sub_rec.status, wait_count, max_wait_count;
             PERFORM pg_sleep(1);
         END IF;
     END LOOP;
@@ -2019,7 +2039,7 @@ BEGIN
 
     -- Phase 10: Present final cluster state.
     -- Example: Show n1, n2, n3, n4 as fully connected and synchronized.
-    CALL spock.present_final_cluster_state(initial_node_count, verb);
+    CALL spock.present_final_cluster_state(src_dsn, initial_node_count, verb);
 
     -- Phase 11: Monitor replication lag.
     -- Example: Check that n4 is keeping up with n1, n2, n3 after joining.
