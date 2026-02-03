@@ -927,7 +927,8 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 
 	/* Read table list from provider. */
 	conn = spock_connect(sub->origin_if->dsn, sub_name, "sync");
-	remote_tables = spock_get_remote_repset_tables(conn, sub->replication_sets);
+	remote_tables = spock_get_remote_repset_tables(conn, sub->replication_sets,
+												   sub->skip_schema);
 	PQfinish(conn);
 
 	local_tables = get_subscription_tables(sub->id);

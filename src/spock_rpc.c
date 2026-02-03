@@ -33,12 +33,14 @@
 
 /*
  * Fetch the list of tables that are grouped in the specified replication sets.
+ * Ignores tables from skip_schema list.
  *
  * Returns a list of SpockRemoteRel elements allocated in the current memory
  * context.
  */
 List *
-spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
+spock_get_remote_repset_tables(PGconn *conn, List *replication_sets,
+							   List *sub_skip_schema)
 {
 	PGresult	   *res;
 	int				i;
@@ -53,6 +55,7 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 	{
 		char	   *repset_name = lfirst(lc);
 
+		Assert(repset_name != NULL);
 		if (first)
 			first = false;
 		else
@@ -61,7 +64,7 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 		appendStringInfo(&repsetarr, "%s",
 						 PQescapeLiteral(conn, repset_name, strlen(repset_name)));
 	}
-
+	Assert(repsetarr.len > 0);
 	/*
 	 * Collect data on each table from any requested replication set.
 	 */
@@ -72,6 +75,7 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 					 "  FROM (SELECT DISTINCT relid FROM spock.tables WHERE set_name = ANY(ARRAY[%s])) t,"
 					 "       LATERAL spock.repset_show_table(t.relid, ARRAY[%s]) i",
 					 repsetarr.data, repsetarr.data);
+	Assert(query.len > 0);
 	res = PQexec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		ereport(ERROR,
@@ -83,9 +87,43 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 	for (i = 0; i < PQntuples(res); i++)
 	{
 		SpockRemoteRel *remoterel = palloc0(sizeof(SpockRemoteRel));
+		ListCell	   *lc_skip;
+		bool			skip_table = false;
 
 		remoterel->relid = atooid(PQgetvalue(res, i, 0));
 		remoterel->nspname = pstrdup(PQgetvalue(res, i, 1));
+		Assert(remoterel->nspname != NULL);
+
+		/*
+		 * Don't account the table if this subscription has namespace
+		 * restrictions.
+		 */
+		foreach(lc_skip, sub_skip_schema)
+		{
+			char	   *skip_schema_name = (char *) lfirst(lc_skip);
+
+			if (strcmp(remoterel->nspname, skip_schema_name) == 0)
+			{
+				skip_table = true;
+				break;
+			}
+		}
+		if (!skip_table)
+		{
+			int j;
+
+			for (j = 0; skip_schema[j] != NULL; j++)
+			{
+				if (strcmp(remoterel->nspname, skip_schema[j]) == 0)
+				{
+					skip_table = true;
+					break;
+				}
+			}
+		}
+		if (skip_table)
+			continue;
+
 		remoterel->relname = pstrdup(PQgetvalue(res, i, 2));
 		if (!parsePGArray(PQgetvalue(res, i, 3), &remoterel->attnames,
 						  &remoterel->natts))

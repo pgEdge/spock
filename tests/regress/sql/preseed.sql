@@ -1,3 +1,5 @@
+CREATE SCHEMA spock_regress;
+
 -- Indirection for connection strings
 CREATE OR REPLACE FUNCTION public.spock_regress_variables(
     OUT orig_provider_dsn text,
@@ -14,6 +16,40 @@ $f$;
 
 SELECT * FROM spock_regress_variables()
 \gset
+
+CREATE OR REPLACE FUNCTION spock_regress.wait_for_sub(
+    sub_name      text,
+	target_status text,
+    timeout_sec   integer DEFAULT 10
+)
+RETURNS void AS $$
+DECLARE
+    cnt integer;
+    start_time timestamptz := clock_timestamp();
+BEGIN
+  IF target_status NOT IN
+             ('unknown', 'replicating', 'initializing', 'disabled', 'down') THEN
+    RAISE EXCEPTION 'Invalid target_status "%".', target_status;
+  END IF;
+
+  LOOP
+    EXECUTE format('SELECT count(*)
+      FROM spock.sub_show_status(subscription_name := %L)
+      WHERE status = %L', sub_name, target_status) INTO cnt;
+
+    EXIT WHEN cnt > 0;
+
+    -- Check timeout
+    IF clock_timestamp() > start_time + make_interval(secs := timeout_sec) THEN
+      RAISE EXCEPTION 'Timeout waiting for subscription "%" status %',
+					  sub_name, target_status;
+    END IF;
+
+    -- Small sleep to avoid busy-waiting
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql;
 
 /*
  * Tests to ensure that objects/data that exists pre-clone is successfully

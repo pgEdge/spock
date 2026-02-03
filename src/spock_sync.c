@@ -180,28 +180,27 @@ get_pg_executable(char *cmdname, char *cmdbuf)
  * The caller is responsible for removing the filter file after use.
  */
 static char *
-build_filter_file(SpockSubscription *sub)
+build_filter_file(SpockSubscription *sub, List *tables)
 {
 	StringInfoData	content;
+	char			filterfile[MAXPGPATH];
 	FILE		   *fp;
 	int				i;
 	ListCell	   *lc;
-	char			filterfile[MAXPGPATH];
-	Oid				nspoid;
-	List		   *skip_nsp_oids = NIL;
+	List		   *include_schema = NIL;
 
 	Assert(sub != NULL);
 
 	initStringInfo(&content);
 
+	/* The spock_get_remote_repset_tables have to filter tables from skipped
+	 * schemas already. We add 'skip schema' clause here just to be a little
+	 * paranoid.
+	 */
+
 	/* Add globally-skipped schemas */
 	for (i = 0; skip_schema[i] != NULL; i++)
 	{
-		nspoid = LookupExplicitNamespace(skip_schema[i], true);
-		if (!OidIsValid(nspoid))
-			continue;
-
-		skip_nsp_oids = lappend_oid(skip_nsp_oids, nspoid);
 		appendStringInfo(&content, "exclude schema %s\n",
 						 quote_identifier(skip_schema[i]));
 	}
@@ -211,11 +210,6 @@ build_filter_file(SpockSubscription *sub)
 	{
 		const char *schema_name = (const char *) lfirst(lc);
 
-		nspoid = LookupExplicitNamespace(schema_name, true);
-		if (!OidIsValid(nspoid))
-			continue;
-
-		skip_nsp_oids = lappend_oid(skip_nsp_oids, nspoid);
 		appendStringInfo(&content, "exclude schema %s\n",
 						 quote_identifier(schema_name));
 	}
@@ -252,6 +246,7 @@ build_filter_file(SpockSubscription *sub)
 				(errcode_for_file_access(),
 				 errmsg("could not write to filter file \"%s\": %m", filterfile)));
 	}
+	elog(DEBUG1, "pg_dump exclusion list: %s", content.data);
 	pfree(content.data);
 
 	initStringInfo(&content);
@@ -263,49 +258,41 @@ build_filter_file(SpockSubscription *sub)
 	 * that some schemas may contain tens of thousands of tables. Let pg_dump
 	 * manage this case.
 	 */
-	foreach(lc, sub->replication_sets)
+	foreach(lc, tables)
 	{
-		SpockRepSet *rset = (SpockRepSet *) lfirst(lc);
-		List		*tbloids;
+		SpockRemoteRel *tbl = (SpockRemoteRel *) lfirst(lc);
+		ListCell	   *lc1;
+		bool			new_schema = true;
 
-		Assert(OidIsValid(rset->id));
-
-		tbloids = replication_set_get_tables(rset->id);
+		Assert(tbl && OidIsValid(tbl->relid));
 
 		/*
-		 * Add replicated tables to the filter file.
-		 * Don't care about memory allocations here - it will be cleaned up
-		 * at the end of transaction.
+		 * Include schema to the filter if it is not yet.
+		 * This may be expensive, but we hope that typical pg_dump needs few
+		 * schemas for its tables.
 		 */
-		foreach_oid(tbloid, tbloids)
+		foreach(lc1, include_schema)
 		{
-			Oid		relnamespace = get_rel_namespace(tbloid);
-			char   *nspname = get_namespace_name(relnamespace);
-			char   *tblname = get_rel_name(tbloid);
+			char *nspname = lfirst(lc1);
 
-			/*
-			 * Spock shouldn't allow tables from skipped schemas to be in
-			 * a replication set. Be paranoid and re-check this. Complain
-			 * if such inconsistency has been found.
-			 */
-			if (list_member_oid(skip_nsp_oids, relnamespace))
+			if (strcmp(nspname, tbl->nspname) == 0)
 			{
-				fclose(fp);
-				unlink(filterfile);
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("table \"%s.%s\" is in schema \"%s\" which is excluded from replication",
-								nspname, tblname, nspname),
-						 errdetail("Replication set \"%s\" contains a table in an excluded schema.",
-								   rset->name),
-						 errhint("Remove the table from the replication set or move it to a different schema.")));
+				new_schema = false;
+				break;
 			}
-
-			appendStringInfo(&content, "include table_and_children %s.%s\n",
-							 quote_identifier(nspname),
-							 quote_identifier(tblname));
 		}
+		if (new_schema)
+		{
+			include_schema = lappend(include_schema, tbl->nspname);
+			appendStringInfo(&content, "include schema %s\n",
+							 quote_identifier(tbl->nspname));
+		}
+
+		appendStringInfo(&content, "include table_and_children %s.%s\n",
+						 quote_identifier(tbl->nspname),
+						 quote_identifier(tbl->relname));
 	}
+	list_free(include_schema);
 
 	if (content.len > 0 &&
 		fwrite(content.data, 1, content.len, fp) != content.len)
@@ -317,6 +304,7 @@ build_filter_file(SpockSubscription *sub)
 				 errmsg("could not write to filter file \"%s\": %m",
 						filterfile)));
 	}
+	elog(DEBUG1, "pg_dump tables list: %s", content.data);
 	pfree(content.data);
 
 	if (fclose(fp) != 0)
@@ -369,7 +357,7 @@ build_exclude_schema_string(SpockSubscription *sub)
 
 static void
 dump_structure(SpockSubscription *sub, const char *destfile,
-			   const char *snapshot)
+			   const char *snapshot, List *tables)
 {
 	char	   *dsn;
 	char	   *err_msg;
@@ -399,7 +387,7 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 
 	/* Filter out schemas and extensions, skipped globally. */
 #if PG_VERSION_NUM >= 170000
-	arg = build_filter_file(sub);
+	arg = build_filter_file(sub, tables);
 	args = lappend(args, arg);
 #else
 	args = list_concat(args, build_exclude_schema_string(sub));
@@ -1141,57 +1129,20 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
  * merged to single function because we need to get list of tables here after
  * the transaction is bound to a snapshot.
  */
-static List *
+static void
 copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 						   const char *target_dsn,
 						   const char *origin_snapshot,
-						   List *replication_sets, const char *origin_name)
+						   List *replication_sets, const char *origin_name,
+						   List *tables)
 {
 	PGconn	   *origin_conn;
 	PGconn	   *target_conn;
-	List	   *tables;
 	ListCell   *lc;
 
 	/* Connect to origin node. */
 	origin_conn = spock_connect(origin_dsn, sub->name, "copy");
 	start_copy_origin_tx(origin_conn, origin_snapshot);
-
-	/* Get tables to copy from origin node. */
-	tables = spock_get_remote_repset_tables(origin_conn,
-											replication_sets);
-
-	/* Filter out tables from schemas that should be skipped */
-	if (sub->skip_schema && list_length(sub->skip_schema) > 0)
-	{
-		List	   *filtered_tables = NIL;
-		ListCell   *lc_filter;
-
-		foreach(lc_filter, tables)
-		{
-			SpockRemoteRel *remoterel = lfirst(lc_filter);
-			ListCell   *lc_skip;
-			bool		skip_table = false;
-
-			/* Check if this table's schema should be skipped */
-			foreach(lc_skip, sub->skip_schema)
-			{
-				char	   *skip_schema_name = (char *) lfirst(lc_skip);
-
-				if (strcmp(remoterel->nspname, skip_schema_name) == 0)
-				{
-					skip_table = true;
-					break;
-				}
-			}
-
-			/* Add table to filtered list if it shouldn't be skipped */
-			if (!skip_table)
-				filtered_tables = lappend(filtered_tables, remoterel);
-		}
-
-		/* Replace the original tables list with the filtered one */
-		tables = filtered_tables;
-	}
 
 	/* Connect to target node. */
 	target_conn = spock_connect(target_dsn, sub->name, "copy");
@@ -1218,8 +1169,6 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
 	finish_copy_target_tx(target_conn);
-
-	return tables;
 }
 
 static void
@@ -1354,6 +1303,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		PGconn	   *origin_conn_repl;
 		char	   *snapshot;
 		bool		use_failover_slot;
+		List	   *tables;
 
 		elog(INFO, "initializing subscriber %s", sub->name);
 
@@ -1373,7 +1323,9 @@ spock_sync_subscription(SpockSubscription *sub)
 													origin_conn_repl,
 													sub->slot_name,
 													use_failover_slot, &lsn);
-
+		tables = spock_get_remote_repset_tables(origin_conn,
+												sub->replication_sets,
+												sub->skip_schema);
 		PQfinish(origin_conn);
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
@@ -1416,7 +1368,7 @@ spock_sync_subscription(SpockSubscription *sub)
 					StartTransactionCommand();
 
 					/* Dump structure to temp storage. */
-					dump_structure(sub, tmpfile, snapshot);
+					dump_structure(sub, tmpfile, snapshot, tables);
 
 					/* Restore base pre-data structure (types, tables, etc). */
 					restore_structure(sub, tmpfile, "pre-data");
@@ -1427,7 +1379,6 @@ spock_sync_subscription(SpockSubscription *sub)
 				/* Copy data. */
 				if (SyncKindData(sync->kind))
 				{
-					List	   *tables;
 					ListCell   *lc;
 
 					elog(INFO, "synchronizing data");
@@ -1437,12 +1388,13 @@ spock_sync_subscription(SpockSubscription *sub)
 					set_subscription_sync_status(sub->id, status);
 					CommitTransactionCommand();
 
-					tables = copy_replication_sets_data(sub,
-														sub->origin_if->dsn,
-														sub->target_if->dsn,
-														snapshot,
-														sub->replication_sets,
-														sub->slot_name);
+					copy_replication_sets_data(sub,
+											   sub->origin_if->dsn,
+											   sub->target_if->dsn,
+											   snapshot,
+											   sub->replication_sets,
+											   sub->slot_name,
+											   tables);
 
 					/* Store info about all the synchronized tables. */
 					StartTransactionCommand();

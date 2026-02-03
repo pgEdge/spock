@@ -16,7 +16,8 @@
 #include "spock_node.h"
 
 extern List *spock_get_remote_repset_tables(PGconn *conn,
-											List *replication_sets);
+											List *replication_sets,
+											List *skip_schema);
 extern SpockRemoteRel *spock_get_remote_repset_table(PGconn *conn,
 													 RangeVar *rv, List *replication_sets);
 
