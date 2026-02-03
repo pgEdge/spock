@@ -256,6 +256,10 @@ CREATE TABLE spock.resolutions (
     PRIMARY KEY(id, node_name)
 ) WITH (user_catalog_table=true);
 
+/*
+ * As part of the Spock sync protocol, this view is used to fetch the list of
+ * tables participating in a specific replication set.
+ */
 CREATE VIEW spock.TABLES AS
     WITH set_relations AS (
         SELECT s.set_name, r.set_reloid
@@ -352,9 +356,20 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_synchron
 CREATE FUNCTION spock.table_data_filtered(reltyp anyelement, relation regclass, repsets text[])
 RETURNS SETOF anyelement CALLED ON NULL INPUT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_table_data_filtered';
 
-CREATE FUNCTION spock.repset_show_table(relation regclass, repsets text[], OUT relid oid, OUT nspname text,
-	OUT relname text, OUT att_list text[], OUT has_row_filter boolean, OUT relkind "char", OUT relispartition boolean)
-RETURNS record STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_repset_table_info';
+CREATE FUNCTION spock.repset_show_table(
+  relation           regclass,
+  repsets            text[],
+  OUT relid          oid,
+  OUT nspname        text,
+  OUT relname        text,
+  OUT att_list       text[],
+  OUT has_row_filter boolean,
+  OUT relkind        "char",
+  OUT relispartition boolean
+)
+RETURNS record
+AS 'MODULE_PATHNAME', 'spock_show_repset_table_info'
+LANGUAGE C STRICT STABLE;
 
 CREATE FUNCTION spock.sub_show_table(subscription_name name, relation regclass, OUT nspname text, OUT relname text, OUT status text)
 RETURNS record STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_subscription_table';

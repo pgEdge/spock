@@ -32,18 +32,21 @@
 #define atooid(x)  ((Oid) strtoul((x), NULL, 10))
 
 /*
- * Fetch list of tables that are grouped in specified replication sets.
+ * Fetch the list of tables that are grouped in the specified replication sets.
+ *
+ * Returns a list of SpockRemoteRel elements allocated in the current memory
+ * context.
  */
 List *
 spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 {
-	PGresult   *res;
-	int			i;
-	List	   *tables = NIL;
-	ListCell   *lc;
-	bool		first = true;
-	StringInfoData query;
-	StringInfoData repsetarr;
+	PGresult	   *res;
+	int				i;
+	List		   *tables = NIL;
+	ListCell	   *lc;
+	bool			first = true;
+	StringInfoData	query;
+	StringInfoData	repsetarr;
 
 	initStringInfo(&repsetarr);
 	foreach(lc, replication_sets)
@@ -59,32 +62,23 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 						 PQescapeLiteral(conn, repset_name, strlen(repset_name)));
 	}
 
+	/*
+	 * Collect data on each table from any requested replication set.
+	 */
 	initStringInfo(&query);
-	if (spock_remote_function_exists(conn, "spock", "repset_show_table", 2, NULL))
-	{
-		/* Spock 2.0+ */
-		appendStringInfo(&query,
-						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
-						 "       i.has_row_filter, i.relkind, i.relispartition"
-						 "  FROM (SELECT DISTINCT relid FROM spock.tables WHERE set_name = ANY(ARRAY[%s])) t,"
-						 "       LATERAL spock.repset_show_table(t.relid, ARRAY[%s]) i",
-						 repsetarr.data, repsetarr.data);
-	}
-	else
-	{
-		/* Spock 1.x */
-		appendStringInfo(&query,
-						 "SELECT r.oid AS relid, t.nspname, t.relname, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = r.oid AND NOT attisdropped AND attnum > 0) AS att_list,"
-						 "       false AS has_row_filter, r.relkind, r.relispartition"
-						 "  FROM spock.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
-						 " WHERE t.set_name = ANY(ARRAY[%s]) AND r.relname = t.relname AND n.oid = r.relnamespace AND n.nspname = t.nspname",
-						 repsetarr.data);
-	}
-
+	appendStringInfo(&query,
+					 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
+					 "       i.has_row_filter, i.relkind, i.relispartition"
+					 "  FROM (SELECT DISTINCT relid FROM spock.tables WHERE set_name = ANY(ARRAY[%s])) t,"
+					 "       LATERAL spock.repset_show_table(t.relid, ARRAY[%s]) i",
+					 repsetarr.data, repsetarr.data);
 	res = PQexec(conn, query.data);
-	/* TODO: better error message? */
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		elog(ERROR, "could not get table list: %s", PQresultErrorMessage(res));
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("could not fetch table list from provider"),
+				 errdetail("Replication sets: %s.", repsetarr.data),
+				 errhint("Provider error: %s", PQresultErrorMessage(res))));
 
 	for (i = 0; i < PQntuples(res); i++)
 	{
@@ -102,7 +96,8 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 
 		tables = lappend(tables, remoterel);
 	}
-
+	pfree(query.data);
+	pfree(repsetarr.data);
 	PQclear(res);
 
 	return tables;

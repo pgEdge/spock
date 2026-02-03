@@ -2441,11 +2441,14 @@ spock_node_info(PG_FUNCTION_ARGS)
 }
 
 /*
- * Get replication info about table.
+ * Get replication info about a table.
  *
- * This is called by downstream sync worker on the upstream to obtain
- * info needed to do initial synchronization correctly. Be careful
- * about changing it, as it must be upward- and downward-compatible.
+ * Combines replication actions, attribute maps, and filters across all
+ * replication sets where this table participates.
+ *
+ * This is called by the downstream sync worker on the upstream to obtain
+ * info needed to do initial synchronization correctly. Be careful about
+ * changing it, as it must be upward- and downward-compatible.
  */
 Datum
 spock_show_repset_table_info(PG_FUNCTION_ARGS)
