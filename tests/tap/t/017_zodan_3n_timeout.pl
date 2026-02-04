@@ -48,7 +48,7 @@ psql_or_bail(1, "ALTER FUNCTION spock.sync_event() RENAME TO sync_event_renamed"
 print STDERR "Attempt add_node from N2 to N1 (should fail quickly with error)\n";
 my $start_time = time();
 
-# Use scalar_query which doesn't die on error - we expect this to fail
+# scalar_query uses backticks which don't throw exceptions - check $? for exit code
 my $result = scalar_query(2, qq{
     CALL spock.add_node(
         src_node_name := 'n1',
@@ -57,13 +57,15 @@ my $result = scalar_query(2, qq{
         new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
         verb := false
     )});
+my $exit_code = $? >> 8;
 
 my $elapsed_time = time() - $start_time;
-print STDERR "add_node call completed in $elapsed_time seconds\n";
+print STDERR "add_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
 
 # The call should fail quickly (well under 1200 seconds which is default timeout)
 # We expect it to fail within a few seconds since it should error immediately
 ok($elapsed_time < 600, "add_node failed quickly (${elapsed_time}s < 600s), not waiting for timeout");
+ok($exit_code != 0, "add_node failed as expected when sync_event is missing (exit code: $exit_code)");
 
 # Restore sync_event function on N1 for cleanup
 print STDERR "Restore spock.sync_event() on N1\n";
@@ -93,7 +95,7 @@ psql_or_bail(2, qq{
     )});
 
 # Should fail quickly
-scalar_query(3, qq{
+$result = scalar_query(3, qq{
     CALL spock.add_node(
         src_node_name := 'n1',
         src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
@@ -101,9 +103,13 @@ scalar_query(3, qq{
         new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
         verb := false
     )});
+$exit_code = $? >> 8;
+
 $elapsed_time = time() - $start_time;
-print STDERR "add_node call completed in $elapsed_time seconds\n";
+print STDERR "add_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
+
 ok($elapsed_time < 600, "add_node on n3 failed quickly");
+ok($exit_code != 0, "add_node failed as expected when pg_replication_slot_advance is missing (exit code: $exit_code)");
 
 psql_or_bail(2, "ALTER FUNCTION pg_replication_slot_advance_renamed RENAME TO pg_replication_slot_advance");
 
@@ -119,7 +125,8 @@ print STDERR "Check: quick fail if something happens during subscription creatio
 
 psql_or_bail(1, "ALTER FUNCTION spock.sub_create RENAME TO sub_create_renamed");
 $start_time = time();
-scalar_query(3, qq{
+
+$result = scalar_query(3, qq{
     CALL spock.add_node(
         src_node_name := 'n1',
         src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
@@ -127,9 +134,14 @@ scalar_query(3, qq{
         new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
         verb := false
     )});
+$exit_code = $? >> 8;
+
 $elapsed_time = time() - $start_time;
-print STDERR "add_node call completed in $elapsed_time seconds\n";
+print STDERR "add_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
+
 ok($elapsed_time < 600, "add_node on n3 failed quickly");
+ok($exit_code != 0, "add_node failed as expected when sub_create is missing (exit code: $exit_code)");
+
 psql_or_bail(1, "ALTER FUNCTION spock.sub_create_renamed RENAME TO sub_create");
 
 # Clean leftovers of node-3 in the Spock cluster caused by unsuccessful addition

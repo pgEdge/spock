@@ -25,7 +25,7 @@ DROP PROCEDURE IF EXISTS spock.create_new_to_source_subscription(text, text, tex
 DROP PROCEDURE IF EXISTS spock.create_source_to_new_subscription(text, text, text, text, boolean);
 DROP PROCEDURE IF EXISTS spock.trigger_sync_on_other_nodes_and_wait_on_source(text, text, text, text, boolean);
 DROP PROCEDURE IF EXISTS spock.check_commit_timestamp_and_advance_slot(text, text, text, text, boolean);
-DROP PROCEDURE IF EXISTS spock.present_final_cluster_state(integer, boolean);
+DROP PROCEDURE IF EXISTS spock.present_final_cluster_state(text, integer, boolean);
 DROP PROCEDURE IF EXISTS spock.add_node(text, text, text, text, boolean, text, text, jsonb);
 
 -- Drop temporary table if it exists
