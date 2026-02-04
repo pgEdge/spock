@@ -2,28 +2,62 @@
 
 `spock.repset-add-partition ()`
 
-## SYNOPSIS
+### SYNOPSIS
 
-`spock.repset-add-partition (PARENT_TABLE DB <flags>)`
- 
-## DESCRIPTION
-    
-Add a partition to the same replication set that the parent table is a part of. 
+spock.repset_add_partition (
+    parent regclass,
+    partition regclass,
+    row_filter text)
 
-## EXAMPLE
+### RETURNS
 
-`spock.repset-add-partition (mytable demo --partition=mytable_202012)`
- 
-## POSITIONAL ARGUMENTS
-    PARENT_TABLE
-        The name of the parent table. Example: mytable
-    DB
-        The name of the database. Example: demo
- 
-## FLAGS
-    -p, --partition=PARTITION
-        The name of the partition. If none is provided, it will add all unreplicated partitions to the replication set. Example: mytable_202012
-    
-    -r, --row_filter=ROW_FILTER
-        The row filtering expression. Example: my_id = 1001
-    
+An integer status code indicating the result of the operation.
+
+### DESCRIPTION
+
+Adds a partition of a table to the same replication set(s) as its parent
+table.
+
+This function is used when working with partitioned tables to ensure that
+new or existing partitions are properly included in replication. If the
+partition argument is omitted, Spock automatically discovers and adds all
+partitions of the specified parent table.
+
+An optional row_filter can be supplied to limit which rows from the
+partition are replicated.
+
+This function writes metadata into the Spock catalogs and does not modify
+PostgreSQL configuration.
+
+This command must be executed by a superuser.
+
+### ARGUMENTS
+
+parent
+
+    The parent partitioned table, specified as a regclass.
+
+partition
+
+    A specific partition table to add. If omitted, all
+    partitions of the parent are added. The default is NULL.
+
+row_filter
+
+    An optional SQL expression used to filter which rows
+    from the partition are replicated. The default is NULL.
+
+### EXAMPLE
+
+Add all partitions of a parent table (named public.sales_parent) to
+replication:
+
+SELECT spock.repset_add_partition('public.sales_parent');
+
+Add a specific partition (named public.sales_2026_q1) with a row filter:
+
+SELECT spock.repset_add_partition(
+    'public.sales_parent',
+    'public.sales_2026_q1',
+    'region = ''US'''
+);
