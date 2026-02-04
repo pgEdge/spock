@@ -128,8 +128,8 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 		}
 
 		/* Get the two nodes for their "tiebreaker" */
-		loc_node = get_node(local_origin_id);
-		rmt_node = get_node(remote_origin_id);
+		loc_node = get_node(local_origin_id, false);
+		rmt_node = get_node(remote_origin_id, false);
 
 		if (loc_node->tiebreaker == rmt_node->tiebreaker)
 		{

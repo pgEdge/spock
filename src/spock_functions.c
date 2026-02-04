@@ -191,7 +191,7 @@ PG_FUNCTION_INFO_V1(spock_get_lsn_from_commit_ts);
 /* Apply Group */
 PG_FUNCTION_INFO_V1(get_apply_group_progress);
 
-static void gen_slot_name(Name slot_name, char *dbname,
+extern void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
 static XLogRecPtr skip_wal_records_decoding(bool enable);
@@ -2874,7 +2874,7 @@ spock_gen_slot_name(PG_FUNCTION_ARGS)
  * Note that we want to leave enough free space for 8 bytes of suffix
  * which in practice means 9 bytes including the underscore.
  */
-static void
+void
 gen_slot_name(Name slot_name, char *dbname, const char *provider_node,
 			  const char *subscription_name)
 {

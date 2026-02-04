@@ -91,8 +91,17 @@ static bool in_remote_transaction = false;
 static bool first_begin_at_startup = true;
 static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
 static RepOriginId remote_origin_id = InvalidRepOriginId;
+static char *remote_origin_name = NULL;
 static TimeOffset apply_delay = 0;
 static TimestampTz required_commit_ts = 0;
+
+/*
+ * Cache for forwarded origin lookup. The remote_origin_id (Spock node ID)
+ * is consistent across the cluster, so we can use it as a cache key to
+ * avoid repeated slot name generation and origin lookups.
+ */
+static RepOriginId cached_forward_remote_id = InvalidRepOriginId;
+static RepOriginId cached_forward_local_id = InvalidRepOriginId;
 
 static Oid	QueueRelid = InvalidOid;
 
@@ -226,6 +235,7 @@ static void append_feedback_position(XLogRecPtr recvpos);
 static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
 								  XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
 static void UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted);
+static void maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception);
 
 /* Wrapper for latch for waiting for previous transaction to commit */
 void
@@ -479,6 +489,15 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_timestamp = commit_time;
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
+	/*
+	 * Free and clear remote_origin_name - it's allocated in TopMemoryContext
+	 * to avoid MessageContext corruption issues.
+	 */
+	if (remote_origin_name != NULL)
+	{
+		pfree(remote_origin_name);
+		remote_origin_name = NULL;
+	}
 
 	elog(DEBUG1, "SPOCK %s: current commit ts is: " INT64_FORMAT,
 		 MySubscription->name,
@@ -903,51 +922,11 @@ handle_commit(StringInfo s)
 	}
 
 	/*
-	 * If the xact isn't from the immediate upstream, advance the slot of the
-	 * node it originally came from so we start replay of that node's change
-	 * data at the right place.
-	 *
-	 * This is only necessary when we're streaming data from one peer (A) that
-	 * in turn receives from other peers (B, C), and we plan to later switch
-	 * to replaying directly from B and/or C, no longer receiving forwarded
-	 * xacts from A. When we do the switchover we need to know the right place
-	 * at which to start replay from B and C. We don't actually do that yet,
-	 * but we'll want to be able to do cascaded initialisation in future, so
-	 * it's worth keeping track.
-	 *
-	 * A failure can occur here (see #79) if there's a cascading replication
-	 * configuration like:
-	 *
-	 * X--> Y -> Z |         ^ |         | \---------/
-	 *
-	 * where the direct and indirect connections from X to Z use different
-	 * replication sets so as not to conflict, and where Y and Z are on the
-	 * same PostgreSQL instance. In this case our attempt to advance the
-	 * replication identifier here will ERROR because it's already in use for
-	 * the direct connection from X to Z. So don't do that.
+	 * For forwarded transactions, advance the replication origin for the
+	 * original source node. This is done outside the IsTransactionState()
+	 * block because it starts its own transaction.
 	 */
-#if 0
-
-	/*
-	 * XXX: This needs to be redone with Spock style forwarding in mind.
-	 */
-	if (remote_origin_id != InvalidRepOriginId &&
-		remote_origin_id != replorigin_session_origin)
-	{
-		Relation	replorigin_rel;
-
-		elog(DEBUG3, "SPOCK %s: advancing origin oid %u for forwarded "
-			 "row to %X/%X",
-			 MySubscription->name,
-			 remote_origin_id,
-			 (uint32) (XactLastCommitEnd >> 32), (uint32) XactLastCommitEnd);
-
-		replorigin_rel = table_open(ReplicationOriginRelationId, RowExclusiveLock);
-		replorigin_advance(remote_origin_id, remote_origin_lsn,
-						   XactLastCommitEnd, false, false /* XXX ? */ );
-		table_close(replorigin_rel, RowExclusiveLock);
-	}
-#endif
+	maybe_advance_forwarded_origin(end_lsn, xact_had_exception);
 
 transdiscard_skip_commit:
 	/* Update the entry in the progress table. */
@@ -1087,12 +1066,24 @@ handle_origin(StringInfo s)
 			 MySubscription->name);
 
 	/*
+	 * Free previous origin name if any.
+	 */
+	if (remote_origin_name != NULL)
+	{
+		pfree(remote_origin_name);
+		remote_origin_name = NULL;
+	}
+
+	/*
 	 * Read the message and adjust the replorigin_session_origin to the real
 	 * origin_id. PostgreSQL builtin logical replication uses the non-sensical
 	 * roident, which is linked to the slot of the provider and has nothing to
 	 * do with the actual origin of the original transaction.
+	 *
+	 * The origin_name is also read and stored for use in handle_commit() to
+	 * advance the forwarded origin's LSN tracking.
 	 */
-	remote_origin_id = spock_read_origin(s, &remote_origin_lsn);
+	remote_origin_id = spock_read_origin(s, &remote_origin_lsn, &remote_origin_name);
 	replorigin_session_origin = remote_origin_id;
 }
 
@@ -3221,6 +3212,12 @@ stream_replay:
 		first_begin_at_startup = true;
 		remote_origin_lsn = InvalidXLogRecPtr;
 		remote_origin_id = InvalidRepOriginId;
+		/* Free origin name - it's in TopMemoryContext, not MessageContext */
+		if (remote_origin_name != NULL)
+		{
+			pfree(remote_origin_name);
+			remote_origin_name = NULL;
+		}
 
 		/* Don't want to use goto inside of PG_CATCH() */
 		need_replay = true;
@@ -3926,4 +3923,106 @@ maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 		*last_receive_timestamp = now;
 		w_message_count = 0;
 	}
+}
+
+/*
+ * Advance the replication origin for forwarded transactions.
+ *
+ * In cascade replication (A -> B -> C with forward_origins='all'), when C
+ * receives transactions that originated on A (forwarded through B), we track
+ * C's position relative to A by maintaining a separate replication origin.
+ *
+ * This enables seamless switchover: if C later subscribes directly to A,
+ * the origin will already exist with the correct LSN, so C knows where to
+ * start receiving from A.
+ *
+ * The origin is named using slot name format (spk_<db>_<source>_<subscriber>)
+ * for consistency with direct subscriptions.
+ *
+ * We cache the remote_origin_id -> local_origin_id mapping since the Spock
+ * node ID is stable across the cluster (set by commit f60484e).
+ */
+static void
+maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception)
+{
+	RepOriginId	forwarded_origin;
+
+	/*
+	 * Only advance for forwarded transactions (origin differs from our direct
+	 * provider) that completed without exceptions.
+	 */
+	if (xact_had_exception ||
+		remote_origin_id == InvalidRepOriginId ||
+		remote_origin_id == MySubscription->origin->id ||
+		remote_origin_name == NULL)
+		return;
+
+	/*
+	 * Check cache first. The remote_origin_id (Spock node ID) is stable
+	 * for a given source node, so we can reuse the local origin ID.
+	 */
+	if (remote_origin_id == cached_forward_remote_id &&
+		cached_forward_local_id != InvalidRepOriginId)
+	{
+		forwarded_origin = cached_forward_local_id;
+
+		elog(DEBUG2, "SPOCK %s: advancing forwarded origin (cached, oid %u) "
+			 "remote_lsn %X/%X end_lsn %X/%X",
+			 MySubscription->name,
+			 forwarded_origin,
+			 (uint32) (remote_origin_lsn >> 32), (uint32) remote_origin_lsn,
+			 (uint32) (end_lsn >> 32), (uint32) end_lsn);
+	}
+	else
+	{
+		/*
+		 * Cache miss - look up or create the origin. Use slot name format
+		 * (spk_<db>_<provider>_<subscription>) for consistency with direct
+		 * subscriptions.
+		 */
+		Relation	replorigin_rel;
+		NameData	slot_name;
+		char	   *dbname;
+
+		StartTransactionCommand();
+
+		dbname = get_database_name(MyDatabaseId);
+		gen_slot_name(&slot_name, dbname, remote_origin_name,
+					  MySubscription->name);
+
+		elog(DEBUG2, "SPOCK %s: advancing forwarded origin '%s' (from node '%s') "
+			 "remote_lsn %X/%X end_lsn %X/%X",
+			 MySubscription->name,
+			 NameStr(slot_name),
+			 remote_origin_name,
+			 (uint32) (remote_origin_lsn >> 32), (uint32) remote_origin_lsn,
+			 (uint32) (end_lsn >> 32), (uint32) end_lsn);
+
+		replorigin_rel = table_open(ReplicationOriginRelationId, RowExclusiveLock);
+		forwarded_origin = replorigin_by_name(NameStr(slot_name), true);
+
+		if (forwarded_origin == InvalidRepOriginId)
+		{
+			forwarded_origin = replorigin_create(NameStr(slot_name));
+			elog(DEBUG2, "SPOCK %s: created replication origin '%s' (oid %u) "
+				 "for forwarded transactions from node '%s'",
+				 MySubscription->name, NameStr(slot_name), forwarded_origin,
+				 remote_origin_name);
+		}
+
+		table_close(replorigin_rel, RowExclusiveLock);
+		CommitTransactionCommand();
+		MemoryContextSwitchTo(MessageContext);
+
+		/* Update cache */
+		cached_forward_remote_id = remote_origin_id;
+		cached_forward_local_id = forwarded_origin;
+	}
+
+	/* Advance the origin */
+	StartTransactionCommand();
+	replorigin_advance(forwarded_origin, remote_origin_lsn,
+					   end_lsn, false, false);
+	CommitTransactionCommand();
+	MemoryContextSwitchTo(MessageContext);
 }

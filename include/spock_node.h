@@ -62,7 +62,7 @@ typedef struct SpockSubscription
 extern void create_node(SpockNode *node);
 extern void drop_node(Oid nodeid);
 
-extern SpockNode *get_node(Oid nodeid);
+extern SpockNode *get_node(Oid nodeid, bool missing_ok);
 extern SpockNode *get_node_by_name(const char *name, bool missing_ok);
 
 extern void create_node_interface(SpockInterface *node);
