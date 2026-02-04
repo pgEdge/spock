@@ -1141,7 +1141,7 @@ BEGIN
         RAISE NOTICE '    OK: %', rpad('Creating new node ' || new_node_name || '...', 120, ' ');
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE NOTICE '    ✗ %', rpad('Creating new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+            RAISE EXCEPTION '    ✗ %', rpad('Creating new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
             RAISE;
     END;
 
@@ -1259,7 +1259,7 @@ BEGIN
             RAISE NOTICE '    OK: %', rpad('Triggering sync event on node ' || src_node_name || ' (LSN: ' || remotesql || ')', 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Triggering sync event on node ' || src_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+                RAISE EXCEPTION '    ✗ %', rpad('Triggering sync event on node ' || src_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
 
         RAISE NOTICE '    - 2-node scenario: sync event stored, skipping disabled subscriptions';
@@ -1270,8 +1270,6 @@ BEGIN
     FOR rec IN SELECT * FROM temp_spock_nodes
 	           WHERE node_name != src_node_name AND node_name != new_node_name
 	LOOP
-		sub_name := 'sub_' || rec.node_name || '_' || new_node_name;
-
         -- Trigger sync event on origin node and store LSN
         BEGIN
             RAISE NOTICE '    - 3+ node scenario: sync event stored, skipping disabled subscriptions';
@@ -1286,7 +1284,7 @@ BEGIN
             RAISE NOTICE '    OK: %', rpad('Triggering sync event on node ' || rec.node_name || ' (LSN: ' || remotesql || ')', 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Triggering sync event on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+                RAISE EXCEPTION '    ✗ %', rpad('Triggering sync event on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
                 CONTINUE;
         END;
 
@@ -1328,6 +1326,7 @@ BEGIN
 
         -- Create disabled subscription on new node from "other" node
         BEGIN
+			sub_name := 'sub_' || rec.node_name || '_' || new_node_name;
             CALL spock.create_sub(
                 new_node_dsn,                                 -- Create on new node
                 sub_name, 									  -- sub_<new_node>_<other_node>
