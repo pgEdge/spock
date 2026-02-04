@@ -344,9 +344,9 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
  * Load the info for specific node.
  */
 SpockNode *
-get_node(Oid nodeid)
+get_node(Oid nodeid, bool missing_ok)
 {
-	SpockNode  *node;
+	SpockNode  *node = NULL;
 	RangeVar   *rv;
 	Relation	rel;
 	SysScanDesc scan;
@@ -366,9 +366,12 @@ get_node(Oid nodeid)
 	tuple = systable_getnext(scan);
 
 	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "node %u not found", nodeid);
-
-	node = node_fromtuple(tuple, RelationGetDescr(rel));
+	{
+		if (!missing_ok)
+			elog(ERROR, "node %u not found", nodeid);
+	}
+	else
+		node = node_fromtuple(tuple, RelationGetDescr(rel));
 
 	systable_endscan(scan);
 	table_close(rel, RowExclusiveLock);
@@ -564,7 +567,7 @@ get_local_node(bool for_update, bool missing_ok)
 	table_close(rel, for_update ? NoLock : RowExclusiveLock);
 
 	res = (SpockLocalNode *) palloc(sizeof(SpockLocalNode));
-	res->node = get_node(nodeid);
+	res->node = get_node(nodeid, false);
 	res->node_if = get_node_interface(nodeifid);
 
 	return res;
@@ -1068,8 +1071,8 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 	sub->slot_name = pstrdup(NameStr(subtup->sub_slot_name));
 	sub->skip_schema = NIL;		/* Initialize to avoid memory corruption */
 
-	sub->origin = get_node(subtup->sub_origin);
-	sub->target = get_node(subtup->sub_target);
+	sub->origin = get_node(subtup->sub_origin, false);
+	sub->target = get_node(subtup->sub_target, false);
 	sub->origin_if = get_node_interface(subtup->sub_origin_if);
 	sub->target_if = get_node_interface(subtup->sub_target_if);
 

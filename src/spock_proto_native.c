@@ -270,14 +270,19 @@ spock_write_commit(StringInfo out, SpockOutputData *data,
  */
 void
 spock_write_origin(StringInfo out, const RepOriginId origin_id,
-				   XLogRecPtr origin_lsn)
+				   XLogRecPtr origin_lsn, const char *origin_name)
 {
 	uint8		flags = 0;
+	uint32		proto_version = spock_get_proto_version();
 
 	Assert(origin_id != InvalidRepOriginId);
 
+	/* Set flag if origin_name is provided (protocol 5+ only) */
+	if (proto_version >= 5 && origin_name != NULL)
+		flags |= ORIGIN_FLAG_HAS_NAME;
+
 	/* Protocol version 5+ includes remote_insert_lsn at the beginning */
-	if (spock_get_proto_version() >= 5)
+	if (proto_version >= 5)
 		pq_sendint64(out, GetXLogWriteRecPtr());
 
 	pq_sendbyte(out, 'O');		/* ORIGIN */
@@ -288,6 +293,10 @@ spock_write_origin(StringInfo out, const RepOriginId origin_id,
 	/* send fields */
 	pq_sendint64(out, origin_lsn);
 	pq_sendint(out, origin_id, sizeof(RepOriginId));
+
+	/* send origin_name if flag is set (protocol 5+ only) */
+	if (flags & ORIGIN_FLAG_HAS_NAME)
+		pq_sendstring(out, origin_name);
 }
 
 /*
@@ -730,18 +739,33 @@ spock_read_commit(StringInfo in,
  * Read ORIGIN from the output stream.
  */
 RepOriginId
-spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
+spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn, char **origin_name)
 {
 	uint8		flags;
+	RepOriginId	origin_id;
 
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
-	Assert(flags == 0);
-	(void) flags;				/* unused */
 
 	/* read fields */
 	*origin_lsn = pq_getmsgint64(in);
-	return pq_getmsgint(in, sizeof(RepOriginId));
+	origin_id = pq_getmsgint(in, sizeof(RepOriginId));
+
+	/* read origin_name if flag is set (protocol 5+ only) */
+	if (flags & ORIGIN_FLAG_HAS_NAME)
+	{
+		const char *name = pq_getmsgrawstring(in);
+
+		if (origin_name != NULL)
+			*origin_name = MemoryContextStrdup(TopMemoryContext, name);
+		/* else: caller doesn't want it, just discard */
+	}
+	else if (origin_name != NULL)
+	{
+		*origin_name = NULL;
+	}
+
+	return origin_id;
 }
 
 /*
