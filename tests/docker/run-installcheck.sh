@@ -17,11 +17,9 @@ BINDIR="$(${PG_CONFIG} --bindir)"
 LIBDIR="$(${PG_CONFIG} --libdir)"
 PG_REGRESS="${LIBDIR}/postgresql/pgxs/src/test/regress/pg_regress"
 
-# PostgreSQL source directory (cloned in Docker build)
-PG_SRC_DIR="/home/pgedge/postgres"
-
 # Standard PostgreSQL regression test directory (from source)
-INPUTDIR="${PG_SRC_DIR}/src/test/regress"
+# PG_SRCDIR is set in .bashrc (sourced above)
+INPUTDIR="${PG_SRCDIR}/src/test/regress"
 SCHEDULE="${INPUTDIR}/parallel_schedule"
 
 # Output directory for regression results
