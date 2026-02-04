@@ -1249,6 +1249,17 @@ handle_insert(StringInfo s)
 		{
 			spock_apply_heap_mi_add_tuple(rel, &newtup);
 			last_insert_rel_cnt++;
+
+			/*
+			 * Close replication step to satisfy corresponding 'begin' routine.
+			 * TODO: multi-insert code should be revised one day: it is not
+			 * obvious why we push and pop transactional snapshot on each tuple
+			 * as well as how command counter increment really works here in
+			 * absence of actual INSERT - following update may need to refer
+			 * this tuple and what's then?
+			 */
+			end_replication_step();
+
 			MemoryContextSwitchTo(oldcontext);
 			MemoryContextReset(ApplyOperationContext);
 			return;
