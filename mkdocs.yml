@@ -83,10 +83,15 @@ nav:
     - Subscription Mgmt Functions: spock_functions/sub_mgmt.md
     - Cluster Mgmt Functions: spock_functions/gen_mgmt.md
     - Function Reference:
+      - spock.gen_slot_name.md(): spock_functions/functions/spock_gen_slot_name.md
+      - spock.get_country(): spock_functions/functions/spock_get_country.md
+      - spock.max_proto_version(): spock_functions/functions/spock_max_proto_version.md
+      - spock.min_proto_version(): spock_functions/functions/spock_min_proto_version.md
       - spock.node_add_interface(): spock_functions/functions/spock_node_add_interface.md
       - spock.node_create(): spock_functions/functions/spock_node_create.md
       - spock.node_drop(): spock_functions/functions/spock_node_drop.md
       - spock.node_drop_interface(): spock_functions/functions/spock_node_drop_interface.md
+      - spock.node_info(): spock_functions/functions/spock_node_info.md
       - spock.replicate_ddl(): spock_functions/functions/spock_replicate_ddl.md
       - spock.repset_add_seq(): spock_functions/functions/spock_repset_add_seq.md
       - spock.repset_add_table(): spock_functions/functions/spock_repset_add_table.md
@@ -104,6 +109,7 @@ nav:
       - spock.seq_sync(): spock_functions/functions/spock_seq_sync.md
       - spock.sub_add_repset(): spock_functions/functions/spock_sub_add_repset.md
       - spock.sub_alter_interface(): spock_functions/functions/spock_sub_alter_interface.md
+      - spock.sub_alter_skiplsn(): spock_functions/functions/spock_sub_alter_skiplsn.md
       - spock.sub_create(): spock_functions/functions/spock_sub_create.md
       - spock.sub_disable(): spock_functions/functions/spock_sub_disable.md
       - spock.sub_drop(): spock_functions/functions/spock_sub_drop.md
@@ -113,7 +119,11 @@ nav:
       - spock.sub_show_status(): spock_functions/functions/spock_sub_show_status.md
       - spock.sub_show_table: spock_functions/functions/spock_sub_show_table.md
       - spock.sub_sync(): spock_functions/functions/spock_sub_sync.md
+      - spock.sync_event(): spock_functions/functions/spock_sync_event.md
       - spock.sub_wait_for_sync(): spock_functions/functions/spock_sub_wait_for_sync.md
+      - spock.version(): spock_functions/functions/spock_version.md
+      - spock.version_num(): spock_functions/functions/spock_version_num.md
+      - spock.wait_slot_confirm_lsn: spock_functions/functions/spock_wait_slot_confirm_lsn.md
   - Limitations: limitations.md
   - FAQ: FAQ.md
   - Release Notes: spock_release_notes.md
