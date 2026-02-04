@@ -108,7 +108,7 @@ jobs:
 
           # Copy regression output from n1 (where tests run)
           # pg_regress outputs to /home/pgedge/installcheck-output/
-          docker compose cp pgedge-n1:/home/pgedge/installcheck-output/regression.diffs installcheck-logs/
+          docker compose cp pgedge-n1:/home/pgedge/installcheck-output/regression.diffs installcheck-logs/ || true
           docker compose cp pgedge-n1:/home/pgedge/installcheck-output/regression.out installcheck-logs/ || true
           docker compose cp pgedge-n1:/home/pgedge/installcheck-output/results installcheck-logs/results/ || true
 
