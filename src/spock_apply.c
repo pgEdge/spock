@@ -970,7 +970,13 @@ transdiscard_skip_commit:
 			.remote_commit_lsn = commit_lsn,
 			/* Ensure invariant: received_lsn >= remote_commit_lsn */
 			.received_lsn = end_lsn,
-			/* Don't need to change remote_insert_lsn - it is done earlier */
+			/*
+			 * Include remote_insert_lsn for WAL persistence. This was already
+			 * updated in shmem by UpdateWorkerStats() earlier (either from
+			 * apply_work for protocol 5+, or from handle_commit for protocol 4).
+			 * Without this, crash recovery would lose remote_insert_lsn.
+			 */
+			.remote_insert_lsn = MyApplyWorker->apply_group->progress.remote_insert_lsn,
 			/* XXX: Could we use commit_ts value instead? */
 			.last_updated_ts = GetCurrentTimestamp(),
 			.updated_by_decode = true,
