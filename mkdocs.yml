@@ -101,10 +101,10 @@ nav:
       - spock.repset_alter(): spock_functions/functions/spock_repset_alter.md
       - spock.repset_create(): spock_functions/functions/spock_repset_create.md
       - spock.repset_drop(): spock_functions/functions/spock_repset_drop.md
-      - spock.repset_list_tables(): spock_functions/functions/spock_repset_list_tables.md
       - spock.repset_remove_partition(): spock_functions/functions/spock_repset_remove_partition.md
       - spock.repset_remove_seq(): spock_functions/functions/spock_repset_remove_seq.md
       - spock.repset_remove_table(): spock_functions/functions/spock_repset_remove_table.md
+      - spock.repset_show_table(): spock_functions/functions/spock_repset_show_table.md
       - spock.table_wait_for_sync(): spock_functions/functions/spock_table_wait_for_sync.md
       - spock.seq_sync(): spock_functions/functions/spock_seq_sync.md
       - spock.sub_add_repset(): spock_functions/functions/spock_sub_add_repset.md
