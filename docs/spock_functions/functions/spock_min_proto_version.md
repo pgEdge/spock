@@ -4,12 +4,13 @@ spock.spock_min_proto_version()
 
 ### SYNOPSIS
 
-spock.spock_min_proto_version ()
+spock.spock_min_proto_version()
 
 ### RETURNS
 
-The minimum protocol version supported by the installed Spock extension as
-an integer.
+The minimum Spock protocol version supported by the installed Spock extension
+as an integer. The protocol version determines compatibility between Spock
+versions.
 
 ### DESCRIPTION
 
@@ -30,7 +31,7 @@ The protocol version is returned as an integer value. This minimum version
 ensures backward compatibility with older Spock releases while still
 allowing the use of newer protocol features when both nodes support them.
 
-This is a read-only query function that does not modify any data.
+This is a read-only query function that does not modify data.
 
 ### ARGUMENTS
 
@@ -38,4 +39,8 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-SELECT spock.spock_min_proto_version();
+postgres=# SELECT spock.spock_min_proto_version();
+ spock_min_proto_version 
+-------------------------
+                       3
+(1 row)

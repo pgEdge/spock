@@ -5,7 +5,7 @@ spock.repset_add_all_seqs()
 ### SYNOPSIS
 
 spock.repset_add_all_seqs (set_name name, schema_names text[],
-synchronize_data boolean DEFAULT false)
+synchronize_data boolean)
 
 ### RETURNS
 
@@ -29,8 +29,6 @@ each sequence is propagated to subscribers.
 
 This function writes metadata into the Spock catalogs to track which
 sequences are part of the replication set.
-
-Returns NULL if any argument is NULL.
 
 This command must be executed by a superuser.
 
@@ -56,7 +54,16 @@ synchronize_data
 
 ### EXAMPLE
 
-SELECT spock.repset_add_all_seqs('default', ARRAY['public']);
+You can specify one or more schemas in the call to repset_add_all_seqs.  The:
+first command adds the sequences in the 'public' schema to the 'default' 
+replication set:
 
-SELECT spock.repset_add_all_seqs('default', ARRAY['public', 'app'],
-    true);
+postgres=# SELECT spock.repset_add_all_seqs('default', ARRAY['public']);
+-[ RECORD 1 ]-------+--
+repset_add_all_seqs | t
+
+The following command adds all sequences in the schemas named 'public' and 'alice' to the 'default' replication set:
+
+postgres=# SELECT spock.repset_add_all_seqs('default', ARRAY['public', 'alice'],true);
+-[ RECORD 1 ]-------+--
+repset_add_all_seqs | t

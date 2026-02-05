@@ -65,7 +65,7 @@ named `n1` and `n2` that listen for Postgres server connections on port
 
     ```sql
     SELECT spock.node_create (node_name := 'n2', 
-           dsn :='host=<node_2_IP_address> port=<n2_port> =<db_name>');`
+           dsn :='host=<node_2_IP_address> port=<n2_port> dbname=<db_name>');`
     ```
 
 7. On `n1`, use the

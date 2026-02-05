@@ -12,8 +12,8 @@ spock.node_drop (node_name name, ifexists boolean DEFAULT false)
 
   - false if the node did not exist and ifexists was set to true.
 
-  - ERROR if the call has invalid parameters, insufficient privileges, or
-    the node cannot be removed due to existing dependencies.
+  - ERROR if the call has invalid parameters, if the invoker has insufficient
+    privileges, or the node cannot be removed due to existing dependencies.
 
 ### DESCRIPTION
 
@@ -28,16 +28,8 @@ If ifexists is set to false (default), an error is raised when the specified
 node does not exist. If ifexists is true, the function returns false
 instead of raising an error.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser and modifies Spock catalog
 tables.
-
-### EXAMPLE
-
-SELECT spock.node_drop('n1');
-
-SELECT spock.node_drop('n1', true);
 
 ### ARGUMENTS
 
@@ -49,3 +41,13 @@ ifexists
 
     If true, do not raise an error when the node does not exist; return
     false instead. Default is false.
+
+### EXAMPLE
+
+The following function call drops a node named 'n3':
+
+inventory=# SELECT spock.node_drop('n3');
+ node_drop 
+-----------
+ t
+(1 row)

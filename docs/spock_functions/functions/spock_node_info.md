@@ -29,7 +29,7 @@ This function queries the Spock catalogs and returns metadata about the
 current node, including its identifier, name, database information, and any
 optional descriptive fields that were set during node creation.
 
-This is a read-only query function that does not modify any data.
+This is a read-only query function that does not modify data.
 
 ### ARGUMENTS
 
@@ -37,4 +37,14 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-SELECT * FROM spock.node_info();
+postgres=# SELECT * FROM spock.node_info();
+
+-[ RECORD 1 ]----+--------------------------------------
+node_id          | 49708
+node_name        | n1
+sysid            | 7600444661598442547
+dbname           | postgres
+replication_sets | "default",default_insert_only,ddl_sql
+location         | 
+country          | 
+info             | 

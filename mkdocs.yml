@@ -83,7 +83,7 @@ nav:
     - Subscription Mgmt Functions: spock_functions/sub_mgmt.md
     - Cluster Mgmt Functions: spock_functions/gen_mgmt.md
     - Function Reference:
-      - spock.gen_slot_name.md(): spock_functions/functions/spock_gen_slot_name.md
+      - spock.gen_slot_name(): spock_functions/functions/spock_gen_slot_name.md
       - spock.get_country(): spock_functions/functions/spock_get_country.md
       - spock.max_proto_version(): spock_functions/functions/spock_max_proto_version.md
       - spock.min_proto_version(): spock_functions/functions/spock_min_proto_version.md
@@ -118,7 +118,6 @@ nav:
       - spock.sub_resync_table(): spock_functions/functions/spock_sub_resync_table.md
       - spock.sub_show_status(): spock_functions/functions/spock_sub_show_status.md
       - spock.sub_show_table: spock_functions/functions/spock_sub_show_table.md
-      - spock.sub_sync(): spock_functions/functions/spock_sub_sync.md
       - spock.sync_event(): spock_functions/functions/spock_sync_event.md
       - spock.sub_wait_for_sync(): spock_functions/functions/spock_sub_wait_for_sync.md
       - spock.version(): spock_functions/functions/spock_version.md

@@ -30,8 +30,6 @@ before removing it.
 This function writes metadata into the Spock catalogs but does not modify
 PostgreSQL server configuration or networking settings.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS
@@ -46,4 +44,10 @@ interface_name
 
 ### EXAMPLE
 
-SELECT spock.node_drop_interface('n1', 'private_net');
+The following example drops an interface named 'private_net':
+
+inventory=# SELECT spock.node_drop_interface('n3', 'private_net');
+ node_drop_interface 
+---------------------
+ t
+(1 row)

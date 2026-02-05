@@ -30,8 +30,6 @@ specified operation types are modified.
 This function updates metadata in the Spock catalogs and does not change
 PostgreSQL server configuration.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS

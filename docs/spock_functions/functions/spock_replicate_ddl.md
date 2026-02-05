@@ -4,9 +4,8 @@ spock.replicate_ddl()
 
 ### SYNOPSIS
 
-spock.replicate_ddl (command text[], replication_sets text[] DEFAULT
-'{ddl_sql}', search_path text DEFAULT current_setting('search_path'),
-role text DEFAULT CURRENT_USER)
+spock.replicate_ddl (command text[], replication_sets text[], search_path text,
+role text)
 
 ### RETURNS
 
@@ -36,8 +35,6 @@ context for the DDL command on both the provider and subscriber nodes.
 This function writes to the replication queue and modifies the database
 schema locally before propagating changes.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a user with sufficient privileges to execute
 the DDL command.
 
@@ -63,13 +60,30 @@ role
     The role (user) under which to execute the DDL command. Default is the
     current user.
 
-### EXAMPLE
+### EXAMPLES
 
-SELECT spock.replicate_ddl('CREATE TABLE users (id SERIAL PRIMARY KEY,
+The following command creates a table and instructs Spock to replicate the
+DDL to other nodes:
+
+postgres=# SELECT spock.replicate_ddl('CREATE TABLE users (id SERIAL PRIMARY KEY,
     name TEXT)');
+-[ RECORD 1 ]-+--
+replicate_ddl | t
 
-SELECT spock.replicate_ddl('ALTER TABLE users ADD COLUMN email TEXT',
+The following command alters the table adding a column, and instructs Spock
+to replicate the DDL to other nodes:
+
+postgres=# SELECT spock.replicate_ddl('ALTER TABLE users ADD COLUMN email TEXT',
     '{default,ddl_sql}');
+-[ RECORD 1 ]-+--
+replicate_ddl | t
 
-SELECT spock.replicate_ddl(ARRAY['CREATE TABLE orders (id SERIAL)',
+The following command creates a table and an index on the tables, and
+instructs Spock to replicate DDL to other nodes:
+
+postgres=# SELECT spock.replicate_ddl(ARRAY['CREATE TABLE orders (id SERIAL)',
     'CREATE INDEX ON orders(id)']);
+-[ RECORD 1 ]-+--
+replicate_ddl | t
+-[ RECORD 2 ]-+--
+replicate_ddl | t

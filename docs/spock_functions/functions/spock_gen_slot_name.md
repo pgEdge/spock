@@ -20,7 +20,7 @@ based on the database name, provider node name, and subscription name. The
 generated name follows Spock's internal naming scheme to ensure uniqueness
 and traceability.
 
-This is a pure function that performs a calculation without accessing the
+This function that performs a calculation without accessing the
 database or modifying any data. It can be used to predict what slot name
 Spock will generate for a given subscription configuration.
 
@@ -40,4 +40,11 @@ subscription
 
 ### EXAMPLE
 
-SELECT spock.spock_gen_slot_name('postgres', 'n1', 'sub_n2_n1');
+The following example executes the function; the database name is postgres,
+the node name is n1, and the subscription name is sub_n2n1:
+
+postgres=# SELECT spock.spock_gen_slot_name('postgres', 'n1', 'sub_n2n1');
+   spock_gen_slot_name    
+--------------------------
+ spk_postgres_n1_sub_n2n1
+(1 row)

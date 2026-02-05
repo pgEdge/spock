@@ -32,8 +32,6 @@ The function will continue waiting indefinitely until synchronization
 completes, so callers should ensure the subscription is actively processing
 and that there are no blocking issues preventing sync completion.
 
-Returns NULL if the subscription_name argument is NULL.
-
 ### ARGUMENTS
 
 subscription_name

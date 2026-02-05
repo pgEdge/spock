@@ -4,12 +4,13 @@ spock.spock_max_proto_version()
 
 ### SYNOPSIS
 
-spock.spock_max_proto_version ()
+spock.spock_max_proto_version()
 
 ### RETURNS
 
-The maximum protocol version supported by the installed Spock extension as
-an integer.
+The maximum spock protocol version supported by the installed Spock extension
+as an integer.  The protocol version determines compatibility between Spock
+versions.
 
 ### DESCRIPTION
 
@@ -28,7 +29,7 @@ different Spock releases.
 The protocol version is returned as an integer value. Higher numbers
 indicate newer protocol versions with additional features.
 
-This is a read-only query function that does not modify any data.
+This is a read-only query function that does not modify data.
 
 ### ARGUMENTS
 
@@ -36,4 +37,9 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-SELECT spock.spock_max_proto_version();
+postgres=# SELECT spock.spock_min_proto_version();
+ spock_min_proto_version 
+-------------------------
+                       4
+(1 row)
+

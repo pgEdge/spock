@@ -4,8 +4,8 @@ spock.node_create()
 
 ### SYNOPSIS
 
-spock.node_create (node_name name, dsn text, location text DEFAULT NULL,
-country text DEFAULT NULL, info jsonb DEFAULT NULL)
+spock.node_create (node_name name, dsn text, location text,
+country text, info jsonb)
 
 ### RETURNS
 
@@ -25,9 +25,7 @@ are stored in the Spock catalogs but are not required for replication to
 function.
 
 This function writes metadata into the Spock catalogs but does not modify
-PostgreSQL server configuration or networking settings.
-
-Returns NULL if any argument is NULL.
+Postgres server configuration or networking settings.
 
 This command must be executed by a superuser.
 
@@ -45,18 +43,26 @@ dsn
 location
 
     Optional descriptive text indicating the physical or logical
-    location of the node.
+    location of the node. The default is NULL.
 
 country
 
-    Optional country code or name associated with the node.
+    Optional country code or name associated with the node. The default is 
+    NULL.
 
 info
 
     Optional JSONB field for storing arbitrary metadata about
-    the node.
+    the node.  The default is NULL.
 
 ### EXAMPLE
 
-SELECT spock.node_create('n1',
-    'host=10.0.0.10 port=5432 dbname=postgres');
+In the following example, Spock creates a node named n3, with a connection
+to a database named 'inventory':
+
+inventory=# SELECT spock.node_create('n3','host=10.0.0.12 port=5432 dbname=inventory');
+
+ node_create 
+-------------
+        9057
+(1 row)

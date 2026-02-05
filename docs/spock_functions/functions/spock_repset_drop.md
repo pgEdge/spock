@@ -30,13 +30,13 @@ objects that were in the dropped replication set. Subscriptions can be
 modified to remove the dropped replication set using
 spock.sub_remove_repset().
 
-The ifexists parameter controls error handling behavior. When set to true,
-the function returns false if the replication set does not exist instead of
-raising an error. This is useful in scripts where the replication set may
-or may not be present.
+The ifexists parameter controls error-handling behavior for the function;
+when set to true, the function returns false if the replication set does not
+exist instead of raising an error. This is useful in situations where the
+replication set may or may not be present.
 
 This function modifies the Spock catalogs but does not modify any user data
-or PostgreSQL server configuration.
+or the Postgres server configuration.
 
 ### ARGUMENTS
 
