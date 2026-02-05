@@ -10,7 +10,7 @@ spock.node_drop_interface (node_name name, interface_name name)
 
   - true if the interface was dropped successfully.
 
-  - false it the interface did not exist.
+  - false if the interface does not exist.
 
   - ERROR if the call has invalid parameters, insufficient privileges, or 
     the interface cannot be removed.

@@ -37,8 +37,8 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-postgres=# SELECT spock.spock_min_proto_version();
- spock_min_proto_version 
+postgres=# SELECT spock.spock_max_proto_version();
+ spock_max_proto_version
 -------------------------
                        4
 (1 row)

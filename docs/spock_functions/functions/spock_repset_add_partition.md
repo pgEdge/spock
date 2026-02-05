@@ -11,7 +11,11 @@ spock.repset_add_partition (
 
 ### RETURNS
 
-An integer status code indicating the result of the operation.
+  - 0 if the parent table is not a partitioned table or if all partitions
+    are already in the replication sets.
+
+  - A positive integer indicating the count of partitions successfully
+    added to replication sets.
 
 ### DESCRIPTION
 
@@ -49,15 +53,22 @@ row_filter
 
 ### EXAMPLE
 
-Add all partitions of a parent table (named public.sales_parent) to
-replication:
+Add all four partitions of a parent table (named 'public.sales_parent') to
+the replication set to which the parent belongs:
 
 SELECT spock.repset_add_partition('public.sales_parent');
+-[ RECORD 1 ]--------+--
+repset_add_partition | 4
 
-Add a specific partition (named public.sales_2026_q1) with a row filter:
+Add a specific partition (named public.sales_2026_q1) to the replication
+set to which the parent table belongs:
 
-SELECT spock.repset_add_partition(
+postgres=# SELECT spock.repset_add_partition(
     'public.sales_parent',
     'public.sales_2026_q1',
     'region = ''US'''
 );
+-[ RECORD 1 ]--------+--
+repset_add_partition | 1
+
+

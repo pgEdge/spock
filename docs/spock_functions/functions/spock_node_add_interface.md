@@ -43,7 +43,7 @@ dsn
     A PostgreSQL connection string that other nodes will use to connect to
     this node. The user in this string should equal the OS user. This
     connection string should be reachable from outside and match the one used
-    later in the sub-create command. Example: host=10.1.2.5 port= 5432
+    later in the sub-create command. Example: host=10.1.2.5 port=5432
     user=rocky
 
 ### EXAMPLE

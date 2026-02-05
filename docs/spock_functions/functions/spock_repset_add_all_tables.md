@@ -5,7 +5,7 @@ spock.repset_add_all_tables()
 ### SYNOPSIS
 
 spock.repset_add_all_tables (set_name name, schema_names text[],
-synchronize_data boolean DEFAULT false)
+synchronize_data boolean)
 
 ### RETURNS
 
@@ -31,8 +31,6 @@ set.
 This function writes metadata into the Spock catalogs to track which tables
 are part of the replication set.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS
@@ -52,7 +50,12 @@ synchronize_data
 
 ### EXAMPLE
 
-SELECT spock.repset_add_all_tables('default', ARRAY['public']);
+Specify the names of one or more schemas in an array to add all of the
+tables in the schemas to the specified replication set; the following
+command adds all of the tables in the public schema to the default
+replication set:
 
-SELECT spock.repset_add_all_tables('default', ARRAY['public', 'app'],
-    true);
+postgres=# SELECT spock.repset_add_all_tables('default', ARRAY['public']);
+-[ RECORD 1 ]---------+--
+repset_add_all_tables | t
+
