@@ -958,7 +958,6 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	PGconn	   *origin_conn;
 	PGconn	   *target_conn;
 	List	   *tables;
-	List	   *progress_entries_list = NIL;
 	ListCell   *lc;
 
 	/* Connect to origin node. */
@@ -1022,18 +1021,9 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	progress_entries_list = adjust_progress_info(origin_conn);
-
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
 	finish_copy_target_tx(target_conn);
-
-	/*
-	 * Match handling in copy_tables_data().
-	 * Update replication progress. We must do it after commit of the COPY.
-	 * Call below will free progress_entries_list
-	 */
-	spock_group_progress_update_list(progress_entries_list);
 
 	return tables;
 }
@@ -1170,6 +1160,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		PGconn	   *origin_conn_repl;
 		char	   *snapshot;
 		bool		use_failover_slot;
+		List	   *progress_entries_list = NIL;
 
 		elog(INFO, "initializing subscriber %s", sub->name);
 
@@ -1185,6 +1176,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
 												 sub->name, "snap");
 
+		progress_entries_list = adjust_progress_info(origin_conn);
 		snapshot = ensure_replication_slot_snapshot(origin_conn,
 													origin_conn_repl,
 													sub->slot_name,
@@ -1254,6 +1246,12 @@ spock_sync_subscription(SpockSubscription *sub)
 														snapshot,
 														sub->replication_sets,
 														sub->slot_name);
+
+					/*
+					 * Arrange replication status according to the just copied
+					 * data.
+					 */
+					spock_group_progress_update_list(progress_entries_list);
 
 					/* Store info about all the synchronized tables. */
 					StartTransactionCommand();
