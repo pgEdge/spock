@@ -1,38 +1,104 @@
 ## NAME
 
-`spock.sub_create()`
+spock.sub_create()
 
 ### SYNOPSIS
 
-`spock.sub_create (subscription_name name, provider_dsn text, repsets text[], sync_structure boolean,
-  sync_data boolean, forward_origins text[], apply_delay interval)`
- 
+spock.sub_create (subscription_name name, provider_dsn text,
+replication_sets text[], synchronize_structure boolean,
+synchronize_data boolean, forward_origins text[], apply_delay interval,
+force_text_transfer boolean, enabled boolean, skip_schema text[])
+
+### RETURNS
+
+The OID of the newly created subscription.
+
 ### DESCRIPTION
 
-Creates a subscription from current node to the provider node. The command does not wait for completion before returning to the caller.
+Creates a subscription from the current node to a provider node.
 
-The `subscription_name` is used as `application_name` by the replication connection. This means that it's visible in the `pg_stat_replication` monitoring view. It can also be used in `synchronous_standby_names` when Spock is used as part of a synchronous replication scenario.
+This function establishes a replication subscription that allows the current
+(subscriber) node to receive changes from the specified provider node. The
+subscription defines which replication sets to subscribe to and how to
+handle initial synchronization.
 
-Use `spock.sub_wait_for_sync(subscription_name)` to wait for the subscription to asynchronously start replicating and complete any needed schema and/or data sync.
+The command returns immediately without waiting for the subscription to
+complete its initialization. Use spock.sub_wait_for_sync() to wait for the
+subscription to finish synchronizing and begin replicating.
 
-### EXAMPLE 
+The subscription_name is used as the application_name for the replication
+connection, making it visible in pg_stat_replication. This can be useful for
+monitoring and for configuring synchronous_standby_names in synchronous
+replication scenarios.
 
-`spock.sub_create ('sub_n2n1', 'host=10.1.2.5 port=5432 user=rocky dbname=demo')`
- 
+This function writes metadata into the Spock catalogs and initiates a
+replication connection to the provider.
+
+Returns NULL if any required argument is NULL.
+
+This command must be executed by a superuser.
+
 ### ARGUMENTS
-    subscription_name 
-        The name of the subscription. Each subscription in a cluster must have a unique name.  The name is used as application_name by the replication connection. This means that the name is visible in the pg_stat_replication monitoring view. 
-    provider_dsn 
-        The connection string to a provider.
-    repsets
-        An array of existing replication sets to subscribe to; the default is {default,default_insert_only,ddl_sql}.
-    sync_structure
-        Specifies if Spock should synchronize the structure from provider to the subscriber; the default is false.
-    sync_data 
-        Specifies if Spock should synchronize data from provider to the subscriber, the default is true.
-    forward_origins
-        An array of origin names to forward; currently the only supported values are an empty array (don't forward any changes that didn't originate on provider node, useful for two-way replication between the nodes), or {all} which means replicate all changes no matter what is their origin. The default is {all}.
-    apply_delay
-        How much to delay replication; the default is 0 seconds.
-    force_text_transfer
-        Force the provider to replicate all columns using a text representation (which is slower, but may be used to change the type of a replicated column on the subscriber). The default is false.
+
+subscription_name
+
+    A unique name for the subscription. Must be unique across the cluster.
+    This name appears in pg_stat_replication as application_name.
+
+provider_dsn
+
+    A PostgreSQL connection string specifying how to connect to the
+    provider node.
+
+replication_sets
+
+    An array of replication set names to subscribe to. Accepted values
+    are default, default_insert_only, ddl_sql.
+
+synchronize_structure
+
+    If true, synchronize table and schema structure from the provider
+    before starting replication. Default is false.
+
+synchronize_data
+
+    If true, perform an initial data copy for all tables in the subscribed
+    replication sets. Default is false.
+
+forward_origins
+
+    Controls which changes to replicate based on their origin. Use '{}' to
+    only replicate changes originating on the provider (useful for
+    bidirectional replication). Use {all} to replicate all changes
+    regardless of origin. Default is '{}'.
+
+apply_delay
+
+    An interval specifying how long to delay applying changes from the
+    provider. Useful for delayed standby scenarios. Default is '0'.
+
+force_text_transfer
+
+    If true, replicate all columns using text representation. This is
+    slower but allows type conversions on the subscriber. Default is false.
+
+enabled
+
+    If true, the subscription is enabled immediately. If false, the
+    subscription is created but not activated. Default is true.
+
+skip_schema
+
+    An array of schema names to exclude from structure and data
+    synchronization. Default is '{}' (no schemas skipped).
+
+### EXAMPLE
+
+SELECT spock.sub_create('sub_n2_n1',
+    'host=10.0.0.10 port=5432 dbname=postgres');
+
+SELECT spock.sub_create('sub_n2_n1',
+    'host=10.0.0.10 port=5432 dbname=postgres',
+    replication_sets := '{default}',
+    synchronize_structure := true,
+    synchronize_data := true);

@@ -1,21 +1,49 @@
 ## NAME
 
-`spock.node_drop_interface()`
+spock.node_drop_interface()
 
 ### SYNOPSIS
 
-`spock.node_drop_interface (node_name name, interface_name name)`
- 
+spock.node_drop_interface (node_name name, interface_name name)
+
+### RETURNS
+
+  - true if the interface was dropped successfully.
+
+  - false it the interface did not exist.
+
+  - ERROR if the call has invalid parameters, insufficient privileges, or 
+    the interface cannot be removed.
+
 ### DESCRIPTION
 
-Drop an interface from a spock node. 
+Removes an existing network interface definition from a Spock node.
+
+This function deletes the interface definition from the Spock catalogs. It
+does not modify PostgreSQL server configuration or networking settings; it
+only removes Spock's logical representation of the interface.
+
+Other nodes that were using this interface to connect will no longer be able
+to use it. Ensure no active subscriptions are relying on this interface
+before removing it.
+
+This function writes metadata into the Spock catalogs but does not modify
+PostgreSQL server configuration or networking settings.
+
+Returns NULL if any argument is NULL.
+
+This command must be executed by a superuser.
+
+### ARGUMENTS
+
+node_name
+
+    The name of an existing Spock node.
+
+interface_name
+
+    The name of the interface to remove from the node.
 
 ### EXAMPLE
 
-`spock.node_drop_interface (n1 n1_2 demo)`
- 
-### POSITIONAL ARGUMENTS
-    node_name
-        The name of the node. Example: n1
-    interface_name
-        The interface name (the named DSN created with `spock node-add-interface`) to remove from the node. Example: n1_2
+SELECT spock.node_drop_interface('n1', 'private_net');
