@@ -23,8 +23,6 @@ subscribers of the replication set.
 This function updates metadata stored in the Spock catalogs and does not
 modify PostgreSQL configuration.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS
@@ -40,6 +38,10 @@ relation
 
 ### EXAMPLE
 
-Remove a sequence (public.order_id_seq) from a replication set (demo_repset):
+Remove a sequence (public.orders_id_seq) from a replication set (demo_repset):
 
-    SELECT spock.repset_remove_seq('demo_repset', 'public.order_id_seq');
+    postgres=# SELECT spock.repset_remove_seq('demo_repset', 'public.orders_id_seq');
+     repset_remove_seq 
+    -------------------
+     t
+    (1 row)

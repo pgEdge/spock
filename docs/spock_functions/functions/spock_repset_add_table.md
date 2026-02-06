@@ -39,8 +39,6 @@ child partitions are automatically included in the replication set.
 This function writes metadata into the Spock catalogs and does not modify
 PostgreSQL configuration.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS
@@ -76,20 +74,21 @@ include_partitions
 
 ### EXAMPLE
 
-Add a table named public.accounts to the demo_repset replication set with
-full replication:
+The following command adds a table named public.accounts to the demo_repset 
+replication set with full replication:
 
     SELECT spock.repset_add_table('demo_repset', 'public.accounts');
 
-Add a table named public.accounts to the demo_repset replication set, and
-synchronize existing data:
+The following command adds a table named public.accounts to the demo_repset 
+replication set, and synchronizes existing data:
 
     SELECT spock.repset_add_table('demo_repset',
         'public.accounts',
         synchronize_data := true);
 
-Add only specific columns (id and balance) from the public.accounts table to
-the demo_repset replication set, and filter the rows:
+The following command adds only specific columns (id and balance) from the
+public.accounts table to the demo_repset replication set, and filters the
+rows:
 
     SELECT spock.repset_add_table('demo_repset',
         'public.accounts',

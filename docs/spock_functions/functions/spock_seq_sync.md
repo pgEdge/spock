@@ -45,4 +45,10 @@ relation
 
 ### EXAMPLE
 
-    SELECT spock.sync_seq('public.my_sequence');
+The following command synchronizes a sequence named public.sales_order_no_seq:
+
+    postgres=# SELECT spock.sync_seq('public.sales_order_no_seq');
+    sync_seq 
+    ----------
+     t
+    (1 row)

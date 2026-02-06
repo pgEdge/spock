@@ -32,8 +32,6 @@ You can selectively disable specific operation types when creating the set.
 This function writes metadata into the Spock catalogs but does not alter any
 PostgreSQL server configuration.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS
@@ -60,9 +58,22 @@ replicate_truncate
 
 ### EXAMPLE
 
-    SELECT spock.repset_create('demo_repset');
+The following example creates a replication set named demo_repset; all
+operations are replicated to the set:
 
-    SELECT spock.repset_create('audit_only',
-        replicate_delete := false,
-        replicate_truncate := false);
+    postgres=# SELECT spock.repset_create('demo_repset');
+     repset_create 
+    ---------------
+        3356172311
+   (1 row)
 
+The following command creates a replication set named audit_only; only 
+INSERT and UPDATE statements are replicated:
+
+    postgres=# SELECT spock.repset_create('audit_only',
+            replicate_delete := false,
+            replicate_truncate := false);
+        repset_create 
+    ---------------
+    3744767607
+    (1 row)

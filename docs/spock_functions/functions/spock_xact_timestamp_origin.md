@@ -37,8 +37,6 @@ received.
 
 This is a read-only query function that does not modify any data.
 
-Returns NULL if the xid argument is NULL.
-
 ### ARGUMENTS
 
 xid

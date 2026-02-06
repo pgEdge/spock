@@ -4,9 +4,7 @@ spock.repset_show_table()
 
 ### SYNOPSIS
 
-spock.repset_show_table (relation regclass, repsets text[], OUT relid oid,
-OUT nspname text, OUT relname text, OUT att_list text[],
-OUT has_row_filter boolean, OUT relkind "char", OUT relispartition boolean)
+spock.repset_show_table (relation regclass, repsets text[])
 
 ### RETURNS
 
@@ -61,5 +59,16 @@ repsets
 
 ### EXAMPLE
 
-    SELECT * FROM spock.repset_show_table('public.mytable',
-    ARRAY['default', 'ddl_sql']);
+The following command shows detailed information about the public.invoices
+table:
+
+    postgres=# SELECT * FROM spock.repset_show_table('public.invoices',
+        ARRAY['default', 'ddl_sql']);
+    -[ RECORD 1 ]--+-----------------------------------------
+    relid          | 17241
+    nspname        | public
+    relname        | invoices
+    att_list       | {order_id,customer_id,order_date,amount}
+    has_row_filter | f
+    relkind        | r
+    relispartition | f

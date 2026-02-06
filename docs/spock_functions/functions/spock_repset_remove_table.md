@@ -26,8 +26,6 @@ whether all child partitions are also removed from the replication set.
 This function updates metadata stored in the Spock catalogs and does not
 modify the PostgreSQL configuration.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ARGUMENTS
@@ -48,13 +46,20 @@ include_partitions
 
 EXAMPLE
 
-    Remove a table (public.accounts) from a replication set (demo_repset):
+Remove a table (public.users) from the default replication set:
 
-    SELECT spock.repset_remove_table('demo_repset', 'public.accounts');
+    postgres=# SELECT spock.repset_remove_table('default', 'public.users');
+     repset_remove_table 
+    ---------------------
+     t
+    (1 row)
 
-    Remove a partitioned table named public.accounts from the demo_repset
-    replication set without removing its partitions:
+Remove a partitioned table named public.sales_parent from the default
+replication set without removing its partitions:
 
-    SELECT spock.repset_remove_table('demo_repset',
-        'public.accounts',
-        include_partitions := false);
+    postgres=# SELECT spock.repset_remove_table('default',
+    'public.users',
+    include_partitions := false);
+    ---------------------
+     t
+    (1 row)

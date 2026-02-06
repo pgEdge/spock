@@ -16,7 +16,7 @@ Returns the version number of the Spock extension.
 
 This function queries the Spock extension and returns its version as a text
 string. The version string typically follows semantic versioning format
-(e.g., "3.1.0" or "4.0.1").
+(e.g., "4.0.1" or "5.0.4").
 
 This is a read-only query function that does not modify any data.
 
@@ -26,4 +26,10 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-    SELECT spock.spock_version();
+The following command returns the Spock version:
+
+    postgres=# SELECT spock.spock_version();
+     spock_version 
+    ---------------
+     5.0.4
+    (1 row)

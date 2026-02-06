@@ -56,17 +56,28 @@ replicate_truncate
 
 ### EXAMPLE
 
-Enable all operations in the demo_repset replication set:
+The following command enables all operations in the demo_repset replication
+set:
 
-    SELECT spock.repset_alter('demo_repset',
-        replicate_insert := true,
-        replicate_update := true,
-        replicate_delete := true,
-        replicate_truncate := true);
+    postgres=# SELECT spock.repset_alter('demo_repset',
+            replicate_insert := true,
+            replicate_update := true,
+            replicate_delete := true,
+            replicate_truncate := true);
+     repset_alter 
+    --------------
+       3356172311
+    (1 row)
 
-Disable DELETE and TRUNCATE replication in the audit_only replication_set:
+The following command disables DELETE and TRUNCATE replication in the
+audit_only replication_set:
 
-    SELECT spock.repset_alter('audit_only',
+    postgres=# SELECT spock.repset_alter('audit_only',
         replicate_delete := false,
         replicate_truncate := false);
+    repset_alter 
+    --------------
+       3744767607
+    (1 row)
+
 

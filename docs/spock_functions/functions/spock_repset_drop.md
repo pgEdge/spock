@@ -51,4 +51,11 @@ ifexists
 
 ### EXAMPLE
 
-    SELECT spock.repset_drop('demo_repset', true);
+The following command drops a replication set named demo_repset; it does not
+raise an error if the set does not exist:
+
+    postgres=# SELECT spock.repset_drop('demo_repset', true);
+     repset_drop 
+    -------------
+     t
+    (1 row)
