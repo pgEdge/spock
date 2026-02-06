@@ -37,14 +37,14 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-postgres=# SELECT * FROM spock.node_info();
+    postgres=# SELECT * FROM spock.node_info();
 
--[ RECORD 1 ]----+--------------------------------------
-node_id          | 49708
-node_name        | n1
-sysid            | 7600444661598442547
-dbname           | postgres
-replication_sets | "default",default_insert_only,ddl_sql
-location         | 
-country          | 
-info             | 
+    -[ RECORD 1 ]----+--------------------------------------
+    node_id          | 49708
+    node_name        | n1
+    sysid            | 7600444661598442547
+    dbname           | postgres
+    replication_sets | "default",default_insert_only,ddl_sql
+    location         |
+    country          |
+    info             | 

@@ -55,7 +55,7 @@ tables in the schemas to the specified replication set; the following
 command adds all of the tables in the public schema to the default
 replication set:
 
-postgres=# SELECT spock.repset_add_all_tables('default', ARRAY['public']);
--[ RECORD 1 ]---------+--
-repset_add_all_tables | t
+    postgres=# SELECT spock.repset_add_all_tables('default', ARRAY['public']);
+    -[ RECORD 1 ]---------+--
+    repset_add_all_tables | t
 

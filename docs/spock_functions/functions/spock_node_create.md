@@ -60,9 +60,8 @@ info
 In the following example, Spock creates a node named n3, with a connection
 to a database named 'inventory':
 
-inventory=# SELECT spock.node_create('n3','host=10.0.0.12 port=5432 dbname=inventory');
-
- node_create 
--------------
-        9057
-(1 row)
+    inventory=# SELECT spock.node_create('n3','host=10.0.0.12 port=5432 dbname=inventory');
+     node_create
+    -------------
+            9057
+    (1 row)

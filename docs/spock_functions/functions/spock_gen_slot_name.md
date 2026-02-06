@@ -43,8 +43,8 @@ subscription
 The following example executes the function; the database name is postgres,
 the node name is n1, and the subscription name is sub_n2n1:
 
-postgres=# SELECT spock.spock_gen_slot_name('postgres', 'n1', 'sub_n2n1');
-   spock_gen_slot_name    
---------------------------
- spk_postgres_n1_sub_n2n1
-(1 row)
+    postgres=# SELECT spock.spock_gen_slot_name('postgres', 'n1', 'sub_n2n1');
+       spock_gen_slot_name
+    --------------------------
+     spk_postgres_n1_sub_n2n1
+    (1 row)

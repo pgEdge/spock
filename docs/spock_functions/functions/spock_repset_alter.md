@@ -58,15 +58,15 @@ replicate_truncate
 
 Enable all operations in the demo_repset replication set:
 
-SELECT spock.repset_alter('demo_repset',
-    replicate_insert := true,
-    replicate_update := true,
-    replicate_delete := true,
-    replicate_truncate := true);
+    SELECT spock.repset_alter('demo_repset',
+        replicate_insert := true,
+        replicate_update := true,
+        replicate_delete := true,
+        replicate_truncate := true);
 
 Disable DELETE and TRUNCATE replication in the audit_only replication_set:
 
-SELECT spock.repset_alter('audit_only',
-    replicate_delete := false,
-    replicate_truncate := false);
+    SELECT spock.repset_alter('audit_only',
+        replicate_delete := false,
+        replicate_truncate := false);
 

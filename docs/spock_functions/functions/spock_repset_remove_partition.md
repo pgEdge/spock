@@ -50,5 +50,5 @@ partition
 
 ### EXAMPLE
 
-SELECT spock.repset_remove_partition('public.mytable',
-'public.mytable_202012');
+    SELECT spock.repset_remove_partition('public.mytable',
+    'public.mytable_202012');

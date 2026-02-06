@@ -61,5 +61,5 @@ repsets
 
 ### EXAMPLE
 
-SELECT * FROM spock.repset_show_table('public.mytable',
-ARRAY['default', 'ddl_sql']);
+    SELECT * FROM spock.repset_show_table('public.mytable',
+    ARRAY['default', 'ddl_sql']);

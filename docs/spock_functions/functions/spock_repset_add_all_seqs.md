@@ -54,16 +54,16 @@ synchronize_data
 
 ### EXAMPLE
 
-You can specify one or more schemas in the call to repset_add_all_seqs.  
-The first command adds the sequences in the 'public' schema to the 'default' 
+You can specify one or more schemas in the call to repset_add_all_seqs.
+The first command adds the sequences in the 'public' schema to the 'default'
 replication set:
 
-postgres=# SELECT spock.repset_add_all_seqs('default', ARRAY['public']);
--[ RECORD 1 ]-------+--
-repset_add_all_seqs | t
+    postgres=# SELECT spock.repset_add_all_seqs('default', ARRAY['public']);
+    -[ RECORD 1 ]-------+--
+    repset_add_all_seqs | t
 
 The following command adds all sequences in the schemas named 'public' and 'alice' to the 'default' replication set:
 
-postgres=# SELECT spock.repset_add_all_seqs('default', ARRAY['public', 'alice'],true);
--[ RECORD 1 ]-------+--
-repset_add_all_seqs | t
+    postgres=# SELECT spock.repset_add_all_seqs('default', ARRAY['public', 'alice'],true);
+    -[ RECORD 1 ]-------+--
+    repset_add_all_seqs | t

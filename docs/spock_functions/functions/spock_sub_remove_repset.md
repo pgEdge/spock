@@ -42,4 +42,4 @@ replication_set
 
 ### EXAMPLE
 
-SELECT spock.sub_remove_repset('sub_n2_n1', 'custom_repset');
+    SELECT spock.sub_remove_repset('sub_n2_n1', 'custom_repset');

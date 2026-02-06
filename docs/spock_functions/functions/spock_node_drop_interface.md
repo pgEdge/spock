@@ -46,8 +46,8 @@ interface_name
 
 The following example drops an interface named 'private_net':
 
-inventory=# SELECT spock.node_drop_interface('n3', 'private_net');
- node_drop_interface 
----------------------
- t
-(1 row)
+    inventory=# SELECT spock.node_drop_interface('n3', 'private_net');
+     node_drop_interface
+    ---------------------
+     t
+    (1 row)

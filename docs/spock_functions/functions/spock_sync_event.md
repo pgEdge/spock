@@ -39,4 +39,4 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-SELECT spock.sync_event();
+    SELECT spock.sync_event();

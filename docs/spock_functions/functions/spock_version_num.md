@@ -30,4 +30,4 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-SELECT spock.spock_version_num();
+    SELECT spock.spock_version_num();

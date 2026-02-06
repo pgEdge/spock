@@ -49,4 +49,4 @@ lsn
 
 ## EXAMPLE
 
-SELECT spock.sub_alter_skiplsn('sub_n1_to_n2', '0/16B6A50');
+    SELECT spock.sub_alter_skiplsn('sub_n1_to_n2', '0/16B6A50');

@@ -55,4 +55,4 @@ relation
 
 ### EXAMPLE
 
-SELECT * FROM spock.sub_show_table('sub_n2_n1', 'public.mytable');
+    SELECT * FROM spock.sub_show_table('sub_n2_n1', 'public.mytable');

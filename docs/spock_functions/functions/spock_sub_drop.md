@@ -39,6 +39,6 @@ ifexists
 
 ### EXAMPLE
 
-SELECT spock.sub_drop('sub_n2_n1');
+    SELECT spock.sub_drop('sub_n2_n1');
 
-SELECT spock.sub_drop('sub_n2_n1', true);
+    SELECT spock.sub_drop('sub_n2_n1', true);

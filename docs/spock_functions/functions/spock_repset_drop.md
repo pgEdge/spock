@@ -51,4 +51,4 @@ ifexists
 
 ### EXAMPLE
 
-SELECT spock.repset_drop('demo_repset', true);
+    SELECT spock.repset_drop('demo_repset', true);

@@ -32,16 +32,16 @@ This function takes no arguments.
 
 If the spock.country parameter has not been set, the function returns:
 
-postgres=# SELECT spock.get_country();
- get_country 
--------------
- ??
-(1 row)
+    postgres=# SELECT spock.get_country();
+     get_country
+    -------------
+     ??
+    (1 row)
 
 If spock.country is set to `US`, the function returns:
 
-postgres=# SELECT spock.get_country();
- get_country 
--------------
- US
-(1 row)
+    postgres=# SELECT spock.get_country();
+     get_country
+    -------------
+     US
+    (1 row)

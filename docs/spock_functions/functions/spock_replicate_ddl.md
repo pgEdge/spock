@@ -62,28 +62,28 @@ role
 
 ### EXAMPLES
 
-The following command creates a table and instructs Spock to replicate the
-DDL to other nodes:
+    The following command creates a table and instructs Spock to replicate the
+    DDL to other nodes:
 
-postgres=# SELECT spock.replicate_ddl('CREATE TABLE users (id SERIAL PRIMARY KEY,
-    name TEXT)');
--[ RECORD 1 ]-+--
-replicate_ddl | t
+    postgres=# SELECT spock.replicate_ddl('CREATE TABLE users (id SERIAL PRIMARY KEY,
+        name TEXT)');
+    -[ RECORD 1 ]-+--
+    replicate_ddl | t
 
-The following command alters the table adding a column, and instructs Spock
-to replicate the DDL to other nodes:
+    The following command alters the table adding a column, and instructs Spock
+    to replicate the DDL to other nodes:
 
-postgres=# SELECT spock.replicate_ddl('ALTER TABLE users ADD COLUMN email TEXT',
-    '{default,ddl_sql}');
--[ RECORD 1 ]-+--
-replicate_ddl | t
+    postgres=# SELECT spock.replicate_ddl('ALTER TABLE users ADD COLUMN email TEXT',
+        '{default,ddl_sql}');
+    -[ RECORD 1 ]-+--
+    replicate_ddl | t
 
-The following command creates a table and an index on the tables, and
-instructs Spock to replicate DDL to other nodes:
+    The following command creates a table and an index on the tables, and
+    instructs Spock to replicate DDL to other nodes:
 
-postgres=# SELECT spock.replicate_ddl(ARRAY['CREATE TABLE orders (id SERIAL)',
-    'CREATE INDEX ON orders(id)']);
--[ RECORD 1 ]-+--
-replicate_ddl | t
--[ RECORD 2 ]-+--
-replicate_ddl | t
+    postgres=# SELECT spock.replicate_ddl(ARRAY['CREATE TABLE orders (id SERIAL)',
+        'CREATE INDEX ON orders(id)']);
+    -[ RECORD 1 ]-+--
+    replicate_ddl | t
+    -[ RECORD 2 ]-+--
+    replicate_ddl | t

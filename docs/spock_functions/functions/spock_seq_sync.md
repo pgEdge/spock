@@ -45,4 +45,4 @@ relation
 
 ### EXAMPLE
 
-SELECT spock.sync_seq('public.my_sequence');
+    SELECT spock.sync_seq('public.my_sequence');

@@ -94,11 +94,11 @@ skip_schema
 
 ### EXAMPLE
 
-SELECT spock.sub_create('sub_n2_n1',
-    'host=10.0.0.10 port=5432 dbname=postgres');
+    SELECT spock.sub_create('sub_n2_n1',
+        'host=10.0.0.10 port=5432 dbname=postgres');
 
-SELECT spock.sub_create('sub_n2_n1',
-    'host=10.0.0.10 port=5432 dbname=postgres',
-    replication_sets := '{default}',
-    synchronize_structure := true,
-    synchronize_data := true);
+    SELECT spock.sub_create('sub_n2_n1',
+        'host=10.0.0.10 port=5432 dbname=postgres',
+        replication_sets := '{default}',
+        synchronize_structure := true,
+        synchronize_data := true);

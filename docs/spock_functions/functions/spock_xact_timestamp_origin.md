@@ -47,4 +47,4 @@ xid
 
 ### EXAMPLE
 
-SELECT * FROM spock.xact_commit_timestamp_origin('12345'::xid);
+    SELECT * FROM spock.xact_commit_timestamp_origin('12345'::xid);

@@ -51,4 +51,4 @@ relation
 
 ### EXAMPLE
 
-SELECT spock.table_wait_for_sync('sub_n2_n1', 'public.mytable');
+    SELECT spock.table_wait_for_sync('sub_n2_n1', 'public.mytable');

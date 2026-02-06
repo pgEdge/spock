@@ -79,25 +79,25 @@ include_partitions
 Add a table named public.accounts to the demo_repset replication set with
 full replication:
 
-SELECT spock.repset_add_table('demo_repset', 'public.accounts');
+    SELECT spock.repset_add_table('demo_repset', 'public.accounts');
 
 Add a table named public.accounts to the demo_repset replication set, and
 synchronize existing data:
 
-SELECT spock.repset_add_table('demo_repset',
-    'public.accounts',
-    synchronize_data := true);
+    SELECT spock.repset_add_table('demo_repset',
+        'public.accounts',
+        synchronize_data := true);
 
 Add only specific columns (id and balance) from the public.accounts table to
 the demo_repset replication set, and filter the rows:
 
-SELECT spock.repset_add_table('demo_repset',
-    'public.accounts',
-    columns := ARRAY['id','balance'],
-    row_filter := 'balance > 0');
+    SELECT spock.repset_add_table('demo_repset',
+        'public.accounts',
+        columns := ARRAY['id','balance'],
+        row_filter := 'balance > 0');
 
-  **WARNING: Use caution when synchronizing data with a valid row filter.**
-  Using `sync_data=true` with a valid `row_filter` is usually a one_time
-  operation for a table. Executing it again with a modified `row_filter` 
-  won't synchronize data to subscriber. You may need to call 
-  `spock.alter_sub_resync_table()` to fix it.
+**WARNING: Use caution when synchronizing data with a valid row filter.**
+Using `sync_data=true` with a valid `row_filter` is usually a one_time
+operation for a table. Executing it again with a modified `row_filter`
+won't synchronize data to subscriber. You may need to call
+`spock.alter_sub_resync_table()` to fix it.

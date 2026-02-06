@@ -28,8 +28,6 @@ synchronized to all subscribers.
 This function updates metadata stored in the Spock catalogs and does not
 modify PostgreSQL configuration.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS
@@ -50,15 +48,23 @@ synchronize_data
 
 ### EXAMPLE
 
-Add a sequence (named public.order_id_seq) to a replication set named
-demo_repset:
+Add a sequence (named public.sales_order_no_seq) to the 'default' replication
+set:
 
-SELECT spock.repset_add_seq('demo_repset', 'public.order_id_seq');
+    postgres=# SELECT spock.repset_add_seq('default', 'public.sales_order_no_seq');
+     repset_add_seq
+    ----------------
+     t
+    (1 row)
 
-Add a sequence (named public.order_id_seq) and synchronize its current value:
+Add a sequence (named public.sales_invoice_no_seq) and synchronize its current value:
 
-SELECT spock.repset_add_seq(
-    'demo_repset',
-    'public.order_id_seq',
-    synchronize_data := true
-);
+    postgres=# SELECT spock.repset_add_seq(
+        'default',
+        'public.sales_invoice_no_seq',
+        synchronize_data := true
+    );
+     repset_add_seq
+    ----------------
+     t
+    (1 row)

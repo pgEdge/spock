@@ -47,5 +47,5 @@ target
 
 ### EXAMPLE
 
-SELECT spock.wait_slot_confirm_lsn('spock_local_sync_123456_789abc',
-'0/3000000');
+    SELECT spock.wait_slot_confirm_lsn('spock_local_sync_123456_789abc',
+    '0/3000000');

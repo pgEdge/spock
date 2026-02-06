@@ -39,8 +39,11 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-postgres=# SELECT spock.spock_min_proto_version();
- spock_min_proto_version 
--------------------------
-                       3
-(1 row)
+The following command shows that the version of Spock in use is using protocol
+version 3:
+
+    postgres=# SELECT spock.spock_min_proto_version();
+     spock_min_proto_version
+    -------------------------
+                           3
+    (1 row)

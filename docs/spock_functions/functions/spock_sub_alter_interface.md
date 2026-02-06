@@ -45,4 +45,4 @@ interface_name
 
 ### EXAMPLE
 
-SELECT spock.sub_alter_interface('sub_n2_n1', 'private_net');
+    SELECT spock.sub_alter_interface('sub_n2_n1', 'private_net');

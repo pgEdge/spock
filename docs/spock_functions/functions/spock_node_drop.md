@@ -46,8 +46,8 @@ ifexists
 
 The following function call drops a node named 'n3':
 
-inventory=# SELECT spock.node_drop('n3');
- node_drop 
------------
- t
-(1 row)
+    inventory=# SELECT spock.node_drop('n3');
+     node_drop
+    -----------
+     t
+    (1 row)

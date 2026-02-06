@@ -26,4 +26,4 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-SELECT spock.spock_version();
+    SELECT spock.spock_version();

@@ -42,4 +42,4 @@ relation
 
 Remove a sequence (public.order_id_seq) from a replication set (demo_repset):
 
-SELECT spock.repset_remove_seq('demo_repset', 'public.order_id_seq');
+    SELECT spock.repset_remove_seq('demo_repset', 'public.order_id_seq');

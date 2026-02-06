@@ -60,9 +60,9 @@ replicate_truncate
 
 ### EXAMPLE
 
-SELECT spock.repset_create('demo_repset');
+    SELECT spock.repset_create('demo_repset');
 
-SELECT spock.repset_create('audit_only',
-    replicate_delete := false,
-    replicate_truncate := false);
+    SELECT spock.repset_create('audit_only',
+        replicate_delete := false,
+        replicate_truncate := false);
 

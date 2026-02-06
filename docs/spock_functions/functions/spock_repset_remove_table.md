@@ -48,13 +48,13 @@ include_partitions
 
 EXAMPLE
 
-Remove a table (public.accounts) from a replication set (demo_repset):
+    Remove a table (public.accounts) from a replication set (demo_repset):
 
-SELECT spock.repset_remove_table('demo_repset', 'public.accounts');
+    SELECT spock.repset_remove_table('demo_repset', 'public.accounts');
 
-Remove a partitioned table named public.accounts from the demo_repset
-replication set without removing its partitions:
+    Remove a partitioned table named public.accounts from the demo_repset
+    replication set without removing its partitions:
 
-SELECT spock.repset_remove_table('demo_repset',
-    'public.accounts',
-    include_partitions := false);
+    SELECT spock.repset_remove_table('demo_repset',
+        'public.accounts',
+        include_partitions := false);

@@ -56,19 +56,19 @@ row_filter
 Add all four partitions of a parent table (named 'public.sales_parent') to
 the replication set to which the parent belongs:
 
-SELECT spock.repset_add_partition('public.sales_parent');
--[ RECORD 1 ]--------+--
-repset_add_partition | 4
+    SELECT spock.repset_add_partition('public.sales_parent');
+    -[ RECORD 1 ]--------+--
+    repset_add_partition | 4
 
 Add a specific partition (named public.sales_2026_q1) to the replication
 set to which the parent table belongs:
 
-postgres=# SELECT spock.repset_add_partition(
-    'public.sales_parent',
-    'public.sales_2026_q1',
-    'region = ''US'''
-);
--[ RECORD 1 ]--------+--
-repset_add_partition | 1
+    postgres=# SELECT spock.repset_add_partition(
+        'public.sales_parent',
+        'public.sales_2026_q1',
+        'region = ''US'''
+    );
+    -[ RECORD 1 ]--------+--
+    repset_add_partition | 1
 
 

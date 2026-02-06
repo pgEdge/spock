@@ -51,6 +51,6 @@ subscription_name
 
 EXAMPLE
 
-SELECT * FROM spock.sub_show_status();
+    SELECT * FROM spock.sub_show_status();
 
-SELECT * FROM spock.sub_show_status('sub_n1_to_n2');
+    SELECT * FROM spock.sub_show_status('sub_n1_to_n2');

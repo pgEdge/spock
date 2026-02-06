@@ -52,10 +52,10 @@ The following example adds an interface named private_net that uses the
 connection string defined in the last argument of the function call
 ('host=10.0.0.10 port=5432 dbname=postgres'):
 
-postgres=# SELECT spock.node_add_interface('n1', 'private_net',
-    'host=10.0.0.10 port=5432 dbname=postgres');
+    postgres=# SELECT spock.node_add_interface('n1', 'private_net',
+        'host=10.0.0.10 port=5432 dbname=postgres');
 
- node_add_interface 
---------------------
-         1239112588
-(1 row)
+    node_add_interface
+        --------------------
+                 1239112588
+        (1 row)
