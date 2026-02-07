@@ -5,7 +5,7 @@ services:
     image: spock
     build:
       context: .
-      dockerfile: Dockerfile-step-1.el9
+      dockerfile: Dockerfile.el9
     environment:
       - HOSTNAME=n1
       - PEER_NAMES=n2,n3
