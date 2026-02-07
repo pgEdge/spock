@@ -57,7 +57,7 @@ RUN for patchfile in /home/pgedge/spock/patches/${PGVER}/*; do \
 	done
 
 RUN echo "==========Compiling Modified PostgreSQL=========="
-RUN options="'--prefix=/home/pgedge/pgedge/pg$PGVER' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' 'LLVM_CONFIG=/usr/bin/llvm-config-64' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' '--enable-cassert' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && eval ./configure $options && make -j4 && make install
+RUN options="'--prefix=/home/pgedge/pgedge/pg$PGVER' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' '--enable-cassert' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && eval ./configure $options && make -j4 && make install
 
 WORKDIR /home/pgedge
 
