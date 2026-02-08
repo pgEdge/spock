@@ -61,6 +61,7 @@ jobs:
           REG_CT_NAME="spock-regress-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "REG_CT_NAME=$REG_CT_NAME" >> "$GITHUB_ENV"
           docker run --name "$REG_CT_NAME" -e PGVER=${{ matrix.pgver }} spock /home/pgedge/run-spock-regress.sh
+        timeout-minutes: 20
 
       - name: Collect regression artifacts (from container)
         if: ${{ always() }}
