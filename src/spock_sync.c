@@ -395,14 +395,18 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 		"       last_updated_ts, updated_by_decode "
 		"FROM spock.progress "
 		"WHERE node_id = %u AND remote_node_id <> %u";
-	const char	   *updateQuery =
-		"UPDATE spock.progress SET "
-		"    remote_commit_ts = %s, "
-		"    remote_lsn = %s, "
-		"    remote_insert_lsn = %s, "
-		"    last_updated_ts = %s, "
-		"    updated_by_decode = %s "
-		"WHERE node_id = '%d' AND remote_node_id = '%d'";
+	const char     *upsertQuery =
+		"INSERT INTO spock.progress "
+		"    (node_id, remote_node_id, remote_commit_ts, "
+		"     remote_lsn, remote_insert_lsn, "
+		"     last_updated_ts, updated_by_decode) "
+		"VALUES (%u, %s, %s, %s, %s, %s, %s) "
+		"ON CONFLICT (node_id, remote_node_id) DO UPDATE SET "
+		"    remote_commit_ts = EXCLUDED.remote_commit_ts, "
+		"    remote_lsn = EXCLUDED.remote_lsn, "
+		"    remote_insert_lsn = EXCLUDED.remote_insert_lsn, "
+		"    last_updated_ts = EXCLUDED.last_updated_ts, "
+		"    updated_by_decode = EXCLUDED.updated_by_decode";
 
 	StringInfoData	query;
 	PGresult	   *originRes;
@@ -428,12 +432,8 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 		for (rno = 0; rno < PQntuples(originRes); rno++)
 		{
 			/*
-			 * Update the remote node's progress entry to what our
+			 * Upsert the remote node's progress entry to what our
 			 * sync provider has included in the COPY snapshot.
-			 *
-			 * We assume here that the progress table entry already
-			 * exists. Turning this into an INSERT if not should be
-			 * easy.
 			 */
 			char   *remote_node_id = PQgetvalue(originRes, rno, 1);
 			char   *remote_commit_ts = PQgetvalue(originRes, rno, 2);
@@ -443,7 +443,9 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 			char   *updated_by_decode = PQgetvalue(originRes, rno, 6);
 
 			resetStringInfo(&query);
-			appendStringInfo(&query, updateQuery,
+			appendStringInfo(&query, upsertQuery,
+							 MySubscription->target->id,
+							 remote_node_id,
 							 PQescapeLiteral(target_conn, remote_commit_ts,
 											 strlen(remote_commit_ts)),
 							 PQescapeLiteral(target_conn, remote_lsn,
@@ -453,9 +455,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 							 PQescapeLiteral(target_conn, last_updated_ts,
 											 strlen(last_updated_ts)),
 							 PQescapeLiteral(target_conn, updated_by_decode,
-											 strlen(updated_by_decode)),
-							 MySubscription->target->id,
-							 MySubscription->origin->id);
+											 strlen(updated_by_decode)));
 			updateRes = PQexec(target_conn, query.data);
 
 			if (PQresultStatus(updateRes) != PGRES_COMMAND_OK)
