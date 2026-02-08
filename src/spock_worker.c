@@ -343,8 +343,6 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	/* Now safe to process signals */
 	BackgroundWorkerUnblockSignals();
 
-	MyProcPort = (Port *) calloc(1, sizeof(Port));
-
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
 	before_shmem_exit(spock_worker_on_exit, (Datum) 0);
@@ -386,6 +384,12 @@ spock_worker_attach(int slot, SpockWorkerType type)
 												  ,0	/* flags */
 			);
 
+		/*
+		 * Allocate MyProcPort after BackgroundWorkerInitializeConnectionByOid
+		 * so that InitPostgres doesn't see a non-NULL MyProcPort and try to
+		 * inspect SSL/GSS state on our fake Port (which would segfault).
+		 */
+		MyProcPort = (Port *) calloc(1, sizeof(Port));
 
 		StartTransactionCommand();
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
