@@ -1,5 +1,12 @@
 # Spock Release Notes
 
+## Spock 5.0.5 on Feb 12, 2026
+
+* Fix segfault that occurs when using new Postgres minor releases like 18.2.
+* Zero Downtime Add Node (Zodan) minor bug fixes and improvements
+* Updated documentation
+
+
 ## Spock 5.0.4 on Oct 8, 2025
 
 * Reduce memory usage for transactions with many inserts.
@@ -15,7 +22,6 @@
     - Log messages containing credentials will now obfuscate password information.
     - Fix bug when the subscriber receives DML for tables that do not exist. This case will be handled according to the configured `spock.exception_behaviour` setting (`SUB_DISABLE`, `DISCARD`, `TRANSDISCARD`).
     - Fix bug where spock incorrectly outputs a message that DDL was replicated when a transaction is executing in repair mode.
-
 
 
 ## v5.0.3 on Sep 26, 2025
