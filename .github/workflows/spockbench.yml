@@ -52,7 +52,7 @@ jobs:
         run: |
           cd ${GITHUB_WORKSPACE}/
           echo PG_VER=${{ matrix.pgver }} >> tests/docker/pgedge.env
-          docker build \
+          docker build --pull \
             --build-arg PGVER=${{ matrix.pgver }} \
             -t spock -f tests/docker/Dockerfile.el9 .
 
