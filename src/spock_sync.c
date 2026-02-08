@@ -455,7 +455,7 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 							 PQescapeLiteral(target_conn, last_updated_ts,
 											 strlen(last_updated_ts)),
 							 PQescapeLiteral(target_conn, updated_by_decode,
-											 strlen(updated_by_decode)));
+											 strnlen(updated_by_decode, 64)));
 			updateRes = PQexec(target_conn, query.data);
 
 			if (PQresultStatus(updateRes) != PGRES_COMMAND_OK)
