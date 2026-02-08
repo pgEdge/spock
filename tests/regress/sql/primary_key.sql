@@ -131,6 +131,20 @@ SELECT spock.wait_slot_confirm_lsn(NULL, :curr_lsn);
 \c :subscriber_dsn
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;
 
+-- Wait for the subscription to become disabled. The DDL to create a unique
+-- index on id will fail on the subscriber (duplicate id=4 exists), which
+-- should trigger exception_behaviour=sub_disable.
+DO $$
+BEGIN
+	FOR i IN 1..100 LOOP
+		IF EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status = 'disabled') THEN
+			RETURN;
+		END IF;
+		PERFORM pg_sleep(0.1);
+	END LOOP;
+END;
+$$;
+
 select status from spock.sub_show_status();
 
 \c :provider_dsn
