@@ -1,9 +1,6 @@
 /* First test whether a table's replication set can be properly manipulated */
 SELECT * FROM spock_regress_variables()
 \gset
---
--- Test resynchronization
---
 \c :provider_dsn
 CREATE TABLE spock.test_387 (x integer PRIMARY KEY);
 INSERT INTO spock.test_387 (x) VALUES (1);
@@ -14,7 +11,7 @@ SELECT 1 FROM spock.repset_create('repset_387');
 (1 row)
 
 SELECT 1 FROM spock.repset_add_table('repset_387', 'spock.test_387');
-ERROR:  table test_387 cannot be added to any replication set
+ERROR:  relation test_387 cannot be added to any replication set
 DETAIL:  table is in the ignored schema spock
 HINT:  Move this relation to a schema allowed for replication
 -- This also states that each test should clean their objects before the end.
