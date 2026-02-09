@@ -75,7 +75,7 @@ psql_or_bail(1, "ALTER FUNCTION spock.sync_event_renamed() RENAME TO sync_event"
 scalar_query(2, qq{
 	CALL spock.remove_node(
 		target_node_name := 'n2',
-		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user',
+		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
 		verbose_mode := true)
 });
 
@@ -117,7 +117,7 @@ psql_or_bail(2, "ALTER FUNCTION pg_replication_slot_advance_renamed RENAME TO pg
 scalar_query(3, qq{
 	CALL spock.remove_node(
 		target_node_name := 'n3',
-		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user',
+		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
 		verbose_mode := true)
 });
 
@@ -148,13 +148,13 @@ psql_or_bail(1, "ALTER FUNCTION spock.sub_create_renamed RENAME TO sub_create");
 scalar_query(2, qq{
 	CALL spock.remove_node(
 		target_node_name := 'n2',
-		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user',
+		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
 		verbose_mode := true)
 });
 scalar_query(3, qq{
 	CALL spock.remove_node(
 		target_node_name := 'n3',
-		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user',
+		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
 		verbose_mode := true)
 });
 

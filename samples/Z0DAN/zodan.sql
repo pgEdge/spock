@@ -1141,7 +1141,6 @@ BEGIN
     EXCEPTION
         WHEN OTHERS THEN
             RAISE EXCEPTION '    ✗ %', rpad('Creating new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
-            RAISE;
     END;
 
     -- Get initial node count from source node using inline dblink
@@ -1284,7 +1283,6 @@ BEGIN
         EXCEPTION
             WHEN OTHERS THEN
                 RAISE EXCEPTION '    ✗ %', rpad('Triggering sync event on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
-                CONTINUE;
         END;
 
         -- Create replication slot on the "other" node
