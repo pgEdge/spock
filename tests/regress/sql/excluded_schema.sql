@@ -3,10 +3,6 @@
 SELECT * FROM spock_regress_variables()
 \gset
 
---
--- Test resynchronization
---
-
 \c :provider_dsn
 
 CREATE TABLE spock.test_387 (x integer PRIMARY KEY);

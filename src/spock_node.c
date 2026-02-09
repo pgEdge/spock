@@ -1260,8 +1260,9 @@ get_node_subscriptions(Oid nodeid, bool origin)
 }
 
 /*
- * TODO: lookup subscriptions, including this schema, and check
- * their 'skip_schema' lists too.
+ * Check if relation depends on an extension from static 'skip_extension' list
+ * or if it is from the static 'skip_schema' list.
+ *
  */
 void
 EnsureRelationNotIgnored(Relation rel)
@@ -1279,7 +1280,7 @@ EnsureRelationNotIgnored(Relation rel)
 
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("table %s cannot be added to any replication set",
+				 errmsg("relation %s cannot be added to any replication set",
 						RelationGetRelationName(rel)),
 				 errdetail("table is in the ignored schema %s",
 						   skip_schema[i]),
@@ -1302,9 +1303,9 @@ EnsureRelationNotIgnored(Relation rel)
 
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("table %s cannot be added to any replication set",
+				 errmsg("relation %s cannot be added to any replication set",
 						RelationGetRelationName(rel)),
-				 errdetail("table belongs to the ignored extension %s",
+				 errdetail("relation belongs to the ignored extension %s",
 						   skip_extension[i]),
 				 errhint("Move this relation to an extension allowed for replication")));
 	}
