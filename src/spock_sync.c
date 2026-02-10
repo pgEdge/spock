@@ -1378,7 +1378,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	if (sync->status != SYNC_STATUS_READY)
 	{
 		elog(ERROR,
-			 "subscriber %s is not ready, cannot synchronzie individual tables", sub->name);
+			 "subscriber %s is not ready, cannot synchronize individual tables", sub->name);
 	}
 
 	/* Check current state of the table. */
@@ -1578,10 +1578,9 @@ spock_sync_main(Datum main_arg)
 	if (status_lsn >= MyApplyWorker->replay_stop_lsn)
 	{
 		/* Mark local table as done. */
-		set_table_sync_status(MyApplyWorker->subid,
-							  NameStr(MySpockWorker->worker.sync.nspname),
-							  NameStr(MySpockWorker->worker.sync.relname),
-							  SYNC_STATUS_SYNCDONE, status_lsn);
+		set_table_sync_status(MySubscription->id, copytable->schemaname,
+							  copytable->relname, SYNC_STATUS_SYNCDONE,
+							  status_lsn);
 		spock_sync_worker_finish();
 		proc_exit(0);
 	}
