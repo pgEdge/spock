@@ -749,7 +749,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	 * See if we need to log any conflict to the server log and spock.resolutions
 	 * Calling this does not necessarily mean that there is a conflict
 	 */
-	spock_report_conflict(is_insert ? CT_INSERT_EXISTS : CT_UPDATE_EXISTS,
+	spock_report_conflict(is_insert ? SPOCK_CT_INSERT_EXISTS : SPOCK_CT_UPDATE_EXISTS,
 						  rel, TTS_TUP(localslot), oldtup,
 						  remotetuple, applytuple, resolution,
 						  xmin, local_origin_found, local_origin,
@@ -928,8 +928,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 									remoteslot, &localslot,
 									true);
 
-	if (check_all_uc_indexes &&
-		!found)
+	if (check_all_uc_indexes && !found)
 	{
 		/*
 		 * Handle the special case of looking through all unique indexes
@@ -1065,7 +1064,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	}
 	else
 	{
-		/* CT_UPDATE_MISSING case gets logged in exception_log, not resolutions */
+		/* SPOCK_CT_UPDATE_MISSING case gets logged in exception_log, not resolutions */
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
 		/*
@@ -1164,7 +1163,15 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	 */
 	if (found)
 	{
-		UserContext ucxt;
+		UserContext 			ucxt;
+		TransactionId   		xmin;
+		TimestampTz				local_ts;
+		RepOriginId				local_origin;
+		bool					local_origin_found;
+		HeapTuple				applytuple;
+		SpockConflictResolution	resolution;
+
+
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
 		/*
@@ -1177,14 +1184,40 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		exception_log->local_tuple = heap_copytuple(local_tuple);
 		MemoryContextSwitchTo(oldctx);
 
-		/* Make sure that any user-supplied code runs as the table owner. */
-		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+		local_origin_found = get_tuple_origin(rel, local_tuple,
+									&(local_tuple->t_self), &xmin,
+									&local_origin, &local_ts);
 
-		/* Delete the tuple found */
-		EvalPlanQualSetSlot(&epqstate, remoteslot);
-		ExecSimpleRelationDelete(edata->targetRelInfo, estate, &epqstate,
-								 localslot);
-		RestoreUserContext(&ucxt);
+		/*
+		 * Check if the local tuple was inserted/updated after this DELETE.
+		 */
+		if (!try_resolve_conflict(rel->rel, TTS_TUP(localslot),
+							 NULL, /* remotetuple */
+							 &applytuple, local_origin,
+							 local_ts, &resolution))
+		{
+			/* Current DELETE happened before current tuple */
+			spock_report_conflict(SPOCK_CT_DELETE_LATE,
+								rel, TTS_TUP(localslot), oldtup,
+								NULL, /* remotetuple */
+								local_tuple, SpockResolution_Skip,
+								xmin, local_origin_found, local_origin,
+								local_ts, edata->targetRel->idxoid
+			);
+		}
+		else
+		{
+			/* DELETE happened after (usual case) */
+
+			/* Make sure that any user-supplied code runs as the table owner. */
+			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+
+			/* Delete the tuple found */
+			EvalPlanQualSetSlot(&epqstate, remoteslot);
+			ExecSimpleRelationDelete(edata->targetRelInfo, estate, &epqstate,
+									 localslot);
+			RestoreUserContext(&ucxt);
+		}
 	}
 	else
 	{
@@ -1198,7 +1231,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		exception_log->local_tuple = NULL;
 		remotetuple = heap_form_tuple(RelationGetDescr(rel->rel),
 									  oldtup->values, oldtup->nulls);
-		spock_report_conflict(CT_DELETE_MISSING,
+		spock_report_conflict(SPOCK_CT_DELETE_MISSING,
 							  rel, NULL, oldtup,
 							  remotetuple, NULL, SpockResolution_Skip,
 							  InvalidTransactionId, false, InvalidRepOriginId,

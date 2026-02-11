@@ -50,7 +50,7 @@ After installing and initializing Postgres and creating the Spock Extension, you
 
 7. On `n1`, create a corresponding subscription to `n2` named `sub_n1_n2`:
 
-    `SELECT spock.sub_create (subscription_name := 'sub_n1_n2', subscriber_dsn := 'host=<n2_ip_address> port=<n2_port> dbname=<db_name>');`
+    `SELECT spock.sub_create (subscription_name := 'sub_n1_n2', provider_dsn := 'host=<n2_ip_address> port=<n2_port> dbname=<db_name>');`
 
 8. To ensure that modifications to your [DDL statements are automatically replicated](managing/spock_autoddl.md), connect to each node with a Postgres client and invoke the following SQL commands:
 

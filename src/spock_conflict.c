@@ -57,13 +57,14 @@
 
 
 /* From src/backend/replication/logical/conflict.c */
-static const char *const ConflictTypeNames[] = {
-	[CT_INSERT_EXISTS] = "insert_exists",
-	[CT_UPDATE_ORIGIN_DIFFERS] = "update_origin_differs",
-	[CT_UPDATE_EXISTS] = "update_exists",
-	[CT_UPDATE_MISSING] = "update_missing",
-	[CT_DELETE_ORIGIN_DIFFERS] = "delete_origin_differs",
-	[CT_DELETE_MISSING] = "delete_missing"
+static const char *const SpockConflictTypeNames[] = {
+	[SPOCK_CT_INSERT_EXISTS] = "insert_exists",
+	[SPOCK_CT_UPDATE_ORIGIN_DIFFERS] = "update_origin_differs",
+	[SPOCK_CT_UPDATE_EXISTS] = "update_exists",
+	[SPOCK_CT_UPDATE_MISSING] = "update_missing",
+	[SPOCK_CT_DELETE_ORIGIN_DIFFERS] = "delete_origin_differs",
+	[SPOCK_CT_DELETE_MISSING] = "delete_missing",
+	[SPOCK_CT_DELETE_LATE] = "delete_late"
 };
 
 
@@ -127,8 +128,8 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 		}
 
 		/* Get the two nodes for their "tiebreaker" */
-		loc_node = get_node(local_origin_id);
-		rmt_node = get_node(remote_origin_id);
+		loc_node = get_node(local_origin_id, false);
+		rmt_node = get_node(remote_origin_id, false);
 
 		if (loc_node->tiebreaker == rmt_node->tiebreaker)
 		{
@@ -328,7 +329,7 @@ conflict_resolution_to_string(SpockConflictResolution resolution)
  * we still try to free the big chunks as we go.
  */
 void
-spock_report_conflict(ConflictType conflict_type,
+spock_report_conflict(SpockConflictType conflict_type,
 					  SpockRelation *rel,
 					  HeapTuple localtuple,
 					  SpockTupleData *oldkey,
@@ -348,9 +349,8 @@ spock_report_conflict(ConflictType conflict_type,
 	const char *idxname = "(unknown)";
 	const char *qualrelname;
 
-
 	/* Ignore update-update conflict for same origin */
-	if (conflict_type == CT_UPDATE_EXISTS)
+	if (conflict_type == SPOCK_CT_UPDATE_EXISTS)
 	{
 		/*
 		 * If updating a row that came from the same origin, do not report it
@@ -365,7 +365,7 @@ spock_report_conflict(ConflictType conflict_type,
 			return;
 
 		/* Differing origin */
-		conflict_type = CT_UPDATE_ORIGIN_DIFFERS;
+		conflict_type = SPOCK_CT_UPDATE_ORIGIN_DIFFERS;
 	}
 
 	/* Count statistics */
@@ -415,17 +415,17 @@ spock_report_conflict(ConflictType conflict_type,
 	 * log_error_verbosity=verbose because we don't necessarily have all that
 	 * info enabled.
 	 *
-	 * Handling for CT_DELETE_ORIGIN_DIFFERS will be added separately.
+	 * Handling for SPOCK_CT_DELETE_ORIGIN_DIFFERS will be added separately.
 	 */
 	switch (conflict_type)
 	{
-		case CT_INSERT_EXISTS:
-		case CT_UPDATE_EXISTS:
-		case CT_UPDATE_ORIGIN_DIFFERS:
+		case SPOCK_CT_INSERT_EXISTS:
+		case SPOCK_CT_UPDATE_EXISTS:
+		case SPOCK_CT_UPDATE_ORIGIN_DIFFERS:
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
 					 errmsg("CONFLICT: remote %s on relation %s (local index %s). Resolution: %s.",
-							ConflictTypeNames[conflict_type],
+							SpockConflictTypeNames[conflict_type],
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("existing local tuple {%s} xid=%u,origin=%d,timestamp=%s; remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
@@ -438,12 +438,11 @@ spock_report_conflict(ConflictType conflict_type,
 							   (uint32) (replorigin_session_origin_lsn << 32),
 							   (uint32) replorigin_session_origin_lsn)));
 			break;
-		case CT_UPDATE_MISSING:
-		case CT_DELETE_MISSING:
+		case SPOCK_CT_UPDATE_MISSING:
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
 					 errmsg("CONFLICT: remote %s on relation %s replica identity index %s (tuple not found). Resolution: %s.",
-							ConflictTypeNames[conflict_type],
+							SpockConflictTypeNames[conflict_type],
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
@@ -453,7 +452,33 @@ spock_report_conflict(ConflictType conflict_type,
 							   (uint32) (replorigin_session_origin_lsn << 32),
 							   (uint32) replorigin_session_origin_lsn)));
 			break;
-		case CT_DELETE_ORIGIN_DIFFERS:
+		case SPOCK_CT_DELETE_MISSING:
+			ereport(spock_conflict_log_level,
+					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
+					 errmsg("CONFLICT: remote %s on relation %s replica identity index %s (tuple not found). Resolution: %s.",
+							SpockConflictTypeNames[conflict_type],
+							qualrelname, idxname,
+							conflict_resolution_to_string(resolution)),
+					 errdetail("tuple for remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
+							   replorigin_session_origin,
+							   timestamptz_to_str(replorigin_session_origin_timestamp),
+							   (uint32) (replorigin_session_origin_lsn << 32),
+							   (uint32) replorigin_session_origin_lsn)));
+			break;
+		case SPOCK_CT_DELETE_LATE:
+			ereport(spock_conflict_log_level,
+					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
+					 errmsg("CONFLICT: remote %s on relation %s replica identity index %s (newer tuple found). Resolution: %s.",
+							SpockConflictTypeNames[conflict_type],
+							qualrelname, idxname,
+							conflict_resolution_to_string(resolution)),
+					 errdetail("remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
+							   replorigin_session_origin,
+							   timestamptz_to_str(replorigin_session_origin_timestamp),
+							   (uint32) (replorigin_session_origin_lsn << 32),
+							   (uint32) replorigin_session_origin_lsn)));
+			break;
+		case SPOCK_CT_DELETE_ORIGIN_DIFFERS:
 			/* keep compiler happy; handling will be added separately */
 			break;
 	}
@@ -482,7 +507,7 @@ spock_report_conflict(ConflictType conflict_type,
  * we still try to free the big chunks as we go.
  */
 void
-spock_conflict_log_table(ConflictType conflict_type,
+spock_conflict_log_table(SpockConflictType conflict_type,
 						 SpockRelation *rel,
 						 HeapTuple localtuple,
 						 SpockTupleData *oldkey,
@@ -543,7 +568,7 @@ spock_conflict_log_table(ConflictType conflict_type,
 		nulls[4] = true;
 
 	/* conflict type */
-	values[5] = CStringGetTextDatum(ConflictTypeNames[conflict_type]);
+	values[5] = CStringGetTextDatum(SpockConflictTypeNames[conflict_type]);
 	/* conflict_resolution */
 	values[6] = CStringGetTextDatum(conflict_resolution_to_string(resolution));
 	/* local_origin */

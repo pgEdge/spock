@@ -44,12 +44,13 @@ spock.control: spock.control.in include/spock.h
 	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' $(realpath $(srcdir)/spock.control.in) > $(control_path)
 
 
-all: spock.control spockctrl
+all: spock.control
 
 # -----------------------------------------------------------------------------
 # Regression tests
 # -----------------------------------------------------------------------------
 REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
+		  excluded_schema	\
 		  toasted replication_set matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay \
@@ -67,6 +68,16 @@ REGRESS := $(filter-out add_table, $(REGRESS))
 # this makes "make check" give a useful error
 abs_top_builddir = .
 NO_TEMP_INSTALL = yes
+
+# Override with_temp_install for extension testing.
+# This allows spock tests to run without the pg*-090-init_template_fix.diff
+# patch applied to PostgreSQL. Changes from default PGXS with_temp_install:
+# 1. Remove INITDB_TEMPLATE - we don't use a temp install template
+# 2. Use actual bindir/libdir - we use the installed PostgreSQL, not tmp_install
+with_temp_install = \
+	PATH="$(bindir):$(CURDIR):$$PATH" \
+	$(call add_to_path,$(strip $(ld_library_path_var)),$(libdir)) \
+	$(with_temp_install_extra)
 
 # We can't do a normal 'make check' because PGXS doesn't support
 # creating a temp install. We don't want to use a normal PGXS
@@ -113,22 +124,6 @@ check_prove:
 	$(prove_check)
 
 # -----------------------------------------------------------------------------
-# SpockCtrl
-# -----------------------------------------------------------------------------
-spockctrl:
-	$(MAKE) -C $(srcdir)/utils/spockctrl
-
-clean: clean-spockctrl
-
-clean-spockctrl:
-	$(MAKE) -C $(srcdir)/utils/spockctrl clean
-
-install: install-spockctrl
-
-install-spockctrl:
-	$(MAKE) -C $(srcdir)/utils/spockctrl install
-
-# -----------------------------------------------------------------------------
 # Dist packaging
 # -----------------------------------------------------------------------------
 GITHASH=$(shell if [ -e .distgitrev ]; then cat .distgitrev; else git rev-parse --short HEAD; fi)
@@ -163,7 +158,7 @@ git-dist: dist-common
 # -----------------------------------------------------------------------------
 # PHONY targets
 # -----------------------------------------------------------------------------
-.PHONY: all check regresscheck spock.control spockctrl clean clean-spockctrl \
+.PHONY: all check regresscheck spock.control clean \
         dist git-dist check_prove valgrind-check
 
 define _spk_create_recursive_target

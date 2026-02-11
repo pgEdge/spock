@@ -147,8 +147,8 @@ typedef struct SpockGroupEntry
 } SpockGroupEntry;
 
 /* shmem setup */
-extern void spock_group_shmem_request(void);
-extern void spock_group_shmem_startup(int napply_groups);
+extern void spock_group_shmem_request(int nworkers);
+extern void spock_group_shmem_startup(bool found);
 
 extern SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id,
 										   Oid remote_node_id);
@@ -156,7 +156,7 @@ extern void spock_group_detach(void);
 extern bool spock_group_progress_update(const SpockApplyProgress *sap);
 extern void spock_group_progress_update_ptr(SpockGroupEntry *entry,
 											const SpockApplyProgress *sap);
-extern SpockApplyProgress *apply_worker_get_progress(void);
+extern TimestampTz apply_worker_get_prev_remote_ts(void);
 
 extern void spock_group_resource_dump(void);
 extern void spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);

@@ -62,6 +62,7 @@
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
 #include "spock_readonly.h"
+#include "spock_shmem.h"
 #include "spock.h"
 
 PG_MODULE_MAGIC;
@@ -1145,11 +1146,11 @@ _PG_init(void)
 							"This setting is deprecated and has no effect. "
 							"The replay queue now dynamically allocates memory as needed.",
 							&spock_replay_queue_size,
-							4194304,
+							4,
 							0,
-							INT_MAX,
+							MAX_KILOBYTES / 1024,
 							PGC_SIGHUP,
-							0,
+							GUC_UNIT_MB,
 							NULL,
 							NULL,
 							NULL);
@@ -1172,6 +1173,19 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
+	DefineCustomIntVariable("spock.output_delay",
+							"For testing conflicts, delay in output plugin in ms",
+							"For testing conflicts, delay in output plugin in milliseconds",
+							&spock_output_delay,
+							0,
+							0,
+							60000,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
 	if (IsBinaryUpgrade)
 		return;
 
@@ -1181,11 +1195,8 @@ _PG_init(void)
 	/* Spock resource manager */
 	spock_rmgr_init();
 
-	/* Init workers. */
-	spock_worker_shmem_init();
-
-	/* Init output plugin shmem */
-	spock_output_plugin_shmem_init();
+	/* Init shared memory for all subsystems needed it */
+	spock_shmem_init();
 
 	/* Init executor module */
 	spock_executor_init();

@@ -12,14 +12,13 @@
 - [Modifying a Cluster](docs/modify/index.md)
 - [Monitoring your Cluster](docs/monitoring/index.md)
 - [Spock Functions](docs/spock_functions/index.md)
-- [Using spockctrl Management Functions](docs/modify/spockctrl/index.md)
 - [Release Notes](docs/spock_release_notes.md)
 - [Limitations](docs/limitations.md)
 - [FAQ](docs/FAQ.md)
 
 ## Spock Multi-Master Replication for PostgreSQL - Prerequisites and Requirements
 
-The Spock extension provides multi-master replication for PostgreSQL versions 15 and later.  Take the following requirements into consideration as you design your cluster:
+The Spock extension provides multi-master replication for PostgreSQL versions 15, 16, 17, and 18.  Take the following requirements into consideration as you design your cluster:
 
 * You will need to install the `Spock` extension on each node in your cluster.  If you're performing a major version upgrade, the old node can be running a recent version of pgLogical2 before upgrading it to become a Spock node.
 

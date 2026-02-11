@@ -132,12 +132,22 @@ RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_a
 CREATE FUNCTION spock.node_drop_interface(node_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface';
 
-CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
-    replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
-    synchronize_data boolean = false, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
-    force_text_transfer boolean = false,
-	enabled boolean = true, skip_schema text[] = '{}')
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
+CREATE FUNCTION spock.sub_create(
+  subscription_name     name,
+  provider_dsn          text,
+  replication_sets      text[] = '{default,default_insert_only,ddl_sql}',
+  synchronize_structure boolean = false,
+  synchronize_data      boolean = false,
+  forward_origins       text[] = '{}',
+  apply_delay           interval DEFAULT '0',
+  force_text_transfer   boolean = false,
+  enabled               boolean = true,
+  skip_schema           text[] = '{}'
+)
+RETURNS oid
+AS 'MODULE_PATHNAME', 'spock_create_subscription'
+LANGUAGE C STRICT VOLATILE;
+
 CREATE FUNCTION spock.sub_drop(subscription_name name, ifexists boolean DEFAULT false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_subscription';
 
@@ -156,11 +166,19 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_su
 CREATE FUNCTION spock.sub_alter_skiplsn(subscription_name name, lsn pg_lsn)
 	RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_skip_lsn';
 
-CREATE FUNCTION spock.sub_show_status(subscription_name name DEFAULT NULL,
-    OUT subscription_name text, OUT status text, OUT provider_node text,
-    OUT provider_dsn text, OUT slot_name text, OUT replication_sets text[],
-    OUT forward_origins text[])
-RETURNS SETOF record STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_subscription_status';
+CREATE FUNCTION spock.sub_show_status(
+  subscription_name     name DEFAULT NULL,
+  OUT subscription_name text,
+  OUT status            text,
+  OUT provider_node     text,
+  OUT provider_dsn      text,
+  OUT slot_name         text,
+  OUT replication_sets  text[],
+  OUT forward_origins   text[]
+)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'spock_show_subscription_status'
+LANGUAGE C STABLE;
 
 CREATE TABLE spock.replication_set (
     set_id oid NOT NULL PRIMARY KEY,
@@ -270,20 +288,42 @@ CREATE VIEW spock.TABLES AS
       FROM user_tables t
      WHERE t.oid NOT IN (SELECT set_reloid FROM set_relations);
 
-CREATE FUNCTION spock.repset_create(set_name name,
-    replicate_insert boolean = true, replicate_update boolean = true,
-    replicate_delete boolean = true, replicate_truncate boolean = true)
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_replication_set';
+CREATE FUNCTION spock.repset_create(
+  set_name           name,
+  replicate_insert   boolean = true,
+  replicate_update   boolean = true,
+  replicate_delete   boolean = true,
+  replicate_truncate boolean = true
+)
+RETURNS oid
+AS 'MODULE_PATHNAME', 'spock_create_replication_set'
+LANGUAGE C STRICT VOLATILE;
+
 CREATE FUNCTION spock.repset_alter(set_name name,
     replicate_insert boolean DEFAULT NULL, replicate_update boolean DEFAULT NULL,
     replicate_delete boolean DEFAULT NULL, replicate_truncate boolean DEFAULT NULL)
 RETURNS oid CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_replication_set';
-CREATE FUNCTION spock.repset_drop(set_name name, ifexists boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_replication_set';
 
-CREATE FUNCTION spock.repset_add_table(set_name name, relation regclass, synchronize_data boolean DEFAULT false,
-	columns text[] DEFAULT NULL, row_filter text DEFAULT NULL, include_partitions boolean default true)
-RETURNS boolean CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_table';
+CREATE FUNCTION spock.repset_drop(
+  set_name name,
+  ifexists boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_drop_replication_set'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.repset_add_table(
+  set_name           name,
+  relation           regclass,
+  synchronize_data   boolean DEFAULT false,
+  columns            text[] DEFAULT NULL,
+  row_filter         text DEFAULT NULL,
+  include_partitions boolean default true
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_replication_set_add_table'
+LANGUAGE C CALLED ON NULL INPUT VOLATILE;
+
 CREATE FUNCTION spock.repset_add_all_tables(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_tables';
 CREATE FUNCTION spock.repset_remove_table(set_name name, relation regclass, include_partitions boolean default true)
@@ -418,6 +458,17 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
+		-- If an unresolvable issue occurs with the apply worker, the LR
+		-- progress gets stuck, and we need to check the subscription's state
+		-- carefully.
+		IF NOT EXISTS (SELECT * FROM spock.subscription
+					  WHERE sub_origin = origin_id AND
+							sub_target = target_id AND
+							sub_enabled = true) THEN
+			RAISE EXCEPTION 'Replication % => % does not have any enabled subscription yet',
+							origin_id, target_id;
+		END IF;
+
 		SELECT INTO progress_lsn remote_commit_lsn
 			FROM spock.progress
 			WHERE node_id = target_id AND remote_node_id = origin_id;
@@ -456,6 +507,17 @@ BEGIN
 	target_id := node_id FROM spock.node_info();
 
 	WHILE true LOOP
+		-- If an unresolvable issue occurs with the apply worker, the LR
+		-- progress gets stuck, and we need to check the subscription's state
+		-- carefully.
+		IF NOT EXISTS (SELECT * FROM spock.subscription
+					  WHERE sub_origin = origin_id AND
+							sub_target = target_id AND
+							sub_enabled = true) THEN
+			RAISE EXCEPTION 'Replication % => % does not have any enabled subscription yet',
+							origin_id, target_id;
+		END IF;
+
 		SELECT INTO progress_lsn remote_commit_lsn
 			FROM spock.progress
 			WHERE node_id = target_id AND remote_node_id = origin_id;
@@ -652,9 +714,9 @@ $$ LANGUAGE plpgsql;
 
 -- Set delta_apply security label on specific column
 CREATE FUNCTION spock.delta_apply(
-  rel regclass,
+  rel      regclass,
   att_name name,
-  to_drop boolean DEFAULT false
+  to_drop  boolean DEFAULT false
 ) RETURNS boolean AS $$
 DECLARE
   label     text;

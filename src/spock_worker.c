@@ -50,6 +50,7 @@
 #include "spock_relcache.h"
 #include "spock_exception_handler.h"
 #include "spock_group.h"
+#include "spock_shmem.h"
 
 typedef struct signal_worker_item
 {
@@ -71,16 +72,11 @@ bool		spock_stats_hash_full = false;
 
 static bool xact_cb_installed = false;
 
-static shmem_request_hook_type prev_shmem_request_hook = NULL;
-static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-
 static void spock_worker_detach(bool crash);
 static void wait_for_worker_startup(SpockWorker *worker,
 									BackgroundWorkerHandle *handle);
 static void signal_worker_xact_callback(XactEvent event, void *arg);
 static uint32 spock_ch_stats_hash(const void *key, Size keysize);
-static void spock_shmem_init_internal(int nworkers);
-
 
 void
 handle_sigterm(SIGNAL_ARGS)
@@ -310,20 +306,6 @@ wait_for_worker_startup(SpockWorker *worker,
 /*
  * Cleanup function.
  */
-
-/*
- * Called on shmem exit.
- */
-static void
-spock_on_shmem_exit(int code, Datum arg)
-{
-	/* Only dump data if exiting cleanly */
-	if (code != 0)
-		return;
-
-	elog(DEBUG1, "spock_on_shmem_exit: dumping apply group data");
-	spock_group_resource_dump();
-}
 
 /*
  * Called for worker process exit.
@@ -761,98 +743,106 @@ spock_subscription_changed(Oid subid, bool kill)
 }
 
 static Size
-worker_shmem_size(int nworkers, bool include_hash)
+exception_log_shmem_size(int nworkers)
 {
-	Size		num_bytes = 0;
-
-	num_bytes = offsetof(SpockContext, workers);
-	num_bytes = add_size(num_bytes,
-						 sizeof(SpockWorker) * nworkers);
-	num_bytes = add_size(num_bytes,
-						 sizeof(SpockExceptionLog) * nworkers);
-
-	spock_stats_max_entries = SPOCK_STATS_MAX_ENTRIES(nworkers);
-
-	if (include_hash)
-	{
-		num_bytes = add_size(num_bytes,
-							 hash_estimate_size(spock_stats_max_entries,
-												sizeof(spockStatsEntry)));
-	}
-
-	return num_bytes;
+	return sizeof(SpockExceptionLog) * nworkers;
 }
 
 /*
- * Requests any additional shared memory required for spock.
+ * Requests any additional shared memory required for spock worker subsystem.
+ *
+ * Note: This function is called from the centralized spock_shmem_request()
+ * hook in spock_shmem.c. It should NOT chain to prev_shmem_request_hook
+ * as that is handled by the central hook.
  */
-static void
-spock_worker_shmem_request(void)
+void
+spock_worker_shmem_request(int nworkers)
 {
-	int			nworkers;
+	Size		num_bytes = 0;
 
-	if (prev_shmem_request_hook != NULL)
-		prev_shmem_request_hook();
+	num_bytes = add_size(num_bytes,
+						 exception_log_shmem_size(nworkers));
 
 	/*
-	 * This is kludge for Windows (Postgres does not define the GUC variable as
-	 * PGDDLIMPORT)
+	 * TODO: Separate spockStatsEntry: it should be covered by separate lock as
+	 * well as its UI functions may be encapsulated inside the module and make
+	 * all the pointers static.
 	 */
-	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL,
-										  false));
+	spock_stats_max_entries = SPOCK_STATS_MAX_ENTRIES(nworkers);
+	num_bytes = add_size(num_bytes,
+						 hash_estimate_size(spock_stats_max_entries,
+											sizeof(spockStatsEntry)));
 
 	/* Allocate enough shmem for the worker limit ... */
-	RequestAddinShmemSpace(worker_shmem_size(nworkers, true));
+	RequestAddinShmemSpace(num_bytes);
 
 	/* Allocate the number of LW-locks needed for Spock. */
 	RequestNamedLWLockTranche("spock", 2);
-
-	/* Request shmem for Apply Group */
-	spock_group_shmem_request();
 }
 
 /*
  * Init shmem needed for workers.
+ *
+ * This function is called from the centralized spock_shmem_startup()
+ * hook in spock_shmem.c. It should NOT:
+ * - Chain to prev_shmem_startup_hook (handled by central hook)
+ * - Register on_shmem_exit callback (handled by central hook)
+ *
+ * NOTE:
+ * We keep initialization inside the worker module to reduce expose of internal
+ * structures.
  */
-static void
-spock_worker_shmem_startup(void)
+void
+spock_worker_shmem_startup(bool found)
 {
-	int			nworkers;
+	HASHCTL	hctl;
+	bool	is_found;
+	int		nworkers = SpockCtx->total_workers;
 
-	if (prev_shmem_startup_hook != NULL)
-		prev_shmem_startup_hook();
-
-	if (!IsUnderPostmaster)
-		on_shmem_exit(spock_on_shmem_exit, (Datum) 0);
-
-	/*
-	 * This is kludge for Windows (Postgres does not define the GUC variable
-	 * as PGDLLIMPORT)
-	 */
-	nworkers = atoi(GetConfigOptionByName("max_worker_processes", NULL, false));
+	/* Check code paths consistency */
+	Assert(LWLockHeldByMeInMode(AddinShmemInitLock, LW_EXCLUSIVE));
+	Assert(SpockCtx != NULL);
 
 	/*
-	 * Reset in case this is a restart within the postmaster
-	 * Spock extension must be loaded on startup. In case of a fatal error and
-	 * further restart, postmaster clean up shared memory but local variables
-	 * stay the same. So, we need to clean outdated pointers in advance.
+	 * Reset local pointers to shared memory structures.
+	 *
+	 * This is called during initialization and after crash recovery to ensure
+	 * that local static pointers don't reference old shared memory.
+	 * When the postmaster reinitializes shared memory after a crash, local
+	 * pointers in extensions still point to the old locations.
 	 */
-	SpockCtx = NULL;
+	MySpockWorker = NULL;
 	SpockHash = NULL;
-	SpockGroupHash = NULL;
 	exception_log_ptr = NULL;
 
-	/* Avoid possible race-conditions when initializing shared memory. */
-	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+	/* In case of EXEC_BACKEND we must initialize it in each backend */
+	spock_stats_max_entries = SPOCK_STATS_MAX_ENTRIES(nworkers);
 
 	/*
-	 * Initialize all shared memory structures (including SpockGroupHash).
-	 * This internally calls spock_group_shmem_startup() to handle group
-	 * initialization and file loading.
+	 * Initialize exception log pointer array.
 	 */
-	spock_shmem_init_internal(nworkers);
+	exception_log_ptr = ShmemInitStruct("spock_exception_log",
+										exception_log_shmem_size(nworkers),
+										&is_found);
+	Assert(found == is_found);
 
-	LWLockRelease(AddinShmemInitLock);
+	if (!found)
+	{
+		memset(exception_log_ptr, 0, exception_log_shmem_size(nworkers));
+	}
+
+	/*
+	 * Initialize (or attach) SpockHash - channel stats hash.
+	 */
+	memset(&hctl, 0, sizeof(hctl));
+	hctl.keysize = sizeof(spockStatsKey);
+	hctl.entrysize = sizeof(spockStatsEntry);
+	hctl.hash = spock_ch_stats_hash;
+	SpockHash = ShmemInitHash("spock channel stats hash",
+							  spock_stats_max_entries,
+							  spock_stats_max_entries,
+							  &hctl,
+							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
 }
 
 /*
@@ -867,88 +857,6 @@ spock_ch_stats_hash(const void *key, Size keysize)
 
 	return hash_uint32((uint32) k->dboid) ^
 		hash_uint32((uint32) k->relid);
-}
-
-/*
- * spock_shmem_init_internal
- *
- * Common function to initialize or attach to shared memory structures.
- * Returns true if structures already existed (found), false if newly created.
- *
- * This centralizes the logic for setting up all Spock shared memory pointers,
- * which is used by both the initial startup hook and the attach function.
- */
-static void
-spock_shmem_init_internal(int nworkers)
-{
-	HASHCTL		hctl;
-	bool		found;
-
-	/* Init signaling context for the various processes. */
-	SpockCtx = ShmemInitStruct("spock_context",
-							   worker_shmem_size(nworkers, false), &found);
-	if (!found)
-	{
-		/* First time - initialize the structure */
-		SpockCtx->lock = &((GetNamedLWLockTranche("spock")[0]).lock);
-		SpockCtx->apply_group_master_lock = &((GetNamedLWLockTranche(SPOCK_GROUP_TRANCHE_NAME)[0]).lock);
-		SpockCtx->slot_group_master_lock = &((GetNamedLWLockTranche("spock_slot_groups")[0]).lock);
-		SpockCtx->slot_ngroups = nworkers;
-		SpockCtx->supervisor = NULL;
-		SpockCtx->subscriptions_changed = false;
-		SpockCtx->total_workers = nworkers;
-		memset(SpockCtx->workers, 0,
-			   sizeof(SpockWorker) * SpockCtx->total_workers);
-	}
-
-	/*
-	 * Initialize exception log pointer array.
-	 */
-	exception_log_ptr = ShmemInitStruct("spock_exception_log_ptr",
-										worker_shmem_size(nworkers, false), &found);
-
-	if (!found)
-	{
-		memset(exception_log_ptr, 0, sizeof(SpockExceptionLog) * nworkers);
-	}
-
-	/*
-	 * Initialize SpockHash - channel stats hash.
-	 */
-	memset(&hctl, 0, sizeof(hctl));
-	hctl.keysize = sizeof(spockStatsKey);
-	hctl.entrysize = sizeof(spockStatsEntry);
-	hctl.hash = spock_ch_stats_hash;
-	SpockHash = ShmemInitHash("spock channel stats hash",
-							  spock_stats_max_entries,
-							  spock_stats_max_entries,
-							  &hctl,
-							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
-
-	/*
-	 * Initialize SpockGroupHash via the spock_group module.
-	 * This creates the hash table and loads the resource file to seed it.
-	 */
-	spock_group_shmem_startup(nworkers);
-}
-
-/*
- * Request shmem resources for our worker management.
- */
-void
-spock_worker_shmem_init(void)
-{
-	/*
-	 * Whether this is a first startup or crash recovery, we'll be re-initing
-	 * the bgworkers.
-	 */
-	SpockCtx = NULL;
-	MySpockWorker = NULL;
-
-	prev_shmem_request_hook = shmem_request_hook;
-	shmem_request_hook = spock_worker_shmem_request;
-	prev_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook = spock_worker_shmem_startup;
 }
 
 const char *
