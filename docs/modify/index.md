@@ -12,5 +12,9 @@ There are several tools and scripts you can use to add a node to a cluster; the 
 
 * **Use Spockctrl to manage aspects of your Spock replication setup.**
 
-The [Spockctrl utility](../modify/spockctrl/index.md) is appropriate for use in production clusters that can't be taken out of production.
+The [Spockctrl utility](spockctrl/index.md) is appropriate for use in production clusters that can't be taken out of production.
+
+* **Recover from a catastrophic node failure**
+
+If a node fails unexpectedly and another node is left behind (for example, due to network delay), you can use [ACE to recover the lagging node](../recovery/catastrophic_node_failure.md) and bring it back in sync with the rest of the cluster.
 

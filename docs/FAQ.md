@@ -39,3 +39,9 @@
   There is a similar mechanism in physical replication - `recovery_min_apply_delay`. However, if you set an interval during daylight savings times, you might get that interval + the time change (in other words, you'll get a 1h delay instead of a 2h delay because of the time differential). This may lead to stopping and starting the database service twice per year.
 
   Yes, `apply_delay` accommodates time changes like Daylight Savings Time.  The value of `apply_delay` stays the same in practice, if a time shift happens after the subscription was created.  However, we do not recommend running heavy workloads during a time change as spock replication needs some time ( ~ 5 minutes) to recover.
+
+### Node failure and recovery
+
+* What should I do if a node crashes and another node is left behind (for example, missing some transactions)?
+
+  If one node fails and a subscriber did not receive all of that node's transactions before the failure, you can recover the lagging node using the Active Consistency Engine (ACE). ACE compares table data across the surviving nodes, identifies what is missing on the lagging node, and repairs it using a fully synchronized node as the source of truth. You can preserve original timestamps and origin IDs so that replication metadata stays correct. For a step-by-step procedure, see [Recovering from Catastrophic Node Failure](recovery/catastrophic_node_failure.md).
