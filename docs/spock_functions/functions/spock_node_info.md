@@ -4,9 +4,7 @@ spock.node_info()
 
 ### SYNOPSIS
 
-spock.node_info (OUT node_id oid, OUT node_name text, OUT sysid text,
-OUT dbname text, OUT replication_sets text, OUT location text,
-OUT country text, OUT info jsonb)
+spock.node_info()
 
 ### RETURNS
 
