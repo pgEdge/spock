@@ -52,6 +52,7 @@ nav:
   - Introduction: index.md
   - Installing and Configuring Spock: install_spock.md
   - Creating a Two-Node Cluster: two_node_cluster.md
+  - Using Advanced Configuration Options: configuring.md
   - Upgrading a Spock Installation: upgrading_spock.md
   - Spock's Conflict Avoidance Options: conflicts.md
   - Spock's Management Features:

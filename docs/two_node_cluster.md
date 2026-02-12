@@ -6,17 +6,20 @@ examples that follow, we'll be creating a cluster that contains two nodes,
 named `n1` and `n2` that listen for Postgres server connections on port
 `5432`.
 
-1. After installing Postgres, connect to each node, and use the following 
-   commands to initialize a cluster:
+:
 
     ```sql
     sudo /usr/pgsql-17/bin/postgresql-17-setup initdb
     sudo systemctl enable postgresql-17
     ```
 
-2. On each node, use your choice of editor to open the `postgresql.conf` file
-   (located in `/var/lib/pgsql/17/data/postgresql.conf`) and add the following
-   parameters to the bottom of the file:
+!!! hint
+
+    SELECT version(); SHOW data_directory; SHOW config_file;
+
+1. After installing Postgres and initializing a cluster, on each node, use 
+   your choice of editor to open the `postgresql.conf` file and add the 
+   following parameters to the bottom of the file:
 
     ```sql
     wal_level = 'logical'
@@ -27,7 +30,7 @@ named `n1` and `n2` that listen for Postgres server connections on port
     track_commit_timestamp = on
     ```
 
-3. On each node that will host spock, edit the 
+2. On each node that will host spock, edit the 
    [`pg_hba.conf` file](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html)
    (located in `/var/lib/pgsql/17/data/pg_hba.conf`) and allow
    connections between `n1` and `n2`. The following commands are provided as
@@ -42,16 +45,16 @@ named `n1` and `n2` that listen for Postgres server connections on port
     host    replication  all          <node_2_IP_address>/32    trust
     ```
 
-4. Use your platform-specific command to restart the server on each node.
+3. Use your platform-specific command to restart the server on each node.
 
-5. Then, on each node, connect to the Postgres server with psql and create the
+4. Then, on each node, connect to the Postgres server with psql and create the
    spock extension:
    
     ```sql
     CREATE EXTENSION spock;
     ```
 
-6. Then, use the
+5. Then, use the
    [`spock.node_create`](spock_functions/functions/spock_node_create.md)
    command to create the provider and subscriber nodes; on node `n1`:
 
@@ -68,7 +71,7 @@ named `n1` and `n2` that listen for Postgres server connections on port
            dsn :='host=<node_2_IP_address> port=<n2_port> dbname=<db_name>');`
     ```
 
-7. On `n1`, use the
+6. On `n1`, use the
    [`spock.repset_add_all_tables`](spock_functions/functions/spock_repset_add_all_tables.md)
    command to add the tables in the `public` schema to the `default`
    replication set.  If you are working in another schema, customize this
@@ -78,7 +81,7 @@ named `n1` and `n2` that listen for Postgres server connections on port
     SELECT spock.repset_add_all_tables('default', ARRAY['public']);`
     ```
 
-8. On n2, use the following commands
+7. On n2, use the following commands
    to create the subscription between n2 and n1 and wait for the subscription
    to sync; the name of the subscription is `sub_n2_n1`:
 
@@ -89,14 +92,14 @@ named `n1` and `n2` that listen for Postgres server connections on port
     SELECT spock.sub_wait_for_sync('sub_n2_n1');
     ```
 
-9.  On `n1`, create a corresponding subscription to `n2` named `sub_n1_n2`:
+8.  On `n1`, create a corresponding subscription to `n2` named `sub_n1_n2`:
 
     ```sql
     SELECT spock.sub_create (subscription_name := 'sub_n1_n2',
         subscriber_dsn := 'host=<node_2_IP_address> port=<n2_port> dbname=<db_name>');
     ```
 
-10. To ensure that modifications to your [DDL statements are automatically
+9.  To ensure that modifications to your [DDL statements are automatically
    replicated](managing/spock_autoddl.md), connect to each node with a
    Postgres client and invoke the following SQL commands:
 
@@ -107,7 +110,7 @@ named `n1` and `n2` that listen for Postgres server connections on port
     SELECT pg_reload_conf();
     ```
 
-11. Then, check the status of each node:
+10. Then, check the status of each node:
 
     ```sql
     SELECT * FROM spock.node;

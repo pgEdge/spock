@@ -34,8 +34,6 @@ replication scenarios.
 This function writes metadata into the Spock catalogs and initiates a
 replication connection to the provider.
 
-Returns NULL if any required argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS
@@ -95,7 +93,7 @@ skip_schema
 ### EXAMPLE
 
     SELECT spock.sub_create('sub_n2_n1',
-        'host=10.0.0.10 port=5432 dbname=postgres');
+        'host=127.0.0.1 port=5432 dbname=postgres');
 
     SELECT spock.sub_create('sub_n2_n1',
         'host=10.0.0.10 port=5432 dbname=postgres',
