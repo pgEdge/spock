@@ -73,7 +73,7 @@ other Postgres extension:
 `make-install`
 
 
-## Configuring Spock for Replication
+## Configuring Postgres for Spock Replication
 
 After installing Postgres on each node that will host a spock instance,
 use [initdb](https://www.postgresql.org/docs/18/app-initdb.html) to initialize
@@ -135,7 +135,6 @@ postgres=# CREATE EXTENSION spock;
 CREATE EXTENSION
 postgres=# 
 ```
-
 
 ### Creating a Replication Scenario
 
