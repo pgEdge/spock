@@ -4,7 +4,7 @@ spock.sync_seq()
 
 ### SYNOPSIS
 
-spock.sync_seq (relation regclass)
+spock.sync_seq(relation regclass)
 
 ### RETURNS
 

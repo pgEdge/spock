@@ -29,8 +29,6 @@ The subscription connection will be restarted using the new interface.
 
 This function writes metadata into the Spock catalogs.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS

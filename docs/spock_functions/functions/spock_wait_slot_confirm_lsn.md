@@ -50,5 +50,5 @@ target
 The following command waits for a slot named spock_local_sync_346_79a to
 confirm that it has received changes to the target LSN (0/3000000):
 
-    SELECT spock.wait_slot_confirm_lsn('spock_local_sync_123456_789abc',
+    SELECT spock.wait_slot_confirm_lsn('spock_local_sync_346_79a',
     '0/3000000');

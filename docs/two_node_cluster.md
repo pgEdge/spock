@@ -6,7 +6,6 @@ examples that follow, we'll be creating a cluster that contains two nodes,
 named `n1` and `n2` that listen for Postgres server connections on port
 `5432`.
 
-:
 
     ```sql
     sudo /usr/pgsql-17/bin/postgresql-17-setup initdb
@@ -78,7 +77,7 @@ named `n1` and `n2` that listen for Postgres server connections on port
    command as needed:
 
     ```sql
-    SELECT spock.repset_add_all_tables('default', ARRAY['public']);`
+    SELECT spock.repset_add_all_tables('default', ARRAY['public']);
     ```
 
 7. On n2, use the following commands
@@ -87,7 +86,7 @@ named `n1` and `n2` that listen for Postgres server connections on port
 
     ```sql
     SELECT spock.sub_create (subscription_name := 'sub_n2_n1',
-        provider_dsn := 'host=<node_1_IP_address> port=<n1 port> dbname=<db_name>');
+        provider_dsn := 'host=<node_1_IP_address> port=<n1_port> dbname=<db_name>');
 
     SELECT spock.sub_wait_for_sync('sub_n2_n1');
     ```

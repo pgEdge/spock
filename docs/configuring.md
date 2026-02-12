@@ -42,7 +42,7 @@ You can use the following configuration parameters (GUCs) on the psql
 command line with a `SET` statement or in a Postgres configuration file
 (like `postgresql.conf`) to configure a Spock installation.
 
-#### `spock.allow_ddl_from_functions`
+### `spock.allow_ddl_from_functions`
 
 `spock.allow_ddl_from_functions` enables spock to automatically replicate
 DDL statements that are called within functions to also be automatically
@@ -53,19 +53,19 @@ functions adhere to the same rule previously described for
 added into the `default` replication set; alternatively, they will be added
 to the `default_insert_only` replication set.
 
-#### `spock.batch_inserts`
+### `spock.batch_inserts`
 
 `spock.batch_inserts` tells Spock to use batch insert mechanism if
 possible. The batch mechanism uses Postgres internal batch insert mode which
 is also used by `COPY` command.
 
-#### `spock.channel_counters`
+### `spock.channel_counters`
 
 `spock.channel_counters` is a boolean value (the default is `true`) that
 enables or disables the Spock channel statistic information collection. This
 option can only be set when the postmaster starts.
 
-#### `spock.check_all_uc_indexes`
+### `spock.check_all_uc_indexes`
 
 !!! info
 
@@ -95,7 +95,7 @@ Child tables / foreign keys are not checked or handled. Therefore, if
 resolving a unique constraint changes the primary key value, you can
 inadvertently create orphaned foreign key records.
 
-#### `spock.conflict_resolution`
+### `spock.conflict_resolution`
 
 `spock.conflict_resolution` sets the resolution method for any detected
 conflicts between local data and incoming changes. Possible values are:
@@ -112,20 +112,20 @@ conflicts between local data and incoming changes. Possible values are:
 To enable conflict resolution, the `track_commit_timestamp` setting must be
 enabled.
 
-#### `spock.deny_all_ddl`
+### `spock.deny_all_ddl`
 
 `spock.deny_all_ddl` is a boolean value (the default is `false`) that
 enables or disables the execution of DDL statements within a Spock
 configured cluster. This option can be set at postmaster startup, with the
 SIGHUP mechanism, or on the command line with SQL if you're a superuser.
 
-#### `spock.enable_ddl_replication`
+### `spock.enable_ddl_replication`
 
 `spock.enable_ddl_replication` enables
 [automatic replication](managing/spock_autoddl.md) of ddl statements through
 the `default` replication set.
 
-#### <a name="spock-exception_behaviour"></a>`spock.exception_behaviour`
+### <a name="spock-exception_behaviour"></a>`spock.exception_behaviour`
 
 Use this GUC to specify the commit behavior of Postgres when it encounters
 an ERROR within a transaction:
@@ -151,7 +151,7 @@ Note that the value you choose for `spock.exception_behaviour` could
 potentially result in a large WAL log if transactions are allowed to
 accumulate.
 
-#### `spock.exception_logging`
+### `spock.exception_logging`
 
 Use this GUC to specify which operations/transactions are written to the
 exception log table:
@@ -165,7 +165,7 @@ exception log table:
 * `none` - Instructs the server to not log any operation or transactions to
   the exception log table.
 
-#### `spock.exception_replay_queue_size` - DEPRECATED
+### `spock.exception_replay_queue_size` - DEPRECATED
 
 This parameter will not be supported after version 5.X.
 
@@ -180,7 +180,7 @@ size is configurable with `spock.exception_replay_queue_size`.
 Now, Spock performs as specified by the
 [`spock.exception_behaviour`](#spock-exception_behaviour) parameter.
 
-#### `spock.extra_connection_options`
+### `spock.extra_connection_options`
 
 You can use the `spock.extra_connection_options` parameter in the
 `postgresql.conf` file to assign connection options that apply to all
@@ -191,7 +191,7 @@ keepalive options, etc.
 the upstream server disappears unexpectedly. To disable them add
 `keepalives = 0` to `spock.extra_connection_options`.
 
-#### `spock.include_ddl_repset`
+### `spock.include_ddl_repset`
 
 `spock.include_ddl_repset` enables spock to automatically add tables to
 replication sets at the time they are created on each node. Tables with
@@ -202,20 +202,20 @@ adjustment to which replication set the table is part of. Setting a table to
 unlogged will remove it from replication. Detaching a partition will not
 remove it from replication.
 
-#### `spock.save_resolutions`
+### `spock.save_resolutions`
 
 `spock.save_resolutions` is a boolean value (the default is `false`) that
-logs all conflict resolutions to the `spock.resolutions table`. This option
+logs all conflict resolutions to the `spock.resolutions` table. This option
 can only be set when the postmaster starts.
 
-#### `spock.stats_max_entries`
+### `spock.stats_max_entries`
 
 `spock.stats_max_entries` specifies the maximum number of entries that can
 be stored into the Spock channel statistic. This option can only be set when
 the postmaster starts.  The parameter accepts values from `-1` to `INT_MAX`
 (the default is `-1`).
 
-#### `spock.temp_directory`
+### `spock.temp_directory`
 
   `spock.temp_directory` defines the system path where temporary files
   needed for schema synchronization are written. This path needs to exist

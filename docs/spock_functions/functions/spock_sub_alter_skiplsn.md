@@ -32,8 +32,6 @@ understands the data implications.
 This function writes metadata into the Spock catalogs but does not modify
 PostgreSQL server configuration.
 
-Returns NULL if any argument is NULL.
-
 This command must be executed by a superuser.
 
 ### ARGUMENTS

@@ -9,7 +9,6 @@ spock.sub_enable (subscription_name name, immediate boolean)
 ### RETURNS
 
   - true if the subscription was successfully enabled.
-
   - false if the operation fails.
 
 ### DESCRIPTION
@@ -27,8 +26,6 @@ true, the subscription is activated immediately. If false (default), the
 subscription is activated at the end of the current transaction.
 
 This function writes metadata into the Spock catalogs.
-
-Returns NULL if any argument is NULL.
 
 This command must be executed by a superuser.
 

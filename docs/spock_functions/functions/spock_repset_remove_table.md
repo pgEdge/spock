@@ -9,12 +9,12 @@ spock.repset_remove_table (
     relation regclass,
     include_partitions boolean)
 
-RETURNS
+### RETURNS
 
     - true if the table was successfully removed from the replication set.
-    — false if the table was not a member of the replication set.
+    - false if the table was not a member of the replication set.
 
-DESCRIPTION
+### DESCRIPTION
 
 Removes a table from an existing Spock replication set.  After removal, 
 changes to this table will no longer be replicated to subscribers that
@@ -28,7 +28,7 @@ modify the PostgreSQL configuration.
 
 This command must be executed by a superuser.
 
-ARGUMENTS
+### ARGUMENTS
 
 set_name
 
@@ -44,7 +44,7 @@ include_partitions
     If true and the table is partitioned, all partitions are
     also removed from the replication set. Default is true.
 
-EXAMPLE
+### EXAMPLE
 
 Remove a table (public.users) from the default replication set:
 
