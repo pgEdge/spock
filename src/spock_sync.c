@@ -170,9 +170,9 @@ get_pg_executable(char *cmdname, char *cmdbuf)
 static List *
 build_exclude_extension_string(void)
 {
-	List   *lst = NIL;
-	char   *arg;
-	int		i;
+	List	   *lst = NIL;
+	char	   *arg;
+	int			i;
 
 	for (i = 0; skip_extension[i] != NULL; i++)
 	{
@@ -206,7 +206,7 @@ build_exclude_schema_string(SpockSubscription *sub)
 	{
 		foreach(lc, sub->skip_schema)
 		{
-			const char   *schema_name = (const char *) lfirst(lc);
+			const char *schema_name = (const char *) lfirst(lc);
 
 			if (!OidIsValid(LookupExplicitNamespace(schema_name, true)))
 				continue;
@@ -240,7 +240,7 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	get_pg_executable(PGDUMP_BINARY, pg_dump);
 
 	args = lappend(args, pg_dump);
-	args = lappend(args, "-Fc"); /* custom format */
+	args = lappend(args, "-Fc");	/* custom format */
 	args = lappend(args, "-s"); /* schema only */
 
 	arg = psprintf("--snapshot=%s", snapshot);
@@ -276,10 +276,10 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 						pg_dump)));
 
 	/*
-	 * Allocations have been made in the transaction context. Hence, don't bother
-	 * freeing memory - it will be released soon.
-	 * Also, some elements in the args list are string literals, so freeing
-	 * the list would be unsafe anyway.
+	 * Allocations have been made in the transaction context. Hence, don't
+	 * bother freeing memory - it will be released soon. Also, some elements
+	 * in the args list are string literals, so freeing the list would be
+	 * unsafe anyway.
 	 */
 }
 
@@ -456,9 +456,9 @@ adjust_progress_info(PGconn *origin_conn)
 		for (rno = 0; rno < PQntuples(originRes); rno++)
 		{
 			SpockApplyProgress *sap =
-								MemoryContextAlloc(CacheMemoryContext,
-												   sizeof(SpockApplyProgress));
-			MemoryContext		oldctx;
+				MemoryContextAlloc(CacheMemoryContext,
+								   sizeof(SpockApplyProgress));
+			MemoryContext oldctx;
 
 			/*
 			 * Update the remote node's progress entry to what our sync
@@ -515,6 +515,7 @@ adjust_progress_info(PGconn *origin_conn)
 				Assert(IS_VALID_TIMESTAMP(sap->last_updated_ts));
 
 				if (sap->last_updated_ts < sap->remote_commit_ts)
+
 					/*
 					 * Complaining at the end of the sync we shouldn't flood
 					 * the log
@@ -530,7 +531,7 @@ adjust_progress_info(PGconn *origin_conn)
 			}
 			sap->updated_by_decode = updated_by_decode[0] == 't',
 
-			oldctx = MemoryContextSwitchTo(CacheMemoryContext);
+				oldctx = MemoryContextSwitchTo(CacheMemoryContext);
 			resultList = lappend(resultList, sap);
 			MemoryContextSwitchTo(oldctx);
 
@@ -609,8 +610,8 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 
 	/*
 	 * Set correct origin if target db supports it. We must do this before
-	 * starting the transaction otherwise the status code below would get
-	 * much more complicated.
+	 * starting the transaction otherwise the status code below would get much
+	 * more complicated.
 	 */
 	if (PQserverVersion(conn) >= 90500)
 	{
@@ -959,10 +960,9 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 	/*
 	 * Update replication progress. We must do it after commit of the COPY.
 	 *
-	 * NOTE:
-	 * It is not obvious we need to arrange progress in case of accidental
-	 * single-table re-sync. But while this machinery serves information goals
-	 * only we just follow the initial logic.
+	 * NOTE: It is not obvious we need to arrange progress in case of
+	 * accidental single-table re-sync. But while this machinery serves
+	 * information goals only we just follow the initial logic.
 	 */
 	spock_group_progress_update_list(progress_entries_list);
 }

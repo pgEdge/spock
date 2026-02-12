@@ -764,9 +764,9 @@ spock_worker_shmem_request(int nworkers)
 						 exception_log_shmem_size(nworkers));
 
 	/*
-	 * TODO: Separate spockStatsEntry: it should be covered by separate lock as
-	 * well as its UI functions may be encapsulated inside the module and make
-	 * all the pointers static.
+	 * TODO: Separate spockStatsEntry: it should be covered by separate lock
+	 * as well as its UI functions may be encapsulated inside the module and
+	 * make all the pointers static.
 	 */
 	spock_stats_max_entries = SPOCK_STATS_MAX_ENTRIES(nworkers);
 	num_bytes = add_size(num_bytes,
@@ -795,9 +795,9 @@ spock_worker_shmem_request(int nworkers)
 void
 spock_worker_shmem_startup(bool found)
 {
-	HASHCTL	hctl;
-	bool	is_found;
-	int		nworkers = SpockCtx->total_workers;
+	HASHCTL		hctl;
+	bool		is_found;
+	int			nworkers = SpockCtx->total_workers;
 
 	/* Check code paths consistency */
 	Assert(LWLockHeldByMeInMode(AddinShmemInitLock, LW_EXCLUSIVE));
@@ -807,9 +807,9 @@ spock_worker_shmem_startup(bool found)
 	 * Reset local pointers to shared memory structures.
 	 *
 	 * This is called during initialization and after crash recovery to ensure
-	 * that local static pointers don't reference old shared memory.
-	 * When the postmaster reinitializes shared memory after a crash, local
-	 * pointers in extensions still point to the old locations.
+	 * that local static pointers don't reference old shared memory. When the
+	 * postmaster reinitializes shared memory after a crash, local pointers in
+	 * extensions still point to the old locations.
 	 */
 	MySpockWorker = NULL;
 	SpockHash = NULL;

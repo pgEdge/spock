@@ -29,14 +29,13 @@ jobs:
 
       - name: Clone and build pg_bsd_indent
         run: |
-          git clone https://git.postgresql.org/git/postgresql.git --depth 1 --branch master /tmp/postgresql
+          git clone https://git.postgresql.org/git/postgresql.git --depth 1 --branch REL_17_STABLE /tmp/postgresql
           cd /tmp/postgresql
           ./configure --prefix=/tmp/pg-build > /dev/null
           cd src/tools/pg_bsd_indent
           make > /dev/null
-          echo "$GITHUB_WORKSPACE/pg-install/bin" >> $GITHUB_PATH
-          echo "/tmp/postgresql/src/tools/pgindent" >> $GITHUB_PATH
-          echo "/tmp/postgresql/src/tools/pg_bsd_indent" >> $GITHUB_PATH
+          echo "/tmp/postgresql/src/tools/pgindent" >> "$GITHUB_PATH"
+          echo "/tmp/postgresql/src/tools/pg_bsd_indent" >> "$GITHUB_PATH"
 
       - name: Run pgindent and check formatting
         working-directory: utils/pgindent
@@ -47,7 +46,7 @@ jobs:
       - name: Check for formatting changes
         run: |
           if ! git diff --quiet; then
-            echo "::error::Code formatting issues detected. Please run gen-typedefs.sh locally."
+            echo "::error::Code formatting issues detected. Please run utils/pgindent/run-pgindent.sh locally."
             git diff
             exit 1
           fi
