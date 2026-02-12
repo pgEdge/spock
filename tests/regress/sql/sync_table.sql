@@ -100,6 +100,49 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 SELECT * FROM g1 ORDER BY col1;
 
+--
+-- Test that table sync stops on error and records FAILED status
+--
+\c :provider_dsn
+SELECT spock.replicate_ddl('CREATE TABLE test_sync_fail(x integer primary key)');
+SELECT * FROM spock.repset_add_table('default', 'test_sync_fail');
+INSERT INTO test_sync_fail (x) SELECT value FROM generate_series(1,6) AS value;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT count(*) FROM test_sync_fail;
+
+-- Add CHECK constraint on subscriber only. NOT VALID skips existing rows
+-- but enforces on new inserts (including COPY FROM during resync).
+ALTER TABLE test_sync_fail ADD CONSTRAINT chk_x CHECK (x < 5) NOT VALID;
+
+-- Resync: COPY will fail because rows with x >= 5 violate the CHECK.
+SELECT spock.sub_resync_table('test_subscription', 'test_sync_fail', true);
+
+-- table_wait_for_sync now detects FAILED status and raises ERROR.
+SELECT spock.table_wait_for_sync('test_subscription', 'test_sync_fail');
+
+-- Verify FAILED status in local_sync_status
+SELECT sync_kind, sync_nspname, sync_relname, sync_status
+FROM spock.local_sync_status
+WHERE sync_nspname = 'public' AND sync_relname = 'test_sync_fail';
+
+-- Let's check exact state of the syncing table
+SELECT count(*) FROM test_sync_fail;
+
+-- Remove the problematic constraint for cleanup
+ALTER TABLE test_sync_fail DROP CONSTRAINT chk_x;
+
+-- .. and retry synchronisation.
+SELECT spock.sub_resync_table('test_subscription', 'test_sync_fail', true);
+SELECT spock.table_wait_for_sync('test_subscription', 'test_sync_fail');
+-- Let's check exact state of the syncing table. Now, it should be OK.
+SELECT sync_kind, sync_nspname, sync_relname, sync_status
+FROM spock.local_sync_status
+WHERE sync_nspname = 'public' AND sync_relname = 'test_sync_fail';
+SELECT count(*) FROM test_sync_fail;
+
 -- Cleanup
 \c :provider_dsn
-DROP TABLE test_sync, g1 CASCADE;
+DROP TABLE test_sync, g1, test_sync_fail CASCADE;

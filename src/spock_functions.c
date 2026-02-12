@@ -1022,7 +1022,8 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	{
 		if (oldsync->status != SYNC_STATUS_READY &&
 			oldsync->status != SYNC_STATUS_SYNCDONE &&
-			oldsync->status != SYNC_STATUS_NONE)
+			oldsync->status != SYNC_STATUS_NONE &&
+			oldsync->status != SYNC_STATUS_FAILED)
 			elog(ERROR, "table %s.%s is already being synchronized",
 				 nspname, relname);
 
@@ -2735,6 +2736,20 @@ spock_wait_for_sync_complete(char *subscription_name, char *relnamespace, char *
 			{
 				SpockSyncStatus *table = get_table_sync_status(sub->id, relnamespace, relname, false);
 
+				/*
+				 * XXX: It would be better to return a boolean instead, but
+				 * for the sake of a stable UI we raise an ERROR here.
+				 */
+				if (table && table->stop_on_error &&
+					table->status == SYNC_STATUS_FAILED)
+				{
+					ereport(ERROR,
+							(errmsg("synchronization of table %s.%s failed on subscription %s",
+									NameStr(table->nspname),
+									NameStr(table->relname), sub->name),
+							 errhint("Check the server log for details, resolve the issue, and retry.")));
+				}
+
 				isdone = table && table->status == SYNC_STATUS_READY;
 				free_sync_status(table);
 			}
@@ -2752,6 +2767,15 @@ spock_wait_for_sync_complete(char *subscription_name, char *relnamespace, char *
 				foreach(lc, tables)
 				{
 					SpockSyncStatus *table = lfirst(lc);
+
+					if (table && table->stop_on_error &&
+						table->status == SYNC_STATUS_FAILED)
+					{
+						ereport(ERROR,
+								(errmsg("synchronization of table %s.%s failed on subscription %s",
+										NameStr(table->nspname), NameStr(table->relname), sub->name),
+								 errhint("Check the server log for details, resolve the issue, and retry.")));
+					}
 
 					free_sync_status(table);
 				}

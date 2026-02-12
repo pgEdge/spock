@@ -3570,8 +3570,18 @@ process_syncing_tables(XLogRecPtr end_lsn)
 				sync->status = SYNC_STATUS_READY;
 				sync->statuslsn = InvalidXLogRecPtr;
 			}
+			else if (newsync->status == SYNC_STATUS_FAILED)
+			{
+				/*
+				 * Failed SYNC operation should be ignored until someone processes
+				 * the error and changes the status.
+				 */
+				sync->status = SYNC_STATUS_FAILED;
+				sync->statuslsn = InvalidXLogRecPtr;
+			}
 			else
 				memcpy(sync, newsync, sizeof(SpockSyncStatus));
+
 			CommitTransactionCommand();
 			MemoryContextSwitchTo(MessageContext);
 
