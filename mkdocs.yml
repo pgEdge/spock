@@ -118,12 +118,12 @@ nav:
       - spock.sub_remove_repset(): spock_functions/functions/spock_sub_remove_repset.md
       - spock.sub_resync_table(): spock_functions/functions/spock_sub_resync_table.md
       - spock.sub_show_status(): spock_functions/functions/spock_sub_show_status.md
-      - spock.sub_show_table: spock_functions/functions/spock_sub_show_table.md
+      - spock.sub_show_table(): spock_functions/functions/spock_sub_show_table.md
       - spock.sync_event(): spock_functions/functions/spock_sync_event.md
       - spock.sub_wait_for_sync(): spock_functions/functions/spock_sub_wait_for_sync.md
       - spock.version(): spock_functions/functions/spock_version.md
       - spock.version_num(): spock_functions/functions/spock_version_num.md
-      - spock.wait_slot_confirm_lsn: spock_functions/functions/spock_wait_slot_confirm_lsn.md
+      - spock.wait_slot_confirm_lsn(): spock_functions/functions/spock_wait_slot_confirm_lsn.md
   - Limitations: limitations.md
   - FAQ: FAQ.md
   - Release Notes: spock_release_notes.md
