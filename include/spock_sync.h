@@ -20,6 +20,17 @@
 typedef struct SpockSyncStatus
 {
 	char		kind;
+
+	/*
+	 * Signal exception behaviour on sync attempt. At this moment it is
+	 * hardcoded to be true for table sync and false for subscription sync.
+	 * Should be introduced into the extension's interface later.
+	 * NOTE: The default value is false. Our current pattern is to create the
+	 * structure and immediately zero it; earlier versions will just follow
+	 * the previous logic and retry in case of an error.
+	 */
+	bool		stop_on_error;
+
 	Oid			subid;
 	NameData	nspname;
 	NameData	relname;
@@ -46,9 +57,11 @@ typedef struct SpockSyncStatus
 #define SYNC_STATUS_CONSTRAINTS	'c' /* Constraint sync (post-data structure). */
 #define SYNC_STATUS_SYNCWAIT	'w' /* Table sync is waiting to get OK from
 									 * main thread. */
+#define SYNC_STATUS_STARTED		'p' /* Sync operation started */
 #define SYNC_STATUS_CATCHUP		'u' /* Catching up. */
 #define SYNC_STATUS_SYNCDONE	'y' /* Synchronization finished (at lsn). */
 #define SYNC_STATUS_READY		'r' /* Done. */
+#define SYNC_STATUS_FAILED		'f' /* Operation has failed. */
 
 extern void spock_sync_worker_finish(void);
 
