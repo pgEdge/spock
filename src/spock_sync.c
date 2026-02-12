@@ -900,6 +900,24 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 						   PQerrorMessage(target_conn))));
 	}
 
+	/* Clear the initial COPY_IN result. */
+	PQclear(res);
+
+	/*
+	 * Retrieve the final COPY result.  PQputCopyEnd only signals end-of-data
+	 * at the protocol level; the actual outcome (constraint violations, etc.)
+	 * is available only via PQgetResult.
+	 */
+	res = PQgetResult(target_conn);
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	{
+		char	   *msg = pstrdup(PQerrorMessage(target_conn));
+
+		PQclear(res);
+		ereport(ERROR,
+				(errmsg("COPY to destination table failed"),
+				 errdetail("destination connection reported: %s", msg)));
+	}
 	PQclear(res);
 
 	elog(INFO, "finished synchronization of data for table %s.%s",
@@ -1388,12 +1406,36 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	/* Already synchronized, nothing to do here. */
 	if (sync->status == SYNC_STATUS_READY ||
 		sync->status == SYNC_STATUS_SYNCDONE)
+	{
+		CommitTransactionCommand();
 		return sync->status;
+	}
 
-	/* If previous sync attempt failed, we need to start from beginning. */
+	/*
+	 * If previous sync attempt failed, we need to start from beginning or
+	 * signal that we failed.
+	 */
 	if (sync->status != SYNC_STATUS_INIT)
+	{
+		/* We don't use the if-branch at the moment. Just check to be paranoid. */
+		Assert(sync->stop_on_error);
+
+		/*
+		 * Do not continue if any error happened during a previous SYNC
+		 * attempt on this table. Just mark the status and exit.
+		 */
 		set_table_sync_status(sub->id, table->schemaname, table->relname,
-							  SYNC_STATUS_INIT, InvalidXLogRecPtr);
+							  SYNC_STATUS_FAILED, InvalidXLogRecPtr);
+		CommitTransactionCommand();
+		return SYNC_STATUS_FAILED;
+	}
+
+	/* Should be removed when we add stop_on_error as a sync option */
+	Assert(sync->status == SYNC_STATUS_INIT);
+
+	/* We initiate sync procedure. Switch state to the next value */
+	set_table_sync_status(sub->id, table->schemaname, table->relname,
+						  SYNC_STATUS_STARTED, InvalidXLogRecPtr);
 
 	CommitTransactionCommand();
 
@@ -1544,7 +1586,8 @@ spock_sync_main(Datum main_arg)
 
 	/* Do the initial sync first. */
 	status = spock_sync_table(MySubscription, copytable, &status_lsn);
-	if (status == SYNC_STATUS_SYNCDONE || status == SYNC_STATUS_READY)
+	if (status == SYNC_STATUS_SYNCDONE || status == SYNC_STATUS_READY ||
+		status == SYNC_STATUS_FAILED)
 	{
 		spock_sync_worker_finish();
 		proc_exit(0);
@@ -1725,6 +1768,20 @@ syncstatus_fromtuple(HeapTuple tuple, TupleDesc desc)
 	d = fastgetattr(tuple, Anum_sync_statuslsn, desc, &isnull);
 	Assert(!isnull);
 	sync->statuslsn = DatumGetLSN(d);
+
+	if (strlen(sync->nspname.data) > 0 && strlen(sync->relname.data) > 0)
+	{
+		/*
+		 * XXX: Adding a parameter to a stable extension's UI and DB table
+		 * always needs careful coding. So, let's do it step-by-step
+		 * and for now change defaults and stop attempting single table
+		 * synchronisation on an error.
+		 * Keep it false for subscriptions syncing purposes. We don't really use
+		 * it in subscription syncing code now - it should be covered by the
+		 * following commits.
+		 */
+		sync->stop_on_error = true;
+	}
 
 	return sync;
 }
