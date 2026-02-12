@@ -4,7 +4,7 @@ spock.node_drop()
 
 ### SYNOPSIS
 
-spock.node_drop (node_name name, ifexists boolean DEFAULT false)
+spock.node_drop(node_name name, ifexists boolean)
 
 ### RETURNS
 
