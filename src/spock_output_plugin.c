@@ -1399,10 +1399,10 @@ spock_output_plugin_shmem_request(int nworkers)
 void
 spock_output_plugin_shmem_startup(bool found)
 {
-	bool					is_found;
-	SpockOutputSlotGroup   *slot_groups;
-	int						i;
-	int						nworkers = SpockCtx->total_workers;
+	bool		is_found;
+	SpockOutputSlotGroup *slot_groups;
+	int			i;
+	int			nworkers = SpockCtx->total_workers;
 
 	/* Check code paths consistency */
 	Assert(LWLockHeldByMeInMode(AddinShmemInitLock, LW_EXCLUSIVE));
@@ -1423,7 +1423,7 @@ spock_output_plugin_shmem_startup(bool found)
 		for (i = 0; i < nworkers; i++)
 		{
 			slot_groups[i].lock =
-					&((GetNamedLWLockTranche(SPOCK_SLOT_GROUPS_TRANCHE_NAME)[i + 1]).lock);
+				&((GetNamedLWLockTranche(SPOCK_SLOT_GROUPS_TRANCHE_NAME)[i + 1]).lock);
 		}
 	}
 }

@@ -84,7 +84,7 @@ spock_rmgr_redo(XLogReaderState *record)
 	{
 		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				SpockApplyProgress   *rec;
+				SpockApplyProgress *rec;
 
 				rec = (SpockApplyProgress *) XLogRecGetData(record);
 
@@ -115,7 +115,7 @@ spock_rmgr_desc(StringInfo buf, XLogReaderState *record)
 	{
 		case SPOCK_RMGR_APPLY_PROGRESS:
 			{
-				SpockApplyProgress   *rec;
+				SpockApplyProgress *rec;
 
 				rec = (SpockApplyProgress *) XLogRecGetData(record);
 				appendStringInfo(buf, "spock apply progress for dbid %u, node_id %u, remote_node_id %u; "
@@ -178,7 +178,7 @@ spock_rmgr_cleanup(void)
 XLogRecPtr
 spock_apply_progress_add_to_wal(const SpockApplyProgress *sap)
 {
-	XLogRecPtr			lsn;
+	XLogRecPtr	lsn;
 
 	Assert(sap != NULL);
 
@@ -187,8 +187,8 @@ spock_apply_progress_add_to_wal(const SpockApplyProgress *sap)
 	lsn = XLogInsert(SPOCK_RMGR_ID, SPOCK_RMGR_APPLY_PROGRESS);
 
 	/*
-	 * Force the WAL record to disk immediately. This ensures that progress
-	 * is durably recorded before we update the in-memory state and continue
+	 * Force the WAL record to disk immediately. This ensures that progress is
+	 * durably recorded before we update the in-memory state and continue
 	 * processing. If we crash after updating memory but before the WAL
 	 * flushes, we could lose progress tracking and replay would be incorrect.
 	 */

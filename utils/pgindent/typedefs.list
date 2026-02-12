@@ -63,10 +63,15 @@ AggregateInstrumentation
 AggSplit
 AggState
 AggStatePerAgg
+AggStatePerAggData
 AggStatePerGroup
+AggStatePerGroupData
 AggStatePerHash
+AggStatePerHashData
 AggStatePerPhase
+AggStatePerPhaseData
 AggStatePerTrans
+AggStatePerTransData
 AggStrategy
 AggTransInfo
 AlenState
@@ -159,6 +164,7 @@ AnlIndexData
 AnyArrayType
 Append
 AppendPath
+AppendPathInput
 AppendRelInfo
 AppendState
 ApplyErrorCallbackArg
@@ -195,6 +201,7 @@ ArrayExpr
 ArrayExprIterState
 ArrayIOData
 ArrayIterator
+ArrayIteratorData
 ArrayMapState
 ArrayMetaState
 ArraySortCachedInfo
@@ -273,6 +280,7 @@ basebackup_options
 BaseBackupCmd
 BaseBackupTargetHandle
 BaseBackupTargetType
+BatchMVCCState
 bbsink
 bbsink_copystream
 bbsink_gzip
@@ -312,6 +320,7 @@ BitmapAndState
 BitmapHeapPath
 BitmapHeapScan
 BitmapHeapScanDesc
+BitmapHeapScanDescData
 BitmapHeapScanInstrumentation
 BitmapHeapScanState
 BitmapIndexScan
@@ -442,8 +451,6 @@ BUF_MEM
 Buffer
 BufferAccessStrategy
 BufferAccessStrategyType
-BufferCacheNumaContext
-BufferCacheNumaRec
 BufferCacheOsPagesContext
 BufferCacheOsPagesRec
 BufferCachePagesContext
@@ -451,6 +458,7 @@ BufferCachePagesRec
 BufferDesc
 BufferDescPadded
 BufferHeapTupleTableSlot
+BufferLockMode
 BufferLookupEnt
 BufferManagerRelation
 BufferStrategyControl
@@ -468,6 +476,7 @@ BumpContext
 BY_HANDLE_FILE_INFORMATION
 BYTE
 bytea
+ByteaSortSupport
 CAC_state
 cached_re_str
 CachedExpression
@@ -510,6 +519,7 @@ CEOUC_WAIT_MODE
 CFuncHashTabEntry
 ChangeVarNodes_callback
 ChangeVarNodes_context
+ChannelName
 CHAR
 char16_t
 char32_t
@@ -790,6 +800,8 @@ deparse_columns
 deparse_context
 deparse_expr_cxt
 deparse_namespace
+DependenciesParseState
+DependenciesSemanticState
 DependencyGenerator
 DependencyGeneratorData
 DependencyType
@@ -905,6 +917,7 @@ EDGE
 EditableObjectType
 element_type
 ElementsState
+ElidedNode
 eLogType
 emit_log_hook_type
 EnableTimeoutParams
@@ -1019,6 +1032,8 @@ ExtensibleNodeEntry
 ExtensibleNodeMethods
 ExtensionControlFile
 ExtensionInfo
+ExtensionLocation
+ExtensionSiblingCache
 ExtensionVersionInfo
 f_smgr
 FailoverSlotFilter
@@ -1332,6 +1347,7 @@ GinPostingList
 GinPostingTreeScanItem
 GinQualCounts
 GinScanEntry
+GinScanEntryData
 GinScanItem
 GinScanKey
 GinScanKeyData
@@ -1393,7 +1409,10 @@ gistxlogPageDelete
 gistxlogPageReuse
 gistxlogPageSplit
 gistxlogPageUpdate
+GlobalChannelEntry
+GlobalChannelKey
 GlobalTransaction
+GlobalTransactionData
 GlobalVisHorizonKind
 GlobalVisState
 GMReaderTupleBuffer
@@ -1418,6 +1437,7 @@ GroupProgressTupDescColumns
 GroupResultPath
 GroupState
 GroupVarInfo
+growable_trgm_array
 gseg_picksplit_item
 gss_buffer_desc
 gss_cred_id_t
@@ -1580,6 +1600,7 @@ IndexPath
 IndexRuntimeKeyInfo
 IndexScan
 IndexScanDesc
+IndexScanDescData
 IndexScanInstrumentation
 IndexScanState
 IndexStateFlagsAction
@@ -1707,6 +1728,7 @@ JOBOBJECT_BASIC_LIMIT_INFORMATION
 JOBOBJECT_BASIC_UI_RESTRICTIONS
 JOBOBJECT_SECURITY_LIMIT_INFORMATION
 Join
+join_path_setup_hook_type
 join_search_hook_type
 JoinCostWorkspace
 JoinDomain
@@ -1714,6 +1736,7 @@ JoinExpr
 JoinHashEntry
 JoinPath
 JoinPathExtraData
+joinrel_setup_hook_type
 JoinState
 JoinTreeItem
 JoinType
@@ -1746,7 +1769,6 @@ JsonbIterState
 JsonbPair
 JsonbParseState
 JsonbSubWorkspace
-JsonbTypeCategory
 JsonbValue
 JsonConstructorExpr
 JsonConstructorExprState
@@ -1881,6 +1903,7 @@ ListCell
 ListDictionary
 ListenAction
 ListenActionKind
+ListenerEntry
 ListenStmt
 ListParsedLex
 LLVMAttributeRef
@@ -1983,6 +2006,7 @@ LogicalDecodeStreamStopCB
 LogicalDecodeStreamTruncateCB
 LogicalDecodeTruncateCB
 LogicalDecodingContext
+LogicalDecodingCtlData
 LogicalErrorCallbackState
 LogicalOutputPluginInit
 LogicalOutputPluginWriterPrepareWrite
@@ -2010,7 +2034,6 @@ LogicalSlotInfo
 LogicalSlotInfoArr
 LogicalTape
 LogicalTapeSet
-LogLevel
 LogOpts
 LogStmtLevel
 logstreamer_param
@@ -2038,6 +2061,7 @@ LsnReadQueueNextStatus
 ltree
 ltree_gist
 ltree_level
+ltree_prefix_eq_func
 LtreeGistOptions
 LtreeSignature
 ltxtquery
@@ -2147,7 +2171,6 @@ ModifyTableState
 MonotonicFunction
 MorphOpaque
 movedb_failure_params
-MsgType
 MTTargetRelLookup
 MultiAssignRef
 multirange_bsearch_comparison
@@ -2160,6 +2183,7 @@ MultiSortSupportData
 MultiXactId
 MultiXactMember
 MultiXactOffset
+MultiXactOffset32
 MultiXactStateData
 MultiXactStatus
 MVDependencies
@@ -2168,7 +2192,6 @@ MVNDistinct
 MVNDistinctItem
 mxact
 mXactCacheEnt
-mxtruncinfo
 Name
 NamedArgExpr
 NameData
@@ -2181,6 +2204,8 @@ NamedTuplestoreScanState
 NameHashEntry
 NamespaceInfo
 NDBOX
+NDistinctParseState
+NDistinctSemanticState
 needs_fmgr_hook_type
 NestLoop
 NestLoopParam
@@ -2252,10 +2277,12 @@ Offset
 OffsetNumber
 OffsetVarNodes_context
 Oid
+Oid8
 oidKEY
 OidOptions
 oidvector
 OkeysState
+OldMultiXactReader
 OldToNewMapping
 OldToNewMappingData
 OM_uint32
@@ -2264,6 +2291,7 @@ on_exit_nicely_callback
 OnCommitAction
 OnCommitItem
 OnConflictAction
+OnConflictActionState
 OnConflictClause
 OnConflictExpr
 OnConflictSetState
@@ -2381,6 +2409,7 @@ PartitionCmd
 PartitionDesc
 PartitionDescData
 PartitionDirectory
+PartitionDirectoryData
 PartitionDirectoryEntry
 PartitionDispatch
 PartitionedRelPruneInfo
@@ -2402,6 +2431,7 @@ PartitionRangeBound
 PartitionRangeDatum
 PartitionRangeDatumKind
 PartitionScheme
+PartitionSchemeData
 PartitionSpec
 PartitionStrategy
 PartitionTupleRouting
@@ -2425,6 +2455,8 @@ pe_test_escape_func
 pe_test_vector
 pending_label
 PendingFsyncEntry
+PendingListenAction
+PendingListenEntry
 pendingPosition
 PendingRelDelete
 PendingRelSync
@@ -2492,6 +2524,7 @@ pg_sha512_ctx
 pg_snapshot
 pg_special_case
 pg_stack_base_t
+pg_ternary
 pg_time_t
 pg_time_usec_t
 pg_tz
@@ -2592,6 +2625,7 @@ PGModuleMagicFunction
 PGNoticeHooks
 PGnotify
 PGoauthBearerRequest
+pgoff_t
 PGOutputData
 PGOutputTxnData
 pgp_armor_headers_state
@@ -2650,11 +2684,12 @@ PgStat_SLRUStats
 PgStat_Snapshot
 pgstat_snapshot_hash
 PgStat_SnapshotEntry
+PgStat_StatCustomFixedEntry
+PgStat_StatCustomVarEntry
 PgStat_StatDBEntry
 PgStat_StatFuncEntry
-PgStat_StatInjEntry
-PgStat_StatInjFixedEntry
 PgStat_StatReplSlotEntry
+PgStat_StatsFileOp
 PgStat_StatSubEntry
 PgStat_StatTabEntry
 PgStat_SubXactStatus
@@ -2668,11 +2703,11 @@ PgStatShared_Backend
 PgStatShared_BgWriter
 PgStatShared_Checkpointer
 PgStatShared_Common
+PgStatShared_CustomFixedEntry
+PgStatShared_CustomVarEntry
 PgStatShared_Database
 PgStatShared_Function
 PgStatShared_HashEntry
-PgStatShared_InjectionPoint
-PgStatShared_InjectionPointFixed
 PgStatShared_IO
 PgStatShared_Relation
 PgStatShared_ReplSlot
@@ -2898,6 +2933,7 @@ PrintTocDataPtrType
 PrinttupAttrInfo
 printXheaderWidthType
 priv_map
+PrivateRefCountData
 PrivateRefCountEntry
 PrivTarget
 PROC_HDR
@@ -3080,6 +3116,7 @@ RecordCacheArrayEntry
 RecordCacheEntry
 RecordCompareData
 RecordIOData
+RecoveryConflictReason
 RecoveryLockEntry
 RecoveryLockXidEntry
 RecoveryPauseState
@@ -3145,6 +3182,7 @@ relopt_kind
 relopt_parse_elt
 relopt_real
 relopt_string
+relopt_ternary
 relopt_type
 relopt_value
 RelOptInfo
@@ -3161,6 +3199,7 @@ RelToCluster
 remoteConn
 remoteConnHashEnt
 remoteDep
+RemoteInfo
 RemoteSlot
 RemoteSyncPosition
 remove_nulling_relids_context
@@ -3215,6 +3254,8 @@ ReplicationSlotPersistentData
 ReplicationState
 ReplicationStateCtl
 ReplicationStateOnDisk
+ReplOriginId
+ReplOriginXactState
 RepOriginId
 report_error_fn
 RepSetSeqTuple
@@ -3255,6 +3296,7 @@ RewriteMappingDataEntry
 RewriteMappingFile
 RewriteRule
 RewriteState
+RewriteStateData
 rf_context
 rfile
 RI_CompareHashEntry
@@ -3446,6 +3488,7 @@ shm_toc_entry
 shm_toc_estimator
 shmem_request_hook_type
 shmem_startup_hook_type
+ShmemAllocatorData
 ShmemIndexEnt
 ShutdownForeignScan_function
 ShutdownInformation
@@ -3470,12 +3513,14 @@ SimpleStats
 SimpleStringList
 SimpleStringListCell
 SingleBoundSortItem
+SinglePartitionSpec
 SISeg
 Size
 size_t
 SIZE_T
 SkipPages
 SkipSupport
+SkipSupportData
 SkipSupportIncDec
 SlabBlock
 SlabContext
@@ -3488,11 +3533,13 @@ slock_t
 SlotInvalidationCauseMap
 SlotNumber
 SlotSyncCtxStruct
+SlotSyncSkipReason
 SlruCtl
 SlruCtlData
 SlruErrorCause
 SlruPageStatus
 SlruScanCallback
+SlruSegState
 SlruShared
 SlruSharedData
 SlruWriteAll
@@ -3500,6 +3547,7 @@ SlruWriteAllData
 SMgrRelation
 SMgrRelationData
 SMgrSortArray
+SN_local
 SnapBuild
 SnapBuildOnDisk
 SnapBuildState
@@ -3516,6 +3564,7 @@ SortBy
 SortByDir
 SortByNulls
 SortCoordinate
+SortCoordinateData
 SortedPoint
 SortGroupClause
 SortItem
@@ -3587,13 +3636,12 @@ SPLITCOST
 SplitInterval
 SplitLR
 SplitPageLayout
+SplitPartitionContext
 SplitPoint
 SplitTextOutputData
 SplitVar
 SPNode
 SPNodeData
-spock_copyState
-SpockApplyFunctions
 SpockApplyProgress
 SpockApplyWorker
 SpockConflictResolution
@@ -3652,6 +3700,7 @@ SSL
 SSL_CTX
 SSLExtensionInfoContext
 StackElem
+StakindFlags
 standard_qp_extra
 StartDataPtrType
 StartLOPtrType
@@ -3690,6 +3739,7 @@ SubLink
 SubLinkType
 SubOpts
 SubPlan
+SubPlanRTInfo
 SubPlanState
 SubqueryScan
 SubqueryScanPath
@@ -3709,7 +3759,6 @@ SubscriptRoutines
 SubscriptTransform
 substitute_actual_parameters_context
 substitute_actual_parameters_in_from_context
-substitute_actual_srf_parameters_context
 substitute_grouped_columns_context
 substitute_phv_relids_context
 SubTransactionCommitTsEntry
@@ -3728,6 +3777,7 @@ SupportRequestOptimizeWindowClause
 SupportRequestRows
 SupportRequestSelectivity
 SupportRequestSimplify
+SupportRequestSimplifyAggref
 SupportRequestWFuncMonotonic
 SV
 symbol
@@ -3744,6 +3794,7 @@ SyscacheCallbackFunction
 SysFKRelationship
 SysloggerStartupData
 SysScanDesc
+SysScanDescData
 SYSTEM_INFO
 SystemRowsSamplerData
 SystemSamplerData
@@ -3963,6 +4014,7 @@ TupleHashEntry
 TupleHashEntryData
 TupleHashIterator
 TupleHashTable
+TupleHashTableData
 TupleQueueReader
 TuplesortClusterArg
 TuplesortDatumArg
@@ -4010,6 +4062,7 @@ U32
 U8
 ua_page_items
 ua_page_stats
+UCaseMap
 UChar
 UCharIterator
 uchr
@@ -4033,6 +4086,7 @@ uint64x2_t
 uint8
 uint8_t
 uint8x16_t
+uintmax_t
 uintptr_t
 ULARGE_INTEGER
 ULONG
@@ -4096,6 +4150,8 @@ ValuesScan
 ValuesScanState
 Var
 varatt_expanded
+varatt_external
+varatt_indirect
 varattrib_1b
 varattrib_1b_e
 varattrib_4b
@@ -4110,6 +4166,7 @@ VariableShowStmt
 VariableSpace
 VariableStatData
 VariableSubstituteHook
+varlena
 VarParamState
 VarReturningType
 VarString
@@ -4132,7 +4189,7 @@ Vsrt
 WAIT_ORDER
 WaitEvent
 WaitEventActivity
-WaitEventBufferPin
+WaitEventBuffer
 WaitEventClient
 WaitEventCustomCounterData
 WaitEventCustomEntryByInfo
@@ -4219,6 +4276,7 @@ WindowObjectData
 WindowStatePerAgg
 WindowStatePerAggData
 WindowStatePerFunc
+WindowStatePerFuncData
 wint_t
 WithCheckOption
 WithClause
@@ -4235,7 +4293,6 @@ WorkerInfoData
 WorkerInstrumentation
 WorkerJobDumpPtrType
 WorkerJobRestorePtrType
-Workflow
 Working_State
 WORKSTATE
 worktable

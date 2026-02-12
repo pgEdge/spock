@@ -80,8 +80,9 @@ spock_autoddl_process(PlannedStmt *pstmt,
 		PushActiveSnapshot(GetTransactionSnapshot());
 
 	/*
-	 * Elevate access rights: Utility hook is called under the session user, who
-	 * does not necessarily have access permission to Spock extension objects.
+	 * Elevate access rights: Utility hook is called under the session user,
+	 * who does not necessarily have access permission to Spock extension
+	 * objects.
 	 */
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
@@ -121,14 +122,14 @@ end:
 void
 add_ddl_to_repset(Node *parsetree)
 {
-	Relation		targetrel;
-	SpockRepSet	   *repset;
+	Relation	targetrel;
+	SpockRepSet *repset;
 	SpockLocalNode *node;
-	Oid				reloid = InvalidOid;
-	RangeVar	   *relation = NULL;
-	List		   *reloids = NIL;
-	ListCell	   *lc;
-	bool			missing_ok = false;
+	Oid			reloid = InvalidOid;
+	RangeVar   *relation = NULL;
+	List	   *reloids = NIL;
+	ListCell   *lc;
+	bool		missing_ok = false;
 
 	/* no need to proceed if spock_include_ddl_repset is off */
 	if (!spock_include_ddl_repset)
@@ -223,10 +224,11 @@ add_ddl_to_repset(Node *parsetree)
 	{
 		targetrel = table_openrv_extended(relation, AccessShareLock, missing_ok);
 		if (targetrel == NULL)
-		/*
-		 * If relation doesn't exist - quietly exit. It is assumed that the core
-		 * already produced an INFO message.
-		 */
+
+			/*
+			 * If relation doesn't exist - quietly exit. It is assumed that
+			 * the core already produced an INFO message.
+			 */
 			return;
 	}
 

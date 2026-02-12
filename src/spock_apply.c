@@ -489,6 +489,7 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_timestamp = commit_time;
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
+
 	/*
 	 * Free and clear remote_origin_name - it's allocated in TopMemoryContext
 	 * to avoid MessageContext corruption issues.
@@ -949,11 +950,12 @@ transdiscard_skip_commit:
 			.remote_commit_lsn = commit_lsn,
 			/* Ensure invariant: received_lsn >= remote_commit_lsn */
 			.received_lsn = end_lsn,
+
 			/*
 			 * Include remote_insert_lsn for WAL persistence. This was already
 			 * updated in shmem by UpdateWorkerStats() earlier (either from
-			 * apply_work for protocol 5+, or from handle_commit for protocol 4).
-			 * Without this, crash recovery would lose remote_insert_lsn.
+			 * apply_work for protocol 5+, or from handle_commit for protocol
+			 * 4). Without this, crash recovery would lose remote_insert_lsn.
 			 */
 			.remote_insert_lsn = MyApplyWorker->apply_group->progress.remote_insert_lsn,
 			/* XXX: Could we use commit_ts value instead? */
@@ -1248,12 +1250,12 @@ handle_insert(StringInfo s)
 			last_insert_rel_cnt++;
 
 			/*
-			 * Close replication step to satisfy corresponding 'begin' routine.
-			 * TODO: multi-insert code should be revised one day: it is not
-			 * obvious why we push and pop transactional snapshot on each tuple
-			 * as well as how command counter increment really works here in
-			 * absence of actual INSERT - following update may need to refer
-			 * this tuple and what's then?
+			 * Close replication step to satisfy corresponding 'begin'
+			 * routine. TODO: multi-insert code should be revised one day: it
+			 * is not obvious why we push and pop transactional snapshot on
+			 * each tuple as well as how command counter increment really
+			 * works here in absence of actual INSERT - following update may
+			 * need to refer this tuple and what's then?
 			 */
 			end_replication_step();
 
@@ -3115,10 +3117,10 @@ stream_replay:
 		 * we still need to ensure proper cleanup (e.g., disabling the
 		 * subscription).
 		 *
-		 * Handle SUB_DISABLE mode for both cases: xact_had_exception means DML
-		 * operations failed during exception handling, while use_try_block
-		 * without xact_had_exception means an error occurred after successful
-		 * retry (e.g., TRANSDISCARD throwing ERROR).
+		 * Handle SUB_DISABLE mode for both cases: xact_had_exception means
+		 * DML operations failed during exception handling, while
+		 * use_try_block without xact_had_exception means an error occurred
+		 * after successful retry (e.g., TRANSDISCARD throwing ERROR).
 		 *
 		 * Note: spock_disable_subscription() handles transaction management
 		 * internally, so no need to wrap it in StartTransactionCommand().
@@ -3143,9 +3145,9 @@ stream_replay:
 
 		/*
 		 * For other exceptions with use_try_block, where xact_had_exception
-		 * is false, this indicates an ERROR occurred during exception handling
-		 * (e.g., connection died, CommitTransactionCommand failure during
-		 * TRANSDISCARD logging, etc.).
+		 * is false, this indicates an ERROR occurred during exception
+		 * handling (e.g., connection died, CommitTransactionCommand failure
+		 * during TRANSDISCARD logging, etc.).
 		 *
 		 * We log the error and re-throw to exit the worker. The background
 		 * worker infrastructure will restart the worker automatically. This
@@ -3417,9 +3419,8 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 
 		/*
 		 * check if it's a DDL statement. we only do this for
-		 * in_spock_replicate_ddl_command
-		 * SECURITY LABEL command is not a DDL, just an utility one. Hence, let
-		 * spock execute this command.
+		 * in_spock_replicate_ddl_command SECURITY LABEL command is not a DDL,
+		 * just an utility one. Hence, let spock execute this command.
 		 */
 		if (in_spock_replicate_ddl_command &&
 			GetCommandLogLevel(command->stmt) != LOGSTMT_DDL &&
@@ -3945,7 +3946,7 @@ maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 static void
 maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception)
 {
-	RepOriginId	forwarded_origin;
+	RepOriginId forwarded_origin;
 
 	/*
 	 * Only advance for forwarded transactions (origin differs from our direct
@@ -3958,8 +3959,8 @@ maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception)
 		return;
 
 	/*
-	 * Check cache first. The remote_origin_id (Spock node ID) is stable
-	 * for a given source node, so we can reuse the local origin ID.
+	 * Check cache first. The remote_origin_id (Spock node ID) is stable for a
+	 * given source node, so we can reuse the local origin ID.
 	 */
 	if (remote_origin_id == cached_forward_remote_id &&
 		cached_forward_local_id != InvalidRepOriginId)

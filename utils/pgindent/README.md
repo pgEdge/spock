@@ -7,7 +7,7 @@
 
 2. Prerequisites:
    - Install pg_bsd_indent: navigate to src/tools/pg_bsd_indent in your postgres source code and run:
-     ```
+     ```sh
      make install prefix=/usr/local
      ```
    - Ensure pgindent is in your PATH (from PostgreSQL source: src/tools/pgindent/pgindent)
