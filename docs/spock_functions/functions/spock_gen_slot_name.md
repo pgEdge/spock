@@ -4,7 +4,7 @@ spock.spock_gen_slot_name()
 
 ### SYNOPSIS
 
-spock.spock_gen_slot_name (dbname name, provider_node name,
+spock.spock_gen_slot_name(dbname name, provider_node name,
 subscription name)
 
 ### RETURNS
