@@ -85,9 +85,9 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	/* Need to update the local cache? */
 	if (!OidIsValid(entry->reloid))
 	{
-		RangeVar	   *rv = makeNode(RangeVar);
-		int				i;
-		ResultRelInfo  *relinfo;
+		RangeVar   *rv = makeNode(RangeVar);
+		int			i;
+		ResultRelInfo *relinfo;
 
 		rv->schemaname = (char *) entry->nspname;
 		rv->relname = (char *) entry->relname;
@@ -98,9 +98,9 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 		for (i = 0; i < entry->natts; i++)
 		{
-			ObjectAddress		object;
-			char			   *seclabel;
-			TupleDesc			desc;
+			ObjectAddress object;
+			char	   *seclabel;
+			TupleDesc	desc;
 
 			desc = RelationGetDescr(entry->rel);
 			entry->attmap[i] = tupdesc_get_att_by_name(desc, entry->attnames[i]);
@@ -109,8 +109,8 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 				continue;
 
 			/*
-			 * Read security labels for each attname. For each such an attribute
-			 * choose corresponding delta function.
+			 * Read security labels for each attname. For each such an
+			 * attribute choose corresponding delta function.
 			 *
 			 * XXX: What about non-existing columns on remote side?
 			 */
@@ -120,8 +120,8 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			seclabel = GetSecurityLabel(&object, SPOCK_SECLABEL_PROVIDER);
 			if (seclabel != NULL)
 			{
-				Form_pg_attribute	att;
-				Oid					dfunc;
+				Form_pg_attribute att;
+				Oid			dfunc;
 
 				att = TupleDescAttr(desc, entry->attmap[i]);
 				dfunc = spock_lookup_delta_function(seclabel, att->atttypid);
@@ -149,11 +149,11 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		if (entry->has_delta_columns)
 		{
 			/*
-			 * It looks like a hack — which, in fact, it is.
-			 * We assume that delta_apply may be used for the DEFAULT identity
-			 * only and will be immediately removed after altering the table.
-			 * Also, if an ERROR happens here we will stay with an inconsistent
-			 * value of the relreplident field. But it is just a cache ...
+			 * It looks like a hack — which, in fact, it is. We assume that
+			 * delta_apply may be used for the DEFAULT identity only and will
+			 * be immediately removed after altering the table. Also, if an
+			 * ERROR happens here we will stay with an inconsistent value of
+			 * the relreplident field. But it is just a cache ...
 			 */
 			relinfo->ri_RelationDesc->rd_rel->relreplident = REPLICA_IDENTITY_DEFAULT;
 			relinfo->ri_RelationDesc->rd_indexvalid = false;
@@ -449,8 +449,8 @@ get_replication_identity(Relation rel)
 
 	for (i = 0; i < tupDesc->natts; i++)
 	{
-		char		   *seclabel;
-		ObjectAddress	object;
+		char	   *seclabel;
+		ObjectAddress object;
 
 		ObjectAddressSubSet(object, RelationRelationId,
 							RelationGetRelid(rel), i + 1);

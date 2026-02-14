@@ -78,9 +78,9 @@ init_progress_fields(SpockApplyProgress *progress)
 	Assert(OidIsValid(progress->key.remote_node_id));
 
 	/*
-	 * Initialize all non-key fields to zero/invalid values.
-	 * Using 0 for timestamps follows PostgreSQL convention where
-	 * timestamp 0 represents "not set" (see CommitTsShmemInit).
+	 * Initialize all non-key fields to zero/invalid values. Using 0 for
+	 * timestamps follows PostgreSQL convention where timestamp 0 represents
+	 * "not set" (see CommitTsShmemInit).
 	 */
 	progress->remote_commit_ts = 0;
 	progress->prev_remote_ts = 0;
@@ -320,8 +320,8 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 bool
 spock_group_progress_update(const SpockApplyProgress *sap)
 {
-	SpockGroupEntry	   *entry;
-	bool				found;
+	SpockGroupEntry *entry;
+	bool		found;
 
 	Assert(OidIsValid(sap->key.dbid) && OidIsValid(sap->key.node_id) &&
 		   OidIsValid(sap->key.remote_node_id));
@@ -332,12 +332,12 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 		/*
 		 * This should never happen in normal operation. The shared memory
 		 * structures are initialized during postmaster startup via
-		 * shmem_startup_hook. If we hit this, it likely indicates:
-		 * 1. A bug in initialization ordering, or
-		 * 2. Corruption of shared memory pointers
+		 * shmem_startup_hook. If we hit this, it likely indicates: 1. A bug
+		 * in initialization ordering, or 2. Corruption of shared memory
+		 * pointers
 		 *
-		 * We return false to allow callers to continue (best-effort recovery),
-		 * but this progress update is lost.
+		 * We return false to allow callers to continue (best-effort
+		 * recovery), but this progress update is lost.
 		 *
 		 * TODO: Add a test case that deliberately calls this function before
 		 * shared memory initialization (e.g., from a backend that loads spock
@@ -409,7 +409,7 @@ spock_group_progress_update_ptr(SpockGroupEntry *e,
 TimestampTz
 apply_worker_get_prev_remote_ts(void)
 {
-	TimestampTz	prev_remote_ts;
+	TimestampTz prev_remote_ts;
 
 	Assert(MyApplyWorker != NULL);
 	Assert(MyApplyWorker->apply_group != NULL);
@@ -421,6 +421,7 @@ apply_worker_get_prev_remote_ts(void)
 		LWLockRelease(SpockCtx->apply_group_master_lock);
 	}
 	else
+
 		/*
 		 * Should never happen. In production just send the worker into
 		 * exception behaviour without crash.
@@ -459,11 +460,11 @@ spock_group_foreach(SpockGroupIterCB cb, void *arg)
 static void
 dump_one_group_cb(const SpockGroupEntry *entry, void *arg)
 {
-	DumpCtx	   *ctx = (DumpCtx *) arg;
+	DumpCtx    *ctx = (DumpCtx *) arg;
 
 	/* Only the progress payload goes to disk. It already contains the key. */
 	write_buf(ctx->fd, &entry->progress, sizeof(SpockApplyProgress),
-												SPOCK_RES_DUMPFILE "(data)");
+			  SPOCK_RES_DUMPFILE "(data)");
 	ctx->count++;
 }
 
@@ -479,17 +480,16 @@ dump_one_group_cb(const SpockGroupEntry *entry, void *arg)
 void
 spock_group_resource_dump(void)
 {
-	char				pathdir[MAXPGPATH];
-	char				pathtmp[MAXPGPATH];
-	char				pathfin[MAXPGPATH];
-	int					fd = -1;
-	SpockResFileHeader	hdr = {0};
-	DumpCtx				dctx = {0};
+	char		pathdir[MAXPGPATH];
+	char		pathtmp[MAXPGPATH];
+	char		pathfin[MAXPGPATH];
+	int			fd = -1;
+	SpockResFileHeader hdr = {0};
+	DumpCtx		dctx = {0};
 
 	/*
 	 * Safety check: if shared memory isn't initialized, we can't dump. This
-	 * shouldn't happen but check anyway.
-	 * Do not tolerate it in development.
+	 * shouldn't happen but check anyway. Do not tolerate it in development.
 	 */
 	Assert(SpockCtx && SpockGroupHash);
 	if (!SpockCtx || !SpockGroupHash)
@@ -567,9 +567,9 @@ spock_group_resource_dump(void)
 static void
 spock_group_resource_load(void)
 {
-	char				pathfin[MAXPGPATH];
-	int					fd;
-	SpockResFileHeader	hdr;
+	char		pathfin[MAXPGPATH];
+	int			fd;
+	SpockResFileHeader hdr;
 
 	/*
 	 * Check that we are actually inside shmem startup or recovery that
@@ -624,18 +624,19 @@ spock_group_resource_load(void)
 	/* Read each record and upsert */
 	for (uint32 i = 0; i < hdr.entry_count; i++)
 	{
-		SpockApplyProgress	rec;
-		bool				ret;
+		SpockApplyProgress rec;
+		bool		ret;
 
 		/* XXX: Do we need any kind of CRC here? */
 		read_buf(fd, &rec, sizeof(SpockApplyProgress),
-												SPOCK_RES_DUMPFILE "(data)");
+				 SPOCK_RES_DUMPFILE "(data)");
 
 		/*
 		 * Note: if ever version is changed in SpockApplyProgress and need
 		 * compatibility, it should be translated here. For now, 1:1.
 		 */
 		ret = spock_group_progress_update(&rec);
+
 		/*
 		 * Should never happen in real life, but be tolerant in production as
 		 * much as possible.
@@ -662,9 +663,9 @@ spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
 void
 spock_group_progress_update_list(List *lst)
 {
-	ListCell *lc;
+	ListCell   *lc;
 
-	foreach (lc, lst)
+	foreach(lc, lst)
 	{
 		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
 
@@ -682,8 +683,8 @@ spock_group_progress_update_list(List *lst)
 	}
 
 	/*
-	 * Free the list and each object. Be careful here because it is inside
-	 * a memory context that is rarely reset.
+	 * Free the list and each object. Be careful here because it is inside a
+	 * memory context that is rarely reset.
 	 */
 	list_free_deep(lst);
 }

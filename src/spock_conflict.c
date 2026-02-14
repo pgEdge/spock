@@ -725,8 +725,8 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 		attr = TupleDescAttr(tupdesc, natt);
 
 		/*
-		 * don't print dropped or generated columns, we can't be sure everything
-		 * is available for them
+		 * don't print dropped or generated columns, we can't be sure
+		 * everything is available for them
 		 */
 		if (attr->attisdropped || attr->attgenerated)
 			continue;

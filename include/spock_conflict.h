@@ -30,7 +30,7 @@ typedef enum SpockConflictResolution
 	SpockResolution_Skip
 } SpockConflictResolution;
 
-typedef enum
+typedef enum SpockResolveOption
 {
 	SPOCK_RESOLVE_ERROR,
 	SPOCK_RESOLVE_APPLY_REMOTE,
@@ -48,7 +48,7 @@ extern bool spock_save_resolutions;
  * so use same ordering and similar naming.
  * We add one additional conflict type, CT_DELETE_LATE.
  */
-typedef enum
+typedef enum SpockConflictType
 {
 	/* The row to be inserted violates unique constraint */
 	SPOCK_CT_INSERT_EXISTS,
@@ -69,16 +69,12 @@ typedef enum
 	SPOCK_CT_DELETE_MISSING,
 
 	/*
-	 * Unique to Spock, delete timestamp is earlier than an existing row.
-	 * Use a higher number so we don't conflict with PostgreSQL in the future.
+	 * Unique to Spock, delete timestamp is earlier than an existing row. Use
+	 * a higher number so we don't conflict with PostgreSQL in the future.
 	 */
 	SPOCK_CT_DELETE_LATE = 101
 
 } SpockConflictType;
-
-extern int spock_conflict_resolver;
-extern int spock_conflict_log_level;
-extern bool	spock_save_resolutions;
 
 extern bool get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple,
 							 ItemPointer tid, TransactionId *xmin,
@@ -122,4 +118,4 @@ extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 extern void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 								HeapTuple tuple);
 
-#endif /* SPOCK_CONFLICT_H */
+#endif							/* SPOCK_CONFLICT_H */

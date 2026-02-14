@@ -121,13 +121,13 @@ const char *const skip_schema[] = {
 	"lolor",
 	"snowflake",
 	"spock",
-	NULL  /* sentinel */
+	NULL						/* sentinel */
 };
 const char *const skip_extension[] = {
 	"lolor",
 	"snowflake",
 	"spock",
-	NULL  /* sentinel */
+	NULL						/* sentinel */
 };
 
 /*
@@ -1270,9 +1270,9 @@ get_node_subscriptions(Oid nodeid, bool origin)
 void
 EnsureRelationNotIgnored(Relation rel)
 {
-	int		i;
-	char   *nspname;
-	Oid		extoid;
+	int			i;
+	char	   *nspname;
+	Oid			extoid;
 
 	nspname = get_namespace_name(RelationGetNamespace(rel));
 
@@ -1297,9 +1297,8 @@ EnsureRelationNotIgnored(Relation rel)
 	for (i = 0; skip_extension[i] != NULL; i++)
 	{
 		/*
-		 * Detect if extension includes this relation.
-		 * XXX: Should we check if the relation doesn't belong to the extension
-		 * but depends on it?
+		 * Detect if extension includes this relation. XXX: Should we check if
+		 * the relation doesn't belong to the extension but depends on it?
 		 */
 		if (extoid != get_extension_oid(skip_extension[i], true))
 			continue;

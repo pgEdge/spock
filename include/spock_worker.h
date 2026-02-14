@@ -19,7 +19,7 @@
 #include "spock_output_plugin.h"	/* for SpockOutputSlotGroup */
 #include "spock_proto_native.h"
 
-typedef enum
+typedef enum SpockWorkerType
 {
 	SPOCK_WORKER_NONE,			/* Unused slot. */
 	SPOCK_WORKER_MANAGER,		/* Manager. */
@@ -28,7 +28,7 @@ typedef enum
 								 * table. */
 } SpockWorkerType;
 
-typedef enum
+typedef enum SpockWorkerStatus
 {
 	SPOCK_WORKER_STATUS_NONE,	/* Unused slot. */
 	SPOCK_WORKER_STATUS_IDLE,	/* Idle. */
