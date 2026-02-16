@@ -4,6 +4,7 @@
 -- Required Spock Version: 5.0.4 or later
 -- ============================================================================
 -- Adds a new node to the cluster of Spock.
+-- NOTE: Run the add_node procedure on the new node you are adding, not on an existing cluster node.
 
 -- Usage:
 -- CALL add_node(
