@@ -176,8 +176,6 @@ In both cases you:
 
 ---
 
----
-
 ## What Happens in a Catastrophic Node Failure (Single Node)
 
 When one node fails mid-replication, some of its transactions may have been
@@ -230,10 +228,9 @@ place:
 
 - **ACE installed and configured** on a host that can reach your surviving
   nodes. ACE is used to compare and repair table data across nodes. For
-  building, installing, and configuring ACE, see the [ACE
-  repository](https://github.com/pgEdge/ace) and its
-  [documentation](https://github.com/pgEdge/ace/tree/main/docs) (including
-  [configuration](https://github.com/pgEdge/ace/blob/main/docs/configuration.md)).
+  building, installing, and configuring ACE, see the [ACE repository](https://github.com/pgEdge/ace)
+  and its [documentation](https://github.com/pgEdge/ace/tree/main/docs)
+  (including [configuration](https://github.com/pgEdge/ace/blob/main/docs/configuration.md)).
 - **Access to your surviving nodes** (n2, n3, n4, and n5). You'll need to
   run ACE commands and, for Spock cleanup, connect to each node with a
   Postgres client.
@@ -246,6 +243,7 @@ place:
   repairing rows.
 
 !!! note
+
     Recovery is a multi-step process. Take your time, and run the
     validation steps so you can confirm that all tables match before
     resuming normal operations. To preserve the origin ID and commit
@@ -278,7 +276,7 @@ each phase and show you the commands to run.
 
 ## Phase 1: Assess the Damage
 
-Connect to your surviving nodes and check replication status. You want to
+Connect to your surviving nodes and check replication status. You need to
 confirm which nodes are behind and which have all of the data. You can use
 [`spock.sub_show_status()`](../spock_functions/functions/spock_sub_show_status.md)
 to see subscription status and any lag.
@@ -292,9 +290,10 @@ before the failure.
 
 ## Phase 2: Spock Cleanup
 
-Once you've confirmed that n1 is gone and won't be coming back in this
-recovery, you need to remove it from the cluster so that the remaining
-nodes no longer expect replication from or to n1.
+Once you've confirmed that the failed node (in our case, n1) is gone 
+and won't be coming back in this recovery, you need to remove it from
+the cluster so that the remaining nodes no longer expect replication from 
+or to n1.
 
 On each surviving node (n2, n3, n4, n5):
 
@@ -310,21 +309,27 @@ On each surviving node (n2, n3, n4, n5):
    to remove n1. This removes the node entry from the Spock catalog.
 
 !!! warning
-    Dropping the node and subscriptions is irreversible for that cluster
-    configuration. Make sure you have identified the failed node correctly
-    and that you do not need to bring n1 back before doing this.
+    
+    Dropping the node and subscriptions is irreversible; make sure you have
+    identified the failed node correctly and that you do not need to bring n1
+    back before doing this.
 
 After cleanup, your cluster has four nodes: n2, n3, n4, and n5. The next
 steps use ACE to fix the data on n2.
 
-!!! info "Multiple node failure (e.g. n1 and n4 both failed)"
-    If **two or more** nodes failed (e.g. n1 and n4), do the same phases
-    with these changes. **Spock cleanup:** On each survivor, drop every
-    subscription that involved n1 or n4, then call `spock.node_drop()` for
-    n1 and for n4. Survivors are then n2, n3, and n5. **Diff:** For each
-    table, run `table-diff` **once per failed node**—e.g. `--against-origin
+!!! info "Multiple node failure"
+    
+    If **two or more** nodes failed (e.g. n1 and n4), perform the following steps 
+    on each node.
+    
+    **Spock cleanup:** On each survivor, drop every subscription that involved 
+    n1 or n4, then call `spock.node_drop()` for both nodes n1 and n4. Our survivors
+    are then n2, n3, and n5. 
+    
+    **Diff:** For each table, run `table-diff` **once per failed node**—e.g. `--against-origin
     n1 --until <n1_failure_time>` and `--against-origin n4 --until
     <n4_failure_time>`. You get one diff file per (table, origin).
+    
     **Repair:** For each of those diff files, run `table-repair` with
     `--recovery-mode`, `--source-of-truth n3` (or n5), and
     `--preserve-origin`. So you recover n2 for rows from n1 and for rows
