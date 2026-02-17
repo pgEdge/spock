@@ -81,7 +81,7 @@ CALL spock.wait_for_sync_event(NULL, 'test_provider', 'FFFFFFFF/FFFFFFFF', 2);
 \set ON_ERROR_STOP 0
 CALL spock.wait_for_sync_event(NULL, 'nonexistent_node', '0/0', 1);
 ERROR:  Origin node 'nonexistent_node' not found
-CONTEXT:  PL/pgSQL function spock.wait_for_sync_event(name,pg_lsn,integer) line 12 at RAISE
+CONTEXT:  PL/pgSQL function spock.wait_for_sync_event(name,pg_lsn,integer) line 7 at RAISE
 \set ON_ERROR_STOP 1
 -- Test 6: wait_for_sync_event with NULL origin_id (should error)
 \set ON_ERROR_STOP 0
