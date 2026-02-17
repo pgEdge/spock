@@ -211,16 +211,16 @@ sequenceDiagram
     Note over N1: Sends transactions to all
 
     rect rgb(230, 240, 255)
-    N1->>N2: Partial replication (e.g. 3 of 5)
-    N1->>N3: Full replication (all 5)
-    N1->>N4: Full replication (all 5)
-    N1->>N5: Full replication (all 5)
+      N1->>N2: Partial replication (e.g. 3 of 5)
+      N1->>N3: Full replication (all 5)
+      N1->>N4: Full replication (all 5)
+      N1->>N5: Full replication (all 5)
     end
 
-    Note over N1: Crash (n1 offline)
+    N1--xN1: Crash (n1 offline)
 
     Note over N2: Missing rows from n1
-    Note over N3,N4,N5: Complete; use as source of truth
+    Note over N3,N4,N5: Complete - use as source of truth
 ```
 
 ## Before You Begin
