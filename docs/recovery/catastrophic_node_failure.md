@@ -220,7 +220,7 @@ sequenceDiagram
     N1--xN1: Crash (n1 offline)
 
     Note over N2: Missing rows from n1
-    Note over N3,N4,N5: Complete - use as source of truth
+    Note over N3..N5: Complete - use as source of truth
 ```
 
 ## Before You Begin
