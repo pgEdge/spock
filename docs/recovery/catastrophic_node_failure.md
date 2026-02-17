@@ -297,16 +297,18 @@ or to n1.
 
 On each surviving node (n2, n3, n4, n5):
 
-1. **Drop subscriptions that involved n1.**
-   If a subscription was receiving from n1 or sending to n1, drop it using
-   [`spock.sub_drop()`](../spock_functions/functions/spock_sub_drop.md).
-   For example, on n2 you might drop the subscription that connected n2 to
-   n1.
+    1. **Drop subscriptions that involved the failed node.**
+   
+    If a subscription was receiving from n1 or sending to n1, drop it using
+    [`spock.sub_drop()`](../spock_functions/functions/spock_sub_drop.md).
+    For example, on n2 you might drop the subscription that connected n2 to
+    n1.
 
-2. **Remove the failed node from the cluster.**
-   From one of the surviving nodes, call
-   [`spock.node_drop()`](../spock_functions/functions/spock_node_drop.md)
-   to remove n1. This removes the node entry from the Spock catalog.
+    2. **Remove the failed node from the cluster.**
+
+    From one of the surviving nodes, call
+    [`spock.node_drop()`](../spock_functions/functions/spock_node_drop.md)
+    to remove n1. This removes the node entry from the Spock catalog.
 
 !!! warning
     
@@ -317,34 +319,18 @@ On each surviving node (n2, n3, n4, n5):
 After cleanup, your cluster has four nodes: n2, n3, n4, and n5. The next
 steps use ACE to fix the data on n2.
 
-!!! info "Multiple node failure"
+If **two or more** nodes failed (e.g. n1 and n4), you'll perform these steps 
+for each node.
     
-    If **two or more** nodes failed (e.g. n1 and n4), perform the following steps 
-    on each node.
-    
-    **Spock cleanup:** On each survivor, drop every subscription that involved 
-    n1 or n4, then call `spock.node_drop()` for both nodes n1 and n4. Our survivors
-    are then n2, n3, and n5. 
-    
-    **Diff:** For each table, run `table-diff` **once per failed node**—e.g. `--against-origin
-    n1 --until <n1_failure_time>` and `--against-origin n4 --until
-    <n4_failure_time>`. You get one diff file per (table, origin).
-    
-    **Repair:** For each of those diff files, run `table-repair` with
-    `--recovery-mode`, `--source-of-truth n3` (or n5), and
-    `--preserve-origin`. So you recover n2 for rows from n1 and for rows
-    from n4 using the same source of truth. Origin ID and timestamp are
-    preserved for every repaired row.
-
 ---
 
-## Phase 3: Identify All Missing Data on n2
+## Phase 3: Identify All of the Missing Data
 
 To recover n2, you need to know **which tables** have differences and
 **what** is missing. ACE's
 [`table-diff`](https://github.com/pgEdge/ace/tree/main/docs/commands/diff)
 command compares table data across nodes. When you run it with
-`--against-origin n1` and `--until <timestamp>`, it limits the comparison
+`--preserve-origin n1` and `--until <timestamp>`, it limits the comparison
 to rows whose origin ID is n1 and whose commit timestamp is at or before
 that time—exactly what you need after n1 has failed.
 
@@ -403,9 +389,9 @@ What these options do:
 - `--output json` – Writes a diff report to a JSON file that you'll use for
   repair.
 
-ACE writes a diff file named like
-`public_customers_diffs-20260211143000.json`. Repeat the same command for
-every other table, for example:
+ACE returns a diff file with a name that contains the schema and table name;
+for example, `public_customers_diffs-20260211143000.json`. Repeat the diff
+command for every other table; for example:
 
 ```bash
 ./ace table-diff \
@@ -428,12 +414,13 @@ every other table, for example:
 After running table-diff on all tables, check the output. ACE will report
 whether each table has differences. For tables that **do** have differences,
 note the name of the diff file (it will include the table name and a
-timestamp). You'll use those files in Phase 4. Tables that show no
-differences don't need repair.
+timestamp). You'll use those files when you perform the repair steps. Tables
+that have no differences don't need repair.
 
-**Multiple node failure (e.g. n1 and n4 both failed):** Run table-diff
-**once per failed origin** per table. Survivors are n2, n3, n5. For each
-table you run two diffs and get two diff files:
+**In the case of a multiple node failure (e.g. n1 and n4 both failed), run 
+table-diff once per failed origin** per table. For example, if your survivors 
+are n2, n3, n5. For each table you run two diffs (one from each node) and get
+two diff files:
 
 ```bash
 # Rows that originated from n1
@@ -445,10 +432,11 @@ table you run two diffs and get two diff files:
   --until 2026-02-11T14:35:00Z --output json mycluster public.customers
 ```
 
-Review the diff reports; then in Phase 4 you run table-repair for **each**
-of these diff files (same source of truth, e.g. n3).
+Review the diff reports; then in Phase 4, run table-repair for **each**
+of these diff files using same source of truth (e.g. n3).
 
 !!! info
+
     If you have many tables, you can script the diff step. The following
     example loops through a list of table names (customize the list to
     match your schema):
