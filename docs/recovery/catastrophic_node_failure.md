@@ -143,8 +143,8 @@ n4, with the origin ID and timestamp preserved for each.
 
 !!! note
 
-    In the multiple-node case, you run diff and repair once per failed
-    origin. For each table, that means one diff (and one repair) for n1
+    In the case of a multiple-node failure, you run diff and repair once per 
+    failed origin. For each table, that means one diff (and one repair) for n1
     and one diff (and one repair) for n4. The source of truth (n3) is the
     same for all repairs.
 
@@ -435,11 +435,9 @@ two diff files:
 Review the diff reports; then in Phase 4, run table-repair for **each**
 of these diff files using same source of truth (e.g. n3).
 
-!!! info
-
-    If you have many tables, you can script the diff step. The following
-    example loops through a list of table names (customize the list to
-    match your schema):
+If you have multiple tables, you can script the diff step. The following
+example loops through a list of table names (customize the list to
+match your schema):
 
 ```bash
 FAILURE_UNTIL="2026-02-11T14:30:00Z"
@@ -462,9 +460,9 @@ done
 ## Phase 4: Repair All Affected Tables
 
 For **each** table that had differences in Phase 3, run ACE `table-repair`
-using the diff file that was produced. You must run repair in **recovery
-mode** and use **`--preserve-origin`** so that repaired rows keep their
-original **origin ID** and **commit timestamp**. Without
+using the diff file that was produced. You must run repair in recovery
+mode and include `--preserve-origin` so that repaired rows keep their
+original `origin ID` and `commit timestamp`. Without
 `--preserve-origin`, repaired rows would get n2's origin ID and a new
 commit time, which can cause replication conflicts and incorrect ordering.
 With `--preserve-origin`, ACE writes each repaired row with the same origin
@@ -472,10 +470,9 @@ ID and commit timestamp it had on the source of truth, so n2's replication
 metadata stays correct.
 
 Choose one node as the source of truth for repair. In our scenario, n3 (and
-n4 and n5) have the complete data, so we use n3. You can let ACE
+n4 and n5) have the complete data, so we chose n3. You can let ACE
 auto-select the source of truth based on which survivor has the highest
-origin LSN for n1, or you can set it explicitly with `--source-of-truth
-n3`.
+origin LSN for n1, or you can set it explicitly with `--source-of-truth n3`.
 
 ### Repair Command for Each Table
 
