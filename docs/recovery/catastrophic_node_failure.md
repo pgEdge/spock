@@ -197,8 +197,8 @@ using a chosen source of truth (in our example, n3). When you use the
 (the node that originally wrote the row) and **commit timestamp** (to
 microsecond precision) so that replication metadata remains correct.
 
-The following diagram shows the state at the moment of failure (single
-node, n1):
+The following diagram shows the state at the moment of failure of our single
+node, n1:
 
 ```mermaid
 sequenceDiagram
