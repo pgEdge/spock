@@ -1,6 +1,6 @@
 # Recovering from Catastrophic Node Failure
 
-Suppose your cluster is running smoothly with five nodes—n1, n2, n3, n4,
+Suppose your cluster is running smoothly with five nodes — n1, n2, n3, n4,
 and n5 — all connected using Spock logical replication. Node n1 sends
 transactions to the other four nodes. Then something goes wrong: perhaps
 because of network delay, n2 has not yet received all of the transactions
@@ -13,22 +13,24 @@ writes. Later in this document, we also show a multiple-node failure
 example where a second node (n4) had also originated transactions before it
 failed.
 
-In the following sections, we'll walk through how to recover using the
+In the following sections, we'll walk through how to recover a cluster using
+Spock for replication with the
 [Active Consistency Engine (ACE)](https://github.com/pgEdge/ace). You'll
 use a fully synchronized node (for example, n3) as the source of truth. ACE
-repairs the missing data and can **preserve the origin ID and commit
-timestamp** for each repaired row so that replication metadata stays
+repairs the missing data and can preserve the origin ID and commit
+timestamp for each repaired row so that replication metadata stays
 correct and your cluster remains consistent and conflict-free.
 
-This document covers two cases: 
+This document covers two cases:
 
 - **single node failure** (one node fails and another is lagging) 
 - **multiple node failure** (two or more nodes fail and one or more survivors
   are behind). 
 
 The same idea applies in both cases; you identify what is missing on the
-lagging node(s), then repair from a node that has the complete data, 
+lagging node(s), then repair using a node that has the complete data, 
 preserving the origin ID and timestamp for every repaired row.
+
 
 ## Single Node Failure vs. Multiple Node Failure
 
@@ -36,9 +38,9 @@ The following diagrams show the two scenarios and what to do in each case.
 
 ### Scenario 1: Single Node Failure (e.g. n1 fails)
 
-One node fails; another node (n2) is behind because it did not receive all
-of that node's transactions. The other survivors (n3, n4, n5) have the full
-data.
+One node (n1) fails; another node (n2) is behind because it did not receive 
+all of that node's transactions. The other survivors (n3, n4, n5) have 
+complete data.
 
 ```mermaid
 flowchart LR
@@ -60,26 +62,37 @@ flowchart LR
   N3 -->|recover from| N2
 ```
 
-**What to do:**
+**Handling this Failure**
 
-| Step | Action |
-|------|--------|
-| Survivors | n2, n3, n4, n5 |
-| Source of truth | n3 (or n4 or n5) |
-| Spock cleanup | Drop n1 from the cluster (subscriptions and node). |
-| Diff | For each table, run `table-diff --against-origin n1 --until <n1_failure_time>` on survivors. |
-| Repair | For each table with differences, run `table-repair` with `--recovery-mode`, `--source-of-truth n3`, and `--preserve-origin`. |
-| Result | n2 is recovered for all rows that originated from n1. |
+* The failed node is: n1
+* The corrupted node is: n2
 
-### Scenario 2: Multiple Node Failure (e.g. n1 and n4 both fail)
+Our source of truth has to be: n3, n4, or n5
 
-Two (or more) nodes fail. One or more survivors (e.g. n2) may be missing
-rows that originated from **each** failed node. You pick one fully
-synchronized survivor as the source of truth (e.g. n3) and recover n2 for
-data from **both** n1 and n4.
+Our first step is to clean up: 
 
-In this example, n4 was also accepting writes before it failed, so some
-rows in the cluster have an origin ID of n4.
+  Drop the subscriptions to n1 before dropping node n1 from the cluster.
+
+Then, on each survivor, and for each table, run: 
+
+  `table-diff --preserve-origin n1 --until <n1_failure_time>`
+
+Then, on each survivor, for each table with differences, run `table-repair`
+with `--recovery-mode`, `--source-of-truth n3`, and `--preserve-origin`.
+
+These steps will ensure n2 contains all of the rows that originated on n1.
+
+### Scenario 2: Multiple Node Failure
+
+In our next example, we'll assume we have a multi-node failure involving nodes
+n1 and n4. If two (or more) nodes fail, leaving one or more survivors, the 
+damaged survivors (we'll use node n2) may be missing rows that originated
+from **each** failed node. To recover, pick one fully synchronized survivor as
+*the* source of truth (we'll use n3) and recover n2, adding data from **both**
+n1 and n4.
+
+In this example, we'll assume n4 was also accepting writes before it failed,
+so some rows in the cluster have an origin ID of n4.
 
 ```mermaid
 flowchart LR
@@ -102,24 +115,40 @@ flowchart LR
   N3 -->|recover n2 for both n1 and n4| N2
 ```
 
-**What to do:**
+**Handling this Failure**
 
-| Step | Action |
-|------|--------|
-| Survivors | n2, n3, n5 (n1 and n4 are gone). |
-| Source of truth | n3 (or n5). Use the same source for all repairs. |
-| Spock cleanup | Drop **both** n1 and n4 from the cluster (subscriptions and nodes). |
-| Diff | For each table, run `table-diff` **once per failed node**: e.g. `--against-origin n1 --until <n1_failure_time>` and `--against-origin n4 --until <n4_failure_time>`. You get one diff file per (table, failed origin). |
-| Repair | For **each** of those diff files, run `table-repair` with `--recovery-mode`, `--source-of-truth n3`, and `--preserve-origin`. So n2 is repaired for rows from n1, then for rows from n4 (same source of truth n3). |
-| Result | n2 is recovered for all rows that originated from n1 and from n4; origin ID and timestamp preserved for each. |
+* The failed nodes are: n1 and n4
+* The corrupted node is: n2
+
+Our source of truth has to be: n3 or n5
+
+Our first step is to clean up: 
+
+  Drop the subscriptions to n1 and n4 before dropping the nodes from the 
+  cluster.
+
+Then, on each surviving node, and for each table, run the table-diff command
+against each failed node:
+
+  `table-diff --preserve-origin n1 --until <n1_failure_time>`
+  `table-diff --preserve-origin n4 --until <n4_failure_time>`
+
+  Each run will return one diff file per table/origin combination.
+
+Then, on each survivor, for each table with differences, run `table-repair`
+with `--recovery-mode`, `--source-of-truth n3`, and `--preserve-origin`.
+
+These steps will ensure n2 contains all of the rows that originated on n1 and
+n4, with the origin ID and timestamp preserved for each.
 
 !!! note
-    In the multiple-node case, you run diff and repair **per failed
-    origin**. For each table, that means one diff (and one repair) for n1
+
+    In the multiple-node case, you run diff and repair once per failed
+    origin. For each table, that means one diff (and one repair) for n1
     and one diff (and one repair) for n4. The source of truth (n3) is the
     same for all repairs.
 
-### Summary: What to Do in Both Cases
+### Implementing Repairs in Both Cases
 
 ```mermaid
 flowchart TD
@@ -137,11 +166,15 @@ flowchart TD
   end
 ```
 
-In both cases you: (1) clean up the failed node(s) in Spock, (2) run
-table-diff on all tables—once per failed origin in the multiple-node
-case—and (3) run table-repair with `--preserve-origin` and a single source
-of truth (e.g. n3) so that origin ID and commit timestamp are preserved for
-every repaired row.
+In both cases you:
+
+1. Clean up the failed node(s) in Spock.
+2. Run table-diff on all tables—once per failed origin in the multiple-node 
+   case.
+3. Run table-repair with `--preserve-origin` and a single source of truth 
+   so that origin ID and commit timestamp are preserved for each repaired row.
+
+---
 
 ---
 
