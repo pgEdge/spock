@@ -5,8 +5,9 @@ and n5 — all connected using Spock logical replication. Node n1 sends
 transactions to the other four nodes. Then something goes wrong: perhaps
 because of network delay, n2 has not yet received all of the transactions
 that n3, n4, and n5 have already applied. Before n2 can catch up, n1
-crashes. You are left with n2 behind the others and no way for it to get the
-missing data from n1. This is a **catastrophic node failure** scenario.
+crashes. You are left with n2 lagging behind the others, and no way for 
+it to get the missing data from n1. This is a **catastrophic node failure**
+scenario.
 
 Depending on how you run your cluster, more than one node may accept
 writes. Later in this document, we also show a multiple-node failure
@@ -28,7 +29,7 @@ This document covers two cases:
   are behind). 
 
 The same idea applies in both cases; you identify what is missing on the
-lagging node(s), then repair using a node that has the complete data, 
+surviving node(s), then repair the nodes using a node with complete data, 
 preserving the origin ID and timestamp for every repaired row.
 
 
@@ -36,11 +37,11 @@ preserving the origin ID and timestamp for every repaired row.
 
 The following diagrams show the two scenarios and what to do in each case.
 
-### Scenario 1: Single Node Failure (e.g. n1 fails)
+### Scenario 1: Single Node Failure
 
-One node (n1) fails; another node (n2) is behind because it did not receive 
-all of that node's transactions. The other survivors (n3, n4, n5) have 
-complete data.
+In our first example, one node (n1) fails, while another node (n2) is lagging
+behind because it did not receive all of that node's transactions. The other
+survivors (n3, n4, n5) have complete data.
 
 ```mermaid
 flowchart LR
@@ -62,10 +63,10 @@ flowchart LR
   N3 -->|recover from| N2
 ```
 
-**Handling this Failure**
+**Implementing a Recovery**
 
-* The failed node is: n1
-* The corrupted node is: n2
+* Node n1 has failed.
+* Node n2 is lagging.
 
 Our source of truth has to be: n3, n4, or n5
 
@@ -86,9 +87,9 @@ These steps will ensure n2 contains all of the rows that originated on n1.
 
 In our next example, we'll assume we have a multi-node failure involving nodes
 n1 and n4. If two (or more) nodes fail, leaving one or more survivors, the 
-damaged survivors (we'll use node n2) may be missing rows that originated
-from **each** failed node. To recover, pick one fully synchronized survivor as
-*the* source of truth (we'll use n3) and recover n2, adding data from **both**
+damaged survivor (node n2 is lagging, but not down) may be missing rows that 
+originated from each node. To recover, pick one fully synchronized survivor as
+*the* source of truth (we'll use n3) and recover n2, adding data from *both*
 n1 and n4.
 
 In this example, we'll assume n4 was also accepting writes before it failed,
@@ -115,10 +116,10 @@ flowchart LR
   N3 -->|recover n2 for both n1 and n4| N2
 ```
 
-**Handling this Failure**
+**Implementing a Recovery**
 
-* The failed nodes are: n1 and n4
-* The corrupted node is: n2
+* Nodes n1 and n4 have failed.
+* Node n2 is lagging.
 
 Our source of truth has to be: n3 or n5
 
