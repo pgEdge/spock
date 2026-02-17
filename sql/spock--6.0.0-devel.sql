@@ -449,13 +449,13 @@ CREATE PROCEDURE spock.wait_for_sync_event(
 ) AS $$
 DECLARE
 	target_id		oid;
-	elapsed_time	numeric := 0;
+	start_time		timestamptz := clock_timestamp();
 	progress_lsn	pg_lsn;
 	sub_is_enabled	bool;
 	sub_slot		name;
 BEGIN
 	IF origin_id IS NULL THEN
-		RAISE EXCEPTION 'Origin node ''%'' not found', origin_id;
+		RAISE EXCEPTION 'Invalid NULL origin_id';
 	END IF;
 	target_id := node_id FROM spock.node_info();
 
@@ -491,12 +491,13 @@ BEGIN
 			FROM pg_replication_origin_status
 			WHERE external_id = sub_slot;
 
-		IF progress_lsn >= lsn THEN
+		IF progress_lsn IS NOT NULL AND progress_lsn >= lsn THEN
 			result = true;
 			RETURN;
 		END IF;
-		elapsed_time := elapsed_time + .2;
-		IF timeout <> 0 AND elapsed_time >= timeout THEN
+
+		IF timeout <> 0 AND
+		   EXTRACT(EPOCH FROM (clock_timestamp() - start_time)) >= timeout THEN
 			result := false;
 			RETURN;
 		END IF;
@@ -514,64 +515,13 @@ CREATE PROCEDURE spock.wait_for_sync_event(
 	timeout    int DEFAULT 0
 ) AS $$
 DECLARE
-	origin_id		oid;
-	target_id		oid;
-	elapsed_time	numeric := 0;
-	progress_lsn	pg_lsn;
-	sub_is_enabled	bool;
-	sub_slot		name;
+	origin_id  oid;
 BEGIN
 	origin_id := node_id FROM spock.node WHERE node_name = origin;
 	IF origin_id IS NULL THEN
 		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
 	END IF;
-	target_id := node_id FROM spock.node_info();
-
-	-- Verify subscription exists and get slot name
-	SELECT sub_enabled, sub_slot_name INTO sub_is_enabled, sub_slot
-		FROM spock.subscription
-		WHERE sub_origin = origin_id AND sub_target = target_id;
-
-	IF NOT FOUND THEN
-		RAISE EXCEPTION 'No subscription found for replication % => %',
-						origin_id, target_id;
-	END IF;
-
-	WHILE true LOOP
-		-- Re-check subscription state each iteration
-		SELECT sub_enabled INTO sub_is_enabled
-			FROM spock.subscription
-			WHERE sub_origin = origin_id AND sub_target = target_id;
-
-		IF NOT FOUND THEN
-			RAISE EXCEPTION 'No subscription found for replication % => %',
-							origin_id, target_id;
-		END IF;
-
-		IF NOT sub_is_enabled THEN
-			RAISE EXCEPTION 'Subscription % => % has been disabled',
-							origin_id, target_id;
-		END IF;
-
-		-- Query pg_replication_origin_status for apply progress
-		-- Uses PostgreSQL's native origin tracking rather than spock.progress
-		SELECT remote_lsn INTO progress_lsn
-			FROM pg_replication_origin_status
-			WHERE external_id = sub_slot;
-
-		IF progress_lsn >= lsn THEN
-			result = true;
-			RETURN;
-		END IF;
-		elapsed_time := elapsed_time + .2;
-		IF timeout <> 0 AND elapsed_time >= timeout THEN
-			result := false;
-			RETURN;
-		END IF;
-
-		ROLLBACK;
-		PERFORM pg_sleep(0.2);
-	END LOOP;
+	CALL spock.wait_for_sync_event(result, origin_id, lsn, timeout);
 END;
 $$ LANGUAGE plpgsql;
 
