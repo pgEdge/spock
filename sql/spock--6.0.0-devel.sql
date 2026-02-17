@@ -451,27 +451,46 @@ DECLARE
 	target_id		oid;
 	elapsed_time	numeric := 0;
 	progress_lsn	pg_lsn;
+	sub_is_enabled	bool;
+	sub_slot		name;
 BEGIN
 	IF origin_id IS NULL THEN
-		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
+		RAISE EXCEPTION 'Origin node ''%'' not found', origin_id;
 	END IF;
 	target_id := node_id FROM spock.node_info();
 
+	-- Verify subscription exists and get slot name
+	SELECT sub_enabled, sub_slot_name INTO sub_is_enabled, sub_slot
+		FROM spock.subscription
+		WHERE sub_origin = origin_id AND sub_target = target_id;
+
+	IF NOT FOUND THEN
+		RAISE EXCEPTION 'No subscription found for replication % => %',
+						origin_id, target_id;
+	END IF;
+
 	WHILE true LOOP
-		-- If an unresolvable issue occurs with the apply worker, the LR
-		-- progress gets stuck, and we need to check the subscription's state
-		-- carefully.
-		IF NOT EXISTS (SELECT * FROM spock.subscription
-					  WHERE sub_origin = origin_id AND
-							sub_target = target_id AND
-							sub_enabled = true) THEN
-			RAISE EXCEPTION 'Replication % => % does not have any enabled subscription yet',
+		-- Re-check subscription state each iteration
+		SELECT sub_enabled INTO sub_is_enabled
+			FROM spock.subscription
+			WHERE sub_origin = origin_id AND sub_target = target_id;
+
+		IF NOT FOUND THEN
+			RAISE EXCEPTION 'No subscription found for replication % => %',
 							origin_id, target_id;
 		END IF;
 
-		SELECT INTO progress_lsn remote_commit_lsn
-			FROM spock.progress
-			WHERE node_id = target_id AND remote_node_id = origin_id;
+		IF NOT sub_is_enabled THEN
+			RAISE EXCEPTION 'Subscription % => % has been disabled',
+							origin_id, target_id;
+		END IF;
+
+		-- Query pg_replication_origin_status for apply progress
+		-- Uses PostgreSQL's native origin tracking rather than spock.progress
+		SELECT remote_lsn INTO progress_lsn
+			FROM pg_replication_origin_status
+			WHERE external_id = sub_slot;
+
 		IF progress_lsn >= lsn THEN
 			result = true;
 			RETURN;
@@ -499,6 +518,8 @@ DECLARE
 	target_id		oid;
 	elapsed_time	numeric := 0;
 	progress_lsn	pg_lsn;
+	sub_is_enabled	bool;
+	sub_slot		name;
 BEGIN
 	origin_id := node_id FROM spock.node WHERE node_name = origin;
 	IF origin_id IS NULL THEN
@@ -506,21 +527,38 @@ BEGIN
 	END IF;
 	target_id := node_id FROM spock.node_info();
 
+	-- Verify subscription exists and get slot name
+	SELECT sub_enabled, sub_slot_name INTO sub_is_enabled, sub_slot
+		FROM spock.subscription
+		WHERE sub_origin = origin_id AND sub_target = target_id;
+
+	IF NOT FOUND THEN
+		RAISE EXCEPTION 'No subscription found for replication % => %',
+						origin_id, target_id;
+	END IF;
+
 	WHILE true LOOP
-		-- If an unresolvable issue occurs with the apply worker, the LR
-		-- progress gets stuck, and we need to check the subscription's state
-		-- carefully.
-		IF NOT EXISTS (SELECT * FROM spock.subscription
-					  WHERE sub_origin = origin_id AND
-							sub_target = target_id AND
-							sub_enabled = true) THEN
-			RAISE EXCEPTION 'Replication % => % does not have any enabled subscription yet',
+		-- Re-check subscription state each iteration
+		SELECT sub_enabled INTO sub_is_enabled
+			FROM spock.subscription
+			WHERE sub_origin = origin_id AND sub_target = target_id;
+
+		IF NOT FOUND THEN
+			RAISE EXCEPTION 'No subscription found for replication % => %',
 							origin_id, target_id;
 		END IF;
 
-		SELECT INTO progress_lsn remote_commit_lsn
-			FROM spock.progress
-			WHERE node_id = target_id AND remote_node_id = origin_id;
+		IF NOT sub_is_enabled THEN
+			RAISE EXCEPTION 'Subscription % => % has been disabled',
+							origin_id, target_id;
+		END IF;
+
+		-- Query pg_replication_origin_status for apply progress
+		-- Uses PostgreSQL's native origin tracking rather than spock.progress
+		SELECT remote_lsn INTO progress_lsn
+			FROM pg_replication_origin_status
+			WHERE external_id = sub_slot;
+
 		IF progress_lsn >= lsn THEN
 			result = true;
 			RETURN;

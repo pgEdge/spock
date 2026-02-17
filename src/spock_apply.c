@@ -920,6 +920,23 @@ handle_commit(StringInfo s)
 		dlist_push_tail(&lsn_mapping, &flushpos->node);
 		MemoryContextSwitchTo(MessageContext);
 	}
+	else
+	{
+		/*
+		 * Empty transaction (e.g., sync_event message with no actual DML).
+		 * PostgreSQL's RecordTransactionCommit() only calls
+		 * replorigin_session_advance() when WAL is written, which doesn't
+		 * happen for empty transactions.
+		 *
+		 * We explicitly advance the replication origin here to ensure
+		 * pg_replication_origin_status.remote_lsn is updated.
+		 */
+		if (replorigin_session_origin != InvalidRepOriginId &&
+			replorigin_session_origin != DoNotReplicateId)
+		{
+			replorigin_session_advance(end_lsn, InvalidXLogRecPtr);
+		}
+	}
 
 	/*
 	 * For forwarded transactions, advance the replication origin for the
