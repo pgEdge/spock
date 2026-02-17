@@ -606,10 +606,10 @@ flowchart LR
 
 ## Why Preserve Origin ID and Timestamp?
 
-When ACE repairs rows on n2, those rows originally came from n1. Each row
-has an **origin ID** (which node wrote it) and a **commit timestamp** (when
-it was committed). Spock uses these for conflict resolution and to keep
-replication consistent.
+The repairs that ACE writes to n2 originated on n1. Each row has an 
+**origin ID** (that identifies which node wrote it) and a **commit timestamp** 
+(that identifies when it was committed). Spock uses these for conflict 
+resolution and to keep replication consistent.
 
 If you repair **without** `--preserve-origin`, the repaired rows get n2's
 origin ID and a new commit timestamp. That can cause:
@@ -633,9 +633,13 @@ you run table-repair.
 
 ---
 
-## Important Considerations
+## Important Considerations when using ACE
+
+Review the following considerations before performing a recovery with ACE.
 
 ### Multi-Table Recovery
+
+When performing a recovery between nodes with multiple tables:
 
 - **Check every table** – Run table-diff on all replicated tables, not just
   one. Only then will you see the full picture of what is missing on n2.
@@ -643,7 +647,7 @@ you run table-repair.
   critical tables first, then the rest. Just ensure you eventually run diff
   and repair for every affected table.
 - **Same cutoff for all** – Use the same `--until` timestamp for every
-  table so that you're consistently fencing at the failure time.
+  table so that you're consistently fencing at the same failure time.
 - **Same source of truth** – Using one node (e.g., n3) as source of truth
   for all tables keeps the process simple. If you have a reason to use
   different sources per table, you can, but document it so you don't get
@@ -652,9 +656,9 @@ you run table-repair.
 ### Large Tables
 
 For very large tables, ACE supports options such as `--table-filter` to
-restrict the comparison to a subset of rows. You can run diff and repair in
-chunks. See the [ACE table-diff command
-documentation](https://github.com/pgEdge/ace/tree/main/docs/commands/diff)
+restrict the comparison to a subset of rows. This allows you to run diff
+and repair in chunks. See the 
+[ACE table-diff command documentation](https://github.com/pgEdge/ace/tree/main/docs/commands/diff)
 for details.
 
 ### When to Specify --source-of-truth
@@ -662,7 +666,7 @@ for details.
 If you omit `--source-of-truth`, ACE will try to pick the survivor with the
 highest origin LSN for n1. If LSN information is missing on the survivors
 or there's a tie, ACE will ask you to specify the source. In that case,
-choose any node that you know has the full set of n1's data (in our
+choose any node that you know has the most complete data set (in our
 example, n3, n4, or n5).
 
 ### Catastrophic Failure vs. Network Partition
@@ -679,36 +683,85 @@ cluster.
 
 ## Troubleshooting
 
-| Problem | What to try |
-|--------|--------------|
-| ACE says LSN information is missing | Specify `--source-of-truth` explicitly (e.g. `--source-of-truth n3`) so ACE doesn't need to probe LSNs. |
-| More than one node is behind | Run diff and repair including all behind nodes in `--nodes`. The source of truth should be a node that has full data; repair will fix the others. |
-| Auto source-of-truth selection fails or ties | Provide `--source-of-truth <node_name>` with a node you know has the complete data. |
-| Origin metadata missing for some rows | ACE may log a warning and repair those rows without preserving origin ID and timestamp. Ensure `track_commit_timestamp = on` and that the diff was run with `--preserve-origin`; check the diff file and ACE logs. |
-| Tables still differ after repair | Re-run table-diff without `--preserve-origin` to see current state. If writes occurred during repair, run diff again and repair if needed. For large tables, consider chunked repair with `--table-filter`. |
+### ACE says LSN Information is Missing
+
+Specify `--source-of-truth` explicitly (e.g. `--source-of-truth n3`) so 
+ACE doesn't need to probe LSNs.
+
+### More than One node is behind
+
+Run `diff` and `repair` commands for all potentially lagging nodes in 
+`--nodes`. The source of truth should be a node that has full data; repair
+will fix the others.
+
+### Auto source-of-truth selection fails or ties
+
+Provide `--source-of-truth <node_name>` with the name of a node you know has
+the complete data.
+
+### Origin metadata missing for some rows
+
+ACE may log a warning and repair those rows without preserving origin ID and
+timestamp. Ensure `track_commit_timestamp = on` and that the diff was run 
+with `--preserve-origin`; check the diff file and ACE logs.
+
+### Tables still differ after repair
+
+Re-run `table-diff` without `--preserve-origin` to see the current state. If
+writes occurred during repair, run diff again and repair if needed. For large
+tables, consider performing a chunked repair with `--table-filter`.
 
 ---
 
 ## Summary
 
-**Single node failure (e.g. n1 fails, n2 behind):** Recover by (1)
-assessing which nodes are behind and when the failure happened, (2)
-cleaning up Spock (drop subscriptions and drop n1), (3) running ACE
-table-diff on all replicated tables with `--preserve-origin n1` and `--until
-<failure_time>`, (4) running ACE table-repair with `--recovery-mode`,
-`--source-of-truth n3`, and **`--preserve-origin`** for each table that had
-differences, and (5) re-running table-diff to confirm they match.
+In summary, the basic steps required to recover a lagging or damaged
+node vary only based on how many nodes you need to repair or rebuild:
 
-**Multiple node failure (e.g. n1 and n4 fail, n2 behind):** Same idea, but
-(2) drop both n1 and n4 from the cluster, (3) run table-diff **once per
-failed origin** per table (e.g. `--preserve-origin n1` and `--preserve-origin
-n4`), and (4) run table-repair for **each** of the resulting diff files,
-using the same source of truth (e.g. n3) and `--preserve-origin` every
-time.
+In the event of a single node failure:
 
-In both cases, use `--preserve-origin` so that the origin ID and commit
-timestamp are preserved for every repaired row, and check all tables so
-that the lagging node is fully recovered.
+1. **Assess the damage** – Identify which nodes are behind and determine
+   when the failure occurred.
+2. **Clean up Spock** – Drop subscriptions to the failed node and remove it
+   from the cluster.
+3. **Identify missing data** – Run ACE table-diff on all replicated tables
+   with `--preserve-origin node_name` and `--until <failure_time>`.
+4. **Repair affected tables** – Run ACE table-repair with the following
+   command options:
+   
+    - `--recovery-mode`
+    - `--source-of-truth n3`
+    - `--preserve-origin` (critical for maintaining replication metadata)
+  
+5. **Validate the recovery** – Re-run table-diff to confirm all tables match
+   across surviving nodes.
+
+The process is similar for a multi-node failure with these key differences:
+
+1. **Assess the damage** – Identify which nodes are behind and when each
+   failure occurred.
+2. **Clean up Spock** – Drop subscriptions to all failed nodes and remove
+   all of the failed nodes from the cluster.
+3. **Identify missing data** – Run table-diff once for each failed origin,
+   for each table:
+ 
+    - `--preserve-origin n1` with n1's failure time
+    - `--preserve-origin n4` with n4's failure time
+
+4. **Repair affected tables** – Run table-repair for **each** diff file
+   produced:
+
+   - Use the same `--source-of-truth` (e.g., n3) for all repairs
+   - Always include `--preserve-origin`
+
+5. **Validate recovery** – Re-run table-diff to confirm all tables match
+
+### Critical Reminder
+
+In both scenarios, always use `--preserve-origin` to ensure that origin ID
+and commit timestamp are preserved for every repaired row. Check all
+replicated tables to ensure the lagging node is fully recovered.
+
 
 ## See also
 
