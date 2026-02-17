@@ -372,7 +372,7 @@ For a single table (for example, `public.customers`):
 ```bash
 ./ace table-diff \
   --nodes n2,n3,n4,n5 \
-  --against-origin n1 \
+  --preserve-origin n1 \
   --until 2026-02-11T14:30:00Z \
   --output json \
   mycluster public.customers
@@ -382,7 +382,7 @@ What these options do:
 
 - `--nodes n2,n3,n4,n5` – Compare only the surviving nodes (n2 and the
   nodes that have full data).
-- `--against-origin n1` – Only consider rows whose origin ID is n1, so you
+- `--preserve-origin n1` – Only consider rows whose origin ID is n1, so you
   don't mix in later local writes on the survivors.
 - `--until 2026-02-11T14:30:00Z` – Only consider rows committed at or
   before this time (use RFC3339 format).
@@ -396,14 +396,14 @@ command for every other table; for example:
 ```bash
 ./ace table-diff \
   --nodes n2,n3,n4,n5 \
-  --against-origin n1 \
+  --preserve-origin n1 \
   --until 2026-02-11T14:30:00Z \
   --output json \
   mycluster public.orders
 
 ./ace table-diff \
   --nodes n2,n3,n4,n5 \
-  --against-origin n1 \
+  --preserve-origin n1 \
   --until 2026-02-11T14:30:00Z \
   --output json \
   mycluster public.products
@@ -424,11 +424,11 @@ two diff files:
 
 ```bash
 # Rows that originated from n1
-./ace table-diff --nodes n2,n3,n5 --against-origin n1 \
+./ace table-diff --nodes n2,n3,n5 --preserve-origin n1 \
   --until 2026-02-11T14:30:00Z --output json mycluster public.customers
 
 # Rows that originated from n4 (use n4's failure time if different)
-./ace table-diff --nodes n2,n3,n5 --against-origin n4 \
+./ace table-diff --nodes n2,n3,n5 --preserve-origin n4 \
   --until 2026-02-11T14:35:00Z --output json mycluster public.customers
 ```
 
@@ -448,7 +448,7 @@ for table in customers orders products invoices; do
   echo "Checking table: public.$table"
   ./ace table-diff \
     --nodes "$NODES" \
-    --against-origin n1 \
+    --preserve-origin n1 \
     --until "$FAILURE_UNTIL" \
     --output json \
     "$CLUSTER" public."$table"
@@ -493,7 +493,7 @@ For each table that had differences, run a command like the following
 - `--nodes n2,n3,n4,n5` – The surviving nodes (n2 will be repaired; n3 is
   the source of truth).
 - `--recovery-mode` – Required when the diff was created with
-  `--against-origin`; tells ACE this is a catastrophic-failure recovery.
+  `--preserve-origin`; tells ACE this is a catastrophic-failure recovery.
 - `--source-of-truth n3` – Use n3's copy of the data to repair n2. You can
   omit this and let ACE choose the survivor with the highest LSN for n1,
   but if there are ties or missing LSNs, you must specify the source.
@@ -536,7 +536,7 @@ run for the second. Example for one table:
   --nodes n2,n3,n5 --recovery-mode --source-of-truth n3 \
   --preserve-origin mycluster public.customers
 
-# Repair n2 for rows from n4 (different diff file from --against-origin n4)
+# Repair n2 for rows from n4 (different diff file from --preserve-origin n4)
 ./ace table-repair \
   --diff-file=public_customers_diffs-20260211143500.json \
   --nodes n2,n3,n5 --recovery-mode --source-of-truth n3 \
@@ -566,7 +566,7 @@ reference](https://github.com/pgEdge/ace/blob/main/docs/commands/repair/table-re
 
 After repairing every affected table, verify that n2 now matches n3, n4,
 and n5. Re-run `table-diff` for each repaired table **without**
-`--against-origin` and `--until`. That compares the full table content
+`--preserve-origin` and `--until`. That compares the full table content
 across the survivors:
 
 ```bash
@@ -684,8 +684,8 @@ cluster.
 | ACE says LSN information is missing | Specify `--source-of-truth` explicitly (e.g. `--source-of-truth n3`) so ACE doesn't need to probe LSNs. |
 | More than one node is behind | Run diff and repair including all behind nodes in `--nodes`. The source of truth should be a node that has full data; repair will fix the others. |
 | Auto source-of-truth selection fails or ties | Provide `--source-of-truth <node_name>` with a node you know has the complete data. |
-| Origin metadata missing for some rows | ACE may log a warning and repair those rows without preserving origin ID and timestamp. Ensure `track_commit_timestamp = on` and that the diff was run with `--against-origin`; check the diff file and ACE logs. |
-| Tables still differ after repair | Re-run table-diff without `--against-origin` to see current state. If writes occurred during repair, run diff again and repair if needed. For large tables, consider chunked repair with `--table-filter`. |
+| Origin metadata missing for some rows | ACE may log a warning and repair those rows without preserving origin ID and timestamp. Ensure `track_commit_timestamp = on` and that the diff was run with `--preserve-origin`; check the diff file and ACE logs. |
+| Tables still differ after repair | Re-run table-diff without `--preserve-origin` to see current state. If writes occurred during repair, run diff again and repair if needed. For large tables, consider chunked repair with `--table-filter`. |
 
 ---
 
@@ -694,14 +694,14 @@ cluster.
 **Single node failure (e.g. n1 fails, n2 behind):** Recover by (1)
 assessing which nodes are behind and when the failure happened, (2)
 cleaning up Spock (drop subscriptions and drop n1), (3) running ACE
-table-diff on all replicated tables with `--against-origin n1` and `--until
+table-diff on all replicated tables with `--preserve-origin n1` and `--until
 <failure_time>`, (4) running ACE table-repair with `--recovery-mode`,
 `--source-of-truth n3`, and **`--preserve-origin`** for each table that had
 differences, and (5) re-running table-diff to confirm they match.
 
 **Multiple node failure (e.g. n1 and n4 fail, n2 behind):** Same idea, but
 (2) drop both n1 and n4 from the cluster, (3) run table-diff **once per
-failed origin** per table (e.g. `--against-origin n1` and `--against-origin
+failed origin** per table (e.g. `--preserve-origin n1` and `--preserve-origin
 n4`), and (4) run table-repair for **each** of the resulting diff files,
 using the same source of truth (e.g. n3) and `--preserve-origin` every
 time.
