@@ -53,6 +53,8 @@ extern int	restart_delay_on_exception;
 extern int	spock_replay_queue_size;	/* Deprecated - no longer used */
 extern bool check_all_uc_indexes;
 extern bool	spock_enable_quiet_mode;
+extern bool log_update_origin_change;
+extern bool log_delete_origin_change;
 
 extern char *shorten_hash(const char *str, int maxlen);
 extern void gen_slot_name(Name slot_name, char *dbname,

@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * spock_apply_heap.c
- *             spock apply functions using heap api
+ *			 spock apply functions using heap api
  *
  * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -1168,6 +1168,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		TimestampTz				local_ts;
 		RepOriginId				local_origin;
 		bool					local_origin_found;
+		HeapTuple				remotetuple;
 		HeapTuple				applytuple;
 		SpockConflictResolution	resolution;
 
@@ -1208,6 +1209,23 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		else
 		{
 			/* DELETE happened after (usual case) */
+
+			/* check if origin differs then report */
+			if (log_delete_origin_change)
+			{
+				if (local_origin_found && local_origin != replorigin_session_origin)
+				{
+					spock_report_conflict(SPOCK_CT_DELETE_ORIGIN_DIFFERS,
+							rel, TTS_TUP(localslot), oldtup,
+							NULL,
+							local_tuple,
+							SpockResolution_ApplyRemote,
+							xmin, local_origin_found, local_origin,
+							local_ts,
+							edata->targetRel->idxoid
+					);
+				}
+			}
 
 			/* Make sure that any user-supplied code runs as the table owner. */
 			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);

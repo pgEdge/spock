@@ -364,8 +364,14 @@ spock_report_conflict(SpockConflictType conflict_type,
 			TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
 			return;
 
+		/* If we could not determine the local origin, do not log */
+		if (!found_local_origin)
+			return;
+
 		/* Differing origin */
 		conflict_type = SPOCK_CT_UPDATE_ORIGIN_DIFFERS;
+		if (!log_update_origin_change)
+			return;
 	}
 
 	/* Count statistics */
@@ -465,6 +471,19 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   (uint32) (replorigin_session_origin_lsn << 32),
 							   (uint32) replorigin_session_origin_lsn)));
 			break;
+		case SPOCK_CT_DELETE_ORIGIN_DIFFERS:
+			ereport(spock_conflict_log_level,
+							   (errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
+								errmsg("CONFLICT: remote %s on relation %s replica identity index %s (origin differs). Resolution: %s.",
+											SpockConflictTypeNames[conflict_type],
+											qualrelname, idxname,
+											conflict_resolution_to_string(resolution)),
+								errdetail("tuple for remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
+											replorigin_session_origin,
+											timestamptz_to_str(replorigin_session_origin_timestamp),
+											(uint32) (replorigin_session_origin_lsn << 32),
+											(uint32) replorigin_session_origin_lsn)));
+		   break;
 		case SPOCK_CT_DELETE_LATE:
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
@@ -477,9 +496,6 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
 							   (uint32) (replorigin_session_origin_lsn << 32),
 							   (uint32) replorigin_session_origin_lsn)));
-			break;
-		case SPOCK_CT_DELETE_ORIGIN_DIFFERS:
-			/* keep compiler happy; handling will be added separately */
 			break;
 	}
 }

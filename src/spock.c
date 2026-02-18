@@ -135,6 +135,8 @@ int			restart_delay_on_exception;
 int			spock_replay_queue_size;	/* Deprecated - no longer used */
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
+bool		log_update_origin_change = false;
+bool   		log_delete_origin_change = false;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
 static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
@@ -1185,6 +1187,24 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
+
+	   DefineCustomBoolVariable("spock.log_update_origin_change",
+														gettext_noop("If set, log when the origin of a tuple changes."),
+														NULL,
+														&log_update_origin_change,
+														false,
+														PGC_SUSET,
+														0,
+														NULL, NULL, NULL);
+
+	   DefineCustomBoolVariable("spock.log_delete_origin_change",
+														gettext_noop("If set, log when the origin of a tuple changes."),
+														NULL,
+														&log_delete_origin_change,
+														false,
+														PGC_SUSET,
+														0,
+														NULL, NULL, NULL);
 
 	if (IsBinaryUpgrade)
 		return;

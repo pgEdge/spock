@@ -136,6 +136,10 @@ SELECT * FROM basic_conflict ORDER BY id;
 --- should return nothing
 SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
 
+-- Enable logging when update origin changes
+ALTER SYSTEM SET spock.log_update_origin_change = true;
+SELECT pg_reload_conf();
+
 -- now update row locally to set up an origin difference
 UPDATE basic_conflict SET data = 'sub-A' WHERE id = 1;
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
@@ -183,6 +187,115 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 -- The insert gets converted into an update, conflict type insert_exists
 SELECT conflict_type, conflict_resolution, remote_tuple FROM spock.resolutions;
 
+-- Test: log_update_origin_change = true logs update_origin_differs
+\c :subscriber_dsn
+TRUNCATE spock.resolutions;
+ALTER SYSTEM SET spock.log_update_origin_change = true;
+SELECT pg_reload_conf();
+
+-- Update locally to change origin
+UPDATE basic_conflict SET data = 'sub-A2' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :provider_dsn
+UPDATE basic_conflict SET data = 'pub-A2' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+-- Should see update_origin_differs when log_update_origin_change is on
+SELECT conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+
+-- Test: VACUUM FREEZE prevents origin detection so no conflict is logged
+-- even when log_update_origin_change = true
+TRUNCATE spock.resolutions;
+
+-- VACUUM FREEZE the table so existing tuples get FrozenTransactionId
+VACUUM FREEZE basic_conflict;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :provider_dsn
+-- Update on provider; subscriber's local tuple is frozen so origin is unknown
+UPDATE basic_conflict SET data = 'pub-A2f' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+-- Should NOT see update_origin_differs because local origin could not be determined
+SELECT COUNT(*) FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+
+-- Test: log_update_origin_change = false suppresses update_origin_differs
+TRUNCATE spock.resolutions;
+ALTER SYSTEM SET spock.log_update_origin_change = false;
+SELECT pg_reload_conf();
+
+-- Update locally to change origin
+UPDATE basic_conflict SET data = 'sub-A3' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :provider_dsn
+UPDATE basic_conflict SET data = 'pub-A3' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+-- Should NOT see update_origin_differs when log_update_origin_change is off
+SELECT COUNT(*) FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+
+-- Test: log_delete_origin_change = true logs delete_origin_differs
+TRUNCATE spock.resolutions;
+ALTER SYSTEM SET spock.log_delete_origin_change = true;
+SELECT pg_reload_conf();
+
+-- Update row locally to change its origin
+UPDATE basic_conflict SET data = 'sub-B' WHERE id = 2;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :provider_dsn
+-- Delete the row; subscriber should detect origin differs
+DELETE FROM basic_conflict WHERE id = 2;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+-- Should see delete_origin_differs
+SELECT conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+
+-- Test: VACUUM FREEZE prevents origin detection so no delete conflict is logged
+-- even when log_delete_origin_change = true
+TRUNCATE spock.resolutions;
+
+-- VACUUM FREEZE the table so existing tuples get FrozenTransactionId
+VACUUM FREEZE basic_conflict;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :provider_dsn
+-- Delete on provider; subscriber's local tuple is frozen so origin is unknown
+DELETE FROM basic_conflict WHERE id = 4;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+-- Should NOT see delete_origin_differs because local origin could not be determined
+SELECT COUNT(*) FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+
+-- Test: log_delete_origin_change = false suppresses delete_origin_differs
+\c :provider_dsn
+INSERT INTO basic_conflict VALUES (5, 'E');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+TRUNCATE spock.resolutions;
+ALTER SYSTEM SET spock.log_delete_origin_change = false;
+SELECT pg_reload_conf();
+
+-- Update locally to change origin
+UPDATE basic_conflict SET data = 'sub-E' WHERE id = 5;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :provider_dsn
+DELETE FROM basic_conflict WHERE id = 5;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+-- Should NOT see delete_origin_differs when log_delete_origin_change is off
+SELECT COUNT(*) FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+
 -- cleanup
 \c :provider_dsn
 SELECT * FROM spock.repset_remove_table('default', 'users');
@@ -194,5 +307,7 @@ $$);
 SELECT spock.replicate_ddl($$
 	DROP TABLE basic_conflict;
 $$);
+ALTER SYSTEM SET spock.log_update_origin_change = false;
+ALTER SYSTEM SET spock.log_delete_origin_change = false;
 ALTER SYSTEM SET spock.save_resolutions = off;
 SELECT pg_reload_conf();
