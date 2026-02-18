@@ -58,6 +58,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
@@ -1203,11 +1204,32 @@ spock_sync_subscription(SpockSubscription *sub)
 		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
 												 sub->name, "snap");
 
-		progress_entries_list = adjust_progress_info(origin_conn);
 		snapshot = ensure_replication_slot_snapshot(origin_conn,
 													origin_conn_repl,
 													sub->slot_name,
 													use_failover_slot, &lsn);
+
+		INJECTION_POINT("spock-before-replication-slot-snapshot", "wait");
+
+		/*
+		 * Read progress info using the same snapshot that will be used for
+		 * COPY. This ensures that the LSN values we capture are consistent
+		 * with the transactional snapshot: we see exactly the same committed
+		 * transactions the COPY will include. Without this, transactions
+		 * from other nodes could be committed between the progress read and
+		 * the snapshot creation, causing the new node to either miss data
+		 * or re-apply already-copied rows.
+		 */
+		start_copy_origin_tx(origin_conn, snapshot);
+		progress_entries_list = adjust_progress_info(origin_conn);
+		{
+			PGresult   *res = PQexec(origin_conn, "ROLLBACK");
+
+			if (PQresultStatus(res) != PGRES_COMMAND_OK)
+				elog(WARNING, "ROLLBACK on origin node failed: %s",
+					 PQresultErrorMessage(res));
+			PQclear(res);
+		}
 
 		PQfinish(origin_conn);
 
