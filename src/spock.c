@@ -757,28 +757,12 @@ spock_temp_directory_assing_hook(const char *newval, void *extra)
 	}
 	else
 	{
-#ifndef WIN32
 		const char *tmpdir = getenv("TMPDIR");
 
 		if (!tmpdir)
 			tmpdir = "/tmp";
-#else
-		char		tmpdir[MAXPGPATH];
-		int			ret;
-
-		ret = GetTempPath(MAXPGPATH, tmpdir);
-		if (ret == 0 || ret > MAXPGPATH)
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("could not locate temporary directory: %s\n",
-							!ret ? strerror(errno) : "")));
-			return false;
-		}
-#endif
 
 		spock_temp_directory = strdup(tmpdir);
-
 	}
 
 	if (spock_temp_directory == NULL)

@@ -234,7 +234,6 @@ BTVacuumPostingData
 BTWriteState
 BUF_MEM
 BYTE
-BY_HANDLE_FILE_INFORMATION
 BackendParameters
 BackendStartupData
 BackendState
@@ -605,7 +604,6 @@ DR_transientrel
 DSMREntryType
 DSMRegistryCtxStruct
 DSMRegistryEntry
-DWORD
 DataDirSyncMethod
 DataDumperPtr
 DataPageDeleteStack
@@ -1137,7 +1135,6 @@ GucStackState
 GucStringAssignHook
 GucStringCheckHook
 GzipCompressorState
-HANDLE
 HASHACTION
 HASHBUCKET
 HASHCTL
@@ -1525,7 +1522,6 @@ LPSERVICE_STATUS
 LPSTR
 LPTHREAD_START_ROUTINE
 LPTSTR
-LPVOID
 LPWSTR
 LSEG
 LUID
@@ -2620,7 +2616,6 @@ RunMode
 RunningTransactions
 RunningTransactionsData
 SASLStatus
-SC_HANDLE
 SECURITY_ATTRIBUTES
 SECURITY_STATUS
 SEG
@@ -2628,7 +2623,6 @@ SERIALIZABLEXACT
 SERIALIZABLEXID
 SERIALIZABLEXIDTAG
 SERVICE_STATUS
-SERVICE_STATUS_HANDLE
 SERVICE_TABLE_ENTRY
 SID_AND_ATTRIBUTES
 SID_IDENTIFIER_AUTHORITY
@@ -4245,7 +4239,6 @@ walrcv_server_version_fn
 walrcv_startstreaming_fn
 wchar2mb_with_len_converter
 wchar_t
-win32_deadchild_waitinfo
 wint_t
 worker_state
 worktable
