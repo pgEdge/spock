@@ -685,6 +685,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 					  Oid conflict_idx_oid)
 {
 	char		local_tup_ts_str[MAXDATELEN] = "(unset)";
+	char		local_origin_str[32];
 	StringInfoData localtup,
 				remotetup;
 	TupleDesc	desc = RelationGetDescr(rel->rel);
@@ -720,10 +721,16 @@ spock_report_conflict(SpockConflictType conflict_type,
 							 conflict_idx_oid);
 
 	memset(local_tup_ts_str, 0, MAXDATELEN);
+	strlcpy(local_origin_str, "unknown", sizeof(local_origin_str));
 	if (found_local_origin)
+	{
 		strlcpy(local_tup_ts_str,
 			   timestamptz_to_str(local_tuple_commit_ts),
 			   MAXDATELEN);
+		if (local_tuple_origin != InvalidRepOriginId)
+			snprintf(local_origin_str, sizeof(local_origin_str), "%u",
+					 (unsigned int) local_tuple_origin);
+	}
 
 	initStringInfo(&remotetup);
 	tuple_to_stringinfo(&remotetup, desc, remotetuple);
@@ -762,9 +769,9 @@ spock_report_conflict(SpockConflictType conflict_type,
 							conflict_type == CONFLICT_INSERT_EXISTS ? "INSERT EXISTS" : "UPDATE",
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
-					 errdetail("existing local tuple {%s} xid=%u,origin=%d,timestamp=%s; remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
+					 errdetail("existing local tuple {%s} xid=%u,origin=%s,timestamp=%s; remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
 							   localtup.data, local_tuple_xid,
-							   found_local_origin ? (int) local_tuple_origin : -1,
+							   local_origin_str,
 							   local_tup_ts_str,
 							   remotetup.data,
 							   replorigin_session_origin,
@@ -878,7 +885,10 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 	/* conflict_resolution */
 	values[6] = CStringGetTextDatum(conflict_resolution_to_string(resolution));
 	/* local_origin */
-	values[7] = Int32GetDatum(found_local_origin ? (int) local_tuple_origin : -1);
+	if (found_local_origin && local_tuple_origin != InvalidRepOriginId)
+		values[7] = Int32GetDatum((int) local_tuple_origin);
+	else
+		nulls[7] = true;
 
 	/* local_tuple */
 	if (localtuple != NULL)
@@ -886,7 +896,7 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 		Datum		datum;
 
 		datum = heap_copy_tuple_as_datum(localtuple, desc);
-		values[8] = spock_conflict_row_to_json(datum, false, &nulls[7]);
+		values[8] = spock_conflict_row_to_json(datum, false, &nulls[8]);
 	}
 	else
 		nulls[8] = true;
@@ -913,7 +923,7 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 		Datum		datum;
 
 		datum = heap_copy_tuple_as_datum(remotetuple, desc);
-		values[12] = spock_conflict_row_to_json(datum, false, &nulls[11]);
+		values[12] = spock_conflict_row_to_json(datum, false, &nulls[12]);
 	}
 	else
 		nulls[12] = true;
