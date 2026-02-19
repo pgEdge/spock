@@ -50,8 +50,14 @@ all: spock.control
 # -----------------------------------------------------------------------------
 # Regression tests
 # -----------------------------------------------------------------------------
+# PG18+ only tests
+REGRESS_PG18 =
+ifeq ($(shell test $(PGVER) -ge 18 && echo yes),yes)
+REGRESS_PG18 = conflict_stat
+endif
+
 REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
-		  excluded_schema	\
+		  excluded_schema $(REGRESS_PG18) \
 		  toasted replication_set matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay \
