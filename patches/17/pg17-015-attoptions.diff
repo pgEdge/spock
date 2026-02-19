@@ -1,5 +1,5 @@
 diff --git a/src/backend/access/common/reloptions.c b/src/backend/access/common/reloptions.c
-index d6eb5d85599..4ef2e55cc44 100644
+index c6a2d13be8d..8e93a084ad6 100644
 --- a/src/backend/access/common/reloptions.c
 +++ b/src/backend/access/common/reloptions.c
 @@ -166,6 +166,15 @@ static relopt_bool boolRelOpts[] =
@@ -38,7 +38,7 @@ index d6eb5d85599..4ef2e55cc44 100644
  	/* list terminator */
  	{{NULL}}
  };
-@@ -2070,7 +2092,9 @@ attribute_reloptions(Datum reloptions, bool validate)
+@@ -2079,7 +2101,9 @@ attribute_reloptions(Datum reloptions, bool validate)
  {
  	static const relopt_parse_elt tab[] = {
  		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
@@ -50,10 +50,10 @@ index d6eb5d85599..4ef2e55cc44 100644
  
  	return (bytea *) build_reloptions(reloptions, validate,
 diff --git a/src/backend/access/heap/heapam.c b/src/backend/access/heap/heapam.c
-index 95e3be524a7..708d55b2618 100644
+index 1bacea4360e..20f60178c72 100644
 --- a/src/backend/access/heap/heapam.c
 +++ b/src/backend/access/heap/heapam.c
-@@ -64,6 +64,7 @@
+@@ -65,6 +65,7 @@
  #include "storage/predicate.h"
  #include "storage/procarray.h"
  #include "storage/standby.h"
@@ -61,7 +61,7 @@ index 95e3be524a7..708d55b2618 100644
  #include "utils/datum.h"
  #include "utils/injection_point.h"
  #include "utils/inval.h"
-@@ -85,6 +86,7 @@ static void check_lock_if_inplace_updateable_rel(Relation relation,
+@@ -86,6 +87,7 @@ static void check_lock_if_inplace_updateable_rel(Relation relation,
  												 HeapTuple newtup);
  static void check_inplace_rel_lock(HeapTuple oldtup);
  #endif
@@ -69,7 +69,7 @@ index 95e3be524a7..708d55b2618 100644
  static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
  										   Bitmapset *interesting_cols,
  										   Bitmapset *external_cols,
-@@ -121,6 +123,7 @@ static void index_delete_sort(TM_IndexDeleteOp *delstate);
+@@ -125,6 +127,7 @@ static void index_delete_sort(TM_IndexDeleteOp *delstate);
  static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
  static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
  static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
@@ -77,7 +77,7 @@ index 95e3be524a7..708d55b2618 100644
  										bool *copy);
  
  
-@@ -2938,7 +2941,7 @@ l1:
+@@ -2980,7 +2983,7 @@ l1:
  	 * Compute replica identity tuple before entering the critical section so
  	 * we don't PANIC upon a memory allocation failure.
  	 */
@@ -86,7 +86,7 @@ index 95e3be524a7..708d55b2618 100644
  
  	/*
  	 * If this is the first possibly-multixact-able operation in the current
-@@ -3171,6 +3174,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
+@@ -3213,6 +3216,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
  	Bitmapset  *id_attrs;
  	Bitmapset  *interesting_attrs;
  	Bitmapset  *modified_attrs;
@@ -94,15 +94,19 @@ index 95e3be524a7..708d55b2618 100644
  	ItemId		lp;
  	HeapTupleData oldtup;
  	HeapTuple	heaptup;
-@@ -3338,6 +3342,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
- 	modified_attrs = HeapDetermineColumnsInfo(relation, interesting_attrs,
+@@ -3383,6 +3387,11 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
  											  id_attrs, &oldtup,
  											  newtup, &id_has_external);
-+	logged_old_attrs = HeapDetermineLogOldColumns(relation);
  
++	if (!IsCatalogRelationOid(relation->rd_id))
++		logged_old_attrs = HeapDetermineLogOldColumns(relation);
++	else
++		logged_old_attrs = NULL;	/* No need to log old values for catalog tables */
++
  	/*
  	 * If we're not updating any "key" column, we can grab a weaker lock type.
-@@ -3612,6 +3617,7 @@ l2:
+ 	 * This allows for more concurrency when we are running simultaneously
+@@ -3656,6 +3665,7 @@ l2:
  		bms_free(key_attrs);
  		bms_free(id_attrs);
  		bms_free(modified_attrs);
@@ -110,7 +114,7 @@ index 95e3be524a7..708d55b2618 100644
  		bms_free(interesting_attrs);
  		return result;
  	}
-@@ -3961,6 +3967,7 @@ l2:
+@@ -4005,6 +4015,7 @@ l2:
  	old_key_tuple = ExtractReplicaIdentity(relation, &oldtup,
  										   bms_overlap(modified_attrs, id_attrs) ||
  										   id_has_external,
@@ -118,7 +122,7 @@ index 95e3be524a7..708d55b2618 100644
  										   &old_key_copied);
  
  	/* NO EREPORT(ERROR) from here till changes are logged */
-@@ -4127,6 +4134,7 @@ l2:
+@@ -4171,6 +4182,7 @@ l2:
  	bms_free(key_attrs);
  	bms_free(id_attrs);
  	bms_free(modified_attrs);
@@ -126,7 +130,7 @@ index 95e3be524a7..708d55b2618 100644
  	bms_free(interesting_attrs);
  
  	return TM_Ok;
-@@ -4299,6 +4307,26 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
+@@ -4343,6 +4355,26 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
  	}
  }
  
@@ -153,7 +157,7 @@ index 95e3be524a7..708d55b2618 100644
  /*
   * Check which columns are being updated.
   *
-@@ -9076,6 +9104,7 @@ log_heap_new_cid(Relation relation, HeapTuple tup)
+@@ -9207,6 +9239,7 @@ log_heap_new_cid(Relation relation, HeapTuple tup)
   */
  static HeapTuple
  ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
@@ -161,7 +165,7 @@ index 95e3be524a7..708d55b2618 100644
  					   bool *copy)
  {
  	TupleDesc	desc = RelationGetDescr(relation);
-@@ -9108,13 +9137,16 @@ ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
+@@ -9239,13 +9272,16 @@ ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
  	}
  
  	/* if the key isn't required and we're only logging the key, we're done */
