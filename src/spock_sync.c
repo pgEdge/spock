@@ -58,7 +58,9 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
+#if PG_VERSION_NUM >= 170000
 #include "utils/injection_point.h"
+#endif
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
@@ -1209,7 +1211,11 @@ spock_sync_subscription(SpockSubscription *sub)
 													sub->slot_name,
 													use_failover_slot, &lsn);
 
-		INJECTION_POINT("spock-before-replication-slot-snapshot", "wait");
+#if PG_VERSION_NUM >= 180000
+		INJECTION_POINT("spock-before-sync-progress-read", "wait");
+#elif PG_VERSION_NUM >= 170000
+		INJECTION_POINT("spock-before-sync-progress-read");
+#endif
 
 		/*
 		 * Read progress info using the same snapshot that will be used for

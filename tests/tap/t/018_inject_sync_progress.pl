@@ -21,7 +21,7 @@ if ($configure_options !~ /enable-injection-points/) {
 	plan skip_all => 'Injection points not supported by this build';
 }
 
-plan tests => 5;
+plan tests => 14;
 
 create_cluster(3, 'Create initial 3-node Spock test cluster');
 
@@ -56,7 +56,7 @@ psql_or_bail(3, "SELECT spock.sub_create(subscription_name := 'n2_n3',
 psql_or_bail(2, "SELECT 1 FROM pg_create_logical_replication_slot(
 									'spk_${dbname}_n2_n2_n3', 'spock_output')");
 psql_or_bail(3, "SELECT injection_points_attach(
-							'spock-before-replication-slot-snapshot', 'wait')");
+							'spock-before-sync-progress-read', 'wait')");
 psql_or_bail(3, "SELECT spock.sub_create(subscription_name := 'n1_n3',
   provider_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
   synchronize_structure := true, synchronize_data := true, enabled := true);");
@@ -74,8 +74,8 @@ psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 600
 print STDERR "---> LSN2: $lsn2\n";
 
 # Wake up N1 -> N3 subscription and wait until it becomes ready
-psql_or_bail(3, "SELECT injection_points_wakeup('spock-before-replication-slot-snapshot');");
-psql_or_bail(3, "SELECT injection_points_detach('spock-before-replication-slot-snapshot');");
+psql_or_bail(3, "SELECT injection_points_wakeup('spock-before-sync-progress-read');");
+psql_or_bail(3, "SELECT injection_points_detach('spock-before-sync-progress-read');");
 psql_or_bail(1, "SELECT spock.wait_slot_confirm_lsn(NULL, NULL)");
 $lsn1 = scalar_query(1, "SELECT spock.sync_event()");
 psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 600)");
