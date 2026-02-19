@@ -89,7 +89,7 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 \c :subscriber_dsn
 SELECT * FROM basic_conflict ORDER BY id;
 
--- We should now see a conflict
+-- Origin changes are no longer saved to resolutions
 SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
 
 -- Clean

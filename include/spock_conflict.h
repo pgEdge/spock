@@ -52,6 +52,17 @@ typedef enum SpockConflictType
 	CONFLICT_DELETE_DELETE
 } SpockConflictType;
 
+typedef enum
+{
+	/* do not log */
+	SPOCK_ORIGIN_NONE,
+	/* log if remote change (ignore local origin, independent of time */
+	SPOCK_ORIGIN_REMOTE_ONLY_DIFFERS,
+	/* log only if origin changed since start of subscription */
+	SPOCK_ORIGIN_DIFFERS_SINCE_SUB
+} SpockSaveOriginConflictOption;
+
+
 extern bool spock_tuple_find_replidx(ResultRelInfo *relinfo,
 										 SpockTupleData *tuple,
 										 TupleTableSlot *oldslot,

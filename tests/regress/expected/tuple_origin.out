@@ -144,12 +144,11 @@ SELECT * FROM basic_conflict ORDER BY id;
   2 | B
 (2 rows)
 
--- We should now see a conflict
+-- Origin changes are no longer saved to resolutions
 SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
-        relname        | conflict_type 
------------------------+---------------
- public.basic_conflict | update_update
-(1 row)
+ relname | conflict_type 
+---------+---------------
+(0 rows)
 
 -- Clean
 TRUNCATE spock.resolutions;
