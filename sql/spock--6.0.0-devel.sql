@@ -712,6 +712,29 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- ----
+-- Subscription conflict statistics
+-- ----
+CREATE FUNCTION spock.get_subscription_stats(
+	subid                           oid,
+	OUT subid                       oid,
+	OUT confl_insert_exists         bigint,
+	OUT confl_update_origin_differs bigint,
+	OUT confl_update_exists         bigint,
+	OUT confl_update_missing        bigint,
+	OUT confl_delete_origin_differs bigint,
+	OUT confl_delete_missing        bigint,
+	OUT stats_reset                 timestamptz
+)
+RETURNS record
+AS 'MODULE_PATHNAME', 'spock_get_subscription_stats'
+LANGUAGE C STABLE;
+
+CREATE FUNCTION spock.reset_subscription_stats(subid oid DEFAULT NULL)
+RETURNS void
+AS 'MODULE_PATHNAME', 'spock_reset_subscription_stats'
+LANGUAGE C CALLED ON NULL INPUT VOLATILE;
+
 -- Set delta_apply security label on specific column
 CREATE FUNCTION spock.delta_apply(
   rel      regclass,

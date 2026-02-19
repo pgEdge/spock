@@ -53,6 +53,9 @@
 #include "pgstat.h"
 
 #include "spock_apply.h"
+#if PG_VERSION_NUM >= 180000
+#include "spock_conflict_stat.h"
+#endif
 #include "spock_executor.h"
 #include "spock_node.h"
 #include "spock_conflict.h"
@@ -1224,4 +1227,9 @@ _PG_init(void)
 
 	/* Security label provider hook */
 	register_label_provider(SPOCK_SECLABEL_PROVIDER, spock_object_relabel);
+
+#if PG_VERSION_NUM >= 180000
+	/* Spock replication conflict statistics */
+	spock_stat_register_conflict_stat();
+#endif
 }
