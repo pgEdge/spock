@@ -80,6 +80,26 @@ extern int spock_conflict_resolver;
 extern int spock_conflict_log_level;
 extern bool	spock_save_resolutions;
 
+typedef enum
+{
+	/* do not log */
+	SPOCK_ORIGIN_NONE,
+	/* log if remote change (ignore local origin, independent of time */
+	SPOCK_ORIGIN_REMOTE_ONLY_DIFFERS,
+	/* log only if origin changed since start of subscription */
+	SPOCK_ORIGIN_DIFFERS_SINCE_SUB
+} SpockSaveOriginConflictOption;
+
+
+extern bool spock_tuple_find_replidx(ResultRelInfo *relinfo,
+										 SpockTupleData *tuple,
+										 TupleTableSlot *oldslot,
+										 Oid *idxrelid);
+
+extern Oid spock_tuple_find_conflict(ResultRelInfo *relinfo,
+										 SpockTupleData *tuple,
+										 TupleTableSlot *oldslot);
+
 extern bool get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple,
 							 ItemPointer tid, TransactionId *xmin,
 							 RepOriginId *local_origin, TimestampTz *local_ts);

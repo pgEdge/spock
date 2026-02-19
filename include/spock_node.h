@@ -57,6 +57,7 @@ typedef struct SpockSubscription
 	XLogRecPtr	skiplsn;		/* All changes finished at this LSN are
 								 * skipped */
 	List	   *skip_schema;	/* Array of schema names to skip */
+	TimestampTz	created_at;	/* When this subscription was created */
 } SpockSubscription;
 
 /* NULL-terminated arrays */
