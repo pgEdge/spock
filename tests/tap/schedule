@@ -17,6 +17,8 @@ test: 009_zodan_add_remove_nodes
 test: 010_zodan_add_remove_python
 test: 012_zodan_basics
 
+test: 013_origin_change_restore
+
 # Tests, consuming too much time to be launched on each check:
 #test: 011_zodan_sync_third
 #

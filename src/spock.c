@@ -81,6 +81,13 @@ static const struct config_enum_entry SpockConflictResolvers[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry SpockOriginConflicts[] = {
+	{"none", SPOCK_ORIGIN_NONE, false},
+	{"remote_only_differs", SPOCK_ORIGIN_REMOTE_ONLY_DIFFERS, false},
+	{"since_sub_creation", SPOCK_ORIGIN_DIFFERS_SINCE_SUB, false},
+	{NULL, 0, false}
+};
+
 /* copied fom guc.c */
 static const struct config_enum_entry server_message_level_options[] = {
 	{"debug", DEBUG2, true},
@@ -135,6 +142,7 @@ int			restart_delay_on_exception;
 int			spock_replay_queue_size;	/* Deprecated - no longer used */
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
+int			log_origin_change = SPOCK_ORIGIN_NONE;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
 static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
@@ -1184,6 +1192,15 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
+
+	DefineCustomEnumVariable("spock.log_origin_change",
+							gettext_noop("If set, log when the origin of a tuple changes."),
+							NULL,
+							&log_origin_change,
+							SPOCK_ORIGIN_NONE,
+							SpockOriginConflicts,
+							PGC_SUSET, 0,
+							NULL, NULL, NULL);
 
 	if (IsBinaryUpgrade)
 		return;

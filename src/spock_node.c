@@ -95,7 +95,7 @@ typedef struct SubscriptionTuple
 	NameData	sub_slot_name;
 } SubscriptionTuple;
 
-#define Natts_subscription			14
+#define Natts_subscription			15
 #define Anum_sub_id					1
 #define Anum_sub_name				2
 #define Anum_sub_origin				3
@@ -110,6 +110,7 @@ typedef struct SubscriptionTuple
 #define Anum_sub_force_text_transfer 12
 #define Anum_sub_skip_lsn			13
 #define Anum_sub_skip_schema		14
+#define Anum_sub_created_at			15
 
 /*
  * List of extensions and schemas that we should skip globally.
@@ -905,6 +906,8 @@ create_subscription(SpockSubscription *sub)
 	else
 		nulls[Anum_sub_skip_schema - 1] = true;
 
+	values[Anum_sub_created_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
+
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
 	/* Insert the tuple to the catalog. */
@@ -968,6 +971,7 @@ alter_subscription(SpockSubscription *sub)
 
 	replaces[Anum_sub_id - 1] = false;
 	replaces[Anum_sub_name - 1] = false;
+	replaces[Anum_sub_created_at - 1] = false;
 
 	values[Anum_sub_origin - 1] = ObjectIdGetDatum(sub->origin_if->nodeid);
 	values[Anum_sub_target - 1] = ObjectIdGetDatum(sub->target_if->nodeid);
@@ -1132,6 +1136,13 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		skip_schema_names = textarray_to_list(DatumGetArrayTypeP(d));
 		sub->skip_schema = skip_schema_names;
 	}
+
+	/* Get created_at. */
+	d = heap_getattr(tuple, Anum_sub_created_at, desc, &isnull);
+	if (isnull)
+		sub->created_at = 0;
+	else
+		sub->created_at = DatumGetTimestampTz(d);
 
 	return sub;
 }
