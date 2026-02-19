@@ -21,7 +21,7 @@ if ($configure_options !~ /enable-injection-points/) {
 	plan skip_all => 'Injection points not supported by this build';
 }
 
-plan tests => 14;
+plan tests => 15;
 
 create_cluster(3, 'Create initial 3-node Spock test cluster');
 
@@ -61,7 +61,17 @@ psql_or_bail(3, "SELECT spock.sub_create(subscription_name := 'n1_n3',
   provider_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
   synchronize_structure := true, synchronize_data := true, enabled := true);");
 
-sleep 10;
+# Wait until the sync worker on N3 has reached the injection point (poll
+# pg_stat_activity for the InjectionPoint wait event), with up to 60s timeout.
+my $waited = 0;
+while ($waited < 60) {
+	my $hit = scalar_query(3,
+		"SELECT 1 FROM pg_stat_activity WHERE wait_event = 'InjectionPoint' AND datname = current_database()");
+	last if ($hit eq '1');
+	sleep 1;
+	$waited++;
+}
+ok($waited < 60, "Sync worker reached injection point within 60s");
 
 # While N3 is paused at the injection point (after snapshot, before progress
 # read), update data on N2. This will be replicated to N1 and included in the
@@ -105,3 +115,5 @@ $ret3 = scalar_query(3, "SELECT count(*) FROM spock.subscription WHERE sub_enabl
 ok($ret1 eq '0', "All subscriptions on the node N1 are active");
 ok($ret2 eq '0', "All subscriptions on the node N2 are active");
 ok($ret3 eq '0', "All subscriptions on the node N3 are active");
+
+destroy_cluster('Destroy 3-node cluster');
