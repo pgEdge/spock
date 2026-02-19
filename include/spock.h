@@ -24,8 +24,8 @@
 #include "spock_fe.h"
 #include "spock_node.h"
 
-#define SPOCK_VERSION "5.0.5"
-#define SPOCK_VERSION_NUM 50005
+#define SPOCK_VERSION "5.0.6"
+#define SPOCK_VERSION_NUM 50006
 
 #define EXTENSION_NAME "spock"
 
@@ -53,6 +53,8 @@ extern int	restart_delay_default;
 extern int	restart_delay_on_exception;
 extern int	spock_replay_queue_size;
 extern bool check_all_uc_indexes;
+extern int	log_origin_change;
+
 extern char *shorten_hash(const char *str, int maxlen);
 
 extern List *textarray_to_list(ArrayType *textarray);

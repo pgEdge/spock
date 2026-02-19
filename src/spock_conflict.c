@@ -691,6 +691,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 	TupleDesc	desc = RelationGetDescr(rel->rel);
 	const char *idxname = "(unknown)";
 	const char *qualrelname;
+	bool		save_in_resolutions = true;
 
 
 	/* Ignore update-update conflict for same origin */
@@ -698,27 +699,70 @@ spock_report_conflict(SpockConflictType conflict_type,
 	{
 		/*
 		 * If updating a row that came from the same origin,
-		 * do not report it as a conflict
+		 * do not report it as a conflict nor log
 		 */
 		if (local_tuple_origin == replorigin_session_origin)
 			return;
 
-		/* If updated in the same transaction, do not report it as a conflict */
+		/* If updated in the same transaction, do not report it as a conflict nor log */
 		if (local_tuple_origin == InvalidRepOriginId &&
-				TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
+			TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
 			return;
+
+		if (applytuple == remotetuple)
+		{
+			/*
+			 * Normal flow. Do not write to spock.resolutions, but possibly write to log
+			 * TODO: revisit when adding custom handling
+			 */
+			save_in_resolutions = false;
+
+			if (!found_local_origin)
+				return;
+
+			else if (log_origin_change == SPOCK_ORIGIN_NONE)
+				return;
+
+
+			else if (log_origin_change == SPOCK_ORIGIN_REMOTE_ONLY_DIFFERS &&
+				local_tuple_origin == InvalidRepOriginId)
+				return;
+
+			else if (log_origin_change == SPOCK_ORIGIN_DIFFERS_SINCE_SUB)
+			{
+				/* Do not log if we do not have a creation timestamp */
+				if (!MySubscription || MySubscription->created_at == 0)
+					return;
+
+				/* If we could not determine the timestamp, do not log */
+				else if (local_tuple_commit_ts == 0)
+					return;
+
+				/*
+				 * If the local tuple predates the subscription, it was
+				 * loaded before replication was set up (e.g. pg_restore).
+				 * Do not treat this as an origin-change conflict.
+				 */
+				else if (local_tuple_commit_ts < MySubscription->created_at)
+					return;
+			}
+		}
 	}
 
-	/* Count statistics */
-	handle_stats_counter(rel->rel, MyApplyWorker->subid,
-						 SPOCK_STATS_CONFLICT_COUNT, 1);
 
-	/* If configured log resolution to table */
-	spock_conflict_log_table(conflict_type, rel, localtuple, oldkey,
+	if (save_in_resolutions)
+	{
+		/* Count statistics */
+		handle_stats_counter(rel->rel, MyApplyWorker->subid,
+							 SPOCK_STATS_CONFLICT_COUNT, 1);
+
+		/* If configured log resolution to table */
+		spock_conflict_log_table(conflict_type, rel, localtuple, oldkey,
 							 remotetuple, applytuple, resolution,
 							 local_tuple_xid, found_local_origin,
 							 local_tuple_origin, local_tuple_commit_ts,
 							 conflict_idx_oid);
+	}
 
 	memset(local_tup_ts_str, 0, MAXDATELEN);
 	strlcpy(local_origin_str, "unknown", sizeof(local_origin_str));
@@ -910,9 +954,9 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 	/* local_timestamp */
    /* local_timestamp. If 0, it is a missing local tuple, so use NULL */
 	if (local_tuple_commit_ts == 0)
-       nulls[10] = true;
+	   nulls[10] = true;
 	else
-       values[10] = TimestampTzGetDatum(local_tuple_commit_ts);
+	   values[10] = TimestampTzGetDatum(local_tuple_commit_ts);
 
 	/* remote_origin */
 	values[11] = Int32GetDatum((int) replorigin_session_origin);
