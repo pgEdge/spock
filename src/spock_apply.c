@@ -134,6 +134,10 @@ static RepOriginId remote_origin_id = InvalidRepOriginId;
 static TimeOffset apply_delay = 0;
 static TimestampTz required_commit_ts = 0;
 
+/* Deferred spock.progress catalog write state */
+static bool        progress_dirty = false;
+static TimestampTz progress_last_flush_ts = 0;
+
 static Oid	QueueRelid = InvalidOid;
 
 static List *SyncingTables = NIL;
@@ -293,6 +297,7 @@ static void update_progress_entry(Oid target_node_id,
 								bool updated_by_decode);
 static void check_and_update_progress(XLogRecPtr last_received_lsn,
 								TimestampTz timestamp);
+static void flush_progress_if_needed(bool force);
 
 static ApplyReplayEntry *apply_replay_entry_create(int r, char *buf);
 static void apply_replay_entry_free(ApplyReplayEntry *entry);
@@ -969,7 +974,6 @@ handle_commit(StringInfo s)
 	XLogRecPtr	end_lsn;
 	XLogRecPtr	remote_insert_lsn;
 	TimestampTz commit_time;
-	MemoryContext oldctx;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
@@ -1142,33 +1146,21 @@ handle_commit(StringInfo s)
 	}
 #endif
 
-	/* Update the entry in the progress table. */
-	elog(DEBUG1, "SPOCK %s: updating progress table for node_id %d" \
+	/* Update the value in shared memory */
+	MyApplyWorker->apply_group->prev_remote_ts = replorigin_session_origin_timestamp;
+	MyApplyWorker->apply_group->remote_lsn = replorigin_session_origin_lsn;
+	MyApplyWorker->apply_group->remote_insert_lsn = remote_insert_lsn;
+
+	/* Mark catalog as needing a flush (deferred to main loop) */
+	progress_dirty = true;
+
+	elog(DEBUG1, "SPOCK %s: updating progress for node_id %d" \
 				" and remote node id %d with remote commit ts"  \
 				" to " INT64_FORMAT,
 				MySubscription->name,
 				MySubscription->target->id,
 				MySubscription->origin->id,
 				replorigin_session_origin_timestamp);
-
-	oldctx = CurrentMemoryContext;
-	StartTransactionCommand();
-
-	update_progress_entry(MySubscription->target->id,
-						MySubscription->origin->id,
-						replorigin_session_origin_timestamp,
-						replorigin_session_origin_lsn,
-						remote_insert_lsn,
-						replorigin_session_origin_timestamp,
-						true);
-
-	CommitTransactionCommand();
-	MemoryContextSwitchTo(oldctx);
-
-	/* Update the value in shared memory */
-	MyApplyWorker->apply_group->prev_remote_ts = replorigin_session_origin_timestamp;
-	MyApplyWorker->apply_group->remote_lsn = replorigin_session_origin_lsn;
-	MyApplyWorker->apply_group->remote_insert_lsn = remote_insert_lsn;
 
 	/* Wakeup all waiters for waiting for the previous transaction to commit */
 	awake_transaction_waiters();
@@ -1223,6 +1215,9 @@ handle_commit(StringInfo s)
 		 */
 		if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
 			spock_sync_worker_finish();
+
+		/* Flush any pending progress before exiting */
+		flush_progress_if_needed(true);
 
 		/* Stop gracefully */
 		proc_exit(0);
@@ -2936,6 +2931,10 @@ stream_replay:
 
 			Assert(CurrentMemoryContext == MessageContext);
 
+			/* Periodically flush deferred progress catalog updates */
+			if (!in_remote_transaction)
+				flush_progress_if_needed(false);
+
 			for (;;)
 			{
 				ApplyReplayEntry   *entry;
@@ -4044,7 +4043,6 @@ static void
 check_and_update_progress(XLogRecPtr last_received_lsn,
 						  TimestampTz timestamp)
 {
-    MemoryContext	 oldctx;
 	bool			 update_needed = false;
 
 	if (last_received_lsn > MyApplyWorker->apply_group->remote_insert_lsn)
@@ -4063,25 +4061,49 @@ check_and_update_progress(XLogRecPtr last_received_lsn,
 	if (timestamp > MyApplyWorker->apply_group->prev_remote_ts)
 		update_needed = true;
 
-    if (update_needed)
-    {
-        /* Perform the progress update */
-        oldctx = CurrentMemoryContext;
-        StartTransactionCommand();
-
-		/* Update in shared memory and in the table */
+	if (update_needed)
+	{
 		MyApplyWorker->apply_group->remote_insert_lsn = last_received_lsn;
-        update_progress_entry(MySubscription->target->id,
-                              MySubscription->origin->id,
-                              0,					/* do not update */
-                              InvalidXLogRecPtr,	/* do not update */
-							  last_received_lsn,
-							  timestamp,
-							  false);
+		progress_dirty = true;
+	}
+}
 
-        CommitTransactionCommand();
-        MemoryContextSwitchTo(oldctx);
-    }
+/*
+ * Flush deferred spock.progress catalog update if progress_dirty is set.
+ * Unless force is true, the write is skipped if less than 1 second has
+ * elapsed since the last flush.
+ */
+static void
+flush_progress_if_needed(bool force)
+{
+	MemoryContext oldctx;
+	TimestampTz  now;
+
+	if (!progress_dirty)
+		return;
+
+	now = GetCurrentTimestamp();
+	if (!force &&
+		progress_last_flush_ts != 0 &&
+		now < TimestampTzPlusMilliseconds(progress_last_flush_ts, 1000))
+		return;
+
+	oldctx = CurrentMemoryContext;
+	StartTransactionCommand();
+
+	update_progress_entry(MySubscription->target->id,
+						  MySubscription->origin->id,
+						  MyApplyWorker->apply_group->prev_remote_ts,
+						  MyApplyWorker->apply_group->remote_lsn,
+						  MyApplyWorker->apply_group->remote_insert_lsn,
+						  now,
+						  false);
+
+	CommitTransactionCommand();
+	MemoryContextSwitchTo(oldctx);
+
+	progress_dirty = false;
+	progress_last_flush_ts = now;
 }
 
 void
@@ -4216,6 +4238,9 @@ spock_apply_main(Datum main_arg)
 	apply_work(streamConn);
 
 	PQfinish(streamConn);
+
+	/* Flush any pending progress before exiting */
+	flush_progress_if_needed(true);
 
 	/* We should only get here if we received sigTERM */
 	proc_exit(0);
