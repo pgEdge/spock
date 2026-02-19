@@ -1226,18 +1226,34 @@ spock_sync_subscription(SpockSubscription *sub)
 		 * the snapshot creation, causing the new node to either miss data
 		 * or re-apply already-copied rows.
 		 */
-		start_copy_origin_tx(origin_conn, snapshot);
-		progress_entries_list = adjust_progress_info(origin_conn);
 		{
-			PGresult   *res = PQexec(origin_conn, "ROLLBACK");
+			PGresult   *res;
+			PGresult   *rollback_res;
 
-			if (PQresultStatus(res) != PGRES_COMMAND_OK)
-				elog(WARNING, "ROLLBACK on origin node failed: %s",
-					 PQresultErrorMessage(res));
-			PQclear(res);
+			PG_TRY();
+			{
+				start_copy_origin_tx(origin_conn, snapshot);
+				progress_entries_list = adjust_progress_info(origin_conn);
+				res = PQexec(origin_conn, "ROLLBACK");
+				if (PQresultStatus(res) != PGRES_COMMAND_OK)
+					elog(WARNING, "ROLLBACK on origin node failed: %s",
+						 PQresultErrorMessage(res));
+				PQclear(res);
+			}
+			PG_CATCH();
+			{
+				rollback_res = PQexec(origin_conn, "ROLLBACK");
+				if (PQresultStatus(rollback_res) != PGRES_COMMAND_OK)
+					elog(WARNING, "ROLLBACK on origin node failed: %s",
+						 PQresultErrorMessage(rollback_res));
+				PQclear(rollback_res);
+				PQfinish(origin_conn);
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+
+			PQfinish(origin_conn);
 		}
-
-		PQfinish(origin_conn);
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
