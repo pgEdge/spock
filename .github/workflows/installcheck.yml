@@ -53,6 +53,7 @@ jobs:
           version: latest
 
       - name: Start docker cluster
+        id: start_cluster
         run: |
           cd ${GITHUB_WORKSPACE}/tests/docker/
           # To minimize regression tests difference, override pgedge.env with
@@ -63,6 +64,22 @@ jobs:
           PGVER=${{ matrix.pgver }} DBUSER=regression DBNAME=regression \
             docker compose up --build --wait -d
         timeout-minutes: 20
+        continue-on-error: true
+
+      - name: Diagnose cluster startup failure
+        if: steps.start_cluster.outcome == 'failure'
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests/docker/
+          echo "=== Docker container status ==="
+          docker compose ps -a
+          for node in n1 n2 n3; do
+            echo ""
+            echo "=== Container logs: $node ==="
+            docker compose logs pgedge-$node 2>&1 | tail -80 || true
+            echo ""
+            echo "=== PostgreSQL logfile: $node ==="
+            docker compose cp pgedge-$node:/home/pgedge/logfile.log /dev/stdout 2>/dev/null | tail -80 || echo "(not available)"
+          done
 
       - name: Run installcheck on node n1
         id: installcheck
