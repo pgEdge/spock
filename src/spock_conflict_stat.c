@@ -16,25 +16,29 @@
  */
 #include "postgres.h"
 
-#if PG_VERSION_NUM >= 180000
-
 #include "funcapi.h"
 #include "utils/pgstat_internal.h"
 
 #include "spock.h"
+
+PG_FUNCTION_INFO_V1(spock_get_subscription_stats);
+PG_FUNCTION_INFO_V1(spock_reset_subscription_stats);
+
+#if PG_VERSION_NUM >= 180000
 #include "spock_conflict_stat.h"
 
 /*
  * Kind ID reserved for statistics of spock replication conflicts.
- * TODO: ask Michael Paquier about exact numbers and conflict detection
+ * TODO: see https://wiki.postgresql.org/wiki/CustomCumulativeStats to choose
+ * specific value in production
  */
-#define SPOCK_PGSTAT_KIND_LRCONFLICTS	27
+#define SPOCK_PGSTAT_KIND_LRCONFLICTS	28
 
 /* Shared memory wrapper for spock subscription conflict stats */
 typedef struct Spock_Stat_Subscription
 {
 	PgStatShared_Common		header;
-	Spock_Stat_StatSubEntry stats;
+	Spock_Stat_StatSubEntry	stats;
 } Spock_Stat_Subscription;
 
 /*
@@ -51,9 +55,6 @@ static const char *const SpockConflictStatColNames[SPOCK_CONFLICT_NUM_TYPES] = {
 	[SPOCK_CT_DELETE_ORIGIN_DIFFERS] = "confl_delete_origin_differs",
 	[SPOCK_CT_DELETE_MISSING] = "confl_delete_missing",
 };
-
-PG_FUNCTION_INFO_V1(spock_get_subscription_stats);
-PG_FUNCTION_INFO_V1(spock_reset_subscription_stats);
 
 static bool spock_stat_subscription_flush_cb(PgStat_EntryRef *entry_ref,
 											 bool nowait);
@@ -95,7 +96,15 @@ spock_stat_report_subscription_conflict(Oid subid, SpockConflictType type)
 	PgStat_EntryRef *entry_ref;
 	Spock_Stat_PendingSubEntry *pending;
 
-	Assert(type >= 0 && type < SPOCK_CONFLICT_NUM_TYPES);
+	if (type != SPOCK_CT_UPDATE_MISSING)
+		/*
+		 * Should happen only in development.  Detect it as fast as possible
+		 * with the highest error level that does not crash the instance.
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("unexpected conflict type %d reported for subscription %u",
+						type, subid)));
 
 	entry_ref = pgstat_prep_pending_entry(SPOCK_PGSTAT_KIND_LRCONFLICTS,
 										  MyDatabaseId, subid, NULL);
@@ -109,13 +118,31 @@ spock_stat_report_subscription_conflict(Oid subid, SpockConflictType type)
 void
 spock_stat_create_subscription(Oid subid)
 {
+	PgStat_EntryRef *ref;
+
 	/* Ensures that stats are dropped if transaction rolls back */
 	pgstat_create_transactional(SPOCK_PGSTAT_KIND_LRCONFLICTS,
 								MyDatabaseId, subid);
 
 	/* Create and initialize the subscription stats entry */
-	pgstat_get_entry_ref(SPOCK_PGSTAT_KIND_LRCONFLICTS, MyDatabaseId, subid,
-						 true, NULL);
+	ref = pgstat_get_entry_ref(SPOCK_PGSTAT_KIND_LRCONFLICTS, MyDatabaseId, subid,
+							   true, NULL);
+
+	if (pg_atomic_read_u32(&ref->shared_entry->refcount) != 2)
+		/*
+		 * Should never happen: a new subscription stats entry should have
+		 * exactly two references (the hashtable entry and our own).  A higher
+		 * count means a stale entry from a previous subscription with the same
+		 * OID was not properly cleaned up.
+		 */
+		ereport(WARNING,
+				(errmsg("conflict statistics entry for subscription %u "
+						"already has %u references",
+						subid,
+						pg_atomic_read_u32(&ref->shared_entry->refcount)),
+				 errhint("This may indicate that a previous subscription with "
+						 "the same OID was not fully dropped.")));
+
 	pgstat_reset_entry(SPOCK_PGSTAT_KIND_LRCONFLICTS, MyDatabaseId, subid, 0);
 }
 
@@ -247,9 +274,36 @@ spock_stat_subscription_flush_cb(PgStat_EntryRef *entry_ref, bool nowait)
 }
 
 static void
-spock_stat_subscription_reset_timestamp_cb(PgStatShared_Common *header, TimestampTz ts)
+spock_stat_subscription_reset_timestamp_cb(PgStatShared_Common *header,
+										   TimestampTz ts)
 {
 	((Spock_Stat_Subscription *) header)->stats.stat_reset_timestamp = ts;
 }
 
 #endif /* PG_VERSION_NUM >= 180000 */
+
+#if PG_VERSION_NUM < 180000
+
+/*
+ * XXX: implement conflict statistics gathering, if needed
+ */
+
+Datum
+spock_get_subscription_stats(PG_FUNCTION_ARGS)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("spock conflict statistics require PostgreSQL 18 or later")));
+	PG_RETURN_NULL(); /* unreachable; suppress compiler warning */
+}
+
+Datum
+spock_reset_subscription_stats(PG_FUNCTION_ARGS)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("spock conflict statistics require PostgreSQL 18 or later")));
+	PG_RETURN_NULL(); /* unreachable; suppress compiler warning */
+}
+
+#endif /* PG_VERSION_NUM < 180000 */

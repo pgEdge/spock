@@ -64,7 +64,9 @@
 
 #include "spock_common.h"
 #include "spock_conflict.h"
+#if PG_VERSION_NUM >= 180000
 #include "spock_conflict_stat.h"
+#endif
 #include "spock_executor.h"
 #include "spock_node.h"
 #include "spock_proto_native.h"
@@ -1071,10 +1073,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 #if PG_VERSION_NUM >= 180000
 		if (!MyApplyWorker->use_try_block)
 			/*
-			 * To avoid duplicated messages complain only in case we are on the
-			 * successful path way. We don't count the conflict if something
-			 * goes wrong already because the update logic is broken yet and
-			 * this conflict may be misleading.
+			 * To avoid duplicate messages, only report the conflict on the
+			 * successful pathway.  We skip counting when the update logic has
+			 * already failed because the conflict would be misleading.
 			 */
 			spock_stat_report_subscription_conflict(MyApplyWorker->subid,
 													SPOCK_CT_UPDATE_MISSING);
