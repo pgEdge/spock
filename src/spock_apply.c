@@ -136,6 +136,7 @@ static TimestampTz required_commit_ts = 0;
 
 /* Deferred spock.progress catalog write state */
 static bool        progress_dirty = false;
+static bool        progress_updated_by_decode = false;
 static TimestampTz progress_last_flush_ts = 0;
 
 static Oid	QueueRelid = InvalidOid;
@@ -1153,6 +1154,7 @@ handle_commit(StringInfo s)
 
 	/* Mark catalog as needing a flush (deferred to main loop) */
 	progress_dirty = true;
+	progress_updated_by_decode = true;
 
 	elog(DEBUG1, "SPOCK %s: updating progress for node_id %d" \
 				" and remote node id %d with remote commit ts"  \
@@ -4097,12 +4099,13 @@ flush_progress_if_needed(bool force)
 						  MyApplyWorker->apply_group->remote_lsn,
 						  MyApplyWorker->apply_group->remote_insert_lsn,
 						  now,
-						  false);
+						  progress_updated_by_decode);
 
 	CommitTransactionCommand();
 	MemoryContextSwitchTo(oldctx);
 
 	progress_dirty = false;
+	progress_updated_by_decode = false;
 	progress_last_flush_ts = now;
 }
 
