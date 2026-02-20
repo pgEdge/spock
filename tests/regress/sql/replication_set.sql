@@ -98,6 +98,10 @@ SELECT spock.replicate_ddl($$
 $$);
 
 \c :subscriber_dsn
+
+-- First time come by to the subscriber node. Clean the history in exception_log
+TRUNCATE spock.exception_log;
+
 SELECT * FROM spock.replication_set;
 
 -- Issue SPOC-102
@@ -203,7 +207,7 @@ SELECT * FROM spoc_102l ORDER BY x;
 
 -- Check exception log format
 SELECT
-  command_counter,table_schema,table_name,operation,
+  table_schema,table_name,operation,
   remote_new_tup,
   -- Replace OIDs with <OID> placeholder for deterministic test output
   regexp_replace(
@@ -212,7 +216,7 @@ SELECT
     'OID \d+', 'OID <OID>', 'g'
   ) AS error_message
 FROM spock.exception_log
-ORDER BY command_counter;
+ORDER BY table_schema COLLATE "C",table_name COLLATE "C",remote_commit_ts;
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g,spoc_102l CASCADE');
@@ -257,7 +261,7 @@ SELECT * FROM spoc_102l_u ORDER BY x;
 SELECT * FROM spoc_102g_u ORDER BY x;
 
 SELECT
-  command_counter,table_schema,table_name,operation,
+  table_schema,table_name,operation,
   remote_new_tup,
   -- Replace OIDs with <OID> placeholder for deterministic test output
   regexp_replace(
@@ -266,7 +270,7 @@ SELECT
     'OID \d+', 'OID <OID>', 'g'
   ) AS error_message
 FROM spock.exception_log
-ORDER BY command_counter;
+ORDER BY table_schema COLLATE "C",table_name COLLATE "C",remote_commit_ts;
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');
