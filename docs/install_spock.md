@@ -136,6 +136,21 @@ CREATE EXTENSION
 postgres=# 
 ```
 
+On each node that will host spock, modify the
+[`pg_hba.conf` file](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html)
+and allow connections between `n1` and `n2`. The following snippet is provided
+as an example only, and is not recommended for a production system as they
+will open your system for connection from any client:
+
+    ```sql
+    host    all          all          <node_1_IP_address>/32    trust
+    host    all          all          <node_2_IP_address>/32    trust
+
+    host    replication  all          <node_1_IP_address>/32    trust
+    host    replication  all          <node_2_IP_address>/32    trust
+
+
+
 ### Creating a Replication Scenario
 
 After configuring the nodes, connect to the psql command line of the first
