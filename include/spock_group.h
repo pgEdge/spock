@@ -66,7 +66,7 @@ typedef struct SpockGroupKey
 /*
  * Columns for the UI routine get_apply_group_progress.
  */
-typedef enum
+typedef enum GroupProgressTupDescColumns
 {
 	GP_DBOID = 0,
 	GP_NODE_ID,
@@ -115,35 +115,35 @@ typedef enum
  */
 typedef struct SpockApplyProgress
 {
-	SpockGroupKey	key;			/* MUST be first field */
+	SpockGroupKey key;			/* MUST be first field */
 
-	TimestampTz			remote_commit_ts;	/* committed remote txn ts */
+	TimestampTz remote_commit_ts;	/* committed remote txn ts */
 
 	/*
 	 * Bit of duplication of remote_commit_ts. Serves the same purpose, except
 	 * keep the last updated value
 	 */
-	TimestampTz			prev_remote_ts;
-	XLogRecPtr			remote_commit_lsn;	/* LSN of remote commit on origin */
-	XLogRecPtr			remote_insert_lsn;	/* origin insert/end LSN reported */
+	TimestampTz prev_remote_ts;
+	XLogRecPtr	remote_commit_lsn;	/* LSN of remote commit on origin */
+	XLogRecPtr	remote_insert_lsn;	/* origin insert/end LSN reported */
 
 	/*
 	 * The largest received LSN by the group. It is more or equal to the
 	 * remote_commit_lsn.
 	 */
-	XLogRecPtr			received_lsn;
+	XLogRecPtr	received_lsn;
 
-	TimestampTz			last_updated_ts;	/* when we set this */
-	bool				updated_by_decode;	/* set by decode or apply. OBSOLETE. Used
+	TimestampTz last_updated_ts;	/* when we set this */
+	bool		updated_by_decode;	/* set by decode or apply. OBSOLETE. Used
 									 * in versions <=5.x.x only */
 } SpockApplyProgress;
 
 /* Hash entry: one per group (stable pointer; not moved by dynahash) */
 typedef struct SpockGroupEntry
 {
-	SpockApplyProgress	progress;
-	pg_atomic_uint32	nattached;
-	ConditionVariable	prev_processed_cv;
+	SpockApplyProgress progress;
+	pg_atomic_uint32 nattached;
+	ConditionVariable prev_processed_cv;
 } SpockGroupEntry;
 
 /* shmem setup */

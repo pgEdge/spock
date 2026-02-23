@@ -100,7 +100,7 @@ extern bool spock_replication_repair_mode;
 #define SPOCK_SYNC_EVENT_MSG		3	/* Sync event message */
 #define SPOCK_SLOT_GROUPS_TRANCHE_NAME   "spock_slot_groups"
 
-extern int spock_output_delay;
+extern int	spock_output_delay;
 
 /*
  * Custom WAL messages

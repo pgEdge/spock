@@ -129,7 +129,7 @@ check_simple_rowfilter_expr_walker(Node *node, ParseState *pstate)
 								  pstate);
 }
 
- /*
+/*
  * Check if the row filter expression is a "simple expression".
  *
  * See check_simple_rowfilter_expr_walker for details.

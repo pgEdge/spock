@@ -1091,7 +1091,7 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 
 	/* Open the relation. */
 #if PG_VERSION_NUM < 170000
-	LOCKTAG			tag;
+	LOCKTAG		tag;
 
 	SET_LOCKTAG_RELATION(tag, MyDatabaseId, reloid);
 	if (!LockOrStrongerHeldByMe(&tag, AccessShareLock))
@@ -1199,7 +1199,7 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 
 	/* Open the relation. */
 #if PG_VERSION_NUM < 170000
-	LOCKTAG			tag;
+	LOCKTAG		tag;
 
 	SET_LOCKTAG_RELATION(tag, MyDatabaseId, seqoid);
 	if (!LockOrStrongerHeldByMe(&tag, AccessShareLock))
