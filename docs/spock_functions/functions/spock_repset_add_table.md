@@ -4,27 +4,99 @@
 
 ### SYNOPSIS
 
-`spock.repset_add_table (set_name name, relation regclass, sync_data boolean, columns text[], row_filter text)`
- 
+spock.repset_add_table (
+    set_name name,
+    relation regclass,
+    synchronize_data boolean,
+    columns text[],
+    row_filter text,
+    include_partitions boolean
+)
+
+### RETURNS
+
+    - true if the table was successfully added to the replication set.
+    - false if the table was already a member of the replication set.
+
 ### DESCRIPTION
 
-Add a table or tables to a replication set. 
+Adds a specific table to an existing Spock replication set.
+
+This function allows fine-grained control over what data is replicated by
+optionally specifying:
+
+    - A subset of columns to replicate.
+    - A row filter to restrict which rows are replicated.
+    - Whether partitions of a partitioned table should also be included.
+
+If synchronize_data is set to true, existing table data is copied to all
+subscribers that are subscribed to this replication set. Otherwise, only
+future changes are replicated.
+
+When used with partitioned tables, include_partitions controls whether
+child partitions are automatically included in the replication set.
+
+This function writes metadata into the Spock catalogs and does not modify
+PostgreSQL configuration.
+
+This command must be executed by a superuser.
+
+### ARGUMENTS
+
+set_name
+
+    The name of an existing replication set.
+
+relation
+
+    The table to add, specified as a regclass (for example,
+    'public.mytable').
+
+synchronize_data
+
+    If true, existing table data is synchronized to all
+    subscribers. Default is false.
+
+columns
+
+    An optional list of column names to replicate. If NULL,
+    all columns are replicated.
+
+row_filter
+
+    An optional SQL WHERE clause used to filter which rows
+    are replicated.
+
+include_partitions
+
+    If true and the table is partitioned, all partitions are
+    included automatically. Default is true.
 
 ### EXAMPLE
 
-`spock.repset_add_table ('demo_repset', 'public.my_table')`
- 
-### ARGUMENTS
-    set_name
-        The name of the existing replication set.
-    relation
-        The name or OID of the table to be added to the set.
-    sync_data
-        If true, the table data is synchronized on all subscribers which are subscribed to given replication set; the default is false.
-    columns
-        A list of columns to replicate. Normally when all columns should be replicated, this will be set to NULL (the default).
-    row_filter
-        A row filtering expression; the default is NULL (no filtering).
-    
-  **WARNING: Use caution when synchronizing data with a valid row filter.**
-  Using `sync_data=true` with a valid `row_filter` is usually a one_time operation for a table. Executing it again with a modified `row_filter` won't synchronize data to subscriber. You may need to call `spock.alter_sub_resync_table()` to fix it.
+The following command adds a table named public.accounts to the demo_repset 
+replication set with full replication:
+
+    SELECT spock.repset_add_table('demo_repset', 'public.accounts');
+
+The following command adds a table named public.accounts to the demo_repset 
+replication set, and synchronizes existing data:
+
+    SELECT spock.repset_add_table('demo_repset',
+        'public.accounts',
+        synchronize_data := true);
+
+The following command adds only specific columns (id and balance) from the
+public.accounts table to the demo_repset replication set, and filters the
+rows:
+
+    SELECT spock.repset_add_table('demo_repset',
+        'public.accounts',
+        columns := ARRAY['id','balance'],
+        row_filter := 'balance > 0');
+
+**WARNING: Use caution when synchronizing data with a valid row filter.**
+Using `sync_data=true` with a valid `row_filter` is usually a one_time
+operation for a table. Executing it again with a modified `row_filter`
+won't synchronize data to subscriber. You may need to call
+`spock.alter_sub_resync_table()` to fix it.

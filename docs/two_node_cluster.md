@@ -1,38 +1,35 @@
 # Using Spock to Create a Two-Node Cluster
 
-After installing and initializing Postgres and creating the Spock Extension, you can use the following steps to configure a two-node cluster.  In the examples that follow, we'll be creating a cluster that contains two nodes, named `n1` and `n2` that listen for Postgres server connections on port `5432`.
+After installing and configuring Postgres with the Spock extension, you can
+use the following steps to create the Spock extension and configure a two-node
+cluster.  In the examples that follow, we'll create a cluster with two nodes
+(named `n1` and `n2`) that listen for Postgres server connections on port
+`5432`.
 
-1. Connect to each node, and use the following commands to initialize a cluster:
+!!! hint
 
-    `sudo /usr/pgsql-17/bin/postgresql-17-setup initdb`
 
-    `sudo systemctl enable postgresql-17`
+1. 
+    ```
 
-2. Use your choice of editor to open the `postgresql.conf` file (located in `/var/lib/pgsql/17/data/postgresql.conf`) and add the following parameters to the bottom of the file:
+2. Use your platform-specific command to restart the server on each node.
 
-    `wal_level = 'logical'`
+3. Then, on each node, connect to the Postgres server with psql and create the
+   spock extension:
+   
+    ```sql
+    CREATE EXTENSION spock;
+    ```
 
-    `max_worker_processes = 10`
+4. Then, use the
+   [`spock.node_create`](spock_functions/functions/spock_node_create.md)
+   command to create the provider and subscriber nodes; on node `n1`:
 
-    `max_replication_slots = 10`
-
-    `max_wal_senders = 10`
-
-    `shared_preload_libraries = 'spock'`
-
-    `track_commit_timestamp = on`
-
-3. Edit the [`pg_hba.conf` file](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html) (located in `/var/lib/pgsql/current/data/postgresql.conf`) and allow connections between `n1` and `n2`; the following commands are provided as an example only, and are not recommended for production systems as they will open your system for connection from any client:
-
-    `host all all 0.0.0.0/0 trust`
-
-    `local replication all trust`
-
-    `host replication all 0.0.0.0/0 trust`
-
-4. Use the [`spock.node_create`](spock_functions/functions/spock_node_create.md) command to create the provider and subscriber nodes; on `n1`, use the command:
-
-    `SELECT spock.node_create (node_name := 'n1', dsn := 'host=<n1_ip_address> port=<n1_port> dbname=<db_name>');`
+    ```sql
+    SELECT spock.node_create 
+        (node_name := 'n1', 
+        dsn :='host=<node_1_IP_address> port=<n1_port> dbname=<db_name>');
+    ```
 
     On `n2`:
 
