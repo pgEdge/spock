@@ -51,7 +51,16 @@ extern int	spock_resolutions_retention_days;
  */
 typedef enum
 {
-	/* The row to be inserted violates unique constraint */
+	/*
+	 * The row to be inserted violates a unique constraint.
+	 * This behaviour is controlled by GUC check_all_uc_indexes (default OFF).
+	 * When ON, this conflict exactly matches PostgreSQL's INSERT_EXISTS
+	 * conflict and Spock attempts to resolve it when any UNIQUE index rejects
+	 * the insertion.  It is counted as a conflict in subscription statistics
+	 * and the exception log.  When OFF, only a replica identity index
+	 * violation is counted as a conflict; other index violations cause an
+	 * ERROR and are not counted as conflicts.
+	 */
 	SPOCK_CT_INSERT_EXISTS = 0,
 
 	/* The row to be updated was modified by a different origin */
