@@ -26,9 +26,17 @@ COMMIT;
 
 SELECT * FROM spock.sub_alter_interface('test_subscription', 'super2');
 
+/*
+ * XXX: there is still a small chance that we see an old state of the apply
+ * worker if it is highly loaded or in a stall state.  Someday we should expose
+ * the 'generation' value or invent something else to identify that it is
+ * actually a new apply worker that has re-read the fresh subscription state.
+ * But for now the current change should be enough.
+ */
 DO $$
 BEGIN
-    WHILE EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status = 'down')
+    WHILE EXISTS (SELECT 1 FROM spock.sub_show_status()
+				  WHERE status != 'replicating')
 	LOOP
     END LOOP;
 END;$$;
@@ -38,6 +46,8 @@ SELECT
 FROM spock.sub_show_status();
 
 \c :provider_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
 DO $$
 BEGIN
     WHILE EXISTS (SELECT 1 FROM pg_replication_slots WHERE active = 'false')
@@ -52,7 +62,7 @@ SELECT * FROM spock.sub_alter_interface('test_subscription', 'test_provider');
 
 DO $$
 BEGIN
-    WHILE EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status = 'down')
+    WHILE EXISTS (SELECT 1 FROM spock.sub_show_status() WHERE status != 'replicating')
 	LOOP
 	-- TODO: The multimaster testing buildfarm should have a general parameter
 	-- like 'wait_change_timeout' that may be used to take control over infinite
