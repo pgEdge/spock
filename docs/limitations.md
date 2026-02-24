@@ -167,3 +167,9 @@ worker will error with:
 
 Ensure all Delta-Apply columns are defined with `NOT NULL` before enabling this feature.
 
+### Mixed Spock and Native Logical Replication
+
+Spock uses its own 16-bit node_id (derived from node name hash) to track transaction origins in commit timestamps, rather than PostgreSQL's RepOriginId. Both ID spaces overlap (0-65535), which can cause ambiguity if Spock and native PostgreSQL logical replication run on the same database.
+
+**Recommendation:** Avoid running Spock and native logical replication subscriptions on the same database.
+
