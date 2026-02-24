@@ -117,6 +117,19 @@ shared_preload_libraries = 'spock'
 track_commit_timestamp = on
 ```
 
+**Note on replication origin states:**
+
+- **PostgreSQL 15-17:** The `max_replication_slots` parameter controls both the
+  number of replication slots *and* the number of replication origin states.
+  When sizing this parameter, account for both slots and origins (typically one
+  origin per subscription).
+
+- **PostgreSQL 18+:** A new parameter `max_active_replication_origins` was
+  introduced to separately control the number of replication origin states.
+  The default value is 10, which may be insufficient for clusters with many
+  subscriptions. Set this to at least the number of subscriptions plus some
+  headroom (similar sizing to `max_replication_slots`).
+
 After modifying the Postgres parameters, use your OS-specific command to 
 restart the Postgres server:
 
