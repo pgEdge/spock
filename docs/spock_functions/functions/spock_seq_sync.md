@@ -1,10 +1,10 @@
 ## NAME
 
-`spock.seq_sync()`
+`spock.sync_seq()`
 
 ### SYNOPSIS
 
-`spock.seq_sync(relation regclass)`
+`spock.sync_seq(relation regclass)`
  
 ### DESCRIPTION
 
@@ -12,7 +12,7 @@ Push the sequence state to all subscribers. Unlike the subscription and table sy
 
 ### EXAMPLE 
 
-`spock.seq_sync ('public.my_sequence')`
+`spock.sync_seq ('public.my_sequence')`
  
 ### ARGUMENTS
     relation
