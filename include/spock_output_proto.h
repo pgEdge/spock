@@ -75,7 +75,8 @@ typedef void (*spock_write_commit_fn) (StringInfo out, SpockOutputData *data,
 
 typedef void (*spock_write_origin_fn) (StringInfo out,
 									   const RepOriginId origin_id,
-									   XLogRecPtr origin_lsn);
+									   XLogRecPtr origin_lsn,
+									   const char *origin_name);
 
 typedef void (*spock_write_insert_fn) (StringInfo out, SpockOutputData *data,
 									   Relation rel, HeapTuple newtuple,

@@ -25,7 +25,8 @@ PG_CPPFLAGS += -I$(libpq_srcdir) \
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
 
 REGRESS := __placeholder__
-EXTRA_CLEAN += $(control_path) spock_compat.bc
+EXTRA_CLEAN += $(control_path) spock_compat.bc \
+	tests/logs tests/tap/logs tests/tap/t/logs
 
 # -----------------------------------------------------------------------------
 # PGXS
@@ -50,6 +51,7 @@ all: spock.control
 # Regression tests
 # -----------------------------------------------------------------------------
 REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
+		  excluded_schema	\
 		  toasted replication_set matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay \
@@ -67,6 +69,16 @@ REGRESS := $(filter-out add_table, $(REGRESS))
 # this makes "make check" give a useful error
 abs_top_builddir = .
 NO_TEMP_INSTALL = yes
+
+# Override with_temp_install for extension testing.
+# This allows spock tests to run without the pg*-090-init_template_fix.diff
+# patch applied to PostgreSQL. Changes from default PGXS with_temp_install:
+# 1. Remove INITDB_TEMPLATE - we don't use a temp install template
+# 2. Use actual bindir/libdir - we use the installed PostgreSQL, not tmp_install
+with_temp_install = \
+	PATH="$(bindir):$(CURDIR):$$PATH" \
+	$(call add_to_path,$(strip $(ld_library_path_var)),$(libdir)) \
+	$(with_temp_install_extra)
 
 # We can't do a normal 'make check' because PGXS doesn't support
 # creating a temp install. We don't want to use a normal PGXS
@@ -103,10 +115,21 @@ check: install regresscheck
 # Copy perl modules in postgresql_srcdir/src/test/perl
 # to postgresql_installdir/lib/pgxs/src/test/perl
 
+TESTLOGDIR := $(CURDIR)/tests/tap/logs
+SCHEDULE_FILE := $(srcdir)/tests/tap/schedule
+TAPS_REGRESS := $(shell awk '/^[[:space:]]*test:/ {print "t/" $$2 ".pl"}' $(SCHEDULE_FILE))
 
 define prove_check
-rm -rf $(CURDIR)/tmp_check/log
-cd $(srcdir)/tests/tap && TESTDIR='$(CURDIR)' $(with_temp_install) PGPORT='6$(DEF_PGPORT)' PG_REGRESS='$(top_builddir)/src/test/regress/pg_regress' $(PROVE) -I t --verbose $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(or $(PROVE_TESTS),t/*.pl)
+rm -rf $(TESTLOGDIR)
+mkdir -p $(TESTLOGDIR)
+cd $(srcdir)/tests/tap && \
+    TESTDIR='$(CURDIR)' \
+    TESTLOGDIR='$(TESTLOGDIR)' \
+    PATH="$(shell $(PG_CONFIG) --bindir):$$PATH" \
+    PGPORT='6$(DEF_PGPORT)' \
+    PG_REGRESS='$(top_builddir)/src/test/regress/pg_regress' \
+    $(PROVE) -I t -v --timer $(PG_PROVE_FLAGS) $(PROVE_FLAGS) \
+    $(or $(PROVE_TESTS),$(TAPS_REGRESS))
 endef
 
 check_prove:

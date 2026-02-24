@@ -23,7 +23,11 @@ not partial, not deferrable, and include only columns marked NOT NULL.
 Replication has no way to find the tuple that should be updated/deleted since
 there is no unique identifier.
 
-`REPLICA IDENTITY FULL` is not supported yet.
+`REPLICA IDENTITY FULL` is not supported as a standalone replication identity
+for UPDATE/DELETE operations. However, it is supported when used in conjunction
+with Delta-Apply columns on tables that have a primary key. For tables without
+a primary key or Delta-Apply configuration, UPDATE and DELETE operations require
+a PRIMARY KEY or explicit REPLICA IDENTITY USING INDEX.
 
 ### Only one unique index/constraint/PK
 
@@ -37,13 +41,20 @@ Partial secondary unique indexes are permitted, but will be ignored for conflict
 
 ### Unique constraints must not be deferrable
 
-On the downstream end spock does not support index-based constraints
-defined as `DEFERRABLE`. It will emit the error:
+Deferrable unique constraints and primary keys are **silently skipped** during
+INSERT conflict resolution. This means that if your only unique constraint on a
+table is deferrable, INSERT conflicts will not be detected, potentially leading
+to duplicate rows on subscriber nodes.
+
+On the downstream end, spock may also emit the error:
 
 `ERROR: spock doesn't support index rechecks needed for deferrable indexes`
 `DETAIL: relation "public"."test_relation" has deferrable indexes: "index1", "index2"`
 
-if such an index is present when it attempts to apply changes to a table.
+in certain apply scenarios.
+
+**Recommendation:** Ensure all tables have at least one non-deferrable unique
+constraint (preferably the primary key) for reliable conflict detection.
 
 ### No replication queue flush
 
@@ -81,8 +92,9 @@ provider side.
 (Properly handling this would probably require the addition of `ON TRUNCATE CASCADE`
 support for foreign keys in PostgreSQL).
 
-`TRUNCATE ... RESTART IDENTITY` is not supported. The identity restart step is
-not replicated to the replica.
+`TRUNCATE ... RESTART IDENTITY` is replicated. The sequence restart is
+applied on subscriber nodes. Note that this may cause sequence value
+divergence if sequences are not managed via pgEdge Snowflake.
 
 ### Sequences
 
@@ -132,7 +144,10 @@ Replicating between different minor versions makes no difference at all.
 ### Database encoding differences
 
 Spock does not support replication between databases with different
-encoding. We recommend using `UTF-8` encoding in all replicated databases.
+encoding. The encoding must match on all nodes in the cluster. While
+`UTF-8` is commonly used and recommended for international character
+support, any encoding is acceptable as long as it is consistent across
+all nodes.
 
 ### Large objects
 
@@ -141,4 +156,14 @@ to [large objects](https://www.postgresql.org/docs/current/largeobjects.html); w
 
 Note that DDL limitations apply, so extra care needs to be taken when using
 `replicate_ddl_command()`.
+
+### Delta-Apply Column Requirements
+
+Columns configured for Delta-Apply conflict resolution **must** have a `NOT NULL`
+constraint. If a NULL value is encountered during delta application, the apply
+worker will error with:
+
+`ERROR: delta apply column can't operate NULL values`
+
+Ensure all Delta-Apply columns are defined with `NOT NULL` before enabling this feature.
 

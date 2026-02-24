@@ -17,21 +17,27 @@ SELECT sum(x), count(*) FROM test_sync;
 \c :subscriber_dsn
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT sum(x), count(*) FROM test_sync;
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
 
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
 SELECT spock.table_wait_for_sync('test_subscription', 'test_sync');
 SELECT sum(x), count(*) FROM test_sync;
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
 
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
 SELECT spock.table_wait_for_sync('test_subscription', 'test_sync');
 
 SELECT sum(x), count(*) FROM test_sync;
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
 
 \c :provider_dsn
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
@@ -44,13 +50,17 @@ SELECT sum(x), count(*) FROM test_sync;
 \c :subscriber_dsn
 -- Restart syncing this specific table, wait until the process finish and check
 -- all the data stay consistent
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
 SELECT spock.sub_resync_table('test_subscription', 'test_sync', true);
 SELECT spock.table_wait_for_sync('test_subscription', 'test_sync');
 SELECT sum(x), count(*) FROM test_sync;
-SELECT sync_kind,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
-FROM spock.local_sync_status;
+SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name,sync_kind,sync_nspname,sync_relname COLLATE "C";
 
 -- Check all data still in place
 \c :provider_dsn

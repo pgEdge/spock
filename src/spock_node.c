@@ -19,12 +19,13 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
-
+#include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_type.h"
 
 #include "commands/dbcommands.h"
+#include "commands/extension.h"
 #include "commands/sequence.h"
 #include "miscadmin.h"
 
@@ -109,6 +110,25 @@ typedef struct SubscriptionTuple
 #define Anum_sub_force_text_transfer 12
 #define Anum_sub_skip_lsn			13
 #define Anum_sub_skip_schema		14
+
+/*
+ * List of extensions and schemas that we should skip globally.
+ * By-default, it is spock, lolor, and snowflake related objects.
+ * Don't merge it with subscription-specific skip-schema list to avoid cases
+ * when user drops 'sub->skip_schema' and violates these restrictions.
+ */
+const char *const skip_schema[] = {
+	"lolor",
+	"snowflake",
+	"spock",
+	NULL  /* sentinel */
+};
+const char *const skip_extension[] = {
+	"lolor",
+	"snowflake",
+	"spock",
+	NULL  /* sentinel */
+};
 
 /*
  * We impose same validation rules as replication slot name validation does.
@@ -324,9 +344,9 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
  * Load the info for specific node.
  */
 SpockNode *
-get_node(Oid nodeid)
+get_node(Oid nodeid, bool missing_ok)
 {
-	SpockNode  *node;
+	SpockNode  *node = NULL;
 	RangeVar   *rv;
 	Relation	rel;
 	SysScanDesc scan;
@@ -346,9 +366,12 @@ get_node(Oid nodeid)
 	tuple = systable_getnext(scan);
 
 	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "node %u not found", nodeid);
-
-	node = node_fromtuple(tuple, RelationGetDescr(rel));
+	{
+		if (!missing_ok)
+			elog(ERROR, "node %u not found", nodeid);
+	}
+	else
+		node = node_fromtuple(tuple, RelationGetDescr(rel));
 
 	systable_endscan(scan);
 	table_close(rel, RowExclusiveLock);
@@ -544,7 +567,7 @@ get_local_node(bool for_update, bool missing_ok)
 	table_close(rel, for_update ? NoLock : RowExclusiveLock);
 
 	res = (SpockLocalNode *) palloc(sizeof(SpockLocalNode));
-	res->node = get_node(nodeid);
+	res->node = get_node(nodeid, false);
 	res->node_if = get_node_interface(nodeifid);
 
 	return res;
@@ -1048,8 +1071,8 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 	sub->slot_name = pstrdup(NameStr(subtup->sub_slot_name));
 	sub->skip_schema = NIL;		/* Initialize to avoid memory corruption */
 
-	sub->origin = get_node(subtup->sub_origin);
-	sub->target = get_node(subtup->sub_target);
+	sub->origin = get_node(subtup->sub_origin, false);
+	sub->target = get_node(subtup->sub_target, false);
 	sub->origin_if = get_node_interface(subtup->sub_origin_if);
 	sub->target_if = get_node_interface(subtup->sub_target_if);
 
@@ -1237,4 +1260,56 @@ get_node_subscriptions(Oid nodeid, bool origin)
 	table_close(rel, RowExclusiveLock);
 
 	return res;
+}
+
+/*
+ * Check if relation depends on an extension from static 'skip_extension' list
+ * or if it is from the static 'skip_schema' list.
+ *
+ */
+void
+EnsureRelationNotIgnored(Relation rel)
+{
+	int		i;
+	char   *nspname;
+	Oid		extoid;
+
+	nspname = get_namespace_name(RelationGetNamespace(rel));
+
+	for (i = 0; skip_schema[i] != NULL; i++)
+	{
+		if (strcmp(skip_schema[i], nspname) != 0)
+			continue;
+
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("relation %s cannot be added to any replication set",
+						RelationGetRelationName(rel)),
+				 errdetail("table is in the ignored schema %s",
+						   skip_schema[i]),
+				 errhint("Move this relation to a schema allowed for replication")));
+	}
+
+	extoid = getExtensionOfObject(RelationRelationId, RelationGetRelid(rel));
+	if (!OidIsValid(extoid))
+		return;
+
+	for (i = 0; skip_extension[i] != NULL; i++)
+	{
+		/*
+		 * Detect if extension includes this relation.
+		 * XXX: Should we check if the relation doesn't belong to the extension
+		 * but depends on it?
+		 */
+		if (extoid != get_extension_oid(skip_extension[i], true))
+			continue;
+
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("relation %s cannot be added to any replication set",
+						RelationGetRelationName(rel)),
+				 errdetail("relation belongs to the ignored extension %s",
+						   skip_extension[i]),
+				 errhint("Move this relation to an extension allowed for replication")));
+	}
 }

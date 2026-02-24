@@ -7,8 +7,8 @@ SELECT * FROM spock.repset_create('parallel');
 
 \c :subscriber_dsn
 
--- FIXME: The statment below is commented out temporarily.
--- SELECT * FROM spock.sub_create(
+-- FIXME: The statement below is commented out temporarily.
+-- SELECT 1 FROM spock.sub_create(
 --     subscription_name := 'test_subscription_parallel',
 --     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 -- 	replication_sets := '{parallel,default}',
@@ -17,7 +17,7 @@ SELECT * FROM spock.repset_create('parallel');
 -- 	synchronize_data := false
 -- );
 
-SELECT * FROM spock.sub_create(
+SELECT 1 FROM spock.sub_create(
     subscription_name := 'test_subscription_parallel',
     provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
 	replication_sets := '{parallel}',
@@ -31,9 +31,12 @@ SET LOCAL statement_timeout = '10s';
 SELECT spock.sub_wait_for_sync('test_subscription_parallel');
 COMMIT;
 
-SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status IN ('y', 'r') FROM spock.local_sync_status ORDER BY 2,3,4;
+SELECT sync_kind, sub_name, sync_nspname, sync_relname, sync_status IN ('y', 'r')
+FROM spock.local_sync_status l JOIN spock.subscription s
+  ON (l.sync_subid = s.sub_id)
+ORDER BY sub_name COLLATE "C";
 
-SELECT * FROM spock.sub_show_status();
+SELECT * FROM spock.sub_show_status() ORDER BY subscription_name COLLATE "C";
 
 -- Make sure we see the slot and active connection
 \c :provider_dsn

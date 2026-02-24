@@ -45,7 +45,7 @@ For example, the following command:
 
 `SELECT spock.node_drop(n1, true)`
 
-Creates a node named `n1` that connects to the `accounting` database on `178.12.15.12`, authenticating with the credentials of a user named `carol`.
+Drops a node named `n1`. If the node does not exist, an error message will be suppressed because `ifexists` is set to `true`.
 
 
 ## Node Management Functions

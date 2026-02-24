@@ -612,12 +612,23 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 			if (txn->origin_id == InvalidRepOriginId)
 			{
 				data->api->write_origin(ctx->out, MyOutputNodeId,
-										txn->origin_lsn);
+										txn->origin_lsn, MyOutputNodeName);
 			}
 			else
 			{
+				/*
+				 * For forwarded transactions, look up the origin node name
+				 * from the local spock.node catalog. This name is needed by
+				 * downstream subscribers for cascade replication to properly
+				 * track the original source. Use missing_ok=true since the
+				 * node might not exist in our catalog (e.g., in complex
+				 * topologies).
+				 */
+				SpockNode  *origin_node = get_node(txn->origin_id, true);
+				const char *origin_name = origin_node ? origin_node->name : NULL;
+
 				data->api->write_origin(ctx->out, txn->origin_id,
-										txn->origin_lsn);
+										txn->origin_lsn, origin_name);
 			}
 		}
 

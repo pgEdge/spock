@@ -55,6 +55,9 @@ extern bool check_all_uc_indexes;
 extern bool	spock_enable_quiet_mode;
 
 extern char *shorten_hash(const char *str, int maxlen);
+extern void gen_slot_name(Name slot_name, char *dbname,
+						  const char *provider_name,
+						  const char *subscriber_name);
 
 extern List *textarray_to_list(ArrayType *textarray);
 extern bool parsePGArray(const char *atext, char ***itemarray, int *nitems);

@@ -106,11 +106,6 @@ BEGIN
         RAISE NOTICE '    ✓ Total nodes in cluster: %', node_count;
     END IF;
 
-    -- Validate that we're not trying to remove the last node
-    IF node_count <= 1 THEN
-        RAISE EXCEPTION 'Cannot remove the last node from cluster';
-    END IF;
-
     IF verbose_mode THEN
         RAISE NOTICE '    ✓ Node removal validation passed';
     END IF;
