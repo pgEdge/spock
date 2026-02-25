@@ -445,12 +445,10 @@ spock_report_conflict(SpockConflictType conflict_type,
 
 		/* If configured log resolution to table */
 		spock_conflict_log_table(conflict_type, rel, localtuple, oldkey,
-	/* If configured log resolution to spock.resolutions table */
-	spock_conflict_log_table(conflict_type, rel, localtuple, oldkey,
-							 remotetuple, applytuple, resolution,
-							 local_tuple_xid, found_local_origin,
-							 local_tuple_origin, local_tuple_commit_ts,
-							 conflict_idx_oid);
+								 remotetuple, applytuple, resolution,
+								 local_tuple_xid, found_local_origin,
+								 local_tuple_origin, local_tuple_commit_ts,
+								 conflict_idx_oid);
 	}
 
 	memset(local_tup_ts_str, 0, MAXDATELEN);
