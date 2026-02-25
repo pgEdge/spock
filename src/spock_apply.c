@@ -3678,7 +3678,12 @@ process_syncing_tables(XLogRecPtr end_lsn)
 		int			nworkers = 0;
 		SpockSyncStatus *sync = (SpockSyncStatus *) lfirst(lc);
 
-		if (sync->status == SYNC_STATUS_SYNCDONE || sync->status == SYNC_STATUS_READY)
+		/*
+		 * Ignore already synced tables as well as failed ones
+		 */
+		if (sync->status == SYNC_STATUS_SYNCDONE ||
+			sync->status == SYNC_STATUS_READY ||
+			sync->status == SYNC_STATUS_FAILED)
 			continue;
 
 		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);

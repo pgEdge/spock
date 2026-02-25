@@ -1,13 +1,13 @@
 # Spock Protocol
 
 spock_output defines a libpq subprotocol for streaming tuples, metadata,
-etc, from the decoding plugin to receivers.
+etc., from the decoding plugin to receivers.
 
 This protocol is an inner layer in a stack:
 
 - TCP or unix sockets
   - libpq protocol
-    - libpq replication subprotocol (COPY BOTH etc)
+    - libpq replication subprotocol (COPY BOTH etc.)
       - spock output plugin => consumer protocol
 
 so clients can simply use libpq's existing replication protocol support,
@@ -16,7 +16,7 @@ directly or via their libpq-wrapper driver.
 This is a binary protocol intended for compact representation.
 
 `spock_output` also supports a json-based text protocol with json
-representations of the same changesets, supporting all the same hooks etc,
+representations of the same changesets, supporting all the same hooks etc.,
 intended mainly for tracing/debugging/diagnostics. That protocol is not
 discussed here.
 
@@ -41,8 +41,8 @@ The only information that flows downstream-to-upstream is:
 - replay progress messages
 
 We can accept an arbitrary list of params to `START_REPLICATION`. After
-that we have no general purpose channel for information to flow upstream. That
-means we can't do a multi-step negotiation/handshake for determining the
+that we have no general-purpose channel for information to flow upstream. That
+means we can't do a multi-step negotiation or handshake for determining the
 replication options to use, binary protocol, etc.
 
 The main form of negotiation is the client getting a "take it or leave it" set
