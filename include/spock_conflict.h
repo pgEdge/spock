@@ -56,7 +56,7 @@ typedef enum
 {
 	/* do not log */
 	SPOCK_ORIGIN_NONE,
-	/* log if remote change (ignore local origin, independent of time */
+	/* log if remote change (ignore local origin, independent of time) */
 	SPOCK_ORIGIN_REMOTE_ONLY_DIFFERS,
 	/* log only if origin changed since start of subscription */
 	SPOCK_ORIGIN_DIFFERS_SINCE_SUB
