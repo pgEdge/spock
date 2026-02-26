@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 20;
+use Test::More;
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok
                  get_test_config scalar_query psql_or_bail);
@@ -77,7 +77,7 @@ my $count_n1 = scalar_query(1, "SELECT COUNT(*) FROM test_origin");
 is($count_n1, '3', 'Node 1 has 3 rows after INSERT');
 
 # ---- Step 2: pg_dump node 1 ------------------------------------------------
-my $dump_file = '/tmp/test_origin_dump.dump';
+my $dump_file = '/tmp/test_origin_dump_$$.dump';
 system_or_bail("$pg_bin/pg_dump", '-p', $node_ports->[0],
                '-d', $dbname, '-t', 'test_origin', '-Fc', '-f', $dump_file);
 pass('pg_dump from node 1 succeeded');
@@ -158,7 +158,7 @@ psql_or_bail(1, "UPDATE test_origin SET data = 'from-n1-v2' WHERE id = 1");
 $val = wait_for_value(2,
     "SELECT data FROM test_origin WHERE id = 1",
     'from-n1-v2');
-die "UPDATE did not replicate" unless $val eq 'from-n1-v2';
+BAIL_OUT("UPDATE did not replicate") unless $val eq 'from-n1-v2';
 
 system_or_bail 'sleep', '2';
 $log_content = get_log_content_since($n2_logfile, $log_pos);
@@ -180,7 +180,7 @@ psql_or_bail(1, "UPDATE test_origin SET data = 'from-n1-v2b' WHERE id = 2");
 $val = wait_for_value(2,
     "SELECT data FROM test_origin WHERE id = 2",
     'from-n1-v2b');
-die "UPDATE did not replicate" unless $val eq 'from-n1-v2b';
+BAIL_OUT("UPDATE did not replicate") unless $val eq 'from-n1-v2b';
 
 system_or_bail 'sleep', '2';
 $log_content = get_log_content_since($n2_logfile, $log_pos);
@@ -202,7 +202,7 @@ psql_or_bail(1, "UPDATE test_origin SET data = 'from-n1-v3' WHERE id = 3");
 $val = wait_for_value(2,
     "SELECT data FROM test_origin WHERE id = 3",
     'from-n1-v3');
-die "UPDATE did not replicate" unless $val eq 'from-n1-v3';
+BAIL_OUT("UPDATE did not replicate") unless $val eq 'from-n1-v3';
 
 system_or_bail 'sleep', '2';
 $log_content = get_log_content_since($n2_logfile, $log_pos);
