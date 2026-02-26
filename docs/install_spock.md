@@ -306,7 +306,7 @@ the upstream server disappears unexpectedly. To disable them add
 
 #### `spock.log_origin_change`
 
-`spock.log_origin_change` indicates whether or not changes to a row's
+`spock.log_origin_change` indicates whether changes to a row's
 origin should be logged to the PostgreSQL log. Rows may be being updated
 locally by regular SQL operations, or by replication from apply workers.
 Note that rows that are changed locally (not from replication) have the
@@ -314,7 +314,7 @@ origin value of 0.
 
 The default of `none` is recommended because otherwise the amount of entries
 may become numerous. The other options allow for monitoring when updates
-occur outside of expected patterns.
+occur outside expected patterns.
 
 The following configuration values are possible:
 
@@ -323,7 +323,7 @@ The following configuration values are possible:
    was from one remote publisher and was changed by another
    remote publisher
 * `since_sub_creation`- log origin changes whether a publisher changed
-   a row that was previously from another publisher or updated locally,
+   a row that was previously from another publisher or updated it locally,
    but only since the time when the subscription was created.
 
 
