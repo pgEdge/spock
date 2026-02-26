@@ -52,6 +52,7 @@ extern bool	allow_ddl_from_functions;
 extern int	restart_delay_default;
 extern int	restart_delay_on_exception;
 extern int	spock_replay_queue_size;
+extern int	spock_feedback_frequency;
 extern bool check_all_uc_indexes;
 extern int	log_origin_change;
 

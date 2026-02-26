@@ -139,6 +139,7 @@ bool	allow_ddl_from_functions = false;
 int		restart_delay_default;
 int		restart_delay_on_exception;
 int		spock_replay_queue_size;
+int		spock_feedback_frequency;
 bool	check_all_uc_indexes = false;
 int		log_origin_change = SPOCK_ORIGIN_NONE;
 
@@ -1134,6 +1135,22 @@ _PG_init(void)
 							&spock_replay_queue_size,
 							4194304,
 							0,
+							INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("spock.feedback_frequency",
+							"Number of WAL messages between feedback to provider",
+							"Controls how often the apply worker sends LSN feedback "
+							"to the provider during replication. Lower values increase "
+							"feedback overhead; the time-based guard (wal_sender_timeout/2) "
+							"ensures liveness regardless of this setting.",
+							&spock_feedback_frequency,
+							200,
+							1,
 							INT_MAX,
 							PGC_SIGHUP,
 							0,
