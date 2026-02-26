@@ -51,6 +51,14 @@ my $subscriber_port = $ports->[1];
 my $provider_connstr =
     "host=$host dbname=$dbname port=$provider_port user=$db_user password=$db_pass";
 
+# Reduce log noise — this is a performance test, not a debugging test
+for my $port ($provider_port, $subscriber_port) {
+    system_or_bail "$pg_bin/psql", '-p', $port, '-d', $dbname, '-c',
+        "ALTER SYSTEM SET log_min_messages TO warning";
+    system_or_bail "$pg_bin/psql", '-p', $port, '-d', $dbname, '-c',
+        "SELECT pg_reload_conf()";
+}
+
 # ── 2. Initialise pgbench on provider only ──────────────────────────────
 
 note "initializing pgbench with scale=$PGBENCH_SCALE ...";

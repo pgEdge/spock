@@ -4316,10 +4316,11 @@ maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
 	w_message_count++;
 
 	/*
-	 * Send feedback if wal_sender_timeout/2 has passed or after 10 'w' messages.
+	 * Send feedback if wal_sender_timeout/2 has passed or after
+	 * spock.feedback_frequency 'w' messages.
 	 */
 	if (TimestampDifferenceExceeds(*last_receive_timestamp, now, wal_sender_timeout / 2) ||
-		w_message_count >= 10)
+		w_message_count >= spock_feedback_frequency)
 	{
 		elog(DEBUG2, "SPOCK %s: force sending feedback after %d 'w' messages or timeout",
 				MySubscription->name, w_message_count);

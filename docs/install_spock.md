@@ -304,6 +304,14 @@ keepalive options, etc.
 the upstream server disappears unexpectedly. To disable them add
 `keepalives = 0` to `spock.extra_connection_options`.
 
+#### `spock.feedback_frequency`
+
+Controls how many WAL messages the apply worker processes before sending
+an LSN feedback packet to the provider. Lower values increase feedback
+overhead due to synchronous socket flushes; higher values reduce overhead
+during bulk catch-up. There is a time-based guard (wal_sender_timeout / 2)
+that ensures connection liveness regardless of this setting.
+
 #### `spock.log_origin_change`
 
 `spock.log_origin_change` indicates whether changes to a row's
@@ -325,7 +333,6 @@ The following configuration values are possible:
 * `since_sub_creation`- log origin changes whether a publisher changed
    a row that was previously from another publisher or updated it locally,
    but only since the time when the subscription was created.
-
 
 #### `spock.include_ddl_repset`
 
