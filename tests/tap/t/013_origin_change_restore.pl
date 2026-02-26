@@ -77,7 +77,7 @@ my $count_n1 = scalar_query(1, "SELECT COUNT(*) FROM test_origin");
 is($count_n1, '3', 'Node 1 has 3 rows after INSERT');
 
 # ---- Step 2: pg_dump node 1 ------------------------------------------------
-my $dump_file = '/tmp/test_origin_dump_$$.dump';
+my $dump_file = "/tmp/test_origin_dump_$$.dump";
 system_or_bail("$pg_bin/pg_dump", '-p', $node_ports->[0],
                '-d', $dbname, '-t', 'test_origin', '-Fc', '-f', $dump_file);
 pass('pg_dump from node 1 succeeded');
