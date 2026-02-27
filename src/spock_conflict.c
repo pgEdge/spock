@@ -709,33 +709,33 @@ spock_report_conflict(SpockConflictType conflict_type,
 			TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
 			return;
 
-		if (applytuple == remotetuple)
+		if (resolution == SpockResolution_ApplyRemote)
 		{
 			/*
-			 * Normal flow. Do not write to spock.resolutions, but possibly write to log
-			 * TODO: revisit when adding custom handling
+			 * Remote tuple wins — this is normal replication flow, not a true
+			 * conflict. Do not write to spock.resolutions, but optionally
+			 * log to the PostgreSQL log based on the GUC setting.
 			 */
 			save_in_resolutions = false;
 
 			if (!found_local_origin)
 				return;
 
-			else if (log_origin_change == SPOCK_ORIGIN_NONE)
+			if (log_origin_change == SPOCK_ORIGIN_NONE)
 				return;
 
-
-			else if (log_origin_change == SPOCK_ORIGIN_REMOTE_ONLY_DIFFERS &&
+			if (log_origin_change == SPOCK_ORIGIN_REMOTE_ONLY_DIFFERS &&
 				local_tuple_origin == InvalidRepOriginId)
 				return;
 
-			else if (log_origin_change == SPOCK_ORIGIN_DIFFERS_SINCE_SUB)
+			if (log_origin_change == SPOCK_ORIGIN_DIFFERS_SINCE_SUB)
 			{
-				/* Do not log if we do not have a creation timestamp */
+				/* Do not log if we do not have a sub creation timestamp */
 				if (!MySubscription || MySubscription->created_at == 0)
 					return;
 
-				/* If we could not determine the timestamp, do not log */
-				else if (local_tuple_commit_ts == 0)
+				/* If we could not determine the tuple timestamp, do not log */
+				if (local_tuple_commit_ts == 0)
 					return;
 
 				/*
@@ -743,7 +743,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 				 * loaded before replication was set up (e.g. pg_restore).
 				 * Do not treat this as an origin-change conflict.
 				 */
-				else if (local_tuple_commit_ts < MySubscription->created_at)
+				if (local_tuple_commit_ts < MySubscription->created_at)
 					return;
 			}
 		}
