@@ -51,6 +51,9 @@
 
 #include "spock.h"
 #include "spock_conflict.h"
+#if PG_VERSION_NUM >= 180000
+#include "spock_conflict_stat.h"
+#endif
 #include "spock_proto_native.h"
 #include "spock_node.h"
 #include "spock_worker.h"
@@ -372,6 +375,15 @@ spock_report_conflict(SpockConflictType conflict_type,
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
 						 SPOCK_STATS_CONFLICT_COUNT, 1);
 
+#if PG_VERSION_NUM >= 180000
+	/*
+	 * TODO: Can't enable until SPOCK_CT_DELETE_LATE is either included in
+	 * SPOCK_CONFLICT_NUM_TYPES or filtered out here — passing it as-is would
+	 * overflow the conflict_count[] array.
+	 *
+	 * spock_stat_report_subscription_conflict(MyApplyWorker->subid, conflict_type);
+	 */
+#endif
 	/* If configured log resolution to spock.resolutions table */
 	spock_conflict_log_table(conflict_type, rel, localtuple, oldkey,
 							 remotetuple, applytuple, resolution,
