@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 34;
+use Test::More tests => 30;
 use IPC::Run;
 use lib '.';
 use lib 't';

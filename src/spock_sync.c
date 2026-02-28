@@ -58,6 +58,9 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
+#if PG_VERSION_NUM >= 170000
+#include "utils/injection_point.h"
+#endif
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
@@ -1221,13 +1224,54 @@ spock_sync_subscription(SpockSubscription *sub)
 		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
 												 sub->name, "snap");
 
-		progress_entries_list = adjust_progress_info(origin_conn);
 		snapshot = ensure_replication_slot_snapshot(origin_conn,
 													origin_conn_repl,
 													sub->slot_name,
 													use_failover_slot, &lsn);
 
-		PQfinish(origin_conn);
+#if PG_VERSION_NUM >= 180000
+		INJECTION_POINT("spock-before-sync-progress-read", "wait");
+#elif PG_VERSION_NUM >= 170000
+		INJECTION_POINT("spock-before-sync-progress-read");
+#endif
+
+		/*
+		 * Read progress info using the same snapshot that will be used for
+		 * COPY. This ensures that the LSN values we capture are consistent
+		 * with the transactional snapshot: we see exactly the same committed
+		 * transactions the COPY will include. Without this, transactions
+		 * from other nodes could be committed between the progress read and
+		 * the snapshot creation, causing the new node to either miss data
+		 * or re-apply already-copied rows.
+		 */
+		{
+			PGresult   *res;
+			PGresult   *rollback_res;
+
+			PG_TRY();
+			{
+				start_copy_origin_tx(origin_conn, snapshot);
+				progress_entries_list = adjust_progress_info(origin_conn);
+				res = PQexec(origin_conn, "ROLLBACK");
+				if (PQresultStatus(res) != PGRES_COMMAND_OK)
+					elog(WARNING, "ROLLBACK on origin node failed: %s",
+						 PQresultErrorMessage(res));
+				PQclear(res);
+			}
+			PG_CATCH();
+			{
+				rollback_res = PQexec(origin_conn, "ROLLBACK");
+				if (PQresultStatus(rollback_res) != PGRES_COMMAND_OK)
+					elog(WARNING, "ROLLBACK on origin node failed: %s",
+						 PQresultErrorMessage(rollback_res));
+				PQclear(rollback_res);
+				PQfinish(origin_conn);
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+
+			PQfinish(origin_conn);
+		}
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
