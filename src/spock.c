@@ -911,7 +911,7 @@ log_message_filter(ErrorData *edata)
 static void
 spock_object_relabel(const ObjectAddress *object, const char *seclabel)
 {
-	Oid				extoid;
+	Oid			extoid;
 
 	extoid = get_extension_oid(EXTENSION_NAME, true);
 	if (!OidIsValid(extoid))
