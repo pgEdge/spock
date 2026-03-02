@@ -34,12 +34,6 @@ jobs:
         # Codacy wants us to use full commit SHA. This is for v3
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
 
-      - name: Set up docker compose
-        # Codacy wants us to use full commit SHA. This is for v1
-        uses: docker/setup-compose-action@364cc21a5de5b1ee4a7f5f9d3fa374ce0ccde746 # v1
-        with:
-          version: latest
-
       - name: Build docker container
         run: |
             docker build \
