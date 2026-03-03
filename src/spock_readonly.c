@@ -82,6 +82,13 @@ spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate
 				case T_VariableShowStmt:
 					command_is_ro = true;
 					break;
+				case T_CopyStmt:
+					/*
+					 * COPY TO (stmt->is_from=false) is a read operation, allow it.
+					 * COPY FROM (stmt->is_from=true) is a write operation, block it.
+					 */
+					command_is_ro = !((CopyStmt *) query->utilityStmt)->is_from;
+					break;
 				default:
 					command_is_ro = false;
 					break;
