@@ -1048,10 +1048,10 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	relname = RelationGetRelationName(rel);
 
 	/*
-	 * Check that neither the subscriber nor origin is in read-only mode
-	 * BEFORE modifying sync status or truncating. If either is readonly,
-	 * the sync will fail. With truncate=true this would cause data loss;
-	 * without truncate it causes an error loop.
+	 * Check that the subscriber is in read-only mode BEFORE modifying
+	 * sync status or truncating. If it is readonly, the sync will fail.
+	 * With truncate=true this would cause data loss; without truncate
+	 * it causes an error loop.
 	 */
 	check_readonly_for_resync(nspname, relname);
 
