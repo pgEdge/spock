@@ -96,6 +96,7 @@
 #include "spock_rpc.h"
 #include "spock_sync.h"
 #include "spock_worker.h"
+#include "spock_readonly.h"
 
 #include "spock.h"
 
@@ -972,6 +973,36 @@ Datum spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Check if the local (subscriber) node is in read-only mode.
+ * If so, raise an error to prevent resync failure or data loss.
+ *
+ * When truncate=true and readonly is set, truncating first then failing on
+ * COPY FROM causes permanent data loss. Even without truncate, if readonly
+ * is set the sync worker will fail repeatedly in an error loop.
+ *
+ * Note: We only check subscriber readonly, not origin. The origin uses
+ * COPY TO (a read operation) which is allowed even in readonly mode.
+ * The subscriber uses COPY FROM (a write operation) which is blocked.
+ */
+static void
+check_readonly_for_resync(const char *nspname, const char *relname)
+{
+	char	tablename[NAMEDATALEN * 2 + 2];
+
+	if (spock_readonly != READONLY_OFF)
+	{
+		snprintf(tablename, sizeof(tablename), "%s.%s", nspname, relname);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("cannot resync table \"%s\": subscriber is in read-only mode",
+						tablename),
+				 errdetail("spock.readonly is set to \"%s\" on this node.",
+						   spock_readonly == READONLY_ALL ? "all" : "user"),
+				 errhint("Set spock.readonly to 'off' before resyncing.")));
+	}
+}
+
+/*
  * Resynchronize one existing table.
  */
 Datum
@@ -998,6 +1029,14 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 
 	nspname = get_namespace_name(RelationGetNamespace(rel));
 	relname = RelationGetRelationName(rel);
+
+	/*
+	 * Check that neither the subscriber nor origin is in read-only mode
+	 * BEFORE modifying sync status or truncating. If either is readonly,
+	 * the sync will fail. With truncate=true this would cause data loss;
+	 * without truncate it causes an error loop.
+	 */
+	check_readonly_for_resync(nspname, relname);
 
 	/* Reset sync status of the table. */
 	oldsync = get_table_sync_status(sub->id, nspname, relname, true);
