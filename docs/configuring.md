@@ -197,7 +197,8 @@ Controls how many WAL messages the apply worker processes before sending
 an LSN feedback packet to the provider. Lower values increase feedback
 overhead due to synchronous socket flushes; higher values reduce overhead
 during bulk catch-up. There is a time-based guard (wal_sender_timeout / 2)
-that ensures connection liveness regardless of this setting.
+that ensures connection liveness regardless of this setting. The default
+is 200.
 
 ### `spock.include_ddl_repset`
 
