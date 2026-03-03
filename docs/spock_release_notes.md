@@ -1,5 +1,29 @@
 # Spock Release Notes
 
+## Spock 5.0.6
+
+### New Features
+* New `spock.feedback_frequency` GUC that controls how often feedback is sent to the WAL sender. Feedback is sent every *n* messages, where *n* is the configured value. Note that feedback is also sent every wal_sender_feedback / 2 seconds.
+* New `spock.log_origin_change` GUC to control logging of row origin changes to the PostgreSQL log. Origin changes caused by replication are no longer written to the `spock.resolutions` table, as they are informational and not true conflicts. Three modes are available:
+    * `none` — Do not log origin changes (default)
+    * `remote_only_differs` — Log only when a row from one remote publisher is updated by a different remote publisher
+    * `since_sub_creation` — Log origin changes for tuples modified after subscription creation (suppresses noise from pg_restored data)
+* New `sub_created_at` column on `spock.subscription` to help distinguish pre-existing data (e.g. from pg_restore) from post-subscription data.
+* COPY TO is considered read-only and can now be run when a node is in read-only mode.
+
+### Performance Improvements
+* Deferred `spock.progress` catalog writes. The progress table was previously updated on every committed transaction and every keepalive, causing significant table bloat and I/O overhead. Progress catalog writes are now batched and flushed at most once per second from the main apply loop. Shared memory is still updated immediately internally for correctness.
+
+### Bug Fixes
+* Fix initdb assertion failure in attoptions patch for PG15/16/17.
+* Fix two bugs in the table re-sync routine: WAL sending is now switched off during truncate and re-sync to prevent data loss, and the infinite wait was fixed when no more DML is committed by using the last committed LSN instead of the last received LSN.
+* Use NULL for unknown `local_origin` in `spock.resolutions` instead of an invalid origin ID when origin cannot be determined (e.g. pg_dump, frozen transactions, truncated commit timestamps). Also fixed off-by-one errors in `spock_conflict_row_to_json()` that were overwriting the `local_origin` NULL flag.
+* Fix Z0DAN initialization issue: `present_final_cluster_state` now executes a COMMIT to allow newly created subscriptions to update their state, and final cluster state now checks all subscriptions across the cluster.
+
+### Operational Improvements
+* `add_node` is now restricted to run only on a new (uninitialized) node, preventing accidental misuse.
+
+
 ## Spock 5.0.5 on Feb 12, 2026
 
 * Fix segfault that occurs when using new Postgres minor releases like 18.2.
