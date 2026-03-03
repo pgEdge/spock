@@ -7,7 +7,7 @@
 - [Building the Spock Documentation](README.md#building-the-spock-documentation)
 - [Basic Configuration and Usage](README.md#basic-configuration-and-usage)
 - [Upgrading a Spock Installation](docs/upgrading_spock.md)
-- [Advanced Configuration Options](docs/install_spock.md#advanced-configuration-options-for-spock)
+- [Advanced Configuration Options](docs/configuring.md)
 - [Spock Management Features](docs/managing/index.md)
 - [Modifying a Cluster](docs/modify/index.md)
 - [Monitoring your Cluster](docs/monitoring/index.md)
@@ -73,7 +73,7 @@ primary key, btree, for table "public.table_a"
 
 * `CHECK` constraints and `NOT NULL` constraints must be the same or more permissive on any standby node that acts only as a subscriber.
 
-For more information about the Spock extension's advanced functionality, visit [here](docs/features.md).
+For more information about the Spock extension's advanced functionality, visit the [Spock documentation](docs/install_spock.md).
 
 
 ## Building the Spock Extension

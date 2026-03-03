@@ -1,6 +1,6 @@
 # Configuring Spock
 
-Add the following `postgresql.conf` settings on each node in your Spock
+Add the following `postgresql.conf` settings on each node in your Spock 
 replication scenario before creating the Spock extension:
 
 ```sql
@@ -18,16 +18,11 @@ with your OS-specific restart command, connect with psql and create the Spock
 extension:
 
 ```sql
-[pg18]$ sudo -u postgres psql -U postgres -p 5432
-psql (18.1)
-Type "help" for help.
-
-postgres=# CREATE EXTENSION spock;
-CREATE EXTENSION
+CREATE EXTENSION spock;
 ```
 
 You will also need to modify your
-[`pg_hba.conf` file](https://www.postgresql.org/docs/18/auth-pg-hba-conf.html)
+[`pg_hba.conf` file](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html)
 to allow logical replication connections from localhost and between nodes.
 Logical replication connections are treated by `pg_hba.conf` as regular
 connections to the provider database.
@@ -52,6 +47,12 @@ functions adhere to the same rule previously described for
 `include_ddl_repset`. If a table possesses a defined primary key, it will be
 added into the `default` replication set; alternatively, they will be added
 to the `default_insert_only` replication set.
+
+### `spock.batch_inserts`
+
+`spock.batch_inserts` tells Spock to use batch insert mechanism if
+possible. The batch mechanism uses Postgres internal batch insert mode which
+is also used by `COPY` command.
 
 ### `spock.channel_counters`
 
@@ -159,9 +160,7 @@ exception log table:
 * `none` - Instructs the server to not log any operation or transactions to
   the exception log table.
 
-### `spock.exception_replay_queue_size` - DEPRECATED
-
-This parameter will not be supported after version 5.X.
+### `spock.exception_replay_queue_size`
 
 When Spock encounters a replication exception, it attempts to resolve the
 exception by entering exception-handling mode, based on the value of
@@ -171,8 +170,8 @@ transaction from memory.  This provides a massive speed and performance
 increase in the handling of the vast majority of exceptions.  The memory
 size is configurable with `spock.exception_replay_queue_size`.
 
-Now, Spock performs as specified by the
-[`spock.exception_behaviour`](#spock-exception_behaviour) parameter.
+If the transaction exceeds the configured size, Spock performs as specified
+by the [`spock.exception_behaviour`](#spock-exception_behaviour) parameter.
 
 ### `spock.extra_connection_options`
 
@@ -185,33 +184,14 @@ keepalive options, etc.
 the upstream server disappears unexpectedly. To disable them add
 `keepalives = 0` to `spock.extra_connection_options`.
 
-### `wal_sender_timeout`
+### `spock.feedback_frequency`
 
-For Spock replication, set `wal_sender_timeout` to a conservative value such
-as `5min` (300000ms) on each node in `postgresql.conf`:
-
-```
-wal_sender_timeout = '5min'
-```
-
-The default PostgreSQL value of `60s` can cause spurious disconnects when
-the subscriber is busy applying a large transaction and cannot send feedback
-in time. A higher value gives the apply worker enough headroom while still
-detecting truly dead connections. Liveness detection is primarily handled by
-TCP keepalives, and `spock.apply_idle_timeout` provides an additional
-subscriber-side safety net.
-
-### `spock.apply_idle_timeout`
-
-Maximum idle time (in seconds) before the apply worker reconnects to the
-provider. This acts as a safety net for detecting a hung walsender that keeps
-the TCP connection alive but stops sending data. The timer resets on any
-received message. Set to `0` to disable and rely solely on TCP keepalive for
-liveness detection. Default: `300` (5 minutes).
-
-```
-spock.apply_idle_timeout = 300
-```
+Controls how many WAL messages the apply worker processes before sending
+an LSN feedback packet to the provider. Lower values increase feedback
+overhead due to synchronous socket flushes; higher values reduce overhead
+during bulk catch-up. There is a time-based guard (wal_sender_timeout / 2)
+that ensures connection liveness regardless of this setting. The default
+is 200.
 
 ### `spock.include_ddl_repset`
 
@@ -252,22 +232,6 @@ The following configuration values are possible:
 logs all conflict resolutions to the `spock.resolutions` table. This option
 can only be set when the postmaster starts.
 
-### `spock.resolutions_retention_days`
-
-`spock.resolutions_retention_days` controls how long rows are kept in the
-`spock.resolutions` table. Rows with a `log_time` older than this many days
-are deleted automatically by the apply worker, which runs the cleanup at most
-once per day. The default is `100` days. Set to `0` to disable automatic
-cleanup entirely.
-
-This GUC has no effect when `spock.save_resolutions` is `off`.
-
-Cleanup can also be triggered manually at any time by a superuser:
-
-```sql
-SELECT spock.cleanup_resolutions();
-```
-
 ### `spock.stats_max_entries`
 
 `spock.stats_max_entries` specifies the maximum number of entries that can
@@ -282,5 +246,3 @@ the postmaster starts.  The parameter accepts values from `-1` to `INT_MAX`
   and be writable by the user running Postgres. The default is `empty`,
   which tells Spock to use the default temporary directory based on
   environment or operating system settings.
-
-

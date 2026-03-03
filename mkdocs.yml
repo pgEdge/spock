@@ -54,11 +54,11 @@ nav:
   - Creating a Two-Node Cluster: two_node_cluster.md
   - Using Advanced Configuration Options: configuring.md
   - Upgrading a Spock Installation: upgrading_spock.md
-  - Conflict Types and Resolution: conflict_types.md
-  - Conflict Avoidance and Delta-Apply Columns: conflicts.md
+  - Spock's Conflict Avoidance Options: conflicts.md
   - Spock's Management Features:
     - Managing a Spock Installation: managing/index.md
     - Replicating Partitioned Tables: managing/partition_mgmt.md
+    - Using Batch Inserts: managing/batch_inserts.md
     - Filtering Data: managing/filtering.md
     - Using Spock in Read-Only Mode: managing/read_only.md
     - Using a Trigger to Manage Replication Set Membership: managing/repset_trigger.md
@@ -72,6 +72,11 @@ nav:
       - Using Zodan Scripts and Workflows: modify/zodan/zodan_readme.md
       - Adding a Node with Zero Downtime: modify/zodan/zodan_tutorial.md
     - Adding a Node with Minimal Downtime with pgBackRest: modify/add_node_pgbackrest.md
+    - Using Spockctrl:
+      - Modifying your Cluster with Spockctrl: modify/spockctrl/index.md
+      - Using Spockctrl Functions: modify/spockctrl/spockctrl_functions.md
+      - Populating the spockctrl.json File: modify/spockctrl/spockctrl_json.md
+      - Using a Workflow File to Modify a Cluster: modify/spockctrl/spockctrl_workflow.md
   - Monitoring a Cluster:
     - Monitoring the Configuration and Health of a Cluster: monitoring/index.md
     - Finding Cluster Information: monitoring/spock_info.md
@@ -102,6 +107,7 @@ nav:
       - spock.repset_alter(): spock_functions/functions/spock_repset_alter.md
       - spock.repset_create(): spock_functions/functions/spock_repset_create.md
       - spock.repset_drop(): spock_functions/functions/spock_repset_drop.md
+      - spock.repset_list_tables(): spock_functions/functions/spock_repset_list_tables.md
       - spock.repset_remove_partition(): spock_functions/functions/spock_repset_remove_partition.md
       - spock.repset_remove_seq(): spock_functions/functions/spock_repset_remove_seq.md
       - spock.repset_remove_table(): spock_functions/functions/spock_repset_remove_table.md
@@ -119,15 +125,17 @@ nav:
       - spock.sub_resync_table(): spock_functions/functions/spock_sub_resync_table.md
       - spock.sub_show_status(): spock_functions/functions/spock_sub_show_status.md
       - spock.sub_show_table(): spock_functions/functions/spock_sub_show_table.md
+      - spock.sub_sync(): spock_functions/functions/spock_sub_sync.md
       - spock.sync_event(): spock_functions/functions/spock_sync_event.md
       - spock.sub_wait_for_sync(): spock_functions/functions/spock_sub_wait_for_sync.md
       - spock.version(): spock_functions/functions/spock_version.md
       - spock.version_num(): spock_functions/functions/spock_version_num.md
       - spock.wait_slot_confirm_lsn(): spock_functions/functions/spock_wait_slot_confirm_lsn.md
+      - spock.xact_timestamp_origin(): spock_functions/functions/spock_xact_timestamp_origin.md
   - Limitations: limitations.md
   - FAQ: FAQ.md
   - Release Notes: spock_release_notes.md
   - Internals:
     - Design: internals-doc/DESIGN.md
     - Output Plugin: internals-doc/OUTPUT.md
-    - Protocol: internals-doc/protocol.txt
+    - Protocol: internals-doc/protocol.md

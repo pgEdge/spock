@@ -18,11 +18,11 @@ For detailed information about using Spock to create a two-node cluster,
 visit [here](two_node_cluster.md).
 
 
-## Installing Spock with pgEdge Enterprise Postgres
+## Installing Spock with pgEdge Distributed or Enterprise Postgres
 
-The latest Spock extension is automatically installed with any
-[pgEdge Enterprise Postgres](https://docs.pgedge.com/enterprise) installation.
-A pgEdge deployment provides quick and easy access to:
+The latest Spock extension is automatically installed and created with any
+[pgEdge Distributed or Enterprise Postgres](https://docs.pgedge.com/)
+installation. A pgEdge deployment provides quick and easy access to:
 
 *  the latest minor version of your preferred Postgres version.
 *  Spock [functions and procedures](spock_functions/index.md).
@@ -76,33 +76,14 @@ other Postgres extension:
 ## Configuring Postgres for Spock Replication
 
 After installing Postgres on each node that will host a spock instance,
-use [initdb](https://www.postgresql.org/docs/18/app-initdb.html) to initialize
+use [initdb](https://www.postgresql.org/docs/current/app-initdb.html) to initialize
 a Postgres cluster. After initializing the cluster, you can connect
 with psql, and query the server for file locations and cluster details:
 
 ```sql
-[sdouglas@lima-pg3 pg18]$ sudo -u postgres psql -U postgres -p 5432
-psql (18.1)
-Type "help" for help.
-
-postgres=# SHOW data_directory;
+SHOW data_directory;
 SHOW config_file;
 SHOW hba_file;
-
-     data_directory     
-------------------------
- /var/lib/pgsql/18/data
-(1 row)
-
-              config_file               
-----------------------------------------
- /var/lib/pgsql/18/data/postgresql.conf
-(1 row)
-
-              hba_file              
-------------------------------------
- /var/lib/pgsql/18/data/pg_hba.conf
-(1 row)
 ```
 
 Then, use your choice of editor to update the `postgresql.conf` file, adding
@@ -117,36 +98,16 @@ shared_preload_libraries = 'spock'
 track_commit_timestamp = on
 ```
 
-**Note on replication origin states:**
-
-- **PostgreSQL 15-17:** The `max_replication_slots` parameter controls both the
-  number of replication slots *and* the number of replication origin states.
-  When sizing this parameter, account for both slots and origins (typically one
-  origin per subscription).
-
-- **PostgreSQL 18+:** A new parameter `max_active_replication_origins` was
-  introduced to separately control the number of replication origin states.
-  The default value is 10, which may be insufficient for clusters with many
-  subscriptions. Set this to at least the number of subscriptions plus some
-  headroom (similar sizing to `max_replication_slots`).
+For detailed information about advanced configuration options (GUCs),
+see [Using Advanced Configuration Options](configuring.md).
 
 After modifying the Postgres parameters, use your OS-specific command to 
-restart the Postgres server:
-
-```bash
-[sdouglas@lima-pg3 pg18]$ sudo systemctl restart postgresql-18
-[sdouglas@lima-pg3 pg18]$ sudo systemctl status postgresql-18
-● postgresql-18.service - PostgreSQL 18 database server
-     Loaded: loaded (/usr/lib/systemd/system/postgresql-18.service; enabled; preset: disabled)
-     Active: active (running) since Wed 2026-02-11 11:44:11 EST; 7s ago
-```
+restart the Postgres server.
 
 Then, connect to the psql command line, and create the spock extension:
   
 ```sql
-postgres=# CREATE EXTENSION spock;
-CREATE EXTENSION
-postgres=# 
+CREATE EXTENSION spock;
 ```
 
 On each node that will host spock, modify the
@@ -155,13 +116,13 @@ and allow connections between `n1` and `n2`. The following snippet is provided
 as an example only, and is not recommended for a production system as they
 will open your system for connection from any client:
 
-    ```sql
-    host    all          all          <node_1_IP_address>/32    trust
-    host    all          all          <node_2_IP_address>/32    trust
+```sql
+host    all          all          <node_1_IP_address>/32    trust
+host    all          all          <node_2_IP_address>/32    trust
 
-    host    replication  all          <node_1_IP_address>/32    trust
-    host    replication  all          <node_2_IP_address>/32    trust
-
+host    replication  all          <node_1_IP_address>/32    trust
+host    replication  all          <node_2_IP_address>/32    trust
+```
 
 
 ### Creating a Replication Scenario

@@ -37,24 +37,22 @@ You can have additional unique constraints upstream if the downstream consumer g
 
 Partial secondary unique indexes are permitted, but will be ignored for conflict resolution purposes.
 
-`spock.check_all_uc_indexes` is an experimental [GUC](https://github.com/pgEdge/spock/blob/main/docs/guc_settings.md) that adds `INSERT` conflict resolution by allowing Spock to consider all unique constraints, not just the primary key or replica identity.
+`spock.check_all_uc_indexes` is an experimental [GUC](configuring.md#spockcheck_all_uc_indexes) that adds `INSERT` conflict resolution by allowing Spock to consider all unique constraints, not just the primary key or replica identity.
 
 ### Unique constraints must not be deferrable
 
-Deferrable unique constraints and primary keys are **silently skipped** during
-INSERT conflict resolution. This means that if your only unique constraint on a
-table is deferrable, INSERT conflicts will not be detected, potentially leading
-to duplicate rows on subscriber nodes.
+Deferrable unique constraints and primary keys are skipped during INSERT
+conflict resolution. If the only unique constraint on a table is deferrable,
+INSERT conflicts will not be detected, which may lead to duplicate rows on
+subscriber nodes.
 
 On the downstream end, spock may also emit the error:
 
 `ERROR: spock doesn't support index rechecks needed for deferrable indexes`
 `DETAIL: relation "public"."test_relation" has deferrable indexes: "index1", "index2"`
 
-in certain apply scenarios.
-
-**Recommendation:** Ensure all tables have at least one non-deferrable unique
-constraint (preferably the primary key) for reliable conflict detection.
+in certain apply scenarios. Ensure all tables have at least one non-deferrable
+unique constraint (preferably the primary key) for reliable conflict detection.
 
 ### No replication queue flush
 
@@ -159,17 +157,20 @@ Note that DDL limitations apply, so extra care needs to be taken when using
 
 ### Delta-Apply Column Requirements
 
-Columns configured for Delta-Apply conflict resolution **must** have a `NOT NULL`
-constraint. If a NULL value is encountered during delta application, the apply
-worker will error with:
+Columns configured for Delta-Apply conflict resolution should have a `NOT NULL`
+constraint and `LOG_OLD_VALUE` enabled. If a NULL old value is encountered
+during delta application, Spock will fall back to applying the plain NEW value
+instead of computing a delta. While this fallback prevents errors, it can lead
+to unexpected results if the local value differs from the provider's old value.
 
-`ERROR: delta apply column can't operate NULL values`
-
-Ensure all Delta-Apply columns are defined with `NOT NULL` before enabling this feature.
+For reliable delta-apply behavior, ensure all Delta-Apply columns are defined
+with `NOT NULL`.
 
 ### Mixed Spock and Native Logical Replication
 
-Spock uses its own 16-bit node_id (derived from node name hash) to track transaction origins in commit timestamps, rather than PostgreSQL's RepOriginId. Both ID spaces overlap (0-65535), which can cause ambiguity if Spock and native PostgreSQL logical replication run on the same database.
-
-**Recommendation:** Avoid running Spock and native logical replication subscriptions on the same database.
+Spock uses its own 16-bit `node_id` (derived from the node name hash) to track
+transaction origins in commit timestamps, rather than PostgreSQL's
+`RepOriginId`. Both ID spaces overlap (0-65535), which can cause ambiguity if
+Spock and native PostgreSQL logical replication run on the same database. Avoid
+running Spock and native logical replication subscriptions on the same database.
 
