@@ -383,9 +383,9 @@ psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 600
 print STDERR "LR messages from active nodes has arrived to the new one\n";
 
 print STDERR "Wait for the N3 -> N1 sync message ...\n";
-psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600)");
+psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600, true)");
 print STDERR "Wait for the N3 -> N2 sync message ...\n";
-psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600)");
+psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600, true)");
 print STDERR "First LR transaction has arrived from new node to the active ones\n";
 
 print STDERR "Check the data consistency.\n";
