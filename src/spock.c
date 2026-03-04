@@ -148,6 +148,7 @@ int			spock_feedback_frequency;
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
+int			spock_apply_idle_timeout = 300;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
 static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
@@ -317,7 +318,7 @@ get_spock_table_oid(const char *table)
 	return reloid;
 }
 
-#define CONN_PARAM_ARRAY_SIZE 9
+#define CONN_PARAM_ARRAY_SIZE 10
 
 static PGconn *
 spock_connect_base(const char *connstr, const char *appname,
@@ -357,17 +358,32 @@ spock_connect_base(const char *connstr, const char *appname,
 	vals[i] = "1";
 	i++;
 	keys[i] = "keepalives_idle";
-	vals[i] = "20";
+	vals[i] = "10";
 	i++;
 	keys[i] = "keepalives_interval";
-	vals[i] = "20";
+	vals[i] = "5";
 	i++;
 	keys[i] = "keepalives_count";
-	vals[i] = "5";
+	vals[i] = "3";
 	i++;
 	keys[i] = "replication";
 	vals[i] = replication ? "database" : NULL;
 	i++;
+	/*
+	 * For replication connections, disable the server-side walsender timeout.
+	 * Liveness detection is handled by TCP keepalives (keepalives_idle /
+	 * keepalives_interval / keepalives_count above) on both sides, and by
+	 * spock.apply_idle_timeout on the subscriber side as a safety net for a
+	 * hung-but-connected walsender.  Leaving wal_sender_timeout active would
+	 * cause spurious disconnects whenever the subscriber is legitimately busy
+	 * applying a large transaction and cannot send 'r' feedback in time.
+	 */
+	if (replication)
+	{
+		keys[i] = "options";
+		vals[i] = "-c wal_sender_timeout=0";
+		i++;
+	}
 	keys[i] = NULL;
 	vals[i] = NULL;
 
@@ -1222,6 +1238,22 @@ _PG_init(void)
 							SpockOriginConflicts,
 							PGC_SUSET, 0,
 							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.apply_idle_timeout",
+							"Maximum idle time in seconds before apply worker reconnects",
+							"Safety net for detecting a hung walsender that keeps the "
+							"TCP connection alive but stops sending data. The timer "
+							"resets on any received message. Set to 0 to disable and "
+							"rely solely on TCP keepalive for liveness detection.",
+							&spock_apply_idle_timeout,
+							300,
+							0,
+							INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_S,
+							NULL,
+							NULL,
+							NULL);
 
 	if (IsBinaryUpgrade)
 		return;
