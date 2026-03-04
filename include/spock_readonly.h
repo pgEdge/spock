@@ -11,7 +11,7 @@
 typedef enum SpockReadonlyMode
 {
 	READONLY_OFF,
-	READONLY_USER,
+	READONLY_LOCAL,
 	READONLY_ALL
 } SpockReadonlyMode;
 
