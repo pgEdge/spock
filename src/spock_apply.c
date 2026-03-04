@@ -2434,7 +2434,7 @@ replication_handler(StringInfo s)
 	char		action = pq_getmsgbyte(s);
 
 	if (spock_readonly == READONLY_ALL)
-		elog(ERROR, "SPOCK %s: cluster is in read-only mode, not performing replication",
+		elog(PANIC, "SPOCK %s: cluster is in read-only mode, not performing replication",
 			 MySubscription->name);
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
@@ -2891,8 +2891,47 @@ stream_replay:
 				StringInfo	msg;
 				int			c;
 
+				CHECK_FOR_INTERRUPTS();
+
 				if (got_SIGTERM)
 					break;
+
+				if (ConfigReloadPending)
+				{
+					ConfigReloadPending = false;
+					ProcessConfigFile(PGC_SIGHUP);
+				}
+
+				/*
+				 * Do not apply new transactions if cluster is switched to
+				 * the readonly mode.
+				 */
+				if (spock_readonly == READONLY_ALL)
+				{
+					/*
+					 * Send feedback to keep walsender alive - we may avoid it
+					 * with introduction of TCP keepalive approach.
+					 */
+					maybe_send_feedback(applyconn, last_received,
+										&last_receive_timestamp);
+
+					/*
+					 * In case of an exception we can't break out of the loop
+					 * because exception processing code may also modify the
+					 * database. Wait briefly and continue to the next iteration.
+					 */
+					if (xact_had_exception)
+					{
+						rc = WaitLatchOrSocket(&MyProc->procLatch,
+								   WL_SOCKET_READABLE | WL_LATCH_SET |
+								   WL_TIMEOUT | WL_POSTMASTER_DEATH,
+								   fd, 1000L);
+
+						ResetLatch(&MyProc->procLatch);
+						continue;
+					}
+					break;
+				}
 
 				if (apply_replay_next == NULL)
 				{
@@ -2947,12 +2986,6 @@ stream_replay:
 					entry = apply_replay_next;
 					apply_replay_next = apply_replay_next->next;
 					queue_append = false;
-				}
-
-				if (ConfigReloadPending)
-				{
-					ConfigReloadPending = false;
-					ProcessConfigFile(PGC_SIGHUP);
 				}
 
 				/* Handle the message received or replayed */
@@ -3072,8 +3105,6 @@ stream_replay:
 
 				/* We must not have fallen out of MessageContext by accident */
 				Assert(CurrentMemoryContext == MessageContext);
-
-				CHECK_FOR_INTERRUPTS();
 			}
 
 			if (xact_had_exception)
