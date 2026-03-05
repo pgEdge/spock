@@ -314,6 +314,7 @@ spock_connect_base(const char *connstr, const char *appname,
 	PGconn	   *conn;
 	const char *keys[CONN_PARAM_ARRAY_SIZE];
 	const char *vals[CONN_PARAM_ARRAY_SIZE];
+	char		appname_buf[NAMEDATALEN];
 	StringInfoData s;
 
 	initStringInfo(&s);
@@ -327,13 +328,11 @@ spock_connect_base(const char *connstr, const char *appname,
 	keys[i] = "application_name";
 	if (suffix)
 	{
-		char		s[NAMEDATALEN];
-
-		snprintf(s, NAMEDATALEN,
+		snprintf(appname_buf, NAMEDATALEN,
 				 "%s_%s",
 				 shorten_hash(appname, NAMEDATALEN - strlen(suffix) - 2),
 				 suffix);
-		vals[i] = s;
+		vals[i] = appname_buf;
 	}
 	else
 		vals[i] = appname;
