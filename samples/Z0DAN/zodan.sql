@@ -1429,7 +1429,7 @@ BEGIN
 
                         -- Wait for this sync event on the new node where the subscription exists
                         PERFORM * FROM dblink(new_node_dsn,
-                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
+                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
                                    src_node_name, sync_lsn, timeout_ms)) AS t(result text);
 
                         IF verb THEN
@@ -1497,7 +1497,7 @@ BEGIN
 
                         -- Wait for this sync event on the new node where the subscription exists
                         PERFORM * FROM dblink(new_node_dsn,
-                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
+                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
                                    rec.node_name, sync_lsn, timeout_ms)) AS t(result text);
 
                         IF verb THEN
@@ -1694,7 +1694,7 @@ BEGIN
 
         -- Wait for sync event on source node
         BEGIN
-            remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s);',
+            remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true);',
                                rec.node_name, sync_lsn, timeout_ms);
             IF verb THEN
                 RAISE NOTICE '    Remote SQL for waiting sync event: %', remotesql;
@@ -1851,7 +1851,7 @@ BEGIN
 
     -- Wait for sync event on new node
     BEGIN
-        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s);', src_node_name, sync_lsn, timeout_ms);
+        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true);', src_node_name, sync_lsn, timeout_ms);
         IF verb THEN
             RAISE NOTICE '    Remote SQL for wait_for_sync_event on new node %: %', new_node_name, remotesql;
         END IF;
