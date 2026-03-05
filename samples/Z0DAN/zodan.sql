@@ -1450,7 +1450,8 @@ BEGIN
             CALL spock.verify_subscription_replicating(
                 new_node_dsn,
                 'sub_' || src_node_name || '_' || new_node_name,
-                verb
+                verb,
+				1200
             );
 
             RAISE NOTICE '    ✓ %', rpad('Enabling subscription ' || sub_name || '...', 120, ' ');
@@ -1512,7 +1513,8 @@ BEGIN
                 CALL spock.verify_subscription_replicating(
                     new_node_dsn,
                     'sub_'|| rec.node_name || '_' || new_node_name,
-                    verb
+                    verb,
+					1200
                 );
 
                 RAISE NOTICE '    ✓ %', rpad('Enabling subscription ' || sub_name || '...', 120, ' ');
