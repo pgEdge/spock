@@ -60,7 +60,7 @@ my $pg_bin      = $config->{pg_bin};
 
 # Compute path to node 2's PostgreSQL log
 my $parent_dir  = Cwd::abs_path(getcwd() . "/..");
-my $n2_logfile  = "$parent_dir/logs/00$node_ports->[1].log";
+my $n2_logfile  = "$parent_dir/tap/logs/00$node_ports->[1].log";
 
 # Verify both nodes are present
 my $n1 = scalar_query(1, "SELECT EXISTS (SELECT 1 FROM spock.node WHERE node_name = 'n1')");
@@ -142,7 +142,7 @@ is($val, 'row-A-updated', 'UPDATE replicated to node 2');
 # Allow time for any log flushing
 system_or_bail 'sleep', '2';
 my $log_content = get_log_content_since($n2_logfile, $log_pos);
-unlike($log_content, qr/CONFLICT:.*remote UPDATE on relation public\.test_origin/,
+unlike($log_content, qr/CONFLICT:.*remote update_origin_differs on relation public\.test_origin/,
     'since_sub_creation: no conflict logged for pg_restored data');
 
 # =============================================================================
@@ -162,7 +162,7 @@ BAIL_OUT("UPDATE did not replicate") unless $val eq 'from-n1-v2';
 
 system_or_bail 'sleep', '2';
 $log_content = get_log_content_since($n2_logfile, $log_pos);
-like($log_content, qr/CONFLICT:.*remote UPDATE on relation public\.test_origin/,
+like($log_content, qr/CONFLICT:.*remote update_origin_differs on relation public\.test_origin/,
     'since_sub_creation: conflict logged for post-subscription data');
 
 # =============================================================================
@@ -184,7 +184,7 @@ BAIL_OUT("UPDATE did not replicate") unless $val eq 'from-n1-v2b';
 
 system_or_bail 'sleep', '2';
 $log_content = get_log_content_since($n2_logfile, $log_pos);
-unlike($log_content, qr/CONFLICT:.*remote UPDATE on relation public\.test_origin/,
+unlike($log_content, qr/CONFLICT:.*remote update_origin_differs on relation public\.test_origin/,
     'none: no conflict logged');
 
 # =============================================================================
@@ -206,7 +206,7 @@ BAIL_OUT("UPDATE did not replicate") unless $val eq 'from-n1-v3';
 
 system_or_bail 'sleep', '2';
 $log_content = get_log_content_since($n2_logfile, $log_pos);
-unlike($log_content, qr/CONFLICT:.*remote UPDATE on relation public\.test_origin/,
+unlike($log_content, qr/CONFLICT:.*remote update_origin_differs on relation public\.test_origin/,
     'remote_only_differs: no conflict logged for locally-written tuple');
 
 # ---- teardown ---------------------------------------------------------------
