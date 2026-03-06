@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 28;
+use Test::More tests => 20;
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config scalar_query psql_or_bail);
 
