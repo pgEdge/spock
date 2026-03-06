@@ -1879,7 +1879,7 @@ DECLARE
     sub_rec  RECORD;
     rec RECORD;
     wait_count integer := 0;
-    max_wait_count integer := 300; -- Wait up to 300 seconds
+    max_wait_count integer := 1200; -- Wait up to 1200 seconds
 BEGIN
     -- Let remote subscriptions update their subscription's state.
     COMMIT;
