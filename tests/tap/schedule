@@ -18,6 +18,7 @@ test: 010_zodan_add_remove_python
 test: 012_zodan_basics
 
 test: 013_origin_change_restore
+test: 014_pgdump_restore_conflict
 
 # Tests, consuming too much time to be launched on each check:
 #test: 011_zodan_sync_third
