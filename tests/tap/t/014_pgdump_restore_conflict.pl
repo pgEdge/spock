@@ -1,8 +1,9 @@
 use strict;
 use warnings;
-use Test::More tests => 27;
+use Test::More tests => 28;
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config scalar_query psql_or_bail);
+
 
 # =============================================================================
 # Test: 014_pgdump_restore_conflict.pl - pg_dump/restore Conflict Scenario
@@ -22,10 +23,10 @@ use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_te
 # - This causes UPDATE_UPDATE conflicts with identical data
 #
 # This test verifies:
-# - The conflict behavior is reproducible
-# - local_origin = NULL for pg_dump loaded rows (SPOC-442)
-# - Conflicts occur even with identical data
-# - Resolution is apply_remote (correct behavior)
+# - pg_restored rows predate the subscription
+# - Origin-change conflicts are suppressed for pre-subscription data
+# - Data replicates correctly without conflicts
+# - Subsequent updates also work without conflicts
 # =============================================================================
 
 # Create 2-node cluster
@@ -39,6 +40,37 @@ my $dbname = $config->{db_name};
 my $db_user = $config->{db_user};
 my $db_password = $config->{db_password};
 my $pg_bin = $config->{pg_bin};
+
+# ---- log helpers -------------------------------------------------------------
+
+sub get_log_size {
+    my ($logfile) = @_;
+    return -s $logfile || 0;
+}
+
+sub get_log_content_since {
+    my ($logfile, $offset) = @_;
+    open my $fh, '<', $logfile or die "Cannot open $logfile: $!";
+    seek $fh, $offset, 0;
+    local $/;
+    my $content = <$fh>;
+    close $fh;
+    return $content // '';
+}
+
+sub wait_for_value {
+    my ($node, $query, $expected, $timeout) = @_;
+    $timeout //= 30;
+    for my $i (1..($timeout * 10)) {
+        my $result = scalar_query($node, $query);
+        return $result if $result eq $expected;
+        system_or_bail 'sleep', '0.1' if $i < $timeout * 10;
+    }
+    return scalar_query($node, $query);
+}
+
+# Compute path to node 2's PostgreSQL log (logging_collector writes to <datadir>/logs/)
+my $n2_logfile = "$node_datadirs->[1]/logs/00$node_ports->[1].log";
 
 # =============================================================================
 # PART 1: Setup - Create data on node1 (publisher/writer)
@@ -176,13 +208,10 @@ is($sub_status, 't', 'Subscription is enabled');
 
 diag("=== Part 5: Make updates on publisher, verify conflicts ===");
 
-# Clear any existing conflicts
-psql_or_bail(2, "TRUNCATE spock.resolutions");
-
-# Configure conflict logging - ensure conflicts are logged to table
+# Configure conflict logging and origin-change detection
 psql_or_bail(2, "ALTER SYSTEM SET spock.conflict_log_level = 'LOG'");
-psql_or_bail(2, "ALTER SYSTEM SET spock.save_resolutions = true");
 psql_or_bail(2, "ALTER SYSTEM SET spock.conflict_resolution = 'last_update_wins'");
+psql_or_bail(2, "ALTER SYSTEM SET spock.log_origin_change = 'since_sub_creation'");
 psql_or_bail(2, "SELECT pg_reload_conf()");
 
 # Need to restart apply worker for GUC changes to take effect
@@ -191,6 +220,8 @@ system_or_bail 'sleep', '2';
 psql_or_bail(2, "SELECT spock.sub_enable('pgdump_test_sub', true)");
 system_or_bail 'sleep', '3';
 
+# Record log position before updates
+my $log_pos = get_log_size($n2_logfile);
 
 # Make updates on node1 (publisher)
 psql_or_bail(1, "UPDATE customer_data SET balance = balance + 100 WHERE id = 1");
@@ -198,60 +229,74 @@ psql_or_bail(1, "UPDATE customer_data SET balance = balance + 200 WHERE id = 2")
 psql_or_bail(1, "UPDATE customer_data SET balance = balance + 50 WHERE id = 3");
 pass('Updates executed on node1');
 
-# Wait for replication
-system_or_bail 'sleep', '5';
-
-# Verify data was replicated correctly
+# Wait for replication by polling for data
 my $alice_balance_n1 = scalar_query(1, "SELECT balance FROM customer_data WHERE id = 1");
-my $alice_balance_n2 = scalar_query(2, "SELECT balance FROM customer_data WHERE id = 1");
+my $alice_balance_n2 = wait_for_value(2,
+    "SELECT balance FROM customer_data WHERE id = 1",
+    $alice_balance_n1);
 is($alice_balance_n1, $alice_balance_n2, 'Balance replicated correctly (data matches)');
 
 # =============================================================================
 # PART 6: Verify conflicts occurred with local_origin = NULL
 # =============================================================================
 
-diag("=== Part 6: Verify conflicts with local_origin = NULL ===");
+diag("=== Part 6: Verify NO conflicts for pg_restored (pre-subscription) data ===");
 
-# Check for conflicts
-my $conflict_count = scalar_query(2, "SELECT COUNT(*) FROM spock.resolutions");
-ok($conflict_count >= 3, "Conflicts were logged (count: $conflict_count)");
+# Allow time for log flushing
+system_or_bail 'sleep', '2';
+my $log_content = get_log_content_since($n2_logfile, $log_pos);
 
-# Verify conflict type is update_origin_differs (v6) or update_update (v5)
-# This conflict type indicates the local row has a different/no origin than incoming
-my $origin_conflicts = scalar_query(2,
-    "SELECT COUNT(*) FROM spock.resolutions WHERE conflict_type IN ('update_origin_differs', 'update_update')"
-);
-ok($origin_conflicts >= 3, "Origin-related conflicts occurred (count: $origin_conflicts)");
+# pg_restored rows predate the subscription, so origin-change conflicts should
+# be suppressed (skip pre-subscription origin-change conflicts)
+unlike($log_content, qr/CONFLICT:.*update_origin_differs on relation public\.customer_data/,
+    'No origin-change conflicts logged for pg_restored (pre-subscription) data');
 
-# KEY VERIFICATION: local_origin should be NULL (no replication origin)
-# This proves the rows from pg_dump have no origin tracking
-# SPOC-442: We now store NULL instead of -1 for unknown origin
-my $no_origin_conflicts = scalar_query(2,
-    "SELECT COUNT(*) FROM spock.resolutions WHERE local_origin IS NULL"
-);
-ok($no_origin_conflicts >= 3, "Conflicts have local_origin = NULL (no origin tracking): $no_origin_conflicts");
+# Verify data was applied without conflict (rows updated correctly)
+my $bob_balance_n1 = scalar_query(1, "SELECT balance FROM customer_data WHERE id = 2");
+my $bob_balance_n2 = wait_for_value(2,
+    "SELECT balance FROM customer_data WHERE id = 2",
+    $bob_balance_n1);
+is($bob_balance_n1, $bob_balance_n2, 'Bob balance replicated correctly');
 
-# Verify resolution is apply_remote (v6)
-my $remote_apply_count = scalar_query(2,
-    "SELECT COUNT(*) FROM spock.resolutions WHERE conflict_resolution = 'apply_remote'"
-);
-ok($remote_apply_count >= 3, "Resolution is apply_remote (count: $remote_apply_count)");
+my $charlie_balance_n1 = scalar_query(1, "SELECT balance FROM customer_data WHERE id = 3");
+my $charlie_balance_n2 = wait_for_value(2,
+    "SELECT balance FROM customer_data WHERE id = 3",
+    $charlie_balance_n1);
+is($charlie_balance_n1, $charlie_balance_n2, 'Charlie balance replicated correctly');
 
-# Display conflict details for debugging
-my $conflict_details = `$pg_bin/psql -h $host -p $node_ports->[1] -U $db_user -d $dbname -c "
-    SELECT conflict_type, conflict_resolution, local_origin, remote_origin
-    FROM spock.resolutions
-    ORDER BY log_time DESC
-    LIMIT 5
-" 2>&1`;
-diag("Conflict details:\n$conflict_details");
+pass('Pre-subscription data updates applied without conflicts');
 
 
 # =============================================================================
-# PART 7: Verify data is identical despite conflicts
+# PART 7: Verify post-subscription origin change IS logged
 # =============================================================================
 
-diag("=== Part 7: Verify data is identical despite conflicts ===");
+diag("=== Part 7: Verify post-subscription origin change IS logged ===");
+
+# Update locally on node 2 to change the origin (becomes locally-written,
+# with a commit timestamp after subscription creation)
+psql_or_bail(2, "UPDATE customer_data SET balance = balance + 1 WHERE id = 4");
+
+my $log_pos_part7 = get_log_size($n2_logfile);
+
+# Now update the same row from node 1 — this should trigger an origin-change conflict
+psql_or_bail(1, "UPDATE customer_data SET balance = balance + 500 WHERE id = 4");
+my $diana_balance_n1 = scalar_query(1, "SELECT balance FROM customer_data WHERE id = 4");
+my $diana_balance_n2 = wait_for_value(2,
+    "SELECT balance FROM customer_data WHERE id = 4",
+    $diana_balance_n1);
+is($diana_balance_n1, $diana_balance_n2, 'Post-subscription update replicated correctly');
+
+system_or_bail 'sleep', '2';
+my $log_part7 = get_log_content_since($n2_logfile, $log_pos_part7);
+like($log_part7, qr/CONFLICT:.*update_origin_differs on relation public\.customer_data/,
+    'Origin-change conflict IS logged for post-subscription local update');
+
+# =============================================================================
+# PART 8: Verify data is identical despite conflicts
+# =============================================================================
+
+diag("=== Part 8: Verify data is identical after all updates ===");
 
 # Final data verification
 my $final_checksum_n1 = scalar_query(1,
@@ -263,37 +308,27 @@ my $final_checksum_n2 = scalar_query(2,
 is($final_checksum_n1, $final_checksum_n2, 'Final data checksum matches - replication worked correctly');
 
 # =============================================================================
-# PART 8: Verify subsequent updates don't cause conflicts
+# PART 9: Verify subsequent updates don't cause conflicts
 # =============================================================================
 
-diag("=== Part 8: Verify subsequent updates don't cause new conflicts ===");
+diag("=== Part 9: Verify subsequent replicated updates don't cause new conflicts ===");
 
-# Clear conflicts
-psql_or_bail(2, "TRUNCATE spock.resolutions");
-
-# Get current conflict count (should be 0)
-my $pre_update_conflicts = scalar_query(2, "SELECT COUNT(*) FROM spock.resolutions");
-is($pre_update_conflicts, '0', 'Conflict table cleared');
+# Record log position before the subsequent update
+my $log_pos_part9 = get_log_size($n2_logfile);
 
 # Make another update on node1
 psql_or_bail(1, "UPDATE customer_data SET balance = balance + 10 WHERE id = 1");
-system_or_bail 'sleep', '3';
 
-# Check if new conflict occurred
+# Wait for replication
+my $expected_bal = scalar_query(1, "SELECT balance FROM customer_data WHERE id = 1");
+wait_for_value(2, "SELECT balance FROM customer_data WHERE id = 1", $expected_bal);
+
+# Check if new conflict occurred in the log
 # After the first update, the row should have proper origin, so no conflict
-my $post_update_conflicts = scalar_query(2, "SELECT COUNT(*) FROM spock.resolutions");
-
-if ($post_update_conflicts eq '0') {
-    pass('No new conflicts after row was updated via replication (origin now tracked)');
-} else {
-    # This might still conflict if the row wasn't properly updated
-    diag("Unexpected conflicts after second update: $post_update_conflicts");
-    my $new_conflict_origin = scalar_query(2,
-        "SELECT local_origin FROM spock.resolutions ORDER BY conflict_time DESC LIMIT 1"
-    );
-    diag("New conflict local_origin: $new_conflict_origin");
-    fail('Expected no new conflicts after row has proper origin');
-}
+system_or_bail 'sleep', '2';
+my $log_part9 = get_log_content_since($n2_logfile, $log_pos_part9);
+unlike($log_part9, qr/CONFLICT:.*update_origin_differs on relation public\.customer_data/,
+    'No new conflicts after row was updated via replication (origin now tracked)');
 
 # =============================================================================
 # CLEANUP
