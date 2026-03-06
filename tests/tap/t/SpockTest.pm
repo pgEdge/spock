@@ -7,6 +7,7 @@ use Test::More;
 use TAP::Formatter::Color;
 use TAP::Harness;
 use File::Path qw(make_path);
+use File::Basename;
 use Cwd;
 
 our @EXPORT_OK = qw(
@@ -41,9 +42,12 @@ sub {
     die "PostgreSQL binaries not found in PATH. Please ensure psql, initdb, and postgres are available." unless $PG_BIN;
 }->();
 
-# Logging
-my $LOG_FILE = $ENV{SPOCKTEST_LOG_FILE} // "logs/spocktest_$$.log";
-eval { make_path('logs') };
+# Logging - derive test name from script filename
+my $test_name = basename($0, '.pl');  # e.g., "001_basic" from "t/001_basic.pl"
+# Use TESTLOGDIR from environment (set by Makefile) or fall back to relative logs/
+my $LOG_DIR = $ENV{TESTLOGDIR} // "logs";
+eval { make_path($LOG_DIR) };
+my $LOG_FILE = $ENV{SPOCKTEST_LOG_FILE} // "${LOG_DIR}/${test_name}.log";
 
 # Redirect all STDERR (from Perl and child processes like backticks) to the per-test log
 {
@@ -81,6 +85,11 @@ my @node_datadirs = ();
 # Add PostgreSQL bin to PATH
 $ENV{PATH} = "$PG_BIN:$ENV{PATH}";
 
+# Disable user's psqlrc to prevent interference with test output
+# (e.g., "\pset pager" produces "Pager usage is off." which breaks tests)
+$ENV{PSQLRC} = '/dev/null';
+$ENV{PSQL_HISTORY} = '/dev/null';
+
 sub get_test_config {
     return {
         node_count => $node_count,
@@ -91,6 +100,7 @@ sub get_test_config {
         db_password => $DB_PASSWORD,
         pg_bin => $PG_BIN,
         node_datadirs => \@node_datadirs,
+        log_dir => $LOG_DIR,
         log_file => $LOG_FILE
     };
 }
@@ -108,7 +118,7 @@ sub system_or_bail {
 sub psql_or_bail {
     my ($node_num, $cmd) = @_;
     my $node_port = ($BASE_PORT + $node_num - 1);
-    my @psql_cmd = ("$PG_BIN/psql", '-p', $node_port, '-d', $DB_NAME, '-t', '-c', $cmd);
+    my @psql_cmd = ("$PG_BIN/psql", '-X', '-p', $node_port, '-d', $DB_NAME, '-t', '-c', $cmd);
 
     my $rc = _run_cmd_logged_wait(@psql_cmd);
     if ($rc != 0) {
@@ -157,9 +167,7 @@ sub create_postgresql_conf {
 
     # Enable logging
     print $conf "logging_collector=on\n";
-    my $cwd = Cwd::getcwd();
-    my $parent = Cwd::abs_path("$cwd/..");
-    print $conf "log_directory='$parent/logs'\n";
+    print $conf "log_directory='$LOG_DIR'\n";
     print $conf "log_filename='00$port.log'\n";
     print $conf "log_rotation_age=1d\n";
     print $conf "log_rotation_size=10MB\n";
@@ -208,11 +216,9 @@ sub create_cluster {
         system_or_bail "$PG_BIN/initdb", '-A', 'trust', '-D', $node_datadirs[$i];
     }
 
-    # Create logs directory in current working directory
-    my $current_dir = getcwd();
-    my $logs_dir = "$current_dir/logs";
-    system_or_bail 'mkdir', '-p', $logs_dir;
-    system_or_bail 'chmod', '755', $logs_dir;
+    # Ensure logs directory exists (uses TESTLOGDIR from env or relative logs/)
+    system_or_bail 'mkdir', '-p', $LOG_DIR;
+    system_or_bail 'chmod', '755', $LOG_DIR;
 
     # Copy configuration files if they exist
     if (-f 'regress-pg_hba.conf') {
@@ -397,7 +403,7 @@ sub destroy_cluster {
 sub run_on_node {
     my ($node_num, $cmd) = @_;
     my $node_port = ($BASE_PORT + $node_num - 1);
-    my $result = `$PG_BIN/psql -p $node_port -d $DB_NAME -t -c "$cmd"`;
+    my $result = `$PG_BIN/psql -X -p $node_port -d $DB_NAME -t -c "$cmd"`;
     chomp($result);
     return $result;
 }

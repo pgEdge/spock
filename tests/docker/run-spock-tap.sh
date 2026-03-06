@@ -5,6 +5,11 @@
 
 source "${HOME}/.bashrc"
 
+# TAP tests create their own PostgreSQL instances via initdb, which only have
+# the OS user (pgedge) as superuser. Unset Docker-specific credentials to avoid
+# "role does not exist" errors.
+unset PGUSER PGPASSWORD PGDATABASE
+
 # PGVER should be previously set in the environment
 if [ -z "${PGVER}" ]
 then

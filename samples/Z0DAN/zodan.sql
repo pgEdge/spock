@@ -4,6 +4,7 @@
 -- Required Spock Version: 5.0.4 or later
 -- ============================================================================
 -- Adds a new node to the cluster of Spock.
+-- NOTE: Run the add_node procedure on the new node you are adding, not on an existing cluster node.
 
 -- Usage:
 -- CALL add_node(
@@ -970,6 +971,31 @@ DECLARE
     new_db_exists boolean;
 BEGIN
     RAISE NOTICE 'Phase 1: Validating source and new node prerequisites';
+
+    -- Verify that add_node is being called on the new node, not on an existing cluster node
+    DECLARE
+        local_sysid bigint;
+        remote_sysid bigint;
+        local_dbname text;
+        remote_dbname text;
+    BEGIN
+        SELECT system_identifier INTO local_sysid FROM pg_control_system();
+        local_dbname := current_database();
+
+        SELECT * FROM dblink(new_node_dsn,
+            'SELECT system_identifier FROM pg_control_system()')
+            AS t(sysid bigint) INTO remote_sysid;
+        SELECT * FROM dblink(new_node_dsn,
+            'SELECT current_database()')
+            AS t(dbname text) INTO remote_dbname;
+
+        IF local_sysid != remote_sysid OR local_dbname != remote_dbname THEN
+            RAISE NOTICE '    [FAILED] %', rpad('add_node must be run on the new node', 60, ' ');
+            RAISE EXCEPTION 'Exiting add_node: This procedure must be run on the new node being added. The new_node_dsn (%) does not match the current database connection. Please connect to the new node and re-run.', new_node_dsn;
+        ELSE
+            RAISE NOTICE '    OK: %', rpad('Verifying add_node is running on the new node', 120, ' ');
+        END IF;
+    END;
 
     -- Check if database specified in new_node_dsn exists on new node
 

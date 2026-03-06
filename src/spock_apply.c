@@ -920,6 +920,23 @@ handle_commit(StringInfo s)
 		dlist_push_tail(&lsn_mapping, &flushpos->node);
 		MemoryContextSwitchTo(MessageContext);
 	}
+	else
+	{
+		/*
+		 * Empty transaction (e.g., sync_event message with no actual DML).
+		 * PostgreSQL's RecordTransactionCommit() only calls
+		 * replorigin_session_advance() when WAL is written, which doesn't
+		 * happen for empty transactions.
+		 *
+		 * We explicitly advance the replication origin here to ensure
+		 * pg_replication_origin_status.remote_lsn is updated.
+		 */
+		if (replorigin_session_origin != InvalidRepOriginId &&
+			replorigin_session_origin != DoNotReplicateId)
+		{
+			replorigin_session_advance(end_lsn, InvalidXLogRecPtr);
+		}
+	}
 
 	/*
 	 * For forwarded transactions, advance the replication origin for the
@@ -3570,8 +3587,18 @@ process_syncing_tables(XLogRecPtr end_lsn)
 				sync->status = SYNC_STATUS_READY;
 				sync->statuslsn = InvalidXLogRecPtr;
 			}
+			else if (newsync->status == SYNC_STATUS_FAILED)
+			{
+				/*
+				 * Failed SYNC operation should be ignored until someone processes
+				 * the error and changes the status.
+				 */
+				sync->status = SYNC_STATUS_FAILED;
+				sync->statuslsn = InvalidXLogRecPtr;
+			}
 			else
 				memcpy(sync, newsync, sizeof(SpockSyncStatus));
+
 			CommitTransactionCommand();
 			MemoryContextSwitchTo(MessageContext);
 
@@ -3668,7 +3695,12 @@ process_syncing_tables(XLogRecPtr end_lsn)
 		int			nworkers = 0;
 		SpockSyncStatus *sync = (SpockSyncStatus *) lfirst(lc);
 
-		if (sync->status == SYNC_STATUS_SYNCDONE || sync->status == SYNC_STATUS_READY)
+		/*
+		 * Ignore already synced tables as well as failed ones
+		 */
+		if (sync->status == SYNC_STATUS_SYNCDONE ||
+			sync->status == SYNC_STATUS_READY ||
+			sync->status == SYNC_STATUS_FAILED)
 			continue;
 
 		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);

@@ -1,25 +1,43 @@
-## NAME 
+## NAME
 
-`spock.sub_remove_repset()`
+spock.sub_remove_repset()
 
 ### SYNOPSIS
 
-`spock.sub_remove_repset (subscription_name name, replication_set name)`
- 
+spock.sub_remove_repset (subscription_name name, replication_set name)
+
+### RETURNS
+
+  - true if the replication set was successfully removed.
+
+  - false if the operation fails.
+
 ### DESCRIPTION
-    
-Remove a replication set from a subscription. 
 
-There is also a `postgresql.conf` parameter, `spock.extra_connection_options`, that you can use to assign connection options that apply to all connections made by spock. This can be a useful place to set up custom keepalive options, etc.
+Removes a replication set from an existing subscription.
 
-spock defaults to enabling TCP keepalives to ensure that it notices when the upstream server disappears unexpectedly. To disable them add `keepalives = 0` to `spock.extra_connection_options`.
+This function modifies a subscription to stop receiving changes from the
+specified replication set on the provider node. The subscription will
+immediately stop consuming events from the removed replication set.
 
-### EXAMPLE 
+Only the replication set association is removed. This does not affect data
+that has already been replicated, nor does it drop any tables or other
+database objects.
 
-`spock.sub_remove_repset ('sub_n2n1', 'demo_repset')`
- 
-### POSITIONAL ARGUMENTS
-    subscription_name
-        The name of the existing subscription.
-    replication_set 
-        The name of replication set to remove.
+This function writes metadata into the Spock catalogs.
+
+This command must be executed by a superuser.
+
+### ARGUMENTS
+
+subscription_name
+
+    The name of an existing subscription.
+
+replication_set
+
+    The name of the replication set to remove from the subscription.
+
+### EXAMPLE
+
+    SELECT spock.sub_remove_repset('sub_n2_n1', 'custom_repset');
