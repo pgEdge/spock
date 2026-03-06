@@ -58,9 +58,6 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
-#if PG_VERSION_NUM >= 170000
-#include "utils/injection_point.h"
-#endif
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
@@ -1001,7 +998,8 @@ static List *
 copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 						   const char *target_dsn,
 						   const char *origin_snapshot,
-						   List *replication_sets, const char *origin_name)
+						   List *replication_sets, const char *origin_name,
+						   List **progress_out)
 {
 	PGconn	   *origin_conn;
 	PGconn	   *target_conn;
@@ -1011,6 +1009,13 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	/* Connect to origin node. */
 	origin_conn = spock_connect(origin_dsn, sub->name, "copy");
 	start_copy_origin_tx(origin_conn, origin_snapshot);
+
+	/*
+	 * Read progress info within the same snapshot used for COPY so that
+	 * the LSN values are consistent with the data we are about to copy.
+	 */
+	if (progress_out)
+		*progress_out = adjust_progress_info(origin_conn);
 
 	/* Get tables to copy from origin node. */
 	tables = spock_get_remote_repset_tables(origin_conn,
@@ -1229,49 +1234,7 @@ spock_sync_subscription(SpockSubscription *sub)
 													sub->slot_name,
 													use_failover_slot, &lsn);
 
-#if PG_VERSION_NUM >= 180000
-		INJECTION_POINT("spock-before-sync-progress-read", "wait");
-#elif PG_VERSION_NUM >= 170000
-		INJECTION_POINT("spock-before-sync-progress-read");
-#endif
-
-		/*
-		 * Read progress info using the same snapshot that will be used for
-		 * COPY. This ensures that the LSN values we capture are consistent
-		 * with the transactional snapshot: we see exactly the same committed
-		 * transactions the COPY will include. Without this, transactions
-		 * from other nodes could be committed between the progress read and
-		 * the snapshot creation, causing the new node to either miss data
-		 * or re-apply already-copied rows.
-		 */
-		{
-			PGresult   *res;
-			PGresult   *rollback_res;
-
-			PG_TRY();
-			{
-				start_copy_origin_tx(origin_conn, snapshot);
-				progress_entries_list = adjust_progress_info(origin_conn);
-				res = PQexec(origin_conn, "ROLLBACK");
-				if (PQresultStatus(res) != PGRES_COMMAND_OK)
-					elog(WARNING, "ROLLBACK on origin node failed: %s",
-						 PQresultErrorMessage(res));
-				PQclear(res);
-			}
-			PG_CATCH();
-			{
-				rollback_res = PQexec(origin_conn, "ROLLBACK");
-				if (PQresultStatus(rollback_res) != PGRES_COMMAND_OK)
-					elog(WARNING, "ROLLBACK on origin node failed: %s",
-						 PQresultErrorMessage(rollback_res));
-				PQclear(rollback_res);
-				PQfinish(origin_conn);
-				PG_RE_THROW();
-			}
-			PG_END_TRY();
-
-			PQfinish(origin_conn);
-		}
+		PQfinish(origin_conn);
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
@@ -1339,7 +1302,8 @@ spock_sync_subscription(SpockSubscription *sub)
 														sub->target_if->dsn,
 														snapshot,
 														sub->replication_sets,
-														sub->slot_name);
+														sub->slot_name,
+														&progress_entries_list);
 
 					/*
 					 * Arrange replication status according to the just copied
