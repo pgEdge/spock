@@ -70,18 +70,24 @@ flowchart LR
 
 Our source of truth has to be: n3, n4, or n5
 
-Our first step is to clean up.  First, we will use Spock commands to drop 
+Our first step is to clean up.  First, we will use Spock commands to drop
 the subscriptions to n1, and then drop node n1 from the cluster.
 
-Then, on our survivor (n2), and for each table, run: 
+Then, on our survivor (n2), and for each table, run:
 
   `table-diff --preserve-origin n1 --until <n1_failure_time>`
 
-Then, on our survivor (n2), for each table with differences, run the ACE 
+Then, on our survivor (n2), for each table with differences, run the ACE
 `table-repair` command, specifying the `--recovery-mode`,
 `--source-of-truth n3`, and `--preserve-origin` options.
 
 These steps ensure that n2 contains all of the rows that originated on n1.
+
+> **Note:** These are high-level steps. Detailed instructions for each step,
+> including exact commands and options, are provided later in this document
+> starting at [Phase 1: Assess the Damage](#phase-1-assess-the-damage). In
+> some cases, tables may still show differences after an initial repair; see
+> the [Troubleshooting](#troubleshooting) section for guidance.
 
 ### Scenario 2: Multiple Nodes have Failed, and One Node is Lagging
 
@@ -247,8 +253,12 @@ place:
     Recovery is a multi-step process. Take your time, and run the
     validation steps so you can confirm that all tables match before
     resuming normal operations. To preserve the origin ID and commit
-    timestamp for repaired rows, include the `--preserve-origin` flag 
-    with every table-repair command in Phase 4.
+    timestamp for repaired rows, include the `--preserve-origin` flag
+    with every table-repair command in Phase 4. In some cases, tables
+    may still show differences after an initial repair (for example, if
+    writes occurred during the diff or repair). The
+    [Troubleshooting](#troubleshooting) section at the end of this
+    document covers the most common causes and how to resolve them.
 
 ## Overview of the Recovery Workflow
 
@@ -284,6 +294,28 @@ Connect to your surviving nodes and check replication status. You need to
 confirm which nodes are behind and which have all of the data. You can use
 [`spock.sub_show_status()`](../spock_functions/functions/spock_sub_show_status.md)
 to see subscription status and any lag.
+
+For example, connect to n2 and run:
+
+```sql
+SELECT * FROM spock.sub_show_status();
+```
+
+The output will list each subscription with its current status and lag. A
+subscription that shows a large lag or a status of `down` or `initializing`
+when it should be `replicating` indicates that the node is behind. For
+example:
+
+```
+ sub_name  | status      | provider_node | replication_sets                      | lag
+-----------+-------------+---------------+---------------------------------------+-----------
+ sub_n2_n1 | down        | n1            | {default,default_insert_only,ddl_sql} | 00:05:12
+ sub_n2_n3 | replicating | n3            | {default,default_insert_only,ddl_sql} | 00:00:00
+```
+
+In this output, `sub_n2_n1` is down and lagging — that confirms n2 did not
+receive all of n1's transactions before n1 failed. The subscriptions to n3,
+n4, and n5 are still healthy.
 
 Determine the approximate time when the failed node (or nodes) failed.
 You'll need this timestamp for the ACE commands in Phase 3 and 4. If you
@@ -584,9 +616,17 @@ across the survivors:
 ```
 
 If ACE reports that the tables match, n2 has been successfully recovered.
-You can then resume normal operations. If any table still shows
-differences, review the diff report and consider re-running repair for that
-table or checking for ongoing writes during the diff.
+At this point you can resume normal operations: re-enable or recreate any
+subscriptions that were dropped during cleanup (for example, subscriptions
+from n2 to n3, n4, and n5 so that n2 receives new writes), and allow
+application traffic to flow again. If writes were occurring on other nodes
+during the repair, a final table-diff run (without `--preserve-origin` or
+`--until`) will confirm that n2 has caught up completely.
+
+If any table still shows differences, review the diff report and consider
+re-running repair for that table or checking for ongoing writes during the
+diff. See the [Troubleshooting](#troubleshooting) section for common causes
+and remedies.
 
 ```mermaid
 flowchart LR
@@ -715,6 +755,104 @@ with `--preserve-origin`; check the diff file and ACE logs.
 Re-run `table-diff` without `--preserve-origin` to see the current state. If
 writes occurred during repair, run diff again and repair if needed. For large
 tables, consider performing a chunked repair with `--table-filter`.
+
+### Source node fails mid-replay
+
+If the node you chose as your source of truth (e.g., n3) fails or becomes
+unavailable while ACE is still running repairs, stop the repair immediately
+and switch to a different fully-synchronized survivor before continuing.
+
+1. Confirm which remaining nodes still have complete data (re-run
+   `spock.sub_show_status()` on each one and check for lag).
+2. Pick a new source of truth (e.g., n4 or n5) and re-run `table-repair`
+   with `--source-of-truth n4` for any tables that were not yet fully
+   repaired.
+
+!!! warning
+
+    If your cluster has only three nodes and the source-of-truth node also
+    fails mid-replay, you may have no fully-synchronized survivor left. In
+    that situation you cannot guarantee a complete, conflict-free repair and
+    some data loss is possible. Minimize this risk by keeping at least one
+    additional warm standby or by pausing application writes before starting
+    the recovery.
+
+### Recovery fails entirely (non-Spock failure)
+
+If the recovery cannot be completed — for example, because the lagging node
+itself has suffered hardware or OS failure during the repair process — you
+may need to rebuild it from scratch rather than repair it in place. In that
+case, remove the damaged node from the cluster and add a fresh replacement
+using the ZODAN node-management procedures:
+
+- **Remove the damaged node** – Use
+  [`spock.node_drop()`](../spock_functions/functions/spock_node_drop.md)
+  (and drop related subscriptions) on the surviving nodes to clean up the
+  cluster registry.
+- **Add a replacement node** – Use ZODAN's `add_node` procedure to bring a
+  new node into the cluster. ZODAN handles slot creation, initial sync, and
+  subscription wiring automatically. See the
+  [ZODAN documentation](../modify/zodan/index.md) and the
+  [ZODAN tutorial](../modify/zodan/zodan_tutorial.md) for step-by-step
+  instructions.
+
+---
+
+## Post-Recovery Validation Checklist
+
+After completing all repair steps, work through the following checklist
+before returning the cluster to normal production traffic.
+
+### Replication Status
+
+- [ ] Run `SELECT * FROM spock.sub_show_status();` on every node and confirm
+  all subscriptions show `replicating` with zero (or near-zero) lag.
+- [ ] Confirm that subscriptions dropped during Phase 2 cleanup have been
+  re-created and are active.
+- [ ] Verify that the recovered node (n2) appears in `SELECT * FROM spock.node;`
+  on all surviving nodes and that its DSN is correct.
+
+### Replication Slot Cleanup
+
+- [ ] Run `SELECT slot_name, active, restart_lsn FROM pg_replication_slots;`
+  on each node and confirm there are no stale or inactive slots left over
+  from the failed node or from the recovery process.
+- [ ] If any orphaned slots remain (for example, a slot for n1 that was
+  never dropped), remove them with
+  `SELECT pg_drop_replication_slot('<slot_name>');` on the node that owns
+  the slot.
+
+### Data Integrity Check
+
+- [ ] Re-run `table-diff` on all repaired tables **without**
+  `--preserve-origin` or `--until` to confirm the full table content
+  matches across all nodes:
+
+    ```bash
+    ./ace table-diff --nodes n2,n3,n4,n5 --output json \
+      mycluster public.<table_name>
+    ```
+
+- [ ] Confirm ACE reports no differences for every table.
+- [ ] Spot-check row counts on the recovered node against a known-good
+  survivor for critical tables:
+
+    ```sql
+    SELECT COUNT(*) FROM public.customers;
+    ```
+
+- [ ] If `track_commit_timestamp = on`, verify that origin IDs and commit
+  timestamps on repaired rows match the source of truth (use
+  `pg_xact_commit_timestamp()` and `spock.xact_commit_timestamp_origin()`).
+
+### Final Sign-off
+
+- [ ] Monitor replication lag for at least 15–30 minutes after re-enabling
+  application traffic to confirm the recovered node is keeping up.
+- [ ] Review PostgreSQL logs on the recovered node for any replication
+  errors or warnings.
+- [ ] Document the recovery: nodes affected, failure time used for
+  `--until`, source of truth used, and any tables that required re-repair.
 
 ---
 
