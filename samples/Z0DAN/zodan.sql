@@ -1795,9 +1795,17 @@ BEGIN
                     CONTINUE;
                 END IF;
 
-                target_lsn := commit_lsn;
+                -- Advance to the other node's current WAL LSN, not just the
+                -- Phase-3 slot creation LSN (commit_lsn).  By Phase 7, N3 has
+                -- received all of N2's changes up through the Phase-6 sync point
+                -- via sub_n1_n3's initial copy.  Replaying from commit_lsn causes
+                -- "row not found" errors when identity-column UPDATEs are replayed
+                -- (the old PK value is already gone on N3).  Skipping to N2's
+                -- current WAL is safe: the gap is covered by sub_n1_n3 streaming.
+                remotesql := 'SELECT pg_current_wal_lsn()';
+                SELECT * FROM dblink(rec.dsn, remotesql) AS t(lsn pg_lsn) INTO target_lsn;
                 IF target_lsn IS NULL OR target_lsn <= current_lsn THEN
-                    RAISE NOTICE '    - Slot % already at or beyond target LSN (current: %, target: %)', slot_name, current_lsn, target_lsn;
+                    RAISE NOTICE '    - Slot % already at or beyond current LSN (current: %, target: %)', slot_name, current_lsn, target_lsn;
                     CONTINUE;
                 END IF;
 
@@ -1811,18 +1819,18 @@ BEGIN
                 RAISE NOTICE '    OK: %', rpad('Advanced slot ' || slot_name || ' from ' || current_lsn || ' to ' || target_lsn, 120, ' ');
 
                 -- Advance the replication origin on the new node to match the slot LSN.
+                -- add_node is always called ON the new node (validated in Phase 1),
+                -- so we can call pg_replication_origin_advance directly here.
                 -- Without this the apply worker starts at 0/0, replays already-known
                 -- WAL, and may hit "row not found" errors that disable the subscription.
                 BEGIN
-                    PERFORM dblink_exec(new_node_dsn,
-                        format('SELECT pg_replication_origin_advance(%L, %L::pg_lsn)',
-                               slot_name, target_lsn));
+                    PERFORM pg_replication_origin_advance(slot_name, target_lsn);
                     IF verb THEN
                         RAISE NOTICE '    OK: %', rpad('Advanced replication origin ' || slot_name || ' on new node to ' || target_lsn, 120, ' ');
                     END IF;
                 EXCEPTION
                     WHEN OTHERS THEN
-                        RAISE EXCEPTION '    ✗ %', rpad('Advancing replication origin ' || slot_name || ' on new node (error: ' || SQLERRM || ')', 120, ' ');
+                        RAISE EXCEPTION '    ✗ Advancing replication origin % on new node (error: %)', slot_name, SQLERRM;
                 END;
             END;
         EXCEPTION
