@@ -76,7 +76,7 @@ psql_or_bail(3, "ALTER SYSTEM SET log_statement_stats TO off");
 psql_or_bail(3, "SELECT pg_reload_conf()");
 
 print STDERR "Initialize pgbench database and wait for initial sync on N1 and N2 ...\n";
-system_or_bail "$pg_bin/pgbench", '-i', '-s', 1, '-R', 3, '-h', $host,
+system_or_bail "$pg_bin/pgbench", '-i', '-s', 1, '-h', $host,
 							'-p', $node_ports->[0], '-U', $db_user, $dbname;
 # Wait until tables and data will be sent to N2
 psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
@@ -99,11 +99,11 @@ my $pgbench_stderr1='';
 my $pgbench_stdout2='';
 my $pgbench_stderr2='';
 my $pgbench_handle1 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 80, '-j', 3, '-c', 3, '-R', 3,
 	'-h', $host, '-p', $node_ports->[0], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout1, '2>', \$pgbench_stderr1);
 my $pgbench_handle2 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 80, '-j', 3, '-c', 3, '-R', 3,
 	'-h', $host, '-p', $node_ports->[1], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout2, '2>', \$pgbench_stderr2);
 $pgbench_handle1->pump();
@@ -241,11 +241,11 @@ $pgbench_stderr1='';
 $pgbench_stdout2='';
 $pgbench_stderr2='';
 $pgbench_handle1 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 80, '-j', 3, '-c', 3, '-R', 3,
 	'-h', $host, '-p', $node_ports->[0], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout1, '2>', \$pgbench_stderr1);
 $pgbench_handle2 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 80, '-j', 3, '-c', 3, '-R', 3,
 	'-h', $host, '-p', $node_ports->[1], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout2, '2>', \$pgbench_stderr2);
 $pgbench_handle1->pump();
@@ -316,11 +316,11 @@ $pgbench_stderr1='';
 $pgbench_stdout2='';
 $pgbench_stderr2='';
 $pgbench_handle1 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 80, '-j', 3, '-c', 3, '-R', 3,
 	'-h', $host, '-p', $node_ports->[0], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout1, '2>', \$pgbench_stderr1);
 $pgbench_handle2 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 80, '-j', 3, '-c', 3, '-R', 3,
 	'-h', $host, '-p', $node_ports->[1], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout2, '2>', \$pgbench_stderr2);
 $pgbench_handle1->pump();
