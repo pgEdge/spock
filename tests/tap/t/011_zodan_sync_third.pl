@@ -76,7 +76,7 @@ psql_or_bail(3, "ALTER SYSTEM SET log_statement_stats TO off");
 psql_or_bail(3, "SELECT pg_reload_conf()");
 
 print STDERR "Initialize pgbench database and wait for initial sync on N1 and N2 ...\n";
-system_or_bail "$pg_bin/pgbench", '-i', '-s', 1, '-h', $host,
+system_or_bail "$pg_bin/pgbench", '-i', '-s', 1, '-R', 3, '-h', $host,
 							'-p', $node_ports->[0], '-U', $db_user, $dbname;
 # Wait until tables and data will be sent to N2
 psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');

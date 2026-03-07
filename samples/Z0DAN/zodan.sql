@@ -1451,7 +1451,7 @@ BEGIN
                 new_node_dsn,
                 'sub_' || src_node_name || '_' || new_node_name,
                 verb,
-				1200
+				120
             );
 
             RAISE NOTICE '    ✓ %', rpad('Enabling subscription ' || sub_name || '...', 120, ' ');
@@ -1514,7 +1514,7 @@ BEGIN
                     new_node_dsn,
                     'sub_'|| rec.node_name || '_' || new_node_name,
                     verb,
-					1200
+					120
                 );
 
                 RAISE NOTICE '    ✓ %', rpad('Enabling subscription ' || sub_name || '...', 120, ' ');
