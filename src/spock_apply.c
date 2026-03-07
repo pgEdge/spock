@@ -229,8 +229,6 @@ static bool should_log_exception(bool failed);
 static ApplyReplayEntry * apply_replay_entry_create(int r, char *buf);
 static void apply_replay_entry_free(ApplyReplayEntry * entry);
 static void apply_replay_queue_reset(void);
-static void maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
-								TimestampTz *last_receive_timestamp);
 static void append_feedback_position(XLogRecPtr recvpos);
 static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
 								  XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
@@ -2838,25 +2836,24 @@ stream_replay:
 			}
 
 			/*
-			 * The walsender is supposed to ping us for a status update every
-			 * wal_sender_timeout / 2 milliseconds. If we don't get those, we
-			 * assume that we have lost the connection.
-			 *
-			 * Note: keepalive configuration is supposed to cover this but is
-			 * apparently unreliable.
+			 * Connection liveness is handled by TCP keepalive (primary)
+			 * and PQstatus == CONNECTION_BAD (above). The idle timeout
+			 * below is a safety net for the case where the walsender
+			 * process is alive but hung -- TCP probes succeed because the
+			 * kernel ACKs them, but no data is being sent.
 			 */
-			if (rc & WL_TIMEOUT)
+			if (rc & WL_TIMEOUT && spock_apply_idle_timeout > 0)
 			{
 				TimestampTz timeout;
 
 				timeout = TimestampTzPlusMilliseconds(last_receive_timestamp,
-													  (wal_sender_timeout * 3) / 2);
+													  (long) spock_apply_idle_timeout * 1000L);
 				if (GetCurrentTimestamp() > timeout)
 				{
 					MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
-					elog(ERROR, "SPOCK %s: terminating apply due to missing "
-						 "walsender ping",
-						 MySubscription->name);
+					elog(ERROR, "SPOCK %s: no data received for %d seconds, "
+						 "reconnecting (spock.apply_idle_timeout)",
+						 MySubscription->name, spock_apply_idle_timeout);
 				}
 			}
 
@@ -2878,8 +2875,6 @@ stream_replay:
 
 					/* We are not in replay mode so receive from the stream */
 					r = PQgetCopyData(applyconn, &buf, 1);
-
-					last_receive_timestamp = GetCurrentTimestamp();
 
 					/* Check for errors */
 					if (r == -1)
@@ -2911,6 +2906,14 @@ stream_replay:
 							PQfreemem(buf);
 						break;
 					}
+
+					/*
+					 * We received actual data. Update the idle-timeout clock
+					 * only here, after confirming r > 0, so that a WL_TIMEOUT
+					 * spin with no incoming data does not silently reset the
+					 * timer and mask a hung walsender.
+					 */
+					last_receive_timestamp = GetCurrentTimestamp();
 
 					/*
 					 * We have a valid message, create an apply queue entry
@@ -2946,16 +2949,6 @@ stream_replay:
 					start_lsn = pq_getmsgint64(msg);
 					end_lsn = pq_getmsgint64(msg);
 					pq_getmsgint64(msg);	/* sendTime */
-
-					/*
-					 * Call maybe_send_feedback before last_received is
-					 * updated. This ordering guarantees that feedback LSN
-					 * never advertises a position beyond what has actually
-					 * been received and processed. Prevents skipping over
-					 * unapplied changes due to premature flush LSN.
-					 */
-					maybe_send_feedback(applyconn, last_received,
-										&last_receive_timestamp);
 
 					if (last_received < start_lsn)
 						last_received = start_lsn;
@@ -3922,39 +3915,6 @@ apply_replay_queue_reset(void)
 	apply_replay_bytes = 0;
 
 	MemoryContextReset(ApplyReplayContext);
-}
-
-/*
- * Check if we should send feedback based on message count or timeout.
- * Resets internal state if feedback is sent.
- */
-static void
-maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
-					TimestampTz *last_receive_timestamp)
-{
-	static int	w_message_count = 0;
-	TimestampTz now = GetCurrentTimestamp();
-
-	w_message_count++;
-
-	/*
-	 * Send feedback if wal_sender_timeout/2 has passed or after 10 'w'
-	 * messages.
-	 */
-	if (TimestampDifferenceExceeds(*last_receive_timestamp, now, wal_sender_timeout / 2) ||
-		w_message_count >= 10)
-	{
-		elog(DEBUG2, "SPOCK %s: force sending feedback after %d 'w' messages or timeout",
-			 MySubscription->name, w_message_count);
-
-		/*
-		 * We need to send feedback to the walsender process to avoid remote
-		 * wal_sender_timeout.
-		 */
-		send_feedback(applyconn, lsn_to_send, now, true);
-		*last_receive_timestamp = now;
-		w_message_count = 0;
-	}
 }
 
 /*
