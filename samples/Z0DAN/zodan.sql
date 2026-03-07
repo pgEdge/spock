@@ -1809,6 +1809,21 @@ BEGIN
 
                 PERFORM * FROM dblink(rec.dsn, remotesql) AS t(result text);
                 RAISE NOTICE '    OK: %', rpad('Advanced slot ' || slot_name || ' from ' || current_lsn || ' to ' || target_lsn, 120, ' ');
+
+                -- Advance the replication origin on the new node to match the slot LSN.
+                -- Without this the apply worker starts at 0/0, replays already-known
+                -- WAL, and may hit "row not found" errors that disable the subscription.
+                BEGIN
+                    PERFORM dblink_exec(new_node_dsn,
+                        format('SELECT pg_replication_origin_advance(%L, %L::pg_lsn)',
+                               slot_name, target_lsn));
+                    IF verb THEN
+                        RAISE NOTICE '    OK: %', rpad('Advanced replication origin ' || slot_name || ' on new node to ' || target_lsn, 120, ' ');
+                    END IF;
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        RAISE EXCEPTION '    ✗ %', rpad('Advancing replication origin ' || slot_name || ' on new node (error: ' || SQLERRM || ')', 120, ' ');
+                END;
             END;
         EXCEPTION
             WHEN OTHERS THEN
