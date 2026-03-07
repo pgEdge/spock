@@ -51,7 +51,7 @@ extern bool spock_save_resolutions;
 typedef enum
 {
 	/* The row to be inserted violates unique constraint */
-	SPOCK_CT_INSERT_EXISTS,
+	SPOCK_CT_INSERT_EXISTS = 0,
 
 	/* The row to be updated was modified by a different origin */
 	SPOCK_CT_UPDATE_ORIGIN_DIFFERS,
@@ -75,6 +75,12 @@ typedef enum
 	SPOCK_CT_DELETE_LATE = 101
 
 } SpockConflictType;
+
+/*
+ * SPOCK_CT_DELETE_LATE is excluded because it is not yet tracked in conflict
+ * statistics.
+ */
+#define SPOCK_CONFLICT_NUM_TYPES (SPOCK_CT_DELETE_MISSING + 1)
 
 extern int spock_conflict_resolver;
 extern int spock_conflict_log_level;

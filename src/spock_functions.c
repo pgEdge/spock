@@ -86,6 +86,9 @@
 
 #include "spock_apply.h"
 #include "spock_conflict.h"
+#if PG_VERSION_NUM >= 180000
+#include "spock_conflict_stat.h"
+#endif
 #include "spock_dependency.h"
 #include "spock_executor.h"
 #include "spock_node.h"
@@ -590,6 +593,9 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 		sub.skip_schema = textarray_to_list(skip_schema_names);
 
 	create_subscription(&sub);
+#if PG_VERSION_NUM >= 180000
+	spock_stat_create_subscription(sub.id);
+#endif
 
 	/* Create progress entry to track commit ts per local/remote origin */
 	spock_group_attach(MyDatabaseId, localnode->node->id, originif.nodeid);
@@ -664,6 +670,9 @@ spock_drop_subscription(PG_FUNCTION_ARGS)
 
 		/* Drop the actual subscription. */
 		drop_subscription(sub->id);
+#if PG_VERSION_NUM >= 180000
+		spock_stat_drop_subscription(sub->id);
+#endif
 
 		/*
 		 * The rest is different depending on if we are doing this on provider
