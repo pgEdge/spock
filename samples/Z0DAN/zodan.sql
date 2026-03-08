@@ -1795,17 +1795,32 @@ BEGIN
                     CONTINUE;
                 END IF;
 
-                -- Advance to the other node's current WAL LSN, not just the
-                -- Phase-3 slot creation LSN (commit_lsn).  By Phase 7, N3 has
-                -- received all of N2's changes up through the Phase-6 sync point
-                -- via sub_n1_n3's initial copy.  Replaying from commit_lsn causes
-                -- "row not found" errors when identity-column UPDATEs are replayed
-                -- (the old PK value is already gone on N3).  Skipping to N2's
-                -- current WAL is safe: the gap is covered by sub_n1_n3 streaming.
-                remotesql := 'SELECT pg_current_wal_lsn()';
-                SELECT * FROM dblink(rec.dsn, remotesql) AS t(lsn pg_lsn) INTO target_lsn;
+                -- Advance the sub_n2_n3 slot to the N2 LSN stored in N3's
+                -- spock.progress for N2.  This value was written during
+                -- sub_n1_n3's initial-copy sync by adjust_progress_info(),
+                -- which copies N1's spock.progress[N2] (= the last N2 commit
+                -- N1 had applied at snapshot time, P_snap) into N3.
+                --
+                -- Starting sub_n2_n3 from P_snap is the only correct choice:
+                -- N3's N2 rows are in exactly their P_snap state (from the
+                -- initial copy via N1), so there are no "row not found"
+                -- errors.  Starting after P_snap skips changes N3 needs;
+                -- starting before P_snap replays already-applied changes
+                -- whose primary key may have been toggled, also causing
+                -- "row not found" errors.
+                SELECT p.remote_commit_lsn INTO target_lsn
+                FROM spock.progress p
+                JOIN spock.node n ON n.node_id = p.remote_node_id
+                WHERE n.node_name = rec.node_name;
+
+                IF target_lsn IS NULL THEN
+                    RAISE NOTICE '    WARNING: No spock.progress entry for %, falling back to pg_current_wal_lsn()', rec.node_name;
+                    remotesql := 'SELECT pg_current_wal_lsn()';
+                    SELECT * FROM dblink(rec.dsn, remotesql) AS t(lsn pg_lsn) INTO target_lsn;
+                END IF;
+
                 IF target_lsn IS NULL OR target_lsn <= current_lsn THEN
-                    RAISE NOTICE '    - Slot % already at or beyond current LSN (current: %, target: %)', slot_name, current_lsn, target_lsn;
+                    RAISE NOTICE '    - Slot % already at or beyond P_snap LSN (current: %, target: %)', slot_name, current_lsn, target_lsn;
                     CONTINUE;
                 END IF;
 
