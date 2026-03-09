@@ -1329,7 +1329,7 @@ spock_sync_subscription(SpockSubscription *sub)
 					 * Arrange replication status according to the just copied
 					 * data.
 					 */
-					spock_group_progress_update_list(progress_entries_list);
+					spock_group_progress_force_set_list(progress_entries_list);
 
 					/* Store info about all the synchronized tables. */
 					StartTransactionCommand();

@@ -687,3 +687,87 @@ spock_group_progress_update_list(List *lst)
 	 */
 	list_free_deep(lst);
 }
+
+/*
+ * spock_group_progress_force_set_list
+ *
+ * Like spock_group_progress_update_list, but force-overwrites the shmem entry
+ * regardless of timestamp order. Used during ZODAN (add_node) to record P_snap
+ * — the replication origin LSN from which a new subscription should begin
+ * streaming. On the second or later ZODAN cycle the shmem entry for this
+ * (node, remote_node) pair already exists with a high timestamp from the
+ * previous cycle's apply worker. The normal MAX-by-timestamp semantics in
+ * progress_update_struct would silently discard the P_snap value, causing
+ * Phase 7 to read the stale (too-advanced) LSN and skip transactions that N3
+ * never received — resulting in data divergence.
+ *
+ * The fix: zero out remote_commit_ts of the existing entry before calling
+ * progress_update_struct, so the condition `dest->ts < src->ts` is always true.
+ * After the subscription's apply worker starts it will update the entry with
+ * genuine timestamps and normal MAX semantics resume correctly.
+ */
+void
+spock_group_progress_force_set_list(List *lst)
+{
+	ListCell *lc;
+
+	if (!SpockGroupHash || !SpockCtx)
+	{
+		elog(WARNING, "SpockGroupHash is not initialized; force-set skipped");
+		list_free_deep(lst);
+		return;
+	}
+
+	foreach (lc, lst)
+	{
+		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
+		SpockGroupEntry	   *entry;
+		bool				found;
+
+		spock_apply_progress_add_to_wal(sap);
+
+		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
+		entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &sap->key,
+												HASH_ENTER, &found);
+
+		if (entry == NULL)
+		{
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+			elog(WARNING, "SpockGroupHash is full, cannot force-set progress for group "
+				 "(dbid=%u, node_id=%u, remote_node_id=%u)",
+				 sap->key.dbid, sap->key.node_id, sap->key.remote_node_id);
+			continue;
+		}
+
+		if (!found)
+		{
+			init_progress_fields(&entry->progress);
+			pg_atomic_init_u32(&entry->nattached, 0);
+			ConditionVariableInit(&entry->prev_processed_cv);
+		}
+		else
+		{
+			/*
+			 * Reset the timestamp so progress_update_struct's MAX-by-timestamp
+			 * guard always passes.  The existing LSN fields are also cleared so
+			 * the assertions inside progress_update_struct remain consistent
+			 * (remote_insert_lsn >= remote_commit_lsn).
+			 */
+			init_progress_fields(&entry->progress);
+		}
+
+		progress_update_struct(&entry->progress, sap);
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+
+		elog(LOG, "SPOCK: force-set spock.progress %d->%d to "
+			 "remote_commit_ts='%s' "
+			 "remote_commit_lsn=%X/%X remote_insert_lsn=%X/%X",
+			 sap->key.remote_node_id, MySubscription->target->id,
+			 timestamptz_to_str(sap->remote_commit_ts),
+			 LSN_FORMAT_ARGS(sap->remote_commit_lsn),
+			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
+	}
+
+	list_free_deep(lst);
+}
