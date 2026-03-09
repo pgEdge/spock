@@ -1346,6 +1346,73 @@ BEGIN
                 RAISE EXCEPTION '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
 
+        -- CRITICAL: Wait for the source node to commit all changes from this
+        -- "other" node up to at least the slot creation LSN (L_slot).
+        --
+        -- WHY THIS IS NECESSARY:
+        --   Phase 3 creates a slot at L_slot on node N2.
+        --   Phase 5 (after Phase 4) takes a snapshot of N1 to copy to N3.
+        --   The snapshot's view of N2 data is limited to N1's remote_commit_lsn
+        --   for N2 at snapshot time, which we call P_snap.
+        --
+        --   Phase 4 fires a sync_event on N2 and calls wait_for_sync_event on N1,
+        --   which waits for N1's pg_replication_origin_status.remote_lsn >= sync_lsn.
+        --   However remote_lsn tracks WAL STREAM position (updated per WAL record),
+        --   while remote_commit_lsn tracks COMMITTED TRANSACTIONS only.
+        --   Under load, remote_lsn can be far ahead of remote_commit_lsn because
+        --   there are in-flight (received but not yet committed) transactions on N1.
+        --
+        --   If P_snap < L_slot, N3's initial copy has N2 data only up to P_snap,
+        --   but the sub_n2_n3 slot starts delivering from L_slot. N2 changes in
+        --   [P_snap, L_slot) are neither in the snapshot nor in the slot: LOST.
+        --
+        --   By waiting here until N1's remote_commit_lsn for N2 >= L_slot, we
+        --   guarantee P_snap >= L_slot when Phase 5 takes the snapshot, closing
+        --   this data-loss gap completely.
+        BEGIN
+            DECLARE
+                src_progress_lsn  pg_lsn;
+                wait_iters        integer := 0;
+                max_wait_iters    integer := 2400;  -- 20 minutes (0.5s per iter)
+                progress_sql      text;
+            BEGIN
+                progress_sql := format(
+                    'SELECT p.remote_commit_lsn '
+                    'FROM spock.progress p '
+                    'JOIN spock.node n ON n.node_id = p.remote_node_id '
+                    'WHERE p.node_id = (SELECT node_id FROM spock.node_info()) '
+                    '  AND n.node_name = %L',
+                    rec.node_name);
+
+                RAISE NOTICE '    - Waiting for source node % to commit % changes up to slot LSN %...',
+                             src_node_name, rec.node_name, _commit_lsn;
+
+                LOOP
+                    SELECT * FROM dblink(src_dsn, progress_sql)
+                        AS t(lsn pg_lsn) INTO src_progress_lsn;
+
+                    EXIT WHEN src_progress_lsn IS NOT NULL
+                              AND src_progress_lsn >= _commit_lsn;
+
+                    IF wait_iters >= max_wait_iters THEN
+                        RAISE WARNING '    Timeout waiting for source node commit catchup (last seen: %)', src_progress_lsn;
+                        EXIT;
+                    END IF;
+
+                    PERFORM pg_sleep(0.5);
+                    wait_iters := wait_iters + 1;
+                END LOOP;
+
+                RAISE NOTICE '    OK: %', rpad(
+                    'Source node ' || src_node_name || ' committed ' || rec.node_name
+                    || ' changes up to ' || COALESCE(src_progress_lsn::text, 'unknown')
+                    || ' (needed >= ' || _commit_lsn || ')', 120, ' ');
+            END;
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE WARNING '    Could not verify source commit catchup for %: %', rec.node_name, SQLERRM;
+        END;
+
         -- Create disabled subscription on new node from "other" node
         BEGIN
 			sub_name := 'sub_' || rec.node_name || '_' || new_node_name;
