@@ -19,6 +19,9 @@ our @EXPORT_OK = qw(
     get_test_config
     scalar_query
     psql_or_bail
+    wait_for_sub_status
+    wait_for_exception_log
+    wait_for_pg_ready
 );
 
 # Test configuration
@@ -412,6 +415,46 @@ sub scalar_query {
     my $result = run_on_node($node_num, $cmd);
     $result =~ s/\s+//g;
     return $result;
+}
+
+# Poll subscription status until it matches $expected or timeout expires.
+sub wait_for_sub_status {
+    my ($node_num, $sub_name, $expected, $timeout) = @_;
+    $timeout //= 30;
+    for (1 .. $timeout) {
+        my $st = scalar_query($node_num,
+            "SELECT status FROM spock.sub_show_status() " .
+            "WHERE subscription_name = '$sub_name'");
+        return 1 if defined $st && $st eq $expected;
+        sleep(1);
+    }
+    return 0;
+}
+
+# Poll exception_log until at least one row matches $where or timeout expires.
+sub wait_for_exception_log {
+    my ($node_num, $where, $timeout) = @_;
+    $timeout //= 30;
+    for (1 .. $timeout) {
+        my $cnt = scalar_query($node_num,
+            "SELECT count(*) FROM spock.exception_log WHERE $where");
+        return 1 if defined $cnt && $cnt >= 1;
+        sleep(1);
+    }
+    return 0;
+}
+
+# Poll pg_isready until the server accepts connections or timeout expires.
+sub wait_for_pg_ready {
+    my ($host, $port, $pg_bin, $timeout) = @_;
+    $pg_bin //= $PG_BIN;
+    $timeout //= 30;
+    for (1 .. $timeout) {
+        my $rc = system("$pg_bin/pg_isready -h $host -p $port -q 2>/dev/null");
+        return 1 if $rc == 0;
+        sleep(1);
+    }
+    return 0;
 }
 
 # Ensure cleanup on module destruction
