@@ -1783,9 +1783,10 @@ BEGIN
                         remotesql := format('SELECT pg_replication_slot_advance(%L, %L::pg_lsn)', src_slot_name, target_lsn);
                         PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(result text);
                         
-                        -- Advance the replication origin - CRITICAL for correctness
-                        PERFORM pg_replication_origin_advance(src_slot_name, target_lsn);
-                        RAISE NOTICE '    OK: Advanced source slot % from %s to %s', src_slot_name, current_lsn, target_lsn;
+                        -- Advance the replication origin on the new node via dblink, using the correct origin name
+                        remotesql := format('SELECT pg_replication_origin_advance(%L, %L::pg_lsn)', src_slot_name, target_lsn);
+                        PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(result text);
+                        RAISE NOTICE '    OK: Advanced replication origin % on new node to %s', src_slot_name, target_lsn;
                     ELSE
                         RAISE NOTICE '    Slot % already at or beyond snapshot LSN', src_slot_name;
                     END IF;
