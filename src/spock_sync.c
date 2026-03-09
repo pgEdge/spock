@@ -1234,6 +1234,26 @@ spock_sync_subscription(SpockSubscription *sub)
 													sub->slot_name,
 													use_failover_slot, &lsn);
 
+		/*
+		 * Capture the origin's progress for all peer nodes RIGHT NOW,
+		 * immediately after the replication slot snapshot was exported.
+		 *
+		 * spock.progress reads SpockGroupHash shmem, which is not
+		 * MVCC-consistent.  If we read it later (e.g. during the COPY
+		 * phase, which can run for minutes), remote apply workers will
+		 * have advanced it far beyond the snapshot point.  Reading
+		 * immediately after CREATE_REPLICATION_SLOT minimises the race
+		 * window to a sub-millisecond socket round-trip, keeping
+		 * progress_entries_list as close to P_snap_actual as possible.
+		 *
+		 * In ZODAN, Phase 7 reads this value from spock.progress on the
+		 * new node to determine where sub_Nx_N3 should start replaying.
+		 * A value even slightly ahead of P_snap_actual causes sub_Nx_N3
+		 * to skip WAL that the new node has not yet received, leading to
+		 * "row not found" errors on PK-changing workloads.
+		 */
+		progress_entries_list = adjust_progress_info(origin_conn);
+
 		PQfinish(origin_conn);
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
@@ -1303,7 +1323,7 @@ spock_sync_subscription(SpockSubscription *sub)
 														snapshot,
 														sub->replication_sets,
 														sub->slot_name,
-														&progress_entries_list);
+														NULL);
 
 					/*
 					 * Arrange replication status according to the just copied
