@@ -22,7 +22,7 @@ DECLARE
 	progress_lsn	pg_lsn;
 BEGIN
 	IF origin_id IS NULL THEN
-		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
+		RAISE EXCEPTION 'Origin node ''%'' not found', origin_id;
 	END IF;
 	target_id := node_id FROM spock.node_info();
 

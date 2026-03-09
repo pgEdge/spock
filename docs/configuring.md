@@ -202,7 +202,7 @@ adjustment to which replication set the table is part of. Setting a table to
 unlogged will remove it from replication. Detaching a partition will not
 remove it from replication.
 
-#### `spock.log_origin_change`
+### `spock.log_origin_change`
 
 `spock.log_origin_change` indicates whether changes to a row's
 origin should be logged to the PostgreSQL log. Rows may be being updated
