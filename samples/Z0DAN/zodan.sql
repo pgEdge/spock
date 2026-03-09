@@ -1909,15 +1909,11 @@ BEGIN
                 -- so we can call pg_replication_origin_advance directly here.
                 -- Without this the apply worker starts at 0/0, replays already-known
                 -- WAL, and may hit "row not found" errors that disable the subscription.
-                BEGIN
-                    PERFORM pg_replication_origin_advance(slot_name, target_lsn);
-                    IF verb THEN
-                        RAISE NOTICE '    OK: %', rpad('Advanced replication origin ' || slot_name || ' on new node to ' || target_lsn, 120, ' ');
-                    END IF;
-                EXCEPTION
-                    WHEN OTHERS THEN
-                        RAISE EXCEPTION '    ✗ Advancing replication origin % on new node (error: %)', slot_name, SQLERRM;
-                END;
+                remotesql := format('SELECT pg_replication_origin_advance(%L, %L::pg_lsn)', slot_name, target_lsn);
+                PERFORM * FROM dblink(rec.dsn, remotesql) AS t(result text);
+                IF verb THEN
+                    RAISE NOTICE '    OK: %', rpad('Advanced replication origin ' || slot_name || ' on new node to ' || target_lsn, 120, ' ');
+                END IF;
             END;
         EXCEPTION
             WHEN OTHERS THEN
