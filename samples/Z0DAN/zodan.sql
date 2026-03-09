@@ -1728,12 +1728,70 @@ DECLARE
     slot_name text;
     dbname text;
     remotesql text;
+    src_rec RECORD;
+    src_commit_lsn pg_lsn;
+    src_slot_name text;
+    src_dbname text;
+    current_lsn pg_lsn;
+    target_lsn pg_lsn;
 BEGIN
     RAISE NOTICE 'Phase 7: Checking commit timestamp and advancing replication slot';
 
+    -- CRITICAL FIX: Advance the source-to-new subscription FIRST
+    -- This must happen BEFORE enabling subscriptions from "other" nodes.
+    -- If the apply worker for sub_n1_n3 starts at LSN 0/0, it re-applies
+    -- transactions that were already in the initial COPY snapshot, causing
+    -- "row not found" errors that disable the subscription and lose data.
+    BEGIN
+        RAISE NOTICE '    - Checking source-to-new subscription slot advancement...';
+        
+        -- Get source node dbname for slot name generation
+        FOR src_rec IN SELECT * FROM temp_spock_nodes WHERE node_name = src_node_name LOOP
+            SELECT spock.extract_dbname_from_dsn(src_rec.dsn) INTO src_dbname;
+            IF src_dbname IS NOT NULL THEN
+                src_dbname := TRIM(BOTH '''' FROM src_dbname);
+            END IF;
+            IF src_dbname IS NULL THEN 
+                src_dbname := 'pgedge'; 
+            END IF;
+
+            -- Generate slot name: spk_<dbname>_<src>_sub_<src>_<new>
+            src_slot_name := spock.spock_gen_slot_name(
+                src_dbname, src_node_name, 
+                'sub_' || src_node_name || '_' || new_node_name);
+
+            -- Get current LSN on source node's slot
+            remotesql := format('SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = %L', src_slot_name);
+            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(lsn pg_lsn) INTO current_lsn;
+
+            IF current_lsn IS NOT NULL THEN
+                -- Get snapshot LSN from new node's spock.progress for source
+                SELECT p.remote_commit_lsn INTO target_lsn
+                FROM spock.progress p
+                JOIN spock.node n ON n.node_id = p.remote_node_id
+                WHERE n.node_name = src_node_name;
+
+                IF target_lsn IS NOT NULL AND target_lsn > current_lsn THEN
+                    -- Advance the replication slot
+                    remotesql := format('SELECT pg_replication_slot_advance(%L, %L::pg_lsn)', src_slot_name, target_lsn);
+                    PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(result text);
+                    
+                    -- Advance the replication origin - CRITICAL for correctness
+                    PERFORM pg_replication_origin_advance(src_slot_name, target_lsn);
+                    RAISE NOTICE '    OK: Advanced source slot % to snapshot LSN %', src_slot_name, target_lsn;
+                ELSIF target_lsn IS NOT NULL THEN
+                    RAISE NOTICE '    - Source slot % already at snapshot LSN', src_slot_name;
+                END IF;
+            END IF;
+        END LOOP;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE WARNING 'Could not advance source-to-new slot: %', SQLERRM;
+    END;
+
     -- Check if this is a 2-node scenario (only source and new node)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
-        RAISE NOTICE '    - No other nodes exist, skipping commit timestamp check';
+        RAISE NOTICE '    - No other nodes exist, skipping additional commitment checks';
         RETURN;
     END IF;
 
