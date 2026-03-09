@@ -34,3 +34,5 @@ test: 013_origin_change_restore
 #        break
 #    fi
 # done
+test: 016_sub_disable_missing_relation
+
