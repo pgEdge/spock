@@ -3282,6 +3282,12 @@ static void
 execute_sql_command_error_cb(void *arg)
 {
 	errcontext("during execution of queued SQL statement: %s", (char *) arg);
+	/*
+	 * The errcontext above already includes the SQL statement, so clear
+	 * debug_query_string to prevent it from appearing a second time in
+	 * the LOG output.
+	 */
+	debug_query_string = NULL;
 }
 
 /*
@@ -4144,6 +4150,13 @@ spock_apply_main(Datum main_arg)
 		apply_api.multi_insert_add_tuple = spock_apply_spi_mi_add_tuple;
 		apply_api.multi_insert_finish = spock_apply_spi_mi_finish;
 	}
+
+	/*
+	 * The apply worker is not a regular backend and has no client query
+	 * string. Initialize debug_query_string to NULL so that LOG reports
+	 * do not print arbitrary memory contents.
+	 */
+	debug_query_string = NULL;
 
 	/* Setup synchronous commit according to the user's wishes */
 	SetConfigOption("synchronous_commit",
