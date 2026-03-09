@@ -30,6 +30,61 @@ CREATE VIEW spock.progress AS
 		SELECT oid FROM pg_database WHERE datname = current_database()
 	);
 
+CREATE FUNCTION spock.create_slot_with_progress(
+    p_slot_name text,
+    p_provider_node_id oid,
+    p_subscriber_node_id oid
+) RETURNS TABLE(
+    lsn pg_lsn,
+    snapshot text,
+    dbid oid,
+    node_id oid,
+    remote_node_id oid,
+    remote_commit_ts timestamptz,
+    prev_remote_ts timestamptz,
+    remote_commit_lsn pg_lsn,
+    remote_insert_lsn pg_lsn,
+    received_lsn pg_lsn,
+    last_updated_ts timestamptz,
+    updated_by_decode boolean
+) VOLATILE STRICT LANGUAGE plpgsql AS $$
+DECLARE
+    v_lsn  pg_lsn;
+    v_snap text;
+    rec    record;
+BEGIN
+    SELECT s.lsn INTO v_lsn
+    FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
+    v_snap := pg_export_snapshot();
+    lsn      := v_lsn;
+    snapshot := v_snap;
+    RETURN NEXT;
+    FOR rec IN (
+        SELECT p.dbid, p.node_id, p.remote_node_id,
+               p.remote_commit_ts, p.prev_remote_ts,
+               p.remote_commit_lsn, p.remote_insert_lsn,
+               p.received_lsn, p.last_updated_ts, p.updated_by_decode
+        FROM spock.progress p
+        WHERE p.node_id = p_provider_node_id
+          AND p.remote_node_id <> p_subscriber_node_id
+    ) LOOP
+        lsn              := v_lsn;
+        snapshot         := v_snap;
+        dbid             := rec.dbid;
+        node_id          := rec.node_id;
+        remote_node_id   := rec.remote_node_id;
+        remote_commit_ts := rec.remote_commit_ts;
+        prev_remote_ts   := rec.prev_remote_ts;
+        remote_commit_lsn  := rec.remote_commit_lsn;
+        remote_insert_lsn  := rec.remote_insert_lsn;
+        received_lsn     := rec.received_lsn;
+        last_updated_ts  := rec.last_updated_ts;
+        updated_by_decode := rec.updated_by_decode;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
 CREATE VIEW spock.lag_tracker AS
 	SELECT
 		origin.node_name AS origin_name,
