@@ -1362,12 +1362,12 @@ BEGIN
                 false,                                        -- force_text_transfer
                 verb                                          -- verbose
             );
-            RAISE NOTICE '    ✓ %', rpad('Creating initial subscription ' || sub_name || ' on node ' || rec.node_name, 120, ' ');
+            RAISE NOTICE '    ✓ %', rpad('Creating initial subscription ' || sub_name || ' on new node ' || new_node_name || ' (provider: ' || rec.node_name || ')', 120, ' ');
             PERFORM pg_sleep(5);
             subscription_count := subscription_count + 1;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Creating initial subscription ' || sub_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Creating initial subscription ' || sub_name || ' on new node ' || new_node_name || ' (provider: ' || rec.node_name || ') (error: ' || SQLERRM || ')', 120, ' ');
         END;
     END LOOP;
 
@@ -1905,15 +1905,21 @@ BEGIN
                 RAISE NOTICE '    OK: %', rpad('Advanced slot ' || slot_name || ' from ' || current_lsn || ' to ' || target_lsn, 120, ' ');
 
                 -- Advance the replication origin on the new node to match the slot LSN.
+                -- IMPORTANT: The replication ORIGIN lives on the subscriber (new node),
+                -- while the replication SLOT lives on the publisher (other/rec node).
                 -- add_node is always called ON the new node (validated in Phase 1),
-                -- so we can call pg_replication_origin_advance directly here.
+                -- so we advance the origin with a direct local call — NOT via
+                -- dblink(rec.dsn), which is the publisher and has no such origin.
                 -- Without this the apply worker starts at 0/0, replays already-known
                 -- WAL, and may hit "row not found" errors that disable the subscription.
-                remotesql := format('SELECT pg_replication_origin_advance(%L, %L::pg_lsn)', slot_name, target_lsn);
-                PERFORM * FROM dblink(rec.dsn, remotesql) AS t(result text);
-                IF verb THEN
-                    RAISE NOTICE '    OK: %', rpad('Advanced replication origin ' || slot_name || ' on new node to ' || target_lsn, 120, ' ');
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_replication_origin WHERE roname = slot_name
+                ) THEN
+                    RAISE WARNING '    Origin % not found on new node; creating it now (was it created in Phase 3?)', slot_name;
+                    PERFORM pg_replication_origin_create(slot_name);
                 END IF;
+                PERFORM pg_replication_origin_advance(slot_name, target_lsn);
+                RAISE NOTICE '    OK: %', rpad('Advanced replication origin ' || slot_name || ' on new node to ' || target_lsn, 120, ' ');
             END;
         EXCEPTION
             WHEN OTHERS THEN
