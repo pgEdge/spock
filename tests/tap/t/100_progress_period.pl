@@ -197,4 +197,4 @@ system_or_bail "$pg_bin/psql", '-p', $subscriber_port, '-d', $dbname, '-c',
     "SELECT spock.sub_drop('test_sub')";
 
 destroy_cluster('Destroy 2-node progress-period test cluster');
-done_testing();
+#done_testing();
