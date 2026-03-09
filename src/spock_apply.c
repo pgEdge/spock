@@ -1226,6 +1226,13 @@ handle_insert(StringInfo s)
 		 */
 		xact_had_exception = true;
 		exception_command_counter++;
+
+		/*
+		 * Clear the local tuple pointer if it was left over from a
+		 * previous operation.
+		 */
+		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+
 		log_insert_exception(true, "Spock can't find relation", NULL,
 							 NULL, NULL, "INSERT");
 		end_replication_step();
