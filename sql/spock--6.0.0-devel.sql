@@ -146,10 +146,19 @@ CREATE FUNCTION spock.create_slot_with_progress(
     updated_by_decode boolean
 ) VOLATILE STRICT LANGUAGE plpgsql AS $$
 DECLARE
-    v_lsn  pg_lsn;
-    v_snap text;
-    rec    record;
+    v_lsn     pg_lsn;
+    pre_v_lsn pg_lsn;  -- WAL position sampled before slot creation
+    v_snap    text;
+    rec       record;
 BEGIN
+    -- Sample the WAL position before slot creation.  Any N2->N1 commit whose
+    -- REPLORIGIN_ADVANCE record sits at local_lsn <= pre_v_lsn was durably
+    -- written to N1 before the slot/snapshot was established and is therefore
+    -- provably inside the COPY snapshot.  Commits that land during the slot
+    -- creation call have local_lsn > pre_v_lsn; we fall back to the shmem
+    -- value for those (slight under-advance / double-apply, never data loss).
+    SELECT pg_current_wal_lsn() INTO pre_v_lsn;
+
     -- Step 1: create the replication slot; this establishes the consistent
     -- point and, in a REPEATABLE READ transaction, locks in the snapshot.
     SELECT s.lsn INTO v_lsn
@@ -169,20 +178,17 @@ BEGIN
     FOR rec IN (
         SELECT p.dbid, p.node_id, p.remote_node_id,
                p.remote_commit_ts, p.prev_remote_ts,
-               -- Close the shmem-lag window: spock shmem is updated AFTER
-               -- CommitTransactionCommand(), while pg_replication_origin_status
-               -- is updated WITHIN it.  Use ros.remote_lsn as P_snap only when
-               -- ros.local_lsn <= v_lsn, meaning its WAL origin-advance record
-               -- was written before the slot's consistent point (i.e. the
-               -- transaction IS in the exported snapshot).  If local_lsn >
-               -- v_lsn the transaction committed after the snapshot; using that
-               -- remote_lsn would over-advance the slot and permanently lose
-               -- those rows on the new node.  In that case fall back to the
-               -- spock shmem value, which lags by at most one transaction and
-               -- is safe (slight double-apply at worst, never data loss).
+               -- Use ros.remote_lsn as P_snap only when ros.local_lsn <=
+               -- pre_v_lsn (WAL position captured BEFORE slot creation).
+               -- Those commits were durably in N1's WAL before the snapshot
+               -- was established, so they are in the COPY data.  Commits
+               -- with local_lsn > pre_v_lsn landed during or after slot
+               -- creation; we fall back to the spock shmem value, which may
+               -- under-advance by at most one transaction (double-apply at
+               -- worst, never data loss).
                GREATEST(p.remote_commit_lsn,
                         CASE WHEN ros.local_lsn IS NOT NULL
-                                  AND ros.local_lsn <= v_lsn
+                                  AND ros.local_lsn <= pre_v_lsn
                              THEN ros.remote_lsn
                              ELSE '0/0'::pg_lsn
                         END) AS remote_commit_lsn,
