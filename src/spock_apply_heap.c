@@ -1209,6 +1209,20 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		{
 			/* DELETE happened after (usual case) */
 
+			if (local_origin_found && local_origin != replorigin_session_origin)
+			{
+				/* Check more carefully if we may need to log an origin change */
+				spock_report_conflict(SPOCK_CT_DELETE_ORIGIN_DIFFERS,
+							rel, TTS_TUP(localslot), oldtup,
+							NULL,
+							local_tuple,
+							SpockResolution_ApplyRemote,
+							xmin, local_origin_found, local_origin,
+							local_ts,
+							edata->targetRel->idxoid
+				);
+			}
+
 			/* Make sure that any user-supplied code runs as the table owner. */
 			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 

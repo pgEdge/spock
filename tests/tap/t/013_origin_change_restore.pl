@@ -9,7 +9,7 @@ use Cwd;
 # =============================================================================
 # Test: 013_origin_change_restore.pl - Origin-change logging after pg_restore
 # =============================================================================
-# Verify that:
+# Verify that for both UPDATE and DELETE origin-change conflicts:
 #   1. pg_restored data (predating subscription) does NOT produce origin-change
 #      conflict log entries when log_origin_change = 'since_sub_creation'
 #   2. Post-subscription origin changes ARE logged (since_sub_creation)
@@ -71,10 +71,12 @@ is($n2, 't', 'Node n2 exists');
 
 # ---- Step 1: create table + seed data on node 1 ----------------------------
 psql_or_bail(1, "CREATE TABLE test_origin (id INTEGER PRIMARY KEY, data TEXT)");
-psql_or_bail(1, "INSERT INTO test_origin VALUES (1, 'row-A'), (2, 'row-B'), (3, 'row-C')");
+psql_or_bail(1, "INSERT INTO test_origin VALUES "
+    . "(1, 'row-A'), (2, 'row-B'), (3, 'row-C'), "
+    . "(4, 'row-D'), (5, 'row-E'), (6, 'row-F'), (7, 'row-G')");
 
 my $count_n1 = scalar_query(1, "SELECT COUNT(*) FROM test_origin");
-is($count_n1, '3', 'Node 1 has 3 rows after INSERT');
+is($count_n1, '7', 'Node 1 has 7 rows after INSERT');
 
 # ---- Step 2: pg_dump node 1 ------------------------------------------------
 my $dump_file = "/tmp/test_origin_dump_$$.dump";
@@ -88,7 +90,7 @@ system_or_bail("$pg_bin/pg_restore", '-p', $node_ports->[1],
 pass('pg_restore to node 2 succeeded');
 
 my $count_n2 = scalar_query(2, "SELECT COUNT(*) FROM test_origin");
-is($count_n2, '3', 'Node 2 has 3 rows after pg_restore');
+is($count_n2, '7', 'Node 2 has 7 rows after pg_restore');
 
 # ---- Step 4: enable GUC on node 2 ------------------------------------------
 psql_or_bail(2, "ALTER SYSTEM SET spock.log_origin_change = 'since_sub_creation'");
@@ -210,6 +212,101 @@ system_or_bail 'sleep', '2';
 $log_content = get_log_content_since($n2_logfile, $log_pos);
 unlike($log_content, qr/CONFLICT:.*remote update_origin_differs on relation public\.test_origin/,
     'remote_only_differs: no conflict logged for locally-written tuple');
+
+# =============================================================================
+# DELETE origin-change tests (rows 4-7)
+# =============================================================================
+
+# =============================================================================
+# Test 5: since_sub_creation — delete of pg_restored data should NOT log
+# =============================================================================
+# Row 4 was pg_restored to node 2 (predates subscription, origin = InvalidRepOriginId).
+# It has never been updated since, so its commit timestamp predates sub creation.
+psql_or_bail(2, "ALTER SYSTEM SET spock.log_origin_change = 'since_sub_creation'");
+psql_or_bail(2, "SELECT pg_reload_conf()");
+
+$log_pos = get_log_size($n2_logfile);
+
+psql_or_bail(1, "DELETE FROM test_origin WHERE id = 4");
+
+$val = wait_for_value(2,
+    "SELECT COUNT(*) FROM test_origin WHERE id = 4",
+    '0');
+is($val, '0', 'DELETE of row 4 replicated to node 2');
+
+system_or_bail 'sleep', '2';
+$log_content = get_log_content_since($n2_logfile, $log_pos);
+unlike($log_content, qr/CONFLICT:.*remote delete_origin_differs on relation public\.test_origin/,
+    'since_sub_creation: no delete conflict logged for pg_restored data');
+
+# =============================================================================
+# Test 6: since_sub_creation — post-subscription delete SHOULD produce log entry
+# =============================================================================
+# Update row 5 locally on node 2 to change its origin and give it a
+# post-subscription commit timestamp.
+psql_or_bail(2, "UPDATE test_origin SET data = 'local-5' WHERE id = 5");
+
+$log_pos = get_log_size($n2_logfile);
+
+psql_or_bail(1, "DELETE FROM test_origin WHERE id = 5");
+
+$val = wait_for_value(2,
+    "SELECT COUNT(*) FROM test_origin WHERE id = 5",
+    '0');
+BAIL_OUT("DELETE did not replicate") unless $val eq '0';
+
+system_or_bail 'sleep', '2';
+$log_content = get_log_content_since($n2_logfile, $log_pos);
+like($log_content, qr/CONFLICT:.*remote delete_origin_differs on relation public\.test_origin/,
+    'since_sub_creation: delete conflict logged for post-subscription data');
+like($log_content, qr/origin=local/,
+    'since_sub_creation: locally-modified row shows origin=local in delete log');
+
+# =============================================================================
+# Test 7: mode 'none' — suppresses delete_origin_differs logging
+# =============================================================================
+psql_or_bail(2, "ALTER SYSTEM SET spock.log_origin_change = 'none'");
+psql_or_bail(2, "SELECT pg_reload_conf()");
+
+# Update locally to change origin
+psql_or_bail(2, "UPDATE test_origin SET data = 'local-6' WHERE id = 6");
+
+$log_pos = get_log_size($n2_logfile);
+
+psql_or_bail(1, "DELETE FROM test_origin WHERE id = 6");
+
+$val = wait_for_value(2,
+    "SELECT COUNT(*) FROM test_origin WHERE id = 6",
+    '0');
+BAIL_OUT("DELETE did not replicate") unless $val eq '0';
+
+system_or_bail 'sleep', '2';
+$log_content = get_log_content_since($n2_logfile, $log_pos);
+unlike($log_content, qr/CONFLICT:.*remote delete_origin_differs on relation public\.test_origin/,
+    'none: no delete conflict logged');
+
+# =============================================================================
+# Test 8: remote_only_differs — locally-written tuple DELETE NOT logged
+# =============================================================================
+psql_or_bail(2, "ALTER SYSTEM SET spock.log_origin_change = 'remote_only_differs'");
+psql_or_bail(2, "SELECT pg_reload_conf()");
+
+# Update locally so local tuple has origin = InvalidRepOriginId
+psql_or_bail(2, "UPDATE test_origin SET data = 'local-7' WHERE id = 7");
+
+$log_pos = get_log_size($n2_logfile);
+
+psql_or_bail(1, "DELETE FROM test_origin WHERE id = 7");
+
+$val = wait_for_value(2,
+    "SELECT COUNT(*) FROM test_origin WHERE id = 7",
+    '0');
+BAIL_OUT("DELETE did not replicate") unless $val eq '0';
+
+system_or_bail 'sleep', '2';
+$log_content = get_log_content_since($n2_logfile, $log_pos);
+unlike($log_content, qr/CONFLICT:.*remote delete_origin_differs on relation public\.test_origin/,
+    'remote_only_differs: no delete conflict logged for locally-written tuple');
 
 # ---- teardown ---------------------------------------------------------------
 psql_or_bail(2, "SELECT spock.sub_drop('sub_origin_test')");
