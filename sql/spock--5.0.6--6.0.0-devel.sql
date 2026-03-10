@@ -78,9 +78,23 @@ BEGIN
     FOR rec IN (
         SELECT p.dbid, p.node_id, p.remote_node_id,
                p.remote_commit_ts, p.prev_remote_ts,
-               p.remote_commit_lsn, p.remote_insert_lsn,
+               -- Use GREATEST to close the brief shmem-lag window: spock shmem
+               -- (backing spock.progress) is updated after CommitTransactionCommand,
+               -- while pg_replication_origin_status.remote_lsn is updated within it.
+               -- If the slot is created in this window, shmem lags by one transaction,
+               -- causing P_snap to be set before the last committed transaction visible
+               -- in the exported snapshot → double-apply when the subscription starts.
+               GREATEST(p.remote_commit_lsn,
+                        COALESCE(ros.remote_lsn, '0/0'::pg_lsn)) AS remote_commit_lsn,
+               p.remote_insert_lsn,
                p.received_lsn, p.last_updated_ts, p.updated_by_decode
         FROM spock.progress p
+        LEFT JOIN spock.subscription sub
+            ON sub.sub_origin = p.remote_node_id AND sub.sub_target = p.node_id
+        LEFT JOIN pg_replication_origin o
+            ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros
+            ON ros.local_id = o.roident
         WHERE p.node_id = p_provider_node_id
           AND p.remote_node_id <> p_subscriber_node_id
     ) LOOP
