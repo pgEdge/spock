@@ -1346,6 +1346,53 @@ BEGIN
                 RAISE EXCEPTION '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
 
+        -- Wait for the source node to have committed all changes from this
+        -- "other" node up to L_slot, ensuring P_snap >= L_slot when Phase 5
+        -- takes the snapshot (prevents data loss in the [P_snap, L_slot) gap).
+        BEGIN
+            DECLARE
+                src_progress_lsn  pg_lsn;
+                wait_iters        integer := 0;
+                max_wait_iters    integer := 2400;  -- 20 minutes (0.5s per iter)
+                progress_sql      text;
+            BEGIN
+                progress_sql := format(
+                    'SELECT p.remote_commit_lsn '
+                    'FROM spock.progress p '
+                    'JOIN spock.node n ON n.node_id = p.remote_node_id '
+                    'WHERE p.node_id = (SELECT node_id FROM spock.node_info()) '
+                    '  AND n.node_name = %L',
+                    rec.node_name);
+
+                RAISE NOTICE '    - Waiting for source node % to commit % changes up to slot LSN %...',
+                             src_node_name, rec.node_name, _commit_lsn;
+
+                LOOP
+                    SELECT * FROM dblink(src_dsn, progress_sql)
+                        AS t(lsn pg_lsn) INTO src_progress_lsn;
+
+                    EXIT WHEN src_progress_lsn IS NOT NULL
+                              AND src_progress_lsn >= _commit_lsn;
+
+                    IF wait_iters >= max_wait_iters THEN
+                        RAISE WARNING '    Timeout waiting for source node commit catchup (last seen: %)', src_progress_lsn;
+                        EXIT;
+                    END IF;
+
+                    PERFORM pg_sleep(0.5);
+                    wait_iters := wait_iters + 1;
+                END LOOP;
+
+                RAISE NOTICE '    OK: %', rpad(
+                    'Source node ' || src_node_name || ' committed ' || rec.node_name
+                    || ' changes up to ' || COALESCE(src_progress_lsn::text, 'unknown')
+                    || ' (needed >= ' || _commit_lsn || ')', 120, ' ');
+            END;
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE WARNING '    Could not verify source commit catchup for %: %', rec.node_name, SQLERRM;
+        END;
+
         -- Create disabled subscription on new node from "other" node
         BEGIN
 			sub_name := 'sub_' || rec.node_name || '_' || new_node_name;
@@ -1362,12 +1409,12 @@ BEGIN
                 false,                                        -- force_text_transfer
                 verb                                          -- verbose
             );
-            RAISE NOTICE '    ✓ %', rpad('Creating initial subscription ' || sub_name || ' on node ' || rec.node_name, 120, ' ');
+            RAISE NOTICE '    ✓ %', rpad('Creating initial subscription ' || sub_name || ' on new node ' || new_node_name || ' (provider: ' || rec.node_name || ')', 120, ' ');
             PERFORM pg_sleep(5);
             subscription_count := subscription_count + 1;
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE NOTICE '    ✗ %', rpad('Creating initial subscription ' || sub_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+                RAISE NOTICE '    ✗ %', rpad('Creating initial subscription ' || sub_name || ' on new node ' || new_node_name || ' (provider: ' || rec.node_name || ') (error: ' || SQLERRM || ')', 120, ' ');
         END;
     END LOOP;
 
@@ -1429,7 +1476,7 @@ BEGIN
 
                         -- Wait for this sync event on the new node where the subscription exists
                         PERFORM * FROM dblink(new_node_dsn,
-                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
+                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
                                    src_node_name, sync_lsn, timeout_ms)) AS t(result text);
 
                         IF verb THEN
@@ -1450,7 +1497,8 @@ BEGIN
             CALL spock.verify_subscription_replicating(
                 new_node_dsn,
                 'sub_' || src_node_name || '_' || new_node_name,
-                verb
+                verb,
+				1200
             );
 
             RAISE NOTICE '    ✓ %', rpad('Enabling subscription ' || sub_name || '...', 120, ' ');
@@ -1497,7 +1545,7 @@ BEGIN
 
                         -- Wait for this sync event on the new node where the subscription exists
                         PERFORM * FROM dblink(new_node_dsn,
-                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s)',
+                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
                                    rec.node_name, sync_lsn, timeout_ms)) AS t(result text);
 
                         IF verb THEN
@@ -1512,7 +1560,8 @@ BEGIN
                 CALL spock.verify_subscription_replicating(
                     new_node_dsn,
                     'sub_'|| rec.node_name || '_' || new_node_name,
-                    verb
+                    verb,
+					1200
                 );
 
                 RAISE NOTICE '    ✓ %', rpad('Enabling subscription ' || sub_name || '...', 120, ' ');
@@ -1694,7 +1743,7 @@ BEGIN
 
         -- Wait for sync event on source node
         BEGIN
-            remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s);',
+            remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true);',
                                rec.node_name, sync_lsn, timeout_ms);
             IF verb THEN
                 RAISE NOTICE '    Remote SQL for waiting sync event: %', remotesql;
@@ -1726,12 +1775,81 @@ DECLARE
     slot_name text;
     dbname text;
     remotesql text;
+    src_rec RECORD;
+    src_commit_lsn pg_lsn;
+    src_slot_name text;
+    src_dbname text;
+    current_lsn pg_lsn;
+    target_lsn pg_lsn;
 BEGIN
     RAISE NOTICE 'Phase 7: Checking commit timestamp and advancing replication slot';
 
+    -- Advance the source-to-new subscription slot before enabling other
+    -- subscriptions; starting at LSN 0/0 would re-apply snapshot rows
+    -- and cause "row not found" errors that disable the subscription.
+    BEGIN
+        RAISE NOTICE '    - Checking source-to-new subscription slot advancement...';
+        
+        -- Get source node info and extract dbname
+        FOR src_rec IN SELECT * FROM temp_spock_nodes WHERE node_name = src_node_name LOOP
+            SELECT spock.extract_dbname_from_dsn(src_rec.dsn) INTO src_dbname;
+            IF src_dbname IS NOT NULL THEN
+                src_dbname := TRIM(BOTH '''' FROM src_dbname);
+            END IF;
+            IF src_dbname IS NULL THEN 
+                src_dbname := 'pgedge'; 
+            END IF;
+
+            -- Generate slot name: spk_<dbname>_<src>_sub_<src>_<new>
+            src_slot_name := spock.spock_gen_slot_name(
+                src_dbname, src_node_name, 
+                'sub_' || src_node_name || '_' || new_node_name);
+            
+            RAISE NOTICE '    Looking for slot %s on new node', src_slot_name;
+
+            -- Check if slot exists on new node (where subscription was created)
+            remotesql := format('SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = %L', src_slot_name);
+            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(lsn pg_lsn) INTO current_lsn;
+
+            IF current_lsn IS NOT NULL THEN
+                RAISE NOTICE '    Slot % found at LSN %s', src_slot_name, current_lsn;
+                
+                -- Get snapshot LSN from new node's spock.progress for source
+                SELECT p.remote_commit_lsn INTO target_lsn
+                FROM spock.progress p
+                JOIN spock.node n ON n.node_id = p.remote_node_id
+                WHERE n.node_name = src_node_name;
+
+                IF target_lsn IS NOT NULL THEN
+                    RAISE NOTICE '    Snapshot LSN for %s: %s', src_node_name, target_lsn;
+                    
+                    IF target_lsn > current_lsn THEN
+                        -- Advance the replication slot
+                        remotesql := format('SELECT pg_replication_slot_advance(%L, %L::pg_lsn)', src_slot_name, target_lsn);
+                        PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(result text);
+                        
+                        -- Advance the replication origin on the new node via dblink, using the correct origin name
+                        remotesql := format('SELECT pg_replication_origin_advance(%L, %L::pg_lsn)', src_slot_name, target_lsn);
+                        PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(result text);
+                        RAISE NOTICE '    OK: Advanced replication origin % on new node to %s', src_slot_name, target_lsn;
+                    ELSE
+                        RAISE NOTICE '    Slot % already at or beyond snapshot LSN', src_slot_name;
+                    END IF;
+                ELSE
+                    RAISE NOTICE '    No snapshot LSN found for %s in progress table', src_node_name;
+                END IF;
+            ELSE
+                RAISE NOTICE '    Slot % not found on new node', src_slot_name;
+            END IF;
+        END LOOP;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE WARNING 'Could not advance source-to-new slot: %', SQLERRM;
+    END;
+
     -- Check if this is a 2-node scenario (only source and new node)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
-        RAISE NOTICE '    - No other nodes exist, skipping commit timestamp check';
+        RAISE NOTICE '    - No other nodes exist, skipping additional commitment checks';
         RETURN;
     END IF;
 
@@ -1793,9 +1911,21 @@ BEGIN
                     CONTINUE;
                 END IF;
 
-                target_lsn := commit_lsn;
+                -- Advance the slot to P_snap: the last commit from this node
+                -- that N1 had applied at snapshot time (stored in N3's spock.progress).
+                SELECT p.remote_commit_lsn INTO target_lsn
+                FROM spock.progress p
+                JOIN spock.node n ON n.node_id = p.remote_node_id
+                WHERE n.node_name = rec.node_name;
+
+                IF target_lsn IS NULL THEN
+                    RAISE NOTICE '    WARNING: No spock.progress entry for %, falling back to pg_current_wal_lsn()', rec.node_name;
+                    remotesql := 'SELECT pg_current_wal_lsn()';
+                    SELECT * FROM dblink(rec.dsn, remotesql) AS t(lsn pg_lsn) INTO target_lsn;
+                END IF;
+
                 IF target_lsn IS NULL OR target_lsn <= current_lsn THEN
-                    RAISE NOTICE '    - Slot % already at or beyond target LSN (current: %, target: %)', slot_name, current_lsn, target_lsn;
+                    RAISE NOTICE '    - Slot % already at or beyond P_snap LSN (current: %, target: %)', slot_name, current_lsn, target_lsn;
                     CONTINUE;
                 END IF;
 
@@ -1807,6 +1937,17 @@ BEGIN
 
                 PERFORM * FROM dblink(rec.dsn, remotesql) AS t(result text);
                 RAISE NOTICE '    OK: %', rpad('Advanced slot ' || slot_name || ' from ' || current_lsn || ' to ' || target_lsn, 120, ' ');
+
+                -- Advance the replication origin on the new node (subscriber side)
+                -- directly, not via dblink; the origin is local to the new node.
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_replication_origin WHERE roname = slot_name
+                ) THEN
+                    RAISE WARNING '    Origin % not found on new node; creating it now (was it created in Phase 3?)', slot_name;
+                    PERFORM pg_replication_origin_create(slot_name);
+                END IF;
+                PERFORM pg_replication_origin_advance(slot_name, target_lsn);
+                RAISE NOTICE '    OK: %', rpad('Advanced replication origin ' || slot_name || ' on new node to ' || target_lsn, 120, ' ');
             END;
         EXCEPTION
             WHEN OTHERS THEN
@@ -1851,7 +1992,7 @@ BEGIN
 
     -- Wait for sync event on new node
     BEGIN
-        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s);', src_node_name, sync_lsn, timeout_ms);
+        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true);', src_node_name, sync_lsn, timeout_ms);
         IF verb THEN
             RAISE NOTICE '    Remote SQL for wait_for_sync_event on new node %: %', new_node_name, remotesql;
         END IF;
@@ -1877,7 +2018,7 @@ DECLARE
     sub_rec  RECORD;
     rec RECORD;
     wait_count integer := 0;
-    max_wait_count integer := 300; -- Wait up to 300 seconds
+    max_wait_count integer := 1200; -- Wait up to 1200 seconds
 BEGIN
     -- Let remote subscriptions update their subscription's state.
     COMMIT;

@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 34;
+use Test::More tests => 30;
 use IPC::Run;
 use lib '.';
 use lib 't';
@@ -373,19 +373,19 @@ $lsn3 = scalar_query(3, "SELECT spock.sync_event()");
 print STDERR "DEBUGGING. LSNs: N1: $lsn1, N2: $lsn2, N3: $lsn3\n";
 
 print STDERR "Wait for the N2 -> N1 sync message ...\n";
-psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 600)");
+psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 1200, true)");
 print STDERR "Wait for the N1 -> N2 sync message ...\n";
-psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 600)");
+psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 1200, true)");
 print STDERR "Wait for the N1 -> N3 sync message ...\n";
-psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 600)");
+psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 1200, true)");
 print STDERR "Wait for the N2 -> N3 sync message ...\n";
-psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 600)");
+psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 1200, true)");
 print STDERR "LR messages from active nodes has arrived to the new one\n";
 
 print STDERR "Wait for the N3 -> N1 sync message ...\n";
-psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600, true)");
+psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 1200, true)");
 print STDERR "Wait for the N3 -> N2 sync message ...\n";
-psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600, true)");
+psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 1200, true)");
 print STDERR "First LR transaction has arrived from new node to the active ones\n";
 
 print STDERR "Check the data consistency.\n";

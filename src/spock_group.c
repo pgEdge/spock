@@ -687,3 +687,73 @@ spock_group_progress_update_list(List *lst)
 	 */
 	list_free_deep(lst);
 }
+
+/*
+ * spock_group_progress_force_set_list
+ *
+ * Like spock_group_progress_update_list but unconditionally overwrites the
+ * shmem entry regardless of timestamp order. Used during add_node to record
+ * P_snap so Phase 7 advances the new subscription's slot correctly, even
+ * after a repeated add_node cycle where the existing high-timestamp entry
+ * would otherwise be silently preserved.
+ */
+void
+spock_group_progress_force_set_list(List *lst)
+{
+	ListCell *lc;
+
+	if (!SpockGroupHash || !SpockCtx)
+	{
+		elog(WARNING, "SpockGroupHash is not initialized; force-set skipped");
+		list_free_deep(lst);
+		return;
+	}
+
+	foreach (lc, lst)
+	{
+		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
+		SpockGroupEntry	   *entry;
+		bool				found;
+
+		spock_apply_progress_add_to_wal(sap);
+
+		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
+		entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &sap->key,
+												HASH_ENTER, &found);
+
+		if (entry == NULL)
+		{
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+			elog(WARNING, "SpockGroupHash is full, cannot force-set progress for group "
+				 "(dbid=%u, node_id=%u, remote_node_id=%u)",
+				 sap->key.dbid, sap->key.node_id, sap->key.remote_node_id);
+			continue;
+		}
+
+		if (!found)
+		{
+			init_progress_fields(&entry->progress);
+			pg_atomic_init_u32(&entry->nattached, 0);
+			ConditionVariableInit(&entry->prev_processed_cv);
+		}
+		else
+		{
+			/* Reset so progress_update_struct's MAX-by-timestamp guard passes. */
+			init_progress_fields(&entry->progress);
+		}
+
+		progress_update_struct(&entry->progress, sap);
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+
+		elog(LOG, "SPOCK: force-set spock.progress %d->%d to "
+			 "remote_commit_ts='%s' "
+			 "remote_commit_lsn=%X/%X remote_insert_lsn=%X/%X",
+			 sap->key.remote_node_id, MySubscription->target->id,
+			 timestamptz_to_str(sap->remote_commit_ts),
+			 LSN_FORMAT_ARGS(sap->remote_commit_lsn),
+			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
+	}
+
+	list_free_deep(lst);
+}

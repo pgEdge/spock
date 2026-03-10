@@ -121,6 +121,77 @@ CREATE VIEW spock.progress AS
         SELECT oid FROM pg_database WHERE datname = current_database()
       );
 
+-- spock.create_slot_with_progress(slot_name, provider_node_id, subscriber_node_id)
+--
+-- Atomically creates a replication slot and reads spock.progress for all peers
+-- in one server-side call, eliminating the slot+progress race.  Called in an
+-- open REPEATABLE READ transaction; caller must ROLLBACK after the COPY.
+-- Row 0: lsn + snapshot header.  Rows 1+: one progress entry each.
+CREATE FUNCTION spock.create_slot_with_progress(
+    p_slot_name text,
+    p_provider_node_id oid,
+    p_subscriber_node_id oid
+) RETURNS TABLE(
+    lsn pg_lsn,
+    snapshot text,
+    dbid oid,
+    node_id oid,
+    remote_node_id oid,
+    remote_commit_ts timestamptz,
+    prev_remote_ts timestamptz,
+    remote_commit_lsn pg_lsn,
+    remote_insert_lsn pg_lsn,
+    received_lsn pg_lsn,
+    last_updated_ts timestamptz,
+    updated_by_decode boolean
+) VOLATILE STRICT LANGUAGE plpgsql AS $$
+DECLARE
+    v_lsn  pg_lsn;
+    v_snap text;
+    rec    record;
+BEGIN
+    -- Step 1: create the replication slot; this establishes the consistent
+    -- point and, in a REPEATABLE READ transaction, locks in the snapshot.
+    SELECT s.lsn INTO v_lsn
+    FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
+
+    -- Step 2: export the current transaction's snapshot so the COPY worker
+    -- can use SET TRANSACTION SNAPSHOT to read N1's data at the same point.
+    v_snap := pg_export_snapshot();
+
+    -- Step 3: read shmem progress IMMEDIATELY (nanoseconds after step 1).
+    -- Header row: slot info only; all progress fields NULL.
+    lsn      := v_lsn;
+    snapshot := v_snap;
+    RETURN NEXT;
+
+    -- Progress rows: one per peer node (excluding the new subscriber).
+    FOR rec IN (
+        SELECT p.dbid, p.node_id, p.remote_node_id,
+               p.remote_commit_ts, p.prev_remote_ts,
+               p.remote_commit_lsn, p.remote_insert_lsn,
+               p.received_lsn, p.last_updated_ts, p.updated_by_decode
+        FROM spock.progress p
+        WHERE p.node_id = p_provider_node_id
+          AND p.remote_node_id <> p_subscriber_node_id
+    ) LOOP
+        lsn              := v_lsn;
+        snapshot         := v_snap;
+        dbid             := rec.dbid;
+        node_id          := rec.node_id;
+        remote_node_id   := rec.remote_node_id;
+        remote_commit_ts := rec.remote_commit_ts;
+        prev_remote_ts   := rec.prev_remote_ts;
+        remote_commit_lsn  := rec.remote_commit_lsn;
+        remote_insert_lsn  := rec.remote_insert_lsn;
+        received_lsn     := rec.received_lsn;
+        last_updated_ts  := rec.last_updated_ts;
+        updated_by_decode := rec.updated_by_decode;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
 CREATE FUNCTION spock.node_create(node_name name, dsn text,
     location text DEFAULT NULL, country text DEFAULT NULL,
     info jsonb DEFAULT NULL)
