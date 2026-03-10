@@ -867,11 +867,11 @@ synchronize_failover_slots(long sleep_time)
 		list_length(spock_failover_slot_names_list) == 0)
 		return sleep_time;
 
-	/* XXX should these be errors or just soft return like above? */
+	/* Sync requires hot_standby_feedback; skip when off so the worker keeps
+	 * running without error. After user sets hot_standby_feedback on and
+	 * reloads, the next cycle will run sync. */
 	if (!hot_standby_feedback)
-		elog(
-			 ERROR,
-			 "cannot synchronize replication slot positions because hot_standby_feedback is off");
+		return sleep_time;
 	if (WalRcv->slotname[0] == '\0')
 		elog(
 			 ERROR,
@@ -1074,7 +1074,9 @@ spock_failover_slots_main(Datum main_arg)
 
 		CHECK_FOR_INTERRUPTS();
 
-		if (RecoveryInProgress())
+		/* On standby, run sync only when hot_standby_feedback is on; otherwise
+		 * use long nap so we never elog(ERROR) for hot_standby_feedback off. */
+		if (RecoveryInProgress() && hot_standby_feedback)
 			sleep_time = synchronize_failover_slots(WORKER_NAP_TIME);
 		else
 			sleep_time = WORKER_NAP_TIME * 10;
