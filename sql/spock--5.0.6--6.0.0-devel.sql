@@ -55,85 +55,32 @@ CREATE FUNCTION spock.create_slot_with_progress(
     updated_by_decode boolean
 ) VOLATILE STRICT LANGUAGE plpgsql AS $$
 DECLARE
-    v_lsn             pg_lsn;
-    v_snap            text;
-    rec               record;
-    -- Pre-slot ROS captured in parallel arrays.  We cannot use CREATE TEMP
-    -- TABLE here: DDL assigns a transaction XID, and PostgreSQL forbids
-    -- pg_create_logical_replication_slot in any transaction that has already
-    -- performed writes.  Plain SELECT into local variables is read-only and
-    -- leaves the XID slot unassigned.
-    v_pre_node_ids    oid[]    := '{}';
-    v_pre_remote_lsns pg_lsn[] := '{}';
-    v_pre_ros_lsns    pg_lsn[] := '{}';
-    v_i               int;
-    v_pre_remote_lsn  pg_lsn;
-    v_ros_local_lsn   pg_lsn;
+    v_lsn  pg_lsn;
+    v_snap text;
+    rec    record;
 BEGIN
     -- -----------------------------------------------------------------------
-    -- Step 1  (MUST be the first data-accessing statement in the REPEATABLE
-    -- READ transaction)
+    -- Step 1: Create the replication slot.
     --
-    -- Capture pg_replication_origin_status for every peer node BEFORE the
-    -- replication slot is created.  Two properties make this ordering critical:
+    -- This MUST be the first data-accessing statement in the REPEATABLE READ
+    -- transaction.  In REPEATABLE READ, PostgreSQL establishes the transaction
+    -- snapshot at exactly this point, so the slot's consistent point (v_lsn)
+    -- and the COPY snapshot share the same WAL boundary.
     --
-    -- (a) SNAPSHOT BOUNDARY
-    --     In REPEATABLE READ, PostgreSQL establishes the transaction snapshot
-    --     at the very first non-transaction-control statement.  The snapshot
-    --     exported in Step 3 (used by the COPY worker) is this same snapshot.
-    --     Therefore, anything visible in the COPY is exactly what was committed
-    --     on N1 before this statement began.
-    --
-    -- (b) P_SNAP DERIVATION
-    --     pg_replication_origin_status reads LIVE shared memory (not MVCC-
-    --     stable).  By reading it here -- before the slot is created -- we
-    --     capture the last N2 commit that N1 had applied at the same instant
-    --     the COPY snapshot was locked in.  This value (pre_remote_lsn) is
-    --     the P_snap we must feed to Phase 7.
-    --
-    --     Reading ros AFTER pg_create_logical_replication_slot (even with
-    --     post-slot ros.local_lsn <= v_lsn filtering) is unsafe: the apply
-    --     worker may have advanced shmem between the snapshot point and the
-    --     slot-creation point (those transactions are NOT in the COPY).
-    --     Using that later value over-estimates P_snap → data loss.
-    -- -----------------------------------------------------------------------
-    FOR rec IN (
-        SELECT p.remote_node_id,
-               COALESCE(ros.remote_lsn, '0/0'::pg_lsn) AS pre_remote_lsn,
-               ros.local_lsn                            AS ros_local_lsn
-        FROM   spock.progress p
-        LEFT JOIN spock.subscription sub
-            ON  sub.sub_origin = p.remote_node_id
-            AND sub.sub_target = p.node_id
-        LEFT JOIN pg_replication_origin o
-            ON  o.roname = sub.sub_slot_name
-        LEFT JOIN pg_replication_origin_status ros
-            ON  ros.local_id = o.roident
-        WHERE  p.node_id         = p_provider_node_id
-          AND  p.remote_node_id <> p_subscriber_node_id
-    ) LOOP
-        RAISE NOTICE 'SPOCK cswp[pre-slot] provider=% subscriber=% remote_node=% pre_remote_lsn=% ros_local_lsn=%',
-            p_provider_node_id, p_subscriber_node_id,
-            rec.remote_node_id, rec.pre_remote_lsn, rec.ros_local_lsn;
-        v_pre_node_ids    := v_pre_node_ids    || rec.remote_node_id;
-        v_pre_remote_lsns := v_pre_remote_lsns || rec.pre_remote_lsn;
-        v_pre_ros_lsns    := v_pre_ros_lsns    || rec.ros_local_lsn;
-    END LOOP;
-
-    -- -----------------------------------------------------------------------
-    -- Step 2: Create the slot.
-    --
-    -- The pre-ROS reads above are purely read-only (no XID assigned), so
-    -- pg_create_logical_replication_slot succeeds here.  In REPEATABLE READ
-    -- the snapshot established by Step 1 is reused, so the slot's consistent
-    -- point and the exported snapshot share the same WAL horizon.
+    -- Any N2 commit whose WAL record landed on N1 before v_lsn is therefore
+    -- visible in the COPY.  Any commit whose WAL record landed after v_lsn is
+    -- not in the COPY and also not visible to pg_replication_origin_status
+    -- reads performed in this same statement evaluation, because its
+    -- ros.local_lsn will be > v_lsn (detectable in Step 3 below).
     -- -----------------------------------------------------------------------
     SELECT s.lsn INTO v_lsn
     FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
 
     RAISE NOTICE 'SPOCK cswp[slot] slot=% v_lsn=%', p_slot_name, v_lsn;
 
-    -- Step 3: Export the snapshot for the COPY worker.
+    -- -----------------------------------------------------------------------
+    -- Step 2: Export the snapshot for the COPY worker.
+    -- -----------------------------------------------------------------------
     v_snap := pg_export_snapshot();
 
     RAISE NOTICE 'SPOCK cswp[snap] slot=% v_lsn=% snapshot=%', p_slot_name, v_lsn, v_snap;
@@ -144,42 +91,52 @@ BEGIN
     RETURN NEXT;
 
     -- -----------------------------------------------------------------------
-    -- Step 4: Emit one progress row per peer node.
+    -- Step 3: Emit one progress row per peer node (P_snap derivation).
     --
-    -- We exclusively use the pre-slot values (captured in Step 1) as
-    -- remote_commit_lsn (P_snap).  We do NOT re-read
-    -- pg_replication_origin_status here because:
-    --   * It is live shmem; by now the apply worker may have advanced it past
-    --     the slot's consistent point (v_lsn).
-    --   * Any N2 transaction applied by N1 after the Step 1 snapshot point is
-    --     NOT in the COPY; using its remote_lsn as P_snap would skip it in
-    --     streaming too, causing data loss.
-    -- Using pre-slot values ensures streaming starts at or before the COPY
-    -- boundary, so the gap is covered by streaming (safe double-apply at
-    -- worst, never data loss).
+    -- Peer enumeration uses PostgreSQL catalog tables (spock.subscription,
+    -- pg_replication_origin) which are MVCC-stable heap tables, so the list
+    -- of peers is snapshot-consistent.
+    --
+    -- P_snap (remote_commit_lsn) for each peer is determined by:
+    --
+    --   Case A  ros.local_lsn <= v_lsn
+    --     The peer's last applied commit on N1 landed before the slot's
+    --     consistent point.  That commit IS in the COPY snapshot.  Use
+    --     ros.remote_lsn as the exact P_snap to feed Phase 7.
+    --
+    --   Case B  ros.local_lsn > v_lsn  (or ros row absent)
+    --     The apply worker advanced past the consistent point just after
+    --     slot creation.  That latest commit is NOT in the COPY.  Fall back
+    --     to spock.progress.remote_commit_lsn (SpockGroupHash), which lags
+    --     ros by one transaction and therefore reflects the commit immediately
+    --     before the race -- a pre-snapshot value that is safe to use as a
+    --     conservative lower bound for P_snap.
     -- -----------------------------------------------------------------------
     FOR rec IN (
         SELECT p.dbid, p.node_id, p.remote_node_id,
                p.remote_commit_ts, p.prev_remote_ts,
+               p.remote_commit_lsn        AS shmem_remote_lsn,
                p.remote_insert_lsn,
-               p.received_lsn, p.last_updated_ts, p.updated_by_decode
-        FROM spock.progress p
-        WHERE p.node_id = p_provider_node_id
-          AND p.remote_node_id <> p_subscriber_node_id
+               p.received_lsn, p.last_updated_ts, p.updated_by_decode,
+               ros.remote_lsn             AS ros_remote_lsn,
+               ros.local_lsn              AS ros_local_lsn
+        FROM   spock.subscription sub
+        JOIN   spock.progress p
+               ON  p.remote_node_id = sub.sub_origin
+               AND p.node_id        = sub.sub_target
+        JOIN   pg_replication_origin o
+               ON  o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros
+               ON  ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id
     ) LOOP
-        -- Look up pre-slot ROS values from the parallel arrays built in Step 1.
-        v_pre_remote_lsn := '0/0'::pg_lsn;
-        v_ros_local_lsn  := NULL;
-        FOR v_i IN 1..COALESCE(array_length(v_pre_node_ids, 1), 0) LOOP
-            IF v_pre_node_ids[v_i] = rec.remote_node_id THEN
-                v_pre_remote_lsn := v_pre_remote_lsns[v_i];
-                v_ros_local_lsn  := v_pre_ros_lsns[v_i];
-                EXIT;
-            END IF;
-        END LOOP;
-        RAISE NOTICE 'SPOCK cswp[progress] provider=% subscriber=% remote_node=% P_snap=% ros_local=% v_lsn=%',
-            p_provider_node_id, p_subscriber_node_id,
-            rec.remote_node_id, v_pre_remote_lsn, v_ros_local_lsn, v_lsn;
+        RAISE NOTICE 'SPOCK cswp[progress] provider=% subscriber=% remote_node=% '
+                     'ros_remote=% ros_local=% shmem_remote=% v_lsn=%',
+            p_provider_node_id, p_subscriber_node_id, rec.remote_node_id,
+            rec.ros_remote_lsn, rec.ros_local_lsn,
+            rec.shmem_remote_lsn, v_lsn;
+
         lsn               := v_lsn;
         snapshot          := v_snap;
         dbid              := rec.dbid;
@@ -187,7 +144,17 @@ BEGIN
         remote_node_id    := rec.remote_node_id;
         remote_commit_ts  := rec.remote_commit_ts;
         prev_remote_ts    := rec.prev_remote_ts;
-        remote_commit_lsn := v_pre_remote_lsn;
+        -- Case A: ros was last updated before the slot's consistent point,
+        --         so ros.remote_lsn is the exact pre-snapshot P_snap.
+        -- Case B: ros advanced past v_lsn after slot creation; use the
+        --         SpockGroupHash value (one commit behind ros) as a safe
+        --         conservative lower bound.
+        remote_commit_lsn := CASE
+            WHEN rec.ros_local_lsn IS NOT NULL
+                 AND rec.ros_local_lsn <= v_lsn
+            THEN COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn)
+            ELSE COALESCE(rec.shmem_remote_lsn, '0/0'::pg_lsn)
+        END;
         remote_insert_lsn := rec.remote_insert_lsn;
         received_lsn      := rec.received_lsn;
         last_updated_ts   := rec.last_updated_ts;

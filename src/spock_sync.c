@@ -599,11 +599,15 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 	/*
 	 * Open a REPEATABLE READ transaction.  In REPEATABLE READ, the snapshot
 	 * is established at the first data-accessing statement.  The function
-	 * spock.create_slot_with_progress first reads pg_replication_origin_status
-	 * into local arrays (pure reads, no XID assigned), then calls
-	 * pg_create_logical_replication_slot.  Both operations share the same
-	 * REPEATABLE READ snapshot, so the slot's consistent-point and the
-	 * exported snapshot cover the same WAL horizon.
+	 * spock.create_slot_with_progress calls pg_create_logical_replication_slot
+	 * as its very first statement so that the slot's consistent point (v_lsn)
+	 * and the COPY snapshot share exactly the same WAL boundary.  After slot
+	 * creation it reads pg_replication_origin_status via pg_replication_origin
+	 * (PostgreSQL catalog tables) and applies a ros.local_lsn <= v_lsn guard
+	 * to derive P_snap: Case A uses ros.remote_lsn directly; Case B (apply
+	 * worker raced past v_lsn) falls back to spock.progress.remote_commit_lsn
+	 * (SpockGroupHash, one transaction behind ros) as a conservative lower
+	 * bound, preventing P_snap over-estimation and the associated data loss.
 	 */
 	res = PQexec(conn, "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
