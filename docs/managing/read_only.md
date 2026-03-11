@@ -23,14 +23,14 @@ You can control read-only mode with the Spock parameter `spock.readonly`; only a
 This value can be changed using the `ALTER SYSTEM` command.
 
 ```sql
-ALTER SYSTEM SET spock.readonly = 'on';
+ALTER SYSTEM SET spock.readonly = 'all';
 SELECT pg_reload_conf();
 ```
 
 To set the cluster to read-only mode for a session, use the `SET` command. Here are the steps:
 
 ```sql
-SET spock.readonly TO on;
+SET spock.readonly TO all;
 ```
 
 To query the current status of the cluster, you can use the following SQL command:
@@ -45,4 +45,4 @@ Notes:
  - Only superusers can set and unset the `spock.readonly` parameter.
  - When the cluster is in read-only mode, only non-superusers are restricted to read-only operations. Superusers can continue to perform both read and write operations.
  - By using a GUC parameter, you can easily manage the cluster's read-only status through standard PostgreSQL configuration mechanisms.
-
+ - Available values for readonly are: off, user, all
