@@ -164,6 +164,8 @@ system_or_bail 'sleep', '2';
 $log_content = get_log_content_since($n2_logfile, $log_pos);
 like($log_content, qr/CONFLICT:.*remote UPDATE on relation public\.test_origin/,
     'since_sub_creation: conflict logged for post-subscription data');
+like($log_content, qr/origin=local/,
+    'since_sub_creation: locally-modified row shows origin=local in log');
 
 # =============================================================================
 # Test 3: mode 'none' — suppresses all origin-change logging

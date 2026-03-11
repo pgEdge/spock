@@ -769,11 +769,14 @@ spock_report_conflict(SpockConflictType conflict_type,
 	if (found_local_origin)
 	{
 		strlcpy(local_tup_ts_str,
-			   timestamptz_to_str(local_tuple_commit_ts),
-			   MAXDATELEN);
-		if (local_tuple_origin != InvalidRepOriginId)
+				timestamptz_to_str(local_tuple_commit_ts),
+				MAXDATELEN);
+
+		if (local_tuple_origin == InvalidRepOriginId)
+			strlcpy(local_origin_str, "local", sizeof(local_origin_str)); /* locally written */
+		else
 			snprintf(local_origin_str, sizeof(local_origin_str), "%u",
-					 (unsigned int) local_tuple_origin);
+				(unsigned int) local_tuple_origin);
 	}
 
 	initStringInfo(&remotetup);
@@ -929,7 +932,7 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 	/* conflict_resolution */
 	values[6] = CStringGetTextDatum(conflict_resolution_to_string(resolution));
 	/* local_origin */
-	if (found_local_origin && local_tuple_origin != InvalidRepOriginId)
+	if (found_local_origin)
 		values[7] = Int32GetDatum((int) local_tuple_origin);
 	else
 		nulls[7] = true;
