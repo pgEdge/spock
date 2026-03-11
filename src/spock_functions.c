@@ -196,6 +196,7 @@ extern void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
 static XLogRecPtr skip_wal_records_decoding(bool enable);
+static void check_readonly_for_resync(const char *nspname, const char *relname);
 
 
 bool		in_spock_replicate_ddl_command = false;
@@ -956,6 +957,8 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 		if (!oldsync)
 		{
 			SpockSyncStatus newsync;
+
+			check_readonly_for_resync(remoterel->nspname, remoterel->relname);
 
 			memset(&newsync, 0, sizeof(SpockSyncStatus));
 			newsync.kind = SYNC_KIND_DATA;
