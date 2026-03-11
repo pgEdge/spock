@@ -146,9 +146,20 @@ CREATE FUNCTION spock.create_slot_with_progress(
     updated_by_decode boolean
 ) VOLATILE STRICT LANGUAGE plpgsql AS $$
 DECLARE
-    v_lsn  pg_lsn;
-    v_snap text;
-    rec    record;
+    v_lsn             pg_lsn;
+    v_snap            text;
+    rec               record;
+    -- Pre-slot ROS captured in parallel arrays.  We cannot use CREATE TEMP
+    -- TABLE here: DDL assigns a transaction XID, and PostgreSQL forbids
+    -- pg_create_logical_replication_slot in any transaction that has already
+    -- performed writes.  Plain SELECT into local variables is read-only and
+    -- leaves the XID slot unassigned.
+    v_pre_node_ids    oid[]    := '{}';
+    v_pre_remote_lsns pg_lsn[] := '{}';
+    v_pre_ros_lsns    pg_lsn[] := '{}';
+    v_i               int;
+    v_pre_remote_lsn  pg_lsn;
+    v_ros_local_lsn   pg_lsn;
 BEGIN
     -- -----------------------------------------------------------------------
     -- Step 1  (MUST be the first data-accessing statement in the REPEATABLE
@@ -177,7 +188,7 @@ BEGIN
     --     slot-creation point (those transactions are NOT in the COPY).
     --     Using that later value over-estimates P_snap → data loss.
     -- -----------------------------------------------------------------------
-    CREATE TEMP TABLE _cswp_pre_ros ON COMMIT DROP AS
+    FOR rec IN (
         SELECT p.remote_node_id,
                COALESCE(ros.remote_lsn, '0/0'::pg_lsn) AS pre_remote_lsn,
                ros.local_lsn                            AS ros_local_lsn
@@ -190,21 +201,23 @@ BEGIN
         LEFT JOIN pg_replication_origin_status ros
             ON  ros.local_id = o.roident
         WHERE  p.node_id         = p_provider_node_id
-          AND  p.remote_node_id <> p_subscriber_node_id;
-
-    FOR rec IN (SELECT * FROM _cswp_pre_ros) LOOP
+          AND  p.remote_node_id <> p_subscriber_node_id
+    ) LOOP
         RAISE NOTICE 'SPOCK cswp[pre-slot] provider=% subscriber=% remote_node=% pre_remote_lsn=% ros_local_lsn=%',
             p_provider_node_id, p_subscriber_node_id,
             rec.remote_node_id, rec.pre_remote_lsn, rec.ros_local_lsn;
+        v_pre_node_ids    := v_pre_node_ids    || rec.remote_node_id;
+        v_pre_remote_lsns := v_pre_remote_lsns || rec.pre_remote_lsn;
+        v_pre_ros_lsns    := v_pre_ros_lsns    || rec.ros_local_lsn;
     END LOOP;
 
     -- -----------------------------------------------------------------------
     -- Step 2: Create the slot.
     --
-    -- In REPEATABLE READ the snapshot established by Step 1 is reused here,
-    -- so the slot's consistent point (v_lsn) is at or after the snapshot
-    -- boundary.  The COPY worker's snapshot covers exactly the WAL up to
-    -- the MVCC snapshot point (Step 1), which is <= v_lsn.
+    -- The pre-ROS reads above are purely read-only (no XID assigned), so
+    -- pg_create_logical_replication_slot succeeds here.  In REPEATABLE READ
+    -- the snapshot established by Step 1 is reused, so the slot's consistent
+    -- point and the exported snapshot share the same WAL horizon.
     -- -----------------------------------------------------------------------
     SELECT s.lsn INTO v_lsn
     FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
@@ -224,7 +237,7 @@ BEGIN
     -- -----------------------------------------------------------------------
     -- Step 4: Emit one progress row per peer node.
     --
-    -- We exclusively use psr.pre_remote_lsn (captured in Step 1) as
+    -- We exclusively use the pre-slot values (captured in Step 1) as
     -- remote_commit_lsn (P_snap).  We do NOT re-read
     -- pg_replication_origin_status here because:
     --   * It is live shmem; by now the apply worker may have advanced it past
@@ -232,37 +245,43 @@ BEGIN
     --   * Any N2 transaction applied by N1 after the Step 1 snapshot point is
     --     NOT in the COPY; using its remote_lsn as P_snap would skip it in
     --     streaming too, causing data loss.
-    -- Using pre_remote_lsn ensures streaming starts at or before the COPY
+    -- Using pre-slot values ensures streaming starts at or before the COPY
     -- boundary, so the gap is covered by streaming (safe double-apply at
     -- worst, never data loss).
     -- -----------------------------------------------------------------------
     FOR rec IN (
         SELECT p.dbid, p.node_id, p.remote_node_id,
                p.remote_commit_ts, p.prev_remote_ts,
-               COALESCE(psr.pre_remote_lsn, '0/0'::pg_lsn) AS remote_commit_lsn,
-               psr.ros_local_lsn,
                p.remote_insert_lsn,
                p.received_lsn, p.last_updated_ts, p.updated_by_decode
         FROM spock.progress p
-        LEFT JOIN _cswp_pre_ros psr
-            ON psr.remote_node_id = p.remote_node_id
         WHERE p.node_id = p_provider_node_id
           AND p.remote_node_id <> p_subscriber_node_id
     ) LOOP
+        -- Look up pre-slot ROS values from the parallel arrays built in Step 1.
+        v_pre_remote_lsn := '0/0'::pg_lsn;
+        v_ros_local_lsn  := NULL;
+        FOR v_i IN 1..COALESCE(array_length(v_pre_node_ids, 1), 0) LOOP
+            IF v_pre_node_ids[v_i] = rec.remote_node_id THEN
+                v_pre_remote_lsn := v_pre_remote_lsns[v_i];
+                v_ros_local_lsn  := v_pre_ros_lsns[v_i];
+                EXIT;
+            END IF;
+        END LOOP;
         RAISE NOTICE 'SPOCK cswp[progress] provider=% subscriber=% remote_node=% P_snap=% ros_local=% v_lsn=%',
             p_provider_node_id, p_subscriber_node_id,
-            rec.remote_node_id, rec.remote_commit_lsn, rec.ros_local_lsn, v_lsn;
-        lsn              := v_lsn;
-        snapshot         := v_snap;
-        dbid             := rec.dbid;
-        node_id          := rec.node_id;
-        remote_node_id   := rec.remote_node_id;
-        remote_commit_ts := rec.remote_commit_ts;
-        prev_remote_ts   := rec.prev_remote_ts;
-        remote_commit_lsn  := rec.remote_commit_lsn;
-        remote_insert_lsn  := rec.remote_insert_lsn;
-        received_lsn     := rec.received_lsn;
-        last_updated_ts  := rec.last_updated_ts;
+            rec.remote_node_id, v_pre_remote_lsn, v_ros_local_lsn, v_lsn;
+        lsn               := v_lsn;
+        snapshot          := v_snap;
+        dbid              := rec.dbid;
+        node_id           := rec.node_id;
+        remote_node_id    := rec.remote_node_id;
+        remote_commit_ts  := rec.remote_commit_ts;
+        prev_remote_ts    := rec.prev_remote_ts;
+        remote_commit_lsn := v_pre_remote_lsn;
+        remote_insert_lsn := rec.remote_insert_lsn;
+        received_lsn      := rec.received_lsn;
+        last_updated_ts   := rec.last_updated_ts;
         updated_by_decode := rec.updated_by_decode;
         RETURN NEXT;
     END LOOP;
