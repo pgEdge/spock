@@ -2,9 +2,12 @@
  * spock_readonly.c
  *    Spock readonly related functions
  *
- * Spock readonly functions allow setting the entire cluster to read-only mode,
- * preventing INSERT, UPDATE, DELETE, and DDL operations. This file is part of
- * pgEdge, Inc. open source project, licensed under the PostgreSQL license.
+ * Spock readonly functions allow setting the database to read-only mode,
+ * preventing INSERT, UPDATE, DELETE, and DDL operations.
+ * In the 'ALL' mode it prevents the database from being modified by spock
+ * apply workers as well.
+ * This code employs the transaction_read_only GUC to disable attempts
+ * to execute DML or DDL commands.
  *
  * This file is part of pgEdge, Inc. open source project, licensed under
  * the PostgreSQL license. For license terms, see the LICENSE file.
@@ -62,56 +65,53 @@ spockro_terminate_active_transactions(PG_FUNCTION_ARGS)
 void
 spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 {
-	bool		command_is_ro = false;
-
-	switch (query->commandType)
+	/*
+	 * If spock.readonly is set, enforce Postgres core restriction for the
+	 * following query. We actively employ the fact that the core uses the
+	 * XactReadOnly value directly, not through the GetConfigOption function.
+	 * Also, we use this fact here to identify if XactReadOnly has been changed
+	 * by Spock or by external tools.
+	 */
+	if (spock_readonly >= READONLY_LOCAL && !superuser())
+		XactReadOnly = true;
+	else if (XactReadOnly)
 	{
-		case CMD_SELECT:
-			command_is_ro = true;
-			break;
-		case CMD_UTILITY:
-			switch (nodeTag(query->utilityStmt))
-			{
-				case T_AlterSystemStmt:
-				case T_DeallocateStmt:
-				case T_ExecuteStmt:
-				case T_ExplainStmt:
-				case T_PrepareStmt:
-				case T_TransactionStmt:
-				case T_VariableSetStmt:
-				case T_VariableShowStmt:
-					command_is_ro = true;
-					break;
-				default:
-					command_is_ro = false;
-					break;
-			}
-			break;
-		default:
-			command_is_ro = false;
-			break;
+		const char *value =
+						GetConfigOption("transaction_read_only", false, false);
+
+		if (strcmp(value, "off") == 0)
+			/* Spock imposed read-only. Restore the original state. */
+			XactReadOnly = false;
 	}
-	if (spock_readonly >= READONLY_USER && !command_is_ro)
-		ereport(ERROR, (errmsg("spock: invalid statement for a read-only cluster")));
+	else
+	{
+		/* XactReadOnly is already false, nothing to restore. */
+	}
 }
 
 void
 spock_roExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-	bool		command_is_ro = false;
-
-	switch (queryDesc->operation)
+	/*
+	 * Let's do the same job as at parse analysis hook.
+	 *
+	 * In some cases parse analysis and planning may be skipped on repeated
+	 * execution (remember SPI plan for example). So, additional control makes
+	 * sense here.
+	 */
+	if (spock_readonly >= READONLY_LOCAL && !superuser())
+		XactReadOnly = true;
+	else if (XactReadOnly)
 	{
-		case CMD_SELECT:
-			command_is_ro = true;
-			break;
-		case CMD_INSERT:
-		case CMD_UPDATE:
-		case CMD_DELETE:
-		default:
-			command_is_ro = false;
-			break;
+		const char *value =
+						GetConfigOption("transaction_read_only", false, false);
+
+		if (strcmp(value, "off") == 0)
+			/* Spock imposed read-only. Restore the original state. */
+			XactReadOnly = false;
 	}
-	if (spock_readonly >= READONLY_USER && !command_is_ro)
-		ereport(ERROR, (errmsg("spock: invalid statement for a read-only cluster")));
+	else
+	{
+		/* XactReadOnly is already false, nothing to restore. */
+	}
 }

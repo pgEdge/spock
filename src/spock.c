@@ -122,7 +122,8 @@ static const struct config_enum_entry exception_logging_options[] = {
 
 static const struct config_enum_entry readonly_options[] = {
 	{"off", READONLY_OFF, false},
-	{"user", READONLY_USER, false},
+	{"local", READONLY_LOCAL, false},
+	{"user", READONLY_LOCAL, true},	/* backward-compatible alias */
 	{"all", READONLY_ALL, false},
 	{NULL, 0, false}
 };
