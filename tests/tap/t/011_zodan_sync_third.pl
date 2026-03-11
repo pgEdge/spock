@@ -197,16 +197,12 @@ $lag = scalar_query(1, "SELECT * FROM wait_subscription(remote_node_name := 'n3'
 														   report_it := true,
 														   timeout := '10 minutes',
 														   delay := 1.)");
-ok($lag  <= 0, "Replication N2 => N1 has been finished successfully");
+ok($lag  <= 0, "Replication N3 => N1 has been finished successfully");
 $lag = scalar_query(2, "SELECT * FROM wait_subscription(remote_node_name := 'n3',
-														   report_it := true,
-														   timeout := '10 minutes',
-														   delay := 1.)");
-ok($lag  <= 0, "Replication N1 => N2 has been finished successfully");
-
-# ##############################################################################
-#
-# Try to update an IDENTITY column (pgbench_accounts.aid). This is the case of
+											   report_it := true,
+											   timeout := '10 minutes',
+											   delay := 1.)");
+ok($lag  <= 0, "Replication N3 => N2 has been finished successfully");
 # 2n congiguration. With non-intersecting load we don't anticipate any issues
 # with this test. It is written to prepare infrastructure and for demonstration
 # purposes.
