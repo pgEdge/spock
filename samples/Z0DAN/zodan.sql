@@ -1781,8 +1781,23 @@ DECLARE
     src_dbname text;
     current_lsn pg_lsn;
     target_lsn pg_lsn;
+    v_sub_name name;
 BEGIN
     RAISE NOTICE 'Phase 7: Checking commit timestamp and advancing replication slot';
+
+    -- Wait for the src->new COPY to complete so that spock_group_progress_force_set_list
+    -- has written the correct P_snap values into spock.progress before we read them.
+    -- Without this wait, Phase 7 can race ahead of the sync worker and read a stale
+    -- apply-worker LSN (< P_snap), causing double-apply or data loss on the new node.
+    v_sub_name := ('sub_' || src_node_name || '_' || new_node_name)::name;
+    RAISE NOTICE '    - Waiting for subscription % to reach READY (ensures COPY is complete and P_snap is set)...', v_sub_name;
+    BEGIN
+        PERFORM spock.sub_wait_for_sync(v_sub_name);
+        RAISE NOTICE '    - Subscription % is READY; spock.progress now holds correct P_snap values', v_sub_name;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE WARNING '    - sub_wait_for_sync(%) failed: %; proceeding anyway', v_sub_name, SQLERRM;
+    END;
 
     -- Advance the source-to-new subscription slot before enabling other
     -- subscriptions; starting at LSN 0/0 would re-apply snapshot rows
