@@ -72,6 +72,7 @@ system_or_bail('mkdir', '-p', $standby_logdir);
     print $conf "primary_slot_name = 'standby_slot'\n";
     print $conf "log_directory = '$standby_logdir'\n";
     print $conf "log_filename = '$standby_logname'\n";
+    print $conf "log_min_messages = debug1\n";
     close($conf);
 }
 
