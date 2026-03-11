@@ -596,6 +596,9 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 	PQclear(res);
 	resetStringInfo(&query);
 
+	elog(LOG, "SPOCK cswp[C:init] slot=%s provider_node=%u subscriber_node=%u",
+		 slot_name, origin_node_id, subscriber_node_id);
+
 	/*
 	 * Open a REPEATABLE READ transaction.  In REPEATABLE READ, the snapshot
 	 * is established at the first data-accessing statement.  The function
@@ -615,11 +618,16 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 			 PQerrorMessage(conn));
 	PQclear(res);
 
+	elog(LOG, "SPOCK cswp[C:begin-rr] slot=%s -- REPEATABLE READ transaction opened",
+		 slot_name);
+
 	/* Single call: create slot + export snapshot + read progress atomically */
 	appendStringInfo(&query,
 					 "SELECT * FROM spock.create_slot_with_progress"
 					 "('%s', %u, %u)",
 					 slot_name, origin_node_id, subscriber_node_id);
+	elog(LOG, "SPOCK cswp[C:call] slot=%s -- executing spock.create_slot_with_progress(%u, %u)",
+		 slot_name, origin_node_id, subscriber_node_id);
 	res = PQexec(conn, query.data);
 	resetStringInfo(&query);
 
@@ -631,10 +639,18 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 	if (nrows < 1)
 		elog(ERROR, "spock.create_slot_with_progress returned no rows");
 
+	elog(LOG, "SPOCK cswp[C:result] slot=%s -- function returned %d rows (1 header + %d peers)",
+		 slot_name, nrows, nrows - 1);
+
 	/* Row 0 is the header row: lsn + snapshot, progress fields all NULL */
 	*lsn_out = DatumGetLSN(DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,
 							CStringGetDatum(PQgetvalue(res, 0, COL_LSN))));
 	snapshot = pstrdup(PQgetvalue(res, 0, COL_SNAP));
+
+	elog(LOG, "SPOCK cswp[C:header] slot=%s lsn=%s snapshot=%s -- header row parsed",
+		 slot_name,
+		 PQgetvalue(res, 0, COL_LSN),
+		 PQgetvalue(res, 0, COL_SNAP));
 
 	/* Rows 1+ are progress entries (remote_node_id NOT NULL) */
 	for (rno = 1; rno < nrows; rno++)
@@ -689,11 +705,23 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 		progress_list = lappend(progress_list, sap);
 		MemoryContextSwitchTo(oldctx);
 
-		elog(LOG, "SPOCK: create_slot_with_progress: captured progress %s->%d "
-			 "remote_commit_lsn=%s remote_insert_lsn=%s",
+		elog(LOG, "SPOCK cswp[C:peer] slot=%s peer=%s->%d "
+			 "remote_commit_lsn=%s remote_insert_lsn=%s received_lsn=%s "
+			 "remote_commit_ts=%s updated_by_decode=%c",
+			 slot_name,
 			 remote_node_id_str, MySubscription->target->id,
-			 remote_commit_lsn_str, remote_insert_lsn_str);
+			 remote_commit_lsn_str, remote_insert_lsn_str,
+			 remote_commit_lsn_str,	/* received_lsn mirrors remote_commit_lsn */
+			 PQgetisnull(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_TS) ? "(null)" :
+				 PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_TS),
+			 PQgetvalue(res, rno, COL_OFFSET + GP_UPDATED_BY_DECODE)[0]);
 	}
+
+	elog(LOG, "SPOCK cswp[C:summary] slot=%s lsn=%s snapshot=%s -- captured %d peer progress rows",
+		 slot_name,
+		 PQgetvalue(res, 0, COL_LSN),
+		 PQgetvalue(res, 0, COL_SNAP),
+		 nrows - 1);
 
 	PQclear(res);
 	pfree(query.data);

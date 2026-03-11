@@ -147,9 +147,13 @@ CREATE FUNCTION spock.create_slot_with_progress(
 ) VOLATILE STRICT LANGUAGE plpgsql AS $$
 DECLARE
     v_lsn  pg_lsn;
-    v_snap text;
-    rec    record;
+    v_snap    text;
+    rec       record;
+    v_n_peers int := 0;
 BEGIN
+    RAISE NOTICE 'SPOCK cswp[enter] slot=% provider_node=% subscriber_node=%',
+        p_slot_name, p_provider_node_id, p_subscriber_node_id;
+
     -- -----------------------------------------------------------------------
     -- Step 1: Create the replication slot.
     --
@@ -164,22 +168,29 @@ BEGIN
     -- reads performed in this same statement evaluation, because its
     -- ros.local_lsn will be > v_lsn (detectable in Step 3 below).
     -- -----------------------------------------------------------------------
+    RAISE NOTICE 'SPOCK cswp[pre-slot] slot=% -- calling pg_create_logical_replication_slot', p_slot_name;
+
     SELECT s.lsn INTO v_lsn
     FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
 
-    RAISE NOTICE 'SPOCK cswp[slot] slot=% v_lsn=%', p_slot_name, v_lsn;
+    RAISE NOTICE 'SPOCK cswp[slot] slot=% v_lsn=% -- slot created; REPEATABLE READ snapshot boundary established',
+        p_slot_name, v_lsn;
 
     -- -----------------------------------------------------------------------
     -- Step 2: Export the snapshot for the COPY worker.
     -- -----------------------------------------------------------------------
     v_snap := pg_export_snapshot();
 
-    RAISE NOTICE 'SPOCK cswp[snap] slot=% v_lsn=% snapshot=%', p_slot_name, v_lsn, v_snap;
+    RAISE NOTICE 'SPOCK cswp[snap] slot=% v_lsn=% snapshot=% -- snapshot exported for COPY worker',
+        p_slot_name, v_lsn, v_snap;
 
     -- Header row: lsn + snapshot only; progress fields all NULL.
     lsn      := v_lsn;
     snapshot := v_snap;
     RETURN NEXT;
+
+    RAISE NOTICE 'SPOCK cswp[header-row] slot=% v_lsn=% snapshot=% -- header row emitted',
+        p_slot_name, v_lsn, v_snap;
 
     -- -----------------------------------------------------------------------
     -- Step 3: Emit one progress row per peer node (P_snap derivation).
@@ -203,6 +214,9 @@ BEGIN
     --     before the race -- a pre-snapshot value that is safe to use as a
     --     conservative lower bound for P_snap.
     -- -----------------------------------------------------------------------
+    RAISE NOTICE 'SPOCK cswp[peer-enum-start] slot=% v_lsn=% -- querying peers for provider=% excluding subscriber=%',
+        p_slot_name, v_lsn, p_provider_node_id, p_subscriber_node_id;
+
     FOR rec IN (
         SELECT p.dbid, p.node_id, p.remote_node_id,
                p.remote_commit_ts, p.prev_remote_ts,
@@ -210,7 +224,9 @@ BEGIN
                p.remote_insert_lsn,
                p.received_lsn, p.last_updated_ts, p.updated_by_decode,
                ros.remote_lsn             AS ros_remote_lsn,
-               ros.local_lsn              AS ros_local_lsn
+               ros.local_lsn              AS ros_local_lsn,
+               sub.sub_slot_name          AS sub_slot_name,
+               o.roident                  AS roident
         FROM   spock.subscription sub
         JOIN   spock.progress p
                ON  p.remote_node_id = sub.sub_origin
@@ -222,11 +238,16 @@ BEGIN
         WHERE  sub.sub_target = p_provider_node_id
           AND  sub.sub_origin <> p_subscriber_node_id
     ) LOOP
-        RAISE NOTICE 'SPOCK cswp[progress] provider=% subscriber=% remote_node=% '
-                     'ros_remote=% ros_local=% shmem_remote=% v_lsn=%',
-            p_provider_node_id, p_subscriber_node_id, rec.remote_node_id,
-            rec.ros_remote_lsn, rec.ros_local_lsn,
-            rec.shmem_remote_lsn, v_lsn;
+        v_n_peers := v_n_peers + 1;
+
+        RAISE NOTICE 'SPOCK cswp[peer-row] slot=% peer=% (#%) sub_slot=% roident=% '
+                     'ros_local=% ros_remote=% shmem_remote=% v_lsn=% '
+                     'ros_present=% ros_local_le_vlsn=%',
+            p_slot_name, rec.remote_node_id, v_n_peers,
+            rec.sub_slot_name, rec.roident,
+            rec.ros_local_lsn, rec.ros_remote_lsn, rec.shmem_remote_lsn, v_lsn,
+            (rec.ros_local_lsn IS NOT NULL),
+            (rec.ros_local_lsn IS NOT NULL AND rec.ros_local_lsn <= v_lsn);
 
         lsn               := v_lsn;
         snapshot          := v_snap;
@@ -235,23 +256,43 @@ BEGIN
         remote_node_id    := rec.remote_node_id;
         remote_commit_ts  := rec.remote_commit_ts;
         prev_remote_ts    := rec.prev_remote_ts;
+
         -- Case A: ros was last updated before the slot's consistent point,
         --         so ros.remote_lsn is the exact pre-snapshot P_snap.
         -- Case B: ros advanced past v_lsn after slot creation; use the
         --         SpockGroupHash value (one commit behind ros) as a safe
         --         conservative lower bound.
-        remote_commit_lsn := CASE
-            WHEN rec.ros_local_lsn IS NOT NULL
-                 AND rec.ros_local_lsn <= v_lsn
-            THEN COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn)
-            ELSE COALESCE(rec.shmem_remote_lsn, '0/0'::pg_lsn)
-        END;
+        IF rec.ros_local_lsn IS NOT NULL AND rec.ros_local_lsn <= v_lsn THEN
+            remote_commit_lsn := COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn);
+            RAISE NOTICE 'SPOCK cswp[case-A] slot=% peer=% ros_local=% <= v_lsn=% -- using ros_remote=% as P_snap',
+                p_slot_name, rec.remote_node_id,
+                rec.ros_local_lsn, v_lsn, remote_commit_lsn;
+        ELSE
+            remote_commit_lsn := COALESCE(rec.shmem_remote_lsn, '0/0'::pg_lsn);
+            RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using shmem_remote=% as P_snap',
+                p_slot_name, rec.remote_node_id,
+                rec.ros_local_lsn, v_lsn, remote_commit_lsn;
+        END IF;
+
         remote_insert_lsn := rec.remote_insert_lsn;
         received_lsn      := rec.received_lsn;
         last_updated_ts   := rec.last_updated_ts;
         updated_by_decode := rec.updated_by_decode;
+
+        RAISE NOTICE 'SPOCK cswp[progress-row] slot=% peer=% P_snap=% remote_insert_lsn=% received_lsn=% remote_commit_ts=% -- emitting progress row',
+            p_slot_name, rec.remote_node_id,
+            remote_commit_lsn, remote_insert_lsn, received_lsn, remote_commit_ts;
+
         RETURN NEXT;
     END LOOP;
+
+    IF v_n_peers = 0 THEN
+        RAISE NOTICE 'SPOCK cswp[no-peers] slot=% v_lsn=% -- no peer nodes found for provider=% (subscriber=% excluded)',
+            p_slot_name, v_lsn, p_provider_node_id, p_subscriber_node_id;
+    END IF;
+
+    RAISE NOTICE 'SPOCK cswp[done] slot=% v_lsn=% -- emitted % progress rows (+ 1 header)',
+        p_slot_name, v_lsn, v_n_peers;
 END;
 $$;
 
