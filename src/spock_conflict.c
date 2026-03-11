@@ -501,8 +501,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   remotetup.data,
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32) (replorigin_session_origin_lsn << 32),
-							   (uint32) replorigin_session_origin_lsn)));
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 		case SPOCK_CT_UPDATE_MISSING:
 			ereport(spock_conflict_log_level,
@@ -515,8 +514,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   remotetup.data,
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32) (replorigin_session_origin_lsn << 32),
-							   (uint32) replorigin_session_origin_lsn)));
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 		case SPOCK_CT_DELETE_MISSING:
 			ereport(spock_conflict_log_level,
@@ -528,8 +526,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 					 errdetail("tuple for remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32) (replorigin_session_origin_lsn << 32),
-							   (uint32) replorigin_session_origin_lsn)));
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 		case SPOCK_CT_DELETE_ORIGIN_DIFFERS:
 			ereport(spock_conflict_log_level,
@@ -544,8 +541,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 								local_tup_ts_str,
 								replorigin_session_origin,
 								timestamptz_to_str(replorigin_session_origin_timestamp),
-								(uint32) (replorigin_session_origin_lsn << 32),
-								(uint32) replorigin_session_origin_lsn)));
+								LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 		case SPOCK_CT_DELETE_EXISTS:
 			ereport(spock_conflict_log_level,
@@ -557,8 +553,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 					 errdetail("remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32) (replorigin_session_origin_lsn << 32),
-							   (uint32) replorigin_session_origin_lsn)));
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 	}
 }
