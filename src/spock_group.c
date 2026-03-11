@@ -691,11 +691,24 @@ spock_group_progress_update_list(List *lst)
 /*
  * spock_group_progress_force_set_list
  *
- * Like spock_group_progress_update_list but unconditionally overwrites the
- * shmem entry regardless of timestamp order. Used during add_node to record
- * P_snap so Phase 7 advances the new subscription's slot correctly, even
- * after a repeated add_node cycle where the existing high-timestamp entry
- * would otherwise be silently preserved.
+ * Establishes P_snap as a lower bound in the shmem entry for each peer.
+ * Used during add_node so that Phase 7 can advance the new subscription's
+ * slot to the correct boundary.
+ *
+ * If no entry exists yet, the incoming P_snap is written directly.
+ *
+ * If an entry already exists (e.g. from a live running apply worker that
+ * has streamed commits past P_snap), the existing value is preserved when
+ * it is already >= the incoming P_snap.  Overwriting a higher LSN with a
+ * stale provider-side value would cause Phase 7 to advance the slot too
+ * far back, allowing the apply worker to re-apply already-copied rows and
+ * produce double-apply errors (abalance divergence).
+ *
+ * In repeated add_node cycles the existing entry may have a stale
+ * high-timestamp from the previous cycle.  In that scenario the incoming
+ * P_snap LSN will be >= the stale entry's LSN (because a new COPY has been
+ * taken from a later consistent point), so the MAX-by-LSN guard naturally
+ * allows the update to proceed without needing an unconditional reset.
  */
 void
 spock_group_progress_force_set_list(List *lst)
@@ -714,8 +727,6 @@ spock_group_progress_force_set_list(List *lst)
 		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
 		SpockGroupEntry	   *entry;
 		bool				found;
-
-		spock_apply_progress_add_to_wal(sap);
 
 		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 
@@ -737,11 +748,43 @@ spock_group_progress_force_set_list(List *lst)
 			pg_atomic_init_u32(&entry->nattached, 0);
 			ConditionVariableInit(&entry->prev_processed_cv);
 		}
+		else if (entry->progress.remote_commit_lsn >= sap->remote_commit_lsn)
+		{
+			/*
+			 * The existing entry already reflects an LSN >= P_snap, meaning
+			 * a live apply worker has streamed commits that subsume the COPY
+			 * boundary.  Preserve the higher value so Phase 7 advances the
+			 * slot to the correct (higher) point and avoids double-apply.
+			 *
+			 * Skip both the shmem update and the WAL write so that crash
+			 * recovery does not inadvertently restore the stale lower value.
+			 */
+			elog(LOG, "SPOCK: force-set spock.progress %d->%d skipped: "
+				 "existing remote_commit_lsn=%X/%X >= incoming P_snap=%X/%X",
+				 sap->key.remote_node_id, MySubscription->target->id,
+				 LSN_FORMAT_ARGS(entry->progress.remote_commit_lsn),
+				 LSN_FORMAT_ARGS(sap->remote_commit_lsn));
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+			continue;
+		}
 		else
 		{
-			/* Reset so progress_update_struct's MAX-by-timestamp guard passes. */
+			/*
+			 * Existing LSN is below the incoming P_snap (stale leftover from
+			 * a previous add_node cycle or an apply worker that is behind).
+			 * Reset so progress_update_struct's MAX-by-timestamp guard
+			 * does not block the update.
+			 */
 			init_progress_fields(&entry->progress);
 		}
+
+		/*
+		 * Write to WAL before updating shmem so that crash recovery sees a
+		 * consistent state.  The WAL write is skipped (via continue above)
+		 * when the existing entry already has a higher LSN, ensuring redo
+		 * cannot regress a live apply worker's progress.
+		 */
+		spock_apply_progress_add_to_wal(sap);
 
 		progress_update_struct(&entry->progress, sap);
 		LWLockRelease(SpockCtx->apply_group_master_lock);
