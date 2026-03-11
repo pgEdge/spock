@@ -150,24 +150,57 @@ DECLARE
     v_snap text;
     rec    record;
 BEGIN
-    -- Step 1: create the replication slot; this establishes the consistent
-    -- point (v_lsn) and, in a REPEATABLE READ transaction, locks in the
-    -- snapshot.  Any peer commit whose REPLORIGIN_ADVANCE WAL record has
-    -- local_lsn <= v_lsn was committed before the consistent point and is
-    -- therefore provably inside the COPY snapshot.  Commits with
-    -- local_lsn > v_lsn landed after the consistent point; we conservatively
-    -- return 0/0 for those so the subscriber replays them via streaming
-    -- replication (safe double-apply) rather than silently missing them
-    -- (data loss).  We never fall back to the live shmem value because it
-    -- may already reflect post-snapshot commits.
+    -- Step 1: Capture the current replication-origin progress values from
+    -- live shared memory BEFORE creating the slot.  This is the first
+    -- data-accessing statement in the REPEATABLE READ transaction, so it
+    -- establishes the transaction snapshot at exactly this point.
+    --
+    -- Why this ordering matters
+    -- -------------------------
+    -- pg_replication_origin_status reads live shmem (not snapshot-stable).
+    -- After pg_create_logical_replication_slot establishes the consistent
+    -- point (v_lsn), the apply worker on this node may continue applying peer
+    -- commits and advancing shmem past v_lsn before our FOR loop runs.
+    -- Two cases arise for any peer node P:
+    --
+    --   A) ros.local_lsn <= v_lsn  (P's last advance is before the consistent
+    --      point): shmem still reflects a pre-snapshot state, so
+    --      ros.remote_lsn is the exact correct P_snap.
+    --
+    --   B) ros.local_lsn >  v_lsn  (P's shmem already advanced past the
+    --      consistent point): the live ros.remote_lsn would OVER-ESTIMATE
+    --      P_snap and cause data loss (commits not in COPY and not in
+    --      streaming).  We fall back to the value captured here (pre_remote_lsn)
+    --      which reflects P's commit LSN at or before the consistent point –
+    --      a safe conservative lower bound (possible double-apply, never loss).
+    --
+    -- Because the slot inherits the snapshot already established by this
+    -- SELECT, the slot's consistent point equals v_lsn which is consistent
+    -- with the exported snapshot used by the COPY worker.
+    CREATE TEMP TABLE _cswp_pre_ros ON COMMIT DROP AS
+        SELECT p.remote_node_id,
+               COALESCE(ros.remote_lsn, '0/0'::pg_lsn) AS pre_remote_lsn
+        FROM   spock.progress p
+        LEFT JOIN spock.subscription sub
+            ON  sub.sub_origin = p.remote_node_id
+            AND sub.sub_target = p.node_id
+        LEFT JOIN pg_replication_origin o
+            ON  o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros
+            ON  ros.local_id = o.roident
+        WHERE  p.node_id          = p_provider_node_id
+          AND  p.remote_node_id  <> p_subscriber_node_id;
+
+    -- Step 2: Create the replication slot.  In REPEATABLE READ this uses the
+    -- snapshot already established by Step 1, so the slot's consistent point
+    -- is the same as the snapshot exported below.
     SELECT s.lsn INTO v_lsn
     FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
 
-    -- Step 2: export the current transaction's snapshot so the COPY worker
-    -- can use SET TRANSACTION SNAPSHOT to read N1's data at the same point.
+    -- Step 3: Export the snapshot for the COPY worker.
     v_snap := pg_export_snapshot();
 
-    -- Header row: slot info only; all progress fields NULL.
+    -- Header row: lsn + snapshot only; progress fields all NULL.
     lsn      := v_lsn;
     snapshot := v_snap;
     RETURN NEXT;
@@ -176,16 +209,15 @@ BEGIN
     FOR rec IN (
         SELECT p.dbid, p.node_id, p.remote_node_id,
                p.remote_commit_ts, p.prev_remote_ts,
-               -- Use ros.remote_lsn as P_snap only when ros.local_lsn <=
-               -- v_lsn (the slot's consistent point).  Those commits were
-               -- present before the snapshot and are in the COPY data.
-               -- Commits after the consistent point get 0/0, so streaming
-               -- starts from a safely low position (possible double-apply,
-               -- never data loss).
+               -- Case A: ros.local_lsn <= v_lsn → shmem is pre-snapshot,
+               --         ros.remote_lsn is the exact P_snap.
+               -- Case B: ros.local_lsn >  v_lsn → shmem already advanced
+               --         past the consistent point; use the pre-slot capture
+               --         (conservative lower bound, never over-estimates).
                CASE WHEN ros.local_lsn IS NOT NULL
                          AND ros.local_lsn <= v_lsn
                     THEN ros.remote_lsn
-                    ELSE '0/0'::pg_lsn
+                    ELSE COALESCE(psr.pre_remote_lsn, '0/0'::pg_lsn)
                END AS remote_commit_lsn,
                p.remote_insert_lsn,
                p.received_lsn, p.last_updated_ts, p.updated_by_decode
@@ -196,6 +228,8 @@ BEGIN
             ON o.roname = sub.sub_slot_name
         LEFT JOIN pg_replication_origin_status ros
             ON ros.local_id = o.roident
+        LEFT JOIN _cswp_pre_ros psr
+            ON psr.remote_node_id = p.remote_node_id
         WHERE p.node_id = p_provider_node_id
           AND p.remote_node_id <> p_subscriber_node_id
     ) LOOP
