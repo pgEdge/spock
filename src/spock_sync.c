@@ -608,9 +608,11 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 	 * creation it reads pg_replication_origin_status via pg_replication_origin
 	 * (PostgreSQL catalog tables) and applies a ros.local_lsn <= v_lsn guard
 	 * to derive P_snap: Case A uses ros.remote_lsn directly; Case B (apply
-	 * worker raced past v_lsn) falls back to spock.progress.remote_commit_lsn
-	 * (SpockGroupHash, one transaction behind ros) as a conservative lower
-	 * bound, preventing P_snap over-estimation and the associated data loss.
+	 * worker raced past v_lsn) falls back to the pre-slot ros.remote_lsn
+	 * captured before slot creation as a conservative lower bound.
+	 *
+	 * The function first terminates peer apply workers so ros cannot
+	 * advance during slot creation, virtually guaranteeing Case A.
 	 */
 	res = PQexec(conn, "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)

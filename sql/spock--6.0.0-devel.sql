@@ -151,50 +151,77 @@ DECLARE
     rec            record;
     v_n_peers      int := 0;
     -- Pre-slot ros capture: parallel arrays keyed by remote_node_id.
-    -- SpockGroupHash (spock.progress) and pg_replication_origin_status both
-    -- read live shared memory, not a snapshot.  After pg_create_logical_replication_slot
-    -- establishes v_lsn, the peer apply worker may immediately commit another
-    -- transaction at N1 LSN > v_lsn, advancing both ros AND SpockGroupHash to
-    -- that transaction's N2 LSN (R_new).  Using SpockGroupHash in Case B would
-    -- then return R_new as P_snap, causing N3 to miss the gap [R_last, R_new].
-    --
-    -- The fix: capture ros.remote_lsn for each peer BEFORE the slot is created.
-    -- At that moment the apply worker has not yet committed any post-v_lsn
-    -- transaction, so pre_ros[peer] = R_last (the last N2 LSN safely in the COPY).
-    -- Case B then uses pre_ros[peer] instead of the stale SpockGroupHash value.
     v_pre_peer_ids  oid[];
     v_pre_ros_lsns  pg_lsn[];
     v_pre_idx       int;
     v_pre_ros_lsn   pg_lsn;
+    -- Worker-pause variables.
+    v_killed_pids   int[];
+    v_alive_count   int;
+    v_wait_iter     int;
+    v_dboid         oid;
 BEGIN
     RAISE NOTICE 'SPOCK cswp[enter] slot=% provider_node=% subscriber_node=%',
         p_slot_name, p_provider_node_id, p_subscriber_node_id;
 
     -- -----------------------------------------------------------------------
-    -- Step 0: Capture pre-slot ros.remote_lsn for every peer.
-    --
-    -- pg_replication_origin_status reads live shmem.  We read it immediately
-    -- before slot creation so the value is as close as possible to the
-    -- slot's consistent point (v_lsn).  There is a tiny race window: the
-    -- apply worker can commit between this read and the slot creation.
-    -- To minimise the gap we re-read ros in a tight loop, accepting the
-    -- latest value each time (ros only moves forward).  The final captured
-    -- value is the tightest safe lower bound on P_snap for Case B.
+    -- Step 0a: Temporarily stop peer apply workers so ros cannot advance
+    -- between the ros capture and slot creation.  This guarantees Case A
+    -- (ros.local_lsn <= v_lsn) and eliminates the P_snap race window.
+    -- The spock manager will restart the workers automatically after they
+    -- exit; the pause lasts only for the duration of ros capture + slot
+    -- creation (typically < 100 ms).
     -- -----------------------------------------------------------------------
-    FOR v_pre_idx IN 1..3 LOOP
-        SELECT array_agg(sub.sub_origin ORDER BY sub.sub_origin),
-               array_agg(COALESCE(ros.remote_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
-        INTO   v_pre_peer_ids, v_pre_ros_lsns
-        FROM   spock.subscription sub
-        JOIN   pg_replication_origin o
-               ON  o.roname = sub.sub_slot_name
-        LEFT JOIN pg_replication_origin_status ros
-               ON  ros.local_id = o.roident
-        WHERE  sub.sub_target = p_provider_node_id
-          AND  sub.sub_origin <> p_subscriber_node_id;
-    END LOOP;
+    SELECT oid INTO v_dboid FROM pg_database WHERE datname = current_database();
 
-    RAISE NOTICE 'SPOCK cswp[pre-slot-ros] slot=% pre_peer_ids=% pre_ros_lsns=% -- captured before slot creation',
+    SELECT array_agg(a.pid)
+    INTO   v_killed_pids
+    FROM   spock.subscription sub
+    JOIN   pg_stat_activity a
+           ON  a.application_name = format('spock apply %s:%s', v_dboid, sub.sub_id)
+    WHERE  sub.sub_target = p_provider_node_id
+      AND  sub.sub_origin <> p_subscriber_node_id;
+
+    IF v_killed_pids IS NOT NULL THEN
+        FOR v_pre_idx IN 1 .. array_length(v_killed_pids, 1) LOOP
+            PERFORM pg_terminate_backend(v_killed_pids[v_pre_idx]);
+        END LOOP;
+
+        -- Wait until every killed worker has exited (up to 2 s).
+        FOR v_wait_iter IN 1 .. 40 LOOP
+            PERFORM pg_sleep(0.05);
+            SELECT count(*) INTO v_alive_count
+            FROM   pg_stat_activity
+            WHERE  pid = ANY(v_killed_pids);
+            EXIT WHEN v_alive_count = 0;
+        END LOOP;
+
+        RAISE NOTICE 'SPOCK cswp[worker-pause] slot=% killed_pids=% alive_after_wait=%',
+            p_slot_name, v_killed_pids, v_alive_count;
+    ELSE
+        RAISE NOTICE 'SPOCK cswp[worker-pause] slot=% -- no peer apply workers found to pause',
+            p_slot_name;
+    END IF;
+
+    -- -----------------------------------------------------------------------
+    -- Step 0b: Capture pre-slot ros.remote_lsn for every peer.
+    --
+    -- With the peer apply workers stopped, ros is frozen — the value we
+    -- read here is exact.  We keep it as a fallback for the unlikely Case B
+    -- (e.g. if a worker restarted faster than expected).
+    -- -----------------------------------------------------------------------
+    SELECT array_agg(sub.sub_origin ORDER BY sub.sub_origin),
+           array_agg(COALESCE(ros.remote_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+    INTO   v_pre_peer_ids, v_pre_ros_lsns
+    FROM   spock.subscription sub
+    JOIN   pg_replication_origin o
+           ON  o.roname = sub.sub_slot_name
+    LEFT JOIN pg_replication_origin_status ros
+           ON  ros.local_id = o.roident
+    WHERE  sub.sub_target = p_provider_node_id
+      AND  sub.sub_origin <> p_subscriber_node_id;
+
+    RAISE NOTICE 'SPOCK cswp[pre-slot-ros] slot=% pre_peer_ids=% pre_ros_lsns=% -- captured after worker pause',
         p_slot_name, v_pre_peer_ids, v_pre_ros_lsns;
 
     -- -----------------------------------------------------------------------
