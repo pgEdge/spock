@@ -19,6 +19,8 @@
 * Fix two bugs in the table re-sync routine: WAL sending is now switched off during truncate and re-sync to prevent data loss, and the infinite wait was fixed when no more DML is committed by using the last committed LSN instead of the last received LSN.
 * Use NULL for unknown `local_origin` in `spock.resolutions` instead of an invalid origin ID when origin cannot be determined (e.g. pg_dump, frozen transactions, truncated commit timestamps). Also fixed off-by-one errors in `spock_conflict_row_to_json()` that were overwriting the `local_origin` NULL flag.
 * Fix Z0DAN initialization issue: `present_final_cluster_state` now executes a COMMIT to allow newly created subscriptions to update their state, and final cluster state now checks all subscriptions across the cluster.
+* Suppress hot_standby_feedback off error messages in log in case a read replica is not used for reporting and not failover (it is required for failover).
+* Fix bug when applying changes to a table that has been dropped.
 
 ### Operational Improvements
 * `add_node` is now restricted to run only on a new (uninitialized) node, preventing accidental misuse.
