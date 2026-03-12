@@ -55,13 +55,39 @@ CREATE FUNCTION spock.create_slot_with_progress(
     updated_by_decode boolean
 ) VOLATILE STRICT LANGUAGE plpgsql AS $$
 DECLARE
-    v_lsn     pg_lsn;
-    v_snap    text;
-    rec       record;
-    v_n_peers int := 0;
+    v_lsn          pg_lsn;
+    v_snap         text;
+    rec            record;
+    v_n_peers      int := 0;
+    v_pre_peer_ids  oid[];
+    v_pre_ros_lsns  pg_lsn[];
+    v_pre_idx       int;
+    v_pre_ros_lsn   pg_lsn;
 BEGIN
     RAISE NOTICE 'SPOCK cswp[enter] slot=% provider_node=% subscriber_node=%',
         p_slot_name, p_provider_node_id, p_subscriber_node_id;
+
+    -- -----------------------------------------------------------------------
+    -- Step 0: Capture pre-slot ros.remote_lsn for every peer BEFORE the slot
+    -- is created.  At this point no post-snapshot transaction has committed on
+    -- N1, so ros.remote_lsn == R_last (the last N2 commit in the COPY).
+    --
+    -- This snapshot is used in Case B below: if the apply worker advances ros
+    -- between slot creation and our peer-loop query, the in-loop ros value is
+    -- R_new (post-snapshot), which is wrong as P_snap.  The pre-slot value
+    -- is always the correct lower bound.
+    -- -----------------------------------------------------------------------
+    SELECT array_agg(sub.sub_origin ORDER BY sub.sub_origin),
+           array_agg(COALESCE(ros.remote_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+    INTO   v_pre_peer_ids, v_pre_ros_lsns
+    FROM   spock.subscription sub
+    JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+    LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+    WHERE  sub.sub_target = p_provider_node_id
+      AND  sub.sub_origin <> p_subscriber_node_id;
+
+    RAISE NOTICE 'SPOCK cswp[pre-slot-ros] slot=% pre_peer_ids=% pre_ros_lsns=% -- captured before slot creation',
+        p_slot_name, v_pre_peer_ids, v_pre_ros_lsns;
 
     -- -----------------------------------------------------------------------
     -- Step 1: Create the replication slot.
@@ -129,7 +155,6 @@ BEGIN
     FOR rec IN (
         SELECT p.dbid, p.node_id, p.remote_node_id,
                p.remote_commit_ts, p.prev_remote_ts,
-               p.remote_commit_lsn        AS shmem_remote_lsn,
                p.remote_insert_lsn,
                p.received_lsn, p.last_updated_ts, p.updated_by_decode,
                ros.remote_lsn             AS ros_remote_lsn,
@@ -149,12 +174,18 @@ BEGIN
     ) LOOP
         v_n_peers := v_n_peers + 1;
 
+        -- Look up the pre-slot ros value captured in Step 0 for this peer
+        v_pre_idx     := array_position(v_pre_peer_ids, rec.remote_node_id);
+        v_pre_ros_lsn := CASE WHEN v_pre_idx IS NOT NULL
+                         THEN v_pre_ros_lsns[v_pre_idx]
+                         ELSE '0/0'::pg_lsn END;
+
         RAISE NOTICE 'SPOCK cswp[peer-row] slot=% peer=% (#%) sub_slot=% roident=% '
-                     'ros_local=% ros_remote=% shmem_remote=% v_lsn=% '
+                     'ros_local=% ros_remote=% pre_ros=% v_lsn=% '
                      'ros_present=% ros_local_le_vlsn=%',
             p_slot_name, rec.remote_node_id, v_n_peers,
             rec.sub_slot_name, rec.roident,
-            rec.ros_local_lsn, rec.ros_remote_lsn, rec.shmem_remote_lsn, v_lsn,
+            rec.ros_local_lsn, rec.ros_remote_lsn, v_pre_ros_lsn, v_lsn,
             (rec.ros_local_lsn IS NOT NULL),
             (rec.ros_local_lsn IS NOT NULL AND rec.ros_local_lsn <= v_lsn);
 
@@ -168,17 +199,19 @@ BEGIN
 
         -- Case A: ros was last updated before the slot's consistent point,
         --         so ros.remote_lsn is the exact pre-snapshot P_snap.
-        -- Case B: ros advanced past v_lsn after slot creation; use the
-        --         SpockGroupHash value (one commit behind ros) as a safe
-        --         conservative lower bound.
+        -- Case B: ros advanced past v_lsn after slot creation (or is absent);
+        --         use the pre-slot ros captured in Step 0 as P_snap.
+        --         SpockGroupHash (spock.progress) is NOT used here because it
+        --         is updated at the same time as ros (after CommitTransactionCommand)
+        --         and may already reflect R_new (post-snapshot), not R_last.
         IF rec.ros_local_lsn IS NOT NULL AND rec.ros_local_lsn <= v_lsn THEN
             remote_commit_lsn := COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn);
             RAISE NOTICE 'SPOCK cswp[case-A] slot=% peer=% ros_local=% <= v_lsn=% -- using ros_remote=% as P_snap',
                 p_slot_name, rec.remote_node_id,
                 rec.ros_local_lsn, v_lsn, remote_commit_lsn;
         ELSE
-            remote_commit_lsn := COALESCE(rec.shmem_remote_lsn, '0/0'::pg_lsn);
-            RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using shmem_remote=% as P_snap',
+            remote_commit_lsn := v_pre_ros_lsn;
+            RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using pre_ros=% as P_snap',
                 p_slot_name, rec.remote_node_id,
                 rec.ros_local_lsn, v_lsn, remote_commit_lsn;
         END IF;
