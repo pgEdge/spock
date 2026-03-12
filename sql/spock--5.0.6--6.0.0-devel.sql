@@ -68,23 +68,26 @@ BEGIN
         p_slot_name, p_provider_node_id, p_subscriber_node_id;
 
     -- -----------------------------------------------------------------------
-    -- Step 0: Capture pre-slot ros.remote_lsn for every peer BEFORE the slot
-    -- is created.  At this point no post-snapshot transaction has committed on
-    -- N1, so ros.remote_lsn == R_last (the last N2 commit in the COPY).
+    -- Step 0: Capture pre-slot ros.remote_lsn for every peer.
     --
-    -- This snapshot is used in Case B below: if the apply worker advances ros
-    -- between slot creation and our peer-loop query, the in-loop ros value is
-    -- R_new (post-snapshot), which is wrong as P_snap.  The pre-slot value
-    -- is always the correct lower bound.
+    -- pg_replication_origin_status reads live shmem.  We read it immediately
+    -- before slot creation so the value is as close as possible to the
+    -- slot's consistent point (v_lsn).  There is a tiny race window: the
+    -- apply worker can commit between this read and the slot creation.
+    -- To minimise the gap we re-read ros in a tight loop, accepting the
+    -- latest value each time (ros only moves forward).  The final captured
+    -- value is the tightest safe lower bound on P_snap for Case B.
     -- -----------------------------------------------------------------------
-    SELECT array_agg(sub.sub_origin ORDER BY sub.sub_origin),
-           array_agg(COALESCE(ros.remote_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
-    INTO   v_pre_peer_ids, v_pre_ros_lsns
-    FROM   spock.subscription sub
-    JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
-    LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
-    WHERE  sub.sub_target = p_provider_node_id
-      AND  sub.sub_origin <> p_subscriber_node_id;
+    FOR v_pre_idx IN 1..3 LOOP
+        SELECT array_agg(sub.sub_origin ORDER BY sub.sub_origin),
+               array_agg(COALESCE(ros.remote_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+        INTO   v_pre_peer_ids, v_pre_ros_lsns
+        FROM   spock.subscription sub
+        JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id;
+    END LOOP;
 
     RAISE NOTICE 'SPOCK cswp[pre-slot-ros] slot=% pre_peer_ids=% pre_ros_lsns=% -- captured before slot creation',
         p_slot_name, v_pre_peer_ids, v_pre_ros_lsns;

@@ -1829,11 +1829,15 @@ BEGIN
             RAISE WARNING '    - sub_wait_for_sync(%) failed: %; proceeding anyway', v_sub_name, SQLERRM;
     END;
 
-    -- Advance the source-to-new subscription slot before enabling other
-    -- subscriptions; starting at LSN 0/0 would re-apply snapshot rows
-    -- and cause "row not found" errors that disable the subscription.
+    -- The source-to-new subscription (sub_<src>_<new>) was created and
+    -- enabled in Phase 5.  Its slot on the source node was placed at the
+    -- correct snapshot LSN by create_slot_with_progress, and the apply
+    -- worker is already consuming from it.  If the slot is active there
+    -- is nothing to advance — the subscription is managing both the slot
+    -- position and the replication origin.  We only attempt advancement
+    -- when the slot is NOT active (defensive; should not happen normally).
     BEGIN
-        RAISE NOTICE '    - Checking source-to-new subscription slot advancement...';
+        RAISE NOTICE '    - Checking source-to-new subscription slot...';
         
         -- Get source node info and extract dbname
         FOR src_rec IN SELECT * FROM temp_spock_nodes WHERE node_name = src_node_name LOOP
@@ -1852,29 +1856,37 @@ BEGIN
             
             RAISE NOTICE '    Looking for slot % on source node', src_slot_name;
 
-            -- Check if slot exists on source node (where the replication slot lives)
-            remotesql := format('SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = %L', src_slot_name);
-            SELECT * FROM dblink(src_dsn, remotesql) AS t(lsn pg_lsn) INTO current_lsn;
+            -- Check if slot exists on source node and whether it is active
+            DECLARE
+                v_slot_active boolean;
+            BEGIN
+                remotesql := format(
+                    'SELECT restart_lsn, active FROM pg_replication_slots WHERE slot_name = %L',
+                    src_slot_name);
+                SELECT * FROM dblink(src_dsn, remotesql)
+                    AS t(lsn pg_lsn, active boolean)
+                    INTO current_lsn, v_slot_active;
 
-            IF current_lsn IS NOT NULL THEN
-                RAISE NOTICE '    Slot % found at LSN %', src_slot_name, current_lsn;
-                
-                -- Get snapshot LSN from new node's spock.progress for source
-                SELECT p.remote_commit_lsn INTO target_lsn
-                FROM spock.progress p
-                JOIN spock.node n ON n.node_id = p.remote_node_id
-                WHERE n.node_name = src_node_name;
+                IF current_lsn IS NULL THEN
+                    RAISE NOTICE '    Slot % not found on source node', src_slot_name;
+                ELSIF v_slot_active THEN
+                    -- Subscription is running; slot and origin managed by the apply worker
+                    RAISE NOTICE '    Slot % is active (subscription running) — no advance needed', src_slot_name;
+                ELSE
+                    -- Slot exists but is not active (unusual).  Advance defensively.
+                    RAISE NOTICE '    Slot % found at LSN % (inactive)', src_slot_name, current_lsn;
 
-                IF target_lsn IS NOT NULL THEN
-                    RAISE NOTICE '    Snapshot LSN for %: %', src_node_name, target_lsn;
-                    
-                    IF target_lsn > current_lsn THEN
-                        -- Advance the replication slot on the source node
+                    SELECT p.remote_commit_lsn INTO target_lsn
+                    FROM spock.progress p
+                    JOIN spock.node n ON n.node_id = p.remote_node_id
+                    WHERE n.node_name = src_node_name;
+
+                    IF target_lsn IS NOT NULL AND target_lsn > current_lsn THEN
+                        RAISE NOTICE '    Snapshot LSN for %: %', src_node_name, target_lsn;
                         remotesql := format('SELECT pg_replication_slot_advance(%L, %L::pg_lsn)', src_slot_name, target_lsn);
                         PERFORM * FROM dblink(src_dsn, remotesql) AS t(result text);
                         RAISE NOTICE '    OK: Advanced slot % on source node from % to %', src_slot_name, current_lsn, target_lsn;
-                        
-                        -- Advance the replication origin locally on the new node
+
                         IF NOT EXISTS (
                             SELECT 1 FROM pg_replication_origin WHERE roname = src_slot_name
                         ) THEN
@@ -1886,16 +1898,12 @@ BEGIN
                     ELSE
                         RAISE NOTICE '    Slot % already at or beyond snapshot LSN', src_slot_name;
                     END IF;
-                ELSE
-                    RAISE NOTICE '    No snapshot LSN found for % in progress table', src_node_name;
                 END IF;
-            ELSE
-                RAISE NOTICE '    Slot % not found on source node', src_slot_name;
-            END IF;
+            END;
         END LOOP;
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE WARNING 'Could not advance source-to-new slot: %', SQLERRM;
+            RAISE WARNING 'Could not check source-to-new slot: %', SQLERRM;
     END;
 
     -- Check if this is a 2-node scenario (only source and new node)
