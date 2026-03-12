@@ -1850,14 +1850,14 @@ BEGIN
                 src_dbname, src_node_name, 
                 'sub_' || src_node_name || '_' || new_node_name);
             
-            RAISE NOTICE '    Looking for slot %s on new node', src_slot_name;
+            RAISE NOTICE '    Looking for slot % on source node', src_slot_name;
 
-            -- Check if slot exists on new node (where subscription was created)
+            -- Check if slot exists on source node (where the replication slot lives)
             remotesql := format('SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = %L', src_slot_name);
-            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(lsn pg_lsn) INTO current_lsn;
+            SELECT * FROM dblink(src_dsn, remotesql) AS t(lsn pg_lsn) INTO current_lsn;
 
             IF current_lsn IS NOT NULL THEN
-                RAISE NOTICE '    Slot % found at LSN %s', src_slot_name, current_lsn;
+                RAISE NOTICE '    Slot % found at LSN %', src_slot_name, current_lsn;
                 
                 -- Get snapshot LSN from new node's spock.progress for source
                 SELECT p.remote_commit_lsn INTO target_lsn
@@ -1866,25 +1866,31 @@ BEGIN
                 WHERE n.node_name = src_node_name;
 
                 IF target_lsn IS NOT NULL THEN
-                    RAISE NOTICE '    Snapshot LSN for %s: %s', src_node_name, target_lsn;
+                    RAISE NOTICE '    Snapshot LSN for %: %', src_node_name, target_lsn;
                     
                     IF target_lsn > current_lsn THEN
-                        -- Advance the replication slot
+                        -- Advance the replication slot on the source node
                         remotesql := format('SELECT pg_replication_slot_advance(%L, %L::pg_lsn)', src_slot_name, target_lsn);
-                        PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(result text);
+                        PERFORM * FROM dblink(src_dsn, remotesql) AS t(result text);
+                        RAISE NOTICE '    OK: Advanced slot % on source node from % to %', src_slot_name, current_lsn, target_lsn;
                         
-                        -- Advance the replication origin on the new node via dblink, using the correct origin name
-                        remotesql := format('SELECT pg_replication_origin_advance(%L, %L::pg_lsn)', src_slot_name, target_lsn);
-                        PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(result text);
-                        RAISE NOTICE '    OK: Advanced replication origin % on new node to %s', src_slot_name, target_lsn;
+                        -- Advance the replication origin locally on the new node
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_replication_origin WHERE roname = src_slot_name
+                        ) THEN
+                            RAISE WARNING '    Origin % not found on new node; creating it now', src_slot_name;
+                            PERFORM pg_replication_origin_create(src_slot_name);
+                        END IF;
+                        PERFORM pg_replication_origin_advance(src_slot_name, target_lsn);
+                        RAISE NOTICE '    OK: Advanced replication origin % on new node to %', src_slot_name, target_lsn;
                     ELSE
                         RAISE NOTICE '    Slot % already at or beyond snapshot LSN', src_slot_name;
                     END IF;
                 ELSE
-                    RAISE NOTICE '    No snapshot LSN found for %s in progress table', src_node_name;
+                    RAISE NOTICE '    No snapshot LSN found for % in progress table', src_node_name;
                 END IF;
             ELSE
-                RAISE NOTICE '    Slot % not found on new node', src_slot_name;
+                RAISE NOTICE '    Slot % not found on source node', src_slot_name;
             END IF;
         END LOOP;
     EXCEPTION
