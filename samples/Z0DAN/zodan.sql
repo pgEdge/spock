@@ -1410,6 +1410,26 @@ BEGIN
                 verb                                          -- verbose
             );
             RAISE NOTICE '    ✓ %', rpad('Creating initial subscription ' || sub_name || ' on new node ' || new_node_name || ' (provider: ' || rec.node_name || ')', 120, ' ');
+            -- Reset the replication origin to the slot creation LSN before the disabled
+            -- apply worker starts.  If a previous add_node run left the origin at a
+            -- mid-run value (because cleanup was incomplete), the apply worker would use
+            -- that stale LSN as feedback, receive WAL during the upcoming COPY window,
+            -- and apply it before the COPY loads the snapshot -- which then overwrites
+            -- those rows → new node SHORT.  Resetting to the slot LSN ensures the
+            -- disabled apply worker cannot advance past the safe starting point.
+            BEGIN
+                PERFORM dblink_exec(
+                    new_node_dsn,
+                    format('SELECT pg_replication_origin_advance(%L, %L::pg_lsn)',
+                           slot_name, _commit_lsn)
+                );
+                RAISE NOTICE '    OK: Reset origin % to slot LSN % on new node',
+                    slot_name, _commit_lsn;
+            EXCEPTION
+                WHEN OTHERS THEN
+                    RAISE WARNING '    Could not reset origin % to slot LSN %: %',
+                        slot_name, _commit_lsn, SQLERRM;
+            END;
             PERFORM pg_sleep(5);
             subscription_count := subscription_count + 1;
         EXCEPTION
