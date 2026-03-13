@@ -283,19 +283,23 @@ BEGIN
         -- Case A: post-slot ros.local_lsn <= v_lsn means no new transaction
         --         committed on N1 after the slot was created.  ros.remote_lsn
         --         is the exact last N2 LSN in the COPY.
-        -- Case B: ros advanced past v_lsn after slot creation.  The pre-slot
-        --         ros value (captured before any post-snapshot commit) reflects
-        --         the last N2 LSN that IS in the COPY.
+        -- Case B: ros advanced past v_lsn after slot creation.  Use the
+        --         current ros.remote_lsn (slightly too high — includes a few
+        --         peer transactions committed AFTER v_lsn).  A too-high
+        --         P_snap safely skips forwarded-origin changes that the
+        --         direct subscription (N2->N3) will deliver instead.
+        --         A too-low P_snap (pre_ros) would double-apply changes
+        --         already in the COPY, drifting non-idempotent counters.
         IF rec.ros_local_lsn IS NOT NULL AND rec.ros_local_lsn <= v_lsn THEN
             remote_commit_lsn := COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn);
             RAISE NOTICE 'SPOCK cswp[case-A] slot=% peer=% ros_local=% <= v_lsn=% -- using ros_remote=% as P_snap',
                 p_slot_name, rec.remote_node_id,
                 rec.ros_local_lsn, v_lsn, remote_commit_lsn;
         ELSE
-            remote_commit_lsn := v_pre_ros_lsn;
-            RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using pre_ros=% as P_snap',
+            remote_commit_lsn := COALESCE(rec.ros_remote_lsn, v_pre_ros_lsn);
+            RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using ros_remote=% as P_snap (pre_ros=% for reference)',
                 p_slot_name, rec.remote_node_id,
-                rec.ros_local_lsn, v_lsn, remote_commit_lsn;
+                rec.ros_local_lsn, v_lsn, remote_commit_lsn, v_pre_ros_lsn;
         END IF;
 
         remote_insert_lsn := rec.remote_insert_lsn;
