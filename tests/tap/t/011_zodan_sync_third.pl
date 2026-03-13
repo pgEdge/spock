@@ -115,6 +115,11 @@ sleep(5);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...\n";
+# Use transdiscard on N3 so that any "row not found" errors during catch-up
+# (from transactions whose effects are already in the COPY snapshot) are
+# gracefully discarded instead of disabling the subscription.
+psql_or_bail(3, "ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard'");
+psql_or_bail(3, "SELECT pg_reload_conf()");
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
 						 src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user',
@@ -328,6 +333,8 @@ sleep(5);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...";
+psql_or_bail(3, "ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard'");
+psql_or_bail(3, "SELECT pg_reload_conf()");
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
 						 src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user',
