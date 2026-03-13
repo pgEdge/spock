@@ -351,8 +351,8 @@ spock_report_conflict(SpockConflictType conflict_type,
 	const char *qualrelname;
 	bool		save_in_resolutions = true;
 
-	/* Ignore update-update conflict for same origin */
-	if (conflict_type == SPOCK_CT_UPDATE_EXISTS)
+	/* Ignore update/delete conflict for same origin */
+	if (conflict_type == SPOCK_CT_UPDATE_EXISTS || conflict_type == SPOCK_CT_DELETE_ORIGIN_DIFFERS)
 	{
 		/*
 		 * If updating a row that came from the same origin,
@@ -367,7 +367,8 @@ spock_report_conflict(SpockConflictType conflict_type,
 			return;
 
 		/* Differing origin */
-		conflict_type = SPOCK_CT_UPDATE_ORIGIN_DIFFERS;
+		if (conflict_type == SPOCK_CT_UPDATE_EXISTS)
+			conflict_type = SPOCK_CT_UPDATE_ORIGIN_DIFFERS;
 
 		if (resolution == SpockResolution_ApplyRemote)
 		{
@@ -468,7 +469,6 @@ spock_report_conflict(SpockConflictType conflict_type,
 	 * log_error_verbosity=verbose because we don't necessarily have all that
 	 * info enabled.
 	 *
-	 * Handling for SPOCK_CT_DELETE_ORIGIN_DIFFERS will be added separately.
 	 */
 	switch (conflict_type)
 	{
@@ -488,8 +488,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   remotetup.data,
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32) (replorigin_session_origin_lsn << 32),
-							   (uint32) replorigin_session_origin_lsn)));
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 		case SPOCK_CT_UPDATE_MISSING:
 			ereport(spock_conflict_log_level,
@@ -502,8 +501,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   remotetup.data,
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32) (replorigin_session_origin_lsn << 32),
-							   (uint32) replorigin_session_origin_lsn)));
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 		case SPOCK_CT_DELETE_MISSING:
 			ereport(spock_conflict_log_level,
@@ -515,8 +513,22 @@ spock_report_conflict(SpockConflictType conflict_type,
 					 errdetail("tuple for remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32) (replorigin_session_origin_lsn << 32),
-							   (uint32) replorigin_session_origin_lsn)));
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
+			break;
+		case SPOCK_CT_DELETE_ORIGIN_DIFFERS:
+			ereport(spock_conflict_log_level,
+					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
+								errmsg("CONFLICT: remote %s on relation %s replica identity index %s (origin differs). Resolution: %s.",
+											SpockConflictTypeNames[conflict_type],
+											qualrelname, idxname,
+											conflict_resolution_to_string(resolution)),
+					errdetail("existing local tuple {%s} xid=%u,origin=%s,timestamp=%s; remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
+								localtup.data, local_tuple_xid,
+								local_origin_str,
+								local_tup_ts_str,
+								replorigin_session_origin,
+								timestamptz_to_str(replorigin_session_origin_timestamp),
+								LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 		case SPOCK_CT_DELETE_LATE:
 			ereport(spock_conflict_log_level,
@@ -528,11 +540,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 					 errdetail("remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
 							   replorigin_session_origin,
 							   timestamptz_to_str(replorigin_session_origin_timestamp),
-							   (uint32) (replorigin_session_origin_lsn << 32),
-							   (uint32) replorigin_session_origin_lsn)));
-			break;
-		case SPOCK_CT_DELETE_ORIGIN_DIFFERS:
-			/* keep compiler happy; handling will be added separately */
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 	}
 }

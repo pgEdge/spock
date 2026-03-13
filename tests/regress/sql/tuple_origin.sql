@@ -156,6 +156,23 @@ SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.bas
 -- Clean
 TRUNCATE spock.resolutions;
 
+-- Test delete_origin_differs: update a row locally on the subscriber to
+-- establish a different (local) origin, then delete it from the provider.
+UPDATE basic_conflict SET data = 'sub-B' WHERE id = 2;
+
+\c :provider_dsn
+DELETE FROM basic_conflict WHERE id = 2;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+-- The row should be deleted (delete applied regardless of origin difference)
+SELECT * FROM basic_conflict ORDER BY id;
+
+-- delete_origin_differs is not saved to resolutions (same as update_origin_differs)
+SELECT relname, conflict_type FROM spock.resolutions WHERE relname = 'public.basic_conflict';
+
+TRUNCATE spock.resolutions;
+
 \c :provider_dsn
 -- Do update in same transaction as INSERT
 BEGIN;
