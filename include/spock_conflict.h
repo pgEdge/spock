@@ -46,7 +46,7 @@ extern bool spock_save_resolutions;
 /*
  * We want to eventually match native PostgreSQL conflict types,
  * so use same ordering and similar naming.
- * We add one additional conflict type, CT_DELETE_LATE.
+ * We add one additional conflict type, CT_DELETE_EXISTS.
  */
 typedef enum
 {
@@ -72,7 +72,7 @@ typedef enum
 	 * Unique to Spock, delete timestamp is earlier than an existing row.
 	 * Use a higher number so we don't conflict with PostgreSQL in the future.
 	 */
-	SPOCK_CT_DELETE_LATE = 101
+	SPOCK_CT_DELETE_EXISTS = 101
 
 } SpockConflictType;
 
@@ -108,6 +108,8 @@ extern bool try_resolve_conflict(Relation rel, HeapTuple localtuple,
 								 HeapTuple remotetuple, HeapTuple *resulttuple,
 								 RepOriginId local_origin, TimestampTz local_ts,
 								 SpockConflictResolution *resolution);
+
+extern const char *SpockConflictTypeName(SpockConflictType t);
 
 extern void spock_report_conflict(SpockConflictType conflict_type,
 								  SpockRelation *rel,

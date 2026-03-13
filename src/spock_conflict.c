@@ -56,16 +56,29 @@
 #include "spock_worker.h"
 
 
-/* From src/backend/replication/logical/conflict.c */
-static const char *const SpockConflictTypeNames[] = {
-	[SPOCK_CT_INSERT_EXISTS] = "insert_exists",
-	[SPOCK_CT_UPDATE_ORIGIN_DIFFERS] = "update_origin_differs",
-	[SPOCK_CT_UPDATE_EXISTS] = "update_exists",
-	[SPOCK_CT_UPDATE_MISSING] = "update_missing",
-	[SPOCK_CT_DELETE_ORIGIN_DIFFERS] = "delete_origin_differs",
-	[SPOCK_CT_DELETE_MISSING] = "delete_missing",
-	[SPOCK_CT_DELETE_LATE] = "delete_late"
-};
+const char *
+SpockConflictTypeName(SpockConflictType t)
+{
+	switch (t)
+	{
+		case SPOCK_CT_INSERT_EXISTS:
+			return "insert_exists";
+		case SPOCK_CT_UPDATE_ORIGIN_DIFFERS:
+			return "update_origin_differs";
+		case SPOCK_CT_UPDATE_EXISTS:
+			return "update_exists";
+		case SPOCK_CT_UPDATE_MISSING:
+			return "update_missing";
+		case SPOCK_CT_DELETE_ORIGIN_DIFFERS:
+			return "delete_origin_differs";
+		case SPOCK_CT_DELETE_MISSING:
+			return "delete_missing";
+		case SPOCK_CT_DELETE_EXISTS:
+			return "delete_exists";
+		default:
+			return "unknown";
+	}
+}
 
 
 int			spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
@@ -478,7 +491,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
 					 errmsg("CONFLICT: remote %s on relation %s (local index %s). Resolution: %s.",
-							SpockConflictTypeNames[conflict_type],
+							SpockConflictTypeName(conflict_type),
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("existing local tuple {%s} xid=%u,origin=%s,timestamp=%s; remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
@@ -495,7 +508,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
 					 errmsg("CONFLICT: remote %s on relation %s replica identity index %s (tuple not found). Resolution: %s.",
-							SpockConflictTypeNames[conflict_type],
+							SpockConflictTypeName(conflict_type),
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("remote tuple {%s} in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
@@ -509,7 +522,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
 					 errmsg("CONFLICT: remote %s on relation %s replica identity index %s (tuple not found). Resolution: %s.",
-							SpockConflictTypeNames[conflict_type],
+							SpockConflictTypeName(conflict_type),
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("tuple for remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
@@ -518,11 +531,11 @@ spock_report_conflict(SpockConflictType conflict_type,
 							   (uint32) (replorigin_session_origin_lsn << 32),
 							   (uint32) replorigin_session_origin_lsn)));
 			break;
-		case SPOCK_CT_DELETE_LATE:
+		case SPOCK_CT_DELETE_EXISTS:
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
 					 errmsg("CONFLICT: remote %s on relation %s replica identity index %s (newer tuple found). Resolution: %s.",
-							SpockConflictTypeNames[conflict_type],
+							SpockConflictTypeName(conflict_type),
 							qualrelname, idxname,
 							conflict_resolution_to_string(resolution)),
 					 errdetail("remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
@@ -621,7 +634,7 @@ spock_conflict_log_table(SpockConflictType conflict_type,
 		nulls[4] = true;
 
 	/* conflict type */
-	values[5] = CStringGetTextDatum(SpockConflictTypeNames[conflict_type]);
+	values[5] = CStringGetTextDatum(SpockConflictTypeName(conflict_type));
 	/* conflict_resolution */
 	values[6] = CStringGetTextDatum(conflict_resolution_to_string(resolution));
 	/* local_origin */

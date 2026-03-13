@@ -90,7 +90,7 @@ UPDATE users SET mgr_id = 333 WHERE id = 3;
 -- so that the delayed DELETE finally arrives (late)
 SELECT pg_sleep(3);
 
--- We should see one resolution, delete_late
+-- We should see one resolution, delete_exists
 SELECT conflict_type, local_tuple FROM spock.resolutions;
 
 -- Empty
