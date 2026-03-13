@@ -147,11 +147,11 @@ SELECT pg_sleep(3);
  
 (1 row)
 
--- We should see one resolution, delete_late
+-- We should see one resolution, delete_exists
 SELECT conflict_type, local_tuple FROM spock.resolutions;
  conflict_type |      local_tuple      
 ---------------+-----------------------
- delete_late   | {"id":3,"mgr_id":333}
+ delete_exists | {"id":3,"mgr_id":333}
 (1 row)
 
 -- Empty

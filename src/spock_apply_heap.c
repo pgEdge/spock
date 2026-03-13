@@ -1197,7 +1197,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 							 local_ts, &resolution))
 		{
 			/* Current DELETE happened before current tuple */
-			spock_report_conflict(SPOCK_CT_DELETE_LATE,
+			spock_report_conflict(SPOCK_CT_DELETE_EXISTS,
 								rel, TTS_TUP(localslot), oldtup,
 								NULL, /* remotetuple */
 								local_tuple, SpockResolution_Skip,
