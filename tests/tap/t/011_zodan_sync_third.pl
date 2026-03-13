@@ -126,7 +126,7 @@ psql_or_bail(3, "SELECT pg_reload_conf()");
 print STDERR "Draining replication before add_node ...\n";
 psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
 psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
-sleep(2);
+sleep(30);
 
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
