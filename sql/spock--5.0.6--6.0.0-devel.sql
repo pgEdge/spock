@@ -65,6 +65,12 @@ DECLARE
     v_pre_ros_lsn   pg_lsn;
     v_ros2_remote_lsn pg_lsn;
     v_ros2_local_lsn  pg_lsn;
+    v_attempt      int;
+    v_max_retries  int := 50;
+    v_all_case_a   boolean;
+    v_prev_local_lsns pg_lsn[];
+    v_curr_local_lsns pg_lsn[];
+    v_idle         boolean;
 BEGIN
     RAISE NOTICE 'SPOCK cswp[enter] slot=% provider_node=% subscriber_node=%',
         p_slot_name, p_provider_node_id, p_subscriber_node_id;
@@ -93,24 +99,86 @@ BEGIN
     -- -----------------------------------------------------------------------
     -- Step 1: Create the replication slot.
     --
-    -- This MUST be the first data-accessing statement in the REPEATABLE READ
-    -- transaction.  In REPEATABLE READ, PostgreSQL establishes the transaction
-    -- snapshot at exactly this point, so the slot's consistent point (v_lsn)
-    -- and the COPY snapshot share the same WAL boundary.
-    --
-    -- Any N2 commit whose WAL record landed on N1 before v_lsn is therefore
-    -- visible in the COPY.  Any commit whose WAL record landed after v_lsn is
-    -- not in the COPY and also not visible to pg_replication_origin_status
-    -- reads performed in this same statement evaluation, because its
-    -- ros.local_lsn will be > v_lsn (detectable in Step 3 below).
+    -- To guarantee Case A (ros.local_lsn <= v_lsn, giving exact P_snap),
+    -- we first wait for an inter-commit gap in the apply worker by polling
+    -- ros.local_lsn twice.  When the value is stable the worker is idle,
+    -- so we immediately create the slot.  This avoids the expensive
+    -- create-check-drop cycle under heavy load.
     -- -----------------------------------------------------------------------
-    RAISE NOTICE 'SPOCK cswp[pre-slot] slot=% -- calling pg_create_logical_replication_slot', p_slot_name;
+    FOR v_attempt IN 1..v_max_retries LOOP
+        -- Phase 1: wait for apply workers to be momentarily idle.
+        SELECT array_agg(COALESCE(ros.local_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+        INTO   v_prev_local_lsns
+        FROM   spock.subscription sub
+        JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id;
 
-    SELECT s.lsn INTO v_lsn
-    FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
+        PERFORM pg_sleep(0.003);  -- 3ms probe gap
 
-    RAISE NOTICE 'SPOCK cswp[slot] slot=% v_lsn=% -- slot created; REPEATABLE READ snapshot boundary established',
-        p_slot_name, v_lsn;
+        SELECT array_agg(COALESCE(ros.local_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+        INTO   v_curr_local_lsns
+        FROM   spock.subscription sub
+        JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id;
+
+        v_idle := (v_prev_local_lsns IS NOT DISTINCT FROM v_curr_local_lsns);
+
+        RAISE NOTICE 'SPOCK cswp[idle-check] slot=% attempt=%/% prev=% curr=% idle=%',
+            p_slot_name, v_attempt, v_max_retries,
+            v_prev_local_lsns, v_curr_local_lsns, v_idle;
+
+        -- Also re-capture pre_ros each time to keep it as fresh as possible.
+        SELECT array_agg(sub.sub_origin ORDER BY sub.sub_origin),
+               array_agg(COALESCE(ros.remote_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+        INTO   v_pre_peer_ids, v_pre_ros_lsns
+        FROM   spock.subscription sub
+        JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id;
+
+        -- Phase 2: create slot and validate Case A.
+        RAISE NOTICE 'SPOCK cswp[pre-slot] slot=% attempt=%/% idle=% -- calling pg_create_logical_replication_slot',
+            p_slot_name, v_attempt, v_max_retries, v_idle;
+
+        SELECT s.lsn INTO v_lsn
+        FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
+
+        RAISE NOTICE 'SPOCK cswp[slot] slot=% v_lsn=% attempt=%/% -- slot created',
+            p_slot_name, v_lsn, v_attempt, v_max_retries;
+
+        -- Quick check: are all peers' ros.local_lsn <= v_lsn (Case A)?
+        SELECT bool_and(COALESCE(ros.local_lsn <= v_lsn, false))
+        INTO   v_all_case_a
+        FROM   spock.subscription sub
+        JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id;
+
+        IF v_all_case_a IS NOT FALSE THEN
+            RAISE NOTICE 'SPOCK cswp[retry-ok] slot=% v_lsn=% attempt=%/% -- all peers Case A',
+                p_slot_name, v_lsn, v_attempt, v_max_retries;
+            EXIT;
+        END IF;
+
+        IF v_attempt = v_max_retries THEN
+            RAISE NOTICE 'SPOCK cswp[retry-exhausted] slot=% v_lsn=% -- falling back after % attempts',
+                p_slot_name, v_lsn, v_max_retries;
+            EXIT;
+        END IF;
+
+        RAISE NOTICE 'SPOCK cswp[retry] slot=% v_lsn=% attempt=%/% -- Case B detected, retrying',
+            p_slot_name, v_lsn, v_attempt, v_max_retries;
+
+        PERFORM pg_drop_replication_slot(p_slot_name);
+        -- Adaptive backoff: short when idle was detected (unlucky), longer when busy.
+        PERFORM pg_sleep(CASE WHEN v_idle THEN 0.005 ELSE 0.02 + 0.002 * v_attempt END);
+    END LOOP;
 
     -- -----------------------------------------------------------------------
     -- Step 2: Export the snapshot for the COPY worker.
@@ -156,6 +224,7 @@ BEGIN
     FOR rec IN (
         SELECT p.dbid, p.node_id, p.remote_node_id,
                p.remote_commit_ts, p.prev_remote_ts,
+           p.remote_commit_lsn      AS grp_remote_commit_lsn,
                p.remote_insert_lsn,
                p.received_lsn, p.last_updated_ts, p.updated_by_decode,
                ros.remote_lsn             AS ros_remote_lsn,
@@ -182,11 +251,11 @@ BEGIN
                          ELSE '0/0'::pg_lsn END;
 
         RAISE NOTICE 'SPOCK cswp[peer-row] slot=% peer=% (#%) sub_slot=% roident=% '
-                     'ros_local=% ros_remote=% pre_ros=% v_lsn=% '
+               'ros_local=% ros_remote=% grp_remote=% pre_ros=% v_lsn=% '
                      'ros_present=% ros_local_le_vlsn=%',
             p_slot_name, rec.remote_node_id, v_n_peers,
             rec.sub_slot_name, rec.roident,
-            rec.ros_local_lsn, rec.ros_remote_lsn, v_pre_ros_lsn, v_lsn,
+          rec.ros_local_lsn, rec.ros_remote_lsn, rec.grp_remote_commit_lsn, v_pre_ros_lsn, v_lsn,
             (rec.ros_local_lsn IS NOT NULL),
             (rec.ros_local_lsn IS NOT NULL AND rec.ros_local_lsn <= v_lsn);
 
@@ -231,10 +300,18 @@ BEGIN
               rec.ros_local_lsn, v_lsn, v_ros2_local_lsn, remote_commit_lsn;
           END IF;
         ELSE
-            remote_commit_lsn := COALESCE(rec.ros_remote_lsn, v_pre_ros_lsn);
-            RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using ros_remote=% as P_snap (pre_ros=% for reference)',
+          -- ros_remote is slightly too high (includes a few peer commits
+          -- after v_lsn), but safe: skipped forwarded changes arrive via the
+          -- direct subscription (N2->N3).  grp_remote / pre_ros are too LOW
+          -- and would double-apply non-idempotent operations already in the
+          -- COPY snapshot.
+          remote_commit_lsn := COALESCE(rec.ros_remote_lsn,
+                          rec.grp_remote_commit_lsn,
+                          v_pre_ros_lsn,
+                          '0/0'::pg_lsn);
+          RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using ros_remote=% as P_snap (grp_remote=% pre_ros=%)',
                 p_slot_name, rec.remote_node_id,
-                rec.ros_local_lsn, v_lsn, remote_commit_lsn, v_pre_ros_lsn;
+            rec.ros_local_lsn, v_lsn, remote_commit_lsn, rec.grp_remote_commit_lsn, v_pre_ros_lsn;
         END IF;
 
         remote_insert_lsn := rec.remote_insert_lsn;

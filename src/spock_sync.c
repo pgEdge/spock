@@ -1411,13 +1411,36 @@ spock_sync_subscription(SpockSubscription *sub)
 		 * in a single server-side call, avoiding the race between the two
 		 * operations. The connection is held open for the COPY snapshot.
 		 */
-		snapshot = spock_create_slot_and_get_progress(
-								origin_conn,
-								sub->slot_name,
-								MySubscription->origin->id,
-								MySubscription->target->id,
-								&lsn,
-								&progress_entries_list);
+		PG_TRY();
+		{
+			snapshot = spock_create_slot_and_get_progress(
+									origin_conn,
+									sub->slot_name,
+									MySubscription->origin->id,
+									MySubscription->target->id,
+									&lsn,
+									&progress_entries_list);
+		}
+		PG_CATCH();
+		{
+			ErrorData  *edata = CopyErrorData();
+
+			FlushErrorState();
+			elog(LOG,
+				 "SPOCK cswp[C:error] sub=%s slot=%s origin=%u target=%u sqlstate=%s msg=%s detail=%s hint=%s",
+				 sub->name,
+				 sub->slot_name,
+				 MySubscription->origin->id,
+				 MySubscription->target->id,
+				 unpack_sql_state(edata->sqlerrcode),
+				 edata->message ? edata->message : "",
+				 edata->detail ? edata->detail : "",
+				 edata->hint ? edata->hint : "");
+
+			FreeErrorData(edata);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
 		/* origin_conn transaction remains open — snapshot held for COPY */
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,

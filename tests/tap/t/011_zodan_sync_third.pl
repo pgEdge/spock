@@ -120,12 +120,24 @@ print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...\n";
 # gracefully discarded instead of disabling the subscription.
 psql_or_bail(3, "ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard'");
 psql_or_bail(3, "SELECT pg_reload_conf()");
+
+# Drain replication backlog before add_node so apply workers are less busy
+# during slot creation, increasing the chance of an idle inter-commit gap.
+print STDERR "Draining replication before add_node ...\n";
+psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+sleep(2);
+
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
 						 src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user',
 						 new_node_name := 'n3',
 						 new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user',
 						 verb := false);");
+
+# Let replication fully stabilize after add_node before checking.
+print STDERR "Sleeping 10s after add_node to let replication settle ...\n";
+sleep(10);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 my $pid = $pgbench_handle1->{KIDS}[0]{PID};
@@ -223,6 +235,10 @@ psql_or_bail(3, "CALL spock.remove_node(
 system_or_bail "$pg_bin/pgbench", '-i', '-I', 'd', '-h', $host, '-p', $node_ports->[2], '-U', $db_user, $dbname;
 psql_or_bail(3, 'DROP FUNCTION wait_subscription');
 psql_or_bail(3, 'VACUUM FULL');
+
+# Let the cluster fully settle after remove_node before starting the next cycle.
+print STDERR "Sleeping 10s after remove_node to let cluster settle ...\n";
+sleep(10);
 
 # To improve TPS
 psql_or_bail(1, "CREATE UNIQUE INDEX ON pgbench_accounts(abs(aid))");
@@ -335,6 +351,13 @@ print STDERR "done warmup\n";
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...";
 psql_or_bail(3, "ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard'");
 psql_or_bail(3, "SELECT pg_reload_conf()");
+
+# Drain replication backlog before second add_node.
+print STDERR "Draining replication before second add_node ...\n";
+psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+sleep(2);
+
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
 						 src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user',
@@ -342,7 +365,9 @@ psql_or_bail(3,
 						 new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user',
 						 verb := false);");
 
-# ...
+# Let replication fully stabilize after second add_node.
+print STDERR "Sleeping 10s after add_node to let replication settle ...\n";
+sleep(10);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 $pid = $pgbench_handle1->{KIDS}[0]{PID};
