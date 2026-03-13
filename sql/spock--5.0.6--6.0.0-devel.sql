@@ -63,6 +63,8 @@ DECLARE
     v_pre_ros_lsns  pg_lsn[];
     v_pre_idx       int;
     v_pre_ros_lsn   pg_lsn;
+    v_ros2_remote_lsn pg_lsn;
+    v_ros2_local_lsn  pg_lsn;
 BEGIN
     RAISE NOTICE 'SPOCK cswp[enter] slot=% provider_node=% subscriber_node=%',
         p_slot_name, p_provider_node_id, p_subscriber_node_id;
@@ -196,8 +198,10 @@ BEGIN
         remote_commit_ts  := rec.remote_commit_ts;
         prev_remote_ts    := rec.prev_remote_ts;
 
-        -- Case A: ros was last updated before the slot's consistent point,
-        --         so ros.remote_lsn is the exact pre-snapshot P_snap.
+        -- Case A: ros was last updated before the slot's consistent point.
+        --         To reduce a tiny stale-read window on shared-memory ros,
+        --         take one more immediate ros sample and keep the higher
+        --         remote_lsn only when both samples are still <= v_lsn.
         -- Case B: ros advanced past v_lsn after slot creation.  Use the
         --         current ros.remote_lsn (slightly too high — includes a few
         --         peer transactions committed AFTER v_lsn).  A too-high
@@ -206,10 +210,26 @@ BEGIN
         --         A too-low P_snap (pre_ros) would double-apply changes
         --         already in the COPY, drifting non-idempotent counters.
         IF rec.ros_local_lsn IS NOT NULL AND rec.ros_local_lsn <= v_lsn THEN
+          SELECT ros.remote_lsn, ros.local_lsn
+          INTO   v_ros2_remote_lsn, v_ros2_local_lsn
+          FROM   pg_replication_origin_status ros
+          WHERE  ros.local_id = rec.roident;
+
+          IF v_ros2_local_lsn IS NOT NULL AND v_ros2_local_lsn <= v_lsn THEN
+            remote_commit_lsn := GREATEST(
+              COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn),
+              COALESCE(v_ros2_remote_lsn, '0/0'::pg_lsn)
+            );
+            RAISE NOTICE 'SPOCK cswp[case-A] slot=% peer=% ros_local1=% ros_local2=% <= v_lsn=% -- using max(ros_remote1=% , ros_remote2=%) => P_snap=%',
+              p_slot_name, rec.remote_node_id,
+              rec.ros_local_lsn, v_ros2_local_lsn, v_lsn,
+              rec.ros_remote_lsn, v_ros2_remote_lsn, remote_commit_lsn;
+          ELSE
             remote_commit_lsn := COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn);
-            RAISE NOTICE 'SPOCK cswp[case-A] slot=% peer=% ros_local=% <= v_lsn=% -- using ros_remote=% as P_snap',
-                p_slot_name, rec.remote_node_id,
-                rec.ros_local_lsn, v_lsn, remote_commit_lsn;
+            RAISE NOTICE 'SPOCK cswp[case-A-boundary] slot=% peer=% ros_local1=% <= v_lsn=% but ros_local2=% > v_lsn (or NULL) -- keeping ros_remote1=% as P_snap',
+              p_slot_name, rec.remote_node_id,
+              rec.ros_local_lsn, v_lsn, v_ros2_local_lsn, remote_commit_lsn;
+          END IF;
         ELSE
             remote_commit_lsn := COALESCE(rec.ros_remote_lsn, v_pre_ros_lsn);
             RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using ros_remote=% as P_snap (pre_ros=% for reference)',
