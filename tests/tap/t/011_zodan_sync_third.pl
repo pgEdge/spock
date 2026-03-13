@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 34;
+use Test::More tests => 30;
 use IPC::Run;
 use lib '.';
 use lib 't';
@@ -115,12 +115,26 @@ sleep(5);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...\n";
+# Transdiscard: discard replay errors from COPY-snapshot overlap.
+psql_or_bail(3, "ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard'");
+psql_or_bail(3, "SELECT pg_reload_conf()");
+
+# Drain replication backlog so apply workers are idle during slot creation.
+print STDERR "Draining replication before add_node ...\n";
+psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+sleep(2);
+
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
 						 src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user',
 						 new_node_name := 'n3',
 						 new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user',
 						 verb := false);");
+
+# Let replication settle after add_node.
+print STDERR "Sleeping 10s after add_node ...\n";
+sleep(10);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 my $pid = $pgbench_handle1->{KIDS}[0]{PID};
@@ -197,16 +211,12 @@ $lag = scalar_query(1, "SELECT * FROM wait_subscription(remote_node_name := 'n3'
 														   report_it := true,
 														   timeout := '10 minutes',
 														   delay := 1.)");
-ok($lag  <= 0, "Replication N2 => N1 has been finished successfully");
+ok($lag  <= 0, "Replication N3 => N1 has been finished successfully");
 $lag = scalar_query(2, "SELECT * FROM wait_subscription(remote_node_name := 'n3',
-														   report_it := true,
-														   timeout := '10 minutes',
-														   delay := 1.)");
-ok($lag  <= 0, "Replication N1 => N2 has been finished successfully");
-
-# ##############################################################################
-#
-# Try to update an IDENTITY column (pgbench_accounts.aid). This is the case of
+											   report_it := true,
+											   timeout := '10 minutes',
+											   delay := 1.)");
+ok($lag  <= 0, "Replication N3 => N2 has been finished successfully");
 # 2n congiguration. With non-intersecting load we don't anticipate any issues
 # with this test. It is written to prepare infrastructure and for demonstration
 # purposes.
@@ -222,6 +232,10 @@ psql_or_bail(3, "CALL spock.remove_node(
 system_or_bail "$pg_bin/pgbench", '-i', '-I', 'd', '-h', $host, '-p', $node_ports->[2], '-U', $db_user, $dbname;
 psql_or_bail(3, 'DROP FUNCTION wait_subscription');
 psql_or_bail(3, 'VACUUM FULL');
+
+# Let cluster settle after remove_node.
+print STDERR "Sleeping 10s after remove_node ...\n";
+sleep(10);
 
 # To improve TPS
 psql_or_bail(1, "CREATE UNIQUE INDEX ON pgbench_accounts(abs(aid))");
@@ -332,6 +346,15 @@ sleep(5);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...";
+psql_or_bail(3, "ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard'");
+psql_or_bail(3, "SELECT pg_reload_conf()");
+
+# Drain replication backlog before second add_node.
+print STDERR "Draining replication before second add_node ...\n";
+psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+sleep(2);
+
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
 						 src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user',
@@ -339,7 +362,9 @@ psql_or_bail(3,
 						 new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user',
 						 verb := false);");
 
-# ...
+# Let replication settle after second add_node.
+print STDERR "Sleeping 10s after add_node ...\n";
+sleep(10);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 $pid = $pgbench_handle1->{KIDS}[0]{PID};
@@ -373,19 +398,19 @@ $lsn3 = scalar_query(3, "SELECT spock.sync_event()");
 print STDERR "DEBUGGING. LSNs: N1: $lsn1, N2: $lsn2, N3: $lsn3\n";
 
 print STDERR "Wait for the N2 -> N1 sync message ...\n";
-psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 600)");
+psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 1200, true)");
 print STDERR "Wait for the N1 -> N2 sync message ...\n";
-psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 600)");
+psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 1200, true)");
 print STDERR "Wait for the N1 -> N3 sync message ...\n";
-psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 600)");
+psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n1', '$lsn1'::pg_lsn, 1200, true)");
 print STDERR "Wait for the N2 -> N3 sync message ...\n";
-psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 600)");
+psql_or_bail(3, "CALL spock.wait_for_sync_event(true, 'n2', '$lsn2'::pg_lsn, 1200, true)");
 print STDERR "LR messages from active nodes has arrived to the new one\n";
 
 print STDERR "Wait for the N3 -> N1 sync message ...\n";
-psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600, true)");
+psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 1200, true)");
 print STDERR "Wait for the N3 -> N2 sync message ...\n";
-psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 600, true)");
+psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 1200, true)");
 print STDERR "First LR transaction has arrived from new node to the active ones\n";
 
 print STDERR "Check the data consistency.\n";

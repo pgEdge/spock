@@ -687,3 +687,81 @@ spock_group_progress_update_list(List *lst)
 	 */
 	list_free_deep(lst);
 }
+
+/*
+ * Force-set spock.progress for each peer during add_node.
+ * Uses MAX-by-LSN guard: preserves existing entry if its LSN >= incoming
+ * P_snap, preventing a live apply worker's progress from being overwritten.
+ */
+void
+spock_group_progress_force_set_list(List *lst)
+{
+	ListCell *lc;
+
+	if (!SpockGroupHash || !SpockCtx)
+	{
+		elog(WARNING, "SpockGroupHash is not initialized; force-set skipped");
+		list_free_deep(lst);
+		return;
+	}
+
+	foreach (lc, lst)
+	{
+		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
+		SpockGroupEntry	   *entry;
+		bool				found;
+
+		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
+		entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &sap->key,
+												HASH_ENTER, &found);
+
+		if (entry == NULL)
+		{
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+			elog(WARNING, "SpockGroupHash is full, cannot force-set progress for group "
+				 "(dbid=%u, node_id=%u, remote_node_id=%u)",
+				 sap->key.dbid, sap->key.node_id, sap->key.remote_node_id);
+			continue;
+		}
+
+		if (!found)
+		{
+			init_progress_fields(&entry->progress);
+			pg_atomic_init_u32(&entry->nattached, 0);
+			ConditionVariableInit(&entry->prev_processed_cv);
+		}
+		else if (entry->progress.remote_commit_lsn >= sap->remote_commit_lsn)
+		{
+			/* Existing LSN >= P_snap; preserve the higher value. */
+			elog(LOG, "SPOCK: force-set spock.progress %d->%d skipped: "
+				 "existing remote_commit_lsn=%X/%X >= incoming P_snap=%X/%X",
+				 sap->key.remote_node_id, MySubscription->target->id,
+				 LSN_FORMAT_ARGS(entry->progress.remote_commit_lsn),
+				 LSN_FORMAT_ARGS(sap->remote_commit_lsn));
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+			continue;
+		}
+		else
+		{
+			/* Stale entry below P_snap; reset before update. */
+			init_progress_fields(&entry->progress);
+		}
+
+		/* Write to WAL before shmem for crash-recovery consistency. */
+		spock_apply_progress_add_to_wal(sap);
+
+		progress_update_struct(&entry->progress, sap);
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+
+		elog(LOG, "SPOCK: force-set spock.progress %d->%d to "
+			 "remote_commit_ts='%s' "
+			 "remote_commit_lsn=%X/%X remote_insert_lsn=%X/%X",
+			 sap->key.remote_node_id, MySubscription->target->id,
+			 timestamptz_to_str(sap->remote_commit_ts),
+			 LSN_FORMAT_ARGS(sap->remote_commit_lsn),
+			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
+	}
+
+	list_free_deep(lst);
+}
