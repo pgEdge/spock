@@ -391,18 +391,20 @@ BEGIN
               rec.ros_local_lsn, v_lsn, v_ros2_local_lsn, remote_commit_lsn;
           END IF;
         ELSE
-          -- ros_remote is slightly too high (includes a few peer commits
-          -- after v_lsn), but safe: skipped forwarded changes arrive via the
-          -- direct subscription (N2->N3).  grp_remote / pre_ros are too LOW
-          -- and would double-apply non-idempotent operations already in the
-          -- COPY snapshot.
-          remote_commit_lsn := COALESCE(rec.ros_remote_lsn,
+          -- Case B: ros advanced past v_lsn — use pre_ros (captured just
+          -- before slot creation) as a safe lower-bound P_snap.
+          -- A too-high P_snap (ros_remote) would skip changes NOT in the
+          -- COPY and NOT delivered by the direct sub either, causing
+          -- permanent data loss.  A too-low P_snap (pre_ros) may re-deliver
+          -- a few changes already in the COPY, but origin-based dedup on
+          -- the subscriber filters those duplicates harmlessly.
+          remote_commit_lsn := COALESCE(
+                          NULLIF(v_pre_ros_lsn, '0/0'::pg_lsn),
                           rec.grp_remote_commit_lsn,
-                          v_pre_ros_lsn,
                           '0/0'::pg_lsn);
-          RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using ros_remote=% as P_snap (grp_remote=% pre_ros=%)',
+          RAISE NOTICE 'SPOCK cswp[case-B] slot=% peer=% ros_local=% > v_lsn=% (or NULL) -- using pre_ros=% as P_snap (ros_remote=% grp_remote=%)',
                 p_slot_name, rec.remote_node_id,
-            rec.ros_local_lsn, v_lsn, remote_commit_lsn, rec.grp_remote_commit_lsn, v_pre_ros_lsn;
+            rec.ros_local_lsn, v_lsn, remote_commit_lsn, rec.ros_remote_lsn, rec.grp_remote_commit_lsn;
         END IF;
 
         remote_insert_lsn := rec.remote_insert_lsn;

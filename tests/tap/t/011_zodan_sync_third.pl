@@ -111,7 +111,7 @@ $pgbench_handle2->pump();
 
 # Warming up ...
 print STDERR "warming up pgbench for 5s\n";
-sleep(5);
+sleep(60);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...\n";
@@ -126,7 +126,7 @@ psql_or_bail(3, "SELECT pg_reload_conf()");
 print STDERR "Draining replication before add_node ...\n";
 psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
 psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
-sleep(30);
+sleep(60);
 
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
@@ -137,7 +137,7 @@ psql_or_bail(3,
 
 # Let replication fully stabilize after add_node before checking.
 print STDERR "Sleeping 10s after add_node to let replication settle ...\n";
-sleep(10);
+sleep(60);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 my $pid = $pgbench_handle1->{KIDS}[0]{PID};
@@ -238,7 +238,7 @@ psql_or_bail(3, 'VACUUM FULL');
 
 # Let the cluster fully settle after remove_node before starting the next cycle.
 print STDERR "Sleeping 10s after remove_node to let cluster settle ...\n";
-sleep(10);
+sleep(60);
 
 # To improve TPS
 psql_or_bail(1, "CREATE UNIQUE INDEX ON pgbench_accounts(abs(aid))");
@@ -270,7 +270,7 @@ $pgbench_handle2->pump();
 
 # Warming up ...
 print STDERR "warming up pgbench for 20s\n";
-sleep(20);
+sleep(60);
 print STDERR "done warmup\n";
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
@@ -345,7 +345,7 @@ $pgbench_handle2->pump();
 
 # Warming up ...
 print STDERR "warming up pgbench for 5s\n";
-sleep(5);
+sleep(60);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...";
@@ -367,7 +367,7 @@ psql_or_bail(3,
 
 # Let replication fully stabilize after second add_node.
 print STDERR "Sleeping 10s after add_node to let replication settle ...\n";
-sleep(10);
+sleep(60);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 $pid = $pgbench_handle1->{KIDS}[0]{PID};
