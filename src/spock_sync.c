@@ -762,6 +762,13 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 	 * Set correct origin if target db supports it. We must do this before
 	 * starting the transaction otherwise the status code below would get
 	 * much more complicated.
+	 *
+	 * Use now() instead of 'epoch' so that COPY rows get a current commit
+	 * timestamp.  Under Case B (pre_ros fallback), the N2→N3 subscription
+	 * may re-deliver transactions already in the COPY.  With 'epoch' the
+	 * LUW resolver always picks the remote (newer timestamp) and overwrites
+	 * COPY data, causing data drift.  With now(), COPY rows are "newer" so
+	 * LUW correctly keeps them over stale duplicates.
 	 */
 	if (PQserverVersion(conn) >= 90500)
 	{
@@ -771,7 +778,7 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 						 s);
 		PQfreemem(s);
 		appendStringInfo(&query,
-						 "SELECT pg_catalog.pg_replication_origin_xact_setup('0/0', 'epoch');");
+						 "SELECT pg_catalog.pg_replication_origin_xact_setup('0/0', now());");
 	}
 
 	appendStringInfoString(&query, setup_query);
