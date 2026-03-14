@@ -1346,7 +1346,8 @@ BEGIN
                 RAISE EXCEPTION '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
 
-        -- Wait for source node to commit changes from this peer up to L_slot.\n        BEGIN
+        -- Wait for source node to commit changes from this peer up to L_slot.
+        BEGIN
             DECLARE
                 src_progress_lsn  pg_lsn;
                 wait_iters        integer := 0;
@@ -1951,7 +1952,8 @@ BEGIN
                     CONTINUE;
                 END IF;
 
-                -- Advance slot to P_snap from spock.progress.\n                SELECT p.remote_commit_lsn INTO target_lsn
+                -- Advance slot to P_snap from spock.progress.
+                SELECT p.remote_commit_lsn INTO target_lsn
                 FROM spock.progress p
                 JOIN spock.node n ON n.node_id = p.remote_node_id
                 WHERE n.node_name = rec.node_name;
@@ -1976,7 +1978,8 @@ BEGIN
                 PERFORM * FROM dblink(rec.dsn, remotesql) AS t(result text);
                 RAISE NOTICE '    OK: %', rpad('Advanced slot ' || slot_name || ' from ' || current_lsn || ' to ' || target_lsn, 120, ' ');
 
-                -- Advance the replication origin on the new node (local).\n                IF NOT EXISTS (
+                -- Advance the replication origin on the new node (local).
+                IF NOT EXISTS (
                     SELECT 1 FROM pg_replication_origin WHERE roname = slot_name
                 ) THEN
                     RAISE WARNING '    Origin % not found on new node; creating it now (was it created in Phase 3?)', slot_name;
