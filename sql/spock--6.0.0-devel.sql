@@ -314,10 +314,14 @@ BEGIN
               rec.remote_node_id, remote_commit_lsn;
           END IF;
         ELSE
-          -- Case B: use ros.remote_lsn as safe high-bound P_snap.
-          remote_commit_lsn := COALESCE(rec.ros_remote_lsn,
+          -- Case B: use pre_ros (captured just before slot creation)
+          -- as a safe lower-bound P_snap.  A too-high P_snap (ros_remote)
+          -- would skip changes NOT in the COPY, causing permanent data
+          -- loss.  A too-low P_snap may re-deliver a few changes already
+          -- in the COPY, but origin-based dedup filters those harmlessly.
+          remote_commit_lsn := COALESCE(
+                          NULLIF(v_pre_ros_lsn, '0/0'::pg_lsn),
                           rec.grp_remote_commit_lsn,
-                          v_pre_ros_lsn,
                           '0/0'::pg_lsn);
           RAISE NOTICE 'SPOCK cswp: peer=% Case B P_snap=%',
                 rec.remote_node_id, remote_commit_lsn;

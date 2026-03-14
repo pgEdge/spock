@@ -99,19 +99,19 @@ my $pgbench_stderr1='';
 my $pgbench_stdout2='';
 my $pgbench_stderr2='';
 my $pgbench_handle1 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 300, '-j', 3, '-c', 3,
 	'-h', $host, '-p', $node_ports->[0], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout1, '2>', \$pgbench_stderr1);
 my $pgbench_handle2 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 300, '-j', 3, '-c', 3,
 	'-h', $host, '-p', $node_ports->[1], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout2, '2>', \$pgbench_stderr2);
 $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 
 # Warming up ...
-print STDERR "warming up pgbench for 5s\n";
-sleep(5);
+print STDERR "warming up pgbench for 60s\n";
+sleep(60);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...\n";
@@ -123,7 +123,7 @@ psql_or_bail(3, "SELECT pg_reload_conf()");
 print STDERR "Draining replication before add_node ...\n";
 psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
 psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
-sleep(2);
+sleep(60);
 
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
@@ -133,8 +133,8 @@ psql_or_bail(3,
 						 verb := false);");
 
 # Let replication settle after add_node.
-print STDERR "Sleeping 10s after add_node ...\n";
-sleep(10);
+print STDERR "Sleeping 60s after add_node ...\n";
+sleep(60);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 my $pid = $pgbench_handle1->{KIDS}[0]{PID};
@@ -234,8 +234,8 @@ psql_or_bail(3, 'DROP FUNCTION wait_subscription');
 psql_or_bail(3, 'VACUUM FULL');
 
 # Let cluster settle after remove_node.
-print STDERR "Sleeping 10s after remove_node ...\n";
-sleep(10);
+print STDERR "Sleeping 60s after remove_node ...\n";
+sleep(60);
 
 # To improve TPS
 psql_or_bail(1, "CREATE UNIQUE INDEX ON pgbench_accounts(abs(aid))");
@@ -255,19 +255,19 @@ $pgbench_stderr1='';
 $pgbench_stdout2='';
 $pgbench_stderr2='';
 $pgbench_handle1 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 300, '-j', 3, '-c', 3,
 	'-h', $host, '-p', $node_ports->[0], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout1, '2>', \$pgbench_stderr1);
 $pgbench_handle2 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 300, '-j', 3, '-c', 3,
 	'-h', $host, '-p', $node_ports->[1], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout2, '2>', \$pgbench_stderr2);
 $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 
 # Warming up ...
-print STDERR "warming up pgbench for 20s\n";
-sleep(20);
+print STDERR "warming up pgbench for 60s\n";
+sleep(60);
 print STDERR "done warmup\n";
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
@@ -330,19 +330,19 @@ $pgbench_stderr1='';
 $pgbench_stdout2='';
 $pgbench_stderr2='';
 $pgbench_handle1 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load1, '-T', 300, '-j', 3, '-c', 3,
 	'-h', $host, '-p', $node_ports->[0], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout1, '2>', \$pgbench_stderr1);
 $pgbench_handle2 = IPC::Run::start(
-    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 80, '-j', 3, '-c', 3,
+    [ "$pg_bin/pgbench", '-n', '-f', $load2, '-T', 300, '-j', 3, '-c', 3,
 	'-h', $host, '-p', $node_ports->[1], '-U', $db_user, $dbname],
 	'>', \$pgbench_stdout2, '2>', \$pgbench_stderr2);
 $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 
 # Warming up ...
-print STDERR "warming up pgbench for 5s\n";
-sleep(5);
+print STDERR "warming up pgbench for 60s\n";
+sleep(60);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...";
@@ -353,7 +353,7 @@ psql_or_bail(3, "SELECT pg_reload_conf()");
 print STDERR "Draining replication before second add_node ...\n";
 psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
 psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
-sleep(2);
+sleep(30);
 
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
@@ -363,8 +363,8 @@ psql_or_bail(3,
 						 verb := false);");
 
 # Let replication settle after second add_node.
-print STDERR "Sleeping 10s after add_node ...\n";
-sleep(10);
+print STDERR "Sleeping 60s after add_node ...\n";
+sleep(60);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 $pid = $pgbench_handle1->{KIDS}[0]{PID};
