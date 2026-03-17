@@ -1,7 +1,11 @@
 /* First test whether a table's replication set can be properly manipulated */
 SELECT * FROM spock_regress_variables()
 \gset
+-- Cleanup in advance to make the test more stable
+\c :subscriber_dsn
+TRUNCATE spock.exception_log;
 \c :provider_dsn
+TRUNCATE spock.exception_log;
 SELECT spock.replicate_ddl($$
 CREATE SCHEMA normalschema;
 CREATE SCHEMA "strange.schema-IS";
@@ -457,15 +461,27 @@ SELECT
   ) AS error_message
 FROM spock.exception_log
 ORDER BY table_schema COLLATE "C",table_name COLLATE "C",remote_commit_ts;
- table_schema | table_name | operation |                   remote_new_tup                   |              error_message               
---------------+------------+-----------+----------------------------------------------------+------------------------------------------
+ table_schema | table_name | operation |                   remote_new_tup                   |       error_message       
+--------------+------------+-----------+----------------------------------------------------+---------------------------
               |            | INSERT    |                                                    | Spock can't find relation
               |            | INSERT    |                                                    | Spock can't find relation
               |            | INSERT    |                                                    | Spock can't find relation
               |            | INSERT    |                                                    | Spock can't find relation
- public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
- public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
-(6 rows)
+ public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | 
+(5 rows)
+
+-- Check exception_log
+SELECT table_schema, table_name, operation, remote_new_tup, error_message
+FROM spock.exception_log
+ORDER BY command_counter;
+ table_schema | table_name | operation |                   remote_new_tup                   |       error_message       
+--------------+------------+-----------+----------------------------------------------------+---------------------------
+              |            | INSERT    |                                                    | Spock can't find relation
+              |            | INSERT    |                                                    | Spock can't find relation
+ public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | 
+              |            | INSERT    |                                                    | Spock can't find relation
+              |            | INSERT    |                                                    | Spock can't find relation
+(5 rows)
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g,spoc_102l CASCADE');
@@ -582,11 +598,25 @@ ORDER BY table_schema COLLATE "C",table_name COLLATE "C",remote_commit_ts;
               |             | INSERT    |                                                    | Spock can't find relation
               |             | UPDATE    |                                                    | Spock can't find relation
               |             | UPDATE    |                                                    | Spock can't find relation
- public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
- public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
- public       | spoc_102g_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
+ public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | 
  public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
-(10 rows)
+(8 rows)
+
+-- Check exception_log
+SELECT table_schema, table_name, operation, remote_new_tup, error_message
+FROM spock.exception_log
+ORDER BY command_counter;
+ table_schema | table_name  | operation |                   remote_new_tup                   |                                             error_message                                              
+--------------+-------------+-----------+----------------------------------------------------+--------------------------------------------------------------------------------------------------------
+              |             | INSERT    |                                                    | Spock can't find relation
+              |             | INSERT    |                                                    | Spock can't find relation
+ public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | 
+              |             | INSERT    |                                                    | Spock can't find relation
+              |             | INSERT    |                                                    | Spock can't find relation
+              |             | UPDATE    |                                                    | Spock can't find relation
+              |             | UPDATE    |                                                    | Spock can't find relation
+ public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
+(8 rows)
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');

@@ -60,6 +60,7 @@ typedef struct SpockExceptionLog
 	HeapTuple	local_tuple;
 	char		initial_error_message[1024];
 	char		initial_operation[16];
+	uint32		failed_action;	/* xact_action_counter at time of error */
 } SpockExceptionLog;
 
 typedef enum SpockExceptionBehaviour
@@ -98,5 +99,6 @@ extern void spock_disable_subscription(SpockSubscription *sub,
 									   TransactionId remote_xid,
 									   XLogRecPtr lsn,
 									   TimestampTz ts);
+
 
 #endif							/* SPOCK_EXCEPTION_HANDLER_H */

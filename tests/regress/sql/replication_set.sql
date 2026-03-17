@@ -2,7 +2,11 @@
 SELECT * FROM spock_regress_variables()
 \gset
 
+-- Cleanup in advance to make the test more stable
+\c :subscriber_dsn
+TRUNCATE spock.exception_log;
 \c :provider_dsn
+TRUNCATE spock.exception_log;
 
 SELECT spock.replicate_ddl($$
 CREATE SCHEMA normalschema;
@@ -218,6 +222,11 @@ SELECT
 FROM spock.exception_log
 ORDER BY table_schema COLLATE "C",table_name COLLATE "C",remote_commit_ts;
 
+-- Check exception_log
+SELECT table_schema, table_name, operation, remote_new_tup, error_message
+FROM spock.exception_log
+ORDER BY command_counter;
+
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g,spoc_102l CASCADE');
 
@@ -271,6 +280,11 @@ SELECT
   ) AS error_message
 FROM spock.exception_log
 ORDER BY table_schema COLLATE "C",table_name COLLATE "C",remote_commit_ts;
+
+-- Check exception_log
+SELECT table_schema, table_name, operation, remote_new_tup, error_message
+FROM spock.exception_log
+ORDER BY command_counter;
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');
