@@ -745,13 +745,14 @@ spock_group_progress_force_set_list(List *lst)
 		}
 		else
 		{
-			/* Stale entry below P_snap; reset so timestamp guard allows update. */
-			init_progress_fields(&entry->progress);
+			/* Stale entry below P_snap; will be reset after WAL write succeeds. */
 		}
 
 		/* WAL-log before shmem update; skipped above when existing LSN is higher. */
 		spock_apply_progress_add_to_wal(sap);
 
+		/* Now safe to mutate shmem: WAL write succeeded. */
+		init_progress_fields(&entry->progress);
 		progress_update_struct(&entry->progress, sap);
 		LWLockRelease(SpockCtx->apply_group_master_lock);
 
