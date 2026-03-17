@@ -110,7 +110,7 @@ $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 
 # Warming up ...
-print STDERR "warming up pgbench for 5s\n";
+print STDERR "warming up pgbench for 60s\n";
 sleep(60);
 print STDERR "done warmup\n";
 
@@ -136,7 +136,7 @@ psql_or_bail(3,
 						 verb := false);");
 
 # Let replication fully stabilize after add_node before checking.
-print STDERR "Sleeping 10s after add_node to let replication settle ...\n";
+print STDERR "Sleeping 60s after add_node to let replication settle ...\n";
 sleep(60);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
@@ -237,7 +237,7 @@ psql_or_bail(3, 'DROP FUNCTION wait_subscription');
 psql_or_bail(3, 'VACUUM FULL');
 
 # Let the cluster fully settle after remove_node before starting the next cycle.
-print STDERR "Sleeping 10s after remove_node to let cluster settle ...\n";
+print STDERR "Sleeping 60s after remove_node to let cluster settle ...\n";
 sleep(60);
 
 # To improve TPS
@@ -269,7 +269,7 @@ $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 
 # Warming up ...
-print STDERR "warming up pgbench for 20s\n";
+print STDERR "warming up pgbench for 60s\n";
 sleep(60);
 print STDERR "done warmup\n";
 
@@ -344,7 +344,7 @@ $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 
 # Warming up ...
-print STDERR "warming up pgbench for 5s\n";
+print STDERR "warming up pgbench for 60s\n";
 sleep(60);
 print STDERR "done warmup\n";
 
@@ -366,7 +366,7 @@ psql_or_bail(3,
 						 verb := false);");
 
 # Let replication fully stabilize after second add_node.
-print STDERR "Sleeping 10s after add_node to let replication settle ...\n";
+print STDERR "Sleeping 60s after add_node to let replication settle ...\n";
 sleep(60);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.

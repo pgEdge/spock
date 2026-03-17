@@ -144,7 +144,7 @@ BEGIN
 
     -- Emit one progress row per peer with P_snap derivation.
     -- Case A (ros.local_lsn <= v_lsn): use ros.remote_lsn (exact).
-    -- Case B (ros.local_lsn > v_lsn): use ros.remote_lsn (slightly high but safe).
+    -- Case B (ros.local_lsn > v_lsn): use pre_ros as safe lower-bound P_snap.
     FOR rec IN (
         SELECT p.dbid, p.node_id, p.remote_node_id,
                p.remote_commit_ts, p.prev_remote_ts,
@@ -197,10 +197,10 @@ BEGIN
             remote_commit_lsn := COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn);
           END IF;
         ELSE
-          -- Case B: use ros.remote_lsn with grp/pre_ros fallbacks.
-          remote_commit_lsn := COALESCE(rec.ros_remote_lsn,
+          -- Case B: use pre_ros as safe lower-bound P_snap.
+          remote_commit_lsn := COALESCE(
+                          NULLIF(v_pre_ros_lsn, '0/0'::pg_lsn),
                           rec.grp_remote_commit_lsn,
-                          v_pre_ros_lsn,
                           '0/0'::pg_lsn);
         END IF;
 

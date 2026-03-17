@@ -1498,13 +1498,21 @@ BEGIN
                         END IF;
 
                         -- Wait for this sync event on the new node where the subscription exists
-                        PERFORM * FROM dblink(new_node_dsn,
-                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
-                                   src_node_name, sync_lsn, timeout_ms)) AS t(result text);
+                        DECLARE
+                            sync_ok text;
+                        BEGIN
+                            SELECT * INTO sync_ok FROM dblink(new_node_dsn,
+                                format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
+                                       src_node_name, sync_lsn, timeout_ms)) AS t(result text);
 
-                        IF verb THEN
-                            RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || src_node_name || ' on new node ' || new_node_name || '...', 120, ' ');
-                        END IF;
+                            IF sync_ok IS NULL OR sync_ok::boolean IS NOT TRUE THEN
+                                RAISE EXCEPTION 'wait_for_sync_event timed out for % on new node %', src_node_name, new_node_name;
+                            END IF;
+
+                            IF verb THEN
+                                RAISE NOTICE '    OK: %', rpad('Sync event from ' || src_node_name || ' confirmed on new node ' || new_node_name, 120, ' ');
+                            END IF;
+                        END;
                     ELSE
                         RAISE NOTICE '    WARNING: %', rpad('No stored sync LSN found for ' || src_node_name || ', skipping sync wait', 120, ' ');
                     END IF;
@@ -1567,13 +1575,21 @@ BEGIN
                         END IF;
 
                         -- Wait for this sync event on the new node where the subscription exists
-                        PERFORM * FROM dblink(new_node_dsn,
-                            format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
-                                   rec.node_name, sync_lsn, timeout_ms)) AS t(result text);
+                        DECLARE
+                            sync_ok text;
+                        BEGIN
+                            SELECT * INTO sync_ok FROM dblink(new_node_dsn,
+                                format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
+                                       rec.node_name, sync_lsn, timeout_ms)) AS t(result text);
 
-                        IF verb THEN
-                            RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || rec.node_name || ' on new node ' || new_node_name || '...', 120, ' ');
-                        END IF;
+                            IF sync_ok IS NULL OR sync_ok::boolean IS NOT TRUE THEN
+                                RAISE EXCEPTION 'wait_for_sync_event timed out for % on new node %', rec.node_name, new_node_name;
+                            END IF;
+
+                            IF verb THEN
+                                RAISE NOTICE '    OK: %', rpad('Sync event from ' || rec.node_name || ' confirmed on new node ' || new_node_name, 120, ' ');
+                            END IF;
+                        END;
                     ELSE
                         RAISE NOTICE '    WARNING: %', rpad('No stored sync LSN found for ' || rec.node_name || ', skipping sync wait', 120, ' ');
                     END IF;
@@ -1772,8 +1788,15 @@ BEGIN
                 RAISE NOTICE '    Remote SQL for waiting sync event: %', remotesql;
             END IF;
 
-            PERFORM * FROM dblink(src_dsn, remotesql) AS t(result text);
-            RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || rec.node_name || ' on source node ' || src_node_name || '...', 120, ' ');
+            DECLARE
+                sync_ok text;
+            BEGIN
+                SELECT * INTO sync_ok FROM dblink(src_dsn, remotesql) AS t(result text);
+                IF sync_ok IS NULL OR sync_ok::boolean IS NOT TRUE THEN
+                    RAISE EXCEPTION 'wait_for_sync_event timed out for % on source node %', rec.node_name, src_node_name;
+                END IF;
+                RAISE NOTICE '    OK: %', rpad('Sync event from ' || rec.node_name || ' confirmed on source node ' || src_node_name, 120, ' ');
+            END;
         EXCEPTION
             WHEN OTHERS THEN
                 RAISE EXCEPTION '    ✗ %', rpad('Waiting for sync event from ' || rec.node_name || ' on source node ' || src_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
@@ -2039,8 +2062,15 @@ BEGIN
         IF verb THEN
             RAISE NOTICE '    Remote SQL for wait_for_sync_event on new node %: %', new_node_name, remotesql;
         END IF;
-        PERFORM * FROM dblink(new_node_dsn, remotesql) AS t(result text);
-        RAISE NOTICE '    OK: %', rpad('Waiting for sync event from ' || src_node_name || ' on new node ' || new_node_name || '...', 120, ' ');
+        DECLARE
+            sync_ok text;
+        BEGIN
+            SELECT * INTO sync_ok FROM dblink(new_node_dsn, remotesql) AS t(result text);
+            IF sync_ok IS NULL OR sync_ok::boolean IS NOT TRUE THEN
+                RAISE EXCEPTION 'wait_for_sync_event timed out for % on new node %', src_node_name, new_node_name;
+            END IF;
+            RAISE NOTICE '    OK: %', rpad('Sync event from ' || src_node_name || ' confirmed on new node ' || new_node_name, 120, ' ');
+        END;
     EXCEPTION
         WHEN OTHERS THEN
             RAISE EXCEPTION '    ✗ %', rpad('Unable to wait for sync event from ' || src_node_name || ' on new node ' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
