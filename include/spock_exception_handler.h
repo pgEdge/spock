@@ -99,4 +99,10 @@ extern void spock_disable_subscription(SpockSubscription *sub,
 									   XLogRecPtr lsn,
 									   TimestampTz ts);
 
+extern bool discardfile_write(const char *node_name, SpockRelation *rel,
+							  Oid remote_origin, Oid local_origin,
+							  const char *operation, SpockTupleData *oldtup,
+							  SpockTupleData *newtup,
+							  TransactionId remote_xid);
+
 #endif							/* SPOCK_EXCEPTION_HANDLER_H */

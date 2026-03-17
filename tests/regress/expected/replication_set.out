@@ -459,11 +459,22 @@ ORDER BY command_counter;
 -----------------+--------------+------------+-----------+----------------------------------------------------+------------------------------------------
                1 |              |            | INSERT    |                                                    | Spock can't find relation
                2 |              |            | INSERT    |                                                    | Spock can't find relation
-               3 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
+               2 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
+               3 |              |            | INSERT    |                                                    | Spock can't find relation
                4 |              |            | INSERT    |                                                    | Spock can't find relation
-               5 |              |            | INSERT    |                                                    | Spock can't find relation
-               6 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
+               5 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
 (6 rows)
+
+-- Check discard file contents (TRANSDISCARD records go here)
+SELECT rec->>'id' AS id, rec->>'node_name' AS node_name,
+       rec->>'relname' AS relname, rec->>'operation' AS operation,
+       rec->'remote_tuple' AS remote_tuple
+FROM spock.discard_read() AS rec
+ORDER BY (rec->>'id')::bigint;
+ id |    node_name    |     relname      | operation |                    remote_tuple                    
+----+-----------------+------------------+-----------+----------------------------------------------------
+    | test_subscriber | public.spoc_102g | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}]
+(1 row)
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g,spoc_102l CASCADE');
@@ -576,15 +587,26 @@ ORDER BY command_counter;
 -----------------+--------------+-------------+-----------+----------------------------------------------------+--------------------------------------------------------------------------------------------------------
                1 |              |             | INSERT    |                                                    | Spock can't find relation
                2 |              |             | INSERT    |                                                    | Spock can't find relation
-               3 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
+               2 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
+               3 |              |             | INSERT    |                                                    | Spock can't find relation
                4 |              |             | INSERT    |                                                    | Spock can't find relation
-               5 |              |             | INSERT    |                                                    | Spock can't find relation
-               6 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
+               5 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
+               6 |              |             | UPDATE    |                                                    | Spock can't find relation
                7 |              |             | UPDATE    |                                                    | Spock can't find relation
-               8 |              |             | UPDATE    |                                                    | Spock can't find relation
-               9 | public       | spoc_102g_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
-              10 | public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
+               8 | public       | spoc_102g_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
+               9 | public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
 (10 rows)
+
+-- Check discard file contents for UPDATE tests
+SELECT rec->>'id' AS id, rec->>'node_name' AS node_name,
+       rec->>'relname' AS relname, rec->>'operation' AS operation,
+       rec->'remote_tuple' AS remote_tuple
+FROM spock.discard_read() AS rec
+ORDER BY (rec->>'id')::bigint;
+ id |    node_name    |     relname      | operation |                    remote_tuple                    
+----+-----------------+------------------+-----------+----------------------------------------------------
+    | test_subscriber | public.spoc_102g | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}]
+(1 row)
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');
