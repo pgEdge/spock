@@ -188,12 +188,8 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 		values[Anum_exception_log_ddl_user - 1] = CStringGetTextDatum(ddl_user);
 	}
 
-	/*
-	 * The error_message column of the spock.exception_log table is marked as
-	 * NOT NULL, but we don't always have a valid error message.
-	 */
 	if (error_message == NULL)
-		values[Anum_exception_log_error_message - 1] = CStringGetTextDatum("unknown");
+		values[Anum_exception_log_error_message - 1] = CStringGetTextDatum("");
 	else
 		values[Anum_exception_log_error_message - 1] = CStringGetTextDatum(error_message);
 	values[Anum_exception_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
