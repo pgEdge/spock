@@ -920,6 +920,75 @@ EXCEPTION
 END;
 $$;
 
+CREATE OR REPLACE PROCEDURE spock.wait_for_replication_catchup_with_dblink(
+    src_node_name text,
+    new_node_name text,
+    new_node_dsn text,
+    verb boolean DEFAULT true,
+    max_wait_seconds integer DEFAULT 180
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    lag_bytes bigint;
+    received_lsn pg_lsn;
+    remote_write_lsn pg_lsn;
+    lag_sql text;
+    wait_started timestamptz := clock_timestamp();
+BEGIN
+    IF verb THEN
+        RAISE NOTICE '    Waiting for replication catchup from % to %...', src_node_name, new_node_name;
+    END IF;
+
+    LOOP
+        lag_sql := format(
+            'SELECT '
+            'MAX(remote_insert_lsn) AS remote_write_lsn, '
+            'MAX(received_lsn) AS received_lsn, '
+            'COALESCE(MAX(remote_insert_lsn - received_lsn), 0) AS lag_bytes '
+            'FROM spock.lag_tracker '
+            'WHERE origin_name = %L AND receiver_name = %L',
+            src_node_name, new_node_name
+        );
+
+        EXECUTE format(
+            'SELECT * FROM dblink(%L, %L) AS t(remote_write_lsn pg_lsn, received_lsn pg_lsn, lag_bytes bigint)',
+            new_node_dsn, lag_sql
+        ) INTO remote_write_lsn, received_lsn, lag_bytes;
+
+        IF verb THEN
+            RAISE NOTICE '    Catchup % -> %: remote_write_lsn=%, received_lsn=%, lag_bytes=%, elapsed=%',
+                src_node_name,
+                new_node_name,
+                COALESCE(remote_write_lsn::text, '<null>'),
+                COALESCE(received_lsn::text, '<null>'),
+                COALESCE(lag_bytes::text, '<null>'),
+                clock_timestamp() - wait_started;
+        END IF;
+
+        EXIT WHEN remote_write_lsn IS NOT NULL
+              AND received_lsn IS NOT NULL
+              AND lag_bytes <= 0;
+
+        IF EXTRACT(EPOCH FROM (clock_timestamp() - wait_started)) >= max_wait_seconds THEN
+            RAISE EXCEPTION 'Replication catchup timeout for % -> % after % seconds (remote_write_lsn=%, received_lsn=%, lag_bytes=%)',
+                src_node_name,
+                new_node_name,
+                max_wait_seconds,
+                COALESCE(remote_write_lsn::text, '<null>'),
+                COALESCE(received_lsn::text, '<null>'),
+                COALESCE(lag_bytes::text, '<null>');
+        END IF;
+
+        PERFORM pg_sleep(1);
+    END LOOP;
+
+    IF verb THEN
+        RAISE NOTICE '    OK: Replication catchup complete for % -> %', src_node_name, new_node_name;
+    END IF;
+END;
+$$;
+
 -- ============================================================================
 
 --
@@ -1351,10 +1420,11 @@ BEGIN
         -- takes the snapshot (prevents data loss in the [P_snap, L_slot) gap).
         BEGIN
             DECLARE
-                src_progress_lsn  pg_lsn;
-                wait_iters        integer := 0;
-                max_wait_iters    integer := 2400;  -- 20 minutes (0.5s per iter)
-                progress_sql      text;
+                src_progress_lsn         pg_lsn;
+                wait_started             timestamptz := clock_timestamp();
+                wait_timeout             interval := interval '3 minutes';
+                progress_sql             text;
+                v_prev_statement_timeout text;
             BEGIN
                 progress_sql := format(
                     'SELECT p.remote_commit_lsn '
@@ -1368,19 +1438,30 @@ BEGIN
                              src_node_name, rec.node_name, _commit_lsn;
 
                 LOOP
-                    SELECT * FROM dblink(src_dsn, progress_sql)
-                        AS t(lsn pg_lsn) INTO src_progress_lsn;
+                    BEGIN
+                        -- Bound each remote probe so dblink calls cannot hang forever.
+                        v_prev_statement_timeout := current_setting('statement_timeout', true);
+                        PERFORM set_config('statement_timeout', '5s', true);
+
+                        SELECT * FROM dblink(src_dsn, progress_sql)
+                            AS t(lsn pg_lsn) INTO src_progress_lsn;
+
+                        PERFORM set_config('statement_timeout', coalesce(v_prev_statement_timeout, '0'), true);
+                    EXCEPTION
+                        WHEN OTHERS THEN
+                            PERFORM set_config('statement_timeout', coalesce(v_prev_statement_timeout, '0'), true);
+                            src_progress_lsn := NULL;
+                    END;
 
                     EXIT WHEN src_progress_lsn IS NOT NULL
                               AND src_progress_lsn >= _commit_lsn;
 
-                    IF wait_iters >= max_wait_iters THEN
+                    IF clock_timestamp() - wait_started > wait_timeout THEN
                         RAISE WARNING '    Timeout waiting for source node commit catchup (last seen: %)', src_progress_lsn;
                         EXIT;
                     END IF;
 
                     PERFORM pg_sleep(0.5);
-                    wait_iters := wait_iters + 1;
                 END LOOP;
 
                 RAISE NOTICE '    OK: %', rpad(
@@ -1476,7 +1557,7 @@ BEGIN
             -- This ensures the subscription starts replicating from the correct sync point
             DECLARE
                 sync_lsn text;
-                timeout_ms integer := 1200;  -- 20 minutes
+                timeout_ms integer := 180;  -- 3 minutes
                 temp_table_exists boolean;
             BEGIN
                 -- Check if temp_sync_lsns table exists
@@ -1529,7 +1610,7 @@ BEGIN
                 new_node_dsn,
                 'sub_' || src_node_name || '_' || new_node_name,
                 verb,
-				1200
+				180
             );
 
             RAISE NOTICE '    ✓ %', rpad('Enabling subscription ' || sub_name || '...', 120, ' ');
@@ -1562,7 +1643,7 @@ BEGIN
                 -- This ensures the subscription starts replicating from the correct sync point
                 DECLARE
                     sync_lsn text;
-                    timeout_ms integer := 1200;  -- 20 minutes
+                    timeout_ms integer := 180;  -- 3 minutes
                 BEGIN
                     -- Get the stored sync LSN from when subscription was created
                     SELECT tsl.sync_lsn INTO sync_lsn
@@ -1600,7 +1681,7 @@ BEGIN
                     new_node_dsn,
                     'sub_'|| rec.node_name || '_' || new_node_name,
                     verb,
-					1200
+					180
                 );
 
                 RAISE NOTICE '    ✓ %', rpad('Enabling subscription ' || sub_name || '...', 120, ' ');
@@ -1753,7 +1834,7 @@ CREATE OR REPLACE PROCEDURE spock.trigger_sync_on_other_nodes_and_wait_on_source
 DECLARE
     rec RECORD;
     sync_lsn pg_lsn;
-    timeout_ms integer := 1200;  -- 20 minutes timeout
+    timeout_ms integer := 180;  -- 3 minutes timeout
     remotesql text;
 BEGIN
     RAISE NOTICE 'Phase 5: Triggering sync events on other nodes and waiting on source';
@@ -1828,6 +1909,10 @@ DECLARE
     current_lsn pg_lsn;
     target_lsn pg_lsn;
     v_sub_name name;
+    v_subid oid;
+    v_pending_sync integer;
+    v_wait_started timestamptz;
+    v_sub_status text;
 BEGIN
     RAISE NOTICE 'Phase 7: Checking commit timestamp and advancing replication slot';
 
@@ -1835,11 +1920,45 @@ BEGIN
     v_sub_name := ('sub_' || src_node_name || '_' || new_node_name)::name;
     RAISE NOTICE '    - Waiting for subscription % to reach READY...', v_sub_name;
     BEGIN
-        PERFORM spock.sub_wait_for_sync(v_sub_name);
-        RAISE NOTICE '    - Subscription % is READY', v_sub_name;
+        -- Avoid rare hangs in C-level sub_wait_for_sync by using a bounded SQL loop.
+        SELECT sub_id INTO v_subid
+        FROM spock.subscription
+        WHERE sub_name = v_sub_name;
+
+        IF v_subid IS NULL THEN
+            RAISE WARNING '    - Subscription % not found on new node; continuing', v_sub_name;
+        ELSE
+            v_wait_started := clock_timestamp();
+            LOOP
+                SELECT count(*) INTO v_pending_sync
+                FROM spock.local_sync_status
+                WHERE sync_subid = v_subid
+                  AND sync_status NOT IN ('y', 'r');
+
+                SELECT status INTO v_sub_status
+                FROM spock.sub_show_status()
+                WHERE subscription_name = v_sub_name;
+
+                IF v_pending_sync = 0 THEN
+                    RAISE NOTICE '    - Subscription % is READY', v_sub_name;
+                    EXIT;
+                END IF;
+
+                IF clock_timestamp() - v_wait_started > interval '3 minutes' THEN
+                    RAISE WARNING '    - Timed out waiting for % to become READY (pending rows: %, status: %); continuing',
+                        v_sub_name, v_pending_sync, coalesce(v_sub_status, '<unknown>');
+                    EXIT;
+                END IF;
+
+                PERFORM pg_sleep(1);
+            END LOOP;
+        END IF;
     EXCEPTION
         WHEN OTHERS THEN
-            RAISE WARNING '    - sub_wait_for_sync(%) failed: %; proceeding anyway', v_sub_name, SQLERRM;
+            RAISE WARNING '    - READY wait for subscription % failed: %; proceeding anyway', v_sub_name, SQLERRM;
+            RAISE WARNING '    - Current subscription status snapshot: %',
+                coalesce((SELECT string_agg(subscription_name || ':' || status, ', ')
+                          FROM spock.sub_show_status()), '<none>');
     END;
 
     -- Check src->new slot; only advance if it is NOT active (defensive).
@@ -2039,7 +2158,7 @@ CREATE OR REPLACE PROCEDURE spock.trigger_source_sync_and_wait_on_new_node(
 DECLARE
     remotesql text;
     sync_lsn pg_lsn;
-    timeout_ms integer := 1200;  -- 20 minutes timeout
+    timeout_ms integer := 180;  -- 3 minutes timeout
 BEGIN
     RAISE NOTICE 'Phase 6: Triggering sync on source node and waiting on new node';
 
@@ -2091,7 +2210,7 @@ DECLARE
     sub_rec  RECORD;
     rec RECORD;
     wait_count integer := 0;
-    max_wait_count integer := 1200; -- Wait up to 1200 seconds
+    max_wait_count integer := 180; -- Wait up to 180 seconds
 BEGIN
     -- Let remote subscriptions update their subscription's state.
     COMMIT;
@@ -2127,9 +2246,12 @@ BEGIN
         IF sub_rec IS NULL THEN
             RAISE NOTICE '    OK: Replication is active';
             EXIT;
+        ELSIF sub_rec.status IN ('disabled', 'down') THEN
+            RAISE EXCEPTION 'Subscription % entered terminal state % while waiting for replication to become active',
+                sub_rec.sub_name, sub_rec.status;
         ELSIF wait_count >= max_wait_count THEN
-            RAISE NOTICE '    WARNING: Timeout waiting for subscription % to become active (current status: %)', sub_rec.sub_name, sub_rec.status;
-            EXIT;
+            RAISE EXCEPTION 'Timeout waiting for subscription % to become active (current status: %)',
+                sub_rec.sub_name, sub_rec.status;
         ELSE
             RAISE NOTICE '    Waiting for replication... (subscription: %, status: %, attempt %/%)',
                 sub_rec.sub_name, sub_rec.status, wait_count, max_wait_count;
