@@ -22,11 +22,13 @@ repairs the missing data and can preserve the origin ID and commit
 timestamp for each repaired row so that replication metadata stays
 correct and your cluster remains consistent and conflict-free.
 
-This document covers two cases:
+This document covers three cases:
 
-- **single node failure** (one node fails and another is lagging) 
+- **single node failure** (one node fails and another is lagging)
+- **two of three nodes fail** (only one survivor remains; rebuild the failed
+  nodes from it)
 - **multiple node failure** (two or more nodes fail and one or more survivors
-  are behind). 
+  are behind).
 
 The same idea applies in both cases; you identify what is missing on the
 surviving node(s), then repair the nodes using a node with complete data, 
@@ -89,7 +91,57 @@ These steps ensure that n2 contains all of the rows that originated on n1.
 > some cases, tables may still show differences after an initial repair; see
 > the [Troubleshooting](#troubleshooting) section for guidance.
 
-### Scenario 2: Multiple Nodes have Failed, and One Node is Lagging
+### Scenario 2: Two of Three Nodes Fail
+
+When your cluster has only three nodes and two of them fail, the single
+survivor becomes the sole source of truth. There are no other nodes to
+cross-check against, so you must trust that the survivor has the most
+complete data available.
+
+In this example, n1, n2, and n3 form the cluster. Nodes n2 and n3 both
+fail, leaving n1 as the only survivor. You must recover **both** n2 and
+n3 from n1.
+
+```mermaid
+flowchart LR
+  subgraph failed [Failed]
+    N2[n2 failed]
+    N3[n3 failed]
+  end
+
+  subgraph source [Sole survivor / source of truth]
+    N1[n1 complete]
+  end
+
+  N1 -->|recover| N2
+  N1 -->|recover| N3
+```
+
+**Implementing a Recovery**
+
+* Nodes n2 and n3 have failed.
+* Node n1 is the sole survivor and source of truth.
+
+1. Clean up Spock: drop subscriptions to n2 and n3 on n1, then drop the
+   failed nodes from the cluster.
+2. Rebuild n2 and n3 from n1. Because the failed nodes are unavailable,
+   you cannot run ACE `table-diff` against them. Instead, use ZODAN's
+   `add_node` procedure to add n2 and n3 back as fresh nodes, which
+   performs a full initial sync from n1. See the
+   [ZODAN documentation](../modify/zodan/index.md) for step-by-step
+   instructions.
+3. After the initial sync completes for each node, validate with
+   `table-diff` across all three nodes to confirm they match.
+
+!!! warning
+
+    With only one survivor, there is no way to cross-validate data. If
+    n1 was also lagging behind n2 or n3 for transactions that originated
+    on those nodes, those transactions are permanently lost. To reduce
+    this risk, consider maintaining at least one additional warm standby
+    or using physical synchronous replicas for each node.
+
+### Scenario 3: Multiple Nodes have Failed, and One Node is Lagging
 
 In our next example, we'll assume multiple nodes have failed (for our example,
 we'll use n1 and n4). If two (or more) nodes fail, leaving one or more survivors, 
@@ -226,6 +278,40 @@ sequenceDiagram
     Note over N2: Missing rows from n1
     Note over N3..N5: Complete - use as source of truth
 ```
+
+## Risk of Lost Transactions
+
+It is possible that the failed node committed transactions that had not
+yet been replicated to any other node at the time of the failure. Because
+Spock uses **asynchronous** logical replication, there is always a window
+between when a transaction commits locally and when it is delivered to
+subscribers. Any transactions that fell within that window are
+permanently lost — they exist in the failed node's WAL but never reached
+the survivors.
+
+The size of this window depends on replication lag, network conditions,
+and transaction volume. Under normal conditions it is very small (often
+sub-second), but it can grow during heavy write bursts, network
+disruptions, or long-running transactions on the publisher.
+
+To protect against this:
+
+- **Physical synchronous replicas** — Maintain a synchronous physical
+  standby for each node. With `synchronous_commit = on` (or
+  `remote_apply`), the node will not report a transaction as committed
+  until the standby has received (or applied) it. If the primary fails,
+  you can promote the standby and recover the transactions that logical
+  subscribers had not yet received.
+- **Multiple logical subscribers** — The more subscribers a node
+  replicates to, the less likely that *all* of them are lagging at the
+  moment of failure. At least one subscriber is likely to have received
+  recent transactions.
+
+Even with these mitigations, a small data-loss window may remain. Plan
+your RPO (Recovery Point Objective) accordingly and factor this into
+your disaster-recovery documentation.
+
+---
 
 ## Before You Begin
 
@@ -759,14 +845,17 @@ tables, consider performing a chunked repair with `--table-filter`.
 ### Source node fails mid-replay
 
 If the node you chose as your source of truth (e.g., n3) fails or becomes
-unavailable while ACE is still running repairs, stop the repair immediately
-and switch to a different fully-synchronized survivor before continuing.
+unavailable while ACE is still running repairs, **stop the repair
+immediately** and choose a different fully-synchronized survivor as the
+new source of truth.
 
-1. Confirm which remaining nodes still have complete data (re-run
+1. Stop any running ACE processes.
+2. Confirm which remaining nodes still have complete data (re-run
    `spock.sub_show_status()` on each one and check for lag).
-2. Pick a new source of truth (e.g., n4 or n5) and re-run `table-repair`
-   with `--source-of-truth n4` for any tables that were not yet fully
-   repaired.
+3. Pick a new source of truth (e.g., n4 or n5) and re-run `table-diff`
+   and `table-repair` with `--source-of-truth n4` for any tables that
+   were not yet fully repaired. Tables that were already repaired and
+   validated do not need to be re-done.
 
 !!! warning
 
