@@ -691,8 +691,8 @@ spock_group_progress_update_list(List *lst)
 /*
  * spock_group_progress_force_set_list
  *
- * Write P_snap into the shmem progress entry for each peer during add_node.
- * Uses MAX-by-LSN: preserves the existing entry when it is already >= P_snap,
+ * Write resume_lsn into the shmem progress entry for each peer during add_node.
+ * Uses MAX-by-LSN: preserves the existing entry when it is already >= resume_lsn,
  * preventing double-apply from overwriting a live apply worker's higher value.
  */
 void
@@ -735,8 +735,8 @@ spock_group_progress_force_set_list(List *lst)
 		}
 		else if (entry->progress.remote_commit_lsn >= sap->remote_commit_lsn)
 		{
-			/* Existing LSN >= P_snap; skip to avoid double-apply. */
-			elog(LOG, "SPOCK: force-set %d->%d skipped: existing=%X/%X >= P_snap=%X/%X",
+			/* Existing LSN >= resume_lsn; skip to avoid double-apply. */
+			elog(LOG, "SPOCK: force-set %d->%d skipped: existing=%X/%X >= resume_lsn=%X/%X",
 				 sap->key.remote_node_id, MySubscription->target->id,
 				 LSN_FORMAT_ARGS(entry->progress.remote_commit_lsn),
 				 LSN_FORMAT_ARGS(sap->remote_commit_lsn));
@@ -745,7 +745,7 @@ spock_group_progress_force_set_list(List *lst)
 		}
 		else
 		{
-			/* Stale entry below P_snap; will be reset after WAL write succeeds. */
+			/* Stale entry below resume_lsn; will be reset after WAL write succeeds. */
 		}
 
 		/* WAL-log before shmem update; skipped above when existing LSN is higher. */
