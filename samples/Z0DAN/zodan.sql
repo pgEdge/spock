@@ -1416,8 +1416,8 @@ BEGIN
         END;
 
         -- Wait for the source node to have committed all changes from this
-        -- "other" node up to L_slot, ensuring P_snap >= L_slot when Phase 5
-        -- takes the snapshot (prevents data loss in the [P_snap, L_slot) gap).
+        -- "other" node up to L_slot, ensuring resume_lsn >= L_slot when Phase 5
+        -- takes the snapshot (prevents data loss in the [resume_lsn, L_slot) gap).
         BEGIN
             DECLARE
                 src_progress_lsn         pg_lsn;
@@ -1916,7 +1916,7 @@ DECLARE
 BEGIN
     RAISE NOTICE 'Phase 7: Checking commit timestamp and advancing replication slot';
 
-    -- Wait for src->new COPY to complete so P_snap is written to spock.progress.
+    -- Wait for src->new COPY to complete so resume_lsn is written to spock.progress.
     v_sub_name := ('sub_' || src_node_name || '_' || new_node_name)::name;
     RAISE NOTICE '    - Waiting for subscription % to reach READY...', v_sub_name;
     BEGIN
@@ -2096,7 +2096,7 @@ BEGIN
                     CONTINUE;
                 END IF;
 
-                -- Advance the slot to P_snap: the last commit from this node
+                -- Advance the slot to resume_lsn: the last commit from this node
                 -- that N1 had applied at snapshot time (stored in N3's spock.progress).
                 SELECT p.remote_commit_lsn INTO target_lsn
                 FROM spock.progress p
@@ -2110,7 +2110,7 @@ BEGIN
                 END IF;
 
                 IF target_lsn IS NULL OR target_lsn <= current_lsn THEN
-                    RAISE NOTICE '    - Slot % already at or beyond P_snap LSN (current: %, target: %)', slot_name, current_lsn, target_lsn;
+                    RAISE NOTICE '    - Slot % already at or beyond resume_lsn LSN (current: %, target: %)', slot_name, current_lsn, target_lsn;
                     CONTINUE;
                 END IF;
 
