@@ -21,9 +21,9 @@ see [Creating a Two-Node Cluster](two_node_cluster.md).
 
 ## Installing Spock with pgEdge Enterprise Postgres
 
-The latest Spock extension is automatically installed with any [pgEdge
-Enterprise Postgres](https://docs.pgedge.com/enterprise) installation. A
-pgEdge deployment provides quick and easy access to the following features:
+The latest Spock extension is automatically installed with any
+[pgEdge Enterprise Postgres](https://docs.pgedge.com/enterprise) installation.
+A pgEdge deployment provides quick and easy access to the following features:
 
 - the latest minor version of your preferred Postgres version.
 - Spock [functions and procedures](spock_functions/index.md).
@@ -37,11 +37,10 @@ pgEdge deployment provides quick and easy access to the following features:
 
 ## Building the Extension from Source
 
-Spock is available as an [open-source
-project](https://github.com/pgEdge/spock) that you can build from source
-code distributed at the GitHub project page. The Spock extension must be
-built on a version-specific build of Postgres that is patched to provide
-hooks so `spock` can access the Postgres engine.
+Spock is available as an [open-source project](https://github.com/pgEdge/spock) 
+that you can build from source code distributed at the GitHub project page.
+The Spock extension must be built on a version-specific build of Postgres
+that is patched to provide hooks so `spock` can access the Postgres engine.
 
 To patch the Postgres source code, download the source code from the
 [Postgres project](https://www.postgresql.org/ftp/source/), and move into
@@ -59,8 +58,8 @@ patch -p1 < path_to_patch/patch_name
 ```
 
 After applying version-specific patches, you can configure, `make`, and
-`make install` the Postgres server as described in the [Postgres
-documentation](https://www.postgresql.org/docs/current/installation.html).
+`make install` the Postgres server as described in the 
+[Postgres documentation](https://www.postgresql.org/docs/current/installation.html).
 When the build completes, add the location of your `pg_config` file to your
 `PATH` variable:
 
@@ -68,8 +67,8 @@ When the build completes, add the location of your `pg_config` file to your
 export PATH=path_to_pg_config_file
 ```
 
-Before invoking `make` and `make install`, install the [jansson
-library](https://jansson.readthedocs.io/en/1.1/gettingstarted.html) to meet
+Before invoking `make` and `make install`, install the 
+[jansson library](https://jansson.readthedocs.io/en/1.1/gettingstarted.html) to meet
 Spock prerequisites.
 
 Then, move into the `spock` directory, and use a build process much like
