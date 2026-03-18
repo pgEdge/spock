@@ -195,8 +195,8 @@ FROM pg_stat_replication;
 
 You should confirm that:
 
-- all nodes report consistent versions (5.0.1);
-- replication lag is minimal or zero;
+- all nodes report consistent versions (5.0.1).
+- replication lag is minimal or zero.
 - no errors appear in PostgreSQL or Spock logs.
 
 
