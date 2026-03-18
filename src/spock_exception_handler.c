@@ -95,6 +95,8 @@
 #define DF_OLD_TUPLE		"old_tuple"
 #define DF_REMOTE_TUPLE		"remote_tuple"
 #define DF_REMOTE_XID		"remote_xid"
+#define DF_DDL_SQL			"ddl_statement"
+#define DF_DDL_USER			"ddl_user"
 
 SpockExceptionLog *exception_log_ptr = NULL;
 int			exception_behaviour = TRANSDISCARD;
@@ -323,6 +325,11 @@ discardfile_ensure_dir(void)
  * a signed int) followed by exactly that many bytes of JSON payload.  Readers
  * must parse the length header first to determine where each record ends.
  *
+ * When rel is NULL (e.g. for DDL/SQL operations that have no target relation),
+ * the relname JSON field is set to an empty string and tuple serialization is
+ * skipped.  In that case the caller may pass ddl_sql / ddl_user to record the
+ * SQL statement and the role that executed it.
+ *
  * Locking: acquires SpockCtx->discard_file_lock in exclusive mode to
  * serialize concurrent writes from different apply workers.
  *
@@ -337,14 +344,15 @@ bool
 discardfile_write(const char *node_name, SpockRelation *rel, Oid remote_origin,
 				  Oid local_origin, const char *operation,
 				  SpockTupleData *oldtup, SpockTupleData *newtup,
-				  TransactionId remote_xid)
+				  TransactionId remote_xid,
+				  const char *ddl_sql, const char *ddl_user)
 {
 	char			path[MAXPGPATH];
 	StringInfoData	buf;
 	char		   *old_json = NULL;
 	char		   *new_json = NULL;
 	int				fd;
-	TupleDesc		tupdesc = RelationGetDescr(rel->rel);
+	TupleDesc		tupdesc = rel ? RelationGetDescr(rel->rel) : NULL;
 
 	Assert(SpockCtx != NULL);
 
@@ -365,7 +373,11 @@ discardfile_write(const char *node_name, SpockRelation *rel, Oid remote_origin,
 	escape_json(&buf, timestamptz_to_str(GetCurrentTimestamp()));
 
 	appendStringInfoString(&buf, ", \"" DF_RELNAME "\": ");
-	escape_json(&buf, quote_qualified_identifier(rel->nspname, rel->relname));
+	if (rel != NULL)
+		escape_json(&buf, quote_qualified_identifier(rel->nspname,
+													 rel->relname));
+	else
+		escape_json(&buf, "");
 
 	appendStringInfo(&buf, ", \"" DF_LOCAL_ORIGIN "\": %u", local_origin);
 
@@ -379,6 +391,18 @@ discardfile_write(const char *node_name, SpockRelation *rel, Oid remote_origin,
 
 	if (new_json != NULL)
 		appendStringInfo(&buf, ", \"" DF_REMOTE_TUPLE "\": %s", new_json);
+
+	if (ddl_sql != NULL)
+	{
+		appendStringInfoString(&buf, ", \"" DF_DDL_SQL "\": ");
+		escape_json(&buf, ddl_sql);
+	}
+
+	if (ddl_user != NULL)
+	{
+		appendStringInfoString(&buf, ", \"" DF_DDL_USER "\": ");
+		escape_json(&buf, ddl_user);
+	}
 
 	appendStringInfo(&buf, ", \"" DF_REMOTE_XID "\": %u}", remote_xid);
 

@@ -1323,7 +1323,7 @@ handle_insert(StringInfo s)
 			 */
 			discardfile_write(local_node->node->name, rel, remote_origin_id,
 							  local_node->node->id, "INSERT", NULL,
-							  &newtup, remote_xid);
+							  &newtup, remote_xid, NULL, NULL);
 			failed = false;
 		}
 		else
@@ -1493,27 +1493,44 @@ handle_update(StringInfo s)
 
 	if (MyApplyWorker->use_try_block == true)
 	{
-		PG_TRY();
+		if (exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE)
 		{
-			exception_command_counter++;
-			BeginInternalSubTransaction(NULL);
-			spock_apply_heap_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
-		}
-		PG_CATCH();
-		{
-			failed = true;
-			RollbackAndReleaseCurrentSubTransaction();
-			edata = CopyErrorData();
-			xact_had_exception = true;
-		}
-		PG_END_TRY();
+			SpockLocalNode *local_node = get_local_node(false, false);
 
-		if (!failed)
+			/*
+			 * TRANSDISCARD and SUB_DISABLE needs only registering current
+			 * operation. If an ERROR happens during the logging process - it is
+			 * a FATAL error: apply worker should follow the exception behaviour
+			 * logic related to such kind of problem.
+			 *
+			 * TODO: process returning value and react correspondingly.
+			 */
+			discardfile_write(local_node->node->name, rel, remote_origin_id,
+							  local_node->node->id, "UPDATE",
+							  hasoldtup ? &oldtup : NULL, &newtup,
+							  remote_xid, NULL, NULL);
+			failed = false;
+		}
+		else
 		{
-			if (exception_behaviour == TRANSDISCARD ||
-				exception_behaviour == SUB_DISABLE)
+			/* DISCARD MODE needs hard way - try block and subtransactions */
+			PG_TRY();
+			{
+				exception_command_counter++;
+				BeginInternalSubTransaction(NULL);
+				spock_apply_heap_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
+			}
+			PG_CATCH();
+			{
+				failed = true;
 				RollbackAndReleaseCurrentSubTransaction();
-			else
+				edata = CopyErrorData();
+				xact_had_exception = true;
+			}
+			PG_END_TRY();
+
+			if (!failed)
 				ReleaseCurrentSubTransaction();
 		}
 
@@ -1600,27 +1617,43 @@ handle_delete(StringInfo s)
 
 	if (MyApplyWorker->use_try_block)
 	{
-		PG_TRY();
+		if (exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE)
 		{
-			exception_command_counter++;
-			BeginInternalSubTransaction(NULL);
-			spock_apply_heap_delete(rel, &oldtup);
-		}
-		PG_CATCH();
-		{
-			failed = true;
-			RollbackAndReleaseCurrentSubTransaction();
-			edata = CopyErrorData();
-			xact_had_exception = true;
-		}
-		PG_END_TRY();
+			SpockLocalNode *local_node = get_local_node(false, false);
 
-		if (!failed)
+			/*
+			 * TRANSDISCARD and SUB_DISABLE needs only registering current
+			 * operation. If an ERROR happens during the logging process - it is
+			 * a FATAL error: apply worker should follow the exception behaviour
+			 * logic related to such kind of problem.
+			 *
+			 * TODO: process returning value and react correspondingly.
+			 */
+			discardfile_write(local_node->node->name, rel, remote_origin_id,
+							  local_node->node->id, "DELETE", &oldtup,
+							  NULL, remote_xid, NULL, NULL);
+			failed = false;
+		}
+		else
 		{
-			if (exception_behaviour == TRANSDISCARD ||
-				exception_behaviour == SUB_DISABLE)
+			/* DISCARD MODE needs hard way - try block and subtransactions */
+			PG_TRY();
+			{
+				exception_command_counter++;
+				BeginInternalSubTransaction(NULL);
+				spock_apply_heap_delete(rel, &oldtup);
+			}
+			PG_CATCH();
+			{
+				failed = true;
 				RollbackAndReleaseCurrentSubTransaction();
-			else
+				edata = CopyErrorData();
+				xact_had_exception = true;
+			}
+			PG_END_TRY();
+
+			if (!failed)
 				ReleaseCurrentSubTransaction();
 		}
 
@@ -2267,31 +2300,46 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 
 	if (MyApplyWorker->use_try_block)
 	{
-		PG_TRY();
+		if (exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE)
 		{
-			exception_command_counter++;
-			BeginInternalSubTransaction(NULL);
-			handle_sql(queued_message, tx_just_started, &sql);
-		}
-		PG_CATCH();
-		{
-			failed = true;
-			RollbackAndReleaseCurrentSubTransaction();
-			edata = CopyErrorData();
-			xact_had_exception = true;
-		}
-		PG_END_TRY();
+			SpockLocalNode *local_node = get_local_node(false, false);
 
-		if (!failed)
-		{
 			/*
-			 * Follow spock.exception_behavior GUC instead of restarting
-			 * worker
+			 * TRANSDISCARD and SUB_DISABLE needs only registering current
+			 * operation. If an ERROR happens during the logging process - it is
+			 * a FATAL error: apply worker should follow the exception behaviour
+			 * logic related to such kind of problem.
+			 *
+			 * TODO: process returning value and react correspondingly.
 			 */
-			if (exception_behaviour == TRANSDISCARD ||
-				exception_behaviour == SUB_DISABLE)
+			sql = JsonbToCString(NULL,
+								 &queued_message->message->root, 0);
+			discardfile_write(local_node->node->name, NULL,
+							  remote_origin_id, local_node->node->id,
+							  "SQL", NULL, NULL, remote_xid,
+							  sql, queued_message->role);
+			failed = false;
+		}
+		else
+		{
+			/* DISCARD MODE needs hard way - try block and subtransactions */
+			PG_TRY();
+			{
+				exception_command_counter++;
+				BeginInternalSubTransaction(NULL);
+				handle_sql(queued_message, tx_just_started, &sql);
+			}
+			PG_CATCH();
+			{
+				failed = true;
 				RollbackAndReleaseCurrentSubTransaction();
-			else
+				edata = CopyErrorData();
+				xact_had_exception = true;
+			}
+			PG_END_TRY();
+
+			if (!failed)
 				ReleaseCurrentSubTransaction();
 		}
 

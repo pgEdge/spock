@@ -103,6 +103,7 @@ extern bool discardfile_write(const char *node_name, SpockRelation *rel,
 							  Oid remote_origin, Oid local_origin,
 							  const char *operation, SpockTupleData *oldtup,
 							  SpockTupleData *newtup,
-							  TransactionId remote_xid);
+							  TransactionId remote_xid,
+							  const char *ddl_sql, const char *ddl_user);
 
 #endif							/* SPOCK_EXCEPTION_HANDLER_H */
