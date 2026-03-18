@@ -1,20 +1,20 @@
 # Configuring Spock
 
-Add the following `postgresql.conf` settings on each node in your Spock 
+Add the following `postgresql.conf` settings on each node in your Spock
 replication scenario before creating the Spock extension:
 
 ```sql
-    wal_level = 'logical'
-    max_worker_processes = 10   # one per database needed on provider node
-                                # one per node needed on subscriber node
-    max_replication_slots = 10  # one per node needed on provider node
-    max_wal_senders = 10        # one per node needed on provider node
-    shared_preload_libraries = 'spock'
-    track_commit_timestamp = on # needed for conflict resolution
+wal_level = 'logical'
+max_worker_processes = 10   # one per database needed on provider node
+                            # one per node needed on subscriber node
+max_replication_slots = 10  # one per node needed on provider node
+max_wal_senders = 10        # one per node needed on provider node
+shared_preload_libraries = 'spock'
+track_commit_timestamp = on # needed for conflict resolution
 ```
 
-After modifying the parameters and restarting the Postgres server
-with your OS-specific restart command, connect with psql and create the Spock
+After modifying the parameters and restarting the Postgres server with your
+OS-specific restart command, connect with psql and create the Spock
 extension:
 
 ```sql
@@ -32,15 +32,15 @@ to allow logical replication connections from localhost and between nodes.
 Logical replication connections are treated by `pg_hba.conf` as regular
 connections to the provider database.
 
-After modifying the pg_hba.conf file on each node, restart the server to apply
-the changes.
+After modifying the pg_hba.conf file on each node, restart the server to
+apply the changes.
 
 
 ## Advanced Configuration Options for Spock
 
 You can use the following configuration parameters (GUCs) on the psql
 command line with a `SET` statement or in a Postgres configuration file
-(like `postgresql.conf`) to configure a Spock installation.
+(for example, `postgresql.conf`) to configure a Spock installation.
 
 ### `spock.allow_ddl_from_functions`
 
@@ -73,17 +73,17 @@ option can only be set when the postmaster starts.
     your own risk.
 
 This parameter enhances conflict resolution during `INSERT` operations in
-scenarios where a row  exists that meets unique constraints defined on the
+scenarios where a row exists that meets unique constraints defined on the
 table (rather than primary keys or replication identity).
 
 If this GUC is `enabled`, Spock will continue to check unique constraint
-indexes, after checking the primary key / replica identity index.  Only one
-conflict will be resolved, using Last-Write-Wins logic.  This includes the
-primary key / replica identity index. If a second conflict occurs, an
+indexes, after checking the primary key or replica identity index. Only one
+conflict will be resolved, using Last-Write-Wins logic. This includes the
+primary key or replica identity index. If a second conflict occurs, an
 exception is recorded in the `spock.exception_log` table.
 
 Partial unique constraints are supported, but nullable unique constraints
-are not. Deferable constraints are not supported, are filtered out and are
+are not. Deferrable constraints are not supported, are filtered out and are
 not checked, and therefore may still cause an exception during the final
 commit.
 
@@ -98,16 +98,16 @@ inadvertently create orphaned foreign key records.
 ### `spock.conflict_resolution`
 
 `spock.conflict_resolution` sets the resolution method for any detected
-conflicts between local data and incoming changes. Possible values are:
+conflicts between local data and incoming changes. Possible values include:
 
-* `error` - the replication will stop on error if conflict is detected and
-  manual action is needed for resolving
-* `apply_remote` - always apply the change that's conflicting with local
-  data
-* `keep_local` - keep the local version of the data and ignore the
-  conflicting change that is coming from the remote node
-* `last_update_wins` - the version of data with newest commit timestamp
-  will be kept (this can be either local or remote version)
+- `error` - the replication will stop on error if conflict is detected and
+  manual action is needed for resolving.
+- `apply_remote` - always apply the change that's conflicting with local
+  data.
+- `keep_local` - keep the local version of the data and ignore the
+  conflicting change that is coming from the remote node.
+- `last_update_wins` - the version of data with newest commit timestamp
+  will be kept (this can be either local or remote version).
 
 To enable conflict resolution, the `track_commit_timestamp` setting must be
 enabled.
@@ -130,19 +130,19 @@ the `default` replication set.
 Use this GUC to specify the commit behavior of Postgres when it encounters
 an ERROR within a transaction:
 
-* `transdiscard` (the default) - Set `spock.exception_behaviour` to
+- `transdiscard` (the default) - set `spock.exception_behaviour` to
   `transdiscard` to instruct the server to discard a transaction if any
   operation within that transaction returns an `ERROR`.
-* `discard` - Set `spock.exception_behaviour` to `discard` to continue
-  processing (and replicating) without interrupting server use. The server
+- `discard` - set `spock.exception_behaviour` to `discard` to continue
+  processing (and replicating) without interrupting server use; the server
   will commit any operation (any portion of a transaction) that does not
   return an `ERROR` statement.
-* `sub_disable` - Set `spock.exception_behaviour` to `sub_disable` to
-  disable the subscription for the node on which the exception was reported.
-  Transactions for the disabled node will be added to a queue that is
-  written to the WAL log file; when the subscription is enabled, replication
-  will resume with the transaction that caused the exception, followed by
-  the other queued transactions. You can use the
+- `sub_disable` - set `spock.exception_behaviour` to `sub_disable` to
+  disable the subscription for the node on which the exception was
+  reported; transactions for the disabled node will be added to a queue
+  that is written to the WAL log file; when the subscription is enabled,
+  replication will resume with the transaction that caused the exception,
+  followed by the other queued transactions; you can use the
   `spock.alter_sub_skip_lsn` function to skip the transaction that caused
   the exception and resume processing with the next transaction in the
   queue.
@@ -153,16 +153,17 @@ accumulate.
 
 ### `spock.exception_logging`
 
-Use this GUC to specify which operations/transactions are written to the
+Use this GUC to specify which operations or transactions are written to the
 exception log table:
 
-* `all` (the default) - Set `spock.exception_logging` to `all` to instruct
+- `all` (the default) - set `spock.exception_logging` to `all` to instruct
   the server to record all transactions that contain one or more failed
-  operations in the `spock.exception_log` table. Note that this setting will
-  log all operations that are part of a transaction if one operation fails.
-* `discard` - Add a row to the `spock.exception_log` table for any
+  operations in the `spock.exception_log` table; note that this setting
+  will log all operations that are part of a transaction if one operation
+  fails.
+- `discard` - add a row to the `spock.exception_log` table for any
   discarded operation; successful transactions are not logged.
-* `none` - Instructs the server to not log any operation or transactions to
+- `none` - instructs the server to not log any operation or transactions to
   the exception log table.
 
 ### `spock.exception_replay_queue_size` - DEPRECATED
@@ -171,10 +172,10 @@ This parameter will not be supported after version 5.X.
 
 When Spock encounters a replication exception, it attempts to resolve the
 exception by entering exception-handling mode, based on the value of
-`spock.exception_behaviour`.  Spock then writes any transaction up to a
+`spock.exception_behaviour`. Spock then writes any transaction up to a
 default size of `4MB` to memory, and the apply worker replays the
-transaction from memory.  This provides a massive speed and performance
-increase in the handling of the vast majority of exceptions.  The memory
+transaction from memory. This provides a massive speed and performance
+increase in the handling of the vast majority of exceptions. The memory
 size is configurable with `spock.exception_replay_queue_size`.
 
 Now, Spock performs as specified by the
@@ -196,9 +197,9 @@ the upstream server disappears unexpectedly. To disable them add
 Controls how many WAL messages the apply worker processes before sending
 an LSN feedback packet to the provider. Lower values increase feedback
 overhead due to synchronous socket flushes; higher values reduce overhead
-during bulk catch-up. There is a time-based guard (wal_sender_timeout / 2)
-that ensures connection liveness regardless of this setting. The default
-is 200.
+during bulk catch-up. There is a time-based guard (wal_sender_timeout
+divided by 2) that ensures connection liveness regardless of this setting.
+The default is 200.
 
 ### `spock.include_ddl_repset`
 
@@ -225,13 +226,12 @@ occur outside expected patterns.
 
 The following configuration values are possible:
 
-* `none` (the default)-  do not log any origin change information
-* `remote_only_differs`- only log origin changes when the existing row
-   was from one remote publisher and was changed by another
-   remote publisher
-* `since_sub_creation`- log origin changes whether a publisher changed
-   a row that was previously from another publisher or updated it locally,
-   but only since the time when the subscription was created.
+- `none` (the default) - do not log any origin change information.
+- `remote_only_differs` - only log origin changes when the existing row was
+  from one remote publisher and was changed by another remote publisher.
+- `since_sub_creation` - log origin changes whether a publisher changed a
+  row that was previously from another publisher or updated it locally, but
+  only since the time when the subscription was created.
 
 ### `spock.save_resolutions`
 
@@ -248,10 +248,10 @@ the postmaster starts.  The parameter accepts values from `-1` to `INT_MAX`
 
 ### `spock.temp_directory`
 
-  `spock.temp_directory` defines the system path where temporary files
-  needed for schema synchronization are written. This path needs to exist
-  and be writable by the user running Postgres. The default is `empty`,
-  which tells Spock to use the default temporary directory based on
-  environment or operating system settings.
+`spock.temp_directory` defines the system path where temporary files needed
+for schema synchronization are written. This path needs to exist and be
+writable by the user running Postgres. The default is `empty`, which tells
+Spock to use the default temporary directory based on environment or
+operating system settings.
 
 
