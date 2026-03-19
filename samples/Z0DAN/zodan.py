@@ -533,7 +533,7 @@ class SpockClusterManager:
             self.notice(f"    OK: Triggering sync event on node {rec['node_name']} (LSN: {sync_lsn})...")
             
             # Wait for sync event on source
-            self.wait_for_sync_event(src_dsn, True, rec['node_name'], sync_lsn, 1200)
+            self.wait_for_sync_event(src_dsn, True, rec['node_name'], sync_lsn, self.sync_event_timeout)
             self.notice(f"    OK: Waiting for sync event from {rec['node_name']} on source node {src_node_name}...")
 
     def trigger_source_sync_and_wait_on_new_node(self, src_node_name: str, src_dsn: str,
@@ -543,8 +543,6 @@ class SpockClusterManager:
 
         # Trigger sync event on source node and wait for it on new node
         sync_lsn = None
-        timeout_ms = 1200  # 20 minutes timeout
-
         try:
             # Trigger sync event on new node
             sql = "SELECT spock.sync_event();"
@@ -563,7 +561,7 @@ class SpockClusterManager:
 
         try:
             # Wait for sync event on new node
-            sql = f"CALL spock.wait_for_sync_event(true, '{src_node_name}', '{sync_lsn}'::pg_lsn, {timeout_ms});"
+            sql = f"CALL spock.wait_for_sync_event(true, '{src_node_name}', '{sync_lsn}'::pg_lsn, {self.sync_event_timeout});"
             if self.verbose:
                 self.info(f"    Remote SQL for wait_for_sync_event on new node {new_node_name}: {sql}")
 
@@ -748,14 +746,13 @@ class SpockClusterManager:
 
                 # Wait for the sync event that was captured when subscription was created
                 # This ensures the subscription starts replicating from the correct sync point
-                timeout_ms = 1200  # 20 minutes
                 sync_lsn = self.sync_lsns[rec['node_name']]['sync_lsn']  # Use stored sync LSN from Phase 3
 
                 if sync_lsn:
                     self.notice(f"    OK: Using stored sync event from origin node {rec['node_name']} (LSN: {sync_lsn})...")
 
                     # Wait for this sync event on the new node where the subscription exists
-                    sql = f"CALL spock.wait_for_sync_event(true, '{rec['node_name']}', '{sync_lsn}'::pg_lsn, {timeout_ms});"
+                    sql = f"CALL spock.wait_for_sync_event(true, '{rec['node_name']}', '{sync_lsn}'::pg_lsn, {self.sync_event_timeout});"
                     if self.verbose:
                         self.info(f"    Remote SQL for wait_for_sync_event on new node {new_node_name}: {sql}")
 
@@ -979,12 +976,13 @@ class SpockClusterManager:
 
     def add_node(self, src_node_name: str, src_dsn: str, new_node_name: str, new_node_dsn: str,
                  new_node_location: str = "NY", new_node_country: str = "USA",
-                 new_node_info: str = "{}"):
+                 new_node_info: str = "{}", sync_event_timeout: int = 180):
         """Main add_node procedure - matches zodan.sql exactly"""
 
         # Store DSN values as instance attributes to avoid hard-coding
         self.src_dsn = src_dsn
         self.new_node_dsn = new_node_dsn
+        self.sync_event_timeout = sync_event_timeout
 
         # Phase 0: Check Spock version compatibility across all nodes
         # Example: Ensure all nodes are running the same Spock version before proceeding
@@ -1332,8 +1330,10 @@ Examples:
     add_node_parser.add_argument('--new-node-location', default='NY', help='New node location (default: NY)')
     add_node_parser.add_argument('--new-node-country', default='USA', help='New node country (default: USA)')
     add_node_parser.add_argument('--new-node-info', default='{}', help='New node info JSON (default: {})')
+    add_node_parser.add_argument('--sync-event-timeout', type=int, default=180,
+                                  help='Timeout in seconds for wait_for_sync_event (default: 180)')
     add_node_parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
-    
+
     args = parser.parse_args()
     
     if not args.command:
@@ -1365,7 +1365,8 @@ Examples:
                 args.new_node_dsn,
                 args.new_node_location,
                 args.new_node_country,
-                args.new_node_info
+                args.new_node_info,
+                args.sync_event_timeout
             )
         except Exception as e:
             print(f"ERROR: {e}")

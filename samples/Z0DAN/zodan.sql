@@ -1313,7 +1313,8 @@ CREATE OR REPLACE PROCEDURE spock.create_disable_subscriptions_and_slots(
     src_dsn text,        -- Source node DSN
     new_node_name text,  -- New node name
     new_node_dsn text,   -- New node DSN
-    verb boolean         -- Verbose flag
+    verb boolean,        -- Verbose flag
+    sync_event_timeout integer DEFAULT 180  -- wait_for_sync_event timeout in seconds
 ) LANGUAGE plpgsql AS $$
 DECLARE
     rec                RECORD;
@@ -1427,7 +1428,7 @@ BEGIN
                 v_prev_statement_timeout text;
             BEGIN
                 progress_sql := format(
-                    'SELECT p.remote_lsn '
+                    'SELECT p.remote_commit_lsn '
                     'FROM spock.progress p '
                     'JOIN spock.node n ON n.node_id = p.remote_node_id '
                     'WHERE p.node_id = (SELECT node_id FROM spock.node_info()) '
@@ -1536,7 +1537,8 @@ CREATE OR REPLACE PROCEDURE spock.enable_disabled_subscriptions(
     src_dsn text,
     new_node_name text,
     new_node_dsn text,
-    verb boolean
+    verb boolean,
+    sync_event_timeout integer DEFAULT 180  -- wait_for_sync_event timeout in seconds
 ) LANGUAGE plpgsql AS $$
 DECLARE
     rec      RECORD;
@@ -1557,7 +1559,7 @@ BEGIN
             -- This ensures the subscription starts replicating from the correct sync point
             DECLARE
                 sync_lsn text;
-                timeout_ms integer := 180;  -- 3 minutes
+                timeout_ms integer := sync_event_timeout;
                 temp_table_exists boolean;
             BEGIN
                 -- Check if temp_sync_lsns table exists
@@ -1643,7 +1645,7 @@ BEGIN
                 -- This ensures the subscription starts replicating from the correct sync point
                 DECLARE
                     sync_lsn text;
-                    timeout_ms integer := 180;  -- 3 minutes
+                    timeout_ms integer := sync_event_timeout;
                 BEGIN
                     -- Get the stored sync LSN from when subscription was created
                     SELECT tsl.sync_lsn INTO sync_lsn
@@ -1829,12 +1831,13 @@ CREATE OR REPLACE PROCEDURE spock.trigger_sync_on_other_nodes_and_wait_on_source
     src_dsn text,        -- Source node DSN
     new_node_name text,  -- New node name
     new_node_dsn text,   -- New node DSN
-    verb boolean         -- Verbose flag
+    verb boolean,        -- Verbose flag
+    sync_event_timeout integer DEFAULT 180  -- wait_for_sync_event timeout in seconds
 ) LANGUAGE plpgsql AS $$
 DECLARE
     rec RECORD;
     sync_lsn pg_lsn;
-    timeout_ms integer := 180;  -- 3 minutes timeout
+    timeout_ms integer := sync_event_timeout;
     remotesql text;
 BEGIN
     RAISE NOTICE 'Phase 5: Triggering sync events on other nodes and waiting on source';
@@ -2002,7 +2005,7 @@ BEGIN
                     -- Slot exists but is not active (unusual).  Advance defensively.
                     RAISE NOTICE '    Slot % found at LSN % (inactive)', src_slot_name, current_lsn;
 
-                    SELECT p.remote_lsn INTO target_lsn
+                    SELECT p.remote_commit_lsn INTO target_lsn
                     FROM spock.progress p
                     JOIN spock.node n ON n.node_id = p.remote_node_id
                     WHERE n.node_name = src_node_name;
@@ -2098,7 +2101,7 @@ BEGIN
 
                 -- Advance the slot to resume_lsn: the last commit from this node
                 -- that N1 had applied at snapshot time (stored in N3's spock.progress).
-                SELECT p.remote_lsn INTO target_lsn
+                SELECT p.remote_commit_lsn INTO target_lsn
                 FROM spock.progress p
                 JOIN spock.node n ON n.node_id = p.remote_node_id
                 WHERE n.node_name = rec.node_name;
@@ -2153,12 +2156,13 @@ CREATE OR REPLACE PROCEDURE spock.trigger_source_sync_and_wait_on_new_node(
     new_node_name text,
     new_node_dsn text,
     verb boolean,
-    sync_check_on_new_node boolean DEFAULT false
+    sync_check_on_new_node boolean DEFAULT false,
+    sync_event_timeout integer DEFAULT 180  -- wait_for_sync_event timeout in seconds
 ) LANGUAGE plpgsql AS $$
 DECLARE
     remotesql text;
     sync_lsn pg_lsn;
-    timeout_ms integer := 180;  -- 3 minutes timeout
+    timeout_ms integer := sync_event_timeout;
 BEGIN
     RAISE NOTICE 'Phase 6: Triggering sync on source node and waiting on new node';
 
@@ -2328,6 +2332,7 @@ $$;
  *   new_node_location - Location (default: 'NY')
  *   new_node_country  - Country (default: 'USA')
  *   new_node_info     - JSONB object with additional metadata (default: '{}')
+ *   sync_event_timeout - Timeout in seconds for wait_for_sync_event calls (default: 180)
  *
  * Notes:
  *   - Assumes `create_node`, `create_sub`, `enable_sub`, `create_replication_slot`,
@@ -2344,7 +2349,8 @@ CREATE OR REPLACE PROCEDURE spock.add_node(
     verb boolean DEFAULT false,
     new_node_location text DEFAULT 'NY',
     new_node_country text DEFAULT 'USA',
-    new_node_info jsonb DEFAULT '{}'::jsonb
+    new_node_info jsonb DEFAULT '{}'::jsonb,
+    sync_event_timeout integer DEFAULT 180
 )
 LANGUAGE plpgsql
 AS
@@ -2366,11 +2372,11 @@ BEGIN
 
     -- Phase 3: Create disabled subscriptions and replication slots.
     -- Example: Prepare n4 for replication but keep subscriptions disabled initially.
-    CALL spock.create_disable_subscriptions_and_slots(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    CALL spock.create_disable_subscriptions_and_slots(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, sync_event_timeout);
 
     -- Phase 4: Trigger sync events on other nodes and wait on source.
     -- Example: Sync n2 and n3, then wait for n1 to acknowledge before proceeding with n4.
-    CALL spock.trigger_sync_on_other_nodes_and_wait_on_source(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    CALL spock.trigger_sync_on_other_nodes_and_wait_on_source(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, sync_event_timeout);
 
     -- Phase 5: Create subscription from source to new node.
     -- Example: Set up n1 to replicate to n4.
@@ -2378,7 +2384,7 @@ BEGIN
 
     -- Phase 6: Trigger sync on source node and wait on new node.
     -- Example: Ensure n1 and n4 are fully synchronized before continuing.
-    CALL spock.trigger_source_sync_and_wait_on_new_node(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, true);
+    CALL spock.trigger_source_sync_and_wait_on_new_node(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, true, sync_event_timeout);
 
     -- Phase 7: Check commit timestamp and advance replication slot.
     -- Example: Confirm n4 is caught up to n1's latest changes.
@@ -2386,7 +2392,7 @@ BEGIN
 
     -- Phase 8: Enable previously disabled subscriptions.
     -- Example: Activate replication paths for n4.
-    CALL spock.enable_disabled_subscriptions(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+    CALL spock.enable_disabled_subscriptions(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, sync_event_timeout);
 
     -- Phase 9: Create subscription from new node to source node.
     -- Example: Set up n4 to replicate back to n1 for bidirectional sync.

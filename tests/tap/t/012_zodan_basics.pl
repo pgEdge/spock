@@ -47,7 +47,8 @@ psql_or_bail(2, "
         src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
         new_node_name := 'n2',
         new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
-        verb := false
+        verb := false,
+        sync_event_timeout := 30
     )");
 print STDERR "Z0DAN (n2 => n1) has finished the attach process\n";
 $result = scalar_query(2, "SELECT x FROM test");
@@ -68,7 +69,8 @@ scalar_query(3, "
 		src_node_name := 'n2',
 		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
 		new_node_name := 'n3', new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
-		verb := false)");
+		verb := false,
+		sync_event_timeout := 30)");
 
 $result = scalar_query(3, "SELECT count(*) FROM spock.local_node");
 ok($result eq '0', "N3 is not in the cluster yet");
@@ -80,7 +82,8 @@ psql_or_bail(3, "
 		src_node_name := 'n2',
 		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
 		new_node_name := 'n3', new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
-		verb := true)");
+		verb := true,
+		sync_event_timeout := 30)");
 
 $result = scalar_query(3, "SELECT count(*) FROM spock.local_node");
 ok($result eq '1', "N3 is in the cluster");
@@ -110,7 +113,8 @@ scalar_query(3, "
 		src_node_name := 'n2',
 		src_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
 		new_node_name := 'n3', new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
-		verb := true)");
+		verb := true,
+		sync_event_timeout := 30)");
 
 # TODO:
 # It seems that add_node keeps remnants after unsuccessful execution. It is

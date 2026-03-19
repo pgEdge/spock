@@ -232,7 +232,8 @@ my $add_node_cmd = "$pg_bin/psql -p $n3_port -d $dbname -c \"
         true,
         'CA',
         'USA',
-        '{}'::jsonb
+        '{}'::jsonb,
+        30
     )
 \"";
 

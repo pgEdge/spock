@@ -189,6 +189,7 @@ my $add_node_cmd = "../../samples/Z0DAN/zodan.py \\
     --new-node-dsn 'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password' \\
     --new-node-location CA \\
     --new-node-country USA \\
+    --sync-event-timeout 30 \\
 ";
 
 print "Executing: $add_node_cmd\n";
