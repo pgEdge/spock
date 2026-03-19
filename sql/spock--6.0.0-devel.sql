@@ -98,6 +98,9 @@ CREATE TABLE spock.exception_status_detail (
 		REFERENCES spock.exception_status
 ) WITH (user_catalog_table=true);
 
+CREATE OR REPLACE FUNCTION spock.discard_read()
+RETURNS SETOF jsonb VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_discard_read';
+
 CREATE FUNCTION spock.apply_group_progress (
 	OUT dbid              oid,
 	OUT node_id           oid,

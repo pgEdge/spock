@@ -214,6 +214,13 @@ SELECT
 FROM spock.exception_log
 ORDER BY command_counter;
 
+-- Check discard file contents (TRANSDISCARD records go here)
+SELECT rec->>'id' AS id, rec->>'node_name' AS node_name,
+       rec->>'relname' AS relname, rec->>'operation' AS operation,
+       rec->'remote_tuple' AS remote_tuple
+FROM spock.discard_read() AS rec
+ORDER BY (rec->>'id')::bigint;
+
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g,spoc_102l CASCADE');
 
@@ -267,6 +274,13 @@ SELECT
   ) AS error_message
 FROM spock.exception_log
 ORDER BY command_counter;
+
+-- Check discard file contents for UPDATE tests
+SELECT rec->>'id' AS id, rec->>'node_name' AS node_name,
+       rec->>'relname' AS relname, rec->>'operation' AS operation,
+       rec->'remote_tuple' AS remote_tuple
+FROM spock.discard_read() AS rec
+ORDER BY (rec->>'id')::bigint;
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');

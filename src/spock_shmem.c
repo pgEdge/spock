@@ -118,6 +118,9 @@ spock_shmem_request(void)
 
 	/* For SpockCtx->lock */
 	RequestNamedLWLockTranche("spock context lock", 1);
+
+	/* For SpockCtx->discard_file_lock */
+	RequestNamedLWLockTranche("spock discard file lock", 1);
 }
 
 /*
@@ -165,6 +168,10 @@ spock_shmem_startup(void)
 		SpockCtx->total_workers = nworkers;
 		memset(SpockCtx->workers, 0,
 			   sizeof(SpockWorker) * SpockCtx->total_workers);
+
+		/* Initialize DISCARDFILE support */
+		SpockCtx->discard_file_lock =
+			&((GetNamedLWLockTranche("spock discard file lock")[0]).lock);
 	}
 
 	/* Initialize worker subsystem shared memory structures */

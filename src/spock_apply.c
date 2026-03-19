@@ -1308,41 +1308,57 @@ handle_insert(StringInfo s)
 	/* TODO: Handle multiple inserts */
 	if (MyApplyWorker->use_try_block)
 	{
-		PG_TRY();
+		if (exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE)
 		{
-			exception_command_counter++;
-			BeginInternalSubTransaction(NULL);
-			spock_apply_heap_insert(rel, &newtup);
-		}
-		PG_CATCH();
-		{
-			failed = true;
-			RollbackAndReleaseCurrentSubTransaction();
-			edata = CopyErrorData();
-			xact_had_exception = true;
-		}
-		PG_END_TRY();
+			SpockLocalNode *local_node = get_local_node(false, false);
 
-		if (!failed)
+			/*
+			 * TRANSDISCARD and SUB_DISABLE needs only registering current
+			 * operation. If an ERROR happens during the logging process - it is
+			 * a FATAL error: apply worker should follow the exception behaviour
+			 * logic related to such kind of problem.
+			 *
+			 * TODO: process returning value and react correspondingly.
+			 */
+			discardfile_write(local_node->node->name, rel, remote_origin_id,
+							  local_node->node->id, "INSERT", NULL,
+							  &newtup, remote_xid);
+			failed = false;
+		}
+		else
 		{
-			if (exception_behaviour == TRANSDISCARD ||
-				exception_behaviour == SUB_DISABLE)
+			/* DISCARD MODE needs hard way - try block and subtransactions */
+			PG_TRY();
+			{
+				exception_command_counter++;
+				BeginInternalSubTransaction(NULL);
+				spock_apply_heap_insert(rel, &newtup);
+			}
+			PG_CATCH();
+			{
+				failed = true;
 				RollbackAndReleaseCurrentSubTransaction();
-			else
+				edata = CopyErrorData();
+				xact_had_exception = true;
+			}
+			PG_END_TRY();
+
+			if (!failed)
 				ReleaseCurrentSubTransaction();
-		}
 
-		/*
-		 * Log the exception. If this operation succeeded but we have an
-		 * initial error message (from a previous attempt), use that instead
-		 * of NULL to provide context for why we're logging this.
-		 */
-		{
-			char	   *error_msg = edata ? edata->message :
-				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
-				 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
+			/*
+			 * Log the exception for DISCARD mode. TRANSDISCARD and
+			 * SUB_DISABLE log a single entry per transaction in
+			 * handle_commit; per-row data goes to the discard file.
+			 */
+			{
+				char	   *error_msg = edata ? edata->message :
+					(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
+					 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
 
-			log_insert_exception(failed, error_msg, rel, NULL, &newtup, "INSERT");
+				log_insert_exception(failed, error_msg, rel, NULL, &newtup, "INSERT");
+			}
 		}
 	}
 	else
