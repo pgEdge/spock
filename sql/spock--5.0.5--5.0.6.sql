@@ -66,12 +66,12 @@ BEGIN
 		ELSE
 			-- Subscription is enabled; check LSN progress.
 			-- Uses PostgreSQL's native origin tracking rather than spock.progress
-			SELECT INTO progress_lsn remote_lsn
-			FROM spock.progress
-			WHERE node_id = target_id AND remote_node_id = origin_id;
-			--SELECT remote_lsn INTO progress_lsn
-			--	FROM pg_replication_origin_status
-			--	WHERE external_id = sub_slot;
+			--SELECT INTO progress_lsn remote_lsn
+			--FROM spock.progress
+			--WHERE node_id = target_id AND remote_node_id = origin_id;
+			SELECT remote_lsn INTO progress_lsn
+				FROM pg_replication_origin_status
+				WHERE external_id = sub_slot;
 
 			IF progress_lsn IS NOT NULL AND progress_lsn >= lsn THEN
 				result = true;

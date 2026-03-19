@@ -33,19 +33,19 @@ BEGIN
 
     SELECT end_time - clock_timestamp() INTO time_remained;
     IF time_remained < '0 second' THEN
-      RETURN state.lag;
+      RETURN lag;
     END IF;
 
     -- NOTE: Remember, an apply group may contain more than a single worker.
     SELECT
       MAX(remote_insert_lsn) AS remote_write_lsn,
-      MAX(received_lsn) AS received_lsn
+      MAX(last_received_lsn) AS last_received_lsn
     FROM spock.lag_tracker
     WHERE origin_name = remote_node_name AND receiver_name = local_node_name
     INTO state;
 
     -- Special case: nothing arrived yet
-    IF (state.received_lsn = '0/0'::pg_lsn) THEN
+    IF (state.last_received_lsn = '0/0'::pg_lsn) THEN
       IF report_it = true THEN
         raise NOTICE 'Replication % -> %: waiting WAL ... . Time remained: % (HH24:MI:SS)',
           remote_node_name, local_node_name,
@@ -59,20 +59,20 @@ BEGIN
     IF (state.remote_write_lsn = '0/0'::pg_lsn) THEN
       IF report_it = true THEN
         raise NOTICE 'Replication % -> %: waiting anything substantial ... Received LSN: %. Time remained: % (HH24:MI:SS)',
-          remote_node_name, local_node_name, state.received_lsn,
+          remote_node_name, local_node_name, state.last_received_lsn,
           to_char(time_remained, 'HH24:MI:SS');
         PERFORM pg_sleep(delay);
         CONTINUE;
       END IF;
 
       -- Check any progress
-      IF (state.received_lsn = prev_received_lsn) THEN
+      IF (state.last_received_lsn = prev_received_lsn) THEN
         raise EXCEPTION 'Replication % -> %: publisher seems get stuck into something',
         remote_node_name, local_node_name;
       END IF;
 
       -- We have a progress, wait further.
-      prev_received_lsn = state.received_lsn;
+      prev_received_lsn = state.last_received_lsn;
       -- To be sure we get a 'keepalive' message
       PERFORM pg_sleep(wal_sender_timeout * 2);
 
@@ -80,7 +80,7 @@ BEGIN
       CONTINUE;
     END IF;
 
-    SELECT MAX(remote_insert_lsn - received_lsn) FROM spock.lag_tracker
+    SELECT MAX(remote_insert_lsn - last_received_lsn) FROM spock.lag_tracker
     WHERE origin_name = remote_node_name AND receiver_name = local_node_name
     INTO lag;
 

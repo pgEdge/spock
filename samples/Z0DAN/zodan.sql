@@ -931,7 +931,7 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     lag_bytes bigint;
-    received_lsn pg_lsn;
+    last_received_lsn pg_lsn;
     remote_write_lsn pg_lsn;
     lag_sql text;
     wait_started timestamptz := clock_timestamp();
@@ -944,39 +944,39 @@ BEGIN
         lag_sql := format(
             'SELECT '
             'MAX(remote_insert_lsn) AS remote_write_lsn, '
-            'MAX(received_lsn) AS received_lsn, '
-            'COALESCE(MAX(remote_insert_lsn - received_lsn), 0) AS lag_bytes '
+            'MAX(last_received_lsn) AS last_received_lsn, '
+            'COALESCE(MAX(remote_insert_lsn - last_received_lsn), 0) AS lag_bytes '
             'FROM spock.lag_tracker '
             'WHERE origin_name = %L AND receiver_name = %L',
             src_node_name, new_node_name
         );
 
         EXECUTE format(
-            'SELECT * FROM dblink(%L, %L) AS t(remote_write_lsn pg_lsn, received_lsn pg_lsn, lag_bytes bigint)',
+            'SELECT * FROM dblink(%L, %L) AS t(remote_write_lsn pg_lsn, last_received_lsn pg_lsn, lag_bytes bigint)',
             new_node_dsn, lag_sql
-        ) INTO remote_write_lsn, received_lsn, lag_bytes;
+        ) INTO remote_write_lsn, last_received_lsn, lag_bytes;
 
         IF verb THEN
-            RAISE NOTICE '    Catchup % -> %: remote_write_lsn=%, received_lsn=%, lag_bytes=%, elapsed=%',
+            RAISE NOTICE '    Catchup % -> %: remote_write_lsn=%, last_received_lsn=%, lag_bytes=%, elapsed=%',
                 src_node_name,
                 new_node_name,
                 COALESCE(remote_write_lsn::text, '<null>'),
-                COALESCE(received_lsn::text, '<null>'),
+                COALESCE(last_received_lsn::text, '<null>'),
                 COALESCE(lag_bytes::text, '<null>'),
                 clock_timestamp() - wait_started;
         END IF;
 
         EXIT WHEN remote_write_lsn IS NOT NULL
-              AND received_lsn IS NOT NULL
+              AND last_received_lsn IS NOT NULL
               AND lag_bytes <= 0;
 
         IF EXTRACT(EPOCH FROM (clock_timestamp() - wait_started)) >= max_wait_seconds THEN
-            RAISE EXCEPTION 'Replication catchup timeout for % -> % after % seconds (remote_write_lsn=%, received_lsn=%, lag_bytes=%)',
+            RAISE EXCEPTION 'Replication catchup timeout for % -> % after % seconds (remote_write_lsn=%, last_received_lsn=%, lag_bytes=%)',
                 src_node_name,
                 new_node_name,
                 max_wait_seconds,
                 COALESCE(remote_write_lsn::text, '<null>'),
-                COALESCE(received_lsn::text, '<null>'),
+                COALESCE(last_received_lsn::text, '<null>'),
                 COALESCE(lag_bytes::text, '<null>');
         END IF;
 
