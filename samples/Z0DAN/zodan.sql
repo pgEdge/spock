@@ -1427,7 +1427,7 @@ BEGIN
                 v_prev_statement_timeout text;
             BEGIN
                 progress_sql := format(
-                    'SELECT p.remote_commit_lsn '
+                    'SELECT p.remote_lsn '
                     'FROM spock.progress p '
                     'JOIN spock.node n ON n.node_id = p.remote_node_id '
                     'WHERE p.node_id = (SELECT node_id FROM spock.node_info()) '
@@ -2002,7 +2002,7 @@ BEGIN
                     -- Slot exists but is not active (unusual).  Advance defensively.
                     RAISE NOTICE '    Slot % found at LSN % (inactive)', src_slot_name, current_lsn;
 
-                    SELECT p.remote_commit_lsn INTO target_lsn
+                    SELECT p.remote_lsn INTO target_lsn
                     FROM spock.progress p
                     JOIN spock.node n ON n.node_id = p.remote_node_id
                     WHERE n.node_name = src_node_name;
@@ -2098,7 +2098,7 @@ BEGIN
 
                 -- Advance the slot to resume_lsn: the last commit from this node
                 -- that N1 had applied at snapshot time (stored in N3's spock.progress).
-                SELECT p.remote_commit_lsn INTO target_lsn
+                SELECT p.remote_lsn INTO target_lsn
                 FROM spock.progress p
                 JOIN spock.node n ON n.node_id = p.remote_node_id
                 WHERE n.node_name = rec.node_name;
