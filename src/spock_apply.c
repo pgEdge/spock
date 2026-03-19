@@ -90,6 +90,7 @@ PGDLLEXPORT void spock_apply_main(Datum main_arg);
 static bool in_remote_transaction = false;
 static bool first_begin_at_startup = true;
 static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
+static XLogRecPtr current_record_lsn = InvalidXLogRecPtr;
 static RepOriginId remote_origin_id = InvalidRepOriginId;
 static char *remote_origin_name = NULL;
 static TimeOffset apply_delay = 0;
@@ -769,8 +770,15 @@ handle_commit(StringInfo s)
 		 * be skipped and made it unavailable when re-enabling the
 		 * subscription. Skipping such transactions should be an explicit user
 		 * action via spock.sub_alter_skiplsn.
+		 *
+		 * For SUB_DISABLE mode during a retry (use_try_block), do not advance
+		 * the LSN even if the replay succeeded. This allows the transaction
+		 * to be re-applied after the user fixes the root cause and re-enables
+		 * the subscription.
 		 */
-		if (!xact_had_exception ||
+		if ((!xact_had_exception &&
+			 !(MyApplyWorker->use_try_block &&
+			   exception_behaviour == SUB_DISABLE)) ||
 			exception_behaviour == DISCARD ||
 			exception_behaviour == TRANSDISCARD)
 		{
@@ -1324,7 +1332,9 @@ handle_insert(StringInfo s)
 			discardfile_write(local_node->node->name, rel, remote_origin_id,
 							  local_node->node->id, "INSERT", NULL,
 							  &newtup, remote_xid, NULL, NULL);
-			failed = false;
+
+			/* No DML was attempted, so clear any stale local_tuple pointer. */
+			exception_log_ptr[my_exception_log_index].local_tuple = NULL;
 		}
 		else
 		{
@@ -1346,19 +1356,17 @@ handle_insert(StringInfo s)
 
 			if (!failed)
 				ReleaseCurrentSubTransaction();
+		}
 
-			/*
-			 * Log the exception for DISCARD mode. TRANSDISCARD and
-			 * SUB_DISABLE log a single entry per transaction in
-			 * handle_commit; per-row data goes to the discard file.
-			 */
-			{
-				char	   *error_msg = edata ? edata->message :
-					(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
-					 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
+		if (failed ||
+			current_record_lsn ==
+			exception_log_ptr[my_exception_log_index].failed_lsn)
+		{
+			char	   *error_msg = edata ? edata->message :
+				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
 
-				log_insert_exception(failed, error_msg, rel, NULL, &newtup, "INSERT");
-			}
+			log_insert_exception(failed, error_msg, rel, NULL, &newtup, "INSERT");
 		}
 	}
 	else
@@ -1510,7 +1518,9 @@ handle_update(StringInfo s)
 							  local_node->node->id, "UPDATE",
 							  hasoldtup ? &oldtup : NULL, &newtup,
 							  remote_xid, NULL, NULL);
-			failed = false;
+
+			/* No DML was attempted, so clear any stale local_tuple pointer. */
+			exception_log_ptr[my_exception_log_index].local_tuple = NULL;
 		}
 		else
 		{
@@ -1534,11 +1544,9 @@ handle_update(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/*
-		 * Log the exception. If this operation succeeded but we have an
-		 * initial error message (from a previous attempt), use that instead
-		 * of NULL to provide context for why we're logging this.
-		 */
+		if (failed ||
+			current_record_lsn ==
+			exception_log_ptr[my_exception_log_index].failed_lsn)
 		{
 			char	   *error_msg = edata ? edata->message :
 				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
@@ -1633,7 +1641,9 @@ handle_delete(StringInfo s)
 			discardfile_write(local_node->node->name, rel, remote_origin_id,
 							  local_node->node->id, "DELETE", &oldtup,
 							  NULL, remote_xid, NULL, NULL);
-			failed = false;
+
+			/* No DML was attempted, so clear any stale local_tuple pointer. */
+			exception_log_ptr[my_exception_log_index].local_tuple = NULL;
 		}
 		else
 		{
@@ -1657,11 +1667,9 @@ handle_delete(StringInfo s)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/*
-		 * Log the exception. If this operation succeeded but we have an
-		 * initial error message (from a previous attempt), use that instead
-		 * of NULL to provide context for why we're logging this.
-		 */
+		if (failed ||
+			current_record_lsn ==
+			exception_log_ptr[my_exception_log_index].failed_lsn)
 		{
 			char	   *error_msg = edata ? edata->message :
 				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
@@ -3071,6 +3079,7 @@ stream_replay:
 						last_inserted = last_received;
 					UpdateWorkerStats(last_received, last_inserted);
 
+					current_record_lsn = last_received;
 					replication_handler(msg);
 
 					/*
@@ -3287,6 +3296,14 @@ stream_replay:
 					 sizeof(exception_log_ptr[my_exception_log_index].initial_operation),
 					 "%s",
 					 errcallback_arg.action_name ? errcallback_arg.action_name : "UNKNOWN");
+
+			/*
+			 * Remember the LSN of the record that triggered the error.
+			 * During the retry, the DML handler will call
+			 * log_insert_exception when this LSN is reached.
+			 */
+			exception_log_ptr[my_exception_log_index].failed_lsn =
+				last_received;
 		}
 
 		FlushErrorState();
