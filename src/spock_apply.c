@@ -1346,19 +1346,19 @@ handle_insert(StringInfo s)
 
 			if (!failed)
 				ReleaseCurrentSubTransaction();
-		}
 
-		/*
-		 * Log the exception. If this operation succeeded but we have an
-		 * initial error message (from a previous attempt), use that instead
-		 * of NULL to provide context for why we're logging this.
-		 */
-		{
-			char	   *error_msg = edata ? edata->message :
-				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
-				 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
+			/*
+			 * Log the exception for DISCARD mode. TRANSDISCARD and
+			 * SUB_DISABLE log a single entry per transaction in
+			 * handle_commit; per-row data goes to the discard file.
+			 */
+			{
+				char	   *error_msg = edata ? edata->message :
+					(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
+					 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
 
-			log_insert_exception(failed, error_msg, rel, NULL, &newtup, "INSERT");
+				log_insert_exception(failed, error_msg, rel, NULL, &newtup, "INSERT");
+			}
 		}
 	}
 	else
