@@ -106,6 +106,9 @@ typedef struct SpockContext
 	/* Manages access to SpockGroupHash */
 	LWLock	   *apply_group_master_lock;
 
+	/* DISCARDFILE: lock for concurrent append by apply workers */
+	LWLock	   *discard_file_lock;
+
 	/* Background workers. */
 	int			total_workers;
 	SpockWorker workers[FLEXIBLE_ARRAY_MEMBER];

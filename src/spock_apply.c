@@ -90,6 +90,7 @@ PGDLLEXPORT void spock_apply_main(Datum main_arg);
 static bool in_remote_transaction = false;
 static bool first_begin_at_startup = true;
 static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
+static XLogRecPtr current_record_lsn = InvalidXLogRecPtr;
 static RepOriginId remote_origin_id = InvalidRepOriginId;
 static char *remote_origin_name = NULL;
 static TimeOffset apply_delay = 0;
@@ -435,6 +436,23 @@ begin_replication_step(void)
 	{
 		StartTransactionCommand();
 		spock_apply_heap_begin();
+
+		/*
+		 * In TRANSDISCARD/SUB_DISABLE mode, set the transaction
+		 * read-only to prevent any actual DML from being applied.
+		 * Direct catalog writes (exception_log entries) are still
+		 * allowed.
+		 */
+
+		if (MyApplyWorker->use_try_block &&
+			(exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE))
+		{
+			set_config_option("transaction_read_only", "on",
+							  PGC_USERSET, PGC_S_SESSION,
+							  GUC_ACTION_LOCAL, true, 0, false);
+		}
+
 		result = true;
 	}
 
@@ -769,8 +787,15 @@ handle_commit(StringInfo s)
 		 * be skipped and made it unavailable when re-enabling the
 		 * subscription. Skipping such transactions should be an explicit user
 		 * action via spock.sub_alter_skiplsn.
+		 *
+		 * For SUB_DISABLE mode during a retry (use_try_block), do not advance
+		 * the LSN even if the replay succeeded. This allows the transaction
+		 * to be re-applied after the user fixes the root cause and re-enables
+		 * the subscription.
 		 */
-		if (!xact_had_exception ||
+		if ((!xact_had_exception &&
+			 !(MyApplyWorker->use_try_block &&
+			   exception_behaviour == SUB_DISABLE)) ||
 			exception_behaviour == DISCARD ||
 			exception_behaviour == TRANSDISCARD)
 		{
@@ -792,48 +817,25 @@ handle_commit(StringInfo s)
 			 exception_behaviour == SUB_DISABLE))
 		{
 			SpockExceptionLog *exception_log;
-			char		errmsg[512];
 
 			exception_log = &exception_log_ptr[my_exception_log_index];
 
 			/*
-			 * All operations were already rolled back in subtransactions (by
-			 * RollbackAndReleaseCurrentSubTransaction in handle_insert/
-			 * update/delete). Abort the parent transaction to discard it
-			 * entirely.
+			 * In TRANSDISCARD/SUB_DISABLE mode, DML operations were never
+			 * attempted — they were skipped and logged to the discardfile.
+			 * The only writes in the current transaction are exception_log
+			 * entries from log_insert_exception (with full relation/tuple
+			 * data).  Let the transaction commit normally so those entries
+			 * are preserved.
 			 */
-			AbortCurrentTransaction();
-
-			/*
-			 * Start a new transaction to log the discard and update progress.
-			 */
-			StartTransactionCommand();
-			PushActiveSnapshot(GetTransactionSnapshot());
-
-			/*
-			 * Log this transaction as discarded to the exception_log so
-			 * there's an audit trail. Include the original error message if
-			 * we have it.
-			 */
-			snprintf(errmsg, sizeof(errmsg),
-					 "%s at LSN %X/%X%s%s",
-					 (exception_behaviour == TRANSDISCARD)
-					 ? "Transaction discarded in TRANSDISCARD mode"
-					 : "Transaction failed, subscription will be disabled",
-					 LSN_FORMAT_ARGS(end_lsn),
-					 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
-					 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
-
-			add_entry_to_exception_log(remote_origin_id,
-									   commit_time,
-									   remote_xid,
-									   0, 0,
-									   NULL, NULL, NULL, NULL,
-									   NULL, NULL,
-									   exception_log->initial_operation,
-									   errmsg);
-
-			elog(LOG, "SPOCK %s: %s", MySubscription->name, errmsg);
+			elog(LOG, "SPOCK %s: %s at LSN %X/%X%s%s",
+				 MySubscription->name,
+				 (exception_behaviour == TRANSDISCARD)
+				 ? "Transaction discarded in TRANSDISCARD mode"
+				 : "Transaction failed, subscription will be disabled",
+				 LSN_FORMAT_ARGS(end_lsn),
+				 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
+				 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
 
 			/*
 			 * Clear the exception state so we don't enter exception handling
@@ -842,31 +844,9 @@ handle_commit(StringInfo s)
 			exception_log->commit_lsn = InvalidXLogRecPtr;
 			exception_log->initial_error_message[0] = '\0';
 			MySpockWorker->restart_delay = 0;
-			PopActiveSnapshot();
-			CommitTransactionCommand();
 
-			/*
-			 * For SUB_DISABLE mode, throw an error to trigger subscription
-			 * disable in the parent PG_CATCH block. The transaction failure
-			 * is already logged above.
-			 */
-			if (exception_behaviour == SUB_DISABLE)
-			{
-				elog(ERROR, "SPOCK %s: disabling subscription due to exception in SUB_DISABLE mode",
-					 MySubscription->name);
-			}
-
-			/*
-			 * Switch to MessageContext before continuing. The progress
-			 * tracking code at transdiscard_skip_commit expects
-			 * MessageContext.
-			 */
-			MemoryContextSwitchTo(MessageContext);
-
-			/*
-			 * Skip the normal commit path - jump to progress tracking.
-			 */
-			goto transdiscard_skip_commit;
+			/* Defensive check */
+			Assert(XactReadOnly);
 		}
 
 		/* Have the commit code adjust our logical clock if needed */
@@ -881,24 +861,24 @@ handle_commit(StringInfo s)
 
 		MemoryContextSwitchTo(TopMemoryContext);
 
-		if (xact_had_exception)
+		if (exception_behaviour == SUB_DISABLE &&
+			(xact_had_exception || MyApplyWorker->use_try_block))
 		{
 			/*
-			 * If we had exception(s) and are in SUB_DISABLE mode then the
-			 * subscription got disabled earlier in the code path. We need to
-			 * exit here to disconnect.
+			 * SUB_DISABLE: after committing exception_log entries, throw
+			 * an ERROR to trigger subscription disable in the PG_CATCH
+			 * block.  This covers both the case where DML actually failed
+			 * (xact_had_exception) and the retry path where all DML was
+			 * skipped but the original error was logged (use_try_block).
 			 */
-			if (exception_behaviour == SUB_DISABLE)
-			{
-				SpockExceptionLog *exception_log;
+			SpockExceptionLog *exception_log;
 
-				exception_log = &exception_log_ptr[my_exception_log_index];
-				exception_log->commit_lsn = InvalidXLogRecPtr;
-				MySpockWorker->restart_delay = 0;
+			exception_log = &exception_log_ptr[my_exception_log_index];
+			exception_log->commit_lsn = InvalidXLogRecPtr;
+			MySpockWorker->restart_delay = 0;
 
-				elog(ERROR, "SPOCK %s: exiting because subscription disabled",
-					 MySubscription->name);
-			}
+			elog(ERROR, "SPOCK %s: disabling subscription due to exception in SUB_DISABLE mode",
+				 MySubscription->name);
 		}
 		else if (MyApplyWorker->use_try_block &&
 				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0')
@@ -945,7 +925,6 @@ handle_commit(StringInfo s)
 	 */
 	maybe_advance_forwarded_origin(end_lsn, xact_had_exception);
 
-transdiscard_skip_commit:
 	/* Update the entry in the progress table. */
 	elog(DEBUG1, "SPOCK %s: updating progress table for node_id %d" \
 		 " and remote node id %d with remote commit ts" \
@@ -1308,35 +1287,51 @@ handle_insert(StringInfo s)
 	/* TODO: Handle multiple inserts */
 	if (MyApplyWorker->use_try_block)
 	{
-		PG_TRY();
+		if (exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE)
 		{
-			exception_command_counter++;
-			BeginInternalSubTransaction(NULL);
-			spock_apply_heap_insert(rel, &newtup);
-		}
-		PG_CATCH();
-		{
-			failed = true;
-			RollbackAndReleaseCurrentSubTransaction();
-			edata = CopyErrorData();
-			xact_had_exception = true;
-		}
-		PG_END_TRY();
+			SpockLocalNode *local_node = get_local_node(false, false);
 
-		if (!failed)
+			/*
+			 * TRANSDISCARD and SUB_DISABLE needs only registering current
+			 * operation. If an ERROR happens during the logging process - it is
+			 * a FATAL error: apply worker should follow the exception behaviour
+			 * logic related to such kind of problem.
+			 *
+			 * TODO: process returning value and react correspondingly.
+			 */
+			discardfile_write(local_node->node->name, rel, remote_origin_id,
+							  local_node->node->id, "INSERT", NULL,
+							  &newtup, remote_xid, NULL, NULL);
+
+			/* No DML was attempted, so clear any stale local_tuple pointer. */
+			exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+		}
+		else
 		{
-			if (exception_behaviour == TRANSDISCARD ||
-				exception_behaviour == SUB_DISABLE)
+			/* DISCARD MODE needs hard way - try block and subtransactions */
+			PG_TRY();
+			{
+				exception_command_counter++;
+				BeginInternalSubTransaction(NULL);
+				spock_apply_heap_insert(rel, &newtup);
+			}
+			PG_CATCH();
+			{
+				failed = true;
 				RollbackAndReleaseCurrentSubTransaction();
-			else
+				edata = CopyErrorData();
+				xact_had_exception = true;
+			}
+			PG_END_TRY();
+
+			if (!failed)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/*
-		 * Log the exception. If this operation succeeded but we have an
-		 * initial error message (from a previous attempt), use that instead
-		 * of NULL to provide context for why we're logging this.
-		 */
+		if (failed ||
+			current_record_lsn ==
+			exception_log_ptr[my_exception_log_index].failed_lsn)
 		{
 			char	   *error_msg = edata ? edata->message :
 				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
@@ -1477,35 +1472,52 @@ handle_update(StringInfo s)
 
 	if (MyApplyWorker->use_try_block == true)
 	{
-		PG_TRY();
+		if (exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE)
 		{
-			exception_command_counter++;
-			BeginInternalSubTransaction(NULL);
-			spock_apply_heap_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
-		}
-		PG_CATCH();
-		{
-			failed = true;
-			RollbackAndReleaseCurrentSubTransaction();
-			edata = CopyErrorData();
-			xact_had_exception = true;
-		}
-		PG_END_TRY();
+			SpockLocalNode *local_node = get_local_node(false, false);
 
-		if (!failed)
+			/*
+			 * TRANSDISCARD and SUB_DISABLE needs only registering current
+			 * operation. If an ERROR happens during the logging process - it is
+			 * a FATAL error: apply worker should follow the exception behaviour
+			 * logic related to such kind of problem.
+			 *
+			 * TODO: process returning value and react correspondingly.
+			 */
+			discardfile_write(local_node->node->name, rel, remote_origin_id,
+							  local_node->node->id, "UPDATE",
+							  hasoldtup ? &oldtup : NULL, &newtup,
+							  remote_xid, NULL, NULL);
+
+			/* No DML was attempted, so clear any stale local_tuple pointer. */
+			exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+		}
+		else
 		{
-			if (exception_behaviour == TRANSDISCARD ||
-				exception_behaviour == SUB_DISABLE)
+			/* DISCARD MODE needs hard way - try block and subtransactions */
+			PG_TRY();
+			{
+				exception_command_counter++;
+				BeginInternalSubTransaction(NULL);
+				spock_apply_heap_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
+			}
+			PG_CATCH();
+			{
+				failed = true;
 				RollbackAndReleaseCurrentSubTransaction();
-			else
+				edata = CopyErrorData();
+				xact_had_exception = true;
+			}
+			PG_END_TRY();
+
+			if (!failed)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/*
-		 * Log the exception. If this operation succeeded but we have an
-		 * initial error message (from a previous attempt), use that instead
-		 * of NULL to provide context for why we're logging this.
-		 */
+		if (failed ||
+			current_record_lsn ==
+			exception_log_ptr[my_exception_log_index].failed_lsn)
 		{
 			char	   *error_msg = edata ? edata->message :
 				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
@@ -1584,35 +1596,51 @@ handle_delete(StringInfo s)
 
 	if (MyApplyWorker->use_try_block)
 	{
-		PG_TRY();
+		if (exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE)
 		{
-			exception_command_counter++;
-			BeginInternalSubTransaction(NULL);
-			spock_apply_heap_delete(rel, &oldtup);
-		}
-		PG_CATCH();
-		{
-			failed = true;
-			RollbackAndReleaseCurrentSubTransaction();
-			edata = CopyErrorData();
-			xact_had_exception = true;
-		}
-		PG_END_TRY();
+			SpockLocalNode *local_node = get_local_node(false, false);
 
-		if (!failed)
+			/*
+			 * TRANSDISCARD and SUB_DISABLE needs only registering current
+			 * operation. If an ERROR happens during the logging process - it is
+			 * a FATAL error: apply worker should follow the exception behaviour
+			 * logic related to such kind of problem.
+			 *
+			 * TODO: process returning value and react correspondingly.
+			 */
+			discardfile_write(local_node->node->name, rel, remote_origin_id,
+							  local_node->node->id, "DELETE", &oldtup,
+							  NULL, remote_xid, NULL, NULL);
+
+			/* No DML was attempted, so clear any stale local_tuple pointer. */
+			exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+		}
+		else
 		{
-			if (exception_behaviour == TRANSDISCARD ||
-				exception_behaviour == SUB_DISABLE)
+			/* DISCARD MODE needs hard way - try block and subtransactions */
+			PG_TRY();
+			{
+				exception_command_counter++;
+				BeginInternalSubTransaction(NULL);
+				spock_apply_heap_delete(rel, &oldtup);
+			}
+			PG_CATCH();
+			{
+				failed = true;
 				RollbackAndReleaseCurrentSubTransaction();
-			else
+				edata = CopyErrorData();
+				xact_had_exception = true;
+			}
+			PG_END_TRY();
+
+			if (!failed)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/*
-		 * Log the exception. If this operation succeeded but we have an
-		 * initial error message (from a previous attempt), use that instead
-		 * of NULL to provide context for why we're logging this.
-		 */
+		if (failed ||
+			current_record_lsn ==
+			exception_log_ptr[my_exception_log_index].failed_lsn)
 		{
 			char	   *error_msg = edata ? edata->message :
 				(exception_log_ptr[my_exception_log_index].initial_error_message[0] ?
@@ -2251,31 +2279,46 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 
 	if (MyApplyWorker->use_try_block)
 	{
-		PG_TRY();
+		if (exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE)
 		{
-			exception_command_counter++;
-			BeginInternalSubTransaction(NULL);
-			handle_sql(queued_message, tx_just_started, &sql);
-		}
-		PG_CATCH();
-		{
-			failed = true;
-			RollbackAndReleaseCurrentSubTransaction();
-			edata = CopyErrorData();
-			xact_had_exception = true;
-		}
-		PG_END_TRY();
+			SpockLocalNode *local_node = get_local_node(false, false);
 
-		if (!failed)
-		{
 			/*
-			 * Follow spock.exception_behavior GUC instead of restarting
-			 * worker
+			 * TRANSDISCARD and SUB_DISABLE needs only registering current
+			 * operation. If an ERROR happens during the logging process - it is
+			 * a FATAL error: apply worker should follow the exception behaviour
+			 * logic related to such kind of problem.
+			 *
+			 * TODO: process returning value and react correspondingly.
 			 */
-			if (exception_behaviour == TRANSDISCARD ||
-				exception_behaviour == SUB_DISABLE)
+			sql = JsonbToCString(NULL,
+								 &queued_message->message->root, 0);
+			discardfile_write(local_node->node->name, NULL,
+							  remote_origin_id, local_node->node->id,
+							  "SQL", NULL, NULL, remote_xid,
+							  sql, queued_message->role);
+			failed = false;
+		}
+		else
+		{
+			/* DISCARD MODE needs hard way - try block and subtransactions */
+			PG_TRY();
+			{
+				exception_command_counter++;
+				BeginInternalSubTransaction(NULL);
+				handle_sql(queued_message, tx_just_started, &sql);
+			}
+			PG_CATCH();
+			{
+				failed = true;
 				RollbackAndReleaseCurrentSubTransaction();
-			else
+				edata = CopyErrorData();
+				xact_had_exception = true;
+			}
+			PG_END_TRY();
+
+			if (!failed)
 				ReleaseCurrentSubTransaction();
 		}
 
@@ -3007,6 +3050,7 @@ stream_replay:
 						last_inserted = last_received;
 					UpdateWorkerStats(last_received, last_inserted);
 
+					current_record_lsn = last_received;
 					replication_handler(msg);
 
 					/*
@@ -3223,6 +3267,14 @@ stream_replay:
 					 sizeof(exception_log_ptr[my_exception_log_index].initial_operation),
 					 "%s",
 					 errcallback_arg.action_name ? errcallback_arg.action_name : "UNKNOWN");
+
+			/*
+			 * Remember the LSN of the record that triggered the error.
+			 * During the retry, the DML handler will call
+			 * log_insert_exception when this LSN is reached.
+			 */
+			exception_log_ptr[my_exception_log_index].failed_lsn =
+				last_received;
 		}
 
 		FlushErrorState();
@@ -3251,7 +3303,6 @@ stream_replay:
 	if (need_replay)
 	{
 		MyApplyWorker->use_try_block = true;
-
 		goto stream_replay;
 	}
 

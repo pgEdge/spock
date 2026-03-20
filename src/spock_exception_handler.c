@@ -46,6 +46,10 @@
 
 #include "pgstat.h"
 
+#include "funcapi.h"
+#include "storage/fd.h"
+#include "utils/json.h"
+
 #include "spock_sync.h"
 #include "spock_worker.h"
 #include "spock_conflict.h"
@@ -73,6 +77,26 @@
 
 
 #define CATALOG_EXCEPTION_LOG "exception_log"
+
+#define DISCARDFILE_DIR "pg_spock"
+#define DISCARDFILE_FMT DISCARDFILE_DIR "/discard_%u.log"
+
+/* File format version — written as a 4-byte header, checked on read */
+#define DISCARDFILE_VERSION 1
+
+/* JSON field names — keep in sync between discardfile_write and discard_read */
+#define DF_XID				"xid"
+#define DF_NODE				"node_name"
+#define DF_LOG_TIME			"log_time"
+#define DF_RELNAME			"relname"
+#define DF_LOCAL_ORIGIN		"local_origin"
+#define DF_REMOTE_ORIGIN	"remote_origin"
+#define DF_OPERATION		"operation"
+#define DF_OLD_TUPLE		"old_tuple"
+#define DF_REMOTE_TUPLE		"remote_tuple"
+#define DF_REMOTE_XID		"remote_xid"
+#define DF_DDL_SQL			"ddl_statement"
+#define DF_DDL_USER			"ddl_user"
 
 SpockExceptionLog *exception_log_ptr = NULL;
 int			exception_behaviour = TRANSDISCARD;
@@ -268,4 +292,274 @@ spock_disable_subscription(SpockSubscription *sub,
 	PopActiveSnapshot();
 	if (started_tx)
 		CommitTransactionCommand();
+}
+
+/*
+ * Get the path to the DISCARDFILE for the current database.
+ * The caller must provide a buffer of at least MAXPGPATH bytes.
+ */
+static void
+discardfile_path(char *path)
+{
+	snprintf(path, MAXPGPATH, DISCARDFILE_FMT, MyDatabaseId);
+}
+
+/*
+ * Ensure the pg_spock directory exists under PGDATA.
+ */
+static void
+discardfile_ensure_dir(void)
+{
+	char		dirpath[MAXPGPATH];
+
+	snprintf(dirpath, MAXPGPATH, "%s", DISCARDFILE_DIR);
+	(void) MakePGDirectory(dirpath);
+}
+
+/*
+ * Append a single record to the DISCARDFILE.
+ *
+ * This function is safe to call outside a transaction — it does not access
+ * catalog tables.  Each call writes one binary length-prefixed record: a
+ * 32-bit native-endian length header (the StringInfoData.len field, which is
+ * a signed int) followed by exactly that many bytes of JSON payload.  Readers
+ * must parse the length header first to determine where each record ends.
+ *
+ * When rel is NULL (e.g. for DDL/SQL operations that have no target relation),
+ * the relname JSON field is set to an empty string and tuple serialization is
+ * skipped.  In that case the caller may pass ddl_sql / ddl_user to record the
+ * SQL statement and the role that executed it.
+ *
+ * Locking: acquires SpockCtx->discard_file_lock in exclusive mode to
+ * serialize concurrent writes from different apply workers.
+ *
+ * Memory leaking. Being executed on a per-row basis it should be executed
+ * inside a short living memory context - consider multiple potential memory
+ * allocations inside a JSON code.
+ *
+ * Returns true on success, false if the record could not be written
+ * (a WARNING is emitted in that case).
+ */
+bool
+discardfile_write(const char *node_name, SpockRelation *rel, Oid remote_origin,
+				  Oid local_origin, const char *operation,
+				  SpockTupleData *oldtup, SpockTupleData *newtup,
+				  TransactionId remote_xid,
+				  const char *ddl_sql, const char *ddl_user)
+{
+	char			path[MAXPGPATH];
+	StringInfoData	buf;
+	char		   *old_json = NULL;
+	char		   *new_json = NULL;
+	int				fd;
+	TupleDesc		tupdesc = rel ? RelationGetDescr(rel->rel) : NULL;
+
+	Assert(SpockCtx != NULL);
+
+	/* Serialize tuples to JSON before taking the lock */
+	if (oldtup != NULL && tupdesc != NULL)
+		old_json = spock_tuple_to_json_cstring(oldtup, tupdesc);
+	if (newtup != NULL && tupdesc != NULL)
+		new_json = spock_tuple_to_json_cstring(newtup, tupdesc);
+
+	/* Build the JSON record. Field names use DF_* defines from above. */
+	initStringInfo(&buf);
+	appendStringInfo(&buf, "{\"" DF_XID "\": %u", remote_xid);
+
+	appendStringInfoString(&buf, ", \"" DF_NODE "\": ");
+	escape_json(&buf, node_name ? node_name : "");
+
+	appendStringInfoString(&buf, ", \"" DF_LOG_TIME "\": ");
+	escape_json(&buf, timestamptz_to_str(GetCurrentTimestamp()));
+
+	appendStringInfoString(&buf, ", \"" DF_RELNAME "\": ");
+	if (rel != NULL)
+		escape_json(&buf, quote_qualified_identifier(rel->nspname,
+													 rel->relname));
+	else
+		escape_json(&buf, "");
+
+	appendStringInfo(&buf, ", \"" DF_LOCAL_ORIGIN "\": %u", local_origin);
+
+	appendStringInfo(&buf, ", \"" DF_REMOTE_ORIGIN "\": %u", remote_origin);
+
+	appendStringInfoString(&buf, ", \"" DF_OPERATION "\": ");
+	escape_json(&buf, operation ? operation : "");
+
+	if (old_json != NULL)
+		appendStringInfo(&buf, ", \"" DF_OLD_TUPLE "\": %s", old_json);
+
+	if (new_json != NULL)
+		appendStringInfo(&buf, ", \"" DF_REMOTE_TUPLE "\": %s", new_json);
+
+	if (ddl_sql != NULL)
+	{
+		appendStringInfoString(&buf, ", \"" DF_DDL_SQL "\": ");
+		escape_json(&buf, ddl_sql);
+	}
+
+	if (ddl_user != NULL)
+	{
+		appendStringInfoString(&buf, ", \"" DF_DDL_USER "\": ");
+		escape_json(&buf, ddl_user);
+	}
+
+	appendStringInfo(&buf, ", \"" DF_REMOTE_XID "\": %u}", remote_xid);
+
+	/* Write under lock: [uint32 length][json data] */
+	LWLockAcquire(SpockCtx->discard_file_lock, LW_EXCLUSIVE);
+
+	discardfile_ensure_dir();
+	discardfile_path(path);
+
+	fd = OpenTransientFile(path, O_WRONLY | O_CREAT | O_APPEND | PG_BINARY);
+	if (fd < 0)
+	{
+		LWLockRelease(SpockCtx->discard_file_lock);
+		ereport(WARNING,
+				(errcode_for_file_access(),
+				 errmsg("could not open discard file \"%s\": %m", path)));
+		pfree(buf.data);
+		return false;
+	}
+
+	/* Write version header if this is a new file */
+	if (lseek(fd, 0, SEEK_END) == 0)
+	{
+		uint32	version = DISCARDFILE_VERSION;
+
+		if (write(fd, &version, sizeof(version)) != sizeof(version))
+		{
+			CloseTransientFile(fd);
+			LWLockRelease(SpockCtx->discard_file_lock);
+			ereport(WARNING,
+					(errcode_for_file_access(),
+					 errmsg("could not write discard file header \"%s\": %m",
+							path)));
+			pfree(buf.data);
+			return false;
+		}
+	}
+
+	if (write(fd, &buf.len, sizeof(buf.len)) != sizeof(buf.len) ||
+		write(fd, buf.data, buf.len) != buf.len)
+	{
+		CloseTransientFile(fd);
+		LWLockRelease(SpockCtx->discard_file_lock);
+		ereport(WARNING,
+				(errcode_for_file_access(),
+				 errmsg("could not write to discard file \"%s\": %m",
+						path)));
+		pfree(buf.data);
+		return false;
+	}
+
+	CloseTransientFile(fd);
+	LWLockRelease(SpockCtx->discard_file_lock);
+
+	return true;
+}
+
+/*
+ * SQL-callable function: spock.discard_read()
+ *
+ * Returns the contents of the current database's DISCARDFILE as a set of
+ * single-column jsonb records. Users extract fields in SQL, e.g.:
+ *
+ *   SELECT rec->>'node_name', rec->>'operation', rec->'remote_tuple'
+ *   FROM spock.discard_read() AS rec;
+ *
+ * TODO: pass through the code scrupulously and decide on safe reading and error
+ * processing. Too much for a single commit, though.
+ */
+PG_FUNCTION_INFO_V1(spock_discard_read);
+Datum
+spock_discard_read(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	char		path[MAXPGPATH];
+	int			fd;
+	int			reclen;
+
+	InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC | MAT_SRF_BLESS);
+
+	discardfile_path(path);
+
+	if (SpockCtx == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("spock shared memory context is not initialized")));
+
+	/*
+	 * Acquire the discard-file lock in shared mode so that concurrent
+	 * writers (which take LW_EXCLUSIVE) cannot produce a partial record
+	 * while we are reading.
+	 */
+	LWLockAcquire(SpockCtx->discard_file_lock, LW_SHARED);
+
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	if (fd < 0)
+	{
+		LWLockRelease(SpockCtx->discard_file_lock);
+		if (errno == ENOENT)
+			PG_RETURN_VOID();
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open discard file \"%s\": %m", path)));
+	}
+
+	/* Validate file format version */
+	{
+		uint32	version;
+
+		if (read(fd, &version, sizeof(version)) != sizeof(version))
+		{
+			CloseTransientFile(fd);
+			LWLockRelease(SpockCtx->discard_file_lock);
+			PG_RETURN_VOID();	/* empty file */
+		}
+		if (version != DISCARDFILE_VERSION)
+		{
+			CloseTransientFile(fd);
+			LWLockRelease(SpockCtx->discard_file_lock);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("unsupported discard file version %u (expected %u)",
+							version, DISCARDFILE_VERSION)));
+		}
+	}
+
+	while (read(fd, &reclen, sizeof(reclen)) == sizeof(reclen))
+	{
+		Datum		value;
+		bool		null = false;
+		char	   *rec;
+
+		rec = palloc(reclen + 1);
+		if (read(fd, rec, reclen) != reclen)
+		{
+			pfree(rec);
+			/*
+			 * In case of crash and semi-written file this option allows us to
+			 * use all the records have written before the failed operation.
+			 */
+			ereport(WARNING,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("truncated record in discard file \"%s\"",
+							path)));
+			break;
+		}
+		rec[reclen] = '\0';
+
+		value = DirectFunctionCall1(jsonb_in, CStringGetDatum(rec));
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
+							 &value, &null);
+		pfree(rec);
+	}
+
+	CloseTransientFile(fd);
+	LWLockRelease(SpockCtx->discard_file_lock);
+
+	PG_RETURN_VOID();
 }

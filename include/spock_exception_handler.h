@@ -60,6 +60,7 @@ typedef struct SpockExceptionLog
 	HeapTuple	local_tuple;
 	char		initial_error_message[1024];
 	char		initial_operation[16];
+	XLogRecPtr	failed_lsn;
 } SpockExceptionLog;
 
 typedef enum SpockExceptionBehaviour
@@ -98,5 +99,12 @@ extern void spock_disable_subscription(SpockSubscription *sub,
 									   TransactionId remote_xid,
 									   XLogRecPtr lsn,
 									   TimestampTz ts);
+
+extern bool discardfile_write(const char *node_name, SpockRelation *rel,
+							  Oid remote_origin, Oid local_origin,
+							  const char *operation, SpockTupleData *oldtup,
+							  SpockTupleData *newtup,
+							  TransactionId remote_xid,
+							  const char *ddl_sql, const char *ddl_user);
 
 #endif							/* SPOCK_EXCEPTION_HANDLER_H */
