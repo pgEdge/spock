@@ -459,9 +459,9 @@ ORDER BY command_counter;
 -----------------+--------------+------------+-----------+----------------------------------------------------+------------------------------------------
                1 |              |            | INSERT    |                                                    | Spock can't find relation
                2 |              |            | INSERT    |                                                    | Spock can't find relation
+               2 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
                3 |              |            | INSERT    |                                                    | Spock can't find relation
                4 |              |            | INSERT    |                                                    | Spock can't find relation
-               5 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
 (5 rows)
 
 -- Check discard file contents (TRANSDISCARD records go here)
@@ -586,14 +586,13 @@ ORDER BY command_counter;
 -----------------+--------------+-------------+-----------+----------------------------------------------------+--------------------------------------------------------------------------------------------------------
                1 |              |             | INSERT    |                                                    | Spock can't find relation
                2 |              |             | INSERT    |                                                    | Spock can't find relation
+               2 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
                3 |              |             | INSERT    |                                                    | Spock can't find relation
                4 |              |             | INSERT    |                                                    | Spock can't find relation
-               5 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
                6 |              |             | UPDATE    |                                                    | Spock can't find relation
                7 |              |             | UPDATE    |                                                    | Spock can't find relation
-               8 | public       | spoc_102g_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | Spock can't find relation with oid <OID>
                9 | public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
-(9 rows)
+(8 rows)
 
 -- Check discard file contents for UPDATE tests
 SELECT rec->>'id' AS id, rec->>'node_name' AS node_name,
