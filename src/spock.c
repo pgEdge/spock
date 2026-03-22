@@ -1153,7 +1153,7 @@ _PG_init(void)
 							"apply-worker replay queue size for exception",
 							NULL,
 							&spock_replay_queue_size,
-							4,
+							16,
 							0,
 							MAX_KILOBYTES / 1024,
 							PGC_SIGHUP,
