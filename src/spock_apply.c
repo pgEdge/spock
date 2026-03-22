@@ -2975,7 +2975,12 @@ stream_replay:
 					{
 						apply_replay_bytes += msg->len;
 
-						if (apply_replay_bytes < spock_replay_queue_size)
+						/*
+						 * spock_replay_queue_size is stored in KB (GUC_UNIT_MB
+						 * converts the user-facing MB value to KB internally),
+						 * so multiply by 1024 to compare against bytes.
+						 */
+						if (apply_replay_bytes < spock_replay_queue_size * 1024)
 						{
 							if (apply_replay_head == NULL)
 							{
