@@ -31,7 +31,7 @@ SELECT spock.reset_subscription_stats(:test_sub_id);
 -- Verify counters are zero initially
 SELECT confl_update_missing,
   confl_insert_exists,confl_update_origin_differs,confl_update_exists,
-  confl_delete_origin_differs,confl_delete_missing
+  confl_delete_origin_differs,confl_delete_missing,confl_delete_exists
 FROM spock.get_subscription_stats(:test_sub_id);
 
 -- Delete a row on subscriber only to set up UPDATE_MISSING
@@ -55,7 +55,7 @@ SELECT operation, table_name FROM spock.exception_log;
 -- Verify that the UPDATE_MISSING conflict was counted
 SELECT confl_update_missing,
   confl_insert_exists,confl_update_origin_differs,confl_update_exists,
-  confl_delete_origin_differs,confl_delete_missing
+  confl_delete_origin_differs,confl_delete_missing,confl_delete_exists
 FROM spock.get_subscription_stats(:test_sub_id);
 
 -- Provoke a second UPDATE_MISSING to confirm counter increments
@@ -74,7 +74,7 @@ SELECT * FROM conflict_stat_test ORDER BY id;
 -- Counter should now be 2
 SELECT confl_update_missing,
   confl_insert_exists,confl_update_origin_differs,confl_update_exists,
-  confl_delete_origin_differs,confl_delete_missing
+  confl_delete_origin_differs,confl_delete_missing,confl_delete_exists
 FROM spock.get_subscription_stats(:test_sub_id);
 
 -- Test reset: clear the stats and verify counter goes back to zero
@@ -82,7 +82,7 @@ SELECT spock.reset_subscription_stats(:test_sub_id);
 
 SELECT confl_update_missing,
   confl_insert_exists,confl_update_origin_differs,confl_update_exists,
-  confl_delete_origin_differs,confl_delete_missing
+  confl_delete_origin_differs,confl_delete_missing,confl_delete_exists
 FROM spock.get_subscription_stats(:test_sub_id);
 
 -- Cleanup

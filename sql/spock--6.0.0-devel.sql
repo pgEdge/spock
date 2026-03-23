@@ -726,6 +726,7 @@ CREATE FUNCTION spock.get_subscription_stats(
 	OUT confl_update_missing        bigint,
 	OUT confl_delete_origin_differs bigint,
 	OUT confl_delete_missing        bigint,
+	OUT confl_delete_exists         bigint,
 	OUT stats_reset                 timestamptz
 )
 RETURNS record

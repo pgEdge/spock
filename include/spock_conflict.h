@@ -77,10 +77,26 @@ typedef enum
 } SpockConflictType;
 
 /*
- * SPOCK_CT_DELETE_LATE is excluded because it is not yet tracked in conflict
- * statistics.
+ * Number of conflict types tracked in statistics.  Includes all types in
+ * SpockConflictType.  Because SPOCK_CT_DELETE_EXISTS has a non-contiguous
+ * enum value (101), use spock_conflict_stat_index() to map enum values to
+ * contiguous array indices.
  */
-#define SPOCK_CONFLICT_NUM_TYPES (SPOCK_CT_DELETE_MISSING + 1)
+#define SPOCK_CONFLICT_NUM_TYPES 7
+
+/*
+ * Map a SpockConflictType enum value to a contiguous array index
+ * suitable for conflict_count[] arrays.  Returns -1 for unknown types.
+ */
+static inline int
+spock_conflict_stat_index(SpockConflictType type)
+{
+	if (type <= SPOCK_CT_DELETE_MISSING)
+		return (int) type;
+	if (type == SPOCK_CT_DELETE_EXISTS)
+		return SPOCK_CT_DELETE_MISSING + 1;
+	return -1;
+}
 
 extern int spock_conflict_resolver;
 extern int spock_conflict_log_level;
