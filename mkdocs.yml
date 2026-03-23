@@ -51,7 +51,7 @@ repo_url: https://github.com/pgEdge/spock
 nav:
   - Introduction: index.md
   - Installing and Configuring Spock: install_spock.md
-  - Creating a Two-Node Cluster: two_node_cluster.md
+  - Getting Started: getting_started.md
   - Using Advanced Configuration Options: configuring.md
   - Upgrading a Spock Installation: upgrading_spock.md
   - Spock's Conflict Avoidance Options: conflicts.md
