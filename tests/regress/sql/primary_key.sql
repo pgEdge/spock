@@ -131,6 +131,16 @@ SELECT spock.wait_slot_confirm_lsn(NULL, :curr_lsn);
 \c :subscriber_dsn
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;
 
+-- Wait up to 10 seconds for the subscription to become disabled.
+DO $$
+BEGIN
+  SET LOCAL statement_timeout = '10s';
+  WHILE (SELECT status FROM spock.sub_show_status()) <> 'disabled' LOOP
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END;
+$$;
+
 select status from spock.sub_show_status();
 
 \c :provider_dsn

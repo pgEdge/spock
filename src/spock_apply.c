@@ -44,6 +44,7 @@
 
 #include "rewrite/rewriteHandler.h"
 
+#include "storage/buffile.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
@@ -124,6 +125,11 @@ static ApplyReplayEntry * apply_replay_head = NULL;
 static ApplyReplayEntry * apply_replay_tail = NULL;
 static ApplyReplayEntry * apply_replay_next = NULL;
 static int	apply_replay_bytes = 0;
+static bool apply_replay_mode = false;		/* true when replaying */
+static BufFile *apply_replay_spill_file = NULL;
+static bool apply_replay_spilling = false;
+static int	apply_replay_spill_count = 0;
+static int	apply_replay_spill_read = 0;
 
 /* Number of tuples inserted after which we switch to multi-insert. */
 #define MIN_MULTI_INSERT_TUPLES 5
@@ -236,6 +242,8 @@ static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
 								  XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
 static void UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted);
 static void maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception);
+static void apply_replay_spill_write_entry(int len, char *data);
+static ApplyReplayEntry *apply_replay_spill_read_entry(void);
 
 /* Wrapper for latch for waiting for previous transaction to commit */
 void
@@ -2873,15 +2881,18 @@ stream_replay:
 			{
 				ApplyReplayEntry *entry;
 				bool		queue_append;
+				bool		entry_spilled = false;
 				StringInfo	msg;
 				int			c;
 
 				if (got_SIGTERM)
 					break;
 
-				if (apply_replay_next == NULL)
+				if (!apply_replay_mode)
 				{
 					char	   *buf;
+
+					Assert(apply_replay_next == NULL);
 
 					/* We are not in replay mode so receive from the stream */
 					r = PQgetCopyData(applyconn, &buf, 1);
@@ -2928,9 +2939,41 @@ stream_replay:
 				}
 				else
 				{
-					/* We are in replay mode so present the next queue entry */
-					entry = apply_replay_next;
-					apply_replay_next = apply_replay_next->next;
+					/* We are in replay mode */
+					if (apply_replay_next != NULL)
+					{
+						/* Still have in-memory entries */
+						entry = apply_replay_next;
+						apply_replay_next = apply_replay_next->next;
+					}
+					else if (apply_replay_spilling &&
+							 apply_replay_spill_read < apply_replay_spill_count)
+					{
+						/* Read next entry from spill file */
+						entry = apply_replay_spill_read_entry();
+						Assert(entry != NULL);
+					}
+					else
+					{
+						/*
+						 * Replay complete — return to default apply mode.
+						 * Close the spill file and reset spill state so
+						 * that new messages from the stream go into the
+						 * in-memory queue.
+						 */
+						apply_replay_mode = false;
+
+						if (apply_replay_spill_file != NULL)
+						{
+							BufFileClose(apply_replay_spill_file);
+							apply_replay_spill_file = NULL;
+						}
+						apply_replay_spilling = false;
+						apply_replay_spill_count = 0;
+						apply_replay_spill_read = 0;
+
+						break;
+					}
 					queue_append = false;
 				}
 
@@ -2971,24 +3014,61 @@ stream_replay:
 						last_received = end_lsn;
 
 					/*
-					 * Append the entry to the end of the replay queue if we
-					 * read it from the stream. Dynamic allocation means no
-					 * fixed size limit - queue grows as needed. Note:
-					 * spock_replay_queue_size is deprecated and no longer
-					 * checked.
+					 * Append the entry to the replay queue if we read it
+					 * from the stream.  When spock_replay_queue_size is set
+					 * and the in-memory limit is exceeded, spill subsequent
+					 * entries to a temporary file on disk.
 					 */
 					if (queue_append)
 					{
-						apply_replay_bytes += msg->len;
-
-						if (apply_replay_head == NULL)
+						if (spock_replay_queue_size > 0 &&
+							(apply_replay_spilling ||
+							 apply_replay_bytes + msg->len >
+							 spock_replay_queue_size * 1024))
 						{
-							apply_replay_head = apply_replay_tail = entry;
+							/* Spill this entry to disk */
+							if (!apply_replay_spilling)
+							{
+								MemoryContext oldctx;
+
+								/*
+								 * Allocate the BufFile in TopMemoryContext so it
+								 * survives across transaction boundaries, as
+								 * required by BufFileCreateTemp(interXact=true).
+								 */
+								oldctx = MemoryContextSwitchTo(TopMemoryContext);
+								apply_replay_spill_file =
+									BufFileCreateTemp(true);
+								MemoryContextSwitchTo(oldctx);
+								apply_replay_spilling = true;
+								apply_replay_spill_count = 0;
+								apply_replay_spill_read = 0;
+
+								elog(LOG,
+									 "SPOCK %s: replay queue exceeded %d kB "
+									 "limit, spilling to disk "
+									 "(in-memory: %d bytes)",
+									 MySubscription->name,
+									 spock_replay_queue_size,
+									 apply_replay_bytes);
+							}
+
+							apply_replay_spill_write_entry(msg->len,
+															  msg->data);
+							entry_spilled = true;
 						}
 						else
 						{
-							apply_replay_tail->next = entry;
-							apply_replay_tail = entry;
+							/* Keep in memory */
+							apply_replay_bytes += msg->len;
+
+							if (apply_replay_head == NULL)
+								apply_replay_head = apply_replay_tail = entry;
+							else
+							{
+								apply_replay_tail->next = entry;
+								apply_replay_tail = entry;
+							}
 						}
 					}
 
@@ -3010,9 +3090,19 @@ stream_replay:
 					replication_handler(msg);
 
 					/*
-					 * Note: No overflow handling needed - dynamic allocation
-					 * used
+					 * Free entries not in the in-memory linked list:
+					 *
+					 * - First-pass spilled entries (entry_spilled): written
+					 *   to the spill file, not in the linked list.
+					 *
+					 * - Spill-read entries during replay (maxlen >= 0):
+					 *   freed here to prevent accumulation.  Skip if
+					 *   handle_commit already called apply_replay_queue_reset
+					 *   which reset ApplyReplayContext (detectable because
+					 *   apply_replay_mode is cleared by the reset).
 					 */
+					if (entry_spilled || MyApplyWorker->use_try_block)
+						apply_replay_entry_free(entry);
 				}
 				else if (c == 'k')
 				{
@@ -3232,6 +3322,16 @@ stream_replay:
 		spock_relation_cache_reset();
 
 		apply_replay_next = apply_replay_head;
+		apply_replay_mode = true;
+
+		/* Seek spill file to the beginning for re-read */
+		if (apply_replay_spilling)
+		{
+			Assert(apply_replay_spill_file != NULL);
+			BufFileSeek(apply_replay_spill_file, 0, 0, SEEK_SET);
+			apply_replay_spill_read = 0;
+		}
+
 		in_remote_transaction = false;
 		first_begin_at_startup = true;
 		remote_origin_lsn = InvalidXLogRecPtr;
@@ -3917,12 +4017,75 @@ apply_replay_entry_create(int r, char *buf)
 	return entry;
 }
 
-/* Free on replay entry (unqueued message type or queue is overflowing) */
+/* Free one replay entry (unqueued message type or queue is overflowing) */
 static void
-apply_replay_entry_free(ApplyReplayEntry * entry)
+apply_replay_entry_free(ApplyReplayEntry *entry)
 {
-	PQfreemem(entry->copydata.data);
+	if (entry->copydata.maxlen < 0)
+		PQfreemem(entry->copydata.data);	/* libpq-allocated */
+	else
+		pfree(entry->copydata.data);		/* palloc'd from spill read */
 	pfree(entry);
+}
+
+/*
+ * Write one replay entry to the spill file.
+ * Format: [int32 length][data bytes]
+ */
+static void
+apply_replay_spill_write_entry(int len, char *data)
+{
+	Assert(apply_replay_spill_file != NULL);
+	Assert(len > 0);
+	Assert(data != NULL);
+
+	BufFileWrite(apply_replay_spill_file, &len, sizeof(int));
+	BufFileWrite(apply_replay_spill_file, data, len);
+	apply_replay_spill_count++;
+}
+
+/*
+ * Read one replay entry from the spill file.
+ * Returns a newly palloc'd ApplyReplayEntry, or NULL at EOF.
+ */
+static ApplyReplayEntry *
+apply_replay_spill_read_entry(void)
+{
+	int				len;
+	size_t			nread;
+	char		   *data;
+	ApplyReplayEntry *entry;
+	MemoryContext	oldcontext;
+
+	Assert(apply_replay_spill_file != NULL);
+
+	if (apply_replay_spill_read >= apply_replay_spill_count)
+		return NULL;
+
+	nread = BufFileReadMaybeEOF(apply_replay_spill_file, &len,
+								sizeof(int), true);
+	if (nread == 0)
+		return NULL;	/* EOF — defensive */
+
+	Assert(nread == sizeof(int));
+	Assert(len > 0);
+
+	oldcontext = MemoryContextSwitchTo(ApplyReplayContext);
+
+	data = palloc(len);
+	BufFileReadExact(apply_replay_spill_file, data, len);
+
+	entry = (ApplyReplayEntry *) palloc(sizeof(ApplyReplayEntry));
+	entry->copydata.len = len;
+	entry->copydata.maxlen = len;	/* positive = palloc'd, not PQ */
+	entry->copydata.cursor = 0;
+	entry->copydata.data = data;
+	entry->next = NULL;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	apply_replay_spill_read++;
+	return entry;
 }
 
 /* Free all queued messages and reset the apply replay queue */
@@ -3931,15 +4094,21 @@ apply_replay_queue_reset(void)
 {
 	ApplyReplayEntry *entry;
 
-	for (entry = apply_replay_head; entry != NULL; entry = entry->next)
-	{
-		PQfreemem(entry->copydata.data);
-	}
-
 	apply_replay_head = NULL;
 	apply_replay_tail = NULL;
 	apply_replay_next = NULL;
 	apply_replay_bytes = 0;
+	apply_replay_mode = false;
+
+	/* Close and delete the spill file if it exists */
+	if (apply_replay_spill_file != NULL)
+	{
+		BufFileClose(apply_replay_spill_file);
+		apply_replay_spill_file = NULL;
+	}
+	apply_replay_spilling = false;
+	apply_replay_spill_count = 0;
+	apply_replay_spill_read = 0;
 
 	MemoryContextReset(ApplyReplayContext);
 }
