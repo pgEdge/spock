@@ -428,13 +428,7 @@ spock_report_conflict(SpockConflictType conflict_type,
 
 
 #if PG_VERSION_NUM >= 180000
-	/*
-	 * TODO: Can't enable until SPOCK_CT_DELETE_LATE is either included in
-	 * SPOCK_CONFLICT_NUM_TYPES or filtered out here — passing it as-is would
-	 * overflow the conflict_count[] array.
-	 *
-	 * spock_stat_report_subscription_conflict(MyApplyWorker->subid, conflict_type);
-	 */
+	spock_stat_report_subscription_conflict(MyApplyWorker->subid, conflict_type);
 #endif
 
 	if (save_in_resolutions)

@@ -42,18 +42,19 @@ typedef struct Spock_Stat_Subscription
 } Spock_Stat_Subscription;
 
 /*
- * Column names for spock_get_subscription_stats(), indexed by
- * SpockConflictType.  Kept in sync with the enum via designated initializers
- * so that reordering the enum produces a compile-time error rather than
- * silently wrong output.
+ * Column names for spock_get_subscription_stats(), indexed by the contiguous
+ * stat index (see spock_conflict_stat_index()).  Order must match the mapping:
+ * 0..5 correspond to SPOCK_CT_INSERT_EXISTS..SPOCK_CT_DELETE_MISSING, and
+ * index 6 corresponds to SPOCK_CT_DELETE_EXISTS.
  */
 static const char *const SpockConflictStatColNames[SPOCK_CONFLICT_NUM_TYPES] = {
-	[SPOCK_CT_INSERT_EXISTS] = "confl_insert_exists",
-	[SPOCK_CT_UPDATE_ORIGIN_DIFFERS] = "confl_update_origin_differs",
-	[SPOCK_CT_UPDATE_EXISTS] = "confl_update_exists",
-	[SPOCK_CT_UPDATE_MISSING] = "confl_update_missing",
-	[SPOCK_CT_DELETE_ORIGIN_DIFFERS] = "confl_delete_origin_differs",
-	[SPOCK_CT_DELETE_MISSING] = "confl_delete_missing",
+	"confl_insert_exists",
+	"confl_update_origin_differs",
+	"confl_update_exists",
+	"confl_update_missing",
+	"confl_delete_origin_differs",
+	"confl_delete_missing",
+	"confl_delete_exists",
 };
 
 static bool spock_stat_subscription_flush_cb(PgStat_EntryRef *entry_ref,
@@ -95,12 +96,11 @@ spock_stat_report_subscription_conflict(Oid subid, SpockConflictType type)
 {
 	PgStat_EntryRef *entry_ref;
 	Spock_Stat_PendingSubEntry *pending;
+	int			idx;
 
-	if (type != SPOCK_CT_UPDATE_MISSING)
-		/*
-		 * Should happen only in development.  Detect it as fast as possible
-		 * with the highest error level that does not crash the instance.
-		 */
+	idx = spock_conflict_stat_index(type);
+	Assert(idx >= 0 && idx < SPOCK_CONFLICT_NUM_TYPES);
+	if (idx < 0 || idx >= SPOCK_CONFLICT_NUM_TYPES)
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("unexpected conflict type %d reported for subscription %u",
@@ -109,7 +109,7 @@ spock_stat_report_subscription_conflict(Oid subid, SpockConflictType type)
 	entry_ref = pgstat_prep_pending_entry(SPOCK_PGSTAT_KIND_LRCONFLICTS,
 										  MyDatabaseId, subid, NULL);
 	pending = entry_ref->pending;
-	pending->conflict_count[type]++;
+	pending->conflict_count[idx]++;
 }
 
 /*
