@@ -80,10 +80,65 @@ FROM spock.get_subscription_stats(:test_sub_id);
 -- Test reset: clear the stats and verify counter goes back to zero
 SELECT spock.reset_subscription_stats(:test_sub_id);
 
+-- ============================================================
+-- Test INSERT_EXISTS: insert a row on subscriber, then insert the same key on
+-- provider.  The apply worker detects the duplicate and resolves the conflict
+-- (last_update_wins converts the insert into an update).
+-- ============================================================
+
+-- Re-seed rows so both sides have data again
+\c :provider_dsn
+INSERT INTO conflict_stat_test VALUES (10, 'provider10');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+
+-- Pre-insert a conflicting row on the subscriber
+INSERT INTO conflict_stat_test VALUES (20, 'sub-only');
+TRUNCATE spock.exception_log;
+
+\c :provider_dsn
+
+-- This INSERT will conflict with the row already on subscriber
+INSERT INTO conflict_stat_test VALUES (20, 'from-provider');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+
+-- The row should now reflect the resolved value (remote wins)
+SELECT * FROM conflict_stat_test WHERE id = 20;
+
+-- Verify INSERT_EXISTS counter incremented
+SELECT confl_insert_exists
+FROM spock.get_subscription_stats(:test_sub_id);
+SELECT spock.reset_subscription_stats(:test_sub_id);
+
+-- ============================================================
+-- Test DELETE_MISSING: delete a row on subscriber first, then delete the same
+-- row on provider.  The apply worker cannot find the row and reports
+-- DELETE_MISSING.
+-- ============================================================
+TRUNCATE spock.exception_log;
+
+-- Remove the row on subscriber before provider sends its DELETE
+DELETE FROM conflict_stat_test WHERE id = 10;
+
+\c :provider_dsn
+
+DELETE FROM conflict_stat_test WHERE id = 10;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+
+-- Row should still be absent
+SELECT * FROM conflict_stat_test WHERE id = 10;
+
 SELECT confl_update_missing,
   confl_insert_exists,confl_update_origin_differs,confl_update_exists,
   confl_delete_origin_differs,confl_delete_missing,confl_delete_exists
 FROM spock.get_subscription_stats(:test_sub_id);
+
+SELECT spock.reset_subscription_stats(:test_sub_id);
 
 -- Cleanup
 TRUNCATE spock.exception_log;

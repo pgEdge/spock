@@ -1,6 +1,8 @@
 --Tuple Origin
 SELECT * FROM spock_regress_variables()
 \gset
+\c :subscriber_dsn
+SELECT current_setting('server_version_num')::int >= 180000 AS has_conflict_stats \gset
 \c :provider_dsn
 ALTER SYSTEM SET spock.save_resolutions = on;
 SELECT pg_reload_conf();
@@ -11,6 +13,17 @@ SELECT pg_reload_conf();
 
 \c :subscriber_dsn
 TRUNCATE spock.resolutions;
+-- Reset conflict stats (PG18+ only)
+\if :has_conflict_stats
+SELECT sub_id AS origin_test_sub_id FROM spock.subscription
+  WHERE sub_name = 'test_subscription' \gset
+SELECT spock.reset_subscription_stats(:origin_test_sub_id);
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+\endif
 \c :provider_dsn
 SELECT spock.replicate_ddl($$
     CREATE TABLE users (id int PRIMARY KEY, mgr_id int);
@@ -82,6 +95,16 @@ SELECT operation, table_name FROM spock.exception_log;
  UPDATE    | users
 (1 row)
 
+-- Verify UPDATE_MISSING stat counter (PG18+ only)
+\if :has_conflict_stats
+SELECT confl_update_missing
+FROM spock.get_subscription_stats(:origin_test_sub_id);
+ confl_update_missing 
+----------------------
+                    1
+(1 row)
+
+\endif
 \c :provider_dsn
 -- This will create a conflict on the subscriber
 DELETE FROM users where id = 3;
@@ -101,6 +124,16 @@ SELECT conflict_type FROM spock.resolutions
  delete_missing
 (1 row)
 
+-- Verify DELETE_MISSING stat counter (PG18+ only)
+\if :has_conflict_stats
+SELECT confl_delete_missing
+FROM spock.get_subscription_stats(:origin_test_sub_id);
+ confl_delete_missing 
+----------------------
+                    1
+(1 row)
+
+\endif
 -- Clear out for next test
 TRUNCATE spock.resolutions;
 TRUNCATE spock.exception_log;
@@ -154,6 +187,16 @@ SELECT conflict_type, local_tuple FROM spock.resolutions;
  delete_exists | {"id":3,"mgr_id":333}
 (1 row)
 
+-- Verify DELETE_EXISTS stat counter (PG18+ only)
+\if :has_conflict_stats
+SELECT confl_delete_exists
+FROM spock.get_subscription_stats(:origin_test_sub_id);
+ confl_delete_exists 
+---------------------
+                   1
+(1 row)
+
+\endif
 -- Empty
 SELECT COUNT(1) thecount FROM spock.exception_log;
  thecount 
@@ -337,6 +380,16 @@ SELECT conflict_type, conflict_resolution, remote_tuple FROM spock.resolutions;
  insert_exists | apply_remote        | {"id":4,"data":"DD"}
 (1 row)
 
+-- Verify INSERT_EXISTS stat counter (PG18+ only)
+\if :has_conflict_stats
+SELECT confl_insert_exists
+FROM spock.get_subscription_stats(:origin_test_sub_id);
+ confl_insert_exists 
+---------------------
+                   1
+(1 row)
+
+\endif
 -- cleanup
 \c :provider_dsn
 SELECT * FROM spock.repset_remove_table('default', 'users');
