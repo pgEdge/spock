@@ -143,7 +143,7 @@ bool		spock_include_ddl_repset = false;
 bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
-int			spock_replay_queue_size;	/* Deprecated - no longer used */
+int			spock_replay_queue_size;
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
@@ -1154,12 +1154,13 @@ _PG_init(void)
 							NULL);
 
 	DefineCustomIntVariable("spock.exception_replay_queue_size",
-							"DEPRECATED: apply-worker replay queue size (no longer used)",
-							"This setting is deprecated and has no effect. "
-							"The replay queue now dynamically allocates memory as needed.",
+							"Maximum in-memory size for the apply replay queue",
+							"When the replay queue exceeds this size, subsequent "
+							"entries are spilled to a temporary file on disk. "
+							"Set to 0 to disable spilling (unlimited memory).",
 							&spock_replay_queue_size,
 							4,
-							0,
+							-1,
 							MAX_KILOBYTES / 1024,
 							PGC_SIGHUP,
 							GUC_UNIT_MB,
