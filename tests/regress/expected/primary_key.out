@@ -259,6 +259,15 @@ SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_
  address    | f          | f
 (5 rows)
 
+-- Wait up to 10 seconds for the subscription to become disabled.
+DO $$
+BEGIN
+  SET LOCAL statement_timeout = '10s';
+  WHILE (SELECT status FROM spock.sub_show_status()) <> 'disabled' LOOP
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END;
+$$;
 select status from spock.sub_show_status();
   status  
 ----------
