@@ -98,10 +98,6 @@ spock_conflict_stat_index(SpockConflictType type)
 	return -1;
 }
 
-extern int spock_conflict_resolver;
-extern int spock_conflict_log_level;
-extern bool	spock_save_resolutions;
-
 typedef enum
 {
 	/* do not log */
