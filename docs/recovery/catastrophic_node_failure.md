@@ -848,6 +848,11 @@ ACE may log a warning and repair those rows without preserving origin ID and
 timestamp. Ensure `track_commit_timestamp = on` and that the diff was run 
 with `--preserve-origin`; check the diff file and ACE logs.
 
+Do not conflate local writes with missing metadata: `origin = 0` means the row
+was changed locally (not via replication), while `NULL` in
+`spock.resolutions.local_origin` or `unknown` in PostgreSQL logs indicates the
+origin is genuinely unavailable.
+
 ### Tables Still Differ after Repair
 
 Re-run `table-diff` without `--preserve-origin` to see the current state. If
