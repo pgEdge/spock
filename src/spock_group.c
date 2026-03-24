@@ -687,3 +687,80 @@ spock_group_progress_update_list(List *lst)
 	 */
 	list_free_deep(lst);
 }
+
+/*
+ * spock_group_progress_force_set_list
+ *
+ * Write resume_lsn into the shmem progress entry for each peer during add_node.
+ * Uses MAX-by-LSN: preserves the existing entry when it is already >= resume_lsn,
+ * preventing double-apply from overwriting a live apply worker's higher value.
+ */
+void
+spock_group_progress_force_set_list(List *lst)
+{
+	ListCell *lc;
+
+	if (!SpockGroupHash || !SpockCtx)
+	{
+		elog(WARNING, "SpockGroupHash is not initialized; force-set skipped");
+		list_free_deep(lst);
+		return;
+	}
+
+	foreach (lc, lst)
+	{
+		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
+		SpockGroupEntry	   *entry;
+		bool				found;
+
+		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
+		entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &sap->key,
+												HASH_ENTER, &found);
+
+		if (entry == NULL)
+		{
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+			elog(WARNING, "SpockGroupHash is full, cannot force-set progress for group "
+				 "(dbid=%u, node_id=%u, remote_node_id=%u)",
+				 sap->key.dbid, sap->key.node_id, sap->key.remote_node_id);
+			continue;
+		}
+
+		if (!found)
+		{
+			init_progress_fields(&entry->progress);
+			pg_atomic_init_u32(&entry->nattached, 0);
+			ConditionVariableInit(&entry->prev_processed_cv);
+		}
+		else if (entry->progress.remote_commit_lsn >= sap->remote_commit_lsn)
+		{
+			/* Existing LSN >= resume_lsn; skip to avoid double-apply. */
+			elog(LOG, "SPOCK: force-set %d->%d skipped: existing=%X/%X >= resume_lsn=%X/%X",
+				 sap->key.remote_node_id, MySubscription->target->id,
+				 LSN_FORMAT_ARGS(entry->progress.remote_commit_lsn),
+				 LSN_FORMAT_ARGS(sap->remote_commit_lsn));
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+			continue;
+		}
+		else
+		{
+			/* Stale entry below resume_lsn; will be reset after WAL write succeeds. */
+		}
+
+		/* WAL-log before shmem update; skipped above when existing LSN is higher. */
+		spock_apply_progress_add_to_wal(sap);
+
+		/* Now safe to mutate shmem: WAL write succeeded. */
+		init_progress_fields(&entry->progress);
+		progress_update_struct(&entry->progress, sap);
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+
+		elog(LOG, "SPOCK: force-set %d->%d commit_lsn=%X/%X insert_lsn=%X/%X",
+			 sap->key.remote_node_id, MySubscription->target->id,
+			 LSN_FORMAT_ARGS(sap->remote_commit_lsn),
+			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
+	}
+
+	list_free_deep(lst);
+}

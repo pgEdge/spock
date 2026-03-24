@@ -30,6 +30,197 @@ CREATE VIEW spock.progress AS
 		SELECT oid FROM pg_database WHERE datname = current_database()
 	);
 
+-- Atomically create a replication slot and read spock.progress for all peers.
+-- Row 0: lsn + snapshot header.  Rows 1+: one progress entry per peer.
+CREATE FUNCTION spock.create_slot_with_progress(
+    p_slot_name text,
+    p_provider_node_id oid,
+    p_subscriber_node_id oid
+) RETURNS TABLE(
+    lsn pg_lsn,
+    snapshot text,
+    dbid oid,
+    node_id oid,
+    remote_node_id oid,
+    remote_commit_ts timestamptz,
+    prev_remote_ts timestamptz,
+    remote_commit_lsn pg_lsn,
+    remote_insert_lsn pg_lsn,
+    received_lsn pg_lsn,
+    last_updated_ts timestamptz,
+    updated_by_decode boolean
+) VOLATILE STRICT LANGUAGE plpgsql AS $$
+DECLARE
+    v_lsn          pg_lsn;
+    v_snap         text;
+    rec            record;
+    v_n_peers      int := 0;
+    v_pre_peer_ids  oid[];
+    v_pre_origin_lsns  pg_lsn[];
+    v_pre_idx       int;
+    v_pre_origin_lsn   pg_lsn;
+    v_ros2_remote_lsn pg_lsn;
+    v_ros2_local_lsn  pg_lsn;
+    v_attempt      int;
+    v_max_retries  int := 50;
+    v_all_case_a   boolean;
+    v_prev_local_lsns pg_lsn[];
+    v_curr_local_lsns pg_lsn[];
+    v_idle         boolean;
+BEGIN
+    -- Capture pre-slot ros.remote_lsn as Case B fallback.
+    SELECT array_agg(sub.sub_origin ORDER BY sub.sub_origin),
+           array_agg(COALESCE(ros.remote_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+    INTO   v_pre_peer_ids, v_pre_origin_lsns
+    FROM   spock.subscription sub
+    JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+    LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+    WHERE  sub.sub_target = p_provider_node_id
+      AND  sub.sub_origin <> p_subscriber_node_id;
+
+    RAISE NOTICE 'SPOCK cswp slot=% pre_origin=%', p_slot_name, v_pre_origin_lsns;
+
+    -- Try to create slot during an idle window (Case A).
+    FOR v_attempt IN 1..v_max_retries LOOP
+        -- Probe ros.local_lsn twice with a short gap to detect idle workers.
+        SELECT array_agg(COALESCE(ros.local_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+        INTO   v_prev_local_lsns
+        FROM   spock.subscription sub
+        JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id;
+
+        PERFORM pg_sleep(0.003);
+
+        SELECT array_agg(COALESCE(ros.local_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+        INTO   v_curr_local_lsns
+        FROM   spock.subscription sub
+        JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id;
+
+        v_idle := (v_prev_local_lsns IS NOT DISTINCT FROM v_curr_local_lsns);
+
+        -- Re-capture pre_origin each iteration to keep it fresh.
+        SELECT array_agg(sub.sub_origin ORDER BY sub.sub_origin),
+               array_agg(COALESCE(ros.remote_lsn, '0/0'::pg_lsn) ORDER BY sub.sub_origin)
+        INTO   v_pre_peer_ids, v_pre_origin_lsns
+        FROM   spock.subscription sub
+        JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id;
+
+        SELECT s.lsn INTO v_lsn
+        FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
+
+        RAISE NOTICE 'SPOCK cswp slot=% v_lsn=% attempt=%/% idle=%',
+            p_slot_name, v_lsn, v_attempt, v_max_retries, v_idle;
+
+        -- Check if all peers have ros.local_lsn <= v_lsn (Case A).
+        SELECT bool_and(COALESCE(ros.local_lsn <= v_lsn, false))
+        INTO   v_all_case_a
+        FROM   spock.subscription sub
+        JOIN   pg_replication_origin o ON o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id;
+
+        EXIT WHEN v_all_case_a IS NOT FALSE OR v_attempt = v_max_retries;
+
+        PERFORM pg_drop_replication_slot(p_slot_name);
+        PERFORM pg_sleep(CASE WHEN v_idle THEN 0.005 ELSE 0.02 + 0.002 * v_attempt END);
+    END LOOP;
+
+    -- Export snapshot for the COPY worker.
+    v_snap := pg_export_snapshot();
+
+    -- Header row: lsn + snapshot only.
+    lsn      := v_lsn;
+    snapshot := v_snap;
+    RETURN NEXT;
+
+    -- Emit one progress row per peer with resume_lsn derivation.
+    -- Case A (ros.local_lsn <= v_lsn): use ros.remote_lsn (exact).
+    -- Case B (ros.local_lsn > v_lsn): use pre_origin as safe lower-bound resume_lsn.
+    FOR rec IN (
+        SELECT p.dbid, p.node_id, p.remote_node_id,
+               p.remote_commit_ts, p.prev_remote_ts,
+           p.remote_commit_lsn      AS grp_remote_commit_lsn,
+               p.remote_insert_lsn,
+               p.received_lsn, p.last_updated_ts, p.updated_by_decode,
+               ros.remote_lsn             AS ros_remote_lsn,
+               ros.local_lsn              AS ros_local_lsn,
+               sub.sub_slot_name          AS sub_slot_name,
+               o.roident                  AS roident
+        FROM   spock.subscription sub
+        JOIN   spock.progress p
+               ON  p.remote_node_id = sub.sub_origin
+               AND p.node_id        = sub.sub_target
+        JOIN   pg_replication_origin o
+               ON  o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros
+               ON  ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id
+    ) LOOP
+        v_n_peers := v_n_peers + 1;
+
+        v_pre_idx     := array_position(v_pre_peer_ids, rec.remote_node_id);
+        v_pre_origin_lsn := CASE WHEN v_pre_idx IS NOT NULL
+                         THEN v_pre_origin_lsns[v_pre_idx]
+                         ELSE '0/0'::pg_lsn END;
+
+        lsn               := v_lsn;
+        snapshot          := v_snap;
+        dbid              := rec.dbid;
+        node_id           := rec.node_id;
+        remote_node_id    := rec.remote_node_id;
+        remote_commit_ts  := rec.remote_commit_ts;
+        prev_remote_ts    := rec.prev_remote_ts;
+
+        IF rec.ros_local_lsn IS NOT NULL AND rec.ros_local_lsn <= v_lsn THEN
+          -- Case A: double-sample ros to reduce stale-read window.
+          SELECT ros.remote_lsn, ros.local_lsn
+          INTO   v_ros2_remote_lsn, v_ros2_local_lsn
+          FROM   pg_replication_origin_status ros
+          WHERE  ros.local_id = rec.roident;
+
+          IF v_ros2_local_lsn IS NOT NULL AND v_ros2_local_lsn <= v_lsn THEN
+            remote_commit_lsn := GREATEST(
+              COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn),
+              COALESCE(v_ros2_remote_lsn, '0/0'::pg_lsn)
+            );
+          ELSE
+            remote_commit_lsn := COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn);
+          END IF;
+        ELSE
+          -- Case B: use pre_origin as safe lower-bound resume_lsn.
+          remote_commit_lsn := COALESCE(
+                          NULLIF(v_pre_origin_lsn, '0/0'::pg_lsn),
+                          rec.grp_remote_commit_lsn,
+                          '0/0'::pg_lsn);
+        END IF;
+
+        remote_insert_lsn := rec.remote_insert_lsn;
+        received_lsn      := rec.received_lsn;
+        last_updated_ts   := rec.last_updated_ts;
+        updated_by_decode := rec.updated_by_decode;
+
+        RAISE NOTICE 'SPOCK cswp peer=% case=% resume_lsn=%',
+            rec.remote_node_id,
+            CASE WHEN rec.ros_local_lsn IS NOT NULL AND rec.ros_local_lsn <= v_lsn THEN 'A' ELSE 'B' END,
+            remote_commit_lsn;
+
+        RETURN NEXT;
+    END LOOP;
+
+    RAISE NOTICE 'SPOCK cswp slot=% done peers=%', p_slot_name, v_n_peers;
+END;
+$$;
+
 CREATE VIEW spock.lag_tracker AS
 	SELECT
 		origin.node_name AS origin_name,
