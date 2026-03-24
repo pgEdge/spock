@@ -30,7 +30,7 @@ This document covers three cases:
 - multiple node failure - two or more nodes fail and one or more survivors
   are behind.
 
-The same idea applies in both cases; you identify what is missing on the
+The same idea applies in these cases; you identify what is missing on the
 surviving node(s), then repair the nodes using a node with complete data, 
 preserving the origin ID and timestamp for every repaired row.
 
@@ -132,7 +132,7 @@ survivor and source of truth.
    performs a full initial sync from n1; see the
    [ZODAN documentation](../modify/zodan/index.md) for step-by-step
    instructions.
-4. When the initial sync completes for each node, validate with
+3. When the initial sync completes for each node, validate with
    `table-diff` across all three nodes to confirm they match.
 
 !!! warning
@@ -210,7 +210,7 @@ n4, with the origin ID and timestamp preserved for each.
     and one diff (and one repair) for n4. The source of truth (n3) is the
     same for all repairs.
 
-### Implementing Repairs in Both Cases
+### Implementing Repairs
 
 ```mermaid
 flowchart TD
@@ -228,7 +228,7 @@ flowchart TD
   end
 ```
 
-In both cases you will:
+In these cases you will:
 
     1. Clean up the failed node(s) in Spock.
     2. Run table-diff on all tables—once per failed origin in the multiple-node 
@@ -310,9 +310,15 @@ To protect against this, use the following approaches:
   moment of failure; at least one subscriber is likely to have received
   recent transactions.
 
-Even with these mitigations, a small data-loss window may remain. Plan
-your RPO (Recovery Point Objective) accordingly and factor this into
-your disaster-recovery documentation.
+Even with these mitigations, a small data-loss window may remain. If the
+failed node restarts, its WAL senders will resume where they left off and
+no transactions are lost. The risk applies only when the node is
+permanently gone and its WAL is unrecoverable — in that case, any
+transactions that had been flushed to the node's WAL but not yet
+delivered to a subscriber are lost with it. Under normal load this
+window is typically sub-second, but plan your RPO (Recovery Point
+Objective) with this constraint in mind and document it in your
+disaster-recovery plan.
 
 ---
 
@@ -651,7 +657,7 @@ Repeat for every table that had differences, for example:
 In the case of multiple node failure (where for example, n1 and n4 both 
 failed), you will have one diff file per (table, failed origin). 
 Run the table-repair command for *each* diff file, using the *same* source
-of truth (n3) and including the `--preserve-origin`clause every time. ACE
+of truth (n3) and including the `--preserve-origin` clause every time. ACE
 writes a new filename for each table-diff run; use the file
 from your n1 diff run for the first repair and the file from your n4 diff
 run for the second. Example for one table:
@@ -836,7 +842,7 @@ will fix the others.
 Provide `--source-of-truth <node_name>` with the name of a node you know has
 the complete data.
 
-### Origin Netadata Missing for Some Rows
+### Origin Metadata Missing for Some Rows
 
 ACE may log a warning and repair those rows without preserving origin ID and
 timestamp. Ensure `track_commit_timestamp = on` and that the diff was run 
