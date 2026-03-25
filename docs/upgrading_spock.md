@@ -2,7 +2,8 @@
 
 !!! note
     If you build the Spock extension from source, you can remove, build,
-    and upgrade the Spock extension like you would any other [Postgres extension](https://www.postgresql.org/docs/17/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
+    and upgrade the Spock extension like you would any other 
+    [Postgres extension](https://www.postgresql.org/docs/17/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
 
 If you're upgrading a secure production environment, shut down each node
 sequentially and perform the following steps:
