@@ -179,7 +179,7 @@ CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
  t
 (1 row)
 
--- Expect entries with duplicated DDL record.
+-- Expect no duplicate DDL entries: one record per operation.
 SELECT table_name, operation, (error_message <> '') AS has_error, ddl_statement
 FROM spock.exception_log
 ORDER BY command_counter;
@@ -188,9 +188,8 @@ ORDER BY command_counter;
  drl_t1     | UPDATE    | f         | 
  queue      | INSERT    | f         | 
             | DDL       | f         | "SET search_path TO \"$user\",public; CREATE TABLE IF NOT EXISTS public.drl_dummy (x int)"
-            | DDL       | t         | "SET search_path TO \"$user\",public; CREATE TABLE IF NOT EXISTS public.drl_dummy (x int)"
  drl_t3     | UPDATE    | t         | 
-(5 rows)
+(4 rows)
 
 -- Check data:
 SELECT x FROM drl_t1 WHERE x = 2; -- Record has not been updated
