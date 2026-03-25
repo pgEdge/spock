@@ -35,16 +35,17 @@ SELECT spock.repset_add_table('default', 'drl_t3');
 INSERT INTO drl_t1 VALUES (0);
 INSERT INTO drl_t2 VALUES (0);
 INSERT INTO drl_t3 VALUES (0);
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.sync_event() AS sync_lsn \gset
 
 -- Verify initial data arrived
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 SELECT * FROM drl_t1;
 SELECT * FROM drl_t2;
 SELECT * FROM drl_t3;
 
 -- ============================================================
--- 1. TRANSDISCARD mode  (error: absent table)
+-- TRANSDISCARD mode  (error: absent table)
 --
 -- drl_t1: pre-insert row x=1 on subscriber to set up INSERT_EXISTS
 -- drl_t2: DROP TABLE to provoke "can't find relation" error
@@ -66,9 +67,9 @@ INSERT INTO drl_t1 VALUES (1);       -- conflict: INSERT_EXISTS
 UPDATE drl_t2 SET x = 1 WHERE x = 0; -- error: missing relation
 UPDATE drl_t3 SET x = 1 WHERE x = 0; -- ok
 END;
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
-
+SELECT spock.sync_event() AS sync_lsn \gset
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 
 -- None of the DMLs should have been applied (entire TX discarded)
 SELECT * FROM drl_t1 ORDER BY x;
@@ -82,6 +83,39 @@ ORDER BY command_counter;
 -- Resolutions must be empty: dry-run never executes DML, so no
 -- conflict detection happens.
 SELECT COUNT(*) AS resolutions_count FROM spock.resolutions;
+
+-- ============================================================
+-- TRANSDISCARD with DDL in the transaction
+--
+-- Verify that a queued DDL operation inside a failing transaction
+-- produces exactly one exception_log entry, not a duplicate.
+-- ============================================================
+\c :subscriber_dsn
+TRUNCATE spock.exception_log;
+TRUNCATE drl_t3;
+
+\c :provider_dsn
+BEGIN;
+UPDATE drl_t1 SET x = 2 WHERE x = 1;
+SELECT spock.replicate_ddl('CREATE TABLE IF NOT EXISTS public.drl_dummy (x int)');
+UPDATE drl_t3 SET x = 2 WHERE x = 1;  -- error: row missing after TRUNCATE
+END;
+SELECT spock.sync_event() AS sync_lsn \gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+
+-- Expect entries with duplicated DDL record.
+SELECT table_name, operation, (error_message <> '') AS has_error, ddl_statement
+FROM spock.exception_log
+ORDER BY command_counter;
+
+-- Check data:
+SELECT x FROM drl_t1 WHERE x = 2; -- Record has not been updated
+SELECT * FROM drl_dummy; -- ERROR, table doesn't exist
+
+-- Cleanup the dummy table
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE IF EXISTS public.drl_dummy');
 
 -- ============================================================
 -- Reset for next test
@@ -101,15 +135,16 @@ SELECT spock.repset_add_table('default', 'drl_t3');
 INSERT INTO drl_t1 VALUES (0);
 INSERT INTO drl_t2 VALUES (0);
 INSERT INTO drl_t3 VALUES (0);
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.sync_event() AS sync_lsn \gset
 
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 SELECT * FROM drl_t1;
 SELECT * FROM drl_t2;
 SELECT * FROM drl_t3;
 
 -- ============================================================
--- 2. DISCARD mode  (error: truncated table, row missing)
+-- DISCARD mode  (error: truncated table, row missing)
 --
 -- drl_t1: pre-insert row x=1 to set up INSERT_EXISTS conflict
 -- drl_t2: TRUNCATE so the UPDATE can't find the row
@@ -131,9 +166,9 @@ INSERT INTO drl_t1 VALUES (1);       -- conflict: INSERT_EXISTS (resolved)
 UPDATE drl_t2 SET x = 1 WHERE x = 0; -- error: row missing after TRUNCATE
 UPDATE drl_t3 SET x = 1 WHERE x = 0; -- ok
 END;
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
-
+SELECT spock.sync_event() AS sync_lsn \gset
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 
 -- In DISCARD mode: drl_t1 INSERT conflict resolved, drl_t2 failed,
 -- drl_t3 applied
@@ -169,15 +204,16 @@ SELECT spock.repset_add_table('default', 'drl_t3');
 INSERT INTO drl_t1 VALUES (0);
 INSERT INTO drl_t2 VALUES (0);
 INSERT INTO drl_t3 VALUES (0);
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+SELECT spock.sync_event() AS sync_lsn \gset
 
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 SELECT * FROM drl_t1;
 SELECT * FROM drl_t2;
 SELECT * FROM drl_t3;
 
 -- ============================================================
--- 3. SUB_DISABLE mode  (error: deleted row)
+-- SUB_DISABLE mode  (error: deleted row)
 --
 -- drl_t1: pre-insert row x=1 to set up INSERT_EXISTS conflict
 -- drl_t2: DELETE the row so the UPDATE can't find it
@@ -223,12 +259,15 @@ SELECT COUNT(*) AS resolutions_count FROM spock.resolutions;
 
 -- Re-enable subscription for cleanup
 SELECT skiplsn_and_enable_sub('test_subscription', :remote_xid);
-SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :provider_dsn
+SELECT spock.sync_event() AS sync_lsn \gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 
 -- ============================================================
 -- Cleanup
 -- ============================================================
-\c :subscriber_dsn
 ALTER SYSTEM RESET spock.exception_behaviour;
 SELECT pg_reload_conf();
 
