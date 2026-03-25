@@ -2264,33 +2264,17 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 			exception_behaviour == SUB_DISABLE)
 		{
 			/*
-			 * TRANSDISCARD and SUB_DISABLE: skip the DDL and log the
-			 * discarded operation directly to spock.exception_log.
+			 * TRANSDISCARD and SUB_DISABLE: skip the DDL, just extract SQL
+			 * for logging below.
 			 */
-			char	   *error_msg =
-				(my_exception_log_index >= 0 &&
-				 xact_action_counter ==
-				 exception_log_ptr[my_exception_log_index].failed_action &&
-				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
-				exception_log_ptr[my_exception_log_index].initial_error_message :
-				NULL;
-
 			sql = JsonbToCString(NULL,
 								 &queued_message->message->root, 0);
 			exception_command_counter++;
-			add_entry_to_exception_log(remote_origin_id,
-									   replorigin_session_origin_timestamp,
-									   remote_xid,
-									   0, 0,
-									   NULL, NULL, NULL, NULL,
-									   sql, queued_message->role,
-									   "SQL",
-									   error_msg);
 			failed = false;
 		}
 		else
 		{
-			/* DISCARD MODE needs hard way - try block and subtransactions */
+			/* DISCARD mode: try block with subtransactions */
 			PG_TRY();
 			{
 				exception_command_counter++;
@@ -2310,18 +2294,22 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 				ReleaseCurrentSubTransaction();
 		}
 
-		/* Let's create an exception log entry if true. */
 		if (should_log_exception(failed))
 		{
-			/*
-			 * Use current error message if operation failed, otherwise use
-			 * initial_error_message for context (e.g., in DISCARD mode when
-			 * SQL succeeds but we're logging it because of a previous error).
-			 */
-			char	   *error_msg = failed ? edata->message :
-				(my_exception_log_index >= 0 &&
-				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0' ?
-				 exception_log_ptr[my_exception_log_index].initial_error_message : NULL);
+			char	   *error_msg;
+
+			/* Just to be paranoid */
+			Assert(my_exception_log_index >= 0);
+
+			if (failed)
+				error_msg = edata->message;
+			else
+				error_msg =
+					(xact_action_counter ==
+					 exception_log_ptr[my_exception_log_index].failed_action &&
+					 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
+					exception_log_ptr[my_exception_log_index].initial_error_message :
+					NULL;
 
 			add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,

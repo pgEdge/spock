@@ -104,7 +104,7 @@ SELECT spock.sync_event() AS sync_lsn \gset
 \c :subscriber_dsn
 CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 
--- Expect entries with duplicated DDL record.
+-- Expect no duplicate DDL entries: one record per operation.
 SELECT table_name, operation, (error_message <> '') AS has_error, ddl_statement
 FROM spock.exception_log
 ORDER BY command_counter;
