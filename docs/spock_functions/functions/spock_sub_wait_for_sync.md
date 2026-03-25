@@ -41,3 +41,6 @@ subscription_name
 ### EXAMPLE
 
     SELECT spock.sub_wait_for_sync('sub_n2_n1');
+    -[ RECORD 1 ]-----+-
+    sub_wait_for_sync | 
+

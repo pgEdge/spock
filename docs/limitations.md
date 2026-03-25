@@ -83,16 +83,16 @@ structure of the provider and subscriber are changed at the same time in a
 way that makes the subscriber table incompatible with the queued transactions
 replication will stop.
 
-Administrators should either ensure that writes to the master are stopped
+Administrators should either ensure that writes to the provider are stopped
 before making schema changes, or use the `spock.replicate_ddl` function to
 queue schema changes so they are replayed at a consistent point on the
-replica.
+subscriber.
 
-Once multi-master replication support is added then using
-`spock.replicate_ddl` will not be enough, as the subscriber may be generating
-new xacts with the old structure after the schema change is committed on the
-publisher. Users will have to ensure writes are stopped on all nodes and all
-slots are caught up before making schema changes.
+In multi-master configurations, using `spock.replicate_ddl` alone is not
+sufficient. The subscriber may be generating new transactions with the old
+structure after the schema change is committed on the provider. Users must
+ensure writes are stopped on all nodes and all slots are caught up before
+making schema changes.
 
 ## FOREIGN KEYS
 
@@ -197,3 +197,133 @@ Spock and native PostgreSQL logical replication run on the same database.
 
 Recommendation: Avoid running Spock and native logical replication
 subscriptions on the same database.
+
+## Row and Column Filters
+
+Row and column filters have the following limitations.
+
+### System Columns Cannot Be Filtered
+
+System columns (such as `oid` or `xmin`) cannot be used in row filters or
+column filters. Column and row filters work correctly on tables with OIDs,
+but the system columns themselves cannot be filtered.
+
+### Row Filter Expression Constraints
+
+Row filters are normal PostgreSQL expressions with the same limitations as
+CHECK constraints.
+
+Volatile functions (like `random()` or `now()`) can be used in row
+filters, but they may produce different results on evaluation and cause
+errors that stop replication. Use volatile functions with caution.
+
+### Row Filter Session Context
+
+Row filters run in the replication session context, not the original
+session context. This means that session-specific expressions (like
+`CURRENT_USER`) will have replication session values, not the original
+session values.
+
+### Column Filter Behavior
+
+When using column filters, note the following behaviors:
+
+- Dropping a filtered column automatically removes it from the filter.
+- New columns are not automatically included in existing filters.
+- Column filters must be updated manually to include new columns.
+
+## Partitioned Tables
+
+Partitioned tables have specific replication limitations.
+
+### New Partitions Not Automatically Replicated
+
+When partitions are added after initial synchronization, they must be
+added manually using the `spock.repset_add_partition()` function.
+
+The parent table is synchronized during initial sync, but individual
+partitions are not synced directly. New partitions created after sync
+require explicit addition to the replication set.
+
+### Detached Partitions Not Automatically Removed
+
+Detaching a partition does not automatically remove it from replication.
+You must use `spock.repset_remove_partition()` to update cluster metadata
+and remove the partition from the replication set.
+
+## DDL Replication Limitations
+
+Some DDL statements are intentionally not replicated.
+
+### DDL Statements Not Replicated
+
+The following types of DDL statements are not replicated:
+
+- `CREATE DATABASE` - Database creation is not replicated.
+- `CREATE TABLE...AS...` - This statement is replicated but may be unsafe
+  because the table is replicated before being added to the replication
+  set.
+
+In multi-node clusters with three or more nodes, some DDL statements (such
+as `DROP TABLE`) may cause replication issues.
+
+### DDL Replication Best Practices
+
+For best results, enable automatic DDL replication only when the schema
+matches exactly on all nodes. This means either all databases have no
+objects, or all databases have exactly the same objects with all tables in
+the replication sets.
+
+## Batch Insert Mode
+
+Batch insert mode has specific requirements and limitations.
+
+### Batch Insert Activation Requirements
+
+Batch insert mode requires the following conditions:
+
+- The `spock.batch_inserts` parameter must be enabled.
+- The `spock.conflict_resolution` parameter must be set to `error`.
+- Tables must have no `INSTEAD OF INSERT` or `BEFORE INSERT` triggers.
+- Batch mode activates automatically after 5 or more inserts in a single
+  transaction.
+
+## Spock Schema
+
+The `spock` schema is managed internally by Spock and has the following
+restriction.
+
+### Direct Modification Prohibited
+
+Do not delete, create, or modify files in the `spock` schema directly. Use
+Spock functions and procedures to manage replication. Direct schema
+modification can corrupt replication metadata and cause replication
+failures.
+
+## Read-Only Mode
+
+Read-only mode has the following limitation.
+
+### Read-Only at SQL Level Only
+
+The `spock.readonly` parameter enforces read-only restrictions at the SQL
+level for non-superusers. However, background processes (checkpointer,
+background writer, WAL writer, and autovacuum) continue to run and may
+write to disk.
+
+This means that database files are not truly read-only, and some disk
+writes may still occur even when read-only mode is enabled.
+
+## Replication Position Skipping
+
+Using `spock.sub_alter_skiplsn()` to skip replication positions has the
+following critical limitation.
+
+### Skipped Data Not Replayed or Repaired
+
+The `spock.sub_alter_skiplsn()` operation does not replay or repair
+skipped data. Any changes between the old LSN and the specified LSN are
+permanently ignored by the subscriber.
+
+Use this function only when you understand the data implications and accept
+that skipped changes will be lost on the subscriber node.
