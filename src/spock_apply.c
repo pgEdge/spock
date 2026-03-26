@@ -1171,6 +1171,11 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 							   errmsg);
 }
 
+/*
+ * All the memory operations of this function is covered under the
+ * ApplyOperationContext's umbrella: in case of an error necessary data is
+ * copied into more stable memory context in the upper CATCH section.
+ */
 static void
 handle_insert(StringInfo s)
 {
@@ -1187,9 +1192,9 @@ handle_insert(StringInfo s)
 	if (is_skipping_changes())
 		return;
 
-	oldcontext = MemoryContextSwitchTo(ApplyOperationContext);
-
 	started_tx = begin_replication_step();
+
+	oldcontext = MemoryContextSwitchTo(ApplyOperationContext);
 
 	rel = spock_read_insert(s, RowExclusiveLock, &newtup);
 	if (unlikely(rel == NULL))
@@ -1211,9 +1216,9 @@ handle_insert(StringInfo s)
 
 		log_insert_exception(true, "Spock can't find relation", NULL,
 							 NULL, NULL, "INSERT");
-		end_replication_step();
 		MemoryContextSwitchTo(oldcontext);
 		MemoryContextReset(ApplyOperationContext);
+		end_replication_step();
 		return;
 	}
 
@@ -1225,9 +1230,9 @@ handle_insert(StringInfo s)
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
 	{
 		spock_relation_close(rel, NoLock);
-		end_replication_step();
 		MemoryContextSwitchTo(oldcontext);
 		MemoryContextReset(ApplyOperationContext);
+		end_replication_step();
 		return;
 	}
 
@@ -1247,6 +1252,9 @@ handle_insert(StringInfo s)
 			spock_apply_heap_mi_add_tuple(rel, &newtup);
 			last_insert_rel_cnt++;
 
+			MemoryContextSwitchTo(oldcontext);
+			MemoryContextReset(ApplyOperationContext);
+
 			/*
 			 * Close replication step to satisfy corresponding 'begin' routine.
 			 * TODO: multi-insert code should be revised one day: it is not
@@ -1256,9 +1264,6 @@ handle_insert(StringInfo s)
 			 * this tuple and what's then?
 			 */
 			end_replication_step();
-
-			MemoryContextSwitchTo(oldcontext);
-			MemoryContextReset(ApplyOperationContext);
 			return;
 		}
 	}
@@ -1315,21 +1320,29 @@ handle_insert(StringInfo s)
 				exception_command_counter++;
 				BeginInternalSubTransaction(NULL);
 				spock_apply_heap_insert(rel, &newtup);
+				ReleaseCurrentSubTransaction();
 			}
 			PG_CATCH();
 			{
+				/* Set per-operation error flag */
 				failed = true;
-				RollbackAndReleaseCurrentSubTransaction();
-				edata = CopyErrorData();
+				/* Set transaction-wide error flag */
 				xact_had_exception = true;
+
+				MemoryContextSwitchTo(ApplyOperationContext);
+				edata = CopyErrorData();
+
+				FlushErrorState();
+				RollbackAndReleaseCurrentSubTransaction();
 			}
 			PG_END_TRY();
 
-			if (!failed)
-				ReleaseCurrentSubTransaction();
-
 			if (failed)
 			{
+				/*
+				 * Need to keep this database operation out of the CATCH section
+				 * to avoid FATAL error in case if an ERROR happens there.
+				 */
 				log_insert_exception(true, edata->message, rel,
 									 NULL, &newtup, "INSERT");
 			}
@@ -1337,10 +1350,16 @@ handle_insert(StringInfo s)
 	}
 	else
 	{
-		MemoryContextSwitchTo(ApplyOperationContext);
 		spock_apply_heap_insert(rel, &newtup);
-		MemoryContextSwitchTo(oldcontext);
 	}
+
+	/*
+	 * DML operation is finished. Be paranoid and check memory context before
+	 * switching out and cleaning the per-operation memory context
+	 */
+	Assert(CurrentMemoryContext == ApplyOperationContext);
+	MemoryContextSwitchTo(oldcontext);
+	MemoryContextReset(ApplyOperationContext);
 
 	/* if INSERT was into our queue, process the message. */
 	if (RelationGetRelid(rel->rel) == QueueRelid)
@@ -1350,8 +1369,6 @@ handle_insert(StringInfo s)
 		Relation	qrel;
 
 		multi_insert_finish();
-
-		MemoryContextSwitchTo(ApplyOperationContext);
 
 		ht = heap_form_tuple(RelationGetDescr(rel->rel),
 							 newtup.values, newtup.nulls);
@@ -1374,15 +1391,12 @@ handle_insert(StringInfo s)
 		table_close(qrel, NoLock);
 
 		spock_apply_heap_begin();
-		MemoryContextSwitchTo(MessageContext);
 	}
 	else
 	{
 		spock_relation_close(rel, NoLock);
 		end_replication_step();
 	}
-	MemoryContextSwitchTo(MessageContext);
-	MemoryContextReset(ApplyOperationContext);
 }
 
 static void
