@@ -17,7 +17,7 @@ SET client_min_messages = 'warning';
 
 DO $$
 BEGIN
-  CREATE EXTENSION IF NOT EXISTS spock VERSION '6.0.0-devel';
+  CREATE EXTENSION IF NOT EXISTS spock VERSION '5.1.0';
 END;
 $$;
 ALTER EXTENSION spock UPDATE;
