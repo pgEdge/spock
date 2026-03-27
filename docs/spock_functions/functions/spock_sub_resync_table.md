@@ -20,4 +20,6 @@ Resynchronize one existing table.
     relation
         The name of existing table, optionally schema qualified.
     truncate
-        Truncate table before synchronisation (default value is true). If do not truncate, conflicts between existing rows and newly arriving may cause errors.
+        Truncate table before synchronisation (default value is true). If 
+        do not include the truncate argument, conflicts between existing rows
+        and newly arriving may cause errors.
