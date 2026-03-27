@@ -39,4 +39,8 @@ This function takes no arguments.
 
 ### EXAMPLE
 
-    SELECT spock.sync_event();
+The following example creates a synchronization event and returns the LSN:
+
+    postgres=# SELECT spock.sync_event();
+    -[ RECORD 1 ]---------
+    sync_event | 0/333F410
