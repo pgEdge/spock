@@ -1337,6 +1337,12 @@ handle_insert(StringInfo s)
 			}
 			PG_END_TRY();
 
+			/*
+			 * Rollback switches to the parent transaction context;
+			 * restore ApplyOperationContext for the code below.
+			 */
+			MemoryContextSwitchTo(ApplyOperationContext);
+
 			if (failed)
 			{
 				/*
@@ -1359,7 +1365,6 @@ handle_insert(StringInfo s)
 	 */
 	Assert(CurrentMemoryContext == ApplyOperationContext);
 	MemoryContextSwitchTo(oldcontext);
-	MemoryContextReset(ApplyOperationContext);
 
 	/* if INSERT was into our queue, process the message. */
 	if (RelationGetRelid(rel->rel) == QueueRelid)
@@ -1397,6 +1402,8 @@ handle_insert(StringInfo s)
 		spock_relation_close(rel, NoLock);
 		end_replication_step();
 	}
+
+	MemoryContextReset(ApplyOperationContext);
 }
 
 static void
@@ -1512,9 +1519,19 @@ handle_update(StringInfo s)
 			PG_CATCH();
 			{
 				failed = true;
-				RollbackAndReleaseCurrentSubTransaction();
-				edata = CopyErrorData();
 				xact_had_exception = true;
+
+				MemoryContextSwitchTo(ApplyOperationContext);
+				edata = CopyErrorData();
+
+				FlushErrorState();
+				RollbackAndReleaseCurrentSubTransaction();
+
+				/*
+				 * Rollback switches to the parent transaction context;
+				 * restore ApplyOperationContext for the code below.
+				 */
+				MemoryContextSwitchTo(ApplyOperationContext);
 			}
 			PG_END_TRY();
 
@@ -1629,9 +1646,19 @@ handle_delete(StringInfo s)
 			PG_CATCH();
 			{
 				failed = true;
-				RollbackAndReleaseCurrentSubTransaction();
-				edata = CopyErrorData();
 				xact_had_exception = true;
+
+				MemoryContextSwitchTo(ApplyOperationContext);
+				edata = CopyErrorData();
+
+				FlushErrorState();
+				RollbackAndReleaseCurrentSubTransaction();
+
+				/*
+				 * Rollback switches to the parent transaction context;
+				 * restore ApplyOperationContext for the code below.
+				 */
+				MemoryContextSwitchTo(ApplyOperationContext);
 			}
 			PG_END_TRY();
 
@@ -2298,9 +2325,19 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 			PG_CATCH();
 			{
 				failed = true;
-				RollbackAndReleaseCurrentSubTransaction();
-				edata = CopyErrorData();
 				xact_had_exception = true;
+
+				MemoryContextSwitchTo(ApplyOperationContext);
+				edata = CopyErrorData();
+
+				FlushErrorState();
+				RollbackAndReleaseCurrentSubTransaction();
+
+				/*
+				 * Rollback switches to the parent transaction context;
+				 * restore ApplyOperationContext for the code below.
+				 */
+				MemoryContextSwitchTo(ApplyOperationContext);
 			}
 			PG_END_TRY();
 

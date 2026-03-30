@@ -138,9 +138,9 @@ FROM spock.exception_log
 ORDER BY command_counter;
  table_name | operation | has_error 
 ------------+-----------+-----------
- drl_t1     | INSERT    | f
+ drl_t1     | INSERT    | t
             | UPDATE    | t
- drl_t3     | UPDATE    | f
+ drl_t3     | UPDATE    | t
 (3 rows)
 
 -- Resolutions must be empty: dry-run never executes DML, so no
@@ -185,9 +185,9 @@ FROM spock.exception_log
 ORDER BY command_counter;
  table_name | operation | has_error |                                       ddl_statement                                        
 ------------+-----------+-----------+--------------------------------------------------------------------------------------------
- drl_t1     | UPDATE    | f         | 
- queue      | INSERT    | f         | 
-            | DDL       | f         | "SET search_path TO \"$user\",public; CREATE TABLE IF NOT EXISTS public.drl_dummy (x int)"
+ drl_t1     | UPDATE    | t         | 
+ queue      | INSERT    | t         | 
+            | DDL       | t         | "SET search_path TO \"$user\",public; CREATE TABLE IF NOT EXISTS public.drl_dummy (x int)"
  drl_t3     | UPDATE    | t         | 
 (4 rows)
 
@@ -458,9 +458,9 @@ FROM spock.exception_log
 ORDER BY command_counter;
  table_name |  operation  | has_error 
 ------------+-------------+-----------
- drl_t1     | INSERT      | f
+ drl_t1     | INSERT      | t
  drl_t2     | UPDATE      | t
- drl_t3     | UPDATE      | f
+ drl_t3     | UPDATE      | t
             | SUB_DISABLE | t
 (4 rows)
 
