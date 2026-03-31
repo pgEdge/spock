@@ -3195,9 +3195,11 @@ stream_replay:
 					 * In-memory entries (both first-pass and replay) live in
 					 * ApplyReplayContext and are freed by
 					 * MemoryContextReset inside apply_replay_queue_reset,
-					 * called from handle_commit.
+					 * called on applying a COMMIT.
+					 *
+					 * !from_pq catches spill-read entries during replay.
 					 */
-					if (entry_spilled)
+					if (entry_spilled || !entry->from_pq)
 						apply_replay_entry_free(entry);
 				}
 				else if (c == 'k')
@@ -4138,9 +4140,16 @@ apply_replay_spill_write_entry(int len, char *data)
 	Assert(len > 0);
 	Assert(data != NULL);
 
+	/*
+	 * Increment the count before writing so that a partial or failed write
+	 * (ERROR from BufFileWrite) leaves the count higher than the number of
+	 * complete records on disk.  During replay, apply_replay_spill_read_entry()
+	 * will attempt to read this record, hit EOF or a short read, and raise
+	 * ERROR — which triggers a clean worker restart via the outer PG_CATCH.
+	 */
+	apply_replay_spill_count++;
 	BufFileWrite(apply_replay_spill_file, &len, sizeof(int));
 	BufFileWrite(apply_replay_spill_file, data, len);
-	apply_replay_spill_count++;
 }
 
 /*
@@ -4342,11 +4351,6 @@ apply_replay_queue_append_entry(ApplyReplayEntry *entry, StringInfo msg)
 
 		apply_replay_spill_write_entry(msg->len, msg->data);
 
-		/* XXX: keep DEBUG1 logging until spill-to-disk code is proven stable */
-		if (xact_action_counter % 100 == 0)
-			elog(DEBUG1, "SPOCK %s: replay queue spill entry %u: ",
-				 MySubscription->name, xact_action_counter);
-
 		/*
 		 * Move the entry struct from ApplyReplayContext to TopMemoryContext.
 		 * handle_commit calls apply_replay_queue_reset which does
@@ -4356,9 +4360,8 @@ apply_replay_queue_append_entry(ApplyReplayEntry *entry, StringInfo msg)
 		 */
 		oldctx = MemoryContextSwitchTo(TopMemoryContext);
 		mc_entry = (ApplyReplayEntry *) palloc(sizeof(ApplyReplayEntry));
-		/* nosemgrep: palloc above allocates exactly sizeof(ApplyReplayEntry)
-		 * bytes — the same size memcpy copies — so no overflow is possible. */
-		memcpy(mc_entry, entry, sizeof(ApplyReplayEntry));
+		/* palloc and memcpy use the same sizeof — no overflow possible. */
+		memcpy(mc_entry, entry, sizeof(ApplyReplayEntry)); /* nosemgrep */
 		MemoryContextSwitchTo(oldctx);
 
 		pfree(entry);

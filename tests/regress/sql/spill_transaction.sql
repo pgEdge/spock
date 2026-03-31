@@ -178,7 +178,7 @@ COPY test_spill (id) FROM PROGRAM 'seq 1 50000' WITH (FORMAT text);
 DO $$
 BEGIN
   SET LOCAL statement_timeout = '30s';
-  WHILE (SELECT status FROM spock.sub_show_status()) <> 'disabled' LOOP
+  WHILE (SELECT status FROM spock.sub_show_status('test_subscription')) <> 'disabled' LOOP
     PERFORM pg_sleep(0.1);
   END LOOP;
 END;
