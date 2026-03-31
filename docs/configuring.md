@@ -191,15 +191,6 @@ keepalive options, etc.
 the upstream server disappears unexpectedly. To disable them add
 `keepalives = 0` to `spock.extra_connection_options`.
 
-#### `spock.feedback_frequency`
-
-Controls how many WAL messages the apply worker processes before sending
-an LSN feedback packet to the provider. Lower values increase feedback
-overhead due to synchronous socket flushes; higher values reduce overhead
-during bulk catch-up. There is a time-based guard (wal_sender_timeout / 2)
-that ensures connection liveness regardless of this setting. The default
-is 200.
-
 ### `spock.include_ddl_repset`
 
 `spock.include_ddl_repset` enables spock to automatically add tables to
