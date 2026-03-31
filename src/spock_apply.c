@@ -2372,7 +2372,7 @@ handle_message(StringInfo s)
 	lsn = pq_getmsgint64(s);
 	transactional = pq_getmsgbyte(s);
 	prefix = pq_getmsgstring(s);
-	if (lsn == InvalidXLogRecPtr || !transactional ||
+	if (lsn == InvalidXLogRecPtr ||
 		strcmp(prefix, SPOCK_MESSAGE_PREFIX) != 0)
 
 		/*
@@ -2396,13 +2396,28 @@ handle_message(StringInfo s)
 				(void) msg;		/* unused */
 
 				/*
-				 * Do nothing. The main idea is to update the progress status.
-				 * This message must be transactional. That means if we see it
-				 * here, the transaction has been committed on the publisher
-				 * and delivered to the subscriber (note: not exactly for
-				 * streaming mode). The progress status will eventually be
-				 * updated in the commit section of this transaction.
+				 * For non-transactional sync events, explicitly advance the
+				 * replication origin so pg_replication_origin_status.remote_lsn
+				 * reflects this position immediately.  For transactional
+				 * messages the origin is advanced at commit time in
+				 * handle_commit().
 				 */
+				elog(LOG, "SPOCK %s: received sync_event at %X/%X "
+					 "(transactional=%d, origin=%d)",
+					 MySubscription->name,
+					 LSN_FORMAT_ARGS(lsn),
+					 transactional,
+					 replorigin_session_origin);
+
+				if (!transactional &&
+					replorigin_session_origin != InvalidRepOriginId &&
+					replorigin_session_origin != DoNotReplicateId)
+				{
+					replorigin_session_advance(lsn, InvalidXLogRecPtr);
+					elog(LOG, "SPOCK %s: advanced origin to %X/%X",
+						 MySubscription->name,
+						 LSN_FORMAT_ARGS(lsn));
+				}
 			}
 			break;
 
