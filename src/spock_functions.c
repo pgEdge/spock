@@ -3109,8 +3109,26 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	message.eorigin = node->node->id;
 	memset(NameStr(message.ename), 0, NAMEDATALEN);
 
+	/*
+	 * Use a non-transactional message with flush. This bypasses the reorder
+	 * buffer so the walsender delivers it immediately, and the explicit WAL
+	 * flush wakes the walsender via WalSndWakeupProcessRequests.
+	 *
+	 * PG17+ has a 5th flush parameter; on PG15/16 we call XLogFlush manually.
+	 * Parentheses around the function name bypass the 4-arg compat macro on
+	 * PG17/18 so we can pass the 5th parameter directly.
+	 */
+#if PG_VERSION_NUM >= 170000
+	lsn = (LogLogicalMessage)(SPOCK_MESSAGE_PREFIX, (char *) &message,
+							  sizeof(message), false, true);
+#else
 	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *) &message,
-							sizeof(message), true);
+							sizeof(message), false);
+	XLogFlush(lsn);
+#endif
+
+	elog(DEBUG1, "SPOCK sync_event: emitted non-transactional message at %X/%X",
+		 LSN_FORMAT_ARGS(lsn));
 
 	PG_RETURN_LSN(lsn);
 }

@@ -722,16 +722,30 @@ pg_decode_message(LogicalDecodingContext *ctx,
 				MemoryContext		oldctx;
 				SpockOutputData	   *data;
 
-				Assert(txn != NULL);
-
-				data = (SpockOutputData*) ctx->output_plugin_private;
+				/* txn is NULL for non-transactional messages */
+				data = (SpockOutputData *) ctx->output_plugin_private;
 				oldctx = MemoryContextSwitchTo(data->context);
+
+				/*
+				 * The startup message is normally sent in pg_decode_begin_txn.
+				 * A non-transactional sync event can arrive before any
+				 * transaction is decoded (e.g. right after slot creation).
+				 * Send the startup message first so the subscriber knows the
+				 * protocol version and can parse the proto-v5 header.
+				 */
+				if (!startup_message_sent)
+					send_startup_message(ctx, data, false);
+
+				elog(DEBUG1, "SPOCK output: sending sync_event at %X/%X "
+					 "(transactional=%d, startup_sent=%d)",
+					 LSN_FORMAT_ARGS(message_lsn),
+					 transactional, startup_message_sent);
 
 				OutputPluginPrepareWrite(ctx, true);
 				spock_write_message(ctx->out,
-									txn->xid,
+									txn ? txn->xid : InvalidTransactionId,
 									message_lsn,
-									true,
+									transactional,
 									prefix,
 									message_size,
 									message);
