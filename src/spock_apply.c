@@ -2337,7 +2337,10 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 		{
 			/*
 			 * TRANSDISCARD and SUB_DISABLE: skip the DDL, just extract SQL
-			 * for logging below.
+			 * for logging below.  JsonbToCString is simpler than the full
+			 * JSONB iterator extraction used in handle_sql(); the result
+			 * includes JSON quoting but that's acceptable for a log entry
+			 * (handle_sql() needs the raw string for execution).
 			 */
 			sql = JsonbToCString(NULL,
 								 &queued_message->message->root, 0);
