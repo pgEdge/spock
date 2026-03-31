@@ -1160,7 +1160,7 @@ _PG_init(void)
 							"Set to 0 to disable spilling (unlimited memory).",
 							&spock_replay_queue_size,
 							4,
-							-1,
+							0,
 							MAX_KILOBYTES / 1024,
 							PGC_SIGHUP,
 							GUC_UNIT_MB,
