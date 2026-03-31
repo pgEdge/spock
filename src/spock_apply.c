@@ -1708,7 +1708,32 @@ handle_truncate(StringInfo s)
 	begin_replication_step();
 
 	errcallback_arg.action_name = "TRUNCATE";
+	xact_action_counter++;
 	remote_relids = spock_read_truncate(s, &cascade, &restart_seqs);
+
+	/*
+	 * TRANSDISCARD/SUB_DISABLE: skip the TRUNCATE and log it as discarded.
+	 * ExecuteTruncateGuts is called directly (not via ProcessUtility), so
+	 * transaction_read_only does not protect against it — we must skip
+	 * explicitly, matching the pattern in handle_insert/update/delete.
+	 */
+	if (MyApplyWorker->use_try_block &&
+		(exception_behaviour == TRANSDISCARD ||
+		 exception_behaviour == SUB_DISABLE))
+	{
+		char	   *error_msg =
+			(xact_action_counter ==
+			 exception_log_ptr[my_exception_log_index].failed_action &&
+			 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+			exception_log_ptr[my_exception_log_index].initial_error_message :
+			NULL;
+
+		exception_command_counter++;
+		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+		log_insert_exception(false, error_msg, NULL, NULL, NULL, "TRUNCATE");
+		end_replication_step();
+		return;
+	}
 
 	foreach(lc, remote_relids)
 	{
