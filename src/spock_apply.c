@@ -1554,6 +1554,9 @@ handle_update(StringInfo s)
 	spock_relation_close(rel, NoLock);
 
 	end_replication_step();
+
+	/* Free CopyErrorData allocations from the DISCARD-mode PG_CATCH path. */
+	MemoryContextReset(ApplyOperationContext);
 }
 
 static void
@@ -1680,6 +1683,9 @@ handle_delete(StringInfo s)
 	spock_relation_close(rel, NoLock);
 
 	end_replication_step();
+
+	/* Free CopyErrorData allocations from the DISCARD-mode PG_CATCH path. */
+	MemoryContextReset(ApplyOperationContext);
 }
 
 /*
@@ -2403,6 +2409,9 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 	}
 
 	end_replication_step();
+
+	/* Free CopyErrorData allocations from the DISCARD-mode PG_CATCH path. */
+	MemoryContextReset(ApplyOperationContext);
 }
 
 /*
