@@ -1507,7 +1507,7 @@ BEGIN
                     slot_name;
             EXCEPTION
                 WHEN OTHERS THEN
-                    RAISE WARNING '    Could not drop stale origin % on new node: %',
+                    RAISE EXCEPTION 'Could not drop stale origin % on new node: %',
                         slot_name, SQLERRM;
             END;
             CALL spock.create_sub(
