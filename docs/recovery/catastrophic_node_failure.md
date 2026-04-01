@@ -455,13 +455,11 @@ steps use ACE to fix the data on n2.
 If two or more nodes failed (e.g. n1 and n4), you'll perform these steps
 for each node.
 
-!!! important
+**Important:** Complete all Spock cleanup steps above before proceeding to
+Phase 3. If the subscription to the failed node is still registered on
+survivors, `--recovery-mode`'s automatic source-of-truth selection (which
+probes replication origin LSNs on each survivor) may return unreliable results.
 
-    Complete all Spock cleanup steps above before proceeding to Phase 3.
-    If the subscription to the failed node is still registered on survivors,
-    `--recovery-mode`'s automatic source-of-truth selection (which probes
-    replication origin LSNs on each survivor) may return unreliable results.
-    
 ---
 
 ### Phase 3: Identify All of the Missing Data
@@ -1003,7 +1001,7 @@ The process is similar for a multi-node failure with these key differences:
 1. Assess the damage by identifying which nodes are behind and when each
    failure occurred.
 2. Clean up Spock by dropping subscriptions to all failed nodes and
-   removing all of the failed nodes from the cluster. Complete this before
+   removing all failed nodes from the cluster. Complete this before
    running table-diff.
 3. Identify missing data by running `ace table-diff` once for each failed
    origin, for each table: `--against-origin n1 --until <n1_failure_time>`
@@ -1014,16 +1012,16 @@ The process is similar for a multi-node failure with these key differences:
 5. Validate recovery by re-running table-diff (without `--against-origin`
    or `--until`) to confirm all tables match.
 
-!!! important
+### Critical Reminder
 
-    In both scenarios, always pair `--against-origin` (on `table-diff`) with
-    `--recovery-mode` and `--preserve-origin` (on `table-repair`). These
-    three flags work together: `--against-origin` scopes the diff to rows
-    from the failed node; `--recovery-mode` tells the repair that the diff
-    is origin-scoped; and `--preserve-origin` keeps the original origin ID
-    and commit timestamp on every repaired row so that replication metadata
-    stays correct. Omitting any one of them can lead to incomplete repairs or
-    incorrect conflict resolution.
+In both scenarios, always pair `--against-origin` (on `table-diff`) with
+`--recovery-mode` and `--preserve-origin` (on `table-repair`). These three
+flags work together: `--against-origin` scopes the diff to rows from the
+failed node; `--recovery-mode` tells the repair that the diff is
+origin-scoped; and `--preserve-origin` keeps the original origin ID and
+commit timestamp on every repaired row so that replication metadata stays
+correct. Omitting any one of them can lead to incomplete repairs or incorrect
+conflict resolution.
 
 
 ## See also
