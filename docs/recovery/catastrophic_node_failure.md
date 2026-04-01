@@ -231,10 +231,11 @@ flowchart TD
 In these cases you will:
 
     1. Clean up the failed node(s) in Spock.
-    2. Run table-diff on all tables—once per failed origin in the multiple-node 
-       case.
-    3. Run table-repair with `--preserve-origin` and a single source of truth 
-       so that origin ID and commit timestamp are preserved for each repaired row.
+    2. Run table-diff on all tables with `--against-origin`—once per failed
+       origin in the multiple-node case.
+    3. Run table-repair with `--recovery-mode`, `--preserve-origin`, and a
+       single source of truth so that origin ID and commit timestamp are
+       preserved for each repaired row.
 
 ---
 
@@ -978,43 +979,51 @@ before returning the cluster to normal production traffic.
 The basic steps required to recover a lagging or damaged node vary only
 based on how many nodes you need to repair or rebuild.
 
-## Single Node Failure Recovery
+### Single Node Failure Recovery
 
 In the event of a single node failure, complete these steps in order:
 
 1. Assess the damage by identifying which nodes are behind and determining
    when the failure occurred.
 2. Clean up Spock by dropping subscriptions to the failed node and removing
-   it from the cluster.
-3. Identify missing data by running ACE table-diff on all replicated tables
-   with `--against-origin node_name` and `--until <failure_time>`.
-4. Repair affected tables by running ACE table-repair with the following
-   command options: `--recovery-mode`, `--source-of-truth n3`, and
-   `--preserve-origin` (critical for maintaining replication metadata).
-5. Validate the recovery by re-running table-diff to confirm all tables
-   match across surviving nodes.
+   it from the cluster. Complete this before running table-diff.
+3. Identify missing data by running `ace table-diff` with
+   `--against-origin node_name` and `--until <failure_time>` on all
+   replicated tables. Only include surviving nodes in `--nodes`.
+4. Repair affected tables by running `ace table-repair` with
+   `--recovery-mode`, `--source-of-truth n3`, and `--preserve-origin`
+   for each table that has differences.
+5. Validate the recovery by re-running table-diff (without `--against-origin`
+   or `--until`) to confirm all tables match across surviving nodes.
 
-## Multi-Node Failure Recovery
+### Multi-Node Failure Recovery
 
 The process is similar for a multi-node failure with these key differences:
 
 1. Assess the damage by identifying which nodes are behind and when each
    failure occurred.
 2. Clean up Spock by dropping subscriptions to all failed nodes and
-   removing all of the failed nodes from the cluster.
-3. Identify missing data by running table-diff once for each failed origin,
-   for each table: `--against-origin n1` with n1's failure time and
-   `--against-origin n4` with n4's failure time.
-4. Repair affected tables by running table-repair for each diff file
-   produced using the same `--source-of-truth` (for example, n3) for all
-   repairs and always including `--preserve-origin`.
-5. Validate recovery by re-running table-diff to confirm all tables match.
+   removing all of the failed nodes from the cluster. Complete this before
+   running table-diff.
+3. Identify missing data by running `ace table-diff` once for each failed
+   origin, for each table: `--against-origin n1 --until <n1_failure_time>`
+   and `--against-origin n4 --until <n4_failure_time>`.
+4. Repair affected tables by running `ace table-repair` with
+   `--recovery-mode`, `--preserve-origin`, and the same
+   `--source-of-truth` (for example, n3) for every diff file produced.
+5. Validate recovery by re-running table-diff (without `--against-origin`
+   or `--until`) to confirm all tables match.
 
-### Critical Reminder
+!!! important
 
-In both scenarios, always use `--preserve-origin` to ensure that origin ID
-and commit timestamp are preserved for every repaired row. Check all
-replicated tables to ensure the lagging node is fully recovered.
+    In both scenarios, always pair `--against-origin` (on `table-diff`) with
+    `--recovery-mode` and `--preserve-origin` (on `table-repair`). These
+    three flags work together: `--against-origin` scopes the diff to rows
+    from the failed node; `--recovery-mode` tells the repair that the diff
+    is origin-scoped; and `--preserve-origin` keeps the original origin ID
+    and commit timestamp on every repaired row so that replication metadata
+    stays correct. Omitting any one of them can lead to incomplete repairs or
+    incorrect conflict resolution.
 
 
 ## See also
