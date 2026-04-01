@@ -110,8 +110,8 @@ $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 
 # Warming up ...
-print STDERR "warming up pgbench for 60s\n";
-sleep(60);
+print STDERR "warming up pgbench for 30s\n";
+sleep(30);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...\n";
@@ -126,7 +126,6 @@ psql_or_bail(3, "SELECT pg_reload_conf()");
 print STDERR "Draining replication before add_node ...\n";
 psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
 psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
-sleep(60);
 
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
@@ -135,9 +134,12 @@ psql_or_bail(3,
 						 new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user',
 						 verb := false);");
 
-# Let replication fully stabilize after add_node before checking.
-print STDERR "Sleeping 60s after add_node to let replication settle ...\n";
-sleep(60);
+# Wait for replication to stabilize after add_node before checking.
+# pgbench is still running so lag won't reach zero; just drain current backlog.
+print STDERR "Waiting for replication to settle after add_node ...\n";
+psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+sleep(5);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 my $pid = $pgbench_handle1->{KIDS}[0]{PID};
@@ -236,9 +238,12 @@ system_or_bail "$pg_bin/pgbench", '-i', '-I', 'd', '-h', $host, '-p', $node_port
 psql_or_bail(3, 'DROP FUNCTION wait_subscription');
 psql_or_bail(3, 'VACUUM FULL');
 
-# Let the cluster fully settle after remove_node before starting the next cycle.
-print STDERR "Sleeping 60s after remove_node to let cluster settle ...\n";
-sleep(60);
+# Let the cluster settle after remove_node before starting the next cycle.
+print STDERR "Waiting for cluster to settle after remove_node ...\n";
+scalar_query(1, "SELECT * FROM wait_subscription(remote_node_name := 'n2',
+                                                  timeout := '3 minutes', delay := 0.5)");
+scalar_query(2, "SELECT * FROM wait_subscription(remote_node_name := 'n1',
+                                                  timeout := '3 minutes', delay := 0.5)");
 
 # To improve TPS
 psql_or_bail(1, "CREATE UNIQUE INDEX ON pgbench_accounts(abs(aid))");
@@ -269,8 +274,8 @@ $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 
 # Warming up ...
-print STDERR "warming up pgbench for 60s\n";
-sleep(60);
+print STDERR "warming up pgbench for 30s\n";
+sleep(30);
 print STDERR "done warmup\n";
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
@@ -344,8 +349,8 @@ $pgbench_handle1->pump();
 $pgbench_handle2->pump();
 
 # Warming up ...
-print STDERR "warming up pgbench for 60s\n";
-sleep(60);
+print STDERR "warming up pgbench for 30s\n";
+sleep(30);
 print STDERR "done warmup\n";
 
 print STDERR "Add N3 into highly loaded configuration of N1 and N2 ...";
@@ -356,7 +361,6 @@ psql_or_bail(3, "SELECT pg_reload_conf()");
 print STDERR "Draining replication before second add_node ...\n";
 psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
 psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
-sleep(30);
 
 psql_or_bail(3,
 	"CALL spock.add_node(src_node_name := 'n1',
@@ -365,9 +369,12 @@ psql_or_bail(3,
 						 new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user',
 						 verb := false);");
 
-# Let replication fully stabilize after second add_node.
-print STDERR "Sleeping 60s after add_node to let replication settle ...\n";
-sleep(60);
+# Wait for replication to stabilize after second add_node.
+# pgbench is still running so lag won't reach zero; just drain current backlog.
+print STDERR "Waiting for replication to settle after add_node ...\n";
+psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+sleep(5);
 
 # Ensure that pgbench load lasts longer than the Z0DAN protocol.
 $pid = $pgbench_handle1->{KIDS}[0]{PID};
@@ -415,6 +422,47 @@ psql_or_bail(1, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 120
 print STDERR "Wait for the N3 -> N2 sync message ...\n";
 psql_or_bail(2, "CALL spock.wait_for_sync_event(true, 'n3', '$lsn3'::pg_lsn, 1200, true)");
 print STDERR "First LR transaction has arrived from new node to the active ones\n";
+
+# Wait for all replication directions to fully catch up.
+psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(3, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+print STDERR "DEBUG: wait_subscription N1<-N2 ...\n";
+scalar_query(1, "SELECT * FROM wait_subscription(remote_node_name := 'n2',
+                                                  timeout := '3 minutes', delay := 0.5)");
+print STDERR "DEBUG: wait_subscription N1<-N3 ...\n";
+scalar_query(1, "SELECT * FROM wait_subscription(remote_node_name := 'n3',
+                                                  timeout := '3 minutes', delay := 0.5)");
+print STDERR "DEBUG: wait_subscription N2<-N1 ...\n";
+scalar_query(2, "SELECT * FROM wait_subscription(remote_node_name := 'n1',
+                                                  timeout := '3 minutes', delay := 0.5)");
+print STDERR "DEBUG: wait_subscription N2<-N3 ...\n";
+scalar_query(2, "SELECT * FROM wait_subscription(remote_node_name := 'n3',
+                                                  timeout := '3 minutes', delay := 0.5)");
+print STDERR "DEBUG: wait_subscription N3<-N1 ...\n";
+my $lag_n3_n1 = scalar_query(3, "SELECT * FROM wait_subscription(remote_node_name := 'n1',
+                                                  timeout := '3 minutes', delay := 0.5)");
+print STDERR "DEBUG: wait_subscription N3<-N1 returned lag=$lag_n3_n1\n";
+print STDERR "DEBUG: wait_subscription N3<-N2 ...\n";
+my $lag_n3_n2 = scalar_query(3, "SELECT * FROM wait_subscription(remote_node_name := 'n2',
+                                                  timeout := '3 minutes', delay := 0.5)");
+print STDERR "DEBUG: wait_subscription N3<-N2 returned lag=$lag_n3_n2\n";
+
+# Second round: confirm N1/N2 outbound slots to N3 have caught up after
+# wait_subscription reported zero lag.
+psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+
+# Final gate: poll N3's actual data until it matches N1, covering any
+# remaining apply lag not captured by WAL position tracking.
+my $n1_agg = scalar_query(1, "SELECT sum(abalance) FROM pgbench_accounts");
+print STDERR "DEBUG: N1 sum(abalance) = $n1_agg\n";
+for my $attempt (1..30) {
+    my $n3_agg = scalar_query(3, "SELECT sum(abalance) FROM pgbench_accounts");
+    print STDERR "DEBUG: N3 sum(abalance) = $n3_agg (attempt $attempt)\n";
+    last if $n3_agg eq $n1_agg;
+    sleep(1);
+}
 
 print STDERR "Check the data consistency.\n";
 $ret1 = scalar_query(1, "SELECT sum(abalance), sum(aid), count(*) FROM pgbench_accounts");
