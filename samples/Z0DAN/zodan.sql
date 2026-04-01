@@ -1594,7 +1594,7 @@ BEGIN
                             sync_ok text;
                         BEGIN
                             SELECT * INTO sync_ok FROM dblink(new_node_dsn,
-                                format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
+                                format('CALL spock.wait_for_sync_event(NULL, %L, %L::pg_lsn, %s, true)',
                                        src_node_name, sync_lsn, timeout_ms)) AS t(result text);
 
                             IF sync_ok IS NULL OR sync_ok::boolean IS NOT TRUE THEN
@@ -1671,7 +1671,7 @@ BEGIN
                             sync_ok text;
                         BEGIN
                             SELECT * INTO sync_ok FROM dblink(new_node_dsn,
-                                format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
+                                format('CALL spock.wait_for_sync_event(NULL, %L, %L::pg_lsn, %s, true)',
                                        rec.node_name, sync_lsn, timeout_ms)) AS t(result text);
 
                             IF sync_ok IS NULL OR sync_ok::boolean IS NOT TRUE THEN
@@ -1874,7 +1874,7 @@ BEGIN
 
         -- Wait for sync event on source node
         BEGIN
-            remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true);',
+            remotesql := format('CALL spock.wait_for_sync_event(NULL, %L, %L::pg_lsn, %s, true);',
                                rec.node_name, sync_lsn, timeout_ms);
             IF verb THEN
                 RAISE NOTICE '    Remote SQL for waiting sync event: %', remotesql;
@@ -2188,7 +2188,7 @@ BEGIN
 
     -- Wait for sync event on new node
     BEGIN
-        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true);', src_node_name, sync_lsn, timeout_ms);
+        remotesql := format('CALL spock.wait_for_sync_event(NULL, %L, %L::pg_lsn, %s, true);', src_node_name, sync_lsn, timeout_ms);
         IF verb THEN
             RAISE NOTICE '    Remote SQL for wait_for_sync_event on new node %: %', new_node_name, remotesql;
         END IF;
