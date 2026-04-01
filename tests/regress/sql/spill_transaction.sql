@@ -92,7 +92,6 @@ SELECT pg_reload_conf();
 
 \c :provider_dsn
 TRUNCATE test_spill RESTART IDENTITY;
-
 SELECT spock.sync_event() as sync_lsn
 \gset
 
@@ -112,8 +111,7 @@ CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 -- Check: COPY transaction discarded, single record presented
 SELECT id, payload FROM test_spill;
 
-SELECT command_counter AS cnt,operation AS opt,
-  remote_new_tup FROM spock.exception_log
+SELECT operation AS opt, remote_new_tup FROM spock.exception_log
 ORDER BY command_counter DESC LIMIT 5;
 
 -- ============================================================
@@ -121,12 +119,12 @@ ORDER BY command_counter DESC LIMIT 5;
 -- The conflict is resolved per-row; all 50000 rows arrive.
 -- ============================================================
 \c :subscriber_dsn
+TRUNCATE spock.exception_log;
 ALTER SYSTEM SET spock.exception_behaviour = 'discard';
 SELECT pg_reload_conf();
 
 \c :provider_dsn
 TRUNCATE test_spill RESTART IDENTITY;
-
 SELECT spock.sync_event() as sync_lsn
 \gset
 
@@ -145,8 +143,7 @@ CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 -- Check 49999 COPY records applied plus older one has been kept
 SELECT count(*), sum(id), sum(payload) FROM test_spill;
 
-SELECT command_counter AS cnt,operation AS opt,
-  remote_new_tup FROM spock.exception_log
+SELECT operation AS opt,remote_new_tup FROM spock.exception_log
 ORDER BY command_counter DESC LIMIT 5;
 
 -- ============================================================
@@ -155,18 +152,21 @@ ORDER BY command_counter DESC LIMIT 5;
 -- conflicting row, re-enable, and verify the transaction
 -- is applied successfully.
 -- ============================================================
-\c :subscriber_dsn
-ALTER SYSTEM SET spock.exception_behaviour = 'sub_disable';
-SELECT pg_reload_conf();
 
 \c :provider_dsn
 TRUNCATE test_spill RESTART IDENTITY;
-
-SELECT spock.sync_event() as sync_lsn
-\gset
+SELECT spock.sync_event() as sync_lsn \gset
 
 \c :subscriber_dsn
 CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+TRUNCATE spock.exception_log;
+ALTER SYSTEM SET spock.exception_behaviour = 'sub_disable';
+SELECT pg_reload_conf();
+
+-- Check that all works and clean on subscriber
+SELECT status FROM spock.sub_show_status('test_subscription');
+SELECT * FROM test_spill; -- empty
+
 INSERT INTO test_spill (id, payload) VALUES (-1, 50000); -- Add conflicting record
 
 \c :provider_dsn
@@ -200,8 +200,7 @@ SELECT count(*), sum(id), sum(payload) FROM test_spill;
 -- Check how the conflict has been processed.
 SELECT node_name,relname,idxname,conflict_type,conflict_resolution,
   local_tuple,remote_tuple FROM spock.resolutions;
-SELECT command_counter AS cnt,operation AS opt,
-  remote_new_tup FROM spock.exception_log
+SELECT operation AS opt, remote_new_tup FROM spock.exception_log
 ORDER BY command_counter DESC LIMIT 5;
 
 -- ============================================================
