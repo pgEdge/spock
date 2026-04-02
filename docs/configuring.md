@@ -191,6 +191,34 @@ keepalive options, etc.
 the upstream server disappears unexpectedly. To disable them add
 `keepalives = 0` to `spock.extra_connection_options`.
 
+### `wal_sender_timeout`
+
+For Spock replication, set `wal_sender_timeout` to a conservative value such
+as `5min` (300000ms) on each node in `postgresql.conf`:
+
+```
+wal_sender_timeout = '5min'
+```
+
+The default PostgreSQL value of `60s` can cause spurious disconnects when
+the subscriber is busy applying a large transaction and cannot send feedback
+in time. A higher value gives the apply worker enough headroom while still
+detecting truly dead connections. Liveness detection is primarily handled by
+TCP keepalives, and `spock.apply_idle_timeout` provides an additional
+subscriber-side safety net.
+
+### `spock.apply_idle_timeout`
+
+Maximum idle time (in seconds) before the apply worker reconnects to the
+provider. This acts as a safety net for detecting a hung walsender that keeps
+the TCP connection alive but stops sending data. The timer resets on any
+received message. Set to `0` to disable and rely solely on TCP keepalive for
+liveness detection. Default: `300` (5 minutes).
+
+```
+spock.apply_idle_timeout = 300
+```
+
 ### `spock.include_ddl_repset`
 
 `spock.include_ddl_repset` enables spock to automatically add tables to
