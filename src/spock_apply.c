@@ -434,6 +434,26 @@ begin_replication_step(void)
 	if (!IsTransactionState())
 	{
 		StartTransactionCommand();
+
+		/*
+		 * Check if create_slot_with_progress needs us to pause.  This runs
+		 * at the start of every new transaction (first DML after BEGIN),
+		 * ensuring the worker blocks even under continuous load.  The
+		 * previous transaction's commit is fully complete at this point,
+		 * and we have a valid transaction context for LockAcquire.
+		 */
+		if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+		{
+			LOCKTAG		tag;
+
+			SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
+								 SPOCK_PAUSE_ADVISORY_KEY, 0, 2);
+			(void) LockAcquire(&tag, ShareLock, true, false);
+			LockRelease(&tag, ShareLock, true);
+			pg_atomic_compare_exchange_u32(&SpockCtx->pause_apply,
+										   &(uint32){1}, 0);
+		}
+
 		spock_apply_heap_begin();
 		result = true;
 	}
@@ -470,24 +490,6 @@ handle_begin(StringInfo s)
 	bool		slot_found = false;
 	int			sub_name_len = strlen(MySubscription->name);
 	char	   *slot_name;
-
-	/*
-	 * Check if create_slot_with_progress needs us to pause.  This runs at
-	 * the start of every transaction (before any DML), ensuring the worker
-	 * blocks even under continuous load.  The previous transaction's commit
-	 * is fully complete at this point, so ros.remote_lsn reflects only
-	 * committed state.
-	 */
-	if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
-	{
-		LOCKTAG		tag;
-
-		SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
-							 SPOCK_PAUSE_ADVISORY_KEY, 0, 2);
-		(void) LockAcquire(&tag, ShareLock, true, false);
-		LockRelease(&tag, ShareLock, true);
-		pg_atomic_compare_exchange_u32(&SpockCtx->pause_apply, &(uint32){1}, 0);
-	}
 
 	/*
 	 * To get here we must have connected successfully and the replication
@@ -3177,18 +3179,6 @@ stream_replay:
 			 */
 			if (!IsTransactionState())
 			{
-				/* Also check pause here for the idle case (no incoming messages). */
-				if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
-				{
-					LOCKTAG		tag;
-
-					SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
-										 SPOCK_PAUSE_ADVISORY_KEY, 0, 2);
-					(void) LockAcquire(&tag, ShareLock, true, false);
-					LockRelease(&tag, ShareLock, true);
-					pg_atomic_compare_exchange_u32(&SpockCtx->pause_apply, &(uint32){1}, 0);
-				}
-
 				VALGRIND_DO_ADDED_LEAK_CHECK;
 				pgstat_report_stat(true);
 			}
