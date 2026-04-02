@@ -2434,7 +2434,7 @@ replication_handler(StringInfo s)
 	char		action = pq_getmsgbyte(s);
 
 	if (spock_readonly == READONLY_ALL)
-		elog(PANIC, "SPOCK %s: cluster is in read-only mode, not performing replication",
+		elog(FATAL, "SPOCK %s: cluster is in read-only mode, not performing replication",
 			 MySubscription->name);
 
 	memset(&errcallback_arg, 0, sizeof(struct ActionErrCallbackArg));
