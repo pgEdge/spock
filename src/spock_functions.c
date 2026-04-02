@@ -3408,8 +3408,9 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 Datum
 spock_resume_apply_workers(PG_FUNCTION_ARGS)
 {
-	/* Clear the flag — workers spinning on it will wake and continue. */
+	/* Clear the flag and wake all sleeping workers. */
 	pg_atomic_write_u32(&SpockCtx->pause_apply, 0);
+	ConditionVariableBroadcast(&SpockCtx->pause_cv);
 
 	elog(DEBUG1, "SPOCK resume_apply_workers: workers resumed");
 

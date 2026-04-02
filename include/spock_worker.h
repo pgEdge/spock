@@ -14,9 +14,6 @@
 
 #include "storage/lock.h"
 
-/* Advisory lock key used for apply worker pause during slot creation. */
-#define SPOCK_PAUSE_ADVISORY_KEY	0x5370434B	/* "SpCK" */
-
 #include "spock.h"
 #include "spock_group.h"		/* for SpockApplyGroupData */
 #include "spock_output_plugin.h"	/* for SpockOutputSlotGroup */
@@ -112,10 +109,10 @@ typedef struct SpockContext
 
 	/*
 	 * Pause mechanism for apply workers during slot creation.
-	 * Non-zero signals apply workers to acquire a shared advisory lock,
-	 * which blocks while create_slot_with_progress holds the exclusive lock.
+	 * Non-zero signals workers to sleep on pause_cv until cleared.
 	 */
 	pg_atomic_uint32 pause_apply;
+	ConditionVariable pause_cv;
 
 	/* Background workers. */
 	int			total_workers;

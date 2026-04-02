@@ -439,22 +439,18 @@ begin_replication_step(void)
 		 * single atomic read that almost always sees 0.
 		 *
 		 * Runs before StartTransactionCommand so the worker has no xid
-		 * while spinning — pause_apply_workers can detect completion via
+		 * while paused — pause_apply_workers can detect completion via
 		 * xid polling.  The previous transaction's commit is fully
 		 * complete, so ros.remote_lsn reflects only committed state.
-		 *
-		 * The 1ms poll loop is adequate: the pause lasts sub-millisecond
-		 * (slot creation + ros read).  A ConditionVariable would be
-		 * more efficient but adds complexity for a rare code path.
 		 */
 		if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
 		{
 			MyApplyWorker->paused = true;
+			ConditionVariablePrepareToSleep(&SpockCtx->pause_cv);
 			while (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
-			{
-				CHECK_FOR_INTERRUPTS();
-				pg_usleep(1000);	/* 1ms */
-			}
+				ConditionVariableSleep(&SpockCtx->pause_cv,
+									  WAIT_EVENT_LOGICAL_APPLY_MAIN);
+			ConditionVariableCancelSleep();
 			MyApplyWorker->paused = false;
 		}
 

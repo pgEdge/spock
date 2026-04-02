@@ -164,6 +164,7 @@ spock_shmem_startup(void)
 		SpockCtx->subscriptions_changed = false;
 		SpockCtx->total_workers = nworkers;
 		pg_atomic_init_u32(&SpockCtx->pause_apply, 0);
+		ConditionVariableInit(&SpockCtx->pause_cv);
 		memset(SpockCtx->workers, 0,
 			   sizeof(SpockWorker) * SpockCtx->total_workers);
 	}
