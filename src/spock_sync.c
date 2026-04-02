@@ -559,13 +559,17 @@ adjust_progress_info(PGconn *origin_conn)
 /*
  * spock_create_slot_and_get_progress
  *
- * Atomically creates a replication slot and reads spock.progress for all peer
- * nodes in a single PL/pgSQL call, eliminating the slot+progress race window.
- * Leaves conn in an open REPEATABLE READ transaction; caller must call
- * spock_release_slot_snapshot() after the COPY phase completes.
+ * Pauses apply workers, creates a replication slot via the replication
+ * protocol (which returns a snapshot consistent with the slot's WAL
+ * position), reads peer progress while workers are paused, and resumes.
+ *
+ * Leaves conn in an open REPEATABLE READ transaction with the slot's
+ * snapshot imported; caller must call spock_release_slot_snapshot()
+ * after the COPY phase completes.
  */
 static char *
-spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
+spock_create_slot_and_get_progress(PGconn *conn, PGconn *repl_conn,
+								   const char *slot_name,
 								   Oid origin_node_id, Oid subscriber_node_id,
 								   XLogRecPtr *lsn_out, List **progress_out)
 {
@@ -600,10 +604,8 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 		 slot_name, origin_node_id, subscriber_node_id);
 
 	/*
-	 * Pause apply workers BEFORE starting the REPEATABLE READ transaction.
-	 * This ensures the snapshot (taken at the first query in REPEATABLE READ)
-	 * is consistent with pg_replication_origin_status: both reflect only
-	 * fully committed apply transactions.
+	 * Pause apply workers so ros.remote_lsn reflects only fully committed
+	 * state when we read it below.
 	 */
 	res = PQexec(conn, "SELECT spock.pause_apply_workers()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -611,15 +613,62 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 			 PQerrorMessage(conn));
 	PQclear(res);
 
-	/* REPEATABLE READ so the COPY snapshot shares the slot's WAL boundary.
-	 * Snapshot is taken at the first query, with workers already paused. */
-	res = PQexec(conn, "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ");
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		elog(ERROR, "could not begin REPEATABLE READ transaction on origin: %s",
-			 PQerrorMessage(conn));
+	/*
+	 * Create the slot via the replication protocol.  This returns a snapshot
+	 * consistent with the slot's WAL position — the correct snapshot for COPY.
+	 */
+	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
+					 slot_name, "spock_output");
+	res = PQexec(repl_conn, query.data);
+	resetStringInfo(&query);
+
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		const char *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+
+		if (sqlstate &&
+			strcmp(sqlstate, "42710") == 0 &&
+			!spock_remote_slot_active(conn, slot_name))
+		{
+			PQclear(res);
+			spock_drop_remote_slot(conn, slot_name);
+
+			appendStringInfo(&query,
+							 "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
+							 slot_name, "spock_output");
+			res = PQexec(repl_conn, query.data);
+			resetStringInfo(&query);
+		}
+
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+			elog(ERROR, "could not create replication slot on provider: %s",
+				 PQresultErrorMessage(res));
+	}
+
+	*lsn_out = DatumGetLSN(DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,
+							CStringGetDatum(PQgetvalue(res, 0, 1))));
+	snapshot = pstrdup(PQgetvalue(res, 0, 2));
 	PQclear(res);
 
-	/* Single call: create slot + export snapshot + read progress */
+	elog(LOG, "SPOCK cswp slot=%s lsn=%X/%X snapshot=%s",
+		 slot_name, LSN_FORMAT_ARGS(*lsn_out), snapshot);
+
+	/*
+	 * Import the slot's snapshot into a REPEATABLE READ transaction.
+	 * This is the snapshot the COPY will use.
+	 */
+	appendStringInfo(&query,
+					 "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ; "
+					 "SET TRANSACTION SNAPSHOT '%s'",
+					 snapshot);
+	res = PQexec(conn, query.data);
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		elog(ERROR, "could not import snapshot on origin: %s",
+			 PQerrorMessage(conn));
+	PQclear(res);
+	resetStringInfo(&query);
+
+	/* Read peer progress via the SQL function (slot already exists) */
 	appendStringInfo(&query,
 					 "SELECT * FROM spock.create_slot_with_progress"
 					 "('%s', %u, %u)",
@@ -635,14 +684,11 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 	if (nrows < 1)
 		elog(ERROR, "spock.create_slot_with_progress returned no rows");
 
-	/* Row 0 is the header row: lsn + snapshot, progress fields all NULL */
-	*lsn_out = DatumGetLSN(DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,
-							CStringGetDatum(PQgetvalue(res, 0, COL_LSN))));
-	snapshot = pstrdup(PQgetvalue(res, 0, COL_SNAP));
-
-	elog(LOG, "SPOCK cswp slot=%s lsn=%s snapshot=%s peers=%d",
-		 slot_name, PQgetvalue(res, 0, COL_LSN),
-		 PQgetvalue(res, 0, COL_SNAP), nrows - 1);
+	/* Row 0 is the header row: lsn + snapshot, progress fields all NULL.
+	 * lsn_out and snapshot are already set from the replication protocol;
+	 * just log for debugging.  Skip COL_LSN/COL_SNAP from SQL result. */
+	elog(LOG, "SPOCK cswp slot=%s lsn=%X/%X snapshot=%s peers=%d",
+		 slot_name, LSN_FORMAT_ARGS(*lsn_out), snapshot, nrows - 1);
 
 	/* Rows 1+ are progress entries (remote_node_id NOT NULL) */
 	for (rno = 1; rno < nrows; rno++)
@@ -1390,6 +1436,7 @@ spock_sync_subscription(SpockSubscription *sub)
 	if (status == SYNC_STATUS_INIT)
 	{
 		PGconn	   *origin_conn;
+		PGconn	   *origin_conn_repl;
 		char	   *snapshot;
 		List	   *progress_entries_list = NIL;
 
@@ -1397,16 +1444,19 @@ spock_sync_subscription(SpockSubscription *sub)
 
 		origin_conn = spock_connect(sub->origin_if->dsn,
 									sub->name, "snap");
+		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
+												 sub->name, "snap");
 
 		/*
-		 * Atomically create the replication slot and capture spock.progress
-		 * in a single server-side call, avoiding the race between the two
-		 * operations. The connection is held open for the COPY snapshot.
+		 * Pause apply workers, create slot via replication protocol
+		 * (returns snapshot consistent with slot's WAL position),
+		 * read peer progress, and resume workers.
 		 */
 		PG_TRY();
 		{
 			snapshot = spock_create_slot_and_get_progress(
 									origin_conn,
+									origin_conn_repl,
 									sub->slot_name,
 									MySubscription->origin->id,
 									MySubscription->target->id,
@@ -1426,7 +1476,11 @@ spock_sync_subscription(SpockSubscription *sub)
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
-		/* origin_conn transaction remains open — snapshot held for COPY */
+
+		/* origin_conn transaction remains open — snapshot held for COPY.
+		 * Keep origin_conn_repl open too — the exported snapshot file
+		 * in pg_snapshots/ is tied to this connection and needed by
+		 * pg_dump during structure sync. */
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
@@ -1557,6 +1611,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		PG_END_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 									PointerGetDatum(sub));
 
+		PQfinish(origin_conn_repl);
 		spock_release_slot_snapshot(origin_conn);
 
 		status = SYNC_STATUS_CATCHUP;

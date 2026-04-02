@@ -148,30 +148,20 @@ DECLARE
     v_n_peers      int := 0;
 BEGIN
     /*
-     * Apply workers are paused by the C caller (spock_create_slot_and_get_progress)
-     * BEFORE starting this REPEATABLE READ transaction, ensuring the snapshot
-     * and ros.remote_lsn are consistent.  Workers are resumed after this
-     * function returns.
+     * The slot and snapshot are created by the C caller via the replication
+     * protocol.  The slot's snapshot is imported into this transaction.
+     * This function just reads peer progress (ros.remote_lsn) while apply
+     * workers are paused.
      */
 
-    -- DEBUG: capture WAL position before slot creation
-    RAISE NOTICE 'SPOCK cswp DEBUG: pre-slot wal_insert=%', pg_current_wal_insert_lsn();
+    -- Get the slot's LSN and the imported snapshot for the header row.
+    SELECT restart_lsn INTO v_lsn
+    FROM pg_replication_slots WHERE slot_name = p_slot_name;
+    v_snap := '';  -- snapshot managed by C caller
 
-    -- Create the replication slot.  With workers paused, no retry needed.
-    SELECT s.lsn INTO v_lsn
-    FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
-
-    -- DEBUG: capture WAL position after slot creation, before snapshot export
-    RAISE NOTICE 'SPOCK cswp DEBUG: post-slot wal_insert=%, slot_lsn=%', pg_current_wal_insert_lsn(), v_lsn;
-
-    -- Export snapshot for the COPY worker.
-    v_snap := pg_export_snapshot();
-
-    -- DEBUG: snapshot info
-    RAISE NOTICE 'SPOCK cswp DEBUG: exported snapshot=%, txid_snapshot=%', v_snap, pg_current_snapshot();
     RAISE NOTICE 'SPOCK cswp slot=% v_lsn=%', p_slot_name, v_lsn;
 
-    -- Header row: lsn + snapshot only.
+    -- Header row: lsn only (snapshot managed by C caller).
     lsn      := v_lsn;
     snapshot := v_snap;
     RETURN NEXT;
