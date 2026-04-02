@@ -6,7 +6,7 @@ transactions to the other four nodes. Then something goes wrong: perhaps
 because of network delay, n2 has not yet received all of the transactions
 that n3, n4, and n5 have already applied. Before n2 can catch up, n1
 crashes. You are left with n2 lagging behind the others, and no way for 
-it to get the missing data from n1. This is a catastrophic node failure
+it to get the missing data from n1. This is a **catastrophic node failure**
 scenario.
 
 Depending on how you run your cluster, more than one node may accept
@@ -22,15 +22,13 @@ repairs the missing data and can preserve the origin ID and commit
 timestamp for each repaired row so that replication metadata stays
 correct and your cluster remains consistent and conflict-free.
 
-This document covers three cases:
+This document covers two cases:
 
-- single node failure - where one node fails and another is lagging.
-- two of three nodes fail - where only one survivor remains; rebuild the failed
-  nodes from the survivor.
-- multiple node failure - two or more nodes fail and one or more survivors
-  are behind.
+- **single node failure** (one node fails and another is lagging) 
+- **multiple node failure** (two or more nodes fail and one or more survivors
+  are behind). 
 
-The same idea applies in these cases; you identify what is missing on the
+The same idea applies in both cases; you identify what is missing on the
 surviving node(s), then repair the nodes using a node with complete data, 
 preserving the origin ID and timestamp for every repaired row.
 
@@ -65,9 +63,7 @@ flowchart LR
   N3 -->|recover from| N2
 ```
 
-### Implementing a Recovery
-
-In the diagram above:
+**Implementing a Recovery**
 
 * Node n1 has failed.
 * Node n2 is lagging.
@@ -79,7 +75,7 @@ the subscriptions to n1, and then drop node n1 from the cluster.
 
 Then, on our survivor (n2), and for each table, run:
 
-  `ace table-diff --against-origin n1 --until <n1_failure_time>`
+  `table-diff --preserve-origin n1 --until <n1_failure_time>`
 
 Then, on our survivor (n2), for each table with differences, run the ACE
 `table-repair` command, specifying the `--recovery-mode`,
@@ -87,63 +83,13 @@ Then, on our survivor (n2), for each table with differences, run the ACE
 
 These steps ensure that n2 contains all of the rows that originated on n1.
 
-> Note: These are high-level steps. Detailed instructions for each step,
+> **Note:** These are high-level steps. Detailed instructions for each step,
 > including exact commands and options, are provided later in this document
 > starting at [Phase 1: Assess the Damage](#phase-1-assess-the-damage). In
 > some cases, tables may still show differences after an initial repair; see
 > the [Troubleshooting](#troubleshooting) section for guidance.
 
-### Scenario 2: Two of Three Nodes Fail
-
-When your cluster has only three nodes and two of them fail, the single
-survivor becomes the sole source of truth. There are no other nodes to
-cross-check against, so you must trust that the survivor has the most
-complete data available.
-
-In this example, n1, n2, and n3 form the cluster. Nodes n2 and n3 both
-fail, leaving n1 as the only survivor. You must recover *both* n2 and
-n3 from n1.
-
-```mermaid
-flowchart LR
-  subgraph failed [Failed]
-    N2[n2 failed]
-    N3[n3 failed]
-  end
-
-  subgraph source [Sole survivor / source of truth]
-    N1[n1 complete]
-  end
-
-  N1 -->|recover| N2
-  N1 -->|recover| N3
-```
-
-### Implementing a Recovery
-
-In the diagram above, nodes n2 and n3 have failed; node n1 is the sole
-survivor and source of truth.
-
-1. Clean up Spock by dropping subscriptions to n2 and n3 on n1, then
-   dropping the failed nodes from the cluster.
-2. Rebuild n2 and n3 from n1; because the failed nodes are unavailable, you
-   cannot run ACE `table-diff` against them; instead, use ZODAN's
-   `add_node` procedure to add n2 and n3 back as fresh nodes, which
-   performs a full initial sync from n1; see the
-   [ZODAN documentation](../modify/zodan/index.md) for step-by-step
-   instructions.
-3. When the initial sync completes for each node, validate with
-   `table-diff` across all three nodes to confirm they match.
-
-!!! warning
-
-    With only one survivor, there is no way to cross-validate data. If
-    n1 was also lagging behind n2 or n3 for transactions that originated
-    on those nodes, those transactions are permanently lost. To reduce
-    this risk, consider maintaining at least one additional warm standby
-    or using physical synchronous replicas for each node.
-
-### Scenario 3: Multiple Nodes have Failed, and One Node is Lagging
+### Scenario 2: Multiple Nodes have Failed, and One Node is Lagging
 
 In our next example, we'll assume multiple nodes have failed (for our example,
 we'll use n1 and n4). If two (or more) nodes fail, leaving one or more survivors, 
@@ -176,9 +122,7 @@ flowchart LR
   N3 -->|recover n2 for both n1 and n4| N2
 ```
 
-### Implementing a Recovery
-
-In the diagram above:
+**Implementing a Recovery**
 
 * Nodes n1 and n4 have failed.
 * Node n2 is lagging.
@@ -189,11 +133,11 @@ Our first step is to clean up the replication scenario.  Drop the subscriptions
 to n1 and n4 before dropping the nodes from the cluster.
 
 Then, on each surviving node, and for each table, run the `table-diff` command
-against each failed node including the `--against-origin` and `--until`
+against each failed node including the `--preserve-origin` and `failure_time`
 options:
 
-  `ace table-diff --against-origin n1 --until <n1_failure_time>`
-  `ace table-diff --against-origin n4 --until <n4_failure_time>`
+  `table-diff --preserve-origin n1 --until <n1_failure_time>`
+  `table-diff --preserve-origin n4 --until <n4_failure_time>`
 
 Each run will return one diff file per table/origin combination.
 
@@ -210,7 +154,7 @@ n4, with the origin ID and timestamp preserved for each.
     and one diff (and one repair) for n4. The source of truth (n3) is the
     same for all repairs.
 
-### Implementing Repairs
+### Implementing Repairs in Both Cases
 
 ```mermaid
 flowchart TD
@@ -228,14 +172,13 @@ flowchart TD
   end
 ```
 
-In these cases you will:
+In both cases you:
 
     1. Clean up the failed node(s) in Spock.
-    2. Run table-diff on all tables with `--against-origin`—once per failed
-       origin in the multiple-node case.
-    3. Run table-repair with `--recovery-mode`, `--preserve-origin`, and a
-       single source of truth so that origin ID and commit timestamp are
-       preserved for each repaired row.
+    2. Run table-diff on all tables—once per failed origin in the multiple-node 
+       case.
+    3. Run table-repair with `--preserve-origin` and a single source of truth 
+       so that origin ID and commit timestamp are preserved for each repaired row.
 
 ---
 
@@ -244,18 +187,18 @@ In these cases you will:
 When one node fails mid-replication, some of its transactions may have been
 applied on some subscribers but not others. In our single-failure example:
 
-- n1 has failed and is no longer available.
-- n2 received fewer transactions from n1 (for example, due to network
+- **n1** has failed and is no longer available.
+- **n2** received fewer transactions from n1 (for example, due to network
   delay) and is behind.
-- n3, n4, and n5 have received all of n1's transactions and are
+- **n3**, **n4**, and **n5** received all of n1's transactions and are
   fully synchronized.
 
 You need to bring n2 back in line with n3, n4, and n5. ACE does this by
 comparing tables across the surviving nodes, focusing only on data that
 originated from n1 and was committed before the failure. It then repairs n2
 using a chosen source of truth (in our example, n3). When you use the
-`--preserve-origin` option, ACE preserves each repaired row's `origin ID`
-(the node that originally wrote the row) and `commit timestamp` (to
+`--preserve-origin` option, ACE preserves each repaired row's **origin ID**
+(the node that originally wrote the row) and **commit timestamp** (to
 microsecond precision) so that replication metadata remains correct.
 
 The following diagram shows the state at the moment of failure of our single
@@ -284,63 +227,23 @@ sequenceDiagram
     Note over N3..N5: Complete - use as source of truth
 ```
 
-## Risk of Lost Transactions
-
-It is possible that the failed node committed transactions that had not
-yet been replicated to any other node at the time of the failure. Because
-Spock uses *asynchronous* logical replication, there is always a window
-between when a transaction commits locally and when it is delivered to
-subscribers. Any transactions that fell within that window are
-permanently lost — they exist in the failed node's WAL but never reached
-the survivors.
-
-The size of this window depends on replication lag, network conditions,
-and transaction volume. Under normal conditions it is very small (often
-sub-second), but it can grow during heavy write bursts, network
-disruptions, or long-running transactions on the publisher.
-
-To protect against this, use the following approaches:
-
-- maintain a synchronous physical standby for each node; with
-  `synchronous_commit = on` (or `remote_apply`), the node will not report
-  a transaction as committed until the standby has received (or applied)
-  it; if the primary fails, you can promote the standby and recover the
-  transactions that logical subscribers had not yet received.
-- configure multiple logical subscribers; the more subscribers a node
-  replicates to, the less likely that all of them are lagging at the
-  moment of failure; at least one subscriber is likely to have received
-  recent transactions.
-
-Even with these mitigations, a small data-loss window may remain. If the
-failed node restarts, its WAL senders will resume where they left off and
-no transactions are lost. The risk applies only when the node is
-permanently gone and its WAL is unrecoverable — in that case, any
-transactions that had been flushed to the node's WAL but not yet
-delivered to a subscriber are lost with it. Under normal load this
-window is typically sub-second, but plan your RPO (Recovery Point
-Objective) with this constraint in mind and document it in your
-disaster-recovery plan.
-
----
-
 ## Before You Begin
 
 Before you start the recovery process, make sure you have the following in
 place:
 
-- Install and configure ACE on a host that can reach your surviving nodes;
-  ACE is used to compare and repair table data across nodes; for building,
-  installing, and configuring ACE, see the 
-  [ACE repository](https://github.com/pgEdge/ace) and its
-  [documentation](https://github.com/pgEdge/ace/tree/main/docs) (including
-  [configuration](https://github.com/pgEdge/ace/blob/main/docs/configuration.md)).
-- Ensure access to your surviving nodes (n2, n3, n4, and n5); you'll need
-  to run ACE commands and, for Spock cleanup, connect to each node with a
+- **ACE installed and configured** on a host that can reach your surviving
+  nodes. ACE is used to compare and repair table data across nodes. For
+  building, installing, and configuring ACE, see the [ACE repository](https://github.com/pgEdge/ace)
+  and its [documentation](https://github.com/pgEdge/ace/tree/main/docs)
+  (including [configuration](https://github.com/pgEdge/ace/blob/main/docs/configuration.md)).
+- **Access to your surviving nodes** (n2, n3, n4, and n5). You'll need to
+  run ACE commands and, for Spock cleanup, connect to each node with a
   Postgres client.
-- Know the approximate time when the failed node (or nodes) failed; you'll
+- **The approximate time when the failed node (or nodes) failed.** You'll
   use this as a cutoff when running ACE so that only data committed before
   the failure is considered.
-- Have origin tracking enabled; your Spock cluster should have
+- **Origin tracking enabled.** Your Spock cluster should have
   `track_commit_timestamp = on` in Postgres so that ACE can use commit
   timestamps and origin ID for recovery and for preserving them when
   repairing rows.
@@ -380,12 +283,12 @@ Recovery has five main phases; you should approach these phases in order:
         n2 matches the other survivors.
 
 Because n2 might be missing data from more than one table, you must check
-all of your tables, not just one. The following sections walk you through
-each phase of the recovery and provide the commands you'll need.
+**all** of your tables, not just one. The sections below walk you through
+each phase and show you the commands to run.
 
 ---
 
-### Phase 1: Assess the Damage
+## Phase 1: Assess the Damage
 
 Connect to your surviving nodes and check replication status. You need to
 confirm which nodes are behind and which have all of the data. You can use
@@ -421,23 +324,23 @@ before the failure.
 
 ---
 
-### Phase 2: Spock Cleanup
+## Phase 2: Spock Cleanup
 
 Once you've confirmed that the failed node (in our case, n1) is gone 
 and won't be coming back in this recovery, you need to remove it from
 the cluster so that the remaining nodes no longer expect replication from 
 or to n1.
 
-On each surviving node (n2, n3, n4, and n5):
+On each surviving node (n2, n3, n4, n5):
 
-    1. Drop all subscriptions that involved the failed node.
+    1. **Drop subscriptions that involved the failed node.**
    
     If a subscription was receiving from n1 or sending to n1, drop it using
     [`spock.sub_drop()`](../spock_functions/functions/spock_sub_drop.md).
     For example, on n2 you might drop the subscription that connected n2 to
     n1.
 
-    2. Remove the failed node from the cluster.
+    2. **Remove the failed node from the cluster.**
 
     From one of the surviving nodes, call
     [`spock.node_drop()`](../spock_functions/functions/spock_node_drop.md)
@@ -452,31 +355,26 @@ On each surviving node (n2, n3, n4, and n5):
 After cleanup, your cluster has four nodes: n2, n3, n4, and n5. The next
 steps use ACE to fix the data on n2.
 
-If two or more nodes failed (e.g. n1 and n4), you'll perform these steps
+If **two or more** nodes failed (e.g. n1 and n4), you'll perform these steps 
 for each node.
-
-**Important:** Complete all Spock cleanup steps above before proceeding to
-Phase 3. If the subscription to the failed node is still registered on
-survivors, `--recovery-mode`'s automatic source-of-truth selection (which
-probes replication origin LSNs on each survivor) may return unreliable results.
-
+    
 ---
 
-### Phase 3: Identify All of the Missing Data
+## Phase 3: Identify All of the Missing Data
 
-To recover n2, you need to know which tables have differences and
-what is missing. ACE's
+To recover n2, you need to know **which tables** have differences and
+**what** is missing. ACE's
 [`table-diff`](https://github.com/pgEdge/ace/tree/main/docs/commands/diff)
 command compares table data across nodes. When you run it with
-`--against-origin n1` and `--until <timestamp>`, ACE limits the comparison
+`--preserve-origin n1` and `--until <timestamp>`, it limits the comparison
 to rows whose origin ID is n1 and whose commit timestamp is at or before
 that time—exactly what you need after n1 has failed.
 
-You must run `table-diff` for every table that is replicated in your
+You must run `table-diff` for **every** table that is replicated in your
 cluster. If you only run it for one table, you might repair that table but
 leave others out of sync.
 
-#### Get a List of All Tables to Check
+### Step 1: Get a List of All Tables to Check
 
 First, get the list of tables that participate in replication. You can get
 this from Spock replication sets. Connect to any surviving node (for
@@ -498,9 +396,9 @@ Use this list for the next step. In the examples below, we'll use tables
 like `customers`, `orders`, and `products`; replace these with your actual
 schema and table names.
 
-#### Run table-diff on Every Table
+### Step 2: Run table-diff on Every Table
 
-For each table in your list, run ACE table-diff with the failed node as
+For **each** table in your list, run ACE table-diff with the failed node as
 the origin and your failure timestamp as the cutoff. Replace
 `2026-02-11T14:30:00Z` with the time when n1 failed, and replace
 `mycluster` with your ACE cluster name.
@@ -510,7 +408,7 @@ For a single table (for example, `public.customers`):
 ```bash
 ./ace table-diff \
   --nodes n2,n3,n4,n5 \
-  --against-origin n1 \
+  --preserve-origin n1 \
   --until 2026-02-11T14:30:00Z \
   --output json \
   mycluster public.customers
@@ -518,14 +416,10 @@ For a single table (for example, `public.customers`):
 
 What these options do:
 
-- `--nodes n2,n3,n4,n5` – Compare only the surviving nodes. Do **not**
-  include the failed node (n1) here — ACE will attempt to connect to every
-  node in the list.
-- `--against-origin n1` – Only consider rows whose origin ID is n1, so you
-  don't mix in later local writes on the survivors. The value must match the
-  node's name as recorded in `spock.node.node_name` on the surviving nodes
-  (e.g. `n1`), not the hostname or ACE cluster node name. You can verify
-  the correct value with `SELECT node_name FROM spock.node;` on any survivor.
+- `--nodes n2,n3,n4,n5` – Compare only the surviving nodes (n2 and the
+  nodes that have full data).
+- `--preserve-origin n1` – Only consider rows whose origin ID is n1, so you
+  don't mix in later local writes on the survivors.
 - `--until 2026-02-11T14:30:00Z` – Only consider rows committed at or
   before this time (use RFC3339 format).
 - `--output json` – Writes a diff report to a JSON file that you'll use for
@@ -538,23 +432,23 @@ command for every other table; for example:
 ```bash
 ./ace table-diff \
   --nodes n2,n3,n4,n5 \
-  --against-origin n1 \
+  --preserve-origin n1 \
   --until 2026-02-11T14:30:00Z \
   --output json \
   mycluster public.orders
 
 ./ace table-diff \
   --nodes n2,n3,n4,n5 \
-  --against-origin n1 \
+  --preserve-origin n1 \
   --until 2026-02-11T14:30:00Z \
   --output json \
   mycluster public.products
 ```
 
-#### Review the Diff Reports
+### Step 3: Review the Diff Reports
 
 After running table-diff on all tables, check the output. ACE will report
-whether each table has differences. For tables that *do* have differences,
+whether each table has differences. For tables that **do** have differences,
 note the name of the diff file (it will include the table name and a
 timestamp). You'll use those files when you perform the repair steps. Tables
 that have no differences don't need repair.
@@ -566,15 +460,15 @@ two diff files:
 
 ```bash
 # Rows that originated from n1
-./ace table-diff --nodes n2,n3,n5 --against-origin n1 \
+./ace table-diff --nodes n2,n3,n5 --preserve-origin n1 \
   --until 2026-02-11T14:30:00Z --output json mycluster public.customers
 
 # Rows that originated from n4 (use n4's failure time if different)
-./ace table-diff --nodes n2,n3,n5 --against-origin n4 \
+./ace table-diff --nodes n2,n3,n5 --preserve-origin n4 \
   --until 2026-02-11T14:35:00Z --output json mycluster public.customers
 ```
 
-Review the diff reports; then in Phase 4, run table-repair for each
+Review the diff reports; then in Phase 4, run table-repair for **each**
 of these diff files using same source of truth (e.g. n3).
 
 If you have multiple tables, you can script the diff step. The following
@@ -590,7 +484,7 @@ for table in customers orders products invoices; do
   echo "Checking table: public.$table"
   ./ace table-diff \
     --nodes "$NODES" \
-    --against-origin n1 \
+    --preserve-origin n1 \
     --until "$FAILURE_UNTIL" \
     --output json \
     "$CLUSTER" public."$table"
@@ -599,7 +493,7 @@ done
 
 ---
 
-### Phase 4: Repair All Affected Tables
+## Phase 4: Repair All Affected Tables
 
 For *each* table that had differences in Phase 3, run ACE `table-repair`
 using the diff file that was produced. You must run repair in recovery
@@ -616,7 +510,7 @@ n4 and n5) have the complete data, so we chose n3. You can let ACE
 auto-select the source of truth based on which survivor has the highest
 origin LSN for n1, or you can set it explicitly with `--source-of-truth n3`.
 
-#### Applying the Repair Command to Each Table
+### Repair Command for Each Table
 
 For each table that had differences, run the following command, replacing
 the diff filename and table name with the ones from your `table-diff` run:
@@ -635,7 +529,7 @@ the diff filename and table name with the ones from your `table-diff` run:
 - `--nodes n2,n3,n4,n5` – The surviving nodes (n2 will be repaired; n3 is
   the source of truth).
 - `--recovery-mode` – Required when the diff was created with
-  `--against-origin`; tells ACE this is a catastrophic-failure recovery.
+  `--preserve-origin`; tells ACE this is a catastrophic-failure recovery.
 - `--source-of-truth n3` – Use n3's copy of the data to repair n2. You can
   omit this and let ACE choose the survivor with the highest LSN for n1,
   but if there are ties or missing LSNs, you must specify the source.
@@ -664,11 +558,10 @@ Repeat for every table that had differences, for example:
   mycluster public.products
 ```
 
-In the case of multiple node failure (where for example, n1 and n4 both 
-failed), you will have one diff file per (table, failed origin). 
-Run the table-repair command for *each* diff file, using the *same* source
-of truth (n3) and including the `--preserve-origin` clause every time. ACE
-writes a new filename for each table-diff run; use the file
+**Multiple node failure (e.g. n1 and n4 both failed):** You have one diff
+file per (table, failed origin). Run table-repair for **each** of those
+diff files, using the **same** source of truth (n3) and `--preserve-origin`
+every time. ACE writes a new filename for each table-diff run; use the file
 from your n1 diff run for the first repair and the file from your n4 diff
 run for the second. Example for one table:
 
@@ -679,38 +572,38 @@ run for the second. Example for one table:
   --nodes n2,n3,n5 --recovery-mode --source-of-truth n3 \
   --preserve-origin mycluster public.customers
 
-# Repair n2 for rows from n4 (different diff file from --against-origin n4)
+# Repair n2 for rows from n4 (different diff file from --preserve-origin n4)
 ./ace table-repair \
   --diff-file=public_customers_diffs-20260211143500.json \
   --nodes n2,n3,n5 --recovery-mode --source-of-truth n3 \
   --preserve-origin mycluster public.customers
 ```
 
-In both commands the source of truth is n3; the origin ID and commit timestamp
+In both commands the source of truth is n3; origin ID and commit timestamp
 are preserved for every repaired row.
 
 !!! warning
     
     Always use `--preserve-origin` when repairing after a catastrophic node
-    failure. This option ensures that the origin ID and commit
-    timestamp are preserved for every repaired row. If you omit it,
+    failure. This option ensures that the **origin ID** and **commit
+    timestamp** are preserved for every repaired row. If you omit it,
     repaired rows will have n2's origin ID and a new timestamp, which can
     cause replication conflicts and incorrect conflict resolution.
 
 For more details on recovery mode and how origin ID and timestamp
 preservation works, see the [ACE repository](https://github.com/pgEdge/ace)
-and the ACE docs: 
-[Using ACE for CNF recovery](https://github.com/pgEdge/ace/blob/main/docs/using-ace-for-cnf-recovery.md)
-and the 
-[table-repair command reference](https://github.com/pgEdge/ace/blob/main/docs/commands/repair/table-repair.md).
+and the ACE docs: [Using ACE for CNF
+recovery](https://github.com/pgEdge/ace/blob/main/docs/using-ace-for-cnf-recovery.md)
+and the [table-repair command
+reference](https://github.com/pgEdge/ace/blob/main/docs/commands/repair/table-repair.md).
 
 ---
 
-### Phase 5: Validate That All Tables Match
+## Phase 5: Validate That All Tables Match
 
 After repairing every affected table, verify that n2 now matches n3, n4,
-and n5. Re-run `table-diff` for each repaired table *without*
-`--against-origin` or `--until`. That compares the full table content
+and n5. Re-run `table-diff` for each repaired table **without**
+`--preserve-origin` and `--until`. That compares the full table content
 across the survivors:
 
 ```bash
@@ -727,7 +620,7 @@ At this point you can resume normal operations: re-enable or recreate any
 subscriptions that were dropped during cleanup (for example, subscriptions
 from n2 to n3, n4, and n5 so that n2 receives new writes), and allow
 application traffic to flow again. If writes were occurring on other nodes
-during the repair, a final table-diff run (without `--against-origin` or
+during the repair, a final table-diff run (without `--preserve-origin` or
 `--until`) will confirm that n2 has caught up completely.
 
 If any table still shows differences, review the diff report and consider
@@ -758,25 +651,26 @@ flowchart LR
 
 ## Why Preserve Origin ID and Timestamp?
 
-The repairs that ACE writes to n2 originated on n1. Each row has an origin
-ID (that identifies which node wrote it) and a commit timestamp (that
-identifies when it was committed). Spock uses these for conflict resolution
-and to keep replication consistent.
+The repairs that ACE writes to n2 originated on n1. Each row has an 
+**origin ID** (that identifies which node wrote it) and a **commit timestamp** 
+(that identifies when it was committed). Spock uses these for conflict 
+resolution and to keep replication consistent.
 
-If you repair without `--preserve-origin`, the repaired rows get n2's
-origin ID and a new commit timestamp. This can cause the following problems:
+If you repair **without** `--preserve-origin`, the repaired rows get n2's
+origin ID and a new commit timestamp. That can cause:
 
-- if n1 ever comes back or you add another node with n1's history, the
-  cluster may see the same row with different origin IDs and timestamps and
-  report conflicts.
-- Spock uses commit timestamps and origin ID for conflict resolution (for
-  example, last-write-wins); wrong timestamps or origin IDs can lead to
-  wrong outcomes.
-- you lose an accurate record of which node produced which data.
+- **Replication conflicts** – If n1 ever comes back or you add another node
+  with n1's history, the cluster may see the same row with different origin
+  IDs and timestamps and report conflicts.
+- **Incorrect ordering** – Spock uses commit timestamps and origin ID for
+  conflict resolution (for example, last-write-wins). Wrong timestamps or
+  origin IDs can lead to wrong outcomes.
+- **Lost data lineage** – You lose an accurate record of which node
+  produced which data.
 
-When you repair with `--preserve-origin`, ACE keeps the original origin ID
-and commit timestamp (to microsecond precision) for each repaired row. The
-repaired rows on n2 then match the replication metadata they had on the
+If you repair **with** `--preserve-origin`, ACE keeps the original origin
+ID and commit timestamp (to microsecond precision) for each repaired row.
+The repaired rows on n2 then match the replication metadata they had on the
 source of truth, so conflict resolution and data lineage stay correct.
 
 For catastrophic node failure recovery, always use `--preserve-origin` when
@@ -790,19 +684,19 @@ Review the following considerations before performing a recovery with ACE.
 
 ### Multi-Table Recovery
 
-When performing a recovery between nodes with multiple tables, follow these
-guidelines:
+When performing a recovery between nodes with multiple tables:
 
-- Run table-diff on all replicated tables, not just one; only then will
-  you see the full picture of what is missing on n2.
-- If you have many tables, you can repair critical tables first, then the
-  rest; just ensure you eventually run diff and repair for every affected
-  table.
-- Use the same `--until` timestamp for every table so that you're
-  consistently fencing at the same failure time.
-- Using one node (for example, n3) as source of truth for all tables keeps
-  the process simple; if you have a reason to use different sources per
-  table, you can, but document it so you don't get confused later.
+- **Check every table** – Run table-diff on all replicated tables, not just
+  one. Only then will you see the full picture of what is missing on n2.
+- **Prioritize if needed** – If you have many tables, you can repair
+  critical tables first, then the rest. Just ensure you eventually run diff
+  and repair for every affected table.
+- **Same cutoff for all** – Use the same `--until` timestamp for every
+  table so that you're consistently fencing at the same failure time.
+- **Same source of truth** – Using one node (e.g., n3) as source of truth
+  for all tables keeps the process simple. If you have a reason to use
+  different sources per table, you can, but document it so you don't get
+  confused later.
 
 ### Large Tables
 
@@ -834,55 +728,45 @@ cluster.
 
 ## Troubleshooting
 
-During the recovery process, you may encounter the following issues:
-
 ### ACE says LSN Information is Missing
 
 Specify `--source-of-truth` explicitly (e.g. `--source-of-truth n3`) so 
 ACE doesn't need to probe LSNs.
 
-### More than One Node is Behind
+### More than One node is behind
 
 Run `diff` and `repair` commands for all potentially lagging nodes in 
 `--nodes`. The source of truth should be a node that has full data; repair
 will fix the others.
 
-### Auto source-of-truth Selection Fails or Ties
+### Auto source-of-truth selection fails or ties
 
 Provide `--source-of-truth <node_name>` with the name of a node you know has
 the complete data.
 
-### Origin Metadata Missing for Some Rows
+### Origin metadata missing for some rows
 
 ACE may log a warning and repair those rows without preserving origin ID and
-timestamp. Ensure `track_commit_timestamp = on` and that the diff was run
-with `--against-origin`; check the diff file and ACE logs.
+timestamp. Ensure `track_commit_timestamp = on` and that the diff was run 
+with `--preserve-origin`; check the diff file and ACE logs.
 
-Do not conflate local writes with missing metadata: `origin = 0` means the row
-was changed locally (not via replication), while `NULL` in
-`spock.resolutions.local_origin` or `unknown` in PostgreSQL logs indicates the
-origin is genuinely unavailable.
+### Tables still differ after repair
 
-### Tables Still Differ after Repair
-
-Re-run `table-diff` without `--against-origin` to see the current state. If
+Re-run `table-diff` without `--preserve-origin` to see the current state. If
 writes occurred during repair, run diff again and repair if needed. For large
 tables, consider performing a chunked repair with `--table-filter`.
 
-### Source Node Fails Mid-replay
+### Source node fails mid-replay
 
 If the node you chose as your source of truth (e.g., n3) fails or becomes
-unavailable while ACE is still running repairs, **stop the repair
-immediately** and choose a different fully-synchronized survivor as the
-new source of truth.
+unavailable while ACE is still running repairs, stop the repair immediately
+and switch to a different fully-synchronized survivor before continuing.
 
-1. Stop any running ACE processes.
-2. Confirm which remaining nodes still have complete data (re-run
+1. Confirm which remaining nodes still have complete data (re-run
    `spock.sub_show_status()` on each one and check for lag).
-3. Pick a new source of truth (e.g., n4 or n5) and re-run `table-diff`
-   and `table-repair` with `--source-of-truth n4` for any tables that
-   were not yet fully repaired. Tables that were already repaired and
-   validated do not need to be re-done.
+2. Pick a new source of truth (e.g., n4 or n5) and re-run `table-repair`
+   with `--source-of-truth n4` for any tables that were not yet fully
+   repaired.
 
 !!! warning
 
@@ -893,55 +777,55 @@ new source of truth.
     additional warm standby or by pausing application writes before starting
     the recovery.
 
-### Recovery Fails Entirely (non-Spock failure)
+### Recovery fails entirely (non-Spock failure)
 
-If the recovery cannot be completed (for example, because the lagging node
-itself has suffered hardware or OS failure during the repair process), you
+If the recovery cannot be completed — for example, because the lagging node
+itself has suffered hardware or OS failure during the repair process — you
 may need to rebuild it from scratch rather than repair it in place. In that
 case, remove the damaged node from the cluster and add a fresh replacement
 using the ZODAN node-management procedures:
 
-- Remove the damaged node and use
-  [`spock.node_drop()`](../spock_functions/functions/spock_node_drop.md) and
-  drop related subscriptions on the surviving nodes to clean up the cluster
-  registry.
-- Add a replacement node by using ZODAN's `add_node` procedure to bring a
-  new node into the cluster; ZODAN handles slot creation, initial sync, and
-  subscription wiring automatically; see the [ZODAN
-  documentation](../modify/zodan/index.md) and the [ZODAN
-  tutorial](../modify/zodan/zodan_tutorial.md) for step-by-step
+- **Remove the damaged node** – Use
+  [`spock.node_drop()`](../spock_functions/functions/spock_node_drop.md)
+  (and drop related subscriptions) on the surviving nodes to clean up the
+  cluster registry.
+- **Add a replacement node** – Use ZODAN's `add_node` procedure to bring a
+  new node into the cluster. ZODAN handles slot creation, initial sync, and
+  subscription wiring automatically. See the
+  [ZODAN documentation](../modify/zodan/index.md) and the
+  [ZODAN tutorial](../modify/zodan/zodan_tutorial.md) for step-by-step
   instructions.
 
 ---
 
-## Post-Recovery Validation
+## Post-Recovery Validation Checklist
 
-After completing all repair steps, work through the following list
+After completing all repair steps, work through the following checklist
 before returning the cluster to normal production traffic.
 
 ### Replication Status
 
-- Run `SELECT * FROM spock.sub_show_status();` on every node and confirm
+- [ ] Run `SELECT * FROM spock.sub_show_status();` on every node and confirm
   all subscriptions show `replicating` with zero (or near-zero) lag.
-- Confirm that subscriptions dropped during Phase 2 cleanup have been
+- [ ] Confirm that subscriptions dropped during Phase 2 cleanup have been
   re-created and are active.
-- Verify that the recovered node (n2) appears in `SELECT * FROM spock.node;`
+- [ ] Verify that the recovered node (n2) appears in `SELECT * FROM spock.node;`
   on all surviving nodes and that its DSN is correct.
 
 ### Replication Slot Cleanup
 
-- Run `SELECT slot_name, active, restart_lsn FROM pg_replication_slots;`
+- [ ] Run `SELECT slot_name, active, restart_lsn FROM pg_replication_slots;`
   on each node and confirm there are no stale or inactive slots left over
   from the failed node or from the recovery process.
-- If any orphaned slots remain (for example, a slot for n1 that was
+- [ ] If any orphaned slots remain (for example, a slot for n1 that was
   never dropped), remove them with
   `SELECT pg_drop_replication_slot('<slot_name>');` on the node that owns
   the slot.
 
 ### Data Integrity Check
 
-- Re-run `table-diff` on all repaired tables **without**
-  `--against-origin` or `--until` to confirm the full table content
+- [ ] Re-run `table-diff` on all repaired tables **without**
+  `--preserve-origin` or `--until` to confirm the full table content
   matches across all nodes:
 
     ```bash
@@ -949,8 +833,8 @@ before returning the cluster to normal production traffic.
       mycluster public.<table_name>
     ```
 
-- Confirm ACE reports no differences for every table.
-- Spot-check row counts on the recovered node against a known-good
+- [ ] Confirm ACE reports no differences for every table.
+- [ ] Spot-check row counts on the recovered node against a known-good
   survivor for critical tables:
 
     ```sql
@@ -963,74 +847,70 @@ before returning the cluster to normal production traffic.
 
 ### Final Sign-off
 
-- Monitor replication lag for at least 15–30 minutes after re-enabling
+- [ ] Monitor replication lag for at least 15–30 minutes after re-enabling
   application traffic to confirm the recovered node is keeping up.
-- Review PostgreSQL logs on the recovered node for any replication
+- [ ] Review PostgreSQL logs on the recovered node for any replication
   errors or warnings.
-- Document the recovery: nodes affected, failure time used for
+- [ ] Document the recovery: nodes affected, failure time used for
   `--until`, source of truth used, and any tables that required re-repair.
 
 ---
 
 ## Summary
 
-The basic steps required to recover a lagging or damaged node vary only
-based on how many nodes you need to repair or rebuild.
+In summary, the basic steps required to recover a lagging or damaged
+node vary only based on how many nodes you need to repair or rebuild:
 
-### Single Node Failure Recovery
+In the event of a single node failure:
 
-In the event of a single node failure, complete these steps in order:
-
-1. Assess the damage by identifying which nodes are behind and determining
-   when the failure occurred.
-2. Clean up Spock by dropping subscriptions to the failed node and removing
-   it from the cluster. Complete this before running table-diff.
-3. Identify missing data by running `ace table-diff` with
-   `--against-origin node_name` and `--until <failure_time>` on all
-   replicated tables. Only include surviving nodes in `--nodes`.
-4. Repair affected tables by running `ace table-repair` with
-   `--recovery-mode`, `--source-of-truth n3`, and `--preserve-origin`
-   for each table that has differences.
-5. Validate the recovery by re-running table-diff (without `--against-origin`
-   or `--until`) to confirm all tables match across surviving nodes.
-
-### Multi-Node Failure Recovery
+    1. **Assess the damage** – Identify which nodes are behind and determine
+       when the failure occurred.
+    2. **Clean up Spock** – Drop subscriptions to the failed node and remove it
+       from the cluster.
+    3. **Identify missing data** – Run ACE table-diff on all replicated tables
+       with `--preserve-origin node_name` and `--until <failure_time>`.
+    4. **Repair affected tables** – Run ACE table-repair with the following
+       command options:
+   
+        - `--recovery-mode`
+        - `--source-of-truth n3`
+        - `--preserve-origin` (critical for maintaining replication metadata)
+  
+    5. **Validate the recovery** – Re-run table-diff to confirm all tables match
+       across surviving nodes.
 
 The process is similar for a multi-node failure with these key differences:
 
-1. Assess the damage by identifying which nodes are behind and when each
-   failure occurred.
-2. Clean up Spock by dropping subscriptions to all failed nodes and
-   removing all failed nodes from the cluster. Complete this before
-   running table-diff.
-3. Identify missing data by running `ace table-diff` once for each failed
-   origin, for each table: `--against-origin n1 --until <n1_failure_time>`
-   and `--against-origin n4 --until <n4_failure_time>`.
-4. Repair affected tables by running `ace table-repair` with
-   `--recovery-mode`, `--preserve-origin`, and the same
-   `--source-of-truth` (for example, n3) for every diff file produced.
-5. Validate recovery by re-running table-diff (without `--against-origin`
-   or `--until`) to confirm all tables match.
+    1. **Assess the damage** – Identify which nodes are behind and when each
+       failure occurred.
+    2. **Clean up Spock** – Drop subscriptions to all failed nodes and remove
+       all of the failed nodes from the cluster.
+    3. **Identify missing data** – Run table-diff once for each failed origin,
+       for each table:
+ 
+        - `--preserve-origin n1` with n1's failure time
+        - `--preserve-origin n4` with n4's failure time
+
+    4. **Repair affected tables** – Run table-repair for **each** diff file
+       produced:
+
+       - Use the same `--source-of-truth` (e.g., n3) for all repairs
+       - Always include `--preserve-origin`
+
+    5. **Validate recovery** – Re-run table-diff to confirm all tables match
 
 ### Critical Reminder
 
-In both scenarios, always pair `--against-origin` (on `table-diff`) with
-`--recovery-mode` and `--preserve-origin` (on `table-repair`). These three
-flags work together: `--against-origin` scopes the diff to rows from the
-failed node; `--recovery-mode` tells the repair that the diff is
-origin-scoped; and `--preserve-origin` keeps the original origin ID and
-commit timestamp on every repaired row so that replication metadata stays
-correct. Omitting any one of them can lead to incomplete repairs or incorrect
-conflict resolution.
+In both scenarios, always use `--preserve-origin` to ensure that origin ID
+and commit timestamp are preserved for every repaired row. Check all
+replicated tables to ensure the lagging node is fully recovered.
 
 
 ## See also
 
-The following resources provide additional information:
-
 - [ACE (Active Consistency Engine) on
-  GitHub](https://github.com/pgEdge/ace) - build, install, and configure
+  GitHub](https://github.com/pgEdge/ace) — build, install, and configure
   ACE; command reference and architecture docs are in the repository.
-- [ACE documentation](https://github.com/pgEdge/ace/tree/main/docs) -
-  configuration, CNF recovery, and command reference (for example,
-  `table-diff` and `table-repair`).
+- [ACE documentation](https://github.com/pgEdge/ace/tree/main/docs) —
+  configuration, CNF recovery, and command reference (e.g. `table-diff`,
+  `table-repair`).
