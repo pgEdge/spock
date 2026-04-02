@@ -472,6 +472,24 @@ handle_begin(StringInfo s)
 	char	   *slot_name;
 
 	/*
+	 * Check if create_slot_with_progress needs us to pause.  This runs at
+	 * the start of every transaction (before any DML), ensuring the worker
+	 * blocks even under continuous load.  The previous transaction's commit
+	 * is fully complete at this point, so ros.remote_lsn reflects only
+	 * committed state.
+	 */
+	if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+	{
+		LOCKTAG		tag;
+
+		SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
+							 SPOCK_PAUSE_ADVISORY_KEY, 0, 2);
+		(void) LockAcquire(&tag, ShareLock, true, false);
+		LockRelease(&tag, ShareLock, true);
+		pg_atomic_compare_exchange_u32(&SpockCtx->pause_apply, &(uint32){1}, 0);
+	}
+
+	/*
 	 * To get here we must have connected successfully and the replication
 	 * stream is delivering the first transaction. At this point we switch to
 	 * restart_delay_on_exception assuming that we are just replicating a
@@ -488,6 +506,19 @@ handle_begin(StringInfo s)
 
 	replorigin_session_origin_timestamp = commit_time;
 	replorigin_session_origin_lsn = commit_lsn;
+
+	/* DEBUG: log first transactions to detect boundary issues */
+	{
+		static int txn_count = 0;
+		if (txn_count < 5)
+		{
+			elog(LOG, "SPOCK apply BEGIN #%d sub=%s commit_lsn=%X/%X origin_lsn=%X/%X",
+				 txn_count, MySubscription->name,
+				 LSN_FORMAT_ARGS(commit_lsn),
+				 LSN_FORMAT_ARGS(replorigin_session_origin_lsn));
+			txn_count++;
+		}
+	}
 	remote_origin_id = InvalidRepOriginId;
 	/*
 	 * Free and clear remote_origin_name - it's allocated in TopMemoryContext
@@ -774,6 +805,17 @@ handle_commit(StringInfo s)
 			exception_behaviour == DISCARD ||
 			exception_behaviour == TRANSDISCARD)
 		{
+			/* DEBUG: log first commits */
+			{
+				static int commit_count = 0;
+				if (commit_count < 5)
+				{
+					elog(LOG, "SPOCK apply COMMIT #%d sub=%s end_lsn=%X/%X had_exception=%d",
+						 commit_count, MySubscription->name,
+						 LSN_FORMAT_ARGS(end_lsn), xact_had_exception);
+					commit_count++;
+				}
+			}
 			replorigin_session_origin_lsn = end_lsn;
 		}
 
@@ -3135,6 +3177,18 @@ stream_replay:
 			 */
 			if (!IsTransactionState())
 			{
+				/* Also check pause here for the idle case (no incoming messages). */
+				if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+				{
+					LOCKTAG		tag;
+
+					SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
+										 SPOCK_PAUSE_ADVISORY_KEY, 0, 2);
+					(void) LockAcquire(&tag, ShareLock, true, false);
+					LockRelease(&tag, ShareLock, true);
+					pg_atomic_compare_exchange_u32(&SpockCtx->pause_apply, &(uint32){1}, 0);
+				}
+
 				VALGRIND_DO_ADDED_LEAK_CHECK;
 				pgstat_report_stat(true);
 			}
@@ -3867,6 +3921,10 @@ spock_apply_main(Datum main_arg)
 	replorigin_session_setup(originid);
 	replorigin_session_origin = originid;
 	origin_startpos = replorigin_session_get_progress(false);
+
+	elog(LOG, "SPOCK apply_main: sub=%s slot=%s origin=%u startpos=%X/%X",
+		 MySubscription->name, MySubscription->slot_name, originid,
+		 LSN_FORMAT_ARGS(origin_startpos));
 
 	/* Start the replication. */
 	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,

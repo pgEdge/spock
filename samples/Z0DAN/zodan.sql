@@ -920,75 +920,6 @@ EXCEPTION
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE spock.wait_for_replication_catchup_with_dblink(
-    src_node_name text,
-    new_node_name text,
-    new_node_dsn text,
-    verb boolean DEFAULT true,
-    max_wait_seconds integer DEFAULT 180
-)
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    lag_bytes bigint;
-    received_lsn pg_lsn;
-    remote_write_lsn pg_lsn;
-    lag_sql text;
-    wait_started timestamptz := clock_timestamp();
-BEGIN
-    IF verb THEN
-        RAISE NOTICE '    Waiting for replication catchup from % to %...', src_node_name, new_node_name;
-    END IF;
-
-    LOOP
-        lag_sql := format(
-            'SELECT '
-            'MAX(remote_insert_lsn) AS remote_write_lsn, '
-            'MAX(received_lsn) AS received_lsn, '
-            'COALESCE(MAX(remote_insert_lsn - received_lsn), 0) AS lag_bytes '
-            'FROM spock.lag_tracker '
-            'WHERE origin_name = %L AND receiver_name = %L',
-            src_node_name, new_node_name
-        );
-
-        EXECUTE format(
-            'SELECT * FROM dblink(%L, %L) AS t(remote_write_lsn pg_lsn, received_lsn pg_lsn, lag_bytes bigint)',
-            new_node_dsn, lag_sql
-        ) INTO remote_write_lsn, received_lsn, lag_bytes;
-
-        IF verb THEN
-            RAISE NOTICE '    Catchup % -> %: remote_write_lsn=%, received_lsn=%, lag_bytes=%, elapsed=%',
-                src_node_name,
-                new_node_name,
-                COALESCE(remote_write_lsn::text, '<null>'),
-                COALESCE(received_lsn::text, '<null>'),
-                COALESCE(lag_bytes::text, '<null>'),
-                clock_timestamp() - wait_started;
-        END IF;
-
-        EXIT WHEN remote_write_lsn IS NOT NULL
-              AND received_lsn IS NOT NULL
-              AND lag_bytes <= 0;
-
-        IF EXTRACT(EPOCH FROM (clock_timestamp() - wait_started)) >= max_wait_seconds THEN
-            RAISE EXCEPTION 'Replication catchup timeout for % -> % after % seconds (remote_write_lsn=%, received_lsn=%, lag_bytes=%)',
-                src_node_name,
-                new_node_name,
-                max_wait_seconds,
-                COALESCE(remote_write_lsn::text, '<null>'),
-                COALESCE(received_lsn::text, '<null>'),
-                COALESCE(lag_bytes::text, '<null>');
-        END IF;
-
-        PERFORM pg_sleep(1);
-    END LOOP;
-
-    IF verb THEN
-        RAISE NOTICE '    OK: Replication catchup complete for % -> %', src_node_name, new_node_name;
-    END IF;
-END;
-$$;
-
 -- ============================================================================
 
 --
@@ -1423,10 +1354,9 @@ BEGIN
         END;
 
         -- Wait for the source node to have received all changes from this
-        -- "other" node up to the sync event LSN.  Uses
-        -- pg_replication_origin_status which is updated in shared memory by
-        -- replorigin_session_advance (including for non-transactional
-        -- messages), rather than spock.progress which only updates on commit.
+        -- "other" node up to the sync event LSN.  This ensures N1 has applied
+        -- enough of N2's data before the COPY snapshot, reducing the amount
+        -- N3 must replay directly from N2.
         BEGIN
             DECLARE
                 src_progress_lsn         pg_lsn;
@@ -1449,7 +1379,6 @@ BEGIN
 
                 LOOP
                     BEGIN
-                        -- Bound each remote probe so dblink calls cannot hang forever.
                         v_prev_statement_timeout := current_setting('statement_timeout', true);
                         PERFORM set_config('statement_timeout', '5s', true);
 
@@ -1647,6 +1576,30 @@ BEGIN
                 END IF;
 
 				sub_name := 'sub_'|| rec.node_name || '_' || new_node_name;
+
+                -- Debug: check origin position before enabling subscription
+                DECLARE
+                    v_pre_enable_lsn pg_lsn;
+                    v_origin_slot text;
+                BEGIN
+                    v_origin_slot := spock.spock_gen_slot_name(
+                        (SELECT spock.extract_dbname_from_dsn(rec.dsn)),
+                        rec.node_name,
+                        sub_name);
+                    -- Remove quotes from dbname
+                    v_origin_slot := spock.spock_gen_slot_name(
+                        TRIM(BOTH '''' FROM (SELECT spock.extract_dbname_from_dsn(rec.dsn))),
+                        rec.node_name,
+                        sub_name);
+                    SELECT remote_lsn INTO v_pre_enable_lsn
+                    FROM pg_replication_origin_status
+                    WHERE external_id = v_origin_slot;
+                    RAISE NOTICE '    DEBUG Phase8: about to enable %, origin % at %',
+                        sub_name, v_origin_slot, v_pre_enable_lsn;
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        RAISE NOTICE '    DEBUG Phase8: could not check origin before enable: %', SQLERRM;
+                END;
 
                 CALL spock.enable_sub(new_node_dsn, sub_name, verb, true);
 
@@ -2114,6 +2067,9 @@ BEGIN
                 JOIN spock.node n ON n.node_id = p.remote_node_id
                 WHERE n.node_name = rec.node_name;
 
+                RAISE NOTICE '    DEBUG Phase7: node=%, progress.remote_commit_lsn=%, slot current_lsn=%',
+                    rec.node_name, target_lsn, current_lsn;
+
                 IF target_lsn IS NULL THEN
                     RAISE NOTICE '    WARNING: No spock.progress entry for %, falling back to pg_current_wal_lsn()', rec.node_name;
                     remotesql := 'SELECT pg_current_wal_lsn()';
@@ -2144,6 +2100,17 @@ BEGIN
                 END IF;
                 PERFORM pg_replication_origin_advance(slot_name, target_lsn);
                 RAISE NOTICE '    OK: %', rpad('Advanced replication origin ' || slot_name || ' on new node to ' || target_lsn, 120, ' ');
+
+                -- Verify the origin was actually advanced
+                DECLARE
+                    v_verify_lsn pg_lsn;
+                BEGIN
+                    SELECT remote_lsn INTO v_verify_lsn
+                    FROM pg_replication_origin_status
+                    WHERE external_id = slot_name;
+                    RAISE NOTICE '    DEBUG Phase7: origin % verified at % (expected %)',
+                        slot_name, v_verify_lsn, target_lsn;
+                END;
             END;
         EXCEPTION
             WHEN OTHERS THEN

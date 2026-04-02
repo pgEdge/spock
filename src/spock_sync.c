@@ -599,14 +599,27 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 	elog(LOG, "SPOCK cswp slot=%s provider=%u subscriber=%u",
 		 slot_name, origin_node_id, subscriber_node_id);
 
-	/* REPEATABLE READ so the COPY snapshot shares the slot's WAL boundary. */
+	/*
+	 * Pause apply workers BEFORE starting the REPEATABLE READ transaction.
+	 * This ensures the snapshot (taken at the first query in REPEATABLE READ)
+	 * is consistent with pg_replication_origin_status: both reflect only
+	 * fully committed apply transactions.
+	 */
+	res = PQexec(conn, "SELECT spock.pause_apply_workers()");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		elog(ERROR, "could not pause apply workers on origin: %s",
+			 PQerrorMessage(conn));
+	PQclear(res);
+
+	/* REPEATABLE READ so the COPY snapshot shares the slot's WAL boundary.
+	 * Snapshot is taken at the first query, with workers already paused. */
 	res = PQexec(conn, "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		elog(ERROR, "could not begin REPEATABLE READ transaction on origin: %s",
 			 PQerrorMessage(conn));
 	PQclear(res);
 
-	/* Single call: create slot + export snapshot + read progress atomically */
+	/* Single call: create slot + export snapshot + read progress */
 	appendStringInfo(&query,
 					 "SELECT * FROM spock.create_slot_with_progress"
 					 "('%s', %u, %u)",
@@ -690,6 +703,18 @@ spock_create_slot_and_get_progress(PGconn *conn, const char *slot_name,
 	}
 
 	PQclear(res);
+
+	/*
+	 * Resume apply workers now that slot and progress are captured.
+	 * The REPEATABLE READ transaction (and its snapshot) remain open
+	 * for the COPY phase; the workers can resume safely.
+	 */
+	res = PQexec(conn, "SELECT spock.resume_apply_workers()");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		elog(WARNING, "could not resume apply workers on origin: %s",
+			 PQerrorMessage(conn));
+	PQclear(res);
+
 	pfree(query.data);
 
 	*progress_out = progress_list;

@@ -51,6 +51,7 @@ extern bool allow_ddl_from_functions;
 extern int	restart_delay_default;
 extern int	restart_delay_on_exception;
 extern int	spock_replay_queue_size;	/* Deprecated - no longer used */
+extern int	spock_pause_timeout;
 extern int	spock_feedback_frequency;
 extern bool check_all_uc_indexes;
 extern bool	spock_enable_quiet_mode;

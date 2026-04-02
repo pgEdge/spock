@@ -735,13 +735,19 @@ spock_group_progress_force_set_list(List *lst)
 		}
 		else if (entry->progress.remote_commit_lsn >= sap->remote_commit_lsn)
 		{
-			/* Existing LSN >= resume_lsn; skip to avoid double-apply. */
-			elog(LOG, "SPOCK: force-set %d->%d skipped: existing=%X/%X >= resume_lsn=%X/%X",
+			/*
+			 * Existing LSN >= resume_lsn.  Unconditionally overwrite: the
+			 * value from create_slot_with_progress is authoritative because
+			 * it was captured at COPY snapshot time.  The apply worker may
+			 * have advanced past it since then, but any data it applied
+			 * after the snapshot is NOT in the COPY — so the new node must
+			 * replay from the snapshot boundary, not from the worker's
+			 * current position.
+			 */
+			elog(LOG, "SPOCK: force-set %d->%d overwriting: existing=%X/%X -> resume_lsn=%X/%X",
 				 sap->key.remote_node_id, MySubscription->target->id,
 				 LSN_FORMAT_ARGS(entry->progress.remote_commit_lsn),
 				 LSN_FORMAT_ARGS(sap->remote_commit_lsn));
-			LWLockRelease(SpockCtx->apply_group_master_lock);
-			continue;
 		}
 		else
 		{

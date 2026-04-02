@@ -163,6 +163,7 @@ spock_shmem_startup(void)
 		SpockCtx->supervisor = NULL;
 		SpockCtx->subscriptions_changed = false;
 		SpockCtx->total_workers = nworkers;
+		pg_atomic_init_u32(&SpockCtx->pause_apply, 0);
 		memset(SpockCtx->workers, 0,
 			   sizeof(SpockWorker) * SpockCtx->total_workers);
 	}
