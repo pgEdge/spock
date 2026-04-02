@@ -2067,8 +2067,23 @@ BEGIN
                 JOIN spock.node n ON n.node_id = p.remote_node_id
                 WHERE n.node_name = rec.node_name;
 
-                RAISE NOTICE '    DEBUG Phase7: node=%, progress.remote_commit_lsn=%, slot current_lsn=%',
-                    rec.node_name, target_lsn, current_lsn;
+                DECLARE
+                    v_ros_remote_lsn pg_lsn;
+                BEGIN
+                    SELECT ros.remote_lsn INTO v_ros_remote_lsn
+                    FROM pg_replication_origin_status ros
+                    JOIN pg_replication_origin o ON o.roident = ros.local_id
+                    JOIN spock.subscription s ON s.sub_slot_name = o.roname
+                    WHERE s.sub_origin = (SELECT node_id FROM spock.node WHERE node_name = rec.node_name)
+                      AND s.sub_target = (SELECT node_id FROM spock.node_info());
+                    RAISE NOTICE '    DEBUG Phase7: node=%, progress.remote_commit_lsn=%, ros.remote_lsn=%, slot current_lsn=%, match=%',
+                        rec.node_name, target_lsn, v_ros_remote_lsn, current_lsn,
+                        (target_lsn IS NOT DISTINCT FROM v_ros_remote_lsn);
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        RAISE NOTICE '    DEBUG Phase7: node=%, progress.remote_commit_lsn=%, slot current_lsn=% (ros check failed: %)',
+                            rec.node_name, target_lsn, current_lsn, SQLERRM;
+                END;
 
                 IF target_lsn IS NULL THEN
                     RAISE NOTICE '    WARNING: No spock.progress entry for %, falling back to pg_current_wal_lsn()', rec.node_name;
