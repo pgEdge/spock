@@ -73,12 +73,21 @@ BEGIN
      * function returns.
      */
 
+    -- DEBUG: capture WAL position before slot creation
+    RAISE NOTICE 'SPOCK cswp DEBUG: pre-slot wal_insert=%', pg_current_wal_insert_lsn();
+
     -- Create the replication slot.  With workers paused, no retry needed.
     SELECT s.lsn INTO v_lsn
     FROM pg_create_logical_replication_slot(p_slot_name, 'spock_output') s;
 
+    -- DEBUG: capture WAL position after slot creation, before snapshot export
+    RAISE NOTICE 'SPOCK cswp DEBUG: post-slot wal_insert=%, slot_lsn=%', pg_current_wal_insert_lsn(), v_lsn;
+
     -- Export snapshot for the COPY worker.
     v_snap := pg_export_snapshot();
+
+    -- DEBUG: snapshot info
+    RAISE NOTICE 'SPOCK cswp DEBUG: exported snapshot=%, txid_snapshot=%', v_snap, pg_current_snapshot();
 
     RAISE NOTICE 'SPOCK cswp slot=% v_lsn=%', p_slot_name, v_lsn;
 
@@ -112,6 +121,16 @@ BEGIN
           AND  sub.sub_origin <> p_subscriber_node_id
     ) LOOP
         v_n_peers := v_n_peers + 1;
+
+        -- DEBUG: show both ros and progress values for comparison
+        RAISE NOTICE 'SPOCK cswp DEBUG: peer=% ros.remote_lsn=% ros.local_lsn=% progress.remote_commit_lsn=%',
+            rec.remote_node_id,
+            rec.ros_remote_lsn,
+            (SELECT ros.local_lsn FROM pg_replication_origin_status ros
+             JOIN pg_replication_origin o ON o.roident = ros.local_id
+             JOIN spock.subscription s ON s.sub_slot_name = o.roname
+             WHERE s.sub_origin = rec.remote_node_id AND s.sub_target = p_provider_node_id),
+            rec.grp_remote_commit_lsn;
 
         lsn               := v_lsn;
         snapshot          := v_snap;
