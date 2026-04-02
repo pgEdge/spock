@@ -4,8 +4,8 @@
 -- Common scenario: three tables on provider, one broken on subscriber.
 -- A single transaction with DMLs on all three tables triggers an error
 -- on the broken table.  The first DML (INSERT into drl_t1) also creates
--- a conflict (INSERT_EXISTS) to verify that dry-run modes do not log
--- it to spock.resolutions, while DISCARD mode does.
+-- a conflict (INSERT_EXISTS) to verify that exception row capture modes
+-- do not log it to spock.resolutions, while DISCARD mode does.
 --
 -- Each mode uses a different breakage method:
 --   TRANSDISCARD: absent table   (DROP TABLE on subscriber)
@@ -80,8 +80,8 @@ SELECT table_name, operation, (error_message <> '') AS has_error
 FROM spock.exception_log
 ORDER BY command_counter;
 
--- Resolutions must be empty: dry-run never executes DML, so no
--- conflict detection happens.
+-- Resolutions must be empty: exception row capture never executes DML,
+-- so no conflict detection happens.
 SELECT COUNT(*) AS resolutions_count FROM spock.resolutions;
 
 -- ============================================================
@@ -254,7 +254,7 @@ ORDER BY command_counter;
 SELECT * FROM drl_t1 ORDER BY x;
 SELECT * FROM drl_t3;
 
--- Resolutions must be empty: dry-run never executes DML
+-- Resolutions must be empty: exception row capture never executes DML
 SELECT COUNT(*) AS resolutions_count FROM spock.resolutions;
 
 -- Re-enable subscription for cleanup
