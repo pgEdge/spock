@@ -1040,6 +1040,22 @@ transdiscard_skip_commit:
 	in_remote_transaction = false;
 
 	/*
+	 * If create_slot_with_progress is waiting for us, pause here.  The
+	 * commit is fully complete (ros.remote_lsn updated, xid cleared),
+	 * so the snapshot and origin will be consistent.
+	 */
+	if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+	{
+		MyApplyWorker->paused = true;
+		ConditionVariablePrepareToSleep(&SpockCtx->pause_cv);
+		while (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+			ConditionVariableSleep(&SpockCtx->pause_cv,
+								  WAIT_EVENT_LOGICAL_APPLY_MAIN);
+		ConditionVariableCancelSleep();
+		MyApplyWorker->paused = false;
+	}
+
+	/*
 	 * Stop replay if we're doing limited replay and we've replayed up to the
 	 * last record we're supposed to process.
 	 */
