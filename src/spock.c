@@ -368,21 +368,6 @@ spock_connect_base(const char *connstr, const char *appname,
 	keys[i] = "replication";
 	vals[i] = replication ? "database" : NULL;
 	i++;
-	/*
-	 * For replication connections, disable the server-side walsender timeout.
-	 * Liveness detection is handled by TCP keepalives (keepalives_idle /
-	 * keepalives_interval / keepalives_count above) on both sides, and by
-	 * spock.apply_idle_timeout on the subscriber side as a safety net for a
-	 * hung-but-connected walsender.  Leaving wal_sender_timeout active would
-	 * cause spurious disconnects whenever the subscriber is legitimately busy
-	 * applying a large transaction and cannot send 'r' feedback in time.
-	 */
-	if (replication)
-	{
-		keys[i] = "options";
-		vals[i] = "-c wal_sender_timeout=0";
-		i++;
-	}
 	keys[i] = NULL;
 	vals[i] = NULL;
 
