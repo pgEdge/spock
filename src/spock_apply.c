@@ -2922,12 +2922,14 @@ stream_replay:
 					 */
 					if (xact_had_exception)
 					{
-						rc = WaitLatchOrSocket(&MyProc->procLatch,
-								   WL_SOCKET_READABLE | WL_LATCH_SET |
-								   WL_TIMEOUT | WL_POSTMASTER_DEATH,
-								   fd, 1000L);
+						rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET |
+									   WL_TIMEOUT | WL_POSTMASTER_DEATH, 1000L);
 
 						ResetLatch(&MyProc->procLatch);
+
+						if (rc & WL_POSTMASTER_DEATH)
+							proc_exit(1);
+
 						continue;
 					}
 					break;
