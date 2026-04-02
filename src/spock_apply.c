@@ -433,27 +433,32 @@ begin_replication_step(void)
 
 	if (!IsTransactionState())
 	{
-		StartTransactionCommand();
-
 		/*
-		 * Check if create_slot_with_progress needs us to pause.  This runs
-		 * at the start of every new transaction (first DML after BEGIN),
-		 * ensuring the worker blocks even under continuous load.  The
-		 * previous transaction's commit is fully complete at this point,
-		 * and we have a valid transaction context for LockAcquire.
+		 * Check if create_slot_with_progress needs us to pause.  This only
+		 * fires during add_node (a rare operation).  The fast path is a
+		 * single atomic read that almost always sees 0.
+		 *
+		 * Runs before StartTransactionCommand so the worker has no xid
+		 * while spinning — pause_apply_workers can detect completion via
+		 * xid polling.  The previous transaction's commit is fully
+		 * complete, so ros.remote_lsn reflects only committed state.
+		 *
+		 * The 1ms poll loop is adequate: the pause lasts sub-millisecond
+		 * (slot creation + ros read).  A ConditionVariable would be
+		 * more efficient but adds complexity for a rare code path.
 		 */
 		if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
 		{
-			LOCKTAG		tag;
-
-			SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
-								 SPOCK_PAUSE_ADVISORY_KEY, 0, 2);
-			(void) LockAcquire(&tag, ShareLock, true, false);
-			LockRelease(&tag, ShareLock, true);
-			pg_atomic_compare_exchange_u32(&SpockCtx->pause_apply,
-										   &(uint32){1}, 0);
+			MyApplyWorker->paused = true;
+			while (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+			{
+				CHECK_FOR_INTERRUPTS();
+				pg_usleep(1000);	/* 1ms */
+			}
+			MyApplyWorker->paused = false;
 		}
 
+		StartTransactionCommand();
 		spock_apply_heap_begin();
 		result = true;
 	}

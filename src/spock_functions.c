@@ -3333,24 +3333,20 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 Datum
 spock_pause_apply_workers(PG_FUNCTION_ARGS)
 {
-	LOCKTAG		tag;
 	int			i;
 	int			max_wait_ms = spock_pause_timeout * 1000;
 	int			waited_ms = 0;
-
-	/* Acquire session-level exclusive advisory lock BEFORE setting the flag.
-	 * Session-level so it persists across transaction boundaries — the caller
-	 * starts a REPEATABLE READ transaction after pausing. */
-	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, SPOCK_PAUSE_ADVISORY_KEY, 0, 2);
-	(void) LockAcquire(&tag, ExclusiveLock, true, false);
 
 	/* Signal apply workers to pause at their next between-transaction point. */
 	pg_atomic_write_u32(&SpockCtx->pause_apply, 1);
 
 	/*
-	 * Wait until all apply workers in this database are either blocked on our
-	 * advisory lock or have no active transaction (idle).  We iterate the
-	 * shared worker array checking each apply worker's PGPROC.
+	 * Wait until all apply workers in this database have either:
+	 * - no active transaction (xid invalid = between transactions or idle), or
+	 * - set their paused flag (spinning on the pause_apply flag).
+	 *
+	 * Either state means the worker has committed its last transaction and
+	 * cannot apply new DML until the flag is cleared.
 	 */
 	while (waited_ms < max_wait_ms)
 	{
@@ -3360,7 +3356,6 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 		{
 			SpockWorker *w = &SpockCtx->workers[i];
 
-			/* Skip non-apply workers and workers in other databases. */
 			if (w->worker_type != SPOCK_WORKER_APPLY)
 				continue;
 			if (w->dboid != MyDatabaseId)
@@ -3368,16 +3363,17 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 			if (w->proc == NULL)
 				continue;
 
-			/*
-			 * Check if this worker has an active transaction.
-			 * TransactionIdIsValid(xid) means the worker is mid-commit or
-			 * mid-transaction — not yet at the pause check point.
-			 */
-			if (TransactionIdIsValid(w->proc->xid))
-			{
-				all_paused = false;
-				break;
-			}
+			/* Worker is paused (spinning on flag) — good. */
+			if (w->worker.apply.paused)
+				continue;
+
+			/* Worker has no active transaction — also good. */
+			if (!TransactionIdIsValid(w->proc->xid))
+				continue;
+
+			/* Worker is mid-transaction and not yet paused. */
+			all_paused = false;
+			break;
 		}
 
 		if (all_paused)
@@ -3390,9 +3386,7 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 
 	if (waited_ms >= max_wait_ms)
 	{
-		/* Clean up before erroring — clear flag and release lock. */
 		pg_atomic_write_u32(&SpockCtx->pause_apply, 0);
-		LockRelease(&tag, ExclusiveLock, true);
 		ereport(ERROR,
 				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 				 errmsg("timed out waiting for apply workers to pause after %d seconds",
@@ -3414,17 +3408,10 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 Datum
 spock_resume_apply_workers(PG_FUNCTION_ARGS)
 {
-	LOCKTAG		tag;
-
-	/* Clear the flag first, so workers don't re-block after waking. */
+	/* Clear the flag — workers spinning on it will wake and continue. */
 	pg_atomic_write_u32(&SpockCtx->pause_apply, 0);
 
-	/* Release the exclusive advisory lock — unblocks waiting workers. */
-	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, SPOCK_PAUSE_ADVISORY_KEY, 0, 2);
-	if (!LockRelease(&tag, ExclusiveLock, true))
-		elog(WARNING, "SPOCK resume_apply_workers: lock was not held");
-	else
-		elog(DEBUG1, "SPOCK resume_apply_workers: workers resumed");
+	elog(DEBUG1, "SPOCK resume_apply_workers: workers resumed");
 
 	PG_RETURN_VOID();
 }
