@@ -58,7 +58,6 @@ nav:
   - Spock's Management Features:
     - Managing a Spock Installation: managing/index.md
     - Replicating Partitioned Tables: managing/partition_mgmt.md
-    - Using Batch Inserts: managing/batch_inserts.md
     - Filtering Data: managing/filtering.md
     - Using Spock in Read-Only Mode: managing/read_only.md
     - Using a Trigger to Manage Replication Set Membership: managing/repset_trigger.md
