@@ -19,8 +19,8 @@ SRCS := $(wildcard src/*.c) \
 OBJS = $(filter-out src/spock_output.o, $(SRCS:.c=.o))
 
 PG_CPPFLAGS += -I$(libpq_srcdir) \
-			   '-I$(realpath include)' \
-			   '-I$(realpath src/compat/$(PGVER))' \
+			   -I"$(realpath include)" \
+			   -I"$(realpath src/compat/$(PGVER))" \
 			   -Werror=implicit-function-declaration
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
 
