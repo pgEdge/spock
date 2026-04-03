@@ -3,23 +3,49 @@
 [![Regression Tests and Spockbench](https://github.com/pgEdge/spock/actions/workflows/spockbench.yml/badge.svg)](https://github.com/pgEdge/spock/actions/workflows/spockbench.yml)
 
 ## Table of Contents
-- [Building the Spock Extension](README.md#building-the-spock-extension)
-- [Building the Spock Documentation](README.md#building-the-spock-documentation)
-- [Basic Configuration and Usage](README.md#basic-configuration-and-usage)
+
+- [Introduction](docs/index.md)
+- [Installing and Configuring Spock](docs/install_spock.md)
+- [Getting Started](docs/getting_started.md)
+- [Using Advanced Configuration Options](docs/configuring.md)
 - [Upgrading a Spock Installation](docs/upgrading_spock.md)
-- [Advanced Configuration Options](docs/configuring.md)
-- [Spock Management Features](docs/managing/index.md)
-- [Modifying a Cluster](docs/modify/index.md)
-- [Monitoring your Cluster](docs/monitoring/index.md)
-- [Spock Functions](docs/spock_functions/index.md)
-- [Using spockctrl Management Functions](docs/modify/spockctrl/index.md)
-- [Release Notes](docs/spock_release_notes.md)
+- [Spock's Conflict Avoidance Options](docs/conflicts.md)
+- Spock's Management Features
+  - [Managing a Spock Installation](docs/managing/index.md)
+  - [Replicating Partitioned Tables](docs/managing/partition_mgmt.md)
+  - [Using Batch Inserts](docs/managing/batch_inserts.md)
+  - [Filtering Data](docs/managing/filtering.md)
+  - [Using Spock in Read-Only Mode](docs/managing/read_only.md)
+  - [Using a Trigger to Manage Replication Set Membership](docs/managing/repset_trigger.md)
+  - [Using Snowflake Sequences](docs/managing/snowflake.md)
+  - [Using Lolor to Manage Large Objects](docs/managing/lolor.md)
+  - [Using Automatic DDL Replication](docs/managing/spock_autoddl.md)
+- Adding or Removing Nodes
+  - [Modifying a Cluster](docs/modify/index.md)
+  - Using Z0DAN
+    - [Modifying your Cluster with Zodan](docs/modify/zodan/index.md)
+    - [Using Zodan Scripts and Workflows](docs/modify/zodan/zodan_readme.md)
+    - [Adding a Node with Zero Downtime](docs/modify/zodan/zodan_tutorial.md)
+  - [Adding a Node with Minimal Downtime with pgBackRest](docs/modify/add_node_pgbackrest.md)
+- Monitoring a Cluster
+  - [Monitoring the Configuration and Health of a Cluster](docs/monitoring/index.md)
+  - [Finding Cluster Information](docs/monitoring/spock_info.md)
+  - [Using Lag Tracking to Evaluate your Cluster](docs/monitoring/lag_tracking.md)
+  - [Using a Sync Event to Monitor Node Content](docs/monitoring/spock_sync_event.md)
+- Using Spock Functions
+  - [Function List](docs/spock_functions/index.md)
+  - [Node Management Functions](docs/spock_functions/node_mgmt.md)
+  - [Replication Set Management Functions](docs/spock_functions/repset_mgmt.md)
+  - [Subscription Management Functions](docs/spock_functions/sub_mgmt.md)
+  - [Cluster Management Functions](docs/spock_functions/gen_mgmt.md)
 - [Limitations](docs/limitations.md)
+- [Troubleshooting](docs/troubleshooting.md)
 - [FAQ](docs/FAQ.md)
+- [Release Notes](docs/spock_release_notes.md)
 
 ## Spock Multi-Master Replication for PostgreSQL - Prerequisites and Requirements
 
-The Spock extension provides multi-master replication for PostgreSQL versions 15 and later.  Take the following requirements into consideration as you design your cluster:
+The Spock extension provides multi-master replication for PostgreSQL versions 15, 16, 17, and 18.  Take the following requirements into consideration as you design your cluster:
 
 * You will need to install the `Spock` extension on each node in your cluster.  If you're performing a major version upgrade, the old node can be running a recent version of pgLogical2 before upgrading it to become a Spock node.
 
@@ -74,7 +100,7 @@ primary key, btree, for table "public.table_a"
 
 * `CHECK` constraints and `NOT NULL` constraints must be the same or more permissive on any standby node that acts only as a subscriber.
 
-For more information about the Spock extension's advanced functionality, visit the [Spock documentation](docs/install_spock.md).
+For more information about the Spock extension's advanced functionality, visit [here](docs/features.md).
 
 
 ## Building the Spock Extension
