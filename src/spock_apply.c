@@ -937,8 +937,7 @@ handle_commit(StringInfo s)
 			.key.remote_node_id = MySubscription->origin->id,
 			.remote_commit_ts = commit_time,
 			.prev_remote_ts = replorigin_session_origin_timestamp,
-			.remote_commit_lsn = commit_lsn,
-			/* Ensure invariant: received_lsn >= remote_commit_lsn */
+			.remote_commit_lsn = end_lsn,
 			.received_lsn = end_lsn,
 			/*
 			 * Include remote_insert_lsn for WAL persistence. This was already
