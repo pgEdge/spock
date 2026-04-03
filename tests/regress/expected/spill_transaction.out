@@ -1,0 +1,352 @@
+--
+-- Test: replay queue spill-to-disk for large transactions
+--
+-- Verifies that a bulk-loaded transaction is successfully replicated when
+-- the replay queue exceeds the in-memory limit and spills to a temp file.
+-- Tests all three exception_behaviour modes, both without and with a
+-- conflict on the last record.
+--
+SELECT * FROM spock_regress_variables()
+\gset
+\c :subscriber_dsn
+TRUNCATE spock.resolutions;
+TRUNCATE spock.exception_log;
+ALTER SYSTEM SET spock.save_resolutions = on;
+-- Force spilling by setting a very low queue size limit (1 MB)
+ALTER SYSTEM SET spock.exception_replay_queue_size = 1;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+-- Create the test table on both nodes via replicated DDL
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+  CREATE TABLE public.test_spill (
+	id integer PRIMARY KEY, payload serial);
+  CREATE UNIQUE INDEX payload_idx ON test_spill (payload);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'test_spill');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+-- ============================================================
+-- TRANSDISCARD mode — no conflict
+-- ============================================================
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard';
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :provider_dsn
+COPY test_spill (id) FROM PROGRAM 'seq 1 50000' WITH (FORMAT text);
+SELECT spock.sync_event() as sync_lsn
+\gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+SELECT count(*), sum(payload) FROM test_spill;
+ count |    sum     
+-------+------------
+ 50000 | 1250025000
+(1 row)
+
+-- ============================================================
+-- DISCARD mode — no conflict
+-- ============================================================
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.exception_behaviour = 'discard';
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :provider_dsn
+TRUNCATE test_spill RESTART IDENTITY;
+COPY test_spill (id) FROM PROGRAM 'seq 1 50000' WITH (FORMAT text);
+SELECT spock.sync_event() as sync_lsn
+\gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+SELECT count(*), sum(payload) FROM test_spill;
+ count |    sum     
+-------+------------
+ 50000 | 1250025000
+(1 row)
+
+-- ============================================================
+-- SUB_DISABLE mode — no conflict
+-- ============================================================
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.exception_behaviour = 'sub_disable';
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :provider_dsn
+TRUNCATE test_spill RESTART IDENTITY;
+COPY test_spill (id) FROM PROGRAM 'seq 1 50000' WITH (FORMAT text);
+SELECT spock.sync_event() as sync_lsn
+\gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+SELECT count(*), sum(payload) FROM test_spill;
+ count |    sum     
+-------+------------
+ 50000 | 1250025000
+(1 row)
+
+-- ============================================================
+-- TRANSDISCARD mode — conflict on last record
+-- The entire transaction is discarded; only the pre-inserted
+-- conflicting row remains on the subscriber.
+-- ============================================================
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard';
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :provider_dsn
+TRUNCATE test_spill RESTART IDENTITY;
+SELECT spock.sync_event() as sync_lsn
+\gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+INSERT INTO test_spill (id, payload) VALUES (-1, 50000);
+\c :provider_dsn
+COPY test_spill (id) FROM PROGRAM 'seq 1 50000' WITH (FORMAT text);
+SELECT spock.sync_event() as sync_lsn
+\gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+-- Check: COPY transaction discarded, single record presented
+SELECT id, payload FROM test_spill;
+ id | payload 
+----+---------
+ -1 |   50000
+(1 row)
+
+SELECT operation AS opt, remote_new_tup FROM spock.exception_log
+ORDER BY command_counter DESC LIMIT 5;
+  opt   |                                                  remote_new_tup                                                   
+--------+-------------------------------------------------------------------------------------------------------------------
+ INSERT | [{"value": 50000, "attname": "id", "atttype": "int4"}, {"value": 50000, "attname": "payload", "atttype": "int4"}]
+ INSERT | [{"value": 49999, "attname": "id", "atttype": "int4"}, {"value": 49999, "attname": "payload", "atttype": "int4"}]
+ INSERT | [{"value": 49998, "attname": "id", "atttype": "int4"}, {"value": 49998, "attname": "payload", "atttype": "int4"}]
+ INSERT | [{"value": 49997, "attname": "id", "atttype": "int4"}, {"value": 49997, "attname": "payload", "atttype": "int4"}]
+ INSERT | [{"value": 49996, "attname": "id", "atttype": "int4"}, {"value": 49996, "attname": "payload", "atttype": "int4"}]
+(5 rows)
+
+-- ============================================================
+-- DISCARD mode — conflict on last record
+-- The conflict is resolved per-row; all 50000 rows arrive.
+-- ============================================================
+\c :subscriber_dsn
+TRUNCATE spock.exception_log;
+ALTER SYSTEM SET spock.exception_behaviour = 'discard';
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :provider_dsn
+TRUNCATE test_spill RESTART IDENTITY;
+SELECT spock.sync_event() as sync_lsn
+\gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+INSERT INTO test_spill (id, payload) VALUES (-1, 50000);
+\c :provider_dsn
+COPY test_spill (id) FROM PROGRAM 'seq 1 50000' WITH (FORMAT text);
+SELECT spock.sync_event() as sync_lsn
+\gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+-- Check 49999 COPY records applied plus older one has been kept
+SELECT count(*), sum(id), sum(payload) FROM test_spill;
+ count |    sum     |    sum     
+-------+------------+------------
+ 50000 | 1249974999 | 1250025000
+(1 row)
+
+SELECT operation AS opt,remote_new_tup FROM spock.exception_log
+ORDER BY command_counter DESC LIMIT 5;
+  opt   |                                                  remote_new_tup                                                   
+--------+-------------------------------------------------------------------------------------------------------------------
+ INSERT | [{"value": 50000, "attname": "id", "atttype": "int4"}, {"value": 50000, "attname": "payload", "atttype": "int4"}]
+(1 row)
+
+-- ============================================================
+-- SUB_DISABLE mode — conflict on last record
+-- The subscription is disabled on conflict. Remove the
+-- conflicting row, re-enable, and verify the transaction
+-- is applied successfully.
+-- ============================================================
+\c :provider_dsn
+TRUNCATE test_spill RESTART IDENTITY;
+SELECT spock.sync_event() as sync_lsn \gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+TRUNCATE spock.exception_log;
+ALTER SYSTEM SET spock.exception_behaviour = 'sub_disable';
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+-- Check that all works and clean on subscriber
+SELECT status FROM spock.sub_show_status('test_subscription');
+   status    
+-------------
+ replicating
+(1 row)
+
+SELECT * FROM test_spill; -- empty
+ id | payload 
+----+---------
+(0 rows)
+
+INSERT INTO test_spill (id, payload) VALUES (-1, 50000); -- Add conflicting record
+\c :provider_dsn
+COPY test_spill (id) FROM PROGRAM 'seq 1 50000' WITH (FORMAT text);
+-- Wait for the subscription to become disabled (apply worker may still
+-- be processing the conflict asynchronously).
+\c :subscriber_dsn
+DO $$
+BEGIN
+  SET LOCAL statement_timeout = '30s';
+  WHILE (SELECT status FROM spock.sub_show_status('test_subscription')) <> 'disabled' LOOP
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END;
+$$;
+-- Remove the conflicting row and re-enable
+DELETE FROM test_spill WHERE id = -1;
+SELECT spock.sub_enable('test_subscription', true);
+ sub_enable 
+------------
+ t
+(1 row)
+
+\c :provider_dsn
+SELECT spock.sync_event() as sync_lsn
+\gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+-- Check: COPY passed successfully
+SELECT count(*), sum(id), sum(payload) FROM test_spill;
+ count |    sum     |    sum     
+-------+------------+------------
+ 50000 | 1250025000 | 1250025000
+(1 row)
+
+-- Check how the conflict has been processed.
+SELECT node_name,relname,idxname,conflict_type,conflict_resolution,
+  local_tuple,remote_tuple FROM spock.resolutions;
+ node_name | relname | idxname | conflict_type | conflict_resolution | local_tuple | remote_tuple 
+-----------+---------+---------+---------------+---------------------+-------------+--------------
+(0 rows)
+
+SELECT operation AS opt, remote_new_tup FROM spock.exception_log
+ORDER BY command_counter DESC LIMIT 5;
+     opt     |                                                  remote_new_tup                                                   
+-------------+-------------------------------------------------------------------------------------------------------------------
+ SUB_DISABLE | 
+ INSERT      | [{"value": 50000, "attname": "id", "atttype": "int4"}, {"value": 50000, "attname": "payload", "atttype": "int4"}]
+ INSERT      | [{"value": 49999, "attname": "id", "atttype": "int4"}, {"value": 49999, "attname": "payload", "atttype": "int4"}]
+ INSERT      | [{"value": 49998, "attname": "id", "atttype": "int4"}, {"value": 49998, "attname": "payload", "atttype": "int4"}]
+ INSERT      | [{"value": 49997, "attname": "id", "atttype": "int4"}, {"value": 49997, "attname": "payload", "atttype": "int4"}]
+(5 rows)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+ALTER SYSTEM RESET spock.exception_behaviour;
+ALTER SYSTEM RESET spock.exception_replay_queue_size;
+ALTER SYSTEM RESET spock.save_resolutions;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :provider_dsn
+SELECT spock.replicate_ddl('DROP TABLE public.test_spill CASCADE;');
+NOTICE:  drop cascades to table test_spill membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT spock.sync_event() as sync_lsn
+\gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
