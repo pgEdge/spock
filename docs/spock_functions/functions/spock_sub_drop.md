@@ -1,36 +1,44 @@
-# spock.sub_drop
+## NAME
 
-The `spock.sub_drop()` function disconnects a subscription and removes the
-subscription from the catalog.
+spock.sub_drop()
 
-## Synopsis
+### SYNOPSIS
 
-```sql
-spock.sub_drop(subscription_name name, ifexists bool)
-```
+spock.sub_drop (subscription_name name, ifexists boolean)
 
-## Description
+### RETURNS
 
-The `spock.sub_drop()` function disconnects the subscription and removes the
-subscription from the catalog.
+The OID of the dropped subscription.
 
-## Arguments
+### DESCRIPTION
 
-The function accepts the following arguments:
+Disconnects and removes a subscription from the cluster.
 
-- `subscription_name` - The name of an existing subscription.
-- `ifexists` - If `true`, an error is not thrown when the subscription does not
-  exist; the default is `false`.
+This function terminates the replication connection for the specified
+subscription and removes all associated metadata from the Spock catalogs. It
+does not affect data that has already been replicated to the subscriber.
 
-## Example
+If ifexists is set to false (default), an error is raised when the specified
+subscription does not exist. If ifexists is true, the function returns
+successfully without error.
 
-In the following example, the `spock.sub_drop()` function drops a subscription
-named `sub_n1_n2`:
+Returns NULL if any argument is NULL.
 
-```sql
-SELECT spock.sub_drop('sub_n1_n2');
- sub_drop
-----------
-        1
-(1 row)
-```
+This command must be executed by a superuser.
+
+### ARGUMENTS
+
+subscription_name
+
+    The name of the existing subscription to remove.
+
+ifexists
+
+    If true, do not raise an error when the subscription does not exist.
+    Default is false.
+
+### EXAMPLE
+
+    SELECT spock.sub_drop('sub_n2_n1');
+
+    SELECT spock.sub_drop('sub_n2_n1', true);
