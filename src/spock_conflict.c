@@ -371,13 +371,16 @@ spock_report_conflict(SpockConflictType conflict_type,
 	if (conflict_type == SPOCK_CT_UPDATE_EXISTS || conflict_type == SPOCK_CT_DELETE_ORIGIN_DIFFERS)
 	{
 		/*
-		 * If updating a row that came from the same origin,
-		 * do not report it as a conflict nor log
+		 * If updating a row that came from the same origin, do not report it
+		 * as a conflict nor log
 		 */
 		if (local_tuple_origin == replorigin_session_origin)
 			return;
 
-		/* If updated in the same transaction, do not report it as a conflict nor log */
+		/*
+		 * If updated in the same transaction, do not report it as a conflict
+		 * nor log
+		 */
 		if (local_tuple_origin == InvalidRepOriginId &&
 			TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
 			return;
@@ -389,9 +392,9 @@ spock_report_conflict(SpockConflictType conflict_type,
 		if (resolution == SpockResolution_ApplyRemote)
 		{
 			/*
-			 * Remote tuple wins — this is normal replication flow, not a true
-			 * conflict. Do not write to spock.resolutions, but optionally
-			 * log to the PostgreSQL log based on the GUC setting.
+			 * Remote tuple wins — this is normal replication flow, not a
+			 * true conflict. Do not write to spock.resolutions, but
+			 * optionally log to the PostgreSQL log based on the GUC setting.
 			 */
 			save_in_resolutions = false;
 
@@ -416,9 +419,9 @@ spock_report_conflict(SpockConflictType conflict_type,
 					return;
 
 				/*
-				 * If the local tuple predates the subscription, it was
-				 * loaded before replication was set up (e.g. pg_restore).
-				 * Do not treat this as an origin-change conflict.
+				 * If the local tuple predates the subscription, it was loaded
+				 * before replication was set up (e.g. pg_restore). Do not
+				 * treat this as an origin-change conflict.
 				 */
 				if (local_tuple_commit_ts < MySubscription->created_at)
 					return;
@@ -453,10 +456,10 @@ spock_report_conflict(SpockConflictType conflict_type,
 				timestamptz_to_str(local_tuple_commit_ts),
 				MAXDATELEN);
 		if (local_tuple_origin == InvalidRepOriginId)
-			strlcpy(local_origin_str, "local", sizeof(local_origin_str)); /* locally written */
+			strlcpy(local_origin_str, "local", sizeof(local_origin_str));	/* locally written */
 		else
 			snprintf(local_origin_str, sizeof(local_origin_str), "%u",
-				(unsigned int) local_tuple_origin);
+					 (unsigned int) local_tuple_origin);
 	}
 
 	initStringInfo(&remotetup);
@@ -538,17 +541,17 @@ spock_report_conflict(SpockConflictType conflict_type,
 		case SPOCK_CT_DELETE_ORIGIN_DIFFERS:
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
-								errmsg("CONFLICT: remote %s on relation %s replica identity index %s (origin differs). Resolution: %s.",
-											SpockConflictTypeName(conflict_type),
-											qualrelname, idxname,
-											conflict_resolution_to_string(resolution)),
-					errdetail("existing local tuple {%s} xid=%u,origin=%s,timestamp=%s; remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
-								localtup.data, local_tuple_xid,
-								local_origin_str,
-								local_tup_ts_str,
-								replorigin_session_origin,
-								timestamptz_to_str(replorigin_session_origin_timestamp),
-								LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
+					 errmsg("CONFLICT: remote %s on relation %s replica identity index %s (origin differs). Resolution: %s.",
+							SpockConflictTypeName(conflict_type),
+							qualrelname, idxname,
+							conflict_resolution_to_string(resolution)),
+					 errdetail("existing local tuple {%s} xid=%u,origin=%s,timestamp=%s; remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
+							   localtup.data, local_tuple_xid,
+							   local_origin_str,
+							   local_tup_ts_str,
+							   replorigin_session_origin,
+							   timestamptz_to_str(replorigin_session_origin_timestamp),
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 		case SPOCK_CT_DELETE_EXISTS:
 			ereport(spock_conflict_log_level,
@@ -809,8 +812,8 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 		attr = TupleDescAttr(tupdesc, natt);
 
 		/*
-		 * don't print dropped or generated columns, we can't be sure everything
-		 * is available for them
+		 * don't print dropped or generated columns, we can't be sure
+		 * everything is available for them
 		 */
 		if (attr->attisdropped || attr->attgenerated)
 			continue;

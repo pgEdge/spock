@@ -614,20 +614,20 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		}
 
 		/*
-		 * This shouldn't happen: creating delta_apply column we must check that
-		 * NOT NULL constraint is set on this column or reject. But just to
-		 * survive in case of a bug we complain and send the apply worker to
-		 * exception behavior path way.
+		 * This shouldn't happen: creating delta_apply column we must check
+		 * that NOT NULL constraint is set on this column or reject. But just
+		 * to survive in case of a bug we complain and send the apply worker
+		 * to exception behavior path way.
 		 */
 		if (oldtup->nulls[remoteattnum] || newtup->nulls[remoteattnum])
 			ereport(ERROR,
 					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-					errmsg("delta apply column can't operate NULL values"),
-					errdetail("attribute %d for remote tuple is %s, and for the local tuple is %s",
-							  remoteattnum + 1,
-							  newtup->nulls[remoteattnum] ? "NULL" : "NOT NULL",
-							  oldtup->nulls[remoteattnum] ? "NULL" : "NOT NULL"
-							  )));
+					 errmsg("delta apply column can't operate NULL values"),
+					 errdetail("attribute %d for remote tuple is %s, and for the local tuple is %s",
+							   remoteattnum + 1,
+							   newtup->nulls[remoteattnum] ? "NULL" : "NOT NULL",
+							   oldtup->nulls[remoteattnum] ? "NULL" : "NOT NULL"
+							   )));
 
 		loc_value = heap_getattr(TTS_TUP(localslot), remoteattnum + 1, tupdesc,
 								 &loc_isnull);
@@ -749,8 +749,9 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	}
 
 	/*
-	 * See if we need to log any conflict to the server log and spock.resolutions
-	 * Calling this does not necessarily mean that there is a conflict
+	 * See if we need to log any conflict to the server log and
+	 * spock.resolutions Calling this does not necessarily mean that there is
+	 * a conflict
 	 */
 	spock_report_conflict(is_insert ? SPOCK_CT_INSERT_EXISTS : SPOCK_CT_UPDATE_EXISTS,
 						  rel, TTS_TUP(localslot), oldtup,
@@ -1056,8 +1057,8 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	 *
 	 * Note this will fail if there are other conflicting unique indexes.
 	 *
-	 * spock_handle_conflict_and_apply is a misnomer as it is called for
-	 * the normal UPDATE case, too.
+	 * spock_handle_conflict_and_apply is a misnomer as it is called for the
+	 * normal UPDATE case, too.
 	 */
 	if (found)
 	{
@@ -1067,11 +1068,15 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	}
 	else
 	{
-		/* SPOCK_CT_UPDATE_MISSING case gets logged in exception_log, not resolutions */
+		/*
+		 * SPOCK_CT_UPDATE_MISSING case gets logged in exception_log, not
+		 * resolutions
+		 */
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
 
 #if PG_VERSION_NUM >= 180000
 		if (!MyApplyWorker->use_try_block)
+
 			/*
 			 * To avoid duplicate messages, only report the conflict on the
 			 * successful pathway.  We skip counting when the update logic has
@@ -1080,6 +1085,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 			spock_stat_report_subscription_conflict(MyApplyWorker->subid,
 													SPOCK_CT_UPDATE_MISSING);
 #endif
+
 		/*
 		 * The tuple to be updated could not be found.  Do nothing except for
 		 * emitting a log message. TODO: Add pkey information as well.
@@ -1176,13 +1182,13 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	 */
 	if (found)
 	{
-		UserContext 			ucxt;
-		TransactionId   		xmin;
-		TimestampTz				local_ts;
-		RepOriginId				local_origin;
-		bool					local_origin_found;
-		HeapTuple				applytuple;
-		SpockConflictResolution	resolution;
+		UserContext ucxt;
+		TransactionId xmin;
+		TimestampTz local_ts;
+		RepOriginId local_origin;
+		bool		local_origin_found;
+		HeapTuple	applytuple;
+		SpockConflictResolution resolution;
 
 
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
@@ -1198,25 +1204,25 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		MemoryContextSwitchTo(oldctx);
 
 		local_origin_found = get_tuple_origin(rel, local_tuple,
-									&(local_tuple->t_self), &xmin,
-									&local_origin, &local_ts);
+											  &(local_tuple->t_self), &xmin,
+											  &local_origin, &local_ts);
 
 		/*
 		 * Check if the local tuple was inserted/updated after this DELETE.
 		 */
 		if (!try_resolve_conflict(rel->rel, TTS_TUP(localslot),
-							 NULL, /* remotetuple */
-							 &applytuple, local_origin,
-							 local_ts, &resolution))
+								  NULL, /* remotetuple */
+								  &applytuple, local_origin,
+								  local_ts, &resolution))
 		{
 			/* Current DELETE happened before current tuple */
 			spock_report_conflict(SPOCK_CT_DELETE_EXISTS,
-								rel, TTS_TUP(localslot), oldtup,
-								NULL, /* remotetuple */
-								local_tuple, SpockResolution_Skip,
-								xmin, local_origin_found, local_origin,
-								local_ts, edata->targetRel->idxoid
-			);
+								  rel, TTS_TUP(localslot), oldtup,
+								  NULL, /* remotetuple */
+								  local_tuple, SpockResolution_Skip,
+								  xmin, local_origin_found, local_origin,
+								  local_ts, edata->targetRel->idxoid
+				);
 		}
 		else
 		{
@@ -1226,14 +1232,14 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 			{
 				/* Check more carefully if we may need to log an origin change */
 				spock_report_conflict(SPOCK_CT_DELETE_ORIGIN_DIFFERS,
-							rel, TTS_TUP(localslot), oldtup,
-							NULL,
-							local_tuple,
-							SpockResolution_ApplyRemote,
-							xmin, local_origin_found, local_origin,
-							local_ts,
-							edata->targetRel->idxoid
-				);
+									  rel, TTS_TUP(localslot), oldtup,
+									  NULL,
+									  local_tuple,
+									  SpockResolution_ApplyRemote,
+									  xmin, local_origin_found, local_origin,
+									  local_ts,
+									  edata->targetRel->idxoid
+					);
 			}
 
 			/* Make sure that any user-supplied code runs as the table owner. */

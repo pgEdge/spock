@@ -522,7 +522,7 @@ static void
 array_to_json_internal(Datum array, StringInfo result, bool use_line_feeds)
 {
 	ArrayType  *v = DatumGetArrayTypeP(array);
-	Oid element_type = ARR_ELEMTYPE(v);
+	Oid			element_type = ARR_ELEMTYPE(v);
 	int		   *dim;
 	int			ndim;
 	int			nitems;

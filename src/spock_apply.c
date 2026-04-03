@@ -118,7 +118,8 @@ typedef struct ApplyReplayEntryData ApplyReplayEntry;
 struct ApplyReplayEntryData
 {
 	StringInfoData copydata;
-	bool		from_pq;	/* true if data was allocated by libpq (PQgetCopyData) */
+	bool		from_pq;		/* true if data was allocated by libpq
+								 * (PQgetCopyData) */
 	ApplyReplayEntry *next;
 };
 static MemoryContext ApplyReplayContext = NULL;
@@ -136,7 +137,7 @@ static ApplyReplayEntry * apply_replay_next = NULL;
 /* Total bytes of libpq-allocated data held by in-memory queue entries */
 static int	apply_replay_bytes = 0;
 
-static bool apply_replay_mode = false;		/* true when replaying */
+static bool apply_replay_mode = false;	/* true when replaying */
 static BufFile *apply_replay_spill_file = NULL;
 static bool apply_replay_spilling = false;
 static int	apply_replay_spill_count = 0;
@@ -251,12 +252,12 @@ static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
 								  XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
 static void UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted);
 static void maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception);
-static ApplyReplayEntry *apply_replay_queue_next_entry(void);
-static bool apply_replay_queue_append_entry(ApplyReplayEntry **entry_p,
-							StringInfo *msg_p);
+static ApplyReplayEntry * apply_replay_queue_next_entry(void);
+static bool apply_replay_queue_append_entry(ApplyReplayEntry * *entry_p,
+											StringInfo *msg_p);
 static void apply_replay_queue_start_replay(void);
 static void apply_replay_spill_write_entry(int len, char *data);
-static ApplyReplayEntry *apply_replay_spill_read_entry(void);
+static ApplyReplayEntry * apply_replay_spill_read_entry(void);
 
 /* Wrapper for latch for waiting for previous transaction to commit */
 void
@@ -458,15 +459,14 @@ begin_replication_step(void)
 		spock_apply_heap_begin();
 
 		/*
-		 * In TRANSDISCARD/SUB_DISABLE mode, set the transaction
-		 * read-only to prevent any actual DML from being applied.
-		 * Direct catalog writes (exception_log entries) are still
-		 * allowed.
+		 * In TRANSDISCARD/SUB_DISABLE mode, set the transaction read-only to
+		 * prevent any actual DML from being applied. Direct catalog writes
+		 * (exception_log entries) are still allowed.
 		 */
 
 		if (MyApplyWorker->use_try_block &&
 			(exception_behaviour == TRANSDISCARD ||
-			exception_behaviour == SUB_DISABLE))
+			 exception_behaviour == SUB_DISABLE))
 		{
 			set_config_option("transaction_read_only", "on",
 							  PGC_USERSET, PGC_S_SESSION,
@@ -527,6 +527,7 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_timestamp = commit_time;
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
+
 	/*
 	 * Free and clear remote_origin_name - it's allocated in TopMemoryContext
 	 * to avoid MessageContext corruption issues.
@@ -883,9 +884,9 @@ handle_commit(StringInfo s)
 			(xact_had_exception || MyApplyWorker->use_try_block))
 		{
 			/*
-			 * SUB_DISABLE: after committing exception_log entries, throw
-			 * an ERROR to trigger subscription disable in the PG_CATCH
-			 * block.  This covers both the case where DML actually failed
+			 * SUB_DISABLE: after committing exception_log entries, throw an
+			 * ERROR to trigger subscription disable in the PG_CATCH block.
+			 * This covers both the case where DML actually failed
 			 * (xact_had_exception) and the retry path where all DML was
 			 * skipped but the original error was logged (use_try_block).
 			 */
@@ -963,11 +964,12 @@ handle_commit(StringInfo s)
 			.remote_commit_lsn = commit_lsn,
 			/* Ensure invariant: received_lsn >= remote_commit_lsn */
 			.received_lsn = end_lsn,
+
 			/*
 			 * Include remote_insert_lsn for WAL persistence. This was already
 			 * updated in shmem by UpdateWorkerStats() earlier (either from
-			 * apply_work for protocol 5+, or from handle_commit for protocol 4).
-			 * Without this, crash recovery would lose remote_insert_lsn.
+			 * apply_work for protocol 5+, or from handle_commit for protocol
+			 * 4). Without this, crash recovery would lose remote_insert_lsn.
 			 */
 			.remote_insert_lsn = MyApplyWorker->apply_group->progress.remote_insert_lsn,
 			/* XXX: Could we use commit_ts value instead? */
@@ -1230,8 +1232,8 @@ handle_insert(StringInfo s)
 		exception_command_counter++;
 
 		/*
-		 * Clear the local tuple pointer if it was left over from a
-		 * previous operation.
+		 * Clear the local tuple pointer if it was left over from a previous
+		 * operation.
 		 */
 		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
 
@@ -1277,12 +1279,12 @@ handle_insert(StringInfo s)
 			MemoryContextReset(ApplyOperationContext);
 
 			/*
-			 * Close replication step to satisfy corresponding 'begin' routine.
-			 * TODO: multi-insert code should be revised one day: it is not
-			 * obvious why we push and pop transactional snapshot on each tuple
-			 * as well as how command counter increment really works here in
-			 * absence of actual INSERT - following update may need to refer
-			 * this tuple and what's then?
+			 * Close replication step to satisfy corresponding 'begin'
+			 * routine. TODO: multi-insert code should be revised one day: it
+			 * is not obvious why we push and pop transactional snapshot on
+			 * each tuple as well as how command counter increment really
+			 * works here in absence of actual INSERT - following update may
+			 * need to refer this tuple and what's then?
 			 */
 			end_replication_step();
 			return;
@@ -1319,8 +1321,8 @@ handle_insert(StringInfo s)
 			 * transaction is read-only, but exception_log has
 			 * user_catalog_table=true so CatalogTupleInsert works.
 			 *
-			 * Only the record that originally caused the error gets the
-			 * real error message; other records get NULL.
+			 * Only the record that originally caused the error gets the real
+			 * error message; other records get NULL.
 			 */
 			char	   *error_msg =
 				(xact_action_counter ==
@@ -1359,16 +1361,17 @@ handle_insert(StringInfo s)
 			PG_END_TRY();
 
 			/*
-			 * Rollback switches to the parent transaction context;
-			 * restore ApplyOperationContext for the code below.
+			 * Rollback switches to the parent transaction context; restore
+			 * ApplyOperationContext for the code below.
 			 */
 			MemoryContextSwitchTo(ApplyOperationContext);
 
 			if (failed)
 			{
 				/*
-				 * Need to keep this database operation out of the CATCH section
-				 * to avoid FATAL error in case if an ERROR happens there.
+				 * Need to keep this database operation out of the CATCH
+				 * section to avoid FATAL error in case if an ERROR happens
+				 * there.
 				 */
 				log_insert_exception(true, edata->message, rel,
 									 NULL, &newtup, "INSERT");
@@ -2525,10 +2528,10 @@ handle_message(StringInfo s)
 
 				/*
 				 * For non-transactional sync events, explicitly advance the
-				 * replication origin so pg_replication_origin_status.remote_lsn
-				 * reflects this position immediately.  For transactional
-				 * messages the origin is advanced at commit time in
-				 * handle_commit().
+				 * replication origin so
+				 * pg_replication_origin_status.remote_lsn reflects this
+				 * position immediately.  For transactional messages the
+				 * origin is advanced at commit time in handle_commit().
 				 */
 				elog(DEBUG1, "SPOCK %s: received sync_event at %X/%X "
 					 "(transactional=%d, origin=%d)",
@@ -2987,11 +2990,11 @@ stream_replay:
 			}
 
 			/*
-			 * Connection liveness is handled by TCP keepalive (primary)
-			 * and PQstatus == CONNECTION_BAD (above). The idle timeout
-			 * below is a safety net for the case where the walsender
-			 * process is alive but hung -- TCP probes succeed because the
-			 * kernel ACKs them, but no data is being sent.
+			 * Connection liveness is handled by TCP keepalive (primary) and
+			 * PQstatus == CONNECTION_BAD (above). The idle timeout below is a
+			 * safety net for the case where the walsender process is alive
+			 * but hung -- TCP probes succeed because the kernel ACKs them,
+			 * but no data is being sent.
 			 */
 			if (rc & WL_TIMEOUT && spock_apply_idle_timeout > 0)
 			{
@@ -3023,22 +3026,23 @@ stream_replay:
 				if (got_SIGTERM)
 					break;
 
-			if (ConfigReloadPending)
+				if (ConfigReloadPending)
 				{
 					ConfigReloadPending = false;
 					ProcessConfigFile(PGC_SIGHUP);
 				}
 
 				/*
-				 * Do not apply new transactions if cluster is switched to
-				 * the readonly mode.
+				 * Do not apply new transactions if cluster is switched to the
+				 * readonly mode.
 				 */
 				if (spock_readonly == READONLY_ALL)
 				{
 					/*
 					 * In case of an exception we can't break out of the loop
 					 * because exception processing code may also modify the
-					 * database. Wait briefly and continue to the next iteration.
+					 * database. Wait briefly and continue to the next
+					 * iteration.
 					 */
 					if (xact_had_exception)
 					{
@@ -3148,8 +3152,8 @@ stream_replay:
 						/*
 						 * Replay path: spill-read entries live in
 						 * TopMemoryContext and must be freed explicitly.
-						 * Capture this before replication_handler, which
-						 * may reset ApplyReplayContext and free the entry.
+						 * Capture this before replication_handler, which may
+						 * reset ApplyReplayContext and free the entry.
 						 */
 						need_free = !entry->from_pq;
 					}
@@ -3297,10 +3301,10 @@ stream_replay:
 		 * we still need to ensure proper cleanup (e.g., disabling the
 		 * subscription).
 		 *
-		 * Handle SUB_DISABLE mode for both cases: xact_had_exception means DML
-		 * operations failed during exception handling, while use_try_block
-		 * without xact_had_exception means an error occurred after successful
-		 * retry (e.g., TRANSDISCARD throwing ERROR).
+		 * Handle SUB_DISABLE mode for both cases: xact_had_exception means
+		 * DML operations failed during exception handling, while
+		 * use_try_block without xact_had_exception means an error occurred
+		 * after successful retry (e.g., TRANSDISCARD throwing ERROR).
 		 *
 		 * Note: spock_disable_subscription() handles transaction management
 		 * internally, so no need to wrap it in StartTransactionCommand().
@@ -3325,9 +3329,9 @@ stream_replay:
 
 		/*
 		 * For other exceptions with use_try_block, where xact_had_exception
-		 * is false, this indicates an ERROR occurred during exception handling
-		 * (e.g., connection died, CommitTransactionCommand failure during
-		 * TRANSDISCARD logging, etc.).
+		 * is false, this indicates an ERROR occurred during exception
+		 * handling (e.g., connection died, CommitTransactionCommand failure
+		 * during TRANSDISCARD logging, etc.).
 		 *
 		 * We log the error and re-throw to exit the worker. The background
 		 * worker infrastructure will restart the worker automatically. This
@@ -3432,10 +3436,11 @@ static void
 execute_sql_command_error_cb(void *arg)
 {
 	errcontext("during execution of queued SQL statement: %s", (char *) arg);
+
 	/*
 	 * The errcontext above already includes the SQL statement, so clear
-	 * debug_query_string to prevent it from appearing a second time in
-	 * the LOG output.
+	 * debug_query_string to prevent it from appearing a second time in the
+	 * LOG output.
 	 */
 	debug_query_string = NULL;
 }
@@ -3613,9 +3618,8 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 
 		/*
 		 * check if it's a DDL statement. we only do this for
-		 * in_spock_replicate_ddl_command
-		 * SECURITY LABEL command is not a DDL, just an utility one. Hence, let
-		 * spock execute this command.
+		 * in_spock_replicate_ddl_command SECURITY LABEL command is not a DDL,
+		 * just an utility one. Hence, let spock execute this command.
 		 */
 		if (in_spock_replicate_ddl_command &&
 			GetCommandLogLevel(command->stmt) != LOGSTMT_DDL &&
@@ -3769,8 +3773,8 @@ process_syncing_tables(XLogRecPtr end_lsn)
 			else if (newsync->status == SYNC_STATUS_FAILED)
 			{
 				/*
-				 * Failed SYNC operation should be ignored until someone processes
-				 * the error and changes the status.
+				 * Failed SYNC operation should be ignored until someone
+				 * processes the error and changes the status.
 				 */
 				sync->status = SYNC_STATUS_FAILED;
 				sync->statuslsn = InvalidXLogRecPtr;
@@ -3960,8 +3964,8 @@ spock_apply_main(Datum main_arg)
 
 	/*
 	 * The apply worker is not a regular backend and has no client query
-	 * string. Initialize debug_query_string to NULL so that LOG reports
-	 * do not print arbitrary memory contents.
+	 * string. Initialize debug_query_string to NULL so that LOG reports do
+	 * not print arbitrary memory contents.
 	 */
 	debug_query_string = NULL;
 
@@ -4092,12 +4096,12 @@ apply_replay_entry_create(int bufsize, char *buf)
  * is freed with PQfreemem (libpq-allocated) or pfree (read from spill file).
  */
 static void
-apply_replay_entry_free(ApplyReplayEntry *entry)
+apply_replay_entry_free(ApplyReplayEntry * entry)
 {
 	if (entry->from_pq)
 		PQfreemem(entry->copydata.data);	/* libpq-allocated */
 	else
-		pfree(entry->copydata.data);		/* palloc'd from spill read */
+		pfree(entry->copydata.data);	/* palloc'd from spill read */
 	pfree(entry);
 }
 
@@ -4115,9 +4119,10 @@ apply_replay_spill_write_entry(int len, char *data)
 	/*
 	 * Increment the count before writing so that a partial or failed write
 	 * (ERROR from BufFileWrite) leaves the count higher than the number of
-	 * complete records on disk.  During replay, apply_replay_spill_read_entry()
-	 * will attempt to read this record, hit EOF or a short read, and raise
-	 * ERROR — which triggers a clean worker restart via the outer PG_CATCH.
+	 * complete records on disk.  During replay,
+	 * apply_replay_spill_read_entry() will attempt to read this record, hit
+	 * EOF or a short read, and raise ERROR — which triggers a clean worker
+	 * restart via the outer PG_CATCH.
 	 */
 	apply_replay_spill_count++;
 	BufFileWrite(apply_replay_spill_file, &len, sizeof(int));
@@ -4134,11 +4139,11 @@ apply_replay_spill_write_entry(int len, char *data)
 static ApplyReplayEntry *
 apply_replay_spill_read_entry(void)
 {
-	int				len;
-	size_t			nread;
-	char		   *data;
+	int			len;
+	size_t		nread;
+	char	   *data;
 	ApplyReplayEntry *entry;
-	MemoryContext	oldcontext;
+	MemoryContext oldcontext;
 
 	Assert(MyApplyWorker->use_try_block && apply_replay_spill_file != NULL);
 
@@ -4262,10 +4267,10 @@ apply_replay_queue_next_entry(void)
 	else
 	{
 		/*
-		 * Replay queue exhausted — switch back to stream reading.
-		 * The remaining cleanup (spill file, PQfreemem of in-memory
-		 * entries, MemoryContextReset) is deferred to
-		 * apply_replay_queue_reset called from handle_commit.
+		 * Replay queue exhausted — switch back to stream reading. The
+		 * remaining cleanup (spill file, PQfreemem of in-memory entries,
+		 * MemoryContextReset) is deferred to apply_replay_queue_reset called
+		 * from handle_commit.
 		 */
 		apply_replay_mode = false;
 		return NULL;
@@ -4288,11 +4293,11 @@ apply_replay_queue_next_entry(void)
  * automatically by MemoryContextReset(ApplyReplayContext).
  */
 static bool
-apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
+apply_replay_queue_append_entry(ApplyReplayEntry * *entry_p, StringInfo *msg_p)
 {
 	ApplyReplayEntry *entry = *entry_p;
 	StringInfo	msg = *msg_p;
-	MemoryContext	oldctx;
+	MemoryContext oldctx;
 
 	Assert(entry != NULL);
 	Assert(msg != NULL);
@@ -4302,8 +4307,8 @@ apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
 		apply_replay_bytes + msg->len > spock_replay_queue_size * 1024L * 1024L)
 	{
 		/*
-		 * Allocate the BufFile in TopMemoryContext so it survives
-		 * across transaction boundaries, as required by
+		 * Allocate the BufFile in TopMemoryContext so it survives across
+		 * transaction boundaries, as required by
 		 * BufFileCreateTemp(interXact=true).
 		 */
 		oldctx = MemoryContextSwitchTo(TopMemoryContext);
@@ -4331,20 +4336,20 @@ apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
 		/*
 		 * Move the entry struct from ApplyReplayContext to TopMemoryContext.
 		 * handle_commit calls apply_replay_queue_reset which does
-		 * MemoryContextReset(ApplyReplayContext).  Spilled entries are not
-		 * in the in-memory linked list and must survive until the caller
-		 * frees them explicitly after replication_handler returns.
+		 * MemoryContextReset(ApplyReplayContext).  Spilled entries are not in
+		 * the in-memory linked list and must survive until the caller frees
+		 * them explicitly after replication_handler returns.
 		 */
 		oldctx = MemoryContextSwitchTo(TopMemoryContext);
 		mc_entry = (ApplyReplayEntry *) palloc(sizeof(ApplyReplayEntry));
 		/* palloc and memcpy use the same sizeof — no overflow possible. */
-		memcpy(mc_entry, entry, sizeof(ApplyReplayEntry)); /* nosemgrep */
+		memcpy(mc_entry, entry, sizeof(ApplyReplayEntry));	/* nosemgrep */
 		MemoryContextSwitchTo(oldctx);
 
 		pfree(entry);
 		*entry_p = mc_entry;
 		*msg_p = &mc_entry->copydata;
-		return true;	/* caller must free */
+		return true;			/* caller must free */
 	}
 	else
 	{
@@ -4368,7 +4373,7 @@ apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
 			elog(DEBUG1, "SPOCK %s: replay queue keep in-memory entry %u: ",
 				 MySubscription->name, xact_action_counter);
 
-		return false;	/* freed by MemoryContextReset */
+		return false;			/* freed by MemoryContextReset */
 	}
 }
 
@@ -4424,7 +4429,7 @@ apply_replay_queue_start_replay(void)
 static void
 maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception)
 {
-	RepOriginId	forwarded_origin;
+	RepOriginId forwarded_origin;
 
 	/*
 	 * Only advance for forwarded transactions (origin differs from our direct
@@ -4437,8 +4442,8 @@ maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception)
 		return;
 
 	/*
-	 * Check cache first. The remote_origin_id (Spock node ID) is stable
-	 * for a given source node, so we can reuse the local origin ID.
+	 * Check cache first. The remote_origin_id (Spock node ID) is stable for a
+	 * given source node, so we can reuse the local origin ID.
 	 */
 	if (remote_origin_id == cached_forward_remote_id &&
 		cached_forward_local_id != InvalidRepOriginId)
