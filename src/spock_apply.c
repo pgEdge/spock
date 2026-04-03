@@ -454,6 +454,27 @@ begin_replication_step(void)
 
 	if (!IsTransactionState())
 	{
+		/*
+		 * Check if create_slot_with_progress needs us to pause.  This only
+		 * fires during add_node (a rare operation).  The fast path is a
+		 * single atomic read that almost always sees 0.
+		 *
+		 * Runs before StartTransactionCommand so the worker has no xid
+		 * while paused — pause_apply_workers can detect completion via
+		 * xid polling.  The previous transaction's commit is fully
+		 * complete, so ros.remote_lsn reflects only committed state.
+		 */
+		if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+		{
+			MyApplyWorker->paused = true;
+			ConditionVariablePrepareToSleep(&SpockCtx->pause_cv);
+			while (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+				ConditionVariableSleep(&SpockCtx->pause_cv,
+									  WAIT_EVENT_LOGICAL_APPLY_MAIN);
+			ConditionVariableCancelSleep();
+			MyApplyWorker->paused = false;
+		}
+
 		StartTransactionCommand();
 		spock_apply_heap_begin();
 
@@ -989,6 +1010,22 @@ handle_commit(StringInfo s)
 	awake_transaction_waiters();
 
 	in_remote_transaction = false;
+
+	/*
+	 * If create_slot_with_progress is waiting for us, pause here.  The
+	 * commit is fully complete (ros.remote_lsn updated, xid cleared),
+	 * so the snapshot and origin will be consistent.
+	 */
+	if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+	{
+		MyApplyWorker->paused = true;
+		ConditionVariablePrepareToSleep(&SpockCtx->pause_cv);
+		while (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+			ConditionVariableSleep(&SpockCtx->pause_cv,
+								  WAIT_EVENT_LOGICAL_APPLY_MAIN);
+		ConditionVariableCancelSleep();
+		MyApplyWorker->paused = false;
+	}
 
 	/*
 	 * Stop replay if we're doing limited replay and we've replayed up to the
