@@ -121,6 +121,101 @@ CREATE VIEW spock.progress AS
         SELECT oid FROM pg_database WHERE datname = current_database()
       );
 
+-- Read peer progress (ros.remote_lsn) for all peer subscriptions.
+-- Called while apply workers are paused and the slot's snapshot is imported.
+-- Row 0: header (lsn + snapshot placeholder).  Rows 1+: one progress entry per peer.
+CREATE FUNCTION spock.read_peer_progress(
+    p_slot_name text,
+    p_provider_node_id oid,
+    p_subscriber_node_id oid
+) RETURNS TABLE(
+    lsn pg_lsn,
+    snapshot text,
+    dbid oid,
+    node_id oid,
+    remote_node_id oid,
+    remote_commit_ts timestamptz,
+    prev_remote_ts timestamptz,
+    remote_commit_lsn pg_lsn,
+    remote_insert_lsn pg_lsn,
+    received_lsn pg_lsn,
+    last_updated_ts timestamptz,
+    updated_by_decode boolean
+) VOLATILE STRICT LANGUAGE plpgsql AS $$
+DECLARE
+    v_lsn          pg_lsn;
+    v_snap         text;
+    rec            record;
+    v_n_peers      int := 0;
+BEGIN
+    /*
+     * The slot and snapshot are created by the C caller via the replication
+     * protocol.  The slot's snapshot is imported into this transaction.
+     * This function just reads peer progress (ros.remote_lsn) while apply
+     * workers are paused.
+     */
+
+    -- Get the slot's LSN and the imported snapshot for the header row.
+    SELECT restart_lsn INTO v_lsn
+    FROM pg_replication_slots WHERE slot_name = p_slot_name;
+    v_snap := '';  -- snapshot managed by C caller
+
+    RAISE NOTICE 'SPOCK cswp slot=% v_lsn=%', p_slot_name, v_lsn;
+
+    -- Header row: lsn only (snapshot managed by C caller).
+    lsn      := v_lsn;
+    snapshot := v_snap;
+    RETURN NEXT;
+
+    /*
+     * Emit one progress row per peer.  With apply workers paused,
+     * ros.remote_lsn is exact: it reflects only committed transactions
+     * whose effects are visible in the slot snapshot.
+     */
+    FOR rec IN (
+        SELECT p.dbid, p.node_id, p.remote_node_id,
+               p.remote_commit_ts, p.prev_remote_ts,
+               p.remote_commit_lsn      AS grp_remote_commit_lsn,
+               p.remote_insert_lsn,
+               p.received_lsn, p.last_updated_ts, p.updated_by_decode,
+               ros.remote_lsn           AS ros_remote_lsn,
+               sub.sub_slot_name        AS sub_slot_name
+        FROM   spock.subscription sub
+        JOIN   spock.progress p
+               ON  p.remote_node_id = sub.sub_origin
+               AND p.node_id        = sub.sub_target
+        JOIN   pg_replication_origin o
+               ON  o.roname = sub.sub_slot_name
+        LEFT JOIN pg_replication_origin_status ros
+               ON  ros.local_id = o.roident
+        WHERE  sub.sub_target = p_provider_node_id
+          AND  sub.sub_origin <> p_subscriber_node_id
+    ) LOOP
+        v_n_peers := v_n_peers + 1;
+
+        lsn               := v_lsn;
+        snapshot          := v_snap;
+        dbid              := rec.dbid;
+        node_id           := rec.node_id;
+        remote_node_id    := rec.remote_node_id;
+        remote_commit_ts  := rec.remote_commit_ts;
+        prev_remote_ts    := rec.prev_remote_ts;
+        remote_commit_lsn := COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn);
+        remote_insert_lsn := rec.remote_insert_lsn;
+        received_lsn      := rec.received_lsn;
+        last_updated_ts   := rec.last_updated_ts;
+        updated_by_decode := rec.updated_by_decode;
+
+        RAISE NOTICE 'SPOCK cswp peer=% resume_lsn=%',
+            rec.remote_node_id, remote_commit_lsn;
+
+        RETURN NEXT;
+    END LOOP;
+
+    RAISE NOTICE 'SPOCK cswp slot=% done peers=%', p_slot_name, v_n_peers;
+END;
+$$;
+
 CREATE FUNCTION spock.node_create(node_name name, dsn text,
     location text DEFAULT NULL, country text DEFAULT NULL,
     info jsonb DEFAULT NULL)
@@ -440,6 +535,16 @@ LANGUAGE C VOLATILE;
 CREATE FUNCTION spock.sync_event()
 RETURNS pg_lsn RETURNS NULL ON NULL INPUT
 AS 'MODULE_PATHNAME', 'spock_create_sync_event'
+LANGUAGE C VOLATILE;
+
+CREATE FUNCTION spock.pause_apply_workers()
+RETURNS void
+AS 'MODULE_PATHNAME', 'spock_pause_apply_workers'
+LANGUAGE C VOLATILE;
+
+CREATE FUNCTION spock.resume_apply_workers()
+RETURNS void
+AS 'MODULE_PATHNAME', 'spock_resume_apply_workers'
 LANGUAGE C VOLATILE;
 
 CREATE PROCEDURE spock.wait_for_sync_event(
