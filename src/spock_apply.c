@@ -432,7 +432,7 @@ begin_replication_step(void)
 	if (!IsTransactionState())
 	{
 		/*
-		 * Check if create_slot_with_progress needs us to pause.  This only
+		 * Check if slot creation (add_node) needs us to pause.  This only
 		 * fires during add_node (a rare operation).  The fast path is a
 		 * single atomic read that almost always sees 0.
 		 *
@@ -989,7 +989,7 @@ handle_commit(StringInfo s)
 	in_remote_transaction = false;
 
 	/*
-	 * If create_slot_with_progress is waiting for us, pause here.  The
+	 * If slot creation (add_node) is waiting for us, pause here.  The
 	 * commit is fully complete (ros.remote_lsn updated, xid cleared),
 	 * so the snapshot and origin will be consistent.
 	 */

@@ -737,7 +737,7 @@ spock_group_progress_force_set_list(List *lst)
 		{
 			/*
 			 * Existing LSN >= resume_lsn.  Unconditionally overwrite: the
-			 * value from create_slot_with_progress is authoritative because
+			 * value from read_peer_progress is authoritative because
 			 * it was captured at COPY snapshot time.  The apply worker may
 			 * have advanced past it since then, but any data it applied
 			 * after the snapshot is NOT in the COPY — so the new node must

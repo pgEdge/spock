@@ -3322,12 +3322,12 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 /*
  * spock_pause_apply_workers
  *
- * Pause all apply workers in this database by acquiring an exclusive advisory
- * lock and setting the shared memory flag.  Apply workers check the flag
- * between transactions and block on a shared advisory lock until we release.
+ * Temporarily pause all apply workers in this database during slot creation
+ * for add_node.  Sets a shared memory flag that workers check between
+ * transactions; workers sleep on a ConditionVariable until resumed.
  *
  * After this function returns, all apply workers have finished their current
- * transaction and are blocked, so pg_replication_origin_status reflects only
+ * transaction and are paused, so pg_replication_origin_status reflects only
  * committed state that is visible in any new snapshot.
  */
 Datum
@@ -3402,8 +3402,8 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 /*
  * spock_resume_apply_workers
  *
- * Resume apply workers by clearing the flag and releasing the exclusive
- * advisory lock.
+ * Resume apply workers by clearing the flag and broadcasting on the
+ * ConditionVariable to wake all sleeping workers.
  */
 Datum
 spock_resume_apply_workers(PG_FUNCTION_ARGS)

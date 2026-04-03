@@ -557,7 +557,7 @@ adjust_progress_info(PGconn *origin_conn)
 }
 
 /*
- * spock_create_slot_and_get_progress
+ * spock_create_slot_and_read_progress
  *
  * Pauses apply workers, creates a replication slot via the replication
  * protocol (which returns a snapshot consistent with the slot's WAL
@@ -568,7 +568,7 @@ adjust_progress_info(PGconn *origin_conn)
  * after the COPY phase completes.
  */
 static char *
-spock_create_slot_and_get_progress(PGconn *conn, PGconn *repl_conn,
+spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 								   const char *slot_name,
 								   Oid origin_node_id, Oid subscriber_node_id,
 								   XLogRecPtr *lsn_out, List **progress_out)
@@ -670,7 +670,7 @@ spock_create_slot_and_get_progress(PGconn *conn, PGconn *repl_conn,
 
 	/* Read peer progress via the SQL function (slot already exists) */
 	appendStringInfo(&query,
-					 "SELECT * FROM spock.create_slot_with_progress"
+					 "SELECT * FROM spock.read_peer_progress"
 					 "('%s', %u, %u)",
 					 slot_name, origin_node_id, subscriber_node_id);
 	res = PQexec(conn, query.data);
@@ -682,7 +682,7 @@ spock_create_slot_and_get_progress(PGconn *conn, PGconn *repl_conn,
 
 	nrows = PQntuples(res);
 	if (nrows < 1)
-		elog(ERROR, "spock.create_slot_with_progress returned no rows");
+		elog(ERROR, "spock.read_peer_progress returned no rows");
 
 	/* Row 0 is the header row: lsn + snapshot, progress fields all NULL.
 	 * lsn_out and snapshot are already set from the replication protocol;
@@ -771,7 +771,7 @@ spock_create_slot_and_get_progress(PGconn *conn, PGconn *repl_conn,
  * spock_release_slot_snapshot
  *
  * Rolls back the snapshot transaction opened by
- * spock_create_slot_and_get_progress and closes the connection.
+ * spock_create_slot_and_read_progress and closes the connection.
  */
 static void
 spock_release_slot_snapshot(PGconn *conn)
@@ -1454,7 +1454,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		 */
 		PG_TRY();
 		{
-			snapshot = spock_create_slot_and_get_progress(
+			snapshot = spock_create_slot_and_read_progress(
 									origin_conn,
 									origin_conn_repl,
 									sub->slot_name,
