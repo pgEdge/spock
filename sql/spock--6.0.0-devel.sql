@@ -121,9 +121,10 @@ CREATE VIEW spock.progress AS
         SELECT oid FROM pg_database WHERE datname = current_database()
       );
 
--- Atomically create a replication slot and read spock.progress for all peers.
--- Row 0: lsn + snapshot header.  Rows 1+: one progress entry per peer.
-CREATE FUNCTION spock.create_slot_with_progress(
+-- Read peer progress (ros.remote_lsn) for all peer subscriptions.
+-- Called while apply workers are paused and the slot's snapshot is imported.
+-- Row 0: header (lsn + snapshot placeholder).  Rows 1+: one progress entry per peer.
+CREATE FUNCTION spock.read_peer_progress(
     p_slot_name text,
     p_provider_node_id oid,
     p_subscriber_node_id oid

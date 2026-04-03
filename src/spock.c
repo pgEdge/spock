@@ -1156,7 +1156,7 @@ _PG_init(void)
 
 	DefineCustomIntVariable("spock.pause_timeout",
 							"Timeout in seconds for pausing apply workers during slot creation",
-							"Controls how long create_slot_with_progress waits for apply "
+							"Controls how long add_node waits for apply "
 							"workers to reach a between-transaction pause point. Increase "
 							"if add_node fails with a pause timeout under heavy load.",
 							&spock_pause_timeout,
