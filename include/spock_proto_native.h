@@ -80,4 +80,3 @@ extern void spock_apply_set_proto_version(uint32 version);
 extern uint32 spock_apply_get_proto_version(void);
 
 #endif							/* SPOCK_PROTO_NATIVE_H */
-

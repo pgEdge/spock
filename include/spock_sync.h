@@ -24,10 +24,10 @@ typedef struct SpockSyncStatus
 	/*
 	 * Signal exception behaviour on sync attempt. At this moment it is
 	 * hardcoded to be true for table sync and false for subscription sync.
-	 * Should be introduced into the extension's interface later.
-	 * NOTE: The default value is false. Our current pattern is to create the
-	 * structure and immediately zero it; earlier versions will just follow
-	 * the previous logic and retry in case of an error.
+	 * Should be introduced into the extension's interface later. NOTE: The
+	 * default value is false. Our current pattern is to create the structure
+	 * and immediately zero it; earlier versions will just follow the previous
+	 * logic and retry in case of an error.
 	 */
 	bool		stop_on_error;
 
