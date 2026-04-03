@@ -12,7 +12,7 @@ spock.sub_show_status(subscription_name name)
 ## Description
 
 The `spock.sub_show_status()` function shows the status and basic information
-of a subscription.
+about a subscription.
 
 ## Arguments
 
@@ -25,12 +25,12 @@ The function accepts the following argument:
 ## Example
 
 In the following example, the `spock.sub_show_status()` function displays the
-status of a subscription named `sub_n1`:
+status of a subscription named `sub_n1_n2`:
 
 ```sql
-SELECT * FROM spock.sub_show_status('sub_n1');
+SELECT * FROM spock.sub_show_status('sub_n1_n2');
 -[ RECORD 1 ]-----+--------------------------------------------------------------------
-subscription_name | sub_n1
+subscription_name | sub_n1_n2
 status            | replicating
 provider_node     | n2
 provider_dsn      | host=192.168.105.11 dbname=postgres user=postgres password=password
