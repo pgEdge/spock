@@ -1,17 +1,34 @@
-## NAME
+# spock.sub_sync
 
-`spock.sub_sync()`
+The `spock.sub_sync()` function synchronizes all unsynchronized tables in all
+sets in a single operation.
 
-### SYNOPSIS
+## Synopsis
 
-`spock.sub_sync (subscription_name name, truncate bool)`
- 
-### DESCRIPTION
-    
-Call this function to synchronize all unsynchronized tables in all sets in a single operation. Tables are copied and synchronized one by one. The command does not wait for completion before returning to the caller. Use `spock.wait_for_sub_sync` to wait for completion.
+```sql
+spock.sub_sync(subscription_name name, truncate bool)
+```
 
-### POSITIONAL ARGUMENTS
-    subscription_name
-        The name of the existing subscription.
-    truncate
-        If true, tables will be truncated before copy; the default is false.
+## Description
+
+The `spock.sub_sync()` function synchronizes all unsynchronized tables in all
+sets in a single operation. Tables are copied and synchronized one by one. The
+command does not wait for completion before returning to the caller. Use
+`spock.sub_wait_for_sync()` to wait for completion.
+
+## Arguments
+
+The function accepts the following arguments:
+
+- `subscription_name` - The name of an existing subscription.
+- `truncate` - If `true`, tables will be truncated before copying; the default
+  is `false`.
+
+## Example
+
+In the following example, the `spock.sub_sync()` function synchronizes all
+unsynchronized tables for a subscription named `sub_n1_n2`:
+
+```sql
+SELECT spock.sub_sync('sub_n1_n2', true);
+```

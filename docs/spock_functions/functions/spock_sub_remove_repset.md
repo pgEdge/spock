@@ -1,25 +1,31 @@
-## NAME 
+# spock.sub_remove_repset
 
-`spock.sub_remove_repset()`
+The `spock.sub_remove_repset()` function removes a replication set from a
+subscription.
 
-### SYNOPSIS
+## Synopsis
 
-`spock.sub_remove_repset (subscription_name name, replication_set name)`
- 
-### DESCRIPTION
-    
-Remove a replication set from a subscription. 
+```sql
+spock.sub_remove_repset(subscription_name name, replication_set name)
+```
 
-There is also a `postgresql.conf` parameter, `spock.extra_connection_options`, that you can use to assign connection options that apply to all connections made by spock. This can be a useful place to set up custom keepalive options, etc.
+## Description
 
-spock defaults to enabling TCP keepalives to ensure that it notices when the upstream server disappears unexpectedly. To disable them add `keepalives = 0` to `spock.extra_connection_options`.
+The `spock.sub_remove_repset()` function removes a replication set from a
+subscription.
 
-### EXAMPLE 
+## Arguments
 
-`spock.sub_remove_repset ('sub_n2n1', 'demo_repset')`
- 
-### POSITIONAL ARGUMENTS
-    subscription_name
-        The name of the existing subscription.
-    replication_set 
-        The name of replication set to remove.
+The function accepts the following arguments:
+
+- `subscription_name` - The name of an existing subscription.
+- `replication_set` - The name of the replication set to remove.
+
+## Example
+
+In the following example, the `spock.sub_remove_repset()` function removes a
+replication set named `demo_repset` from a subscription named `sub_n2n1`:
+
+```sql
+SELECT spock.sub_remove_repset('sub_n2n1', 'demo_repset');
+```
