@@ -3013,13 +3013,6 @@ stream_replay:
 				if (spock_readonly == READONLY_ALL)
 				{
 					/*
-					 * Send feedback to keep walsender alive - we may avoid it
-					 * with introduction of TCP keepalive approach.
-					 */
-					maybe_send_feedback(applyconn, last_received,
-										&last_receive_timestamp);
-
-					/*
 					 * In case of an exception we can't break out of the loop
 					 * because exception processing code may also modify the
 					 * database. Wait briefly and continue to the next iteration.
