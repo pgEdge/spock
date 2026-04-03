@@ -1,21 +1,36 @@
-## NAME
+# spock.sub_drop
 
-`spock.sub_drop ()`
+The `spock.sub_drop()` function disconnects a subscription and removes the
+subscription from the catalog.
 
-### SYNOPSIS
+## Synopsis
 
-`spock.sub_drop (subscription_name name, ifexists bool)`
- 
-### DESCRIPTION
+```sql
+spock.sub_drop(subscription_name name, ifexists bool)
+```
 
-Disconnects the subscription and removes it from the catalog. 
+## Description
 
-### EXAMPLE
+The `spock.sub_drop()` function disconnects the subscription and removes the
+subscription from the catalog.
 
-`spock.sub_drop ('sub_n2n1')`
- 
-### POSITIONAL ARGUMENTS
-    subscription_name
-        The name of the existing subscription.
-    ifexists
-        If true, an error is not thrown when subscription does not exist; the default is false.
+## Arguments
+
+The function accepts the following arguments:
+
+- `subscription_name` - The name of an existing subscription.
+- `ifexists` - If `true`, an error is not thrown when the subscription does not
+  exist; the default is `false`.
+
+## Example
+
+In the following example, the `spock.sub_drop()` function drops a subscription
+named `sub_n1_n2`:
+
+```sql
+SELECT spock.sub_drop('sub_n1_n2');
+ sub_drop
+----------
+        1
+(1 row)
+```

@@ -1,21 +1,36 @@
-## NAME
+# spock.sub_enable
 
-`spock.sub_enable()`
+The `spock.sub_enable()` function enables a subscription and reconnects to the
+provider.
 
-### SYNOPSIS
+## Synopsis
 
-`spock.sub_enable (subscription_name name, immediate boolean)`
+```sql
+spock.sub_enable(subscription_name name, immediate boolean)
+```
 
-### DESCRIPTION
+## Description
 
-Enable a subscription. 
+The `spock.sub_enable()` function enables a subscription.
 
-### Example
+## Arguments
 
-`spock sub_enable ('sub_n2n1')`
- 
-### ARGUMENTS
-    subscription_name
-        The name of the existing subscription.
-    immediate
-        If true, the subscription is started immediately, otherwise it will be only started at the end of current transaction; the default is false.
+The function accepts the following arguments:
+
+- `subscription_name` - The name of an existing subscription.
+- `immediate` - If `true`, the subscription is started immediately; otherwise
+  the subscription will be started only at the end of the current transaction.
+  The default is `false`.
+
+## Example
+
+In the following example, the `spock.sub_enable()` function enables a
+subscription named `sub_n1_n2`:
+
+```sql
+SELECT spock.sub_enable('sub_n1_n2');
+ sub_enable
+-------------
+ t
+(1 row)
+```

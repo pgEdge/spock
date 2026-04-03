@@ -1,21 +1,37 @@
-## NAME 
+# spock.sub_disable
 
-`spock.sub_disable ()`
+The `spock.sub_disable()` function disables a subscription and disconnects
+from the provider.
 
-### SYNOPSIS
+## Synopsis
 
-`spock.sub_disable (subscription_name name, immediate boolean)`
- 
-### DESCRIPTION
-    Disable a subscription by putting it on hold and disconnect from provider. 
+```sql
+spock.sub_disable(subscription_name name, immediate boolean)
+```
 
-### EXAMPLE
+## Description
 
-`spock sub_disable 'sub_n2n1'`
- 
-### ARGUMENTS
-    subscription_name
-        The name of the existing subscription.
-    immediate
-        If true, the subscription is stopped immediately, otherwise it will be only stopped at the end of current transaction; the default is false.
- 
+The `spock.sub_disable()` function disables a subscription by putting the
+subscription on hold and disconnecting from the provider.
+
+## Arguments
+
+The function accepts the following arguments:
+
+- `subscription_name` - The name of an existing subscription.
+- `immediate` - If `true`, the subscription is stopped immediately; otherwise
+  the subscription will be stopped only at the end of the current transaction.
+  The default is `false`.
+
+## Example
+
+In the following example, the `spock.sub_disable()` function disables a
+subscription named `sub_n1_n2`:
+
+```sql
+SELECT spock.sub_disable('sub_n1_n2');
+ sub_disable
+-------------
+ t
+(1 row)
+```
