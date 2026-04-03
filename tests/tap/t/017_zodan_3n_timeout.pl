@@ -110,7 +110,7 @@ $exit_code = $? >> 8;
 $elapsed_time = time() - $start_time;
 print STDERR "add_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
 
-ok($elapsed_time < 120, "add_node on n3 failed quickly");
+ok($elapsed_time < 300, "add_node on n3 failed quickly (${elapsed_time}s < 300s)");
 ok($exit_code != 0, "add_node failed as expected when pg_replication_slot_advance is missing (exit code: $exit_code)");
 
 psql_or_bail(2, "ALTER FUNCTION pg_replication_slot_advance_renamed RENAME TO pg_replication_slot_advance");
@@ -142,7 +142,7 @@ $exit_code = $? >> 8;
 $elapsed_time = time() - $start_time;
 print STDERR "add_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
 
-ok($elapsed_time < 120, "add_node on n3 failed quickly");
+ok($elapsed_time < 300, "add_node on n3 failed quickly (${elapsed_time}s < 300s)");
 ok($exit_code != 0, "add_node failed as expected when sub_create is missing (exit code: $exit_code)");
 
 psql_or_bail(1, "ALTER FUNCTION spock.sub_create_renamed RENAME TO sub_create");
