@@ -1497,7 +1497,7 @@ BEGIN
             -- This ensures the subscription starts replicating from the correct sync point
             DECLARE
                 sync_lsn text;
-                timeout_ms integer := 180;  -- 3 minutes
+                timeout_ms integer := coalesce(nullif(current_setting('spock.add_node_timeout', true), ''), '180')::integer;
                 temp_table_exists boolean;
             BEGIN
                 -- Check if temp_sync_lsns table exists
@@ -1583,7 +1583,7 @@ BEGIN
                 -- This ensures the subscription starts replicating from the correct sync point
                 DECLARE
                     sync_lsn text;
-                    timeout_ms integer := 180;  -- 3 minutes
+                    timeout_ms integer := coalesce(nullif(current_setting('spock.add_node_timeout', true), ''), '180')::integer;
                 BEGIN
                     -- Get the stored sync LSN from when subscription was created
                     SELECT tsl.sync_lsn INTO sync_lsn
@@ -1774,7 +1774,7 @@ CREATE OR REPLACE PROCEDURE spock.trigger_sync_on_other_nodes_and_wait_on_source
 DECLARE
     rec RECORD;
     sync_lsn pg_lsn;
-    timeout_ms integer := 180;  -- 3 minutes timeout
+    timeout_ms integer := coalesce(nullif(current_setting('spock.add_node_timeout', true), ''), '180')::integer;
     remotesql text;
 BEGIN
     RAISE NOTICE 'Phase 5: Triggering sync events on other nodes and waiting on source';
@@ -2098,7 +2098,7 @@ CREATE OR REPLACE PROCEDURE spock.trigger_source_sync_and_wait_on_new_node(
 DECLARE
     remotesql text;
     sync_lsn pg_lsn;
-    timeout_ms integer := 180;  -- 3 minutes timeout
+    timeout_ms integer := coalesce(nullif(current_setting('spock.add_node_timeout', true), ''), '180')::integer;
 BEGIN
     RAISE NOTICE 'Phase 6: Triggering sync on source node and waiting on new node';
 
@@ -2284,7 +2284,8 @@ CREATE OR REPLACE PROCEDURE spock.add_node(
     verb boolean DEFAULT false,
     new_node_location text DEFAULT 'NY',
     new_node_country text DEFAULT 'USA',
-    new_node_info jsonb DEFAULT '{}'::jsonb
+    new_node_info jsonb DEFAULT '{}'::jsonb,
+    timeout_sec integer DEFAULT 180
 )
 LANGUAGE plpgsql
 AS
@@ -2292,6 +2293,8 @@ $$
 DECLARE
     initial_node_count integer;
 BEGIN
+    -- Store timeout for inner procedures to read
+    PERFORM set_config('spock.add_node_timeout', timeout_sec::text, true);
     -- Phase 0: Check Spock version compatibility across all nodes
     -- Example: Ensure all nodes are running the same Spock version before proceeding
     CALL spock.check_spock_version_compatibility(src_dsn, new_node_dsn, verb);

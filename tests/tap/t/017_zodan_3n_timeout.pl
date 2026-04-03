@@ -55,16 +55,17 @@ my $result = scalar_query(2, qq{
         src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
         new_node_name := 'n2',
         new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
-        verb := false
+        verb := false,
+        timeout_sec := 30
     )});
 my $exit_code = $? >> 8;
 
 my $elapsed_time = time() - $start_time;
 print STDERR "add_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
 
-# The call should fail quickly (well under 1200 seconds which is default timeout)
+# The call should fail quickly (well under 30s timeout)
 # We expect it to fail within a few seconds since it should error immediately
-ok($elapsed_time < 600, "add_node failed quickly (${elapsed_time}s < 600s), not waiting for timeout");
+ok($elapsed_time < 60, "add_node failed quickly (${elapsed_time}s < 60s), not waiting for timeout");
 ok($exit_code != 0, "add_node failed as expected when sync_event is missing (exit code: $exit_code)");
 
 # Restore sync_event function on N1 for cleanup
@@ -101,14 +102,15 @@ $result = scalar_query(3, qq{
         src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
         new_node_name := 'n3',
         new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
-        verb := false
+        verb := false,
+        timeout_sec := 30
     )});
 $exit_code = $? >> 8;
 
 $elapsed_time = time() - $start_time;
 print STDERR "add_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
 
-ok($elapsed_time < 600, "add_node on n3 failed quickly");
+ok($elapsed_time < 120, "add_node on n3 failed quickly");
 ok($exit_code != 0, "add_node failed as expected when pg_replication_slot_advance is missing (exit code: $exit_code)");
 
 psql_or_bail(2, "ALTER FUNCTION pg_replication_slot_advance_renamed RENAME TO pg_replication_slot_advance");
@@ -132,14 +134,15 @@ $result = scalar_query(3, qq{
         src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
         new_node_name := 'n3',
         new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
-        verb := false
+        verb := false,
+        timeout_sec := 30
     )});
 $exit_code = $? >> 8;
 
 $elapsed_time = time() - $start_time;
 print STDERR "add_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
 
-ok($elapsed_time < 600, "add_node on n3 failed quickly");
+ok($elapsed_time < 120, "add_node on n3 failed quickly");
 ok($exit_code != 0, "add_node failed as expected when sub_create is missing (exit code: $exit_code)");
 
 psql_or_bail(1, "ALTER FUNCTION spock.sub_create_renamed RENAME TO sub_create");
