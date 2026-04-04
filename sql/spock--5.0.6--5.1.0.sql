@@ -1,7 +1,30 @@
-/* spock--5.0.6--6.0.0-devel.sql */
+/* spock--5.0.6--5.1.0.sql */
 
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
-\echo Use "ALTER EXTENSION spock UPDATE TO '6.0.0-devel'" to load this file. \quit
+\echo Use "ALTER EXTENSION spock UPDATE TO '5.1.0'" to load this file. \quit
+
+-- Fix sub_skip_schema column type: was added as text in 5.0.1->5.0.2, must be text[]
+ALTER TABLE spock.subscription
+    ALTER COLUMN sub_skip_schema TYPE text[] USING sub_skip_schema::text[];
+
+-- Drop functions removed from the 5.1.0 fresh install (present since 5.0.0 but no longer needed)
+DROP FUNCTION IF EXISTS spock.convert_column_to_int8(regclass, smallint);
+DROP FUNCTION IF EXISTS spock.convert_sequence_to_snowflake(regclass);
+
+-- Add IMMUTABLE PARALLEL SAFE to md5_agg_sfunc (was missing in earlier definitions)
+CREATE OR REPLACE FUNCTION spock.md5_agg_sfunc(text, anyelement)
+	RETURNS text
+AS $$ SELECT md5($1 || $2::text) $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE;
+
+-- Add named parameters to spock_gen_slot_name (originally created without names in 5.0.0)
+CREATE OR REPLACE FUNCTION spock.spock_gen_slot_name(
+  dbname        name,
+  provider_node name,
+  subscription  name
+) RETURNS name
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 DROP VIEW IF EXISTS spock.lag_tracker;
 DROP TABLE IF EXISTS spock.progress;
