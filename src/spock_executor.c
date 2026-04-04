@@ -239,7 +239,7 @@ spock_object_access(ObjectAccessType access,
 {
 	Oid			save_userid = 0;
 	int			save_sec_context = 0;
-	ObjectAddress	object;
+	ObjectAddress object;
 
 	if (next_object_access_hook)
 		(*next_object_access_hook) (access, classId, objectId, subId, arg);
@@ -312,14 +312,15 @@ spock_object_access(ObjectAccessType access,
 	/* SECURITY LABEL related section (see delta_apply for more details) */
 	else if (access == OAT_POST_ALTER && subId > 0)
 	{
-		char *label;
+		char	   *label;
 
 		/*
-		 * Something changes in the definition of the column. We have not enough
-		 * data at the moment to check if the column will satisfy delta_apply
-		 * type requirements. So, just warn and drop security label, if exists.
-		 * TODO: the direction of further improvement is discovery of syscache
-		 * or querying the table definition in attempt to identify the new type.
+		 * Something changes in the definition of the column. We have not
+		 * enough data at the moment to check if the column will satisfy
+		 * delta_apply type requirements. So, just warn and drop security
+		 * label, if exists. TODO: the direction of further improvement is
+		 * discovery of syscache or querying the table definition in attempt
+		 * to identify the new type.
 		 */
 		ObjectAddressSubSet(object, classId, objectId, subId);
 		label = GetSecurityLabel(&object, "spock");

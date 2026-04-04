@@ -788,11 +788,12 @@ pg_decode_message(LogicalDecodingContext *ctx,
 				oldctx = MemoryContextSwitchTo(data->context);
 
 				/*
-				 * The startup message is normally sent in pg_decode_begin_txn.
-				 * A non-transactional sync event can arrive before any
-				 * transaction is decoded (e.g. right after slot creation).
-				 * Send the startup message first so the subscriber knows the
-				 * protocol version and can parse the proto-v5 header.
+				 * The startup message is normally sent in
+				 * pg_decode_begin_txn. A non-transactional sync event can
+				 * arrive before any transaction is decoded (e.g. right after
+				 * slot creation). Send the startup message first so the
+				 * subscriber knows the protocol version and can parse the
+				 * proto-v5 header.
 				 */
 				if (!startup_message_sent)
 					send_startup_message(ctx, data, false);
@@ -1413,10 +1414,10 @@ spock_output_plugin_shmem_request(int nworkers)
 void
 spock_output_plugin_shmem_startup(bool found)
 {
-	bool					is_found;
-	SpockOutputSlotGroup   *slot_groups;
-	int						i;
-	int						nworkers = SpockCtx->total_workers;
+	bool		is_found;
+	SpockOutputSlotGroup *slot_groups;
+	int			i;
+	int			nworkers = SpockCtx->total_workers;
 
 	/* Check code paths consistency */
 	Assert(LWLockHeldByMeInMode(AddinShmemInitLock, LW_EXCLUSIVE));
@@ -1437,7 +1438,7 @@ spock_output_plugin_shmem_startup(bool found)
 		for (i = 0; i < nworkers; i++)
 		{
 			slot_groups[i].lock =
-					&((GetNamedLWLockTranche(SPOCK_SLOT_GROUPS_TRANCHE_NAME)[i + 1]).lock);
+				&((GetNamedLWLockTranche(SPOCK_SLOT_GROUPS_TRANCHE_NAME)[i + 1]).lock);
 		}
 	}
 }
