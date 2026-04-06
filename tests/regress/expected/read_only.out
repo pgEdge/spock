@@ -1,0 +1,223 @@
+-- Tests for read-only mode (spock.readonly GUC)
+-- Verifies three modes (off, local, all), superuser exemption,
+-- backward-compatible 'user' alias, and user-imposed transaction_read_only.
+SELECT * FROM spock_regress_variables()
+\gset
+\c :provider_dsn
+-- Store superuser name for reconnections after user switching
+SELECT current_user AS regress_su
+\gset
+-- Setup: test table with grants for nonsuper
+CREATE TABLE public.ro_test (id int primary key, data text);
+GRANT ALL ON public.ro_test TO nonsuper;
+-- Verify default state is 'off'
+SHOW spock.readonly;
+ spock.readonly 
+----------------
+ off
+(1 row)
+
+---
+--- Test: non-superuser can write when readonly is off
+---
+SET ROLE nonsuper;
+INSERT INTO ro_test VALUES (1, 'nonsuper writes when off');
+RESET ROLE;
+SELECT count(*) FROM ro_test;
+ count 
+-------
+     1
+(1 row)
+
+---
+--- Test: set readonly to 'local', superuser can still write
+---
+SET spock.readonly = 'local';
+SHOW spock.readonly;
+ spock.readonly 
+----------------
+ local
+(1 row)
+
+INSERT INTO ro_test VALUES (2, 'superuser writes in local');
+SELECT count(*) FROM ro_test;
+ count 
+-------
+     2
+(1 row)
+
+---
+--- Test: non-superuser blocked from DML and DDL in 'local' mode
+---
+\set VERBOSITY terse
+SET ROLE nonsuper;
+-- INSERT blocked
+INSERT INTO ro_test VALUES (3, 'should fail');
+ERROR:  cannot execute INSERT in a read-only transaction
+-- UPDATE blocked
+UPDATE ro_test SET data = 'fail' WHERE id = 1;
+ERROR:  cannot execute UPDATE in a read-only transaction
+-- DELETE blocked
+DELETE FROM ro_test WHERE id = 1;
+ERROR:  cannot execute DELETE in a read-only transaction
+-- TRUNCATE blocked
+TRUNCATE ro_test;
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+-- DDL blocked
+CREATE TABLE public.ro_fail (id int);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- Non-superuser can still SELECT
+SELECT count(*) FROM ro_test;
+ count 
+-------
+     2
+(1 row)
+
+-- Non-superuser cannot change spock.readonly
+SET spock.readonly = 'off';
+ERROR:  permission denied to set parameter "spock.readonly"
+RESET ROLE;
+\set VERBOSITY default
+---
+--- Test: backward-compatible 'user' alias maps to 'local'
+---
+SET spock.readonly = 'user';
+SHOW spock.readonly;
+ spock.readonly 
+----------------
+ local
+(1 row)
+
+\set VERBOSITY terse
+SET ROLE nonsuper;
+INSERT INTO ro_test VALUES (4, 'fail user alias');
+ERROR:  cannot execute INSERT in a read-only transaction
+RESET ROLE;
+\set VERBOSITY default
+---
+--- Test: reset to 'off', non-superuser can write again
+---
+SET spock.readonly = 'off';
+SHOW spock.readonly;
+ spock.readonly 
+----------------
+ off
+(1 row)
+
+SET ROLE nonsuper;
+INSERT INTO ro_test VALUES (3, 'nonsuper after reset');
+RESET ROLE;
+SELECT count(*) FROM ro_test;
+ count 
+-------
+     3
+(1 row)
+
+---
+--- Test: 'all' mode - non-superuser blocked, superuser exempt
+---
+SET spock.readonly = 'all';
+SHOW spock.readonly;
+ spock.readonly 
+----------------
+ all
+(1 row)
+
+-- Superuser can write in 'all' mode
+INSERT INTO ro_test VALUES (4, 'superuser in all');
+-- Non-superuser blocked
+\set VERBOSITY terse
+SET ROLE nonsuper;
+INSERT INTO ro_test VALUES (5, 'fail all mode');
+ERROR:  cannot execute INSERT in a read-only transaction
+RESET ROLE;
+\set VERBOSITY default
+SELECT count(*) FROM ro_test;
+ count 
+-------
+     4
+(1 row)
+
+---
+--- Test: user-imposed transaction_read_only is respected when spock.readonly = off
+---
+SET spock.readonly = 'off';
+\set VERBOSITY terse
+BEGIN;
+SET LOCAL transaction_read_only = on;
+INSERT INTO ro_test VALUES (5, 'fail user readonly');
+ERROR:  cannot execute INSERT in a read-only transaction
+ROLLBACK;
+\set VERBOSITY default
+---
+--- Test: ALTER SYSTEM with separate non-superuser connection
+---
+ALTER SYSTEM SET spock.readonly = 'local';
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+SELECT pg_sleep(0.5);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+-- New connection as nonsuper inherits system-level setting
+\c regression nonsuper
+SHOW spock.readonly;
+ spock.readonly 
+----------------
+ local
+(1 row)
+
+\set VERBOSITY terse
+INSERT INTO ro_test VALUES (5, 'fail new conn');
+ERROR:  cannot execute INSERT in a read-only transaction
+\set VERBOSITY default
+SELECT count(*) FROM ro_test;
+ count 
+-------
+     4
+(1 row)
+
+-- Superuser not blocked
+\c regression :regress_su
+INSERT INTO ro_test VALUES (5, 'superuser alter system');
+SELECT count(*) FROM ro_test;
+ count 
+-------
+     5
+(1 row)
+
+-- Reset system setting
+ALTER SYSTEM RESET spock.readonly;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+SELECT pg_sleep(0.5);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+-- Non-superuser can write after ALTER SYSTEM RESET
+\c regression nonsuper
+INSERT INTO ro_test VALUES (6, 'nonsuper after sys reset');
+SELECT count(*) FROM ro_test;
+ count 
+-------
+     6
+(1 row)
+
+---
+--- Cleanup
+---
+\c regression :regress_su
+SET spock.readonly = 'off';
+DROP TABLE public.ro_test;
