@@ -35,10 +35,14 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'spock_pause_apply_workers'
 LANGUAGE C VOLATILE;
 
+REVOKE ALL ON FUNCTION spock.pause_apply_workers() FROM PUBLIC;
+
 CREATE FUNCTION spock.resume_apply_workers()
 RETURNS void
 AS 'MODULE_PATHNAME', 'spock_resume_apply_workers'
 LANGUAGE C VOLATILE;
+
+REVOKE ALL ON FUNCTION spock.resume_apply_workers() FROM PUBLIC;
 
 -- Read peer progress (ros.remote_lsn) for all peer subscriptions.
 -- Called while apply workers are paused and the slot's snapshot is imported.
