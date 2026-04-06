@@ -51,6 +51,7 @@
 #include "spock_exception_handler.h"
 #include "spock_group.h"
 #include "spock_shmem.h"
+#include "spock_injection.h"
 
 typedef struct signal_worker_item
 {
@@ -341,6 +342,13 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	/* Now safe to process signals */
 	BackgroundWorkerUnblockSignals();
 
+	/*
+	 * Allow tests to delay worker startup, e.g. to exercise race conditions
+	 * in the manager's restart-delay logic.  Fires before the worker
+	 * announces itself in shared memory.
+	 */
+	SPOCK_WORKER_DELAY();
+
 	MyProcPort = (Port *) calloc(1, sizeof(Port));
 
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
@@ -406,6 +414,13 @@ spock_worker_detach(bool crash)
 	/* Nothing to detach. */
 	if (MySpockWorker == NULL)
 		return;
+
+	/*
+	 * Allow tests to observe the worker just before it releases its shared
+	 * memory slot.  The worker type and proc pointer are still valid here,
+	 * so callers can distinguish worker types if needed.
+	 */
+	SPOCK_WORKER_DELAY();
 
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
