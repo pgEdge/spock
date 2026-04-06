@@ -364,11 +364,26 @@ retry:
 
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
-	/* TODO: Should we ever use FAILOVER here? */
 
+#if PG_VERSION_NUM >= 170000
 	/*
-	 * if (use_failover_slot) appendStringInfo(&query, " FAILOVER");
+	 * PostgreSQL 17+ supports logical slot synchronization to physical
+	 * standbys via sync_replication_slots = on.  Mark all spock slots with
+	 * FAILOVER so the built-in slotsync worker picks them up automatically.
+	 *
+	 * On PG17+ the caller should configure:
+	 *   Primary:  synchronized_standby_slots = '<physical_slot_name>'
+	 *   Standby:  sync_replication_slots = on
+	 *             primary_conninfo = '...'
+	 *             primary_slot_name = '<physical_slot_name>'
+	 *             hot_standby_feedback = on
 	 */
+	appendStringInfo(&query, " FAILOVER");
+#else
+	/* On older versions use FAILOVER only when the remote supports it. */
+	if (use_failover_slot)
+		appendStringInfo(&query, " FAILOVER");
+#endif
 
 
 	res = PQexec(repl_conn, query.data);
@@ -616,9 +631,17 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	/*
 	 * Create the slot via the replication protocol.  This returns a snapshot
 	 * consistent with the slot's WAL position — the correct snapshot for COPY.
+	 *
+	 * PG17+ supports logical slot synchronization to physical standbys via
+	 * sync_replication_slots = on.  Mark all spock slots with (FAILOVER) so
+	 * the built-in slotsync worker picks them up automatically.
+	 * PG17+ uses parenthesised option syntax: plugin (FAILOVER).
 	 */
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
+#if PG_VERSION_NUM >= 170000
+	appendStringInfo(&query, " (FAILOVER)");
+#endif
 	res = PQexec(repl_conn, query.data);
 	resetStringInfo(&query);
 
@@ -636,6 +659,9 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 			appendStringInfo(&query,
 							 "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 							 slot_name, "spock_output");
+#if PG_VERSION_NUM >= 170000
+			appendStringInfo(&query, " (FAILOVER)");
+#endif
 			res = PQexec(repl_conn, query.data);
 			resetStringInfo(&query);
 		}

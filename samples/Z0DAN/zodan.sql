@@ -368,10 +368,22 @@ BEGIN
     -- ============================================================================
     -- Step 2: Build remote SQL for replication slot creation
     -- ============================================================================
-    remotesql := format(
-        'SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, %L)',
-        slot_name, plugin
-    );
+    --
+    -- On PostgreSQL 17+, mark the slot with failover => true so the built-in
+    -- slotsync worker (sync_replication_slots = on) synchronizes it to physical
+    -- standbys automatically.  On older versions, omit the failover parameter.
+    --
+    IF (SELECT setting::int >= 170000 FROM pg_settings WHERE name = 'server_version_num') THEN
+        remotesql := format(
+            'SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, %L, false, false, true)',
+            slot_name, plugin
+        );
+    ELSE
+        remotesql := format(
+            'SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, %L)',
+            slot_name, plugin
+        );
+    END IF;
 
     IF verb THEN
         RAISE NOTICE '[QUERY] %', remotesql;
@@ -1314,7 +1326,11 @@ BEGIN
 							dbname, rec.node_name,
 							'sub_' || rec.node_name || '_' || new_node_name);
 
-            remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'');', slot_name);
+            IF (SELECT setting::int >= 170000 FROM pg_settings WHERE name = 'server_version_num') THEN
+                remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'', false, false, true);', slot_name);
+            ELSE
+                remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'');', slot_name);
+            END IF;
             IF verb THEN
                 RAISE NOTICE '    Remote SQL for slot creation: %', remotesql;
             END IF;

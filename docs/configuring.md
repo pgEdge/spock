@@ -219,6 +219,109 @@ liveness detection. Default: `300` (5 minutes).
 spock.apply_idle_timeout = 300
 ```
 
+### Logical Slot Failover (HA Standby)
+
+Spock creates logical replication slots on each provider node. For high
+availability with a physical standby, these slots must be synchronized to the
+standby so that replication can resume without data loss after a failover.
+
+See [Logical Slot Failover](logical_slot_failover.md) for full setup instructions.
+
+The behaviour depends on the PostgreSQL version:
+
+| PostgreSQL | Slot sync mechanism | Spock worker |
+|---|---|---|
+| 15, 16 | Spock built-in `spock_failover_slots` worker | Always runs |
+| 17 | Spock worker OR native `sync_replication_slots` | Spock worker yields to native if enabled |
+| 18+ | Native `sync_replication_slots` (required) | Not registered |
+
+#### PostgreSQL 17 and Later (Native Slot Sync)
+
+On PostgreSQL 17+, Spock marks every logical slot with the `FAILOVER` flag
+at creation time. PostgreSQL's built-in slotsync worker then synchronizes
+those slots automatically.
+
+On **PostgreSQL 18+**, Spock's own failover worker is not registered. You
+must configure the native mechanism:
+
+**Primary (`postgresql.conf`):**
+```
+synchronized_standby_slots = 'physical_slot_name'
+```
+
+**Standby (`postgresql.conf`):**
+```
+sync_replication_slots = on
+primary_conninfo = 'host=<primary_host> dbname=<dbname> ...'
+primary_slot_name = 'physical_slot_name'
+hot_standby_feedback = on
+```
+
+After a failover, subscribers only need to update their `host=` in the
+connection string — replication resumes from the last synchronized LSN with
+no data loss.
+
+#### PostgreSQL 15 and 16 (Spock Built-in Worker)
+
+On PostgreSQL 15 and 16, Spock's `spock_failover_slots` background worker
+handles slot synchronization. Configure it with the GUCs below.
+
+### `spock.synchronize_slot_names`
+
+List of slot name patterns to synchronize from primary to physical standby.
+Accepts name prefixes (`name:foo`) or LIKE patterns (`name_like:spock%`).
+Default: `name_like:%%` (synchronize all logical slots).
+
+```
+spock.synchronize_slot_names = 'name_like:%%'
+```
+
+Only used on PostgreSQL 15 and 16. On PostgreSQL 17+, slot synchronization
+is handled natively via `sync_replication_slots = on`.
+
+### `spock.drop_extra_slots`
+
+When `on` (the default), the `spock_failover_slots` worker drops any slots
+on the standby that do not match `spock.synchronize_slot_names`.
+
+```
+spock.drop_extra_slots = on
+```
+
+### `spock.primary_dsn`
+
+Connection string used by the `spock_failover_slots` worker to connect to
+the primary and read slot state. If empty, `primary_conninfo` from
+`postgresql.conf` is used.
+
+```
+spock.primary_dsn = ''
+```
+
+### `spock.pg_standby_slot_names`
+
+Comma-separated list of physical replication slot names that must confirm
+durable flush of a given LSN before the walsender is allowed to replicate
+logical changes beyond that LSN. This prevents a physical standby from
+falling behind a logical subscriber.
+
+```
+spock.pg_standby_slot_names = 'physical_slot_1,physical_slot_2'
+```
+
+Only used on PostgreSQL 15 and 16. On PostgreSQL 17+, use
+`synchronized_standby_slots` instead.
+
+### `spock.standby_slots_min_confirmed`
+
+Number of slots from `spock.pg_standby_slot_names` that must confirm a
+given LSN before logical replication is allowed to proceed. The default
+`-1` requires all listed slots to confirm. `0` disables the check.
+
+```
+spock.standby_slots_min_confirmed = -1
+```
+
 ### `spock.include_ddl_repset`
 
 `spock.include_ddl_repset` enables spock to automatically add tables to
