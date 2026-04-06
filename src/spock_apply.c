@@ -438,6 +438,35 @@ action_error_callback(void *arg)
  * existing transaction).
  * Also provide a global snapshot and ensure we run in ApplyMessageContext.
  */
+
+/*
+ * If the pause flag is set (slot creation in progress for add_node),
+ * sleep on the ConditionVariable until resumed or timed out.
+ */
+static void
+maybe_pause_for_slot_creation(void)
+{
+	if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+	{
+		MyApplyWorker->paused = true;
+		ConditionVariablePrepareToSleep(&SpockCtx->pause_cv);
+		while (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+		{
+			if (ConditionVariableTimedSleep(&SpockCtx->pause_cv,
+										    spock_pause_timeout * 1000L,
+										    WAIT_EVENT_LOGICAL_APPLY_MAIN))
+			{
+				elog(WARNING, "SPOCK: apply worker pause timed out after %ds, resuming",
+					 spock_pause_timeout);
+				pg_atomic_write_u32(&SpockCtx->pause_apply, 0);
+				break;
+			}
+		}
+		ConditionVariableCancelSleep();
+		MyApplyWorker->paused = false;
+	}
+}
+
 static bool
 begin_replication_step(void)
 {
@@ -464,16 +493,7 @@ begin_replication_step(void)
 		 * xid polling.  The previous transaction's commit is fully
 		 * complete, so ros.remote_lsn reflects only committed state.
 		 */
-		if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
-		{
-			MyApplyWorker->paused = true;
-			ConditionVariablePrepareToSleep(&SpockCtx->pause_cv);
-			while (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
-				ConditionVariableSleep(&SpockCtx->pause_cv,
-									  WAIT_EVENT_LOGICAL_APPLY_MAIN);
-			ConditionVariableCancelSleep();
-			MyApplyWorker->paused = false;
-		}
+		maybe_pause_for_slot_creation();
 
 		StartTransactionCommand();
 		spock_apply_heap_begin();
@@ -1011,21 +1031,7 @@ handle_commit(StringInfo s)
 
 	in_remote_transaction = false;
 
-	/*
-	 * If slot creation (add_node) is waiting for us, pause here.  The
-	 * commit is fully complete (ros.remote_lsn updated, xid cleared),
-	 * so the snapshot and origin will be consistent.
-	 */
-	if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
-	{
-		MyApplyWorker->paused = true;
-		ConditionVariablePrepareToSleep(&SpockCtx->pause_cv);
-		while (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
-			ConditionVariableSleep(&SpockCtx->pause_cv,
-								  WAIT_EVENT_LOGICAL_APPLY_MAIN);
-		ConditionVariableCancelSleep();
-		MyApplyWorker->paused = false;
-	}
+	maybe_pause_for_slot_creation();
 
 	/*
 	 * Stop replay if we're doing limited replay and we've replayed up to the

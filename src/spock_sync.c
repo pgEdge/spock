@@ -1472,6 +1472,17 @@ spock_sync_subscription(SpockSubscription *sub)
 				 sub->name, sub->slot_name,
 				 edata->message ? edata->message : "");
 
+			/* Best-effort resume of apply workers on the remote node.
+			 * If the connection is broken this will fail silently —
+			 * the workers' CV timeout will recover them. */
+			if (origin_conn && PQstatus(origin_conn) == CONNECTION_OK)
+			{
+				PGresult *rres = PQexec(origin_conn,
+										"SELECT spock.resume_apply_workers()");
+				if (rres)
+					PQclear(rres);
+			}
+
 			FreeErrorData(edata);
 			PG_RE_THROW();
 		}

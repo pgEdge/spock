@@ -542,10 +542,14 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'spock_pause_apply_workers'
 LANGUAGE C VOLATILE;
 
+REVOKE ALL ON FUNCTION spock.pause_apply_workers() FROM PUBLIC;
+
 CREATE FUNCTION spock.resume_apply_workers()
 RETURNS void
 AS 'MODULE_PATHNAME', 'spock_resume_apply_workers'
 LANGUAGE C VOLATILE;
+
+REVOKE ALL ON FUNCTION spock.resume_apply_workers() FROM PUBLIC;
 
 CREATE PROCEDURE spock.wait_for_sync_event(
 	OUT result          bool,
