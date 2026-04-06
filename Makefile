@@ -22,6 +22,13 @@ PG_CPPFLAGS += -I$(libpq_srcdir) \
 			   -I"$(realpath include)" \
 			   -I"$(realpath src/compat/$(PGVER))" \
 			   -Werror=implicit-function-declaration
+
+# When SPOCK_RANDOM_DELAYS is set in the environment, inject unconditional
+# random delays at worker start/finish without requiring injection point
+# infrastructure or a runtime spock.inject_attach() call.
+ifdef SPOCK_RANDOM_DELAYS
+PG_CPPFLAGS += -DSPOCK_RANDOM_DELAYS
+endif
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
 
 REGRESS := __placeholder__
