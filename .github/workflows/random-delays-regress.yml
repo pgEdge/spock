@@ -1,0 +1,72 @@
+name: Regression Tests with Random Delays
+run-name: Regression tests compiled with SPOCK_RANDOM_DELAYS
+
+# Runs the standard Spock regression suite against a build where every
+# BEGIN, worker start, and worker finish introduces a random 1–100 ms delay.
+# This exercises timing-sensitive paths that are invisible under normal load.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  regress-random-delays:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        pgver: [15, 16, 17, 18]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Add permissions
+        run: |
+          sudo chmod -R a+w ${GITHUB_WORKSPACE}
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      - name: Build docker image with SPOCK_RANDOM_DELAYS
+        run: |
+          docker build \
+            --build-arg PGVER=${{ matrix.pgver }} \
+            --build-arg SPOCK_RANDOM_DELAYS=1 \
+            -t spock-random-delays \
+            -f tests/docker/Dockerfile-step-1.el9 .
+        timeout-minutes: 30
+
+      - name: Run regression tests
+        run: |
+          REG_CT_NAME="spock-random-delays-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "REG_CT_NAME=$REG_CT_NAME" >> "$GITHUB_ENV"
+          docker run --name "$REG_CT_NAME" \
+            -e PGVER=${{ matrix.pgver }} \
+            spock-random-delays \
+            /home/pgedge/run-spock-regress.sh
+        timeout-minutes: 60
+
+      - name: Collect regression artifacts
+        if: ${{ always() }}
+        run: |
+          docker cp "$REG_CT_NAME":/home/pgedge/spock/tests/regress/regression_output \
+            "${GITHUB_WORKSPACE}/tests/regress/" || true
+          docker rm -f "$REG_CT_NAME" || true
+
+      - name: Upload regression artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: random-delays-regress-pg${{ matrix.pgver }}
+          path: tests/regress/regression_output/**
+          if-no-files-found: ignore
+          retention-days: 7

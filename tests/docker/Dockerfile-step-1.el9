@@ -50,13 +50,18 @@ ARG DBPASSWD=testpass
 ARG DBNAME=demo
 ARG DBPORT=5432
 ARG MAKE_JOBS=4
+# When set to any non-empty value, Spock is compiled with -DSPOCK_RANDOM_DELAYS,
+# injecting random 1-100 ms delays at every transaction begin, worker start,
+# and worker finish.  Used by the random-delays-regress workflow.
+ARG SPOCK_RANDOM_DELAYS=
 
 # Export as environment variables for build-time and runtime
 ENV PGVER=${PGVER} \
 	DBUSER=${DBUSER} \
 	DBPASSWD=${DBPASSWD} \
 	DBNAME=${DBNAME} \
-	DBPORT=${DBPORT}
+	DBPORT=${DBPORT} \
+	SPOCK_RANDOM_DELAYS=${SPOCK_RANDOM_DELAYS}
 
 # PostgreSQL paths
 ENV PATH="/home/pgedge/pgedge:/home/pgedge/pgedge/pg${PGVER}/bin:${PATH}" \
@@ -210,7 +215,7 @@ RUN set -eux && \
 	echo "Building Spock Extension" && \
 	echo "========================================" && \
 	make clean > /dev/null && \
-	make -j${MAKE_JOBS} > /dev/null && \
+	make -j${MAKE_JOBS} ${SPOCK_RANDOM_DELAYS:+SPOCK_RANDOM_DELAYS=1} > /dev/null && \
 	make install > /dev/null && \
 	echo "export SPOCK_SOURCE_DIR=/home/pgedge/spock" >> /home/pgedge/.bashrc && \
 	echo "Spock installation complete"
