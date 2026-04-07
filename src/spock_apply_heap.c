@@ -819,8 +819,48 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 			BeginInternalSubTransaction("SpockDeltaApply");
 
 		EvalPlanQualSetSlot(epqstate, remoteslot);
-		ExecSimpleRelationUpdate(relinfo, estate, epqstate,
-								 localslot, remoteslot);
+
+		PG_TRY();
+		{
+			ExecSimpleRelationUpdate(relinfo, estate, epqstate,
+									 localslot, remoteslot);
+		}
+		PG_CATCH();
+		{
+			/*
+			 * If the UPDATE's new values violated a unique constraint,
+			 * report it as an update_exists conflict before re-throwing.
+			 * This matches PG18 native conflict detection behavior.
+			 *
+			 * We cannot safely call spock_report_conflict() here because
+			 * the executor may have invalidated tuple slot data during its
+			 * partial execution.  Use a simple elog that is similar instead
+			 */
+			if (!is_insert)
+			{
+				ErrorData  *edata;
+
+				MemoryContextSwitchTo(MessageContext);
+				edata = CopyErrorData();
+
+				if (edata->sqlerrcode == ERRCODE_UNIQUE_VIOLATION)
+				{
+					elog(spock_conflict_log_level,
+						 "CONFLICT: detected %s on %s.%s: %s",
+						 SpockConflictTypeName(SPOCK_CT_UPDATE_EXISTS),
+						 rel->nspname,
+						 RelationGetRelationName(rel->rel),
+						 edata->message);
+#if PG_VERSION_NUM >= 180000
+					spock_stat_report_subscription_conflict(
+						MyApplyWorker->subid, SPOCK_CT_UPDATE_EXISTS);
+#endif
+				}
+				FreeErrorData(edata);
+			}
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
 
 		if (is_delta_apply)
 		{

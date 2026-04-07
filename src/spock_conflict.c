@@ -386,15 +386,18 @@ spock_report_conflict(SpockConflictType conflict_type,
 		if (conflict_type == SPOCK_CT_UPDATE_EXISTS)
 			conflict_type = SPOCK_CT_UPDATE_ORIGIN_DIFFERS;
 
+		/*
+		 * Origin-differs is normal replication flow, not a true conflict.
+		 * Do not write to spock.resolutions regardless of which side wins.
+		 */
+		save_in_resolutions = false;
+
 		if (resolution == SpockResolution_ApplyRemote)
 		{
 			/*
-			 * Remote tuple wins — this is normal replication flow, not a true
-			 * conflict. Do not write to spock.resolutions, but optionally
-			 * log to the PostgreSQL log based on the GUC setting.
+			 * Remote tuple wins — optionally log to the PostgreSQL log
+			 * based on the log_origin_change GUC setting.
 			 */
-			save_in_resolutions = false;
-
 			if (!found_local_origin)
 				return;
 
