@@ -7,7 +7,15 @@ In this detailed walk through, we'll add a fourth node to a three-node cluster w
     **Important Prerequisites and Warnings**
 
         - The new node should not be accessible to users while adding the node.
-        - Disable `auto_ddl` on all cluster nodes.
+        - **Recommended:** Disable `auto_ddl` (`spock.enable_ddl_replication = off`)
+          on all cluster nodes before adding a new node and re-enable it after the
+          process completes.  This is the safest approach.
+        - If you must leave `auto_ddl` enabled, exercise caution: avoid any DDL
+          changes during the node addition window.  In particular, do not run burst
+          DDL (many statements in rapid succession), heavy schema migrations, or
+          DDL inside transactions while ZODAN is running.  Concurrent DDL with an
+          active ZODAN operation can cause replication conflicts or an inconsistent
+          schema on the new node.
         - Do not modify your DDL during node addition.
         - The users must be identical on the source and target node. You must create any users on the target node before proceeding; the permissions must be *identical* for all users on both the source and target nodes.
           

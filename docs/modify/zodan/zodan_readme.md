@@ -36,6 +36,18 @@ After adding the new node, you can use health checks on your cluster to ensure t
 - Python 3
 - Passwordless access or a properly configured `.pgpass` file for remote connections
 
+!!! Warning "DDL and auto_ddl during node addition"
+
+    **Recommended:** Disable `auto_ddl` (`spock.enable_ddl_replication = off`) on
+    all cluster nodes before running ZODAN and re-enable it after the new node is
+    fully subscribed.
+
+    ZODAN can run with `auto_ddl` enabled, but you must avoid any DDL activity
+    during the operation.  Do not run burst DDL (many statements in rapid
+    succession), heavy schema migrations, or DDL inside transactions while ZODAN
+    is active.  Concurrent DDL can cause replication conflicts or leave the new
+    node with an inconsistent schema.
+
 **Running a Health Check**
 
 Invoke the script on the node you are validating:
