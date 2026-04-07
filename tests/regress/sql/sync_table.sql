@@ -47,7 +47,15 @@ SELECT sum(x), count(*) FROM test_sync;
 INSERT INTO test_sync (x) SELECT -value FROM generate_series(1,10) AS value;
 SELECT sum(x), count(*) FROM test_sync;
 
+-- Wait for apply worker to catch up before resyncing; without this, the
+-- apply worker may have already inserted some rows and the sync COPY
+-- would fail with a duplicate-key violation.
+SELECT spock.sync_event() AS sync_lsn
+\gset
+
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 60);
+
 -- Restart syncing this specific table, wait until the process finish and check
 -- all the data stay consistent
 SELECT sync_kind,sub_name,sync_nspname,sync_relname,sync_status, sync_statuslsn <> '0/0'
