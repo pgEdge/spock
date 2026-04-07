@@ -52,12 +52,12 @@ CREATE TABLE public.ro_fail (id int);
 
 ---
 --- Test: utility commands allowed in 'local' mode (still as nonsuper)
---- Spock sets XactReadOnly = true and delegates enforcement entirely to
---- Postgres.  These commands are allowed because Postgres does not call
---- PreventCommandIfReadOnly() for maintenance operations.
+--- VACUUM ANALYZE does not alter the schema or generate WAL that would
+--- interfere with logical replication, so Postgres allows it in read-only
+--- transactions.  Spock delegates to Postgres here and could add further
+--- restrictions if needed.
 ---
-VACUUM ro_test;
-ANALYZE ro_test;
+VACUUM ANALYZE ro_test;
 
 -- Non-superuser can still SELECT
 SELECT count(*) FROM ro_test;
@@ -269,7 +269,15 @@ SET spock.enable_ddl_replication = off;
 
 ---
 --- Test: replication paused when subscriber is in 'all' mode
+--- The apply worker should gently wait (not crash or flood logs).
 ---
+
+-- Record walsender PID: if the apply worker crashes, the replication
+-- connection drops and the walsender restarts with a new PID.
+SELECT pid AS repl_pid FROM pg_stat_replication LIMIT 1
+\gset
+
+\c :subscriber_dsn
 ALTER SYSTEM SET spock.readonly = 'all';
 SELECT pg_reload_conf();
 -- Give apply worker time to detect config change and enter readonly mode
@@ -285,6 +293,9 @@ SET LOCAL statement_timeout = '5s';
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 ROLLBACK;
 \set VERBOSITY default
+
+-- Same walsender PID proves the apply worker stayed alive (gentle wait)
+SELECT :repl_pid = pid AS worker_survived FROM pg_stat_replication LIMIT 1;
 
 -- Data should NOT have arrived on subscriber
 \c :subscriber_dsn
