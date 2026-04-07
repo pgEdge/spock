@@ -110,7 +110,14 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 -- Add more data before resync
 INSERT INTO gen_resync (id, data) VALUES (3, 3), (4, 4);
 
+-- Wait for apply worker to catch up before resyncing; without this, the
+-- apply worker may have already inserted some rows and the sync COPY
+-- would fail with a duplicate-key violation.
+SELECT spock.sync_event() AS sync_lsn
+\gset
+
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 60);
 SELECT spock.sub_resync_table('test_subscription', 'gen_resync', true);
 SELECT spock.table_wait_for_sync('test_subscription', 'gen_resync');
 SELECT * FROM gen_resync ORDER BY id;
