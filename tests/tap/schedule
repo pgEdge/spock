@@ -41,5 +41,6 @@ test: 015_skip_lsn
 test: 015_forward_origin_advance
 test: 016_sub_disable_missing_relation
 test: 018_forward_origins
+test: 018_failover_slots
 test: 019_stale_fd_epoll_after_conn_death
 test: 022_rmgr_progress_post_checkpoint_crash
