@@ -147,7 +147,6 @@ BEGIN
   END LOOP;
 END;
 $$;
-COMMIT;
 
 select status from spock.sub_show_status();
 

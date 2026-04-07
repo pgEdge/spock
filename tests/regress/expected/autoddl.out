@@ -131,8 +131,15 @@ SELECT objname, label FROM pg_seclabels;
  slabel1.x | spock.delta_apply
 (1 row)
 
--- Short round trip to check that subscriber has the security label
+-- Wait for the apply worker to process the security label before checking.
+SELECT spock.sync_event() AS sync_lsn \gset
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 60);
+ result 
+--------
+ t
+(1 row)
+
 SELECT objname, label FROM pg_seclabels;
   objname  |       label       
 -----------+-------------------
@@ -148,8 +155,15 @@ INFO:  DDL statement replicated.
  t
 (1 row)
 
--- Short round trip to check that subscriber has removed the security label too
+-- Wait for the apply worker to process the removal before checking.
+SELECT spock.sync_event() AS sync_lsn \gset
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 60);
+ result 
+--------
+ t
+(1 row)
+
 SELECT objname, label FROM pg_seclabels;
  objname | label 
 ---------+-------
