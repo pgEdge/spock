@@ -371,6 +371,9 @@ retry:
 	 * standbys via sync_replication_slots = on.  Mark all spock slots with
 	 * FAILOVER so the built-in slotsync worker picks them up automatically.
 	 *
+	 * PG17+ uses parenthesised option syntax for CREATE_REPLICATION_SLOT:
+	 *   CREATE_REPLICATION_SLOT "name" LOGICAL plugin (FAILOVER)
+	 *
 	 * On PG17+ the caller should configure:
 	 *   Primary:  synchronized_standby_slots = '<physical_slot_name>'
 	 *   Standby:  sync_replication_slots = on
@@ -378,11 +381,11 @@ retry:
 	 *             primary_slot_name = '<physical_slot_name>'
 	 *             hot_standby_feedback = on
 	 */
-	appendStringInfo(&query, " FAILOVER");
+	appendStringInfo(&query, " (FAILOVER)");
 #else
 	/* On older versions use FAILOVER only when the remote supports it. */
 	if (use_failover_slot)
-		appendStringInfo(&query, " FAILOVER");
+		appendStringInfo(&query, " (FAILOVER)");
 #endif
 
 
