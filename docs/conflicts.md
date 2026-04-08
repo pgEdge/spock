@@ -105,8 +105,8 @@ to `on`, Spock will perform the following actions:
 
     If `spock.check_all_uc_indexes` is `enabled`, Spock will resolve only
     the first conflict identified, using Last-Write-Wins logic. If a second
-    conflict occurs, an exception is recorded in the `spock.resolutions`
-    table as either `Keep-Local` or `Apply-Remote`.
+    unique constraint conflict occurs, an error is raised and recorded in
+    `spock.exception_log`.
 
     This feature is experimental; enable this feature at your own risk.
 
