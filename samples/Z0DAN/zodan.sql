@@ -340,6 +340,7 @@ DECLARE
     remotesql text;
     result RECORD;
     exists_count int;
+    remote_pgver int;
 BEGIN
     -- ============================================================================
     -- Step 1: Check if replication slot already exists on remote node
@@ -368,10 +369,35 @@ BEGIN
     -- ============================================================================
     -- Step 2: Build remote SQL for replication slot creation
     -- ============================================================================
-    remotesql := format(
-        'SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, %L)',
-        slot_name, plugin
-    );
+    --
+    -- On PostgreSQL 17+, mark the slot with failover => true so the built-in
+    -- slotsync worker (sync_replication_slots = on) synchronizes it to physical
+    -- standbys automatically.  On older versions, omit the failover parameter.
+    --
+    -- Query the *remote* server version via the same dblink connection so that
+    -- mixed-version topologies (e.g. adding a PG17 node to a PG16 cluster)
+    -- use the correct call signature on the target node.
+    --
+    BEGIN
+        SELECT pgver INTO remote_pgver
+        FROM dblink(node_dsn,
+            'SELECT setting::int FROM pg_settings WHERE name = ''server_version_num'''
+        ) AS t(pgver int);
+    EXCEPTION WHEN OTHERS THEN
+        remote_pgver := 0;
+    END;
+
+    IF remote_pgver >= 170000 THEN
+        remotesql := format(
+            'SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, %L, false, false, true)',
+            slot_name, plugin
+        );
+    ELSE
+        remotesql := format(
+            'SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, %L)',
+            slot_name, plugin
+        );
+    END IF;
 
     IF verb THEN
         RAISE NOTICE '[QUERY] %', remotesql;
@@ -1254,6 +1280,7 @@ DECLARE
     slot_name          text;
 	sub_name           text;
     _commit_lsn        pg_lsn;
+    remote_pgver       int;
 BEGIN
     RAISE NOTICE 'Phase 3: Creating disabled subscriptions and slots';
 
@@ -1314,7 +1341,22 @@ BEGIN
 							dbname, rec.node_name,
 							'sub_' || rec.node_name || '_' || new_node_name);
 
-            remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'');', slot_name);
+            -- Query the remote node version so mixed-version topologies use
+            -- the correct pg_create_logical_replication_slot signature.
+            BEGIN
+                SELECT pgver INTO remote_pgver
+                FROM dblink(rec.dsn,
+                    'SELECT setting::int FROM pg_settings WHERE name = ''server_version_num'''
+                ) AS t(pgver int);
+            EXCEPTION WHEN OTHERS THEN
+                remote_pgver := 0;
+            END;
+
+            IF remote_pgver >= 170000 THEN
+                remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'', false, false, true);', slot_name);
+            ELSE
+                remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'');', slot_name);
+            END IF;
             IF verb THEN
                 RAISE NOTICE '    Remote SQL for slot creation: %', remotesql;
             END IF;
