@@ -1012,6 +1012,17 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
+	DefineCustomIntVariable("spock.resolutions_retention_days",
+							"Number of days to retain rows in spock." CATALOG_LOGTABLE " table. "
+							"Rows older than this are deleted periodically by the apply worker. "
+							"Set to 0 to disable automatic cleanup.",
+							NULL,
+							&spock_resolutions_retention_days,
+							100, 0, INT_MAX,
+							PGC_SUSET,
+							0,
+							NULL, NULL, NULL);
+
 	DefineCustomBoolVariable("spock.enable_quiet_mode",
 							 "Reduce message verbosity for cleaner output",
 							 "When enabled, downgrades DDL replication INFO/WARNING messages to LOG level "

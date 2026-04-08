@@ -87,6 +87,7 @@ SpockConflictTypeName(SpockConflictType t)
 int			spock_conflict_resolver = SPOCK_RESOLVE_LAST_UPDATE_WINS;
 int			spock_conflict_log_level = LOG;
 bool		spock_save_resolutions = false;
+int			spock_resolutions_retention_days = 100;
 
 static Datum spock_conflict_row_to_json(Datum row, bool row_isnull,
 										bool *ret_isnull);
@@ -880,6 +881,149 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 		appendStringInfoChar(s, ':');
 		appendStringInfoString(s, outputstr);
 	}
+}
+
+/*
+ * Delete rows from spock.resolutions that are older than
+ * spock.resolutions_retention_days.  Returns the number of rows deleted.
+ *
+ * Caller must have an active transaction and snapshot (SPI requirement).
+ * Errors propagate to the caller; no error suppression here.
+ */
+static uint64
+spock_cleanup_resolutions_core(void)
+{
+	int				ret;
+	uint64			ndeleted;
+	StringInfoData	cmd;
+
+	initStringInfo(&cmd);
+	appendStringInfo(&cmd,
+					 "DELETE FROM spock.%s WHERE log_time < now() - '%d days'::interval",
+					 CATALOG_LOGTABLE, spock_resolutions_retention_days);
+
+	if (SPI_connect() != SPI_OK_CONNECT)
+	{
+		pfree(cmd.data);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("SPOCK: SPI_connect failed in spock_cleanup_resolutions")));
+	}
+
+	ret = SPI_execute(cmd.data, false, 0);
+	pfree(cmd.data);
+
+	if (ret != SPI_OK_DELETE)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("SPOCK: unexpected SPI result %d in spock_cleanup_resolutions",
+						ret)));
+
+	ndeleted = SPI_processed;
+	SPI_finish();
+
+	elog(DEBUG1, "SPOCK: cleaned up " UINT64_FORMAT " row(s) from spock.%s",
+		 ndeleted, CATALOG_LOGTABLE);
+
+	return ndeleted;
+}
+
+/*
+ * spock_cleanup_resolutions
+ *
+ * Apply worker entry point.  Manages its own transaction so it can be called
+ * from the background loop where no transaction is active.  Errors are
+ * downgraded to WARNING so a transient failure does not disrupt replication;
+ * the worker will retry on the next daily cycle.
+ */
+uint64
+spock_cleanup_resolutions(void)
+{
+	uint64			ndeleted = 0;
+	MemoryContext	oldcontext;
+
+	if (spock_resolutions_retention_days <= 0)
+		return 0;
+
+	/*
+	 * Save the caller's memory context (MessageContext in the apply worker)
+	 * before entering PG_TRY.
+	 */
+	oldcontext = CurrentMemoryContext;
+
+	/*
+	 * The entire transaction lifetime lives inside PG_TRY so that errors
+	 * from StartTransactionCommand() or PushActiveSnapshot() — not just SPI
+	 * execution failures — are also caught and downgraded to WARNING.
+	 *
+	 * SetCurrentStatementStartTimestamp() must precede StartTransactionCommand()
+	 * so the transaction's cached current_timestamp is initialised correctly.
+	 * PushActiveSnapshot() is required by SPI_execute (it asserts an active
+	 * snapshot exists).
+	 */
+	PG_TRY();
+	{
+		SetCurrentStatementStartTimestamp();
+		StartTransactionCommand();
+		PushActiveSnapshot(GetTransactionSnapshot());
+
+		/* do the cleanup */
+		ndeleted = spock_cleanup_resolutions_core();
+
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+
+		/*
+		 * Abort only if a transaction was actually started.  If the error
+		 * occurred in SetCurrentStatementStartTimestamp() or before
+		 * StartTransactionCommand() completed, there may be no transaction
+		 * to abort.  AbortCurrentTransaction() also handles SPI and snapshot
+		 * cleanup via AtEOXact_SPI() and AtAbort_Snapshot(), avoiding
+		 * double-cleanup if core() already called SPI_finish() before
+		 * CommitTransactionCommand() threw.
+		 */
+		if (IsTransactionState())
+			AbortCurrentTransaction();
+
+		ereport(WARNING,
+				(errcode(edata->sqlerrcode),
+				 errmsg("%s", edata->message)));
+		FreeErrorData(edata);
+	}
+	PG_END_TRY();
+	MemoryContextSwitchTo(oldcontext);
+
+	return ndeleted;
+}
+
+/*
+ * spock_cleanup_resolutions_sql
+ *
+ * SQL-callable entry point.  The executor already provides an active
+ * transaction, so we call the core function directly.  Any error propagates
+ * to the caller normally — no silent transaction poisoning.
+ */
+PG_FUNCTION_INFO_V1(spock_cleanup_resolutions_sql);
+Datum
+spock_cleanup_resolutions_sql(PG_FUNCTION_ARGS)
+{
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to call spock.cleanup_resolutions()")));
+
+	if (spock_resolutions_retention_days <= 0)
+		PG_RETURN_INT64(0);
+
+	PG_RETURN_INT64((int64) spock_cleanup_resolutions_core());
 }
 
 /*

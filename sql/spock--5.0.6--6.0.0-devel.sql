@@ -177,6 +177,15 @@ SET conflict_type = CASE conflict_type
     ELSE conflict_type
 END;
 
+-- Add index on log_time to support efficient TTL-based cleanup
+CREATE INDEX ON spock.resolutions (log_time);
+
+-- Manual cleanup function for the resolutions table
+CREATE FUNCTION spock.cleanup_resolutions()
+RETURNS bigint VOLATILE
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_cleanup_resolutions_sql';
+REVOKE ALL ON FUNCTION spock.cleanup_resolutions() FROM PUBLIC;
+
 -- ----
 -- Subscription conflict statistics
 -- ----
