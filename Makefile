@@ -56,7 +56,8 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondar
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay \
 		  extended node_origin_cascade multiple_upstreams tuple_origin autoddl \
-		  sync_event sync_table generated_columns spill_transaction read_only drop
+		  sync_event sync_table generated_columns spill_transaction read_only \
+		  resolutions_retention drop
 
 # The following test cases are disabled while developing.
 #

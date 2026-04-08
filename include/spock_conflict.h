@@ -42,6 +42,7 @@ typedef enum
 extern int	spock_conflict_resolver;
 extern int	spock_conflict_log_level;
 extern bool spock_save_resolutions;
+extern int	spock_resolutions_retention_days;
 
 /*
  * We want to eventually match native PostgreSQL conflict types,
@@ -161,5 +162,6 @@ extern bool spock_conflict_resolver_check_hook(int *newval, void **extra,
 
 extern void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 								HeapTuple tuple);
+extern uint64 spock_cleanup_resolutions(void);
 
 #endif /* SPOCK_CONFLICT_H */
