@@ -1089,13 +1089,15 @@ spock_failover_slots_main(Datum main_arg)
 		 * On standby, run sync only when hot_standby_feedback is on; otherwise
 		 * use long nap so we never elog(ERROR) for hot_standby_feedback off.
 		 *
-		 * On PG17+, also skip when PostgreSQL's native slotsync worker is
-		 * active (sync_replication_slots = on), to avoid both workers
-		 * competing to synchronize the same logical slots.
+		 * On PG17+, yield entirely to PostgreSQL's native slotsync worker when
+		 * sync_replication_slots = on is configured.  IsSyncingReplicationSlots()
+		 * is process-local and would always be false here; instead we check the
+		 * exported sync_replication_slots GUC variable directly — if the DBA
+		 * has enabled the native worker, we must not compete with it.
 		 */
 		if (RecoveryInProgress() && hot_standby_feedback
 #if PG_VERSION_NUM >= 170000
-			&& !IsSyncingReplicationSlots()
+			&& !sync_replication_slots
 #endif
 			)
 			sleep_time = synchronize_failover_slots(WORKER_NAP_TIME);
