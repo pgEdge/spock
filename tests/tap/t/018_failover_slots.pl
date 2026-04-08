@@ -281,31 +281,35 @@ if ($pg_major >= 17) {
 }
 
 # ==========================================================================
-# 12. PG15/16: verify spock_failover_slots worker ran on standby
+# 12. Verify spock_failover_slots bgworker state on standby per PG version:
+#     PG15/16: worker must be running (sole sync mechanism)
+#     PG17:    worker is registered and present; it yields to native slotsync
+#              when sync_replication_slots=on but still appears in pg_stat_activity
+#     PG18+:   worker is not registered at all
 # ==========================================================================
+my $bgw_count = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
+    "SELECT count(*) FROM pg_stat_activity
+     WHERE application_name = 'spock_failover_slots worker'");
+$bgw_count =~ s/\s+//g;
+
 if ($pg_major < 17) {
-    my $wc = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
-        "SELECT count(*) FROM pg_stat_activity
-         WHERE application_name = 'spock_failover_slots worker'");
-    $wc =~ s/\s+//g;
-    ok($wc > 0,
+    ok($bgw_count > 0,
         "PG$pg_major: spock_failover_slots worker running on standby");
+} elsif ($pg_major == 17) {
+    ok($bgw_count > 0,
+        "PG17: spock_failover_slots worker registered on standby (yields to native slotsync)");
 } else {
-    pass("PG$pg_major: spock bgworker not expected on standby (native slotsync)");
+    pass("PG$pg_major: spock bgworker not expected on standby (PG18+ native slotsync only)");
 }
 
 # ==========================================================================
-# 13. PG18+: verify NO spock bgworker on standby
+# 13. PG18+: confirm no spock bgworker on standby
 # ==========================================================================
 if ($pg_major >= 18) {
-    my $wc = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
-        "SELECT count(*) FROM pg_stat_activity
-         WHERE application_name = 'spock_failover_slots worker'");
-    $wc =~ s/\s+//g;
-    is($wc, '0',
+    is($bgw_count, '0',
         "PG18+: no spock_failover_slots bgworker on standby");
 } else {
-    pass("PG$pg_major: bgworker absence check not applicable");
+    pass("PG$pg_major: bgworker absence check not applicable (< PG18)");
 }
 
 # ==========================================================================
