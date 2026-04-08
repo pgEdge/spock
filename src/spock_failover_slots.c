@@ -581,8 +581,9 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 			new_slot->confirmed_lsn = receivePtr;
 
 		if (new_slot->restart_lsn >= slot->data.restart_lsn &&
-			TransactionIdFollowsOrEquals(new_slot->catalog_xmin,
-										 MyReplicationSlot->data.catalog_xmin))
+			(!TransactionIdIsValid(new_slot->catalog_xmin) ||
+			 TransactionIdFollowsOrEquals(new_slot->catalog_xmin,
+										  MyReplicationSlot->data.catalog_xmin)))
 		{
 			remote_slot->restart_lsn = new_slot->restart_lsn;
 			remote_slot->confirmed_lsn = new_slot->confirmed_lsn;
@@ -699,8 +700,9 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * with our physical replication slot on the master.
 		 */
 		if (remote_slot->restart_lsn < MyReplicationSlot->data.restart_lsn ||
-			TransactionIdPrecedes(remote_slot->catalog_xmin,
-								  MyReplicationSlot->data.catalog_xmin))
+			(TransactionIdIsValid(remote_slot->catalog_xmin) &&
+			 TransactionIdPrecedes(remote_slot->catalog_xmin,
+								   MyReplicationSlot->data.catalog_xmin)))
 		{
 			elog(
 				 WARNING,
@@ -790,8 +792,9 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * synchronized as they will always be behind the physical slot.
 		 */
 		if (remote_slot->restart_lsn < MyReplicationSlot->data.restart_lsn ||
-			TransactionIdPrecedes(remote_slot->catalog_xmin,
-								  MyReplicationSlot->data.catalog_xmin))
+			(TransactionIdIsValid(remote_slot->catalog_xmin) &&
+			 TransactionIdPrecedes(remote_slot->catalog_xmin,
+								   MyReplicationSlot->data.catalog_xmin)))
 		{
 			if (!wait_for_primary_slot_catchup(MyReplicationSlot, remote_slot))
 			{
