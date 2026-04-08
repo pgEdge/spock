@@ -365,26 +365,20 @@ retry:
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
 
-#if PG_VERSION_NUM >= 170000
 	/*
-	 * PostgreSQL 17+ supports logical slot synchronization to physical
-	 * standbys via sync_replication_slots = on.  Mark all spock slots with
-	 * FAILOVER so the built-in slotsync worker picks them up automatically.
-	 *
-	 * PG17+ uses parenthesised option syntax for CREATE_REPLICATION_SLOT:
+	 * Mark the slot with (FAILOVER) when the *remote* provider is PG17+.
+	 * PG17+ supports logical slot synchronization to physical standbys via
+	 * sync_replication_slots = on.  PG17+ uses parenthesised option syntax:
 	 *   CREATE_REPLICATION_SLOT "name" LOGICAL plugin (FAILOVER)
 	 *
-	 * On PG17+ the caller should configure:
-	 *   Primary:  synchronized_standby_slots = '<physical_slot_name>'
-	 *   Standby:  sync_replication_slots = on
-	 *             primary_conninfo = '...'
-	 *             primary_slot_name = '<physical_slot_name>'
-	 *             hot_standby_feedback = on
+	 * We key off the regular SQL connection (sql_conn) for version detection.
+	 * Replication protocol connections (repl_conn) return 0 from PQserverVersion()
+	 * so they cannot be used for this check.
 	 */
-	appendStringInfo(&query, " (FAILOVER)");
-#else
-	/* On older versions use FAILOVER only when the remote supports it. */
-	if (use_failover_slot)
+	if (PQserverVersion(sql_conn) >= 170000)
+		appendStringInfo(&query, " (FAILOVER)");
+#if PG_VERSION_NUM < 170000
+	else if (use_failover_slot)
 		appendStringInfo(&query, " (FAILOVER)");
 #endif
 
@@ -633,16 +627,14 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	 * Create the slot via the replication protocol.  This returns a snapshot
 	 * consistent with the slot's WAL position — the correct snapshot for COPY.
 	 *
-	 * PG17+ supports logical slot synchronization to physical standbys via
-	 * sync_replication_slots = on.  Mark all spock slots with (FAILOVER) so
-	 * the built-in slotsync worker picks them up automatically.
-	 * PG17+ uses parenthesised option syntax: plugin (FAILOVER).
+	 * Mark the slot with (FAILOVER) when the remote provider is PG17+.
+	 * Use the regular SQL connection (conn) for version detection — replication
+	 * protocol connections (repl_conn) return 0 from PQserverVersion().
 	 */
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
-#if PG_VERSION_NUM >= 170000
-	appendStringInfo(&query, " (FAILOVER)");
-#endif
+	if (PQserverVersion(conn) >= 170000)
+		appendStringInfo(&query, " (FAILOVER)");
 	res = PQexec(repl_conn, query.data);
 	resetStringInfo(&query);
 
@@ -660,9 +652,8 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 			appendStringInfo(&query,
 							 "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 							 slot_name, "spock_output");
-#if PG_VERSION_NUM >= 170000
-			appendStringInfo(&query, " (FAILOVER)");
-#endif
+			if (PQserverVersion(conn) >= 170000)
+				appendStringInfo(&query, " (FAILOVER)");
 			res = PQexec(repl_conn, query.data);
 			resetStringInfo(&query);
 		}

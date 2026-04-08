@@ -40,7 +40,7 @@ SELECT pg_create_physical_replication_slot('spock_standby_slot');
 
 ### 2. Configure the primary (`postgresql.conf`)
 
-```
+```ini
 # Hold walsenders back until the standby has confirmed this LSN,
 # preventing logical subscribers from getting ahead of the standby.
 synchronized_standby_slots = 'spock_standby_slot'
@@ -48,7 +48,7 @@ synchronized_standby_slots = 'spock_standby_slot'
 
 ### 3. Configure the standby (`postgresql.conf`)
 
-```
+```ini
 sync_replication_slots = on
 primary_conninfo = 'host=<primary_host> port=5432 dbname=<dbname> user=replicator'
 primary_slot_name = 'spock_standby_slot'
@@ -95,7 +95,7 @@ on the standby and periodically copies slot state from the primary.
 
 ### Example (`postgresql.conf` on standby)
 
-```
+```ini
 hot_standby_feedback = on
 spock.synchronize_slot_names = 'name_like:%%'
 spock.drop_extra_slots = on
@@ -121,10 +121,12 @@ WHERE NOT temporary
 ORDER BY slot_name;
 ```
 
-### Check if slotsync worker is active (PG17+)
+### Check if native slotsync worker is active (PG17+)
 
 ```sql
-SELECT * FROM pg_stat_replication_slots;
+SELECT pid, wait_event_type, wait_event, state
+FROM pg_stat_activity
+WHERE backend_type = 'slot sync worker';
 ```
 
 ### Check spock worker is running (PG15/16)
