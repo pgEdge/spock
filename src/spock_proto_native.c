@@ -622,7 +622,7 @@ spock_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
 	if (spock_get_proto_version() >= 5)
 		pq_sendint64(out, GetXLogWriteRecPtr());
 
-	pq_sendbyte(out, 'M'); /* message type field */
+	pq_sendbyte(out, 'M');		/* message type field */
 
 	/* send out message contents */
 	pq_sendint32(out, xid);
@@ -742,7 +742,7 @@ RepOriginId
 spock_read_origin(StringInfo in, XLogRecPtr *origin_lsn, char **origin_name)
 {
 	uint8		flags;
-	RepOriginId	origin_id;
+	RepOriginId origin_id;
 
 	/* read the flags */
 	flags = pq_getmsgbyte(in);

@@ -26,7 +26,7 @@ typedef enum
 	SPOCK_WORKER_APPLY,			/* Apply. */
 	SPOCK_WORKER_SYNC			/* Special type of Apply that synchronizes one
 								 * table. */
-} SpockWorkerType;
+}			SpockWorkerType;
 
 typedef enum
 {
@@ -36,7 +36,7 @@ typedef enum
 	SPOCK_WORKER_STATUS_STOPPING,	/* Stopping. */
 	SPOCK_WORKER_STATUS_STOPPED,	/* Stopped. */
 	SPOCK_WORKER_STATUS_FAILED, /* Failed. */
-} SpockWorkerStatus;
+}			SpockWorkerStatus;
 
 typedef struct SpockApplyWorker
 {
