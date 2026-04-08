@@ -258,6 +258,22 @@ The following configuration values are possible:
 logs all conflict resolutions to the `spock.resolutions` table. This option
 can only be set when the postmaster starts.
 
+### `spock.resolutions_retention_days`
+
+`spock.resolutions_retention_days` controls how long rows are kept in the
+`spock.resolutions` table. Rows with a `log_time` older than this many days
+are deleted automatically by the apply worker, which runs the cleanup at most
+once per day. The default is `100` days. Set to `0` to disable automatic
+cleanup entirely.
+
+This GUC has no effect when `spock.save_resolutions` is `off`.
+
+Cleanup can also be triggered manually at any time by a superuser:
+
+```sql
+SELECT spock.cleanup_resolutions();
+```
+
 ### `spock.stats_max_entries`
 
 `spock.stats_max_entries` specifies the maximum number of entries that can
