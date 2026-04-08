@@ -140,7 +140,73 @@ FROM spock.get_subscription_stats(:test_sub_id);
 
 SELECT spock.reset_subscription_stats(:test_sub_id);
 
--- Cleanup
-TRUNCATE spock.exception_log;
+-- ============================================================
+-- Test UPDATE_EXISTS: an UPDATE from the provider violates a secondary
+-- unique constraint on the subscriber.  The apply worker detects the
+-- unique violation, logs update_exists to the PostgreSQL log, counts
+-- it in conflict stats, and records it in exception_log.
+-- Default exception_behaviour is TRANSDISCARD: the worker errors on
+-- the first attempt, restarts, replays read-only logging each failing
+-- row to exception_log, then advances the LSN.
+-- ============================================================
+
 \c :provider_dsn
+
+-- Create a table with a secondary unique index
+SELECT spock.replicate_ddl($$
+	CREATE TABLE public.conflict_ue_test (
+		id integer PRIMARY KEY,
+		uval integer NOT NULL,
+		data text
+	);
+	CREATE UNIQUE INDEX conflict_ue_test_uval_idx
+		ON public.conflict_ue_test (uval);
+$$);
+
+SELECT * FROM spock.repset_add_table('default', 'conflict_ue_test');
+
+-- Seed rows on both sides via replication
+INSERT INTO conflict_ue_test VALUES (1, 100, 'row1');
+INSERT INTO conflict_ue_test VALUES (2, 200, 'row2');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+
+-- Insert a row only on the subscriber to set up the conflict
+INSERT INTO conflict_ue_test VALUES (3, 300, 'sub_only');
+SELECT * FROM conflict_ue_test ORDER BY id;
+
+-- Reset stats
+SELECT spock.reset_subscription_stats(:test_sub_id);
+TRUNCATE spock.exception_log;
+
+\c :provider_dsn
+
+-- This UPDATE sets uval=300 on row id=2.  It succeeds on the provider
+-- (no row with uval=300 here), but on the subscriber row id=3 already
+-- has uval=300, so the secondary unique index is violated.
+UPDATE conflict_ue_test SET uval = 300, data = 'should_conflict' WHERE id = 2;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+
+-- Row id=2 should still have its original value (update was discarded)
+SELECT * FROM conflict_ue_test ORDER BY id;
+
+-- The conflict should be logged in exception_log
+SELECT operation, table_name FROM spock.exception_log;
+
+-- Verify UPDATE_EXISTS counter incremented
+SELECT confl_update_exists
+FROM spock.get_subscription_stats(:test_sub_id);
+
+SELECT spock.reset_subscription_stats(:test_sub_id);
+TRUNCATE spock.exception_log;
+
+-- Cleanup
+\c :provider_dsn
+SELECT spock.replicate_ddl($$ DROP TABLE public.conflict_ue_test CASCADE; $$);
+
+-- Cleanup original test table
+TRUNCATE spock.exception_log;
 SELECT spock.replicate_ddl($$ DROP TABLE public.conflict_stat_test CASCADE; $$);
