@@ -68,7 +68,7 @@ forward_origins
     Controls which changes to replicate based on their origin. Use '{}' to
     only replicate changes originating on the provider (useful for
     bidirectional replication). Use {all} to replicate all changes
-    regardless of origin. Default is '{}'.
+    regardless of origin. The default is `{}` (an empty array, meaning only local changes are forwarded).
 
 apply_delay
 
