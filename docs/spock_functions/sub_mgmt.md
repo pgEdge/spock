@@ -48,7 +48,7 @@ Parameters include:
   only supported values are an empty array meaning don't forward any changes
   that didn't originate on provider node (this is useful for two-way
   replication between the nodes), or `{all}` which means replicate all changes
-  no matter what is their origin. The default is `{all}`.
+  no matter what is their origin. The default is `{}` (an empty array, meaning only local changes are forwarded).
 - `apply_delay` specifies how long to delay replication; the default is `0`
   seconds.
 - set `force_text_transfer` to `true` to force the provider to replicate all
@@ -123,7 +123,7 @@ Parameters:
   only supported values are an empty array meaning don't forward any changes
   that didn't originate on the provider node (this is useful for two-way
   replication between the nodes), or `{all}` which means replicate all
-  changes regardless of their origin. The default is `{all}`.
+  changes regardless of their origin. The default is `{}` (an empty array, meaning only local changes are forwarded).
 - `apply_delay` is the number of seconds to delay replication; the default
   is `0` seconds.
 - `force_text_transfer` forces the provider to replicate all columns using

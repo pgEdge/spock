@@ -1,10 +1,10 @@
 ## NAME
 
-spock.spock_max_proto_version()
+spock_max_proto_version()
 
 ### SYNOPSIS
 
-spock.spock_max_proto_version()
+spock_max_proto_version()
 
 ### RETURNS
 
@@ -40,7 +40,7 @@ This function takes no arguments.
 The following command shows that the current version of Spock uses protocol
 version 4:
 
-    postgres=# SELECT spock.spock_max_proto_version();
+    postgres=# SELECT spock_max_proto_version();
      spock_max_proto_version
     -------------------------
                            4
