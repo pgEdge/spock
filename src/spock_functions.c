@@ -947,6 +947,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 	JsonbIterator *it;
 	JsonbIteratorToken r;
 	JsonbValue	v;
+	bool		changed = false;
 
 	/* XXX: Only used for locking purposes. */
 	(void) get_local_node(true, false);
@@ -984,20 +985,33 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 			while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_END_ARRAY)
 			{
+				char   *elem;
+
 				if (r != WJB_ELEM || v.type != jbvString)
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("option \"%s\" must contain only strings",
 									key)));
-				/* TODO: further commits should perform a precheck of the input */
-				result = lappend(result,
-								 pnstrdup(v.val.string.val, v.val.string.len));
+
+				elem = pnstrdup(v.val.string.val, v.val.string.len);
+
+				/* forward_origins only accepts the sentinel value "all" */
+				if (strcmp(key, "forward_origins") == 0 &&
+					strcmp(elem, "all") != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("invalid value \"%s\" for option \"forward_origins\"",
+									elem),
+							 errhint("The only supported value is \"all\".")));
+
+				result = lappend(result, elem);
 			}
 
 			if (strcmp(key, "forward_origins") == 0)
 				sub->forward_origins = result;
 			else
 				sub->skip_schema = result;
+			changed = true;
 		}
 		else if (strcmp(key, "apply_delay") == 0)
 		{
@@ -1015,6 +1029,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 									CStringGetDatum(delay_str),
 									ObjectIdGetDatum(InvalidOid),
 									Int32GetDatum(-1)));
+			changed = true;
 		}
 		else
 		{
@@ -1026,9 +1041,10 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 		}
 	}
 
-	alter_subscription(sub);
+	if (changed)
+		alter_subscription(sub);
 
-	PG_RETURN_BOOL(true);
+	PG_RETURN_BOOL(changed);
 }
 
 /*
