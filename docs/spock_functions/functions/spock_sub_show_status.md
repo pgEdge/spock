@@ -1,19 +1,40 @@
-## NAME
+# spock.sub_show_status
 
-`spock.sub_show_status()`
+The `spock.sub_show_status()` function displays the status and basic
+information about a subscription.
 
-### SYNOPSIS
+## Synopsis
 
-`spock.sub_show_status (subscription_name name)`
- 
-### DESCRIPTION
+```sql
+spock.sub_show_status(subscription_name name)
+```
 
-Show the status and basic information of a subscription. 
+## Description
 
-### EXAMPLE
+The `spock.sub_show_status()` function shows the status and basic information
+about a subscription.
 
-`spock.sub_show_status ('sub_n2n1')`
- 
-### ARGUMENTS
-    subscription_name
-        The optional name of the existing subscription.  If no name is provided, the function will show status for all subscriptions on the local node.
+## Arguments
+
+The function accepts the following argument:
+
+- `subscription_name` - The optional name of an existing subscription. If no
+  name is provided, the function shows the status for all subscriptions on the
+  local node.
+
+## Example
+
+In the following example, the `spock.sub_show_status()` function displays the
+status of a subscription named `sub_n1_n2`:
+
+```sql
+SELECT * FROM spock.sub_show_status('sub_n1_n2');
+-[ RECORD 1 ]-----+--------------------------------------------------------------------
+subscription_name | sub_n1_n2
+status            | replicating
+provider_node     | n2
+provider_dsn      | host=192.168.105.11 dbname=postgres user=postgres password=password
+slot_name         | spk_postgres_n2_sub_n1
+replication_sets  | {default,default_insert_only,ddl_sql,audit_only}
+forward_origins   |
+```

@@ -12,12 +12,12 @@ Advances the replication position of an existing subscription to the specified L
 
 This command must be executed by a superuser.
 
-### EXAMPLE
-
-`SELECT spock.sub_alter_skiplsn('sub_n1_to_n2', '0/16B6A50');`
-
 ### ARGUMENTS
     subscription_name
         The name of an existing subscription.
     lsn
         The Log Sequence Number to which the subscription should advance.
+
+### EXAMPLE
+
+`SELECT spock.sub_alter_skiplsn('sub_n1_to_n2', '0/16B6A50');`

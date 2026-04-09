@@ -105,47 +105,126 @@ CREATE TABLE spock.progress (
 	PRIMARY KEY(node_id, remote_node_id)
 ) WITH (fillfactor=50);
 
-CREATE FUNCTION spock.node_create(node_name name, dsn text,
-    location text DEFAULT NULL, country text DEFAULT NULL,
-    info jsonb DEFAULT NULL)
-RETURNS oid CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_node';
-CREATE FUNCTION spock.node_drop(node_name name, ifexists boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_node';
+CREATE FUNCTION spock.node_create(
+  node_name name,
+  dsn       text,
+  location  text DEFAULT NULL,
+  country   text DEFAULT NULL,
+  info      jsonb DEFAULT NULL
+)
+RETURNS oid CALLED ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_create_node'
+LANGUAGE C VOLATILE;
 
-CREATE FUNCTION spock.node_add_interface(node_name name, interface_name name, dsn text)
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_add_interface';
-CREATE FUNCTION spock.node_drop_interface(node_name name, interface_name name)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface';
+CREATE FUNCTION spock.node_drop(
+  node_name name,
+  ifexists  boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_drop_node'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
-    replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
-    synchronize_data boolean = false, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
-    force_text_transfer boolean = false,
-	enabled boolean = true)
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
-CREATE FUNCTION spock.sub_drop(subscription_name name, ifexists boolean DEFAULT false)
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_subscription';
+CREATE FUNCTION spock.node_add_interface(
+  node_name      name,
+  interface_name name,
+  dsn            text
+)
+RETURNS oid
+AS 'MODULE_PATHNAME', 'spock_alter_node_add_interface'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.sub_alter_interface(subscription_name name, interface_name name)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_interface';
+CREATE FUNCTION spock.node_drop_interface(
+  node_name      name,
+  interface_name name
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.sub_disable(subscription_name name, immediate boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_disable';
-CREATE FUNCTION spock.sub_enable(subscription_name name, immediate boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_enable';
+CREATE FUNCTION spock.sub_create(
+  subscription_name     name,
+  provider_dsn          text,
+  replication_sets      text[]   DEFAULT '{default,default_insert_only,ddl_sql}',
+  synchronize_structure boolean  DEFAULT false,
+  synchronize_data      boolean  DEFAULT false,
+  forward_origins       text[]   DEFAULT '{}',
+  apply_delay           interval DEFAULT '0',
+  force_text_transfer   boolean  DEFAULT false,
+  enabled               boolean  DEFAULT true
+)
+RETURNS oid
+AS 'MODULE_PATHNAME', 'spock_create_subscription'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.sub_add_repset(subscription_name name, replication_set name)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_add_replication_set';
-CREATE FUNCTION spock.sub_remove_repset(subscription_name name, replication_set name)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_remove_replication_set';
-CREATE FUNCTION spock.sub_alter_skiplsn(subscription_name name, lsn pg_lsn)
-	RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_skip_lsn';
+CREATE FUNCTION spock.sub_drop(
+  subscription_name name,
+  ifexists          boolean DEFAULT false
+)
+RETURNS oid
+AS 'MODULE_PATHNAME', 'spock_drop_subscription'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.sub_show_status(subscription_name name DEFAULT NULL,
-    OUT subscription_name text, OUT status text, OUT provider_node text,
-    OUT provider_dsn text, OUT slot_name text, OUT replication_sets text[],
-    OUT forward_origins text[])
-RETURNS SETOF record STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_subscription_status';
+CREATE FUNCTION spock.sub_alter_interface(
+  subscription_name name,
+  interface_name    name
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_interface'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.sub_disable(
+  subscription_name name,
+  immediate         boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_disable'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.sub_enable(
+  subscription_name name,
+  immediate         boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_enable'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.sub_add_repset(
+  subscription_name name,
+  replication_set   name
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_add_replication_set'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.sub_remove_repset(
+  subscription_name name,
+  replication_set   name
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_remove_replication_set'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.sub_alter_skiplsn(
+  subscription_name name,
+  lsn               pg_lsn
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_skip_lsn'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.sub_show_status(
+  subscription_name name DEFAULT NULL,
+  OUT subscription_name text,
+  OUT status text,
+  OUT provider_node text,
+  OUT provider_dsn text,
+  OUT slot_name text,
+  OUT replication_sets text[],
+  OUT forward_origins text[]
+)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'spock_show_subscription_status'
+LANGUAGE C STABLE;
 
 CREATE TABLE spock.replication_set (
     set_id oid NOT NULL PRIMARY KEY,
@@ -255,58 +334,167 @@ CREATE VIEW spock.TABLES AS
       FROM user_tables t
      WHERE t.oid NOT IN (SELECT set_reloid FROM set_relations);
 
-CREATE FUNCTION spock.repset_create(set_name name,
-    replicate_insert boolean = true, replicate_update boolean = true,
-    replicate_delete boolean = true, replicate_truncate boolean = true)
-RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_replication_set';
-CREATE FUNCTION spock.repset_alter(set_name name,
-    replicate_insert boolean DEFAULT NULL, replicate_update boolean DEFAULT NULL,
-    replicate_delete boolean DEFAULT NULL, replicate_truncate boolean DEFAULT NULL)
-RETURNS oid CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_replication_set';
-CREATE FUNCTION spock.repset_drop(set_name name, ifexists boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_replication_set';
+CREATE FUNCTION spock.repset_create(
+  set_name           name,
+  replicate_insert   boolean DEFAULT true,
+  replicate_update   boolean DEFAULT true,
+  replicate_delete   boolean DEFAULT true,
+  replicate_truncate boolean DEFAULT true
+)
+RETURNS oid
+AS 'MODULE_PATHNAME', 'spock_create_replication_set'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.repset_add_table(set_name name, relation regclass, synchronize_data boolean DEFAULT false,
-	columns text[] DEFAULT NULL, row_filter text DEFAULT NULL, include_partitions boolean default true)
-RETURNS boolean CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_table';
-CREATE FUNCTION spock.repset_add_all_tables(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_tables';
-CREATE FUNCTION spock.repset_remove_table(set_name name, relation regclass, include_partitions boolean default true)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_table';
+CREATE FUNCTION spock.repset_alter(
+  set_name           name,
+  replicate_insert   boolean DEFAULT NULL,
+  replicate_update   boolean DEFAULT NULL,
+  replicate_delete   boolean DEFAULT NULL,
+  replicate_truncate boolean DEFAULT NULL
+)
+RETURNS oid CALLED ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_alter_replication_set'
+LANGUAGE C VOLATILE;
 
-CREATE FUNCTION spock.repset_add_seq(set_name name, relation regclass, synchronize_data boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_sequence';
-CREATE FUNCTION spock.repset_add_all_seqs(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_sequences';
-CREATE FUNCTION spock.repset_remove_seq(set_name name, relation regclass)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_sequence';
+CREATE FUNCTION spock.repset_drop(
+  set_name name,
+  ifexists boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_drop_replication_set'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.repset_add_partition(parent regclass, partition regclass default NULL,
-    row_filter text default NULL)
-RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_partition';
+CREATE FUNCTION spock.repset_add_table(
+  set_name           name,
+  relation           regclass,
+  synchronize_data   boolean DEFAULT false,
+  columns            text[]  DEFAULT NULL,
+  row_filter         text    DEFAULT NULL,
+  include_partitions boolean DEFAULT true
+)
+RETURNS boolean CALLED ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_replication_set_add_table'
+LANGUAGE C VOLATILE;
 
-CREATE FUNCTION spock.repset_remove_partition(parent regclass, partition regclass default NULL)
-RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_partition';
+CREATE FUNCTION spock.repset_add_all_tables(
+  set_name         name,
+  schema_names     text[],
+  synchronize_data boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_tables'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.sub_alter_sync(subscription_name name, truncate boolean DEFAULT false)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';
+CREATE FUNCTION spock.repset_remove_table(
+  set_name           name,
+  relation           regclass,
+  include_partitions boolean DEFAULT true
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_replication_set_remove_table'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.sub_resync_table(subscription_name name, relation regclass,
-	truncate boolean DEFAULT true)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table';
+CREATE FUNCTION spock.repset_add_seq(
+  set_name         name,
+  relation         regclass,
+  synchronize_data boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_replication_set_add_sequence'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.sync_seq(relation regclass)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_synchronize_sequence';
+CREATE FUNCTION spock.repset_add_all_seqs(
+  set_name         name,
+  schema_names     text[],
+  synchronize_data boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_sequences'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.table_data_filtered(reltyp anyelement, relation regclass, repsets text[])
-RETURNS SETOF anyelement CALLED ON NULL INPUT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_table_data_filtered';
+CREATE FUNCTION spock.repset_remove_seq(
+  set_name name,
+  relation regclass
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_replication_set_remove_sequence'
+LANGUAGE C STRICT VOLATILE;
 
-CREATE FUNCTION spock.repset_show_table(relation regclass, repsets text[], OUT relid oid, OUT nspname text,
-	OUT relname text, OUT att_list text[], OUT has_row_filter boolean, OUT relkind "char", OUT relispartition boolean)
-RETURNS record STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_repset_table_info';
+CREATE FUNCTION spock.repset_add_partition(
+  parent     regclass,
+  partition  regclass DEFAULT NULL,
+  row_filter text     DEFAULT NULL
+)
+RETURNS int CALLED ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_replication_set_add_partition'
+LANGUAGE C VOLATILE;
 
-CREATE FUNCTION spock.sub_show_table(subscription_name name, relation regclass, OUT nspname text, OUT relname text, OUT status text)
-RETURNS record STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_subscription_table';
+CREATE FUNCTION spock.repset_remove_partition(
+  parent    regclass,
+  partition regclass DEFAULT NULL
+)
+RETURNS int CALLED ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_replication_set_remove_partition'
+LANGUAGE C VOLATILE;
+
+CREATE FUNCTION spock.sub_alter_sync(
+  subscription_name name,
+  truncate          boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.sub_resync_table(
+  subscription_name name,
+  relation          regclass,
+  truncate          boolean DEFAULT true
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.sync_seq(
+  relation regclass
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_synchronize_sequence'
+LANGUAGE C STRICT VOLATILE;
+
+CREATE FUNCTION spock.table_data_filtered(
+  reltyp   anyelement,
+  relation regclass,
+  repsets  text[]
+)
+RETURNS SETOF anyelement CALLED ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_table_data_filtered'
+LANGUAGE C STABLE;
+
+CREATE FUNCTION spock.repset_show_table(
+  relation           regclass,
+  repsets            text[],
+  OUT relid          oid,
+  OUT nspname        text,
+  OUT relname        text,
+  OUT att_list       text[],
+  OUT has_row_filter boolean,
+  OUT relkind        "char",
+  OUT relispartition boolean
+)
+RETURNS record
+AS 'MODULE_PATHNAME', 'spock_show_repset_table_info'
+LANGUAGE C STRICT STABLE;
+
+CREATE FUNCTION spock.sub_show_table(
+  subscription_name name,
+  relation          regclass,
+  OUT nspname       text,
+  OUT relname       text,
+  OUT status        text
+)
+RETURNS record
+AS 'MODULE_PATHNAME', 'spock_show_subscription_table'
+LANGUAGE C STRICT STABLE;
 
 CREATE TABLE spock.queue (
     queued_at timestamp with time zone NOT NULL,
@@ -316,11 +504,15 @@ CREATE TABLE spock.queue (
     message json NOT NULL
 );
 
-CREATE FUNCTION spock.replicate_ddl(command text,
-									replication_sets text[] DEFAULT '{ddl_sql}',
-									search_path text DEFAULT '',
-									role text DEFAULT CURRENT_USER)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
+CREATE FUNCTION spock.replicate_ddl(
+  command          text,
+  replication_sets text[] DEFAULT '{ddl_sql}',
+  search_path      text   DEFAULT '',
+  role             text   DEFAULT CURRENT_USER
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command'
+LANGUAGE C STRICT VOLATILE;
 
 CREATE FUNCTION spock.replicate_ddl(command text[],
 									replication_sets text[] DEFAULT '{ddl_sql}',
@@ -329,44 +521,76 @@ CREATE FUNCTION spock.replicate_ddl(command text[],
 RETURNS SETOF boolean STRICT VOLATILE LANGUAGE sql AS
     'SELECT spock.replicate_ddl(cmd, $2, $3, $4) FROM (SELECT unnest(command) cmd)';
 
-CREATE FUNCTION spock.node_info(OUT node_id oid, OUT node_name text,
-    OUT sysid text, OUT dbname text, OUT replication_sets text,
-    OUT location text, OUT country text, OUT info jsonb)
+CREATE FUNCTION spock.node_info(
+  OUT node_id oid,
+  OUT node_name text,
+  OUT sysid text,
+  OUT dbname text,
+  OUT replication_sets text,
+  OUT location text,
+  OUT country text,
+  OUT info jsonb
+)
 RETURNS record
-STABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME', 'spock_node_info';
+AS 'MODULE_PATHNAME', 'spock_node_info'
+LANGUAGE C STABLE STRICT;
 
 CREATE FUNCTION spock.spock_gen_slot_name(name, name, name)
 RETURNS name
-IMMUTABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME';
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION spock_version() RETURNS text
-LANGUAGE c AS 'MODULE_PATHNAME';
+CREATE FUNCTION spock_version()
+RETURNS text
+AS 'MODULE_PATHNAME'
+LANGUAGE C;
 
-CREATE FUNCTION spock_version_num() RETURNS integer
-LANGUAGE c AS 'MODULE_PATHNAME';
+CREATE FUNCTION spock_version_num()
+RETURNS integer
+AS 'MODULE_PATHNAME'
+LANGUAGE C;
 
-CREATE FUNCTION spock_max_proto_version() RETURNS integer
-LANGUAGE c AS 'MODULE_PATHNAME';
+CREATE FUNCTION spock_max_proto_version()
+RETURNS integer
+AS 'MODULE_PATHNAME'
+LANGUAGE C;
 
-CREATE FUNCTION spock_min_proto_version() RETURNS integer
-LANGUAGE c AS 'MODULE_PATHNAME';
+CREATE FUNCTION spock_min_proto_version()
+RETURNS integer
+AS 'MODULE_PATHNAME'
+LANGUAGE C;
 
 CREATE FUNCTION spock.get_country() RETURNS text
 LANGUAGE sql AS
 $$ SELECT current_setting('spock.country') $$;
 
-CREATE FUNCTION
-spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
-RETURNS void LANGUAGE c AS 'spock','spock_wait_slot_confirm_lsn';
+CREATE FUNCTION spock.wait_slot_confirm_lsn(
+  slotname name,
+  target   pg_lsn
+)
+RETURNS void
+AS 'spock', 'spock_wait_slot_confirm_lsn'
+LANGUAGE C;
 
-CREATE FUNCTION spock.sub_wait_for_sync(subscription_name name)
-RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete';
+CREATE FUNCTION spock.sub_wait_for_sync(
+  subscription_name name
+)
+RETURNS void RETURNS NULL ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete'
+LANGUAGE C VOLATILE;
 
-CREATE FUNCTION spock.table_wait_for_sync(subscription_name name, relation regclass)
-RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete';
+CREATE FUNCTION spock.table_wait_for_sync(
+  subscription_name name,
+  relation          regclass
+)
+RETURNS void RETURNS NULL ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete'
+LANGUAGE C VOLATILE;
 
 CREATE FUNCTION spock.sync_event()
-RETURNS pg_lsn RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_sync_event';
+RETURNS pg_lsn RETURNS NULL ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_create_sync_event'
+LANGUAGE C VOLATILE;
 
 CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin_id oid, lsn pg_lsn, timeout int DEFAULT 0)
 AS $$
@@ -434,22 +658,32 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE FUNCTION spock.xact_commit_timestamp_origin("xid" xid, OUT "timestamp" timestamptz, OUT "roident" oid)
-RETURNS record RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_xact_commit_timestamp_origin';
+CREATE FUNCTION spock.xact_commit_timestamp_origin(
+  "xid"           xid,
+  OUT "timestamp" timestamptz,
+  OUT "roident"   oid
+)
+RETURNS record RETURNS NULL ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_xact_commit_timestamp_origin'
+LANGUAGE C VOLATILE;
 
 CREATE FUNCTION spock.get_channel_stats(
-    OUT subid oid,
-	OUT relid oid,
-    OUT n_tup_ins bigint,
-    OUT n_tup_upd bigint,
-    OUT n_tup_del bigint,
-	OUT n_conflict bigint,
-	OUT n_dca bigint)
+  OUT subid      oid,
+  OUT relid      oid,
+  OUT n_tup_ins  bigint,
+  OUT n_tup_upd  bigint,
+  OUT n_tup_del  bigint,
+  OUT n_conflict bigint,
+  OUT n_dca      bigint
+)
 RETURNS SETOF record
-LANGUAGE c AS 'MODULE_PATHNAME', 'get_channel_stats';
+AS 'MODULE_PATHNAME', 'get_channel_stats'
+LANGUAGE C;
 
-CREATE FUNCTION spock.reset_channel_stats() RETURNS void
-LANGUAGE c AS 'MODULE_PATHNAME', 'reset_channel_stats';
+CREATE FUNCTION spock.reset_channel_stats()
+RETURNS void
+AS 'MODULE_PATHNAME', 'reset_channel_stats'
+LANGUAGE C;
 
 CREATE VIEW spock.channel_table_stats AS
   SELECT H.subid, H.relid,
@@ -513,9 +747,10 @@ CREATE  AGGREGATE spock.md5_agg (ORDER BY anyelement)
 -- ----------------------------------------------------------------------
 -- Spock Read Only
 -- ----------------------------------------------------------------------
-CREATE FUNCTION spock.terminate_active_transactions() RETURNS bool
- AS 'MODULE_PATHNAME', 'spockro_terminate_active_transactions'
- LANGUAGE C STRICT;
+CREATE FUNCTION spock.terminate_active_transactions()
+RETURNS bool
+AS 'MODULE_PATHNAME', 'spockro_terminate_active_transactions'
+LANGUAGE C STRICT;
 
 -- ----------------------------------------------------------------------
 -- We check the PostgreSQL major version number in case a future
@@ -716,40 +951,64 @@ $version_dependent$ LANGUAGE plpgsql;
 -- Generic delta apply functions for all numeric data types
 -- ----
 CREATE FUNCTION spock.delta_apply(int2, int2, int2)
-RETURNS int2 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int2';
+RETURNS int2
+AS 'MODULE_PATHNAME', 'delta_apply_int2'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(int4, int4, int4)
-RETURNS int4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int4';
+RETURNS int4
+AS 'MODULE_PATHNAME', 'delta_apply_int4'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(int8, int8, int8)
-RETURNS int8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int8';
+RETURNS int8
+AS 'MODULE_PATHNAME', 'delta_apply_int8'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(float4, float4, float4)
-RETURNS float4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float4';
+RETURNS float4
+AS 'MODULE_PATHNAME', 'delta_apply_float4'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(float8, float8, float8)
-RETURNS float8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float8';
+RETURNS float8
+AS 'MODULE_PATHNAME', 'delta_apply_float8'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(numeric, numeric, numeric)
-RETURNS numeric LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_numeric';
+RETURNS numeric
+AS 'MODULE_PATHNAME', 'delta_apply_numeric'
+LANGUAGE C;
 CREATE FUNCTION spock.delta_apply(money, money, money)
-RETURNS money LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_money';
+RETURNS money
+AS 'MODULE_PATHNAME', 'delta_apply_money'
+LANGUAGE C;
 
 -- ----
 -- Function to control REPAIR mode
 -- ----
-CREATE FUNCTION spock.repair_mode(enabled bool)
-RETURNS pg_catalog.pg_lsn LANGUAGE c
-AS 'MODULE_PATHNAME', 'spock_repair_mode';
+CREATE FUNCTION spock.repair_mode(
+  enabled bool
+)
+RETURNS pg_catalog.pg_lsn
+AS 'MODULE_PATHNAME', 'spock_repair_mode'
+LANGUAGE C;
 
 -- ----
 -- Function to determine LSN from commit timestamp
 -- ----
-CREATE FUNCTION spock.get_lsn_from_commit_ts(slot_name name, commit_ts timestamptz)
-RETURNS pg_lsn STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_lsn_from_commit_ts';
+CREATE FUNCTION spock.get_lsn_from_commit_ts(
+  slot_name name,
+  commit_ts timestamptz
+)
+RETURNS pg_lsn
+AS 'MODULE_PATHNAME', 'spock_get_lsn_from_commit_ts'
+LANGUAGE C STRICT VOLATILE;
 
 CREATE OR REPLACE FUNCTION spock.get_apply_worker_status(
-    OUT worker_pid bigint, -- Changed from int to bigint
-    OUT worker_dboid int,
-    OUT worker_subid bigint,
-    OUT worker_status text
+  OUT worker_pid    bigint, -- Changed from int to bigint
+  OUT worker_dboid  int,
+  OUT worker_subid  bigint,
+  OUT worker_status text
 )
-RETURNS SETOF record STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'get_apply_worker_status';
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'get_apply_worker_status'
+LANGUAGE C STABLE;
 
 CREATE FUNCTION spock.wait_for_apply_worker(p_subbid bigint, timeout int DEFAULT 0)
 RETURNS boolean
