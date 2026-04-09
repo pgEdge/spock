@@ -414,3 +414,11 @@ BEGIN
 	CALL spock.wait_for_sync_event(result, origin_id, lsn, timeout, wait_if_disabled);
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE FUNCTION spock.sub_alter_options(
+  subscription_name name,
+  options           jsonb
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
+LANGUAGE C STRICT VOLATILE;

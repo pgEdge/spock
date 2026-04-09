@@ -262,6 +262,14 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_su
 CREATE FUNCTION spock.sub_alter_skiplsn(subscription_name name, lsn pg_lsn)
 	RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_skip_lsn';
 
+CREATE FUNCTION spock.sub_alter_options(
+  subscription_name name,
+  options           jsonb
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
+LANGUAGE C STRICT VOLATILE;
+
 CREATE FUNCTION spock.sub_show_status(
   subscription_name     name DEFAULT NULL,
   OUT subscription_name text,
