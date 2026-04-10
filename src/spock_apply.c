@@ -218,6 +218,9 @@ static dlist_head sync_replica_lsn = DLIST_STATIC_INIT(sync_replica_lsn);
 static XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
 #define is_skipping_changes() (unlikely(!XLogRecPtrIsInvalid(skip_xact_finish_lsn)))
 
+/* How often the apply worker runs spock_cleanup_resolutions() (milliseconds). */
+#define RESOLUTIONS_CLEANUP_INTERVAL_MS (86400L * 1000L)
+
 /*
  * Whereas MessageContext is used for the duration of a transaction,
  * ApplyOperationContext can be used for individual operations
@@ -2947,6 +2950,7 @@ apply_work(PGconn *streamConn)
 	XLogRecPtr	last_received = InvalidXLogRecPtr;
 	XLogRecPtr	last_inserted = InvalidXLogRecPtr;
 	TimestampTz last_receive_timestamp = GetCurrentTimestamp();
+	TimestampTz last_cleanup_timestamp = 0;
 	bool		need_replay;
 	ErrorData  *edata = NULL;
 
@@ -3047,6 +3051,26 @@ stream_replay:
 					elog(ERROR, "SPOCK %s: no data received for %d seconds, "
 						 "reconnecting (spock.apply_idle_timeout)",
 						 MySubscription->name, spock_apply_idle_timeout);
+				}
+			}
+
+			/*
+			 * Periodically clean up old rows from spock.resolutions.  We run
+			 * at most once per day regardless of whether the worker is idle
+			 * or processing traffic.  spock_cleanup_resolutions() manages its
+			 * own transaction and error handling.
+			 */
+			if (!IsTransactionState() &&
+				spock_resolutions_retention_days > 0)
+			{
+				TimestampTz cleanup_due;
+
+				cleanup_due = TimestampTzPlusMilliseconds(last_cleanup_timestamp,
+														  RESOLUTIONS_CLEANUP_INTERVAL_MS);
+				if (GetCurrentTimestamp() >= cleanup_due)
+				{
+					spock_cleanup_resolutions();
+					last_cleanup_timestamp = GetCurrentTimestamp();
 				}
 			}
 
