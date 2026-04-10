@@ -115,6 +115,15 @@ SELECT * FROM pk_users ORDER BY id;
 \c :provider_dsn
 \set VERBOSITY terse
 
+-- Ensure all prior DML (including the rows that create the duplicate on the
+-- subscriber) has been applied before issuing the DDL.  Without this, delays
+-- in the apply worker may cause the subscriber to receive CREATE UNIQUE INDEX
+-- before the conflicting row exists, making it succeed instead of fail.
+SELECT spock.sync_event() AS sync_lsn \gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 60);
+
+\c :provider_dsn
 SELECT quote_literal(pg_current_wal_lsn()) as curr_lsn
 \gset
 
@@ -125,8 +134,6 @@ ALTER TABLE public.pk_users DROP CONSTRAINT pk_users_pkey,
 $$);
 
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;
-
-SELECT spock.wait_slot_confirm_lsn(NULL, :curr_lsn);
 
 \c :subscriber_dsn
 SELECT attname, attnotnull, attisdropped from pg_attribute where attrelid = 'pk_users'::regclass and attnum > 0 order by attnum;

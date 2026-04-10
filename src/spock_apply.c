@@ -84,6 +84,7 @@
 #include "spock_common.h"
 #include "spock_readonly.h"
 #include "spock.h"
+#include "spock_injection.h"
 
 
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
@@ -549,6 +550,8 @@ handle_begin(StringInfo s)
 	bool		slot_found = false;
 	int			sub_name_len = strlen(MySubscription->name);
 	char	   *slot_name;
+
+	SPOCK_WORKER_DELAY();
 
 	/*
 	 * To get here we must have connected successfully and the replication

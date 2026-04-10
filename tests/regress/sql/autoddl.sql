@@ -76,14 +76,18 @@ SELECT spock.delta_apply('slabel1', 'z'); -- ERROR
 SELECT spock.delta_apply('slabel1', 'x'); -- repeating call do nothing
 SELECT objname, label FROM pg_seclabels;
 
--- Short round trip to check that subscriber has the security label
+-- Wait for the apply worker to process the security label before checking.
+SELECT spock.sync_event() AS sync_lsn \gset
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 60);
 SELECT objname, label FROM pg_seclabels;
 \c :provider_dsn
 
 SELECT spock.delta_apply('slabel1', 'x', true);
--- Short round trip to check that subscriber has removed the security label too
+-- Wait for the apply worker to process the removal before checking.
+SELECT spock.sync_event() AS sync_lsn \gset
 \c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 60);
 SELECT objname, label FROM pg_seclabels;
 \c :provider_dsn
 

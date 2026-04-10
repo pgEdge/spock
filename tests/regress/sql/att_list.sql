@@ -136,3 +136,9 @@ SELECT * FROM basic_dml ORDER BY id;
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.basic_dml CASCADE;
 $$);
+
+-- Sync subscription here explicitly: in case following test utilises this
+-- table, subscriber will have guarantees that this DROP has been applied.
+SELECT spock.sync_event() AS sync_lsn \gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 60);
