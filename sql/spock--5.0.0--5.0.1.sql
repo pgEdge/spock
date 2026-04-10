@@ -12,8 +12,12 @@ BEGIN
     END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION spock.replicate_ddl(command text,
-                                    replication_sets text[] DEFAULT '{ddl_sql}',
-                                    search_path text DEFAULT current_setting('search_path'),
-                                    role text DEFAULT CURRENT_USER)
-RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
+CREATE OR REPLACE FUNCTION spock.replicate_ddl(
+  command          text,
+  replication_sets text[] DEFAULT '{ddl_sql}',
+  search_path      text   DEFAULT current_setting('search_path'),
+  role             text   DEFAULT CURRENT_USER
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command'
+LANGUAGE C STRICT VOLATILE;
