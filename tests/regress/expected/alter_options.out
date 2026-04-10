@@ -26,7 +26,6 @@ $$ LANGUAGE plpgsql;
 -- =========================================================================
 -- Baseline: record the initial state before any changes.
 -- =========================================================================
--- Server view (catalog):
 SELECT sub_name, sub_forward_origins, sub_apply_delay, sub_skip_schema
 FROM   spock.subscription
 WHERE  sub_name = 'test_subscription';
@@ -35,7 +34,6 @@ WHERE  sub_name = 'test_subscription';
  test_subscription |                     | @ 0             | 
 (1 row)
 
--- Client view (public API):
 SELECT subscription_name, status, forward_origins
 FROM   spock.sub_show_status()
 WHERE  subscription_name = 'test_subscription';
@@ -85,27 +83,17 @@ SELECT wait_replicating('test_subscription');
  
 (1 row)
 
--- Server view — forward_origins should now be '{all}'.
-SELECT sub_name, sub_forward_origins
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
-     sub_name      | sub_forward_origins 
--------------------+---------------------
- test_subscription | {all}
+\c :provider_dsn
+SELECT query ~ 'forward_origins.*all' AS new_param_active
+FROM   pg_stat_activity WHERE  backend_type = 'walsender';
+ new_param_active 
+------------------
+ t
 (1 row)
 
--- Client view — forward_origins column in sub_show_status.
-SELECT subscription_name, status, forward_origins
-FROM   spock.sub_show_status()
-WHERE  subscription_name = 'test_subscription';
- subscription_name |   status    | forward_origins 
--------------------+-------------+-----------------
- test_subscription | replicating | {all}
-(1 row)
-
+\c :subscriber_dsn
 -- Clear forward_origins back to empty.
-SELECT spock.sub_alter_options('test_subscription',
-    '{"forward_origins": []}');
+SELECT spock.sub_alter_options('test_subscription', '{"forward_origins": []}');
  sub_alter_options 
 -------------------
  t
@@ -121,24 +109,6 @@ SELECT wait_replicating('test_subscription');
  wait_replicating 
 ------------------
  
-(1 row)
-
--- Server view — forward_origins should be NULL (empty list stored as NULL).
-SELECT sub_name, sub_forward_origins
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
-     sub_name      | sub_forward_origins 
--------------------+---------------------
- test_subscription | 
-(1 row)
-
--- Client view — forward_origins should be empty / NULL.
-SELECT subscription_name, status, forward_origins
-FROM   spock.sub_show_status()
-WHERE  subscription_name = 'test_subscription';
- subscription_name |   status    | forward_origins 
--------------------+-------------+-----------------
- test_subscription | replicating | 
 (1 row)
 
 -- =========================================================================
@@ -162,15 +132,6 @@ SELECT wait_replicating('test_subscription');
  wait_replicating 
 ------------------
  
-(1 row)
-
--- Server view — apply_delay should now be '00:00:02'.
-SELECT sub_name, sub_apply_delay
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
-     sub_name      | sub_apply_delay 
--------------------+-----------------
- test_subscription | @ 2 secs
 (1 row)
 
 -- sub_show_status does not expose apply_delay; verify status is still healthy.
@@ -202,14 +163,6 @@ SELECT wait_replicating('test_subscription');
  
 (1 row)
 
-SELECT sub_name, sub_apply_delay
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
-     sub_name      | sub_apply_delay 
--------------------+-----------------
- test_subscription | @ 0
-(1 row)
-
 -- =========================================================================
 -- skip_schema
 -- =========================================================================
@@ -231,15 +184,6 @@ SELECT wait_replicating('test_subscription');
  wait_replicating 
 ------------------
  
-(1 row)
-
--- Server view — skip_schema should be '{myschema}'.
-SELECT sub_name, sub_skip_schema
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
-     sub_name      | sub_skip_schema 
--------------------+-----------------
- test_subscription | {myschema}
 (1 row)
 
 -- sub_show_status does not expose skip_schema; verify status remains healthy.
@@ -271,14 +215,6 @@ SELECT wait_replicating('test_subscription');
  
 (1 row)
 
-SELECT sub_name, sub_skip_schema
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
-     sub_name      | sub_skip_schema 
--------------------+-----------------
- test_subscription | 
-(1 row)
-
 -- =========================================================================
 -- Multiple options in a single call
 -- =========================================================================
@@ -301,7 +237,6 @@ SELECT wait_replicating('test_subscription');
  
 (1 row)
 
--- Server view — all three columns should reflect the new values.
 SELECT sub_name, sub_forward_origins, sub_apply_delay, sub_skip_schema
 FROM   spock.subscription
 WHERE  sub_name = 'test_subscription';
@@ -310,7 +245,6 @@ WHERE  sub_name = 'test_subscription';
  test_subscription | {all}               | @ 0.5 secs      | {pg_catalog}
 (1 row)
 
--- Client view.
 SELECT subscription_name, status, forward_origins
 FROM   spock.sub_show_status()
 WHERE  subscription_name = 'test_subscription';

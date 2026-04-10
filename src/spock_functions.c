@@ -935,8 +935,7 @@ spock_alter_subscription_skip_lsn(PG_FUNCTION_ARGS)
  *
  * Note: options that affect the replication stream (forward_origins,
  * apply_delay) take effect only after the apply worker reconnects to the
- * publisher.  Call sub_disable() followed by sub_enable() to force an
- * immediate restart.
+ * publisher.
  */
 Datum
 spock_alter_subscription_options(PG_FUNCTION_ARGS)

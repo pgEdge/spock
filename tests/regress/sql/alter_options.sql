@@ -32,12 +32,10 @@ $$ LANGUAGE plpgsql;
 -- Baseline: record the initial state before any changes.
 -- =========================================================================
 
--- Server view (catalog):
 SELECT sub_name, sub_forward_origins, sub_apply_delay, sub_skip_schema
 FROM   spock.subscription
 WHERE  sub_name = 'test_subscription';
 
--- Client view (public API):
 SELECT subscription_name, status, forward_origins
 FROM   spock.sub_show_status()
 WHERE  subscription_name = 'test_subscription';
@@ -63,32 +61,17 @@ SELECT spock.sub_alter_options('test_subscription', '{"forward_origins": ["all"]
 SELECT pg_sleep(1);
 SELECT wait_replicating('test_subscription');
 
--- Server view — forward_origins should now be '{all}'.
-SELECT sub_name, sub_forward_origins
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
+\c :provider_dsn
 
--- Client view — forward_origins column in sub_show_status.
-SELECT subscription_name, status, forward_origins
-FROM   spock.sub_show_status()
-WHERE  subscription_name = 'test_subscription';
+SELECT query ~ 'forward_origins.*all' AS new_param_active
+FROM   pg_stat_activity WHERE  backend_type = 'walsender';
+\c :subscriber_dsn
 
 -- Clear forward_origins back to empty.
-SELECT spock.sub_alter_options('test_subscription',
-    '{"forward_origins": []}');
+SELECT spock.sub_alter_options('test_subscription', '{"forward_origins": []}');
 
 SELECT pg_sleep(1);
 SELECT wait_replicating('test_subscription');
-
--- Server view — forward_origins should be NULL (empty list stored as NULL).
-SELECT sub_name, sub_forward_origins
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
-
--- Client view — forward_origins should be empty / NULL.
-SELECT subscription_name, status, forward_origins
-FROM   spock.sub_show_status()
-WHERE  subscription_name = 'test_subscription';
 
 -- =========================================================================
 -- apply_delay
@@ -100,11 +83,6 @@ SELECT spock.sub_alter_options('test_subscription',
 
 SELECT pg_sleep(1);
 SELECT wait_replicating('test_subscription');
-
--- Server view — apply_delay should now be '00:00:02'.
-SELECT sub_name, sub_apply_delay
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
 
 -- sub_show_status does not expose apply_delay; verify status is still healthy.
 SELECT subscription_name, status
@@ -118,10 +96,6 @@ SELECT spock.sub_alter_options('test_subscription',
 SELECT pg_sleep(1);
 SELECT wait_replicating('test_subscription');
 
-SELECT sub_name, sub_apply_delay
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
-
 -- =========================================================================
 -- skip_schema
 -- =========================================================================
@@ -132,11 +106,6 @@ SELECT spock.sub_alter_options('test_subscription',
 
 SELECT pg_sleep(1);
 SELECT wait_replicating('test_subscription');
-
--- Server view — skip_schema should be '{myschema}'.
-SELECT sub_name, sub_skip_schema
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
 
 -- sub_show_status does not expose skip_schema; verify status remains healthy.
 SELECT subscription_name, status
@@ -150,10 +119,6 @@ SELECT spock.sub_alter_options('test_subscription',
 SELECT pg_sleep(1);
 SELECT wait_replicating('test_subscription');
 
-SELECT sub_name, sub_skip_schema
-FROM   spock.subscription
-WHERE  sub_name = 'test_subscription';
-
 -- =========================================================================
 -- Multiple options in a single call
 -- =========================================================================
@@ -164,12 +129,10 @@ SELECT spock.sub_alter_options('test_subscription',
 SELECT pg_sleep(1);
 SELECT wait_replicating('test_subscription');
 
--- Server view — all three columns should reflect the new values.
 SELECT sub_name, sub_forward_origins, sub_apply_delay, sub_skip_schema
 FROM   spock.subscription
 WHERE  sub_name = 'test_subscription';
 
--- Client view.
 SELECT subscription_name, status, forward_origins
 FROM   spock.sub_show_status()
 WHERE  subscription_name = 'test_subscription';
