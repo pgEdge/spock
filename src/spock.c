@@ -863,7 +863,7 @@ log_message_filter(ErrorData *edata)
 	if (edata->elevel == ERROR)
 	{
 		char	   *strpos;
-		const int	len = strlen(PSWD_KEYWORD);
+		const int	len = sizeof(PSWD_KEYWORD) - 1;
 
 		/*
 		 * Password may bubble up in the error message and query string. XXX:
