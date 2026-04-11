@@ -579,9 +579,7 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	List	   *progress_list = NIL;
 	int			nrows;
 	int			rno;
-	/* Column indices in the result: lsn(0), snapshot(1), then GP_* + 2 */
-	const int	COL_LSN = 0;
-	const int	COL_SNAP = 1;
+	/* Column indices in the result: lsn(0), snapshot(1) are skipped; GP_* start at 2 */
 	const int	COL_OFFSET = 2;	/* GP_* indices start at COL_OFFSET */
 
 	initStringInfo(&query);
