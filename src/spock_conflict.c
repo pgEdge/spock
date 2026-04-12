@@ -891,7 +891,7 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
  * Errors propagate to the caller; no error suppression here.
  */
 static uint64
-spock_cleanup_resolutions_core(void)
+spock_cleanup_resolutions_core(int days)
 {
 	int				ret;
 	uint64			ndeleted;
@@ -900,7 +900,7 @@ spock_cleanup_resolutions_core(void)
 	initStringInfo(&cmd);
 	appendStringInfo(&cmd,
 					 "DELETE FROM spock.%s WHERE log_time < now() - '%d days'::interval",
-					 CATALOG_LOGTABLE, spock_resolutions_retention_days);
+					 CATALOG_LOGTABLE, days);
 
 	if (SPI_connect() != SPI_OK_CONNECT)
 	{
@@ -968,7 +968,7 @@ spock_cleanup_resolutions(void)
 		PushActiveSnapshot(GetTransactionSnapshot());
 
 		/* do the cleanup */
-		ndeleted = spock_cleanup_resolutions_core();
+		ndeleted = spock_cleanup_resolutions_core(spock_resolutions_retention_days);
 
 		PopActiveSnapshot();
 		CommitTransactionCommand();
@@ -1010,20 +1010,28 @@ spock_cleanup_resolutions(void)
  * SQL-callable entry point.  The executor already provides an active
  * transaction, so we call the core function directly.  Any error propagates
  * to the caller normally — no silent transaction poisoning.
+ *
+ * The optional 'days' argument overrides spock.resolutions_retention_days for
+ * this call.  This is useful when automatic cleanup is disabled (retention = 0)
+ * but the operator wants a one-off purge with a specific retention window.
  */
 PG_FUNCTION_INFO_V1(spock_cleanup_resolutions_sql);
 Datum
 spock_cleanup_resolutions_sql(PG_FUNCTION_ARGS)
 {
+	int	days;
+
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("must be superuser to call spock.cleanup_resolutions()")));
 
-	if (spock_resolutions_retention_days <= 0)
+	days = PG_ARGISNULL(0) ? spock_resolutions_retention_days : PG_GETARG_INT32(0);
+
+	if (days <= 0)
 		PG_RETURN_INT64(0);
 
-	PG_RETURN_INT64((int64) spock_cleanup_resolutions_core());
+	PG_RETURN_INT64((int64) spock_cleanup_resolutions_core(days));
 }
 
 /*
