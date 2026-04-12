@@ -353,10 +353,10 @@ CREATE TABLE spock.resolutions (
 ) WITH (user_catalog_table=true);
 CREATE INDEX ON spock.resolutions (log_time);
 
-CREATE FUNCTION spock.cleanup_resolutions()
+CREATE FUNCTION spock.cleanup_resolutions(days integer DEFAULT NULL)
 RETURNS bigint VOLATILE
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_cleanup_resolutions_sql';
-REVOKE ALL ON FUNCTION spock.cleanup_resolutions() FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.cleanup_resolutions(integer) FROM PUBLIC;
 
 CREATE VIEW spock.TABLES AS
     WITH set_relations AS (

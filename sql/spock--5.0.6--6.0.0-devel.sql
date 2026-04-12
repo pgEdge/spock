@@ -181,10 +181,10 @@ END;
 CREATE INDEX ON spock.resolutions (log_time);
 
 -- Manual cleanup function for the resolutions table
-CREATE FUNCTION spock.cleanup_resolutions()
+CREATE FUNCTION spock.cleanup_resolutions(days integer DEFAULT NULL)
 RETURNS bigint VOLATILE
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_cleanup_resolutions_sql';
-REVOKE ALL ON FUNCTION spock.cleanup_resolutions() FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.cleanup_resolutions(integer) FROM PUBLIC;
 
 -- ----
 -- Subscription conflict statistics

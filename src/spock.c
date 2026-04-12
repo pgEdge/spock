@@ -1019,7 +1019,7 @@ _PG_init(void)
 							NULL,
 							&spock_resolutions_retention_days,
 							100, 0, INT_MAX,
-							PGC_SUSET,
+							PGC_SIGHUP,
 							0,
 							NULL, NULL, NULL);
 

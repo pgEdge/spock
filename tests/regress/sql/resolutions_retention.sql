@@ -47,7 +47,9 @@ SELECT COUNT(*) AS total FROM spock.resolutions WHERE relname = 'public.retentio
 
 -- Set retention to 30 days: the 60-day-old row falls outside the window
 -- (60 > 30) so cleanup will delete it.
-SET spock.resolutions_retention_days = 30;
+ALTER SYSTEM SET spock.resolutions_retention_days = 30;
+SELECT pg_reload_conf();
+SELECT pg_sleep(1);
 SELECT spock.cleanup_resolutions() AS rows_deleted;
 
 -- Expect 0 rows remaining
@@ -69,7 +71,9 @@ SELECT COUNT(*) AS total FROM spock.resolutions WHERE relname = 'public.retentio
 UPDATE spock.resolutions
 SET log_time = now() - '999 days'::interval
 WHERE relname = 'public.retention_test';
-SET spock.resolutions_retention_days = 0;
+ALTER SYSTEM SET spock.resolutions_retention_days = 0;
+SELECT pg_reload_conf();
+SELECT pg_sleep(1);
 SELECT spock.cleanup_resolutions() AS rows_deleted;
 
 -- Row should still be there
@@ -81,7 +85,9 @@ UPDATE spock.resolutions
 SET log_time = now() - '999 days'::interval
 WHERE relname = 'public.retention_test';
 
-SET spock.resolutions_retention_days = 30;
+ALTER SYSTEM SET spock.resolutions_retention_days = 30;
+SELECT pg_reload_conf();
+SELECT pg_sleep(1);
 ALTER SYSTEM SET spock.save_resolutions = off;
 SELECT pg_reload_conf();
 SELECT pg_sleep(1);
@@ -101,6 +107,7 @@ ALTER SYSTEM SET spock.save_resolutions = off;
 SELECT pg_reload_conf();
 
 \c :subscriber_dsn
-RESET spock.resolutions_retention_days;
+ALTER SYSTEM RESET spock.resolutions_retention_days;
+SELECT pg_reload_conf();
 ALTER SYSTEM SET spock.save_resolutions = off;
 SELECT pg_reload_conf();
