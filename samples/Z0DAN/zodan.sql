@@ -28,6 +28,22 @@
 -- ============================================================================
 
 -- ============================================================================
+-- Function: gen_sub_name
+-- Purpose : Generate a subscription name following the sub_{provider}_{subscriber}
+--           convention (i.e. sub_{remote}_{local}).
+-- Arguments:
+--   provider_node   - The node supplying data (remote/provider).
+--   subscriber_node - The node receiving data (local/subscriber).
+-- Returns  : text, e.g. 'sub_n1_n2' where n1 is the provider and n2 is the subscriber.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION spock.gen_sub_name(
+    provider_node text,
+    subscriber_node text
+) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT 'sub_' || provider_node || '_' || subscriber_node;
+$$;
+
+-- ============================================================================
 -- Procedure: check_spock_version_compatibility
 -- Purpose: Verify all nodes have the same Spock version before adding a node
 -- ============================================================================
@@ -1218,7 +1234,7 @@ BEGIN
 
             slot_name := spock.spock_gen_slot_name(
 							dbname, rec.node_name,
-							'sub_' || rec.node_name || '_' || new_node_name);
+							spock.gen_sub_name(rec.node_name, new_node_name));
 
             CALL spock.create_replication_slot(
                 rec.dsn,
@@ -1295,7 +1311,7 @@ BEGIN
     FOR rec IN SELECT * FROM temp_spock_nodes
 	           WHERE node_name != src_node_name AND node_name != new_node_name
 	LOOP
-		sub_name := 'sub_' || rec.node_name || '_' || new_node_name;
+		sub_name := spock.gen_sub_name(rec.node_name, new_node_name);
 
         -- Trigger sync event on origin node and store LSN
         BEGIN
@@ -1333,7 +1349,7 @@ BEGIN
 
 			slot_name := spock.spock_gen_slot_name(
 							dbname, rec.node_name,
-							'sub_' || rec.node_name || '_' || new_node_name);
+							spock.gen_sub_name(rec.node_name, new_node_name));
 
             remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'');', slot_name);
             IF verb THEN
@@ -1401,7 +1417,7 @@ BEGIN
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
         -- 2-node scenario: enable the disabled subscription from source to new node
 
-		sub_name := 'sub_' || src_node_name || '_' || new_node_name;
+		sub_name := spock.gen_sub_name(src_node_name, new_node_name);
 
         BEGIN
             CALL spock.enable_sub( new_node_dsn, sub_name, verb, true);
@@ -1453,7 +1469,7 @@ BEGIN
             -- Verify subscription is replicating after enabling (2-node scenario)
             CALL spock.verify_subscription_replicating(
                 new_node_dsn,
-                'sub_' || src_node_name || '_' || new_node_name,
+                spock.gen_sub_name(src_node_name, new_node_name),
                 verb
             );
 
@@ -1480,7 +1496,7 @@ BEGIN
                     CONTINUE;  -- Skip new node to avoid self-subscription
                 END IF;
 
-				sub_name := 'sub_'|| rec.node_name || '_' || new_node_name;
+				sub_name := spock.gen_sub_name(rec.node_name, new_node_name);
 
                 CALL spock.enable_sub(new_node_dsn, sub_name, verb, true);
 
@@ -1516,7 +1532,7 @@ BEGIN
                 -- Verify subscription is replicating after enabling
                 CALL spock.verify_subscription_replicating(
                     new_node_dsn,
-                    'sub_'|| rec.node_name || '_' || new_node_name,
+                    spock.gen_sub_name(rec.node_name, new_node_name),
                     verb
                 );
 
@@ -1558,7 +1574,7 @@ BEGIN
 
     -- For each existing node (excluding new node), create subscription TO the new node
     FOR rec IN SELECT * FROM temp_spock_nodes WHERE node_name != new_node_name LOOP
-	    sub_name := 'sub_' || rec.node_name || '_' || new_node_name;
+	    sub_name := spock.gen_sub_name(new_node_name, rec.node_name);
         BEGIN
             CALL spock.create_sub(
                 rec.dsn,                                      -- Create on existing node
@@ -1601,7 +1617,7 @@ CREATE OR REPLACE PROCEDURE spock.create_new_to_source_subscription(
     verb boolean
 ) LANGUAGE plpgsql AS $$
 DECLARE
-    sub_name text := 'sub_' || new_node_name || '_' || src_node_name;
+    sub_name text := spock.gen_sub_name(new_node_name, src_node_name);
 BEGIN
     RAISE NOTICE 'Phase 10: Creating new to source node subscription';
 
@@ -1635,7 +1651,7 @@ CREATE OR REPLACE PROCEDURE spock.create_source_to_new_subscription(
     verb            boolean  -- Verbose flag
 ) LANGUAGE plpgsql AS $$
 DECLARE
-    sub_name text := 'sub_' || src_node_name || '_' || new_node_name;
+    sub_name text := spock.gen_sub_name(src_node_name, new_node_name);
 BEGIN
     RAISE NOTICE 'Phase 4: Creating source to new node subscription';
 
@@ -1780,7 +1796,7 @@ BEGIN
             END IF;
             IF dbname IS NULL THEN dbname := 'pgedge'; END IF;
 
-			slot_name := spock.spock_gen_slot_name(dbname, rec.node_name, 'sub_' || rec.node_name || '_' || new_node_name);
+			slot_name := spock.spock_gen_slot_name(dbname, rec.node_name, spock.gen_sub_name(rec.node_name, new_node_name));
 
             -- First check if slot exists and get current LSN
             remotesql := format('SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = %L', slot_name);
