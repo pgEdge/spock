@@ -51,7 +51,7 @@ $result = scalar_query(2, "SELECT x FROM test");
 print STDERR "Check result: $result\n";
 ok($result eq '1', "Check state of the test table after the attachment");
 
-psql_or_bail(1, "SELECT spock.sub_disable('sub_n1_n2')");
+psql_or_bail(1, "SELECT spock.sub_disable('sub_n2_n1')");
 
 # ##############################################################################
 #
@@ -71,7 +71,7 @@ $result = scalar_query(3, "SELECT count(*) FROM spock.local_node");
 ok($result eq '0', "N3 is not in the cluster yet");
 print STDERR "Z0DAN should fail because of a disabled subscription\n";
 
-psql_or_bail(1, "SELECT spock.sub_enable('sub_n1_n2')");
+psql_or_bail(1, "SELECT spock.sub_enable('sub_n2_n1')");
 psql_or_bail(3, "
 	CALL spock.add_node(
 		src_node_name := 'n2',
