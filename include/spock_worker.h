@@ -64,6 +64,7 @@ typedef struct SpockApplyWorker
 	XLogRecPtr	replay_stop_lsn;	/* Replay should stop here if defined. */
 	bool		sync_pending;		/* Is there new synchronization info pending?. */
 	bool		use_try_block;		/* Should use try block for apply? */
+	bool		paused;			/* Worker is paused for slot creation. */
 	SpockApplyGroup apply_group;	/* Apply group to be used with parallel slots. */
 } SpockApplyWorker;
 
@@ -127,6 +128,13 @@ typedef struct SpockContext {
 	LWLock				   *apply_group_master_lock;
 	int						napply_groups;
 	SpockApplyGroupData	   *apply_groups;
+
+	/*
+	 * Pause mechanism for apply workers during slot creation.
+	 * Non-zero signals workers to sleep on pause_cv until cleared.
+	 */
+	pg_atomic_uint32 pause_apply;
+	ConditionVariable pause_cv;
 
 	/* Background workers. */
 	int			total_workers;

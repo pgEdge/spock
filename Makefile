@@ -20,8 +20,8 @@ OBJS = $(filter-out src/spock_output.o, $(SRCS:.c=.o)) \
        src/compat/$(PGVER)/spock_compat.o
 
 PG_CPPFLAGS += -I$(libpq_srcdir) \
-			   -I$(realpath include) \
-			   -I$(realpath src/compat/$(PGVER)) \
+			   -I"$(realpath include)" \
+			   -I"$(realpath src/compat/$(PGVER))" \
 			   -Werror=implicit-function-declaration
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
 ifdef NO_LOG_OLD_VALUE
@@ -41,11 +41,11 @@ include $(PGXS)
 spock_output.o: src/spock_output.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
-spock_version=$(shell grep "^\#define \<SPOCK_VERSION\>" $(realpath include/spock.h) | cut -d'"' -f2)
+spock_version=$(shell grep "^\#define \<SPOCK_VERSION\>" "$(realpath include/spock.h)" | cut -d'"' -f2)
 requires =
 control_path = $(abspath $(srcdir))/spock.control
 spock.control: spock.control.in include/spock.h
-	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' $(realpath $(srcdir)/spock.control.in) > $(control_path)
+	sed 's/__SPOCK_VERSION__/$(spock_version)/;s/__REQUIRES__/$(requires)/' "$(realpath $(srcdir)/spock.control.in)" > "$(control_path)"
 
 
 all: spock.control spockctrl
