@@ -133,7 +133,6 @@ static const struct config_enum_entry readonly_options[] = {
 
 bool		spock_synchronous_commit = false;
 char	   *spock_temp_directory = "";
-bool		spock_batch_inserts = true;
 static char *spock_temp_directory_config;
 bool		spock_ch_stats = true;
 static char *spock_country_code;
@@ -1039,15 +1038,6 @@ _PG_init(void)
 							 NULL,
 							 &spock_synchronous_commit,
 							 false, PGC_POSTMASTER,
-							 0,
-							 NULL, NULL, NULL);
-
-	DefineCustomBoolVariable("spock.batch_inserts",
-							 "Batch inserts if possible",
-							 NULL,
-							 &spock_batch_inserts,
-							 true,
-							 PGC_POSTMASTER,
 							 0,
 							 NULL, NULL, NULL);
 

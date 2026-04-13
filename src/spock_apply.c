@@ -142,12 +142,6 @@ static bool apply_replay_spilling = false;
 static int	apply_replay_spill_count = 0;
 static int	apply_replay_spill_read = 0;
 
-/* Number of tuples inserted after which we switch to multi-insert. */
-#define MIN_MULTI_INSERT_TUPLES 5
-static SpockRelation *last_insert_rel = NULL;
-static int	last_insert_rel_cnt = 0;
-static bool use_multi_insert = false;
-
 /*
  * A message counter for the xact, for debugging. We don't send
  * the remote change LSN with messages, so this aids identification
@@ -231,8 +225,6 @@ static MemoryContext ApplyOperationContext = NULL;
 static void maybe_start_skipping_changes(XLogRecPtr finish_lsn);
 static void stop_skipping_changes(void);
 static void clear_subscription_skip_lsn(XLogRecPtr finish_lsn);
-
-static void multi_insert_finish(void);
 
 static void handle_queued_message(HeapTuple msgtup, bool tx_just_started);
 static void handle_startup_param(const char *key, const char *value);
@@ -831,8 +823,6 @@ handle_commit(StringInfo s)
 		 */
 		clear_subscription_skip_lsn(replorigin_session_origin_lsn);
 
-		multi_insert_finish();
-
 		spock_apply_heap_commit();
 
 
@@ -1191,8 +1181,6 @@ handle_relation(StringInfo s)
 	/* Let's wait to avoid concurrent updates to spock cache */
 	wait_for_previous_transaction();
 
-	multi_insert_finish();
-
 	(void) spock_read_rel(s);
 }
 
@@ -1302,54 +1290,6 @@ handle_insert(StringInfo s)
 		return;
 	}
 
-	/*
-	 * Handle multi_insert capabilities. TODO: Don't do multi- or
-	 * batch-inserts when in use_try_block mode
-	 */
-	if (use_multi_insert && MyApplyWorker->use_try_block == false)
-	{
-		if (rel != last_insert_rel)
-		{
-			multi_insert_finish();
-			/* Fall through to normal insert. */
-		}
-		else
-		{
-			spock_apply_heap_mi_add_tuple(rel, &newtup);
-			last_insert_rel_cnt++;
-
-			MemoryContextSwitchTo(oldcontext);
-			MemoryContextReset(ApplyOperationContext);
-
-			/*
-			 * Close replication step to satisfy corresponding 'begin' routine.
-			 * TODO: multi-insert code should be revised one day: it is not
-			 * obvious why we push and pop transactional snapshot on each tuple
-			 * as well as how command counter increment really works here in
-			 * absence of actual INSERT - following update may need to refer
-			 * this tuple and what's then?
-			 */
-			end_replication_step();
-			return;
-		}
-	}
-	else if (spock_batch_inserts &&
-			 RelationGetRelid(rel->rel) != QueueRelid &&
-			 spock_apply_heap_can_mi(rel) &&
-			 MyApplyWorker->use_try_block == false)
-	{
-		if (rel != last_insert_rel)
-		{
-			last_insert_rel = rel;
-			last_insert_rel_cnt = 0;
-		}
-		else if (last_insert_rel_cnt++ >= MIN_MULTI_INSERT_TUPLES)
-		{
-			use_multi_insert = true;
-			last_insert_rel_cnt = 0;
-		}
-	}
-
 	/* Normal insert. */
 
 	/* TODO: Handle multiple inserts */
@@ -1439,8 +1379,6 @@ handle_insert(StringInfo s)
 		LockRelId	lockid = rel->rel->rd_lockInfo.lockRelId;
 		Relation	qrel;
 
-		multi_insert_finish();
-
 		ht = heap_form_tuple(RelationGetDescr(rel->rel),
 							 newtup.values, newtup.nulls);
 
@@ -1473,28 +1411,6 @@ handle_insert(StringInfo s)
 }
 
 static void
-multi_insert_finish(void)
-{
-	if (use_multi_insert && last_insert_rel_cnt)
-	{
-		const char *old_action = errcallback_arg.action_name;
-		SpockRelation *old_rel = errcallback_arg.rel;
-
-		errcallback_arg.action_name = "multi INSERT";
-		errcallback_arg.rel = last_insert_rel;
-
-		spock_apply_heap_mi_finish(last_insert_rel);
-		spock_relation_close(last_insert_rel, NoLock);
-		use_multi_insert = false;
-		last_insert_rel = NULL;
-		last_insert_rel_cnt = 0;
-
-		errcallback_arg.rel = old_rel;
-		errcallback_arg.action_name = old_action;
-	}
-}
-
-static void
 handle_update(StringInfo s)
 {
 	SpockTupleData oldtup;
@@ -1514,8 +1430,6 @@ handle_update(StringInfo s)
 
 	errcallback_arg.action_name = "UPDATE";
 	xact_action_counter++;
-
-	multi_insert_finish();
 
 	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup, &newtup);
 	if (unlikely(rel == NULL))
@@ -1644,8 +1558,6 @@ handle_delete(StringInfo s)
 	xact_action_counter++;
 
 	begin_replication_step();
-
-	multi_insert_finish();
 
 	rel = spock_read_delete(s, RowExclusiveLock, &oldtup);
 	if (unlikely(rel == NULL))
