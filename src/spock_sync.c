@@ -905,7 +905,8 @@ static List *
 copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 						   const char *target_dsn,
 						   const char *origin_snapshot,
-						   List *replication_sets, const char *origin_name)
+						   List *replication_sets, const char *origin_name,
+						   PGconn *resume_conn)
 {
 	PGconn	   *origin_conn;
 	PGconn	   *target_conn;
@@ -973,6 +974,21 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	}
 
 	adjust_progress_info(origin_conn, target_conn);
+
+	/*
+	 * If apply workers were paused before slot creation (to prevent data loss
+	 * during add_node under write load), resume them now that progress has been
+	 * read consistently within the slot snapshot.
+	 */
+	if (resume_conn != NULL && PQstatus(resume_conn) == CONNECTION_OK)
+	{
+		PGresult *rres = PQexec(resume_conn,
+								"SELECT spock.resume_apply_workers()");
+		if (PQresultStatus(rres) != PGRES_TUPLES_OK)
+			elog(WARNING, "SPOCK: could not resume apply workers: %s",
+				 PQerrorMessage(resume_conn));
+		PQclear(rres);
+	}
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
@@ -1100,12 +1116,53 @@ spock_sync_subscription(SpockSubscription *sub)
 		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
 													 sub->name, "snap");
 
-		snapshot = ensure_replication_slot_snapshot(origin_conn,
-													origin_conn_repl,
-													sub->slot_name,
-													use_failover_slot, &lsn);
+		/*
+		 * Pause apply workers on the origin before creating the replication
+		 * slot.  This prevents data loss when adding a node under write load:
+		 * without the pause, an apply worker could commit a transaction after
+		 * the slot is created but before adjust_progress_info reads
+		 * spock.progress, making the new node think it has already seen data
+		 * that was not included in the COPY snapshot.
+		 *
+		 * Workers are resumed inside copy_replication_sets_data after
+		 * adjust_progress_info completes.  If slot creation fails, the
+		 * PG_CATCH block below attempts a best-effort resume.
+		 */
+		{
+			PGresult *pres = PQexec(origin_conn,
+									"SELECT spock.pause_apply_workers()");
+			if (PQresultStatus(pres) != PGRES_TUPLES_OK)
+				elog(WARNING, "SPOCK: could not pause apply workers on origin: %s",
+					 PQerrorMessage(origin_conn));
+			PQclear(pres);
+		}
 
-		PQfinish(origin_conn);
+		PG_TRY();
+		{
+			snapshot = ensure_replication_slot_snapshot(origin_conn,
+														origin_conn_repl,
+														sub->slot_name,
+														use_failover_slot, &lsn);
+		}
+		PG_CATCH();
+		{
+			/* Best-effort resume on error — workers' CV timeout will also
+			 * recover them if this fails. */
+			if (PQstatus(origin_conn) == CONNECTION_OK)
+			{
+				PGresult *rres = PQexec(origin_conn,
+										"SELECT spock.resume_apply_workers()");
+				if (rres)
+					PQclear(rres);
+			}
+			PQfinish(origin_conn);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+
+		/* Keep origin_conn open — resume_conn is passed to
+		 * copy_replication_sets_data so workers are released after
+		 * adjust_progress_info reads progress within the slot snapshot. */
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
@@ -1168,7 +1225,13 @@ spock_sync_subscription(SpockSubscription *sub)
 														sub->target_if->dsn,
 														snapshot,
 														sub->replication_sets,
-														sub->slot_name);
+														sub->slot_name,
+														origin_conn);
+
+					/* origin_conn was kept open for the resume call inside
+					 * copy_replication_sets_data; close it now. */
+					PQfinish(origin_conn);
+					origin_conn = NULL;
 
 					/* Store info about all the synchronized tables. */
 					StartTransactionCommand();
@@ -1215,6 +1278,23 @@ spock_sync_subscription(SpockSubscription *sub)
 
 					restore_structure(sub, tmpfile, "post-data");
 				}
+
+				/*
+				 * If no data copy was done (structure-only sync), apply
+				 * workers are still paused — resume them now.
+				 */
+				if (origin_conn != NULL)
+				{
+					if (PQstatus(origin_conn) == CONNECTION_OK)
+					{
+						PGresult *rres = PQexec(origin_conn,
+												"SELECT spock.resume_apply_workers()");
+						if (rres)
+							PQclear(rres);
+					}
+					PQfinish(origin_conn);
+					origin_conn = NULL;
+				}
 			}
 			PG_END_ENSURE_ERROR_CLEANUP_SUFFIX(spock_sync_tmpfile_cleanup_cb,
 										CStringGetDatum(tmpfile), _suf);
@@ -1223,6 +1303,20 @@ spock_sync_subscription(SpockSubscription *sub)
 		}
 		PG_END_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 									PointerGetDatum(sub));
+
+		/* Safety net: if origin_conn is still open (e.g. error before data
+		 * copy), resume workers and close it. */
+		if (origin_conn != NULL)
+		{
+			if (PQstatus(origin_conn) == CONNECTION_OK)
+			{
+				PGresult *rres = PQexec(origin_conn,
+										"SELECT spock.resume_apply_workers()");
+				if (rres)
+					PQclear(rres);
+			}
+			PQfinish(origin_conn);
+		}
 
 		PQfinish(origin_conn_repl);
 

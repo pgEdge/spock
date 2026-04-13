@@ -139,6 +139,7 @@ bool	allow_ddl_from_functions = false;
 int		restart_delay_default;
 int		restart_delay_on_exception;
 int		spock_replay_queue_size;
+int		spock_pause_timeout = 10;	/* seconds to wait for apply workers to pause */
 int		spock_feedback_frequency;
 bool	check_all_uc_indexes = false;
 int		log_origin_change = SPOCK_ORIGIN_NONE;
@@ -1138,6 +1139,21 @@ _PG_init(void)
 							INT_MAX,
 							PGC_SIGHUP,
 							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("spock.pause_timeout",
+							"Timeout in seconds for pausing apply workers during slot creation",
+							"Controls how long add_node waits for apply "
+							"workers to reach a between-transaction pause point. Increase "
+							"if add_node fails with a pause timeout under heavy load.",
+							&spock_pause_timeout,
+							10,
+							1,
+							300,
+							PGC_USERSET,
+							GUC_UNIT_S,
 							NULL,
 							NULL,
 							NULL);

@@ -795,6 +795,8 @@ spock_worker_shmem_startup(void)
 		SpockCtx->lag_lock = &((GetNamedLWLockTranche("spock")[1]).lock);
 		SpockCtx->supervisor = NULL;
 		SpockCtx->subscriptions_changed = false;
+		pg_atomic_init_u32(&SpockCtx->pause_apply, 0);
+		ConditionVariableInit(&SpockCtx->pause_cv);
 		SpockCtx->total_workers = nworkers;
 		memset(SpockCtx->workers, 0,
 			   sizeof(SpockWorker) * SpockCtx->total_workers);
