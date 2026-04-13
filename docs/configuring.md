@@ -1,6 +1,6 @@
 # Configuring Spock
 
-Add the following `postgresql.conf` settings on each node in your Spock 
+Add the following `postgresql.conf` settings on each node in your Spock
 replication scenario before creating the Spock extension:
 
 ```sql
@@ -52,12 +52,6 @@ functions adhere to the same rule previously described for
 `include_ddl_repset`. If a table possesses a defined primary key, it will be
 added into the `default` replication set; alternatively, they will be added
 to the `default_insert_only` replication set.
-
-### `spock.batch_inserts`
-
-`spock.batch_inserts` tells Spock to use batch insert mechanism if
-possible. The batch mechanism uses Postgres internal batch insert mode which
-is also used by `COPY` command.
 
 ### `spock.channel_counters`
 
