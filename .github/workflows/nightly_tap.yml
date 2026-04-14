@@ -1,0 +1,178 @@
+# Keep its logic in sync with zodan_sync.yml!
+
+name: Nightly Long-running TAP Tests
+run-name: Long-running TAP tests (nightly)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'  # Every day at 02:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  # Query GitHub for all currently open PRs and expose them as a JSON matrix.
+  # If there are no open PRs the workflow exits cleanly with no test jobs.
+  setup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.list-prs.outputs.matrix }}
+    steps:
+      - name: List recently-updated open PRs
+        id: list-prs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # On a scheduled run: include only PRs updated within the last 25 hours
+          # (1-hour buffer for scheduling jitter) so every open/push is covered
+          # by that night's run without retesting PRs that have not changed.
+          # On a manual dispatch: include all open PRs regardless of age.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            CUTOFF=$(date -u -d '25 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
+            FILTER='[.[] | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login}]'
+          else
+            FILTER='[.[] | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login}]'
+            CUTOFF=""
+          fi
+          MATRIX=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/pulls?state=open&sort=updated&direction=desc&per_page=100" \
+            | jq -c --arg cutoff "$CUTOFF" "$FILTER")
+          echo "Recently-updated PRs: $MATRIX"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  pull-and-test:
+    needs: setup
+    # Skip entirely when there are no open PRs.
+    if: needs.setup.outputs.matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.setup.outputs.matrix) }}
+        pgver: [15, 16, 17, 18]
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: read  # needed to resolve author email via GitHub API
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.pr.sha }}
+
+      - name: Add permissions
+        run: |
+          sudo chmod -R a+w ${GITHUB_WORKSPACE}
+
+      - name: Set up Docker
+        # Codacy wants us to use full commit SHA. This is for v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      - name: Build docker container
+        run: |
+            docker build \
+            --build-arg PGVER=${{ matrix.pgver }} \
+            -t spock -f tests/docker/Dockerfile-step-1.el9 .
+
+      - name: Run long-lasting TAP tests
+        run: |
+          TAP_CT_NAME="spock-tap-nightly-pr${{ matrix.pr.number }}-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "TAP_CT_NAME=$TAP_CT_NAME" >> "$GITHUB_ENV"
+          docker run --name "$TAP_CT_NAME" -e PGVER=${{ matrix.pgver }} spock \
+            /home/pgedge/run-spock-tap.sh \
+            "t/010_zodan_add_remove_python.pl t/012_zodan_basics.pl t/016_crash_recovery_progress.pl t/017_zodan_3n_timeout.pl" \
+            1
+        timeout-minutes: 1440
+
+      - name: Collect TAP artifacts (from container)
+        if: ${{ always() }}
+        run: |
+          docker cp "$TAP_CT_NAME":/home/pgedge/spock/ "$GITHUB_WORKSPACE/results" || true
+          docker rm -f "$TAP_CT_NAME" || true
+
+      - name: Upload TAP artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tap-nightly-pr${{ matrix.pr.number }}-pg${{ matrix.pgver }}
+          path: |
+            ${{ github.workspace }}/results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Notification is inline so each matrix job can report against its own PR.
+      # Requires repository secrets: MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD.
+      - name: Resolve PR author email
+        id: author
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_USER: ${{ matrix.pr.user }}
+          PR_NUMBER: ${{ matrix.pr.number }}
+          PR_SHA: ${{ matrix.pr.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Try the PR author's public profile email first.
+          EMAIL=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/users/$PR_USER" \
+            | jq -r '.email // empty')
+
+          # Fall back to the commit author email from the PR's commit list,
+          # skipping GitHub's anonymous noreply addresses.
+          if [ -z "$EMAIL" ] || echo "$EMAIL" | grep -q "noreply"; then
+            EMAIL=$(curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/commits" \
+              | jq -r '[.[].commit.author.email
+                        | select(test("noreply") | not)] | first // empty')
+          fi
+
+          # Final fallback: author email recorded in the PR head commit.
+          if [ -z "$EMAIL" ] || echo "$EMAIL" | grep -q "noreply"; then
+            EMAIL=$(curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/commits/$PR_SHA" \
+              | jq -r '.commit.author.email
+                        | if test("noreply") then empty else . end
+                        // empty')
+          fi
+
+          if [ -z "$EMAIL" ]; then
+            echo "WARNING: could not determine PR author's email — skipping notification"
+          else
+            echo "Resolved author email: $EMAIL"
+          fi
+          echo "email=$EMAIL" >> "$GITHUB_OUTPUT"
+
+      - name: Send failure notification
+        if: failure() && steps.author.outputs.email != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          to: ${{ steps.author.outputs.email }}
+          from: Spock CI <${{ secrets.MAIL_USERNAME }}>
+          subject: "[spock] Nightly TAP tests FAILED — PR #${{ matrix.pr.number }} (PG ${{ matrix.pgver }})"
+          body: |
+            The long-running TAP tests failed for your pull request.
+
+            PR:       ${{ github.server_url }}/${{ github.repository }}/pull/${{ matrix.pr.number }}
+            Branch:   ${{ matrix.pr.ref }}
+            PG ver:   ${{ matrix.pgver }}
+            Run:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Please check the workflow run for details and test artifacts.
