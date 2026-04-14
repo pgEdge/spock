@@ -33,16 +33,34 @@ jobs:
           # On a manual dispatch: include all open PRs regardless of age.
           if [ "${{ github.event_name }}" = "schedule" ]; then
             CUTOFF=$(date -u -d '25 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
-            FILTER='[.[] | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login}]'
+            FILTER='[.[] | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
           else
-            FILTER='[.[] | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login}]'
+            FILTER='[.[] | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
             CUTOFF=""
           fi
-          MATRIX=$(curl -fsSL \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/pulls?state=open&sort=updated&direction=desc&per_page=100" \
-            | jq -c --arg cutoff "$CUTOFF" "$FILTER")
+          ALL_JSON="[]"
+          PAGE=1
+          while true; do
+            PAGE_JSON=$(curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/pulls?state=open&sort=updated&direction=desc&per_page=100&page=$PAGE") \
+              || { echo "curl failed on page $PAGE" >&2; exit 1; }
+            [ -n "$PAGE_JSON" ] \
+              || { echo "curl returned empty response on page $PAGE" >&2; exit 1; }
+            COUNT=$(printf '%s' "$PAGE_JSON" | jq 'length') \
+              || { echo "jq failed to parse page $PAGE response" >&2; exit 1; }
+            [[ "$COUNT" =~ ^[0-9]+$ ]] \
+              || { echo "jq returned non-numeric COUNT ('$COUNT') on page $PAGE" >&2; exit 1; }
+            [ "$COUNT" -eq 0 ] && break
+            ALL_JSON=$(printf '%s\n%s' "$ALL_JSON" "$PAGE_JSON" | jq -cs 'add') \
+              || { echo "jq failed to merge page $PAGE into ALL_JSON" >&2; exit 1; }
+            PAGE=$((PAGE + 1))
+          done
+          MATRIX=$(printf '%s' "$ALL_JSON" | jq -c --arg cutoff "$CUTOFF" "$FILTER") \
+            || { echo "jq failed to build MATRIX" >&2; exit 1; }
+          printf '%s' "$MATRIX" | jq -e '.' > /dev/null \
+            || { echo "MATRIX is not valid JSON: $MATRIX" >&2; exit 1; }
           echo "Recently-updated PRs: $MATRIX"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
@@ -66,11 +84,13 @@ jobs:
       - name: Checkout spock
         uses: actions/checkout@v4
         with:
+          repository: ${{ matrix.pr.head_repo || github.repository }}
           ref: ${{ matrix.pr.sha }}
 
       - name: Add permissions
         run: |
-          sudo chmod -R a+w ${GITHUB_WORKSPACE}
+          sudo chown -R "$(whoami):$(id -gn)" "${GITHUB_WORKSPACE}"
+          chmod -R u+w "${GITHUB_WORKSPACE}"
 
       - name: Set up Docker
         # Codacy wants us to use full commit SHA. This is for v3
@@ -149,19 +169,21 @@ jobs:
                         // empty')
           fi
 
-          if [ -z "$EMAIL" ]; then
+          if [ -z "$EMAIL" ] || echo "$EMAIL" | grep -q "noreply"; then
             echo "WARNING: could not determine PR author's email — skipping notification"
           else
-            echo "Resolved author email: $EMAIL"
+            echo "::add-mask::$EMAIL"
+            echo "Resolved author email"
+            echo "email=$EMAIL" >> "$GITHUB_OUTPUT"
           fi
-          echo "email=$EMAIL" >> "$GITHUB_OUTPUT"
 
       - name: Send failure notification
         if: failure() && steps.author.outputs.email != ''
-        uses: dawidd6/action-send-mail@v3
+        uses: dawidd6/action-send-mail@4226df7daafa6fc901a43789c49bf7ab309066e7 # v3
         with:
           server_address: ${{ secrets.MAIL_SERVER }}
           server_port: ${{ secrets.MAIL_PORT }}
+          secure: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
           to: ${{ steps.author.outputs.email }}
