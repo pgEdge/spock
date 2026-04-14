@@ -35,4 +35,4 @@ test: 013_origin_change_restore
 #    fi
 # done
 test: 016_sub_disable_missing_relation
-
+test: 019_stale_fd_epoll_after_conn_death
