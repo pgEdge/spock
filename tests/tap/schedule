@@ -44,3 +44,4 @@ test: 016_crash_recovery_progress
 test: 016_sub_disable_missing_relation
 test: 017_zodan_3n_timeout
 test: 018_forward_origins
+test: 019_stale_fd_epoll_after_conn_death
