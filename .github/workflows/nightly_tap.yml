@@ -101,13 +101,20 @@ jobs:
             --build-arg PGVER=${{ matrix.pgver }} \
             -t spock -f tests/docker/Dockerfile-step-1.el9 .
 
+      - name: Build nightly test list from schedule file
+        run: |
+          TESTS=$(grep '^test:' tests/tap/schedule-nightly \
+                  | sed 's/^test:[[:space:]]*/t\//' | sed 's/$/.pl/' \
+                  | tr '\n' ' ' | sed 's/ *$//')
+          echo "NIGHTLY_TESTS=$TESTS" >> "$GITHUB_ENV"
+
       - name: Run long-lasting TAP tests
         run: |
           TAP_CT_NAME="spock-tap-nightly-pr${{ matrix.pr.number }}-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "TAP_CT_NAME=$TAP_CT_NAME" >> "$GITHUB_ENV"
           docker run --name "$TAP_CT_NAME" -e PGVER=${{ matrix.pgver }} spock \
             /home/pgedge/run-spock-tap.sh \
-            "t/010_zodan_add_remove_python.pl t/012_zodan_basics.pl t/016_crash_recovery_progress.pl t/017_zodan_3n_timeout.pl" \
+            "${{ env.NIGHTLY_TESTS }}" \
             1
         timeout-minutes: 1440
 

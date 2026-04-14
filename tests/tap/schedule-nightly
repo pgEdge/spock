@@ -1,0 +1,16 @@
+# Nightly TAP Test Schedule
+# Long-running tests that are too slow for per-push CI.
+# Run by .github/workflows/nightly_tap.yml on a daily cron.
+#
+# Format is the same as the main 'schedule' file:
+#   test: <name>       (without t/ prefix or .pl suffix)
+# Lines starting with '#' are comments; blank lines are ignored.
+#
+# If running locally:
+#   "make check_prove_nightly" or "make PROVE=prove check_prove_nightly"
+#
+
+test: 010_zodan_add_remove_python
+test: 012_zodan_basics
+test: 016_crash_recovery_progress
+test: 017_zodan_3n_timeout
