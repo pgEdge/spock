@@ -141,6 +141,10 @@ endef
 check_prove:
 	$(prove_check)
 
+check_prove_nightly:
+	$(eval TAPS_REGRESS := $(shell awk '/^[[:space:]]*test:/ {print "t/" $$2 ".pl"}' $(srcdir)/tests/tap/schedule-nightly))
+	$(prove_check)
+
 # -----------------------------------------------------------------------------
 # Dist packaging
 # -----------------------------------------------------------------------------
