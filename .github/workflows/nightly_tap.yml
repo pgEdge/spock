@@ -78,7 +78,6 @@ jobs:
 
     permissions:
       contents: read
-      pull-requests: read  # needed to resolve author email via GitHub API
 
     steps:
       - name: Checkout spock
@@ -128,73 +127,3 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # Notification is inline so each matrix job can report against its own PR.
-      # Requires repository secrets: MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD.
-      - name: Resolve PR author email
-        id: author
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_USER: ${{ matrix.pr.user }}
-          PR_NUMBER: ${{ matrix.pr.number }}
-          PR_SHA: ${{ matrix.pr.sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          # Try the PR author's public profile email first.
-          EMAIL=$(curl -fsSL \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/users/$PR_USER" \
-            | jq -r '.email // empty')
-
-          # Fall back to the commit author email from the PR's commit list,
-          # skipping GitHub's anonymous noreply addresses.
-          if [ -z "$EMAIL" ] || echo "$EMAIL" | grep -q "noreply"; then
-            EMAIL=$(curl -fsSL \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/commits" \
-              | jq -r '[.[].commit.author.email
-                        | select(test("noreply") | not)] | first // empty')
-          fi
-
-          # Final fallback: author email recorded in the PR head commit.
-          if [ -z "$EMAIL" ] || echo "$EMAIL" | grep -q "noreply"; then
-            EMAIL=$(curl -fsSL \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/commits/$PR_SHA" \
-              | jq -r '.commit.author.email
-                        | if test("noreply") then empty else . end
-                        // empty')
-          fi
-
-          if [ -z "$EMAIL" ] || echo "$EMAIL" | grep -q "noreply"; then
-            echo "WARNING: could not determine PR author's email — skipping notification"
-          else
-            echo "::add-mask::$EMAIL"
-            echo "Resolved author email"
-            echo "email=$EMAIL" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Send failure notification
-        if: failure() && steps.author.outputs.email != ''
-        uses: dawidd6/action-send-mail@4226df7daafa6fc901a43789c49bf7ab309066e7 # v3
-        with:
-          server_address: ${{ secrets.MAIL_SERVER }}
-          server_port: ${{ secrets.MAIL_PORT }}
-          secure: true
-          username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}
-          to: ${{ steps.author.outputs.email }}
-          from: Spock CI <${{ secrets.MAIL_USERNAME }}>
-          subject: "[spock] Nightly TAP tests FAILED — PR #${{ matrix.pr.number }} (PG ${{ matrix.pgver }})"
-          body: |
-            The long-running TAP tests failed for your pull request.
-
-            PR:       ${{ github.server_url }}/${{ github.repository }}/pull/${{ matrix.pr.number }}
-            Branch:   ${{ matrix.pr.ref }}
-            PG ver:   ${{ matrix.pgver }}
-            Run:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-            Please check the workflow run for details and test artifacts.
