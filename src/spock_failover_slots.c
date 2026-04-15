@@ -527,19 +527,19 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 	/*
 	 * Append the dbname of the remote slot. We don't use a generic db like
 	 * postgres here because plugin callback below might want to invoke
-	 * extension functions.
+	 * extension functions.  Keep connstr alive for reconnect attempts.
 	 */
 	make_sync_failover_slots_dsn(&connstr, remote_slot->database);
 
 	conn = remote_connect(connstr.data, "spock_failover_slots");
-	pfree(connstr.data);
 
 	for (;;)
 	{
 		RemoteSlot *new_slot;
 		int			rc;
-		FailoverSlotFilter *filter = palloc(sizeof(FailoverSlotFilter));
+		FailoverSlotFilter *filter;
 		XLogRecPtr	receivePtr;
+		bool		query_failed;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -555,18 +555,89 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 					 errmsg(
 							"replication slot sync wait for slot %s interrupted by promotion",
 							remote_slot->name)));
-			PQfinish(conn);
+			if (conn)
+				PQfinish(conn);
+			pfree(connstr.data);
 			return false;
 		}
 
+		/*
+		 * If the connection to the primary was lost (e.g. because the primary
+		 * was stopped as part of a controlled failover), attempt to reconnect.
+		 * We wrap the reconnect in PG_TRY so that a failed reconnect does not
+		 * crash the bgworker; we simply wait and try again, and the
+		 * RecoveryInProgress() check at the top of the loop will detect
+		 * promotion and return false cleanly.
+		 */
+		if (conn == NULL)
+		{
+			PG_TRY();
+			{
+				conn = remote_connect(connstr.data, "spock_failover_slots");
+			}
+			PG_CATCH();
+			{
+				FlushErrorState();
+				conn = NULL;
+			}
+			PG_END_TRY();
+
+			if (conn == NULL)
+			{
+				/* Still cannot reach primary; wait before retrying. */
+				rc = WaitLatch(MyLatch,
+							   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+							   wal_retrieve_retry_interval, PG_WAIT_EXTENSION);
+				if (rc & WL_POSTMASTER_DEATH)
+					proc_exit(1);
+				ResetLatch(MyLatch);
+				continue;
+			}
+		}
+
+		/*
+		 * Query the primary for the current slot state.  Wrap in PG_TRY so
+		 * that a connection failure (primary stopped before promotion) is
+		 * handled gracefully: close the dead connection, wait, and retry.
+		 * The RecoveryInProgress() check above will detect promotion on the
+		 * next iteration and return false, allowing the caller to persist the
+		 * slot with whatever WAL position the standby has locally reserved.
+		 */
+		query_failed = false;
+		slots = NIL;
+		filter = palloc(sizeof(FailoverSlotFilter));
 		filter->key = FAILOVERSLOT_FILTER_NAME;
 		filter->val = remote_slot->name;
-		slots = remote_get_primary_slot_info(conn, list_make1(filter));
+
+		PG_TRY();
+		{
+			slots = remote_get_primary_slot_info(conn, list_make1(filter));
+		}
+		PG_CATCH();
+		{
+			FlushErrorState();
+			PQfinish(conn);
+			conn = NULL;
+			query_failed = true;
+		}
+		PG_END_TRY();
+
+		if (query_failed)
+		{
+			rc = WaitLatch(MyLatch,
+						   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+						   wal_retrieve_retry_interval, PG_WAIT_EXTENSION);
+			if (rc & WL_POSTMASTER_DEATH)
+				proc_exit(1);
+			ResetLatch(MyLatch);
+			continue;
+		}
 
 		if (!list_length(slots))
 		{
 			/* Slot on provider vanished */
 			PQfinish(conn);
+			pfree(connstr.data);
 			return false;
 		}
 
@@ -589,6 +660,7 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 			remote_slot->confirmed_lsn = new_slot->confirmed_lsn;
 			remote_slot->catalog_xmin = new_slot->catalog_xmin;
 			PQfinish(conn);
+			pfree(connstr.data);
 			return true;
 		}
 
@@ -618,7 +690,6 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
-
 
 		ResetLatch(MyLatch);
 	}
@@ -798,13 +869,28 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		{
 			if (!wait_for_primary_slot_catchup(MyReplicationSlot, remote_slot))
 			{
+				if (RecoveryInProgress())
+				{
+					/*
+					 * Not a promotion — genuinely can't satisfy slot
+					 * requirements while still in recovery.
+					 */
+					ReplicationSlotRelease();
+					PopActiveSnapshot();
+					CommitTransactionCommand();
+					return;
+				}
+
 				/*
-				 * Provider slot didn't catch up to locally reserved position
+				 * Promotion interrupted the wait.  A freshly promoted
+				 * streaming standby has all WAL from pg_basebackup onward,
+				 * so the slot's restart_lsn (set conservatively by
+				 * ReplicationSlotReserveWal) is safe to use.  Fall through
+				 * to persist the slot.
 				 */
-				ReplicationSlotRelease();
-				PopActiveSnapshot();
-				CommitTransactionCommand();
-				return;
+				elog(LOG, "spock_failover_slots: persisting slot \"%s\" after "
+					 "promotion interrupted WAL catchup; standby has required WAL",
+					 remote_slot->name);
 			}
 		}
 

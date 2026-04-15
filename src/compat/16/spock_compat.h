@@ -101,6 +101,32 @@
 
 #define getObjectDescription(object) getObjectDescription(object, false)
 
+/*
+ * PG17+ replaced bool sync_standbys_defined with bits8 sync_standbys_status.
+ * Map the new bitmask-based access back to the PG16 bool field.
+ */
+#define sync_standbys_status sync_standbys_defined
+#define SYNC_STANDBY_DEFINED 1
+
+/*
+ * LockOrStrongerHeldByMe was added in PG17.  Emulate it for PG16 by
+ * iterating from lockmode up through AccessExclusiveLock.
+ * Guard with LOCK_H_ so this is only compiled when storage/lock.h is
+ * already in scope (via storage/lmgr.h or similar).
+ */
+#ifdef LOCK_H_
+static inline bool
+LockOrStrongerHeldByMe(const LOCKTAG *tag, LOCKMODE lockmode)
+{
+	LOCKMODE	m;
+
+	for (m = lockmode; m <= AccessExclusiveLock; m++)
+		if (LockHeldByMe(tag, m))
+			return true;
+	return false;
+}
+#endif							/* LOCK_H_ */
+
 #define replorigin_session_setup(node) \
 	replorigin_session_setup(node, 0)
 
