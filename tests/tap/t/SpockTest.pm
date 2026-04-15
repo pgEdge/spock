@@ -361,17 +361,10 @@ sub destroy_cluster {
     $test_name //= 'Destroy multi-node Spock cluster';
     
     if ($nodes_created) {
-        # Cleanup subscriptions and nodes (ignore errors for subscriptions that don't exist)
+        # Drop all subscriptions on each node regardless of naming convention
         for (my $i = 0; $i < $node_count; $i++) {
-            for (my $j = 0; $j < $node_count; $j++) {
-                next if $i == $j; # Skip self-subscription
-                
-                my $source_node = "n" . ($i + 1);
-                my $target_node = "n" . ($j + 1);
-                my $sub_name = "sub_${source_node}_${target_node}";
-                
-                system_maybe "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "SELECT spock.sub_drop('$sub_name')";
-            }
+            system_maybe "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c',
+                "SELECT spock.sub_drop(sub_name) FROM spock.subscription";
         }
         
         for (my $i = 0; $i < $node_count; $i++) {
