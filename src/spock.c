@@ -133,7 +133,6 @@ static const struct config_enum_entry readonly_options[] = {
 
 bool		spock_synchronous_commit = false;
 char	   *spock_temp_directory = "";
-bool		spock_batch_inserts = true;
 static char *spock_temp_directory_config;
 bool		spock_ch_stats = true;
 static char *spock_country_code;
@@ -863,7 +862,7 @@ log_message_filter(ErrorData *edata)
 	if (edata->elevel == ERROR)
 	{
 		char	   *strpos;
-		const int	len = strlen(PSWD_KEYWORD);
+		const int	len = sizeof(PSWD_KEYWORD) - 1;
 
 		/*
 		 * Password may bubble up in the error message and query string. XXX:
@@ -1012,6 +1011,17 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
+	DefineCustomIntVariable("spock.resolutions_retention_days",
+							"Number of days to retain rows in spock." CATALOG_LOGTABLE " table. "
+							"Rows older than this are deleted periodically by the apply worker. "
+							"Set to 0 to disable automatic cleanup.",
+							NULL,
+							&spock_resolutions_retention_days,
+							100, 0, INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL, NULL, NULL);
+
 	DefineCustomBoolVariable("spock.enable_quiet_mode",
 							 "Reduce message verbosity for cleaner output",
 							 "When enabled, downgrades DDL replication INFO/WARNING messages to LOG level "
@@ -1028,15 +1038,6 @@ _PG_init(void)
 							 NULL,
 							 &spock_synchronous_commit,
 							 false, PGC_POSTMASTER,
-							 0,
-							 NULL, NULL, NULL);
-
-	DefineCustomBoolVariable("spock.batch_inserts",
-							 "Batch inserts if possible",
-							 NULL,
-							 &spock_batch_inserts,
-							 true,
-							 PGC_POSTMASTER,
 							 0,
 							 NULL, NULL, NULL);
 

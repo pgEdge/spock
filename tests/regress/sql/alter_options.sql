@@ -1,0 +1,194 @@
+-- Tests for spock.sub_alter_options().
+--
+-- For each supported option we verify:
+--   * the function accepts a valid value and returns true;
+--   * the change is visible in the spock.subscription catalog (server view);
+--   * the change is visible via spock.sub_show_status() (client/user view);
+--   * the apply worker restarts and reaches 'replicating' again.
+-- We also check all expected error paths.
+
+SELECT * FROM spock_regress_variables()
+\gset
+
+\c :subscriber_dsn
+
+-- Block until statement_timeout fires if subscription never reaches
+-- 'replicating'; applied for the whole session from here on.
+SET statement_timeout = '30s';
+
+-- Helper: block until the named subscription is replicating (or
+-- statement_timeout fires).
+CREATE OR REPLACE FUNCTION wait_replicating(sub_name name) RETURNS void AS $$
+BEGIN
+    WHILE EXISTS (
+        SELECT 1 FROM spock.sub_show_status()
+        WHERE subscription_name = sub_name
+          AND status != 'replicating'
+    ) LOOP END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =========================================================================
+-- Baseline: record the initial state before any changes.
+-- =========================================================================
+
+SELECT sub_name, sub_forward_origins, sub_apply_delay, sub_skip_schema
+FROM   spock.subscription
+WHERE  sub_name = 'test_subscription';
+
+SELECT subscription_name, status, forward_origins
+FROM   spock.sub_show_status()
+WHERE  subscription_name = 'test_subscription';
+
+-- =========================================================================
+-- Empty object — no-op: nothing changes, apply worker is NOT signalled.
+-- =========================================================================
+
+SELECT spock.sub_alter_options('test_subscription', '{}'::jsonb);
+
+-- Returns false: nothing changed, alter_subscription() is skipped, apply
+-- worker is never killed and the subscription stays in 'replicating'.
+SELECT sub_name, sub_forward_origins, sub_apply_delay, sub_skip_schema
+FROM   spock.subscription
+WHERE  sub_name = 'test_subscription';
+
+-- =========================================================================
+-- forward_origins
+-- =========================================================================
+
+-- Enable forwarding of all origins.
+SELECT spock.sub_alter_options('test_subscription', '{"forward_origins": ["all"]}');
+SELECT pg_sleep(1);
+SELECT wait_replicating('test_subscription');
+
+\c :provider_dsn
+
+SELECT query ~ 'forward_origins.*all' AS new_param_active
+FROM   pg_stat_activity WHERE  backend_type = 'walsender';
+\c :subscriber_dsn
+
+-- Clear forward_origins back to empty.
+SELECT spock.sub_alter_options('test_subscription', '{"forward_origins": []}');
+
+SELECT pg_sleep(1);
+SELECT wait_replicating('test_subscription');
+
+-- =========================================================================
+-- apply_delay
+-- =========================================================================
+
+-- Set a non-zero delay.
+SELECT spock.sub_alter_options('test_subscription',
+    '{"apply_delay": "2 seconds"}');
+
+SELECT pg_sleep(1);
+SELECT wait_replicating('test_subscription');
+
+-- sub_show_status does not expose apply_delay; verify status is still healthy.
+SELECT subscription_name, status
+FROM   spock.sub_show_status()
+WHERE  subscription_name = 'test_subscription';
+
+-- Reset delay to zero.
+SELECT spock.sub_alter_options('test_subscription',
+    '{"apply_delay": "0"}');
+
+SELECT pg_sleep(1);
+SELECT wait_replicating('test_subscription');
+
+-- =========================================================================
+-- skip_schema
+-- =========================================================================
+
+-- Exclude a schema from apply.
+SELECT spock.sub_alter_options('test_subscription',
+    '{"skip_schema": ["myschema"]}');
+
+SELECT pg_sleep(1);
+SELECT wait_replicating('test_subscription');
+
+-- sub_show_status does not expose skip_schema; verify status remains healthy.
+SELECT subscription_name, status
+FROM   spock.sub_show_status()
+WHERE  subscription_name = 'test_subscription';
+
+-- Clear the excluded schema list.
+SELECT spock.sub_alter_options('test_subscription',
+    '{"skip_schema": []}');
+
+SELECT pg_sleep(1);
+SELECT wait_replicating('test_subscription');
+
+-- =========================================================================
+-- Multiple options in a single call
+-- =========================================================================
+
+SELECT spock.sub_alter_options('test_subscription',
+    '{"forward_origins": ["all"], "apply_delay": "500ms", "skip_schema": ["pg_catalog"]}');
+
+SELECT pg_sleep(1);
+SELECT wait_replicating('test_subscription');
+
+SELECT sub_name, sub_forward_origins, sub_apply_delay, sub_skip_schema
+FROM   spock.subscription
+WHERE  sub_name = 'test_subscription';
+
+SELECT subscription_name, status, forward_origins
+FROM   spock.sub_show_status()
+WHERE  subscription_name = 'test_subscription';
+
+-- Restore original state (empty forward_origins, zero delay, no skip_schema).
+SELECT spock.sub_alter_options('test_subscription',
+    '{"forward_origins": [], "apply_delay": "0", "skip_schema": []}');
+
+SELECT pg_sleep(1);
+SELECT wait_replicating('test_subscription');
+
+-- Confirm baseline is restored.
+SELECT sub_name, sub_forward_origins, sub_apply_delay, sub_skip_schema
+FROM   spock.subscription
+WHERE  sub_name = 'test_subscription';
+
+-- =========================================================================
+-- Error cases
+-- =========================================================================
+
+\set VERBOSITY terse
+
+-- options argument is not a JSON object.
+SELECT spock.sub_alter_options('test_subscription', '"not_an_object"');
+
+-- options argument is a JSON array, not an object.
+SELECT spock.sub_alter_options('test_subscription', '["all"]');
+
+-- Unrecognised key.
+SELECT spock.sub_alter_options('test_subscription', '{"no_such_option": "x"}');
+
+-- forward_origins: value is a string, not an array.
+SELECT spock.sub_alter_options('test_subscription', '{"forward_origins": "all"}');
+
+-- forward_origins: value other than "all" is rejected.
+SELECT spock.sub_alter_options('test_subscription', '{"forward_origins": ["meaningless"]}');
+
+-- forward_origins: array contains a non-string element.
+SELECT spock.sub_alter_options('test_subscription', '{"forward_origins": [1, 2]}');
+
+-- apply_delay: value is a number, not a string.
+SELECT spock.sub_alter_options('test_subscription', '{"apply_delay": 5}');
+
+-- apply_delay: value is not a valid interval string.
+SELECT spock.sub_alter_options('test_subscription', '{"apply_delay": "not_an_interval"}');
+
+-- skip_schema: value is a string, not an array.
+SELECT spock.sub_alter_options('test_subscription', '{"skip_schema": "public"}');
+
+-- Non-existent subscription.
+SELECT spock.sub_alter_options('no_such_subscription', '{"forward_origins": []}');
+
+\set VERBOSITY default
+
+-- =========================================================================
+-- Cleanup
+-- =========================================================================
+
+DROP FUNCTION wait_replicating(name);

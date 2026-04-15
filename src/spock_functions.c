@@ -72,6 +72,7 @@
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/json.h"
+#include "utils/jsonb.h"
 #include "utils/guc.h"
 #if PG_VERSION_NUM >= 160000
 #include "utils/guc_hooks.h"
@@ -122,6 +123,7 @@ PG_FUNCTION_INFO_V1(spock_alter_subscription_enable);
 PG_FUNCTION_INFO_V1(spock_alter_subscription_add_replication_set);
 PG_FUNCTION_INFO_V1(spock_alter_subscription_remove_replication_set);
 PG_FUNCTION_INFO_V1(spock_alter_subscription_skip_lsn);
+PG_FUNCTION_INFO_V1(spock_alter_subscription_options);
 
 PG_FUNCTION_INFO_V1(spock_alter_subscription_synchronize);
 PG_FUNCTION_INFO_V1(spock_alter_subscription_resynchronize_table);
@@ -922,6 +924,126 @@ spock_alter_subscription_skip_lsn(PG_FUNCTION_ARGS)
 	alter_subscription(sub);
 
 	PG_RETURN_BOOL(true);
+}
+
+/*
+ * Update multiple subscription options at once mentioned at the input JSONB.
+ *
+ * Recognised keys: "forward_origins", "apply_delay", and "skip_schema".
+ *
+ * Any unrecognised key or wrong JSON type raises an ERROR immediately.
+ *
+ * Note: options that affect the replication stream (forward_origins,
+ * apply_delay) take effect only after the apply worker reconnects to the
+ * publisher.
+ */
+Datum
+spock_alter_subscription_options(PG_FUNCTION_ARGS)
+{
+	char	   *sub_name = NameStr(*PG_GETARG_NAME(0));
+	Jsonb	   *options = PG_GETARG_JSONB_P(1);
+	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
+	JsonbIterator *it;
+	JsonbIteratorToken r;
+	JsonbValue	v;
+	bool		changed = false;
+
+	/* XXX: Only used for locking purposes. */
+	(void) get_local_node(true, false);
+
+	it = JsonbIteratorInit(&options->root);
+
+	r = JsonbIteratorNext(&it, &v, false);
+	if (r != WJB_BEGIN_OBJECT)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("subscription options must be a JSON object")));
+
+	while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_END_OBJECT)
+	{
+		char   *key;
+
+		if (r != WJB_KEY)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("unexpected token while parsing subscription options")));
+
+		key = pnstrdup(v.val.string.val, v.val.string.len);
+
+		if (strcmp(key, "forward_origins") == 0 ||
+			strcmp(key, "skip_schema") == 0)
+		{
+			List   *result = NIL;
+
+			r = JsonbIteratorNext(&it, &v, false);
+			if (r != WJB_BEGIN_ARRAY)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("option \"%s\" must be a JSON array of strings",
+								key)));
+
+			while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_END_ARRAY)
+			{
+				char   *elem;
+
+				if (r != WJB_ELEM || v.type != jbvString)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("option \"%s\" must contain only strings",
+									key)));
+
+				elem = pnstrdup(v.val.string.val, v.val.string.len);
+
+				/* forward_origins only accepts the sentinel value "all" */
+				if (strcmp(key, "forward_origins") == 0 &&
+					strcmp(elem, "all") != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("invalid value \"%s\" for option \"forward_origins\"",
+									elem),
+							 errhint("The only supported value is \"all\".")));
+
+				result = lappend(result, elem);
+			}
+
+			if (strcmp(key, "forward_origins") == 0)
+				sub->forward_origins = result;
+			else
+				sub->skip_schema = result;
+			changed = true;
+		}
+		else if (strcmp(key, "apply_delay") == 0)
+		{
+			char   *delay_str;
+
+			r = JsonbIteratorNext(&it, &v, false);
+			if (r != WJB_VALUE || v.type != jbvString)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("option \"apply_delay\" must be a string")));
+
+			delay_str = pnstrdup(v.val.string.val, v.val.string.len);
+			sub->apply_delay = DatumGetIntervalP(
+				DirectFunctionCall3(interval_in,
+									CStringGetDatum(delay_str),
+									ObjectIdGetDatum(InvalidOid),
+									Int32GetDatum(-1)));
+			changed = true;
+		}
+		else
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("unrecognized subscription option \"%s\"", key),
+					 errhint("Valid options are: \"forward_origins\", "
+							 "\"apply_delay\", \"skip_schema\".")));
+		}
+	}
+
+	if (changed)
+		alter_subscription(sub);
+
+	PG_RETURN_BOOL(changed);
 }
 
 /*

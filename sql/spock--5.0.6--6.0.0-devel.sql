@@ -177,6 +177,15 @@ SET conflict_type = CASE conflict_type
     ELSE conflict_type
 END;
 
+-- Add index on log_time to support efficient TTL-based cleanup
+CREATE INDEX ON spock.resolutions (log_time);
+
+-- Manual cleanup function for the resolutions table
+CREATE FUNCTION spock.cleanup_resolutions(days integer DEFAULT NULL)
+RETURNS bigint VOLATILE
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_cleanup_resolutions_sql';
+REVOKE ALL ON FUNCTION spock.cleanup_resolutions(integer) FROM PUBLIC;
+
 -- ----
 -- Subscription conflict statistics
 -- ----
@@ -414,3 +423,11 @@ BEGIN
 	CALL spock.wait_for_sync_event(result, origin_id, lsn, timeout, wait_if_disabled);
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE FUNCTION spock.sub_alter_options(
+  subscription_name name,
+  options           jsonb
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
+LANGUAGE C STRICT VOLATILE;

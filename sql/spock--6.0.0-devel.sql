@@ -262,6 +262,14 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_su
 CREATE FUNCTION spock.sub_alter_skiplsn(subscription_name name, lsn pg_lsn)
 	RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_skip_lsn';
 
+CREATE FUNCTION spock.sub_alter_options(
+  subscription_name name,
+  options           jsonb
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
+LANGUAGE C STRICT VOLATILE;
+
 CREATE FUNCTION spock.sub_show_status(
   subscription_name     name DEFAULT NULL,
   OUT subscription_name text,
@@ -351,6 +359,12 @@ CREATE TABLE spock.resolutions (
 
     PRIMARY KEY(id, node_name)
 ) WITH (user_catalog_table=true);
+CREATE INDEX ON spock.resolutions (log_time);
+
+CREATE FUNCTION spock.cleanup_resolutions(days integer DEFAULT NULL)
+RETURNS bigint VOLATILE
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_cleanup_resolutions_sql';
+REVOKE ALL ON FUNCTION spock.cleanup_resolutions(integer) FROM PUBLIC;
 
 CREATE VIEW spock.TABLES AS
     WITH set_relations AS (

@@ -4433,7 +4433,6 @@ NodeInterfaceTuple
 SubscriptionTuple
 ApplyExecutionData
 ApplyExecState
-ApplyMIState
 ApplyReplayEntryData
 SpockApplyFunctions
 SPKFlushPosition
@@ -4509,7 +4508,6 @@ NodeInterfaceTuple
 SubscriptionTuple
 ApplyExecutionData
 ApplyExecState
-ApplyMIState
 ApplyReplayEntryData
 SPKFlushPosition
 ApplyExecState
@@ -4588,7 +4586,6 @@ NodeInterfaceTuple
 SubscriptionTuple
 ApplyExecutionData
 ApplyExecState
-ApplyMIState
 ApplyReplayEntryData
 SPKFlushPosition
 ApplyExecState
@@ -4672,7 +4669,6 @@ NodeInterfaceTuple
 SubscriptionTuple
 ApplyExecutionData
 ApplyExecState
-ApplyMIState
 ApplyReplayEntryData
 SPKFlushPosition
 ApplyExecState

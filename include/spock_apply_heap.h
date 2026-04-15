@@ -26,9 +26,5 @@ extern void spock_apply_heap_update(SpockRelation *rel,
 extern void spock_apply_heap_delete(SpockRelation *rel,
 									SpockTupleData *oldtup);
 
-bool		spock_apply_heap_can_mi(SpockRelation *rel);
-void		spock_apply_heap_mi_add_tuple(SpockRelation *rel,
-										  SpockTupleData *tup);
-void		spock_apply_heap_mi_finish(SpockRelation *rel);
 
 #endif							/* SPOCK_APPLY_HEAP_H */
