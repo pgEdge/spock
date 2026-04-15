@@ -98,10 +98,16 @@ ok($sub_active, 'Subscription sub_n2_n1 active on n2');
 # ==========================================================================
 # 3. Get the logical slot created on n1 for n2
 # ==========================================================================
-my $slot_name = scalar_query(1,
-    "SELECT slot_name FROM pg_replication_slots WHERE slot_type='logical' LIMIT 1");
-$slot_name =~ s/\s+//g;
-ok(length($slot_name) > 0,
+# The slot is created asynchronously by the sync worker after subscription
+# is enabled, so poll until it appears (up to 60s).
+my $slot_name = '';
+my $slot_ready = wait_until(60, 3, sub {
+    $slot_name = scalar_query(1,
+        "SELECT slot_name FROM pg_replication_slots WHERE slot_type='logical' LIMIT 1");
+    $slot_name =~ s/\s+//g;
+    return length($slot_name) > 0;
+});
+ok($slot_ready && length($slot_name) > 0,
     "Logical slot created on n1: '$slot_name'");
 
 # ==========================================================================
@@ -134,6 +140,21 @@ if ($pg_major >= 18) {
 # ==========================================================================
 # 6. Create physical replication slot for the standby
 # ==========================================================================
+
+# Force a WAL segment switch on n1 so the logical slot's restart_lsn
+# advances across a segment boundary.  On PG15/16 the failover-slot bgworker
+# uses wait_for_primary_slot_catchup() which requires the primary slot's
+# restart_lsn to be >= the standby's local WAL reservation; without a forced
+# switch the gap can be just a few bytes (within the same segment), making
+# the wait too easy to interrupt by promotion before the slot is persisted.
+if ($pg_major < 17) {
+    psql_or_bail(1, "SELECT pg_switch_wal()");
+    # Wait for n2's apply worker to acknowledge the new WAL position so the
+    # slot's confirmed_flush_lsn (and restart_lsn) advances past the switch
+    # point before we take the basebackup.
+    sleep(5);
+}
+
 psql_or_bail(1,
     "SELECT pg_create_physical_replication_slot('standby_physical_slot')");
 pass('Physical replication slot created on n1');
@@ -237,6 +258,31 @@ my $slot_present = wait_until($wait_secs, $poll_secs, sub {
 ok($slot_present,
     "Logical slot '$slot_name' present on standby within ${wait_secs}s");
 
+# Emit diagnostics whenever slot sync is slow / failed.
+unless ($slot_present) {
+    my $all_slots = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
+        "SELECT slot_name, slot_type, active FROM pg_replication_slots");
+    diag("  standby pg_replication_slots: $all_slots");
+
+    my $sub_enabled = scalar_query(2,
+        "SELECT sub_enabled FROM spock.subscription WHERE sub_name = 'sub_n2_n1'");
+    $sub_enabled =~ s/\s+//g;
+    diag("  n2 sub_n2_n1 sub_enabled: $sub_enabled");
+
+    my $n1_slots = scalar_query(1,
+        "SELECT slot_name||':'||active::text FROM pg_replication_slots WHERE slot_type='logical'");
+    $n1_slots =~ s/\s+//g;
+    diag("  n1 logical slots: $n1_slots");
+
+    if ($pg_major < 17) {
+        my $bgw_pid = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
+            "SELECT pid||' state='||state FROM pg_stat_activity
+             WHERE application_name = 'spock_failover_slots worker'");
+        $bgw_pid =~ s/\s+//g;
+        diag("  standby bgworker: $bgw_pid");
+    }
+}
+
 # ==========================================================================
 # 11. PG17+: verify synced=t and failover=t on standby
 # ==========================================================================
@@ -321,7 +367,22 @@ sleep(5);
 psql_or_bail(1,
     "INSERT INTO failover_test VALUES (1, 'before_failover')");
 
-my $data_ok = wait_until(30, 3, sub {
+# Check subscription state before waiting for data
+{
+    my $sub_state = scalar_query(2,
+        "SELECT sub_enabled FROM spock.subscription WHERE sub_name = 'sub_n2_n1'");
+    $sub_state =~ s/\s+//g;
+    diag("  n2 sub_n2_n1 sub_enabled before data check: $sub_state");
+
+    # If disabled due to error, re-enable so the test can proceed
+    if ($sub_state eq 'f') {
+        diag("  Re-enabling disabled subscription sub_n2_n1");
+        psql_or_bail(2, "SELECT spock.sub_enable('sub_n2_n1')");
+        sleep(5);
+    }
+}
+
+my $data_ok = wait_until(60, 3, sub {
     my $v = scalar_query(2,
         "SELECT val FROM failover_test WHERE id = 1");
     $v =~ s/\s+//g;
@@ -367,6 +428,15 @@ ok($promoted, 'Standby promoted to primary (no longer in recovery)');
 #     - Add a failover interface on n1's node record
 #     - Switch subscription to use that interface
 # ==========================================================================
+
+# Disable the subscription first to ensure the apply worker has fully
+# stopped before we change the interface DSN.  This is especially important
+# on PG16 where the worker may be in a reconnect loop after the primary
+# went away; without an explicit disable the DSN change can race with the
+# worker's next connection attempt.
+psql_or_bail(2, "SELECT spock.sub_disable('sub_n2_n1')");
+sleep(3);
+
 psql_or_bail(2,
     "SELECT spock.node_add_interface(
         'n1', 'n1_promoted',
@@ -376,9 +446,8 @@ psql_or_bail(2,
 psql_or_bail(2,
     "SELECT spock.sub_alter_interface('sub_n2_n1', 'n1_promoted')");
 
-# spock auto-disables a subscription on fatal apply errors (including an
-# abrupt primary shutdown).  Re-enable it so the apply worker reconnects
-# using the new interface pointing to the promoted standby.
+# Re-enable so the apply worker connects using the new interface that
+# points to the promoted standby.
 psql_or_bail(2, "SELECT spock.sub_enable('sub_n2_n1')");
 
 # Wait for n2's apply worker to connect to the promoted standby.
