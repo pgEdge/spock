@@ -952,6 +952,20 @@ _PG_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		elog(ERROR, "spock is not in shared_preload_libraries");
 
+	/*
+	 * Runtime patchset check: if the server binary was built from a
+	 * different patchset generation than this extension, refuse to
+	 * start.  An unpatched server never reaches here -- the dynamic
+	 * linker fails on the missing SpockCorePatchsetVersion symbol.
+	 */
+	if (SpockCorePatchsetVersion != SPOCK_CORE_PATCHSET_VERSION)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("spock core patchset version mismatch: "
+						"server has v%d, extension expects v%d",
+						SpockCorePatchsetVersion,
+						SPOCK_CORE_PATCHSET_VERSION)));
+
 	DefineCustomEnumVariable("spock.conflict_resolution",
 							 gettext_noop("Sets method used for conflict resolution for resolvable conflicts."),
 							 NULL,

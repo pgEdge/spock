@@ -1,0 +1,28 @@
+Spock core-patchset: export patchset version via miscadmin.h and globals.c.
+
+Adds SPOCK_CORE_PATCHSET_VERSION (compile-time constant) and
+SpockCorePatchsetVersion (runtime global) to the standard places
+PostgreSQL already uses for server-wide state.  No new files.
+
+--- a/src/include/miscadmin.h
++++ b/src/include/miscadmin.h
+@@ -498,4 +498,11 @@ extern bool has_rolreplication(Oid roleid);
+ /* in executor/nodeHash.c */
+ extern size_t get_hash_memory_limit(void);
+
++/*
++ * Spock core-patchset identity.  Bump the version when the patchset
++ * changes in a way visible to the extension binary.
++ */
++#define SPOCK_CORE_PATCHSET_VERSION 1
++extern PGDLLIMPORT const int SpockCorePatchsetVersion;
++
+ #endif							/* MISCADMIN_H */
+--- a/src/backend/utils/init/globals.c
++++ b/src/backend/utils/init/globals.c
+@@ -152,3 +152,5 @@ int64		VacuumPageDirty = 0;
+
+ int			VacuumCostBalance = 0;	/* working state for vacuum */
+ bool		VacuumCostActive = false;
++
++const int	SpockCorePatchsetVersion = SPOCK_CORE_PATCHSET_VERSION;

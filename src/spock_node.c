@@ -65,9 +65,10 @@ typedef struct NodeTuple
 #define Anum_node_country	4
 #define Anum_node_info		5
 
-#define Natts_local_node			2
-#define Anum_node_local_id			1
-#define Anum_node_local_node_if		2
+#define Natts_local_node				3
+#define Anum_node_local_id				1
+#define Anum_node_local_node_if			2
+#define Anum_node_local_node_version	3
 
 typedef struct NodeInterfaceTuple
 {
@@ -455,6 +456,7 @@ create_local_node(Oid nodeid, Oid ifid)
 
 	values[Anum_node_local_id - 1] = ObjectIdGetDatum(nodeid);
 	values[Anum_node_local_node_if - 1] = ObjectIdGetDatum(ifid);
+	values[Anum_node_local_node_version - 1] = Int32GetDatum(SPOCK_VERSION_NUM);
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
@@ -563,6 +565,47 @@ get_local_node(bool for_update, bool missing_ok)
 										  &isnull));
 	nodeifid = DatumGetObjectId(fastgetattr(tuple, Anum_node_local_node_if,
 											desc, &isnull));
+
+	/*
+	 * Version check.  The node_version column was added in Spock 6.0.
+	 * If the relation still has only 2 attributes the extension SQL has
+	 * not been upgraded yet.  If the column exists but carries a NULL or
+	 * a non-matching value, the node was touched by a different build.
+	 *
+	 * Always ERROR regardless of missing_ok -- returning NULL would
+	 * conflate "node not configured" with "node misconfigured", and
+	 * callers are not obliged to check the return value.
+	 */
+	if (desc->natts < Anum_node_local_node_version)
+	{
+		systable_endscan(scan);
+		table_close(rel, for_update ? NoLock : RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("spock extension schema outdated"),
+				 errhint("Run ALTER EXTENSION spock UPDATE.")));
+	}
+
+	/* Column exists -- safe to read. */
+	{
+		int32	node_version;
+
+		node_version = DatumGetInt32(fastgetattr(tuple,
+												 Anum_node_local_node_version,
+												 desc, &isnull));
+		if (isnull || node_version != SPOCK_VERSION_NUM)
+		{
+			systable_endscan(scan);
+			table_close(rel, for_update ? NoLock : RowExclusiveLock);
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("spock version mismatch: "
+							"node at v%d, binary at v%d",
+							isnull ? 0 : node_version,
+							SPOCK_VERSION_NUM),
+					 errhint("Run ALTER EXTENSION spock UPDATE.")));
+		}
+	}
 
 	systable_endscan(scan);
 	table_close(rel, for_update ? NoLock : RowExclusiveLock);
