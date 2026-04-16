@@ -1,0 +1,136 @@
+# Keep its logic in sync with zodan_sync.yml!
+
+name: Nightly Long-running TAP Tests
+run-name: Long-running TAP tests (nightly)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'  # Every day at 02:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  # Query GitHub for all currently open PRs and expose them as a JSON matrix.
+  # If there are no open PRs the workflow exits cleanly with no test jobs.
+  setup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.list-prs.outputs.matrix }}
+    steps:
+      - name: List recently-updated open PRs
+        id: list-prs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # On a scheduled run: include only PRs updated within the last 25 hours
+          # (1-hour buffer for scheduling jitter) so every open/push is covered
+          # by that night's run without retesting PRs that have not changed.
+          # On a manual dispatch: include all open PRs regardless of age.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            CUTOFF=$(date -u -d '25 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
+            FILTER='[.[] | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
+          else
+            FILTER='[.[] | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
+            CUTOFF=""
+          fi
+          ALL_JSON="[]"
+          PAGE=1
+          while true; do
+            PAGE_JSON=$(curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/pulls?state=open&sort=updated&direction=desc&per_page=100&page=$PAGE") \
+              || { echo "curl failed on page $PAGE" >&2; exit 1; }
+            [ -n "$PAGE_JSON" ] \
+              || { echo "curl returned empty response on page $PAGE" >&2; exit 1; }
+            COUNT=$(printf '%s' "$PAGE_JSON" | jq 'length') \
+              || { echo "jq failed to parse page $PAGE response" >&2; exit 1; }
+            [[ "$COUNT" =~ ^[0-9]+$ ]] \
+              || { echo "jq returned non-numeric COUNT ('$COUNT') on page $PAGE" >&2; exit 1; }
+            [ "$COUNT" -eq 0 ] && break
+            ALL_JSON=$(printf '%s\n%s' "$ALL_JSON" "$PAGE_JSON" | jq -cs 'add') \
+              || { echo "jq failed to merge page $PAGE into ALL_JSON" >&2; exit 1; }
+            PAGE=$((PAGE + 1))
+          done
+          MATRIX=$(printf '%s' "$ALL_JSON" | jq -c --arg cutoff "$CUTOFF" "$FILTER") \
+            || { echo "jq failed to build MATRIX" >&2; exit 1; }
+          printf '%s' "$MATRIX" | jq -e '.' > /dev/null \
+            || { echo "MATRIX is not valid JSON: $MATRIX" >&2; exit 1; }
+          echo "Recently-updated PRs: $MATRIX"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  pull-and-test:
+    needs: setup
+    # Skip entirely when there are no open PRs.
+    if: needs.setup.outputs.matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.setup.outputs.matrix) }}
+        pgver: [15, 16, 17, 18]
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.pr.head_repo || github.repository }}
+          ref: ${{ matrix.pr.sha }}
+
+      - name: Add permissions
+        run: |
+          sudo chown -R "$(whoami):$(id -gn)" "${GITHUB_WORKSPACE}"
+          chmod -R u+w "${GITHUB_WORKSPACE}"
+
+      - name: Set up Docker
+        # Codacy wants us to use full commit SHA. This is for v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      - name: Build docker container
+        run: |
+            docker build \
+            --build-arg PGVER=${{ matrix.pgver }} \
+            -t spock -f tests/docker/Dockerfile-step-1.el9 .
+
+      - name: Build nightly test list from schedule file
+        run: |
+          TESTS=$(grep '^test:' tests/tap/schedule-nightly \
+                  | sed 's/^test:[[:space:]]*/t\//' | sed 's/$/.pl/' \
+                  | tr '\n' ' ' | sed 's/ *$//')
+          echo "NIGHTLY_TESTS=$TESTS" >> "$GITHUB_ENV"
+
+      - name: Run long-lasting TAP tests
+        run: |
+          TAP_CT_NAME="spock-tap-nightly-pr${{ matrix.pr.number }}-${{ matrix.pgver }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "TAP_CT_NAME=$TAP_CT_NAME" >> "$GITHUB_ENV"
+          docker run --name "$TAP_CT_NAME" -e PGVER=${{ matrix.pgver }} spock \
+            /home/pgedge/run-spock-tap.sh \
+            "${{ env.NIGHTLY_TESTS }}" \
+            1
+        timeout-minutes: 1440
+
+      - name: Collect TAP artifacts (from container)
+        if: ${{ always() }}
+        run: |
+          docker cp "$TAP_CT_NAME":/home/pgedge/spock/ "$GITHUB_WORKSPACE/results" || true
+          docker rm -f "$TAP_CT_NAME" || true
+
+      - name: Upload TAP artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tap-nightly-pr${{ matrix.pr.number }}-pg${{ matrix.pgver }}
+          path: |
+            ${{ github.workspace }}/results
+          if-no-files-found: ignore
+          retention-days: 7
+
