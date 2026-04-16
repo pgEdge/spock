@@ -435,3 +435,7 @@ CREATE FUNCTION spock.sub_alter_options(
 RETURNS boolean
 AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
 LANGUAGE C STRICT VOLATILE;
+
+ALTER TABLE spock.local_node
+  ADD COLUMN IF NOT EXISTS node_version int4 NOT NULL DEFAULT 0;
+UPDATE spock.local_node SET node_version = spock.spock_version_num();
