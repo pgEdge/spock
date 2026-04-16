@@ -652,10 +652,21 @@ spock_group_resource_load(void)
 void
 spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
 {
-	if ((flags & (CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_END_OF_RECOVERY)) == 0)
-		return;
-
-	/* Dump group progress to resource.dat */
+	/*
+	 * Dump current progress state to resource.dat at every checkpoint.
+	 *
+	 * resource.dat and WAL cooperate for crash recovery:
+	 *   - resource.dat seeds shmem with checkpoint-time values on restart
+	 *   - WAL replay (spock_rmgr_redo) advances any entries written after
+	 *     checkPointRedo
+	 *
+	 * Without dumping at regular checkpoints, a crash after a checkpoint
+	 * leaves resource.dat with values from the last clean shutdown. If apply
+	 * workers were idle during the checkpoint interval (provider unreachable),
+	 * no SPOCK_RMGR_APPLY_PROGRESS records exist after checkPointRedo to
+	 * recover from either, causing spock.progress to show stale values or
+	 * missing entries after crash recovery.
+	 */
 	spock_group_resource_dump();
 }
 
