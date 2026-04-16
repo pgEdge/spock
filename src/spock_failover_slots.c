@@ -24,6 +24,7 @@
 #include "access/genam.h"
 #include "access/table.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "access/xlogrecovery.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_database.h"
@@ -858,6 +859,17 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		if (XLogRecPtrIsInvalid(MyReplicationSlot->data.restart_lsn))
 		{
 			XLogRecPtr rcvPtr = GetWalRcvFlushRecPtr(NULL, NULL);
+
+			/*
+			 * GetWalRcvFlushRecPtr returns InvalidXLogRecPtr when the WAL
+			 * receiver process has not yet flushed any WAL (e.g. the
+			 * bgworker starts before the receiver has received its first
+			 * byte).  Fall back to the recovery redo pointer, which is
+			 * always set from the pg_basebackup checkpoint and represents
+			 * the oldest WAL position available on this standby.
+			 */
+			if (XLogRecPtrIsInvalid(rcvPtr))
+				rcvPtr = GetRedoRecPtr();
 
 			if (!XLogRecPtrIsInvalid(rcvPtr))
 			{
