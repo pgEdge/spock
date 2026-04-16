@@ -1,0 +1,36 @@
+Spock core-patchset: export patchset version via miscadmin.h and globals.c.
+
+Adds SPOCK_CORE_PATCHSET_VERSION (compile-time constant) and
+SpockCorePatchsetVersion (runtime global) to the standard places
+PostgreSQL already uses for server-wide state.  No new files.
+
+The Spock extension checks SpockCorePatchsetVersion in _PG_init().
+If the server was built without the patchset the .so fails to load
+(undefined symbol).  If the version does not match, _PG_init()
+raises ERROR.
+
+Bump SPOCK_CORE_PATCHSET_VERSION when the patchset changes in a
+way visible to the extension (new/removed patches, changed symbols
+or struct layout).  Do NOT bump for mechanical rebases.
+
+--- a/src/include/miscadmin.h
++++ b/src/include/miscadmin.h
+@@ -540,4 +540,11 @@ extern void SerializeClientConnectionInfo(Size maxsize, char *start_address);
+ /* in executor/nodeHash.c */
+ extern size_t get_hash_memory_limit(void);
+
++/*
++ * Spock core-patchset identity.  Bump the version when the patchset
++ * changes in a way visible to the extension binary.
++ */
++#define SPOCK_CORE_PATCHSET_VERSION 1
++extern PGDLLIMPORT const int SpockCorePatchsetVersion;
++
+ #endif							/* MISCADMIN_H */
+--- a/src/backend/utils/init/globals.c
++++ b/src/backend/utils/init/globals.c
+@@ -157,3 +157,5 @@ int			serializable_buffers = 32;
+ int			subtransaction_buffers = 0;
+ int			transaction_buffers = 0;
++
++const int	SpockCorePatchsetVersion = SPOCK_CORE_PATCHSET_VERSION;

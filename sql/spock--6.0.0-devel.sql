@@ -18,7 +18,8 @@ CREATE TABLE spock.node_interface (
 
 CREATE TABLE spock.local_node (
     node_id oid PRIMARY KEY REFERENCES node(node_id),
-    node_local_interface oid NOT NULL REFERENCES node_interface(if_id)
+    node_local_interface oid NOT NULL REFERENCES node_interface(if_id),
+    node_version int4 NOT NULL DEFAULT 0
 );
 
 CREATE TABLE spock.subscription (
