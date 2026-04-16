@@ -41,4 +41,4 @@ test: 015_skip_lsn
 test: 015_forward_origin_advance
 test: 016_sub_disable_missing_relation
 test: 018_forward_origins
-020_version_safety_net
+test: 020_version_safety_net
