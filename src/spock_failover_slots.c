@@ -840,6 +840,37 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 */
 		ReplicationSlotReserveWal();
 
+		/*
+		 * On PG16 and earlier standbys, ReplicationSlotReserveWal() may leave
+		 * restart_lsn as InvalidXLogRecPtr when the standby hasn't yet decoded
+		 * any WAL locally.  If we leave it at zero the unsigned comparison
+		 * below (remote_slot->restart_lsn < slot->data.restart_lsn) will be
+		 * FALSE for any real remote LSN, causing us to skip
+		 * wait_for_primary_slot_catchup and persist a slot with the remote's
+		 * restart_lsn — which may be before the standby's WAL streaming start
+		 * position — resulting in an immediate PANIC ("required WAL not
+		 * available") and an infinite crash loop.
+		 *
+		 * Fix: seed restart_lsn with the actual WAL receive position so the
+		 * catchup condition fires correctly whenever the remote slot requires
+		 * WAL that precedes what the standby has streamed so far.
+		 */
+		if (XLogRecPtrIsInvalid(MyReplicationSlot->data.restart_lsn))
+		{
+			XLogRecPtr rcvPtr = GetWalRcvFlushRecPtr(NULL, NULL);
+
+			if (!XLogRecPtrIsInvalid(rcvPtr))
+			{
+				SpinLockAcquire(&slot->mutex);
+				slot->data.restart_lsn = rcvPtr;
+				SpinLockRelease(&slot->mutex);
+				elog(DEBUG1,
+					 "spock_failover_slots: seeded restart_lsn to WAL receive"
+					 " position %X/%X for new slot \"%s\"",
+					 LSN_FORMAT_ARGS(rcvPtr), remote_slot->name);
+			}
+		}
+
 		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 		xmin_horizon = GetOldestSafeDecodingTransactionId(true);
 		slot->effective_catalog_xmin = xmin_horizon;
