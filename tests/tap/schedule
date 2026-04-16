@@ -43,3 +43,4 @@ test: 016_sub_disable_missing_relation
 test: 018_forward_origins
 test: 019_stale_fd_epoll_after_conn_death
 test: 022_rmgr_progress_post_checkpoint_crash
+020_version_safety_net

@@ -568,30 +568,46 @@ get_local_node(bool for_update, bool missing_ok)
 
 	/*
 	 * Version check.  The node_version column was added in Spock 6.0.
-	 * If the relation still has only 2 attributes the extension SQL has
-	 * not been upgraded yet.  If the column exists but carries a NULL or
-	 * a non-matching value, the node was touched by a different build.
+	 * Look up the column by name and verify its type.  We cannot rely
+	 * on positional access (Anum constants) because DROP COLUMN leaves
+	 * a gap in the physical layout, and VACUUM FULL renumbers attributes.
 	 *
 	 * Always ERROR regardless of missing_ok -- returning NULL would
 	 * conflate "node not configured" with "node misconfigured", and
 	 * callers are not obliged to check the return value.
 	 */
-	if (desc->natts < Anum_node_local_node_version)
 	{
-		systable_endscan(scan);
-		table_close(rel, for_update ? NoLock : RowExclusiveLock);
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("spock extension schema outdated"),
-				 errhint("Run ALTER EXTENSION spock UPDATE.")));
-	}
+		AttrNumber	ver_attnum;
+		int32		node_version;
 
-	/* Column exists -- safe to read. */
-	{
-		int32	node_version;
+		ver_attnum = InvalidAttrNumber;
+		for (int i = 0; i < desc->natts; i++)
+		{
+			Form_pg_attribute att = TupleDescAttr(desc, i);
+
+			if (att->attisdropped)
+				continue;
+			if (strcmp(NameStr(att->attname), "node_version") == 0)
+			{
+				ver_attnum = att->attnum;
+				break;
+			}
+		}
+
+		if (!AttributeNumberIsValid(ver_attnum))
+		{
+			systable_endscan(scan);
+			table_close(rel, for_update ? NoLock : RowExclusiveLock);
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("spock extension schema outdated"),
+					 errhint("Run ALTER EXTENSION spock UPDATE.")));
+		}
+
+		Assert(TupleDescAttr(desc, ver_attnum - 1)->atttypid == INT4OID);
 
 		node_version = DatumGetInt32(fastgetattr(tuple,
-												 Anum_node_local_node_version,
+												 ver_attnum,
 												 desc, &isnull));
 		if (isnull || node_version != SPOCK_VERSION_NUM)
 		{
