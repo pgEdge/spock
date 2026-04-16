@@ -24,7 +24,7 @@ or struct layout).  Do NOT bump for mechanical rebases.
 + * changes in a way visible to the extension binary.
 + */
 +#define SPOCK_CORE_PATCHSET_VERSION 1
-+extern PGDLLIMPORT const int SpockCorePatchsetVersion;
++extern PGDLLIMPORT int SpockCorePatchsetVersion;
 +
  #endif							/* MISCADMIN_H */
 --- a/src/backend/utils/init/globals.c
@@ -33,4 +33,4 @@ or struct layout).  Do NOT bump for mechanical rebases.
  int			subtransaction_buffers = 0;
  int			transaction_buffers = 0;
 +
-+const int	SpockCorePatchsetVersion = SPOCK_CORE_PATCHSET_VERSION;
++int	SpockCorePatchsetVersion = SPOCK_CORE_PATCHSET_VERSION;

@@ -15,7 +15,7 @@ PostgreSQL already uses for server-wide state.  No new files.
 + * changes in a way visible to the extension binary.
 + */
 +#define SPOCK_CORE_PATCHSET_VERSION 1
-+extern PGDLLIMPORT const int SpockCorePatchsetVersion;
++extern PGDLLIMPORT int SpockCorePatchsetVersion;
 +
  #endif							/* MISCADMIN_H */
 --- a/src/backend/utils/init/globals.c
@@ -24,4 +24,4 @@ PostgreSQL already uses for server-wide state.  No new files.
  int			subtransaction_buffers = 0;
  int			transaction_buffers = 0;
 +
-+const int	SpockCorePatchsetVersion = SPOCK_CORE_PATCHSET_VERSION;
++int	SpockCorePatchsetVersion = SPOCK_CORE_PATCHSET_VERSION;
