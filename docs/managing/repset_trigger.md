@@ -49,7 +49,7 @@ replication sets for newly created tables. For example:
     CREATE EVENT TRIGGER spock_assign_repset_trg
         ON ddl_command_end
         WHEN TAG IN ('CREATE TABLE', 'CREATE TABLE AS')
-        EXECUTE PROCEDURE spock_assign_repset();
+        EXECUTE FUNCTION spock_assign_repset();
 ```
 
 The code snippet shown above adds any new table created in the `config`
