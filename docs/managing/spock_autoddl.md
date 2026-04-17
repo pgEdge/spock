@@ -23,9 +23,8 @@ automatic DDL replication, set the following parameters to `on`:
   table from replication.
 
 * `spock.allow_ddl_from_functions` enables spock to automatically replicate
-  DDL statements that are called within functions. You can turned this `off`
-  if the functions are expected to run on every node. When set to `off`,
-  statements replicated from functions adhere to the same rule previously
+  DDL statements that are called within functions. Set `spock.allow_ddl_from_functions` to `off` if each function is expected to execute on every node. When set to `off`,
+  statements replicated from functions adhere to the same rule 
   described for `include_ddl_repset`. If a table possesses a primary key, it
   will be added into the `default` replication set; alternatively, they will
   be added to the `default_insert_only` replication set.

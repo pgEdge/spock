@@ -24,8 +24,8 @@ does not modify PostgreSQL server configuration or networking settings; it
 only removes Spock's logical representation of the interface.
 
 Other nodes that were using this interface to connect will no longer be able
-to use it. Ensure no active subscriptions are relying on this interface
-before removing it.
+to use it. To avoid a client error, ensure that no active subscriptions rely
+on this interface before attempting to remove it.
 
 This function writes metadata into the Spock catalogs but does not modify
 PostgreSQL server configuration or networking settings.
