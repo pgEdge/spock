@@ -28,7 +28,6 @@
 #define SPOCK_VERSION_NUM 60000
 
 #define EXTENSION_NAME "spock"
-#define spock_SECLABEL_PROVIDER "spock"
 
 #define REPLICATION_ORIGIN_ALL	"all"
 
