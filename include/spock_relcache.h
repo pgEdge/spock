@@ -44,6 +44,8 @@ typedef struct SpockRelation
 	Oid			idxoid;
 	Relation	rel;
 	int		   *attmap;
+	bool		has_delta_columns;
+	Oid		   *delta_apply_functions;
 
 	/* Additional cache, only valid as long as relation mapping is. */
 	bool		hasTriggers;
