@@ -1111,64 +1111,84 @@ synchronize_failover_slots(long sleep_time)
 			lsn = remote_slot->restart_lsn;
 	}
 
-	if (safe_lsn == InvalidXLogRecPtr ||
-		WalRcv->latestWalEnd == InvalidXLogRecPtr)
+	/*
+	 * We need the WAL flush position both for the latestWalEnd/lsn check
+	 * and for capping confirmed_lsn inside the slot loop.  Read it once
+	 * here so we use a consistent value throughout.
+	 *
+	 * On PostgreSQL builds with --enable-cassert, LogicalConfirmReceivedLocation
+	 * asserts that the LSN passed to it is not InvalidXLogRecPtr.  If
+	 * GetWalRcvFlushRecPtr returns 0 (which can happen in the brief window
+	 * after the WAL receiver starts but before it has flushed its first
+	 * page), capping confirmed_lsn to 0 and then passing 0 to
+	 * LogicalConfirmReceivedLocation will trip that assertion and SIGABRT the
+	 * bgworker, causing a postmaster cluster reset on every loop iteration.
+	 * Guard by returning early when the flush position is not yet valid.
+	 */
 	{
-		ereport(
-				WARNING,
-				(errmsg(
-						"cannot synchronize replication slot positions yet because feedback was not sent yet")));
-		was_lsn_safe = false;
-		PQfinish(conn);
-		return Min(sleep_time, WORKER_WAIT_FEEDBACK);
-	}
-	else if (WalRcv->latestWalEnd < lsn)
-	{
-		ereport(
-				WARNING,
-				(errmsg(
-						"requested slot synchronization point %X/%X is ahead of the standby position %X/%X, not synchronizing slots",
-						(uint32) (lsn >> 32), (uint32) (lsn),
-						(uint32) (WalRcv->latestWalEnd >> 32),
-						(uint32) (WalRcv->latestWalEnd))));
-		was_lsn_safe = false;
-		PQfinish(conn);
-		return Min(sleep_time, WORKER_WAIT_FEEDBACK);
-	}
+		XLogRecPtr	receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
 
-	foreach(lc, slots)
-	{
-		RemoteSlot *remote_slot = lfirst(lc);
-		XLogRecPtr	receivePtr;
+		if (safe_lsn == InvalidXLogRecPtr ||
+			WalRcv->latestWalEnd == InvalidXLogRecPtr ||
+			XLogRecPtrIsInvalid(receivePtr))
+		{
+			ereport(
+					WARNING,
+					(errmsg(
+							"cannot synchronize replication slot positions yet because feedback was not sent yet")));
+			was_lsn_safe = false;
+			PQfinish(conn);
+			return Min(sleep_time, WORKER_WAIT_FEEDBACK);
+		}
+		else if (WalRcv->latestWalEnd < lsn)
+		{
+			ereport(
+					WARNING,
+					(errmsg(
+							"requested slot synchronization point %X/%X is ahead of the standby position %X/%X, not synchronizing slots",
+							(uint32) (lsn >> 32), (uint32) (lsn),
+							(uint32) (WalRcv->latestWalEnd >> 32),
+							(uint32) (WalRcv->latestWalEnd))));
+			was_lsn_safe = false;
+			PQfinish(conn);
+			return Min(sleep_time, WORKER_WAIT_FEEDBACK);
+		}
 
-		/*
-		 * If we haven't received WAL for a remote slot's current
-		 * confirmed_flush_lsn our local copy shouldn't reflect a confirmed
-		 * position in the future. Cap it at the position we really received.
-		 *
-		 * Because the client will use a replication origin to track its
-		 * position, in most cases it'll still fast-forward to the new
-		 * confirmed position even if that skips over a gap of WAL we never
-		 * received from the provider before failover. We can't detect or
-		 * prevent that as the same fast forward is normal when we lost slot
-		 * state in a provider crash after subscriber committed but before we
-		 * saved the new confirmed flush lsn. The master will also fast
-		 * forward the slot over irrelevant changes and then the subscriber
-		 * will update its confirmed_flush_lsn in response to master standby
-		 * status updates.
-		 */
-		receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
-		if (remote_slot->confirmed_lsn > receivePtr)
-			remote_slot->confirmed_lsn = receivePtr;
+		foreach(lc, slots)
+		{
+			RemoteSlot *remote_slot = lfirst(lc);
 
-		/*
-		 * For simplicity we always move restart_lsn of all slots to the
-		 * restart_lsn needed by the furthest-behind master slot.
-		 */
-		if (remote_slot->restart_lsn > lsn)
-			remote_slot->restart_lsn = lsn;
+			/*
+			 * If we haven't received WAL for a remote slot's current
+			 * confirmed_flush_lsn our local copy shouldn't reflect a
+			 * confirmed position in the future. Cap it at the position we
+			 * really received.
+			 *
+			 * Because the client will use a replication origin to track its
+			 * position, in most cases it'll still fast-forward to the new
+			 * confirmed position even if that skips over a gap of WAL we
+			 * never received from the provider before failover. We can't
+			 * detect or prevent that as the same fast forward is normal when
+			 * we lost slot state in a provider crash after subscriber
+			 * committed but before we saved the new confirmed flush lsn. The
+			 * master will also fast forward the slot over irrelevant changes
+			 * and then the subscriber will update its confirmed_flush_lsn in
+			 * response to master standby status updates.
+			 *
+			 * receivePtr is guaranteed non-zero here (checked above).
+			 */
+			if (remote_slot->confirmed_lsn > receivePtr)
+				remote_slot->confirmed_lsn = receivePtr;
 
-		synchronize_one_slot(remote_slot);
+			/*
+			 * For simplicity we always move restart_lsn of all slots to the
+			 * restart_lsn needed by the furthest-behind master slot.
+			 */
+			if (remote_slot->restart_lsn > lsn)
+				remote_slot->restart_lsn = lsn;
+
+			synchronize_one_slot(remote_slot);
+		}
 	}
 
 	PQfinish(conn);
