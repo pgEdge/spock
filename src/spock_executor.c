@@ -215,7 +215,7 @@ DeleteSecurityLabels(const char *provider)
 		Assert(!isnull);
 		provider = TextDatumGetCString(datum);
 
-		if (strcmp(provider, SPOCK_SECLABEL_PROVIDER) != 0)
+		if (strcmp(provider, spock_SECLABEL_PROVIDER) != 0)
 			continue;
 
 		CatalogTupleDelete(pg_seclabel, &htup->t_self);
@@ -279,7 +279,7 @@ spock_object_access(ObjectAccessType access,
 		if (dropping_spock_obj)
 		{
 			/* Need to drop any security labels created by the extension */
-			DeleteSecurityLabels(SPOCK_SECLABEL_PROVIDER);
+			DeleteSecurityLabels(spock_SECLABEL_PROVIDER);
 			return;
 		}
 
