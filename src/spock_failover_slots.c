@@ -842,44 +842,42 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		ReplicationSlotReserveWal();
 
 		/*
-		 * On PG16 and earlier standbys, ReplicationSlotReserveWal() may leave
-		 * restart_lsn as InvalidXLogRecPtr when the standby hasn't yet decoded
-		 * any WAL locally.  If we leave it at zero the unsigned comparison
-		 * below (remote_slot->restart_lsn < slot->data.restart_lsn) will be
-		 * FALSE for any real remote LSN, causing us to skip
-		 * wait_for_primary_slot_catchup and persist a slot with the remote's
-		 * restart_lsn — which may be before the standby's WAL streaming start
-		 * position — resulting in an immediate PANIC ("required WAL not
-		 * available") and an infinite crash loop.
+		 * On PG16 and earlier standbys, ReplicationSlotReserveWal() may set
+		 * restart_lsn to InvalidXLogRecPtr (zero) or to a value that is below
+		 * the standby's recovery redo pointer — the oldest WAL position the
+		 * standby actually has from the pg_basebackup checkpoint.
 		 *
-		 * Fix: seed restart_lsn with the actual WAL receive position so the
-		 * catchup condition fires correctly whenever the remote slot requires
-		 * WAL that precedes what the standby has streamed so far.
+		 * When restart_lsn is zero, the unsigned comparison below
+		 * (remote_slot->restart_lsn < slot->data.restart_lsn) is always FALSE
+		 * for any real remote LSN, so wait_for_primary_slot_catchup is never
+		 * called.  When restart_lsn is a small but non-zero value (less than
+		 * the redo pointer), the comparison still fails to fire for remote
+		 * slots that require WAL older than what the standby has.  In both
+		 * cases we end up persisting a slot with the remote's restart_lsn,
+		 * which the standby cannot satisfy, causing an immediate PANIC
+		 * ("required WAL not available") and an infinite crash loop on the
+		 * next startup.
+		 *
+		 * Fix: always ensure restart_lsn is at least as high as the recovery
+		 * redo pointer (GetRedoRecPtr), which is set from the basebackup
+		 * checkpoint and represents the guaranteed minimum WAL floor on this
+		 * standby.  Any remote slot that requires WAL older than that will
+		 * then correctly trigger wait_for_primary_slot_catchup.
 		 */
-		if (XLogRecPtrIsInvalid(MyReplicationSlot->data.restart_lsn))
 		{
-			XLogRecPtr rcvPtr = GetWalRcvFlushRecPtr(NULL, NULL);
+			XLogRecPtr	old_lsn = MyReplicationSlot->data.restart_lsn;
+			XLogRecPtr	redo_lsn = GetRedoRecPtr();
 
-			/*
-			 * GetWalRcvFlushRecPtr returns InvalidXLogRecPtr when the WAL
-			 * receiver process has not yet flushed any WAL (e.g. the
-			 * bgworker starts before the receiver has received its first
-			 * byte).  Fall back to the recovery redo pointer, which is
-			 * always set from the pg_basebackup checkpoint and represents
-			 * the oldest WAL position available on this standby.
-			 */
-			if (XLogRecPtrIsInvalid(rcvPtr))
-				rcvPtr = GetRedoRecPtr();
-
-			if (!XLogRecPtrIsInvalid(rcvPtr))
+			if (!XLogRecPtrIsInvalid(redo_lsn) && redo_lsn > old_lsn)
 			{
 				SpinLockAcquire(&slot->mutex);
-				slot->data.restart_lsn = rcvPtr;
+				slot->data.restart_lsn = redo_lsn;
 				SpinLockRelease(&slot->mutex);
 				elog(DEBUG1,
-					 "spock_failover_slots: seeded restart_lsn to WAL receive"
-					 " position %X/%X for new slot \"%s\"",
-					 LSN_FORMAT_ARGS(rcvPtr), remote_slot->name);
+					 "spock_failover_slots: bumped restart_lsn from %X/%X to"
+					 " redo pointer %X/%X for new slot \"%s\"",
+					 LSN_FORMAT_ARGS(old_lsn),
+					 LSN_FORMAT_ARGS(redo_lsn), remote_slot->name);
 			}
 		}
 
