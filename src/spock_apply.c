@@ -3782,12 +3782,9 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		/*
 		 * check if it's a DDL statement. we only do this for
 		 * in_spock_replicate_ddl_command
-		 * SECURITY LABEL command is not a DDL, just an utility one. Hence, let
-		 * spock execute this command.
 		 */
 		if (in_spock_replicate_ddl_command &&
-			GetCommandLogLevel(command->stmt) != LOGSTMT_DDL &&
-			!IsA(command->stmt, SecLabelStmt))
+			GetCommandLogLevel(command->stmt) != LOGSTMT_DDL)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
