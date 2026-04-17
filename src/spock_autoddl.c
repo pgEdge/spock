@@ -342,9 +342,8 @@ autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
 		 */
 		return false;
 
-	/* Only process DDL statements and SECURITY LABEL's */
-	if (GetCommandLogLevel(parsetree) != LOGSTMT_DDL &&
-		!IsA(parsetree, SecLabelStmt))
+	/* Only process DDL statements */
+	if (GetCommandLogLevel(parsetree) != LOGSTMT_DDL)
 		return false;
 
 	/* If DDL replication is disabled, do nothing */
