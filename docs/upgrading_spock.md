@@ -10,11 +10,13 @@ sequentially and perform the following steps:
 
 1. Disable auto-DDL.
 2. Stop the Postgres server.
-3. Build and install the updated Spock binaries.
-4. Restart the Postgres server.
-5. Use the psql command line to update the Spock version in use.
-6. Verify the node status.
-7. Enable Auto-DDL and restart the service on each node.
+3. Build the updated Spock binaries for your Postgres version.
+4. Restart the Postgres server; this will trigger an automatic update of the
+   binary if a newer binary is available.
+5. Use the psql command line to verify the Spock version in use and the node
+   status.
+6. After upgrading all of the nodes in your cluster, enable Auto-DDL and
+   restart the service on each node.
 
 A detailed description of each step in the upgrade process is provided below.
 
@@ -24,7 +26,8 @@ Before stopping a node, disable DDL replication to prevent schema changes
 during the upgrade. Connect to each node and run:
 
 ```sql
-SELECT spock.replicate_ddl('SET spock.enable_ddl_replication = off');
+SELECT spock.replicate_ddl('ALTER SYSTEM SET spock.enable_ddl_replication = off');
+SELECT pg_reload_conf();
 ```
 
 Or, set the following parameter in `postgresql.conf` on each node:
@@ -54,7 +57,7 @@ pg_ctl -D /path/to/data1 stop -m fast
 !!! warning
     This step is essential if old and new versions are incompatible.
 
-## Building and Installing the New Spock Binaries
+## Building the New Spock Binaries
 
 Before building the extension, you'll need to obtain updated Spock source
 code. If you regularly build the Spock extension from source code (available
@@ -97,44 +100,35 @@ ls -l $(pg_config --sharedir)/extension/spock--5.0.0--5.0.1.sql
 
 ## Restarting the Postgres Server
 
-After performing the upgrade, use pg_ctl to restart the Postgres postmaster
+Then, use pg_ctl to restart the Postgres postmaster
 process:
 
 ```bash
 pg_ctl -D /path/to/data1 start
 ```
 
-## Upgrading the Extension Version in Use
+When the server restarts, Spock's database manager background worker
+automatically detects the version mismatch and upgrades the extension schema
+(with `spock_manage_extension()` in `spock.c`).
 
-After building the extension, you need to update the Spock version in use;
-use the psql command line to modify the Spock version in use and confirm the
-node status.
+
+## Verifying the Extension Upgrade
+
+After building the extension, you can verify the version of the extension that
+is in use and the state of your replication cluster.  Use the psql command
+line to invoke the commands that follow.
 
 Connect to the database with psql:
 
 ```bash
-psql -d postgres -p port1
+psql -d database_name -p port_number
 ```
 
-Check the current version:
+Verify the Spock version that is in use:
 
 ```sql
 SELECT extname, extversion FROM pg_extension WHERE extname = 'spock';
 ```
-
-Upgrade the extension version in use:
-
-```sql
-ALTER EXTENSION spock UPDATE TO '5.0.1';
-```
-
-Verify the new version:
-
-```sql
-SELECT extname, extversion FROM pg_extension WHERE extname = 'spock';
-```
-
-## Verifying the Node Status
 
 Then, verify that the node is replicating. Check that subscriptions are 
 active with the following commands:
@@ -158,9 +152,8 @@ SELECT * FROM spock.node;
 
 ## Enabling Auto-DDL and Restarting the Service on Each Node
 
-After all of the nodes in your cluster have been upgraded successfully,
-connect to each node with psql and enable DDL replication. On each node, 
-enable automatic DDL replication:
+After upgrading all of the nodes in your cluster, connect to each node with
+psql and enable DDL replication:
 
 ```sql
 SELECT spock.replicate_ddl('SET spock.enable_ddl_replication = on');
