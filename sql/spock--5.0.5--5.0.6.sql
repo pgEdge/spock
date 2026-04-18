@@ -5,3 +5,12 @@
 
 ALTER TABLE spock.subscription
     ADD COLUMN sub_created_at timestamptz;
+
+CREATE FUNCTION spock.pause_apply_workers()
+RETURNS void VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_pause_apply_workers';
+
+CREATE FUNCTION spock.resume_apply_workers()
+RETURNS void VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_resume_apply_workers';
+
+REVOKE EXECUTE ON FUNCTION spock.pause_apply_workers() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION spock.resume_apply_workers() FROM PUBLIC;

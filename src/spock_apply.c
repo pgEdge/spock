@@ -720,6 +720,35 @@ action_error_callback(void *arg)
  * existing transaction).
  * Also provide a global snapshot and ensure we run in ApplyMessageContext.
  */
+
+/*
+ * If the pause flag is set (slot creation in progress for add_node),
+ * sleep on the ConditionVariable until resumed or timed out.
+ */
+static void
+maybe_pause_for_slot_creation(void)
+{
+	if (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+	{
+		MyApplyWorker->paused = true;
+		ConditionVariablePrepareToSleep(&SpockCtx->pause_cv);
+		while (pg_atomic_read_u32(&SpockCtx->pause_apply) != 0)
+		{
+			if (ConditionVariableTimedSleep(&SpockCtx->pause_cv,
+											spock_pause_timeout * 1000L,
+											WAIT_EVENT_LOGICAL_APPLY_MAIN))
+			{
+				elog(WARNING, "SPOCK: apply worker pause timed out after %ds, resuming",
+					 spock_pause_timeout);
+				pg_atomic_write_u32(&SpockCtx->pause_apply, 0);
+				break;
+			}
+		}
+		ConditionVariableCancelSleep();
+		MyApplyWorker->paused = false;
+	}
+}
+
 static bool
 begin_replication_step(void)
 {
@@ -736,6 +765,18 @@ begin_replication_step(void)
 
 	if (!IsTransactionState())
 	{
+		/*
+		 * Check if slot creation (add_node) needs us to pause.  This only
+		 * fires during add_node (a rare operation).  The fast path is a
+		 * single atomic read that almost always sees 0.
+		 *
+		 * Runs before StartTransactionCommand so the worker has no xid
+		 * while paused — pause_apply_workers can detect completion via
+		 * xid polling.  The previous transaction's commit is fully
+		 * complete, so progress reflects only committed state.
+		 */
+		maybe_pause_for_slot_creation();
+
 		StartTransactionCommand();
 		apply_api.on_begin();
 		result = true;
@@ -1168,6 +1209,8 @@ handle_commit(StringInfo s)
 	awake_transaction_waiters();
 
 	in_remote_transaction = false;
+
+	maybe_pause_for_slot_creation();
 
 	/*
 	 * Stop replay if we're doing limited replay and we've replayed up to the
