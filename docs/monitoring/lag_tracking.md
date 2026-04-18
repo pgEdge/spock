@@ -1,8 +1,12 @@
 # Lag Tracking
 
-The Spock extension's lag tracking feature shows how far behind a subscriber is when compared to a provider node in terms of write-ahead log (WAL) replication. You can use this feature to understand replication delays and monitor streaming health.
+The Spock extension's lag tracking feature shows how far behind a subscriber
+is when compared to a provider node in terms of write-ahead log (WAL)
+replication. You can use this feature to understand replication delays and
+monitor streaming health.
 
-Tracking is implemented via a SQL view named `spock.lag_tracker`, which exposes key metrics for replication lag on a per-node basis. For example:
+Tracking is implemented via a SQL view named `spock.lag_tracker`, which
+exposes key metrics for replication lag on a per-node basis. For example:
 
 ```sql
 -[ RECORD 1 ]---------+------------------------------
@@ -15,7 +19,7 @@ replication_lag_bytes | 0
 replication_lag       | 00:00:04.014177
 ```
 
-`spock.lag tracker` displays the following information:
+The following table describes the columns displayed by `spock.lag_tracker`:
 
 | Column Name | Description |
 |-------------|-------------|

@@ -1,21 +1,36 @@
-## NAME
+# spock.sub_show_table
 
-`spock.sub_show_table()`
+The `spock.sub_show_table()` function displays the synchronization status of a
+table.
 
-### SYNOPSIS
-    
-`spock.sub_show_table (subscription_name name, relation regclass)`
- 
-### DESCRIPTION
-    
-Shows synchronization status of a table. 
+## Synopsis
 
-### EXAMPLE
+```sql
+spock.sub_show_table(subscription_name name, relation regclass)
+```
 
-`spock.sub_show_table ('sub_n2n1', 'mytable')`
- 
-### POSITIONAL ARGUMENTS
-    subscription_name
-        The name of the existing subscription.
-    relation 
-        The name of existing table, optionally qualified.
+## Description
+
+The `spock.sub_show_table()` function shows the synchronization status of a
+table.
+
+## Arguments
+
+The function accepts the following arguments:
+
+- `subscription_name` - The name of an existing subscription.
+- `relation` - The name of an existing table, optionally qualified.
+
+## Example
+
+In the following example, the `spock.sub_show_table()` function displays the
+synchronization status of a table named `test` for a subscription named
+`sub_n2`:
+
+```sql
+SELECT * FROM spock.sub_show_table('sub_n2', 'test');
+-[ RECORD 1 ]----
+nspname | public
+relname | test
+status  | unknown
+```
