@@ -43,7 +43,7 @@ my $p2 = $node_ports->[1];   # n2 — subscriber
 my $conn_n1 = "host=$host dbname=$dbname port=$p1 user=$db_user password=$db_password";
 
 # PG log file for n2 (set by SpockTest create_postgresql_conf).
-my $pg_log_n2 = "../logs/00${p2}.log";
+my $pg_log_n2 = "$config->{log_dir}/00${p2}.log";
 
 # ===========================================================================
 # Phase 1: Basic SUB_DISABLE + skip_lsn recovery
