@@ -23,6 +23,8 @@
 #include "common/pg_prng.h"
 #include "port.h"
 
+#include "spock_injection.h"
+
 /* Maximum random delay, in milliseconds. */
 #define SPOCK_INJ_MAX_DELAY_MS	100
 
