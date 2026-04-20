@@ -1187,19 +1187,54 @@ handle_relation(StringInfo s)
 	(void) spock_read_rel(s);
 }
 
+/* Return the GUC name of the active exception behaviour mode. */
+static const char *
+get_exception_behaviour_name(void)
+{
+	switch (exception_behaviour)
+	{
+		case DISCARD:
+			return "discard";
+		case TRANSDISCARD:
+			return "transdiscard";
+		case SUB_DISABLE:
+			return "sub_disable";
+		default:
+			return "unknown";
+	}
+}
+
+/*
+ * Log a replication exception to spock.exception_log.
+ *
+ * Called for INSERT, UPDATE, DELETE, and TRUNCATE operations.  'failed'
+ * is true when an actual error occurred (relation not found, or subtransaction
+ * raised an error in DISCARD mode) and false when the operation was
+ * deliberately skipped during dry-run replay (TRANSDISCARD/SUB_DISABLE mode).
+ *
+ * When 'errmsg' is NULL — i.e. the tuple is being discarded because another
+ * command in the same transaction failed, not this one — a synthetic message
+ * is generated that names the active exception behaviour and the
+ * failed_action counter so the operator can cross-reference the root cause.
+ */
 static void
 log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 					 SpockTupleData *oldtup, SpockTupleData *newtup,
 					 const char *action_name)
 {
-	RepOriginId local_origin = InvalidRepOriginId;
-	TimestampTz local_commit_ts = 0;
-	TransactionId xmin = InvalidTransactionId;
-	bool		local_origin_found = false;
-	HeapTuple	localtup;
+	RepOriginId		local_origin = InvalidRepOriginId;
+	TimestampTz		local_commit_ts = 0;
+	TransactionId	xmin = InvalidTransactionId;
+	bool			local_origin_found = false;
+	HeapTuple		localtup;
 
 	if (!should_log_exception(failed))
 		return;
+
+	if (errmsg == NULL)
+		errmsg = psprintf("%s: tuple discarded due to exception at command_counter %u",
+						  get_exception_behaviour_name(),
+						  exception_log_ptr[my_exception_log_index].failed_action);
 
 	localtup = exception_log_ptr[my_exception_log_index].local_tuple;
 	if (localtup != NULL)
@@ -1251,6 +1286,9 @@ handle_insert(StringInfo s)
 
 	started_tx = begin_replication_step();
 
+	errcallback_arg.action_name = "INSERT";
+	xact_action_counter++;
+
 	oldcontext = MemoryContextSwitchTo(ApplyOperationContext);
 
 	rel = spock_read_insert(s, RowExclusiveLock, &newtup);
@@ -1279,9 +1317,7 @@ handle_insert(StringInfo s)
 		return;
 	}
 
-	errcallback_arg.action_name = "INSERT";
 	errcallback_arg.rel = rel;
-	xact_action_counter++;
 
 	/* If in list of relations which are being synchronized, skip. */
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
@@ -2369,13 +2405,14 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 
 			if (failed)
 				error_msg = edata->message;
-			else
-				error_msg =
-					(xact_action_counter ==
+			else if (xact_action_counter ==
 					 exception_log_ptr[my_exception_log_index].failed_action &&
-					 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
-					exception_log_ptr[my_exception_log_index].initial_error_message :
-					NULL;
+					 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0')
+				error_msg = exception_log_ptr[my_exception_log_index].initial_error_message;
+			else
+				error_msg = psprintf("%s: tuple discarded due to exception at command_counter %u",
+									 get_exception_behaviour_name(),
+									 exception_log_ptr[my_exception_log_index].failed_action);
 
 			add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
