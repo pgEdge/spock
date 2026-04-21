@@ -253,6 +253,7 @@ static bool apply_replay_queue_append_entry(ApplyReplayEntry **entry_p,
 static void apply_replay_queue_start_replay(void);
 static void apply_replay_spill_write_entry(int len, char *data);
 static ApplyReplayEntry *apply_replay_spill_read_entry(void);
+static void request_initial_status_update(PGconn *conn, XLogRecPtr startpos);
 
 /* Wrapper for latch for waiting for previous transaction to commit */
 void
@@ -2882,6 +2883,46 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 }
 
 /*
+ * Send a one-shot standby status update with replyRequested=1 so the
+ * publisher responds immediately with a keepalive carrying its current
+ * sentPtr. Called once per apply-worker (re)connect to refresh
+ * remote_insert_lsn / received_lsn in shmem without waiting for
+ * wal_sender_timeout/2. Independent of send_feedback's static state.
+ *
+ * Note on ordering: this 'r' message does not jump ahead of any pending
+ * 'w' messages the walsender already has queued. That is fine -- in
+ * protocol v5+ every 'w' header carries the publisher's current insert
+ * position, so UpdateWorkerStats refreshes remote_insert_lsn on the
+ * first 'w' that arrives, often sooner than the eventual 'k'. The
+ * forced keepalive matters most when the publisher is otherwise idle;
+ * when there is data flowing, the data messages do the job.
+ */
+static void
+request_initial_status_update(PGconn *conn, XLogRecPtr startpos)
+{
+	StringInfoData	msg;
+	int64			now = GetCurrentTimestamp();
+
+	initStringInfo(&msg);
+	pq_sendbyte(&msg, 'r');
+	pq_sendint64(&msg, startpos);	/* write */
+	pq_sendint64(&msg, startpos);	/* flush */
+	pq_sendint64(&msg, startpos);	/* apply */
+	pq_sendint64(&msg, now);		/* sendTime */
+	pq_sendbyte(&msg, true);		/* replyRequested */
+
+	elog(DEBUG2, "SPOCK %s: requesting initial status update at %X/%X",
+		 MySubscription->name,
+		 LSN_FORMAT_ARGS(startpos));
+
+	if (PQputCopyData(conn, msg.data, msg.len) <= 0 || PQflush(conn))
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("SPOCK %s: could not send initial status update: %s",
+						MySubscription->name, PQerrorMessage(conn))));
+}
+
+/*
  * Update frequently changing statistics of the apply group
  */
 static void
@@ -4069,6 +4110,13 @@ spock_apply_main(Datum main_arg)
 							origin_startpos, origins, repsets, NULL,
 							MySubscription->force_text_transfer);
 	pfree(repsets);
+
+	/*
+	 * Ask the publisher to immediately send a keepalive carrying its current
+	 * sentPtr so we can refresh remote_insert_lsn/received_lsn in shmem
+	 * without waiting for wal_sender_timeout/2.
+	 */
+	request_initial_status_update(streamConn, origin_startpos);
 
 	CommitTransactionCommand();
 
