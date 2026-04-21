@@ -150,7 +150,6 @@ int			log_origin_change = SPOCK_ORIGIN_NONE;
 int			spock_apply_idle_timeout = 300;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
-static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
 
 void		_PG_init(void);
 PGDLLEXPORT void spock_supervisor_main(Datum main_arg);
@@ -1243,9 +1242,6 @@ _PG_init(void)
 
 	if (IsBinaryUpgrade)
 		return;
-
-	prev_Checkpoint_hook = Checkpoint_hook;
-	Checkpoint_hook = spock_checkpoint_hook;
 
 	/* Spock resource manager */
 	spock_rmgr_init();

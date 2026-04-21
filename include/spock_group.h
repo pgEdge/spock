@@ -159,7 +159,6 @@ extern void spock_group_progress_update_ptr(SpockGroupEntry *entry,
 extern TimestampTz apply_worker_get_prev_remote_ts(void);
 
 extern void spock_group_resource_dump(void);
-extern void spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags);
 extern void spock_group_progress_update_list(List *lst);
 extern void spock_group_progress_force_set_list(List *lst);
 
