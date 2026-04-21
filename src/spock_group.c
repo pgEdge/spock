@@ -670,6 +670,16 @@ spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
 	spock_group_resource_dump();
 }
 
+/*
+ * spock_group_progress_update_list
+ *
+ * Update shmem progress for each entry in lst after a table COPY completes.
+ * Entries are applied via spock_group_progress_update (MAX-by-LSN semantics).
+ *
+ * After all entries are updated, a single spock_group_resource_dump()
+ * persists the complete hash to resource.dat (O(1) file writes rather
+ * than O(N) if we dumped per entry).
+ */
 void
 spock_group_progress_update_list(List *lst)
 {
@@ -678,8 +688,6 @@ spock_group_progress_update_list(List *lst)
 	foreach (lc, lst)
 	{
 		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
-
-		spock_apply_progress_add_to_wal(sap);
 
 		spock_group_progress_update(sap);
 
@@ -691,6 +699,9 @@ spock_group_progress_update_list(List *lst)
 			 LSN_FORMAT_ARGS(sap->remote_commit_lsn),
 			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
 	}
+
+	/* Persist all entries atomically via a single resource.dat dump. */
+	spock_group_resource_dump();
 
 	/*
 	 * Free the list and each object. Be careful here because it is inside
