@@ -702,9 +702,14 @@ spock_group_progress_update_list(List *lst)
 /*
  * spock_group_progress_force_set_list
  *
- * Write resume_lsn into the shmem progress entry for each peer during add_node.
- * Uses MAX-by-LSN: preserves the existing entry when it is already >= resume_lsn,
- * preventing double-apply from overwriting a live apply worker's higher value.
+ * Unconditionally write resume_lsn into the shmem progress entry for each
+ * peer during add_node. The resume_lsn from read_peer_progress is the
+ * COPY-snapshot boundary and is authoritative: the new node must replay
+ * from there, not from any live apply worker's current position.
+ *
+ * After all entries are updated, a single spock_group_resource_dump()
+ * persists the complete hash to resource.dat (O(1) file writes rather
+ * than O(N) if we dumped per entry).
  */
 void
 spock_group_progress_force_set_list(List *lst)
@@ -746,31 +751,19 @@ spock_group_progress_force_set_list(List *lst)
 		}
 		else if (entry->progress.remote_commit_lsn >= sap->remote_commit_lsn)
 		{
-			/*
-			 * Existing LSN >= resume_lsn.  Unconditionally overwrite: the
-			 * value from read_peer_progress is authoritative because
-			 * it was captured at COPY snapshot time.  The apply worker may
-			 * have advanced past it since then, but any data it applied
-			 * after the snapshot is NOT in the COPY — so the new node must
-			 * replay from the snapshot boundary, not from the worker's
-			 * current position.
-			 */
-			elog(LOG, "SPOCK: force-set %d->%d overwriting: existing=%X/%X -> resume_lsn=%X/%X",
+			elog(LOG, "SPOCK: force-set %d->%d backwards overwrite: existing=%X/%X -> resume_lsn=%X/%X",
 				 sap->key.remote_node_id, MySubscription->target->id,
 				 LSN_FORMAT_ARGS(entry->progress.remote_commit_lsn),
 				 LSN_FORMAT_ARGS(sap->remote_commit_lsn));
 		}
-		else
-		{
-			/* Stale entry below resume_lsn; will be reset after WAL write succeeds. */
-		}
 
-		/* WAL-log before shmem update; skipped above when existing LSN is higher. */
-		spock_apply_progress_add_to_wal(sap);
-
-		/* Now safe to mutate shmem: WAL write succeeded. */
+		/*
+		 * Unconditional overwrite: the resume_lsn from read_peer_progress is
+		 * the COPY-snapshot boundary and is authoritative.
+		 */
 		init_progress_fields(&entry->progress);
 		progress_update_struct(&entry->progress, sap);
+
 		LWLockRelease(SpockCtx->apply_group_master_lock);
 
 		elog(LOG, "SPOCK: force-set %d->%d commit_lsn=%X/%X insert_lsn=%X/%X",
@@ -778,6 +771,9 @@ spock_group_progress_force_set_list(List *lst)
 			 LSN_FORMAT_ARGS(sap->remote_commit_lsn),
 			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
 	}
+
+	/* Persist all entries atomically via a single resource.dat dump. */
+	spock_group_resource_dump();
 
 	list_free_deep(lst);
 }
