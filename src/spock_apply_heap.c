@@ -510,64 +510,6 @@ physatt_in_attmap(SpockRelation *rel, int attid)
 	return false;
 }
 
-/*
- * Executes default values for columns for which we didn't get any data.
- *
- * TODO: this needs caching, it's not exactly fast.
- */
-static void
-fill_missing_defaults(SpockRelation *rel, EState *estate,
-					  SpockTupleData *tuple)
-{
-	TupleDesc	desc = RelationGetDescr(rel->rel);
-	AttrNumber	num_phys_attrs = desc->natts;
-	int			i;
-	AttrNumber	attnum,
-				num_defaults = 0;
-	int		   *defmap;
-	ExprState **defexprs;
-	ExprContext *econtext;
-
-	econtext = GetPerTupleExprContext(estate);
-
-	/* We got all the data via replication, no need to evaluate anything. */
-	if (num_phys_attrs == rel->natts)
-		return;
-
-	defmap = (int *) palloc(num_phys_attrs * sizeof(int));
-	defexprs = (ExprState **) palloc(num_phys_attrs * sizeof(ExprState *));
-
-	for (attnum = 0; attnum < num_phys_attrs; attnum++)
-	{
-		Expr	   *defexpr;
-
-		if (TupleDescAttr(desc, attnum)->attisdropped ||
-			TupleDescAttr(desc, attnum)->attgenerated)
-			continue;
-
-		if (physatt_in_attmap(rel, attnum))
-			continue;
-
-		defexpr = (Expr *) build_column_default(rel->rel, attnum + 1);
-
-		if (defexpr != NULL)
-		{
-			/* Run the expression through planner */
-			defexpr = expression_planner(defexpr);
-
-			/* Initialize executable expression in copycontext */
-			defexprs[num_defaults] = ExecInitExpr(defexpr, NULL);
-			defmap[num_defaults] = attnum;
-			num_defaults++;
-		}
-	}
-
-	for (i = 0; i < num_defaults; i++)
-		tuple->values[defmap[i]] = ExecEvalExpr(defexprs[i],
-												econtext,
-												&tuple->nulls[defmap[i]]);
-}
-
 static void
 build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 				  SpockTupleData *newtup,
@@ -624,54 +566,6 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 		deltatup->nulls[remoteattnum] = false;
 		deltatup->changed[remoteattnum] = true;
 	}
-}
-
-static ApplyExecState *
-init_apply_exec_state(SpockRelation *rel)
-{
-	ApplyExecState *aestate = palloc0(sizeof(ApplyExecState));
-
-	/* Initialize the executor state. */
-	aestate->estate = create_estate_for_relation(rel->rel, true);
-
-	aestate->resultRelInfo = makeNode(ResultRelInfo);
-	InitResultRelInfo(aestate->resultRelInfo, rel->rel, 1, NULL, 0);
-
-	/* aestate->slot = ExecInitExtraTupleSlot(aestate->estate); */
-	ExecSetSlotDescriptor(aestate->slot, RelationGetDescr(rel->rel));
-
-	if (aestate->resultRelInfo->ri_TrigDesc)
-		EvalPlanQualInit(&aestate->epqstate, aestate->estate, NULL, NIL, -1,
-						 NIL);
-
-	/* Prepare to catch AFTER triggers. */
-	AfterTriggerBeginQuery();
-
-	return aestate;
-}
-
-static void
-finish_apply_exec_state(ApplyExecState *aestate)
-{
-	/* Close indexes */
-	ExecCloseIndices(aestate->resultRelInfo);
-
-	/* Handle queued AFTER triggers. */
-	AfterTriggerEndQuery(aestate->estate);
-
-	/* Terminate EPQ execution if active. */
-	if (aestate->resultRelInfo->ri_TrigDesc)
-	{
-		EvalPlanQualEnd(&aestate->epqstate);
-		ExecCloseResultRelations(aestate->estate);
-	}
-
-	/* Cleanup tuple table. */
-	ExecResetTupleTable(aestate->estate->es_tupleTable, true);
-
-	/* Free the memory. */
-	FreeExecutorState(aestate->estate);
-	pfree(aestate);
 }
 
 /**
