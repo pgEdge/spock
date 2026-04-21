@@ -1,7 +1,22 @@
-/* spock--5.0.6--6.0.0-devel.sql */
+/* spock--5.0.7--6.0.0-devel.sql */
 
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
 \echo Use "ALTER EXTENSION spock UPDATE TO '6.0.0-devel'" to load this file. \quit
+
+/*
+ * Correct the declared type of spock.subscription.sub_skip_schema.
+ *
+ * The column was added as text in the 5.0.1--5.0.2 upgrade, but the C code
+ * has always treated it as text[] on both read and write paths.  The bytes
+ * already on disk are therefore a valid ArrayType; only the catalog's type
+ * label is wrong.  Relabel the column in place so SQL-level access
+ * (e.g. SELECT, unnest) works as users expect, without rewriting data.
+ */
+UPDATE pg_catalog.pg_attribute
+   SET atttypid = 'text[]'::regtype,
+       attndims = 1
+ WHERE attrelid = 'spock.subscription'::regclass
+   AND attname  = 'sub_skip_schema';
 
 DROP VIEW IF EXISTS spock.lag_tracker;
 DROP TABLE IF EXISTS spock.progress;
@@ -30,19 +45,8 @@ CREATE VIEW spock.progress AS
 		SELECT oid FROM pg_database WHERE datname = current_database()
 	);
 
-CREATE FUNCTION spock.pause_apply_workers()
-RETURNS void
-AS 'MODULE_PATHNAME', 'spock_pause_apply_workers'
-LANGUAGE C VOLATILE;
-
-REVOKE ALL ON FUNCTION spock.pause_apply_workers() FROM PUBLIC;
-
-CREATE FUNCTION spock.resume_apply_workers()
-RETURNS void
-AS 'MODULE_PATHNAME', 'spock_resume_apply_workers'
-LANGUAGE C VOLATILE;
-
-REVOKE ALL ON FUNCTION spock.resume_apply_workers() FROM PUBLIC;
+-- Note: spock.pause_apply_workers() / spock.resume_apply_workers() were
+-- introduced in 5.0.7, so no CREATE FUNCTION for them is needed here.
 
 -- Read peer progress (ros.remote_lsn) for all peer subscriptions.
 -- Called while apply workers are paused and the slot's snapshot is imported.
