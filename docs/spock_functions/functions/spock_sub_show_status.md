@@ -1,56 +1,40 @@
-## NAME
+# spock.sub_show_status
 
-`spock.sub_show_status()`
+The `spock.sub_show_status()` function displays the status and basic
+information about a subscription.
 
-### SYNOPSIS
+## Synopsis
 
-spock.sub_show_status (subscription_name name)
+```sql
+spock.sub_show_status(subscription_name name)
+```
 
-### RETURNS
+## Description
 
-A set of rows describing the status of one or more Spock subscriptions.
+The `spock.sub_show_status()` function shows the status and basic information
+about a subscription.
 
-Each row contains:
+## Arguments
 
-    - The name of the subscription.
+The function accepts the following argument:
 
-    — Current replication status.
+- `subscription_name` - The optional name of an existing subscription. If no
+  name is provided, the function shows the status for all subscriptions on the
+  local node.
 
-    — The name of the provider node.
+## Example
 
-    — The connection string used to reach the provider.
+In the following example, the `spock.sub_show_status()` function displays the
+status of a subscription named `sub_n1_n2`:
 
-    — The logical replication slot used by the subscription.
-
-    — The replication sets associated with the subscription.
-
-    — The origins that are forwarded by this subscription.
-
-DESCRIPTION
-
-Displays detailed runtime information about Spock subscriptions.
-
-If a specific subscription name is provided, only that subscription is shown.
-If NULL (the default), the status of all subscriptions on the node is
-returned.
-
-This function is useful for troubleshooting replication issues, validating
-configuration, and verifying which replication sets and origins are in use.
-
-The information returned is derived from Spock catalog metadata and the
-current state of logical replication slots.
-
-This function does not modify any configuration.
-
-ARGUMENTS
-
-subscription_name
-
-    Optional. The name of a specific Spock subscription. The default is NULL;
-    If NULL, all subscriptions are shown.
-
-EXAMPLE
-
-    SELECT * FROM spock.sub_show_status();
-
-    SELECT * FROM spock.sub_show_status('sub_n1_to_n2');
+```sql
+SELECT * FROM spock.sub_show_status('sub_n1_n2');
+-[ RECORD 1 ]-----+--------------------------------------------------------------------
+subscription_name | sub_n1_n2
+status            | replicating
+provider_node     | n2
+provider_dsn      | host=192.168.105.11 dbname=postgres user=postgres password=password
+slot_name         | spk_postgres_n2_sub_n1
+replication_sets  | {default,default_insert_only,ddl_sql,audit_only}
+forward_origins   |
+```

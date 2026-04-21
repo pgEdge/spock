@@ -43,5 +43,9 @@ replication_set
 
 ### EXAMPLE
 
+The following example adds a replication set named audit_only to a 
+subscription named sub_n2n1:
 
-    SELECT spock.sub_add_repset('sub_n2_n1', 'custom_repset');
+    postgres=# SELECT spock.sub_add_repset('sub_n2n1', 'audit_only');
+    -[ RECORD 1 ]--+--
+    sub_add_repset | t

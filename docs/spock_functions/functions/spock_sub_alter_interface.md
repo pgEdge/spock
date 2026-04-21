@@ -43,4 +43,12 @@ interface_name
 
 ### EXAMPLE
 
-    SELECT spock.sub_alter_interface('sub_n2_n1', 'private_net');
+The following example modifies the interface used when connecting to the
+replication cluster to use the connection string associated with an
+interface named private_net:
+
+    postgres=# SELECT spock.sub_alter_interface('sub_n2_n1', 'private_net');
+    sub_alter_interface 
+    ---------------------
+     t
+    (1 row)

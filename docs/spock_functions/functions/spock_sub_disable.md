@@ -1,52 +1,37 @@
-## NAME
+# spock.sub_disable
 
-spock.sub_disable()
+The `spock.sub_disable()` function disables a subscription and disconnects
+from the provider.
 
-### SYNOPSIS
+## Synopsis
 
-spock.sub_disable (subscription_name name, immediate boolean)
+```sql
+spock.sub_disable(subscription_name name, immediate boolean)
+```
 
-### RETURNS
+## Description
 
-  - true if the subscription was successfully disabled.
+The `spock.sub_disable()` function disables a subscription by putting the
+subscription on hold and disconnecting from the provider.
 
-  - false if the operation fails.
+## Arguments
 
-### DESCRIPTION
+The function accepts the following arguments:
 
-Disables a subscription and disconnects from the provider node.
+- `subscription_name` - The name of an existing subscription.
+- `immediate` - If `true`, the subscription is stopped immediately; otherwise
+  the subscription will be stopped only at the end of the current transaction.
+  The default is `false`.
 
-This function pauses an active subscription by disconnecting the replication
-connection to the provider and marking the subscription as disabled. While
-disabled, the subscription will not receive any changes from the provider.
+## Example
 
-The immediate parameter controls when the subscription is stopped. If set to
-true, the subscription is terminated immediately. If false (default), the
-subscription continues processing until the end of the current transaction
-before stopping.
+In the following example, the `spock.sub_disable()` function disables a
+subscription named `sub_n1_n2`:
 
-A disabled subscription can be re-enabled later using spock.sub_enable()
-without losing its position in the replication stream.
-
-This function writes metadata into the Spock catalogs.
-
-Returns NULL if any argument is NULL.
-
-This command must be executed by a superuser.
-
-### ARGUMENTS
-
-subscription_name
-
-    The name of the existing subscription to disable.
-
-immediate
-
-    If true, stop the subscription immediately. If false, stop at the end
-    of the current transaction. Default is false.
-
-### EXAMPLE
-
-    SELECT spock.sub_disable('sub_n2_n1');
-
-    SELECT spock.sub_disable('sub_n2_n1', true);
+```sql
+SELECT spock.sub_disable('sub_n1_n2');
+ sub_disable
+-------------
+ t
+(1 row)
+```

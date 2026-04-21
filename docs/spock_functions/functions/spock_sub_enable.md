@@ -1,47 +1,36 @@
-## NAME
+# spock.sub_enable
 
-spock.sub_enable()
+The `spock.sub_enable()` function enables a subscription and reconnects to the
+provider.
 
-### SYNOPSIS
+## Synopsis
 
-spock.sub_enable (subscription_name name, immediate boolean)
+```sql
+spock.sub_enable(subscription_name name, immediate boolean)
+```
 
-### RETURNS
+## Description
 
-  - true if the subscription was successfully enabled.
-  - false if the operation fails.
+The `spock.sub_enable()` function enables a subscription.
 
-### DESCRIPTION
+## Arguments
 
-Enables a previously disabled subscription and reconnects to the provider
-node.
+The function accepts the following arguments:
 
-This function activates a disabled subscription by re-establishing the
-replication connection to the provider and resuming replication. The
-subscription will continue receiving changes from where it left off when it
-was disabled.
+- `subscription_name` - The name of an existing subscription.
+- `immediate` - If `true`, the subscription is started immediately; otherwise
+  the subscription will be started only at the end of the current transaction.
+  The default is `false`.
 
-The immediate parameter controls when the subscription is started. If set to
-true, the subscription is activated immediately. If false (default), the
-subscription is activated at the end of the current transaction.
+## Example
 
-This function writes metadata into the Spock catalogs.
+In the following example, the `spock.sub_enable()` function enables a
+subscription named `sub_n1_n2`:
 
-This command must be executed by a superuser.
-
-### ARGUMENTS
-
-subscription_name
-
-    The name of the existing subscription to enable.
-
-immediate
-
-    If true, start the subscription immediately. If false, start at the
-    end of the current transaction. Default is false.
-
-### EXAMPLE
-
-    SELECT spock.sub_enable('sub_n2_n1');
-
-    SELECT spock.sub_enable('sub_n2_n1', true);
+```sql
+SELECT spock.sub_enable('sub_n1_n2');
+ sub_enable
+-------------
+ t
+(1 row)
+```

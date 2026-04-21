@@ -1,9 +1,5 @@
 ## Conflict-Free Delta-Apply Columns (Conflict Avoidance)
 
-For a complete reference on conflict types, resolution strategies, and
-comparison with PostgreSQL 18, see
-[Conflict Types and Resolution](conflict_types.md).
-
 Conflicts can arise if a node is subscribed to multiple providers, or when
 local writes happen on a subscriber node. Without Spock, logical replication
 can also encounter issues when resolving the value of a running sum (such as
@@ -73,6 +69,10 @@ that are set in the `postgresql.conf` file or via `ALTER SYSTEM SET`:
   setting (see [possible
   values](https://www.postgresql.org/docs/15/runtime-config-logging.html#RUNTIME-CONFIG-SEVERITY-LEVELS));
   this setting is used primarily to suppress logging of conflicts.
+- `spock.batch_inserts` tells Spock to use a batch insert mechanism if
+  possible; the batch mechanism uses PostgreSQL internal batch insert mode
+  (also used by the `COPY` command); the default is `on`.
+
 
 ### Handling `INSERT-RowExists` or `INSERT/INSERT` Conflicts
 
@@ -101,8 +101,8 @@ to `on`, Spock will perform the following actions:
 
     If `spock.check_all_uc_indexes` is `enabled`, Spock will resolve only
     the first conflict identified, using Last-Write-Wins logic. If a second
-    unique constraint conflict occurs, an error is raised and recorded in
-    `spock.exception_log`.
+    conflict occurs, an exception is recorded in the `spock.resolutions`
+    table as either `Keep-Local` or `Apply-Remote`.
 
     This feature is experimental; enable this feature at your own risk.
 

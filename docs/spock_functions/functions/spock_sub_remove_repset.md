@@ -1,43 +1,35 @@
-## NAME
+# spock.sub_remove_repset
 
-spock.sub_remove_repset()
+The `spock.sub_remove_repset()` function removes a replication set from a
+subscription.
 
-### SYNOPSIS
+## Synopsis
 
-spock.sub_remove_repset (subscription_name name, replication_set name)
+```sql
+spock.sub_remove_repset(subscription_name name, replication_set name)
+```
 
-### RETURNS
+## Description
 
-  - true if the replication set was successfully removed.
+The `spock.sub_remove_repset()` function removes a replication set from a
+subscription.
 
-  - false if the operation fails.
+## Arguments
 
-### DESCRIPTION
+The function accepts the following arguments:
 
-Removes a replication set from an existing subscription.
+- `subscription_name` - The name of an existing subscription.
+- `replication_set` - The name of the replication set to remove.
 
-This function modifies a subscription to stop receiving changes from the
-specified replication set on the provider node. The subscription will
-immediately stop consuming events from the removed replication set.
+## Example
 
-Only the replication set association is removed. This does not affect data
-that has already been replicated, nor does it drop any tables or other
-database objects.
+In the following example, the `spock.sub_remove_repset()` function removes a
+replication set named `test` from a subscription named `sub_n2n1`:
 
-This function writes metadata into the Spock catalogs.
-
-This command must be executed by a superuser.
-
-### ARGUMENTS
-
-subscription_name
-
-    The name of an existing subscription.
-
-replication_set
-
-    The name of the replication set to remove from the subscription.
-
-### EXAMPLE
-
-    SELECT spock.sub_remove_repset('sub_n2_n1', 'custom_repset');
+```sql
+select spock.sub_remove_repset('sub_n1_n2', 'test');
+ sub_remove_repset 
+-------------------
+ t
+(1 row)
+```
