@@ -178,6 +178,7 @@ extern SpockWorker *spock_sync_find(Oid dboid, Oid subid,
 extern List *spock_sync_find_all(Oid dboid, Oid subscriberid);
 
 extern SpockWorker *spock_get_worker(int slot);
+extern bool spock_any_apply_worker_running(void);
 extern bool spock_worker_running(SpockWorker *w);
 extern bool spock_worker_terminating(SpockWorker *w);
 extern void spock_worker_kill(SpockWorker *worker);

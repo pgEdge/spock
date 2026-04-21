@@ -602,6 +602,39 @@ spock_sync_find_all(Oid dboid, Oid subscriberid)
 }
 
 /*
+ * Return true if any APPLY or SYNC worker still has a live PGPROC slot.
+ *
+ * Used by the supervisor's exit callback to drain in-flight apply work
+ * before emitting the SHUTDOWN forensic snapshot, so the dump reflects
+ * each worker's last write to SpockGroupHash. Workers clear ->proc in
+ * spock_worker_detach() under SpockCtx->lock from before_shmem_exit,
+ * after their main loop has finished mutating shmem.
+ */
+bool
+spock_any_apply_worker_running(void)
+{
+	int			i;
+	bool		any = false;
+
+	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+	for (i = 0; i < SpockCtx->total_workers; i++)
+	{
+		SpockWorker *w = &SpockCtx->workers[i];
+
+		if (w->proc != NULL &&
+			(w->worker_type == SPOCK_WORKER_APPLY ||
+			 w->worker_type == SPOCK_WORKER_SYNC))
+		{
+			any = true;
+			break;
+		}
+	}
+	LWLockRelease(SpockCtx->lock);
+
+	return any;
+}
+
+/*
  * Get worker based on slot
  */
 SpockWorker *

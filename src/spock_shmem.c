@@ -38,7 +38,6 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 /* Forward declarations of local functions */
 static void spock_shmem_request(void);
 static void spock_shmem_startup(void);
-static void spock_on_shmem_exit(int code, Datum arg);
 
 /*
  * spock_shmem_init
@@ -144,10 +143,6 @@ spock_shmem_startup(void)
 	if (prev_shmem_startup_hook != NULL)
 		prev_shmem_startup_hook();
 
-	/* Register shmem exit callback (only in postmaster) */
-	if (!IsUnderPostmaster)
-		on_shmem_exit(spock_on_shmem_exit, (Datum) 0);
-
 	/*
 	 * Acquire AddinShmemInitLock once for all subsystem initialization.
 	 * This avoids multiple lock acquisitions and potential race conditions.
@@ -179,21 +174,4 @@ spock_shmem_startup(void)
 	spock_group_shmem_startup(found);
 
 	LWLockRelease(AddinShmemInitLock);
-}
-
-/*
- * spock_on_shmem_exit
- *
- * Called on postmaster's shared memory exit.
- * Currently dumps apply group data for persistence.
- */
-static void
-spock_on_shmem_exit(int code, Datum arg)
-{
-	/* Only dump data if exiting cleanly */
-	if (code != 0)
-		return;
-
-	elog(DEBUG1, "spock_on_shmem_exit: dumping apply group data");
-	spock_group_resource_dump();
 }

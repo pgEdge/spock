@@ -57,6 +57,7 @@
 #include "spock_conflict_stat.h"
 #endif
 #include "spock_executor.h"
+#include "spock_group.h"
 #include "spock_node.h"
 #include "spock_conflict.h"
 #include "spock_rmgr.h"
@@ -150,7 +151,6 @@ int			log_origin_change = SPOCK_ORIGIN_NONE;
 int			spock_apply_idle_timeout = 300;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
-static Checkpoint_hook_type prev_Checkpoint_hook = NULL;
 
 void		_PG_init(void);
 PGDLLEXPORT void spock_supervisor_main(Datum main_arg);
@@ -694,6 +694,49 @@ start_manager_workers(void)
 }
 
 /*
+ * Drain interval and timeout for the supervisor's shutdown wait loop.
+ *
+ * On SIGTERM, postmaster signals all bgworkers in parallel; the supervisor
+ * waits for sibling APPLY/SYNC workers to clear their PGPROC slots so the
+ * SHUTDOWN forensic dump reflects each worker's last update to
+ * SpockGroupHash. 100 ms × 50 = 5 s ceiling — long enough to cover normal
+ * apply-side cleanup, short enough to avoid blocking postmaster shutdown
+ * on a stuck worker.
+ */
+#define SPOCK_SHUTDOWN_DRAIN_INTERVAL_US	100000
+#define SPOCK_SHUTDOWN_DRAIN_MAX_RETRIES	50
+
+/*
+ * Supervisor before_shmem_exit cleanup. Runs in the supervisor process on
+ * clean shutdown, with WAL insertion still permitted.
+ *
+ * We poll-wait for in-flight apply/sync workers to detach so the resource.dat
+ * file dump and the SPOCK_DUMP_SHUTDOWN forensic WAL records reflect each
+ * worker's final SpockGroupHash state.
+ */
+static void
+spock_supervisor_on_exit(int code, Datum arg)
+{
+	int		retries = SPOCK_SHUTDOWN_DRAIN_MAX_RETRIES;
+
+	if (code != 0)
+		return;
+
+	while (retries-- > 0 && spock_any_apply_worker_running())
+	{
+		CHECK_FOR_INTERRUPTS();
+		pg_usleep(SPOCK_SHUTDOWN_DRAIN_INTERVAL_US);
+	}
+
+	if (spock_any_apply_worker_running())
+		elog(LOG, "spock supervisor: shutdown drain timed out, "
+				  "SHUTDOWN forensic snapshot may be incomplete");
+
+	spock_group_resource_dump();
+	spock_rmgr_log_resource_dump(SPOCK_DUMP_SHUTDOWN, NULL);
+}
+
+/*
  * Static bgworker used for initialization and management (our main process).
  */
 void
@@ -702,6 +745,8 @@ spock_supervisor_main(Datum main_arg)
 	/* Establish signal handlers. */
 	pqsignal(SIGTERM, handle_sigterm);
 	BackgroundWorkerUnblockSignals();
+
+	before_shmem_exit(spock_supervisor_on_exit, (Datum) 0);
 
 	/*
 	 * Initialize supervisor info in shared memory.  Strictly speaking we
@@ -1243,9 +1288,6 @@ _PG_init(void)
 
 	if (IsBinaryUpgrade)
 		return;
-
-	prev_Checkpoint_hook = Checkpoint_hook;
-	Checkpoint_hook = spock_checkpoint_hook;
 
 	/* Spock resource manager */
 	spock_rmgr_init();

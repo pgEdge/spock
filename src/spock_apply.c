@@ -71,6 +71,7 @@
 #include "spock_conflict.h"
 #include "spock_executor.h"
 #include "spock_node.h"
+#include "spock_progress_recovery.h"
 #include "spock_proto_native.h"
 #include "spock_queue.h"
 #include "spock_relcache.h"
@@ -1005,10 +1006,11 @@ handle_commit(StringInfo s)
 			.remote_commit_lsn = end_lsn,
 			.received_lsn = end_lsn,
 			/*
-			 * Include remote_insert_lsn for WAL persistence. This was already
-			 * updated in shmem by UpdateWorkerStats() earlier (either from
-			 * apply_work for protocol 5+, or from handle_commit for protocol 4).
-			 * Without this, crash recovery would lose remote_insert_lsn.
+			 * Carry forward the remote_insert_lsn already in shmem (set by
+			 * UpdateWorkerStats on the most-recent keepalive or 'w' message).
+			 * This keeps the shmem entry coherent after the update below;
+			 * crash recovery of this field is handled by the forced keepalive
+			 * sent right after spock_start_replication, not by any WAL record.
 			 */
 			.remote_insert_lsn = MyApplyWorker->apply_group->progress.remote_insert_lsn,
 			/* XXX: Could we use commit_ts value instead? */
@@ -1018,9 +1020,6 @@ handle_commit(StringInfo s)
 
 		/* XXX: Don't care in production yet */
 		Assert(sap.last_updated_ts >= sap.remote_commit_ts);
-
-		/* WAL after commit, then to shmem */
-		spock_apply_progress_add_to_wal(&sap);
 
 		Assert(MyApplyWorker && MyApplyWorker->apply_group);
 
@@ -4051,6 +4050,8 @@ spock_apply_main(Datum main_arg)
 	replorigin_session_setup(originid);
 	replorigin_session_origin = originid;
 	origin_startpos = replorigin_session_get_progress(false);
+
+	spock_init_progress_state(origin_startpos);
 
 	/* Start the replication. */
 	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
