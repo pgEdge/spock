@@ -59,7 +59,6 @@
 #include "spock_executor.h"
 #include "spock_node.h"
 #include "spock_conflict.h"
-#include "spock_rmgr.h"
 #include "spock_worker.h"
 #include "spock_output_config.h"
 #include "spock_output_plugin.h"
@@ -1242,9 +1241,6 @@ _PG_init(void)
 
 	if (IsBinaryUpgrade)
 		return;
-
-	/* Spock resource manager */
-	spock_rmgr_init();
 
 	/* Init shared memory for all subsystems needed it */
 	spock_shmem_init();

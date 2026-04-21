@@ -21,10 +21,15 @@
  *       * nattached, prev_processed_cv  -- apply-worker coordination (runtime)
  *
  * Persistence:
- *   - WAL: authoritative. spock_rmgr_redo() replays progress into this hash.
- *   - File: PGDATA/spock/resource.dat on clean shutdown (on_shmem_exit).
- *           Load during shmem_startup_hook to seed shmem quickly. WAL replay
- *           runs after and overrides stale file contents.
+ *   - File: PGDATA/spock/resource.dat, written on clean shutdown
+ *           (spock_on_shmem_exit) and after table-sync / add_node bulk
+ *           updates. Loaded during shmem_startup_hook to seed shmem on
+ *           restart. reconcile_progress_with_origin() then reconciles
+ *           remote_commit_lsn against pg_replication_origin at apply-worker
+ *           start; timestamp fields are cleared if the file LSN is stale.
+ *           remote_insert_lsn and received_lsn refresh within milliseconds
+ *           of reconnect via the forced keepalive sent by
+ *           request_initial_status_update().
  *
  *
  * Notes:

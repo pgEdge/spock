@@ -20,8 +20,6 @@
 #include "storage/spin.h"
 #include "utils/hsearch.h"
 
-#include "spock_rmgr.h"
-
 extern HTAB *SpockGroupHash;
 
 /* numeric version to store on disk */
