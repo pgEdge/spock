@@ -881,12 +881,19 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 			}
 		}
 
+		/*
+		 * ReplicationSlotsComputeRequiredXmin(true) asserts that BOTH
+		 * ReplicationSlotControlLock (exclusive) and ProcArrayLock (exclusive)
+		 * are held, in that order, to prevent deadlocks.
+		 */
+		LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
 		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 		xmin_horizon = GetOldestSafeDecodingTransactionId(true);
 		slot->effective_catalog_xmin = xmin_horizon;
 		slot->data.catalog_xmin = xmin_horizon;
 		ReplicationSlotsComputeRequiredXmin(true);
 		LWLockRelease(ProcArrayLock);
+		LWLockRelease(ReplicationSlotControlLock);
 
 		/*
 		 * Our xmin and/or catalog_xmin may be > that required by one or more
@@ -1186,6 +1193,22 @@ synchronize_failover_slots(long sleep_time)
 			 */
 			if (remote_slot->restart_lsn > lsn)
 				remote_slot->restart_lsn = lsn;
+
+			/*
+			 * Skip slots whose primary confirmed_flush_lsn is still
+			 * InvalidXLogRecPtr (no consumer feedback yet).
+			 * LogicalConfirmReceivedLocation asserts the LSN is not invalid;
+			 * passing 0 aborts the bgworker and triggers a postmaster cluster
+			 * reset on --enable-cassert builds.
+			 */
+			if (XLogRecPtrIsInvalid(remote_slot->confirmed_lsn))
+			{
+				elog(DEBUG1,
+					 "spock_failover_slots: deferring slot \"%s\":"
+					 " no confirmed_flush_lsn on primary yet",
+					 remote_slot->name);
+				continue;
+			}
 
 			synchronize_one_slot(remote_slot);
 		}
