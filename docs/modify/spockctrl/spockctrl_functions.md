@@ -87,7 +87,7 @@ Use `spockctrl node drop-interface` to drop an interface from a node. The syntax
 
 `spockctrl node drop-interface <node_name> <interface_name>` drops an interface from a node.
  *   `<node_name>`: The name of the node accessed by the interface.
- *   `<interface_name>`: A unique name for the new interface.
+ *   `<interface_name>`: The name of the interface to remove.
 
 **Example**
 

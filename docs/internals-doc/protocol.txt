@@ -1,6 +1,6 @@
 = Spock protocol
 
-spock_output defines a libpq subprocotol for streaming tuples, metadata,
+spock_output defines a libpq subprotocol for streaming tuples, metadata,
 etc, from the decoding plugin to receivers.
 
 This protocol is an inner layer in a stack:

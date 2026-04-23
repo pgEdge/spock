@@ -27,9 +27,11 @@ Now no restriction exists. Spock will use memory until memory is exhausted
 (improving performance for huge transactions). If an allocation fails, Spock
 performs as specified by the spock.exception_behavior GUC:
 
-- 'discard': Skip failed transaction and continue
-- 'transdiscard': Rollback transaction and continue
-- 'sub_disable': Disable subscription and exit cleanly
+Exception handling behavior is now controlled by the `spock.exception_behaviour` GUC, which accepts the following values:
+
+- `discard`: Skip the failed transaction and continue replication.
+- `transdiscard`: Roll back the failed transaction and continue replication.
+- `sub_disable`: Disable the subscription and exit cleanly.
 
 * Change Spock replication health tracking routines and views:
   - apply_group_progress, spock.progress, and spock.lag_tracker.
@@ -231,7 +233,7 @@ performs as specified by the spock.exception_behavior GUC:
 
 ## Version 4.0
 
-* Full re-work of paralell slots implementation to support mixed OLTP
+* Full re-work of parallel slots implementation to support mixed OLTP
   workloads
 * Improved support for delta_apply columns to support various data types
 * Improved regression test coverage
@@ -275,5 +277,5 @@ the BDR/pg_logical base:
 * Better management & monitoring stats and integration
 * A 'pii' table for making it easy for personally identifiable data to be
   kept in country
-* Better support for minimizing system interuption during switch-over and
+* Better support for minimizing system interruption during switch-over and
   failover

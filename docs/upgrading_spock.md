@@ -32,7 +32,7 @@ SELECT pg_reload_conf();
 
 Or, set the following parameter in `postgresql.conf` on each node:
 
-```
+```ini
 spock.enable_ddl_replication = off
 ```
 
@@ -162,7 +162,7 @@ SELECT pg_reload_conf();
 
 Or you can modify the parameter in the `postgresql.conf` file:
 
-```
+```ini
 spock.enable_ddl_replication = on
 ```
 

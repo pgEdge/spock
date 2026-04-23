@@ -32,8 +32,12 @@ to allow logical replication connections from localhost and between nodes.
 Logical replication connections are treated by `pg_hba.conf` as regular
 connections to the provider database.
 
-After modifying the pg_hba.conf file on each node, restart the server to
-apply the changes.
+After modifying the `pg_hba.conf` file on each node, reload the server
+configuration to apply the changes (no restart required):
+
+```sql
+SELECT pg_reload_conf();
+```
 
 
 ## Advanced Configuration Options for Spock
@@ -338,7 +342,18 @@ remove it from replication.
 origin should be logged to the PostgreSQL log. Rows may be being updated
 locally by regular SQL operations, or by replication from apply workers.
 Note that rows that are changed locally (not from replication) have the
-origin value of 0.
+origin value of `0`. This is distinct from an unavailable or unknown origin:
+a `NULL` value in `spock.resolutions.local_origin`, or `unknown` in
+PostgreSQL logs, indicates that the origin metadata could not be determined
+— it does not mean the change was local. For example:
+
+```sql
+-- Rows resolved from a locally-originated conflict (origin = 0)
+SELECT * FROM spock.resolutions WHERE local_origin = 0;
+
+-- Rows where origin metadata was unavailable at resolution time
+SELECT * FROM spock.resolutions WHERE local_origin IS NULL;
+```
 
 The default of `none` is recommended because otherwise the amount of entries
 may become numerous. The other options allow for monitoring when updates
@@ -358,6 +373,19 @@ The following configuration values are possible:
 `spock.save_resolutions` is a boolean value (the default is `false`) that
 logs all conflict resolutions to the `spock.resolutions` table. This option
 can only be set when the postmaster starts.
+
+### `spock.resolutions_retention_days`
+
+`spock.resolutions_retention_days` controls how long rows are kept in the
+`spock.resolutions` table before the apply worker automatically deletes them.
+The default is `100` days. Set to `0` to disable automatic cleanup entirely,
+in which case rows accumulate indefinitely until removed manually.
+
+This setting takes effect on `pg_reload_conf()` (no restart required).
+
+```ini
+spock.resolutions_retention_days = 100
+```
 
 ### `spock.stats_max_entries`
 

@@ -25,7 +25,6 @@ Parameters include:
 
 - a name for the node.
 - the dsn of the server on which the node resides.
-- connection information for your database.
 
 !!! note
     The DSN is similar to a connection string to the node you’re creating.
@@ -138,4 +137,17 @@ current node, including its identifier, name, database information, and any
 optional descriptive fields that were set during node creation.
 
 This is a read-only query function that does not modify data.
+
+Returns one row with the following columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `node_id` | `oid` | The object identifier of the local node. |
+| `node_name` | `text` | The name of the local node. |
+| `sysid` | `text` | The PostgreSQL system identifier for this instance. |
+| `dbname` | `text` | The name of the current database. |
+| `replication_sets` | `text` | Comma-separated list of replication sets associated with this node. |
+| `location` | `text` | Optional location label; `NULL` if not set during node creation. |
+| `country` | `text` | Optional country label; `NULL` if not set during node creation. |
+| `info` | `jsonb` | Optional JSON metadata; `NULL` if not set during node creation. |
 

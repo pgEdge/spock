@@ -6,7 +6,7 @@ from the provider.
 ## Synopsis
 
 ```sql
-spock.sub_disable(subscription_name name, immediate boolean)
+spock.sub_disable(subscription_name name, immediate boolean DEFAULT false)
 ```
 
 ## Description

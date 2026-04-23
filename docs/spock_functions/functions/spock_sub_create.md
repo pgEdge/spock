@@ -66,9 +66,10 @@ synchronize_data
 forward_origins
 
     Controls which changes to replicate based on their origin. Use '{}' to
-    only replicate changes originating on the provider (useful for
-    bidirectional replication). Use {all} to replicate all changes
-    regardless of origin. The default is `{}` (an empty array, meaning only local changes are forwarded).
+    only replicate changes originating locally on the provider node (origin ID 0,
+    i.e. not already replicated in from another node — useful for bidirectional
+    replication to avoid forwarding changes in a loop). Use {all} to replicate all
+    changes regardless of origin. The default is `{}` (local-origin changes only).
 
 apply_delay
 

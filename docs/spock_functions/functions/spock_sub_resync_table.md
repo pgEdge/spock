@@ -5,7 +5,7 @@ The `spock.sub_resync_table()` function resynchronizes one existing table.
 ## Synopsis
 
 ```sql
-spock.sub_resync_table(subscription_name name, relation regclass, truncate boolean)
+spock.sub_resync_table(subscription_name name, relation regclass, truncate boolean DEFAULT true)
 ```
 
 ## Description

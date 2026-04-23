@@ -35,7 +35,7 @@ acctg=# SELECT id, snowflake.format(id), customer, invoice FROM orders;
                   2 | {"id": 2, "ts": "2022-12-31 19:00:00-05", "count": 0}     | Chesterfield Schools   | math_9663
  135824181823537153 | {"id": 1, "ts": "2024-01-10 14:16:48.438-05", "count": 0} | Prince William Schools | math_8330
  135824609030176769 | {"id": 1, "ts": "2024-01-10 14:18:30.292-05", "count": 0} | Fluvanna Schools       | art_9447
-(9 rows)
+(4 rows)
 ```
 
 ## Snowflake Sequence Structure

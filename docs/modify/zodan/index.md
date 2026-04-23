@@ -46,7 +46,7 @@ node addition:
 - Zodan stores sync LSNs and uses them later to ensure subscriptions
   start from the correct point even if hours pass between steps.
 
-- Zodan automatically detects existing schemas on n4 and populates the
+- Zodan automatically detects existing schemas on the new node and populates the
   `skip_schema` parameter, preventing conflicts during structure sync.
 
 - Zodan verifies all nodes run the same Spock version before starting.

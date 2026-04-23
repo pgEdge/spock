@@ -63,7 +63,7 @@ leading to duplicate rows on subscriber nodes.
 
 On the downstream end, spock may also emit the error:
 
-```
+```sql
 ERROR: spock doesn't support index rechecks needed for deferrable indexes
 DETAIL: relation "public"."test_relation" has deferrable indexes: "index1",
 "index2"

@@ -232,8 +232,12 @@ host    replication  all          <node_2_IP_address>/32    trust
     not recommended for production systems. In production, use
     appropriate authentication methods like `scram-sha-256` or `md5`.
 
-After modifying `pg_hba.conf`, restart PostgreSQL again to apply the
-changes.
+After modifying `pg_hba.conf`, reload the server configuration to apply the
+changes (no restart required):
+
+```sql
+SELECT pg_reload_conf();
+```
 
 ## Create the Spock Extension
 

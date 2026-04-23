@@ -1328,8 +1328,8 @@ encountering issues with replication status:
 -- Check subscription status
 SELECT * FROM spock.sub_show_status();
 
--- Check worker processes
-SELECT * FROM spock.sub_show_table(subscription_name);
+-- Check table sync status
+SELECT * FROM spock.sub_show_table('sub_n2_n4', 'public.test_replication');
 
 -- Check logs
 SELECT * FROM pg_stat_replication;

@@ -20,7 +20,7 @@ has been received and applied:
 
 ## Synopsis
 
-Invoked on the provider node, this function returns the current pg_lsn`
+Invoked on the provider node, this function returns the current `pg_lsn`
 value, representing a point-in-time value for your replication scenario. The
 syntax of `spock.sync_event` is:
 
@@ -33,7 +33,7 @@ node, while the second uses the node name as an identifier:
 - `spock.wait_for_sync_event(OUT result boolean, origin_id oid, lsn pg_lsn,
   timeout int DEFAULT 0)`
 
-- `spock.wait_for_sync_event(OUT result boolean, origin_name, lsn pg_lsn,
+- `spock.wait_for_sync_event(OUT result boolean, origin_name name, lsn pg_lsn,
   timeout int DEFAULT 0)`
 
 This procedure waits on the subscriber node to alert you when the specified

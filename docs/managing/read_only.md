@@ -35,11 +35,11 @@ The valid settings are:
 
 - `all` - All databases are read-only for non-superusers and read-write
   for superusers.
-- `user` - Each database is dependent on individual privileges to determine
-  if a reader has write access.
+- `local` - Each database is dependent on individual privileges to determine
+  if a reader has write access. (`user` is a deprecated alias for this value.)
 - `off` - All databases are read-write to all users.
 
-After modifying the property setting, you must restart the server to apply .
+After modifying this setting, you must restart the server to apply the change.
 
 To query the current status of the cluster, use the SQL `SHOW` command. In the
 following example, the `SHOW` command displays the current read-only mode

@@ -1,13 +1,9 @@
 # Finding Cluster Information
 
-The following table describes the informational tables in the `spock` schema;
-you can query these tables with the psql client to return information about
-your replication cluster.
-
 The following table describes informational tables in the `spock` schema:
 
 | Table Name | Description |
----------------------|----------------------------|
+|---------------------|----------------------------|
 | `channel_summary_stats` | This table tracks per-table statistics for a given subscription, including total inserts, updates, deletes, conflicts, and delta apply column changes. The table includes the following columns: `subid`, `sub_name`, `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` |
 | `channel_table_stats` | This table is similar to `channel_summary_stats`, but aggregates statistics across subscriptions, showing overall metrics grouped by subscription. The table includes the following columns: `subid`, `relid`, `sub_name`, `table_name`, `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` |
 | `depend` | This is an internal-use table that tracks dependent objects (e.g., tables added for replication or row filters). If such objects are dropped, they are also removed from Spock’s tracking. The table includes the following columns: `classid`, `objid`, `objsubid`, `refclassid`, `refobjid`, `refobjsubid`, `deptype` |
