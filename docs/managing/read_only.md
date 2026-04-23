@@ -57,11 +57,12 @@ The `spock.readonly` parameter supports three configuration methods:
 
 The valid settings are:
 
-- `all` - All databases are read-only for non-superusers and read-write
-  for superusers.
-- `local` - Each database is dependent on individual privileges to determine
-  if a reader has write access. (`user` is a deprecated alias for this value.)
-- `off` - All databases are read-write to all users.
+- `off` - No restrictions; all users may write.
+- `local` - Non-superuser local sessions are read-only; replicated writes from
+  apply workers are still permitted. (`user` is a backward-compatible alias for
+  this value.)
+- `all` - The node is fully read-only: both local sessions and apply workers are
+  blocked from writing.
 
 To query the current status of the cluster, use the SQL `SHOW` command. In the
 following example, the `SHOW` command displays the current read-only mode
