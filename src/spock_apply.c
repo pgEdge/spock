@@ -1100,8 +1100,13 @@ handle_commit(StringInfo s)
 				SpockExceptionLog *exception_log;
 
 				exception_log = &exception_log_ptr[my_exception_log_index];
+				elog(LOG, "SPOCK %s: disabling subscription%s%s",
+					 MySubscription->name,
+					 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
+					 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
 				exception_log->commit_lsn = InvalidXLogRecPtr;
 				exception_log->initial_error_message[0] = '\0';
+				exception_log->failed_action = 0;
 				MySpockWorker->restart_delay = 0;
 
 				elog(ERROR, "SPOCK %s: exiting because subscription disabled",
@@ -1124,8 +1129,17 @@ handle_commit(StringInfo s)
 				SpockExceptionLog *exception_log;
 
 				exception_log = &exception_log_ptr[my_exception_log_index];
+				elog(LOG, "SPOCK %s: %s at LSN %X/%X%s%s",
+					 MySubscription->name,
+					 (exception_behaviour == TRANSDISCARD)
+					 ? "transaction discarded (TRANSDISCARD)"
+					 : "exception handled (SUB_DISABLE)",
+					 LSN_FORMAT_ARGS(end_lsn),
+					 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
+					 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
 				exception_log->commit_lsn = InvalidXLogRecPtr;
 				exception_log->initial_error_message[0] = '\0';
+				exception_log->failed_action = 0;
 				MySpockWorker->restart_delay = 0;
 
 				elog(ERROR, "SPOCK %s: exception handling had no exception(s) "
@@ -1274,6 +1288,7 @@ handle_commit(StringInfo s)
 
 	xact_action_counter = 0;
 	remote_xid = InvalidTransactionId;
+	xact_had_exception = false;
 
 	/*
 	 * This is the only place we can reset the use_try_block = false without
@@ -1552,7 +1567,7 @@ handle_insert(StringInfo s)
 			char	   *err_msg = failed ? (edata ? edata->message : NULL) :
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
-				 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
 				exception_log_ptr[my_exception_log_index].initial_error_message : NULL;
 
 			log_insert_exception(failed, err_msg, rel, NULL, &newtup, "INSERT");
@@ -1720,7 +1735,7 @@ handle_update(StringInfo s)
 			char	   *err_msg = failed ? (edata ? edata->message : NULL) :
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
-				 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
 				exception_log_ptr[my_exception_log_index].initial_error_message : NULL;
 
 			log_insert_exception(failed, err_msg, rel,
@@ -1825,7 +1840,7 @@ handle_delete(StringInfo s)
 			char	   *err_msg = failed ? (edata ? edata->message : NULL) :
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
-				 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
 				exception_log_ptr[my_exception_log_index].initial_error_message : NULL;
 
 			log_insert_exception(failed, err_msg, rel, &oldtup, NULL, "DELETE");
@@ -2420,7 +2435,7 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 {
 	bool		failed = false;
 	char	   *sql = NULL;
-	ErrorData  *edata;
+	ErrorData  *edata = NULL;
 
 	/*
 	 * Start transaction before making any changes to Spock's internal state.
@@ -3348,19 +3363,15 @@ stream_replay:
 		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
 
 		/*
-		 * Save the initial error so the retry pass can record it against the
-		 * row that originally caused the failure, even if that row succeeds on
-		 * retry (transient error) or the error is cleared by FlushErrorState.
+		 * Save the initial error message and which action triggered it.
+		 * On the retry pass, the matching row gets this message in
+		 * exception_log; all other rows get NULL ("unavailable").
 		 */
 		if (exception_log_ptr != NULL)
 		{
 			snprintf(exception_log_ptr[my_exception_log_index].initial_error_message,
 					 sizeof(exception_log_ptr[my_exception_log_index].initial_error_message),
 					 "%s", edata->message);
-			snprintf(exception_log_ptr[my_exception_log_index].initial_operation,
-					 sizeof(exception_log_ptr[my_exception_log_index].initial_operation),
-					 "%s",
-					 errcallback_arg.action_name ? errcallback_arg.action_name : "UNKNOWN");
 			exception_log_ptr[my_exception_log_index].failed_action =
 				xact_action_counter;
 		}
