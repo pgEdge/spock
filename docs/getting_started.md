@@ -433,8 +433,8 @@ Perform a simple replication test using the following steps.
    ```
    postgres=# SELECT * FROM test;
    -[ RECORD 1 ]------
-   id  | 1
-   val | Hello from n1
+   id      | 1
+   message | Hello from n1
    ```
 
 3. On n2, insert a new row with the following command:
@@ -454,11 +454,11 @@ Perform a simple replication test using the following steps.
    ```
    postgres=# SELECT * FROM test;
    -[ RECORD 1 ]------
-   id  | 1
-   val | Hello from n1
+   id      | 1
+   message | Hello from n1
    -[ RECORD 2 ]------
-   id  | 2
-   val | Hello from n2
+   id      | 2
+   message | Hello from n2
    ```
 
 You should see both messages on both nodes, confirming bidirectional

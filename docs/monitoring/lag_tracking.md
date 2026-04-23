@@ -13,7 +13,7 @@ exposes key metrics for replication lag on a per-node basis. For example:
 origin_name           | node1
 receiver_name         | node2
 commit_timestamp      | 2025-06-30 09:27:57.317779+00
-last_received_lsn     | 0/15A2780
+received_lsn          | 0/15A2780
 remote_insert_lsn     | 0/15A2780
 replication_lag_bytes | 0
 replication_lag       | 00:00:04.014177
@@ -26,7 +26,7 @@ The following table describes the columns displayed by `spock.lag_tracker`:
 | origin_name | Name of the provider node. |
 | receiver_name | Name of the subscriber node. |
 | commit_timestamp | Commit time of the last transaction received from the provider. |
-| last_received_lsn | Last acknowledged log sequence number (LSN) received from the provider. |
+| received_lsn | Last acknowledged log sequence number (LSN) received from the provider. |
 | remote_insert_lsn | WAL insert position on the provider when the commit was sent. |
 | replication_lag_bytes | The amount of data the subscriber is behind. |
 | replication_lag | Time delay between when the transaction was committed on the provider and when processed locally. |

@@ -44,10 +44,6 @@ performs as specified by the spock.exception_behavior GUC:
 ## Spock 5.0.6
 
 ### New Features
-* New `spock.feedback_frequency` GUC that controls how often feedback is sent
-  to the WAL sender. Feedback is sent every *n* messages, where *n* is the
-  configured value. Note that feedback is also sent every
-  wal_sender_feedback / 2 seconds.
 * New `spock.log_origin_change` GUC to control logging of row origin changes
   to the PostgreSQL log. Origin changes caused by replication are no longer
   written to the `spock.resolutions` table, as they are informational and not

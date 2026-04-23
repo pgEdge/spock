@@ -88,7 +88,7 @@ replicating.
 ### Listing Tables that are Part of a Replication Scenario
 
 You can connect to the database server and query the
-`spock.subscription_set_table` table to return similar information:
+`spock.replication_set_table` table to return similar information:
 
 ```sql
 select * from spock.replication_set_table;

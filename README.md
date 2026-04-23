@@ -22,7 +22,7 @@
   - [Using Automatic DDL Replication](docs/managing/spock_autoddl.md)
 - Adding or Removing Nodes
   - [Modifying a Cluster](docs/modify/index.md)
-  - Using Z0DAN
+  - Using Zodan
     - [Modifying your Cluster with Zodan](docs/modify/zodan/index.md)
     - [Using Zodan Scripts and Workflows](docs/modify/zodan/zodan_readme.md)
     - [Adding a Node with Zero Downtime](docs/modify/zodan/zodan_tutorial.md)
@@ -269,4 +269,4 @@ You cannot roll back an upgrade because of changes to the catalog tables; before
 Then, to upgrade the version of spock that you use to manage your replication cluster, you can remove, build, and upgrade the spock extension like you would any other [PostgreSQL extension](https://www.postgresql.org/docs/17/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
 
 
-To review the spock license, visit [here](LICENSE.md).
+To review the spock license, see the [PostgreSQL License](LICENSE.md).

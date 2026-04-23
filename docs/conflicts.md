@@ -69,9 +69,6 @@ that are set in the `postgresql.conf` file or via `ALTER SYSTEM SET`:
   setting (see [possible
   values](https://www.postgresql.org/docs/15/runtime-config-logging.html#RUNTIME-CONFIG-SEVERITY-LEVELS));
   this setting is used primarily to suppress logging of conflicts.
-- `spock.batch_inserts` tells Spock to use a batch insert mechanism if
-  possible; the batch mechanism uses PostgreSQL internal batch insert mode
-  (also used by the `COPY` command); the default is `on`.
 
 
 ### Handling `INSERT-RowExists` or `INSERT/INSERT` Conflicts

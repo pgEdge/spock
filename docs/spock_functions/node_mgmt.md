@@ -39,7 +39,7 @@ and have a default of `null`.
 For example, the following command:
 
 ```sql
-SELECT spock.node_create(n1, ‘host=178.12.15.12 user=carol dbname=accounting’)
+SELECT spock.node_create('n1', 'host=178.12.15.12 user=carol dbname=accounting');
 ```
 
 Creates a node named `n1` that connects to the `accounting` database on
@@ -63,7 +63,7 @@ Parameters include:
 For example, the following command:
 
 ```sql
-SELECT spock.node_drop(n1, true)
+SELECT spock.node_drop('n1', true);
 ```
 
 Drops a node named `n1`. If the node does not exist, an error message will

@@ -17,7 +17,7 @@ Use properties within the `spockctrl.json` file describe your cluster before inv
 | Global Properties | Use properties in the `global` section to describe your cluster. |
 | spock -> cluster_name | The name of your cluster. |
 | spock -> version | The pgEdge .json file version in use. |
-| log -> log_level | Specify the message severity level to use for Spockctrl; valid options are: `0` (log errors only), `1` (log warnings and errors), `2` (log informational messages, warnings, and errors), and `3` (log debug level messages (most verbose)). |
+| log -> log_level | Specify the message severity level to use for Spockctrl; valid options are: `"ERROR"` (log errors only), `"WARN"` (log warnings and errors), `"INFO"` (log informational messages, warnings, and errors), and `"DEBUG"` (log debug level messages (most verbose)). |
 | log -> log_destination | Specify the target destination for your log messages. |
 | log -> log_file | Specify the log file name for your log files. |
 | spock-nodes Properties | Provide a stanza about each node in your cluster in the `spock-nodes` section.  If you are adding a node to your cluster, update this file to add the connection information for the new node before invoking `spockctrl`. |

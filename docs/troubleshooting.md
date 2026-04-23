@@ -272,40 +272,6 @@ Possible causes and solutions include:
 - Large transactions - break into smaller transactions if possible.
 - Slow subscriber hardware - upgrade hardware or reduce workload.
 
-### Batch Insert Mode Not Activating
-
-Batch insert mode requires specific conditions to activate automatically.
-
-Check the following requirements:
-
-- Verify batch inserts are enabled with this query:
-
-  ```sql
-  SHOW spock.batch_inserts;
-  ```
-
-- Check that conflict resolution is set to error:
-
-  ```sql
-  SHOW spock.conflict_resolution;
-  ```
-
-- Ensure tables have no INSTEAD OF INSERT or BEFORE INSERT triggers.
-- Batch mode activates after 5+ inserts in a single transaction.
-
-### Feedback Frequency Issues
-
-If you experience feedback overhead during bulk operations, adjust the
-feedback frequency with the following command:
-
-```sql
-ALTER SYSTEM SET spock.feedback_frequency = 500;
-SELECT pg_reload_conf();
-```
-
-The default value is 200. Higher values reduce overhead during bulk
-catch-up; lower values provide more frequent feedback.
-
 ## Node Failure and Recovery
 
 This section explains how to recover from node failures and restore

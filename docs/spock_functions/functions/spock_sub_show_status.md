@@ -33,7 +33,7 @@ SELECT * FROM spock.sub_show_status('sub_n1_n2');
 subscription_name | sub_n1_n2
 status            | replicating
 provider_node     | n2
-provider_dsn      | host=192.168.105.11 dbname=postgres user=postgres password=password
+provider_dsn      | host=192.168.105.11 dbname=postgres user=postgres password=<redacted>
 slot_name         | spk_postgres_n2_sub_n1
 replication_sets  | {default,default_insert_only,ddl_sql,audit_only}
 forward_origins   |

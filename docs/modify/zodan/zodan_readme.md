@@ -219,14 +219,16 @@ directory of the [Spock GitHub](https://github.com/pgEdge/spock)
 repository.
 
 To use the workflow, call a command from your Postgres session. In the
-following example, the `spock.remove_node` procedure removes a node
-from the cluster:
+following example, the Z0DAN `spock.remove_node` procedure removes a node
+from the cluster. Note that `spock.remove_node` is a Z0DAN utility
+procedure provided by `zodremove.sql`; it is not a built-in function of
+the Spock extension.
 
 ```sql
 CALL spock.remove_node(
   'target_node_name',
   'target_dsn',
-  'verbose_mode'            -- optional
+  true                      -- verbose_mode, optional boolean
 );
 ```
 

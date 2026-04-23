@@ -88,7 +88,7 @@ pgEdge cluster. In the following example, the `psql` command connects to the
 new node:
 
 ```bash
-psql -h 127.0.0.1 -p 5432 -d inventory -U pgedge
+psql -h 127.0.0.1 -p 5435 -d inventory -U pgedge
 ```
 
 Load the Zodan procedures with the following command:

@@ -270,7 +270,7 @@ The previous stanza returns the LSN of the sync event in the `$n2.sync_event` va
         "description": "Wait for a sync event on (n1) for n2-n1",
         "sleep": 0,
         "args": [
-          "--sql=CALL spock.wait_for_sync_event(true, 'n2', '$n2.sync_event'::pg_lsn, 1200000);"
+          "--sql=CALL spock.wait_for_sync_event('n2', '$n2.sync_event'::pg_lsn, 1200000);"
         ],
         "on_success": {},
         "on_failure": {}
@@ -337,7 +337,7 @@ In the next stanza, we wait for the sync event started in the previous stanza to
         "description": "Wait for a sync event on (n1) for n1-n3",
         "sleep": 10,
         "args": [
-          "--sql=CALL spock.wait_for_sync_event(true, 'n1', '$n1.sync_event'::pg_lsn, 1200000);"
+          "--sql=CALL spock.wait_for_sync_event('n1', '$n1.sync_event'::pg_lsn, 1200000);"
         ],
         "on_success": {},
         "on_failure": {}

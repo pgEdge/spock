@@ -53,12 +53,6 @@ functions adhere to the same rule previously described for
 added into the `default` replication set; alternatively, they will be added
 to the `default_insert_only` replication set.
 
-### `spock.batch_inserts`
-
-`spock.batch_inserts` tells Spock to use batch insert mechanism if
-possible. The batch mechanism uses Postgres internal batch insert mode which
-is also used by `COPY` command.
-
 ### `spock.channel_counters`
 
 `spock.channel_counters` is a boolean value (the default is `true`) that
@@ -191,15 +185,6 @@ keepalive options, etc.
 `spock` defaults to enabling TCP keepalives to ensure that it notices when
 the upstream server disappears unexpectedly. To disable them add
 `keepalives = 0` to `spock.extra_connection_options`.
-
-#### `spock.feedback_frequency`
-
-Controls how many WAL messages the apply worker processes before sending
-an LSN feedback packet to the provider. Lower values increase feedback
-overhead due to synchronous socket flushes; higher values reduce overhead
-during bulk catch-up. There is a time-based guard (wal_sender_timeout
-divided by 2) that ensures connection liveness regardless of this setting.
-The default is 200.
 
 ### Logical Slot Failover (HA Standby)
 

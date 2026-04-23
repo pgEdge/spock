@@ -36,6 +36,4 @@
 
 * Does `apply_delay` accommodate time zone changes, for example Daylight Savings Time?
 
-  There is a similar mechanism in physical replication - `recovery_min_apply_delay`. However, if you set an interval during daylight savings times, you might get that interval + the time change (in other words, you'll get a 1h delay instead of a 2h delay because of the time differential). This may lead to stopping and starting the database service twice per year.
-
-  Yes, `apply_delay` accommodates time changes like Daylight Savings Time.  The value of `apply_delay` stays the same in practice, if a time shift happens after the subscription was created.  However, we do not recommend running heavy workloads during a time change as spock replication needs some time ( ~ 5 minutes) to recover.
+  Yes, `apply_delay` accommodates time changes like Daylight Savings Time. The value of `apply_delay` stays constant and is not affected by DST or other time zone shifts; the configured interval remains the same if a time change happens after the subscription was created. However, we do not recommend running heavy workloads during a time change as spock replication needs some time (~ 5 minutes) to recover.

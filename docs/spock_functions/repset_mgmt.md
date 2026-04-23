@@ -46,7 +46,7 @@ Use the four remaining parameters to specify the content type to replicate:
 For example, the following command:
 
 ```sql
-SELECT spock.repset_create(accts, true, true, true, false)
+SELECT spock.repset_create('accts', true, true, true, false);
 ```
 
 Adds a replication set named `accts` that replicates all statements except
@@ -84,7 +84,7 @@ Parameters include:
 For example, the following command:
 
 ```sql
-SELECT spock.repset_add_table(accts, payables, accounting)
+SELECT spock.repset_add_table('accts', 'payables', 'accounting');
 ```
 
 Adds a table named `payables` to a replication set named `accts` in the
@@ -108,7 +108,7 @@ Parameters include:
 For example, the following command:
 
 ```sql
-SELECT spock.repset_remove_table(accts, payables)
+SELECT spock.repset_remove_table('accts', 'payables');
 ```
 
 Removes a table named `payables` from a replication set named `accts`.

@@ -1,7 +1,7 @@
 # spock.sub_enable
 
-The `spock.sub_enable()` function enables a subscription and reconnects to the
-provider.
+The `spock.sub_enable()` function enables a subscription. Replication workers
+then resume normal processing for that subscription.
 
 ## Synopsis
 

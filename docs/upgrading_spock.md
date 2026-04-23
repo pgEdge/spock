@@ -156,7 +156,8 @@ After upgrading all of the nodes in your cluster, connect to each node with
 psql and enable DDL replication:
 
 ```sql
-SELECT spock.replicate_ddl('SET spock.enable_ddl_replication = on');
+ALTER SYSTEM SET spock.enable_ddl_replication = on;
+SELECT pg_reload_conf();
 ```
 
 Or you can modify the parameter in the `postgresql.conf` file:

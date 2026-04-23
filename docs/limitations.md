@@ -274,20 +274,6 @@ matches exactly on all nodes. This means either all databases have no
 objects, or all databases have exactly the same objects with all tables in
 the replication sets.
 
-## Batch Insert Mode
-
-Batch insert mode has specific requirements and limitations.
-
-### Batch Insert Activation Requirements
-
-Batch insert mode requires the following conditions:
-
-- The `spock.batch_inserts` parameter must be enabled.
-- The `spock.conflict_resolution` parameter must be set to `error`.
-- Tables must have no `INSTEAD OF INSERT` or `BEFORE INSERT` triggers.
-- Batch mode activates automatically after 5 or more inserts in a single
-  transaction.
-
 ## Spock Schema
 
 The `spock` schema is managed internally by Spock and has the following
