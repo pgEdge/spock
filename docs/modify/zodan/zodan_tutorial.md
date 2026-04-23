@@ -39,7 +39,7 @@ need to complete the following steps:
 - Create a database user.
 - Follow the instructions at the [GitHub repository](https://github.com/pgEdge/spock)
   to build and install Spock on the database.
-- Add `spock` to the `shared_preload_library` parameter in the
+- Add `spock` to the `shared_preload_libraries` parameter in the
   `postgresql.conf` file.
 - Restart the server to update the configuration.
 - Use the `CREATE EXTENSION spock` command to create the Spock extension.
@@ -145,7 +145,7 @@ commands:
 
 ```sql
 -- Check source node version
-SELECT extversion 
+SELECT version
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT extversion FROM pg_extension WHERE extname = ''spock'''
@@ -153,7 +153,7 @@ FROM dblink(
 -- Expected: 5.0.4
 
 -- Check new node version
-SELECT extversion 
+SELECT version
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT extversion FROM pg_extension WHERE extname = ''spock'''

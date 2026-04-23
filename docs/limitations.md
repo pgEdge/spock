@@ -181,7 +181,7 @@ Columns configured for Delta-Apply conflict resolution must have a `NOT NULL`
 constraint. If a NULL value is encountered during delta application, the apply
 worker will error with:
 
-```
+```text
 ERROR: delta apply column can't operate NULL values
 ```
 

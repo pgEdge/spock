@@ -11,8 +11,9 @@ sequentially and perform the following steps:
 1. Disable auto-DDL.
 2. Stop the Postgres server.
 3. Build the updated Spock binaries for your Postgres version.
-4. Restart the Postgres server; this will trigger an automatic update of the
-   binary if a newer binary is available.
+4. Restart the Postgres server; this triggers extension schema upgrade checks
+   (Spock's background worker detects the version mismatch and runs any
+   required schema migrations automatically).
 5. Use the psql command line to verify the Spock version in use and the node
    status.
 6. After upgrading all of the nodes in your cluster, enable Auto-DDL and
@@ -26,7 +27,7 @@ Before stopping a node, disable DDL replication to prevent schema changes
 during the upgrade. Connect to each node and run:
 
 ```sql
-SELECT spock.replicate_ddl('ALTER SYSTEM SET spock.enable_ddl_replication = off');
+ALTER SYSTEM SET spock.enable_ddl_replication = off;
 SELECT pg_reload_conf();
 ```
 
@@ -104,7 +105,7 @@ Then, use pg_ctl to restart the Postgres postmaster
 process:
 
 ```bash
-pg_ctl -D /path/to/data1 start
+pg_ctl -D /path/to/data1 restart
 ```
 
 When the server restarts, Spock's database manager background worker
@@ -175,7 +176,7 @@ SELECT pg_reload_conf();
 Then, on each node, restart the service:
 
 ```bash
-pg_ctl -D /path/to/data1 start
+pg_ctl -D /path/to/data1 restart
 ```
 
 ## Final Verification
@@ -190,7 +191,7 @@ FROM pg_stat_replication;
 
 You should confirm that:
 
-- all nodes report consistent versions (5.0.1).
+- all nodes report consistent versions (the target version).
 - replication lag is minimal or zero.
 - no errors appear in PostgreSQL or Spock logs.
 

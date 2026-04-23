@@ -76,7 +76,7 @@ You can add and remove nodes dynamically with the following SQL functions.
 
 Use `spock.node_create` to create a replication node.
 
-`spock.node_create(node_name name, dsn text)`
+`spock.node_create(node_name name, dsn text, location text DEFAULT NULL, country text DEFAULT NULL, info jsonb DEFAULT NULL)`
 
 Parameters:
 
@@ -84,6 +84,9 @@ Parameters:
   database.
 - `dsn` is the connection string to the node. For nodes that are supposed to
   be providers, this should be reachable from the subscription nodes.
+- `location` (optional) is a text label for the node's physical location.
+- `country` (optional) is a text label for the node's country.
+- `info` (optional) is a JSON object for any additional node metadata.
 
 ### spock.node_drop
 
@@ -100,7 +103,7 @@ Parameters:
 
 ### spock.node_add_interface
 
-Use `spock.node_add_interface` to add an additional interface to a node.
+Use `spock.node_add_interface` to add an interface to a node.
 
 `spock.node_add_interface(node_name name, interface_name name, dsn text)`
 

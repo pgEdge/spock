@@ -9,12 +9,14 @@ cluster. Read-only mode restricts non-superusers to read-only
 operations, while superusers can still perform both read and write
 operations regardless of the setting.
 
-Read-only mode is implemented by filtering SQL statements:
+Read-only mode is enforced by setting PostgreSQL's `XactReadOnly` flag for
+each transaction, which prevents writes at the storage and transaction level.
+The practical effect is:
 
 - `SELECT` statements are allowed if they do not call functions that write.
 - DML (`INSERT`, `UPDATE`, `DELETE`) and DDL statements including
-  `TRUNCATE` are forbidden entirely.
-- DCL statements `GRANT` and `REVOKE` are also forbidden.
+  `TRUNCATE` are blocked.
+- DCL statements `GRANT` and `REVOKE` are also blocked.
 
 !!! note
 

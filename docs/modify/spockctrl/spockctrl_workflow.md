@@ -69,7 +69,7 @@ This stanza associates the name of the new node with the connection properties o
         "description": "Create a spock node n3",
         "args": [
           "--node_name=n3",
-          "--dsn=host=127.0.0.1 port=5433 user=pgedge password=pgedge",
+          "--dsn=host=127.0.0.1 port=5433 user=pgedge password=<PASSWORD>",
           "--location=Los Angeles",
           "--country=USA",
           "--info={\"key\": \"value\"}"
@@ -96,7 +96,7 @@ The next stanza creates the subscription from the new node (`n3`) to the source 
         "sleep": 0,
         "args": [
           "--sub_name=sub_n3_n1",
-          "--provider_dsn=host=127.0.0.1 port=5433 user=pgedge password=spockpass",
+          "--provider_dsn=host=127.0.0.1 port=5433 user=pgedge password=<PASSWORD>",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
           "--synchronize_structure=true",
           "--synchronize_data=true",
@@ -131,7 +131,7 @@ Our next stanza creates subscriptions between the new node and any existing repl
         "sleep": 0,
         "args": [
           "--sub_name=sub_n3_n2",
-          "--provider_dsn=host=127.0.0.1 port=5433 user=pgedge password=spockpass",
+          "--provider_dsn=host=127.0.0.1 port=5433 user=pgedge password=<PASSWORD>",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
           "--synchronize_structure=true",
           "--synchronize_data=true",
@@ -190,7 +190,7 @@ In our next stanza, we create a subscription between each replica node (`n2`) an
         "sleep": 5,
         "args": [
           "--sub_name=sub_n2_n3",
-          "--provider_dsn=host=127.0.0.1 port=5432 user=pgedge password=spockpass",
+          "--provider_dsn=host=127.0.0.1 port=5432 user=pgedge password=<PASSWORD>",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
           "--synchronize_structure=false",
           "--synchronize_data=false",
@@ -294,7 +294,7 @@ In the next stanza, we create a subscription on our new target node (`n3`) from 
         "sleep": 0,
         "args": [
           "--sub_name=sub_n1_n3",
-          "--provider_dsn=host=127.0.0.1 port=5431 user=pgedge password=spockpass",
+          "--provider_dsn=host=127.0.0.1 port=5431 user=pgedge password=<PASSWORD>",
           "--replication_sets=ARRAY['default', 'default_insert_only', 'ddl_sql']",
           "--synchronize_structure=true",
           "--synchronize_data=true",

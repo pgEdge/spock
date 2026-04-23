@@ -77,8 +77,9 @@ table (rather than primary keys or replication identity).
 If this GUC is `enabled`, Spock will continue to check unique constraint
 indexes, after checking the primary key or replica identity index. Only one
 conflict will be resolved, using Last-Write-Wins logic. This includes the
-primary key or replica identity index. If a second conflict occurs, an
-exception is recorded in the `spock.resolutions` table.
+primary key or replica identity index. If a second conflict occurs, the outcome is recorded in the
+`spock.resolutions` table if `spock.save_resolutions` is enabled; otherwise
+it is not persisted.
 
 Partial unique constraints are supported, but nullable unique constraints
 are not. Deferrable constraints are not supported, are filtered out and are
@@ -98,8 +99,8 @@ inadvertently create orphaned foreign key records.
 `spock.conflict_resolution` sets the resolution method for any detected
 conflicts between local data and incoming changes. Possible values include:
 
-- `error` - the replication will stop on error if conflict is detected and
-  manual action is needed for resolving.
+- `error` - the replication will stop on error if a conflict is detected and
+  manual action is required to resolve the conflict.
 - `apply_remote` - always apply the change that's conflicting with local
   data.
 - `keep_local` - keep the local version of the data and ignore the

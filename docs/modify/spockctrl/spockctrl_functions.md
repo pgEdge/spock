@@ -3,7 +3,7 @@
 Spockctrl provides functions to manage different aspects of your Spock replication setup. The functions are grouped by the type of object they manage:
 
 * [Spockctrl node management](#spockctrl-node-management-functions) functions
-* [Spockctrl replication management](#spockctrl-node-management-functions) functions
+* [Spockctrl replication management](#replication-set-management-functions) functions
 * [Spockctrl subscription management](#spockctrl-subscription-management-functions) functions
 * [Spockctrl SQL execution](#spockctrl-sql-execution-functions) functions
 
@@ -39,7 +39,7 @@ Use `spockctrl node create` to create a new Spock node within the Spock metadata
 
 * `-c <file>`, `--config=<path_to_spockctrl.json>` - Specifies the path to the `spockctrl.json` configuration file. If not provided, `spockctrl` looks for `spockctrl.json` in the current directory. For example: `spockctrl node list -c /etc/spock/spockctrl.conf`
 *  `-f <format>`, `--format=<table or json>` - Determines the output format for commands that display data. Specify: `table` (the default) to outputs data in a human-readable tabular format or `json` to output data in JSON format, which is useful for scripting or integration with other tools.  For example: `spockctrl sub list --format=json`
-*  `-v <level>`, `--verbose=<integer_value>` - Enables verbose logging to provide more detailed output about what `spockctrl` is doing. The verbosity level is an integer with higher numbers providing more detailed logs. `0` logs ERRORs only, `1` logs WARNINGs and ERRORs, `2` logs informational messages, WARNINGs, and ERRORs, and `3` logs debug level messages (most verbose).  For example: `spockctrl --verbose=2 node create mynode ...`
+*  `-v <level>`, `--verbose=<integer_value>` - Enables verbose logging to provide more detailed output about what `spockctrl` is doing. The verbosity level is an integer with higher numbers providing more detailed logs. `0` logs ERRORs only, `1` logs WARNINGs and ERRORs, `2` logs informational messages, WARNINGs, and ERRORs, and `3` logs debug-level messages (most verbose).  For example: `spockctrl --verbose=2 node create mynode ...`
 *  `-w <file>`, `--workflow=<path_to_workflow>` - Executes a predefined workflow from the specified JSON file. When using this option, you typically don't specify other commands like `node` or `sub` directly on the command line, as the workflow file directs the operations.   For example: `spockctrl --config=myconfig.json --workflow=workflows/add_node.json`
 *  `-h`, `--help` - Displays a general help message listing all available commands, or help for a specific command or subcommand. For example, to request help for the `node create` subcommand: `spockctrl node create --help`
 
@@ -85,7 +85,7 @@ Use `spockctrl node add-interface` to add an alternative connection interface to
 
 Use `spockctrl node drop-interface` to drop an interface from a node. The syntax is:
 
-`spockctrl node drop-interface <node_name> <interface_name>` drops an interface from a node.
+`spockctrl node drop-interface <node_name> <interface_name>`
  *   `<node_name>`: The name of the node accessed by the interface.
  *   `<interface_name>`: The name of the interface to remove.
 
@@ -198,7 +198,7 @@ The `sub` command manages subscriptions, which connect a subscriber node to a pr
 | [spockctrl sub create](#spockctrl-sub-create) | Create a new subscription. |
 | [spockctrl sub drop](#spockctrl-sub-drop) | Drop the specified subscription. |
 | [spockctrl sub enable](#spockctrl-sub-enable) | Enable the specified subscription. |
-| [spockctrl sub disable](#spockctrl-sub-disable) | Enable the specified subscription.  |
+| [spockctrl sub disable](#spockctrl-sub-disable) | Disable the specified subscription. |
 | [spockctrl sub list](#spockctrl-sub-list) | Generate a list of subscriptions.  |
 | [spockctrl sub wait-for-sync](#spockctrl-sub-wait-for-sync) | Wait for a subscription sync event.  |
 | [spockctrl sub show-status](#spockctrl-sub-show-status) | Display the status of the specified subscription.  |

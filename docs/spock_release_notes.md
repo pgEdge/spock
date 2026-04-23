@@ -35,7 +35,7 @@ Exception handling behavior is now controlled by the `spock.exception_behaviour`
 
 * Change Spock replication health tracking routines and views:
   - apply_group_progress, spock.progress, and spock.lag_tracker.
-  - rename last_received_lsn with commit_lsn to more precisely identify the
+  - rename last_received_lsn to commit_lsn to more precisely identify the
     underlying value.
   - introduce received_lsn - points to the last LSN, sent by the publisher,
     exactly like the pgoutput protocol does.
@@ -78,7 +78,7 @@ Exception handling behavior is now controlled by the `spock.exception_behaviour`
   transactions, truncated commit timestamps). Also fixed off-by-one errors in
   `spock_conflict_row_to_json()` that were overwriting the `local_origin`
   NULL flag.
-* Fix Z0DAN initialization issue: `present_final_cluster_state` now executes
+* Fix Zodan initialization issue: `present_final_cluster_state` now executes
   a COMMIT to allow newly created subscriptions to update their state, and
   final cluster state now checks all subscriptions across the cluster.
 * Suppress hot_standby_feedback off error messages in log in case a read
@@ -108,8 +108,8 @@ Exception handling behavior is now controlled by the `spock.exception_behaviour`
     - New health checks and verifications (ex: version compatibility) before
       and during the add node process.
     - New remove node SQL procedure (`spock.remove_node()` in
-      samples/Z0DAN/zodremove.sql) and python script
-      (samples/Z0DAN/zodremove.py). This also handles removing nodes that
+      samples/Zodan/zodremove.sql) and python script
+      (samples/Zodan/zodremove.py). This also handles removing nodes that
       were partially added when the user decided to undo this work.
     - Handle DSN strings that contain quotes.
 
@@ -238,7 +238,7 @@ Exception handling behavior is now controlled by the `spock.exception_behaviour`
 * Improved support for delta_apply columns to support various data types
 * Improved regression test coverage
 * Support for
-  [Large Object LOgical Replication](https://github.com/pgedge/lolor)
+  [Large Object Logical Replication](https://github.com/pgedge/lolor)
 * Support for pg17
 
 Our current production version is v3.3 and includes the following
@@ -262,7 +262,7 @@ enhancements over v3.2:
 * Prelim testing for online upgrades between pg15 & pg16
 * Regression testing improvements
 * Improved support for in-region shadow nodes (in different AZ's)
-* Improved and document support for replication and maintaining partitioned
+* Improved and documented support for replication and maintaining partitioned
   tables.
 
 **Version 3.0 (Beta)** includes the following important enhancements beyond

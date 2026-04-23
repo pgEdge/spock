@@ -32,6 +32,12 @@ Use properties within the `spockctrl.json` file to describe your cluster before 
 
 The following is sample content from a `spockctrl.json` file; customize the `spockctrl.json` file to contain connection information about your cluster.
 
+!!! warning
+
+    Do not embed plaintext passwords in this file for production use. Inject
+    credentials via environment variables or a secrets manager, and ensure the
+    file has restrictive permissions (e.g., `chmod 600 spockctrl.json`).
+
 ```json
 {
     "global": {
@@ -52,8 +58,8 @@ The following is sample content from a `spockctrl.json` file; customize the `spo
                 "postgres_ip": "127.0.0.1",
                 "postgres_port": 5431,
                 "postgres_user": "pgedge",
-                "postgres_password": "pgedge",
-                "postgres_db": "pgedge"
+                "postgres_password": "<POSTGRES_PASSWORD>",
+                "postgres_db": "<POSTGRES_DB>"
             }
         },
         {
@@ -62,8 +68,8 @@ The following is sample content from a `spockctrl.json` file; customize the `spo
                 "postgres_ip": "127.0.0.1",
                 "postgres_port": 5432,
                 "postgres_user": "pgedge",
-                "postgres_password": "pgedge",
-                "postgres_db": "pgedge"
+                "postgres_password": "<POSTGRES_PASSWORD>",
+                "postgres_db": "<POSTGRES_DB>"
             }
         },
         {
@@ -72,8 +78,8 @@ The following is sample content from a `spockctrl.json` file; customize the `spo
                 "postgres_ip": "127.0.0.1",
                 "postgres_port": 5433,
                 "postgres_user": "pgedge",
-                "postgres_password": "pgedge",
-                "postgres_db": "pgedge"
+                "postgres_password": "<POSTGRES_PASSWORD>",
+                "postgres_db": "<POSTGRES_DB>"
             }
         }
     ]

@@ -9,19 +9,13 @@ from the provider.
 spock.sub_disable(subscription_name name, immediate boolean DEFAULT false)
 ```
 
-## Description
-
-The `spock.sub_disable()` function disables a subscription by putting the
-subscription on hold and disconnecting from the provider.
-
 ## Arguments
 
 The function accepts the following arguments:
 
 - `subscription_name` - The name of an existing subscription.
-- `immediate` - If `true`, the subscription is stopped immediately; otherwise
-  the subscription will be stopped only at the end of the current transaction.
-  The default is `false`.
+- `immediate` - If `true`, the subscription is disabled immediately; otherwise
+  it is disabled at the end of the current transaction. The default is `false`.
 
 ## Example
 

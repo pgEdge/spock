@@ -8,7 +8,7 @@ The following table describes informational tables in the `spock` schema:
 | `channel_table_stats` | This table is similar to `channel_summary_stats`, but aggregates statistics across subscriptions, showing overall metrics grouped by subscription. The table includes the following columns: `subid`, `relid`, `sub_name`, `table_name`, `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` |
 | `depend` | This is an internal-use table that tracks dependent objects (e.g., tables added for replication or row filters). If such objects are dropped, they are also removed from Spock’s tracking. The table includes the following columns: `classid`, `objid`, `objsubid`, `refclassid`, `refobjid`, `refobjsubid`, `deptype` |
 | `exception_log` | This table logs unrecoverable errors or conflicts encountered by Spock during the replication process. The table includes the following columns: `remote_origin`, `remote_commit_ts`, `command_counter`, `retry_errored_at`, `remote_xid`, `local_origin`, `local_commit_ts`, `table_schema`, `table_name`, `operation` (contains one of the following: `BEGIN`, `COMMIT`, `INSERT`, `UPDATE`, `DELETE`, or `DDL`), `local_tup`, `remote_old_tup`, `remote_new_tup`, `ddl_statement`, `ddl_user`, `error_message` |
-| `exception_status` | This table is not used internally by Spock. These tables exist to support ACE by tracking specific status details. The table includes the following information columns: `remote_origin`, `remote_commit_ts`, `retry_errored_at`, `remote_xid`, `status`, `resolved_at`, `resolution_details` |
+| `exception_status` | This table is not used internally by Spock. This table exists to support ACE by tracking specific status details. The table includes the following information columns: `remote_origin`, `remote_commit_ts`, `retry_errored_at`, `remote_xid`, `status`, `resolved_at`, `resolution_details` |
 | `exception_status_detail` | The table includes the following columns: `remote_origin`, `remote_commit_ts`, `command_counter`, `retry_errored_at`, `remote_xid`, `status`, `resolved_at`, `resolution_details` |
 | `local_node` | This table contains one row with information for the local node. It contains the `node_id` and `node_local_interface` and can be joined with the previous two tables to show all local node information only. |
 | `local_sync_status` | This table displays the synchronization status of relations (tables) added to subscriptions. Shows all tables if a full sync was requested, or individual tables if sync was limited to specific tables. The table includes the following columns: `sync_kind`, `sync_subid`, `sync_nspname`, `sync_relname`, `sync_status`, `sync_statuslsn` |
@@ -33,10 +33,15 @@ monitor and validate your Spock replication cluster.
 ### Validating Spock Configuration for a Two-Node Cluster
 
 You can use the Spock extension to confirm that nodes are created and
-replication is happening. If a command returns a result set with no records,
-it implies that a command to create the node has not yet been run; a single
-row in this table implies that a command to create a subscription on the node
-has not been executed.
+replication is happening.
+
+Query `spock.node` to check node creation status: an empty result set means
+the node creation command has not yet been run, while a single row confirms
+the node exists.
+
+Query `spock.subscription` to check subscription creation status: an empty
+result set means no subscription has been created on this node, while a
+single row confirms a subscription exists.
 
 You can connect to the database server and query the `spock.node` table to
 return information about configured nodes:
