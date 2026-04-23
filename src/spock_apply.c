@@ -1101,6 +1101,7 @@ handle_commit(StringInfo s)
 
 				exception_log = &exception_log_ptr[my_exception_log_index];
 				exception_log->commit_lsn = InvalidXLogRecPtr;
+				exception_log->initial_error_message[0] = '\0';
 				MySpockWorker->restart_delay = 0;
 
 				elog(ERROR, "SPOCK %s: exiting because subscription disabled",
@@ -1124,6 +1125,7 @@ handle_commit(StringInfo s)
 
 				exception_log = &exception_log_ptr[my_exception_log_index];
 				exception_log->commit_lsn = InvalidXLogRecPtr;
+				exception_log->initial_error_message[0] = '\0';
 				MySpockWorker->restart_delay = 0;
 
 				elog(ERROR, "SPOCK %s: exception handling had no exception(s) "
@@ -1546,8 +1548,15 @@ handle_insert(StringInfo s)
 		}
 
 		/* Let's create an exception log entry if true. */
-		log_insert_exception(failed, edata ? edata->message : NULL, rel,
-							 NULL, &newtup, "INSERT");
+		{
+			char	   *err_msg = failed ? (edata ? edata->message : NULL) :
+				(xact_action_counter ==
+				 exception_log_ptr[my_exception_log_index].failed_action &&
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+				exception_log_ptr[my_exception_log_index].initial_error_message : NULL;
+
+			log_insert_exception(failed, err_msg, rel, NULL, &newtup, "INSERT");
+		}
 	}
 	else
 	{
@@ -1707,8 +1716,16 @@ handle_update(StringInfo s)
 		}
 
 		/* Let's create an exception log entry if true. */
-		log_insert_exception(failed, edata ? edata->message : NULL, rel,
-							 hasoldtup ? &oldtup : NULL, &newtup, "UPDATE");
+		{
+			char	   *err_msg = failed ? (edata ? edata->message : NULL) :
+				(xact_action_counter ==
+				 exception_log_ptr[my_exception_log_index].failed_action &&
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+				exception_log_ptr[my_exception_log_index].initial_error_message : NULL;
+
+			log_insert_exception(failed, err_msg, rel,
+								 hasoldtup ? &oldtup : NULL, &newtup, "UPDATE");
+		}
 	}
 	else
 	{
@@ -1804,8 +1821,15 @@ handle_delete(StringInfo s)
 		}
 
 		/* Let's create an exception log entry if true. */
-		log_insert_exception(failed, edata ? edata->message : NULL, rel,
-							 &oldtup, NULL, "DELETE");
+		{
+			char	   *err_msg = failed ? (edata ? edata->message : NULL) :
+				(xact_action_counter ==
+				 exception_log_ptr[my_exception_log_index].failed_action &&
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+				exception_log_ptr[my_exception_log_index].initial_error_message : NULL;
+
+			log_insert_exception(failed, err_msg, rel, &oldtup, NULL, "DELETE");
+		}
 	}
 	else
 	{
@@ -2438,6 +2462,13 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 
 		/* Let's create an exception log entry if true. */
 		if (should_log_exception(failed))
+		{
+			char	   *err_msg = failed ? edata->message :
+				(xact_action_counter ==
+				 exception_log_ptr[my_exception_log_index].failed_action &&
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
+				exception_log_ptr[my_exception_log_index].initial_error_message : NULL;
+
 			add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
 									   remote_xid,
@@ -2445,7 +2476,8 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 									   NULL, NULL, NULL, NULL,
 									   sql, queued_message->role,
 									   "SQL",
-									   (failed) ? edata->message : NULL);
+									   err_msg);
+		}
 	}
 	else
 	{
@@ -3314,6 +3346,24 @@ stream_replay:
 
 		MemoryContextSwitchTo(MessageContext);
 		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
+
+		/*
+		 * Save the initial error so the retry pass can record it against the
+		 * row that originally caused the failure, even if that row succeeds on
+		 * retry (transient error) or the error is cleared by FlushErrorState.
+		 */
+		if (exception_log_ptr != NULL)
+		{
+			snprintf(exception_log_ptr[my_exception_log_index].initial_error_message,
+					 sizeof(exception_log_ptr[my_exception_log_index].initial_error_message),
+					 "%s", edata->message);
+			snprintf(exception_log_ptr[my_exception_log_index].initial_operation,
+					 sizeof(exception_log_ptr[my_exception_log_index].initial_operation),
+					 "%s",
+					 errcallback_arg.action_name ? errcallback_arg.action_name : "UNKNOWN");
+			exception_log_ptr[my_exception_log_index].failed_action =
+				xact_action_counter;
+		}
 
 		FlushErrorState();
 
