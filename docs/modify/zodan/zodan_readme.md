@@ -78,7 +78,7 @@ the `zodan.py` script performs a health check on the cluster:
 The following options are available:
 
 - `--src-node-name` - Name of an existing node in the cluster.
-- `--src-dsn` - DSN of the source node (e.g., `"host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge"`).
+- `--src-dsn` - DSN of the source node (e.g., `"host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=<PASSWORD>"`).
 - `--new-node-name` - Name of the new node to add.
 - `--new-node-dsn` - DSN of the new node.
 - `--new-node-location` - Location of the new node (default: "NY").
@@ -105,7 +105,7 @@ a node:
 The command supports the following options:
 
 - `--src-node-name` - Name of an existing node in the cluster.
-- `--src-dsn` - DSN of the source node (e.g., `"host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge"`).
+- `--src-dsn` - DSN of the source node (e.g., `"host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=<PASSWORD>"`).
 - `--new-node-name` - Name of the new node to add.
 - `--new-node-dsn` - DSN of the new node.
 - `--new-node-location` - Location of the new node (default: "NY").
@@ -156,9 +156,9 @@ In the following example, the command adds node `n4` to the cluster:
 ```sql
 CALL spock.add_node(
   'n1',
-  'host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge',
+  'host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=<PASSWORD>',
   'n4',
-  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=pgedge'
+  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=<PASSWORD>'
 );
 ```
 
@@ -237,6 +237,6 @@ In the following example, the command removes node `n4` from the cluster:
 ```sql
 CALL spock.remove_node(
   'n4',
-  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=pgedge'
+  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=<PASSWORD>'
 );
 ```

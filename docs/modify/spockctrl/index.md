@@ -55,13 +55,13 @@ Assuming your `spockctrl.json` is in the current directory or is specified with 
     The following command tells Spock about your provider database instance:
 
     ```bash
-    spockctrl node create provider_node --dsn "host=pgserver1 port=5432 dbname=salesdb user=spock_user password=securepass"
+    spockctrl node create provider_node --dsn "host=pgserver1 port=5432 dbname=salesdb user=spock_user password=<PASSWORD>"
     ```
 
 2.  **Create the Subscriber Node:**
     The following command registers your subscriber database instance:
     ```bash
-    spockctrl node create subscriber_node --dsn "host=pgserver2 port=5432 dbname=salesdb_replica user=spock_user password=securepass"
+    spockctrl node create subscriber_node --dsn "host=pgserver2 port=5432 dbname=salesdb_replica user=spock_user password=<PASSWORD>"
     ```
 
 3.  **Create a Replication Set on the Provider:**
@@ -87,7 +87,7 @@ Assuming your `spockctrl.json` is in the current directory or is specified with 
     The following command initiates the replication process by telling the subscriber_node to connect to provider_node and subscribe to the specified replication sets:
     ```bash
     spockctrl sub create sales_subscription \
-        --provider-dsn "host=pgserver1 port=5432 dbname=salesdb user=spock_user password=securepass" \
+        --provider-dsn "host=pgserver1 port=5432 dbname=salesdb user=spock_user password=<PASSWORD>" \
         --target-node subscriber_node \
         --repsets "default_repset" \
         --forward-origins "none" \

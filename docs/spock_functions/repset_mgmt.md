@@ -58,43 +58,37 @@ To add a table to a replication set with Spock, connect to the server with
 psql and invoke the `spock.repset_add_table` command:
 
 ```sql
-SELECT spock.repset_add_table(replication_set_name, table_name, db_name,
-    synchronize_data, columns, row_filter, include_partitions, pg_version)
+SELECT spock.repset_add_table(set_name name, relation regclass,
+    synchronize_data boolean DEFAULT false, columns text[] DEFAULT NULL,
+    row_filter text DEFAULT NULL, include_partitions boolean DEFAULT true)
 ```
 
 Parameters include:
 
-- `replication_set_name` is the name of an existing replication set.
-- `table_name` is the name or name pattern of the table(s) to be added to the
-  set (for example `*` for all tables or `public.*` for all tables in public
-  schema).
-- `db_name` is the name of the database in which the table resides.
+- `set_name` is the name of an existing replication set.
+- `relation` is the name or OID of the table to add.
 - `synchronize_data` is a boolean value that instructs the server to
   synchronize table data on all related subscribers; the default is `false`.
-- `columns` specifies a list of columns to replicate.
-- use `row_filter` to provide a row filtering expression; this value defaults
-  to `None`.
+- `columns` specifies a list of columns to replicate; the default is `NULL`
+  (all columns).
+- `row_filter` is a row filtering expression; the default is `NULL` (no
+  filtering).
 - `include_partitions` is a boolean value; specify `true` to include all
   partitions; the default is `true`.
-- `pg_version` is the PostgreSQL version; if you have only one version
-  installed, this will default to the installed version; if you have more
-  than one version installed, you should include the version on which the
-  replication set resides.
 
 For example, the following command:
 
 ```sql
-SELECT spock.repset_add_table('accts', 'payables', 'accounting');
+SELECT spock.repset_add_table('accts', 'payables');
 ```
 
-Adds a table named `payables` to a replication set named `accts` in the
-`accounting` database. Since no columns are specified, all columns will be
-replicated.
+Adds a table named `payables` to a replication set named `accts`. Since no
+columns are specified, all columns will be replicated.
 
 ## Removing a Table from a Replication Set
 
-To drop a replication set with Spock, connect to the server with psql and
-invoke the `spock.repset_remove_table` command:
+To remove a table from a replication set with Spock, connect to the server
+with psql and invoke the `spock.repset_remove_table` command:
 
 ```sql
 SELECT spock.repset_remove_table(set_name, relation)
@@ -163,24 +157,27 @@ Parameters:
 
 Use `spock.repset_add_table` to add a table to a replication set.
 
-`spock.repset_add_table(set_name name, relation regclass, sync_data boolean,
-columns text[], row_filter text)`
+`spock.repset_add_table(set_name name, relation regclass,
+synchronize_data boolean DEFAULT false, columns text[] DEFAULT NULL,
+row_filter text DEFAULT NULL, include_partitions boolean DEFAULT true)`
 
 Parameters:
 
 - `set_name` is the name of an existing replication set.
 - `relation` is the name or OID of the table to be added to the set.
-- `sync_data` is `true` if the table data is to be synchronized on all
+- `synchronize_data` is `true` if the table data is to be synchronized on all
   subscribers which are subscribed to the specified replication set; the
   default is `false`.
 - `columns` is the list of columns to replicate. Normally when all columns
   should be replicated, this will be set to `NULL` (the default).
 - `row_filter` is a row filtering expression; the default is `NULL` (no
   filtering).
+- `include_partitions` is `true` to also add partitions of a partitioned
+  table; the default is `true`.
 
 !!! warning
     Use caution when synchronizing data with a valid row filter. Using
-    `sync_data=true` with a valid `row_filter` is usually a one-time
+    `synchronize_data=true` with a valid `row_filter` is usually a one-time
     operation for a table. Executing it again with a modified `row_filter`
     won't synchronize data to subscriber. You may need to call
     `spock.alter_sub_resync_table()` to fix it.
@@ -243,7 +240,7 @@ future will not be added automatically.
 Parameters:
 
 - `set_name` is the name of an existing replication set.
-- `schema_names` is an array of names of existing schemas from which tables
+- `schema_names` is an array of names of existing schemas from which sequences
   should be added.
 - `sync_data` specify `true` to synchronize the sequence value immediately;
   the default is `false`.
