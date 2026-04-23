@@ -36,7 +36,7 @@ performs as specified by the spock.exception_behavior GUC:
   - rename last_received_lsn with commit_lsn to more precisely identify the
     underlying value.
   - introduce received_lsn - points to the last LSN, sent by the publisher,
-    exactly like pgoutput protocol do.
+    exactly like the pgoutput protocol does.
   - remote_insert_lsn reported more frequently, on each incoming WAL record,
     not only on a COMMIT, as it was before.
 

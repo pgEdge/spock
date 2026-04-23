@@ -39,7 +39,7 @@ In this example, we'll walk through the stanzas that make up a workflow that add
 | CREATE SUBSCRIPTION | Add a subscription to a cluster. |
 | DROP SUBSCRIPTION| Drop a subscription from a cluster. |
 | CREATE REPSET | Add a repset to a cluster. |
-| DROP REPSET | Drop a node to a cluster. |
+| DROP REPSET | Drop a replication set from a cluster. |
 | CREATE SLOT | Add a replication slot. |
 | DROP SLOT | Drop a replication slot. |
 | ENABLE SUBSCRIPTION | Start replication on a node. |
@@ -50,7 +50,7 @@ In this example, we'll walk through the stanzas that make up a workflow that add
 
     In this walkthrough, we're using a two-node cluster; if your cluster is larger than two nodes, any actions performed on the replica node (in our example, `n2`) should be performed on *every* replica node in your cluster.  A replica node is any existing node that is not used as a source node.
 
-Our sample workflow adds a third node to a new node cluster. The first stanza provides connection information for the host of the new node.  Spockctrl can add only one node per workflow file; provide this information for each new node you add to your cluster.
+Our sample workflow adds a third node to an existing two-node cluster. The first stanza provides connection information for the host of the new node.  Spockctrl can add only one node per workflow file; provide this information for each new node you add to your cluster.
 
 This stanza associates the name of the new node with the connection properties of the new node:
 
@@ -150,7 +150,7 @@ Our next stanza creates subscriptions between the new node and any existing repl
 In the next step, we wait for the apply worker to check state of the subscription.  This step is optional, but should be considered a *best practice*.  This step uses a SQL command to call the `spock.wait_for_apply_worker` function.
 
 * `$n2.sub_create` is a variable (the subscription ID) populated by the previous `CREATE SUBSCRIPTION` stanza.
-* If needed, use the `sleep` property to accomodate processing time.
+* If needed, use the `sleep` property to accommodate processing time.
 
 !!! info
 
@@ -290,7 +290,7 @@ In the next stanza, we create a subscription on our new target node (`n3`) from 
       "spock": {
         "node": "n3",
         "command": "CREATE SUBSCRIPTION",
-        "description": "Create a subscription (sub_n1_n3) for n1 fpr n1->n3",
+        "description": "Create a subscription (sub_n1_n3) for n1 for n1->n3",
         "sleep": 0,
         "args": [
           "--sub_name=sub_n1_n3",
@@ -373,7 +373,7 @@ In the next stanza, we use the timestamp from the previous stanza (`$n3.commit_t
         "description": "Advance the replication slot for n2->n3 based on a specific commit timestamp",
         "sleep": 0,
         "args": [
-          "--sql=WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_pgedge_n2_sub_n2_n3', '$n3.commit_timestamp'::timestamp) AS lsn) SELECT pg_replication_slot_advance('spk_pgedge_n2_sub_n2_n3', lsn) FROM lsn_cte;"
+          "--sql=WITH lsn_cte AS (SELECT spock.get_lsn_from_commit_ts('spk_pgedge_n2_sub_n2_n3', '$n3.commit_timestamp'::timestamptz) AS lsn) SELECT pg_replication_slot_advance('spk_pgedge_n2_sub_n2_n3', lsn) FROM lsn_cte;"
         ],
         "on_success": {},
         "on_failure": {}
@@ -406,7 +406,7 @@ After starting replication, we check the lag time between the new node and each 
       "sql": {
         "node": "n3",
         "command": "SQL",
-        "description": "Advance the replication slot for n2->n3 based on a specific commit timestamp",
+        "description": "Poll spock.lag_tracker until replication lag from all nodes to n3 is within acceptable range",
         "sleep": 0,
         "args": [
           "--sql=DO $$\nDECLARE\n    lag_n1_n3 interval;\n    lag_n2_n3 interval;\nBEGIN\n    LOOP\n        SELECT now() - commit_timestamp INTO lag_n1_n3\n        FROM spock.lag_tracker\n        WHERE origin_name = 'n1' AND receiver_name = 'n3';\n\n        SELECT now() - commit_timestamp INTO lag_n2_n3\n        FROM spock.lag_tracker\n        WHERE origin_name = 'n2' AND receiver_name = 'n3';\n\n        RAISE NOTICE 'n1 → n3 lag: %, n2 → n3 lag: %',\n                     COALESCE(lag_n1_n3::text, 'NULL'),\n                     COALESCE(lag_n2_n3::text, 'NULL');\n\n        EXIT WHEN lag_n1_n3 IS NOT NULL AND lag_n2_n3 IS NOT NULL\n                  AND extract(epoch FROM lag_n1_n3) < 59\n                  AND extract(epoch FROM lag_n2_n3) < 59;\n\n        PERFORM pg_sleep(1);\n    END LOOP;\nEND\n$$;\n"

@@ -18,7 +18,7 @@ To create a node with Spock, connect to the server with psql and use the
 `spock.node_create` command:
 
 ```sql
-SELECT spock.node_create(node_name, dsn, location, country, info)
+SELECT spock.node_create(node_name, dsn)
 ```
 
 Parameters include:
@@ -106,7 +106,7 @@ Use `spock.node_add_interface` to add an additional interface to a node.
 `spock.node_add_interface(node_name name, interface_name name, dsn text)`
 
 When a node is created, the interface for it is also created using the `dsn`
-specified in the `create_node` command, and with the same name as the node.
+specified in the `spock.node_create` command, and with the same name as the node.
 This interface allows adding alternative interfaces with different connection
 strings to an existing node.
 

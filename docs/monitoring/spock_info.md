@@ -9,7 +9,7 @@ The following table describes informational tables in the `spock` schema:
 | Table Name | Description |
 ---------------------|----------------------------|
 | `channel_summary_stats` | This table tracks per-table statistics for a given subscription, including total inserts, updates, deletes, conflicts, and delta apply column changes. The table includes the following columns: `subid`, `sub_name`, `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` |
-| `channel_table_stats` | This table is similar to `channel_table_stats`, but aggregates statistics across subscriptions, showing overall metrics grouped by subscription. The table includes the following columns: `subid`, `relid`, `sub_name`, `table_name`, `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` |
+| `channel_table_stats` | This table is similar to `channel_summary_stats`, but aggregates statistics across subscriptions, showing overall metrics grouped by subscription. The table includes the following columns: `subid`, `relid`, `sub_name`, `table_name`, `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` |
 | `depend` | This is an internal-use table that tracks dependent objects (e.g., tables added for replication or row filters). If such objects are dropped, they are also removed from Spock’s tracking. The table includes the following columns: `classid`, `objid`, `objsubid`, `refclassid`, `refobjid`, `refobjsubid`, `deptype` |
 | `exception_log` | This table logs unrecoverable errors or conflicts encountered by Spock during the replication process. The table includes the following columns: `remote_origin`, `remote_commit_ts`, `command_counter`, `retry_errored_at`, `remote_xid`, `local_origin`, `local_commit_ts`, `table_schema`, `table_name`, `operation` (contains one of the following: `BEGIN`, `COMMIT`, `INSERT`, `UPDATE`, `DELETE`, or `DDL`), `local_tup`, `remote_old_tup`, `remote_new_tup`, `ddl_statement`, `ddl_user`, `error_message` |
 | `exception_status` | This table is not used internally by Spock. These tables exist to support ACE by tracking specific status details. The table includes the following information columns: `remote_origin`, `remote_commit_ts`, `retry_errored_at`, `remote_xid`, `status`, `resolved_at`, `resolution_details` |
@@ -34,7 +34,7 @@ The following table describes informational tables in the `spock` schema:
 The following examples demonstrate how to query the informational tables to
 monitor and validate your Spock replication cluster.
 
-### Validating Spock Configuration for a Two Node Cluster
+### Validating Spock Configuration for a Two-Node Cluster
 
 You can use the Spock extension to confirm that nodes are created and
 replication is happening. If a command returns a result set with no records,

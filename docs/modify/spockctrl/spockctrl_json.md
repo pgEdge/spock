@@ -10,7 +10,7 @@ Within the template, provide information about your cluster and each node that i
 
 ## spockctrl.json Properties
 
-Use properties within the `spockctrl.json` file describe your cluster before invoking `spockctrl`:
+Use properties within the `spockctrl.json` file to describe your cluster before invoking `spockctrl`:
 
 | Property | Description |
 |----------|-------------|
