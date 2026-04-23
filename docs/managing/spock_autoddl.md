@@ -6,7 +6,7 @@ automatic DDL replication, set the following parameters to `on`:
 * `spock.enable_ddl_replication` enables replication of ddl statements
   through the default replication set. Some DDL statements are intentionally
   not replicated (like `CREATE DATABASE`). Other DDL statements are
-  replicated, but can cause lead to replication issues (like the
+  replicated, but can lead to replication issues (like the
   `CREATE TABLE... AS...` statement). In the case of `CREATE TABLE... AS...`,
   the DDL statement is replicated before the table is added to the
   replication set, leading to potential data irregularities. Some DDL
