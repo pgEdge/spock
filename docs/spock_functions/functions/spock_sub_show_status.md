@@ -4,53 +4,69 @@
 
 ### SYNOPSIS
 
-spock.sub_show_status (subscription_name name)
+```sql
+spock.sub_show_status(subscription_name name DEFAULT NULL)
+```
 
 ### RETURNS
 
-A set of rows describing the status of one or more Spock subscriptions.
+A set of rows describing the current state of one or more
+subscriptions. Each row contains:
 
-Each row contains:
+- the name of the subscription.
+- the current replication status.
+- the name of the provider node.
+- the connection string used to reach the provider.
+- the name of the logical replication slot used by the subscription.
+- the replication sets associated with the subscription.
+- the origins that are forwarded by this subscription.
 
-    - The name of the subscription.
+### STATUS VALUES
 
-    — Current replication status.
+The following table describes each possible value for the `status`
+column:
 
-    — The name of the provider node.
+| Status | Description |
+|---|---|
+| `replicating` | The apply worker is running and initial synchronization is complete; changes from the provider are being applied normally. |
+| `initializing` | The apply worker is running but initial synchronization has not yet completed; table data is still being copied from the provider. |
+| `disabled` | The subscription was explicitly disabled with `spock.sub_disable()`; the apply worker is not running. |
+| `down` | The subscription is enabled but the apply worker is not running; the worker may not have started yet or may have exited unexpectedly. |
+| `unknown` | The apply worker is running but no synchronization status record was found; this is a transient state that typically resolves quickly. |
 
-    — The connection string used to reach the provider.
+### DESCRIPTION
 
-    — The logical replication slot used by the subscription.
+`spock.sub_show_status()` displays detailed runtime information about
+Spock subscriptions on the current node.
 
-    — The replication sets associated with the subscription.
+If a specific subscription name is provided, only that subscription is
+shown. If `NULL` (the default), the function returns status for all
+subscriptions on the node.
 
-    — The origins that are forwarded by this subscription.
-
-DESCRIPTION
-
-Displays detailed runtime information about Spock subscriptions.
-
-If a specific subscription name is provided, only that subscription is shown.
-If NULL (the default), the status of all subscriptions on the node is
-returned.
-
-This function is useful for troubleshooting replication issues, validating
-configuration, and verifying which replication sets and origins are in use.
-
-The information returned is derived from Spock catalog metadata and the
-current state of logical replication slots.
+This function is useful for monitoring replication health, validating
+configuration, and verifying which replication sets and origins are in
+use. The information is derived from Spock catalog metadata and the
+current state of logical replication workers.
 
 This function does not modify any configuration.
 
-ARGUMENTS
+### ARGUMENTS
 
 subscription_name
 
-    Optional. The name of a specific Spock subscription. The default is NULL;
-    If NULL, all subscriptions are shown.
+    Optional. The name of a specific Spock subscription. If NULL
+    (the default), the function returns status for all subscriptions.
 
-EXAMPLE
+### EXAMPLE
 
-    SELECT * FROM spock.sub_show_status();
+To display the status of all subscriptions, run:
 
-    SELECT * FROM spock.sub_show_status('sub_n1_to_n2');
+```sql
+SELECT * FROM spock.sub_show_status();
+```
+
+To display the status of a specific subscription, run:
+
+```sql
+SELECT * FROM spock.sub_show_status('sub_n1_to_n2');
+```
