@@ -59,7 +59,6 @@ typedef struct SpockExceptionLog
 	XLogRecPtr	commit_lsn;
 	HeapTuple	local_tuple;
 	char		initial_error_message[1024];
-	char		initial_operation[16];
 	uint32		failed_action;	/* xact_action_counter at time of error */
 } SpockExceptionLog;
 

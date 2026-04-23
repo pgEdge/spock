@@ -801,6 +801,7 @@ handle_commit(StringInfo s)
 			exception_log = &exception_log_ptr[my_exception_log_index];
 			exception_log->commit_lsn = InvalidXLogRecPtr;
 			exception_log->initial_error_message[0] = '\0';
+			exception_log->failed_action = 0;
 			MyApplyWorker->use_try_block = false;
 			MySpockWorker->restart_delay = 0;
 
@@ -898,6 +899,7 @@ handle_commit(StringInfo s)
 			 */
 			exception_log->commit_lsn = InvalidXLogRecPtr;
 			exception_log->initial_error_message[0] = '\0';
+			exception_log->failed_action = 0;
 			MySpockWorker->restart_delay = 0;
 
 			/* Defensive check */
@@ -930,6 +932,8 @@ handle_commit(StringInfo s)
 
 			exception_log = &exception_log_ptr[my_exception_log_index];
 			exception_log->commit_lsn = InvalidXLogRecPtr;
+			exception_log->initial_error_message[0] = '\0';
+			exception_log->failed_action = 0;
 			MySpockWorker->restart_delay = 0;
 
 			elog(ERROR, "SPOCK %s: disabling subscription due to exception in SUB_DISABLE mode",
@@ -945,6 +949,7 @@ handle_commit(StringInfo s)
 			 * into future transactions.
 			 */
 			exception_log_ptr[my_exception_log_index].initial_error_message[0] = '\0';
+			exception_log_ptr[my_exception_log_index].failed_action = 0;
 		}
 
 		/* Track commit lsn  */
@@ -1086,6 +1091,7 @@ handle_commit(StringInfo s)
 
 	xact_action_counter = 0;
 	remote_xid = InvalidTransactionId;
+	xact_had_exception = false;
 
 	/* Reset the ApplyReplayContext and pointers */
 	apply_replay_queue_reset();
@@ -1349,7 +1355,7 @@ handle_insert(StringInfo s)
 			char	   *error_msg =
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
-				 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
 				exception_log_ptr[my_exception_log_index].initial_error_message :
 				NULL;
 
@@ -1517,7 +1523,7 @@ handle_update(StringInfo s)
 			char	   *error_msg =
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
-				 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
 				exception_log_ptr[my_exception_log_index].initial_error_message :
 				NULL;
 
@@ -1645,7 +1651,7 @@ handle_delete(StringInfo s)
 			char	   *error_msg =
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
-				 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
 				exception_log_ptr[my_exception_log_index].initial_error_message :
 				NULL;
 
@@ -1747,7 +1753,7 @@ handle_truncate(StringInfo s)
 		char	   *error_msg =
 			(xact_action_counter ==
 			 exception_log_ptr[my_exception_log_index].failed_action &&
-			 exception_log_ptr[my_exception_log_index].initial_error_message[0]) ?
+			 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
 			exception_log_ptr[my_exception_log_index].initial_error_message :
 			NULL;
 
@@ -3408,15 +3414,6 @@ stream_replay:
 			snprintf(exception_log_ptr[my_exception_log_index].initial_error_message,
 					 sizeof(exception_log_ptr[my_exception_log_index].initial_error_message),
 					 "%s", edata->message);
-
-			/*
-			 * Capture the operation that caused the initial exception. Use
-			 * errcallback_arg.action_name if available, otherwise "UNKNOWN".
-			 */
-			snprintf(exception_log_ptr[my_exception_log_index].initial_operation,
-					 sizeof(exception_log_ptr[my_exception_log_index].initial_operation),
-					 "%s",
-					 errcallback_arg.action_name ? errcallback_arg.action_name : "UNKNOWN");
 
 			/*
 			 * Remember which action in the transaction triggered the error.
