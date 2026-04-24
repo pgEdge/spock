@@ -25,6 +25,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 #if PG_VERSION_NUM >= 150000
+#include "access/xlog.h"
 #include "access/xlogrecovery.h"
 #endif
 
@@ -39,6 +40,9 @@
 #include "replication/slot.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
+#if PG_VERSION_NUM >= 170000
+#include "replication/slotsync.h"
+#endif
 
 #include "storage/ipc.h"
 #include "storage/procarray.h"
@@ -523,21 +527,21 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 
 	initStringInfo(&connstr);
 	/*
-	 * Append the dbname of the remote slot. We don't use a generic db
-	 * like postgres here because plugin callback bellow might want to invoke
-	 * extension functions.
+	 * Append the dbname of the remote slot. We don't use a generic db like
+	 * postgres here because plugin callback below might want to invoke
+	 * extension functions.  Keep connstr alive for reconnect attempts.
 	 */
 	make_sync_failover_slots_dsn(&connstr, remote_slot->database);
 
 	conn = remote_connect(connstr.data, "spock_failover_slots");
-	pfree(connstr.data);
 
 	for (;;)
 	{
 		RemoteSlot *new_slot;
-		int rc;
-		FailoverSlotFilter *filter = palloc(sizeof(FailoverSlotFilter));
-		XLogRecPtr receivePtr;
+		int			rc;
+		FailoverSlotFilter *filter;
+		XLogRecPtr	receivePtr;
+		bool		query_failed;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -551,20 +555,91 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 				WARNING,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg(
-					 "replication slot sync wait for slot %s interrupted by promotion",
-					 remote_slot->name)));
-			PQfinish(conn);
+						"replication slot sync wait for slot %s interrupted by promotion",
+						remote_slot->name)));
+			if (conn)
+				PQfinish(conn);
+			pfree(connstr.data);
 			return false;
 		}
 
+		/*
+		 * If the connection to the primary was lost (e.g. because the primary
+		 * was stopped as part of a controlled failover), attempt to reconnect.
+		 * We wrap the reconnect in PG_TRY so that a failed reconnect does not
+		 * crash the bgworker; we simply wait and try again, and the
+		 * RecoveryInProgress() check at the top of the loop will detect
+		 * promotion and return false cleanly.
+		 */
+		if (conn == NULL)
+		{
+			PG_TRY();
+			{
+				conn = remote_connect(connstr.data, "spock_failover_slots");
+			}
+			PG_CATCH();
+			{
+				FlushErrorState();
+				conn = NULL;
+			}
+			PG_END_TRY();
+
+			if (conn == NULL)
+			{
+				/* Still cannot reach primary; wait before retrying. */
+				rc = WaitLatch(MyLatch,
+							   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+							   wal_retrieve_retry_interval, PG_WAIT_EXTENSION);
+				if (rc & WL_POSTMASTER_DEATH)
+					proc_exit(1);
+				ResetLatch(MyLatch);
+				continue;
+			}
+		}
+
+		/*
+		 * Query the primary for the current slot state.  Wrap in PG_TRY so
+		 * that a connection failure (primary stopped before promotion) is
+		 * handled gracefully: close the dead connection, wait, and retry.
+		 * The RecoveryInProgress() check above will detect promotion on the
+		 * next iteration and return false, allowing the caller to persist the
+		 * slot with whatever WAL position the standby has locally reserved.
+		 */
+		query_failed = false;
+		slots = NIL;
+		filter = palloc(sizeof(FailoverSlotFilter));
 		filter->key = FAILOVERSLOT_FILTER_NAME;
 		filter->val = remote_slot->name;
-		slots = remote_get_primary_slot_info(conn, list_make1(filter));
+
+		PG_TRY();
+		{
+			slots = remote_get_primary_slot_info(conn, list_make1(filter));
+		}
+		PG_CATCH();
+		{
+			FlushErrorState();
+			PQfinish(conn);
+			conn = NULL;
+			query_failed = true;
+		}
+		PG_END_TRY();
+
+		if (query_failed)
+		{
+			rc = WaitLatch(MyLatch,
+						   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+						   wal_retrieve_retry_interval, PG_WAIT_EXTENSION);
+			if (rc & WL_POSTMASTER_DEATH)
+				proc_exit(1);
+			ResetLatch(MyLatch);
+			continue;
+		}
 
 		if (!list_length(slots))
 		{
 			/* Slot on provider vanished */
 			PQfinish(conn);
+			pfree(connstr.data);
 			return false;
 		}
 
@@ -579,13 +654,15 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 			new_slot->confirmed_lsn = receivePtr;
 
 		if (new_slot->restart_lsn >= slot->data.restart_lsn &&
-			TransactionIdFollowsOrEquals(new_slot->catalog_xmin,
-										 MyReplicationSlot->data.catalog_xmin))
+			(!TransactionIdIsValid(new_slot->catalog_xmin) ||
+			 TransactionIdFollowsOrEquals(new_slot->catalog_xmin,
+										  MyReplicationSlot->data.catalog_xmin)))
 		{
 			remote_slot->restart_lsn = new_slot->restart_lsn;
 			remote_slot->confirmed_lsn = new_slot->confirmed_lsn;
 			remote_slot->catalog_xmin = new_slot->catalog_xmin;
 			PQfinish(conn);
+			pfree(connstr.data);
 			return true;
 		}
 
@@ -615,7 +692,6 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
-
 
 		ResetLatch(MyLatch);
 	}
@@ -697,8 +773,9 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * with our physical replication slot on the master.
 		 */
 		if (remote_slot->restart_lsn < MyReplicationSlot->data.restart_lsn ||
-			TransactionIdPrecedes(remote_slot->catalog_xmin,
-								  MyReplicationSlot->data.catalog_xmin))
+			(TransactionIdIsValid(remote_slot->catalog_xmin) &&
+			 TransactionIdPrecedes(remote_slot->catalog_xmin,
+								   MyReplicationSlot->data.catalog_xmin)))
 		{
 			elog(
 				WARNING,
@@ -764,12 +841,59 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 */
 		ReplicationSlotReserveWal();
 
+		/*
+		 * On PG16 and earlier standbys, ReplicationSlotReserveWal() may set
+		 * restart_lsn to InvalidXLogRecPtr (zero) or to a value that is below
+		 * the standby's recovery redo pointer — the oldest WAL position the
+		 * standby actually has from the pg_basebackup checkpoint.
+		 *
+		 * When restart_lsn is zero, the unsigned comparison below
+		 * (remote_slot->restart_lsn < slot->data.restart_lsn) is always FALSE
+		 * for any real remote LSN, so wait_for_primary_slot_catchup is never
+		 * called.  When restart_lsn is a small but non-zero value (less than
+		 * the redo pointer), the comparison still fails to fire for remote
+		 * slots that require WAL older than what the standby has.  In both
+		 * cases we end up persisting a slot with the remote's restart_lsn,
+		 * which the standby cannot satisfy, causing an immediate PANIC
+		 * ("required WAL not available") and an infinite crash loop on the
+		 * next startup.
+		 *
+		 * Fix: always ensure restart_lsn is at least as high as the recovery
+		 * redo pointer (GetRedoRecPtr), which is set from the basebackup
+		 * checkpoint and represents the guaranteed minimum WAL floor on this
+		 * standby.  Any remote slot that requires WAL older than that will
+		 * then correctly trigger wait_for_primary_slot_catchup.
+		 */
+		{
+			XLogRecPtr	old_lsn = MyReplicationSlot->data.restart_lsn;
+			XLogRecPtr	redo_lsn = GetRedoRecPtr();
+
+			if (!XLogRecPtrIsInvalid(redo_lsn) && redo_lsn > old_lsn)
+			{
+				SpinLockAcquire(&slot->mutex);
+				slot->data.restart_lsn = redo_lsn;
+				SpinLockRelease(&slot->mutex);
+				elog(DEBUG1,
+					 "spock_failover_slots: bumped restart_lsn from %X/%X to"
+					 " redo pointer %X/%X for new slot \"%s\"",
+					 LSN_FORMAT_ARGS(old_lsn),
+					 LSN_FORMAT_ARGS(redo_lsn), remote_slot->name);
+			}
+		}
+
+		/*
+		 * ReplicationSlotsComputeRequiredXmin(true) asserts that BOTH
+		 * ReplicationSlotControlLock (exclusive) and ProcArrayLock (exclusive)
+		 * are held, in that order, to prevent deadlocks.
+		 */
+		LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
 		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 		xmin_horizon = GetOldestSafeDecodingTransactionId(true);
 		slot->effective_catalog_xmin = xmin_horizon;
 		slot->data.catalog_xmin = xmin_horizon;
 		ReplicationSlotsComputeRequiredXmin(true);
 		LWLockRelease(ProcArrayLock);
+		LWLockRelease(ReplicationSlotControlLock);
 
 		/*
 		 * Our xmin and/or catalog_xmin may be > that required by one or more
@@ -787,17 +911,34 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * synchronized as they will always be behind the physical slot.
 		 */
 		if (remote_slot->restart_lsn < MyReplicationSlot->data.restart_lsn ||
-			TransactionIdPrecedes(remote_slot->catalog_xmin,
-								  MyReplicationSlot->data.catalog_xmin))
+			(TransactionIdIsValid(remote_slot->catalog_xmin) &&
+			 TransactionIdPrecedes(remote_slot->catalog_xmin,
+								   MyReplicationSlot->data.catalog_xmin)))
 		{
 			if (!wait_for_primary_slot_catchup(MyReplicationSlot, remote_slot))
 			{
-				/* Provider slot didn't catch up to locally reserved position
+			if (RecoveryInProgress())
+				{
+					/*
+					 * Not a promotion — genuinely can't satisfy slot
+					 * requirements while still in recovery.
+					 */
+					ReplicationSlotRelease();
+					PopActiveSnapshot();
+					CommitTransactionCommand();
+					return;
+				}
+
+				/*
+				 * Promotion interrupted the wait.  A freshly promoted
+				 * streaming standby has all WAL from pg_basebackup onward,
+				 * so the slot's restart_lsn (set conservatively by
+				 * ReplicationSlotReserveWal) is safe to use.  Fall through
+				 * to persist the slot.
 				 */
-				ReplicationSlotRelease();
-				PopActiveSnapshot();
-				CommitTransactionCommand();
-				return;
+				elog(LOG, "spock_failover_slots: persisting slot \"%s\" after "
+					 "promotion interrupted WAL catchup; standby has required WAL",
+					 remote_slot->name);
 			}
 		}
 
@@ -977,64 +1118,100 @@ synchronize_failover_slots(long sleep_time)
 			lsn = remote_slot->restart_lsn;
 	}
 
-	if (safe_lsn == InvalidXLogRecPtr ||
-		WalRcv->latestWalEnd == InvalidXLogRecPtr)
+	/*
+	 * We need the WAL flush position both for the latestWalEnd/lsn check
+	 * and for capping confirmed_lsn inside the slot loop.  Read it once
+	 * here so we use a consistent value throughout.
+	 *
+	 * On PostgreSQL builds with --enable-cassert, LogicalConfirmReceivedLocation
+	 * asserts that the LSN passed to it is not InvalidXLogRecPtr.  If
+	 * GetWalRcvFlushRecPtr returns 0 (which can happen in the brief window
+	 * after the WAL receiver starts but before it has flushed its first
+	 * page), capping confirmed_lsn to 0 and then passing 0 to
+	 * LogicalConfirmReceivedLocation will trip that assertion and SIGABRT the
+	 * bgworker, causing a postmaster cluster reset on every loop iteration.
+	 * Guard by returning early when the flush position is not yet valid.
+	 */
 	{
-		ereport(
-			WARNING,
-			(errmsg(
-				"cannot synchronize replication slot positions yet because feedback was not sent yet")));
-		was_lsn_safe = false;
-		PQfinish(conn);
-		return Min(sleep_time, WORKER_WAIT_FEEDBACK);
-	}
-	else if (WalRcv->latestWalEnd < lsn)
-	{
-		ereport(
-			WARNING,
-			(errmsg(
-				"requested slot synchronization point %X/%X is ahead of the standby position %X/%X, not synchronizing slots",
-				(uint32) (lsn >> 32), (uint32) (lsn),
-				(uint32) (WalRcv->latestWalEnd >> 32),
-				(uint32) (WalRcv->latestWalEnd))));
-		was_lsn_safe = false;
-		PQfinish(conn);
-		return Min(sleep_time, WORKER_WAIT_FEEDBACK);
-	}
+		XLogRecPtr	receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
 
-	foreach (lc, slots)
-	{
-		RemoteSlot *remote_slot = lfirst(lc);
-		XLogRecPtr receivePtr;
+		if (safe_lsn == InvalidXLogRecPtr ||
+			WalRcv->latestWalEnd == InvalidXLogRecPtr ||
+			XLogRecPtrIsInvalid(receivePtr))
+		{
+			ereport(
+					WARNING,
+					(errmsg(
+							"cannot synchronize replication slot positions yet because feedback was not sent yet")));
+			was_lsn_safe = false;
+			PQfinish(conn);
+			return Min(sleep_time, WORKER_WAIT_FEEDBACK);
+		}
+		else if (WalRcv->latestWalEnd < lsn)
+		{
+			ereport(
+					WARNING,
+					(errmsg(
+							"requested slot synchronization point %X/%X is ahead of the standby position %X/%X, not synchronizing slots",
+							(uint32) (lsn >> 32), (uint32) (lsn),
+							(uint32) (WalRcv->latestWalEnd >> 32),
+							(uint32) (WalRcv->latestWalEnd))));
+			was_lsn_safe = false;
+			PQfinish(conn);
+			return Min(sleep_time, WORKER_WAIT_FEEDBACK);
+		}
 
-		/*
-		 * If we haven't received WAL for a remote slot's current
-		 * confirmed_flush_lsn our local copy shouldn't reflect a confirmed
-		 * position in the future. Cap it at the position we really received.
-		 *
-		 * Because the client will use a replication origin to track its
-		 * position, in most cases it'll still fast-forward to the new
-		 * confirmed position even if that skips over a gap of WAL we never
-		 * received from the provider before failover. We can't detect or
-		 * prevent that as the same fast forward is normal when we lost slot
-		 * state in a provider crash after subscriber committed but before we
-		 * saved the new confirmed flush lsn. The master will also fast forward
-		 * the slot over irrelevant changes and then the subscriber will update
-		 * its confirmed_flush_lsn in response to master standby status
-		 * updates.
-		 */
-		receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
-		if (remote_slot->confirmed_lsn > receivePtr)
-			remote_slot->confirmed_lsn = receivePtr;
+		foreach(lc, slots)
+		{
+			RemoteSlot *remote_slot = lfirst(lc);
 
-		/*
-		 * For simplicity we always move restart_lsn of all slots to the
-		 * restart_lsn needed by the furthest-behind master slot.
-		 */
-		if (remote_slot->restart_lsn > lsn)
-			remote_slot->restart_lsn = lsn;
+			/*
+			 * If we haven't received WAL for a remote slot's current
+			 * confirmed_flush_lsn our local copy shouldn't reflect a
+			 * confirmed position in the future. Cap it at the position we
+			 * really received.
+			 *
+			 * Because the client will use a replication origin to track its
+			 * position, in most cases it'll still fast-forward to the new
+			 * confirmed position even if that skips over a gap of WAL we
+			 * never received from the provider before failover. We can't
+			 * detect or prevent that as the same fast forward is normal when
+			 * we lost slot state in a provider crash after subscriber
+			 * committed but before we saved the new confirmed flush lsn. The
+			 * master will also fast forward the slot over irrelevant changes
+			 * and then the subscriber will update its confirmed_flush_lsn in
+			 * response to master standby status updates.
+			 *
+			 * receivePtr is guaranteed non-zero here (checked above).
+			 */
+			if (remote_slot->confirmed_lsn > receivePtr)
+				remote_slot->confirmed_lsn = receivePtr;
 
-		synchronize_one_slot(remote_slot);
+			/*
+			 * For simplicity we always move restart_lsn of all slots to the
+			 * restart_lsn needed by the furthest-behind master slot.
+			 */
+			if (remote_slot->restart_lsn > lsn)
+				remote_slot->restart_lsn = lsn;
+
+			/*
+			 * Skip slots whose primary confirmed_flush_lsn is still
+			 * InvalidXLogRecPtr (no consumer feedback yet).
+			 * LogicalConfirmReceivedLocation asserts the LSN is not invalid;
+			 * passing 0 aborts the bgworker and triggers a postmaster cluster
+			 * reset on --enable-cassert builds.
+			 */
+			if (XLogRecPtrIsInvalid(remote_slot->confirmed_lsn))
+			{
+				elog(DEBUG1,
+					 "spock_failover_slots: deferring slot \"%s\":"
+					 " no confirmed_flush_lsn on primary yet",
+					 remote_slot->name);
+				continue;
+			}
+
+			synchronize_one_slot(remote_slot);
+		}
 	}
 
 	PQfinish(conn);
@@ -1050,6 +1227,14 @@ synchronize_failover_slots(long sleep_time)
 void
 spock_failover_slots_main(Datum main_arg)
 {
+#if PG_VERSION_NUM >= 180000
+	/*
+	 * PostgreSQL 18 has native logical slot synchronization via
+	 * sync_replication_slots = on.  This worker is not registered on PG18,
+	 * so this entry point should never be reached.
+	 */
+	elog(ERROR, "spock_failover_slots_main: not supported on PostgreSQL 18+");
+#else
 	/* Establish signal handlers. */
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	pqsignal(SIGTERM, die);
@@ -1073,9 +1258,21 @@ spock_failover_slots_main(Datum main_arg)
 
 		CHECK_FOR_INTERRUPTS();
 
-		/* On standby, run sync only when hot_standby_feedback is on; otherwise
-		 * use long nap so we never elog(ERROR) for hot_standby_feedback off. */
-		if (RecoveryInProgress() && hot_standby_feedback)
+		/*
+		 * On standby, run sync only when hot_standby_feedback is on; otherwise
+		 * use long nap so we never elog(ERROR) for hot_standby_feedback off.
+		 *
+		 * On PG17+, yield entirely to PostgreSQL's native slotsync worker when
+		 * sync_replication_slots = on is configured.  IsSyncingReplicationSlots()
+		 * is process-local and would always be false here; instead we check the
+		 * exported sync_replication_slots GUC variable directly — if the DBA
+		 * has enabled the native worker, we must not compete with it.
+		 */
+		if (RecoveryInProgress() && hot_standby_feedback
+#if PG_VERSION_NUM >= 170000
+			&& !sync_replication_slots
+#endif
+			)
 			sleep_time = synchronize_failover_slots(WORKER_NAP_TIME);
 		else
 			sleep_time = WORKER_NAP_TIME * 10;
@@ -1097,6 +1294,7 @@ spock_failover_slots_main(Datum main_arg)
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 	}
+#endif							/* PG_VERSION_NUM < 180000 */
 }
 
 static bool
@@ -1428,6 +1626,20 @@ spock_init_failover_slot(void)
 	if (IsBinaryUpgrade)
 		return;
 
+#if PG_VERSION_NUM >= 180000
+	/*
+	 * PostgreSQL 18 natively synchronizes logical replication slots to
+	 * physical standbys via sync_replication_slots = on (slotsync worker)
+	 * and provides synchronized_standby_slots for walsender hold-back.
+	 * Spock's failover slot worker is not needed on PG18+.
+	 *
+	 * To enable slot synchronization on PG18, set in postgresql.conf:
+	 *   sync_replication_slots = on
+	 *   primary_conninfo = '...'
+	 */
+	elog(LOG, "spock: skipping failover slot worker on PostgreSQL 18+ "
+		 "(use sync_replication_slots = on instead)");
+#else
 	/* Run the worker. */
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags =
@@ -1443,4 +1655,5 @@ spock_init_failover_slot(void)
 	/* Install Hooks */
 	original_client_auth_hook = ClientAuthentication_hook;
 	ClientAuthentication_hook = attach_to_walsender;
+#endif							/* PG_VERSION_NUM < 180000 */
 }

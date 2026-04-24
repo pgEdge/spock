@@ -2,6 +2,20 @@
 
 ## Spock 5.1 on xxx
 
+### Logical Slot Failover Improvements
+
+* On **PostgreSQL 17+**, Spock now creates all logical replication slots with
+  the `FAILOVER` flag, allowing PostgreSQL's built-in slotsync worker
+  (`sync_replication_slots = on`) to automatically synchronize them to
+  physical standbys.
+* On **PostgreSQL 18+**, Spock's own `spock_failover_slots` background worker
+  is no longer registered. The native PostgreSQL slotsync worker fully
+  replaces it. See the [Logical Slot Failover](configuring.md#logical-slot-failover-ha-standby)
+  section in the configuration guide for required `postgresql.conf` settings.
+* On **PostgreSQL 17**, Spock's worker remains active but automatically yields
+  to the native slotsync worker if `sync_replication_slots = on` is set,
+  preventing conflicts.
+
 This release deprecates the spock.exception_replay_queue_size GUC. Previously
 Spock restored transaction changes up to the size defined by the
 spock.exception_replay_queue_size GUC. If an error occurred, the transaction

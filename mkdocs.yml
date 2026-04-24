@@ -53,6 +53,7 @@ nav:
   - Installing and Configuring Spock: install_spock.md
   - Getting Started: getting_started.md
   - Using Advanced Configuration Options: configuring.md
+  - Logical Slot Failover (HA Standby): logical_slot_failover.md
   - Upgrading a Spock Installation: upgrading_spock.md
   - Spock's Conflict Avoidance Options: conflicts.md
   - Spock's Management Features:
