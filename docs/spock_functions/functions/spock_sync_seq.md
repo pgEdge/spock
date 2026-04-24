@@ -1,54 +1,43 @@
-## NAME
+# spock.sync_seq
 
-spock.sync_seq()
+The `spock.sync_seq()` function synchronizes the current state of a sequence
+to all subscribers.
 
-### SYNOPSIS
+## Synopsis
 
-spock.sync_seq(relation regclass)
+```sql
+spock.sync_seq(relation regclass) RETURNS boolean
+```
 
-### RETURNS
+## Description
 
-- true if the sequence state was successfully synchronized.
+Captures the current value of a sequence on the provider node and pushes it
+into the replication stream so that subscribers can update their local copy to
+match. This ensures sequence values remain coordinated across nodes.
 
-### DESCRIPTION
+This function must be executed on the provider node. The sequence state update
+is embedded in the transaction where this function is called, and subscribers
+apply the update when they replicate that transaction.
 
-Synchronizes the current state of a sequence to all subscribers.
+Replication set filtering applies — only subscribers whose subscriptions
+include the replication set containing this sequence will receive the update.
 
-This function captures the current value of a sequence on the provider node
-and pushes it into the replication stream so that subscribers can update
-their local copy of the sequence to match. This ensures sequence values
-remain coordinated across nodes in a replication topology.
+## Arguments
 
-Unlike subscription and table synchronization functions which run on the
-subscriber, this function must be executed on the provider node. The
-sequence state update is embedded in the transaction where this function is
-called, and subscribers will apply the sequence update when they replicate
-that transaction.
+The function accepts the following argument:
 
-Replication set filtering still applies - only subscribers whose
-subscriptions include the replication set containing this sequence will
-receive the update.
+- `relation` - The name of the sequence to synchronize, optionally
+  schema-qualified.
 
-This is particularly useful after making direct changes to a sequence value
-or when you need to ensure subscribers have the latest sequence state
-before performing operations that depend on sequence coordination.
+## Example
 
-This function modifies the replication stream by inserting a sequence
-synchronization event.
+In the following example, the `spock.sync_seq()` function synchronizes a
+sequence named `public.sales_order_no_seq`:
 
-### ARGUMENTS
-
-relation
-
-    The name of the sequence to synchronize, optionally
-    schema-qualified.
-
-### EXAMPLE
-
-The following command synchronizes a sequence named public.sales_order_no_seq:
-
-    postgres=# SELECT spock.sync_seq('public.sales_order_no_seq');
-    sync_seq 
-    ----------
-     t
-    (1 row)
+```sql
+SELECT spock.sync_seq('public.sales_order_no_seq');
+ sync_seq
+----------
+ t
+(1 row)
+```

@@ -13,7 +13,9 @@ The OID of the newly created interface. Returns NULL if any argument is NULL.
 
 ### DESCRIPTION
 
-Adds a new network interface definition to an existing Spock node.
+Adds a new network interface definition to an existing Spock node; the network
+interface has an associated connection string that is used when the interface
+is referenced by other nodes.
 
 Interfaces allow a single node to be reachable through multiple connection
 endpoints. This is commonly used in environments where nodes are accessible
@@ -43,7 +45,7 @@ dsn
     A PostgreSQL connection string that other nodes will use to connect to
     this node. The user in this string should equal the OS user. This
     connection string should be reachable from outside and match the one used
-    later in the sub-create command. Example: host=10.1.2.5 port=5432
+    later in the sub-create command. For example: host=10.1.2.5 port=5432
     user=rocky
 
 ### EXAMPLE

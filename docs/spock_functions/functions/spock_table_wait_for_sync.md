@@ -36,8 +36,6 @@ synchronization completes, so callers should ensure the subscription is
 actively processing and that there are no blocking issues preventing sync
 completion.
 
-Returns NULL if any argument is NULL.
-
 ### ARGUMENTS
 
 subscription_name

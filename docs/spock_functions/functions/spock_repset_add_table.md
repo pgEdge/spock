@@ -99,4 +99,4 @@ rows:
 Using `sync_data=true` with a valid `row_filter` is usually a one_time
 operation for a table. Executing it again with a modified `row_filter`
 won't synchronize data to subscriber. You may need to call
-`spock.alter_sub_resync_table()` to fix it.
+`spock.sub_resync_table()` to fix it.

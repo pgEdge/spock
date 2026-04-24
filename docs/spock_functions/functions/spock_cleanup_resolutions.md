@@ -1,16 +1,15 @@
-## NAME
+# spock.cleanup_resolutions
 
-spock.cleanup_resolutions()
+The `spock.cleanup_resolutions()` function manually deletes old rows from the
+`spock.resolutions` table.
 
-### SYNOPSIS
+## Synopsis
 
-spock.cleanup_resolutions([days integer])
+```sql
+spock.cleanup_resolutions(days integer DEFAULT NULL) RETURNS bigint
+```
 
-### RETURNS
-
-bigint — the number of rows deleted from `spock.resolutions`.
-
-### DESCRIPTION
+## Description
 
 Deletes rows from `spock.resolutions` whose `log_time` is older than the
 retention window. Returns the number of rows deleted.
@@ -20,27 +19,34 @@ the apply worker runs automatically once per day. It is useful for
 immediate cleanup via `pg_cron` or when the apply worker has not been
 running.
 
-When `days` is provided it takes precedence over `spock.resolutions_retention_days`,
-including when the GUC is set to 0 (automatic cleanup disabled). If `days` is
-omitted, the GUC value is used; if the GUC is also 0, the function returns `0`
-without deleting anything.
+When `days` is provided it takes precedence over
+`spock.resolutions_retention_days`, including when the GUC is set to `0`
+(automatic cleanup disabled). If `days` is omitted, the GUC value is used;
+if the GUC is also `0`, the function returns `0` without deleting anything.
 
-### ARGUMENTS
+## Arguments
 
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `days` | `integer` | `NULL` | Retention window in days. Overrides `spock.resolutions_retention_days` for this call. Pass an explicit value to perform a one-off cleanup when automatic cleanup is disabled (`resolutions_retention_days = 0`). |
+The function accepts the following argument:
 
-### EXAMPLE
+- `days` - Retention window in days. Overrides `spock.resolutions_retention_days`
+  for this call. Pass an explicit value to perform a one-off cleanup when
+  automatic cleanup is disabled (`resolutions_retention_days = 0`). Default
+  is `NULL` (use the GUC value).
 
-Delete conflict history rows older than the configured retention window:
+## Example
 
-    SELECT spock.cleanup_resolutions();
+Delete rows older than the configured retention window:
+
+```sql
+SELECT spock.cleanup_resolutions();
+```
 
 Delete rows older than 60 days, regardless of the GUC setting:
 
-    SELECT spock.cleanup_resolutions(60);
+```sql
+SELECT spock.cleanup_resolutions(60);
+```
 
-### SEE ALSO
+## See Also
 
 `spock.resolutions_retention_days`

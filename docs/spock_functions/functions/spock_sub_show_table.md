@@ -1,58 +1,37 @@
-## NAME
+# spock.sub_show_table
 
-spock.sub_show_table()
+The `spock.sub_show_table()` function displays the synchronization status of a
+table.
 
-### SYNOPSIS
+## Synopsis
 
-spock.sub_show_table (subscription_name name, relation regclass,
-OUT nspname text, OUT relname text, OUT status text)
+```sql
+spock.sub_show_table(subscription_name name, relation regclass,
+                     OUT nspname text, OUT relname text, OUT status text)
+```
 
-### RETURNS
+## Description
 
-A record containing synchronization status information for the table:
+The `spock.sub_show_table()` function shows the synchronization status of a
+table.
 
-  - nspname is the schema name of the table.
-  - relname is the table name.
-  - status is the current synchronization status of the table.
+## Arguments
 
-### DESCRIPTION
+The function accepts the following arguments:
 
-Returns the synchronization status of a specific table within a
-subscription.
+- `subscription_name` - The name of an existing subscription.
+- `relation` - The name of an existing table, optionally qualified.
 
-This function queries the current state of table synchronization for a
-given subscription. The status field indicates where the table is in the
-synchronization process, with possible values:
+## Example
 
-    - 'i' - initial sync requested
-    - 's' - structure synchronization in progress
-    - 'd' - data synchronization in progress
-    - 'c' - constraint synchronization in progress
-    - 'w' - sync waiting for approval from main thread
-    - 'u' - catching up with changes
-    - 'y' - synchronization finished at LSN
-    - 'r' - ready and actively replicating
+In the following example, the `spock.sub_show_table()` function displays the
+synchronization status of a table named `test` for a subscription named
+`sub_n2`:
 
-This is useful for monitoring synchronization progress, diagnosing
-replication issues, or verifying that a table has completed its initial
-sync before performing dependent operations.
-
-The function must be run on the subscriber node where the subscription
-exists.
-
-This is a read-only query function that does not modify any data.
-
-### ARGUMENTS
-
-subscription_name
-
-    The name of the subscription to query.
-
-relation
-
-    The name of the table to check synchronization status for,
-    optionally schema-qualified.
-
-### EXAMPLE
-
-    SELECT * FROM spock.sub_show_table('sub_n2_n1', 'public.mytable');
+```sql
+SELECT * FROM spock.sub_show_table('sub_n2', 'test');
+-[ RECORD 1 ]----
+nspname | public
+relname | test
+status  | unknown
+```
