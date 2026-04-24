@@ -28,6 +28,10 @@ node), `n2`, `n3`, and the new node is `n4`.
     - Prepare the new node to meet all of the prerequisites described here.
     - If the process fails, do not immediately retry a command until you
       ensure that all artifacts created by the workflow have been removed.
+    - Zodan uses an internal 180-second (3-minute) timeout when waiting for
+      sync events between nodes. If replication lag exceeds this window, the
+      process will raise an exception. Ensure network latency and replication
+      lag are within acceptable limits before starting.
 
 ## Creating a Node Manually
 
