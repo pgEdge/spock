@@ -564,11 +564,11 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 
 		/*
 		 * If the connection to the primary was lost (e.g. because the primary
-		 * was stopped as part of a controlled failover), attempt to reconnect.
-		 * We wrap the reconnect in PG_TRY so that a failed reconnect does not
-		 * crash the bgworker; we simply wait and try again, and the
-		 * RecoveryInProgress() check at the top of the loop will detect
-		 * promotion and return false cleanly.
+		 * was stopped as part of a controlled failover), attempt to
+		 * reconnect. We wrap the reconnect in PG_TRY so that a failed
+		 * reconnect does not crash the bgworker; we simply wait and try
+		 * again, and the RecoveryInProgress() check at the top of the loop
+		 * will detect promotion and return false cleanly.
 		 */
 		if (conn == NULL)
 		{
@@ -599,10 +599,10 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 		/*
 		 * Query the primary for the current slot state.  Wrap in PG_TRY so
 		 * that a connection failure (primary stopped before promotion) is
-		 * handled gracefully: close the dead connection, wait, and retry.
-		 * The RecoveryInProgress() check above will detect promotion on the
-		 * next iteration and return false, allowing the caller to persist the
-		 * slot with whatever WAL position the standby has locally reserved.
+		 * handled gracefully: close the dead connection, wait, and retry. The
+		 * RecoveryInProgress() check above will detect promotion on the next
+		 * iteration and return false, allowing the caller to persist the slot
+		 * with whatever WAL position the standby has locally reserved.
 		 */
 		query_failed = false;
 		slots = NIL;
@@ -883,8 +883,8 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 
 		/*
 		 * ReplicationSlotsComputeRequiredXmin(true) asserts that BOTH
-		 * ReplicationSlotControlLock (exclusive) and ProcArrayLock (exclusive)
-		 * are held, in that order, to prevent deadlocks.
+		 * ReplicationSlotControlLock (exclusive) and ProcArrayLock
+		 * (exclusive) are held, in that order, to prevent deadlocks.
 		 */
 		LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
 		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
@@ -931,10 +931,10 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 
 				/*
 				 * Promotion interrupted the wait.  A freshly promoted
-				 * streaming standby has all WAL from pg_basebackup onward,
-				 * so the slot's restart_lsn (set conservatively by
-				 * ReplicationSlotReserveWal) is safe to use.  Fall through
-				 * to persist the slot.
+				 * streaming standby has all WAL from pg_basebackup onward, so
+				 * the slot's restart_lsn (set conservatively by
+				 * ReplicationSlotReserveWal) is safe to use.  Fall through to
+				 * persist the slot.
 				 */
 				elog(LOG, "spock_failover_slots: persisting slot \"%s\" after "
 					 "promotion interrupted WAL catchup; standby has required WAL",
@@ -1007,9 +1007,11 @@ synchronize_failover_slots(long sleep_time)
 		list_length(spock_failover_slot_names_list) == 0)
 		return sleep_time;
 
-	/* Sync requires hot_standby_feedback; skip when off so the worker keeps
+	/*
+	 * Sync requires hot_standby_feedback; skip when off so the worker keeps
 	 * running without error. After user sets hot_standby_feedback on and
-	 * reloads, the next cycle will run sync. */
+	 * reloads, the next cycle will run sync.
+	 */
 	if (!hot_standby_feedback)
 		return sleep_time;
 	if (WalRcv->slotname[0] == '\0')
@@ -1119,18 +1121,19 @@ synchronize_failover_slots(long sleep_time)
 	}
 
 	/*
-	 * We need the WAL flush position both for the latestWalEnd/lsn check
-	 * and for capping confirmed_lsn inside the slot loop.  Read it once
-	 * here so we use a consistent value throughout.
+	 * We need the WAL flush position both for the latestWalEnd/lsn check and
+	 * for capping confirmed_lsn inside the slot loop.  Read it once here so
+	 * we use a consistent value throughout.
 	 *
-	 * On PostgreSQL builds with --enable-cassert, LogicalConfirmReceivedLocation
-	 * asserts that the LSN passed to it is not InvalidXLogRecPtr.  If
-	 * GetWalRcvFlushRecPtr returns 0 (which can happen in the brief window
-	 * after the WAL receiver starts but before it has flushed its first
-	 * page), capping confirmed_lsn to 0 and then passing 0 to
-	 * LogicalConfirmReceivedLocation will trip that assertion and SIGABRT the
-	 * bgworker, causing a postmaster cluster reset on every loop iteration.
-	 * Guard by returning early when the flush position is not yet valid.
+	 * On PostgreSQL builds with --enable-cassert,
+	 * LogicalConfirmReceivedLocation asserts that the LSN passed to it is not
+	 * InvalidXLogRecPtr.  If GetWalRcvFlushRecPtr returns 0 (which can happen
+	 * in the brief window after the WAL receiver starts but before it has
+	 * flushed its first page), capping confirmed_lsn to 0 and then passing 0
+	 * to LogicalConfirmReceivedLocation will trip that assertion and SIGABRT
+	 * the bgworker, causing a postmaster cluster reset on every loop
+	 * iteration. Guard by returning early when the flush position is not yet
+	 * valid.
 	 */
 	{
 		XLogRecPtr	receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
@@ -1230,8 +1233,8 @@ spock_failover_slots_main(Datum main_arg)
 #if PG_VERSION_NUM >= 180000
 	/*
 	 * PostgreSQL 18 has native logical slot synchronization via
-	 * sync_replication_slots = on.  This worker is not registered on PG18,
-	 * so this entry point should never be reached.
+	 * sync_replication_slots = on.  This worker is not registered on PG18, so
+	 * this entry point should never be reached.
 	 */
 	elog(ERROR, "spock_failover_slots_main: not supported on PostgreSQL 18+");
 #else
@@ -1259,14 +1262,16 @@ spock_failover_slots_main(Datum main_arg)
 		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * On standby, run sync only when hot_standby_feedback is on; otherwise
-		 * use long nap so we never elog(ERROR) for hot_standby_feedback off.
+		 * On standby, run sync only when hot_standby_feedback is on;
+		 * otherwise use long nap so we never elog(ERROR) for
+		 * hot_standby_feedback off.
 		 *
-		 * On PG17+, yield entirely to PostgreSQL's native slotsync worker when
-		 * sync_replication_slots = on is configured.  IsSyncingReplicationSlots()
-		 * is process-local and would always be false here; instead we check the
-		 * exported sync_replication_slots GUC variable directly — if the DBA
-		 * has enabled the native worker, we must not compete with it.
+		 * On PG17+, yield entirely to PostgreSQL's native slotsync worker
+		 * when sync_replication_slots = on is configured.
+		 * IsSyncingReplicationSlots() is process-local and would always be
+		 * false here; instead we check the exported sync_replication_slots
+		 * GUC variable directly — if the DBA has enabled the native worker,
+		 * we must not compete with it.
 		 */
 		if (RecoveryInProgress() && hot_standby_feedback
 #if PG_VERSION_NUM >= 170000
@@ -1633,15 +1638,15 @@ spock_init_failover_slot(void)
 		return;
 
 #if PG_VERSION_NUM >= 180000
+
 	/*
 	 * PostgreSQL 18 natively synchronizes logical replication slots to
-	 * physical standbys via sync_replication_slots = on (slotsync worker)
-	 * and provides synchronized_standby_slots for walsender hold-back.
-	 * Spock's failover slot worker is not needed on PG18+.
+	 * physical standbys via sync_replication_slots = on (slotsync worker) and
+	 * provides synchronized_standby_slots for walsender hold-back. Spock's
+	 * failover slot worker is not needed on PG18+.
 	 *
 	 * To enable slot synchronization on PG18, set in postgresql.conf:
-	 *   sync_replication_slots = on
-	 *   primary_conninfo = '...'
+	 * sync_replication_slots = on primary_conninfo = '...'
 	 */
 	elog(LOG, "spock: skipping failover slot worker on PostgreSQL 18+ "
 		 "(use sync_replication_slots = on instead)");
