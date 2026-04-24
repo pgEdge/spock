@@ -1,79 +1,82 @@
 # Using Spock in Read-Only Mode
 
-Spock supports operating a cluster in read-only mode for non-superuser roles.
-Read-only status is managed using a GUC parameter named `spock.readonly`.
-Superusers can change this parameter at runtime without restarting the server.
+Spock supports operating a node in read-only mode. Read-only status is managed using a GUC parameter named `spock.readonly`, which can be set to one of three values:
 
-This parameter can be used to enable or disable the read-only mode for a
-cluster. Read-only mode restricts non-superusers to read-only
-operations, while superusers can still perform both read and write
-operations regardless of the setting.
+| Value   | Description |
+|---------|-------------|
+| `off`   | No restrictions. All users may write. This is the default. |
+| `local` | Non-superuser local sessions are read-only. Replicated writes from apply workers are still permitted, so inbound replication continues normally. Superusers may still perform write operations. (The legacy alias `user` is accepted for backward compatibility.) |
+| `all`   | Non-superuser local sessions and apply workers are blocked from writing. Superusers may still perform write operations. Use this mode when you need to stop both local application writes and inbound replication. |
 
-Read-only mode is enforced by setting PostgreSQL's `XactReadOnly` flag for
-each transaction, which prevents writes at the storage and transaction level.
-The practical effect is:
+The setting is at cluster level: either all databases are read-only or all
+databases are read-write (the usual setting).
 
-- `SELECT` statements are allowed if they do not call functions that write.
-- DML (`INSERT`, `UPDATE`, `DELETE`) and DDL statements including
-  `TRUNCATE` are blocked.
-- DCL statements `GRANT` and `REVOKE` are also blocked.
+Read-only mode is enforced by setting PostgreSQL's `transaction_read_only` flag for affected sessions. This means that any statement that would modify data — including DML (`INSERT`, `UPDATE`, `DELETE`), DDL, `TRUNCATE`, and DCL (`GRANT`, `REVOKE`) — will be rejected by PostgreSQL's standard read-only transaction checks.
 
-!!! note
-
-    Databases are in read-only mode for SQL queries only. The Postgres
-    core does not know about read-only mode, so some functions (like the 
-    `SELECT lo_open()` call to C functions), as well as the checkpointer, 
-    background writer, WAL writer, and the autovacuum launcher are still
-    running. This means that not all files are read-only and that in
-    some cases Postgres may still write to disk.
+The databases are in read-only mode at the SQL level: however, the checkpointer,
+background writer, walwriter, and the autovacuum launcher are still running. This
+means that the database files are not read-only and that in some cases the
+database may still write to disk.
 
 ## Setting Read-Only Mode
 
-The `spock.readonly` parameter supports three configuration methods:
-
-- **Session-level** — takes effect immediately for the current session
-  (superuser only):
-
-  ```sql
-  SET spock.readonly = 'all';
-  ```
-
-- **System-wide persistent** — takes effect after reloading the configuration:
-
-  ```sql
-  ALTER SYSTEM SET spock.readonly = 'all';
-  SELECT pg_reload_conf();
-  ```
-
-- **Configuration file** — set in `postgresql.conf`, then reload:
-
-  ```ini
-  spock.readonly = all
-  ```
-
-  ```sql
-  SELECT pg_reload_conf();
-  ```
-
-The valid settings are:
-
-- `off` - No restrictions; all users may write.
-- `local` - Non-superuser local sessions are read-only; replicated writes from
-  apply workers are still permitted. (`user` is a backward-compatible alias for
-  this value.)
-- `all` - The node is fully read-only: both local sessions and apply workers are
-  blocked from writing.
-
-To query the current status of the cluster, use the SQL `SHOW` command. In the
-following example, the `SHOW` command displays the current read-only mode
-setting:
+Only a superuser can modify the `spock.readonly` parameter. The value can be changed using the `ALTER SYSTEM` command:
 
 ```sql
-postgres=# SHOW spock.readonly;
--[ RECORD 1 ]--+----
-spock.readonly | on
+-- Block non-superuser local writes; inbound replication continues
+ALTER SYSTEM SET spock.readonly = 'local';
+SELECT pg_reload_conf();
+
+-- Block all non-superuser writes including replication
+ALTER SYSTEM SET spock.readonly = 'all';
+SELECT pg_reload_conf();
+
+-- Restore normal operation
+ALTER SYSTEM SET spock.readonly = 'off';
+SELECT pg_reload_conf();
 ```
 
-This command returns `on` if the cluster is in read-only mode and `off` if
-the cluster is not.
+To set the mode for the current session only:
+
+```sql
+SET spock.readonly TO local;
+```
+
+To query the current status:
+
+```sql
+SHOW spock.readonly;
+```
+
+## Superuser writes and outbound replication
+
+In both `local` and `all` modes, superusers are exempt from the read-only
+restriction and may perform write operations. **The readonly setting has no
+effect on the walsender (outbound replication).** Any writes made by a
+superuser are captured in WAL and will be replicated outbound to other nodes
+in the cluster, regardless of the readonly mode.
+
+To perform repair operations that should **not** replicate to other nodes, use
+[`spock.repair_mode()`](../spock_functions/index.md) to suppress outbound
+replication of DML/DDL statements:
+
+```sql
+BEGIN;
+SELECT spock.repair_mode(true);
+
+-- Perform repair DML/DDL here...
+
+SELECT spock.repair_mode(false);
+COMMIT;
+```
+
+## Behavior of `all` mode
+
+In `all` mode, apply workers detect the setting and stop consuming inbound WAL.
+When the mode is switched back to `off` or `local`, replication resumes from
+where it left off — no data is lost.
+
+Notes:
+ - Only superusers can set and unset the `spock.readonly` parameter.
+ - By using a GUC parameter, you can easily manage the node's read-only status through standard PostgreSQL configuration mechanisms.
 
