@@ -126,7 +126,7 @@ static const struct config_enum_entry exception_logging_options[] = {
 static const struct config_enum_entry readonly_options[] = {
 	{"off", READONLY_OFF, false},
 	{"local", READONLY_LOCAL, false},
-	{"user", READONLY_LOCAL, true},	/* backward-compatible alias */
+	{"user", READONLY_LOCAL, true}, /* backward-compatible alias */
 	{"all", READONLY_ALL, false},
 	{NULL, 0, false}
 };
@@ -143,7 +143,8 @@ bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
 int			spock_replay_queue_size;
-int			spock_pause_timeout = 10;	/* seconds to wait for apply workers to pause */
+int			spock_pause_timeout = 10;	/* seconds to wait for apply workers
+										 * to pause */
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
@@ -923,7 +924,7 @@ log_message_filter(ErrorData *edata)
 static void
 spock_object_relabel(const ObjectAddress *object, const char *seclabel)
 {
-	Oid				extoid;
+	Oid			extoid;
 
 	extoid = get_extension_oid(EXTENSION_NAME, true);
 	if (!OidIsValid(extoid))
@@ -1217,13 +1218,13 @@ _PG_init(void)
 							NULL);
 
 	DefineCustomEnumVariable("spock.log_origin_change",
-							gettext_noop("If set, log when the origin of a tuple changes."),
-							NULL,
-							&log_origin_change,
-							SPOCK_ORIGIN_NONE,
-							SpockOriginConflicts,
-							PGC_SUSET, 0,
-							NULL, NULL, NULL);
+							 gettext_noop("If set, log when the origin of a tuple changes."),
+							 NULL,
+							 &log_origin_change,
+							 SPOCK_ORIGIN_NONE,
+							 SpockOriginConflicts,
+							 PGC_SUSET, 0,
+							 NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.apply_idle_timeout",
 							"Maximum idle time in seconds before apply worker reconnects",

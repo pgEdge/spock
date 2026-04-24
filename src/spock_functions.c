@@ -961,7 +961,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 	while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_END_OBJECT)
 	{
-		char   *key;
+		char	   *key;
 
 		if (r != WJB_KEY)
 			ereport(ERROR,
@@ -973,7 +973,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 		if (strcmp(key, "forward_origins") == 0 ||
 			strcmp(key, "skip_schema") == 0)
 		{
-			List   *result = NIL;
+			List	   *result = NIL;
 
 			r = JsonbIteratorNext(&it, &v, false);
 			if (r != WJB_BEGIN_ARRAY)
@@ -984,7 +984,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 			while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_END_ARRAY)
 			{
-				char   *elem;
+				char	   *elem;
 
 				if (r != WJB_ELEM || v.type != jbvString)
 					ereport(ERROR,
@@ -1014,7 +1014,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 		}
 		else if (strcmp(key, "apply_delay") == 0)
 		{
-			char   *delay_str;
+			char	   *delay_str;
 
 			r = JsonbIteratorNext(&it, &v, false);
 			if (r != WJB_VALUE || v.type != jbvString)
@@ -1024,10 +1024,10 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 			delay_str = pnstrdup(v.val.string.val, v.val.string.len);
 			sub->apply_delay = DatumGetIntervalP(
-				DirectFunctionCall3(interval_in,
-									CStringGetDatum(delay_str),
-									ObjectIdGetDatum(InvalidOid),
-									Int32GetDatum(-1)));
+												 DirectFunctionCall3(interval_in,
+																	 CStringGetDatum(delay_str),
+																	 ObjectIdGetDatum(InvalidOid),
+																	 Int32GetDatum(-1)));
 			changed = true;
 		}
 		else
@@ -1140,7 +1140,7 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 static void
 check_readonly_for_resync(const char *nspname, const char *relname)
 {
-	char	tablename[NAMEDATALEN * 2 + 2];
+	char		tablename[NAMEDATALEN * 2 + 2];
 
 	if (spock_readonly != READONLY_OFF)
 	{
@@ -1184,10 +1184,10 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	relname = RelationGetRelationName(rel);
 
 	/*
-	 * Check that the subscriber is in read-only mode BEFORE modifying
-	 * sync status or truncating. If it is readonly, the sync will fail.
-	 * With truncate=true this would cause data loss; without truncate
-	 * it causes an error loop.
+	 * Check that the subscriber is in read-only mode BEFORE modifying sync
+	 * status or truncating. If it is readonly, the sync will fail. With
+	 * truncate=true this would cause data loss; without truncate it causes an
+	 * error loop.
 	 */
 	check_readonly_for_resync(nspname, relname);
 
@@ -2330,12 +2330,12 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	/*
 	 * Filter local commands and decide on search path setting.
 	 *
-	 * We label command as 'local' sometimes to state the fact that the protocol
-	 * does not support its replication.
+	 * We label command as 'local' sometimes to state the fact that the
+	 * protocol does not support its replication.
 	 */
 	switch (nodeTag(stmt))
 	{
-		/* Purely local commands */
+			/* Purely local commands */
 		case T_FetchStmt:
 		case T_NotifyStmt:
 		case T_ListenStmt:
@@ -2343,9 +2343,10 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			goto skip_ddl;
 			break;
 
-		/*
-		 * We don't want to replicate statements that run outside of transactions
-		 */
+			/*
+			 * We don't want to replicate statements that run outside of
+			 * transactions
+			 */
 		case T_CreateTableSpaceStmt:
 		case T_DropTableSpaceStmt:
 		case T_VacuumStmt:
@@ -2409,33 +2410,33 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 		case T_ClusterStmt:
-		{
-			ClusterStmt	   *cstmt = (ClusterStmt *) stmt;
-			bool			skip_cluster = true;
-
-			if (cstmt->relation != NULL)
 			{
-				Relation	rel;
-				Oid			tableOid;
+				ClusterStmt *cstmt = (ClusterStmt *) stmt;
+				bool		skip_cluster = true;
 
-				/*
-				 * Single relation case may be allowed if it is not a
-				 * partitioned table. Don't care about errors - if we replicate
-				 * this command it means everything must be ok, or we are in
-				 * trouble and deserve an ERROR.
-				 */
-				tableOid = RangeVarGetRelidExtended(cstmt->relation,
-												AccessShareLock, 0, NULL, NULL);
-				rel = table_open(tableOid, NoLock);
-				skip_cluster = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
-				table_close(rel, AccessShareLock);
+				if (cstmt->relation != NULL)
+				{
+					Relation	rel;
+					Oid			tableOid;
+
+					/*
+					 * Single relation case may be allowed if it is not a
+					 * partitioned table. Don't care about errors - if we
+					 * replicate this command it means everything must be ok,
+					 * or we are in trouble and deserve an ERROR.
+					 */
+					tableOid = RangeVarGetRelidExtended(cstmt->relation,
+														AccessShareLock, 0, NULL, NULL);
+					rel = table_open(tableOid, NoLock);
+					skip_cluster = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
+					table_close(rel, AccessShareLock);
+				}
+
+				if (skip_cluster)
+					goto skip_ddl;
+
+				add_search_path = false;
 			}
-
-			if (skip_cluster)
-				goto skip_ddl;
-
-			add_search_path = false;
-		}
 			break;
 
 		case T_AlterTableSpaceOptionsStmt:
@@ -2463,22 +2464,22 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				goto skip_ddl;
 			break;
 		case T_ReindexStmt:
-		{
-			ReindexStmt	   *rstmt = (ReindexStmt *) stmt;
-			bool			concurrently = false;
-
-			foreach(lc, rstmt->params)
 			{
-				DefElem    *opt = (DefElem *) lfirst(lc);
+				ReindexStmt *rstmt = (ReindexStmt *) stmt;
+				bool		concurrently = false;
 
-				if (strcmp(opt->defname, "concurrently") != 0)
-					continue;
-				concurrently = defGetBoolean(opt);
+				foreach(lc, rstmt->params)
+				{
+					DefElem    *opt = (DefElem *) lfirst(lc);
+
+					if (strcmp(opt->defname, "concurrently") != 0)
+						continue;
+					concurrently = defGetBoolean(opt);
+				}
+
+				if (concurrently)
+					goto skip_ddl;
 			}
-
-			if (concurrently)
-				goto skip_ddl;
-		}
 			break;
 
 		case T_DropStmt:
@@ -2520,8 +2521,8 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	}
 
 	/*
-	 * Report replication status. In quiet mode, downgrade INFO/WARNING to
-	 * LOG level to reduce output verbosity.
+	 * Report replication status. In quiet mode, downgrade INFO/WARNING to LOG
+	 * level to reduce output verbosity.
 	 */
 	if (warn)
 		elog(spock_enable_quiet_mode ? LOG : WARNING,
@@ -3204,8 +3205,8 @@ get_channel_stats(PG_FUNCTION_ARGS)
 		/*
 		 * Acquire spinlock before reading counter values to prevent torn
 		 * reads. The writer (handle_stats_counter) uses entry->mutex to
-		 * protect counter updates, so we must use the same lock for reads
-		 * to ensure atomic access to 64-bit counter values.
+		 * protect counter updates, so we must use the same lock for reads to
+		 * ensure atomic access to 64-bit counter values.
 		 */
 		SpinLockAcquire(&entry->mutex);
 		for (j = 0; j < SPOCK_STATS_NUM_COUNTERS; j++)
@@ -3240,12 +3241,12 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 
 	/*
 	 * In principle we could reset only specific channel statistics; but that
-	 * would be more complicated, and it's probably not worth the trouble.
-	 * So for now, just reset all entries.
+	 * would be more complicated, and it's probably not worth the trouble. So
+	 * for now, just reset all entries.
 	 */
-		hash_seq_init(&hash_seq, SpockHash);
-		while ((entry = hash_seq_search(&hash_seq)) != NULL)
-		{
+	hash_seq_init(&hash_seq, SpockHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
 		if (hash_search(SpockHash,
 						&entry->key,
 						HASH_REMOVE,
@@ -3427,8 +3428,8 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	 * PG17/18 so we can pass the 5th parameter directly.
 	 */
 #if PG_VERSION_NUM >= 170000
-	lsn = (LogLogicalMessage)(SPOCK_MESSAGE_PREFIX, (char *) &message,
-							  sizeof(message), false, true);
+	lsn = (LogLogicalMessage) (SPOCK_MESSAGE_PREFIX, (char *) &message,
+							   sizeof(message), false, true);
 #else
 	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *) &message,
 							sizeof(message), false);
@@ -3463,16 +3464,16 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 	pg_atomic_write_u32(&SpockCtx->pause_apply, 1);
 
 	/*
-	 * Wait until all apply workers in this database have either:
-	 * - no active transaction (xid invalid = between transactions or idle), or
-	 * - set their paused flag (spinning on the pause_apply flag).
+	 * Wait until all apply workers in this database have either: - no active
+	 * transaction (xid invalid = between transactions or idle), or - set
+	 * their paused flag (spinning on the pause_apply flag).
 	 *
 	 * Either state means the worker has committed its last transaction and
 	 * cannot apply new DML until the flag is cleared.
 	 */
 	while (waited_ms < max_wait_ms)
 	{
-		bool	all_paused = true;
+		bool		all_paused = true;
 
 		for (i = 0; i < SpockCtx->total_workers; i++)
 		{
@@ -3502,7 +3503,7 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 			break;
 
 		CHECK_FOR_INTERRUPTS();
-		pg_usleep(1000);	/* 1ms */
+		pg_usleep(1000);		/* 1ms */
 		waited_ms++;
 	}
 
@@ -3810,8 +3811,8 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
 	{
 		SpockApplyProgress *sap = &e->progress;
-		Datum				values[_GP_LAST_];
-		bool				nulls[_GP_LAST_] = {0};
+		Datum		values[_GP_LAST_];
+		bool		nulls[_GP_LAST_] = {0};
 
 		/*
 		 * Centralise conversion of local representation of the progress data
