@@ -217,6 +217,12 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
  * This function is invoked when the configured exception handling behavior is
  * SUB_DISABLE, meaning the subscription must be suspended instead of skipping
  * or retrying the failing transaction.
+ *
+ * May be called with or without an active transaction.  If no transaction is
+ * in progress, one is started and committed internally.  If the caller already
+ * holds an open transaction, it is the caller's responsibility to ensure that
+ * transaction is either committed or terminates with a FATAL error; otherwise
+ * the subscription state change and exception_log entry will be rolled back.
  */
 void
 spock_disable_subscription(SpockSubscription *sub,
