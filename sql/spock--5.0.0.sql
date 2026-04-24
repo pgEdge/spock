@@ -18,8 +18,7 @@ CREATE TABLE spock.node_interface (
 
 CREATE TABLE spock.local_node (
     node_id oid PRIMARY KEY REFERENCES node(node_id),
-    node_local_interface oid NOT NULL REFERENCES node_interface(if_id),
-    node_version int4 NOT NULL DEFAULT 0
+    node_local_interface oid NOT NULL REFERENCES node_interface(if_id)
 );
 
 CREATE TABLE spock.subscription (
@@ -35,12 +34,8 @@ CREATE TABLE spock.subscription (
     sub_forward_origins text[],
     sub_apply_delay interval NOT NULL DEFAULT '0',
     sub_force_text_transfer boolean NOT NULL DEFAULT 'f',
-	sub_skip_lsn pg_lsn NOT NULL DEFAULT '0/0',
-	sub_skip_schema text[],
-	sub_created_at timestamptz
+	sub_skip_lsn pg_lsn NOT NULL DEFAULT '0/0'
 );
--- Source for sub_id values.
-CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1 OWNED BY spock.subscription.sub_id;
 
 CREATE TABLE spock.local_sync_status (
     sync_kind "char" NOT NULL CHECK (sync_kind IN ('i', 's', 'd', 'f')),
@@ -99,123 +94,16 @@ CREATE TABLE spock.exception_status_detail (
 		REFERENCES spock.exception_status
 ) WITH (user_catalog_table=true);
 
-CREATE FUNCTION spock.apply_group_progress (
-	OUT dbid              oid,
-	OUT node_id           oid,
-	OUT remote_node_id    oid,
-	OUT remote_commit_ts  timestamptz,
-	OUT prev_remote_ts    timestamptz,
-	OUT remote_commit_lsn pg_lsn,
-	OUT remote_insert_lsn pg_lsn,
-	OUT received_lsn      pg_lsn,
-	OUT last_updated_ts   timestamptz,
-	OUT updated_by_decode bool
-) RETURNS SETOF record
-LANGUAGE c AS 'MODULE_PATHNAME', 'get_apply_group_progress';
-
--- Show the Spock apply progress for the current database
--- Columns prev_remote_ts, last_updated_ts, and updated_by_decode is dedicated
--- for internal use only.
-CREATE VIEW spock.progress AS
-	SELECT * FROM spock.apply_group_progress()
-      WHERE dbid = (
-        SELECT oid FROM pg_database WHERE datname = current_database()
-      );
-
--- Read peer progress (ros.remote_lsn) for all peer subscriptions.
--- Called while apply workers are paused and the slot's snapshot is imported.
--- Row 0: header (lsn + snapshot placeholder).  Rows 1+: one progress entry per peer.
-CREATE FUNCTION spock.read_peer_progress(
-    p_slot_name text,
-    p_provider_node_id oid,
-    p_subscriber_node_id oid
-) RETURNS TABLE(
-    lsn pg_lsn,
-    snapshot text,
-    dbid oid,
-    node_id oid,
-    remote_node_id oid,
-    remote_commit_ts timestamptz,
-    prev_remote_ts timestamptz,
-    remote_commit_lsn pg_lsn,
-    remote_insert_lsn pg_lsn,
-    received_lsn pg_lsn,
-    last_updated_ts timestamptz,
-    updated_by_decode boolean
-) VOLATILE STRICT LANGUAGE plpgsql AS $$
-DECLARE
-    v_lsn          pg_lsn;
-    v_snap         text;
-    rec            record;
-    v_n_peers      int := 0;
-BEGIN
-    /*
-     * The slot and snapshot are created by the C caller via the replication
-     * protocol.  The slot's snapshot is imported into this transaction.
-     * This function just reads peer progress (ros.remote_lsn) while apply
-     * workers are paused.
-     */
-
-    -- Get the slot's LSN and the imported snapshot for the header row.
-    SELECT restart_lsn INTO v_lsn
-    FROM pg_replication_slots WHERE slot_name = p_slot_name;
-    v_snap := '';  -- snapshot managed by C caller
-
-    RAISE NOTICE 'SPOCK cswp slot=% v_lsn=%', p_slot_name, v_lsn;
-
-    -- Header row: lsn only (snapshot managed by C caller).
-    lsn      := v_lsn;
-    snapshot := v_snap;
-    RETURN NEXT;
-
-    /*
-     * Emit one progress row per peer.  With apply workers paused,
-     * ros.remote_lsn is exact: it reflects only committed transactions
-     * whose effects are visible in the slot snapshot.
-     */
-    FOR rec IN (
-        SELECT p.dbid, p.node_id, p.remote_node_id,
-               p.remote_commit_ts, p.prev_remote_ts,
-               p.remote_commit_lsn      AS grp_remote_commit_lsn,
-               p.remote_insert_lsn,
-               p.received_lsn, p.last_updated_ts, p.updated_by_decode,
-               ros.remote_lsn           AS ros_remote_lsn,
-               sub.sub_slot_name        AS sub_slot_name
-        FROM   spock.subscription sub
-        JOIN   spock.progress p
-               ON  p.remote_node_id = sub.sub_origin
-               AND p.node_id        = sub.sub_target
-        JOIN   pg_replication_origin o
-               ON  o.roname = sub.sub_slot_name
-        LEFT JOIN pg_replication_origin_status ros
-               ON  ros.local_id = o.roident
-        WHERE  sub.sub_target = p_provider_node_id
-          AND  sub.sub_origin <> p_subscriber_node_id
-    ) LOOP
-        v_n_peers := v_n_peers + 1;
-
-        lsn               := v_lsn;
-        snapshot          := v_snap;
-        dbid              := rec.dbid;
-        node_id           := rec.node_id;
-        remote_node_id    := rec.remote_node_id;
-        remote_commit_ts  := rec.remote_commit_ts;
-        prev_remote_ts    := rec.prev_remote_ts;
-        remote_commit_lsn := COALESCE(rec.ros_remote_lsn, '0/0'::pg_lsn);
-        remote_insert_lsn := rec.remote_insert_lsn;
-        received_lsn      := rec.received_lsn;
-        last_updated_ts   := rec.last_updated_ts;
-        updated_by_decode := rec.updated_by_decode;
-
-        RAISE NOTICE 'SPOCK cswp peer=% resume_lsn=%',
-            rec.remote_node_id, remote_commit_lsn;
-
-        RETURN NEXT;
-    END LOOP;
-
-    RAISE NOTICE 'SPOCK cswp slot=% done peers=%', p_slot_name, v_n_peers;
-END;
-$$;
+CREATE TABLE spock.progress (
+	node_id oid NOT NULL,
+	remote_node_id oid NOT NULL,
+	remote_commit_ts timestamptz NOT NULL,
+	remote_lsn pg_lsn NOT NULL,
+	remote_insert_lsn pg_lsn NOT NULL,
+	last_updated_ts timestamptz NOT NULL,
+	updated_by_decode bool NOT NULL,
+	PRIMARY KEY(node_id, remote_node_id)
+) WITH (fillfactor=50);
 
 CREATE FUNCTION spock.node_create(node_name name, dsn text,
     location text DEFAULT NULL, country text DEFAULT NULL,
@@ -229,22 +117,12 @@ RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_a
 CREATE FUNCTION spock.node_drop_interface(node_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface';
 
-CREATE FUNCTION spock.sub_create(
-  subscription_name     name,
-  provider_dsn          text,
-  replication_sets      text[] = '{default,default_insert_only,ddl_sql}',
-  synchronize_structure boolean = false,
-  synchronize_data      boolean = false,
-  forward_origins       text[] = '{}',
-  apply_delay           interval DEFAULT '0',
-  force_text_transfer   boolean = false,
-  enabled               boolean = true,
-  skip_schema           text[] = '{}'
-)
-RETURNS oid
-AS 'MODULE_PATHNAME', 'spock_create_subscription'
-LANGUAGE C STRICT VOLATILE;
-
+CREATE FUNCTION spock.sub_create(subscription_name name, provider_dsn text,
+    replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
+    synchronize_data boolean = false, forward_origins text[] = '{}', apply_delay interval DEFAULT '0',
+    force_text_transfer boolean = false,
+	enabled boolean = true)
+RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_subscription';
 CREATE FUNCTION spock.sub_drop(subscription_name name, ifexists boolean DEFAULT false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_subscription';
 
@@ -263,27 +141,11 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_su
 CREATE FUNCTION spock.sub_alter_skiplsn(subscription_name name, lsn pg_lsn)
 	RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_skip_lsn';
 
-CREATE FUNCTION spock.sub_alter_options(
-  subscription_name name,
-  options           jsonb
-)
-RETURNS boolean
-AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
-LANGUAGE C STRICT VOLATILE;
-
-CREATE FUNCTION spock.sub_show_status(
-  subscription_name     name DEFAULT NULL,
-  OUT subscription_name text,
-  OUT status            text,
-  OUT provider_node     text,
-  OUT provider_dsn      text,
-  OUT slot_name         text,
-  OUT replication_sets  text[],
-  OUT forward_origins   text[]
-)
-RETURNS SETOF record
-AS 'MODULE_PATHNAME', 'spock_show_subscription_status'
-LANGUAGE C STABLE;
+CREATE FUNCTION spock.sub_show_status(subscription_name name DEFAULT NULL,
+    OUT subscription_name text, OUT status text, OUT provider_node text,
+    OUT provider_dsn text, OUT slot_name text, OUT replication_sets text[],
+    OUT forward_origins text[])
+RETURNS SETOF record STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_show_subscription_status';
 
 CREATE TABLE spock.replication_set (
     set_id oid NOT NULL PRIMARY KEY,
@@ -360,12 +222,6 @@ CREATE TABLE spock.resolutions (
 
     PRIMARY KEY(id, node_name)
 ) WITH (user_catalog_table=true);
-CREATE INDEX ON spock.resolutions (log_time);
-
-CREATE FUNCTION spock.cleanup_resolutions(days integer DEFAULT NULL)
-RETURNS bigint VOLATILE
-LANGUAGE c AS 'MODULE_PATHNAME', 'spock_cleanup_resolutions_sql';
-REVOKE ALL ON FUNCTION spock.cleanup_resolutions(integer) FROM PUBLIC;
 
 CREATE VIEW spock.TABLES AS
     WITH set_relations AS (
@@ -399,42 +255,20 @@ CREATE VIEW spock.TABLES AS
       FROM user_tables t
      WHERE t.oid NOT IN (SELECT set_reloid FROM set_relations);
 
-CREATE FUNCTION spock.repset_create(
-  set_name           name,
-  replicate_insert   boolean = true,
-  replicate_update   boolean = true,
-  replicate_delete   boolean = true,
-  replicate_truncate boolean = true
-)
-RETURNS oid
-AS 'MODULE_PATHNAME', 'spock_create_replication_set'
-LANGUAGE C STRICT VOLATILE;
-
+CREATE FUNCTION spock.repset_create(set_name name,
+    replicate_insert boolean = true, replicate_update boolean = true,
+    replicate_delete boolean = true, replicate_truncate boolean = true)
+RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_replication_set';
 CREATE FUNCTION spock.repset_alter(set_name name,
     replicate_insert boolean DEFAULT NULL, replicate_update boolean DEFAULT NULL,
     replicate_delete boolean DEFAULT NULL, replicate_truncate boolean DEFAULT NULL)
 RETURNS oid CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_replication_set';
+CREATE FUNCTION spock.repset_drop(set_name name, ifexists boolean DEFAULT false)
+RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_drop_replication_set';
 
-CREATE FUNCTION spock.repset_drop(
-  set_name name,
-  ifexists boolean DEFAULT false
-)
-RETURNS boolean
-AS 'MODULE_PATHNAME', 'spock_drop_replication_set'
-LANGUAGE C STRICT VOLATILE;
-
-CREATE FUNCTION spock.repset_add_table(
-  set_name           name,
-  relation           regclass,
-  synchronize_data   boolean DEFAULT false,
-  columns            text[] DEFAULT NULL,
-  row_filter         text DEFAULT NULL,
-  include_partitions boolean default true
-)
-RETURNS boolean
-AS 'MODULE_PATHNAME', 'spock_replication_set_add_table'
-LANGUAGE C CALLED ON NULL INPUT VOLATILE;
-
+CREATE FUNCTION spock.repset_add_table(set_name name, relation regclass, synchronize_data boolean DEFAULT false,
+	columns text[] DEFAULT NULL, row_filter text DEFAULT NULL, include_partitions boolean default true)
+RETURNS boolean CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_table';
 CREATE FUNCTION spock.repset_add_all_tables(set_name name, schema_names text[], synchronize_data boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_add_all_tables';
 CREATE FUNCTION spock.repset_remove_table(set_name name, relation regclass, include_partitions boolean default true)
@@ -457,14 +291,9 @@ RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spoc
 CREATE FUNCTION spock.sub_alter_sync(subscription_name name, truncate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';
 
-CREATE FUNCTION spock.sub_resync_table(
-	subscription_name name,
-	relation          regclass,
-	truncate          boolean DEFAULT true
-)
-RETURNS boolean
-AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table'
-LANGUAGE C STRICT VOLATILE;
+CREATE FUNCTION spock.sub_resync_table(subscription_name name, relation regclass,
+	truncate boolean DEFAULT true)
+RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table';
 
 CREATE FUNCTION spock.sync_seq(relation regclass)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_synchronize_sequence';
@@ -489,7 +318,7 @@ CREATE TABLE spock.queue (
 
 CREATE FUNCTION spock.replicate_ddl(command text,
 									replication_sets text[] DEFAULT '{ddl_sql}',
-									search_path text DEFAULT current_setting('search_path'),
+									search_path text DEFAULT '',
 									role text DEFAULT CURRENT_USER)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replicate_ddl_command';
 
@@ -506,13 +335,9 @@ CREATE FUNCTION spock.node_info(OUT node_id oid, OUT node_name text,
 RETURNS record
 STABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME', 'spock_node_info';
 
-CREATE FUNCTION spock.spock_gen_slot_name(
-  dbname        name,
-  provider_node name,
-  subscription  name
-) RETURNS name
-AS 'MODULE_PATHNAME'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION spock.spock_gen_slot_name(name, name, name)
+RETURNS name
+IMMUTABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME';
 
 CREATE FUNCTION spock_version() RETURNS text
 LANGUAGE c AS 'MODULE_PATHNAME';
@@ -530,111 +355,41 @@ CREATE FUNCTION spock.get_country() RETURNS text
 LANGUAGE sql AS
 $$ SELECT current_setting('spock.country') $$;
 
-CREATE FUNCTION spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
-RETURNS void
-AS 'spock','spock_wait_slot_confirm_lsn'
-LANGUAGE C;
+CREATE FUNCTION
+spock.wait_slot_confirm_lsn(slotname name, target pg_lsn)
+RETURNS void LANGUAGE c AS 'spock','spock_wait_slot_confirm_lsn';
 
 CREATE FUNCTION spock.sub_wait_for_sync(subscription_name name)
-RETURNS void RETURNS NULL ON NULL INPUT
-AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete'
-LANGUAGE C VOLATILE;
+RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_subscription_sync_complete';
 
-CREATE FUNCTION spock.table_wait_for_sync(
-	subscription_name name,
-	relation          regclass
-) RETURNS void RETURNS NULL ON NULL INPUT
-AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete'
-LANGUAGE C VOLATILE;
+CREATE FUNCTION spock.table_wait_for_sync(subscription_name name, relation regclass)
+RETURNS void RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete';
 
 CREATE FUNCTION spock.sync_event()
-RETURNS pg_lsn RETURNS NULL ON NULL INPUT
-AS 'MODULE_PATHNAME', 'spock_create_sync_event'
-LANGUAGE C VOLATILE;
+RETURNS pg_lsn RETURNS NULL ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_create_sync_event';
 
-CREATE FUNCTION spock.pause_apply_workers()
-RETURNS void
-AS 'MODULE_PATHNAME', 'spock_pause_apply_workers'
-LANGUAGE C VOLATILE;
-
-REVOKE ALL ON FUNCTION spock.pause_apply_workers() FROM PUBLIC;
-
-CREATE FUNCTION spock.resume_apply_workers()
-RETURNS void
-AS 'MODULE_PATHNAME', 'spock_resume_apply_workers'
-LANGUAGE C VOLATILE;
-
-REVOKE ALL ON FUNCTION spock.resume_apply_workers() FROM PUBLIC;
-
-CREATE PROCEDURE spock.wait_for_sync_event(
-	OUT result          bool,
-	origin_id           oid,
-	lsn                 pg_lsn,
-	timeout             int  DEFAULT 0,
-	wait_if_disabled    bool DEFAULT false
-) AS $$
+CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin_id oid, lsn pg_lsn, timeout int DEFAULT 0)
+AS $$
 DECLARE
 	target_id		oid;
-	start_time		timestamptz := clock_timestamp();
+	elapsed_time	numeric := 0;
 	progress_lsn	pg_lsn;
-	sub_is_enabled	bool;
-	sub_slot		name;
 BEGIN
 	IF origin_id IS NULL THEN
-		RAISE EXCEPTION 'Invalid NULL origin_id';
+		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
 	END IF;
 	target_id := node_id FROM spock.node_info();
 
-	-- Upfront existence check is skipped when wait_if_disabled is true because
-	-- the subscription may not yet exist (e.g. a newly added node whose
-	-- subscriptions are still initializing).  The loop below handles both the
-	-- not-found and disabled cases gracefully in that mode.
-	IF NOT wait_if_disabled THEN
-		SELECT sub_enabled, sub_slot_name INTO sub_is_enabled, sub_slot
-			FROM spock.subscription
-			WHERE sub_origin = origin_id AND sub_target = target_id;
-
-		IF NOT FOUND THEN
-			RAISE EXCEPTION 'No subscription found for replication % => %',
-							origin_id, target_id;
-		END IF;
-	END IF;
-
 	WHILE true LOOP
-		-- Re-check subscription state each iteration.  Also re-fetches
-		-- sub_slot_name so the loop is self-contained when wait_if_disabled
-		-- is true and the pre-loop check was skipped.
-		SELECT sub_enabled, sub_slot_name INTO sub_is_enabled, sub_slot
-			FROM spock.subscription
-			WHERE sub_origin = origin_id AND sub_target = target_id;
-
-		IF NOT FOUND THEN
-			IF NOT wait_if_disabled THEN
-				RAISE EXCEPTION 'No subscription found for replication % => %',
-								origin_id, target_id;
-			END IF;
-			-- Subscription not yet created; fall through to sleep.
-		ELSIF NOT sub_is_enabled THEN
-			IF NOT wait_if_disabled THEN
-				RAISE EXCEPTION 'Subscription % => % has been disabled',
-								origin_id, target_id;
-			END IF;
-			-- Subscription still initializing; fall through to sleep.
-		ELSE
-			-- Subscription is enabled; check LSN progress.
-			-- Uses PostgreSQL's native origin tracking rather than spock.progress
-			SELECT remote_lsn INTO progress_lsn
-				FROM pg_replication_origin_status
-				WHERE external_id = sub_slot;
-
-			IF progress_lsn IS NOT NULL AND progress_lsn >= lsn THEN
-				result = true;
-				RETURN;
-			END IF;
+		SELECT INTO progress_lsn remote_lsn
+			FROM spock.progress
+			WHERE node_id = target_id AND remote_node_id = origin_id;
+		IF progress_lsn >= lsn THEN
+			result = true;
+			RETURN;
 		END IF;
-
-		IF timeout <> 0 AND
-		   EXTRACT(EPOCH FROM (clock_timestamp() - start_time)) >= timeout THEN
+		elapsed_time := elapsed_time + .2;
+		IF timeout <> 0 AND elapsed_time >= timeout THEN
 			result := false;
 			RETURN;
 		END IF;
@@ -645,21 +400,37 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE PROCEDURE spock.wait_for_sync_event(
-	OUT result          bool,
-	origin              name,
-	lsn                 pg_lsn,
-	timeout             int  DEFAULT 0,
-	wait_if_disabled    bool DEFAULT false
-) AS $$
+CREATE PROCEDURE spock.wait_for_sync_event(OUT result bool, origin name, lsn pg_lsn, timeout int DEFAULT 0)
+AS $$
 DECLARE
-	origin_id  oid;
+	origin_id		oid;
+	target_id		oid;
+	elapsed_time	numeric := 0;
+	progress_lsn	pg_lsn;
 BEGIN
 	origin_id := node_id FROM spock.node WHERE node_name = origin;
 	IF origin_id IS NULL THEN
 		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
 	END IF;
-	CALL spock.wait_for_sync_event(result, origin_id, lsn, timeout, wait_if_disabled);
+	target_id := node_id FROM spock.node_info();
+
+	WHILE true LOOP
+		SELECT INTO progress_lsn remote_lsn
+			FROM spock.progress
+			WHERE node_id = target_id AND remote_node_id = origin_id;
+		IF progress_lsn >= lsn THEN
+			result = true;
+			RETURN;
+		END IF;
+		elapsed_time := elapsed_time + .2;
+		IF timeout <> 0 AND elapsed_time >= timeout THEN
+			result := false;
+			RETURN;
+		END IF;
+
+		ROLLBACK;
+		PERFORM pg_sleep(0.2);
+	END LOOP;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -709,18 +480,15 @@ CREATE VIEW spock.lag_tracker AS
 		origin.node_name AS origin_name,
 		n.node_name AS receiver_name,
 		MAX(p.remote_commit_ts) AS commit_timestamp,
-		MAX(p.remote_commit_lsn) AS commit_lsn,
+		MAX(p.remote_lsn) AS last_received_lsn,
 		MAX(p.remote_insert_lsn) AS remote_insert_lsn,
-		MAX(p.received_lsn) AS received_lsn,
 		CASE
-			WHEN MAX(p.remote_insert_lsn) IS NOT NULL AND MAX(p.remote_commit_lsn) IS NOT NULL
-			  THEN MAX(pg_wal_lsn_diff(p.remote_insert_lsn, p.remote_commit_lsn))
-			ELSE NULL
+			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN pg_wal_lsn_diff(MAX(p.remote_insert_lsn), MAX(p.remote_lsn))
+			ELSE 0
 		END AS replication_lag_bytes,
 		CASE
-			WHEN MAX(p.remote_commit_ts) IS NOT NULL AND MAX(p.last_updated_ts) IS NOT NULL
-              THEN MAX(p.last_updated_ts - p.remote_commit_ts)
-            ELSE NULL
+			WHEN CAST(MAX(CAST(p.updated_by_decode as int)) as bool) THEN now() - MAX(p.remote_commit_ts)
+			ELSE now() - MAX(p.last_updated_ts)
 		END AS replication_lag
 	FROM spock.progress p
 	LEFT JOIN spock.subscription sub ON (p.node_id = sub.sub_target and p.remote_node_id = sub.sub_origin)
@@ -730,14 +498,16 @@ CREATE VIEW spock.lag_tracker AS
 
 CREATE FUNCTION spock.md5_agg_sfunc(text, anyelement)
 	RETURNS text
-AS $$ SELECT md5($1 || $2::text) $$
-LANGUAGE sql IMMUTABLE PARALLEL SAFE;
+	LANGUAGE sql
+AS
+$$
+	SELECT md5($1 || $2::text)
+$$;
 CREATE  AGGREGATE spock.md5_agg (ORDER BY anyelement)
 (
 	STYPE = text,
 	SFUNC = spock.md5_agg_sfunc,
-	INITCOND = '',
-	PARALLEL = SAFE
+	INITCOND = ''
 );
 
 -- ----------------------------------------------------------------------
@@ -747,37 +517,218 @@ CREATE FUNCTION spock.terminate_active_transactions() RETURNS bool
  AS 'MODULE_PATHNAME', 'spockro_terminate_active_transactions'
  LANGUAGE C STRICT;
 
+-- ----------------------------------------------------------------------
+-- We check the PostgreSQL major version number in case a future
+-- catalog change forces us to provide different functions for
+-- different versions.
+-- ----------------------------------------------------------------------
+DO $version_dependent$
+DECLARE
+	pgmajor	integer;
+BEGIN
+	pgmajor = regexp_replace(regexp_replace(version(), '^PostgreSQL ', ''), '[^0-9].*', '')::integer;
+
+	CASE
+		WHEN pgmajor IN (15, 16, 17, 18) THEN
+
+-- ----------------------------------------------------------------------
+-- convert_column_to_int8()
+--
+--	Change the data type of a column to int8 and recursively alter
+--	all columns that reference this one through foreign key constraints.
+-- ----------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION spock.convert_column_to_int8(p_rel regclass, p_attnum smallint)
+RETURNS integer
+SET search_path = pg_catalog
+AS $$
+DECLARE
+	v_attr			record;
+	v_fk			record;
+	v_attidx		integer;
+	v_cmd			text;
+	v_num_altered	integer := 0;
+BEGIN
+	-- ----
+	-- Get the attribute definition
+	-- ----
+	SELECT * INTO v_attr
+	FROM pg_namespace N
+	JOIN pg_class C
+		ON N.oid = C.relnamespace
+	JOIN pg_attribute A
+		ON C.oid = A.attrelid
+	WHERE A.attrelid = p_rel
+		AND A.attnum = p_attnum;
+
+	IF NOT FOUND THEN
+		RAISE EXCEPTION 'Attribute % of reation % not found', p_attnum, p_rel;
+	END IF;
+
+	-- ----
+	-- If the attribute type is not bigint, we change it
+	-- ----
+	IF v_attr.atttypid <> 'int8'::regtype THEN
+		v_cmd = 'ALTER TABLE ' ||
+			quote_ident(v_attr.nspname) || '.' ||
+			quote_ident(v_attr.relname) ||
+			' ALTER COLUMN ' ||
+			quote_ident(v_attr.attname) ||
+			' SET DATA TYPE int8';
+		RAISE NOTICE 'EXECUTE %', v_cmd;
+		EXECUTE v_cmd;
+
+		v_num_altered = v_num_altered + 1;
+	END IF;
+
+	-- ----
+	-- Convert foreign keys referencing this column as well
+	-- ----
+	FOR v_fk IN
+		SELECT * FROM pg_constraint F
+			JOIN pg_class C
+				ON C.oid = F.conrelid
+			JOIN pg_namespace N
+				ON N.oid = C.relnamespace
+			WHERE F.contype = 'f'
+			AND F.confrelid = v_attr.attrelid
+	LOOP
+		-- ----
+		-- Lookup the attribute index in the possibly compount FK
+		-- ----
+		v_attidx = array_position(v_fk.confkey, v_attr.attnum);
+		IF v_attidx IS NULL THEN
+			CONTINUE;
+		END IF;
+
+		-- ----
+		-- Recurse for the referencing column
+		-- ----
+		v_num_altered = v_num_altered +
+			spock.convert_column_to_int8(v_fk.conrelid,
+										 v_fk.conkey[v_attidx]);
+	END LOOP;
+	RETURN v_num_altered;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ----------------------------------------------------------------------
+-- convert_sequence_to_snowflake()
+--
+--	Convert the DEFAULT expression for a sequence to snowflake's nextval()
+--	function. Eventually change the data type of columns using it
+--	to bigint.
+-- ----------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION spock.convert_sequence_to_snowflake(p_seqid regclass)
+RETURNS integer
+SET search_path = pg_catalog
+AS $$
+DECLARE
+	v_attrdef		record;
+	v_attr			record;
+	v_seq			record;
+	v_cmd			text;
+	v_num_altered	integer := 0;
+BEGIN
+	-- ----
+	-- We are looking for column defaults that use the requested
+	-- sequence and the function nextval().
+	-- ----
+	FOR v_attrdef IN
+		SELECT AD.*,
+			pg_get_expr(AD.adbin, AD.adrelid, true) adstr
+		FROM pg_depend D
+		JOIN pg_attrdef AD
+			ON D.refclassid = 'pg_class'::regclass
+			AND AD.adrelid = D.refobjid
+			AND AD.adnum = D.refobjsubid
+		WHERE D.classid = 'pg_class'::regclass
+			AND D.objid = p_seqid
+	LOOP
+		IF v_attrdef.adstr NOT LIKE 'nextval(%' THEN
+			CONTINUE;
+		END IF;
+
+		-- ----
+		-- Get the attribute definition
+		-- ----
+		SELECT * INTO v_attr
+		FROM pg_namespace N
+		JOIN pg_class C
+			ON N.oid = C.relnamespace
+		JOIN pg_attribute A
+			ON C.oid = A.attrelid
+		WHERE A.attrelid = v_attrdef.adrelid
+			AND A.attnum = v_attrdef.adnum;
+
+		IF NOT FOUND THEN
+			RAISE EXCEPTION 'Attribute for % not found', v_attrdef.adstr;
+		END IF;
+
+		-- ----
+		-- Get the sequence definition
+		-- ----
+		SELECT * INTO v_seq
+		FROM pg_namespace N
+		JOIN pg_class C
+			ON N.oid = C.relnamespace
+		WHERE C.oid = p_seqid;
+
+		IF NOT FOUND THEN
+			RAISE EXCEPTION 'Sequence with Oid % not found', p_seqid;
+		END IF;
+
+		-- ----
+		-- If the attribute type is not bigint, we change it
+		-- ----
+		v_num_altered = v_num_altered +
+			spock.convert_column_to_int8(v_attr.attrelid, v_attr.attnum);
+
+		-- ----
+		-- Now we can change the default to snowflake.nextval()
+		-- ----
+		v_cmd = 'ALTER TABLE ' ||
+			quote_ident(v_attr.nspname) || '.' ||
+			quote_ident(v_attr.relname) ||
+			' ALTER COLUMN ' ||
+			quote_ident(v_attr.attname) ||
+			' SET DEFAULT snowflake.nextval(''' ||
+			quote_ident(v_seq.nspname) || '.' ||
+			quote_ident(v_seq.relname) ||
+			'''::regclass)';
+		RAISE NOTICE 'EXECUTE %', v_cmd;
+		EXECUTE v_cmd;
+
+		v_num_altered = v_num_altered + 1;
+	END LOOP;
+	RETURN v_num_altered;
+END;
+$$ LANGUAGE plpgsql;
+
+	-- END pgmajor in (15, 16, 17, 18)
+	ELSE
+		RAISE EXCEPTION 'Unsupported PostgreSQL major version %', pgmajor;
+	END CASE;
+-- End of PG major version dependent PL/pgSQL definitions
+END;
+$version_dependent$ LANGUAGE plpgsql;
+
 -- ----
 -- Generic delta apply functions for all numeric data types
 -- ----
 CREATE FUNCTION spock.delta_apply(int2, int2, int2)
-RETURNS int2
-AS 'MODULE_PATHNAME', 'delta_apply_int2'
-LANGUAGE C;
+RETURNS int2 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int2';
 CREATE FUNCTION spock.delta_apply(int4, int4, int4)
-RETURNS int4
-AS 'MODULE_PATHNAME', 'delta_apply_int4'
-LANGUAGE C;
+RETURNS int4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int4';
 CREATE FUNCTION spock.delta_apply(int8, int8, int8)
-RETURNS int8
-AS 'MODULE_PATHNAME', 'delta_apply_int8'
-LANGUAGE C;
+RETURNS int8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_int8';
 CREATE FUNCTION spock.delta_apply(float4, float4, float4)
-RETURNS float4
-AS 'MODULE_PATHNAME', 'delta_apply_float4'
-LANGUAGE C;
+RETURNS float4 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float4';
 CREATE FUNCTION spock.delta_apply(float8, float8, float8)
-RETURNS float8
-AS 'MODULE_PATHNAME', 'delta_apply_float8'
-LANGUAGE C;
+RETURNS float8 LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_float8';
 CREATE FUNCTION spock.delta_apply(numeric, numeric, numeric)
-RETURNS numeric
-AS 'MODULE_PATHNAME', 'delta_apply_numeric'
-LANGUAGE C;
+RETURNS numeric LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_numeric';
 CREATE FUNCTION spock.delta_apply(money, money, money)
-RETURNS money
-AS 'MODULE_PATHNAME', 'delta_apply_money'
-LANGUAGE C;
+RETURNS money LANGUAGE c AS 'MODULE_PATHNAME', 'delta_apply_money';
 
 -- ----
 -- Function to control REPAIR mode
@@ -837,139 +788,3 @@ BEGIN
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
-
--- ----
--- Subscription conflict statistics
--- ----
-CREATE FUNCTION spock.get_subscription_stats(
-	subid                           oid,
-	OUT subid                       oid,
-	OUT confl_insert_exists         bigint,
-	OUT confl_update_origin_differs bigint,
-	OUT confl_update_exists         bigint,
-	OUT confl_update_missing        bigint,
-	OUT confl_delete_origin_differs bigint,
-	OUT confl_delete_missing        bigint,
-	OUT confl_delete_exists         bigint,
-	OUT stats_reset                 timestamptz
-)
-RETURNS record
-AS 'MODULE_PATHNAME', 'spock_get_subscription_stats'
-LANGUAGE C STABLE;
-
-CREATE FUNCTION spock.reset_subscription_stats(subid oid DEFAULT NULL)
-RETURNS void
-AS 'MODULE_PATHNAME', 'spock_reset_subscription_stats'
-LANGUAGE C CALLED ON NULL INPUT VOLATILE;
-
--- Set delta_apply security label on specific column
-CREATE FUNCTION spock.delta_apply(
-  rel      regclass,
-  att_name name,
-  to_drop  boolean DEFAULT false
-) RETURNS boolean AS $$
-DECLARE
-  label     text;
-  atttype   name;
-  attdata   record;
-  sqlstring text;
-  status    boolean;
-  relreplident char (1);
-  ctypname  name;
-BEGIN
-
-  /*
-   * regclass input type guarantees we see this table, no 'not found' check
-   * is needed.
-   */
-  SELECT c.relreplident FROM pg_class c WHERE oid = rel INTO relreplident;
-  /*
-   * Allow only DEFAULT type of replica identity. FULL type means we have
-   * already requested delta_apply feature on this table.
-   * Avoid INDEX type because indexes may have different names on the nodes and
-   * it would be better to stay paranoid than afraid of consequences.
-   */
-  IF (relreplident <> 'd' AND relreplident <> 'f')
-  THEN
-    RAISE EXCEPTION 'spock can apply delta_apply feature to the DEFAULT replica identity type only. This table holds "%" idenity', relreplident;
-  END IF;
-
-  /*
-   * Find proper delta_apply function for the column type or ERROR
-   */
-
-  SELECT t.typname,t.typinput,t.typoutput, a.attnotnull
-  FROM pg_catalog.pg_attribute a, pg_type t
-  WHERE a.attrelid = rel AND a.attname = att_name AND (a.atttypid = t.oid)
-  INTO attdata;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'column % does not exist in the table %', att_name, rel;
-  END IF;
-
-  IF (attdata.attnotnull = false) THEN
-    /*
-	 * TODO: Here is a case where the table has different constraints on nodes.
-	 * Using prepared transactions, we might be sure this operation will finish
-	 * if only each node satisfies the rule. But we need to add support for 2PC
-	 * commit beforehand.
-	 */
-    RAISE NOTICE USING
-	  MESSAGE = format('delta_apply feature can not be applied to nullable column %L of the table %I',
-						att_name, rel),
-	  HINT = 'Set NOT NULL constraint on the column',
-	  ERRCODE = 'object_not_in_prerequisite_state';
-	RETURN false;
-  END IF;
-
-  SELECT typname FROM pg_type WHERE
-    typname IN ('int2','int4','int8','float4','float8','numeric','money') AND
-    typinput = attdata.typinput AND typoutput = attdata.typoutput
-  INTO ctypname;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'type "%" can not be used in delta_apply conflict resolution',
-          attdata.typname;
-  END IF;
-
-  --
-  -- Create security label on the column
-  --
-  IF (to_drop = true) THEN
-    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS NULL;' ,
-                        rel, att_name);
-  ELSE
-    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L;' ,
-                        rel, att_name, 'spock.delta_apply');
-  END IF;
-
-  EXECUTE sqlstring;
-
-  /*
-   * Auto replication will propagate security label if needed. Just warn if it's
-   * not - the structure sync pg_dump call would copy security labels, isn't it?
-   */
-  SELECT pg_catalog.current_setting('spock.enable_ddl_replication') INTO status;
-  IF EXISTS (SELECT 1 FROM spock.local_node) AND status = false THEN
-    raise WARNING 'delta_apply setting has not been propagated to other spock nodes';
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM pg_catalog.pg_seclabel
-			 WHERE objoid = rel AND classoid = 'pg_class'::regclass AND
-			       provider = 'spock') THEN
-    /*
-     * Call it each time to trigger relcache invalidation callback that causes
-     * refresh of the SpockRelation entry and guarantees actual state of the
-     * delta_apply columns.
-     */
-    EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', rel);
-  ELSIF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
-			 WHERE c.oid = rel AND c.relreplident = 'f') THEN
-    /*
-	 * Have removed he last security label. Revert this spock hack change,
-	 * if needed.
-	 */
-	EXECUTE format('ALTER TABLE %I REPLICA IDENTITY DEFAULT', rel);
-  END IF;
-
-  RETURN true;
-END;
-$$ LANGUAGE plpgsql STRICT VOLATILE;

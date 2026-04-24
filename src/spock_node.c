@@ -65,9 +65,10 @@ typedef struct NodeTuple
 #define Anum_node_country	4
 #define Anum_node_info		5
 
-#define Natts_local_node			2
-#define Anum_node_local_id			1
-#define Anum_node_local_node_if		2
+#define Natts_local_node				3
+#define Anum_node_local_id				1
+#define Anum_node_local_node_if			2
+#define Anum_node_local_node_version	3
 
 typedef struct NodeInterfaceTuple
 {
@@ -455,6 +456,7 @@ create_local_node(Oid nodeid, Oid ifid)
 
 	values[Anum_node_local_id - 1] = ObjectIdGetDatum(nodeid);
 	values[Anum_node_local_node_if - 1] = ObjectIdGetDatum(ifid);
+	values[Anum_node_local_node_version - 1] = Int32GetDatum(SPOCK_VERSION_NUM);
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
@@ -563,6 +565,63 @@ get_local_node(bool for_update, bool missing_ok)
 										  &isnull));
 	nodeifid = DatumGetObjectId(fastgetattr(tuple, Anum_node_local_node_if,
 											desc, &isnull));
+
+	/*
+	 * Version check.  The node_version column was added in Spock 6.0.
+	 * Look up the column by name and verify its type.  We cannot rely
+	 * on positional access (Anum constants) because DROP COLUMN leaves
+	 * a gap in the physical layout, and VACUUM FULL renumbers attributes.
+	 *
+	 * Always ERROR regardless of missing_ok -- returning NULL would
+	 * conflate "node not configured" with "node misconfigured", and
+	 * callers are not obliged to check the return value.
+	 */
+	{
+		AttrNumber	ver_attnum;
+		int32		node_version;
+
+		ver_attnum = InvalidAttrNumber;
+		for (int i = 0; i < desc->natts; i++)
+		{
+			Form_pg_attribute att = TupleDescAttr(desc, i);
+
+			if (att->attisdropped)
+				continue;
+			if (strcmp(NameStr(att->attname), "node_version") == 0)
+			{
+				ver_attnum = att->attnum;
+				break;
+			}
+		}
+
+		if (!AttributeNumberIsValid(ver_attnum))
+		{
+			systable_endscan(scan);
+			table_close(rel, for_update ? NoLock : RowExclusiveLock);
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("spock extension schema outdated"),
+					 errhint("Run ALTER EXTENSION spock UPDATE.")));
+		}
+
+		Assert(TupleDescAttr(desc, ver_attnum - 1)->atttypid == INT4OID);
+
+		node_version = DatumGetInt32(fastgetattr(tuple,
+												 ver_attnum,
+												 desc, &isnull));
+		if (isnull || node_version != SPOCK_VERSION_NUM)
+		{
+			systable_endscan(scan);
+			table_close(rel, for_update ? NoLock : RowExclusiveLock);
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("spock version mismatch: "
+							"node at v%d, binary at v%d",
+							isnull ? 0 : node_version,
+							SPOCK_VERSION_NUM),
+					 errhint("Run ALTER EXTENSION spock UPDATE.")));
+		}
+	}
 
 	systable_endscan(scan);
 	table_close(rel, for_update ? NoLock : RowExclusiveLock);
