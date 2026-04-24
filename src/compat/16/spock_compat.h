@@ -107,6 +107,27 @@
 
 #define getObjectDescription(object) getObjectDescription(object, false)
 
+/*
+ * Stock PG16 uses bool sync_standbys_defined; pgEdge's patched PG16 and
+ * PG17+ use bits8 sync_standbys_status with SYNC_STANDBY_DEFINED flags.
+ * Only provide the mapping when the PG headers have not already defined
+ * SYNC_STANDBY_DEFINED (i.e. walsender_private.h was not yet included).
+ * In translation units that use these symbols (spock_apply.c) walsender_private.h
+ * is included before spock_compat.h, so the guard fires correctly.
+ */
+#ifndef SYNC_STANDBY_DEFINED
+#define sync_standbys_status sync_standbys_defined
+#define SYNC_STANDBY_DEFINED 1
+#endif							/* !SYNC_STANDBY_DEFINED */
+
+/*
+ * LockOrStrongerHeldByMe was added in PG17.  pgEdge's patched PG16 builds
+ * may also declare it in storage/lmgr.h as an extern function.  To avoid a
+ * "static declaration follows non-static declaration" error we do NOT define
+ * it here; instead spock_repset.c provides a private spk_LockOrStrongerHeldByMe
+ * helper and redirects calls via a file-local #define.
+ */
+
 #define replorigin_session_setup(node) \
 	replorigin_session_setup(node, 0)
 

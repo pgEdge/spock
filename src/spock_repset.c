@@ -49,6 +49,27 @@
 #include "spock.h"
 #include "spock_compat.h"
 
+/*
+ * LockOrStrongerHeldByMe is a PG17+ function.  pgEdge's patched PG16 may
+ * declare it as extern in storage/lmgr.h (included above).  To avoid a
+ * "static declaration follows non-static declaration" clash we use a
+ * private name and redirect calls via a file-local macro.  On PG17+ the
+ * native function is used directly (the #if block is skipped).
+ */
+#if PG_VERSION_NUM < 170000
+static inline bool
+spk_LockOrStrongerHeldByMe(const LOCKTAG *tag, LOCKMODE lockmode)
+{
+	LOCKMODE	m;
+
+	for (m = lockmode; m <= AccessExclusiveLock; m++)
+		if (LockHeldByMe(tag, m))
+			return true;
+	return false;
+}
+#define LockOrStrongerHeldByMe spk_LockOrStrongerHeldByMe
+#endif							/* PG_VERSION_NUM < 170000 */
+
 #define CATALOG_REPSET			"replication_set"
 #define CATALOG_REPSET_SEQ		"replication_set_seq"
 #define CATALOG_REPSET_TABLE	"replication_set_table"
