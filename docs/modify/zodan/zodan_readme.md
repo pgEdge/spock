@@ -207,11 +207,13 @@ ideal for environments where you may not have access to a shell or Python.
 
 Within the workflow, SQL commands orchestrate the following operations:
 
-- `remove_node` - Main procedure to orchestrate the full workflow.
-- `sub_drop` - Manages removing subscriptions. Also removes the
-  replication slot if there are no remaining subscriptions.
-- `repset_drop` - Removes published repsets on the node being removed.
-- `node_drop` - Removes the node from the cluster.
+- `spock.remove_node` - Main procedure to orchestrate the full workflow.
+- `spock.remove_node_subscriptions` - Manages removing subscriptions. Also
+  removes the replication slot if there are no remaining subscriptions.
+- `spock.remove_node_replication_sets` - Removes published repsets on the
+  node being removed.
+- `spock.remove_node_from_cluster_registry` - Removes the node from the
+  cluster.
 
 The workflow is located in the 
 [samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)

@@ -31,20 +31,22 @@ flavors - the first uses the origin_id (an `oid`) as an identifier for the
 node, while the second uses the node name as an identifier:
 
 - `spock.wait_for_sync_event(OUT result boolean, origin_id oid, lsn pg_lsn,
-  timeout int DEFAULT 0)`
+  timeout int DEFAULT 0, wait_if_disabled bool DEFAULT false)`
 
-- `spock.wait_for_sync_event(OUT result boolean, origin_name name, lsn pg_lsn,
-  timeout int DEFAULT 0)`
+- `spock.wait_for_sync_event(OUT result boolean, origin name, lsn pg_lsn,
+  timeout int DEFAULT 0, wait_if_disabled bool DEFAULT false)`
 
 This procedure waits on the subscriber node to alert you when the specified
 LSN (from the provider) is received and applied to the node.
 
 Parameters:
 
-- `origin_id` or `origin_name`: Identifies the provider node.
+- `origin_id` or `origin`: Identifies the provider node (by OID or name).
 - `lsn`: The target LSN to wait for.
 - `timeout`: (Optional) Number of seconds to wait before timing out. The
   default is 0 (wait indefinitely).
+- `wait_if_disabled`: (Optional) If `true`, wait even if the subscription is
+  disabled. The default is `false`.
 
 Returns:
 
