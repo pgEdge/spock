@@ -54,8 +54,8 @@ node addition:
 - Zodan includes the `verify_subscription_replicating()` function after
   enabling subscriptions to ensure they reach replicating status.
 
-- Zodan handles 2-node scenarios differently. No disabled subscriptions
-  are needed when adding to a single-node cluster.
+- When adding to a single-node cluster, Zodan handles the process
+  differently — no disabled subscriptions are needed.
 
 - Zodan shows final status of all nodes and subscriptions across the
   entire cluster, not just the new node.
