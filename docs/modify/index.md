@@ -8,5 +8,5 @@ There are several tools and scripts you can use to add a node to a cluster; the 
 
 * **Use pgBackRest to Add a Node to a Replicating Cluster with Minimal Downtime**
 
-[pgBackRest](add_node_pgbackrest.md) is an open-source tool that you can use add a node to a replicating cluster with minimal interruption.
+[pgBackRest](add_node_pgbackrest.md) is an open-source tool that you can use to add a node to a replicating cluster with minimal interruption.
 
