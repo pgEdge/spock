@@ -1,8 +1,10 @@
 # Spock Release Notes
 
-## Spock 5.1 on xxx
+## Spock 5.0.7
 
-### Logical Slot Failover Improvements
+### New Features
+
+Logical Slot Failover Improvements
 
 * On **PostgreSQL 17+**, Spock now creates all logical replication slots with
   the `FAILOVER` flag, allowing PostgreSQL's built-in slotsync worker
@@ -16,30 +18,50 @@
   to the native slotsync worker if `sync_replication_slots = on` is set,
   preventing conflicts.
 
-This release deprecates the spock.exception_replay_queue_size GUC. Previously
-Spock restored transaction changes up to the size defined by the
-spock.exception_replay_queue_size GUC. If an error occurred, the transaction
-was replayed, and if the size was less than the exception queue, the cache
-was used. If the size was greater than the limit, it was resent from the
-origin.
+### Bug Fixes
+* Preserve the original error message in `spock.exception_log` when applying
+  in `TRANSDISCARD` or `SUB_DISABLE` mode. Previously the original error was
+  written only to the server log and lost before the retry pass; every row in
+  the discarded transaction was logged with `error_message = NULL` (stored as
+  "unknown"). The originally-failing row now carries the real error message,
+  while the bystander rows in the same transaction are recorded as
+  "unavailable" instead of the misleading "unknown" fallback.
+* Fix missing data when adding a new node. An apply worker that committed
+  between `ensure_replication_slot_snapshot` and `adjust_progress_info` could
+  advance `spock.progress` past the COPY snapshot boundary, causing the new
+  node to permanently skip those changes. Apply workers are now paused via an
+  atomic flag and condition variable in `SpockContext` for the duration of
+  slot creation and resumed once `adjust_progress_info` completes.
+* Fix apply worker crash with `epoll_ctl() failed: Invalid argument` after a
+  provider connection died. The socket fd captured before `stream_replay:`
+  was never refreshed, so a stale fd was passed to `WaitLatchOrSocket` on
+  re-entry. The fd is now refreshed at `stream_replay:` and the worker exits
+  cleanly so the postmaster can restart and reconnect it.
+* Fix PG15/16 failover slot loss on promotion: reconnect with retry and guard
+  against a zero WAL flush LSN.
+* ZODAN: `create_sub_on_new_node_to_src_node` (Phase 9 of `add_node`) was
+  generating subscription names as `sub_{subscriber}_{provider}` instead of
+  the expected `sub_{provider}_{subscriber}` convention, causing
+  `remove_node` to fail when looking up subscriptions by name (SPOC-503). A
+  new `spock.gen_sub_name(provider_node, subscriber_node)` helper is now used
+  in place of inline name concatenations.
+* ZODAN: the `remove_node` cleanup loop tried to drop subscriptions by
+  guessing names and nodes, which broke whenever `cross_wire` and `add_node`
+  used different naming conventions. It now performs a per-node `DROP` of
+  every subscription read directly from the `spock.subscription` catalog.
 
-Now no restriction exists. Spock will use memory until memory is exhausted
-(improving performance for huge transactions). If an allocation fails, Spock
-performs as specified by the spock.exception_behavior GUC:
-
-- 'discard': Skip failed transaction and continue
-- 'transdiscard': Rollback transaction and continue
-- 'sub_disable': Disable subscription and exit cleanly
-
-* Change Spock replication health tracking routines and views:
-  - apply_group_progress, spock.progress, and spock.lag_tracker.
-  - rename last_received_lsn with commit_lsn to more precisely identify the
-    underlying value.
-  - introduce received_lsn - points to the last LSN, sent by the publisher,
-    exactly like pgoutput protocol do.
-  - remote_insert_lsn reported more frequently, on each incoming WAL record,
-    not only on a COMMIT, as it was before.
-
+### Operational Improvements
+* ZODAN now uses the 5-argument form of `wait_for_sync_event` with explicit
+  timeout-result checking and raises an `EXCEPTION` on timeout or failure.
+* Documentation: filled out `snowflake.md`; revised `upgrading_spock.md`;
+  fixed event-trigger syntax (`EXECUTE FUNCTION` instead of the deprecated
+  `EXECUTE PROCEDURE`); standardized function-reference filenames to match
+  function names exactly; removed obsolete `batch_inserts.md` (SPOC-493).
+* Test infrastructure aligned with `main`: `run_tests.sh` and `SpockTest.pm`
+  now use absolute `TESTLOGDIR` paths, derive per-test log filenames, and
+  isolate `psql` from a developer's `psqlrc`/history. New regression tests
+  added for failover slots (018), exception-handling/TRANSDISCARD error
+  quality (013), and the stale-fd-after-connection-death scenario (019).
 
 ## Spock 5.0.6
 
