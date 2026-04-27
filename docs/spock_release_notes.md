@@ -42,7 +42,7 @@ Logical Slot Failover Improvements
 * ZODAN: `create_sub_on_new_node_to_src_node` (Phase 9 of `add_node`) was
   generating subscription names as `sub_{subscriber}_{provider}` instead of
   the expected `sub_{provider}_{subscriber}` convention, causing
-  `remove_node` to fail when looking up subscriptions by name (SPOC-503). A
+  `remove_node` to fail when looking up subscriptions by name. A
   new `spock.gen_sub_name(provider_node, subscriber_node)` helper is now used
   in place of inline name concatenations.
 * ZODAN: the `remove_node` cleanup loop tried to drop subscriptions by
@@ -51,12 +51,10 @@ Logical Slot Failover Improvements
   every subscription read directly from the `spock.subscription` catalog.
 
 ### Operational Improvements
-* ZODAN now uses the 5-argument form of `wait_for_sync_event` with explicit
-  timeout-result checking and raises an `EXCEPTION` on timeout or failure.
 * Documentation: filled out `snowflake.md`; revised `upgrading_spock.md`;
   fixed event-trigger syntax (`EXECUTE FUNCTION` instead of the deprecated
   `EXECUTE PROCEDURE`); standardized function-reference filenames to match
-  function names exactly; removed obsolete `batch_inserts.md` (SPOC-493).
+  function names exactly; removed obsolete `batch_inserts.md`
 * Test infrastructure aligned with `main`: `run_tests.sh` and `SpockTest.pm`
   now use absolute `TESTLOGDIR` paths, derive per-test log filenames, and
   isolate `psql` from a developer's `psqlrc`/history. New regression tests
