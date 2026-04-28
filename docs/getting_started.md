@@ -509,8 +509,8 @@ Your two-node Spock cluster is now operational. The following documents describe
 
 If you encounter issues, review the following common problems and solutions.
 
-- If replication is not starting, check the `pg_hba.conf` entries and ensure the nodes can connect to each other.
-- If a subscription is stuck in the initializing state, verify that `max_replication_slots` and `max_wal_senders` are set to sufficient values.
+- Check the `pg_hba.conf` entries and ensure the nodes can connect to each other if replication is not starting.
+- Verify that `max_replication_slots` and `max_wal_senders` are set to sufficient values when a subscription is stuck initializing.
 - If DDL is not replicating, confirm that the automatic DDL replication settings are enabled on both nodes.
 - If errors are not clear, review the PostgreSQL logs for detailed error messages.
 
