@@ -3085,24 +3085,41 @@ spock_repair_mode(PG_FUNCTION_ARGS)
 /*
  * spock_create_sync_event
  *
- * This function creates a synchronization event on the provider. It leverages
- * the LogLogicalMessage API to log a custom message within the logical
- * replication framework. By doing so, it generates a unique Log Sequence Number
- * (LSN) that serves as a marker for synchronization purposes.
+ * Emit a SPOCK_SYNC_EVENT_MSG marker into the WAL via LogLogicalMessage and
+ * return the LSN of the message record. The LSN is intended for use with
+ * spock.wait_for_sync_event() on the subscriber side, which blocks until the
+ * marker has been decoded and applied.
  *
- * The generated LSN is returned to the caller and can be used by the
- * spock_wait_for_sync_event procedure on the subscriber side. Subscribers can
- * block and wait for this LSN to arrive, ensuring that all changes up to and
- * including the event have been replicated.
+ * The single boolean argument selects the transactional mode of the marker:
  *
- * an LSN is returned to caller.
+ *   transactional = false (default)
+ *       The message is written non-transactionally with an explicit WAL
+ *       flush, so the walsender wakes immediately and the apply worker on
+ *       the subscriber explicitly advances pg_replication_origin_status to
+ *       the marker's LSN as soon as it is applied. The marker is durable
+ *       regardless of the calling transaction's outcome - waiters cannot
+ *       hang because of a caller-side rollback. This is the right choice
+ *       when the LSN is used as a polling target (e.g. zodan add_node Phase
+ *       3 catchup wait against spock.progress.remote_commit_lsn).
+ *
+ *   transactional = true
+ *       The message is buffered with the surrounding transaction and
+ *       emitted at commit time, preserving order with the caller's DML.
+ *       wait_for_sync_event therefore implies that all DML committed
+ *       before the marker has also been applied. The trade-off: if the
+ *       calling transaction rolls back, the marker is discarded and any
+ *       waiter will hang until its own timeout fires.
+ *
+ * In both modes, an explicit WAL flush is performed so the walsender does
+ * not stall waiting for unrelated traffic.
  */
 Datum
 spock_create_sync_event(PG_FUNCTION_ARGS)
 {
-	SpockLocalNode		   *node;
-	SpockSyncEventMessage	message;
-	XLogRecPtr				lsn;
+	SpockLocalNode *node;
+	SpockSyncEventMessage message;
+	XLogRecPtr	lsn;
+	bool		transactional = PG_GETARG_BOOL(0);
 
 	node = check_local_node(true);
 	message.mtype = SPOCK_SYNC_EVENT_MSG;
@@ -3110,24 +3127,22 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	memset(NameStr(message.ename), 0, NAMEDATALEN);
 
 	/*
-	 * Use a non-transactional message with flush. This bypasses the reorder
-	 * buffer so the walsender delivers it immediately, and the explicit WAL
-	 * flush wakes the walsender via WalSndWakeupProcessRequests.
-	 *
-	 * PG17+ has a 5th flush parameter; on PG15/16 we call XLogFlush manually.
-	 * Parentheses around the function name bypass the 4-arg compat macro on
-	 * PG17/18 so we can pass the 5th parameter directly.
+	 * PG17+ has a 5th flush parameter on LogLogicalMessage; on PG15/16 we
+	 * call XLogFlush manually. Parentheses around the function name bypass
+	 * the 4-arg compat macro on PG17/18 so we can pass the 5th parameter
+	 * directly.
 	 */
 #if PG_VERSION_NUM >= 170000
 	lsn = (LogLogicalMessage)(SPOCK_MESSAGE_PREFIX, (char *) &message,
-							  sizeof(message), false, true);
+							  sizeof(message), transactional, true);
 #else
 	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *) &message,
-							sizeof(message), false);
+							sizeof(message), transactional);
 	XLogFlush(lsn);
 #endif
 
-	elog(DEBUG1, "SPOCK sync_event: emitted non-transactional message at %X/%X",
+	elog(DEBUG1, "SPOCK sync_event: emitted %s message at %X/%X",
+		 transactional ? "transactional" : "non-transactional",
 		 LSN_FORMAT_ARGS(lsn));
 
 	PG_RETURN_LSN(lsn);
