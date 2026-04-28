@@ -30,15 +30,15 @@ On each node, add the pgEdge repository to your system.
 For RHEL/Rocky Linux/AlmaLinux:
 
 ```bash
-sudo yum install -y https://pgedge-download.s3.amazonaws.com/REPO/pgedge-repo-1.0-1.noarch.rpm
+sudo dnf install -y https://dnf.pgedge.com/reporpm/pgedge-release-latest.noarch.rpm
 ```
 
 For Ubuntu/Debian:
 
 ```bash
-curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/pgedge-repo.gpg | sudo gpg --dearmor -o /usr/share/keyrings/pgedge-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/pgedge-archive-keyring.gpg] https://pgedge-download.s3.amazonaws.com/REPO/apt $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/pgedge.list
-sudo apt update
+sudo curl -sSL https://apt.pgedge.com/repodeb/pgedge-release_latest_all.deb -o /tmp/pgedge-release.deb
+
+sudo dpkg -i /tmp/pgedge-release.deb && rm -f /tmp/pgedge-release.deb || true
 ```
 
 After creating the repository, install your preferred PostgreSQL version.
