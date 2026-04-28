@@ -13,33 +13,56 @@ Before you begin, ensure you have the following prerequisites:
 
 The installation process follows these steps.
 
-1. Adding the pgEdge repository and installing pgEdge Postgres with Spock.
-2. Configuring PostgreSQL parameters for logical replication.
-3. Creating the Spock extension on both nodes.
-4. Setting up node definitions and bidirectional subscriptions.
-5. Enabling automatic DDL replication across the cluster.
-6. Testing the cluster to verify bidirectional replication works correctly.
+1. Add the pgEdge repository and install pgEdge Postgres with Spock.
+2. Configure PostgreSQL parameters for logical replication.
+3. Create the Spock extension on both nodes.
+4. Set up node definitions and bidirectional subscriptions.
+5. Enable automatic DDL replication across the cluster.
+6. Test the cluster to verify bidirectional replication works correctly.
 
 ## Install pgEdge Enterprise Postgres (Recommended Path)
 
 This section describes how to install pgEdge Enterprise Postgres with
-Spock on each node using the pgEdge repository.
+Spock using the pgEdge repository.
 
-On each node, add the pgEdge repository to your system.
+First, on each node, add the pgEdge repository to your system. 
 
-For RHEL/Rocky Linux/AlmaLinux:
+For RHEL/Rocky Linux/AlmaLinux 10, use the commands:
 
 ```bash
-sudo dnf install -y https://dnf.pgedge.com/reporpm/pgedge-release-latest.noarch.rpm
+sudo dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
+sudo subscription-manager repos --enable codeready-builder-for-rhel-10-$(arch)-rpms
 ```
 
+Version-specific commands for RHEL, OEL, Alma, and Rocky are available in the 
+[pgEdge Enterprise Postgres documentation](https://docs.pgedge.com/enterprise/el/configure-repo/).
+
 For Ubuntu/Debian:
+
+Before configuring local access to the pgedge repository, you should ensure that your system does 
+not contain any community Postgres packages. Then, install the platform-specific prerequisites 
+for your system with the commands:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y curl
+sudo apt-get install -y gnupg2
+sudo apt-get install lsb-release
+```
+
+Then, create the repository with the commands:
 
 ```bash
 sudo curl -sSL https://apt.pgedge.com/repodeb/pgedge-release_latest_all.deb -o /tmp/pgedge-release.deb
 
 sudo dpkg -i /tmp/pgedge-release.deb && rm -f /tmp/pgedge-release.deb || true
 ```
+
+!!! note
+
+    For detailed information about using the pgEdge repository, see the 
+    [pgEdge Enterprise Postgres documentation](https://docs.pgedge.com/enterprise/).
+
 
 After creating the repository, install your preferred PostgreSQL version.
 The examples use PostgreSQL 18, but you can substitute 15, 16, or 17.
