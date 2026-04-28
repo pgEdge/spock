@@ -45,7 +45,7 @@ for your system with the commands:
 sudo apt-get update
 sudo apt-get install -y curl
 sudo apt-get install -y gnupg2
-sudo apt-get install lsb-release
+sudo apt-get install -y lsb-release
 ```
 
 Then, create the repository with the commands:
