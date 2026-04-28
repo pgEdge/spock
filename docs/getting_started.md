@@ -3,43 +3,65 @@
 This guide walks you through installing Spock and creating a two-node
 active-active replication cluster.
 
-Before you begin, ensure you have the following prerequisites:
+Before you begin, ensure you have met the following prerequisites:
 
-- Two nodes (physical or virtual machines) with network connectivity.
-- Administrative access to both nodes.
-- Basic familiarity with PostgreSQL and command-line operations.
-
-## Overview
+- Each node must be a physical or virtual machine with network connectivity.
+- You must have administrative access to both nodes.
+- A basic familiarity with PostgreSQL and command-line operations is required.
 
 The installation process follows these steps.
 
-1. Adding the pgEdge repository and installing pgEdge Postgres with Spock.
-2. Configuring PostgreSQL parameters for logical replication.
-3. Creating the Spock extension on both nodes.
-4. Setting up node definitions and bidirectional subscriptions.
-5. Enabling automatic DDL replication across the cluster.
-6. Testing the cluster to verify bidirectional replication works correctly.
+1. Add the pgEdge repository and install pgEdge Postgres with Spock.
+2. Configure PostgreSQL parameters for logical replication.
+3. Create the Spock extension on both nodes.
+4. Set up node definitions and bidirectional subscriptions.
+5. Enable automatic DDL replication across the cluster.
+6. Test the cluster to verify bidirectional replication works correctly.
 
 ## Install pgEdge Enterprise Postgres (Recommended Path)
 
 This section describes how to install pgEdge Enterprise Postgres with
-Spock on each node using the pgEdge repository.
+Spock using the pgEdge repository.
 
-On each node, add the pgEdge repository to your system.
+First, on each node, add the pgEdge repository to your system. 
 
-For RHEL/Rocky Linux/AlmaLinux:
+For RHEL/Rocky Linux/AlmaLinux 10, use the commands:
 
 ```bash
-sudo yum install -y https://pgedge-download.s3.amazonaws.com/REPO/pgedge-repo-1.0-1.noarch.rpm
+sudo dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
+sudo subscription-manager repos --enable codeready-builder-for-rhel-10-$(arch)-rpms
 ```
+
+Version-specific commands for RHEL, OEL, Alma, and Rocky are available in the 
+[pgEdge Enterprise Postgres documentation](https://docs.pgedge.com/enterprise/el/configure-repo/).
 
 For Ubuntu/Debian:
 
+Before configuring local access to the pgedge repository, you should ensure that your system does 
+not contain any community Postgres packages. Then, install the platform-specific prerequisites 
+for your system with the commands:
+
 ```bash
-curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/pgedge-repo.gpg | sudo gpg --dearmor -o /usr/share/keyrings/pgedge-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/pgedge-archive-keyring.gpg] https://pgedge-download.s3.amazonaws.com/REPO/apt $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/pgedge.list
+sudo apt-get update
+sudo apt-get install -y curl
+sudo apt-get install -y gnupg2
+sudo apt-get install lsb-release
+```
+
+Then, create the repository with the commands:
+
+```bash
+sudo curl -sSL https://apt.pgedge.com/repodeb/pgedge-release_latest_all.deb -o /tmp/pgedge-release.deb
+sudo dpkg -i /tmp/pgedge-release.deb
+rm -f /tmp/pgedge-release.deb
 sudo apt update
 ```
+
+!!! note
+
+    For detailed information about using the pgEdge repository, see the 
+    [pgEdge Enterprise Postgres documentation](https://docs.pgedge.com/enterprise/).
+
 
 After creating the repository, install your preferred PostgreSQL version.
 The examples use PostgreSQL 18, but you can substitute 15, 16, or 17.
@@ -47,7 +69,7 @@ The examples use PostgreSQL 18, but you can substitute 15, 16, or 17.
 For RHEL/Rocky Linux/AlmaLinux:
 
 ```bash
-sudo yum install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock18
+sudo dnf install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock18
 ```
 
 For Ubuntu/Debian:
@@ -215,7 +237,7 @@ addresses.
 In the following example, the configuration entries allow connections
 from both nodes:
 
-```
+```conf
 # Regular connections
 host    all          all          <node_1_IP_address>/32    trust
 host    all          all          <node_2_IP_address>/32    trust
@@ -232,8 +254,12 @@ host    replication  all          <node_2_IP_address>/32    trust
     not recommended for production systems. In production, use
     appropriate authentication methods like `scram-sha-256` or `md5`.
 
-After modifying `pg_hba.conf`, restart PostgreSQL again to apply the
-changes.
+After modifying `pg_hba.conf`, reload the server configuration to apply the
+changes (no restart required):
+
+```sql
+SELECT pg_reload_conf();
+```
 
 ## Create the Spock Extension
 
@@ -258,7 +284,7 @@ postgres=#
 
 ## Create Nodes and Configure Replication
 
-Next, you will set up bidirectional replication between your two nodes.
+This section describes how to set up bidirectional replication between the two nodes.
 For this guide, the nodes are named `n1` and `n2`.
 
 ### On Node 1 (n1)
@@ -344,11 +370,8 @@ SELECT pg_reload_conf();
 
 These settings enable the following features:
 
-- Automatic replication of DDL statements through the default replication
-  set.
-- Automatic addition of new tables to replication sets; tables with
-  primary keys are added to the default set, and tables without primary
-  keys are added to the default_insert_only set.
+- DDL statements are automatically replicated through the default replication set.
+- New tables are automatically added to replication sets; tables with primary keys are added to the default set, and tables without primary keys are added to the default_insert_only set.
 
 ## Verify the Cluster
 
@@ -364,7 +387,7 @@ SELECT * FROM spock.node;
 
 Expected output:
 
-```
+```sql
 postgres=# SELECT * FROM spock.node;
 -[ RECORD 1 ]----
 node_id   | 26863
@@ -393,7 +416,7 @@ SELECT * FROM spock.sub_show_status();
 
 Expected output:
 
-```
+```sql
  postgres=# SELECT * FROM spock.sub_show_status();
 -[ RECORD 1 ]-----+--------------------------------------------------------------------
 subscription_name | sub_n1
@@ -430,11 +453,11 @@ Perform a simple replication test using the following steps.
 
    Expected output:
 
-   ```
+   ```sql
    postgres=# SELECT * FROM test;
    -[ RECORD 1 ]------
-   id  | 1
-   val | Hello from n1
+   id      | 1
+   message | Hello from n1
    ```
 
 3. On n2, insert a new row with the following command:
@@ -451,52 +474,37 @@ Perform a simple replication test using the following steps.
 
    Expected output:
 
-   ```
+   ```sql
    postgres=# SELECT * FROM test;
    -[ RECORD 1 ]------
-   id  | 1
-   val | Hello from n1
+   id      | 1
+   message | Hello from n1
    -[ RECORD 2 ]------
-   id  | 2
-   val | Hello from n2
+   id      | 2
+   message | Hello from n2
    ```
 
-You should see both messages on both nodes, confirming bidirectional
-replication is working.
+Both messages should appear on both nodes, confirming that bidirectional replication is working.
 
 ## Next Steps
 
-Your two-node Spock cluster is now operational.
+Your two-node Spock cluster is now operational. The following documents describe the next steps for configuring and managing the cluster.
 
-- The [Configuring Spock](configuring.md) document describes conflict
-  resolution settings and advanced configuration options.
-- The [Spock Functions Reference](spock_functions/index.md) document
-  provides detailed information about monitoring functions and replication
-  management.
-- The [Managing DDL Replication](managing/spock_autoddl.md) document
-  explains how to control automatic DDL replication behavior.
+- The [Configuring Spock](configuring.md) document describes conflict resolution settings and advanced configuration options.
+- The [Spock Functions Reference](spock_functions/index.md) document provides detailed information about monitoring functions and replication management.
+- The [Managing DDL Replication](managing/spock_autoddl.md) document explains how to control automatic DDL replication behavior.
 
 ## Troubleshooting
 
-If you encounter issues, review the following common problems and
-solutions.
+If you encounter issues, review the following common problems and solutions.
 
-1. Replication not starting: Check `pg_hba.conf` entries and ensure nodes
-   can connect to each other.
-
-2. Subscription stuck in initializing: Verify that `max_replication_slots`
-   and `max_wal_senders` are sufficient.
-
-3. DDL not replicating: Confirm automatic DDL replication settings are
-   enabled on both nodes.
-
-4. Check logs: Review PostgreSQL logs for detailed error messages.
+- If replication is not starting, check the `pg_hba.conf` entries and ensure the nodes can connect to each other.
+- If a subscription is stuck in the initializing state, verify that `max_replication_slots` and `max_wal_senders` are set to sufficient values.
+- If DDL is not replicating, confirm that the automatic DDL replication settings are enabled on both nodes.
+- If errors are not clear, review the PostgreSQL logs for detailed error messages.
 
 For more information, see the following resources:
 
-- The [Spock Functions Reference](spock_functions/index.md) document
-  provides detailed function documentation.
-- The [Advanced Configuration Options](configuring.md) document describes
-  additional configuration parameters.
-- The [Managing DDL Replication](managing/spock_autoddl.md) document
-  explains DDL replication features.
+- The [Spock Functions Reference](spock_functions/index.md) document provides detailed function documentation.
+- The [Advanced Configuration Options](configuring.md) document describes additional configuration parameters.
+- The [Managing DDL Replication](managing/spock_autoddl.md) document explains DDL replication features.
