@@ -1338,7 +1338,8 @@ DECLARE
     dbname             text;
     slot_name          text;
 	sub_name           text;
-    _commit_lsn        pg_lsn;
+    _slot_lsn          pg_lsn;
+    _catchup_lsn       pg_lsn;
 BEGIN
     RAISE NOTICE 'Phase 3: Creating disabled subscriptions and slots';
 
@@ -1349,7 +1350,7 @@ BEGIN
     CREATE TEMP TABLE IF NOT EXISTS temp_sync_lsns (
         origin_node text PRIMARY KEY,
         sync_lsn text NOT NULL,
-        commit_lsn pg_lsn
+        slot_lsn pg_lsn
     );
 
     -- Check if there are any "other" nodes (not source, not new)
@@ -1379,23 +1380,6 @@ BEGIN
     FOR rec IN SELECT * FROM temp_spock_nodes
 	           WHERE node_name != src_node_name AND node_name != new_node_name
 	LOOP
-        -- Trigger sync event on origin node and store LSN
-        BEGIN
-            RAISE NOTICE '    - 3+ node scenario: sync event stored, skipping disabled subscriptions';
-            SELECT * INTO remotesql
-            FROM dblink(rec.dsn, 'SELECT spock.sync_event()') AS t(sync_lsn text);
-
-            -- Store the sync LSN for later use when enabling subscriptions
-            INSERT INTO temp_sync_lsns (origin_node, sync_lsn)
-            VALUES (rec.node_name, remotesql)
-            ON CONFLICT (origin_node) DO UPDATE SET sync_lsn = EXCLUDED.sync_lsn;
-
-            RAISE NOTICE '    OK: %', rpad('Triggering sync event on node ' || rec.node_name || ' (LSN: ' || remotesql || ')', 120, ' ');
-        EXCEPTION
-            WHEN OTHERS THEN
-                RAISE EXCEPTION '    ✗ %', rpad('Triggering sync event on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
-        END;
-
         -- Create replication slot on the "other" node
         BEGIN
             -- Extract dbname and handle both quoted and unquoted values
@@ -1421,73 +1405,104 @@ BEGIN
                 RAISE NOTICE '    Remote SQL for slot creation: %', remotesql;
             END IF;
 
-            SELECT lsn INTO _commit_lsn
+            SELECT lsn INTO _slot_lsn
                 FROM dblink(rec.dsn, remotesql) AS t(slot_name text, lsn pg_lsn);
-            UPDATE temp_sync_lsns SET commit_lsn = _commit_lsn
-                WHERE origin_node = rec.node_name;
-            RAISE NOTICE '    OK: %', rpad('Creating replication slot ' || slot_name || ' (LSN: ' || _commit_lsn || ')' || ' on node ' || rec.node_name, 120, ' ');
+            RAISE NOTICE '    OK: %', rpad('Creating replication slot ' || slot_name || ' (LSN: ' || _slot_lsn || ')' || ' on node ' || rec.node_name, 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
                 RAISE EXCEPTION '    ✗ %', rpad('Creating replication slot ' || slot_name || ' on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
 
-        -- Wait for the source node to have committed all changes from this
-        -- "other" node up to L_slot, ensuring resume_lsn >= L_slot when Phase 5
-        -- takes the snapshot (prevents data loss in the [resume_lsn, L_slot) gap).
+        -- Trigger a sync event on rec *after* slot creation. This anchors a
+        -- real commit at LSN > _slot_lsn, which gives the catchup wait below
+        -- a reachable target even when rec is otherwise idle (the slot's
+        -- consistent_point typically lands on a RUNNING_XACTS record, not on
+        -- a commit, so remote_commit_lsn alone may never reach _slot_lsn).
+        -- The same LSN is reused by Phase 8 wait_for_sync_event on new.
         BEGIN
-            DECLARE
-                src_progress_lsn         pg_lsn;
-                wait_started             timestamptz := clock_timestamp();
-                wait_timeout             interval := interval '3 minutes';
-                progress_sql             text;
-                v_prev_statement_timeout text;
-            BEGIN
-                progress_sql := format(
-                    'SELECT p.remote_commit_lsn '
-                    'FROM spock.progress p '
-                    'JOIN spock.node n ON n.node_id = p.remote_node_id '
-                    'WHERE p.node_id = (SELECT node_id FROM spock.node_info()) '
-                    '  AND n.node_name = %L',
-                    rec.node_name);
+            SELECT t.sync_lsn::pg_lsn INTO _catchup_lsn
+            FROM dblink(rec.dsn, 'SELECT spock.sync_event(true)') AS t(sync_lsn text);
 
-                RAISE NOTICE '    - Waiting for source node % to commit % changes up to slot LSN %...',
-                             src_node_name, rec.node_name, _commit_lsn;
+            INSERT INTO temp_sync_lsns (origin_node, sync_lsn, slot_lsn)
+            VALUES (rec.node_name, _catchup_lsn::text, _slot_lsn)
+            ON CONFLICT (origin_node) DO UPDATE
+                SET sync_lsn = EXCLUDED.sync_lsn,
+                    slot_lsn = EXCLUDED.slot_lsn;
 
-                LOOP
-                    BEGIN
-                        -- Bound each remote probe so dblink calls cannot hang forever.
-                        v_prev_statement_timeout := current_setting('statement_timeout', true);
-                        PERFORM set_config('statement_timeout', '5s', true);
-
-                        SELECT * FROM dblink(src_dsn, progress_sql)
-                            AS t(lsn pg_lsn) INTO src_progress_lsn;
-
-                        PERFORM set_config('statement_timeout', coalesce(v_prev_statement_timeout, '0'), true);
-                    EXCEPTION
-                        WHEN OTHERS THEN
-                            PERFORM set_config('statement_timeout', coalesce(v_prev_statement_timeout, '0'), true);
-                            src_progress_lsn := NULL;
-                    END;
-
-                    EXIT WHEN src_progress_lsn IS NOT NULL
-                              AND src_progress_lsn >= _commit_lsn;
-
-                    IF clock_timestamp() - wait_started > wait_timeout THEN
-                        RAISE WARNING '    Timeout waiting for source node commit catchup (last seen: %)', src_progress_lsn;
-                        EXIT;
-                    END IF;
-
-                    PERFORM pg_sleep(0.5);
-                END LOOP;
-
-                RAISE NOTICE '    OK: %', rpad(
-                    'Source node ' || src_node_name || ' committed ' || rec.node_name
-                    || ' changes up to ' || COALESCE(src_progress_lsn::text, 'unknown')
-                    || ' (needed >= ' || _commit_lsn || ')', 120, ' ');
-            END;
+            RAISE NOTICE '    OK: %', rpad('Triggering sync event on node ' || rec.node_name || ' (LSN: ' || _catchup_lsn || ')', 120, ' ');
         EXCEPTION
             WHEN OTHERS THEN
-                RAISE WARNING '    Could not verify source commit catchup for %: %', rec.node_name, SQLERRM;
+                RAISE EXCEPTION '    ✗ %', rpad('Triggering sync event on node ' || rec.node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+        END;
+
+        -- Wait until src has applied rec changes through _catchup_lsn. Since
+        -- _catchup_lsn > _slot_lsn and apply is in commit order, reaching it
+        -- proves every rec commit with commit_lsn <= _slot_lsn is committed
+        -- on src and visible to the Phase 5 src->new COPY snapshot.
+        --
+        -- We must use remote_commit_lsn (apply progress at last applied
+        -- commit). received_lsn is unsafe here: it advances on keepalive
+        -- messages reporting the remote walsender position even when no rec
+        -- changes have been applied on src yet.
+        DECLARE
+            src_progress_lsn         pg_lsn;
+            wait_started             timestamptz := clock_timestamp();
+            wait_timeout             interval := interval '3 minutes';
+            progress_sql             text;
+            v_prev_statement_timeout text;
+        BEGIN
+            progress_sql := format(
+                'SELECT p.remote_commit_lsn '
+                'FROM spock.progress p '
+                'JOIN spock.node n ON n.node_id = p.remote_node_id '
+                'WHERE p.node_id = (SELECT node_id FROM spock.node_info()) '
+                '  AND n.node_name = %L',
+                rec.node_name);
+
+            RAISE NOTICE '    - Waiting for source node % to apply % changes up to sync LSN %...',
+                         src_node_name, rec.node_name, _catchup_lsn;
+
+            LOOP
+                BEGIN
+                    -- Bound each remote probe so dblink calls cannot hang forever.
+                    v_prev_statement_timeout := current_setting('statement_timeout', true);
+                    PERFORM set_config('statement_timeout', '5s', true);
+
+                    SELECT * FROM dblink(src_dsn, progress_sql)
+                        AS t(lsn pg_lsn) INTO src_progress_lsn;
+
+                    PERFORM set_config('statement_timeout', coalesce(v_prev_statement_timeout, '0'), true);
+                EXCEPTION
+                    WHEN OTHERS THEN
+					    -- Let user know if something wrong happens
+						IF verb THEN
+					      RAISE NOTICE 'An error happened: %', SQLERRM;
+						END IF;
+                        -- Transient probe failure; restore timeout and retry.
+                        PERFORM set_config('statement_timeout', coalesce(v_prev_statement_timeout, '0'), true);
+                        src_progress_lsn := NULL;
+                END;
+
+                EXIT WHEN src_progress_lsn IS NOT NULL
+                          AND src_progress_lsn >= _catchup_lsn;
+
+                IF clock_timestamp() - wait_started > wait_timeout THEN
+                    -- Hard failure: a post-slot sync_event commit was emitted
+                    -- on rec, so this LSN must reach src unless replication
+                    -- is broken. Proceeding would risk losing rec rows in
+                    -- (src_progress_lsn, _slot_lsn] from the src->new COPY.
+                    RAISE EXCEPTION 'Timed out waiting for source node % to apply % changes through sync LSN % (last seen: %)',
+                                    src_node_name, rec.node_name, _catchup_lsn,
+                                    COALESCE(src_progress_lsn::text, 'none');
+                END IF;
+
+                PERFORM pg_sleep(0.5);
+            END LOOP;
+
+            RAISE NOTICE '    OK: %', rpad(
+                'Source node ' || src_node_name || ' applied ' || rec.node_name
+                || ' changes up to ' || COALESCE(src_progress_lsn::text, 'unknown')
+                || ' (needed >= ' || _catchup_lsn || ')', 120, ' ');
         END;
 
         -- Create disabled subscription on new node from "other" node
@@ -1914,7 +1929,7 @@ CREATE OR REPLACE PROCEDURE spock.check_commit_timestamp_and_advance_slot(
 ) LANGUAGE plpgsql AS $$
 DECLARE
     rec RECORD;
-    commit_lsn pg_lsn;
+    slot_lsn pg_lsn;
     slot_name text;
     dbname text;
     remotesql text;
@@ -1980,22 +1995,22 @@ BEGIN
     -- Check src->new slot; only advance if it is NOT active (defensive).
     BEGIN
         RAISE NOTICE '    - Checking source-to-new subscription slot...';
-        
+
         -- Get source node info and extract dbname
         FOR src_rec IN SELECT * FROM temp_spock_nodes WHERE node_name = src_node_name LOOP
             SELECT spock.extract_dbname_from_dsn(src_rec.dsn) INTO src_dbname;
             IF src_dbname IS NOT NULL THEN
                 src_dbname := TRIM(BOTH '''' FROM src_dbname);
             END IF;
-            IF src_dbname IS NULL THEN 
-                src_dbname := 'pgedge'; 
+            IF src_dbname IS NULL THEN
+                src_dbname := 'pgedge';
             END IF;
 
             -- Generate slot name: spk_<dbname>_<src>_sub_<src>_<new>
             src_slot_name := spock.spock_gen_slot_name(
-                src_dbname, src_node_name, 
+                src_dbname, src_node_name,
                 spock.gen_sub_name(src_node_name, new_node_name));
-            
+
             RAISE NOTICE '    Looking for slot % on source node', src_slot_name;
 
             -- Check if slot exists on source node and whether it is active
@@ -2058,23 +2073,23 @@ BEGIN
     FOR rec IN SELECT * FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name LOOP
         BEGIN
             IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'temp_sync_lsns' AND relpersistence = 't') THEN
-                -- Get the stored sync LSN from when subscription was created
-                SELECT tsl.commit_lsn INTO commit_lsn
+                -- Get the stored slot LSN from when the slot was created
+                SELECT tsl.slot_lsn INTO slot_lsn
                 FROM temp_sync_lsns tsl
                 WHERE tsl.origin_node = rec.node_name;
 
-                IF commit_lsn IS NOT NULL THEN
-                    RAISE NOTICE '    OK: %', rpad('Found commit LSN for ' || rec.node_name || ' (LSN: ' || commit_lsn || ')...', 120, ' ');
+                IF slot_lsn IS NOT NULL THEN
+                    RAISE NOTICE '    OK: %', rpad('Found slot LSN for ' || rec.node_name || ' (LSN: ' || slot_lsn || ')...', 120, ' ');
                 ELSE
-                    RAISE NOTICE '    - %', rpad('No commit LSN found for ' || rec.node_name || '->' || new_node_name, 120, ' ');
+                    RAISE NOTICE '    - %', rpad('No slot LSN found for ' || rec.node_name || '->' || new_node_name, 120, ' ');
                     CONTINUE;
                 END IF;
             END IF;
         EXCEPTION
             WHEN OTHERS THEN
-                -- Can't continue the process because commit_lsn is needed
+                -- Can't continue the process because slot_lsn is needed
                 -- to advance LR slot properly.
-                RAISE EXCEPTION '    ✗ %', rpad('Checking commit LSN for ' || rec.node_name || '->' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
+                RAISE EXCEPTION '    ✗ %', rpad('Checking slot LSN for ' || rec.node_name || '->' || new_node_name || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
 
         -- Advance replication slot based on commit timestamp
@@ -2154,7 +2169,7 @@ BEGIN
             WHEN OTHERS THEN
                 -- Can't continue the process because of an error during the
                 -- slot advancement operation
-                RAISE EXCEPTION '    ✗ %', rpad('Advancing slot ' || slot_name || ' to LSN ' || commit_lsn || ' (error: ' || SQLERRM || ')', 120, ' ');
+                RAISE EXCEPTION '    ✗ %', rpad('Advancing slot ' || slot_name || ' to LSN ' || slot_lsn || ' (error: ' || SQLERRM || ')', 120, ' ');
         END;
     END LOOP;
 END;

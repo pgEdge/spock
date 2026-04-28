@@ -323,6 +323,15 @@ END;
 $$ LANGUAGE plpgsql STRICT VOLATILE;
 
 
+-- spock.sync_event() gained an optional 'transactional' boolean argument
+-- (default false). Drop the old zero-arg signature first so the upgrade
+-- doesn't leave behind two overloads with overlapping zero-arg resolution.
+DROP FUNCTION IF EXISTS spock.sync_event();
+CREATE FUNCTION spock.sync_event(transactional boolean DEFAULT false)
+RETURNS pg_lsn RETURNS NULL ON NULL INPUT
+AS 'MODULE_PATHNAME', 'spock_create_sync_event'
+LANGUAGE C VOLATILE;
+
 DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, oid, pg_lsn, int);
 DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, oid, pg_lsn, int, bool);
 DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, name, pg_lsn, int);

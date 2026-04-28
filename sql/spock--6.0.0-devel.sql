@@ -546,7 +546,7 @@ CREATE FUNCTION spock.table_wait_for_sync(
 AS 'MODULE_PATHNAME', 'spock_wait_for_table_sync_complete'
 LANGUAGE C VOLATILE;
 
-CREATE FUNCTION spock.sync_event()
+CREATE FUNCTION spock.sync_event(transactional boolean DEFAULT false)
 RETURNS pg_lsn RETURNS NULL ON NULL INPUT
 AS 'MODULE_PATHNAME', 'spock_create_sync_event'
 LANGUAGE C VOLATILE;
