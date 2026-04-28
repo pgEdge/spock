@@ -25,11 +25,22 @@ Spock using the pgEdge repository.
 
 First, on each node, add the pgEdge repository to your system. 
 
-For RHEL/Rocky Linux/AlmaLinux 10, use the commands:
+For RHEL/Rocky Linux/AlmaLinux 10, first install EPEL:
 
 ```bash
 sudo dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
+```
+
+On RHEL 10, also enable the CodeReady Builder repository:
+
+```bash
 sudo subscription-manager repos --enable codeready-builder-for-rhel-10-$(arch)-rpms
+```
+
+On Rocky Linux 10 or AlmaLinux 10, enable the equivalent CRB repository instead:
+
+```bash
+sudo dnf config-manager --set-enabled crb
 ```
 
 Version-specific commands for RHEL, OEL, Alma, and Rocky are available in the 
@@ -53,7 +64,7 @@ Then, create the repository with the commands:
 ```bash
 sudo curl -sSL https://apt.pgedge.com/repodeb/pgedge-release_latest_all.deb -o /tmp/pgedge-release.deb
 sudo dpkg -i /tmp/pgedge-release.deb
-rm -f /tmp/pgedge-release.deb
+sudo rm -f /tmp/pgedge-release.deb
 sudo apt update
 ```
 
