@@ -3,13 +3,11 @@
 This guide walks you through installing Spock and creating a two-node
 active-active replication cluster.
 
-Before you begin, ensure you have the following prerequisites:
+Before you begin, ensure you have met the following prerequisites:
 
-- Two nodes (physical or virtual machines) with network connectivity.
-- Administrative access to both nodes.
-- Basic familiarity with PostgreSQL and command-line operations.
-
-## Overview
+- Each node must be a physical or virtual machine with network connectivity.
+- You must have administrative access to both nodes.
+- A basic familiarity with PostgreSQL and command-line operations is required.
 
 The installation process follows these steps.
 
@@ -238,7 +236,7 @@ addresses.
 In the following example, the configuration entries allow connections
 from both nodes:
 
-```
+```conf
 # Regular connections
 host    all          all          <node_1_IP_address>/32    trust
 host    all          all          <node_2_IP_address>/32    trust
@@ -285,7 +283,7 @@ postgres=#
 
 ## Create Nodes and Configure Replication
 
-Next, you will set up bidirectional replication between your two nodes.
+This section describes how to set up bidirectional replication between the two nodes.
 For this guide, the nodes are named `n1` and `n2`.
 
 ### On Node 1 (n1)
@@ -371,11 +369,8 @@ SELECT pg_reload_conf();
 
 These settings enable the following features:
 
-- Automatic replication of DDL statements through the default replication
-  set.
-- Automatic addition of new tables to replication sets; tables with
-  primary keys are added to the default set, and tables without primary
-  keys are added to the default_insert_only set.
+- DDL statements are automatically replicated through the default replication set.
+- New tables are automatically added to replication sets; tables with primary keys are added to the default set, and tables without primary keys are added to the default_insert_only set.
 
 ## Verify the Cluster
 
@@ -391,7 +386,7 @@ SELECT * FROM spock.node;
 
 Expected output:
 
-```
+```sql
 postgres=# SELECT * FROM spock.node;
 -[ RECORD 1 ]----
 node_id   | 26863
@@ -420,7 +415,7 @@ SELECT * FROM spock.sub_show_status();
 
 Expected output:
 
-```
+```sql
  postgres=# SELECT * FROM spock.sub_show_status();
 -[ RECORD 1 ]-----+--------------------------------------------------------------------
 subscription_name | sub_n1
@@ -457,7 +452,7 @@ Perform a simple replication test using the following steps.
 
    Expected output:
 
-   ```
+   ```sql
    postgres=# SELECT * FROM test;
    -[ RECORD 1 ]------
    id      | 1
@@ -478,7 +473,7 @@ Perform a simple replication test using the following steps.
 
    Expected output:
 
-   ```
+   ```sql
    postgres=# SELECT * FROM test;
    -[ RECORD 1 ]------
    id      | 1
@@ -488,42 +483,27 @@ Perform a simple replication test using the following steps.
    message | Hello from n2
    ```
 
-You should see both messages on both nodes, confirming bidirectional
-replication is working.
+Both messages should appear on both nodes, confirming that bidirectional replication is working.
 
 ## Next Steps
 
-Your two-node Spock cluster is now operational.
+Your two-node Spock cluster is now operational. The following documents describe the next steps for configuring and managing the cluster.
 
-- The [Configuring Spock](configuring.md) document describes conflict
-  resolution settings and advanced configuration options.
-- The [Spock Functions Reference](spock_functions/index.md) document
-  provides detailed information about monitoring functions and replication
-  management.
-- The [Managing DDL Replication](managing/spock_autoddl.md) document
-  explains how to control automatic DDL replication behavior.
+- The [Configuring Spock](configuring.md) document describes conflict resolution settings and advanced configuration options.
+- The [Spock Functions Reference](spock_functions/index.md) document provides detailed information about monitoring functions and replication management.
+- The [Managing DDL Replication](managing/spock_autoddl.md) document explains how to control automatic DDL replication behavior.
 
 ## Troubleshooting
 
-If you encounter issues, review the following common problems and
-solutions.
+If you encounter issues, review the following common problems and solutions.
 
-1. Replication not starting: Check `pg_hba.conf` entries and ensure nodes
-   can connect to each other.
-
-2. Subscription stuck in initializing: Verify that `max_replication_slots`
-   and `max_wal_senders` are sufficient.
-
-3. DDL not replicating: Confirm automatic DDL replication settings are
-   enabled on both nodes.
-
-4. Check logs: Review PostgreSQL logs for detailed error messages.
+- If replication is not starting, check the `pg_hba.conf` entries and ensure the nodes can connect to each other.
+- If a subscription is stuck in the initializing state, verify that `max_replication_slots` and `max_wal_senders` are set to sufficient values.
+- If DDL is not replicating, confirm that the automatic DDL replication settings are enabled on both nodes.
+- If errors are not clear, review the PostgreSQL logs for detailed error messages.
 
 For more information, see the following resources:
 
-- The [Spock Functions Reference](spock_functions/index.md) document
-  provides detailed function documentation.
-- The [Advanced Configuration Options](configuring.md) document describes
-  additional configuration parameters.
-- The [Managing DDL Replication](managing/spock_autoddl.md) document
-  explains DDL replication features.
+- The [Spock Functions Reference](spock_functions/index.md) document provides detailed function documentation.
+- The [Advanced Configuration Options](configuring.md) document describes additional configuration parameters.
+- The [Managing DDL Replication](managing/spock_autoddl.md) document explains DDL replication features.
