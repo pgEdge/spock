@@ -146,39 +146,39 @@ If you need to build Spock from source instead of using pgEdge Enterprise
 Postgres, follow these steps.
 
 1. Download PostgreSQL source code from the [Postgres project](https://www.postgresql.org/ftp/source/)
-   and navigate to the source directory.
+    and navigate to the source directory.
 
 2. Clone the Spock repository with the following command:
 
-   ```bash
-   git clone https://github.com/pgEdge/spock.git
-   ```
+    ```bash
+    git clone https://github.com/pgEdge/spock.git
+    ```
 
 3. Apply the version-specific patches with the following command:
 
-   ```bash
-   patch -p1 < spock/patches/version/patch_name
-   ```
+    ```bash
+    patch -p1 < spock/patches/version/patch_name
+    ```
 
 4. Configure, build, and install PostgreSQL as described in the
-   [Postgres documentation](https://www.postgresql.org/docs/current/installation.html).
+    [Postgres documentation](https://www.postgresql.org/docs/current/installation.html).
 
 5. Add the `pg_config` file location to your PATH with this command:
 
-   ```bash
-   export PATH=path_to_pg_config_file
-   ```
+    ```bash
+    export PATH=path_to_pg_config_file
+    ```
 
 6. Install the [jansson library](https://jansson.readthedocs.io/en/1.1/gettingstarted.html)
-   (required for Spock).
+    (required for Spock).
 
 7. Build and install Spock with the following commands:
 
-   ```bash
-   cd spock
-   make
-   make install
-   ```
+    ```bash
+    cd spock
+    make
+    make install
+    ```
 
 Repeat the installation process on both nodes.
 
@@ -294,21 +294,21 @@ replication set.
 
 1. Create the node definition with the following command:
 
-   ```sql
-   SELECT spock.node_create(
-       node_name := 'n1',
-       dsn := 'host=<n1_ip_address> port=<n1_port> dbname=<db_name>'
-   );
-   ```
+    ```sql
+    SELECT spock.node_create(
+        node_name := 'n1',
+        dsn := 'host=<n1_ip_address> port=<n1_port> dbname=<db_name>'
+    );
+    ```
 
 2. Add tables to the default replication set with this command:
 
-   ```sql
-   SELECT spock.repset_add_all_tables('default', ARRAY['public']);
-   ```
+    ```sql
+    SELECT spock.repset_add_all_tables('default', ARRAY['public']);
+    ```
 
-   If you are working in a schema other than `public`, adjust the schema
-   name accordingly.
+    If you are working in a schema other than `public`, adjust the schema
+    name accordingly.
 
 ### On Node 2 (n2)
 
@@ -317,29 +317,29 @@ the subscription.
 
 1. Create the node definition with the following command:
 
-   ```sql
-   SELECT spock.node_create(
-       node_name := 'n2',
-       dsn := 'host=<n2_ip_address> port=<n2_port> dbname=<db_name>'
-   );
-   ```
+    ```sql
+    SELECT spock.node_create(
+        node_name := 'n2',
+        dsn := 'host=<n2_ip_address> port=<n2_port> dbname=<db_name>'
+    );
+    ```
 
 2. Add tables to the default replication set with this command:
 
-   ```sql
-   SELECT spock.repset_add_all_tables('default', ARRAY['public']);
-   ```
+    ```sql
+    SELECT spock.repset_add_all_tables('default', ARRAY['public']);
+    ```
 
 3. Create the subscription from n2 to n1 with these commands:
 
-   ```sql
-   SELECT spock.sub_create(
-       subscription_name := 'sub_n2_n1',
-       provider_dsn := 'host=<n1_ip_address> port=<n1_port> dbname=<db_name>'
-   );
+    ```sql
+    SELECT spock.sub_create(
+        subscription_name := 'sub_n2_n1',
+        provider_dsn := 'host=<n1_ip_address> port=<n1_port> dbname=<db_name>'
+    );
 
-   SELECT spock.sub_wait_for_sync('sub_n2_n1');
-   ```
+    SELECT spock.sub_wait_for_sync('sub_n2_n1');
+    ```
 
 ### On Node 1 (n1)
 
@@ -436,53 +436,53 @@ Perform a simple replication test using the following steps.
 
 1. On n1, create a test table with the following commands:
 
-   ```sql
-   CREATE TABLE test (
-       id SERIAL PRIMARY KEY,
-       message TEXT
-   );
+    ```sql
+    CREATE TABLE test (
+        id SERIAL PRIMARY KEY,
+        message TEXT
+    );
 
-   INSERT INTO test (message) VALUES ('Hello from n1');
-   ```
+    INSERT INTO test (message) VALUES ('Hello from n1');
+    ```
 
 2. On n2, verify the table exists and contains the data with this query:
 
-   ```sql
-   SELECT * FROM test;
-   ```
+    ```sql
+    SELECT * FROM test;
+    ```
 
-   Expected output:
+    Expected output:
 
-   ```sql
-   postgres=# SELECT * FROM test;
-   -[ RECORD 1 ]------
-   id      | 1
-   message | Hello from n1
-   ```
+    ```sql
+    postgres=# SELECT * FROM test;
+    -[ RECORD 1 ]------
+    id      | 1
+    message | Hello from n1
+    ```
 
 3. On n2, insert a new row with the following command:
 
-   ```sql
-   INSERT INTO test (message) VALUES ('Hello from n2');
-   ```
+    ```sql
+    INSERT INTO test (message) VALUES ('Hello from n2');
+    ```
 
 4. On n1, verify both rows are present with this query:
 
-   ```sql
-   SELECT * FROM test;
-   ```
+    ```sql
+    SELECT * FROM test;
+    ```
 
-   Expected output:
+    Expected output:
 
-   ```sql
-   postgres=# SELECT * FROM test;
-   -[ RECORD 1 ]------
-   id      | 1
-   message | Hello from n1
-   -[ RECORD 2 ]------
-   id      | 2
-   message | Hello from n2
-   ```
+    ```sql
+    postgres=# SELECT * FROM test;
+    -[ RECORD 1 ]------
+    id      | 1
+    message | Hello from n1
+    -[ RECORD 2 ]------
+    id      | 2
+    message | Hello from n2
+    ```
 
 Both messages should appear on both nodes, confirming that bidirectional replication is working.
 
