@@ -52,8 +52,9 @@ Then, create the repository with the commands:
 
 ```bash
 sudo curl -sSL https://apt.pgedge.com/repodeb/pgedge-release_latest_all.deb -o /tmp/pgedge-release.deb
-
-sudo dpkg -i /tmp/pgedge-release.deb && rm -f /tmp/pgedge-release.deb || true
+sudo dpkg -i /tmp/pgedge-release.deb
+rm -f /tmp/pgedge-release.deb
+sudo apt update
 ```
 
 !!! note
@@ -68,7 +69,7 @@ The examples use PostgreSQL 18, but you can substitute 15, 16, or 17.
 For RHEL/Rocky Linux/AlmaLinux:
 
 ```bash
-sudo yum install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock18
+sudo dnf install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock18
 ```
 
 For Ubuntu/Debian:
