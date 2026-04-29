@@ -21,10 +21,12 @@
 #include "catalog/pg_extension.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_type.h"
 
 #include "commands/extension.h"
+#include "commands/seclabel.h"
 
 #include "executor/executor.h"
 
@@ -917,6 +919,39 @@ log_message_filter(ErrorData *edata)
 }
 
 /*
+ * Spock security label hook.
+ *
+ * Stub provider: stores any well-shaped label and does nothing else.
+ * It exists so v5 servers can persist the labels that the upcoming
+ * delta_apply rework will read on v6 (and on a later v5 release).
+ *
+ * We do NOT remove this stub when the real provider lands: register_label_provider()
+ * registers exactly one callback per provider name, and the real version will
+ * replace this body in place.  Until then, constrain the contract to "column on
+ * an existing relation" so users cannot persist labels on objects the real
+ * provider will refuse, leaving them stuck with rows in pg_seclabel that no
+ * subsequent code path will accept.
+ */
+static void
+spock_object_relabel(const ObjectAddress *object, const char *seclabel)
+{
+	/*
+	 * classId must be pg_class, the object must be a column (objectSubId > 0),
+	 * and the relation must still exist.  The syscache lookup catches the
+	 * race where the relation is dropped concurrently, in which case we let
+	 * the caller see an explicit error rather than silently storing a
+	 * dangling label.
+	 */
+	if (object->classId != RelationRelationId ||
+		object->objectSubId <= 0 ||
+		!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(object->objectId)))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("spock provider does not support labels on %s",
+						getObjectTypeDescription(object, false))));
+}
+
+/*
  * Entry point for this module.
  */
 void
@@ -1236,5 +1271,8 @@ _PG_init(void)
 	/* General-purpose message filter */
 	prev_emit_log_hook = emit_log_hook;
 	emit_log_hook = log_message_filter;
+
+	/* Security label provider hook */
+	register_label_provider(SPOCK_SECLABEL_PROVIDER, spock_object_relabel);
 }
 
