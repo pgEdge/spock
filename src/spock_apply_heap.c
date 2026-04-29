@@ -28,7 +28,10 @@
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
 
+#include "access/tableam.h"
+#include "commands/trigger.h"
 #include "executor/executor.h"
+#include "executor/nodeModifyTable.h"
 
 #include "libpq/pqformat.h"
 
@@ -823,22 +826,40 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
 		/*
-		 * If this is a forced delta-apply we execute it in a
-		 * subtransaction and record the local_ts & local_origin
-		 * for CommitTsData override.
+		 * Delta-apply forces the update inside a subtransaction so the heap
+		 * tuple is stamped with a sub-XID for SubTransactionIdSetCommitTsData.
+		 *
+		 * Redirect CurrentResourceOwner to TopTransactionResourceOwner for the
+		 * duration of the executor call. Without this, TupleDesc refs acquired
+		 * by the executor are registered under the SubTxn and force-released at
+		 * ReleaseCurrentSubTransaction(), causing "tupdesc reference not owned
+		 * by TopTransaction" during ExecResetTupleTable. Restore before
+		 * releasing so CommitSubTransaction's assertion holds.
 		 */
 		if (is_delta_apply)
+		{
+			ResourceOwner save_resowner;
+
 			BeginInternalSubTransaction("SpockDeltaApply");
 
-		EvalPlanQualSetSlot(epqstate, remoteslot);
-		ExecSimpleRelationUpdate(relinfo, estate, epqstate,
-								 localslot, remoteslot);
+			save_resowner = CurrentResourceOwner;
+			CurrentResourceOwner = TopTransactionResourceOwner;
 
-		if (is_delta_apply)
-		{
+			EvalPlanQualSetSlot(epqstate, remoteslot);
+			ExecSimpleRelationUpdate(relinfo, estate, epqstate,
+									 localslot, remoteslot);
+
+			CurrentResourceOwner = save_resowner;
+
 			SubTransactionIdSetCommitTsData(GetCurrentTransactionId(),
 											local_ts, local_origin);
 			ReleaseCurrentSubTransaction();
+		}
+		else
+		{
+			EvalPlanQualSetSlot(epqstate, remoteslot);
+			ExecSimpleRelationUpdate(relinfo, estate, epqstate,
+									 localslot, remoteslot);
 		}
 
 		RestoreUserContext(&ucxt);
