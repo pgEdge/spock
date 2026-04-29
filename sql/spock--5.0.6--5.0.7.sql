@@ -123,3 +123,41 @@ RETURNS pg_lsn RETURNS NULL ON NULL INPUT
 AS 'MODULE_PATHNAME', 'spock_create_sync_event'
 LANGUAGE C VOLATILE;
 
+/*
+ * Correct the declared type of spock.subscription.sub_skip_schema.
+ *
+ * The column was added as text in the 5.0.1--5.0.2 upgrade, but the C code
+ * has always treated it as text[] on both read and write paths
+ * (strlist_to_textarray on write, DatumGetArrayTypeP on read).  The bytes
+ * already on disk are therefore a valid ArrayType; only the catalog's type
+ * label is wrong.  ALTER TABLE ... ALTER COLUMN TYPE text[] USING ... is
+ * not viable here: there is no SQL expression that converts "varlena bytes
+ * the planner believes are text but are in fact ArrayType internal format"
+ * back into an ArrayType Datum.  Relabel the column in place so SQL-level
+ * access (SELECT, unnest, etc.) works as users expect, without rewriting
+ * data.
+ */
+LOCK TABLE spock.subscription IN ACCESS EXCLUSIVE MODE;
+
+UPDATE pg_catalog.pg_attribute
+   SET atttypid  = 'text[]'::regtype,
+       attndims  = 1
+ WHERE attrelid  = 'spock.subscription'::regclass
+   AND attname   = 'sub_skip_schema'
+   AND atttypid  = 'text'::regtype;
+
+/*
+ * Drop any pg_statistic rows for the column.  Stats sampled when the
+ * column was labelled text encode varlena bytes with text semantics;
+ * after the relabel the planner would interpret the same stavalues
+ * arrays as text[], producing nonsense selectivities (and possibly
+ * crashing on operators that validate ArrayType structure).  ANALYZE
+ * will repopulate as needed.
+ */
+DELETE FROM pg_catalog.pg_statistic
+ WHERE starelid  = 'spock.subscription'::regclass
+   AND staattnum = (
+       SELECT attnum
+       FROM   pg_catalog.pg_attribute
+       WHERE  attrelid = 'spock.subscription'::regclass
+         AND  attname  = 'sub_skip_schema');
