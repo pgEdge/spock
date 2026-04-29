@@ -28,6 +28,10 @@ node), `n2`, `n3`, and the new node is `n4`.
     - Prepare the new node to meet all of the prerequisites described here.
     - If the process fails, do not immediately retry a command until you
       ensure that all artifacts created by the workflow have been removed.
+    - Zodan uses an internal 180-second (3-minute) timeout when waiting for
+      sync events between nodes. If replication lag exceeds this window, the
+      process will raise an exception. Ensure network latency and replication
+      lag are within acceptable limits before starting.
 
 ## Creating a Node Manually
 
@@ -39,7 +43,7 @@ need to complete the following steps:
 - Create a database user.
 - Follow the instructions at the [GitHub repository](https://github.com/pgEdge/spock)
   to build and install Spock on the database.
-- Add `spock` to the `shared_preload_library` parameter in the
+- Add `spock` to the `shared_preload_libraries` parameter in the
   `postgresql.conf` file.
 - Restart the server to update the configuration.
 - Use the `CREATE EXTENSION spock` command to create the Spock extension.
@@ -88,7 +92,7 @@ pgEdge cluster. In the following example, the `psql` command connects to the
 new node:
 
 ```bash
-psql -h 127.0.0.1 -p 5432 -d inventory -U pgedge
+psql -h 127.0.0.1 -p 5435 -d inventory -U pgedge
 ```
 
 Load the Zodan procedures with the following command:
@@ -145,7 +149,7 @@ commands:
 
 ```sql
 -- Check source node version
-SELECT extversion 
+SELECT version
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT extversion FROM pg_extension WHERE extname = ''spock'''
@@ -153,7 +157,7 @@ FROM dblink(
 -- Expected: 5.0.4
 
 -- Check new node version
-SELECT extversion 
+SELECT version
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT extversion FROM pg_extension WHERE extname = ''spock'''
@@ -1328,8 +1332,8 @@ encountering issues with replication status:
 -- Check subscription status
 SELECT * FROM spock.sub_show_status();
 
--- Check worker processes
-SELECT * FROM spock.sub_show_table(subscription_name);
+-- Check table sync status
+SELECT * FROM spock.sub_show_table('sub_n2_n4', 'public.test_replication');
 
 -- Check logs
 SELECT * FROM pg_stat_replication;

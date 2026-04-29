@@ -12,9 +12,9 @@ the publisher.
 | [spock.sub_disable](functions/spock_sub_disable.md) | Disable a subscription and disconnect it from the provider.
 | [spock.sub_enable](functions/spock_sub_enable.md) | Enables a disabled subscription.
 | [spock.sub_alter_interface](functions/spock_sub_alter_interface.md) | Switch the subscription to use a different interface to connect to the provider node.
-| [spock.sub_sync](functions/spock_sub_sync.md) | Synchronize all unsynchronized tables in a single operation.
+| [spock.sub_alter_sync](functions/spock_sub_alter_sync.md) | Synchronize all unsynchronized tables in a single operation.
 | [spock.sub_resync_table](functions/spock_sub_resync_table.md) | Resynchronize a single table.
-| [spock.sub_wait_for_sync](functions/spock_sub_wait_for_sync.md) | Wait for a subscription to finish synchronization after a `spock.sub_create` or `spock.sub_sync`.
+| [spock.sub_wait_for_sync](functions/spock_sub_wait_for_sync.md) | Wait for a subscription to finish synchronization after a `spock.sub_create` or `spock.sub_alter_sync`.
 | [spock.sub_wait_table_sync](functions/spock_table_wait_for_sync.md) | Same as `spock.sub_wait_for_sync`, but waits only for the subscription's initial sync.
 | [spock.sub_show_status](functions/spock_sub_show_status.md) | Shows status and basic information about subscription.
 | [spock.sub_show_table](functions/spock_sub_show_table.md) | Shows synchronization status of a table.
@@ -193,15 +193,15 @@ Parameters:
 - `interface_name` is the name of an existing interface of the current
   provider node.
 
-### spock.sub_sync
+### spock.sub_alter_sync
 
-Use `spock.sub_sync` to synchronize all unsynchronized tables in all sets in a
+Use `spock.sub_alter_sync` to synchronize all unsynchronized tables in all sets in a
 single operation.
 
-`spock.sub_sync(subscription_name name, truncate bool)`
+`spock.sub_alter_sync(subscription_name name, truncate boolean DEFAULT false)`
 
 Tables are copied and synchronized one by one. The command does not wait for
-completion before returning to the caller. Use `spock.wait_for_sub_sync` to
+completion before returning to the caller. Use `spock.sub_wait_for_sync` to
 wait for completion.
 
 Parameters:
@@ -232,7 +232,7 @@ Parameters:
 ### spock.sub_wait_for_sync
 
 Use `spock.sub_wait_for_sync` to wait for a subscription to finish
-synchronization after a `spock.sub_create` or `spock.sub_sync`.
+synchronization after a `spock.sub_create` or `spock.sub_alter_sync`.
 
 `spock.sub_wait_for_sync(subscription_name name)`
 

@@ -6,7 +6,8 @@ in all sets in a single operation.
 ## Synopsis
 
 ```sql
-spock.sub_alter_sync(subscription_name name, truncate bool)
+spock.sub_alter_sync(subscription_name name, truncate boolean DEFAULT false)
+RETURNS boolean
 ```
 
 ## Description

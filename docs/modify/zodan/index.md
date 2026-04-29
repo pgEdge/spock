@@ -46,7 +46,7 @@ node addition:
 - Zodan stores sync LSNs and uses them later to ensure subscriptions
   start from the correct point even if hours pass between steps.
 
-- Zodan automatically detects existing schemas on n4 and populates the
+- Zodan automatically detects existing schemas on the new node and populates the
   `skip_schema` parameter, preventing conflicts during structure sync.
 
 - Zodan verifies all nodes run the same Spock version before starting.
@@ -54,8 +54,8 @@ node addition:
 - Zodan includes the `verify_subscription_replicating()` function after
   enabling subscriptions to ensure they reach replicating status.
 
-- Zodan handles 2-node scenarios differently. No disabled subscriptions
-  are needed when adding to a single-node cluster.
+- When adding to a single-node cluster, Zodan handles the process
+  differently — no disabled subscriptions are needed.
 
 - Zodan shows final status of all nodes and subscriptions across the
   entire cluster, not just the new node.

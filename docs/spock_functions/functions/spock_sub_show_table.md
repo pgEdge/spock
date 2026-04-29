@@ -6,7 +6,8 @@ table.
 ## Synopsis
 
 ```sql
-spock.sub_show_table(subscription_name name, relation regclass)
+spock.sub_show_table(subscription_name name, relation regclass,
+                     OUT nspname text, OUT relname text, OUT status text)
 ```
 
 ## Description

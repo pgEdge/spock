@@ -24,7 +24,7 @@ The function accepts the following arguments:
 ## Example
 
 In the following example, the `spock.sub_remove_repset()` function removes a
-replication set named `test` from a subscription named `sub_n2n1`:
+replication set named `test` from a subscription named `sub_n1_n2`:
 
 ```sql
 select spock.sub_remove_repset('sub_n1_n2', 'test');

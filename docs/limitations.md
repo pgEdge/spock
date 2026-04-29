@@ -63,7 +63,7 @@ leading to duplicate rows on subscriber nodes.
 
 On the downstream end, spock may also emit the error:
 
-```
+```sql
 ERROR: spock doesn't support index rechecks needed for deferrable indexes
 DETAIL: relation "public"."test_relation" has deferrable indexes: "index1",
 "index2"
@@ -181,7 +181,7 @@ Columns configured for Delta-Apply conflict resolution must have a `NOT NULL`
 constraint. If a NULL value is encountered during delta application, the apply
 worker will error with:
 
-```
+```text
 ERROR: delta apply column can't operate NULL values
 ```
 
@@ -273,20 +273,6 @@ For best results, enable automatic DDL replication only when the schema
 matches exactly on all nodes. This means either all databases have no
 objects, or all databases have exactly the same objects with all tables in
 the replication sets.
-
-## Batch Insert Mode
-
-Batch insert mode has specific requirements and limitations.
-
-### Batch Insert Activation Requirements
-
-Batch insert mode requires the following conditions:
-
-- The `spock.batch_inserts` parameter must be enabled.
-- The `spock.conflict_resolution` parameter must be set to `error`.
-- Tables must have no `INSTEAD OF INSERT` or `BEFORE INSERT` triggers.
-- Batch mode activates automatically after 5 or more inserts in a single
-  transaction.
 
 ## Spock Schema
 

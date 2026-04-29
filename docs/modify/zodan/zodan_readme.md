@@ -78,7 +78,7 @@ the `zodan.py` script performs a health check on the cluster:
 The following options are available:
 
 - `--src-node-name` - Name of an existing node in the cluster.
-- `--src-dsn` - DSN of the source node (e.g., `"host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge"`).
+- `--src-dsn` - DSN of the source node (e.g., `"host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=<PASSWORD>"`).
 - `--new-node-name` - Name of the new node to add.
 - `--new-node-dsn` - DSN of the new node.
 - `--new-node-location` - Location of the new node (default: "NY").
@@ -105,7 +105,7 @@ a node:
 The command supports the following options:
 
 - `--src-node-name` - Name of an existing node in the cluster.
-- `--src-dsn` - DSN of the source node (e.g., `"host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge"`).
+- `--src-dsn` - DSN of the source node (e.g., `"host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=<PASSWORD>"`).
 - `--new-node-name` - Name of the new node to add.
 - `--new-node-dsn` - DSN of the new node.
 - `--new-node-location` - Location of the new node (default: "NY").
@@ -156,9 +156,9 @@ In the following example, the command adds node `n4` to the cluster:
 ```sql
 CALL spock.add_node(
   'n1',
-  'host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=pgedge',
+  'host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=<PASSWORD>',
   'n4',
-  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=pgedge'
+  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=<PASSWORD>'
 );
 ```
 
@@ -207,11 +207,13 @@ ideal for environments where you may not have access to a shell or Python.
 
 Within the workflow, SQL commands orchestrate the following operations:
 
-- `remove_node` - Main procedure to orchestrate the full workflow.
-- `sub_drop` - Manages removing subscriptions. Also removes the
-  replication slot if there are no remaining subscriptions.
-- `repset_drop` - Removes published repsets on the node being removed.
-- `node_drop` - Removes the node from the cluster.
+- `spock.remove_node` - Main procedure to orchestrate the full workflow.
+- `spock.remove_node_subscriptions` - Manages removing subscriptions. Also
+  removes the replication slot if there are no remaining subscriptions.
+- `spock.remove_node_replication_sets` - Removes published repsets on the
+  node being removed.
+- `spock.remove_node_from_cluster_registry` - Removes the node from the
+  cluster.
 
 The workflow is located in the 
 [samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
@@ -219,14 +221,16 @@ directory of the [Spock GitHub](https://github.com/pgEdge/spock)
 repository.
 
 To use the workflow, call a command from your Postgres session. In the
-following example, the `spock.remove_node` procedure removes a node
-from the cluster:
+following example, the Z0DAN `spock.remove_node` procedure removes a node
+from the cluster. Note that `spock.remove_node` is a Z0DAN utility
+procedure provided by `zodremove.sql`; it is not a built-in function of
+the Spock extension.
 
 ```sql
 CALL spock.remove_node(
   'target_node_name',
   'target_dsn',
-  'verbose_mode'            -- optional
+  true                      -- verbose_mode, optional boolean
 );
 ```
 
@@ -235,6 +239,6 @@ In the following example, the command removes node `n4` from the cluster:
 ```sql
 CALL spock.remove_node(
   'n4',
-  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=pgedge'
+  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=<PASSWORD>'
 );
 ```

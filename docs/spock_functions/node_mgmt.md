@@ -18,14 +18,13 @@ To create a node with Spock, connect to the server with psql and use the
 `spock.node_create` command:
 
 ```sql
-SELECT spock.node_create(node_name, dsn, location, country, info)
+SELECT spock.node_create(node_name, dsn)
 ```
 
 Parameters include:
 
 - a name for the node.
 - the dsn of the server on which the node resides.
-- connection information for your database.
 
 !!! note
     The DSN is similar to a connection string to the node you’re creating.
@@ -39,7 +38,7 @@ and have a default of `null`.
 For example, the following command:
 
 ```sql
-SELECT spock.node_create(n1, ‘host=178.12.15.12 user=carol dbname=accounting’)
+SELECT spock.node_create('n1', 'host=178.12.15.12 user=carol dbname=accounting');
 ```
 
 Creates a node named `n1` that connects to the `accounting` database on
@@ -63,7 +62,7 @@ Parameters include:
 For example, the following command:
 
 ```sql
-SELECT spock.node_drop(n1, true)
+SELECT spock.node_drop('n1', true);
 ```
 
 Drops a node named `n1`. If the node does not exist, an error message will
@@ -77,7 +76,7 @@ You can add and remove nodes dynamically with the following SQL functions.
 
 Use `spock.node_create` to create a replication node.
 
-`spock.node_create(node_name name, dsn text)`
+`spock.node_create(node_name name, dsn text, location text DEFAULT NULL, country text DEFAULT NULL, info jsonb DEFAULT NULL)`
 
 Parameters:
 
@@ -85,6 +84,9 @@ Parameters:
   database.
 - `dsn` is the connection string to the node. For nodes that are supposed to
   be providers, this should be reachable from the subscription nodes.
+- `location` (optional) is a text label for the node's physical location.
+- `country` (optional) is a text label for the node's country.
+- `info` (optional) is a JSON object for any additional node metadata.
 
 ### spock.node_drop
 
@@ -101,12 +103,12 @@ Parameters:
 
 ### spock.node_add_interface
 
-Use `spock.node_add_interface` to add an additional interface to a node.
+Use `spock.node_add_interface` to add an interface to a node.
 
 `spock.node_add_interface(node_name name, interface_name name, dsn text)`
 
 When a node is created, the interface for it is also created using the `dsn`
-specified in the `create_node` command, and with the same name as the node.
+specified in the `spock.node_create` command, and with the same name as the node.
 This interface allows adding alternative interfaces with different connection
 strings to an existing node.
 
@@ -138,4 +140,17 @@ current node, including its identifier, name, database information, and any
 optional descriptive fields that were set during node creation.
 
 This is a read-only query function that does not modify data.
+
+Returns one row with the following columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `node_id` | `oid` | The object identifier of the local node. |
+| `node_name` | `text` | The name of the local node. |
+| `sysid` | `text` | The PostgreSQL system identifier for this instance. |
+| `dbname` | `text` | The name of the current database. |
+| `replication_sets` | `text` | Comma-separated list of replication sets associated with this node. |
+| `location` | `text` | Optional location label; `NULL` if not set during node creation. |
+| `country` | `text` | Optional country label; `NULL` if not set during node creation. |
+| `info` | `jsonb` | Optional JSON metadata; `NULL` if not set during node creation. |
 

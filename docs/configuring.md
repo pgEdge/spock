@@ -32,8 +32,12 @@ to allow logical replication connections from localhost and between nodes.
 Logical replication connections are treated by `pg_hba.conf` as regular
 connections to the provider database.
 
-After modifying the pg_hba.conf file on each node, restart the server to
-apply the changes.
+After modifying the `pg_hba.conf` file on each node, reload the server
+configuration to apply the changes (no restart required):
+
+```sql
+SELECT pg_reload_conf();
+```
 
 
 ## Advanced Configuration Options for Spock
@@ -52,12 +56,6 @@ functions adhere to the same rule previously described for
 `include_ddl_repset`. If a table possesses a defined primary key, it will be
 added into the `default` replication set; alternatively, they will be added
 to the `default_insert_only` replication set.
-
-### `spock.batch_inserts`
-
-`spock.batch_inserts` tells Spock to use batch insert mechanism if
-possible. The batch mechanism uses Postgres internal batch insert mode which
-is also used by `COPY` command.
 
 ### `spock.channel_counters`
 
@@ -79,8 +77,9 @@ table (rather than primary keys or replication identity).
 If this GUC is `enabled`, Spock will continue to check unique constraint
 indexes, after checking the primary key or replica identity index. Only one
 conflict will be resolved, using Last-Write-Wins logic. This includes the
-primary key or replica identity index. If a second conflict occurs, an
-exception is recorded in the `spock.exception_log` table.
+primary key or replica identity index. If a second conflict occurs, the outcome is recorded in the
+`spock.resolutions` table if `spock.save_resolutions` is enabled; otherwise
+it is not persisted.
 
 Partial unique constraints are supported, but nullable unique constraints
 are not. Deferrable constraints are not supported, are filtered out and are
@@ -100,8 +99,8 @@ inadvertently create orphaned foreign key records.
 `spock.conflict_resolution` sets the resolution method for any detected
 conflicts between local data and incoming changes. Possible values include:
 
-- `error` - the replication will stop on error if conflict is detected and
-  manual action is needed for resolving.
+- `error` - the replication will stop on error if a conflict is detected and
+  manual action is required to resolve the conflict.
 - `apply_remote` - always apply the change that's conflicting with local
   data.
 - `keep_local` - keep the local version of the data and ignore the
@@ -192,14 +191,33 @@ keepalive options, etc.
 the upstream server disappears unexpectedly. To disable them add
 `keepalives = 0` to `spock.extra_connection_options`.
 
-#### `spock.feedback_frequency`
+### `wal_sender_timeout`
 
-Controls how many WAL messages the apply worker processes before sending
-an LSN feedback packet to the provider. Lower values increase feedback
-overhead due to synchronous socket flushes; higher values reduce overhead
-during bulk catch-up. There is a time-based guard (wal_sender_timeout
-divided by 2) that ensures connection liveness regardless of this setting.
-The default is 200.
+For Spock replication, set `wal_sender_timeout` to a conservative value such
+as `5min` (300000ms) on each node in `postgresql.conf`:
+
+```
+wal_sender_timeout = '5min'
+```
+
+The default PostgreSQL value of `60s` can cause spurious disconnects when
+the subscriber is busy applying a large transaction and cannot send feedback
+in time. A higher value gives the apply worker enough headroom while still
+detecting truly dead connections. Liveness detection is primarily handled by
+TCP keepalives, and `spock.apply_idle_timeout` provides an additional
+subscriber-side safety net.
+
+### `spock.apply_idle_timeout`
+
+Maximum idle time (in seconds) before the apply worker reconnects to the
+provider. This acts as a safety net for detecting a hung walsender that keeps
+the TCP connection alive but stops sending data. The timer resets on any
+received message. Set to `0` to disable and rely solely on TCP keepalive for
+liveness detection. Default: `300` (5 minutes).
+
+```
+spock.apply_idle_timeout = 300
+```
 
 ### Logical Slot Failover (HA Standby)
 
@@ -325,7 +343,18 @@ remove it from replication.
 origin should be logged to the PostgreSQL log. Rows may be being updated
 locally by regular SQL operations, or by replication from apply workers.
 Note that rows that are changed locally (not from replication) have the
-origin value of 0.
+origin value of `0`. This is distinct from an unavailable or unknown origin:
+a `NULL` value in `spock.resolutions.local_origin`, or `unknown` in
+PostgreSQL logs, indicates that the origin metadata could not be determined
+— it does not mean the change was local. For example:
+
+```sql
+-- Rows resolved from a locally-originated conflict (origin = 0)
+SELECT * FROM spock.resolutions WHERE local_origin = 0;
+
+-- Rows where origin metadata was unavailable at resolution time
+SELECT * FROM spock.resolutions WHERE local_origin IS NULL;
+```
 
 The default of `none` is recommended because otherwise the amount of entries
 may become numerous. The other options allow for monitoring when updates
@@ -345,6 +374,19 @@ The following configuration values are possible:
 `spock.save_resolutions` is a boolean value (the default is `false`) that
 logs all conflict resolutions to the `spock.resolutions` table. This option
 can only be set when the postmaster starts.
+
+### `spock.resolutions_retention_days`
+
+`spock.resolutions_retention_days` controls how long rows are kept in the
+`spock.resolutions` table before the apply worker automatically deletes them.
+The default is `100` days. Set to `0` to disable automatic cleanup entirely,
+in which case rows accumulate indefinitely until removed manually.
+
+This setting takes effect on `pg_reload_conf()` (no restart required).
+
+```ini
+spock.resolutions_retention_days = 100
+```
 
 ### `spock.stats_max_entries`
 

@@ -232,8 +232,12 @@ host    replication  all          <node_2_IP_address>/32    trust
     not recommended for production systems. In production, use
     appropriate authentication methods like `scram-sha-256` or `md5`.
 
-After modifying `pg_hba.conf`, restart PostgreSQL again to apply the
-changes.
+After modifying `pg_hba.conf`, reload the server configuration to apply the
+changes (no restart required):
+
+```sql
+SELECT pg_reload_conf();
+```
 
 ## Create the Spock Extension
 
@@ -433,8 +437,8 @@ Perform a simple replication test using the following steps.
    ```
    postgres=# SELECT * FROM test;
    -[ RECORD 1 ]------
-   id  | 1
-   val | Hello from n1
+   id      | 1
+   message | Hello from n1
    ```
 
 3. On n2, insert a new row with the following command:
@@ -454,11 +458,11 @@ Perform a simple replication test using the following steps.
    ```
    postgres=# SELECT * FROM test;
    -[ RECORD 1 ]------
-   id  | 1
-   val | Hello from n1
+   id      | 1
+   message | Hello from n1
    -[ RECORD 2 ]------
-   id  | 2
-   val | Hello from n2
+   id      | 2
+   message | Hello from n2
    ```
 
 You should see both messages on both nodes, confirming bidirectional

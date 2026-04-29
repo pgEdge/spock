@@ -4,7 +4,11 @@
 
 ### SYNOPSIS
 
-`spock.sub_alter_skiplsn (subscription_name name, lsn pg_lsn)`
+`spock.sub_alter_skiplsn (subscription_name name, lsn pg_lsn) RETURNS boolean`
+
+### RETURNS
+
+`true` if the skip LSN was successfully set, `false` otherwise.
 
 ### DESCRIPTION
 
