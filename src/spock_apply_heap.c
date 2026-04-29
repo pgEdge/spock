@@ -28,7 +28,10 @@
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
 
+#include "access/tableam.h"
+#include "commands/trigger.h"
 #include "executor/executor.h"
+#include "executor/nodeModifyTable.h"
 
 #include "libpq/pqformat.h"
 
@@ -705,7 +708,8 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	 */
 	if (apply)
 	{
-		UserContext ucxt;
+		UserContext	ucxt;
+		ResourceOwner save_resowner = NULL;
 
 		/* Make sure that any user-supplied code runs as the table owner. */
 		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
@@ -713,9 +717,22 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 		/*
 		 * If this is a forced delta-apply we execute it in a subtransaction
 		 * and record the local_ts & local_origin for CommitTsData override.
+		 *
+		 * Inside the subtransaction we redirect CurrentResourceOwner to
+		 * TopTransactionResourceOwner for the executor call.  Without this,
+		 * TupleDesc refs acquired by the executor are registered under the
+		 * SubTxn and force-released at ReleaseCurrentSubTransaction(),
+		 * causing "tupdesc reference not owned by TopTransaction" during
+		 * ExecResetTupleTable.  Restored before ReleaseCurrentSubTransaction
+		 * so the assertion holds, and inside PG_CATCH before re-throw so any
+		 * outer error handler sees a sane state.
 		 */
 		if (is_delta_apply)
+		{
 			BeginInternalSubTransaction("SpockDeltaApply");
+			save_resowner = CurrentResourceOwner;
+			CurrentResourceOwner = TopTransactionResourceOwner;
+		}
 
 		EvalPlanQualSetSlot(epqstate, remoteslot);
 
@@ -726,6 +743,9 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 		}
 		PG_CATCH();
 		{
+			if (is_delta_apply)
+				CurrentResourceOwner = save_resowner;
+
 			/*
 			 * If the UPDATE's new values violated a unique constraint,
 			 * report it as an update_exists conflict before re-throwing.
@@ -763,6 +783,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 
 		if (is_delta_apply)
 		{
+			CurrentResourceOwner = save_resowner;
 			SubTransactionIdSetCommitTsData(GetCurrentTransactionId(),
 											local_ts, local_origin);
 			ReleaseCurrentSubTransaction();
