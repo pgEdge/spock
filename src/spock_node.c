@@ -1033,7 +1033,17 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 	if (isnull)
 		sub->apply_delay = NULL;
 	else
-		sub->apply_delay = DatumGetIntervalP(d);
+	{
+		/*
+		 * DatumGetIntervalP returns a pointer into the heap tuple (or a
+		 * detoasted copy in the current memory context).  Both go away when
+		 * the calling transaction is committed, so deep-copy into the same
+		 * context that owns this SpockSubscription.
+		 */
+		Interval   *src = DatumGetIntervalP(d);
+		sub->apply_delay = (Interval *) palloc(sizeof(Interval));
+		memcpy(sub->apply_delay, src, sizeof(Interval));
+	}
 
 	/* Get force_text_transfer. */
 	d = heap_getattr(tuple, Anum_sub_force_text_transfer, desc, &isnull);
