@@ -43,6 +43,7 @@ test: 018_forward_origins
 test: 018_failover_slots
 test: 019_stale_fd_epoll_after_conn_death
 test: 022_rmgr_progress_post_checkpoint_crash
+test: 024_node_id_collision
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
