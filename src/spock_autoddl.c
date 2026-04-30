@@ -40,6 +40,7 @@ static void remove_table_from_repsets(Oid nodeid, Oid reloid,
 									  bool only_for_update);
 static bool autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
 								NodeTag toplevel_stmt);
+static void add_one_table_to_repset(SpockLocalNode *node, Oid reloid);
 
 /*
  * spock_autoddl_process
@@ -122,7 +123,6 @@ void
 add_ddl_to_repset(Node *parsetree)
 {
 	Relation		targetrel;
-	SpockRepSet	   *repset;
 	SpockLocalNode *node;
 	Oid				reloid = InvalidOid;
 	RangeVar	   *relation = NULL;
@@ -241,65 +241,169 @@ add_ddl_to_repset(Node *parsetree)
 	foreach(lc, reloids)
 	{
 		reloid = lfirst_oid(lc);
-		targetrel = RelationIdGetRelation(reloid);
+		add_one_table_to_repset(node, reloid);
+	}
+}
 
-		/* UNLOGGED and TEMP relations cannot be part of replication set. */
-		if (!RelationNeedsWAL(targetrel))
-		{
-			/* remove table from the repsets. */
-			remove_table_from_repsets(node->node->id, reloid, false);
+/*
+ * Add a single table to the appropriate auto-managed repset.
+ *
+ * Mirrors the per-relation logic that add_ddl_to_repset() used to have inline:
+ *
+ *   - UNLOGGED / TEMP tables cannot be replicated, so any existing membership
+ *     is stripped.
+ *   - A table with a primary key or REPLICA IDENTITY is parked in 'default'
+ *     (full replication).
+ *   - Otherwise it lands in 'default_insert_only'.
+ *   - Tables that lack a usable replication identity but whose target repset
+ *     would replicate UPDATE/DELETE are skipped (no safe way to identify
+ *     rows downstream).
+ *
+ * Used by both the DDL hook (CREATE / ALTER TABLE) and by node_create() when
+ * we retroactively auto-add tables that were created before the local node
+ * existed.
+ */
+static void
+add_one_table_to_repset(SpockLocalNode *node, Oid reloid)
+{
+	Relation		targetrel;
+	SpockRepSet	   *repset;
 
-			table_close(targetrel, NoLock);
-			return;
-		}
+	targetrel = RelationIdGetRelation(reloid);
 
-		if (targetrel->rd_indexvalid == 0)
-			RelationGetIndexList(targetrel);
+	/* UNLOGGED and TEMP relations cannot be part of replication set. */
+	if (!RelationNeedsWAL(targetrel))
+	{
+		remove_table_from_repsets(node->node->id, reloid, false);
+		table_close(targetrel, NoLock);
+		return;
+	}
+
+	if (targetrel->rd_indexvalid == 0)
+		RelationGetIndexList(targetrel);
+
+	/*
+	 * Choose the 'default' repset if the table has PK or replica identity
+	 * defined; otherwise fall back to 'default_insert_only'.
+	 */
+	if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
+	{
+		repset = get_replication_set_by_name(node->node->id,
+											 DEFAULT_REPSET_NAME, false);
+		remove_table_from_repsets(node->node->id, reloid, false);
+	}
+	else
+	{
+		repset = get_replication_set_by_name(node->node->id,
+											 DEFAULT_INSONLY_REPSET_NAME, false);
+		remove_table_from_repsets(node->node->id, reloid, true);
+	}
+
+	if (!OidIsValid(targetrel->rd_replidindex) &&
+		(repset->replicate_update || repset->replicate_delete) &&
+		!OidIsValid(get_replication_identity(targetrel)))
+	{
+		table_close(targetrel, NoLock);
+		return;
+	}
+
+	table_close(targetrel, NoLock);
+
+	/* Add if not already present. */
+	if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
+	{
+		replication_set_add_table(repset->id, reloid, NIL, NULL);
+		elog(LOG, "table '%s' was added to '%s' replication set.",
+			 get_rel_name(reloid), repset->name);
+	}
+}
+
+/*
+ * spock_auto_add_user_tables_to_repsets
+ *
+ * Walks every user table in the current database and routes it to the
+ * appropriate auto-managed repset (default / default_insert_only) using the
+ * exact same rules as the DDL hook.
+ *
+ * Called from spock_create_node() so that tables which were created BEFORE
+ * the local node existed (and therefore silently skipped by the DDL hook)
+ * get retro-added the moment node_create runs.  Without this, cross-wire
+ * would happily propagate the schema to a peer while leaving
+ * spock.replication_set_table empty, so data would never replicate.
+ *
+ * Honors the spock.include_ddl_repset GUC: if the operator has explicitly
+ * disabled auto-managed repsets, we don't second-guess them here either.
+ */
+void
+spock_auto_add_user_tables_to_repsets(void)
+{
+	SpockLocalNode *node;
+	Relation		rel;
+	SysScanDesc		sysscan;
+	HeapTuple		tuple;
+
+	if (!spock_include_ddl_repset)
+		return;
+
+	node = get_local_node(false, true);
+	if (!node)
+		return;
+
+	rel = table_open(RelationRelationId, AccessShareLock);
+	sysscan = systable_beginscan(rel, InvalidOid, false, NULL, 0, NULL);
+
+	while (HeapTupleIsValid(tuple = systable_getnext(sysscan)))
+	{
+		Form_pg_class reltup = (Form_pg_class) GETSTRUCT(tuple);
+		Oid				reloid = reltup->oid;
+		char		   *nspname;
+		int				i;
+		bool			skip = false;
+
+		/* Only ordinary or partitioned tables, permanent storage. */
+		if (reltup->relkind != RELKIND_RELATION &&
+			reltup->relkind != RELKIND_PARTITIONED_TABLE)
+			continue;
+		if (reltup->relpersistence != RELPERSISTENCE_PERMANENT)
+			continue;
+		if (IsSystemClass(reloid, reltup))
+			continue;
 
 		/*
-		 * choose the 'default' repset, if table has PK or replica identity
-		 * defined.
+		 * Skip pg_catalog, information_schema, spock's own catalogs and
+		 * any extensions whose objects are explicitly excluded from
+		 * replication (see skip_schema[] in spock_node.c).  IsSystemClass
+		 * already drops pg_catalog and pg_toast, but information_schema
+		 * lives in its own namespace and would otherwise sneak through.
 		 */
-		if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
-		{
-			repset = get_replication_set_by_name(node->node->id, DEFAULT_REPSET_NAME, false);
-
-			/*
-			 * remove table from previous repsets, it will be added to
-			 * 'default' down below.
-			 */
-			remove_table_from_repsets(node->node->id, reloid, false);
-		}
+		nspname = get_namespace_name(reltup->relnamespace);
+		if (nspname == NULL)
+			continue;
+		if (strcmp(nspname, "information_schema") == 0 ||
+			strcmp(nspname, "pg_catalog") == 0 ||
+			strncmp(nspname, "pg_temp", 7) == 0 ||
+			strncmp(nspname, "pg_toast", 8) == 0)
+			skip = true;
 		else
 		{
-			repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
-
-			/*
-			 * no primary key defined. let's see if the table is part of any
-			 * other repset or not?
-			 */
-			remove_table_from_repsets(node->node->id, reloid, true);
+			for (i = 0; skip_schema[i] != NULL; i++)
+			{
+				if (strcmp(nspname, skip_schema[i]) == 0)
+				{
+					skip = true;
+					break;
+				}
+			}
 		}
+		pfree(nspname);
+		if (skip)
+			continue;
 
-		if (!OidIsValid(targetrel->rd_replidindex) &&
-			(repset->replicate_update || repset->replicate_delete) &&
-			!OidIsValid(get_replication_identity(targetrel)))
-		{
-			table_close(targetrel, NoLock);
-			return;
-		}
-
-		table_close(targetrel, NoLock);
-
-		/* Add if not already present. */
-		if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
-		{
-			replication_set_add_table(repset->id, reloid, NIL, NULL);
-
-			elog(LOG, "table '%s' was added to '%s' replication set.",
-				 get_rel_name(reloid), repset->name);
-		}
+		add_one_table_to_repset(node, reloid);
 	}
+
+	systable_endscan(sysscan);
+	table_close(rel, AccessShareLock);
 }
 
 /*

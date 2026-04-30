@@ -133,8 +133,8 @@ SCHEDULE_FILE := $(srcdir)/tests/tap/schedule
 TAPS_REGRESS := $(shell awk '/^[[:space:]]*test:/ {print "t/" $$2 ".pl"}' $(SCHEDULE_FILE))
 
 define prove_check
-rm -rf $(TESTLOGDIR)
-mkdir -p $(TESTLOGDIR)
+rm -rf "$(TESTLOGDIR)"
+mkdir -p "$(TESTLOGDIR)"
 cd $(srcdir)/tests/tap && \
     TESTDIR='$(CURDIR)' \
     TESTLOGDIR='$(TESTLOGDIR)' \

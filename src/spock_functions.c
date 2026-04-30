@@ -97,6 +97,13 @@
 #include "spock_queue.h"
 #include "spock_relcache.h"
 #include "spock_repset.h"
+
+/*
+ * Forward declared from spock_autoddl.h.  Including the full header drags in
+ * tcop/utility.h which collides with the spock_compat.h CreateCommandTag
+ * redefinition; spock_create_node() only needs this one entry point.
+ */
+extern void spock_auto_add_user_tables_to_repsets(void);
 #include "spock_rpc.h"
 #include "spock_sync.h"
 #include "spock_worker.h"
@@ -295,6 +302,14 @@ spock_create_node(PG_FUNCTION_ARGS)
 	create_replication_set(&repset);
 
 	create_local_node(node.id, nodeif.id);
+
+	/*
+	 * Tables that already exist when node_create() is invoked were skipped
+	 * by the DDL hook (no local node existed at the time).  Retroactively
+	 * route them to the appropriate auto-managed repset so cross-wire
+	 * actually replicates their data.  Honors spock.include_ddl_repset.
+	 */
+	spock_auto_add_user_tables_to_repsets();
 
 	PG_RETURN_OID(node.id);
 }

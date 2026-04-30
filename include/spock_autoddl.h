@@ -28,5 +28,6 @@ void		spock_autoddl_process(PlannedStmt *pstmt,
 								  ProcessUtilityContext context,
 								  NodeTag toplevel_stmt);
 void		add_ddl_to_repset(Node *parsetree);
+void		spock_auto_add_user_tables_to_repsets(void);
 
 #endif							/* SPOCK_AUTODDL_H */
