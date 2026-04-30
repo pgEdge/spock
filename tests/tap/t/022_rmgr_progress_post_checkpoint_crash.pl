@@ -19,10 +19,12 @@
 #   - The apply worker's reconcile_progress_with_origin() at startup
 #     detects file_lsn < origin_lsn, overwrites remote_commit_lsn with
 #     origin_lsn, and clears the (now-stale) timestamp fields to NULL.
+#   - recover_progress_timestamps_from_commit_ts() then scans pg_commit_ts
+#     backward to repopulate remote_commit_ts.
 #
 # This test reproduces that exact scenario and asserts:
 #   - remote_commit_lsn matches pre-crash value (recovered via origin).
-#   - remote_commit_ts is NULL post-crash (reconcile cleared the stale ts).
+#   - remote_commit_ts is NON-NULL post-crash (recovered via the scan).
 #
 # Provider is kept UP throughout so the apply worker can actually restart
 # and run reconcile after the subscriber crash. (If the provider were down
@@ -188,13 +190,16 @@ my $post_commit_lsn = scalar_query(2, q{
 is($post_commit_lsn, $pre_snap,
    "remote_commit_lsn matches pre-crash (recovered via replication origin)");
 
+my $post_commit_ts_not_null = scalar_query(2, q{
+    SELECT remote_commit_ts IS NOT NULL FROM spock.progress LIMIT 1
+});
+is($post_commit_ts_not_null, 't',
+   "remote_commit_ts is NOT NULL post-crash (recovered via pg_commit_ts scan)");
+
 my $post_commit_ts = scalar_query(2, q{
     SELECT remote_commit_ts::text FROM spock.progress LIMIT 1
 });
-is($post_commit_ts, '',
-   "remote_commit_ts is NULL post-crash (reconcile cleared stale ts)");
-
-diag("post-crash: remote_commit_lsn=$post_commit_lsn remote_commit_ts='$post_commit_ts' (expected NULL)");
+diag("post-crash: remote_commit_lsn=$post_commit_lsn remote_commit_ts='$post_commit_ts'");
 
 # =============================================================================
 # Cleanup

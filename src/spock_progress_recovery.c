@@ -18,6 +18,7 @@
 
 #include "miscadmin.h"
 
+#include "access/commit_ts.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "datatype/timestamp.h"
@@ -26,25 +27,80 @@
 #include "storage/lwlock.h"
 #include "utils/hsearch.h"
 #include "utils/rel.h"
+#include "utils/timestamp.h"
 
 #include "spock_group.h"
 #include "spock_node.h"
 #include "spock_progress_recovery.h"
 #include "spock_worker.h"
 
-static void reconcile_progress_with_origin(XLogRecPtr origin_lsn);
+/*
+ * Constants governing the post-crash scan of pg_commit_ts that recovers
+ * remote_commit_ts per origin. Plain #defines for now; convert to GUCs only
+ * if a deployment ever needs to tune them.
+ */
+#define SPOCK_TS_RECOVERY_MIN_SEEN_PER_ORIGIN	1000
+#define SPOCK_TS_RECOVERY_SCAN_LIMIT			1000000
+#define SPOCK_TS_RECOVERY_BATCH_SIZE			1000
+
+typedef enum ReconcileResult
+{
+	RECONCILE_FILE_IN_SYNC,		/* file_lsn == origin_lsn; recovery scan can skip */
+	RECONCILE_FILE_STALE,		/* file_lsn <  origin_lsn; recovery scan needed */
+	RECONCILE_FILE_ANOMALY,		/* file_lsn >  origin_lsn; recovery scan needed */
+	RECONCILE_FILE_ABSENT		/* no entry was loaded; recovery scan needed */
+} ReconcileResult;
+
+static ReconcileResult reconcile_progress_with_origin(XLogRecPtr origin_lsn);
+static void recover_progress_timestamps_from_commit_ts(SpockGroupEntry *entry,
+													   RepOriginId target_origin);
 
 /*
  * spock_init_progress_state
  *
  * Public entry point: reconcile the apply worker's shmem entry against the
- * replication origin. Called once between replorigin_session_setup() and
- * spock_start_replication().
+ * replication origin, and if reconcile detected staleness, scan pg_commit_ts
+ * to recover the timestamp fields. Called once between
+ * replorigin_session_setup() and spock_start_replication().
  */
 void
 spock_init_progress_state(XLogRecPtr origin_lsn)
 {
-	reconcile_progress_with_origin(origin_lsn);
+	ReconcileResult		result;
+	SpockGroupKey		key;
+	SpockGroupEntry	   *entry;
+	bool				found;
+
+	result = reconcile_progress_with_origin(origin_lsn);
+
+	if (result == RECONCILE_FILE_IN_SYNC)
+	{
+		elog(LOG, "SPOCK %s: ts recovery: file in sync with origin, skipping scan",
+			 MySubscription->name);
+		return;
+	}
+
+	key.dbid = MyDatabaseId;
+	key.node_id = MySubscription->target->id;
+	key.remote_node_id = MySubscription->origin->id;
+
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+	entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &key,
+											HASH_FIND, &found);
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+
+	if (entry != NULL)
+	{
+		/*
+		 * The apply worker overwrites replorigin_session_origin per-message
+		 * with the publisher's spock node id (handle_origin) and that value is
+		 * what pg_commit_ts records for applied xacts on the subscriber --
+		 * NOT the local subscription's roident. Filter the scan on
+		 * MySubscription->origin->id so we match the recorded entries.
+		 */
+		recover_progress_timestamps_from_commit_ts(entry,
+												   (RepOriginId) MySubscription->origin->id);
+	}
 }
 
 /*
@@ -60,18 +116,19 @@ spock_init_progress_state(XLogRecPtr origin_lsn)
  * remote_insert_lsn and received_lsn are left alone here; the forced
  * keepalive sent right after spock_start_replication will overwrite them.
  */
-static void
+static ReconcileResult
 reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 {
 	SpockGroupKey	key;
 	SpockGroupEntry *entry;
 	bool			found;
+	ReconcileResult	result;
 
 	if (!SpockGroupHash || !SpockCtx)
 	{
 		elog(WARNING, "SPOCK %s: SpockGroupHash is not initialized; reconcile skipped",
 			 MySubscription->name);
-		return;
+		return RECONCILE_FILE_ABSENT;
 	}
 
 	key.dbid = MyDatabaseId;
@@ -88,7 +145,7 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 		elog(WARNING, "SpockGroupHash is full, cannot reconcile progress for "
 			 "(dbid=%u, node_id=%u, remote_node_id=%u)",
 			 key.dbid, key.node_id, key.remote_node_id);
-		return;
+		return RECONCILE_FILE_ABSENT;
 	}
 
 	if (!found)
@@ -116,12 +173,14 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 		ConditionVariableInit(&entry->prev_processed_cv);
 		elog(LOG, "SPOCK %s: reconcile: new entry seeded at origin LSN %X/%X",
 			 MySubscription->name, LSN_FORMAT_ARGS(origin_lsn));
+		result = RECONCILE_FILE_ABSENT;
 	}
 	else if (entry->progress.remote_commit_lsn == origin_lsn)
 	{
 		/* File and origin agree; keep timestamps. */
 		elog(DEBUG1, "SPOCK %s: reconcile: file LSN matches origin (%X/%X)",
 			 MySubscription->name, LSN_FORMAT_ARGS(origin_lsn));
+		result = RECONCILE_FILE_IN_SYNC;
 	}
 	else if (entry->progress.remote_commit_lsn < origin_lsn)
 	{
@@ -146,6 +205,7 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 			entry->progress.remote_insert_lsn = origin_lsn;
 		if (entry->progress.received_lsn < origin_lsn)
 			entry->progress.received_lsn = origin_lsn;
+		result = RECONCILE_FILE_STALE;
 	}
 	else
 	{
@@ -163,7 +223,114 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 			entry->progress.remote_insert_lsn = origin_lsn;
 		if (entry->progress.received_lsn < origin_lsn)
 			entry->progress.received_lsn = origin_lsn;
+		result = RECONCILE_FILE_ANOMALY;
 	}
 
 	LWLockRelease(SpockCtx->apply_group_master_lock);
+	return result;
+}
+
+/*
+ * recover_progress_timestamps_from_commit_ts
+ *
+ * After reconcile detects that resource.dat is stale (or absent) for this
+ * origin, scan pg_commit_ts backward from the latest xid to recover the
+ * most-recent remote_commit_ts for this origin. Restores accurate
+ * post-crash values in the spock.progress view; will also be useful for
+ * the planned parallel-apply rework, which is expected to coordinate on
+ * prev_remote_ts.
+ *
+ * Termination: stop after observing SPOCK_TS_RECOVERY_MIN_SEEN_PER_ORIGIN
+ * commits for this origin (any older commit is guaranteed to have a smaller
+ * commit_ts under realistic concurrency widths) or after scanning
+ * SPOCK_TS_RECOVERY_SCAN_LIMIT total xids.
+ *
+ * Caller must have ensured the entry exists in SpockGroupHash (reconcile
+ * does this).
+ */
+static void
+recover_progress_timestamps_from_commit_ts(SpockGroupEntry *entry,
+										   RepOriginId target_origin)
+{
+	TransactionId	xid_high;
+	TimestampTz		running_max_ts = 0;
+	int				seen_count = 0;
+	int64			total_scanned = 0;
+
+	xid_high = ReadNextTransactionId();
+	if (TransactionIdPrecedes(xid_high, FirstNormalTransactionId + 1))
+	{
+		elog(LOG, "SPOCK %s: ts recovery: no normal transactions yet; skipping",
+			 MySubscription->name);
+		return;
+	}
+	xid_high = xid_high - 1;
+
+	while (seen_count < SPOCK_TS_RECOVERY_MIN_SEEN_PER_ORIGIN
+		   && total_scanned < SPOCK_TS_RECOVERY_SCAN_LIMIT)
+	{
+		TransactionId	xid_low;
+		TransactionId	xid;
+		int64			batch_count;
+
+		CHECK_FOR_INTERRUPTS();
+
+		/* Compute batch lower bound, clamped at FirstNormalTransactionId. */
+		if (TransactionIdPrecedes(xid_high,
+								  FirstNormalTransactionId + SPOCK_TS_RECOVERY_BATCH_SIZE))
+			xid_low = FirstNormalTransactionId;
+		else
+			xid_low = xid_high - SPOCK_TS_RECOVERY_BATCH_SIZE + 1;
+
+		batch_count = (int64) xid_high - (int64) xid_low + 1;
+
+		for (xid = xid_low; TransactionIdPrecedes(xid, xid_high + 1); xid++)
+		{
+			TimestampTz		ts;
+			RepOriginId		origin;
+
+			if (!TransactionIdGetCommitTsData(xid, &ts, &origin))
+				continue;					/* aborted, vacuumed, or no commit_ts */
+			if (origin != target_origin)
+				continue;					/* local writes / other origins */
+
+			seen_count++;
+			if (ts > running_max_ts)
+				running_max_ts = ts;
+		}
+
+		total_scanned += batch_count;
+
+		if (xid_low == FirstNormalTransactionId)
+			break;						/* wraparound floor */
+
+		xid_high = xid_low - 1;
+	}
+
+	if (running_max_ts > 0)
+	{
+		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+		if (entry->progress.remote_commit_ts < running_max_ts)
+		{
+			entry->progress.remote_commit_ts = running_max_ts;
+			entry->progress.prev_remote_ts = running_max_ts;
+			/*
+			 * Local apply time isn't recoverable post-crash. Use
+			 * remote_commit_ts as a lower bound; refreshes on the next
+			 * applied commit.
+			 */
+			entry->progress.last_updated_ts = running_max_ts;
+		}
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+
+		elog(LOG, "SPOCK %s: ts recovery: scanned %lld xids, found %d commits, "
+			 "recovered remote_commit_ts",
+			 MySubscription->name, (long long) total_scanned, seen_count);
+	}
+	else
+	{
+		elog(WARNING, "SPOCK %s: ts recovery: scanned %lld xids, no commits found "
+			 "for origin %u; remote_commit_ts remains NULL until next applied commit",
+			 MySubscription->name, (long long) total_scanned, target_origin);
+	}
 }

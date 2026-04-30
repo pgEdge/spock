@@ -4018,13 +4018,13 @@ interval_to_timeoffset(const Interval *interval)
 void
 spock_apply_main(Datum main_arg)
 {
-	int			slot = DatumGetInt32(main_arg);
-	PGconn	   *streamConn;
-	RepOriginId originid;
-	XLogRecPtr	origin_startpos;
-	MemoryContext saved_ctx;
-	char	   *repsets;
-	char	   *origins;
+	int				slot = DatumGetInt32(main_arg);
+	PGconn		   *streamConn;
+	RepOriginId		originid;
+	XLogRecPtr		origin_startpos;
+	MemoryContext	saved_ctx;
+	char		   *repsets;
+	char		   *origins;
 
 	/* Setup shmem. */
 	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
