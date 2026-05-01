@@ -1270,13 +1270,9 @@ pg_decode_shutdown(LogicalDecodingContext *ctx)
 static void
 spock_output_join_slot_group(NameData slot_name)
 {
-	SpockOutputSlotGroup *groups;
-	SpockOutputSlotGroup *free_group = NULL;
-	int			free_i = 0;
 	NameData	group_name;
 	bool		is_slot_group = false;
 	char	   *cp;
-	int			i;
 
 	/*
 	 * Ensure we are not already a member of a slot-group
@@ -1286,7 +1282,9 @@ spock_output_join_slot_group(NameData slot_name)
 			 NameStr(slot_name));
 
 	/*
-	 * Determine the group name (if possible)
+	 * Detect the slot-group naming pattern: a trailing "_<digit>" suffix.
+	 * Parallel apply is not supported in this release, so reject any slot
+	 * name that would otherwise be grouped.
 	 */
 	strlcpy(NameStr(group_name), NameStr(slot_name), NAMEDATALEN);
 	for (cp = NameStr(group_name); *cp; cp++)
@@ -1303,51 +1301,72 @@ spock_output_join_slot_group(NameData slot_name)
 	if (!is_slot_group)
 		return;
 
-	/*
-	 * Register our on_proc_exit callback if not done yet
-	 */
-	if (!slot_group_on_exit_set)
-	{
-		on_proc_exit(spock_output_plugin_on_exit, 0);
-		slot_group_on_exit_set = true;
-	}
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("parallel apply is not supported"),
+			 errdetail("Replication slot \"%s\" has a trailing \"_<digit>\" suffix, which would enable parallel apply via slot grouping (group \"%s\").",
+					   NameStr(slot_name), NameStr(group_name)),
+			 errhint("Rename the slot to remove the trailing \"_<digit>\" suffix.")));
 
+#if 0
 	/*
-	 * Find and join this group; use an empty slot if not found
+	 * Parallel apply (slot grouping) is currently disabled — see the
+	 * ereport above. The original join logic is preserved here as a
+	 * reference for future re-enabling.
 	 */
-	elog(LOG, "SPOCK join slot-group '%s' for slot '%s'",
-		 NameStr(group_name),
-		 NameStr(slot_name));
-	LWLockAcquire(SpockCtx->slot_group_master_lock, LW_EXCLUSIVE);
-	groups = SpockCtx->slot_groups;
-	for (i = 0; i < SpockCtx->slot_ngroups; i++)
 	{
-		if (free_group == NULL && groups[i].nattached == 0)
-		{
-			free_group = &groups[i];
-			free_i = i;
-		}
-		if (strcmp(NameStr(group_name), NameStr(groups[i].name)) == 0
-			&& groups[i].nattached > 0)
-		{
-			slot_group = &groups[i];
-			slot_group->nattached++;
-			elog(LOG, "using existing slot-group %d - nattached=%d", i,
-				 slot_group->nattached);
-			break;
-		}
-	}
-	if (slot_group == NULL)
-	{
-		elog(LOG, "using free slot-group %d", free_i);
-		slot_group = free_group;
-		strlcpy(NameStr(slot_group->name), NameStr(group_name), NAMEDATALEN);
-		slot_group->nattached = 1;
-		slot_group->last_lsn = InvalidXLogRecPtr;
-		slot_group->last_commit_ts = 0;
-	}
+		SpockOutputSlotGroup *groups;
+		SpockOutputSlotGroup *free_group = NULL;
+		int			free_i = 0;
+		int			i;
 
-	LWLockRelease(SpockCtx->slot_group_master_lock);
+		/*
+		 * Register our on_proc_exit callback if not done yet
+		 */
+		if (!slot_group_on_exit_set)
+		{
+			on_proc_exit(spock_output_plugin_on_exit, 0);
+			slot_group_on_exit_set = true;
+		}
+
+		/*
+		 * Find and join this group; use an empty slot if not found
+		 */
+		elog(LOG, "SPOCK join slot-group '%s' for slot '%s'",
+			 NameStr(group_name),
+			 NameStr(slot_name));
+		LWLockAcquire(SpockCtx->slot_group_master_lock, LW_EXCLUSIVE);
+		groups = SpockCtx->slot_groups;
+		for (i = 0; i < SpockCtx->slot_ngroups; i++)
+		{
+			if (free_group == NULL && groups[i].nattached == 0)
+			{
+				free_group = &groups[i];
+				free_i = i;
+			}
+			if (strcmp(NameStr(group_name), NameStr(groups[i].name)) == 0
+				&& groups[i].nattached > 0)
+			{
+				slot_group = &groups[i];
+				slot_group->nattached++;
+				elog(LOG, "using existing slot-group %d - nattached=%d", i,
+					 slot_group->nattached);
+				break;
+			}
+		}
+		if (slot_group == NULL)
+		{
+			elog(LOG, "using free slot-group %d", free_i);
+			slot_group = free_group;
+			strlcpy(NameStr(slot_group->name), NameStr(group_name), NAMEDATALEN);
+			slot_group->nattached = 1;
+			slot_group->last_lsn = InvalidXLogRecPtr;
+			slot_group->last_commit_ts = 0;
+		}
+
+		LWLockRelease(SpockCtx->slot_group_master_lock);
+	}
+#endif
 }
 
 static void
