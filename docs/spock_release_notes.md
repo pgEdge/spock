@@ -49,6 +49,12 @@ Logical Slot Failover Improvements
   guessing names and nodes, which broke whenever `cross_wire` and `add_node`
   used different naming conventions. It now performs a per-node `DROP` of
   every subscription read directly from the `spock.subscription` catalog.
+* Since 5.0.2 there was a bug with spock.subscription.sub_skip_schema having
+  the incorrect type, it should be text[]. Fixed, including in the
+  spock-5.0.6--5.0.7.sql migration script to repair.
+* Fix a rare bug where under high concurrency when using delta apply columns
+  a ResourceOwner exception may occur.
+* Have more meaningful messages appear in spock.exception_log.
 
 ### Operational Improvements
 * Documentation: filled out `snowflake.md`; revised `upgrading_spock.md`;
@@ -60,6 +66,7 @@ Logical Slot Failover Improvements
   isolate `psql` from a developer's `psqlrc`/history. New regression tests
   added for failover slots (018), exception-handling/TRANSDISCARD error
   quality (013), and the stale-fd-after-connection-death scenario (019).
+* Avoid unnecessarily waiting after sync_event()
 
 ## Spock 5.0.6
 
