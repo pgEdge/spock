@@ -210,6 +210,7 @@ spock_object_access(ObjectAccessType access,
 	if (access == OAT_DROP)
 	{
 		ObjectAccessDrop *drop_arg = (ObjectAccessDrop *) arg;
+		ObjectAddress object;
 		DropBehavior behavior;
 
 		/* No need to check for internal deletions. */

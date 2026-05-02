@@ -87,6 +87,7 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	{
 		RangeVar	   *rv = makeNode(RangeVar);
 		int				i;
+		TupleDesc		desc;
 		ResultRelInfo  *relinfo;
 
 		rv->schemaname = (char *) entry->nspname;
