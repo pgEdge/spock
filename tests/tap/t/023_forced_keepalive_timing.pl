@@ -1,14 +1,17 @@
 #!/usr/bin/perl
 # =============================================================================
 # Test: 023_forced_keepalive_timing.pl
-#       Verify that after apply-worker reconnect, remote_insert_lsn in
+#       Verify that after apply-worker reconnect, received_lsn in
 #       spock.progress is populated quickly (within a couple of seconds)
 #       even when wal_sender_timeout is set high enough that the publisher's
 #       timer-driven keepalive would not fire.
 #
 # Proves the forced 'r' status update with replyRequested=true sent
 # immediately after spock_start_replication triggers an immediate 'k'
-# reply from the publisher.
+# reply from the publisher. We assert received_lsn (not remote_insert_lsn)
+# because 'k' messages only update received_lsn; remote_insert_lsn is
+# only advanced by 'w' data messages (see UpdateWorkerStats and the 'k'
+# handler in spock_apply.c).
 # =============================================================================
 
 use strict;
@@ -67,15 +70,27 @@ ok(wait_until(10, sub { scalar_query(2, "SELECT count(*) FROM public.keepalive_t
    'row replicated');
 
 ok(wait_until(10, sub {
-    my $lsn = scalar_query(2, "SELECT remote_insert_lsn::text FROM spock.progress LIMIT 1");
+    my $lsn = scalar_query(2, "SELECT received_lsn::text FROM spock.progress LIMIT 1");
     defined $lsn && $lsn ne '' && $lsn ne '0/0'
-}), 'remote_insert_lsn populated by initial apply');
+}), 'received_lsn populated by initial apply');
 
-# Restart the subscriber cleanly. With wal_sender_timeout=10min, the
-# publisher's timer-driven 'k' message will NOT fire within our test
-# window, so any refresh of remote_insert_lsn within seconds after the
-# apply worker reconnects must be caused by our forced keepalive.
+# Stop subscriber cleanly. The supervisor's before_shmem_exit writes
+# resource.dat with the current shmem state -- which would mask a
+# broken forced keepalive on the next start (shmem reseeds from the file
+# before reconnect, so "non-zero" assertions would pass spuriously).
 system_or_bail "$pg_bin/pg_ctl", '-D', $sub_dir, '-m', 'fast', 'stop';
+
+# Remove resource.dat so shmem starts empty on next boot. After
+# reconcile_progress_with_origin runs in the ABSENT branch, the new
+# entry has received_lsn = InvalidXLogRecPtr. The only mechanism that
+# can populate it within seconds is a 'k' keepalive carrying the
+# publisher's sentPtr -- which is exactly what request_initial_status_update
+# triggers. Without forced keepalive, the timer-driven 'k' wouldn't fire
+# for wal_sender_timeout/2 = 5min, well outside the test's window.
+my $resource_dat = "$sub_dir/spock/resource.dat";
+unlink $resource_dat or diag "no resource.dat to remove (already absent)";
+ok(! -e $resource_dat, 'resource.dat absent before restart');
+
 system_or_bail "$pg_bin/pg_ctl", '-D', $sub_dir, '-o', "-p $sub_port", '-w', 'start';
 ok(wait_for_pg_ready($host, $sub_port, $pg_bin, 30), 'subscriber restarted');
 
@@ -83,18 +98,18 @@ ok(wait_for_pg_ready($host, $sub_port, $pg_bin, 30), 'subscriber restarted');
 # (apply worker reconnected and the forced keepalive was sent).
 ok(wait_for_sub_status(2, 'sub', 'replicating', 30), 'subscription replicating after restart');
 
-# Capture the start time and wait for remote_insert_lsn to become non-zero.
-# Under the forced-keepalive path, this should happen within 1-2 seconds.
-# Without it, it would take wal_sender_timeout/2 = 5 minutes.
+# received_lsn must transition from 0/0 (post-reconcile) to a non-zero
+# LSN within 5s. Under the forced-keepalive path this happens in
+# milliseconds; without it, in 5 minutes (wal_sender_timeout/2).
 my $start = time();
 my $got = wait_until(5, sub {
-    my $lsn = scalar_query(2, "SELECT remote_insert_lsn::text FROM spock.progress LIMIT 1");
+    my $lsn = scalar_query(2, "SELECT received_lsn::text FROM spock.progress LIMIT 1");
     defined $lsn && $lsn ne '' && $lsn ne '0/0'
 });
 my $elapsed = time() - $start;
 
 ok($got,
-   "remote_insert_lsn populated within 5s of reconnect despite wal_sender_timeout=10min (elapsed=${elapsed}s)");
+   "received_lsn populated within 5s of reconnect despite wal_sender_timeout=10min (elapsed=${elapsed}s)");
 
 # Sanity: confirm wal_sender_timeout is actually high on the provider
 # (i.e., the setting took effect). If it didn't, the above test might

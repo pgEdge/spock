@@ -2895,6 +2895,16 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
  * first 'w' that arrives, often sooner than the eventual 'k'. The
  * forced keepalive matters most when the publisher is otherwise idle;
  * when there is data flowing, the data messages do the job.
+ *
+ * Protocol-version note: the 'r' / 'k' framing is the streaming-replication
+ * wire protocol (libpqwalreceiver level), not the spock output-plugin
+ * protocol carried inside 'w' message bodies, so this works on every
+ * negotiable spock protocol version. The 'k' response advances
+ * received_lsn on both v4 and v5+. remote_insert_lsn refresh paths differ:
+ * v5+ takes it from each 'w' header; v4 takes it from COMMIT message
+ * payloads. Until the first commit/keepalive lands, v4's remote_insert_lsn
+ * stays at whatever reconcile pinned it to (origin_lsn) -- correct, but
+ * not "live" -- while v5+ catches up on the very next 'w'.
  */
 static void
 request_initial_status_update(PGconn *conn, XLogRecPtr startpos)

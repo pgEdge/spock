@@ -160,4 +160,13 @@ extern void spock_group_resource_dump(void);
 extern void spock_group_progress_update_list(List *lst);
 extern void spock_group_progress_force_set_list(List *lst);
 
+/*
+ * Reset every non-key field of a SpockApplyProgress to its "not set" value.
+ * Single source of truth for initial-state semantics; callers that need to
+ * (re)seed a progress entry from somewhere other than the hash insert path
+ * (e.g. reconcile_progress_with_origin) call this directly so the two paths
+ * cannot drift when SpockApplyProgress gains a new field.
+ */
+extern void spock_init_progress_fields(SpockApplyProgress *progress);
+
 #endif							/* SPOCK_GROUP_H */

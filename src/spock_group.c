@@ -80,8 +80,8 @@ static void spock_group_resource_load(void);
  * We use C99 designated initializers to be explicit about what we're
  * initializing and to avoid fragile pointer arithmetic.
  */
-static inline void
-init_progress_fields(SpockApplyProgress *progress)
+void
+spock_init_progress_fields(SpockApplyProgress *progress)
 {
 	/* Key should already be set by hash_search or caller */
 	Assert(OidIsValid(progress->key.dbid));
@@ -230,7 +230,7 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 		 * New entry: the hash table already copied 'key' into
 		 * entry->progress.key, now initialize the remaining progress fields.
 		 */
-		init_progress_fields(&entry->progress);
+		spock_init_progress_fields(&entry->progress);
 
 		pg_atomic_init_u32(&entry->nattached, 0);
 		ConditionVariableInit(&entry->prev_processed_cv);
@@ -383,7 +383,7 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 		 * New entry: the hash table already copied sap->key into
 		 * entry->progress.key, now initialize the remaining fields.
 		 */
-		init_progress_fields(&entry->progress);
+		spock_init_progress_fields(&entry->progress);
 
 		pg_atomic_init_u32(&entry->nattached, 0);
 		ConditionVariableInit(&entry->prev_processed_cv);
@@ -742,7 +742,6 @@ spock_group_progress_force_set_list(List *lst)
 
 		if (!found)
 		{
-			init_progress_fields(&entry->progress);
 			pg_atomic_init_u32(&entry->nattached, 0);
 			ConditionVariableInit(&entry->prev_processed_cv);
 		}
@@ -755,11 +754,18 @@ spock_group_progress_force_set_list(List *lst)
 		}
 
 		/*
-		 * Unconditional overwrite: the resume_lsn from read_peer_progress is
-		 * the COPY-snapshot boundary and is authoritative.
+		 * Force-set: unconditionally adopt sap as authoritative. Cannot use
+		 * progress_update_struct here -- its max-by-timestamp merge skips
+		 * remote_commit_lsn when sap->remote_commit_ts == 0, which is a legal
+		 * shape when the peer is post-reconcile and pre-recovery.
 		 */
-		init_progress_fields(&entry->progress);
-		progress_update_struct(&entry->progress, sap);
+		entry->progress = *sap;
+
+		/* Preserve the insert_lsn >= commit_lsn invariant. */
+		if (entry->progress.remote_insert_lsn < entry->progress.remote_commit_lsn)
+			entry->progress.remote_insert_lsn = entry->progress.remote_commit_lsn;
+		if (entry->progress.received_lsn < entry->progress.remote_commit_lsn)
+			entry->progress.received_lsn = entry->progress.remote_commit_lsn;
 
 		LWLockRelease(SpockCtx->apply_group_master_lock);
 

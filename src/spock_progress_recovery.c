@@ -71,11 +71,33 @@ spock_init_progress_state(XLogRecPtr origin_lsn)
 	SpockGroupEntry	   *entry;
 	bool				found;
 
+	/*
+	 * Defense in depth: reconcile_progress_with_origin returns ABSENT on
+	 * NULL shmem rather than dereferencing it, but the rest of this function
+	 * does dereference SpockCtx/SpockGroupHash. Mirror the guard so the
+	 * caller-visible contract is self-consistent.
+	 */
+	if (!SpockCtx || !SpockGroupHash)
+		return;
+
 	result = reconcile_progress_with_origin(origin_lsn);
 
 	if (result == RECONCILE_FILE_IN_SYNC)
 	{
 		elog(LOG, "SPOCK %s: ts recovery: file in sync with origin, skipping scan",
+			 MySubscription->name);
+		return;
+	}
+
+	/*
+	 * Fresh subscription: replication origin has never recorded progress.
+	 * pg_commit_ts may still hold rows for this publisher's spock node id
+	 * from a prior subscription -- scanning would backfill stale historical
+	 * timestamps unrelated to the current subscription's actual state.
+	 */
+	if (XLogRecPtrIsInvalid(origin_lsn))
+	{
+		elog(LOG, "SPOCK %s: ts recovery: no durable origin progress yet, skipping scan",
 			 MySubscription->name);
 		return;
 	}
@@ -97,6 +119,11 @@ spock_init_progress_state(XLogRecPtr origin_lsn)
 		 * what pg_commit_ts records for applied xacts on the subscriber --
 		 * NOT the local subscription's roident. Filter the scan on
 		 * MySubscription->origin->id so we match the recorded entries.
+		 *
+		 * Limitation: this filter is not subscription-unique. Sibling subs to
+		 * the same publisher, or a dropped/recreated sub with old commits
+		 * still in the 1M-xid window, can contribute to running_max_ts.
+		 * Forensic-only impact; parallel-apply rework will revisit.
 		 */
 		recover_progress_timestamps_from_commit_ts(entry,
 												   (RepOriginId) MySubscription->origin->id);
@@ -152,23 +179,15 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 	{
 		/*
 		 * New entry: hash_search already copied the key into
-		 * entry->progress.key. Zero the remaining fields inline because
-		 * init_progress_fields is static to spock_group.c.
-		 *
-		 * MAINTENANCE: if SpockApplyProgress gains new fields, this block
-		 * must be updated in lockstep with init_progress_fields in
-		 * spock_group.c:init_progress_fields().
+		 * entry->progress.key.  Reset the rest via the same helper that
+		 * the hash insert path uses, then position the LSN fields at
+		 * origin_lsn so this worker starts from the durable origin
+		 * position and the insert >= commit invariant holds.
 		 */
-		Assert(OidIsValid(entry->progress.key.dbid));
-		Assert(OidIsValid(entry->progress.key.node_id));
-		Assert(OidIsValid(entry->progress.key.remote_node_id));
-		entry->progress.remote_commit_ts = 0;
-		entry->progress.prev_remote_ts = 0;
+		spock_init_progress_fields(&entry->progress);
 		entry->progress.remote_commit_lsn = origin_lsn;
-		entry->progress.remote_insert_lsn = InvalidXLogRecPtr;
-		entry->progress.received_lsn = InvalidXLogRecPtr;
-		entry->progress.last_updated_ts = 0;
-		entry->progress.updated_by_decode = false;
+		entry->progress.remote_insert_lsn = origin_lsn;
+		entry->progress.received_lsn = origin_lsn;
 		pg_atomic_init_u32(&entry->nattached, 0);
 		ConditionVariableInit(&entry->prev_processed_cv);
 		elog(LOG, "SPOCK %s: reconcile: new entry seeded at origin LSN %X/%X",
@@ -209,11 +228,28 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 	}
 	else
 	{
-		/* Anomaly: file ahead of origin. Trust origin. */
-		elog(WARNING, "SPOCK %s: reconcile: file LSN %X/%X ahead of origin %X/%X; trusting origin",
+		/*
+		 * Anomaly: file ahead of origin.  Most likely cause is operator
+		 * intervention on the replication origin (e.g. pg_replication_origin_advance
+		 * to roll back) or filesystem corruption.  We trust origin because that
+		 * is the value Postgres will use for incoming WAL acknowledgements; the
+		 * file's values are recorded in the log so an operator can recover them
+		 * after the fact if the trust-origin choice turns out to be wrong.
+		 */
+		elog(WARNING,
+			 "SPOCK %s: reconcile: file LSN %X/%X ahead of origin %X/%X; trusting origin "
+			 "(discarded file values: commit_lsn=%X/%X insert_lsn=%X/%X received_lsn=%X/%X "
+			 "commit_ts=" INT64_FORMAT " prev_remote_ts=" INT64_FORMAT
+			 " last_updated_ts=" INT64_FORMAT ")",
 			 MySubscription->name,
 			 LSN_FORMAT_ARGS(entry->progress.remote_commit_lsn),
-			 LSN_FORMAT_ARGS(origin_lsn));
+			 LSN_FORMAT_ARGS(origin_lsn),
+			 LSN_FORMAT_ARGS(entry->progress.remote_commit_lsn),
+			 LSN_FORMAT_ARGS(entry->progress.remote_insert_lsn),
+			 LSN_FORMAT_ARGS(entry->progress.received_lsn),
+			 (int64) entry->progress.remote_commit_ts,
+			 (int64) entry->progress.prev_remote_ts,
+			 (int64) entry->progress.last_updated_ts);
 		entry->progress.remote_commit_lsn = origin_lsn;
 		entry->progress.remote_commit_ts = 0;
 		entry->progress.prev_remote_ts = 0;
@@ -236,9 +272,8 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
  * After reconcile detects that resource.dat is stale (or absent) for this
  * origin, scan pg_commit_ts backward from the latest xid to recover the
  * most-recent remote_commit_ts for this origin. Restores accurate
- * post-crash values in the spock.progress view; will also be useful for
- * the planned parallel-apply rework, which is expected to coordinate on
- * prev_remote_ts.
+ * post-crash values in the spock.progress view; the recovered values are
+ * also intended to be useful for the planned parallel-apply rework.
  *
  * Termination: stop after observing SPOCK_TS_RECOVERY_MIN_SEEN_PER_ORIGIN
  * commits for this origin (any older commit is guaranteed to have a smaller
