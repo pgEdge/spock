@@ -136,7 +136,7 @@ static ApplyReplayEntry * apply_replay_tail = NULL;
 static ApplyReplayEntry * apply_replay_next = NULL;
 
 /* Total bytes of libpq-allocated data held by in-memory queue entries */
-static int	apply_replay_bytes = 0;
+static uint64	apply_replay_bytes = 0;
 
 static bool apply_replay_mode = false;		/* true when replaying */
 static BufFile *apply_replay_spill_file = NULL;
@@ -4488,7 +4488,7 @@ apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
 		/* XXX: keep DEBUG1 logging until spill-to-disk code is proven stable */
 		elog(DEBUG1,
 			 "SPOCK %s: replay queue spill activated: "
-			 "in-memory %d bytes exceeds %d MB limit",
+			 "in-memory " UINT64_FORMAT " bytes exceeds %d MB limit",
 			 MySubscription->name, apply_replay_bytes,
 			 spock_replay_queue_size);
 
