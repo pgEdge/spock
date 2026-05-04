@@ -159,7 +159,7 @@ static MemoryContext		ApplyReplayContext = NULL;
 static ApplyReplayEntry	   *apply_replay_head = NULL;
 static ApplyReplayEntry	   *apply_replay_tail = NULL;
 static ApplyReplayEntry	   *apply_replay_next = NULL;
-static int					apply_replay_bytes = 0;
+static uint64				apply_replay_bytes = 0;
 static bool					apply_replay_overflow = false;
 
 typedef struct SpockApplyFunctions
