@@ -135,13 +135,15 @@ static ApplyReplayEntry * apply_replay_tail = NULL;
 static ApplyReplayEntry * apply_replay_next = NULL;
 
 /* Total bytes of libpq-allocated data held by in-memory queue entries */
-static int	apply_replay_bytes = 0;
+static int64 apply_replay_bytes = 0;
 
 static bool apply_replay_mode = false;		/* true when replaying */
 static BufFile *apply_replay_spill_file = NULL;
 static bool apply_replay_spilling = false;
 static int	apply_replay_spill_count = 0;
 static int	apply_replay_spill_read = 0;
+/* In-flight spilled PQ buffer; freed by reset if ERROR skips PQfreemem. */
+static char *apply_replay_pending_pqfree = NULL;
 
 /*
  * A message counter for the xact, for debugging. We don't send
@@ -248,8 +250,8 @@ static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
 static void UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted);
 static void maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception);
 static ApplyReplayEntry *apply_replay_queue_next_entry(void);
-static bool apply_replay_queue_append_entry(ApplyReplayEntry **entry_p,
-							StringInfo *msg_p);
+static bool apply_replay_queue_append_entry(ApplyReplayEntry *entry,
+							StringInfo msg);
 static void apply_replay_queue_start_replay(void);
 static void apply_replay_spill_write_entry(int len, char *data);
 static ApplyReplayEntry *apply_replay_spill_read_entry(void);
@@ -3056,7 +3058,7 @@ stream_replay:
 			{
 				ApplyReplayEntry *entry;
 				bool		queue_append;
-				bool		need_free = false;
+				bool		spilled = false;
 				StringInfo	msg;
 				int			c;
 
@@ -3065,7 +3067,7 @@ stream_replay:
 				if (got_SIGTERM)
 					break;
 
-			if (ConfigReloadPending)
+				if (ConfigReloadPending)
 				{
 					ConfigReloadPending = false;
 					ProcessConfigFile(PGC_SIGHUP);
@@ -3181,19 +3183,21 @@ stream_replay:
 					if (last_received < end_lsn)
 						last_received = end_lsn;
 
-					/* Append the entry to the replay queue if from stream */
+					/* Stream entry: queue (or spill) and track the PQ buffer. */
 					if (queue_append)
-						need_free = apply_replay_queue_append_entry(&entry,
-																	&msg);
-					else
 					{
-						/*
-						 * Replay path: spill-read entries live in
-						 * TopMemoryContext and must be freed explicitly.
-						 * Capture this before replication_handler, which
-						 * may reset ApplyReplayContext and free the entry.
-						 */
-						need_free = !entry->from_pq;
+						spilled = apply_replay_queue_append_entry(entry,
+																  msg);
+						if (spilled)
+						{
+							/* Free orphan from prior ERROR, if any. */
+							if (apply_replay_pending_pqfree != NULL)
+							{
+								elog(LOG, "SPOCK: freed orphaned spill PQ buffer");
+								PQfreemem(apply_replay_pending_pqfree);
+							}
+							apply_replay_pending_pqfree = entry->copydata.data;
+						}
 					}
 
 					/*
@@ -3213,8 +3217,24 @@ stream_replay:
 
 					replication_handler(msg);
 
-					if (need_free)
-						apply_replay_entry_free(entry);
+					if (queue_append)
+					{
+						/* Stream path: PQfreemem spilled buffer (data is on disk). */
+						if (spilled && apply_replay_pending_pqfree != NULL)
+						{
+							PQfreemem(apply_replay_pending_pqfree);
+							apply_replay_pending_pqfree = NULL;
+						}
+					}
+					else
+					{
+						/* Replay path: free spill-read entries immediately. */
+						if (!entry->from_pq)
+						{
+							pfree(entry->copydata.data);
+							pfree(entry);
+						}
+					}
 				}
 				else if (c == 'k')
 				{
@@ -4120,9 +4140,10 @@ apply_replay_entry_create(int bufsize, char *buf)
 /*
  * Free one replay entry and its data buffer.
  *
- * Used for spilled entries whose structs live outside ApplyReplayContext
- * and therefore are not cleaned up by MemoryContextReset.  The data buffer
- * is freed with PQfreemem (libpq-allocated) or pfree (read from spill file).
+ * Used for non-queued message types ('k' keepalive, unknown) that are
+ * discarded immediately rather than added to the replay queue.  The data
+ * buffer is freed with PQfreemem (libpq-allocated) or pfree (read from
+ * spill file).
  */
 static void
 apply_replay_entry_free(ApplyReplayEntry *entry)
@@ -4160,9 +4181,8 @@ apply_replay_spill_write_entry(int len, char *data)
 /*
  * Read one replay entry from the spill file.
  *
- * Returns a newly palloc'd ApplyReplayEntry.  Allocated in TopMemoryContext
- * so it survives MemoryContextReset(ApplyReplayContext); on error during
- * replay the apply worker restarts and cleans up all memory.
+ * Returns a newly palloc'd ApplyReplayEntry in ApplyReplayContext, freed
+ * by MemoryContextReset in apply_replay_queue_reset.
  */
 static ApplyReplayEntry *
 apply_replay_spill_read_entry(void)
@@ -4188,11 +4208,7 @@ apply_replay_spill_read_entry(void)
 			 MySubscription->name, nread, len);
 	}
 
-	/*
-	 * Allocate in long-living memory context so the entry survives cleanup of
-	 * the in-memory replay queue.
-	 */
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	oldcontext = MemoryContextSwitchTo(ApplyReplayContext);
 
 	data = palloc(len);
 	nread = BufFileRead(apply_replay_spill_file, data, len);
@@ -4218,21 +4234,27 @@ apply_replay_spill_read_entry(void)
 /*
  * Free all messages queued in memory and reset replay context.
  *
- * In-memory entries may hold data buffers allocated by libpq (indicated by
- * from_pq = true).  Those must be freed with PQfreemem before the
- * ApplyReplayContext is reset, because MemoryContextReset only releases
- * palloc'd memory.
+ * In-memory entries hold data buffers allocated by libpq (from_pq = true).
+ * Those must be freed with PQfreemem before the ApplyReplayContext is
+ * reset, because MemoryContextReset only releases palloc'd memory.
  */
 static void
 apply_replay_queue_reset(void)
 {
 	ApplyReplayEntry *entry;
 
+	/* Free orphaned spilled PQ buffer from an interrupted entry. */
+	if (apply_replay_pending_pqfree != NULL)
+	{
+		PQfreemem(apply_replay_pending_pqfree);
+		apply_replay_pending_pqfree = NULL;
+	}
+
 	/* Free libpq-allocated data buffers and in-memory queue itself */
 	for (entry = apply_replay_head; entry != NULL; entry = entry->next)
 	{
-		Assert(entry->from_pq);
-		PQfreemem(entry->copydata.data);
+		if (entry->from_pq)
+			PQfreemem(entry->copydata.data);
 	}
 	apply_replay_head = NULL;
 	apply_replay_tail = NULL;
@@ -4258,8 +4280,8 @@ apply_replay_queue_reset(void)
  *
  * Drains the in-memory linked list first, then reads from the spill file.
  * When all entries are exhausted, replay mode is turned off and NULL is
- * returned.  The caller is responsible for freeing spilled entries; in-memory
- * entries are freed by apply_replay_queue_reset via MemoryContextReset.
+ * returned.  All entries live in ApplyReplayContext and are cleaned up by
+ * apply_replay_queue_reset via MemoryContextReset.
  */
 static ApplyReplayEntry *
 apply_replay_queue_next_entry(void)
@@ -4311,20 +4333,14 @@ apply_replay_queue_next_entry(void)
  * If spock_replay_queue_size is configured and the in-memory limit is
  * exceeded, spill subsequent entries to a temporary file on disk.
  *
- * When spilled, the original entry (in ApplyReplayContext) is freed and
- * replaced by a copy in TopMemoryContext that survives
- * MemoryContextReset(ApplyReplayContext) in handle_commit.  The updated
- * entry and msg pointers are written back through entry_p and msg_p.
- *
- * Returns true if the caller must free the entry after processing
- * (i.e. it lives in TopMemoryContext), false if it will be cleaned up
- * automatically by MemoryContextReset(ApplyReplayContext).
+ * Returns true if the entry was spilled.  The caller must PQfreemem the
+ * entry's data buffer after replication_handler returns; the entry struct
+ * remains in ApplyReplayContext and is cleaned up by MemoryContextReset
+ * in apply_replay_queue_reset.
  */
 static bool
-apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
+apply_replay_queue_append_entry(ApplyReplayEntry *entry, StringInfo msg)
 {
-	ApplyReplayEntry *entry = *entry_p;
-	StringInfo	msg = *msg_p;
 	MemoryContext	oldctx;
 
 	Assert(entry != NULL);
@@ -4347,7 +4363,7 @@ apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
 		/* XXX: keep DEBUG1 logging until spill-to-disk code is proven stable */
 		elog(DEBUG1,
 			 "SPOCK %s: replay queue spill activated: "
-			 "in-memory %d bytes exceeds %d MB limit",
+			 "in-memory " INT64_FORMAT " bytes exceeds %d MB limit",
 			 MySubscription->name, apply_replay_bytes,
 			 spock_replay_queue_size);
 
@@ -4357,27 +4373,8 @@ apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
 
 	if (apply_replay_spilling)
 	{
-		ApplyReplayEntry *mc_entry;
-
 		apply_replay_spill_write_entry(msg->len, msg->data);
-
-		/*
-		 * Move the entry struct from ApplyReplayContext to TopMemoryContext.
-		 * handle_commit calls apply_replay_queue_reset which does
-		 * MemoryContextReset(ApplyReplayContext).  Spilled entries are not
-		 * in the in-memory linked list and must survive until the caller
-		 * frees them explicitly after replication_handler returns.
-		 */
-		oldctx = MemoryContextSwitchTo(TopMemoryContext);
-		mc_entry = (ApplyReplayEntry *) palloc(sizeof(ApplyReplayEntry));
-		/* palloc and memcpy use the same sizeof — no overflow possible. */
-		memcpy(mc_entry, entry, sizeof(ApplyReplayEntry)); /* nosemgrep */
-		MemoryContextSwitchTo(oldctx);
-
-		pfree(entry);
-		*entry_p = mc_entry;
-		*msg_p = &mc_entry->copydata;
-		return true;	/* caller must free */
+		return true;	/* caller must PQfreemem data after processing */
 	}
 	else
 	{
@@ -4401,7 +4398,7 @@ apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
 			elog(DEBUG1, "SPOCK %s: replay queue keep in-memory entry %u: ",
 				 MySubscription->name, xact_action_counter);
 
-		return false;	/* freed by MemoryContextReset */
+		return false;
 	}
 }
 
