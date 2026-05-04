@@ -3080,6 +3080,7 @@ stream_replay:
 			{
 				ApplyReplayEntry   *entry;
 				bool				queue_append;
+				bool				added_to_queue;
 				StringInfo			msg;
 				int					c;
 
@@ -3180,6 +3181,7 @@ stream_replay:
 					 * Append the entry to the end of the replay queue
 					 * if we read it from the stream but check for overflow.
 					 */
+					added_to_queue = false;
 					if (queue_append)
 					{
 						apply_replay_bytes += msg->len;
@@ -3195,6 +3197,7 @@ stream_replay:
 								apply_replay_tail->next = entry;
 								apply_replay_tail = entry;
 							}
+							added_to_queue = true;
 						}
 						else
 						{
@@ -3204,7 +3207,7 @@ stream_replay:
 
 					replication_handler(msg);
 
-					if (queue_append && apply_replay_overflow)
+					if (queue_append && apply_replay_overflow && !added_to_queue)
 					{
 						apply_replay_entry_free(entry);
 					}
