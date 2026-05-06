@@ -1,5 +1,13 @@
 # Spock Release Notes
 
+## Spock 5.0.8
+
+### Bug Fixes
+* Fix subscriber crash on transactions larger than 2 GB. `apply_replay_bytes`
+  was declared as `int`, causing signed-integer overflow and a crash when a
+  single replicated transaction exceeded 2 GB of WAL data. Changed to
+  `uint64`.
+
 ## Spock 5.0.7
 
 ### New Features
