@@ -1,0 +1,127 @@
+name: Regression and TAP against PG stable-branch tips
+run-name: Check spock against fresh stable PostgreSQL branches
+
+# Builds PostgreSQL from the live tip of REL_${PGVER}_STABLE (not a tagged
+# release) with stock configure flags, applies spock's version-specific
+# patches per the README, builds spock per the README, and runs the
+# regression and TAP suites.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel in-flight runs on the same ref when a new commit lands.
+concurrency:
+  group: pg-stable-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        pgver: [15, 16, 17, 18]
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      PG_PREFIX: ${{ github.workspace }}/pg-install
+      PG_SRCDIR: ${{ github.workspace }}/postgres
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          path: spock
+
+      # libjansson-dev: required by utils/spockctrl (linked at spock build).
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bison flex pkg-config \
+            libreadline-dev zlib1g-dev libjansson-dev \
+            libipc-run-perl libtest-simple-perl
+
+      - name: Clone PostgreSQL stable-branch tip
+        run: |
+          git clone --branch REL_${{ matrix.pgver }}_STABLE --depth 1 \
+            https://github.com/postgres/postgres.git "$PG_SRCDIR"
+          cd "$PG_SRCDIR"
+          echo "Cloned $(git rev-parse --short HEAD) on REL_${{ matrix.pgver }}_STABLE"
+
+      # README step 2: apply spock patches in numerical order.  Glob
+      # expansion gives us "pgN-000-...", "pgN-015-...", etc., in order.
+      - name: Apply spock patches
+        run: |
+          PATCH_DIR="${GITHUB_WORKSPACE}/spock/patches/${{ matrix.pgver }}"
+          if [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR" 2>/dev/null)" ]; then
+            cd "$PG_SRCDIR"
+            for p in "$PATCH_DIR"/*; do
+              echo "Applying $(basename "$p")"
+              patch -p1 < "$p"
+            done
+          else
+            echo "No spock patches for PG ${{ matrix.pgver }}; using vanilla source"
+          fi
+
+      # README step 3: configure / make / make install the Postgres server.
+      # Stock flags; --enable-tap-tests is the one CI-only addition we need
+      # so the spock TAP suite can run.
+      # The dblink contrib extension is needed by some spock TAP tests.
+      - name: Configure, build, install PostgreSQL
+        run: |
+          cd "$PG_SRCDIR"
+          ./configure --prefix="$PG_PREFIX" --enable-tap-tests
+          make -j"$(nproc)" -s
+          make install -s
+          make -j"$(nproc)" -s -C contrib/dblink
+          make install -s -C contrib/dblink
+
+      # README step 4: pg_config on PATH.
+      # README step 6: make && make install spock.
+      - name: Build and install spock
+        run: |
+          export PATH="$PG_PREFIX/bin:$PATH"
+          cd "${GITHUB_WORKSPACE}/spock"
+          make -j"$(nproc)"
+          make install
+
+      - name: Run regression suite
+        run: |
+          export PATH="$PG_PREFIX/bin:$PATH"
+          cd "${GITHUB_WORKSPACE}/spock"
+          make regresscheck
+
+      - name: Upload regression artifacts on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: regress-stable-tip-${{ matrix.pgver }}
+          path: |
+            spock/tests/regress/regression_output/**
+            spock/tests/regress/regression.diffs
+            spock/tests/regress/regression.out
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Run TAP suite
+        run: |
+          export PATH="$PG_PREFIX/bin:$PATH"
+          export PG_CONFIG="$PG_PREFIX/bin/pg_config"
+          cd "${GITHUB_WORKSPACE}/spock/tests/tap"
+          ./run_tests.sh
+
+      - name: Upload TAP artifacts on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-stable-test-${{ matrix.pgver }}
+          path: |
+            spock/tests/tap/logs/**
+            spock/tests/logs/**
+          if-no-files-found: ignore
+          retention-days: 7
