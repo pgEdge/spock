@@ -36,7 +36,7 @@ After installing and initializing Postgres and creating the Spock Extension, you
 
     On `n2`:
 
-      `SELECT spock.node_create (node_name := 'n2', dsn := 'host=<n2_ip_address> port=<n2_port> =<db_name>');`
+      `SELECT spock.node_create (node_name := 'n2', dsn := 'host=<n2_ip_address> port=<n2_port> dbname=<db_name>');`
 
 5. On `n1`, use the [`spock.repset_add_all_tables`](spock_functions/functions/spock_repset_add_all_tables.md) command to add the tables in the `public` schema to the `default` replication set.  If you are working in another schema, customize this command as needed:
 
@@ -50,7 +50,7 @@ After installing and initializing Postgres and creating the Spock Extension, you
 
 7. On `n1`, create a corresponding subscription to `n2` named `sub_n1_n2`:
 
-    `SELECT spock.sub_create (subscription_name := 'sub_n1_n2', subscriber_dsn := 'host=<n2_ip_address> port=<n2_port> dbname=<db_name>');`
+    `SELECT spock.sub_create (subscription_name := 'sub_n1_n2', provider_dsn := 'host=<n2_ip_address> port=<n2_port> dbname=<db_name>');`
 
 8. To ensure that modifications to your [DDL statements are automatically replicated](managing/spock_autoddl.md), connect to each node with a Postgres client and invoke the following SQL commands:
 

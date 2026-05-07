@@ -24,7 +24,13 @@ Invoked on the provider node, this function returns the current `pg_lsn`
 value, representing a point-in-time value for your replication scenario. The
 syntax of `spock.sync_event` is:
 
-`spock.sync_event() RETURNS pg_lsn`
+`spock.sync_event(transactional boolean DEFAULT false) RETURNS pg_lsn`
+
+When `transactional` is `false` (the default), the sync event marker is
+emitted into the WAL stream immediately, independent of the calling
+transaction. When `transactional` is `true`, the marker is bound to the
+calling transaction and is only visible to subscribers if the transaction
+commits.
 
 Invoked on a subscriber node, `spock.wait_for_sync_event` is available in two
 flavors - the first uses the origin_id (an `oid`) as an identifier for the
@@ -62,6 +68,11 @@ On a provider node:
 
 On a subscriber node:
 
-`CALL spock.wait_for_sync_event(OUT result, 'provider_node', '0/16342B0', 10);`
-`-- result: true (if applied within 10s), false otherwise`
+```sql
+CALL spock.wait_for_sync_event(NULL, 'provider_node', '0/16342B0', 10);
+-- result: true  (if applied within 10s), false otherwise
+```
+
+The first parameter is the OUT `result` placeholder; pass `NULL` for it in
+the `CALL` statement and read the OUT value from the procedure result.
 

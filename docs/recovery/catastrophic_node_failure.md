@@ -307,15 +307,17 @@ when it should be `replicating` indicates that the node is behind. For
 example:
 
 ```
- sub_name  | status      | provider_node | replication_sets                      | lag
------------+-------------+---------------+---------------------------------------+-----------
- sub_n2_n1 | down        | n1            | {default,default_insert_only,ddl_sql} | 00:05:12
- sub_n2_n3 | replicating | n3            | {default,default_insert_only,ddl_sql} | 00:00:00
+ subscription_name | status      | provider_node | replication_sets
+-------------------+-------------+---------------+---------------------------------------
+ sub_n2_n1         | down        | n1            | {default,default_insert_only,ddl_sql}
+ sub_n2_n3         | replicating | n3            | {default,default_insert_only,ddl_sql}
 ```
 
-In this output, `sub_n2_n1` is down and lagging — that confirms n2 did not
-receive all of n1's transactions before n1 failed. The subscriptions to n3,
-n4, and n5 are still healthy.
+In this output, `sub_n2_n1` is `down` — that confirms n2 lost its
+connection to n1 (which has failed). The subscriptions to n3, n4, and n5
+are still healthy. To gauge how far behind n2 is, query
+[`spock.lag_tracker`](../monitoring/lag_tracking.md) for replication lag
+in bytes and time.
 
 Determine the approximate time when the failed node (or nodes) failed.
 You'll need this timestamp for the ACE commands in Phase 3 and 4. If you
@@ -377,14 +379,17 @@ leave others out of sync.
 ### Step 1: Get a List of All Tables to Check
 
 First, get the list of tables that participate in replication. You can get
-this from Spock replication sets. Connect to any surviving node (for
+this from the `spock.tables` view, which lists every table along with the
+replication set (if any) it belongs to. Connect to any surviving node (for
 example, n3) and run:
 
 ```sql
-SELECT * FROM spock.repset_list_tables('default');
+SELECT nspname, relname, set_name
+  FROM spock.tables
+ WHERE set_name IS NOT NULL
+ ORDER BY set_name, nspname, relname;
 ```
 
-If you use multiple replication sets, run this for each set.
 Alternatively, you can list all tables in the schema you replicate:
 
 ```sql
