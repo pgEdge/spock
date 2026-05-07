@@ -100,5 +100,5 @@ rows:
 **WARNING: Use caution when synchronizing data with a valid row filter.**
 Using `synchronize_data=true` with a valid `row_filter` is usually a
 one-time operation for a table. Executing it again with a modified
-`row_filter` won't synchronize data to subscriber. You may need to call
+`row_filter` won't synchronize data to the subscriber. You may need to call
 `spock.sub_resync_table()` to fix it.
