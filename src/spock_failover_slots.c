@@ -242,6 +242,7 @@ assign_standby_slot_names(const char *newval, void *extra)
 /*
  * Get failover slots from upstream
  */
+#if PG_VERSION_NUM < 180000
 static List *
 remote_get_primary_slot_info(PGconn *conn, List *slot_filter)
 {
@@ -1223,6 +1224,7 @@ synchronize_failover_slots(long sleep_time)
 
 	return sleep_time;
 }
+#endif							/* PG_VERSION_NUM < 180000 */
 
 void
 spock_failover_slots_main(Datum main_arg)
@@ -1297,6 +1299,7 @@ spock_failover_slots_main(Datum main_arg)
 #endif							/* PG_VERSION_NUM < 180000 */
 }
 
+#if PG_VERSION_NUM < 180000
 static bool
 list_member_str(List *l, const char *str)
 {
@@ -1576,12 +1579,11 @@ attach_to_walsender(Port *port, int status)
 		PqCommMethods = &PqCommSocketMethods;
 	}
 }
+#endif							/* PG_VERSION_NUM < 180000 */
 
 void
 spock_init_failover_slot(void)
 {
-	BackgroundWorker bgw;
-
 	DefineCustomStringVariable(
 							   "spock.pg_standby_slot_names",
 							   "list of names of slot that must confirm changes before they're sent by the decoding plugin",
@@ -1647,6 +1649,8 @@ spock_init_failover_slot(void)
 		 "(use sync_replication_slots = on instead)");
 #else
 	/* Run the worker. */
+	BackgroundWorker bgw;
+
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags =
 		BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
