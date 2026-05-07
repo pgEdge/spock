@@ -6,8 +6,6 @@ spock_max_proto_version()
 
 spock_max_proto_version()
 
-This function is defined in the public schema, not the `spock.` schema.
-
 ### RETURNS
 
 The maximum spock protocol version supported by the installed Spock extension
@@ -31,7 +29,8 @@ different Spock releases.
 The protocol version is returned as an integer value. Higher numbers
 indicate newer protocol versions with additional features.
 
-This is a read-only query function that does not modify data.
+This is a read-only query function that does not modify data. This function is
+defined in the public schema.
 
 ### ARGUMENTS
 
