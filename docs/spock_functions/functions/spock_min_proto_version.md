@@ -6,8 +6,6 @@ spock_min_proto_version()
 
 spock_min_proto_version()
 
-This function is defined in the public schema, not the `spock.` schema.
-
 ### RETURNS
 
 The minimum Spock protocol version supported by the installed Spock extension
@@ -33,7 +31,8 @@ The protocol version is returned as an integer value. This minimum version
 ensures backward compatibility with older Spock releases while still
 allowing the use of newer protocol features when both nodes support them.
 
-This is a read-only query function that does not modify data.
+This is a read-only query function that does not modify data. This function is 
+defined in the public schema.
 
 ### ARGUMENTS
 
