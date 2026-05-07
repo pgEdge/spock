@@ -203,11 +203,8 @@ resolution setting with this query:
 SHOW spock.conflict_resolution;
 ```
 
-The following values are available:
+The only supported value is:
 
-- `error` - Stop replication on conflict (requires manual resolution).
-- `apply_remote` - Always apply the remote change.
-- `keep_local` - Keep the local version.
 - `last_update_wins` - Keep the version with the newest commit timestamp.
 
 To change the setting, use the following command:
@@ -374,7 +371,7 @@ If DDL replication was disabled for the upgrade, re-enable it on all
 nodes with the following commands:
 
 ```sql
-SELECT spock.replicate_ddl('SET spock.enable_ddl_replication = on');
+ALTER SYSTEM SET spock.enable_ddl_replication = on;
 SELECT pg_reload_conf();
 ```
 
@@ -419,14 +416,16 @@ following command:
 
 ```sql
 SELECT spock.repset_add_partition(
-    set_name := 'default',
-    relation := 'public.parent_table',
-    partition_name := 'public.new_partition'
+    parent := 'public.parent_table',
+    partition := 'public.new_partition'
 );
 ```
 
 The parent table is synced during initial sync, but new partitions
-created after sync must be added explicitly.
+created after sync must be added explicitly. Pass `partition := NULL`
+(or omit it) to add every existing partition of the parent at once.
+You can also pass an optional `row_filter` argument to restrict which
+rows from the partition are replicated.
 
 
 ## Checking Logs

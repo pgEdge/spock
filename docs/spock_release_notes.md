@@ -25,7 +25,7 @@ origin.
 
 Now no restriction exists. Spock will use memory until memory is exhausted
 (improving performance for huge transactions). If an allocation fails, Spock
-performs as specified by the spock.exception_behavior GUC:
+performs as specified by the spock.exception_behaviour GUC:
 
 Exception handling behavior is now controlled by the `spock.exception_behaviour` GUC, which accepts the following values:
 

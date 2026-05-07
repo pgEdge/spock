@@ -97,16 +97,12 @@ inadvertently create orphaned foreign key records.
 ### `spock.conflict_resolution`
 
 `spock.conflict_resolution` sets the resolution method for any detected
-conflicts between local data and incoming changes. Possible values include:
+conflicts between local data and incoming changes. The only supported value
+in current Spock releases is:
 
-- `error` - the replication will stop on error if a conflict is detected and
-  manual action is required to resolve the conflict.
-- `apply_remote` - always apply the change that's conflicting with local
-  data.
-- `keep_local` - keep the local version of the data and ignore the
-  conflicting change that is coming from the remote node.
-- `last_update_wins` - the version of data with newest commit timestamp
-  will be kept (this can be either local or remote version).
+- `last_update_wins` (the default) - the version of data with the newest
+  commit timestamp will be kept (this can be either the local or the remote
+  version).
 
 To enable conflict resolution, the `track_commit_timestamp` setting must be
 enabled.
@@ -142,7 +138,7 @@ an ERROR within a transaction:
   that is written to the WAL log file; when the subscription is enabled,
   replication will resume with the transaction that caused the exception,
   followed by the other queued transactions; you can use the
-  `spock.alter_sub_skip_lsn` function to skip the transaction that caused
+  `spock.sub_alter_skiplsn` function to skip the transaction that caused
   the exception and resume processing with the next transaction in the
   queue.
 

@@ -29,6 +29,15 @@ automatic DDL replication, set the following parameters to `on`:
   will be added into the `default` replication set; alternatively, they will
   be added to the `default_insert_only` replication set.
 
+To completely block all DDL across the cluster (including DDL that would
+otherwise be replicated automatically), use:
+
+* `spock.deny_all_ddl` is a boolean (default `false`). When set to `true`,
+  Spock rejects any DDL statement executed on the node. This is useful as a
+  guard during sensitive maintenance windows or while a node is being added
+  or repaired. The setting can be changed by a superuser at runtime
+  (`PGC_SUSET`); a server reload is not required.
+
 It's best to set these parameters to `on` only when the database schema
 matches exactly on all nodes - either when all databases have no objects, or
 when all databases have exactly the same objects and all tables are added to
