@@ -32,7 +32,7 @@ PG_FUNCTION_INFO_V1(spock_reset_subscription_stats);
  * TODO: see https://wiki.postgresql.org/wiki/CustomCumulativeStats to choose
  * specific value in production
  */
-#define SPOCK_PGSTAT_KIND_LRCONFLICTS	28
+#define SPOCK_PGSTAT_KIND_LRCONFLICTS	29
 
 /* Shared memory wrapper for spock subscription conflict stats */
 typedef struct Spock_Stat_Subscription
