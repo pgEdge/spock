@@ -160,18 +160,14 @@ kept (`skip` / `keep_local`). The event is recorded in the
 ### Conflict Resolution Strategies
 
 The `spock.conflict_resolution` GUC controls how resolvable conflicts
-(all types except `update_missing` and `update_exists`) are decided:
+(all types except `update_missing` and `update_exists`) are decided. In
+current Spock releases the only supported value is:
 
 | Strategy              | Behavior                                                  |
 |-----------------------|-----------------------------------------------------------|
 | `last_update_wins`    | The row with the most recent commit timestamp wins (default). |
-| `first_update_wins`   | The row with the earliest commit timestamp wins.          |
-| `apply_remote`        | Always apply the incoming remote change.                  |
-| `keep_local`          | Always keep the local row.                                |
-| `error`               | Raise an ERROR on any conflict.                           |
 
-The timestamp-based strategies (`last_update_wins` and
-`first_update_wins`) require `track_commit_timestamp = on` in
+`last_update_wins` requires `track_commit_timestamp = on` in
 `postgresql.conf`.
 
 **Tiebreaker:** When two rows have identical commit timestamps, Spock

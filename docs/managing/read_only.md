@@ -72,9 +72,15 @@ COMMIT;
 
 ## Behavior of `all` mode
 
-In `all` mode, apply workers detect the setting and stop consuming inbound WAL.
-When the mode is switched back to `off` or `local`, replication resumes from
-where it left off — no data is lost.
+In `all` mode, apply workers detect the setting and stop consuming inbound
+WAL — internally each worker raises a FATAL and exits, and the manager
+restarts it once read-only is cleared. When the mode is switched back to
+`off` or `local`, replication resumes from where it left off, **provided
+the upstream replication slot still retains the necessary WAL**. Plan for
+slot retention (`max_slot_wal_keep_size`, disk capacity) before placing a
+node in `all` mode for an extended period; if the upstream slot is
+recycled while the node is read-only, replication cannot resume from the
+prior position and the node will need to be re-synchronized.
 
 Notes:
  - Only superusers can set and unset the `spock.readonly` parameter.
