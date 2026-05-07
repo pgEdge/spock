@@ -154,7 +154,7 @@ FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT extversion FROM pg_extension WHERE extname = ''spock'''
 ) AS t(version text);
--- Expected: 5.0.4
+-- Expected: matches the version installed on every node in the cluster
 
 -- Check new node version
 SELECT version
@@ -162,7 +162,7 @@ FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT extversion FROM pg_extension WHERE extname = ''spock'''
 ) AS t(version text);
--- Expected: 5.0.4
+-- Expected: matches the version installed on every node in the cluster
 
 -- Check all existing cluster nodes (n2, n3)
 SELECT node_name, version
@@ -173,12 +173,12 @@ FROM dblink(
      FROM spock.node n'
 ) AS t(node_name text, version text);
 
--- Expected output:
---  node_name |   version    
--- -----------+--------------
---  n1        | 5.0.4
---  n2        | 5.0.4
---  n3        | 5.0.4
+-- Expected output: every node reports the same Spock version, e.g.
+--  node_name |  version
+-- -----------+----------
+--  n1        | 5.0.6
+--  n2        | 5.0.6
+--  n3        | 5.0.6
 ```
 
 ### Validate Prerequisites
@@ -597,8 +597,8 @@ FROM dblink(
 SELECT * 
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
-    'CALL spock.wait_for_sync_event(true, ''n2'', ''0/1C9F400''::pg_lsn, 1200000)'
-) AS t(result text);
+    'CALL spock.wait_for_sync_event(true, ''n2'', ''0/1C9F400''::pg_lsn, 1200)'
+) AS t(result bool);
 ```
 
 #### Sync n3 to n1
@@ -623,8 +623,8 @@ FROM dblink(
 SELECT * 
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
-    'CALL spock.wait_for_sync_event(true, ''n3'', ''0/1D0E510''::pg_lsn, 1200000)'
-) AS t(result text);
+    'CALL spock.wait_for_sync_event(true, ''n3'', ''0/1D0E510''::pg_lsn, 1200)'
+) AS t(result bool);
 ```
 
 ### Copy the Source to New Subscription
@@ -752,7 +752,7 @@ FROM dblink(
 On n4, wait for the sync marker that matches the returned LSN (0/1E1F620)
 to arrive and be processed. This is a blocking call; the call will not
 return until the n4 subscription from n1 has replicated up to this LSN.
-The timeout (1200000 milliseconds = 20 minutes) prevents waiting forever
+The timeout (1200 seconds = 20 minutes) prevents waiting forever
 if something goes wrong.
 
 In the following example, the command waits for the sync event on n4:
@@ -761,8 +761,8 @@ In the following example, the command waits for the sync event on n4:
 SELECT * 
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
-    'CALL spock.wait_for_sync_event(true, ''n1'', ''0/1E1F620''::pg_lsn, 1200000)'
-) AS t(result text);
+    'CALL spock.wait_for_sync_event(true, ''n1'', ''0/1E1F620''::pg_lsn, 1200)'
+) AS t(result bool);
 ```
 
 
@@ -844,7 +844,7 @@ FROM dblink(
      )
      SELECT pg_replication_slot_advance(''spk_inventory_n2_sub_n2_n4'', lsn) 
      FROM lsn_cte'
-) AS t(result text);
+) AS t(result bool);
 ```
 
 #### Repeat for n3 to n4
@@ -875,7 +875,7 @@ FROM dblink(
      )
      SELECT pg_replication_slot_advance(''spk_inventory_n3_sub_n3_n4'', lsn) 
      FROM lsn_cte'
-) AS t(result text);
+) AS t(result bool);
 ```
 
 
@@ -925,7 +925,7 @@ FROM dblink(
         subscription_name := ''sub_n2_n4'',
         immediate := true
     )'
-) AS t(result text);
+) AS t(result bool);
 ```
 
 #### Wait for Stored Sync Event from n2
@@ -948,8 +948,8 @@ SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = 'n2';
 SELECT * 
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
-    'CALL spock.wait_for_sync_event(true, ''n2'', ''0/1A7D1E0''::pg_lsn, 1200000)'
-) AS t(result text);
+    'CALL spock.wait_for_sync_event(true, ''n2'', ''0/1A7D1E0''::pg_lsn, 1200)'
+) AS t(result bool);
 ```
 
 #### Verify the Subscription is Replicating
@@ -991,7 +991,7 @@ FROM dblink(
         subscription_name := ''sub_n3_n4'',
         immediate := true
     )'
-) AS t(result text);
+) AS t(result bool);
 
 -- Retrieve stored LSN
 SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = 'n3';
@@ -1001,8 +1001,8 @@ SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = 'n3';
 SELECT * 
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
-    'CALL spock.wait_for_sync_event(true, ''n3'', ''0/1B8E2F0''::pg_lsn, 1200000)'
-) AS t(result text);
+    'CALL spock.wait_for_sync_event(true, ''n3'', ''0/1B8E2F0''::pg_lsn, 1200)'
+) AS t(result bool);
 
 -- Verify status
 SELECT subscription_name, status, provider_node

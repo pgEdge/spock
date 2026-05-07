@@ -50,7 +50,7 @@ Partial secondary unique indexes are permitted, but will be ignored for
 conflict resolution purposes.
 
 `spock.check_all_uc_indexes` is an experimental
-[GUC](https://github.com/pgEdge/spock/blob/main/docs/guc_settings.md) that
+[GUC](configuring.md) that
 adds `INSERT` conflict resolution by allowing Spock to consider all unique
 constraints, not just the primary key or replica identity.
 
