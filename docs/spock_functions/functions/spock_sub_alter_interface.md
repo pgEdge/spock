@@ -10,7 +10,8 @@ spock.sub_alter_interface (subscription_name name, interface_name name)
 
   - true if the interface was successfully changed.
 
-  - false if the operation fails.
+  - Raises an ERROR if the subscription or interface does not exist, or
+    if the call has invalid parameters or insufficient privileges.
 
 ### DESCRIPTION
 

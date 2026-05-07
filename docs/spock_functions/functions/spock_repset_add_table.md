@@ -16,7 +16,9 @@ spock.repset_add_table (
 ### RETURNS
 
     - true if the table was successfully added to the replication set.
-    - false if the table was already a member of the replication set.
+    - Raises an ERROR if the table is already a member of the replication
+      set, or if the call has invalid parameters or insufficient
+      privileges.
 
 ### DESCRIPTION
 
@@ -96,7 +98,7 @@ rows:
         row_filter := 'balance > 0');
 
 **WARNING: Use caution when synchronizing data with a valid row filter.**
-Using `sync_data=true` with a valid `row_filter` is usually a one_time
-operation for a table. Executing it again with a modified `row_filter`
-won't synchronize data to subscriber. You may need to call
+Using `synchronize_data=true` with a valid `row_filter` is usually a
+one-time operation for a table. Executing it again with a modified
+`row_filter` won't synchronize data to subscriber. You may need to call
 `spock.sub_resync_table()` to fix it.

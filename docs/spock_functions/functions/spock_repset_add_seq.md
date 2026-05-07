@@ -12,7 +12,9 @@ spock.repset_add_seq (
 ### RETURNS
 
     - true if the sequence was successfully added to the replication set.
-    - false if the sequence was already a member of the replication set.
+    - Raises an ERROR if the sequence is already a member of the
+      replication set, or if the call has invalid parameters or
+      insufficient privileges.
 
 ### DESCRIPTION
 

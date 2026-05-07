@@ -132,26 +132,30 @@ Parameters:
 Use `spock.repset_alter` to change the parameters of an existing replication
 set.
 
-`spock.repset_alter(set_name name, replicate_inserts bool,
-replicate_updates bool, replicate_deletes bool, replicate_truncate bool)`
+`spock.repset_alter(set_name name, replicate_insert bool DEFAULT NULL,
+replicate_update bool DEFAULT NULL, replicate_delete bool DEFAULT NULL,
+replicate_truncate bool DEFAULT NULL)`
 
 Parameters:
 
 - `set_name` is the name of an existing replication set that will be modified by this function.
-- `replicate_insert` is `true` if `INSERT` statements are replicated; the default is `true`.
-- `replicate_update` is `true` if `UPDATE` statements are replicated; the default is `true`.
-- `replicate_delete` is `true` if `DELETE` statements are replicated; the default is `true`.
-- `replicate_truncate` is `true` if `TRUNCATE` statements are replicated; the default is `true`.
+- `replicate_insert` is `true` if `INSERT` statements are replicated. Pass `NULL` (the default) to leave the current value unchanged.
+- `replicate_update` is `true` if `UPDATE` statements are replicated. Pass `NULL` (the default) to leave the current value unchanged.
+- `replicate_delete` is `true` if `DELETE` statements are replicated. Pass `NULL` (the default) to leave the current value unchanged.
+- `replicate_truncate` is `true` if `TRUNCATE` statements are replicated. Pass `NULL` (the default) to leave the current value unchanged.
 
 ### spock.repset_drop
 
 Use `spock.repset_drop` to remove the specified replication set.
 
-`spock.repset_drop(set_name text)`
+`spock.repset_drop(set_name name, ifexists boolean DEFAULT false)`
 
 Parameters:
 
 - `set_name` is the name of an existing replication set.
+- `ifexists` controls whether dropping a non-existent replication set
+  raises an error. When `true`, no error is raised if the set is missing;
+  the default is `false`.
 
 ### spock.repset_add_table
 
@@ -188,7 +192,7 @@ Use `spock.repset_add_all_tables` to add all tables in the specified schemas
 to the replication set.
 
 `spock.repset_add_all_tables(set_name name, schema_names text[],
-sync_data boolean)`
+synchronize_data boolean DEFAULT false)`
 
 Only existing tables are added; tables that will be created in the future
 will not be added automatically.
@@ -198,41 +202,45 @@ Parameters:
 - `set_name` is the name of an existing replication set.
 - `schema_names` is an array of names of existing schemas from which tables
   should be added.
-- `sync_data` instructs Spock to synchronize the table data on all nodes
-  which are subscribed to the given replication set when set to `true`; the
-  default is `false`.
+- `synchronize_data` instructs Spock to synchronize the table data on all
+  nodes which are subscribed to the given replication set when set to
+  `true`; the default is `false`.
 
 ### spock.repset_remove_table
 
 Use `spock.repset_remove_table` to remove a table from a replication set.
 
-`spock.repset_remove_table(set_name name, relation regclass)`
+`spock.repset_remove_table(set_name name, relation regclass,
+include_partitions boolean DEFAULT true)`
 
 Parameters:
 
 - `set_name` is the name of an existing replication set.
 - `relation` is the name or OID of the table to be removed from the set.
+- `include_partitions` is `true` to also remove partitions of the
+  partitioned table; the default is `true`.
 
 ### spock.repset_add_seq
 
 Use `spock.repset_add_seq` to add a sequence to a replication set.
 
-`spock.repset_add_seq(set_name name, relation regclass, sync_data boolean)`
+`spock.repset_add_seq(set_name name, relation regclass,
+synchronize_data boolean DEFAULT false)`
 
 Parameters:
 
 - `set_name` is the name of an existing replication set.
 - `relation` is the name or OID of the sequence to be added to the set.
-- `sync_data` instructs Spock to synchronize the table data on all nodes
-  which are subscribed to the given replication set when set to `true`; the
-  default is `false`.
+- `synchronize_data` instructs Spock to synchronize the sequence on all
+  nodes which are subscribed to the given replication set when set to
+  `true`; the default is `false`.
 
 ### spock.repset_add_all_seqs
 
 Use `spock.repset_add_all_seqs` to add all sequences from the given schemas.
 
 `spock.repset_add_all_seqs(set_name name, schema_names text[],
-sync_data boolean)`
+synchronize_data boolean DEFAULT false)`
 
 Only existing sequences are added; any sequences that will be created in the
 future will not be added automatically.
@@ -242,8 +250,8 @@ Parameters:
 - `set_name` is the name of an existing replication set.
 - `schema_names` is an array of names of existing schemas from which sequences
   should be added.
-- `sync_data` specify `true` to synchronize the sequence value immediately;
-  the default is `false`.
+- `synchronize_data` specify `true` to synchronize the sequence value
+  immediately; the default is `false`.
 
 ### spock.repset_remove_seq
 

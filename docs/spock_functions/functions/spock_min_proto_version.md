@@ -1,10 +1,12 @@
 ## NAME
 
-spock.spock_min_proto_version()
+spock_min_proto_version()
 
 ### SYNOPSIS
 
-spock.spock_min_proto_version()
+spock_min_proto_version()
+
+This function is defined in the public schema, not the `spock.` schema.
 
 ### RETURNS
 
@@ -42,7 +44,7 @@ This function takes no arguments.
 The following command shows that the version of Spock in use is using protocol
 version 3:
 
-    postgres=# SELECT spock.spock_min_proto_version();
+    postgres=# SELECT spock_min_proto_version();
      spock_min_proto_version
     -------------------------
                            3

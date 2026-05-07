@@ -6,7 +6,7 @@ replication stream and returns its Log Sequence Number (LSN).
 ## Synopsis
 
 ```sql
-spock.sync_event()
+spock.sync_event(transactional boolean DEFAULT false)
 ```
 
 ## Returns
@@ -38,7 +38,11 @@ This function modifies the replication stream by inserting a sync marker.
 
 ## Arguments
 
-The function takes no arguments.
+- `transactional` (optional, default `false`) - When `false`, the sync
+  event marker is emitted immediately into the WAL stream, independent of
+  the calling transaction. When `true`, the marker is bound to the calling
+  transaction and is only visible to subscribers if the transaction
+  commits.
 
 ## Example
 
