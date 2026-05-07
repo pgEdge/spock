@@ -10,7 +10,9 @@ spock.sub_add_repset (subscription_name name, replication_set name)
 
   - true if the replication set was successfully added.
 
-  - false if the operation fails.
+  - Raises an ERROR if the subscription does not exist, the replication
+    set is already attached, or the call has invalid parameters or
+    insufficient privileges.
 
 ### DESCRIPTION
 

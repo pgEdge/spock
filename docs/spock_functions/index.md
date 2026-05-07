@@ -20,9 +20,9 @@ The following user functions are available via the Spock extension:
 | [spock.repset_add_all_tables](functions/spock_repset_add_all_tables.md) | Add all existing table(s) to the replication set.
 | [spock.repset_remove_table](functions/spock_repset_remove_table.md) | Remove table from replication set.
 | spock.repset_show_table |
-| [repset_add_seq](functions/spock_repset_add_seq.md) | Deprecated; Adds a sequence to a replication set.
-| [repset_add_all_seqs](functions/spock_repset_add_all_seqs.md) | Deprecated; Adds all sequences from the specified schemas to a replication set.
-| [repset_remove_seq](functions/spock_repset_remove_seq.md) | Deprecated; Remove a sequence from a replication set.
+| [spock.repset_add_seq](functions/spock_repset_add_seq.md) | Adds a sequence to a replication set.
+| [spock.repset_add_all_seqs](functions/spock_repset_add_all_seqs.md) | Adds all sequences from the specified schemas to a replication set.
+| [spock.repset_remove_seq](functions/spock_repset_remove_seq.md) | Remove a sequence from a replication set.
 | spock.sync_seq | Synchronize the specified sequence.
 | **Subscription Management Functions** | |
 | [spock.sub_create](functions/spock_sub_create.md) | Create a subscription.
@@ -41,16 +41,16 @@ The following user functions are available via the Spock extension:
 | **Miscellaneous Management Functions** | |
 | [spock.table_wait_for_sync](functions/spock_table_wait_for_sync.md) | Pause until a table finishes synchronizing.
 | [spock.replicate_ddl](functions/spock_replicate_ddl.md) | Enable DDL replication.
-| spock.spock_version | Returns the Spock version in a major/minor version form: `4.0.10`.
-| spock.spock_version_num | Returns the Spock version in a single numeric form: `40010`.
+| spock_version | Returns the Spock version in a major/minor version form: `4.0.10`. Defined in the public schema (no `spock.` prefix).
+| spock_version_num | Returns the Spock version in a single numeric form: `40010`. Defined in the public schema (no `spock.` prefix).
 | spock.get_channel_stats | Returns tuple traffic statistics.
 | spock.get_country | Returns the country code if explicitly set; returns `??` if not set.
 | spock.lag_tracker | Returns a list of slots, with commit_lsn and commit_timestamp for each.
 | spock.repair_mode | Used to manage the state of replication - If set to `true`, stops replicating statements; when `false`, resumes replication.
 | spock.replicate_ddl | Replicate a specific statement.
 | spock.reset_channel_stats | Reset the channel statistics.
-| spock.spock_max_proto_version | The highest Spock native protocol supported by the current binary/build.
-| spock.spock_min_proto_version | The lowest build for which this Spock binary is backward compatible.
+| spock_max_proto_version | The highest Spock native protocol supported by the current binary/build. Defined in the public schema (no `spock.` prefix).
+| spock_min_proto_version | The lowest build for which this Spock binary is backward compatible. Defined in the public schema (no `spock.` prefix).
 | spock.table_data_filtered | Scans the specified table and returns rows that match the row filter from the specified replication set(s).  Row filters are added to a replication set when adding a table with `repset_add_table`.
 | spock.terminate_active_transactions | Terminates all active transactions.
 | spock.wait_slot_confirm_lsn | Wait for the `confirmed_flush_lsn` of the specified slot, or all logical slots if none given.

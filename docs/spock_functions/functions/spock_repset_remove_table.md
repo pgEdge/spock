@@ -12,7 +12,8 @@ spock.repset_remove_table (
 ### RETURNS
 
     - true if the table was successfully removed from the replication set.
-    - false if the table was not a member of the replication set.
+    - Raises an ERROR if the table is not a member of the replication set,
+      or if the call has invalid parameters or insufficient privileges.
 
 ### DESCRIPTION
 

@@ -15,7 +15,7 @@ the publisher.
 | [spock.sub_alter_sync](functions/spock_sub_alter_sync.md) | Synchronize all unsynchronized tables in a single operation.
 | [spock.sub_resync_table](functions/spock_sub_resync_table.md) | Resynchronize a single table.
 | [spock.sub_wait_for_sync](functions/spock_sub_wait_for_sync.md) | Wait for a subscription to finish synchronization after a `spock.sub_create` or `spock.sub_alter_sync`.
-| [spock.sub_wait_table_sync](functions/spock_table_wait_for_sync.md) | Same as `spock.sub_wait_for_sync`, but waits only for the subscription's initial sync.
+| [spock.table_wait_for_sync](functions/spock_table_wait_for_sync.md) | Wait only for the subscription's initial sync and a named table.
 | [spock.sub_show_status](functions/spock_sub_show_status.md) | Shows status and basic information about subscription.
 | [spock.sub_show_table](functions/spock_sub_show_table.md) | Shows synchronization status of a table.
 | [spock.sub_add_repset](functions/spock_sub_add_repset.md) | Adds a replication set to a subscriber.
@@ -29,7 +29,7 @@ connect to the server with psql and invoke the `spock.sub_create` command:
 ```sql
 SELECT spock.sub_create(subscription_name, provider_dsn, replication_sets,
     synchronize_structure, synchronize_data, forward_origins, apply_delay,
-    force_text_transfer)
+    force_text_transfer, enabled, skip_schema)
 ```
 
 Parameters include:
@@ -39,11 +39,11 @@ Parameters include:
 - `replication_sets` is an array of replication sets that you wish to
   subscribe to. The sets must already exist; the default is
   `{default,default_insert_only,ddl_sql}`.
-- `sync_structure` is a boolean value that specifies if Spock should
+- `synchronize_structure` is a boolean value that specifies if Spock should
   synchronize the structure from provider to the subscriber; the default is
   `false`.
-- `sync_data` specifies if Spock should synchronize data from provider to the
-  subscriber; the default is `true`.
+- `synchronize_data` specifies if Spock should synchronize data from
+  provider to the subscriber; the default is `false`.
 - `forward_origins` is an array of origin names to forward. Currently, the
   only supported values are an empty array meaning don't forward any changes
   that didn't originate on provider node (this is useful for two-way
@@ -55,12 +55,18 @@ Parameters include:
   columns using a text representation (which is slower, but may be used to
   change the type of a replicated column on the subscriber); the default is
   `false`.
+- `enabled` controls whether the subscription is started immediately after
+  creation. The default is `true`.
+- `skip_schema` is an array of schema names whose changes should be ignored
+  by the apply worker. The default is `{}` (an empty array, meaning no
+  schemas are skipped).
 
 For example, the following command:
 
 ```sql
-SELECT spock.sub_create(accts,
-    'host=178.12.15.12 user=carol dbname=accounting', payables)
+SELECT spock.sub_create('accts',
+    'host=178.12.15.12 user=carol dbname=accounting',
+    ARRAY['payables']);
 ```
 
 Creates a subscription named `accts` that connects to the `accounting`
@@ -86,7 +92,7 @@ Parameters include:
 For example, the following command:
 
 ```sql
-SELECT spock.sub_drop(accts, true)
+SELECT spock.sub_drop('accts', true);
 ```
 
 Drops a subscription named `accts`; if the subscription does not exist, an
@@ -103,9 +109,10 @@ You can use the following settings to control and manage your subscriptions.
 Use `spock.sub_create` to create a subscription from current node to the
 provider node.
 
-`spock.sub_create(subscription_name name, provider_dsn text, repsets text[],
-sync_structure boolean, sync_data boolean, forward_origins text[],
-apply_delay interval)`
+`spock.sub_create(subscription_name name, provider_dsn text,
+replication_sets text[], synchronize_structure boolean,
+synchronize_data boolean, forward_origins text[], apply_delay interval,
+force_text_transfer boolean, enabled boolean, skip_schema text[])`
 
 The command does not wait for completion before returning to the caller.
 
@@ -113,12 +120,12 @@ Parameters:
 
 - `subscription_name` is the unique name of the subscription.
 - `provider_dsn` is the connection string to a provider.
-- `repsets` is an array of existing replication sets to which you are
-  subscribing. The default is `{default,default_insert_only,ddl_sql}`.
-- `sync_structure` tells Spock if it should synchronize the structure from
-  the provider to the subscriber; the default is `false`.
-- `sync_data` tells Spock to synchronize data from provider to the
-  subscriber; the default is `true`.
+- `replication_sets` is an array of existing replication sets to which you
+  are subscribing. The default is `{default,default_insert_only,ddl_sql}`.
+- `synchronize_structure` tells Spock if it should synchronize the
+  structure from the provider to the subscriber; the default is `false`.
+- `synchronize_data` tells Spock to synchronize data from provider to the
+  subscriber; the default is `false`.
 - `forward_origins` is an array of origin names to forward. Currently, the
   only supported values are an empty array meaning don't forward any changes
   that didn't originate on the provider node (this is useful for two-way
@@ -128,8 +135,12 @@ Parameters:
   is `0` seconds.
 - `force_text_transfer` forces the provider to replicate all columns using
   a text representation (which is slower, but may be used to change the type
-  of a replicated column on the subscriber) when set to `yes`. The default
+  of a replicated column on the subscriber) when set to `true`. The default
   is `false`.
+- `enabled` controls whether the subscription is started immediately after
+  creation. The default is `true`.
+- `skip_schema` is an array of schema names whose changes should be ignored
+  by the apply worker. The default is `{}`.
 
 The `subscription_name` is used as `application_name` by the replication
 connection. This means that it's visible in the `pg_stat_replication`
@@ -222,7 +233,7 @@ The table may not be the target of any foreign key constraints.
     This function will truncate the table immediately, and only then begin
     synchronising it, so it will be empty while being synced. The command does
     not wait for completion before returning to the caller; use
-    `spock.wait_for_table_sync` to wait for completion.
+    `spock.table_wait_for_sync` to wait for completion.
 
 Parameters:
 
@@ -248,12 +259,12 @@ For best results, run `SELECT spock.wait_slot_confirm_lsn(NULL, NULL)` on the
 provider after any replication set changes that requested resyncs, and only
 then call `spock.sub_wait_for_sync` on the subscriber.
 
-### spock.sub_wait_table_sync
+### spock.table_wait_for_sync
 
-Use `spock.sub_wait_table_sync` to wait only for the subscription's initial
+Use `spock.table_wait_for_sync` to wait only for the subscription's initial
 sync and the named table.
 
-`spock.sub_wait_table_sync(subscription_name name, relation regclass)`
+`spock.table_wait_for_sync(subscription_name name, relation regclass)`
 
 Same as `spock.sub_wait_for_sync`, but waits only for the subscription's
 initial sync and the named table. Other tables pending resynchronisation are
@@ -285,13 +296,17 @@ up to a certain point on the provider.
 Use `spock.sub_show_status` to show status and basic information about a
 subscription.
 
-`spock.sub_show_status(subscription_name name)`
+`spock.sub_show_status(subscription_name name DEFAULT NULL)`
 
 Parameters:
 
 - `subscription_name` is the optional name of an existing subscription. If
-  no name is provided, the function will show the status of all
+  omitted (or `NULL`), the function will show the status of all
   subscriptions on the local node.
+
+The function returns one row per subscription with these columns:
+`subscription_name`, `status`, `provider_node`, `provider_dsn`,
+`slot_name`, `replication_sets`, `forward_origins`.
 
 ### spock.sub_show_table
 

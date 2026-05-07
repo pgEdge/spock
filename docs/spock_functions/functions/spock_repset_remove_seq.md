@@ -11,7 +11,9 @@ spock.repset_remove_seq (
 ### RETURNS
 
     - true if the sequence was successfully removed from the replication set.
-    - false if the sequence was not a member of the replication set.
+    - Raises an ERROR if the sequence is not a member of the replication
+      set, or if the call has invalid parameters or insufficient
+      privileges.
 
 ### DESCRIPTION
 
