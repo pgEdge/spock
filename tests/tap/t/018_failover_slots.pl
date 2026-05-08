@@ -391,6 +391,70 @@ my $data_ok = wait_until(60, 3, sub {
 ok($data_ok, 'Row (1, before_failover) replicated n1 -> n2 before failover');
 
 # ==========================================================================
+# 14b. REGRESSION: read-only standby is queryable while spock is loaded
+#
+# A customer reported that after enabling spock with logical slot failover,
+# the hot_standby could not be queried — basic SELECTs failed because of
+# spock interactions on a recovery backend.  Re-running the full
+# slot-failover dance is not enough; we need explicit assertions that the
+# standby answers user SELECT, spock catalog SELECT, and pg_replication_slots
+# while it's still in recovery.  Without these checks a future regression
+# could quietly reintroduce the same bug.
+# ==========================================================================
+
+# Wait for the standby to apply the row we just wrote on n1.
+my $primary_wal_lsn = scalar_query(1, "SELECT pg_current_wal_lsn()");
+$primary_wal_lsn =~ s/\s+//g;
+my $standby_caught_up = wait_until(60, 2, sub {
+    my $rl = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
+        "SELECT pg_last_wal_replay_lsn() >= '$primary_wal_lsn'::pg_lsn");
+    $rl =~ s/\s+//g;
+    return $rl eq 't';
+});
+ok($standby_caught_up,
+    "Standby applied WAL up to primary lsn $primary_wal_lsn");
+
+# Standby must still be in recovery — confirms hot_standby mode and that
+# no spock hook accidentally took the standby out of recovery.
+my $still_in_recovery = qport($pg_bin, $host, $standby_port,
+    $dbname, $db_user, "SELECT pg_is_in_recovery()");
+$still_in_recovery =~ s/\s+//g;
+is($still_in_recovery, 't',
+    'Read-only standby is still in recovery (hot_standby mode)');
+
+# 1) User-table SELECT against the standby returns the committed row.
+my $val_on_standby = qport($pg_bin, $host, $standby_port,
+    $dbname, $db_user, "SELECT val FROM failover_test WHERE id = 1");
+$val_on_standby =~ s/\s+//g;
+is($val_on_standby, 'before_failover',
+    'Read-only standby returns committed user data (SELECT works)');
+
+# 2) Spock catalog SELECT against the standby — the original customer
+#    failure mode was that spock.* reads errored out on a recovery backend.
+my $standby_node_count = qport($pg_bin, $host, $standby_port,
+    $dbname, $db_user, "SELECT count(*) FROM spock.node");
+$standby_node_count =~ s/\s+//g;
+ok(($standby_node_count =~ /^\d+$/) && $standby_node_count >= 1,
+    "Read-only standby returns spock.node ($standby_node_count rows)");
+
+# 3) The synced logical slot is visible on the standby.
+my $standby_slot_count = qport($pg_bin, $host, $standby_port,
+    $dbname, $db_user,
+    "SELECT count(*) FROM pg_replication_slots WHERE slot_name = '$slot_name'");
+$standby_slot_count =~ s/\s+//g;
+is($standby_slot_count, '1',
+    "Read-only standby returns synced slot '$slot_name' via pg_replication_slots");
+
+# 4) Writes are rejected — the standby must remain read-only.
+my $write_rc = system(
+    "$pg_bin/psql -X -h $host -p $standby_port -d $dbname -U $db_user "
+  . "-v ON_ERROR_STOP=1 "
+  . "-c \"INSERT INTO failover_test VALUES (999, 'must_fail')\" "
+  . ">/dev/null 2>&1");
+isnt($write_rc, 0,
+    'Write against read-only standby is rejected (read-only enforced)');
+
+# ==========================================================================
 # 15. Verify invalidation_reason is NULL (slot is healthy on standby)
 # ==========================================================================
 if ($pg_major >= 17) {
