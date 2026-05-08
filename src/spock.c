@@ -68,7 +68,14 @@
 #include "spock_shmem.h"
 #include "spock.h"
 
+#if PG_VERSION_NUM >= 180000
+PG_MODULE_MAGIC_EXT(
+	.name = "spock",
+	.version = SPOCK_VERSION
+);
+#else
 PG_MODULE_MAGIC;
+#endif
 
 static const struct config_enum_entry SpockConflictResolvers[] = {
 	/*
