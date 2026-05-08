@@ -1,10 +1,10 @@
 ## NAME
 
-spock_version_num()
+spock.spock_version_num()
 
 ### SYNOPSIS
 
-spock_version_num ()
+spock.spock_version_num ()
 
 ### RETURNS
 
@@ -33,6 +33,6 @@ This function takes no arguments.
 The following command returns the current Spock extension version as an
 integer:
 
-    postgres=# SELECT spock_version_num();
+    postgres=# SELECT spock.spock_version_num();
     -[ RECORD 1 ]-----+------
     spock_version_num | 50005
