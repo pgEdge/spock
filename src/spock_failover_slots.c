@@ -1584,6 +1584,9 @@ attach_to_walsender(Port *port, int status)
 void
 spock_init_failover_slot(void)
 {
+#if PG_VERSION_NUM < 180000
+	BackgroundWorker bgw;
+#endif
 	DefineCustomStringVariable(
 							   "spock.pg_standby_slot_names",
 							   "list of names of slot that must confirm changes before they're sent by the decoding plugin",
@@ -1648,8 +1651,6 @@ spock_init_failover_slot(void)
 	elog(LOG, "spock: skipping failover slot worker on PostgreSQL 18+ "
 		 "(use sync_replication_slots = on instead)");
 #else
-	/* Run the worker. */
-	BackgroundWorker bgw;
 
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags =
