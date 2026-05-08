@@ -1483,7 +1483,17 @@ spock_sync_subscription(SpockSubscription *sub)
 		}
 		PG_CATCH();
 		{
-			ErrorData  *edata = CopyErrorData();
+			MemoryContext savecxt;
+			ErrorData  *edata;
+
+			/*
+			 * CopyErrorData() requires that we are NOT running in
+			 * ErrorContext, otherwise its assertion in elog.c trips on
+			 * cassert builds and the apply worker dies with SIGABRT.
+			 * Switch into our long-lived sync context first.
+			 */
+			savecxt = MemoryContextSwitchTo(myctx);
+			edata = CopyErrorData();
 
 			FlushErrorState();
 			elog(LOG, "SPOCK cswp error sub=%s slot=%s: %s",
@@ -1502,6 +1512,7 @@ spock_sync_subscription(SpockSubscription *sub)
 			}
 
 			FreeErrorData(edata);
+			MemoryContextSwitchTo(savecxt);
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
