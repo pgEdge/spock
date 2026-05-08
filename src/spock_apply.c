@@ -1922,10 +1922,20 @@ static void
 spock_apply_worker_shmem_exit(int code, Datum arg)
 {
 	/*
-	 * Reset replication session to avoid reuse after an error. This is done
-	 * in a before_shmem_exit callback instead of on_proc_exit because the
-	 * backend may also clean up the origin in certain cases, and we want to
-	 * avoid duplicate cleanup.
+	 * Reset replication session to avoid reuse after an error.
+	 * This is done in a before_shmem_exit callback instead of
+	 * on_proc_exit because the backend may also clean up the origin
+	 * in certain cases, and we want to avoid duplicate cleanup.
+	 *
+	 * Ordering matters: this must run before ShutdownPostgres()
+	 * (also a before_shmem_exit, registered earlier during
+	 * InitPostgres) so the origin is Invalid by the time
+	 * ShutdownPostgres calls AbortOutOfAnyTransaction().  Otherwise
+	 * RecordTransactionAbort advances the origin to the in-flight
+	 * transaction's stale final_lsn, silently skipping that txn on
+	 * reconnect.  LIFO callback order makes this work.  The
+	 * connection-error rethrow path in apply_work's PG_CATCH
+	 * relies on it.
 	 */
 	replorigin_session_origin = InvalidRepOriginId;
 	replorigin_session_origin_lsn = InvalidXLogRecPtr;
@@ -3019,11 +3029,31 @@ stream_replay:
 			MySpockWorker->worker_status = SPOCK_WORKER_STATUS_RUNNING;
 
 			/*
-			 * Background workers mustn't call usleep() or any direct
-			 * equivalent instead, they may wait on their process latch, which
-			 * sleeps as necessary, but is awakened if postmaster dies.  That
-			 * way the background process goes away immediately in an
-			 * emergency.
+			 * Refresh fd at the top of every iteration.  On the previous
+			 * iteration, PQconsumeInput may have detected a dead socket and
+			 * caused libpq to close it (and possibly reset conn->sock to
+			 * PGINVALID_SOCKET).  Reading PQsocket() again here ensures we
+			 * pass libpq's current value to WaitLatchOrSocket -- never a
+			 * stale fd, which would otherwise cause epoll_ctl(EINVAL) on
+			 * Linux.  If the connection has gone bad, raise a tagged error
+			 * so the PG_CATCH discriminator routes us to a clean exit.
+			 */
+			fd = PQsocket(applyconn);
+			if (PQstatus(applyconn) == CONNECTION_BAD ||
+				fd == PGINVALID_SOCKET)
+			{
+				MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("SPOCK %s: connection to other side has died",
+								MySubscription->name)));
+			}
+
+			/*
+			 * Background workers mustn't call usleep() or any direct equivalent
+			 * instead, they may wait on their process latch, which sleeps as
+			 * necessary, but is awakened if postmaster dies.  That way the
+			 * background process goes away immediately in an emergency.
 			 */
 			rc = WaitLatchOrSocket(&MyProc->procLatch,
 								   WL_SOCKET_READABLE | WL_LATCH_SET |
@@ -3054,8 +3084,10 @@ stream_replay:
 			if (PQstatus(applyconn) == CONNECTION_BAD)
 			{
 				MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
-				elog(ERROR, "SPOCK %s: connection to other side has died",
-					 MySubscription->name);
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("SPOCK %s: connection to other side has died",
+								MySubscription->name)));
 			}
 
 			/*
@@ -3162,23 +3194,29 @@ stream_replay:
 					{
 						if (buf != NULL)
 							PQfreemem(buf);
-						elog(ERROR, "SPOCK %s: data stream ended",
-							 MySubscription->name);
+						ereport(ERROR,
+								(errcode(ERRCODE_CONNECTION_FAILURE),
+								 errmsg("SPOCK %s: data stream ended",
+										MySubscription->name)));
 					}
 					else if (r == -2)
 					{
 						if (buf != NULL)
 							PQfreemem(buf);
-						elog(ERROR, "SPOCK %s: could not read COPY data: %s",
-							 MySubscription->name,
-							 PQerrorMessage(applyconn));
+						ereport(ERROR,
+								(errcode(ERRCODE_CONNECTION_FAILURE),
+								 errmsg("SPOCK %s: could not read COPY data: %s",
+										MySubscription->name,
+										PQerrorMessage(applyconn))));
 					}
 					else if (r < 0)
 					{
 						if (buf != NULL)
 							PQfreemem(buf);
-						elog(ERROR, "SPOCK %s: invalid COPY status %d",
-							 MySubscription->name, r);
+						ereport(ERROR,
+								(errcode(ERRCODE_CONNECTION_FAILURE),
+								 errmsg("SPOCK %s: invalid COPY status %d",
+										MySubscription->name, r)));
 					}
 					else if (r == 0)
 					{
@@ -3381,9 +3419,56 @@ stream_replay:
 		edata = CopyErrorData();
 
 		/*
-		 * use_try_block == true indicates either that an exception occurred
-		 * during a DML operation, or that we were replaying previously failed
-		 * actions (via need_replay).
+		 * Connection-class errors must NOT enter the apply-side replay
+		 * path (need_replay / use_try_block).  Two reasons:
+		 *
+		 * 1. The replay path re-enters the wait loop with stale libpq
+		 *    state, producing an epoll_ctl(EINVAL) cascade on Linux.
+		 *
+		 * 2. With spock.exception_behaviour = transdiscard the replay
+		 *    path eventually logs the in-flight remote transaction's
+		 *    rows to spock.exception_log as if they had failed apply,
+		 *    when in fact they were never applied -- producing a
+		 *    "missing row" on the subscriber after reconnect.
+		 *
+		 * Re-throw instead.  apply_work has the only PG_TRY in this call
+		 * stack; the error propagates to the bgworker error handler,
+		 * which aborts the current transaction (RecordTransactionAbort
+		 * does not advance replorigin) and runs proc_exit.  The
+		 * before_shmem_exit callback spock_apply_worker_shmem_exit()
+		 * (see ~line 2039) then clears
+		 * replorigin_session_origin{,_lsn,_timestamp} so no later code
+		 * path can advance the replication origin past the aborted
+		 * in-flight remote transaction.  The post-apply_work
+		 * flush_progress_if_needed(true) at the bottom of
+		 * spock_apply_main is also bypassed by the rethrow, which is
+		 * what we want -- it would otherwise be the path that advances
+		 * origin via RecordTransactionCommit.  The manager respawns the
+		 * worker, which resumes from the last durably-committed origin
+		 * LSN and re-streams the aborted txn.
+		 *
+		 * Detect via sqlerrcode (preferred -- spock's own disconnect
+		 * ereports are tagged ERRCODE_CONNECTION_FAILURE) with PQstatus
+		 * as a fallback for libpq-internal raises (e.g. epoll_ctl) that
+		 * don't tag.  Apply-side errors (constraint violations and the
+		 * like) do NOT take this branch and continue through the
+		 * existing exception_log replay path below.
+		 */
+		if (edata->sqlerrcode == ERRCODE_CONNECTION_FAILURE ||
+			edata->sqlerrcode == ERRCODE_CONNECTION_EXCEPTION ||
+			edata->sqlerrcode == ERRCODE_CONNECTION_DOES_NOT_EXIST ||
+			edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
+			(applyconn != NULL && PQstatus(applyconn) == CONNECTION_BAD))
+		{
+			elog(LOG, "SPOCK %s: connection error during apply, exiting via rethrow: %s",
+				 MySubscription->name, edata->message);
+			PG_RE_THROW();
+		}
+
+		/*
+		 * use_try_block == true indicates either:
+		 * 1. An exception occurred during a DML operation,
+		 * 2. Or we were replaying previously failed actions (via need_replay).
 		 *
 		 * If an exception occurs during handle_commit after prior handling,
 		 * we still need to ensure proper cleanup (e.g., disabling the
