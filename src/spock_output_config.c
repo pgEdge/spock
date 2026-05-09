@@ -247,11 +247,18 @@ process_parameters_v1(List *options, SpockOutputData *data)
 					{
 						char	   *origin_name = (char *) lfirst(lc2);
 
-						if (strcmp(origin_name, REPLICATION_ORIGIN_ALL) != 0)
-							elog(ERROR, "Only \"%s\" is allowed in forward origin name list at the moment, found \"%s\"",
-								 REPLICATION_ORIGIN_ALL, origin_name);
+						if (origin_name == NULL || origin_name[0] == '\0')
+							elog(ERROR, "forward_origins entries must be non-empty");
 					}
 
+					/*
+					 * Entries are interpreted by the output plugin: the
+					 * literal "all" forwards every foreign-origin txn, an
+					 * entry containing '*' is treated as a glob pattern, and
+					 * any other entry is matched exactly against replication
+					 * origin names. Resolution to RepOriginIds happens at
+					 * slot startup (see spock_populate_forward_origins).
+					 */
 					data->forward_origins = forward_origin_names;
 					break;
 				}

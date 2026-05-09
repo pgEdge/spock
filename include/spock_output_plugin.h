@@ -74,8 +74,29 @@ typedef struct SpockOutputData
 	/* Protocol version negotiation */
 	uint32		negotiated_proto_version;
 
-	/* List of origin names */
+	/*
+	 * forward_origins is the user-facing list of origin name patterns from
+	 * the spock.forward_origins startup parameter. Each entry is one of:
+	 *   - the literal "all" keyword (REPLICATION_ORIGIN_ALL) meaning "forward
+	 *     every foreign-origin transaction"
+	 *   - an exact replication-origin name (e.g. "spk_pgadb_node1_subxxx")
+	 *   - a glob pattern containing '*' (e.g. "pgactive_*", "*_subxxx")
+	 *
+	 * The fields below are populated at slot startup from forward_origins:
+	 *
+	 *   forward_origins_all      - true iff "all" appears anywhere in the list
+	 *   forward_origin_ids       - sorted RepOriginIds resolved from exact-match
+	 *                              entries; used as the bsearch fast-path
+	 *   num_forward_origin_ids   - length of forward_origin_ids
+	 *   forward_origin_globs     - List of glob pattern strings (those that
+	 *                              contained '*'); checked by name on
+	 *                              fast-path miss
+	 */
 	List	   *forward_origins;
+	bool		forward_origins_all;
+	RepOriginId *forward_origin_ids;
+	int			num_forward_origin_ids;
+	List	   *forward_origin_globs;
 	/* List of SpockRepSet */
 	List	   *replication_sets;
 	RangeVar   *replicate_only_table;

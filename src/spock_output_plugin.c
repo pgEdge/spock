@@ -20,11 +20,15 @@
 
 #include "miscadmin.h"
 #include "access/commit_ts.h"
+#include "access/heapam.h"
+#include "access/table.h"
 #include "access/xact.h"
+#include "catalog/pg_replication_origin.h"
 #include "executor/executor.h"
 #include "catalog/namespace.h"
 #include "storage/fd.h"
 #include "storage/lmgr.h"
+#include "utils/builtins.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -74,6 +78,7 @@ static void pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *tx
 							   int nrelations, Relation relations[],
 							   ReorderBufferChange *change);
 
+static void spock_populate_forward_origins(SpockOutputData *data);
 static bool pg_decode_origin_filter(LogicalDecodingContext *ctx,
 									RepOriginId origin_id);
 
@@ -314,6 +319,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		 */
 		oldctx = MemoryContextSwitchTo(ctx->context);
 		process_parameters(ctx->output_plugin_options, data);
+		spock_populate_forward_origins(data);
 		MemoryContextSwitchTo(oldctx);
 
 		if (data->client_min_proto_version > SPOCK_PROTO_VERSION_NUM)
@@ -1186,29 +1192,251 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 }
 
 /*
+ * qsort/bsearch comparator for an array of RepOriginId values.
+ */
+static int
+spock_repl_origin_id_cmp(const void *a, const void *b)
+{
+	RepOriginId oa = *(const RepOriginId *) a;
+	RepOriginId ob = *(const RepOriginId *) b;
+
+	if (oa < ob)
+		return -1;
+	if (oa > ob)
+		return 1;
+	return 0;
+}
+
+/*
+ * Match a name against a simple glob pattern. The pattern supports '*' as a
+ * wildcard matching zero or more characters; all other characters are
+ * literal. Examples:
+ *
+ *   spock_origin_name_matches_glob("pgactive_123_0_5_5_", "pgactive_*") = true
+ *   spock_origin_name_matches_glob("spk_pgadb_node1",     "pgactive_*") = false
+ *   spock_origin_name_matches_glob("pgactive_x_y",        "*_y")        = true
+ *
+ * This is intentionally minimal — full LIKE semantics are not required for
+ * forward_origins ergonomics, and avoiding LIKE keeps this independent of
+ * locale/encoding behavior in the hot path.
+ */
+static bool
+spock_origin_name_matches_glob(const char *name, const char *pattern)
+{
+	const char *p = pattern;
+	const char *n = name;
+
+	while (*p)
+	{
+		if (*p == '*')
+		{
+			/* Skip consecutive stars */
+			while (*p == '*')
+				p++;
+			if (*p == '\0')
+				return true;	/* trailing '*' matches the rest */
+
+			/* Find the next position in name where the literal can match */
+			while (*n)
+			{
+				if (spock_origin_name_matches_glob(n, p))
+					return true;
+				n++;
+			}
+			return false;
+		}
+
+		if (*n == '\0' || *n != *p)
+			return false;
+
+		p++;
+		n++;
+	}
+	return *n == '\0';
+}
+
+/*
+ * Resolve forward_origins (a List of name/pattern strings) into a sorted
+ * array of RepOriginIds we should forward. Sets forward_origins_all if the
+ * "all" keyword was specified. Called once during pg_decode_startup, after
+ * process_parameters has filled data->forward_origins. Caller must be in a
+ * transaction (we open pg_replication_origin and walk it).
+ *
+ * Both exact-name entries and glob patterns are resolved here, by scanning
+ * pg_replication_origin once and matching each origin name against every
+ * non-"all" entry in forward_origins. This keeps the per-transaction filter
+ * (pg_decode_origin_filter) catalog-free — that callback is invoked outside
+ * any transaction, so we can't safely call replorigin_by_oid from there.
+ *
+ * Origins that come into existence after slot startup are not currently
+ * picked up; in practice the relevant origins (e.g. pgactive's per-peer
+ * REPORIGINs) are created during cluster setup before the spock
+ * subscription is started. A future change could refresh the cache on
+ * cache-invalidation events from pg_replication_origin.
+ *
+ * Allocations are in the active memory context (ctx->context, set up by the
+ * caller before calling process_parameters).
+ */
+static void
+spock_populate_forward_origins(SpockOutputData *data)
+{
+	ListCell   *lc;
+	int			n_patterns;
+	int			cap = 8;
+	int			n = 0;
+	RepOriginId *ids;
+	Relation	rel;
+	TableScanDesc scan;
+	HeapTuple	tup;
+	bool		any_pattern = false;
+
+	data->forward_origins_all = false;
+	data->forward_origin_ids = NULL;
+	data->num_forward_origin_ids = 0;
+	data->forward_origin_globs = NIL;	/* unused but kept for future use */
+
+	if (data->forward_origins == NIL)
+		return;
+
+	/* First pass: handle the "all" keyword and count usable patterns. */
+	n_patterns = 0;
+	foreach(lc, data->forward_origins)
+	{
+		const char *entry = (const char *) lfirst(lc);
+
+		if (strcmp(entry, REPLICATION_ORIGIN_ALL) == 0)
+		{
+			data->forward_origins_all = true;
+			continue;
+		}
+		n_patterns++;
+		any_pattern = true;
+	}
+
+	if (data->forward_origins_all || !any_pattern)
+		return;
+
+	/*
+	 * Second pass: walk pg_replication_origin and resolve every name that
+	 * matches any of our exact-name or glob entries.
+	 */
+	ids = palloc(cap * sizeof(RepOriginId));
+
+	rel = table_open(ReplicationOriginRelationId, AccessShareLock);
+	scan = table_beginscan_catalog(rel, 0, NULL);
+
+	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+		Form_pg_replication_origin form;
+		const char *roname;
+		bool		matched = false;
+
+		form = (Form_pg_replication_origin) GETSTRUCT(tup);
+		roname = text_to_cstring(&form->roname);
+
+		foreach(lc, data->forward_origins)
+		{
+			const char *entry = (const char *) lfirst(lc);
+
+			if (strcmp(entry, REPLICATION_ORIGIN_ALL) == 0)
+				continue;
+
+			if (strchr(entry, '*') != NULL)
+			{
+				if (spock_origin_name_matches_glob(roname, entry))
+				{
+					matched = true;
+					break;
+				}
+			}
+			else if (strcmp(roname, entry) == 0)
+			{
+				matched = true;
+				break;
+			}
+		}
+
+		if (matched)
+		{
+			if (n >= cap)
+			{
+				cap *= 2;
+				ids = repalloc(ids, cap * sizeof(RepOriginId));
+			}
+			ids[n++] = form->roident;
+		}
+	}
+
+	table_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	if (n > 0)
+	{
+		data->forward_origin_ids = ids;
+		data->num_forward_origin_ids = n;
+		if (n > 1)
+			qsort(data->forward_origin_ids, n, sizeof(RepOriginId),
+				  spock_repl_origin_id_cmp);
+	}
+	else
+	{
+		pfree(ids);
+	}
+
+	elog(DEBUG1,
+		 "spock forward_origins: all=%s, resolved=%d (from %d pattern(s))",
+		 data->forward_origins_all ? "true" : "false",
+		 data->num_forward_origin_ids,
+		 n_patterns);
+}
+
+/*
  * Decide if the whole transaction with specific origin should be filtered out.
+ *
+ * Filtering is selective:
+ *
+ *   - Locally-originated transactions (InvalidRepOriginId) are always
+ *     forwarded.
+ *   - If "all" is in forward_origins, every foreign-origin transaction is
+ *     forwarded.
+ *   - If forward_origins is empty, no foreign-origin transactions are
+ *     forwarded (default).
+ *   - Otherwise, only origins resolved at slot startup are forwarded. The
+ *     resolution (spock_populate_forward_origins) walks pg_replication_origin
+ *     once and matches each origin's name against the forward_origins entries
+ *     (exact name or glob with '*'); matches go into a sorted RepOriginId
+ *     array that we bsearch here.
+ *
+ * This callback is invoked outside any transaction, so it must not touch
+ * catalogs (e.g. replorigin_by_oid would Assert). All catalog work is done
+ * once at slot startup; the hot path is bsearch only.
  */
 static bool
 pg_decode_origin_filter(LogicalDecodingContext *ctx,
 						RepOriginId origin_id)
 {
 	SpockOutputData *data = ctx->output_plugin_private;
-	bool		ret;
 
+	/* Always forward locally-originated transactions. */
 	if (origin_id == InvalidRepOriginId)
-		/* Never filter out locally originated tx's */
-		ret = false;
+		return false;
 
-	else
+	/* "all" keyword forwards every foreign origin. */
+	if (data->forward_origins_all)
+		return false;
 
-		/*
-		 * Otherwise, ignore the origin passed in txnfilter_args->origin_id,
-		 * and just forward all or nothing based on the configuration option
-		 * 'forward_origins'.
-		 */
-		ret = list_length(data->forward_origins) == 0;
+	/* Empty list filters out every foreign origin. */
+	if (list_length(data->forward_origins) == 0)
+		return true;
 
-	return ret;
+	/* Resolved-at-startup id set: bsearch for an exact match. */
+	if (data->num_forward_origin_ids > 0 &&
+		bsearch(&origin_id, data->forward_origin_ids,
+				data->num_forward_origin_ids, sizeof(RepOriginId),
+				spock_repl_origin_id_cmp) != NULL)
+		return false;
+
+	return true;
 }
 
 static void
