@@ -7,6 +7,18 @@
   was declared as `int`, causing signed-integer overflow and a crash when a
   single replicated transaction exceeded 2 GB of WAL data. Changed to
   `uint64`.
+* The apply worker now exits cleanly when the upstream connection dies
+  (firewall reload, walsender SIGKILL/RST, walsender ping timeout) and the
+  manager respawns it from the last durably-committed remote LSN.  Previously
+  a stale libpq socket fd produced an `epoll_ctl()` cascade with a follow-on
+  `error during exception handling` per disconnect, and a corner of the
+  recovery path could silently advance the replication origin past the
+  in-flight remote transaction, causing it to be skipped on reconnect.
+* Hardened zero-downtime add-node (zodan): logical replication slots created
+  during sub_create are now marked with failover := true on PostgreSQL 17+
+  so they're picked up by the native slotsync worker, Phase 9 waits for apply
+  workers to come up before proceeding, and a crash in the cswp error path
+  (CopyErrorData called while still in ErrorContext) has been fixed.
 
 ## Spock 5.0.7
 
