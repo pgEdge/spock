@@ -3,32 +3,25 @@
  * spock_rmgr.c
  * 		spock resource manager definitions
  *
+ * Emits one WAL record per SpockGroupHash entry on each resource.dat dump
+ * event so operators can correlate the persisted progress snapshot with
+ * WAL position via pg_waldump. Each record carries the full
+ * SpockApplyProgress for one entry, the event type, and the (seq, total)
+ * pair within the dump event so consumers can reassemble.
+ *
+ * The records are not required for state recovery: shmem is reseeded at
+ * startup from resource.dat plus replication-origin reconcile plus
+ * pg_commit_ts scan. Their value is showing what state was on disk at
+ * each dump LSN -- useful for incident reconstruction over time.
+ *
+ * Volume is N entries × handful per cluster per day in normal operation
+ * (one event per clean shutdown + one per add_node + one per table sync),
+ * so a single XLogFlush at the end of each emit batch is cheap and gives
+ * WAL durability symmetric with resource.dat's durable_rename().
+ *
  * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, The Regents of the University of California
- *
- *
- * Spock Resource Manager (RMGR)
- * -----------------------------
- *
- * This module implements the WAL side of Spock's apply progress persistence.
- *
- *   - WAL is authoritative for progress. We emit compact progress records
- *     after each locally-committed, remotely-originated transaction on the
- *     subscriber, and REDO replays them into shared memory after crash/restart.
- *   - Shared memory holds a hash map keyed by (dbid, node_id, remote_node_id),
- *     storing the latest SpockApplyProgress snapshot for each group.
- *   - On clean shutdowns we also take a file snapshot (resource.dat) so restarts
- *     can seed shmem quickly; WAL REDO still runs after load and will overwrite
- *     any stale entries.
- *
- * Startup ordering:
- *   1) postmaster creates shared memory and runs shmem_startup_hook
- *        -> shmem_init()
- *        -> spock_group_resource_load() to load file snapshot (if any)
- *   2) startup process begins WAL recovery
- *        -> calls spock_rmgr_redo() for our records
- *        -> redo update the same shmem hash (wins over file load)
  *
  *-------------------------------------------------------------------------
  */
@@ -39,28 +32,21 @@
 #include "access/xloginsert.h"
 #include "access/xlogreader.h"
 #include "access/xlogrecord.h"
-#include "utils/pg_lsn.h"
+#include "storage/lwlock.h"
+#include "utils/hsearch.h"
 
 #include "spock_rmgr.h"
 #include "spock_worker.h"
-#include "spock_apply.h"
 
 static RmgrData spock_custom_rmgr = {
 	.rm_name = SPOCK_RMGR_NAME,
 	.rm_redo = spock_rmgr_redo,
 	.rm_desc = spock_rmgr_desc,
 	.rm_identify = spock_rmgr_identify,
-	.rm_startup = spock_rmgr_startup,
-	.rm_cleanup = spock_rmgr_cleanup,
+	.rm_startup = NULL,
+	.rm_cleanup = NULL,
 };
 
-/*
- * spock_rmgr_init
- *
- * Register Spock's resource manager so our WAL records are recognized during
- * recovery. Called in _PG_init() before recovery can begin;
- * do not allocate shmem here.
- */
 void
 spock_rmgr_init(void)
 {
@@ -68,12 +54,25 @@ spock_rmgr_init(void)
 }
 
 /*
- * spock_rmgr_redo
- *
- * Redo handler for Spock WAL records. For APPLY_PROGRESS records, decode the
- * payload (SpockApplyProgress) and upsert into the shmem group registry via
- * spock_group_update_progress(). This runs during recovery and overwrites any
- * shmem contents previously seeded by file load.
+ * Translate the event_type byte to a stable string for log/desc output.
+ */
+static const char *
+event_name(uint8 event_type)
+{
+	switch ((SpockResourceDumpEvent) event_type)
+	{
+		case SPOCK_DUMP_SHUTDOWN:	return "shutdown";
+		case SPOCK_DUMP_ADD_NODE:	return "add_node";
+		case SPOCK_DUMP_TABLE_SYNC:	return "table_sync";
+	}
+	return "unknown";
+}
+
+/*
+ * Replay handler: log only. The actual progress data is reseeded by
+ * spock_group_resource_load() (file) plus reconcile_progress_with_origin()
+ * (origin) plus the commit_ts recovery scan -- none of which touch this
+ * record. We just log so it's visible in recovery logs.
  */
 void
 spock_rmgr_redo(XLogReaderState *record)
@@ -82,117 +81,155 @@ spock_rmgr_redo(XLogReaderState *record)
 
 	switch (info)
 	{
-		case SPOCK_RMGR_APPLY_PROGRESS:
+		case SPOCK_RMGR_RESOURCE_DUMP:
 			{
-				SpockApplyProgress   *rec;
+				SpockResourceDumpRec *rec;
 
-				rec = (SpockApplyProgress *) XLogRecGetData(record);
-
-				/*
-				 * During WAL replay, we must acquire locks when accessing
-				 * shared hash tables (per commit c6d76d7 in PostgreSQL core).
-				 * The spock_group_progress_update() function acquires
-				 * apply_group_master_lock internally for us.
-				 */
-				(void) spock_group_progress_update(rec);
+				rec = (SpockResourceDumpRec *) XLogRecGetData(record);
+				elog(LOG,
+					 "SPOCK rmgr: resource.dat dump replayed "
+					 "(event=%s, entry %u/%u, dbid=%u node_id=%u remote_node_id=%u, "
+					 "remote_commit_lsn=%X/%X remote_insert_lsn=%X/%X received_lsn=%X/%X, "
+					 "remote_commit_ts=" INT64_FORMAT ")",
+					 event_name(rec->event_type),
+					 (unsigned) rec->entry_seq + 1, (unsigned) rec->entry_total,
+					 rec->progress.key.dbid,
+					 rec->progress.key.node_id,
+					 rec->progress.key.remote_node_id,
+					 LSN_FORMAT_ARGS(rec->progress.remote_commit_lsn),
+					 LSN_FORMAT_ARGS(rec->progress.remote_insert_lsn),
+					 LSN_FORMAT_ARGS(rec->progress.received_lsn),
+					 (int64) rec->progress.remote_commit_ts);
+				break;
 			}
-			break;
-
-		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:
-			break;
-
 		default:
-			elog(PANIC, "spock_rmgr_redo: unknown op code %u", info);
+			elog(WARNING,
+				 "SPOCK rmgr: unknown info byte 0x%02x in WAL record; ignoring",
+				 info);
+			break;
 	}
 }
 
+/*
+ * pg_waldump descriptor: appended after the standard rmgr/info header.
+ */
 void
 spock_rmgr_desc(StringInfo buf, XLogReaderState *record)
 {
 	uint8		info = XLogRecGetInfo(record) & XLR_RMGR_INFO_MASK;
 
-	switch (info)
+	if (info == SPOCK_RMGR_RESOURCE_DUMP)
 	{
-		case SPOCK_RMGR_APPLY_PROGRESS:
-			{
-				SpockApplyProgress   *rec;
+		SpockResourceDumpRec *rec = (SpockResourceDumpRec *) XLogRecGetData(record);
 
-				rec = (SpockApplyProgress *) XLogRecGetData(record);
-				appendStringInfo(buf, "spock apply progress for dbid %u, node_id %u, remote_node_id %u; "
-								 "remote_commit_lsn %X/%X, remote_insert_lsn %X/%X, received_lsn %X/%X",
-								 rec->key.dbid,
-								 rec->key.node_id,
-								 rec->key.remote_node_id,
-								 LSN_FORMAT_ARGS(rec->remote_commit_lsn),
-								 LSN_FORMAT_ARGS(rec->remote_insert_lsn),
-								 LSN_FORMAT_ARGS(rec->received_lsn));
-			}
-			break;
-		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:
-			appendStringInfo(buf, "spock rmgr: sub transaction commit ts");
-			break;
-
-		default:
-			appendStringInfo(buf, "spock rmgr: unknown(%u)", info);
+		appendStringInfo(buf,
+						 "event=%s entry=%u/%u "
+						 "key=(%u,%u,%u) "
+						 "commit_lsn=%X/%X insert_lsn=%X/%X received_lsn=%X/%X "
+						 "commit_ts=" INT64_FORMAT,
+						 event_name(rec->event_type),
+						 (unsigned) rec->entry_seq + 1, (unsigned) rec->entry_total,
+						 rec->progress.key.dbid,
+						 rec->progress.key.node_id,
+						 rec->progress.key.remote_node_id,
+						 LSN_FORMAT_ARGS(rec->progress.remote_commit_lsn),
+						 LSN_FORMAT_ARGS(rec->progress.remote_insert_lsn),
+						 LSN_FORMAT_ARGS(rec->progress.received_lsn),
+						 (int64) rec->progress.remote_commit_ts);
 	}
-}
-
-const char *
-spock_rmgr_identify(uint8 info)
-{
-	switch (info)
-	{
-		case SPOCK_RMGR_APPLY_PROGRESS:
-			return "APPLY_PROGRESS";
-			break;
-		case SPOCK_RMGR_SUBTRANS_COMMIT_TS:
-			return "SUBTRANS_COMMIT_TS";
-			break;
-	}
-
-	return NULL;
-}
-
-void
-spock_rmgr_startup(void)
-{
-}
-
-void
-spock_rmgr_cleanup(void)
-{
 }
 
 /*
- * spock_apply_progress_add_to_wal
- *
- * Emit and flush a progress record to WAL after committing a remote-origin
- * transaction locally. This makes the progress update durable and guarantees
- * redo will restore it after crash.
- *
- *   - Must be called *after* CommitTransactionCommand() of the applied txn.
- *   - Uses info code SPOCK_RMGR_APPLY_PROGRESS (0x10).
- *
- * Returns: the LSN of the inserted record.
+ * pg_waldump identifier: maps info byte -> human-readable name.
  */
-XLogRecPtr
-spock_apply_progress_add_to_wal(const SpockApplyProgress *sap)
+const char *
+spock_rmgr_identify(uint8 info)
 {
-	XLogRecPtr			lsn;
+	switch (info & XLR_RMGR_INFO_MASK)
+	{
+		case SPOCK_RMGR_RESOURCE_DUMP:
+			return "RESOURCE_DUMP";
+	}
+	return NULL;
+}
 
-	Assert(sap != NULL);
+/*
+ * Build and insert one SPOCK_RMGR_RESOURCE_DUMP record for `progress`.
+ * Returns the inserted record's LSN.
+ */
+static XLogRecPtr
+emit_one_dump_record(SpockResourceDumpEvent event,
+					 uint16 entry_seq, uint16 entry_total,
+					 const SpockApplyProgress *progress)
+{
+	SpockResourceDumpRec rec;
+
+	memset(&rec, 0, sizeof(rec));
+	rec.event_type = (uint8) event;
+	rec.entry_seq = entry_seq;
+	rec.entry_total = entry_total;
+	rec.progress = *progress;
 
 	XLogBeginInsert();
-	XLogRegisterData((char *) sap, sizeof(SpockApplyProgress));
-	lsn = XLogInsert(SPOCK_RMGR_ID, SPOCK_RMGR_APPLY_PROGRESS);
+	XLogRegisterData((char *) &rec, sizeof(rec));
+	return XLogInsert(SPOCK_RMGR_ID, SPOCK_RMGR_RESOURCE_DUMP);
+}
 
-	/*
-	 * Force the WAL record to disk immediately. This ensures that progress
-	 * is durably recorded before we update the in-memory state and continue
-	 * processing. If we crash after updating memory but before the WAL
-	 * flushes, we could lose progress tracking and replay would be incorrect.
-	 */
-	XLogFlush(lsn);
+/*
+ * Emit one WAL record per progress entry, then flush once at the end. If
+ * changed_entries is NULL, walks the full SpockGroupHash; otherwise iterates
+ * the supplied list of SpockApplyProgress*.
+ */
+void
+spock_rmgr_log_resource_dump(SpockResourceDumpEvent event,
+							 List *changed_entries)
+{
+	XLogRecPtr		last_recptr = InvalidXLogRecPtr;
+	uint32			entry_total;
+	uint16			entry_seq = 0;
 
-	return lsn;
+	if (SpockGroupHash == NULL || SpockCtx == NULL)
+		return;
+
+	if (changed_entries != NULL)
+	{
+		ListCell   *lc;
+
+		entry_total = list_length(changed_entries);
+		if (entry_total == 0)
+			return;
+
+		foreach(lc, changed_entries)
+		{
+			SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
+
+			last_recptr = emit_one_dump_record(event, entry_seq++,
+											   (uint16) entry_total, sap);
+		}
+	}
+	else
+	{
+		HASH_SEQ_STATUS scan;
+		SpockGroupEntry *entry;
+
+		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+
+		entry_total = hash_get_num_entries(SpockGroupHash);
+		if (entry_total == 0)
+		{
+			LWLockRelease(SpockCtx->apply_group_master_lock);
+			return;
+		}
+
+		hash_seq_init(&scan, SpockGroupHash);
+		while ((entry = (SpockGroupEntry *) hash_seq_search(&scan)) != NULL)
+			last_recptr = emit_one_dump_record(event, entry_seq++,
+											   (uint16) entry_total,
+											   &entry->progress);
+
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+	}
+
+	if (!XLogRecPtrIsInvalid(last_recptr))
+		XLogFlush(last_recptr);
 }

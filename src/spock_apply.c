@@ -71,6 +71,7 @@
 #include "spock_conflict.h"
 #include "spock_executor.h"
 #include "spock_node.h"
+#include "spock_progress_recovery.h"
 #include "spock_proto_native.h"
 #include "spock_queue.h"
 #include "spock_relcache.h"
@@ -253,6 +254,7 @@ static bool apply_replay_queue_append_entry(ApplyReplayEntry **entry_p,
 static void apply_replay_queue_start_replay(void);
 static void apply_replay_spill_write_entry(int len, char *data);
 static ApplyReplayEntry *apply_replay_spill_read_entry(void);
+static void request_initial_status_update(PGconn *conn, XLogRecPtr startpos);
 
 /* Wrapper for latch for waiting for previous transaction to commit */
 void
@@ -1005,10 +1007,11 @@ handle_commit(StringInfo s)
 			.remote_commit_lsn = end_lsn,
 			.received_lsn = end_lsn,
 			/*
-			 * Include remote_insert_lsn for WAL persistence. This was already
-			 * updated in shmem by UpdateWorkerStats() earlier (either from
-			 * apply_work for protocol 5+, or from handle_commit for protocol 4).
-			 * Without this, crash recovery would lose remote_insert_lsn.
+			 * Carry forward the remote_insert_lsn already in shmem (set by
+			 * UpdateWorkerStats on the most-recent keepalive or 'w' message).
+			 * This keeps the shmem entry coherent after the update below;
+			 * crash recovery of this field is handled by the forced keepalive
+			 * sent right after spock_start_replication, not by any WAL record.
 			 */
 			.remote_insert_lsn = MyApplyWorker->apply_group->progress.remote_insert_lsn,
 			/* XXX: Could we use commit_ts value instead? */
@@ -1018,9 +1021,6 @@ handle_commit(StringInfo s)
 
 		/* XXX: Don't care in production yet */
 		Assert(sap.last_updated_ts >= sap.remote_commit_ts);
-
-		/* WAL after commit, then to shmem */
-		spock_apply_progress_add_to_wal(&sap);
 
 		Assert(MyApplyWorker && MyApplyWorker->apply_group);
 
@@ -2882,6 +2882,56 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 }
 
 /*
+ * Send a one-shot standby status update with replyRequested=1 so the
+ * publisher responds immediately with a keepalive carrying its current
+ * sentPtr. Called once per apply-worker (re)connect to refresh
+ * remote_insert_lsn / received_lsn in shmem without waiting for
+ * wal_sender_timeout/2. Independent of send_feedback's static state.
+ *
+ * Note on ordering: this 'r' message does not jump ahead of any pending
+ * 'w' messages the walsender already has queued. That is fine -- in
+ * protocol v5+ every 'w' header carries the publisher's current insert
+ * position, so UpdateWorkerStats refreshes remote_insert_lsn on the
+ * first 'w' that arrives, often sooner than the eventual 'k'. The
+ * forced keepalive matters most when the publisher is otherwise idle;
+ * when there is data flowing, the data messages do the job.
+ *
+ * Protocol-version note: the 'r' / 'k' framing is the streaming-replication
+ * wire protocol (libpqwalreceiver level), not the spock output-plugin
+ * protocol carried inside 'w' message bodies, so this works on every
+ * negotiable spock protocol version. The 'k' response advances
+ * received_lsn on both v4 and v5+. remote_insert_lsn refresh paths differ:
+ * v5+ takes it from each 'w' header; v4 takes it from COMMIT message
+ * payloads. Until the first commit/keepalive lands, v4's remote_insert_lsn
+ * stays at whatever reconcile pinned it to (origin_lsn) -- correct, but
+ * not "live" -- while v5+ catches up on the very next 'w'.
+ */
+static void
+request_initial_status_update(PGconn *conn, XLogRecPtr startpos)
+{
+	StringInfoData	msg;
+	int64			now = GetCurrentTimestamp();
+
+	initStringInfo(&msg);
+	pq_sendbyte(&msg, 'r');
+	pq_sendint64(&msg, startpos);	/* write */
+	pq_sendint64(&msg, startpos);	/* flush */
+	pq_sendint64(&msg, startpos);	/* apply */
+	pq_sendint64(&msg, now);		/* sendTime */
+	pq_sendbyte(&msg, true);		/* replyRequested */
+
+	elog(DEBUG2, "SPOCK %s: requesting initial status update at %X/%X",
+		 MySubscription->name,
+		 LSN_FORMAT_ARGS(startpos));
+
+	if (PQputCopyData(conn, msg.data, msg.len) <= 0 || PQflush(conn))
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("SPOCK %s: could not send initial status update: %s",
+						MySubscription->name, PQerrorMessage(conn))));
+}
+
+/*
  * Update frequently changing statistics of the apply group
  */
 static void
@@ -3978,13 +4028,13 @@ interval_to_timeoffset(const Interval *interval)
 void
 spock_apply_main(Datum main_arg)
 {
-	int			slot = DatumGetInt32(main_arg);
-	PGconn	   *streamConn;
-	RepOriginId originid;
-	XLogRecPtr	origin_startpos;
-	MemoryContext saved_ctx;
-	char	   *repsets;
-	char	   *origins;
+	int				slot = DatumGetInt32(main_arg);
+	PGconn		   *streamConn;
+	RepOriginId		originid;
+	XLogRecPtr		origin_startpos;
+	MemoryContext	saved_ctx;
+	char		   *repsets;
+	char		   *origins;
 
 	/* Setup shmem. */
 	spock_worker_attach(slot, SPOCK_WORKER_APPLY);
@@ -4052,6 +4102,8 @@ spock_apply_main(Datum main_arg)
 	replorigin_session_origin = originid;
 	origin_startpos = replorigin_session_get_progress(false);
 
+	spock_init_progress_state(origin_startpos);
+
 	/* Start the replication. */
 	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
 									   MySubscription->slot_name, NULL);
@@ -4069,6 +4121,13 @@ spock_apply_main(Datum main_arg)
 							origin_startpos, origins, repsets, NULL,
 							MySubscription->force_text_transfer);
 	pfree(repsets);
+
+	/*
+	 * Ask the publisher to immediately send a keepalive carrying its current
+	 * sentPtr so we can refresh remote_insert_lsn/received_lsn in shmem
+	 * without waiting for wal_sender_timeout/2.
+	 */
+	request_initial_status_update(streamConn, origin_startpos);
 
 	CommitTransactionCommand();
 

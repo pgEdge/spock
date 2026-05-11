@@ -21,10 +21,20 @@
  *       * nattached, prev_processed_cv  -- apply-worker coordination (runtime)
  *
  * Persistence:
- *   - WAL: authoritative. spock_rmgr_redo() replays progress into this hash.
- *   - File: PGDATA/spock/resource.dat on clean shutdown (on_shmem_exit).
- *           Load during shmem_startup_hook to seed shmem quickly. WAL replay
- *           runs after and overrides stale file contents.
+ *   - File: PGDATA/spock/resource.dat, written on clean shutdown
+ *           (spock_on_shmem_exit) and after table-sync / add_node bulk
+ *           updates. Loaded during shmem_startup_hook to seed shmem on
+ *           restart. reconcile_progress_with_origin() then reconciles
+ *           remote_commit_lsn against pg_replication_origin at apply-worker
+ *           start; timestamp fields are cleared if the file LSN is stale.
+ *           remote_insert_lsn and received_lsn refresh within milliseconds
+ *           of reconnect via the forced keepalive sent by
+ *           request_initial_status_update(). remote_commit_ts is
+ *           repopulated by recover_progress_timestamps_from_commit_ts()
+ *           scanning pg_commit_ts.
+ *   - WAL: not authoritative for state. The RMGR (id 144) emits forensic
+ *           dump markers only; redo emits a LOG line and does not touch
+ *           shmem.
  *
  *
  * Notes:
@@ -54,6 +64,7 @@
 #include "spock_worker.h"
 #include "spock_compat.h"
 #include "spock_group.h"
+#include "spock_rmgr.h"
 
 HTAB	   *SpockGroupHash = NULL;
 
@@ -69,8 +80,8 @@ static void spock_group_resource_load(void);
  * We use C99 designated initializers to be explicit about what we're
  * initializing and to avoid fragile pointer arithmetic.
  */
-static inline void
-init_progress_fields(SpockApplyProgress *progress)
+void
+spock_init_progress_fields(SpockApplyProgress *progress)
 {
 	/* Key should already be set by hash_search or caller */
 	Assert(OidIsValid(progress->key.dbid));
@@ -219,7 +230,7 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 		 * New entry: the hash table already copied 'key' into
 		 * entry->progress.key, now initialize the remaining progress fields.
 		 */
-		init_progress_fields(&entry->progress);
+		spock_init_progress_fields(&entry->progress);
 
 		pg_atomic_init_u32(&entry->nattached, 0);
 		ConditionVariableInit(&entry->prev_processed_cv);
@@ -372,7 +383,7 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 		 * New entry: the hash table already copied sap->key into
 		 * entry->progress.key, now initialize the remaining fields.
 		 */
-		init_progress_fields(&entry->progress);
+		spock_init_progress_fields(&entry->progress);
 
 		pg_atomic_init_u32(&entry->nattached, 0);
 		ConditionVariableInit(&entry->prev_processed_cv);
@@ -649,27 +660,13 @@ spock_group_resource_load(void)
 	CloseTransientFile(fd);
 }
 
-void
-spock_checkpoint_hook(XLogRecPtr checkPointRedo, int flags)
-{
-	/*
-	 * Dump current progress state to resource.dat at every checkpoint.
-	 *
-	 * resource.dat and WAL cooperate for crash recovery:
-	 *   - resource.dat seeds shmem with checkpoint-time values on restart
-	 *   - WAL replay (spock_rmgr_redo) advances any entries written after
-	 *     checkPointRedo
-	 *
-	 * Without dumping at regular checkpoints, a crash after a checkpoint
-	 * leaves resource.dat with values from the last clean shutdown. If apply
-	 * workers were idle during the checkpoint interval (provider unreachable),
-	 * no SPOCK_RMGR_APPLY_PROGRESS records exist after checkPointRedo to
-	 * recover from either, causing spock.progress to show stale values or
-	 * missing entries after crash recovery.
-	 */
-	spock_group_resource_dump();
-}
-
+/*
+ * spock_group_progress_update_list
+ *
+ * Update shmem progress for each entry in lst after a table COPY completes.
+ * Entries are applied via spock_group_progress_update (MAX-by-LSN semantics).
+ * A single spock_group_resource_dump() after the loop persists the result.
+ */
 void
 spock_group_progress_update_list(List *lst)
 {
@@ -678,8 +675,6 @@ spock_group_progress_update_list(List *lst)
 	foreach (lc, lst)
 	{
 		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
-
-		spock_apply_progress_add_to_wal(sap);
 
 		spock_group_progress_update(sap);
 
@@ -692,6 +687,10 @@ spock_group_progress_update_list(List *lst)
 			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
 	}
 
+	/* Persist all entries atomically via a single resource.dat dump. */
+	spock_group_resource_dump();
+	spock_rmgr_log_resource_dump(SPOCK_DUMP_TABLE_SYNC, lst);
+
 	/*
 	 * Free the list and each object. Be careful here because it is inside
 	 * a memory context that is rarely reset.
@@ -702,9 +701,12 @@ spock_group_progress_update_list(List *lst)
 /*
  * spock_group_progress_force_set_list
  *
- * Write resume_lsn into the shmem progress entry for each peer during add_node.
- * Uses MAX-by-LSN: preserves the existing entry when it is already >= resume_lsn,
- * preventing double-apply from overwriting a live apply worker's higher value.
+ * Unconditionally write resume_lsn into the shmem progress entry for each
+ * peer during add_node. The resume_lsn from read_peer_progress is the
+ * COPY-snapshot boundary and is authoritative: the new node must replay
+ * from there, not from any live apply worker's current position.
+ *
+ * A single spock_group_resource_dump() after the loop persists the result.
  */
 void
 spock_group_progress_force_set_list(List *lst)
@@ -740,37 +742,31 @@ spock_group_progress_force_set_list(List *lst)
 
 		if (!found)
 		{
-			init_progress_fields(&entry->progress);
 			pg_atomic_init_u32(&entry->nattached, 0);
 			ConditionVariableInit(&entry->prev_processed_cv);
 		}
 		else if (entry->progress.remote_commit_lsn >= sap->remote_commit_lsn)
 		{
-			/*
-			 * Existing LSN >= resume_lsn.  Unconditionally overwrite: the
-			 * value from read_peer_progress is authoritative because
-			 * it was captured at COPY snapshot time.  The apply worker may
-			 * have advanced past it since then, but any data it applied
-			 * after the snapshot is NOT in the COPY — so the new node must
-			 * replay from the snapshot boundary, not from the worker's
-			 * current position.
-			 */
-			elog(LOG, "SPOCK: force-set %d->%d overwriting: existing=%X/%X -> resume_lsn=%X/%X",
+			elog(LOG, "SPOCK: force-set %d->%d backwards overwrite: existing=%X/%X -> resume_lsn=%X/%X",
 				 sap->key.remote_node_id, MySubscription->target->id,
 				 LSN_FORMAT_ARGS(entry->progress.remote_commit_lsn),
 				 LSN_FORMAT_ARGS(sap->remote_commit_lsn));
 		}
-		else
-		{
-			/* Stale entry below resume_lsn; will be reset after WAL write succeeds. */
-		}
 
-		/* WAL-log before shmem update; skipped above when existing LSN is higher. */
-		spock_apply_progress_add_to_wal(sap);
+		/*
+		 * Force-set: unconditionally adopt sap as authoritative. Cannot use
+		 * progress_update_struct here -- its max-by-timestamp merge skips
+		 * remote_commit_lsn when sap->remote_commit_ts == 0, which is a legal
+		 * shape when the peer is post-reconcile and pre-recovery.
+		 */
+		entry->progress = *sap;
 
-		/* Now safe to mutate shmem: WAL write succeeded. */
-		init_progress_fields(&entry->progress);
-		progress_update_struct(&entry->progress, sap);
+		/* Preserve the insert_lsn >= commit_lsn invariant. */
+		if (entry->progress.remote_insert_lsn < entry->progress.remote_commit_lsn)
+			entry->progress.remote_insert_lsn = entry->progress.remote_commit_lsn;
+		if (entry->progress.received_lsn < entry->progress.remote_commit_lsn)
+			entry->progress.received_lsn = entry->progress.remote_commit_lsn;
+
 		LWLockRelease(SpockCtx->apply_group_master_lock);
 
 		elog(LOG, "SPOCK: force-set %d->%d commit_lsn=%X/%X insert_lsn=%X/%X",
@@ -778,6 +774,10 @@ spock_group_progress_force_set_list(List *lst)
 			 LSN_FORMAT_ARGS(sap->remote_commit_lsn),
 			 LSN_FORMAT_ARGS(sap->remote_insert_lsn));
 	}
+
+	/* Persist all entries atomically via a single resource.dat dump. */
+	spock_group_resource_dump();
+	spock_rmgr_log_resource_dump(SPOCK_DUMP_ADD_NODE, NULL);
 
 	list_free_deep(lst);
 }
