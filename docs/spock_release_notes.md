@@ -1,51 +1,479 @@
 # Spock Release Notes
 
-## Spock 5.1 on xxx
+## Spock 6.0.0
 
-### Logical Slot Failover Improvements
+Spock 6.0.0 supersedes the 5.0.x line.  The on-disk catalog format and the
+GUC surface both change in this release; see *Upgrading* below before
+running `ALTER EXTENSION spock UPDATE`.
 
-* On **PostgreSQL 17+**, Spock now creates all logical replication slots with
+### Highlights
+
+* **Catastrophic node failure recovery** — new ACE-based workflow with
+  origin-preserving repair prevents silent data divergence after node loss.
+* **Progress tracking moved to WAL + shared memory** — eliminates
+  heavyweight catalog writes in the apply hot path; `spock.progress` is now
+  a view backed by `spock.apply_group_progress()`.
+* **Delta apply reimplemented via security labels** — no longer requires
+  PostgreSQL core patches; configuration replicates automatically across
+  nodes via AutoDDL.
+* **More granular conflict classification** — seven conflict types (up from
+  four), with origin-aware suppression and DELETE conflicts now resolved
+  through timestamp-based resolution.
+* **Per-subscription conflict statistics** on PostgreSQL 18+ via a custom
+  pgstat kind.
+* **Liveness and feedback refactor** — TCP keepalive replaces the fragile
+  `wal_sender_timeout` workaround; new `spock.apply_idle_timeout` GUC.
+* **Logical slot failover** uses native PostgreSQL slotsync on PG17+ /
+  PG18+.
+* **Rolling upgrade support** — protocol negotiation (v4 for 5.0.x, v5 for
+  6.0+) enables zero-downtime rolling upgrades.
+* **Exception handling refactor** — stable behaviour under TRANSDISCARD /
+  SUB_DISABLE; original error messages preserved in `spock.exception_log`.
+* **Replay queue spills to disk** instead of refetching from the publisher.
+
+### Catastrophic node failure recovery
+
+Spock 6.0 documents and supports a structured recovery workflow for the
+scenario where a node fails permanently and one or more surviving nodes are
+lagging behind.  Using the
+[Active Consistency Engine (ACE)](https://github.com/pgEdge/ace), operators
+can:
+
+1. Identify which rows are missing on lagging survivors using
+   `table-diff --preserve-origin`.
+2. Repair the lagging node from a fully-synchronized survivor using
+   `table-repair --recovery-mode --source-of-truth --preserve-origin`.
+
+The `--preserve-origin` flag is critical: it ensures that repaired rows
+retain their original origin ID and commit timestamp, so replication
+metadata stays correct and the cluster remains conflict-free.  Without it,
+repaired rows would appear as local changes and could trigger false
+conflicts.
+
+Both single-node and multi-node failure scenarios are covered.  See
+[Catastrophic Node Failure Recovery](recovery/catastrophic_node_failure.md)
+for the full guide.
+
+### Replication progress tracking
+
+Replication progress is no longer tracked in the `spock.progress` catalog
+table.  Spock now tracks it in shared memory, logs progress to WAL via a
+custom resource manager so it survives crash recovery, and persists a
+snapshot to `$PGDATA/spock/resource.dat` on clean shutdown.  At each
+checkpoint, group data and per-group progress records are emitted to WAL.
+
+The catalog surface has been restructured accordingly:
+
+* `spock.progress` is now a **view** over the new `spock.apply_group_progress()`
+  set-returning function, filtered to the current database.  Code that read
+  the previous *table* of the same name continues to work, but writes are
+  no longer possible.  Use `apply_group_progress()` directly (or the view)
+  for live data, and use the new
+  `spock.read_peer_progress(slot, provider_node_id, subscriber_node_id)`
+  function during slot snapshot import.
+* `spock.lag_tracker` view redefined.  The old `last_received_lsn` column
+  has been renamed to `commit_lsn` to reflect what it actually is, and a
+  new `received_lsn` column reports the last LSN sent by the publisher
+  (matching the `pgoutput` protocol convention).
+* `remote_insert_lsn` is now updated on every incoming WAL record rather
+  than only on COMMIT, so lag readings are more responsive.
+
+### Exception handling improvements
+
+* Fixed TRANSDISCARD / SUB_DISABLE handling during the commit phase in
+  retry mode, preventing apply-worker death loops.
+* Eliminated "(unknown action)" in error-context strings and NULL error
+  messages in `exception_log`.  The originally-failing row now carries the
+  real error message; bystander rows in the same transaction are recorded
+  as `unavailable` instead of `unknown`.
+* Added `initial_operation` field to track which DML operation caused a
+  transaction discard.
+* Subscriptions stuck in an unrecoverable synchronization stage are now
+  disabled rather than restarted indefinitely.
+
+### Exception replay: spill to disk
+
+`spock.exception_replay_queue_size` has changed semantics.
+
+* **Before**: a single byte threshold (default 4 MiB ≈ 4194304).  When the
+  in-memory queue exceeded the threshold, Spock could not replay the
+  transaction and would refetch it from the publisher.
+* **Now**: a soft cap (default `4` MB, unit `MB`).  When the queue exceeds
+  the cap, subsequent entries spill to a temporary file on disk.  Set to
+  `0` to disable spilling and allow unbounded memory use (improves
+  throughput for very large transactions; allocation failure falls back to
+  `spock.exception_behaviour`).
+
+`spock.exception_behaviour` continues to control the action on
+unrecoverable errors:
+
+| Value          | Action                                                   |
+|----------------|----------------------------------------------------------|
+| `discard`      | Skip the failed transaction and continue replication.    |
+| `transdiscard` | Roll back the failed transaction and continue.           |
+| `sub_disable`  | Disable the subscription and exit cleanly.               |
+
+### Logical Slot Failover
+
+* On **PostgreSQL 17+**, Spock creates all logical replication slots with
   the `FAILOVER` flag, allowing PostgreSQL's built-in slotsync worker
   (`sync_replication_slots = on`) to automatically synchronize them to
   physical standbys.
-* On **PostgreSQL 18+**, Spock's own `spock_failover_slots` background worker
-  is no longer registered. The native PostgreSQL slotsync worker fully
-  replaces it. See the [Logical Slot Failover](configuring.md#logical-slot-failover-ha-standby)
-  section in the configuration guide for required `postgresql.conf` settings.
-* On **PostgreSQL 17**, Spock's worker remains active but automatically yields
-  to the native slotsync worker if `sync_replication_slots = on` is set,
-  preventing conflicts.
+* On **PostgreSQL 18+**, Spock's own `spock_failover_slots` background
+  worker is no longer registered.  The native PostgreSQL slotsync worker
+  fully replaces it.  See the
+  [Logical Slot Failover](configuring.md#logical-slot-failover-ha-standby)
+  section of the configuration guide for required `postgresql.conf`
+  settings.
+* On **PostgreSQL 17**, Spock's worker remains active but automatically
+  yields to the native slotsync worker if `sync_replication_slots = on`
+  is set, preventing conflicts.
 
-This release deprecates the spock.exception_replay_queue_size GUC. Previously
-Spock restored transaction changes up to the size defined by the
-spock.exception_replay_queue_size GUC. If an error occurred, the transaction
-was replayed, and if the size was less than the exception queue, the cache
-was used. If the size was greater than the limit, it was resent from the
-origin.
+### Delta apply reimplemented via security labels
 
-Now no restriction exists. Spock will use memory until memory is exhausted
-(improving performance for huge transactions). If an allocation fails, Spock
-performs as specified by the spock.exception_behaviour GUC:
+The delta-apply feature (which computes column deltas rather than
+overwriting values) has been completely reimplemented:
 
-Exception handling behavior is now controlled by the `spock.exception_behaviour` GUC, which accepts the following values:
+| Aspect                  | v5.0                                                                                | v6.0                                                                                            |
+|-------------------------|-------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
+| Configuration mechanism | PostgreSQL core patches adding `attoptions` (`log_old_value`, `delta_apply_function`) | PostgreSQL security labels (`SECURITY LABEL FOR spock ON COLUMN ...`)                           |
+| Core patches required   | Yes (one per PG version)                                                            | No — pure extension                                                                             |
+| Cross-node replication  | Manual setup required on each node                                                  | Automatic — `SECURITY LABEL` commands are replicated by AutoDDL                                 |
+| Nullable columns        | Silently fell back to plain NEW value when OLD was NULL                             | Explicitly rejected as an error (`ERRCODE_NULL_VALUE_NOT_ALLOWED`)                              |
+| Replica identity        | Manual configuration                                                                | Automatically set to `REPLICA IDENTITY FULL` when delta_apply is enabled; reverted when cleared |
 
-- `discard`: Skip the failed transaction and continue replication.
-- `transdiscard`: Roll back the failed transaction and continue replication.
-- `sub_disable`: Disable the subscription and exit cleanly.
+Use `spock.delta_apply(rel, att_name, to_drop)` to attach or clear the
+label on a column.  Spock registers its own `pg_seclabel` provider so the
+label is recognized and validated by PostgreSQL.
 
-* Change Spock replication health tracking routines and views:
-  - apply_group_progress, spock.progress, and spock.lag_tracker.
-  - rename last_received_lsn to commit_lsn to more precisely identify the
-    underlying value.
-  - introduce received_lsn - points to the last LSN, sent by the publisher,
-    exactly like the pgoutput protocol does.
-  - remote_insert_lsn reported more frequently, on each incoming WAL record,
-    not only on a COMMIT, as it was before.
+### More granular conflict classification
+
+v5.0 classified conflicts into four types.  v6.0 expands this to seven,
+adopting PostgreSQL-native conflict-type naming:
+
+| v5.0 type       | v6.0 type(s)                                | What changed                                                                                                                                                                                                                                                                |
+|-----------------|---------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `insert_exists` | `insert_exists`                             | No change.                                                                                                                                                                                                                                                                  |
+| `update_update` | `update_exists` / `update_origin_differs`   | Spock now distinguishes between an update whose local origin matches the incoming origin (suppressed silently) and one whose local origin differs (evaluated through resolution).  `update_exists` is used for update constraint violations.                               |
+| `update_delete` | `update_missing`                            | Renamed for clarity.                                                                                                                                                                                                                                                        |
+| `delete_delete` | `delete_missing` / `delete_origin_differs`  | Spock now logs whether the missing row was last modified by a different origin.                                                                                                                                                                                              |
+| *(new)*         | `delete_exists`                             | A remote DELETE arrives, but the local row has been updated more recently than the delete's timestamp.  The newer local version is preserved.                                                                                                                                |
+
+Existing `spock.resolutions` data is migrated automatically during
+`ALTER EXTENSION spock UPDATE` (see *Catalog changes* below).
+
+### DELETE operations now use conflict resolution
+
+In v5.0, when a DELETE found a matching local row, it was applied
+immediately without consulting conflict resolution.  In v6.0, DELETE
+operations go through timestamp-based resolution, just like updates.  This
+enables the new `delete_exists` classification — Spock can determine
+whether a delete should be applied or whether a newer local version should
+be preserved.
+
+### Cascade replication origin tracking
+
+v6.0 adds support for tracking and forwarding replication origins in
+cascade topologies (Node A → Node B → Node C).  The origin name is now
+included in ORIGIN messages when the protocol version is 5 or higher.
+This ensures that conflict evaluation on Node C has accurate origin
+information even when changes pass through intermediate Node B.
+
+### Per-subscription conflict statistics
+
+On PostgreSQL 18+, Spock registers a custom pgstat kind
+(`SPOCK_PGSTAT_KIND_LRCONFLICTS`) to count replication conflicts per
+subscription.  New SQL functions
+`spock.get_subscription_stats(subid, peer_node_id)` and
+`spock.reset_subscription_stats(subid)` expose per-subscription apply
+statistics.  On PostgreSQL versions before 18 these functions raise a
+feature-not-supported error.
+
+### Liveness and feedback refactoring
+
+The `wal_sender_timeout`-based liveness mechanism has been replaced with a
+cleaner two-layer model:
+
+* **TCP keepalive** as the primary liveness detector (detects dead network
+  or host in ~25 seconds).
+* **`wal_sender_timeout=0`** on replication connections so the walsender
+  never disconnects due to missing feedback.
+* **`spock.apply_idle_timeout`** (default 300s) as a subscriber-side
+  safety net for hung-but-connected walsenders.
+
+This replaces the `maybe_send_feedback()` workaround that coupled
+subscriber behaviour to a server GUC it cannot control.
+
+### Read-only mode refactoring
+
+Read-only mode has been refactored to use PostgreSQL's native
+`DefaultXactReadOnly` mechanism instead of manual command-type filtering:
+
+* `READONLY_USER` renamed to `READONLY_LOCAL` (the old name is retained as
+  a backward-compatible alias) to clarify that it restricts local
+  (non-replication) connections.
+* In `READONLY_ALL` mode, the apply worker sends keepalive feedback but
+  skips applying new transactions.
+* Read-only mode changes are detected before applying the next
+  transaction (`CHECK_FOR_INTERRUPTS` moved to top of the replay loop).
+
+### Rolling upgrade via protocol negotiation
+
+Spock now negotiates an output-plugin protocol version between publisher
+and subscriber (Protocol 4 for v5.0.x, Protocol 5 for v6.0+).  This
+enables zero-downtime rolling upgrades: a v6.0 subscriber can apply from
+a v5 publisher and vice versa, with protocol-5-only features (such as
+cascade origin forwarding) activated only when both sides support them.
+
+### Zodan: data-loss fix when adding a node under write load
+
+When adding a node while existing nodes were handling writes, the new
+node could permanently miss rows or accumulate stale updates.  The root
+cause was that apply workers were not paused during slot creation
+(sub-second operation), so the captured resume LSN could fall before the
+COPY boundary.  The fix pauses apply workers during slot creation and
+captures the resume LSN deterministically.
+
+Additional Zodan fixes in 6.0:
+
+* Slots and subscriptions are now named consistently as
+  `sub_{provider}_{subscriber}` via the new `spock.gen_sub_name()` helper.
+* `remove_node` drops subscriptions from the `spock.subscription` catalog
+  instead of guessing names.
+* Phase 3 catch-up wait aligned and `spock.sync_event()` parameterised to
+  avoid the Phase 9 handshake deadlock.
+
+### AutoDDL improvements
+
+AutoDDL has been refactored and hardened:
+
+* **Centralized in `spock_autoddl.c`** — all AutoDDL plumbing moved into a
+  single module for maintainability.
+* **Simplified control flow** — dropped the recursive tag-matching
+  heuristic in favour of clearer early-exit filters.
+* **Extension script guard** — internal subcommands during
+  `CREATE EXTENSION` / `ALTER EXTENSION UPDATE` are no longer replicated.
+* **Transaction guards** — AutoDDL hook no longer fails when utility
+  commands (e.g., `CLUSTER` without a table name) execute outside a
+  transaction context.
+* **Filtered non-transactional DDL** — commands that cannot execute inside
+  transaction blocks on subscribers (e.g., `CLUSTER` on partitioned
+  tables, `VACUUM`) are filtered on the publisher side before being
+  queued.
+
+### Memory and stability
+
+* **Replay queue spills to disk** (see *Exception replay* above) instead of
+  triggering a worker restart, eliminating the unpredictable restarts and
+  replication lag spikes seen with large transactions.
+* **Resource leak fixes**:
+  * Row filter processing no longer leaks resource-owner entries when many
+    rows are filtered out.
+  * `remotetuple` is now freed after use in the conflict reporting path.
+  * `signal_workers` list moved to `TopMemoryContext` so it is not accessed
+    after `TopTransactionContext` is reset on abort.
+* **Shared memory initialization** centralized in `spock_shmem.c` with
+  proper handling of startup, checkpointer, and background-worker
+  processes.
+
+### Bug fixes specific to 6.0
+
+* **WAL recovery crash after apply-worker failure** — when an apply worker
+  crashed and triggered a server restart, WAL recovery could fail due to
+  improperly initialized shared memory structures.  Shared memory init has
+  been refactored to handle startup, checkpointer, and background-worker
+  processes correctly.
+* **`remote_insert_lsn` lost after crash recovery** — the value was not
+  included in WAL records and defaulted to 0 after crash recovery,
+  breaking lag tracking in `spock.lag_tracker`.  Now included in the
+  custom WAL resource-manager records.
+* **Generated columns** — tables containing `GENERATED ALWAYS AS … STORED`
+  columns caused replication errors because generated columns were treated
+  as regular columns during COPY, protocol messages, default-value
+  filling, and conflict resolution.  Now properly excluded.
+* **Replica index lookup with `REPLICA IDENTITY FULL`** — cached index
+  information was not invalidated before calling
+  `RelationGetReplicaIndex()`, causing incorrect index usage when
+  switching between replica identity modes.
+* **Hash table iteration safety** — fixed removal-during-iteration
+  corruption, missing NULL checks for `HASH_FIXED_SIZE` tables, and torn
+  reads of 64-bit counters without spinlock protection.
+* **Skip LSN mechanism** — a successfully skipped transaction in
+  `SUB_DISABLE` mode would incorrectly disable the subscription again due
+  to LSN mismatch between the skip point (BEGIN LSN) and the clear point
+  (COMMIT LSN).  Exception-handling state is now cleared after a
+  successful skip.
+* **Table sync failure detection** — COPY failures during table sync were
+  silently swallowed and the sync worker retried indefinitely.
+  `PQgetResult()` is now called after `PQputCopyEnd()` to detect failures,
+  and a new `SYNC_STATUS_FAILED` state stops retry loops and surfaces
+  clear error messages.
+
+### Security
+
+* **DSN password obfuscation** — passwords in DSN connection strings are
+  no longer visible in error messages or log output.  A message-filter
+  hook wipes password characters from error messages before they are
+  written.
+
+### Other notable changes
+
+* **Protocol cleanup** — removed unused SPI API support from the Spock
+  protocol; fixed multiple protocol parameter validation issues.
+* **Prevented adding tables from ignored schemas to replication sets.**
+* **Snowflake removal** — removed snowflake-related functions and
+  documentation.
+* **SpockCtrl removal** — removed the SpockCtrl utility code.
+* **PostgreSQL 18 support** — compatibility work across core patches,
+  initdb, row filters, and compiler warnings.
+* **Source tree restructured** under `src/` and `include/` directories.
+
+### GUC changes
+
+**New**
+
+* `spock.apply_idle_timeout` (int seconds, default `300`, `SIGHUP`) —
+  safety net for detecting a hung walsender that keeps the TCP
+  connection alive but stops sending data.  The timer resets on any
+  received message.  Set to `0` to disable and rely solely on TCP
+  keepalive for liveness detection.
+* `spock.output_delay` (int milliseconds, default `0`, range 0–60000,
+  `SIGHUP`) — artificial delay in the publisher-side output plugin.
+  Used to reproduce conflict and lag scenarios in tests.
+* `spock.resolutions_retention_days` (int days, default `100`,
+  `SIGHUP`) — TTL for rows in `spock.resolutions`.  Rows older than
+  this are deleted periodically by the apply worker.  Set to `0` to
+  disable automatic cleanup.  Complements
+  `spock.cleanup_resolutions(days)` and the new index on
+  `resolutions(log_time)`.
+* `spock.enable_quiet_mode` (bool, default `off`, `SIGHUP`) — when
+  enabled, downgrades DDL replication INFO/WARNING messages to LOG
+  level and suppresses dependent-object reporting in `DROP CASCADE`
+  operations.  Intended for regression tests and production
+  environments where less verbose output is desired.
+
+**Removed**
+
+* `spock.use_spi` — no longer used; the legacy SPI apply path is gone.
+* `spock.feedback_frequency` — replaced by internal pacing.
+* `spock.batch_inserts` — batching is now driven by the protocol layer.
+
+**Changed**
+
+* `spock.exception_replay_queue_size`: default `4194304` → `4`, unit
+  changed from bytes to MB, semantics changed from a hard threshold (with
+  publisher refetch) to a soft cap (with disk spill).  See above.
+
+### Catalog changes
+
+* New: `spock.sub_id_generator` sequence (replaces inline oid-from-counter
+  generation for subscription rows).
+* New index `spock.resolutions(log_time)` to support
+  `spock.cleanup_resolutions()`.
+* `spock.resolutions.conflict_type` values renamed during upgrade:
+  `update_update` → `update_exists`, `update_delete` → `update_missing`,
+  `delete_delete` → `delete_missing`.  `insert_exists` is unchanged.
+* `spock.subscription.sub_skip_schema` is now correctly typed as `text[]`
+  (the column was added as `text` in 5.0.2 but the C code always treated
+  the bytes as `text[]`; the 5.0.7 step migration relabels the catalog so
+  no rewrite or downtime is required).
+
+### New functions
+
+* `spock.apply_group_progress()` — set-returning health view (backs
+  `spock.progress`).
+* `spock.read_peer_progress(slot, provider_node_id, subscriber_node_id)`
+  — used by zodan when importing a slot snapshot.
+* `spock.get_subscription_stats(subid, peer_node_id)` /
+  `spock.reset_subscription_stats(subid)` — per-subscription apply
+  statistics.
+* `spock.cleanup_resolutions(days int DEFAULT NULL)` — TTL-based cleanup
+  of the resolutions log.  Default permissions revoke EXECUTE from
+  PUBLIC.
+* `spock.sub_alter_options(subscription_name name, options text[])` —
+  bulk subscription option changes, with input validation and no-op
+  restart skipping.
+* `spock.delta_apply(rel regclass, att_name name, to_drop boolean DEFAULT false)`
+  — declarative wrapper that sets or clears the delta-apply security
+  label on a column.  The underlying per-type C functions are unchanged.
+
+### Removed functions
+
+* `spock.convert_column_to_int8(regclass, smallint)` — superseded.
+* `spock.convert_sequence_to_snowflake(regclass)` — superseded.
+
+### Bug fixes carried forward from the 5.0.x line
+
+These shipped in 5.0.6 – 5.0.8 and are included in 6.0.0:
+
+* Handle upstream connection loss cleanly without replication-origin
+  advance leak.  Previously a stale libpq socket fd produced an
+  `epoll_ctl(EINVAL)` cascade and the recovery path could silently
+  advance the replication origin past an in-flight remote transaction,
+  causing it to be missed on reconnect (and, with
+  `spock.exception_behaviour = transdiscard`, its rows would land in
+  `spock.exception_log` with `error_message = unknown`).  The apply
+  worker now `PG_RE_THROW`s on connection-class errors and the manager
+  respawns it from the last durably-committed remote LSN.
+* Preserve the original error message in `spock.exception_log` when
+  applying under `transdiscard` / `sub_disable`.  The originally-failing
+  row now carries the real error message; bystander rows in the same
+  transaction are recorded as `unavailable` instead of `unknown`.
+* zodan: name slots and subscriptions consistently
+  (`sub_{provider}_{subscriber}`) via the new `spock.gen_sub_name()`
+  helper; `remove_node` drops subscriptions from the
+  `spock.subscription` catalog instead of guessing names; pause apply
+  workers during slot creation to prevent data loss when adding a new
+  node; align Phase 3 catch-up wait and parameterise
+  `spock.sync_event()` to avoid the Phase 9 handshake deadlock.
+* Spock now registers its own `pg_seclabel` provider (added in 5.0.8).
+  The new `spock.delta_apply(rel, att_name, to_drop)` plpgsql wrapper in
+  6.0.0 uses it to attach and clear the `spock.delta_apply` label on
+  individual columns.
+* Prevent data loss on `resync_table` when the subscriber is read-only
+  (SPOC-440).
+* Fix stale `local_tuple` pointer in the INSERT exception path for a
+  missing relation; `SUB_DISABLE` now exits cleanly instead of
+  dereferencing freed memory.
+* Suppress repeated `hot_standby_feedback off` ERROR spam when a standby
+  is used for reporting (not failover).
+* Fix stack-use-after-scope in `spock_connect_base()` (ASan finding).
+
+> **Pending backport to main (still on `v5_STABLE` only at the time of
+> writing — verify before tagging 6.0.0)**:
+> `apply_delay` dangling pointer in `subscription_fromtuple` (v5
+> commit `991b9e8b`), the `CurrentResourceOwner` redirect in the
+> delta-apply subtransaction path (`bbe60f3a`), and the
+> `apply_replay_bytes` `int` → `uint64` overflow fix (`b4ba9bdf`).
+> These should be cherry-picked to main and this note removed before
+> release.
+
+### Upgrading
+
+The upgrade from 5.0.8 to 6.0.0 is a single `ALTER EXTENSION spock UPDATE`
+once the binaries are swapped.  The upgrade:
+
+* drops the legacy `spock.progress` table and recreates it as a view,
+* replaces the `spock.lag_tracker` view definition,
+* migrates `spock.resolutions.conflict_type` values,
+* adds the new functions and the `sub_id_generator` sequence,
+* refreshes the parallel-safety attributes on `spock.md5_agg_sfunc` and
+  `spock.spock_gen_slot_name`.
+
+Only `5.0.8 → 6.0.0` is shipped as a direct upgrade.  Earlier 5.0.x
+installs should first chain forward through the step migrations
+(`5.0.6 → 5.0.7 → 5.0.8`) and then take the `5.0.8 → 6.0.0` step.
+Versions older than 5.0.0 must first be upgraded to a 5.0.x release
+through the 4.0.x → 5.0.0 path.
 
 
 ## Spock 5.0.6
 
 ### New Features
+* New `spock.feedback_frequency` GUC that controls how often feedback is
+  sent to the WAL sender. Feedback is sent every *n* messages, where *n*
+  is the configured value. Note that feedback is also sent every
+  `wal_sender_timeout / 2` seconds.
 * New `spock.log_origin_change` GUC to control logging of row origin changes
   to the PostgreSQL log. Origin changes caused by replication are no longer
   written to the `spock.resolutions` table, as they are informational and not
