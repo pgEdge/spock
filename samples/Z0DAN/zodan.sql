@@ -353,9 +353,10 @@ LANGUAGE plpgsql
 AS
 $$
 DECLARE
-    remotesql text;
-    result RECORD;
-    exists_count int;
+    remotesql      text;
+    result         RECORD;
+    exists_count   int;
+    remote_version int;
 BEGIN
     -- ============================================================================
     -- Step 1: Check if replication slot already exists on remote node
@@ -383,11 +384,27 @@ BEGIN
 
     -- ============================================================================
     -- Step 2: Build remote SQL for replication slot creation
+    --         On PG17+ pass failover := true so the slot is picked up by the
+    --         native slotsync worker (sync_replication_slots = on) and is
+    --         synchronized to physical standbys, matching what Spock does
+    --         on its own CREATE_REPLICATION_SLOT path (see spock_sync.c).
     -- ============================================================================
-    remotesql := format(
-        'SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, %L)',
-        slot_name, plugin
-    );
+    SELECT v INTO remote_version
+      FROM dblink(node_dsn, 'SHOW server_version_num') AS t(v int);
+
+    IF remote_version >= 170000 THEN
+        remotesql := format(
+            'SELECT slot_name, lsn '
+            'FROM pg_create_logical_replication_slot(%L, %L, false, false, true)',
+            slot_name, plugin
+        );
+    ELSE
+        remotesql := format(
+            'SELECT slot_name, lsn '
+            'FROM pg_create_logical_replication_slot(%L, %L)',
+            slot_name, plugin
+        );
+    END IF;
 
     IF verb THEN
         RAISE NOTICE '[QUERY] %', remotesql;
