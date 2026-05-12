@@ -107,8 +107,11 @@ SELECT spock.alter_sequence_set_kind('sf_seq'::regclass, 'local');
 -- is what we test, not a magic "< 100" -- a future change to the
 -- default start would otherwise make the test pass by accident.
 SELECT nextval('sf_seq') AS local_value;
--- local_value must be small (definitely below 2^22, which is the
--- smallest possible snowflake value).
+-- local_value must be well below the snowflake range.  Even the first
+-- snowflake value after the epoch is at least (1 << 22) once the
+-- millisecond timestamp field is non-zero; in practice values are far
+-- larger (~2^53 to 2^54).  A local-managed sequence at start = 1
+-- produces values below 2^22 for any conceivable use case.
 SELECT currval('sf_seq') < (1::bigint << 22) AS reverted_to_local;
 
 -- ------------------------------------------------------------------------

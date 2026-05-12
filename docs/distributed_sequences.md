@@ -42,7 +42,7 @@ fails to load with an unresolved-symbol error.
 |--------------------------------|---------|----------------|-------------|---------|
 | `spock.max_managed_sequences`  | integer | postmaster     | 1024        | Maximum number of sequences that may be managed concurrently. Each slot consumes a small amount of shared memory (≈24 bytes). Changing this value requires a server restart. |
 | `spock.default_sequence_kind`  | enum    | superuser      | `local`     | Method applied to sequences that have no explicit row in `spock.sequence_kind`. Valid values: `local`, `snowflake`. |
-| `spock.snowflake_node_id`      | integer | postmaster     | 0           | Node identifier embedded in every Snowflake value generated on this node. Must be unique cluster-wide, in the range 1..1023. If 0, Spock derives the value from `spock.node` at first use; this is intended for single-node testing only. |
+| `spock.snowflake_node_id`      | integer | postmaster     | 0           | Node identifier embedded in every Snowflake value generated on this node. Permitted values: 0..1023. The value 0 is a sentinel meaning "derive from `spock.node` at first use." Set to a non-zero, cluster-wide-unique value (1..1023) for production. An explicit non-zero is required if `spock.node` is not configured; the first `nextval()` against a snowflake sequence ERRORS otherwise. |
 
 `spock.snowflake_node_id` **must be set to a value unique across every
 node in the Spock cluster** before any Snowflake-managed sequence is

@@ -64,7 +64,14 @@ REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondar
 		  row_filter_sampling att_list column_filter apply_delay alter_options \
 		  extended node_origin_cascade multiple_upstreams tuple_origin autoddl \
 		  sync_event sync_table generated_columns spill_transaction read_only \
-		  resolutions_retention drop seqam_snowflake
+		  resolutions_retention drop
+
+# seqam_snowflake is held out of REGRESS until tests/regress/expected/
+# seqam_snowflake.out has been generated against a working patched build
+# (patches/{15,16,17,18}/pgNN-050-nextval-hook.diff applied to the target
+# PostgreSQL).  To enable: run `make installcheck TESTS=seqam_snowflake`
+# once, copy results/seqam_snowflake.out to expected/, and append
+# `seqam_snowflake` to the REGRESS list above.
 
 # The following test cases are disabled while developing.
 #

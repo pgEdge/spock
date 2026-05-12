@@ -66,6 +66,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/guc.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
@@ -425,11 +426,19 @@ seqam_relcache_invalidate(Datum arg, Oid relid)
 	/*
 	 * If we have not yet learned the OID of spock.sequence_kind, conservatively
 	 * mark all stale.  We will learn it on the next catalog lookup.
+	 *
+	 * Also invalidate the cached PK index OID.  Without this, a REINDEX or
+	 * a DROP-then-CREATE EXTENSION cycle within a single backend's
+	 * lifetime would leave SeqAmCatalogPKIdxRelid pointing at an old or
+	 * dropped index, which would then make systable_beginscan() error out
+	 * on the next managed nextval().
 	 */
 	if (SeqAmCatalogRelid == InvalidOid || relid == InvalidOid ||
 		relid == SeqAmCatalogRelid)
 	{
 		SeqAmCacheInvalAll = true;
+		SeqAmCatalogPKIdxRelid = InvalidOid;
+		SeqAmCatalogRelid = InvalidOid;
 	}
 	/* Also invalidate when a sequence relation is invalidated. */
 	else if (SeqAmCache != NULL)
@@ -659,6 +668,7 @@ spock_seqam_drop_sequence_record(Oid seqoid)
 	ScanKeyData		key[1];
 	HeapTuple		tup;
 	int				i;
+	bool			is_apply;
 
 	/*
 	 * Cleanup uses superuser privileges because OAT_DROP can fire under a
@@ -666,10 +676,26 @@ spock_seqam_drop_sequence_record(Oid seqoid)
 	 * spock_executor.c for the matching SetUserIdAndSecContext shuffle.
 	 *
 	 * If the extension is being dropped, the catalog table is about to
-	 * disappear too -- skip the cleanup.
+	 * disappear too -- skip the catalog cleanup but still free the
+	 * shared-memory slot below.
 	 */
 	if (get_extension_oid(EXTENSION_NAME, true) == InvalidOid)
-		return;
+		goto cleanup_shmem;
+
+	/*
+	 * If we are inside a Spock apply worker (REPLICA replication role),
+	 * skip the explicit catalog delete: the originating node's DELETE on
+	 * spock.sequence_kind is itself replicated as user_catalog_table DML
+	 * and will arrive separately.  Issuing our own delete here races
+	 * against that and would either no-op (best case) or trigger Spock's
+	 * conflict-resolution path and bump spock.resolutions with noise
+	 * proportional to the number of dropped sequences.  Freeing the
+	 * shared-memory slot is still required: shmem is per-node and not
+	 * touched by replication.
+	 */
+	is_apply = (SessionReplicationRole == SESSION_REPLICATION_ROLE_REPLICA);
+	if (is_apply)
+		goto cleanup_shmem;
 
 	/*
 	 * Open spock.sequence_kind tolerating absence (catalog dropped or not
@@ -682,7 +708,7 @@ spock_seqam_drop_sequence_record(Oid seqoid)
 		rv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_KIND, -1);
 		catrelid = RangeVarGetRelid(rv, RowExclusiveLock, true);
 		if (!OidIsValid(catrelid))
-			return;
+			goto cleanup_shmem;
 		rel = table_open(catrelid, NoLock);
 	}
 
@@ -697,7 +723,8 @@ spock_seqam_drop_sequence_record(Oid seqoid)
 	systable_endscan(scan);
 	table_close(rel, RowExclusiveLock);
 
-	/* Free the shmem slot. */
+cleanup_shmem:
+	/* Free the shmem slot.  Always runs, including in apply contexts. */
 	if (SpockSeqShmemCtx != NULL)
 	{
 		LWLockAcquire(SpockSeqShmemCtx->alloc_lock, LW_EXCLUSIVE);
@@ -707,9 +734,20 @@ spock_seqam_drop_sequence_record(Oid seqoid)
 
 			if (slot->seqoid == seqoid)
 			{
-				slot->seqoid = InvalidOid;
+				/*
+				 * Mirror the allocation publish-ordering: write the
+				 * "unallocated" payload first (kind, packed_state), then
+				 * a write barrier, then publish seqoid = InvalidOid last.
+				 * This way a lock-free reader either sees the slot fully
+				 * allocated (matching seqoid + readable kind / state) or
+				 * fully free (seqoid == InvalidOid), but never an
+				 * in-between state where seqoid still matches but kind
+				 * has been overwritten.
+				 */
 				slot->kind = SPOCK_SEQAM_LOCAL;
 				pg_atomic_write_u64(&slot->packed_state, 0);
+				pg_write_barrier();
+				slot->seqoid = InvalidOid;
 				if (SpockSeqShmemCtx->nallocated > 0)
 					SpockSeqShmemCtx->nallocated--;
 				break;
@@ -843,9 +881,11 @@ spock_alter_sequence_set_kind(PG_FUNCTION_ARGS)
  *
  * NOTE for non-Snowflake methods: a non-trivial implementation would also
  * pre-set the sequence's starting value above the max(col) value across
- * the cluster.  Snowflake values are >> 2^62 due to the timestamp+epoch
- * combination, so they cannot collide with realistic local values; no
- * such pre-seeding is needed here.
+ * the cluster.  Snowflake values are well above any realistic local
+ * value (the timestamp field starts at the Spock epoch shifted left by
+ * 22 bits, so even the first value after epoch is around 2^53 to 2^54);
+ * they cannot collide with realistic local values, so no such
+ * pre-seeding is needed here.
  */
 Datum
 spock_convert_all_sequences(PG_FUNCTION_ARGS)
