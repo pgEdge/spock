@@ -66,6 +66,7 @@
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
 #include "spock_readonly.h"
+#include "spock_seqam.h"
 #include "spock_shmem.h"
 #include "spock.h"
 
@@ -1291,6 +1292,14 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
+
+	/*
+	 * Distributed sequence access methods.  Registers the
+	 * spock.default_sequence_kind GUC and attaches the in-core
+	 * nextval_hook.  Called before the IsBinaryUpgrade early-return so
+	 * pg_upgrade clusters still recognise the GUC in postgresql.conf.
+	 */
+	spock_seqam_init();
 
 	if (IsBinaryUpgrade)
 		return;

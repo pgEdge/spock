@@ -1,0 +1,172 @@
+diff --git a/src/backend/commands/sequence.c b/src/backend/commands/sequence.c
+index fbcfcddb59e..b2430ea44b8 100644
+--- a/src/backend/commands/sequence.c
++++ b/src/backend/commands/sequence.c
+@@ -95,6 +95,9 @@ static HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
+  */
+ static SeqTableData *last_used_seq = NULL;
+ 
++/* Spock: nextval generator hook; see sequence.h for contract. */
++nextval_hook_type nextval_hook = NULL;
++
+ static void fill_seq_with_data(Relation rel, HeapTuple tuple);
+ static void fill_seq_fork_with_data(Relation rel, HeapTuple tuple, ForkNumber forkNum);
+ static Relation lock_and_open_sequence(SeqTable seq);
+@@ -637,24 +640,15 @@ nextval_internal(Oid relid, bool check_permissions)
+ {
+ 	SeqTable	elm;
+ 	Relation	seqrel;
+-	Buffer		buf;
+-	Page		page;
+ 	HeapTuple	pgstuple;
+ 	Form_pg_sequence pgsform;
+-	HeapTupleData seqdatatuple;
+-	Form_pg_sequence_data seq;
+ 	int64		incby,
+ 				maxv,
+ 				minv,
+ 				cache,
+-				log,
+-				fetch,
+ 				last;
+-	int64		result,
+-				next,
+-				rescnt = 0;
++	int64		result;
+ 	bool		cycle;
+-	bool		logit = false;
+ 
+ 	/* open and lock sequence */
+ 	init_sequence(relid, &elm, &seqrel);
+@@ -699,12 +693,51 @@ nextval_internal(Oid relid, bool check_permissions)
+ 	cycle = pgsform->seqcycle;
+ 	ReleaseSysCache(pgstuple);
+ 
++	/* Spock: hook overrides; swap for rel->rd_sequenceam->nextval at SeqAM merge. */
++	if (nextval_hook != NULL)
++		result = (*nextval_hook) (seqrel, incby, maxv, minv, cache, cycle, &last);
++	else
++		result = sequence_am_local_nextval(seqrel, incby, maxv, minv,
++										   cache, cycle, &last);
++
++	/* save info in local cache */
++	elm->increment = incby;
++	elm->last = result;			/* last returned number */
++	elm->cached = last;			/* last fetched number */
++	elm->last_valid = true;
++
++	relation_close(seqrel, NoLock);
++	last_used_seq = elm;
++	return result;
++}
++
++/*
++ * Spock: stock per-call generator, factored out of nextval_internal so the
++ * nextval_hook can delegate to it.  Caller owns seqrel and the per-session
++ * cache state; *last receives the largest value reserved for the session.
++ */
++int64
++sequence_am_local_nextval(Relation seqrel,
++						  int64 incby, int64 maxv, int64 minv,
++						  int64 cache, bool cycle,
++						  int64 *last)
++{
++	Buffer		buf;
++	Page		page;
++	HeapTupleData seqdatatuple;
++	Form_pg_sequence_data seq;
++	int64		log,
++				fetch;
++	int64		result,
++				next,
++				rescnt = 0;
++	bool		logit = false;
++
+ 	/* lock page' buffer and read tuple */
+ 	seq = read_seq_tuple(seqrel, &buf, &seqdatatuple);
+ 	page = BufferGetPage(buf);
+ 
+-	elm->increment = incby;
+-	last = next = result = seq->last_value;
++	*last = next = result = seq->last_value;
+ 	fetch = cache;
+ 	log = seq->log_cnt;
+ 
+@@ -791,7 +824,7 @@ nextval_internal(Oid relid, bool check_permissions)
+ 		{
+ 			log--;
+ 			rescnt++;
+-			last = next;
++			*last = next;
+ 			if (rescnt == 1)	/* if it's first result - */
+ 				result = next;	/* it's what to return */
+ 		}
+@@ -800,13 +833,6 @@ nextval_internal(Oid relid, bool check_permissions)
+ 	log -= fetch;				/* adjust for any unfetched numbers */
+ 	Assert(log >= 0);
+ 
+-	/* save info in local cache */
+-	elm->last = result;			/* last returned number */
+-	elm->cached = last;			/* last fetched number */
+-	elm->last_valid = true;
+-
+-	last_used_seq = elm;
+-
+ 	/*
+ 	 * If something needs to be WAL logged, acquire an xid, so this
+ 	 * transaction's commit will trigger a WAL flush and wait for syncrep.
+@@ -862,7 +888,7 @@ nextval_internal(Oid relid, bool check_permissions)
+ 	}
+ 
+ 	/* Now update sequence tuple to the intended final state */
+-	seq->last_value = last;		/* last fetched number */
++	seq->last_value = *last;	/* last fetched number */
+ 	seq->is_called = true;
+ 	seq->log_cnt = log;			/* how much is logged */
+ 
+@@ -870,8 +896,6 @@ nextval_internal(Oid relid, bool check_permissions)
+ 
+ 	UnlockReleaseBuffer(buf);
+ 
+-	relation_close(seqrel, NoLock);
+-
+ 	return result;
+ }
+ 
+diff --git a/src/include/commands/sequence.h b/src/include/commands/sequence.h
+index 9da23008101..0fe86199306 100644
+--- a/src/include/commands/sequence.h
++++ b/src/include/commands/sequence.h
+@@ -20,6 +20,7 @@
+ #include "nodes/parsenodes.h"
+ #include "parser/parse_node.h"
+ #include "storage/relfilenode.h"
++#include "utils/relcache.h"
+ 
+ 
+ typedef struct FormData_pg_sequence_data
+@@ -55,6 +56,24 @@ extern int64 nextval_internal(Oid relid, bool check_permissions);
+ extern Datum nextval(PG_FUNCTION_ARGS);
+ extern List *sequence_options(Oid relid);
+ 
++/*
++ * Spock: per-call value-generation hook.  Signature matches Paquier's
++ * upstream SeqAM nextval callback; the forward-port replaces the call
++ * site with rel->rd_sequenceam->nextval(...).  Single consumer; extension
++ * must reject install when nextval_hook != NULL.
++ */
++typedef int64 (*nextval_hook_type) (Relation rel,
++									int64 incby, int64 maxv, int64 minv,
++									int64 cache, bool cycle,
++									int64 *last);
++extern PGDLLIMPORT nextval_hook_type nextval_hook;
++
++/* Spock: stock per-call generator, factored out so hooks can delegate. */
++extern int64 sequence_am_local_nextval(Relation rel,
++									   int64 incby, int64 maxv, int64 minv,
++									   int64 cache, bool cycle,
++									   int64 *last);
++
+ extern ObjectAddress DefineSequence(ParseState *pstate, CreateSeqStmt *stmt);
+ extern ObjectAddress AlterSequence(ParseState *pstate, AlterSeqStmt *stmt);
+ extern void SequenceChangePersistence(Oid relid, char newrelpersistence);

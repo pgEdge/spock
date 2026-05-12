@@ -35,6 +35,7 @@
 #include "spock_compat.h"
 #include "spock_queue.h"
 #include "spock_repset.h"
+#include "spock_seqam.h"
 
 #define CATALOG_SEQUENCE_STATE			"sequence_state"
 
@@ -62,13 +63,13 @@ sequence_get_last_value(Oid seqoid)
 	SysScanDesc scan;
 	HeapTuple	tup;
 	int64		last_value;
-	Form_pg_sequence seq;
+	Form_pg_sequence_data seq;
 
 	seqrel = table_open(seqoid, AccessShareLock);
 	scan = systable_beginscan(seqrel, 0, false, NULL, 0, NULL);
 	tup = systable_getnext(scan);
 	Assert(HeapTupleIsValid(tup));
-	seq = (Form_pg_sequence) GETSTRUCT(tup);
+	seq = (Form_pg_sequence_data) GETSTRUCT(tup);
 	last_value = seq->last_value;
 	systable_endscan(scan);
 	table_close(seqrel, AccessShareLock);
@@ -117,8 +118,21 @@ synchronize_sequences(void)
 		char	   *nspname;
 		char	   *relname;
 		StringInfoData json;
+		SpockSeqAmKind	kind;
 
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * Managed sequences generate independently on every node and must
+		 * not be cluster-propagated.  Skip without disturbing their state
+		 * row -- the row may still serve other monitoring purposes.
+		 */
+		nspname = get_namespace_name(get_rel_namespace(oldseq->seqoid));
+		relname = get_rel_name(oldseq->seqoid);
+		if (nspname != NULL && relname != NULL &&
+			spock_seqam_lookup_kind_by_name(nspname, relname, &kind) &&
+			kind != SPOCK_SEQAM_LOCAL)
+			continue;
 
 		last_value = sequence_get_last_value(oldseq->seqoid);
 
@@ -197,6 +211,7 @@ synchronize_sequence(Oid seqoid)
 	char	   *nspname;
 	char	   *relname;
 	StringInfoData json;
+	SpockSeqAmKind	kind;
 	SpockLocalNode *local_node = get_local_node(true, false);
 
 	/* Check if the oid points to actual sequence. */
@@ -207,6 +222,22 @@ synchronize_sequence(Oid seqoid)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a sequence",
 						RelationGetRelationName(seqrel))));
+
+	/*
+	 * Managed sequences (snowflake, ...) generate independently on every
+	 * node and must not be cluster-propagated.  Resolve by (nspname,
+	 * relname); the catalog may not exist yet (early extension lifecycle)
+	 * in which case spock_seqam_lookup_kind_by_name returns false and we
+	 * proceed as for a local sequence.
+	 */
+	nspname = get_namespace_name(RelationGetNamespace(seqrel));
+	relname = RelationGetRelationName(seqrel);
+	if (spock_seqam_lookup_kind_by_name(nspname, relname, &kind) &&
+		kind != SPOCK_SEQAM_LOCAL)
+	{
+		table_close(seqrel, AccessShareLock);
+		return;
+	}
 
 	/* Now search for it in our tracking table. */
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_STATE, -1);

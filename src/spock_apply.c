@@ -84,6 +84,7 @@
 #include "spock_exception_handler.h"
 #include "spock_common.h"
 #include "spock_readonly.h"
+#include "spock_seqam.h"
 #include "spock.h"
 #include "spock_injection.h"
 
@@ -2414,6 +2415,21 @@ handle_sequence(QueuedMessage *queued_message)
 	nspoid = get_namespace_oid(nspname, false);
 	reloid = get_relname_relid(relname, nspoid);
 	last_value = pg_strtoint64(last_value_raw);
+
+	/*
+	 * Defence in depth: if our local catalog says this sequence is managed
+	 * (snowflake, ...) refuse to apply a setval from the publisher.  The
+	 * publisher should not be sending these in the first place (see the
+	 * filter in spock_sequences.c), but a kind-table desync between source
+	 * and dest could otherwise overwrite our locally-generated state.
+	 */
+	{
+		SpockSeqAmKind	kind;
+
+		if (spock_seqam_lookup_kind_by_name(nspname, relname, &kind) &&
+			kind != SPOCK_SEQAM_LOCAL)
+			return;
+	}
 
 	DirectFunctionCall2(setval_oid, ObjectIdGetDatum(reloid),
 						Int64GetDatum(last_value));

@@ -28,7 +28,12 @@ GRANT ALL ON SCHEMA public TO nonsuper;
 
 DO $$
 BEGIN
-	IF (SELECT setting::integer/100 FROM pg_settings WHERE name = 'server_version_num') >= 1000 THEN
+	-- The pg_current_xlog_location compat shim is for PG < 10 only and lives
+	-- in the spock schema, which is created later by CREATE EXTENSION spock.
+	-- Guard on schema presence so this DO block is a no-op on a fresh
+	-- provider_dsn where spock has not yet been installed.
+	IF (SELECT setting::integer/100 FROM pg_settings WHERE name = 'server_version_num') >= 1000
+	   AND EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'spock') THEN
 		CREATE OR REPLACE FUNCTION spock.pg_current_xlog_location() RETURNS pg_lsn
 		LANGUAGE SQL AS 'SELECT pg_current_wal_lsn()';
 		ALTER FUNCTION spock.pg_current_xlog_location() OWNER TO super;
@@ -45,11 +50,13 @@ SET client_min_messages = 'warning';
 
 CREATE EXTENSION IF NOT EXISTS spock;
 
--- Check default settings of installed Spock extension
+-- Check default settings of installed Spock extension.
+-- extconfig is cast to regclass[] because the OIDs in it vary with
+-- installation order; the names are stable.
 SELECT
   extnamespace::regnamespace,
   extrelocatable,
-  extconfig,
+  extconfig::regclass[],
   extcondition,
   obj_description(oid) AS comment
 FROM pg_extension WHERE extname = 'spock';

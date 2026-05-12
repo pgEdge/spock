@@ -166,6 +166,21 @@ validate_subscription_name(const char *name)
 }
 
 /*
+ * Derive a Spock node id from a node name.  Truncated to 16 bits so the
+ * value fits cleanly inside an Oid column and leaves room for downstream
+ * uses (snowflake sequences mask off the low 10 bits as their node_id).
+ * Same input -> same output across nodes; callers that need cluster-wide
+ * uniqueness must verify by inspecting peers.
+ */
+Oid
+spock_node_id_for_name(const char *name)
+{
+	return (Oid)
+		(DatumGetUInt32(hash_any((const unsigned char *) name,
+								 strlen(name))) & 0xffff);
+}
+
+/*
  * Add new node to catalog.
  */
 void
@@ -185,9 +200,7 @@ create_node(SpockNode *node)
 
 	/* Generate new id unless one was already specified. */
 	if (node->id == InvalidOid)
-		node->id =
-			DatumGetUInt32(hash_any((const unsigned char *) node->name,
-									strlen(node->name))) & 0xffff;
+		node->id = spock_node_id_for_name(node->name);
 
 	/*
 	 * Detect node_id hash collisions before insertion.  The id is a 16-bit

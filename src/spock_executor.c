@@ -58,6 +58,7 @@
 #include "spock_repset.h"
 #include "spock_queue.h"
 #include "spock_dependency.h"
+#include "spock_seqam.h"
 #include "spock.h"
 
 
@@ -234,6 +235,28 @@ spock_object_access(ObjectAccessType access,
 
 			if (spknspoid == relnspoid)
 				dropping_spock_obj = true;
+
+			/*
+			 * Sequence drop: clean up any spock.sequence_kind row and the
+			 * shared-memory slot.  Without this, dropping a managed
+			 * sequence orphans the catalog row, and a future relation
+			 * landing on the same OID (or even a CREATE SEQUENCE that
+			 * reuses the OID) inherits the stale assignment and the
+			 * stale Snowflake high-water-mark timestamp.
+			 */
+			if (get_rel_relkind(objectId) == RELKIND_SEQUENCE &&
+				!dropping_spock_obj)
+			{
+				Oid	save_userid;
+				int	save_sec_context;
+
+				GetUserIdAndSecContext(&save_userid, &save_sec_context);
+				SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
+									   save_sec_context |
+									   SECURITY_LOCAL_USERID_CHANGE);
+				spock_seqam_drop_sequence_record(objectId);
+				SetUserIdAndSecContext(save_userid, save_sec_context);
+			}
 		}
 
 		/*
@@ -268,6 +291,28 @@ spock_object_access(ObjectAccessType access,
 
 		/* Restore previous session privileges */
 		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	/*
+	 * Relation-level ALTER on a sequence: keep the spock.sequence_kind row
+	 * in sync with ALTER SEQUENCE ... RENAME TO and ... SET SCHEMA.  Both
+	 * commands fire OAT_POST_ALTER with subId == 0 from RenameRelationInternal
+	 * / AlterObjectNamespace_internal in src/backend/commands/.  The hook
+	 * runs under superuser like the OAT_DROP arm above: the operator may
+	 * have rename rights without spock.sequence_kind write rights.
+	 */
+	else if (access == OAT_POST_ALTER && subId == 0 &&
+			 classId == RelationRelationId &&
+			 get_rel_relkind(objectId) == RELKIND_SEQUENCE)
+	{
+		Oid		saved_userid;
+		int		saved_sec_context;
+
+		GetUserIdAndSecContext(&saved_userid, &saved_sec_context);
+		SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
+							   saved_sec_context |
+							   SECURITY_LOCAL_USERID_CHANGE);
+		spock_seqam_relocate_sequence_record(objectId);
+		SetUserIdAndSecContext(saved_userid, saved_sec_context);
 	}
 }
 

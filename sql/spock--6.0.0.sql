@@ -315,6 +315,87 @@ CREATE TABLE spock.sequence_state (
 	last_value bigint NOT NULL
 ) WITH (user_catalog_table=true);
 
+-- Distributed sequence access method registry.
+--
+-- Maps a sequence (schema, name) to a "kind" identifying which generation
+-- method nextval() should use.  Sequences without a row use the
+-- spock.default_sequence_kind GUC (defaults to 'local').
+--
+-- Keyed on (nspname, relname) rather than seqoid.  Names round-trip cleanly
+-- through pg_dump / pg_restore; OIDs do not.  seqoid is carried as a
+-- non-key cache column so the OAT_POST_ALTER hook can find a row by the
+-- (rename-stable) OID when ALTER SEQUENCE ... RENAME fires.  After a
+-- logical restore the seqoid values reference the source cluster and are
+-- stale; the next spock.alter_sequence_set_kind() or
+-- spock.convert_all_sequences() call on a given sequence refreshes them.
+--
+-- Not marked user_catalog_table: this is a node-local registry, by
+-- design.  Cluster-wide propagation is NOT automatic in Spock 6.0:
+-- spock_autoddl_process only replicates LOGSTMT_DDL utility statements
+-- (CREATE/ALTER/DROP), not SQL function invocations, so a call to
+-- spock.alter_sequence_set_kind() or spock.convert_all_sequences()
+-- affects only the local node.  Operators must run the same call on
+-- every node in the cluster.  Running it on only some nodes is
+-- supported but inconsistent: the unconverted nodes continue to emit
+-- stock sequence values while the converted ones emit snowflakes, so
+-- cluster-wide uniqueness is no longer guaranteed.  Autoddl-driven
+-- propagation is a planned follow-up (see docs/specs/distributed_sequences.md
+-- §14 "Known gaps and follow-up work").
+CREATE TABLE spock.sequence_kind (
+	nspname  name NOT NULL,
+	relname  name NOT NULL,
+	kind     text NOT NULL
+		CHECK (kind IN ('local','snowflake')),
+	seqoid   oid  NOT NULL,
+	PRIMARY KEY (nspname, relname)
+);
+CREATE INDEX spock_sequence_kind_seqoid_idx
+	ON spock.sequence_kind (seqoid);
+
+SELECT pg_catalog.pg_extension_config_dump('spock.sequence_kind', '');
+
+CREATE FUNCTION spock.alter_sequence_set_kind(seqname regclass, kind text)
+RETURNS void
+AS 'MODULE_PATHNAME', 'spock_alter_sequence_set_kind'
+LANGUAGE C VOLATILE;
+
+REVOKE ALL ON FUNCTION spock.alter_sequence_set_kind(regclass, text) FROM PUBLIC;
+
+CREATE FUNCTION spock.convert_all_sequences(
+	method text DEFAULT 'snowflake',
+	force  bool DEFAULT false
+) RETURNS integer
+AS 'MODULE_PATHNAME', 'spock_convert_all_sequences'
+LANGUAGE C VOLATILE;
+
+REVOKE ALL ON FUNCTION spock.convert_all_sequences(text, bool) FROM PUBLIC;
+
+CREATE FUNCTION spock.sequence_hook_available()
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_sequence_hook_available'
+LANGUAGE C STABLE STRICT;
+
+REVOKE ALL ON FUNCTION spock.sequence_hook_available() FROM PUBLIC;
+
+-- Per-sequence summary.
+--
+-- hook_status is 'active' iff Spock's dispatcher is the *root* of the
+-- nextval_hook chain.  An extension loaded after Spock that chains on
+-- top will read as 'inactive' even though Spock is still reachable via
+-- the chain; the column is therefore best read as "is Spock the
+-- outermost hook?", not "is Spock managing my sequences?".
+--
+-- On unpatched PostgreSQL the spock shared library fails to load, so
+-- this view doesn't exist there at all -- the column never reads
+-- 'inactive' for the patch-absent reason in practice.
+CREATE VIEW spock.sequence_info AS
+SELECT
+	sk.seqoid::regclass AS sequence_name,
+	sk.kind,
+	CASE WHEN spock.sequence_hook_available() THEN 'active'
+	     ELSE 'inactive' END AS hook_status
+FROM spock.sequence_kind sk;
+
 CREATE TABLE spock.depend (
     classid oid NOT NULL,
     objid oid NOT NULL,
