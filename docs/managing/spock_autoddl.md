@@ -32,7 +32,7 @@ automatic DDL replication, set the following parameters to `on`:
 To completely block all DDL across the cluster (including DDL that would
 otherwise be replicated automatically), use:
 
-* `spock.deny_all_ddl` is a boolean (default `false`). When set to `true`,
+* `spock.deny_all_ddl` - a boolean value, default `false`. When set to `true`,
   Spock rejects any DDL statement executed on the node. This is useful as a
   guard during sensitive maintenance windows or while a node is being added
   or repaired. The setting can be changed by a superuser at runtime
