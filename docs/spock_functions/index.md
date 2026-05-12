@@ -41,16 +41,16 @@ The following user functions are available via the Spock extension:
 | **Miscellaneous Management Functions** | |
 | [spock.table_wait_for_sync](functions/spock_table_wait_for_sync.md) | Pause until a table finishes synchronizing.
 | [spock.replicate_ddl](functions/spock_replicate_ddl.md) | Enable DDL replication.
-| spock_version | Returns the Spock version in a major/minor version form: `4.0.10`. Defined in the public schema (no `spock.` prefix).
-| spock_version_num | Returns the Spock version in a single numeric form: `40010`. Defined in the public schema (no `spock.` prefix).
+| spock_version | Returns the Spock version in a major/minor version form: `4.0.10`. Defined in the public schema so invoked without the `spock.` prefix.
+| spock_version_num | Returns the Spock version in a single numeric form: `40010`. Defined in the public schema so invoked without the `spock.` prefix.
 | spock.get_channel_stats | Returns tuple traffic statistics.
 | spock.get_country | Returns the country code if explicitly set; returns `??` if not set.
 | spock.lag_tracker | Returns a list of slots, with commit_lsn and commit_timestamp for each.
 | spock.repair_mode | Used to manage the state of replication - If set to `true`, stops replicating statements; when `false`, resumes replication.
 | spock.replicate_ddl | Replicate a specific statement.
 | spock.reset_channel_stats | Reset the channel statistics.
-| spock_max_proto_version | The highest Spock native protocol supported by the current binary/build. Defined in the public schema (no `spock.` prefix).
-| spock_min_proto_version | The lowest build for which this Spock binary is backward compatible. Defined in the public schema (no `spock.` prefix).
+| spock_max_proto_version | The highest Spock native protocol supported by the current binary/build. Defined in the public schema so invoked without the `spock.` prefix.
+| spock_min_proto_version | The lowest build for which this Spock binary is backward compatible. Defined in the public schema so invoked without the `spock.` prefix.
 | spock.table_data_filtered | Scans the specified table and returns rows that match the row filter from the specified replication set(s).  Row filters are added to a replication set when adding a table with `repset_add_table`.
 | spock.terminate_active_transactions | Terminates all active transactions.
 | spock.wait_slot_confirm_lsn | Wait for the `confirmed_flush_lsn` of the specified slot, or all logical slots if none given.
