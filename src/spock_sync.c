@@ -153,7 +153,7 @@ get_pg_executable(char *cmdname, char *cmdbuf)
  * The sub->skip_schema typically doesn't include our globally-skipped objects.
  * So, don't care about duplicates.
  */
-#if PG_VERSION_NUM >= 180000
+#if PG_VERSION_NUM >= 170000
 static List *
 build_exclude_extension_string(void)
 {
@@ -236,7 +236,7 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 
 	/* Filter out schemas and extensions, skipped globally. */
 	args = list_concat(args, build_exclude_schema_string(sub));
-#if PG_VERSION_NUM >= 180000
+#if PG_VERSION_NUM >= 170000
 	args = list_concat(args, build_exclude_extension_string());
 #endif
 
