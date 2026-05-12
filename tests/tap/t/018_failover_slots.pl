@@ -111,31 +111,25 @@ ok($slot_ready && length($slot_name) > 0,
     "Logical slot created on n1: '$slot_name'");
 
 # ==========================================================================
-# 4. Verify FAILOVER flag on slot (PG17+)
+# 4. Verify FAILOVER flag on slot is NOT set (spock owns the sync; native
+#    PG slot-sync is intentionally disabled on this branch).
 # ==========================================================================
 if ($pg_major >= 17) {
     my $fv = scalar_query(1,
         "SELECT failover FROM pg_replication_slots WHERE slot_name='$slot_name'");
     $fv =~ s/\s+//g;
-    is($fv, 't',
-        "PG$pg_major: slot '$slot_name' was created with FAILOVER=true");
+    is($fv, 'f',
+        "PG$pg_major: slot '$slot_name' NOT created with FAILOVER (spock handles sync)");
 } else {
     pass("PG$pg_major: FAILOVER flag not applicable (PG15/16)");
 }
 
 # ==========================================================================
-# 5. Verify spock failover bgworker state on n1 (primary)
+# 5. spock_failover_slots bgworker on primary: not used regardless of version
+#    (the worker only does work on a standby in recovery).  We don't assert
+#    anything about its presence here — that's checked on the standby below.
 # ==========================================================================
-if ($pg_major >= 18) {
-    my $wc = scalar_query(1,
-        "SELECT count(*) FROM pg_stat_activity
-         WHERE application_name = 'spock_failover_slots worker'");
-    $wc =~ s/\s+//g;
-    is($wc, '0',
-        "PG18+: spock_failover_slots bgworker not registered on primary");
-} else {
-    pass("PG$pg_major: spock bgworker expected (PG15/16/17 uses it on standby)");
-}
+pass("PG$pg_major: spock bgworker check deferred to standby (section 12)");
 
 # ==========================================================================
 # 6. Create physical replication slot for the standby
@@ -191,10 +185,9 @@ system_or_bail('mkdir', '-p', $standby_logdir);
     print $conf "log_min_messages         = debug1\n";
     print $conf "log_replication_commands = on\n";
 
-    if ($pg_major >= 17) {
-        # Enable native slot sync worker on standby
-        print $conf "sync_replication_slots = on\n";
-    }
+    # Native slot sync is intentionally NOT enabled on this branch — spock's
+    # failover-slot worker handles synchronization for every supported PG
+    # version, so leave sync_replication_slots at its default (off).
     close($conf);
 }
 
@@ -210,12 +203,10 @@ system_or_bail('mkdir', '-p', $standby_logdir);
     close($aconf);
 }
 
-# PG17+: hold walsenders on primary until standby confirms LSN
-if ($pg_major >= 17) {
-    psql_or_bail(1,
-        "ALTER SYSTEM SET synchronized_standby_slots = 'standby_physical_slot'");
-    psql_or_bail(1, "SELECT pg_reload_conf()");
-}
+# synchronized_standby_slots is the native walsender-hold-back mechanism;
+# it's intentionally NOT configured here because this branch does not use
+# native PG slot sync. Spock's worker covers the sync path on every
+# supported PG version.
 
 system_or_bail("$pg_bin/pg_ctl", 'start',
     '-D', $standby_datadir, '-l', "$standby_datadir/startup.log", '-w');
@@ -284,26 +275,23 @@ unless ($slot_present) {
 }
 
 # ==========================================================================
-# 11. PG17+: verify synced=t and failover=t on standby
+# 11. PG17+: standby slot is synced by spock's worker, NOT by native PG
+#     slotsync.  Therefore the slot must show synced=f and failover=f.
 # ==========================================================================
 if ($pg_major >= 17) {
-    # Poll until synced=true (slotsync may take a few cycles)
-    my $fully_synced = wait_until(30, 3, sub {
-        my $s = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
-            "SELECT synced FROM pg_replication_slots
-             WHERE slot_name = '$slot_name'");
-        $s =~ s/\s+//g;
-        return $s eq 't';
-    });
-    is($fully_synced, 1,
-        "PG$pg_major: standby slot '$slot_name' has synced=true");
+    my $sd = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
+        "SELECT synced FROM pg_replication_slots
+         WHERE slot_name = '$slot_name'");
+    $sd =~ s/\s+//g;
+    is($sd, 'f',
+        "PG$pg_major: standby slot '$slot_name' has synced=false (spock worker, not native)");
 
     my $fb = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
         "SELECT failover FROM pg_replication_slots
          WHERE slot_name = '$slot_name'");
     $fb =~ s/\s+//g;
-    is($fb, 't',
-        "PG$pg_major: standby slot '$slot_name' has failover=true");
+    is($fb, 'f',
+        "PG$pg_major: standby slot '$slot_name' has failover=false (native sync disabled)");
 
     # Verify slot LSN on standby is not behind primary by more than 1MB
     my $primary_lsn = scalar_query(1, "SELECT pg_current_wal_lsn()");
@@ -327,36 +315,21 @@ if ($pg_major >= 17) {
 }
 
 # ==========================================================================
-# 12. Verify spock_failover_slots bgworker state on standby per PG version:
-#     PG15/16: worker must be running (sole sync mechanism)
-#     PG17:    worker is registered and present; it yields to native slotsync
-#              when sync_replication_slots=on but still appears in pg_stat_activity
-#     PG18+:   worker is not registered at all
+# 12. spock_failover_slots bgworker must be running on the standby for
+#     every supported PG version — spock owns slot sync for all of them.
 # ==========================================================================
 my $bgw_count = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
     "SELECT count(*) FROM pg_stat_activity
      WHERE application_name = 'spock_failover_slots worker'");
 $bgw_count =~ s/\s+//g;
 
-if ($pg_major < 17) {
-    ok($bgw_count > 0,
-        "PG$pg_major: spock_failover_slots worker running on standby");
-} elsif ($pg_major == 17) {
-    ok($bgw_count > 0,
-        "PG17: spock_failover_slots worker registered on standby (yields to native slotsync)");
-} else {
-    pass("PG$pg_major: spock bgworker not expected on standby (PG18+ native slotsync only)");
-}
+ok($bgw_count > 0,
+    "PG$pg_major: spock_failover_slots worker running on standby");
 
 # ==========================================================================
-# 13. PG18+: confirm no spock bgworker on standby
+# 13. (placeholder to keep test count stable across the schedule)
 # ==========================================================================
-if ($pg_major >= 18) {
-    is($bgw_count, '0',
-        "PG18+: no spock_failover_slots bgworker on standby");
-} else {
-    pass("PG$pg_major: bgworker absence check not applicable (< PG18)");
-}
+pass("PG$pg_major: spock owns failover slot sync regardless of PG version");
 
 # ==========================================================================
 # 14. Write data on n1, verify n2 receives it (baseline replication check)
@@ -483,14 +456,9 @@ ok($post_ok,
 # ==========================================================================
 system("$pg_bin/pg_ctl stop -D $standby_datadir -m immediate >> /dev/null 2>&1");
 
-# Undo primary GUC change so destroy_cluster can restart n1 cleanly
+# Restart n1 so destroy_cluster can connect cleanly.
 system("$pg_bin/postgres -D $primary_dir >> /dev/null 2>&1 &");
 sleep(10);
-system_maybe("$pg_bin/psql", '-h', $host, '-p', $primary_port,
-    '-d', $dbname, '-U', $db_user,
-    '-c', "ALTER SYSTEM RESET synchronized_standby_slots");
-system_maybe("$pg_bin/psql", '-h', $host, '-p', $primary_port,
-    '-d', $dbname, '-U', $db_user, '-c', "SELECT pg_reload_conf()");
 
 system("rm -rf $standby_datadir 2>/dev/null");
 
