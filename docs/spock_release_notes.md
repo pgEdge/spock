@@ -1,49 +1,8 @@
 # Spock Release Notes
 
-## Spock 5.1 on xxx
-
-### Logical Slot Failover Improvements
-
-* On **PostgreSQL 17+**, Spock now creates all logical replication slots with
-  the `FAILOVER` flag, allowing PostgreSQL's built-in slotsync worker
-  (`sync_replication_slots = on`) to automatically synchronize them to
-  physical standbys.
-* On **PostgreSQL 18+**, Spock's own `spock_failover_slots` background worker
-  is no longer registered. The native PostgreSQL slotsync worker fully
-  replaces it. See the [Logical Slot Failover](configuring.md#logical-slot-failover-ha-standby)
-  section in the configuration guide for required `postgresql.conf` settings.
-* On **PostgreSQL 17**, Spock's worker remains active but automatically yields
-  to the native slotsync worker if `sync_replication_slots = on` is set,
-  preventing conflicts.
-
-This release deprecates the spock.exception_replay_queue_size GUC. Previously
-Spock restored transaction changes up to the size defined by the
-spock.exception_replay_queue_size GUC. If an error occurred, the transaction
-was replayed, and if the size was less than the exception queue, the cache
-was used. If the size was greater than the limit, it was resent from the
-origin.
-
-Now no restriction exists. Spock will use memory until memory is exhausted
-(improving performance for huge transactions). If an allocation fails, Spock
-performs as specified by the spock.exception_behavior GUC:
-
-Exception handling behavior is now controlled by the `spock.exception_behaviour` GUC, which accepts the following values:
-
-- `discard`: Skip the failed transaction and continue replication.
-- `transdiscard`: Roll back the failed transaction and continue replication.
-- `sub_disable`: Disable the subscription and exit cleanly.
-
-* Change Spock replication health tracking routines and views:
-  - apply_group_progress, spock.progress, and spock.lag_tracker.
-  - rename last_received_lsn to commit_lsn to more precisely identify the
-    underlying value.
-  - introduce received_lsn - points to the last LSN, sent by the publisher,
-    exactly like the pgoutput protocol does.
-  - remote_insert_lsn reported more frequently, on each incoming WAL record,
-    not only on a COMMIT, as it was before.
-
-
 ## Spock 5.0.6
+
+Spock 5.0.6 includes the following improvements:
 
 ### New Features
 * New `spock.log_origin_change` GUC to control logging of row origin changes
