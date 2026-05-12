@@ -213,7 +213,7 @@ spock_seqam_snowflake_nextval(Oid seqoid,
 	if (now_ms < 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_EXCEPTION),
-				 errmsg("system clock is before the spock snowflake epoch"),
+				 errmsg("system clock is before the Spock snowflake epoch"),
 				 errdetail("System clock indicates a time earlier than "
 						   "2026-01-01 UTC.  Snowflake sequences cannot "
 						   "produce values until the clock is correct.")));
@@ -271,7 +271,7 @@ spock_seqam_snowflake_nextval(Oid seqoid,
 					SNOWFLAKE_SKEW_WARN_INTERVAL_US)
 				{
 					ereport(WARNING,
-							(errmsg("spock snowflake: wall clock regressed by " INT64_FORMAT " ms",
+							(errmsg("wall clock regressed by " INT64_FORMAT " ms on a Spock snowflake sequence",
 									cur_ts - now_ms),
 							 errdetail("Continuing from the last observed "
 									   "timestamp.  No duplicate values "

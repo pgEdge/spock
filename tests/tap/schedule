@@ -44,3 +44,6 @@ test: 018_forward_origins
 test: 018_failover_slots
 test: 019_stale_fd_epoll_after_conn_death
 test: 022_rmgr_progress_post_checkpoint_crash
+
+# Distributed sequence access methods
+test: 050_seqam_snowflake

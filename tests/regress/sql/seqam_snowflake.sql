@@ -9,6 +9,11 @@
 -- Spock's shared library fails to load and the regression cluster will
 -- not start, so we do not bother detecting that here.
 --
+-- TODO: tests/regress/expected/seqam_snowflake.out needs to be generated
+-- against a working patched build.  Run `make check TESTS=seqam_snowflake`
+-- once, inspect the resulting `results/seqam_snowflake.out`, and commit
+-- it under `expected/`.
+--
 
 \set VERBOSITY terse
 
@@ -37,23 +42,18 @@ CREATE SEQUENCE sf_seq;
 
 SELECT spock.alter_sequence_set_kind('sf_seq'::regclass, 'snowflake');
 
--- The exact value depends on the wall clock, but every snowflake value
--- has these stable properties:
---   * non-negative (bit 63 reserved as 0)
---   * encodes the configured node id
---   * the millisecond timestamp field is greater than the configured
---     snowflake epoch (2026-01-01 UTC) -- so the value is at least
---     (epoch_ms - SPOCK_SNOWFLAKE_EPOCH_MS) << 22, which is 0 right at
---     the epoch and grows from there.
-SELECT v > 0                             AS positive,
-       (sf).node_id                      AS decoded_node,
-       (sf).counter < 4096               AS counter_in_range,
-       (sf).timestamp_ms >= 0            AS ts_after_epoch
-FROM (
-  SELECT v, spock.seq_snowflake_decode(v) sf FROM (
-    SELECT nextval('sf_seq') v
-  ) s
-) t;
+-- Every snowflake value should decode to the configured node id, have
+-- a counter and timestamp that match the on-the-wire layout, and be
+-- greater than the previous value emitted by the same backend.
+WITH s AS (
+  SELECT nextval('sf_seq') AS v1, nextval('sf_seq') AS v2
+)
+SELECT v1 > 0                                     AS first_positive,
+       v2 > v1                                    AS strictly_increasing,
+       (spock.seq_snowflake_decode(v1)).node_id = 42 AS decoded_node_correct,
+       (spock.seq_snowflake_decode(v1)).counter >= 0 AS counter_non_negative,
+       (spock.seq_snowflake_decode(v1)).timestamp_ms > 0 AS ts_after_epoch
+FROM s;
 
 -- ------------------------------------------------------------------------
 -- 3. Lastval / currval regression: the hook MUST update last_used_seq.
@@ -101,10 +101,15 @@ FROM spock.seq_snowflake_decode((1000::bigint << 22) |
 
 SELECT spock.alter_sequence_set_kind('sf_seq'::regclass, 'local');
 
--- Now sf_seq behaves as a stock sequence with whatever last_value the
--- heap state happens to have (no snowflake values were ever written to
--- the heap state, so it remains at the CREATE SEQUENCE start).
-SELECT nextval('sf_seq') < 100  AS reverted_to_local;
+-- After revert to local, nextval() reads the heap-stored last_value.
+-- Snowflake never wrote that field while it managed the sequence, so
+-- the first stock value is the sequence's start (1 by default).  This
+-- is what we test, not a magic "< 100" -- a future change to the
+-- default start would otherwise make the test pass by accident.
+SELECT nextval('sf_seq') AS local_value;
+-- local_value must be small (definitely below 2^22, which is the
+-- smallest possible snowflake value).
+SELECT currval('sf_seq') < (1::bigint << 22) AS reverted_to_local;
 
 -- ------------------------------------------------------------------------
 -- 7. Bad input

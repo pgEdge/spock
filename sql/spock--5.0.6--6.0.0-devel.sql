@@ -449,6 +449,8 @@ CREATE TABLE spock.sequence_kind (
 		CHECK (kind IN ('local','snowflake'))
 ) WITH (user_catalog_table=true);
 
+SELECT pg_catalog.pg_extension_config_dump('spock.sequence_kind', '');
+
 CREATE FUNCTION spock.alter_sequence_set_kind(seqname regclass, kind text)
 RETURNS void
 AS 'MODULE_PATHNAME', 'spock_alter_sequence_set_kind'

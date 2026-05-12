@@ -162,6 +162,15 @@ extern void spock_seqam_shmem_request(void);
 extern void spock_seqam_shmem_startup(bool found);
 
 /*
+ * Drop hook callback.  Invoked from src/spock_executor.c:spock_object_access
+ * on OAT_DROP of a RELKIND_SEQUENCE relation.  Deletes the spock.sequence_kind
+ * row (if any) and clears the per-sequence shared-memory slot so the entry
+ * is reusable and a future sequence with the same OID does not inherit
+ * stale state.
+ */
+extern void spock_seqam_drop_sequence_record(Oid seqoid);
+
+/*
  * SQL-callable, registered from sql/spock--*.sql.
  */
 extern Datum spock_alter_sequence_set_kind(PG_FUNCTION_ARGS);

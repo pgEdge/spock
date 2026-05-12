@@ -329,6 +329,17 @@ CREATE TABLE spock.sequence_kind (
 		CHECK (kind IN ('local','snowflake'))
 ) WITH (user_catalog_table=true);
 
+-- Mark spock.sequence_kind as a user-data table so pg_dump preserves the
+-- per-sequence method assignments across logical dump/restore.  Without
+-- this, an extension-owned table is silently skipped by pg_dump, and a
+-- restored cluster would lose every snowflake assignment.  Sequence OIDs
+-- in dumps are not stable across restore -- this preserves the rows
+-- nonetheless, since logical-restore order is to recreate sequences
+-- (and their OIDs) before extension tables are re-populated; a
+-- mismatched-OID row is harmless (the dispatcher falls through to
+-- local) and is cleaned up by the next spock.convert_all_sequences().
+SELECT pg_catalog.pg_extension_config_dump('spock.sequence_kind', '');
+
 CREATE FUNCTION spock.alter_sequence_set_kind(seqname regclass, kind text)
 RETURNS void
 AS 'MODULE_PATHNAME', 'spock_alter_sequence_set_kind'

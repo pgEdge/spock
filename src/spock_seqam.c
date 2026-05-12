@@ -40,22 +40,30 @@
 #include "access/xlog.h"
 
 #include "catalog/indexing.h"
+#include "catalog/namespace.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_index.h"
 #include "catalog/pg_sequence.h"
 
 #include "commands/extension.h"
 #include "commands/sequence.h"
 
+#include "utils/syscache.h"
+
 #include "miscadmin.h"
+
+#include "funcapi.h"
 
 #include "nodes/makefuncs.h"
 
 #include "port/atomics.h"
 
 #include "storage/ipc.h"
+#include "storage/lmgr.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/hsearch.h"
@@ -159,6 +167,44 @@ static HTAB			   *SeqAmCache = NULL;
 static MemoryContext	SeqAmCacheCtx = NULL;
 static bool				SeqAmCacheInvalAll = false;
 static Oid				SeqAmCatalogRelid = InvalidOid;
+static Oid				SeqAmCatalogPKIdxRelid = InvalidOid;
+
+/*
+ * Resolve the OID of the spock.sequence_kind PK index, lazily.  Used to
+ * turn the catalog lookup from a seqscan into an index scan -- the catalog
+ * is small (one row per managed sequence), but DDL on it invalidates every
+ * backend's cache and triggers re-lookup, so index-bounded latency matters.
+ */
+static Oid
+seqam_catalog_pkidx_oid(Relation rel)
+{
+	List	   *idxlist;
+	ListCell   *lc;
+
+	if (OidIsValid(SeqAmCatalogPKIdxRelid))
+		return SeqAmCatalogPKIdxRelid;
+
+	idxlist = RelationGetIndexList(rel);
+	foreach(lc, idxlist)
+	{
+		Oid			idxoid = lfirst_oid(lc);
+		HeapTuple	tup = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(idxoid));
+		bool		is_pk;
+
+		if (!HeapTupleIsValid(tup))
+			continue;
+		is_pk = ((Form_pg_index) GETSTRUCT(tup))->indisprimary;
+		ReleaseSysCache(tup);
+		if (is_pk)
+		{
+			SeqAmCatalogPKIdxRelid = idxoid;
+			break;
+		}
+	}
+	list_free(idxlist);
+
+	return SeqAmCatalogPKIdxRelid;
+}
 
 /*
  * Forward declaration of the snowflake method.  Defined in
@@ -172,9 +218,11 @@ extern void spock_seqam_snowflake_init_slot(SpockSeqShmemSlot *slot,
 											Form_pg_sequence seqform);
 
 /*
- * Method registry.  Indexed by SpockSeqAmKind value.
+ * Method registry.  Indexed by SpockSeqAmKind value.  Sized by the highest
+ * registered kind plus one; using a literal here would silently corrupt
+ * memory the moment a new kind is added to the enum.
  */
-static const SpockSeqAmMethod *SeqAmMethods[2];
+static const SpockSeqAmMethod *SeqAmMethods[SPOCK_SEQAM_SNOWFLAKE + 1];
 
 static void
 spock_seqam_register_methods(void)
@@ -206,6 +254,7 @@ seqam_catalog_lookup(Oid seqoid, SpockSeqAmKind *kind_out)
 	ScanKeyData		key[1];
 	HeapTuple		tup;
 	bool			found = false;
+	Oid				idxoid;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_KIND, -1);
 	rel = table_openrv(rv, AccessShareLock);
@@ -214,12 +263,14 @@ seqam_catalog_lookup(Oid seqoid, SpockSeqAmKind *kind_out)
 	if (SeqAmCatalogRelid == InvalidOid)
 		SeqAmCatalogRelid = RelationGetRelid(rel);
 
+	idxoid = seqam_catalog_pkidx_oid(rel);
+
 	ScanKeyInit(&key[0],
 				Anum_sequence_kind_seqoid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(seqoid));
 
-	scan = systable_beginscan(rel, 0, true, NULL, 1, key);
+	scan = systable_beginscan(rel, idxoid, OidIsValid(idxoid), NULL, 1, key);
 	tup = systable_getnext(scan);
 	if (HeapTupleIsValid(tup))
 	{
@@ -245,7 +296,7 @@ seqam_catalog_lookup(Oid seqoid, SpockSeqAmKind *kind_out)
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("unrecognised spock.sequence_kind value \"%s\" for sequence %u",
+					 errmsg("unrecognized spock.sequence_kind value \"%s\" for sequence %u",
 							kindstr, seqoid)));
 
 		pfree(kindstr);
@@ -281,11 +332,20 @@ seqam_locate_slot(Oid seqoid, SpockSeqAmKind kind, Form_pg_sequence seqform)
 	method = SeqAmMethods[kind];
 	Assert(method != NULL);
 
-	/* First, look without taking the lock. */
+	/*
+	 * Lock-free pre-scan.  Read seqoid first; only if it matches do we
+	 * issue a read barrier and trust the rest of the slot.  This pairs
+	 * with the pg_write_barrier() in the publication path below.  On x86
+	 * the barrier is a no-op; on ARM/POWER it is load-ordered acquire.
+	 */
 	for (i = 0; i < SpockSeqShmemCtx->nslots; i++)
 	{
-		if (SpockSeqShmemCtx->slots[i].seqoid == seqoid &&
-			SpockSeqShmemCtx->slots[i].kind == kind)
+		Oid			sid = SpockSeqShmemCtx->slots[i].seqoid;
+
+		if (sid != seqoid)
+			continue;
+		pg_read_barrier();
+		if (SpockSeqShmemCtx->slots[i].kind == kind)
 			return &SpockSeqShmemCtx->slots[i];
 	}
 
@@ -310,14 +370,18 @@ seqam_locate_slot(Oid seqoid, SpockSeqAmKind kind, Form_pg_sequence seqform)
 			if (SpockSeqShmemCtx->slots[i].seqoid == InvalidOid)
 			{
 				slot = &SpockSeqShmemCtx->slots[i];
-				slot->kind = kind;
+				/*
+				 * Initialise per-method state *before* setting kind and
+				 * publishing seqoid.  This way, a reader that observes a
+				 * stale recycled slot before the publish cannot also see
+				 * a partly-initialised kind / packed_state.
+				 */
 				if (method->init_slot != NULL)
 					method->init_slot(slot, seqoid, seqform);
+				slot->kind = kind;
 				/*
-				 * Publish the seqoid last; readers use seqoid != InvalidOid
-				 * as the "valid slot" indicator.  pg_write_barrier() pairs
-				 * with the implicit acquire on the readers' first read of
-				 * seqoid.
+				 * Publish seqoid last.  pg_write_barrier() pairs with the
+				 * pg_read_barrier() in the lock-free reader above.
 				 */
 				pg_write_barrier();
 				slot->seqoid = seqoid;
@@ -332,8 +396,8 @@ seqam_locate_slot(Oid seqoid, SpockSeqAmKind kind, Form_pg_sequence seqform)
 	if (slot == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
-				 errmsg("spock: out of managed sequence slots"),
-				 errhint("Increase spock.max_managed_sequences (current: %d) "
+				 errmsg("out of Spock managed sequence slots"),
+				 errhint("Increase spock.max_managed_sequences (currently %d) "
 						 "and restart the server.",
 						 spock_seqam_max_managed_sequences)));
 
@@ -399,7 +463,11 @@ seqam_init_cache(void)
 							 128, &ctl,
 							 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
-	CacheRegisterRelcacheCallback(seqam_relcache_invalidate, (Datum) 0);
+	/*
+	 * NOTE: the relcache callback itself is registered once at module load
+	 * in spock_seqam_init(), not here, so that backends which never call a
+	 * managed nextval() still receive DROP SEQUENCE invalidations.
+	 */
 }
 
 static void
@@ -486,7 +554,16 @@ spock_seqam_nextval(Oid seqoid, Form_pg_sequence seqform, int64 *result)
 	}
 
 	if (entry->kind == SPOCK_SEQAM_LOCAL)
+	{
+		/*
+		 * Chain to any previous hook installed before ours.  This keeps
+		 * composition with other extensions working: they get a chance
+		 * to handle sequences that Spock has chosen not to manage.
+		 */
+		if (prev_nextval_hook != NULL)
+			return prev_nextval_hook(seqoid, seqform, result);
 		return false;
+	}
 
 	method = SeqAmMethods[entry->kind];
 	Assert(method != NULL);
@@ -546,9 +623,100 @@ spock_seqam_init(void)
 
 	spock_seqam_register_methods();
 
+	/*
+	 * Register the relcache invalidation callback once at module load.
+	 * Registering it lazily on first hook firing meant that a backend
+	 * which never called a managed nextval() (e.g. one that ran nothing
+	 * but DDL) would never see invalidations and could leak orphan
+	 * entries in the per-backend cache.
+	 */
+	CacheRegisterRelcacheCallback(seqam_relcache_invalidate, (Datum) 0);
+
 	/* Chain into the in-core nextval_hook. */
 	prev_nextval_hook = nextval_hook;
 	nextval_hook = spock_seqam_nextval;
+}
+
+
+/* ----- DROP SEQUENCE cleanup ------------------------------------------- */
+
+/*
+ * Delete the spock.sequence_kind row (if any) and free the per-sequence
+ * shared-memory slot for the given sequence OID.  Called from the
+ * object_access OAT_DROP path for RELKIND_SEQUENCE relations.
+ *
+ * The caller has already verified that the object is a sequence; we do
+ * not re-check, because by the time OAT_DROP fires the relation may not
+ * be openable.  We perform best-effort cleanup: missing rows / unused
+ * slots are not an error.
+ */
+void
+spock_seqam_drop_sequence_record(Oid seqoid)
+{
+	RangeVar	   *rv;
+	Relation		rel;
+	SysScanDesc		scan;
+	ScanKeyData		key[1];
+	HeapTuple		tup;
+	int				i;
+
+	/*
+	 * Cleanup uses superuser privileges because OAT_DROP can fire under a
+	 * caller who has no rights on spock.sequence_kind.  See
+	 * spock_executor.c for the matching SetUserIdAndSecContext shuffle.
+	 *
+	 * If the extension is being dropped, the catalog table is about to
+	 * disappear too -- skip the cleanup.
+	 */
+	if (get_extension_oid(EXTENSION_NAME, true) == InvalidOid)
+		return;
+
+	/*
+	 * Open spock.sequence_kind tolerating absence (catalog dropped or not
+	 * yet created).  RangeVarGetRelid(..., missing_ok=true) returns
+	 * InvalidOid when the relation is missing; portable across PG 15-18.
+	 */
+	{
+		Oid			catrelid;
+
+		rv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_KIND, -1);
+		catrelid = RangeVarGetRelid(rv, RowExclusiveLock, true);
+		if (!OidIsValid(catrelid))
+			return;
+		rel = table_open(catrelid, NoLock);
+	}
+
+	ScanKeyInit(&key[0],
+				Anum_sequence_kind_seqoid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(seqoid));
+	scan = systable_beginscan(rel, 0, true, NULL, 1, key);
+	tup = systable_getnext(scan);
+	if (HeapTupleIsValid(tup))
+		simple_heap_delete(rel, &tup->t_self);
+	systable_endscan(scan);
+	table_close(rel, RowExclusiveLock);
+
+	/* Free the shmem slot. */
+	if (SpockSeqShmemCtx != NULL)
+	{
+		LWLockAcquire(SpockSeqShmemCtx->alloc_lock, LW_EXCLUSIVE);
+		for (i = 0; i < SpockSeqShmemCtx->nslots; i++)
+		{
+			SpockSeqShmemSlot *slot = &SpockSeqShmemCtx->slots[i];
+
+			if (slot->seqoid == seqoid)
+			{
+				slot->seqoid = InvalidOid;
+				slot->kind = SPOCK_SEQAM_LOCAL;
+				pg_atomic_write_u64(&slot->packed_state, 0);
+				if (SpockSeqShmemCtx->nallocated > 0)
+					SpockSeqShmemCtx->nallocated--;
+				break;
+			}
+		}
+		LWLockRelease(SpockSeqShmemCtx->alloc_lock);
+	}
 }
 
 
@@ -596,6 +764,25 @@ spock_alter_sequence_set_kind(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("relation \"%s\" is not a sequence",
 						get_rel_name(seqoid))));
+
+	/*
+	 * Only the sequence owner (or a member of the owning role) may change
+	 * its kind.  Cluster-wide flipping by anyone with EXECUTE on this
+	 * function would let a non-owner corrupt monotonicity of another
+	 * tenant's sequence by toggling between local and snowflake.
+	 *
+	 * pg_class_ownercheck was renamed to object_ownercheck in PG 16; gate
+	 * via PG_VERSION_NUM to keep this source compatible with PG 15-18.
+	 */
+#if PG_VERSION_NUM >= 160000
+	if (!object_ownercheck(RelationRelationId, seqoid, GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_SEQUENCE,
+					   get_rel_name(seqoid));
+#else
+	if (!pg_class_ownercheck(seqoid, GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_SEQUENCE,
+					   get_rel_name(seqoid));
+#endif
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_KIND, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -667,9 +854,25 @@ spock_convert_all_sequences(PG_FUNCTION_ARGS)
 	bool		force = PG_GETARG_BOOL(1);
 	char	   *kindstr = text_to_cstring(kind_in);
 	Relation	pgclass;
+	Relation	skrel;
+	RangeVar   *skrv;
 	SysScanDesc	scan;
 	HeapTuple	tup;
 	int			n_converted = 0;
+
+	/*
+	 * Iterates every sequence in the database and writes spock.sequence_kind
+	 * rows for sequences whose owner may differ from the caller.  Restrict
+	 * to superuser to avoid cross-tenant corruption of monotonicity
+	 * (a non-owner could otherwise switch another role's sequences to a
+	 * different generator).
+	 */
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to run spock.convert_all_sequences"),
+				 errhint("Use spock.sequence_set_kind() per sequence to "
+						 "convert sequences you own.")));
 
 	if (strcmp(kindstr, "local") != 0 &&
 		strcmp(kindstr, "snowflake") != 0)
@@ -678,6 +881,27 @@ spock_convert_all_sequences(PG_FUNCTION_ARGS)
 				 errmsg("invalid sequence kind \"%s\"", kindstr),
 				 errhint("Valid kinds are: local, snowflake.")));
 
+	/*
+	 * Serialise concurrent conversions on this node.  Two callers (in
+	 * different sessions, or running this on different nodes simultaneously)
+	 * would otherwise produce a last-write-wins race in spock.sequence_kind.
+	 * The advisory xact lock is database-scoped; cluster-wide ordering is
+	 * provided by Spock's replication of the user_catalog_table.
+	 */
+	{
+		LOCKTAG		tag;
+
+		SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
+							 (uint32) 0x53504F43,	/* "SPOC" */
+							 (uint32) 0x4B534551,	/* "KSEQ" */
+							 1);
+		(void) LockAcquire(&tag, ExclusiveLock, false, false);
+	}
+
+	/* Open spock.sequence_kind once for the whole loop. */
+	skrv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_KIND, -1);
+	skrel = table_openrv(skrv, RowExclusiveLock);
+
 	pgclass = table_open(RelationRelationId, AccessShareLock);
 	scan = systable_beginscan(pgclass, InvalidOid, false, NULL, 0, NULL);
 
@@ -685,8 +909,6 @@ spock_convert_all_sequences(PG_FUNCTION_ARGS)
 	{
 		Form_pg_class classform = (Form_pg_class) GETSTRUCT(tup);
 		Oid			seqoid;
-		RangeVar   *rv;
-		Relation	skrel;
 		SysScanDesc	sscan;
 		ScanKeyData	key[1];
 		HeapTuple	srow;
@@ -702,8 +924,6 @@ spock_convert_all_sequences(PG_FUNCTION_ARGS)
 		seqoid = classform->oid;
 
 		/* Check existing assignment. */
-		rv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_KIND, -1);
-		skrel = table_openrv(rv, RowExclusiveLock);
 		ScanKeyInit(&key[0],
 					Anum_sequence_kind_seqoid,
 					BTEqualStrategyNumber, F_OIDEQ,
@@ -743,11 +963,11 @@ spock_convert_all_sequences(PG_FUNCTION_ARGS)
 		}
 
 		systable_endscan(sscan);
-		table_close(skrel, RowExclusiveLock);
 	}
 
 	systable_endscan(scan);
 	table_close(pgclass, AccessShareLock);
+	table_close(skrel, RowExclusiveLock);
 
 	CommandCounterIncrement();
 	pfree(kindstr);
@@ -798,8 +1018,8 @@ spock_seq_snowflake_decode(PG_FUNCTION_ARGS)
 	if (val < 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("snowflake values are non-negative; got " INT64_FORMAT,
-						val)));
+				 errmsg("invalid snowflake value " INT64_FORMAT, val),
+				 errdetail("Snowflake values are non-negative.")));
 
 	ts_ms = (int64) ((u & SPOCK_SNOWFLAKE_TIMESTAMP_MASK)
 					 >> SPOCK_SNOWFLAKE_TIMESTAMP_SHIFT);
