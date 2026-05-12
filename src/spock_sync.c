@@ -320,29 +320,13 @@ ensure_replication_slot_snapshot(PGconn *sql_conn, PGconn *repl_conn,
 	StringInfoData	query;
 	char		   *snapshot;
 
+	(void) use_failover_slot;	/* native PG slot-sync intentionally disabled */
+
 retry:
 	initStringInfo(&query);
 
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
-
-	/*
-	 * Mark the slot with (FAILOVER) when the *remote* provider is PG17+.
-	 * PG17+ supports logical slot synchronization to physical standbys via
-	 * sync_replication_slots = on.  PG17+ uses parenthesised option syntax:
-	 *   CREATE_REPLICATION_SLOT "name" LOGICAL plugin (FAILOVER)
-	 *
-	 * We key off the regular SQL connection (sql_conn) for version detection.
-	 * Replication protocol connections (repl_conn) return 0 from PQserverVersion()
-	 * so they cannot be used for this check.
-	 */
-	if (PQserverVersion(sql_conn) >= 170000)
-		appendStringInfo(&query, " (FAILOVER)");
-#if PG_VERSION_NUM < 170000
-	else if (use_failover_slot)
-		appendStringInfo(&query, " (FAILOVER)");
-#endif
-
 
 	res = PQexec(repl_conn, query.data);
 
