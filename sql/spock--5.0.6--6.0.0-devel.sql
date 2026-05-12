@@ -440,3 +440,48 @@ CREATE FUNCTION spock.sub_alter_options(
 RETURNS boolean
 AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
 LANGUAGE C STRICT VOLATILE;
+
+-- Distributed sequence access method registry.  See base
+-- spock--6.0.0-devel.sql for full documentation.
+CREATE TABLE spock.sequence_kind (
+	seqoid oid NOT NULL PRIMARY KEY,
+	kind   text NOT NULL
+		CHECK (kind IN ('local','snowflake'))
+) WITH (user_catalog_table=true);
+
+CREATE FUNCTION spock.alter_sequence_set_kind(seqname regclass, kind text)
+RETURNS void
+AS 'MODULE_PATHNAME', 'spock_alter_sequence_set_kind'
+LANGUAGE C VOLATILE;
+
+REVOKE ALL ON FUNCTION spock.alter_sequence_set_kind(regclass, text) FROM PUBLIC;
+
+CREATE FUNCTION spock.convert_all_sequences(
+	method text DEFAULT 'snowflake',
+	force  bool DEFAULT false
+) RETURNS integer
+AS 'MODULE_PATHNAME', 'spock_convert_all_sequences'
+LANGUAGE C VOLATILE;
+
+REVOKE ALL ON FUNCTION spock.convert_all_sequences(text, bool) FROM PUBLIC;
+
+CREATE FUNCTION spock.seq_hook_available()
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_seq_hook_available'
+LANGUAGE C STABLE STRICT;
+
+CREATE FUNCTION spock.seq_snowflake_decode(val bigint,
+	OUT timestamp_ms bigint,
+	OUT node_id int,
+	OUT counter int,
+	OUT ts_utc timestamptz)
+AS 'MODULE_PATHNAME', 'spock_seq_snowflake_decode'
+LANGUAGE C IMMUTABLE STRICT;
+
+CREATE VIEW spock.sequence_info AS
+SELECT
+	sk.seqoid::regclass AS sequence_name,
+	sk.kind,
+	CASE WHEN spock.seq_hook_available() THEN 'active'
+	     ELSE 'inactive' END AS hook_status
+FROM spock.sequence_kind sk;

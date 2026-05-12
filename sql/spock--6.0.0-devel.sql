@@ -315,6 +315,62 @@ CREATE TABLE spock.sequence_state (
 	last_value bigint NOT NULL
 ) WITH (user_catalog_table=true);
 
+-- Distributed sequence access method registry.
+--
+-- Maps a sequence OID to a "kind" identifying which generation method
+-- nextval() should use.  Replicated across the cluster via the
+-- user_catalog_table mechanism so all nodes converge on the same
+-- assignment.  Empty by default; sequences without a row use the
+-- spock.default_sequence_kind GUC (which defaults to 'local', i.e. stock
+-- PostgreSQL behaviour).
+CREATE TABLE spock.sequence_kind (
+	seqoid oid NOT NULL PRIMARY KEY,
+	kind   text NOT NULL
+		CHECK (kind IN ('local','snowflake'))
+) WITH (user_catalog_table=true);
+
+CREATE FUNCTION spock.alter_sequence_set_kind(seqname regclass, kind text)
+RETURNS void
+AS 'MODULE_PATHNAME', 'spock_alter_sequence_set_kind'
+LANGUAGE C VOLATILE;
+
+REVOKE ALL ON FUNCTION spock.alter_sequence_set_kind(regclass, text) FROM PUBLIC;
+
+CREATE FUNCTION spock.convert_all_sequences(
+	method text DEFAULT 'snowflake',
+	force  bool DEFAULT false
+) RETURNS integer
+AS 'MODULE_PATHNAME', 'spock_convert_all_sequences'
+LANGUAGE C VOLATILE;
+
+REVOKE ALL ON FUNCTION spock.convert_all_sequences(text, bool) FROM PUBLIC;
+
+CREATE FUNCTION spock.seq_hook_available()
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_seq_hook_available'
+LANGUAGE C STABLE STRICT;
+
+CREATE FUNCTION spock.seq_snowflake_decode(val bigint,
+	OUT timestamp_ms bigint,
+	OUT node_id int,
+	OUT counter int,
+	OUT ts_utc timestamptz)
+AS 'MODULE_PATHNAME', 'spock_seq_snowflake_decode'
+LANGUAGE C IMMUTABLE STRICT;
+
+-- Per-sequence summary.  hook_status reflects whether the patched
+-- PostgreSQL binary's nextval_hook is currently attached to Spock's
+-- dispatcher.  On unpatched builds the shared library would fail to
+-- load and SQL access to this view would not exist at all -- the
+-- column is kept for forward compatibility and for monitoring tooling.
+CREATE VIEW spock.sequence_info AS
+SELECT
+	sk.seqoid::regclass AS sequence_name,
+	sk.kind,
+	CASE WHEN spock.seq_hook_available() THEN 'active'
+	     ELSE 'inactive' END AS hook_status
+FROM spock.sequence_kind sk;
+
 CREATE TABLE spock.depend (
     classid oid NOT NULL,
     objid oid NOT NULL,

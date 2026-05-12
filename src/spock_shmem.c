@@ -30,6 +30,7 @@
 #include "spock_worker.h"
 #include "spock_group.h"
 #include "spock_output_plugin.h"
+#include "spock_seqam.h"
 
 /* Previous hook values for chaining */
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
@@ -115,6 +116,9 @@ spock_shmem_request(void)
 	/* Request shmem for Apply Group */
 	spock_group_shmem_request(max_worker_processes);
 
+	/* Request shared memory for distributed sequence access methods */
+	spock_seqam_shmem_request();
+
 	/* For SpockCtx->lock */
 	RequestNamedLWLockTranche("spock context lock", 1);
 }
@@ -172,6 +176,9 @@ spock_shmem_startup(void)
 
 	/* Initialize spock_group's shared memory. */
 	spock_group_shmem_startup(found);
+
+	/* Initialize distributed sequence access method shared memory. */
+	spock_seqam_shmem_startup(found);
 
 	LWLockRelease(AddinShmemInitLock);
 }

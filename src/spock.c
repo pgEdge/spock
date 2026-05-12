@@ -66,6 +66,7 @@
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
 #include "spock_readonly.h"
+#include "spock_seqam.h"
 #include "spock_shmem.h"
 #include "spock.h"
 
@@ -1285,6 +1286,17 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
+
+	/*
+	 * Distributed sequence access methods.  Registers GUCs and chains
+	 * into the in-core nextval_hook.  Called before the IsBinaryUpgrade
+	 * early-return so that pg_upgrade clusters still know about
+	 * spock.snowflake_node_id / spock.default_sequence_kind /
+	 * spock.max_managed_sequences referenced from postgresql.conf.  Must
+	 * run before spock_shmem_init() so the seqam shmem request attaches
+	 * to the unified spock_shmem_request hook.
+	 */
+	spock_seqam_init();
 
 	if (IsBinaryUpgrade)
 		return;

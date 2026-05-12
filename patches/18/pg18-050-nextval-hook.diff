@@ -1,0 +1,134 @@
+diff --git a/src/backend/commands/sequence.c b/src/backend/commands/sequence.c
+--- a/src/backend/commands/sequence.c
++++ b/src/backend/commands/sequence.c
+@@ -86,6 +86,15 @@ typedef SeqTableData *SeqTable;
+ static HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
+
+ /*
++ * Spock:
++ * Hook for extensions to intercept sequence value generation.  When set,
++ * the hook is consulted before the in-core sequence access method is
++ * invoked from nextval_internal().  See nextval_hook_type in sequence.h
++ * for the contract.
++ */
++nextval_hook_type nextval_hook = NULL;
++
++/*
+  * last_used_seq is updated upon successful completion of nextval() in any
+  * sequence.  This is used to set the currval() of the current session when
+  * lastval() is called.
+@@ -642,6 +651,10 @@ nextval_internal(Oid relid, bool check_permissions)
+ 	int64		log,
+ 				fetch,
+ 				last;
++	bool		hook_handled = false;
++	int64		hook_result = 0;
++	Form_pg_sequence pgsform = NULL;
++	HeapTuple	pgstuple = NULL;
+ 	int64		minv,
+ 				maxv;
+ 	int64		cache,
+@@ -678,6 +691,52 @@ nextval_internal(Oid relid, bool check_permissions)
+ 	if (!seqrel)
+ 		elog(ERROR, "could not open sequence with OID %u", relid);
+
++	/*
++	 * Spock:
++	 * If a nextval_hook is installed, give it a chance to produce the next
++	 * value instead of the in-core sequence AM.  The hook sees the
++	 * Form_pg_sequence catalog row (increment, minv, maxv, ...) but not
++	 * the heap-stored sequence state -- by design, since hook-managed
++	 * sequences (Snowflake, galloc, ...) are not heap-state-driven.
++	 *
++	 * The hook may return false to decline (fall through to the in-core
++	 * implementation).  If it returns true, *hook_result is treated as the
++	 * generated value and we still update the per-session lastval/currval
++	 * cache and last_used_seq below, so currval() and lastval() behave
++	 * consistently with the hook-produced value.
++	 */
++	if (nextval_hook != NULL)
++	{
++		pgstuple = SearchSysCache1(SEQRELID, ObjectIdGetDatum(relid));
++		if (!HeapTupleIsValid(pgstuple))
++			elog(ERROR, "cache lookup failed for sequence %u", relid);
++		pgsform = (Form_pg_sequence) GETSTRUCT(pgstuple);
++
++		hook_handled = (*nextval_hook) (relid, pgsform, &hook_result);
++	}
++
++	if (hook_handled)
++	{
++		Assert(pgstuple != NULL);
++
++		/*
++		 * Spock:
++		 * Update per-session caches so currval() / lastval() return the
++		 * hook-produced value.  These three fields are stable across
++		 * PG 15 .. 18.
++		 */
++		elm->last = hook_result;
++		elm->last_valid = true;
++		elm->cached = hook_result;
++		elm->increment = pgsform->seqincrement;
++		last_used_seq = elm;
++
++		ReleaseSysCache(pgstuple);
++		relation_close(seqrel, NoLock);
++		return hook_result;
++	}
++	if (pgstuple != NULL)
++		ReleaseSysCache(pgstuple);
++
+ 	rescnt = 0;
+
+ 	/*
+diff --git a/src/include/commands/sequence.h b/src/include/commands/sequence.h
+--- a/src/include/commands/sequence.h
++++ b/src/include/commands/sequence.h
+@@ -75,6 +75,46 @@ extern int64 nextval_internal(Oid relid, bool check_permissions);
+ extern Datum nextval(PG_FUNCTION_ARGS);
+ extern List *sequence_options(Oid relid);
+
++/*
++ * Spock:
++ * Extension hook for replacing nextval() value generation.
++ *
++ * Called from nextval_internal() after the sequence relation has been
++ * opened and the per-session SeqTable cache entry has been populated,
++ * but before the in-core sequence AM reads the heap-stored last_value.
++ *
++ * Arguments:
++ *   seqoid  - the sequence relation's OID
++ *   seqform - Form_pg_sequence pointer to the pg_sequence catalog row,
++ *             owned by the caller (do not pfree, do not ReleaseSysCache
++ *             from within the hook).  Provides seqincrement, seqmin,
++ *             seqmax, seqstart, seqcache, seqcycle.
++ *   result  - out parameter: the generated value (only read by the
++ *             caller if the hook returns true).
++ *
++ * Return value:
++ *   true  -> caller uses *result, updates the per-session lastval/currval
++ *            cache (elm->last, elm->last_valid, elm->cached), records
++ *            elm in last_used_seq for lastval(), closes the sequence
++ *            relation, and returns the value.  The heap-stored last_value
++ *            and the WAL-logged sequence state are NOT updated.
++ *   false -> caller falls through to the in-core sequence AM (heap read,
++ *            value compute, WAL log, heap update).
++ *
++ * The hook MUST NOT:
++ *   - close seqrel or release any lock
++ *   - call nextval()/setval()/lastval()/currval() recursively
++ *   - access the heap-stored sequence state directly
++ *
++ * Hook implementors that need additional pg_sequence_data fields (such
++ * as last_value for migrating an existing local sequence to a managed
++ * method) should call sequence_get_last_value() or equivalent on first
++ * use, not from inside the hot path of every nextval() call.
++ */
++typedef bool (*nextval_hook_type) (Oid seqoid, Form_pg_sequence seqform,
++								   int64 *result);
++extern PGDLLIMPORT nextval_hook_type nextval_hook;
++
+ extern void SequenceChangePersistence(Oid relid, char newrelpersistence);
+ extern void DeleteSequenceTuple(Oid relid);
+ extern void ResetSequence(Oid seq_relid);
