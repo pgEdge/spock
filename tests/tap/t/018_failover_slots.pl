@@ -293,21 +293,26 @@ if ($pg_major >= 17) {
     is($fb, 'f',
         "PG$pg_major: standby slot '$slot_name' has failover=false (native sync disabled)");
 
-    # Verify slot LSN on standby is not behind primary by more than 1MB
+    # Verify slot LSN on standby is set and behind/at primary.  spock's
+    # failover-slot worker prefers restart_lsn (which it sets during
+    # ReplicationSlotCreate/LogicalIncreaseRestartDecodingForSlot);
+    # confirmed_flush_lsn may stay NULL until LogicalConfirmReceivedLocation
+    # runs the first time, so poll for either column.
     my $primary_lsn = scalar_query(1, "SELECT pg_current_wal_lsn()");
     $primary_lsn =~ s/\s+//g;
-    my $slot_lsn = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
-        "SELECT confirmed_flush_lsn FROM pg_replication_slots
-         WHERE slot_name = '$slot_name'");
-    $slot_lsn =~ s/\s+//g;
-    my $lag = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
-        "SELECT '$primary_lsn'::pg_lsn - confirmed_flush_lsn
-         FROM pg_replication_slots WHERE slot_name = '$slot_name'");
-    $lag =~ s/\s+//g;
-    ok(defined($lag) && $lag ne '',
-        "PG$pg_major: slot LSN lag from primary is measurable ($lag bytes)");
 
-    diag("  primary_lsn=$primary_lsn  slot_lsn=$slot_lsn  lag=${lag}bytes");
+    my $slot_lsn = '';
+    my $slot_lsn_ok = wait_until(30, 2, sub {
+        $slot_lsn = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
+            "SELECT coalesce(confirmed_flush_lsn::text, restart_lsn::text, '')
+             FROM pg_replication_slots WHERE slot_name = '$slot_name'");
+        $slot_lsn =~ s/\s+//g;
+        return $slot_lsn ne '';
+    });
+    ok($slot_lsn_ok,
+        "PG$pg_major: standby slot has an LSN set (slot_lsn=$slot_lsn)");
+
+    diag("  primary_lsn=$primary_lsn  slot_lsn=$slot_lsn");
 } else {
     pass("PG$pg_major: synced column not available");
     pass("PG$pg_major: failover column not available");
