@@ -32,12 +32,14 @@ This function takes no arguments.
 ## spock_max_proto_version
 
 Use `spock_max_proto_version` to retrieve the maximum protocol version
-supported by Spock. This function is defined in the public schema (no
-`spock.` prefix).
+supported by Spock. 
 
 `spock_max_proto_version()`
 
 Returns the maximum protocol version supported by the Spock extension.
+
+This function takes no arguments, and is defined in the public
+schema so must be invoked without the `spock.` prefix.
 
 This function queries the Spock extension and returns the highest protocol
 version number it can use for replication communication. The protocol
@@ -49,17 +51,18 @@ Spock versions, the nodes negotiate to use the lower of the two maximum
 protocol versions. This ensures compatibility between nodes running
 different Spock releases.
 
-This function takes no arguments.
 
 ## spock_min_proto_version
 
 Use `spock_min_proto_version` to retrieve the minimum protocol version
-supported by Spock. This function is defined in the public schema (no
-`spock.` prefix).
+supported by Spock.
 
 `spock_min_proto_version()`
 
 Returns the minimum protocol version supported by the Spock extension.
+
+This function takes no arguments, and is defined in the public
+schema so must be invoked without the `spock.` prefix.
 
 This function queries the Spock extension and returns the lowest protocol
 version number it can use for replication communication. The protocol
@@ -70,8 +73,6 @@ When establishing replication connections between nodes running different
 Spock versions, the nodes negotiate to use a protocol version that falls
 within the supported range of both nodes. The minimum protocol version
 defines the lower bound of compatibility.
-
-This function takes no arguments.
 
 ## spock.node_info
 
@@ -88,26 +89,29 @@ This function takes no arguments.
 ## spock_version
 
 Use `spock_version` to retrieve the version string of the Spock extension.
-This function is defined in the public schema (no `spock.` prefix).
 
 `spock_version()`
 
 Returns the version number of the Spock extension.
 
+This function takes no arguments, and is defined in the public
+schema so must be invoked without the `spock.` prefix.
+
 This function queries the Spock extension and returns its version as a text
 string. The version string typically follows semantic versioning format
 (for example, "4.0.1" or "5.0.4").
 
-This function takes no arguments.
-
 ## spock_version_num
 
 Use `spock_version_num` to retrieve the version number of Spock as an
-integer. This function is defined in the public schema (no `spock.` prefix).
+integer. 
 
 `spock_version_num()`
 
 Returns the version number of the Spock extension as an integer.
+
+This function takes no arguments, and is defined in the public
+schema so must be invoked without the `spock.` prefix.
 
 This function queries the Spock extension and returns its version encoded
 as an integer value. The integer format allows for easy version comparison
@@ -117,4 +121,3 @@ The integer typically represents the version in a format like XXYYZZ where
 XX is the major version, YY is the minor version, and ZZ is the patch
 version. For example, version 3.1.0 might be represented as 30100.
 
-This function takes no arguments.
