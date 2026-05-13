@@ -14,11 +14,16 @@
   `error during exception handling` per disconnect, and a corner of the
   recovery path could silently advance the replication origin past the
   in-flight remote transaction, causing it to be skipped on reconnect.
-* Hardened zero-downtime add-node (zodan): logical replication slots created
-  during sub_create are now marked with failover := true on PostgreSQL 17+
-  so they're picked up by the native slotsync worker, Phase 9 waits for apply
-  workers to come up before proceeding, and a crash in the cswp error path
-  (CopyErrorData called while still in ErrorContext) has been fixed.
+* Removed native PG17+/PG18 slot-sync integration. Spock no longer creates
+  slots with (FAILOVER), does not defer to PostgreSQL's slotsync worker,
+  and keeps spock_failover_slots active on PG18; the spock worker is once
+  again the only path for failover-slot sync on 5.x.
+* spock_failover_slots: handle primary disconnects and post-promotion edge
+  cases. Reconnects to the primary on transient failure during sync; fixes
+  a PG15/16 PANIC where a freshly promoted standby could enter a crash loop
+  because the synchronized slot's restart_lsn was below the standby's WAL
+  floor; tolerates invalid/zero LSNs and catalog_xmin values that previously
+  tripped assertions.
 
 ## Spock 5.0.7
 
