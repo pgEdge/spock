@@ -62,6 +62,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
+#include "utils/resowner.h"
 #include "utils/snapmgr.h"
 #include "replication/syncrep.h"
 #include "replication/walsender_private.h"
@@ -143,6 +144,19 @@ static BufFile *apply_replay_spill_file = NULL;
 static bool apply_replay_spilling = false;
 static int	apply_replay_spill_count = 0;
 static int	apply_replay_spill_read = 0;
+
+/*
+ * Worker-lifetime ResourceOwner
+ *
+ * Transaction replay needs some resources to survive across transactions. So,
+ * to avoid leaks we need a resource owner that guarantees we remove resources
+ * in a standard way (on commit) or on reboot after a fatal error.
+ *
+ * Created once in apply_handle_startup, never explicitly deleted -- the
+ * worker process exit reclaims it (nothing is registered against it, so
+ * no resource survives the process).
+ */
+static ResourceOwner apply_replay_resowner = NULL;
 
 /*
  * A message counter for the xact, for debugging. We don't send
@@ -549,6 +563,22 @@ handle_begin(StringInfo s)
 	char	   *slot_name;
 
 	SPOCK_WORKER_DELAY();
+
+	/*
+	 * In the replay path (apply_replay_mode == true) we are re-dispatching
+	 * the queued BEGIN entry from a previous error cycle: spill state may
+	 * be active (if the txn spilled) and apply_replay_next is the live
+	 * iteration cursor, so none of those are invariants here either.
+	 */
+	if (!apply_replay_mode)
+	{
+		Assert(apply_replay_spill_file == NULL);
+		Assert(!apply_replay_spilling);
+		Assert(apply_replay_spill_count == 0);
+		Assert(apply_replay_spill_read == 0);
+		Assert(apply_replay_next == NULL);
+	}
+	Assert(apply_replay_resowner != NULL);
 
 	/*
 	 * To get here we must have connected successfully and the replication
@@ -1082,6 +1112,13 @@ handle_commit(StringInfo s)
 		 */
 		if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
 			spock_sync_worker_finish();
+
+		/*
+		 * Explicitly reset cross-transactional resources apply worker used to
+		 * implement replay-mode run. It keeps the cleanup contract symmetric
+		 * between graceful and replay-completion exits.
+		 */
+		apply_replay_queue_reset();
 
 		/* Stop gracefully */
 		proc_exit(0);
@@ -1913,6 +1950,14 @@ handle_startup(StringInfo s)
 	/* Register callback for cleaning up */
 	before_shmem_exit(spock_apply_worker_shmem_exit, 0);
 	on_proc_exit(spock_apply_worker_on_exit, 0);
+
+	/*
+	 * apply_handle_startup is the per-connection handler; if a future change
+	 * makes it re-runnable across reconnects, we must not silently leak a
+	 * ResourceOwner per reconnect.
+	 */
+	Assert(apply_replay_resowner == NULL);
+	apply_replay_resowner = ResourceOwnerCreate(NULL, "Spock apply replay");
 }
 
 /*
@@ -1921,6 +1966,17 @@ handle_startup(StringInfo s)
 static void
 spock_apply_worker_shmem_exit(int code, Datum arg)
 {
+	/*
+	 * Close the cross-transaction replay spill BufFile, if any.
+	 * The only reason is to keep up with following changes of upstream
+	 * behaviour that has been discussed already.
+	 */
+	if (apply_replay_spill_file != NULL)
+	{
+		BufFileClose(apply_replay_spill_file);
+		apply_replay_spill_file = NULL;
+	}
+
 	/*
 	 * Reset replication session to avoid reuse after an error.
 	 * This is done in a before_shmem_exit callback instead of
@@ -4470,6 +4526,7 @@ apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
 	ApplyReplayEntry *entry = *entry_p;
 	StringInfo	msg = *msg_p;
 	MemoryContext	oldctx;
+	ResourceOwner	oldowner;
 
 	Assert(entry != NULL);
 	Assert(msg != NULL);
@@ -4479,12 +4536,16 @@ apply_replay_queue_append_entry(ApplyReplayEntry **entry_p, StringInfo *msg_p)
 		apply_replay_bytes + msg->len > spock_replay_queue_size * 1024L * 1024L)
 	{
 		/*
-		 * Allocate the BufFile in TopMemoryContext so it survives
-		 * across transaction boundaries, as required by
-		 * BufFileCreateTemp(interXact=true).
+		 * Allocate the BufFile in TopMemoryContext and pin it to the
+		 * worker-lifetime ResourceOwner so it survives transaction
+		 * boundaries, as required by BufFileCreateTemp(interXact=true).
 		 */
+		Assert(apply_replay_resowner != NULL);
 		oldctx = MemoryContextSwitchTo(TopMemoryContext);
+		oldowner = CurrentResourceOwner;
+		CurrentResourceOwner = apply_replay_resowner;
 		apply_replay_spill_file = BufFileCreateTemp(true);
+		CurrentResourceOwner = oldowner;
 		MemoryContextSwitchTo(oldctx);
 		apply_replay_spilling = true;
 
