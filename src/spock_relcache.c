@@ -97,6 +97,32 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			return NULL;
 
 		desc = RelationGetDescr(entry->rel);
+
+		/*
+		 * Reset delta-apply metadata before rescanning. A relcache
+		 * invalidation only resets entry->reloid; the function-Oid array
+		 * and has_delta_columns flag carry over from the prior state.
+		 * Without this reset, dropping a delta_apply_function attoption
+		 * would leave a stale Oid behind and has_delta_columns stuck at
+		 * true.
+		 *
+		 * Also resize the array to the local TupleDesc width. The
+		 * cache_update path sizes it to remote natts, but the scan loop
+		 * below indexes by attmap[i] (a local position), which can exceed
+		 * remote natts when local has columns the remote does not.
+		 */
+		if (entry->delta_apply_functions != NULL)
+			pfree(entry->delta_apply_functions);
+		{
+			MemoryContext oldcontext;
+
+			oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
+			entry->delta_apply_functions =
+				palloc0(desc->natts * sizeof(Oid));
+			MemoryContextSwitchTo(oldcontext);
+		}
+		entry->has_delta_columns = false;
+
 		for (i = 0; i < entry->natts; i++)
 		{
 			AttributeOpts *aopt;
