@@ -28,10 +28,14 @@ node), `n2`, `n3`, and the new node is `n4`.
     - Prepare the new node to meet all of the prerequisites described here.
     - If the process fails, do not immediately retry a command until you
       ensure that all artifacts created by the workflow have been removed.
-    - Zodan uses an internal 180-second (3-minute) timeout when waiting for
-      sync events between nodes. If replication lag exceeds this window, the
-      process will raise an exception. Ensure network latency and replication
-      lag are within acceptable limits before starting.
+    - The automated `spock.add_node()` procedure uses an internal 180-second
+      (3-minute) timeout when waiting for sync events between nodes. If
+      replication lag exceeds this window, the procedure will raise an
+      exception. Ensure network latency and replication lag are within
+      acceptable limits before starting. When following the manual workflow
+      below, you call `spock.wait_for_sync_event()` directly and supply your
+      own timeout (the examples use 1200 seconds), so this internal limit
+      does not apply.
 
 ## Creating a Node Manually
 
@@ -752,8 +756,11 @@ FROM dblink(
 On n4, wait for the sync marker that matches the returned LSN (0/1E1F620)
 to arrive and be processed. This is a blocking call; the call will not
 return until the n4 subscription from n1 has replicated up to this LSN.
-The timeout (1200 seconds = 20 minutes) prevents waiting forever
-if something goes wrong.
+The timeout (1200 seconds = 20 minutes) is a value chosen for this manual
+example to give plenty of headroom; tune it to suit your environment. It
+prevents waiting forever if something goes wrong. (The automated
+`spock.add_node()` procedure uses a shorter 180-second internal timeout
+for its sync waits, as noted in the prerequisites.)
 
 In the following example, the command waits for the sync event on n4:
 
@@ -844,7 +851,7 @@ FROM dblink(
      )
      SELECT pg_replication_slot_advance(''spk_inventory_n2_sub_n2_n4'', lsn) 
      FROM lsn_cte'
-) AS t(result bool);
+) AS t(slot_name name, end_lsn pg_lsn);
 ```
 
 #### Repeat for n3 to n4
@@ -875,7 +882,7 @@ FROM dblink(
      )
      SELECT pg_replication_slot_advance(''spk_inventory_n3_sub_n3_n4'', lsn) 
      FROM lsn_cte'
-) AS t(result bool);
+) AS t(slot_name name, end_lsn pg_lsn);
 ```
 
 
