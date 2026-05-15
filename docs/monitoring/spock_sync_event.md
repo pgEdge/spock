@@ -16,7 +16,8 @@ Then, you monitor a procedure on the node you have selected to act as the
 subscriber node that detects the presence of the LSN, and confirms when it
 has been received and applied:
 
-`spock.wait_for_sync_event()`
+`spock.wait_for_sync_event(...)` (see the [Synopsis](#synopsis) for the
+required arguments)
 
 ## Synopsis
 

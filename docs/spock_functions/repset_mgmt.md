@@ -91,13 +91,16 @@ To remove a table from a replication set with Spock, connect to the server
 with psql and invoke the `spock.repset_remove_table` command:
 
 ```sql
-SELECT spock.repset_remove_table(set_name, relation)
+SELECT spock.repset_remove_table(set_name name, relation regclass,
+    include_partitions boolean DEFAULT true)
 ```
 
 Parameters include:
 
 - `set_name` is the name of the replication set in which the table resides.
 - `relation` is the name or OID of the table that will be removed.
+- `include_partitions` is a boolean value; specify `true` to also remove
+  partitions of the partitioned table; the default is `true`.
 
 For example, the following command:
 
