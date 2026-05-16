@@ -67,6 +67,7 @@
 #include "replication/walsender_private.h"
 
 #include "spock_autoddl.h"
+#include "spock_change_log.h"
 #include "spock_common.h"
 #include "spock_conflict.h"
 #include "spock_executor.h"
@@ -1475,6 +1476,10 @@ handle_insert(StringInfo s)
 		spock_apply_heap_insert(rel, &newtup);
 	}
 
+	if (!failed)
+		spock_log_apply_change("INSERT", rel, NULL, &newtup,
+							   remote_origin_name);
+
 	/*
 	 * DML operation is finished. Be paranoid and check memory context before
 	 * switching out and cleaning the per-operation memory context
@@ -1641,6 +1646,11 @@ handle_update(StringInfo s)
 		spock_apply_heap_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 	}
 
+	if (!failed)
+		spock_log_apply_change("UPDATE", rel,
+							   hasoldtup ? &oldtup : NULL, &newtup,
+							   remote_origin_name);
+
 	spock_relation_close(rel, NoLock);
 
 	end_replication_step();
@@ -1767,6 +1777,10 @@ handle_delete(StringInfo s)
 	{
 		spock_apply_heap_delete(rel, &oldtup);
 	}
+
+	if (!failed)
+		spock_log_apply_change("DELETE", rel, &oldtup, NULL,
+							   remote_origin_name);
 
 	spock_relation_close(rel, NoLock);
 
@@ -2401,6 +2415,14 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started, char **sql)
 		elog(ERROR, "SPOCK %s: malformed message in queued message tuple, "
 			 "item type %d expected %d",
 			 MySubscription->name, r, WJB_DONE);
+
+	/*
+	 * Emit the DDL change-log record (in both 'key_only' and 'verbose'
+	 * modes) BEFORE execution.  Logging at this point means the operator
+	 * always sees what SQL was about to run, even if the execution itself
+	 * later errors out.
+	 */
+	spock_log_apply_ddl(*sql, remote_origin_name);
 
 	/* Run the extracted SQL. */
 	spock_execute_sql_command(*sql, queued_message->role, tx_just_started);

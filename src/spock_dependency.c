@@ -765,7 +765,7 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 			 * results are too confusing when client_min_messages and
 			 * log_min_messages are different.
 			 */
-			ereport(DEBUG2,
+			ereport(SPOCK_DEBUG2,
 					(errmsg("drop auto-cascades to %s",
 							objDesc)));
 		}
