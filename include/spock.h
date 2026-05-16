@@ -55,6 +55,51 @@ extern bool check_all_uc_indexes;
 extern bool	spock_enable_quiet_mode;
 extern int	log_origin_change;
 extern int	spock_apply_idle_timeout;
+extern int	spock_log_verbosity;
+extern int	spock_apply_change_logging;
+
+/*
+ * spock.log_verbosity - controls the verbosity of spock-specific log output.
+ *
+ * Spock's own DEBUG1/DEBUG2 messages are silent by default because PostgreSQL's
+ * log_min_messages typically defaults to WARNING or NOTICE.  Customer Success
+ * needs to crank up spock detail when debugging an issue without flipping
+ * log_min_messages globally (which floods the logs with non-spock output).
+ *
+ * When spock_log_verbosity = SPOCK_LOG_VERBOSITY_VERBOSE every spock-emitted
+ * DEBUG message routed through SPOCK_DEBUG1 / SPOCK_DEBUG2 is promoted to
+ * LOG level so it appears in standard server logs.
+ */
+typedef enum SpockLogVerbosity
+{
+	SPOCK_LOG_VERBOSITY_NORMAL = 0,
+	SPOCK_LOG_VERBOSITY_VERBOSE
+} SpockLogVerbosity;
+
+/*
+ * spock.apply_change_logging - controls JSON change logging by the apply worker.
+ *
+ *   none     - default; no extra logging.
+ *   key_only - log {action, schema, table, primary_key, origin, commit_ts}
+ *              for each DML change.  DDL is also logged with its SQL text.
+ *   verbose  - all of the above, plus old/new row data for DML.
+ */
+typedef enum SpockApplyChangeLogging
+{
+	SPOCK_APPLY_CHANGE_LOG_NONE = 0,
+	SPOCK_APPLY_CHANGE_LOG_KEY_ONLY,
+	SPOCK_APPLY_CHANGE_LOG_VERBOSE
+} SpockApplyChangeLogging;
+
+/*
+ * Route every spock-specific DEBUG1/DEBUG2 ereport through these macros so
+ * spock.log_verbosity = 'verbose' can promote them to LOG without recompiling.
+ * Used as `ereport(SPOCK_DEBUG1, (errmsg("...")));`
+ */
+#define SPOCK_LOG_DEBUG_LEVEL(orig_level) \
+	((spock_log_verbosity == SPOCK_LOG_VERBOSITY_VERBOSE) ? LOG : (orig_level))
+#define SPOCK_DEBUG1	SPOCK_LOG_DEBUG_LEVEL(DEBUG1)
+#define SPOCK_DEBUG2	SPOCK_LOG_DEBUG_LEVEL(DEBUG2)
 
 extern char *shorten_hash(const char *str, int maxlen);
 extern void gen_slot_name(Name slot_name, char *dbname,

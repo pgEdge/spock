@@ -28,6 +28,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+#include "spock.h"
 #include "spock_common.h"
 #include "spock_compat.h"
 
@@ -456,17 +457,17 @@ retry:
 			case TM_Updated:
 				/* XXX: Improve handling here */
 				if (ItemPointerIndicatesMovedPartitions(&tmfd.ctid))
-					ereport(DEBUG1,
+					ereport(SPOCK_DEBUG1,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("tuple to be locked was already moved to another partition due to concurrent update, retrying")));
 				else
-					ereport(DEBUG1,
+					ereport(SPOCK_DEBUG1,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("concurrent update, retrying")));
 				goto retry;
 			case TM_Deleted:
 				/* XXX: Improve handling here */
-				ereport(DEBUG1,
+				ereport(SPOCK_DEBUG1,
 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 						 errmsg("concurrent delete, retrying")));
 				goto retry;

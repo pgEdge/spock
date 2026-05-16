@@ -139,6 +139,19 @@ static const struct config_enum_entry readonly_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry log_verbosity_options[] = {
+	{"normal", SPOCK_LOG_VERBOSITY_NORMAL, false},
+	{"verbose", SPOCK_LOG_VERBOSITY_VERBOSE, false},
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry apply_change_logging_options[] = {
+	{"none", SPOCK_APPLY_CHANGE_LOG_NONE, false},
+	{"key_only", SPOCK_APPLY_CHANGE_LOG_KEY_ONLY, false},
+	{"verbose", SPOCK_APPLY_CHANGE_LOG_VERBOSE, false},
+	{NULL, 0, false}
+};
+
 bool		spock_synchronous_commit = false;
 char	   *spock_temp_directory = "";
 static char *spock_temp_directory_config;
@@ -157,6 +170,8 @@ bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
 int			spock_apply_idle_timeout = 300;
+int			spock_log_verbosity = SPOCK_LOG_VERBOSITY_NORMAL;
+int			spock_apply_change_logging = SPOCK_APPLY_CHANGE_LOG_NONE;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
 
@@ -1064,6 +1079,30 @@ _PG_init(void)
 							 &spock_enable_quiet_mode,
 							 false, PGC_SIGHUP,
 							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomEnumVariable("spock.log_verbosity",
+							 gettext_noop("Sets the verbosity of spock-specific log output."),
+							 gettext_noop("When 'verbose', spock's own DEBUG1 and DEBUG2 messages are "
+										  "promoted to LOG level so they appear in standard server logs "
+										  "without changing log_min_messages globally."),
+							 &spock_log_verbosity,
+							 SPOCK_LOG_VERBOSITY_NORMAL,
+							 log_verbosity_options,
+							 PGC_SUSET, 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomEnumVariable("spock.apply_change_logging",
+							 gettext_noop("Controls JSON logging of changes applied by the apply worker."),
+							 gettext_noop("'none' (default) disables. 'key_only' logs the action, "
+										  "schema-qualified relation, primary-key values, origin and "
+										  "commit timestamp for each DML change in JSON. 'verbose' "
+										  "additionally logs old/new row data. DDL is logged in both "
+										  "'key_only' and 'verbose' modes."),
+							 &spock_apply_change_logging,
+							 SPOCK_APPLY_CHANGE_LOG_NONE,
+							 apply_change_logging_options,
+							 PGC_SUSET, 0,
 							 NULL, NULL, NULL);
 
 	DefineCustomBoolVariable("spock.synchronous_commit",
