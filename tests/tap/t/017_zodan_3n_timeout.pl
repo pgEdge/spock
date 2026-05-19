@@ -42,7 +42,7 @@ psql_or_bail(3, "\\i ../../samples/Z0DAN/zodremove.sql");
 
 # Rename sync_event function on node 1 to simulate it being missing
 print STDERR "Rename spock.sync_event() on N1 to simulate missing function\n";
-psql_or_bail(1, "ALTER FUNCTION spock.sync_event() RENAME TO sync_event_renamed");
+psql_or_bail(1, "ALTER FUNCTION spock.sync_event(boolean) RENAME TO sync_event_renamed");
 
 # Attempt add_node - this should fail quickly with an error, not timeout
 print STDERR "Attempt add_node from N2 to N1 (should fail quickly with error)\n";
@@ -70,7 +70,7 @@ ok($exit_code != 0, "add_node failed as expected when sync_event is missing (exi
 
 # Restore sync_event function on N1 for cleanup
 print STDERR "Restore spock.sync_event() on N1\n";
-psql_or_bail(1, "ALTER FUNCTION spock.sync_event_renamed() RENAME TO sync_event");
+psql_or_bail(1, "ALTER FUNCTION spock.sync_event_renamed(boolean) RENAME TO sync_event");
 
 # Clean leftovers in the Spock cluster caused by unsuccessful addition
 scalar_query(2, qq{
