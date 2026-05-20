@@ -79,6 +79,7 @@
 #include "spock_apply_heap.h"
 #include "spock_apply.h"
 #include "spock_exception_handler.h"
+#include "spock.h"
 
 typedef struct ApplyExecutionData
 {
@@ -969,7 +970,7 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	idxused = edata->targetRel->idxoid;
 
 	retry = 0;
-	while (retry < 5)
+	while (retry < spock_read_retry_count)
 	{
 		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
 										edata->targetRel->idxoid,
@@ -1086,7 +1087,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	relinfo = edata->targetRelInfo;
 
 	retry = 0;
-	while (retry < 5)
+	while (retry < spock_read_retry_count)
 	{
 		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
 										edata->targetRel->idxoid,
