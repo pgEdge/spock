@@ -151,6 +151,7 @@ int			restart_delay_default;
 int			restart_delay_on_exception;
 int			spock_replay_queue_size;
 int			spock_pause_timeout = 10;	/* seconds to wait for apply workers to pause */
+int			spock_read_retry_count = 5;	/* heap update/delete: retries when local tuple is missing */
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
@@ -1191,6 +1192,26 @@ _PG_init(void)
 							300,
 							PGC_USERSET,
 							GUC_UNIT_S,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("spock.read_retry_count",
+							"Number of times the apply worker re-reads the local "
+							"relation when a row targeted by a remote UPDATE or "
+							"DELETE is not yet visible",
+							"On each retry the apply worker waits for any "
+							"concurrently-applying transaction to finish, then "
+							"searches the local relation again. Set to 0 to disable "
+							"retries (the row-missing path runs immediately). "
+							"Used in spock_apply_heap_update and "
+							"spock_apply_heap_delete.",
+							&spock_read_retry_count,
+							5,
+							0,
+							100,
+							PGC_SIGHUP,
+							0,
 							NULL,
 							NULL,
 							NULL);
