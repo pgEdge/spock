@@ -1203,9 +1203,7 @@ _PG_init(void)
 							"On each retry the apply worker waits for any "
 							"concurrently-applying transaction to finish, then "
 							"searches the local relation again. Set to 0 to disable "
-							"retries (the row-missing path runs immediately). "
-							"Used in spock_apply_heap_update and "
-							"spock_apply_heap_delete.",
+							"retries (the row-missing path runs immediately).",
 							&spock_read_retry_count,
 							5,
 							0,
