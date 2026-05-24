@@ -46,6 +46,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -666,9 +667,11 @@ start_manager_workers(void)
 
 	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
 	{
-		Form_pg_database pgdatabase = (Form_pg_database) GETSTRUCT(tup);
-		Oid			dboid = pgdatabase->oid;
-		SpockWorker worker;
+		Form_pg_database	pgdatabase = (Form_pg_database) GETSTRUCT(tup);
+		Oid					dboid = pgdatabase->oid;
+		SpockWorker		worker;
+		HeapTuple			rev;
+		bool				connectable = false;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -684,6 +687,26 @@ start_manager_workers(void)
 			continue;
 		}
 		LWLockRelease(SpockCtx->lock);
+
+		/*
+		 * Revalidate the dboid is still connectable.  The seq-scan tuple
+		 * above can have become stale: another backend may have DROPped
+		 * the database or set datconnlimit = -2 (invalid-database marker)
+		 * while we walk pg_database.  Without this check the manager
+		 * worker FATALs during attach with "cannot connect to invalid
+		 * database" or "database <oid> does not exist", which sustains a
+		 * supervisor-respawn loop under heavy tenant-DB churn (SUP-137).
+		 */
+		rev = SearchSysCache1(DATABASEOID, ObjectIdGetDatum(dboid));
+		if (HeapTupleIsValid(rev))
+		{
+			Form_pg_database d = (Form_pg_database) GETSTRUCT(rev);
+
+			connectable = d->datallowconn && d->datconnlimit != -2;
+			ReleaseSysCache(rev);
+		}
+		if (!connectable)
+			continue;
 
 		/* No record found, try running new worker. */
 		elog(DEBUG1, "registering spock manager process for database %s",
