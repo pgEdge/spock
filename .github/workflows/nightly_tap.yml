@@ -31,11 +31,16 @@ jobs:
           # (1-hour buffer for scheduling jitter) so every open/push is covered
           # by that night's run without retesting PRs that have not changed.
           # On a manual dispatch: include all open PRs regardless of age.
+          # Skip PRs whose base branch is v5_STABLE: that line has an older
+          # tests/docker tree (e.g. Dockerfile.el9 instead of
+          # Dockerfile-step-1.el9) and the build step here is wired for main's
+          # 6.x layout, so v5_STABLE-targeted PRs cannot be built by this
+          # workflow. They are tested separately on their own pipelines.
           if [ "${{ github.event_name }}" = "schedule" ]; then
             CUTOFF=$(date -u -d '25 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
-            FILTER='[.[] | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
+            FILTER='[.[] | select(.base.ref != "v5_STABLE") | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
           else
-            FILTER='[.[] | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
+            FILTER='[.[] | select(.base.ref != "v5_STABLE") | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
             CUTOFF=""
           fi
           ALL_JSON="[]"
