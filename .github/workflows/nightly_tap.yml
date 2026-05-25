@@ -41,11 +41,17 @@ jobs:
           # "not ready", so do not burn long-running TAP cycles on it.
           # Contributors who want nightly signal on a draft can mark the PR
           # ready for review or open a non-draft.
+          #
+          # Skip PRs that carry the "skip-test-nightly" label: explicit
+          # opt-out for ready-for-review PRs whose author or a maintainer
+          # decided they should not consume nightly cycles (e.g. WIP that
+          # cannot be marked draft for review-process reasons, or a PR
+          # whose feature is currently broken in a known way).
           if [ "${{ github.event_name }}" = "schedule" ]; then
             CUTOFF=$(date -u -d '25 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
-            FILTER='[.[] | select(.draft == false) | select(.base.ref != "v5_STABLE") | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
+            FILTER='[.[] | select(.draft == false) | select(.base.ref != "v5_STABLE") | select(any(.labels[]; .name == "skip-test-nightly") | not) | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
           else
-            FILTER='[.[] | select(.draft == false) | select(.base.ref != "v5_STABLE") | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
+            FILTER='[.[] | select(.draft == false) | select(.base.ref != "v5_STABLE") | select(any(.labels[]; .name == "skip-test-nightly") | not) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
             CUTOFF=""
           fi
           ALL_JSON="[]"
