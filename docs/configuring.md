@@ -215,6 +215,26 @@ liveness detection. Default: `300` (5 minutes).
 spock.apply_idle_timeout = 300
 ```
 
+### `spock.read_retry_count`
+
+Number of times the apply worker re-reads the local relation when a row
+targeted by a remote `UPDATE` or `DELETE` is not yet visible. On each retry
+the apply worker waits for any concurrently-applying transaction to finish
+and then searches the local relation again. If the row is still missing
+after the configured number of retries, the apply worker falls through to
+the standard row-missing handling path (conflict resolution and/or the
+exception handler, depending on the configured
+[`spock.exception_behaviour`](#spock-exception_behaviour)).
+
+Set to `0` to disable retries entirely (the row-missing path runs
+immediately). Valid range is `0` to `100`. Default: `5`. Changes take
+effect on `SIGHUP` (for example, `SELECT pg_reload_conf()`); a server
+restart is not required.
+
+```
+spock.read_retry_count = 5
+```
+
 ### Logical Slot Failover (HA Standby)
 
 Spock creates logical replication slots on each provider node. For high
