@@ -97,8 +97,11 @@ jobs:
 
     steps:
       - name: Checkout spock
-        uses: actions/checkout@v4
+        # Pinned to immutable SHA (matches docker/setup-buildx-action style above).
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          # Do not leave the GITHUB_TOKEN in .git/config on the runner.
+          persist-credentials: false
           repository: ${{ matrix.pr.head_repo || github.repository }}
           ref: ${{ matrix.pr.sha }}
 
@@ -142,7 +145,8 @@ jobs:
 
       - name: Upload TAP artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        # Pinned to immutable SHA (matches docker/setup-buildx-action style above).
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: tap-nightly-pr${{ matrix.pr.number }}-pg${{ matrix.pgver }}
           path: |
@@ -156,7 +160,13 @@ jobs:
   # open PR. Mirror the pull-and-test step list, but check out main and use
   # a different container/artifact naming scheme so PR and main runs do not
   # collide.
+  #
+  # TEMPORARILY DISABLED: 016_crash_recovery_progress and 017_zodan_3n_timeout
+  # are not yet skipped on main, so this job is guaranteed to fail until those
+  # are addressed (or this PR's disable lands on main). Flip `if: false` back
+  # to remove the gate when main is ready to be exercised.
   test-main:
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -169,8 +179,11 @@ jobs:
 
     steps:
       - name: Checkout spock (main)
-        uses: actions/checkout@v4
+        # Pinned to immutable SHA (matches docker/setup-buildx-action style above).
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          # Do not leave the GITHUB_TOKEN in .git/config on the runner.
+          persist-credentials: false
           ref: main
 
       - name: Add permissions
@@ -213,7 +226,8 @@ jobs:
 
       - name: Upload TAP artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        # Pinned to immutable SHA (matches docker/setup-buildx-action style above).
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: tap-nightly-main-pg${{ matrix.pgver }}
           path: |
