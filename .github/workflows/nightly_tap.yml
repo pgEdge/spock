@@ -36,11 +36,16 @@ jobs:
           # Dockerfile-step-1.el9) and the build step here is wired for main's
           # 6.x layout, so v5_STABLE-targeted PRs cannot be built by this
           # workflow. They are tested separately on their own pipelines.
+          #
+          # Skip draft PRs as well: a draft is the author signalling
+          # "not ready", so do not burn long-running TAP cycles on it.
+          # Contributors who want nightly signal on a draft can mark the PR
+          # ready for review or open a non-draft.
           if [ "${{ github.event_name }}" = "schedule" ]; then
             CUTOFF=$(date -u -d '25 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
-            FILTER='[.[] | select(.base.ref != "v5_STABLE") | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
+            FILTER='[.[] | select(.draft == false) | select(.base.ref != "v5_STABLE") | select(.updated_at >= $cutoff) | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
           else
-            FILTER='[.[] | select(.base.ref != "v5_STABLE") | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
+            FILTER='[.[] | select(.draft == false) | select(.base.ref != "v5_STABLE") | {number: .number, sha: .head.sha, ref: .head.ref, user: .user.login, head_repo: .head.repo.full_name}]'
             CUTOFF=""
           fi
           ALL_JSON="[]"
