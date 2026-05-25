@@ -38,3 +38,6 @@ test: 013_origin_change_restore
 test: 016_sub_disable_missing_relation
 test: 018_failover_slots
 test: 019_stale_fd_epoll_after_conn_death
+
+# Regression tests
+test: 103_manager_worker_dboid_race
