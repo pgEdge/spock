@@ -59,7 +59,6 @@ reconciles the snapshot against the durable replication-origin LSN: if
 `resource.dat` is stale, `remote_commit_lsn` is advanced from the origin
 and stale timestamp fields are cleared (to be refreshed by subsequent
 apply).
-path.
 
 A custom resource manager (id 144) emits one WAL record per
 `SpockGroupHash` entry at each `resource.dat` dump event, visible via
@@ -93,11 +92,6 @@ The catalog surface has been restructured accordingly:
   transaction discard.
 * Subscriptions stuck in an unrecoverable synchronization stage are now
   disabled rather than restarted indefinitely.
-* New GUC `spock.read_retry_count` allows for configuring the number of
-  retries when an expected row is not found. The default matches the
-  previously hard-coded value of 5 (there is 1ms of sleep between each
-  retry). Setting it to 0 disables retries. This helps when a node has a
-  large lag and we do not want to slow down processing.
 
 ### Exception replay: spill to disk
 
@@ -339,6 +333,11 @@ AutoDDL has been refactored and hardened:
   level and suppresses dependent-object reporting in `DROP CASCADE`
   operations.  Intended for regression tests and production
   environments where less verbose output is desired.
+* `spock.read_retry_count` allows for configuring the number of retries
+  when an expected row is not found. The default matches the previously
+  hard-coded value of 5 (there is 1ms of sleep between each retry).
+  Setting it to 0 disables retries. This helps when a node has a large
+  lag and we do not want to slow down processing.
 
 **Removed**
 
