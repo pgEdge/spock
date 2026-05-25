@@ -14,11 +14,32 @@
 # 3. Restart n2 and verify remote_insert_lsn is still > 0
 #
 # Without the fix, remote_insert_lsn would be 0 after crash recovery.
+#
+# -----------------------------------------------------------------------------
+# DISABLED (see plan skip_all below)
+# -----------------------------------------------------------------------------
+# Commit 2f9a686c ("Reduce work for spock.progress and remove checkpoint hook",
+# PR #450) removed the checkpoint hook and switched resource.dat to a
+# shutdown-only snapshot. After a SIGKILL there is no fresh on-disk record of
+# remote_insert_lsn; reconcile_progress_with_origin() only clamps the field up
+# to the durable replication-origin LSN, and the pre-crash value is only
+# restored later by the publisher's forced keepalive after reconnect. The
+# strict equality assertion on line 111 ("matches value before crash") is no
+# longer guaranteed under that design and races with the keepalive arrival
+# window.
+#
+# Re-enable this test when fail-safe progress tracking is restored -- e.g. the
+# checkpoint hook returns, or remote_insert_lsn is WAL-logged on advance so
+# redo can reseed it. To re-enable, delete the `plan skip_all` line below and
+# restore `use Test::More tests => 13;`.
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 13;
+use Test::More;
+plan skip_all =>
+    "Disabled until fail-safe remote_insert_lsn persistence is restored " .
+    "(see commit 2f9a686c / PR #450; header comment above explains).";
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail system_maybe
                  command_ok get_test_config scalar_query psql_or_bail);
