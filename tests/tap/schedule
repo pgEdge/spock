@@ -45,3 +45,5 @@ test: 019_stale_fd_epoll_after_conn_death
 test: 022_rmgr_progress_post_checkpoint_crash
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
+#
+test: 103_manager_worker_dboid_race
