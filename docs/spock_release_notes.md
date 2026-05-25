@@ -2,9 +2,8 @@
 
 ## Spock 6.0.0
 
-Spock 6.0.0 supersedes the 5.0.x line.  The on-disk catalog format and the
-GUC surface both change in this release; see *Upgrading* below before
-running `ALTER EXTENSION spock UPDATE`.
+The on-disk catalog format and the GUC surface both change in this release;
+see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
 
 ### Highlights
 
@@ -13,9 +12,6 @@ running `ALTER EXTENSION spock UPDATE`.
 * **Progress tracking moved to WAL + shared memory** — eliminates
   heavyweight catalog writes in the apply hot path; `spock.progress` is now
   a view backed by `spock.apply_group_progress()`.
-* **Delta apply reimplemented via security labels** — no longer requires
-  PostgreSQL core patches; configuration replicates automatically across
-  nodes via AutoDDL.
 * **More granular conflict classification** — seven conflict types (up from
   four), with origin-aware suppression and DELETE conflicts now resolved
   through timestamp-based resolution.
@@ -44,7 +40,7 @@ can:
 2. Repair the lagging node from a fully-synchronized survivor using
    `table-repair --recovery-mode --source-of-truth --preserve-origin`.
 
-The `--preserve-origin` flag is critical: it ensures that repaired rows
+The `--preserve-origin` flag is important: it ensures that repaired rows
 retain their original origin ID and commit timestamp, so replication
 metadata stays correct and the cluster remains conflict-free.  Without it,
 repaired rows would appear as local changes and could trigger false
@@ -57,10 +53,17 @@ for the full guide.
 ### Replication progress tracking
 
 Replication progress is no longer tracked in the `spock.progress` catalog
-table.  Spock now tracks it in shared memory, logs progress to WAL via a
-custom resource manager so it survives crash recovery, and persists a
-snapshot to `$PGDATA/spock/resource.dat` on clean shutdown.  At each
-checkpoint, group data and per-group progress records are emitted to WAL.
+table.  Spock now tracks it live in shared memory and persists a snapshot
+to `$PGDATA/spock/resource.dat`.  On apply-worker startup, Spock
+reconciles the snapshot against the durable replication-origin LSN: if
+`resource.dat` is stale, `remote_commit_lsn` is advanced from the origin
+and stale timestamp fields are cleared (to be refreshed by subsequent
+apply).
+path.
+
+A custom resource manager (id 144) emits one WAL record per
+`SpockGroupHash` entry at each `resource.dat` dump event, visible via
+`pg_waldump` for debugging, not used for state recovery.
 
 The catalog surface has been restructured accordingly:
 
@@ -84,12 +87,17 @@ The catalog surface has been restructured accordingly:
   retry mode, preventing apply-worker death loops.
 * Eliminated "(unknown action)" in error-context strings and NULL error
   messages in `exception_log`.  The originally-failing row now carries the
-  real error message; bystander rows in the same transaction are recorded
-  as `unavailable` instead of `unknown`.
+  real error message; bystander rows in the same transaction refer to the
+  entry containing the root cause message.
 * Added `initial_operation` field to track which DML operation caused a
   transaction discard.
 * Subscriptions stuck in an unrecoverable synchronization stage are now
   disabled rather than restarted indefinitely.
+* New GUC `spock.read_retry_count` allows for configuring the number of
+  retries when an expected row is not found. The default matches the
+  previously hard-coded value of 5 (there is 1ms of sleep between each
+  retry). Setting it to 0 disables retries. This helps when a node has a
+  large lag and we do not want to slow down processing.
 
 ### Exception replay: spill to disk
 
@@ -128,23 +136,6 @@ unrecoverable errors:
 * On **PostgreSQL 17**, Spock's worker remains active but automatically
   yields to the native slotsync worker if `sync_replication_slots = on`
   is set, preventing conflicts.
-
-### Delta apply reimplemented via security labels
-
-The delta-apply feature (which computes column deltas rather than
-overwriting values) has been completely reimplemented:
-
-| Aspect                  | v5.0                                                                                | v6.0                                                                                            |
-|-------------------------|-------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
-| Configuration mechanism | PostgreSQL core patches adding `attoptions` (`log_old_value`, `delta_apply_function`) | PostgreSQL security labels (`SECURITY LABEL FOR spock ON COLUMN ...`)                           |
-| Core patches required   | Yes (one per PG version)                                                            | No — pure extension                                                                             |
-| Cross-node replication  | Manual setup required on each node                                                  | Automatic — `SECURITY LABEL` commands are replicated by AutoDDL                                 |
-| Nullable columns        | Silently fell back to plain NEW value when OLD was NULL                             | Explicitly rejected as an error (`ERRCODE_NULL_VALUE_NOT_ALLOWED`)                              |
-| Replica identity        | Manual configuration                                                                | Automatically set to `REPLICA IDENTITY FULL` when delta_apply is enabled; reverted when cleared |
-
-Use `spock.delta_apply(rel, att_name, to_drop)` to attach or clear the
-label on a column.  Spock registers its own `pg_seclabel` provider so the
-label is recognized and validated by PostgreSQL.
 
 ### More granular conflict classification
 
@@ -270,8 +261,6 @@ AutoDDL has been refactored and hardened:
   * Row filter processing no longer leaks resource-owner entries when many
     rows are filtered out.
   * `remotetuple` is now freed after use in the conflict reporting path.
-  * `signal_workers` list moved to `TopMemoryContext` so it is not accessed
-    after `TopTransactionContext` is reset on abort.
 * **Shared memory initialization** centralized in `spock_shmem.c` with
   proper handling of startup, checkpointer, and background-worker
   processes.
@@ -285,8 +274,7 @@ AutoDDL has been refactored and hardened:
   processes correctly.
 * **`remote_insert_lsn` lost after crash recovery** — the value was not
   included in WAL records and defaulted to 0 after crash recovery,
-  breaking lag tracking in `spock.lag_tracker`.  Now included in the
-  custom WAL resource-manager records.
+  breaking lag tracking in `spock.lag_tracker`.
 * **Generated columns** — tables containing `GENERATED ALWAYS AS … STORED`
   columns caused replication errors because generated columns were treated
   as regular columns during COPY, protocol messages, default-value
@@ -322,7 +310,7 @@ AutoDDL has been refactored and hardened:
   protocol; fixed multiple protocol parameter validation issues.
 * **Prevented adding tables from ignored schemas to replication sets.**
 * **Snowflake removal** — removed snowflake-related functions and
-  documentation.
+  documentation since it is now in its own repository.
 * **SpockCtrl removal** — removed the SpockCtrl utility code.
 * **PostgreSQL 18 support** — compatibility work across core patches,
   initdb, row filters, and compiler warnings.
@@ -356,7 +344,7 @@ AutoDDL has been refactored and hardened:
 
 * `spock.use_spi` — no longer used; the legacy SPI apply path is gone.
 * `spock.feedback_frequency` — replaced by internal pacing.
-* `spock.batch_inserts` — batching is now driven by the protocol layer.
+* `spock.batch_inserts` - unused.
 
 **Changed**
 
@@ -393,9 +381,6 @@ AutoDDL has been refactored and hardened:
 * `spock.sub_alter_options(subscription_name name, options text[])` —
   bulk subscription option changes, with input validation and no-op
   restart skipping.
-* `spock.delta_apply(rel regclass, att_name name, to_drop boolean DEFAULT false)`
-  — declarative wrapper that sets or clears the delta-apply security
-  label on a column.  The underlying per-type C functions are unchanged.
 
 ### Removed functions
 
@@ -438,15 +423,8 @@ These shipped in 5.0.6 – 5.0.8 and are included in 6.0.0:
 * Suppress repeated `hot_standby_feedback off` ERROR spam when a standby
   is used for reporting (not failover).
 * Fix stack-use-after-scope in `spock_connect_base()` (ASan finding).
-
-> **Pending backport to main (still on `v5_STABLE` only at the time of
-> writing — verify before tagging 6.0.0)**:
-> `apply_delay` dangling pointer in `subscription_fromtuple` (v5
-> commit `991b9e8b`), the `CurrentResourceOwner` redirect in the
-> delta-apply subtransaction path (`bbe60f3a`), and the
-> `apply_replay_bytes` `int` → `uint64` overflow fix (`b4ba9bdf`).
-> These should be cherry-picked to main and this note removed before
-> release.
+* Fix resource owner bug
+* `apply_replay_bytes` `int` → `uint64` overflow fix (`b4ba9bdf`)
 
 ### Upgrading
 
@@ -459,13 +437,6 @@ once the binaries are swapped.  The upgrade:
 * adds the new functions and the `sub_id_generator` sequence,
 * refreshes the parallel-safety attributes on `spock.md5_agg_sfunc` and
   `spock.spock_gen_slot_name`.
-
-Only `5.0.8 → 6.0.0` is shipped as a direct upgrade.  Earlier 5.0.x
-installs should first chain forward through the step migrations
-(`5.0.6 → 5.0.7 → 5.0.8`) and then take the `5.0.8 → 6.0.0` step.
-Versions older than 5.0.0 must first be upgraded to a 5.0.x release
-through the 4.0.x → 5.0.0 path.
-
 
 ## Spock 5.0.6
 
