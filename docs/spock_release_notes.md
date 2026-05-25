@@ -438,6 +438,99 @@ once the binaries are swapped.  The upgrade:
 * refreshes the parallel-safety attributes on `spock.md5_agg_sfunc` and
   `spock.spock_gen_slot_name`.
 
+## Spock 5.0.8
+
+### Bug Fixes
+* Fix subscriber crash on transactions larger than 2 GB. `apply_replay_bytes`
+  was declared as `int`, causing signed-integer overflow and a crash when a
+  single replicated transaction exceeded 2 GB of WAL data. Changed to
+  `uint64`.
+* The apply worker now exits cleanly when the upstream connection dies
+  (firewall reload, walsender SIGKILL/RST, walsender ping timeout) and the
+  manager respawns it from the last durably-committed remote LSN.  Previously
+  a stale libpq socket fd produced an `epoll_ctl()` cascade with a follow-on
+  `error during exception handling` per disconnect, and a corner of the
+  recovery path could silently advance the replication origin past the
+  in-flight remote transaction, causing it to be skipped on reconnect.
+* Removed native PG17+/PG18 slot-sync integration. Spock no longer creates
+  slots with (FAILOVER), does not defer to PostgreSQL's slotsync worker,
+  and keeps spock_failover_slots active on PG18; the spock worker is once
+  again the only path for failover-slot sync on 5.x.
+* spock_failover_slots: handle primary disconnects and post-promotion edge
+  cases. Reconnects to the primary on transient failure during sync; fixes
+  a PG15/16 PANIC where a freshly promoted standby could enter a crash loop
+  because the synchronized slot's restart_lsn was below the standby's WAL
+  floor; tolerates invalid/zero LSNs and catalog_xmin values that previously
+  tripped assertions.
+
+## Spock 5.0.7
+
+### New Features
+
+Logical Slot Failover Improvements
+
+* On **PostgreSQL 17+**, Spock now creates all logical replication slots with
+  the `FAILOVER` flag, allowing PostgreSQL's built-in slotsync worker
+  (`sync_replication_slots = on`) to automatically synchronize them to
+  physical standbys.
+* On **PostgreSQL 18+**, Spock's own `spock_failover_slots` background worker
+  is no longer registered. The native PostgreSQL slotsync worker fully
+  replaces it. See the [Logical Slot Failover](configuring.md#logical-slot-failover-ha-standby)
+  section in the configuration guide for required `postgresql.conf` settings.
+* On **PostgreSQL 17**, Spock's worker remains active but automatically yields
+  to the native slotsync worker if `sync_replication_slots = on` is set,
+  preventing conflicts.
+
+### Bug Fixes
+* Preserve the original error message in `spock.exception_log` when applying
+  in `TRANSDISCARD` or `SUB_DISABLE` mode. Previously the original error was
+  written only to the server log and lost before the retry pass; every row in
+  the discarded transaction was logged with `error_message = NULL` (stored as
+  "unknown"). The originally-failing row now carries the real error message,
+  while the bystander rows in the same transaction are recorded as
+  "unavailable" instead of the misleading "unknown" fallback.
+* Fix missing data when adding a new node. An apply worker that committed
+  between `ensure_replication_slot_snapshot` and `adjust_progress_info` could
+  advance `spock.progress` past the COPY snapshot boundary, causing the new
+  node to permanently skip those changes. Apply workers are now paused via an
+  atomic flag and condition variable in `SpockContext` for the duration of
+  slot creation and resumed once `adjust_progress_info` completes.
+* Fix apply worker crash with `epoll_ctl() failed: Invalid argument` after a
+  provider connection died. The socket fd captured before `stream_replay:`
+  was never refreshed, so a stale fd was passed to `WaitLatchOrSocket` on
+  re-entry. The fd is now refreshed at `stream_replay:` and the worker exits
+  cleanly so the postmaster can restart and reconnect it.
+* Fix PG15/16 failover slot loss on promotion: reconnect with retry and guard
+  against a zero WAL flush LSN.
+* ZODAN: `create_sub_on_new_node_to_src_node` (Phase 9 of `add_node`) was
+  generating subscription names as `sub_{subscriber}_{provider}` instead of
+  the expected `sub_{provider}_{subscriber}` convention, causing
+  `remove_node` to fail when looking up subscriptions by name. A
+  new `spock.gen_sub_name(provider_node, subscriber_node)` helper is now used
+  in place of inline name concatenations.
+* ZODAN: the `remove_node` cleanup loop tried to drop subscriptions by
+  guessing names and nodes, which broke whenever `cross_wire` and `add_node`
+  used different naming conventions. It now performs a per-node `DROP` of
+  every subscription read directly from the `spock.subscription` catalog.
+* Since 5.0.2 there was a bug with spock.subscription.sub_skip_schema having
+  the incorrect type, it should be text[]. Fixed, including in the
+  spock-5.0.6--5.0.7.sql migration script to repair.
+* Fix a rare bug where under high concurrency when using delta apply columns
+  a ResourceOwner exception may occur.
+* Have more meaningful messages appear in spock.exception_log.
+
+### Operational Improvements
+* Documentation: filled out `snowflake.md`; revised `upgrading_spock.md`;
+  fixed event-trigger syntax (`EXECUTE FUNCTION` instead of the deprecated
+  `EXECUTE PROCEDURE`); standardized function-reference filenames to match
+  function names exactly; removed obsolete `batch_inserts.md`
+* Test infrastructure aligned with `main`: `run_tests.sh` and `SpockTest.pm`
+  now use absolute `TESTLOGDIR` paths, derive per-test log filenames, and
+  isolate `psql` from a developer's `psqlrc`/history. New regression tests
+  added for failover slots (018), exception-handling/TRANSDISCARD error
+  quality (013), and the stale-fd-after-connection-death scenario (019).
+* Avoid unnecessarily waiting after sync_event()
+
 ## Spock 5.0.6
 
 ### New Features
