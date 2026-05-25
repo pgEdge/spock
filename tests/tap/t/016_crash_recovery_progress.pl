@@ -1,138 +1,153 @@
 #!/usr/bin/perl
 # =============================================================================
-# Test: 016_crash_recovery_progress.pl - Verify progress survives crash recovery
-# =============================================================================
-# This test verifies that spock.progress.remote_insert_lsn is correctly
-# persisted to WAL and survives crash recovery.
+# Test: 016_crash_recovery_progress.pl
+#       Verify that after a SIGKILL of the subscriber, the apply worker
+#       reconnects, the forced keepalive refreshes received_lsn from the
+#       publisher's sentPtr, and a subsequent commit drives remote_insert_lsn
+#       forward via the next 'w' message -- so spock.progress reflects a
+#       value at least as advanced as the pre-crash position.
 #
-# Topology:
-#   n1 (provider) -> n2 (subscriber)
+# Topology:  n1 (provider) -> n2 (subscriber)
 #
-# Test scenario:
-# 1. Create subscription, insert data, verify remote_insert_lsn > 0
-# 2. Crash n2 (immediate stop - no clean shutdown)
-# 3. Restart n2 and verify remote_insert_lsn is still > 0
+# Background:
+#   resource.dat is a shutdown-only snapshot, so after SIGKILL the on-disk
+#   file (if any) is stale. reconcile_progress_with_origin clamps
+#   remote_insert_lsn / received_lsn up to the durable origin LSN
+#   (= end_lsn of last applied commit), which may be below the pre-crash
+#   values. The publisher's forced keepalive on reconnect populates
+#   received_lsn with the publisher's current sentPtr; remote_insert_lsn
+#   only advances when a 'w' data message arrives, so we drive one by
+#   inserting after the restart.
 #
-# Without the fix, remote_insert_lsn would be 0 after crash recovery.
-#
-# -----------------------------------------------------------------------------
-# DISABLED (see plan skip_all below)
-# -----------------------------------------------------------------------------
-# Commit 2f9a686c ("Reduce work for spock.progress and remove checkpoint hook",
-# PR #450) removed the checkpoint hook and switched resource.dat to a
-# shutdown-only snapshot. After a SIGKILL there is no fresh on-disk record of
-# remote_insert_lsn; reconcile_progress_with_origin() only clamps the field up
-# to the durable replication-origin LSN, and the pre-crash value is only
-# restored later by the publisher's forced keepalive after reconnect. The
-# strict equality assertion on line 111 ("matches value before crash") is no
-# longer guaranteed under that design and races with the keepalive arrival
-# window.
-#
-# Re-enable this test when fail-safe progress tracking is restored -- e.g. the
-# checkpoint hook returns, or remote_insert_lsn is WAL-logged on advance so
-# redo can reseed it. To re-enable, delete the `plan skip_all` line below and
-# restore `use Test::More tests => 13;`.
+# Note: pre/post equality is NOT asserted -- pre-crash remote_insert_lsn
+# is r->dataStart of the latest received record on the subscriber, while
+# post-crash refreshes come from publisher state at different moments.
+# The invariant the new design guarantees is monotonic advance (>=).
 # =============================================================================
 
 use strict;
 use warnings;
 use Test::More;
-plan skip_all =>
-    "Disabled until fail-safe remote_insert_lsn persistence is restored " .
-    "(see commit 2f9a686c / PR #450; header comment above explains).";
 use lib '.';
-use SpockTest qw(create_cluster destroy_cluster system_or_bail system_maybe
-                 command_ok get_test_config scalar_query psql_or_bail);
+use SpockTest qw(create_cluster destroy_cluster system_or_bail
+                 get_test_config scalar_query psql_or_bail
+                 wait_for_sub_status wait_for_pg_ready);
+
+sub wait_until {
+    my ($timeout_s, $probe) = @_;
+    my $deadline = time() + $timeout_s;
+    while (time() < $deadline) {
+        return 1 if $probe->();
+        select(undef, undef, undef, 0.1);
+    }
+    return 0;
+}
 
 # =============================================================================
-# SETUP: Create 2-node cluster
+# SETUP: 2-node cluster
 # =============================================================================
 
 create_cluster(2, 'Create 2-node cluster');
 
 my $config = get_test_config();
-my $node_ports = $config->{node_ports};
+my $host          = $config->{host};
+my $pg_bin        = $config->{pg_bin};
+my $node_ports    = $config->{node_ports};
 my $node_datadirs = $config->{node_datadirs};
-my $pg_bin = $config->{pg_bin};
-my $dbname = $config->{db_name};
-my $host = $config->{host};
+my $dbname        = $config->{db_name};
 
-# Connection string for n1
+my $sub_dir  = $node_datadirs->[1];
+my $sub_port = $node_ports->[1];
+
 my $conn_n1 = "host=$host port=$node_ports->[0] dbname=$dbname";
 
-# =============================================================================
-# TEST: Setup replication and verify progress
-# =============================================================================
-
-# Create test table on both nodes (auto-added to default repset via DDL replication)
 psql_or_bail(1, "CREATE TABLE test_progress (id serial primary key, val text)");
 psql_or_bail(2, "CREATE TABLE test_progress (id serial primary key, val text)");
-pass('Created test table on both nodes');
 
-# Create subscription on n2 to n1
 psql_or_bail(2, "SELECT spock.sub_create('sub_n1_n2', '$conn_n1', ARRAY['default'], false, false)");
-pass('Created subscription n2->n1');
+ok(wait_for_sub_status(2, 'sub_n1_n2', 'replicating', 30), 'subscription is replicating');
 
-# Wait for subscription to be ready
-system_or_bail 'sleep', '5';
+# =============================================================================
+# Apply rows and capture pre-crash LSNs.
+# =============================================================================
 
-my $sub_status = scalar_query(2, "SELECT 1 FROM spock.sub_show_status() WHERE subscription_name = 'sub_n1_n2' AND status = 'replicating'");
-is($sub_status, '1', 'Subscription is replicating');
-
-# Insert data on n1
 psql_or_bail(1, "INSERT INTO test_progress (val) SELECT 'row_' || g FROM generate_series(1, 100) g");
-system_or_bail 'sleep', '3';
+ok(wait_until(30, sub { scalar_query(2, "SELECT COUNT(*) FROM test_progress") eq '100' }),
+   '100 rows replicated to n2');
 
-# Verify data reached n2
-my $count_n2 = scalar_query(2, "SELECT COUNT(*) FROM test_progress");
-is($count_n2, '100', 'Data replicated to n2');
+my $remote_node_filter = "remote_node_id = (SELECT node_id FROM spock.node WHERE node_name = 'n1')";
+
+my $insert_lsn_before   = scalar_query(2, "SELECT remote_insert_lsn::text   FROM spock.progress WHERE $remote_node_filter");
+my $received_lsn_before = scalar_query(2, "SELECT received_lsn::text        FROM spock.progress WHERE $remote_node_filter");
+my $commit_lsn_before   = scalar_query(2, "SELECT remote_commit_lsn::text   FROM spock.progress WHERE $remote_node_filter");
+
+diag("pre-crash: insert=$insert_lsn_before received=$received_lsn_before commit=$commit_lsn_before");
+ok($insert_lsn_before   ne '' && $insert_lsn_before   ne '0/0', 'pre-crash remote_insert_lsn populated');
+ok($received_lsn_before ne '' && $received_lsn_before ne '0/0', 'pre-crash received_lsn populated');
 
 # =============================================================================
-# KEY TEST: Verify remote_insert_lsn before crash
+# SIGKILL n2.
 # =============================================================================
 
-my $insert_lsn_before = scalar_query(2, "SELECT remote_insert_lsn FROM spock.progress WHERE remote_node_id = (SELECT node_id FROM spock.node WHERE node_name = 'n1')");
-diag("remote_insert_lsn before crash: $insert_lsn_before");
-ok($insert_lsn_before ne '0/0' && $insert_lsn_before ne '', 'remote_insert_lsn is valid before crash');
-
-# =============================================================================
-# CRASH: Kill n2 with SIGKILL (simulates crash - no cleanup, no resource.dat)
-# =============================================================================
-
-# Get postmaster PID
-my $pid_file = "$node_datadirs->[1]/postmaster.pid";
+my $pid_file = "$sub_dir/postmaster.pid";
 open(my $fh, '<', $pid_file) or die "Cannot open $pid_file: $!";
 my $postmaster_pid = <$fh>;
 chomp($postmaster_pid);
 close($fh);
 
-diag("Killing n2 (PID $postmaster_pid) with SIGKILL...");
+diag("Killing n2 (PID $postmaster_pid) with SIGKILL");
 kill 'KILL', $postmaster_pid;
-system_or_bail 'sleep', '2';
+select(undef, undef, undef, 2.0);
 
 # =============================================================================
-# RECOVERY: Restart n2
+# Restart and wait for the apply worker to reconnect.
 # =============================================================================
 
-diag("Restarting n2...");
-system_or_bail "$pg_bin/pg_ctl", 'start', '-D', $node_datadirs->[1], '-l', "$node_datadirs->[1]/logfile", '-w';
-system_or_bail 'sleep', '3';
+system_or_bail "$pg_bin/pg_ctl", '-D', $sub_dir, '-o', "-p $sub_port", '-w', 'start';
+ok(wait_for_pg_ready($host, $sub_port, $pg_bin, 30), 'n2 accepting connections after crash');
+ok(wait_for_sub_status(2, 'sub_n1_n2', 'replicating', 30), 'subscription replicating after restart');
 
 # =============================================================================
-# VERIFY: remote_insert_lsn should survive crash recovery
+# Verify post-crash recovery.
 # =============================================================================
+#
+# At this point the forced keepalive has been sent and should have refreshed
+# received_lsn. To advance remote_insert_lsn past whatever reconcile clamped
+# it to, drive a 'w' message by inserting on the publisher.
 
-my $insert_lsn_after = scalar_query(2, "SELECT remote_insert_lsn FROM spock.progress WHERE remote_node_id = (SELECT node_id FROM spock.node WHERE node_name = 'n1')");
-diag("remote_insert_lsn after recovery: $insert_lsn_after");
+psql_or_bail(1, "INSERT INTO test_progress (val) VALUES ('after_crash')");
+ok(wait_until(30, sub { scalar_query(2, "SELECT COUNT(*) FROM test_progress") eq '101' }),
+   'post-crash insert replicated to n2');
 
-# The key assertion: remote_insert_lsn should NOT be 0 after crash recovery
-ok($insert_lsn_after ne '0/0' && $insert_lsn_after ne '', 'remote_insert_lsn survives crash recovery');
+# Both LSNs should now be >= their pre-crash values. wait_until is a short
+# safety net for shmem propagation; in practice this resolves on the first
+# probe once the row above has been applied.
+ok(wait_until(5, sub {
+    my $ok = scalar_query(2, qq{
+        SELECT remote_insert_lsn >= '$insert_lsn_before'::pg_lsn
+               AND received_lsn  >= '$received_lsn_before'::pg_lsn
+        FROM spock.progress WHERE $remote_node_filter
+    });
+    defined $ok && $ok eq 't'
+}), 'post-crash remote_insert_lsn and received_lsn advanced past pre-crash values');
 
-# Verify it's the same or close to the value before crash
-is($insert_lsn_after, $insert_lsn_before, 'remote_insert_lsn matches value before crash');
+my $insert_lsn_after   = scalar_query(2, "SELECT remote_insert_lsn::text FROM spock.progress WHERE $remote_node_filter");
+my $received_lsn_after = scalar_query(2, "SELECT received_lsn::text      FROM spock.progress WHERE $remote_node_filter");
+my $commit_lsn_after   = scalar_query(2, "SELECT remote_commit_lsn::text FROM spock.progress WHERE $remote_node_filter");
+diag("post-crash: insert=$insert_lsn_after received=$received_lsn_after commit=$commit_lsn_after");
 
-# =============================================================================
-# CLEANUP
-# =============================================================================
+# Explicit non-zero assertions for clarity in the test report.
+ok($insert_lsn_after   ne '' && $insert_lsn_after   ne '0/0', 'remote_insert_lsn non-zero after recovery');
+ok($received_lsn_after ne '' && $received_lsn_after ne '0/0', 'received_lsn non-zero after recovery');
+
+# remote_commit_lsn must also have survived (this is what reconcile guarantees
+# via the durable replication origin). 027 covers the deeper recovery-scan
+# path; the assertion here is just a smoke check.
+my $commit_advanced = scalar_query(2, qq{
+    SELECT remote_commit_lsn >= '$commit_lsn_before'::pg_lsn
+    FROM spock.progress WHERE $remote_node_filter
+});
+is($commit_advanced, 't', 'remote_commit_lsn >= pre-crash value (reconcile via durable origin)');
 
 destroy_cluster('Cleanup');
+done_testing();
