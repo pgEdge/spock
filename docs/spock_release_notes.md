@@ -1,5 +1,18 @@
 # Spock Release Notes
 
+## Spock 5.0.9
+
+### Bug Fixes
+* Fix `spock_failover_slots` stalling on PG17+ standbys. Slot
+  synchronization could hold replication-slot and proc-array locks
+  exclusively long enough to block every backend trying to start up on the
+  standby, freezing the worker and any new connections. The sync path now
+  uses shorter, shared locks matching PostgreSQL's own slot code.
+* Fix manager-worker respawn loop when databases are dropped or have
+  connections disabled (`datconnlimit = -2`) concurrently with Spock
+  starting a per-database worker. The database OID is now revalidated
+  immediately before the worker is registered to avoid race.
+
 ## Spock 5.0.8
 
 ### Bug Fixes
