@@ -31,13 +31,33 @@ use Time::HiRes qw(time);
 
 # --------------------------------------------------------------------------
 # Helper: query on an arbitrary port
+#
+# PGCONNECT_TIMEOUT is set so a hung standby fails fast instead of stalling
+# the whole test suite.  Returns '' on connect/query failure; callers that
+# need to distinguish hang-vs-empty should use qport_status() below.
 # --------------------------------------------------------------------------
 sub qport {
     my ($pg_bin, $host, $port, $dbname, $user, $sql) = @_;
-    my $out = `$pg_bin/psql -X -h $host -p $port -d $dbname -U $user -t -c "$sql" 2>/dev/null`;
+    my $out = `PGCONNECT_TIMEOUT=10 $pg_bin/psql -X -h $host -p $port -d $dbname -U $user -t -c "$sql" 2>/dev/null`;
     $out //= '';
     $out =~ s/^\s+|\s+$//g;
     return $out;
+}
+
+# --------------------------------------------------------------------------
+# Helper: like qport() but asserts that psql returned in time.
+#
+# Returns the trimmed output and the psql exit status.  A non-zero exit
+# status means connect/query failed (timeout, refused, ERROR, etc.) — the
+# caller can fail the corresponding ok()/is() assertion instead of hanging.
+# --------------------------------------------------------------------------
+sub qport_status {
+    my ($pg_bin, $host, $port, $dbname, $user, $sql) = @_;
+    my $out = `PGCONNECT_TIMEOUT=10 $pg_bin/psql -X -h $host -p $port -d $dbname -U $user -t -v ON_ERROR_STOP=1 -c "$sql" 2>/dev/null`;
+    my $rc  = $? >> 8;
+    $out //= '';
+    $out =~ s/^\s+|\s+$//g;
+    return ($out, $rc);
 }
 
 # --------------------------------------------------------------------------
@@ -394,32 +414,42 @@ ok($standby_caught_up,
 
 # Standby must still be in recovery — confirms hot_standby mode and that
 # no spock hook accidentally took the standby out of recovery.
-my $still_in_recovery = qport($pg_bin, $host, $standby_port,
+#
+# Use qport_status so a hung backend (initializing / futex_wait_queue) is
+# reported as an explicit assertion failure with a clear message, instead
+# of stalling the whole test until prove kills it.
+my ($still_in_recovery, $rc_recov) = qport_status($pg_bin, $host, $standby_port,
     $dbname, $db_user, "SELECT pg_is_in_recovery()");
-$still_in_recovery =~ s/\s+//g;
+ok($rc_recov == 0,
+    "Standby answered pg_is_in_recovery() within 10s (psql rc=$rc_recov)");
 is($still_in_recovery, 't',
     'Read-only standby is still in recovery (hot_standby mode)');
 
 # 1) User-table SELECT against the standby returns the committed row.
-my $val_on_standby = qport($pg_bin, $host, $standby_port,
+my ($val_on_standby, $rc_user) = qport_status($pg_bin, $host, $standby_port,
     $dbname, $db_user, "SELECT val FROM failover_test WHERE id = 1");
-$val_on_standby =~ s/\s+//g;
+ok($rc_user == 0,
+    "Standby answered user SELECT within 10s (psql rc=$rc_user)");
 is($val_on_standby, 'before_failover',
     'Read-only standby returns committed user data (SELECT works)');
 
-# 2) Spock catalog SELECT against the standby — the original customer
-#    failure mode was that spock.* reads errored out on a recovery backend.
-my $standby_node_count = qport($pg_bin, $host, $standby_port,
+# 2) Spock catalog SELECT against the standby — guards against the
+#    failure mode where backends hang in "initializing" state on the
+#    standby with futex_wait_queue.  An explicit timeout on the connect
+#    makes this a fast assertion failure, not a hang.
+my ($standby_node_count, $rc_node) = qport_status($pg_bin, $host, $standby_port,
     $dbname, $db_user, "SELECT count(*) FROM spock.node");
-$standby_node_count =~ s/\s+//g;
+ok($rc_node == 0,
+    "Standby answered spock.node SELECT within 10s (psql rc=$rc_node)");
 ok(($standby_node_count =~ /^\d+$/) && $standby_node_count >= 1,
     "Read-only standby returns spock.node ($standby_node_count rows)");
 
 # 3) The synced logical slot is visible on the standby.
-my $standby_slot_count = qport($pg_bin, $host, $standby_port,
+my ($standby_slot_count, $rc_slot) = qport_status($pg_bin, $host, $standby_port,
     $dbname, $db_user,
     "SELECT count(*) FROM pg_replication_slots WHERE slot_name = '$slot_name'");
-$standby_slot_count =~ s/\s+//g;
+ok($rc_slot == 0,
+    "Standby answered pg_replication_slots SELECT within 10s (psql rc=$rc_slot)");
 is($standby_slot_count, '1',
     "Read-only standby returns synced slot '$slot_name' via pg_replication_slots");
 
