@@ -879,18 +879,41 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		}
 
 		/*
-		 * ReplicationSlotsComputeRequiredXmin(true) asserts that BOTH
-		 * ReplicationSlotControlLock (exclusive) and ProcArrayLock (exclusive)
-		 * are held, in that order, to prevent deadlocks.
+		 * Compute the safe xmin horizon and seed the new slot.
+		 *
+		 * Before, this section held ReplicationSlotControlLock LW_EXCLUSIVE
+		 * + ProcArrayLock LW_EXCLUSIVE while calling
+		 * ReplicationSlotsComputeRequiredXmin(true) (the "locks already
+		 * held" form).  That serialised this worker against every other
+		 * caller of ReplicationSlotControlLock LW_SHARED — including the
+		 * SHARED acquire that PG core itself does from
+		 * ReplicationSlotRelease() and ReplicationSlotDropPtr() via
+		 * ReplicationSlotsComputeRequiredXmin(false).  On PG17+, where
+		 * these helpers can be invoked indirectly later in this same
+		 * function (and from other concurrent slot operations), the
+		 * resulting contention on the standby manifested as a pile-up:
+		 * the spock_failover_slots worker hangs in
+		 * LWLockAcquire(ReplicationSlotControlLock, LW_SHARED) and every
+		 * backend trying to initialise queues behind it.
+		 *
+		 * Fix: take ProcArrayLock LW_SHARED briefly to read the proc
+		 * array, update the slot fields under the slot's SpinLock, then
+		 * let ReplicationSlotsComputeRequiredXmin(false) acquire its own
+		 * short SHARED RSCL the way every PG-core call site does.  Per
+		 * the comment in PG core's ReplicationSlotsComputeRequiredXmin:
+		 * "Concurrent invocation may cause the computed slot xmin to
+		 * regress.  However, this is harmless..."
 		 */
-		LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
-		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+		LWLockAcquire(ProcArrayLock, LW_SHARED);
 		xmin_horizon = GetOldestSafeDecodingTransactionId(true);
+		LWLockRelease(ProcArrayLock);
+
+		SpinLockAcquire(&slot->mutex);
 		slot->effective_catalog_xmin = xmin_horizon;
 		slot->data.catalog_xmin = xmin_horizon;
-		ReplicationSlotsComputeRequiredXmin(true);
-		LWLockRelease(ProcArrayLock);
-		LWLockRelease(ReplicationSlotControlLock);
+		SpinLockRelease(&slot->mutex);
+
+		ReplicationSlotsComputeRequiredXmin(false);
 
 		/*
 		 * Our xmin and/or catalog_xmin may be > that required by one or more
