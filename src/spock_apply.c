@@ -256,14 +256,22 @@ static void apply_replay_spill_write_entry(int len, char *data);
 static ApplyReplayEntry *apply_replay_spill_read_entry(void);
 static void request_initial_status_update(PGconn *conn, XLogRecPtr startpos);
 
-/* Wrapper for latch for waiting for previous transaction to commit */
-void
-wait_for_previous_transaction(void)
+/*
+ * Wait for the immediate predecessor transaction to commit, up to
+ * timeout_ms milliseconds.  Pass 0 to wait forever.
+ *
+ * Returns true if the predecessor commit-ts was observed, false if the
+ * timeout elapsed first.
+ */
+bool
+wait_for_previous_transaction_timeout(int timeout_ms)
 {
-	/*
-	 * Sleep on a cv to be woken up once our the required predecessor has
-	 * commited.
-	 */
+	TimestampTz deadline = 0;
+
+	if (timeout_ms > 0)
+		deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
+											   timeout_ms);
+
 	for (;;)
 	{
 		/*
@@ -274,7 +282,14 @@ wait_for_previous_transaction(void)
 		if (apply_worker_get_prev_remote_ts() == required_commit_ts ||
 			required_commit_ts == 0)
 		{
-			break;
+			ConditionVariableCancelSleep();
+			return true;
+		}
+
+		if (deadline != 0 && GetCurrentTimestamp() >= deadline)
+		{
+			ConditionVariableCancelSleep();
+			return false;
 		}
 
 		CHECK_FOR_INTERRUPTS();
@@ -300,7 +315,13 @@ wait_for_previous_transaction(void)
 									1,
 									WAIT_EVENT_LOGICAL_APPLY_MAIN);
 	}
-	ConditionVariableCancelSleep();
+}
+
+/* Wrapper for latch for waiting for previous transaction to commit */
+void
+wait_for_previous_transaction(void)
+{
+	(void) wait_for_previous_transaction_timeout(0);
 }
 
 /* Wrapper to wake up all waiters for previous transaction to commit */

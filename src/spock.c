@@ -152,7 +152,8 @@ int			restart_delay_default;
 int			restart_delay_on_exception;
 int			spock_replay_queue_size;
 int			spock_pause_timeout = 10;	/* seconds to wait for apply workers to pause */
-int			spock_read_retry_count = 5;	/* heap update/delete: retries when local tuple is missing */
+int			spock_read_retry_count = 5;	/* heap update/delete phase-1 tight retries */
+int			spock_read_retry_wait_ms = 100;	/* heap update/delete phase-2 predecessor wait cap (ms) */
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
@@ -1204,19 +1205,40 @@ _PG_init(void)
 							NULL);
 
 	DefineCustomIntVariable("spock.read_retry_count",
-							"Number of times the apply worker re-reads the local "
-							"relation when a row targeted by a remote UPDATE or "
-							"DELETE is not yet visible",
-							"On each retry the apply worker waits for any "
-							"concurrently-applying transaction to finish, then "
-							"searches the local relation again. Set to 0 to disable "
-							"retries (the row-missing path runs immediately).",
+							"Phase-1 tight retry count for the heap apply path",
+							"When a row targeted by a remote UPDATE or DELETE is "
+							"not yet visible locally, the apply worker first "
+							"re-reads the local relation up to this many times "
+							"back-to-back, with no waits.  Addresses a brief "
+							"local visibility window under extreme load. "
+							"Set to 0 to skip phase 1.",
 							&spock_read_retry_count,
 							5,
 							0,
 							100,
 							PGC_SIGHUP,
 							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("spock.read_retry_wait_ms",
+							"Phase-2 bounded predecessor wait for the heap apply path",
+							"If the local row is still missing after the phase-1 "
+							"tight retries, the apply worker waits up to this many "
+							"milliseconds for the immediate predecessor transaction "
+							"to commit (event-driven via condition variable), then "
+							"re-checks the relation once.  Addresses the case where "
+							"the row's insert is still in a predecessor transaction "
+							"that has not yet committed. "
+							"Set to 0 to skip phase 2 (the loop returns to the "
+							"row-missing conflict path immediately after phase 1).",
+							&spock_read_retry_wait_ms,
+							100,
+							0,
+							60000,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
 							NULL,
 							NULL,
 							NULL);

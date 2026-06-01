@@ -990,6 +990,19 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	relinfo = edata->targetRelInfo;
 	idxused = edata->targetRel->idxoid;
 
+	/*
+	 * Two races can cause FindReplTupleInLocalRel to miss a row that should
+	 * be present.  Address each with its own primitive:
+	 *
+	 *   Phase 1: a brief local visibility window under extreme load
+	 *   occasionally hides a row that has already been inserted.  Resolve
+	 *   with a tight retry, no wait.
+	 *
+	 *   Phase 2: the row's insert may still be in a predecessor
+	 *   transaction that has not yet committed.  Wait once, bounded by
+	 *   spock.read_retry_wait_ms, on the apply-group condition variable;
+	 *   re-check once after the wake-up.
+	 */
 	retry = 0;
 	while (retry < spock_read_retry_count)
 	{
@@ -1000,17 +1013,22 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		if (found)
 			break;
 
-		/*
-		 * We didn't find the local tuple. Let's wait here so that any
-		 * impending insert can be processed.
-		 */
-		wait_for_previous_transaction();
+		retry++;
+	}
 
+	if (!found && spock_read_retry_wait_ms > 0)
+	{
+		(void) wait_for_previous_transaction_timeout(spock_read_retry_wait_ms);
+		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
+										edata->targetRel->idxoid,
+										remoteslot, &localslot,
+										false);
 		retry++;
 	}
 
 	if (retry > 0)
-		elog(LOG, "spock_apply_heap_update() retried %d times", retry);
+		elog(LOG, "spock_apply_heap_update() retried %d times (found=%s)",
+			 retry, found ? "true" : "false");
 
 	/*
 	 * Perform the UPDATE if Tuple found.
@@ -1107,6 +1125,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 
 	relinfo = edata->targetRelInfo;
 
+	/* See spock_apply_heap_update() above for the two-phase rationale. */
 	retry = 0;
 	while (retry < spock_read_retry_count)
 	{
@@ -1117,18 +1136,24 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 		if (found)
 			break;
 
-		/*
-		 * We didn't find the local tuple. Let's wait here so that any
-		 * impending insert can be processed.
-		 */
-		wait_for_previous_transaction();
-
 		retry++;
 	}
+
+	if (!found && spock_read_retry_wait_ms > 0)
+	{
+		(void) wait_for_previous_transaction_timeout(spock_read_retry_wait_ms);
+		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
+										edata->targetRel->idxoid,
+										remoteslot, &localslot,
+										false);
+		retry++;
+	}
+
 	ExecClearTuple(remoteslot);
 
 	if (retry > 0)
-		elog(LOG, "spock_apply_heap_delete() retried %d times", retry);
+		elog(LOG, "spock_apply_heap_delete() retried %d times (found=%s)",
+			 retry, found ? "true" : "false");
 
 	/*
 	 * Perform the DELETE if Tuple found.

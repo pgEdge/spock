@@ -37,6 +37,7 @@ typedef void (*spock_apply_mi_finish_fn) (SpockRelation *rel);
 extern int	my_exception_log_index;
 
 extern void wait_for_previous_transaction(void);
+extern bool wait_for_previous_transaction_timeout(int timeout_ms);
 extern void awake_transaction_waiters(void);
 
 #endif							/* SPOCK_APPLY_H */
