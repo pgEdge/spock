@@ -26,6 +26,7 @@
 #include "catalog/pg_replication_origin.h"
 #include "executor/executor.h"
 #include "catalog/namespace.h"
+#include "nodes/makefuncs.h"
 #include "storage/fd.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
@@ -1317,8 +1318,20 @@ spock_populate_forward_origins(SpockOutputData *data)
 		return;
 
 	/*
-	 * Second pass: walk pg_replication_origin and resolve every name that
-	 * matches any of our exact-name or glob entries.
+	 * Second pass: walk pg_replication_origin and spock.node, resolving every
+	 * name that matches any of our entries.
+	 *
+	 * Two catalogs are scanned because spock identifies origins at filter time
+	 * by *spock.node.node_id*, not by pg_replication_origin.roident: the apply
+	 * worker writes WAL with replorigin_session_origin set to the producer's
+	 * spock node_id, so pg_decode_origin_filter receives that value. Origins
+	 * applied from non-spock extensions (e.g. pgactive) DO use real RepOriginIds
+	 * and are matched via pg_replication_origin. Walking both lets a single
+	 * forward_origins setting work for either case.
+	 *
+	 * Patterns are matched against:
+	 *   - pg_replication_origin.roname (e.g. "pgactive_*", "spk_pgadb_X_sub_Y")
+	 *   - spock.node.node_name        (e.g. "ca1", "cb*", "bridge")
 	 */
 	ids = palloc(cap * sizeof(RepOriginId));
 
@@ -1369,6 +1382,78 @@ spock_populate_forward_origins(SpockOutputData *data)
 
 	table_endscan(scan);
 	table_close(rel, AccessShareLock);
+
+	/*
+	 * Now walk spock.node. The node_id and node_name attribute numbers below
+	 * (1 and 2) match the definitions in spock_node.c (Anum_node_id /
+	 * Anum_node_name); keep them in sync if that catalog ever gains columns.
+	 */
+	{
+		RangeVar   *rv;
+		Relation	noderel;
+		TableScanDesc noderscan;
+		HeapTuple	nodetup;
+		TupleDesc	nodedesc;
+
+		rv = makeRangeVar(EXTENSION_NAME, "node", -1);
+		noderel = table_openrv(rv, AccessShareLock);
+		nodedesc = RelationGetDescr(noderel);
+		noderscan = table_beginscan_catalog(noderel, 0, NULL);
+
+		while ((nodetup = heap_getnext(noderscan, ForwardScanDirection)) != NULL)
+		{
+			Datum		d;
+			bool		isnull;
+			Oid			node_id;
+			const char *node_name;
+			bool		matched = false;
+
+			d = heap_getattr(nodetup, 1, nodedesc, &isnull);	/* node_id */
+			if (isnull)
+				continue;
+			node_id = DatumGetObjectId(d);
+
+			d = heap_getattr(nodetup, 2, nodedesc, &isnull);	/* node_name */
+			if (isnull)
+				continue;
+			node_name = NameStr(*DatumGetName(d));
+
+			foreach(lc, data->forward_origins)
+			{
+				const char *entry = (const char *) lfirst(lc);
+
+				if (strcmp(entry, REPLICATION_ORIGIN_ALL) == 0)
+					continue;
+
+				if (strchr(entry, '*') != NULL)
+				{
+					if (spock_origin_name_matches_glob(node_name, entry))
+					{
+						matched = true;
+						break;
+					}
+				}
+				else if (strcmp(node_name, entry) == 0)
+				{
+					matched = true;
+					break;
+				}
+			}
+
+			if (matched)
+			{
+				if (n >= cap)
+				{
+					cap *= 2;
+					ids = repalloc(ids, cap * sizeof(RepOriginId));
+				}
+				ids[n++] = (RepOriginId) node_id;
+			}
+		}
+
+		table_endscan(noderscan);
+		table_close(noderel, AccessShareLock);
+	}
 
 	if (n > 0)
 	{
