@@ -494,6 +494,27 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 
 	/* Now, fetch info about remote node. */
 	conn = spock_connect(provider_dsn, sub_name, "create");
+
+	/*
+	 * If we will dump the provider's schema, our pg_dump/pg_restore must be
+	 * able to read it.  Reject an incompatible major version now, at CREATE
+	 * SUBSCRIPTION, rather than failing later in the sync worker.
+	 */
+	if (sync_structure && !upstream_version_supports_structure_sync(conn))
+	{
+		const char *v = PQparameterStatus(conn, "server_version");
+		char	   *provider_version = pstrdup(v ? v : "unknown");
+
+		PQfinish(conn);
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot synchronize structure from provider running PostgreSQL %s",
+						provider_version),
+				 errdetail("The subscriber's pg_dump/pg_restore (version %s) cannot dump from a newer major version.",
+						   PG_VERSION),
+				 errhint("Synchronize the schema separately and create the subscription with synchronize_structure = false, or match the major versions.")));
+	}
+
 	origin = spock_remote_node_info(conn, NULL, NULL, NULL);
 	PQfinish(conn);
 
