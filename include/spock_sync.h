@@ -66,6 +66,7 @@ typedef struct SpockSyncStatus
 extern void spock_sync_worker_finish(void);
 
 extern void spock_sync_subscription(SpockSubscription *sub);
+extern bool upstream_version_supports_structure_sync(PGconn *origin_conn);
 extern char spock_sync_table(SpockSubscription *sub, RangeVar *table, XLogRecPtr *status_lsn);
 
 extern void create_local_sync_status(SpockSyncStatus *sync);
