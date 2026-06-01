@@ -359,9 +359,8 @@ retry:
 	 * sync_replication_slots = on.  PG17+ uses parenthesised option syntax:
 	 *   CREATE_REPLICATION_SLOT "name" LOGICAL plugin (FAILOVER)
 	 *
-	 * We key off the regular SQL connection (sql_conn) for version detection.
-	 * Replication protocol connections (repl_conn) return 0 from PQserverVersion()
-	 * so they cannot be used for this check.
+	 * Detect the version on the SQL connection (sql_conn), which we hold open
+	 * anyway for the slot-reclaim queries below.
 	 */
 	if (PQserverVersion(sql_conn) >= 170000)
 		appendStringInfo(&query, " (FAILOVER)");
@@ -616,8 +615,7 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	 * consistent with the slot's WAL position — the correct snapshot for COPY.
 	 *
 	 * Mark the slot with (FAILOVER) when the remote provider is PG17+.
-	 * Use the regular SQL connection (conn) for version detection — replication
-	 * protocol connections (repl_conn) return 0 from PQserverVersion().
+	 * Detect the version on the SQL connection (conn), held open anyway.
 	 */
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
