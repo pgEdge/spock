@@ -39,6 +39,9 @@ static void remove_table_from_repsets(Oid nodeid, Oid reloid,
 									  bool only_for_update);
 static bool autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
 								NodeTag toplevel_stmt);
+static bool extract_ddl_target(Node *parsetree, RangeVar **relation,
+							   Oid *reloid, bool *missing_ok);
+static void apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid);
 
 /*
  * spock_autoddl_process
@@ -120,15 +123,20 @@ end:
 
 /*
  * add_ddl_to_repset
- *		Check if the DDL statement can be added to the replication set. (For
- * now only tables are added). The function also checks whether the table has
- * needed indexes to be added to replication set. If not, they are ignored.
+ *		Route a just-executed DDL statement into the appropriate replication
+ *		set(s). Only tables are auto-managed.
+ *
+ * Pipeline:
+ *	1. extract_ddl_target() inspects the parse tree, decides if this DDL
+ *	   targets a table, and reports the target.
+ *	2. The target is opened and (if partitioned) expanded into all inheritors.
+ *	3. apply_repset_policy_for_reloid() handles each concrete relation:
+ *	   UNLOGGED/TEMP skip and default/insert-only repset routing.
  */
 void
 add_ddl_to_repset(Node *parsetree)
 {
 	Relation		targetrel;
-	SpockRepSet	   *repset;
 	SpockLocalNode *node;
 	Oid				reloid = InvalidOid;
 	RangeVar	   *relation = NULL;
@@ -136,88 +144,11 @@ add_ddl_to_repset(Node *parsetree)
 	ListCell	   *lc;
 	bool			missing_ok = false;
 
-	/* no need to proceed if spock_include_ddl_repset is off */
 	if (!spock_include_ddl_repset)
 		return;
 
-	if (nodeTag(parsetree) == T_AlterTableStmt)
-	{
-		if (castNode(AlterTableStmt, parsetree)->objtype == OBJECT_TABLE)
-			relation = castNode(AlterTableStmt, parsetree)->relation;
-		else if (castNode(AlterTableStmt, parsetree)->objtype == OBJECT_INDEX)
-		{
-			ListCell   *cell;
-			AlterTableStmt *atstmt = (AlterTableStmt *) parsetree;
-
-			foreach(cell, atstmt->cmds)
-			{
-				AlterTableCmd *cmd = (AlterTableCmd *) lfirst(cell);
-
-				if (cmd->subtype == AT_AttachPartition)
-				{
-					RangeVar   *rv = castNode(AlterTableStmt, parsetree)->relation;
-					Relation	indrel;
-
-					indrel = relation_openrv(rv, AccessShareLock);
-					reloid = IndexGetRelation(RelationGetRelid(indrel), false);
-					table_close(indrel, NoLock);
-				}
-			}
-
-			if (!OidIsValid(reloid))
-				return;
-		}
-		else
-		{
-			return;
-		}
-
-		missing_ok = ((AlterTableStmt *) parsetree)->missing_ok;
-	}
-	else if (nodeTag(parsetree) == T_CreateStmt)
-		relation = castNode(CreateStmt, parsetree)->relation;
-	else if (nodeTag(parsetree) == T_CreateTableAsStmt &&
-			 castNode(CreateTableAsStmt, parsetree)->objtype == OBJECT_TABLE)
-		relation = castNode(CreateTableAsStmt, parsetree)->into->rel;
-	else if (nodeTag(parsetree) == T_CreateSchemaStmt)
-	{
-		ListCell   *cell;
-		CreateSchemaStmt *cstmt = (CreateSchemaStmt *) parsetree;
-
-		foreach(cell, cstmt->schemaElts)
-		{
-			if (nodeTag(lfirst(cell)) == T_CreateStmt)
-				add_ddl_to_repset(lfirst(cell));
-		}
+	if (!extract_ddl_target(parsetree, &relation, &reloid, &missing_ok))
 		return;
-	}
-	else if (nodeTag(parsetree) == T_ExplainStmt)
-	{
-		ExplainStmt *stmt = (ExplainStmt *) parsetree;
-		bool		analyze = false;
-		ListCell   *cell;
-
-		/* Look through an EXPLAIN ANALYZE to the contained stmt */
-		foreach(cell, stmt->options)
-		{
-			DefElem    *opt = (DefElem *) lfirst(cell);
-
-			if (strcmp(opt->defname, "analyze") == 0)
-				analyze = defGetBoolean(opt);
-			/* don't "break", as explain.c will use the last value */
-		}
-
-		if (analyze &&
-			castNode(Query, stmt->query)->commandType == CMD_UTILITY)
-			add_ddl_to_repset(castNode(Query, stmt->query)->utilityStmt);
-
-		return;
-	}
-	else
-	{
-		/* only tables are added to repset. */
-		return;
-	}
 
 	node = get_local_node(false, true);
 	if (!node)
@@ -226,15 +157,14 @@ add_ddl_to_repset(Node *parsetree)
 	if (OidIsValid(reloid))
 		targetrel = RelationIdGetRelation(reloid);
 	else
-	{
 		targetrel = table_openrv_extended(relation, AccessShareLock, missing_ok);
-		if (targetrel == NULL)
-		/*
-		 * If relation doesn't exist - quietly exit. It is assumed that the core
-		 * already produced an INFO message.
-		 */
-			return;
-	}
+
+	/*
+	 * If the relation doesn't exist (concurrent drop, or missing_ok hit),
+	 * quietly exit. The core already produced an INFO message.
+	 */
+	if (targetrel == NULL)
+		return;
 
 	reloid = RelationGetRelid(targetrel);
 
@@ -245,65 +175,186 @@ add_ddl_to_repset(Node *parsetree)
 	table_close(targetrel, NoLock);
 
 	foreach(lc, reloids)
+		apply_repset_policy_for_reloid(node, lfirst_oid(lc));
+}
+
+/*
+ * extract_ddl_target
+ *		Parse-tree dispatch: decide whether this DDL targets a table that
+ *		auto-DDL should auto-manage, and if so, fill in the target outputs.
+ *
+ * Returns true if *relation or *reloid identifies a target the caller should
+ * process. Returns false otherwise; in the CreateSchema and EXPLAIN ANALYZE
+ * cases this also recurses back into add_ddl_to_repset() for each contained
+ * statement.
+ *
+ * On a true return:
+ *	*relation	- RangeVar of the target, or NULL if *reloid is set
+ *	*reloid		- pre-resolved oid (currently only the
+ *				  ALTER INDEX ... ATTACH PARTITION path)
+ *	*missing_ok	- whether table_openrv_extended should tolerate a missing rel
+ */
+static bool
+extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
+				   bool *missing_ok)
+{
+	switch (nodeTag(parsetree))
 	{
-		reloid = lfirst_oid(lc);
-		targetrel = RelationIdGetRelation(reloid);
+		case T_AlterTableStmt:
+			{
+				AlterTableStmt *atstmt = (AlterTableStmt *) parsetree;
 
-		/* UNLOGGED and TEMP relations cannot be part of replication set. */
-		if (!RelationNeedsWAL(targetrel))
-		{
-			/* remove table from the repsets. */
-			remove_table_from_repsets(node->node->id, reloid, false);
+				if (atstmt->objtype == OBJECT_TABLE)
+					*relation = atstmt->relation;
+				else if (atstmt->objtype == OBJECT_INDEX)
+				{
+					ListCell *cell;
 
-			table_close(targetrel, NoLock);
-			return;
-		}
+					/*
+					 * ALTER INDEX ... ATTACH PARTITION may complete a
+					 * partitioned primary key, so re-evaluate the partitioned
+					 * table that owns the index.
+					 */
+					foreach(cell, atstmt->cmds)
+					{
+						AlterTableCmd *cmd = (AlterTableCmd *) lfirst(cell);
 
-		if (targetrel->rd_indexvalid == 0)
-			RelationGetIndexList(targetrel);
+						if (cmd->subtype == AT_AttachPartition)
+						{
+							Relation indrel;
 
-		/*
-		 * choose the 'default' repset, if table has PK or replica identity
-		 * defined.
-		 */
-		if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
-		{
-			repset = get_replication_set_by_name(node->node->id, DEFAULT_REPSET_NAME, false);
+							indrel = relation_openrv(atstmt->relation,
+													 AccessShareLock);
+							*reloid = IndexGetRelation(RelationGetRelid(indrel),
+													   false);
+							table_close(indrel, NoLock);
+						}
+					}
 
-			/*
-			 * remove table from previous repsets, it will be added to
-			 * 'default' down below.
-			 */
-			remove_table_from_repsets(node->node->id, reloid, false);
-		}
-		else
-		{
-			repset = get_replication_set_by_name(node->node->id, DEFAULT_INSONLY_REPSET_NAME, false);
+					if (!OidIsValid(*reloid))
+						return false;
+				}
+				else
+					return false;
 
-			/*
-			 * no primary key defined. let's see if the table is part of any
-			 * other repset or not?
-			 */
-			remove_table_from_repsets(node->node->id, reloid, true);
-		}
+				*missing_ok = atstmt->missing_ok;
+				return true;
+			}
 
-		if (!OidIsValid(targetrel->rd_replidindex) &&
-			(repset->replicate_update || repset->replicate_delete))
-		{
-			table_close(targetrel, NoLock);
-			return;
-		}
+		case T_CreateStmt:
+			*relation = castNode(CreateStmt, parsetree)->relation;
+			return true;
 
+		case T_CreateTableAsStmt:
+			if (castNode(CreateTableAsStmt, parsetree)->objtype != OBJECT_TABLE)
+				return false;
+			*relation = castNode(CreateTableAsStmt, parsetree)->into->rel;
+			return true;
+
+		case T_CreateSchemaStmt:
+			{
+				CreateSchemaStmt *cstmt = (CreateSchemaStmt *) parsetree;
+				ListCell   *cell;
+
+				foreach(cell, cstmt->schemaElts)
+				{
+					if (nodeTag(lfirst(cell)) == T_CreateStmt)
+						add_ddl_to_repset(lfirst(cell));
+				}
+				return false;
+			}
+
+		case T_ExplainStmt:
+			{
+				ExplainStmt *stmt = (ExplainStmt *) parsetree;
+				bool		analyze = false;
+				ListCell   *cell;
+
+				/* Look through an EXPLAIN ANALYZE to the contained stmt */
+				foreach(cell, stmt->options)
+				{
+					DefElem    *opt = (DefElem *) lfirst(cell);
+
+					if (strcmp(opt->defname, "analyze") == 0)
+						analyze = defGetBoolean(opt);
+					/* don't "break", as explain.c will use the last value */
+				}
+
+				if (analyze &&
+					castNode(Query, stmt->query)->commandType == CMD_UTILITY)
+					add_ddl_to_repset(castNode(Query, stmt->query)->utilityStmt);
+
+				return false;
+			}
+
+		default:
+			/* only tables are added to repset. */
+			return false;
+	}
+}
+
+/*
+ * apply_repset_policy_for_reloid
+ *		Repset routing for a single concrete relation oid.
+ *
+ *	- UNLOGGED/TEMP	-> evict from every repset, done.
+ *	- PK or replica identity present -> 'default' repset.
+ *	- No PK/RI -> 'default_insert_only'.
+ */
+static void
+apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid)
+{
+	Relation		targetrel;
+	SpockRepSet	   *repset;
+
+	targetrel = RelationIdGetRelation(reloid);
+
+	/* UNLOGGED and TEMP relations cannot be part of replication set. */
+	if (!RelationNeedsWAL(targetrel))
+	{
+		remove_table_from_repsets(node->node->id, reloid, false);
 		table_close(targetrel, NoLock);
+		return;
+	}
 
-		/* Add if not already present. */
-		if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
-		{
-			replication_set_add_table(repset->id, reloid, NIL, NULL);
+	/*
+	 * Force index list build so rd_pkindex and rd_replidindex are populated
+	 * before we read them below.
+	 */
+	if (targetrel->rd_indexvalid == 0)
+		RelationGetIndexList(targetrel);
 
-			elog(LOG, "table '%s' was added to '%s' replication set.",
-				 get_rel_name(reloid), repset->name);
-		}
+	/* Choose default vs default_insert_only based on PK/RI presence. */
+	if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
+	{
+		repset = get_replication_set_by_name(node->node->id,
+											 DEFAULT_REPSET_NAME, false);
+		/* will be added to 'default' below; clear any prior membership */
+		remove_table_from_repsets(node->node->id, reloid, false);
+	}
+	else
+	{
+		repset = get_replication_set_by_name(node->node->id,
+											 DEFAULT_INSONLY_REPSET_NAME, false);
+		/* no PK: only evict from repsets that need UPDATE/DELETE */
+		remove_table_from_repsets(node->node->id, reloid, true);
+	}
+
+	if (!OidIsValid(targetrel->rd_replidindex) &&
+		(repset->replicate_update || repset->replicate_delete))
+	{
+		table_close(targetrel, NoLock);
+		return;
+	}
+
+	table_close(targetrel, NoLock);
+
+	/* Add if not already present. */
+	if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
+	{
+		replication_set_add_table(repset->id, reloid, NIL, NULL);
+		elog(LOG, "table '%s' was added to '%s' replication set.",
+			 get_rel_name(reloid), repset->name);
 	}
 }
 
