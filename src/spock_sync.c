@@ -331,6 +331,31 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
 }
 
 /*
+ * upstream_version_supports_structure_sync
+ *		True if our pg_dump/pg_restore can read this upstream.
+ *
+ * The subscriber's pg_dump (its own, per get_pg_executable()) cannot read a
+ * provider of a newer major version than itself; cf. _check_database_version()
+ * in src/bin/pg_dump/connectdb.c.
+ */
+bool
+upstream_version_supports_structure_sync(PGconn *origin_conn)
+{
+	int			remoteversion;
+
+	Assert(origin_conn != NULL && PQstatus(origin_conn) == CONNECTION_OK);
+
+	remoteversion = PQserverVersion(origin_conn);
+
+	/*
+	 * Treat an unknown version (0 -- a dead connection or a non-PostgreSQL
+	 * endpoint) as unsupported, and reject a newer major version that our
+	 * pg_dump could not read.
+	 */
+	return remoteversion != 0 && remoteversion / 100 <= PG_VERSION_NUM / 100;
+}
+
+/*
  * Create slot and get the exported snapshot.
  *
  * This will try to recreate slot if already exists and not active.
@@ -1448,6 +1473,38 @@ spock_sync_subscription(SpockSubscription *sub)
 
 		origin_conn = spock_connect(sub->origin_if->dsn,
 									sub->name, "snap");
+
+		/*
+		 * An incompatible upstream is permanent, so disable the subscription
+		 * rather than let the worker crash-loop on every restart.  Checked
+		 * before the replication connection and slot are created.  No
+		 * transaction is open (the switch above committed its own), so
+		 * spock_disable_subscription() commits its own and the disable survives
+		 * the FATAL; origin_conn is left open to keep remoteversion_str valid.
+		 */
+		if (SyncKindStructure(sync->kind) &&
+			!upstream_version_supports_structure_sync(origin_conn))
+		{
+			const char *remoteversion_str = PQparameterStatus(origin_conn,
+															  "server_version");
+
+			Assert(!IsTransactionState());
+
+			exception_behaviour = SUB_DISABLE;
+			spock_disable_subscription(sub, InvalidRepOriginId,
+									   InvalidTransactionId,
+									   InvalidXLogRecPtr, 0);
+
+			ereport(FATAL,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("SPOCK %s: cannot synchronize structure from upstream server version %s",
+							sub->name,
+							remoteversion_str ? remoteversion_str : "unknown"),
+					 errdetail("The subscriber's pg_dump/pg_restore (version %s) cannot dump from a newer major version.",
+							   PG_VERSION),
+					 errhint("Synchronize the schema another way and recreate the subscription with synchronize_structure = false, then re-enable the subscription.")));
+		}
+
 		origin_conn_repl = spock_connect_replica(sub->origin_if->dsn,
 												 sub->name, "snap");
 
