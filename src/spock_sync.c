@@ -335,13 +335,17 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
  *		True if our pg_dump/pg_restore can read this upstream.
  *
  * The subscriber's pg_dump (its own, per get_pg_executable()) cannot read a
- * provider of a newer major version than itself; cf. _check_database_version()
- * in src/bin/pg_dump/connectdb.c.
+ * provider whose server version falls outside the inclusive
+ * [minRemoteVersion, maxRemoteVersion] window that pg_dump itself enforces in
+ * _check_database_version() (src/bin/pg_dump/pg_backup_db.c).  The bounds
+ * mirror those set in main() of src/bin/pg_dump/pg_dump.c.
  */
 bool
 upstream_version_supports_structure_sync(PGconn *origin_conn)
 {
 	int			remoteversion;
+	const int	minRemoteVersion = 90200;
+	const int	maxRemoteVersion = (PG_VERSION_NUM / 100) * 100 + 99;
 
 	Assert(origin_conn != NULL && PQstatus(origin_conn) == CONNECTION_OK);
 
@@ -349,10 +353,12 @@ upstream_version_supports_structure_sync(PGconn *origin_conn)
 
 	/*
 	 * Treat an unknown version (0 -- a dead connection or a non-PostgreSQL
-	 * endpoint) as unsupported, and reject a newer major version that our
-	 * pg_dump could not read.
+	 * endpoint) as unsupported, and reject upstreams below minRemoteVersion
+	 * or above maxRemoteVersion, matching pg_dump's own bounds check.
 	 */
-	return remoteversion != 0 && remoteversion / 100 <= PG_VERSION_NUM / 100;
+	return remoteversion != 0
+		&& remoteversion >= minRemoteVersion
+		&& remoteversion <= maxRemoteVersion;
 }
 
 /*
