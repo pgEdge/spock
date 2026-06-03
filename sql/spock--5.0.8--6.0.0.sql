@@ -215,106 +215,103 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'spock_reset_subscription_stats'
 LANGUAGE C CALLED ON NULL INPUT VOLATILE;
 
-DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, oid, pg_lsn, int);
-DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, oid, pg_lsn, int, bool);
-DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, name, pg_lsn, int);
-DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, name, pg_lsn, int, bool);
-CREATE PROCEDURE spock.wait_for_sync_event(
-	OUT result          bool,
-	origin_id           oid,
-	lsn                 pg_lsn,
-	timeout             int  DEFAULT 0,
-	wait_if_disabled    bool DEFAULT false
-) AS $$
+-- Set delta_apply security label on specific column
+CREATE FUNCTION spock.delta_apply(
+  rel regclass,
+  att_name name,
+  to_drop boolean DEFAULT false
+) RETURNS boolean AS $$
 DECLARE
-	target_id		oid;
-	start_time		timestamptz := clock_timestamp();
-	progress_lsn	pg_lsn;
-	sub_is_enabled	bool;
-	sub_slot		name;
+  label     text;
+  atttype   name;
+  attdata   record;
+  sqlstring text;
+  status    boolean;
+  relreplident char (1);
+  ctypname  name;
 BEGIN
-	IF origin_id IS NULL THEN
-		RAISE EXCEPTION 'Invalid NULL origin_id';
-	END IF;
-	target_id := node_id FROM spock.node_info();
 
-	-- Upfront existence check is skipped when wait_if_disabled is true because
-	-- the subscription may not yet exist (e.g. a newly added node whose
-	-- subscriptions are still initializing).  The loop below handles both the
-	-- not-found and disabled cases gracefully in that mode.
-	IF NOT wait_if_disabled THEN
-		SELECT sub_enabled, sub_slot_name INTO sub_is_enabled, sub_slot
-			FROM spock.subscription
-			WHERE sub_origin = origin_id AND sub_target = target_id;
+  /*
+   * regclass input type guarantees we see this table, no 'not found' check
+   * is needed.
+   */
+  SELECT c.relreplident FROM pg_class c WHERE oid = rel INTO relreplident;
+  /*
+   * Allow only DEFAULT type of replica identity. FULL type means we have
+   * already requested delta_apply feature on this table.
+   * Avoid INDEX type because indexes may have different names on the nodes and
+   * it would be better to stay paranoid than afraid of consequences.
+   */
+  IF (relreplident <> 'd' AND relreplident <> 'f')
+  THEN
+    RAISE EXCEPTION 'spock can apply delta_apply feature to the DEFAULT replica identity type only. This table holds "%" idenity', relreplident;
+  END IF;
 
-		IF NOT FOUND THEN
-			RAISE EXCEPTION 'No subscription found for replication % => %',
-							origin_id, target_id;
-		END IF;
-	END IF;
+  /*
+   * Find proper delta_apply function for the column type or ERROR
+   */
 
-	WHILE true LOOP
-		-- Re-check subscription state each iteration.  Also re-fetches
-		-- sub_slot_name so the loop is self-contained when wait_if_disabled
-		-- is true and the pre-loop check was skipped.
-		SELECT sub_enabled, sub_slot_name INTO sub_is_enabled, sub_slot
-			FROM spock.subscription
-			WHERE sub_origin = origin_id AND sub_target = target_id;
+  SELECT t.typname,t.typinput,t.typoutput
+  FROM pg_catalog.pg_attribute a, pg_type t
+  WHERE a.attrelid = rel AND a.attname = att_name AND (a.atttypid = t.oid)
+  INTO attdata;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'column % does not exist in the table %', att_name, rel;
+  END IF;
 
-		IF NOT FOUND THEN
-			IF NOT wait_if_disabled THEN
-				RAISE EXCEPTION 'No subscription found for replication % => %',
-								origin_id, target_id;
-			END IF;
-			-- Subscription not yet created; fall through to sleep.
-		ELSIF NOT sub_is_enabled THEN
-			IF NOT wait_if_disabled THEN
-				RAISE EXCEPTION 'Subscription % => % has been disabled',
-								origin_id, target_id;
-			END IF;
-			-- Subscription still initializing; fall through to sleep.
-		ELSE
-			-- Subscription is enabled; check LSN progress.
-			-- Uses PostgreSQL's native origin tracking rather than spock.progress
-			SELECT remote_lsn INTO progress_lsn
-				FROM pg_replication_origin_status
-				WHERE external_id = sub_slot;
+  SELECT typname FROM pg_type WHERE
+    typname IN ('int2','int4','int8','float4','float8','numeric','money') AND
+    typinput = attdata.typinput AND typoutput = attdata.typoutput
+  INTO ctypname;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'type "%" can not be used in delta_apply conflict resolution',
+          attdata.typname;
+  END IF;
 
-			IF progress_lsn IS NOT NULL AND progress_lsn >= lsn THEN
-				result = true;
-				RETURN;
-			END IF;
-		END IF;
+  --
+  -- Create security label on the column
+  --
+  IF (to_drop = true) THEN
+    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS NULL;' ,
+                        rel, att_name);
+  ELSE
+    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L;' ,
+                        rel, att_name, 'spock.delta_apply');
+  END IF;
 
-		IF timeout <> 0 AND
-		   EXTRACT(EPOCH FROM (clock_timestamp() - start_time)) >= timeout THEN
-			result := false;
-			RETURN;
-		END IF;
+  EXECUTE sqlstring;
 
-		ROLLBACK;
-		PERFORM pg_sleep(0.2);
-	END LOOP;
+  /*
+   * Auto replication will propagate security label if needed. Just warn if it's
+   * not - the structure sync pg_dump call would copy security labels, isn't it?
+   */
+  SELECT pg_catalog.current_setting('spock.enable_ddl_replication') INTO status;
+  IF EXISTS (SELECT 1 FROM spock.local_node) AND status = false THEN
+    raise WARNING 'delta_apply setting has not been propagated to other spock nodes';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_seclabel
+			 WHERE objoid = rel AND classoid = 'pg_class'::regclass AND
+			       provider = 'spock') THEN
+    /*
+     * Call it each time to trigger relcache invalidation callback that causes
+     * refresh of the SpockRelation entry and guarantees actual state of the
+     * delta_apply columns.
+     */
+    EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', rel);
+  ELSIF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+			 WHERE c.oid = rel AND c.relreplident = 'f') THEN
+    /*
+	 * Have removed he last security label. Revert this spock hack change,
+	 * if needed.
+	 */
+	EXECUTE format('ALTER TABLE %I REPLICA IDENTITY DEFAULT', rel);
+  END IF;
+
+  RETURN true;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql STRICT VOLATILE;
 
-CREATE PROCEDURE spock.wait_for_sync_event(
-	OUT result          bool,
-	origin              name,
-	lsn                 pg_lsn,
-	timeout             int  DEFAULT 0,
-	wait_if_disabled    bool DEFAULT false
-) AS $$
-DECLARE
-	origin_id  oid;
-BEGIN
-	origin_id := node_id FROM spock.node WHERE node_name = origin;
-	IF origin_id IS NULL THEN
-		RAISE EXCEPTION 'Origin node ''%'' not found', origin;
-	END IF;
-	CALL spock.wait_for_sync_event(result, origin_id, lsn, timeout, wait_if_disabled);
-END;
-$$ LANGUAGE plpgsql;
 
 CREATE FUNCTION spock.sub_alter_options(
   subscription_name name,

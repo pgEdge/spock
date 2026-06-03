@@ -69,6 +69,8 @@ extern void spock_relation_cache_reset(void);
 
 extern Oid	spock_lookup_delta_function(char *fname, Oid typeoid);
 
+extern Oid get_replication_identity(Relation rel);
+
 struct SpockTupleData;
 
 #endif							/* SPOCK_RELCACHE_H */

@@ -34,6 +34,7 @@ test: 014_pgdump_restore_conflict
 #        break
 #    fi
 # done
+test: 012_delta_apply
 test: 013_exception_handling
 # test: 014_rolling_upgrade
 test: 015_skip_lsn
