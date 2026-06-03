@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 25;
+use Test::More tests => 27;
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail psql_or_bail
                  scalar_query get_test_config);
@@ -163,5 +163,18 @@ is(repsets_for('spoc539_t9'), 'default_insert_only,spoc539_insonly',
 psql_or_bail(1, "ALTER TABLE spoc539_t9 DROP CONSTRAINT spoc539_t9_pkey");
 is(repsets_for('spoc539_t9'), 'default_insert_only,spoc539_insonly',
    'T9: PK drop on insert-only-only membership leaves placement alone');
+
+# -----------------------------------------------------------------------------
+# T10: inline-PK form of ADD COLUMN. "ALTER TABLE ... ADD COLUMN x int PRIMARY
+# KEY" attaches the PK via the ColumnDef's inline constraints list rather than
+# as a separate AT_AddConstraint command; the classifier must still recognize
+# it as a PK add so the table moves out of default_insert_only into default.
+# -----------------------------------------------------------------------------
+psql_or_bail(1, "CREATE TABLE spoc539_t10 (b int)");
+is(repsets_for('spoc539_t10'), 'default_insert_only',
+   'T10: no-PK table starts in default_insert_only');
+psql_or_bail(1, "ALTER TABLE spoc539_t10 ADD COLUMN id int PRIMARY KEY");
+is(repsets_for('spoc539_t10'), 'default',
+   'T10: ADD COLUMN ... PRIMARY KEY promotes table to default');
 
 destroy_cluster();
