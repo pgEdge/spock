@@ -104,7 +104,7 @@ COPY --chmod=755 tests/docker/*.sh /home/pgedge/
 # Clone spockbench for testing workloads
 # TODO: Pin to specific tag/commit for reproducibility
 RUN set -eux && \
-	git clone --depth 1 \
+	git clone --branch delta-apply-update --depth 1 \
 	https://github.com/pgEdge/spockbench.git /home/pgedge/spockbench && \
 	echo "export SPOCKBENCH_SOURCE_DIR=/home/pgedge/spockbench" >> /home/pgedge/.bashrc
 
