@@ -55,13 +55,13 @@ relcache_free_entry(SpockRelation *entry)
 
 	if (entry->attmap)
 		pfree(entry->attmap);
-	if (entry->delta_functions)
-		pfree(entry->delta_functions);
+	if (entry->delta_apply_functions)
+		pfree(entry->delta_apply_functions);
 
 	entry->natts = 0;
 	entry->reloid = InvalidOid;
 	entry->rel = NULL;
-	entry->has_delta_apply = false;
+	entry->has_delta_columns = false;
 }
 
 
@@ -101,9 +101,9 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		/*
 		 * Reset delta-apply metadata before rescanning. A relcache
 		 * invalidation only resets entry->reloid; the function-Oid array
-		 * and has_delta_apply flag carry over from the prior state.
+		 * and has_delta_columns flag carry over from the prior state.
 		 * Without this reset, dropping a delta_apply security label
-		 * would leave a stale Oid behind and has_delta_apply stuck at
+		 * would leave a stale Oid behind and has_delta_columns stuck at
 		 * true.
 		 *
 		 * Also resize the array to the local TupleDesc width. The
@@ -111,17 +111,17 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		 * below indexes by attmap[i] (a local position), which can exceed
 		 * remote natts when local has columns the remote does not.
 		 */
-		if (entry->delta_functions != NULL)
-			pfree(entry->delta_functions);
+		if (entry->delta_apply_functions != NULL)
+			pfree(entry->delta_apply_functions);
 		{
 			MemoryContext oldcontext;
 
 			oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
-			entry->delta_functions =
+			entry->delta_apply_functions =
 				palloc0(desc->natts * sizeof(Oid));
 			MemoryContextSwitchTo(oldcontext);
 		}
-		entry->has_delta_apply = false;
+		entry->has_delta_columns = false;
 
 		for (i = 0; i < entry->natts; i++)
 		{
@@ -142,7 +142,7 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			ObjectAddressSubSet(object, RelationRelationId,
 								RelationGetRelid(entry->rel),
 								entry->attmap[i] + 1);
-			seclabel = GetSecurityLabel(&object, spock_SECLABEL_PROVIDER);
+			seclabel = GetSecurityLabel(&object, SPOCK_SECLABEL_PROVIDER);
 			if (seclabel != NULL)
 			{
 				Form_pg_attribute	att;
@@ -157,21 +157,21 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 						 entry->nspname, entry->relname,
 						 entry->attnames[i], seclabel);
 
-				entry->delta_functions[entry->attmap[i]] = dfunc;
-				Assert(entry->delta_functions[entry->attmap[i]] != InvalidOid);
-				entry->has_delta_apply = true;
+				entry->delta_apply_functions[entry->attmap[i]] = dfunc;
+				Assert(entry->delta_apply_functions[entry->attmap[i]] != InvalidOid);
+				entry->has_delta_columns = true;
 			}
 			else
 			{
 				/* Main case */
-				entry->delta_functions[entry->attmap[i]] = InvalidOid;
+				entry->delta_apply_functions[entry->attmap[i]] = InvalidOid;
 			}
 		}
 
 		relinfo = makeNode(ResultRelInfo);
 		InitResultRelInfo(relinfo, entry->rel, 1, NULL, 0);
 		entry->reloid = RelationGetRelid(entry->rel);
-		if (entry->has_delta_apply)
+		if (entry->has_delta_columns)
 		{
 			/*
 			 * It looks like a hack — which, in fact, it is.
@@ -257,8 +257,8 @@ spock_relation_cache_update(uint32 remoteid, char *schemaname,
 		entry->attrtypmods[i] = attrtypmods[i];
 	}
 	entry->attmap = palloc(natts * sizeof(int));
-	entry->has_delta_apply = false;
-	entry->delta_functions = (Oid *) palloc0(entry->natts * sizeof(Oid));
+	entry->has_delta_columns = false;
+	entry->delta_apply_functions = (Oid *) palloc0(entry->natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
 
 	/* XXX Should we validate the relation against local schema here? */
@@ -295,8 +295,8 @@ spock_relation_cache_updater(SpockRemoteRel *remoterel)
 	for (i = 0; i < remoterel->natts; i++)
 		entry->attnames[i] = pstrdup(remoterel->attnames[i]);
 	entry->attmap = palloc(remoterel->natts * sizeof(int));
-	entry->has_delta_apply = false;
-	entry->delta_functions = (Oid *) palloc0(entry->natts * sizeof(Oid));
+	entry->has_delta_columns = false;
+	entry->delta_apply_functions = (Oid *) palloc0(entry->natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
 
 	/* XXX Should we validate the relation against local schema here? */
@@ -479,7 +479,7 @@ get_replication_identity(Relation rel)
 
 		ObjectAddressSubSet(object, RelationRelationId,
 							RelationGetRelid(rel), i + 1);
-		seclabel = GetSecurityLabel(&object, spock_SECLABEL_PROVIDER);
+		seclabel = GetSecurityLabel(&object, SPOCK_SECLABEL_PROVIDER);
 
 		if (seclabel != NULL)
 		{

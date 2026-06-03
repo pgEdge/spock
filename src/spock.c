@@ -1353,7 +1353,7 @@ _PG_init(void)
 	emit_log_hook = log_message_filter;
 
 	/* Security label provider hook */
-	register_label_provider(spock_SECLABEL_PROVIDER, spock_object_relabel);
+	register_label_provider(SPOCK_SECLABEL_PROVIDER, spock_object_relabel);
 
 #if PG_VERSION_NUM >= 180000
 	/* Spock replication conflict statistics */
