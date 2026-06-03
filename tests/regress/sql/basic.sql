@@ -119,12 +119,17 @@ DROP FUNCTION call_fn;
 
 -- A label creation checks
 CREATE TABLE slabel (x integer, y text PRIMARY KEY);
+CREATE TABLE slabel_ri (x integer NOT NULL, y text);
+CREATE UNIQUE INDEX slabel_ri_idx ON slabel_ri(x);
+ALTER TABLE slabel_ri REPLICA IDENTITY USING INDEX slabel_ri_idx;
 
 SELECT spock.delta_apply('slabel', 'x');
 SELECT spock.delta_apply('slabel', 'y'); -- ERROR
 SELECT spock.delta_apply('slabel', 'z'); -- ERROR
 SELECT spock.delta_apply('slabel', 'x'); -- repeating call do nothing
+SELECT spock.delta_apply('slabel_ri', 'x'); -- ERROR
 SELECT objname, label FROM pg_seclabels;
+DROP TABLE slabel_ri CASCADE;
 
 -- Short round trip to check that subscriber has no security labels
 \c :subscriber_dsn

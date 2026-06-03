@@ -29,9 +29,9 @@ SELECT spock.delta_apply('slabel', 'x', false);
 (1 row)
 
 SELECT objname, label FROM pg_seclabels;
- objname  |    label    
-----------+-------------
- slabel.x | delta_apply
+ objname  |       label       
+----------+-------------------
+ slabel.x | spock.delta_apply
 (1 row)
 
 DROP EXTENSION spock;
