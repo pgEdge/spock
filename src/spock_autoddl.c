@@ -527,6 +527,31 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 						has_add_pkri_cmd = true;
 				}
 				break;
+			case AT_AddColumn:
+				/*
+				 * "ALTER TABLE ... ADD COLUMN x int PRIMARY KEY" arrives as
+				 * AT_AddColumn with the PRIMARY KEY embedded in the
+				 * ColumnDef's inline constraints list, not as a separate
+				 * AT_AddConstraint command.
+				 */
+				if (cmd->def && IsA(cmd->def, ColumnDef))
+				{
+					ColumnDef  *col = (ColumnDef *) cmd->def;
+					ListCell   *cc;
+
+					foreach(cc, col->constraints)
+					{
+						Constraint *con = (Constraint *) lfirst(cc);
+
+						if (IsA(con, Constraint) &&
+							con->contype == CONSTR_PRIMARY)
+						{
+							has_add_pkri_cmd = true;
+							break;
+						}
+					}
+				}
+				break;
 			case AT_ReplicaIdentity:
 				/*
 				 * Could be adding or removing RI; let the post-state
