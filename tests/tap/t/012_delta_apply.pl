@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 13;
+use Test::More tests => 14;
 use IPC::Run;
 use lib '.';
 use lib 't';
@@ -30,8 +30,8 @@ psql_or_bail(2, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
 psql_or_bail(3, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
 
 psql_or_bail(1, "SELECT spock.delta_apply('t1', 'x');");
-psql_or_bail(2, "SELECT spock.delta_apply('t1', 'x');");
-psql_or_bail(3, "SELECT spock.delta_apply('t1', 'x');");
+#psql_or_bail(2, "SELECT spock.delta_apply('t1', 'x');");
+#psql_or_bail(3, "SELECT spock.delta_apply('t1', 'x');");
 
 psql_or_bail(3, q(
 CREATE PROCEDURE counter_change(relname name, attname name,
@@ -98,5 +98,10 @@ ok($result1 eq $result3, "Equality of the data on N1 and N3 is confirmed");
 ok($result2 eq $result3, "Equality of the data on N2 and N3 is confirmed");
 print STDERR "DEBUGGING. Results: $result1 | $result2 | $result3\n";
 
+# Remove delta_apply from the column x and set it on the column y
+psql_or_bail(1, "SELECT spock.delta_apply('t1', 'x', true)");
+$result1 = scalar_query(1, "SELECT spock.delta_apply('t1', 'y')"); # ERROR
+print STDERR "DEBUGGING. Result: $result1\n";
+ok($result1 eq 'f', "delta_apply can't be used with nullable columns");
 # Cleanup will be handled by SpockTest.pm END block
 # No need for done_testing() when using a test plan
