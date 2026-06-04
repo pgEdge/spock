@@ -1060,9 +1060,11 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 	List	   *local_tables;
 	ListCell   *lc;
 
-	/* Read table list from provider. */
+	/* Read table list from provider.  Apply per-sub skip list on the
+	 * publisher side so we don't shuttle rows we'd discard locally. */
 	conn = spock_connect(sub->origin_if->dsn, sub_name, "sync");
-	remote_tables = spock_get_remote_repset_tables(conn, sub->replication_sets);
+	remote_tables = spock_get_remote_repset_tables(conn, sub->replication_sets,
+												   sub->skip_schema);
 	PQfinish(conn);
 
 	local_tables = get_subscription_tables(sub->id);
@@ -1157,6 +1159,14 @@ check_readonly_for_resync(const char *nspname, const char *relname)
 
 /*
  * Resynchronize one existing table.
+ *
+ * XXX: data-only resync.  Per-table structure resync is future scope: it
+ * would need its own snapshot story (no slot-exported snapshot is available
+ * outside the initial-sync window), its own disable-on-failure plumbing
+ * (this is a SQL-function backend, so the sync-worker PG_TRY/PG_CATCH
+ * pattern that commits a separate disable transaction is not directly
+ * reusable), and a clear operator UX rationale for refreshing structure
+ * without data.  Not implemented today.
  */
 Datum
 spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)

@@ -16,15 +16,31 @@
 #include "spock_node.h"
 
 extern List *spock_get_remote_repset_tables(PGconn *conn,
-											List *replication_sets);
+											List *replication_sets,
+											List *skip_schemas);
 extern SpockRemoteRel *spock_get_remote_repset_table(PGconn *conn,
 													 RangeVar *rv, List *replication_sets);
+
+/*
+ * Minimal schema-qualified relation identity, used by structure sync to
+ * carry (nspname, relname) pairs returned by the publisher.
+ */
+typedef struct SpockRemoteRelId
+{
+	char	   *nspname;
+	char	   *relname;
+} SpockRemoteRelId;
+
+extern List *spock_get_repset_excluded_tables(PGconn *conn,
+											  List *schemas,
+											  List *repset_tables);
+
+extern List *spock_get_remote_user_schemas(PGconn *conn,
+										   List *skip_schemas);
 
 extern bool spock_remote_slot_active(PGconn *conn, const char *slot_name);
 extern void spock_drop_remote_slot(PGconn *conn, const char *slot_name);
 extern SpockNode *spock_remote_node_info(PGconn *conn, char **sysid,
 										 char **dbname, char **replication_sets);
-extern bool spock_remote_function_exists(PGconn *conn, const char *nspname,
-										 const char *proname, int nargs, char *argname);
 
 #endif							/* SPOCK_RPC_H */

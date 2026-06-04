@@ -67,7 +67,7 @@
 #include "spock_worker.h"
 #include "spock.h"
 
-#define CATALOG_LOCAL_SYNC_STATUS	"local_sync_status"
+#define CATALOG_LOCAL_SYNC_STATUS		"local_sync_status"
 
 #define PGDUMP_BINARY "pg_dump"
 #define PGRESTORE_BINARY "pg_restore"
@@ -146,33 +146,20 @@ get_pg_executable(char *cmdname, char *cmdbuf)
 			 PG_VERSION_NUM / 100 / 100, PG_VERSION_NUM / 100 % 100);
 }
 
+#if PG_VERSION_NUM < 170000
 /*
- * Couple of helper functions to centralise the extension and schema skipping
- * logic. Test existence of the object before adding it to the list to avoid
- * noisy WARNINGs.
- * The sub->skip_schema typically doesn't include our globally-skipped objects.
- * So, don't care about duplicates.
+ * build_exclude_schema_string
+ *		Pre-17 fallback path: build a List of "--exclude-schema=NAME" args
+ *		for every globally-skipped schema plus the per-subscription skip
+ *		list.  Extensions are not separately excluded because pre-17
+ *		pg_dump lacks --exclude-extension and the spock/lolor/snowflake
+ *		extensions live in same-named schemas that we already exclude.
+ *
+ * On PG 17+ the repset-driven filter file (see
+ * build_filter_file_repset_driven) does this job uniformly through
+ * pg_dump's --filter mechanism, so the helper is compiled only when we
+ * actually need it.
  */
-#if PG_VERSION_NUM >= 170000
-static List *
-build_exclude_extension_string(void)
-{
-	List   *lst = NIL;
-	char   *arg;
-	int		i;
-
-	for (i = 0; skip_extension[i] != NULL; i++)
-	{
-		if (!OidIsValid(get_extension_oid(skip_extension[i], true)))
-			continue;
-
-		arg = psprintf("--exclude-extension=%s", skip_extension[i]);
-		lst = lappend(lst, arg);
-	}
-	return lst;
-}
-#endif
-
 static List *
 build_exclude_schema_string(SpockSubscription *sub)
 {
@@ -206,10 +193,370 @@ build_exclude_schema_string(SpockSubscription *sub)
 
 	return lst;
 }
+#endif
 
+/*
+ * Append a double-quoted SQL identifier to buf, doubling any embedded
+ * double-quote per pg_dump's filter-grammar convention.  Streams straight
+ * into the caller's buffer; no transient StringInfo allocation per call.
+ */
 static void
+append_quoted_ident(StringInfo buf, const char *ident)
+{
+	const char *p;
+
+	Assert(ident != NULL);
+
+	appendStringInfoChar(buf, '"');
+	for (p = ident; *p; p++)
+	{
+		if (*p == '"')
+			appendStringInfoChar(buf, '"');
+		appendStringInfoChar(buf, *p);
+	}
+	appendStringInfoChar(buf, '"');
+}
+
+/*
+ * Write one "{include|exclude} <kind> <ident>" filter-file line, with the
+ * identifier double-quoted.  For schema-qualified names (table excludes),
+ * the caller assembles the line directly using append_quoted_ident.
+ */
+static void
+append_filter_line(StringInfo buf, const char *verb, const char *kind,
+				   const char *ident)
+{
+	appendStringInfo(buf, "%s %s ", verb, kind);
+	append_quoted_ident(buf, ident);
+	appendStringInfoChar(buf, '\n');
+}
+
+/*
+ * build_filter_file_repset_driven
+ *		Construct a pg_dump --filter file directing the dump at exactly the
+ *		tables this subscription's replication sets cover, plus their schemas'
+ *		non-table dependencies.  PG 17+ only — older pg_dump versions do not
+ *		support --filter.
+ *
+ *		Algorithm:
+ *		  1. Fetch R from the publisher with per-sub skip filtering applied
+ *		     publisher-side.  Partitions of replicated parents are already
+ *		     in R because spock.repset_add_table walks find_all_inheritors
+ *		     when partitions are added (see spock_replication_set_add_table).
+ *		  2. Populate S_R.
+ *		       a. If R is non-empty: dedup R's schemas into S_R.  R is
+ *		          already sorted by (nspname, relname) on the publisher
+ *		          side, so dedup is a tail-compare per row, not an O(n)
+ *		          probe.  The static skip list is enforced under
+ *		          USE_ASSERT_CHECKING — those schemas must never appear
+ *		          in any repset to begin with.
+ *		       b. If R is empty: fetch the publisher's user schemas via
+ *		          spock_get_remote_user_schemas() and use them as S_R.
+ *		          This is *scaffold mode* — the subscription was created
+ *		          before any tables were added to repsets, and the
+ *		          operator wants the schema structure mirrored so they
+ *		          can opt tables in later.
+ *		       c. If R is empty AND the publisher has no user schemas:
+ *		          return false; the caller skips pg_dump entirely.
+ *		  3. Ask the publisher which relations in S_R are NOT in R
+ *		     (spock_get_repset_excluded_tables, covering relkind IN
+ *		     'r','p','f','m','v' so matviews / views / foreign tables are
+ *		     also pruned).  In scaffold mode (empty R) this returns
+ *		     *every* dump-able relation in S_R, so every table becomes
+ *		     an exclude-table line — the scaffold dump carries only
+ *		     non-table objects.
+ *		  4. Write the filter file:
+ *		       - exclude-schema for skip lists (static + per-sub)
+ *		       - include-schema for each S_R member (repset-driven
+ *		         mode only; scaffold mode deliberately omits this to
+ *		         keep pg_dump in its default mode where the
+ *		         public-schema special-case applies and CREATE SCHEMA
+ *		         public is not emitted)
+ *		       - exclude-table for the relations the previous step
+ *		         returned (siblings in repset-driven mode, every
+ *		         relation in scaffold mode)
+ *		       - exclude-extension for globally skipped extensions
+ *
+ *		`origin_conn` must already be inside a transaction that has imported
+ *		the replication slot's exported snapshot (SET TRANSACTION SNAPSHOT);
+ *		otherwise the enumerated tables can disagree with what pg_dump
+ *		subsequently observes.  This invariant is established at the sync
+ *		worker call site via spock_create_slot_and_read_progress.
+ *
+ *		Returns true if a filter file was written (caller should proceed
+ *		with pg_dump and restore_structure).  Returns false on the
+ *		truly-empty fastpath (no R, no user schemas — nothing to sync).
+ *		The caller must then skip both pg_dump and the pre-data/post-data
+ *		restore_structure() calls.
+ */
+static bool
+build_filter_file_repset_driven(SpockSubscription *sub, PGconn *origin_conn,
+								const char *destfile)
+{
+	List	   *repset_tables;
+	List	   *s_r = NIL;
+	List	   *excluded_tables;
+	ListCell   *lc;
+	StringInfoData buf;
+	FILE	   *fp;
+	int			i;
+	bool		scaffold_mode = false;
+	MemoryContext build_cxt;
+	MemoryContext oldcxt;
+
+	Assert(sub != NULL);
+	Assert(origin_conn != NULL);
+	Assert(destfile != NULL);
+
+	/*
+	 * Short-lived context so the assembled buffer and dedup list don't leak
+	 * into the long-lived sync-worker context; reclaimed at success on the
+	 * way out, or by transaction abort on error.
+	 */
+	build_cxt = AllocSetContextCreate(CurrentMemoryContext,
+									  "spock filter-file build",
+									  ALLOCSET_DEFAULT_SIZES);
+	oldcxt = MemoryContextSwitchTo(build_cxt);
+
+	/* Step 1: fetch R (per-sub skip list applied publisher-side). */
+	repset_tables = spock_get_remote_repset_tables(origin_conn,
+												   sub->replication_sets,
+												   sub->skip_schema);
+
+	/*
+	 * Step 2: populate S_R.
+	 *
+	 * The repset-driven path is the common case: R is non-empty, and we
+	 * dedup its schemas into S_R below.  But when R is empty (operator
+	 * created the subscription before adding tables to any repset),
+	 * fall back to *scaffold mode*: enumerate the publisher's user
+	 * schemas and use those as S_R, then ask the publisher for "all
+	 * tables in those schemas" downstream so every table becomes an
+	 * exclude-table line.  Net effect: pg_dump emits schemas, types,
+	 * functions, sequences, ACLs, comments — but no tables.  Operator
+	 * gets a structural mirror to work against; tables come over via
+	 * later repset_add_table + resync.
+	 *
+	 * If the publisher has no user schemas either (truly empty
+	 * publisher), return false so the caller skips pg_dump entirely —
+	 * there's literally nothing to dump.  pg_dump on a filter file
+	 * with only exclude rules would fall back to "dump everything not
+	 * excluded", which on a truly empty publisher is a no-op anyway,
+	 * but skipping is cleaner and avoids the operator wondering why
+	 * pg_dump ran at all.
+	 */
+	if (list_length(repset_tables) == 0)
+	{
+		s_r = spock_get_remote_user_schemas(origin_conn, sub->skip_schema);
+
+		if (list_length(s_r) == 0)
+		{
+			elog(INFO, "spock structure sync: subscription \"%s\" has no replicated tables and publisher has no user schemas; skipping pg_dump invocation",
+				 sub->name);
+			MemoryContextSwitchTo(oldcxt);
+			MemoryContextDelete(build_cxt);
+			return false;
+		}
+
+		scaffold_mode = true;
+		elog(INFO, "spock structure sync: subscription \"%s\" has no replicated tables; dumping scaffold of %d user schema(s), no tables",
+			 sub->name, list_length(s_r));
+	}
+	else
+	{
+		/*
+		 * R is non-empty: dedup its schemas into S_R.  Folded into
+		 * the same loop is a defensive static-skip check.  spock-
+		 * internal schemas (spock/lolor/snowflake) must never appear
+		 * in any repset; surface that loudly under USE_ASSERT_CHECKING
+		 * so developers catch the catalogue-bug case before it ships.
+		 *
+		 * spock_get_remote_repset_tables guarantees rows sorted by
+		 * (nspname, relname), so adjacent rows in the same schema
+		 * cluster together and dedup collapses to "did the tail of
+		 * s_r already see this nspname?" — O(1) per row via llast()
+		 * instead of an O(n) walk.
+		 */
+		foreach(lc, repset_tables)
+		{
+			SpockRemoteRel *rel = (SpockRemoteRel *) lfirst(lc);
+
+#ifdef USE_ASSERT_CHECKING
+			{
+				int			s;
+
+				for (s = 0; skip_schema[s] != NULL; s++)
+					if (strcmp(rel->nspname, skip_schema[s]) == 0)
+						elog(ERROR,
+							 "replication set contains table \"%s.%s\" from system-restricted schema \"%s\"",
+							 rel->nspname, rel->relname, skip_schema[s]);
+			}
+#endif
+
+			if (s_r == NIL ||
+				strcmp((const char *) llast(s_r), rel->nspname) != 0)
+				s_r = lappend(s_r, pstrdup(rel->nspname));
+		}
+	}
+
+	/*
+	 * Step 3: enumerate the relations to emit as "exclude table" lines.
+	 *
+	 * In the repset-driven path (non-empty R), this is the set of
+	 * relations in S_R that are NOT in R — sibling tables/matviews/
+	 * views/foreign tables that would otherwise ride along on the
+	 * broad "include schema" rule.  In scaffold mode (empty R), we
+	 * pass `repset_tables = NIL` and the RPC returns every dump-able
+	 * relation in S_R, so every table becomes an exclude-table line
+	 * and the scaffold dump carries only non-table objects.
+	 */
+	excluded_tables = spock_get_repset_excluded_tables(origin_conn, s_r,
+													   repset_tables);
+
+	/* Step 4: write the filter file. */
+	initStringInfo(&buf);
+
+	/*
+	 * Exclude rules first: static and per-sub schemas, then static
+	 * extensions.  All three loops skip names that don't exist locally —
+	 * pg_dump tolerates non-existent exclude targets, but a tidier filter
+	 * file matches the pre-17 build_exclude_schema_string pattern and is
+	 * easier to eyeball.
+	 */
+	for (i = 0; skip_schema[i] != NULL; i++)
+	{
+		if (!OidIsValid(LookupExplicitNamespace(skip_schema[i], true)))
+			continue;
+		append_filter_line(&buf, "exclude", "schema", skip_schema[i]);
+	}
+	foreach(lc, sub->skip_schema)
+	{
+		const char *user_skipped = (const char *) lfirst(lc);
+
+		if (!OidIsValid(LookupExplicitNamespace(user_skipped, true)))
+			continue;
+		append_filter_line(&buf, "exclude", "schema", user_skipped);
+	}
+	for (i = 0; skip_extension[i] != NULL; i++)
+	{
+		if (!OidIsValid(get_extension_oid(skip_extension[i], true)))
+			continue;
+		append_filter_line(&buf, "exclude", "extension", skip_extension[i]);
+	}
+
+	/*
+	 * Include each S_R schema (repset-driven mode only).  This drags in
+	 * each schema's non-table dependencies — types, domains, functions,
+	 * sequences, operator classes, ACLs, comments.
+	 *
+	 * In scaffold mode we deliberately skip this loop.  With no
+	 * include-schema rules, pg_dump enters its default mode where the
+	 * standard public-schema special-case applies: CREATE SCHEMA public
+	 * is suppressed because the subscriber's public always pre-exists
+	 * from initdb.  Forcing include-schema for public via --filter
+	 * bypasses that special-case (selectDumpableNamespace in
+	 * src/bin/pg_dump/pg_dump.c) and pg_restore subsequently fails on
+	 * "schema public already exists".  The exclude-table lines below
+	 * still constrain the dump to "no tables", so scaffold mode without
+	 * include-schema produces the desired schemas + non-table-objects
+	 * output.
+	 */
+	if (!scaffold_mode)
+	{
+		foreach(lc, s_r)
+			append_filter_line(&buf, "include", "schema",
+							   (const char *) lfirst(lc));
+	}
+
+	/*
+	 * Surgically prune non-replicated relations inside the included
+	 * schemas.  Without these excludes, sibling tables / matviews / views /
+	 * foreign tables would appear on the subscriber as empty mirrors.
+	 *
+	 * We use "exclude table" not "exclude table_and_children": partitions
+	 * of a replicated parent are themselves in R (via find_all_inheritors
+	 * at repset_add_table time) and would be incorrectly excluded by the
+	 * _and_children form if a sibling parent matched.  Per-relation
+	 * excludes are unambiguous.
+	 */
+	foreach(lc, excluded_tables)
+	{
+		SpockRemoteRelId *rel = (SpockRemoteRelId *) lfirst(lc);
+
+		appendStringInfoString(&buf, "exclude table ");
+		append_quoted_ident(&buf, rel->nspname);
+		appendStringInfoChar(&buf, '.');
+		append_quoted_ident(&buf, rel->relname);
+		appendStringInfoChar(&buf, '\n');
+	}
+
+	elog(LOG, "spock structure sync mode=repset: %d schemas included, %d tables in repsets, %d tables excluded",
+		 list_length(s_r), list_length(repset_tables),
+		 list_length(excluded_tables));
+
+	/*
+	 * Write the buffer.  No fsync: pg_dump reads the file via the kernel
+	 * page cache moments later, which sees buffered writes immediately —
+	 * we are not protecting against power loss here, only against ordering
+	 * bugs that don't apply between fclose() and execve().
+	 */
+	fp = AllocateFile(destfile, "wb");
+	if (fp == NULL)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open filter file \"%s\" for writing: %m",
+						destfile)));
+
+	if (fwrite(buf.data, 1, buf.len, fp) != (size_t) buf.len)
+	{
+		int			save_errno = errno;
+
+		FreeFile(fp);
+		errno = save_errno;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write filter file \"%s\": %m",
+						destfile)));
+	}
+
+	if (FreeFile(fp))
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not close filter file \"%s\": %m",
+						destfile)));
+
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextDelete(build_cxt);
+
+	return true;
+}
+
+/*
+ * dump_structure
+ *		Run pg_dump on the publisher to capture the schemas/tables needed by
+ *		this subscription.
+ *
+ *		On PG 17+ this uses pg_dump's --filter mechanism with a positive
+ *		include list driven by the subscription's repsets (see
+ *		build_filter_file_repset_driven above).  On older PG it falls back to
+ *		repeated --exclude-schema flags.  The caller must arrange for
+ *		filter_file_path to be cleaned up on any exit path; that path is
+ *		used only on PG 17+, but we accept it uniformly so the call site
+ *		doesn't have to branch.
+ *
+ *		Returns true if pg_dump was invoked (caller should proceed with
+ *		restore_structure).  Returns false on PG 17+ when the subscription
+ *		resolves to zero replicated tables — pg_dump is not invoked, and
+ *		the caller must also skip the subsequent restore_structure() calls.
+ *		The pre-17 path always returns true: it cannot detect the
+ *		empty-publisher case without a separate publisher round-trip, and
+ *		its --exclude-schema-driven behaviour for an empty publisher
+ *		matches what spock did before this feature anyway.
+ */
+static bool
 dump_structure(SpockSubscription *sub, const char *destfile,
-			   const char *snapshot)
+			   const char *snapshot, PGconn *origin_conn,
+			   const char *filter_file_path)
 {
 	char	   *dsn;
 	char	   *err_msg;
@@ -219,6 +566,13 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	List	   *args = NIL;
 	char	   *arg;
 	ListCell   *lc;
+
+	Assert(sub != NULL);
+
+#if PG_VERSION_NUM >= 170000
+	Assert(filter_file_path != NULL);
+	Assert(origin_conn != NULL);
+#endif
 
 	dsn = spk_get_connstr((char *) sub->origin_if->dsn, NULL, NULL, &err_msg);
 	if (dsn == NULL)
@@ -234,10 +588,25 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	arg = psprintf("--snapshot=%s", snapshot);
 	args = lappend(args, arg);
 
-	/* Filter out schemas and extensions, skipped globally. */
-	args = list_concat(args, build_exclude_schema_string(sub));
 #if PG_VERSION_NUM >= 170000
-	args = list_concat(args, build_exclude_extension_string());
+	/*
+	 * Construct the filter file.  build_filter_file_repset_driven returns
+	 * false when the subscription's repsets resolve to zero tables; in
+	 * that case there's nothing to dump and we propagate the signal to
+	 * the caller so the matching restore_structure() calls are also
+	 * skipped.  Free the dsn here because we're bailing out before the
+	 * exec_cmd() block that would otherwise consume it.
+	 */
+	if (!build_filter_file_repset_driven(sub, origin_conn, filter_file_path))
+	{
+		free(dsn);
+		return false;
+	}
+	arg = psprintf("--filter=%s", filter_file_path);
+	args = lappend(args, arg);
+#else
+	/* Pre-17 fallback: exclude-by-flag. */
+	args = list_concat(args, build_exclude_schema_string(sub));
 #endif
 
 	/* destination file */
@@ -269,6 +638,7 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	 * Also, some elements in the args list are string literals, so freeing
 	 * the list would be unsafe anyway.
 	 */
+	return true;
 }
 
 static void
@@ -1249,42 +1619,14 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	if (progress_out)
 		*progress_out = adjust_progress_info(origin_conn);
 
-	/* Get tables to copy from origin node. */
+	/*
+	 * Get tables to copy from origin node.  Skip-list filtering happens
+	 * publisher-side now — rows from schemas in sub->skip_schema don't
+	 * traverse the wire.
+	 */
 	tables = spock_get_remote_repset_tables(origin_conn,
-											replication_sets);
-
-	/* Filter out tables from schemas that should be skipped */
-	if (sub->skip_schema && list_length(sub->skip_schema) > 0)
-	{
-		List	   *filtered_tables = NIL;
-		ListCell   *lc_filter;
-
-		foreach(lc_filter, tables)
-		{
-			SpockRemoteRel *remoterel = lfirst(lc_filter);
-			ListCell   *lc_skip;
-			bool		skip_table = false;
-
-			/* Check if this table's schema should be skipped */
-			foreach(lc_skip, sub->skip_schema)
-			{
-				char	   *skip_schema_name = (char *) lfirst(lc_skip);
-
-				if (strcmp(remoterel->nspname, skip_schema_name) == 0)
-				{
-					skip_table = true;
-					break;
-				}
-			}
-
-			/* Add table to filtered list if it shouldn't be skipped */
-			if (!skip_table)
-				filtered_tables = lappend(filtered_tables, remoterel);
-		}
-
-		/* Replace the original tables list with the filtered one */
-		tables = filtered_tables;
-	}
+											replication_sets,
+											sub->skip_schema);
 
 	/* Connect to target node. */
 	target_conn = spock_connect(target_dsn, sub->name, "copy");
@@ -1372,6 +1714,74 @@ spock_sync_tmpfile_cleanup_cb(int code, Datum arg)
 			 tmpfile);
 }
 
+/*
+ * spock_make_sync_tmpfile_path
+ *		Build the absolute path of a per-(database, subscription) structure-sync
+ *		intermediate file in spock_temp_directory.
+ *
+ *		The path is deterministic given (MyDatabaseId, sub_id, suffix), so the
+ *		creation site and the default-branch FATAL site in
+ *		spock_sync_subscription() can both compute it without threading the
+ *		string through any shared state.  Stability also lets pg_dump's --file=
+ *		truncate-on-overwrite handle the cleanup of a leftover artefact from a
+ *		previous failed attempt — the file is simply re-created on retry.
+ *
+ *		Including MyDatabaseId disambiguates two databases in the same cluster
+ *		each having a subscription whose OID happens to collide (sub OIDs are
+ *		per-catalog, not cluster-unique).
+ *
+ *		'buf' must point to a buffer of at least MAXPGPATH bytes.  'suffix' is
+ *		the file extension without the dot, e.g. "dump" or "filter".
+ *
+ *		Caveat: if the subscription is dropped before a successful sync, the
+ *		artefact files orphan in spock_temp_directory until the operator clears
+ *		them manually — there is no drop hook today.  See repset-driven-
+ *		structure-sync.md for the rationale.
+ */
+static void
+spock_make_sync_tmpfile_path(char *buf, Oid sub_id, const char *suffix)
+{
+	Assert(buf != NULL);
+	Assert(suffix != NULL);
+
+	snprintf(buf, MAXPGPATH, "%s/spock-db-%u-sub-%u.%s",
+			 spock_temp_directory, MyDatabaseId, sub_id, suffix);
+	canonicalize_path(buf);
+}
+
+/*
+ * sync_status_step_name
+ *		Translate a SYNC_STATUS_* code into a human-readable phase name.
+ *
+ *		Returns a static string; never NULL.  Unknown codes return
+ *		"unknown" rather than throwing — callers are typically ereport()
+ *		sites that must not themselves error.  When a new SYNC_STATUS_*
+ *		macro is added in spock_node.h, add a matching arm here so the
+ *		operator-facing FATAL message in spock_sync_subscription() names
+ *		the step instead of printing "unknown".
+ *
+ *		It is local at the moment, but may be reused in other reporting messages
+ */
+static const char *
+sync_status_step_name(char status)
+{
+	switch (status)
+	{
+		case SYNC_STATUS_NONE:			return "none";
+		case SYNC_STATUS_INIT:			return "init";
+		case SYNC_STATUS_STRUCTURE:		return "structure sync";
+		case SYNC_STATUS_DATA:			return "data sync";
+		case SYNC_STATUS_CONSTRAINTS:	return "constraint sync";
+		case SYNC_STATUS_SYNCWAIT:		return "sync wait";
+		case SYNC_STATUS_STARTED:		return "sync started";
+		case SYNC_STATUS_CATCHUP:		return "catchup";
+		case SYNC_STATUS_SYNCDONE:		return "sync done";
+		case SYNC_STATUS_READY:			return "ready";
+		case SYNC_STATUS_FAILED:		return "failed";
+	}
+	return "unknown";
+}
+
 void
 spock_sync_subscription(SpockSubscription *sub)
 {
@@ -1419,6 +1829,8 @@ spock_sync_subscription(SpockSubscription *sub)
 		default:
 			{
 				int			old_exception_behaviour = exception_behaviour;
+				char		tmpfile[MAXPGPATH];
+				char		filter_file[MAXPGPATH];
 
 				StartTransactionCommand();
 				originid = replorigin_by_name(sub->slot_name, true);
@@ -1428,13 +1840,18 @@ spock_sync_subscription(SpockSubscription *sub)
 				exception_behaviour = old_exception_behaviour;
 				CommitTransactionCommand();
 
+				/* Reconstruct the artefact paths for the errhint. */
+				spock_make_sync_tmpfile_path(tmpfile, sub->id, "dump");
+				spock_make_sync_tmpfile_path(filter_file, sub->id, "filter");
+
 				ereport(FATAL,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Spock's subscriber %s initialization failed during"
-								" nonrecoverable step (%c). Subscription disabled.",
-								sub->name, status),
-						 errhint("Check server errors and 'exception_log', fix "
-								 "the issue and try the setup again")));
+						 errmsg("subscription \"%s\" initialization failed at non-recoverable step \"%s\"",
+								sub->name, sync_status_step_name(status)),
+						 errdetail("Subscription has been disabled (internal status code '%c').",
+								   status),
+						 errhint("See the previous sync worker's log entries and spock.exception_log for the underlying cause.  Structure-sync intermediates, if produced, are left for inspection at \"%s\" (pg_dump custom archive — use pg_restore --list) and \"%s\" (pg_dump --filter file — plain text).",
+								 tmpfile, filter_file)));
 			}
 			break;
 	}
@@ -1514,13 +1931,22 @@ spock_sync_subscription(SpockSubscription *sub)
 								PointerGetDatum(sub));
 		{
 			char		tmpfile[MAXPGPATH];
+			char		filter_file[MAXPGPATH];
+			bool		structure_dumped = false;
 
-			snprintf(tmpfile, MAXPGPATH, "%s/spock-%d.dump",
-					 spock_temp_directory, MyProcPid);
-			canonicalize_path(tmpfile);
-
-			PG_ENSURE_ERROR_CLEANUP_SUFFIX(spock_sync_tmpfile_cleanup_cb,
-										   CStringGetDatum(tmpfile), _suf);
+			/*
+			 * Name the intermediates by (MyDatabaseId, sub->id) so they're
+			 * stable across worker restarts.  On a retry, pg_dump truncates the
+			 * leftovers.On FATAL exit, the file is deliberately left on disk
+			 * for forensic inspection.
+			 *
+			 * structure_dumped tracks whether dump_structure() actually invoked
+			 * pg_dump.  It returns false on the empty-publisher fastpath (no
+			 * replicated tables), in which case both pre-data and post-data
+			 * restore_structure() calls below are also skipped.
+			 */
+			spock_make_sync_tmpfile_path(tmpfile, sub->id, "dump");
+			spock_make_sync_tmpfile_path(filter_file, sub->id, "filter");
 			{
 				Relation	replorigin_rel;
 
@@ -1549,11 +1975,22 @@ spock_sync_subscription(SpockSubscription *sub)
 					/* Need catalog lookups, hence, transactional context */
 					StartTransactionCommand();
 
-					/* Dump structure to temp storage. */
-					dump_structure(sub, tmpfile, snapshot);
-
-					/* Restore base pre-data structure (types, tables, etc). */
-					restore_structure(sub, tmpfile, "pre-data");
+					/*
+					 * Either ERRORs, the worker exits FATAL while sync->status
+					 * remains committed at SYNC_STATUS_STRUCTURE (set just
+					 * above).
+					 * On restart, upper switch detects the non-recoverable
+					 * status, calls spock_disable_subscription() to disable the
+					 * subscription, and ereports FATAL with a clear
+					 * step-named message.
+					 *
+					 * That mechanism is the project convention for "sync
+					 * worker found subscription in a wedged status".
+					 */
+					structure_dumped = dump_structure(sub, tmpfile, snapshot,
+													  origin_conn, filter_file);
+					if (structure_dumped)
+						restore_structure(sub, tmpfile, "pre-data");
 
 					CommitTransactionCommand();
 				}
@@ -1619,7 +2056,7 @@ spock_sync_subscription(SpockSubscription *sub)
 				}
 
 				/* Restore post-data structure (indexes, constraints, etc). */
-				if (SyncKindStructure(sync->kind))
+				if (SyncKindStructure(sync->kind) && structure_dumped)
 				{
 					elog(INFO, "synchronizing constraints");
 
@@ -1631,8 +2068,9 @@ spock_sync_subscription(SpockSubscription *sub)
 					restore_structure(sub, tmpfile, "post-data");
 				}
 			}
-			PG_END_ENSURE_ERROR_CLEANUP_SUFFIX(spock_sync_tmpfile_cleanup_cb,
-											   CStringGetDatum(tmpfile), _suf);
+			/* Success path: explicitly unlink both intermediates. */
+			spock_sync_tmpfile_cleanup_cb(0,
+										  CStringGetDatum(filter_file));
 			spock_sync_tmpfile_cleanup_cb(0,
 										  CStringGetDatum(tmpfile));
 		}

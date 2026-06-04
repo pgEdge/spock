@@ -32,54 +32,79 @@
 #define atooid(x)  ((Oid) strtoul((x), NULL, 10))
 
 /*
- * Fetch list of tables that are grouped in specified replication sets.
+ * Build a comma-separated list of SQL literals from a List of C strings.
+ *
+ * Used to construct ARRAY[...] payloads for IN/ANY/ALL clauses.  Each
+ * element is run through PQescapeLiteral so the publisher's SQL parser
+ * sees a properly-quoted literal.  An empty input list produces an empty
+ * buffer; callers wanting a syntactically-valid empty array must wrap the
+ * result, e.g. "ARRAY[%s]::text[]".
+ *
+ * PQescapeLiteral allocates with libpq's allocator, not palloc; the
+ * returned buffer is freed with PQfreemem after we copy it into the
+ * StringInfo.  Without this we'd leak ~30 bytes per element into the
+ * backend's libc heap, which adds up across long-lived backends that
+ * sync many subscriptions.
  */
-List *
-spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
+static void
+append_string_list_as_literals(StringInfo buf, PGconn *conn, List *items)
 {
-	PGresult   *res;
-	int			i;
-	List	   *tables = NIL;
 	ListCell   *lc;
 	bool		first = true;
-	StringInfoData query;
-	StringInfoData repsetarr;
 
-	initStringInfo(&repsetarr);
-	foreach(lc, replication_sets)
+	foreach(lc, items)
 	{
-		char	   *repset_name = lfirst(lc);
+		const char *s = (const char *) lfirst(lc);
+		char	   *escaped;
 
 		if (first)
 			first = false;
 		else
-			appendStringInfoChar(&repsetarr, ',');
-
-		appendStringInfo(&repsetarr, "%s",
-						 PQescapeLiteral(conn, repset_name, strlen(repset_name)));
+			appendStringInfoChar(buf, ',');
+		escaped = PQescapeLiteral(conn, s, strlen(s));
+		appendStringInfoString(buf, escaped);
+		PQfreemem(escaped);
 	}
+}
+
+/*
+ * Fetch list of tables that are grouped in specified replication sets.
+ *
+ * skip_schemas, if non-NIL, is applied as a publisher-side filter so the
+ * caller doesn't have to wade through rows it would discard.  Passing NIL
+ * means "return everything in the named repsets" — backward-compatible with
+ * the original two-argument shape.
+ *
+ * Rows are returned sorted by (nspname, relname).  This is a documented
+ * invariant the structure-sync caller relies on for O(1) schema-dedup via
+ * a tail compare; do not drop the ORDER BY without auditing callers.
+ */
+List *
+spock_get_remote_repset_tables(PGconn *conn, List *replication_sets,
+							   List *skip_schemas)
+{
+	PGresult   *res;
+	int			i;
+	List	   *tables = NIL;
+	StringInfoData query;
+	StringInfoData repsetarr;
+	StringInfoData skiparr;
+
+	initStringInfo(&repsetarr);
+	append_string_list_as_literals(&repsetarr, conn, replication_sets);
+
+	initStringInfo(&skiparr);
+	append_string_list_as_literals(&skiparr, conn, skip_schemas);
 
 	initStringInfo(&query);
-	if (spock_remote_function_exists(conn, "spock", "repset_show_table", 2, NULL))
-	{
-		/* Spock 2.0+ */
-		appendStringInfo(&query,
-						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
-						 "       i.has_row_filter, i.relkind, i.relispartition"
-						 "  FROM (SELECT DISTINCT relid FROM spock.tables WHERE set_name = ANY(ARRAY[%s])) t,"
-						 "       LATERAL spock.repset_show_table(t.relid, ARRAY[%s]) i",
-						 repsetarr.data, repsetarr.data);
-	}
-	else
-	{
-		/* Spock 1.x */
-		appendStringInfo(&query,
-						 "SELECT r.oid AS relid, t.nspname, t.relname, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = r.oid AND NOT attisdropped AND attnum > 0) AS att_list,"
-						 "       false AS has_row_filter, r.relkind, r.relispartition"
-						 "  FROM spock.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
-						 " WHERE t.set_name = ANY(ARRAY[%s]) AND r.relname = t.relname AND n.oid = r.relnamespace AND n.nspname = t.nspname",
-						 repsetarr.data);
-	}
+	appendStringInfo(&query,
+					 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
+					 "       i.has_row_filter, i.relkind, i.relispartition"
+					 "  FROM (SELECT DISTINCT relid FROM spock.tables WHERE set_name = ANY(ARRAY[%s])) t,"
+					 "       LATERAL spock.repset_show_table(t.relid, ARRAY[%s]) i"
+					 " WHERE i.nspname <> ALL(ARRAY[%s]::text[])"
+					 " ORDER BY i.nspname, i.relname",
+					 repsetarr.data, repsetarr.data, skiparr.data);
 
 	res = PQexec(conn, query.data);
 	/* TODO: better error message? */
@@ -143,27 +168,12 @@ spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 	}
 
 	initStringInfo(&query);
-	if (spock_remote_function_exists(conn, "spock", "repset_show_table", 2, NULL))
-	{
-		/* Spock 2.0+ */
-		appendStringInfo(&query,
-						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
-						 "       i.has_row_filter, i.relkind, i.relispartition"
-						 "  FROM spock.repset_show_table(%s::regclass, ARRAY[%s]) i",
-						 PQescapeLiteral(conn, relname.data, relname.len),
-						 repsetarr.data);
-	}
-	else
-	{
-		/* Spock 1.x */
-		appendStringInfo(&query,
-						 "SELECT r.oid AS relid, t.nspname, t.relname, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = r.oid AND NOT attisdropped AND attnum > 0) AS att_list,"
-						 "       false AS has_row_filter, r.relkind, r.relispartition"
-						 "  FROM spock.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
-						 " WHERE r.oid = %s::regclass AND t.set_name = ANY(ARRAY[%s]) AND r.relname = t.relname AND n.oid = r.relnamespace AND n.nspname = t.nspname",
-						 PQescapeLiteral(conn, relname.data, relname.len),
-						 repsetarr.data);
-	}
+	appendStringInfo(&query,
+					 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
+					 "       i.has_row_filter, i.relkind, i.relispartition"
+					 "  FROM spock.repset_show_table(%s::regclass, ARRAY[%s]) i",
+					 PQescapeLiteral(conn, relname.data, relname.len),
+					 repsetarr.data);
 
 	res = PQexec(conn, query.data);
 	/* TODO: better error message? */
@@ -336,46 +346,200 @@ spock_remote_node_info(PGconn *conn, char **sysid, char **dbname, char **replica
 	return node;
 }
 
-bool
-spock_remote_function_exists(PGconn *conn, const char *nspname,
-							 const char *proname, int nargs, char *argname)
+
+/*
+ * spock_get_repset_excluded_tables
+ *		Return relations in the given schemas that are NOT in the replication
+ *		set — sibling tables, matviews, views, and foreign tables that would
+ *		otherwise ride along on the broad "include schema" rule in the
+ *		filter file.
+ *
+ * Enumerates relkind IN ('r','p','f','m','v') so pg_dump's "include
+ * schema S" doesn't silently carry along non-replicated relations of any
+ * dump-able kind.
+ *
+ * Caller must have set the connection's snapshot to the slot's exported
+ * snapshot before calling (the structure-sync caller does this via the
+ * same origin_conn that fed spock_get_remote_repset_tables).  Empty
+ * `schemas` or `repset_tables` is a legitimate input (a subscription
+ * being initialised against a publisher that has no replicated tables
+ * yet) and short-circuits to an empty result — see fastpath below.
+ *
+ * Returns a List of palloc'd SpockRemoteRelId pointers in
+ * CurrentMemoryContext.
+ */
+List *
+spock_get_repset_excluded_tables(PGconn *conn, List *schemas,
+								 List *repset_tables)
 {
 	PGresult   *res;
-	const char *values[2];
-	Oid			types[2] = {TEXTOID, TEXTOID};
-	bool		ret;
 	StringInfoData query;
+	StringInfoData schemaarr;
+	List	   *result = NIL;
+	ListCell   *lc;
+	bool		first;
+	int			i;
 
-	values[0] = proname;
-	values[1] = nspname;
+	/*
+	 * Fastpath when there are no schemas to look in.  With no input
+	 * schemas, the answer is trivially NIL — and the release-build SQL
+	 * would degenerate to "ANY(ARRAY[])" over pg_class, also returning
+	 * nothing, just less informatively.  Defensively short-circuit.
+	 *
+	 * Note: an empty `repset_tables` is NOT a fastpath here.  It means
+	 * "every dump-able relation in `schemas` should be excluded" —
+	 * used by the scaffold-mode caller in build_filter_file_repset_driven()
+	 * when R is empty but the publisher has user schemas to scaffold.
+	 * In that case the NOT EXISTS anti-join below is omitted and the
+	 * SELECT returns every relation in `schemas`.
+	 */
+	if (list_length(schemas) == 0)
+		return NIL;
+
+	/* Build the schema-name array literal. */
+	initStringInfo(&schemaarr);
+	appendStringInfoString(&schemaarr, "ARRAY[");
+	first = true;
+	foreach(lc, schemas)
+	{
+		const char *nspname = (const char *) lfirst(lc);
+		char	   *escaped;
+
+		if (!first)
+			appendStringInfoChar(&schemaarr, ',');
+		first = false;
+
+		escaped = PQescapeLiteral(conn, nspname, strlen(nspname));
+		appendStringInfoString(&schemaarr, escaped);
+		PQfreemem(escaped);
+	}
+	appendStringInfoString(&schemaarr, "]::text[]");
+
+	/*
+	 * Anti-join the dump-able relations in the included schemas against R
+	 * inlined as a VALUES set.  Genuinely huge repsets get hash-anti-joined
+	 * on the publisher side so the per-table cost stays bounded.
+	 *
+	 * When repset_tables is empty (scaffold mode), we skip the NOT EXISTS
+	 * clause entirely — the SELECT then returns every dump-able relation
+	 * in `schemas` because there's nothing to anti-join against.  Callers
+	 * use that result to emit "exclude table" lines for every table in
+	 * scaffold-mode schemas.
+	 */
+	initStringInfo(&query);
+	appendStringInfo(&query,
+		"SELECT n.nspname, c.relname\n"
+		"  FROM pg_catalog.pg_class c\n"
+		"  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace\n"
+		" WHERE n.nspname = ANY(%s)\n"
+		"   AND c.relkind IN ('r','p','f','m','v')",
+		schemaarr.data);
+
+	if (list_length(repset_tables) > 0)
+	{
+		appendStringInfoString(&query,
+			"\n   AND NOT EXISTS (\n"
+			"         SELECT 1 FROM (VALUES ");
+
+		first = true;
+		foreach(lc, repset_tables)
+		{
+			SpockRemoteRel *rel = (SpockRemoteRel *) lfirst(lc);
+			char	   *esc_ns;
+			char	   *esc_rel;
+
+			if (!first)
+				appendStringInfoChar(&query, ',');
+			first = false;
+
+			esc_ns = PQescapeLiteral(conn, rel->nspname, strlen(rel->nspname));
+			esc_rel = PQescapeLiteral(conn, rel->relname, strlen(rel->relname));
+			appendStringInfo(&query, "(%s,%s)", esc_ns, esc_rel);
+			PQfreemem(esc_ns);
+			PQfreemem(esc_rel);
+		}
+
+		appendStringInfoString(&query,
+			") AS r(s, t)\n"
+			"         WHERE r.s = n.nspname AND r.t = c.relname\n"
+			"       )");
+	}
+
+	res = PQexec(conn, query.data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		elog(ERROR, "could not enumerate excluded tables: %s",
+			 PQresultErrorMessage(res));
+
+	for (i = 0; i < PQntuples(res); i++)
+	{
+		SpockRemoteRelId *rid = palloc0(sizeof(SpockRemoteRelId));
+
+		rid->nspname = pstrdup(PQgetvalue(res, i, 0));
+		rid->relname = pstrdup(PQgetvalue(res, i, 1));
+		result = lappend(result, rid);
+	}
+
+	PQclear(res);
+	return result;
+}
+
+
+/*
+ * spock_get_remote_user_schemas
+ *		Enumerate non-system, non-spock-internal schemas on the publisher.
+ *
+ *		Used by build_filter_file_repset_driven() when R is empty (the
+ *		operator created the subscription without any tables in the
+ *		named repsets).  The result becomes the scaffold-mode S_R: the
+ *		caller writes "include schema" lines for these names plus
+ *		"exclude table" lines for every relation in them, so pg_dump
+ *		emits the publisher's schema scaffold (types, functions,
+ *		sequences, ACLs, comments) without any tables.
+ *
+ *		The publisher-side WHERE clause hard-excludes:
+ *		  - System schemas matching `pg_%`
+ *		  - `information_schema`
+ *		  - `spock`, `lolor`, `snowflake` (the static skip set duplicated
+ *		    in src/spock_node.c — kept in sync by inspection)
+ *		Plus any per-subscription `skip_schemas` the caller forwards.
+ *
+ *		Returns a List of palloc'd C strings (nspname) in
+ *		CurrentMemoryContext, sorted by nspname for deterministic filter
+ *		file output across runs.
+ */
+List *
+spock_get_remote_user_schemas(PGconn *conn, List *skip_schemas)
+{
+	PGresult   *res;
+	int			i;
+	List	   *schemas = NIL;
+	StringInfoData query;
+	StringInfoData skiparr;
+
+	Assert(conn != NULL);
+
+	initStringInfo(&skiparr);
+	append_string_list_as_literals(&skiparr, conn, skip_schemas);
 
 	initStringInfo(&query);
 	appendStringInfo(&query,
-					 "SELECT oid "
-					 "  FROM pg_catalog.pg_proc "
-					 " WHERE proname = $1 "
-					 "   AND pronamespace = "
-					 "       (SELECT oid "
-					 "          FROM pg_catalog.pg_namespace "
-					 "         WHERE nspname = $2)");
+		"SELECT n.nspname\n"
+		"  FROM pg_catalog.pg_namespace n\n"
+		" WHERE n.nspname NOT LIKE 'pg\\_%%' ESCAPE '\\'\n"
+		"   AND n.nspname <> 'information_schema'\n"
+		"   AND n.nspname NOT IN ('spock','lolor','snowflake')\n"
+		"   AND n.nspname <> ALL(ARRAY[%s]::text[])\n"
+		" ORDER BY n.nspname",
+		skiparr.data);
 
-	if (nargs >= 0)
-		appendStringInfo(&query,
-						 "   AND pronargs = '%d'", nargs);
-	if (argname != NULL)
-		appendStringInfo(&query,
-						 "   AND %s = ANY (proargnames)",
-						 PQescapeLiteral(conn, argname, strlen(argname)));
-
-	res = PQexecParams(conn, query.data, 2, types, values, NULL, NULL, 0);
-
+	res = PQexec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		elog(ERROR, "could not fetch remote function info: %s\n",
-			 PQerrorMessage(conn));
+		elog(ERROR, "could not enumerate publisher user schemas: %s",
+			 PQresultErrorMessage(res));
 
-	ret = PQntuples(res) > 0;
+	for (i = 0; i < PQntuples(res); i++)
+		schemas = lappend(schemas, pstrdup(PQgetvalue(res, i, 0)));
 
 	PQclear(res);
-
-	return ret;
+	return schemas;
 }
