@@ -2810,12 +2810,6 @@ get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
  *                        WAL stream we have processed, flush/write are the
  *                        equivalent positions returned by get_flush_position
  *                        once the local commit is durable).
- *
- * Sending the local LSN as the remote position (the previous behaviour of
- * this function) poisons the publisher's slot->confirmed_flush_lsn with a
- * value from a different WAL space and silently drops every transaction
- * after a fail-over until the publisher's own WAL grows past the bogus
- * value.
  */
 static void
 append_feedback_position(XLogRecPtr local_commit_lsn, XLogRecPtr remote_commit_lsn)
@@ -2861,11 +2855,7 @@ append_feedback_position(XLogRecPtr local_commit_lsn, XLogRecPtr remote_commit_l
  * and release any whose LOCAL commit has been flushed on the local sync
  * standby.  For each released entry we overwrite the caller's *recvpos /
  * *writepos / *flushpos with the entry's REMOTE positions -- those are
- * what go into the standby-status reply to the publisher.  Mixing the two
- * LSN spaces (the previous behaviour) caused the publisher to write a
- * subscriber-local LSN into the slot's confirmed_flush_lsn, which after a
- * fail-over made the new primary resume from a non-existent publisher
- * position and silently drop every transaction in the window.
+ * what go into the standby-status reply to the publisher.
  */
 static void
 get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos, XLogRecPtr *flushpos, XLogRecPtr *max_recvpos)
