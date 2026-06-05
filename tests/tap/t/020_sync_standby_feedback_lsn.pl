@@ -238,6 +238,80 @@ is($cf_nonzero, 't',
     "publisher's confirmed_flush_lsn advanced past 0/0 (feedback is flowing)");
 
 # ==========================================================================
+# 10. Failover scenario the original bug surfaced through: stop the
+#     subscriber, promote its sync standby, and verify no writes from the
+#     publisher are missing.  Before the fix the publisher's slot was
+#     poisoned with a subscriber-local LSN, so after promotion the new
+#     primary would resume from a wrong position and silently drop the
+#     window of recent commits.
+# ==========================================================================
+psql_or_bail(1, "INSERT INTO feedback_test SELECT g, 'pre_failover_'||g "
+              . "FROM generate_series(21, 40) g");
+
+my $pre_failover_applied = wait_until(60, 2, sub {
+    my $v = scalar_query(2, "SELECT v FROM feedback_test WHERE id = 40");
+    $v =~ s/\s+//g;
+    return $v eq 'pre_failover_40';
+});
+ok($pre_failover_applied, 'pre-failover batch (ids 21..40) replicated to n2');
+
+my $expected_count = scalar_query(1,
+    "SELECT count(*) FROM feedback_test");
+$expected_count =~ s/\s+//g;
+
+# Wait briefly for n2_standby to flush the latest commits (synchronous
+# replication makes this almost immediate, but a small grace handles the
+# walreceiver round-trip).
+sleep(2);
+
+# Stop the subscriber (n2).  Use fast shutdown so the apply worker exits
+# cleanly before the standby is promoted.
+diag("Stopping n2 (subscriber) to simulate failover...");
+system("$pg_bin/pg_ctl stop -D $node_dirs->[1] -m fast >> /dev/null 2>&1");
+sleep(3);
+
+diag("Promoting n2_standby...");
+system("$pg_bin/pg_ctl promote -D $standby_datadir >> /dev/null 2>&1");
+
+my $promoted = wait_until(30, 2, sub {
+    my $r = qport($pg_bin, $host, $standby_port,
+                  $dbname, $db_user, "SELECT pg_is_in_recovery()");
+    $r =~ s/\s+//g;
+    return $r eq 'f';
+});
+ok($promoted, 'n2_standby promoted to primary (no longer in recovery)');
+
+# The decisive check: every row the publisher committed before the failover
+# must be present on the promoted standby.  With the bug, the publisher's
+# slot.confirmed_flush_lsn pointed at a subscriber-local LSN; after
+# promotion the new primary would resume from there and miss recent
+# commits.  With the fix, confirmed_flush_lsn tracks the publisher's WAL,
+# so every committed row is durable on the standby before failover.
+my $standby_count = qport($pg_bin, $host, $standby_port,
+                          $dbname, $db_user,
+                          "SELECT count(*) FROM feedback_test");
+$standby_count =~ s/\s+//g;
+is($standby_count, $expected_count,
+    "promoted standby has all $expected_count publisher rows "
+  . "(no writes lost across failover)");
+
+# Spot-check the boundary rows so a wrong count is not masked by an off-by-one
+my $boundary_ok = qport($pg_bin, $host, $standby_port,
+                        $dbname, $db_user,
+                        "SELECT bool_and(v IS NOT NULL) FROM feedback_test "
+                      . "WHERE id IN (1, 20, 21, 40)");
+$boundary_ok =~ s/\s+//g;
+is($boundary_ok, 't',
+    'promoted standby has the first, last, and failover-boundary rows');
+
+# Stop the promoted standby so destroy_cluster can run; n2 is already down.
+system("$pg_bin/pg_ctl stop -D $standby_datadir -m immediate >> /dev/null 2>&1");
+
+# Restart n2 so destroy_cluster can connect cleanly (matches 018's pattern).
+system("$pg_bin/postgres -D $node_dirs->[1] >> /dev/null 2>&1 &");
+sleep(10);
+
+# ==========================================================================
 # Cleanup
 # ==========================================================================
 
