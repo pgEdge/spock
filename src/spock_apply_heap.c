@@ -914,6 +914,104 @@ init_tuple_with_defaults(SpockTupleData *oldtup, TupleDesc tupdesc)
 }
 
 /*
+ * Insert-first conflict detection (Tier 3 prototype) for spock.check_all_uc_indexes.
+ *
+ * Instead of proactively scanning every unique index before each INSERT (which
+ * is pure waste when there is no conflict -- the common case, e.g. resync), we
+ * insert the tuple SPECULATIVELY and let unique-index maintenance surface a
+ * conflict (modeled on ExecInsert's ON CONFLICT path).  Returns true if a unique
+ * conflict was detected -- the speculative tuple has been removed and the caller
+ * must locate the conflicting row and resolve it; false if the row was inserted
+ * cleanly (no proactive scan paid).
+ *
+ * arbiterIndexes must list ALL unique indexes on the relation so a conflict on
+ * any of them is reported (via noDupErr) rather than raising a duplicate-key
+ * error.  Only used for plain tables (no row triggers, not partitioned); the
+ * caller guarantees that.
+ */
+static List *
+spock_speculative_insert(ApplyExecutionData *edata, TupleTableSlot *slot,
+						 List *arbiterIndexes)
+{
+	EState		   *estate = edata->estate;
+	ResultRelInfo  *relinfo = edata->targetRelInfo;
+	Relation		rel = relinfo->ri_RelationDesc;
+	uint32			specToken;
+	bool			specConflict = false;
+	List		   *recheckIndexes;
+
+	/* Mirror ExecSimpleRelationInsert's pre-insert work for correctness. */
+	if (rel->rd_att->constr && rel->rd_att->constr->has_generated_stored)
+		ExecComputeStoredGenerated(relinfo, estate, slot, CMD_INSERT);
+	if (rel->rd_att->constr)
+		ExecConstraints(relinfo, slot, estate);
+
+	relinfo->ri_onConflictArbiterIndexes = arbiterIndexes;
+
+	specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
+	table_tuple_insert_speculative(rel, slot, estate->es_output_cid, 0, NULL,
+								   specToken);
+	recheckIndexes = ExecInsertIndexTuples(relinfo, slot, estate,
+										   false,	/* update */
+										   true,	/* noDupErr -> report, don't error */
+										   &specConflict, arbiterIndexes, false);
+	table_tuple_complete_speculative(rel, slot, specToken, !specConflict);
+	SpeculativeInsertionLockRelease(GetCurrentTransactionId());
+
+	if (!specConflict)
+	{
+		/* Inserted cleanly. */
+		list_free(recheckIndexes);
+		return NIL;
+	}
+
+	/*
+	 * Conflict: the speculative tuple has been removed.  recheckIndexes holds
+	 * the unique index(es) that flagged the conflict -- return it so the caller
+	 * can fetch the conflicting row from just those indexes instead of
+	 * re-scanning every unique index.  Caller frees the list.
+	 */
+	return recheckIndexes;
+}
+
+/*
+ * Find the local tuple conflicting with remoteslot using a known set of unique
+ * indexes (e.g. the recheckIndexes flagged by spock_speculative_insert), rather
+ * than scanning all usable unique indexes.  Sets *indexoid to the match.
+ */
+static bool
+FindReplTupleByIndexList(ApplyExecutionData *edata, Relation localrel,
+						 List *indexoidlist, TupleTableSlot *remoteslot,
+						 TupleTableSlot **localslot, Oid *indexoid)
+{
+	ListCell   *lc;
+	bool		found = false;
+
+	*indexoid = InvalidOid;
+
+	foreach(lc, indexoidlist)
+	{
+		Relation	idxrel;
+
+		*indexoid = lfirst_oid(lc);
+		idxrel = index_open(*indexoid, RowExclusiveLock);
+
+		found = SpockRelationFindReplTupleByIndex(edata->estate, localrel, idxrel,
+												  LockTupleExclusive,
+												  remoteslot, *localslot);
+		if (found)
+		{
+			/* Don't release lock until commit. */
+			index_close(idxrel, NoLock);
+			break;
+		}
+		index_close(idxrel, RowExclusiveLock);
+	}
+
+	return found;
+}
+
+/*
  * Handle insert via low level api.
  */
 void
@@ -930,6 +1028,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	ResultRelInfo *relinfo;
 	bool		found;
 	Oid			idxused;
+	List	   *arbiterIndexes = NIL;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -958,19 +1057,39 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	 * wait_for_previous_transaction() call here?
 	 */
 
-	/* Find the current local tuple. */
+	/* Find the current local tuple by PK / replica identity. */
 	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
 									edata->targetRel->idxoid,
 									remoteslot, &localslot,
 									true);
 
-	if (check_all_uc_indexes &&
-		!found)
+	/*
+	 * For check_all_uc_indexes, prefer insert-first conflict detection on plain
+	 * tables (no row triggers, not partitioned): build the arbiter list of all
+	 * unique indexes so the speculative INSERT can surface a conflict instead of
+	 * a proactive per-row scan.
+	 */
+	if (check_all_uc_indexes && !found && !rel->hasTriggers &&
+		!relinfo->ri_RelationDesc->rd_rel->relispartition)
 	{
-		/*
-		 * Handle the special case of looking through all unique indexes
-		 * defined on the relation.
-		 */
+		int		i;
+
+		for (i = 0; i < relinfo->ri_NumIndices; i++)
+		{
+			Relation	idx = relinfo->ri_IndexRelationDescs[i];
+
+			if (idx->rd_index->indisunique && idx->rd_index->indimmediate)
+				arbiterIndexes = lappend_oid(arbiterIndexes,
+											 RelationGetRelid(idx));
+		}
+	}
+
+	/*
+	 * Ineligible for the speculative path (triggers/partitioned, or no unique
+	 * index) but the GUC is on: fall back to the original proactive scan.
+	 */
+	if (check_all_uc_indexes && !found && arbiterIndexes == NIL)
+	{
 		found = FindReplTupleByUCIndex(edata, relinfo->ri_RelationDesc,
 									   remoteslot, &localslot, &idxused);
 	}
@@ -993,17 +1112,59 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	else
 	{
 		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
+		List	   *conflictidx = NIL;
 
 		/* Clear out any old value for when logging it in the resolutions table. */
 		exception_log->local_tuple = NULL;
 
-		/* Make sure that any user-supplied code runs as the table owner. */
+		/*
+		 * Insert the row as the table owner.  With usable unique indexes we
+		 * insert speculatively so unique-index maintenance surfaces a conflict
+		 * without a proactive scan (insert-first); otherwise a plain INSERT.
+		 * spock_speculative_insert returns the offending unique index(es) on
+		 * conflict, or NIL when the row was inserted cleanly.
+		 */
 		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
-		/* Do the actual INSERT */
-		ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
-		/* Switch back to the original user */
+		if (arbiterIndexes != NIL)
+			conflictidx = spock_speculative_insert(edata, remoteslot, arbiterIndexes);
+		else
+			ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
 		RestoreUserContext(&ucxt);
+
+		if (conflictidx != NIL)
+		{
+			/*
+			 * Secondary-unique conflict: the speculative tuple was removed.
+			 * Locate the conflicting row from just the offending index(es) and
+			 * resolve it (INSERT -> UPDATE) via spock's conflict resolver.
+			 */
+			found = FindReplTupleByIndexList(edata, relinfo->ri_RelationDesc,
+											 conflictidx, remoteslot,
+											 &localslot, &idxused);
+			list_free(conflictidx);
+
+			if (found)
+			{
+				SpockTupleData oldtup;
+
+				init_tuple_with_defaults(&oldtup, RelationGetDescr(rel->rel));
+				spock_handle_conflict_and_apply(rel, estate, localslot,
+												remoteslot, &oldtup, newtup,
+												relinfo, &epqstate,
+												idxused, true);
+			}
+			else
+			{
+				/* Conflict vanished (concurrent delete): plain INSERT. */
+				SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+				ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
+				RestoreUserContext(&ucxt);
+			}
+		}
 	}
+
+	if (arbiterIndexes != NIL)
+		list_free(arbiterIndexes);
 
 	/* Cleanup */
 	ExecCloseIndices(edata->targetRelInfo);
