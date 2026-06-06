@@ -455,7 +455,7 @@ These parameters are specific to the Spock replication extension and control wha
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| spock.forward_origins | string | null | Comma-separated list of origin name patterns to forward. Accepts the literal keyword `all` (forward every foreign origin), exact `pg_replication_origin.roname` values, or glob patterns containing `*`. Resolved once at slot start by walking `pg_replication_origin` and building a sorted RepOriginId array used as a `bsearch` fast path. See `spock.sub_create` in the user docs for full semantics. |
+| spock.forward_origins | string | null | Comma-separated list of origin name patterns to forward. Accepts the literal keyword `all` (forward every foreign origin), exact names, or glob patterns containing `*`. Names are matched against `pg_replication_origin.roname` AND `spock.node.node_name`; the union of matching IDs is resolved once at slot start into a sorted array used as a `bsearch` fast path. Both catalogs are walked because spock's apply writes WAL with `spock.node.node_id` whereas non-spock extensions writing on the same instance use `pg_replication_origin.roident`. See `spock.sub_create` in the user docs for full semantics. |
 | spock.replication_set_names | string | null | Comma-separated list of replication set names to subscribe to. If specified, only changes in the named replication sets are sent. |
 | spock.replicate_only_table | string | null | Qualified table name (schema.table) to replicate. If specified, only changes to this single table are sent. Used during initial table synchronization. |
 | hooks.setup_function | string | null | Legacy parameter for backwards compatibility with Spock 1.x. Currently ignored. |

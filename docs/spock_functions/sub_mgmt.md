@@ -54,18 +54,24 @@ Parameters include:
     - an exact `pg_replication_origin.roname` (e.g.
       `pgactive_7637663063971119106_0_16385_16385_`) — forward only
       transactions tagged with that specific replication origin;
-    - a glob pattern containing `*` (e.g. `pgactive_*`) — forward
-      transactions whose origin name matches the pattern.
+    - an exact `spock.node.node_name` (e.g. `ca1`) — forward only
+      transactions whose original producer is that spock node;
+    - a glob pattern containing `*` (e.g. `pgactive_*`, `ca*`) — wildcard
+      match against either of the two name spaces above.
 
   Multiple entries are combined with logical OR. The default is `{}` (the
   empty array), meaning only locally-originated transactions are forwarded.
 
-  Patterns are resolved once at slot start by walking
-  `pg_replication_origin` and matching each origin's name against the
-  configured entries; the resolved replication-origin IDs are used for a
-  fast `bsearch` on the hot path. Origins created after the slot starts
-  are not picked up retroactively — restart the subscription if a new
-  origin needs to be matched.
+  Patterns are resolved once at slot start by walking both
+  `pg_replication_origin` (matching `roname`) and `spock.node` (matching
+  `node_name`); the union of resolved IDs is stored as a sorted array and
+  consulted on the hot path with `bsearch`. Two catalogs are walked
+  because spock's apply tags WAL records with `spock.node.node_id`,
+  whereas non-spock extensions running on the same instance (e.g.
+  pgactive) tag WAL with `pg_replication_origin.roident`. A single
+  `forward_origins` value can mix both pattern styles. Origins or nodes
+  added after the slot starts are not picked up retroactively — restart
+  the subscription if new ones need to be matched.
 
   ### Example: bridging a pgactive cluster through a spock node
 
@@ -87,6 +93,38 @@ Parameters include:
   gives a clean, loop-free bidirectional bridge: pgactive-origin traffic
   flows through the bridge subscription, and spock-cluster traffic flows
   through the spock peer mesh, with neither path duplicating the other.
+
+  ### Example: bridging two spock clusters through a shared bridge node
+
+  Two distinct spock clusters can share a single bridge node — one spock
+  instance that is a member of both clusters — and route cross-cluster
+  traffic through it without merging the clusters' peer meshes. The
+  asymmetric `forward_origins` configuration that gives each row exactly
+  one bridge-to-cluster path is:
+
+  | Subscription                                  | `forward_origins`               |
+  |-----------------------------------------------|---------------------------------|
+  | `bridge` ← `ca1`, `ca2`, `cb1`, `cb2`          | `ARRAY[]::text[]` (local only)  |
+  | `ca1` ↔ `ca2` (cluster A peer mesh)            | `ARRAY[]::text[]`               |
+  | `cb1` ↔ `cb2` (cluster B peer mesh)            | `ARRAY[]::text[]`               |
+  | `ca1`, `ca2` ← `bridge` (forward cluster B)    | `ARRAY['cb1', 'cb2']`           |
+  | `cb1`, `cb2` ← `bridge` (forward cluster A)    | `ARRAY['ca1', 'ca2']`           |
+
+  Patterns reference `spock.node.node_name` directly, so adding a new
+  node to cluster B simply means appending its name (or adopting a glob
+  like `cb*`) to the relevant subscriptions. Two operational notes for
+  this topology:
+
+  1. **Use lowercase, cluster-distinctive node names.** Spock's internal
+     `gen_slot_name()` silently replaces any character outside `[a-z0-9_]`
+     with `_` when forming slot and origin names. Node names like `A1`
+     and `B1` therefore collapse to the same string (`_1`) and collide;
+     `ca1` / `cb1` do not.
+  2. **Node names must be globally unique across all bridged clusters.**
+     The resolved set keys on `spock.node.node_id` but the user-facing
+     pattern keys on `node_name`; two nodes with the same name in
+     different clusters cannot be told apart by a `forward_origins`
+     pattern.
 - `apply_delay` specifies how long to delay replication; the default is `0`
   seconds.
 - set `force_text_transfer` to `true` to force the provider to replicate all
