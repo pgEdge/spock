@@ -160,6 +160,7 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 				entry->delta_apply_functions[entry->attmap[i]] = dfunc;
 				Assert(entry->delta_apply_functions[entry->attmap[i]] != InvalidOid);
 				entry->has_delta_columns = true;
+				pfree(seclabel);
 			}
 			else
 			{

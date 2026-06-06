@@ -562,7 +562,21 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 
 		loc_value = heap_getattr(TTS_TUP(localslot), remoteattnum + 1, tupdesc,
 								 &loc_isnull);
-		Assert(!loc_isnull);
+
+		/*
+		 * The local base value is required to compute the delta. It must not be
+		 * NULL (delta_apply columns are required to be NOT NULL), but constraints
+		 * can drift across nodes or predate the constraint, so guard at runtime
+		 * rather than only via Assert - otherwise a non-assert build would call
+		 * the delta function with an invalid Datum.
+		 */
+		if (loc_isnull)
+			ereport(ERROR,
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+					errmsg("delta apply column can't operate NULL values"),
+					errdetail("attribute \"%s\" (%d) of the local tuple is NULL",
+							  NameStr(TupleDescAttr(tupdesc, remoteattnum)->attname),
+							  remoteattnum + 1)));
 
 		result = OidFunctionCall3Coll(rel->delta_apply_functions[remoteattnum],
 									  InvalidOid, oldtup->values[remoteattnum],

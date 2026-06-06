@@ -344,7 +344,10 @@ autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
 		 */
 		return false;
 
-	/* Only process DDL statements and SECURITY LABEL's */
+	/*
+	 * Process DDL and all SECURITY LABELs (every provider, not just spock) -
+	 * participating nodes must therefore have the same label providers loaded.
+	 */
 	if (GetCommandLogLevel(parsetree) != LOGSTMT_DDL &&
 		!IsA(parsetree, SecLabelStmt))
 		return false;

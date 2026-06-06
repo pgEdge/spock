@@ -990,11 +990,13 @@ spock_object_relabel(const ObjectAddress *object, const char *seclabel)
 		elog(ERROR, "spock extension is not created yet");
 
 	/*
-	 * Check: classId must be pg_class, objectId should an existing table and
-	 * attnum must be more than 0.
+	 * Check: classId must be pg_class, the object must be an existing plain
+	 * table, and attnum must be greater than 0. delta_apply reads heap tuples,
+	 * so reject views, matviews, sequences, indexes, foreign/partitioned
+	 * tables, composite types, etc.
 	 */
 	if (object->classId != RelationRelationId || object->objectSubId <= 0 ||
-		!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(object->objectId)))
+		get_rel_relkind(object->objectId) != RELKIND_RELATION)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("spock provider does not support labels on %s",
