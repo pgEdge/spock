@@ -44,11 +44,49 @@ Parameters include:
   `false`.
 - `sync_data` specifies if Spock should synchronize data from provider to the
   subscriber; the default is `true`.
-- `forward_origins` is an array of origin names to forward. Currently, the
-  only supported values are an empty array meaning don't forward any changes
-  that didn't originate on provider node (this is useful for two-way
-  replication between the nodes), or `{all}` which means replicate all changes
-  no matter what is their origin. The default is `{}` (an empty array, meaning only local changes are forwarded).
+- `forward_origins` is an array of origin name patterns that controls which
+  foreign-origin transactions the provider forwards to this subscription.
+  Locally-originated transactions on the provider are always forwarded.
+  Each array entry is interpreted as one of:
+
+    - the literal keyword `all` — forward every foreign-origin transaction
+      (this preserves the historical "forward everything" behaviour);
+    - an exact `pg_replication_origin.roname` (e.g.
+      `pgactive_7637663063971119106_0_16385_16385_`) — forward only
+      transactions tagged with that specific replication origin;
+    - a glob pattern containing `*` (e.g. `pgactive_*`) — forward
+      transactions whose origin name matches the pattern.
+
+  Multiple entries are combined with logical OR. The default is `{}` (the
+  empty array), meaning only locally-originated transactions are forwarded.
+
+  Patterns are resolved once at slot start by walking
+  `pg_replication_origin` and matching each origin's name against the
+  configured entries; the resolved replication-origin IDs are used for a
+  fast `bsearch` on the hot path. Origins created after the slot starts
+  are not picked up retroactively — restart the subscription if a new
+  origin needs to be matched.
+
+  ### Example: bridging a pgactive cluster through a spock node
+
+  A spock subscriber that runs alongside a `pgactive` mesh on the same
+  node can forward only pgactive-originated transactions while ignoring
+  spock-cluster-internal traffic by using a glob pattern that matches the
+  pgactive replication-origin naming convention:
+
+  ```sql
+  SELECT spock.sub_create(
+      subscription_name := 'sub_spock_from_bridge',
+      provider_dsn      := 'host=bridge ...',
+      forward_origins   := ARRAY['pgactive_*']
+  );
+  ```
+
+  Combined with `forward_origins := ARRAY[]::text[]` on the reverse-
+  direction subscription (bridge subscribing back from spock peers), this
+  gives a clean, loop-free bidirectional bridge: pgactive-origin traffic
+  flows through the bridge subscription, and spock-cluster traffic flows
+  through the spock peer mesh, with neither path duplicating the other.
 - `apply_delay` specifies how long to delay replication; the default is `0`
   seconds.
 - set `force_text_transfer` to `true` to force the provider to replicate all
@@ -119,11 +157,13 @@ Parameters:
   the provider to the subscriber; the default is `false`.
 - `sync_data` tells Spock to synchronize data from provider to the
   subscriber; the default is `true`.
-- `forward_origins` is an array of origin names to forward. Currently, the
-  only supported values are an empty array meaning don't forward any changes
-  that didn't originate on the provider node (this is useful for two-way
-  replication between the nodes), or `{all}` which means replicate all
-  changes regardless of their origin. The default is `{}` (an empty array, meaning only local changes are forwarded).
+- `forward_origins` is an array of origin name patterns controlling which
+  foreign-origin transactions are forwarded by the provider. Accepted
+  forms are the literal keyword `all`, exact replication-origin names, and
+  glob patterns containing `*`. The default is `{}` (only locally-
+  originated transactions are forwarded). See the matching section under
+  `spock.sub_create` above for full semantics, including the
+  pgactive-bridge example.
 - `apply_delay` is the number of seconds to delay replication; the default
   is `0` seconds.
 - `force_text_transfer` forces the provider to replicate all columns using

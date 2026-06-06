@@ -455,7 +455,7 @@ These parameters are specific to the Spock replication extension and control wha
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| spock.forward_origins | string | null | Comma-separated list of replication origin names to forward. Currently only the special value "all" is accepted. |
+| spock.forward_origins | string | null | Comma-separated list of origin name patterns to forward. Accepts the literal keyword `all` (forward every foreign origin), exact `pg_replication_origin.roname` values, or glob patterns containing `*`. Resolved once at slot start by walking `pg_replication_origin` and building a sorted RepOriginId array used as a `bsearch` fast path. See `spock.sub_create` in the user docs for full semantics. |
 | spock.replication_set_names | string | null | Comma-separated list of replication set names to subscribe to. If specified, only changes in the named replication sets are sent. |
 | spock.replicate_only_table | string | null | Qualified table name (schema.table) to replicate. If specified, only changes to this single table are sent. Used during initial table synchronization. |
 | hooks.setup_function | string | null | Legacy parameter for backwards compatibility with Spock 1.x. Currently ignored. |
