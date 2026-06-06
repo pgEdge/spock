@@ -11,15 +11,16 @@ use Time::HiRes qw(time);
 # =============================================================================
 # spock.check_all_uc_indexes ON makes the INSERT apply path scan the table's
 # unique indexes (to find/resolve a conflicting row). This test isolates that
-# cost on a wide, multi-unique-index table under a bulk load, running exactly
-# three scenarios:
+# cost on a customer-shaped wide table: a few multi-column UNIQUE constraints
+# that share a leading column, plus many ordinary non-unique indexes (all of
+# which are still maintained on every insert). It runs three scenarios:
 #
 #   * GUC-OFF          : non-colliding inserts, GUC off -> no scan (baseline).
 #   * GUC-ON           : non-colliding inserts, GUC on  -> full not-found scan
 #                        of every unique index per insert. GUC-ON/GUC-OFF is
 #                        the scan cost.
 #   * GUC-ON+CONFLICT  : inserts colliding with seeded rows on the LAST unique
-#                        index, GUC on -> full scan + INSERT->UPDATE resolution.
+#                        compound index, GUC on -> scan + INSERT->UPDATE resolve.
 #
 # Runs one-directional (n1 -> n2): n2 is seeded with rows n1 lacks so the
 # conflict inserts succeed on n1 but conflict on apply.
@@ -33,11 +34,18 @@ use Time::HiRes qw(time);
 # =============================================================================
 
 my $NROWS   = $ENV{SPOCK_UC_TEST_ROWS}    // 200_000;
-my $NCOL    = 20;                                      # 20 cols -> 10 unique indexes
+my $NCOL    = 20;                                      # 20 data columns c00..c19
 my $TIMEOUT = $ENV{SPOCK_UC_TEST_TIMEOUT} // 900;
 my $KEYTYPE = $ENV{SPOCK_UC_KEYTYPE}      // 'bigint';
-my @IDX     = grep { $_ % 2 == 0 } 0 .. $NCOL - 1;     # indexed (even) columns
-my $NIDX    = scalar @IDX;
+
+# Index layout (customer-shaped): a few multi-column UNIQUE constraints that all
+# share a leading column, plus many ordinary non-unique indexes.  Only the
+# unique ones drive spock.check_all_uc_indexes; all are maintained on insert.
+my $LEAD      = 0;                   # shared leading column of the unique compound indexes
+my @UQ_SECOND = (1, 2, 3, 4);        # second columns -> 4 unique indexes (c00,c01)..(c00,c04)
+my @NONUNIQUE = (0, 5 .. $NCOL - 1); # 16 non-unique single-column indexes
+my $NUNIQUE   = scalar @UQ_SECOND;   # 4
+my $NIDX      = $NUNIQUE + scalar @NONUNIQUE;   # 20 secondary indexes (+ PK)
 
 my %CT = (bigint => 'bigint', uuid => 'uuid', text => 'text');
 my $CTYPE = $CT{$KEYTYPE} or die "SPOCK_UC_KEYTYPE must be bigint|uuid|text\n";
@@ -81,12 +89,24 @@ sub set_uc {    # toggle spock.check_all_uc_indexes on n2 and let the apply work
     sleep(2);
 }
 
-# --- Wide table + $NIDX unique indexes distributed across columns (on n1) ---
+# --- Wide table + $NIDX indexes ($NUNIQUE unique compound + non-unique) on n1 ---
 my $coldefs = join(', ', map { sprintf('c%02d %s', $_, $CTYPE) } 0 .. $NCOL - 1);
 psql_or_bail(1, "CREATE TABLE uctest (id bigint PRIMARY KEY, $coldefs, payload text)");
-my $ICOLL = $ENV{SPOCK_UC_INDEX_COLLATE} ? qq{ COLLATE "$ENV{SPOCK_UC_INDEX_COLLATE}"} : '';
-for my $i (@IDX) {
-    psql_or_bail(1, sprintf('CREATE UNIQUE INDEX uctest_c%02d_uidx ON uctest (c%02d%s)', $i, $i, $ICOLL));
+# Index collation. Default to "C" (byte comparison -- avoids per-compare strcoll
+# on text keys); set SPOCK_UC_INDEX_COLLATE='' for the database default collation,
+# or to any collation name to override.
+my $ICOLL_NAME = $ENV{SPOCK_UC_INDEX_COLLATE} // 'C';
+my $ICOLL = $ICOLL_NAME ? qq{ COLLATE "$ICOLL_NAME"} : '';
+# UNIQUE compound indexes, all sharing leading column c%02d (a few multi-column
+# unique constraints on text columns -- the shape we care about).
+for my $j (@UQ_SECOND) {
+    psql_or_bail(1, sprintf('CREATE UNIQUE INDEX uctest_uq_c%02d_c%02d ON uctest (c%02d%s, c%02d%s)',
+                  $LEAD, $j, $LEAD, $ICOLL, $j, $ICOLL));
+}
+# Non-unique single-column indexes: maintained on every insert, but not
+# scanned by check_all_uc_indexes for conflicts.
+for my $j (@NONUNIQUE) {
+    psql_or_bail(1, sprintf('CREATE INDEX uctest_ix_c%02d ON uctest (c%02d%s)', $j, $j, $ICOLL));
 }
 
 my $want_idx = $NIDX + 1;
@@ -96,7 +116,8 @@ for (1 .. 60) {
     last if $got_idx && $got_idx >= $want_idx;
     sleep(1);
 }
-is($got_idx, $want_idx, "uctest + $NIDX unique indexes ($KEYTYPE keys) replicated to n2");
+is($got_idx, $want_idx,
+   "uctest + $NIDX indexes ($NUNIQUE unique compound, $KEYTYPE keys) replicated to n2");
 
 sub wait_count {    # poll n2 until $expect rows match $where; elapsed secs or -1
     my ($where, $expect, $t0) = @_;
@@ -140,13 +161,15 @@ ok($t_on >= 0, "GUC-ON: $NROWS rows applied (GUC on) within ${TIMEOUT}s")
 }
 
 # Scenario 3 - GUC-ON+CONFLICT: GUC on, collide with seed row g on the LAST
-# unique index only (full-depth scan), single target => resolvable INSERT->UPDATE.
-my $last_idx = $IDX[-1];
+# unique compound index only -- (c00, c04).  Match the shared lead column and
+# that index's second column to seed g; keep the other unique second columns
+# distinct so exactly one unique index conflicts (single resolvable target).
+my $last_uq = $UQ_SECOND[-1];
 my $conf_vals = vals(sub {
     my $c = shift;
-    return 'g'                                         if $c == $last_idx;
-    return sprintf('(%d + g)', (10 + $c) * 10_000_000) if $c % 2 == 0;
-    return '(7000000 + g)';
+    return 'g'             if $c == $LEAD || $c == $last_uq;   # -> conflict on (c00,c04)
+    return '(7000000 + g)' if grep { $_ == $c } @UQ_SECOND;    # other unique second cols: no collision
+    return sprintf('(%d + g)', (10 + $c) * 10_000_000);        # non-unique columns: distinct
 });
 $t0 = time();
 psql_or_bail(1, "INSERT INTO uctest SELECT 6000000+g, $conf_vals, 'conf' FROM generate_series(1, $NROWS) g");
@@ -164,10 +187,10 @@ is(scalar_query(2, "SELECT count(*) FROM uctest"), 3 * $NROWS,
 my $scan_x  = ($t_off > 0 && $t_on   >= 0) ? sprintf('%.2fx', $t_on   / $t_off) : 'n/a';
 my $conf_x  = ($t_off > 0 && $t_conf >= 0) ? sprintf('%.2fx', $t_conf / $t_off) : 'n/a';
 my $conf_xo = ($t_on  > 0 && $t_conf >= 0) ? sprintf('%.2fx', $t_conf / $t_on)  : 'n/a';
-diag(sprintf(<<'REPORT', $KEYTYPE, $NROWS, $NIDX, $t_off, $t_on, $t_conf, $scan_x, $conf_xo, $conf_x));
+diag(sprintf(<<'REPORT', $KEYTYPE, $NROWS, $NIDX, $NUNIQUE, $t_off, $t_on, $t_conf, $scan_x, $conf_xo, $conf_x));
 
 ============== spock.check_all_uc_indexes apply cost ==============
-  keys=%s  rows=%d  unique indexes=%d
+  keys=%s  rows=%d  indexes=%d (%d unique compound)
 
   apply time per scenario:
     GUC-OFF          : %6.1fs   (baseline -- no index scan)
