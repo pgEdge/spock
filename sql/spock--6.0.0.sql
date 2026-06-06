@@ -933,10 +933,10 @@ BEGIN
   -- Create security label on the column
   --
   IF (to_drop = true) THEN
-    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS NULL;' ,
+    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %s.%I IS NULL;' ,
                         rel, att_name);
   ELSE
-    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %I.%I IS %L;' ,
+    sqlstring := format('SECURITY LABEL FOR spock ON COLUMN %s.%I IS %L;' ,
                         rel, att_name, 'spock.delta_apply');
   END IF;
 
@@ -959,14 +959,13 @@ BEGIN
      * refresh of the SpockRelation entry and guarantees actual state of the
      * delta_apply columns.
      */
-    EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', rel);
+    EXECUTE format('ALTER TABLE %s REPLICA IDENTITY FULL', rel);
   ELSIF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
 			 WHERE c.oid = rel AND c.relreplident = 'f') THEN
     /*
-	 * Have removed he last security label. Revert this spock hack change,
-	 * if needed.
+	 * Removed the last security label. Revert the replica identity spock set.
 	 */
-	EXECUTE format('ALTER TABLE %I REPLICA IDENTITY DEFAULT', rel);
+	EXECUTE format('ALTER TABLE %s REPLICA IDENTITY DEFAULT', rel);
   END IF;
 
   RETURN true;
