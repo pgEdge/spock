@@ -764,6 +764,14 @@ spock_report_conflict(SpockConflictType conflict_type,
 							 conflict_idx_oid);
 	}
 
+	/*
+	 * Building the log message below stringifies both full tuples and does
+	 * catalog lookups, once per conflict.  Skip it when the level would not be
+	 * emitted.  (The resolutions-table write above is gated separately.)
+	 */
+	if (!message_level_is_interesting(spock_conflict_log_level))
+		return;
+
 	memset(local_tup_ts_str, 0, MAXDATELEN);
 	strlcpy(local_origin_str, "unknown", sizeof(local_origin_str));
 	if (found_local_origin)
