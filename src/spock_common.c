@@ -20,6 +20,7 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
@@ -245,23 +246,26 @@ index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation 
 
 /*
  * If the index is partial (has a WHERE clause), prepare the predicate
- * expression for evaluation.
+ * expression for evaluation.  Build the raw predicate tree in a scratch
+ * context so it is freed once ExecPrepareQual has consumed it; the
+ * resulting ExprState is owned by estate->es_query_cxt.
  */
 static ExprState *
 SpockPreparePredicateExpr(Relation idxrel, EState *estate)
 {
-	List *predExprList = NIL;
+	List       *predExprList;
+	ExprState  *result;
+	MemoryContext oldcxt;
 
 	if (heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
-		return NULL;
+	    return NULL;
 
+	oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
 	predExprList = RelationGetIndexPredicate(idxrel);
-	if (predExprList == NIL)
-		return NULL;
-
-	return ExecPrepareQual(predExprList, estate);
+	result = (predExprList != NIL) ? ExecPrepareQual(predExprList, estate) : NULL;
+	MemoryContextSwitchTo(oldcxt);
+	return result;
 }
-
 /*
  * Check if the predicate matches by evaluating the index predicate on the
  * given tuple slot. This is used for both remote and local tuples.
