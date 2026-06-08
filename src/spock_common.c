@@ -253,34 +253,19 @@ index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation 
 static ExprState *
 SpockPreparePredicateExpr(Relation idxrel, EState *estate)
 {
-	List	   *predExprList;
+	List       *predExprList;
 	ExprState  *result;
-	MemoryContext tmpcxt;
 	MemoryContext oldcxt;
 
 	if (heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
-		return NULL;
+	    return NULL;
 
-	tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
-								   "Spock predicate prep",
-								   ALLOCSET_SMALL_SIZES);
-	oldcxt = MemoryContextSwitchTo(tmpcxt);
-
+	oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
 	predExprList = RelationGetIndexPredicate(idxrel);
-	if (predExprList == NIL)
-	{
-		MemoryContextSwitchTo(oldcxt);
-		MemoryContextDelete(tmpcxt);
-		return NULL;
-	}
-
-	result = ExecPrepareQual(predExprList, estate);
-
+	result = (predExprList != NIL) ? ExecPrepareQual(predExprList, estate) : NULL;
 	MemoryContextSwitchTo(oldcxt);
-	MemoryContextDelete(tmpcxt);
 	return result;
 }
-
 /*
  * Check if the predicate matches by evaluating the index predicate on the
  * given tuple slot. This is used for both remote and local tuples.
