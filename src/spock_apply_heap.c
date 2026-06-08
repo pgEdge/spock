@@ -440,8 +440,9 @@ FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
  * Find a matching tuple using all usable unique indexes (excluding PK and RI
  * indexes)
  *
- * This is a fallback mechanism when PK/RI indexes do not match. The caller must
- * ensure this function is only called in that context.
+ * Fallback for INSERT conflict resolution when PK/RI indexes do not match.
+ * Iterates over the indexes already opened and locked by ExecOpenIndices so
+ * the apply path does not re-open and re-lock every index per row.
  */
 static bool
 FindReplTupleByUCIndex(ApplyExecutionData *edata,
@@ -450,45 +451,32 @@ FindReplTupleByUCIndex(ApplyExecutionData *edata,
 					   TupleTableSlot **localslot,
 					   Oid *indexoid)
 {
-	List	   *indexoidlist = NIL;
-	ListCell   *lc;
+	ResultRelInfo *relinfo;
+	int			i;
 	bool		found = false;
 
 	if (!check_all_uc_indexes)
 		elog(ERROR, "spock.check_all_uc_indexes must be enabled to call this function");
 
 	*indexoid = InvalidOid;
-	/* Get the list of index OIDs for the table from the relcache. */
-	indexoidlist = RelationGetIndexList(localrel);
+	relinfo = edata->targetRelInfo;
 
-	foreach(lc, indexoidlist)
+	for (i = 0; i < relinfo->ri_NumIndices; i++)
 	{
-		Relation	idxrel;
-
-		*indexoid = lfirst_oid(lc);
-
-		/* Open the index. */
-		idxrel = index_open(*indexoid, RowExclusiveLock);
+		Relation	idxrel = relinfo->ri_IndexRelationDescs[i];
 
 		if (!IsIndexUsableForInsertConflict(idxrel))
-		{
-			index_close(idxrel, RowExclusiveLock);
 			continue;
-		}
 
 		found = SpockRelationFindReplTupleByIndex(edata->estate, localrel, idxrel,
 												  LockTupleExclusive,
 												  remoteslot, *localslot);
 		if (found)
 		{
-			/* Don't release lock until commit. */
-			index_close(idxrel, NoLock);
+			*indexoid = RelationGetRelid(idxrel);
 			break;
 		}
-		index_close(idxrel, RowExclusiveLock);
 	}
-
-	list_free(indexoidlist);
 
 	return found;
 }
