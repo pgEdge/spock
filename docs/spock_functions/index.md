@@ -37,6 +37,7 @@ The following user functions are available via the Spock extension:
 | [spock.sub_wait_for_sync](functions/spock_sub_wait_for_sync.md) | Pause until the subscription is synchronized.
 | spock.sub_alter_skiplsn | Skip transactions until the specified lsn.
 | spock.sub_alter_sync | Synchronize all missing tables.
+| [spock.sub_alter_options](functions/spock_sub_alter_options.md) | Change one or more subscription options in a single atomic operation.
 | spock.sub_resync_table | Synchronize a specific table.
 | **Miscellaneous Management Functions** | |
 | [spock.table_wait_for_sync](functions/spock_table_wait_for_sync.md) | Pause until a table finishes synchronizing.
