@@ -114,18 +114,16 @@ typedef struct SubscriptionTuple
 
 /*
  * List of extensions and schemas that we should skip globally.
- * By-default, it is spock, lolor, and snowflake related objects.
+ * By-default, it is spock and snowflake related objects.
  * Don't merge it with subscription-specific skip-schema list to avoid cases
  * when user drops 'sub->skip_schema' and violates these restrictions.
  */
 const char *const skip_schema[] = {
-	"lolor",
 	"snowflake",
 	"spock",
 	NULL  /* sentinel */
 };
 const char *const skip_extension[] = {
-	"lolor",
 	"snowflake",
 	"spock",
 	NULL  /* sentinel */
