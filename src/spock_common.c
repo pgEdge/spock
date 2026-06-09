@@ -325,6 +325,33 @@ SpockRelationFindReplTupleByIndex(EState *estate,
 	if (!SpockPredicateMatches(estate, predExpr, searchslot))
 		return false;
 
+	/*
+	 * A unique index treats NULLs as distinct, so a remote row with a NULL in
+	 * any of this index's key columns can never conflict with an existing row
+	 * here -- skip the probe entirely.
+	 *
+	 * This is not just an optimization: spock_build_replindex_scan_key() emits
+	 * SK_SEARCHNULL for a NULL key value, which makes the btree return *every*
+	 * row whose key IS NULL.  index_keys_have_nonnulls() below then discards
+	 * each of them, so without this short-circuit every applied insert would
+	 * run an O(rows) scan -- guaranteed to find nothing -- on a unique index
+	 * over a mostly-NULL key column.
+	 */
+	{
+		int2vector *indkey = &idxrel->rd_index->indkey;
+		int			i;
+
+		slot_getallattrs(searchslot);
+		for (i = 0; i < IndexRelationGetNumberOfKeyAttributes(idxrel); i++)
+		{
+			int		table_attno = indkey->values[i];
+
+			if (AttributeNumberIsValid(table_attno) &&
+				searchslot->tts_isnull[table_attno - 1])
+				return false;
+		}
+	}
+
 	InitDirtySnapshot(snap);
 
 	/* Build scan key. */
