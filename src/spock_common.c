@@ -195,18 +195,39 @@ IsIndexUsableForInsertConflict(Relation idxrel)
 }
 
 /*
- * Check whether the index key attributes in the two tuples are all non-NULL.
+ * Does this unique index treat NULLs as distinct (the default)?
  *
- * This function does not compare actual values for equality. Instead, it verifies
- * that all index key columns (excluding dropped and generated ones) are non-NULL
- * in both tuples.
- * In SQL semantics, NULLs are not considered equals, even when both sides are
- * NULLs. so any NULL in a key column implies that they do not match.
+ * For such an index a NULL in any key column means the row can never have a
+ * uniqueness conflict, because NULL is never equal to anything -- including
+ * another NULL.  With NULLS NOT DISTINCT a single NULL row is allowed and
+ * NULLs do compare equal, so a NULL search value can legitimately match.
+ */
+static inline bool
+SpockIndexNullsAreDistinct(Relation idxrel)
+{
+	return !idxrel->rd_index->indnullsnotdistinct;
+}
+
+/*
+ * Check whether the index key columns of the two tuples match, applying the
+ * index's NULL semantics.
+ *
+ * This does not compare non-NULL values for equality -- the index scan already
+ * did that.  It only decides the NULL cases:
+ *
+ *   - NULLS DISTINCT (the default): a NULL is never equal to anything, even
+ *     another NULL, so any NULL in a key column means the rows do not match.
+ *   - NULLS NOT DISTINCT: two NULLs in the same key column compare
+ *     equal, so a column that is NULL on both sides is a match; a column that
+ *     is NULL on only one side is not.
+ *
+ * Dropped and generated columns are ignored (the publisher doesn't send them).
  */
 static bool
-index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
+index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
 			 ScanKey skey, int ncols)
 {
+	bool		nulls_distinct = SpockIndexNullsAreDistinct(idxrel);
 	int			i;
 	int			attrnum;
 
@@ -220,25 +241,31 @@ index_keys_have_nonnulls(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation 
 	for (i = 0; i < ncols; i++)
 	{
 		Form_pg_attribute att;
+		bool		isnull1;
+		bool		isnull2;
 
 		attrnum = idxrel->rd_index->indkey.values[skey[i].sk_attno - 1] - 1;
 
 		att = TupleDescAttr(slot1->tts_tupleDescriptor, attrnum);
 
-		/*
-		 * Ignore dropped and generated columns as the publisher doesn't send
-		 * those
-		 */
 		if (att->attisdropped || att->attgenerated)
 			continue;
 
-		/*
-		 * If either value is NULL, then according to SQL semantics,
-		 * they are not considered equal, even if both are NULL.
-		 */
-		if (slot1->tts_isnull[attrnum] || slot2->tts_isnull[attrnum])
-			return false;
+		isnull1 = slot1->tts_isnull[attrnum];
+		isnull2 = slot2->tts_isnull[attrnum];
 
+		if (isnull1 || isnull2)
+		{
+			/*
+			 * Under NULLS NOT DISTINCT, two NULLs in the same column compare
+			 * equal, so a both-NULL column is a match.  Every other NULL
+			 * pairing (and any NULL under NULLS DISTINCT) means no match.
+			 */
+			if (isnull1 && isnull2 && !nulls_distinct)
+				continue;
+
+			return false;
+		}
 	}
 
 	return true;
@@ -284,20 +311,6 @@ SpockPredicateMatches(EState *estate, ExprState *predExpr, TupleTableSlot *slot)
 	econtext = GetPerTupleExprContext(estate);
 	econtext->ecxt_scantuple = slot;
 	return ExecQual(predExpr, econtext);
-}
-
-/*
- * Does this unique index treat NULLs as distinct (the default)?
- *
- * For such an index a NULL in any key column means the row can never have a
- * uniqueness conflict, because NULL is never equal to anything -- including
- * another NULL.  With NULLS NOT DISTINCT a single NULL row is allowed and
- * NULLs do compare equal, so a NULL search value can legitimately match.
- */
-static inline bool
-SpockIndexNullsAreDistinct(Relation idxrel)
-{
-	return !idxrel->rd_index->indnullsnotdistinct;
 }
 
 /*
@@ -387,7 +400,7 @@ retry:
 	/* Try to find the tuple */
 	while (index_getnext_slot(scan, ForwardScanDirection, outslot))
 	{
-		if (!index_keys_have_nonnulls(outslot, searchslot, idxrel, skey, skey_attoff))
+		if (!index_keys_match(outslot, searchslot, idxrel, skey, skey_attoff))
 			continue;
 
 		/* Skip if local tuple does not satisfy the index predicate */

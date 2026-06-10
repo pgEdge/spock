@@ -93,12 +93,48 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 SELECT * FROM secondary_unique_null ORDER BY a;
 
 \c :provider_dsn
+
+-- Test a NULLS NOT DISTINCT unique index (PG15+). Here NULL == NULL, so a
+-- NULL-keyed row CAN conflict with another NULL-keyed row. The apply path must
+-- detect that conflict (and resolve it) rather than skipping it -- otherwise
+-- the insert would fall through and raise a duplicate-key error.
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.secondary_unique_nnd (
+    a integer PRIMARY KEY,
+    b integer
+);
+
+CREATE UNIQUE INDEX ON public.secondary_unique_nnd (b) NULLS NOT DISTINCT;
+$$);
+
+SELECT * FROM spock.repset_add_table('default', 'secondary_unique_nnd');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+-- Seed a local-only row on the subscriber with a NULL key.
+\c :subscriber_dsn
+INSERT INTO secondary_unique_nnd (a, b) VALUES (100, NULL);
+
+-- The provider inserts a different PK with a NULL key. On the subscriber this
+-- conflicts with the local NULL-keyed row via the NULLS NOT DISTINCT index and
+-- is resolved (last-update-wins): the local row is overwritten by the remote
+-- tuple, so a=100 is replaced by a=200.
+\c :provider_dsn
+INSERT INTO secondary_unique_nnd (a, b) VALUES (200, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+
+\c :subscriber_dsn
+SELECT * FROM secondary_unique_nnd ORDER BY a;
+
+\c :provider_dsn
 \set VERBOSITY terse
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.secondary_unique_pred CASCADE;
 $$);
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.secondary_unique_null CASCADE;
+$$);
+SELECT spock.replicate_ddl($$
+	DROP TABLE public.secondary_unique_nnd CASCADE;
 $$);
 
 -- Restore the default (off) on both nodes.
