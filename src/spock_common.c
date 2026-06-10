@@ -287,6 +287,40 @@ SpockPredicateMatches(EState *estate, ExprState *predExpr, TupleTableSlot *slot)
 }
 
 /*
+ * Does this unique index treat NULLs as distinct (the default)?
+ *
+ * For such an index a NULL in any key column means the row can never have a
+ * uniqueness conflict, because NULL is never equal to anything -- including
+ * another NULL.  With NULLS NOT DISTINCT a single NULL row is allowed and
+ * NULLs do compare equal, so a NULL search value can legitimately match.
+ */
+static inline bool
+SpockIndexNullsAreDistinct(Relation idxrel)
+{
+	return !idxrel->rd_index->indnullsnotdistinct;
+}
+
+/*
+ * Returns true if any column of the built scan key is NULL.
+ *
+ * spock_build_replindex_scan_key() tags such columns with SK_ISNULL, so we can
+ * detect a NULL search value without re-deforming the slot.
+ */
+static bool
+SpockScanKeyHasNull(ScanKey skey, int skey_attoff)
+{
+	int			i;
+
+	for (i = 0; i < skey_attoff; i++)
+	{
+		if (skey[i].sk_flags & SK_ISNULL)
+			return true;
+	}
+
+	return false;
+}
+
+/*
  * Search the relation 'rel' for tuple using the index.
  *
  * If a matching tuple is found, lock it with lockmode, fill the slot with its
@@ -325,6 +359,22 @@ SpockRelationFindReplTupleByIndex(EState *estate,
 
 	/* Build scan key. */
 	skey_attoff = spock_build_replindex_scan_key(skey, rel, idxrel, searchslot);
+
+	/*
+	 * If any key column of the search tuple is NULL and the index treats NULLs
+	 * as distinct (the default), the tuple cannot collide with anything in
+	 * this unique index -- NULL is never equal to NULL -- so skip the scan
+	 * entirely.
+	 *
+	 * Without this short-circuit, spock_build_replindex_scan_key() has tagged
+	 * the NULL column with SK_SEARCHNULL, which turns the probe into an
+	 * "IS NULL" scan that walks every NULL-keyed row in the table and then
+	 * discards each one in index_keys_have_nonnulls().  On a nullable column
+	 * with many NULLs that is O(table size) per insert.  The PK/RI path in
+	 * core never hits this because those key columns are NOT NULL.
+	 */
+	if (SpockIndexNullsAreDistinct(idxrel) && SpockScanKeyHasNull(skey, skey_attoff))
+		return false;
 
 	/* Start an index scan. */
 	scan = index_beginscan(rel, idxrel, &snap, skey_attoff, 0);
