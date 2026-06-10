@@ -74,6 +74,15 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	if (SpockRelationHash == NULL)
 		spock_relcache_init();
 
+	/*
+	 * Process pending relcache invalidations before using a cached relation
+	 * entry.  An index dropped under the apply worker (notably DROP INDEX
+	 * CONCURRENTLY, whose lock does not block apply) otherwise leaves a stale
+	 * index list on the cached relation, and the next ExecOpenIndices() would
+	 * index_open() the removed OID and raise "could not open relation with OID".
+	 */
+	AcceptInvalidationMessages();
+
 	/* Search for existing entry. */
 	entry = hash_search(SpockRelationHash, (void *) &remoteid,
 						HASH_FIND, &found);
