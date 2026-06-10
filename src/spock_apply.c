@@ -1211,6 +1211,41 @@ get_exception_behaviour_name(void)
 }
 
 /*
+ * Build the error_message for an entry discarded as collateral -- i.e. it was
+ * not itself the failing command (the caller passed a NULL message).  'what'
+ * names the discarded entry for the message: "tuple" on the DML path,
+ * "statement" on the SQL/DDL path (where no tuple is involved).
+ *
+ * Normally we just point the operator at the entry that carries the real error
+ * via its command_counter, which avoids repeating the same message on every
+ * discarded entry.  But when the failure is not attributable to a specific row,
+ * failed_action is 0 and that pointer dangles (no entry's counter is 0), so we
+ * surface the captured root cause instead -- or note that none was captured.
+ */
+static char *
+discard_collateral_message(const char *what)
+{
+	SpockExceptionLog  *e;
+
+	/*
+	 * Match the paranoia level of the surrounding code: every caller reaches
+	 * this only after exception logging has been set up for this worker.
+	 */
+	Assert(exception_log_ptr != NULL && my_exception_log_index >= 0);
+
+	e = &exception_log_ptr[my_exception_log_index];
+
+	if (e->failed_action != 0)
+		return psprintf("%s: %s discarded due to exception at command_counter %u",
+						get_exception_behaviour_name(), what, e->failed_action);
+	if (e->initial_error_message[0] != '\0')
+		return psprintf("%s: %s discarded due to exception: %s",
+						get_exception_behaviour_name(), what, e->initial_error_message);
+	return psprintf("%s: %s discarded due to exception (root cause not captured)",
+					get_exception_behaviour_name(), what);
+}
+
+/*
  * Log a replication exception to spock.exception_log.
  *
  * Called for INSERT, UPDATE, DELETE, and TRUNCATE operations.  'failed'
@@ -1218,10 +1253,9 @@ get_exception_behaviour_name(void)
  * raised an error in DISCARD mode) and false when the operation was
  * deliberately skipped during dry-run replay (TRANSDISCARD/SUB_DISABLE mode).
  *
- * When 'errmsg' is NULL — i.e. the tuple is being discarded because another
- * command in the same transaction failed, not this one — a synthetic message
- * is generated that names the active exception behaviour and the
- * failed_action counter so the operator can cross-reference the root cause.
+ * When 'errmsg' is NULL the tuple is being discarded as collateral (another
+ * command in the same transaction failed); discard_collateral_message() builds
+ * the message in that case.
  */
 static void
 log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
@@ -1238,9 +1272,7 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 		return;
 
 	if (errmsg == NULL)
-		errmsg = psprintf("%s: tuple discarded due to exception at command_counter %u",
-						  get_exception_behaviour_name(),
-						  exception_log_ptr[my_exception_log_index].failed_action);
+		errmsg = discard_collateral_message("tuple");
 
 	localtup = exception_log_ptr[my_exception_log_index].local_tuple;
 	if (localtup != NULL)
@@ -2426,9 +2458,7 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 					 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0')
 				error_msg = exception_log_ptr[my_exception_log_index].initial_error_message;
 			else
-				error_msg = psprintf("%s: tuple discarded due to exception at command_counter %u",
-									 get_exception_behaviour_name(),
-									 exception_log_ptr[my_exception_log_index].failed_action);
+				error_msg = discard_collateral_message("statement");
 
 			add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
@@ -3554,9 +3584,20 @@ stream_replay:
 			 * Remember which action in the transaction triggered the error.
 			 * During the read-only replay, only this action gets the real
 			 * error message; other records get NULL.
+			 *
+			 * A failure during COMMIT (e.g. a deferred constraint trigger that
+			 * fires at commit) is not attributable to any replayed row:
+			 * handle_commit has already bumped the counter, so no row's
+			 * command_counter would match and the pointer would dangle.  Treat
+			 * it as non-attributable (failed_action = 0) so the replay surfaces
+			 * the captured root cause instead of a dangling command_counter.
 			 */
-			exception_log_ptr[my_exception_log_index].failed_action =
-				xact_action_counter;
+			if (errcallback_arg.action_name != NULL &&
+				strcmp(errcallback_arg.action_name, "COMMIT") == 0)
+				exception_log_ptr[my_exception_log_index].failed_action = 0;
+			else
+				exception_log_ptr[my_exception_log_index].failed_action =
+					xact_action_counter;
 		}
 
 		FlushErrorState();
