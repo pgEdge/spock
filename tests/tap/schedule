@@ -39,6 +39,7 @@ test: 016_sub_disable_missing_relation
 test: 018_failover_slots
 test: 019_stale_fd_epoll_after_conn_death
 test: 021_uc_null_key_skip
+test: 022_apply_mem_context
 
 # Regression tests
 test: 103_manager_worker_dboid_race
