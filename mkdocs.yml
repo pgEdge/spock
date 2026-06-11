@@ -115,6 +115,7 @@ nav:
       - spock.sub_add_repset(): spock_functions/functions/spock_sub_add_repset.md
       - spock.sub_alter_interface(): spock_functions/functions/spock_sub_alter_interface.md
       - spock.sub_alter_skiplsn(): spock_functions/functions/spock_sub_alter_skiplsn.md
+      - spock.sub_alter_options(): spock_functions/functions/spock_sub_alter_options.md
       - spock.sub_alter_sync(): spock_functions/functions/spock_sub_alter_sync.md
       - spock.sub_create(): spock_functions/functions/spock_sub_create.md
       - spock.sub_disable(): spock_functions/functions/spock_sub_disable.md

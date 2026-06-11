@@ -13,6 +13,7 @@ the publisher.
 | [spock.sub_enable](functions/spock_sub_enable.md) | Enables a disabled subscription.
 | [spock.sub_alter_interface](functions/spock_sub_alter_interface.md) | Switch the subscription to use a different interface to connect to the provider node.
 | [spock.sub_alter_sync](functions/spock_sub_alter_sync.md) | Synchronize all unsynchronized tables in a single operation.
+| [spock.sub_alter_options](functions/spock_sub_alter_options.md) | Change one or more subscription options in a single atomic operation.
 | [spock.sub_resync_table](functions/spock_sub_resync_table.md) | Resynchronize a single table.
 | [spock.sub_wait_for_sync](functions/spock_sub_wait_for_sync.md) | Wait for a subscription to finish synchronization after a `spock.sub_create` or `spock.sub_alter_sync`.
 | [spock.table_wait_for_sync](functions/spock_table_wait_for_sync.md) | Wait only for the subscription's initial sync and a named table.
