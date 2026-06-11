@@ -1434,14 +1434,9 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 		return;
 
 	/*
-	 * Callers reach this point with CurrentMemoryContext set to
-	 * TopTransactionContext, because RollbackAndReleaseCurrentSubTransaction
-	 * and ReleaseCurrentSubTransaction restore the parent's
-	 * CurTransactionContext (not the caller's prior context).  Run the
-	 * exception-log work in ApplyOperationContext so the JSON conversion,
-	 * TextDatum and tuple allocations are released at the per-message
-	 * MemoryContextReset(ApplyOperationContext) instead of accumulating in
-	 * TopTransactionContext for the duration of the outer apply txn.
+	 * Run the exception-log work in ApplyOperationContext so its JSON and
+	 * tuple allocations get released by the per-message reset instead of
+	 * piling up in TopTransactionContext for the outer apply transaction.
 	 */
 	oldctx = MemoryContextSwitchTo(ApplyOperationContext);
 

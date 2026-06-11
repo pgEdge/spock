@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use Test::More;
 use lib '.';
+use lib 't';
 use SpockTest qw(create_cluster destroy_cluster
                  get_test_config scalar_query psql_or_bail
                  wait_for_sub_status);
@@ -148,14 +149,22 @@ for my $i (1 .. 6) {
 
     open(my $lh, '<', $n2_log) or die "open $n2_log: $!";
     seek($lh, $log_size_before, 0);
+    # Match by context name only.  pg_log_backend_memory_contexts() emits
+    # a "level: N;" prefix where N is the depth from TopMemoryContext: a
+    # direct child of TopMemoryContext is level 1, a grandchild is level
+    # 2, and so on.  TopTransactionContext is a level-1 child of
+    # TopMemoryContext; ApplyOperationContext and MessageContext sit
+    # under MessageContext / TopMemoryContext at varying depths
+    # depending on the version of spock.  Pinning the regex to a
+    # specific level number made all three counters miss on PG 15-17.
     while (my $line = <$lh>) {
-        if ($line =~ /\[$apply_pid\].*level: 2; TopTransactionContext:.*?(\d+) used/) {
+        if ($line =~ /\[$apply_pid\].*\bTopTransactionContext:.*?(\d+) used/) {
             $top_used = $1 if $1 > $top_used;
         }
-        elsif ($line =~ /\[$apply_pid\].*level: 2; ApplyOperationContext:.*?(\d+) used/) {
+        elsif ($line =~ /\[$apply_pid\].*\bApplyOperationContext:.*?(\d+) used/) {
             $apply_used = $1 if $1 > $apply_used;
         }
-        elsif ($line =~ /\[$apply_pid\].*level: 2; MessageContext:.*?(\d+) used/) {
+        elsif ($line =~ /\[$apply_pid\].*\bMessageContext:.*?(\d+) used/) {
             $msg_used = $1 if $1 > $msg_used;
         }
     }
@@ -166,7 +175,7 @@ for my $i (1 .. 6) {
 # not even allocated and the regex misses (top_used stays -1). Skip the
 # strict assertion in that case but still report it.
 SKIP: {
-    skip "apply worker was idle at dump time (no TopTransactionContext)", 1
+    skip "no TopTransactionContext line captured for pid $apply_pid", 1
         if $top_used < 0;
 
     ok($top_used < $THRESHOLD,
