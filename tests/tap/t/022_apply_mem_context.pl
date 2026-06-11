@@ -144,7 +144,12 @@ for (1 .. $TIMEOUT) {
 # first sample we take (the worker has just started, no rows applied
 # yet) and assert that peak_rss - baseline_rss stays below a generous
 # RSS_GROWTH threshold.  Post-fix the growth is in the low MB.
-my $RSS_GROWTH = $ENV{SPOCK_LEAK_RSS_GROWTH_KB} // 200_000;  # 200 MB
+# 500 MB sits comfortably between the pre-fix leak (~800 MB at 200 k rows)
+# and the legitimate post-fix peak (~270 MB on a typical CI runner: heap +
+# index buffers, catalog cache, MessageContext growth that is only reset
+# on commit -- see follow-up for per-message reset).  Tighten this once
+# MessageContext is reset per message.
+my $RSS_GROWTH = $ENV{SPOCK_LEAK_RSS_GROWTH_KB} // 500_000;  # 500 MB
 
 sub rss_kb {
     my ($pid) = @_;
