@@ -48,8 +48,9 @@ options
     forward_origins
 
         A JSON array of origin names whose transactions the subscriber
-        should forward. The only accepted element is the string "all".
-        Pass an empty array ([]) to disable origin forwarding.
+        should apply or receive based on their origin. The only accepted
+        element is the string "all". Pass an empty array ([]) to disable
+        origin forwarding.
 
     apply_delay
 
