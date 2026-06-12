@@ -1262,6 +1262,7 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 					 SpockTupleData *oldtup, SpockTupleData *newtup,
 					 const char *action_name)
 {
+	MemoryContext	oldctx;
 	RepOriginId		local_origin = InvalidRepOriginId;
 	TimestampTz		local_commit_ts = 0;
 	TransactionId	xmin = InvalidTransactionId;
@@ -1270,6 +1271,13 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 
 	if (!should_log_exception(failed))
 		return;
+
+	/*
+	 * Run the exception-log work in ApplyOperationContext so its JSON and
+	 * tuple allocations get released by the per-message reset instead of
+	 * piling up in TopTransactionContext for the outer apply transaction.
+	 */
+	oldctx = MemoryContextSwitchTo(ApplyOperationContext);
 
 	if (errmsg == NULL)
 		errmsg = discard_collateral_message("tuple");
@@ -1299,6 +1307,8 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 							   NULL, NULL,
 							   action_name,
 							   errmsg);
+
+	MemoryContextSwitchTo(oldctx);
 }
 
 /*
@@ -2671,6 +2681,14 @@ replication_handler(StringInfo s)
 
 	if (error_context_stack == &errcallback)
 		error_context_stack = errcallback.previous;
+
+	/*
+	 * Release per-message palloc in ApplyOperationContext.  The handlers
+	 * route per-row exception logging and similar work through this
+	 * context so it can be cleaned up at one place instead of every
+	 * call site.
+	 */
+	MemoryContextReset(ApplyOperationContext);
 
 	if (action == 'C')
 	{
