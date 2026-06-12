@@ -1653,7 +1653,6 @@ handle_insert(StringInfo s)
 		end_replication_step();
 	}
 	MemoryContextSwitchTo(MessageContext);
-	MemoryContextReset(ApplyOperationContext);
 }
 
 static void
@@ -1783,7 +1782,6 @@ handle_update(StringInfo s)
 	spock_relation_close(rel, NoLock);
 
 	end_replication_step();
-	MemoryContextReset(ApplyOperationContext);
 }
 
 static void
@@ -1888,7 +1886,6 @@ handle_delete(StringInfo s)
 	spock_relation_close(rel, NoLock);
 
 	end_replication_step();
-	MemoryContextReset(ApplyOperationContext);
 }
 
 /*
@@ -2740,6 +2737,14 @@ replication_handler(StringInfo s)
 
 	if (error_context_stack == &errcallback)
 		error_context_stack = errcallback.previous;
+
+	/*
+	 * Release per-message palloc in ApplyOperationContext. The handlers
+	 * route per-row exception logging and similar work through this
+	 * context so it can be cleaned up at one place instead of every
+	 * call site.
+	 */
+	MemoryContextReset(ApplyOperationContext);
 
 	if (action == 'C')
 	{
