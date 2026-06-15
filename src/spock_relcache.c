@@ -88,8 +88,11 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 						HASH_FIND, &found);
 
 	if (!found)
-		elog(ERROR, "cache lookup failed for remote relation %u",
-			 remoteid);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("cache lookup failed for remote relation %u", remoteid),
+				 errdetail("No relation metadata has been received for remote relation %u; a data change referencing it arrived before its RELATION message.", remoteid),
+				 errhint("This usually indicates a schema mismatch. Check logs, then restart the subscription.")));
 
 	/* Need to update the local cache? */
 	if (!OidIsValid(entry->reloid))

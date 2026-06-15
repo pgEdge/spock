@@ -65,7 +65,26 @@ CREATE INDEX test_383_y_idx ON test_383 (a);
 CLUSTER test_383 USING test_383_y_idx; -- Should not be replicated
 DROP TABLE test_383 CASCADE;
 
+-- An empty search_path set via set_config() leaves a bare space in the GUC
+-- (as the core "namespace" regression test does). It must be shipped as a
+-- valid, empty path, not the invalid "SET search_path TO  ;" that fails to
+-- parse on the subscriber.
+SELECT set_config('search_path', ' ', false);
+CREATE SCHEMA test_ns_schema_1
+       CREATE TABLE abc (a serial, b int UNIQUE);
+INSERT INTO test_ns_schema_1.abc DEFAULT VALUES;
+RESET search_path;
+SELECT spock.sync_event() as sync_event
+\gset
+
 \c :subscriber_dsn
+
+-- Wait for the empty-search_path DDL to be applied on subscriber (node 2)
+CALL spock.wait_for_sync_event(true, 'test_provider', :'sync_event');
+
+-- Schema, table and the inserted row must all replicate to the subscriber
+SELECT count(*) FROM spock.tables where nspname = 'test_ns_schema_1' AND set_name IS NOT NULL;
+SELECT count(*) FROM test_ns_schema_1.abc;
 
 -- Reset the configuration to the default value
 \c :provider_dsn
