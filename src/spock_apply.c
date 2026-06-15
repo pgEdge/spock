@@ -1423,6 +1423,7 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 					 SpockTupleData *oldtup, SpockTupleData *newtup,
 					 const char *action_name)
 {
+	MemoryContext	oldctx;
 	RepOriginId		local_origin = InvalidRepOriginId;
 	TimestampTz		local_commit_ts = 0;
 	TransactionId	xmin = InvalidTransactionId;
@@ -1431,6 +1432,13 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 
 	if (!should_log_exception(failed))
 		return;
+
+	/*
+	 * Run the exception-log work in ApplyOperationContext so its JSON and
+	 * tuple allocations get released by the per-message reset instead of
+	 * piling up in TopTransactionContext for the outer apply transaction.
+	 */
+	oldctx = MemoryContextSwitchTo(ApplyOperationContext);
 
 	localtup = exception_log_ptr[my_exception_log_index].local_tuple;
 	if (localtup != NULL)
@@ -1456,6 +1464,8 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 							   NULL, NULL,
 							   action_name,
 							   (failed) ? errmsg : NULL);
+
+	MemoryContextSwitchTo(oldctx);
 }
 
 static void
@@ -1643,7 +1653,6 @@ handle_insert(StringInfo s)
 		end_replication_step();
 	}
 	MemoryContextSwitchTo(MessageContext);
-	MemoryContextReset(ApplyOperationContext);
 }
 
 static void
@@ -2511,11 +2520,15 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 		/* Let's create an exception log entry if true. */
 		if (should_log_exception(failed))
 		{
+			MemoryContext oldctx;
 			char	   *err_msg = failed ? edata->message :
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
 				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
 				exception_log_ptr[my_exception_log_index].initial_error_message : NULL;
+
+			/* See note in log_insert_exception about the context switch. */
+			oldctx = MemoryContextSwitchTo(ApplyOperationContext);
 
 			add_entry_to_exception_log(remote_origin_id,
 									   replorigin_session_origin_timestamp,
@@ -2525,6 +2538,8 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 									   sql, queued_message->role,
 									   "SQL",
 									   err_msg);
+
+			MemoryContextSwitchTo(oldctx);
 		}
 	}
 	else
@@ -2722,6 +2737,14 @@ replication_handler(StringInfo s)
 
 	if (error_context_stack == &errcallback)
 		error_context_stack = errcallback.previous;
+
+	/*
+	 * Release per-message palloc in ApplyOperationContext. The handlers
+	 * route per-row exception logging and similar work through this
+	 * context so it can be cleaned up at one place instead of every
+	 * call site.
+	 */
+	MemoryContextReset(ApplyOperationContext);
 
 	if (action == 'C')
 	{
