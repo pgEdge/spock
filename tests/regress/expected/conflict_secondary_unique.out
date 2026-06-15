@@ -2,6 +2,25 @@
 SELECT * FROM spock_regress_variables()
 \gset
 \c :provider_dsn
+-- This test exercises the secondary unique index path, so enable it explicitly
+-- on both nodes (restored to off at the end) rather than relying on the suite
+-- default.
+ALTER SYSTEM SET spock.check_all_uc_indexes = true;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = true;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :provider_dsn
 -- Test conflicts where a secondary unique constraint with a predicate exits,
 -- ensuring we don't generate false conflicts.
 SELECT spock.replicate_ddl($$
@@ -86,6 +105,115 @@ SELECT * FROM secondary_unique_pred ORDER BY a;
 (4 rows)
 
 \c :provider_dsn
+-- Test a NULLS DISTINCT unique index (the default) on a nullable column.
+-- NULL is never equal to NULL, so rows with a NULL key can never conflict
+-- and any number of them are allowed. The apply path must short-circuit the
+-- NULL search key instead of scanning every NULL-keyed row.
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.secondary_unique_null (
+    a integer PRIMARY KEY,
+    b integer
+);
+
+CREATE UNIQUE INDEX ON public.secondary_unique_null (b);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'secondary_unique_null');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+-- Multiple NULLs in the unique column must all be allowed (no false conflict),
+-- and a non-NULL row alongside them must replicate normally. On apply, the
+-- subscriber probes the unique index on (b); the NULL-keyed rows must take the
+-- short-circuit rather than scanning every NULL-keyed row.
+INSERT INTO secondary_unique_null (a, b) VALUES (1, NULL);
+INSERT INTO secondary_unique_null (a, b) VALUES (2, NULL);
+INSERT INTO secondary_unique_null (a, b) VALUES (3, 10);
+INSERT INTO secondary_unique_null (a, b) VALUES (4, NULL);
+SELECT * FROM secondary_unique_null ORDER BY a;
+ a | b  
+---+----
+ 1 |   
+ 2 |   
+ 3 | 10
+ 4 |   
+(4 rows)
+
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM secondary_unique_null ORDER BY a;
+ a | b  
+---+----
+ 1 |   
+ 2 |   
+ 3 | 10
+ 4 |   
+(4 rows)
+
+\c :provider_dsn
+-- Test a NULLS NOT DISTINCT unique index (PG15+). Here NULL == NULL, so a
+-- NULL-keyed row CAN conflict with another NULL-keyed row. The apply path must
+-- detect that conflict (and resolve it) rather than skipping it -- otherwise
+-- the insert would fall through and raise a duplicate-key error.
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.secondary_unique_nnd (
+    a integer PRIMARY KEY,
+    b integer
+);
+
+CREATE UNIQUE INDEX ON public.secondary_unique_nnd (b) NULLS NOT DISTINCT;
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'secondary_unique_nnd');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+-- Seed a local-only row on the subscriber with a NULL key.
+\c :subscriber_dsn
+INSERT INTO secondary_unique_nnd (a, b) VALUES (100, NULL);
+-- The provider inserts a different PK with a NULL key. On the subscriber this
+-- conflicts with the local NULL-keyed row via the NULLS NOT DISTINCT index and
+-- is resolved (last-update-wins): the local row is overwritten by the remote
+-- tuple, so a=100 is replaced by a=200.
+\c :provider_dsn
+INSERT INTO secondary_unique_nnd (a, b) VALUES (200, NULL);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM secondary_unique_nnd ORDER BY a;
+  a  | b 
+-----+---
+ 200 |  
+(1 row)
+
+\c :provider_dsn
 \set VERBOSITY terse
 SELECT spock.replicate_ddl($$
 	DROP TABLE public.secondary_unique_pred CASCADE;
@@ -93,6 +221,40 @@ $$);
 NOTICE:  drop cascades to table secondary_unique_pred membership in replication set default
  replicate_ddl 
 ---------------
+ t
+(1 row)
+
+SELECT spock.replicate_ddl($$
+	DROP TABLE public.secondary_unique_null CASCADE;
+$$);
+NOTICE:  drop cascades to table secondary_unique_null membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT spock.replicate_ddl($$
+	DROP TABLE public.secondary_unique_nnd CASCADE;
+$$);
+NOTICE:  drop cascades to table secondary_unique_nnd membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+-- Restore the default (off) on both nodes.
+ALTER SYSTEM SET spock.check_all_uc_indexes = false;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :subscriber_dsn
+ALTER SYSTEM SET spock.check_all_uc_indexes = false;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
  t
 (1 row)
 
