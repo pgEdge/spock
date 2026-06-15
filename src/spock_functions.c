@@ -2200,6 +2200,53 @@ spock_replication_set_remove_partition(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Append a "SET search_path TO ...;" command to buf that reproduces the given
+ * search_path GUC value with every schema name properly quoted.
+ *
+ * The value must be parsed and re-quoted rather than interpolated verbatim:
+ * GetConfigOptionByName() does not always return a value that is valid SQL on
+ * its own.  In particular set_config('search_path', ' ', false) (as the core
+ * "namespace" regression test does) yields a bare space, which interpolated
+ * directly would emit the invalid "SET search_path TO  ;".  A value that
+ * resolves to no schemas (empty or whitespace-only) yields
+ * "SET search_path TO '';", so the command is always valid SQL and the
+ * subscriber ends up with the same (empty) effective search path as the
+ * publisher.
+ */
+static void
+append_set_search_path(StringInfo buf, const char *search_path)
+{
+	List	   *path_list = NIL;
+	char	   *rawname;
+	ListCell   *lc;
+
+	/* SplitIdentifierString scribbles on its argument, so work on a copy. */
+	rawname = pstrdup(search_path);
+
+	if (!SplitIdentifierString(rawname, ',', &path_list))
+		elog(ERROR, "invalid value for search_path: \"%s\"", search_path);
+
+	if (path_list == NIL)
+	{
+		appendStringInfoString(buf, "SET search_path TO ''; ");
+		pfree(rawname);
+		return;
+	}
+
+	appendStringInfoString(buf, "SET search_path TO ");
+	foreach(lc, path_list)
+	{
+		if (lc != list_head(path_list))
+			appendStringInfo(buf, ", ");
+		appendStringInfoString(buf, quote_identifier((char *) lfirst(lc)));
+	}
+	appendStringInfoString(buf, "; ");
+
+	list_free(path_list);
+	pfree(rawname);
+}
+
+/*
  * spock_replicate_ddl_command
  *
  * Queues the input SQL for replication.
@@ -2215,7 +2262,6 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 	SpockLocalNode *node;
 	StringInfoData cmd;
 	StringInfoData q;
-	List	   *path_list = NIL;
 	char	   *search_path;
 	char	   *role;
 
@@ -2246,22 +2292,7 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 
 	/* Add search path to the query for execution on the target node */
 	initStringInfo(&q);
-	SplitIdentifierString(search_path, ',', &path_list);
-	if (path_list != NIL)
-	{
-		ListCell   *lc2;
-
-		appendStringInfoString(&q, "SET search_path TO ");
-		foreach(lc2, path_list)
-		{
-			if (lc2 != list_head(path_list))
-				appendStringInfoChar(&q, ',');
-			appendStringInfo(&q, "%s", quote_identifier((char *) lfirst(lc2)));
-		}
-		appendStringInfo(&q, "; ");
-	}
-	else
-		appendStringInfo(&q, "SET search_path TO ''; ");
+	append_set_search_path(&q, search_path);
 	appendStringInfoString(&q, query);
 
 	/* Convert the query to json string. */
@@ -2534,10 +2565,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	{
 		/* Add search path to the query for execution on the target node */
 		search_path = GetConfigOptionByName("search_path", NULL, false);
-		if (strlen(search_path) > 0)
-			appendStringInfo(&q, "SET search_path TO %s; ", search_path);
-		else
-			appendStringInfo(&q, "SET search_path TO ''; ");
+		append_set_search_path(&q, search_path);
 	}
 	/* add query to buffer */
 	appendStringInfoString(&q, query);

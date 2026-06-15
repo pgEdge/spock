@@ -183,11 +183,11 @@ CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 SELECT table_name, operation, (error_message <> '') AS has_error, ddl_statement
 FROM spock.exception_log
 ORDER BY command_counter;
- table_name | operation | has_error |                                       ddl_statement                                        
-------------+-----------+-----------+--------------------------------------------------------------------------------------------
+ table_name | operation | has_error |                                        ddl_statement                                        
+------------+-----------+-----------+---------------------------------------------------------------------------------------------
  drl_t1     | UPDATE    | t         | 
  queue      | INSERT    | t         | 
-            | DDL       | t         | "SET search_path TO \"$user\",public; CREATE TABLE IF NOT EXISTS public.drl_dummy (x int)"
+            | DDL       | t         | "SET search_path TO \"$user\", public; CREATE TABLE IF NOT EXISTS public.drl_dummy (x int)"
  drl_t3     | UPDATE    | t         | 
 (4 rows)
 
