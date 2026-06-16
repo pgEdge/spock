@@ -86,6 +86,33 @@ CALL spock.wait_for_sync_event(true, 'test_provider', :'sync_event');
 SELECT count(*) FROM spock.tables where nspname = 'test_ns_schema_1' AND set_name IS NOT NULL;
 SELECT count(*) FROM test_ns_schema_1.abc;
 
+-- A temporary relation is never replicated, so a permanent table that copies
+-- its definition (LIKE) or its data (CREATE TABLE AS) cannot be auto-replicated:
+-- the shipped command text would fail on the subscriber, where the temporary
+-- relation does not exist.  Auto-DDL creates the table locally but skips
+-- replication and explains why.
+\c :provider_dsn
+CREATE TEMP TABLE autoddl_temp_src (a int primary key, b text);
+
+-- CREATE TABLE ... (LIKE temp): created locally, replication skipped with a reason
+CREATE TABLE autoddl_perm_like (LIKE autoddl_temp_src);
+
+-- CREATE TABLE AS reading a temp relation: created locally, replication skipped
+CREATE TABLE autoddl_perm_ctas AS SELECT * FROM autoddl_temp_src;
+
+-- A temp relation nested in a subquery is still detected
+CREATE TABLE autoddl_perm_ctas2 AS
+    SELECT * FROM (SELECT a FROM autoddl_temp_src) s;
+
+-- Sanity: copying a permanent relation with LIKE still replicates normally
+CREATE TABLE autoddl_perm_src (a int primary key, b text);
+CREATE TABLE autoddl_perm_like_ok (LIKE autoddl_perm_src);
+
+-- Clean up (IF EXISTS: the temp-derived tables were never created on the subscriber)
+DROP TABLE IF EXISTS autoddl_perm_like, autoddl_perm_ctas, autoddl_perm_ctas2;
+DROP TABLE IF EXISTS autoddl_perm_like_ok, autoddl_perm_src;
+DROP TABLE autoddl_temp_src;
+
 -- Reset the configuration to the default value
 \c :provider_dsn
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';

@@ -138,6 +138,44 @@ SELECT count(*) FROM test_ns_schema_1.abc;
      1
 (1 row)
 
+-- A temporary relation is never replicated, so a permanent table that copies
+-- its definition (LIKE) or its data (CREATE TABLE AS) cannot be auto-replicated:
+-- the shipped command text would fail on the subscriber, where the temporary
+-- relation does not exist.  Auto-DDL creates the table locally but skips
+-- replication and explains why.
+\c :provider_dsn
+CREATE TEMP TABLE autoddl_temp_src (a int primary key, b text);
+WARNING:  This DDL statement will not be replicated.
+-- CREATE TABLE ... (LIKE temp): created locally, replication skipped with a reason
+CREATE TABLE autoddl_perm_like (LIKE autoddl_temp_src);
+WARNING:  CREATE TABLE copies the definition of temporary relation "autoddl_temp_src"
+DETAIL:  Temporary relations are session-private and do not exist on other nodes.
+WARNING:  This DDL statement will not be replicated.
+-- CREATE TABLE AS reading a temp relation: created locally, replication skipped
+CREATE TABLE autoddl_perm_ctas AS SELECT * FROM autoddl_temp_src;
+WARNING:  CREATE TABLE AS reads a temporary relation
+DETAIL:  Temporary relations are session-private and do not exist on other nodes.
+WARNING:  This DDL statement will not be replicated.
+-- A temp relation nested in a subquery is still detected
+CREATE TABLE autoddl_perm_ctas2 AS
+    SELECT * FROM (SELECT a FROM autoddl_temp_src) s;
+WARNING:  CREATE TABLE AS reads a temporary relation
+DETAIL:  Temporary relations are session-private and do not exist on other nodes.
+WARNING:  This DDL statement will not be replicated.
+-- Sanity: copying a permanent relation with LIKE still replicates normally
+CREATE TABLE autoddl_perm_src (a int primary key, b text);
+INFO:  DDL statement replicated.
+CREATE TABLE autoddl_perm_like_ok (LIKE autoddl_perm_src);
+INFO:  DDL statement replicated.
+-- Clean up (IF EXISTS: the temp-derived tables were never created on the subscriber)
+DROP TABLE IF EXISTS autoddl_perm_like, autoddl_perm_ctas, autoddl_perm_ctas2;
+INFO:  DDL statement replicated.
+DROP TABLE IF EXISTS autoddl_perm_like_ok, autoddl_perm_src;
+NOTICE:  drop cascades to table autoddl_perm_like_ok membership in replication set default_insert_only
+NOTICE:  drop cascades to table autoddl_perm_src membership in replication set default
+INFO:  DDL statement replicated.
+DROP TABLE autoddl_temp_src;
+INFO:  DDL statement replicated.
 -- Reset the configuration to the default value
 \c :provider_dsn
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';

@@ -97,7 +97,7 @@ extern int64 sequence_get_last_value(Oid seqoid);
 
 extern bool in_spock_replicate_ddl_command;
 extern bool in_spock_queue_ddl_command;
-extern void spock_auto_replicate_ddl(const char *query, List *replication_sets,
+extern bool spock_auto_replicate_ddl(const char *query, List *replication_sets,
 									 Oid roleoid, Node *stmt);
 
 /* spock_readonly.c */
