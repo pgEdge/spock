@@ -2351,13 +2351,81 @@ spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 }
 
 /*
+ * query_temp_like_source
+ *
+ * Auto-DDL ships the raw text of a command to be re-parsed and executed on the
+ * subscriber.  A CREATE TABLE may copy the definition of another relation with
+ * a LIKE clause; if that source relation is temporary, the shipped command
+ * would fail on the subscriber, where the temporary relation does not exist.
+ *
+ * We cannot inspect the executed parse tree for this: by the time auto-DDL runs
+ * (post-execution) transformCreateStmt() has already expanded the LIKE clause
+ * out of CreateStmt->tableElts, so the TableLikeClause is gone.  Instead we
+ * re-parse the raw command text -- the exact text we are about to ship and the
+ * subscriber will re-parse -- which still carries the LIKE clause untouched.
+ *
+ * The parse tree's relpersistence flag is only meaningful for the object being
+ * declared -- referenced RangeVars default to RELPERSISTENCE_PERMANENT
+ * regardless of what they actually resolve to -- so we resolve each LIKE source
+ * against the catalogue and inspect its real persistence.  Name resolution uses
+ * the current search_path (where pg_temp is normally first), matching what the
+ * executor did on the origin.
+ *
+ * Returns the offending RangeVar (for a useful error message) or NULL if no
+ * temporary relation is referenced.  Note that this detects only relations
+ * named directly in the statement; a temporary relation reached indirectly
+ * (e.g. through a function body) is not visible here.
+ */
+static RangeVar *
+query_temp_like_source(const char *query)
+{
+	ListCell   *rawlc;
+
+	foreach(rawlc, pg_parse_query(query))
+	{
+		RawStmt    *raw = lfirst_node(RawStmt, rawlc);
+		CreateStmt *cstmt;
+		ListCell   *cell;
+
+		if (!IsA(raw->stmt, CreateStmt))
+			continue;
+
+		cstmt = (CreateStmt *) raw->stmt;
+		foreach(cell, cstmt->tableElts)
+		{
+			TableLikeClause *like;
+			Oid			relid;
+
+			if (!IsA(lfirst(cell), TableLikeClause))
+				continue;
+
+			like = (TableLikeClause *) lfirst(cell);
+			relid = RangeVarGetRelid(like->relation, AccessShareLock, true);
+
+			if (OidIsValid(relid) &&
+				get_rel_persistence(relid) == RELPERSISTENCE_TEMP)
+				return like->relation;
+		}
+	}
+
+	return NULL;
+}
+
+/*
  * spock_auto_replicate_ddl
  *
  * Add the DDL statement to the spock.queue table so it can
  * be replicated to connected nodes. It also sends the current
  * search_path along with the query.
+ *
+ * Returns true if the statement was queued for replication, or false if it was
+ * skipped (e.g. a purely local command, or one that references a temporary
+ * relation that does not exist on other nodes).  The caller uses this to decide
+ * whether the affected relation should be added to the replication set: a table
+ * whose creation was not replicated must not be tracked, or its later DML would
+ * fail to apply on the subscriber.
  */
-void
+bool
 spock_auto_replicate_ddl(const char *query, List *replication_sets,
 						 Oid roleoid, Node *stmt)
 {
@@ -2441,13 +2509,50 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				if (castNode(Query, ctas->query)->commandType == CMD_UTILITY &&
 					IsA(castNode(Query, ctas->query)->utilityStmt, ExecuteStmt))
 					goto skip_ddl;
+
+				/*
+				 * The defining query is re-executed verbatim on the subscriber.
+				 * If it reads a temporary relation -- at any nesting level --
+				 * it would fail there, so let the local command stand but skip
+				 * replication and say why.  isQueryUsingTempRelation() walks the
+				 * whole analysed query tree.
+				 */
+				if (isQueryUsingTempRelation(castNode(Query, ctas->query)))
+				{
+					ereport(spock_enable_quiet_mode ? LOG : WARNING,
+							(errmsg("CREATE TABLE AS reads a temporary relation"),
+							 errdetail("Temporary relations are session-private and do not exist on other nodes.")));
+					goto skip_ddl;
+				}
 				warn = true;
 			}
 			break;
 
 		case T_CreateStmt:
-			if (castNode(CreateStmt, stmt)->relation->relpersistence == RELPERSISTENCE_TEMP)
-				goto skip_ddl;
+			{
+				CreateStmt *cstmt = castNode(CreateStmt, stmt);
+				RangeVar   *tmpsrc;
+
+				if (cstmt->relation->relpersistence == RELPERSISTENCE_TEMP)
+					goto skip_ddl;
+
+				/*
+				 * A permanent table whose definition is copied from a
+				 * temporary one via LIKE cannot be replicated: the shipped
+				 * command text would fail on the subscriber, where the
+				 * temporary source relation does not exist.  Let the local
+				 * command stand, but skip replication and say why.
+				 */
+				tmpsrc = query_temp_like_source(query);
+				if (tmpsrc != NULL)
+				{
+					ereport(spock_enable_quiet_mode ? LOG : WARNING,
+							(errmsg("CREATE TABLE copies the definition of temporary relation \"%s\"",
+									tmpsrc->relname),
+							 errdetail("Temporary relations are session-private and do not exist on other nodes.")));
+					goto skip_ddl;
+				}
+			}
 			break;
 
 		case T_CreateSeqStmt:
@@ -2557,12 +2662,11 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 
 				if (analyze &&
 					castNode(Query, estmt->query)->commandType == CMD_UTILITY)
-				{
-					spock_auto_replicate_ddl(query, replication_sets, roleoid,
-											 castNode(Query, estmt->query)->utilityStmt);
-				}
+					return spock_auto_replicate_ddl(query, replication_sets,
+													roleoid,
+													castNode(Query, estmt->query)->utilityStmt);
 
-				return;			/* nothing more to do. */
+				return false;	/* EXPLAIN without ANALYZE: nothing replicated. */
 			}
 			break;
 
@@ -2598,10 +2702,11 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	/* Queue the query for replication. */
 	queue_message(replication_sets, roleoid, QUEUE_COMMAND_TYPE_DDL, cmd.data);
 
-	return;
+	return true;
 
 skip_ddl:
 	elog(spock_enable_quiet_mode ? LOG : WARNING, "This DDL statement will not be replicated.");
+	return false;
 }
 
 

@@ -94,11 +94,18 @@ spock_autoddl_process(PlannedStmt *pstmt,
 	queryString = CleanQuerytext(queryString, &loc, &len);
 	curr_qry = pnstrdup(queryString, len);
 
-	spock_auto_replicate_ddl(curr_qry,
-							 list_make1(DEFAULT_INSONLY_REPSET_NAME),
-							 GetUserId(),
-							 parsetree);
-	add_ddl_to_repset(parsetree);
+	/*
+	 * Only track the affected relation in the replication set if the command
+	 * was actually queued for replication.  If replication was skipped (for
+	 * example because the statement references a temporary relation), adding
+	 * the table here would let its later DML replicate to subscribers that
+	 * never received the CREATE, stalling the apply worker.
+	 */
+	if (spock_auto_replicate_ddl(curr_qry,
+								 list_make1(DEFAULT_INSONLY_REPSET_NAME),
+								 GetUserId(),
+								 parsetree))
+		add_ddl_to_repset(parsetree);
 
 end:
 	/* Restore previous session privileges */
