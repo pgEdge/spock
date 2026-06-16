@@ -1,0 +1,80 @@
+#
+# Single-PG18 Spock mesh installcheck (no Docker)
+#
+# Builds PostgreSQL REL_18_STABLE plus the Spock extension once, wires
+# three single-node PG18 clusters into a full Spock mesh
+# (6 subscriptions, exception_behaviour='discard', auto-DDL on),
+# stresses it with `make installcheck` against n1,
+# then asserts that every subscription is still enabled and that
+# spock.sync_event() round-trips on every directed edge.
+#
+# The whole thing is driven by tests/run-single-pg18-installcheck.sh, so
+# it runs identically on a developer laptop.  This workflow's job is
+# just: provision deps, invoke the script, save logs on failure.
+#
+# Dependency footprint is dictated by the script's ./configure flags:
+#
+#   --with-icu       -> libicu-dev
+#   --with-openssl   -> libssl-dev
+#   --with-readline  -> libreadline-dev
+#   --with-zstd      -> libzstd-dev
+#   --with-lz4       -> liblz4-dev
+#   (default zlib)   -> zlib1g-dev
+#   parser/scanner   -> bison, flex
+#   ICU pkg detect   -> pkg-config (preinstalled, listed for clarity)
+#
+# Everything else the script touches -- gcc, make, perl, git, rsync,
+# ca-certificates -- is preinstalled on ubuntu-latest.  If you change
+# the configure command in the script, sync this list with it.
+#
+
+name: Installcheck (single-PG18 mesh)
+run-name: Single-PG18 mesh installcheck + sync_event verification
+
+on:
+  workflow_dispatch:          # manual: "Run workflow" button in the UI
+  push:                       # automatic: every commit on every branch
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'mkdocs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  installcheck-single-pg18:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            --no-install-recommends \
+              bison flex pkg-config \
+              libicu-dev libssl-dev libreadline-dev \
+              libzstd-dev liblz4-dev zlib1g-dev
+
+      - name: Run single-PG18 installcheck
+        run: |
+          # BASE_DIR defaults to <repo>/single-pg18-installcheck which in CI
+          # is ${GITHUB_WORKSPACE}/single-pg18-installcheck -- exactly the
+          # paths the upload-artifact step below points at.
+          ./tests/run-single-pg18-installcheck.sh --jobs "$(nproc)"
+
+      - name: Collect logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installcheck-single-pg18-logs
+          path: |
+            single-pg18-installcheck/log/**
+            single-pg18-installcheck/src/pg18/src/test/regress/regression.diffs
+            single-pg18-installcheck/src/pg18/src/test/regress/regression.out
+          if-no-files-found: ignore
+          retention-days: 7

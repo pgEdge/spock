@@ -14,3 +14,10 @@ spock.control
 tags
 .vscode
 tmp/
+
+# Single-PG18 installcheck test rig (tests/run-single-pg18-installcheck.sh).
+# Contains the PG clone, build, install, PGDATA dirs and logs; can grow to
+# several gigabytes.  Always ignored -- re-create by running the script.
+# Deliberately not dot-prefixed so the directory is visible in Finder / ls
+# and easy to inspect.
+single-pg18-installcheck/
