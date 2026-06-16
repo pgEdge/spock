@@ -1,8 +1,39 @@
 # Spock Release Notes
 
-## Spock 5.0.9
+## Spock 5.0.10
 
 ### Bug Fixes
+* Improve apply performance on tables with a unique index over a frequently
+  NULL column. Rows with a NULL in such a key are now recognized as
+  non-conflicting without an unnecessary index scan, avoiding a slowdown that
+  grew with table size.
+* Correctly handle conflicts on `NULLS NOT DISTINCT` unique indexes.
+  On these indexes (PostgreSQL 15+) two NULL values are treated as equal, so
+  matching NULL-keyed rows are now resolved through normal conflict resolution
+  (last-update-wins) instead of failing with a duplicate-key error.
+* Fix a `could not open relation` error in the apply worker when an index is
+  dropped while replication is running. The worker now refreshes its cached
+  view of a table's indexes before using it.
+* Fix gradual memory growth during a transaction that logs to
+  `spock.exception_log`. Memory used while recording exceptions is now released
+  per row instead of accumulating until the transaction commits.
+* Fix ZODAN (`add_node`) version checking. Spock versions were compared as
+  text, so `5.0.10` sorted below `5.0.4` and a valid node was wrongly rejected.
+  Versions are now compared numerically, and nodes may differ in patch level as
+  long as their major.minor matches, allowing rolling upgrades.
+
+## Spock 5.0.9
+
+### New Features
+* Initial PostgreSQL 19 support. Adds the server-side patches required to build
+  and run Spock against PostgreSQL 19.
+
+### Bug Fixes
+* Fix silently dropped writes after a synchronous-standby failover.
+  Spock could report an incorrect replication position to the publisher, so a
+  promoted standby resumed from the wrong point and lost the changes in
+  between. The position reported to the publisher is now always taken from the
+  publisher's own WAL stream.
 * Fix `spock_failover_slots` stalling on PG17+ standbys. Slot
   synchronization could hold replication-slot and proc-array locks
   exclusively long enough to block every backend trying to start up on the
@@ -12,6 +43,15 @@
   connections disabled (`datconnlimit = -2`) concurrently with Spock
   starting a per-database worker. The database OID is now revalidated
   immediately before the worker is registered to avoid race.
+* Reduce per-row work and memory growth in the apply path. Replicated
+  changes no longer re-open a table's indexes for every row, and transient
+  memory is freed per row instead of building up over the transaction.
+
+### Performance
+* Skip building conflict log messages that would not be logged. When the log
+  level is suppressed, Spock no longer formats the conflicting rows for an
+  `ereport()` that would be discarded, speeding up apply on high-conflict
+  workloads. Recording conflicts in `spock.resolutions` is unaffected.
 
 ## Spock 5.0.8
 
