@@ -113,8 +113,8 @@ my $sub_rc     = $?;
 
 isnt($sub_rc, 0, 'sub_create from tampered n2 to n1 fails as expected');
 like($sub_output,
-     qr/duplicate key|unique constraint|already exists|node.*exists/i,
-     "failure mode is a uniqueness / duplicate diagnostic " .
+     qr/duplicate key|unique constraint|already exists|node.*exists|collides with existing node/i,
+     "failure mode is a collision diagnostic " .
      "(sees: " . substr($sub_output, 0, 120) . "...)");
 
 # ---- Step 4: same in the reverse direction ---------------------------------
@@ -129,8 +129,8 @@ my $sub_rc2     = $?;
 
 isnt($sub_rc2, 0, 'sub_create from n1 to tampered n2 fails as expected');
 like($sub_output2,
-     qr/duplicate key|unique constraint|already exists|node.*exists/i,
-     "reverse failure mode is also a uniqueness diagnostic " .
+     qr/duplicate key|unique constraint|already exists|node.*exists|collides with existing node/i,
+     "reverse failure mode is also a collision diagnostic " .
      "(sees: " . substr($sub_output2, 0, 120) . "...)");
 
 # ---- Step 5: verify catalog state was not corrupted by the failed attempts -
