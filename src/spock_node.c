@@ -178,6 +178,7 @@ create_node(SpockNode *node)
 	Datum		values[Natts_node];
 	bool		nulls[Natts_node];
 	NameData	node_name;
+	SpockNode  *existing;
 
 	if (get_node_by_name(node->name, true) != NULL)
 		elog(ERROR, "node %s already exists", node->name);
@@ -187,6 +188,19 @@ create_node(SpockNode *node)
 		node->id =
 			DatumGetUInt32(hash_any((const unsigned char *) node->name,
 									strlen(node->name))) & 0xffff;
+
+	/*
+	 * Detect node_id hash collisions before insertion.  The id is a 16-bit
+	 * hash of the node name, so two different names can produce the same
+	 * value.  A collision causes replication-origin ambiguity between the
+	 * two nodes.
+	 */
+	existing = get_node(node->id, true);
+	if (existing != NULL)
+		elog(ERROR,
+				"node id %u (computed from name \"%s\") collides with existing "
+				"node \"%s\"; rename this node to resolve the collision",
+				node->id, node->name, existing->name);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
