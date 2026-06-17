@@ -157,6 +157,7 @@ create_node(SpockNode *node)
 	Datum		values[Natts_node];
 	bool		nulls[Natts_node];
 	NameData	node_name;
+	SpockNode  *existing;
 
 	if (get_node_by_name(node->name, true) != NULL)
 		elog(ERROR, "node %s already exists", node->name);
@@ -166,6 +167,19 @@ create_node(SpockNode *node)
 		node->id =
 			DatumGetUInt32(hash_any((const unsigned char *) node->name,
 									strlen(node->name))) & 0xffff;
+
+	/*
+	 * Detect node_id hash collisions before insertion.  The id is a 16-bit
+	 * hash of the node name, so two different names can produce the same
+	 * value.  A collision causes replication-origin ambiguity between the
+	 * two nodes.
+	 */
+	existing = get_node(node->id, true);
+	if (existing != NULL)
+		elog(ERROR,
+			 "node id %u (computed from name \"%s\") collides with existing "
+			 "node \"%s\"; rename this node to resolve the collision",
+			 node->id, node->name, existing->name);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -324,9 +338,9 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
  * Load the info for specific node.
  */
 SpockNode *
-get_node(Oid nodeid)
+get_node(Oid nodeid, bool missing_ok)
 {
-	SpockNode  *node;
+	SpockNode  *node = NULL;
 	RangeVar	   *rv;
 	Relation		rel;
 	SysScanDesc		scan;
@@ -346,9 +360,12 @@ get_node(Oid nodeid)
 	tuple = systable_getnext(scan);
 
 	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "node %u not found", nodeid);
-
-	node = node_fromtuple(tuple, RelationGetDescr(rel));
+	{
+		if (!missing_ok)
+			elog(ERROR, "node %u not found", nodeid);
+	}
+	else
+		node = node_fromtuple(tuple, RelationGetDescr(rel));
 
 	systable_endscan(scan);
 	table_close(rel, RowExclusiveLock);
@@ -536,7 +553,7 @@ get_local_node(bool for_update, bool missing_ok)
 	table_close(rel, for_update ? NoLock : RowExclusiveLock);
 
 	res = (SpockLocalNode *) palloc(sizeof(SpockLocalNode));
-	res->node = get_node(nodeid);
+	res->node = get_node(nodeid, false);
 	res->node_if = get_node_interface(nodeifid);
 
 	return res;
@@ -1001,8 +1018,8 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 	sub->slot_name = pstrdup(NameStr(subtup->sub_slot_name));
 	sub->skip_schema = NIL;  /* Initialize to avoid memory corruption */
 
-	sub->origin = get_node(subtup->sub_origin);
-	sub->target = get_node(subtup->sub_target);
+	sub->origin = get_node(subtup->sub_origin, false);
+	sub->target = get_node(subtup->sub_target, false);
 	sub->origin_if = get_node_interface(subtup->sub_origin_if);
 	sub->target_if = get_node_interface(subtup->sub_target_if);
 
