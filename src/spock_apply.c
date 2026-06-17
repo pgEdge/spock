@@ -1777,14 +1777,18 @@ handle_delete(StringInfo s)
 }
 
 /*
- * Handle TRUNCATE
+ * apply_truncate
+ *		Resolve the remote relation OIDs to local relations -- expanding any
+ *		partitioned table to its leaf partitions -- and TRUNCATE them.
+ *
+ *		May throw: a relation missing on this node, or a constraint or trigger
+ *		fired by the truncate.  Callers replaying under exception handling must
+ *		wrap this in a subtransaction so such a failure can be discarded; see
+ *		handle_truncate().
  */
 static void
-handle_truncate(StringInfo s)
+apply_truncate(List *remote_relids, bool restart_seqs)
 {
-	bool		cascade = false;
-	bool		restart_seqs = false;
-	List	   *remote_relids = NIL;
 	List	   *remote_rels = NIL;
 	List	   *rels = NIL;
 	List	   *part_rels = NIL;
@@ -1792,42 +1796,6 @@ handle_truncate(StringInfo s)
 	List	   *relids_logged = NIL;
 	ListCell   *lc;
 	LOCKMODE	lockmode = AccessExclusiveLock;
-
-	/*
-	 * Quick return if we are skipping data modification changes.
-	 */
-	if (is_skipping_changes())
-		return;
-
-	begin_replication_step();
-
-	errcallback_arg.action_name = "TRUNCATE";
-	xact_action_counter++;
-	remote_relids = spock_read_truncate(s, &cascade, &restart_seqs);
-
-	/*
-	 * TRANSDISCARD/SUB_DISABLE: skip the TRUNCATE and log it as discarded.
-	 * ExecuteTruncateGuts is called directly (not via ProcessUtility), so
-	 * transaction_read_only does not protect against it — we must skip
-	 * explicitly, matching the pattern in handle_insert/update/delete.
-	 */
-	if (MyApplyWorker->use_try_block &&
-		(exception_behaviour == TRANSDISCARD ||
-		 exception_behaviour == SUB_DISABLE))
-	{
-		char	   *error_msg =
-			(xact_action_counter ==
-			 exception_log_ptr[my_exception_log_index].failed_action &&
-			 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
-			exception_log_ptr[my_exception_log_index].initial_error_message :
-			NULL;
-
-		exception_command_counter++;
-		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
-		log_insert_exception(false, error_msg, NULL, NULL, NULL, "TRUNCATE");
-		end_replication_step();
-		return;
-	}
 
 	foreach(lc, remote_relids)
 	{
@@ -1920,6 +1888,55 @@ handle_truncate(StringInfo s)
 
 		table_close(rel, NoLock);
 	}
+}
+
+/*
+ * Handle TRUNCATE
+ */
+static void
+handle_truncate(StringInfo s)
+{
+	bool		cascade = false;
+	bool		restart_seqs = false;
+	List	   *remote_relids = NIL;
+
+	/*
+	 * Quick return if we are skipping data modification changes.
+	 */
+	if (is_skipping_changes())
+		return;
+
+	begin_replication_step();
+
+	errcallback_arg.action_name = "TRUNCATE";
+	xact_action_counter++;
+	remote_relids = spock_read_truncate(s, &cascade, &restart_seqs);
+
+	/*
+	 * TRANSDISCARD/SUB_DISABLE: skip the TRUNCATE and log it as discarded.
+	 * ExecuteTruncateGuts is called directly (not via ProcessUtility), so
+	 * transaction_read_only does not protect against it — we must skip
+	 * explicitly, matching the pattern in handle_insert/update/delete.
+	 */
+	if (MyApplyWorker->use_try_block &&
+		(exception_behaviour == TRANSDISCARD ||
+		 exception_behaviour == SUB_DISABLE))
+	{
+		char	   *error_msg =
+			(xact_action_counter ==
+			 exception_log_ptr[my_exception_log_index].failed_action &&
+			 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
+			exception_log_ptr[my_exception_log_index].initial_error_message :
+			NULL;
+
+		exception_command_counter++;
+		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+		log_insert_exception(false, error_msg, NULL, NULL, NULL, "TRUNCATE");
+		end_replication_step();
+		return;
+	}
+
+	apply_truncate(remote_relids, restart_seqs);
 
 	end_replication_step();
 }
