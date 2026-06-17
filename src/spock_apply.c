@@ -1912,33 +1912,84 @@ handle_truncate(StringInfo s)
 	xact_action_counter++;
 	remote_relids = spock_read_truncate(s, &cascade, &restart_seqs);
 
-	/*
-	 * TRANSDISCARD/SUB_DISABLE: skip the TRUNCATE and log it as discarded.
-	 * ExecuteTruncateGuts is called directly (not via ProcessUtility), so
-	 * transaction_read_only does not protect against it — we must skip
-	 * explicitly, matching the pattern in handle_insert/update/delete.
-	 */
-	if (MyApplyWorker->use_try_block &&
-		(exception_behaviour == TRANSDISCARD ||
-		 exception_behaviour == SUB_DISABLE))
+	if (MyApplyWorker->use_try_block)
 	{
-		char	   *error_msg =
-			(xact_action_counter ==
-			 exception_log_ptr[my_exception_log_index].failed_action &&
-			 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
-			exception_log_ptr[my_exception_log_index].initial_error_message :
-			NULL;
+		if (exception_behaviour == TRANSDISCARD ||
+			exception_behaviour == SUB_DISABLE)
+		{
+			/*
+			 * TRANSDISCARD/SUB_DISABLE: the whole transaction is being
+			 * abandoned, so skip the TRUNCATE outright and log it as discarded
+			 * -- do not attempt it.  (ExecuteTruncateGuts is called directly,
+			 * not via ProcessUtility, so transaction_read_only would not have
+			 * protected us anyway.)
+			 */
+			char	   *error_msg =
+				(xact_action_counter ==
+				 exception_log_ptr[my_exception_log_index].failed_action &&
+				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
+				exception_log_ptr[my_exception_log_index].initial_error_message :
+				NULL;
 
-		exception_command_counter++;
-		exception_log_ptr[my_exception_log_index].local_tuple = NULL;
-		log_insert_exception(false, error_msg, NULL, NULL, NULL, "TRUNCATE");
-		end_replication_step();
-		return;
+			exception_command_counter++;
+			exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+			log_insert_exception(false, error_msg, NULL, NULL, NULL, "TRUNCATE");
+		}
+		else
+		{
+			/*
+			 * DISCARD: attempt the TRUNCATE in a subtransaction.  If it fails
+			 * -- including a relation that is missing on this node -- discard
+			 * it and carry on, rather than letting the error escape and be
+			 * re-thrown on every retry, which would loop the apply worker.
+			 * Matches the pattern in handle_insert/update/delete and
+			 * handle_sql_or_exception().
+			 */
+			bool		failed = false;
+			ErrorData  *edata = NULL;
+
+			PG_TRY();
+			{
+				exception_command_counter++;
+				BeginInternalSubTransaction(NULL);
+				apply_truncate(remote_relids, restart_seqs);
+			}
+			PG_CATCH();
+			{
+				failed = true;
+				xact_had_exception = true;
+
+				MemoryContextSwitchTo(ApplyOperationContext);
+				edata = CopyErrorData();
+
+				FlushErrorState();
+				RollbackAndReleaseCurrentSubTransaction();
+
+				/*
+				 * Rollback switches to the parent transaction context;
+				 * restore ApplyOperationContext for the code below.
+				 */
+				MemoryContextSwitchTo(ApplyOperationContext);
+			}
+			PG_END_TRY();
+
+			if (!failed)
+				ReleaseCurrentSubTransaction();
+			else
+			{
+				exception_log_ptr[my_exception_log_index].local_tuple = NULL;
+				log_insert_exception(true, edata->message, NULL, NULL, NULL,
+									 "TRUNCATE");
+			}
+		}
 	}
-
-	apply_truncate(remote_relids, restart_seqs);
+	else
+		apply_truncate(remote_relids, restart_seqs);
 
 	end_replication_step();
+
+	/* Free CopyErrorData allocations from the DISCARD-mode PG_CATCH path. */
+	MemoryContextReset(ApplyOperationContext);
 }
 
 inline static bool
