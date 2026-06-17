@@ -265,8 +265,6 @@ static bool should_log_exception(bool failed);
 static ApplyReplayEntry * apply_replay_entry_create(int r, char *buf);
 static void apply_replay_entry_free(ApplyReplayEntry * entry);
 static void apply_replay_queue_reset(void);
-static void maybe_send_feedback(PGconn *applyconn, XLogRecPtr lsn_to_send,
-								TimestampTz *last_receive_timestamp);
 static void append_feedback_position(XLogRecPtr local_commit_lsn,
 									 XLogRecPtr remote_commit_lsn);
 static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
