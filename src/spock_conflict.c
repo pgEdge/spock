@@ -132,32 +132,52 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 		/*
 		 * The timestamps were equal. Use the "tiebreaker" from the spock.node
 		 * configuration to come up with a winner.
+		 *
+		 * loc_node is always this node (the one applying the change), not the
+		 * origin of the local tuple.  The tiebreaker answers "which physical
+		 * node wins?" — that is a property of the applying node vs the remote
+		 * sending node, regardless of what origin is stamped on the existing
+		 * local tuple.  Using local_origin_id here incorrectly resolves to the
+		 * same node on both sides whenever the local row was replicated from
+		 * the same source that is sending the update (single-writer topology).
+		 *
+		 * Same-origin shortcut: when the local tuple and the remote change share
+		 * the same origin (e.g. the same row updated twice in one upstream
+		 * transaction), there is no real conflict — apply the remote value.
 		 */
+		SpockLocalNode *applying_node;
 		SpockNode  *loc_node;
 		SpockNode  *rmt_node;
 
-		/* If the current local tuple is really local, use our own node.id */
-		if (local_origin_id == InvalidRepOriginId)
+		if (local_origin_id != InvalidRepOriginId &&
+			local_origin_id == remote_origin_id)
 		{
-			SpockLocalNode *local_node = get_local_node(false, false);
-
-			local_origin_id = local_node->node->id;
+			*resolution = SpockResolution_ApplyRemote;
+			return true;
 		}
 
-		/* Get the two nodes for their "tiebreaker" */
-		loc_node = get_node(local_origin_id, false);
+		applying_node = get_local_node(false, false);
+		loc_node = applying_node->node;
 		rmt_node = get_node(remote_origin_id, false);
 
 		if (loc_node->tiebreaker == rmt_node->tiebreaker)
 		{
 			/*
-			 * Major pilot error here. Our default for the tiebreaker is the
-			 * unique 16-bit node.id but the user somehow managed to get
-			 * identical values into the "info" jsonb "tiebreaker" element.
+			 * Equal tiebreaker values. Node creation prevents this for new
+			 * nodes, but existing clusters may still hit it. Apply remote and
+			 * warn so the operator can assign unique tiebreaker values:
+			 *
+			 *   UPDATE spock.node
+			 *      SET info = COALESCE(info, '{}'::jsonb) ||
+			 *                 '{"tiebreaker": <unique_integer>}'
+			 *    WHERE node_name = '<name>';
 			 */
-			elog(WARNING, "CONFLICT: current node=%d and remote node=%d "
-				 "tiebreaker values are equal!",
-				 loc_node->id, rmt_node->id);
+			ereport(WARNING,
+					(errmsg("CONFLICT: node \"%s\" (id=%d) and node \"%s\" (id=%d) "
+							"have equal tiebreaker value %d; applying remote",
+							loc_node->name, loc_node->id,
+							rmt_node->name, rmt_node->id,
+							loc_node->tiebreaker)));
 			*resolution = SpockResolution_ApplyRemote;
 			return true;
 		}
