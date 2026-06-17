@@ -45,6 +45,21 @@ CREATE OR REPLACE FUNCTION spock.gen_sub_name(
 $$;
 
 -- ============================================================================
+-- Function: version_to_array
+-- Purpose : Convert a Spock version string (e.g. '5.0.10', '5.0.4-devel') into
+--           an integer array (e.g. {5,0,10}) so versions can be compared
+--           numerically. A plain text comparison is wrong because it orders
+--           versions lexically (e.g. '5.0.10' < '5.0.4').
+-- Arguments:
+--   v - The version string. Any non-numeric suffix (such as '-devel') is ignored.
+-- Returns  : int[], the dotted numeric components in order.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION spock.version_to_array(v text)
+RETURNS int[] LANGUAGE sql IMMUTABLE AS $$
+    SELECT string_to_array((regexp_match(v, '[0-9]+(?:\.[0-9]+)*'))[1], '.')::int[];
+$$;
+
+-- ============================================================================
 -- Procedure: check_spock_version_compatibility
 -- Purpose: Verify all nodes have the same Spock version before adding a node
 -- ============================================================================
@@ -73,8 +88,8 @@ BEGIN
         RAISE EXCEPTION 'Spock extension not found on source node';
     END IF;
 
-    -- Check source node has required version (strip -devel suffix for comparison)
-    IF regexp_replace(src_version, '-devel$', '') < min_required_version THEN
+    -- Check source node has required version (compare numerically, not lexically)
+    IF spock.version_to_array(src_version) < spock.version_to_array(min_required_version) THEN
         RAISE EXCEPTION 'Spock version mismatch: source node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
             src_version, min_required_version, min_required_version;
     END IF;
@@ -89,8 +104,8 @@ BEGIN
         RAISE EXCEPTION 'Spock extension not found on new node';
     END IF;
 
-    -- Check new node has required version (strip -devel suffix for comparison)
-    IF regexp_replace(new_version, '-devel$', '') < min_required_version THEN
+    -- Check new node has required version (compare numerically, not lexically)
+    IF spock.version_to_array(new_version) < spock.version_to_array(min_required_version) THEN
         RAISE EXCEPTION 'Spock version mismatch: new node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
             new_version, min_required_version, min_required_version;
     END IF;
@@ -113,7 +128,7 @@ BEGIN
             RAISE EXCEPTION 'Spock extension not found on node %', node_rec.node_name;
         END IF;
 
-        IF regexp_replace(node_version, '-devel$', '') < min_required_version THEN
+        IF spock.version_to_array(node_version) < spock.version_to_array(min_required_version) THEN
             version_mismatch := true;
             RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is at least %. All nodes must have version % or later.',
                 node_rec.node_name, node_version, min_required_version, min_required_version;
