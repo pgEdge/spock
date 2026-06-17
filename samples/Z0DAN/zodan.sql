@@ -1,7 +1,7 @@
 -- ============================================================================
 -- ZODAN (Zero Downtime Add Node) - Spock Extension
 -- Version: 1.0.0
--- Required Spock Version: 5.0.4 or later
+-- Required Spock Version: 5.0.9 or later
 -- ============================================================================
 -- Adds a new node to the cluster of Spock.
 -- NOTE: Run the add_node procedure on the new node you are adding, not on an existing cluster node.
@@ -60,6 +60,21 @@ RETURNS int[] LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 -- ============================================================================
+-- Function: version_major_minor
+-- Purpose : Extract the {major, minor} components of a Spock version string as
+--           an int[] (e.g. '5.0.10' and '5.0.4' both yield {5,0}). Used to
+--           allow rolling upgrades: nodes may differ in patch level as long as
+--           their major.minor matches.
+-- Arguments:
+--   v - The version string. Any non-numeric suffix (such as '-devel') is ignored.
+-- Returns  : int[] of length up to 2, the major and minor components.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION spock.version_major_minor(v text)
+RETURNS int[] LANGUAGE sql IMMUTABLE AS $$
+    SELECT (spock.version_to_array(v))[1:2];
+$$;
+
+-- ============================================================================
 -- Procedure: check_spock_version_compatibility
 -- Purpose: Verify all nodes have the same Spock version before adding a node
 -- ============================================================================
@@ -69,7 +84,7 @@ CREATE OR REPLACE PROCEDURE spock.check_spock_version_compatibility(
     verb boolean DEFAULT false
 ) LANGUAGE plpgsql AS $$
 DECLARE
-    min_required_version text := '5.0.4';
+    min_required_version text := '5.0.9';
     src_version text;
     new_version text;
     node_rec RECORD;
@@ -110,8 +125,9 @@ BEGIN
             new_version, min_required_version, min_required_version;
     END IF;
 
-    IF regexp_replace(new_version, '-devel$', '') != regexp_replace(src_version, '-devel$', '') THEN
-        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. Please ensure that they match.',
+    -- Allow rolling upgrades: patch differences are fine, but major.minor must match
+    IF spock.version_major_minor(new_version) IS DISTINCT FROM spock.version_major_minor(src_version) THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. Major.minor versions must match (patch differences are allowed).',
             new_version, src_version;
     END IF;
 
@@ -134,8 +150,9 @@ BEGIN
                 node_rec.node_name, node_version, min_required_version, min_required_version;
         END IF;
 
-        IF regexp_replace(node_version, '-devel$', '') != regexp_replace(new_version, '-devel$', '') THEN
-            RAISE EXCEPTION 'Spock version mismatch: new node has version %, but found node version %. Please ensure that they match.',
+        -- Allow rolling upgrades: patch differences are fine, but major.minor must match
+        IF spock.version_major_minor(node_version) IS DISTINCT FROM spock.version_major_minor(new_version) THEN
+            RAISE EXCEPTION 'Spock version mismatch: new node has version %, but found node version %. Major.minor versions must match (patch differences are allowed).',
                 new_version, node_version;
         END IF;
     END LOOP;
