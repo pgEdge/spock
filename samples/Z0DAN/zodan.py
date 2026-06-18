@@ -24,7 +24,7 @@ import re
 
 class SpockClusterManager:
     VERSION = "1.0.0"
-    MIN_SPOCK_VERSION = "5.0.4"
+    MIN_SPOCK_VERSION = "5.0.9"
     
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
@@ -917,6 +917,21 @@ class SpockClusterManager:
 
         self.notice("=========================================")
 
+    @staticmethod
+    def _version_key(v: str) -> Tuple[int, ...]:
+        """Convert a Spock version string (e.g. '5.0.10', '5.0.4-devel') into a
+        tuple of ints (e.g. (5, 0, 10)) so versions compare numerically. A plain
+        string comparison is wrong because it orders versions lexically
+        (e.g. '5.0.10' < '5.0.4')."""
+        return tuple(int(x) for x in re.findall(r'\d+', v))
+
+    @classmethod
+    def _version_major_minor(cls, v: str) -> Tuple[int, ...]:
+        """Return the (major, minor) components of a version string. Used to allow
+        rolling upgrades: nodes may differ in patch level as long as their
+        major.minor matches."""
+        return cls._version_key(v)[:2]
+
     def check_spock_version_compatibility(self, src_dsn: str, new_node_dsn: str):
         """Check that all nodes have the required Spock version"""
         self.info("Checking Spock version compatibility across all nodes")
@@ -930,9 +945,8 @@ class SpockClusterManager:
             raise Exception("Spock extension not found on source node")
         src_version = src_version.strip()
         
-        # Check source node has required version (strip -devel suffix for comparison)
-        src_version_clean = src_version.replace('-devel', '')
-        if src_version_clean < min_required_version:
+        # Check source node has required version (compare numerically, not lexically)
+        if self._version_key(src_version) < self._version_key(min_required_version):
             raise Exception(f"Spock version mismatch: source node has version {src_version}, "
                           f"but minimum required version is {min_required_version}. Please upgrade all nodes to at least {min_required_version}.")
         
@@ -944,15 +958,15 @@ class SpockClusterManager:
             raise Exception("Spock extension not found on new node")
         new_version = new_version.strip()
         
-        # Check new node has required version (strip -devel suffix for comparison)
-        new_version_clean = new_version.replace('-devel', '')
-        if new_version_clean < min_required_version:
+        # Check new node has required version (compare numerically, not lexically)
+        if self._version_key(new_version) < self._version_key(min_required_version):
             raise Exception(f"Spock version mismatch: new node has version {new_version}, "
                           f"but minimum required version is {min_required_version}. Please upgrade all nodes to at least {min_required_version}.")
-        
-        if new_version_clean != src_version_clean:
+
+        # Allow rolling upgrades: patch differences are fine, but major.minor must match
+        if self._version_major_minor(new_version) != self._version_major_minor(src_version):
             raise Exception(f"Spock version mismatch: new node has version {new_version}, "
-                          f"but source version is {src_version}. Please ensure they are the same.")
+                          f"but source version is {src_version}. Major.minor versions must match (patch differences are allowed).")
 
         # Check all existing nodes in cluster
         nodes = self.get_spock_nodes(src_dsn)
@@ -965,15 +979,15 @@ class SpockClusterManager:
                 raise Exception(f"Spock extension not found on node {node['node_name']}")
             node_version = node_version.strip()
             
-            node_version_clean = node_version.replace('-devel', '')
-            if node_version_clean < min_required_version:
+            if self._version_key(node_version) < self._version_key(min_required_version):
                 raise Exception(f"Spock version mismatch: node {node['node_name']} has version {node_version}, "
                               f"but minimum required version is {min_required_version}. "
                               f"All nodes must have version {min_required_version}.")
 
-            if node_version_clean != new_version_clean:
+            # Allow rolling upgrades: patch differences are fine, but major.minor must match
+            if self._version_major_minor(node_version) != self._version_major_minor(new_version):
                 raise Exception(f"Spock version mismatch: new node has version {new_version}, "
-                              f"but node version is {node_version}. Please ensure they are the same.")
+                              f"but node version is {node_version}. Major.minor versions must match (patch differences are allowed).")
 
         self.notice(f"Version check passed: All nodes running at least Spock version {min_required_version}. Source node {src_version}, new node {new_version}")
 
