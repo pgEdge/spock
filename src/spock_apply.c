@@ -1418,6 +1418,99 @@ handle_relation(StringInfo s)
 	(void) spock_read_rel(s);
 }
 
+/* Return the GUC name of the active exception behaviour mode. */
+static const char *
+get_exception_behaviour_name(void)
+{
+	switch (exception_behaviour)
+	{
+		case DISCARD:
+			return "discard";
+		case TRANSDISCARD:
+			return "transdiscard";
+		case SUB_DISABLE:
+			return "sub_disable";
+		default:
+			return "unknown";
+	}
+}
+
+/*
+ * Format an error message with its SQLSTATE prefix so the root cause recorded
+ * in spock.exception_log (and the apply log) is unambiguous.  exception_log has
+ * no dedicated sqlstate column, so we carry it inline in the message text.
+ *
+ * The result is allocated in ApplyOperationContext (reset per row/message)
+ * rather than the long-lived TopTransactionContext that is current on the
+ * exception path, so repeated logging within one large transaction does not
+ * accumulate.  Callers copy it into the durable tuple immediately.
+ */
+static char *
+errmsg_with_sqlstate(ErrorData *edata)
+{
+	MemoryContext	oldctx = MemoryContextSwitchTo(ApplyOperationContext);
+	char		   *msg;
+
+	if (edata == NULL)
+		msg = psprintf("[SQLSTATE %s] (no error detail captured)",
+					   unpack_sql_state(ERRCODE_INTERNAL_ERROR));
+	else
+		msg = psprintf("[SQLSTATE %s] %s",
+					   unpack_sql_state(edata->sqlerrcode),
+					   edata->message ? edata->message : "(no message)");
+
+	MemoryContextSwitchTo(oldctx);
+	return msg;
+}
+
+/*
+ * Build the error_message for an entry discarded as collateral -- i.e. it was
+ * not itself the failing command (the caller passed a NULL message).  'what'
+ * names the discarded entry for the message: "tuple" on the DML path,
+ * "statement" on the SQL/DDL path (where no tuple is involved).
+ *
+ * Normally we just point the operator at the entry that carries the real error
+ * via its command_counter, which avoids repeating the same message on every
+ * discarded entry.  But when the failure is not attributable to a specific row,
+ * failed_action is 0 and that pointer dangles (no entry's counter is 0), so we
+ * surface the captured root cause instead -- or note that none was captured.
+ */
+static char *
+discard_collateral_message(const char *what)
+{
+	SpockExceptionLog  *e;
+	MemoryContext		oldctx;
+	char			   *msg;
+
+	/*
+	 * Match the paranoia level of the surrounding code: every caller reaches
+	 * this only after exception logging has been set up for this worker.
+	 */
+	Assert(exception_log_ptr != NULL && my_exception_log_index >= 0);
+
+	e = &exception_log_ptr[my_exception_log_index];
+
+	/*
+	 * Allocate in ApplyOperationContext (reset per row/message) so logging
+	 * every discarded row of a large transaction does not pile up in the
+	 * long-lived TopTransactionContext current on the exception path.
+	 */
+	oldctx = MemoryContextSwitchTo(ApplyOperationContext);
+
+	if (e->failed_action != 0)
+		msg = psprintf("%s: %s discarded due to exception at command_counter %u",
+					   get_exception_behaviour_name(), what, e->failed_action);
+	else if (e->initial_error_message[0] != '\0')
+		msg = psprintf("%s: %s discarded due to exception: %s",
+					   get_exception_behaviour_name(), what, e->initial_error_message);
+	else
+		msg = psprintf("%s: %s discarded due to exception (root cause not captured)",
+					   get_exception_behaviour_name(), what);
+
+	MemoryContextSwitchTo(oldctx);
+	return msg;
+}
+
 static void
 log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 					 SpockTupleData *oldtup, SpockTupleData *newtup,
@@ -1432,6 +1525,14 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 
 	if (!should_log_exception(failed))
 		return;
+
+	/*
+	 * A NULL message means this entry is collateral damage -- some other
+	 * command in the same transaction failed, not this one.  Build an
+	 * informative message rather than recording the opaque "unavailable".
+	 */
+	if (errmsg == NULL)
+		errmsg = discard_collateral_message("tuple");
 
 	/*
 	 * Run the exception-log work in ApplyOperationContext so its JSON and
@@ -1463,7 +1564,7 @@ log_insert_exception(bool failed, char *errmsg, SpockRelation *rel,
 							   rel, localtup, oldtup, newtup,
 							   NULL, NULL,
 							   action_name,
-							   (failed) ? errmsg : NULL);
+							   errmsg);
 
 	MemoryContextSwitchTo(oldctx);
 }
@@ -1597,7 +1698,7 @@ handle_insert(StringInfo s)
 
 		/* Let's create an exception log entry if true. */
 		{
-			char	   *err_msg = failed ? (edata ? edata->message : NULL) :
+			char	   *err_msg = failed ? errmsg_with_sqlstate(edata) :
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
 				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
@@ -1764,7 +1865,7 @@ handle_update(StringInfo s)
 
 		/* Let's create an exception log entry if true. */
 		{
-			char	   *err_msg = failed ? (edata ? edata->message : NULL) :
+			char	   *err_msg = failed ? errmsg_with_sqlstate(edata) :
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
 				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
@@ -1869,7 +1970,7 @@ handle_delete(StringInfo s)
 
 		/* Let's create an exception log entry if true. */
 		{
-			char	   *err_msg = failed ? (edata ? edata->message : NULL) :
+			char	   *err_msg = failed ? errmsg_with_sqlstate(edata) :
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
 				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
@@ -2521,11 +2622,19 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 		if (should_log_exception(failed))
 		{
 			MemoryContext oldctx;
-			char	   *err_msg = failed ? edata->message :
+			char	   *err_msg = failed ? errmsg_with_sqlstate(edata) :
 				(xact_action_counter ==
 				 exception_log_ptr[my_exception_log_index].failed_action &&
 				 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0') ?
 				exception_log_ptr[my_exception_log_index].initial_error_message : NULL;
+
+			/*
+			 * A NULL message means this statement is collateral damage -- some
+			 * other command in the same transaction failed.  Build an
+			 * informative message rather than recording "unavailable".
+			 */
+			if (err_msg == NULL)
+				err_msg = discard_collateral_message("statement");
 
 			/* See note in log_insert_exception about the context switch. */
 			oldctx = MemoryContextSwitchTo(ApplyOperationContext);
@@ -3540,20 +3649,39 @@ stream_replay:
 		AbortOutOfAnyTransaction();
 
 		MemoryContextSwitchTo(MessageContext);
-		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
+		elog(LOG, "SPOCK: caught initial exception - [SQLSTATE %s] %s",
+			 unpack_sql_state(edata->sqlerrcode), edata->message);
 
 		/*
 		 * Save the initial error message and which action triggered it.
+		 * The message is prefixed with its SQLSTATE so that whichever entry
+		 * surfaces it later (the matching row, or every collateral row when
+		 * the failure is not attributable) carries an unambiguous root cause.
 		 * On the retry pass, the matching row gets this message in
-		 * exception_log; all other rows get NULL ("unavailable").
+		 * exception_log; other rows get an informative collateral message
+		 * built by discard_collateral_message().
 		 */
 		if (exception_log_ptr != NULL)
 		{
 			snprintf(exception_log_ptr[my_exception_log_index].initial_error_message,
 					 sizeof(exception_log_ptr[my_exception_log_index].initial_error_message),
-					 "%s", edata->message);
-			exception_log_ptr[my_exception_log_index].failed_action =
-				xact_action_counter;
+					 "[SQLSTATE %s] %s",
+					 unpack_sql_state(edata->sqlerrcode), edata->message);
+
+			/*
+			 * A failure during COMMIT (e.g. a deferred constraint trigger that
+			 * fires at commit) is not attributable to any replayed row:
+			 * handle_commit has already bumped the action counter, so no row's
+			 * command_counter would match and the pointer would dangle.  Treat
+			 * it as non-attributable (failed_action = 0) so the replay surfaces
+			 * the captured root cause instead of a dangling command_counter.
+			 */
+			if (errcallback_arg.action_name != NULL &&
+				strcmp(errcallback_arg.action_name, "COMMIT") == 0)
+				exception_log_ptr[my_exception_log_index].failed_action = 0;
+			else
+				exception_log_ptr[my_exception_log_index].failed_action =
+					xact_action_counter;
 		}
 
 		FlushErrorState();

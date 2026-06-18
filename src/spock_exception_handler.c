@@ -186,10 +186,15 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 		values[Anum_exception_log_ddl_user - 1] = CStringGetTextDatum(ddl_user);
 	}
 
-	if (error_message == NULL)
-		values[Anum_exception_log_error_message - 1] = CStringGetTextDatum("unavailable");
-	else
-		values[Anum_exception_log_error_message - 1] = CStringGetTextDatum(error_message);
+	/*
+	 * All callers now build an informative message (the failing command's
+	 * error, or a collateral-discard message) before reaching here.  Keep a
+	 * defensive fallback so a future caller passing NULL degrades to a
+	 * placeholder rather than crashing.
+	 */
+	Assert(error_message != NULL);
+	values[Anum_exception_log_error_message - 1] =
+		CStringGetTextDatum(error_message != NULL ? error_message : "unavailable");
 	values[Anum_exception_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
