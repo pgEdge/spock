@@ -15,6 +15,7 @@
 
 #include "access/hash.h"
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 

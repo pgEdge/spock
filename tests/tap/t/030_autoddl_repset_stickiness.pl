@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 27;
+use Test::More tests => 29;
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail psql_or_bail
                  scalar_query get_test_config);
@@ -86,7 +86,7 @@ is(repsets_for('spoc539_t4'), 'spoc539_full',
 my $t4_cmd = qq{$pg_bin/psql -X -p $node_port -d $dbname }
            . qq{-c "ALTER TABLE spoc539_t4 DROP CONSTRAINT spoc539_t4_pkey" 2>&1};
 my $output = `$t4_cmd`;
-like($output, qr/WARNING:.*lost its primary key.*moving to/i,
+like($output, qr/WARNING:.*no replica identity.*moving to/i,
      'T4: WARNING emitted on PK drop from UPDATE/DELETE custom repset');
 is(repsets_for('spoc539_t4'), 'default_insert_only',
    'T4: table moved to default_insert_only by safety net');
@@ -145,7 +145,7 @@ is(repsets_for('spoc539_t8'), 'default,spoc539_insonly',
 my $t8_cmd = qq{$pg_bin/psql -X -p $node_port -d $dbname }
            . qq{-c "ALTER TABLE spoc539_t8 DROP CONSTRAINT spoc539_t8_pkey" 2>&1};
 my $t8_output = `$t8_cmd`;
-like($t8_output, qr/WARNING:.*lost its primary key.*moving to/i,
+like($t8_output, qr/WARNING:.*no replica identity.*moving to/i,
      'T8: WARNING emitted when PK drop affects a UPDATE/DELETE repset');
 is(repsets_for('spoc539_t8'), 'default_insert_only,spoc539_insonly',
    'T8: evicted from default, preserved in custom insert-only');
@@ -176,5 +176,34 @@ is(repsets_for('spoc539_t10'), 'default_insert_only',
 psql_or_bail(1, "ALTER TABLE spoc539_t10 ADD COLUMN id int PRIMARY KEY");
 is(repsets_for('spoc539_t10'), 'default',
    'T10: ADD COLUMN ... PRIMARY KEY promotes table to default');
+
+# -----------------------------------------------------------------------------
+# T11: REPLICA_IDENTITY_FULL table (no PK) in a custom UPDATE/DELETE repset.
+# Dropping an unrelated UNIQUE constraint via ALTER TABLE must NOT emit a
+# WARNING and must leave the custom membership alone.
+#
+# Regression for post_has_pk_or_ri missing the FULL case: without the fix,
+# rd_pkindex=invalid AND rd_replidindex=invalid → post_has_pk_or_ri=false →
+# AT_DropConstraint → PKRI_DROPPED → spurious WARNING + eviction.
+# -----------------------------------------------------------------------------
+# Setup: create with PK (rd_replidindex valid), move to custom repset, then
+# set REPLICA IDENTITY FULL (sticky path fires — in_any_custom=true — so the
+# standard routing is never reached and the table stays in spoc539_full), then
+# drop the PK (post_has_pk_or_ri=true due to RI_FULL → PKRI_UNCHANGED → sticky).
+# After all that, the table is in spoc539_full with RI_FULL and no PK.
+psql_or_bail(1, "CREATE TABLE spoc539_t11 (id int PRIMARY KEY, a text, " .
+                "CONSTRAINT spoc539_t11_a UNIQUE (a))");
+psql_or_bail(1, "SELECT spock.repset_remove_table('default', 'spoc539_t11')");
+psql_or_bail(1, "SELECT spock.repset_add_table('spoc539_full', 'spoc539_t11')");
+psql_or_bail(1, "ALTER TABLE spoc539_t11 REPLICA IDENTITY FULL");
+psql_or_bail(1, "ALTER TABLE spoc539_t11 DROP CONSTRAINT spoc539_t11_pkey");
+my $t11_cmd = qq{$pg_bin/psql -X -p $node_port -d $dbname }
+            . qq{-c "ALTER TABLE spoc539_t11 DROP CONSTRAINT spoc539_t11_a" 2>&1};
+my $t11_output = `$t11_cmd`;
+BAIL_OUT("T11 ALTER TABLE failed: $t11_output") if ($? >> 8) != 0;
+unlike($t11_output, qr/WARNING/i,
+       'T11: REPLICA_IDENTITY_FULL table: no WARNING on unrelated constraint drop');
+is(repsets_for('spoc539_t11'), 'spoc539_full',
+   'T11: REPLICA_IDENTITY_FULL table: custom membership unchanged after constraint drop');
 
 destroy_cluster();
