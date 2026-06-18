@@ -79,6 +79,9 @@ typedef struct SpockOutputData
 	/* List of SpockRepSet */
 	List	   *replication_sets;
 	RangeVar   *replicate_only_table;
+	/* Never-replicate schemas (info->'skip_schema') as namespace OIDs, reloaded
+	 * when the global skip_schema_valid flag is cleared. */
+	List	   *skip_schema;	/* list of namespace OIDs */
 } SpockOutputData;
 
 /*
