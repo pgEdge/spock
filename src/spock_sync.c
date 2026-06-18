@@ -157,9 +157,9 @@ get_pg_executable(char *cmdname, char *cmdbuf)
 static List *
 build_exclude_extension_string(void)
 {
-	List   *lst = NIL;
-	char   *arg;
-	int		i;
+	List	   *lst = NIL;
+	char	   *arg;
+	int			i;
 
 	for (i = 0; skip_extension[i] != NULL; i++)
 	{
@@ -192,6 +192,19 @@ build_exclude_schema_string(SpockSubscription *sub)
 
 	if (sub)
 	{
+		/*
+		 * Exclude schemas the local node registered as skipped (sub->target is
+		 * the local node).  No local-existence test as below: the schema lives
+		 * on the provider and usually does not exist here yet - the point.
+		 */
+		foreach(lc, sub->target->skip_schema)
+		{
+			const char *schema_name = (const char *) lfirst(lc);
+
+			arg = psprintf("--exclude-schema=%s", schema_name);
+			lst = lappend(lst, arg);
+		}
+
 		foreach(lc, sub->skip_schema)
 		{
 			const char   *schema_name = (const char *) lfirst(lc);
@@ -238,6 +251,13 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	args = list_concat(args, build_exclude_schema_string(sub));
 #if PG_VERSION_NUM >= 170000
 	args = list_concat(args, build_exclude_extension_string());
+
+	/*
+	 * XXX an extension in a skipped schema is still dumped as a global
+	 * "CREATE EXTENSION ... WITH SCHEMA <skipped>", recreating the schema on the
+	 * target.  Excluding it needs --exclude-extension for extensions found in
+	 * those schemas on the provider.  Not handled yet.
+	 */
 #endif
 
 	/* destination file */
