@@ -25,19 +25,6 @@ files, etc.).
 
     Each script must be run from the target node being added or removed.
 
-## Zodan Use Cases
-
-The following table describes when to use the Python scripts versus the
-SQL scripts:
-
-| Use Case                           | Use `zodan.py` & `zodremove.py` | Use `zodan.sql` & `zodremove.sql` |
-| ---------------------------------- | :-----------------------------: | :-------------------------------: |
-| CLI automation or scripting        | Good                            |                                   |
-| SQL-only environments              |                                 | Good                              |
-| No Python or shell access          |                                 | Good                              |
-| Postgres extension workflows       | Good                            | Good                              |
-
-
 ## Key Differences Between using Zodan and the Manual Process
 
 The following differences highlight how Zodan automates and simplifies
