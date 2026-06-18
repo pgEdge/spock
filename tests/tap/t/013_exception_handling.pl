@@ -307,12 +307,15 @@ pass('Part 4 (Deferred trigger) complete');
 # ===========================================================================
 # Part 5: TRANSDISCARD error_message quality  (backport fix regression test)
 # ===========================================================================
-# Before the fix, TRANSDISCARD logged bystander rows with error_message =
-# 'unknown' because the NULL fallback in add_entry_to_exception_log was the
-# string "unknown".  After the fix:
-#   - The NULL fallback is "unavailable"
-#   - The originally-failing row carries the real constraint-violation message
-#   - Bystander rows carry "unavailable"
+# Backport of ed17523 + b32ef95 to v5_STABLE.  Before the fix, every row of a
+# discarded transaction that was not itself the failing command was logged with
+# the opaque placeholder error_message = 'unavailable' (the NULL fallback in
+# add_entry_to_exception_log).  After the fix:
+#   - No row carries the opaque 'unavailable' placeholder.
+#   - The originally-failing row carries the real constraint-violation message,
+#     prefixed with its SQLSTATE so the root cause is unambiguous.
+#   - Bystander (collateral-discard) rows carry an informative message that
+#     names the active behaviour and points at the command that failed.
 #
 # Scenario: three-table transaction where t_ehx_b has NOT NULL on n2 only.
 # The INSERT with v=NULL succeeds on n1 but fails on n2, triggering TRANSDISCARD.
@@ -365,28 +368,41 @@ my $p5_unknown_cnt = scalar_query(2,
 is($p5_unknown_cnt, '0',
     "P5: no exception_log entries with error_message = 'unknown' (regression guard)");
 
-# Failing row must carry the real NOT NULL constraint-violation message.
+# Failing row must carry the real NOT NULL constraint-violation message,
+# now prefixed with its SQLSTATE so the root cause is unambiguous.
 my $p5_b_err = scalar_query(2,
     "SELECT error_message FROM spock.exception_log " .
     "WHERE table_name = 't_ehx_b' " .
     "ORDER BY retry_errored_at DESC LIMIT 1");
 like($p5_b_err, qr/null|not.null|violates/i,
     'P5: t_ehx_b exception_log has real constraint-violation message');
+# scalar_query() strips whitespace, so match the SQLSTATE prefix space-agnostically.
+like($p5_b_err, qr/\[SQLSTATE\s*23502\]/,
+    'P5: t_ehx_b message carries SQLSTATE 23502 (not_null_violation)');
 
-# Bystander rows must have 'unavailable', not 'unknown'.
+# The opaque 'unavailable' placeholder must be gone entirely.
+my $p5_unavail_cnt = scalar_query(2,
+    "SELECT COUNT(*) FROM spock.exception_log " .
+    "WHERE error_message = 'unavailable' " .
+    "AND table_name IN ('t_ehx_a', 't_ehx_b', 't_ehx_c')");
+is($p5_unavail_cnt, '0',
+    "P5: no exception_log entries with opaque 'unavailable' placeholder");
+
+# Bystander rows must now carry an informative collateral-discard message
+# (names the behaviour and points at the failing command), not 'unavailable'.
 my $p5_a_err = scalar_query(2,
     "SELECT error_message FROM spock.exception_log " .
     "WHERE table_name = 't_ehx_a' " .
     "ORDER BY retry_errored_at DESC LIMIT 1");
-is($p5_a_err, 'unavailable',
-    "P5: bystander t_ehx_a has error_message = 'unavailable'");
+like($p5_a_err, qr/discarded\s*due\s*to\s*exception/,
+    'P5: bystander t_ehx_a has informative discard message (not unavailable)');
 
 my $p5_c_err = scalar_query(2,
     "SELECT error_message FROM spock.exception_log " .
     "WHERE table_name = 't_ehx_c' " .
     "ORDER BY retry_errored_at DESC LIMIT 1");
-is($p5_c_err, 'unavailable',
-    "P5: bystander t_ehx_c has error_message = 'unavailable'");
+like($p5_c_err, qr/discarded\s*due\s*to\s*exception/,
+    'P5: bystander t_ehx_c has informative discard message (not unavailable)');
 
 # TRANSDISCARD rolls back the entire transaction — no rows land on n2.
 sleep(3);
