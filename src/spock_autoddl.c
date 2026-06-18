@@ -57,8 +57,7 @@ static bool extract_ddl_target(Node *parsetree, RangeVar **relation,
 							   Oid *reloid, bool *missing_ok,
 							   bool *check_alter_stickiness);
 static void apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
-										   AlterTableStmt *atstmt,
-										   bool check_alter_stickiness);
+										   AlterTableStmt *atstmt);
 static AlterPkRiChange classify_alter_pkri_change(AlterTableStmt *atstmt,
 												  Relation targetrel);
 static void classify_repset_membership(Oid nodeid, Oid reloid,
@@ -202,8 +201,7 @@ add_ddl_to_repset(Node *parsetree)
 	atstmt = check_alter_stickiness ? (AlterTableStmt *) parsetree : NULL;
 
 	foreach(lc, reloids)
-		apply_repset_policy_for_reloid(node, lfirst_oid(lc), atstmt,
-									   check_alter_stickiness);
+		apply_repset_policy_for_reloid(node, lfirst_oid(lc), atstmt);
 }
 
 /*
@@ -262,7 +260,7 @@ extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
 													 AccessShareLock);
 							*reloid = IndexGetRelation(RelationGetRelid(indrel),
 													   false);
-							table_close(indrel, NoLock);
+							relation_close(indrel, NoLock);
 						}
 					}
 
@@ -333,8 +331,7 @@ extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
  *		Repset routing for a single concrete relation oid.
  *
  *	atstmt is the originating ALTER TABLE statement, or NULL if this DDL was
- *	not an ALTER TABLE. check_alter_stickiness must match: it is true iff
- *	atstmt is non-NULL and ALTER stickiness rules should be applied.
+ *	not an ALTER TABLE (in which case stickiness rules are skipped).
  *
  * Decision tree:
  *	- UNLOGGED/TEMP	-> evict from every repset, done.
@@ -351,8 +348,7 @@ extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
  */
 static void
 apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
-							   AlterTableStmt *atstmt,
-							   bool check_alter_stickiness)
+							   AlterTableStmt *atstmt)
 {
 	Relation		targetrel;
 	SpockRepSet	   *repset;
@@ -392,7 +388,7 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 	 *					  default-managed fall through to standard routing
 	 *					  (e.g. move from default_insert_only to default).
 	 */
-	if (check_alter_stickiness)
+	if (atstmt != NULL)
 	{
 		AlterPkRiChange pkchange;
 		bool			in_any_upd_del;
@@ -421,7 +417,7 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 				 */
 				if (in_any_custom)
 					ereport(WARNING,
-							(errmsg("table \"%s\" lost its primary key while in a replication set that replicates UPDATE/DELETE; moving to \"%s\"",
+							(errmsg("table \"%s\" has no replica identity while in a replication set that replicates UPDATE/DELETE; moving to \"%s\"",
 									get_rel_name(reloid),
 									DEFAULT_INSONLY_REPSET_NAME)));
 				/* fall through to the remove+add path below */
@@ -509,7 +505,8 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 	bool		post_has_pk_or_ri;
 
 	post_has_pk_or_ri = OidIsValid(targetrel->rd_pkindex) ||
-		OidIsValid(targetrel->rd_replidindex);
+		OidIsValid(targetrel->rd_replidindex) ||
+		targetrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL;
 
 	foreach(cell, atstmt->cmds)
 	{
@@ -553,15 +550,38 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 				}
 				break;
 			case AT_ReplicaIdentity:
-				/*
-				 * Could be adding or removing RI; let the post-state
-				 * disambiguate.
-				 */
-				has_add_pkri_cmd = true;
-				has_drop_pkri_candidate = true;
+				{
+					ReplicaIdentityStmt *ri = (ReplicaIdentityStmt *) cmd->def;
+
+					if (ri->identity_type == REPLICA_IDENTITY_FULL ||
+						ri->identity_type == REPLICA_IDENTITY_INDEX)
+						has_add_pkri_cmd = true;
+					else if (ri->identity_type == REPLICA_IDENTITY_NOTHING)
+						has_drop_pkri_candidate = true;
+					else
+					{
+						/*
+						 * REPLICA_IDENTITY_DEFAULT resets to "use the primary
+						 * key if one exists, otherwise nothing".  We cannot
+						 * determine the effective direction from the parse tree
+						 * alone, so set both flags and let the post-state
+						 * disambiguate: if rd_pkindex is valid after the ALTER,
+						 * the table gains effective RI (PKRI_ADDED); if not,
+						 * it loses whatever RI was in effect (PKRI_DROPPED).
+						 */
+						has_add_pkri_cmd = true;
+						has_drop_pkri_candidate = true;
+					}
+				}
 				break;
 			case AT_DropConstraint:
 			case AT_DropColumn:
+				/*
+				 * Pessimistic: any constraint or column drop could remove
+				 * the PK.  The post-state check (!post_has_pk_or_ri) is the
+				 * real filter; if the table still has a PK/RI after the
+				 * ALTER, PKRI_UNCHANGED is returned regardless.
+				 */
 				has_drop_pkri_candidate = true;
 				break;
 			default:
@@ -654,12 +674,8 @@ static bool
 autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
 					NodeTag toplevel_stmt)
 {
+	/* Repair mode: nothing should be decoded and sent to subscribers. */
 	if (spock_replication_repair_mode)
-
-		/*
-		 * Repair mode means that nothing happened in this state should be
-		 * decoded and sent to any subscriber.
-		 */
 		return false;
 
 	/* Only process DDL statements */
