@@ -1450,14 +1450,21 @@ errmsg_with_sqlstate(ErrorData *edata)
 {
 	MemoryContext	oldctx = MemoryContextSwitchTo(ApplyOperationContext);
 	char		   *msg;
+	int				sqlerrcode = edata ? edata->sqlerrcode : ERRCODE_INTERNAL_ERROR;
+	const char	   *detail = (edata && edata->message) ? edata->message
+													   : "(no error detail captured)";
 
-	if (edata == NULL)
-		msg = psprintf("[SQLSTATE %s] (no error detail captured)",
-					   unpack_sql_state(ERRCODE_INTERNAL_ERROR));
+	/*
+	 * Prefix the SQLSTATE only when it carries information.  A bare
+	 * elog(ERROR) defaults to ERRCODE_INTERNAL_ERROR (XX000), which is just
+	 * noise (e.g. spock's own "did not find row to update").  Real errors --
+	 * constraint violations, deadlocks, connection failures -- keep their
+	 * code, which is what makes the cause unambiguous.
+	 */
+	if (sqlerrcode == ERRCODE_INTERNAL_ERROR)
+		msg = pstrdup(detail);
 	else
-		msg = psprintf("[SQLSTATE %s] %s",
-					   unpack_sql_state(edata->sqlerrcode),
-					   edata->message ? edata->message : "(no message)");
+		msg = psprintf("[SQLSTATE %s] %s", unpack_sql_state(sqlerrcode), detail);
 
 	MemoryContextSwitchTo(oldctx);
 	return msg;
@@ -3649,24 +3656,24 @@ stream_replay:
 		AbortOutOfAnyTransaction();
 
 		MemoryContextSwitchTo(MessageContext);
-		elog(LOG, "SPOCK: caught initial exception - [SQLSTATE %s] %s",
-			 unpack_sql_state(edata->sqlerrcode), edata->message);
+		elog(LOG, "SPOCK: caught initial exception - %s",
+			 errmsg_with_sqlstate(edata));
 
 		/*
 		 * Save the initial error message and which action triggered it.
-		 * The message is prefixed with its SQLSTATE so that whichever entry
-		 * surfaces it later (the matching row, or every collateral row when
-		 * the failure is not attributable) carries an unambiguous root cause.
-		 * On the retry pass, the matching row gets this message in
-		 * exception_log; other rows get an informative collateral message
-		 * built by discard_collateral_message().
+		 * The message carries its SQLSTATE (via errmsg_with_sqlstate, which
+		 * omits the uninformative XX000) so that whichever entry surfaces it
+		 * later (the matching row, or every collateral row when the failure is
+		 * not attributable) carries an unambiguous root cause.  On the retry
+		 * pass, the matching row gets this message in exception_log; other
+		 * rows get an informative collateral message built by
+		 * discard_collateral_message().
 		 */
 		if (exception_log_ptr != NULL)
 		{
 			snprintf(exception_log_ptr[my_exception_log_index].initial_error_message,
 					 sizeof(exception_log_ptr[my_exception_log_index].initial_error_message),
-					 "[SQLSTATE %s] %s",
-					 unpack_sql_state(edata->sqlerrcode), edata->message);
+					 "%s", errmsg_with_sqlstate(edata));
 
 			/*
 			 * A failure during COMMIT (e.g. a deferred constraint trigger that

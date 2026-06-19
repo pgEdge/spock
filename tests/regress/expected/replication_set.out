@@ -449,14 +449,14 @@ SELECT
   remote_new_tup,error_message
 FROM spock.exception_log
 ORDER BY command_counter;
- command_counter | table_schema | table_name | operation |                   remote_new_tup                   |       error_message       
------------------+--------------+------------+-----------+----------------------------------------------------+---------------------------
+ command_counter | table_schema | table_name | operation |                   remote_new_tup                   |                            error_message                            
+-----------------+--------------+------------+-----------+----------------------------------------------------+---------------------------------------------------------------------
                1 |              |            | INSERT    |                                                    | Spock can't find relation
                2 |              |            | INSERT    |                                                    | Spock can't find relation
-               3 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unavailable
+               3 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | transdiscard: tuple discarded due to exception at command_counter 1
                4 |              |            | INSERT    |                                                    | Spock can't find relation
                5 |              |            | INSERT    |                                                    | Spock can't find relation
-               6 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unavailable
+               6 | public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | discard: tuple discarded due to exception at command_counter 1
 (6 rows)
 
 \c :provider_dsn
@@ -564,13 +564,13 @@ ORDER BY command_counter;
 -----------------+--------------+-------------+-----------+----------------------------------------------------+--------------------------------------------------------------------------------------------------------
                1 |              |             | INSERT    |                                                    | Spock can't find relation
                2 |              |             | INSERT    |                                                    | Spock can't find relation
-               3 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unavailable
+               3 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | transdiscard: tuple discarded due to exception at command_counter 1
                4 |              |             | INSERT    |                                                    | Spock can't find relation
                5 |              |             | INSERT    |                                                    | Spock can't find relation
-               6 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | unavailable
+               6 | public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | discard: tuple discarded due to exception at command_counter 1
                7 |              |             | UPDATE    |                                                    | Spock can't find relation
                8 |              |             | UPDATE    |                                                    | Spock can't find relation
-               9 | public       | spoc_102g_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | unavailable
+               9 | public       | spoc_102g_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | discard: tuple discarded due to exception at command_counter 2
               10 | public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
 (10 rows)
 
