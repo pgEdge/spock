@@ -17,6 +17,11 @@
 * Fix gradual memory growth during a transaction that logs to
   `spock.exception_log`. Memory used while recording exceptions is now released
   per row instead of accumulating until the transaction commits.
+* Record the real cause of a discarded transaction in `spock.exception_log`
+  instead of the opaque placeholder `unavailable`. The failing command's
+  message is now stored (prefixed with its SQLSTATE where informative), and the
+  other rows of the transaction note that they were discarded as collateral,
+  making it possible to provide the root cause of the exception.
 * Fix ZODAN (`add_node`) version checking. Spock versions were compared as
   text, so `5.0.10` sorted below `5.0.4` and a valid node was wrongly rejected.
   Versions are now compared numerically, and nodes may differ in patch level as
