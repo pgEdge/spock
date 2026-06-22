@@ -192,7 +192,6 @@ add_entry_to_exception_log(Oid remote_origin, TimestampTz remote_commit_ts,
 	 * defensive fallback so a future caller passing NULL degrades to a
 	 * placeholder rather than crashing.
 	 */
-	Assert(error_message != NULL);
 	values[Anum_exception_log_error_message - 1] =
 		CStringGetTextDatum(error_message != NULL ? error_message : "unavailable");
 	values[Anum_exception_log_retry_errored_at - 1] = TimestampTzGetDatum(GetCurrentTimestamp());
