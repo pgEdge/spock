@@ -1,7 +1,6 @@
 results
 regression_output
 tmp_check
-spock_create_subscriber
 .vimrc
 *.o
 *.so
