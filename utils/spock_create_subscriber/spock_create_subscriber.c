@@ -531,8 +531,6 @@ main(int argc, char **argv)
 		/* Create the extension. */
 		print_msg(VERBOSITY_VERBOSE,
 				  _("Creating spock extension for database %s...\n"), db);
-		if (PQserverVersion(subscriber_conn) < 90500)
-			install_extension(subscriber_conn, "spock_origin");
 		install_extension(subscriber_conn, "spock");
 
 		/*
@@ -965,16 +963,13 @@ remove_unwanted_data(PGconn *conn)
 	 * Remove replication identifiers (9.4 will get them removed by dropping
 	 * the extension later as we emulate them there).
 	 */
-	if (PQserverVersion(conn) >= 90500)
+	res = PQexec(conn, "SELECT pg_replication_origin_drop(external_id) FROM pg_replication_origin_status;");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
-		res = PQexec(conn, "SELECT pg_replication_origin_drop(external_id) FROM pg_replication_origin_status;");
-		if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		{
-			PQclear(res);
-			die(_("Could not remove existing replication origins: %s\n"), PQerrorMessage(conn));
-		}
 		PQclear(res);
+		die(_("Could not remove existing replication origins: %s\n"), PQerrorMessage(conn));
 	}
+	PQclear(res);
 
 	res = PQexec(conn, "DROP EXTENSION spock CASCADE;");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
@@ -994,49 +989,30 @@ initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
 	PGresult   *res;
 	PQExpBuffer query = createPQExpBuffer();
 
-	if (PQserverVersion(conn) >= 90500)
+	printfPQExpBuffer(query, "SELECT pg_replication_origin_create(%s)",
+						PQescapeLiteral(conn, origin_name, strlen(origin_name)));
+
+	res = PQexec(conn, query->data);
+
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
-		printfPQExpBuffer(query, "SELECT pg_replication_origin_create(%s)",
-						  PQescapeLiteral(conn, origin_name, strlen(origin_name)));
+		die(_("Could not create replication origin \"%s\": status %s: %s\n"),
+			query->data,
+			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+	}
+	PQclear(res);
+
+	if (remote_lsn)
+	{
+		printfPQExpBuffer(query, "SELECT pg_replication_origin_advance(%s, '%s')",
+							PQescapeLiteral(conn, origin_name, strlen(origin_name)),
+							remote_lsn);
 
 		res = PQexec(conn, query->data);
 
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
-			die(_("Could not create replication origin \"%s\": status %s: %s\n"),
-				query->data,
-				PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
-		}
-		PQclear(res);
-
-		if (remote_lsn)
-		{
-			printfPQExpBuffer(query, "SELECT pg_replication_origin_advance(%s, '%s')",
-							  PQescapeLiteral(conn, origin_name, strlen(origin_name)),
-							  remote_lsn);
-
-			res = PQexec(conn, query->data);
-
-			if (PQresultStatus(res) != PGRES_TUPLES_OK)
-			{
-				die(_("Could not advance replication origin \"%s\": status %s: %s\n"),
-					query->data,
-					PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
-			}
-			PQclear(res);
-		}
-	}
-	else
-	{
-		printfPQExpBuffer(query, "INSERT INTO spock_origin.replication_origin (roident, roname, roremote_lsn) SELECT COALESCE(MAX(roident::int), 0) + 1, %s, %s FROM spock_origin.replication_origin",
-						  PQescapeLiteral(conn, origin_name, strlen(origin_name)),
-						  remote_lsn ? PQescapeLiteral(conn, remote_lsn, strlen(remote_lsn)) : "0");
-
-		res = PQexec(conn, query->data);
-
-		if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		{
-			die(_("Could not create replication origin \"%s\": status %s: %s\n"),
+			die(_("Could not advance replication origin \"%s\": status %s: %s\n"),
 				query->data,
 				PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 		}
