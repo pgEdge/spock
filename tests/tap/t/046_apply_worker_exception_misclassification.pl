@@ -143,7 +143,7 @@ if ($writer_pid == 0) {
 
 # Restart the apply worker repeatedly while the writer is running, via
 # sub_alter_options() toggling apply_delay -- the same mechanism that
-# uncovered this bug in 049_bidir_join_under_load.pl's lag-injection
+# uncovered this bug in 071_bidir_join_under_load.pl's lag-injection
 # scenario.
 for my $i (1 .. 40) {
     system_or_bail("$pg_bin/psql", '-X', '-p', $p2, '-d', $dbname, '-c',
