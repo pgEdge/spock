@@ -1,4 +1,8 @@
-/* spock--5.0.8--6.0.0.sql */
+/* spock--5.0.10--6.0.0.sql */
+
+-- No schema changes occurred between 5.0.8 and 5.0.10 (spock--5.0.8--5.0.9.sql
+-- and spock--5.0.9--5.0.10.sql are empty no-ops), so this final step of the
+-- update chain carries the full 5.x -> 6.0.0 migration.
 
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
 \echo Use "ALTER EXTENSION spock UPDATE TO '6.0.0'" to load this file. \quit
