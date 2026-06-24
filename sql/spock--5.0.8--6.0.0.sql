@@ -302,7 +302,12 @@ BEGIN
    */
   SELECT pg_catalog.current_setting('spock.enable_ddl_replication') INTO status;
   IF EXISTS (SELECT 1 FROM spock.local_node) AND status = false THEN
-    raise WARNING 'delta_apply setting has not been propagated to other spock nodes';
+    raise WARNING 'delta_apply setting has not been propagated to other spock nodes (spock.enable_ddl_replication is set to off)';
+  END IF;
+
+  SELECT pg_catalog.current_setting('spock.allow_ddl_from_functions') INTO status;
+  IF EXISTS (SELECT 1 FROM spock.local_node) AND status = false THEN
+    raise WARNING 'delta_apply setting has not been propagated to other spock nodes (spock.allow_ddl_from_functions is set to off)';
   END IF;
 
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_seclabel
