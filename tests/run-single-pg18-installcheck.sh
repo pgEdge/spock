@@ -71,7 +71,8 @@ SPOCK_SRC="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # contained next to the source.  Distinct from the multi-version rig's
 # directory so the two can coexist.  Overridden by --base-dir.
 BASE_DIR="${SPOCK_SRC}/single-pg18-installcheck"
-KEEP_RUNNING=1
+# Default: stop every node we started on exit.  --keep flips this on.
+KEEP_RUNNING=0
 FORCE_REBUILD=0
 JOBS_TOTAL="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 
@@ -158,10 +159,12 @@ usage() {
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
-		--base-dir)         BASE_DIR="$2"; shift 2 ;;
+		--base-dir)         [ "$#" -ge 2 ] || fail "--base-dir requires a value" 4
+		                    BASE_DIR="$2"; shift 2 ;;
 		--keep)             KEEP_RUNNING=1; shift ;;
 		--force)            FORCE_REBUILD=1; shift ;;
-		--jobs)             JOBS_TOTAL="$2"; shift 2 ;;
+		--jobs)             [ "$#" -ge 2 ] || fail "--jobs requires a value" 4
+		                    JOBS_TOTAL="$2"; shift 2 ;;
 		-h|--help)          usage; exit 0 ;;
 		*)                  fail "unknown argument: $1" 4 ;;
 	esac
@@ -247,7 +250,8 @@ _do_clone_pg() {
 clone_pg() {
 	local branch="REL_${PG_VER}_STABLE"
 
-	if [ -d "${SRC}/.git" ] \
+	if [ "${FORCE_REBUILD}" -eq 0 ] \
+		&& [ -d "${SRC}/.git" ] \
 		&& [ -f "${SRC}/src/test/regress/parallel_schedule" ]; then
 		log "pg${PG_VER}: [pg-clone] source already present, skipping"
 		return 0
@@ -427,6 +431,19 @@ stop_all_nodes() {
 	local node
 	for node in ${NODES}; do stop_node "${node}"; done
 }
+
+# Bound to EXIT so node shutdown runs on normal completion AND on every
+# failure path -- including the ERR trap, which exit()s before main()'s tail
+# is reached.  Skipped only when the user passed --keep.  stop_node is a
+# no-op for nodes that never started, so this is safe at any exit point.
+cleanup_nodes() {
+	if [ "${KEEP_RUNNING}" -eq 0 ]; then
+		stop_all_nodes
+	else
+		log "--keep set: leaving nodes running. Sockets under ${SOCK_DIR}"
+	fi
+}
+trap cleanup_nodes EXIT
 
 # ---------------------------------------------------------------------------
 # pg_isready probe for each node
@@ -650,7 +667,11 @@ print_subscription_state_to_screen() {
 # End-to-end propagation check using spock.sync_event / wait_for_sync_event
 # ---------------------------------------------------------------------------
 
-SYNC_EVENT_TIMEOUT=10
+# Seconds to wait for a sync_event to propagate across the mesh.  This is the
+# test's authoritative success signal and runs after run_installcheck, when the
+# replication backlog is heaviest, so the default is generous (matching the
+# pre-installcheck replicating wait).  Override via the environment on slow CI.
+SYNC_EVENT_TIMEOUT="${SYNC_EVENT_TIMEOUT:-60}"
 
 _wait_one_sync_event() {
 	local provider="$1" subscriber="$2" lsn="$3"
@@ -714,7 +735,7 @@ verify_subs_enabled() {
 			|| { any_bad=1; log "${node}: NOT reachable -- treating as failure"; continue; }
 		if [ -n "${out}" ]; then
 			any_bad=1
-			log "${node}: DISABLED subscriptions: $(echo ${out} | tr '\n' ' ')"
+			log "${node}: DISABLED subscriptions: $(echo "${out}" | tr '\n' ' ')"
 		else
 			log "${node}: all subscriptions still enabled"
 		fi
@@ -778,11 +799,7 @@ main() {
 	print_subscription_state_to_screen
 	print_connection_params
 
-	if [ "${KEEP_RUNNING}" -eq 0 ]; then
-		stop_all_nodes
-	else
-		log "--keep set: leaving nodes running. Sockets under ${SOCK_DIR}"
-	fi
+	# node shutdown is handled by the cleanup_nodes EXIT trap
 
 	if [ "${verify_rc}" -ne 0 ] || [ "${sync_rc}" -ne 0 ]; then
 		local reason=
