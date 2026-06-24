@@ -37,8 +37,8 @@ PG_FUNCTION_INFO_V1(spock_reset_subscription_stats);
 /* Shared memory wrapper for spock subscription conflict stats */
 typedef struct Spock_Stat_Subscription
 {
-	PgStatShared_Common		header;
-	Spock_Stat_StatSubEntry	stats;
+	PgStatShared_Common header;
+	Spock_Stat_StatSubEntry stats;
 } Spock_Stat_Subscription;
 
 /*
@@ -60,8 +60,8 @@ static const char *const SpockConflictStatColNames[SPOCK_CONFLICT_NUM_TYPES] = {
 static bool spock_stat_subscription_flush_cb(PgStat_EntryRef *entry_ref,
 											 bool nowait);
 static void spock_stat_subscription_reset_timestamp_cb(
-													PgStatShared_Common *header,
-													TimestampTz ts);
+													   PgStatShared_Common *header,
+													   TimestampTz ts);
 
 /*
  * We rely on the pgstat infrastructure here, employing spock's own conflict
@@ -129,11 +129,12 @@ spock_stat_create_subscription(Oid subid)
 							   true, NULL);
 
 	if (pg_atomic_read_u32(&ref->shared_entry->refcount) != 2)
+
 		/*
 		 * Should never happen: a new subscription stats entry should have
 		 * exactly two references (the hashtable entry and our own).  A higher
-		 * count means a stale entry from a previous subscription with the same
-		 * OID was not properly cleaned up.
+		 * count means a stale entry from a previous subscription with the
+		 * same OID was not properly cleaned up.
 		 */
 		ereport(WARNING,
 				(errmsg("conflict statistics entry for subscription %u "
@@ -280,7 +281,7 @@ spock_stat_subscription_reset_timestamp_cb(PgStatShared_Common *header,
 	((Spock_Stat_Subscription *) header)->stats.stat_reset_timestamp = ts;
 }
 
-#endif /* PG_VERSION_NUM >= 180000 */
+#endif							/* PG_VERSION_NUM >= 180000 */
 
 #if PG_VERSION_NUM < 180000
 
@@ -294,7 +295,7 @@ spock_get_subscription_stats(PG_FUNCTION_ARGS)
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("spock conflict statistics require PostgreSQL 18 or later")));
-	PG_RETURN_NULL(); /* unreachable; suppress compiler warning */
+	PG_RETURN_NULL();			/* unreachable; suppress compiler warning */
 }
 
 Datum
@@ -303,7 +304,7 @@ spock_reset_subscription_stats(PG_FUNCTION_ARGS)
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("spock conflict statistics require PostgreSQL 18 or later")));
-	PG_RETURN_NULL(); /* unreachable; suppress compiler warning */
+	PG_RETURN_NULL();			/* unreachable; suppress compiler warning */
 }
 
-#endif /* PG_VERSION_NUM < 180000 */
+#endif							/* PG_VERSION_NUM < 180000 */

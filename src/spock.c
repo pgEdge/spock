@@ -71,8 +71,8 @@
 
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(
-	.name = "spock",
-	.version = SPOCK_VERSION
+					.name = "spock",
+					.version = SPOCK_VERSION
 );
 #else
 PG_MODULE_MAGIC;
@@ -134,7 +134,7 @@ static const struct config_enum_entry exception_logging_options[] = {
 static const struct config_enum_entry readonly_options[] = {
 	{"off", READONLY_OFF, false},
 	{"local", READONLY_LOCAL, false},
-	{"user", READONLY_LOCAL, true},	/* backward-compatible alias */
+	{"user", READONLY_LOCAL, true}, /* backward-compatible alias */
 	{"all", READONLY_ALL, false},
 	{NULL, 0, false}
 };
@@ -151,8 +151,10 @@ bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
 int			spock_replay_queue_size;
-int			spock_pause_timeout = 10;	/* seconds to wait for apply workers to pause */
-int			spock_read_retry_count = 5;	/* heap update/delete: retries when local tuple is missing */
+int			spock_pause_timeout = 10;	/* seconds to wait for apply workers
+										 * to pause */
+int			spock_read_retry_count = 5; /* heap update/delete: retries when
+										 * local tuple is missing */
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
@@ -667,11 +669,11 @@ start_manager_workers(void)
 
 	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
 	{
-		Form_pg_database	pgdatabase = (Form_pg_database) GETSTRUCT(tup);
-		Oid					dboid = pgdatabase->oid;
-		SpockWorker		worker;
-		HeapTuple			rev;
-		bool				connectable = false;
+		Form_pg_database pgdatabase = (Form_pg_database) GETSTRUCT(tup);
+		Oid			dboid = pgdatabase->oid;
+		SpockWorker worker;
+		HeapTuple	rev;
+		bool		connectable = false;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -690,11 +692,11 @@ start_manager_workers(void)
 
 		/*
 		 * Revalidate the dboid is still connectable.  The seq-scan tuple
-		 * above can have become stale: another backend may have DROPped
-		 * the database or set datconnlimit = -2 (invalid-database marker)
-		 * while we walk pg_database.  Without this check the manager
-		 * worker FATALs during attach with "cannot connect to invalid
-		 * database" or "database <oid> does not exist", which sustains a
+		 * above can have become stale: another backend may have DROPped the
+		 * database or set datconnlimit = -2 (invalid-database marker) while
+		 * we walk pg_database.  Without this check the manager worker FATALs
+		 * during attach with "cannot connect to invalid database" or
+		 * "database <oid> does not exist", which sustains a
 		 * supervisor-respawn loop under heavy tenant-DB churn (SUP-137).
 		 */
 		rev = SearchSysCache1(DATABASEOID, ObjectIdGetDatum(dboid));
@@ -747,7 +749,7 @@ start_manager_workers(void)
 static void
 spock_supervisor_on_exit(int code, Datum arg)
 {
-	int		retries = SPOCK_SHUTDOWN_DRAIN_MAX_RETRIES;
+	int			retries = SPOCK_SHUTDOWN_DRAIN_MAX_RETRIES;
 
 	if (code != 0)
 		return;
@@ -760,7 +762,7 @@ spock_supervisor_on_exit(int code, Datum arg)
 
 	if (spock_any_apply_worker_running())
 		elog(LOG, "spock supervisor: shutdown drain timed out, "
-				  "SHUTDOWN forensic snapshot may be incomplete");
+			 "SHUTDOWN forensic snapshot may be incomplete");
 
 	spock_group_resource_dump();
 	spock_rmgr_log_resource_dump(SPOCK_DUMP_SHUTDOWN, NULL);
@@ -1268,13 +1270,13 @@ _PG_init(void)
 							NULL);
 
 	DefineCustomEnumVariable("spock.log_origin_change",
-							gettext_noop("If set, log when the origin of a tuple changes."),
-							NULL,
-							&log_origin_change,
-							SPOCK_ORIGIN_NONE,
-							SpockOriginConflicts,
-							PGC_SUSET, 0,
-							NULL, NULL, NULL);
+							 gettext_noop("If set, log when the origin of a tuple changes."),
+							 NULL,
+							 &log_origin_change,
+							 SPOCK_ORIGIN_NONE,
+							 SpockOriginConflicts,
+							 PGC_SUSET, 0,
+							 NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.apply_idle_timeout",
 							"Maximum idle time in seconds before apply worker reconnects",

@@ -122,13 +122,13 @@ const char *const skip_schema[] = {
 	"lolor",
 	"snowflake",
 	"spock",
-	NULL  /* sentinel */
+	NULL						/* sentinel */
 };
 const char *const skip_extension[] = {
 	"lolor",
 	"snowflake",
 	"spock",
-	NULL  /* sentinel */
+	NULL						/* sentinel */
 };
 
 /*
@@ -192,15 +192,15 @@ create_node(SpockNode *node)
 	/*
 	 * Detect node_id hash collisions before insertion.  The id is a 16-bit
 	 * hash of the node name, so two different names can produce the same
-	 * value.  A collision causes replication-origin ambiguity between the
-	 * two nodes.
+	 * value.  A collision causes replication-origin ambiguity between the two
+	 * nodes.
 	 */
 	existing = get_node(node->id, true);
 	if (existing != NULL)
 		elog(ERROR,
-				"node id %u (computed from name \"%s\") collides with existing "
-				"node \"%s\"; rename this node to resolve the collision",
-				node->id, node->name, existing->name);
+			 "node id %u (computed from name \"%s\") collides with existing "
+			 "node \"%s\"; rename this node to resolve the collision",
+			 node->id, node->name, existing->name);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1131,6 +1131,7 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		 * context that owns this SpockSubscription.
 		 */
 		Interval   *src = DatumGetIntervalP(d);
+
 		sub->apply_delay = (Interval *) palloc(sizeof(Interval));
 		memcpy(sub->apply_delay, src, sizeof(Interval));
 	}
@@ -1305,9 +1306,9 @@ get_node_subscriptions(Oid nodeid, bool origin)
 void
 EnsureRelationNotIgnored(Relation rel)
 {
-	int		i;
-	char   *nspname;
-	Oid		extoid;
+	int			i;
+	char	   *nspname;
+	Oid			extoid;
 
 	nspname = get_namespace_name(RelationGetNamespace(rel));
 
@@ -1332,9 +1333,8 @@ EnsureRelationNotIgnored(Relation rel)
 	for (i = 0; skip_extension[i] != NULL; i++)
 	{
 		/*
-		 * Detect if extension includes this relation.
-		 * XXX: Should we check if the relation doesn't belong to the extension
-		 * but depends on it?
+		 * Detect if extension includes this relation. XXX: Should we check if
+		 * the relation doesn't belong to the extension but depends on it?
 		 */
 		if (extoid != get_extension_oid(skip_extension[i], true))
 			continue;

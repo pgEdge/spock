@@ -79,7 +79,8 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	 * entry.  An index dropped under the apply worker (notably DROP INDEX
 	 * CONCURRENTLY, whose lock does not block apply) otherwise leaves a stale
 	 * index list on the cached relation, and the next ExecOpenIndices() would
-	 * index_open() the removed OID and raise "could not open relation with OID".
+	 * index_open() the removed OID and raise "could not open relation with
+	 * OID".
 	 */
 	AcceptInvalidationMessages();
 
@@ -94,10 +95,10 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	/* Need to update the local cache? */
 	if (!OidIsValid(entry->reloid))
 	{
-		RangeVar	   *rv = makeNode(RangeVar);
-		int				i;
-		TupleDesc		desc;
-		ResultRelInfo  *relinfo;
+		RangeVar   *rv = makeNode(RangeVar);
+		int			i;
+		TupleDesc	desc;
+		ResultRelInfo *relinfo;
 
 		rv->schemaname = (char *) entry->nspname;
 		rv->relname = (char *) entry->relname;
@@ -109,16 +110,15 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 		/*
 		 * Reset delta-apply metadata before rescanning. A relcache
-		 * invalidation only resets entry->reloid; the function-Oid array
-		 * and has_delta_columns flag carry over from the prior state.
-		 * Without this reset, dropping a delta_apply_function attoption
-		 * would leave a stale Oid behind and has_delta_columns stuck at
-		 * true.
+		 * invalidation only resets entry->reloid; the function-Oid array and
+		 * has_delta_columns flag carry over from the prior state. Without
+		 * this reset, dropping a delta_apply_function attoption would leave a
+		 * stale Oid behind and has_delta_columns stuck at true.
 		 *
 		 * Also resize the array to the local TupleDesc width. The
-		 * cache_update path sizes it to remote natts, but the scan loop
-		 * below indexes by attmap[i] (a local position), which can exceed
-		 * remote natts when local has columns the remote does not.
+		 * cache_update path sizes it to remote natts, but the scan loop below
+		 * indexes by attmap[i] (a local position), which can exceed remote
+		 * natts when local has columns the remote does not.
 		 */
 		if (entry->delta_apply_functions != NULL)
 			pfree(entry->delta_apply_functions);

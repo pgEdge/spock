@@ -61,9 +61,12 @@ event_name(uint8 event_type)
 {
 	switch ((SpockResourceDumpEvent) event_type)
 	{
-		case SPOCK_DUMP_SHUTDOWN:	return "shutdown";
-		case SPOCK_DUMP_ADD_NODE:	return "add_node";
-		case SPOCK_DUMP_TABLE_SYNC:	return "table_sync";
+		case SPOCK_DUMP_SHUTDOWN:
+			return "shutdown";
+		case SPOCK_DUMP_ADD_NODE:
+			return "add_node";
+		case SPOCK_DUMP_TABLE_SYNC:
+			return "table_sync";
 	}
 	return "unknown";
 }
@@ -184,9 +187,9 @@ void
 spock_rmgr_log_resource_dump(SpockResourceDumpEvent event,
 							 List *changed_entries)
 {
-	XLogRecPtr		last_recptr = InvalidXLogRecPtr;
-	uint32			entry_total;
-	uint16			entry_seq = 0;
+	XLogRecPtr	last_recptr = InvalidXLogRecPtr;
+	uint32		entry_total;
+	uint16		entry_seq = 0;
 
 	if (SpockGroupHash == NULL || SpockCtx == NULL)
 		return;
