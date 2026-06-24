@@ -38,8 +38,8 @@
 void
 spock_random_delay(void)
 {
-	long	delay_ms = 1 + (long) (pg_prng_uint64(&pg_global_prng_state) %
-								   SPOCK_INJ_MAX_DELAY_MS);
+	long		delay_ms = 1 + (long) (pg_prng_uint64(&pg_global_prng_state) %
+									   SPOCK_INJ_MAX_DELAY_MS);
 
 	elog(LOG, "Spock random delay: sleeping %ld ms", delay_ms);
 	pg_usleep(delay_ms * 1000L);

@@ -229,7 +229,7 @@ SpockIndexNullsAreDistinct(Relation idxrel)
  */
 static bool
 index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
-			 ScanKey skey, int ncols)
+				 ScanKey skey, int ncols)
 {
 	bool		nulls_distinct = SpockIndexNullsAreDistinct(idxrel);
 	int			i;
@@ -288,12 +288,12 @@ index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
 static ExprState *
 SpockPreparePredicateExpr(Relation idxrel, EState *estate)
 {
-	List       *predExprList;
+	List	   *predExprList;
 	ExprState  *result;
 	MemoryContext oldcxt;
 
 	if (heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
-	    return NULL;
+		return NULL;
 
 	oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
 	predExprList = RelationGetIndexPredicate(idxrel);
@@ -301,6 +301,7 @@ SpockPreparePredicateExpr(Relation idxrel, EState *estate)
 	MemoryContextSwitchTo(oldcxt);
 	return result;
 }
+
 /*
  * Check if the predicate matches by evaluating the index predicate on the
  * given tuple slot. This is used for both remote and local tuples.
@@ -358,16 +359,16 @@ SpockRelationFindReplTupleByIndex(EState *estate,
 
 	/*
 	 * Under NULLS DISTINCT (the default), a remote row with a NULL in any of
-	 * this index's key columns can never conflict with an existing row here --
-	 * NULL is never equal to anything, including another NULL -- so skip the
-	 * probe entirely.
+	 * this index's key columns can never conflict with an existing row here
+	 * -- NULL is never equal to anything, including another NULL -- so skip
+	 * the probe entirely.
 	 *
-	 * This is not just an optimization: spock_build_replindex_scan_key() emits
-	 * SK_SEARCHNULL for a NULL key value, which makes the btree return *every*
-	 * row whose key IS NULL.  index_keys_match() below then discards each of
-	 * them, so without this short-circuit every applied insert would run an
-	 * O(rows) scan -- guaranteed to find nothing -- on a unique index over a
-	 * mostly-NULL key column.
+	 * This is not just an optimization: spock_build_replindex_scan_key()
+	 * emits SK_SEARCHNULL for a NULL key value, which makes the btree return
+	 * *every* row whose key IS NULL.  index_keys_match() below then discards
+	 * each of them, so without this short-circuit every applied insert would
+	 * run an O(rows) scan -- guaranteed to find nothing -- on a unique index
+	 * over a mostly-NULL key column.
 	 *
 	 * Under NULLS NOT DISTINCT, NULLs compare equal, so a NULL-keyed row CAN
 	 * conflict; don't short-circuit -- let the scan run and let
@@ -381,7 +382,7 @@ SpockRelationFindReplTupleByIndex(EState *estate,
 		slot_getallattrs(searchslot);
 		for (i = 0; i < IndexRelationGetNumberOfKeyAttributes(idxrel); i++)
 		{
-			int		table_attno = indkey->values[i];
+			int			table_attno = indkey->values[i];
 
 			if (AttributeNumberIsValid(table_attno) &&
 				searchslot->tts_isnull[table_attno - 1])

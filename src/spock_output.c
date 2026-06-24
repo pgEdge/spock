@@ -20,8 +20,8 @@
 
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(
-	.name = "spock_output",
-	.version = SPOCK_VERSION
+					.name = "spock_output",
+					.version = SPOCK_VERSION
 );
 #else
 PG_MODULE_MAGIC;

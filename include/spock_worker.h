@@ -26,7 +26,7 @@ typedef enum
 	SPOCK_WORKER_APPLY,			/* Apply. */
 	SPOCK_WORKER_SYNC			/* Special type of Apply that synchronizes one
 								 * table. */
-} SpockWorkerType;
+}			SpockWorkerType;
 
 typedef enum
 {
@@ -36,7 +36,7 @@ typedef enum
 	SPOCK_WORKER_STATUS_STOPPING,	/* Stopping. */
 	SPOCK_WORKER_STATUS_STOPPED,	/* Stopped. */
 	SPOCK_WORKER_STATUS_FAILED, /* Failed. */
-} SpockWorkerStatus;
+}			SpockWorkerStatus;
 
 typedef struct SpockApplyWorker
 {
@@ -108,8 +108,8 @@ typedef struct SpockContext
 	LWLock	   *apply_group_master_lock;
 
 	/*
-	 * Pause mechanism for apply workers during slot creation.
-	 * Non-zero signals workers to sleep on pause_cv until cleared.
+	 * Pause mechanism for apply workers during slot creation. Non-zero
+	 * signals workers to sleep on pause_cv until cleared.
 	 */
 	pg_atomic_uint32 pause_apply;
 	ConditionVariable pause_cv;
