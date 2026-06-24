@@ -222,7 +222,8 @@ CREATE TABLE slabel_ri (x integer NOT NULL, y text, z text);
 CREATE UNIQUE INDEX slabel_ri_idx ON slabel_ri(x);
 ALTER TABLE slabel_ri REPLICA IDENTITY USING INDEX slabel_ri_idx;
 SELECT spock.delta_apply('slabel', 'x');
-WARNING:  delta_apply setting has not been propagated to other spock nodes
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.enable_ddl_replication is set to off)
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.allow_ddl_from_functions is set to off)
  delta_apply 
 -------------
  t
@@ -233,7 +234,8 @@ ERROR:  type "text" can not be used in delta_apply conflict resolution
 SELECT spock.delta_apply('slabel', 'z'); -- ERROR
 ERROR:  column z does not exist in the table slabel
 SELECT spock.delta_apply('slabel', 'x'); -- repeating call do nothing
-WARNING:  delta_apply setting has not been propagated to other spock nodes
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.enable_ddl_replication is set to off)
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.allow_ddl_from_functions is set to off)
  delta_apply 
 -------------
  t
@@ -258,7 +260,8 @@ SELECT objname, label FROM pg_seclabels;
 \c :provider_dsn
 -- Label drop checks
 SELECT spock.delta_apply('slabel', 'x', true);
-WARNING:  delta_apply setting has not been propagated to other spock nodes
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.enable_ddl_replication is set to off)
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.allow_ddl_from_functions is set to off)
  delta_apply 
 -------------
  t
@@ -275,7 +278,8 @@ SELECT objname, label FROM pg_seclabels;
 
 -- Dependencies
 SELECT spock.delta_apply('slabel', 'x', false);
-WARNING:  delta_apply setting has not been propagated to other spock nodes
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.enable_ddl_replication is set to off)
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.allow_ddl_from_functions is set to off)
  delta_apply 
 -------------
  t
@@ -291,7 +295,8 @@ SELECT objname, label FROM pg_seclabels;
 ALTER TABLE slabel DROP COLUMN x;
 ALTER TABLE slabel ADD COLUMN x numeric NOT NULL;
 SELECT spock.delta_apply('slabel', 'x', false);
-WARNING:  delta_apply setting has not been propagated to other spock nodes
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.enable_ddl_replication is set to off)
+WARNING:  delta_apply setting has not been propagated to other spock nodes (spock.allow_ddl_from_functions is set to off)
  delta_apply 
 -------------
  t
