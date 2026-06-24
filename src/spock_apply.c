@@ -1970,6 +1970,19 @@ handle_truncate(StringInfo s)
 				 * restore ApplyOperationContext for the code below.
 				 */
 				MemoryContextSwitchTo(ApplyOperationContext);
+
+				/*
+				 * apply_truncate() opens its target relations inside the
+				 * subtransaction we just rolled back -- unlike
+				 * handle_insert/update/delete, which open the relation in the
+				 * parent transaction.  The abort released those relation
+				 * references, but the Spock relation cache still holds the
+				 * now-stale ->rel handles (the spock_relation_close() calls at
+				 * the tail of apply_truncate() never ran).  Invalidate the
+				 * cache so the next open re-resolves the relation instead of
+				 * returning a dangling Relation pointer.
+				 */
+				spock_relation_cache_reset();
 			}
 			PG_END_TRY();
 
