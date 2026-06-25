@@ -57,6 +57,29 @@ functions adhere to the same rule previously described for
 added into the `default` replication set; alternatively, they will be added
 to the `default_insert_only` replication set.
 
+### `spock.apply_change_logging`
+
+`spock.apply_change_logging` controls per-change JSON logging by the apply
+worker. After each change is successfully applied locally, a single JSON
+object is written to the PostgreSQL server log (at `LOG` level) so that
+operators can correlate replayed changes with their origin and commit
+timestamp. This is intended for debugging and auditing; it adds log volume
+proportional to the apply workload, so leave it at the default in normal
+operation.
+
+The following values are possible:
+
+- `none` (the default) - no per-change logging.
+- `key_only` - for each `INSERT`/`UPDATE`/`DELETE`, log the action,
+  schema-qualified table, primary-key values, origin, and commit timestamp.
+- `verbose` - all of the above, plus the old and new row data for each
+  change.
+
+Replicated DDL is logged (with its SQL text) in both `key_only` and
+`verbose` modes. This option can be set by a superuser via `SET`, or
+reloaded with the `SIGHUP` mechanism (for example,
+`SELECT pg_reload_conf()`); a server restart is not required.
+
 ### `spock.channel_counters`
 
 `spock.channel_counters` is a boolean value (the default is `true`) that
@@ -384,6 +407,29 @@ The following configuration values are possible:
 - `since_sub_creation` - log origin changes whether a publisher changed a
   row that was previously from another publisher or updated it locally, but
   only since the time when the subscription was created.
+
+### `spock.log_verbosity`
+
+`spock.log_verbosity` controls the verbosity of Spock's own debug log
+output. Spock emits internal `DEBUG1`/`DEBUG2` messages that are normally
+silent, because PostgreSQL's `log_min_messages` typically defaults to
+`warning`. Lowering `log_min_messages` globally would surface those
+messages, but it would also flood the log with unrelated PostgreSQL debug
+output.
+
+Instead, this setting *promotes* Spock's own debug messages to `LOG` level
+(which is written to the server log under any normal `log_min_messages`
+setting), without changing `log_min_messages`. The value controls how much
+detail is promoted:
+
+- `normal` (the default) - promote nothing; Spock's `DEBUG1`/`DEBUG2`
+  messages keep their native (normally silent) levels.
+- `debug1` - promote Spock's `DEBUG1` messages to `LOG`.
+- `debug2` - promote both Spock's `DEBUG1` and `DEBUG2` messages to `LOG`.
+
+This option can be set by a superuser via `SET`, or reloaded with the
+`SIGHUP` mechanism (for example, `SELECT pg_reload_conf()`); a server
+restart is not required.
 
 ### `spock.save_resolutions`
 
