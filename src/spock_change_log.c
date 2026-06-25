@@ -21,6 +21,7 @@
 #include "nodes/bitmapset.h"
 #include "replication/origin.h"
 #include "utils/builtins.h"
+#include "utils/json.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
@@ -29,39 +30,6 @@
 #include "spock_proto_native.h"
 #include "spock_relcache.h"
 #include "spock_change_log.h"
-
-/*
- * Append a JSON-quoted string.  Handles \\, \", and control chars below 0x20.
- */
-static void
-append_json_string(StringInfo buf, const char *str)
-{
-	appendStringInfoChar(buf, '"');
-	if (str != NULL)
-	{
-		while (*str)
-		{
-			unsigned char c = (unsigned char) *str++;
-
-			switch (c)
-			{
-				case '"':	appendStringInfoString(buf, "\\\""); break;
-				case '\\':	appendStringInfoString(buf, "\\\\"); break;
-				case '\b':	appendStringInfoString(buf, "\\b"); break;
-				case '\f':	appendStringInfoString(buf, "\\f"); break;
-				case '\n':	appendStringInfoString(buf, "\\n"); break;
-				case '\r':	appendStringInfoString(buf, "\\r"); break;
-				case '\t':	appendStringInfoString(buf, "\\t"); break;
-				default:
-					if (c < 0x20)
-						appendStringInfo(buf, "\\u%04x", c);
-					else
-						appendStringInfoChar(buf, (char) c);
-			}
-		}
-	}
-	appendStringInfoChar(buf, '"');
-}
 
 /*
  * Append a Datum as a JSON value.  Always emits text-quoted form (after
@@ -84,7 +52,7 @@ append_json_value(StringInfo buf, Oid typid, Datum value, bool isnull)
 
 	getTypeOutputInfo(typid, &typoutput, &typisvarlena);
 	str = OidOutputFunctionCall(typoutput, value);
-	append_json_string(buf, str);
+	escape_json(buf, str);
 	pfree(str);
 }
 
@@ -151,7 +119,7 @@ append_row_json(StringInfo buf, SpockRelation *rel,
 			appendStringInfoChar(buf, ',');
 		first = false;
 
-		append_json_string(buf, rel->attnames[i]);
+		escape_json(buf, rel->attnames[i]);
 		appendStringInfoChar(buf, ':');
 		append_json_value(buf, rel->attrtypes[i],
 						  tup->values[i], tup->nulls[i]);
@@ -173,22 +141,22 @@ append_change_log_header(StringInfo buf, const char *action,
 						 const char *origin_name)
 {
 	appendStringInfoString(buf, "\"action\":");
-	append_json_string(buf, action);
+	escape_json(buf, action);
 
 	if (nspname != NULL)
 	{
 		appendStringInfoString(buf, ",\"schema\":");
-		append_json_string(buf, nspname);
+		escape_json(buf, nspname);
 	}
 	if (relname != NULL)
 	{
 		appendStringInfoString(buf, ",\"table\":");
-		append_json_string(buf, relname);
+		escape_json(buf, relname);
 	}
 	if (origin_name != NULL)
 	{
 		appendStringInfoString(buf, ",\"origin\":");
-		append_json_string(buf, origin_name);
+		escape_json(buf, origin_name);
 	}
 	if (replorigin_session_origin_timestamp != 0)
 	{
@@ -279,7 +247,7 @@ spock_log_apply_ddl(const char *sql, const char *origin_name)
 	append_change_log_header(&buf, "DDL", NULL, NULL, origin_name);
 
 	appendStringInfoString(&buf, ",\"sql\":");
-	append_json_string(&buf, sql);
+	escape_json(&buf, sql);
 
 	appendStringInfoChar(&buf, '}');
 
