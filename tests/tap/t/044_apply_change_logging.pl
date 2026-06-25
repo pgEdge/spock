@@ -5,10 +5,11 @@
 # =============================================================================
 # Verifies the two GUCs added for SPOC-551:
 #
-#   spock.log_verbosity = normal | verbose
-#       When 'verbose', spock's own DEBUG1/DEBUG2 messages are promoted to
-#       LOG so they appear in the standard server log without changing
-#       log_min_messages globally.
+#   spock.log_verbosity = normal | debug1 | debug2
+#       Promotes spock's own debug messages to LOG so they appear in the
+#       standard server log without changing log_min_messages globally.
+#       'normal' promotes nothing; 'debug1' promotes spock's DEBUG1 messages;
+#       'debug2' promotes both DEBUG1 and DEBUG2.
 #
 #   spock.apply_change_logging = none | key_only | verbose
 #       Controls JSON change logging by the apply worker:
@@ -71,9 +72,15 @@ is(scalar_query(2, "SHOW spock.apply_change_logging"), 'none',
     'spock.apply_change_logging defaults to none');
 
 # -------------------------------------------------------------------------
-# 2. Both GUCs are PGC_SUSET - settable by superuser via SET
+# 2. Both GUCs are PGC_SUSET - settable by superuser via SET.  Also verify
+#    spock.log_verbosity accepts each tier and reports it back canonically.
 # -------------------------------------------------------------------------
-psql_or_bail(2, "SET spock.log_verbosity = 'verbose'");
+psql_or_bail(2, "SET spock.log_verbosity = 'debug1'");
+is(scalar_query(2, "SHOW spock.log_verbosity"), 'debug1',
+    'spock.log_verbosity accepts debug1');
+psql_or_bail(2, "SET spock.log_verbosity = 'debug2'");
+is(scalar_query(2, "SHOW spock.log_verbosity"), 'debug2',
+    'spock.log_verbosity accepts debug2');
 psql_or_bail(2, "SET spock.apply_change_logging = 'key_only'");
 psql_or_bail(2, "RESET spock.log_verbosity");
 psql_or_bail(2, "RESET spock.apply_change_logging");

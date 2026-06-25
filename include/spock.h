@@ -66,14 +66,22 @@ extern int	spock_apply_change_logging;
  * needs to crank up spock detail when debugging an issue without flipping
  * log_min_messages globally (which floods the logs with non-spock output).
  *
- * When spock_log_verbosity = SPOCK_LOG_VERBOSITY_VERBOSE every spock-emitted
- * DEBUG message routed through SPOCK_DEBUG1 / SPOCK_DEBUG2 is promoted to
- * LOG level so it appears in standard server logs.
+ * PostgreSQL has only a single, global log threshold (log_min_messages), so we
+ * cannot give spock a lower "minimum level" of its own: a DEBUG1/DEBUG2 message
+ * emitted below log_min_messages is discarded by errstart() before it is ever
+ * built.  Instead this GUC *promotes* spock's own debug messages up to LOG,
+ * which is always written to the server log under any normal log_min_messages
+ * setting.  The level controls how much detail is promoted:
+ *
+ *   normal - no promotion; DEBUG1/DEBUG2 keep their native (silent) levels.
+ *   debug1 - promote SPOCK_DEBUG1 messages to LOG (DEBUG2 stays silent).
+ *   debug2 - promote both SPOCK_DEBUG1 and SPOCK_DEBUG2 messages to LOG.
  */
 typedef enum SpockLogVerbosity
 {
 	SPOCK_LOG_VERBOSITY_NORMAL = 0,
-	SPOCK_LOG_VERBOSITY_VERBOSE
+	SPOCK_LOG_VERBOSITY_DEBUG1,
+	SPOCK_LOG_VERBOSITY_DEBUG2
 } SpockLogVerbosity;
 
 /*
@@ -93,13 +101,15 @@ typedef enum SpockApplyChangeLogging
 
 /*
  * Route every spock-specific DEBUG1/DEBUG2 ereport through these macros so
- * spock.log_verbosity = 'verbose' can promote them to LOG without recompiling.
+ * spock.log_verbosity can promote them to LOG without recompiling.  Each macro
+ * promotes to LOG only once spock.log_verbosity is at or above that message's
+ * tier; otherwise the message keeps its native (and normally silent) level.
  * Used as `ereport(SPOCK_DEBUG1, (errmsg("...")));`
  */
-#define SPOCK_LOG_DEBUG_LEVEL(orig_level) \
-	((spock_log_verbosity == SPOCK_LOG_VERBOSITY_VERBOSE) ? LOG : (orig_level))
-#define SPOCK_DEBUG1	SPOCK_LOG_DEBUG_LEVEL(DEBUG1)
-#define SPOCK_DEBUG2	SPOCK_LOG_DEBUG_LEVEL(DEBUG2)
+#define SPOCK_DEBUG1 \
+	((spock_log_verbosity >= SPOCK_LOG_VERBOSITY_DEBUG1) ? LOG : DEBUG1)
+#define SPOCK_DEBUG2 \
+	((spock_log_verbosity >= SPOCK_LOG_VERBOSITY_DEBUG2) ? LOG : DEBUG2)
 
 extern char *shorten_hash(const char *str, int maxlen);
 extern void gen_slot_name(Name slot_name, char *dbname,

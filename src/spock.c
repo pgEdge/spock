@@ -141,7 +141,8 @@ static const struct config_enum_entry readonly_options[] = {
 
 static const struct config_enum_entry log_verbosity_options[] = {
 	{"normal", SPOCK_LOG_VERBOSITY_NORMAL, false},
-	{"verbose", SPOCK_LOG_VERBOSITY_VERBOSE, false},
+	{"debug1", SPOCK_LOG_VERBOSITY_DEBUG1, false},
+	{"debug2", SPOCK_LOG_VERBOSITY_DEBUG2, false},
 	{NULL, 0, false}
 };
 
@@ -1083,9 +1084,10 @@ _PG_init(void)
 
 	DefineCustomEnumVariable("spock.log_verbosity",
 							 gettext_noop("Sets the verbosity of spock-specific log output."),
-							 gettext_noop("When 'verbose', spock's own DEBUG1 and DEBUG2 messages are "
-										  "promoted to LOG level so they appear in standard server logs "
-										  "without changing log_min_messages globally."),
+							 gettext_noop("Promotes spock's own debug messages to LOG so they appear in "
+										  "standard server logs without changing log_min_messages globally. "
+										  "'normal' (default) promotes nothing; 'debug1' promotes spock's "
+										  "DEBUG1 messages; 'debug2' promotes both DEBUG1 and DEBUG2."),
 							 &spock_log_verbosity,
 							 SPOCK_LOG_VERBOSITY_NORMAL,
 							 log_verbosity_options,
