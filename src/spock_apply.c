@@ -1269,6 +1269,40 @@ discard_collateral_message(const char *what)
 }
 
 /*
+ * Format an error message with its SQLSTATE prefix so the root cause recorded
+ * in spock.exception_log (and the apply log) is unambiguous.  exception_log has
+ * no dedicated sqlstate column, so we carry it inline in the message text.
+ *
+ * The SQLSTATE prefix is omitted when the code is the uninformative
+ * ERRCODE_INTERNAL_ERROR (XX000): a bare elog(ERROR) -- e.g. spock's own
+ * "did not find row to update" -- defaults to it, and the prefix is just noise.
+ * Real errors (constraint violations, deadlocks, connection failures) keep
+ * their code, which is what makes the cause unambiguous.
+ *
+ * The result is allocated in ApplyOperationContext (reset per row/message)
+ * rather than the long-lived TopTransactionContext that is current on the
+ * exception path, so repeated logging within one large transaction does not
+ * accumulate.  Callers copy it into the durable tuple immediately.
+ */
+static char *
+errmsg_with_sqlstate(ErrorData *edata)
+{
+	MemoryContext	oldctx = MemoryContextSwitchTo(ApplyOperationContext);
+	char		   *msg;
+	int				sqlerrcode = edata ? edata->sqlerrcode : ERRCODE_INTERNAL_ERROR;
+	const char	   *detail = (edata && edata->message) ? edata->message
+													   : "(no error detail captured)";
+
+	if (sqlerrcode == ERRCODE_INTERNAL_ERROR)
+		msg = pstrdup(detail);
+	else
+		msg = psprintf("[SQLSTATE %s] %s", unpack_sql_state(sqlerrcode), detail);
+
+	MemoryContextSwitchTo(oldctx);
+	return msg;
+}
+
+/*
  * Log a replication exception to spock.exception_log.
  *
  * Called for INSERT, UPDATE, DELETE, and TRUNCATE operations.  'failed'
@@ -1465,7 +1499,7 @@ handle_insert(StringInfo s)
 				 * Need to keep this database operation out of the CATCH section
 				 * to avoid FATAL error in case if an ERROR happens there.
 				 */
-				log_insert_exception(true, edata->message, rel,
+				log_insert_exception(true, errmsg_with_sqlstate(edata), rel,
 									 NULL, &newtup, "INSERT");
 			}
 		}
@@ -1630,7 +1664,7 @@ handle_update(StringInfo s)
 
 			if (failed)
 			{
-				log_insert_exception(true, edata->message, rel,
+				log_insert_exception(true, errmsg_with_sqlstate(edata), rel,
 									 hasoldtup ? &oldtup : NULL, &newtup,
 									 "UPDATE");
 			}
@@ -1758,7 +1792,7 @@ handle_delete(StringInfo s)
 
 			if (failed)
 			{
-				log_insert_exception(true, edata->message, rel,
+				log_insert_exception(true, errmsg_with_sqlstate(edata), rel,
 									 &oldtup, NULL, "DELETE");
 			}
 		}
@@ -1978,7 +2012,7 @@ handle_truncate(StringInfo s)
 			else
 			{
 				exception_log_ptr[my_exception_log_index].local_tuple = NULL;
-				log_insert_exception(true, edata->message, NULL, NULL, NULL,
+				log_insert_exception(true, errmsg_with_sqlstate(edata), NULL, NULL, NULL,
 									 "TRUNCATE");
 			}
 		}
@@ -2553,7 +2587,7 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 			Assert(my_exception_log_index >= 0);
 
 			if (failed)
-				error_msg = edata->message;
+				error_msg = errmsg_with_sqlstate(edata);
 			else if (xact_action_counter ==
 					 exception_log_ptr[my_exception_log_index].failed_action &&
 					 exception_log_ptr[my_exception_log_index].initial_error_message[0] != '\0')
@@ -3698,7 +3732,7 @@ stream_replay:
 		AbortOutOfAnyTransaction();
 
 		MemoryContextSwitchTo(MessageContext);
-		elog(LOG, "SPOCK: caught initial exception - %s", edata->message);
+		elog(LOG, "SPOCK: caught initial exception - %s", errmsg_with_sqlstate(edata));
 
 		/*
 		 * Save the initial exception message and operation type so we can
@@ -3709,7 +3743,7 @@ stream_replay:
 		{
 			snprintf(exception_log_ptr[my_exception_log_index].initial_error_message,
 					 sizeof(exception_log_ptr[my_exception_log_index].initial_error_message),
-					 "%s", edata->message);
+					 "%s", errmsg_with_sqlstate(edata));
 
 			/*
 			 * Remember which action in the transaction triggered the error.
