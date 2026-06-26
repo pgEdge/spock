@@ -1,4 +1,4 @@
-/* spock--5.0.8--6.0.0.sql */
+/* spock--5.0.10--6.0.0.sql */
 
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
 \echo Use "ALTER EXTENSION spock UPDATE TO '6.0.0'" to load this file. \quit
