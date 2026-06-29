@@ -1,0 +1,32 @@
+Spock core-patchset: export patchset version via miscadmin.h and globals.c.
+
+Adds SPOCK_CORE_PATCHSET_VERSION (compile-time constant) and
+SpockCorePatchsetVersion (runtime global) to the standard places
+PostgreSQL already uses for server-wide state.  No new files.
+
+--- a/src/include/miscadmin.h
++++ b/src/include/miscadmin.h
+@@ -525,4 +525,11 @@
+ /* in executor/nodeHash.c */
+ extern size_t get_hash_memory_limit(void);
+ 
++/*
++ * Spock core-patchset identity.  Bump the version when the patchset
++ * changes in a way visible to the extension binary.
++ */
++#define SPOCK_CORE_PATCHSET_VERSION 1
++extern PGDLLIMPORT int SpockCorePatchsetVersion;
++
+ #endif							/* MISCADMIN_H */
+--- a/src/backend/utils/init/globals.c
++++ b/src/backend/utils/init/globals.c
+@@ -117,6 +117,9 @@
+ bool		IsUnderPostmaster = false;
+ bool		IsBinaryUpgrade = false;
+ 
++/* Spock core-patchset identity. */
++int			SpockCorePatchsetVersion = SPOCK_CORE_PATCHSET_VERSION;
++
+ bool		ExitOnAnyError = false;
+ 
+ int			DateStyle = USE_ISO_DATES;

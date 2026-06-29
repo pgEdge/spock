@@ -113,7 +113,10 @@ is($sub_status, 't', 'Subscription is enabled');
 
 # Test 13: Insert more data and verify replication
 system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "INSERT INTO test_subscription_data (name, value) VALUES ('test3', 300)";
-system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[1], '-d', $dbname, '-c', "SELECT spock.sub_wait_for_sync('test_subscription')";
+my $sync_lsn = `$pg_bin/psql -p $node_ports->[0] -d $dbname -t -A -c "SELECT spock.sync_event()"`;
+chomp($sync_lsn);
+$sync_lsn =~ s/\s+//g;
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[1], '-d', $dbname, '-c', "CALL spock.wait_for_sync_event(NULL, 'n1', '$sync_lsn'::pg_lsn, 60)";
 
 my $count_subscriber_updated = `$pg_bin/psql -p $node_ports->[1] -d $dbname -t -c "SELECT COUNT(*) FROM test_subscription_data"`;
 chomp($count_subscriber_updated);

@@ -11,7 +11,7 @@ use SpockTest qw(system_or_bail system_maybe wait_for_pg_ready psql_or_bail scal
 # =============================================================================
 # Test: 018_upgrade_schema_match.pl
 #
-# Verify that upgrading Spock from 5.0.8 -> 6.0.0 produces a schema that is
+# Verify that upgrading Spock from 5.0.10 -> 6.0.0 produces a schema that is
 # identical to a fresh 6.0.0 installation.
 #
 # Each Spock version requires PostgreSQL built with that branch's patches:
@@ -28,7 +28,7 @@ use SpockTest qw(system_or_bail system_maybe wait_for_pg_ready psql_or_bail scal
 # for caching across runs (only datadirs and source trees are cleaned up).
 #
 # Environment variables:
-#   V5_PG_INSTALL   pre-built PG+Spock 5.0.8 dir  (default: $TEMP_BASE/pg_v5)
+#   V5_PG_INSTALL   pre-built PG+Spock 5.0.10 dir  (default: $TEMP_BASE/pg_v5)
 #   V60_PG_INSTALL  pre-built PG+Spock 6.0.0 dir  (default: $TEMP_BASE/pg_v60)
 #   PG_TAG          git tag for PG source          (default: REL_18_2)
 #   PG_REPO         git URL for PG source          (default: github postgres mirror)
@@ -75,7 +75,7 @@ my $V5_BIN  = "$V5_PG_INSTALL/bin";
 my $V60_BIN = "$V60_PG_INSTALL/bin";
 my $PG_BIN  = $V60_BIN;   # client tools (psql, pg_ctl) use v60 binary
 
-my $DATADIR_UPG = "$TEMP_BASE/datadir_upgraded";   # starts at 5.0.8, upgraded
+my $DATADIR_UPG = "$TEMP_BASE/datadir_upgraded";   # starts at 5.0.10, upgraded
 my $DATADIR_NEW = "$TEMP_BASE/datadir_fresh";       # fresh 6.0.0 install
 my $PORT_UPG    = 5441;
 my $PORT_NEW    = 5442;
@@ -352,11 +352,11 @@ sub compare_category {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1 – Ensure v5_STABLE environment (PG + Spock 5.0.8)
+# PHASE 1 – Ensure v5_STABLE environment (PG + Spock 5.0.10)
 # ─────────────────────────────────────────────────────────────────────────────
-diag("PHASE 1: Ensuring Spock 5.0.8 environment ($V5_BRANCH)");
+diag("PHASE 1: Ensuring Spock 5.0.10 environment ($V5_BRANCH)");
 ok(ensure_version_ready($V5_BRANCH, $V5_PG_INSTALL, 'v5'),
-   "Spock 5.0.8 environment ready");
+   "Spock 5.0.10 environment ready");
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE 2 – Ensure current environment (PG + Spock 6.0.0)
@@ -366,11 +366,11 @@ ok(ensure_version_ready($V60_BRANCH, $V60_PG_INSTALL, 'v60'),
    "Spock 6.0.0 environment ready");
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 3 – Start upgrade node (Spock 5.0.8)
+# PHASE 3 – Start upgrade node (Spock 5.0.10)
 # ─────────────────────────────────────────────────────────────────────────────
-diag("PHASE 3: Initialising upgrade node (Spock 5.0.8)...");
+diag("PHASE 3: Initialising upgrade node (Spock 5.0.10)...");
 ok(init_and_start_node($DATADIR_UPG, $PORT_UPG, $V5_PG_INSTALL),
-   'Upgrade node started (5.0.8)');
+   'Upgrade node started (5.0.10)');
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE 4 – Start fresh node (Spock 6.0.0)
@@ -394,7 +394,7 @@ psql_or_bail($NODE_UPG, 'CREATE EXTENSION spock');
 my $ver_upg = scalar_query($NODE_UPG,
     "SELECT extversion FROM pg_extension WHERE extname = 'spock'");
 diag("Upgrade node extension version after CREATE: $ver_upg");
-like($ver_upg, qr/^5\.0\.8/, 'Upgrade node starts at 5.0.8');
+like($ver_upg, qr/^5\.0\.10/, 'Upgrade node starts at 5.0.10');
 
 psql_or_bail($NODE_NEW, 'CREATE EXTENSION spock');
 my $ver_new = scalar_query($NODE_NEW,

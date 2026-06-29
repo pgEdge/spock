@@ -55,3 +55,4 @@ test: 025_tiebreaker_equal_warning
 # Regression tests
 
 test: 103_manager_worker_dboid_race
+test: 030_pg_upgrade_5x_to_6x

@@ -427,8 +427,9 @@ These shipped in 5.0.6 – 5.0.8 and are included in 6.0.0:
 
 ### Upgrading
 
-The upgrade from 5.0.8 to 6.0.0 is a single `ALTER EXTENSION spock UPDATE`
-once the binaries are swapped.  The upgrade:
+The upgrade from any 5.0.8 or later release to 6.0.0 is a single
+`ALTER EXTENSION spock UPDATE` once the binaries are swapped (the command
+walks the 5.0.8 -> 5.0.9 -> 5.0.10 -> 6.0.0 chain automatically).  The upgrade:
 
 * drops the legacy `spock.progress` table and recreates it as a view,
 * replaces the `spock.lag_tracker` view definition,
