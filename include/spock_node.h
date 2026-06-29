@@ -24,6 +24,8 @@ typedef struct SpockNode
 	Jsonb	   *info;
 	/* Fields contained in the info jsonb */
 	int32		tiebreaker;
+	List	   *skip_schema;	/* "skip_schema" array: schemas this node
+								 * never replicates (NIL when unset) */
 } SpockNode;
 
 typedef struct SpockInterface

@@ -280,6 +280,46 @@ drop_node(Oid nodeid)
 	spock_subscription_changed(InvalidOid, false);
 }
 
+/*
+ * Extract a top-level jsonb array of strings into a List of palloc'd C
+ * strings.  Returns NIL when the key is absent or is not a string array.
+ * Non-string elements are skipped defensively.
+ */
+static List *
+jsonb_text_array_field(Jsonb *jb, const char *key)
+{
+	List	   *result = NIL;
+	JsonbValue	kval;
+	JsonbValue *aval;
+	JsonbValue	elem;
+	JsonbIterator *it;
+	JsonbIteratorToken tok;
+
+	if (jb == NULL || !JB_ROOT_IS_OBJECT(jb))
+		return NIL;
+
+	kval.type = jbvString;
+	kval.val.string.val = (char *) key;
+	kval.val.string.len = strlen(key);
+
+	aval = findJsonbValueFromContainer(&jb->root, JB_FOBJECT, &kval);
+
+	/* An array stored inside a container surfaces as a binary value. */
+	if (aval == NULL || aval->type != jbvBinary)
+		return NIL;
+
+	it = JsonbIteratorInit(aval->val.binary.data);
+	while ((tok = JsonbIteratorNext(&it, &elem, true)) != WJB_DONE)
+	{
+		if (tok == WJB_ELEM && elem.type == jbvString)
+			result = lappend(result,
+							 pnstrdup(elem.val.string.val,
+									  elem.val.string.len));
+	}
+
+	return result;
+}
+
 static SpockNode *
 node_fromtuple(HeapTuple tuple, TupleDesc desc)
 {
@@ -313,6 +353,9 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 		bool		isnullval;
 
 		node->info = DatumGetJsonbP(datum);
+
+		/* "skip_schema": schemas this node never replicates (NIL if absent) */
+		node->skip_schema = jsonb_text_array_field(node->info, "skip_schema");
 
 		/*
 		 * The node entry has jsonb info, try to extract the tiebreaker value
@@ -1323,6 +1366,28 @@ EnsureRelationNotIgnored(Relation rel)
 				 errdetail("table is in the ignored schema %s",
 						   skip_schema[i]),
 				 errhint("Move this relation to a schema allowed for replication")));
+	}
+
+	/*
+	 * Reject schemas the node registered as skipped (info->'skip_schema').
+	 * Refusing repset membership keeps their changes out of replication.
+	 */
+	{
+		SpockLocalNode *local_node = get_local_node(false, true);
+		ListCell   *lc;
+
+		foreach(lc, (local_node ? local_node->node->skip_schema : NIL))
+		{
+			if (strcmp((char *) lfirst(lc), nspname) != 0)
+				continue;
+
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("relation %s cannot be added to any replication set",
+							RelationGetRelationName(rel)),
+					 errdetail("table is in the ignored schema %s", nspname),
+					 errhint("Move this relation to a schema allowed for replication")));
+		}
 	}
 
 	extoid = getExtensionOfObject(RelationRelationId, RelationGetRelid(rel));

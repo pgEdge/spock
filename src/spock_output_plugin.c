@@ -101,6 +101,14 @@ static MemoryContext RelMetaCacheContext = NULL;
 static int	InvalidRelMetaCacheCnt = 0;
 static int	MyWalSenderIdx = 0;
 
+/*
+ * Is the active session's cached skip-schema OID set still valid?  Cleared by a
+ * spock.node change (list may differ) or a relcache invalidation (name->OID may
+ * differ).  Process-global like InvalidRelMetaCacheCnt - the relcache callback
+ * has no SpockOutputData, and only one session is active per process.
+ */
+static bool skip_schema_valid = false;
+
 static bool slot_group_on_exit_set = false;
 static SpockOutputSlotGroup *slot_group = NULL;
 static bool slot_group_skip_xact = false;
@@ -220,6 +228,92 @@ check_binary_compatibility(SpockOutputData *data)
 	return true;
 }
 
+/* Cached oid of the spock.node catalog. */
+static Oid
+get_node_table_oid(void)
+{
+	static Oid	nodetableoid = InvalidOid;
+
+	if (nodetableoid == InvalidOid)
+		nodetableoid = get_spock_table_oid("node");
+
+	return nodetableoid;
+}
+
+/* Cached oid of the spock extension's schema (gates the per-change catalog checks). */
+static Oid
+get_spock_schema_oid(void)
+{
+	static Oid	spockschemaoid = InvalidOid;
+
+	if (spockschemaoid == InvalidOid)
+		spockschemaoid = get_namespace_oid(EXTENSION_NAME, false);
+
+	return spockschemaoid;
+}
+
+/*
+ * Reload the local node's never-replicate set as namespace OIDs (so the
+ * per-change test is a cheap membership check); resolution happens here, off
+ * the hot path.
+ *
+ * Reads only spock.node - a user_catalog_table, safe to scan under the historic
+ * snapshot during decoding, unlike get_local_node()'s other catalogs.  The
+ * decoded tuple is avoided too: its info jsonb could be an unreadable external
+ * TOAST datum.  Stored in data's long-lived context, not the per-message one.
+ */
+static void
+spock_output_reload_skip_schema(SpockOutputData *data)
+{
+	SpockNode	   *node;
+	MemoryContext	target = GetMemoryChunkContext(data);
+	MemoryContext	oldctx;
+	ListCell	   *lc;
+
+	/*
+	 * Set valid *before* the catalog work below: it may process invalidations
+	 * that re-clear the flag, and we want that race to force another reload
+	 * rather than be masked by setting the flag afterwards.
+	 */
+	skip_schema_valid = true;
+
+	node = get_node(data->local_node_id, true);
+
+	oldctx = MemoryContextSwitchTo(target);
+	list_free(data->skip_schema);
+	data->skip_schema = NIL;
+	if (node != NULL)
+	{
+		foreach(lc, node->skip_schema)
+		{
+			Oid			nspoid = get_namespace_oid((char *) lfirst(lc), true);
+
+			/* Absent schema: drop it; a later CREATE invalidates and re-resolves. */
+			if (OidIsValid(nspoid))
+				data->skip_schema = lappend_oid(data->skip_schema, nspoid);
+		}
+	}
+	MemoryContextSwitchTo(oldctx);
+}
+
+/*
+ * Is relation in a schema the local node never replicates?  Consulted for both
+ * row changes and TRUNCATE, so such changes are dropped at the publisher even
+ * for tables already in a replication set.  Reloads the cache lazily when
+ * skip_schema_valid has been cleared.
+ */
+static bool
+spock_relation_schema_skipped(SpockOutputData *data, Relation relation)
+{
+	if (!skip_schema_valid)
+		spock_output_reload_skip_schema(data);
+
+	if (data->skip_schema == NIL)
+		return false;
+
+	return list_member_oid(data->skip_schema, RelationGetNamespace(relation));
+}
+
 /* initialize this plugin */
 static void
 pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
@@ -276,6 +370,9 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		}
 		node = get_local_node(false, false);
 		data->local_node_id = node->node->id;
+
+		/* Seed the never-replicate schema OID set for this decoding session. */
+		spock_output_reload_skip_schema(data);
 
 		/*
 		 * Remember our own node.name for quick access out write_origin().
@@ -841,92 +938,122 @@ spock_change_filter(SpockOutputData *data, Relation relation,
 			RelationGetNamespace(relation) ==
 			get_namespace_oid(data->replicate_only_table->schemaname, true);
 	}
-	else if (RelationGetRelid(relation) == get_queue_table_oid())
+
+	/*
+	 * Spock's catalogs all live in the spock schema; gate their per-table
+	 * checks on the namespace so an ordinary user-table change rules them all
+	 * out with one comparison.
+	 */
+	else if (RelationGetNamespace(relation) == get_spock_schema_oid())
 	{
-		/* Special case - queue table */
-		if (change->action == REORDER_BUFFER_CHANGE_INSERT)
+		Oid			relid = RelationGetRelid(relation);
+
+		if (relid == get_queue_table_oid())
 		{
-			HeapTuple	tup = ReorderBufferChangeHeapTuple(change, newtuple);
-			QueuedMessage *q;
-			ListCell   *qlc;
-
-			LockRelation(relation, AccessShareLock);
-			q = queued_message_from_tuple(tup);
-			UnlockRelation(relation, AccessShareLock);
-
-			/*
-			 * No replication set means global message, those are always
-			 * replicated.
-			 */
-			if (q->replication_sets == NULL)
-				return true;
-
-			foreach(qlc, q->replication_sets)
+			/* Special case - queue table */
+			if (change->action == REORDER_BUFFER_CHANGE_INSERT)
 			{
-				char	   *queue_set = (char *) lfirst(qlc);
-				ListCell   *plc;
+				HeapTuple	tup = ReorderBufferChangeHeapTuple(change, newtuple);
+				QueuedMessage *q;
+				ListCell   *qlc;
 
-				foreach(plc, data->replication_sets)
+				LockRelation(relation, AccessShareLock);
+				q = queued_message_from_tuple(tup);
+				UnlockRelation(relation, AccessShareLock);
+
+				/*
+				 * No replication set means global message, those are always
+				 * replicated.
+				 */
+				if (q->replication_sets == NULL)
+					return true;
+
+				foreach(qlc, q->replication_sets)
 				{
-					SpockRepSet *rs = lfirst(plc);
+					char	   *queue_set = (char *) lfirst(qlc);
+					ListCell   *plc;
 
-					/* TODO: this is somewhat ugly. */
-					if (strcmp(queue_set, rs->name) == 0)
-						return true;
+					foreach(plc, data->replication_sets)
+					{
+						SpockRepSet *rs = lfirst(plc);
+
+						/* TODO: this is somewhat ugly. */
+						if (strcmp(queue_set, rs->name) == 0)
+							return true;
+					}
 				}
 			}
-		}
 
-		return false;
-	}
-	else if (RelationGetRelid(relation) == get_replication_set_rel_oid())
-	{
-		/*
-		 * Special case - replication set table.
-		 *
-		 * We can use this to update our cached replication set info, without
-		 * having to deal with cache invalidation callbacks.
-		 */
-		HeapTuple	tup;
-		SpockRepSet *replicated_set;
-		ListCell   *plc;
-
-		if (change->action == REORDER_BUFFER_CHANGE_UPDATE)
-			tup = ReorderBufferChangeHeapTuple(change, newtuple);
-		else if (change->action == REORDER_BUFFER_CHANGE_DELETE)
-			tup = ReorderBufferChangeHeapTuple(change, oldtuple);
-		else
 			return false;
-
-		replicated_set = replication_set_from_tuple(tup);
-		foreach(plc, data->replication_sets)
+		}
+		else if (relid == get_replication_set_rel_oid())
 		{
-			SpockRepSet *rs = lfirst(plc);
+			/*
+			 * Special case - replication set table.
+			 *
+			 * We can use this to update our cached replication set info,
+			 * without having to deal with cache invalidation callbacks.
+			 */
+			HeapTuple	tup;
+			SpockRepSet *replicated_set;
+			ListCell   *plc;
 
-			/* Check if the changed repset is used by us. */
-			if (rs->id == replicated_set->id)
-			{
-				/*
-				 * In case this was delete, somebody deleted one of our rep
-				 * sets, bail here and let reconnect logic handle any
-				 * potential issues.
-				 */
-				if (change->action == REORDER_BUFFER_CHANGE_DELETE)
-					elog(ERROR, "replication set \"%s\" used by this connection was deleted, existing",
-						 rs->name);
-
-				/* This was update of our repset, update the cache. */
-				rs->replicate_insert = replicated_set->replicate_insert;
-				rs->replicate_update = replicated_set->replicate_update;
-				rs->replicate_delete = replicated_set->replicate_delete;
-				rs->replicate_truncate = replicated_set->replicate_truncate;
-
+			if (change->action == REORDER_BUFFER_CHANGE_UPDATE)
+				tup = ReorderBufferChangeHeapTuple(change, newtuple);
+			else if (change->action == REORDER_BUFFER_CHANGE_DELETE)
+				tup = ReorderBufferChangeHeapTuple(change, oldtuple);
+			else
 				return false;
+
+			replicated_set = replication_set_from_tuple(tup);
+			foreach(plc, data->replication_sets)
+			{
+				SpockRepSet *rs = lfirst(plc);
+
+				/* Check if the changed repset is used by us. */
+				if (rs->id == replicated_set->id)
+				{
+					/*
+					 * In case this was delete, somebody deleted one of our rep
+					 * sets, bail here and let reconnect logic handle any
+					 * potential issues.
+					 */
+					if (change->action == REORDER_BUFFER_CHANGE_DELETE)
+						elog(ERROR, "replication set \"%s\" used by this connection was deleted, existing",
+							 rs->name);
+
+					/* This was update of our repset, update the cache. */
+					rs->replicate_insert = replicated_set->replicate_insert;
+					rs->replicate_update = replicated_set->replicate_update;
+					rs->replicate_delete = replicated_set->replicate_delete;
+					rs->replicate_truncate = replicated_set->replicate_truncate;
+
+					return false;
+				}
 			}
+
+			return false;
+		}
+		else if (relid == get_node_table_oid())
+		{
+			/*
+			 * Node table: never replicated, but a row change may alter our
+			 * skip list.  Mark the cache stale so a later change reloads it
+			 * from the catalog (cheaper and safer than parsing the decoded
+			 * tuple, whose info jsonb could be an unreadable external TOAST
+			 * datum).
+			 */
+			skip_schema_valid = false;
+
+			return false;
 		}
 
-		return false;
+		/* Any other spock-schema relation falls through to the normal path. */
 	}
+
+	/* Drop changes in a never-replicate schema (catches tables already in a repset). */
+	if (spock_relation_schema_skipped(data, relation))
+		return false;
 
 	/* Normal case - use replication set membership. */
 	tblinfo = get_table_replication_info(data->local_node_id, relation,
@@ -1162,7 +1289,13 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	{
 		Relation	relation = relations[i];
 		Oid			relid = RelationGetRelid(relation);
-		List	   *repsets = get_table_replication_sets(data->local_node_id, relid);
+		List	   *repsets;
+
+		/* Drop TRUNCATEs for tables in a never-replicate schema. */
+		if (spock_relation_schema_skipped(data, relation))
+			continue;
+
+		repsets = get_table_replication_sets(data->local_node_id, relid);
 
 		if (!can_replicate_truncate(repsets))
 			continue;
@@ -1483,6 +1616,9 @@ relmetacache_invalidation_cb(Datum arg, Oid relid)
 		hentry->is_valid = false;
 		InvalidRelMetaCacheCnt++;
 	}
+
+	/* A namespace change may alter name->OID resolution; invalidate (lazy reload). */
+	skip_schema_valid = false;
 }
 
 /*
