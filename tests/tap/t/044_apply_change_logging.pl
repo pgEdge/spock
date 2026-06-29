@@ -52,9 +52,10 @@ my $pw       = $config->{db_password};
 my $ports    = $config->{node_ports};
 my $datadirs = $config->{node_datadirs};
 
-# postgresql.conf in SpockTest.pm sets log_directory='logs' (relative), so
-# the actual server log on the subscriber lives under its data directory.
-my $sub_log  = "$datadirs->[1]/logs/00" . $ports->[1] . ".log";
+# postgresql.conf in SpockTest.pm sets log_directory to $LOG_DIR (exposed as
+# config->{log_dir}) with log_filename='00<port>.log', so the subscriber's
+# server log lives there - not under the data directory.
+my $sub_log  = "$config->{log_dir}/00" . $ports->[1] . ".log";
 
 my $conn = "host=$host dbname=$dbname port=$ports->[0] user=$user password=$pw";
 psql_or_bail(2,
@@ -75,15 +76,17 @@ is(scalar_query(2, "SHOW spock.apply_change_logging"), 'none',
 # 2. Both GUCs are PGC_SUSET - settable by superuser via SET.  Also verify
 #    spock.log_verbosity accepts each tier and reports it back canonically.
 # -------------------------------------------------------------------------
-psql_or_bail(2, "SET spock.log_verbosity = 'debug1'");
-is(scalar_query(2, "SHOW spock.log_verbosity"), 'debug1',
-    'spock.log_verbosity accepts debug1');
-psql_or_bail(2, "SET spock.log_verbosity = 'debug2'");
-is(scalar_query(2, "SHOW spock.log_verbosity"), 'debug2',
-    'spock.log_verbosity accepts debug2');
-psql_or_bail(2, "SET spock.apply_change_logging = 'key_only'");
-psql_or_bail(2, "RESET spock.log_verbosity");
-psql_or_bail(2, "RESET spock.apply_change_logging");
+# SET is session-local, so a SET in one psql process is gone by the time a
+# separate SHOW process connects.  Use set_config(), which both applies the
+# value and returns its canonical form as a single result row in one session -
+# this verifies the enum accepts (and canonicalises) each tier.
+is(scalar_query(2, "SELECT set_config('spock.log_verbosity', 'debug1', false)"),
+    'debug1', 'spock.log_verbosity accepts debug1');
+is(scalar_query(2, "SELECT set_config('spock.log_verbosity', 'debug2', false)"),
+    'debug2', 'spock.log_verbosity accepts debug2');
+is(scalar_query(2,
+    "SELECT set_config('spock.apply_change_logging', 'key_only', false)"),
+    'key_only', 'spock.apply_change_logging accepts key_only');
 
 # -------------------------------------------------------------------------
 # 3. apply_change_logging = key_only: INSERT generates a JSON record
