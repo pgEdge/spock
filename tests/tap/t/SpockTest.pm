@@ -384,13 +384,19 @@ sub destroy_cluster {
             system_maybe "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "SELECT spock.node_drop('$node_name')";
         }
 
-        # Stop PostgreSQL instances (must always run).
+        # Stop PostgreSQL instances (must always run).  Run pg_ctl stop
+        # synchronously (no trailing '&') so its built-in wait blocks until
+        # the postmaster has actually exited before we rm -rf the datadir --
+        # otherwise rm could race a still-live postmaster and leak a process
+        # holding the fixed port/datadir into the next test.  Use plain
+        # system() (not system_or_bail) so a failed stop still does not abort
+        # teardown.
         for (my $i = 0; $i < $node_count; $i++) {
-            system("$PG_BIN/pg_ctl stop -D $node_datadirs[$i] -m immediate >> '$LOG_FILE' 2>&1 &");
+            system("$PG_BIN/pg_ctl stop -D $node_datadirs[$i] -m immediate >> '$LOG_FILE' 2>&1");
         }
 
-        # Wait for processes to stop.
-        sleep(5);
+        # Brief margin for the OS to release ports/sockets after exit.
+        sleep(2);
 
         # Clean up test directories (must always run).
         for my $datadir (@node_datadirs) {

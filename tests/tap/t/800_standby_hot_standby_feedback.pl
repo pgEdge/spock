@@ -14,7 +14,6 @@ my ($pg_major) = `$pg_bin/pg_config --version` =~ /\b(\d+)/;
 plan skip_all =>
     "spock_failover_slots worker is disabled on PG18+ (native sync_replication_slots)"
     if defined $pg_major && $pg_major >= 18;
-plan tests => 9;
 
 # =============================================================================
 # Test: 800_standby_hot_standby_feedback.pl
