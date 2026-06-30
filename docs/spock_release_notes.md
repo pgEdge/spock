@@ -210,6 +210,12 @@ enables zero-downtime rolling upgrades: a v6.0 subscriber can apply from
 a v5 publisher and vice versa, with protocol-5-only features (such as
 cascade origin forwarding) activated only when both sides support them.
 
+An incompatible upstream is now rejected early: `create_subscription()`
+runs the version check at DDL time when `synchronize_structure` is
+requested, and a structure sync from a newer-major upstream is refused
+(pg_dump cannot read a newer server) instead of failing opaquely after a
+slot and snapshot were created.
+
 ### Zodan: data-loss fix when adding a node under write load
 
 When adding a node while existing nodes were handling writes, the new
@@ -245,6 +251,16 @@ AutoDDL has been refactored and hardened:
   transaction blocks on subscribers (e.g., `CLUSTER` on partitioned
   tables, `VACUUM`) are filtered on the publisher side before being
   queued.
+* **Temporary-relation DDL not replicated** — `CREATE TABLE … (LIKE temp)`
+  and `CREATE TABLE … AS SELECT … FROM temp` are skipped, since the
+  temporary relation does not exist on the subscriber.
+* **Replication-set stickiness on `ALTER TABLE`** — with
+  `spock.include_ddl_repset` enabled, `ALTER TABLE` no longer evicts a
+  table from a user-defined replication set unless it adds or drops a
+  primary key / replica identity.  Inline `ADD COLUMN … PRIMARY KEY` and
+  `REPLICA IDENTITY FULL` tables are now classified correctly.
+* **Safe `search_path` interpolation** — replicated DDL ships a valid
+  `SET search_path` even when the session path is empty.
 
 ### Memory and stability
 
@@ -290,6 +306,10 @@ AutoDDL has been refactored and hardened:
   `PQgetResult()` is now called after `PQputCopyEnd()` to detect failures,
   and a new `SYNC_STATUS_FAILED` state stops retry loops and surfaces
   clear error messages.
+* **Un-appliable TRUNCATE loop** — in `discard` mode a TRUNCATE that failed
+  on the subscriber (e.g. the relation does not exist) crash-looped the
+  apply worker.  It is now wrapped in a subtransaction, logged, and
+  discarded like other DML.
 
 ### Security
 
@@ -306,6 +326,10 @@ AutoDDL has been refactored and hardened:
 * **Snowflake removal** — removed snowflake-related functions and
   documentation since it is now in its own repository.
 * **SpockCtrl removal** — removed the SpockCtrl utility code.
+* **Windows support removal** — dropped Win32-specific code paths; Spock
+  targets POSIX-only environments.
+* **`--exclude-extension`** — extended use of the pg_dump option
+  (PostgreSQL 17+).
 * **PostgreSQL 18 support** — compatibility work across core patches,
   initdb, row filters, and compiler warnings.
 * **Source tree restructured** under `src/` and `include/` directories.
@@ -333,6 +357,13 @@ AutoDDL has been refactored and hardened:
   level and suppresses dependent-object reporting in `DROP CASCADE`
   operations.  Intended for regression tests and production
   environments where less verbose output is desired.
+* `spock.log_verbosity` (enum `normal`/`debug1`/`debug2`, default
+  `normal`, `SUSET`) — promotes Spock's own `DEBUG1`/`DEBUG2` messages to
+  `LOG` so they survive a normal `log_min_messages`.
+* `spock.apply_change_logging` (enum `none`/`key_only`/`verbose`, default
+  `none`, `SUSET`) — emits per-change JSON from the apply worker
+  (action, table, key, origin, commit timestamp; plus row data in
+  `verbose`).
 * `spock.read_retry_count` allows for configuring the number of retries
   when an expected row is not found. The default matches the previously
   hard-coded value of 5 (there is 1ms of sleep between each retry).
@@ -459,6 +490,10 @@ once the binaries are swapped.  The upgrade:
   text, so `5.0.10` sorted below `5.0.4` and a valid node was wrongly rejected.
   Versions are now compared numerically, and nodes may differ in patch level as
   long as their major.minor matches, allowing rolling upgrades.
+* Fix a spurious "tiebreaker values are equal" WARNING on timestamp-tied
+  conflicts in single-writer topologies (and on node-id hash collisions). The
+  tiebreaker now compares the applying node against the remote sender, and
+  node-id collisions are detected at node creation.
 
 ## Spock 5.0.9
 
