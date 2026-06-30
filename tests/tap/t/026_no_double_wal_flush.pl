@@ -59,7 +59,7 @@ my $prov_dsn = "host=$host port=$prov_port dbname=$dbname user=$user";
 # WAL fsyncs there and fall back to pg_stat_wal.wal_sync on PG15-17.
 my $pg_version_num = scalar_query(2, "SELECT current_setting('server_version_num')");
 my $wal_sync_query = ($pg_version_num >= 180000)
-    ? "SELECT COALESCE(sum(fsyncs), 0)::bigint FROM pg_stat_io WHERE object = 'wal'"
+    ? "SELECT COALESCE(sum(fsyncs), 0)::bigint FROM pg_stat_io WHERE object = 'wal' AND context = 'normal'"
     : "SELECT wal_sync FROM pg_stat_wal";
 diag("WAL-fsync counter source (server_version_num=$pg_version_num): $wal_sync_query");
 
