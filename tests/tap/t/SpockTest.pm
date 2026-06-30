@@ -375,22 +375,26 @@ sub destroy_cluster {
 			  FROM spock.subscription s, LATERAL spock.sub_drop(s.sub_name)";
         }
 
+        # Best-effort logical cleanup. A failed node_drop (e.g. a node that
+        # was never fully set up) must NOT abort teardown: the servers below
+        # share fixed ports/datadirs with every other test, so a leaked
+        # postmaster poisons the next test in the run.
         for (my $i = 0; $i < $node_count; $i++) {
             my $node_name = "n" . ($i + 1);
-            system_or_bail "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "SELECT spock.node_drop('$node_name')";
+            system_maybe "$PG_BIN/psql", '-p', $node_ports[$i], '-d', $DB_NAME, '-c', "SELECT spock.node_drop('$node_name')";
         }
 
-        # Stop PostgreSQL instances
+        # Stop PostgreSQL instances (must always run).
         for (my $i = 0; $i < $node_count; $i++) {
             system("$PG_BIN/pg_ctl stop -D $node_datadirs[$i] -m immediate >> '$LOG_FILE' 2>&1 &");
         }
 
-        # Wait for processes to stop
-        system_or_bail 'sleep', '5';
+        # Wait for processes to stop.
+        sleep(5);
 
-        # Clean up test directories
+        # Clean up test directories (must always run).
         for my $datadir (@node_datadirs) {
-            system_or_bail 'rm', '-rf', $datadir;
+            system('rm', '-rf', $datadir);
         }
 
         $nodes_created = 0;
