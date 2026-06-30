@@ -58,7 +58,10 @@ my $user      = $conf->{db_user};
 my $prov_port = $ports->[0];
 my $sub_port  = $ports->[1];
 my $sub_dir   = $datadirs->[1];
-my $logdir    = "$sub_dir/logs";
+# The logging collector writes server logs into the harness log directory
+# (TESTLOGDIR) as 00<port>.log, not into the data directory.  Grep there for
+# the apply worker's "ts recovery" lines.
+my $logdir    = $conf->{log_dir};
 
 my $prov_dsn = "host=$host port=$prov_port dbname=$dbname user=$user";
 

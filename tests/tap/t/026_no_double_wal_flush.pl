@@ -8,9 +8,14 @@
 #       pressure on the apply hot path.  After the removal, each applied
 #       commit should produce exactly one fsync (the commit record itself).
 #
-# Uses pg_stat_wal.wal_sync as an indirect counter.  With
+# Uses a WAL-fsync counter as an indirect measure.  With
 # synchronous_commit=on and no other WAL-generating activity, N applied
 # commits should produce ~N fsyncs, not ~2N.
+#
+# The counter source depends on the server version: PG15-17 expose
+# pg_stat_wal.wal_sync, but PG18 removed wal_sync/wal_write from pg_stat_wal
+# and relocated WAL I/O accounting to pg_stat_io (object = 'wal').  See
+# $wal_sync_query below.
 # =============================================================================
 
 use strict;
@@ -49,6 +54,15 @@ my $sub_dir   = $datadirs->[1];
 
 my $prov_dsn = "host=$host port=$prov_port dbname=$dbname user=$user";
 
+# Pick a WAL-fsync counter that exists on the running server.  pg_stat_wal
+# lost wal_sync/wal_write in PG18 (moved to pg_stat_io), so use pg_stat_io's
+# WAL fsyncs there and fall back to pg_stat_wal.wal_sync on PG15-17.
+my $pg_version_num = scalar_query(2, "SELECT current_setting('server_version_num')");
+my $wal_sync_query = ($pg_version_num >= 180000)
+    ? "SELECT COALESCE(sum(fsyncs), 0)::bigint FROM pg_stat_io WHERE object = 'wal'"
+    : "SELECT wal_sync FROM pg_stat_wal";
+diag("WAL-fsync counter source (server_version_num=$pg_version_num): $wal_sync_query");
+
 # Force synchronous_commit=on so every commit record is flushed.
 psql_or_bail(2, "ALTER SYSTEM SET synchronous_commit = 'on'");
 system_or_bail "$pg_bin/pg_ctl", '-D', $sub_dir, 'reload';
@@ -64,8 +78,8 @@ ok(wait_for_sub_status(2, 'sub', 'replicating', 30), 'subscription is replicatin
 psql_or_bail(2, 'CHECKPOINT');
 select(undef, undef, undef, 0.5);
 
-my $before = scalar_query(2, "SELECT wal_sync FROM pg_stat_wal");
-ok($before =~ /^\d+$/, "baseline wal_sync=$before");
+my $before = scalar_query(2, $wal_sync_query);
+ok($before =~ /^\d+$/, "baseline wal sync count=$before");
 
 # Apply N commits. Each is a small transaction to minimize non-commit WAL
 # volume; bigger transactions would drag in checkpoints, XLogBackgroundFlush
@@ -81,9 +95,9 @@ ok(wait_until(30, sub {
 # Let any lingering feedback/statistic flushes settle.
 select(undef, undef, undef, 1.0);
 
-my $after = scalar_query(2, "SELECT wal_sync FROM pg_stat_wal");
+my $after = scalar_query(2, $wal_sync_query);
 my $delta = $after - $before;
-diag("wal_sync delta over $N applied commits: $delta");
+diag("wal sync delta over $N applied commits: $delta");
 
 # Before the fix: at least N extra syncs from the per-commit XLogFlush in
 # spock_apply_progress_add_to_wal(), independent of synchronous_commit.
@@ -95,7 +109,7 @@ diag("wal_sync delta over $N applied commits: $delta");
 # sync-per-commit. Assert the delta is well below N.  This catches any
 # re-introduction of an XLogFlush in the apply hot path.
 cmp_ok($delta, '<', $N,
-    "wal_sync delta ($delta) is below N=$N -- applied commits do not force a sync per commit");
+    "wal sync delta ($delta) is below N=$N -- applied commits do not force a sync per commit");
 
 # Lower bound: zero is unlikely because the walwriter fires periodically,
 # but we don't want to require a specific minimum -- the test is about the

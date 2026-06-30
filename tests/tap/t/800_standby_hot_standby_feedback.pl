@@ -1,8 +1,20 @@
 use strict;
 use warnings;
-use Test::More tests => 9;
+use Test::More;
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config psql_or_bail);
+
+# Spock disables its own failover-slots worker on PG18+, relying on
+# PostgreSQL's native sync_replication_slots instead (see the
+# #if PG_VERSION_NUM >= 180000 gate in src/spock_failover_slots.c). The
+# worker this test exercises therefore does not exist on PG18+, so skip
+# there. Valid on PG15/16/17, where Spock still runs the worker.
+my $pg_bin = get_test_config()->{pg_bin};
+my ($pg_major) = `$pg_bin/pg_config --version` =~ /\b(\d+)/;
+plan skip_all =>
+    "spock_failover_slots worker is disabled on PG18+ (native sync_replication_slots)"
+    if defined $pg_major && $pg_major >= 18;
+plan tests => 9;
 
 # =============================================================================
 # Test: 800_standby_hot_standby_feedback.pl
