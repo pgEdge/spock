@@ -113,9 +113,9 @@ typedef struct SubscriptionTuple
 #define Anum_sub_created_at			15
 
 /*
- * List of extensions and schemas that we should skip globally.
- * By-default, it is spock, lolor, and snowflake related objects.
- * Don't merge it with subscription-specific skip-schema list to avoid cases
+ * Schemas and extensions excluded from the structure-sync dump. Restoring
+ * these on a subscriber that already has them fails, so keep them out of the
+ * dump. Kept separate from the subscription-specific skip list to avoid cases
  * when user drops 'sub->skip_schema' and violates these restrictions.
  */
 const char *const skip_schema[] = {
@@ -126,6 +126,22 @@ const char *const skip_schema[] = {
 };
 const char *const skip_extension[] = {
 	"lolor",
+	"snowflake",
+	"spock",
+	NULL  /* sentinel */
+};
+
+/*
+ * Schemas and extensions that may not be added to a replication set. lolor is
+ * absent here on purpose: its tables must replicate so large objects survive a
+ * DROP EXTENSION on every node, not only where the drop was issued.
+ */
+static const char *const norepset_schema[] = {
+	"snowflake",
+	"spock",
+	NULL  /* sentinel */
+};
+static const char *const norepset_extension[] = {
 	"snowflake",
 	"spock",
 	NULL  /* sentinel */
@@ -1298,9 +1314,8 @@ get_node_subscriptions(Oid nodeid, bool origin)
 }
 
 /*
- * Check if relation depends on an extension from static 'skip_extension' list
- * or if it is from the static 'skip_schema' list.
- *
+ * Check if relation is from a schema, or depends on an extension, that may not
+ * be added to a replication set.
  */
 void
 EnsureRelationNotIgnored(Relation rel)
@@ -1311,9 +1326,9 @@ EnsureRelationNotIgnored(Relation rel)
 
 	nspname = get_namespace_name(RelationGetNamespace(rel));
 
-	for (i = 0; skip_schema[i] != NULL; i++)
+	for (i = 0; norepset_schema[i] != NULL; i++)
 	{
-		if (strcmp(skip_schema[i], nspname) != 0)
+		if (strcmp(norepset_schema[i], nspname) != 0)
 			continue;
 
 		ereport(ERROR,
@@ -1321,7 +1336,7 @@ EnsureRelationNotIgnored(Relation rel)
 				 errmsg("relation %s cannot be added to any replication set",
 						RelationGetRelationName(rel)),
 				 errdetail("table is in the ignored schema %s",
-						   skip_schema[i]),
+						   norepset_schema[i]),
 				 errhint("Move this relation to a schema allowed for replication")));
 	}
 
@@ -1329,14 +1344,14 @@ EnsureRelationNotIgnored(Relation rel)
 	if (!OidIsValid(extoid))
 		return;
 
-	for (i = 0; skip_extension[i] != NULL; i++)
+	for (i = 0; norepset_extension[i] != NULL; i++)
 	{
 		/*
 		 * Detect if extension includes this relation.
 		 * XXX: Should we check if the relation doesn't belong to the extension
 		 * but depends on it?
 		 */
-		if (extoid != get_extension_oid(skip_extension[i], true))
+		if (extoid != get_extension_oid(norepset_extension[i], true))
 			continue;
 
 		ereport(ERROR,
@@ -1344,7 +1359,7 @@ EnsureRelationNotIgnored(Relation rel)
 				 errmsg("relation %s cannot be added to any replication set",
 						RelationGetRelationName(rel)),
 				 errdetail("relation belongs to the ignored extension %s",
-						   skip_extension[i]),
+						   norepset_extension[i]),
 				 errhint("Move this relation to an extension allowed for replication")));
 	}
 }
