@@ -127,17 +127,25 @@ WORKDIR /home/pgedge
 # Clone PostgreSQL Source
 # ==============================================================================
 
-# Determine the latest stable tag for the requested PostgreSQL major version
+# Determine the PostgreSQL source ref for the requested major version.
+# Normally the latest stable *tag* (REL_${PGVER}_x).  PostgreSQL 19 has no GA
+# tag yet, so temporarily track the tip of REL_19_STABLE instead; revert to
+# tag resolution once PG19 ships a GA release.
 RUN set -eux && \
-	LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
-	grep "refs/tags/REL_${PGVER}_" | \
-	sed 's|.*refs/tags/||' | \
-	tr '_' '.' | \
-	sort -V | \
-	tail -n 1 | \
-	tr '.' '_') && \
-	echo "Cloning PostgreSQL tag: ${LATEST_TAG}" && \
-	git clone --branch "${LATEST_TAG}" --depth 1 \
+	if [ "${PGVER}" -ge 19 ]; then \
+		PG_REF="REL_${PGVER}_STABLE"; \
+		echo "Cloning PostgreSQL branch HEAD (pre-GA): ${PG_REF}"; \
+	else \
+		PG_REF=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
+		grep "refs/tags/REL_${PGVER}_" | \
+		sed 's|.*refs/tags/||' | \
+		tr '_' '.' | \
+		sort -V | \
+		tail -n 1 | \
+		tr '.' '_'); \
+		echo "Cloning PostgreSQL tag: ${PG_REF}"; \
+	fi && \
+	git clone --branch "${PG_REF}" --depth 1 \
 	https://github.com/postgres/postgres.git /home/pgedge/postgres && \
 	echo "export PG_SRCDIR=/home/pgedge/postgres" >> /home/pgedge/.bashrc
 

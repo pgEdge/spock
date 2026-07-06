@@ -8,6 +8,11 @@
 # The 'security_label' test has no chance to pass without extra coding. So, just
 # skip it for now. This decision may be revised later if something is changed
 # in the PostgreSQL core.
+# The PG19 'create_property_graph' core test filters on grantee LIKE 'regress%',
+# which also matches the 'regression' run-user under installcheck, surfacing
+# owner self-grants that a plain 'make check' (run as a non-regress OS user)
+# never shows. It is an installcheck-harness artifact unrelated to Spock, so
+# skip it too.
 # The sad fact is that n2 and n3 can't pass these tests without errors, because
 # the LR is limited and doesn't support many features. That turns their logs
 # into a mess, but we still save them to detect any potential issues.
@@ -30,7 +35,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        pgver: [15, 16, 17, 18]
+        pgver: [15, 16, 17, 18, 19]
 
     runs-on: ${{ matrix.os }}
 
@@ -100,16 +105,16 @@ jobs:
             exit 0
           fi
 
-          # Check for 'not ok' test results, excluding 'security_label'
-          # Extract all 'not ok' lines and filter out security_label
-          FAILED_TESTS=$(grep "not ok" installcheck_output.txt | grep -v "security_label" || true)
+          # Check for 'not ok' test results, excluding the known installcheck-only
+          # core-test artifacts (security_label, and PG19's create_property_graph).
+          FAILED_TESTS=$(grep "not ok" installcheck_output.txt | grep -vE "security_label|create_property_graph" || true)
 
           if [ -n "$FAILED_TESTS" ]; then
-            echo "ERROR: Found failing tests (excluding security_label):"
+            echo "ERROR: Found failing tests (excluding security_label, create_property_graph):"
             echo "$FAILED_TESTS"
             echo "test_result=failed" >> $GITHUB_OUTPUT
           else
-            echo "All tests passed (security_label failures are expected and ignored)"
+            echo "All tests passed (security_label/create_property_graph failures are expected and ignored)"
             echo "test_result=passed" >> $GITHUB_OUTPUT
           fi
         timeout-minutes: 30

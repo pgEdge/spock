@@ -88,7 +88,7 @@ jobs:
       fail-fast: false
       matrix:
         pr: ${{ fromJSON(needs.setup.outputs.matrix) }}
-        pgver: [15, 16, 17, 18]
+        pgver: [15, 16, 17, 18, 19]
 
     runs-on: ubuntu-latest
 
@@ -170,7 +170,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pgver: [15, 16, 17, 18]
+        pgver: [15, 16, 17, 18, 19]
 
     runs-on: ubuntu-latest
 
