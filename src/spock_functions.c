@@ -1315,6 +1315,10 @@ spock_show_subscription_table(PG_FUNCTION_ARGS)
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "nspname", TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "relname", TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "status", TEXTOID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+	/* PG19 requires finalising a manually built descriptor before use */
+	TupleDescFinalize(tupdesc);
+#endif
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	nspname = get_namespace_name(get_rel_namespace(reloid));
@@ -2565,12 +2569,25 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				goto skip_ddl;
 			break;
 
+#if PG_VERSION_NUM >= 190000
+		/*
+		 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
+		 * CLUSTER statement now parses into a RepackStmt whose target is a
+		 * VacuumRelation rather than a bare RangeVar.
+		 */
+		case T_RepackStmt:
+		{
+			RepackStmt	   *cstmt = (RepackStmt *) stmt;
+			RangeVar	   *cluster_rel = cstmt->relation ? cstmt->relation->relation : NULL;
+#else
 		case T_ClusterStmt:
 		{
 			ClusterStmt	   *cstmt = (ClusterStmt *) stmt;
+			RangeVar	   *cluster_rel = cstmt->relation;
+#endif
 			bool			skip_cluster = true;
 
-			if (cstmt->relation != NULL)
+			if (cluster_rel != NULL)
 			{
 				Relation	rel;
 				Oid			tableOid;
@@ -2581,7 +2598,7 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				 * this command it means everything must be ok, or we are in
 				 * trouble and deserve an ERROR.
 				 */
-				tableOid = RangeVarGetRelidExtended(cstmt->relation,
+				tableOid = RangeVarGetRelidExtended(cluster_rel,
 												AccessShareLock, 0, NULL, NULL);
 				rel = table_open(tableOid, NoLock);
 				skip_cluster = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
@@ -3181,6 +3198,10 @@ spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 					   TIMESTAMPTZOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "roident",
 					   OIDOID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+	/* PG19 requires finalising a manually built descriptor before use */
+	TupleDescFinalize(tupdesc);
+#endif
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	found = TransactionIdGetCommitTsData(xid, &ts, &origin);
@@ -3883,6 +3904,10 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "worker_dboid", INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "worker_subid", INT8OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "worker_status", TEXTOID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+	/* PG19 requires finalising a manually built descriptor before use */
+	TupleDescFinalize(tupdesc);
+#endif
 
 	tupstore = tuplestore_begin_heap(true, false, work_mem);
 	rsinfo->returnMode = SFRM_Materialize;

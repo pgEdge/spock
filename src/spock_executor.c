@@ -71,7 +71,11 @@ static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook;
 static ExecutorStart_hook_type prev_executor_start_hook;
 
+#if PG_VERSION_NUM >= 190000
+void		spock_post_parse_analyze(ParseState *pstate, Query *query, const JumbleState *jstate);
+#else
 void		spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
+#endif
 void		spock_ExecutorStart(QueryDesc *queryDesc, int eflags);
 
 EState *
@@ -301,7 +305,11 @@ spock_ExecutorStart(QueryDesc *queryDesc, int eflags)
 }
 
 void
+#if PG_VERSION_NUM >= 190000
+spock_post_parse_analyze(ParseState *pstate, Query *query, const JumbleState *jstate)
+#else
 spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
+#endif
 {
 	spock_ropost_parse_analyze(pstate, query, jstate);
 

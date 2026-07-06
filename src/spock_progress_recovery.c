@@ -34,6 +34,9 @@
 #include "spock_progress_recovery.h"
 #include "spock_worker.h"
 
+/* Keep last: provides the PG-version compatibility shims (e.g. RepOriginId) */
+#include "spock_compat.h"
+
 /*
  * Constants governing the post-crash scan of pg_commit_ts that recovers
  * remote_commit_ts per origin. Plain #defines for now; convert to GUCs only

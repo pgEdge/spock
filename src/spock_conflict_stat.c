@@ -166,7 +166,12 @@ Spock_Stat_StatSubEntry *
 spock_stat_fetch_stat_subscription(Oid subid)
 {
 	return (Spock_Stat_StatSubEntry *)
+#if PG_VERSION_NUM >= 190000
+		/* PG19 added a trailing may_free out-parameter; NULL means "don't care". */
+		pgstat_fetch_entry(SPOCK_PGSTAT_KIND_LRCONFLICTS, MyDatabaseId, subid, NULL);
+#else
 		pgstat_fetch_entry(SPOCK_PGSTAT_KIND_LRCONFLICTS, MyDatabaseId, subid);
+#endif
 }
 
 /*
@@ -198,6 +203,10 @@ spock_get_subscription_stats(PG_FUNCTION_ARGS)
 						   INT8OID, -1, 0);
 	TupleDescInitEntry(tupdesc, attnum++, "stats_reset",
 					   TIMESTAMPTZOID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+	/* PG19 requires finalising a manually built descriptor before use */
+	TupleDescFinalize(tupdesc);
+#endif
 	BlessTupleDesc(tupdesc);
 
 	if (!subentry)

@@ -228,7 +228,7 @@ spock_write_begin(StringInfo out, SpockOutputData *data,
 
 	/* fixed fields */
 	pq_sendint64(out, txn->final_lsn);
-	pq_sendint64(out, txn->xact_time.commit_time);
+	pq_sendint64(out, SpockTxnCommitTime(txn));
 	pq_sendint(out, txn->xid, 4);
 }
 
@@ -258,7 +258,7 @@ spock_write_commit(StringInfo out, SpockOutputData *data,
 	/* send fixed fields */
 	pq_sendint64(out, commit_lsn);
 	pq_sendint64(out, txn->end_lsn);
-	pq_sendint64(out, txn->xact_time.commit_time);
+	pq_sendint64(out, SpockTxnCommitTime(txn));
 
 	/* Protocol version 4 includes remote_insert_lsn at the end */
 	if (spock_get_proto_version() == 4)
@@ -512,7 +512,7 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 			pq_sendbyte(out, 'n');	/* null column */
 			continue;
 		}
-		else if (att->attlen == -1 && VARATT_IS_EXTERNAL_ONDISK(values[i]))
+		else if (att->attlen == -1 && VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(values[i])))
 		{
 			pq_sendbyte(out, 'u');	/* unchanged toast column */
 			continue;
@@ -557,7 +557,7 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 					char	   *data = DatumGetPointer(values[i]);
 
 					/* send indirect datums inline */
-					if (VARATT_IS_EXTERNAL_INDIRECT(values[i]))
+					if (VARATT_IS_EXTERNAL_INDIRECT(DatumGetPointer(values[i])))
 					{
 						struct varatt_indirect redirect;
 
@@ -1025,7 +1025,7 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 						att->atttypid < FirstNormalObjectId &&
 						attrtype < FirstNormalObjectId)
 					{
-						bits16		flags = FORMAT_TYPE_TYPEMOD_GIVEN | FORMAT_TYPE_ALLOW_INVALID;
+						uint16		flags = FORMAT_TYPE_TYPEMOD_GIVEN | FORMAT_TYPE_ALLOW_INVALID;
 
 						ereport(ERROR,
 								(errcode(ERRCODE_DATATYPE_MISMATCH),

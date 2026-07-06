@@ -121,9 +121,10 @@ system_or_bail 'sleep', '5';
 $sub_status = scalar_query(2, "SELECT status FROM spock.sub_show_status()");
 is($sub_status, 'replicating', 'Subscription stayed enabled after skipping transaction');
 
-# Verify skip_lsn was cleared
-my $current_skip_lsn = scalar_query(2, "SELECT sub_skip_lsn FROM spock.subscription WHERE sub_name = 'sub_n2_n1'");
-is($current_skip_lsn, '0/0', 'skip_lsn was cleared after successful skip');
+# Verify skip_lsn was cleared.  Compare as pg_lsn rather than text: a zero LSN
+# renders as "0/0" on PG<=18 but "0/00000000" on PG19+ (pg_lsn_out uses %08X).
+my $skip_lsn_cleared = scalar_query(2, "SELECT sub_skip_lsn = '0/0'::pg_lsn FROM spock.subscription WHERE sub_name = 'sub_n2_n1'");
+is($skip_lsn_cleared, 't', 'skip_lsn was cleared after successful skip');
 
 # Test that subsequent replication continues to work
 # Insert a new row on n1
