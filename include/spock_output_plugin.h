@@ -20,6 +20,23 @@
 /* summon cross-PG-version compatibility voodoo */
 #include "spock_compat.h"
 
+/*
+ * PG19 flattened the ReorderBufferTXN "xact_time" union into direct
+ * commit_time / prepare_time / abort_time members.
+ *
+ * Spock reads this only at commit-decode time (it registers no two-phase
+ * callbacks), so commit_time is always the right member.  If prepared-
+ * transaction decoding is ever added, this accessor must choose commit_time
+ * vs prepare_time by txn state: on PG<=18 those aliased in the union, on PG19
+ * they are separate fields, so blindly reading commit_time would yield 0 for a
+ * prepare.
+ */
+#if PG_VERSION_NUM >= 190000
+#define SpockTxnCommitTime(txn) ((txn)->commit_time)
+#else
+#define SpockTxnCommitTime(txn) ((txn)->xact_time.commit_time)
+#endif
+
 /* typedef appears in spock_output_plugin.h */
 typedef struct SpockOutputData
 {

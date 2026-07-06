@@ -1140,6 +1140,10 @@ Datum spock_show_subscription_table(PG_FUNCTION_ARGS)
 	TupleDescInitEntry(tupdesc, (AttrNumber)1, "nspname", TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber)2, "relname", TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber)3, "status", TEXTOID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+	/* PG19 requires finalising a manually built descriptor before use */
+	TupleDescFinalize(tupdesc);
+#endif
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	nspname = get_namespace_name(get_rel_namespace(reloid));
@@ -2219,7 +2223,15 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		case T_CreateTableSpaceStmt:	/* TABLESPACE */
 		case T_DropTableSpaceStmt:
 		case T_AlterTableSpaceOptionsStmt:
+#if PG_VERSION_NUM >= 190000
+		/*
+		 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
+		 * CLUSTER statement now parses into a RepackStmt.
+		 */
+		case T_RepackStmt:				/* CLUSTER */
+#else
 		case T_ClusterStmt:				/* CLUSTER */
+#endif
 			add_search_path = false;
 			break;
 
@@ -2750,6 +2762,10 @@ Datum spock_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 					   TIMESTAMPTZOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber)2, "roident",
 					   OIDOID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+	/* PG19 requires finalising a manually built descriptor before use */
+	TupleDescFinalize(tupdesc);
+#endif
 	tupdesc = BlessTupleDesc(tupdesc);
 
 #ifdef HAVE_REPLICATION_ORIGINS
@@ -3421,6 +3437,10 @@ get_apply_worker_status(PG_FUNCTION_ARGS)
     TupleDescInitEntry(tupdesc, (AttrNumber)2, "worker_dboid", INT4OID, -1, 0);
     TupleDescInitEntry(tupdesc, (AttrNumber)3, "worker_subid", INT8OID, -1, 0);
     TupleDescInitEntry(tupdesc, (AttrNumber)4, "worker_status", TEXTOID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+    /* PG19 requires finalising a manually built descriptor before use */
+    TupleDescFinalize(tupdesc);
+#endif
 
     tupstore = tuplestore_begin_heap(true, false, work_mem);
     rsinfo->returnMode = SFRM_Materialize;
