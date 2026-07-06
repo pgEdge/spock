@@ -75,7 +75,7 @@ sudo apt update
 
 
 After creating the repository, install your preferred PostgreSQL version.
-The examples use PostgreSQL 18, but you can substitute 15, 16, or 17.
+The examples use PostgreSQL 18. If you switch to 15, 16, 17, or 19, update every versioned package, path, and service name in the snippets below.
 
 For RHEL/Rocky Linux/AlmaLinux:
 
