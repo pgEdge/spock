@@ -68,17 +68,9 @@ spock_json_write_begin(StringInfo out, SpockOutputData *data, ReorderBufferTXN *
 		appendStringInfo(out, ", \"origin_lsn\":\"%X/%X\"",
 			(uint32)(txn->origin_lsn >> 32), (uint32)(txn->origin_lsn));
 #endif
-#if PG_VERSION_NUM >= 150000
-		if (txn->xact_time.commit_time != 0)
-#else
-		if (txn->commit_time != 0)
-#endif
-		appendStringInfo(out, ", \"commit_time\":\"%s\"",
-#if PG_VERSION_NUM >= 150000
-			timestamptz_to_str(txn->xact_time.commit_time));
-#else
-			timestamptz_to_str(txn->commit_time));
-#endif
+		if (SpockTxnCommitTime(txn) != 0)
+			appendStringInfo(out, ", \"commit_time\":\"%s\"",
+							 timestamptz_to_str(SpockTxnCommitTime(txn)));
 	}
 	appendStringInfoChar(out, '}');
 }
@@ -226,7 +218,7 @@ typedef enum					/* type categories for datum_to_json */
 	JSONTYPE_OTHER				/* all else */
 } JsonTypeCategory;
 
-static void composite_to_json(Datum composite, StringInfo result,
+static void spock_composite_to_json(Datum composite, StringInfo result,
 				  bool use_line_feeds);
 static void array_dim_to_json(StringInfo result, int dim, int ndims, int *dims,
 				  Datum *vals, bool *nulls, int *valcount,
@@ -374,7 +366,7 @@ datum_to_json(Datum val, bool is_null, StringInfo result,
 			array_to_json_internal(val, result, false);
 			break;
 		case JSONTYPE_COMPOSITE:
-			composite_to_json(val, result, false);
+			spock_composite_to_json(val, result, false);
 			break;
 		case JSONTYPE_BOOL:
 			outputstr = DatumGetBool(val) ? "true" : "false";
@@ -574,7 +566,7 @@ array_to_json_internal(Datum array, StringInfo result, bool use_line_feeds)
  * Turn a composite / record into JSON.
  */
 static void
-composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
+spock_composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 {
 	HeapTupleHeader td;
 	Oid			tupType;
@@ -681,7 +673,7 @@ json_write_tuple(StringInfo out, Relation rel, HeapTuple tuple,
 		 * them.
 		 */
 		if (!isnull[i] && att->attlen == -1 &&
-			VARATT_IS_EXTERNAL_ONDISK(values[i]))
+			VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(values[i])))
 			continue;
 
 		if (needsep)
