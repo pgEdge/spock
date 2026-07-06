@@ -1,7 +1,7 @@
 # The Spock Extension
 
 The Spock extension provides multi-master (active-active) replication for
-pgEdge Distributed and Enterprise Postgres, versions 15, 16, 17, and 18. The
+pgEdge Distributed and Enterprise Postgres, versions 15, 16, 17, 18, and 19. The
 extension leverages the pgLogical open-source project as a solid foundation
 to build upon for this enterprise-class extension.
 
