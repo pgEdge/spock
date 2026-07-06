@@ -26,6 +26,10 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
 * **Exception handling refactor** — stable behaviour under TRANSDISCARD /
   SUB_DISABLE; original error messages preserved in `spock.exception_log`.
 * **Replay queue spills to disk** instead of refetching from the publisher.
+* **PostgreSQL 19 support** — compatibility work across core patches and
+  version-specific API changes (replication-origin session state folded into
+  `replorigin_xact_state`, `CLUSTER` folded into `REPACK`, the `pgstat` and
+  recovery-conflict signalling changes, and the `RepOriginId` rename).
 
 ### Catastrophic node failure recovery
 
