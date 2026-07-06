@@ -24,7 +24,11 @@
 extern EState *create_estate_for_relation(Relation rel, bool forwrite);
 extern ExprContext *prepare_per_tuple_econtext(EState *estate, TupleDesc tupdesc);
 extern ExprState *spock_prepare_row_filter(Node *row_filter);
+#if PG_VERSION_NUM >= 190000
+extern void spock_post_parse_analyze(ParseState *pstate, Query *query, const JumbleState *jstate);
+#else
 extern void spock_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
+#endif
 extern void spock_ExecutorStart(QueryDesc *queryDesc, int eflags);
 
 extern void spock_executor_init(void);

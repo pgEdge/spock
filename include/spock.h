@@ -102,7 +102,11 @@ extern void spock_auto_replicate_ddl(const char *query, List *replication_sets,
 
 /* spock_readonly.c */
 void		spock_roExecutorStart(QueryDesc *queryDesc, int eflags);
+#if PG_VERSION_NUM >= 190000
+void		spock_ropost_parse_analyze(ParseState *pstate, Query *query, const JumbleState *jstate);
+#else
 void		spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
+#endif
 
 #include "utils/memdebug.h"
 

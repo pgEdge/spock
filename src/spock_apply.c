@@ -63,6 +63,8 @@
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/snapmgr.h"
+/* PG19 no longer pulls wait_event.h in via pgstat.h; include it explicitly */
+#include "utils/wait_event.h"
 #include "replication/syncrep.h"
 #include "replication/walsender_private.h"
 

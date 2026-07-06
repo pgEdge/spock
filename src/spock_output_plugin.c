@@ -542,10 +542,10 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 		 * Save the slot_group->last_commit_ts to the static local variable to
 		 * avoid further locking.
 		 */
-		if (slot_group->last_commit_ts < txn->xact_time.commit_time)
+		if (slot_group->last_commit_ts < SpockTxnCommitTime(txn))
 		{
 			slot_group_last_commit_ts = slot_group->last_commit_ts;
-			slot_group->last_commit_ts = txn->xact_time.commit_time;
+			slot_group->last_commit_ts = SpockTxnCommitTime(txn);
 		}
 
 		elog(DEBUG1, "SPOCK: slot-group '%s': current transaction %u commit order ts"

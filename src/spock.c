@@ -99,7 +99,13 @@ static const struct config_enum_entry SpockOriginConflicts[] = {
 	{NULL, 0, false}
 };
 
-/* copied fom guc.c */
+/*
+ * copied fom guc.c
+ *
+ * PostgreSQL 19 exports server_message_level_options from utils/guc.h, so a
+ * local copy would clash with the core declaration; use core's there.
+ */
+#if PG_VERSION_NUM < 190000
 static const struct config_enum_entry server_message_level_options[] = {
 	{"debug", DEBUG2, true},
 	{"debug5", DEBUG5, false},
@@ -116,6 +122,7 @@ static const struct config_enum_entry server_message_level_options[] = {
 	{"panic", PANIC, false},
 	{NULL, 0, false}
 };
+#endif
 
 static const struct config_enum_entry exception_behaviour_options[] = {
 	{"discard", DISCARD, false},

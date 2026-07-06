@@ -22,12 +22,15 @@ typedef enum					/* type categories for datum_to_jsonb */
 	JSONBTYPE_OTHER				/* all else */
 } JsonbTypeCategory;
 
+/* PG19 exposes its own (differently-shaped) JsonbInState from utils/jsonb.h */
+#if PG_VERSION_NUM < 190000
 typedef struct JsonbInState
 {
 	JsonbParseState *parseState;
 	JsonbValue *res;
 	Node	   *escontext;
 } JsonbInState;
+#endif
 
 extern char *spock_tuple_to_json_cstring(SpockTupleData *tuple,
 										 TupleDesc tupdesc);

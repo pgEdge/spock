@@ -429,7 +429,12 @@ spock_lookup_delta_function(char *fname, Oid typeoid)
 
 	/* Find a match */
 	candidates = FuncnameGetCandidates(namestrings, 3, NIL,
-									   false, false, false, false);
+									   false, false, false, false
+#if PG_VERSION_NUM >= 190000
+	/* PG19 added a mandatory out-parameter that the callee dereferences */
+									   , &(int){0}
+#endif
+		);
 	for (fc = candidates; fc != NULL; fc = fc->next)
 		if (fc->args[0] == typeoid &&
 			fc->args[1] == typeoid &&

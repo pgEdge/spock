@@ -18,6 +18,9 @@
 
 #include "spock.h"
 
+/* Keep last: provides the PG-version compatibility shims */
+#include "spock_compat.h"
+
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(
 	.name = "spock_output",

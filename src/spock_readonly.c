@@ -25,6 +25,10 @@
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#if PG_VERSION_NUM >= 190000
+/* RECOVERY_CONFLICT_SNAPSHOT lives here since the PG19 conflict-reason split */
+#include "storage/standby.h"
+#endif
 #include "tcop/utility.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
@@ -49,21 +53,38 @@ spockro_terminate_active_transactions(PG_FUNCTION_ARGS)
 	VirtualTransactionId *tvxid;
 	int			nvxids;
 	int			i;
+#if PG_VERSION_NUM < 190000
 	pid_t		pid;
+#endif
 
 	elog(LOG, "spock: terminating all active transactions ...");
 
 	tvxid = GetCurrentVirtualXIDs(InvalidTransactionId, false, true, 0, &nvxids);
 	for (i = 0; i < nvxids; i++)
 	{
+#if PG_VERSION_NUM >= 190000
+		/*
+		 * PostgreSQL 19 replaced CancelVirtualTransaction() with
+		 * SignalRecoveryConflictWithVirtualXID() and moved the conflict reason
+		 * into the RecoveryConflictReason enum.
+		 */
+		(void) SignalRecoveryConflictWithVirtualXID(tvxid[i],
+													RECOVERY_CONFLICT_SNAPSHOT);
+		elog(LOG, "spock: transaction %u signalled", tvxid[i].localTransactionId);
+#else
 		pid = CancelVirtualTransaction(tvxid[i], PROCSIG_RECOVERY_CONFLICT_SNAPSHOT);
 		elog(LOG, "spock: PID %d signalled", pid);
+#endif
 	}
 	PG_RETURN_BOOL(true);
 }
 
 void
+#if PG_VERSION_NUM >= 190000
+spock_ropost_parse_analyze(ParseState *pstate, Query *query, const JumbleState *jstate)
+#else
 spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
+#endif
 {
 	/*
 	 * If spock.readonly is set, enforce Postgres core restriction for the
