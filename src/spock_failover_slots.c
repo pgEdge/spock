@@ -1604,6 +1604,165 @@ attach_to_walsender(Port *port, int status)
 }
 #endif							/* PG_VERSION_NUM < 180000 */
 
+/*
+ * spock_slot_enable_failover
+ *
+ * SQL-callable maintenance helper used by the 5.0.10 -> 6.0.0 upgrade.
+ *
+ * PostgreSQL 17+ can synchronize a logical replication slot to a physical
+ * standby (natively on 18 via sync_replication_slots, and on 17 when that GUC
+ * is enabled), but only slots whose "failover" flag is set are synchronized.
+ * Slots created by spock 6.0.0 already set the flag at CREATE time (see
+ * ensure_replication_slot_snapshot() in spock_sync.c), but slots created by
+ * earlier releases predate that logic.  This function marks every existing
+ * spock logical slot as failover-enabled so it participates in slot sync.
+ *
+ * There is no SQL to alter the flag on an existing slot -- the walsender
+ * ALTER_REPLICATION_SLOT command and pg_create_logical_replication_slot()'s
+ * failover argument are the only in-tree ways to set it -- so we flip it here
+ * the same way ReplicationSlotAlter() does, but acquiring the slot with
+ * nowait = true so a busy walsender never blocks the upgrade transaction.
+ *
+ * Behaviour:
+ *   - no-op (returns 0) on PostgreSQL 16 and older, where the flag doesn't exist;
+ *   - no-op on a standby, where failover cannot be enabled;
+ *   - skips slots that are already enabled, temporary, synced from a primary,
+ *     invalidated, or currently held by a walsender (a NOTICE is emitted for
+ *     active slots so the operator can rerun after pausing replication);
+ *   - returns the number of slots whose failover flag was turned on.
+ */
+PG_FUNCTION_INFO_V1(spock_slot_enable_failover);
+Datum
+spock_slot_enable_failover(PG_FUNCTION_ARGS)
+{
+	int			n_enabled = 0;
+#if PG_VERSION_NUM >= 170000
+	int			i;
+	List	   *targets = NIL;
+	ListCell   *lc;
+	MemoryContext caller_ctx = CurrentMemoryContext;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to call spock.slot_enable_failover()")));
+
+	/* Failover can only be enabled on a primary. */
+	if (RecoveryInProgress())
+	{
+		ereport(NOTICE,
+				(errmsg("spock: not enabling slot failover on a standby server")));
+		PG_RETURN_INT32(0);
+	}
+
+	/*
+	 * Collect the names of spock's persistent logical slots that don't yet
+	 * have the failover flag set and aren't currently in use.  We only read
+	 * shared slot state under the control lock here; the actual acquire/alter
+	 * happens afterwards because ReplicationSlotAcquire() must not run while
+	 * ReplicationSlotControlLock is held.
+	 */
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+
+		if (!s->in_use)
+			continue;
+		/* logical slots only (physical slots have no database) */
+		if (s->data.database == InvalidOid)
+			continue;
+		/* spock's own slots only */
+		if (strcmp(NameStr(s->data.plugin), "spock_output") != 0)
+			continue;
+		/* only persistent slots can carry the failover flag */
+		if (s->data.persistency != RS_PERSISTENT)
+			continue;
+		/* already enabled */
+		if (s->data.failover)
+			continue;
+		/* never touch a slot being synced from a primary */
+		if (s->data.synced)
+			continue;
+		/* an invalidated slot cannot be altered or reused */
+		if (s->data.invalidated != RS_INVAL_NONE)
+			continue;
+		/* skip slots held by a walsender so we never block the upgrade */
+		if (s->active_pid != 0)
+		{
+			ereport(NOTICE,
+					(errmsg("spock: replication slot \"%s\" is active; "
+							"rerun spock.slot_enable_failover() after pausing replication",
+							NameStr(s->data.name))));
+			continue;
+		}
+
+		targets = lappend(targets, pstrdup(NameStr(s->data.name)));
+	}
+	LWLockRelease(ReplicationSlotControlLock);
+
+	foreach(lc, targets)
+	{
+		char	   *slot_name = (char *) lfirst(lc);
+
+		/*
+		 * Isolate each slot in a subtransaction so a race (the slot turning
+		 * active or being dropped after our scan) is skipped with a WARNING
+		 * instead of aborting the whole upgrade.
+		 */
+		BeginInternalSubTransaction("spock_slot_enable_failover");
+		PG_TRY();
+		{
+#if PG_VERSION_NUM >= 180000
+			ReplicationSlotAcquire(slot_name, true, true);
+#else
+			ReplicationSlotAcquire(slot_name, true);
+#endif
+			SpinLockAcquire(&MyReplicationSlot->mutex);
+			MyReplicationSlot->data.failover = true;
+			SpinLockRelease(&MyReplicationSlot->mutex);
+			ReplicationSlotMarkDirty();
+			ReplicationSlotSave();
+			ReplicationSlotRelease();
+
+			ReleaseCurrentSubTransaction();
+			MemoryContextSwitchTo(caller_ctx);
+			n_enabled++;
+
+			ereport(NOTICE,
+					(errmsg("spock: enabled failover on replication slot \"%s\"",
+							slot_name)));
+		}
+		PG_CATCH();
+		{
+			ErrorData  *edata;
+
+			MemoryContextSwitchTo(caller_ctx);
+			edata = CopyErrorData();
+			FlushErrorState();
+
+			/* release the slot if we acquired it before failing */
+			if (MyReplicationSlot != NULL)
+				ReplicationSlotRelease();
+
+			RollbackAndReleaseCurrentSubTransaction();
+			MemoryContextSwitchTo(caller_ctx);
+
+			ereport(WARNING,
+					(errmsg("spock: could not enable failover on replication slot \"%s\": %s",
+							slot_name, edata->message)));
+			FreeErrorData(edata);
+		}
+		PG_END_TRY();
+	}
+#else
+	ereport(NOTICE,
+			(errmsg("spock: replication slot failover requires PostgreSQL 17 or newer; nothing to do")));
+#endif
+
+	PG_RETURN_INT32(n_enabled);
+}
+
 void
 spock_init_failover_slot(void)
 {

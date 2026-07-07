@@ -270,6 +270,16 @@ RETURNS boolean
 AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
 LANGUAGE C STRICT VOLATILE;
 
+-- Turn on the "failover" flag for spock's existing logical replication slots
+-- so PostgreSQL 17+ slot synchronization picks them up.  New 6.0.0 slots set
+-- the flag at creation time; this helper exists for slots made by older
+-- releases and for manual use after pausing replication.
+CREATE FUNCTION spock.slot_enable_failover()
+RETURNS integer
+AS 'MODULE_PATHNAME', 'spock_slot_enable_failover'
+LANGUAGE C VOLATILE;
+REVOKE ALL ON FUNCTION spock.slot_enable_failover() FROM PUBLIC;
+
 CREATE FUNCTION spock.sub_show_status(
   subscription_name     name DEFAULT NULL,
   OUT subscription_name text,
