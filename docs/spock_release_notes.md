@@ -462,7 +462,13 @@ once the binaries are swapped.  The upgrade:
 * migrates `spock.resolutions.conflict_type` values,
 * adds the new functions and the `sub_id_generator` sequence,
 * refreshes the parallel-safety attributes on `spock.md5_agg_sfunc` and
-  `spock.spock_gen_slot_name`.
+  `spock.spock_gen_slot_name`,
+* turns on the `failover` flag for existing logical slots by calling
+  `spock.slot_enable_failover()`, so PostgreSQL 17 and 18 slot synchronization
+  picks them up. This is a no-op on PostgreSQL 16 and older and on a standby,
+  and it skips slots that are in use at the time. See
+  [Logical Slot Failover](logical_slot_failover.md) for how to handle any
+  skipped slots.
 
 ## Spock 5.0.10
 

@@ -324,3 +324,25 @@ RETURNS boolean
 AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
 LANGUAGE C STRICT VOLATILE;
 
+-- ----
+-- Enable the "failover" flag on spock's existing logical replication slots.
+--
+-- PostgreSQL 17 and newer can synchronize a logical slot to a physical standby
+-- (natively on 18 through sync_replication_slots, and on 17 when that setting
+-- is turned on), but only slots that have failover = true are synchronized.
+-- Slots created by spock 6.0.0 set the flag when the slot is created, but slots
+-- created by earlier releases do not have it, so turn it on for the existing
+-- ones during the upgrade.
+--
+-- The function is a no-op on PostgreSQL 16 and older and on a standby, and it
+-- skips slots that are currently in use (it prints a NOTICE for those so the
+-- operator can rerun it after pausing replication).
+-- ----
+CREATE FUNCTION spock.slot_enable_failover()
+RETURNS integer
+AS 'MODULE_PATHNAME', 'spock_slot_enable_failover'
+LANGUAGE C VOLATILE;
+REVOKE ALL ON FUNCTION spock.slot_enable_failover() FROM PUBLIC;
+
+SELECT spock.slot_enable_failover();
+
