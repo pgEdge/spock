@@ -284,10 +284,13 @@ BEGIN
 
     IF synchronize_structure THEN
         BEGIN
-            -- Query existing schemas on the new node (excluding system schemas)
+            -- Query existing schemas on the new node (excluding system schemas).
+            -- lolor is excluded here: Spock already keeps it out of the
+            -- structure dump globally, and putting it into skip_schema would
+            -- also exclude the lolor tables from the initial data sync.
             remotesql_schema := 'SELECT string_agg(schema_name, '','') as schemas
                                 FROM information_schema.schemata
-                                WHERE schema_name NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'', ''public'')
+                                WHERE schema_name NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'', ''public'', ''lolor'')
                                 AND schema_name NOT LIKE ''pg_temp_%''
                                 AND schema_name NOT LIKE ''pg_toast_temp_%''';
 
@@ -1143,20 +1146,41 @@ BEGIN
             RAISE EXCEPTION 'Exiting add_node: Database % does not exist on new node. Please create it first.', new_db_name;
     END;
 
-    -- Check if they previously installed lolor on the destination.
-    -- They should not have run CREATE EXTENSION yet
+    -- Check lolor state on the destination. Having the lolor extension
+    -- installed is fine (and required when the source replicates lolor
+    -- tables), but pre-existing large object data would conflict with the
+    -- data synchronized from the source.
     DECLARE
-        user_table_count integer;
+        new_lolor_installed boolean;
+        lolor_row_count bigint;
+        src_lolor_repset_tables integer;
         remotesql text;
     BEGIN
-        remotesql := 'SELECT count(*) FROM pg_tables WHERE schemaname = ''lolor''';
-        SELECT * FROM dblink(new_node_dsn, remotesql) AS t(count integer) INTO user_table_count;
+        remotesql := 'SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_extension WHERE extname = ''lolor'')';
+        SELECT * FROM dblink(new_node_dsn, remotesql) AS t(installed boolean) INTO new_lolor_installed;
 
-        IF user_table_count > 0 THEN
-            RAISE NOTICE '    [FAILED] %', rpad('Database ' || new_db_name || ' has the lolor extension installed or remaining lolor data.', 120, ' ');
-            RAISE EXCEPTION 'Exiting add_node: Database % has the lolor extension installed or remaining lolor user data.', new_db_name;
+        IF new_lolor_installed THEN
+            remotesql := 'SELECT (SELECT count(*) FROM lolor.pg_largeobject) + (SELECT count(*) FROM lolor.pg_largeobject_metadata)';
+            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(row_count bigint) INTO lolor_row_count;
+
+            IF lolor_row_count > 0 THEN
+                RAISE NOTICE '    [FAILED] %', rpad('Database ' || new_db_name || ' has pre-existing large object data in the lolor tables', 120, ' ');
+                RAISE EXCEPTION 'Exiting add_node: Database % on new node has pre-existing large object data in the lolor tables. The lolor tables must be empty so the large object data from the source node can be synchronized.', new_db_name;
+            ELSE
+                RAISE NOTICE '    OK: %', rpad('Checking database ' || new_db_name || ' lolor tables are empty', 120, ' ');
+            END IF;
+        END IF;
+
+        -- If the source node replicates lolor tables, the new node must have
+        -- lolor installed or the initial data synchronization will fail.
+        remotesql := 'SELECT count(*) FROM spock.tables WHERE nspname = ''lolor'' AND set_name IS NOT NULL';
+        SELECT * FROM dblink(src_dsn, remotesql) AS t(count integer) INTO src_lolor_repset_tables;
+
+        IF src_lolor_repset_tables > 0 AND NOT new_lolor_installed THEN
+            RAISE NOTICE '    [FAILED] %', rpad('Source node replicates lolor tables but database ' || new_db_name || ' does not have lolor installed', 120, ' ');
+            RAISE EXCEPTION 'Exiting add_node: Source node replicates lolor tables but database % on new node does not have the lolor extension installed. Please run CREATE EXTENSION lolor on the new node first.', new_db_name;
         ELSE
-            RAISE NOTICE '    OK: %', rpad('Checking database ' || new_db_name || ' to ensure lolor is not installed', 120, ' ');
+            RAISE NOTICE '    OK: %', rpad('Checking lolor requirements for database ' || new_db_name, 120, ' ');
         END IF;
     END;
 
@@ -1165,7 +1189,9 @@ BEGIN
         user_table_count integer;
         remotesql text;
     BEGIN
-        remotesql := 'SELECT count(*) FROM pg_tables WHERE schemaname NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'') AND schemaname NOT LIKE ''pg_temp_%'' AND schemaname NOT LIKE ''pg_toast_temp_%''';
+        -- lolor tables are excluded: they belong to the lolor extension and
+        -- their emptiness is enforced by the lolor check above.
+        remotesql := 'SELECT count(*) FROM pg_tables WHERE schemaname NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'', ''lolor'') AND schemaname NOT LIKE ''pg_temp_%'' AND schemaname NOT LIKE ''pg_toast_temp_%''';
         SELECT * FROM dblink(new_node_dsn, remotesql) AS t(count integer) INTO user_table_count;
 
         IF user_table_count > 0 THEN
@@ -2539,6 +2565,9 @@ DECLARE
     new_version text;
     sub_count text;
     user_table_count text;
+    new_lolor_installed boolean;
+    lolor_row_count bigint;
+    src_lolor_repset_tables integer;
 BEGIN
     RAISE NOTICE '';
     RAISE NOTICE '================================================================================';
@@ -2668,20 +2697,35 @@ BEGIN
     -- Check 8: Database prerequisites (pre-check only)
     -- ========================================================================
     IF check_type = 'pre' AND new_node_dsn IS NOT NULL THEN
-        -- Check 8a: Verify lolor extension is not installed
+        -- Check 8a: lolor state. Having lolor installed is OK, but the lolor
+        -- tables must be empty, and if the source replicates lolor tables the
+        -- new node must have lolor installed.
         BEGIN
-            remotesql := 'SELECT count(*) FROM pg_tables WHERE schemaname = ''lolor''';
-            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(table_count text) INTO user_table_count;
+            remotesql := 'SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_extension WHERE extname = ''lolor'')';
+            SELECT * FROM dblink(new_node_dsn, remotesql) AS t(installed boolean) INTO new_lolor_installed;
 
-            IF user_table_count IS NOT NULL AND user_table_count::integer = 0 THEN
-                RAISE NOTICE 'PASS: Destination database does not have signs of lolor being installed';
-                checks_passed := checks_passed + 1;
+            IF new_lolor_installed THEN
+                remotesql := 'SELECT (SELECT count(*) FROM lolor.pg_largeobject) + (SELECT count(*) FROM lolor.pg_largeobject_metadata)';
+                SELECT * FROM dblink(new_node_dsn, remotesql) AS t(row_count bigint) INTO lolor_row_count;
             ELSE
-                RAISE NOTICE 'FAIL: Destination database has the lolor extension installed or remaining lolor user data in the lolor schema';
+                lolor_row_count := 0;
+            END IF;
+
+            remotesql := 'SELECT count(*) FROM spock.tables WHERE nspname = ''lolor'' AND set_name IS NOT NULL';
+            SELECT * FROM dblink(src_dsn, remotesql) AS t(count integer) INTO src_lolor_repset_tables;
+
+            IF lolor_row_count > 0 THEN
+                RAISE NOTICE 'FAIL: Destination database has pre-existing large object data in the lolor tables';
                 checks_failed := checks_failed + 1;
+            ELSIF src_lolor_repset_tables > 0 AND NOT new_lolor_installed THEN
+                RAISE NOTICE 'FAIL: Source node replicates lolor tables but the destination database does not have the lolor extension installed';
+                checks_failed := checks_failed + 1;
+            ELSE
+                RAISE NOTICE 'PASS: Destination database lolor state is compatible with add_node';
+                checks_passed := checks_passed + 1;
             END IF;
         EXCEPTION WHEN OTHERS THEN
-            RAISE NOTICE 'FAIL: lolor extension check - %', SQLERRM;
+            RAISE NOTICE 'FAIL: lolor check - %', SQLERRM;
             checks_failed := checks_failed + 1;
         END;
 
@@ -2689,7 +2733,7 @@ BEGIN
         BEGIN
             remotesql := $pg_tables$
                 SELECT count(*) FROM pg_tables
-                WHERE schemaname NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'spock')
+                WHERE schemaname NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'spock', 'lolor')
                 AND schemaname NOT LIKE 'pg_temp_%'
                 AND schemaname NOT LIKE 'pg_toast_temp_%'
             $pg_tables$;

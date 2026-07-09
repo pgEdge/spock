@@ -23,6 +23,7 @@ our @EXPORT_OK = qw(
     wait_for_sub_status
     wait_for_exception_log
     wait_for_pg_ready
+    ensure_lolor
 );
 
 # Test configuration
@@ -147,6 +148,24 @@ sub system_maybe {
     my @cmd = @_;
     my $rc = _run_cmd_logged_wait(@cmd);
     return $rc == 0;
+}
+
+# Build and install the lolor extension if it is not already present.
+# Returns true when lolor is available. Callers should skip_all (rather
+# than fail) when this returns false, e.g. no network to clone the repo.
+sub ensure_lolor {
+    my $sharedir = `$PG_BIN/pg_config --sharedir`;
+    chomp $sharedir;
+    return 1 if $sharedir && -f "$sharedir/extension/lolor.control";
+
+    my $build = "/tmp/spock_lolor_build";
+    my $log   = "$LOG_DIR/lolor_build.log";
+    system('rm', '-rf', $build);
+    my $rc = system("git clone --depth 1 https://github.com/pgEdge/lolor.git $build >> '$log' 2>&1");
+    return 0 if $rc != 0;
+    $rc = system("make -C $build USE_PGXS=1 PG_CONFIG='$PG_BIN/pg_config' install >> '$log' 2>&1");
+    return 0 if $rc != 0;
+    return ($sharedir && -f "$sharedir/extension/lolor.control") ? 1 : 0;
 }
 
 # Create PostgreSQL configuration file
