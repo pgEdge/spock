@@ -127,24 +127,21 @@ WORKDIR /home/pgedge
 # Clone PostgreSQL Source
 # ==============================================================================
 
-# Determine the PostgreSQL source ref for the requested major version.
-# Normally the latest stable *tag* (REL_${PGVER}_x).  PostgreSQL 19 has no GA
-# tag yet, so temporarily track the tip of REL_19_STABLE instead; revert to
-# tag resolution once PG19 ships a GA release.
+# Determine the PostgreSQL source ref for the requested major version:
+# the latest REL_${PGVER}_* tag.  Version sort places BETA/RC tags before
+# numeric point releases, so a pre-GA major resolves to its newest beta/RC
+# tag (currently REL_19_BETA1 for PG19) and switches to GA point releases
+# automatically once they are tagged.  Building from a tag instead of a
+# branch tip keeps CI reproducible between runs.
 RUN set -eux && \
-	if [ "${PGVER}" -ge 19 ]; then \
-		PG_REF="REL_${PGVER}_STABLE"; \
-		echo "Cloning PostgreSQL branch HEAD (pre-GA): ${PG_REF}"; \
-	else \
-		PG_REF=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
-		grep "refs/tags/REL_${PGVER}_" | \
-		sed 's|.*refs/tags/||' | \
-		tr '_' '.' | \
-		sort -V | \
-		tail -n 1 | \
-		tr '.' '_'); \
-		echo "Cloning PostgreSQL tag: ${PG_REF}"; \
-	fi && \
+	PG_REF=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
+	grep "refs/tags/REL_${PGVER}_" | \
+	sed 's|.*refs/tags/||' | \
+	tr '_' '.' | \
+	sort -V | \
+	tail -n 1 | \
+	tr '.' '_') && \
+	echo "Cloning PostgreSQL tag: ${PG_REF}" && \
 	git clone --branch "${PG_REF}" --depth 1 \
 	https://github.com/postgres/postgres.git /home/pgedge/postgres && \
 	echo "export PG_SRCDIR=/home/pgedge/postgres" >> /home/pgedge/.bashrc
