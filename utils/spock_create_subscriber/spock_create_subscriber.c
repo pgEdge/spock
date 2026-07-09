@@ -52,6 +52,8 @@
 #include "access/timeline.h"
 #include "access/xlog_internal.h"
 #include "catalog/pg_control.h"
+#include "common/jsonapi.h"
+#include "mb/pg_wchar.h"
 
 #include "spock_fe.h"
 
@@ -64,6 +66,30 @@ typedef struct RemoteInfo {
 	char	   *dbname;
 	char	   *replication_sets;
 } RemoteInfo;
+
+typedef struct PeerNodeInfo
+{
+	char	   *node_name;
+	char	   *dsn;
+	char	   *slot_name;          /* from spock.spock_gen_slot_name() */
+	char	   *sub_name;           /* "sub_<subscriber>_<peer>" */
+	bool		disabled_sub_created;
+	bool		slot_created;
+	bool		reverse_sub_created;
+} PeerNodeInfo;
+
+typedef struct BidirectionalState
+{
+	bool		enabled;
+	int			num_peers;
+	PeerNodeInfo *peers;
+	int			stall_timeout;      /* default 600s */
+	int			max_wait;           /* default 0 = unbounded */
+	char	   *source_slot_name;
+	char	   *source_origin_name;
+	bool		cleanup_mode;
+	char	   *manifest_path;
+} BidirectionalState;
 
 typedef enum {
 	VERBOSITY_NORMAL,
@@ -141,6 +167,20 @@ static long get_pgpid(void);
 static char **get_database_list(char *databases, int *n_databases);
 static char *generate_restore_point_name(void);
 
+static int discover_peer_nodes(PGconn *source_conn, const char *source_node_name,
+								const char *subscriber_name, const char *dbname,
+								PeerNodeInfo **peers_out);
+static void check_preconditions(PGconn *source_conn, PeerNodeInfo *peers, int num_peers);
+static void write_manifest(BidirectionalState *state, const char *subscriber_name,
+							const char *dbname, const char *source_dsn);
+static bool read_manifest(const char *manifest_path, BidirectionalState *state,
+						   char **subscriber_name_out, char **dbname_out,
+						   char **source_dsn_out);
+static void cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
+								  const char *dbname, const char *source_dsn,
+								  bool force_rm_datadir);
+static void append_json_string(PQExpBuffer buf, const char *str);
+
 static PGconn *
 connectdb(const char *connstr)
 {
@@ -159,6 +199,667 @@ void signal_handler(int sig)
 	{
 		die(_("\nCanceling...\n"));
 	}
+}
+
+/*
+ * append_json_string
+ *		Append str to buf with JSON string escaping applied (no surrounding
+ *		quotes — caller wraps in "...").  Follows the same convention as
+ *		pg_combinebackup's local escape_json: control characters below 0x20
+ *		are emitted as \uXXXX.
+ *
+ *		jsonapi.h provides a parser but no encoder; this local helper is the
+ *		standard frontend pattern (see src/bin/pg_combinebackup/write_manifest.c).
+ */
+static void
+append_json_string(PQExpBuffer buf, const char *str)
+{
+	const char *p;
+
+	for (p = str; *p; p++)
+	{
+		switch (*p)
+		{
+			case '\b':	appendPQExpBufferStr(buf, "\\b");  break;
+			case '\f':	appendPQExpBufferStr(buf, "\\f");  break;
+			case '\n':	appendPQExpBufferStr(buf, "\\n");  break;
+			case '\r':	appendPQExpBufferStr(buf, "\\r");  break;
+			case '\t':	appendPQExpBufferStr(buf, "\\t");  break;
+			case '"':	appendPQExpBufferStr(buf, "\\\""); break;
+			case '\\':	appendPQExpBufferStr(buf, "\\\\"); break;
+			default:
+				if ((unsigned char) *p < 0x20)
+					appendPQExpBuffer(buf, "\\u%04x", (unsigned char) *p);
+				else
+					appendPQExpBufferChar(buf, *p);
+				break;
+		}
+	}
+}
+
+/*
+ * discover_peer_nodes
+ *		Query source for all peer nodes in the multi-master cluster.
+ *		Returns the peer count; *peers_out is set to a pg_malloc0'd array.
+ *
+ *		For each peer, sub_name is derived as "sub_<subscriber_name>_<peer_name>"
+ *		and slot_name is obtained via spock.spock_gen_slot_name() on the source.
+ */
+static int
+discover_peer_nodes(PGconn *source_conn, const char *source_node_name,
+					const char *subscriber_name, const char *dbname,
+					PeerNodeInfo **peers_out)
+{
+	static const char *discover_sql =
+		"SELECT DISTINCT n.node_name, ni.if_dsn"
+		" FROM spock.subscription s"
+		" JOIN spock.node n ON s.sub_origin = n.node_id"
+		" JOIN spock.node_interface ni ON n.node_id = ni.if_nodeid"
+		" WHERE n.node_name != $1"
+		" ORDER BY n.node_name";
+	const char *paramValues[3];
+	PGresult   *res;
+	PGresult   *slot_res;
+	int			npeers;
+	PeerNodeInfo *peers;
+	int			i;
+
+	paramValues[0] = source_node_name;
+	res = PQexecParams(source_conn, discover_sql,
+					   1, NULL, paramValues, NULL, NULL, 0);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		die(_("could not discover peer nodes: %s"),
+			PQerrorMessage(source_conn));
+
+	npeers = PQntuples(res);
+	if (npeers == 0)
+	{
+		PQclear(res);
+		die(_("no peer nodes found; source does not appear to be part of a "
+			  "multi-master cluster"));
+	}
+
+	peers = pg_malloc0(npeers * sizeof(PeerNodeInfo));
+
+	for (i = 0; i < npeers; i++)
+	{
+		PQExpBuffer sub_name_buf = createPQExpBuffer();
+
+		peers[i].node_name = pg_strdup(PQgetvalue(res, i, 0));
+		peers[i].dsn = pg_strdup(PQgetvalue(res, i, 1));
+
+		appendPQExpBuffer(sub_name_buf, "sub_%s_%s",
+						  subscriber_name, peers[i].node_name);
+		peers[i].sub_name = pg_strdup(sub_name_buf->data);
+		destroyPQExpBuffer(sub_name_buf);
+
+		paramValues[0] = dbname;
+		paramValues[1] = peers[i].node_name;
+		paramValues[2] = peers[i].sub_name;
+		slot_res = PQexecParams(source_conn,
+								"SELECT spock.spock_gen_slot_name"
+								"($1::name, $2::name, $3::name)",
+								3, NULL, paramValues, NULL, NULL, 0);
+		if (PQresultStatus(slot_res) != PGRES_TUPLES_OK)
+			die(_("could not generate slot name for peer \"%s\": %s"),
+				peers[i].node_name, PQerrorMessage(source_conn));
+
+		peers[i].slot_name = pg_strdup(PQgetvalue(slot_res, 0, 0));
+		PQclear(slot_res);
+
+		print_msg(VERBOSITY_VERBOSE,
+				  _("  discovered peer: %s (slot: %s)\n"),
+				  peers[i].node_name, peers[i].slot_name);
+	}
+
+	PQclear(res);
+	*peers_out = peers;
+	return npeers;
+}
+
+/*
+ * check_preconditions
+ *		Verify that the source cluster and all peers meet the requirements
+ *		for a bidirectional join: Spock >= 6.0.0, track_commit_timestamp on,
+ *		no pending DDL, full-mesh topology, and peer connectivity.
+ */
+static void
+check_preconditions(PGconn *source_conn, PeerNodeInfo *peers, int num_peers)
+{
+	PGresult   *res;
+	int			i;
+
+	/* Spock version gate: require >= 6.0.0 */
+	res = PQexec(source_conn,
+				 "SELECT extversion FROM pg_extension WHERE extname = 'spock'");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		die(_("could not query Spock extension version: %s"),
+			PQerrorMessage(source_conn));
+	if (PQntuples(res) == 0)
+		die(_("Spock extension is not installed on the source node"));
+	{
+		const char *ver = PQgetvalue(res, 0, 0);
+		int			major = 0;
+
+		if (sscanf(ver, "%d.", &major) < 1)
+			die(_("could not parse Spock version \"%s\""), ver);
+		if (major < 6)
+			die(_("Spock version %s on source is too old for bidirectional "
+				  "join; require >= 6.0.0"), ver);
+	}
+	PQclear(res);
+
+	/* track_commit_timestamp must be on at the source */
+	res = PQexec(source_conn, "SHOW track_commit_timestamp");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		die(_("could not check track_commit_timestamp: %s"),
+			PQerrorMessage(source_conn));
+	if (strcmp(PQgetvalue(res, 0, 0), "on") != 0)
+		die(_("track_commit_timestamp must be on for bidirectional join (source)"));
+	PQclear(res);
+
+	/* No pending DDL in spock.queue */
+	res = PQexec(source_conn, "SELECT COUNT(*) FROM spock.queue");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		die(_("could not check spock.queue: %s"),
+			PQerrorMessage(source_conn));
+	if (strcmp(PQgetvalue(res, 0, 0), "0") != 0)
+		die(_("pending DDL in spock.queue; wait for replication to drain "
+			  "before joining"));
+	PQclear(res);
+
+	/* Full-mesh assertion: subscriptions on source == num_peers */
+	res = PQexec(source_conn, "SELECT COUNT(*) FROM spock.subscription");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		die(_("could not count subscriptions: %s"),
+			PQerrorMessage(source_conn));
+	{
+		int sub_count = atoi(PQgetvalue(res, 0, 0));
+
+		if (sub_count != num_peers)
+			die(_("source node has %d active subscription(s) but %d peer(s) "
+				  "discovered; partial-mesh topologies are not supported"),
+				sub_count, num_peers);
+	}
+	PQclear(res);
+
+	/*
+	 * Per-peer: connectivity and track_commit_timestamp.
+	 *
+	 * Spock version is not checked on peers here; peer version checking
+	 * is deferred to the subscription-setup phase (PR3+).
+	 */
+	for (i = 0; i < num_peers; i++)
+	{
+		PGconn	   *peer_conn;
+
+		print_msg(VERBOSITY_VERBOSE,
+				  _("  checking peer %s ...\n"), peers[i].node_name);
+
+		peer_conn = PQconnectdb(peers[i].dsn);
+		if (PQstatus(peer_conn) != CONNECTION_OK)
+			die(_("cannot connect to peer \"%s\": %s"),
+				peers[i].node_name, PQerrorMessage(peer_conn));
+
+		res = PQexec(peer_conn, "SHOW track_commit_timestamp");
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			PQfinish(peer_conn);
+			die(_("could not check track_commit_timestamp on peer \"%s\": %s"),
+				peers[i].node_name, PQerrorMessage(peer_conn));
+		}
+		if (strcmp(PQgetvalue(res, 0, 0), "on") != 0)
+		{
+			PQclear(res);
+			PQfinish(peer_conn);
+			die(_("track_commit_timestamp must be on for bidirectional join "
+				  "(peer \"%s\")"), peers[i].node_name);
+		}
+		PQclear(res);
+		PQfinish(peer_conn);
+	}
+
+	print_msg(VERBOSITY_NORMAL, _("Preconditions verified.\n"));
+}
+
+/*
+ * write_manifest
+ *		Write the bidirectional state manifest to state->manifest_path
+ *		atomically (write to .tmp then rename).
+ *
+ *		The manifest is a simple hand-formatted JSON file; no parser library
+ *		is required.  String values are escaped with append_json_string().
+ */
+static void
+write_manifest(BidirectionalState *state, const char *subscriber_name,
+			   const char *dbname, const char *source_dsn)
+{
+	PQExpBuffer	buf = createPQExpBuffer();
+	char		tmp_path[MAXPGPATH];
+	FILE	   *f;
+	int			i;
+
+	snprintf(tmp_path, MAXPGPATH, "%s.tmp", state->manifest_path);
+
+	appendPQExpBufferStr(buf, "{\n");
+	appendPQExpBufferStr(buf, "    \"version\": 1,\n");
+
+	appendPQExpBufferStr(buf, "    \"subscriber_name\": \"");
+	append_json_string(buf, subscriber_name);
+	appendPQExpBufferStr(buf, "\",\n");
+
+	appendPQExpBufferStr(buf, "    \"dbname\": \"");
+	append_json_string(buf, dbname);
+	appendPQExpBufferStr(buf, "\",\n");
+
+	appendPQExpBufferStr(buf, "    \"source_dsn\": \"");
+	append_json_string(buf, source_dsn);
+	appendPQExpBufferStr(buf, "\",\n");
+
+	appendPQExpBufferStr(buf, "    \"source_slot_name\": \"");
+	if (state->source_slot_name)
+		append_json_string(buf, state->source_slot_name);
+	appendPQExpBufferStr(buf, "\",\n");
+
+	appendPQExpBufferStr(buf, "    \"source_origin_name\": \"");
+	if (state->source_origin_name)
+		append_json_string(buf, state->source_origin_name);
+	appendPQExpBufferStr(buf, "\",\n");
+
+	appendPQExpBufferStr(buf, "    \"peers\": [\n");
+	for (i = 0; i < state->num_peers; i++)
+	{
+		PeerNodeInfo *p = &state->peers[i];
+		bool		 last = (i == state->num_peers - 1);
+
+		appendPQExpBufferStr(buf, "        {\n");
+
+		appendPQExpBufferStr(buf, "            \"node_name\": \"");
+		append_json_string(buf, p->node_name);
+		appendPQExpBufferStr(buf, "\",\n");
+
+		appendPQExpBufferStr(buf, "            \"peer_dsn\": \"");
+		append_json_string(buf, p->dsn);
+		appendPQExpBufferStr(buf, "\",\n");
+
+		appendPQExpBufferStr(buf, "            \"sub_name_on_n3\": \"");
+		append_json_string(buf, p->sub_name);
+		appendPQExpBufferStr(buf, "\",\n");
+
+		appendPQExpBufferStr(buf, "            \"peer_slot_name\": \"");
+		append_json_string(buf, p->slot_name);
+		appendPQExpBufferStr(buf, "\"\n");
+
+		appendPQExpBufferStr(buf, last ? "        }\n" : "        },\n");
+	}
+	appendPQExpBufferStr(buf, "    ]\n");
+	appendPQExpBufferStr(buf, "}\n");
+
+	f = fopen(tmp_path, "w");
+	if (f == NULL)
+		die(_("could not create manifest file \"%s\": %s"),
+			tmp_path, strerror(errno));
+
+	if (fwrite(buf->data, 1, buf->len, f) != buf->len)
+	{
+		fclose(f);
+		unlink(tmp_path);
+		die(_("could not write manifest file \"%s\": %s"),
+			tmp_path, strerror(errno));
+	}
+	if (fclose(f) != 0)
+	{
+		unlink(tmp_path);
+		die(_("could not close manifest file \"%s\": %s"),
+			tmp_path, strerror(errno));
+	}
+	if (rename(tmp_path, state->manifest_path) != 0)
+		die(_("could not rename manifest to \"%s\": %s"),
+			state->manifest_path, strerror(errno));
+
+	destroyPQExpBuffer(buf);
+}
+
+/*
+ * Semantic-action state for read_manifest().  Passed as void *semstate to all
+ * pg_parse_json callbacks; tracks nesting depth and accumulates field values.
+ */
+typedef struct ManifestParseState
+{
+	/* outputs written by scalar callback */
+	char	  **subscriber_name_out;
+	char	  **dbname_out;
+	char	  **source_dsn_out;
+	BidirectionalState *bidir;
+
+	/* parser context */
+	int			depth;			/* object/array nesting depth */
+	bool		in_peers;		/* inside the top-level "peers" array */
+	bool		in_peer_obj;	/* inside one peer object */
+	char	   *cur_field;		/* current object field name (owned by us) */
+
+	/* per-peer accumulator, flushed on each object_end inside peers */
+	char	   *peer_node_name;
+	char	   *peer_dsn;
+	char	   *peer_sub_name;
+	char	   *peer_slot_name;
+	int			peer_capacity;
+} ManifestParseState;
+
+static JsonParseErrorType
+manifest_object_start(void *st)
+{
+	ManifestParseState *s = (ManifestParseState *) st;
+
+	s->depth++;
+	if (s->in_peers && s->depth == 3)
+		s->in_peer_obj = true;
+	return JSON_SUCCESS;
+}
+
+static JsonParseErrorType
+manifest_object_end(void *st)
+{
+	ManifestParseState *s = (ManifestParseState *) st;
+
+	if (s->in_peer_obj && s->depth == 3)
+	{
+		int			i = s->bidir->num_peers;
+
+		if (i >= s->peer_capacity)
+		{
+			s->peer_capacity = (s->peer_capacity > 0) ? s->peer_capacity * 2 : 4;
+			s->bidir->peers = pg_realloc(s->bidir->peers,
+										 s->peer_capacity * sizeof(PeerNodeInfo));
+		}
+		s->bidir->peers[i].node_name = s->peer_node_name;
+		s->bidir->peers[i].dsn = s->peer_dsn;
+		s->bidir->peers[i].sub_name = s->peer_sub_name;
+		s->bidir->peers[i].slot_name = s->peer_slot_name;
+		s->bidir->num_peers++;
+		s->peer_node_name = s->peer_dsn = s->peer_sub_name = s->peer_slot_name = NULL;
+		s->in_peer_obj = false;
+	}
+	s->depth--;
+	return JSON_SUCCESS;
+}
+
+static JsonParseErrorType
+manifest_array_start(void *st)
+{
+	ManifestParseState *s = (ManifestParseState *) st;
+
+	s->depth++;
+	if (s->depth == 2 && s->cur_field != NULL &&
+		strcmp(s->cur_field, "peers") == 0)
+		s->in_peers = true;
+	return JSON_SUCCESS;
+}
+
+static JsonParseErrorType
+manifest_array_end(void *st)
+{
+	ManifestParseState *s = (ManifestParseState *) st;
+
+	if (s->in_peers && s->depth == 2)
+		s->in_peers = false;
+	s->depth--;
+	return JSON_SUCCESS;
+}
+
+static JsonParseErrorType
+manifest_ofield_start(void *st, char *fname, bool isnull)
+{
+	ManifestParseState *s = (ManifestParseState *) st;
+
+	(void) isnull;
+	pg_free(s->cur_field);
+	s->cur_field = pg_strdup(fname);
+	pg_free(fname);				/* callback owns the token */
+	return JSON_SUCCESS;
+}
+
+static JsonParseErrorType
+manifest_scalar(void *st, char *token, JsonTokenType tokentype)
+{
+	ManifestParseState *s = (ManifestParseState *) st;
+
+	if (s->cur_field == NULL || tokentype != JSON_TOKEN_STRING)
+	{
+		pg_free(token);
+		return JSON_SUCCESS;
+	}
+
+	if (!s->in_peer_obj)
+	{
+		/* top-level scalar fields */
+		if (strcmp(s->cur_field, "subscriber_name") == 0)
+			*s->subscriber_name_out = token;
+		else if (strcmp(s->cur_field, "dbname") == 0)
+			*s->dbname_out = token;
+		else if (strcmp(s->cur_field, "source_dsn") == 0)
+			*s->source_dsn_out = token;
+		else if (strcmp(s->cur_field, "source_slot_name") == 0)
+			s->bidir->source_slot_name = token;
+		else if (strcmp(s->cur_field, "source_origin_name") == 0)
+			s->bidir->source_origin_name = token;
+		else
+			pg_free(token);
+	}
+	else
+	{
+		/* per-peer scalar fields */
+		if (strcmp(s->cur_field, "node_name") == 0)
+			s->peer_node_name = token;
+		else if (strcmp(s->cur_field, "peer_dsn") == 0)
+			s->peer_dsn = token;
+		else if (strcmp(s->cur_field, "sub_name_on_n3") == 0)
+			s->peer_sub_name = token;
+		else if (strcmp(s->cur_field, "peer_slot_name") == 0)
+			s->peer_slot_name = token;
+		else
+			pg_free(token);
+	}
+	return JSON_SUCCESS;
+}
+
+/*
+ * read_manifest
+ *		Read the bidirectional manifest from manifest_path.
+ *
+ *		Returns false if the file does not exist (nothing to clean up).
+ *		Dies if the file exists but cannot be read or is malformed.
+ *		On success, sets *subscriber_name_out, *dbname_out, *source_dsn_out,
+ *		and populates state->peers[].
+ *
+ *		Uses pg_parse_json (common/jsonapi.h) for correct JSON lexing, which
+ *		handles string quoting, escape sequences, and nesting transparently.
+ */
+static bool
+read_manifest(const char *manifest_path, BidirectionalState *state,
+			  char **subscriber_name_out, char **dbname_out,
+			  char **source_dsn_out)
+{
+	struct stat			st;
+	char			   *content;
+	FILE			   *f;
+	JsonLexContext	   *lex;
+	JsonSemAction		sem;
+	ManifestParseState	pstate;
+	JsonParseErrorType	result;
+
+	if (stat(manifest_path, &st) != 0)
+		return false;
+
+	content = pg_malloc(st.st_size + 1);
+	f = fopen(manifest_path, "r");
+	if (f == NULL)
+		die(_("could not open manifest file \"%s\": %s"),
+			manifest_path, strerror(errno));
+
+	if ((size_t) fread(content, 1, st.st_size, f) != (size_t) st.st_size)
+	{
+		fclose(f);
+		die(_("could not read manifest file \"%s\": %s"),
+			manifest_path, strerror(errno));
+	}
+	content[st.st_size] = '\0';
+	fclose(f);
+
+	memset(&pstate, 0, sizeof(pstate));
+	pstate.subscriber_name_out = subscriber_name_out;
+	pstate.dbname_out = dbname_out;
+	pstate.source_dsn_out = source_dsn_out;
+	pstate.bidir = state;
+
+	memset(&sem, 0, sizeof(sem));
+	sem.semstate = &pstate;
+	sem.object_start = manifest_object_start;
+	sem.object_end = manifest_object_end;
+	sem.array_start = manifest_array_start;
+	sem.array_end = manifest_array_end;
+	sem.object_field_start = manifest_ofield_start;
+	sem.scalar = manifest_scalar;
+
+	lex = makeJsonLexContextCstringLen(NULL, content, st.st_size,
+									  PG_UTF8, true);
+	result = pg_parse_json(lex, &sem);
+	pg_free(content);
+	pg_free(pstate.cur_field);
+
+	if (result != JSON_SUCCESS)
+	{
+		char *detail = json_errdetail(result, lex);
+
+		freeJsonLexContext(lex);
+		die(_("manifest file \"%s\" is malformed: %s"), manifest_path, detail);
+	}
+	freeJsonLexContext(lex);
+
+	if (!*subscriber_name_out || !*dbname_out || !*source_dsn_out)
+		die(_("manifest file \"%s\" is malformed or missing required fields"),
+			manifest_path);
+
+	return true;
+}
+
+/*
+ * cleanup_partial_state
+ *		Idempotently remove bidirectional join state from all reachable nodes.
+ *
+ *		Connects to the source and each peer; drops replication slots and
+ *		reverse subscriptions that were created during a previous join attempt.
+ *		All operations are best-effort: connectivity failures are logged as
+ *		warnings rather than being fatal.
+ */
+static void
+cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
+					  const char *dbname, const char *source_dsn,
+					  bool force_rm_datadir)
+{
+	PGconn	   *source_conn;
+	PGresult   *res;
+	PQExpBuffer	query = createPQExpBuffer();
+	int			i;
+
+	print_msg(VERBOSITY_NORMAL,
+			  _("Cleaning up partial bidirectional join state ...\n"));
+
+	source_conn = PQconnectdb(source_dsn);
+	if (PQstatus(source_conn) != CONNECTION_OK)
+	{
+		print_msg(VERBOSITY_NORMAL,
+				  _("warning: cannot connect to source node; skipping "
+					"source-side cleanup: %s\n"),
+				  PQerrorMessage(source_conn));
+		PQfinish(source_conn);
+		source_conn = NULL;
+	}
+
+	/* Drop source replication slot if it was created */
+	if (source_conn && state->source_slot_name && state->source_slot_name[0])
+	{
+		printfPQExpBuffer(query,
+						  "SELECT pg_drop_replication_slot(slot_name)"
+						  " FROM pg_replication_slots"
+						  " WHERE slot_name = '%s'",
+						  state->source_slot_name);
+		res = PQexec(source_conn, query->data);
+		if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0)
+			print_msg(VERBOSITY_NORMAL,
+					  _("  dropped source slot %s\n"),
+					  state->source_slot_name);
+		PQclear(res);
+	}
+
+	/* Per-peer: drop slot and any reverse subscription */
+	for (i = 0; i < state->num_peers; i++)
+	{
+		PeerNodeInfo *peer = &state->peers[i];
+		PGconn	   *peer_conn;
+		char		reverse_sub[NAMEDATALEN];
+
+		if (!peer->dsn || !peer->dsn[0])
+			continue;
+
+		peer_conn = PQconnectdb(peer->dsn);
+		if (PQstatus(peer_conn) != CONNECTION_OK)
+		{
+			print_msg(VERBOSITY_NORMAL,
+					  _("warning: cannot connect to peer \"%s\"; skipping "
+						"peer-side cleanup: %s\n"),
+					  peer->node_name, PQerrorMessage(peer_conn));
+			PQfinish(peer_conn);
+			continue;
+		}
+
+		if (peer->slot_name && peer->slot_name[0])
+		{
+			printfPQExpBuffer(query,
+							  "SELECT pg_drop_replication_slot(slot_name)"
+							  " FROM pg_replication_slots"
+							  " WHERE slot_name = '%s'",
+							  peer->slot_name);
+			res = PQexec(peer_conn, query->data);
+			if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0)
+				print_msg(VERBOSITY_NORMAL,
+						  _("  dropped peer slot %s on %s\n"),
+						  peer->slot_name, peer->node_name);
+			PQclear(res);
+		}
+
+		/*
+		 * Drop the reverse subscription (peer -> new subscriber) if it was
+		 * created during a previous attempt.  The sub_drop second argument
+		 * is ifexists=true.
+		 */
+		snprintf(reverse_sub, sizeof(reverse_sub), "sub_%s_%s",
+				 peer->node_name, subscriber_name);
+		printfPQExpBuffer(query,
+						  "SELECT spock.sub_drop('%s', true)",
+						  reverse_sub);
+		res = PQexec(peer_conn, query->data);
+		PQclear(res);
+
+		PQfinish(peer_conn);
+		print_msg(VERBOSITY_NORMAL,
+				  _("  cleaned up peer %s\n"), peer->node_name);
+	}
+
+	if (source_conn)
+		PQfinish(source_conn);
+
+	destroyPQExpBuffer(query);
+
+	if (state->manifest_path && state->manifest_path[0])
+	{
+		unlink(state->manifest_path);
+		print_msg(VERBOSITY_NORMAL,
+				  _("  removed manifest %s\n"), state->manifest_path);
+	}
+
+	print_msg(VERBOSITY_NORMAL, _("Cleanup complete.\n"));
 }
 
 
@@ -194,6 +895,8 @@ main(int argc, char **argv)
 				logfd;
 	char	   *restore_point_name = NULL;
 	char	   *extra_basebackup_args = NULL;
+	BidirectionalState bidir = {0};
+	char		bidir_manifest_path[MAXPGPATH] = {0};
 
 	static struct option long_options[] = {
 		{"subscriber-name", required_argument, NULL, 'n'},
@@ -210,6 +913,10 @@ main(int argc, char **argv)
 		{"databases", required_argument, NULL, 9},
 		{"extra-basebackup-args", required_argument, NULL, 10},
 		{"text-types", no_argument, NULL, 11},
+		{"bidirectional", no_argument, NULL, 12},
+		{"stall-timeout", required_argument, NULL, 13},
+		{"max-wait", required_argument, NULL, 14},
+		{"cleanup", no_argument, NULL, 15},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -299,6 +1006,22 @@ main(int argc, char **argv)
 			case 11:
 				force_text_transfer = true;
 				break;
+			case 12:
+				bidir.enabled = true;
+				break;
+			case 13:
+				bidir.stall_timeout = atoi(optarg);
+				if (bidir.stall_timeout <= 0)
+					die(_("--stall-timeout must be a positive integer"));
+				break;
+			case 14:
+				bidir.max_wait = atoi(optarg);
+				if (bidir.max_wait < 0)
+					die(_("--max-wait must be a non-negative integer"));
+				break;
+			case 15:
+				bidir.cleanup_mode = true;
+				break;
 			default:
 				fprintf(stderr, _("Unknown option\n"));
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
@@ -316,16 +1039,20 @@ main(int argc, char **argv)
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(1);
 	}
-	else if (subscriber_name == NULL)
+	else if (subscriber_name == NULL && !bidir.cleanup_mode)
 	{
 		fprintf(stderr, _("No subscriber name specified\n"));
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(1);
 	}
 
-	if (!base_prov_connstr || !strlen(base_prov_connstr))
+	if (bidir.cleanup_mode && !bidir.enabled)
+		die(_("--cleanup requires --bidirectional.\n"));
+
+	if (!bidir.cleanup_mode && (!base_prov_connstr || !strlen(base_prov_connstr)))
 		die(_("Provider connection string must be specified.\n"));
-	if (!base_sub_connstr || !strlen(base_sub_connstr))
+	if (!bidir.enabled && !bidir.cleanup_mode &&
+		(!base_sub_connstr || !strlen(base_sub_connstr)))
 		die(_("Subscriber connection string must be specified.\n"));
 
 	if (apply_delay < 0)
@@ -336,6 +1063,33 @@ main(int argc, char **argv)
 
 	if (!replication_sets || !strlen(replication_sets))
 		replication_sets = "default,default_insert_only,ddl_sql";
+
+	/* Build the manifest path from --pgdata */
+	if (bidir.enabled || bidir.cleanup_mode)
+	{
+		snprintf(bidir_manifest_path, MAXPGPATH,
+				 "%s/spock_bidirectional_manifest.json", data_dir);
+		bidir.manifest_path = bidir_manifest_path;
+		if (bidir.stall_timeout == 0)
+			bidir.stall_timeout = 600;
+	}
+
+	/* --cleanup: read manifest, remove partial state, exit */
+	if (bidir.cleanup_mode)
+	{
+		char *sub_name = NULL;
+		char *db = NULL;
+		char *src_dsn = NULL;
+
+		if (!read_manifest(bidir.manifest_path, &bidir, &sub_name, &db, &src_dsn))
+		{
+			fprintf(stderr, _("No manifest found at %s; nothing to clean up.\n"),
+					bidir.manifest_path);
+			exit(0);
+		}
+		cleanup_partial_state(&bidir, sub_name, db, src_dsn, false);
+		exit(0);
+	}
 
 	/* Init random numbers used for slot suffixes, etc */
 	srand(time(NULL));
@@ -372,9 +1126,12 @@ main(int argc, char **argv)
 		if (!prov_connstr || !strlen(prov_connstr))
 			die(_("Provider connection string is not valid.\n"));
 
-		sub_connstr = get_connstr(base_sub_connstr, db);
-		if (!sub_connstr || !strlen(sub_connstr))
-			die(_("Subscriber connection string is not valid.\n"));
+		if (!bidir.enabled)
+		{
+			sub_connstr = get_connstr(base_sub_connstr, db);
+			if (!sub_connstr || !strlen(sub_connstr))
+				die(_("Subscriber connection string is not valid.\n"));
+		}
 	}
 
 	/*
@@ -407,6 +1164,28 @@ main(int argc, char **argv)
 				  _("Getting information for database %s ...\n"), db);
 		provider_conn = connectdb(prov_connstr);
 		remote_info = get_remote_info(provider_conn);
+
+		/*
+		 * --bidirectional: discover peers, verify preconditions, write the
+		 * manifest, then exit.  PR3+ continues from here after the physical
+		 * backup has been taken and the subscriber is running.
+		 */
+		if (bidir.enabled)
+		{
+			bidir.num_peers = discover_peer_nodes(provider_conn,
+												  remote_info->node_name,
+												  subscriber_name, db,
+												  &bidir.peers);
+			check_preconditions(provider_conn, bidir.peers, bidir.num_peers);
+			write_manifest(&bidir, subscriber_name, db, base_prov_connstr);
+			print_msg(VERBOSITY_NORMAL,
+					  _("Bidirectional plumbing complete: %d peer(s) discovered, "
+						"preconditions OK, manifest written to %s.\n"),
+					  bidir.num_peers, bidir.manifest_path);
+			PQfinish(provider_conn);
+			provider_conn = NULL;
+			exit(0);
+		}
 
 		/* only need to do this piece once */
 
