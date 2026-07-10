@@ -13,6 +13,7 @@
 #include "postgres.h"
 
 #include "access/commit_ts.h"
+#include "access/relation.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
@@ -2419,8 +2420,10 @@ query_temp_like_source(const char *query)
  * Is the relation named by rv in a never-replicate schema?
  *
  * Runs after the DDL executed, so for CREATE/ALTER the relation exists and an
- * unqualified name can be resolved by opening it.  A missing relation (e.g. a
- * dropped one) can be classified only when the name is schema-qualified.
+ * unqualified name can be resolved by opening it.  relation_openrv, not
+ * table_openrv: rv may name any relation kind (table_open errors on
+ * indexes).  A missing relation (e.g. a dropped one) can be classified only
+ * when the name is schema-qualified.
  */
 static bool
 rangevar_in_skipped_schema(RangeVar *rv)
@@ -2434,12 +2437,12 @@ rangevar_in_skipped_schema(RangeVar *rv)
 	if (rv->schemaname != NULL)
 		return spock_schema_is_skipped(rv->schemaname);
 
-	rel = table_openrv_extended(rv, AccessShareLock, true);
+	rel = relation_openrv_extended(rv, AccessShareLock, true);
 	if (rel == NULL)
 		return false;
 	skipped = spock_schema_is_skipped(
 		get_namespace_name(RelationGetNamespace(rel)));
-	table_close(rel, AccessShareLock);
+	relation_close(rel, AccessShareLock);
 
 	return skipped;
 }
@@ -2467,20 +2470,24 @@ stmt_in_skipped_schema(Node *stmt)
 				((CreateStmt *) stmt)->relation);
 
 		case T_CreateTableAsStmt:
-			{
-				CreateTableAsStmt *ctas = (CreateTableAsStmt *) stmt;
-
-				return ctas->objtype == OBJECT_TABLE &&
-					rangevar_in_skipped_schema(ctas->into->rel);
-			}
+			/* Covers CREATE MATERIALIZED VIEW too (objtype OBJECT_MATVIEW). */
+			return rangevar_in_skipped_schema(
+				((CreateTableAsStmt *) stmt)->into->rel);
 
 		case T_AlterTableStmt:
-			{
-				AlterTableStmt *atstmt = (AlterTableStmt *) stmt;
+			/*
+			 * Covers ALTER INDEX/VIEW/MATERIALIZED VIEW/FOREIGN TABLE too;
+			 * for all of them ->relation names the target relation.
+			 */
+			return rangevar_in_skipped_schema(
+				((AlterTableStmt *) stmt)->relation);
 
-				return atstmt->objtype == OBJECT_TABLE &&
-					rangevar_in_skipped_schema(atstmt->relation);
-			}
+		case T_ViewStmt:
+			return rangevar_in_skipped_schema(((ViewStmt *) stmt)->view);
+
+		case T_CreateSeqStmt:
+			return rangevar_in_skipped_schema(
+				((CreateSeqStmt *) stmt)->sequence);
 
 		case T_IndexStmt:
 			return rangevar_in_skipped_schema(

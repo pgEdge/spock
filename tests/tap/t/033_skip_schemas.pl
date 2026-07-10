@@ -78,6 +78,21 @@ psql_or_bail(1, "CREATE TABLE pgedge_ace.local_t (id int primary key)");
 is(scalar_query(1, "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'pgedge_ace' AND c.relname = 'local_t'"),
    '1', 'CREATE TABLE in pgedge_ace succeeds with AutoDDL on');
 
+# Other relation kinds in pgedge_ace must also succeed locally and stay
+# local: matview/view/sequence creation and ALTER INDEX (classified via the
+# same code paths).
+psql_or_bail(1, "CREATE MATERIALIZED VIEW pgedge_ace.mv AS SELECT 1 AS x");
+psql_or_bail(1, "CREATE VIEW pgedge_ace.v AS SELECT 1 AS x");
+psql_or_bail(1, "CREATE SEQUENCE pgedge_ace.seq");
+psql_or_bail(1, "CREATE INDEX ace_state_v_idx ON pgedge_ace.ace_state (v)");
+psql_or_bail(1, "ALTER INDEX pgedge_ace.ace_state_v_idx SET (fillfactor = 90)");
+
+# Regression guard: an unqualified ALTER INDEX on an ordinary index must not
+# trip the classifier (it resolves the name by opening the relation, which
+# must tolerate non-table relkinds).
+psql_or_bail(1, "CREATE INDEX normal_tbl_v_idx ON public.normal_tbl (v)");
+psql_or_bail(1, "ALTER INDEX normal_tbl_v_idx SET (fillfactor = 90)");
+
 # Fence: once a replicated row arrives, any DDL queued before it would have
 # been applied (and would have failed on the subscriber, which lacks the
 # schema, disabling the subscription).
