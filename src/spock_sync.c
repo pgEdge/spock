@@ -190,6 +190,20 @@ build_exclude_schema_string(SpockSubscription *sub)
 		lst = lappend(lst, arg);
 	}
 
+	/*
+	 * Schemas this node never replicates (spock_skip_schemas_list()).
+	 * Added unconditionally, unlike the nodump entries above: pg_dump
+	 * ignores exclude patterns that match nothing, and the schema may not
+	 * exist locally yet.
+	 */
+	foreach(lc, spock_skip_schemas_list())
+	{
+		const char *schema_name = (const char *) lfirst(lc);
+
+		arg = psprintf("--exclude-schema=%s", schema_name);
+		lst = lappend(lst, arg);
+	}
+
 	if (sub)
 	{
 		foreach(lc, sub->skip_schema)

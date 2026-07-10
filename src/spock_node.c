@@ -1343,6 +1343,15 @@ EnsureRelationNotIgnored(Relation rel)
 				 errhint("Move this relation to a schema allowed for replication")));
 	}
 
+	if (spock_schema_is_skipped(nspname))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("relation %s cannot be added to any replication set",
+						RelationGetRelationName(rel)),
+				 errdetail("schema %s is never replicated by this node",
+						   nspname),
+				 errhint("Move this relation to a schema allowed for replication")));
+
 	extoid = getExtensionOfObject(RelationRelationId, RelationGetRelid(rel));
 	if (!OidIsValid(extoid))
 		return;
