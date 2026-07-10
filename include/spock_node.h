@@ -61,8 +61,8 @@ typedef struct SpockSubscription
 } SpockSubscription;
 
 /* NULL-terminated arrays */
-extern const char *const skip_schema[];
-extern const char *const skip_extension[];
+extern const char *const nodump_schema[];
+extern const char *const nodump_extension[];
 
 extern void create_node(SpockNode *node);
 extern void drop_node(Oid nodeid);

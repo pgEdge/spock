@@ -113,18 +113,21 @@ typedef struct SubscriptionTuple
 #define Anum_sub_created_at			15
 
 /*
- * Schemas and extensions excluded from the structure-sync dump. Restoring
- * these on a subscriber that already has them fails, so keep them out of the
- * dump. Kept separate from the subscription-specific skip list to avoid cases
- * when user drops 'sub->skip_schema' and violates these restrictions.
+ * Schemas and extensions excluded from the structure-sync pg_dump only.
+ * Restoring these on a subscriber that already has them fails, so keep them
+ * out of the dump.  Unlike norepset_schema below, membership here does not
+ * prevent replication: lolor is dump-excluded but its tables must replicate
+ * so large objects survive a DROP EXTENSION on every node.  Kept separate
+ * from the subscription-specific skip list ('sub->skip_schema') so a user
+ * cannot drop these built-in exclusions.
  */
-const char *const skip_schema[] = {
+const char *const nodump_schema[] = {
 	"lolor",
 	"snowflake",
 	"spock",
 	NULL  /* sentinel */
 };
-const char *const skip_extension[] = {
+const char *const nodump_extension[] = {
 	"lolor",
 	"snowflake",
 	"spock",
