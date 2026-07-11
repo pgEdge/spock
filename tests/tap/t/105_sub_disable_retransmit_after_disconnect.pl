@@ -85,8 +85,8 @@ like($new_log,
      qr/cleared transient exception state after provider connection loss/,
      'connection-loss path clears transient exception state');
 unlike($new_log,
-       qr/exception handling had no exception.*replay/,
-       'retransmission does not enter empty exception replay');
+       qr/Transaction failed, subscription will be disabled/,
+       'retransmission does not enter SUB_DISABLE exception replay');
 
 destroy_cluster('Destroy reconnect retransmission test cluster');
 done_testing();
