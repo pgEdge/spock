@@ -264,6 +264,7 @@ static void spock_apply_worker_attach(void);
 static void spock_apply_worker_detach(void);
 
 static bool should_log_exception(bool failed);
+static void clear_transient_exception_state_on_connection_loss(void);
 
 static ApplyReplayEntry * apply_replay_entry_create(int r, char *buf);
 static void apply_replay_entry_free(ApplyReplayEntry * entry);
@@ -359,6 +360,47 @@ should_log_exception(bool failed)
 	}
 
 	return false;
+}
+
+/*
+ * Forget the in-flight transaction marker after a transport failure on the
+ * normal apply path.
+ *
+ * handle_begin() records commit_lsn in shared memory before any changes are
+ * applied.  That marker normally lets a restarted worker recognize a
+ * transaction which failed during apply and replay it under the configured
+ * exception policy.  A provider disconnect is different: PostgreSQL aborts
+ * the local transaction and the replication origin is deliberately left at
+ * the last durable commit so the provider can send the transaction again.
+ *
+ * Leaving commit_lsn behind makes the replacement worker misclassify that
+ * retransmitted transaction as an apply failure.  In SUB_DISABLE mode it then
+ * performs a read-only exception replay and disables the subscription instead
+ * of applying the transaction.  Clear the marker only for a first-pass
+ * transport failure.  Genuine apply failures and failures during exception
+ * replay retain their state.
+ */
+static void
+clear_transient_exception_state_on_connection_loss(void)
+{
+	SpockExceptionLog *exception_log;
+
+	if (!in_remote_transaction ||
+		MyApplyWorker == NULL ||
+		MyApplyWorker->use_try_block ||
+		xact_had_exception ||
+		exception_log_ptr == NULL ||
+		my_exception_log_index < 0)
+		return;
+
+	exception_log = &exception_log_ptr[my_exception_log_index];
+	exception_log->commit_lsn = InvalidXLogRecPtr;
+	exception_log->local_tuple = NULL;
+	exception_log->initial_error_message[0] = '\0';
+	exception_log->failed_action = 0;
+
+	elog(DEBUG1, "SPOCK %s: cleared transient exception state after provider connection loss",
+		 MySubscription->name);
 }
 
 /*
@@ -3692,6 +3734,7 @@ stream_replay:
 			edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
 			(applyconn != NULL && PQstatus(applyconn) == CONNECTION_BAD))
 		{
+			clear_transient_exception_state_on_connection_loss();
 			elog(LOG, "SPOCK %s: connection error during apply, exiting via rethrow: %s",
 				 MySubscription->name, edata->message);
 			PG_RE_THROW();
