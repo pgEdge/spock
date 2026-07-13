@@ -65,6 +65,7 @@ test: 048_insert_conflict_race
 test: 049_wait_for_sync_dropped
 test: 051_subscriber_failover_no_replay
 test: 052_change_log_attmap
+test: 070_bidir_plumbing
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
