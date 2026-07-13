@@ -51,6 +51,7 @@ test: 025_tiebreaker_equal_warning
 test: 030_autoddl_repset_stickiness
 test: 032_lolor_largeobject_repset
 test: 044_apply_change_logging
+test: 047_bidir_plumbing
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
@@ -58,3 +59,4 @@ test: 044_apply_change_logging
 # Regression tests
 test: 103_manager_worker_dboid_race
 test: 105_sub_disable_retransmit_after_disconnect
+
