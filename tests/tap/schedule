@@ -60,6 +60,7 @@ test: 039_no_replay_mode_leak
 test: 044_apply_change_logging
 test: 045_lsn_from_commit_ts
 test: 046_apply_worker_exception_misclassification
+test: 047_bidir_plumbing
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
