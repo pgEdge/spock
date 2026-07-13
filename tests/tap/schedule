@@ -58,6 +58,7 @@ test: 037_wire_format_datestyle
 test: 038_reserved_schema_ddl_guard
 test: 044_apply_change_logging
 test: 045_lsn_from_commit_ts
+test: 047_bidir_plumbing
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
@@ -65,3 +66,4 @@ test: 045_lsn_from_commit_ts
 # Regression tests
 test: 103_manager_worker_dboid_race
 test: 105_sub_disable_retransmit_after_disconnect
+
