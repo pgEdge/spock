@@ -61,6 +61,7 @@ test: 044_apply_change_logging
 test: 045_lsn_from_commit_ts
 test: 046_apply_worker_exception_misclassification
 test: 048_insert_conflict_race
+test: 070_bidir_plumbing
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
