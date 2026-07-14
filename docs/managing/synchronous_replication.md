@@ -118,22 +118,33 @@ PostgreSQL but weaken the guarantee accordingly and are not the intended
 mode for this feature.
 
 There is a second, related setting: **`spock.synchronous_commit`** (boolean,
-`PGC_POSTMASTER`, default `false`). It controls how the apply worker
-itself commits transactions it replays from the provider:
+`PGC_POSTMASTER`, default `false`), which controls the apply worker's own
+`synchronous_commit` (`off` vs `local`). **In `standby` mode you do not need
+to change it.** When `spock.synchronous_mode = standby`, the apply worker
+performs an eager local WAL flush (`XLogFlush`) immediately after each applied
+commit, so the flush that A is waiting on happens at once instead of lagging a
+WAL-writer cycle.
 
-- `false` (default) — the apply worker commits with `synchronous_commit =
-  off`. Flush of an applied transaction on S can lag by up to a WAL-writer
-  cycle, which delays the flush that A's commit is waiting on.
-- `true` — the apply worker commits with `synchronous_commit = local`, so
-  applied transactions are flushed promptly. Set this when you want low,
-  predictable latency on the synchronous pair; it requires a **restart**
-  to take effect (`PGC_POSTMASTER`).
+This is what makes the *default* (`spock.synchronous_commit = off`) usable:
+without the eager flush, synchronous throughput collapses to roughly **one
+transaction per second** — the confirming feedback would wait for the apply
+loop's ~1 s idle wakeup — whereas with it the pair runs in the thousands of
+TPS (loopback-local benchmark), with **no restart required**. (Setting
+`spock.synchronous_commit = true` is therefore no longer necessary for
+throughput in standby mode; it remains a `PGC_POSTMASTER`/restart option that
+affects the apply worker outside standby mode.)
 
-The apply worker never commits with `synchronous_commit = on` — this is a
-deliberate invariant. If it did, A waiting on S and S waiting on A while
-applying A's transaction would form a genuine distributed deadlock; using
-`off`/`local` on apply is what keeps a synchronous MM pair from deadlocking
-against itself.
+**Cost:** while a node is in `standby` mode, **every** applied commit is flushed
+to disk — for all subscriptions on that node, not only the synchronous one.
+That is the intended durability cost of opting a node into synchronous-standby
+behaviour (equivalent to `synchronous_commit = local` for replayed traffic).
+
+The eager flush is a *local* WAL flush only — it never calls
+`SyncRepWaitForLSN`. The apply worker still never commits with
+`synchronous_commit = on`: that would make S, while applying A's transaction,
+wait for S's *own* synchronous standby (A) and form a genuine distributed
+deadlock. Flushing locally (not waiting on a standby) is exactly what keeps a
+synchronous MM pair from deadlocking against itself.
 
 ## Monitoring: `spock.synchronous_replica_status`
 
