@@ -143,15 +143,17 @@ Parameters:
 - `skip_schema` is an array of schema names whose changes should be ignored
   by the apply worker. The default is `{}`.
 
-The `subscription_name` is used as `application_name` by the replication
-connection. This means that it's visible in the `pg_stat_replication`
-monitoring view. It can also be used in `synchronous_standby_names` when
-Spock is used as part of a synchronous replication setup.
+The subscription's replication slot name (generated from
+`subscription_name`; see `spock.spock_gen_slot_name`) is used as
+`application_name` by the replication connection, not the raw
+`subscription_name` itself. This means the slot name is what's visible in
+the `pg_stat_replication` monitoring view, and it's this slot name — not
+`subscription_name` — that must be listed in `synchronous_standby_names`
+when Spock is used as part of a synchronous replication setup.
 
 To use a Spock subscription as a **logical synchronous standby**, the
 provider node needs `spock.synchronous_mode` set to `standby`, and the
-subscription's replication slot name (not `subscription_name` itself; see
-`spock.spock_gen_slot_name`) must be listed in the provider's
+subscription's replication slot name must be listed in the provider's
 `synchronous_standby_names`. Both settings are required together — see
 [Synchronous Spock Replication](../managing/synchronous_replication.md) for
 the full setup, monitoring, and failure/recovery runbook.

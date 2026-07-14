@@ -6,7 +6,8 @@ useful when you want local HA/durability between two co-located
 multi-master nodes while continuing normal **asynchronous** Spock
 replication to the rest of the mesh.
 
-Requires **PostgreSQL 17 or later**.
+Requires **PostgreSQL 17 or later** (stock PG16 lacks the required
+`sync_standbys_status` field).
 
 ## Topology
 
@@ -31,9 +32,10 @@ The supported topology is a **synchronous multi-master pair**:
   surviving node.
 
 A fully-synchronous N-way mesh (more than one synchronous peer with
-cross-dependencies) is not supported. Neither is a node having both a
-physical synchronous standby and a Spock synchronous replica at the same
-time.
+cross-dependencies) is not a supported or tested configuration, and
+neither is a node having both a physical synchronous standby and a Spock
+synchronous replica at the same time — there is no code-level check that
+rejects either.
 
 ## Enabling synchronous replication
 
