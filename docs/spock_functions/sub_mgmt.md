@@ -148,6 +148,14 @@ connection. This means that it's visible in the `pg_stat_replication`
 monitoring view. It can also be used in `synchronous_standby_names` when
 Spock is used as part of a synchronous replication setup.
 
+To use a Spock subscription as a **logical synchronous standby**, the
+provider node needs `spock.synchronous_mode` set to `standby`, and the
+subscription's replication slot name (not `subscription_name` itself; see
+`spock.spock_gen_slot_name`) must be listed in the provider's
+`synchronous_standby_names`. Both settings are required together — see
+[Synchronous Spock Replication](../managing/synchronous_replication.md) for
+the full setup, monitoring, and failure/recovery runbook.
+
 Use `spock.sub_wait_for_sync(subscription_name)` to wait for the
 subscription to asynchronously start replicating and complete any needed
 schema and/or data sync.

@@ -63,6 +63,7 @@ nav:
     - Replicating Partitioned Tables: managing/partition_mgmt.md
     - Filtering Data: managing/filtering.md
     - Using Spock in Read-Only Mode: managing/read_only.md
+    - Synchronous Spock Replication: managing/synchronous_replication.md
     - Using a Trigger to Manage Replication Set Membership: managing/repset_trigger.md
     - Using Snowflake Sequences: managing/snowflake.md
     - Using Lolor to Manage Large Objects: managing/lolor.md

@@ -5,6 +5,7 @@ The Spock extension is a powerful addition to any PostgreSQL installation; manag
 * [replicate partitioned tables](partition_mgmt.md).
 * create logical [row-based data filters](filtering.md).
 * set a cluster to [READ-ONLY mode](read_only.md); this restricts non-superusers to read-only operations, while superusers can still perform both read and write operations.
+* use a [logical synchronous standby](synchronous_replication.md) for local HA/durability between a co-located multi-master pair.
 * use a [trigger](repset_trigger.md) to manage replication set membership.
 * use [Snowflake sequences](snowflake.md) for sequence management in a distributed cluster.
 * use [the Lolor extension](lolor.md) to replicate large objects.
