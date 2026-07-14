@@ -706,9 +706,37 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	}
 	else
 	{
-		HOLD_INTERRUPTS();
-		SyncRepWaitForLSN(end_lsn, true);
-		RESUME_INTERRUPTS();
+		int			my_sync_priority = 0;
+
+		/*
+		 * When Spock's synchronous-replica handling is enabled and THIS
+		 * walsender is itself a synchronous standby (its application_name is
+		 * named in synchronous_standby_names, which PostgreSQL records as
+		 * sync_standby_priority > 0), we must not wait for the synchronous
+		 * standby to confirm this commit: the only way the standby receives
+		 * it is for this very walsender to send it.  Waiting waits on
+		 * ourselves and deadlocks.  See spec 2026-07-13 sec 5.2.
+		 *
+		 * When the GUC is off, behavior is unchanged (legacy wait below).
+		 */
+		if (spock_synchronous_mode == SPOCK_SYNC_MODE_STANDBY && MyWalSnd != NULL)
+		{
+			SpinLockAcquire(&MyWalSnd->mutex);
+			my_sync_priority = MyWalSnd->sync_standby_priority;
+			SpinLockRelease(&MyWalSnd->mutex);
+		}
+
+		if (spock_synchronous_mode == SPOCK_SYNC_MODE_STANDBY && my_sync_priority > 0)
+		{
+			elog(DEBUG1, "SPOCK: this walsender is a synchronous standby; "
+				 "skipping self SyncRepWaitForLSN()");
+		}
+		else
+		{
+			HOLD_INTERRUPTS();
+			SyncRepWaitForLSN(end_lsn, true);
+			RESUME_INTERRUPTS();
+		}
 	}
 
 	/* update progress */
