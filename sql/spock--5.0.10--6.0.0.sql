@@ -215,6 +215,37 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'spock_reset_subscription_stats'
 LANGUAGE C CALLED ON NULL INPUT VOLATILE;
 
+-- ----
+-- Synchronous replica status (observability)
+--
+-- One row per active walsender known to PostgreSQL (pg_stat_replication),
+-- reporting whether it is a synchronous standby and whether the underlying
+-- replication slot is a spock logical slot.
+--
+-- Note on sub_name: this view runs on the *provider* side of a replication
+-- connection (the node sending WAL). The subscription name for that
+-- connection is only recorded in spock.subscription on the *subscribing*
+-- node, so it generally cannot be resolved here. We best-effort match on
+-- sub_slot_name = application_name (application_name is set to the slot
+-- name for spock's streaming connections), which will only succeed when
+-- this node happens to also hold a local subscription using that same
+-- slot name; otherwise sub_name is NULL and application_name (== slot
+-- name) identifies the connection.
+-- ----
+CREATE VIEW spock.synchronous_replica_status AS
+	SELECT
+		sub.sub_name AS sub_name,
+		r.application_name AS application_name,
+		(r.sync_state <> 'async') AS is_synchronous,
+		(s.slot_type = 'logical' AND s.plugin IN ('spock_output', 'spock')) AS is_logical,
+		(r.state IS NOT NULL) AS connected,
+		(pg_catalog.pg_wal_lsn_diff(r.sent_lsn, r.flush_lsn))::bigint AS flush_lag_bytes
+	FROM pg_catalog.pg_stat_replication r
+	LEFT JOIN pg_catalog.pg_replication_slots s
+		ON s.active_pid = r.pid
+	LEFT JOIN spock.subscription sub
+		ON sub.sub_slot_name = r.application_name;
+
 DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, oid, pg_lsn, int);
 DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, oid, pg_lsn, int, bool);
 DROP PROCEDURE IF EXISTS spock.wait_for_sync_event(OUT bool, name, pg_lsn, int);
