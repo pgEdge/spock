@@ -718,7 +718,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		 * sync_standby_priority > 0), we must not wait for the synchronous
 		 * standby to confirm this commit: the only way the standby receives
 		 * it is for this very walsender to send it.  Waiting waits on
-		 * ourselves and deadlocks.  See spec 2026-07-13 sec 5.2.
+		 * ourselves and deadlocks.
 		 *
 		 * When the GUC is off, behavior is unchanged (legacy wait below).
 		 */

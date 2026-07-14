@@ -2943,8 +2943,7 @@ get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
  * feedback to, so the feedback hold (which assumes a SEPARATE physical
  * standby) is circular and must be bypassed. NOTE: a node with BOTH a Spock
  * sync standby and a separate physical sync standby is out of scope; standby
- * mode assumes the sync standby is the MM peer. See spec 2026-07-13 sec 5.3 /
- * non-goals.
+ * mode assumes the sync standby is the MM peer.
  */
 static bool
 spock_sync_standby_is_publisher(void)
