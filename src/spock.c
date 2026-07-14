@@ -161,6 +161,13 @@ static const struct config_enum_entry apply_change_logging_options[] = {
 };
 
 bool		spock_synchronous_commit = false;
+int			spock_synchronous_mode = SPOCK_SYNC_MODE_OFF;
+
+static const struct config_enum_entry spock_synchronous_mode_options[] = {
+	{"off", SPOCK_SYNC_MODE_OFF, false},
+	{"standby", SPOCK_SYNC_MODE_STANDBY, false},
+	{NULL, 0, false}
+};
 char	   *spock_temp_directory = "";
 static char *spock_temp_directory_config;
 bool		spock_ch_stats = true;
@@ -1119,6 +1126,17 @@ _PG_init(void)
 							 NULL,
 							 &spock_synchronous_commit,
 							 false, PGC_POSTMASTER,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomEnumVariable("spock.synchronous_mode",
+							 "Spock synchronous-standby mode.",
+							 "off = unchanged legacy behavior; standby = self-skip "
+							 "forwarding + peer-aware feedback (group reserved).",
+							 &spock_synchronous_mode,
+							 SPOCK_SYNC_MODE_OFF,
+							 spock_synchronous_mode_options,
+							 PGC_SIGHUP,
 							 0,
 							 NULL, NULL, NULL);
 

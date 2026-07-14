@@ -38,6 +38,15 @@
 #define SPOCK_RESTART_MIN_DELAY 1
 
 extern bool spock_synchronous_commit;
+
+typedef enum SpockSynchronousMode
+{
+	SPOCK_SYNC_MODE_OFF = 0,
+	SPOCK_SYNC_MODE_STANDBY,
+	/* SPOCK_SYNC_MODE_GROUP reserved for future multi-site group durability */
+} SpockSynchronousMode;
+
+extern int	spock_synchronous_mode;
 extern char *spock_temp_directory;
 extern bool spock_use_spi;
 extern char *spock_extra_connection_options;

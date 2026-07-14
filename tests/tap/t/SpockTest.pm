@@ -23,6 +23,9 @@ our @EXPORT_OK = qw(
     wait_for_sub_status
     wait_for_exception_log
     wait_for_pg_ready
+    sync_appname
+    make_synchronous
+    unmake_synchronous
 );
 
 # Test configuration
@@ -466,6 +469,30 @@ sub wait_for_pg_ready {
         sleep(1);
     }
     return 0;
+}
+
+sub _psql_scalar {
+    my ($node_num, $sql) = @_;
+    my $port = $BASE_PORT + $node_num - 1;
+    my $out = `timeout 10 $PG_BIN/psql -X -h $HOST -p $port -d $DB_NAME -U $DB_USER -tA -c "$sql" 2>>$LOG_FILE`;
+    $out //= ''; $out =~ s/^\s+|\s+$//g; return $out;
+}
+sub sync_appname {
+    my ($node_num) = @_;
+    return _psql_scalar($node_num,
+        "SELECT application_name FROM pg_stat_replication WHERE application_name LIKE 'spk_%' ORDER BY backend_start DESC LIMIT 1");
+}
+sub make_synchronous {
+    my ($node_num, $appname) = @_;
+    _psql_scalar($node_num, "ALTER SYSTEM SET synchronous_standby_names = '$appname'");
+    _psql_scalar($node_num, "ALTER SYSTEM SET synchronous_commit = 'on'");
+    _psql_scalar($node_num, "ALTER SYSTEM SET spock.synchronous_mode = 'standby'");
+    _psql_scalar($node_num, "SELECT pg_reload_conf()");
+}
+sub unmake_synchronous {
+    my ($node_num) = @_;
+    _psql_scalar($node_num, "ALTER SYSTEM RESET synchronous_standby_names");
+    _psql_scalar($node_num, "SELECT pg_reload_conf()");
 }
 
 # Ensure cleanup on module destruction
