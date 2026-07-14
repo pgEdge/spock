@@ -944,6 +944,25 @@ handle_commit(StringInfo s)
 			!spock_sync_standby_is_publisher())
 			append_feedback_position(XactLastCommitEnd, end_lsn);
 
+		/*
+		 * Eager flush when this node is acting as a synchronous standby
+		 * (spock.synchronous_mode = standby): a publisher may be blocking in
+		 * SyncRepWaitForLSN on our flush feedback.  With the apply worker's
+		 * default synchronous_commit=off, this commit's WAL is not fsync'd until
+		 * the WAL writer's next cycle, and the confirming feedback would not be
+		 * sent until the apply loop's next (idle, ~1s) wakeup -- collapsing
+		 * synchronous throughput to ~1 TPS.  Flush now so the feedback sent
+		 * after this batch confirms the commit immediately.
+		 *
+		 * Gated only on this node's own standby mode -- NOT on it having its own
+		 * downstream sync standby (SYNC_STANDBY_DEFINED) -- so it also covers a
+		 * one-directional logical sync standby, not just a mutually-synchronous
+		 * MM pair.  Cheap no-op when the WAL is already flushed (e.g.
+		 * spock.synchronous_commit=on).
+		 */
+		if (spock_synchronous_mode == SPOCK_SYNC_MODE_STANDBY)
+			XLogFlush(XactLastCommitEnd);
+
 		remoteTransactionStopTimestamp = 0;
 
 		MemoryContextSwitchTo(TopMemoryContext);
