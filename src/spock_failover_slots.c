@@ -63,6 +63,17 @@
 #define WORKER_NAP_TIME 60000L
 #define WORKER_WAIT_FEEDBACK 10000L
 
+/*
+ * PostgreSQL 19 replaced ReplicationSlot.active_pid (an int pid, 0 when the
+ * slot is unused) with active_proc (a ProcNumber, INVALID_PROC_NUMBER when
+ * unused).  SlotIsActive() hides that difference.
+ */
+#if PG_VERSION_NUM >= 190000
+#define SlotIsActive(s) ((s)->active_proc != INVALID_PROC_NUMBER)
+#else
+#define SlotIsActive(s) ((s)->active_pid != 0)
+#endif
+
 typedef struct RemoteSlot
 {
 	char	   *name;
@@ -1083,7 +1094,7 @@ synchronize_failover_slots(long sleep_time)
 			bool		active;
 			bool		found = false;
 
-			active = (s->active_pid != 0);
+			active = SlotIsActive(s);
 
 			/* Only check inactive slots. */
 			if (!s->in_use || active)
@@ -1688,7 +1699,7 @@ spock_slot_enable_failover(PG_FUNCTION_ARGS)
 		if (s->data.invalidated != RS_INVAL_NONE)
 			continue;
 		/* skip slots held by a walsender so we never block the upgrade */
-		if (s->active_pid != 0)
+		if (SlotIsActive(s))
 		{
 			ereport(NOTICE,
 					(errmsg("spock: replication slot \"%s\" is active; "
