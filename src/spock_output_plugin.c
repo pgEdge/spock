@@ -34,6 +34,9 @@
 #include "replication/syncrep.h"
 #include "replication/walsender_private.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
+#include "storage/lwlock.h"
+#include "utils/wait_event.h"
 
 #include "spock_output_plugin.h"
 #include "spock.h"
@@ -730,6 +733,64 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		{
 			elog(DEBUG1, "SPOCK: this walsender is a synchronous standby; "
 				 "skipping self SyncRepWaitForLSN()");
+		}
+		else if (spock_synchronous_mode == SPOCK_SYNC_MODE_STANDBY &&
+				 (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED))
+		{
+			/*
+			 * Async-peer forwarding gate: do not forward this commit to a
+			 * non-synchronous peer until the synchronous standby has flushed
+			 * it, so async peers never outrun the sync standby.  We READ the
+			 * published sync-flush LSN rather than enqueueing in SyncRepQueue
+			 * (which is why the slot-offset uniqueness hack is not needed on
+			 * this path).  Poll in a latch loop so walsender keepalives keep
+			 * flowing (spec gotcha 8).
+			 */
+			for (;;)
+			{
+				XLogRecPtr	flushed;
+
+				CHECK_FOR_INTERRUPTS();
+				if (!(WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED))
+					break;			/* sync dropped -> stop gating */
+
+				/*
+				 * NOTE (pg18a deviation from brief): WalSndCtl->lsn[] is NOT
+				 * protected by a WalSndCtlData spinlock on this PG version --
+				 * there is no "mutex" member on WalSndCtlData (only the
+				 * per-walsender WalSnd struct has one).  syncrep.c itself
+				 * reads/writes WalSndCtl->lsn[] under the SyncRepLock LWLock,
+				 * so we take the same lock here, in LW_SHARED mode since we
+				 * only read.
+				 */
+				LWLockAcquire(SyncRepLock, LW_SHARED);
+				flushed = WalSndCtl->lsn[SYNC_REP_WAIT_FLUSH];
+				LWLockRelease(SyncRepLock);
+
+				if (flushed >= end_lsn)
+					break;
+
+				/*
+				 * Bounded wait; keeps the walsender loop responsive.
+				 *
+				 * NOTE (pg18a deviation from brief): this build's
+				 * spock_compat.h (src/compat/18/spock_compat.h) #defines a
+				 * 3-argument WaitLatch(latch, wakeEvents, timeout) that
+				 * always appends PG_WAIT_EXTENSION, for compatibility with
+				 * older-PG 3-arg call sites elsewhere in the tree.  Passing
+				 * our own wait_event_info as a 4th argument fails to compile
+				 * ("passed 4 arguments, but takes just 3").  We want the
+				 * more descriptive WAIT_EVENT_WAL_SENDER_WAIT_FOR_WAL (the
+				 * brief's WAIT_EVENT_WAL_SENDER_WAIT_WAL does not exist in
+				 * this PG version either), so bypass the macro by wrapping
+				 * the callee name in parentheses -- the preprocessor only
+				 * recognizes "WaitLatch(" as an invocation, not "(WaitLatch)(".
+				 */
+				(void) (WaitLatch) (MyLatch,
+									 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+									 10L, WAIT_EVENT_WAL_SENDER_WAIT_FOR_WAL);
+				ResetLatch(MyLatch);
+			}
 		}
 		else
 		{
