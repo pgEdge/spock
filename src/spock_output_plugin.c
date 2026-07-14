@@ -743,8 +743,11 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			 * it, so async peers never outrun the sync standby.  We READ the
 			 * published sync-flush LSN rather than enqueueing in SyncRepQueue
 			 * (which is why the slot-offset uniqueness hack is not needed on
-			 * this path).  Poll in a latch loop so walsender keepalives keep
-			 * flowing (spec gotcha 8).
+			 * this path).  Poll in a latch loop with a bounded timeout so the
+			 * wait stays interruptible (CHECK_FOR_INTERRUPTS() below) rather
+			 * than blocking indefinitely; this does not itself send walsender
+			 * keepalives (keepalive behavior is unchanged from the legacy
+			 * SyncRepWaitForLSN() path) (spec gotcha 8).
 			 */
 			for (;;)
 			{

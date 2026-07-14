@@ -38,8 +38,11 @@ BAIL_OUT('could not determine application_name for S (n2) walsender') if !define
 make_synchronous(1,$appS);
 # pause S's apply worker so it cannot confirm
 psql_or_bail(2,"SELECT spock.sub_disable('sub_n2_n1', true)");
-# write on A in the background (it will block on sync S); bounded
-system("timeout 8 $c->{pg_bin}/psql -X -h $c->{host} -p $c->{node_ports}[0] -d $c->{db_name} -U $c->{db_user} -c \"INSERT INTO t1 VALUES (1,'x')\" >/dev/null 2>&1 &");
+# write on A in the background (it will block on sync S); bounded.
+# Client-side timeout must comfortably outlast the row-count sleep (4s)
+# plus the wait_event bounded-retry poll below (up to 8s), or the write
+# could be killed (and the walsender unblocked) before we finish checking.
+system("timeout 20 $c->{pg_bin}/psql -X -h $c->{host} -p $c->{node_ports}[0] -d $c->{db_name} -U $c->{db_user} -c \"INSERT INTO t1 VALUES (1,'x')\" >/dev/null 2>&1 &");
 select(undef,undef,undef,4);
 is(sc(3,"SELECT count(*) FROM t1 WHERE id=1"), '0', 'async peer B did NOT receive row while sync standby S is behind');
 
@@ -53,11 +56,17 @@ is(sc(3,"SELECT count(*) FROM t1 WHERE id=1"), '0', 'async peer B did NOT receiv
 # blocks B just as effectively.  This wait_event check confirms which
 # implementation is actually active on B's walsender while it is gated.
 my $b_slot = "spk_$c->{db_name}_n1_sub_n3_n1";
-my $b_wait = sc(1, "SELECT wait_event FROM pg_stat_activity a " .
-                   "JOIN pg_stat_replication r ON a.pid = r.pid " .
-                   "JOIN pg_replication_slots s ON s.active_pid = r.pid " .
-                   "WHERE s.slot_name = '$b_slot'");
-diag("B's walsender wait_event while gated: '$b_wait'");
+my $b_wait = '';
+my $got_gate_wait = w(8, sub {
+    $b_wait = sc(1, "SELECT wait_event FROM pg_stat_activity a " .
+                     "JOIN pg_stat_replication r ON a.pid = r.pid " .
+                     "JOIN pg_replication_slots s ON s.active_pid = r.pid " .
+                     "WHERE s.slot_name = '$b_slot'");
+    return defined($b_wait) && $b_wait eq 'WalSenderWaitForWal';
+});
+diag("B's walsender wait_event while gated: '$b_wait' (matched WalSenderWaitForWal: $got_gate_wait)");
+is($b_wait, 'WalSenderWaitForWal',
+   "B's walsender is blocked in the new poll-gate (WalSenderWaitForWal), not legacy SyncRep");
 # release
 psql_or_bail(2,"SELECT spock.sub_enable('sub_n2_n1', true)");
 w(30,sub{ sc(3,"SELECT count(*) FROM t1 WHERE id=1") eq '1'}) or diag('B never caught up');
