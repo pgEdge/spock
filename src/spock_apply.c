@@ -268,6 +268,7 @@ static bool should_log_exception(bool failed);
 static ApplyReplayEntry * apply_replay_entry_create(int r, char *buf);
 static void apply_replay_entry_free(ApplyReplayEntry * entry);
 static void apply_replay_queue_reset(void);
+static bool spock_sync_standby_is_publisher(void);
 static void append_feedback_position(XLogRecPtr local_commit_lsn,
 									 XLogRecPtr remote_commit_lsn);
 static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
@@ -939,7 +940,8 @@ handle_commit(StringInfo s)
 
 		CommitTransactionCommand();
 
-		if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
+		if ((WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED) &&
+			!spock_sync_standby_is_publisher())
 			append_feedback_position(XactLastCommitEnd, end_lsn);
 
 		remoteTransactionStopTimestamp = 0;
@@ -2917,6 +2919,22 @@ get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
 }
 
 /*
+ * True when Spock synchronous-standby mode is on and a synchronous standby is
+ * defined. In this mode the synchronous standby is the MM peer we report
+ * feedback to, so the feedback hold (which assumes a SEPARATE physical
+ * standby) is circular and must be bypassed. NOTE: a node with BOTH a Spock
+ * sync standby and a separate physical sync standby is out of scope; standby
+ * mode assumes the sync standby is the MM peer. See spec 2026-07-13 sec 5.3 /
+ * non-goals.
+ */
+static bool
+spock_sync_standby_is_publisher(void)
+{
+	return spock_synchronous_mode == SPOCK_SYNC_MODE_STANDBY &&
+		(WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED);
+}
+
+/*
  * If a synchronous replica is attached, we cannot send feedback to the
  * publisher the instant the apply transaction commits locally: the local
  * commit is not yet durable until the sync standby has flushed it, and
@@ -3049,7 +3067,8 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 	 * In case of any syncrounoun replica is attached get the  LSN from the
 	 * list
 	 */
-	if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
+	if ((WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED) &&
+		!spock_sync_standby_is_publisher())
 		get_feedback_position(&recvpos, &writepos, &flushpos, &max_recvpos);
 
 	/* It's legal to not pass a recvpos */
