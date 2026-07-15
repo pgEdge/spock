@@ -85,6 +85,47 @@ SELECT spock.repset_add_table('accts', 'payables');
 Adds a table named `payables` to a replication set named `accts`. Since no
 columns are specified, all columns will be replicated.
 
+## Reserved Schemas and Extensions
+
+Some schemas and extensions are reserved and are treated specially by Spock.
+They are listed in the `spock.reserved_object` catalog, which is the single
+source of truth for two behaviours:
+
+- `exclude_from_dump`: the object is left out of the structure-sync dump used
+  when a subscription synchronizes structure. Restoring these on a subscriber
+  that already has them would fail.
+- `block_in_repset`: a table in this schema, or belonging to this extension,
+  may not be added to a replication set.
+
+Spock seeds the following built-in rows, and they cannot be removed or
+modified:
+
+| Object            | exclude_from_dump | block_in_repset |
+|-------------------|-------------------|-----------------|
+| `spock`           | yes               | yes             |
+| `snowflake`       | yes               | yes             |
+| `lolor`           | yes               | no              |
+
+`lolor` is excluded from the dump but is intentionally allowed in replication
+sets: its tables must replicate so that large objects survive a
+`DROP EXTENSION` on every node, not only where the drop was issued.
+
+To reserve an additional schema or extension of your own, use
+`spock.reserved_object_add`:
+
+```sql
+-- keep a custom schema out of structure sync and out of replication sets
+SELECT spock.reserved_object_add('ace', 'schema');
+
+-- exclude an extension from the dump but still allow its tables in repsets
+SELECT spock.reserved_object_add('myext', 'extension', p_block_in_repset := false);
+```
+
+Use `spock.reserved_object_remove('ace', 'schema')` to drop your own entry.
+Reserved objects are node-local configuration: apply the same additions on
+each node of the cluster. Operator-added rows are preserved across
+`pg_dump`/`pg_restore`; the built-in rows are always re-seeded.
+
 ## Removing a Table from a Replication Set
 
 To remove a table from a replication set with Spock, connect to the server
@@ -293,3 +334,34 @@ Parameters:
 
 - `subscription_name` is the name of an existing subscription.
 - `replication_set` is the name of replication set to remove.
+
+### spock.reserved_object_add
+
+Use `spock.reserved_object_add` to reserve a schema or extension (see
+[Reserved Schemas and Extensions](#reserved-schemas-and-extensions)). If the
+object is already reserved, its flags are updated. Built-in objects cannot be
+changed.
+
+`spock.reserved_object_add(p_name name, p_kind text, p_exclude_from_dump bool
+DEFAULT true, p_block_in_repset bool DEFAULT true)`
+
+Parameters:
+
+- `p_name` is the schema or extension name.
+- `p_kind` is `'schema'` or `'extension'`.
+- `p_exclude_from_dump` keeps the object out of the structure-sync dump; the
+  default is `true`.
+- `p_block_in_repset` blocks the object from replication sets; the default is
+  `true`.
+
+### spock.reserved_object_remove
+
+Use `spock.reserved_object_remove` to remove one of your own reserved objects.
+Built-in objects are protected and cannot be removed.
+
+`spock.reserved_object_remove(p_name name, p_kind text)`
+
+Parameters:
+
+- `p_name` is the schema or extension name.
+- `p_kind` is `'schema'` or `'extension'`.

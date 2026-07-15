@@ -157,18 +157,23 @@ get_pg_executable(char *cmdname, char *cmdbuf)
 static List *
 build_exclude_extension_string(void)
 {
-	List   *lst = NIL;
-	char   *arg;
-	int		i;
+	List	   *lst = NIL;
+	char	   *arg;
+	List	   *reserved;
+	ListCell   *lc;
 
-	for (i = 0; skip_extension[i] != NULL; i++)
+	reserved = spock_reserved_object_names(RESERVED_KIND_EXTENSION, RESERVED_PURPOSE_DUMP);
+	foreach(lc, reserved)
 	{
-		if (!OidIsValid(get_extension_oid(skip_extension[i], true)))
+		const char *ext_name = (const char *) lfirst(lc);
+
+		if (!OidIsValid(get_extension_oid(ext_name, true)))
 			continue;
 
-		arg = psprintf("--exclude-extension=%s", skip_extension[i]);
+		arg = psprintf("--exclude-extension=%s", ext_name);
 		lst = lappend(lst, arg);
 	}
+	list_free_deep(reserved);
 	return lst;
 }
 #endif
@@ -178,17 +183,21 @@ build_exclude_schema_string(SpockSubscription *sub)
 {
 	List	   *lst = NIL;
 	char	   *arg;
-	int			i;
+	List	   *reserved;
 	ListCell   *lc;
 
-	for (i = 0; skip_schema[i] != NULL; i++)
+	reserved = spock_reserved_object_names(RESERVED_KIND_SCHEMA, RESERVED_PURPOSE_DUMP);
+	foreach(lc, reserved)
 	{
-		if (!OidIsValid(LookupExplicitNamespace(skip_schema[i], true)))
+		const char *schema_name = (const char *) lfirst(lc);
+
+		if (!OidIsValid(LookupExplicitNamespace(schema_name, true)))
 			continue;
 
-		arg = psprintf("--exclude-schema=%s", skip_schema[i]);
+		arg = psprintf("--exclude-schema=%s", schema_name);
 		lst = lappend(lst, arg);
 	}
+	list_free_deep(reserved);
 
 	if (sub)
 	{
