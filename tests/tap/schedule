@@ -57,3 +57,4 @@ test: 044_apply_change_logging
 
 # Regression tests
 test: 103_manager_worker_dboid_race
+test: 105_sub_disable_retransmit_after_disconnect
