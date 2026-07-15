@@ -1,5 +1,26 @@
 # Spock Release Notes
 
+## Spock 5.0.11
+
+### New Features
+* Sync failover slots to the standby every 1s by default instead of a
+  hard-coded 60s, shrinking the window in which a promotion can find a stale
+  slot. The interval is now tunable via `spock.failover_slots_naptime` (and the
+  feedback-wait retry via `spock.failover_slots_feedback_naptime`), both
+  SIGHUP-settable in milliseconds
+
+* Never copy the `pgedge_ace` schema to a node joining via `add_node`. ACE
+  state is node-local, so its objects are now excluded from both the schema
+  copy and the data sync, even when an ACE table belongs to a replication set.
+
+### Bug Fixes
+
+* Fixed a bug where a transient provider connection loss could incorrectly
+  disable a subscription under SUB_DISABLE exception handling. A transaction
+  retransmitted after a reconnect is no longer misclassified as an apply
+  failure, so replication resumes normally instead of stopping.
+
+
 ## Spock 5.0.10
 
 ### Bug Fixes

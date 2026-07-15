@@ -308,6 +308,32 @@ given LSN before logical replication is allowed to proceed. The default
 spock.standby_slots_min_confirmed = -1
 ```
 
+### `spock.failover_slots_naptime`
+
+How long the `spock_failover_slots` worker sleeps between slot-synchronization
+passes, in milliseconds. A smaller value keeps the standby's synchronized slots
+closer to the primary — narrowing the window in which a promotion can find a
+stale slot — at the cost of more frequent sync passes. Default: `1000` (1s).
+Range: `1000`–`3600000`. Settable at runtime with `SIGHUP` (reload).
+
+```ini
+spock.failover_slots_naptime = 1000
+```
+
+Used on PostgreSQL 15, 16, and 17 (when `sync_replication_slots` is not
+enabled).
+
+### `spock.failover_slots_feedback_naptime`
+
+Shorter retry interval, in milliseconds, used instead of
+`spock.failover_slots_naptime` while the standby has not yet received or fed
+back the WAL a slot needs. Default: `10000` (10s). Range: `1000`–`3600000`.
+Settable at runtime with `SIGHUP` (reload).
+
+```ini
+spock.failover_slots_feedback_naptime = 10000
+```
+
 ### `spock.include_ddl_repset`
 
 `spock.include_ddl_repset` enables spock to automatically add tables to

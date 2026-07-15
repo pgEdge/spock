@@ -92,6 +92,8 @@ on the standby and periodically copies slot state from the primary.
 | `spock.primary_dsn` | `''` | DSN to connect to primary (falls back to `primary_conninfo`) |
 | `spock.pg_standby_slot_names` | `''` | Physical slots that must confirm LSN before logical replication advances |
 | `spock.standby_slots_min_confirmed` | `-1` | How many slots from `pg_standby_slot_names` must confirm (`-1` = all) |
+| `spock.failover_slots_naptime` | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1000–3600000) |
+| `spock.failover_slots_feedback_naptime` | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1000–3600000) |
 
 ### Example (`postgresql.conf` on standby)
 
