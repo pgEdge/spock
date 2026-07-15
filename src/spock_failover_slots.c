@@ -60,8 +60,9 @@
 #include "libpq/auth.h"
 #include "libpq/libpq.h"
 
-#define WORKER_NAP_TIME 60000L
-#define WORKER_WAIT_FEEDBACK 10000L
+/* Defaults (milliseconds) for the tunable worker intervals below. */
+#define WORKER_NAP_TIME_DEFAULT 1000
+#define WORKER_WAIT_FEEDBACK_DEFAULT 10000
 
 /*
  * PostgreSQL 19 replaced ReplicationSlot.active_pid (an int pid, 0 when the
@@ -111,6 +112,16 @@ static char *spock_failover_slot_names;
 static char *spock_failover_slot_names_str = NULL;
 static List *spock_failover_slot_names_list = NIL;
 static bool spock_failover_slots_drop = true;
+
+/*
+ * How long the worker sleeps between slot-sync passes, and the shorter retry
+ * used while it is still waiting for the standby to receive/feedback WAL.
+ * Both are in milliseconds and settable at runtime (SIGHUP).  A smaller
+ * naptime narrows the window in which the standby's synced slots lag the
+ * primary, at the cost of more frequent sync passes.
+ */
+static int	spock_failover_slots_naptime = WORKER_NAP_TIME_DEFAULT;
+static int	spock_failover_slots_feedback_naptime = WORKER_WAIT_FEEDBACK_DEFAULT;
 
 void		spock_init_failover_slot(void);
 
@@ -1180,7 +1191,7 @@ synchronize_failover_slots(long sleep_time)
 							"cannot synchronize replication slot positions yet because feedback was not sent yet")));
 			was_lsn_safe = false;
 			PQfinish(conn);
-			return Min(sleep_time, WORKER_WAIT_FEEDBACK);
+			return Min(sleep_time, spock_failover_slots_feedback_naptime);
 		}
 		else if (WalRcv->latestWalEnd < lsn)
 		{
@@ -1193,7 +1204,7 @@ synchronize_failover_slots(long sleep_time)
 							(uint32) (WalRcv->latestWalEnd))));
 			was_lsn_safe = false;
 			PQfinish(conn);
-			return Min(sleep_time, WORKER_WAIT_FEEDBACK);
+			return Min(sleep_time, spock_failover_slots_feedback_naptime);
 		}
 
 		foreach(lc, slots)
@@ -1290,7 +1301,7 @@ spock_failover_slots_main(Datum main_arg)
 	while (true)
 	{
 		int			rc;
-		long		sleep_time = WORKER_NAP_TIME;
+		long		sleep_time = spock_failover_slots_naptime;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -1309,9 +1320,9 @@ spock_failover_slots_main(Datum main_arg)
 			&& !sync_replication_slots
 #endif
 			)
-			sleep_time = synchronize_failover_slots(WORKER_NAP_TIME);
+			sleep_time = synchronize_failover_slots(spock_failover_slots_naptime);
 		else
-			sleep_time = WORKER_NAP_TIME * 10;
+			sleep_time = (long) spock_failover_slots_naptime * 10;
 
 		rc =
 			WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
@@ -1825,6 +1836,24 @@ spock_init_failover_slot(void)
 							   "if empty, uses the defaults to primary_conninfo",
 							   &spock_failover_slots_dsn, "", PGC_SIGHUP, GUC_SUPERUSER_ONLY, NULL, NULL,
 							   NULL);
+
+	DefineCustomIntVariable(
+		"spock.failover_slots_naptime",
+		"time the failover slot worker sleeps between slot synchronization passes",
+		"A smaller value keeps the standby's synchronized slots closer to the "
+		"primary, at the cost of more frequent sync passes.",
+		&spock_failover_slots_naptime, WORKER_NAP_TIME_DEFAULT,
+		1000, 3600000,
+		PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
+
+	DefineCustomIntVariable(
+		"spock.failover_slots_feedback_naptime",
+		"shorter retry interval used while waiting for standby WAL feedback",
+		"The worker retries this often (instead of failover_slots_naptime) while "
+		"the standby has not yet received or fed back the WAL a slot needs.",
+		&spock_failover_slots_feedback_naptime, WORKER_WAIT_FEEDBACK_DEFAULT,
+		1000, 3600000,
+		PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
 
 
 	if (IsBinaryUpgrade)
