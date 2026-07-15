@@ -319,6 +319,91 @@ CREATE TABLE spock.replication_set_seq (
     PRIMARY KEY(set_id, set_seqoid)
 ) WITH (user_catalog_table=true);
 
+-- ----------------------------------------------------------------------------
+-- Reserved objects: schemas and extensions Spock treats specially.
+--
+-- Single source of truth (replacing hard-coded lists in the C code) for:
+--   * exclude_from_dump - kept out of the structure-sync dump (pg_dump
+--     --exclude-schema / --exclude-extension); restoring these on a subscriber
+--     that already has them would fail.
+--   * block_in_repset   - may not be added to a replication set.
+--
+-- Built-in rows (builtin = true) are seeded by the extension and are protected
+-- from removal/modification.  Add your own with spock.reserved_object_add().
+-- ----------------------------------------------------------------------------
+CREATE TABLE spock.reserved_object (
+    name              name    NOT NULL,
+    kind              text    NOT NULL CHECK (kind IN ('schema', 'extension')),
+    exclude_from_dump boolean NOT NULL DEFAULT true,
+    block_in_repset   boolean NOT NULL DEFAULT true,
+    builtin           boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (name, kind)
+) WITH (user_catalog_table=true);
+
+-- Preserve operator-added rows across pg_dump/restore; built-ins are re-seeded
+-- by this script, so only non-built-in rows are dumped.
+SELECT pg_catalog.pg_extension_config_dump('spock.reserved_object', 'WHERE NOT builtin');
+
+-- lolor is excluded from the dump but NOT blocked from replication sets: its
+-- tables must replicate so large objects survive a DROP EXTENSION on all nodes.
+INSERT INTO spock.reserved_object (name, kind, exclude_from_dump, block_in_repset, builtin) VALUES
+    ('spock',     'schema',    true, true,  true),
+    ('spock',     'extension', true, true,  true),
+    ('snowflake', 'schema',    true, true,  true),
+    ('snowflake', 'extension', true, true,  true),
+    ('lolor',     'schema',    true, false, true),
+    ('lolor',     'extension', true, false, true);
+
+-- Protect built-in rows so replication can't be broken by dropping
+-- spock/snowflake/lolor from the reserved set.
+CREATE FUNCTION spock.reserved_object_guard()
+RETURNS trigger AS $$
+BEGIN
+    IF OLD.builtin THEN
+        RAISE EXCEPTION 'cannot % built-in reserved object "%" (%)',
+            lower(TG_OP), OLD.name, OLD.kind;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER reserved_object_guard
+    BEFORE UPDATE OR DELETE ON spock.reserved_object
+    FOR EACH ROW EXECUTE FUNCTION spock.reserved_object_guard();
+
+-- Add (or update) a user-defined reserved object.  (ON CONFLICT is not
+-- allowed on a user_catalog_table, so upsert by hand; updating a built-in row
+-- is rejected by the guard trigger.)
+CREATE FUNCTION spock.reserved_object_add(
+    p_name              name,
+    p_kind              text,
+    p_exclude_from_dump boolean DEFAULT true,
+    p_block_in_repset   boolean DEFAULT true)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE spock.reserved_object
+       SET exclude_from_dump = p_exclude_from_dump,
+           block_in_repset   = p_block_in_repset
+     WHERE name = p_name AND kind = p_kind;
+    IF NOT FOUND THEN
+        INSERT INTO spock.reserved_object
+            (name, kind, exclude_from_dump, block_in_repset, builtin)
+        VALUES (p_name, p_kind, p_exclude_from_dump, p_block_in_repset, false);
+    END IF;
+END;
+$$;
+
+-- Remove a user-defined reserved object (built-ins are protected by the guard).
+CREATE FUNCTION spock.reserved_object_remove(object_name name, object_kind text)
+RETURNS void
+LANGUAGE sql AS $$
+    DELETE FROM spock.reserved_object WHERE name = object_name AND kind = object_kind;
+$$;
+
 CREATE TABLE spock.sequence_state (
 	seqoid oid NOT NULL PRIMARY KEY,
 	cache_size integer NOT NULL,
