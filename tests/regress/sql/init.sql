@@ -49,7 +49,7 @@ CREATE EXTENSION IF NOT EXISTS spock;
 SELECT
   extnamespace::regnamespace,
   extrelocatable,
-  extconfig,
+  extconfig::regclass[] AS extconfig,
   extcondition,
   obj_description(oid) AS comment
 FROM pg_extension WHERE extname = 'spock';
