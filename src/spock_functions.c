@@ -13,6 +13,7 @@
 #include "postgres.h"
 
 #include "access/commit_ts.h"
+#include "access/relation.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
@@ -2416,6 +2417,131 @@ query_temp_like_source(const char *query)
 }
 
 /*
+ * Is the relation named by rv in a never-replicate schema?
+ *
+ * Runs after the DDL executed, so for CREATE/ALTER the relation exists and an
+ * unqualified name can be resolved by opening it.  relation_openrv, not
+ * table_openrv: rv may name any relation kind (table_open errors on
+ * indexes).  A missing relation (e.g. a dropped one) can be classified only
+ * when the name is schema-qualified.
+ */
+static bool
+rangevar_in_skipped_schema(RangeVar *rv)
+{
+	Relation	rel;
+	bool		skipped;
+
+	if (rv == NULL)
+		return false;
+
+	if (rv->schemaname != NULL)
+		return spock_schema_is_skipped(rv->schemaname);
+
+	rel = relation_openrv_extended(rv, AccessShareLock, true);
+	if (rel == NULL)
+		return false;
+	skipped = spock_schema_is_skipped(
+		get_namespace_name(RelationGetNamespace(rel)));
+	relation_close(rel, AccessShareLock);
+
+	return skipped;
+}
+
+/*
+ * Does this DDL statement target only never-replicate schemas?  Such DDL is
+ * node-local and must not be queued.
+ *
+ * Only statement types whose target schema is identifiable are classified;
+ * anything else keeps replicating as before.  Known gap: dropping a
+ * never-replicate relation by an unqualified name cannot be classified here
+ * (the relation is already gone when this hook runs).
+ */
+static bool
+stmt_in_skipped_schema(Node *stmt)
+{
+	switch (nodeTag(stmt))
+	{
+		case T_CreateSchemaStmt:
+			return spock_schema_is_skipped(
+				((CreateSchemaStmt *) stmt)->schemaname);
+
+		case T_CreateStmt:
+			return rangevar_in_skipped_schema(
+				((CreateStmt *) stmt)->relation);
+
+		case T_CreateTableAsStmt:
+			/* Covers CREATE MATERIALIZED VIEW too (objtype OBJECT_MATVIEW). */
+			return rangevar_in_skipped_schema(
+				((CreateTableAsStmt *) stmt)->into->rel);
+
+		case T_AlterTableStmt:
+			/*
+			 * Covers ALTER INDEX/VIEW/MATERIALIZED VIEW/FOREIGN TABLE too;
+			 * for all of them ->relation names the target relation.
+			 */
+			return rangevar_in_skipped_schema(
+				((AlterTableStmt *) stmt)->relation);
+
+		case T_ViewStmt:
+			return rangevar_in_skipped_schema(((ViewStmt *) stmt)->view);
+
+		case T_CreateSeqStmt:
+			return rangevar_in_skipped_schema(
+				((CreateSeqStmt *) stmt)->sequence);
+
+		case T_IndexStmt:
+			return rangevar_in_skipped_schema(
+				((IndexStmt *) stmt)->relation);
+
+		case T_DropStmt:
+			{
+				DropStmt   *drop = (DropStmt *) stmt;
+				ListCell   *cell;
+
+				if (drop->objects == NIL)
+					return false;
+
+				if (drop->removeType == OBJECT_SCHEMA)
+				{
+					foreach(cell, drop->objects)
+					{
+						if (!spock_schema_is_skipped(strVal(lfirst(cell))))
+							return false;
+					}
+					return true;
+				}
+
+				if (drop->removeType != OBJECT_TABLE &&
+					drop->removeType != OBJECT_INDEX &&
+					drop->removeType != OBJECT_SEQUENCE &&
+					drop->removeType != OBJECT_VIEW &&
+					drop->removeType != OBJECT_MATVIEW &&
+					drop->removeType != OBJECT_FOREIGN_TABLE)
+					return false;
+
+				/*
+				 * The relations are already dropped; only schema-qualified
+				 * names can be classified.  Suppress replication only when
+				 * every dropped object is in a never-replicate schema.
+				 */
+				foreach(cell, drop->objects)
+				{
+					RangeVar   *rv =
+						makeRangeVarFromNameList((List *) lfirst(cell));
+
+					if (rv->schemaname == NULL ||
+						!spock_schema_is_skipped(rv->schemaname))
+						return false;
+				}
+				return true;
+			}
+
+		default:
+			return false;
+	}
+}
+
+/*
  * spock_auto_replicate_ddl
  *
  * Add the DDL statement to the spock.queue table so it can
@@ -2450,6 +2576,14 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 
 		(void) get_replication_set_by_name(node->node->id, setname, false);
 	}
+
+	/*
+	 * DDL targeting only never-replicate schemas is node-local: skipping it
+	 * here also keeps the affected tables out of the replication sets (the
+	 * caller adds them only when we return true).
+	 */
+	if (stmt_in_skipped_schema(stmt))
+		goto skip_ddl;
 
 	/*
 	 * Filter local commands and decide on search path setting.

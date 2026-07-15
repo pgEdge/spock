@@ -117,6 +117,8 @@ extern void gen_slot_name(Name slot_name, char *dbname,
 						  const char *subscriber_name);
 
 extern List *textarray_to_list(ArrayType *textarray);
+extern List *spock_skip_schemas_list(void);
+extern bool spock_schema_is_skipped(const char *nspname);
 extern bool parsePGArray(const char *atext, char ***itemarray, int *nitems);
 
 extern Oid	get_spock_table_oid(const char *table);

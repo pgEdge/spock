@@ -355,6 +355,18 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 
 	targetrel = RelationIdGetRelation(reloid);
 
+	/*
+	 * Never track tables from never-replicate schemas in a replication set.
+	 * This also catches relations reached indirectly (e.g. a partition
+	 * living in such a schema under a replicated parent).
+	 */
+	if (spock_schema_is_skipped(
+			get_namespace_name(RelationGetNamespace(targetrel))))
+	{
+		table_close(targetrel, NoLock);
+		return;
+	}
+
 	/* UNLOGGED and TEMP relations cannot be part of replication set. */
 	if (!RelationNeedsWAL(targetrel))
 	{

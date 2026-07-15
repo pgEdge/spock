@@ -161,12 +161,12 @@ build_exclude_extension_string(void)
 	char   *arg;
 	int		i;
 
-	for (i = 0; skip_extension[i] != NULL; i++)
+	for (i = 0; nodump_extension[i] != NULL; i++)
 	{
-		if (!OidIsValid(get_extension_oid(skip_extension[i], true)))
+		if (!OidIsValid(get_extension_oid(nodump_extension[i], true)))
 			continue;
 
-		arg = psprintf("--exclude-extension=%s", skip_extension[i]);
+		arg = psprintf("--exclude-extension=%s", nodump_extension[i]);
 		lst = lappend(lst, arg);
 	}
 	return lst;
@@ -181,12 +181,26 @@ build_exclude_schema_string(SpockSubscription *sub)
 	int			i;
 	ListCell   *lc;
 
-	for (i = 0; skip_schema[i] != NULL; i++)
+	for (i = 0; nodump_schema[i] != NULL; i++)
 	{
-		if (!OidIsValid(LookupExplicitNamespace(skip_schema[i], true)))
+		if (!OidIsValid(LookupExplicitNamespace(nodump_schema[i], true)))
 			continue;
 
-		arg = psprintf("--exclude-schema=%s", skip_schema[i]);
+		arg = psprintf("--exclude-schema=%s", nodump_schema[i]);
+		lst = lappend(lst, arg);
+	}
+
+	/*
+	 * Schemas this node never replicates (spock_skip_schemas_list()).
+	 * Added unconditionally, unlike the nodump entries above: pg_dump
+	 * ignores exclude patterns that match nothing, and the schema may not
+	 * exist locally yet.
+	 */
+	foreach(lc, spock_skip_schemas_list())
+	{
+		const char *schema_name = (const char *) lfirst(lc);
+
+		arg = psprintf("--exclude-schema=%s", schema_name);
 		lst = lappend(lst, arg);
 	}
 

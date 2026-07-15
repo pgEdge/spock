@@ -50,6 +50,7 @@ test: 024_node_id_collision
 test: 025_tiebreaker_equal_warning
 test: 030_autoddl_repset_stickiness
 test: 032_lolor_largeobject_repset
+test: 033_skip_schemas
 test: 044_apply_change_logging
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match

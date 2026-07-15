@@ -858,6 +858,62 @@ spock_supervisor_main(Datum main_arg)
 	proc_exit(0);
 }
 
+/*
+ * Built-in never-replicate schemas, returned by spock_skip_schemas_list().
+ * pgEdge tooling (ACE) keeps node-local state in pgedge_ace using plain
+ * Postgres DDL; spock must let that DDL succeed while keeping the schema
+ * and its changes off the wire.  Distinct from the lists in spock_node.c:
+ * nodump_schema[] only excludes from the structure-sync dump, and
+ * norepset_schema[] only refuses replication set membership.  Membership
+ * here means DDL and DML stay local, silently.
+ */
+static const char *const builtin_skip_schemas[] = {
+	"pgedge_ace",
+	NULL	/* sentinel */
+};
+
+/*
+ * The node's never-replicate schemas, as a list of palloc'd names.
+ */
+List *
+spock_skip_schemas_list(void)
+{
+	List	   *result = NIL;
+	int			i;
+
+	for (i = 0; builtin_skip_schemas[i] != NULL; i++)
+		result = lappend(result, pstrdup(builtin_skip_schemas[i]));
+
+	return result;
+}
+
+/*
+ * Is nspname never replicated on this node?  For occasional callers;
+ * rebuilds the list on each call.
+ */
+bool
+spock_schema_is_skipped(const char *nspname)
+{
+	List	   *skiplist;
+	ListCell   *lc;
+	bool		result = false;
+
+	if (nspname == NULL)
+		return false;
+
+	skiplist = spock_skip_schemas_list();
+	foreach(lc, skiplist)
+	{
+		if (strcmp((char *) lfirst(lc), nspname) == 0)
+		{
+			result = true;
+			break;
+		}
+	}
+	list_free_deep(skiplist);
+	return result;
+}
+
 static void
 spock_temp_directory_assing_hook(const char *newval, void *extra)
 {
