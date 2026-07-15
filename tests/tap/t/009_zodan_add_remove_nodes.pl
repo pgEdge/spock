@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 40;  # Fixed test count to match actual tests
+use Test::More tests => 43;  # Fixed test count to match actual tests
 use lib '.';
 use lib 't';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config cross_wire system_maybe);
@@ -88,6 +88,21 @@ if ($data_on_n2 eq '3') {
 } else {
     fail("Data replication failed: expected 3 rows, got $data_on_n2");
 }
+
+# Step 2b: Create a pgedge_ace schema with a table on n1.
+#
+# spock excludes the pgedge_ace schema from the schema-sync pg_dump when a new
+# node joins (see --exclude-schema=pgedge_ace in src/spock_sync.c). Create the
+# schema and table here, BEFORE n3 exists or subscribes, so the only path by
+# which n3 could acquire it is the add_node schema copy. This isolates the
+# exclusion logic from DDL replication.
+system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "
+    CREATE SCHEMA pgedge_ace;
+    CREATE TABLE pgedge_ace.ace_meta (id INTEGER PRIMARY KEY, note TEXT);
+    INSERT INTO pgedge_ace.ace_meta VALUES (1, 'alpha'), (2, 'beta');
+";
+
+pass('Created pgedge_ace schema and table on n1');
 
 # Step 3: Create n3 database instance
 pass('Creating n3 database instance');
@@ -310,6 +325,26 @@ if ($table_exists_n3 eq 't') {
     }
 } else {
     fail('Test table does not exist on n3');
+}
+
+# Verify the pgedge_ace schema was NOT copied to n3 by add_node.
+# spock's schema-sync pg_dump uses --exclude-schema=pgedge_ace, so neither the
+# schema nor its tables should exist on the joining node.
+my $ace_schema_on_n3 = `$pg_bin/psql -p $n3_port -d $dbname -t -c "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'pgedge_ace')"`;
+chomp($ace_schema_on_n3);
+$ace_schema_on_n3 =~ s/\s+//g;
+if ($ace_schema_on_n3 eq 'f') {
+    pass('pgedge_ace schema was not copied to n3 (excluded from add_node sync)');
+} else {
+    fail('pgedge_ace schema exists on n3 but should have been excluded from add_node sync');
+}
+
+# Explicit control: the public-schema table copied to n3 while pgedge_ace did
+# not. This confirms the exclusion is targeted, not a wholesale sync failure.
+if ($table_exists_n3 eq 't' && $ace_schema_on_n3 eq 'f') {
+    pass('Exclusion is targeted: public test table copied, pgedge_ace did not');
+} else {
+    fail("Unexpected sync result on n3: test_zodan_table exists=$table_exists_n3, pgedge_ace exists=$ace_schema_on_n3");
 }
 
 # Verify n3 has subscriptions that reference the default replication sets

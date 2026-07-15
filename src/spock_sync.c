@@ -164,7 +164,6 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	char		pg_dump[MAXPGPATH];
 	char	   *cmdargv[20];
 	int			cmdargc = 0;
-	bool		has_spk_origin;
 	bool		has_snowflake;
 	StringInfoData	s;
 
@@ -194,19 +193,20 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	cmdargv[cmdargc++] = pstrdup(s.data);
 	resetStringInfo(&s);
 
-	/* Skip the spock_origin and snowflake if it exists locally. */
+	/*
+	 * Always exclude the pgedge_ace schema. ACE state is node-local, so a
+	 * joining node must never inherit the source's ACE objects, whether or not
+	 * it already has a pgedge_ace schema of its own.
+	 */
+	appendStringInfo(&s, "--exclude-schema=%s", "pgedge_ace");
+	cmdargv[cmdargc++] = pstrdup(s.data);
+	resetStringInfo(&s);
+
+	/* Skip snowflake if it exists locally. */
 	StartTransactionCommand();
-	has_spk_origin = OidIsValid(LookupExplicitNamespace("spock_origin",
-														true));
 	has_snowflake = OidIsValid(LookupExplicitNamespace("snowflake",
 														true));
 	CommitTransactionCommand();
-	if (has_spk_origin)
-	{
-		appendStringInfo(&s, "--exclude-schema=%s", "spock_origin");
-		cmdargv[cmdargc++] = pstrdup(s.data);
-		resetStringInfo(&s);
-	}
 
 	if (has_snowflake)
 	{
@@ -918,8 +918,14 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	tables = spock_get_remote_repset_tables(origin_conn,
 												 replication_sets);
 
-	/* Filter out tables from schemas that should be skipped */
-	if (sub->skip_schema && list_length(sub->skip_schema) > 0)
+	/*
+	 * Filter out tables that must not be data-synced:
+	 *   - the pgedge_ace schema is always excluded, mirroring the
+	 *     structure-sync exclusion in dump_structure(); ACE state is
+	 *     node-local, so its tables are never copied to a joining node even
+	 *     when they are members of a replication set.
+	 *   - any schema listed in the subscription's skip_schema.
+	 */
 	{
 		List	   *filtered_tables = NIL;
 		ListCell   *lc_filter;
@@ -927,17 +933,25 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		foreach (lc_filter, tables)
 		{
 			SpockRemoteRel	*remoterel = lfirst(lc_filter);
-			ListCell   *lc_skip;
 			bool		skip_table = false;
 
-			/* Check if this table's schema should be skipped */
-			foreach (lc_skip, sub->skip_schema)
+			/* Always skip the pgedge_ace schema. */
+			if (strcmp(remoterel->nspname, "pgedge_ace") == 0)
+				skip_table = true;
+
+			/* Check if this table's schema is in the skip_schema list. */
+			if (!skip_table && sub->skip_schema)
 			{
-				char	   *skip_schema_name = (char *) lfirst(lc_skip);
-				if (strcmp(remoterel->nspname, skip_schema_name) == 0)
+				ListCell   *lc_skip;
+
+				foreach (lc_skip, sub->skip_schema)
 				{
-					skip_table = true;
-					break;
+					char	   *skip_schema_name = (char *) lfirst(lc_skip);
+					if (strcmp(remoterel->nspname, skip_schema_name) == 0)
+					{
+						skip_table = true;
+						break;
+					}
 				}
 			}
 
