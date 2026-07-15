@@ -61,7 +61,7 @@
 #include "libpq/libpq.h"
 
 /* Defaults (milliseconds) for the tunable worker intervals below. */
-#define WORKER_NAP_TIME_DEFAULT 60000
+#define WORKER_NAP_TIME_DEFAULT 1000
 #define WORKER_WAIT_FEEDBACK_DEFAULT 10000
 
 typedef struct RemoteSlot

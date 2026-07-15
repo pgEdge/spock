@@ -49,8 +49,8 @@ sub setting_of {
 # --------------------------------------------------------------------------
 # Defaults (pg_settings reports the value in the base unit, ms)
 # --------------------------------------------------------------------------
-is(setting_of('spock.failover_slots_naptime'), '60000',
-   'failover_slots_naptime default is 60000 ms');
+is(setting_of('spock.failover_slots_naptime'), '1000',
+   'failover_slots_naptime default is 1000 ms');
 is(setting_of('spock.failover_slots_feedback_naptime'), '10000',
    'failover_slots_feedback_naptime default is 10000 ms');
 
