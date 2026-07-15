@@ -406,16 +406,24 @@ BEGIN
            block_in_repset   = p_block_in_repset
      WHERE name = p_name AND kind = p_kind;
     IF NOT FOUND THEN
-        INSERT INTO spock.reserved_object
-            (name, kind, exclude_from_dump, block_in_repset, builtin)
-        VALUES (p_name, p_kind, p_exclude_from_dump, p_block_in_repset, false);
+        BEGIN
+            INSERT INTO spock.reserved_object
+                (name, kind, exclude_from_dump, block_in_repset, builtin)
+            VALUES (p_name, p_kind, p_exclude_from_dump, p_block_in_repset, false);
+        EXCEPTION WHEN unique_violation THEN
+            -- A concurrent call inserted the same object; apply as an update.
+            UPDATE spock.reserved_object
+               SET exclude_from_dump = p_exclude_from_dump,
+                   block_in_repset   = p_block_in_repset
+             WHERE name = p_name AND kind = p_kind;
+        END;
     END IF;
 END;
 $$;
 
-CREATE FUNCTION spock.reserved_object_remove(object_name name, object_kind text)
+CREATE FUNCTION spock.reserved_object_remove(p_name name, p_kind text)
 RETURNS void
 LANGUAGE sql AS $$
-    DELETE FROM spock.reserved_object WHERE name = object_name AND kind = object_kind;
+    DELETE FROM spock.reserved_object WHERE name = p_name AND kind = p_kind;
 $$;
 
