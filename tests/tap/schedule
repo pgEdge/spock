@@ -44,3 +44,4 @@ test: 025_tiebreaker_equal_warning
 
 # Regression tests
 test: 103_manager_worker_dboid_race
+test: 105_sub_disable_retransmit_after_disconnect
