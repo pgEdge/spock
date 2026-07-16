@@ -4,7 +4,15 @@ ARG PGVER
 
 ENV PGVER=$PGVER
 
-RUN dnf -y update && dnf -y install sudo && dnf -y groupinstall "Development Tools"
+RUN for i in $(seq 1 5); do \
+        if dnf -y --refresh update && dnf -y install sudo && dnf -y groupinstall "Development Tools"; then \
+            break; \
+        fi; \
+        if [ "$i" -eq 5 ]; then echo "dnf failed after 5 attempts" >&2; exit 1; fi; \
+        echo "dnf attempt $i failed; clearing metadata, retrying in 5s..." >&2; \
+        dnf clean all; \
+        sleep 5; \
+    done
 
 RUN useradd -m pgedge -s /bin/bash && \
     echo pgedge:asdf | chpasswd && \
@@ -14,7 +22,15 @@ RUN useradd -m pgedge -s /bin/bash && \
 
 COPY tests/docker/lib-list.txt /home/pgedge/
 
-RUN dnf install --allowerasing --enablerepo=crb -y $(cat /home/pgedge/lib-list.txt)
+RUN for i in $(seq 1 5); do \
+        if dnf install --refresh --allowerasing --enablerepo=crb -y $(cat /home/pgedge/lib-list.txt); then \
+            break; \
+        fi; \
+        if [ "$i" -eq 5 ]; then echo "dnf failed after 5 attempts" >&2; exit 1; fi; \
+        echo "dnf attempt $i failed; clearing metadata, retrying in 5s..." >&2; \
+        dnf clean all; \
+        sleep 5; \
+    done
 
 # Install perl dependencies for running tap tests
 RUN cpanm Test::More
