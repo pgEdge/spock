@@ -65,9 +65,17 @@ RUN set -eux && \
 # System Update and Base Development Tools Installation
 # ==============================================================================
 RUN set -eux && \
-    dnf -y upgrade && \
-    dnf -y install sudo && \
-    dnf -y groupinstall "Development Tools" && \
+    for i in $(seq 1 5); do \
+        if dnf -y --refresh upgrade && \
+           dnf -y install sudo && \
+           dnf -y groupinstall "Development Tools"; then \
+            break; \
+        fi; \
+        if [ "$i" -eq 5 ]; then echo "dnf failed after 5 attempts" >&2; exit 1; fi; \
+        echo "dnf attempt $i failed; clearing metadata, retrying in 5s..." >&2; \
+        dnf clean all; \
+        sleep 5; \
+    done && \
     dnf clean all && \
     rm -rf /var/cache/dnf/*
 
@@ -86,7 +94,8 @@ RUN set -eux && \
 # ==============================================================================
 # Install all required packages in a single RUN to minimize layers
 RUN set -eux && \
-    dnf install --allowerasing --enablerepo=crb -y \
+    for i in $(seq 1 5); do \
+        if dnf install --refresh --allowerasing --enablerepo=crb -y \
         bind-utils \
         bison \
         clang \
@@ -126,7 +135,14 @@ RUN set -eux && \
         unzip \
         uuid-devel \
         zlib-devel \
-        libzstd-devel && \
+        libzstd-devel; then \
+            break; \
+        fi; \
+        if [ "$i" -eq 5 ]; then echo "dnf failed after 5 attempts" >&2; exit 1; fi; \
+        echo "dnf attempt $i failed; clearing metadata, retrying in 5s..." >&2; \
+        dnf clean all; \
+        sleep 5; \
+    done && \
     dnf clean all && \
     rm -rf /var/cache/dnf/* /tmp/* /var/tmp/*
 
