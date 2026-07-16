@@ -1640,7 +1640,7 @@ spock_init_failover_slot(void)
 		"A smaller value keeps the standby's synchronized slots closer to the "
 		"primary, at the cost of more frequent sync passes.",
 		&spock_failover_slots_naptime, WORKER_NAP_TIME_DEFAULT,
-		1000, 3600000,
+		1, 3600000,
 		PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
 
 	DefineCustomIntVariable(
@@ -1649,7 +1649,7 @@ spock_init_failover_slot(void)
 		"The worker retries this often (instead of failover_slots_naptime) while "
 		"the standby has not yet received or fed back the WAL a slot needs.",
 		&spock_failover_slots_feedback_naptime, WORKER_WAIT_FEEDBACK_DEFAULT,
-		1000, 3600000,
+		1, 3600000,
 		PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
 
 
