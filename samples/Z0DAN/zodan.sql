@@ -427,7 +427,7 @@ BEGIN
     IF remote_version >= 170000 THEN
         remotesql := format(
             'SELECT slot_name, lsn '
-            'FROM pg_create_logical_replication_slot(%L, %L, false, false, true)',
+            'FROM pg_create_logical_replication_slot(%L, %L, false, false, false)',
             slot_name, plugin
         );
     ELSE
