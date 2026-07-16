@@ -340,6 +340,32 @@ the primary and read slot state. If empty, `primary_conninfo` from
 spock.primary_dsn = ''
 ```
 
+### `spock.failover_slots_naptime`
+
+How long the `spock_failover_slots` worker sleeps between slot-synchronization
+passes, in milliseconds. A smaller value keeps the standby's synchronized slots
+closer to the primary, narrowing the window in which promotion can find stale
+slot state, at the cost of more frequent sync passes. Default: `1000` (1s).
+Range: `1000`–`3600000`. Reloadable with `SIGHUP`.
+
+```ini
+spock.failover_slots_naptime = 1000
+```
+
+This applies on PostgreSQL 15, 16, and 17 when native
+`sync_replication_slots` is not enabled.
+
+### `spock.failover_slots_feedback_naptime`
+
+Shorter retry interval, in milliseconds, used instead of
+`spock.failover_slots_naptime` while the standby has not yet received or fed
+back the WAL needed by a slot. Default: `10000` (10s). Range:
+`1000`–`3600000`. Reloadable with `SIGHUP`.
+
+```ini
+spock.failover_slots_feedback_naptime = 10000
+```
+
 ### `spock.pg_standby_slot_names`
 
 Comma-separated list of physical replication slot names that must confirm
@@ -464,5 +490,4 @@ for schema synchronization are written. This path needs to exist and be
 writable by the user running Postgres. The default is `empty`, which tells
 Spock to use the default temporary directory based on environment or
 operating system settings.
-
 
