@@ -21,6 +21,10 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
   `wal_sender_timeout` workaround; new `spock.apply_idle_timeout` GUC.
 * **Logical slot failover** uses native PostgreSQL slotsync on PG17+ /
   PG18+.
+* **Tunable failover-slot synchronization on PostgreSQL 15–17** —
+  `spock.failover_slots_naptime` and
+  `spock.failover_slots_feedback_naptime` replace the fixed worker intervals;
+  the slot-sync pass now defaults to 1 second and both settings are reloadable.
 * **Rolling upgrade support** — protocol negotiation (v4 for 5.0.x, v5 for
   6.0+) enables zero-downtime rolling upgrades.
 * **Exception handling refactor** — stable behaviour under TRANSDISCARD /
