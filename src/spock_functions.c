@@ -17,6 +17,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/tupconvert.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xlogrecovery.h"
@@ -3019,11 +3020,35 @@ spock_table_data_filtered(PG_FUNCTION_ARGS)
 	if (rc != SPI_OK_SELECT)
 		elog(ERROR, "SPOCK: SPI_execute() failed");
 
-	for (i = 0; i < SPI_processed; i++)
+	/*
+	 * "SELECT *" leaves out dropped columns, so the result tuples produced by
+	 * SPI carry only the live attributes. Storing them directly against the
+	 * relation descriptor (which still counts the dropped attributes) makes
+	 * every attribute after a dropped one read at the wrong offset, yielding
+	 * corrupt rows or a crash when a misaligned varlena is detoasted. Remap
+	 * each tuple to the relation descriptor, which fills NULLs at the dropped
+	 * positions, when the two descriptors differ.
+	 */
+	if (SPI_processed > 0)
 	{
-		HeapTuple	tup = SPI_tuptable->vals[i];
+		TupleConversionMap *map;
 
-		tuplestore_puttuple(tupstore, tup);
+		map = convert_tuples_by_position(SPI_tuptable->tupdesc, tupdesc,
+										 "SPOCK: filtered row type does not "
+										 "match relation");
+
+		for (i = 0; i < SPI_processed; i++)
+		{
+			HeapTuple	tup = SPI_tuptable->vals[i];
+
+			if (map != NULL)
+				tup = execute_attr_map_tuple(tup, map);
+
+			tuplestore_puttuple(tupstore, tup);
+		}
+
+		if (map != NULL)
+			free_conversion_map(map);
 	}
 
 	/* Cleanup. */
