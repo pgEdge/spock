@@ -40,6 +40,9 @@
 #include "replication/slot.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
+#if PG_VERSION_NUM >= 170000
+#include "replication/slotsync.h"
+#endif
 
 #include "storage/ipc.h"
 #include "storage/procarray.h"
@@ -59,6 +62,8 @@
 #include "libpq-fe.h"
 #include "libpq/auth.h"
 #include "libpq/libpq.h"
+
+#include "spock.h"
 
 /* Defaults (milliseconds) for the tunable worker intervals below. */
 #define WORKER_NAP_TIME_DEFAULT 1000
@@ -1258,6 +1263,17 @@ synchronize_failover_slots(long sleep_time)
 void
 spock_failover_slots_main(Datum main_arg)
 {
+#if PG_VERSION_NUM >= 180000
+	/*
+	 * When spock.use_native_failover_slots is on, PostgreSQL 18's native
+	 * slotsync worker replaces this one, so it is not registered.  Reaching
+	 * this point with the GUC on indicates a registration bug.
+	 */
+	if (spock_use_native_failover_slots)
+		elog(ERROR, "spock_failover_slots_main: not started when "
+			 "spock.use_native_failover_slots is on (PostgreSQL 18+)");
+#endif
+
 	/* Establish signal handlers. */
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	pqsignal(SIGTERM, die);
@@ -1283,9 +1299,18 @@ spock_failover_slots_main(Datum main_arg)
 
 		/*
 		 * On standby, run sync only when hot_standby_feedback is on; otherwise
-		 * use long nap so we never elog(ERROR) for hot_standby_feedback off.
+		 * use a long nap so we never elog(ERROR) for hot_standby_feedback off.
+		 *
+		 * On PG17+, when spock.use_native_failover_slots is on and the DBA has
+		 * enabled PostgreSQL's native slotsync (sync_replication_slots = on),
+		 * yield entirely so we never compete with the native worker.
+		 * sync_replication_slots is a process-global GUC we read directly.
 		 */
-		if (RecoveryInProgress() && hot_standby_feedback)
+		if (RecoveryInProgress() && hot_standby_feedback
+#if PG_VERSION_NUM >= 170000
+			&& !(spock_use_native_failover_slots && sync_replication_slots)
+#endif
+			)
 			sleep_time = synchronize_failover_slots(spock_failover_slots_naptime);
 		else
 			sleep_time = (long) spock_failover_slots_naptime * 10;
@@ -1655,6 +1680,21 @@ spock_init_failover_slot(void)
 
 	if (IsBinaryUpgrade)
 		return;
+
+#if PG_VERSION_NUM >= 180000
+	if (spock_use_native_failover_slots)
+	{
+		/*
+		 * PostgreSQL 18 natively synchronizes logical slots to standbys via
+		 * sync_replication_slots = on (slotsync worker) and holds back
+		 * walsenders via synchronized_standby_slots.  Spock's worker and its
+		 * client-auth hook are not needed and are not installed.
+		 */
+		elog(LOG, "spock: skipping failover slot worker on PostgreSQL 18+ "
+			 "(spock.use_native_failover_slots=on; use sync_replication_slots=on)");
+		return;
+	}
+#endif
 
 	/* Run the worker. */
 	memset(&bgw, 0, sizeof(bgw));

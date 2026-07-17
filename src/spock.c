@@ -129,6 +129,7 @@ static const struct config_enum_entry readonly_options[] = {
 };
 
 bool	spock_synchronous_commit = false;
+bool	spock_use_native_failover_slots = false;
 char   *spock_temp_directory = "";
 bool	spock_use_spi = false;
 bool	spock_batch_inserts = true;
@@ -1048,6 +1049,19 @@ _PG_init(void)
 							 "spock specific synchronous commit value",
 							 NULL,
 							 &spock_synchronous_commit,
+							 false, PGC_POSTMASTER,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.use_native_failover_slots",
+							 "Use PostgreSQL native logical slot failover on PG17+.",
+							 "When on, spock marks logical slots with the FAILOVER "
+							 "flag on PG17+, yields to the native slotsync worker on "
+							 "PG17 when sync_replication_slots is on, and does not "
+							 "register spock's own failover-slot worker on PG18+. "
+							 "Off preserves spock's worker-based behavior. Requires a "
+							 "server restart to change.",
+							 &spock_use_native_failover_slots,
 							 false, PGC_POSTMASTER,
 							 0,
 							 NULL, NULL, NULL);

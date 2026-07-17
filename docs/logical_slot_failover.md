@@ -15,30 +15,72 @@ failover occurs.
 Without slot synchronization, a failover would require manual slot recreation
 and a full re-sync of all subscriber tables.
 
+## Opt-in: `spock.use_native_failover_slots`
+
+Starting with Spock 5, PostgreSQL's native slot-failover path (PG17+) is
+**opt-in**, controlled by the boolean GUC `spock.use_native_failover_slots`
+(**default `off`**). With the GUC off, Spock behaves exactly as before on
+every PostgreSQL version: its own `spock_failover_slots` worker runs and no
+slot carries the `FAILOVER` flag.
+
+This GUC is `PGC_POSTMASTER` — it can only be set in `postgresql.conf` (or
+`ALTER SYSTEM`) and requires a **server restart** to take effect; it cannot
+be changed with `SET` or reloaded with `SIGHUP`.
+
+The flag is read on the **subscriber** — the node that issues
+`CREATE_REPLICATION_SLOT` against the provider to create its logical slot.
+Set it there, not on the provider.
+
+ZODAN's `add_node` path works differently: it checks the GUC via `dblink`
+on the node that **hosts** the slot (the existing provider), not on the
+node being added. Because this is a `PGC_POSTMASTER` GUC, set
+`spock.use_native_failover_slots` **uniformly** on every node in the
+cluster so both paths agree on the same behavior.
+
 ## PostgreSQL Version Behaviour
 
-| PostgreSQL | Slot sync mechanism | Spock worker |
-|---|---|---|
-| 15, 16 | Spock built-in `spock_failover_slots` worker | Always runs on standby |
-| 17 | Spock worker **or** native `sync_replication_slots` | Yields to native if enabled |
-| 18+ | Native `sync_replication_slots` (required) | Not registered |
+| PostgreSQL | `spock.use_native_failover_slots` | Slot sync mechanism | Spock worker |
+|---|---|---|---|
+| 15, 16 | off or on | Spock built-in `spock_failover_slots` worker | Always runs on standby |
+| 17 | off (default) | Spock built-in worker only | Always runs the full sync loop; no `FAILOVER` flag |
+| 17 | on | Slots created with `(FAILOVER)`; native `sync_replication_slots` (if enabled) | Worker still registered but **yields** its sync loop when `sync_replication_slots = on` |
+| 18+ | off (default) | Spock built-in `spock_failover_slots` worker | Always runs; no `FAILOVER` flag |
+| 18+ | on | Native `sync_replication_slots` (required) | **Not registered** |
 
-On **PostgreSQL 17+**, Spock marks every logical slot with the `FAILOVER` flag
-at creation time. This enables PostgreSQL's built-in slotsync worker to pick
-them up automatically.
+On PG15/16 there is no native slotsync mechanism, so the GUC has no effect;
+Spock's worker always handles synchronization regardless of the setting.
 
-On **PostgreSQL 18+**, Spock's own failover worker is not registered at all.
-The native slotsync worker is the only mechanism.
+On **PostgreSQL 17+**, when the GUC is `on`, Spock marks every logical slot
+with the `FAILOVER` flag at creation time. This enables PostgreSQL's built-in
+slotsync worker to pick them up automatically.
 
-## Setup: PostgreSQL 18+ (Native)
+On **PostgreSQL 18+**, when the GUC is `on`, Spock's own failover worker is
+not registered at all. The native slotsync worker is the only mechanism. If
+the GUC is left `off` (the default), Spock's worker is registered and runs
+as it did before, and no slot carries the `FAILOVER` flag.
 
-### 1. Create a physical replication slot on the primary
+## Setup: PostgreSQL 18+ (Native, requires `spock.use_native_failover_slots = on`)
+
+### 1. Enable the GUC on the subscriber
+
+On the **subscriber node** (the node that creates the logical replication
+slot on the provider), set:
+
+```ini
+spock.use_native_failover_slots = on
+```
+
+This is `PGC_POSTMASTER`, so restart the subscriber's server after setting
+it. Without this step, the slot is created without the `FAILOVER` flag and
+none of the steps below take effect.
+
+### 2. Create a physical replication slot on the primary
 
 ```sql
 SELECT pg_create_physical_replication_slot('spock_standby_slot');
 ```
 
-### 2. Configure the primary (`postgresql.conf`)
+### 3. Configure the primary (`postgresql.conf`)
 
 ```ini
 # Hold walsenders back until the standby has confirmed this LSN,
@@ -46,7 +88,7 @@ SELECT pg_create_physical_replication_slot('spock_standby_slot');
 synchronized_standby_slots = 'spock_standby_slot'
 ```
 
-### 3. Configure the standby (`postgresql.conf`)
+### 4. Configure the standby (`postgresql.conf`)
 
 ```ini
 sync_replication_slots = on
@@ -55,7 +97,7 @@ primary_slot_name = 'spock_standby_slot'
 hot_standby_feedback = on
 ```
 
-### 4. Verify slot synchronization
+### 5. Verify slot synchronization
 
 On the standby, confirm that Spock's logical slots are synchronized:
 
@@ -67,11 +109,54 @@ WHERE NOT temporary;
 
 All Spock slots should show `synced = true` and `failover = true`.
 
-### 5. After failover
+### 6. After failover
 
 After promoting the standby, subscribers only need to update their connection
 string to point to the new primary. Replication resumes from the last
 synchronized LSN with no data loss and no slot recreation required.
+
+**Important:** if `synchronized_standby_slots` was configured (step 3 above),
+you must adjust it on the promoted node before replication will resume — see
+[Runbook: clear `synchronized_standby_slots` after promotion](#runbook-clear-synchronized_standby_slots-after-promotion)
+below.
+
+## Runbook: clear `synchronized_standby_slots` after promotion
+
+When `synchronized_standby_slots` is configured (Setup step 3 above), the
+provider's walsenders hold back logical decoding until every physical slot
+named in that list has confirmed flush of the relevant LSN. This is what
+keeps a physical standby from falling behind a logical subscriber — but it
+has a sharp edge on failover.
+
+When a standby is promoted, `synchronized_standby_slots` on the **promoted**
+node still lists the physical slot(s) that fed replication to *that* node
+before promotion. Those slots are now orphaned: nothing is consuming them
+any more, so they never confirm, and the promoted node's walsenders sit
+blocked waiting on them indefinitely. The practical symptom is that logical
+replication to subscribers **freezes** immediately after a promotion that
+otherwise looked successful.
+
+The fix is a mandatory post-promotion step, not optional cleanup:
+
+```sql
+-- On the newly promoted node:
+ALTER SYSTEM SET synchronized_standby_slots = '';
+SELECT pg_reload_conf();
+
+-- Then drop the orphaned physical slot(s) that fed the old topology:
+SELECT pg_drop_replication_slot('spock_standby_slot');
+```
+
+If the new topology has its own physical standby(s), set
+`synchronized_standby_slots` to the physical slot(s) for *that* standby
+instead of clearing it to `''` — the point is to remove references to
+orphaned slots, not to leave the setting pointing at slots nothing will ever
+consume.
+
+Add this step to your failover runbook alongside the subscriber DSN update
+described above; skipping it is the most common cause of "failover
+succeeded but replication stopped" reports when native failover slots are
+in use.
 
 ## Setup: PostgreSQL 15 and 16 (Spock Worker)
 
@@ -143,19 +228,35 @@ WHERE application_name = 'spock_failover_slots worker';
 
 **Q: Do I need to do anything after a failover?**
 
-On PG17+: Just update the subscriber's `host=` in their DSN. No slot
-recreation needed.
+On PG17+ with `spock.use_native_failover_slots = on`: update the
+subscriber's `host=` in their DSN, and — if `synchronized_standby_slots` was
+configured — clear/adjust it on the promoted node as described in the
+[runbook above](#runbook-clear-synchronized_standby_slots-after-promotion).
+No slot recreation is needed.
 
-On PG15/16: Spock's worker on the standby (now primary) stops running
-since it is no longer in recovery. Subscribers reconnect automatically.
+On PG15/16, or on PG17+ with the GUC left at its default `off`: Spock's
+worker on the standby (now primary) stops running since it is no longer in
+recovery. Subscribers reconnect automatically.
 
-**Q: What if `sync_replication_slots` is not configured on PG18?**
+**Q: What if `sync_replication_slots` is not configured on PG18 with the GUC on?**
 
-Spock's worker is not registered on PG18. If `sync_replication_slots = on`
-is not set, logical slots will **not** be synchronized to standbys, and a
-failover will require manual slot recreation and table re-sync.
+With `spock.use_native_failover_slots = on`, Spock's worker is not
+registered on PG18+. If `sync_replication_slots = on` is not also set,
+logical slots will **not** be synchronized to standbys, and a failover will
+require manual slot recreation and table re-sync. (With the GUC left `off`,
+this does not apply — Spock's worker is registered and runs as usual.)
 
 **Q: Can I use both mechanisms on PG17?**
 
-No. If `sync_replication_slots = on` is set on PG17, Spock's worker detects
-this and skips its sync loop, deferring to the native worker entirely.
+No, both can't run their sync loops at once, and this only matters if
+`spock.use_native_failover_slots` is on in the first place. If it is on and
+`sync_replication_slots = on` is also set on PG17, Spock's worker detects
+this and skips its sync loop, deferring to the native worker entirely. With
+the GUC off (the default), native `sync_replication_slots` has no effect on
+Spock's slots since they are never marked with `FAILOVER`.
+
+**Q: Do I need to restart the server to enable this?**
+
+Yes. `spock.use_native_failover_slots` is `PGC_POSTMASTER` — it can only be
+set at server start (via `postgresql.conf` or `ALTER SYSTEM` followed by a
+restart), not with `SET` or a `SIGHUP` reload.

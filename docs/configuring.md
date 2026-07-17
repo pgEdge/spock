@@ -207,24 +207,53 @@ Spock creates logical replication slots on each provider node. For high
 availability with a physical standby, these slots must be synchronized to the
 standby so that replication can resume without data loss after a failover.
 
-See [Logical Slot Failover](logical_slot_failover.md) for full setup instructions.
+See [Logical Slot Failover](logical_slot_failover.md) for full setup
+instructions, including a mandatory runbook step for clearing
+`synchronized_standby_slots` on the promoted node after a failover.
 
-The behaviour depends on the PostgreSQL version:
+#### `spock.use_native_failover_slots`
 
-| PostgreSQL | Slot sync mechanism | Spock worker |
-|---|---|---|
-| 15, 16 | Spock built-in `spock_failover_slots` worker | Always runs |
-| 17 | Spock worker OR native `sync_replication_slots` | Spock worker yields to native if enabled |
-| 18+ | Native `sync_replication_slots` (required) | Not registered |
+On Spock 5, PostgreSQL's native slot-failover path (PG17+) is **opt-in**,
+controlled by the boolean GUC `spock.use_native_failover_slots` (default
+`off`). This GUC is `PGC_POSTMASTER`, so changing it requires a **server
+restart** — it cannot be set with `SET` or reloaded with `SIGHUP`.
 
-#### PostgreSQL 17 and Later (Native Slot Sync)
+The flag is read on the **subscriber** — the node that creates the logical
+replication slot on the provider via `CREATE_REPLICATION_SLOT`. Set it on
+that node, not on the provider.
 
-On PostgreSQL 17+, Spock marks every logical slot with the `FAILOVER` flag
-at creation time. PostgreSQL's built-in slotsync worker then synchronizes
-those slots automatically.
+ZODAN's `add_node` path differs: it checks the GUC via `dblink` on the
+node that **hosts** the slot (the existing provider), not on the node
+being added. Since this is a `PGC_POSTMASTER` GUC, set
+`spock.use_native_failover_slots` **uniformly** on every node so both
+paths behave consistently.
 
-On **PostgreSQL 18+**, Spock's own failover worker is not registered. You
-must configure the native mechanism:
+```ini
+spock.use_native_failover_slots = on   # default: off
+```
+
+The behaviour depends on both the PostgreSQL version and this GUC:
+
+| PostgreSQL | GUC | Slot sync mechanism | Spock worker |
+|---|---|---|---|
+| 15, 16 | off or on | Spock built-in `spock_failover_slots` worker | Always runs |
+| 17 | off (default) | Spock built-in worker only | Always runs; no `FAILOVER` flag |
+| 17 | on | Spock worker OR native `sync_replication_slots` | Yields to native if `sync_replication_slots = on` |
+| 18+ | off (default) | Spock built-in `spock_failover_slots` worker | Always runs; no `FAILOVER` flag |
+| 18+ | on | Native `sync_replication_slots` (required) | Not registered |
+
+With the GUC left at its default `off`, Spock behaves exactly as it always
+has on every PostgreSQL version: no slot carries the `FAILOVER` flag and the
+Spock worker (below) handles synchronization.
+
+#### PostgreSQL 17 and Later (Native Slot Sync, requires `spock.use_native_failover_slots = on`)
+
+On PostgreSQL 17+, when `spock.use_native_failover_slots = on`, Spock marks
+every logical slot with the `FAILOVER` flag at creation time. PostgreSQL's
+built-in slotsync worker then synchronizes those slots automatically.
+
+On **PostgreSQL 18+** with the GUC on, Spock's own failover worker is not
+registered. You must configure the native mechanism:
 
 **Primary (`postgresql.conf`):**
 ```ini
@@ -241,14 +270,24 @@ hot_standby_feedback = on
 
 After a failover, subscribers only need to update their `host=` in the
 connection string — replication resumes from the last synchronized LSN with
-no data loss.
+no data loss. **However**, if `synchronized_standby_slots` was configured on
+the primary, you must clear or update it on the newly promoted node first —
+otherwise the promoted node's walsenders wait forever on the now-orphaned
+physical slot(s) and logical replication to subscribers freezes. See the
+[runbook in Logical Slot Failover](logical_slot_failover.md#runbook-clear-synchronized_standby_slots-after-promotion)
+for the exact steps.
+
+If the GUC is left `off` (the default), PG18+ behaves like PG15/16/17 below
+— Spock's own worker is registered and runs.
 
 #### PostgreSQL 15, 16, and 17 (Spock Built-in Worker)
 
-On PostgreSQL 15, 16, and 17, Spock's `spock_failover_slots` background worker
-handles slot synchronization. On PostgreSQL 17 it yields to the native
-slotsync worker when `sync_replication_slots = on` is enabled. Configure it
-with the GUCs below.
+On PostgreSQL 15 and 16, Spock's `spock_failover_slots` background worker
+always handles slot synchronization, regardless of the GUC above (there is
+no native mechanism to defer to). On PostgreSQL 17, it also handles
+synchronization unless `spock.use_native_failover_slots = on` **and**
+`sync_replication_slots = on` are both set, in which case it yields to the
+native slotsync worker. Configure the Spock worker with the GUCs below.
 
 ### `spock.synchronize_slot_names`
 
@@ -260,9 +299,12 @@ Default: `name_like:%%` (synchronize all logical slots).
 spock.synchronize_slot_names = 'name_like:%%'
 ```
 
-Used on PostgreSQL 15, 16, and 17 (when `sync_replication_slots` is not
-enabled). On PostgreSQL 17 with native slotsync active, or on PostgreSQL 18+,
-this setting is ignored.
+Used whenever the Spock worker is running: PostgreSQL 15 and 16 always;
+PostgreSQL 17 when native slotsync is not active (either
+`spock.use_native_failover_slots` is `off`, or it is `on` but
+`sync_replication_slots` is not enabled). On PostgreSQL 17 with native
+slotsync active, or on PostgreSQL 18+ with `spock.use_native_failover_slots
+= on`, this setting is ignored.
 
 ### `spock.drop_extra_slots`
 
@@ -294,9 +336,12 @@ falling behind a logical subscriber.
 spock.pg_standby_slot_names = 'physical_slot_1,physical_slot_2'
 ```
 
-Used on PostgreSQL 15, 16, and 17 (when `sync_replication_slots` is not
-enabled). On PostgreSQL 17+ with native slotsync, or on PostgreSQL 18+, use
-`synchronized_standby_slots` instead.
+Used whenever the Spock worker is running: PostgreSQL 15 and 16 always;
+PostgreSQL 17 when native slotsync is not active (either
+`spock.use_native_failover_slots` is `off`, or it is `on` but
+`sync_replication_slots` is not enabled). On PostgreSQL 17+ with native
+slotsync, or on PostgreSQL 18+ with `spock.use_native_failover_slots = on`,
+use `synchronized_standby_slots` instead.
 
 ### `spock.standby_slots_min_confirmed`
 
@@ -320,8 +365,10 @@ Range: `1000`–`3600000`. Settable at runtime with `SIGHUP` (reload).
 spock.failover_slots_naptime = 1000
 ```
 
-Used on PostgreSQL 15, 16, and 17 (when `sync_replication_slots` is not
-enabled).
+Used whenever the Spock worker is running: PostgreSQL 15 and 16 always;
+PostgreSQL 17 when native slotsync is not active (either
+`spock.use_native_failover_slots` is `off`, or it is `on` but
+`sync_replication_slots` is not enabled).
 
 ### `spock.failover_slots_feedback_naptime`
 
