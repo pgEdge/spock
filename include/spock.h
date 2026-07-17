@@ -41,6 +41,7 @@
 #define SPOCK_RESTART_MIN_DELAY 1
 
 extern bool spock_synchronous_commit;
+extern bool spock_use_native_failover_slots;
 extern char *spock_temp_directory;
 extern bool spock_use_spi;
 extern bool spock_batch_inserts;

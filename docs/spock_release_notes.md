@@ -3,6 +3,15 @@
 ## Spock 5.0.11
 
 ### New Features
+* Add `spock.use_native_failover_slots` (default off, PGC_POSTMASTER). When
+  enabled, spock marks logical slots with the FAILOVER flag on PG17+, yields to
+  PostgreSQL's native slotsync worker on PG17 when `sync_replication_slots=on`,
+  and does not register spock's own failover-slot worker on PG18+. Off preserves
+  the existing worker-based behavior. Read on the subscriber node that creates
+  the logical replication slot; changing it requires a server restart. See
+  [Logical Slot Failover](logical_slot_failover.md) for setup steps and the
+  required post-promotion `synchronized_standby_slots` runbook.
+
 * Sync failover slots to the standby every 1s by default instead of a
   hard-coded 60s, shrinking the window in which a promotion can find a stale
   slot. The interval is now tunable via `spock.failover_slots_naptime` (and the

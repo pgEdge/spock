@@ -389,6 +389,7 @@ DECLARE
     result         RECORD;
     exists_count   int;
     remote_version int;
+    use_native     boolean := false;
 BEGIN
     -- ============================================================================
     -- Step 1: Check if replication slot already exists on remote node
@@ -416,15 +417,26 @@ BEGIN
 
     -- ============================================================================
     -- Step 2: Build remote SQL for replication slot creation
-    --         On PG17+ pass failover := true so the slot is picked up by the
-    --         native slotsync worker (sync_replication_slots = on) and is
-    --         synchronized to physical standbys, matching what Spock does
-    --         on its own CREATE_REPLICATION_SLOT path (see spock_sync.c).
+    --         Request a failover slot (failover := true) only on PG17+ AND when
+    --         the remote node has spock.use_native_failover_slots = on, matching
+    --         spock core's gated CREATE_REPLICATION_SLOT path (see spock_sync.c).
+    --         With the GUC off (default) a normal slot is created, preserving
+    --         pre-native behavior.
     -- ============================================================================
     SELECT v INTO remote_version
       FROM dblink(node_dsn, 'SHOW server_version_num') AS t(v int);
 
     IF remote_version >= 170000 THEN
+        BEGIN
+            SELECT (v = 'on') INTO use_native
+              FROM dblink(node_dsn,
+                          'SHOW spock.use_native_failover_slots') AS t(v text);
+        EXCEPTION WHEN OTHERS THEN
+            use_native := false;   -- remote spock predates the GUC
+        END;
+    END IF;
+
+    IF use_native THEN
         remotesql := format(
             'SELECT slot_name, lsn '
             'FROM pg_create_logical_replication_slot(%L, %L, false, false, true)',
@@ -1389,6 +1401,8 @@ DECLARE
 	sub_name           text;
     _slot_lsn          pg_lsn;
     _catchup_lsn       pg_lsn;
+    _remote_version    int;
+    _use_native        boolean := false;
 BEGIN
     RAISE NOTICE 'Phase 3: Creating disabled subscriptions and slots';
 
@@ -1449,7 +1463,24 @@ BEGIN
 							dbname, rec.node_name,
 							spock.gen_sub_name(rec.node_name, new_node_name));
 
-            remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'');', slot_name);
+            SELECT v INTO _remote_version
+              FROM dblink(rec.dsn, 'SHOW server_version_num') AS t(v int);
+            _use_native := false;
+            IF _remote_version >= 170000 THEN
+                BEGIN
+                    SELECT (v = 'on') INTO _use_native
+                      FROM dblink(rec.dsn,
+                                  'SHOW spock.use_native_failover_slots') AS t(v text);
+                EXCEPTION WHEN OTHERS THEN
+                    _use_native := false;
+                END;
+            END IF;
+
+            IF _use_native THEN
+                remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'', false, false, true);', slot_name);
+            ELSE
+                remotesql := format('SELECT slot_name, lsn FROM pg_create_logical_replication_slot(%L, ''spock_output'');', slot_name);
+            END IF;
             IF verb THEN
                 RAISE NOTICE '    Remote SQL for slot creation: %', remotesql;
             END IF;

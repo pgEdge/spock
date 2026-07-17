@@ -320,13 +320,33 @@ ensure_replication_slot_snapshot(PGconn *sql_conn, PGconn *repl_conn,
 	StringInfoData	query;
 	char		   *snapshot;
 
-	(void) use_failover_slot;	/* native PG slot-sync intentionally disabled */
+	(void) use_failover_slot;	/* referenced only in the PG<17 branch below */
 
 retry:
 	initStringInfo(&query);
 
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
+
+	/*
+	 * When spock.use_native_failover_slots is on, mark the slot with
+	 * (FAILOVER) so PostgreSQL's native slotsync can synchronize it to
+	 * physical standbys.  We key off the *remote* provider's version via the
+	 * regular SQL connection (sql_conn); repl_conn returns 0 from
+	 * PQserverVersion().  PG17+ uses parenthesised option syntax:
+	 *   CREATE_REPLICATION_SLOT "name" LOGICAL plugin (FAILOVER)
+	 * When the GUC is off (default) no FAILOVER flag is added, preserving
+	 * spock's worker-based behavior.
+	 */
+	if (spock_use_native_failover_slots)
+	{
+		if (PQserverVersion(sql_conn) >= 170000)
+			appendStringInfo(&query, " (FAILOVER)");
+#if PG_VERSION_NUM < 170000
+		else if (use_failover_slot)
+			appendStringInfo(&query, " (FAILOVER)");
+#endif
+	}
 
 	res = PQexec(repl_conn, query.data);
 
