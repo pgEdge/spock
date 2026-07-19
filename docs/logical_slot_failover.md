@@ -59,7 +59,12 @@ not registered at all. The native slotsync worker is the only mechanism. If
 the GUC is left `off` (the default), Spock's worker is registered and runs
 as it did before, and no slot carries the `FAILOVER` flag.
 
-## Setup: PostgreSQL 18+ (Native, requires `spock.use_native_failover_slots = on`)
+## Setup: PostgreSQL 17 and 18+ (Native, requires `spock.use_native_failover_slots = on`)
+
+On PostgreSQL 17 the Spock worker only steps aside once `sync_replication_slots
+= on` is also set (step 4); on PostgreSQL 18+ with the GUC on, the Spock worker
+is not registered and the native mechanism is required. The steps are the same
+for both.
 
 ### 1. Enable the GUC on the subscriber
 

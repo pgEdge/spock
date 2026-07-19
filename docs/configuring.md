@@ -252,21 +252,38 @@ On PostgreSQL 17+, when `spock.use_native_failover_slots = on`, Spock marks
 every logical slot with the `FAILOVER` flag at creation time. PostgreSQL's
 built-in slotsync worker then synchronizes those slots automatically.
 
-On **PostgreSQL 18+** with the GUC on, Spock's own failover worker is not
-registered. You must configure the native mechanism:
+On **PostgreSQL 17**, Spock's worker only yields to native slotsync when you
+also set `sync_replication_slots = on` (below). On **PostgreSQL 18+** with the
+GUC on, Spock's own failover worker is not registered, so the native mechanism
+is required. Either way you must configure PostgreSQL's own slot
+synchronization. The `spock.use_native_failover_slots` GUC alone is not enough.
+
+First create the physical replication slot on the primary. The standby streams
+through it, and its `catalog_xmin` (fed back via `hot_standby_feedback`) is what
+protects the synchronized logical slots from being invalidated:
+
+```sql
+SELECT pg_create_physical_replication_slot('physical_slot_name');
+```
 
 **Primary (`postgresql.conf`):**
 ```ini
+# Hold logical walsenders back until the standby has confirmed the changes.
 synchronized_standby_slots = 'physical_slot_name'
 ```
 
 **Standby (`postgresql.conf`):**
 ```ini
-sync_replication_slots = on
-primary_conninfo = 'host=<primary_host> dbname=<dbname> ...'
-primary_slot_name = 'physical_slot_name'
-hot_standby_feedback = on
+sync_replication_slots = on                      # enable the native slotsync worker
+hot_standby_feedback   = on                      # required; pins the primary's catalog vacuum
+primary_slot_name      = 'physical_slot_name'    # the physical slot created above
+primary_conninfo       = 'host=<primary_host> dbname=<dbname> ...'   # must include dbname
 ```
+
+Only logical slots created with `failover = true` are synchronized. Spock sets
+that flag automatically at slot creation when `spock.use_native_failover_slots
+= on`; slots that already existed before the GUC was turned on must be
+recreated to gain it.
 
 After a failover, subscribers only need to update their `host=` in the
 connection string — replication resumes from the last synchronized LSN with
