@@ -412,7 +412,7 @@ AutoDDL has been refactored and hardened:
 * `spock.cleanup_resolutions(days int DEFAULT NULL)` — TTL-based cleanup
   of the resolutions log.  Default permissions revoke EXECUTE from
   PUBLIC.
-* `spock.sub_alter_options(subscription_name name, options text[])` —
+* `spock.sub_alter_options(subscription_name name, options jsonb)` —
   bulk subscription option changes, with input validation and no-op
   restart skipping.
 
