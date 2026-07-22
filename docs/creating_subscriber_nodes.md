@@ -2,7 +2,7 @@
 
 Spock supports creating a subscriber node by cloning the provider with [`pg_basebackup`](https://www.postgresql.org/docs/current/app-pgbasebackup.html) and starting it as a Spock subscriber. Use the `spock_create_subscriber` utility (located in the `bin` directory of your pgEdge platform installation) to register the node.
 
-#### Synopsis:
+### Synopsis:
 
   `spock_create_subscriber [OPTION]...`
 
@@ -17,12 +17,13 @@ Specify the following options as needed.
 | `-n`, `--subscriber-name=NAME` | The name of the newly created subscriber.
 | `--subscriber-dsn=CONNSTR` | A connection string to the newly created subscriber.
 | `--provider-dsn=CONNSTR` | A connection string to the provider.
-| `--replication-sets=SETS` | A comma separated list of replication set names.
+| `--replication-sets=SETS` | A comma-separated list of replication set names.
 | `--apply-delay=DELAY` | The apply delay in seconds (by default 0).
 | `--drop-slot-if-exists` | Drop replication slot of conflicting name.
 | `-s`, `--stop` | Stop the server once the initialization is done.
 | `-v` | Increase logging verbosity.
 | `--extra-basebackup-args` | Additional arguments to pass to `pg_basebackup`. Safe options are: `-T`, `-c`, `--xlogdir`/`--waldir`
+| `--text-types` | Transfer all column values as text rather than binary during initial sync. Use this when provider and subscriber differ in endianness or type representation.
 
 **Configuration files overrides**
 

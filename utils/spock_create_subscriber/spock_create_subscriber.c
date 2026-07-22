@@ -90,6 +90,7 @@ static void print_msg(VerbosityLevelEnum level, const char *fmt,...)
 pg_attribute_printf(2, 3);
 
 static int run_pg_ctl(const char *arg);
+static void validate_extra_basebackup_args(const char *args);
 static void run_basebackup(const char *provider_connstr, const char *data_dir,
 	const char *extra_basebackup_args);
 static void wait_postmaster_connection(const char *connstr);
@@ -281,13 +282,19 @@ main(int argc, char **argv)
 				drop_slot_if_exists = true;
 				break;
 			case 8:
-				apply_delay = atoi(optarg);
+				{
+					char *endptr;
+					apply_delay = (int) strtol(optarg, &endptr, 10);
+					if (*endptr != '\0' || endptr == optarg)
+						die(_("--apply-delay requires an integer value\n"));
+				}
 				break;
 			case 9:
 				databases = pg_strdup(optarg);
 				break;
 			case 10:
 				extra_basebackup_args = pg_strdup(optarg);
+				validate_extra_basebackup_args(extra_basebackup_args);
 				break;
 			case 11:
 				force_text_transfer = true;
@@ -407,9 +414,14 @@ main(int argc, char **argv)
 		{
 			use_existing_data_dir = check_data_dir(data_dir, remote_info);
 
-			if (use_existing_data_dir &&
-				strcmp(remote_info->sysid, read_sysid(data_dir)) != 0)
-				die(_("Subscriber data directory is not basebackup of remote node.\n"));
+			if (use_existing_data_dir)
+			{
+				char *local_sysid = read_sysid(data_dir);
+				bool mismatch = strcmp(remote_info->sysid, local_sysid) != 0;
+				free(local_sysid);
+				if (mismatch)
+					die(_("Subscriber data directory is not basebackup of remote node.\n"));
+			}
 		}
 
 		/*
@@ -597,6 +609,9 @@ usage(void)
 	printf(_("  -v                          increase logging verbosity\n"));
 	printf(_("  --extra-basebackup-args     additional arguments to pass to pg_basebackup.\n"));
 	printf(_("                              Safe options: -T, -c, --xlogdir/--waldir\n"));
+	printf(_("  --text-types               transfer column values as text rather than binary\n"));
+	printf(_("                              (use when provider and subscriber differ in type\n"));
+	printf(_("                              representation or endianness)\n"));
 	printf(_("\nConfiguration files override:\n"));
 	printf(_("  --hba-conf              path to the new pg_hba.conf\n"));
 	printf(_("  --postgresql-conf       path to the new postgresql.conf\n"));
@@ -683,6 +698,26 @@ run_pg_ctl(const char *arg)
 
 
 /*
+ * Reject --extra-basebackup-args values that contain shell control characters.
+ * The args are appended to a system() command string, so semicolons, pipes,
+ * backticks, and similar metacharacters would allow arbitrary command injection.
+ */
+static void
+validate_extra_basebackup_args(const char *args)
+{
+	const char *p;
+
+	for (p = args; *p; p++)
+	{
+		if (*p == ';' || *p == '|' || *p == '&' || *p == '`' ||
+			*p == '$' || *p == '(' || *p == ')' ||
+			*p == '<' || *p == '>' || *p == '{' || *p == '}' ||
+			*p == '\n' || *p == '\r')
+			die(_("--extra-basebackup-args contains unsafe shell characters\n"));
+	}
+}
+
+/*
  * Run pg_basebackup to create the copy of the origin node.
  */
 static void
@@ -700,7 +735,7 @@ run_basebackup(const char *provider_connstr, const char *data_dir,
 		appendPQExpBuffer(cmd, " -v");
 
 	if (extra_basebackup_args != NULL)
-		appendPQExpBuffer(cmd, "%s", extra_basebackup_args);
+		appendPQExpBuffer(cmd, " %s", extra_basebackup_args);
 
 	print_msg(VERBOSITY_DEBUG, _("Running pg_basebackup: %s.\n"), cmd->data);
 	ret = system(cmd->data);
@@ -1097,8 +1132,8 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 	}
 	PQclear(res);
 
-	/* TODO */
-	res = PQexec(conn, "UPDATE spock.local_sync_status SET sync_status = 'r'");
+	res = PQexec(conn, "UPDATE spock.local_sync_status SET sync_status = 'r'"
+					   " WHERE sync_status != 'r'");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		die(_("Could not update subscription, status %s: %s\n"),
@@ -1317,7 +1352,7 @@ WriteRecoveryConf(PQExpBuffer contents)
 	char		filename[MAXPGPATH];
 	FILE	   *cf;
 
-	sprintf(filename, "%s/postgresql.auto.conf", data_dir);
+	snprintf(filename, sizeof(filename), "%s/postgresql.auto.conf", data_dir);
 
 	cf = fopen(filename, "a");
 	if (cf == NULL)
@@ -1334,7 +1369,7 @@ WriteRecoveryConf(PQExpBuffer contents)
 	fclose(cf);
 
 	{
-		sprintf(filename, "%s/standby.signal", data_dir);
+		snprintf(filename, sizeof(filename), "%s/standby.signal", data_dir);
 		cf = fopen(filename, "w");
 		if (cf == NULL)
 		{
@@ -1353,7 +1388,7 @@ CopyConfFile(char *fromfile, char *tofile, bool append)
 {
 	char		filename[MAXPGPATH];
 
-	sprintf(filename, "%s/%s", data_dir, tofile);
+	snprintf(filename, sizeof(filename), "%s/%s", data_dir, tofile);
 
 	print_msg(VERBOSITY_DEBUG, _("Copying \"%s\" to \"%s\".\n"),
 			  fromfile, filename);
@@ -1560,7 +1595,7 @@ is_pg_dir(const char *path)
 	if (stat(path, &statbuf) != 0)
 		return false;
 
-	snprintf(version_file, MAXPGPATH, "%s/PG_VERSION", data_dir);
+	snprintf(version_file, MAXPGPATH, "%s/PG_VERSION", path);
 	if (stat(version_file, &statbuf) != 0 && errno == ENOENT)
 	{
 		return false;
@@ -1711,6 +1746,7 @@ get_pgpid(void)
 	}
 	if (fscanf(pidf, "%ld", &pid) != 1)
 	{
+		fclose(pidf);
 		return 0;
 	}
 	fclose(pidf);
@@ -1746,6 +1782,8 @@ static char *
 generate_restore_point_name(void)
 {
 	char *rpn = malloc(NAMEDATALEN);
-	snprintf(rpn, NAMEDATALEN-1, "spock_create_subscriber_%lx", random());
+	if (rpn == NULL)
+		die(_("out of memory\n"));
+	snprintf(rpn, NAMEDATALEN, "spock_create_subscriber_%lx", random());
 	return rpn;
 }
