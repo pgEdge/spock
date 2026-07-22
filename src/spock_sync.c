@@ -1332,32 +1332,13 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		foreach(lc_filter, tables)
 		{
 			SpockRemoteRel *remoterel = lfirst(lc_filter);
-			bool		skip_table = false;
-			ListCell   *lc_skip;
 
-			foreach(lc_skip, blocked)
-			{
-				if (strcmp(remoterel->nspname, (char *) lfirst(lc_skip)) == 0)
-				{
-					skip_table = true;
-					break;
-				}
-			}
+			/* Skip if the schema is blocked or on the sub's own skip list. */
+			if (name_in_list(blocked, remoterel->nspname) ||
+				name_in_list(sub->skip_schema, remoterel->nspname))
+				continue;
 
-			if (!skip_table && sub->skip_schema)
-			{
-				foreach(lc_skip, sub->skip_schema)
-				{
-					if (strcmp(remoterel->nspname, (char *) lfirst(lc_skip)) == 0)
-					{
-						skip_table = true;
-						break;
-					}
-				}
-			}
-
-			if (!skip_table)
-				filtered_tables = lappend(filtered_tables, remoterel);
+			filtered_tables = lappend(filtered_tables, remoterel);
 		}
 		list_free_deep(blocked);
 		tables = filtered_tables;

@@ -2449,8 +2449,8 @@ rangevar_is_ddl_local(RangeVar *rv)
 	return local;
 }
 
-/* Membership test used to classify a DROP against one catalog read. */
-static bool
+/* True if `name` (case-sensitive) appears in a List of C strings. */
+bool
 name_in_list(List *names, const char *name)
 {
 	ListCell   *lc;
