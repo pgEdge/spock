@@ -279,7 +279,12 @@ _do_patch_pg() {
 		[ -f "${p}" ] || continue
 		any=1
 		echo "----- applying $(basename "${p}") -----"
-		( cd "${SRC}" && git apply --whitespace=nowarn -p1 "${p}" )
+		# A failed apply must abort the phase: otherwise PG builds without the
+		# patch and the Spock build fails later with a confusing symbol error.
+		if ! ( cd "${SRC}" && git apply --whitespace=nowarn -p1 "${p}" ); then
+			echo "ERROR: failed to apply $(basename "${p}")" >&2
+			return 1
+		fi
 	done
 	if [ "${any}" -eq 0 ]; then
 		echo "no .diff/.patch files in ${patch_dir}"

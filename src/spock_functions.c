@@ -16,6 +16,7 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -2415,6 +2416,123 @@ query_temp_like_source(const char *query)
 	return NULL;
 }
 
+/* True when nspname is a reserved schema with replicate_ddl = false. */
+bool
+spock_schema_is_ddl_local(const char *nspname)
+{
+	return spock_name_is_reserved(RESERVED_KIND_SCHEMA, RESERVED_PURPOSE_DDL,
+								  nspname);
+}
+
+/*
+ * Resolve rv to its schema and test replicate_ddl=false.  Runs post-execution,
+ * so CREATE/ALTER targets exist and an unqualified name resolves by opening the
+ * relation (relation_openrv, not table_openrv: rv may name an index/view).  A
+ * dropped relation is classifiable only when schema-qualified.
+ */
+static bool
+rangevar_is_ddl_local(RangeVar *rv)
+{
+	Relation	rel;
+	bool		local;
+
+	if (rv == NULL)
+		return false;
+	if (rv->schemaname != NULL)
+		return spock_schema_is_ddl_local(rv->schemaname);
+
+	rel = relation_openrv_extended(rv, AccessShareLock, true);
+	if (rel == NULL)
+		return false;
+	local = spock_schema_is_ddl_local(get_namespace_name(RelationGetNamespace(rel)));
+	relation_close(rel, AccessShareLock);
+	return local;
+}
+
+/* True if `name` (case-sensitive) appears in a List of C strings. */
+bool
+name_in_list(List *names, const char *name)
+{
+	ListCell   *lc;
+
+	if (name == NULL)
+		return false;
+	foreach(lc, names)
+		if (strcmp((char *) lfirst(lc), name) == 0)
+			return true;
+	return false;
+}
+
+/*
+ * Does this DDL target ONLY node-local (replicate_ddl=false) schemas?  Only
+ * statement types whose target schema is identifiable are classified; all
+ * others replicate as before.  Known gap: dropping a node-local relation by an
+ * unqualified name cannot be classified (the relation is already gone).
+ *
+ * A DROP is skipped only when EVERY object is node-local.  A statement mixing a
+ * node-local object with a replicated one is shipped as-is: the raw command
+ * text cannot be rewritten to strip the node-local object, so the subscriber --
+ * where that object never existed -- would fail to drop it unless the drop
+ * carries IF EXISTS.  Mixing node-local and replicated objects in one DROP is
+ * therefore unsupported.
+ */
+static bool
+stmt_targets_only_ddl_local(Node *stmt)
+{
+	switch (nodeTag(stmt))
+	{
+		case T_CreateSchemaStmt:
+			return spock_schema_is_ddl_local(((CreateSchemaStmt *) stmt)->schemaname);
+		case T_CreateStmt:
+			return rangevar_is_ddl_local(((CreateStmt *) stmt)->relation);
+		case T_CreateTableAsStmt:
+			return rangevar_is_ddl_local(((CreateTableAsStmt *) stmt)->into->rel);
+		case T_AlterTableStmt:
+			return rangevar_is_ddl_local(((AlterTableStmt *) stmt)->relation);
+		case T_ViewStmt:
+			return rangevar_is_ddl_local(((ViewStmt *) stmt)->view);
+		case T_CreateSeqStmt:
+			return rangevar_is_ddl_local(((CreateSeqStmt *) stmt)->sequence);
+		case T_IndexStmt:
+			return rangevar_is_ddl_local(((IndexStmt *) stmt)->relation);
+		case T_DropStmt:
+			{
+				DropStmt   *drop = (DropStmt *) stmt;
+				ListCell   *cell;
+				List	   *local;
+				bool		all_local = true;
+
+				if (drop->objects == NIL)
+					return false;
+				if (drop->removeType != OBJECT_SCHEMA &&
+					drop->removeType != OBJECT_TABLE && drop->removeType != OBJECT_INDEX &&
+					drop->removeType != OBJECT_SEQUENCE && drop->removeType != OBJECT_VIEW &&
+					drop->removeType != OBJECT_MATVIEW && drop->removeType != OBJECT_FOREIGN_TABLE)
+					return false;
+
+				/* One catalog read for the whole (possibly multi-object) DROP. */
+				local = spock_reserved_object_names(RESERVED_KIND_SCHEMA,
+													RESERVED_PURPOSE_DDL);
+				foreach(cell, drop->objects)
+				{
+					const char *schema = (drop->removeType == OBJECT_SCHEMA)
+						? strVal(lfirst(cell))
+						: makeRangeVarFromNameList((List *) lfirst(cell))->schemaname;
+
+					if (!name_in_list(local, schema))
+					{
+						all_local = false;
+						break;
+					}
+				}
+				list_free_deep(local);
+				return all_local;
+			}
+		default:
+			return false;
+	}
+}
+
 /*
  * spock_auto_replicate_ddl
  *
@@ -2450,6 +2568,14 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 
 		(void) get_replication_set_by_name(node->node->id, setname, false);
 	}
+
+	/*
+	 * DDL targeting only node-local schemas (replicate_ddl=false) is not
+	 * shipped: skipping here also keeps the affected tables out of repsets
+	 * (the caller adds them only when we return true).
+	 */
+	if (stmt_targets_only_ddl_local(stmt))
+		goto skip_ddl;
 
 	/*
 	 * Filter local commands and decide on search path setting.

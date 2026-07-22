@@ -60,9 +60,30 @@ typedef struct SpockSubscription
 	TimestampTz	created_at;	/* When this subscription was created */
 } SpockSubscription;
 
-/* NULL-terminated arrays */
-extern const char *const skip_schema[];
-extern const char *const skip_extension[];
+/*
+ * Reserved schemas/extensions are stored in the spock.reserved_object catalog
+ * (the single source of truth, replacing the old hard-coded C arrays).
+ * spock_reserved_object_names() returns the names of one kind of object
+ * reserved for one purpose.
+ */
+typedef enum ReservedObjectKind
+{
+	RESERVED_KIND_SCHEMA,
+	RESERVED_KIND_EXTENSION
+} ReservedObjectKind;
+
+typedef enum ReservedObjectPurpose
+{
+	RESERVED_PURPOSE_DUMP,		/* exclude_from_dump: kept out of structure sync */
+	RESERVED_PURPOSE_REPSET,	/* block_in_repset: cannot join a replication set */
+	RESERVED_PURPOSE_DDL		/* replicate_ddl = false (node-local) */
+} ReservedObjectPurpose;
+
+extern List *spock_reserved_object_names(ReservedObjectKind kind,
+										 ReservedObjectPurpose purpose);
+extern bool spock_name_is_reserved(ReservedObjectKind kind,
+								   ReservedObjectPurpose purpose,
+								   const char *name);
 
 extern void create_node(SpockNode *node);
 extern void drop_node(Oid nodeid);

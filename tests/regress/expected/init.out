@@ -43,13 +43,13 @@ CREATE EXTENSION IF NOT EXISTS spock;
 SELECT
   extnamespace::regnamespace,
   extrelocatable,
-  extconfig,
+  extconfig::regclass[] AS extconfig,
   extcondition,
   obj_description(oid) AS comment
 FROM pg_extension WHERE extname = 'spock';
- extnamespace | extrelocatable | extconfig | extcondition |            comment             
---------------+----------------+-----------+--------------+--------------------------------
- spock        | f              |           |              | PostgreSQL Logical Replication
+ extnamespace | extrelocatable |        extconfig        |     extcondition      |            comment             
+--------------+----------------+-------------------------+-----------------------+--------------------------------
+ spock        | f              | {spock.reserved_object} | {"WHERE NOT builtin"} | PostgreSQL Logical Replication
 (1 row)
 
 SELECT * FROM spock.node_create(node_name := 'test_provider', dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super');

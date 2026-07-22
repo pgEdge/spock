@@ -355,6 +355,20 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 
 	targetrel = RelationIdGetRelation(reloid);
 
+	if (spock_name_is_reserved(RESERVED_KIND_SCHEMA, RESERVED_PURPOSE_REPSET,
+							   get_namespace_name(RelationGetNamespace(targetrel))))
+	{
+		/*
+		 * A block_in_repset schema's tables must not replicate.  Like the
+		 * UNLOGGED/TEMP case below, evict any existing membership (covers a
+		 * table that joined a repset before its schema was reserved) rather
+		 * than only skipping routing.
+		 */
+		remove_table_from_repsets(node->node->id, reloid, false);
+		table_close(targetrel, NoLock);
+		return;
+	}
+
 	/* UNLOGGED and TEMP relations cannot be part of replication set. */
 	if (!RelationNeedsWAL(targetrel))
 	{
