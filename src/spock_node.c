@@ -59,7 +59,8 @@
 #define Anum_reserved_kind				2
 #define Anum_reserved_exclude_from_dump	3
 #define Anum_reserved_block_in_repset	4
-#define Anum_reserved_builtin			5
+#define Anum_reserved_replicate_ddl		5
+#define Anum_reserved_builtin			6
 
 typedef struct NodeTuple
 {
@@ -138,9 +139,24 @@ spock_reserved_object_names(ReservedObjectKind kind,
 	List		   *names = NIL;
 	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
 									? "extension" : "schema";
-	AttrNumber		flag_attnum = (purpose == RESERVED_PURPOSE_DUMP)
-									? Anum_reserved_exclude_from_dump
-									: Anum_reserved_block_in_repset;
+	AttrNumber		flag_attnum;
+	bool			invert = false;
+
+	switch (purpose)
+	{
+		case RESERVED_PURPOSE_DUMP:
+			flag_attnum = Anum_reserved_exclude_from_dump;
+			break;
+		case RESERVED_PURPOSE_REPSET:
+			flag_attnum = Anum_reserved_block_in_repset;
+			break;
+		case RESERVED_PURPOSE_DDL:
+			flag_attnum = Anum_reserved_replicate_ddl;
+			invert = true;		/* select rows that do NOT replicate DDL */
+			break;
+		default:
+			elog(ERROR, "unknown reserved object purpose %d", (int) purpose);
+	}
 
 	catalog_rv = makeRangeVar(EXTENSION_NAME, CATALOG_RESERVED_OBJECT, -1);
 
@@ -177,6 +193,8 @@ spock_reserved_object_names(ReservedObjectKind kind,
 
 		reserved_for_purpose = DatumGetBool(heap_getattr(tuple, flag_attnum,
 														 tuple_desc, &isnull));
+		if (invert)
+			reserved_for_purpose = !reserved_for_purpose;
 		if (!reserved_for_purpose)
 			continue;
 

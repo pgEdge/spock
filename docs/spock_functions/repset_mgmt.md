@@ -96,19 +96,36 @@ source of truth for two behaviours:
   that already has them would fail.
 - `block_in_repset`: a table in this schema, or belonging to this extension,
   may not be added to a replication set.
+- `replicate_ddl`: applies to schemas only. When `false`, AutoDDL does not
+  ship DDL that targets only this schema to other nodes -- the schema is
+  node-local. It is not meaningful for extensions, so it is required for
+  `schema` rows and is `NULL` for `extension` rows (a `CHECK` enforces this,
+  and `reserved_object_add` sets it to `NULL` automatically for an extension).
 
 Spock seeds the following built-in rows, and they cannot be removed or
 modified:
 
-| Object            | exclude_from_dump | block_in_repset |
-|-------------------|-------------------|-----------------|
-| `spock`           | yes               | yes             |
-| `snowflake`       | yes               | yes             |
-| `lolor`           | yes               | no              |
+| Object            | exclude_from_dump | block_in_repset | replicate_ddl |
+|-------------------|-------------------|-----------------|---------------|
+| `spock`           | yes               | yes             | yes           |
+| `snowflake`       | yes               | yes             | yes           |
+| `lolor`           | yes               | no              | yes           |
+| `pgedge_ace` (schema only) | yes      | yes             | no            |
+
+`spock`, `snowflake`, and `lolor` each have both a `schema` and an
+`extension` row. The `replicate_ddl` column above is the value on the
+`schema` row; the `extension` row carries `replicate_ddl = NULL` (not
+applicable), while `exclude_from_dump`/`block_in_repset` apply to both.
 
 `lolor` is excluded from the dump but is intentionally allowed in replication
 sets: its tables must replicate so that large objects survive a
 `DROP EXTENSION` on every node, not only where the drop was issued.
+
+`pgedge_ace` is the schema used by the pgEdge ACE utility. It is node-local
+configuration/state, not application data: its DDL is never shipped to other
+nodes (`replicate_ddl=no`), and its tables can never be added to a
+replication set, so `CREATE SCHEMA pgedge_ace` and DDL/tables underneath it
+stay local to the node where they were issued.
 
 To reserve an additional schema or extension of your own, use
 `spock.reserved_object_add`:
@@ -119,6 +136,9 @@ SELECT spock.reserved_object_add('ace', 'schema');
 
 -- exclude an extension from the dump but still allow its tables in repsets
 SELECT spock.reserved_object_add('myext', 'extension', p_block_in_repset := false);
+
+-- keep a custom schema node-local: AutoDDL will not replicate its DDL
+SELECT spock.reserved_object_add('myschema', 'schema', p_replicate_ddl := false);
 ```
 
 Use `spock.reserved_object_remove('ace', 'schema')` to drop your own entry.
@@ -343,7 +363,8 @@ object is already reserved, its flags are updated. Built-in objects cannot be
 changed.
 
 `spock.reserved_object_add(p_name name, p_kind text, p_exclude_from_dump bool
-DEFAULT true, p_block_in_repset bool DEFAULT true)`
+DEFAULT true, p_block_in_repset bool DEFAULT true, p_replicate_ddl bool
+DEFAULT NULL)`
 
 Parameters:
 
@@ -353,6 +374,11 @@ Parameters:
   default is `true`.
 - `p_block_in_repset` blocks the object from replication sets; the default is
   `true`.
+- `p_replicate_ddl` applies to schemas only. For a schema, leaving it unset
+  (`NULL`) defaults to `true`; pass `false` to keep the schema node-local so
+  AutoDDL does not ship its DDL to other nodes (as `pgedge_ace` is). For
+  `p_kind = 'extension'` the argument is ignored and the value is stored as
+  `NULL`.
 
 ### spock.reserved_object_remove
 
