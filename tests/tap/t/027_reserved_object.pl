@@ -147,5 +147,40 @@ is($rc, 0, 'ALTER on a table in a now-reserved schema succeeds locally') or diag
 is(scalar_query(1, "SELECT count(*) FROM spock.tables WHERE nspname='evict_ns' AND set_name IS NOT NULL"),
    '0', 'reserving block_in_repset then AutoDDL evicts the table from all repsets');
 
+# --------------------------------------------------------------------------
+# pg_dump/pg_restore round-trip: pg_extension_config_dump(..., 'WHERE NOT
+# builtin') dumps only operator-added rows; CREATE EXTENSION re-seeds the
+# built-ins on restore, so they are preserved and never duplicated.
+# --------------------------------------------------------------------------
+is(scalar_query(1, "SELECT count(*) FROM spock.reserved_object WHERE NOT builtin"),
+   '4', 'four operator-added rows present before the dump (ace, foo, myext, evict_ns)');
+
+my $dumpfile = "/tmp/spock_reserved_$$.dump";
+my $rtdb     = "reserved_roundtrip";
+system("$bin/pg_dump -Fc -h $host -p $port -U $user -d $db -f $dumpfile") == 0
+    or diag("pg_dump failed");
+system("$bin/dropdb --if-exists -h $host -p $port -U $user $rtdb 2>/dev/null");
+system("$bin/createdb -h $host -p $port -U $user $rtdb") == 0
+    or diag("createdb failed");
+# Default (no --exit-on-error): unrelated restore noise never fails the run;
+# the reserved_object COPY still lands.
+system("$bin/pg_restore -h $host -p $port -U $user -d $rtdb $dumpfile 2>/dev/null");
+
+my $rt = sub {
+    my ($sql) = @_;
+    my $r = `$bin/psql -X -h $host -p $port -d $rtdb -U $user -tAc "$sql" 2>/dev/null`;
+    $r =~ s/\s+//g;
+    return $r;
+};
+is($rt->("SELECT count(*) FROM spock.reserved_object WHERE builtin"), '7',
+   'restore re-seeded exactly 7 built-in rows (no duplicates)');
+is($rt->("SELECT count(*) FROM spock.reserved_object WHERE NOT builtin"), '4',
+   'restore preserved all 4 operator-added rows');
+is($rt->("SELECT replicate_ddl FROM spock.reserved_object WHERE name='foo' AND kind='schema'"),
+   'f', "operator-added 'foo' kept replicate_ddl=false across the round-trip");
+
+system("$bin/dropdb --if-exists -h $host -p $port -U $user $rtdb 2>/dev/null");
+unlink $dumpfile;
+
 destroy_cluster();
 done_testing();

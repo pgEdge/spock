@@ -394,7 +394,8 @@ DECLARE
     -- replicate_ddl is schema-only.  For a schema, an unset (NULL) argument
     -- defaults to true; for an extension it is always NULL, so the
     -- reserved_object_replicate_ddl_kind CHECK holds without the caller
-    -- having to pass NULL explicitly.
+    -- having to pass NULL explicitly.  (The table is a user_catalog_table,
+    -- which forbids INSERT ... ON CONFLICT, so this hand-rolled upsert stands.)
     v_replicate_ddl boolean := CASE WHEN p_kind = 'schema'
                                     THEN COALESCE(p_replicate_ddl, true) END;
 BEGIN
