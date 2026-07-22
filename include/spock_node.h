@@ -75,7 +75,8 @@ typedef enum ReservedObjectKind
 typedef enum ReservedObjectPurpose
 {
 	RESERVED_PURPOSE_DUMP,		/* exclude_from_dump: kept out of structure sync */
-	RESERVED_PURPOSE_REPSET		/* block_in_repset: cannot join a replication set */
+	RESERVED_PURPOSE_REPSET,	/* block_in_repset: cannot join a replication set */
+	RESERVED_PURPOSE_DDL		/* replicate_ddl = false (node-local) */
 } ReservedObjectPurpose;
 
 extern List *spock_reserved_object_names(ReservedObjectKind kind,

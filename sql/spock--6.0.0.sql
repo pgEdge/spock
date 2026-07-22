@@ -327,6 +327,8 @@ CREATE TABLE spock.replication_set_seq (
 --     --exclude-schema / --exclude-extension); restoring these on a subscriber
 --     that already has them would fail.
 --   * block_in_repset   - may not be added to a replication set.
+--   * replicate_ddl     - when false, AutoDDL does not ship DDL for this
+--                         object (node-local; e.g. pgedge_ace).
 --
 -- Built-in rows (builtin = true) are seeded by the extension and are protected
 -- from removal/modification.  Add your own with spock.reserved_object_add().
@@ -336,8 +338,14 @@ CREATE TABLE spock.reserved_object (
     kind              text    NOT NULL CHECK (kind IN ('schema', 'extension')),
     exclude_from_dump boolean NOT NULL DEFAULT true,
     block_in_repset   boolean NOT NULL DEFAULT true,
+    -- replicate_ddl applies to schemas only (when false, AutoDDL keeps DDL
+    -- targeting the schema node-local).  It is not meaningful for extensions,
+    -- so it is required for schemas and must be NULL for extensions.
+    replicate_ddl     boolean,
     builtin           boolean NOT NULL DEFAULT false,
-    PRIMARY KEY (name, kind)
+    PRIMARY KEY (name, kind),
+    CONSTRAINT reserved_object_replicate_ddl_kind
+        CHECK ((kind = 'schema') = (replicate_ddl IS NOT NULL))
 ) WITH (user_catalog_table=true);
 
 -- Preserve operator-added rows across pg_dump/restore; built-ins are re-seeded
@@ -346,16 +354,16 @@ SELECT pg_catalog.pg_extension_config_dump('spock.reserved_object', 'WHERE NOT b
 
 -- lolor is excluded from the dump but NOT blocked from replication sets: its
 -- tables must replicate so large objects survive a DROP EXTENSION on all nodes.
-INSERT INTO spock.reserved_object (name, kind, exclude_from_dump, block_in_repset, builtin) VALUES
-    ('spock',     'schema',    true, true,  true),
-    ('spock',     'extension', true, true,  true),
-    ('snowflake', 'schema',    true, true,  true),
-    ('snowflake', 'extension', true, true,  true),
-    ('lolor',     'schema',    true, false, true),
-    ('lolor',     'extension', true, false, true);
+INSERT INTO spock.reserved_object
+    (name, kind, exclude_from_dump, block_in_repset, replicate_ddl, builtin) VALUES
+    ('spock',      'schema',    true, true,  true,  true),
+    ('spock',      'extension', true, true,  NULL,  true),
+    ('snowflake',  'schema',    true, true,  true,  true),
+    ('snowflake',  'extension', true, true,  NULL,  true),
+    ('lolor',      'schema',    true, false, true,  true),
+    ('lolor',      'extension', true, false, NULL,  true),
+    ('pgedge_ace', 'schema',    true, true,  false, true);
 
--- Protect built-in rows so replication can't be broken by dropping
--- spock/snowflake/lolor from the reserved set.
 CREATE FUNCTION spock.reserved_object_guard()
 RETURNS trigger AS $$
 BEGIN
@@ -374,38 +382,43 @@ CREATE TRIGGER reserved_object_guard
     BEFORE UPDATE OR DELETE ON spock.reserved_object
     FOR EACH ROW EXECUTE FUNCTION spock.reserved_object_guard();
 
--- Add (or update) a user-defined reserved object.  (ON CONFLICT is not
--- allowed on a user_catalog_table, so upsert by hand; updating a built-in row
--- is rejected by the guard trigger.)
 CREATE FUNCTION spock.reserved_object_add(
     p_name              name,
     p_kind              text,
     p_exclude_from_dump boolean DEFAULT true,
-    p_block_in_repset   boolean DEFAULT true)
+    p_block_in_repset   boolean DEFAULT true,
+    p_replicate_ddl     boolean DEFAULT NULL)
 RETURNS void
 LANGUAGE plpgsql AS $$
+DECLARE
+    -- replicate_ddl is schema-only.  For a schema, an unset (NULL) argument
+    -- defaults to true; for an extension it is always NULL, so the
+    -- reserved_object_replicate_ddl_kind CHECK holds without the caller
+    -- having to pass NULL explicitly.
+    v_replicate_ddl boolean := CASE WHEN p_kind = 'schema'
+                                    THEN COALESCE(p_replicate_ddl, true) END;
 BEGIN
     UPDATE spock.reserved_object
        SET exclude_from_dump = p_exclude_from_dump,
-           block_in_repset   = p_block_in_repset
+           block_in_repset   = p_block_in_repset,
+           replicate_ddl     = v_replicate_ddl
      WHERE name = p_name AND kind = p_kind;
     IF NOT FOUND THEN
         BEGIN
             INSERT INTO spock.reserved_object
-                (name, kind, exclude_from_dump, block_in_repset, builtin)
-            VALUES (p_name, p_kind, p_exclude_from_dump, p_block_in_repset, false);
+                (name, kind, exclude_from_dump, block_in_repset, replicate_ddl, builtin)
+            VALUES (p_name, p_kind, p_exclude_from_dump, p_block_in_repset, v_replicate_ddl, false);
         EXCEPTION WHEN unique_violation THEN
-            -- A concurrent call inserted the same object; apply as an update.
             UPDATE spock.reserved_object
                SET exclude_from_dump = p_exclude_from_dump,
-                   block_in_repset   = p_block_in_repset
+                   block_in_repset   = p_block_in_repset,
+                   replicate_ddl     = v_replicate_ddl
              WHERE name = p_name AND kind = p_kind;
         END;
     END IF;
 END;
 $$;
 
--- Remove a user-defined reserved object (built-ins are protected by the guard).
 CREATE FUNCTION spock.reserved_object_remove(p_name name, p_kind text)
 RETURNS void
 LANGUAGE sql AS $$

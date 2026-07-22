@@ -42,13 +42,23 @@ sub psql_try {
 # Seeded built-ins
 # --------------------------------------------------------------------------
 is(scalar_query(1, "SELECT count(*) FROM spock.reserved_object WHERE builtin"),
-   '6', 'six built-in reserved objects are seeded');
+   '7', 'seven built-in reserved objects are seeded');
 is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
    't', 'spock schema is blocked from replication sets');
 is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='lolor' AND kind='schema'"),
    'f', 'lolor schema is NOT blocked from replication sets (its tables must replicate)');
 is(scalar_query(1, "SELECT exclude_from_dump FROM spock.reserved_object WHERE name='lolor' AND kind='schema'"),
    't', 'lolor schema is excluded from the structure dump');
+
+# --------------------------------------------------------------------------
+# pgedge_ace: node-local schema (replicate_ddl=false), seeded as builtin
+# --------------------------------------------------------------------------
+is(scalar_query(1, "SELECT replicate_ddl FROM spock.reserved_object WHERE name='pgedge_ace' AND kind='schema'"),
+   'f', 'pgedge_ace schema has replicate_ddl=false (AutoDDL keeps it node-local)');
+is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='pgedge_ace' AND kind='schema'"),
+   't', 'pgedge_ace schema is blocked from replication sets');
+is(scalar_query(1, "SELECT exclude_from_dump FROM spock.reserved_object WHERE name='pgedge_ace' AND kind='schema'"),
+   't', 'pgedge_ace schema is excluded from the structure dump');
 
 # --------------------------------------------------------------------------
 # Built-in rows are protected
@@ -60,6 +70,10 @@ like($out, qr/cannot delete built-in reserved object/, 'guard message shown on d
 ($rc, $out) = psql_try("UPDATE spock.reserved_object SET builtin=false WHERE name='spock' AND kind='schema'");
 isnt($rc, 0, 'modifying a built-in reserved object is rejected');
 
+($rc, $out) = psql_try("DELETE FROM spock.reserved_object WHERE name='pgedge_ace' AND kind='schema'");
+isnt($rc, 0, 'deleting the built-in pgedge_ace reserved object is rejected');
+like($out, qr/cannot delete built-in reserved object/, 'guard message shown on pgedge_ace delete');
+
 # --------------------------------------------------------------------------
 # Add helper + the C repset path reading the table live
 # --------------------------------------------------------------------------
@@ -67,6 +81,35 @@ isnt($rc, 0, 'modifying a built-in reserved object is rejected');
 is($rc, 0, "reserved_object_add('ace','schema') succeeds") or diag($out);
 is(scalar_query(1, "SELECT builtin FROM spock.reserved_object WHERE name='ace' AND kind='schema'"),
    'f', "user-added 'ace' is not a built-in");
+
+# p_replicate_ddl round-trips through reserved_object_add.
+($rc, $out) = psql_try("SELECT spock.reserved_object_add('foo','schema', p_replicate_ddl := false)");
+is($rc, 0, "reserved_object_add('foo','schema', p_replicate_ddl := false) succeeds") or diag($out);
+is(scalar_query(1, "SELECT replicate_ddl FROM spock.reserved_object WHERE name='foo' AND kind='schema'"),
+   'f', "'foo' round-trips replicate_ddl=false");
+is(scalar_query(1, "SELECT builtin FROM spock.reserved_object WHERE name='foo' AND kind='schema'"),
+   'f', "user-added 'foo' is not a built-in");
+
+# --------------------------------------------------------------------------
+# replicate_ddl is schema-only: NULL for extensions, enforced by a CHECK.
+# --------------------------------------------------------------------------
+is(scalar_query(1, "SELECT replicate_ddl IS NULL FROM spock.reserved_object WHERE name='spock' AND kind='extension'"),
+   't', 'built-in extension row has replicate_ddl NULL (not applicable)');
+
+# reserved_object_add coerces replicate_ddl to NULL for an extension, even
+# when a value is passed for it.
+($rc, $out) = psql_try("SELECT spock.reserved_object_add('myext','extension', p_replicate_ddl := false)");
+is($rc, 0, 'reserved_object_add for an extension succeeds') or diag($out);
+is(scalar_query(1, "SELECT replicate_ddl IS NULL FROM spock.reserved_object WHERE name='myext' AND kind='extension'"),
+   't', "extension row's replicate_ddl is coerced to NULL");
+
+# The CHECK rejects a non-NULL replicate_ddl on an extension row...
+($rc, $out) = psql_try("INSERT INTO spock.reserved_object (name, kind, replicate_ddl) VALUES ('badext', 'extension', true)");
+isnt($rc, 0, 'CHECK rejects a non-NULL replicate_ddl on an extension row');
+
+# ...and rejects a NULL replicate_ddl on a schema row.
+($rc, $out) = psql_try("INSERT INTO spock.reserved_object (name, kind, replicate_ddl) VALUES ('badschema', 'schema', NULL)");
+isnt($rc, 0, 'CHECK rejects a NULL replicate_ddl on a schema row');
 
 # Create the schemas/tables with DDL replication off, so nothing is
 # auto-added to a replication set (this cluster runs with include_ddl_repset
@@ -87,6 +130,22 @@ like($out, qr/ignored schema ace/, 'block message names the reserved schema');
 is($rc, 0, 'ace can be unblocked via the helper');
 ($rc, $out) = psql_try("SELECT spock.repset_add_table('default','ace.t')");
 is($rc, 0, 'after unblocking, the ace table can join the replication set') or diag($out);
+
+# --------------------------------------------------------------------------
+# Reserving a schema block_in_repset evicts an already-member table the next
+# time AutoDDL re-evaluates it (apply_repset_policy_for_reloid).
+# --------------------------------------------------------------------------
+psql_try("SET spock.enable_ddl_replication=off; CREATE SCHEMA evict_ns; CREATE TABLE evict_ns.t (id int primary key)");
+($rc, $out) = psql_try("SELECT spock.repset_add_table('default','evict_ns.t')");
+is($rc, 0, 'evict_ns.t joins a repset while its schema is unreserved') or diag($out);
+is(scalar_query(1, "SELECT count(*) FROM spock.tables WHERE nspname='evict_ns' AND set_name IS NOT NULL"),
+   '1', 'evict_ns.t is a repset member before its schema is reserved');
+
+psql_try("SELECT spock.reserved_object_add('evict_ns','schema')");
+($rc, $out) = psql_try("SET spock.enable_ddl_replication=on; ALTER TABLE evict_ns.t ADD COLUMN v text");
+is($rc, 0, 'ALTER on a table in a now-reserved schema succeeds locally') or diag($out);
+is(scalar_query(1, "SELECT count(*) FROM spock.tables WHERE nspname='evict_ns' AND set_name IS NOT NULL"),
+   '0', 'reserving block_in_repset then AutoDDL evicts the table from all repsets');
 
 destroy_cluster();
 done_testing();

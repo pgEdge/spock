@@ -167,9 +167,7 @@ build_exclude_extension_string(void)
 	{
 		const char *ext_name = (const char *) lfirst(lc);
 
-		if (!OidIsValid(get_extension_oid(ext_name, true)))
-			continue;
-
+		/* Unconditional: see build_exclude_schema_string(). */
 		arg = psprintf("--exclude-extension=%s", ext_name);
 		lst = lappend(lst, arg);
 	}
@@ -191,9 +189,11 @@ build_exclude_schema_string(SpockSubscription *sub)
 	{
 		const char *schema_name = (const char *) lfirst(lc);
 
-		if (!OidIsValid(LookupExplicitNamespace(schema_name, true)))
-			continue;
-
+		/*
+		 * Exclude unconditionally: we run on the subscriber but pg_dump reads
+		 * the provider (e.g. pgedge_ace exists only there on a fresh join), and
+		 * pg_dump ignores an exclude pattern that matches nothing.
+		 */
 		arg = psprintf("--exclude-schema=%s", schema_name);
 		lst = lappend(lst, arg);
 	}
@@ -1291,36 +1291,75 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	tables = spock_get_remote_repset_tables(origin_conn,
 											replication_sets);
 
-	/* Filter out tables from schemas that should be skipped */
-	if (sub->skip_schema && list_length(sub->skip_schema) > 0)
+	/*
+	 * Drop tables we must not data-sync: any block_in_repset schema (a table
+	 * may have joined a repset before its schema was reserved), plus the
+	 * subscription's own skip_schema.  Matched by the table's own namespace;
+	 * this does not descend partition hierarchies, so a partition physically
+	 * in a reserved schema under a non-reserved parent is not caught here
+	 * (rare: the parent copy would target a partition the reserved schema's
+	 * dump-exclusion left off the subscriber, so it errors rather than
+	 * silently importing the data).
+	 */
 	{
+		MemoryContext synccxt = CurrentMemoryContext;
+		List	   *blocked = NIL;
 		List	   *filtered_tables = NIL;
 		ListCell   *lc_filter;
+
+		/*
+		 * Reading the catalog needs a transaction and this function runs with
+		 * none open; copy the names into the persistent context so they
+		 * survive the commit.
+		 */
+		StartTransactionCommand();
+		{
+			List	   *reserved = spock_reserved_object_names(RESERVED_KIND_SCHEMA,
+														   RESERVED_PURPOSE_REPSET);
+			ListCell   *lc_res;
+			MemoryContext txcxt = MemoryContextSwitchTo(synccxt);
+
+			foreach(lc_res, reserved)
+				blocked = lappend(blocked, pstrdup((char *) lfirst(lc_res)));
+
+			MemoryContextSwitchTo(txcxt);
+		}
+		CommitTransactionCommand();
+
+		/* Commit reset the current context; restore the sync context. */
+		MemoryContextSwitchTo(synccxt);
 
 		foreach(lc_filter, tables)
 		{
 			SpockRemoteRel *remoterel = lfirst(lc_filter);
-			ListCell   *lc_skip;
 			bool		skip_table = false;
+			ListCell   *lc_skip;
 
-			/* Check if this table's schema should be skipped */
-			foreach(lc_skip, sub->skip_schema)
+			foreach(lc_skip, blocked)
 			{
-				char	   *skip_schema_name = (char *) lfirst(lc_skip);
-
-				if (strcmp(remoterel->nspname, skip_schema_name) == 0)
+				if (strcmp(remoterel->nspname, (char *) lfirst(lc_skip)) == 0)
 				{
 					skip_table = true;
 					break;
 				}
 			}
 
-			/* Add table to filtered list if it shouldn't be skipped */
+			if (!skip_table && sub->skip_schema)
+			{
+				foreach(lc_skip, sub->skip_schema)
+				{
+					if (strcmp(remoterel->nspname, (char *) lfirst(lc_skip)) == 0)
+					{
+						skip_table = true;
+						break;
+					}
+				}
+			}
+
 			if (!skip_table)
 				filtered_tables = lappend(filtered_tables, remoterel);
 		}
-
-		/* Replace the original tables list with the filtered one */
+		list_free_deep(blocked);
 		tables = filtered_tables;
 	}
 
