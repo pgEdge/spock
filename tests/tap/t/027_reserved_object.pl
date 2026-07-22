@@ -162,16 +162,26 @@ system("$bin/pg_dump -Fc -h $host -p $port -U $user -d $db -f $dumpfile") == 0
 system("$bin/dropdb --if-exists -h $host -p $port -U $user $rtdb 2>/dev/null");
 system("$bin/createdb -h $host -p $port -U $user $rtdb") == 0
     or diag("createdb failed");
-# Default (no --exit-on-error): unrelated restore noise never fails the run;
-# the reserved_object COPY still lands.
-system("$bin/pg_restore -h $host -p $port -U $user -d $rtdb $dumpfile 2>/dev/null");
-
 my $rt = sub {
     my ($sql) = @_;
     my $r = `$bin/psql -X -h $host -p $port -d $rtdb -U $user -tAc "$sql" 2>/dev/null`;
     $r =~ s/\s+//g;
     return $r;
 };
+
+# A whole-DB dump also re-creates spock's own node/subscription objects, and
+# restoring those into a fresh standalone DB emits unrelated errors -- so we
+# can't use --exit-on-error (it would abort before the reserved_object COPY
+# runs).  Instead capture the outcome: tolerate that noise, but surface the
+# output on any non-zero exit and assert below that the catalog actually came
+# back, so a broken round-trip can't pass silently.
+my $restore_out = `$bin/pg_restore -h $host -p $port -U $user -d $rtdb $dumpfile 2>&1`;
+my $restore_rc  = $? >> 8;
+diag("pg_restore exited $restore_rc; output follows:\n$restore_out")
+    if $restore_rc != 0;
+
+is($rt->("SELECT to_regclass('spock.reserved_object') IS NOT NULL"), 't',
+   'pg_restore recreated the spock.reserved_object catalog');
 is($rt->("SELECT count(*) FROM spock.reserved_object WHERE builtin"), '7',
    'restore re-seeded exactly 7 built-in rows (no duplicates)');
 is($rt->("SELECT count(*) FROM spock.reserved_object WHERE NOT builtin"), '4',

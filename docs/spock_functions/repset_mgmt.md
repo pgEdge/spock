@@ -114,12 +114,12 @@ source of truth for three behaviours:
 Spock seeds the following built-in rows, and they cannot be removed or
 modified:
 
-| Object            | exclude_from_dump | block_in_repset | replicate_ddl |
-|-------------------|-------------------|-----------------|---------------|
-| `spock`           | yes               | yes             | yes           |
-| `snowflake`       | yes               | yes             | yes           |
-| `lolor`           | yes               | no              | yes           |
-| `pgedge_ace` (schema only) | yes      | yes             | no            |
+| Object            | exclude_from_dump | block_in_repset | replicate_ddl
+|-------------------|-------------------|-----------------|---------------
+| `spock`           | yes               | yes             | yes
+| `snowflake`       | yes               | yes             | yes
+| `lolor`           | yes               | no              | yes
+| `pgedge_ace` (schema only) | yes      | yes             | no
 
 `spock`, `snowflake`, and `lolor` each have both a `schema` and an
 `extension` row. The `replicate_ddl` column above is the value on the
