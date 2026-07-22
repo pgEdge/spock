@@ -65,6 +65,22 @@ is(scalar_query(1,
    'default', 'control table public.ace_ctrl was auto-added to the default replication set');
 
 # --------------------------------------------------------------------------
+# Step 2b: an OPERATOR-added reserved schema (not a built-in). Reserve it on
+# both nodes -- node-local config, applied per node -- so its table never
+# joins a repset on the provider (block_in_repset) and the structure dump
+# excludes it (exclude_from_dump). It must therefore be absent on the
+# subscriber after the structure sync below.
+# --------------------------------------------------------------------------
+psql_or_bail(1, "SELECT spock.reserved_object_add('op_local', 'schema')");
+psql_or_bail(2, "SELECT spock.reserved_object_add('op_local', 'schema')");
+psql_or_bail(1, "CREATE SCHEMA op_local");
+psql_or_bail(1, "CREATE TABLE op_local.t (id int primary key, v text)");
+
+is(scalar_query(1,
+    "SELECT count(*) FROM spock.tables WHERE nspname = 'op_local' AND set_name IS NOT NULL"),
+   '0', 'operator-reserved op_local.t was not auto-added to any replication set');
+
+# --------------------------------------------------------------------------
 # Step 3: subscribe n2 to n1 with structure AND data sync.  If pgedge_ace's
 # DDL had been captured for replication, or if the structure dump had not
 # excluded pgedge_ace (exclude_from_dump=true), this sync would try to
@@ -79,6 +95,9 @@ ok(wait_for_sub_status(2, $sub_name, 'replicating', 60),
 
 is(scalar_query(2, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'pgedge_ace')"),
    'f', 'pgedge_ace schema is ABSENT on the subscriber after structure sync');
+
+is(scalar_query(2, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'op_local')"),
+   'f', 'operator-reserved op_local schema is ABSENT on the subscriber (exclude_from_dump)');
 
 is(scalar_query(2,
     "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ace_ctrl')"),

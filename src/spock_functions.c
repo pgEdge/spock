@@ -2420,24 +2420,8 @@ query_temp_like_source(const char *query)
 bool
 spock_schema_is_ddl_local(const char *nspname)
 {
-	List	   *ddl_local;
-	ListCell   *lc;
-	bool		result = false;
-
-	if (nspname == NULL)
-		return false;
-
-	ddl_local = spock_reserved_object_names(RESERVED_KIND_SCHEMA, RESERVED_PURPOSE_DDL);
-	foreach(lc, ddl_local)
-	{
-		if (strcmp((char *) lfirst(lc), nspname) == 0)
-		{
-			result = true;
-			break;
-		}
-	}
-	list_free_deep(ddl_local);
-	return result;
+	return spock_name_is_reserved(RESERVED_KIND_SCHEMA, RESERVED_PURPOSE_DDL,
+								  nspname);
 }
 
 /*
@@ -2465,11 +2449,32 @@ rangevar_is_ddl_local(RangeVar *rv)
 	return local;
 }
 
+/* Membership test used to classify a DROP against one catalog read. */
+static bool
+name_in_list(List *names, const char *name)
+{
+	ListCell   *lc;
+
+	if (name == NULL)
+		return false;
+	foreach(lc, names)
+		if (strcmp((char *) lfirst(lc), name) == 0)
+			return true;
+	return false;
+}
+
 /*
  * Does this DDL target ONLY node-local (replicate_ddl=false) schemas?  Only
  * statement types whose target schema is identifiable are classified; all
  * others replicate as before.  Known gap: dropping a node-local relation by an
  * unqualified name cannot be classified (the relation is already gone).
+ *
+ * A DROP is skipped only when EVERY object is node-local.  A statement mixing a
+ * node-local object with a replicated one is shipped as-is: the raw command
+ * text cannot be rewritten to strip the node-local object, so the subscriber --
+ * where that object never existed -- would fail to drop it unless the drop
+ * carries IF EXISTS.  Mixing node-local and replicated objects in one DROP is
+ * therefore unsupported.
  */
 static bool
 stmt_targets_only_ddl_local(Node *stmt)
@@ -2494,27 +2499,34 @@ stmt_targets_only_ddl_local(Node *stmt)
 			{
 				DropStmt   *drop = (DropStmt *) stmt;
 				ListCell   *cell;
+				List	   *local;
+				bool		all_local = true;
 
 				if (drop->objects == NIL)
 					return false;
-				if (drop->removeType == OBJECT_SCHEMA)
-				{
-					foreach(cell, drop->objects)
-						if (!spock_schema_is_ddl_local(strVal(lfirst(cell))))
-							return false;
-					return true;
-				}
-				if (drop->removeType != OBJECT_TABLE && drop->removeType != OBJECT_INDEX &&
+				if (drop->removeType != OBJECT_SCHEMA &&
+					drop->removeType != OBJECT_TABLE && drop->removeType != OBJECT_INDEX &&
 					drop->removeType != OBJECT_SEQUENCE && drop->removeType != OBJECT_VIEW &&
 					drop->removeType != OBJECT_MATVIEW && drop->removeType != OBJECT_FOREIGN_TABLE)
 					return false;
+
+				/* One catalog read for the whole (possibly multi-object) DROP. */
+				local = spock_reserved_object_names(RESERVED_KIND_SCHEMA,
+													RESERVED_PURPOSE_DDL);
 				foreach(cell, drop->objects)
 				{
-					RangeVar *rv = makeRangeVarFromNameList((List *) lfirst(cell));
-					if (rv->schemaname == NULL || !spock_schema_is_ddl_local(rv->schemaname))
-						return false;
+					const char *schema = (drop->removeType == OBJECT_SCHEMA)
+						? strVal(lfirst(cell))
+						: makeRangeVarFromNameList((List *) lfirst(cell))->schemaname;
+
+					if (!name_in_list(local, schema))
+					{
+						all_local = false;
+						break;
+					}
 				}
-				return true;
+				list_free_deep(local);
+				return all_local;
 			}
 		default:
 			return false;

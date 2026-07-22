@@ -122,43 +122,30 @@ typedef struct SubscriptionTuple
 #define Anum_sub_skip_schema		14
 #define Anum_sub_created_at			15
 
-/*
- * Names of the reserved objects of the given kind (schema or extension) that
- * are reserved for the given purpose, read from the spock.reserved_object
- * catalog.  Names are palloc'd in the caller's context.
- */
-List *
-spock_reserved_object_names(ReservedObjectKind kind,
-							ReservedObjectPurpose purpose)
+/* Column holding the flag for a purpose; *invert set when true means "not". */
+static AttrNumber
+reserved_purpose_attnum(ReservedObjectPurpose purpose, bool *invert)
 {
-	RangeVar	   *catalog_rv;
-	Relation		catalog_rel;
-	TupleDesc		tuple_desc;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	List		   *names = NIL;
-	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
-									? "extension" : "schema";
-	AttrNumber		flag_attnum;
-	bool			invert = false;
-
+	*invert = false;
 	switch (purpose)
 	{
 		case RESERVED_PURPOSE_DUMP:
-			flag_attnum = Anum_reserved_exclude_from_dump;
-			break;
+			return Anum_reserved_exclude_from_dump;
 		case RESERVED_PURPOSE_REPSET:
-			flag_attnum = Anum_reserved_block_in_repset;
-			break;
+			return Anum_reserved_block_in_repset;
 		case RESERVED_PURPOSE_DDL:
-			flag_attnum = Anum_reserved_replicate_ddl;
-			invert = true;		/* select rows that do NOT replicate DDL */
-			break;
-		default:
-			elog(ERROR, "unknown reserved object purpose %d", (int) purpose);
+			*invert = true;		/* select rows that do NOT replicate DDL */
+			return Anum_reserved_replicate_ddl;
 	}
+	elog(ERROR, "unknown reserved object purpose %d", (int) purpose);
+	return InvalidAttrNumber;	/* unreachable; keeps the compiler quiet */
+}
 
-	catalog_rv = makeRangeVar(EXTENSION_NAME, CATALOG_RESERVED_OBJECT, -1);
+/* Open spock.reserved_object, failing closed with a hint if it is missing. */
+static Relation
+open_reserved_object(LOCKMODE lockmode)
+{
+	RangeVar   *catalog_rv = makeRangeVar(EXTENSION_NAME, CATALOG_RESERVED_OBJECT, -1);
 
 	/*
 	 * Fail closed with a clear message if the catalog is missing (e.g. a new
@@ -172,7 +159,87 @@ spock_reserved_object_names(ReservedObjectKind kind,
 						EXTENSION_NAME, CATALOG_RESERVED_OBJECT),
 				 errhint("Run \"ALTER EXTENSION spock UPDATE\".")));
 
-	catalog_rel = table_openrv(catalog_rv, AccessShareLock);
+	return table_openrv(catalog_rv, lockmode);
+}
+
+/*
+ * True if `name` is a reserved object of the given kind reserved for the given
+ * purpose.  Unlike spock_reserved_object_names() this stops at the first match
+ * and allocates nothing -- for the common "is this one name reserved?" checks
+ * on the DDL and replication-set paths.
+ */
+bool
+spock_name_is_reserved(ReservedObjectKind kind, ReservedObjectPurpose purpose,
+					   const char *name)
+{
+	Relation		catalog_rel;
+	TupleDesc		tuple_desc;
+	SysScanDesc		scan;
+	HeapTuple		tuple;
+	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
+									? "extension" : "schema";
+	bool			invert;
+	AttrNumber		flag_attnum = reserved_purpose_attnum(purpose, &invert);
+	bool			found = false;
+
+	if (name == NULL)
+		return false;
+
+	catalog_rel = open_reserved_object(AccessShareLock);
+	tuple_desc = RelationGetDescr(catalog_rel);
+
+	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		bool	isnull;
+		char   *row_kind;
+		bool	flag;
+
+		if (strcmp(NameStr(*DatumGetName(heap_getattr(tuple, Anum_reserved_name,
+													  tuple_desc, &isnull))),
+				   name) != 0)
+			continue;
+
+		row_kind = TextDatumGetCString(heap_getattr(tuple, Anum_reserved_kind,
+													tuple_desc, &isnull));
+		if (strcmp(row_kind, wanted_kind) != 0)
+		{
+			pfree(row_kind);
+			continue;
+		}
+		pfree(row_kind);
+
+		flag = DatumGetBool(heap_getattr(tuple, flag_attnum, tuple_desc, &isnull));
+		/* replicate_ddl is NULL for extensions; NULL is not "node-local". */
+		found = invert ? (!isnull && !flag) : flag;
+		break;
+	}
+
+	systable_endscan(scan);
+	table_close(catalog_rel, AccessShareLock);
+	return found;
+}
+
+/*
+ * Names of the reserved objects of the given kind (schema or extension) that
+ * are reserved for the given purpose, read from the spock.reserved_object
+ * catalog.  Names are palloc'd in the caller's context.
+ */
+List *
+spock_reserved_object_names(ReservedObjectKind kind,
+							ReservedObjectPurpose purpose)
+{
+	Relation		catalog_rel;
+	TupleDesc		tuple_desc;
+	SysScanDesc		scan;
+	HeapTuple		tuple;
+	List		   *names = NIL;
+	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
+									? "extension" : "schema";
+	bool			invert;
+	AttrNumber		flag_attnum = reserved_purpose_attnum(purpose, &invert);
+
+	catalog_rel = open_reserved_object(AccessShareLock);
 	tuple_desc = RelationGetDescr(catalog_rel);
 
 	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
@@ -1385,53 +1452,29 @@ EnsureRelationNotIgnored(Relation rel)
 {
 	char	   *nspname;
 	Oid			extoid;
-	List	   *reserved;
-	ListCell   *lc;
+	char	   *extname;
 
 	nspname = get_namespace_name(RelationGetNamespace(rel));
 
-	reserved = spock_reserved_object_names(RESERVED_KIND_SCHEMA, RESERVED_PURPOSE_REPSET);
-	foreach(lc, reserved)
-	{
-		const char *schema_name = (const char *) lfirst(lc);
-
-		if (strcmp(schema_name, nspname) != 0)
-			continue;
-
+	if (spock_name_is_reserved(RESERVED_KIND_SCHEMA, RESERVED_PURPOSE_REPSET, nspname))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("relation %s cannot be added to any replication set",
 						RelationGetRelationName(rel)),
-				 errdetail("table is in the ignored schema %s",
-						   schema_name),
+				 errdetail("table is in the ignored schema %s", nspname),
 				 errhint("Move this relation to a schema allowed for replication")));
-	}
-	list_free_deep(reserved);
 
 	extoid = getExtensionOfObject(RelationRelationId, RelationGetRelid(rel));
 	if (!OidIsValid(extoid))
 		return;
 
-	reserved = spock_reserved_object_names(RESERVED_KIND_EXTENSION, RESERVED_PURPOSE_REPSET);
-	foreach(lc, reserved)
-	{
-		const char *ext_name = (const char *) lfirst(lc);
-
-		/*
-		 * Detect if extension includes this relation.
-		 * XXX: Should we check if the relation doesn't belong to the extension
-		 * but depends on it?
-		 */
-		if (extoid != get_extension_oid(ext_name, true))
-			continue;
-
+	extname = get_extension_name(extoid);
+	if (extname != NULL &&
+		spock_name_is_reserved(RESERVED_KIND_EXTENSION, RESERVED_PURPOSE_REPSET, extname))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("relation %s cannot be added to any replication set",
 						RelationGetRelationName(rel)),
-				 errdetail("relation belongs to the ignored extension %s",
-						   ext_name),
+				 errdetail("relation belongs to the ignored extension %s", extname),
 				 errhint("Move this relation to an extension allowed for replication")));
-	}
-	list_free_deep(reserved);
 }
