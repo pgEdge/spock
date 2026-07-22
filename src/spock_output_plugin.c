@@ -156,7 +156,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
  * better to centralize management of this feature and LOG each time it is
  * changed.
  */
-inline void
+void
 set_repair_mode(bool is_enabled)
 {
 	if (likely(spock_replication_repair_mode == is_enabled))
