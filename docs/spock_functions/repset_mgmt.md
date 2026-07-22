@@ -89,18 +89,27 @@ columns are specified, all columns will be replicated.
 
 Some schemas and extensions are reserved and are treated specially by Spock.
 They are listed in the `spock.reserved_object` catalog, which is the single
-source of truth for two behaviours:
+source of truth for three behaviours:
 
 - `exclude_from_dump`: the object is left out of the structure-sync dump used
   when a subscription synchronizes structure. Restoring these on a subscriber
   that already has them would fail.
 - `block_in_repset`: a table in this schema, or belonging to this extension,
   may not be added to a replication set.
-- `replicate_ddl`: applies to schemas only. When `false`, AutoDDL does not
-  ship DDL that targets only this schema to other nodes -- the schema is
-  node-local. It is not meaningful for extensions, so it is required for
+- `replicate_ddl`: applies to schemas only. When `false`, AutoDDL keeps DDL
+  targeting this schema node-local -- it runs where issued but is not shipped
+  to other nodes. It is not meaningful for extensions, so it is required for
   `schema` rows and is `NULL` for `extension` rows (a `CHECK` enforces this,
   and `reserved_object_add` sets it to `NULL` automatically for an extension).
+
+  Only DDL whose target schema Spock can identify is kept local: `CREATE`
+  `SCHEMA`/`TABLE`/`TABLE AS`/`SEQUENCE`/`VIEW`/`INDEX`, `ALTER TABLE`, and
+  `DROP` of those object kinds. Other DDL against the schema (for example
+  `GRANT`, `COMMENT`, `TRUNCATE`, or `ALTER ... SET SCHEMA`) is not classified
+  and replicates as usual. A single `DROP` is kept local only when *every*
+  object it names is node-local; do not mix a node-local object and a
+  replicated one in one `DROP`, as the shipped command cannot be rewritten to
+  drop only the replicated object.
 
 Spock seeds the following built-in rows, and they cannot be removed or
 modified:
@@ -122,10 +131,11 @@ sets: its tables must replicate so that large objects survive a
 `DROP EXTENSION` on every node, not only where the drop was issued.
 
 `pgedge_ace` is the schema used by the pgEdge ACE utility. It is node-local
-configuration/state, not application data: its DDL is never shipped to other
-nodes (`replicate_ddl=no`), and its tables can never be added to a
-replication set, so `CREATE SCHEMA pgedge_ace` and DDL/tables underneath it
-stay local to the node where they were issued.
+configuration/state, not application data: its DDL is kept local for the
+classified statement kinds above (`replicate_ddl=no`), and its tables can
+never be added to a replication set (`block_in_repset=yes`), so
+`CREATE SCHEMA pgedge_ace` and the tables underneath it stay local to the
+node where they were issued.
 
 To reserve an additional schema or extension of your own, use
 `spock.reserved_object_add`:

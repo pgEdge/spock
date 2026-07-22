@@ -81,6 +81,9 @@ typedef enum ReservedObjectPurpose
 
 extern List *spock_reserved_object_names(ReservedObjectKind kind,
 										 ReservedObjectPurpose purpose);
+extern bool spock_name_is_reserved(ReservedObjectKind kind,
+								   ReservedObjectPurpose purpose,
+								   const char *name);
 
 extern void create_node(SpockNode *node);
 extern void drop_node(Oid nodeid);
