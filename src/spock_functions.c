@@ -3040,11 +3040,21 @@ spock_table_data_filtered(PG_FUNCTION_ARGS)
 		for (i = 0; i < SPI_processed; i++)
 		{
 			HeapTuple	tup = SPI_tuptable->vals[i];
+			HeapTuple	remapped = NULL;
 
 			if (map != NULL)
-				tup = execute_attr_map_tuple(tup, map);
+				tup = remapped = execute_attr_map_tuple(tup, map);
 
 			tuplestore_puttuple(tupstore, tup);
+
+			/*
+			 * execute_attr_map_tuple() allocates a fresh tuple for every row.
+			 * tuplestore_puttuple() copies it, so free the remapped tuple to
+			 * avoid accumulating them for the whole result set. The original
+			 * SPI tuple is owned by SPI and must not be freed here.
+			 */
+			if (remapped != NULL)
+				heap_freetuple(remapped);
 		}
 
 		if (map != NULL)
