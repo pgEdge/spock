@@ -155,6 +155,7 @@ extern bool in_spock_queue_ddl_command;
 extern bool spock_auto_replicate_ddl(const char *query, List *replication_sets,
 									 Oid roleoid, Node *stmt);
 extern bool spock_schema_is_ddl_local(const char *nspname);
+extern bool name_in_list(List *names, const char *name);
 
 /* spock_readonly.c */
 void		spock_roExecutorStart(QueryDesc *queryDesc, int eflags);

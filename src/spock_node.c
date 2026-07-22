@@ -122,23 +122,44 @@ typedef struct SubscriptionTuple
 #define Anum_sub_skip_schema		14
 #define Anum_sub_created_at			15
 
-/* Column holding the flag for a purpose; *invert set when true means "not". */
-static AttrNumber
-reserved_purpose_attnum(ReservedObjectPurpose purpose, bool *invert)
+/*
+ * Is this spock.reserved_object row reserved for the given purpose?
+ *
+ * Each purpose is decided by one boolean column, but the column and the sense
+ * of "reserved" differ, so keep that knowledge in one place:
+ *
+ *   RESERVED_PURPOSE_DUMP    exclude_from_dump  reserved when true
+ *   RESERVED_PURPOSE_REPSET  block_in_repset    reserved when true
+ *   RESERVED_PURPOSE_DDL     replicate_ddl      reserved when *false*
+ *
+ * DDL is reserved when the object is node-local, i.e. its DDL is not
+ * replicated, so replicate_ddl == false means reserved.  A NULL flag (e.g.
+ * replicate_ddl is NULL for extensions) is never treated as reserved.
+ */
+static bool
+row_reserved_for_purpose(HeapTuple tuple, TupleDesc tuple_desc,
+						 ReservedObjectPurpose purpose)
 {
-	*invert = false;
+	bool	isnull;
+	bool	flag;
+
 	switch (purpose)
 	{
 		case RESERVED_PURPOSE_DUMP:
-			return Anum_reserved_exclude_from_dump;
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_exclude_from_dump,
+											 tuple_desc, &isnull));
+			return !isnull && flag;
 		case RESERVED_PURPOSE_REPSET:
-			return Anum_reserved_block_in_repset;
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_block_in_repset,
+											 tuple_desc, &isnull));
+			return !isnull && flag;
 		case RESERVED_PURPOSE_DDL:
-			*invert = true;		/* select rows that do NOT replicate DDL */
-			return Anum_reserved_replicate_ddl;
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_replicate_ddl,
+											 tuple_desc, &isnull));
+			return !isnull && !flag;
 	}
 	elog(ERROR, "unknown reserved object purpose %d", (int) purpose);
-	return InvalidAttrNumber;	/* unreachable; keeps the compiler quiet */
+	return false;	/* unreachable; keeps the compiler quiet */
 }
 
 /* Open spock.reserved_object, failing closed with a hint if it is missing. */
@@ -178,8 +199,6 @@ spock_name_is_reserved(ReservedObjectKind kind, ReservedObjectPurpose purpose,
 	HeapTuple		tuple;
 	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
 									? "extension" : "schema";
-	bool			invert;
-	AttrNumber		flag_attnum = reserved_purpose_attnum(purpose, &invert);
 	bool			found = false;
 
 	if (name == NULL)
@@ -193,7 +212,6 @@ spock_name_is_reserved(ReservedObjectKind kind, ReservedObjectPurpose purpose,
 	{
 		bool	isnull;
 		char   *row_kind;
-		bool	flag;
 
 		if (strcmp(NameStr(*DatumGetName(heap_getattr(tuple, Anum_reserved_name,
 													  tuple_desc, &isnull))),
@@ -209,9 +227,7 @@ spock_name_is_reserved(ReservedObjectKind kind, ReservedObjectPurpose purpose,
 		}
 		pfree(row_kind);
 
-		flag = DatumGetBool(heap_getattr(tuple, flag_attnum, tuple_desc, &isnull));
-		/* replicate_ddl is NULL for extensions; NULL is not "node-local". */
-		found = invert ? (!isnull && !flag) : flag;
+		found = row_reserved_for_purpose(tuple, tuple_desc, purpose);
 		break;
 	}
 
@@ -236,8 +252,6 @@ spock_reserved_object_names(ReservedObjectKind kind,
 	List		   *names = NIL;
 	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
 									? "extension" : "schema";
-	bool			invert;
-	AttrNumber		flag_attnum = reserved_purpose_attnum(purpose, &invert);
 
 	catalog_rel = open_reserved_object(AccessShareLock);
 	tuple_desc = RelationGetDescr(catalog_rel);
@@ -247,7 +261,6 @@ spock_reserved_object_names(ReservedObjectKind kind,
 	{
 		bool	isnull;
 		char   *row_kind;
-		bool	reserved_for_purpose;
 
 		row_kind = TextDatumGetCString(heap_getattr(tuple, Anum_reserved_kind,
 													tuple_desc, &isnull));
@@ -258,11 +271,7 @@ spock_reserved_object_names(ReservedObjectKind kind,
 		}
 		pfree(row_kind);
 
-		reserved_for_purpose = DatumGetBool(heap_getattr(tuple, flag_attnum,
-														 tuple_desc, &isnull));
-		if (invert)
-			reserved_for_purpose = !reserved_for_purpose;
-		if (!reserved_for_purpose)
+		if (!row_reserved_for_purpose(tuple, tuple_desc, purpose))
 			continue;
 
 		names = lappend(names,
