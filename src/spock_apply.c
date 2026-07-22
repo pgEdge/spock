@@ -57,7 +57,9 @@
 #include "utils/builtins.h"
 
 #include "utils/acl.h"
+#include "utils/catcache.h"
 #include "utils/fmgroids.h"
+#include "utils/hsearch.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -102,12 +104,24 @@ static TimeOffset apply_delay = 0;
 static TimestampTz required_commit_ts = 0;
 
 /*
- * Cache for forwarded origin lookup. The remote_origin_id (Spock node ID)
- * is consistent across the cluster, so we can use it as a cache key to
- * avoid repeated slot name generation and origin lookups.
+ * Cache mapping a forwarding peer's Spock node id to the local RepOriginId
+ * of this node's own subscription to that peer, if any. Keyed by node id
+ * (not a single last-seen scalar) because one apply worker can forward
+ * transactions originally from many different peers, interleaved in
+ * arbitrary commit order -- a single-entry cache would be invalidated by
+ * nearly every transaction as soon as more than one peer is in play. Only
+ * peers that successfully resolved to a local subscription are entered; a
+ * peer with none is looked up again next time (see resolve_forward_peer_origin()
+ * callers), so a subscription created later is picked up without a worker
+ * restart.
  */
-static RepOriginId cached_forward_remote_id = InvalidRepOriginId;
-static RepOriginId cached_forward_local_id = InvalidRepOriginId;
+typedef struct ForwardOriginCacheEntry
+{
+	RepOriginId remote_node_id;	/* hash key: peer's Spock node id */
+	RepOriginId local_origin_id;	/* this node's origin for that peer */
+} ForwardOriginCacheEntry;
+
+static HTAB *ForwardOriginCache = NULL;
 
 static Oid	QueueRelid = InvalidOid;
 
@@ -274,7 +288,10 @@ static void append_feedback_position(XLogRecPtr local_commit_lsn,
 static void get_feedback_position(XLogRecPtr *recvpos, XLogRecPtr *writepos,
 								  XLogRecPtr *flushpos, XLogRecPtr *max_recvpos);
 static void UpdateWorkerStats(XLogRecPtr last_received, XLogRecPtr last_inserted);
-static void maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception);
+static void forward_origin_cache_init(void);
+static RepOriginId resolve_forward_peer_origin(RepOriginId remote_origin_id);
+static void track_forward_peer_origin(RepOriginId remote_origin_id);
+static void maybe_advance_forwarded_origin(XLogRecPtr local_lsn, bool xact_had_exception);
 static ApplyReplayEntry *apply_replay_queue_next_entry(void);
 static bool apply_replay_queue_append_entry(ApplyReplayEntry **entry_p,
 							StringInfo *msg_p);
@@ -836,6 +853,7 @@ handle_commit(StringInfo s)
 	XLogRecPtr	end_lsn;
 	TimestampTz commit_time;
 	XLogRecPtr	remote_insert_lsn;
+	XLogRecPtr	local_commit_lsn = InvalidXLogRecPtr;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
@@ -1026,6 +1044,7 @@ handle_commit(StringInfo s)
 		flushpos = (SPKFlushPosition *) palloc(sizeof(SPKFlushPosition));
 		flushpos->local_end = XactLastCommitEnd;
 		flushpos->remote_end = end_lsn;
+		local_commit_lsn = XactLastCommitEnd;
 
 		dlist_push_tail(&lsn_mapping, &flushpos->node);
 		MemoryContextSwitchTo(MessageContext);
@@ -1050,10 +1069,12 @@ handle_commit(StringInfo s)
 
 	/*
 	 * For forwarded transactions, advance the replication origin for the
-	 * original source node. This is done outside the IsTransactionState()
-	 * block because it starts its own transaction.
+	 * original source node.  The local LSN passed here must be OUR commit
+	 * position (XactLastCommitEnd), not end_lsn — end_lsn is the provider's
+	 * WAL position, a different WAL space entirely.  For an empty forwarded
+	 * transaction there is no local commit, so InvalidXLogRecPtr is passed.
 	 */
-	maybe_advance_forwarded_origin(end_lsn, xact_had_exception);
+	maybe_advance_forwarded_origin(local_commit_lsn, xact_had_exception);
 
 	/* Update the entry in the progress table. */
 	elog(DEBUG1, "SPOCK %s: updating progress table for node_id %d" \
@@ -1175,6 +1196,60 @@ handle_commit(StringInfo s)
 	pgstat_report_activity(STATE_IDLE, NULL);
 }
 
+static void
+forward_origin_cache_init(void)
+{
+	HASHCTL		ctl;
+
+	if (CacheMemoryContext == NULL)
+		CreateCacheMemoryContext();
+
+	MemSet(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(RepOriginId);
+	ctl.entrysize = sizeof(ForwardOriginCacheEntry);
+	ctl.hcxt = CacheMemoryContext;
+
+	ForwardOriginCache = hash_create("spock forwarded origin cache",
+									 16, &ctl,
+									 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+}
+
+/*
+ * Resolve the local subscription to a forwarding peer, if one exists.
+ * Called from handle_origin() with a transaction already open.
+ *
+ * A peer's transactions can reach this node forwarded through some other
+ * provider (cascade replication, or forward_origins) well before -- or
+ * without -- a direct subscription to that peer ever being created here.
+ * If one has been created, tracking the forwarded progress on its origin
+ * lets it start from the right position whenever it is enabled, instead of
+ * a full resync. get_node_subscriptions() finds it by the peer's Spock node
+ * id, returning InvalidRepOriginId when no such subscription exists (the
+ * ordinary case for a peer this node has no plans to subscribe to
+ * directly).
+ *
+ * get_node_subscriptions() returns a list rather than a single row, so more
+ * than one local subscription to the same peer is possible; picking one
+ * arbitrarily would advance the wrong one's origin. That is a hard error
+ * rather than a pick.
+ */
+static RepOriginId
+resolve_forward_peer_origin(RepOriginId remote_origin_id)
+{
+	List	   *subs;
+
+	subs = get_node_subscriptions((Oid) remote_origin_id, true);
+	if (subs == NIL)
+		return InvalidRepOriginId;
+
+	if (list_length(subs) > 1)
+		elog(ERROR, "SPOCK %s: ambiguous forwarded origin: more than one "
+			 "local subscription matches peer node (origin id %u)",
+			 MySubscription->name, remote_origin_id);
+
+	return replorigin_by_name(((SpockSubscription *) linitial(subs))->slot_name, true);
+}
+
 /*
  * Handle ORIGIN message.
  */
@@ -1211,6 +1286,70 @@ handle_origin(StringInfo s)
 	 */
 	remote_origin_id = spock_read_origin(s, &remote_origin_lsn, &remote_origin_name);
 	replorigin_session_origin = remote_origin_id;
+
+	track_forward_peer_origin(remote_origin_id);
+}
+
+/*
+ * Ensure the forward-origin cache has an entry for remote_origin_id, if a
+ * local subscription to that peer exists.  Called from handle_origin() for
+ * every ORIGIN message.
+ *
+ * An ORIGIN message is NOT exclusive to forwarded transactions: with
+ * forwarding output enabled the direct provider also tags its OWN
+ * locally-originated transactions with an ORIGIN carrying its own node
+ * id/name.  Excluding InvalidRepOriginId and the direct provider
+ * (MySubscription->origin->id) keeps the provider's own commit from ever
+ * being mistaken for a forwarded peer transaction.
+ *
+ * hash_search(HASH_FIND) is a cheap in-memory lookup, so it is fine to do
+ * unconditionally on every ORIGIN message, regardless of how many distinct
+ * peers are being forwarded or how their transactions interleave -- unlike
+ * a single-entry "last seen" cache, this pays the catalog-lookup cost only
+ * once per peer, ever.  That catalog lookup runs here, outside any active
+ * transaction, so handle_commit()/maybe_advance_forwarded_origin() stay
+ * free of any transaction overhead and just call replorigin_advance()
+ * directly.
+ *
+ * Only insert when a local subscription to this peer was actually found. A
+ * subscription can be created to a peer at any time, independent of when
+ * its transactions start arriving forwarded through some other provider —
+ * nothing here controls that ordering. Leaving a failed lookup out of the
+ * cache means the next occurrence of this peer's origin id retries, so a
+ * subscription created after this worker already saw (and missed on) that
+ * peer is still picked up, without requiring an apply worker restart.
+ */
+static void
+track_forward_peer_origin(RepOriginId remote_origin_id)
+{
+	bool		found;
+
+	if (remote_origin_id == InvalidRepOriginId ||
+		remote_origin_id == (RepOriginId) MySubscription->origin->id)
+		return;
+
+	if (ForwardOriginCache == NULL)
+		forward_origin_cache_init();
+
+	hash_search(ForwardOriginCache, &remote_origin_id, HASH_FIND, &found);
+	if (!found)
+	{
+		RepOriginId	local_id;
+
+		StartTransactionCommand();
+		local_id = resolve_forward_peer_origin(remote_origin_id);
+		CommitTransactionCommand();
+		MemoryContextSwitchTo(MessageContext);
+
+		if (local_id != InvalidRepOriginId)
+		{
+			ForwardOriginCacheEntry *entry;
+
+			entry = hash_search(ForwardOriginCache, &remote_origin_id,
+								HASH_ENTER, NULL);
+			entry->local_origin_id = local_id;
+		}
+	}
 }
 
 /*
@@ -4867,101 +5006,60 @@ apply_replay_queue_start_replay(void)
 /*
  * Advance the replication origin for forwarded transactions.
  *
- * In cascade replication (A -> B -> C with forward_origins='all'), when C
- * receives transactions that originated on A (forwarded through B), we track
- * C's position relative to A by maintaining a separate replication origin.
+ * Called from handle_commit() for forwarded transactions (those carrying an
+ * ORIGIN message from a peer node, not our direct provider).
  *
- * This enables seamless switchover: if C later subscribes directly to A,
- * the origin will already exist with the correct LSN, so C knows where to
- * start receiving from A.
+ * handle_origin() already resolved the cache: a hash_search(HASH_FIND) below
+ * finds the RepOriginId of this node's own subscription to the forwarding
+ * peer, keyed by the peer's node id, if one exists. There is no entry when
+ * no such subscription exists (pure cascade topology, the ordinary case),
+ * or when this specific peer has not yet been resolved -- either way,
+ * nothing to advance.
  *
- * The origin is named using slot name format (spk_<db>_<source>_<subscriber>)
- * for consistency with direct subscriptions.
+ * The origin records two LSNs in two different WAL spaces: the remote LSN is
+ * the peer's commit position (remote_origin_lsn, peer space) and the local
+ * LSN is our own commit position for the applied transaction (local_lsn =
+ * XactLastCommitEnd, or InvalidXLogRecPtr for an empty transaction).  Never
+ * pass the provider's end_lsn as the local value — it poisons the origin's
+ * crash-recovery ordering.
  *
- * We cache the remote_origin_id -> local_origin_id mapping since the Spock
- * node ID is stable across the cluster (set by commit f60484e).
+ * wal_log=true makes this advance durable through PG's normal
+ * replication-origin machinery: the peer's origin becomes the position that
+ * subscription resumes from once/if it is later enabled -- no separate
+ * ledger or reconciliation step, the origin is the single source of truth,
+ * advanced in place as forwarded transactions commit. One residual gap is
+ * inherent: this advance is a separate WAL record *after* the data commit
+ * (PG allows only one session origin per commit, and that one belongs to
+ * our actual provider's subscription), so a crash in that narrow window
+ * loses only the last forwarded transaction's advance, which is simply
+ * re-delivered once forwarding resumes -- at-least-once, matching ordinary
+ * Spock apply. last_update_wins absorbs the duplicate; delta-apply
+ * idempotency under such re-delivery is a separate, tracked follow-up.
  */
 static void
-maybe_advance_forwarded_origin(XLogRecPtr end_lsn, bool xact_had_exception)
+maybe_advance_forwarded_origin(XLogRecPtr local_lsn, bool xact_had_exception)
 {
-	RepOriginId	forwarded_origin;
+	ForwardOriginCacheEntry *entry;
+	bool		found;
 
-	/*
-	 * Only advance for forwarded transactions (origin differs from our direct
-	 * provider) that completed without exceptions.
-	 */
 	if (xact_had_exception ||
 		remote_origin_id == InvalidRepOriginId ||
-		remote_origin_id == MySubscription->origin->id ||
-		remote_origin_name == NULL)
+		remote_origin_id == (RepOriginId) MySubscription->origin->id ||
+		remote_origin_name == NULL ||
+		ForwardOriginCache == NULL)
 		return;
 
-	/*
-	 * Check cache first. The remote_origin_id (Spock node ID) is stable
-	 * for a given source node, so we can reuse the local origin ID.
-	 */
-	if (remote_origin_id == cached_forward_remote_id &&
-		cached_forward_local_id != InvalidRepOriginId)
-	{
-		forwarded_origin = cached_forward_local_id;
+	entry = hash_search(ForwardOriginCache, &remote_origin_id, HASH_FIND, &found);
+	if (!found)
+		return;
 
-		elog(DEBUG2, "SPOCK %s: advancing forwarded origin (cached, oid %u) "
-			 "remote_lsn %X/%X end_lsn %X/%X",
-			 MySubscription->name,
-			 forwarded_origin,
-			 (uint32) (remote_origin_lsn >> 32), (uint32) remote_origin_lsn,
-			 (uint32) (end_lsn >> 32), (uint32) end_lsn);
-	}
-	else
-	{
-		/*
-		 * Cache miss - look up or create the origin. Use slot name format
-		 * (spk_<db>_<provider>_<subscription>) for consistency with direct
-		 * subscriptions.
-		 */
-		Relation	replorigin_rel;
-		NameData	slot_name;
-		char	   *dbname;
+	elog(DEBUG2, "SPOCK %s: advancing forwarded origin (oid %u) "
+		 "remote_lsn %X/%X local_lsn %X/%X",
+		 MySubscription->name,
+		 entry->local_origin_id,
+		 (uint32) (remote_origin_lsn >> 32), (uint32) remote_origin_lsn,
+		 (uint32) (local_lsn >> 32), (uint32) local_lsn);
 
-		StartTransactionCommand();
-
-		dbname = get_database_name(MyDatabaseId);
-		gen_slot_name(&slot_name, dbname, remote_origin_name,
-					  MySubscription->name);
-
-		elog(DEBUG2, "SPOCK %s: advancing forwarded origin '%s' (from node '%s') "
-			 "remote_lsn %X/%X end_lsn %X/%X",
-			 MySubscription->name,
-			 NameStr(slot_name),
-			 remote_origin_name,
-			 (uint32) (remote_origin_lsn >> 32), (uint32) remote_origin_lsn,
-			 (uint32) (end_lsn >> 32), (uint32) end_lsn);
-
-		replorigin_rel = table_open(ReplicationOriginRelationId, RowExclusiveLock);
-		forwarded_origin = replorigin_by_name(NameStr(slot_name), true);
-
-		if (forwarded_origin == InvalidRepOriginId)
-		{
-			forwarded_origin = replorigin_create(NameStr(slot_name));
-			elog(DEBUG2, "SPOCK %s: created replication origin '%s' (oid %u) "
-				 "for forwarded transactions from node '%s'",
-				 MySubscription->name, NameStr(slot_name), forwarded_origin,
-				 remote_origin_name);
-		}
-
-		table_close(replorigin_rel, RowExclusiveLock);
-		CommitTransactionCommand();
-		MemoryContextSwitchTo(MessageContext);
-
-		/* Update cache */
-		cached_forward_remote_id = remote_origin_id;
-		cached_forward_local_id = forwarded_origin;
-	}
-
-	/* Advance the origin */
-	StartTransactionCommand();
-	replorigin_advance(forwarded_origin, remote_origin_lsn,
-					   end_lsn, false, false);
-	CommitTransactionCommand();
-	MemoryContextSwitchTo(MessageContext);
+	replorigin_advance(entry->local_origin_id, remote_origin_lsn,
+					   local_lsn, false, true);
 }
