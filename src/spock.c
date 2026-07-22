@@ -58,6 +58,7 @@
 #endif
 #include "spock_executor.h"
 #include "spock_group.h"
+#include "spock_group_slot.h"
 #include "spock_node.h"
 #include "spock_conflict.h"
 #include "spock_rmgr.h"
@@ -153,6 +154,13 @@ static const struct config_enum_entry apply_change_logging_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry group_slots_safety_mode_options[] = {
+	{"strict", SPOCK_GROUP_SLOT_SAFETY_STRICT, false},
+	{"repair", SPOCK_GROUP_SLOT_SAFETY_REPAIR, false},
+	{"off", SPOCK_GROUP_SLOT_SAFETY_OFF, false},
+	{NULL, 0, false}
+};
+
 bool		spock_synchronous_commit = false;
 char	   *spock_temp_directory = "";
 static char *spock_temp_directory_config;
@@ -173,6 +181,12 @@ int			log_origin_change = SPOCK_ORIGIN_NONE;
 int			spock_apply_idle_timeout = 300;
 int			spock_log_verbosity = SPOCK_LOG_VERBOSITY_NORMAL;
 int			spock_apply_change_logging = SPOCK_APPLY_CHANGE_LOG_NONE;
+
+/* Group slots (opt-in; conservative defaults) */
+bool		spock_group_slots_enabled = false;
+int			spock_group_slots_worker_interval = 5;		/* seconds */
+int			spock_group_slots_staleness_timeout = 60;	/* seconds */
+int			spock_group_slots_safety_mode = SPOCK_GROUP_SLOT_SAFETY_STRICT;
 
 static emit_log_hook_type prev_emit_log_hook = NULL;
 
@@ -1332,6 +1346,59 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
+
+	DefineCustomBoolVariable("spock.group_slots_enabled",
+							 "Enable group replication slots.",
+							 "When enabled, each Spock database maintains one "
+							 "internally managed, inactive logical replication "
+							 "slot that tracks the oldest safe WAL position for "
+							 "the whole replication group. Disabled by default; "
+							 "when off, no group slot is created and normal "
+							 "replication behaviour is unchanged.",
+							 &spock_group_slots_enabled,
+							 false,
+							 PGC_SIGHUP,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.group_slots_worker_interval",
+							"Interval in seconds between group-slot maintenance ticks.",
+							"How often the per-database group-slot worker "
+							"recomputes the group-safe horizon and, when safe, "
+							"advances the group slot.",
+							&spock_group_slots_worker_interval,
+							5,
+							1,
+							3600,
+							PGC_SIGHUP,
+							GUC_UNIT_S,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.group_slots_progress_staleness_timeout",
+							"Seconds after which a member's progress is considered stale.",
+							"If a required member has not reported fresh progress "
+							"within this many seconds, the group slot refuses to "
+							"advance and records a blocked reason.",
+							&spock_group_slots_staleness_timeout,
+							60,
+							1,
+							86400,
+							PGC_SIGHUP,
+							GUC_UNIT_S,
+							NULL, NULL, NULL);
+
+	DefineCustomEnumVariable("spock.group_slots_safety_mode",
+							 gettext_noop("Controls how conservatively the group slot is managed."),
+							 gettext_noop("'strict' (default) refuses any unsafe "
+										  "advancement or repair. 'repair' additionally "
+										  "allows guarded recreate/relink of a damaged "
+										  "group slot. 'off' keeps metadata up to date "
+										  "but never advances the slot."),
+							 &spock_group_slots_safety_mode,
+							 SPOCK_GROUP_SLOT_SAFETY_STRICT,
+							 group_slots_safety_mode_options,
+							 PGC_SIGHUP, 0,
+							 NULL, NULL, NULL);
 
 	if (IsBinaryUpgrade)
 		return;

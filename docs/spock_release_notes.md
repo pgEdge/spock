@@ -1,5 +1,30 @@
 # Spock Release Notes
 
+## Spock 6.0.1
+
+### Highlights
+
+* **Group replication slots** — opt-in, BDR/PGD-style group slots that retain
+  WAL at the oldest safe position for the whole replication group. Each Spock
+  database maintains one internally managed, inactive logical slot whose
+  horizon is advanced by a background worker only when every required member
+  has fresh, durable progress for the current membership generation. Advancement
+  is refused during join, part, unknown node state, stale progress, missing
+  slot state, or membership-generation mismatch. New GUCs
+  (`spock.group_slots_enabled`, `spock.group_slots_worker_interval`,
+  `spock.group_slots_progress_staleness_timeout`,
+  `spock.group_slots_safety_mode`), catalog tables, and SQL functions
+  (`spock.local_group_slot_name()`, `spock.group_slot_status()`,
+  `spock.advance_group_slot()`, `spock.repair_group_slot()`) are added. The
+  feature is disabled by default and does not change replication behaviour when
+  off. See [Group replication slots](managing/group_slots.md).
+
+### Upgrading
+
+Run `ALTER EXTENSION spock UPDATE TO '6.0.1';` (or `ALTER EXTENSION spock
+UPDATE;`). The upgrade only adds new, dormant objects; no existing behaviour
+changes until `spock.group_slots_enabled` is turned on.
+
 ## Spock 6.0.0
 
 The on-disk catalog format and the GUC surface both change in this release;

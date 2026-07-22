@@ -56,3 +56,6 @@ test: 044_apply_change_logging
 
 # Regression tests
 test: 103_manager_worker_dboid_race
+
+# Group replication slots
+test: 105_group_slots

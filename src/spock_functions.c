@@ -101,6 +101,7 @@
 #include "spock_sync.h"
 #include "spock_worker.h"
 #include "spock_group.h"
+#include "spock_group_slot.h"
 #include "spock_readonly.h"
 
 #include "spock.h"
@@ -296,6 +297,29 @@ spock_create_node(PG_FUNCTION_ARGS)
 
 	create_local_node(node.id, nodeif.id);
 
+	/*
+	 * Seed durable group-slot metadata for this node.  No-op when the group
+	 * slots feature is disabled.  The physical (inactive) slot itself is
+	 * created by the group-slot background worker, because a logical slot
+	 * cannot be created in a transaction that has already written.
+	 */
+	CommandCounterIncrement();
+	spock_group_slot_init_local(node.id);
+
+	/*
+	 * Wake the supervisor so a per-database manager is (re)started promptly.
+	 * A lone node with no subscriptions would otherwise have no manager, and
+	 * therefore no group-slot worker, until the supervisor's periodic sweep.
+	 */
+	if (SpockCtx != NULL)
+	{
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+		SpockCtx->subscriptions_changed = true;
+		if (SpockCtx->supervisor != NULL)
+			SetLatch(&SpockCtx->supervisor->procLatch);
+		LWLockRelease(SpockCtx->lock);
+	}
+
 	PG_RETURN_OID(node.id);
 }
 
@@ -363,6 +387,14 @@ spock_drop_node(PG_FUNCTION_ARGS)
 				elog(ERROR, "SPI query failed: %d", res);
 
 			SPI_finish();
+
+			/*
+			 * Deliberately tear down the internally managed group slot for
+			 * this node.  This is the only place a group slot is dropped;
+			 * the generic "spk_.*" cleanup above never matches the
+			 * "spkgrp_" group-slot prefix.
+			 */
+			spock_group_slot_drop_local();
 
 			/* And drop the local node association as well. */
 			drop_local_node();

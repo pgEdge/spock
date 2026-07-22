@@ -2447,6 +2447,19 @@ BEGIN
     -- Example: Register n4 as a new node alongside n1, n2, n3.
     CALL spock.create_nodes_only(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, new_node_location, new_node_country, new_node_info, initial_node_count);
 
+    -- Phase 2b: Group slot integration (no-op unless spock.group_slots_enabled).
+    -- Begin a membership-generation transition and pause group-slot advancement
+    -- so the group-safe WAL horizon is retained as a stable base point for the
+    -- joining node until it has fully joined.  The existing temporary-slot
+    -- behaviour below remains as the fallback.
+    IF COALESCE(current_setting('spock.group_slots_enabled', true), 'off')::boolean
+       AND to_regprocedure('spock.group_slot_begin_join(name)') IS NOT NULL THEN
+        PERFORM spock.group_slot_begin_join(new_node_name);
+        IF verb THEN
+            RAISE NOTICE 'Group slot: join started for %, group-slot advancement paused', new_node_name;
+        END IF;
+    END IF;
+
     -- Phase 3: Create disabled subscriptions and replication slots.
     -- Example: Prepare n4 for replication but keep subscriptions disabled initially.
     CALL spock.create_disable_subscriptions_and_slots(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
@@ -2474,6 +2487,18 @@ BEGIN
     -- Phase 9: Create subscription from new node to source node.
     -- Example: Set up n4 to replicate back to n1 for bidirectional sync.
     CALL spock.create_sub_on_new_node_to_src_node(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
+
+    -- Phase 9b: Group slot integration (no-op unless spock.group_slots_enabled).
+    -- The new node is now a full, bidirectionally replicating member.  Promote
+    -- it to active in the current membership generation and resume group-slot
+    -- advancement.
+    IF COALESCE(current_setting('spock.group_slots_enabled', true), 'off')::boolean
+       AND to_regprocedure('spock.group_slot_complete_join(name)') IS NOT NULL THEN
+        PERFORM spock.group_slot_complete_join(new_node_name);
+        IF verb THEN
+            RAISE NOTICE 'Group slot: join completed for %, group-slot advancement resumed', new_node_name;
+        END IF;
+    END IF;
 
     -- Phase 10: Present final cluster state.
     -- Example: Show n1, n2, n3, n4 as fully connected and synchronized.

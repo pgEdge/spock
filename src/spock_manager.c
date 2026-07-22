@@ -18,9 +18,12 @@
 #include "commands/dbcommands.h"
 #include "commands/extension.h"
 
+#include "postmaster/interrupt.h"
+
 #include "storage/ipc.h"
 #include "storage/proc.h"
 
+#include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
@@ -29,6 +32,7 @@
 
 #include "spock_node.h"
 #include "spock_worker.h"
+#include "spock_group_slot.h"
 #include "spock.h"
 
 PGDLLEXPORT void spock_manager_main(Datum main_arg);
@@ -58,6 +62,40 @@ manage_apply_workers(void)
 	node = get_local_node(true, true);
 	if (!node)
 		proc_exit(0);
+
+	/*
+	 * Maintain the per-database group-slot worker.  Start one when the
+	 * feature is enabled and none is running; stop any running worker when
+	 * the feature is turned off.  The group-slot worker only exists while a
+	 * local node is configured (we already returned above otherwise).
+	 */
+	{
+		SpockWorker *gsw;
+		bool		gs_running;
+
+		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+		gsw = spock_group_slot_find(MySpockWorker->dboid);
+		gs_running = spock_worker_running(gsw);
+		LWLockRelease(SpockCtx->lock);
+
+		if (spock_group_slots_enabled && !gs_running)
+		{
+			SpockWorker gw;
+
+			memset(&gw, 0, sizeof(SpockWorker));
+			gw.worker_type = SPOCK_WORKER_GROUP_SLOT;
+			gw.dboid = MySpockWorker->dboid;
+			spock_worker_register(&gw);
+		}
+		else if (!spock_group_slots_enabled && gs_running)
+		{
+			LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+			gsw = spock_group_slot_find(MySpockWorker->dboid);
+			if (spock_worker_running(gsw))
+				spock_worker_kill(gsw);
+			LWLockRelease(SpockCtx->lock);
+		}
+	}
 
 	/* Get list of subscribers. */
 	subscriptions = get_node_subscriptions(node->node->id, false);
@@ -217,6 +255,16 @@ spock_manager_main(Datum main_arg)
 	{
 		int			rc;
 		int			sleep_timer;
+
+		/*
+		 * Pick up configuration changes so that runtime toggles (for example
+		 * spock.group_slots_enabled) take effect without a restart.
+		 */
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
 
 		/*
 		 * Launch or restart apply-workers. This determines how long we have

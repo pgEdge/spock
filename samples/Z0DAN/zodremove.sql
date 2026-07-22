@@ -468,5 +468,23 @@ BEGIN
     -- Example: Show summary of n4 removal from cluster n1,n2,n3,n4.
     CALL spock.finalize_node_removal(target_node_name, verbose_mode);
 
+    -- Phase 7: Group slot integration (no-op unless spock.group_slots_enabled).
+    -- The group slot protects the part boundary automatically: on every
+    -- remaining node, the departed node stays in the current membership
+    -- generation as a required member with no fresh progress, so group-slot
+    -- advancement blocks with reason 'stale_progress' until the membership is
+    -- reconciled.  To resume advancement, run the following on EACH remaining
+    -- node once the node has been fully removed:
+    --
+    --     SELECT spock.group_slot_complete_part('<removed_node_name>');
+    --
+    -- This advances to the next membership generation with the removed node no
+    -- longer required and clears the part freeze boundary.
+    IF COALESCE(current_setting('spock.group_slots_enabled', true), 'off')::boolean THEN
+        RAISE NOTICE 'Group slot: node % removed. On each REMAINING node run '
+                     'SELECT spock.group_slot_complete_part(%L); to resume group-slot advancement.',
+                     target_node_name, target_node_name;
+    END IF;
+
 END;
 $$ LANGUAGE plpgsql;
