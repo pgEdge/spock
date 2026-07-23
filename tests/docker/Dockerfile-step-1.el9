@@ -50,6 +50,11 @@ ARG DBPASSWD=testpass
 ARG DBNAME=demo
 ARG DBPORT=5432
 ARG MAKE_JOBS=4
+# Optional override for the PostgreSQL source ref.  Normally left empty, in
+# which case resolve-pg-ref.sh picks the ref from tests/postgres-build.conf.
+# If set (e.g. by a workflow that resolves the ref on the runner to key a
+# layer cache), it is used verbatim and the config is not consulted.
+ARG PG_REF=
 # When set to any non-empty value, Spock is compiled with -DSPOCK_RANDOM_DELAYS,
 # injecting random 1-100 ms delays at every transaction begin, worker start,
 # and worker finish.  Used by the random-delays-regress workflow.
@@ -127,23 +132,20 @@ WORKDIR /home/pgedge
 # Clone PostgreSQL Source
 # ==============================================================================
 
-# Determine the PostgreSQL source ref for the requested major version:
-# the latest REL_${PGVER}_* tag.  Version sort places BETA/RC tags before
-# numeric point releases, so a pre-GA major resolves to its newest beta/RC
-# tag (currently REL_19_BETA1 for PG19) and switches to GA point releases
-# automatically once they are tagged.  Building from a tag instead of a
-# branch tip keeps CI reproducible between runs.
+# Determine the PostgreSQL source ref for the requested major version.
+# tests/resolve-pg-ref.sh maps tests/postgres-build.conf (tag | branch |
+# explicit pin, per major) to a concrete ref.  A tag is reproducible; a
+# branch tracks the untagged upcoming release.  The PG_REF build-arg, if set,
+# overrides the config and is used verbatim.
 RUN set -eux && \
-	PG_REF=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
-	grep "refs/tags/REL_${PGVER}_" | \
-	sed 's|.*refs/tags/||' | \
-	tr '_' '.' | \
-	sort -V | \
-	tail -n 1 | \
-	tr '.' '_') && \
-	echo "Cloning PostgreSQL tag: ${PG_REF}" && \
-	git clone --branch "${PG_REF}" --depth 1 \
-	https://github.com/postgres/postgres.git /home/pgedge/postgres && \
+	PG_REF="${PG_REF:-$(/home/pgedge/spock/tests/resolve-pg-ref.sh "${PGVER}")}" && \
+	echo "Fetching PostgreSQL ref: ${PG_REF}" && \
+	git init /home/pgedge/postgres && \
+	git -C /home/pgedge/postgres remote add origin \
+	https://github.com/postgres/postgres.git && \
+	git -C /home/pgedge/postgres fetch --depth 1 origin "${PG_REF}" && \
+	git -C /home/pgedge/postgres checkout --detach FETCH_HEAD && \
+	echo "Checked out $(git -C /home/pgedge/postgres rev-parse --short HEAD) (${PG_REF})" && \
 	echo "export PG_SRCDIR=/home/pgedge/postgres" >> /home/pgedge/.bashrc
 
 
