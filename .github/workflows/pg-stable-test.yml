@@ -1,10 +1,10 @@
-name: Regression and TAP against PG stable-branch tips
-run-name: Check spock against fresh stable PostgreSQL branches
+name: Regression and TAP against configured PostgreSQL ref
+run-name: Check spock against the PostgreSQL ref from postgres-build.conf
 
-# Builds PostgreSQL from the live tip of REL_${PGVER}_STABLE (not a tagged
-# release) with stock configure flags, applies spock's version-specific
-# patches per the README, builds spock per the README, and runs the
-# regression and TAP suites.
+# Builds PostgreSQL from the ref selected per major in
+# tests/postgres-build.conf (tag, tip of REL_${PGVER}_STABLE, or an explicit
+# pin) with stock configure flags, applies spock's version-specific patches
+# and builds spock per the README, and runs the regression and TAP suites.
 
 on:
   workflow_dispatch:
@@ -45,12 +45,18 @@ jobs:
             libreadline-dev zlib1g-dev \
             libipc-run-perl libtest-simple-perl
 
-      - name: Clone PostgreSQL stable-branch tip
+      - name: Resolve and fetch PostgreSQL source
         run: |
-          git clone --branch REL_${{ matrix.pgver }}_STABLE --depth 1 \
-            https://github.com/postgres/postgres.git "$PG_SRCDIR"
-          cd "$PG_SRCDIR"
-          echo "Cloned $(git rev-parse --short HEAD) on REL_${{ matrix.pgver }}_STABLE"
+          PG_REF=$(spock/tests/resolve-pg-ref.sh "${{ matrix.pgver }}")
+          echo "PG ${{ matrix.pgver }} resolved to $PG_REF"
+          # fetch + checkout (not clone --branch) so an explicit commit-SHA
+          # pin works as well as a branch or tag name.
+          git init "$PG_SRCDIR"
+          git -C "$PG_SRCDIR" remote add origin \
+            https://github.com/postgres/postgres.git
+          git -C "$PG_SRCDIR" fetch --depth 1 origin "$PG_REF"
+          git -C "$PG_SRCDIR" checkout --detach FETCH_HEAD
+          echo "Checked out $(git -C "$PG_SRCDIR" rev-parse --short HEAD) ($PG_REF)"
 
       # README step 2: apply spock patches in numerical order.  Glob
       # expansion gives us "pgN-000-...", "pgN-015-...", etc., in order.

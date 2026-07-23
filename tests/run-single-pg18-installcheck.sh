@@ -227,11 +227,15 @@ psql_on() {
 # Build pipeline: clone + build PG + build Spock (once, shared by all nodes)
 # ---------------------------------------------------------------------------
 
+# PG_REF is the concrete ref to build (a tag or a branch); resolved by
+# clone_pg from tests/postgres-build.conf before these helpers run.
+# Pick the first reachable mirror.  Reachability is checked generically
+# (HEAD), not by looking up PG_REF, because PG_REF may be a raw commit SHA
+# rather than a ref name; a bad ref is caught loudly by the fetch below.
 pick_pg_remote() {
 	local r
 	for r in ${PG_GIT_REMOTES}; do
-		if git ls-remote --exit-code --heads "${r}" "REL_${PG_VER}_STABLE" \
-				>/dev/null 2>&1; then
+		if git ls-remote --exit-code "${r}" HEAD >/dev/null 2>&1; then
 			echo "${r}"
 			return 0
 		fi
@@ -239,29 +243,50 @@ pick_pg_remote() {
 	return 1
 }
 
+# fetch + checkout (not clone --branch) so an explicit commit-SHA pin works
+# as well as a branch or tag name.  The && chain ensures a mid-sequence
+# failure propagates and the reuse marker is only written on full success.
 _do_clone_pg() {
 	local remote="$1"
-	local branch="REL_${PG_VER}_STABLE"
-	rm -rf "${SRC}"
-	git clone --depth=1 --single-branch --branch "${branch}" \
-		"${remote}" "${SRC}"
+	rm -rf "${SRC}" && \
+	git init "${SRC}" && \
+	git -C "${SRC}" remote add origin "${remote}" && \
+	git -C "${SRC}" fetch --depth 1 origin "${PG_REF}" && \
+	git -C "${SRC}" checkout --detach FETCH_HEAD && \
+	printf '%s\n' "${PG_REF}" > "${SRC}/.spock-pg-ref"
 }
 
 clone_pg() {
-	local branch="REL_${PG_VER}_STABLE"
+	# Resolve first: the reuse checks below must know which ref is wanted.
+	# tag | branch | explicit pin, per tests/postgres-build.conf.
+	PG_REF="$("${SCRIPT_DIR}/resolve-pg-ref.sh" "${PG_VER}")" \
+		|| fail "PG${PG_VER}: could not resolve PostgreSQL ref from config" 5
+
+	# A cached checkout built for a different ref (config changed since)
+	# forces a full rebuild, so the new ref takes effect in the pg-build and
+	# spock-build phases too -- all three phases gate on FORCE_REBUILD.  A
+	# moved branch tip (same ref name, new commits) is deliberately NOT
+	# detected here; use --force for that.
+	if [ "${FORCE_REBUILD}" -eq 0 ] \
+		&& [ -d "${SRC}/.git" ] \
+		&& [ "$(cat "${SRC}/.spock-pg-ref" 2>/dev/null)" != "${PG_REF}" ]; then
+		log "pg${PG_VER}: [pg-clone] cached source is for a different ref;" \
+			"rebuilding for ${PG_REF}"
+		FORCE_REBUILD=1
+	fi
 
 	if [ "${FORCE_REBUILD}" -eq 0 ] \
 		&& [ -d "${SRC}/.git" ] \
 		&& [ -f "${SRC}/src/test/regress/parallel_schedule" ]; then
-		log "pg${PG_VER}: [pg-clone] source already present, skipping"
+		log "pg${PG_VER}: [pg-clone] source for ${PG_REF} already present, skipping"
 		return 0
 	fi
 
 	local remote
 	remote="$(pick_pg_remote)" \
-		|| fail "PG${PG_VER}: no reachable git remote for ${branch}" 5
+		|| fail "PG${PG_VER}: no reachable git remote for ${PG_REF}" 5
 
-	log "pg${PG_VER}: [pg-clone] ${branch} from ${remote}"
+	log "pg${PG_VER}: [pg-clone] ${PG_REF} from ${remote}"
 	run_phase "pg${PG_VER}" pg-clone _do_clone_pg "${remote}"
 }
 
