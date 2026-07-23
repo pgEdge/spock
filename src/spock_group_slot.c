@@ -1,24 +1,11 @@
 /*-------------------------------------------------------------------------
  *
  * spock_group_slot.c
- *		Group replication slot subsystem (BDR/PGD-style group slots).
+ *		Group replication slot subsystem.
  *
- * This module provides:
- *   - Deterministic naming for the per-database group slot
- *     (spock.local_group_slot_name()).
- *   - A node-initialization hook that seeds durable group-slot metadata.
- *   - A per-database background worker that periodically drives the SQL-side
- *     "tick" which recomputes the group-safe horizon and, when every required
- *     member has fresh progress for the current membership generation and no
- *     blocker exists, advances the inactive group slot.
- *   - Deliberate teardown of the group slot when the local node is dropped.
- *
- * All safety decisions (safe/freeze LSN computation, membership-generation
- * gating, blocked-reason recording, advancement and repair) are implemented
- * in SQL (spock.group_slot_* functions) so that they are durable and
- * auditable in catalog tables and survive restarts without relying on shared
- * memory.  This C module is deliberately thin: it owns naming, scheduling and
- * lifecycle only.
+ * Thin C layer: slot naming, the per-database worker that drives the SQL
+ * tick, and node create/drop hooks. All safety logic lives in the
+ * spock.group_slot_* SQL functions so it is durable and survives restarts.
  *
  * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -53,12 +40,7 @@
 
 PG_FUNCTION_INFO_V1(spock_local_group_slot_name_sql);
 
-/*
- * Build a group slot name from a database name and node name into the
- * supplied Name buffer.  The result only contains characters valid in a
- * replication slot name ([a-z0-9_]); any other character is replaced with an
- * underscore, matching gen_slot_name()'s behaviour.
- */
+/* Build the slot name; sanitize to [a-z0-9_] like gen_slot_name(). */
 static void
 build_group_slot_name(Name out_name, const char *dbname, const char *nodename)
 {
@@ -81,12 +63,7 @@ build_group_slot_name(Name out_name, const char *dbname, const char *nodename)
 	}
 }
 
-/*
- * spock_build_local_group_slot_name
- *
- * Fill out_name with the deterministic group slot name for the current
- * database and local node.  Returns false when there is no local node.
- */
+/* Fill out_name for the local node; false when there is no local node. */
 bool
 spock_build_local_group_slot_name(Name out_name)
 {
@@ -102,11 +79,7 @@ spock_build_local_group_slot_name(Name out_name)
 	return true;
 }
 
-/*
- * SQL: spock.local_group_slot_name() -> name
- *
- * Returns NULL when the current database is not configured as a Spock node.
- */
+/* SQL: spock.local_group_slot_name() -> name (NULL when not a spock node). */
 Datum
 spock_local_group_slot_name_sql(PG_FUNCTION_ARGS)
 {
@@ -119,16 +92,9 @@ spock_local_group_slot_name_sql(PG_FUNCTION_ARGS)
 }
 
 /*
- * spock_group_slot_init_local
- *
- * Seed durable group-slot metadata for a freshly created local node.  Called
- * from spock_create_node() while a transaction is open.  Does not create the
- * physical slot here: a logical replication slot cannot be created in a
- * transaction that has already performed writes, so the actual slot is
- * created by the background worker on its next tick (see
- * spock.group_slot_ensure()).
- *
- * No-op when the feature is disabled.
+ * Seed group-slot metadata for a freshly created local node. The physical
+ * slot is created later by the worker: a logical slot cannot be created in a
+ * transaction that has already written. No-op when the feature is disabled.
  */
 void
 spock_group_slot_init_local(Oid node_id)
@@ -163,10 +129,7 @@ spock_group_slot_init_local(Oid node_id)
 	argtypes[2] = NAMEOID;
 	values[2] = NameGetDatum(&slotname);
 
-	/*
-	 * The metadata table is a user catalog table, which does not support ON
-	 * CONFLICT, so guard the insert with an existence check.
-	 */
+	/* User catalog table: no ON CONFLICT, so guard with NOT EXISTS. */
 	rc = SPI_execute_with_args(
 		"INSERT INTO spock.group_slot_state (node_id, dboid, slot_name) "
 		"SELECT $1, $2, $3 "
@@ -180,16 +143,9 @@ spock_group_slot_init_local(Oid node_id)
 }
 
 /*
- * spock_group_slot_drop_local
- *
- * Deliberately tear down the local group slot and its metadata.  Called from
- * spock_drop_node() when the local node itself is being removed.  This is the
- * only path that removes a group slot; normal subscription/node cleanup never
- * touches it because the "spkgrp_" prefix does not match the "spk_.*" pattern
- * used to bulk-drop per-subscription slots.
- *
- * Tolerant of a missing metadata table (older extension) and of an active
- * slot (skipped rather than erroring).
+ * Tear down the local group slot and metadata. Only called from
+ * spock_drop_node(); ordinary cleanup never matches the "spkgrp_" prefix.
+ * Tolerant of a missing metadata table and an active slot.
  */
 void
 spock_group_slot_drop_local(void)
@@ -222,11 +178,7 @@ spock_group_slot_drop_local(void)
 	SPI_finish();
 }
 
-/*
- * Run a single maintenance tick by invoking the SQL orchestration function.
- * Errors are caught and logged so that a transient failure (for example a
- * momentarily missing slot mid-repair) does not tear down the worker.
- */
+/* One tick: run the SQL orchestrator, catching errors so the worker lives. */
 static void
 spock_group_slot_do_tick(void)
 {
@@ -268,10 +220,7 @@ spock_group_slot_do_tick(void)
 	PG_END_TRY();
 }
 
-/*
- * Background worker entry point.  One per Spock database, started by the
- * manager only while spock.group_slots_enabled is on and a local node exists.
- */
+/* Worker entry point. One per database, started by the manager. */
 void
 spock_group_slot_main(Datum main_arg)
 {
@@ -295,11 +244,7 @@ spock_group_slot_main(Datum main_arg)
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
-		/*
-		 * If the feature was turned off at runtime, exit cleanly.  The manager
-		 * will not restart us while it stays off, and will start a fresh
-		 * worker if it is turned back on.
-		 */
+		/* Turned off at runtime: exit; the manager restarts us if re-enabled. */
 		if (!spock_group_slots_enabled)
 		{
 			elog(LOG, "spock group slot worker exiting: feature disabled");

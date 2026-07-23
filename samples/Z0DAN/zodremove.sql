@@ -446,6 +446,17 @@ BEGIN
     -- Example: Gather info about n4's subscriptions, slots, and sets in n1,n2,n3,n4.
     CALL spock.gather_cluster_info_for_removal(target_node_name, verbose_mode);
 
+    -- Phase 2b: Group slot integration (no-op unless spock.group_slots_enabled).
+    -- Freeze the group slot at the pre-removal boundary before slots are torn
+    -- down, so retained WAL covers the part.
+    IF COALESCE(current_setting('spock.group_slots_enabled', true), 'off')::boolean
+       AND to_regprocedure('spock.group_slot_begin_part(name)') IS NOT NULL THEN
+        PERFORM spock.group_slot_begin_part(target_node_name);
+        IF verbose_mode THEN
+            RAISE NOTICE 'Group slot: part started for %, boundary frozen', target_node_name;
+        END IF;
+    END IF;
+
     -- Phase 3: Remove subscriptions (before removing replication sets).
     -- Note that this will also remove slots on the provider and the node
     -- and node interface info if no other subscription relies on it.
@@ -469,21 +480,17 @@ BEGIN
     CALL spock.finalize_node_removal(target_node_name, verbose_mode);
 
     -- Phase 7: Group slot integration (no-op unless spock.group_slots_enabled).
-    -- The group slot protects the part boundary automatically: on every
-    -- remaining node, the departed node stays in the current membership
-    -- generation as a required member with no fresh progress, so group-slot
-    -- advancement blocks with reason 'stale_progress' until the membership is
-    -- reconciled.  To resume advancement, run the following on EACH remaining
-    -- node once the node has been fully removed:
-    --
-    --     SELECT spock.group_slot_complete_part('<removed_node_name>');
-    --
-    -- This advances to the next membership generation with the removed node no
-    -- longer required and clears the part freeze boundary.
-    IF COALESCE(current_setting('spock.group_slots_enabled', true), 'off')::boolean THEN
-        RAISE NOTICE 'Group slot: node % removed. On each REMAINING node run '
-                     'SELECT spock.group_slot_complete_part(%L); to resume group-slot advancement.',
-                     target_node_name, target_node_name;
+    -- The node is gone: advance to the next generation, clear the freeze, and
+    -- resume advancement. Run the same call on every other remaining node,
+    -- since each maintains its own group slot.
+    IF COALESCE(current_setting('spock.group_slots_enabled', true), 'off')::boolean
+       AND to_regprocedure('spock.group_slot_complete_part(name)') IS NOT NULL THEN
+        PERFORM spock.group_slot_complete_part(target_node_name);
+        IF verbose_mode THEN
+            RAISE NOTICE 'Group slot: part completed for %. Run '
+                         'SELECT spock.group_slot_complete_part(%L); on each remaining node.',
+                         target_node_name, target_node_name;
+        END IF;
     END IF;
 
 END;

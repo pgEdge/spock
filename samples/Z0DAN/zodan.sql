@@ -2448,16 +2448,19 @@ BEGIN
     CALL spock.create_nodes_only(src_node_name, src_dsn, new_node_name, new_node_dsn, verb, new_node_location, new_node_country, new_node_info, initial_node_count);
 
     -- Phase 2b: Group slot integration (no-op unless spock.group_slots_enabled).
-    -- Begin a membership-generation transition and pause group-slot advancement
-    -- so the group-safe WAL horizon is retained as a stable base point for the
-    -- joining node until it has fully joined.  The existing temporary-slot
-    -- behaviour below remains as the fallback.
+    -- Capture the safe horizon as the joining node's base point, then pause
+    -- advancement so that WAL is retained until the join completes.
     IF COALESCE(current_setting('spock.group_slots_enabled', true), 'off')::boolean
        AND to_regprocedure('spock.group_slot_begin_join(name)') IS NOT NULL THEN
-        PERFORM spock.group_slot_begin_join(new_node_name);
-        IF verb THEN
-            RAISE NOTICE 'Group slot: join started for %, group-slot advancement paused', new_node_name;
-        END IF;
+        DECLARE
+            base_lsn pg_lsn := spock.group_slot_safe_horizon();
+        BEGIN
+            PERFORM spock.group_slot_begin_join(new_node_name);
+            IF verb THEN
+                RAISE NOTICE 'Group slot: join started for %, advancement paused (base %)',
+                             new_node_name, COALESCE(base_lsn::text, 'n/a');
+            END IF;
+        END;
     END IF;
 
     -- Phase 3: Create disabled subscriptions and replication slots.

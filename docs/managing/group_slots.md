@@ -82,12 +82,13 @@ existing temporary-slot behaviour as a fallback:
   retained as a stable base point for the joining node. Once the new node is a
   full, bidirectionally replicating member, `spock.group_slot_complete_join()`
   resumes advancement.
-* **Removing a node** — the group slot protects the part boundary
-  automatically: on every remaining node, the departed node stays in the
-  current membership generation as a required member with no fresh progress, so
-  advancement blocks with `stale_progress` until the membership is reconciled.
-  After the node is fully removed, run the following on **each remaining node**
-  to advance to the next generation and resume advancement:
+* **Removing a node** — `spock.remove_node()` calls
+  `spock.group_slot_begin_part()` before the departing node's slots are torn
+  down, freezing the group slot at the pre-removal boundary so retained WAL
+  covers the part. After the node is gone it calls
+  `spock.group_slot_complete_part()` to advance to the next generation, clear
+  the freeze, and resume advancement. Because each node maintains its own group
+  slot, run the same call on every other remaining node:
 
   ```sql
   SELECT spock.group_slot_complete_part('<removed_node_name>');
