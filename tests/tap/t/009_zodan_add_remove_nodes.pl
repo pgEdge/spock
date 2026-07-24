@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 40;  # Fixed test count to match actual tests
+use Test::More;
 use lib '.';
 use lib 't';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config cross_wire system_maybe);
@@ -36,12 +36,6 @@ my $pg_bin = $config->{pg_bin};
 cross_wire(2, ['n1', 'n2'], 'Cross-wire nodes n1 and n2');
 
 pass('2-node cluster created and cross-wired');
-
-# Install dblink extension on all nodes (required for ZODAN procedures)
-system_maybe "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
-system_maybe "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
-
-pass('dblink extension installed on n1 and n2');
 
 # Step 2: Create test data and replication sets
 pass('Creating test data and replication sets');
@@ -142,84 +136,10 @@ system_or_bail "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c', "CREATE USER
 system_or_bail "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS spock";
 system_or_bail "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c', "ALTER EXTENSION spock UPDATE";
 
-# Install dblink extension on n3
-system_maybe "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
-
 pass('n3 database instance created and configured');
 
-# Step 4: Load ZODAN procedures on n3 (the new node)
-pass('Loading ZODAN procedures on n3');
-
-my $zodan_sql = '../../samples/Z0DAN/zodan.sql';
-if (-f $zodan_sql) {
-    print "Loading ZODAN procedures from: $zodan_sql\n";
-    
-    # Load the procedures and capture any errors
-    my $load_result = `$pg_bin/psql -p $n3_port -d $dbname -f $zodan_sql 2>&1`;
-    my $load_exit_code = $? >> 8;
-    
-    print "ZODAN SQL loading result (exit code: $load_exit_code):\n$load_result\n";
-    
-    if ($load_exit_code != 0) {
-        fail("Failed to load ZODAN procedures: $load_result");
-    }
-    
-    # Debug: List all procedures in spock schema
-    print "Debug: Listing all procedures in spock schema:\n";
-    my $debug_procs = `$pg_bin/psql -p $n3_port -d $dbname -c "SELECT proname FROM pg_proc WHERE pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'spock') ORDER BY proname"`;
-    print "$debug_procs\n";
-    
-    # Verify the procedure was created in spock schema
-    my $proc_check = `$pg_bin/psql -p $n3_port -d $dbname -t -c "SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE p.proname = 'check_spock_version_compatibility' AND n.nspname = 'spock'"`;
-    chomp($proc_check);
-    $proc_check =~ s/\s+//g;
-    if ($proc_check > 0) {
-        pass('ZODAN procedures loaded and verified on n3');
-    } else {
-        # Try checking all procedures in spock schema
-        my $alt_check = `$pg_bin/psql -p $n3_port -d $dbname -t -c "SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = 'spock' AND p.proname LIKE '%compatibility%'"`;
-        chomp($alt_check);
-        if ($alt_check) {
-            pass("ZODAN procedures loaded on n3 (found: $alt_check)");
-        } else {
-            fail('ZODAN procedures loaded but check_spock_version_compatibility not found');
-        }
-    }
-} else {
-    fail('ZODAN SQL file not found');
-}
-
-# Step 5: Add node n3 using ZODAN add_node procedure (called from n3)
-pass('Pre health check for node n3 (called from n3)');
-
-my $health_pre_cmd = "$pg_bin/psql -p $n3_port -d $dbname -c \"
-    CALL spock.health_check(
-        'n1',
-        'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
-        'n3',
-        'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password',
-        'pre'
-    )
-\"";
-
-print "Executing: $health_pre_cmd\n";
-print "---\n";
-
-open(my $pipe, "$health_pre_cmd 2>&1 |") or die "Cannot open pipe: $!";
-while (my $line = <$pipe>) {
-    print $line;
-}
-close($pipe);
-my $health_pre_result = $? >> 8;
-
-print "---\n";
-print "=== PRE HEALTH CHECK COMPLETED (exit code: $health_pre_result) ===\n";
-
-if ($health_pre_result == 0) {
-    pass('Pre health check procedure executed successfully');
-} else {
-    pass('Pre health check for node n3 using ZODAN health_check procedure (called from n3)');
-}
+# add_node/remove_node ship with the spock extension; nothing to load.
+my $pipe;
 
 print "=== STARTING ADD_NODE PROCEDURE ===\n";
 
@@ -260,37 +180,6 @@ pass('Verifying n3 integration');
 
 # Wait for replication to complete
 system_or_bail 'sleep', '3';
-
-pass('Post health check for node n3 (called from n3)');
-
-my $health_post_cmd = "$pg_bin/psql -p $n3_port -d $dbname -c \"
-    CALL spock.health_check(
-        'n1',
-        'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
-        'n3',
-        'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password',
-        'post'
-    )
-\"";
-
-print "Executing: $health_post_cmd\n";
-print "---\n";
-
-open($pipe, "$health_post_cmd 2>&1 |") or die "Cannot open pipe: $!";
-while (my $line = <$pipe>) {
-    print $line;
-}
-close($pipe);
-my $health_post_result = $? >> 8;
-
-print "---\n";
-print "=== POST HEALTH CHECK COMPLETED (exit code: $health_post_result) ===\n";
-
-if ($health_post_result == 0) {
-    pass('Post health check procedure executed successfully');
-} else {
-    pass('Post health check for node n3 using ZODAN health_check procedure (called from n3)');
-}
 
 # Check if test table exists on n3
 my $table_exists_n3 = `$pg_bin/psql -p $n3_port -d $dbname -t -c "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'test_zodan_table')"`;
@@ -353,19 +242,8 @@ if ($node_count_n3 eq '3') {
     fail("n3 node count incorrect: expected 3, got $node_count_n3");
 }
 
-# Step 7: Load ZODREMOVE procedures on n3
-pass('Loading ZODREMOVE procedures on n3');
-
-my $zodremove_sql = '../../samples/Z0DAN/zodremove.sql';
-if (-f $zodremove_sql) {
-    system_or_bail "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-f', $zodremove_sql;
-    pass('ZODREMOVE procedures loaded on n3');
-} else {
-    fail('ZODREMOVE SQL file not found');
-}
-
-# Step 8: Remove node n3 using ZODREMOVE remove_node procedure
-pass('Removing node n3 using ZODREMOVE remove_node procedure');
+# Step 7: Remove node n3 using the in-core remove_node procedure
+pass('Removing node n3 using remove_node procedure');
 
 print "=== STARTING REMOVE_NODE PROCEDURE ===\n";
 
@@ -466,4 +344,4 @@ print "✓ Cleaned up n3\n";
 print "========================\n";
 
 # Cleanup will be handled by SpockTest.pm END block
-# No need for done_testing() when using a test plan
+done_testing();

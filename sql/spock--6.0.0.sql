@@ -856,3 +856,30 @@ CREATE FUNCTION spock.reset_subscription_stats(subid oid DEFAULT NULL)
 RETURNS void
 AS 'MODULE_PATHNAME', 'spock_reset_subscription_stats'
 LANGUAGE C CALLED ON NULL INPUT VOLATILE;
+
+-- ----------------------------------------------------------------------------
+-- Zero Downtime Add/Remove Node (ZODAN)
+--
+-- add_node/remove_node orchestrate joining or removing a node entirely in C,
+-- reaching the other cluster nodes over libpq (no dblink dependency).
+--
+--     add_node must be run on the new node being added.
+--     remove_node must be run on the node being removed.
+-- ----------------------------------------------------------------------------
+CREATE PROCEDURE spock.add_node(
+	src_node_name		text,
+	src_dsn				text,
+	new_node_name		text,
+	new_node_dsn		text,
+	verb				boolean DEFAULT false,
+	new_node_location	text	DEFAULT 'NY',
+	new_node_country	text	DEFAULT 'USA',
+	new_node_info		jsonb	DEFAULT '{}'::jsonb,
+	timeout_sec			int		DEFAULT 180
+) LANGUAGE c AS 'MODULE_PATHNAME', 'spock_add_node';
+
+CREATE PROCEDURE spock.remove_node(
+	target_node_name	text,
+	target_node_dsn		text,
+	verbose_mode		boolean DEFAULT true
+) LANGUAGE c AS 'MODULE_PATHNAME', 'spock_remove_node';

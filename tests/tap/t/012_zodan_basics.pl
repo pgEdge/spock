@@ -22,10 +22,6 @@ my $pg_bin = $config->{pg_bin};
 psql_or_bail(2, "SELECT spock.node_drop('n2')");
 psql_or_bail(3, "SELECT spock.node_drop('n3')");
 psql_or_bail(1, "CREATE EXTENSION amcheck");
-psql_or_bail(2, "CREATE EXTENSION dblink");
-psql_or_bail(3, "CREATE EXTENSION dblink");
-psql_or_bail(2, "\\i ../../samples/Z0DAN/zodan.sql");
-psql_or_bail(3, "\\i ../../samples/Z0DAN/zodan.sql");
 psql_or_bail(1, "CREATE TABLE test(x serial PRIMARY KEY)");
 psql_or_bail(1, "INSERT INTO test DEFAULT VALUES");
 
@@ -94,7 +90,6 @@ print STDERR "Z0DAN should add N3 to the cluster\n";
 # ##############################################################################
 
 # Remove node from the cluster and data leftovers.
-psql_or_bail(3, "\\i ../../samples/Z0DAN/zodremove.sql");
 psql_or_bail(3, "CALL spock.remove_node(target_node_name := 'n3',
 	target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
 	verbose_mode := true)");

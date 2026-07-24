@@ -1,9 +1,9 @@
 # Modifying a Cluster with Zodan
 
-Zodan provides tools to add or remove a node with zero downtime. The
-scripts are located in the 
-[samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
-directory of the [Spock GitHub](https://github.com/pgEdge/spock) repository.
+Zodan adds or removes a node with zero downtime. It is built into the Spock
+extension as the `spock.add_node` and `spock.remove_node` procedures, so a
+single `CREATE EXTENSION spock` is all that is required. The `dblink`
+extension is not needed, and there are no SQL scripts to load.
 
 During node addition, Zodan seamlessly manages creation of the new node,
 subscription management (both to and from the node), replication slot
@@ -23,7 +23,8 @@ files, etc.).
 
 !!! note
 
-    Each script must be run from the target node being added or removed.
+    `spock.add_node` must be run on the new node being added, and
+    `spock.remove_node` must be run on the node being removed.
 
 ## Key Differences Between using Zodan and the Manual Process
 
@@ -31,27 +32,23 @@ The following differences highlight how Zodan automates and simplifies
 node addition:
 
 - Zodan stores sync LSNs and uses them later to ensure subscriptions
-  start from the correct point even if hours pass between steps.
+  start from the correct point even if time passes between steps.
 
-- Zodan automatically detects existing schemas on the new node and populates the
-  `skip_schema` parameter, preventing conflicts during structure sync.
+- Zodan verifies all nodes run a compatible Spock version before starting.
 
-- Zodan verifies all nodes run the same Spock version before starting.
-
-- Zodan includes the `verify_subscription_replicating()` function after
-  enabling subscriptions to ensure they reach replicating status.
+- Zodan waits for each new subscription to reach the replicating state
+  before proceeding.
 
 - When adding to a single-node cluster, Zodan handles the process
-  differently — no disabled subscriptions are needed.
+  differently, since no disabled subscriptions are needed.
 
-- Zodan shows final status of all nodes and subscriptions across the
-  entire cluster, not just the new node.
+- Every internal wait is bounded by the `timeout_sec` argument, so a join
+  that cannot make progress fails quickly instead of blocking.
 
 
 For more information, review the following resources:
 
 - [Using Zodan](zodan_readme.md)
 - [Zodan Tutorial](zodan_tutorial.md)
-- [Zodan Scripts and Workflows](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
 - [Spock Documentation](https://docs.pgedge.com/spock-v5/)
 

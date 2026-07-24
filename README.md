@@ -24,7 +24,7 @@
   - [Modifying a Cluster](docs/modify/index.md)
   - Using Zodan
     - [Modifying your Cluster with Zodan](docs/modify/zodan/index.md)
-    - [Using Zodan Scripts and Workflows](docs/modify/zodan/zodan_readme.md)
+    - [Using Zodan](docs/modify/zodan/zodan_readme.md)
     - [Adding a Node with Zero Downtime](docs/modify/zodan/zodan_tutorial.md)
   - [Adding a Node with Minimal Downtime with pgBackRest](docs/modify/add_node_pgbackrest.md)
 - Monitoring a Cluster

@@ -114,9 +114,7 @@ EOF
 				country := 'ESP', location := 'Madrid',
 				info := '{\"tiebreaker\" : \"1\"}')"
 		else
-		  # Add node to the existing cluster using Z0DAN
-		  psql -h /tmp -c "CREATE EXTENSION dblink"
-		  psql -h /tmp -f ${SPOCK_SOURCE_DIR}/samples/Z0DAN/zodan.sql
+		  # Add node to the existing cluster (add_node ships with the extension)
 		  psql -h /tmp -c "CALL spock.add_node(
 			src_node_name := 'n1',
 			src_dsn := 'host=n1 port=${PGPORT} dbname=${PGDATABASE} user=${PGUSER}',

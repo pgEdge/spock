@@ -10,10 +10,10 @@ use Time::HiRes qw(time);
 # Test: Verify that add_node fails immediately with an error when sync_event
 # function is missing on the source node, rather than waiting for timeout.
 # =============================================================================
-# This test verifies the fix where RAISE NOTICE was changed to RAISE EXCEPTION
-# in zodan.sql for sync_event failures. The test:
+# add_node raises an error (rather than looping until timeout) when a required
+# helper such as sync_event is missing on the source node. The test:
 # 1. Creates a 3-node cluster (n1, n2 active; n3 dropped and re-added)
-# 2. Drops n3 from cluster and installs zodan on it
+# 2. Drops n3 from the cluster
 # 3. Renames spock.sync_event() on node 1 to simulate it being missing
 # 4. Attempts add_node from n3 to join the cluster
 # 5. Verifies the call fails quickly with an error (not timeout)
@@ -29,16 +29,10 @@ my $db_user = $config->{db_user};
 my $db_password = $config->{db_password};
 my $pg_bin = $config->{pg_bin};
 
-# Prepare node 2: drop from cluster, install zodan
-print STDERR "Prepare N2: drop local node and install zodan.sql\n";
+# Prepare node 2: drop from cluster (add_node/remove_node ship with the extension)
+print STDERR "Prepare N2: drop local node\n";
 psql_or_bail(2, "SELECT spock.node_drop('n2')");
-psql_or_bail(2, "CREATE EXTENSION dblink");
-psql_or_bail(2, "\\i ../../samples/Z0DAN/zodan.sql");
-psql_or_bail(2, "\\i ../../samples/Z0DAN/zodremove.sql");
 psql_or_bail(3, "SELECT spock.node_drop('n3')");
-psql_or_bail(3, "CREATE EXTENSION dblink");
-psql_or_bail(3, "\\i ../../samples/Z0DAN/zodan.sql");
-psql_or_bail(3, "\\i ../../samples/Z0DAN/zodremove.sql");
 
 # Rename sync_event function on node 1 to simulate it being missing
 print STDERR "Rename spock.sync_event() on N1 to simulate missing function\n";
