@@ -40,11 +40,8 @@ cross_wire(2, ['n1', 'n2'], 'Cross-wire nodes N1 and N2');
 
 print STDERR "Install the helper functions and do other preparatory stuff\n";
 my $helper_sql = '../../samples/Z0DAN/wait_subscription.sql';
-my $zodan_sql = '../../samples/Z0DAN/zodan.sql';
 psql_or_bail(1, "\\i $helper_sql");
 psql_or_bail(2, "\\i $helper_sql");
-psql_or_bail(3, "\\i $zodan_sql");
-psql_or_bail(3, "CREATE EXTENSION dblink");
 psql_or_bail(3, "SELECT spock.node_drop('n3')");
 
 # Reduce the logfile size
@@ -228,8 +225,6 @@ ok($lag  <= 0, "Replication N3 => N2 has been finished successfully");
 #
 # ##############################################################################
 
-$zodan_sql = '../../samples/Z0DAN/zodremove.sql';
-psql_or_bail(3, "\\i $zodan_sql");
 psql_or_bail(3, "CALL spock.remove_node(
 	target_node_name := 'n3',
 	target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user',
