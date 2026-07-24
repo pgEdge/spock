@@ -27,6 +27,20 @@
 #define SPOCK_VERSION "6.0.0"
 #define SPOCK_VERSION_NUM 60000
 
+/*
+ * Core patch-set generation this Spock build is designed for. Bump in lockstep
+ * with the pgNN-000-spock-patchset.diff patches. 0 is reserved to mean the
+ * server's patch set predates generation tracking (baseline).
+ *
+ * NOT enforced yet: _PG_init() currently only detects and logs the server's
+ * generation. A future release may compare against this to gate or limit
+ * patch-dependent features.
+ */
+#define SPOCK_CORE_PATCHSET_TARGET 1
+
+/* Detected core patch-set generation; 0 = baseline/untracked. Set in _PG_init(). */
+extern int spock_detected_patchset;
+
 #define EXTENSION_NAME "spock"
 
 #define REPLICATION_ORIGIN_ALL	"all"

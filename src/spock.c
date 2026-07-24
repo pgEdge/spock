@@ -52,6 +52,8 @@
 
 #include "pgstat.h"
 
+#include <dlfcn.h>
+
 #include "spock_apply.h"
 #if PG_VERSION_NUM >= 180000
 #include "spock_conflict_stat.h"
@@ -77,6 +79,8 @@ PG_MODULE_MAGIC_EXT(
 #else
 PG_MODULE_MAGIC;
 #endif
+
+int			spock_detected_patchset = 0;	/* detected; 0 = unpatched/absent */
 
 static const struct config_enum_entry SpockConflictResolvers[] = {
 	/*
@@ -1007,6 +1011,29 @@ _PG_init(void)
 
 	if (!process_shared_preload_libraries_in_progress)
 		elog(ERROR, "spock is not in shared_preload_libraries");
+
+	/*
+	 * Detect the core patch set. The patched server exports
+	 * SpockCorePatchsetVersion; we read it by name so a server whose patch set
+	 * predates this marker (or is otherwise absent) does not prevent spock.so
+	 * from loading. For now this is informational only: we record and log the
+	 * detected generation and continue. A future release may use it to gate or
+	 * limit patch-dependent features (HLC, delta apply).
+	 */
+	{
+		int		   *core_patchset = (int *) dlsym(RTLD_DEFAULT,
+												  "SpockCorePatchsetVersion");
+
+		if (core_patchset != NULL)
+			spock_detected_patchset = *core_patchset;
+
+		if (spock_detected_patchset > 0)
+			elog(LOG, "spock: PostgreSQL core patch set generation %d detected",
+				 spock_detected_patchset);
+		else
+			elog(LOG, "spock: PostgreSQL core patch set predates generation "
+				 "tracking; treating as baseline (generation 0)");
+	}
 
 	DefineCustomEnumVariable("spock.conflict_resolution",
 							 gettext_noop("Sets method used for conflict resolution for resolvable conflicts."),

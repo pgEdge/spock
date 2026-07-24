@@ -636,6 +636,10 @@ LANGUAGE c AS 'MODULE_PATHNAME';
 CREATE FUNCTION spock_version_num() RETURNS integer
 LANGUAGE c AS 'MODULE_PATHNAME';
 
+CREATE FUNCTION spock.core_patchset() RETURNS integer
+AS 'MODULE_PATHNAME', 'spock_core_patchset'
+LANGUAGE c;
+
 CREATE FUNCTION spock_max_proto_version() RETURNS integer
 LANGUAGE c AS 'MODULE_PATHNAME';
 
