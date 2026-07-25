@@ -46,9 +46,11 @@ SELECT pg_reload_conf();
   `spk_*` pattern used to clean up per-subscription slots, so ordinary
   subscription/node cleanup never removes a group slot.
 * A per-database background worker periodically computes the **safe LSN** as the
-  minimum confirmed flush/replay LSN across all active and relevant downstream
-  members, and advances the group slot to that horizon — but only when it is
-  safe to do so.
+  minimum `confirmed_flush_lsn` over **every** downstream logical slot in the
+  database (all `spk_*` slots), and advances the group slot to that horizon, but
+  only when it is safe to do so. Because the minimum is taken across all such
+  slots, a leftover or slow subscription slot pins the horizon until it is
+  removed or catches up.
 * All state (safe LSN, freeze LSN, membership generation, node state, blocked
   reasons, per-member progress) is stored in durable catalog tables
   (`spock.group_slot_state`, `spock.group_slot_membership`,

@@ -30,6 +30,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "utils/snapmgr.h"
 
 #include "pgstat.h"
 
@@ -122,6 +123,28 @@ spock_group_slot_init_local(Oid node_id)
 		return;
 	}
 
+	/*
+	 * Version-skew guard: with the 6.0.1 binary loaded but the extension still
+	 * at 6.0.0, spock.group_slot_state does not exist yet.  Skip the seed
+	 * rather than aborting spock.create_node() with a missing-relation error.
+	 */
+	rc = SPI_execute("SELECT to_regclass('spock.group_slot_state') IS NOT NULL",
+					 true, 1);
+	if (rc == SPI_OK_SELECT && SPI_processed == 1)
+	{
+		bool	isnull;
+		Datum	present = SPI_getbinval(SPI_tuptable->vals[0],
+										SPI_tuptable->tupdesc, 1, &isnull);
+
+		if (isnull || !DatumGetBool(present))
+		{
+			elog(DEBUG1, "spock group slot: group_slot_state not present yet; "
+				 "skipping metadata seed");
+			SPI_finish();
+			return;
+		}
+	}
+
 	argtypes[0] = OIDOID;
 	values[0] = ObjectIdGetDatum(node_id);
 	argtypes[1] = OIDOID;
@@ -162,13 +185,25 @@ spock_group_slot_drop_local(void)
 		"DO $$ "
 		"BEGIN "
 		"  IF to_regclass('spock.group_slot_state') IS NULL THEN RETURN; END IF; "
+		/* Drop only inactive group slots for this node. */
 		"  PERFORM pg_drop_replication_slot(s.slot_name) "
 		"     FROM pg_replication_slots s "
 		"     JOIN spock.group_slot_state g ON g.slot_name = s.slot_name "
 		"    WHERE g.node_id = (SELECT node_id FROM spock.local_node) "
 		"      AND NOT s.active; "
-		"  DELETE FROM spock.group_slot_state "
-		"   WHERE node_id = (SELECT node_id FROM spock.local_node); "
+		/* Warn about any still-active slot; its metadata is kept below. */
+		"  IF EXISTS (SELECT 1 FROM pg_replication_slots s "
+		"               JOIN spock.group_slot_state g ON g.slot_name = s.slot_name "
+		"              WHERE g.node_id = (SELECT node_id FROM spock.local_node) "
+		"                AND s.active) THEN "
+		"    RAISE WARNING 'spock group slot: active slot not dropped; "
+		"metadata retained for later cleanup'; "
+		"  END IF; "
+		/* Delete metadata only for slots that no longer exist (were dropped). */
+		"  DELETE FROM spock.group_slot_state g "
+		"   WHERE g.node_id = (SELECT node_id FROM spock.local_node) "
+		"     AND NOT EXISTS (SELECT 1 FROM pg_replication_slots s "
+		"                      WHERE s.slot_name = g.slot_name); "
 		"END $$;",
 		false, 0);
 

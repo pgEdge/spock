@@ -474,6 +474,9 @@ BEGIN
     END IF;
 
     v_target := COALESCE(target_lsn, v_safe);
+    IF v_target IS NULL THEN
+        RAISE EXCEPTION 'no group-safe LSN to advance to: no target_lsn given and the group-safe horizon is undefined';
+    END IF;
 
     -- Never advance past the group-safe LSN without a forced, non-strict override.
     IF v_safe IS NOT NULL AND v_target > v_safe THEN
@@ -621,12 +624,13 @@ BEGIN
 
     SELECT node_id INTO v_join FROM spock.node WHERE node_name = joining_node_name;
 
+    -- Do not bootstrap via group_slot_worker_tick() here: it creates the
+    -- logical slot, which errors inside a transaction that has already
+    -- performed writes (this runs from the node-add workflow, after writes).
     SELECT membership_generation INTO v_gen
       FROM spock.group_slot_state WHERE node_id = v_local;
     IF v_gen IS NULL THEN
-        PERFORM spock.group_slot_worker_tick();
-        SELECT membership_generation INTO v_gen
-          FROM spock.group_slot_state WHERE node_id = v_local;
+        RAISE EXCEPTION 'group slot metadata missing; run spock.repair_group_slot() first';
     END IF;
 
     v_newgen := v_gen + 1;
@@ -750,6 +754,9 @@ BEGIN
 
     SELECT membership_generation INTO v_gen
       FROM spock.group_slot_state WHERE node_id = v_local;
+    IF v_gen IS NULL THEN
+        RAISE EXCEPTION 'group slot metadata missing; run spock.repair_group_slot()';
+    END IF;
     v_newgen := v_gen + 1;
 
     -- Carry remaining members forward; the parting node is not carried over.

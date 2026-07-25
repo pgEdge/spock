@@ -11,7 +11,7 @@ symptoms on the subscriber side:
 - The publisher's logical replication slot does not move forward.
   `restart_lsn` stays frozen for the full duration of the apply.
 - The publisher accumulates a lot of WAL on disk during that window.
-  In one of our reproductions a 600,000 row INSERT held ~28 GB of WAL
+  In one of our reproductions a 600,000-row INSERT held ~28 GB of WAL
   pinned for about 17 minutes.
 
 ## Why this happens
@@ -123,6 +123,21 @@ protection for normal traffic:
 ALTER SYSTEM SET spock.check_all_uc_indexes = on;
 SELECT pg_reload_conf();
 ```
+
+**`ALTER SYSTEM` is not session-scoped.** It changes the subscriber's
+persistent server configuration and affects every apply worker on that
+node, so record the current value first and restore it explicitly when
+the load finishes:
+
+```sql
+-- before: note the current value so you can put it back
+SHOW spock.check_all_uc_indexes;
+```
+
+If the load is interrupted and you skip the restore step, the protection
+stays disabled for all subsequent traffic. Prefer restoring with the
+prior value (or `ALTER SYSTEM RESET spock.check_all_uc_indexes`) rather
+than assuming a default.
 
 **Important: you lose unique-index conflict protection while it is
 off.** With the GUC on, Spock catches the case where an incoming row

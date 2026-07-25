@@ -488,8 +488,8 @@ BEGIN
         PERFORM spock.group_slot_complete_part(target_node_name);
         IF verbose_mode THEN
             RAISE NOTICE 'Group slot: part completed for %. Run '
-                         'SELECT spock.group_slot_complete_part(%L); on each remaining node.',
-                         target_node_name, target_node_name;
+                         'SELECT spock.group_slot_complete_part(%); on each remaining node.',
+                         target_node_name, quote_literal(target_node_name);
         END IF;
     END IF;
 
