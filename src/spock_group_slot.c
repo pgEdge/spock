@@ -28,6 +28,7 @@
 #include "storage/proc.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/lsyscache.h"	/* get_database_name(): moved here from dbcommands.h in PG19 */
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/snapmgr.h"
