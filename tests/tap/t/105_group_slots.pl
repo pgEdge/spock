@@ -160,8 +160,11 @@ is($part_state, 'parting', 'node_state is parting after begin_part');
 my $gen_before_complete = scalar_query(1, "SELECT membership_generation FROM spock.group_slot_state");
 my $gen_part = scalar_query(1, "SELECT spock.group_slot_complete_part('n2')");
 cmp_ok($gen_part, '>', $gen_before_complete, 'complete_part advances the membership generation');
-my $freeze = scalar_query(1, "SELECT freeze_lsn FROM spock.group_slot_state");
-is($freeze, '0/0', 'freeze boundary cleared after complete_part');
+# Compare LSN values, not their text: PG19 renders a zero pg_lsn as
+# '0/00000000' while earlier versions print '0/0'.
+my $freeze_cleared = scalar_query(1,
+	"SELECT (freeze_lsn = '0/0'::pg_lsn) FROM spock.group_slot_state");
+is($freeze_cleared, 't', 'freeze boundary cleared after complete_part');
 
 # -------------------------------------------------------------------------
 # Controlled manual advancement
