@@ -5,9 +5,11 @@ from a primary to its physical streaming standby, so that when the
 standby is promoted to primary it already has the slot — meaning logical
 subscribers can keep replicating without re-syncing.
 
-PostgreSQL's mechanism for keeping slots in sync between a primary and a
-standby changed in PG17, and changed again in PG18. This document
-explains:
+PostgreSQL introduced native logical-slot synchronization between a
+primary and a standby in PG17 (`sync_replication_slots`). PG18 keeps
+that same native mechanism; what changes in PG18 is on the Spock side —
+Spock no longer registers its own failover-slot worker and relies on
+native sync instead. This document explains:
 
 1. What configuration users must apply on **PG15/16**.
 2. What configuration users must apply on **PG17/18**.
@@ -114,7 +116,10 @@ In `postgresql.auto.conf` (or `postgresql.conf`):
 ```ini
 # IMPORTANT: dbname is required — without it, the slot sync worker
 # cannot log into the primary to inspect logical slots, and slot sync
-# silently does nothing. pg_basebackup -R does NOT include dbname.
+# silently does nothing. pg_basebackup -R records dbname only if you
+# passed it explicitly in the connection string; the replication
+# connection it normally uses carries none, so the generated
+# primary_conninfo usually has no dbname. Add it yourself, as below.
 primary_conninfo = 'host=<primary_host> port=5432 user=replicator dbname=<dbname>'
 ```
 
@@ -207,15 +212,20 @@ FROM   pg_replication_slots
 WHERE  slot_type = 'logical' AND slot_name LIKE '%<new_node_name>%';
 ```
 
-On each standby, confirm the slot appeared and is synced:
+On each standby, confirm the slot appeared, is synced, and is not
+invalidated:
 
 ```sql
-SELECT slot_name, synced, failover
+SELECT slot_name, synced, failover, invalidation_reason
 FROM   pg_replication_slots
 WHERE  slot_type = 'logical' AND slot_name LIKE '%<new_node_name>%';
 ```
 
-Both `synced` and `failover` should be `t`.
+`synced` and `failover` should both be `t`, and `invalidation_reason`
+should be null. A non-null `invalidation_reason` (or a null
+`restart_lsn`) means the synced slot was invalidated and is not usable
+for failover; it must be recreated. The `invalidation_reason` column
+exists on PG17 and later.
 
 ### PG15/16
 

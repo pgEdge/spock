@@ -76,6 +76,13 @@ BEGIN
 END $$;
 ```
 
+This `DO` block uses transaction control (`COMMIT`), so it must run at
+the top level with autocommit on. Run inside an explicit
+`BEGIN`/`COMMIT` or a transaction-wrapped migration it fails with
+"invalid transaction termination". In a transaction-wrapped
+environment, do the batching on the client side instead (one
+transaction per batch, committed by the client between batches).
+
 The exact batch size depends on your row width and acceptable
 throughput. Most workloads we have seen are comfortable in the 1,000
 to 10,000 row per transaction range.
@@ -144,11 +151,14 @@ off.** With the GUC on, Spock catches the case where an incoming row
 collides with an existing local row on a secondary unique index (not
 the primary key or replica identity) and resolves it through the normal
 conflict path. With the GUC off, that detection does not happen. If
-a colliding row arrives, the apply worker still tries the INSERT, the
-heap rejects it with a duplicate-key violation, and (because the
-default `spock.exception_behaviour` is `sub_disable`) the subscription
-is disabled until an operator inspects `spock.exception_log` and
-re-enables it.
+a colliding row arrives, the apply worker still tries the INSERT and
+the heap rejects it with a duplicate-key violation. What happens next
+depends on `spock.exception_behaviour`. Under the default
+(`transdiscard`) the whole failing transaction is rolled back, written
+to `spock.exception_log`, and apply continues with the next
+transaction; the subscription keeps running. Only if you set
+`spock.exception_behaviour = sub_disable` is the subscription disabled
+until an operator inspects `spock.exception_log` and re-enables it.
 
 So turn the GUC off only when one of these is true:
 

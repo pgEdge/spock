@@ -151,6 +151,23 @@ Safely repairs a damaged group slot.
 
 Returns `relinked`, `recreated`, `already_present`, or `missing_slot`.
 
+### spock.group_slot_complete_part
+
+```sql
+spock.group_slot_complete_part(parting_node_name name) -> bigint
+```
+
+Finalizes the removal of a node: advances the membership generation,
+clears the part freeze, and resumes advancement. `spock.remove_node()`
+calls it automatically on the node that ran the removal, but because
+each node keeps its own group slot you must run it once on every other
+remaining node, passing the removed node's name. Returns the new
+membership generation. The related lifecycle functions
+`spock.group_slot_begin_join()`, `spock.group_slot_complete_join()`,
+and `spock.group_slot_begin_part()` are driven automatically by
+`spock.add_node()`/`spock.remove_node()` and are not normally called by
+hand.
+
 ## Backward compatibility
 
 When `spock.group_slots_enabled` is `off` (the default), no group slot is
