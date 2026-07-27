@@ -10,7 +10,11 @@
 #   "make check_prove_nightly" or "make PROVE=prove check_prove_nightly"
 #
 
-test: 010_zodan_add_remove_python
+# 010_zodan_add_remove_python was removed with the Python ZODAN scripts.
+# ZODAN basics/timeout: SQL/dblink orchestration (samples/Z0DAN/zodan.sql)
 test: 012_zodan_basics
 # test: 016_crash_recovery_progress
 test: 017_zodan_3n_timeout
+# ZODAN basics/timeout: in-core C orchestration (spock.attach_node/detach_node)
+test: 036_attach_node_basics_incore
+test: 037_attach_node_3n_timeout_incore

@@ -1,21 +1,23 @@
 use strict;
 use warnings;
-use Test::More tests => 35;  # Fixed test count to match actual tests
+use Test::More;
 use lib '.';
 use lib 't';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config cross_wire system_maybe);
 
-# ==============================================================================================
-# Test: 010_zodan_add_remove_python.pl - Test Zodan Node Addition and Removal for python version
-# ==============================================================================================
+# =============================================================================
+# Test: 034_attach_detach_node_incore.pl - Test Zodan Node Addition and Removal
+# =============================================================================
 # This test follows the sequence:
 # 1. Create 2-node cluster and cross-wire them
 # 2. Create test data and replication sets
-# 3. Add node n3 using zodan.py procedure
-# 4. Verify n3 is properly integrated
-# 5. Remove node n3 using zodremove.py
-# 6. Verify n3 is properly removed
-# 7. Clean up
+# 3. Load ZODAN procedures on n1
+# 4. Add node n3 using ZODAN attach_node procedure
+# 5. Verify n3 is properly integrated
+# 6. Load ZODREMOVE procedures on n3
+# 7. Remove node n3 using ZODREMOVE detach_node procedure
+# 8. Verify n3 is properly removed
+# 9. Clean up
 
 # Step 1: Create a 2-node cluster initially
 create_cluster(2, 'Create initial 2-node Spock test cluster');
@@ -34,12 +36,6 @@ my $pg_bin = $config->{pg_bin};
 cross_wire(2, ['n1', 'n2'], 'Cross-wire nodes n1 and n2');
 
 pass('2-node cluster created and cross-wired');
-
-# Install dblink extension on all nodes (required for ZODAN procedures)
-system_maybe "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
-system_maybe "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
-
-pass('dblink extension installed on n1 and n2');
 
 # Step 2: Create test data and replication sets
 pass('Creating test data and replication sets');
@@ -140,77 +136,46 @@ system_or_bail "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c', "CREATE USER
 system_or_bail "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS spock";
 system_or_bail "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c', "ALTER EXTENSION spock UPDATE";
 
-# Install dblink extension on n3
-system_maybe "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c', "CREATE EXTENSION IF NOT EXISTS dblink";
-
 pass('n3 database instance created and configured');
 
-# Step 4: Add node n3 using zodan.py(called from n3)
-pass('Pre health check for node n3 (called from n3)');
-
-my $health_pre_cmd = "../../samples/Z0DAN/zodan.py \\
-    health-check \\
-    --src-node-name n1 \\
-    --src-dsn 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password' \\
-    --new-node-name n3 \\
-    --new-node-dsn 'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password' \\
-    --check-type pre \\
-    --verbose
-";
-
-print "Executing: $health_pre_cmd\n";
-print "---\n";
-
-open(my $pipe, "$health_pre_cmd 2>&1 |") or die "Cannot open pipe: $!";
-while (my $line = <$pipe>) {
-    print $line;
-}
-close($pipe);
-my $health_pre_result = $? >> 8;
-
-print "---\n";
-print "=== PRE HEALTH CHECK PROCEDURE COMPLETED (exit code: $health_pre_result) ===\n";
-
-if ($health_pre_result == 0) {
-    pass('zodan.py pre health check executed successfully');
-} else {
-    fail("zodan.py pre health check failed with exit code: $health_pre_result");
-}
-
-pass('Adding node n3 using zodan.py (called from n3)');
+# attach_node/detach_node ship with the spock extension; nothing to load.
+my $pipe;
 
 print "=== STARTING ADD_NODE PROCEDURE ===\n";
 
-my $add_node_cmd = "../../samples/Z0DAN/zodan.py \\
-    add_node \\
-    --src-node-name n1 \\
-    --src-dsn 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password' \\
-    --new-node-name n3 \\
-    --new-node-dsn 'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password' \\
-    --new-node-location CA \\
-    --new-node-country USA \\
-";
+my $attach_node_cmd = "$pg_bin/psql -p $n3_port -d $dbname -c \"
+    CALL spock.attach_node(
+        'n1',
+        'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        'n3',
+        'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password',
+        true,
+        'CA',
+        'USA',
+        '{}'::jsonb
+    )
+\"";
 
-print "Executing: $add_node_cmd\n";
+print "Executing: $attach_node_cmd\n";
 print "---\n";
 
-open(my $pipe, "$add_node_cmd 2>&1 |") or die "Cannot open pipe: $!";
+open($pipe, "$attach_node_cmd 2>&1 |") or die "Cannot open pipe: $!";
 while (my $line = <$pipe>) {
     print $line;
 }
 close($pipe);
-my $add_node_result = $? >> 8;
+my $attach_node_result = $? >> 8;
 
 print "---\n";
-print "=== ADD_NODE PROCEDURE COMPLETED (exit code: $add_node_result) ===\n";
+print "=== ADD_NODE PROCEDURE COMPLETED (exit code: $attach_node_result) ===\n";
 
-if ($add_node_result == 0) {
-    pass('zodan.py executed successfully');
+if ($attach_node_result == 0) {
+    pass('attach_node procedure executed successfully');
 } else {
-    fail("zodan.py failed with exit code: $add_node_result");
+    fail("attach_node procedure failed with exit code: $attach_node_result");
 }
 
-# Step 5: Verify n3 is properly integrated
+# Step 6: Verify n3 is properly integrated
 pass('Verifying n3 integration');
 
 # Wait for replication to complete
@@ -277,38 +242,39 @@ if ($node_count_n3 eq '3') {
     fail("n3 node count incorrect: expected 3, got $node_count_n3");
 }
 
-# Step 6: Remove node n3 using ZODREMOVE remove_node procedure
-pass('Removing node n3 using ZODREMOVE remove_node procedure');
+# Step 7: Remove node n3 using the in-core detach_node procedure
+pass('Removing node n3 using detach_node procedure');
 
 print "=== STARTING REMOVE_NODE PROCEDURE ===\n";
 
-my $remove_node_cmd = "../../samples/Z0DAN/zodremove.py \\
-    remove_node \\
-    --target-node-name n3 \\
-    --target-node-dsn 'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password' \\
-    --verbose \\
-";
+my $detach_node_cmd = "$pg_bin/psql -p $n3_port -d $dbname -c \"
+    CALL spock.detach_node(
+        'n3',
+        'host=$host dbname=$dbname port=$n3_port user=$db_user password=$db_password',
+        true
+    )
+\"";
 
-print "Executing: $remove_node_cmd\n";
+print "Executing: $detach_node_cmd\n";
 print "---\n";
 
-open($pipe, "$remove_node_cmd 2>&1 |") or die "Cannot open pipe: $!";
+open($pipe, "$detach_node_cmd 2>&1 |") or die "Cannot open pipe: $!";
 while (my $line = <$pipe>) {
     print $line;
 }
 close($pipe);
-my $remove_node_result = $? >> 8;
+my $detach_node_result = $? >> 8;
 
 print "---\n";
-print "=== REMOVE_NODE PROCEDURE COMPLETED (exit code: $remove_node_result) ===\n";
+print "=== REMOVE_NODE PROCEDURE COMPLETED (exit code: $detach_node_result) ===\n";
 
-if ($remove_node_result == 0) {
-    pass('zodremove procedure executed successfully');
+if ($detach_node_result == 0) {
+    pass('detach_node procedure executed successfully');
 } else {
-    fail("zodremove procedure failed with exit code: $remove_node_result");
+    fail("detach_node procedure failed with exit code: $detach_node_result");
 }
 
-# Step 7: Verify n3 is properly removed
+# Step 9: Verify n3 is properly removed
 pass('Verifying n3 removal');
 
 # Wait for cleanup to complete
@@ -352,7 +318,7 @@ if ($n3_exists_n2 eq 'f') {
     fail('n3 still exists in n2 node list after removal');
 }
 
-# Step 8 Clean up n3
+# Step 10: Clean up n3
 pass('Cleaning up n3');
 
 # Stop n3 PostgreSQL instance
@@ -370,12 +336,15 @@ print "\n=== TEST SUMMARY ===\n";
 print "✓ Created 2-node cluster\n";
 print "✓ Cross-wired nodes n1 and n2\n";
 print "✓ Created test data and replication sets\n";
-print "✓ Added node n3 using zodan.py \n";
+print "✓ Added node n3 using ZODAN attach_node\n";
 print "✓ Verified n3 integration\n";
-print "✓ Removed node n3 using zodremove.py\n";
+print "✓ Removed node n3 using ZODREMOVE detach_node\n";
 print "✓ Verified n3 removal\n";
 print "✓ Cleaned up n3\n";
 print "========================\n";
 
-# Cleanup will be handled by SpockTest.pm END block
-# No need for done_testing() when using a test plan
+# Tear down n1/n2 explicitly (n3 was already cleaned up above) so the
+# destroy_cluster pass() is counted within the plan rather than firing from the
+# END block after done_testing().
+destroy_cluster('Destroy ZODAN add/remove test cluster');
+done_testing();
