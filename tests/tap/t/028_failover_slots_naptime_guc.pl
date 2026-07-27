@@ -9,7 +9,7 @@ use SpockTest qw(
 );
 
 # =============================================================================
-# Test: 026_failover_slots_naptime_guc.pl
+# Test: 028_failover_slots_naptime_guc.pl
 #
 # Verifies the tunable failover-slot worker interval GUCs:
 #   spock.failover_slots_naptime
@@ -17,10 +17,11 @@ use SpockTest qw(
 #
 # These control how often the spock_failover_slots worker syncs slot state to
 # a physical standby.  A smaller naptime narrows the window in which the
-# standby's synchronized slots lag the primary.
+# standby's synchronized slots lag the primary; subsecond values are allowed.
 #
 # The test checks defaults, unit, bounds, reloadability, that a new value
-# takes effect on reload, and that out-of-range values are rejected.
+# takes effect on reload, that subsecond values are accepted, and that
+# out-of-range values are rejected.
 # =============================================================================
 
 create_cluster(1);
@@ -60,7 +61,7 @@ is(setting_of('spock.failover_slots_feedback_naptime'), '10000',
 is(scalar_query(1, "SELECT unit FROM pg_settings WHERE name='spock.failover_slots_naptime'"),
    'ms', 'naptime unit is ms');
 is(scalar_query(1, "SELECT min_val||'/'||max_val FROM pg_settings WHERE name='spock.failover_slots_naptime'"),
-   '1000/3600000', 'naptime bounds are 1000..3600000 ms');
+   '1/3600000', 'naptime bounds are 1..3600000 ms');
 is(scalar_query(1, "SELECT context FROM pg_settings WHERE name='spock.failover_slots_naptime'"),
    'sighup', 'naptime is reloadable (sighup), no restart needed');
 
@@ -81,10 +82,16 @@ for (1 .. 20) {
 is($val, '5000', "naptime becomes 5000 ms after reload");
 
 # --------------------------------------------------------------------------
+# Subsecond values are accepted (the minimum is 1 ms, not 1 s)
+# --------------------------------------------------------------------------
+($rc, $out) = psql_try("ALTER SYSTEM SET spock.failover_slots_naptime = '500ms'");
+is($rc, 0, "ALTER SYSTEM accepts a subsecond value ('500ms')") or diag($out);
+
+# --------------------------------------------------------------------------
 # Out-of-range values are rejected
 # --------------------------------------------------------------------------
-($rc, $out) = psql_try("ALTER SYSTEM SET spock.failover_slots_naptime = '10ms'");
-isnt($rc, 0, "ALTER SYSTEM rejects 10ms (below the 1s minimum)");
+($rc, $out) = psql_try("ALTER SYSTEM SET spock.failover_slots_naptime = '2h'");
+isnt($rc, 0, "ALTER SYSTEM rejects '2h' (above the 3600000 ms maximum)");
 like($out, qr/outside the valid range|invalid value/i,
      "rejection message mentions the valid range");
 

@@ -86,6 +86,8 @@ addition to the base settings.
 | `spock.primary_dsn` | standby | `''` | Connection to the primary. Falls back to `primary_conninfo` when empty. |
 | `spock.pg_standby_slot_names` | primary | `''` | Physical slots that must confirm an LSN before logical replication advances. Optional. |
 | `spock.standby_slots_min_confirmed` | primary | `-1` | How many of those slots must confirm. `-1` means all. |
+| `spock.failover_slots_naptime` | standby | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1–3600000). |
+| `spock.failover_slots_feedback_naptime` | standby | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1–3600000). |
 
 `hot_standby_feedback = on` plus a physical slot named by `primary_slot_name` is
 the important pair. Without both, the primary can remove catalog rows a slot
@@ -161,6 +163,8 @@ on the standby and periodically copies slot state from the primary.
 | `spock.primary_dsn` | `''` | DSN to connect to primary (falls back to `primary_conninfo`) |
 | `spock.pg_standby_slot_names` | `''` | Physical slots that must confirm LSN before logical replication advances |
 | `spock.standby_slots_min_confirmed` | `-1` | How many slots from `pg_standby_slot_names` must confirm (`-1` = all) |
+| `spock.failover_slots_naptime` | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1–3600000) |
+| `spock.failover_slots_feedback_naptime` | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1–3600000) |
 
 ### Example (`postgresql.conf` on standby)
 
