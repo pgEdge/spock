@@ -423,7 +423,7 @@ AutoDDL has been refactored and hardened:
 
 ### Bug fixes carried forward from the 5.0.x line
 
-These shipped in 5.0.6 – 5.0.10 and are included in 6.0.0:
+These shipped in 5.0.6 – 5.0.11 and are included in 6.0.0:
 
 * Handle upstream connection loss cleanly without replication-origin
   advance leak.  Previously a stale libpq socket fd produced an
@@ -458,7 +458,7 @@ These shipped in 5.0.6 – 5.0.10 and are included in 6.0.0:
 
 ### Upgrading
 
-The upgrade from 5.0.10 to 6.0.0 is a single `ALTER EXTENSION spock UPDATE`
+The upgrade from 5.0.11 to 6.0.0 is a single `ALTER EXTENSION spock UPDATE`
 once the binaries are swapped.  The upgrade:
 
 * drops the legacy `spock.progress` table and recreates it as a view,
@@ -473,6 +473,36 @@ once the binaries are swapped.  The upgrade:
   and it skips slots that are in use at the time. See
   [Logical Slot Failover](logical_slot_failover.md) for how to handle any
   skipped slots.
+
+## Spock 5.0.11
+
+### New Features
+* Add `spock.use_native_failover_slots` (default off, PGC_POSTMASTER). When
+  enabled, spock marks logical slots with the FAILOVER flag on PG17+, yields to
+  PostgreSQL's native slotsync worker on PG17 when `sync_replication_slots=on`,
+  and does not register spock's own failover-slot worker on PG18+. Off preserves
+  the existing worker-based behavior. Read on the subscriber node that creates
+  the logical replication slot; changing it requires a server restart. See
+  [Logical Slot Failover](logical_slot_failover.md) for setup steps and the
+  required post-promotion `synchronized_standby_slots` runbook.
+
+* Sync failover slots to the standby every 1s by default instead of a
+  hard-coded 60s, shrinking the window in which a promotion can find a stale
+  slot. The interval is now tunable via `spock.failover_slots_naptime` (and the
+  feedback-wait retry via `spock.failover_slots_feedback_naptime`), both
+  SIGHUP-settable in milliseconds
+
+* Never copy the `pgedge_ace` schema to a node joining via `add_node`. ACE
+  state is node-local, so its objects are now excluded from both the schema
+  copy and the data sync, even when an ACE table belongs to a replication set.
+
+### Bug Fixes
+
+* Fixed a bug where a transient provider connection loss could incorrectly
+  disable a subscription under SUB_DISABLE exception handling. A transaction
+  retransmitted after a reconnect is no longer misclassified as an apply
+  failure, so replication resumes normally instead of stopping.
+
 
 ## Spock 5.0.10
 

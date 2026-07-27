@@ -1618,7 +1618,7 @@ attach_to_walsender(Port *port, int status)
 /*
  * spock_slot_enable_failover
  *
- * SQL-callable maintenance helper used by the 5.0.10 -> 6.0.0 upgrade.
+ * SQL-callable maintenance helper used by the 5.0.11 -> 6.0.0 upgrade.
  *
  * PostgreSQL 17+ can synchronize a logical replication slot to a physical
  * standby (natively on 18 via sync_replication_slots, and on 17 when that GUC
