@@ -50,6 +50,16 @@ stage_source() {
   if [ -f "${ARTIFACT_DIR}/${SRC_TARBALL}" ]; then
     echo "Staging ${SRC_TARBALL} from ${ARTIFACT_DIR}"
     cp "${ARTIFACT_DIR}/${SRC_TARBALL}" "${dest}"
+  elif [ -z "${SPOCK_ALLOW_CLONE_FALLBACK:-}" ]; then
+    # A staged tarball is REQUIRED by default. release.yml always stages one, so
+    # a miss there means the staging step did not run (or ran in the wrong
+    # directory) — and silently cloning SPOCK_BRANCH instead would ship a
+    # package built from a DIFFERENT commit while still stamped with
+    # COMPONENT_VERSION. Gating on $CI would not work: pgedge-builder-action
+    # passes only COMPONENT_*/PG_VERSION/REPO_TYPE into the container, so $CI is
+    # unset during a real build. Hence an explicit opt-in for the clone path.
+    echo "::error::${ARTIFACT_DIR}/${SRC_TARBALL} not found. release.yml stages it with git archive; for a local build, stage it yourself or set SPOCK_ALLOW_CLONE_FALLBACK=1 to clone ${SPOCK_BRANCH} instead." >&2
+    return 1
   else
     echo "Fetching Spock source code (${SPOCK_BRANCH})"
     rm -rf "spock-${SPOCK_VERSION}"
