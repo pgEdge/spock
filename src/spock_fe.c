@@ -226,10 +226,12 @@ appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str)
 	bool		needquotes;
 
 	/*
-	 * If the string consists entirely of plain ASCII characters, no need to
-	 * quote it. This is quite conservative, but better safe than sorry.
+	 * If the string is one or more plain ASCII characters, no need to quote
+	 * it.  An empty string must default to needing quotes -- an unquoted
+	 * empty value doesn't parse as empty, it swallows the entire next
+	 * "keyword=value" token.
 	 */
-	needquotes = false;
+	needquotes = true;
 	for (s = str; *s; s++)
 	{
 		if (!((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') ||
@@ -238,6 +240,7 @@ appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str)
 			needquotes = true;
 			break;
 		}
+		needquotes = false;
 	}
 
 	if (needquotes)
