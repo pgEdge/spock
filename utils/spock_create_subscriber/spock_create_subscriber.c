@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -52,8 +53,12 @@
 #include "access/timeline.h"
 #include "access/xlog_internal.h"
 #include "catalog/pg_control.h"
+#include "common/controldata_utils.h"
+#include "common/file_utils.h"
 #include "common/jsonapi.h"
+#include "common/logging.h"
 #include "mb/pg_wchar.h"
+#include "port.h"
 
 #include "spock_fe.h"
 
@@ -87,9 +92,56 @@ typedef struct BidirectionalState
 	int			max_wait;           /* default 0 = unbounded */
 	char	   *source_slot_name;
 	char	   *source_origin_name;
+	char	   *source_restore_lsn; /* recovery target LSN; consumed by the
+									 * disabled-first catchup sub_create */
+	char	   *node_dsn;       /* DSN registered via spock.node_create();
+								 * the address peers use to connect back to
+								 * this node.  Derived from --subscriber-dsn. */
 	bool		cleanup_mode;
+	bool		force_cleanup;      /* --force: also remove the data directory
+									 * on --cleanup, not just remote state */
 	char	   *manifest_path;
 } BidirectionalState;
+
+/*
+ * Replication-set / table-membership / sequence state captured from the
+ * source's catalog before DROP EXTENSION spock removes it.  Utility-side
+ * memory only; never written to the manifest.
+ */
+typedef struct RepsetCapture
+{
+	char	   *set_name;
+	bool		replicate_insert;
+	bool		replicate_update;
+	bool		replicate_delete;
+	bool		replicate_truncate;
+} RepsetCapture;
+
+typedef struct RepsetTableCapture
+{
+	char	   *set_name;
+	char	   *qualified_table;   /* rts.set_reloid::regclass */
+	char	   *columns;           /* rts.set_att_list, NULL if all columns */
+	char	   *row_filter;        /* pg_get_expr(...), NULL if none */
+} RepsetTableCapture;
+
+typedef struct SequenceCapture
+{
+	char	   *set_name;
+	char	   *qualified_seq;
+	int64		last_value;
+	bool		is_called;
+} SequenceCapture;
+
+typedef struct CatalogCapture
+{
+	RepsetCapture *repsets;
+	int			num_repsets;
+	RepsetTableCapture *tables;
+	int			num_tables;
+	SequenceCapture *sequences;
+	int			num_sequences;
+} CatalogCapture;
 
 typedef enum {
 	VERBOSITY_NORMAL,
@@ -119,8 +171,10 @@ static int run_pg_ctl(const char *arg);
 static void validate_extra_basebackup_args(const char *args);
 static void run_basebackup(const char *provider_connstr, const char *data_dir,
 	const char *extra_basebackup_args);
+static char *reset_subscriber_sysid(const char *data_dir);
+static void run_pg_resetwal(const char *data_dir);
 static void wait_postmaster_connection(const char *connstr);
-static void wait_primary_connection(const char *connstr);
+static void wait_primary_connection(const char *connstr, int stall_timeout, int max_wait);
 static void wait_postmaster_shutdown(void);
 
 static char *validate_replication_set_input(char *replication_sets);
@@ -170,16 +224,35 @@ static char *generate_restore_point_name(void);
 static int discover_peer_nodes(PGconn *source_conn, const char *source_node_name,
 								const char *subscriber_name, const char *dbname,
 								PeerNodeInfo **peers_out);
-static void check_preconditions(PGconn *source_conn, PeerNodeInfo *peers, int num_peers);
+static void check_preconditions(PGconn *source_conn, const char *source_node_name,
+								PeerNodeInfo *peers, int num_peers);
+static void check_spock_version_at_least_6(PGconn *conn, const char *node_label);
+static void check_mesh_edges(PGconn *conn, const char *this_node_name,
+							 char **all_names, int total_nodes);
+static void check_peer_identity(PGconn *peer_conn, const char *expected_name);
+static void check_replication_set_equivalence(PGconn *source_conn,
+											  const char *source_node_name,
+											  PeerNodeInfo *peers, int num_peers);
 static void write_manifest(BidirectionalState *state, const char *subscriber_name,
 							const char *dbname, const char *source_dsn);
 static bool read_manifest(const char *manifest_path, BidirectionalState *state,
 						   char **subscriber_name_out, char **dbname_out,
 						   char **source_dsn_out);
-static void cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
+static bool cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 								  const char *dbname, const char *source_dsn,
 								  bool force_rm_datadir);
 static void append_json_string(PQExpBuffer buf, const char *str);
+
+static void check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
+										const char *current_dbname);
+static void check_no_native_subscriptions(PGconn *conn);
+static void capture_catalog_state(PGconn *conn, Oid source_nodeid,
+								  CatalogCapture *capture);
+static void remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture);
+static void restore_replication_sets(PGconn *conn, CatalogCapture *capture);
+static void verify_replication_sets_restored(PGconn *conn, CatalogCapture *capture);
+static void set_readonly_local(PGconn *conn);
+static Oid	get_local_node_id(PGconn *conn);
 
 static PGconn *
 connectdb(const char *connstr)
@@ -195,7 +268,7 @@ connectdb(const char *connstr)
 
 void signal_handler(int sig)
 {
-	if (sig == SIGINT)
+	if (sig == SIGINT || sig == SIGTERM)
 	{
 		die(_("\nCanceling...\n"));
 	}
@@ -313,35 +386,523 @@ discover_peer_nodes(PGconn *source_conn, const char *source_node_name,
 }
 
 /*
- * Verify that the source cluster and all peers meet the requirements for
- * a bidirectional join: Spock >= 6.0.0, track_commit_timestamp on, no
- * pending DDL, full-mesh topology, and peer connectivity.
+ * Verify Spock version on conn (the source or a peer): an old apply
+ * worker would advance the wrong-named origin, so this must be checked
+ * everywhere up front, not just on the source.
  */
 static void
-check_preconditions(PGconn *source_conn, PeerNodeInfo *peers, int num_peers)
+check_spock_version_at_least_6(PGconn *conn, const char *node_label)
 {
 	PGresult   *res;
-	int			i;
 
-	/* Spock version gate: require >= 6.0.0 */
-	res = PQexec(source_conn,
-				 "SELECT extversion FROM pg_extension WHERE extname = 'spock'");
+	res = PQexec(conn, "SELECT extversion FROM pg_extension WHERE extname = 'spock'");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		die(_("could not query Spock extension version: %s"),
-			PQerrorMessage(source_conn));
+	{
+		PQclear(res);
+		die(_("could not query Spock extension version on \"%s\": %s"),
+			node_label, PQerrorMessage(conn));
+	}
 	if (PQntuples(res) == 0)
-		die(_("Spock extension is not installed on the source node"));
+	{
+		PQclear(res);
+		die(_("Spock extension is not installed on \"%s\""), node_label);
+	}
 	{
 		const char *ver = PQgetvalue(res, 0, 0);
 		int			major = 0;
 
+		/*
+		 * die() exits immediately -- ver points inside res, so it must
+		 * not be PQclear()'d first (that would be a use-after-free when
+		 * die()'s own formatting reads ver).
+		 */
 		if (sscanf(ver, "%d.", &major) < 1)
-			die(_("could not parse Spock version \"%s\""), ver);
+			die(_("could not parse Spock version \"%s\" on \"%s\""), ver, node_label);
 		if (major < 6)
-			die(_("Spock version %s on source is too old for bidirectional "
-				  "join; require >= 6.0.0"), ver);
+			die(_("Spock version %s on \"%s\" is too old for bidirectional "
+				  "join; require >= 6.0.0"), ver, node_label);
 	}
 	PQclear(res);
+}
+
+/*
+ * Validate the actual directed subscription graph from one node's own
+ * catalog, not just a count: exactly one healthy (status = 'replicating')
+ * subscription from every other node in the set, no self-reference, no
+ * edge from outside the set, and no duplicate edge from the same origin
+ * regardless of status.
+ */
+static void
+check_mesh_edges(PGconn *conn, const char *this_node_name,
+				 char **all_names, int total_nodes)
+{
+	PGresult   *res;
+	bool	   *healthy;
+	int		   *edge_count;
+	int			i;
+
+	/*
+	 * spock.sub_show_status() (not raw sub_enabled) so "enabled" also
+	 * means "actually replicating" -- a worker that's down or still
+	 * initializing must not satisfy the mesh.
+	 */
+	res = PQexec(conn, "SELECT provider_node, status FROM spock.sub_show_status()");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not check subscription topology on \"%s\": %s"),
+			this_node_name, PQerrorMessage(conn));
+	}
+
+	healthy = pg_malloc0(total_nodes * sizeof(bool));
+	edge_count = pg_malloc0(total_nodes * sizeof(int));
+
+	for (i = 0; i < PQntuples(res); i++)
+	{
+		const char *origin_name = PQgetvalue(res, i, 0);
+		const char *status = PQgetvalue(res, i, 1);
+		int			idx = -1;
+		int			k;
+
+		if (strcmp(origin_name, this_node_name) == 0)
+			die(_("node \"%s\" has a subscription whose origin is itself; "
+				  "corrupt or misconfigured topology"), this_node_name);
+
+		for (k = 0; k < total_nodes; k++)
+		{
+			if (strcmp(all_names[k], origin_name) == 0)
+			{
+				idx = k;
+				break;
+			}
+		}
+		if (idx == -1)
+			die(_("node \"%s\" has a subscription from \"%s\", which is not "
+				  "part of the discovered node set; partial-mesh or "
+				  "unknown-node topologies are not supported"),
+				this_node_name, origin_name);
+
+		/*
+		 * Count regardless of status: an extra disabled duplicate from
+		 * the same origin is still a duplicate edge.
+		 */
+		edge_count[idx]++;
+		if (edge_count[idx] > 1)
+			die(_("node \"%s\" has more than one subscription from \"%s\" "
+				  "(status \"%s\"); duplicate edges are not supported"),
+				this_node_name, origin_name, status);
+
+		if (strcmp(status, "replicating") == 0)
+			healthy[idx] = true;
+	}
+	PQclear(res);
+
+	for (i = 0; i < total_nodes; i++)
+	{
+		if (strcmp(all_names[i], this_node_name) == 0)
+			continue;		/* skip self */
+		if (!healthy[i])
+		{
+			pg_free(healthy);
+			pg_free(edge_count);
+			die(_("node \"%s\" has no healthy (status = 'replicating') "
+				  "subscription from \"%s\"; full-mesh topology of live "
+				  "replication is required for bidirectional join"),
+				this_node_name, all_names[i]);
+		}
+	}
+	pg_free(healthy);
+	pg_free(edge_count);
+}
+
+/*
+ * Confirm the peer identifies itself as the name it was discovered
+ * under, so a node-name collision or wrong DSN can't silently validate
+ * the mesh against the wrong node.
+ */
+static void
+check_peer_identity(PGconn *peer_conn, const char *expected_name)
+{
+	PGresult   *res;
+
+	res = PQexec(peer_conn, "SELECT node_name FROM spock.node_info()");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+	{
+		PQclear(res);
+		die(_("could not verify identity of peer \"%s\": %s"),
+			expected_name, PQerrorMessage(peer_conn));
+	}
+	if (strcmp(PQgetvalue(res, 0, 0), expected_name) != 0)
+	{
+		char *actual_name = pg_strdup(PQgetvalue(res, 0, 0));
+
+		PQclear(res);
+		die(_("peer discovered as \"%s\" identifies itself as \"%s\" once "
+			  "connected; node-name/identity mismatch, refusing to trust "
+			  "this topology\n"), expected_name, actual_name);
+	}
+	PQclear(res);
+}
+
+/*
+ * Build a canonical, comparable fingerprint of one replication set as
+ * defined by its owning node: operation flags, each member table (sorted,
+ * with column list, row filter, and schema), then each member sequence
+ * (sorted).  Scoped by node_id since spock.replication_set is keyed
+ * UNIQUE(set_nodeid, set_name) -- a set replicated via DDL becomes the
+ * replaying node's own row, not an echo.  selected_filter restricts this
+ * to sets actually referenced by a subscription's sub_replication_sets,
+ * since unused/scratch repsets can legitimately differ between nodes.
+ */
+typedef struct RepsetFingerprintEntry
+{
+	char	   *set_name;
+	char	   *fingerprint;
+} RepsetFingerprintEntry;
+
+static void
+compute_repset_fingerprints(PGconn *conn, Oid node_id, const char *selected_filter,
+							RepsetFingerprintEntry **out, int *nout)
+{
+	PGresult   *res;
+	RepsetFingerprintEntry *entries;
+	int			n;
+	int			i;
+	PQExpBuffer query = createPQExpBuffer();
+
+	printfPQExpBuffer(query,
+					  "SELECT set_name, replicate_insert, replicate_update,"
+					  " replicate_delete, replicate_truncate"
+					  " FROM spock.replication_set WHERE set_nodeid = %u"
+					  " AND (%s)"
+					  " ORDER BY set_name", node_id, selected_filter);
+	res = PQexec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		destroyPQExpBuffer(query);
+		die(_("could not fingerprint replication sets: %s\n"), PQerrorMessage(conn));
+	}
+
+	n = PQntuples(res);
+	entries = pg_malloc0(n * sizeof(RepsetFingerprintEntry));
+
+	for (i = 0; i < n; i++)
+	{
+		PQExpBuffer fp = createPQExpBuffer();
+		PGresult   *tres;
+		PGresult   *sres;
+		int			j;
+
+		entries[i].set_name = pg_strdup(PQgetvalue(res, i, 0));
+		appendPQExpBuffer(fp, "flags=%s%s%s%s;",
+						  PQgetvalue(res, i, 1)[0] == 't' ? "i" : "",
+						  PQgetvalue(res, i, 2)[0] == 't' ? "u" : "",
+						  PQgetvalue(res, i, 3)[0] == 't' ? "d" : "",
+						  PQgetvalue(res, i, 4)[0] == 't' ? "t" : "");
+
+		printfPQExpBuffer(query,
+						  "SELECT rts.set_reloid::regclass::text, rts.set_att_list,"
+						  " pg_get_expr(rts.set_row_filter, rts.set_reloid)"
+						  " FROM spock.replication_set_table rts"
+						  " JOIN spock.replication_set rs ON rts.set_id = rs.set_id"
+						  " WHERE rs.set_nodeid = %u AND rs.set_name = %s"
+						  " ORDER BY rts.set_reloid::regclass::text",
+						  node_id,
+						  PQescapeLiteral(conn, entries[i].set_name, strlen(entries[i].set_name)));
+		tres = PQexec(conn, query->data);
+		if (PQresultStatus(tres) != PGRES_TUPLES_OK)
+		{
+			PQclear(tres);
+			PQclear(res);
+			destroyPQExpBuffer(query);
+			destroyPQExpBuffer(fp);
+			die(_("could not fingerprint table memberships for set \"%s\": %s\n"),
+				entries[i].set_name, PQerrorMessage(conn));
+		}
+
+		for (j = 0; j < PQntuples(tres); j++)
+		{
+			const char *qualified_table = PQgetvalue(tres, j, 0);
+			PGresult   *cres;
+			PQExpBuffer schema_query = createPQExpBuffer();
+			int			k;
+
+			appendPQExpBuffer(fp, "tbl=%s|cols=%s|filter=%s|schema=(",
+							  qualified_table,
+							  PQgetisnull(tres, j, 1) ? "*" : PQgetvalue(tres, j, 1),
+							  PQgetisnull(tres, j, 2) ? "-" : PQgetvalue(tres, j, 2));
+
+			/*
+			 * Schema fingerprint: relation kind and replica identity,
+			 * then per-column name, type, typmod (varchar(10) vs
+			 * varchar(100) is otherwise invisible), collation,
+			 * nullability, and generated/identity status -- so a
+			 * divergent column or relation definition is caught even if
+			 * repset membership itself matches.
+			 */
+			printfPQExpBuffer(schema_query,
+							  "SELECT relkind::text, relreplident::text"
+							  " FROM pg_class WHERE oid = %s::regclass",
+							  PQescapeLiteral(conn, qualified_table, strlen(qualified_table)));
+			cres = PQexec(conn, schema_query->data);
+			if (PQresultStatus(cres) != PGRES_TUPLES_OK || PQntuples(cres) != 1)
+			{
+				PQclear(cres);
+				PQclear(tres);
+				PQclear(res);
+				destroyPQExpBuffer(schema_query);
+				destroyPQExpBuffer(query);
+				destroyPQExpBuffer(fp);
+				die(_("could not fingerprint relation kind of \"%s\": %s\n"),
+					qualified_table, PQerrorMessage(conn));
+			}
+			appendPQExpBuffer(fp, "relkind=%s|replident=%s|",
+							  PQgetvalue(cres, 0, 0), PQgetvalue(cres, 0, 1));
+			PQclear(cres);
+
+			printfPQExpBuffer(schema_query,
+							  "SELECT a.attname, a.atttypid::regtype::text, a.atttypmod,"
+							  " a.attnotnull, a.attidentity, a.attgenerated,"
+							  " COALESCE(co.collname, '')"
+							  " FROM pg_attribute a"
+							  " LEFT JOIN pg_collation co ON co.oid = a.attcollation"
+							  " WHERE a.attrelid = %s::regclass AND a.attnum > 0"
+							  " AND NOT a.attisdropped ORDER BY a.attnum",
+							  PQescapeLiteral(conn, qualified_table, strlen(qualified_table)));
+			cres = PQexec(conn, schema_query->data);
+			destroyPQExpBuffer(schema_query);
+			if (PQresultStatus(cres) != PGRES_TUPLES_OK)
+			{
+				PQclear(cres);
+				PQclear(tres);
+				PQclear(res);
+				destroyPQExpBuffer(query);
+				destroyPQExpBuffer(fp);
+				die(_("could not fingerprint schema of \"%s\": %s\n"),
+					qualified_table, PQerrorMessage(conn));
+			}
+			for (k = 0; k < PQntuples(cres); k++)
+				appendPQExpBuffer(fp, "%s%s:%s:%s:notnull=%s:ident=%s:gen=%s:coll=%s",
+								  k > 0 ? "," : "",
+								  PQgetvalue(cres, k, 0),
+								  PQgetvalue(cres, k, 1),
+								  PQgetvalue(cres, k, 2),
+								  PQgetvalue(cres, k, 3),
+								  PQgetvalue(cres, k, 4),
+								  PQgetvalue(cres, k, 5),
+								  PQgetvalue(cres, k, 6));
+			appendPQExpBufferStr(fp, ");");
+			PQclear(cres);
+		}
+		PQclear(tres);
+
+		printfPQExpBuffer(query,
+						  "SELECT rss.set_seqoid::regclass::text"
+						  " FROM spock.replication_set_seq rss"
+						  " JOIN spock.replication_set rs ON rss.set_id = rs.set_id"
+						  " WHERE rs.set_nodeid = %u AND rs.set_name = %s"
+						  " ORDER BY rss.set_seqoid::regclass::text",
+						  node_id,
+						  PQescapeLiteral(conn, entries[i].set_name, strlen(entries[i].set_name)));
+		sres = PQexec(conn, query->data);
+		if (PQresultStatus(sres) != PGRES_TUPLES_OK)
+		{
+			PQclear(sres);
+			PQclear(res);
+			destroyPQExpBuffer(query);
+			destroyPQExpBuffer(fp);
+			die(_("could not fingerprint sequence memberships for set \"%s\": %s\n"),
+				entries[i].set_name, PQerrorMessage(conn));
+		}
+		for (j = 0; j < PQntuples(sres); j++)
+			appendPQExpBuffer(fp, "seq=%s;", PQgetvalue(sres, j, 0));
+		PQclear(sres);
+
+		entries[i].fingerprint = pg_strdup(fp->data);
+		destroyPQExpBuffer(fp);
+	}
+	PQclear(res);
+	destroyPQExpBuffer(query);
+
+	*out = entries;
+	*nout = n;
+}
+
+static void
+free_repset_fingerprints(RepsetFingerprintEntry *entries, int n)
+{
+	int			i;
+
+	for (i = 0; i < n; i++)
+	{
+		pg_free(entries[i].set_name);
+		pg_free(entries[i].fingerprint);
+	}
+	pg_free(entries);
+}
+
+/*
+ * Build a SQL boolean expression ("set_name IN (...)") over the union of
+ * every replication set actually referenced by conn's own subscriptions
+ * (sub_replication_sets), rather than every set that happens to exist
+ * locally.  Caller frees the result.
+ */
+static char *
+build_selected_set_name_filter(PGconn *conn)
+{
+	PGresult   *res;
+	PQExpBuffer	filter;
+	char	   *result;
+	int			i;
+
+	res = PQexec(conn,
+				 "SELECT DISTINCT s FROM spock.subscription,"
+				 " unnest(sub_replication_sets) AS s ORDER BY 1");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not determine selected replication sets: %s\n"), PQerrorMessage(conn));
+	}
+	if (PQntuples(res) == 0)
+	{
+		PQclear(res);
+		die(_("no subscription references any replication set; cannot "
+			  "verify replication-set equivalence\n"));
+	}
+
+	filter = createPQExpBuffer();
+	appendPQExpBufferStr(filter, "set_name IN (");
+	for (i = 0; i < PQntuples(res); i++)
+	{
+		char *name = PQgetvalue(res, i, 0);
+
+		appendPQExpBuffer(filter, "%s%s", i > 0 ? ", " : "",
+						  PQescapeLiteral(conn, name, strlen(name)));
+	}
+	appendPQExpBufferStr(filter, ")");
+	PQclear(res);
+
+	result = pg_strdup(filter->data);
+	destroyPQExpBuffer(filter);
+	return result;
+}
+
+/*
+ * The forwarding path (peer -> source -> n3) and the future direct path
+ * (peer -> n3) must select exactly the same changes, or a change omitted
+ * on one path is lost once the direct subscription takes over.  Compare
+ * every selected replication set's fingerprint between the source and
+ * each peer; reject any mismatch or missing/extra set on either side.
+ */
+static void
+check_replication_set_equivalence(PGconn *source_conn, const char *source_node_name,
+								  PeerNodeInfo *peers, int num_peers)
+{
+	Oid			source_nodeid = get_local_node_id(source_conn);
+	char	   *selected_filter = build_selected_set_name_filter(source_conn);
+	RepsetFingerprintEntry *source_fps;
+	int			num_source_fps;
+	int			i;
+
+	compute_repset_fingerprints(source_conn, source_nodeid, selected_filter,
+								&source_fps, &num_source_fps);
+
+	for (i = 0; i < num_peers; i++)
+	{
+		PGconn	   *peer_conn;
+		Oid			peer_nodeid;
+		RepsetFingerprintEntry *peer_fps;
+		int			num_peer_fps;
+		int			j;
+
+		peer_conn = PQconnectdb(peers[i].dsn);
+		if (PQstatus(peer_conn) != CONNECTION_OK)
+			die(_("cannot connect to peer \"%s\": %s"),
+				peers[i].node_name, PQerrorMessage(peer_conn));
+
+		peer_nodeid = get_local_node_id(peer_conn);
+		compute_repset_fingerprints(peer_conn, peer_nodeid, selected_filter,
+									&peer_fps, &num_peer_fps);
+
+		/*
+		 * die() exits immediately, so none of the branches below free
+		 * source_fps/peer_fps before calling it -- freeing first and then
+		 * still reading source_fps[j]/peer_fps[j] in the same die() call's
+		 * arguments would be a use-after-free (the process is about to
+		 * exit anyway; nothing else in this file frees before die() either).
+		 */
+		for (j = 0; j < num_source_fps; j++)
+		{
+			int			k;
+			bool		found = false;
+
+			for (k = 0; k < num_peer_fps; k++)
+			{
+				if (strcmp(source_fps[j].set_name, peer_fps[k].set_name) != 0)
+					continue;
+				found = true;
+				if (strcmp(source_fps[j].fingerprint, peer_fps[k].fingerprint) != 0)
+					die(_("replication set \"%s\" differs between the source "
+						  "and peer \"%s\" (membership, flags, columns, row "
+						  "filter, or schema) -- the forwarding path and a "
+						  "future direct peer subscription would not select "
+						  "the same changes, risking permanently lost data "
+						  "on cutover. Reconcile the definitions before "
+						  "retrying.\n"),
+						source_fps[j].set_name, peers[i].node_name);
+				break;
+			}
+			if (!found)
+				die(_("replication set \"%s\" exists on the source but not "
+					  "on peer \"%s\"\n"), source_fps[j].set_name, peers[i].node_name);
+		}
+		for (j = 0; j < num_peer_fps; j++)
+		{
+			int			k;
+			bool		found = false;
+
+			for (k = 0; k < num_source_fps; k++)
+				if (strcmp(peer_fps[j].set_name, source_fps[k].set_name) == 0)
+				{
+					found = true;
+					break;
+				}
+			if (!found)
+				die(_("replication set \"%s\" exists on peer \"%s\" but not "
+					  "on the source\n"), peer_fps[j].set_name, peers[i].node_name);
+		}
+
+		free_repset_fingerprints(peer_fps, num_peer_fps);
+		PQfinish(peer_conn);
+	}
+
+	free_repset_fingerprints(source_fps, num_source_fps);
+	pg_free(selected_filter);
+	(void) source_node_name;
+}
+
+/*
+ * Verify that the source cluster and all peers meet the requirements for
+ * a bidirectional join: Spock >= 6.0.0 on every node, track_commit_timestamp
+ * on, no pending DDL, an actual full-mesh subscription graph (not just a
+ * count), replication-set/schema equivalence across the source and every
+ * peer, and peer connectivity.
+ */
+static void
+check_preconditions(PGconn *source_conn, const char *source_node_name,
+					PeerNodeInfo *peers, int num_peers)
+{
+	PGresult   *res;
+	int			i;
+	int			total_nodes = num_peers + 1;
+	char	  **all_names = pg_malloc(total_nodes * sizeof(char *));
+
+	all_names[0] = pg_strdup(source_node_name);
+	for (i = 0; i < num_peers; i++)
+		all_names[i + 1] = pg_strdup(peers[i].node_name);
+
+	check_spock_version_at_least_6(source_conn, "source");
 
 	/* track_commit_timestamp must be on at the source */
 	res = PQexec(source_conn, "SHOW track_commit_timestamp");
@@ -352,36 +913,34 @@ check_preconditions(PGconn *source_conn, PeerNodeInfo *peers, int num_peers)
 		die(_("track_commit_timestamp must be on for bidirectional join (source)"));
 	PQclear(res);
 
-	/* No pending DDL in spock.queue */
-	res = PQexec(source_conn, "SELECT COUNT(*) FROM spock.queue");
+	/*
+	 * All outbound replication caught up to the source's current WAL
+	 * position -- i.e. nothing (DDL or data) still in flight to an
+	 * existing peer.  spock.queue's row count is not a usable signal here:
+	 * queue_message() (spock_queue.c) only ever inserts into it, so its
+	 * count is monotonically non-decreasing and is never zero on any node
+	 * that has replicated so much as a single DDL statement.
+	 */
+	res = PQexec(source_conn,
+				 "SELECT COUNT(*) FROM pg_replication_slots"
+				 " WHERE slot_type = 'logical' AND plugin = 'spock_output'"
+				 " AND (confirmed_flush_lsn IS NULL"
+				 "      OR confirmed_flush_lsn < pg_current_wal_lsn())");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		die(_("could not check spock.queue: %s"),
+		die(_("could not check replication slot lag: %s"),
 			PQerrorMessage(source_conn));
 	if (strcmp(PQgetvalue(res, 0, 0), "0") != 0)
-		die(_("pending DDL in spock.queue; wait for replication to drain "
-			  "before joining"));
+		die(_("source has unreplicated changes pending to an existing peer; "
+			  "wait for replication to drain before joining"));
 	PQclear(res);
 
-	/* Full-mesh assertion: subscriptions on source == num_peers */
-	res = PQexec(source_conn, "SELECT COUNT(*) FROM spock.subscription");
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		die(_("could not count subscriptions: %s"),
-			PQerrorMessage(source_conn));
-	{
-		int sub_count = atoi(PQgetvalue(res, 0, 0));
-
-		if (sub_count != num_peers)
-			die(_("source node has %d active subscription(s) but %d peer(s) "
-				  "discovered; partial-mesh topologies are not supported"),
-				sub_count, num_peers);
-	}
-	PQclear(res);
+	/* Full-mesh directed-graph check, from the source's own perspective. */
+	check_mesh_edges(source_conn, source_node_name, all_names, total_nodes);
 
 	/*
-	 * Per-peer: connectivity and track_commit_timestamp.
-	 *
-	 * Spock version is not checked on peers here; peer version checking is
-	 * deferred to the subscription-setup phase.
+	 * Per-peer: connectivity, Spock version, track_commit_timestamp, and
+	 * the full-mesh directed-graph check from each peer's own perspective
+	 * (a mesh that's only complete as seen from the source is not a mesh).
 	 */
 	for (i = 0; i < num_peers; i++)
 	{
@@ -395,11 +954,18 @@ check_preconditions(PGconn *source_conn, PeerNodeInfo *peers, int num_peers)
 			die(_("cannot connect to peer \"%s\": %s"),
 				peers[i].node_name, PQerrorMessage(peer_conn));
 
+		check_peer_identity(peer_conn, peers[i].node_name);
+		check_spock_version_at_least_6(peer_conn, peers[i].node_name);
+
 		res = PQexec(peer_conn, "SHOW track_commit_timestamp");
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
+			/*
+			 * die() exits immediately -- PQerrorMessage() needs peer_conn
+			 * still open, so PQfinish() must not run first (that would be
+			 * a use-after-free when die()'s own formatting reads it).
+			 */
 			PQclear(res);
-			PQfinish(peer_conn);
 			die(_("could not check track_commit_timestamp on peer \"%s\": %s"),
 				peers[i].node_name, PQerrorMessage(peer_conn));
 		}
@@ -411,10 +977,163 @@ check_preconditions(PGconn *source_conn, PeerNodeInfo *peers, int num_peers)
 				  "(peer \"%s\")"), peers[i].node_name);
 		}
 		PQclear(res);
+
+		check_mesh_edges(peer_conn, peers[i].node_name, all_names, total_nodes);
+
 		PQfinish(peer_conn);
 	}
 
+	/* Replication-set & schema equivalence: run once the mesh is sound. */
+	check_replication_set_equivalence(source_conn, source_node_name, peers, num_peers);
+
+	for (i = 0; i < total_nodes; i++)
+		pg_free(all_names[i]);
+	pg_free(all_names);
+
 	print_msg(VERBOSITY_NORMAL, _("Preconditions verified.\n"));
+}
+
+/*
+ * The physical-backup path runs once per data directory, so it requires
+ * exactly one spock-configured database on the source instance.  Checked
+ * against actual spock configuration, not --databases/--provider-dsn,
+ * since the instance can host other unrelated databases.  Fails closed:
+ * any database we cannot inspect aborts the run rather than being
+ * treated as spock-free.  datallowconn is not used to skip databases --
+ * a database with connections disabled can still hold spock catalog
+ * state -- only true templates are excluded.
+ */
+static void
+check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
+							const char *current_dbname)
+{
+	PGresult   *res;
+	int			i;
+	PQExpBuffer	others = createPQExpBuffer();
+	int			other_count = 0;
+
+	res = PQexec(conn, "SELECT datname FROM pg_database WHERE NOT datistemplate");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not list databases on source: %s\n"), PQerrorMessage(conn));
+	}
+
+	for (i = 0; i < PQntuples(res); i++)
+	{
+		char	   *dbname = PQgetvalue(res, i, 0);
+		char	   *db_connstr;
+		PGconn	   *db_conn;
+		PGresult   *ext_res;
+		PGresult   *node_res;
+
+		if (strcmp(dbname, current_dbname) == 0)
+			continue;
+
+		db_connstr = get_connstr((char *) base_prov_connstr, dbname);
+		db_conn = PQconnectdb(db_connstr);
+		if (PQstatus(db_conn) != CONNECTION_OK)
+		{
+			char *errmsg = pg_strdup(PQerrorMessage(db_conn));
+
+			PQfinish(db_conn);
+			PQclear(res);
+			die(_("--bidirectional requires proving no other database on the "
+				  "source has spock configured, but could not connect to "
+				  "\"%s\" to check: %s\n"), dbname, errmsg);
+		}
+
+		ext_res = PQexec(db_conn, "SELECT 1 FROM pg_extension WHERE extname = 'spock'");
+		if (PQresultStatus(ext_res) != PGRES_TUPLES_OK)
+		{
+			char *errmsg = pg_strdup(PQerrorMessage(db_conn));
+
+			PQclear(ext_res);
+			PQfinish(db_conn);
+			PQclear(res);
+			die(_("--bidirectional requires proving no other database on the "
+				  "source has spock configured, but could not query \"%s\": "
+				  "%s\n"), dbname, errmsg);
+		}
+
+		if (PQntuples(ext_res) > 0)
+		{
+			node_res = PQexec(db_conn, "SELECT 1 FROM spock.local_node");
+			if (PQresultStatus(node_res) != PGRES_TUPLES_OK)
+			{
+				char *errmsg = pg_strdup(PQerrorMessage(db_conn));
+
+				PQclear(node_res);
+				PQclear(ext_res);
+				PQfinish(db_conn);
+				PQclear(res);
+				die(_("--bidirectional requires proving no other database on "
+					  "the source has spock configured, but could not query "
+					  "spock.local_node in \"%s\": %s\n"), dbname, errmsg);
+			}
+
+			if (PQntuples(node_res) > 0)
+			{
+				appendPQExpBuffer(others, "%s%s", other_count ? ", " : "", dbname);
+				other_count++;
+			}
+			PQclear(node_res);
+		}
+		PQclear(ext_res);
+		PQfinish(db_conn);
+	}
+	PQclear(res);
+
+	if (other_count > 0)
+		die(_("--bidirectional requires exactly one spock-configured database "
+			  "on the source instance; also found spock configured on: %s\n"),
+			others->data);
+
+	destroyPQExpBuffer(others);
+}
+
+/*
+ * A physical base backup copies native (non-spock) logical subscriptions
+ * too, which DROP EXTENSION spock doesn't touch.  Once n3 is promoted and
+ * restarted, an enabled native subscription would start consuming from
+ * its provider as a second, unintended consumer.  pg_subscription is a
+ * shared catalog, so one query sees every database's rows.
+ */
+static void
+check_no_native_subscriptions(PGconn *conn)
+{
+	PGresult   *res;
+
+	res = PQexec(conn,
+				 "SELECT s.subname, d.datname"
+				 " FROM pg_subscription s"
+				 " JOIN pg_database d ON d.oid = s.subdbid"
+				 " WHERE s.subenabled");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not check for native logical subscriptions on the "
+			  "source instance: %s\n"), PQerrorMessage(conn));
+	}
+
+	if (PQntuples(res) > 0)
+	{
+		PQExpBuffer	list = createPQExpBuffer();
+		int			i;
+
+		for (i = 0; i < PQntuples(res); i++)
+			appendPQExpBuffer(list, "\n  - %s (database %s)",
+							  PQgetvalue(res, i, 0), PQgetvalue(res, i, 1));
+
+		PQclear(res);
+		die(_("--bidirectional requires no enabled native (non-spock) logical "
+			  "subscriptions anywhere on the source instance -- a physical "
+			  "backup would copy them, and they would start consuming on "
+			  "the new node as an unintended second consumer once "
+			  "promoted: %s\nDisable or drop these subscriptions before "
+			  "retrying.\n"), list->data);
+	}
+	PQclear(res);
 }
 
 /*
@@ -429,7 +1148,6 @@ write_manifest(BidirectionalState *state, const char *subscriber_name,
 {
 	PQExpBuffer	buf = createPQExpBuffer();
 	char		tmp_path[MAXPGPATH];
-	FILE	   *f;
 	int			i;
 
 	snprintf(tmp_path, MAXPGPATH, "%s.tmp", state->manifest_path);
@@ -459,6 +1177,16 @@ write_manifest(BidirectionalState *state, const char *subscriber_name,
 		append_json_string(buf, state->source_origin_name);
 	appendPQExpBufferStr(buf, "\",\n");
 
+	appendPQExpBufferStr(buf, "    \"source_restore_lsn\": \"");
+	if (state->source_restore_lsn)
+		append_json_string(buf, state->source_restore_lsn);
+	appendPQExpBufferStr(buf, "\",\n");
+
+	appendPQExpBufferStr(buf, "    \"node_dsn\": \"");
+	if (state->node_dsn)
+		append_json_string(buf, state->node_dsn);
+	appendPQExpBufferStr(buf, "\",\n");
+
 	appendPQExpBufferStr(buf, "    \"peers\": [\n");
 	for (i = 0; i < state->num_peers; i++)
 	{
@@ -481,34 +1209,83 @@ write_manifest(BidirectionalState *state, const char *subscriber_name,
 
 		appendPQExpBufferStr(buf, "            \"peer_slot_name\": \"");
 		append_json_string(buf, p->slot_name);
-		appendPQExpBufferStr(buf, "\"\n");
+		appendPQExpBufferStr(buf, "\",\n");
+
+		appendPQExpBuffer(buf, "            \"disabled_sub_created\": %s,\n",
+						  p->disabled_sub_created ? "true" : "false");
+		appendPQExpBuffer(buf, "            \"slot_created\": %s,\n",
+						  p->slot_created ? "true" : "false");
+		appendPQExpBuffer(buf, "            \"reverse_sub_created\": %s\n",
+						  p->reverse_sub_created ? "true" : "false");
 
 		appendPQExpBufferStr(buf, last ? "        }\n" : "        },\n");
 	}
 	appendPQExpBufferStr(buf, "    ]\n");
 	appendPQExpBufferStr(buf, "}\n");
 
-	f = fopen(tmp_path, "w");
-	if (f == NULL)
-		die(_("could not create manifest file \"%s\": %s"),
-			tmp_path, strerror(errno));
+	/*
+	 * The manifest can embed a password (source_dsn, node_dsn), so create
+	 * with mode 0600 up front, not a post-hoc chmod.  O_EXCL|O_NOFOLLOW
+	 * refuses to write through a pre-existing file or planted symlink,
+	 * except a leftover .tmp from a previous crashed run.
+	 */
+	{
+		int			fd;
+		ssize_t		written;
 
-	if (fwrite(buf->data, 1, buf->len, f) != buf->len)
-	{
-		fclose(f);
-		unlink(tmp_path);
-		die(_("could not write manifest file \"%s\": %s"),
-			tmp_path, strerror(errno));
+		fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+		if (fd < 0 && errno == EEXIST)
+		{
+			if (unlink(tmp_path) != 0)
+				die(_("could not remove stale manifest temp file \"%s\": %s"),
+					tmp_path, strerror(errno));
+			fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+		}
+		if (fd < 0)
+			die(_("could not create manifest file \"%s\": %s"),
+				tmp_path, strerror(errno));
+
+		written = write(fd, buf->data, buf->len);
+		if (written < 0 || (size_t) written != buf->len)
+		{
+			close(fd);
+			unlink(tmp_path);
+			die(_("could not write manifest file \"%s\": %s"),
+				tmp_path, strerror(errno));
+		}
+
+		/*
+		 * fsync, rename, then fsync the directory -- a crash right after
+		 * this returns must not lose the only cleanup record for the
+		 * source slot created just before it.
+		 */
+		if (fsync(fd) != 0)
+		{
+			close(fd);
+			unlink(tmp_path);
+			die(_("could not fsync manifest file \"%s\": %s"),
+				tmp_path, strerror(errno));
+		}
+		if (close(fd) != 0)
+		{
+			unlink(tmp_path);
+			die(_("could not close manifest file \"%s\": %s"),
+				tmp_path, strerror(errno));
+		}
+		if (rename(tmp_path, state->manifest_path) != 0)
+			die(_("could not rename manifest to \"%s\": %s"),
+				state->manifest_path, strerror(errno));
+
+		/*
+		 * fsync_parent_path() already treats "filesystem doesn't support
+		 * directory fsync" as success internally, so a nonzero return
+		 * here is a genuine failure that can orphan the source slot
+		 * after a crash.  Fatal, like the durability steps above.
+		 */
+		if (fsync_parent_path(state->manifest_path) != 0)
+			die(_("could not fsync directory containing \"%s\": %s\n"),
+				state->manifest_path, strerror(errno));
 	}
-	if (fclose(f) != 0)
-	{
-		unlink(tmp_path);
-		die(_("could not close manifest file \"%s\": %s"),
-			tmp_path, strerror(errno));
-	}
-	if (rename(tmp_path, state->manifest_path) != 0)
-		die(_("could not rename manifest to \"%s\": %s"),
-			state->manifest_path, strerror(errno));
 
 	destroyPQExpBuffer(buf);
 }
@@ -536,6 +1313,9 @@ typedef struct ManifestParseState
 	char	   *peer_dsn;
 	char	   *peer_sub_name;
 	char	   *peer_slot_name;
+	bool		peer_disabled_sub_created;
+	bool		peer_slot_created;
+	bool		peer_reverse_sub_created;
 	int			peer_capacity;
 } ManifestParseState;
 
@@ -569,8 +1349,12 @@ manifest_object_end(void *st)
 		s->bidir->peers[i].dsn = s->peer_dsn;
 		s->bidir->peers[i].sub_name = s->peer_sub_name;
 		s->bidir->peers[i].slot_name = s->peer_slot_name;
+		s->bidir->peers[i].disabled_sub_created = s->peer_disabled_sub_created;
+		s->bidir->peers[i].slot_created = s->peer_slot_created;
+		s->bidir->peers[i].reverse_sub_created = s->peer_reverse_sub_created;
 		s->bidir->num_peers++;
 		s->peer_node_name = s->peer_dsn = s->peer_sub_name = s->peer_slot_name = NULL;
+		s->peer_disabled_sub_created = s->peer_slot_created = s->peer_reverse_sub_created = false;
 		s->in_peer_obj = false;
 	}
 	s->depth--;
@@ -617,7 +1401,32 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 {
 	ManifestParseState *s = (ManifestParseState *) st;
 
-	if (s->cur_field == NULL || tokentype != JSON_TOKEN_STRING)
+	if (s->cur_field == NULL)
+	{
+		pg_free(token);
+		return JSON_SUCCESS;
+	}
+
+	/*
+	 * Per-peer creation-state flags are JSON booleans, not strings --
+	 * handle them before the string-only fields below (which free and
+	 * ignore anything that isn't JSON_TOKEN_STRING).
+	 */
+	if (s->in_peer_obj && tokentype != JSON_TOKEN_STRING)
+	{
+		bool	value = (tokentype == JSON_TOKEN_TRUE);
+
+		if (strcmp(s->cur_field, "disabled_sub_created") == 0)
+			s->peer_disabled_sub_created = value;
+		else if (strcmp(s->cur_field, "slot_created") == 0)
+			s->peer_slot_created = value;
+		else if (strcmp(s->cur_field, "reverse_sub_created") == 0)
+			s->peer_reverse_sub_created = value;
+		pg_free(token);
+		return JSON_SUCCESS;
+	}
+
+	if (tokentype != JSON_TOKEN_STRING)
 	{
 		pg_free(token);
 		return JSON_SUCCESS;
@@ -636,6 +1445,10 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 			s->bidir->source_slot_name = token;
 		else if (strcmp(s->cur_field, "source_origin_name") == 0)
 			s->bidir->source_origin_name = token;
+		else if (strcmp(s->cur_field, "source_restore_lsn") == 0)
+			s->bidir->source_restore_lsn = token;
+		else if (strcmp(s->cur_field, "node_dsn") == 0)
+			s->bidir->node_dsn = token;
 		else
 			pg_free(token);
 	}
@@ -735,12 +1548,16 @@ read_manifest(const char *manifest_path, BidirectionalState *state,
 
 /*
  * Idempotently remove bidirectional join state from all reachable nodes.
- * Connects to the source and each peer, drops replication slots and
- * reverse subscriptions created during a previous join attempt.  All
- * operations are best-effort: connectivity failures are logged as
- * warnings rather than being fatal.
+ * Connects to the source and each peer; drops replication slots and
+ * reverse subscriptions created during a previous join attempt.
+ * Connectivity and drop failures are logged as warnings, not fatal, so
+ * cleanup attempts every remaining resource -- but each failure is
+ * tracked, and the function returns true only if every recorded resource
+ * was confirmed gone.  The manifest/sidecar record (the only way to
+ * retry) is removed only on a true return; an incomplete cleanup keeps
+ * it and the caller exits non-zero.
  */
-static void
+static bool
 cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 					  const char *dbname, const char *source_dsn,
 					  bool force_rm_datadir)
@@ -749,6 +1566,7 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 	PGresult   *res;
 	PQExpBuffer	query = createPQExpBuffer();
 	int			i;
+	bool		fully_cleaned = true;
 
 	print_msg(VERBOSITY_NORMAL,
 			  _("Cleaning up partial bidirectional join state ...\n"));
@@ -756,10 +1574,14 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 	source_conn = PQconnectdb(source_dsn);
 	if (PQstatus(source_conn) != CONNECTION_OK)
 	{
-		print_msg(VERBOSITY_NORMAL,
-				  _("warning: cannot connect to source node; skipping "
-					"source-side cleanup: %s\n"),
-				  PQerrorMessage(source_conn));
+		if (state->source_slot_name && state->source_slot_name[0])
+		{
+			print_msg(VERBOSITY_NORMAL,
+					  _("warning: cannot connect to source node; slot %s "
+						"may still exist: %s\n"),
+					  state->source_slot_name, PQerrorMessage(source_conn));
+			fully_cleaned = false;
+		}
 		PQfinish(source_conn);
 		source_conn = NULL;
 	}
@@ -773,10 +1595,20 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 						  " WHERE slot_name = '%s'",
 						  state->source_slot_name);
 		res = PQexec(source_conn, query->data);
-		if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0)
+		if (PQresultStatus(res) == PGRES_TUPLES_OK)
+		{
+			if (PQntuples(res) > 0)
+				print_msg(VERBOSITY_NORMAL,
+						  _("  dropped source slot %s\n"),
+						  state->source_slot_name);
+		}
+		else
+		{
 			print_msg(VERBOSITY_NORMAL,
-					  _("  dropped source slot %s\n"),
-					  state->source_slot_name);
+					  _("warning: could not drop source slot %s: %s\n"),
+					  state->source_slot_name, PQerrorMessage(source_conn));
+			fully_cleaned = false;
+		}
 		PQclear(res);
 	}
 
@@ -790,18 +1622,29 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 		if (!peer->dsn || !peer->dsn[0])
 			continue;
 
+		/*
+		 * Only attempt to drop -- and only require connectivity for --
+		 * resources this run actually recorded as created.  Slot/sub names
+		 * are deterministic, not per-run unique, so --cleanup must not
+		 * touch a same-named resource from an unrelated join, nor report
+		 * "incomplete" over a peer that was never touched.
+		 */
+		if (!peer->slot_created && !peer->reverse_sub_created)
+			continue;
+
 		peer_conn = PQconnectdb(peer->dsn);
 		if (PQstatus(peer_conn) != CONNECTION_OK)
 		{
 			print_msg(VERBOSITY_NORMAL,
-					  _("warning: cannot connect to peer \"%s\"; skipping "
-						"peer-side cleanup: %s\n"),
+					  _("warning: cannot connect to peer \"%s\"; its slot/"
+						"subscription may still exist: %s\n"),
 					  peer->node_name, PQerrorMessage(peer_conn));
+			fully_cleaned = false;
 			PQfinish(peer_conn);
 			continue;
 		}
 
-		if (peer->slot_name && peer->slot_name[0])
+		if (peer->slot_created && peer->slot_name && peer->slot_name[0])
 		{
 			printfPQExpBuffer(query,
 							  "SELECT pg_drop_replication_slot(slot_name)"
@@ -809,25 +1652,49 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 							  " WHERE slot_name = '%s'",
 							  peer->slot_name);
 			res = PQexec(peer_conn, query->data);
-			if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0)
+			if (PQresultStatus(res) == PGRES_TUPLES_OK)
+			{
+				if (PQntuples(res) > 0)
+					print_msg(VERBOSITY_NORMAL,
+							  _("  dropped peer slot %s on %s\n"),
+							  peer->slot_name, peer->node_name);
+			}
+			else
+			{
 				print_msg(VERBOSITY_NORMAL,
-						  _("  dropped peer slot %s on %s\n"),
-						  peer->slot_name, peer->node_name);
+						  _("warning: could not drop peer slot %s on %s: %s\n"),
+						  peer->slot_name, peer->node_name,
+						  PQerrorMessage(peer_conn));
+				fully_cleaned = false;
+			}
 			PQclear(res);
 		}
 
 		/*
-		 * Drop the reverse subscription (peer -> new subscriber) if it was
-		 * created during a previous attempt.  The sub_drop second argument
-		 * is ifexists=true.
+		 * Drop the reverse subscription (peer -> new subscriber) only if
+		 * this run recorded having created it.  The sub_drop second
+		 * argument is ifexists=true, so an absent subscription is not an
+		 * error -- only an actual query failure counts against
+		 * fully_cleaned.
 		 */
-		snprintf(reverse_sub, sizeof(reverse_sub), "sub_%s_%s",
-				 peer->node_name, subscriber_name);
-		printfPQExpBuffer(query,
-						  "SELECT spock.sub_drop('%s', true)",
-						  reverse_sub);
-		res = PQexec(peer_conn, query->data);
-		PQclear(res);
+		if (peer->reverse_sub_created)
+		{
+			snprintf(reverse_sub, sizeof(reverse_sub), "sub_%s_%s",
+					 peer->node_name, subscriber_name);
+			printfPQExpBuffer(query,
+							  "SELECT spock.sub_drop(%s, true)",
+							  PQescapeLiteral(peer_conn, reverse_sub, strlen(reverse_sub)));
+			res = PQexec(peer_conn, query->data);
+			if (PQresultStatus(res) != PGRES_TUPLES_OK)
+			{
+				print_msg(VERBOSITY_NORMAL,
+						  _("warning: could not drop reverse subscription %s on "
+							"%s: %s\n"),
+						  reverse_sub, peer->node_name, PQerrorMessage(peer_conn));
+				fully_cleaned = false;
+			}
+			PQclear(res);
+		}
 
 		PQfinish(peer_conn);
 		print_msg(VERBOSITY_NORMAL,
@@ -839,14 +1706,112 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 
 	destroyPQExpBuffer(query);
 
+	/*
+	 * The data directory a partial run may have created via basebackup.
+	 * Never touch it without --force.
+	 */
+	if (data_dir != NULL && data_dir[0] && file_exists(data_dir))
+	{
+		if (force_rm_datadir)
+		{
+			struct stat	st;
+
+			snprintf(pid_file, MAXPGPATH, "%s/postmaster.pid", data_dir);
+			if (stat(pid_file, &st) == 0)
+			{
+				print_msg(VERBOSITY_NORMAL,
+						  _("  stopping postgres in %s before removing it ...\n"),
+						  data_dir);
+				run_pg_ctl("stop -m fast");
+				wait_postmaster_shutdown();
+			}
+
+			print_msg(VERBOSITY_NORMAL,
+					  _("  removing data directory %s ...\n"), data_dir);
+			if (!rmtree(data_dir, true))
+			{
+				print_msg(VERBOSITY_NORMAL,
+						  _("warning: could not fully remove data directory "
+							"%s; remove it manually\n"), data_dir);
+				fully_cleaned = false;
+			}
+		}
+		else
+		{
+			print_msg(VERBOSITY_NORMAL,
+					  _("  data directory %s was left in place; pass --force "
+						"to remove it, or clean it up manually.\n"), data_dir);
+		}
+	}
+
+	if (!fully_cleaned)
+	{
+		print_msg(VERBOSITY_NORMAL,
+				  _("Cleanup incomplete: some resource(s) above could not be "
+					"confirmed removed. Keeping the manifest/sidecar record "
+					"so --cleanup can be retried.\n"));
+		return false;
+	}
+
+	/*
+	 * Every remote/local resource above was confirmed gone; now remove the
+	 * retry record(s) themselves.  An unexpected removal failure here
+	 * (anything but ENOENT, i.e. already gone) must also flip
+	 * fully_cleaned -- otherwise the caller reports success and exits 0
+	 * while a stale record that still references now-removed resources
+	 * lingers on disk, which a later --cleanup could misread as current.
+	 */
 	if (state->manifest_path && state->manifest_path[0])
 	{
-		unlink(state->manifest_path);
+		if (unlink(state->manifest_path) == 0)
+			print_msg(VERBOSITY_NORMAL,
+					  _("  removed manifest %s\n"), state->manifest_path);
+		else if (errno != ENOENT)
+		{
+			print_msg(VERBOSITY_NORMAL,
+					  _("warning: could not remove manifest %s: %s\n"),
+					  state->manifest_path, strerror(errno));
+			fully_cleaned = false;
+		}
+	}
+
+	/*
+	 * Also remove any pending-cleanup sidecar, even if it wasn't the file
+	 * that drove this cleanup: a stale one left behind by an earlier run
+	 * whose own sidecar-unlink failed could otherwise be misread as
+	 * current by a later --cleanup once the manifest above is gone,
+	 * reporting resources as still-pending that were, in fact, already
+	 * confirmed removed here.
+	 */
+	if (data_dir != NULL && data_dir[0])
+	{
+		char	sidecar_path[MAXPGPATH];
+
+		snprintf(sidecar_path, MAXPGPATH, "%s.spock_bidir_pending.json", data_dir);
+		if (unlink(sidecar_path) == 0)
+			print_msg(VERBOSITY_NORMAL,
+					  _("  removed pending sidecar %s\n"), sidecar_path);
+		else if (errno != ENOENT)
+		{
+			print_msg(VERBOSITY_NORMAL,
+					  _("warning: could not remove pending sidecar %s: %s\n"),
+					  sidecar_path, strerror(errno));
+			fully_cleaned = false;
+		}
+	}
+
+	if (!fully_cleaned)
+	{
 		print_msg(VERBOSITY_NORMAL,
-				  _("  removed manifest %s\n"), state->manifest_path);
+				  _("Cleanup incomplete: the manifest or sidecar record could "
+					"not be removed even though every resource it tracked "
+					"was confirmed gone. Retry --cleanup to remove the "
+					"stale record.\n"));
+		return false;
 	}
 
 	print_msg(VERBOSITY_NORMAL, _("Cleanup complete.\n"));
+	return true;
 }
 
 
@@ -884,6 +1849,8 @@ main(int argc, char **argv)
 	char	   *extra_basebackup_args = NULL;
 	BidirectionalState bidir = {0};
 	char		bidir_manifest_path[MAXPGPATH] = {0};
+	char		bidir_pending_path[MAXPGPATH] = {0};
+	CatalogCapture capture = {0};
 
 	static struct option long_options[] = {
 		{"subscriber-name", required_argument, NULL, 'n'},
@@ -904,13 +1871,16 @@ main(int argc, char **argv)
 		{"stall-timeout", required_argument, NULL, 13},
 		{"max-wait", required_argument, NULL, 14},
 		{"cleanup", no_argument, NULL, 15},
+		{"force", no_argument, NULL, 16},
 		{NULL, 0, NULL, 0}
 	};
 
 	argv0 = argv[0];
 	progname = get_progname(argv[0]);
+	pg_logging_init(argv[0]);
 	start_time = time(NULL);
 	signal(SIGINT, signal_handler);
+	signal(SIGTERM, signal_handler);
 
 	/* check for --help */
 	if (argc > 1)
@@ -1009,6 +1979,9 @@ main(int argc, char **argv)
 			case 15:
 				bidir.cleanup_mode = true;
 				break;
+			case 16:
+				bidir.force_cleanup = true;
+				break;
 			default:
 				fprintf(stderr, _("Unknown option\n"));
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
@@ -1036,11 +2009,18 @@ main(int argc, char **argv)
 	if (bidir.cleanup_mode && !bidir.enabled)
 		die(_("--cleanup requires --bidirectional.\n"));
 
+	if (bidir.force_cleanup && !bidir.cleanup_mode)
+		die(_("--force requires --cleanup.\n"));
+
 	if (!bidir.cleanup_mode && (!base_prov_connstr || !strlen(base_prov_connstr)))
 		die(_("Provider connection string must be specified.\n"));
-	if (!bidir.enabled && !bidir.cleanup_mode &&
+	if (!bidir.cleanup_mode &&
 		(!base_sub_connstr || !strlen(base_sub_connstr)))
-		die(_("Subscriber connection string must be specified.\n"));
+		die(_("Subscriber connection string must be specified: --subscriber-dsn "
+			  "is used both for the tool's own connection to the newly "
+			  "created node and, with --bidirectional, as the externally-"
+			  "reachable address registered via spock.node_create() for "
+			  "peers to connect back to it.\n"));
 
 	if (apply_delay < 0)
 		die(_("Apply delay cannot be negative.\n"));
@@ -1057,6 +2037,14 @@ main(int argc, char **argv)
 		snprintf(bidir_manifest_path, MAXPGPATH,
 				 "%s/spock_bidirectional_manifest.json", data_dir);
 		bidir.manifest_path = bidir_manifest_path;
+		/*
+		 * Sidecar path for the source slot orphan-protection record (see
+		 * the write near source-slot creation below) -- lives next to, not
+		 * inside, data_dir, since data_dir must still be empty when this is
+		 * first written (pg_basebackup requires an empty target directory).
+		 */
+		snprintf(bidir_pending_path, MAXPGPATH,
+				 "%s.spock_bidir_pending.json", data_dir);
 		if (bidir.stall_timeout == 0)
 			bidir.stall_timeout = 600;
 	}
@@ -1068,13 +2056,23 @@ main(int argc, char **argv)
 		char *db = NULL;
 		char *src_dsn = NULL;
 
-		if (!read_manifest(bidir.manifest_path, &bidir, &sub_name, &db, &src_dsn))
-		{
-			fprintf(stderr, _("No manifest found at %s; nothing to clean up.\n"),
-					bidir.manifest_path);
-			exit(0);
-		}
-		cleanup_partial_state(&bidir, sub_name, db, src_dsn, false);
+		if (read_manifest(bidir.manifest_path, &bidir, &sub_name, &db, &src_dsn))
+			exit(cleanup_partial_state(&bidir, sub_name, db, src_dsn,
+										bidir.force_cleanup) ? 0 : 1);
+
+		/*
+		 * No full manifest -- basebackup may never have completed.  Fall
+		 * back to the pending-cleanup sidecar written right after source
+		 * slot creation, so a slot orphaned by a failed/interrupted backup
+		 * is still reachable by --cleanup.
+		 */
+		if (read_manifest(bidir_pending_path, &bidir, &sub_name, &db, &src_dsn))
+			/* cleanup_partial_state() removes the sidecar itself on success. */
+			exit(cleanup_partial_state(&bidir, sub_name, db, src_dsn,
+										bidir.force_cleanup) ? 0 : 1);
+
+		fprintf(stderr, _("No manifest found at %s or %s; nothing to clean up.\n"),
+				bidir.manifest_path, bidir_pending_path);
 		exit(0);
 	}
 
@@ -1098,6 +2096,18 @@ main(int argc, char **argv)
 		database_list = palloc(n_databases * sizeof(char *));
 		database_list[0] = dbname;
 	}
+
+	/*
+	 * Single database only: all join state is per-database, and the
+	 * physical-backup/recovery path operates on one data directory.
+	 * Reject a multi-database request rather than silently joining only
+	 * database_list[0]. Separate from check_single_spock_database()
+	 * below, which checks the instance for spock on other databases.
+	 */
+	if (bidir.enabled && n_databases > 1)
+		die(_("--bidirectional supports a single database only; "
+			  "%d were named via --databases/--provider-dsn.\n"),
+			n_databases);
 
 	slot_names = palloc(n_databases * sizeof(char *));
 
@@ -1153,26 +2163,66 @@ main(int argc, char **argv)
 		remote_info = get_remote_info(provider_conn);
 
 		/*
-		 * --bidirectional: discover peers, verify preconditions, write the
-		 * manifest, then exit.  The rest of the join resumes from this
-		 * manifest once the physical backup has been taken and the
-		 * subscriber is running.
+		 * --bidirectional: discover peers, verify preconditions, then
+		 * continue into the physical-backup pipeline below using the
+		 * "sub_<subscriber>_<source>" slot naming convention.  Manifest
+		 * write is deferred until after the basebackup; see the comment
+		 * there.
 		 */
 		if (bidir.enabled)
 		{
+			PQExpBuffer	sub_name_buf = createPQExpBuffer();
+			char	   *source_sub_name;
+
 			bidir.num_peers = discover_peer_nodes(provider_conn,
 												  remote_info->node_name,
 												  subscriber_name, db,
 												  &bidir.peers);
-			check_preconditions(provider_conn, bidir.peers, bidir.num_peers);
-			write_manifest(&bidir, subscriber_name, db, base_prov_connstr);
+			check_preconditions(provider_conn, remote_info->node_name,
+								bidir.peers, bidir.num_peers);
+			check_single_spock_database(provider_conn, base_prov_connstr, db);
+			check_no_native_subscriptions(provider_conn);
+			use_existing_data_dir = check_data_dir(data_dir, remote_info);
+			if (use_existing_data_dir)
+			{
+				char *local_sysid = read_sysid(data_dir);
+				bool mismatch = strcmp(remote_info->sysid, local_sysid) != 0;
+				free(local_sysid);
+				if (mismatch)
+					die(_("Subscriber data directory is not basebackup of remote node.\n"));
+			}
+
+			appendPQExpBuffer(sub_name_buf, "sub_%s_%s",
+							  subscriber_name, remote_info->node_name);
+			source_sub_name = pg_strdup(sub_name_buf->data);
+			destroyPQExpBuffer(sub_name_buf);
+
 			print_msg(VERBOSITY_NORMAL,
-					  _("Bidirectional plumbing complete: %d peer(s) discovered, "
-						"preconditions OK, manifest written to %s.\n"),
-					  bidir.num_peers, bidir.manifest_path);
+					  _("Creating source replication slot in database %s ...\n"), db);
+			bidir.source_slot_name = initialize_replication_slot(provider_conn,
+																 remote_info->dbname,
+																 remote_info->node_name,
+																 source_sub_name,
+																 drop_slot_if_exists);
+			bidir.source_origin_name = pg_strdup(bidir.source_slot_name);
+			pg_free(source_sub_name);
+
+			/*
+			 * Persist a pending-cleanup record now, before the base backup
+			 * even starts: the source slot above already exists on the
+			 * remote node, and a failed/interrupted backup would otherwise
+			 * orphan it with nothing for --cleanup to find (the real
+			 * manifest can't be written yet -- data_dir must stay empty for
+			 * pg_basebackup).  Superseded and removed once the real
+			 * manifest is written below.
+			 */
+			bidir.manifest_path = bidir_pending_path;
+			write_manifest(&bidir, subscriber_name, db, base_prov_connstr);
+			bidir.manifest_path = bidir_manifest_path;
+
 			PQfinish(provider_conn);
 			provider_conn = NULL;
-			exit(0);
+			break;				/* single-database only, enforced above */
 		}
 
 		/* only need to do this piece once */
@@ -1217,6 +2267,26 @@ main(int argc, char **argv)
 						extra_basebackup_args);
 	snprintf(pid_file, MAXPGPATH, "%s/postmaster.pid", data_dir);
 
+	/*
+	 * Manifest write is deferred until here: pg_basebackup requires an
+	 * empty target directory, and a manifest file in data_dir earlier
+	 * would make it look non-empty.  The pending-cleanup sidecar written
+	 * right after source slot creation covers the gap between then and
+	 * now; it's superseded by the real manifest and removed below.
+	 */
+	if (bidir.enabled)
+	{
+		write_manifest(&bidir, subscriber_name, database_list[0], base_prov_connstr);
+		if (unlink(bidir_pending_path) != 0 && errno != ENOENT)
+			print_msg(VERBOSITY_NORMAL,
+					  _("warning: could not remove superseded pending sidecar "
+						"%s: %s\n"), bidir_pending_path, strerror(errno));
+		print_msg(VERBOSITY_NORMAL,
+				  _("Bidirectional plumbing complete: %d peer(s) discovered, "
+					"source slot created, manifest written to %s.\n"),
+				  bidir.num_peers, bidir.manifest_path);
+	}
+
 	restore_point_name = generate_restore_point_name();
 
 	print_msg(VERBOSITY_NORMAL, _("Creating restore point \"%s\" on remote node ...\n"),
@@ -1251,12 +2321,22 @@ main(int argc, char **argv)
 	/*
 	 * Start subscriber node with spock disabled, and wait until it starts
 	 * accepting connections which means it has caught up to the restore point.
+	 *
+	 * TODO: for --bidirectional this node should be network-quarantined
+	 * (private socket/listen address, or a restrictive pg_hba.conf) from
+	 * this first startup through the end of the join -- spock.readonly =
+	 * 'local' (set later) blocks writes but not reads or peer probes.  Not
+	 * implemented: --subscriber-dsn must be directly reachable, and the
+	 * tool's own connections use that same DSN throughout, so restricting
+	 * listen_addresses here would also lock the tool itself out.
 	 */
 	pg_ctl_ret = run_pg_ctl("start -l \"spock_create_subscriber_postgres.log\" -o \"-c shared_preload_libraries=''\"");
 	if (pg_ctl_ret != 0)
 		die(_("Postgres startup for restore point catchup failed with %d. See spock_create_subscriber_postgres.log."), pg_ctl_ret);
 
-	wait_primary_connection(sub_connstr);
+	wait_primary_connection(sub_connstr,
+							 bidir.enabled ? bidir.stall_timeout : 0,
+							 bidir.enabled ? bidir.max_wait : 0);
 
 	/*
 	 * Clean any per-node data that were copied by pg_basebackup.
@@ -1264,22 +2344,114 @@ main(int argc, char **argv)
 	print_msg(VERBOSITY_VERBOSE,
 			  _("Removing old spock configuration ...\n"));
 
-	for (dbnum = 0; dbnum < n_databases; dbnum++)
+	if (bidir.enabled)
 	{
-		char *db = database_list[dbnum];
+		Oid			source_nodeid;
+		char	   *expected_sysid;
 
-		sub_connstr = get_connstr(base_sub_connstr, db);
+		/*
+		 * Give n3 its own permanent identity now, right after promotion
+		 * and before any catalog mutation: a physical backup preserves
+		 * the source's system identifier, which risks stray WAL from one
+		 * cluster being mistaken for the other's, and until reset makes
+		 * system_identifier useless for proving a connection actually
+		 * reaches n3 rather than the source.
+		 */
+		print_msg(VERBOSITY_NORMAL,
+				  _("Assigning a new system identifier to the subscriber node...\n"));
+		pg_ctl_ret = run_pg_ctl("stop");
+		if (pg_ctl_ret != 0)
+			die(_("Postgres stop before resetting system identifier failed with %d."), pg_ctl_ret);
+		wait_postmaster_shutdown();
 
-		if (!sub_connstr || !strlen(sub_connstr))
-			die(_("Subscriber connection string is not valid.\n"));
+		{
+			sigset_t	block_set,
+						old_set;
+
+			/*
+			 * Neither step below is safe to interrupt -- both write
+			 * pg_control/WAL directly, and signal_handler() -> die() is
+			 * not async-signal-safe.  A signal landing mid-write could
+			 * corrupt pg_control with no repair short of --cleanup
+			 * --force.  Block both signals across this pair of calls;
+			 * any that arrives is deferred until right after.
+			 */
+			sigemptyset(&block_set);
+			sigaddset(&block_set, SIGINT);
+			sigaddset(&block_set, SIGTERM);
+			sigprocmask(SIG_BLOCK, &block_set, &old_set);
+
+			expected_sysid = reset_subscriber_sysid(data_dir);
+			run_pg_resetwal(data_dir);
+
+			sigprocmask(SIG_SETMASK, &old_set, NULL);
+		}
+
+		pg_ctl_ret = run_pg_ctl("start -l \"spock_create_subscriber_postgres.log\" -o \"-c shared_preload_libraries=''\"");
+		if (pg_ctl_ret != 0)
+			die(_("Postgres startup after resetting system identifier failed with %d."), pg_ctl_ret);
+		wait_postmaster_connection(sub_connstr);
 
 		subscriber_conn = connectdb(sub_connstr);
-		remove_unwanted_data(subscriber_conn);
+
+		/*
+		 * --subscriber-dsn is expected to point directly at this node;
+		 * verify that cheaply before running anything destructive, rather
+		 * than trusting it silently.  Now that n3 has just been given its
+		 * own system identifier above, a straightforward comparison is a
+		 * valid proof the connection reaches n3 and not the source or any
+		 * other server -- unlike before the reset, nothing else could
+		 * share it.
+		 */
+		{
+			PGresult   *sysid_res = PQexec(subscriber_conn, "SELECT system_identifier FROM pg_control_system()");
+			bool		mismatch;
+
+			if (PQresultStatus(sysid_res) != PGRES_TUPLES_OK || PQntuples(sysid_res) != 1)
+			{
+				PQclear(sysid_res);
+				die(_("could not verify --subscriber-dsn connects to this node: %s\n"),
+					PQerrorMessage(subscriber_conn));
+			}
+			mismatch = strcmp(PQgetvalue(sysid_res, 0, 0), expected_sysid) != 0;
+			PQclear(sysid_res);
+			if (mismatch)
+				die(_("--subscriber-dsn does not connect to the node at \"%s\": "
+					  "system identifier mismatch. This can happen if the DSN "
+					  "routes to the source node or another server; refusing "
+					  "to run catalog operations against it.\n"), data_dir);
+		}
+		free(expected_sysid);
+
+		/* Capture repset/table/sequence state before the catalog strip. */
+		source_nodeid = get_local_node_id(subscriber_conn);
+		capture_catalog_state(subscriber_conn, source_nodeid, &capture);
+
+		/* Drop all origins, then guarded DROP EXTENSION. */
+		remove_unwanted_data_bidir(subscriber_conn, &capture);
+
 		PQfinish(subscriber_conn);
 		subscriber_conn = NULL;
 	}
+	else
+	{
+		for (dbnum = 0; dbnum < n_databases; dbnum++)
+		{
+			char *db = database_list[dbnum];
 
-	/* Stop Postgres so we can reset system id and start it with spock loaded. */
+			sub_connstr = get_connstr(base_sub_connstr, db);
+
+			if (!sub_connstr || !strlen(sub_connstr))
+				die(_("Subscriber connection string is not valid.\n"));
+
+			subscriber_conn = connectdb(sub_connstr);
+			remove_unwanted_data(subscriber_conn);
+			PQfinish(subscriber_conn);
+			subscriber_conn = NULL;
+		}
+	}
+
+	/* Stop Postgres so we can start it again with spock (shared_preload_libraries) loaded. */
 	pg_ctl_ret = run_pg_ctl("stop");
 	if (pg_ctl_ret != 0)
 		die(_("Postgres stop after restore point catchup failed with %d. See spock_create_subscriber_postgres.log."), pg_ctl_ret);
@@ -1287,7 +2459,7 @@ main(int argc, char **argv)
 
 	/*
 	 * Start the node again, now with spock active so that we can start the
-	 * logical replication. This is final start, so don't log to to special log
+	 * logical replication.  This is final start, so don't log to to special log
 	 * file anymore.
 	 */
 	print_msg(VERBOSITY_NORMAL,
@@ -1296,43 +2468,110 @@ main(int argc, char **argv)
 	pg_ctl_ret = run_pg_ctl("start");
 	if (pg_ctl_ret != 0)
 		die(_("Postgres restart with spock enabled failed with %d."), pg_ctl_ret);
-	wait_postmaster_connection(base_sub_connstr);
+	wait_postmaster_connection(bidir.enabled ? sub_connstr : base_sub_connstr);
 
-	for (dbnum = 0; dbnum < n_databases; dbnum++)
+	if (bidir.enabled)
 	{
-		char *db = database_list[dbnum];
-
-		sub_connstr = get_connstr(base_sub_connstr, db);
-		prov_connstr = get_connstr(base_prov_connstr, db);
+		char *db = database_list[0];
 
 		subscriber_conn = connectdb(sub_connstr);
 
-		/* Create the extension. */
 		print_msg(VERBOSITY_VERBOSE,
 				  _("Creating spock extension for database %s...\n"), db);
 		install_extension(subscriber_conn, "spock");
 
 		/*
-		 * Create the identifier which is setup with the position to which we
-		 * already caught up using physical replication.
+		 * Create the local node, then immediately go read-only -- no
+		 * window where n3 is reachable/writable before that lands.  No
+		 * origin creation here; the catchup subscription creates it
+		 * later.
+		 *
+		 * dsn is --subscriber-dsn (sub_connstr) -- the externally-reachable
+		 * address other nodes use to connect back, not a separate
+		 * --node-dsn option.
 		 */
-		print_msg(VERBOSITY_VERBOSE,
-				  _("Creating replication origin for database %s...\n"), db);
-		initialize_replication_origin(subscriber_conn, slot_names[dbnum], remote_lsn);
+		print_msg(VERBOSITY_NORMAL, _("Creating local Spock node \"%s\"...\n"),
+				  subscriber_name);
+		{
+			PQExpBuffer nodequery = createPQExpBuffer();
+			PGresult   *res;
 
-		/*
-		 * And finally add the node to the cluster.
-		 */
-		print_msg(VERBOSITY_NORMAL, _("Creating subscriber %s for database %s...\n"),
-				  subscriber_name, db);
-		print_msg(VERBOSITY_VERBOSE, _("Replication sets: %s\n"), replication_sets);
+			printfPQExpBuffer(nodequery,
+							  "SELECT spock.node_create(node_name := %s, dsn := %s)",
+							  PQescapeLiteral(subscriber_conn, subscriber_name,
+											  strlen(subscriber_name)),
+							  PQescapeLiteral(subscriber_conn, sub_connstr,
+											  strlen(sub_connstr)));
+			res = PQexec(subscriber_conn, nodequery->data);
+			if (PQresultStatus(res) != PGRES_TUPLES_OK)
+			{
+				PQclear(res);
+				die(_("could not create local node: %s\n"),
+					PQerrorMessage(subscriber_conn));
+			}
+			PQclear(res);
+			destroyPQExpBuffer(nodequery);
+		}
 
-		spock_subscribe(subscriber_conn, subscriber_name, sub_connstr,
-							prov_connstr, replication_sets, apply_delay,
-							force_text_transfer);
+		print_msg(VERBOSITY_NORMAL, _("Setting spock.readonly = 'local'...\n"));
+		set_readonly_local(subscriber_conn);
+
+		/* Restore what was captured before the catalog strip. */
+		print_msg(VERBOSITY_NORMAL, _("Restoring replication set state...\n"));
+		restore_replication_sets(subscriber_conn, &capture);
+
+		bidir.source_restore_lsn = pg_strdup(remote_lsn);
+		bidir.node_dsn = sub_connstr;
+		write_manifest(&bidir, subscriber_name, db, base_prov_connstr);
 
 		PQfinish(subscriber_conn);
 		subscriber_conn = NULL;
+
+		print_msg(VERBOSITY_NORMAL,
+				  _("Bidirectional join: physical backup, catalog strip, and "
+					"replication set restore complete. Node \"%s\" is "
+					"read-only pending the catchup subscription (a later "
+					"release).\n"),
+				  subscriber_name);
+	}
+	else
+	{
+		for (dbnum = 0; dbnum < n_databases; dbnum++)
+		{
+			char *db = database_list[dbnum];
+
+			sub_connstr = get_connstr(base_sub_connstr, db);
+			prov_connstr = get_connstr(base_prov_connstr, db);
+
+			subscriber_conn = connectdb(sub_connstr);
+
+			/* Create the extension. */
+			print_msg(VERBOSITY_VERBOSE,
+					  _("Creating spock extension for database %s...\n"), db);
+			install_extension(subscriber_conn, "spock");
+
+			/*
+			 * Create the identifier which is setup with the position to which we
+			 * already caught up using physical replication.
+			 */
+			print_msg(VERBOSITY_VERBOSE,
+					  _("Creating replication origin for database %s...\n"), db);
+			initialize_replication_origin(subscriber_conn, slot_names[dbnum], remote_lsn);
+
+			/*
+			 * And finally add the node to the cluster.
+			 */
+			print_msg(VERBOSITY_NORMAL, _("Creating subscriber %s for database %s...\n"),
+					  subscriber_name, db);
+			print_msg(VERBOSITY_VERBOSE, _("Replication sets: %s\n"), replication_sets);
+
+			spock_subscribe(subscriber_conn, subscriber_name, sub_connstr,
+								prov_connstr, replication_sets, apply_delay,
+								force_text_transfer);
+
+			PQfinish(subscriber_conn);
+			subscriber_conn = NULL;
+		}
 	}
 
 	/* If user does not want the node to be running at the end, stop it. */
@@ -1367,7 +2606,10 @@ usage(void)
 	printf(_("                              pg_basebackup -X stream command\n"));
 	printf(_("  --databases                 optional list of databases to replicate\n"));
 	printf(_("  -n, --subscriber-name=NAME  name of the newly created subscriber\n"));
-	printf(_("  --subscriber-dsn=CONNSTR    connection string to the newly created subscriber\n"));
+	printf(_("  --subscriber-dsn=CONNSTR    connection string to the newly created subscriber;\n"));
+	printf(_("                              with --bidirectional, also the externally-\n"));
+	printf(_("                              reachable address peers use to connect back\n"));
+	printf(_("                              to this node once joined (required)\n"));
 	printf(_("  --provider-dsn=CONNSTR      connection string to the provider\n"));
 	printf(_("  --replication-sets=SETS     comma separated list of replication set names\n"));
 	printf(_("  --apply-delay=DELAY         apply delay in seconds (by default 0)\n"));
@@ -1383,6 +2625,19 @@ usage(void)
 	printf(_("  --hba-conf              path to the new pg_hba.conf\n"));
 	printf(_("  --postgresql-conf       path to the new postgresql.conf\n"));
 	printf(_("  --recovery-conf         path to the template recovery configuration\n"));
+	printf(_("\nBidirectional join (joins an existing multi-master cluster):\n"));
+	printf(_("  --bidirectional         enable bidirectional join plumbing\n"));
+	printf(_("  --stall-timeout=SECS    once PostgreSQL accepts connections, seconds of no\n"));
+	printf(_("                          replay progress before giving up (default 600); does\n"));
+	printf(_("                          not bound PostgreSQL's own startup\n"));
+	printf(_("  --max-wait=SECS         hard ceiling on post-connection catchup wait, seconds\n"));
+	printf(_("                          (default: unbounded); does not bound PostgreSQL's own\n"));
+	printf(_("                          startup\n"));
+	printf(_("  --cleanup               idempotently remove partial join state and exit\n"));
+	printf(_("  --force                 with --cleanup, also remove the data directory\n"));
+	printf(_("\nDuring the join, this node must be network-quarantined (private address /\n"));
+	printf(_("restrictive pg_hba.conf) by the operator -- via --hba-conf/--postgresql-conf --\n"));
+	printf(_("until the join completes; the tool does not manage this for you.\n"));
 }
 
 /*
@@ -1432,7 +2687,7 @@ print_msg(VerbosityLevelEnum level, const char *fmt,...)
 /*
  * Start pg_ctl with given argument(s) - used to start/stop postgres
  *
- * Returns the exit code reported by pg_ctl. If pg_ctl exits due to a
+ * Returns the exit code reported by pg_ctl.  If pg_ctl exits due to a
  * signal this call will die and not return.
  */
 static int
@@ -1442,7 +2697,7 @@ run_pg_ctl(const char *arg)
 	PQExpBuffer  cmd = createPQExpBuffer();
 	char		*exec_path = find_other_exec_or_die(argv0, "pg_ctl");
 
-	appendPQExpBuffer(cmd, "%s %s -D \"%s\"", exec_path, arg, data_dir);
+	appendPQExpBuffer(cmd, "\"%s\" %s -D \"%s\"", exec_path, arg, data_dir);
 
 	/* Run pg_ctl in silent mode unless we run in debug mode. */
 	if (verbosity < VERBOSITY_DEBUG)
@@ -1496,7 +2751,14 @@ run_basebackup(const char *provider_connstr, const char *data_dir,
 	PQExpBuffer  cmd = createPQExpBuffer();
 	char		*exec_path = find_other_exec_or_die(argv0, "pg_basebackup");
 
-	appendPQExpBuffer(cmd, "%s -D \"%s\" -d \"%s\" -X s -P", exec_path, data_dir, provider_connstr);
+	/*
+	 * -c fast forces an immediate checkpoint.  Without it, pg_basebackup
+	 * requests the default "spread" checkpoint, which paces itself against
+	 * checkpoint_timeout (5 minutes by default) regardless of how little
+	 * data needs flushing -- an unpredictable, unnecessary stall for a
+	 * tool whose entire job is this one backup.
+	 */
+	appendPQExpBuffer(cmd, "\"%s\" -D \"%s\" -d \"%s\" -X s -c fast -P", exec_path, data_dir, provider_connstr);
 
 	/* Run pg_basebackup in verbose mode if we are running in verbose mode. */
 	if (verbosity >= VERBOSITY_VERBOSE)
@@ -1784,6 +3046,598 @@ remove_unwanted_data(PGconn *conn)
 }
 
 /*
+ * Return the connected node's own local node id, from spock.local_node --
+ * a plain catalog table, so it works even with spock's shared memory not
+ * loaded (e.g. before DROP EXTENSION, while spock is disabled).
+ */
+static Oid
+get_local_node_id(PGconn *conn)
+{
+	PGresult   *res;
+	Oid			nodeid;
+
+	res = PQexec(conn, "SELECT node_id FROM spock.local_node");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+	{
+		PQclear(res);
+		die(_("could not determine source local node id: %s\n"),
+			PQerrorMessage(conn));
+	}
+	nodeid = (Oid) strtoul(PQgetvalue(res, 0, 0), NULL, 10);
+	PQclear(res);
+	return nodeid;
+}
+
+/*
+ * Capture replication-set definitions, table memberships, and sequence
+ * state from the local catalog before DROP EXTENSION removes it -- this
+ * reflects what was replicated at backup time, unlike querying the live
+ * source afterward.  Utility-side memory only; never written to the
+ * manifest.
+ */
+static void
+capture_catalog_state(PGconn *conn, Oid source_nodeid, CatalogCapture *capture)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	int			i;
+
+	memset(capture, 0, sizeof(*capture));
+
+	/* Replication set definitions owned by the source node. */
+	printfPQExpBuffer(query,
+					  "SELECT set_name, replicate_insert, replicate_update,"
+					  " replicate_delete, replicate_truncate"
+					  " FROM spock.replication_set"
+					  " WHERE set_nodeid = %u",
+					  source_nodeid);
+	res = PQexec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not capture replication set definitions: %s\n"),
+			PQerrorMessage(conn));
+	}
+
+	capture->num_repsets = PQntuples(res);
+	capture->repsets = pg_malloc0(capture->num_repsets * sizeof(RepsetCapture));
+	for (i = 0; i < capture->num_repsets; i++)
+	{
+		capture->repsets[i].set_name = pg_strdup(PQgetvalue(res, i, 0));
+		capture->repsets[i].replicate_insert = (PQgetvalue(res, i, 1)[0] == 't');
+		capture->repsets[i].replicate_update = (PQgetvalue(res, i, 2)[0] == 't');
+		capture->repsets[i].replicate_delete = (PQgetvalue(res, i, 3)[0] == 't');
+		capture->repsets[i].replicate_truncate = (PQgetvalue(res, i, 4)[0] == 't');
+	}
+	PQclear(res);
+
+	/* Table memberships across all of the source's sets. */
+	printfPQExpBuffer(query,
+					  "SELECT rs.set_name, rts.set_reloid::regclass AS qualified_table,"
+					  " rts.set_att_list AS columns,"
+					  " pg_get_expr(rts.set_row_filter, rts.set_reloid) AS row_filter"
+					  " FROM spock.replication_set_table rts"
+					  " JOIN spock.replication_set rs ON rts.set_id = rs.set_id"
+					  " WHERE rs.set_nodeid = %u",
+					  source_nodeid);
+	res = PQexec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not capture replication set table memberships: %s\n"),
+			PQerrorMessage(conn));
+	}
+
+	capture->num_tables = PQntuples(res);
+	capture->tables = pg_malloc0(capture->num_tables * sizeof(RepsetTableCapture));
+	for (i = 0; i < capture->num_tables; i++)
+	{
+		capture->tables[i].set_name = pg_strdup(PQgetvalue(res, i, 0));
+		capture->tables[i].qualified_table = pg_strdup(PQgetvalue(res, i, 1));
+		capture->tables[i].columns = PQgetisnull(res, i, 2) ? NULL :
+			pg_strdup(PQgetvalue(res, i, 2));
+		capture->tables[i].row_filter = PQgetisnull(res, i, 3) ? NULL :
+			pg_strdup(PQgetvalue(res, i, 3));
+	}
+	PQclear(res);
+
+	/*
+	 * Sequences and the sets they belong to (a sequence can be in more
+	 * than one set, so this is captured per-membership like table rows,
+	 * not deduplicated by sequence).
+	 */
+	printfPQExpBuffer(query,
+					  "SELECT rs.set_name, rss.set_seqoid::regclass"
+					  " FROM spock.replication_set_seq rss"
+					  " JOIN spock.replication_set rs ON rss.set_id = rs.set_id"
+					  " WHERE rs.set_nodeid = %u",
+					  source_nodeid);
+	res = PQexec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not capture replicated sequence list: %s\n"),
+			PQerrorMessage(conn));
+	}
+
+	capture->num_sequences = PQntuples(res);
+	capture->sequences = pg_malloc0(capture->num_sequences * sizeof(SequenceCapture));
+	for (i = 0; i < capture->num_sequences; i++)
+	{
+		PQExpBuffer seq_query = createPQExpBuffer();
+		PGresult   *seq_res;
+
+		capture->sequences[i].set_name = pg_strdup(PQgetvalue(res, i, 0));
+		capture->sequences[i].qualified_seq = pg_strdup(PQgetvalue(res, i, 1));
+
+		/*
+		 * Read last_value/is_called directly off the sequence relation
+		 * (standard technique) rather than pg_sequence_last_value(), which
+		 * conflates "never called" with is_called=false and loses the
+		 * distinction setval()'s third argument needs to restore exactly.
+		 */
+		printfPQExpBuffer(seq_query, "SELECT last_value, is_called FROM %s",
+						  capture->sequences[i].qualified_seq);
+		seq_res = PQexec(conn, seq_query->data);
+		if (PQresultStatus(seq_res) != PGRES_TUPLES_OK)
+		{
+			PQclear(seq_res);
+			destroyPQExpBuffer(seq_query);
+			die(_("could not read sequence state for \"%s\": %s\n"),
+				capture->sequences[i].qualified_seq, PQerrorMessage(conn));
+		}
+
+		capture->sequences[i].last_value = strtoll(PQgetvalue(seq_res, 0, 0), NULL, 10);
+		capture->sequences[i].is_called = (PQgetvalue(seq_res, 0, 1)[0] == 't');
+
+		PQclear(seq_res);
+		destroyPQExpBuffer(seq_query);
+	}
+	PQclear(res);
+
+	destroyPQExpBuffer(query);
+
+	print_msg(VERBOSITY_VERBOSE,
+			  _("Captured %d replication set(s), %d table membership(s), "
+				"%d sequence(s) before catalog strip.\n"),
+			  capture->num_repsets, capture->num_tables, capture->num_sequences);
+}
+
+/*
+ * Bidirectional-mode catalog strip: drop ALL replication origins (not
+ * just ones with a status row, unlike remove_unwanted_data()), then
+ * guard DROP EXTENSION ... CASCADE with a one-hop pg_depend inventory --
+ * any non-spock object depending on a spock member would otherwise be
+ * silently collaterally dropped.
+ */
+static void
+remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
+{
+	PGresult   *res;
+
+	(void) capture;			/* must already be populated before this runs */
+
+	/*
+	 * Drop all replication origins copied by the basebackup.
+	 * pg_replication_origin is a cluster-wide (not per-database) catalog,
+	 * so this is scoped to spock's own "spk_..." naming convention
+	 * (gen_slot_name(), shared with slot names) rather than dropping every
+	 * row -- an unrelated database on the same instance with its own
+	 * (non-spock) logical replication would otherwise lose its origins too.
+	 */
+	res = PQexec(conn,
+				 "SELECT pg_replication_origin_drop(roname)"
+				 " FROM pg_replication_origin"
+				 " WHERE roname LIKE 'spk\\_%' ESCAPE '\\'");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not remove existing replication origins: %s\n"),
+			PQerrorMessage(conn));
+	}
+	PQclear(res);
+
+	/* Guard against CASCADE collaterally dropping user objects. */
+	res = PQexec(conn,
+				 "WITH spock_ext AS ("
+				 "  SELECT oid FROM pg_extension WHERE extname = 'spock'"
+				 "), ext_members AS ("
+				 "  SELECT classid, objid FROM pg_depend, spock_ext"
+				 "  WHERE refclassid = 'pg_extension'::regclass"
+				 "    AND refobjid = spock_ext.oid"
+				 "    AND deptype = 'e'"
+				 "), spock_members AS ("
+				 /*
+				  * Extension members proper (tables, views, functions, ...)
+				  * plus anything with an INTERNAL ('i') or AUTO ('a')
+				  * dependency on one of them -- a view's own rules use 'i',
+				  * while a table's own constraints (CHECK, FK, ...) use
+				  * 'a'; both are linked to their owning relation this way,
+				  * not directly to the extension, but are just as much
+				  * spock's own objects.
+				  */
+				 "  SELECT classid, objid FROM ext_members"
+				 "  UNION"
+				 "  SELECT d.classid, d.objid FROM pg_depend d"
+				 "  JOIN ext_members m ON d.refclassid = m.classid AND d.refobjid = m.objid"
+				 "  WHERE d.deptype IN ('i', 'a')"
+				 ")"
+				 "SELECT DISTINCT pg_describe_object(d.classid, d.objid, d.objsubid)"
+				 " FROM pg_depend d"
+				 " JOIN spock_members m ON d.refclassid = m.classid AND d.refobjid = m.objid"
+				 " WHERE d.deptype = 'n'"
+				 "   AND NOT EXISTS ("
+				 "     SELECT 1 FROM spock_members m2"
+				 "     WHERE m2.classid = d.classid AND m2.objid = d.objid)");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not inventory spock extension dependents: %s\n"),
+			PQerrorMessage(conn));
+	}
+	if (PQntuples(res) > 0)
+	{
+		PQExpBuffer	list = createPQExpBuffer();
+		int			i;
+
+		for (i = 0; i < PQntuples(res); i++)
+			appendPQExpBuffer(list, "\n  - %s", PQgetvalue(res, i, 0));
+
+		PQclear(res);
+		die(_("cannot drop the spock extension: the following object(s) "
+			  "depend on it and would be collaterally dropped by CASCADE:%s\n"
+			  "Resolve these dependencies manually before retrying; v1 does "
+			  "not attempt to recreate them.\n"),
+			list->data);
+	}
+	PQclear(res);
+
+	res = PQexec(conn, "DROP EXTENSION spock CASCADE;");
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	{
+		die(_("Could not clean the spock extension, status %s: %s\n"),
+			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+	}
+	PQclear(res);
+}
+
+/*
+ * Immediately after node_create, make the new node read-only to
+ * non-superuser clients -- there must be no window where n3 is
+ * reachable/writable before this lands.
+ */
+static void
+set_readonly_local(PGconn *conn)
+{
+	PGresult   *res;
+
+	res = PQexec(conn, "ALTER SYSTEM SET spock.readonly = 'local'");
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	{
+		die(_("could not set spock.readonly: status %s: %s\n"),
+			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+	}
+	PQclear(res);
+
+	res = PQexec(conn, "SELECT pg_reload_conf()");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		die(_("could not reload configuration after setting spock.readonly: %s\n"),
+			PQerrorMessage(conn));
+	}
+	PQclear(res);
+}
+
+/*
+ * Restore the replication-set definitions, table memberships, and
+ * sequence state captured before the catalog strip, now that
+ * node_create() has given this node an identity again.  Without this,
+ * n3 would accept incoming changes but send nothing back once peers
+ * create reverse subscriptions later.
+ */
+static void
+restore_replication_sets(PGconn *conn, CatalogCapture *capture)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	int			i;
+
+	/*
+	 * 1.  Recreate custom sets.  The three built-in sets already exist from
+	 * node_create(), so apply the captured flags to them via
+	 * repset_alter() instead, since the source may have altered them.
+	 */
+	for (i = 0; i < capture->num_repsets; i++)
+	{
+		RepsetCapture *s = &capture->repsets[i];
+		bool		builtin = (strcmp(s->set_name, "default") == 0 ||
+							  strcmp(s->set_name, "default_insert_only") == 0 ||
+							  strcmp(s->set_name, "ddl_sql") == 0);
+
+		if (builtin)
+			printfPQExpBuffer(query,
+							  "SELECT spock.repset_alter("
+							  "set_name := %s, "
+							  "replicate_insert := %s, "
+							  "replicate_update := %s, "
+							  "replicate_delete := %s, "
+							  "replicate_truncate := %s)",
+							  PQescapeLiteral(conn, s->set_name, strlen(s->set_name)),
+							  s->replicate_insert ? "true" : "false",
+							  s->replicate_update ? "true" : "false",
+							  s->replicate_delete ? "true" : "false",
+							  s->replicate_truncate ? "true" : "false");
+		else
+			printfPQExpBuffer(query,
+							  "SELECT spock.repset_create("
+							  "set_name := %s, "
+							  "replicate_insert := %s, "
+							  "replicate_update := %s, "
+							  "replicate_delete := %s, "
+							  "replicate_truncate := %s)",
+							  PQescapeLiteral(conn, s->set_name, strlen(s->set_name)),
+							  s->replicate_insert ? "true" : "false",
+							  s->replicate_update ? "true" : "false",
+							  s->replicate_delete ? "true" : "false",
+							  s->replicate_truncate ? "true" : "false");
+		res = PQexec(conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not %s replication set \"%s\": %s\n"),
+				builtin ? "alter" : "recreate", s->set_name, PQerrorMessage(conn));
+		}
+		PQclear(res);
+	}
+
+	/*
+	 * 2.  Restore table memberships for all sets.  Named arguments are
+	 * required: repset_add_table's 3rd positional argument is
+	 * synchronize_data, not the column list, so a positional call would
+	 * misfire.
+	 *
+	 * include_partitions := false: the capture already has a separate row
+	 * per partition.  Restoring the parent with include_partitions := true
+	 * would re-add every child, violating the (set_id, set_reloid)
+	 * primary key against the child's own captured row.
+	 */
+	for (i = 0; i < capture->num_tables; i++)
+	{
+		RepsetTableCapture *t = &capture->tables[i];
+
+		printfPQExpBuffer(query,
+						  "SELECT spock.repset_add_table("
+						  "set_name := %s, "
+						  "relation := %s, "
+						  "synchronize_data := false, "
+						  "columns := %s, "
+						  "row_filter := %s, "
+						  "include_partitions := false)",
+						  PQescapeLiteral(conn, t->set_name, strlen(t->set_name)),
+						  PQescapeLiteral(conn, t->qualified_table, strlen(t->qualified_table)),
+						  t->columns ? PQescapeLiteral(conn, t->columns, strlen(t->columns)) : "NULL",
+						  t->row_filter ? PQescapeLiteral(conn, t->row_filter, strlen(t->row_filter)) : "NULL");
+		res = PQexec(conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not add table \"%s\" to replication set \"%s\": %s\n"),
+				t->qualified_table, t->set_name, PQerrorMessage(conn));
+		}
+		PQclear(res);
+	}
+
+	/*
+	 * 3.  Restore each sequence's replication-set membership, then its
+	 * value, so n3 both publishes it and resumes it exactly.
+	 */
+	for (i = 0; i < capture->num_sequences; i++)
+	{
+		SequenceCapture *sq = &capture->sequences[i];
+
+		printfPQExpBuffer(query,
+						  "SELECT spock.repset_add_seq("
+						  "set_name := %s, relation := %s, "
+						  "synchronize_data := false)",
+						  PQescapeLiteral(conn, sq->set_name, strlen(sq->set_name)),
+						  PQescapeLiteral(conn, sq->qualified_seq, strlen(sq->qualified_seq)));
+		res = PQexec(conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not add sequence \"%s\" to replication set \"%s\": %s\n"),
+				sq->qualified_seq, sq->set_name, PQerrorMessage(conn));
+		}
+		PQclear(res);
+
+		printfPQExpBuffer(query, "SELECT setval(%s, " INT64_FORMAT ", %s)",
+						  PQescapeLiteral(conn, sq->qualified_seq, strlen(sq->qualified_seq)),
+						  sq->last_value,
+						  sq->is_called ? "true" : "false");
+		res = PQexec(conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not restore sequence state for \"%s\": %s\n"),
+				sq->qualified_seq, PQerrorMessage(conn));
+		}
+		PQclear(res);
+	}
+
+	destroyPQExpBuffer(query);
+
+	print_msg(VERBOSITY_VERBOSE,
+			  _("Restored %d replication set(s), %d table membership(s), "
+				"%d sequence(s).\n"),
+			  capture->num_repsets, capture->num_tables, capture->num_sequences);
+
+	verify_replication_sets_restored(conn, capture);
+}
+
+/*
+ * Round-trip check: compare what actually landed against the capture,
+ * rather than trusting that each individual repset_add_table()/
+ * repset_add_seq() call succeeding means the final state matches.
+ * Catches per-row drift (a column list or row_filter that didn't
+ * re-parse identically) and aggregate drift (an accidental double-add).
+ * n3 is brand-new here, so an unqualified COUNT(*) is safe.
+ */
+static void
+verify_replication_sets_restored(PGconn *conn, CatalogCapture *capture)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	int			i;
+	int			count;
+
+	/*
+	 * Verify the four replication-set flags landed correctly -- a bug in
+	 * restore_replication_sets()'s argument binding would otherwise pass
+	 * verification with wrong flags on the clone.
+	 */
+	for (i = 0; i < capture->num_repsets; i++)
+	{
+		RepsetCapture *s = &capture->repsets[i];
+
+		printfPQExpBuffer(query,
+						  "SELECT replicate_insert, replicate_update,"
+						  " replicate_delete, replicate_truncate"
+						  " FROM spock.replication_set WHERE set_name = %s",
+						  PQescapeLiteral(conn, s->set_name, strlen(s->set_name)));
+		res = PQexec(conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+		{
+			PQclear(res);
+			die(_("replication set restore verification failed: set \"%s\" "
+				  "not found after restore\n"), s->set_name);
+		}
+
+		if (strcmp(PQgetvalue(res, 0, 0), s->replicate_insert ? "t" : "f") != 0 ||
+			strcmp(PQgetvalue(res, 0, 1), s->replicate_update ? "t" : "f") != 0 ||
+			strcmp(PQgetvalue(res, 0, 2), s->replicate_delete ? "t" : "f") != 0 ||
+			strcmp(PQgetvalue(res, 0, 3), s->replicate_truncate ? "t" : "f") != 0)
+		{
+			char	   *got_insert = pg_strdup(PQgetvalue(res, 0, 0));
+			char	   *got_update = pg_strdup(PQgetvalue(res, 0, 1));
+			char	   *got_delete = pg_strdup(PQgetvalue(res, 0, 2));
+			char	   *got_truncate = pg_strdup(PQgetvalue(res, 0, 3));
+
+			PQclear(res);
+			die(_("replication set restore verification failed: flags for set "
+				  "\"%s\" do not match capture (expected i=%s/u=%s/d=%s/t=%s, "
+				  "got i=%s/u=%s/d=%s/t=%s)\n"),
+				s->set_name,
+				s->replicate_insert ? "t" : "f", s->replicate_update ? "t" : "f",
+				s->replicate_delete ? "t" : "f", s->replicate_truncate ? "t" : "f",
+				got_insert, got_update, got_delete, got_truncate);
+		}
+		PQclear(res);
+	}
+
+	for (i = 0; i < capture->num_tables; i++)
+	{
+		RepsetTableCapture *t = &capture->tables[i];
+		char	   *columns;
+		char	   *row_filter;
+
+		printfPQExpBuffer(query,
+						  "SELECT rts.set_att_list,"
+						  " pg_get_expr(rts.set_row_filter, rts.set_reloid)"
+						  " FROM spock.replication_set_table rts"
+						  " JOIN spock.replication_set rs ON rts.set_id = rs.set_id"
+						  " WHERE rs.set_name = %s AND rts.set_reloid::regclass::text = %s",
+						  PQescapeLiteral(conn, t->set_name, strlen(t->set_name)),
+						  PQescapeLiteral(conn, t->qualified_table, strlen(t->qualified_table)));
+		res = PQexec(conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+		{
+			PQclear(res);
+			die(_("replication set restore verification failed: table \"%s\" "
+				  "not found in set \"%s\" after restore\n"),
+				t->qualified_table, t->set_name);
+		}
+
+		columns = PQgetisnull(res, 0, 0) ? NULL : pg_strdup(PQgetvalue(res, 0, 0));
+		row_filter = PQgetisnull(res, 0, 1) ? NULL : pg_strdup(PQgetvalue(res, 0, 1));
+		PQclear(res);
+
+		if ((columns == NULL) != (t->columns == NULL) ||
+			(columns && strcmp(columns, t->columns) != 0))
+			die(_("replication set restore verification failed: column list for "
+				  "table \"%s\" in set \"%s\" does not match capture "
+				  "(expected %s, got %s)\n"),
+				t->qualified_table, t->set_name,
+				t->columns ? t->columns : "NULL", columns ? columns : "NULL");
+
+		if ((row_filter == NULL) != (t->row_filter == NULL) ||
+			(row_filter && strcmp(row_filter, t->row_filter) != 0))
+			die(_("replication set restore verification failed: row_filter for "
+				  "table \"%s\" in set \"%s\" does not re-parse identically "
+				  "(expected %s, got %s)\n"),
+				t->qualified_table, t->set_name,
+				t->row_filter ? t->row_filter : "NULL",
+				row_filter ? row_filter : "NULL");
+	}
+
+	printfPQExpBuffer(query,
+					  "SELECT COUNT(*) FROM spock.replication_set_table");
+	res = PQexec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not verify table membership count: %s\n"), PQerrorMessage(conn));
+	}
+	count = atoi(PQgetvalue(res, 0, 0));
+	PQclear(res);
+	if (count != capture->num_tables)
+		die(_("replication set restore verification failed: expected %d table "
+			  "membership(s), found %d\n"), capture->num_tables, count);
+
+	for (i = 0; i < capture->num_sequences; i++)
+	{
+		SequenceCapture *sq = &capture->sequences[i];
+
+		printfPQExpBuffer(query,
+						  "SELECT COUNT(*) FROM spock.replication_set_seq rss"
+						  " JOIN spock.replication_set rs ON rss.set_id = rs.set_id"
+						  " WHERE rs.set_name = %s AND rss.set_seqoid::regclass::text = %s",
+						  PQescapeLiteral(conn, sq->set_name, strlen(sq->set_name)),
+						  PQescapeLiteral(conn, sq->qualified_seq, strlen(sq->qualified_seq)));
+		res = PQexec(conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not verify sequence membership for \"%s\": %s\n"),
+				sq->qualified_seq, PQerrorMessage(conn));
+		}
+		count = atoi(PQgetvalue(res, 0, 0));
+		PQclear(res);
+		if (count != 1)
+			die(_("replication set restore verification failed: sequence \"%s\" "
+				  "not a member of set \"%s\" after restore\n"),
+				sq->qualified_seq, sq->set_name);
+	}
+
+	printfPQExpBuffer(query, "SELECT COUNT(*) FROM spock.replication_set_seq");
+	res = PQexec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not verify sequence membership count: %s\n"), PQerrorMessage(conn));
+	}
+	count = atoi(PQgetvalue(res, 0, 0));
+	PQclear(res);
+	if (count != capture->num_sequences)
+		die(_("replication set restore verification failed: expected %d sequence "
+			  "membership(s), found %d\n"), capture->num_sequences, count);
+
+	destroyPQExpBuffer(query);
+
+	print_msg(VERBOSITY_VERBOSE,
+			  _("Verified replication set restore matches capture exactly.\n"));
+}
+
+/*
  * Initialize new remote identifier to specific position.
  */
 static void
@@ -1800,7 +3654,7 @@ initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("Could not create replication origin \"%s\": status %s: %s\n"),
-			query->data,
+			origin_name,
 			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 	}
 	PQclear(res);
@@ -1816,7 +3670,7 @@ initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
 			die(_("Could not advance replication origin \"%s\": status %s: %s\n"),
-				query->data,
+				origin_name,
 				PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 		}
 		PQclear(res);
@@ -1837,7 +3691,8 @@ create_restore_point(PGconn *conn, char *restore_point_name)
 	PGresult	*res;
 	char		*remote_lsn = NULL;
 
-	printfPQExpBuffer(query, "SELECT pg_create_restore_point('%s')", restore_point_name);
+	printfPQExpBuffer(query, "SELECT pg_create_restore_point(%s)",
+					  PQescapeLiteral(conn, restore_point_name, strlen(restore_point_name)));
 	res = PQexec(conn, query->data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
@@ -1937,7 +3792,7 @@ validate_replication_set_input(char *replication_sets)
 		if (strlen(name) == 0)
 			die(_("Replication set name \"%s\" is too short\n"), name);
 
-		if (strlen(name) > NAMEDATALEN)
+		if (strlen(name) >= NAMEDATALEN)
 			die(_("Replication set name \"%s\" is too long\n"), name);
 
 		for (cp = name; *cp; cp++)
@@ -2090,25 +3945,97 @@ get_connstr(char *connstr, char *dbname)
 static char *
 read_sysid(const char *data_dir)
 {
-	ControlFileData ControlFile;
-	int			fd;
-	char		ControlFilePath[MAXPGPATH];
+	ControlFileData *cf;
+	bool		crc_ok;
 	char	   *res = (char *) pg_malloc0(33);
 
-	snprintf(ControlFilePath, MAXPGPATH, "%s/global/pg_control", data_dir);
+	/*
+	 * get_controlfile() validates the control file's CRC; a torn or
+	 * corrupted control file must be rejected here rather than silently
+	 * misread, since this result feeds directly into check_data_dir()'s
+	 * "is this really a basebackup of the expected node" safety check.
+	 */
+	cf = get_controlfile(data_dir, &crc_ok);
+	if (!crc_ok)
+		die(_("control file of \"%s\" appears to be corrupt\n"), data_dir);
 
-	if ((fd = open(ControlFilePath, O_RDONLY | PG_BINARY, 0)) == -1)
-		die(_("%s: could not open file \"%s\" for reading: %s\n"),
-			progname, ControlFilePath, strerror(errno));
-
-	if (read(fd, &ControlFile, sizeof(ControlFileData)) != sizeof(ControlFileData))
-		die(_("%s: could not read file \"%s\": %s\n"),
-			progname, ControlFilePath, strerror(errno));
-
-	close(fd);
-
-	snprintf(res, 33, UINT64_FORMAT, ControlFile.system_identifier);
+	snprintf(res, 33, UINT64_FORMAT, cf->system_identifier);
+	pg_free(cf);
 	return res;
+}
+
+/*
+ * Assign data_dir a fresh system identifier, since a physical clone
+ * otherwise keeps the source's -- risking stray WAL from one cluster
+ * being mistaken for the other's, and leaving system_identifier useless
+ * for proving --subscriber-dsn actually reaches this node.  Called with
+ * the subscriber stopped, right after promotion and before any catalog
+ * mutation.
+ *
+ * pg_resetwal alone does NOT do this: it only regenerates
+ * system_identifier when it can't read an existing control file at all
+ * (verified empirically against a valid, cleanly-shut-down cluster).
+ * The identifier is overwritten directly in the control file here;
+ * pg_resetwal is run afterward (run_pg_resetwal()) only to relabel the
+ * existing WAL segments to match.
+ *
+ * Returns the new identifier as a string (caller must free()), matching
+ * read_sysid()'s convention.
+ */
+static char *
+reset_subscriber_sysid(const char *data_dir)
+{
+	ControlFileData *cf;
+	bool		crc_ok;
+	struct timeval tv;
+	char	   *result = (char *) pg_malloc0(33);
+
+	cf = get_controlfile(data_dir, &crc_ok);
+	if (!crc_ok)
+		die(_("control file of \"%s\" appears to be corrupt\n"), data_dir);
+
+	/* Same formula used to assign a system identifier at initdb time. */
+	gettimeofday(&tv, NULL);
+	cf->system_identifier = ((uint64) tv.tv_sec) << 32;
+	cf->system_identifier |= ((uint64) tv.tv_usec) << 12;
+	cf->system_identifier |= getpid() & 0xFFF;
+
+	update_controlfile(data_dir, cf, true);
+
+	snprintf(result, 33, UINT64_FORMAT, cf->system_identifier);
+	pg_free(cf);
+
+	return result;
+}
+
+/*
+ * Relabel data_dir's existing WAL segments to match the system
+ * identifier reset_subscriber_sysid() just wrote to the control file
+ * (see that function's comment for why both steps are needed).  Must
+ * run after reset_subscriber_sysid(), with the subscriber stopped.
+ */
+static void
+run_pg_resetwal(const char *data_dir)
+{
+	int			 ret;
+	PQExpBuffer  cmd = createPQExpBuffer();
+	char		*exec_path = find_other_exec_or_die(argv0, "pg_resetwal");
+
+	appendPQExpBuffer(cmd, "\"%s\" -D \"%s\"", exec_path, data_dir);
+
+	print_msg(VERBOSITY_DEBUG, _("Running pg_resetwal: %s.\n"), cmd->data);
+	ret = system(cmd->data);
+
+	destroyPQExpBuffer(cmd);
+
+	if (WIFEXITED(ret) && WEXITSTATUS(ret) == 0)
+		return;
+	if (WIFEXITED(ret))
+		die(_("pg_resetwal failed with exit status %d, cannot continue.\n"), WEXITSTATUS(ret));
+	else if (WIFSIGNALED(ret))
+		die(_("pg_resetwal exited with signal %d, cannot continue"), WTERMSIG(ret));
+	else
+		die(_("pg_resetwal exited for an unknown reason (system() returned %d)"), ret);
 }
 
 /*
@@ -2198,10 +4125,12 @@ appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str)
 	bool		needquotes;
 
 	/*
-	 * If the string consists entirely of plain ASCII characters, no need to
-	 * quote it. This is quite conservative, but better safe than sorry.
+	 * If the string is one or more plain ASCII characters, no need to quote
+	 * it.  An empty string must default to needing quotes -- an unquoted
+	 * empty value doesn't parse as empty, it swallows the entire next
+	 * "keyword=value" token.
 	 */
-	needquotes = false;
+	needquotes = true;
 	for (s = str; *s; s++)
 	{
 		if (!((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') ||
@@ -2210,6 +4139,7 @@ appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str)
 			needquotes = true;
 			break;
 		}
+		needquotes = false;
 	}
 
 	if (needquotes)
@@ -2263,7 +4193,7 @@ wait_postmaster_connection(const char *connstr)
 			break;
 
 		/*
-		 * Check if the process is still alive. This covers cases where the
+		 * Check if the process is still alive.  This covers cases where the
 		 * postmaster successfully created the pidfile but then crashed without
 		 * removing it.
 		 */
@@ -2280,14 +4210,25 @@ wait_postmaster_connection(const char *connstr)
 
 
 /*
- * Wait for PostgreSQL to leave recovery/standby mode
+ * Wait for PostgreSQL to leave recovery/standby mode.
+ *
+ * stall_timeout/max_wait (seconds; 0 = disabled) bound replay catchup,
+ * but only once PostgreSQL first accepts connections -- they don't bound
+ * server startup itself.  stall_timeout tracks pg_last_wal_replay_lsn()
+ * as a progress signal and fires only when replay stalls, not on total
+ * elapsed time, so a slow multi-GB catchup can still run.  max_wait is a
+ * separate hard ceiling on total post-connection wait time.  The
+ * unidirectional path passes 0/0 for unbounded waiting.
  */
 static void
-wait_primary_connection(const char *connstr)
+wait_primary_connection(const char *connstr, int stall_timeout, int max_wait)
 {
 	bool		ispri = false;
 	PGconn		*conn = NULL;
 	PGresult	*res;
+	time_t		start_time = time(NULL);
+	time_t		last_progress_time = start_time;
+	char	   *last_lsn = NULL;
 
 	wait_postmaster_connection(connstr);
 
@@ -2305,16 +4246,51 @@ wait_primary_connection(const char *connstr)
 
 		res = PQexec(conn, "SELECT pg_is_in_recovery()");
 		if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1 && *PQgetvalue(res, 0, 0) == 'f')
-			ispri = true;
-		else
 		{
-			pg_usleep(1000000);		/* 1 sec */
-			print_msg(VERBOSITY_VERBOSE, ".");
+			ispri = true;
+			PQclear(res);
+			break;
+		}
+		PQclear(res);
+
+		if (stall_timeout > 0)
+		{
+			PGresult   *lsn_res = PQexec(conn, "SELECT pg_last_wal_replay_lsn()");
+
+			if (PQresultStatus(lsn_res) == PGRES_TUPLES_OK && PQntuples(lsn_res) == 1 &&
+				!PQgetisnull(lsn_res, 0, 0))
+			{
+				char *cur_lsn = PQgetvalue(lsn_res, 0, 0);
+
+				if (!last_lsn || strcmp(cur_lsn, last_lsn) != 0)
+				{
+					pg_free(last_lsn);
+					last_lsn = pg_strdup(cur_lsn);
+					last_progress_time = time(NULL);
+				}
+			}
+			PQclear(lsn_res);
+
+			if ((time(NULL) - last_progress_time) >= stall_timeout)
+			{
+				PQfinish(conn);
+				die(_("recovery appears stalled: no WAL replay progress for "
+					  "%d second(s) (--stall-timeout)\n"), stall_timeout);
+			}
 		}
 
-		PQclear(res);
+		if (max_wait > 0 && (time(NULL) - start_time) >= max_wait)
+		{
+			PQfinish(conn);
+			die(_("timed out after %d second(s) waiting for recovery to "
+				  "complete (--max-wait)\n"), max_wait);
+		}
+
+		pg_usleep(1000000);		/* 1 sec */
+		print_msg(VERBOSITY_VERBOSE, ".");
 	}
 
+	pg_free(last_lsn);
 	PQfinish(conn);
 	print_msg(VERBOSITY_VERBOSE, "\n");
 }
@@ -2325,19 +4301,33 @@ wait_primary_connection(const char *connstr)
 static void
 wait_postmaster_shutdown(void)
 {
-	long pid;
+	long		pid;
+	int			waited = 0;
+	const int	max_wait_secs = 60;
 
 	print_msg(VERBOSITY_VERBOSE, "Waiting for PostgreSQL to shutdown ...");
 
 	for (;;)
 	{
-		if ((pid = get_pgpid()) != 0)
-		{
-			pg_usleep(1000000);		/* 1 sec */
-			print_msg(VERBOSITY_NORMAL, ".");
-		}
-		else
+		pid = get_pgpid();
+		if (pid == 0)
 			break;
+
+		/*
+		 * A hard-killed postmaster can leave its pidfile behind (it's only
+		 * removed on a normal exit) -- without this check a stale pidfile
+		 * hangs here forever.  Mirrors the same postmaster_is_alive() check
+		 * wait_postmaster_connection() already does on the start side.
+		 */
+		if (!postmaster_is_alive((pid_t) pid))
+			break;
+
+		if (++waited >= max_wait_secs)
+			die(_("timed out after %d second(s) waiting for PostgreSQL to "
+				  "shut down\n"), max_wait_secs);
+
+		pg_usleep(1000000);		/* 1 sec */
+		print_msg(VERBOSITY_NORMAL, ".");
 	}
 
 	print_msg(VERBOSITY_VERBOSE, "\n");
@@ -2385,7 +4375,7 @@ copy_file(char *fromfile, char *tofile, bool append)
 
 #define COPY_BUF_SIZE (8 * BLCKSZ)
 
-	buffer = malloc(COPY_BUF_SIZE);
+	buffer = pg_malloc(COPY_BUF_SIZE);
 
 	/*
 	 * Open the files
@@ -2425,7 +4415,7 @@ copy_file(char *fromfile, char *tofile, bool append)
 	/* we don't care about errors here */
 	close(srcfd);
 
-	free(buffer);
+	pg_free(buffer);
 }
 
 
