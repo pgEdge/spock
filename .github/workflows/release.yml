@@ -105,6 +105,13 @@ jobs:
         steps:
             - name: Checkout code
               uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  # No job uses the default GITHUB_TOKEN for git operations (the
+                  # pgEdge action repos are cloned with an explicit token and
+                  # git archive needs no credentials), and the workspace is
+                  # mounted into the build containers — so don't leave a
+                  # credential in .git/config.
+                  persist-credentials: false
 
             - name: Checkout pgedge-detect-build-matrix
               env:
@@ -145,6 +152,13 @@ jobs:
         steps:
             - name: Checkout code
               uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  # No job uses the default GITHUB_TOKEN for git operations (the
+                  # pgEdge action repos are cloned with an explicit token and
+                  # git archive needs no credentials), and the workspace is
+                  # mounted into the build containers — so don't leave a
+                  # credential in .git/config.
+                  persist-credentials: false
 
             - name: Checkout pgedge-parse-release-tag
               env:
@@ -235,6 +249,13 @@ jobs:
         steps:
             - name: Checkout code
               uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  # No job uses the default GITHUB_TOKEN for git operations (the
+                  # pgEdge action repos are cloned with an explicit token and
+                  # git archive needs no credentials), and the workspace is
+                  # mounted into the build containers — so don't leave a
+                  # credential in .git/config.
+                  persist-credentials: false
 
             - name: Derive os_version from image
               id: cell
@@ -288,6 +309,10 @@ jobs:
                   # (os, arch) would collide on a single artifact name.
                   name: rpm__el-${{ steps.cell.outputs.os_version }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
                   path: output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}/
+                  # A cell that produced no packages is a failure, not a warning:
+                  # the default (warn) would let the push job proceed with an
+                  # incomplete set.
+                  if-no-files-found: error
                   retention-days: 7
 
     # =========================================================================
@@ -313,6 +338,13 @@ jobs:
         steps:
             - name: Checkout code
               uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  # No job uses the default GITHUB_TOKEN for git operations (the
+                  # pgEdge action repos are cloned with an explicit token and
+                  # git archive needs no credentials), and the workspace is
+                  # mounted into the build containers — so don't leave a
+                  # credential in .git/config.
+                  persist-credentials: false
 
             - name: Download all RPM cell artifacts
               uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -336,8 +368,14 @@ jobs:
                       find "$d" -type f -name '*.rpm' -exec mv -v {} "rpms-el${os}/" \;
                   done
 
+                  # find on a missing dir exits non-zero; under `set -euo pipefail`
+                  # that propagates out of the command substitution and kills the
+                  # step. Guard it so an OS with no artifacts just reports 0.
                   for os in $(echo "$RPM_MATRIX" | jq -r '[.include[].image | split(":")[1]] | unique | .[]'); do
-                      count=$(find "rpms-el${os}" -maxdepth 1 -name '*.rpm' 2>/dev/null | wc -l)
+                      count=0
+                      if [ -d "rpms-el${os}" ]; then
+                          count=$(find "rpms-el${os}" -maxdepth 1 -name '*.rpm' | wc -l)
+                      fi
                       echo "EL${os}: ${count} RPMs"
                   done
                   rm -rf rpm-artifacts
@@ -410,6 +448,13 @@ jobs:
         steps:
             - name: Checkout code
               uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  # No job uses the default GITHUB_TOKEN for git operations (the
+                  # pgEdge action repos are cloned with an explicit token and
+                  # git archive needs no credentials), and the workspace is
+                  # mounted into the build containers — so don't leave a
+                  # credential in .git/config.
+                  persist-credentials: false
 
             - name: Derive distro from image
               id: cell
@@ -458,6 +503,10 @@ jobs:
               with:
                   name: deb__${{ steps.cell.outputs.distro }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
                   path: output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}/
+                  # A cell that produced no packages is a failure, not a warning:
+                  # the default (warn) would let the push job proceed with an
+                  # incomplete set.
+                  if-no-files-found: error
                   retention-days: 7
 
     # =========================================================================
@@ -483,6 +532,13 @@ jobs:
         steps:
             - name: Checkout code
               uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  # No job uses the default GITHUB_TOKEN for git operations (the
+                  # pgEdge action repos are cloned with an explicit token and
+                  # git archive needs no credentials), and the workspace is
+                  # mounted into the build containers — so don't leave a
+                  # credential in .git/config.
+                  persist-credentials: false
 
             - name: Download all DEB cell artifacts
               uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -503,8 +559,12 @@ jobs:
                       find "$d" -type f -name '*.deb' -exec mv -v {} "debs-${distro}/" \;
                   done
 
+                  # Same set -e + find guard as the RPM side.
                   for distro in $(echo "$DEB_MATRIX" | jq -r '[.include[].image | split(":")[1]] | unique | .[]'); do
-                      count=$(find "debs-${distro}" -maxdepth 1 -name '*.deb' 2>/dev/null | wc -l)
+                      count=0
+                      if [ -d "debs-${distro}" ]; then
+                          count=$(find "debs-${distro}" -maxdepth 1 -name '*.deb' | wc -l)
+                      fi
                       echo "${distro}: ${count} DEBs"
                   done
                   rm -rf deb-artifacts
@@ -564,14 +624,6 @@ jobs:
         if: always() && needs.determine-repo-type.result == 'success'
         runs-on: ubuntu-latest
         steps:
-            - name: Install jq + awscli
-              run: |
-                  set -euo pipefail
-                  sudo apt-get update
-                  sudo apt-get install -y python3-pip jq
-                  pip3 install --user awscli
-                  echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
             - name: Build manifest (with cells[] for qa-certify/promote)
               id: build_manifest
               env:

@@ -62,13 +62,18 @@ export SRC_TARBALL="spock-${SPOCK_VERSION}.tar.gz"
 # must stay diffable against the canonical one.
 #
 # Prefer the workflow-staged tarball (so branch / simulate_tag runs build the
-# exact commit under test and need no network); fall back to cloning
-# SPOCK_BRANCH for local builds outside the workflow.
+# exact commit under test and need no network). The SPOCK_BRANCH clone is an
+# opt-in fallback for local builds: set SPOCK_ALLOW_CLONE_FALLBACK=1.
 stage_source() {
   local dest="$1"
   if [ -f "${ARTIFACT_DIR}/${SRC_TARBALL}" ]; then
     echo "Staging ${SRC_TARBALL} from ${ARTIFACT_DIR}"
     cp "${ARTIFACT_DIR}/${SRC_TARBALL}" "${dest}"
+  elif [ -z "${SPOCK_ALLOW_CLONE_FALLBACK:-}" ]; then
+    # A staged tarball is required by default: cloning SPOCK_BRANCH instead would
+    # ship a package built from a different commit than COMPONENT_VERSION claims.
+    echo "::error::${ARTIFACT_DIR}/${SRC_TARBALL} not found. release.yml stages it with git archive; for a local build, stage it yourself or set SPOCK_ALLOW_CLONE_FALLBACK=1 to clone ${SPOCK_BRANCH} instead." >&2
+    return 1
   else
     echo "Fetching Spock source code (${SPOCK_BRANCH})"
     rm -rf "spock-${SPOCK_VERSION}"
