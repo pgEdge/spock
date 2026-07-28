@@ -82,6 +82,11 @@ PG_MODULE_MAGIC;
 
 int			spock_detected_patchset = 0;	/* detected; 0 = unpatched/absent */
 
+/* Unpatched Postgres groundwork: resolved via dlsym() in _PG_init(). See spock.h. */
+bool		spock_hlc_available = false;
+TimestampTz *spock_remote_ts_ptr = NULL;
+SubTransactionSetCommitTs_fn spock_subxact_setts = NULL;
+
 static const struct config_enum_entry SpockConflictResolvers[] = {
 	/*
 	 * Disabled until we can clearly define their desired behavior. Jan Wieck
@@ -1033,6 +1038,47 @@ _PG_init(void)
 		else
 			elog(LOG, "spock: PostgreSQL core patch set predates generation "
 				 "tracking; treating as baseline (generation 0)");
+	}
+
+	/*
+	 * Resolve the patch-provided core symbols by name. Because these lookups
+	 * are the only way spock references the symbols (the by-name uses in the
+	 * apply path were removed), spock.so has no unresolved link-time reference
+	 * to them and therefore loads even on unpatched PostgreSQL.
+	 *
+	 * For now spock does not actually run in a degraded unpatched mode. If the
+	 * logical commit clock (HLC) support is absent, we refuse to start with a
+	 * clear message instead of the cryptic dynamic-linker "undefined symbol"
+	 * error the old hard references produced. Running on unpatched PostgreSQL
+	 * with reduced functionality is future work.
+	 */
+	spock_remote_ts_ptr = (TimestampTz *)
+		dlsym(RTLD_DEFAULT, "remoteTransactionStopTimestamp");
+	spock_subxact_setts = (SubTransactionSetCommitTs_fn)
+		dlsym(RTLD_DEFAULT, "SubTransactionIdSetCommitTsData");
+	spock_hlc_available = (spock_remote_ts_ptr != NULL);
+
+	/*
+	 * Both symbols come from the Spock core patch set and must be present
+	 * together. A partially patched server (e.g. the logical commit clock but
+	 * not the delta-apply commit-timestamp support) would otherwise pass init
+	 * and later let delta apply silently skip its per-subtransaction
+	 * commit-timestamp override, corrupting conflict-resolution metadata.
+	 * Refuse startup if either required symbol is missing.
+	 */
+	if (spock_remote_ts_ptr == NULL || spock_subxact_setts == NULL)
+	{
+		const char *missing = (spock_remote_ts_ptr == NULL)
+			? "remoteTransactionStopTimestamp (logical commit clock)"
+			: "SubTransactionIdSetCommitTsData (delta apply commit timestamp)";
+
+		ereport(FATAL,
+				(errmsg("spock cannot currently run against unpatched PostgreSQL"),
+				 errdetail("Required Spock core patch-set symbol \"%s\" is not present.",
+						   missing),
+				 errhint("Use a PostgreSQL server built with the complete Spock "
+						 "patch set. Running on unpatched PostgreSQL is not yet "
+						 "supported.")));
 	}
 
 	DefineCustomEnumVariable("spock.conflict_resolution",
