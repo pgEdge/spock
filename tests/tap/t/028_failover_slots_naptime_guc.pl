@@ -65,6 +65,16 @@ is(scalar_query(1, "SELECT min_val||'/'||max_val FROM pg_settings WHERE name='sp
 is(scalar_query(1, "SELECT context FROM pg_settings WHERE name='spock.failover_slots_naptime'"),
    'sighup', 'naptime is reloadable (sighup), no restart needed');
 
+# The two GUCs are defined by near-identical DefineCustomIntVariable() calls,
+# so assert the second one's properties independently rather than assuming it
+# inherited the first's.  This also pins the feedback GUC's 1 ms floor.
+is(scalar_query(1, "SELECT unit FROM pg_settings WHERE name='spock.failover_slots_feedback_naptime'"),
+   'ms', 'feedback_naptime unit is ms');
+is(scalar_query(1, "SELECT min_val||'/'||max_val FROM pg_settings WHERE name='spock.failover_slots_feedback_naptime'"),
+   '1/3600000', 'feedback_naptime bounds are 1..3600000 ms');
+is(scalar_query(1, "SELECT context FROM pg_settings WHERE name='spock.failover_slots_feedback_naptime'"),
+   'sighup', 'feedback_naptime is reloadable (sighup), no restart needed');
+
 # --------------------------------------------------------------------------
 # A new value takes effect on reload
 # --------------------------------------------------------------------------
@@ -94,6 +104,15 @@ is($rc, 0, "ALTER SYSTEM accepts a subsecond value ('500ms')") or diag($out);
 isnt($rc, 0, "ALTER SYSTEM rejects '2h' (above the 3600000 ms maximum)");
 like($out, qr/outside the valid range|invalid value/i,
      "rejection message mentions the valid range");
+
+# Lower bound: the floor is 1 ms, so 0 must still be rejected.  This is the
+# boundary the subsecond change moved (it was 1000 ms), so pin it explicitly
+# -- 0 would otherwise read as a plausible "disable the nap" value.
+($rc, $out) = psql_try("ALTER SYSTEM SET spock.failover_slots_naptime = '0ms'");
+isnt($rc, 0, "ALTER SYSTEM rejects '0ms' (below the 1 ms minimum)");
+
+($rc, $out) = psql_try("ALTER SYSTEM SET spock.failover_slots_feedback_naptime = '0ms'");
+isnt($rc, 0, "ALTER SYSTEM rejects '0ms' for feedback_naptime (below the 1 ms minimum)");
 
 # Restore the default so the node is clean for teardown.
 psql_try("ALTER SYSTEM RESET spock.failover_slots_naptime");
