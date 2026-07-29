@@ -1,0 +1,39 @@
+Source: pgedge-spockSPOCK_MAJOR_VERSION
+Section: database
+Priority: optional
+Maintainer: pgEdge Build Team <support@pgedge.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ libkrb5-dev,
+ liblz4-dev,
+ libpam0g-dev | libpam-dev,
+ libselinux1-dev [linux-any],
+ libxslt1-dev,
+ libjansson-dev,
+ libzstd-dev (>= 1.4.0) <!pkg.postgresql.nozstd>,
+ pgedge-postgresql-all <!nocheck>,
+ pgedge-postgresql-server-dev-PG_MAJOR_VERSION,
+ pgedge-postgresql-server-dev-all,
+ zlib1g-dev | libz-dev,
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/pgEdge/spock
+
+Package: pgedge-postgresql-PG_MAJOR_VERSION-spockSPOCK_MAJOR_VERSION
+Architecture: any
+Depends:
+ ${misc:Depends},
+ pgedge-postgresql-PG_MAJOR_VERSION,
+ ${shlibs:Depends},
+Conflicts:
+ postgresql-PG_MAJOR_VERSION-spockSPOCK_MAJOR_VERSION,
+ pgedge-postgresql-PG_MAJOR_VERSION-spock60,
+Provides:
+ postgresql-PG_MAJOR_VERSION-spockSPOCK_MAJOR_VERSION,
+Replaces:
+ postgresql-PG_MAJOR_VERSION-spockSPOCK_MAJOR_VERSION,
+Breaks:
+ postgresql-PG_MAJOR_VERSION-spockSPOCK_MAJOR_VERSION,
+Description: This SPOCK extension provides multi-master replication for
+ PostgreSQL 15+. We originally leveraged the pgLogical and BDR2 projects as a
+ solid foundation to build upon for this enterprise-class extension.

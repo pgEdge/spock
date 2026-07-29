@@ -1,0 +1,21 @@
+#!/usr/bin/make -f
+
+SPOCK_MAJOR_VERSION := 50
+
+%:
+	dh $@
+
+override_dh_builddeb:
+	dh_builddeb -- -Zgzip
+
+execute_before_dh_install:
+	# --- SBOM generation and signing ---
+	mkdir -p debian/tmp/sbom
+	syft dir:$(CURDIR) -o cyclonedx-json > debian/tmp/sbom/spock$(SPOCK_MAJOR_VERSION)-sbom.json || exit 1
+	KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5}' | head -n 1); export KEY_ID
+	gpg --armor --detach-sign \
+		--output debian/tmp/sbom/spock$(SPOCK_MAJOR_VERSION)-sbom.json.asc \
+		debian/tmp/sbom/spock$(SPOCK_MAJOR_VERSION)-sbom.json || exit 1
+
+override_dh_installdocs:
+	dh_installdocs --all README.*
