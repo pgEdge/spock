@@ -23,19 +23,22 @@ node), `n2`, `n3`, and the new node is `n4`.
     - All nodes in your cluster must be available to Spock for the duration
       of the node addition.
     - The procedure should be performed on the new node being added.
-    - The `dblink` extension must be installed on the node from which
-      commands like `SELECT spock.add_node()` are being run.
+    - `spock.attach_node` and `spock.detach_node` are built into the Spock
+      extension. They reach the other nodes over libpq, so the `dblink`
+      extension is not required. (`dblink` is only needed if you choose to
+      follow the optional manual walkthrough later in this tutorial.)
     - Prepare the new node to meet all of the prerequisites described here.
     - If the process fails, do not immediately retry a command until you
       ensure that all artifacts created by the workflow have been removed.
-    - The automated `spock.add_node()` procedure uses an internal 180-second
-      (3-minute) timeout when waiting for sync events between nodes. If
-      replication lag exceeds this window, the procedure will raise an
-      exception. Ensure network latency and replication lag are within
-      acceptable limits before starting. When following the manual workflow
-      below, you call `spock.wait_for_sync_event()` directly and supply your
-      own timeout (the examples use 1200 seconds), so this internal limit
-      does not apply.
+    - The automated `spock.attach_node()` procedure bounds each internal wait
+      (for sync events between nodes) with its `timeout_sec` argument, which
+      defaults to 180 seconds (3 minutes). If replication lag exceeds this
+      window, the procedure raises an exception; pass a larger `timeout_sec`
+      if your environment needs more headroom. Ensure network latency and
+      replication lag are within acceptable limits before starting. When
+      following the manual workflow below, you call
+      `spock.wait_for_sync_event()` directly and supply your own timeout (the
+      examples use 1200 seconds), so the `timeout_sec` default does not apply.
 
 ## Creating a Node Manually
 
@@ -81,36 +84,26 @@ psql -c "CREATE DATABASE inventory;"
 psql -c "CREATE USER pgedge WITH PASSWORD '1safepassword';"
 psql -c "GRANT ALL ON DATABASE inventory TO pgedge;"
 
-# Install Spock extension
+# Install Spock extension (provides attach_node and detach_node)
 psql -d inventory -c "CREATE EXTENSION spock;"
-psql -d inventory -c "CREATE EXTENSION dblink;"
 ```
 
 ## Using the Zodan Procedure to Add a Node
 
-After creating the node, you can use [Zodan scripts](zodan_readme.md) to
-simplify adding a node to a cluster.
-
-To use the SQL script, connect to the new node that you wish to add to the
-pgEdge cluster. In the following example, the `psql` command connects to the
-new node:
+`spock.attach_node` is built into the extension, so there is nothing to load.
+Connect to the new node that you wish to add to the pgEdge cluster. In the
+following example, the `psql` command connects to the new node:
 
 ```bash
 psql -h 127.0.0.1 -p 5435 -d inventory -U pgedge
 ```
 
-Load the Zodan procedures with the following command:
+Then, use `spock.attach_node()` from the new node to add it to the cluster. In
+the following example, the `spock.attach_node` procedure adds node `n4` to the
+cluster:
 
 ```sql
-\i /path/to/zodan.sql
-```
-
-Then, use `spock.add_node()` from the new node to create the node
-definition. In the following example, the `spock.add_node` procedure adds node `n4` to
-the cluster:
-
-```sql
-CALL spock.add_node(
+CALL spock.attach_node(
     src_node_name := 'n1',
     src_dsn := 'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     new_node_name := 'n4',
@@ -122,20 +115,25 @@ CALL spock.add_node(
 );
 ```
 
-The `spock.add_node` function executes the steps required to add a node to
+The `spock.attach_node` function executes the steps required to add a node to
 the cluster; a detailed explanation of the steps performed follows below.
 
-Should a problem occur during this process, you can source the
-`zodremove.sql` script and call the `spock.remove_node` procedure to
-remove the node or reverse partially completed steps. The
-`spock.remove_node` procedure should be called on the node being removed.
+Should a problem occur during this process, you can call the
+`spock.detach_node` procedure to remove the node or reverse partially
+completed steps. The `spock.detach_node` procedure should be called on the
+node being removed.
+
+If you prefer the SQL-script workflow instead of the in-core procedures, load
+`samples/Z0DAN/zodan.sql` (which requires the `dblink` extension) and call
+`spock.add_node()` / `spock.remove_node()` with the same arguments. Both
+workflows are described in [Using Zodan](zodan_readme.md).
 
 
 ## Manually Adding a Node to a Cluster
 
 The steps that follow outline the process Zodan goes through
 when adding a node. You can manually perform the same steps to add a node
-to a cluster instead of using `spock.add_node` above.
+to a cluster instead of using `spock.attach_node` above.
 
 ### Check the Spock Version Compatibility
 
@@ -171,7 +169,7 @@ FROM dblink(
 -- Check all existing cluster nodes (n2, n3)
 SELECT node_name, version
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT n.node_name, 
             (SELECT extversion FROM pg_extension WHERE extname = ''spock'') as version
      FROM spock.node n'
@@ -211,7 +209,7 @@ n4:
 ```sql
 SELECT 1 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT 1'
 ) AS t(dummy int);
 -- If no error, database exists
@@ -228,7 +226,7 @@ In the following example, the query checks for user-created tables on n4:
 ```sql
 SELECT count(*) 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT count(*) FROM pg_tables 
      WHERE schemaname NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'')
      AND schemaname NOT LIKE ''pg_temp_%''
@@ -300,10 +298,10 @@ a cluster participant:
 -- Via dblink to n4
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT spock.node_create(
         node_name := ''n4'',
-        dsn := ''host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword'',
+        dsn := ''host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword'',
         location := ''Los Angeles'',
         country := ''USA'',
         info := ''{\"key\": \"value\"}''::jsonb
@@ -323,7 +321,7 @@ In the following example, the query retrieves the current node count:
 ```sql
 SELECT count(*) 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT count(*) FROM spock.node'
 ) AS t(count integer);
 -- Expected: 4 (n1, n2, n3, n4)
@@ -359,7 +357,7 @@ and their DSNs:
 ```sql
 SELECT n.node_name, i.if_dsn 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT n.node_name, i.if_dsn 
      FROM spock.node n 
      JOIN spock.node_interface i ON n.node_id = i.if_nodeid'
@@ -368,10 +366,10 @@ FROM dblink(
 -- Expected output:
 --  node_name |                              if_dsn                              
 -- -----------+------------------------------------------------------------------
---  n1        | host=127.0.0.1 dbname=inventory port=5432 user=alice password=...
---  n2        | host=127.0.0.1 dbname=inventory port=5433 user=alice password=...
---  n3        | host=127.0.0.1 dbname=inventory port=5434 user=alice password=...
---  n4        | host=127.0.0.1 dbname=inventory port=5435 user=alice password=...
+--  n1        | host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=...
+--  n2        | host=127.0.0.1 dbname=inventory port=5433 user=pgedge password=...
+--  n3        | host=127.0.0.1 dbname=inventory port=5434 user=pgedge password=...
+--  n4        | host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=...
 ```
 
 #### For n2 to n4: Trigger Sync Event on n2 and Store LSN
@@ -389,7 +387,7 @@ LSN:
 -- Trigger sync event on n2
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5433 user=pgedge password=1safepassword',
     'SELECT spock.sync_event()'
 ) AS t(sync_lsn pg_lsn);
 -- Returns: 0/1A7D1E0
@@ -418,7 +416,7 @@ In the following example, the commands create a replication slot on n2:
 -- On n2
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5433 user=pgedge password=1safepassword',
     'SELECT slot_name, lsn 
      FROM pg_create_logical_replication_slot(
          ''spk_inventory_n2_sub_n2_n4'',
@@ -443,10 +441,10 @@ yet.
 -- On n4
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT spock.sub_create(
         subscription_name := ''sub_n2_n4'',
-        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword'',
+        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5433 user=pgedge password=1safepassword'',
         replication_sets := ARRAY[''default'', ''default_insert_only'', ''ddl_sql''],
         synchronize_structure := false,
         synchronize_data := false,
@@ -468,7 +466,7 @@ to n4:
 -- Trigger sync event on n3
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5434 user=pgedge password=1safepassword',
     'SELECT spock.sync_event()'
 ) AS t(sync_lsn pg_lsn);
 -- Returns: 0/1B8E2F0
@@ -481,7 +479,7 @@ ON CONFLICT (origin_node) DO UPDATE SET sync_lsn = EXCLUDED.sync_lsn;
 -- Create replication slot on n3
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5434 user=pgedge password=1safepassword',
     'SELECT slot_name, lsn 
      FROM pg_create_logical_replication_slot(
          ''spk_inventory_n3_sub_n3_n4'',
@@ -492,10 +490,10 @@ FROM dblink(
 -- Create disabled subscription on n4 from n3
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT spock.sub_create(
         subscription_name := ''sub_n3_n4'',
-        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword'',
+        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5434 user=pgedge password=1safepassword'',
         replication_sets := ARRAY[''default'', ''default_insert_only'', ''ddl_sql''],
         synchronize_structure := false,
         synchronize_data := false,
@@ -534,7 +532,7 @@ In the following example, the command creates a replication slot on n2:
 ```sql
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5433 user=pgedge password=1safepassword',
     'SELECT slot_name, lsn 
      FROM pg_create_logical_replication_slot(
          ''spk_inventory_n2_sub_n4_n2'',
@@ -550,7 +548,7 @@ In the following example, the command creates a replication slot on n3:
 ```sql
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5434 user=pgedge password=1safepassword',
     'SELECT slot_name, lsn 
      FROM pg_create_logical_replication_slot(
          ''spk_inventory_n3_sub_n4_n3'',
@@ -592,7 +590,7 @@ completion:
 -- Trigger sync event on n2
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5433 user=pgedge password=1safepassword',
     'SELECT spock.sync_event()'
 ) AS t(sync_lsn pg_lsn);
 -- Returns: 0/1C9F400
@@ -600,7 +598,7 @@ FROM dblink(
 -- Wait for sync event on n1
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n2'', ''0/1C9F400''::pg_lsn, 1200)'
 ) AS t(result bool);
 ```
@@ -618,7 +616,7 @@ for completion on n1:
 -- Trigger sync event on n3
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5434 user=pgedge password=1safepassword',
     'SELECT spock.sync_event()'
 ) AS t(sync_lsn pg_lsn);
 -- Returns: 0/1D0E510
@@ -626,7 +624,7 @@ FROM dblink(
 -- Wait for sync event on n1
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n3'', ''0/1D0E510''::pg_lsn, 1200)'
 ) AS t(result bool);
 ```
@@ -664,7 +662,7 @@ In the following example, the query detects existing schemas on n4:
 ```sql
 SELECT string_agg(schema_name, ',') as schemas
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT schema_name
      FROM information_schema.schemata
      WHERE schema_name NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'', ''public'')
@@ -701,10 +699,10 @@ What Spock does internally:
 
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT spock.sub_create(
         subscription_name := ''sub_n1_n4'',
-        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword'',
+        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword'',
         replication_sets := ARRAY[''default'', ''default_insert_only'', ''ddl_sql''],
         synchronize_structure := true,
         synchronize_data := true,
@@ -745,7 +743,7 @@ In the following example, the command triggers a sync event on n1:
 ```sql
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT spock.sync_event()'
 ) AS t(sync_lsn pg_lsn);
 -- Returns: 0/1E1F620
@@ -759,15 +757,15 @@ return until the n4 subscription from n1 has replicated up to this LSN.
 The timeout (1200 seconds = 20 minutes) is a value chosen for this manual
 example to give plenty of headroom; tune it to suit your environment. It
 prevents waiting forever if something goes wrong. (The automated
-`spock.add_node()` procedure uses a shorter 180-second internal timeout
-for its sync waits, as noted in the prerequisites.)
+`spock.attach_node()` procedure bounds its sync waits with the `timeout_sec`
+argument, which defaults to 180 seconds, as noted in the prerequisites.)
 
 In the following example, the command waits for the sync event on n4:
 
 ```sql
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n1'', ''0/1E1F620''::pg_lsn, 1200)'
 ) AS t(result bool);
 ```
@@ -814,7 +812,7 @@ In the following example, the query retrieves the commit timestamp:
 ```sql
 SELECT commit_timestamp 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT commit_timestamp 
      FROM spock.lag_tracker 
      WHERE origin_name = ''n2'' AND receiver_name = ''n4'''
@@ -842,7 +840,7 @@ the slot:
 -- Get LSN from commit timestamp
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5433 user=pgedge password=1safepassword',
     'WITH lsn_cte AS (
          SELECT spock.get_lsn_from_commit_ts(
              ''spk_inventory_n2_sub_n2_n4'',
@@ -863,7 +861,7 @@ to n4:
 -- Get commit timestamp
 SELECT commit_timestamp 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT commit_timestamp 
      FROM spock.lag_tracker 
      WHERE origin_name = ''n3'' AND receiver_name = ''n4'''
@@ -873,7 +871,7 @@ FROM dblink(
 -- Advance the slot on n3
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5434 user=pgedge password=1safepassword',
     'WITH lsn_cte AS (
          SELECT spock.get_lsn_from_commit_ts(
              ''spk_inventory_n3_sub_n3_n4'',
@@ -927,7 +925,7 @@ The following example enables the subscription:
 -- Enable the subscription
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT spock.sub_enable(
         subscription_name := ''sub_n2_n4'',
         immediate := true
@@ -954,7 +952,7 @@ SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = 'n2';
 -- Wait for that sync event on n4
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n2'', ''0/1A7D1E0''::pg_lsn, 1200)'
 ) AS t(result bool);
 ```
@@ -972,7 +970,7 @@ The following example checks the subscription status on n4:
 -- Check subscription status on n4
 SELECT subscription_name, status, provider_node
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT subscription_name, status, provider_node 
      FROM spock.sub_show_status() 
      WHERE subscription_name = ''sub_n2_n4'''
@@ -993,7 +991,7 @@ replication:
 -- Enable subscription
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT spock.sub_enable(
         subscription_name := ''sub_n3_n4'',
         immediate := true
@@ -1007,14 +1005,14 @@ SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = 'n3';
 -- Wait for stored sync event
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n3'', ''0/1B8E2F0''::pg_lsn, 1200)'
 ) AS t(result bool);
 
 -- Verify status
 SELECT subscription_name, status, provider_node
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'SELECT subscription_name, status, provider_node 
      FROM spock.sub_show_status() 
      WHERE subscription_name = ''sub_n3_n4'''
@@ -1059,10 +1057,10 @@ The following example creates the subscription:
 ```sql
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT spock.sub_create(
         subscription_name := ''sub_n4_n1'',
-        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword'',
+        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword'',
         replication_sets := ARRAY[''default'', ''default_insert_only'', ''ddl_sql''],
         synchronize_structure := false,
         synchronize_data := false,
@@ -1085,10 +1083,10 @@ In the following example, the command creates the subscription on n2:
 ```sql
 SELECT * 
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5433 user=pgedge password=1safepassword',
     'SELECT spock.sub_create(
         subscription_name := ''sub_n4_n2'',
-        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword'',
+        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword'',
         replication_sets := ARRAY[''default'', ''default_insert_only'', ''ddl_sql''],
         synchronize_structure := false,
         synchronize_data := false,
@@ -1107,10 +1105,10 @@ The following command creates the subscription on n3:
 
 ```sql
 SELECT * FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5434 user=pgedge password=1safepassword',
     'SELECT spock.sub_create(
         subscription_name := ''sub_n4_n3'',
-        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword'',
+        provider_dsn := ''host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword'',
         replication_sets := ARRAY[''default'', ''default_insert_only'', ''ddl_sql''],
         synchronize_structure := false,
         synchronize_data := false,
@@ -1156,7 +1154,7 @@ BEGIN
         SELECT now() - commit_timestamp, replication_lag_bytes 
         INTO lag_interval, lag_bytes
         FROM dblink(
-            'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+            'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
             'SELECT now() - commit_timestamp, replication_lag_bytes 
              FROM spock.lag_tracker 
              WHERE origin_name = ''n1'' AND receiver_name = ''n4'''
@@ -1192,7 +1190,7 @@ query displays all registered nodes:
 ```sql
 SELECT n.node_id, n.node_name, n.location, n.country, i.if_dsn
 FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'SELECT n.node_id, n.node_name, n.location, n.country, i.if_dsn 
      FROM spock.node n 
      JOIN spock.node_interface i ON n.node_id = i.if_nodeid 
@@ -1202,10 +1200,10 @@ FROM dblink(
 -- Expected output:
 --  node_id | node_name |  location   | country |                           if_dsn                           
 -- ---------+-----------+-------------+---------+------------------------------------------------------------
---    16385 | n1        | New York    | USA     | host=127.0.0.1 dbname=inventory port=5432 user=alice ...
---    16386 | n2        | Chicago     | USA     | host=127.0.0.1 dbname=inventory port=5433 user=alice ...
---    16387 | n3        | Boston      | USA     | host=127.0.0.1 dbname=inventory port=5434 user=alice ...
---    16389 | n4        | Los Angeles | USA     | host=127.0.0.1 dbname=inventory port=5435 user=alice ...
+--    16385 | n1        | New York    | USA     | host=127.0.0.1 dbname=inventory port=5432 user=pgedge ...
+--    16386 | n2        | Chicago     | USA     | host=127.0.0.1 dbname=inventory port=5433 user=pgedge ...
+--    16387 | n3        | Boston      | USA     | host=127.0.0.1 dbname=inventory port=5434 user=pgedge ...
+--    16389 | n4        | Los Angeles | USA     | host=127.0.0.1 dbname=inventory port=5435 user=pgedge ...
 ```
 
 ### Show the Status of all Subscriptions
@@ -1220,7 +1218,7 @@ FROM (
     -- n1 subscriptions
     SELECT 'n1' as node_name, *
     FROM dblink(
-        'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
+        'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
         'SELECT subscription_name, status, provider_node FROM spock.sub_show_status()'
     ) AS t(subscription_name text, status text, provider_node text)
     
@@ -1229,7 +1227,7 @@ FROM (
     -- n2 subscriptions
     SELECT 'n2' as node_name, *
     FROM dblink(
-        'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
+        'host=127.0.0.1 dbname=inventory port=5433 user=pgedge password=1safepassword',
         'SELECT subscription_name, status, provider_node FROM spock.sub_show_status()'
     ) AS t(subscription_name text, status text, provider_node text)
     
@@ -1238,7 +1236,7 @@ FROM (
     -- n3 subscriptions
     SELECT 'n3' as node_name, *
     FROM dblink(
-        'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
+        'host=127.0.0.1 dbname=inventory port=5434 user=pgedge password=1safepassword',
         'SELECT subscription_name, status, provider_node FROM spock.sub_show_status()'
     ) AS t(subscription_name text, status text, provider_node text)
     
@@ -1247,7 +1245,7 @@ FROM (
     -- n4 subscriptions
     SELECT 'n4' as node_name, *
     FROM dblink(
-        'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
+        'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
         'SELECT subscription_name, status, provider_node FROM spock.sub_show_status()'
     ) AS t(subscription_name text, status text, provider_node text)
 ) combined

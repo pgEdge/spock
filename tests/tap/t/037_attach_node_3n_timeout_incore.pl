@@ -1,0 +1,197 @@
+use strict;
+use warnings;
+use Test::More;
+use lib '.';
+use lib 't';
+use SpockTest qw(create_cluster destroy_cluster get_test_config psql_or_bail scalar_query);
+use Time::HiRes qw(time);
+
+# =============================================================================
+# Test: Verify that attach_node fails immediately with an error when sync_event
+# function is missing on the source node, rather than waiting for timeout.
+# =============================================================================
+# attach_node raises an error (rather than looping until timeout) when a required
+# helper such as sync_event is missing on the source node. The test:
+# 1. Creates a 3-node cluster (n1, n2 active; n3 dropped and re-added)
+# 2. Drops n3 from the cluster
+# 3. Renames spock.sync_event() on node 1 to simulate it being missing
+# 4. Attempts attach_node from n3 to join the cluster
+# 5. Verifies the call fails quickly with an error (not timeout)
+
+create_cluster(3, 'Create 3-node Spock test cluster');
+
+# Get cluster configuration
+my $config = get_test_config();
+my $node_ports = $config->{node_ports};
+my $host = $config->{host};
+my $dbname = $config->{db_name};
+my $db_user = $config->{db_user};
+my $db_password = $config->{db_password};
+my $pg_bin = $config->{pg_bin};
+
+# Prepare node 2: drop from cluster (attach_node/detach_node ship with the extension)
+print STDERR "Prepare N2: drop local node\n";
+psql_or_bail(2, "SELECT spock.node_drop('n2')");
+psql_or_bail(3, "SELECT spock.node_drop('n3')");
+
+# Rename sync_event function on node 1 to simulate it being missing
+print STDERR "Rename spock.sync_event() on N1 to simulate missing function\n";
+psql_or_bail(1, "ALTER FUNCTION spock.sync_event(boolean) RENAME TO sync_event_renamed");
+
+# Attempt attach_node - this should fail quickly with an error, not timeout
+print STDERR "Attempt attach_node from N2 to N1 (should fail quickly with error)\n";
+my $start_time = time();
+
+# scalar_query uses backticks which don't throw exceptions - check $? for exit code
+my $result = scalar_query(2, qq{
+    CALL spock.attach_node(
+        src_node_name := 'n1',
+        src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        new_node_name := 'n2',
+        new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+        verb := false,
+        timeout_sec := 30
+    )});
+my $exit_code = $? >> 8;
+
+my $elapsed_time = time() - $start_time;
+print STDERR "attach_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
+
+# The call should fail quickly, well under the 30s timeout_sec above. The bound
+# must stay safely below that timeout, otherwise a call that loops to the full
+# timeout would still pass this assertion and defeat its purpose.
+ok($elapsed_time < 25, "attach_node failed quickly (${elapsed_time}s < 25s), not waiting for timeout");
+ok($exit_code != 0, "attach_node failed as expected when sync_event is missing (exit code: $exit_code)");
+
+# Restore sync_event function on N1 for cleanup
+print STDERR "Restore spock.sync_event() on N1\n";
+psql_or_bail(1, "ALTER FUNCTION spock.sync_event_renamed(boolean) RENAME TO sync_event");
+
+# Clean leftovers in the Spock cluster caused by unsuccessful addition
+scalar_query(2, qq{
+	CALL spock.detach_node(
+		target_node_name := 'n2',
+		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+		verbose_mode := true)
+});
+
+print STDERR "Check: an error during pg_replication_slot_advance should stop node addition\n";
+
+psql_or_bail(2, "ALTER FUNCTION pg_replication_slot_advance RENAME TO pg_replication_slot_advance_renamed");
+
+# Should be OK, because of 2-n configuration, no advance needed. This join is
+# expected to succeed and can take tens of seconds, so it must not be inside the
+# window the "failed quickly" assertion below measures.
+psql_or_bail(2, qq{
+    CALL spock.attach_node(
+        src_node_name := 'n1',
+        src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        new_node_name := 'n2',
+        new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+        verb := false
+    )});
+
+# Time only the n3 attach, which is the call expected to fail quickly.
+$start_time = time();
+
+# Should fail quickly
+$result = scalar_query(3, qq{
+    CALL spock.attach_node(
+        src_node_name := 'n1',
+        src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        new_node_name := 'n3',
+        new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+        verb := false,
+        timeout_sec := 30
+    )});
+$exit_code = $? >> 8;
+
+$elapsed_time = time() - $start_time;
+print STDERR "attach_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
+
+ok($elapsed_time < 25, "attach_node on n3 failed quickly (${elapsed_time}s < 25s), not waiting for timeout");
+ok($exit_code != 0, "attach_node failed as expected when pg_replication_slot_advance is missing (exit code: $exit_code)");
+
+psql_or_bail(2, "ALTER FUNCTION pg_replication_slot_advance_renamed RENAME TO pg_replication_slot_advance");
+
+# Clean leftovers of node-3 in the Spock cluster caused by unsuccessful addition
+scalar_query(3, qq{
+	CALL spock.detach_node(
+		target_node_name := 'n3',
+		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+		verbose_mode := true)
+});
+
+print STDERR "Check: quick fail if something happens during subscription creation on source node\n";
+
+psql_or_bail(1, "ALTER FUNCTION spock.sub_create RENAME TO sub_create_renamed");
+$start_time = time();
+
+$result = scalar_query(3, qq{
+    CALL spock.attach_node(
+        src_node_name := 'n1',
+        src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        new_node_name := 'n3',
+        new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+        verb := false,
+        timeout_sec := 30
+    )});
+$exit_code = $? >> 8;
+
+$elapsed_time = time() - $start_time;
+print STDERR "attach_node call completed in $elapsed_time seconds (exit code: $exit_code)\n";
+
+ok($elapsed_time < 25, "attach_node on n3 failed quickly (${elapsed_time}s < 25s), not waiting for timeout");
+ok($exit_code != 0, "attach_node failed as expected when sub_create is missing (exit code: $exit_code)");
+
+psql_or_bail(1, "ALTER FUNCTION spock.sub_create_renamed RENAME TO sub_create");
+
+# Clean leftovers of node-3 in the Spock cluster caused by unsuccessful addition
+scalar_query(2, qq{
+	CALL spock.detach_node(
+		target_node_name := 'n2',
+		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+		verbose_mode := true)
+});
+scalar_query(3, qq{
+	CALL spock.detach_node(
+		target_node_name := 'n3',
+		target_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+		verbose_mode := true)
+});
+
+print STDERR "Final check: node-3 adds to the cluster successfully\n";
+
+psql_or_bail(2, qq{
+    CALL spock.attach_node(
+        src_node_name := 'n1',
+        src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        new_node_name := 'n2',
+        new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[1] user=$db_user password=$db_password',
+        verb := false
+    )});
+psql_or_bail(3, qq{
+    CALL spock.attach_node(
+        src_node_name := 'n1',
+        src_dsn := 'host=$host dbname=$dbname port=$node_ports->[0] user=$db_user password=$db_password',
+        new_node_name := 'n3',
+        new_node_dsn := 'host=$host dbname=$dbname port=$node_ports->[2] user=$db_user password=$db_password',
+        verb := false
+    )});
+
+# Verify cluster has 3 nodes on each node
+for my $node (1, 2, 3) {
+    my $node_count = scalar_query($node, "SELECT count(*) FROM spock.node");
+    ok($node_count == 3, "Node $node sees 3 nodes in cluster (got $node_count)");
+}
+
+# Verify each node has 2 non-disabled subscriptions
+for my $node (1, 2, 3) {
+    my $sub_count = scalar_query($node,
+        "SELECT count(*) FROM spock.subscription WHERE sub_enabled = true");
+    ok($sub_count == 2, "Node $node has 2 enabled subscriptions (got $sub_count)");
+}
+
+# Cleanup will be handled by SpockTest.pm END block
+destroy_cluster('Destroy test cluster');
+done_testing();
