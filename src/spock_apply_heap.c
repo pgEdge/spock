@@ -1358,6 +1358,19 @@ spock_apply_heap_mi_flush(void)
 		{
 			List	   *recheckIndexes = NIL;
 
+#if PG_VERSION_NUM >= 190000
+			/*
+			 * PG19 replaced the separate update/noDupErr/onlySummarizing
+			 * booleans with a flags bitmask and reordered the arguments.
+			 */
+			recheckIndexes =
+				ExecInsertIndexTuples(
+									  resultRelInfo,
+									  spkmistate->aestate->estate,
+									  0,	/* flags */
+									  spkmistate->buffered_tuples[i],
+									  NIL, NULL);
+#else
 			recheckIndexes =
 				ExecInsertIndexTuples(
 									  resultRelInfo,
@@ -1372,6 +1385,7 @@ spock_apply_heap_mi_flush(void)
 									  false
 #endif
 				);
+#endif
 			SPKExecARInsertTriggers(spkmistate->aestate->estate, resultRelInfo,
 									spkmistate->buffered_tuples[i],
 									recheckIndexes);

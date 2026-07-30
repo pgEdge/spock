@@ -16,6 +16,9 @@
 
 #include "replication/logical.h"
 
+/* Keep last: provides the PG-version compatibility shims */
+#include "spock_compat.h"
+
 PG_MODULE_MAGIC;
 
 extern void		_PG_output_plugin_init(OutputPluginCallbacks *cb);

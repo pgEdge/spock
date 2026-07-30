@@ -941,7 +941,12 @@ log_message_filter(ErrorData *edata)
 		if (lower_output_level)
 		{
 			/* Reconsider decision on exposing the message */
+#if PG_VERSION_NUM >= 190000
+			/* PG19 turned log_min_messages into a per-backend-type array */
+			if (log_min_messages[MyBackendType] < edata->elevel)
+#else
 			if (log_min_messages < edata->elevel)
+#endif
 				edata->output_to_server = false;
 			if (client_min_messages < edata->elevel)
 				edata->output_to_client = false;

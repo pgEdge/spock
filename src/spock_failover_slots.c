@@ -69,6 +69,17 @@
 #define WORKER_NAP_TIME_DEFAULT 1000
 #define WORKER_WAIT_FEEDBACK_DEFAULT 10000
 
+/*
+ * PostgreSQL 19 replaced ReplicationSlot.active_pid (an int pid, 0 when the
+ * slot is unused) with active_proc (a ProcNumber, INVALID_PROC_NUMBER when
+ * unused).  SlotIsActive() hides that difference.
+ */
+#if PG_VERSION_NUM >= 190000
+#define SlotIsActive(s) ((s)->active_proc != INVALID_PROC_NUMBER)
+#else
+#define SlotIsActive(s) ((s)->active_pid != 0)
+#endif
+
 typedef struct RemoteSlot
 {
 	char *name;
@@ -378,10 +389,11 @@ remote_get_physical_slot_lsn(PGconn *conn, const char *slot_name)
 
 /*
  * Can't use get_database_oid from dbcommands.c because it does not work
- * without db connection.
+ * without db connection.  Named spock_get_database_oid to avoid clashing
+ * with the core declaration that PG19 exports from catalog/pg_database.h.
  */
 static Oid
-get_database_oid(const char *dbname)
+spock_get_database_oid(const char *dbname)
 {
 	HeapTuple tuple;
 	Relation relation;
@@ -830,7 +842,14 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * We have to create the slot to reserve its name and resources, but
 		 * don't want it to persist if we fail.
 		 */
-#if PG_VERSION_NUM >= 170000
+#if PG_VERSION_NUM >= 190000
+		/* PG19 added a "repack" argument after two_phase */
+		ReplicationSlotCreate(remote_slot->name, true, RS_EPHEMERAL,
+							  remote_slot->two_phase,
+							  false,
+							  false,
+							  false);
+#elif PG_VERSION_NUM >= 170000
 		ReplicationSlotCreate(remote_slot->name, true, RS_EPHEMERAL,
 							  remote_slot->two_phase,
 							  false,
@@ -842,7 +861,7 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		slot = MyReplicationSlot;
 
 		SpinLockAcquire(&slot->mutex);
-		slot->data.database = get_database_oid(remote_slot->database);
+		slot->data.database = spock_get_database_oid(remote_slot->database);
 		strlcpy(NameStr(slot->data.plugin), remote_slot->plugin, NAMEDATALEN);
 		SpinLockRelease(&slot->mutex);
 
@@ -1095,7 +1114,7 @@ synchronize_failover_slots(long sleep_time)
 			bool active;
 			bool found = false;
 
-			active = (s->active_pid != 0);
+			active = SlotIsActive(s);
 
 			/* Only check inactive slots. */
 			if (!s->in_use || active)
