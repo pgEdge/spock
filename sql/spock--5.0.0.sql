@@ -529,7 +529,7 @@ BEGIN
 	pgmajor = regexp_replace(regexp_replace(version(), '^PostgreSQL ', ''), '[^0-9].*', '')::integer;
 
 	CASE
-		WHEN pgmajor IN (15, 16, 17, 18) THEN
+		WHEN pgmajor IN (15, 16, 17, 18, 19) THEN
 
 -- ----------------------------------------------------------------------
 -- convert_column_to_int8()
@@ -704,7 +704,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-	-- END pgmajor in (15, 16, 17, 18)
+	-- END pgmajor in (15, 16, 17, 18, 19)
 	ELSE
 		RAISE EXCEPTION 'Unsupported PostgreSQL major version %', pgmajor;
 	END CASE;
