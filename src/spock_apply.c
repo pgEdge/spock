@@ -264,7 +264,9 @@ static void spock_apply_worker_attach(void);
 static void spock_apply_worker_detach(void);
 
 static bool should_log_exception(bool failed);
-static void clear_transient_exception_state_on_connection_loss(void);
+static void clear_transient_exception_state(const char *reason);
+static char *errmsg_with_sqlstate(ErrorData *edata);
+static void prepare_transient_error_retry(ErrorData *edata, const char *what);
 
 static ApplyReplayEntry * apply_replay_entry_create(int r, char *buf);
 static void apply_replay_entry_free(ApplyReplayEntry * entry);
@@ -363,25 +365,27 @@ should_log_exception(bool failed)
 }
 
 /*
- * Forget the in-flight transaction marker after a transport failure on the
+ * Forget the in-flight transaction marker after a transient failure on the
  * normal apply path.
  *
  * handle_begin() records commit_lsn in shared memory before any changes are
  * applied.  That marker normally lets a restarted worker recognize a
  * transaction which failed during apply and replay it under the configured
- * exception policy.  A provider disconnect is different: PostgreSQL aborts
- * the local transaction and the replication origin is deliberately left at
- * the last durable commit so the provider can send the transaction again.
+ * exception policy.  A transient failure is different -- a provider disconnect,
+ * or a retryable local abort such as being chosen as a deadlock victim:
+ * PostgreSQL aborts the local transaction and the replication origin is
+ * deliberately left at the last durable commit so the provider can send the
+ * transaction again.
  *
  * Leaving commit_lsn behind makes the replacement worker misclassify that
  * retransmitted transaction as an apply failure.  In SUB_DISABLE mode it then
  * performs a read-only exception replay and disables the subscription instead
  * of applying the transaction.  Clear the marker only for a first-pass
- * transport failure.  Genuine apply failures and failures during exception
- * replay retain their state.
+ * transient failure.  Genuine apply failures and failures during exception
+ * replay retain their state.  reason names the cause for the debug message.
  */
 static void
-clear_transient_exception_state_on_connection_loss(void)
+clear_transient_exception_state(const char *reason)
 {
 	SpockExceptionLog *exception_log;
 
@@ -399,8 +403,29 @@ clear_transient_exception_state_on_connection_loss(void)
 	exception_log->initial_error_message[0] = '\0';
 	exception_log->failed_action = 0;
 
-	elog(DEBUG1, "SPOCK %s: cleared transient exception state after provider connection loss",
-		 MySubscription->name);
+	elog(DEBUG1, "SPOCK %s: cleared transient exception state after %s",
+		 MySubscription->name, reason);
+}
+
+/*
+ * Common bookkeeping before rethrowing a transient apply error.  what names
+ * the class of error for the log line.  The caller must PG_RE_THROW() straight
+ * afterwards, which has to happen in the PG_CATCH() scope itself.
+ */
+static void
+prepare_transient_error_retry(ErrorData *edata, const char *what)
+{
+	clear_transient_exception_state("transient apply error");
+
+	/*
+	 * Pace retries with restart_delay_default rather than the
+	 * restart_delay_on_exception (default 0) that handle_begin() installs, so a
+	 * condition that never clears does not spin the worker.
+	 */
+	MySpockWorker->restart_delay = restart_delay_default;
+
+	elog(LOG, "SPOCK %s: %s, will restart and retry: %s",
+		 MySubscription->name, what, errmsg_with_sqlstate(edata));
 }
 
 /*
@@ -3727,16 +3752,91 @@ stream_replay:
 		 * don't tag.  Apply-side errors (constraint violations and the
 		 * like) do NOT take this branch and continue through the
 		 * existing exception_log replay path below.
+		 *
+		 * CRASH_SHUTDOWN and CANNOT_CONNECT_NOW join ADMIN_SHUTDOWN: all three
+		 * mean the provider is going away or not ready yet, and all clear on
+		 * their own.  DATABASE_DROPPED (57P04) is excluded -- it never does.
+		 *
+		 * Do not collapse this into an ERRCODE_TO_CATEGORY() class 08 test:
+		 * handle_startup_message() raises PROTOCOL_VIOLATION (08P01) for a
+		 * version-mismatched provider, which is permanent and would then retry
+		 * forever.
 		 */
 		if (edata->sqlerrcode == ERRCODE_CONNECTION_FAILURE ||
 			edata->sqlerrcode == ERRCODE_CONNECTION_EXCEPTION ||
 			edata->sqlerrcode == ERRCODE_CONNECTION_DOES_NOT_EXIST ||
 			edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
+			edata->sqlerrcode == ERRCODE_CRASH_SHUTDOWN ||
+			edata->sqlerrcode == ERRCODE_CANNOT_CONNECT_NOW ||
 			(applyconn != NULL && PQstatus(applyconn) == CONNECTION_BAD))
 		{
-			clear_transient_exception_state_on_connection_loss();
+			clear_transient_exception_state("provider connection loss");
+
+			/*
+			 * Pace the respawn as the transient branches below do.  An error
+			 * raised once apply is under way leaves restart_delay at the
+			 * restart_delay_on_exception (default 0) that handle_begin()
+			 * installed, so a provider that fails every attempt -- 57P02 or
+			 * 57P03 for the length of its crash recovery, say -- otherwise
+			 * spins the worker as fast as it can reconnect and re-stream.
+			 * Costs up to restart_delay_default of extra recovery latency on a
+			 * one-off blip, which is the same trade native PG makes with
+			 * wal_retrieve_retry_interval.
+			 */
+			MySpockWorker->restart_delay = restart_delay_default;
+
 			elog(LOG, "SPOCK %s: connection error during apply, exiting via rethrow: %s",
 				 MySubscription->name, edata->message);
+			PG_RE_THROW();
+		}
+
+		/*
+		 * Retryable local aborts must not enter the replay path either.  A
+		 * deadlock victim or a lock_timeout abort is no fault of the replicated
+		 * data: the same transaction succeeds once the contending local
+		 * transaction is gone.  The replay path is for permanent data faults, so
+		 * every spock.exception_behaviour loses data the provider would resend:
+		 * SUB_DISABLE stops replication, TRANSDISCARD drops the transaction,
+		 * DISCARD skips the row.
+		 *
+		 * Rethrow as above, leaving the origin at the last durable commit so the
+		 * respawned worker re-applies from scratch.  Retry is INDEFINITE, as on
+		 * the connection path and in native PG logical replication: contention
+		 * that never clears surfaces as a restarting worker, whereas a bounded
+		 * count would end in discarding data anyway.
+		 *
+		 * Serialization errors are absent because they reach apply only when
+		 * the worker itself runs at REPEATABLE READ / SERIALIZABLE (from the
+		 * default isolation level, which is not yet pinned to READ COMMITTED).
+		 * Until then, a cluster-wide default_transaction_isolation can still
+		 * produce 40001, which then takes the exception path.
+		 */
+		if (edata->sqlerrcode == ERRCODE_T_R_DEADLOCK_DETECTED ||
+			edata->sqlerrcode == ERRCODE_LOCK_NOT_AVAILABLE)
+		{
+			prepare_transient_error_retry(edata,
+										  "transient error (deadlock/lock timeout)");
+			PG_RE_THROW();
+		}
+
+		/*
+		 * Resource exhaustion (class 53: disk full, out of memory, too many
+		 * connections, configuration limit exceeded) is retryable for the same
+		 * reason, and this makes the handling self-consistent -- the "error
+		 * during exception handling" branch below already rethrows out-of-memory
+		 * and disk-full, but only on a second occurrence.
+		 *
+		 * The whole-category test is safe here, unlike class 08 and class 40:
+		 * every class 53 member can clear, whereas 40002
+		 * (T_R_INTEGRITY_CONSTRAINT_VIOLATION) is a permanent data fault.
+		 *
+		 * A shortage that never clears -- a disk kept full by a bulk load --
+		 * retries indefinitely instead of discarding: human intervention, but a
+		 * restarting worker rather than data loss.
+		 */
+		if (ERRCODE_TO_CATEGORY(edata->sqlerrcode) == ERRCODE_INSUFFICIENT_RESOURCES)
+		{
+			prepare_transient_error_retry(edata, "transient resource error");
 			PG_RE_THROW();
 		}
 
