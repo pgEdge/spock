@@ -68,15 +68,18 @@ teardown is skipped with a warning rather than aborting the removal.
 ```sql
 CALL spock.detach_node(
   target_node_name => 'target_node_name',
-  target_node_dsn  => 'target_dsn',       -- accepted for symmetry, not used
+  target_node_dsn  => 'target_dsn',    -- DSN of the node being removed
   verbose_mode     => true             -- verbose progress output, optional
 );
 ```
 
 `detach_node` runs on the node being removed and does all of its work locally
-and against the surviving nodes it already knows about, so `target_node_dsn`
-is currently accepted for signature symmetry with `spock.remove_node` but is
-not used. Pass any value (for example the node's own DSN).
+and against the surviving nodes it already knows about. `target_node_dsn` must
+be the DSN of that same node: `detach_node` connects to it and compares the
+system identifier and database name against the local ones, refusing to run if
+they differ. This is the mirror of the `new_node_dsn` check in `attach_node`,
+and it is what stops `detach_node` from tearing down the replication of
+whichever node it was accidentally run on.
 
 In the following example, the command removes node `n4` from the cluster. Run
 it while connected to `n4`:

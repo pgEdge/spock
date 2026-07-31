@@ -1,4 +1,4 @@
-/* spock--5.0.10--6.0.0.sql */
+/* spock--5.0.11--6.0.0.sql */
 
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
 \echo Use "ALTER EXTENSION spock UPDATE TO '6.0.0'" to load this file. \quit
@@ -345,4 +345,50 @@ LANGUAGE C VOLATILE;
 REVOKE ALL ON FUNCTION spock.slot_enable_failover() FROM PUBLIC;
 
 SELECT spock.slot_enable_failover();
+
+-- ----------------------------------------------------------------------------
+-- Zero Downtime Add/Remove Node (ZODAN), in-core C orchestration
+--
+-- attach_node/detach_node orchestrate joining or removing a node entirely in
+-- C, reaching the other cluster nodes over libpq (no dblink dependency).
+--
+-- These are the in-core equivalents of the SQL/dblink procedures shipped in
+-- samples/Z0DAN/zodan.sql (spock.add_node) and zodremove.sql
+-- (spock.remove_node); users may choose either orchestration.
+--
+--     attach_node must be run on the new node being added.
+--     detach_node must be run on the node being removed.
+--
+-- Neither procedure is atomic across the cluster.  Both commit local state at
+-- phase boundaries, and the subscriptions they create or drop on the other nodes
+-- are committed one node at a time by the remote server.  A failure part-way
+-- through therefore leaves the cluster in an intermediate state that is not
+-- rolled back: recovery from a failed attach_node is spock.detach_node() on the
+-- new node, then a fresh attach_node().  See the header of src/spock_zodan.c.
+--
+-- Both take an arbitrary connection string and reach out to it, and detach_node
+-- drops every subscription, replication set and the node itself, so EXECUTE is
+-- revoked from PUBLIC below.
+-- ----------------------------------------------------------------------------
+CREATE PROCEDURE spock.attach_node(
+	src_node_name		text,
+	src_dsn				text,
+	new_node_name		text,
+	new_node_dsn		text,
+	verb				boolean DEFAULT false,
+	new_node_location	text	DEFAULT 'NY',
+	new_node_country	text	DEFAULT 'USA',
+	new_node_info		jsonb	DEFAULT '{}'::jsonb,
+	timeout_sec			int		DEFAULT 180
+) LANGUAGE c AS 'MODULE_PATHNAME', 'spock_attach_node';
+
+CREATE PROCEDURE spock.detach_node(
+	target_node_name	text,
+	target_node_dsn		text,
+	verbose_mode		boolean DEFAULT true
+) LANGUAGE c AS 'MODULE_PATHNAME', 'spock_detach_node';
+
+REVOKE ALL ON PROCEDURE spock.attach_node(text, text, text, text, boolean,
+										  text, text, jsonb, int) FROM PUBLIC;
+REVOKE ALL ON PROCEDURE spock.detach_node(text, text, boolean) FROM PUBLIC;
 

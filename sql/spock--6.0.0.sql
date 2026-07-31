@@ -869,6 +869,17 @@ LANGUAGE C CALLED ON NULL INPUT VOLATILE;
 --
 --     attach_node must be run on the new node being added.
 --     detach_node must be run on the node being removed.
+--
+-- Neither procedure is atomic across the cluster.  Both commit local state at
+-- phase boundaries, and the subscriptions they create or drop on the other nodes
+-- are committed one node at a time by the remote server.  A failure part-way
+-- through therefore leaves the cluster in an intermediate state that is not
+-- rolled back: recovery from a failed attach_node is spock.detach_node() on the
+-- new node, then a fresh attach_node().  See the header of src/spock_zodan.c.
+--
+-- Both take an arbitrary connection string and reach out to it, and detach_node
+-- drops every subscription, replication set and the node itself, so EXECUTE is
+-- revoked from PUBLIC below.
 -- ----------------------------------------------------------------------------
 CREATE PROCEDURE spock.attach_node(
 	src_node_name		text,
@@ -887,3 +898,7 @@ CREATE PROCEDURE spock.detach_node(
 	target_node_dsn		text,
 	verbose_mode		boolean DEFAULT true
 ) LANGUAGE c AS 'MODULE_PATHNAME', 'spock_detach_node';
+
+REVOKE ALL ON PROCEDURE spock.attach_node(text, text, text, text, boolean,
+										  text, text, jsonb, int) FROM PUBLIC;
+REVOKE ALL ON PROCEDURE spock.detach_node(text, text, boolean) FROM PUBLIC;
