@@ -14,3 +14,11 @@ test: 010_zodan_add_remove_python
 test: 012_zodan_basics
 # test: 016_crash_recovery_progress
 test: 017_zodan_3n_timeout
+
+# Transient apply-error retry.  Both gate apply on an error that has to persist
+# for a while and then clear, so they are dominated by waiting: 035 runs ~130s
+# across 12 gated phases (10 retryable SQLSTATEs plus 2 that must stay
+# permanent), 036 ~60s holding a replica trigger open to line up a real
+# deadlock.
+test: 035_deadlock_retry
+test: 036_real_deadlock_retry
