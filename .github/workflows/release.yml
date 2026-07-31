@@ -52,7 +52,7 @@ on:
                     comma-separated. This repo has no postgresql-N/ dirs, so the
                     list cannot be auto-discovered from the packaging repo.
                 required: false
-                default: '16,17,18'
+                default: '16,17,18,19'
             force_push:
                 description: |
                     Publish RPMs/DEBs even if some matrix cells failed. Only
@@ -128,7 +128,7 @@ jobs:
               uses: ./.github/actions/pgedge-detect-build-matrix
               with:
                   component_name: ${{ env.PACKAGING_DIR }}
-                  pg_versions: ${{ github.event.inputs.pg_versions || '16,17,18' }}
+                  pg_versions: ${{ github.event.inputs.pg_versions || '16,17,18,19' }}
                   archs: '["amd64","arm64"]'
                   rpm_images: '["almalinux:9","almalinux:10"]'
                   deb_images: '["ubuntu:jammy","ubuntu:noble","ubuntu:resolute","debian:bullseye","debian:bookworm","debian:trixie"]'
