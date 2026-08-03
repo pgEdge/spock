@@ -4624,6 +4624,15 @@ spock_apply_main(Datum main_arg)
 	Assert(MySpockWorker->worker_type == SPOCK_WORKER_APPLY);
 	MyApplyWorker = &MySpockWorker->worker.apply;
 
+	/*
+	 * use_try_block lives in shared memory and outlives the process that set
+	 * it.  What keeps replay mode from leaking into a replacement worker is
+	 * that every caller of spock_worker_register() hands it a zeroed
+	 * SpockWorker.  Assert that here so the dependency is stated where it
+	 * matters.
+	 */
+	Assert(!MyApplyWorker->use_try_block);
+
 	/* Load correct apply API. */
 	if (spock_use_spi)
 	{
