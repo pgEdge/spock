@@ -276,7 +276,10 @@ Two ways to handle it:
 
   The script receives `on_role_change <role> <scope>`; on becoming leader it
   should `ALTER SYSTEM SET synchronized_standby_slots` to the other members'
-  slot names and reload, and on becoming a replica it should clear it.
+  slot names and reload, and on becoming a replica it should clear it. A
+  ready-to-adapt reference implementation ships with Spock at
+  [`samples/set_synchronized_standby_slots.sh`](../samples/set_synchronized_standby_slots.sh);
+  review and tailor it to your environment before production use.
 
 - **Leave it unset and accept the trade-off.** Without
   `synchronized_standby_slots`, nothing freezes on switchover, but the leader
