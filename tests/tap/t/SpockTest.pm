@@ -163,7 +163,9 @@ sub create_postgresql_conf {
     print $conf "spock.exception_behaviour=sub_disable\n";
     print $conf "spock.conflict_resolution=last_update_wins\n";
     print $conf "track_commit_timestamp=on\n";
-    print $conf "spock.exception_replay_queue_size='1MB'\n";
+    # Plain byte count: the GUC is declared without GUC_UNIT_BYTE, so a
+    # unit suffix such as '1MB' is rejected and the default is used instead.
+    print $conf "spock.exception_replay_queue_size=1048576\n";
     print $conf "spock.enable_spill=on\n";
     print $conf "port=$port\n";
     print $conf "listen_addresses='*'\n";
