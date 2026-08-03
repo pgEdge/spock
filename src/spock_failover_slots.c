@@ -437,10 +437,16 @@ get_database_oid(const char *dbname)
  * This is slightly complicated because we default to primary_conninfo if
  * user didn't explicitly set anything and we might need to request explicit
  * database name override, that's why we need dedicated function for this.
+ *
+ * Returns false if no connection string is available yet, which only happens
+ * on the primary_conninfo path; connstr is left untouched in that case and the
+ * caller must not try to connect.  See the comment on that path below.
  */
-static void
+static bool
 make_sync_failover_slots_dsn(StringInfo connstr, char *db_name)
 {
+	char		conninfo[MAXCONNINFO];
+
 	if (spock_failover_slots_dsn && strlen(spock_failover_slots_dsn) > 0)
 	{
 		if (db_name)
@@ -448,13 +454,31 @@ make_sync_failover_slots_dsn(StringInfo connstr, char *db_name)
 							 db_name);
 		else
 			appendStringInfoString(connstr, spock_failover_slots_dsn);
+
+		return true;
 	}
-	else
-	{
-		Assert(WalRcv);
-		appendStringInfo(connstr, "%s dbname=%s", WalRcv->conninfo,
-						 db_name ? db_name : "postgres");
-	}
+
+	/*
+	 * Fall back to the walreceiver's connection string.
+	 * The field might be legitimately empty for as long as a connection
+	 * attempt is in flight.  WalReceiverMain() clears conninfo before calling
+	 * walrcv_connect() and only fills it in once the connection is fully
+	 * established, so this happens on every walreceiver start and restart --
+	 * not merely in a narrow window while the standby comes up.
+	 */
+	Assert(WalRcv);
+
+	SpinLockAcquire(&WalRcv->mutex);
+	strlcpy(conninfo, (char *) WalRcv->conninfo, sizeof(conninfo));
+	SpinLockRelease(&WalRcv->mutex);
+
+	if (conninfo[0] == '\0')
+		return false;
+
+	appendStringInfo(connstr, "%s dbname=%s", conninfo,
+					 db_name ? db_name : "postgres");
+
+	return true;
 }
 
 /*
@@ -553,7 +577,19 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 	 * postgres here because plugin callback below might want to invoke
 	 * extension functions.  Keep connstr alive for reconnect attempts.
 	 */
-	make_sync_failover_slots_dsn(&connstr, remote_slot->database);
+	if (!make_sync_failover_slots_dsn(&connstr, remote_slot->database))
+	{
+		/*
+		 * The walreceiver dropped its connection string while we were getting
+		 * here, so it is reconnecting to the primary.  Give up on this slot for
+		 * now; the caller's next cycle starts over.
+		 */
+		elog(DEBUG1,
+			 "no connection string for the primary yet, not waiting for slot %s",
+			 remote_slot->name);
+		pfree(connstr.data);
+		return false;
+	}
 
 	conn = remote_connect(connstr.data, "spock_failover_slots");
 
@@ -1066,7 +1102,15 @@ synchronize_failover_slots(long sleep_time)
 	elog(DEBUG1, "starting replication slot synchronization from primary");
 
 	initStringInfo(&connstr);
-	make_sync_failover_slots_dsn(&connstr, NULL /* Use default db name */ );
+	if (!make_sync_failover_slots_dsn(&connstr, NULL /* Use default db name */ ))
+	{
+		/* Nothing to connect with yet.  Nap and retry later. */
+		elog(DEBUG1, "no connection string for the primary yet, "
+			 "deferring replication slot synchronization");
+		pfree(connstr.data);
+		return sleep_time;
+	}
+
 	conn = remote_connect(connstr.data, "spock_failover_slots");
 
 	/*
