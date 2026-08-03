@@ -1083,6 +1083,7 @@ handle_commit(StringInfo s)
 	XLogRecPtr	end_lsn;
 	XLogRecPtr	remote_insert_lsn;
 	TimestampTz commit_time;
+	bool		xact_was_skipped = false;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
@@ -1096,6 +1097,7 @@ handle_commit(StringInfo s)
 
 	if (is_skipping_changes())
 	{
+		xact_was_skipped = true;
 		stop_skipping_changes();
 
 		/*
@@ -1109,6 +1111,54 @@ handle_commit(StringInfo s)
 	if (IsTransactionState())
 	{
 		SPKFlushPosition *flushpos;
+
+		/*
+		 * Decide whether this transaction may be committed at all before we
+		 * finalise anything.
+		 *
+		 * Under TRANSDISCARD and SUB_DISABLE every replayed action runs in a
+		 * subtransaction that is rolled back unconditionally, so a replay pass
+		 * never applies any row.  In case of a "transient conflict" or an
+		 * internal error it might cause eventual data divergency between nodes.
+		 * Let's give it a second chance, send the apply worker to restart and
+		 * retry the transaction.
+		 */
+		if (MyApplyWorker->use_try_block &&
+			!xact_had_exception &&
+			!xact_was_skipped &&
+			(exception_behaviour == TRANSDISCARD ||
+			 exception_behaviour == SUB_DISABLE))
+		{
+			SpockExceptionLog *exception_log;
+
+			/*
+			 * handle_begin() always assigns a slot before any change is
+			 * applied, so this cannot fire.  Check it anyway rather than
+			 * Assert: my_exception_log_index starts out negative, and the
+			 * writes below would corrupt the shared memory preceding the
+			 * array in a build without assertions.
+			 */
+			if (exception_log_ptr == NULL || my_exception_log_index < 0)
+				elog(ERROR, "SPOCK %s: no exception log slot assigned for "
+					 "transaction at %X/%X",
+					 MySubscription->name, LSN_FORMAT_ARGS(end_lsn));
+
+			exception_log = &exception_log_ptr[my_exception_log_index];
+			elog(LOG, "SPOCK %s: replay at LSN %X/%X applied nothing, "
+				 "retrying without exception handling%s%s",
+				 MySubscription->name,
+				 LSN_FORMAT_ARGS(end_lsn),
+				 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
+				 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
+			exception_log->commit_lsn = InvalidXLogRecPtr;
+			exception_log->initial_error_message[0] = '\0';
+			exception_log->failed_action = 0;
+			MySpockWorker->restart_delay = 0;
+
+			elog(ERROR, "SPOCK %s: exception handling had no exception(s) "
+				 "during replay in TRANSDISCARD or SUB_DISABLE mode",
+				 MySubscription->name);
+		}
 
 		/*
 		 * The transaction is either non-empty or skipped, so we clear the
@@ -1177,40 +1227,6 @@ handle_commit(StringInfo s)
 				MySpockWorker->restart_delay = 0;
 
 				elog(ERROR, "SPOCK %s: exiting because subscription disabled",
-					 MySubscription->name);
-			}
-		}
-		else
-		{
-			/*
-			 * If we had no exception(s) in exception handling mode then
-			 * the entire transaction would be silently skipped with no
-			 * exception_log entries showing in TRANSDISCARD or SUB_DISABLE
-			 * mode. We need to retry this once more without exception
-			 * handling.
-			 */
-			if (MyApplyWorker->use_try_block &&
-				(exception_behaviour == TRANSDISCARD ||
-				 exception_behaviour == SUB_DISABLE))
-			{
-				SpockExceptionLog *exception_log;
-
-				exception_log = &exception_log_ptr[my_exception_log_index];
-				elog(LOG, "SPOCK %s: %s at LSN %X/%X%s%s",
-					 MySubscription->name,
-					 (exception_behaviour == TRANSDISCARD)
-					 ? "transaction discarded (TRANSDISCARD)"
-					 : "exception handled (SUB_DISABLE)",
-					 LSN_FORMAT_ARGS(end_lsn),
-					 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
-					 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
-				exception_log->commit_lsn = InvalidXLogRecPtr;
-				exception_log->initial_error_message[0] = '\0';
-				exception_log->failed_action = 0;
-				MySpockWorker->restart_delay = 0;
-
-				elog(ERROR, "SPOCK %s: exception handling had no exception(s) "
-					 "during replay in TRANSDISCARD or SUB_DISABLE mode",
 					 MySubscription->name);
 			}
 		}
