@@ -13,6 +13,10 @@ spock.sub_enable(subscription_name name, immediate boolean)
 
 The `spock.sub_enable()` function enables a subscription.
 
+This fails if another subscription on this node already has origin
+forwarding active; see
+[Origin Forwarding](../sub_mgmt.md#origin-forwarding).
+
 ## Arguments
 
 The function accepts the following arguments:

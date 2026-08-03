@@ -71,6 +71,9 @@ forward_origins
     replication to avoid forwarding changes in a loop). Use {all} to replicate all
     changes regardless of origin. The default is `{}` (local-origin changes only).
 
+    See [Origin Forwarding](../sub_mgmt.md#origin-forwarding) for the
+    restriction on combining this with other enabled subscriptions.
+
 apply_delay
 
     An interval specifying how long to delay applying changes from the
