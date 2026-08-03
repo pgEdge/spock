@@ -929,7 +929,7 @@ handle_begin(StringInfo s)
 	{
 		first_begin_at_startup = false;
 
-		for (int i = 0; i <= SpockCtx->total_workers; i++)
+		for (int i = 0; i < SpockCtx->total_workers; i++)
 		{
 			exception_log = &exception_log_ptr[i];
 			slot_name = NameStr(exception_log->slot_name);
@@ -967,7 +967,7 @@ handle_begin(StringInfo s)
 			 */
 			LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
-			for (int i = 0; i <= SpockCtx->total_workers; i++)
+			for (int i = 0; i < SpockCtx->total_workers; i++)
 			{
 				exception_log = &exception_log_ptr[i];
 				slot_name = NameStr(exception_log->slot_name);
