@@ -83,6 +83,46 @@ sub wait_until {
 }
 
 # --------------------------------------------------------------------------
+# Helper: preserve the standby's server log under the test log directory.
+#
+# The spock_failover_slots worker runs on the standby and its messages -- which
+# say whether slot synchronisation is waiting for the primary's slot to catch up
+# -- appear nowhere else.  The standby's data directory lives in /tmp and is
+# removed at the end of each scenario, and CI only uploads tests/tap/logs, so
+# the log has to be copied out while it still exists or a slot-sync failure
+# cannot be diagnosed after the fact.
+#
+# The standby inherits logging_collector = on from the base backup, so the real
+# log lands in pg_log/; startup.log holds only the lines written before the
+# collector took over, plus anything logged if the server fails to start at all.
+# Both are worth keeping.
+#
+# $tag distinguishes the two scenarios, and a snapshot taken at the moment of
+# failure from the one taken at the end of the scenario.
+# --------------------------------------------------------------------------
+sub save_standby_log {
+    my ($datadir, $log_dir, $tag) = @_;
+    my $saved = 0;
+
+    foreach my $src ("$datadir/startup.log", glob("$datadir/pg_log/*")) {
+        next unless -f $src;
+
+        (my $base = $src) =~ s{.*/}{};
+        my $dst = "$log_dir/018_failover_slots_standby_${tag}_$base";
+
+        if (system('cp', $src, $dst) == 0) {
+            $saved++;
+            diag("  standby log saved to $dst");
+        }
+        else {
+            diag("  could not copy $src to $dst");
+        }
+    }
+
+    diag("  no standby log found under $datadir") unless $saved;
+}
+
+# --------------------------------------------------------------------------
 # Helper: enable spock.use_native_failover_slots on a node's data dir and
 # restart it.  The GUC is PGC_POSTMASTER, so a restart is required for it
 # to take effect before any logical slot is created.
@@ -343,6 +383,11 @@ sub run_failover_scenario {
             $bgw_pid =~ s/\s+//g;
             diag("  standby bgworker: $bgw_pid");
         }
+
+        # Snapshot the standby log now: it names the slot the sync worker is
+        # waiting for, and whether it is waiting for the primary's slot to
+        # catch up at all.
+        save_standby_log($standby_datadir, $config->{log_dir}, "${mode}_slotwait");
     }
 
     # ==========================================================================
@@ -647,6 +692,9 @@ sub run_failover_scenario {
     # Restart n1 so destroy_cluster can connect cleanly.
     system("$pg_bin/postgres -D $primary_dir >> /dev/null 2>&1 &");
     sleep(10);
+
+    # Keep the standby's log before the data directory goes away.
+    save_standby_log($standby_datadir, $config->{log_dir}, $mode);
 
     system("rm -rf $standby_datadir 2>/dev/null");
 
