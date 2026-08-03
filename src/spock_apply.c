@@ -613,8 +613,6 @@ handle_begin(StringInfo s)
 	XLogRecPtr	commit_lsn;
 	TimestampTz commit_time;
 	bool		slot_found = false;
-	int			sub_name_len = strlen(MySubscription->name);
-	char	   *slot_name;
 
 	SPOCK_WORKER_DELAY();
 
@@ -676,9 +674,9 @@ handle_begin(StringInfo s)
 		for (int i = 0; i < SpockCtx->total_workers; i++)
 		{
 			exception_log = &exception_log_ptr[i];
-			slot_name = NameStr(exception_log->slot_name);
 
-			if (strncmp(slot_name, MySubscription->name, sub_name_len) == 0)
+			if (namestrcmp(&exception_log->slot_name,
+						   MySubscription->name) == 0)
 			{
 				/* We found our slot in shared memory. */
 				slot_found = true;
@@ -714,9 +712,9 @@ handle_begin(StringInfo s)
 			for (int i = 0; i < SpockCtx->total_workers; i++)
 			{
 				exception_log = &exception_log_ptr[i];
-				slot_name = NameStr(exception_log->slot_name);
 
-				if (strncmp(slot_name, MySubscription->name, sub_name_len) == 0)
+				if (namestrcmp(&exception_log->slot_name,
+							   MySubscription->name) == 0)
 				{
 					/* We found our slot in shared memory. */
 					slot_found = true;
@@ -729,7 +727,8 @@ handle_begin(StringInfo s)
 					break;
 				}
 
-				if (free_slot_index < 0 && strlen(slot_name) == 0)
+				if (free_slot_index < 0 &&
+					NameStr(exception_log->slot_name)[0] == '\0')
 				{
 					free_slot_index = i;
 				}
