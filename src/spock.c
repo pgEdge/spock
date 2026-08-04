@@ -69,6 +69,8 @@
 #include "spock_shmem.h"
 #include "spock.h"
 
+#include "spock_compat.h"
+
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(
 	.name = "spock",
@@ -989,10 +991,17 @@ log_message_filter(ErrorData *edata)
 
 		if (lower_output_level)
 		{
-			/* Reconsider decision on exposing the message */
-			if (log_min_messages < edata->elevel)
+			/*
+			 * Reconsider the decision on exposing the message.  errstart()
+			 * made it for the original elevel, which was LOG and therefore
+			 * loud enough to pass both thresholds; now that the level is
+			 * DEBUG1 the message must be held back wherever DEBUG1 is below
+			 * the threshold.  The test is the same one is_log_level_output()
+			 * applies for a non-LOG elevel: emit when elevel >= the minimum.
+			 */
+			if (edata->elevel < SPOCK_LOG_MIN_MESSAGES)
 				edata->output_to_server = false;
-			if (client_min_messages < edata->elevel)
+			if (edata->elevel < client_min_messages)
 				edata->output_to_client = false;
 		}
 	}

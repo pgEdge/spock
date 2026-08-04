@@ -143,4 +143,10 @@ extern bool check_simple_rowfilter_expr(Node *node, ParseState *pstate);
 #endif
 #endif
 
+/*
+ * PG19 turned log_min_messages into an array indexed by backend type, so that
+ * the threshold can be set per backend type.  Older majors have a single int.
+ */
+#define SPOCK_LOG_MIN_MESSAGES	(log_min_messages)
+
 #endif
