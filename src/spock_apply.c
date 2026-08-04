@@ -648,6 +648,31 @@ should_log_exception(bool failed)
 }
 
 /*
+ * Reset one exception log entry to the "no failure recorded" state.
+ *
+ * Only the apply worker of the subscription named in slot_name ever writes its
+ * own entry, so no lock is taken here.  The caller must have established that
+ * the recorded failure is not the transaction about to be applied; wiping the
+ * entry of a failure that is still pending would lose the root cause we report
+ * for it.
+ *
+ * local_tuple is included deliberately.  It is a HeapTuple copied into
+ * ApplyOperationContext by the conflict handling code, and every path that
+ * reaches here has already reset that context, so the pointer parked in shared
+ * memory is dangling.
+ */
+static void
+clear_exception_log_entry(SpockExceptionLog *entry)
+{
+	Assert(entry != NULL);
+
+	entry->commit_lsn = InvalidXLogRecPtr;
+	entry->local_tuple = NULL;
+	entry->initial_error_message[0] = '\0';
+	entry->failed_action = 0;
+}
+
+/*
  * Forget the in-flight transaction marker after a transient failure on the
  * normal apply path.
  *
@@ -681,10 +706,7 @@ clear_transient_exception_state(const char *reason)
 		return;
 
 	exception_log = &exception_log_ptr[my_exception_log_index];
-	exception_log->commit_lsn = InvalidXLogRecPtr;
-	exception_log->local_tuple = NULL;
-	exception_log->initial_error_message[0] = '\0';
-	exception_log->failed_action = 0;
+	clear_exception_log_entry(exception_log);
 
 	elog(DEBUG1, "SPOCK %s: cleared transient exception state after %s",
 		 MySubscription->name, reason);
