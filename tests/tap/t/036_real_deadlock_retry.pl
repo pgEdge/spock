@@ -94,6 +94,24 @@ sub wait_for_log {
     return 0;
 }
 
+# Block until the apply worker is inside dl_real_hold(): spock sets
+# application_name to the bgworker name, and pg_sleep() reports wait_event
+# 'PgSleep'.  The trigger is AFTER UPDATE, so a sleeping worker already holds
+# row 2 -- the precondition for the cycle below.
+sub wait_for_apply_in_hold_trigger {
+    my ($timeout) = @_;
+    $timeout //= 60;
+    for (1 .. $timeout) {
+        my $n = scalar_query(2,
+            "SELECT count(*) FROM pg_stat_activity " .
+            "WHERE application_name LIKE 'spock apply %' " .
+            "AND wait_event = 'PgSleep'");
+        return 1 if defined $n && $n >= 1;
+        sleep(1);
+    }
+    return 0;
+}
+
 my $log_offset = -s $subscriber_log // 0;
 
 # Row 2 is updated first so that apply holds it while the trigger sleeps.
@@ -104,8 +122,10 @@ psql_or_bail(1, q{
     COMMIT;
 });
 
-# Let the apply worker take row 2 and enter the trigger's sleep window.
-sleep(4);
+# A fixed delay would race: if apply had not yet taken row 2, the local
+# transaction below would take and release it unopposed and no cycle would form.
+ok(wait_for_apply_in_hold_trigger(60),
+    'apply worker is inside the hold trigger, holding row 2');
 
 # The contending local transaction: takes row 1, then blocks on row 2.  It
 # unblocks the moment the apply worker is aborted, then rolls back, which is
