@@ -135,5 +135,19 @@
 /* Must use this interface for access HeapTuple in ReorderBufferChange */
 #define ReorderBufferChangeHeapTuple(change, tuple_type) \
 	&change->data.tp.tuple_type->tuple
+/*
+ * pg_fallthrough is new in PG19, where c.h picks whichever spelling the
+ * compiler understands.  Provide it for older majors so a deliberate
+ * fall-through between switch labels can be annotated once, portably.  clang
+ * does not accept a plain comment as the annotation the way gcc does, so
+ * without this the switch in handle_queued_message() warns.
+ */
+#ifndef pg_fallthrough
+#if defined(__GNUC__) || defined(__clang__)
+#define pg_fallthrough	__attribute__((fallthrough))
+#else
+#define pg_fallthrough
+#endif
+#endif
 
 #endif

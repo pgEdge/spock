@@ -988,7 +988,7 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
  * INTERNAL dependency type.
  */
 static inline Oid
-generate_subscription_id()
+generate_subscription_id(void)
 {
 	RangeVar   *rv;
 	Relation	rel;
