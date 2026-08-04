@@ -90,6 +90,8 @@
 #include "spock.h"
 #include "spock_injection.h"
 
+#include "spock_compat.h"
+
 
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
 
@@ -2764,7 +2766,7 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 	{
 		case QUEUE_COMMAND_TYPE_DDL:
 			in_spock_queue_ddl_command = true;
-			/* fallthrough */
+			pg_fallthrough;
 		case QUEUE_COMMAND_TYPE_SQL:
 			errcallback_arg.action_name = "QUEUED_SQL";
 			handle_sql_or_exception(queued_message, tx_just_started);

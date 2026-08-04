@@ -165,8 +165,8 @@ spock_group_shmem_startup(bool found)
 		spock_group_resource_load();
 
 		elog(DEBUG1,
-			 "spock_group_shmem_startup: hash initialized with %lu entries from resource file",
-			 hash_get_num_entries(SpockGroupHash));
+			 "spock_group_shmem_startup: hash initialized with " INT64_FORMAT " entries from resource file",
+			 (int64) hash_get_num_entries(SpockGroupHash));
 	}
 }
 
