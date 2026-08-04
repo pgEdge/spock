@@ -90,6 +90,8 @@
 #include "spock.h"
 #include "spock_injection.h"
 
+#include "spock_compat.h"
+
 
 PGDLLEXPORT void spock_apply_main(Datum main_arg);
 
@@ -363,6 +365,31 @@ should_log_exception(bool failed)
 }
 
 /*
+ * Reset one exception log entry to the "no failure recorded" state.
+ *
+ * Only the apply worker of the subscription named in slot_name ever writes its
+ * own entry, so no lock is taken here.  The caller must have established that
+ * the recorded failure is not the transaction about to be applied; wiping the
+ * entry of a failure that is still pending would lose the root cause we report
+ * for it.
+ *
+ * local_tuple is included deliberately.  It is a HeapTuple copied into
+ * ApplyOperationContext by the conflict handling code, and every path that
+ * reaches here has already reset that context, so the pointer parked in shared
+ * memory is dangling.
+ */
+static void
+clear_exception_log_entry(SpockExceptionLog *entry)
+{
+	Assert(entry != NULL);
+
+	entry->commit_lsn = InvalidXLogRecPtr;
+	entry->local_tuple = NULL;
+	entry->initial_error_message[0] = '\0';
+	entry->failed_action = 0;
+}
+
+/*
  * Forget the in-flight transaction marker after a transport failure on the
  * normal apply path.
  *
@@ -394,10 +421,7 @@ clear_transient_exception_state_on_connection_loss(void)
 		return;
 
 	exception_log = &exception_log_ptr[my_exception_log_index];
-	exception_log->commit_lsn = InvalidXLogRecPtr;
-	exception_log->local_tuple = NULL;
-	exception_log->initial_error_message[0] = '\0';
-	exception_log->failed_action = 0;
+	clear_exception_log_entry(exception_log);
 
 	elog(DEBUG1, "SPOCK %s: cleared transient exception state after provider connection loss",
 		 MySubscription->name);
@@ -613,8 +637,6 @@ handle_begin(StringInfo s)
 	XLogRecPtr	commit_lsn;
 	TimestampTz commit_time;
 	bool		slot_found = false;
-	int			sub_name_len = strlen(MySubscription->name);
-	char	   *slot_name;
 
 	SPOCK_WORKER_DELAY();
 
@@ -661,8 +683,8 @@ handle_begin(StringInfo s)
 	 * the entries. We need to create a slot here as well.
 	 *
 	 * 3. The error log is not empty and we found our entry, but the commit
-	 * lsn does not match. We simply update the commit lsn and move on. This
-	 * case happens when we have not errored out previously.
+	 * lsn does not match. The recorded failure is not this transaction, so we
+	 * clear the entry, leave exception handling off and apply normally.
 	 *
 	 * 4. The error log is not empty, we found our entry and the commit lsn.
 	 * This would mean that we previously errored and restarted. We set the
@@ -673,12 +695,12 @@ handle_begin(StringInfo s)
 	{
 		first_begin_at_startup = false;
 
-		for (int i = 0; i <= SpockCtx->total_workers; i++)
+		for (int i = 0; i < SpockCtx->total_workers; i++)
 		{
 			exception_log = &exception_log_ptr[i];
-			slot_name = NameStr(exception_log->slot_name);
 
-			if (strncmp(slot_name, MySubscription->name, sub_name_len) == 0)
+			if (namestrcmp(&exception_log->slot_name,
+						   MySubscription->name) == 0)
 			{
 				/* We found our slot in shared memory. */
 				slot_found = true;
@@ -711,12 +733,12 @@ handle_begin(StringInfo s)
 			 */
 			LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
-			for (int i = 0; i <= SpockCtx->total_workers; i++)
+			for (int i = 0; i < SpockCtx->total_workers; i++)
 			{
 				exception_log = &exception_log_ptr[i];
-				slot_name = NameStr(exception_log->slot_name);
 
-				if (strncmp(slot_name, MySubscription->name, sub_name_len) == 0)
+				if (namestrcmp(&exception_log->slot_name,
+							   MySubscription->name) == 0)
 				{
 					/* We found our slot in shared memory. */
 					slot_found = true;
@@ -729,7 +751,8 @@ handle_begin(StringInfo s)
 					break;
 				}
 
-				if (free_slot_index < 0 && strlen(slot_name) == 0)
+				if (free_slot_index < 0 &&
+					NameStr(exception_log->slot_name)[0] == '\0')
 				{
 					free_slot_index = i;
 				}
@@ -792,6 +815,33 @@ handle_begin(StringInfo s)
 			 * handling, don't go into a fast error loop.
 			 */
 			MySpockWorker->restart_delay = restart_delay_default;
+		}
+		else
+		{
+			/*
+			 * The recorded failure is not this transaction, so this one has not
+			 * been attempted yet and must be applied normally.
+			 *
+			 * use_try_block lives in the worker's shared memory slot and is not
+			 * per-transaction state, so it can still be set from an earlier
+			 * failure.  The case that matters is an error raised between remote
+			 * transactions: apply_work() switches to replay mode even though
+			 * nothing was queued for this cycle, and the flag then belongs to
+			 * whichever transaction the provider sends next.  Leaving it set
+			 * would replay that transaction read-only and, under TRANSDISCARD
+			 * or SUB_DISABLE, discard it -- a transaction that never failed,
+			 * reported as if the exception policy had fired.
+			 *
+			 * Drop the recorded root cause along with the flag.  Nothing will
+			 * be attributed to it now, and leaving it behind would make the
+			 * next genuine exception surface a stale "Initial error".
+			 *
+			 * We only get here on the first BEGIN of an apply cycle, which is
+			 * also the first BEGIN after an exception: apply_work() sets
+			 * first_begin_at_startup back to true when it catches one.
+			 */
+			MyApplyWorker->use_try_block = false;
+			clear_exception_log_entry(exception_log);
 		}
 	}
 
@@ -1165,8 +1215,11 @@ handle_commit(StringInfo s)
 	apply_replay_queue_reset();
 
 	/*
-	 * This is the only place we can reset the use_try_block = false without
-	 * any risk of going into the error deathloop
+	 * Clearing use_try_block here cannot start an error deathloop: the
+	 * transaction has committed, so there is nothing left to retry.  The only
+	 * other places that may clear it are the ones which have established that
+	 * the incoming transaction is not the failure recorded in the exception log
+	 * (see handle_begin).
 	 */
 	MyApplyWorker->use_try_block = false;
 
@@ -2713,7 +2766,7 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 	{
 		case QUEUE_COMMAND_TYPE_DDL:
 			in_spock_queue_ddl_command = true;
-			/* fallthrough */
+			pg_fallthrough;
 		case QUEUE_COMMAND_TYPE_SQL:
 			errcallback_arg.action_name = "QUEUED_SQL";
 			handle_sql_or_exception(queued_message, tx_just_started);
@@ -3854,6 +3907,15 @@ stream_replay:
 		apply_replay_queue_start_replay();
 
 		in_remote_transaction = false;
+
+		/*
+		 * Re-arm the exception log lookup in handle_begin().  The next BEGIN
+		 * has to compare the recorded commit_lsn against the incoming one:
+		 * that is where exception handling is entered for the transaction that
+		 * failed, and where the recorded failure is dropped if the provider
+		 * sends a different transaction instead.  Without this the stale entry
+		 * would be left to govern transactions it knows nothing about.
+		 */
 		first_begin_at_startup = true;
 		remote_origin_lsn = InvalidXLogRecPtr;
 		remote_origin_id = InvalidRepOriginId;
