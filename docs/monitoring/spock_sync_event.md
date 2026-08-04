@@ -45,11 +45,48 @@ Parameters:
 - `lsn`: The target LSN to wait for.
 - `timeout`: (Optional) Number of seconds to wait before timing out. The
   default is 0 (wait indefinitely).
+- `wait_if_disabled`: (Optional) Controls how a missing or disabled
+  subscription is handled. The default is `false`.
+
+  When `wait_if_disabled` is `false` (the default), the procedure requires the
+  subscription from the origin node to this node to already exist and be
+  enabled. It raises an error if no such subscription is found, or if the
+  subscription is disabled at any point while waiting:
+
+  ```
+  ERROR:  No subscription found for replication 16443 => 16444
+  ERROR:  Subscription 16443 => 16444 has been disabled
+  ```
+
+  When `wait_if_disabled` is `true`, neither condition is an error. The
+  procedure keeps polling until the subscription exists, becomes enabled, and
+  reaches the target LSN, or until `timeout` expires. Use this when the
+  subscription may not be ready yet - for example on a newly added node whose
+  subscriptions are still being created, or while a subscription is
+  temporarily disabled during a maintenance operation. Because a missing
+  subscription is not reported, pass a non-zero `timeout` so a subscription
+  that is never created does not wait forever.
+
+  `wait_if_disabled` only affects the subscription checks. It does not
+  suppress the argument validation both flavors perform first, so these are
+  still raised immediately regardless of its value:
+
+  ```
+  ERROR:  Origin node 'provider_node' not found
+  ERROR:  Invalid NULL origin_id
+  ```
+
+  In particular, the name-based flavor requires the origin node to already be
+  registered in `spock.node`. If you are waiting on a node that is still
+  joining the cluster, that row may not exist yet either - resolve the
+  `origin_id` once the node is registered, or retry the call.
 
 Returns:
 
 - `result = true` - LSN has been received and applied.
-- `result = false` - Timeout occurred before the LSN was reached.
+- `result = false` - Timeout occurred before the LSN was reached. With
+  `wait_if_disabled = true` this also covers the case where the subscription
+  never existed or never became enabled within the timeout.
 
 ## Examples
 
@@ -62,4 +99,13 @@ On a subscriber node:
 
 `CALL spock.wait_for_sync_event(OUT result, 'provider_node', '0/16342B0', 10);`
 `-- result: true (if applied within 10s), false otherwise`
+
+To wait on a node whose subscription may not be created or enabled yet, pass
+`wait_if_disabled = true` along with a timeout:
+
+```sql
+CALL spock.wait_for_sync_event(NULL, 'provider_node', '0/16342B0', 300, true);
+-- result: true once the subscription is enabled and has applied the LSN,
+-- false if 300s elapse first (including if the subscription never appeared)
+```
 
