@@ -1,6 +1,6 @@
 # Spock Release Notes
 
-## Spock 5.0.11
+## Unreleased
 
 ### New Features
 * **PostgreSQL 19 support** — new `compat/19` layer and version-specific API
@@ -8,6 +8,9 @@
   signalling changes, tuple-descriptor finalisation, and the flattened
   `ReorderBufferTXN` commit-time field).
 
+## Spock 5.0.11
+
+### New Features
 * Add `spock.use_native_failover_slots` (default off, PGC_POSTMASTER). When
   enabled, spock marks logical slots with the FAILOVER flag on PG17+, yields to
   PostgreSQL's native slotsync worker on PG17 when `sync_replication_slots=on`,
