@@ -58,8 +58,14 @@
 PG_FUNCTION_INFO_V1(spock_attach_node);
 PG_FUNCTION_INFO_V1(spock_detach_node);
 
-/* Replication sets used for every ZODAN-managed subscription. */
-#define ZODAN_REPSETS "'{default,default_insert_only,ddl_sql}'"
+/*
+ * Replication sets used for every ZODAN-managed subscription.  This is only the
+ * fallback for a source node that reports no sets at all (which should not
+ * happen: spock.node_create() always creates these three).  The real list is
+ * read from the source node into ctx->repsets, so a cluster with user-created
+ * sets does not silently lose them on the new node.
+ */
+#define ZODAN_DEFAULT_REPSETS "ARRAY['default', 'default_insert_only', 'ddl_sql']"
 
 /* Minimum Spock version required on every node participating in attach_node. */
 #define ZODAN_MIN_VERSION "5.0.9"
@@ -98,8 +104,23 @@ typedef struct ZodanAddCtx
 	ZNode	   *nodes;
 	int			nnodes;
 
+	/*
+	 * The source node's replication sets: as an SQL array literal for the
+	 * sub_create() calls, and as the raw names for the mirroring phase.
+	 */
+	char	   *repsets;
+	char	  **repset_names;
+	int			nrepsets;
+
 	MemoryContext mcxt;				/* survives SPI_commit() */
 } ZodanAddCtx;
+
+/* A two-column row snapshotted out of SPI_tuptable; see zodan_local_pairs(). */
+typedef struct ZPair
+{
+	char	   *a;
+	char	   *b;
+} ZPair;
 
 /*
  * Progress reporting.  All progress output is gated on verbose mode so a
@@ -111,6 +132,14 @@ static bool zodan_verbose = false;
 
 #define ZNOTICE(...) \
 	do { if (zodan_verbose) ereport(NOTICE, (errmsg(__VA_ARGS__))); } while (0)
+
+/*
+ * A boolean column of a PGresult as a SQL literal.  libpq renders booleans as
+ * "t"/"f", which parses as a column reference rather than a value when it is
+ * interpolated into a query.
+ */
+#define ZBOOL(res, row, col) \
+	(PQgetvalue((res), (row), (col))[0] == 't' ? "true" : "false")
 
 /* ------------------------------------------------------------------------
  * Small utilities
@@ -452,6 +481,43 @@ zodan_local_scalar(const char *sql)
 	return ret;
 }
 
+/*
+ * Snapshot a one- or two-column local query into palloc'd strings in mcxt.
+ *
+ * Callers act on the rows by issuing further SPI_execute() calls, and each of
+ * those replaces SPI_tuptable, so the rows have to be copied out first.  A SQL
+ * NULL, and a missing second column, come back as NULL.
+ */
+static ZPair *
+zodan_local_pairs(const char *sql, MemoryContext mcxt, int *nrows)
+{
+	ZPair	   *rows;
+	int			n;
+	int			i;
+	int			natts;
+	MemoryContext old;
+
+	if (SPI_execute(sql, false, 0) != SPI_OK_SELECT)
+		elog(ERROR, "SPI_execute (select) failed for: %s", sql);
+
+	n = SPI_processed;
+	natts = SPI_tuptable->tupdesc->natts;
+
+	/* SPI_getvalue() allocates in the current context, so switch first. */
+	old = MemoryContextSwitchTo(mcxt);
+	rows = (ZPair *) palloc0(sizeof(ZPair) * Max(n, 1));
+	for (i = 0; i < n; i++)
+	{
+		rows[i].a = SPI_getvalue(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1);
+		if (natts >= 2)
+			rows[i].b = SPI_getvalue(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 2);
+	}
+	MemoryContextSwitchTo(old);
+
+	*nrows = n;
+	return rows;
+}
+
 /* Convenience: local scalar as int64 (0 if NULL). */
 static int64
 zodan_local_count(const char *sql)
@@ -538,6 +604,65 @@ zodan_fetch_cluster_nodes(ZodanAddCtx *ctx)
 				 errdetail("Nodes known to that cluster: %s",
 						   known.len > 0 ? known.data : "(none)")));
 	}
+}
+
+/*
+ * Fetch the source node's replication sets into ctx->repset_names and render
+ * them as the SQL array literal ctx->repsets, used as the replication_sets
+ * argument of every sub_create() this orchestration issues.
+ *
+ * Subscriptions used to be pinned to the three built-in sets, which silently
+ * dropped every table that only lives in a user-created set: the new node
+ * neither received those tables nor sent them, with no error anywhere.  The
+ * source node is authoritative for the cluster's replication set layout, in
+ * both directions, so the list is read from it.
+ */
+static void
+zodan_fetch_source_repsets(ZodanAddCtx *ctx)
+{
+	PGconn	   *conn;
+	PGresult   *res;
+	int			n;
+	int			i;
+	StringInfoData buf;
+	MemoryContext old;
+
+	conn = zodan_connect(ctx->src_dsn, "repsets");
+	res = zodan_remote_query(conn,
+							 "SELECT rs.set_name "
+							 "FROM spock.replication_set rs "
+							 "JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id "
+							 "ORDER BY rs.set_name");
+	n = PQntuples(res);
+
+	old = MemoryContextSwitchTo(ctx->mcxt);
+	ctx->repset_names = (char **) palloc0(sizeof(char *) * Max(n, 1));
+	for (i = 0; i < n; i++)
+		ctx->repset_names[i] = pstrdup(PQgetvalue(res, i, 0));
+	ctx->nrepsets = n;
+
+	if (n == 0)
+	{
+		/* A Spock node always has the built-ins; fall back rather than
+		 * build an empty array that would replicate nothing. */
+		ctx->repsets = pstrdup(ZODAN_DEFAULT_REPSETS);
+	}
+	else
+	{
+		initStringInfo(&buf);
+		appendStringInfoString(&buf, "ARRAY[");
+		for (i = 0; i < n; i++)
+			appendStringInfo(&buf, "%s%s", i > 0 ? ", " : "",
+							 quote_literal_cstr(ctx->repset_names[i]));
+		appendStringInfoChar(&buf, ']');
+		ctx->repsets = buf.data;
+	}
+	MemoryContextSwitchTo(old);
+
+	zodan_clear(res);
+	zodan_disconnect(conn);
+
+	ZNOTICE("    OK: source node replication sets: %s", ctx->repsets);
 }
 
 /* Number of nodes that are neither the source nor the new node. */
@@ -1133,7 +1258,7 @@ zodan_create_sub(ZodanAddCtx *ctx, const char *on_dsn, const char *sub_name,
 					 "enabled := %s)",
 					 quote_literal_cstr(sub_name),
 					 quote_literal_cstr(provider_dsn),
-					 ZODAN_REPSETS,
+					 ctx->repsets,
 					 sync_structure ? "true" : "false",
 					 sync_data ? "true" : "false",
 					 enabled ? "true" : "false");
@@ -1504,7 +1629,265 @@ zodan_wait_ready_and_advance(ZodanAddCtx *ctx)
 }
 
 /*
- * Phase 8: enable the previously disabled subscriptions (source->new for the
+ * Phase 8: make the new node's replication sets an exact copy of the source
+ * node's: the set definitions, the table memberships (including column lists
+ * and row filters) and the sequence memberships.
+ *
+ * This has to run after the structure and data sync, because the tables must
+ * exist locally before they can be added to a set, and before the new node
+ * starts acting as a provider in phase 10.
+ *
+ * Nothing in Spock copies replication set membership.  What actually populates
+ * the sets on a freshly joined node is AutoDDL firing while pg_restore replays
+ * the structure dump, which routes each table by policy (primary key or replica
+ * identity to 'default', otherwise 'default_insert_only') rather than by what
+ * the source says.  That derived membership is wiped here and replaced by the
+ * source's, so a table the user deliberately removed from a set on the source
+ * does not reappear on the new node, and extension-owned tables such as
+ * lolor's (which AutoDDL skips entirely, because it ignores anything created by
+ * CREATE EXTENSION) no longer have to be added by hand.
+ */
+static void
+zodan_sync_repsets_from_source(ZodanAddCtx *ctx)
+{
+	PGconn	   *conn;
+	PGresult   *res;
+	MemoryContext mcxt;
+	ZPair	   *local;
+	int			nlocal;
+	int			i;
+	int			cleared = 0;
+	int			added = 0;
+	int			added_seqs = 0;
+	int			dropped = 0;
+	int64		src_members;
+	int64		src_seqs;
+	int64		local_members;
+	int64		local_seqs;
+	StringInfoData missing;
+
+	ZNOTICE("Phase 8: Mirroring replication sets from the source node");
+
+	mcxt = AllocSetContextCreate(CurrentMemoryContext, "zodan_repsets",
+								 ALLOCSET_DEFAULT_SIZES);
+	initStringInfo(&missing);
+
+	/*
+	 * 1. Drop the membership AutoDDL derived during the structure restore.  The
+	 * source's memberships are replayed below; keeping both would leave two
+	 * sources of truth.  include_partitions is false throughout so the source's
+	 * rows are mirrored one for one: if the source has a partition in a set, it
+	 * has its own row for it.
+	 */
+	local = zodan_local_pairs(
+		"SELECT rs.set_name, rst.set_reloid::text "
+		"FROM spock.replication_set_table rst "
+		"JOIN spock.replication_set rs ON rs.set_id = rst.set_id "
+		"JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id",
+		mcxt, &nlocal);
+	for (i = 0; i < nlocal; i++)
+	{
+		zodan_local_command(psprintf(
+			"SELECT spock.repset_remove_table(%s, %s::regclass, false)",
+			quote_literal_cstr(local[i].a), quote_literal_cstr(local[i].b)));
+		cleared++;
+	}
+
+	local = zodan_local_pairs(
+		"SELECT rs.set_name, rss.set_seqoid::text "
+		"FROM spock.replication_set_seq rss "
+		"JOIN spock.replication_set rs ON rs.set_id = rss.set_id "
+		"JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id",
+		mcxt, &nlocal);
+	for (i = 0; i < nlocal; i++)
+	{
+		zodan_local_command(psprintf(
+			"SELECT spock.repset_remove_seq(%s, %s::regclass)",
+			quote_literal_cstr(local[i].a), quote_literal_cstr(local[i].b)));
+		cleared++;
+	}
+	if (cleared > 0)
+		ZNOTICE("    OK: cleared %d auto-derived replication set entries", cleared);
+
+	/*
+	 * 2. Replication set definitions.  The three built-ins already exist here
+	 * (spock.node_create() creates them), so those are altered into shape and
+	 * the rest created.
+	 */
+	conn = zodan_connect(ctx->src_dsn, "repsetdefs");
+	res = zodan_remote_query(conn,
+							 "SELECT rs.set_name, rs.replicate_insert, "
+							 "rs.replicate_update, rs.replicate_delete, "
+							 "rs.replicate_truncate "
+							 "FROM spock.replication_set rs "
+							 "JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id");
+	for (i = 0; i < PQntuples(res); i++)
+	{
+		const char *name = PQgetvalue(res, i, 0);
+
+		/* libpq renders booleans as "t"/"f", which is not a SQL literal. */
+		const char *ins = ZBOOL(res, i, 1);
+		const char *upd = ZBOOL(res, i, 2);
+		const char *del = ZBOOL(res, i, 3);
+		const char *trunc = ZBOOL(res, i, 4);
+
+		zodan_local_command(psprintf(
+			"SELECT CASE WHEN EXISTS (SELECT 1 FROM spock.replication_set rs "
+			"                         JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id "
+			"                         WHERE rs.set_name = %s) "
+			"            THEN spock.repset_alter(%s, %s, %s, %s, %s) "
+			"            ELSE spock.repset_create(%s, %s, %s, %s, %s) END",
+			quote_literal_cstr(name),
+			quote_literal_cstr(name), ins, upd, del, trunc,
+			quote_literal_cstr(name), ins, upd, del, trunc));
+	}
+	zodan_clear(res);
+	zodan_disconnect(conn);
+
+	/* Any set the source does not have should not exist here either. */
+	local = zodan_local_pairs(psprintf(
+		"SELECT rs.set_name, NULL::text "
+		"FROM spock.replication_set rs "
+		"JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id "
+		"WHERE rs.set_name <> ALL (%s::name[])", ctx->repsets),
+		mcxt, &nlocal);
+	for (i = 0; i < nlocal; i++)
+	{
+		zodan_local_command(psprintf("SELECT spock.repset_drop(%s, true)",
+									 quote_literal_cstr(local[i].a)));
+		dropped++;
+		ZNOTICE("    OK: dropped replication set %s (absent on source)", local[i].a);
+	}
+
+	/* 3. Table membership, with column lists and row filters. */
+	conn = zodan_connect(ctx->src_dsn, "repsettables");
+	res = zodan_remote_query(conn,
+							 "SELECT rs.set_name, "
+							 "quote_ident(n.nspname) || '.' || quote_ident(c.relname), "
+							 "rst.set_att_list::text, "
+							 "pg_get_expr(rst.set_row_filter, rst.set_reloid) "
+							 "FROM spock.replication_set_table rst "
+							 "JOIN spock.replication_set rs ON rs.set_id = rst.set_id "
+							 "JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id "
+							 "JOIN pg_catalog.pg_class c ON c.oid = rst.set_reloid "
+							 "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace");
+	for (i = 0; i < PQntuples(res); i++)
+	{
+		const char *name = PQgetvalue(res, i, 0);
+		const char *rel = PQgetvalue(res, i, 1);
+		char	   *atts = PQgetisnull(res, i, 2) ? pstrdup("NULL") :
+			psprintf("%s::text[]", quote_literal_cstr(PQgetvalue(res, i, 2)));
+		char	   *filter = PQgetisnull(res, i, 3) ? pstrdup("NULL") :
+			quote_literal_cstr(PQgetvalue(res, i, 3));
+		char	   *present;
+
+		present = zodan_local_scalar(psprintf(
+			"SELECT to_regclass(%s) IS NOT NULL", quote_literal_cstr(rel)));
+		if (present == NULL || present[0] != 't')
+		{
+			appendStringInfo(&missing, "%s%s", missing.len > 0 ? ", " : "", rel);
+			continue;
+		}
+		pfree(present);
+
+		zodan_local_command(psprintf(
+			"SELECT spock.repset_add_table(%s, %s::regclass, false, %s, %s, false)",
+			quote_literal_cstr(name), quote_literal_cstr(rel), atts, filter));
+		added++;
+	}
+	zodan_clear(res);
+	zodan_disconnect(conn);
+
+	/* 4. Sequence membership. */
+	conn = zodan_connect(ctx->src_dsn, "repsetseqs");
+	res = zodan_remote_query(conn,
+							 "SELECT rs.set_name, "
+							 "quote_ident(n.nspname) || '.' || quote_ident(c.relname) "
+							 "FROM spock.replication_set_seq rss "
+							 "JOIN spock.replication_set rs ON rs.set_id = rss.set_id "
+							 "JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id "
+							 "JOIN pg_catalog.pg_class c ON c.oid = rss.set_seqoid "
+							 "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace");
+	for (i = 0; i < PQntuples(res); i++)
+	{
+		const char *name = PQgetvalue(res, i, 0);
+		const char *rel = PQgetvalue(res, i, 1);
+		char	   *present;
+
+		present = zodan_local_scalar(psprintf(
+			"SELECT to_regclass(%s) IS NOT NULL", quote_literal_cstr(rel)));
+		if (present == NULL || present[0] != 't')
+		{
+			appendStringInfo(&missing, "%s%s", missing.len > 0 ? ", " : "", rel);
+			continue;
+		}
+		pfree(present);
+
+		zodan_local_command(psprintf(
+			"SELECT spock.repset_add_seq(%s, %s::regclass, false)",
+			quote_literal_cstr(name), quote_literal_cstr(rel)));
+		added_seqs++;
+	}
+	zodan_clear(res);
+	zodan_disconnect(conn);
+
+	if (missing.len > 0)
+		ereport(ERROR,
+				(errmsg("the source node replicates relations that do not exist on \"%s\"",
+						ctx->new_node_name),
+				 errdetail("Missing: %s", missing.data),
+				 errhint("The new node cannot join until those relations are present.")));
+
+	ZNOTICE("    OK: replication sets: %d dropped; membership: %d tables, %d sequences copied from source",
+			dropped, added, added_seqs);
+
+	/*
+	 * 5. The source is a moving target: somebody running repset_add_table()
+	 * there while the join is in progress would leave the two nodes out of step.
+	 * Re-read the source and fail loudly rather than finish with a node that
+	 * quietly replicates a different set of tables.
+	 */
+	conn = zodan_connect(ctx->src_dsn, "repsetcheck");
+	res = zodan_remote_query(conn,
+							 "SELECT (SELECT count(*) FROM spock.replication_set_table rst "
+							 "        JOIN spock.replication_set rs ON rs.set_id = rst.set_id "
+							 "        JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id), "
+							 "       (SELECT count(*) FROM spock.replication_set_seq rss "
+							 "        JOIN spock.replication_set rs ON rs.set_id = rss.set_id "
+							 "        JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id)");
+	src_members = pg_strtoint64(PQgetvalue(res, 0, 0));
+	src_seqs = pg_strtoint64(PQgetvalue(res, 0, 1));
+	zodan_clear(res);
+	zodan_disconnect(conn);
+
+	local_members = zodan_local_count(
+		"SELECT count(*) FROM spock.replication_set_table rst "
+		"JOIN spock.replication_set rs ON rs.set_id = rst.set_id "
+		"JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id");
+	local_seqs = zodan_local_count(
+		"SELECT count(*) FROM spock.replication_set_seq rss "
+		"JOIN spock.replication_set rs ON rs.set_id = rss.set_id "
+		"JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id");
+
+	if (src_members != local_members || src_seqs != local_seqs)
+		ereport(ERROR,
+				(errmsg("replication set membership on the source changed while \"%s\" was joining",
+						ctx->new_node_name),
+				 errdetail("Source has " INT64_FORMAT " tables / " INT64_FORMAT " sequences, %s has "
+						   INT64_FORMAT " / " INT64_FORMAT ".",
+						   src_members, src_seqs, ctx->new_node_name,
+						   local_members, local_seqs),
+				 errhint("Re-run attach_node once the source is quiescent.")));
+
+	pfree(missing.data);
+	MemoryContextDelete(mcxt);
+	SPI_commit();
+
+	ZNOTICE("    OK: replication sets on %s match the source", ctx->new_node_name);
+}
+
+/*
+ * Phase 9: enable the previously disabled subscriptions (source->new for the
  * 2-node case, other->new for the multi-node case), waiting for each stored
  * sync event first.
  */
@@ -1513,7 +1896,7 @@ zodan_enable_disabled_subs(ZodanAddCtx *ctx)
 {
 	int			i;
 
-	ZNOTICE("Phase 8: Enabling disabled subscriptions");
+	ZNOTICE("Phase 9: Enabling disabled subscriptions");
 
 	if (zodan_num_other_nodes(ctx) == 0)
 	{
@@ -1566,23 +1949,23 @@ zodan_enable_disabled_subs(ZodanAddCtx *ctx)
 }
 
 /*
- * Phase 9: create subscriptions from every "other" existing node to the new node
+ * Phase 10: create subscriptions from every "other" existing node to the new node
  * (so the rest of the cluster receives the new node's changes).  These are
  * created on the remote nodes, with the new node as provider.
  *
- * The source node is deliberately skipped here and handled by phase 10, which
+ * The source node is deliberately skipped here and handled by phase 11, which
  * reaches it over the caller-supplied src_dsn -- verified reachable in phase 0 --
  * rather than the if_dsn registered in the source's own spock.node_interface,
  * which nothing in this orchestration ever verifies.  Note that ctx->nodes is
  * read from the source and does contain the source itself, so without this skip
- * phase 9 would create the new->source subscription and make phase 10 dead code.
+ * phase 10 would create the new->source subscription and make phase 11 dead code.
  */
 static void
 zodan_create_subs_to_new_node(ZodanAddCtx *ctx)
 {
 	int			i;
 
-	ZNOTICE("Phase 9: Creating subscriptions from other nodes to the new node");
+	ZNOTICE("Phase 10: Creating subscriptions from other nodes to the new node");
 
 	for (i = 0; i < ctx->nnodes; i++)
 	{
@@ -1600,7 +1983,7 @@ zodan_create_subs_to_new_node(ZodanAddCtx *ctx)
 }
 
 /*
- * Phase 10: create the enabled new->source subscription, completing
+ * Phase 11: create the enabled new->source subscription, completing
  * bidirectional replication with the source node.  Skipped if it somehow already
  * exists, so a re-run does not fail at the very last step.
  */
@@ -1611,7 +1994,7 @@ zodan_create_new_to_source_sub(ZodanAddCtx *ctx)
 	int64		exists;
 	PGconn	   *conn;
 
-	ZNOTICE("Phase 10: Creating new to source node subscription");
+	ZNOTICE("Phase 11: Creating new to source node subscription");
 
 	conn = zodan_connect(ctx->src_dsn, "subcheck");
 	exists = 0;
@@ -1859,11 +2242,17 @@ spock_attach_node(PG_FUNCTION_ARGS)
 		zodan_create_nodes(ctx);
 		/* Cluster snapshot may be stale after node creation; refresh. */
 		zodan_fetch_cluster_nodes(ctx);
+		/*
+		 * Every subscription created below names the source's replication
+		 * sets, so the list has to be in hand before the first sub_create().
+		 */
+		zodan_fetch_source_repsets(ctx);
 		zodan_create_disabled_subs_and_slots(ctx);
 		zodan_sync_other_nodes_wait_source(ctx);
 		zodan_create_source_to_new_sub(ctx);
 		zodan_source_sync_wait_new(ctx);
 		zodan_wait_ready_and_advance(ctx);
+		zodan_sync_repsets_from_source(ctx);
 		zodan_enable_disabled_subs(ctx);
 		zodan_create_subs_to_new_node(ctx);
 		zodan_create_new_to_source_sub(ctx);
