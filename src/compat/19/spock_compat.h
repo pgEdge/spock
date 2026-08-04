@@ -156,17 +156,4 @@
 #define replorigin_session_origin_timestamp (replorigin_xact_state.origin_timestamp)
 #define AssertVariableIsOfType StaticAssertVariableIsOfType
 
-/*
- * PG19 removed isQueryUsingTempRelation() (commit 698fa924b11).
- *
- * Note this also widens detection: query_uses_temp_object() flags temp types,
- * regclass constants, etc., not just relations.  So on PG19 a CREATE TABLE AS
- * referencing such an object is skipped from DDL replication where PG<=18 would
- * have replicated it -- in a mixed-version cluster the same statement can thus
- * be treated differently depending on the node's major version.
- */
-#include "catalog/dependency.h"
-#define isQueryUsingTempRelation(query) \
-	query_uses_temp_object((query), &(ObjectAddress){0})
-
 #endif
