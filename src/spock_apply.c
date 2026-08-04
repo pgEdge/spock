@@ -710,8 +710,8 @@ handle_begin(StringInfo s)
 	 * the entries. We need to create a slot here as well.
 	 *
 	 * 3. The error log is not empty and we found our entry, but the commit
-	 * lsn does not match. We simply update the commit lsn and move on. This
-	 * case happens when we have not errored out previously.
+	 * lsn does not match. The recorded failure is not this transaction, so we
+	 * clear the entry, leave exception handling off and apply normally.
 	 *
 	 * 4. The error log is not empty, we found our entry and the commit lsn.
 	 * This would mean that we previously errored and restarted. We set the
@@ -841,6 +841,33 @@ handle_begin(StringInfo s)
 			 * handling, don't go into a fast error loop.
 			 */
 			MySpockWorker->restart_delay = restart_delay_default;
+		}
+		else
+		{
+			/*
+			 * The recorded failure is not this transaction, so this one has not
+			 * been attempted yet and must be applied normally.
+			 *
+			 * use_try_block lives in the worker's shared memory slot and is not
+			 * per-transaction state, so it can still be set from an earlier
+			 * failure.  The case that matters is an error raised between remote
+			 * transactions: apply_work() switches to replay mode even though
+			 * nothing was queued for this cycle, and the flag then belongs to
+			 * whichever transaction the provider sends next.  Leaving it set
+			 * would replay that transaction read-only and, under TRANSDISCARD
+			 * or SUB_DISABLE, discard it -- a transaction that never failed,
+			 * reported as if the exception policy had fired.
+			 *
+			 * Drop the recorded root cause along with the flag.  Nothing will
+			 * be attributed to it now, and leaving it behind would make the
+			 * next genuine exception surface a stale "Initial error".
+			 *
+			 * We only get here on the first BEGIN of an apply cycle, which is
+			 * also the first BEGIN after an exception: apply_work() sets
+			 * first_begin_at_startup back to true when it catches one.
+			 */
+			MyApplyWorker->use_try_block = false;
+			clear_exception_log_entry(exception_log);
 		}
 	}
 
@@ -1218,8 +1245,11 @@ handle_commit(StringInfo s)
 	apply_replay_queue_reset();
 
 	/*
-	 * This is the only place we can reset the use_try_block = false without
-	 * any risk of going into the error deathloop
+	 * Clearing use_try_block here cannot start an error deathloop: the
+	 * transaction has committed, so there is nothing left to retry.  The only
+	 * other places that may clear it are the ones which have established that
+	 * the incoming transaction is not the failure recorded in the exception log
+	 * (see handle_begin).
 	 */
 	MyApplyWorker->use_try_block = false;
 
@@ -4041,6 +4071,15 @@ stream_replay:
 		apply_replay_queue_start_replay();
 
 		in_remote_transaction = false;
+
+		/*
+		 * Re-arm the exception log lookup in handle_begin().  The next BEGIN
+		 * has to compare the recorded commit_lsn against the incoming one:
+		 * that is where exception handling is entered for the transaction that
+		 * failed, and where the recorded failure is dropped if the provider
+		 * sends a different transaction instead.  Without this the stale entry
+		 * would be left to govern transactions it knows nothing about.
+		 */
 		first_begin_at_startup = true;
 		remote_origin_lsn = InvalidXLogRecPtr;
 		remote_origin_id = InvalidRepOriginId;
