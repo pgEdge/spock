@@ -198,8 +198,8 @@ static bool extension_exists(PGconn *conn, const char *extname);
 static void install_extension(PGconn *conn, const char *extname);
 
 static void initialize_data_dir(char *data_dir, char *connstr,
-					char *postgresql_conf, char *pg_hba_conf,
-					char *extra_basebackup_args);
+					char *postgresql_conf, char *postgresql_auto_conf,
+					char *pg_hba_conf, char *extra_basebackup_args);
 static bool check_data_dir(char *data_dir, RemoteInfo *remoteinfo);
 
 static char *read_sysid(const char *data_dir);
@@ -1864,6 +1864,7 @@ main(int argc, char **argv)
 	char	   *replication_sets = NULL;
 	char       *databases = NULL;
 	char	   *postgresql_conf = NULL,
+			   *postgresql_auto_conf = NULL,
 			   *pg_hba_conf = NULL,
 			   *recovery_conf = NULL;
 	int			apply_delay = 0;
@@ -1904,6 +1905,7 @@ main(int argc, char **argv)
 		{"max-wait", required_argument, NULL, 14},
 		{"cleanup", no_argument, NULL, 15},
 		{"force", no_argument, NULL, 16},
+		{"postgresql-auto-conf", required_argument, NULL, 17},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -2014,6 +2016,13 @@ main(int argc, char **argv)
 			case 16:
 				bidir.force_cleanup = true;
 				break;
+			case 17:
+				{
+					postgresql_auto_conf = pg_strdup(optarg);
+					if (postgresql_auto_conf != NULL && !file_exists(postgresql_auto_conf))
+						die(_("The specified postgresql.auto.conf file does not exist."));
+					break;
+				}
 			default:
 				fprintf(stderr, _("Unknown option\n"));
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
@@ -2295,7 +2304,7 @@ main(int argc, char **argv)
 
 	initialize_data_dir(data_dir,
 						use_existing_data_dir ? NULL : prov_connstr,
-						postgresql_conf, pg_hba_conf,
+						postgresql_conf, postgresql_auto_conf, pg_hba_conf,
 						extra_basebackup_args);
 	snprintf(pid_file, MAXPGPATH, "%s/postmaster.pid", data_dir);
 
@@ -2656,6 +2665,7 @@ usage(void)
 	printf(_("\nConfiguration files override:\n"));
 	printf(_("  --hba-conf              path to the new pg_hba.conf\n"));
 	printf(_("  --postgresql-conf       path to the new postgresql.conf\n"));
+	printf(_("  --postgresql-auto-conf  settings to override in postgresql.auto.conf\n"));
 	printf(_("  --recovery-conf         path to the template recovery configuration\n"));
 	printf(_("\nBidirectional join (joins an existing multi-master cluster):\n"));
 	printf(_("  --bidirectional         enable bidirectional join plumbing\n"));
@@ -2824,8 +2834,8 @@ run_basebackup(const char *provider_connstr, const char *data_dir,
  */
 static void
 initialize_data_dir(char *data_dir, char *connstr,
-					char *postgresql_conf, char *pg_hba_conf,
-					char *extra_basebackup_args)
+					char *postgresql_conf, char *postgresql_auto_conf,
+					char *pg_hba_conf, char *extra_basebackup_args)
 {
 	if (connstr)
 	{
@@ -2836,6 +2846,32 @@ initialize_data_dir(char *data_dir, char *connstr,
 
 	if (postgresql_conf)
 		CopyConfFile(postgresql_conf, "postgresql.conf", false);
+	if (postgresql_auto_conf)
+	{
+		char		auto_conf_path[MAXPGPATH];
+		FILE	   *f;
+
+		/*
+		 * postgresql.auto.conf is copied verbatim from the source by
+		 * pg_basebackup, and is loaded after postgresql.conf and wins
+		 * on conflicts -- most of it (tuning, spock GUCs) is exactly
+		 * what should carry over to this node, but a setting like port
+		 * or listen_addresses may need to differ. Append rather than
+		 * replace, so this node's overrides win (same-file, later
+		 * setting wins) while everything else inherited stays in effect.
+		 * A marker line makes any resulting duplicate settings obvious
+		 * to whoever next reads the file.
+		 */
+		snprintf(auto_conf_path, sizeof(auto_conf_path), "%s/postgresql.auto.conf", data_dir);
+		f = fopen(auto_conf_path, "a");
+		if (f == NULL)
+			die(_("could not open \"%s\": %s\n"), auto_conf_path, strerror(errno));
+		fprintf(f, "# --- appended by spock_create_subscriber (--postgresql-auto-conf); "
+				"later settings override the inherited ones above ---\n");
+		fclose(f);
+
+		CopyConfFile(postgresql_auto_conf, "postgresql.auto.conf", true);
+	}
 	if (pg_hba_conf)
 		CopyConfFile(pg_hba_conf, "pg_hba.conf", false);
 }
