@@ -168,6 +168,13 @@ included in ORIGIN messages when the protocol version is 5 or higher.
 This ensures that conflict evaluation on Node C has accurate origin
 information even when changes pass through intermediate Node B.
 
+A subscription cannot activate `forward_origins` while another subscription
+is already enabled on the same node, and a subscription cannot be enabled
+while another has forwarding active; clear `forward_origins`
+(`spock.sub_alter_options`) or disable the other subscription first.  See
+[Origin Forwarding](spock_functions/sub_mgmt.md#origin-forwarding) for
+details.
+
 ### Per-subscription conflict statistics
 
 On PostgreSQL 18+, Spock registers a custom pgstat kind

@@ -463,6 +463,70 @@ spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Reject changes that enable forwarding alongside another enabled
+ * subscription on this node.
+ *
+ * A forwarding worker advances matching local subscription origins. If that
+ * subscription is enabled, its apply worker owns the origin and a subsequent
+ * advance fails with ERRCODE_OBJECT_IN_USE, disabling the forwarder.
+ *
+ * Check creates, enables, and non-empty forward_origins changes. The target's
+ * pending state is passed explicitly because its catalog state may not yet
+ * reflect the change. The check covers all subscriptions because forwarding
+ * may relay any origin.
+ *
+ * This catalog check cannot prevent worker races or direct catalog changes.
+ * maybe_advance_forwarded_origin() leaves ownership errors uncaught so they
+ * remain visible.
+ */
+static void
+enforce_forwarding_exclusivity(Oid target_sub_id, const char *target_sub_name,
+								bool target_enabled, List *target_forward_origins)
+{
+	SpockLocalNode *localnode = get_local_node(true, false);
+	List	   *subs;
+	ListCell   *lc;
+	bool		target_forwards = target_enabled && list_length(target_forward_origins) > 0;
+
+	if (!target_enabled)
+		return;		/* a disabled target can never conflict with anything */
+
+	subs = get_node_subscriptions(localnode->node->id, false);
+	foreach(lc, subs)
+	{
+		SpockSubscription *sub = (SpockSubscription *) lfirst(lc);
+		bool		other_forwards;
+
+		if (sub->id == target_sub_id || !sub->enabled)
+			continue;
+
+		other_forwards = list_length(sub->forward_origins) > 0;
+
+		if (!target_forwards && !other_forwards)
+			continue;
+
+		if (target_forwards)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("cannot activate forwarding on subscription \"%s\" "
+							"while subscription \"%s\" is enabled on this node",
+							target_sub_name, sub->name),
+					 errhint("clear forward_origins on \"%s\", or disable "
+							 "\"%s\" first",
+							 target_sub_name, sub->name)));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("cannot enable subscription \"%s\" while "
+							"subscription \"%s\" has forwarding active",
+							target_sub_name, sub->name),
+					 errhint("clear forward_origins on \"%s\" "
+							 "(spock.sub_alter_options) before enabling \"%s\"",
+							 sub->name, target_sub_name)));
+	}
+}
+
+/*
  * Connect two existing nodes.
  */
 Datum
@@ -488,11 +552,16 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	SpockInterface targetif;
 	List	   *replication_sets;
 	List	   *other_subs;
+	List	   *new_forward_origins;
 	ListCell   *lc;
 	NameData	slot_name;
 
 	/* Check that this is actually a node. */
 	localnode = get_local_node(true, false);
+
+	new_forward_origins = textarray_to_list(forward_origin_names);
+	if (enabled)
+		enforce_forwarding_exclusivity(InvalidOid, sub_name, true, new_forward_origins);
 
 	/* Now, fetch info about remote node. */
 	conn = spock_connect(provider_dsn, sub_name, "create");
@@ -608,7 +677,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	sub.origin_if = &originif;
 	sub.target_if = &targetif;
 	sub.replication_sets = replication_sets;
-	sub.forward_origins = textarray_to_list(forward_origin_names);
+	sub.forward_origins = new_forward_origins;
 	sub.enabled = enabled;
 	gen_slot_name(&slot_name, get_database_name(MyDatabaseId),
 				  origin->name, sub_name);
@@ -833,6 +902,8 @@ spock_alter_subscription_enable(PG_FUNCTION_ARGS)
 	/* XXX: Only used for locking purposes. */
 	(void) get_local_node(true, false);
 
+	enforce_forwarding_exclusivity(sub->id, sub->name, true, sub->forward_origins);
+
 	sub->enabled = true;
 
 	alter_subscription(sub);
@@ -1030,7 +1101,10 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 			}
 
 			if (strcmp(key, "forward_origins") == 0)
+			{
+				enforce_forwarding_exclusivity(sub->id, sub->name, sub->enabled, result);
 				sub->forward_origins = result;
+			}
 			else
 				sub->skip_schema = result;
 			changed = true;
