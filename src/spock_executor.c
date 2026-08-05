@@ -398,6 +398,33 @@ autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 	return false;
 }
 
+/*
+ * Quick precheck whether auto-ddl has any work to do for this statement.
+ *
+ * Must stay trivial, and must not call anything that may need a transaction:
+ * it decides whether spock_ProcessUtility() establishes one, so it runs before
+ * a transaction or snapshot is guaranteed to exist.
+ */
+static bool
+autoddl_precheck(Node *parsetree, ProcessUtilityContext context,
+				 NodeTag toplevel_stmt)
+{
+	/*
+	 * DDL arriving via spock.queue still has to be added to a replication set.
+	 * DDL from spock.replicate_ddl() has already been acted upon by the
+	 * caller, so nothing is left to do for it here.
+	 */
+	if (in_spock_queue_ddl_command)
+		return autoddl_can_proceed(context, toplevel_stmt, nodeTag(parsetree));
+
+	if (in_spock_replicate_ddl_command)
+		return false;
+
+	return GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
+		spock_enable_ddl_replication &&
+		autoddl_can_proceed(context, toplevel_stmt, nodeTag(parsetree));
+}
+
 static void
 spock_ProcessUtility(
 						 PlannedStmt *pstmt,
@@ -420,6 +447,8 @@ spock_ProcessUtility(
 	Oid			roleoid = InvalidOid;
 	Oid			save_userid = 0;
 	int			save_sec_context = 0;
+	bool		needTx = false;
+	bool		needSnapshot = false;
 
 	dropping_spock_obj = false;
 
@@ -475,6 +504,35 @@ spock_ProcessUtility(
 								   sentToRemote,
 								   qc);
 
+	/*
+	 * Nothing below concerns this statement -- skip it before going to the
+	 * trouble of establishing a transaction for it.
+	 */
+	if (!autoddl_precheck(parsetree, context, toplevel_stmt))
+		return;
+
+	/*
+	 * Some utility commands run outside a transaction block and commit as they
+	 * go, so by the time this hook regains control there may be no transaction
+	 * and no snapshot left.
+	 *
+	 * The work below both reads and writes spock's catalogs, and spock.queue
+	 * and spock.replication_set_table each have a TOAST table.
+	 */
+	needTx = !IsTransactionState();
+	if (needTx)
+		StartTransactionCommand();
+	needSnapshot = !HaveRegisteredOrActiveSnapshot();
+	if (needSnapshot)
+		PushActiveSnapshot(GetTransactionSnapshot());
+
+	/* Everything from here on relies on both being in place. */
+	Assert(IsTransactionState() && HaveRegisteredOrActiveSnapshot());
+
+	/*
+	 * Capture the invoking role before elevating: it is recorded with the
+	 * queued DDL and decides which role replays the statement downstream.
+	 */
 	roleoid = GetUserId();
 
 	/*
@@ -530,6 +588,12 @@ spock_ProcessUtility(
 	}
 	/* Restore previous session privileges */
 	SetUserIdAndSecContext(save_userid, save_sec_context);
+
+	/* Release the transaction and snapshot we established, if any */
+	if (needSnapshot)
+		PopActiveSnapshot();
+	if (needTx)
+		CommitTransactionCommand();
 }
 
 /*

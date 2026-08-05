@@ -45,6 +45,14 @@ SELECT count(*) FROM spock.tables where nspname = 'hollywood' AND set_name IS NO
 SELECT count(*) FROM spock.tables where relname = 'test1' AND set_name IS NOT NULL;
 SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3') AND set_name IS NOT NULL;
 
+-- auto-ddl and transaction state: check that auto-ddl initiates a new
+-- transaction if it is not inside one.
+CREATE TABLE test_380 (x serial PRIMARY KEY, y integer);
+CREATE INDEX test_380_y_idx ON test_380 (y);
+ALTER TABLE test_380 CLUSTER ON test_380_y_idx;
+CLUSTER; -- Should call utility hook outside of transaction state
+DROP TABLE test_380 CASCADE;
+
 -- Reset the configuration to the default value
 \c :provider_dsn
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';
