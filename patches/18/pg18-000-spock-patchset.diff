@@ -1,0 +1,14 @@
+diff --git a/src/backend/utils/init/globals.c b/src/backend/utils/init/globals.c
+index d31cb45a058..4f8c9fd5083 100644
+--- a/src/backend/utils/init/globals.c
++++ b/src/backend/utils/init/globals.c
+@@ -44,6 +44,9 @@ volatile uint32 InterruptHoldoffCount = 0;
+ volatile uint32 QueryCancelHoldoffCount = 0;
+ volatile uint32 CritSectionCount = 0;
+ 
++/* Spock core patch-set generation. Bumped when the patch set changes. */
++int			SpockCorePatchsetVersion = 1;
++
+ int			MyProcPid;
+ pg_time_t	MyStartTime;
+ TimestampTz MyStartTimestamp;

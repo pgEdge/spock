@@ -1001,15 +1001,22 @@ handle_commit(StringInfo s)
 			Assert(XactReadOnly);
 		}
 
-		/* Have the commit code adjust our logical clock if needed */
-		remoteTransactionStopTimestamp = commit_time;
+		/*
+		 * Have the commit code adjust our logical clock if needed. Written
+		 * through the dlsym-resolved pointer so spock.so has no hard link-time
+		 * reference to the patch-provided symbol (see spock.h). NULL only on
+		 * unpatched PostgreSQL, where _PG_init() has already refused to start.
+		 */
+		if (spock_remote_ts_ptr != NULL)
+			*spock_remote_ts_ptr = commit_time;
 
 		CommitTransactionCommand();
 
 		if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
 			append_feedback_position(XactLastCommitEnd, end_lsn);
 
-		remoteTransactionStopTimestamp = 0;
+		if (spock_remote_ts_ptr != NULL)
+			*spock_remote_ts_ptr = 0;
 
 		MemoryContextSwitchTo(TopMemoryContext);
 
