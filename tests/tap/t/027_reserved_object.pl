@@ -70,6 +70,19 @@ like($out, qr/cannot delete built-in reserved object/, 'guard message shown on d
 ($rc, $out) = psql_try("UPDATE spock.reserved_object SET builtin=false WHERE name='spock' AND kind='schema'");
 isnt($rc, 0, 'modifying a built-in reserved object is rejected');
 
+# Updating a built-in's behavioral columns (without touching the builtin
+# flag) is rejected too: the guard fires on ANY update of a built-in row,
+# and the aborted statement must leave the row unchanged.
+($rc, $out) = psql_try("UPDATE spock.reserved_object SET block_in_repset=false, replicate_ddl=false, exclude_from_dump=false WHERE name='spock' AND kind='schema'");
+isnt($rc, 0, "updating a built-in row's behavioral columns is rejected");
+like($out, qr/cannot update built-in reserved object/, 'guard message shown on the behavioral-column update');
+is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
+   't', 'block_in_repset unchanged on the built-in spock row after the rejected update');
+is(scalar_query(1, "SELECT replicate_ddl FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
+   't', 'replicate_ddl unchanged on the built-in spock row after the rejected update');
+is(scalar_query(1, "SELECT exclude_from_dump FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
+   't', 'exclude_from_dump unchanged on the built-in spock row after the rejected update');
+
 ($rc, $out) = psql_try("DELETE FROM spock.reserved_object WHERE name='pgedge_ace' AND kind='schema'");
 isnt($rc, 0, 'deleting the built-in pgedge_ace reserved object is rejected');
 like($out, qr/cannot delete built-in reserved object/, 'guard message shown on pgedge_ace delete');
