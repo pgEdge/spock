@@ -52,6 +52,9 @@ options
         element is the string "all". Pass an empty array ([]) to disable
         origin forwarding.
 
+        See [Origin Forwarding](../sub_mgmt.md#origin-forwarding) for the
+        restriction on combining this with other enabled subscriptions.
+
     apply_delay
 
         A PostgreSQL interval string (e.g. "2 seconds", "500ms", "0")

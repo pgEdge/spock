@@ -45,11 +45,9 @@ Parameters include:
   `false`.
 - `synchronize_data` specifies if Spock should synchronize data from
   provider to the subscriber; the default is `false`.
-- `forward_origins` is an array of origin names to forward. Currently, the
-  only supported values are an empty array meaning don't forward any changes
-  that didn't originate on provider node (this is useful for two-way
-  replication between the nodes), or `{all}` which means replicate all changes
-  no matter what is their origin. The default is `{}` (an empty array, meaning only local changes are forwarded).
+- `forward_origins` is an array of origin names to forward. See
+  [Origin Forwarding](#origin-forwarding) below for supported values and the
+  restriction on combining this with other enabled subscriptions.
 - `apply_delay` specifies how long to delay replication; the default is `0`
   seconds.
 - set `force_text_transfer` to `true` to force the provider to replicate all
@@ -100,6 +98,36 @@ Drops a subscription named `accts`; if the subscription does not exist, an
 error message will be suppressed by the `true` trailing parameter (`ifexists =
 true`).
 
+## Origin Forwarding
+
+`forward_origins` controls whether a subscription's apply worker also
+processes transactions that did not originate on the immediate provider, but
+were relayed through it from a peer further upstream (a cascade or multi-hop
+topology). `{}` (the default) forwards only the provider's own
+locally-originated changes — the setting used for ordinary bidirectional
+replication between two nodes, since forwarding a peer's changes back to
+itself would loop. `{all}` forwards every change regardless of origin.
+
+A forwarding worker advances the replication origin of the local subscription
+matching the peer it's relaying (for example, a subscription to that peer
+created disabled ahead of time, so it can later start from the right
+position instead of a full resync). At most one local subscription may match
+a given peer; if more than one does, replication fails with an ambiguous-match
+error. If the matching subscription is also enabled, its own apply worker
+owns the same origin, and the two would conflict. Spock avoids this by
+requiring that a subscription with forwarding active be the only enabled
+subscription on the node:
+
+- Enabling forwarding (`{all}`) on a subscription — via `spock.sub_create`
+  with `enabled := true`, `spock.sub_enable`, or `spock.sub_alter_options`
+  on an already-enabled subscription — fails if another subscription is
+  already enabled on this node.
+- Enabling a subscription (`spock.sub_create` with `enabled := true`, or
+  `spock.sub_enable`) fails if another subscription on this node already has
+  forwarding active.
+- Changing `forward_origins` on a subscription that stays disabled is always
+  allowed; the restriction is only checked once the subscription is actually
+  enabled.
 
 ## Subscription Management Functions
 
@@ -127,11 +155,9 @@ Parameters:
   structure from the provider to the subscriber; the default is `false`.
 - `synchronize_data` tells Spock to synchronize data from provider to the
   subscriber; the default is `false`.
-- `forward_origins` is an array of origin names to forward. Currently, the
-  only supported values are an empty array meaning don't forward any changes
-  that didn't originate on the provider node (this is useful for two-way
-  replication between the nodes), or `{all}` which means replicate all
-  changes regardless of their origin. The default is `{}` (an empty array, meaning only local changes are forwarded).
+- `forward_origins` is an array of origin names to forward. See
+  [Origin Forwarding](#origin-forwarding) above for supported values and the
+  restriction on combining this with other enabled subscriptions.
 - `apply_delay` is the number of seconds to delay replication; the default
   is `0` seconds.
 - `force_text_transfer` forces the provider to replicate all columns using
@@ -191,6 +217,9 @@ Parameters:
 - `immediate` tells Spock when to start the subscription. If set to `true`,
   the subscription is started immediately; if set to `false` (the default),
   it will only be started at the end of the current transaction.
+
+This fails if another subscription on this node already has forwarding
+active; see [Origin Forwarding](#origin-forwarding) above.
 
 ### spock.sub_alter_interface
 
