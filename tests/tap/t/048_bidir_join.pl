@@ -1,11 +1,14 @@
 #!/usr/bin/perl
 # =============================================================================
-# Test: 048_bidir_pr3.pl - spock_create_subscriber --bidirectional
+# Test: 048_bidir_join.pl - spock_create_subscriber --bidirectional
 # =============================================================================
-# Validates the bidirectional node-join procedure: physical backup, recovery
-# to a restore point, catalog strip (capture + origin drop + guarded DROP
-# EXTENSION), and replication-set/table/sequence restore -- stopping short
-# of the catchup subscription (a later step).
+# Validates the bidirectional node-join procedure end to end: physical
+# backup, recovery to a restore point, catalog strip (capture + origin drop
+# + guarded DROP EXTENSION), replication-set/table/sequence restore, and
+# catchup (disabled-first subscription to the source, disabled placeholder
+# subscriptions to every peer, and a wait for n3 to reach a target LSN
+# captured on the source) -- stopping short of enabling any direct peer
+# subscription (a later step).
 #
 # Topology:
 #   n1 <-> n2   (full bidirectional Spock subscriptions, existing 2-node
@@ -25,10 +28,12 @@
 #   1  sequence advanced past its initial value on n1 (setval fidelity check)
 #   1  partitioned table (parent + 2 children) added to custom set on n1
 #   1  sequence with apostrophe in name added to custom set on n1
+#   1  peer-forwarding test table created on n1
+#   1  peer-forwarding test table replicated to n2
 #   1  --bidirectional exits 0
 #   1  n3 postgres is running
 #   1  spock extension installed cleanly on n3 (exactly one row)
-#   1  n3 has no leftover replication origins from the basebackup
+#   1  n3 has exactly the catchup and peer origins, none leftover from the basebackup
 #   1  n3 was given its own system identifier (pg_resetwal), distinct from n1
 #   1  spock.readonly is 'local' on n3
 #   1  custom replication set restored on n3 with correct flags
@@ -45,6 +50,11 @@
 #   1  manifest: source_restore_lsn populated
 #   1  manifest: node_dsn populated
 #   1  source slot exists on n1
+#   1  catchup subscription sub_n3_n1 is replicating on n3
+#   1  disabled peer subscription sub_n3_n2 exists and is disabled
+#   1  n3's origin for peer n2 starts at 0/0 before any post-join write
+#   1  n2's post-join write reached n3 via forwarding through sub_n3_n1
+#   1  n3's origin for peer n2 advanced during catchup forwarding
 #   1  --cleanup --force exits 0
 #   1  source slot removed from n1 after cleanup
 #   1  n3 data directory removed after cleanup --force
@@ -69,12 +79,12 @@
 #   1  pending sidecar removed once cleanup actually completed
 #   1  destroy_cluster
 #  ---
-#  57  total
+#  64  total
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 57;
+use Test::More tests => 64;
 use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
@@ -183,6 +193,24 @@ system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c',
     q(SELECT setval('"weird''s_seq"', 7, true));
 pass('sequence with apostrophe in name added to custom set on n1');
 
+# Table used later to verify n3's origin for peer n2 advances via forwarding.
+# Created on n1 only and left to arrive on n2 via DDL replication (creating
+# it directly on both sides races the already-established cross-wire DDL
+# replay); spock.include_ddl_repset=on adds it to 'default' on each node
+# once it lands there.
+system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c',
+    "CREATE TABLE pr4_peer_tbl (id serial primary key, val text)";
+pass('peer-forwarding test table created on n1');
+
+my $tbl_on_n2 = '0';
+for (1 .. 15) {
+    $tbl_on_n2 = scalar_query(2,
+        "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'pr4_peer_tbl'");
+    last if $tbl_on_n2 eq '1';
+    sleep(1);
+}
+is($tbl_on_n2, '1', 'peer-forwarding test table replicated to n2');
+
 # check_preconditions() requires all of n1's outbound replication to have
 # caught up (no unreplicated DDL/data still in flight to n2); wait for the
 # setup above to drain.
@@ -248,9 +276,14 @@ my $ext_count = `$pg_bin/psql -p $n3_port -d $dbname -t -c "SELECT COUNT(*) FROM
 $ext_count =~ s/\s+//g;
 is($ext_count, '1', 'spock extension installed cleanly on n3 (exactly one row)');
 
+# By this point the catchup subscription and the one disabled peer
+# subscription (n2) have each created their own origin -- exactly 2, not
+# more. Anything beyond that would mean an origin survived from the
+# basebackup instead of being dropped by the catalog strip.
 my $origin_count = `$pg_bin/psql -p $n3_port -d $dbname -t -c "SELECT COUNT(*) FROM pg_replication_origin"`;
 $origin_count =~ s/\s+//g;
-is($origin_count, '0', 'n3 has no leftover replication origins from the basebackup');
+is($origin_count, '2',
+   'n3 has exactly the catchup and peer origins, none leftover from the basebackup');
 
 my $n3_sysid = `$pg_bin/psql -p $n3_port -d $dbname -t -A -c "SELECT system_identifier FROM pg_control_system()"`;
 $n3_sysid =~ s/\s+//g;
@@ -342,6 +375,57 @@ ok($manifest_content =~ /"node_dsn":\s*"[^"]+"/,
 my $source_slot_exists = scalar_query(1,
     "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name LIKE 'spk_%n3%'");
 ok($source_slot_exists >= 1, 'source slot exists on n1');
+
+# =============================================================================
+# TEST: catchup subscription created, enabled, and caught up; disabled peer
+# subscription's origin advances via forwarding once n2 writes post-join.
+# =============================================================================
+my $sub_status = '';
+for (1 .. 30) {
+    $sub_status = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
+        '-c', "SELECT status FROM spock.sub_show_status('sub_n3_n1')");
+    last if $sub_status eq 'replicating';
+    sleep(1);
+}
+is($sub_status, 'replicating', 'catchup subscription sub_n3_n1 is replicating on n3');
+
+my $peer_sub_status = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
+    '-c', "SELECT status FROM spock.sub_show_status('sub_n3_n2')");
+is($peer_sub_status, 'disabled', 'disabled peer subscription sub_n3_n2 exists and is disabled');
+
+# Origin name matches what create_disabled_peer_subscriptions() computed for
+# sub_n3_n2 (spock_gen_slot_name(dbname, 'n2', 'sub_n3_n2')).
+my $n2_origin_name = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
+    '-c', "SELECT spock.spock_gen_slot_name('$dbname', 'n2', 'sub_n3_n2')");
+
+my $n2_origin_query =
+    "SELECT COALESCE(s.remote_lsn::text, '0/0') FROM pg_replication_origin o " .
+    "LEFT JOIN pg_replication_origin_status s ON o.roident = s.local_id " .
+    "WHERE o.roname = '$n2_origin_name'";
+
+my $n2_origin_lsn_initial = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
+    '-c', $n2_origin_query);
+is($n2_origin_lsn_initial, '0/0',
+   "n3's origin for peer n2 starts at 0/0 before any post-join write");
+
+# Write on n2 after the join; n1 forwards it to n3 via sub_n3_n1's
+# forward_origins = '{all}', and maybe_advance_forwarded_origin() should move
+# n3's origin for n2 off 0/0 even though the direct sub_n3_n2 stays disabled.
+system_or_bail "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c',
+    "INSERT INTO pr4_peer_tbl (val) VALUES ('from_n2_post_join')";
+
+my $row_on_n3 = '0';
+for (1 .. 30) {
+    $row_on_n3 = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
+        '-c', "SELECT COUNT(*) FROM pr4_peer_tbl WHERE val = 'from_n2_post_join'");
+    last if $row_on_n3 eq '1';
+    sleep(1);
+}
+is($row_on_n3, '1', "n2's post-join write reached n3 via forwarding through sub_n3_n1");
+
+my $n2_origin_lsn = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
+    '-c', $n2_origin_query);
+isnt($n2_origin_lsn, '0/0', "n3's origin for peer n2 advanced during catchup forwarding");
 
 # =============================================================================
 # TEST: --cleanup --force removes source slot, data directory, and manifest
