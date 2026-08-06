@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <locale.h>
+#include <pwd.h>
 #include <signal.h>
 #include <time.h>
 #include <sys/types.h>
@@ -70,6 +71,9 @@ typedef struct RemoteInfo {
 	char	   *sysid;
 	char	   *dbname;
 	char	   *replication_sets;
+	TimeLineID	timeline_id;	/* current TLI, for detecting a data_dir
+								 * left over from an already-promoted
+								 * earlier attempt (see check_data_dir()) */
 } RemoteInfo;
 
 typedef struct PeerNodeInfo
@@ -202,6 +206,7 @@ static void initialize_data_dir(char *data_dir, char *connstr,
 					char *postgresql_conf, char *postgresql_auto_conf,
 					char *pg_hba_conf, char *extra_basebackup_args);
 static bool check_data_dir(char *data_dir, RemoteInfo *remoteinfo);
+static void check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo);
 
 static char *read_sysid(const char *data_dir);
 
@@ -214,6 +219,7 @@ static char *PQconninfoParamsToConnstr(const char *const * keywords, const char 
 static void appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str);
 
 static bool file_exists(const char *path);
+static char *expand_tilde(char *path);
 static bool is_pg_dir(const char *path);
 static void copy_file(char *fromfile, char *tofile, bool append);
 static char *find_other_exec_or_die(const char *argv0, const char *target);
@@ -242,6 +248,8 @@ static bool read_manifest(const char *manifest_path, BidirectionalState *state,
 static bool cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 								  const char *dbname, const char *source_dsn,
 								  bool force_rm_datadir);
+static void stop_postgres_in_data_dir(void);
+static bool remove_data_dir_if_forced(bool force);
 static void append_json_string(PQExpBuffer buf, const char *str);
 
 static void check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
@@ -252,6 +260,15 @@ static void capture_catalog_state(PGconn *conn, Oid source_nodeid,
 static void remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture);
 static void restore_replication_sets(PGconn *conn, CatalogCapture *capture);
 static void verify_replication_sets_restored(PGconn *conn, CatalogCapture *capture);
+static void create_catchup_subscription(PGconn *subscriber_conn, const char *source_sub_name,
+					const char *source_dsn, const char *replication_sets,
+					const char *source_slot_name, const char *source_restore_lsn);
+static void create_disabled_peer_subscriptions(PGconn *subscriber_conn, PeerNodeInfo *peers,
+					int num_peers, const char *replication_sets);
+static char *get_catchup_target_lsn(const char *source_dsn);
+static void wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
+					const char *source_slot_name, const char *target_lsn,
+					int stall_timeout, int max_wait);
 static void set_readonly_local(PGconn *conn);
 static Oid	get_local_node_id(PGconn *conn);
 
@@ -1553,6 +1570,65 @@ read_manifest(const char *manifest_path, BidirectionalState *state,
 }
 
 /*
+ * If data_dir holds a running postmaster, stop it (fast mode) and wait
+ * for shutdown.  No-op if data_dir is unset, doesn't exist, or has no
+ * postmaster.pid.
+ */
+static void
+stop_postgres_in_data_dir(void)
+{
+	struct stat	st;
+
+	if (data_dir == NULL || !data_dir[0] || !file_exists(data_dir))
+		return;
+
+	snprintf(pid_file, MAXPGPATH, "%s/postmaster.pid", data_dir);
+	if (stat(pid_file, &st) == 0)
+	{
+		print_msg(VERBOSITY_NORMAL,
+				  _("  stopping postgres in %s ...\n"), data_dir);
+		run_pg_ctl("stop -m fast");
+		wait_postmaster_shutdown();
+	}
+}
+
+/*
+ * If data_dir exists, remove it when force is true (stopping postgres in
+ * it first, defensively, in case the caller hasn't already); if force is
+ * false, leave it in place with a hint.  Returns false only when removal
+ * was attempted and actually failed; a missing data_dir, an unset one,
+ * or force being false are all "nothing to report" and return true.
+ */
+static bool
+remove_data_dir_if_forced(bool force)
+{
+	if (data_dir == NULL || !data_dir[0] || !file_exists(data_dir))
+		return true;
+
+	if (!force)
+	{
+		print_msg(VERBOSITY_NORMAL,
+				  _("  data directory %s was left in place; pass --force "
+					"to remove it, or clean it up manually.\n"), data_dir);
+		return true;
+	}
+
+	stop_postgres_in_data_dir();
+
+	print_msg(VERBOSITY_NORMAL,
+			  _("  removing data directory %s ...\n"), data_dir);
+	if (!rmtree(data_dir, true))
+	{
+		print_msg(VERBOSITY_NORMAL,
+				  _("warning: could not fully remove data directory "
+					"%s; remove it manually\n"), data_dir);
+		return false;
+	}
+
+	return true;
+}
+
+/*
  * Idempotently remove bidirectional join state from all reachable nodes.
  * Connects to the source and each peer; drops replication slots and
  * reverse subscriptions created during a previous join attempt.
@@ -1576,6 +1652,18 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 
 	print_msg(VERBOSITY_NORMAL,
 			  _("Cleaning up partial bidirectional join state ...\n"));
+
+	/*
+	 * If n3 got far enough to have a live, replicating catchup
+	 * subscription, its apply worker holds the source slot active --
+	 * pg_drop_replication_slot() below would fail against it.  Stop n3
+	 * first, unconditionally (not gated by --force, which only governs
+	 * removing the data directory): leaving it running against a source
+	 * slot that this function is about to drop would just have it error
+	 * out repeatedly instead of sitting in a clean, inspectable stopped
+	 * state.
+	 */
+	stop_postgres_in_data_dir();
 
 	source_conn = PQconnectdb(source_dsn);
 	if (PQstatus(source_conn) != CONNECTION_OK)
@@ -1716,39 +1804,8 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 	 * The data directory a partial run may have created via basebackup.
 	 * Never touch it without --force.
 	 */
-	if (data_dir != NULL && data_dir[0] && file_exists(data_dir))
-	{
-		if (force_rm_datadir)
-		{
-			struct stat	st;
-
-			snprintf(pid_file, MAXPGPATH, "%s/postmaster.pid", data_dir);
-			if (stat(pid_file, &st) == 0)
-			{
-				print_msg(VERBOSITY_NORMAL,
-						  _("  stopping postgres in %s before removing it ...\n"),
-						  data_dir);
-				run_pg_ctl("stop -m fast");
-				wait_postmaster_shutdown();
-			}
-
-			print_msg(VERBOSITY_NORMAL,
-					  _("  removing data directory %s ...\n"), data_dir);
-			if (!rmtree(data_dir, true))
-			{
-				print_msg(VERBOSITY_NORMAL,
-						  _("warning: could not fully remove data directory "
-							"%s; remove it manually\n"), data_dir);
-				fully_cleaned = false;
-			}
-		}
-		else
-		{
-			print_msg(VERBOSITY_NORMAL,
-					  _("  data directory %s was left in place; pass --force "
-						"to remove it, or clean it up manually.\n"), data_dir);
-		}
-	}
+	if (!remove_data_dir_if_forced(force_rm_datadir))
+		fully_cleaned = false;
 
 	if (!fully_cleaned)
 	{
@@ -1909,7 +1966,7 @@ main(int argc, char **argv)
 		switch (c)
 		{
 			case 'D':
-				data_dir = pg_strdup(optarg);
+				data_dir = expand_tilde(pg_strdup(optarg));
 				break;
 			case 'n':
 				subscriber_name = pg_strdup(optarg);
@@ -1925,21 +1982,21 @@ main(int argc, char **argv)
 				break;
 			case 4:
 				{
-					postgresql_conf = pg_strdup(optarg);
+					postgresql_conf = expand_tilde(pg_strdup(optarg));
 					if (postgresql_conf != NULL && !file_exists(postgresql_conf))
 						die(_("The specified postgresql.conf file does not exist."));
 					break;
 				}
 			case 5:
 				{
-					pg_hba_conf = pg_strdup(optarg);
+					pg_hba_conf = expand_tilde(pg_strdup(optarg));
 					if (pg_hba_conf != NULL && !file_exists(pg_hba_conf))
 						die(_("The specified pg_hba.conf file does not exist."));
 					break;
 				}
 			case 6:
 				{
-					recovery_conf = pg_strdup(optarg);
+					recovery_conf = expand_tilde(pg_strdup(optarg));
 					if (recovery_conf != NULL && !file_exists(recovery_conf))
 						die(_("The specified recovery configuration file does not exist."));
 					break;
@@ -1992,7 +2049,7 @@ main(int argc, char **argv)
 				break;
 			case 17:
 				{
-					postgresql_auto_conf = pg_strdup(optarg);
+					postgresql_auto_conf = expand_tilde(pg_strdup(optarg));
 					if (postgresql_auto_conf != NULL && !file_exists(postgresql_auto_conf))
 						die(_("The specified postgresql.auto.conf file does not exist."));
 					break;
@@ -2085,6 +2142,25 @@ main(int argc, char **argv)
 			/* cleanup_partial_state() removes the sidecar itself on success. */
 			exit(cleanup_partial_state(&bidir, sub_name, db, src_dsn,
 										bidir.force_cleanup) ? 0 : 1);
+
+		/*
+		 * Neither record exists -- there's no slot/subscription bookkeeping
+		 * to act on, e.g. because the run died before the pending sidecar
+		 * was even written.  But an orphaned data_dir can still be sitting
+		 * there from that attempt, and --force is an explicit instruction
+		 * to remove it: don't leave it behind just because there was
+		 * nothing to read.
+		 */
+		if (bidir.force_cleanup && data_dir != NULL && data_dir[0] &&
+			file_exists(data_dir))
+		{
+			fprintf(stderr,
+					_("No manifest found at %s or %s; no slot/subscription "
+					  "state to clean up, but --force was given -- removing "
+					  "data directory %s.\n"),
+					bidir.manifest_path, bidir_pending_path, data_dir);
+			exit(remove_data_dir_if_forced(true) ? 0 : 1);
+		}
 
 		fprintf(stderr, _("No manifest found at %s or %s; nothing to clean up.\n"),
 				bidir.manifest_path, bidir_pending_path);
@@ -2208,13 +2284,7 @@ main(int argc, char **argv)
 			check_no_native_subscriptions(provider_conn);
 			use_existing_data_dir = check_data_dir(data_dir, remote_info);
 			if (use_existing_data_dir)
-			{
-				char *local_sysid = read_sysid(data_dir);
-				bool mismatch = strcmp(remote_info->sysid, local_sysid) != 0;
-				free(local_sysid);
-				if (mismatch)
-					die(_("Subscriber data directory is not basebackup of remote node.\n"));
-			}
+				check_reused_data_dir_is_safe(data_dir, remote_info);
 
 			appendPQExpBuffer(sub_name_buf, "sub_%s_%s",
 							  subscriber_name, remote_info->node_name);
@@ -2261,13 +2331,7 @@ main(int argc, char **argv)
 			use_existing_data_dir = check_data_dir(data_dir, remote_info);
 
 			if (use_existing_data_dir)
-			{
-				char *local_sysid = read_sysid(data_dir);
-				bool mismatch = strcmp(remote_info->sysid, local_sysid) != 0;
-				free(local_sysid);
-				if (mismatch)
-					die(_("Subscriber data directory is not basebackup of remote node.\n"));
-			}
+				check_reused_data_dir_is_safe(data_dir, remote_info);
 		}
 
 		/*
@@ -2579,14 +2643,54 @@ main(int argc, char **argv)
 		bidir.node_dsn = sub_connstr;
 		write_manifest(&bidir, subscriber_name, db, base_prov_connstr);
 
+		{
+			PQExpBuffer sub_name_buf = createPQExpBuffer();
+			char	   *source_sub_name;
+			char	   *target_lsn;
+
+			appendPQExpBuffer(sub_name_buf, "sub_%s_%s",
+							  subscriber_name, remote_info->node_name);
+			source_sub_name = pg_strdup(sub_name_buf->data);
+			destroyPQExpBuffer(sub_name_buf);
+
+			print_msg(VERBOSITY_NORMAL, _("Creating catchup subscription to the source...\n"));
+			print_msg(VERBOSITY_DEBUG,
+					  _("Creating subscription \"%s\" to source \"%s\" using slot "
+						"\"%s\", forward_origins={all}, enabled=false\n"),
+					  source_sub_name, prov_connstr, bidir.source_slot_name);
+			create_catchup_subscription(subscriber_conn, source_sub_name, prov_connstr,
+										replication_sets, bidir.source_slot_name,
+										bidir.source_restore_lsn);
+			print_msg(VERBOSITY_DEBUG,
+					  _("Subscription \"%s\" created, origin advanced to %s, and "
+						"enabled\n"), source_sub_name, bidir.source_restore_lsn);
+
+			print_msg(VERBOSITY_NORMAL, _("Creating disabled peer subscriptions...\n"));
+			create_disabled_peer_subscriptions(subscriber_conn, bidir.peers,
+											   bidir.num_peers, replication_sets);
+
+			print_msg(VERBOSITY_NORMAL, _("Getting catchup target from the source...\n"));
+			target_lsn = get_catchup_target_lsn(prov_connstr);
+			print_msg(VERBOSITY_DEBUG, _("Catchup target LSN: %s\n"), target_lsn);
+
+			print_msg(VERBOSITY_NORMAL, _("Waiting for catchup to the source...\n"));
+			print_msg(VERBOSITY_DEBUG,
+					  _("Waiting for subscription \"%s\" (origin \"%s\") to reach "
+						"LSN %s\n"), source_sub_name, bidir.source_slot_name, target_lsn);
+			wait_for_catchup(subscriber_conn, source_sub_name, bidir.source_slot_name,
+							 target_lsn, bidir.stall_timeout, bidir.max_wait);
+
+			pg_free(target_lsn);
+			pg_free(source_sub_name);
+		}
+
 		PQfinish(subscriber_conn);
 		subscriber_conn = NULL;
 
 		print_msg(VERBOSITY_NORMAL,
-				  _("Bidirectional join: physical backup, catalog strip, and "
-					"replication set restore complete. Node \"%s\" is "
-					"read-only pending the catchup subscription (a later "
-					"release).\n"),
+				  _("Bidirectional join: catchup complete. Node \"%s\" has caught "
+					"up to the source and forward-tracked every peer's origin; "
+					"ready for the next phase.\n"),
 				  subscriber_name);
 	}
 	else
@@ -2955,6 +3059,44 @@ check_data_dir(char *data_dir, RemoteInfo *remoteinfo)
 }
 
 /*
+ * Called whenever check_data_dir() approves reusing an existing
+ * data_dir.  The sysid check alone doesn't catch every unsafe reuse: if
+ * an earlier attempt already reached promotion (recovery_target_action =
+ * promote) before failing or being interrupted, but before
+ * reset_subscriber_sysid() ran, the sysid still matches, yet this
+ * data_dir's own timeline has advanced past whatever the source has.
+ * Re-entering recovery against the source at that point can never
+ * succeed: the source has no way to supply WAL for a timeline it never
+ * had, so streaming fails permanently with "highest timeline N of the
+ * primary is behind recovery timeline M" and this tool would otherwise
+ * wait forever for WAL that will never arrive.  Refuse reuse instead.
+ */
+static void
+check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo)
+{
+	char	   *local_sysid = read_sysid(data_dir);
+	bool		mismatch = strcmp(remoteinfo->sysid, local_sysid) != 0;
+	ControlFileData *cf;
+	bool		crc_ok;
+
+	free(local_sysid);
+	if (mismatch)
+		die(_("Subscriber data directory is not basebackup of remote node.\n"));
+
+	cf = get_controlfile(data_dir, &crc_ok);
+	if (!crc_ok)
+		die(_("control file of \"%s\" appears to be corrupt\n"), data_dir);
+	if (cf->checkPointCopy.ThisTimeLineID > remoteinfo->timeline_id)
+		die(_("data directory \"%s\" is already on timeline %u, past the "
+			  "source's current timeline %u -- it was already promoted by "
+			  "an earlier, incomplete attempt and can never resume "
+			  "recovery from this source again; run --cleanup --force and "
+			  "retry with a fresh base backup\n"),
+			data_dir, cf->checkPointCopy.ThisTimeLineID, remoteinfo->timeline_id);
+	pg_free(cf);
+}
+
+/*
  * Initialize replication slots
  */
 static char *
@@ -3071,6 +3213,12 @@ get_remote_info(PGconn* conn)
 	ri->dbname = pstrdup(PQgetvalue(res, 0, 3));
 	ri->replication_sets = pstrdup(PQgetvalue(res, 0, 4));
 
+	PQclear(res);
+
+	res = debug_exec(conn, "SELECT timeline_id FROM pg_control_checkpoint()");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		die(_("could not fetch remote node's current timeline: %s\n"), PQerrorMessage(conn));
+	ri->timeline_id = (TimeLineID) strtoul(PQgetvalue(res, 0, 0), NULL, 10);
 	PQclear(res);
 
 	return ri;
@@ -3747,6 +3895,317 @@ verify_replication_sets_restored(PGconn *conn, CatalogCapture *capture)
 
 	print_msg(VERBOSITY_VERBOSE,
 			  _("Verified replication set restore matches capture exactly.\n"));
+}
+
+/*
+ * Create n3's subscription to the source disabled-first (enabled :=
+ * false) -- sub_create() sets SYNC_STATUS_READY and creates the local
+ * replication origin atomically, with no apply worker and no INIT
+ * window, before this advances that origin to source_restore_lsn and
+ * enables it.
+ */
+static void
+create_catchup_subscription(PGconn *subscriber_conn, const char *source_sub_name,
+							const char *source_dsn, const char *replication_sets,
+							const char *source_slot_name, const char *source_restore_lsn)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PQExpBuffer repsets = createPQExpBuffer();
+	PGresult   *res;
+	PGconn	   *source_conn;
+
+	/* Re-confirm the source slot is still there before relying on it. */
+	source_conn = connectdb(source_dsn);
+	printfPQExpBuffer(query, "SELECT 1 FROM pg_replication_slots WHERE slot_name = %s",
+					  PQescapeLiteral(source_conn, source_slot_name, strlen(source_slot_name)));
+	res = debug_exec(source_conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not check source replication slot \"%s\": %s\n"),
+			source_slot_name, PQerrorMessage(source_conn));
+	}
+	if (PQntuples(res) != 1)
+	{
+		PQclear(res);
+		die(_("source replication slot \"%s\" is missing on the source; "
+			  "cannot start catchup\n"), source_slot_name);
+	}
+	PQclear(res);
+	PQfinish(source_conn);
+
+	printfPQExpBuffer(repsets, "{%s}", replication_sets);
+	printfPQExpBuffer(query,
+					  "SELECT spock.sub_create("
+					  "subscription_name := %s, provider_dsn := %s, "
+					  "replication_sets := %s, "
+					  "synchronize_structure := false, "
+					  "synchronize_data := false, "
+					  "forward_origins := '{all}', "
+					  "enabled := false)",
+					  PQescapeLiteral(subscriber_conn, source_sub_name, strlen(source_sub_name)),
+					  PQescapeLiteral(subscriber_conn, source_dsn, strlen(source_dsn)),
+					  PQescapeLiteral(subscriber_conn, repsets->data, repsets->len));
+	res = debug_exec(subscriber_conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not create catchup subscription \"%s\": %s\n"),
+			source_sub_name, PQerrorMessage(subscriber_conn));
+	}
+	PQclear(res);
+
+	printfPQExpBuffer(query, "SELECT pg_replication_origin_advance(%s, %s)",
+					  PQescapeLiteral(subscriber_conn, source_slot_name, strlen(source_slot_name)),
+					  PQescapeLiteral(subscriber_conn, source_restore_lsn, strlen(source_restore_lsn)));
+	res = debug_exec(subscriber_conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not advance catchup origin to the recovery point: %s\n"),
+			PQerrorMessage(subscriber_conn));
+	}
+	PQclear(res);
+
+	/*
+	 * Confirm forward_origins landed as '{all}' -- otherwise forwarded peer
+	 * changes are silently dropped during catchup instead of reaching n3.
+	 */
+	printfPQExpBuffer(query, "SELECT forward_origins FROM spock.sub_show_status(%s)",
+					  PQescapeLiteral(subscriber_conn, source_sub_name, strlen(source_sub_name)));
+	res = debug_exec(subscriber_conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+	{
+		PQclear(res);
+		die(_("could not verify forward_origins on \"%s\": %s\n"),
+			source_sub_name, PQerrorMessage(subscriber_conn));
+	}
+	if (strcmp(PQgetvalue(res, 0, 0), "{all}") != 0)
+	{
+		char *got = pg_strdup(PQgetvalue(res, 0, 0));
+
+		PQclear(res);
+		die(_("catchup subscription \"%s\" has forward_origins = %s, expected "
+			  "{all}; forwarded peer changes would be silently dropped\n"),
+			source_sub_name, got);
+	}
+	PQclear(res);
+
+	printfPQExpBuffer(query, "SELECT spock.sub_enable(%s)",
+					  PQescapeLiteral(subscriber_conn, source_sub_name, strlen(source_sub_name)));
+	res = debug_exec(subscriber_conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not enable catchup subscription \"%s\": %s\n"),
+			source_sub_name, PQerrorMessage(subscriber_conn));
+	}
+	PQclear(res);
+
+	destroyPQExpBuffer(query);
+	destroyPQExpBuffer(repsets);
+}
+
+/*
+ * Pre-create a disabled subscription to every peer on n3, giving each a
+ * local named origin (sub_create(enabled := false), same mechanism as
+ * the catchup subscription) without creating anything on the peer
+ * itself -- no remote slot, no apply worker.  Forwarding through the
+ * catchup subscription is what advances these origins; the direct peer
+ * subscriptions stay disabled until a later phase.
+ */
+static void
+create_disabled_peer_subscriptions(PGconn *subscriber_conn, PeerNodeInfo *peers,
+								   int num_peers, const char *replication_sets)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PQExpBuffer repsets = createPQExpBuffer();
+	int			i;
+
+	printfPQExpBuffer(repsets, "{%s}", replication_sets);
+
+	for (i = 0; i < num_peers; i++)
+	{
+		PeerNodeInfo *peer = &peers[i];
+		PGresult   *res;
+
+		print_msg(VERBOSITY_DEBUG,
+				  _("Creating disabled subscription \"%s\" to peer \"%s\" (dsn "
+					"\"%s\"); its origin will be \"%s\"\n"),
+				  peer->sub_name, peer->node_name, peer->dsn, peer->slot_name);
+		printfPQExpBuffer(query,
+						  "SELECT spock.sub_create("
+						  "subscription_name := %s, provider_dsn := %s, "
+						  "replication_sets := %s, "
+						  "synchronize_structure := false, "
+						  "synchronize_data := false, "
+						  "enabled := false)",
+						  PQescapeLiteral(subscriber_conn, peer->sub_name, strlen(peer->sub_name)),
+						  PQescapeLiteral(subscriber_conn, peer->dsn, strlen(peer->dsn)),
+						  PQescapeLiteral(subscriber_conn, repsets->data, repsets->len));
+		res = debug_exec(subscriber_conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not create disabled subscription \"%s\" to peer \"%s\": %s\n"),
+				peer->sub_name, peer->node_name, PQerrorMessage(subscriber_conn));
+		}
+		PQclear(res);
+
+		printfPQExpBuffer(query, "SELECT 1 FROM pg_replication_origin WHERE roname = %s",
+						  PQescapeLiteral(subscriber_conn, peer->slot_name, strlen(peer->slot_name)));
+		res = debug_exec(subscriber_conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not verify replication origin for peer \"%s\": %s\n"),
+				peer->node_name, PQerrorMessage(subscriber_conn));
+		}
+		if (PQntuples(res) != 1)
+		{
+			PQclear(res);
+			die(_("expected replication origin \"%s\" for peer \"%s\" was not "
+				  "created\n"), peer->slot_name, peer->node_name);
+		}
+		PQclear(res);
+
+		peer->disabled_sub_created = true;
+	}
+
+	destroyPQExpBuffer(query);
+	destroyPQExpBuffer(repsets);
+}
+
+/*
+ * A single spock.sync_event() on the source is the catchup target -- it
+ * flushes durably before returning, so the LSN is guaranteed to arrive
+ * at n3 via the replication stream with no per-peer flush needed.
+ * Caller must free the result.
+ */
+static char *
+get_catchup_target_lsn(const char *source_dsn)
+{
+	PGconn	   *source_conn;
+	PGresult   *res;
+	char	   *target_lsn;
+
+	source_conn = connectdb(source_dsn);
+	res = debug_exec(source_conn, "SELECT spock.sync_event()");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+	{
+		PQclear(res);
+		die(_("could not get catchup target LSN: %s\n"), PQerrorMessage(source_conn));
+	}
+	target_lsn = pg_strdup(PQgetvalue(res, 0, 0));
+	PQclear(res);
+	PQfinish(source_conn);
+
+	return target_lsn;
+}
+
+/*
+ * Wait for n3's catchup subscription to reach target_lsn.  Progress
+ * watchdog, not a flat wall-clock timeout -- reset the stall clock
+ * whenever remote_lsn advances at all, since a legitimately large
+ * catchup can take hours (same shape as wait_primary_connection(), which
+ * does this for WAL replay).  Aborts immediately, without waiting out
+ * the timeout, if the subscription's own status reports 'disabled' --
+ * the signal an unresolvable apply exception leaves behind under
+ * spock.exception_behaviour = 'sub_disable'; catchup must not be allowed
+ * to silently stall forever behind a stopped apply worker.
+ */
+static void
+wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
+				 const char *source_slot_name, const char *target_lsn,
+				 int stall_timeout, int max_wait)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	time_t		start_time = time(NULL);
+	time_t		last_progress_time = start_time;
+	char	   *last_lsn = NULL;
+
+	print_msg(VERBOSITY_VERBOSE, "Waiting for catchup to reach %s...", target_lsn);
+
+	for (;;)
+	{
+		PGresult   *res;
+		bool		reached;
+
+		printfPQExpBuffer(query,
+						  "SELECT (remote_lsn >= %s::pg_lsn), remote_lsn::text"
+						  " FROM pg_replication_origin_status WHERE external_id = %s",
+						  PQescapeLiteral(subscriber_conn, target_lsn, strlen(target_lsn)),
+						  PQescapeLiteral(subscriber_conn, source_slot_name, strlen(source_slot_name)));
+		res = debug_exec(subscriber_conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not check catchup progress: %s\n"), PQerrorMessage(subscriber_conn));
+		}
+
+		reached = PQntuples(res) == 1 && !PQgetisnull(res, 0, 0) &&
+				  PQgetvalue(res, 0, 0)[0] == 't';
+		if (reached)
+		{
+			PQclear(res);
+			break;
+		}
+
+		if (PQntuples(res) == 1 && !PQgetisnull(res, 0, 1))
+		{
+			char *cur_lsn = PQgetvalue(res, 0, 1);
+
+			if (!last_lsn || strcmp(cur_lsn, last_lsn) != 0)
+			{
+				pg_free(last_lsn);
+				last_lsn = pg_strdup(cur_lsn);
+				last_progress_time = time(NULL);
+			}
+		}
+		PQclear(res);
+
+		/*
+		 * spock.sub_show_status() is the same primitive check_mesh_edges()
+		 * relies on for subscription health; 'disabled' here means the
+		 * apply worker hit an unresolvable exception and
+		 * spock.exception_behaviour disabled it -- catchup cannot recover
+		 * from that on its own, so abort now rather than waiting out
+		 * stall_timeout/max_wait behind a subscription that will never
+		 * move again.
+		 */
+		printfPQExpBuffer(query, "SELECT status FROM spock.sub_show_status(%s)",
+						  PQescapeLiteral(subscriber_conn, source_sub_name, strlen(source_sub_name)));
+		res = debug_exec(subscriber_conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not check catchup subscription status: %s\n"),
+				PQerrorMessage(subscriber_conn));
+		}
+		if (PQntuples(res) == 1 && strcmp(PQgetvalue(res, 0, 0), "disabled") == 0)
+		{
+			PQclear(res);
+			die(_("catchup subscription \"%s\" was disabled during catchup, "
+				  "likely by an unresolvable apply exception; this is a hard "
+				  "join failure -- run --cleanup and retry\n"), source_sub_name);
+		}
+		PQclear(res);
+
+		if (stall_timeout > 0 && (time(NULL) - last_progress_time) >= stall_timeout)
+			die(_("catchup appears stalled: no origin progress for %d second(s) "
+				  "(--stall-timeout)\n"), stall_timeout);
+
+		if (max_wait > 0 && (time(NULL) - start_time) >= max_wait)
+			die(_("timed out after %d second(s) waiting for catchup to "
+				  "complete (--max-wait)\n"), max_wait);
+
+		pg_usleep(1000000);		/* 1 sec */
+		print_msg(VERBOSITY_VERBOSE, ".");
+	}
+
+	pg_free(last_lsn);
+	destroyPQExpBuffer(query);
+	print_msg(VERBOSITY_VERBOSE, "\n");
 }
 
 /*
@@ -4454,6 +4913,53 @@ file_exists(const char *path)
 		return false;
 
 	return true;
+}
+
+/*
+ * Replace a leading "~" or "~username" with that user's home directory,
+ * in place.  Shell tilde expansion never happens for a quoted argument,
+ * so a path like "~/n3.auto.conf" otherwise reaches file_exists()
+ * literally and fails.  get_home_path() (port.h, already linked)
+ * resolves "~"/"~/..." for the current user; getpwnam() handles
+ * "~user"/"~user/...".
+ */
+static char *
+expand_tilde(char *path)
+{
+	char	   *slash;
+	char		home[MAXPGPATH];
+	char	   *result;
+
+	if (path == NULL || path[0] != '~')
+		return path;
+
+	slash = strchr(path, '/');
+
+	if (slash == path + 1 || path[1] == '\0')
+	{
+		if (!get_home_path(home))
+			return path;
+	}
+	else
+	{
+		char		username[MAXPGPATH];
+		struct passwd *pw;
+		size_t		len = slash ? (size_t) (slash - (path + 1)) : strlen(path + 1);
+
+		if (len >= sizeof(username))
+			return path;
+		memcpy(username, path + 1, len);
+		username[len] = '\0';
+
+		pw = getpwnam(username);
+		if (pw == NULL)
+			return path;
+		strlcpy(home, pw->pw_dir, sizeof(home));
+	}
+
+	result = psprintf("%s%s", home, slash ? slash : "");
+	pg_free(path);
+	return result;
 }
 
 static bool
