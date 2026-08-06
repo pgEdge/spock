@@ -1087,6 +1087,342 @@ END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
 -- ============================================================================
+-- Function: node_repset_list
+-- Purpose : Return a node's replication sets as an SQL array literal suitable
+--           for the replication_sets argument of spock.create_sub().
+--
+--           Subscriptions used to be pinned to the three built-in sets
+--           (default, default_insert_only, ddl_sql), which silently dropped
+--           every table that only lives in a user-created set.
+--
+--           This must always be called with the DSN of the subscription's
+--           PROVIDER. A subscription's replication set names are resolved on
+--           the provider, by get_replication_sets() in spock_repset.c, and a
+--           name the provider does not have is an ERROR there ("replication
+--           set %s not found"), not something it ignores. The walsender then
+--           refuses START_REPLICATION and the apply worker retries forever.
+--           Replication sets are per-node local state, so two existing nodes
+--           can legitimately have different ones.
+-- Arguments:
+--   node_dsn - DSN of the provider node.
+-- Returns  : text, e.g. ARRAY['default', 'default_insert_only', 'ddl_sql']
+-- ============================================================================
+CREATE OR REPLACE FUNCTION spock.node_repset_list(node_dsn text)
+RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+    sets text[];
+BEGIN
+    SELECT array_agg(set_name ORDER BY set_name)
+      INTO sets
+      FROM dblink(node_dsn,
+               'SELECT rs.set_name
+                  FROM spock.replication_set rs
+                  JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id')
+        AS t(set_name text);
+
+    -- A Spock node always has the built-in sets, so an empty result means the
+    -- DSN does not point at a node. Fall back rather than build an empty array.
+    IF sets IS NULL OR array_length(sets, 1) IS NULL THEN
+        sets := ARRAY['default', 'default_insert_only', 'ddl_sql'];
+    END IF;
+
+    RETURN 'ARRAY[' ||
+           (SELECT string_agg(quote_literal(s), ', ' ORDER BY i)
+              FROM unnest(sets) WITH ORDINALITY AS u(s, i)) ||
+           ']';
+END;
+$$;
+
+-- ============================================================================
+-- Function: repset_diff
+-- Purpose : List the replication set entries that differ between two nodes.
+--           An entry is a set definition, a table membership (with its column
+--           list and row filter) or a sequence membership, rendered as text so
+--           the two sides can be compared directly.
+--
+--           Used after the mirroring to report drift: the source is a moving
+--           target, and a join can run for hours, so somebody may well add a
+--           table to a replication set there while it is in progress. That is
+--           reported rather than treated as a failure, because the new node is
+--           otherwise complete and the remedy is a single repset_add_table on
+--           it. Naming the exact entries is what makes that practical.
+-- Arguments:
+--   left_dsn  - DSN of the first node (the source, in add_node's use).
+--   right_dsn - DSN of the second node (the new node).
+-- Returns  : rows of (side, entry), where side is 'source only' or 'new only'.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION spock.repset_diff(left_dsn text, right_dsn text)
+RETURNS TABLE (side text, entry text) LANGUAGE plpgsql AS $$
+DECLARE
+    entries_sql CONSTANT text :=
+        'SELECT rs.set_name || '' ['' || concat_ws('','',
+                    CASE WHEN rs.replicate_insert   THEN ''insert'' END,
+                    CASE WHEN rs.replicate_update   THEN ''update'' END,
+                    CASE WHEN rs.replicate_delete   THEN ''delete'' END,
+                    CASE WHEN rs.replicate_truncate THEN ''truncate'' END) || '']''
+           FROM spock.replication_set rs
+           JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id
+         UNION ALL
+         SELECT rs.set_name || '' '' ||
+                quote_ident(n.nspname) || ''.'' || quote_ident(c.relname) ||
+                coalesce('' cols='' || rst.set_att_list::text, '''') ||
+                coalesce('' filter='' || pg_get_expr(rst.set_row_filter, rst.set_reloid), '''')
+           FROM spock.replication_set_table rst
+           JOIN spock.replication_set rs ON rs.set_id = rst.set_id
+           JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id
+           JOIN pg_catalog.pg_class c ON c.oid = rst.set_reloid
+           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+         UNION ALL
+         SELECT rs.set_name || '' sequence '' ||
+                quote_ident(n.nspname) || ''.'' || quote_ident(c.relname)
+           FROM spock.replication_set_seq rss
+           JOIN spock.replication_set rs ON rs.set_id = rss.set_id
+           JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id
+           JOIN pg_catalog.pg_class c ON c.oid = rss.set_seqoid
+           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace';
+    left_entries  text[];
+    right_entries text[];
+BEGIN
+    SELECT coalesce(array_agg(e), ARRAY[]::text[]) INTO left_entries
+      FROM dblink(left_dsn, entries_sql) AS t(e text);
+    SELECT coalesce(array_agg(e), ARRAY[]::text[]) INTO right_entries
+      FROM dblink(right_dsn, entries_sql) AS t(e text);
+
+    RETURN QUERY
+        SELECT 'source only', e
+          FROM unnest(left_entries) AS e
+         WHERE e <> ALL (right_entries)
+         UNION ALL
+        SELECT 'new only', e
+          FROM unnest(right_entries) AS e
+         WHERE e <> ALL (left_entries)
+         ORDER BY 1, 2;
+END;
+$$;
+
+-- ============================================================================
+-- Function: sync_repsets_from_source
+-- Purpose : Make the new node's replication sets an exact copy of the source
+--           node's: the set definitions, the table memberships (including
+--           column lists and row filters) and the sequence memberships.
+--
+--           This has to run after the structure and data sync, because the
+--           tables must exist locally before they can be added to a set.
+--
+--           Nothing in Spock copies replication set membership. What actually
+--           populates the sets on a freshly joined node is AutoDDL firing
+--           while pg_restore replays the structure dump, which routes each
+--           table by policy (primary key or replica identity to 'default',
+--           otherwise 'default_insert_only') rather than by what the source
+--           says. That derived membership is wiped here and replaced by the
+--           source's, so a table the user deliberately removed from a set on
+--           the source does not reappear on the new node, and extension-owned
+--           tables such as lolor's (which AutoDDL skips entirely, because it
+--           ignores anything created by CREATE EXTENSION) no longer have to be
+--           added by hand.
+--           Everything here runs on the new node, but it must NOT be called
+--           directly from add_node: add_node holds one transaction open across
+--           all of its phases, so the AccessShareLock these queries take on
+--           spock.local_node would be held for the rest of the run. The later
+--           phases reach the new node over dblink, in a second session, and
+--           spock.sub_enable() there wants ShareUpdateExclusiveLock on the same
+--           catalog. The two sessions would wait on each other forever, with
+--           the deadlock detector unable to see it because add_node is blocked
+--           on a network read. add_node therefore invokes this over dblink too,
+--           so every statement commits and releases its locks immediately.
+-- Arguments:
+--   src_dsn       - DSN of the source node.
+--   new_node_name - Name of the node being added (for messages only).
+--   verb          - Verbose output flag.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION spock.sync_repsets_from_source(
+    src_dsn       text,
+    new_node_name text,
+    verb          boolean
+) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+    rec           RECORD;
+    created       integer := 0;
+    altered       integer := 0;
+    dropped       integer := 0;
+    cleared       integer := 0;
+    added         integer := 0;
+    added_seqs    integer := 0;
+    missing       text[]  := ARRAY[]::text[];
+BEGIN
+
+    -- ------------------------------------------------------------------
+    -- 1. Drop the membership AutoDDL derived during the structure restore.
+    --    The source's memberships are replayed below; keeping both would
+    --    leave two sources of truth. include_partitions is false throughout
+    --    so that the source's rows are mirrored one for one: if the source
+    --    has a partition in a set, it has its own row there.
+    -- ------------------------------------------------------------------
+    FOR rec IN
+        SELECT rs.set_name, rst.set_reloid
+          FROM spock.replication_set_table rst
+          JOIN spock.replication_set rs ON rs.set_id = rst.set_id
+          JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id
+    LOOP
+        PERFORM spock.repset_remove_table(rec.set_name::name, rec.set_reloid, false);
+        cleared := cleared + 1;
+    END LOOP;
+
+    FOR rec IN
+        SELECT rs.set_name, rss.set_seqoid
+          FROM spock.replication_set_seq rss
+          JOIN spock.replication_set rs ON rs.set_id = rss.set_id
+          JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id
+    LOOP
+        PERFORM spock.repset_remove_seq(rec.set_name::name, rec.set_seqoid);
+        cleared := cleared + 1;
+    END LOOP;
+
+    IF cleared > 0 THEN
+        RAISE NOTICE '    OK: %', rpad('Cleared ' || cleared || ' auto-derived replication set entries', 120, ' ');
+    END IF;
+
+    -- ------------------------------------------------------------------
+    -- 2. Replication set definitions. The three built-in sets already exist
+    --    (spock.node_create() creates them), so those are altered into shape
+    --    and the rest are created.
+    --
+    --    The source is read once, into a temp table, and both the create/alter
+    --    pass and the drop pass below work from that snapshot. Reading it twice
+    --    would let a set created on the source in between be created here and
+    --    then immediately dropped again.
+    -- ------------------------------------------------------------------
+    CREATE TEMP TABLE IF NOT EXISTS temp_src_repsets (
+        set_name text PRIMARY KEY,
+        ins boolean,
+        upd boolean,
+        del boolean,
+        trunc boolean
+    );
+    TRUNCATE temp_src_repsets;
+
+    INSERT INTO temp_src_repsets
+        SELECT * FROM dblink(src_dsn,
+                   'SELECT rs.set_name, rs.replicate_insert, rs.replicate_update,
+                           rs.replicate_delete, rs.replicate_truncate
+                      FROM spock.replication_set rs
+                      JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id')
+            AS t(set_name text, ins boolean, upd boolean, del boolean, trunc boolean);
+
+    FOR rec IN SELECT * FROM temp_src_repsets
+    LOOP
+        IF EXISTS (SELECT 1
+                     FROM spock.replication_set rs
+                     JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id
+                    WHERE rs.set_name = rec.set_name) THEN
+            PERFORM spock.repset_alter(rec.set_name::name, rec.ins, rec.upd,
+                                       rec.del, rec.trunc);
+            altered := altered + 1;
+        ELSE
+            PERFORM spock.repset_create(rec.set_name::name, rec.ins, rec.upd,
+                                        rec.del, rec.trunc);
+            created := created + 1;
+            IF verb THEN
+                RAISE NOTICE '[INFO] Created replication set % on %', rec.set_name, new_node_name;
+            END IF;
+        END IF;
+    END LOOP;
+
+    -- Any set the source does not have should not exist here either.
+    FOR rec IN
+        SELECT rs.set_name
+          FROM spock.replication_set rs
+          JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id
+         WHERE rs.set_name NOT IN (SELECT set_name FROM temp_src_repsets)
+    LOOP
+        PERFORM spock.repset_drop(rec.set_name::name, true);
+        dropped := dropped + 1;
+        IF verb THEN
+            RAISE NOTICE '[INFO] Dropped replication set % (absent on source)', rec.set_name;
+        END IF;
+    END LOOP;
+
+    RAISE NOTICE '    OK: %', rpad('Replication sets: ' || created || ' created, ' ||
+                                   altered || ' updated, ' || dropped || ' dropped', 120, ' ');
+
+    -- ------------------------------------------------------------------
+    -- 3. Table membership, with column lists and row filters.
+    -- ------------------------------------------------------------------
+    FOR rec IN
+        SELECT * FROM dblink(src_dsn,
+                   'SELECT rs.set_name,
+                           quote_ident(n.nspname) || ''.'' || quote_ident(c.relname),
+                           rst.set_att_list,
+                           pg_get_expr(rst.set_row_filter, rst.set_reloid)
+                      FROM spock.replication_set_table rst
+                      JOIN spock.replication_set rs ON rs.set_id = rst.set_id
+                      JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id
+                      JOIN pg_catalog.pg_class c ON c.oid = rst.set_reloid
+                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace')
+            AS t(set_name text, relname text, att_list text[], row_filter text)
+    LOOP
+        IF to_regclass(rec.relname) IS NULL THEN
+            missing := missing || rec.relname;
+            CONTINUE;
+        END IF;
+
+        PERFORM spock.repset_add_table(rec.set_name::name,
+                                       rec.relname::regclass,
+                                       false,          -- synchronize_data
+                                       rec.att_list,
+                                       rec.row_filter,
+                                       false);         -- include_partitions
+        added := added + 1;
+    END LOOP;
+
+    IF array_length(missing, 1) IS NOT NULL THEN
+        RAISE NOTICE '    [FAILED] %', rpad('Tables replicated by the source are missing on ' || new_node_name, 60, ' ');
+        RAISE EXCEPTION 'Exiting add_node: the source node replicates tables that do not exist on %: %. The new node cannot join until they are present.',
+            new_node_name, array_to_string(missing, ', ');
+    END IF;
+
+    -- ------------------------------------------------------------------
+    -- 4. Sequence membership.
+    -- ------------------------------------------------------------------
+    FOR rec IN
+        SELECT * FROM dblink(src_dsn,
+                   'SELECT rs.set_name,
+                           quote_ident(n.nspname) || ''.'' || quote_ident(c.relname)
+                      FROM spock.replication_set_seq rss
+                      JOIN spock.replication_set rs ON rs.set_id = rss.set_id
+                      JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id
+                      JOIN pg_catalog.pg_class c ON c.oid = rss.set_seqoid
+                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace')
+            AS t(set_name text, relname text)
+    LOOP
+        IF to_regclass(rec.relname) IS NULL THEN
+            missing := missing || rec.relname;
+            CONTINUE;
+        END IF;
+
+        PERFORM spock.repset_add_seq(rec.set_name::name, rec.relname::regclass, false);
+        added_seqs := added_seqs + 1;
+    END LOOP;
+
+    IF array_length(missing, 1) IS NOT NULL THEN
+        RAISE NOTICE '    [FAILED] %', rpad('Sequences replicated by the source are missing on ' || new_node_name, 60, ' ');
+        RAISE EXCEPTION 'Exiting add_node: the source node replicates sequences that do not exist on %: %.',
+            new_node_name, array_to_string(missing, ', ');
+    END IF;
+
+    RAISE NOTICE '    OK: %', rpad('Replication set membership: ' || added || ' tables, ' ||
+                                   added_seqs || ' sequences copied from source', 120, ' ');
+
+    -- Drift against the source is reported by the caller, not here: this runs
+    -- in a dblink session, and dblink discards remote NOTICE and WARNING, so a
+    -- complaint raised at this point would never reach the operator.
+    RETURN 'replication sets: ' || created || ' created, ' || altered ||
+           ' updated, ' || dropped || ' dropped; membership: ' || added ||
+           ' tables, ' || added_seqs || ' sequences copied from source';
+END;
+$$;
+
+-- ============================================================================
 -- Procedure to verify prerequisites for adding a new node
 -- (Combines Phase 1: Validating source node prerequisites and Phase 2: Validating new node prerequisites)
 -- ============================================================================
@@ -1338,6 +1674,9 @@ $$;
 
 -- ============================================================================
 -- Procedure to configure cross-node replication
+--
+-- Not called by add_node, which creates its slots inline in Phase 3, so its
+-- notice carries no phase number.
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE spock.create_replication_slots(
     src_node_name text,
@@ -1351,8 +1690,7 @@ DECLARE
     dbname text;
     slot_name text;
 BEGIN
-    -- Phase 4: Configuring cross-node replication
-    RAISE NOTICE 'Phase 4: Configuring cross-node replication';
+    RAISE NOTICE 'Configuring cross-node replication';
     BEGIN
         FOR rec IN SELECT * FROM temp_spock_nodes LOOP
             IF rec.node_name = src_node_name THEN
@@ -1415,6 +1753,7 @@ DECLARE
 	sub_name           text;
     _slot_lsn          pg_lsn;
     _catchup_lsn       pg_lsn;
+    repsets            text;
 BEGIN
     RAISE NOTICE 'Phase 3: Creating disabled subscriptions and slots';
 
@@ -1606,11 +1945,19 @@ BEGIN
                     RAISE WARNING '    Could not drop stale origin % on new node: %',
                         slot_name, SQLERRM;
             END;
+            -- Every replication set this provider has, not just the three
+            -- built-ins: a table that only lives in a user-created set would
+            -- otherwise never reach the new node, with no error reported. The
+            -- list has to come from this provider rather than from the source,
+            -- because the provider is where the names are resolved and it
+            -- errors out on one it does not have.
+            repsets := spock.node_repset_list(rec.dsn);
+
             CALL spock.create_sub(
                 new_node_dsn,                                 -- Create on new node
                 sub_name, 									  -- sub_<new_node>_<other_node>
                 rec.dsn,                                      -- Provider is other node
-                'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
+                repsets,                                      -- Replication sets (this provider's)
                 false,                                        -- synchronize_structure
                 false,                                        -- synchronize_data
                 'ARRAY[]::text[]',                            -- forward_origins
@@ -1648,7 +1995,7 @@ DECLARE
     rec      RECORD;
 	sub_name text;
 BEGIN
-    RAISE NOTICE 'Phase 8: Enabling disabled subscriptions';
+    RAISE NOTICE 'Phase 9: Enabling disabled subscriptions';
 
     -- Check if this is a 2-node scenario (only source and new node)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
@@ -1819,8 +2166,13 @@ DECLARE
     rec                RECORD;
     subscription_count integer := 0;
 	sub_name           text;
+    repsets            text;
 BEGIN
-    RAISE NOTICE 'Phase 9: Creating subscriptions from all other nodes to new node';
+    RAISE NOTICE 'Phase 10: Creating subscriptions from all other nodes to new node';
+
+    -- The new node is the provider for every subscription created here, and by
+    -- this point its replication sets have been mirrored from the source.
+    repsets := spock.node_repset_list(new_node_dsn);
 
     -- Get all existing nodes (excluding new node)
     CALL spock.get_spock_nodes(src_dsn, verb);
@@ -1833,7 +2185,7 @@ BEGIN
                 rec.dsn,                                      -- Create on existing node
                 sub_name, 									  -- sub_<new_node>_<existing_node>
                 new_node_dsn,                                 -- Provider is new node
-                'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
+                repsets,                                      -- Replication sets (mirrored from source)
                 false,                                        -- synchronize_structure
                 false,                                        -- synchronize_data
                 'ARRAY[]::text[]',                            -- forward_origins
@@ -1864,6 +2216,10 @@ $$;
 
 -- ============================================================================
 -- Procedure to create new to source node subscription
+--
+-- Not part of the add_node sequence and not called by it: add_node's Phase 10
+-- loops over every node except the new one, which covers the source as well.
+-- Its notice therefore carries no phase number.
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE spock.create_new_to_source_subscription(
     src_node_name text,
@@ -1874,15 +2230,19 @@ CREATE OR REPLACE PROCEDURE spock.create_new_to_source_subscription(
 ) LANGUAGE plpgsql AS $$
 DECLARE
     sub_name text := spock.gen_sub_name(new_node_name, src_node_name);
+    repsets  text;
 BEGIN
-    RAISE NOTICE 'Phase 10: Creating new to source node subscription';
+    RAISE NOTICE 'Creating new to source node subscription';
+
+    -- The new node is the provider, so the list comes from it.
+    repsets := spock.node_repset_list(new_node_dsn);
 
     -- Create subscription from new node to source node (enabled with sync)
     CALL spock.create_sub(
         src_dsn,
         sub_name,
         new_node_dsn,
-        'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']',
+        repsets,
         false,   -- synchronize_structure
         false,   -- synchronize_data
         'ARRAY[]::text[]',
@@ -1908,15 +2268,19 @@ CREATE OR REPLACE PROCEDURE spock.create_source_to_new_subscription(
 ) LANGUAGE plpgsql AS $$
 DECLARE
     sub_name text := spock.gen_sub_name(src_node_name, new_node_name);
+    repsets  text;
 BEGIN
-    RAISE NOTICE 'Phase 4: Creating source to new node subscription';
+    RAISE NOTICE 'Phase 5: Creating source to new node subscription';
+
+    -- The source is the provider for this subscription.
+    repsets := spock.node_repset_list(src_dsn);
 
     -- Create subscription from source to new node (enabled with sync)
     CALL spock.create_sub(
         new_node_dsn,                                 -- Create on new node
         sub_name, 									  -- sub_<new_node>_<src_node>
         src_dsn,                                      -- Provider is source node
-        'ARRAY[''default'', ''default_insert_only'', ''ddl_sql'']', -- Replication sets
+        repsets,                                      -- Replication sets (all of the source's)
         true,                                         -- synchronize_structure
         true,                                         -- synchronize_data
         'ARRAY[]::text[]',                            -- forward_origins
@@ -1946,7 +2310,7 @@ DECLARE
     timeout_ms integer := 180;  -- 3 minutes timeout
     remotesql text;
 BEGIN
-    RAISE NOTICE 'Phase 5: Triggering sync events on other nodes and waiting on source';
+    RAISE NOTICE 'Phase 4: Triggering sync events on other nodes and waiting on source';
 
     -- Check if this is a 2-node scenario (only source and new node)
     IF (SELECT count(*) FROM temp_spock_nodes WHERE node_name != src_node_name AND node_name != new_node_name) = 0 THEN
@@ -2325,7 +2689,7 @@ BEGIN
     COMMIT;
 
     -- Phase 10: Presenting final cluster state
-    RAISE NOTICE 'Phase 10: Presenting final cluster state';
+    RAISE NOTICE 'Phase 11: Presenting final cluster state';
 
     -- Wait for replication to be active
     RAISE NOTICE '    Waiting for replication to be active...';
@@ -2410,7 +2774,7 @@ CREATE OR REPLACE PROCEDURE spock.monitor_replication_lag(
 ) LANGUAGE plpgsql AS $$
 BEGIN
     -- Phase 11: Monitor replication lag
-    RAISE NOTICE 'Phase 11: Monitoring replication lag';
+    RAISE NOTICE 'Phase 12: Monitoring replication lag';
     CALL spock.monitor_lag_with_dblink(src_node_name, new_node_name, new_node_dsn, verb);
 END;
 $$;
@@ -2460,6 +2824,7 @@ AS
 $$
 DECLARE
     initial_node_count integer;
+    repset_summary     text;
 BEGIN
     -- Phase 0: Check Spock version compatibility across all nodes
     -- Example: Ensure all nodes are running the same Spock version before proceeding
@@ -2493,27 +2858,70 @@ BEGIN
     -- Example: Confirm n4 is caught up to n1's latest changes.
     CALL spock.check_commit_timestamp_and_advance_slot(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 8: Enable previously disabled subscriptions.
+    -- Phase 8: Mirror the source node's replication sets onto the new node.
+    -- Runs after the structure and data sync (the tables have to exist) and
+    -- before the new node starts acting as a provider in Phase 10, otherwise it
+    -- would send only whatever AutoDDL happened to route into the built-in
+    -- sets during the restore.
+    --
+    -- Invoked over dblink rather than called directly even though add_node is
+    -- already running on the new node: see sync_repsets_from_source() for why
+    -- holding its catalog locks for the rest of this transaction deadlocks
+    -- against the dblink session that Phase 9 enables subscriptions from.
+    RAISE NOTICE 'Phase 8: Mirroring replication sets from source node';
+    SELECT summary INTO repset_summary
+      FROM dblink(new_node_dsn,
+               format('SELECT spock.sync_repsets_from_source(%L, %L, %L::boolean)',
+                      src_dsn, new_node_name, verb)) AS t(summary text);
+    RAISE NOTICE '    OK: %', rpad(repset_summary, 120, ' ');
+
+    -- Report, but do not fail on, replication sets that moved on the source
+    -- while this join was running. A join can take hours; refusing to finish
+    -- because somebody added a table in the meantime would throw away all of
+    -- that work, when the new node is otherwise complete and the fix is one
+    -- repset_add_table away. Name the exact entries so it can be applied.
+    DECLARE
+        drift_rec  RECORD;
+        drift_list text := '';
+    BEGIN
+        FOR drift_rec IN
+            SELECT side, entry FROM spock.repset_diff(src_dsn, new_node_dsn)
+        LOOP
+            drift_list := drift_list || E'\n      ' || drift_rec.side || ': ' || drift_rec.entry;
+        END LOOP;
+
+        IF drift_list <> '' THEN
+            RAISE WARNING 'Replication sets on % no longer match %: the source changed while the node was joining.%',
+                new_node_name, src_node_name, drift_list;
+            RAISE WARNING 'Reconcile with spock.repset_add_table()/spock.repset_remove_table() on %; add_node has otherwise completed.',
+                new_node_name;
+        ELSE
+            RAISE NOTICE '    OK: %', rpad('Replication sets on ' || new_node_name ||
+                                           ' match ' || src_node_name, 120, ' ');
+        END IF;
+    END;
+
+    -- Phase 9: Enable previously disabled subscriptions.
     -- Example: Activate replication paths for n4.
     CALL spock.enable_disabled_subscriptions(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 9: Create subscription from new node to source node.
+    -- Phase 10: Create subscription from new node to source node.
     -- Example: Set up n4 to replicate back to n1 for bidirectional sync.
     CALL spock.create_sub_on_new_node_to_src_node(src_node_name, src_dsn, new_node_name, new_node_dsn, verb);
 
-    -- Phase 10: Present final cluster state.
+    -- Phase 11: Present final cluster state.
     -- Example: Show n1, n2, n3, n4 as fully connected and synchronized.
     CALL spock.present_final_cluster_state(src_dsn, initial_node_count, verb);
 
-    -- Phase 11: Monitor replication lag.
+    -- Phase 12: Monitor replication lag.
     -- Example: Check that n4 is keeping up with n1, n2, n3 after joining.
     CALL spock.monitor_replication_lag(src_node_name, new_node_name, new_node_dsn, verb);
 
-    -- Phase 12: Show comprehensive node status across all nodes.
+    -- Phase 13: Show comprehensive node status across all nodes.
     -- Example: Display all nodes in n1, n2, n3, n4, n5 cluster.
     CALL spock.show_all_nodes(src_dsn, verb);
 
-    -- Phase 13: Show comprehensive subscription status across all nodes.
+    -- Phase 14: Show comprehensive subscription status across all nodes.
     -- Example: Display status of all subscriptions in n1, n2, n3, n4, n5 cluster.
     CALL spock.show_all_subscription_status(src_dsn, verb);
 END;
