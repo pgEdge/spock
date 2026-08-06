@@ -70,6 +70,19 @@ like($out, qr/cannot delete built-in reserved object/, 'guard message shown on d
 ($rc, $out) = psql_try("UPDATE spock.reserved_object SET builtin=false WHERE name='spock' AND kind='schema'");
 isnt($rc, 0, 'modifying a built-in reserved object is rejected');
 
+# Updating a built-in's behavioral columns (without touching the builtin
+# flag) is rejected too: the guard fires on ANY update of a built-in row,
+# and the aborted statement must leave the row unchanged.
+($rc, $out) = psql_try("UPDATE spock.reserved_object SET block_in_repset=false, replicate_ddl=false, exclude_from_dump=false WHERE name='spock' AND kind='schema'");
+isnt($rc, 0, "updating a built-in row's behavioral columns is rejected");
+like($out, qr/cannot update built-in reserved object/, 'guard message shown on the behavioral-column update');
+is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
+   't', 'block_in_repset unchanged on the built-in spock row after the rejected update');
+is(scalar_query(1, "SELECT replicate_ddl FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
+   't', 'replicate_ddl unchanged on the built-in spock row after the rejected update');
+is(scalar_query(1, "SELECT exclude_from_dump FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
+   't', 'exclude_from_dump unchanged on the built-in spock row after the rejected update');
+
 ($rc, $out) = psql_try("DELETE FROM spock.reserved_object WHERE name='pgedge_ace' AND kind='schema'");
 isnt($rc, 0, 'deleting the built-in pgedge_ace reserved object is rejected');
 like($out, qr/cannot delete built-in reserved object/, 'guard message shown on pgedge_ace delete');
@@ -110,6 +123,67 @@ isnt($rc, 0, 'CHECK rejects a non-NULL replicate_ddl on an extension row');
 # ...and rejects a NULL replicate_ddl on a schema row.
 ($rc, $out) = psql_try("INSERT INTO spock.reserved_object (name, kind, replicate_ddl) VALUES ('badschema', 'schema', NULL)");
 isnt($rc, 0, 'CHECK rejects a NULL replicate_ddl on a schema row');
+
+# --------------------------------------------------------------------------
+# reserved_object_remove(): drops an operator-added row, but the guard still
+# protects built-ins on the DELETE it issues.  These rows are added and
+# removed here so the operator-row count is back to 4 before the dump below.
+# --------------------------------------------------------------------------
+($rc, $out) = psql_try("SELECT spock.reserved_object_add('tmp_rm','schema')");
+is($rc, 0, "reserved_object_add('tmp_rm','schema') succeeds") or diag($out);
+is(scalar_query(1, "SELECT count(*) FROM spock.reserved_object WHERE name='tmp_rm' AND kind='schema'"),
+   '1', "operator-added 'tmp_rm' is present before removal");
+
+($rc, $out) = psql_try("SELECT spock.reserved_object_remove('tmp_rm','schema')");
+is($rc, 0, "reserved_object_remove('tmp_rm','schema') succeeds") or diag($out);
+is(scalar_query(1, "SELECT count(*) FROM spock.reserved_object WHERE name='tmp_rm' AND kind='schema'"),
+   '0', "reserved_object_remove drops the operator-added row");
+
+# reserved_object_remove on a built-in hits the guard on DELETE and is rejected.
+($rc, $out) = psql_try("SELECT spock.reserved_object_remove('spock','schema')");
+isnt($rc, 0, 'reserved_object_remove is rejected for a built-in row');
+like($out, qr/cannot delete built-in reserved object/, 'guard message shown when removing a built-in');
+is(scalar_query(1, "SELECT count(*) FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
+   '1', 'built-in spock schema row survives the rejected remove');
+
+# --------------------------------------------------------------------------
+# reserved_object_add on a built-in must be rejected too: its first step is an
+# UPDATE of the matching row, which trips the guard for built-ins.  The
+# built-in row must be left unchanged.
+# --------------------------------------------------------------------------
+is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
+   't', 'spock schema block_in_repset is true before the add attempt');
+($rc, $out) = psql_try("SELECT spock.reserved_object_add('spock','schema', p_block_in_repset := false)");
+isnt($rc, 0, 'reserved_object_add is rejected for a built-in row');
+like($out, qr/cannot update built-in reserved object/, 'guard message shown when add updates a built-in');
+is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
+   't', 'built-in spock row is unchanged after the rejected add');
+
+# --------------------------------------------------------------------------
+# reserved_object_add is an upsert: a second call for the same (name, kind)
+# updates the existing row in place rather than inserting a duplicate or
+# erroring.  Added and removed here to keep the operator-row count at 4.
+# --------------------------------------------------------------------------
+($rc, $out) = psql_try("SELECT spock.reserved_object_add('idem','schema', p_block_in_repset := true)");
+is($rc, 0, "first reserved_object_add('idem','schema') succeeds") or diag($out);
+is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='idem' AND kind='schema'"),
+   't', "'idem' starts with block_in_repset=true");
+
+($rc, $out) = psql_try("SELECT spock.reserved_object_add('idem','schema', p_block_in_repset := false)");
+is($rc, 0, "second reserved_object_add('idem','schema') succeeds") or diag($out);
+is(scalar_query(1, "SELECT count(*) FROM spock.reserved_object WHERE name='idem' AND kind='schema'"),
+   '1', 're-adding the same object does not create a duplicate row');
+is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='idem' AND kind='schema'"),
+   'f', 're-adding updates the existing row in place (block_in_repset now false)');
+is(scalar_query(1, "SELECT builtin FROM spock.reserved_object WHERE name='idem' AND kind='schema'"),
+   'f', "re-added 'idem' is still not a built-in");
+
+# Clean up: assert the removal so a silent failure here can't quietly break
+# the "4 operator-added rows" round-trip assertion later.
+($rc, $out) = psql_try("SELECT spock.reserved_object_remove('idem','schema')");
+is($rc, 0, "reserved_object_remove('idem','schema') cleans up") or diag($out);
+is(scalar_query(1, "SELECT count(*) FROM spock.reserved_object WHERE NOT builtin"),
+   '3', 'operator-row count is back to baseline (ace, foo, myext) after these tests');
 
 # Create the schemas/tables with DDL replication off, so nothing is
 # auto-added to a replication set (this cluster runs with include_ddl_repset
