@@ -59,6 +59,10 @@ ARG PG_REF=
 # injecting random 1-100 ms delays at every transaction begin, worker start,
 # and worker finish.  Used by the random-delays-regress workflow.
 ARG SPOCK_RANDOM_DELAYS=
+# When set to any non-empty value, PostgreSQL is configured with
+# --enable-injection-points, so spock_injection.h's USE_INJECTION_POINTS
+# branch is compiled.  Must be combined with an empty SPOCK_RANDOM_DELAYS.
+ARG ENABLE_INJECTION_POINTS=
 
 # Export as environment variables for build-time and runtime
 ENV PGVER=${PGVER} \
@@ -196,6 +200,7 @@ RUN set -eux && \
 	--enable-dtrace \
 	--enable-cassert \
 	--enable-tap-tests \
+	${ENABLE_INJECTION_POINTS:+--enable-injection-points} \
 	PYTHON=/usr/bin/python3 \
 	CFLAGS="-g -O0" \
 	BITCODE_CFLAGS="-gdwarf-5 -O0 -fforce-dwarf-frame" && \

@@ -50,9 +50,12 @@ jobs:
       - name: Build docker container
         run: |
           cd ${GITHUB_WORKSPACE}/
-          # Build docker image once for specific version, needed for this test
+          # --enable-injection-points is on here (and SPOCK_RANDOM_DELAYS is
+          # left unset) purely so spock_injection.h's USE_INJECTION_POINTS
+          # branch gets compiled and checked.
           docker build \
             --build-arg PGVER=${{ matrix.pgver }} \
+            --build-arg ENABLE_INJECTION_POINTS=1 \
             -t spock -f tests/docker/Dockerfile-step-1.el9 .
 
       - name: Start docker cluster
