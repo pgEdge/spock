@@ -166,6 +166,7 @@ static void die(const char *fmt,...)
 pg_attribute_printf(1, 2);
 static void print_msg(VerbosityLevelEnum level, const char *fmt,...)
 pg_attribute_printf(2, 3);
+static PGresult *debug_exec(PGconn *conn, const char *query);
 
 static int run_pg_ctl(const char *arg);
 static void validate_extra_basebackup_args(const char *args);
@@ -333,6 +334,7 @@ discover_peer_nodes(PGconn *source_conn, const char *source_node_name,
 	int			i;
 
 	paramValues[0] = source_node_name;
+	print_msg(VERBOSITY_DEBUG, _("  > %s [$1=%s]\n"), discover_sql, source_node_name);
 	res = PQexecParams(source_conn, discover_sql,
 					   1, NULL, paramValues, NULL, NULL, 0);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -364,6 +366,10 @@ discover_peer_nodes(PGconn *source_conn, const char *source_node_name,
 		paramValues[0] = dbname;
 		paramValues[1] = peers[i].node_name;
 		paramValues[2] = peers[i].sub_name;
+		print_msg(VERBOSITY_DEBUG,
+				  _("  > SELECT spock.spock_gen_slot_name($1::name, $2::name, "
+					"$3::name) [$1=%s, $2=%s, $3=%s]\n"),
+				  dbname, peers[i].node_name, peers[i].sub_name);
 		slot_res = PQexecParams(source_conn,
 								"SELECT spock.spock_gen_slot_name"
 								"($1::name, $2::name, $3::name)",
@@ -395,7 +401,7 @@ check_spock_version_at_least_6(PGconn *conn, const char *node_label)
 {
 	PGresult   *res;
 
-	res = PQexec(conn, "SELECT extversion FROM pg_extension WHERE extname = 'spock'");
+	res = debug_exec(conn, "SELECT extversion FROM pg_extension WHERE extname = 'spock'");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -446,7 +452,7 @@ check_mesh_edges(PGconn *conn, const char *this_node_name,
 	 * means "actually replicating" -- a worker that's down or still
 	 * initializing must not satisfy the mesh.
 	 */
-	res = PQexec(conn, "SELECT provider_node, status FROM spock.sub_show_status()");
+	res = debug_exec(conn, "SELECT provider_node, status FROM spock.sub_show_status()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -525,7 +531,7 @@ check_peer_identity(PGconn *peer_conn, const char *expected_name)
 {
 	PGresult   *res;
 
-	res = PQexec(peer_conn, "SELECT node_name FROM spock.node_info()");
+	res = debug_exec(peer_conn, "SELECT node_name FROM spock.node_info()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
 	{
 		PQclear(res);
@@ -576,7 +582,7 @@ compute_repset_fingerprints(PGconn *conn, Oid node_id, const char *selected_filt
 					  " FROM spock.replication_set WHERE set_nodeid = %u"
 					  " AND (%s)"
 					  " ORDER BY set_name", node_id, selected_filter);
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -610,7 +616,7 @@ compute_repset_fingerprints(PGconn *conn, Oid node_id, const char *selected_filt
 						  " ORDER BY rts.set_reloid::regclass::text",
 						  node_id,
 						  PQescapeLiteral(conn, entries[i].set_name, strlen(entries[i].set_name)));
-		tres = PQexec(conn, query->data);
+		tres = debug_exec(conn, query->data);
 		if (PQresultStatus(tres) != PGRES_TUPLES_OK)
 		{
 			PQclear(tres);
@@ -645,7 +651,7 @@ compute_repset_fingerprints(PGconn *conn, Oid node_id, const char *selected_filt
 							  "SELECT relkind::text, relreplident::text"
 							  " FROM pg_class WHERE oid = %s::regclass",
 							  PQescapeLiteral(conn, qualified_table, strlen(qualified_table)));
-			cres = PQexec(conn, schema_query->data);
+			cres = debug_exec(conn, schema_query->data);
 			if (PQresultStatus(cres) != PGRES_TUPLES_OK || PQntuples(cres) != 1)
 			{
 				PQclear(cres);
@@ -670,7 +676,7 @@ compute_repset_fingerprints(PGconn *conn, Oid node_id, const char *selected_filt
 							  " WHERE a.attrelid = %s::regclass AND a.attnum > 0"
 							  " AND NOT a.attisdropped ORDER BY a.attnum",
 							  PQescapeLiteral(conn, qualified_table, strlen(qualified_table)));
-			cres = PQexec(conn, schema_query->data);
+			cres = debug_exec(conn, schema_query->data);
 			destroyPQExpBuffer(schema_query);
 			if (PQresultStatus(cres) != PGRES_TUPLES_OK)
 			{
@@ -705,7 +711,7 @@ compute_repset_fingerprints(PGconn *conn, Oid node_id, const char *selected_filt
 						  " ORDER BY rss.set_seqoid::regclass::text",
 						  node_id,
 						  PQescapeLiteral(conn, entries[i].set_name, strlen(entries[i].set_name)));
-		sres = PQexec(conn, query->data);
+		sres = debug_exec(conn, query->data);
 		if (PQresultStatus(sres) != PGRES_TUPLES_OK)
 		{
 			PQclear(sres);
@@ -756,7 +762,7 @@ build_selected_set_name_filter(PGconn *conn)
 	char	   *result;
 	int			i;
 
-	res = PQexec(conn,
+	res = debug_exec(conn,
 				 "SELECT DISTINCT s FROM spock.subscription,"
 				 " unnest(sub_replication_sets) AS s ORDER BY 1");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -905,7 +911,7 @@ check_preconditions(PGconn *source_conn, const char *source_node_name,
 	check_spock_version_at_least_6(source_conn, "source");
 
 	/* track_commit_timestamp must be on at the source */
-	res = PQexec(source_conn, "SHOW track_commit_timestamp");
+	res = debug_exec(source_conn, "SHOW track_commit_timestamp");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		die(_("could not check track_commit_timestamp: %s"),
 			PQerrorMessage(source_conn));
@@ -921,7 +927,7 @@ check_preconditions(PGconn *source_conn, const char *source_node_name,
 	 * count is monotonically non-decreasing and is never zero on any node
 	 * that has replicated so much as a single DDL statement.
 	 */
-	res = PQexec(source_conn,
+	res = debug_exec(source_conn,
 				 "SELECT COUNT(*) FROM pg_replication_slots"
 				 " WHERE slot_type = 'logical' AND plugin = 'spock_output'"
 				 " AND (confirmed_flush_lsn IS NULL"
@@ -957,7 +963,7 @@ check_preconditions(PGconn *source_conn, const char *source_node_name,
 		check_peer_identity(peer_conn, peers[i].node_name);
 		check_spock_version_at_least_6(peer_conn, peers[i].node_name);
 
-		res = PQexec(peer_conn, "SHOW track_commit_timestamp");
+		res = debug_exec(peer_conn, "SHOW track_commit_timestamp");
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
 			/*
@@ -1012,7 +1018,7 @@ check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
 	PQExpBuffer	others = createPQExpBuffer();
 	int			other_count = 0;
 
-	res = PQexec(conn, "SELECT datname FROM pg_database WHERE NOT datistemplate");
+	res = debug_exec(conn, "SELECT datname FROM pg_database WHERE NOT datistemplate");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -1043,7 +1049,7 @@ check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
 				  "\"%s\" to check: %s\n"), dbname, errmsg);
 		}
 
-		ext_res = PQexec(db_conn, "SELECT 1 FROM pg_extension WHERE extname = 'spock'");
+		ext_res = debug_exec(db_conn, "SELECT 1 FROM pg_extension WHERE extname = 'spock'");
 		if (PQresultStatus(ext_res) != PGRES_TUPLES_OK)
 		{
 			char *errmsg = pg_strdup(PQerrorMessage(db_conn));
@@ -1058,7 +1064,7 @@ check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
 
 		if (PQntuples(ext_res) > 0)
 		{
-			node_res = PQexec(db_conn, "SELECT 1 FROM spock.local_node");
+			node_res = debug_exec(db_conn, "SELECT 1 FROM spock.local_node");
 			if (PQresultStatus(node_res) != PGRES_TUPLES_OK)
 			{
 				char *errmsg = pg_strdup(PQerrorMessage(db_conn));
@@ -1104,7 +1110,7 @@ check_no_native_subscriptions(PGconn *conn)
 {
 	PGresult   *res;
 
-	res = PQexec(conn,
+	res = debug_exec(conn,
 				 "SELECT s.subname, d.datname"
 				 " FROM pg_subscription s"
 				 " JOIN pg_database d ON d.oid = s.subdbid"
@@ -1594,7 +1600,7 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 						  " FROM pg_replication_slots"
 						  " WHERE slot_name = '%s'",
 						  state->source_slot_name);
-		res = PQexec(source_conn, query->data);
+		res = debug_exec(source_conn, query->data);
 		if (PQresultStatus(res) == PGRES_TUPLES_OK)
 		{
 			if (PQntuples(res) > 0)
@@ -1651,7 +1657,7 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 							  " FROM pg_replication_slots"
 							  " WHERE slot_name = '%s'",
 							  peer->slot_name);
-			res = PQexec(peer_conn, query->data);
+			res = debug_exec(peer_conn, query->data);
 			if (PQresultStatus(res) == PGRES_TUPLES_OK)
 			{
 				if (PQntuples(res) > 0)
@@ -1684,7 +1690,7 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 			printfPQExpBuffer(query,
 							  "SELECT spock.sub_drop(%s, true)",
 							  PQescapeLiteral(peer_conn, reverse_sub, strlen(reverse_sub)));
-			res = PQexec(peer_conn, query->data);
+			res = debug_exec(peer_conn, query->data);
 			if (PQresultStatus(res) != PGRES_TUPLES_OK)
 			{
 				print_msg(VERBOSITY_NORMAL,
@@ -2187,6 +2193,15 @@ main(int argc, char **argv)
 												  remote_info->node_name,
 												  subscriber_name, db,
 												  &bidir.peers);
+			{
+				int	pi;
+
+				for (pi = 0; pi < bidir.num_peers; pi++)
+					print_msg(VERBOSITY_DEBUG,
+							  _("Discovered peer \"%s\" (dsn \"%s\", slot \"%s\")\n"),
+							  bidir.peers[pi].node_name, bidir.peers[pi].dsn,
+							  bidir.peers[pi].slot_name);
+			}
 			check_preconditions(provider_conn, remote_info->node_name,
 								bidir.peers, bidir.num_peers);
 			check_single_spock_database(provider_conn, base_prov_connstr, db);
@@ -2208,11 +2223,16 @@ main(int argc, char **argv)
 
 			print_msg(VERBOSITY_NORMAL,
 					  _("Creating source replication slot in database %s ...\n"), db);
+			print_msg(VERBOSITY_DEBUG,
+					  _("Creating replication slot on source \"%s\" for future "
+						"subscription \"%s\"\n"), remote_info->node_name, source_sub_name);
 			bidir.source_slot_name = initialize_replication_slot(provider_conn,
 																 remote_info->dbname,
 																 remote_info->node_name,
 																 source_sub_name,
 																 drop_slot_if_exists);
+			print_msg(VERBOSITY_DEBUG, _("Source replication slot created: \"%s\"\n"),
+					  bidir.source_slot_name);
 			bidir.source_origin_name = pg_strdup(bidir.source_slot_name);
 			pg_free(source_sub_name);
 
@@ -2270,6 +2290,14 @@ main(int argc, char **argv)
 	prov_connstr = get_connstr(base_prov_connstr, database_list[0]);
 	sub_connstr = get_connstr(base_sub_connstr, database_list[0]);
 
+	if (!use_existing_data_dir)
+		print_msg(VERBOSITY_DEBUG,
+				  _("Taking a physical base backup from \"%s\" into \"%s\"\n"),
+				  prov_connstr, data_dir);
+	else
+		print_msg(VERBOSITY_DEBUG,
+				  _("Reusing existing data directory \"%s\" (already a basebackup "
+					"of this source)\n"), data_dir);
 	initialize_data_dir(data_dir,
 						use_existing_data_dir ? NULL : prov_connstr,
 						postgresql_conf, postgresql_auto_conf, pg_hba_conf,
@@ -2413,7 +2441,7 @@ main(int argc, char **argv)
 		 * share it.
 		 */
 		{
-			PGresult   *sysid_res = PQexec(subscriber_conn, "SELECT system_identifier FROM pg_control_system()");
+			PGresult   *sysid_res = debug_exec(subscriber_conn, "SELECT system_identifier FROM pg_control_system()");
 			bool		mismatch;
 
 			if (PQresultStatus(sysid_res) != PGRES_TUPLES_OK || PQntuples(sysid_res) != 1)
@@ -2434,9 +2462,20 @@ main(int argc, char **argv)
 
 		/* Capture repset/table/sequence state before the catalog strip. */
 		source_nodeid = get_local_node_id(subscriber_conn);
+		print_msg(VERBOSITY_DEBUG,
+				  _("Capturing replication-set/table/sequence membership for local "
+					"node id %u before dropping the spock extension\n"), source_nodeid);
 		capture_catalog_state(subscriber_conn, source_nodeid, &capture);
+		print_msg(VERBOSITY_DEBUG,
+				  _("Captured %d replication set(s), %d table membership(s), "
+					"%d sequence(s)\n"),
+				  capture.num_repsets, capture.num_tables, capture.num_sequences);
 
 		/* Drop all origins, then guarded DROP EXTENSION. */
+		print_msg(VERBOSITY_DEBUG,
+				  _("Dropping replication origins and the spock extension (checking "
+					"pg_depend first for non-spock objects CASCADE would collaterally "
+					"drop)\n"));
 		remove_unwanted_data_bidir(subscriber_conn, &capture);
 
 		PQfinish(subscriber_conn);
@@ -2501,6 +2540,8 @@ main(int argc, char **argv)
 		 */
 		print_msg(VERBOSITY_NORMAL, _("Creating local Spock node \"%s\"...\n"),
 				  subscriber_name);
+		print_msg(VERBOSITY_DEBUG, _("Registering node \"%s\" with dsn \"%s\"\n"),
+				  subscriber_name, sub_connstr);
 		{
 			PQExpBuffer nodequery = createPQExpBuffer();
 			PGresult   *res;
@@ -2511,7 +2552,7 @@ main(int argc, char **argv)
 											  strlen(subscriber_name)),
 							  PQescapeLiteral(subscriber_conn, sub_connstr,
 											  strlen(sub_connstr)));
-			res = PQexec(subscriber_conn, nodequery->data);
+			res = debug_exec(subscriber_conn, nodequery->data);
 			if (PQresultStatus(res) != PGRES_TUPLES_OK)
 			{
 				PQclear(res);
@@ -2527,6 +2568,11 @@ main(int argc, char **argv)
 
 		/* Restore what was captured before the catalog strip. */
 		print_msg(VERBOSITY_NORMAL, _("Restoring replication set state...\n"));
+		print_msg(VERBOSITY_DEBUG,
+				  _("Restoring %d replication set(s), %d table membership(s), "
+					"%d sequence(s) onto node \"%s\"\n"),
+				  capture.num_repsets, capture.num_tables, capture.num_sequences,
+				  subscriber_name);
 		restore_replication_sets(subscriber_conn, &capture);
 
 		bidir.source_restore_lsn = pg_strdup(remote_lsn);
@@ -2624,7 +2670,9 @@ usage(void)
 	printf(_("  --apply-delay=DELAY         apply delay in seconds (by default 0)\n"));
 	printf(_("  --drop-slot-if-exists       drop replication slot of conflicting name\n"));
 	printf(_("  -s, --stop                  stop the server once the initialization is done\n"));
-	printf(_("  -v                          increase logging verbosity\n"));
+	printf(_("  -v                          increase logging verbosity; repeatable --\n"));
+	printf(_("                              -v -v also traces every query this tool\n"));
+	printf(_("                              runs, with its result status\n"));
 	printf(_("  --extra-basebackup-args     additional arguments to pass to pg_basebackup.\n"));
 	printf(_("                              Safe options: -T, -c, --xlogdir/--waldir\n"));
 	printf(_("  --text-types               transfer column values as text rather than binary\n"));
@@ -2691,6 +2739,34 @@ print_msg(VerbosityLevelEnum level, const char *fmt,...)
 		va_end(argptr);
 		fflush(stdout);
 	}
+}
+
+/*
+ * PQexec() wrapper that logs the query text at VERBOSITY_DEBUG (-v -v)
+ * before running it, and the resulting status/row count after -- a
+ * drop-in replacement so every query this tool issues is traceable
+ * without a separate print_msg() call at each site.  Callers still do
+ * their own PQresultStatus()/die() handling on the result exactly as
+ * with a plain PQexec() call.
+ */
+static PGresult *
+debug_exec(PGconn *conn, const char *query)
+{
+	PGresult   *res;
+
+	print_msg(VERBOSITY_DEBUG, _("  > %s\n"), query);
+	res = PQexec(conn, query);
+	if (verbosity >= VERBOSITY_DEBUG)
+	{
+		if (PQresultStatus(res) == PGRES_TUPLES_OK)
+			print_msg(VERBOSITY_DEBUG, _("  < %s (%d row(s))\n"),
+					  PQresStatus(PQresultStatus(res)), PQntuples(res));
+		else
+			print_msg(VERBOSITY_DEBUG, _("  < %s\n"),
+					  PQresStatus(PQresultStatus(res)));
+	}
+
+	return res;
 }
 
 
@@ -2900,7 +2976,7 @@ initialize_replication_slot(PGconn *conn, char *dbname,
 					  PQescapeLiteral(conn, subscription_name,
 									  strlen(subscription_name)));
 
-	res = PQexec(conn, query.data);
+	res = debug_exec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		die(_("Could generate slot name: %s"), PQerrorMessage(conn));
 
@@ -2914,7 +2990,7 @@ initialize_replication_slot(PGconn *conn, char *dbname,
 					  "SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name = %s",
 					  PQescapeLiteral(conn, slot_name, strlen(slot_name)));
 
-	res = PQexec(conn, query.data);
+	res = debug_exec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		die(_("Could not fetch existing slot information: %s"), PQerrorMessage(conn));
 
@@ -2935,7 +3011,7 @@ initialize_replication_slot(PGconn *conn, char *dbname,
 						  "SELECT pg_catalog.pg_drop_replication_slot(%s)",
 						  PQescapeLiteral(conn, slot_name, strlen(slot_name)));
 
-		res = PQexec(conn, query.data);
+		res = debug_exec(conn, query.data);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 			die(_("Could not drop existing slot %s: %s"), slot_name,
 				PQerrorMessage(conn));
@@ -2949,7 +3025,7 @@ initialize_replication_slot(PGconn *conn, char *dbname,
 					  PQescapeLiteral(conn, slot_name, strlen(slot_name)),
 					  "spock_output");
 
-	res = PQexec(conn, query.data);
+	res = debug_exec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("Could not create replication slot, status %s: %s\n"),
@@ -2976,7 +3052,7 @@ get_remote_info(PGconn* conn)
 	if (!extension_exists(conn, "spock"))
 		die(_("The remote node is not configured as a spock provider.\n"));
 
-	res = PQexec(conn, "SELECT node_id, node_name, sysid, dbname, replication_sets FROM spock.node_info()");
+	res = debug_exec(conn, "SELECT node_id, node_name, sysid, dbname, replication_sets FROM spock.node_info()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		die(_("could not fetch remote node info: %s\n"), PQerrorMessage(conn));
 
@@ -3012,7 +3088,7 @@ extension_exists(PGconn *conn, const char *extname)
 
 	printfPQExpBuffer(query, "SELECT 1 FROM pg_catalog.pg_extension WHERE extname = %s;",
 					  PQescapeLiteral(conn, extname, strlen(extname)));
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
@@ -3039,7 +3115,7 @@ install_extension(PGconn *conn, const char *extname)
 
 	printfPQExpBuffer(query, "CREATE EXTENSION IF NOT EXISTS %s;",
 					  PQescapeIdentifier(conn, extname, strlen(extname)));
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
@@ -3064,7 +3140,7 @@ remove_unwanted_data(PGconn *conn)
 	 * Remove replication identifiers (9.4 will get them removed by dropping
 	 * the extension later as we emulate them there).
 	 */
-	res = PQexec(conn, "SELECT pg_replication_origin_drop(external_id) FROM pg_replication_origin_status;");
+	res = debug_exec(conn, "SELECT pg_replication_origin_drop(external_id) FROM pg_replication_origin_status;");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -3072,7 +3148,7 @@ remove_unwanted_data(PGconn *conn)
 	}
 	PQclear(res);
 
-	res = PQexec(conn, "DROP EXTENSION spock CASCADE;");
+	res = debug_exec(conn, "DROP EXTENSION spock CASCADE;");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		die(_("Could not clean the spock extension, status %s: %s\n"),
@@ -3092,7 +3168,7 @@ get_local_node_id(PGconn *conn)
 	PGresult   *res;
 	Oid			nodeid;
 
-	res = PQexec(conn, "SELECT node_id FROM spock.local_node");
+	res = debug_exec(conn, "SELECT node_id FROM spock.local_node");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
 	{
 		PQclear(res);
@@ -3118,7 +3194,7 @@ capture_repsets(PGconn *conn, Oid source_nodeid, CatalogCapture *capture)
 					  " FROM spock.replication_set"
 					  " WHERE set_nodeid = %u",
 					  source_nodeid);
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -3157,7 +3233,7 @@ capture_repset_tables(PGconn *conn, Oid source_nodeid, CatalogCapture *capture)
 					  " JOIN spock.replication_set rs ON rts.set_id = rs.set_id"
 					  " WHERE rs.set_nodeid = %u",
 					  source_nodeid);
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -3199,7 +3275,7 @@ capture_repset_sequences(PGconn *conn, Oid source_nodeid, CatalogCapture *captur
 					  " JOIN spock.replication_set rs ON rss.set_id = rs.set_id"
 					  " WHERE rs.set_nodeid = %u",
 					  source_nodeid);
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -3225,7 +3301,7 @@ capture_repset_sequences(PGconn *conn, Oid source_nodeid, CatalogCapture *captur
 		 */
 		printfPQExpBuffer(seq_query, "SELECT last_value, is_called FROM %s",
 						  capture->sequences[i].qualified_seq);
-		seq_res = PQexec(conn, seq_query->data);
+		seq_res = debug_exec(conn, seq_query->data);
 		if (PQresultStatus(seq_res) != PGRES_TUPLES_OK)
 		{
 			PQclear(seq_res);
@@ -3289,7 +3365,7 @@ remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
 	 * row -- an unrelated database on the same instance with its own
 	 * (non-spock) logical replication would otherwise lose its origins too.
 	 */
-	res = PQexec(conn,
+	res = debug_exec(conn,
 				 "SELECT pg_replication_origin_drop(roname)"
 				 " FROM pg_replication_origin"
 				 " WHERE roname LIKE 'spk\\_%' ESCAPE '\\'");
@@ -3302,7 +3378,7 @@ remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
 	PQclear(res);
 
 	/* Guard against CASCADE collaterally dropping user objects. */
-	res = PQexec(conn,
+	res = debug_exec(conn,
 				 "WITH spock_ext AS ("
 				 "  SELECT oid FROM pg_extension WHERE extname = 'spock'"
 				 "), ext_members AS ("
@@ -3356,7 +3432,7 @@ remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
 	}
 	PQclear(res);
 
-	res = PQexec(conn, "DROP EXTENSION spock CASCADE;");
+	res = debug_exec(conn, "DROP EXTENSION spock CASCADE;");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		die(_("Could not clean the spock extension, status %s: %s\n"),
@@ -3375,7 +3451,7 @@ set_readonly_local(PGconn *conn)
 {
 	PGresult   *res;
 
-	res = PQexec(conn, "ALTER SYSTEM SET spock.readonly = 'local'");
+	res = debug_exec(conn, "ALTER SYSTEM SET spock.readonly = 'local'");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		die(_("could not set spock.readonly: status %s: %s\n"),
@@ -3383,7 +3459,7 @@ set_readonly_local(PGconn *conn)
 	}
 	PQclear(res);
 
-	res = PQexec(conn, "SELECT pg_reload_conf()");
+	res = debug_exec(conn, "SELECT pg_reload_conf()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("could not reload configuration after setting spock.readonly: %s\n"),
@@ -3439,7 +3515,7 @@ restore_repsets(PGconn *conn, CatalogCapture *capture)
 							  s->replicate_update ? "true" : "false",
 							  s->replicate_delete ? "true" : "false",
 							  s->replicate_truncate ? "true" : "false");
-		res = PQexec(conn, query->data);
+		res = debug_exec(conn, query->data);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
 			PQclear(res);
@@ -3485,7 +3561,7 @@ restore_repset_tables(PGconn *conn, CatalogCapture *capture)
 						  PQescapeLiteral(conn, t->qualified_table, strlen(t->qualified_table)),
 						  t->columns ? PQescapeLiteral(conn, t->columns, strlen(t->columns)) : "NULL",
 						  t->row_filter ? PQescapeLiteral(conn, t->row_filter, strlen(t->row_filter)) : "NULL");
-		res = PQexec(conn, query->data);
+		res = debug_exec(conn, query->data);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
 			PQclear(res);
@@ -3519,7 +3595,7 @@ restore_repset_sequences(PGconn *conn, CatalogCapture *capture)
 						  "synchronize_data := false)",
 						  PQescapeLiteral(conn, sq->set_name, strlen(sq->set_name)),
 						  PQescapeLiteral(conn, sq->qualified_seq, strlen(sq->qualified_seq)));
-		res = PQexec(conn, query->data);
+		res = debug_exec(conn, query->data);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
 			PQclear(res);
@@ -3532,7 +3608,7 @@ restore_repset_sequences(PGconn *conn, CatalogCapture *capture)
 						  PQescapeLiteral(conn, sq->qualified_seq, strlen(sq->qualified_seq)),
 						  sq->last_value,
 						  sq->is_called ? "true" : "false");
-		res = PQexec(conn, query->data);
+		res = debug_exec(conn, query->data);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
 			PQclear(res);
@@ -3590,7 +3666,7 @@ verify_repsets_restored(PGconn *conn, CatalogCapture *capture)
 						  " replicate_delete, replicate_truncate"
 						  " FROM spock.replication_set WHERE set_name = %s",
 						  PQescapeLiteral(conn, s->set_name, strlen(s->set_name)));
-		res = PQexec(conn, query->data);
+		res = debug_exec(conn, query->data);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
 		{
 			PQclear(res);
@@ -3650,7 +3726,7 @@ verify_repset_tables_restored(PGconn *conn, CatalogCapture *capture)
 						  " WHERE rs.set_name = %s AND rts.set_reloid::regclass::text = %s",
 						  PQescapeLiteral(conn, t->set_name, strlen(t->set_name)),
 						  PQescapeLiteral(conn, t->qualified_table, strlen(t->qualified_table)));
-		res = PQexec(conn, query->data);
+		res = debug_exec(conn, query->data);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
 		{
 			PQclear(res);
@@ -3683,7 +3759,7 @@ verify_repset_tables_restored(PGconn *conn, CatalogCapture *capture)
 
 	printfPQExpBuffer(query,
 					  "SELECT COUNT(*) FROM spock.replication_set_table");
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -3720,7 +3796,7 @@ verify_repset_sequences_restored(PGconn *conn, CatalogCapture *capture)
 						  " WHERE rs.set_name = %s AND rss.set_seqoid::regclass::text = %s",
 						  PQescapeLiteral(conn, sq->set_name, strlen(sq->set_name)),
 						  PQescapeLiteral(conn, sq->qualified_seq, strlen(sq->qualified_seq)));
-		res = PQexec(conn, query->data);
+		res = debug_exec(conn, query->data);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
 			PQclear(res);
@@ -3736,7 +3812,7 @@ verify_repset_sequences_restored(PGconn *conn, CatalogCapture *capture)
 	}
 
 	printfPQExpBuffer(query, "SELECT COUNT(*) FROM spock.replication_set_seq");
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -3781,7 +3857,7 @@ initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
 	printfPQExpBuffer(query, "SELECT pg_replication_origin_create(%s)",
 						PQescapeLiteral(conn, origin_name, strlen(origin_name)));
 
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
@@ -3797,7 +3873,7 @@ initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
 							PQescapeLiteral(conn, origin_name, strlen(origin_name)),
 							remote_lsn);
 
-		res = PQexec(conn, query->data);
+		res = debug_exec(conn, query->data);
 
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
@@ -3825,7 +3901,7 @@ create_restore_point(PGconn *conn, char *restore_point_name)
 
 	printfPQExpBuffer(query, "SELECT pg_create_restore_point(%s)",
 					  PQescapeLiteral(conn, restore_point_name, strlen(restore_point_name)));
-	res = PQexec(conn, query->data);
+	res = debug_exec(conn, query->data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("Could not create restore point, status %s: %s\n"),
@@ -3854,7 +3930,7 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 					  PQescapeLiteral(conn, subscriber_name, strlen(subscriber_name)),
 					  PQescapeLiteral(conn, subscriber_dsn, strlen(subscriber_dsn)));
 
-	res = PQexec(conn, query.data);
+	res = debug_exec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("Could not create local node, status %s: %s\n"),
@@ -3879,7 +3955,7 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 					  PQescapeLiteral(conn, repsets.data, repsets.len),
 					  apply_delay, (force_text_transfer ? "t" : "f"));
 
-	res = PQexec(conn, query.data);
+	res = debug_exec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("Could not create subscription, status %s: %s\n"),
@@ -3887,7 +3963,7 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 	}
 	PQclear(res);
 
-	res = PQexec(conn, "UPDATE spock.local_sync_status SET sync_status = 'r'"
+	res = debug_exec(conn, "UPDATE spock.local_sync_status SET sync_status = 'r'"
 					   " WHERE sync_status != 'r'");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
@@ -4376,7 +4452,7 @@ wait_primary_connection(const char *connstr, int stall_timeout, int max_wait)
 			conn = connectdb(connstr);
 		}
 
-		res = PQexec(conn, "SELECT pg_is_in_recovery()");
+		res = debug_exec(conn, "SELECT pg_is_in_recovery()");
 		if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1 && *PQgetvalue(res, 0, 0) == 'f')
 		{
 			ispri = true;
@@ -4387,7 +4463,7 @@ wait_primary_connection(const char *connstr, int stall_timeout, int max_wait)
 
 		if (stall_timeout > 0)
 		{
-			PGresult   *lsn_res = PQexec(conn, "SELECT pg_last_wal_replay_lsn()");
+			PGresult   *lsn_res = debug_exec(conn, "SELECT pg_last_wal_replay_lsn()");
 
 			if (PQresultStatus(lsn_res) == PGRES_TUPLES_OK && PQntuples(lsn_res) == 1 &&
 				!PQgetisnull(lsn_res, 0, 0))
