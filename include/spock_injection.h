@@ -28,7 +28,12 @@ extern void spock_random_delay(void);
 #elif defined(USE_INJECTION_POINTS)
 
 #include "utils/injection_point.h"
+
+#if PG_VERSION_NUM >= 180000
 #define SPOCK_WORKER_DELAY()	INJECTION_POINT("spock-worker-delay", NULL)
+#else
+#define SPOCK_WORKER_DELAY()	INJECTION_POINT("spock-worker-delay")
+#endif
 
 #else
 
