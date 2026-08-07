@@ -1340,11 +1340,27 @@ _PG_init(void)
 							NULL,
 							NULL);
 
+	/*
+	 * Spock resource manager.
+	 *
+	 * This must happen even under binary upgrade, and therefore before the
+	 * IsBinaryUpgrade early return below. From PG17 on, pg_upgrade proves
+	 * every logical slot is drained by calling
+	 * binary_upgrade_logical_slot_has_caught_up(), which decodes the WAL from
+	 * the slot's confirmed_flush to the end of WAL. Logical decoding looks up
+	 * the resource manager of every record it walks past -- whether or not
+	 * that rmgr has a decode callback -- so an unregistered SPOCK_RMGR_ID
+	 * makes GetRmgr() raise "resource manager with ID 144 not registered" and
+	 * pg_upgrade fails at the consistency-check stage.
+	 *
+	 * RegisterCustomRmgr() only installs redo/desc/identify callbacks; it
+	 * starts no worker and touches no shared state, so it does not
+	 * reintroduce any of the activity the early return exists to prevent.
+	 */
+	spock_rmgr_init();
+
 	if (IsBinaryUpgrade)
 		return;
-
-	/* Spock resource manager */
-	spock_rmgr_init();
 
 	/* Init shared memory for all subsystems needed it */
 	spock_shmem_init();
