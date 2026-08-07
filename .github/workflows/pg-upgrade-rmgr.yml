@@ -1,0 +1,96 @@
+#
+# pg_upgrade of a Spock node out of a PG17+ old cluster (no Docker)
+#
+# From PG17 on, pg_upgrade proves every logical slot is drained by decoding
+# it, and logical decoding resolves the resource manager of every record it
+# walks past.  Spock writes records with a custom rmgr (id 144), so if
+# spock_rmgr_init() is not reached in the throwaway servers pg_upgrade
+# starts, the upgrade dies with
+#
+#     ERROR:  resource manager with ID 144 not registered
+#
+# tests/run-pg-upgrade-rmgr.sh builds both majors, brings up a two-node
+# Spock mesh on the old one, shuts it down cleanly so the SHUTDOWN forensic
+# records land past the slot's confirmed_flush, and upgrades one node.
+#
+# The negative-control job reverts the fix in a throwaway copy of
+# src/spock.c and asserts the upgrade fails with exactly that error, so a
+# green main job cannot be green for the wrong reason.
+#
+# Dependency footprint is dictated by the script's ./configure flags:
+#
+#   --with-icu       -> libicu-dev
+#   --with-openssl   -> libssl-dev
+#   --with-readline  -> libreadline-dev
+#   --with-zstd      -> libzstd-dev
+#   --with-lz4       -> liblz4-dev
+#   (default zlib)   -> zlib1g-dev
+#   parser/scanner   -> bison, flex
+#   ICU pkg detect   -> pkg-config (preinstalled, listed for clarity)
+#
+
+name: pg_upgrade (custom rmgr)
+run-name: pg_upgrade PG17+spock -> PG18+spock
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'mkdocs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pg-upgrade-rmgr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The fix under test: the upgrade must succeed.
+          - name: fixed
+            args: ''
+          # The same rig with the fix reverted: the upgrade must fail with
+          # the rmgr error.  Guards against the main job passing because
+          # the slot check never ran.
+          - name: negative-control
+            args: '--negative-control'
+
+    name: pg-upgrade-rmgr (${{ matrix.name }})
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            --no-install-recommends \
+              bison flex pkg-config \
+              libicu-dev libssl-dev libreadline-dev \
+              libzstd-dev liblz4-dev zlib1g-dev
+
+      - name: Run the pg_upgrade rmgr test
+        run: |
+          # BASE_DIR defaults to <repo>/pg-upgrade-rmgr, which in CI is
+          # ${GITHUB_WORKSPACE}/pg-upgrade-rmgr -- the paths the
+          # upload-artifact step below points at.
+          ./tests/run-pg-upgrade-rmgr.sh --jobs "$(nproc)" ${{ matrix.args }}
+
+      - name: Collect logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-upgrade-rmgr-logs-${{ matrix.name }}
+          path: |
+            pg-upgrade-rmgr/log/**
+            pg-upgrade-rmgr/pgdata/n1-new/pg_upgrade_output.d/**
+            pg-upgrade-rmgr/upgrade-run/pg_upgrade_output.d/**
+          if-no-files-found: ignore
+          retention-days: 7

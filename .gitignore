@@ -21,3 +21,8 @@ tmp/
 # Deliberately not dot-prefixed so the directory is visible in Finder / ls
 # and easy to inspect.
 single-pg18-installcheck/
+
+# pg_upgrade custom-rmgr test rig (tests/run-pg-upgrade-rmgr.sh).  Same
+# deal: two PG clones plus builds, installs, PGDATA dirs, pg_upgrade
+# output and logs.  Re-create by running the script.
+pg-upgrade-rmgr/

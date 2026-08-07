@@ -38,6 +38,15 @@
 #include "spock_rmgr.h"
 #include "spock_worker.h"
 
+/*
+ * rm_decode is deliberately NULL. These records are forensic only: they
+ * carry no replicated data, so there is nothing for logical decoding to turn
+ * into an output-plugin callback. Logical decoding then takes its "no decode
+ * callback" branch, which processes the record's xid and nothing else -- the
+ * behaviour we want. Note that this branch is reached for every one of our
+ * records that a decoder walks past, which is why the rmgr must be
+ * registered even during a binary upgrade (see _PG_init in spock.c).
+ */
 static RmgrData spock_custom_rmgr = {
 	.rm_name = SPOCK_RMGR_NAME,
 	.rm_redo = spock_rmgr_redo,
@@ -45,6 +54,8 @@ static RmgrData spock_custom_rmgr = {
 	.rm_identify = spock_rmgr_identify,
 	.rm_startup = NULL,
 	.rm_cleanup = NULL,
+	.rm_mask = NULL,
+	.rm_decode = NULL,
 };
 
 void
