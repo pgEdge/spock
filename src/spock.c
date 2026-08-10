@@ -1218,7 +1218,7 @@ _PG_init(void)
 							SPOCK_RESTART_MIN_DELAY,
 							INT_MAX,
 							PGC_POSTMASTER,
-							0,
+							GUC_UNIT_MS,
 							NULL,
 							NULL,
 							NULL);
@@ -1231,7 +1231,7 @@ _PG_init(void)
 							0,
 							INT_MAX,
 							PGC_POSTMASTER,
-							0,
+							GUC_UNIT_MS,
 							NULL,
 							NULL,
 							NULL);
@@ -1310,7 +1310,7 @@ _PG_init(void)
 							0,
 							60000,
 							PGC_SIGHUP,
-							0,
+							GUC_UNIT_MS,
 							NULL,
 							NULL,
 							NULL);
