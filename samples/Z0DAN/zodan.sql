@@ -2010,7 +2010,7 @@ BEGIN
             -- This ensures the subscription starts replicating from the correct sync point
             DECLARE
                 sync_lsn text;
-                timeout_ms integer := 180;  -- 3 minutes
+                timeout_s integer := 180;  -- 3 minutes
                 temp_table_exists boolean;
             BEGIN
                 -- Check if temp_sync_lsns table exists
@@ -2037,7 +2037,7 @@ BEGIN
                         BEGIN
                             SELECT * INTO sync_ok FROM dblink(new_node_dsn,
                                 format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
-                                       src_node_name, sync_lsn, timeout_ms)) AS t(result text);
+                                       src_node_name, sync_lsn, timeout_s)) AS t(result text);
 
                             IF sync_ok IS NULL OR sync_ok::boolean IS NOT TRUE THEN
                                 RAISE EXCEPTION 'wait_for_sync_event timed out for % on new node %', src_node_name, new_node_name;
@@ -2096,7 +2096,7 @@ BEGIN
                 -- This ensures the subscription starts replicating from the correct sync point
                 DECLARE
                     sync_lsn text;
-                    timeout_ms integer := 180;  -- 3 minutes
+                    timeout_s integer := 180;  -- 3 minutes
                 BEGIN
                     -- Get the stored sync LSN from when subscription was created
                     SELECT tsl.sync_lsn INTO sync_lsn
@@ -2114,7 +2114,7 @@ BEGIN
                         BEGIN
                             SELECT * INTO sync_ok FROM dblink(new_node_dsn,
                                 format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true)',
-                                       rec.node_name, sync_lsn, timeout_ms)) AS t(result text);
+                                       rec.node_name, sync_lsn, timeout_s)) AS t(result text);
 
                             IF sync_ok IS NULL OR sync_ok::boolean IS NOT TRUE THEN
                                 RAISE EXCEPTION 'wait_for_sync_event timed out for % on new node %', rec.node_name, new_node_name;
@@ -2307,7 +2307,7 @@ CREATE OR REPLACE PROCEDURE spock.trigger_sync_on_other_nodes_and_wait_on_source
 DECLARE
     rec RECORD;
     sync_lsn pg_lsn;
-    timeout_ms integer := 180;  -- 3 minutes timeout
+    timeout_s integer := 180;  -- 3 minutes timeout
     remotesql text;
 BEGIN
     RAISE NOTICE 'Phase 4: Triggering sync events on other nodes and waiting on source';
@@ -2337,7 +2337,7 @@ BEGIN
         -- Wait for sync event on source node
         BEGIN
             remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true);',
-                               rec.node_name, sync_lsn, timeout_ms);
+                               rec.node_name, sync_lsn, timeout_s);
             IF verb THEN
                 RAISE NOTICE '    Remote SQL for waiting sync event: %', remotesql;
             END IF;
@@ -2631,7 +2631,7 @@ CREATE OR REPLACE PROCEDURE spock.trigger_source_sync_and_wait_on_new_node(
 DECLARE
     remotesql text;
     sync_lsn pg_lsn;
-    timeout_ms integer := 180;  -- 3 minutes timeout
+    timeout_s integer := 180;  -- 3 minutes timeout
 BEGIN
     RAISE NOTICE 'Phase 6: Triggering sync on source node and waiting on new node';
 
@@ -2650,7 +2650,7 @@ BEGIN
 
     -- Wait for sync event on new node
     BEGIN
-        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true);', src_node_name, sync_lsn, timeout_ms);
+        remotesql := format('CALL spock.wait_for_sync_event(true, %L, %L::pg_lsn, %s, true);', src_node_name, sync_lsn, timeout_s);
         IF verb THEN
             RAISE NOTICE '    Remote SQL for wait_for_sync_event on new node %: %', new_node_name, remotesql;
         END IF;
