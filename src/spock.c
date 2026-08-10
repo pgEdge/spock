@@ -1244,7 +1244,7 @@ _PG_init(void)
 							&spock_pause_timeout,
 							10,
 							1,
-							300,
+							INT_MAX,
 							PGC_USERSET,
 							GUC_UNIT_S,
 							NULL,
