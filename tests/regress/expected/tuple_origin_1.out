@@ -187,7 +187,7 @@ SELECT COUNT(1) thecount FROM spock.exception_log;
 SHOW spock.output_delay;
  spock.output_delay 
 --------------------
- 2000
+ 2s
 (1 row)
 
 -- Reset delay
