@@ -173,6 +173,7 @@ int			restart_delay_default;
 int			restart_delay_on_exception;
 int			spock_replay_queue_size;
 int			spock_pause_timeout = 10;	/* seconds to wait for apply workers to pause */
+int			spock_sync_timeout = 0;		/* seconds per sync wait; 0 = routine's own default */
 int			spock_read_retry_count = 5;	/* heap update/delete: retries when local tuple is missing */
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
@@ -1244,6 +1245,26 @@ _PG_init(void)
 							&spock_pause_timeout,
 							10,
 							1,
+							INT_MAX,
+							PGC_USERSET,
+							GUC_UNIT_S,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("spock.sync_timeout",
+							"Timeout in seconds for a single synchronisation wait",
+							"Total budget for one logical wait step in the node "
+							"management routines: waiting for a sync event to arrive, "
+							"for a peer to catch up, or for a subscription to start "
+							"replicating. Raise it on large databases, where catchup "
+							"legitimately takes longer than those routines assume. "
+							"Zero, the default, leaves each routine on its own built-in "
+							"limit. This bounds a whole wait, not an individual probe "
+							"of a remote node.",
+							&spock_sync_timeout,
+							0,
+							0,
 							INT_MAX,
 							PGC_USERSET,
 							GUC_UNIT_S,
