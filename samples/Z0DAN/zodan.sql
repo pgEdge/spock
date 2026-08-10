@@ -29,6 +29,24 @@
 -- ============================================================================
 
 -- ============================================================================
+-- Function: sync_timeout
+-- Purpose : Resolve the budget, in seconds, for a single synchronisation wait.
+--           Every wait in this script that bounds a whole synchronisation step
+--           reads its limit from here, so an operator can raise them all at
+--           once with "SET spock.sync_timeout = '2h'" instead of editing this
+--           file.
+-- Returns  : integer, seconds. Always positive, so callers need no special case
+--           for an unbounded wait.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION spock.sync_timeout()
+RETURNS integer LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(
+               (SELECT NULLIF(setting::integer, 0) FROM pg_settings
+                 WHERE name = 'spock.sync_timeout'),
+               180);
+$$;
+
+-- ============================================================================
 -- Function: gen_sub_name
 -- Purpose : Generate a subscription name following the sub_{provider}_{subscriber}
 --           convention (i.e. sub_{remote}_{local}).
@@ -1861,7 +1879,7 @@ BEGIN
         DECLARE
             src_progress_lsn         pg_lsn;
             wait_started             timestamptz := clock_timestamp();
-            wait_timeout             interval := interval '3 minutes';
+            wait_budget              integer  := spock.sync_timeout();
             progress_sql             text;
             v_prev_statement_timeout text;
         BEGIN
@@ -1900,7 +1918,8 @@ BEGIN
                 EXIT WHEN src_progress_lsn IS NOT NULL
                           AND src_progress_lsn >= _catchup_lsn;
 
-                IF clock_timestamp() - wait_started > wait_timeout THEN
+                IF clock_timestamp() - wait_started
+                       > make_interval(secs => wait_budget) THEN
                     -- Hard failure: a post-slot sync_event commit was emitted
                     -- on rec, so this LSN must reach src unless replication
                     -- is broken. Proceeding would risk losing rec rows in
@@ -2010,7 +2029,7 @@ BEGIN
             -- This ensures the subscription starts replicating from the correct sync point
             DECLARE
                 sync_lsn text;
-                timeout_s integer := 180;  -- 3 minutes
+                timeout_s integer := spock.sync_timeout();
                 temp_table_exists boolean;
             BEGIN
                 -- Check if temp_sync_lsns table exists
@@ -2096,7 +2115,7 @@ BEGIN
                 -- This ensures the subscription starts replicating from the correct sync point
                 DECLARE
                     sync_lsn text;
-                    timeout_s integer := 180;  -- 3 minutes
+                    timeout_s integer := spock.sync_timeout();
                 BEGIN
                     -- Get the stored sync LSN from when subscription was created
                     SELECT tsl.sync_lsn INTO sync_lsn
@@ -2307,7 +2326,7 @@ CREATE OR REPLACE PROCEDURE spock.trigger_sync_on_other_nodes_and_wait_on_source
 DECLARE
     rec RECORD;
     sync_lsn pg_lsn;
-    timeout_s integer := 180;  -- 3 minutes timeout
+    timeout_s integer := spock.sync_timeout();
     remotesql text;
 BEGIN
     RAISE NOTICE 'Phase 4: Triggering sync events on other nodes and waiting on source';
@@ -2417,7 +2436,10 @@ BEGIN
                     EXIT;
                 END IF;
 
-                IF clock_timestamp() - v_wait_started > interval '3 minutes' THEN
+                -- Advisory wait: report and carry on rather than failing the
+                -- whole operation. Only the budget comes from the GUC.
+                IF clock_timestamp() - v_wait_started
+                       > make_interval(secs => spock.sync_timeout()) THEN
                     RAISE WARNING '    - Timed out waiting for % to become READY (pending rows: %, status: %); continuing',
                         v_sub_name, v_pending_sync, coalesce(v_sub_status, '<unknown>');
                     EXIT;
@@ -2631,7 +2653,7 @@ CREATE OR REPLACE PROCEDURE spock.trigger_source_sync_and_wait_on_new_node(
 DECLARE
     remotesql text;
     sync_lsn pg_lsn;
-    timeout_s integer := 180;  -- 3 minutes timeout
+    timeout_s integer := spock.sync_timeout();
 BEGIN
     RAISE NOTICE 'Phase 6: Triggering sync on source node and waiting on new node';
 
@@ -2683,7 +2705,11 @@ DECLARE
     sub_rec  RECORD;
     rec RECORD;
     wait_count integer := 0;
-    max_wait_count integer := 180; -- Wait up to 180 seconds
+    wait_started timestamptz := clock_timestamp();
+    -- A budget in seconds, not a number of attempts: each iteration costs a
+    -- dblink round trip per node on top of the sleep, so on a loaded cluster an
+    -- attempt count is not a time bound at all.
+    wait_budget integer := spock.sync_timeout();
 BEGIN
     -- Let remote subscriptions update their subscription's state.
     COMMIT;
@@ -2722,12 +2748,14 @@ BEGIN
         ELSIF sub_rec.status IN ('disabled', 'down') THEN
             RAISE EXCEPTION 'Subscription % entered terminal state % while waiting for replication to become active',
                 sub_rec.sub_name, sub_rec.status;
-        ELSIF wait_count >= max_wait_count THEN
-            RAISE EXCEPTION 'Timeout waiting for subscription % to become active (current status: %)',
-                sub_rec.sub_name, sub_rec.status;
+        ELSIF clock_timestamp() - wait_started
+                  > make_interval(secs => wait_budget) THEN
+            RAISE EXCEPTION 'Timeout waiting for subscription % to become active after % seconds (current status: %)',
+                sub_rec.sub_name, wait_budget, sub_rec.status;
         ELSE
-            RAISE NOTICE '    Waiting for replication... (subscription: %, status: %, attempt %/%)',
-                sub_rec.sub_name, sub_rec.status, wait_count, max_wait_count;
+            RAISE NOTICE '    Waiting for replication... (subscription: %, status: %, attempt %, elapsed %)',
+                sub_rec.sub_name, sub_rec.status, wait_count,
+                clock_timestamp() - wait_started;
             PERFORM pg_sleep(1);
         END IF;
     END LOOP;
