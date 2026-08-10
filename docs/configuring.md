@@ -238,6 +238,34 @@ liveness detection. Default: `300` (5 minutes).
 spock.apply_idle_timeout = 300
 ```
 
+### `spock.sync_timeout`
+
+Overrides the time (in seconds) budgeted for a single synchronisation wait in
+the node management routines - waiting for a sync event to arrive on a peer,
+waiting for a node to catch up, or waiting for a subscription to start
+replicating. Default: `0`, meaning each routine keeps its own built-in limit
+(3 minutes). Only a positive value takes effect, so leaving this unset
+preserves the behaviour those routines have always had.
+
+Raise it on large databases. The built-in limits are sized for small clusters,
+where a node joins in seconds; when catchup legitimately takes minutes or hours,
+the routines fail with a timeout long before the work is done. It can be raised
+for a single operation rather than cluster-wide:
+
+```
+SET spock.sync_timeout = '2h';
+CALL spock.add_node(...);
+```
+
+This bounds a whole wait, not an individual probe of a remote node. Routines
+that additionally bound each remote probe - so that one unresponsive peer
+cannot consume the entire budget - keep their own, much smaller limit for that
+purpose.
+
+```
+spock.sync_timeout = 0
+```
+
 ### `spock.read_retry_count`
 
 Number of times the apply worker re-reads the local relation when a row
