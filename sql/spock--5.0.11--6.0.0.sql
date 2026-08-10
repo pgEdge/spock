@@ -6,6 +6,7 @@
 -- Drop functions removed from the 6.0.0 fresh install (present since 5.0.0 but no longer needed)
 DROP FUNCTION IF EXISTS spock.convert_column_to_int8(regclass, smallint);
 DROP FUNCTION IF EXISTS spock.convert_sequence_to_snowflake(regclass);
+DROP FUNCTION IF EXISTS spock.wait_for_apply_worker(bigint, int);
 
 -- Add IMMUTABLE PARALLEL SAFE to md5_agg_sfunc (was missing in earlier definitions)
 CREATE OR REPLACE FUNCTION spock.md5_agg_sfunc(text, anyelement)
