@@ -153,10 +153,11 @@
 #define AssertVariableIsOfType StaticAssertVariableIsOfType
 
 /*
- * check_simple_rowfilter_expr() is provided by core on PG19 and exported via
- * commands/publicationcmds.h by the pg19-035-row-filter-check.diff patch, so
- * (unlike PG18) spock does not carry its own copy in spock_compat.c.
+ * check_simple_rowfilter_expr() is static in core's publicationcmds.c, so
+ * spock_compat.c carries its own copy (same as on PG18).
  */
+#include "parser/parse_node.h"
+extern bool check_simple_rowfilter_expr(Node *node, ParseState *pstate);
 
 /*
  * PG19 removed isQueryUsingTempRelation() (commit 698fa924b11).  Its ad-hoc
