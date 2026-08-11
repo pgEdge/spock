@@ -84,6 +84,12 @@ DBUSER=regression
 TARGET_NODE=n1   # node we run `make installcheck` against
 
 PG_GIT_REMOTES="https://git.postgresql.org/git/postgresql.git https://github.com/postgres/postgres.git"
+# Each remote is tried PG_CLONE_ATTEMPTS times before moving to the next one.
+# A pack transfer dropped mid-stream ("early EOF", "RPC failed; curl 56") is
+# almost always transient, so an immediate retry is the cheapest cure; only
+# if that fails too is the remote itself suspect and the mirror worth a go.
+PG_CLONE_ATTEMPTS=2
+PG_CLONE_RETRY_DELAY=5
 
 # ---------------------------------------------------------------------------
 # Bash-3-safe lookup helpers (no `declare -A`)
@@ -246,24 +252,20 @@ psql_on() {
 
 # PG_REF is the concrete ref to build (a tag or a branch); resolved by
 # clone_pg from tests/postgres-build.conf before these helpers run.
-# Pick the first reachable mirror.  Reachability is checked generically
-# (HEAD), not by looking up PG_REF, because PG_REF may be a raw commit SHA
-# rather than a ref name; a bad ref is caught loudly by the fetch below.
-pick_pg_remote() {
-	local r
-	for r in ${PG_GIT_REMOTES}; do
-		if git ls-remote --exit-code "${r}" HEAD >/dev/null 2>&1; then
-			echo "${r}"
-			return 0
-		fi
-	done
-	return 1
+#
+# PG_GIT_REMOTE may embed credentials -- resolve-pg-ref.sh is careful never
+# to echo it -- so strip any user:pass@ before a remote reaches a log that CI
+# uploads as an artefact.  A URL without credentials passes through unchanged.
+_redact_remote() {
+	printf '%s' "$1" | sed -e 's,//[^/@]*@,//,g'
 }
 
 # fetch + checkout (not clone --branch) so an explicit commit-SHA pin works
 # as well as a branch or tag name.  The && chain ensures a mid-sequence
 # failure propagates and the reuse marker is only written on full success.
-_do_clone_pg() {
+# Starting with rm -rf leaves no half-fetched tree behind for the next
+# attempt (or the next run) to trip over.
+_do_clone_pg_once() {
 	local remote="$1"
 	rm -rf "${SRC}" && \
 	git init "${SRC}" && \
@@ -271,6 +273,60 @@ _do_clone_pg() {
 	git -C "${SRC}" fetch --depth 1 origin "${PG_REF}" && \
 	git -C "${SRC}" checkout --detach FETCH_HEAD && \
 	printf '%s\n' "${PG_REF}" > "${SRC}/.spock-pg-ref"
+}
+
+# Try each remote in PG_GIT_REMOTES in turn, PG_CLONE_ATTEMPTS times each,
+# and stop at the first attempt that completes.
+#
+# The fetch is its own reachability test.  Probing with `git ls-remote HEAD`
+# first and then committing to whichever remote answered does not work: a
+# remote can serve that cheap request and still drop the connection part-way
+# through the real pack transfer, which is precisely how git.postgresql.org
+# fails from CI.  Selecting on the probe means the fallback mirror is never
+# reached on the one occasion it would have helped.
+#
+# Every attempt reports itself into the phase log, so a run that eventually
+# succeeds still shows which remote it had to fall back to.
+_do_clone_pg() {
+	local remote attempt first=1 rc=1
+	local remotes="${PG_GIT_REMOTES}"
+
+	# resolve-pg-ref.sh resolves a `tag` spec against PG_GIT_REMOTE, which
+	# exists so a private or internal mirror can stand in for the public
+	# hosts.  Honour it here too: resolving the ref from one remote and then
+	# fetching it from another is how a mirror-only environment fails in
+	# this phase.  It goes first, with the public defaults kept as fallback,
+	# and is not added twice if it already names one of them.
+	if [ -n "${PG_GIT_REMOTE:-}" ]; then
+		case " ${remotes} " in
+			*" ${PG_GIT_REMOTE} "*) ;;
+			*) remotes="${PG_GIT_REMOTE} ${remotes}" ;;
+		esac
+	fi
+
+	for remote in ${remotes}; do
+		attempt=1
+		while [ "${attempt}" -le "${PG_CLONE_ATTEMPTS}" ]; do
+			# Delay between attempts only -- never after the last one.
+			[ "${first}" -eq 1 ] || sleep "${PG_CLONE_RETRY_DELAY}"
+			first=0
+
+			echo "----- fetch ${PG_REF} from $(_redact_remote "${remote}")" \
+				"(attempt ${attempt}/${PG_CLONE_ATTEMPTS}) -----"
+			rc=0
+			_do_clone_pg_once "${remote}" || rc=$?
+			[ "${rc}" -eq 0 ] && return 0
+			echo "----- fetch from $(_redact_remote "${remote}")" \
+				"failed rc=${rc} -----"
+
+			attempt=$((attempt + 1))
+		done
+	done
+
+	# rc starts at 1 so an empty remote list reports failure rather than
+	# silently "succeeding" with no source tree.
+	echo "all remotes exhausted for ${PG_REF}: $(_redact_remote "${remotes}")"
+	return "${rc}"
 }
 
 clone_pg() {
@@ -299,12 +355,9 @@ clone_pg() {
 		return 0
 	fi
 
-	local remote
-	remote="$(pick_pg_remote)" \
-		|| fail "PG${PG_VER}: no reachable git remote for ${PG_REF}" 5
-
-	log "pg${PG_VER}: [pg-clone] ${PG_REF} from ${remote}"
-	run_phase "pg${PG_VER}" pg-clone _do_clone_pg "${remote}"
+	# Which remote each attempt used is recorded in the phase log, redacted.
+	log "pg${PG_VER}: [pg-clone] ${PG_REF}"
+	run_phase "pg${PG_VER}" pg-clone _do_clone_pg
 }
 
 # Spock needs Postgres with per-version patches applied; patches live
