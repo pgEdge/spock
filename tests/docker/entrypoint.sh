@@ -84,7 +84,11 @@ EOF
 		echo "ERROR: could not run postgres --describe-config"
 		exit 1
 	fi
-	if printf '%s\n' "${described}" | grep -q '^output_plugin_libraries'; then
+	# Here-string rather than `printf ... | grep -q`: grep -q exits at the
+	# first match, printf takes EPIPE on the rest of the listing, and under
+	# `set -o pipefail` the pipeline then fails -- reporting "GUC absent"
+	# exactly when it is present.
+	if grep -q '^output_plugin_libraries' <<<"${described}"; then
 		cat >> "${PGDATA}/postgresql.conf" <<EOF
 output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
 EOF
