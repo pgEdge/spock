@@ -3,7 +3,7 @@ use warnings;
 use Test::More tests => 43;  # Fixed test count to match actual tests
 use lib '.';
 use lib 't';
-use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config cross_wire system_maybe);
+use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config cross_wire system_maybe output_plugin_libraries_conf);
 
 # =============================================================================
 # Test: 009_zodan_add_remove_nodes.pl - Test Zodan Node Addition and Removal
@@ -127,6 +127,7 @@ if (-f 'regress-pg_hba.conf') {
 open(my $conf, '>>', "$n3_datadir/postgresql.conf") or die "Cannot open config file: $!";
 print $conf "shared_buffers=1GB\n";
 print $conf "shared_preload_libraries='spock'\n";
+print $conf output_plugin_libraries_conf();
 print $conf "wal_level=logical\n";
 print $conf "spock.enable_ddl_replication=on\n";
 print $conf "spock.include_ddl_repset=on\n";

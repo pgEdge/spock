@@ -1573,7 +1573,7 @@ spock_sync_subscription(SpockSubscription *sub)
 			savecxt = MemoryContextSwitchTo(myctx);
 			edata = CopyErrorData();
 
-			FlushErrorState();
+			/* Do NOT call FlushErrorState() here. */
 			elog(LOG, "SPOCK cswp error sub=%s slot=%s: %s",
 				 sub->name, sub->slot_name,
 				 edata->message ? edata->message : "");

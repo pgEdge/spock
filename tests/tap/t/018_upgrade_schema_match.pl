@@ -6,7 +6,7 @@ use Cwd qw(getcwd);
 
 use lib '.';
 use lib 't';
-use SpockTest qw(system_or_bail system_maybe wait_for_pg_ready psql_or_bail scalar_query);
+use SpockTest qw(system_or_bail system_maybe wait_for_pg_ready psql_or_bail scalar_query output_plugin_libraries_conf);
 
 # =============================================================================
 # Test: 018_upgrade_schema_match.pl
@@ -268,6 +268,19 @@ sub init_and_start_node {
         shared_preload_libraries => "'spock'",
         log_min_messages         => 'warning',
     );
+
+    # A server carrying the output_plugin_libraries security fix will not let a
+    # slot name spock_output until the GUC lists it; see
+    # SpockTest::output_plugin_libraries_conf.  Each Spock version under test
+    # has its own PostgreSQL install, and PG_TAG defaults to a release that
+    # predates the fix, so probe this install's binaries -- not whichever
+    # happens to be first on PATH -- and expect '' to be a normal answer.
+    my $opl = output_plugin_libraries_conf($pg_bin);
+    if ($opl ne '') {
+        open my $fh, '>>', "$datadir/postgresql.conf" or die $!;
+        print $fh $opl;
+        close $fh;
+    }
 
     _start_postgres($pg_bin, $datadir);
     return wait_for_pg_ready($HOST, $port, $PG_BIN, 30);
