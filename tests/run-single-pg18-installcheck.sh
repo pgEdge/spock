@@ -130,7 +130,24 @@ run_phase() {
 	local logf="${LOG_DIR}/${label}-${phase}.log"
 	log "${label}: [${phase}] start  -> ${logf}"
 	local rc=0
-	"$@" >"${logf}" 2>&1 || rc=$?
+
+	# Run the phase in a standalone subshell that re-arms errexit rather than
+	# as `"$@" || rc=$?`.  A command that is part of an AND-OR list has
+	# errexit suppressed for its whole body, so a multi-command phase carried
+	# on past a failure and reported the status of its *last* command as the
+	# phase result: _do_patch_pg ran every remaining `git apply` after one had
+	# failed and still returned 0, because its last command is a `touch`.
+	# That turned a rejected patch into a "pg-patch ok" line and surfaced two
+	# minutes later as a compile error about a missing struct member.
+	#
+	# `( set -e; "$@" )` alone does not help -- the suppression propagates
+	# into a subshell that is itself part of an AND-OR list -- so errexit is
+	# disabled around a subshell that is not.
+	set +e
+	( set -e; "$@" ) >"${logf}" 2>&1
+	rc=$?
+	set -e
+
 	if [ "${rc}" -ne 0 ]; then
 		log "${label}: [${phase}] FAILED rc=${rc}  (see ${logf})"
 		say "${label}: ${phase} FAILED rc=${rc}  (see ${logf})"
@@ -304,7 +321,14 @@ _do_patch_pg() {
 		[ -f "${p}" ] || continue
 		any=1
 		echo "----- applying $(basename "${p}") -----"
-		( cd "${SRC}" && git apply --whitespace=nowarn -p1 "${p}" )
+		# Checked explicitly rather than left to errexit: a rejected patch
+		# must stop the phase here, with the culprit named, and must leave
+		# the marker below unwritten -- otherwise a cached source tree is
+		# treated as patched on every later run and only --force recovers.
+		if ! ( cd "${SRC}" && git apply --whitespace=nowarn -p1 "${p}" ); then
+			echo "----- FAILED to apply $(basename "${p}") -----"
+			return 1
+		fi
 	done
 	if [ "${any}" -eq 0 ]; then
 		echo "no .diff/.patch files in ${patch_dir}"
@@ -433,7 +457,13 @@ init_node() {
 	local described
 	described="$("${PREFIX}/bin/postgres" --describe-config 2>/dev/null)" \
 		|| fail "pg${PG_VER}: could not run postgres --describe-config" 5
-	if printf '%s\n' "${described}" | grep -q '^output_plugin_libraries'; then
+	# Matched with a here-string, not `printf ... | grep -q`: grep -q exits at
+	# the first match, so printf takes EPIPE on the rest of the ~60kB listing,
+	# and under `set -o pipefail` that makes the whole pipeline fail.  The
+	# probe then reported "GUC absent" precisely when the GUC was present --
+	# only on servers whose listing exceeds the pipe buffer, which is why it
+	# passed locally and failed in CI against an --enable-cassert build.
+	if grep -q '^output_plugin_libraries' <<<"${described}"; then
 		cat >>"${data}/postgresql.conf" <<-EOF
 			output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
 		EOF
