@@ -424,6 +424,21 @@ init_node() {
 		spock.allow_ddl_from_functions = on
 	EOF
 
+	# Commit 2a29b607dbb requires Spock to be in the output_plugin_libraries.
+	# Absent on servers predating that fix, where writing an unrecognised
+	# parameter would stop the postmaster starting -- so probe rather than
+	# test the major version.  A probe that cannot run is a broken install,
+	# not an old server: fail here rather than let it become a slot creation
+	# failure once the mesh is being wired up.
+	local described
+	described="$("${PREFIX}/bin/postgres" --describe-config 2>/dev/null)" \
+		|| fail "pg${PG_VER}: could not run postgres --describe-config" 5
+	if printf '%s\n' "${described}" | grep -q '^output_plugin_libraries'; then
+		cat >>"${data}/postgresql.conf" <<-EOF
+			output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+		EOF
+	fi
+
 	# Trust on the shared Unix socket; no TCP listener so this is local-only.
 	cat >>"${data}/pg_hba.conf" <<-EOF
 		local all all trust

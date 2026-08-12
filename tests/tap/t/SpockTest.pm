@@ -24,6 +24,7 @@ our @EXPORT_OK = qw(
     wait_for_exception_log
     wait_for_pg_ready
     ensure_lolor
+    output_plugin_libraries_conf
 );
 
 # Test configuration
@@ -168,6 +169,41 @@ sub ensure_lolor {
     return ($sharedir && -f "$sharedir/extension/lolor.control") ? 1 : 0;
 }
 
+# Return the output_plugin_libraries line a node needs, or '' if the server
+# does not have that GUC (to satisfy security fix 2a29b607dbb).
+#
+# The GUC is absent from servers predating the fix, and an unrecognised
+# parameter in postgresql.conf stops the postmaster from starting at all.
+# A bindir is taken as an argument because the upgrade tests run against more
+# than one installation.
+#
+# A probe that cannot run at all is a broken install, not an old server, and
+# must not be mistaken for one: returning '' there would omit the setting and
+# turn the failure into a slot creation error thirty seconds later, in another
+# test file.  Die instead.  The answer is per-bindir invariant, so cache it --
+# create_postgresql_conf() runs once per node.
+my %output_plugin_libraries_cache;
+
+sub output_plugin_libraries_conf {
+    my ($pg_bin) = @_;
+    $pg_bin = $PG_BIN unless defined $pg_bin && length $pg_bin;
+
+    return $output_plugin_libraries_cache{$pg_bin}
+        if exists $output_plugin_libraries_cache{$pg_bin};
+
+    my $described = `"$pg_bin/postgres" --describe-config 2>/dev/null`;
+    die "could not run $pg_bin/postgres --describe-config (wait status $?)\n"
+        if $? != 0;
+
+    # Core's defaults are kept alongside spock_output so nothing relying on
+    # them changes behaviour.
+    my $line = $described =~ /^output_plugin_libraries\b/m
+        ? "output_plugin_libraries='pgoutput, test_decoding, spock_output'\n"
+        : '';
+
+    return $output_plugin_libraries_cache{$pg_bin} = $line;
+}
+
 # Create PostgreSQL configuration file
 sub create_postgresql_conf {
     my ($datadir, $port) = @_;
@@ -175,6 +211,7 @@ sub create_postgresql_conf {
     open(my $conf, '>>', "$datadir/postgresql.conf") or die "Cannot open config file: $!";
     print $conf "shared_buffers=1GB\n";
     print $conf "shared_preload_libraries='spock'\n";
+    print $conf output_plugin_libraries_conf($PG_BIN);
     print $conf "wal_level=logical\n";
     print $conf "spock.enable_ddl_replication=on\n";
     print $conf "spock.include_ddl_repset=on\n";

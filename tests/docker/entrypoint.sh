@@ -77,6 +77,19 @@ spock.conflict_resolution = 'last_update_wins'
 spock.save_resolutions = 'on'
 EOF
 
+	# Adjust spock settings to satisfy security fix (commit 2a29b607dbb).
+	# A probe that cannot run is a broken image, not an old server; failing
+	# here beats a slot creation error once the cluster is being wired up.
+	if ! described="$(postgres --describe-config 2>/dev/null)"; then
+		echo "ERROR: could not run postgres --describe-config"
+		exit 1
+	fi
+	if printf '%s\n' "${described}" | grep -q '^output_plugin_libraries'; then
+		cat >> "${PGDATA}/postgresql.conf" <<EOF
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+EOF
+	fi
+
 	# Configure client authentication for Docker network
 	cat >> "${PGDATA}/pg_hba.conf" <<EOF
 # Allow connections from Docker network (all containers)
