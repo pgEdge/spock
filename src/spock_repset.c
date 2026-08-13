@@ -1130,11 +1130,10 @@ check_relation_replicatable(Relation rel, SpockRepSet *repset,
 				 errhint("Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.")));
 
 	ereport(WARNING,
-			(errmsg("skipping table %s.%s",
+			(errmsg("skipping table %s.%s for replication set %s",
 					get_namespace_name(RelationGetNamespace(rel)),
-					RelationGetRelationName(rel)),
-			 errdetail("Table has no replica identity index, and replication set %s replicates UPDATEs or DELETEs.",
-					   repset->name),
+					RelationGetRelationName(rel), repset->name),
+			 errdetail("Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs."),
 			 errhint("Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.")));
 
 	return false;
