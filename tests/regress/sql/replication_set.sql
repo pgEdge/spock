@@ -552,3 +552,62 @@ DROP FUNCTION public.spoc410_probe(name, text);
 SET client_min_messages = warning;
 DROP SCHEMA spoc410_ok, spoc410_r1, spoc410_r2, spoc410_r3, spoc410_r4 CASCADE;
 RESET client_min_messages;
+
+--
+-- Pin the all-or-nothing restriction behaviour of the repset_add_all_tables()
+--
+
+CREATE SCHEMA spoc410_mix;
+-- a_pk sorts before m_orphan, so it is already added when the call aborts;
+-- z_pk sorts after it and is never even looked at
+CREATE TABLE spoc410_mix.a_pk (id int PRIMARY KEY, payload text);
+CREATE TABLE spoc410_mix.m_orphan (id int, payload text);
+CREATE TABLE spoc410_mix.z_pk (id int PRIMARY KEY, payload text);
+
+-- Reports the members of the sets built below.
+CREATE VIEW public.spoc410_members AS
+	SELECT r.set_name, n.nspname, c.relname
+	  FROM spock.replication_set_table t
+		   JOIN spock.replication_set r ON r.set_id = t.set_id
+		   JOIN spock.local_node l ON l.node_id = r.set_nodeid
+		   JOIN pg_class c ON c.oid = t.set_reloid
+		   JOIN pg_namespace n ON n.oid = c.relnamespace
+	 WHERE n.nspname = 'spoc410_mix';
+
+SELECT spock.repset_create('spoc410_mix_upd') IS NOT NULL AS created;
+
+-- Today: the whole call dies on the one table that cannot be replicated
+SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spoc410_mix}');
+
+-- ... and a_pk, which had been accepted, is gone with it
+SELECT set_name, nspname, relname FROM public.spoc410_members
+ ORDER BY 1, 2, 3;
+
+-- An INSERT-only set never has to identify a row, so the same schema goes in
+-- whole, m_orphan included.
+SELECT spock.repset_create('spoc410_mix_ins',
+	replicate_update := false, replicate_delete := false) IS NOT NULL AS created;
+
+SELECT spock.repset_add_all_tables('spoc410_mix_ins', '{spoc410_mix}');
+
+-- Three tables in the replication set
+SELECT set_name, nspname, relname FROM public.spoc410_members
+ ORDER BY 1, 2, 3;
+
+-- And the ERROR really was only about the missing identity: give m_orphan a
+-- PRIMARY KEY and the very same call succeeds.
+ALTER TABLE spoc410_mix.m_orphan ADD PRIMARY KEY (id);
+
+SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spoc410_mix}');
+
+SELECT set_name, nspname, relname FROM public.spoc410_members
+ ORDER BY 1, 2, 3;
+
+SELECT spock.repset_drop('spoc410_mix_upd');
+
+SELECT spock.repset_drop('spoc410_mix_ins');
+
+DROP VIEW public.spoc410_members;
+SET client_min_messages = warning;
+DROP SCHEMA spoc410_mix CASCADE;
+RESET client_min_messages;
