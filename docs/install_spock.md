@@ -122,7 +122,16 @@ max_replication_slots = 10
 max_wal_senders = 10
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
 ```
+
+Set `output_plugin_libraries` only if your server has that parameter — it was
+added by a 2026 security fix and, without `spock_output` listed there, logical
+decoding fails with `library "spock_output" may not be used as an output
+plugin`. The check runs every time decoding starts, so it stops established
+clusters after a minor-version upgrade too, and it applies to every node. On
+older releases the parameter does not exist and setting it stops the server
+from starting. See [Configuring Spock](configuring.md) for how to check.
 
 Note on replication origin states:
 
