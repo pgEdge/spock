@@ -9,6 +9,24 @@ use SpockTest qw(
     wait_for_sub_status wait_for_exception_log wait_for_pg_ready
 );
 
+# Poll $check once a second for up to $timeout seconds, returning true as soon
+# as it succeeds.  Used in place of sleep() wherever the wait is on an apply
+# worker respawn: sub_enable() SIGTERMs the running worker and the manager only
+# re-registers it spock.restart_delay_default (5s) later, so no fixed sleep is
+# reliably longer than the wait -- one of exactly 5s races the respawn and can
+# lose by a millisecond.
+sub wait_for
+{
+	my ($timeout, $check) = @_;
+
+	for (my $i = 0; $i < $timeout; $i++)
+	{
+		return 1 if $check->();
+		sleep(1);
+	}
+	return 0;
+}
+
 # =============================================================================
 # Test 016: SUB_DISABLE on missing relation + skip_lsn recovery
 #           + regression: dangling local_tuple after conflict
@@ -106,14 +124,25 @@ ok(wait_for_sub_status(2, 'sub_n1_n2', 'replicating', 30),
     'P1: sub_n1_n2 returns to replicating state after recovery');
 
 psql_or_bail(1, "INSERT INTO test_missing_rel (val) VALUES ('post_recovery_row')");
-sleep(5);
-my $post_count = scalar_query(2, "SELECT count(*) FROM test_missing_rel");
-cmp_ok($post_count, '>=', '1', 'P1: post-recovery INSERT replicates to n2');
 
-sleep(3);
-my $worker_alive = scalar_query(2,
-    "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'spock apply%'");
-cmp_ok($worker_alive, '>=', '1', 'P1: apply worker still running after re-enable');
+my $post_count = 0;
+my $post_replicated = wait_for(30, sub {
+    $post_count = scalar_query(2, "SELECT count(*) FROM test_missing_rel");
+    $post_count =~ s/\s+//g;
+    return $post_count >= 1;
+});
+ok($post_replicated,
+    "P1: post-recovery INSERT replicates to n2 (count=$post_count)");
+
+my $worker_alive = 0;
+my $worker_running = wait_for(30, sub {
+    $worker_alive = scalar_query(2,
+        "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'spock apply%'");
+    $worker_alive =~ s/\s+//g;
+    return $worker_alive >= 1;
+});
+ok($worker_running,
+    "P1: apply worker still running after re-enable (count=$worker_alive)");
 
 my $still_enabled = scalar_query(2,
     "SELECT sub_enabled FROM spock.subscription WHERE sub_name = 'sub_n1_n2'");
