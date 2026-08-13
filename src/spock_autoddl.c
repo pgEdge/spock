@@ -493,7 +493,7 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 	/* Add if not already present. */
 	if (get_table_replication_row(repset->id, reloid, NULL, NULL) == NULL)
 	{
-		replication_set_add_table(repset->id, reloid, NIL, NULL);
+		replication_set_add_table(repset->id, reloid, NIL, NULL, false);
 		elog(LOG, "table '%s' was added to '%s' replication set.",
 			 get_rel_name(reloid), repset->name);
 	}

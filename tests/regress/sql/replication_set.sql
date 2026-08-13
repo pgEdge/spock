@@ -50,6 +50,10 @@ SELECT * FROM spock.repset_alter('repset_replicate_insupd', replicate_truncate :
 -- fail again
 SELECT * FROM spock.repset_add_table('repset_replicate_insupd', 'test_nopkey');
 SELECT * FROM spock.repset_add_all_tables('default', '{public}');
+
+-- test_publicschema has landed in 'default' as well now; take it back out so
+-- that the checks below see the same replication sets as before
+SELECT spock.repset_remove_table('default', 'public.test_publicschema');
 SELECT * FROM spock.repset_alter('repset_replicate_instrunc', replicate_update := true);
 SELECT * FROM spock.repset_alter('repset_replicate_instrunc', replicate_delete := true);
 
@@ -333,9 +337,8 @@ SELECT * FROM spoc_102g_d ORDER BY x; -- See (-5).
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_d,spoc_102l_d CASCADE');
 
 --
--- What does spock.repset_add_all_tables() actually collect?
+-- What does spock.repset_add_all_tables() collect, and what does it leave behind?
 --
-
 \set VERBOSITY default
 
 CREATE SCHEMA spoc410_ok;
@@ -372,25 +375,25 @@ CREATE MATERIALIZED VIEW spoc410_ok.m_matview AS SELECT * FROM spoc410_ok.t_pk;
 CREATE SEQUENCE spoc410_ok.s_seq;
 CREATE UNLOGGED TABLE spoc410_ok.u_unlogged (id int PRIMARY KEY);
 
--- rejected: a UNIQUE NOT NULL index is not enough, the identity is still
+-- skipped: a UNIQUE NOT NULL index is not enough, the identity is still
 -- DEFAULT and there is no PRIMARY KEY for DEFAULT to point at
 CREATE TABLE spoc410_r1.t_unique_no_pk (id int NOT NULL UNIQUE, payload text);
 
--- rejected: REPLICA IDENTITY FULL is not an index
+-- skipped: REPLICA IDENTITY FULL is not an index
 CREATE TABLE spoc410_r2.t_full (id int NOT NULL, payload text);
 ALTER TABLE spoc410_r2.t_full REPLICA IDENTITY FULL;
 
--- rejected: PRIMARY KEY present, but the identity is switched off
+-- skipped: PRIMARY KEY present, but the identity is switched off
 CREATE TABLE spoc410_r3.t_nothing (id int PRIMARY KEY, payload text);
 ALTER TABLE spoc410_r3.t_nothing REPLICA IDENTITY NOTHING;
 
--- rejected: no identity of any kind
+-- skipped: no identity of any kind
 CREATE TABLE spoc410_r4.t_no_identity (id int, payload text);
 
 -- Reports the replica identity of every relation of the test schemas, plus
 -- the replication sets it belongs to.  identity_index is exactly what the
--- relcache would put into rd_replidindex, i.e. NULL means "spock will refuse
--- this table for an UPDATE/DELETE replicating set".
+-- relcache would put into rd_replidindex, i.e. NULL means "this table cannot be
+-- replicated by a set that replicates UPDATEs or DELETEs".
 CREATE VIEW public.spoc410_state AS
 	SELECT n.nspname, c.relname, c.relkind, c.relpersistence, c.relreplident,
 		   CASE c.relreplident
@@ -412,68 +415,36 @@ CREATE VIEW public.spoc410_state AS
 	 WHERE n.nspname LIKE 'spoc410\_%'
 	   AND c.relkind IN ('r', 'p', 'v', 'm', 'S');
 
--- Calls the routine under test and reports the verdict instead of aborting
--- the script.  The subtransaction rollback also shows that a failed call
--- leaves the replication set exactly as it was.
-CREATE FUNCTION public.spoc410_probe(p_repset name, p_schema text)
-RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM spock.repset_add_all_tables(p_repset, ARRAY[p_schema]);
-	RETURN 'added';
-EXCEPTION WHEN invalid_parameter_value THEN
-	RETURN 'REJECTED: ' || SQLERRM;
-END;
-$$;
-
 -- Which relations repset_add_all_tables() will even consider
 SELECT nspname, relname, relkind, relpersistence,
 	   (relkind IN ('r', 'p') AND relpersistence = 'p') AS candidate
   FROM public.spoc410_state
  ORDER BY nspname, relname;
 
--- The identity matrix of those candidates.  An empty identity_index is
--- what makes spock refuse the table.
+-- The identity matrix of those candidates.  An empty identity_index is what
+-- makes the table unreplicatable.
 SELECT nspname, relname, relreplident, identity_index
   FROM public.spoc410_state
  WHERE relkind IN ('r', 'p') AND relpersistence = 'p'
  ORDER BY nspname, relname;
 
--- A replication set with the default flags replicates UPDATEs and DELETEs,
--- so the identity requirement is in force.
+-- A replication set with the default flags replicates UPDATEs and DELETEs, so
+-- the identity requirement is in force.  One call over all five schemas: the
+-- four unreplicatable tables are named and skipped, everything else is added.
 SELECT spock.repset_create('spoc410_upd') IS NOT NULL AS created;
 
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_ok');
+SELECT spock.repset_add_all_tables('spoc410_upd',
+	'{spoc410_ok,spoc410_r1,spoc410_r2,spoc410_r3,spoc410_r4}');
 
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_r1');
-
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_r2');
-
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_r3');
-
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_r4');
-
--- Only the well-identified tables of spoc410_ok made it in -- including the
--- partitioned parent and each of its partitions as separate members.
+-- The well-identified tables of spoc410_ok are in -- including the partitioned
+-- parent and each of its partitions as a member of its own.
 SELECT set_name, nspname, relname, relkind
   FROM public.spoc410_state
  WHERE set_name IS NOT NULL
  ORDER BY set_name, nspname, relname;
 
--- The same rejection unwrapped, with DETAIL and HINT
-SELECT spock.repset_add_all_tables('spoc410_upd', '{spoc410_r2}');
-
--- Atomicity: one bad table in any of the listed schemas and the entire call
--- is rolled back, so the fresh replication set stays empty.
-SELECT spock.repset_create('spoc410_atomic') IS NOT NULL AS created;
-
-SELECT spock.repset_add_all_tables('spoc410_atomic',
-	'{spoc410_ok,spoc410_r1,spoc410_r2,spoc410_r3,spoc410_r4}');
-
-SELECT count(*) AS members
-  FROM public.spoc410_state WHERE set_name = 'spoc410_atomic';
-
--- An INSERT-only replication set does not need to identify a row, so the
--- identity of the table is irrelevant and every candidate is collected.
+-- An INSERT-only replication set never has to identify a row, so the identity
+-- of the table is irrelevant and every candidate is collected, silently.
 SELECT spock.repset_create('spoc410_ins',
 	replicate_update := false, replicate_delete := false) IS NOT NULL AS created;
 
@@ -485,9 +456,13 @@ SELECT set_name, nspname, relname, relkind
  WHERE set_name IS NOT NULL
  ORDER BY set_name, nspname, relname;
 
--- Repeating the call is a no-op: relations already in the set are skipped,
--- so there is no duplicate key failure.
+-- Repeating a call costs nothing for the tables that are already members, so
+-- there is no duplicate key failure.  A skipped table never became a member
+-- though, so it is considered again -- and warned about again.
 SELECT spock.repset_add_all_tables('spoc410_ins',
+	'{spoc410_ok,spoc410_r1,spoc410_r2,spoc410_r3,spoc410_r4}');
+
+SELECT spock.repset_add_all_tables('spoc410_upd',
 	'{spoc410_ok,spoc410_r1,spoc410_r2,spoc410_r3,spoc410_r4}');
 
 SELECT set_name, count(*) AS members
@@ -495,36 +470,36 @@ SELECT set_name, count(*) AS members
  WHERE set_name IS NOT NULL
  GROUP BY set_name ORDER BY set_name;
 
--- ... and the set collected this way can no longer be promoted to replicate
--- UPDATEs or DELETEs.
+-- ... and a set filled that way still cannot be promoted to replicate UPDATEs
+-- or DELETEs.
 SELECT spock.repset_alter('spoc410_ins', replicate_update := true);
 
--- Now give each rejected table an index-based identity and watch it become
--- acceptable.  r1 only needs its existing unique index promoted.
+-- spock.repset_add_table() is unaffected by all this: asked for one table by
+-- name, it still refuses rather than silently doing nothing.
+SELECT spock.repset_add_table('spoc410_upd', 'spoc410_r1.t_unique_no_pk');
+
+-- Now give each skipped table an index-based identity.  r1 only needs its
+-- existing unique index promoted.
 ALTER TABLE spoc410_r1.t_unique_no_pk
 	REPLICA IDENTITY USING INDEX t_unique_no_pk_id_key;
 
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_r1');
-
--- r2 is the trap: adding a PRIMARY KEY does nothing while the identity is
+-- r2 is the trap: adding a PRIMARY KEY changes nothing while the identity is
 -- still FULL, because FULL never resolves to an index.
 ALTER TABLE spoc410_r2.t_full ADD PRIMARY KEY (id);
 
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_r2');
+SELECT spock.repset_add_all_tables('spoc410_upd', '{spoc410_r2}');
 
 ALTER TABLE spoc410_r2.t_full REPLICA IDENTITY DEFAULT;
-
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_r2');
 
 -- r3 had a PRIMARY KEY all along, only the identity was switched off
 ALTER TABLE spoc410_r3.t_nothing REPLICA IDENTITY DEFAULT;
 
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_r3');
-
 -- r4 genuinely had nothing to identify a row by
 ALTER TABLE spoc410_r4.t_no_identity ADD PRIMARY KEY (id);
 
-SELECT public.spoc410_probe('spoc410_upd', 'spoc410_r4');
+-- With every table replicatable the same call warns about nothing
+SELECT spock.repset_add_all_tables('spoc410_upd',
+	'{spoc410_r1,spoc410_r2,spoc410_r3,spoc410_r4}');
 
 SELECT DISTINCT nspname, relname, relreplident, identity_index
   FROM public.spoc410_state
@@ -536,30 +511,28 @@ SELECT set_name, count(*) AS members
  WHERE set_name IS NOT NULL
  GROUP BY set_name ORDER BY set_name;
 
+-- A schema that does not exist is still an error, not a skip
 SELECT spock.repset_add_all_tables('spoc410_ins', '{spoc410_nosuch}');
 
--- Cleanup.  Drop the replication sets first so that dropping the schemas
--- does not have to cascade through the memberships.
+-- Cleanup.  Drop the replication sets first so that dropping the schemas does
+-- not have to cascade through the memberships.
 SELECT spock.repset_drop('spoc410_upd');
-
-SELECT spock.repset_drop('spoc410_atomic');
 
 SELECT spock.repset_drop('spoc410_ins');
 
 DROP VIEW public.spoc410_state;
-DROP FUNCTION public.spoc410_probe(name, text);
 -- the cascade notice just lists the schema contents, keep it out of the output
 SET client_min_messages = warning;
 DROP SCHEMA spoc410_ok, spoc410_r1, spoc410_r2, spoc410_r3, spoc410_r4 CASCADE;
 RESET client_min_messages;
 
 --
--- Pin the all-or-nothing restriction behaviour of the repset_add_all_tables()
---
+-- Check: one table that does not satisfy replication restrictions must not cost
+-- the caller the whole schema
 
 CREATE SCHEMA spoc410_mix;
--- a_pk sorts before m_orphan, so it is already added when the call aborts;
--- z_pk sorts after it and is never even looked at
+-- a_pk sorts before m_orphan and z_pk after it, so this also shows that the
+-- scan carries on past the table it skips
 CREATE TABLE spoc410_mix.a_pk (id int PRIMARY KEY, payload text);
 CREATE TABLE spoc410_mix.m_orphan (id int, payload text);
 CREATE TABLE spoc410_mix.z_pk (id int PRIMARY KEY, payload text);
@@ -576,26 +549,42 @@ CREATE VIEW public.spoc410_members AS
 
 SELECT spock.repset_create('spoc410_mix_upd') IS NOT NULL AS created;
 
--- Today: the whole call dies on the one table that cannot be replicated
 SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spoc410_mix}');
 
--- ... and a_pk, which had been accepted, is gone with it
+-- a_pk and z_pk are in, only m_orphan stayed out
 SELECT set_name, nspname, relname FROM public.spoc410_members
  ORDER BY 1, 2, 3;
 
--- An INSERT-only set never has to identify a row, so the same schema goes in
--- whole, m_orphan included.
+-- The same schema named twice must not turn into a duplicate key failure, and
+-- must not report the same relation twice either.
+SELECT spock.repset_add_all_tables('spoc410_mix_upd',
+	'{spoc410_mix,spoc410_mix}');
+
+SELECT set_name, nspname, relname FROM public.spoc410_members
+ ORDER BY 1, 2, 3;
+
+-- Naming that same table explicitly is still an error: the caller asked for
+-- this one table, so silently doing nothing would be worse than failing.
+SELECT spock.repset_add_table('spoc410_mix_upd', 'spoc410_mix.m_orphan');
+
+-- A schema that may never hold replicated relations is an error too.  The
+-- caller named it, and scanning it could achieve nothing but a warning per
+-- relation: errors are about what the caller asked for, warnings about what we
+-- found inside a schema we were told to scan.
+SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spock}');
+
+-- The requirement belongs to the replication set, not to the routine: an
+-- INSERT-only set never has to identify a row, so m_orphan goes in too.
 SELECT spock.repset_create('spoc410_mix_ins',
 	replicate_update := false, replicate_delete := false) IS NOT NULL AS created;
 
 SELECT spock.repset_add_all_tables('spoc410_mix_ins', '{spoc410_mix}');
 
--- Three tables in the replication set
 SELECT set_name, nspname, relname FROM public.spoc410_members
  ORDER BY 1, 2, 3;
 
--- And the ERROR really was only about the missing identity: give m_orphan a
--- PRIMARY KEY and the very same call succeeds.
+-- Give m_orphan a PRIMARY KEY and a later call picks it up, without touching
+-- the members already there.
 ALTER TABLE spoc410_mix.m_orphan ADD PRIMARY KEY (id);
 
 SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spoc410_mix}');

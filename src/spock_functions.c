@@ -18,6 +18,7 @@
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/tupconvert.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -63,6 +64,7 @@
 
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/lmgr.h"
 #include "storage/proc.h"
 
 #include "tcop/tcopprot.h"
@@ -1846,7 +1848,8 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	{
 		Oid			partoid = lfirst_oid(lc);
 
-		replication_set_add_table(repset->id, partoid, att_list, row_filter);
+		replication_set_add_table(repset->id, partoid, att_list, row_filter,
+								  false);
 
 		/* In case of partitions, only synchronize the parent table. */
 		if (synchronize && (partoid == reloid))
@@ -1958,6 +1961,20 @@ spock_replication_set_add_all_relations(Name repset_name,
 		SysScanDesc sysscan;
 		HeapTuple	tuple;
 
+		/*
+		 * A schema the caller named is the caller's mistake to hear about:
+		 * scanning it could only produce a warning per relation and an empty
+		 * replication set.  A relation we merely come across inside a schema we
+		 * were told to scan is skipped with a warning instead -- errors are
+		 * about what the caller asked for, warnings about what we found.
+		 */
+		if (spock_name_is_reserved(RESERVED_KIND_SCHEMA, RESERVED_PURPOSE_REPSET,
+								   nspname))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("schema %s is excluded from replication", nspname),
+					 errdetail("Relations of this schema cannot be added to any replication set.")));
+
 		ScanKeyInit(&skey[0],
 					Anum_pg_class_relnamespace,
 					BTEqualStrategyNumber, F_OIDEQ,
@@ -1984,14 +2001,47 @@ spock_replication_set_add_all_relations(Name repset_name,
 			if (!list_member_oid(existing_relations, reloid))
 			{
 				bool		ispartition;
+				bool		added;
+				Relation	targetrel;
+
+				/*
+				 * The same schema may be named twice in nsp_names, and a second
+				 * visit would try to insert a duplicate catalog row and abort
+				 * the whole call.
+				 */
+				existing_relations = lappend_oid(existing_relations, reloid);
+
+				/*
+				 * Lock the relation and confirm it is still there before we
+				 * touch it.  This scan runs on the catalog snapshot, so a DROP
+				 * TABLE that committed after it started is not reflected in the
+				 * tuple we are holding.
+				 */
+				targetrel = try_table_open(reloid, AccessShareLock);
+				if (targetrel == NULL)
+					continue;
+				table_close(targetrel, NoLock);
 
 				if (relkind == RELKIND_RELATION || relkind == RELKIND_PARTITIONED_TABLE)
-				{
-					replication_set_add_table(repset->id, reloid, NIL, NULL);
-				}
+					added = replication_set_add_table(repset->id, reloid, NIL,
+													  NULL, true);
 				else
+				{
 					/* FIXME: What happens if the id is a snowflake sequence? */
 					replication_set_add_seq(repset->id, reloid);
+					added = true;
+				}
+
+				/*
+				 * A schema full of unreplicatable tables would otherwise fill
+				 * the lock table for no benefit, and block DDL on tables we
+				 * declined to manage.
+				 */
+				if (!added)
+				{
+					UnlockRelationOid(reloid, AccessShareLock);
+					continue;
+				}
 
 				/* don't synchronize the partitions */
 				ispartition = get_rel_relispartition(reloid);
@@ -2218,7 +2268,8 @@ spock_replication_set_add_partition(PG_FUNCTION_ARGS)
 			if (get_table_replication_row(repset->id, partoid, NULL, NULL))
 				continue;
 
-			replication_set_add_table(repset->id, partoid, att_list, row_filter);
+			replication_set_add_table(repset->id, partoid, att_list, row_filter,
+									  false);
 			nrows++;
 		}
 

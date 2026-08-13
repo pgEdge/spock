@@ -1092,11 +1092,67 @@ drop_node_replication_sets(Oid nodeid)
 }
 
 /*
- * Insert new replication set / table mapping.
+ * May this relation join the replication set, as far as its replica identity
+ * goes?  Reports the reason it may not, at WARNING when the caller is walking a
+ * whole schema and at ERROR when it asked for this one relation.
+ *
+ * Replicating an UPDATE or a DELETE means locating the affected row on the
+ * subscriber, which spock does through the relation's replica identity index.
+ * Note that neither REPLICA IDENTITY FULL nor REPLICA IDENTITY NOTHING yields
+ * an index, so both fail this test even when the table has a PRIMARY KEY.  A
+ * relation without an index can still belong to a set that only replicates
+ * INSERTs and TRUNCATEs.
+ *
+ * Both wordings live here, side by side, so that they cannot drift apart, and
+ * because a dynamically assembled message could not be translated.
+ *
+ * The relation must be open.
  */
-void
+static bool
+check_relation_replicatable(Relation rel, SpockRepSet *repset,
+							bool skip_unreplicatable)
+{
+	if (!repset->replicate_update && !repset->replicate_delete)
+		return true;
+
+	if (rel->rd_indexvalid == 0)
+		RelationGetIndexList(rel);
+
+	if (OidIsValid(rel->rd_replidindex))
+		return true;
+
+	if (!skip_unreplicatable)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("table %s cannot be added to replication set %s",
+						RelationGetRelationName(rel), repset->name),
+				 errdetail("Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs."),
+				 errhint("Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.")));
+
+	ereport(WARNING,
+			(errmsg("skipping table %s.%s",
+					get_namespace_name(RelationGetNamespace(rel)),
+					RelationGetRelationName(rel)),
+			 errdetail("Table has no replica identity index, and replication set %s replicates UPDATEs or DELETEs.",
+					   repset->name),
+			 errhint("Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.")));
+
+	return false;
+}
+
+/*
+ * Insert new replication set / table mapping.
+ *
+ * A relation the set cannot replicate row-by-row is normally an error.  With
+ * skip_unreplicatable set, it is reported with a warning and left out instead,
+ * which is what repset_add_all_tables() wants: one such table in a schema
+ * should not cost the caller every other table of that schema.
+ *
+ * Returns true if the mapping was created.
+ */
+bool
 replication_set_add_table(Oid setid, Oid reloid, List *att_list,
-						  Node *row_filter)
+						  Node *row_filter, bool skip_unreplicatable)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -1128,18 +1184,17 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("UNLOGGED and TEMP tables cannot be replicated")));
 
-	if (targetrel->rd_indexvalid == 0)
-		RelationGetIndexList(targetrel);
-	if (!OidIsValid(targetrel->rd_replidindex) &&
-		(repset->replicate_update || repset->replicate_delete))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("table %s cannot be added to replication set %s",
-						RelationGetRelationName(targetrel), repset->name),
-				 errdetail("table does not have PRIMARY KEY and given "
-						   "replication set is configured to replicate "
-						   "UPDATEs and/or DELETEs"),
-				 errhint("Add a PRIMARY KEY to the table")));
+	if (!check_relation_replicatable(targetrel, repset, skip_unreplicatable))
+	{
+		/*
+		 * Caller's lock, caller's problem: we opened with NoLock if it already
+		 * held one, so releasing here would be releasing something we never
+		 * took.  Bulk callers hand the lock back themselves once we tell them
+		 * the relation is not going in.
+		 */
+		table_close(targetrel, NoLock);
+		return false;
+	}
 
 	EnsureRelationNotIgnored(targetrel);
 
@@ -1198,6 +1253,8 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	table_close(rel, RowExclusiveLock);
 
 	CommandCounterIncrement();
+
+	return true;
 }
 
 /*
