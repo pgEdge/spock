@@ -26,6 +26,7 @@
 #include "access/xlogutils.h"
 
 #include "catalog/catalog.h"
+#include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
@@ -36,6 +37,7 @@
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
+#include "commands/extension.h"
 #if PG_VERSION_NUM >= 180000
 #include "commands/publicationcmds.h"
 #endif
@@ -1962,18 +1964,17 @@ spock_replication_set_add_all_relations(Name repset_name,
 		HeapTuple	tuple;
 
 		/*
-		 * A schema the caller named is the caller's mistake to hear about:
-		 * scanning it could only produce a warning per relation and an empty
-		 * replication set.  A relation we merely come across inside a schema we
-		 * were told to scan is skipped with a warning instead -- errors are
-		 * about what the caller asked for, warnings about what we found.
+		 * A schema no replication set may draw from is reported once and
+		 * passed over, rather than once per relation it holds.
 		 */
 		if (spock_name_is_reserved(RESERVED_KIND_SCHEMA, RESERVED_PURPOSE_REPSET,
 								   nspname))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("schema %s is excluded from replication", nspname),
+		{
+			ereport(WARNING,
+					(errmsg("skipping schema %s", nspname),
 					 errdetail("Relations of this schema cannot be added to any replication set.")));
+			continue;
+		}
 
 		ScanKeyInit(&skey[0],
 					Anum_pg_class_relnamespace,
@@ -2003,6 +2004,8 @@ spock_replication_set_add_all_relations(Name repset_name,
 				bool		ispartition;
 				bool		added;
 				Relation	targetrel;
+				Oid			extoid;
+				char	   *extname;
 
 				/*
 				 * The same schema may be named twice in nsp_names, and a second
@@ -2021,6 +2024,28 @@ spock_replication_set_add_all_relations(Name repset_name,
 				if (targetrel == NULL)
 					continue;
 				table_close(targetrel, NoLock);
+
+				/*
+				 * A relation belonging to an extension no replication set may
+				 * draw from is passed over here rather than inside the add
+				 * routines, which raise an error: a relation we merely came
+				 * across while walking a schema should not cost the caller the
+				 * rest of that schema.
+				 */
+				extoid = getExtensionOfObject(RelationRelationId, reloid);
+				extname = OidIsValid(extoid) ? get_extension_name(extoid) : NULL;
+				if (extname != NULL &&
+					spock_name_is_reserved(RESERVED_KIND_EXTENSION,
+										   RESERVED_PURPOSE_REPSET, extname))
+				{
+					ereport(WARNING,
+							(errmsg("skipping relation %s.%s",
+									nspname, NameStr(reltup->relname)),
+							 errdetail("Relation belongs to extension %s, which is excluded from replication.",
+									   extname)));
+					UnlockRelationOid(reloid, AccessShareLock);
+					continue;
+				}
 
 				if (relkind == RELKIND_RELATION || relkind == RELKIND_PARTITIONED_TABLE)
 					added = replication_set_add_table(repset->id, reloid, NIL,

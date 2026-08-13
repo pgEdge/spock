@@ -120,8 +120,8 @@ ERROR:  table test_nopkey cannot be added to replication set repset_replicate_in
 DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
 SELECT * FROM spock.repset_add_all_tables('default', '{public}');
-WARNING:  skipping table public.test_nopkey
-DETAIL:  Table has no replica identity index, and replication set default replicates UPDATEs or DELETEs.
+WARNING:  skipping table public.test_nopkey for replication set default
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
  repset_add_all_tables 
 -----------------------
@@ -850,17 +850,17 @@ SELECT spock.repset_create('spoc410_upd') IS NOT NULL AS created;
 
 SELECT spock.repset_add_all_tables('spoc410_upd',
 	'{spoc410_ok,spoc410_r1,spoc410_r2,spoc410_r3,spoc410_r4}');
-WARNING:  skipping table spoc410_r1.t_unique_no_pk
-DETAIL:  Table has no replica identity index, and replication set spoc410_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_r1.t_unique_no_pk for replication set spoc410_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
-WARNING:  skipping table spoc410_r2.t_full
-DETAIL:  Table has no replica identity index, and replication set spoc410_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_r2.t_full for replication set spoc410_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
-WARNING:  skipping table spoc410_r3.t_nothing
-DETAIL:  Table has no replica identity index, and replication set spoc410_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_r3.t_nothing for replication set spoc410_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
-WARNING:  skipping table spoc410_r4.t_no_identity
-DETAIL:  Table has no replica identity index, and replication set spoc410_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_r4.t_no_identity for replication set spoc410_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
  repset_add_all_tables 
 -----------------------
@@ -935,17 +935,17 @@ SELECT spock.repset_add_all_tables('spoc410_ins',
 
 SELECT spock.repset_add_all_tables('spoc410_upd',
 	'{spoc410_ok,spoc410_r1,spoc410_r2,spoc410_r3,spoc410_r4}');
-WARNING:  skipping table spoc410_r1.t_unique_no_pk
-DETAIL:  Table has no replica identity index, and replication set spoc410_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_r1.t_unique_no_pk for replication set spoc410_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
-WARNING:  skipping table spoc410_r2.t_full
-DETAIL:  Table has no replica identity index, and replication set spoc410_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_r2.t_full for replication set spoc410_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
-WARNING:  skipping table spoc410_r3.t_nothing
-DETAIL:  Table has no replica identity index, and replication set spoc410_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_r3.t_nothing for replication set spoc410_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
-WARNING:  skipping table spoc410_r4.t_no_identity
-DETAIL:  Table has no replica identity index, and replication set spoc410_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_r4.t_no_identity for replication set spoc410_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
  repset_add_all_tables 
 -----------------------
@@ -980,8 +980,8 @@ ALTER TABLE spoc410_r1.t_unique_no_pk
 -- still FULL, because FULL never resolves to an index.
 ALTER TABLE spoc410_r2.t_full ADD PRIMARY KEY (id);
 SELECT spock.repset_add_all_tables('spoc410_upd', '{spoc410_r2}');
-WARNING:  skipping table spoc410_r2.t_full
-DETAIL:  Table has no replica identity index, and replication set spoc410_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_r2.t_full for replication set spoc410_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
  repset_add_all_tables 
 -----------------------
@@ -1070,8 +1070,8 @@ SELECT spock.repset_create('spoc410_mix_upd') IS NOT NULL AS created;
 (1 row)
 
 SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spoc410_mix}');
-WARNING:  skipping table spoc410_mix.m_orphan
-DETAIL:  Table has no replica identity index, and replication set spoc410_mix_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_mix.m_orphan for replication set spoc410_mix_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
  repset_add_all_tables 
 -----------------------
@@ -1091,8 +1091,8 @@ SELECT set_name, nspname, relname FROM public.spoc410_members
 -- must not report the same relation twice either.
 SELECT spock.repset_add_all_tables('spoc410_mix_upd',
 	'{spoc410_mix,spoc410_mix}');
-WARNING:  skipping table spoc410_mix.m_orphan
-DETAIL:  Table has no replica identity index, and replication set spoc410_mix_upd replicates UPDATEs or DELETEs.
+WARNING:  skipping table spoc410_mix.m_orphan for replication set spoc410_mix_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
  repset_add_all_tables 
 -----------------------
@@ -1113,13 +1113,16 @@ SELECT spock.repset_add_table('spoc410_mix_upd', 'spoc410_mix.m_orphan');
 ERROR:  table m_orphan cannot be added to replication set spoc410_mix_upd
 DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
 HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
--- A schema that may never hold replicated relations is an error too.  The
--- caller named it, and scanning it could achieve nothing but a warning per
--- relation: errors are about what the caller asked for, warnings about what we
--- found inside a schema we were told to scan.
+-- A schema no replication set may draw from is reported once and passed over,
+-- not once per relation it holds.
 SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spock}');
-ERROR:  schema spock is excluded from replication
+WARNING:  skipping schema spock
 DETAIL:  Relations of this schema cannot be added to any replication set.
+ repset_add_all_tables 
+-----------------------
+ t
+(1 row)
+
 -- The requirement belongs to the replication set, not to the routine: an
 -- INSERT-only set never has to identify a row, so m_orphan goes in too.
 SELECT spock.repset_create('spoc410_mix_ins',
@@ -1166,6 +1169,58 @@ SELECT set_name, nspname, relname FROM public.spoc410_members
  spoc410_mix_upd | spoc410_mix | m_orphan
  spoc410_mix_upd | spoc410_mix | z_pk
 (6 rows)
+
+-- Every table of the schema is replicatable by now, so the only thing the next
+-- call reports is the failure itself.  Schemas are resolved one at a time, as
+-- the loop reaches them: spoc410_mix is scanned and all of it added to the
+-- fresh set before the second name is looked up and fails.  Everything the
+-- routine writes is an ordinary catalog insert, so that work goes with it.
+SELECT spock.repset_create('spoc410_mix_err') IS NOT NULL AS created;
+ created 
+---------
+ t
+(1 row)
+
+SELECT spock.repset_add_all_tables('spoc410_mix_err',
+	'{spoc410_mix,nosuchschema}');
+ERROR:  schema "nosuchschema" does not exist
+-- ... and the set is left empty, not half full
+SELECT count(*) AS members FROM public.spoc410_members
+ WHERE set_name = 'spoc410_mix_err';
+ members 
+---------
+       0
+(1 row)
+
+-- Same for a relation of an extension no replication set may draw from.
+CREATE TABLE spoc410_mix.e_ext (id int PRIMARY KEY, payload text);
+ALTER EXTENSION spock ADD TABLE spoc410_mix.e_ext;
+SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spoc410_mix}');
+WARNING:  skipping relation spoc410_mix.e_ext
+DETAIL:  Relation belongs to extension spock, which is excluded from replication.
+ repset_add_all_tables 
+-----------------------
+ t
+(1 row)
+
+SELECT set_name, nspname, relname FROM public.spoc410_members
+ ORDER BY 1, 2, 3;
+    set_name     |   nspname   | relname  
+-----------------+-------------+----------
+ spoc410_mix_ins | spoc410_mix | a_pk
+ spoc410_mix_ins | spoc410_mix | m_orphan
+ spoc410_mix_ins | spoc410_mix | z_pk
+ spoc410_mix_upd | spoc410_mix | a_pk
+ spoc410_mix_upd | spoc410_mix | m_orphan
+ spoc410_mix_upd | spoc410_mix | z_pk
+(6 rows)
+
+ALTER EXTENSION spock DROP TABLE spoc410_mix.e_ext;
+SELECT spock.repset_drop('spoc410_mix_err');
+ repset_drop 
+-------------
+ t
+(1 row)
 
 SELECT spock.repset_drop('spoc410_mix_upd');
  repset_drop 

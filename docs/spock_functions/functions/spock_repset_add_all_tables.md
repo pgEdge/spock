@@ -23,8 +23,12 @@ specified replication set. Only tables that exist at the time of execution
 are added; tables created afterward must be added separately using
 spock.repset_add_table().
 
-A table that the replication set cannot replicate is skipped and reported with a
-WARNING naming its schema and table; the remaining tables are still added.
+A table that cannot be replicated is skipped and reported with a WARNING naming
+its schema and table; the remaining tables are still added. A table is skipped
+when the replication set replicates UPDATEs or DELETEs and the table has no
+index-based replica identity, or when the table belongs to an extension listed
+in spock.reserved_object. A schema listed in spock.reserved_object is reported
+once and passed over as a whole.
 
 A replication set that replicates UPDATEs or DELETEs has to locate the affected
 row on the subscriber, so it can only take tables with an index-based replica
@@ -36,10 +40,7 @@ replicates only INSERTs and TRUNCATEs.
 
 Unlike spock.repset_add_table(), which raises an error when the table cannot be
 replicated, this function never refuses the whole call on account of a single
-table's replica identity. It does still raise an error for problems with the
-arguments themselves — a schema that does not exist, or a schema listed in
-spock.reserved_object — and for a relation that no replication set may contain,
-such as a table belonging to a reserved extension.
+relation. A schema that does not exist is still an error.
 
 Views, materialized views, sequences, and UNLOGGED and TEMPORARY tables are not
 considered at all.

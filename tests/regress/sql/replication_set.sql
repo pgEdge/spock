@@ -567,10 +567,8 @@ SELECT set_name, nspname, relname FROM public.spoc410_members
 -- this one table, so silently doing nothing would be worse than failing.
 SELECT spock.repset_add_table('spoc410_mix_upd', 'spoc410_mix.m_orphan');
 
--- A schema that may never hold replicated relations is an error too.  The
--- caller named it, and scanning it could achieve nothing but a warning per
--- relation: errors are about what the caller asked for, warnings about what we
--- found inside a schema we were told to scan.
+-- A schema no replication set may draw from is reported once and passed over,
+-- not once per relation it holds.
 SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spock}');
 
 -- The requirement belongs to the replication set, not to the routine: an
@@ -591,6 +589,33 @@ SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spoc410_mix}');
 
 SELECT set_name, nspname, relname FROM public.spoc410_members
  ORDER BY 1, 2, 3;
+
+-- Every table of the schema is replicatable by now, so the only thing the next
+-- call reports is the failure itself.  Schemas are resolved one at a time, as
+-- the loop reaches them: spoc410_mix is scanned and all of it added to the
+-- fresh set before the second name is looked up and fails.  Everything the
+-- routine writes is an ordinary catalog insert, so that work goes with it.
+SELECT spock.repset_create('spoc410_mix_err') IS NOT NULL AS created;
+
+SELECT spock.repset_add_all_tables('spoc410_mix_err',
+	'{spoc410_mix,nosuchschema}');
+
+-- ... and the set is left empty, not half full
+SELECT count(*) AS members FROM public.spoc410_members
+ WHERE set_name = 'spoc410_mix_err';
+
+-- Same for a relation of an extension no replication set may draw from.
+CREATE TABLE spoc410_mix.e_ext (id int PRIMARY KEY, payload text);
+ALTER EXTENSION spock ADD TABLE spoc410_mix.e_ext;
+
+SELECT spock.repset_add_all_tables('spoc410_mix_upd', '{spoc410_mix}');
+
+SELECT set_name, nspname, relname FROM public.spoc410_members
+ ORDER BY 1, 2, 3;
+
+ALTER EXTENSION spock DROP TABLE spoc410_mix.e_ext;
+
+SELECT spock.repset_drop('spoc410_mix_err');
 
 SELECT spock.repset_drop('spoc410_mix_upd');
 
