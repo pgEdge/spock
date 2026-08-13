@@ -87,6 +87,26 @@ _regress=$(patsubst %/,%,$(srcdir))/tests/regress
 REGRESS_OPTS += --dbname=regression \
 				--bindir=$(shell $(PG_CONFIG) --bindir) \
 				--inputdir=$(abspath $(_regress))
+
+# Servers carrying the output_plugin_libraries security fix (commit 2a29b607dbb)
+# refuse to let a slot name spock_output as its output plugin until the GUC
+# lists it, so the setting is layered in from a separate file.
+#
+# The fix shipped in minor releases of every supported major as well as in
+# PG19, so the major version says nothing about whether the GUC is there;
+# ask the server binary instead.  --describe-config needs no data directory.
+# An empty answer (probe failed, or server predates the fix) leaves the
+# setting out, which is required -- an unrecognised parameter would stop the
+# postmaster from starting.  pg_regress appends each --temp-config in order.
+#
+# Deferred (=, not :=) on purpose: the probe then runs only when regresscheck
+# expands it.  An immediate assignment forks pg_config and postgres during
+# Makefile parse, on every invocation -- make, make install, make clean, and
+# each recursive one -- to compute something only this one recipe reads.
+_regress_output_plugin_config = $(shell \
+	"$$($(PG_CONFIG) --bindir)/postgres" --describe-config 2>/dev/null \
+	| grep -q '^output_plugin_libraries' \
+	&& echo --temp-config $(_regress)/regress-output-plugin.conf)
 pg_regress_clean_files = $(_regress)/results $(_regress)/regression_output \
 			$(_regress)/regression.diffs $(_regress)/regression.out $(_regress)/tmp_check/ \
 			$(_regress)/tmp_check_iso/ $(_regress)/log/ $(_regress)/output_iso/
@@ -94,6 +114,7 @@ regresscheck:
 	$(MKDIR_P) $(_regress)/regression_output
 	$(pg_regress_check) $(REGRESS_OPTS) \
 	    --temp-config $(_regress)/regress-postgresql.conf \
+	    $(_regress_output_plugin_config) \
 	    --temp-instance=$(_regress)/tmp_check \
 	    --outputdir=$(_regress)/regression_output \
 	    --create-role=logical \
