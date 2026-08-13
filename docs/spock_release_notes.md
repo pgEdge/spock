@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Upgrade Notes
+* PostgreSQL's 2026 security fix for CVE-2026-6471 (back-patched to every
+  supported major) added the `output_plugin_libraries` parameter, and a library
+  may no longer be used as an output plugin unless it is listed there. Its
+  default excludes `spock_output`, so on a server carrying the fix logical
+  decoding fails with `library "spock_output" may not be used as an output
+  plugin`. The check runs whenever decoding starts, not only at slot creation,
+  so this stops an established cluster after a minor-version upgrade — not just
+  new subscriptions. Set
+  `output_plugin_libraries = 'pgoutput, test_decoding, spock_output'` on every
+  node, physical standbys included, and only on servers that have the parameter
+  — on older releases an unrecognised parameter stops the server from starting.
+  See [Configuring Spock](configuring.md).
+
 ### New Features
 * **PostgreSQL 19 support** — new `compat/19` layer and version-specific API
   adaptations (`CLUSTER` folded into `REPACK`, the recovery-conflict

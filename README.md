@@ -132,7 +132,17 @@ You will need to build the Spock extension on a patched PostgreSQL source tree t
    ```bash
    shared_preload_libraries = 'spock'
    track_commit_timestamp = on # needed for conflict resolution
+   output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
    ```
+
+   Set `output_plugin_libraries` only if your server has that parameter: it was
+   added by a 2026 security fix (CVE-2026-6471), and unless `spock_output` is
+   listed there logical decoding fails with `library "spock_output" may not be
+   used as an output plugin` — on established clusters as well as new ones,
+   because the check runs every time decoding starts. On a release predating
+   the fix the parameter does not exist and setting it stops the server from
+   starting; check with
+   `SELECT current_setting('output_plugin_libraries', true)`.
 
 8. Then, connect to the server and use the `CREATE EXTENSION` command to create the spock extension on each node in the database you wish to replicate:
 
@@ -191,6 +201,14 @@ Modify the `postgresql.conf` file, adding:
     max_wal_senders = 10        # one per node needed on provider node
     shared_preload_libraries = 'spock'
     track_commit_timestamp = on # needed for conflict resolution
+    output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+
+Add `output_plugin_libraries` only on a server that has that parameter (see step
+7 of the build instructions above): it was added by a 2026 security fix, and
+unless `spock_output` is listed there logical decoding fails with `library
+"spock_output" may not be used as an output plugin`. Set it on every node,
+physical standbys included — see
+[Configuring Spock](docs/configuring.md).
 
 You'll also want to enable automatic ddl replication on each node; add these GUCs to the `postgresql.conf` file as well:
 

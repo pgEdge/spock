@@ -194,6 +194,52 @@ After modifying `postgresql.conf`, restart PostgreSQL with this command:
 sudo systemctl restart postgresql-18
 ```
 
+### Decoding Fails on `spock_output`
+
+Replication stops — either a new subscription never leaves the initializing
+state, or an established subscription stops applying after a minor-version
+upgrade — and the provider's log records:
+
+```
+ERROR:  library "spock_output" may not be used as an output plugin
+HINT:   If it is safe for all REPLICATION users to use this library as an
+        output plugin, add it to "output_plugin_libraries" and reload the
+        server configuration.
+```
+
+A 2026 PostgreSQL security fix (CVE-2026-6471, back-patched to every supported
+major) added the `output_plugin_libraries` parameter, and a library may no
+longer be used as an output plugin unless it is listed there. The default,
+`'pgoutput, test_decoding'`, excludes `spock_output`.
+
+The check runs whenever logical decoding starts, not only when the slot is
+created, so this is not limited to new subscriptions: a cluster that has been
+replicating for months will stop the first time a walsender starts decoding
+after the upgrade. Add the library on **every** node a subscription may connect
+to — which, in a mesh, is all of them — keeping the core defaults:
+
+```sql
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+```
+
+Include physical standbys and Patroni replicas that hold synchronized failover
+slots: a copied slot keeps `spock_output` as its plugin, so a standby missing
+this setting serves replication only until it is promoted, and then fails.
+
+The parameter is `PGC_SUSET`, so `SELECT pg_reload_conf();` is enough — no
+restart needed. Re-enable the subscription afterwards if the failure had
+already disabled it.
+
+Only set the parameter if your server has it; on a release predating the fix,
+an unrecognised parameter in `postgresql.conf` stops the server from starting.
+Check with:
+
+```sql
+SELECT current_setting('output_plugin_libraries', true);
+```
+
+A NULL result means the parameter does not exist and must not be set.
+
 ### Conflict Resolution Issues
 
 If conflicts are causing replication to stop, check the conflict

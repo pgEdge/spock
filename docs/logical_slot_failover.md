@@ -195,6 +195,7 @@ Use Patroni 4.x, the line these instructions are written and tested against.
 | `sync_replication_slots` | `on` | dynamic config | No (reload) | PostgreSQL slotsync worker copies flagged slots to standbys |
 | `hot_standby_feedback` | `on` | dynamic config | No (reload) | Pins `catalog_xmin` so vacuum can't remove rows a slot needs |
 | `wal_level` | `logical` | dynamic config | Yes | Required for logical decoding |
+| `output_plugin_libraries` | include `spock_output` | dynamic config, **every member** | No (reload) | Only on servers that have the parameter (see note below). A synchronized slot keeps `spock_output` as its plugin, so a member missing this setting fails to serve replication once promoted |
 | `postgresql.use_slots` | `true` | Patroni config | n/a | Patroni manages the physical member slots (leave on) |
 | `max_replication_slots` / `max_wal_senders` | sized to cluster | dynamic config | Yes | Enough slots/senders for members plus Spock logical slots |
 | `synchronized_standby_slots` | standby member slot name(s) | dynamic config | No (reload) | Optional but recommended; holds the leader back until the standby confirms. See the [sharp edge](#the-switchover-sharp-edge-synchronized_standby_slots) below |
@@ -223,7 +224,24 @@ bootstrap:
         sync_replication_slots: "on"        # PG slotsync worker copies FAILOVER slots
         max_replication_slots: 10
         max_wal_senders: 10
+        # Only on servers that have this parameter -- see the note below
+        output_plugin_libraries: "pgoutput, test_decoding, spock_output"
 ```
+
+`output_plugin_libraries` arrived with PostgreSQL's 2026 security fix
+(CVE-2026-6471, back-patched to every supported major): a library may not be
+used as an output plugin unless it is listed there, and the default excludes
+`spock_output`. A synchronized slot keeps `spock_output` as its plugin, so a
+member without this setting looks healthy while it is a replica and then fails
+to serve replication the moment it is promoted — the failure surfaces during a
+switchover, which is the worst time to find it. It is `PGC_SUSET`, so Patroni
+reloads it without a restart.
+
+Do not set it on a release that predates the fix: an unrecognised parameter
+stops the server from starting, and pushing one through the DCS stops *every*
+member. Check first, on each member, with
+`SELECT current_setting('output_plugin_libraries', true)` — a NULL result means
+the parameter does not exist.
 
 `spock.use_native_failover_slots` is `PGC_POSTMASTER`. Patroni cannot reload
 it into a running server; after adding it, Patroni flags every member as

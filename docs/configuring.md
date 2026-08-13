@@ -11,7 +11,42 @@ max_replication_slots = 10  # one per node needed on provider node
 max_wal_senders = 10        # one per node needed on provider node
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+                            # only on servers that have this parameter; see below
 ```
+
+!!! warning "`output_plugin_libraries`"
+
+    A 2026 PostgreSQL security fix (CVE-2026-6471, back-patched to every
+    supported major) added the `output_plugin_libraries` parameter, and a
+    library may no longer be used as an output plugin unless it is listed
+    there. Its default, `'pgoutput, test_decoding'`, does not include
+    `spock_output`, so on such a server logical decoding fails with:
+
+    ```
+    ERROR:  library "spock_output" may not be used as an output plugin
+    ```
+
+    The check runs every time decoding starts, not only when the slot is
+    created, so an established cluster stops replicating after a minor-version
+    upgrade too. Add `spock_output` to the list, keeping the core defaults, as
+    shown above, on every node — including standbys, which need it once
+    promoted.
+
+    Only set the parameter if your server has it. On a PostgreSQL release
+    predating the fix an unrecognised parameter in `postgresql.conf` stops the
+    server from starting at all. To check, run against a server that is up:
+
+    ```sql
+    SELECT current_setting('output_plugin_libraries', true);
+    ```
+
+    A NULL result means the parameter does not exist and must not be set. You
+    can also ask the binary, with no server running:
+
+    ```bash
+    postgres --describe-config | grep '^output_plugin_libraries'
+    ```
 
 After modifying the parameters and restarting the Postgres server with your
 OS-specific restart command, connect with psql and create the Spock
