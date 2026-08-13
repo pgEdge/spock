@@ -26,6 +26,41 @@ sudo python3 setup.py install
 cd ~/pgedge
 sed -i '/log_min_messages/s/^#//g' data/pg$PGVER/postgresql.conf
 sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg$PGVER/postgresql.conf
+
+# Adjust spock settings to satisfy security fix (commit 2a29b607dbb): a server
+# carrying it refuses to let a slot name spock_output as its output plugin
+# until output_plugin_libraries lists the library, so every sub-create below
+# would fail with
+#   ERROR: library "spock_output" may not be used as an output plugin
+#
+# The fix shipped in minor releases of every supported major, so $PGVER says
+# nothing about whether the GUC is there; ask the server binary instead.  On a
+# server predating the fix the setting must stay out -- an unrecognised
+# parameter would stop the postmaster from starting.  A probe that cannot run
+# is a broken image, not an old server; failing here beats a slot creation
+# error once the cluster is being wired up.
+#
+# Matched with a here-string rather than `printf ... | grep -q`: grep -q exits
+# at the first match, printf takes EPIPE on the rest of the listing, and under
+# `set -o pipefail` the pipeline would then fail -- reporting "GUC absent"
+# exactly when it is present.
+if ! described="$(postgres --describe-config 2>/dev/null)"; then
+  echo "ERROR: could not run postgres --describe-config"
+  exit 1
+fi
+#
+# Appended only once: unlike the sed edits above this is not idempotent, and
+# the entrypoint runs again on every container start against a data directory
+# that persists.
+if grep -q '^output_plugin_libraries' <<<"${described}" &&
+	! grep -q '^output_plugin_libraries' data/pg$PGVER/postgresql.conf; then
+  # The core defaults are kept alongside spock_output so nothing relying on
+  # them changes behaviour.
+  cat >> data/pg$PGVER/postgresql.conf <<EOF
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+EOF
+fi
+
 ./pgedge restart
 
 wait_for_pg
