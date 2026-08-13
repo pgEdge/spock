@@ -4447,7 +4447,24 @@ process_syncing_tables(XLogRecPtr end_lsn)
 				/*
 				 * Failed SYNC operation should be ignored until someone processes
 				 * the error and changes the status.
+				 *
+				 * Say so once, on the transition. From here on every change
+				 * for this table is dropped by should_apply_changes_for_rel(),
+				 * so the table stops replicating and diverges; without this
+				 * the only trace is a status column in
+				 * spock.local_sync_status that nobody thinks to read.
 				 */
+				if (sync->status != SYNC_STATUS_FAILED)
+					ereport(WARNING,
+							(errmsg("SPOCK %s: synchronization of table %s.%s failed, changes for it are no longer applied",
+									MySubscription->name,
+									NameStr(sync->nspname),
+									NameStr(sync->relname)),
+							 errhint("Re-synchronize with spock.sub_resync_table('%s', '%s.%s') once the cause is fixed.",
+									 MySubscription->name,
+									 NameStr(sync->nspname),
+									 NameStr(sync->relname))));
+
 				sync->status = SYNC_STATUS_FAILED;
 				sync->statuslsn = InvalidXLogRecPtr;
 			}

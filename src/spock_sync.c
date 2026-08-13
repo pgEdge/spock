@@ -72,6 +72,12 @@
 #define PGDUMP_BINARY "pg_dump"
 #define PGRESTORE_BINARY "pg_restore"
 
+/*
+ * Staging table used by copy_table_data() when the target already holds rows.
+ * Lives in pg_temp on the target connection for the duration of the COPY.
+ */
+#define SPOCK_SYNC_STAGE_RELNAME	"spock_sync_stage"
+
 #define Natts_local_sync_state	6
 #define Anum_sync_kind			1
 #define Anum_sync_subid			2
@@ -1001,8 +1007,12 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	List	   *attnamelist;
 	ListCell   *lc;
 	bool		first;
+	bool		stage_load;
+	bool		override_identity = false;
+	char	   *merged = NULL;
 	StringInfoData query;
 	StringInfoData attlist;
+	StringInfoData relident;
 	MemoryContext curctx = CurrentMemoryContext,
 				oldctx;
 
@@ -1018,6 +1028,25 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 						remoterel->nspname, remoterel->relname)));
 
 	attnamelist = make_copy_attnamelist(rel);
+
+	/*
+	 * COPY may write GENERATED ALWAYS AS IDENTITY columns, an INSERT may not
+	 * without OVERRIDING SYSTEM VALUE. Remember whether we need it for the
+	 * staged-load path below.
+	 */
+	{
+		TupleDesc	desc = RelationGetDescr(rel->rel);
+		int			attnum;
+
+		for (attnum = 0; attnum < desc->natts; attnum++)
+		{
+			if (TupleDescAttr(desc, attnum)->attidentity == ATTRIBUTE_IDENTITY_ALWAYS)
+			{
+				override_identity = true;
+				break;
+			}
+		}
+	}
 
 	initStringInfo(&attlist);
 	first = true;
@@ -1118,13 +1147,71 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 						   PQerrorMessage(origin_conn))));
 	}
 
+	/*
+	 * Decide whether to load straight into the table or through a staging
+	 * table.
+	 *
+	 * A direct COPY into a table that already holds rows aborts on the first
+	 * key collision, and that failure is not recoverable: the table's sync
+	 * status ends up SYNC_STATUS_FAILED, and from then on the apply worker
+	 * drops every change for it (see should_apply_changes_for_rel), silently
+	 * and permanently. In a mesh this is the normal case rather than an edge
+	 * case, because adding an already-populated table to a replication set
+	 * with synchronize_data := true asks every peer to copy rows it already
+	 * has. Load those tables into an unconstrained staging table and merge,
+	 * so a sync of data we already hold converges instead of wedging.
+	 */
+	initStringInfo(&relident);
+	appendStringInfo(&relident, "%s.%s",
+					 PQescapeIdentifier(target_conn, remoterel->nspname,
+										strlen(remoterel->nspname)),
+					 PQescapeIdentifier(target_conn, remoterel->relname,
+										strlen(remoterel->relname)));
+
+	resetStringInfo(&query);
+	appendStringInfo(&query, "SELECT 1 FROM %s LIMIT 1", relident.data);
+	res = PQexec(target_conn, query.data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		char	   *msg = pstrdup(PQerrorMessage(target_conn));
+
+		PQclear(res);
+		ereport(ERROR,
+				(errmsg("could not check whether target table %s.%s is empty",
+						remoterel->nspname, remoterel->relname),
+				 errdetail("destination connection reported: %s", msg)));
+	}
+	stage_load = PQntuples(res) > 0;
+	PQclear(res);
+
+	if (stage_load)
+	{
+		resetStringInfo(&query);
+		appendStringInfo(&query,
+						 "DROP TABLE IF EXISTS pg_temp.%s;"
+						 "CREATE TEMP TABLE %s (LIKE %s)",
+						 SPOCK_SYNC_STAGE_RELNAME, SPOCK_SYNC_STAGE_RELNAME,
+						 relident.data);
+		res = PQexec(target_conn, query.data);
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		{
+			char	   *msg = pstrdup(PQerrorMessage(target_conn));
+
+			PQclear(res);
+			ereport(ERROR,
+					(errmsg("could not create staging table for %s.%s",
+							remoterel->nspname, remoterel->relname),
+					 errdetail("destination connection reported: %s", msg)));
+		}
+		PQclear(res);
+	}
+
 	/* Build COPY FROM query. */
 	resetStringInfo(&query);
-	appendStringInfo(&query, "COPY %s.%s ",
-					 PQescapeIdentifier(origin_conn, remoterel->nspname,
-										strlen(remoterel->nspname)),
-					 PQescapeIdentifier(origin_conn, remoterel->relname,
-										strlen(remoterel->relname)));
+	if (stage_load)
+		appendStringInfo(&query, "COPY pg_temp.%s ", SPOCK_SYNC_STAGE_RELNAME);
+	else
+		appendStringInfo(&query, "COPY %s ", relident.data);
 	if (list_length(attnamelist))
 		appendStringInfo(&query, "(%s) ", attlist.data);
 	appendStringInfoString(&query, "FROM stdin");
@@ -1190,8 +1277,66 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	}
 	PQclear(res);
 
-	elog(INFO, "finished synchronization of data for table %s.%s",
-		 remoterel->nspname, remoterel->relname);
+	/*
+	 * Merge the staged rows. Rows we already have are left alone rather than
+	 * overwritten: the local copy is the one the rest of the cluster has
+	 * already replicated from us, so keeping it is the conservative choice.
+	 */
+	if (stage_load)
+	{
+		resetStringInfo(&query);
+		if (list_length(attnamelist))
+			appendStringInfo(&query,
+							 "INSERT INTO %s (%s) %sSELECT %s FROM pg_temp.%s "
+							 "ON CONFLICT DO NOTHING",
+							 relident.data, attlist.data,
+							 override_identity ? "OVERRIDING SYSTEM VALUE " : "",
+							 attlist.data, SPOCK_SYNC_STAGE_RELNAME);
+		else
+			appendStringInfo(&query,
+							 "INSERT INTO %s %sSELECT * FROM pg_temp.%s "
+							 "ON CONFLICT DO NOTHING",
+							 relident.data,
+							 override_identity ? "OVERRIDING SYSTEM VALUE " : "",
+							 SPOCK_SYNC_STAGE_RELNAME);
+
+		res = PQexec(target_conn, query.data);
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		{
+			char	   *msg = pstrdup(PQerrorMessage(target_conn));
+
+			PQclear(res);
+			ereport(ERROR,
+					(errmsg("merging synchronized data into %s.%s failed",
+							remoterel->nspname, remoterel->relname),
+					 errdetail("destination connection reported: %s", msg)));
+		}
+		merged = pstrdup(PQcmdTuples(res));
+		PQclear(res);
+
+		resetStringInfo(&query);
+		appendStringInfo(&query, "DROP TABLE pg_temp.%s",
+						 SPOCK_SYNC_STAGE_RELNAME);
+		res = PQexec(target_conn, query.data);
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		{
+			char	   *msg = pstrdup(PQerrorMessage(target_conn));
+
+			PQclear(res);
+			ereport(ERROR,
+					(errmsg("could not drop staging table for %s.%s",
+							remoterel->nspname, remoterel->relname),
+					 errdetail("destination connection reported: %s", msg)));
+		}
+		PQclear(res);
+	}
+
+	if (stage_load)
+		elog(INFO, "finished synchronization of data for table %s.%s, %s row(s) added to existing data",
+			 remoterel->nspname, remoterel->relname, merged);
+	else
+		elog(INFO, "finished synchronization of data for table %s.%s",
+			 remoterel->nspname, remoterel->relname);
 }
 
 /*
