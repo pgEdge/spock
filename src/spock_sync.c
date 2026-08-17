@@ -994,6 +994,42 @@ make_copy_attnamelist(SpockRelation *rel)
 }
 
 /*
+ * Does the target table already hold rows?
+ *
+ * Chooses between the direct COPY and the staging path in copy_table_data().
+ * Errors out rather than guessing, because getting this wrong in the "empty"
+ * direction is what wedges the table's sync status.
+ */
+static bool
+target_table_has_rows(PGconn *target_conn, SpockRemoteRel *remoterel,
+					  const char *relident)
+{
+	PGresult   *res;
+	bool		has_rows;
+	StringInfoData query;
+
+	initStringInfo(&query);
+	appendStringInfo(&query, "SELECT 1 FROM %s LIMIT 1", relident);
+	res = PQexec(target_conn, query.data);
+	pfree(query.data);
+
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		char	   *msg = pstrdup(PQerrorMessage(target_conn));
+
+		PQclear(res);
+		ereport(ERROR,
+				(errmsg("could not check whether target table %s.%s is empty",
+						remoterel->nspname, remoterel->relname),
+				 errdetail("destination connection reported: %s", msg)));
+	}
+	has_rows = PQntuples(res) > 0;
+	PQclear(res);
+
+	return has_rows;
+}
+
+/*
  * COPY single table over wire.
  */
 static void
@@ -1168,21 +1204,43 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 					 PQescapeIdentifier(target_conn, remoterel->relname,
 										strlen(remoterel->relname)));
 
-	resetStringInfo(&query);
-	appendStringInfo(&query, "SELECT 1 FROM %s LIMIT 1", relident.data);
-	res = PQexec(target_conn, query.data);
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-	{
-		char	   *msg = pstrdup(PQerrorMessage(target_conn));
+	stage_load = target_table_has_rows(target_conn, remoterel, relident.data);
 
+	if (!stage_load)
+	{
+		/*
+		 * That probe took no lock, so on its own it does not settle anything:
+		 * another transaction can commit a row between it and the COPY, and
+		 * the COPY then aborts on the duplicate key and wedges the table's
+		 * sync status, which is the exact failure the staging path exists to
+		 * avoid. Lock writers out and ask again; the second answer holds for
+		 * the rest of the copy transaction.
+		 *
+		 * The lock is taken only on this path. Here the table is empty, so
+		 * nothing should be contending for it, and blocking writes to a table
+		 * that is mid initial load is what we want anyway. Locking before the
+		 * first probe would instead hold EXCLUSIVE on a populated table for
+		 * the whole sync, which on a live node is a real availability cost.
+		 */
+		resetStringInfo(&query);
+		appendStringInfo(&query, "LOCK TABLE %s IN EXCLUSIVE MODE",
+						 relident.data);
+		res = PQexec(target_conn, query.data);
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		{
+			char	   *msg = pstrdup(PQerrorMessage(target_conn));
+
+			PQclear(res);
+			ereport(ERROR,
+					(errmsg("could not lock target table %s.%s for synchronization",
+							remoterel->nspname, remoterel->relname),
+					 errdetail("destination connection reported: %s", msg)));
+		}
 		PQclear(res);
-		ereport(ERROR,
-				(errmsg("could not check whether target table %s.%s is empty",
-						remoterel->nspname, remoterel->relname),
-				 errdetail("destination connection reported: %s", msg)));
+
+		stage_load = target_table_has_rows(target_conn, remoterel,
+										   relident.data);
 	}
-	stage_load = PQntuples(res) > 0;
-	PQclear(res);
 
 	if (stage_load)
 	{
