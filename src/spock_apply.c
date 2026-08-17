@@ -1224,9 +1224,7 @@ handle_commit(StringInfo s)
 				 LSN_FORMAT_ARGS(end_lsn),
 				 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
 				 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
-			exception_log->commit_lsn = InvalidXLogRecPtr;
-			exception_log->initial_error_message[0] = '\0';
-			exception_log->failed_action = 0;
+			clear_exception_log_entry(exception_log);
 			MySpockWorker->restart_delay = 0;
 
 			elog(ERROR, "SPOCK %s: exception handling had no exception(s) "
@@ -1295,9 +1293,7 @@ handle_commit(StringInfo s)
 					 MySubscription->name,
 					 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
 					 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
-				exception_log->commit_lsn = InvalidXLogRecPtr;
-				exception_log->initial_error_message[0] = '\0';
-				exception_log->failed_action = 0;
+				clear_exception_log_entry(exception_log);
 				MySpockWorker->restart_delay = 0;
 
 				elog(ERROR, "SPOCK %s: exiting because subscription disabled",
