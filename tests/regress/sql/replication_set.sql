@@ -625,3 +625,48 @@ DROP VIEW public.spoc410_members;
 SET client_min_messages = warning;
 DROP SCHEMA spoc410_mix CASCADE;
 RESET client_min_messages;
+
+--
+-- Check: promoting a set must weigh partitioned tables too, not only plain ones
+--
+-- A partitioned parent is what spock locates by replica identity, so a parent
+-- without one is as unreplicatable as a plain table without one.
+
+CREATE SCHEMA spoc410_part;
+
+-- No PRIMARY KEY, hence no replica identity index.  No partitions either: the
+-- plain 'r' relations that would fail the check in their own right are not
+-- there to mask the parent.
+CREATE TABLE spoc410_part.t_no_pk (id int, ts date) PARTITION BY RANGE (ts);
+
+-- An INSERT-only set never has to identify a row, so it takes the parent
+-- whatever its identity.
+SELECT spock.repset_create('spoc410_part_ins',
+	replicate_update := false, replicate_delete := false) IS NOT NULL AS created;
+
+SELECT spock.repset_add_all_tables('spoc410_part_ins', '{spoc410_part}');
+
+-- ... and cannot then be promoted to replicate UPDATEs or DELETEs.
+SELECT spock.repset_alter('spoc410_part_ins', replicate_update := true);
+
+SELECT spock.repset_alter('spoc410_part_ins', replicate_delete := true);
+
+-- A sequence, on the other hand, is replicated by shipping its last_value and
+-- never by locating a row on the subscriber, so it has no replica identity to
+-- ask after and its membership must not weigh on the promotion either.
+CREATE SEQUENCE spoc410_part.s_seq;
+
+SELECT spock.repset_add_seq('spoc410_part_ins', 'spoc410_part.s_seq');
+
+-- Give the parent an identity -- the PRIMARY KEY of a partitioned table has to
+-- cover the partition key -- and the promotion goes through, sequence and all.
+ALTER TABLE spoc410_part.t_no_pk ADD PRIMARY KEY (id, ts);
+
+SELECT spock.repset_alter('spoc410_part_ins', replicate_update := true)
+	IS NOT NULL AS altered;
+
+SELECT spock.repset_drop('spoc410_part_ins');
+
+SET client_min_messages = warning;
+DROP SCHEMA spoc410_part CASCADE;
+RESET client_min_messages;

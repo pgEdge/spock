@@ -791,6 +791,28 @@ create_replication_set(SpockRepSet *repset)
 }
 
 /*
+ * Is there an index to identify a row of this relation by?
+ *
+ * Replicating an UPDATE or a DELETE means locating the affected row on the
+ * subscriber, which spock does through the relation's replica identity index.
+ * Note that neither REPLICA IDENTITY FULL nor REPLICA IDENTITY NOTHING yields
+ * an index, so both answer false even when the table has a PRIMARY KEY.
+ *
+ * Every caller that gates row-by-row replication on the replica identity asks
+ * here, so that they cannot come to disagree about what counts as one.
+ *
+ * The relation must be open.
+ */
+static bool
+relation_has_replica_identity_index(Relation rel)
+{
+	if (rel->rd_indexvalid == 0)
+		RelationGetIndexList(rel);
+
+	return OidIsValid(rel->rd_replidindex);
+}
+
+/*
  * Alter the existing replication set.
  */
 void
@@ -854,21 +876,21 @@ alter_replication_set(SpockRepSet *repset)
 
 			targetrel = table_open(t->reloid, AccessShareLock);
 
-			/* Check of relation has replication index. */
-			if (RelationGetForm(targetrel)->relkind == RELKIND_RELATION)
-			{
-
-				if (targetrel->rd_indexvalid == 0)
-					RelationGetIndexList(targetrel);
-				if (!OidIsValid(targetrel->rd_replidindex) &&
-					(repset->replicate_update || repset->replicate_delete))
-					ereport(ERROR,
-							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							 errmsg("replication set %s cannot be altered to "
-									"replicate UPDATEs or DELETEs because it "
-									"contains tables without PRIMARY KEY",
-									repset->name)));
-			}
+			/*
+			 * Check whether the relation has a replica identity index.  A
+			 * partitioned parent is a member in its own right, and it is the
+			 * parent's identity that spock locates the row by, so it weighs
+			 * here exactly as a plain table does.
+			 */
+			if ((RelationGetForm(targetrel)->relkind == RELKIND_RELATION ||
+				 RelationGetForm(targetrel)->relkind == RELKIND_PARTITIONED_TABLE) &&
+				!relation_has_replica_identity_index(targetrel))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("replication set %s cannot be altered to "
+								"replicate UPDATEs or DELETEs because it "
+								"contains tables without PRIMARY KEY",
+								repset->name)));
 
 			table_close(targetrel, NoLock);
 		}
@@ -1096,11 +1118,8 @@ drop_node_replication_sets(Oid nodeid)
  * goes?  Reports the reason it may not, at WARNING when the caller is walking a
  * whole schema and at ERROR when it asked for this one relation.
  *
- * Replicating an UPDATE or a DELETE means locating the affected row on the
- * subscriber, which spock does through the relation's replica identity index.
- * Note that neither REPLICA IDENTITY FULL nor REPLICA IDENTITY NOTHING yields
- * an index, so both fail this test even when the table has a PRIMARY KEY.  A
- * relation without an index can still belong to a set that only replicates
+ * What counts as an identity is relation_has_replica_identity_index()'s to say.
+ * A relation without one can still belong to a set that only replicates
  * INSERTs and TRUNCATEs.
  *
  * Both wordings live here, side by side, so that they cannot drift apart, and
@@ -1115,10 +1134,7 @@ check_relation_replicatable(Relation rel, SpockRepSet *repset,
 	if (!repset->replicate_update && !repset->replicate_delete)
 		return true;
 
-	if (rel->rd_indexvalid == 0)
-		RelationGetIndexList(rel);
-
-	if (OidIsValid(rel->rd_replidindex))
+	if (relation_has_replica_identity_index(rel))
 		return true;
 
 	if (!skip_unreplicatable)
