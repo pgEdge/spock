@@ -196,8 +196,6 @@ Modify the `postgresql.conf` file, adding:
 
 PostgreSQL 15.19, 16.15, 17.11, 18.6, and 19 (and their later minor releases) require every logical decoding output plugin to be named in the `output_plugin_libraries` parameter before it can be used. Spock decodes with the `spock_output` plugin, so `spock_output` must appear in this list on every node, or slot creation fails with `library "spock_output" may not be used as an output plugin`.
 
-The value must be *additive*: the built-in default is `'pgoutput, test_decoding'`, so keep those entries alongside `spock_output`. Setting the parameter to `spock_output` alone disables the built-in plugins.
-
 You'll also want to enable automatic ddl replication on each node; add these GUCs to the `postgresql.conf` file as well:
 
     spock.enable_ddl_replication=on
