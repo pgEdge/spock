@@ -945,9 +945,7 @@ handle_commit(StringInfo s)
 		if (MyApplyWorker->use_try_block)
 		{
 			exception_log = &exception_log_ptr[my_exception_log_index];
-			exception_log->commit_lsn = InvalidXLogRecPtr;
-			exception_log->initial_error_message[0] = '\0';
-			exception_log->failed_action = 0;
+			clear_exception_log_entry(exception_log);
 			MyApplyWorker->use_try_block = false;
 			MySpockWorker->restart_delay = 0;
 
@@ -1043,9 +1041,7 @@ handle_commit(StringInfo s)
 			 * Clear the exception state so we don't enter exception handling
 			 * mode again on the next transaction.
 			 */
-			exception_log->commit_lsn = InvalidXLogRecPtr;
-			exception_log->initial_error_message[0] = '\0';
-			exception_log->failed_action = 0;
+			clear_exception_log_entry(exception_log);
 			MySpockWorker->restart_delay = 0;
 
 			/* Defensive check */
@@ -1077,9 +1073,7 @@ handle_commit(StringInfo s)
 			SpockExceptionLog *exception_log;
 
 			exception_log = &exception_log_ptr[my_exception_log_index];
-			exception_log->commit_lsn = InvalidXLogRecPtr;
-			exception_log->initial_error_message[0] = '\0';
-			exception_log->failed_action = 0;
+			clear_exception_log_entry(exception_log);
 			MySpockWorker->restart_delay = 0;
 
 			elog(ERROR, "SPOCK %s: disabling subscription due to exception in SUB_DISABLE mode",
@@ -1093,9 +1087,13 @@ handle_commit(StringInfo s)
 			 * special (only operation-level failures are logged), but we
 			 * should clear the saved error message to prevent it from leaking
 			 * into future transactions.
+			 *
+			 * The transaction has committed and the origin has been advanced,
+			 * so the recorded failure is resolved: drop the whole entry rather
+			 * than just the message, which also releases the local_tuple
+			 * pointer into the now-reset ApplyOperationContext.
 			 */
-			exception_log_ptr[my_exception_log_index].initial_error_message[0] = '\0';
-			exception_log_ptr[my_exception_log_index].failed_action = 0;
+			clear_exception_log_entry(&exception_log_ptr[my_exception_log_index]);
 		}
 
 		/* Track commit lsn  */
