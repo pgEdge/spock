@@ -3264,13 +3264,41 @@ spock_resume_apply_workers(PG_FUNCTION_ARGS)
 
 /*
  * Helper function for finding the endptr for a particular commit timestamp
+ *
+ * Scans WAL from the acquired slot's restart_lsn and returns the end position
+ * of the last local commit that is not newer than committs.
+ *
+ * A no-match must stay distinguishable: report it through *found rather than
+ * falling back to restart_lsn, which is a valid-looking position later than
+ * the answer and would make the caller advance a slot past changes it has not
+ * replicated.
+ *
+ * Note "last" is in WAL order, not timestamp order: a transaction takes its
+ * commit timestamp before inserting the record, so under concurrency a commit
+ * with a slightly older timestamp can sit after the record that ends the scan.
+ * The result is therefore never too late, but can be a few records early.
  */
 static XLogRecPtr
-spock_logical_replication_slot_scan(TimestampTz committs)
+spock_logical_replication_slot_scan(TimestampTz committs, bool *found)
 {
 	LogicalDecodingContext *ctx;
 	ResourceOwner old_resowner = CurrentResourceOwner;
-	XLogRecPtr	retlsn;
+	XLogRecPtr	retlsn = InvalidXLogRecPtr;
+	XLogRecPtr	start_lsn = MyReplicationSlot->data.restart_lsn;
+	XLogRecPtr	end_of_wal;
+
+	Assert(!XLogRecPtrIsInvalid(start_lsn));	/* checked by the caller */
+
+	*found = false;
+
+	/*
+	 * Fix the upper bound of the scan before reading anything.
+	 *
+	 * The page_read callback used below waits for WAL rather than reporting
+	 * its end: once the reader catches up with the flush position it sleeps in
+	 * pg_usleep() until somebody appends more, which on an idle node is never.
+	 */
+	end_of_wal = GetFlushRecPtr(NULL);
 
 	PG_TRY();
 	{
@@ -3291,53 +3319,78 @@ spock_logical_replication_slot_scan(TimestampTz committs)
 		 * Start reading at the slot's restart_lsn, which we know to point to
 		 * a valid record.
 		 */
-		XLogBeginRead(ctx->reader, MyReplicationSlot->data.restart_lsn);
-		retlsn = MyReplicationSlot->data.restart_lsn;
+		XLogBeginRead(ctx->reader, start_lsn);
 
 		/* invalidate non-timetravel entries */
 		InvalidateSystemCaches();
 
-		/* Decode at least one record, until we run out of records */
-		while (true)
+		while (ctx->reader->EndRecPtr < end_of_wal)
 		{
 			char	   *errm = NULL;
 			XLogRecord *record;
+			xl_xact_commit *xlrec;
+			uint8		info;
 
-			/*
-			 * Read records.  No changes are generated in fast_forward mode,
-			 * but snapbuilder/slot statuses are updated properly.
-			 */
+			/* Keep this ahead of the continue's below, or they skip it */
+			CHECK_FOR_INTERRUPTS();
+
 			record = XLogReadRecord(ctx->reader, &errm);
 			if (errm)
 				elog(ERROR, "could not find record while advancing replication slot: %s",
 					 errm);
 
-			if (record)
-			{
-				if (record->xl_rmid == RM_XACT_ID)
-				{
-					RepOriginId		nodeid;
-					TimestampTz		ts;
-
-					if (record->xl_xid == InvalidTransactionId)
-						continue;
-
-					TransactionIdGetCommitTsData(record->xl_xid,
-												 &ts, &nodeid);
-
-					if (nodeid == 0 && ts > committs)
-						break;
-
-					if (nodeid == 0)
-						retlsn = ctx->reader->EndRecPtr;
-				}
-			}
-			else
-			{
+			/*
+			 * A NULL record with no message means the reader gave up short of
+			 * end_of_wal - it does that on a historic timeline, say after the
+			 * upstream of a cascading standby was promoted mid-scan.  The scan
+			 * result is then truncated rather than wrong: too early, never too
+			 * late.
+			 */
+			if (record == NULL)
 				break;
-			}
 
-			CHECK_FOR_INTERRUPTS();
+			if (record->xl_rmid != RM_XACT_ID)
+				continue;
+
+			/*
+			 * Only the commit opcodes carry a commit timestamp; aborts,
+			 * prepares and XLOG_XACT_ASSIGNMENT do not.  COMMIT PREPARED has
+			 * to be included even though Spock never produces one: WAL is
+			 * cluster-wide, so another application on this instance can, and
+			 * ignoring its commit lets the scan run past it and return an LSN
+			 * that is too late.
+			 */
+			info = XLogRecGetInfo(ctx->reader) & XLOG_XACT_OPMASK;
+			if (info != XLOG_XACT_COMMIT && info != XLOG_XACT_COMMIT_PREPARED)
+				continue;
+
+			/*
+			 * This origin test is what confines the scan to local commits, and
+			 * nothing below can stand in for it: xact_time is the local commit
+			 * time even on a replicated transaction, so without this a commit
+			 * from another node is indistinguishable from one of ours.
+			 */
+			if (XLogRecGetOrigin(ctx->reader) != InvalidRepOriginId)
+				continue;
+
+			/*
+			 * xl_xact_commit leads the record and xact_time is its first field
+			 * for both commit opcodes, so the timestamp needs no parsing.
+			 *
+			 * Do not reach for pg_commit_ts instead.  Once it has been
+			 * truncated past an xid it reports ts = 0, which reads here as a
+			 * commit older than anything the caller can ask about; it errors
+			 * out entirely when track_commit_timestamp is off; and it costs
+			 * CommitTsLock plus an SLRU lookup on every commit record scanned.
+			 */
+			Assert(XLogRecGetDataLen(ctx->reader) >= MinSizeOfXactCommit);
+			xlrec = (xl_xact_commit *) XLogRecGetData(ctx->reader);
+
+			if (xlrec->xact_time > committs)
+				break;
+
+			retlsn = ctx->reader->EndRecPtr;
+			*found = true;
 		}
 
 		/*
@@ -3365,18 +3418,33 @@ spock_logical_replication_slot_scan(TimestampTz committs)
 }
 
 /*
- * SQL function for moving the position in a replication slot.
+ * SQL function for finding the WAL position of a commit timestamp.
+ *
+ * When no commit matches, the slot's restart_lsn is returned - the result
+ * is then indistinguishable from a real match, so a caller cannot tell that
+ * the question went unanswered.  That is the long-standing behaviour of this
+ * branch and is kept for compatibility; the DEBUG1 line below is what makes
+ * the case visible.
  */
 Datum
 spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 {
 	Name		slotname = PG_GETARG_NAME(0);
 	TimestampTz	targettz = PG_GETARG_TIMESTAMPTZ(1);
+	XLogRecPtr	start_lsn;
 	XLogRecPtr	endlsn;
+	bool		found;
 
 	Assert(!MyReplicationSlot);
 
 	CheckSlotPermissions();
+
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("recovery is in progress"),
+				 errhint("%s cannot be executed during recovery.",
+						 "spock.get_lsn_from_commit_ts()")));
 
 	/* Acquire the slot so we "own" it */
 #if PG_VERSION_NUM >= 180000
@@ -3393,13 +3461,37 @@ spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 						NameStr(*slotname)),
 				 errdetail("This slot has never previously reserved WAL, or it has been invalidated.")));
 
+	/*
+	 * Keep a copy of restart_lsn for the log line below: it is emitted after
+	 * the slot has been released, and MyReplicationSlot must not be read then.
+	 */
+	start_lsn = MyReplicationSlot->data.restart_lsn;
+
 	/* Do the actual slot scanning */
 	if (OidIsValid(MyReplicationSlot->data.database))
-		endlsn = spock_logical_replication_slot_scan(targettz);
+		endlsn = spock_logical_replication_slot_scan(targettz, &found);
 	else
 		elog(ERROR, "not a logical replication slot");
 
 	ReplicationSlotRelease();
+
+	/*
+	 * No match.  Keep returning the slot's restart_lsn, as this branch has
+	 * always done on 5.x - callers in the field rely on getting an LSN back,
+	 * and a stable branch is the wrong place to change that.  Note it is a
+	 * position later than the answer would have been, so a caller advancing a
+	 * slot to it skips whatever sits in between; the log line is the only way
+	 * to tell this apart from a real match.
+	 */
+	if (!found)
+	{
+		elog(DEBUG1, "SPOCK get_lsn_from_commit_ts: no commit at or before %s in WAL from %X/%X for slot \"%s\"",
+			 DatumGetCString(DirectFunctionCall1(timestamptz_out,
+												 TimestampTzGetDatum(targettz))),
+			 LSN_FORMAT_ARGS(start_lsn), NameStr(*slotname));
+
+		PG_RETURN_LSN(start_lsn);
+	}
 
 	PG_RETURN_LSN(endlsn);
 }
