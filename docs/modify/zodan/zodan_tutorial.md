@@ -28,14 +28,18 @@ node), `n2`, `n3`, and the new node is `n4`.
     - Prepare the new node to meet all of the prerequisites described here.
     - If the process fails, do not immediately retry a command until you
       ensure that all artifacts created by the workflow have been removed.
-    - The automated `spock.add_node()` procedure uses an internal 180-second
-      (3-minute) timeout when waiting for sync events between nodes. If
+    - The automated `spock.add_node()` procedure allows 180 seconds
+      (3 minutes) for each wait for a sync event between nodes. If
       replication lag exceeds this window, the procedure will raise an
       exception. Ensure network latency and replication lag are within
-      acceptable limits before starting. When following the manual workflow
-      below, you call `spock.wait_for_sync_event()` directly and supply your
-      own timeout (the examples use 1200 seconds), so this internal limit
-      does not apply.
+      acceptable limits before starting, or raise the budget for the
+      session with
+      [`spock.sync_timeout`](../../configuring.md#spock-sync_timeout), as
+      described in [Setting the Synchronisation
+      Timeout](#setting-the-synchronisation-timeout) below. When following
+      the manual workflow below, you call `spock.wait_for_sync_event()`
+      directly and supply your own timeout (the examples use 1200
+      seconds), so neither the default nor `spock.sync_timeout` applies.
 
 ## Creating a Node Manually
 
@@ -130,6 +134,34 @@ Should a problem occur during this process, you can source the
 remove the node or reverse partially completed steps. The
 `spock.remove_node` procedure should be called on the node being removed.
 
+### Setting the Synchronisation Timeout
+
+`spock.add_node()` waits at several points for the nodes to synchronise -
+for a sync event to arrive on a peer, for the new node to catch up, and
+for a subscription to start replicating. Each of those waits is allowed
+180 seconds (3 minutes) by default, which is sized for a small cluster
+where a node joins in seconds. On a large database, catchup can
+legitimately take minutes or hours, and the procedure fails with a timeout
+long before the work is done.
+
+To raise the budget, set
+[`spock.sync_timeout`](../../configuring.md#spock-sync_timeout) in the
+same session, before calling the add_node procedure:
+
+```sql
+SET spock.sync_timeout = '2h';
+```
+
+The new value applies to every synchronisation wait the procedure
+performs, and it reverts when the session ends, so a long-running node
+addition does not need a cluster-wide configuration change. To raise the
+limit for every session, set the parameter in `postgresql.conf` instead.
+
+The setting bounds a whole wait, not an individual probe of a remote node;
+steps that also bound each remote probe - so that one unresponsive peer
+cannot consume the entire budget - keep their own, much smaller limit for
+that purpose.
+
 
 ## Manually Adding a Node to a Cluster
 
@@ -172,7 +204,7 @@ FROM dblink(
 SELECT node_name, version
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
-    'SELECT n.node_name, 
+    'SELECT n.node_name,
             (SELECT extversion FROM pg_extension WHERE extname = ''spock'') as version
      FROM spock.node n'
 ) AS t(node_name text, version text);
@@ -209,7 +241,7 @@ In the following example, the query checks whether the database exists on
 n4:
 
 ```sql
-SELECT 1 
+SELECT 1
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'SELECT 1'
@@ -226,10 +258,10 @@ ZODAN will abort because syncing would overwrite existing data.
 In the following example, the query checks for user-created tables on n4:
 
 ```sql
-SELECT count(*) 
+SELECT count(*)
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
-    'SELECT count(*) FROM pg_tables 
+    'SELECT count(*) FROM pg_tables
      WHERE schemaname NOT IN (''information_schema'', ''pg_catalog'', ''pg_toast'', ''spock'')
      AND schemaname NOT LIKE ''pg_temp_%''
      AND schemaname NOT LIKE ''pg_toast_temp_%'''
@@ -240,7 +272,7 @@ FROM dblink(
 #### Confirm that n4 Does Not Exist in the Cluster
 
 Check if a node with the name n4 is already registered in the cluster. If
-the node exists, ZODAN aborts to prevent duplicate node names. The 
+the node exists, ZODAN aborts to prevent duplicate node names. The
 following example checks to see if n4 already exists in the cluster:
 
 ```sql
@@ -255,9 +287,9 @@ In the following example, the query checks whether n4 has any existing
 subscriptions:
 
 ```sql
-SELECT count(*) 
-FROM spock.subscription s 
-JOIN spock.node n ON s.sub_origin = n.node_id 
+SELECT count(*)
+FROM spock.subscription s
+JOIN spock.node n ON s.sub_origin = n.node_id
 WHERE n.node_name = 'n4';
 -- Expected: 0
 ```
@@ -268,9 +300,9 @@ In the following example, the query checks whether n4 has any replication
 sets:
 
 ```sql
-SELECT count(*) 
-FROM spock.replication_set rs 
-JOIN spock.node n ON rs.set_nodeid = n.node_id 
+SELECT count(*)
+FROM spock.replication_set rs
+JOIN spock.node n ON rs.set_nodeid = n.node_id
 WHERE n.node_name = 'n4';
 -- Expected: 0
 ```
@@ -298,7 +330,7 @@ a cluster participant:
 
 ```sql
 -- Via dblink to n4
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'SELECT spock.node_create(
@@ -311,7 +343,7 @@ FROM dblink(
 ) AS t(node_id oid);
 
 -- Expected output:
---  node_id 
+--  node_id
 -- ---------
 --    16389
 ```
@@ -321,7 +353,7 @@ FROM dblink(
 In the following example, the query retrieves the current node count:
 
 ```sql
-SELECT count(*) 
+SELECT count(*)
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
     'SELECT count(*) FROM spock.node'
@@ -357,16 +389,16 @@ connection strings. In the following example, the query retrieves all nodes
 and their DSNs:
 
 ```sql
-SELECT n.node_name, i.if_dsn 
+SELECT n.node_name, i.if_dsn
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
-    'SELECT n.node_name, i.if_dsn 
-     FROM spock.node n 
+    'SELECT n.node_name, i.if_dsn
+     FROM spock.node n
      JOIN spock.node_interface i ON n.node_id = i.if_nodeid'
 ) AS t(node_name text, if_dsn text);
 
 -- Expected output:
---  node_name |                              if_dsn                              
+--  node_name |                              if_dsn
 -- -----------+------------------------------------------------------------------
 --  n1        | host=127.0.0.1 dbname=inventory port=5432 user=alice password=...
 --  n2        | host=127.0.0.1 dbname=inventory port=5433 user=alice password=...
@@ -387,7 +419,7 @@ LSN:
 
 ```sql
 -- Trigger sync event on n2
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
     'SELECT spock.sync_event()'
@@ -416,10 +448,10 @@ In the following example, the commands create a replication slot on n2:
 
 ```sql
 -- On n2
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
-    'SELECT slot_name, lsn 
+    'SELECT slot_name, lsn
      FROM pg_create_logical_replication_slot(
          ''spk_inventory_n2_sub_n2_n4'',
          ''spock_output''
@@ -427,7 +459,7 @@ FROM dblink(
 ) AS t(slot_name text, lsn pg_lsn);
 
 -- Expected output:
---         slot_name         |    lsn     
+--         slot_name         |    lsn
 -- --------------------------+------------
 --  spk_inventory_n2_sub_n2_n4 | 0/1A7D1E8
 ```
@@ -441,7 +473,7 @@ yet.
 
 ```sql
 -- On n4
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'SELECT spock.sub_create(
@@ -466,7 +498,7 @@ to n4:
 
 ```sql
 -- Trigger sync event on n3
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
     'SELECT spock.sync_event()'
@@ -479,10 +511,10 @@ VALUES ('n3', '0/1B8E2F0')
 ON CONFLICT (origin_node) DO UPDATE SET sync_lsn = EXCLUDED.sync_lsn;
 
 -- Create replication slot on n3
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
-    'SELECT slot_name, lsn 
+    'SELECT slot_name, lsn
      FROM pg_create_logical_replication_slot(
          ''spk_inventory_n3_sub_n3_n4'',
          ''spock_output''
@@ -490,7 +522,7 @@ FROM dblink(
 ) AS t(slot_name text, lsn pg_lsn);
 
 -- Create disabled subscription on n4 from n3
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'SELECT spock.sub_create(
@@ -532,10 +564,10 @@ ready, but there is no subscription using the slot yet; that comes later.
 In the following example, the command creates a replication slot on n2:
 
 ```sql
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
-    'SELECT slot_name, lsn 
+    'SELECT slot_name, lsn
      FROM pg_create_logical_replication_slot(
          ''spk_inventory_n2_sub_n4_n2'',
          ''spock_output''
@@ -548,10 +580,10 @@ FROM dblink(
 In the following example, the command creates a replication slot on n3:
 
 ```sql
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
-    'SELECT slot_name, lsn 
+    'SELECT slot_name, lsn
      FROM pg_create_logical_replication_slot(
          ''spk_inventory_n3_sub_n4_n3'',
          ''spock_output''
@@ -590,7 +622,7 @@ completion:
 
 ```sql
 -- Trigger sync event on n2
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
     'SELECT spock.sync_event()'
@@ -598,7 +630,7 @@ FROM dblink(
 -- Returns: 0/1C9F400
 
 -- Wait for sync event on n1
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n2'', ''0/1C9F400''::pg_lsn, 1200)'
@@ -616,7 +648,7 @@ for completion on n1:
 
 ```sql
 -- Trigger sync event on n3
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
     'SELECT spock.sync_event()'
@@ -624,7 +656,7 @@ FROM dblink(
 -- Returns: 0/1D0E510
 
 -- Wait for sync event on n1
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n3'', ''0/1D0E510''::pg_lsn, 1200)'
@@ -699,7 +731,7 @@ What Spock does internally:
 -- If schemas found: ARRAY['mgmt_tools','monitoring']::text[]
 -- If no schemas: ARRAY[]::text[]
 
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'SELECT spock.sub_create(
@@ -743,7 +775,7 @@ n1 transaction log.
 In the following example, the command triggers a sync event on n1:
 
 ```sql
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
     'SELECT spock.sync_event()'
@@ -765,7 +797,7 @@ for its sync waits, as noted in the prerequisites.)
 In the following example, the command waits for the sync event on n4:
 
 ```sql
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n1'', ''0/1E1F620''::pg_lsn, 1200)'
@@ -812,11 +844,11 @@ tracks the original source.
 In the following example, the query retrieves the commit timestamp:
 
 ```sql
-SELECT commit_timestamp 
+SELECT commit_timestamp
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
-    'SELECT commit_timestamp 
-     FROM spock.lag_tracker 
+    'SELECT commit_timestamp
+     FROM spock.lag_tracker
      WHERE origin_name = ''n2'' AND receiver_name = ''n4'''
 ) AS t(commit_timestamp timestamp);
 -- Returns: 2025-01-15 10:30:45.123456
@@ -840,7 +872,7 @@ the slot:
 
 ```sql
 -- Get LSN from commit timestamp
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
     'WITH lsn_cte AS (
@@ -849,7 +881,7 @@ FROM dblink(
              ''2025-01-15 10:30:45.123456''::timestamp
          ) AS lsn
      )
-     SELECT pg_replication_slot_advance(''spk_inventory_n2_sub_n2_n4'', lsn) 
+     SELECT pg_replication_slot_advance(''spk_inventory_n2_sub_n2_n4'', lsn)
      FROM lsn_cte'
 ) AS t(slot_name name, end_lsn pg_lsn);
 ```
@@ -861,17 +893,17 @@ to n4:
 
 ```sql
 -- Get commit timestamp
-SELECT commit_timestamp 
+SELECT commit_timestamp
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
-    'SELECT commit_timestamp 
-     FROM spock.lag_tracker 
+    'SELECT commit_timestamp
+     FROM spock.lag_tracker
      WHERE origin_name = ''n3'' AND receiver_name = ''n4'''
 ) AS t(commit_timestamp timestamp);
 -- Returns: 2025-01-15 10:30:46.789012
 
 -- Advance the slot on n3
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
     'WITH lsn_cte AS (
@@ -880,7 +912,7 @@ FROM dblink(
              ''2025-01-15 10:30:46.789012''::timestamp
          ) AS lsn
      )
-     SELECT pg_replication_slot_advance(''spk_inventory_n3_sub_n3_n4'', lsn) 
+     SELECT pg_replication_slot_advance(''spk_inventory_n3_sub_n3_n4'', lsn)
      FROM lsn_cte'
 ) AS t(slot_name name, end_lsn pg_lsn);
 ```
@@ -925,7 +957,7 @@ The following example enables the subscription:
 
 ```sql
 -- Enable the subscription
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'SELECT spock.sub_enable(
@@ -952,7 +984,7 @@ SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = 'n2';
 -- Returns: 0/1A7D1E0
 
 -- Wait for that sync event on n4
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n2'', ''0/1A7D1E0''::pg_lsn, 1200)'
@@ -973,13 +1005,13 @@ The following example checks the subscription status on n4:
 SELECT subscription_name, status, provider_node
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
-    'SELECT subscription_name, status, provider_node 
-     FROM spock.sub_show_status() 
+    'SELECT subscription_name, status, provider_node
+     FROM spock.sub_show_status()
      WHERE subscription_name = ''sub_n2_n4'''
 ) AS t(subscription_name text, status text, provider_node text);
 
 -- Expected output:
---  subscription_name |   status    | provider_node 
+--  subscription_name |   status    | provider_node
 -- -------------------+-------------+---------------
 --  sub_n2_n4         | replicating | n2
 ```
@@ -991,7 +1023,7 @@ replication:
 
 ```sql
 -- Enable subscription
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'SELECT spock.sub_enable(
@@ -1005,7 +1037,7 @@ SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = 'n3';
 -- Returns: 0/1B8E2F0
 
 -- Wait for stored sync event
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n3'', ''0/1B8E2F0''::pg_lsn, 1200)'
@@ -1015,8 +1047,8 @@ FROM dblink(
 SELECT subscription_name, status, provider_node
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
-    'SELECT subscription_name, status, provider_node 
-     FROM spock.sub_show_status() 
+    'SELECT subscription_name, status, provider_node
+     FROM spock.sub_show_status()
      WHERE subscription_name = ''sub_n3_n4'''
 ) AS t(subscription_name text, status text, provider_node text);
 ```
@@ -1057,7 +1089,7 @@ happens directly on n4 will replicate to n1.
 The following example creates the subscription:
 
 ```sql
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
     'SELECT spock.sub_create(
@@ -1083,7 +1115,7 @@ n4. Now n2 will receive changes that happen on n4.
 In the following example, the command creates the subscription on n2:
 
 ```sql
-SELECT * 
+SELECT *
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
     'SELECT spock.sub_create(
@@ -1153,20 +1185,20 @@ DECLARE
     lag_bytes bigint;
 BEGIN
     LOOP
-        SELECT now() - commit_timestamp, replication_lag_bytes 
+        SELECT now() - commit_timestamp, replication_lag_bytes
         INTO lag_interval, lag_bytes
         FROM dblink(
             'host=127.0.0.1 dbname=inventory port=5435 user=alice password=1safepassword',
-            'SELECT now() - commit_timestamp, replication_lag_bytes 
-             FROM spock.lag_tracker 
+            'SELECT now() - commit_timestamp, replication_lag_bytes
+             FROM spock.lag_tracker
              WHERE origin_name = ''n1'' AND receiver_name = ''n4'''
         ) AS t(lag_interval interval, lag_bytes bigint);
 
-        RAISE NOTICE 'n1 → n4 lag: % (bytes: %)', 
+        RAISE NOTICE 'n1 → n4 lag: % (bytes: %)',
             COALESCE(lag_interval::text, 'NULL'),
             COALESCE(lag_bytes::text, 'NULL');
 
-        EXIT WHEN lag_interval IS NOT NULL 
+        EXIT WHEN lag_interval IS NOT NULL
                   AND (extract(epoch FROM lag_interval) < 59 OR lag_bytes = 0);
 
         PERFORM pg_sleep(1);
@@ -1186,21 +1218,21 @@ $$;
 
 ### Show All Nodes
 
-Next, we will verify that all of the nodes are registered; the following 
+Next, we will verify that all of the nodes are registered; the following
 query displays all registered nodes:
 
 ```sql
 SELECT n.node_id, n.node_name, n.location, n.country, i.if_dsn
 FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
-    'SELECT n.node_id, n.node_name, n.location, n.country, i.if_dsn 
-     FROM spock.node n 
-     JOIN spock.node_interface i ON n.node_id = i.if_nodeid 
+    'SELECT n.node_id, n.node_name, n.location, n.country, i.if_dsn
+     FROM spock.node n
+     JOIN spock.node_interface i ON n.node_id = i.if_nodeid
      ORDER BY n.node_name'
 ) AS t(node_id integer, node_name text, location text, country text, if_dsn text);
 
 -- Expected output:
---  node_id | node_name |  location   | country |                           if_dsn                           
+--  node_id | node_name |  location   | country |                           if_dsn
 -- ---------+-----------+-------------+---------+------------------------------------------------------------
 --    16385 | n1        | New York    | USA     | host=127.0.0.1 dbname=inventory port=5432 user=alice ...
 --    16386 | n2        | Chicago     | USA     | host=127.0.0.1 dbname=inventory port=5433 user=alice ...
@@ -1210,7 +1242,7 @@ FROM dblink(
 
 ### Show the Status of all Subscriptions
 
-Next, we want to verify that all subscriptions are replicating. In the 
+Next, we want to verify that all subscriptions are replicating. In the
 following example, the query displays subscription status across all nodes:
 
 ```sql
@@ -1223,27 +1255,27 @@ FROM (
         'host=127.0.0.1 dbname=inventory port=5432 user=alice password=1safepassword',
         'SELECT subscription_name, status, provider_node FROM spock.sub_show_status()'
     ) AS t(subscription_name text, status text, provider_node text)
-    
+
     UNION ALL
-    
+
     -- n2 subscriptions
     SELECT 'n2' as node_name, *
     FROM dblink(
         'host=127.0.0.1 dbname=inventory port=5433 user=alice password=1safepassword',
         'SELECT subscription_name, status, provider_node FROM spock.sub_show_status()'
     ) AS t(subscription_name text, status text, provider_node text)
-    
+
     UNION ALL
-    
+
     -- n3 subscriptions
     SELECT 'n3' as node_name, *
     FROM dblink(
         'host=127.0.0.1 dbname=inventory port=5434 user=alice password=1safepassword',
         'SELECT subscription_name, status, provider_node FROM spock.sub_show_status()'
     ) AS t(subscription_name text, status text, provider_node text)
-    
+
     UNION ALL
-    
+
     -- n4 subscriptions
     SELECT 'n4' as node_name, *
     FROM dblink(
@@ -1254,7 +1286,7 @@ FROM (
 ORDER BY node_name, subscription_name;
 
 -- Expected output (12 rows):
---  node_name | subscription_name |   status    | provider_node 
+--  node_name | subscription_name |   status    | provider_node
 -- -----------+-------------------+-------------+---------------
 --  n1        | sub_n2_n1         | replicating | n2
 --  n1        | sub_n3_n1         | replicating | n3
@@ -1346,13 +1378,29 @@ SELECT * FROM spock.sub_show_table('sub_n2_n4', 'public.test_replication');
 SELECT * FROM pg_stat_replication;
 ```
 
+### Node Addition Fails with a Timeout
+
+If `spock.add_node()` raises a timeout while waiting for a sync event or
+for the new node to catch up, the node is likely larger than the default
+3-minute budget allows for. Remove the partially added node with
+`spock.remove_node`, then retry with a longer budget, as described in
+[Setting the Synchronisation
+Timeout](#setting-the-synchronisation-timeout):
+
+```sql
+SET spock.sync_timeout = '2h';
+```
+
+Use the lag query below to gauge how long catchup actually takes before
+choosing a value.
+
 ### Replication Lag Too High
 
 Use the following command to check replication lag on a subscribing node:
 
 ```sql
 -- Check lag on receiver node
-SELECT origin_name, receiver_name, 
+SELECT origin_name, receiver_name,
        now() - commit_timestamp as lag,
        replication_lag_bytes
 FROM spock.lag_tracker
