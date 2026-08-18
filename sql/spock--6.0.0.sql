@@ -891,6 +891,12 @@ AS 'MODULE_PATHNAME', 'spock_repair_mode';
 -- ----
 -- Function to determine LSN from commit timestamp
 -- ----
+-- Returns the end LSN of the last local commit not newer than commit_ts,
+-- scanning from the slot's restart_lsn to the end of WAL.  Returns NULL when
+-- nothing matched, which means "cannot answer" - the scan cannot look behind
+-- restart_lsn - rather than "no such commit exists".  A caller that has to
+-- have an answer, such as one about to advance a slot, should check for NULL
+-- and complain itself.
 CREATE FUNCTION spock.get_lsn_from_commit_ts(slot_name name, commit_ts timestamptz)
 RETURNS pg_lsn STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_lsn_from_commit_ts';
 
