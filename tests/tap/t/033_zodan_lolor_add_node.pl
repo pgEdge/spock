@@ -187,6 +187,73 @@ for my $node (1, 2) {
        "metadata for the n3 large object replicated to n$node");
 }
 
+# --- DROP EXTENSION: lolor's cleanup must not replicate ---------------------
+#
+# lolor's ddl_command_start event trigger calls lolor.disable() through SPI,
+# which issues ~40 "ALTER FUNCTION pg_catalog.lo_*(...) RENAME TO ..."
+# statements to put the native large object API back. Those belong to the node
+# running the drop: every peer runs its own copy when it applies the
+# replicated DROP EXTENSION. Shipping them as well lands the renames on the
+# peer ahead of the drop, leaving lolor disabled out of band, and the drop
+# that follows then fails in migrate_to_native() with "lolor must be enabled
+# before migration to native" -- which stalls apply.
+#
+# Runs last: it removes the extension the rest of this file depends on.
+#
+# spock.allow_ddl_from_functions is enabled deliberately. With it off, DDL
+# arriving from a function is never a replication candidate, and this would
+# pass without exercising the guard at all.
+
+# The queued DDL message is a bare JSON string ("SET search_path ...; <stmt>"),
+# not an object, so #>> '{}' is how the statement text comes back out.
+my $queued = "message #>> '{}'";
+
+# Fence table, used below to show the peers are still applying after the drop.
+ok(psql_ok(1, "CREATE TABLE public.fence (id int primary key, v text)"),
+   'fence table created on n1');
+for my $node (2, 3) {
+    ok(wait_for_scalar($node,
+        "SELECT count(*) FROM information_schema.tables " .
+        "WHERE table_schema = 'public' AND table_name = 'fence'", '1'),
+       "fence table reached n$node");
+}
+
+ok(psql_ok(1, "SET spock.allow_ddl_from_functions = on; DROP EXTENSION lolor"),
+   'lolor dropped on n1');
+
+is(scalar_query(1,
+    "SELECT count(*) FROM spock.queue WHERE $queued ILIKE '%ALTER FUNCTION%RENAME%'"),
+   '0', "lolor.disable()'s ALTER FUNCTION ... RENAME statements were not queued")
+    or diag("queued DDL was:\n" . (psql_capture(1,
+        "SELECT message #>> '{}' FROM spock.queue ORDER BY queued_at"))[1]);
+
+isnt(scalar_query(1,
+    "SELECT count(*) FROM spock.queue WHERE $queued ILIKE '%DROP EXTENSION%lolor%'"),
+   '0', 'the DROP EXTENSION itself was queued for replication');
+
+for my $node (2, 3) {
+    ok(wait_for_scalar($node,
+        "SELECT count(*) FROM pg_extension WHERE extname = 'lolor'", '0'),
+       "DROP EXTENSION replicated: lolor is gone on n$node");
+
+    # Each peer must have run its OWN cleanup while applying the drop:
+    # disable() renames lo_open_orig back to lo_open, so the _orig name is
+    # gone afterwards. This separates "we suppressed the replication" from
+    # "we suppressed the cleanup".
+    is(scalar_query($node, "SELECT count(*) FROM pg_proc WHERE proname = 'lo_open_orig'"),
+       '0', "n$node ran its own lolor cleanup: native lo_open restored");
+    is(scalar_query($node, "SELECT count(*) FROM pg_proc WHERE proname = 'lo_open'"),
+       '1', "n$node has exactly one lo_open, the native one");
+}
+
+# Apply is still healthy on both peers.
+ok(psql_ok(1, "INSERT INTO public.fence (id, v) VALUES (1, 'after-drop')"),
+   'fence row inserted on n1 after the drop');
+for my $node (2, 3) {
+    ok(wait_for_scalar($node, "SELECT v FROM public.fence WHERE id = 1", 'after-drop'),
+       "fence row reached n$node after the drop, so apply did not stall");
+}
+
 destroy_cluster('Destroy zodan lolor test cluster');
 
 done_testing();

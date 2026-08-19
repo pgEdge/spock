@@ -38,6 +38,23 @@ my $ports = $cfg->{node_ports};
 my $prov_dsn = "host=$host dbname=$db port=$ports->[0] user=$user password=$pass";
 my $sub_name = 'sub_n1_n2';
 
+# scalar_query() collapses all whitespace (SpockTest.pm), which would run the
+# queued statements together into one unreadable blob -- exactly when a diag
+# is needed. Read the queue with the text intact instead.
+sub queued_ddl {
+    my $pid = open(my $fh, '-|');
+    die "fork failed: $!" unless defined $pid;
+    if ($pid == 0) {
+        open(STDERR, '>&', \*STDOUT) or die "cannot dup STDERR: $!";
+        exec("$cfg->{pg_bin}/psql", '-X', '-p', $ports->[0], '-d', $db, '-At',
+             '-c', "SELECT message #>> '{}' FROM spock.queue ORDER BY queued_at");
+        exit 127;
+    }
+    my $out = do { local $/; <$fh> } // '';
+    close($fh);
+    return $out;
+}
+
 # --------------------------------------------------------------------------
 # Step 1: on the provider (n1), create the reserved pgedge_ace schema and a
 # table in it. This must succeed locally...
@@ -133,6 +150,104 @@ is(scalar_query(2, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'p
 # broken or disabled replication.
 ok(wait_for_sub_status(2, $sub_name, 'replicating', 30),
    'subscription is still enabled/replicating after the fence row');
+
+# --------------------------------------------------------------------------
+# Step 5: DDL that an extension's own cleanup path runs must stay node-local.
+#
+# An extension may register a ddl_command_start event trigger and run DDL of
+# its own through SPI while it is being dropped -- lolor does exactly that,
+# renaming the native large object functions back into place. That DDL is an
+# implementation detail of the drop: a subscriber runs its own copy when it
+# applies the replicated DROP EXTENSION, so shipping it as well would execute
+# the cleanup twice there.
+#
+# Core exposes creating_extension so AutoDDL can recognise the CREATE side,
+# but has no counterpart for DROP, so spock_ProcessUtility() tracks that half
+# itself and autoddl_can_proceed() skips anything nested inside.
+#
+# hstore stands in for any extension with a cleanup path, and the event
+# trigger for the cleanup itself, so this needs no lolor and runs everywhere.
+# spock.allow_ddl_from_functions is enabled deliberately: with it off, DDL
+# arriving from a function is never a replication candidate and the guard
+# would never be reached.
+#
+# The assertions are deliberately provider-side. This subscription requests
+# only 'default', while AutoDDL queues to 'default_insert_only', so no DDL
+# reaches n2 here at all -- checking n2 would prove nothing. What must not
+# happen is the statement being queued in the first place, and that is what
+# spock.queue shows. The end-to-end consequence on a subscriber is covered by
+# 033_zodan_lolor_add_node.
+# --------------------------------------------------------------------------
+
+# The queued DDL message is a bare JSON string ("SET search_path ...; <stmt>"),
+# not an object, so #>> '{}' is how the statement text comes back out.
+my $queued = "message #>> '{}'";
+
+# hstore is contrib and may not be installed. Guard the whole step rather
+# than letting psql_or_bail die part way through: that would skip
+# destroy_cluster, and the nodes share fixed ports and datadirs with every
+# other test, so a leaked postmaster takes the rest of the run down with it
+# (see the comment in destroy_cluster, SpockTest.pm).
+my $have_hstore = scalar_query(1,
+    "SELECT count(*) FROM pg_available_extensions WHERE name = 'hstore'");
+
+SKIP: {
+    skip 'hstore not available (contrib not installed)', 4
+        unless defined $have_hstore && $have_hstore eq '1';
+
+    psql_or_bail(1, "CREATE EXTENSION hstore");
+
+    # IF NOT EXISTS so the trigger stays harmless if it ever fires twice: it
+    # runs on ddl_command_start, so an error here takes the DROP with it.
+    psql_or_bail(1, <<'SQL');
+CREATE FUNCTION public.drop_ext_cleanup() RETURNS event_trigger AS $fn$
+BEGIN
+    EXECUTE 'CREATE TABLE IF NOT EXISTS public.cleanup_marker (id int primary key)';
+END
+$fn$ LANGUAGE plpgsql
+SQL
+    psql_or_bail(1,
+        "CREATE EVENT TRIGGER drop_ext_cleanup ON ddl_command_start " .
+        "WHEN TAG IN ('DROP EXTENSION') " .
+        "EXECUTE FUNCTION public.drop_ext_cleanup()");
+
+    # Count what the drop adds to the queue rather than pattern-matching for
+    # the cleanup statement: the event trigger function's own source
+    # necessarily contains the text of the statement it runs, so any substring
+    # match would hit the CREATE FUNCTION entry and prove nothing.
+    my $queue_before = scalar_query(1, "SELECT count(*) FROM spock.queue");
+
+    psql_or_bail(1, "SET spock.allow_ddl_from_functions = on; DROP EXTENSION hstore");
+
+    # The cleanup ran locally...
+    is(scalar_query(1,
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables " .
+        "WHERE table_schema = 'public' AND table_name = 'cleanup_marker')"),
+       't', "the event trigger's DDL executed locally during the drop");
+
+    # ...and the drop queued exactly one statement, so the cleanup was not
+    # shipped.
+    is(scalar_query(1, "SELECT count(*) FROM spock.queue") - $queue_before, 1,
+       'the drop queued exactly one statement')
+        or diag("queued DDL was:\n" . queued_ddl());
+
+    # A statement that is not replicated must not be tracked in a repset
+    # either: add_ddl_to_repset() only runs when the DDL was actually queued.
+    is(scalar_query(1,
+        "SELECT count(*) FROM spock.tables " .
+        "WHERE relname = 'cleanup_marker' AND set_name IS NOT NULL"),
+       '0', 'the node-local table was not added to a replication set');
+
+    # The DROP EXTENSION itself must still replicate, or subscribers keep an
+    # extension the provider has removed.
+    is(scalar_query(1,
+        "SELECT count(*) FROM spock.queue WHERE $queued ILIKE '%DROP EXTENSION%hstore%'"),
+       '1', 'and that one statement was the DROP EXTENSION itself');
+
+    # Leave no armed trigger behind: a later DROP EXTENSION in this file would
+    # otherwise fire it again.
+    psql_or_bail(1, "DROP EVENT TRIGGER drop_ext_cleanup");
+}
 
 destroy_cluster('Destroy 2-node reserved-object DDL test cluster');
 
