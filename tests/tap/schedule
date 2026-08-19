@@ -54,6 +54,7 @@ test: 030_autoddl_repset_stickiness
 test: 032_lolor_largeobject_repset
 test: 033_zodan_lolor_add_node
 test: 034_reserved_object_ddl
+test: 037_wire_format_datestyle
 test: 044_apply_change_logging
 test: 045_lsn_from_commit_ts
 # Upgrade schema match test (builds from source, slow):
