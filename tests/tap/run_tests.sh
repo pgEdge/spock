@@ -417,9 +417,18 @@ run_single_test() {
     plan_line=$(grep -E '^1\.\.[0-9]+' "$tap_log_file" | tail -1 2>/dev/null || true)
     total_tests=$(echo "$plan_line" | sed -n 's/^1\.\.\([0-9]\+\).*$/\1/p' 2>/dev/null || echo "0")
     [ -z "$total_tests" ] && total_tests=0
-    passed_tests=$(grep -cE '^ok ' "$tap_log_file" 2>/dev/null || echo "0")
-    failed_tests=$(grep -cE '^not ok ' "$tap_log_file" 2>/dev/null || echo "0")
-    skipped_tests=$(grep -cE '^ok .*# SKIP' "$tap_log_file" 2>/dev/null || echo "0")
+    # Anchor on the TAP test number. prove's own per-file summary line
+    # ("ok    80615 ms (...)") also begins with "ok", and counting it inflated
+    # every passing file by one, and the suite total by one per passing file.
+    # It puts several spaces before its number, so a single space here excludes
+    # it. Assumes numbered TAP output, which Test::More always emits.
+    passed_tests=$(grep -cE '^ok [0-9]+' "$tap_log_file" 2>/dev/null || echo "0")
+    failed_tests=$(grep -cE '^not ok [0-9]+' "$tap_log_file" 2>/dev/null || echo "0")
+    # TAP reports a skip as a passing "ok" carrying a skip directive, which
+    # Test::More writes lowercase ("ok 2 # skip reason"), so match it without
+    # regard to case. These lines are also counted by passed_tests above; the
+    # subtraction below takes them back out.
+    skipped_tests=$(grep -ciE '^ok [0-9]+.*# skip' "$tap_log_file" 2>/dev/null || echo "0")
     
     # If total_tests is still 0, try alternative parsing
     if [ "$total_tests" = "0" ] && [ -n "$plan_line" ]; then
@@ -432,6 +441,11 @@ run_single_test() {
     passed_tests=$(echo "$passed_tests" | tr -d ' \n\r')
     failed_tests=$(echo "$failed_tests" | tr -d ' \n\r')
     skipped_tests=$(echo "$skipped_tests" | tr -d ' \n\r')
+
+    # generate_summary() sums passed + failed + skipped, so a skipped test left
+    # in both buckets would be counted twice in the suite total and would drag
+    # the success rate down. Report it once, as skipped.
+    passed_tests=$((10#$passed_tests - 10#$skipped_tests))
     
 
     
