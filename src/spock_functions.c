@@ -174,6 +174,7 @@ PG_FUNCTION_INFO_V1(spock_table_data_filtered);
 /* Information */
 PG_FUNCTION_INFO_V1(spock_version);
 PG_FUNCTION_INFO_V1(spock_version_num);
+PG_FUNCTION_INFO_V1(spock_core_patchset);
 PG_FUNCTION_INFO_V1(spock_min_proto_version);
 PG_FUNCTION_INFO_V1(spock_max_proto_version);
 
@@ -3593,6 +3594,12 @@ Datum
 spock_version_num(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(SPOCK_VERSION_NUM);
+}
+
+Datum
+spock_core_patchset(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(spock_detected_patchset);
 }
 
 Datum
