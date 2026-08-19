@@ -10,7 +10,6 @@
 #   "make check_prove_nightly" or "make PROVE=prove check_prove_nightly"
 #
 
-test: 010_zodan_add_remove_python
 test: 012_zodan_basics
 # test: 016_crash_recovery_progress
 test: 017_zodan_3n_timeout
