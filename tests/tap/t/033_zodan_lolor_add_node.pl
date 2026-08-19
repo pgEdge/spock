@@ -13,7 +13,9 @@ use SpockTest qw(create_cluster destroy_cluster system_or_bail system_maybe
 #   - reject a new node whose lolor tables already contain data,
 #   - accept a new node with lolor installed and empty, and copy the large
 #     object data from the source during the initial data sync,
-#   - stream large objects created after the join.
+#   - stream large objects created after the join,
+#   - leave the lolor tables in the new node's own default replication set,
+#     so large objects created there replicate back to the existing nodes.
 
 my $cfg   = get_test_config();
 my $PG    = $cfg->{pg_bin};
@@ -150,6 +152,40 @@ ok(psql_ok(1, "SET lolor.node=1; SELECT lo_from_bytea(0, '\\xfeedface')"),
    'second large object created on n1 after join');
 ok(wait_for_scalar(3, "SELECT count(*) FROM lolor.pg_largeobject WHERE encode(data, 'hex') = 'feedface'", '1'),
    'post-join large object streamed to n3');
+
+# --- Outbound: a large object created on n3 must reach n1 and n2 ------------
+#
+# Everything above tests the inbound direction, which rides on n1's
+# replication sets. Outbound rides on n3's own sets, and nothing in the
+# replication machinery copies set membership to a joining node. What
+# populates the sets during a normal join is AutoDDL firing while pg_restore
+# replays the structure dump, and that never sees the lolor tables: they are
+# left out of the dump (reserved_object.exclude_from_dump), so they arrive via
+# CREATE EXTENSION instead, and autoddl_can_proceed() returns false while
+# creating_extension is set. So the lolor tables reach n3's default set only
+# if add_node mirrors the source node's sets onto the new node.
+
+for my $tbl ('pg_largeobject', 'pg_largeobject_metadata') {
+    is(scalar_query(3,
+        "SELECT set_name FROM spock.tables " .
+        "WHERE nspname = 'lolor' AND relname = '$tbl'"),
+       'default',
+       "lolor.$tbl is in n3 default replication set after the join");
+}
+
+ok(psql_ok(3, "SET lolor.node=3; SELECT lo_from_bytea(0, '\\xc0ffee')"),
+   'large object created on n3 after the join');
+
+for my $node (1, 2) {
+    ok(wait_for_scalar($node,
+        "SELECT count(*) FROM lolor.pg_largeobject WHERE encode(data, 'hex') = 'c0ffee'", '1'),
+       "large object created on n3 replicated to n$node");
+    ok(wait_for_scalar($node,
+        "SELECT count(*) FROM lolor.pg_largeobject_metadata m " .
+        "JOIN lolor.pg_largeobject l ON l.loid = m.oid " .
+        "WHERE encode(l.data, 'hex') = 'c0ffee'", '1'),
+       "metadata for the n3 large object replicated to n$node");
+}
 
 destroy_cluster('Destroy zodan lolor test cluster');
 
