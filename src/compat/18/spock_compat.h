@@ -132,4 +132,25 @@
 #define ExecInitRangeTable(estate, rangeTable, permInfos) \
 	ExecInitRangeTable(estate, rangeTable, permInfos, bms_make_singleton(1))
 
+/*
+ * pg_fallthrough is new in PG19, where c.h picks whichever spelling the
+ * compiler understands.  Provide it for older majors so a deliberate
+ * fall-through between switch labels can be annotated once, portably.  clang
+ * does not accept a plain comment as the annotation the way gcc does, so
+ * without this the switch in handle_queued_message() warns.
+ */
+#ifndef pg_fallthrough
+#if defined(__GNUC__) || defined(__clang__)
+#define pg_fallthrough	__attribute__((fallthrough))
+#else
+#define pg_fallthrough
+#endif
+#endif
+
+/*
+ * PG19 turned log_min_messages into an array indexed by backend type, so that
+ * the threshold can be set per backend type.  Older majors have a single int.
+ */
+#define SPOCK_LOG_MIN_MESSAGES	(log_min_messages)
+
 #endif
