@@ -156,4 +156,12 @@
 #define replorigin_session_origin_timestamp (replorigin_xact_state.origin_timestamp)
 #define AssertVariableIsOfType StaticAssertVariableIsOfType
 
+/*
+ * PG19 turned log_min_messages into an array indexed by backend type, so that
+ * the threshold can be set per backend type.  Older majors have a single int.
+ * Requires miscadmin.h for MyBackendType.
+ */
+#include "miscadmin.h"
+#define SPOCK_LOG_MIN_MESSAGES	(log_min_messages[MyBackendType])
+
 #endif
