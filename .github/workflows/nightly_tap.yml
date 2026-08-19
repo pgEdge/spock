@@ -161,12 +161,13 @@ jobs:
   # a different container/artifact naming scheme so PR and main runs do not
   # collide.
   #
-  # TEMPORARILY DISABLED: 016_crash_recovery_progress and 017_zodan_3n_timeout
-  # are not yet skipped on main, so this job is guaranteed to fail until those
-  # are addressed (or this PR's disable lands on main). Flip `if: false` back
-  # to remove the gate when main is ready to be exercised.
+  # This job was gated off with `if: false` while 016_crash_recovery_progress
+  # was still in the nightly schedule and failing on main. 016 has since been
+  # skipped in tests/tap/schedule-nightly, and 010_zodan_add_remove_python --
+  # which drove the zodan.py removed in ffd960af and so failed every night --
+  # has been dropped, so the gate is no longer needed. Keeping this job
+  # enabled is what tells us whether a red nightly is the PR's fault or main's.
   test-main:
-    if: false
     strategy:
       fail-fast: false
       matrix:
