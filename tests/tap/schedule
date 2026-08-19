@@ -55,6 +55,7 @@ test: 032_lolor_largeobject_repset
 test: 033_zodan_lolor_add_node
 test: 034_reserved_object_ddl
 test: 044_apply_change_logging
+test: 048_bidir_join
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
@@ -62,3 +63,4 @@ test: 044_apply_change_logging
 # Regression tests
 test: 103_manager_worker_dboid_race
 test: 105_sub_disable_retransmit_after_disconnect
+
