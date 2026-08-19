@@ -194,6 +194,8 @@ static PGconn *spock_connect_base(const char *connstr,
 								  const char *appname,
 								  const char *suffix,
 								  bool replication);
+static char *spock_get_conninfo_option(const char *connstr,
+									   const char *keyword);
 
 /*
  * Ensure string is not longer than maxlen.
@@ -351,7 +353,12 @@ get_spock_table_oid(const char *table)
 	return reloid;
 }
 
-#define CONN_PARAM_ARRAY_SIZE 10
+/*
+ * One more than the number of parameters we pass, to leave room for the NULL
+ * terminator.  In passing, bumped from 10 when "options" was added; the array
+ * was previously an exact fit, which left no margin for the next parameter.
+ */
+#define CONN_PARAM_ARRAY_SIZE 11
 
 static PGconn *
 spock_connect_base(const char *connstr, const char *appname,
@@ -362,6 +369,8 @@ spock_connect_base(const char *connstr, const char *appname,
 	const char *keys[CONN_PARAM_ARRAY_SIZE];
 	const char *vals[CONN_PARAM_ARRAY_SIZE];
 	char		appname_buf[NAMEDATALEN];
+	char	   *user_options;
+	char	   *options_val;
 	StringInfoData s;
 
 	initStringInfo(&s);
@@ -402,16 +411,44 @@ spock_connect_base(const char *connstr, const char *appname,
 	keys[i] = "replication";
 	vals[i] = replication ? "database" : NULL;
 	i++;
+
+	/*
+	 * Force assorted GUC parameters to settings that ensure that the peer will
+	 * output data values in a form that is unambiguous to us when the transfer
+	 * happens in text mode.  (We don't touch our own settings; that would
+	 * surprise user-defined code running here, such as triggers.)  ISO is the
+	 * only DateStyle that always emits an unambiguous date and an explicit
+	 * numeric UTC offset, which is also why TimeZone needs no forcing.
+	 *
+	 * Subscription sync reads spock.progress from a peer over a regular
+	 * connection, so this is applied to those as well, not only to replication
+	 * ones.
+	 *
+	 * Caution: an explicit array entry overrides any "options" carried by the
+	 * expanded dbname string, so the user's must be prepended rather than
+	 * replaced.  Ours win by coming last, as the backend applies -c in order.
+	 */
+	user_options = spock_get_conninfo_option(connstr, "options");
+	options_val = psprintf("%s -c datestyle=ISO -c intervalstyle=postgres -c extra_float_digits=3",
+						   (user_options == NULL) ? "" : user_options);
+	if (user_options != NULL)
+		pfree(user_options);
+
+	keys[i] = "options";
+	vals[i] = options_val;
+	i++;
+
 	keys[i] = NULL;
 	vals[i] = NULL;
 
-	Assert(i <= CONN_PARAM_ARRAY_SIZE);
+	Assert(i < CONN_PARAM_ARRAY_SIZE);
 
 	/*
 	 * We use the expand_dbname parameter to process the connection string (or
 	 * URI), and pass some extra options.
 	 */
 	conn = PQconnectdbParams(keys, vals, /* expand_dbname = */ true);
+
 	if (PQstatus(conn) != CONNECTION_OK)
 	{
 		ereport(ERROR,
@@ -421,9 +458,71 @@ spock_connect_base(const char *connstr, const char *appname,
 				 errdetail("dsn was: %s", s.data)));
 	}
 
+	/*
+	 * Released only once nothing can read vals[] again.  libpq copied what it
+	 * needed during the call above, so freeing earlier would work, but it would
+	 * leave a dangling entry in vals[] across the error path -- and that path
+	 * already formats connection details for the report.
+	 */
+	pfree(options_val);
+
 	resetStringInfo(&s);
 
 	return conn;
+}
+
+/*
+ * spock_get_conninfo_option
+ *		Return the value of a single option from a connection string, or NULL
+ *		if it is absent or empty.
+ *
+ *		Result is palloc'd in CurrentMemoryContext.  If the option appears more
+ *		than once the last occurrence wins, matching libpq's own precedence.
+ *
+ *		Modelled on libpqrcv_get_option_from_conninfo() in
+ *		src/backend/replication/libpqwalreceiver/libpqwalreceiver.c, but
+ *		deliberately does not raise an error on an unparseable string; see below.
+ */
+static char *
+spock_get_conninfo_option(const char *connstr, const char *keyword)
+{
+	PQconninfoOption *opts;
+	PQconninfoOption *opt;
+	char	   *option = NULL;
+	char	   *err = NULL;
+
+	Assert(connstr != NULL);
+	Assert(keyword != NULL);
+
+	opts = PQconninfoParse(connstr, &err);
+	if (opts == NULL)
+	{
+		/*
+		 * Deliberately not an error.  PQconnectdbParams() takes a dbname with
+		 * neither '=' nor a URI prefix literally, so a DSN of plain "mydb"
+		 * connects today while PQconninfoParse() rejects it; raising an error
+		 * here would break such configurations.  Report no options instead, and
+		 * let PQconnectdbParams() complain if the string really is malformed.
+		 *
+		 * The error string is malloc'd, so we must free it explicitly.
+		 */
+		PQfreemem(err);
+		return NULL;
+	}
+
+	for (opt = opts; opt->keyword != NULL; opt++)
+	{
+		if (strcmp(opt->keyword, keyword) == 0 && opt->val && opt->val[0] != '\0')
+		{
+			if (option != NULL)
+				pfree(option);
+			option = pstrdup(opt->val);
+		}
+	}
+
+	PQconninfoFree(opts);
+
+	return option;
 }
 
 
