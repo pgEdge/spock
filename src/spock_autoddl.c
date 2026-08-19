@@ -680,6 +680,25 @@ remove_table_from_repsets(Oid nodeid, Oid reloid, bool only_for_update)
 }
 
 /*
+ * True while an extension's own script or cleanup path is running: its
+ * CREATE/UPDATE script, or its DROP-time cleanup.
+ *
+ * DDL from either is an implementation detail of installing or removing the
+ * extension, and the subscriber runs its own copy when it applies the
+ * replicated CREATE/DROP, so replicating it would execute that work twice.
+ *
+ * The two halves come from different places because core only tracks one of
+ * them: creating_extension is set by execute_extension_script(), which covers
+ * CREATE EXTENSION and ALTER EXTENSION ... UPDATE, but there is no dropping
+ * counterpart, so spock_ProcessUtility() maintains that half itself.
+ */
+static inline bool
+in_extension_script(void)
+{
+	return creating_extension || in_spock_extension_drop;
+}
+
+/*
  * Quick precheck if auto-ddl may proceed further.
  *
  * Must be trivial and does not call anything that may need a transaction.
@@ -708,8 +727,8 @@ autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
 	if (context == PROCESS_UTILITY_TOPLEVEL)
 		return true;
 
-	/* Guard against CREATE EXTENSION subcommands */
-	if (creating_extension)
+	/* An extension's own script or cleanup path -- see in_extension_script(). */
+	if (in_extension_script())
 		return false;
 
 	/*
