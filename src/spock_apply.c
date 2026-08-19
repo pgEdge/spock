@@ -94,6 +94,8 @@
 #include "spock_readonly.h"
 #include "spock.h"
 
+#include "spock_compat.h"
+
 #define CATALOG_PROGRESS			"progress"
 #define CATALOG_PROGRESS_PKEY		"progress_pkey"
 
@@ -2817,11 +2819,7 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 	{
 		case QUEUE_COMMAND_TYPE_DDL:
 			in_spock_queue_ddl_command = true;
-#if PG_VERSION_NUM >= 190000
 			pg_fallthrough;
-#else
-			/* fallthrough */
-#endif
 		case QUEUE_COMMAND_TYPE_SQL:
 			errcallback_arg.action_name = "QUEUED_SQL";
 			handle_sql_or_exception(queued_message, tx_just_started);
