@@ -35,7 +35,7 @@
 #   1  spock extension installed cleanly on n3 (exactly one row)
 #   1  n3 has exactly the catchup and peer origins, none leftover from the basebackup
 #   1  n3 was given its own system identifier (pg_resetwal), distinct from n1
-#   1  spock.readonly is 'local' on n3
+#   1  spock.readonly is lifted on n3 once the join is fully verified
 #   1  custom replication set restored on n3 with correct flags
 #   1  table membership restored with correct row_filter
 #   1  table membership restored with correct explicit column list
@@ -51,10 +51,15 @@
 #   1  manifest: node_dsn populated
 #   1  source slot exists on n1
 #   1  catchup subscription sub_n3_n1 is replicating on n3
-#   1  disabled peer subscription sub_n3_n2 exists and is disabled
-#   1  n3's origin for peer n2 starts at 0/0 before any post-join write
-#   1  n2's post-join write reached n3 via forwarding through sub_n3_n1
-#   1  n3's origin for peer n2 advanced during catchup forwarding
+#   1  forwarding cleared on sub_n3_n1 after cutover
+#   1  direct peer subscription sub_n3_n2 is replicating on n3 after cutover
+#   1  peer slot created on n2 during the coverage barrier
+#   1  n2's post-cutover write reached n3 via the direct sub_n3_n2 path
+#   1  n3's origin for peer n2 advanced via the direct subscription
+#   1  reverse subscription sub_n2_n3 is replicating on n2
+#   1  reverse subscription sub_n1_n3 is replicating on n1
+#   1  n3's post-join write reached the source via sub_n1_n3
+#   1  n3's post-join write reached the peer via sub_n2_n3
 #   1  --cleanup --force exits 0
 #   1  source slot removed from n1 after cleanup
 #   1  n3 data directory removed after cleanup --force
@@ -79,12 +84,12 @@
 #   1  pending sidecar removed once cleanup actually completed
 #   1  destroy_cluster
 #  ---
-#  64  total
+#  69  total
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 64;
+use Test::More tests => 69;
 use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
@@ -292,7 +297,8 @@ isnt($n3_sysid, $n1_sysid,
 
 my $readonly = `$pg_bin/psql -p $n3_port -d $dbname -t -c "SHOW spock.readonly"`;
 $readonly =~ s/\s+//g;
-is($readonly, 'local', "spock.readonly is 'local' on n3");
+is($readonly, 'off',
+   "spock.readonly is lifted on n3 once the join is fully verified");
 
 my $repset_flags = `$pg_bin/psql -p $n3_port -d $dbname -t -A -c "SELECT replicate_insert, replicate_update, replicate_delete, replicate_truncate FROM spock.replication_set WHERE set_name = 'pr3_test_repset'"`;
 $repset_flags =~ s/\s+//g;
@@ -377,8 +383,9 @@ my $source_slot_exists = scalar_query(1,
 ok($source_slot_exists >= 1, 'source slot exists on n1');
 
 # =============================================================================
-# TEST: catchup subscription created, enabled, and caught up; disabled peer
-# subscription's origin advances via forwarding once n2 writes post-join.
+# TEST: catchup subscription and, after cutover, the direct peer
+# subscription are both replicating; a post-cutover write on n2 reaches n3
+# via the direct path, advancing n3's origin for n2.
 # =============================================================================
 my $sub_status = '';
 for (1 .. 30) {
@@ -389,28 +396,33 @@ for (1 .. 30) {
 }
 is($sub_status, 'replicating', 'catchup subscription sub_n3_n1 is replicating on n3');
 
+is(psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
+    '-c', "SELECT forward_origins FROM spock.sub_show_status('sub_n3_n1')"),
+    '', "forwarding cleared on sub_n3_n1 after cutover");
+
 my $peer_sub_status = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
     '-c', "SELECT status FROM spock.sub_show_status('sub_n3_n2')");
-is($peer_sub_status, 'disabled', 'disabled peer subscription sub_n3_n2 exists and is disabled');
+is($peer_sub_status, 'replicating',
+   'direct peer subscription sub_n3_n2 is replicating on n3 after cutover');
 
 # Origin name matches what create_disabled_peer_subscriptions() computed for
-# sub_n3_n2 (spock_gen_slot_name(dbname, 'n2', 'sub_n3_n2')).
+# sub_n3_n2 (spock_gen_slot_name(dbname, 'n2', 'sub_n3_n2')) -- the same
+# value is also the slot name create_peer_slot() created on n2 during the
+# coverage barrier.
 my $n2_origin_name = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
     '-c', "SELECT spock.spock_gen_slot_name('$dbname', 'n2', 'sub_n3_n2')");
+
+is(psql_capture('-p', $node_ports->[1], '-d', $dbname, '-t', '-A',
+    '-c', "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name = '$n2_origin_name'"),
+    '1', 'peer slot created on n2 during the coverage barrier');
 
 my $n2_origin_query =
     "SELECT COALESCE(s.remote_lsn::text, '0/0') FROM pg_replication_origin o " .
     "LEFT JOIN pg_replication_origin_status s ON o.roident = s.local_id " .
     "WHERE o.roname = '$n2_origin_name'";
 
-my $n2_origin_lsn_initial = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
-    '-c', $n2_origin_query);
-is($n2_origin_lsn_initial, '0/0',
-   "n3's origin for peer n2 starts at 0/0 before any post-join write");
-
-# Write on n2 after the join; n1 forwards it to n3 via sub_n3_n1's
-# forward_origins = '{all}', and maybe_advance_forwarded_origin() should move
-# n3's origin for n2 off 0/0 even though the direct sub_n3_n2 stays disabled.
+# Write on n2 after cutover; forwarding is off and the direct sub_n3_n2 is
+# enabled, so this reaches n3 directly from n2, not via n1.
 system_or_bail "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c',
     "INSERT INTO pr4_peer_tbl (val) VALUES ('from_n2_post_join')";
 
@@ -421,11 +433,51 @@ for (1 .. 30) {
     last if $row_on_n3 eq '1';
     sleep(1);
 }
-is($row_on_n3, '1', "n2's post-join write reached n3 via forwarding through sub_n3_n1");
+is($row_on_n3, '1', "n2's post-cutover write reached n3 via the direct sub_n3_n2 path");
 
 my $n2_origin_lsn = psql_capture('-p', $n3_port, '-d', $dbname, '-t', '-A',
     '-c', $n2_origin_query);
-isnt($n2_origin_lsn, '0/0', "n3's origin for peer n2 advanced during catchup forwarding");
+isnt($n2_origin_lsn, '0/0', "n3's origin for peer n2 advanced via the direct subscription");
+
+# =============================================================================
+# TEST: reverse subscriptions are replicating, and a write on n3 reaches
+# both the source and the peer through them -- an external proof,
+# independent of the utility's own internal verify_bidirectional_dataflow()
+# check.
+# =============================================================================
+is(psql_capture('-p', $node_ports->[1], '-d', $dbname, '-t', '-A',
+    '-c', "SELECT status FROM spock.sub_show_status('sub_n2_n3')"),
+    'replicating', 'reverse subscription sub_n2_n3 is replicating on n2');
+
+is(psql_capture('-p', $node_ports->[0], '-d', $dbname, '-t', '-A',
+    '-c', "SELECT status FROM spock.sub_show_status('sub_n1_n3')"),
+    'replicating', 'reverse subscription sub_n1_n3 is replicating on n1');
+
+# Explicit id: pr4_peer_tbl's serial sequence isn't part of the custom
+# repset that gets its value round-tripped onto n3 (only pr3_test_seq and
+# the apostrophe-named sequence are), so n3's own local copy of the
+# sequence is still at its basebackup-time value and would collide with
+# the id the n2-post-join row already claimed via replication.
+system_or_bail "$pg_bin/psql", '-p', $n3_port, '-d', $dbname, '-c',
+    "INSERT INTO pr4_peer_tbl (id, val) VALUES (1000, 'from_n3_post_join')";
+
+my $row_on_n1 = '0';
+for (1 .. 30) {
+    $row_on_n1 = scalar_query(1,
+        "SELECT COUNT(*) FROM pr4_peer_tbl WHERE val = 'from_n3_post_join'");
+    last if $row_on_n1 eq '1';
+    sleep(1);
+}
+is($row_on_n1, '1', "n3's post-join write reached the source via sub_n1_n3");
+
+my $row_on_n2_from_n3 = '0';
+for (1 .. 30) {
+    $row_on_n2_from_n3 = scalar_query(2,
+        "SELECT COUNT(*) FROM pr4_peer_tbl WHERE val = 'from_n3_post_join'");
+    last if $row_on_n2_from_n3 eq '1';
+    sleep(1);
+}
+is($row_on_n2_from_n3, '1', "n3's post-join write reached the peer via sub_n2_n3");
 
 # =============================================================================
 # TEST: --cleanup --force removes source slot, data directory, and manifest
