@@ -78,6 +78,10 @@
  */
 #define SPOCK_SYNC_STAGE_RELNAME	"spock_sync_stage"
 
+/* Savepoint and bound for the empty-table lock in copy_table_data(). */
+#define SPOCK_SYNC_LOCK_SAVEPOINT	"spock_sync_lock"
+#define SPOCK_SYNC_LOCK_TIMEOUT_MS	5000
+
 #define Natts_local_sync_state	6
 #define Anum_sync_kind			1
 #define Anum_sync_subid			2
@@ -1030,6 +1034,31 @@ target_table_has_rows(PGconn *target_conn, SpockRemoteRel *remoterel,
 }
 
 /*
+ * Run one command on the target connection during a table copy.
+ *
+ * Never returns on failure. On success the caller owns the result.
+ */
+static PGresult *
+sync_target_cmd(PGconn *target_conn, const char *sql,
+				SpockRemoteRel *remoterel, const char *what)
+{
+	PGresult   *res = PQexec(target_conn, sql);
+
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	{
+		char	   *msg = pstrdup(PQerrorMessage(target_conn));
+
+		PQclear(res);
+		ereport(ERROR,
+				(errmsg("could not %s for %s.%s", what,
+						remoterel->nspname, remoterel->relname),
+				 errdetail("destination connection reported: %s", msg)));
+	}
+
+	return res;
+}
+
+/*
  * COPY single table over wire.
  */
 static void
@@ -1221,47 +1250,94 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		 * that is mid initial load is what we want anyway. Locking before the
 		 * first probe would instead hold EXCLUSIVE on a populated table for
 		 * the whole sync, which on a live node is a real availability cost.
+		 *
+		 * The wait is bounded, because every table is copied in one
+		 * transaction: this lock is held until the last table is done, and an
+		 * apply worker holding ROW EXCLUSIVE on a table this sync has not
+		 * reached yet would deadlock against it. A savepoint keeps the failure
+		 * recoverable, since an error would otherwise abort the copy
+		 * transaction. If the lock does not arrive, fall back to the staging
+		 * path, which is correct whether or not the table is empty.
 		 */
+		PQclear(sync_target_cmd(target_conn,
+								"SAVEPOINT " SPOCK_SYNC_LOCK_SAVEPOINT,
+								remoterel, "open a savepoint"));
+
 		resetStringInfo(&query);
-		appendStringInfo(&query, "LOCK TABLE %s IN EXCLUSIVE MODE",
-						 relident.data);
+		appendStringInfo(&query,
+						 "SET LOCAL lock_timeout = %d;"
+						 "LOCK TABLE %s IN EXCLUSIVE MODE",
+						 SPOCK_SYNC_LOCK_TIMEOUT_MS, relident.data);
 		res = PQexec(target_conn, query.data);
+
 		if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		{
+			char	   *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+			bool		busy = sqlstate != NULL &&
+				strcmp(sqlstate, "55P03" /*ERRCODE_LOCK_NOT_AVAILABLE*/) == 0;
 			char	   *msg = pstrdup(PQerrorMessage(target_conn));
 
 			PQclear(res);
-			ereport(ERROR,
-					(errmsg("could not lock target table %s.%s for synchronization",
-							remoterel->nspname, remoterel->relname),
-					 errdetail("destination connection reported: %s", msg)));
-		}
-		PQclear(res);
 
-		stage_load = target_table_has_rows(target_conn, remoterel,
-										   relident.data);
+			/*
+			 * Rolling back leaves the savepoint live, so release it too. Every
+			 * table in the sync shares this transaction, and one dangling
+			 * subtransaction per table would push a large sync past the 64 the
+			 * snapshot can track without overflowing.
+			 */
+			PQclear(sync_target_cmd(target_conn,
+									"ROLLBACK TO SAVEPOINT " SPOCK_SYNC_LOCK_SAVEPOINT,
+									remoterel, "roll back to the lock savepoint"));
+			PQclear(sync_target_cmd(target_conn,
+									"RELEASE SAVEPOINT " SPOCK_SYNC_LOCK_SAVEPOINT,
+									remoterel, "release the lock savepoint"));
+
+			if (!busy)
+				ereport(ERROR,
+						(errmsg("could not lock target table %s.%s for synchronization",
+								remoterel->nspname, remoterel->relname),
+						 errdetail("destination connection reported: %s", msg)));
+
+			elog(LOG, "SPOCK: could not lock %s.%s within %dms, staging the copy instead",
+				 remoterel->nspname, remoterel->relname,
+				 SPOCK_SYNC_LOCK_TIMEOUT_MS);
+			stage_load = true;
+		}
+		else
+		{
+			PQclear(res);
+
+			/* Restore what start_copy_target_tx() set for the rest of the copy. */
+			PQclear(sync_target_cmd(target_conn, "SET LOCAL lock_timeout = 0",
+									remoterel, "reset lock_timeout"));
+			PQclear(sync_target_cmd(target_conn,
+									"RELEASE SAVEPOINT " SPOCK_SYNC_LOCK_SAVEPOINT,
+									remoterel, "release the lock savepoint"));
+
+			stage_load = target_table_has_rows(target_conn, remoterel,
+											   relident.data);
+		}
 	}
 
 	if (stage_load)
 	{
+		/*
+		 * A bare LIKE copies NOT NULL but not the defaults, generation
+		 * expressions or identity behind it, and make_copy_attnamelist()
+		 * leaves generated and provider-absent columns out of the COPY. The
+		 * staging table would then take a NULL where the real table computes
+		 * a value, and the COPY would abort on the not-null constraint.
+		 */
 		resetStringInfo(&query);
 		appendStringInfo(&query,
 						 "DROP TABLE IF EXISTS pg_temp.%s;"
-						 "CREATE TEMP TABLE %s (LIKE %s)",
+						 "CREATE TEMP TABLE %s (LIKE %s"
+						 " INCLUDING DEFAULTS INCLUDING GENERATED"
+						 " INCLUDING IDENTITY)",
 						 SPOCK_SYNC_STAGE_RELNAME, SPOCK_SYNC_STAGE_RELNAME,
 						 relident.data);
-		res = PQexec(target_conn, query.data);
-		if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		{
-			char	   *msg = pstrdup(PQerrorMessage(target_conn));
-
-			PQclear(res);
-			ereport(ERROR,
-					(errmsg("could not create staging table for %s.%s",
-							remoterel->nspname, remoterel->relname),
-					 errdetail("destination connection reported: %s", msg)));
-		}
-		PQclear(res);
+		PQclear(sync_target_cmd(target_conn, query.data, remoterel,
+								"create the staging table"));
 	}
 
 	/* Build COPY FROM query. */
@@ -1358,35 +1434,16 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 							 override_identity ? "OVERRIDING SYSTEM VALUE " : "",
 							 SPOCK_SYNC_STAGE_RELNAME);
 
-		res = PQexec(target_conn, query.data);
-		if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		{
-			char	   *msg = pstrdup(PQerrorMessage(target_conn));
-
-			PQclear(res);
-			ereport(ERROR,
-					(errmsg("merging synchronized data into %s.%s failed",
-							remoterel->nspname, remoterel->relname),
-					 errdetail("destination connection reported: %s", msg)));
-		}
+		res = sync_target_cmd(target_conn, query.data, remoterel,
+							  "merge the staged rows");
 		merged = pstrdup(PQcmdTuples(res));
 		PQclear(res);
 
 		resetStringInfo(&query);
 		appendStringInfo(&query, "DROP TABLE pg_temp.%s",
 						 SPOCK_SYNC_STAGE_RELNAME);
-		res = PQexec(target_conn, query.data);
-		if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		{
-			char	   *msg = pstrdup(PQerrorMessage(target_conn));
-
-			PQclear(res);
-			ereport(ERROR,
-					(errmsg("could not drop staging table for %s.%s",
-							remoterel->nspname, remoterel->relname),
-					 errdetail("destination connection reported: %s", msg)));
-		}
-		PQclear(res);
+		PQclear(sync_target_cmd(target_conn, query.data, remoterel,
+								"drop the staging table"));
 	}
 
 	if (stage_load)
