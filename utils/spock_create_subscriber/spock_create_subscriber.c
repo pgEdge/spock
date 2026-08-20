@@ -82,9 +82,18 @@ typedef struct PeerNodeInfo
 	char	   *dsn;
 	char	   *slot_name;          /* from spock.spock_gen_slot_name() */
 	char	   *sub_name;           /* "sub_<subscriber>_<peer>" */
-	bool		disabled_sub_created;
-	bool		slot_created;
 	bool		reverse_sub_created;
+
+	/*
+	 * slot_creation_lsn doubles as the "peer slot created" flag: a
+	 * non-empty value means the slot exists, so no separate boolean is
+	 * kept.  It is persisted to the manifest for --cleanup; peer_marker_lsn
+	 * below it is in-memory only -- it doesn't gate a --cleanup decision,
+	 * and cutover has no cross-invocation resume in v1 (see
+	 * check_reused_data_dir_is_safe()).
+	 */
+	char	   *slot_creation_lsn;  /* peer's replication slot creation LSN */
+	char	   *peer_marker_lsn;    /* this peer's marker once seen on the source */
 } PeerNodeInfo;
 
 typedef struct BidirectionalState
@@ -95,15 +104,28 @@ typedef struct BidirectionalState
 	int			stall_timeout;      /* default 600s */
 	int			max_wait;           /* default 0 = unbounded */
 	char	   *source_slot_name;
-	char	   *source_origin_name;
 	char	   *source_restore_lsn; /* recovery target LSN; consumed by the
-									 * disabled-first catchup sub_create */
+									 * disabled-first catchup sub_create.
+									 * Written to the manifest as a
+									 * diagnostic record of what was used,
+									 * but never read back on a --cleanup
+									 * reload -- nothing needs it restored
+									 * into memory there */
 	char	   *node_dsn;       /* DSN registered via spock.node_create();
 								 * the address peers use to connect back to
 								 * this node.  Derived from --subscriber-dsn. */
 	char	   *node_sysid;     /* n3's system_identifier; lets --cleanup
 								 * confirm node_dsn still reaches this node
 								 * before dropping subscriptions there. */
+	bool		source_reverse_sub_created; /* sub_<source>_<n3> created on
+											 * the source -- must be
+											 * persisted, unlike the peer
+											 * progress bits, since it is
+											 * the only way --cleanup knows
+											 * to drop this specific
+											 * subscription on a node that
+											 * also has other, unrelated,
+											 * legitimate subscriptions */
 	bool		cleanup_mode;
 	bool		force_cleanup;      /* --force: also remove the data directory
 									 * on --cleanup, not just remote state */
@@ -190,9 +212,14 @@ static char *validate_replication_set_input(char *replication_sets);
 static void remove_unwanted_data(PGconn *conn);
 static void initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn);
 static char *create_restore_point(PGconn *conn, char *restore_point_name);
+static char *create_logical_slot(PGconn *conn, const char *slot_name,
+							bool drop_if_exists, const char *already_exists_hint);
 static char *initialize_replication_slot(PGconn *conn, char *dbname,
 							char *provider_node_name, char *subscription_name,
 							bool drop_slot_if_exists);
+static char *create_peer_slot(PGconn *peer_conn, const char *peer_slot_name);
+static char *get_origin_name_for_node(PGconn *conn, const char *upstream_node_name,
+							const char *conn_label, char **sub_name_out);
 static void spock_subscribe(PGconn *conn, char *subscriber_name,
 								char *subscriber_dsn,
 								char *provider_connstr,
@@ -270,11 +297,48 @@ static void create_catchup_subscription(PGconn *subscriber_conn, const char *sou
 					const char *source_slot_name, const char *source_restore_lsn);
 static void create_disabled_peer_subscriptions(PGconn *subscriber_conn, PeerNodeInfo *peers,
 					int num_peers, const char *replication_sets);
+static char *get_sync_event_lsn(PGconn *conn, const char *node_label);
 static char *get_catchup_target_lsn(const char *source_dsn);
+static void wait_for_origin_progress(PGconn *conn, const char *origin_name,
+					const char *target_lsn, const char *watch_sub_name,
+					const char *context_label, int stall_timeout, int max_wait);
 static void wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
 					const char *source_slot_name, const char *target_lsn,
 					int stall_timeout, int max_wait);
+static void establish_peer_coverage_barrier(BidirectionalState *state, PGconn *n3_conn,
+					const char *prov_connstr, const char *source_node_name,
+					const char *source_sub_name, const char *source_slot_name,
+					const char *subscriber_name, const char *dbname,
+					const char *base_prov_connstr,
+					int stall_timeout, int max_wait);
+static void clear_forwarding(PGconn *n3_conn, const char *source_dsn,
+					const char *source_sub_name, const char *source_slot_name,
+					int stall_timeout, int max_wait);
+static void wait_for_sub_replicating(PGconn *conn, const char *sub_name,
+					int stall_timeout, int max_wait);
+static void enable_peer_subs(PGconn *n3_conn, PeerNodeInfo *peers, int num_peers,
+					int stall_timeout, int max_wait);
+static void create_subscription_on_conn(PGconn *conn, const char *sub_name,
+					const char *provider_dsn, const char *repsets,
+					const char *conn_label);
+static void create_reverse_subscriptions(BidirectionalState *state, const char *subscriber_name,
+					const char *n3_dsn, const char *replication_sets,
+					const char *source_dsn, const char *source_node_name,
+					const char *dbname, const char *base_prov_connstr);
+static void wait_for_reverse_subs_ready(BidirectionalState *state, PGconn *n3_conn,
+					const char *source_dsn, const char *source_node_name,
+					const char *subscriber_name, int stall_timeout, int max_wait);
+static void verify_dataflow_from_n3(PGconn *remote_conn, const char *remote_node_name,
+					const char *subscriber_name, const char *n3_marker,
+					int stall_timeout, int max_wait);
+static void verify_dataflow_to_n3(PGconn *n3_conn, const char *remote_node_name,
+					const char *remote_marker, const char *slot_name,
+					const char *sub_name, int stall_timeout, int max_wait);
+static void verify_bidirectional_dataflow(BidirectionalState *state, PGconn *n3_conn,
+					const char *source_dsn, const char *source_node_name,
+					const char *subscriber_name, int stall_timeout, int max_wait);
 static void set_readonly_local(PGconn *conn);
+static void lift_readonly(PGconn *conn);
 static Oid	get_local_node_id(PGconn *conn);
 
 static PGconn *
@@ -1209,160 +1273,178 @@ check_no_native_subscriptions(PGconn *conn)
 }
 
 /*
- * Write the bidirectional state manifest to state->manifest_path
- * atomically (write to .tmp, then rename).  The manifest is a simple
- * hand-formatted JSON file, with string values escaped by
- * append_json_string().
+ * Manifest field names, shared between serialize_manifest() and the
+ * manifest_* parser callbacks below, so a typo in one becomes a
+ * compile error instead of a silent read/write mismatch.
+ */
+#define MF_SUBSCRIBER_NAME				"subscriber_name"
+#define MF_DBNAME						"dbname"
+#define MF_SOURCE_DSN					"source_dsn"
+#define MF_SOURCE_SLOT_NAME				"source_slot_name"
+#define MF_SOURCE_RESTORE_LSN			"source_restore_lsn"
+#define MF_NODE_DSN						"node_dsn"
+#define MF_NODE_SYSID					"node_sysid"
+#define MF_SOURCE_REVERSE_SUB_CREATED	"source_reverse_sub_created"
+#define MF_PEERS						"peers"
+#define MF_NODE_NAME					"node_name"
+#define MF_PEER_DSN						"peer_dsn"
+#define MF_SUB_NAME_ON_N3				"sub_name_on_n3"
+#define MF_PEER_SLOT_NAME				"peer_slot_name"
+#define MF_SLOT_CREATION_LSN			"slot_creation_lsn"
+#define MF_REVERSE_SUB_CREATED			"reverse_sub_created"
+
+/*
+ * Append one "<indent>"<field_name>": "<value>"" field to buf, with a
+ * trailing comma unless trailing_comma is false (the last field in an
+ * object).  A NULL value serializes as an empty string, matching
+ * append_json_string()'s existing null-becomes-empty convention here.
  */
 static void
-write_manifest(BidirectionalState *state, const char *subscriber_name,
-			   const char *dbname, const char *source_dsn)
+append_json_str_field(PQExpBuffer buf, const char *indent, const char *field_name,
+					  const char *value, bool trailing_comma)
 {
-	PQExpBuffer	buf = createPQExpBuffer();
-	char		tmp_path[MAXPGPATH];
-	int			i;
+	appendPQExpBuffer(buf, "%s\"%s\": \"", indent, field_name);
+	if (value)
+		append_json_string(buf, value);
+	appendPQExpBufferStr(buf, trailing_comma ? "\",\n" : "\"\n");
+}
 
-	snprintf(tmp_path, MAXPGPATH, "%s.tmp", state->manifest_path);
+/*
+ * Append one "<indent>"<field_name>": true|false" field to buf, with a
+ * trailing comma unless trailing_comma is false (the last field in an
+ * object).
+ */
+static void
+append_json_bool_field(PQExpBuffer buf, const char *indent, const char *field_name,
+					   bool value, bool trailing_comma)
+{
+	appendPQExpBuffer(buf, "%s\"%s\": %s%s\n", indent, field_name,
+					  value ? "true" : "false", trailing_comma ? "," : "");
+}
+
+/*
+ * Hand-serialize the bidirectional state manifest schema into buf, as
+ * JSON, with string values escaped by append_json_string().
+ */
+static void
+serialize_manifest(BidirectionalState *state, const char *subscriber_name,
+				   const char *dbname, const char *source_dsn, PQExpBuffer buf)
+{
+	int			i;
 
 	appendPQExpBufferStr(buf, "{\n");
 	appendPQExpBufferStr(buf, "    \"version\": 1,\n");
 
-	appendPQExpBufferStr(buf, "    \"subscriber_name\": \"");
-	append_json_string(buf, subscriber_name);
-	appendPQExpBufferStr(buf, "\",\n");
+	append_json_str_field(buf, "    ", MF_SUBSCRIBER_NAME, subscriber_name, true);
+	append_json_str_field(buf, "    ", MF_DBNAME, dbname, true);
+	append_json_str_field(buf, "    ", MF_SOURCE_DSN, source_dsn, true);
+	append_json_str_field(buf, "    ", MF_SOURCE_SLOT_NAME, state->source_slot_name, true);
+	append_json_str_field(buf, "    ", MF_SOURCE_RESTORE_LSN, state->source_restore_lsn, true);
+	append_json_str_field(buf, "    ", MF_NODE_DSN, state->node_dsn, true);
+	append_json_str_field(buf, "    ", MF_NODE_SYSID, state->node_sysid, true);
+	append_json_bool_field(buf, "    ", MF_SOURCE_REVERSE_SUB_CREATED,
+						   state->source_reverse_sub_created, true);
 
-	appendPQExpBufferStr(buf, "    \"dbname\": \"");
-	append_json_string(buf, dbname);
-	appendPQExpBufferStr(buf, "\",\n");
-
-	appendPQExpBufferStr(buf, "    \"source_dsn\": \"");
-	append_json_string(buf, source_dsn);
-	appendPQExpBufferStr(buf, "\",\n");
-
-	appendPQExpBufferStr(buf, "    \"source_slot_name\": \"");
-	if (state->source_slot_name)
-		append_json_string(buf, state->source_slot_name);
-	appendPQExpBufferStr(buf, "\",\n");
-
-	appendPQExpBufferStr(buf, "    \"source_origin_name\": \"");
-	if (state->source_origin_name)
-		append_json_string(buf, state->source_origin_name);
-	appendPQExpBufferStr(buf, "\",\n");
-
-	appendPQExpBufferStr(buf, "    \"source_restore_lsn\": \"");
-	if (state->source_restore_lsn)
-		append_json_string(buf, state->source_restore_lsn);
-	appendPQExpBufferStr(buf, "\",\n");
-
-	appendPQExpBufferStr(buf, "    \"node_dsn\": \"");
-	if (state->node_dsn)
-		append_json_string(buf, state->node_dsn);
-	appendPQExpBufferStr(buf, "\",\n");
-
-	appendPQExpBufferStr(buf, "    \"node_sysid\": \"");
-	if (state->node_sysid)
-		append_json_string(buf, state->node_sysid);
-	appendPQExpBufferStr(buf, "\",\n");
-
-	appendPQExpBufferStr(buf, "    \"peers\": [\n");
+	appendPQExpBuffer(buf, "    \"%s\": [\n", MF_PEERS);
 	for (i = 0; i < state->num_peers; i++)
 	{
 		PeerNodeInfo *p = &state->peers[i];
 		bool		 last = (i == state->num_peers - 1);
 
 		appendPQExpBufferStr(buf, "        {\n");
-
-		appendPQExpBufferStr(buf, "            \"node_name\": \"");
-		append_json_string(buf, p->node_name);
-		appendPQExpBufferStr(buf, "\",\n");
-
-		appendPQExpBufferStr(buf, "            \"peer_dsn\": \"");
-		append_json_string(buf, p->dsn);
-		appendPQExpBufferStr(buf, "\",\n");
-
-		appendPQExpBufferStr(buf, "            \"sub_name_on_n3\": \"");
-		append_json_string(buf, p->sub_name);
-		appendPQExpBufferStr(buf, "\",\n");
-
-		appendPQExpBufferStr(buf, "            \"peer_slot_name\": \"");
-		append_json_string(buf, p->slot_name);
-		appendPQExpBufferStr(buf, "\",\n");
-
-		appendPQExpBuffer(buf, "            \"disabled_sub_created\": %s,\n",
-						  p->disabled_sub_created ? "true" : "false");
-		appendPQExpBuffer(buf, "            \"slot_created\": %s,\n",
-						  p->slot_created ? "true" : "false");
-		appendPQExpBuffer(buf, "            \"reverse_sub_created\": %s\n",
-						  p->reverse_sub_created ? "true" : "false");
-
+		append_json_str_field(buf, "            ", MF_NODE_NAME, p->node_name, true);
+		append_json_str_field(buf, "            ", MF_PEER_DSN, p->dsn, true);
+		append_json_str_field(buf, "            ", MF_SUB_NAME_ON_N3, p->sub_name, true);
+		append_json_str_field(buf, "            ", MF_PEER_SLOT_NAME, p->slot_name, true);
+		append_json_str_field(buf, "            ", MF_SLOT_CREATION_LSN, p->slot_creation_lsn, true);
+		append_json_bool_field(buf, "            ", MF_REVERSE_SUB_CREATED,
+							   p->reverse_sub_created, false);
 		appendPQExpBufferStr(buf, last ? "        }\n" : "        },\n");
 	}
 	appendPQExpBufferStr(buf, "    ]\n");
 	appendPQExpBufferStr(buf, "}\n");
+}
+
+/*
+ * Atomically replace path's contents with the len bytes at data: write
+ * to a "<path>.tmp" sibling with mode 0600 up front (never a post-hoc
+ * chmod, since the caller's data can embed a password), fsync, rename
+ * over path, then fsync the containing directory -- a crash right
+ * after this returns must not lose the write (e.g. the only cleanup
+ * record for a resource created just before it).  O_EXCL|O_NOFOLLOW
+ * refuses to write through a pre-existing file or planted symlink,
+ * except a leftover .tmp from a previous crashed run.
+ */
+static void
+durably_replace_manifest(const char *path, const char *data, size_t len)
+{
+	char		tmp_path[MAXPGPATH];
+	int			fd;
+	ssize_t		written;
+
+	snprintf(tmp_path, MAXPGPATH, "%s.tmp", path);
+
+	fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+	if (fd < 0 && errno == EEXIST)
+	{
+		if (unlink(tmp_path) != 0)
+			die(_("could not remove stale manifest temp file \"%s\": %s"),
+				tmp_path, strerror(errno));
+		fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+	}
+	if (fd < 0)
+		die(_("could not create manifest file \"%s\": %s"),
+			tmp_path, strerror(errno));
+
+	written = write(fd, data, len);
+	if (written < 0 || (size_t) written != len)
+	{
+		close(fd);
+		unlink(tmp_path);
+		die(_("could not write manifest file \"%s\": %s"),
+			tmp_path, strerror(errno));
+	}
+
+	if (fsync(fd) != 0)
+	{
+		close(fd);
+		unlink(tmp_path);
+		die(_("could not fsync manifest file \"%s\": %s"),
+			tmp_path, strerror(errno));
+	}
+	if (close(fd) != 0)
+	{
+		unlink(tmp_path);
+		die(_("could not close manifest file \"%s\": %s"),
+			tmp_path, strerror(errno));
+	}
+	if (rename(tmp_path, path) != 0)
+		die(_("could not rename manifest to \"%s\": %s"),
+			path, strerror(errno));
 
 	/*
-	 * The manifest can embed a password (source_dsn, node_dsn), so create
-	 * with mode 0600 up front, not a post-hoc chmod.  O_EXCL|O_NOFOLLOW
-	 * refuses to write through a pre-existing file or planted symlink,
-	 * except a leftover .tmp from a previous crashed run.
+	 * fsync_parent_path() already treats "filesystem doesn't support
+	 * directory fsync" as success internally, so a nonzero return here
+	 * is a genuine failure that can orphan the resource(s) this
+	 * manifest is the only record of, after a crash.  Fatal, like the
+	 * durability steps above.
 	 */
-	{
-		int			fd;
-		ssize_t		written;
+	if (fsync_parent_path(path) != 0)
+		die(_("could not fsync directory containing \"%s\": %s\n"),
+			path, strerror(errno));
+}
 
-		fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
-		if (fd < 0 && errno == EEXIST)
-		{
-			if (unlink(tmp_path) != 0)
-				die(_("could not remove stale manifest temp file \"%s\": %s"),
-					tmp_path, strerror(errno));
-			fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
-		}
-		if (fd < 0)
-			die(_("could not create manifest file \"%s\": %s"),
-				tmp_path, strerror(errno));
+/*
+ * Write the bidirectional state manifest to state->manifest_path.
+ */
+static void
+write_manifest(BidirectionalState *state, const char *subscriber_name,
+			   const char *dbname, const char *source_dsn)
+{
+	PQExpBuffer	buf = createPQExpBuffer();
 
-		written = write(fd, buf->data, buf->len);
-		if (written < 0 || (size_t) written != buf->len)
-		{
-			close(fd);
-			unlink(tmp_path);
-			die(_("could not write manifest file \"%s\": %s"),
-				tmp_path, strerror(errno));
-		}
-
-		/*
-		 * fsync, rename, then fsync the directory -- a crash right after
-		 * this returns must not lose the only cleanup record for the
-		 * source slot created just before it.
-		 */
-		if (fsync(fd) != 0)
-		{
-			close(fd);
-			unlink(tmp_path);
-			die(_("could not fsync manifest file \"%s\": %s"),
-				tmp_path, strerror(errno));
-		}
-		if (close(fd) != 0)
-		{
-			unlink(tmp_path);
-			die(_("could not close manifest file \"%s\": %s"),
-				tmp_path, strerror(errno));
-		}
-		if (rename(tmp_path, state->manifest_path) != 0)
-			die(_("could not rename manifest to \"%s\": %s"),
-				state->manifest_path, strerror(errno));
-
-		/*
-		 * fsync_parent_path() already treats "filesystem doesn't support
-		 * directory fsync" as success internally, so a nonzero return
-		 * here is a genuine failure that can orphan the source slot
-		 * after a crash.  Fatal, like the durability steps above.
-		 */
-		if (fsync_parent_path(state->manifest_path) != 0)
-			die(_("could not fsync directory containing \"%s\": %s\n"),
-				state->manifest_path, strerror(errno));
-	}
+	serialize_manifest(state, subscriber_name, dbname, source_dsn, buf);
+	durably_replace_manifest(state->manifest_path, buf->data, buf->len);
 
 	destroyPQExpBuffer(buf);
 }
@@ -1390,8 +1472,7 @@ typedef struct ManifestParseState
 	char	   *peer_dsn;
 	char	   *peer_sub_name;
 	char	   *peer_slot_name;
-	bool		peer_disabled_sub_created;
-	bool		peer_slot_created;
+	char	   *peer_slot_creation_lsn;
 	bool		peer_reverse_sub_created;
 	int			peer_capacity;
 } ManifestParseState;
@@ -1426,12 +1507,12 @@ manifest_object_end(void *st)
 		s->bidir->peers[i].dsn = s->peer_dsn;
 		s->bidir->peers[i].sub_name = s->peer_sub_name;
 		s->bidir->peers[i].slot_name = s->peer_slot_name;
-		s->bidir->peers[i].disabled_sub_created = s->peer_disabled_sub_created;
-		s->bidir->peers[i].slot_created = s->peer_slot_created;
+		s->bidir->peers[i].slot_creation_lsn = s->peer_slot_creation_lsn;
 		s->bidir->peers[i].reverse_sub_created = s->peer_reverse_sub_created;
 		s->bidir->num_peers++;
 		s->peer_node_name = s->peer_dsn = s->peer_sub_name = s->peer_slot_name = NULL;
-		s->peer_disabled_sub_created = s->peer_slot_created = s->peer_reverse_sub_created = false;
+		s->peer_slot_creation_lsn = NULL;
+		s->peer_reverse_sub_created = false;
 		s->in_peer_obj = false;
 	}
 	s->depth--;
@@ -1445,7 +1526,7 @@ manifest_array_start(void *st)
 
 	s->depth++;
 	if (s->depth == 2 && s->cur_field != NULL &&
-		strcmp(s->cur_field, "peers") == 0)
+		strcmp(s->cur_field, MF_PEERS) == 0)
 		s->in_peers = true;
 	return JSON_SUCCESS;
 }
@@ -1493,12 +1574,19 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 	{
 		bool	value = (tokentype == JSON_TOKEN_TRUE);
 
-		if (strcmp(s->cur_field, "disabled_sub_created") == 0)
-			s->peer_disabled_sub_created = value;
-		else if (strcmp(s->cur_field, "slot_created") == 0)
-			s->peer_slot_created = value;
-		else if (strcmp(s->cur_field, "reverse_sub_created") == 0)
+		if (strcmp(s->cur_field, MF_REVERSE_SUB_CREATED) == 0)
 			s->peer_reverse_sub_created = value;
+		pg_free(token);
+		return JSON_SUCCESS;
+	}
+
+	/* Top-level creation-state flags are also JSON booleans. */
+	if (!s->in_peer_obj && tokentype != JSON_TOKEN_STRING)
+	{
+		bool	value = (tokentype == JSON_TOKEN_TRUE);
+
+		if (strcmp(s->cur_field, MF_SOURCE_REVERSE_SUB_CREATED) == 0)
+			s->bidir->source_reverse_sub_created = value;
 		pg_free(token);
 		return JSON_SUCCESS;
 	}
@@ -1512,21 +1600,17 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 	if (!s->in_peer_obj)
 	{
 		/* top-level scalar fields */
-		if (strcmp(s->cur_field, "subscriber_name") == 0)
+		if (strcmp(s->cur_field, MF_SUBSCRIBER_NAME) == 0)
 			*s->subscriber_name_out = token;
-		else if (strcmp(s->cur_field, "dbname") == 0)
+		else if (strcmp(s->cur_field, MF_DBNAME) == 0)
 			*s->dbname_out = token;
-		else if (strcmp(s->cur_field, "source_dsn") == 0)
+		else if (strcmp(s->cur_field, MF_SOURCE_DSN) == 0)
 			*s->source_dsn_out = token;
-		else if (strcmp(s->cur_field, "source_slot_name") == 0)
+		else if (strcmp(s->cur_field, MF_SOURCE_SLOT_NAME) == 0)
 			s->bidir->source_slot_name = token;
-		else if (strcmp(s->cur_field, "source_origin_name") == 0)
-			s->bidir->source_origin_name = token;
-		else if (strcmp(s->cur_field, "source_restore_lsn") == 0)
-			s->bidir->source_restore_lsn = token;
-		else if (strcmp(s->cur_field, "node_dsn") == 0)
+		else if (strcmp(s->cur_field, MF_NODE_DSN) == 0)
 			s->bidir->node_dsn = token;
-		else if (strcmp(s->cur_field, "node_sysid") == 0)
+		else if (strcmp(s->cur_field, MF_NODE_SYSID) == 0)
 			s->bidir->node_sysid = token;
 		else
 			pg_free(token);
@@ -1534,14 +1618,16 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 	else
 	{
 		/* per-peer scalar fields */
-		if (strcmp(s->cur_field, "node_name") == 0)
+		if (strcmp(s->cur_field, MF_NODE_NAME) == 0)
 			s->peer_node_name = token;
-		else if (strcmp(s->cur_field, "peer_dsn") == 0)
+		else if (strcmp(s->cur_field, MF_PEER_DSN) == 0)
 			s->peer_dsn = token;
-		else if (strcmp(s->cur_field, "sub_name_on_n3") == 0)
+		else if (strcmp(s->cur_field, MF_SUB_NAME_ON_N3) == 0)
 			s->peer_sub_name = token;
-		else if (strcmp(s->cur_field, "peer_slot_name") == 0)
+		else if (strcmp(s->cur_field, MF_PEER_SLOT_NAME) == 0)
 			s->peer_slot_name = token;
+		else if (strcmp(s->cur_field, MF_SLOT_CREATION_LSN) == 0)
+			s->peer_slot_creation_lsn = token;
 		else
 			pg_free(token);
 	}
@@ -1811,19 +1897,6 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 		}
 	}
 
-	/*
-	 * Stop n3's postmaster unconditionally (not gated by --force, which
-	 * only governs removing the data directory).  check_data_dir() and
-	 * check_reused_data_dir_is_safe() explicitly support resuming a join
-	 * into this same data_dir after a failed attempt, and that resume
-	 * path (main(), the "start -l ..." pg_ctl call before catchup) assumes
-	 * postgres is not already running here; leaving it up after
-	 * `--cleanup` would make the very next retry fail outright.  The
-	 * subscription drops above already ran while n3 was still reachable,
-	 * so this is just shutdown, not a substitute for them.
-	 */
-	stop_postgres_in_data_dir();
-
 	source_conn = PQconnectdb(source_dsn);
 	if (PQstatus(source_conn) != CONNECTION_OK)
 	{
@@ -1865,12 +1938,60 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 		PQclear(res);
 	}
 
+	/*
+	 * Drop the reverse subscription on the source if this run recorded
+	 * having created it.  Unlike n3 (whose n3-side block above
+	 * drops every subscription it finds, since a fresh n3 has no other
+	 * legitimate ones), the source has its own pre-existing, unrelated
+	 * subscriptions that must not be touched -- so this is gated by the
+	 * flag and targets the specific reverse subscription by name.
+	 */
+	if (source_conn && state->source_reverse_sub_created)
+	{
+		res = debug_exec(source_conn, "SELECT node_name FROM spock.node_info()");
+		if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+		{
+			PQclear(res);
+			print_msg(VERBOSITY_NORMAL,
+					  _("warning: could not determine the source's node name; "
+						"its reverse subscription may still exist: %s\n"),
+					  PQerrorMessage(source_conn));
+			fully_cleaned = false;
+		}
+		else
+		{
+			char *source_node_name = pg_strdup(PQgetvalue(res, 0, 0));
+			char reverse_sub[NAMEDATALEN * 2 + 8];
+
+			PQclear(res);
+			snprintf(reverse_sub, sizeof(reverse_sub), "sub_%s_%s",
+					 source_node_name, subscriber_name);
+			printfPQExpBuffer(query, "SELECT spock.sub_drop(%s, true)",
+							  PQescapeLiteral(source_conn, reverse_sub, strlen(reverse_sub)));
+			res = debug_exec(source_conn, query->data);
+			if (PQresultStatus(res) != PGRES_TUPLES_OK)
+			{
+				print_msg(VERBOSITY_NORMAL,
+						  _("warning: could not drop reverse subscription %s on "
+							"the source: %s\n"),
+						  reverse_sub, PQerrorMessage(source_conn));
+				fully_cleaned = false;
+			}
+			else
+				print_msg(VERBOSITY_NORMAL,
+						  _("  dropped reverse subscription %s on the source\n"),
+						  reverse_sub);
+			PQclear(res);
+			pg_free(source_node_name);
+		}
+	}
+
 	/* Per-peer: drop slot and any reverse subscription */
 	for (i = 0; i < state->num_peers; i++)
 	{
 		PeerNodeInfo *peer = &state->peers[i];
 		PGconn	   *peer_conn;
-		char		reverse_sub[NAMEDATALEN];
+		char		reverse_sub[NAMEDATALEN * 2 + 8];
 
 		if (!peer->dsn || !peer->dsn[0])
 			continue;
@@ -1882,7 +2003,8 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 		 * touch a same-named resource from an unrelated join, nor report
 		 * "incomplete" over a peer that was never touched.
 		 */
-		if (!peer->slot_created && !peer->reverse_sub_created)
+		if ((!peer->slot_creation_lsn || !peer->slot_creation_lsn[0]) &&
+			!peer->reverse_sub_created)
 			continue;
 
 		peer_conn = PQconnectdb(peer->dsn);
@@ -1897,7 +2019,8 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 			continue;
 		}
 
-		if (peer->slot_created && peer->slot_name && peer->slot_name[0])
+		if (peer->slot_creation_lsn && peer->slot_creation_lsn[0] &&
+			peer->slot_name && peer->slot_name[0])
 		{
 			printfPQExpBuffer(query,
 							  "SELECT pg_drop_replication_slot(slot_name)"
@@ -1958,6 +2081,21 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 		PQfinish(source_conn);
 
 	destroyPQExpBuffer(query);
+
+	/*
+	 * Stop n3's postmaster unconditionally (not gated by --force, which
+	 * only governs removing the data directory).  check_data_dir() and
+	 * check_reused_data_dir_is_safe() explicitly support resuming a join
+	 * into this same data_dir after a failed attempt, and that resume
+	 * path (main(), the "start -l ..." pg_ctl call before catchup) assumes
+	 * postgres is not already running here; leaving it up after
+	 * `--cleanup` would make the very next retry fail outright.  Every
+	 * drop above already ran while n3 was still reachable -- including
+	 * the source's and each peer's reverse subscription, whose provider
+	 * is n3, so dropping them needs a live connection back to it -- so
+	 * this is just shutdown, not a substitute for them.
+	 */
+	stop_postgres_in_data_dir();
 
 	/*
 	 * The data directory a partial run may have created via basebackup.
@@ -2485,7 +2623,6 @@ main(int argc, char **argv)
 																 drop_slot_if_exists);
 			print_msg(VERBOSITY_DEBUG, _("Source replication slot created: \"%s\"\n"),
 					  bidir.source_slot_name);
-			bidir.source_origin_name = pg_strdup(bidir.source_slot_name);
 			pg_free(source_sub_name);
 
 			/*
@@ -2857,15 +2994,6 @@ main(int argc, char **argv)
 			create_disabled_peer_subscriptions(subscriber_conn, bidir.peers,
 											   bidir.num_peers, replication_sets);
 
-			/*
-			 * Persist disabled_sub_created for every peer now, not just at
-			 * the top of this block -- a crash during the (possibly long)
-			 * catchup wait below must not leave --cleanup reading a stale
-			 * manifest that still shows every peer's disabled subscription
-			 * as not-yet-created.
-			 */
-			write_manifest(&bidir, subscriber_name, db, base_prov_connstr);
-
 			print_msg(VERBOSITY_NORMAL, _("Getting catchup target from the source...\n"));
 			target_lsn = get_catchup_target_lsn(prov_connstr);
 			print_msg(VERBOSITY_DEBUG, _("Catchup target LSN: %s\n"), target_lsn);
@@ -2876,18 +3004,50 @@ main(int argc, char **argv)
 						"LSN %s\n"), source_sub_name, bidir.source_slot_name, target_lsn);
 			wait_for_catchup(subscriber_conn, source_sub_name, bidir.source_slot_name,
 							 target_lsn, bidir.stall_timeout, bidir.max_wait);
-
 			pg_free(target_lsn);
+
+			print_msg(VERBOSITY_NORMAL, _("Establishing peer coverage barrier...\n"));
+			establish_peer_coverage_barrier(&bidir, subscriber_conn, prov_connstr,
+											remote_info->node_name, source_sub_name,
+											bidir.source_slot_name, subscriber_name, db,
+											base_prov_connstr, bidir.stall_timeout,
+											bidir.max_wait);
+
+			print_msg(VERBOSITY_NORMAL, _("Clearing forwarding on the catchup subscription...\n"));
+			clear_forwarding(subscriber_conn, prov_connstr, source_sub_name,
+							 bidir.source_slot_name, bidir.stall_timeout, bidir.max_wait);
+
+			print_msg(VERBOSITY_NORMAL, _("Enabling direct peer subscriptions...\n"));
+			enable_peer_subs(subscriber_conn, bidir.peers, bidir.num_peers,
+							 bidir.stall_timeout, bidir.max_wait);
+
 			pg_free(source_sub_name);
+
+			print_msg(VERBOSITY_NORMAL, _("Creating reverse subscriptions...\n"));
+			create_reverse_subscriptions(&bidir, subscriber_name, sub_connstr,
+										 replication_sets, prov_connstr,
+										 remote_info->node_name, db, base_prov_connstr);
+
+			print_msg(VERBOSITY_NORMAL, _("Waiting for reverse subscriptions to be ready...\n"));
+			wait_for_reverse_subs_ready(&bidir, subscriber_conn, prov_connstr,
+										remote_info->node_name, subscriber_name,
+										bidir.stall_timeout, bidir.max_wait);
+
+			print_msg(VERBOSITY_NORMAL, _("Verifying bidirectional replication...\n"));
+			verify_bidirectional_dataflow(&bidir, subscriber_conn, prov_connstr,
+										  remote_info->node_name, subscriber_name,
+										  bidir.stall_timeout, bidir.max_wait);
+
+			print_msg(VERBOSITY_NORMAL, _("Lifting read-only mode...\n"));
+			lift_readonly(subscriber_conn);
 		}
 
 		PQfinish(subscriber_conn);
 		subscriber_conn = NULL;
 
 		print_msg(VERBOSITY_NORMAL,
-				  _("Bidirectional join: catchup complete. Node \"%s\" has caught "
-					"up to the source and forward-tracked every peer's origin; "
-					"ready for the next phase.\n"),
+				  _("Bidirectional join complete: node \"%s\" is a live, verified "
+					"bidirectional member of the cluster.\n"),
 				  subscriber_name);
 	}
 	else
@@ -3338,6 +3498,73 @@ check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo)
 }
 
 /*
+ * Create a logical replication slot named slot_name for the spock_output
+ * plugin and return its creation LSN (caller must free).  If a slot of
+ * that name already exists: drop and recreate it when drop_if_exists is
+ * set, otherwise die with already_exists_hint appended to the message.
+ */
+static char *
+create_logical_slot(PGconn *conn, const char *slot_name, bool drop_if_exists,
+					const char *already_exists_hint)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	char	   *slot_lsn;
+
+	printfPQExpBuffer(query,
+					  "SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name = %s",
+					  PQescapeLiteral(conn, slot_name, strlen(slot_name)));
+	res = debug_exec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not check for existing replication slot \"%s\": %s\n"),
+			slot_name, PQerrorMessage(conn));
+	}
+
+	if (PQntuples(res) > 0)
+	{
+		PQclear(res);
+
+		if (!drop_if_exists)
+			die(_("replication slot \"%s\" already exists; %s\n"),
+				slot_name, already_exists_hint);
+
+		print_msg(VERBOSITY_VERBOSE,
+				  _("dropping existing replication slot \"%s\"...\n"), slot_name);
+
+		printfPQExpBuffer(query,
+						  "SELECT pg_catalog.pg_drop_replication_slot(%s)",
+						  PQescapeLiteral(conn, slot_name, strlen(slot_name)));
+		res = debug_exec(conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not drop existing replication slot \"%s\": %s\n"),
+				slot_name, PQerrorMessage(conn));
+		}
+	}
+	PQclear(res);
+
+	printfPQExpBuffer(query,
+					  "SELECT slot_name, lsn::text"
+					  " FROM pg_create_logical_replication_slot(%s, 'spock_output')",
+					  PQescapeLiteral(conn, slot_name, strlen(slot_name)));
+	res = debug_exec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+	{
+		PQclear(res);
+		die(_("could not create replication slot \"%s\": %s\n"),
+			slot_name, PQerrorMessage(conn));
+	}
+	slot_lsn = pg_strdup(PQgetvalue(res, 0, 1));
+	PQclear(res);
+
+	destroyPQExpBuffer(query);
+	return slot_lsn;
+}
+
+/*
  * Initialize replication slots
  */
 static char *
@@ -3366,58 +3593,78 @@ initialize_replication_slot(PGconn *conn, char *dbname,
 	slot_name = pstrdup(PQgetvalue(res, 0, 0));
 
 	PQclear(res);
-	resetPQExpBuffer(&query);
-
-	/* Check if the current slot exists. */
-	printfPQExpBuffer(&query,
-					  "SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name = %s",
-					  PQescapeLiteral(conn, slot_name, strlen(slot_name)));
-
-	res = debug_exec(conn, query.data);
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		die(_("Could not fetch existing slot information: %s"), PQerrorMessage(conn));
-
-	/* Drop the existing slot when asked for it or error if it already exists. */
-	if (PQntuples(res) > 0)
-	{
-		PQclear(res);
-		resetPQExpBuffer(&query);
-
-		if (!drop_slot_if_exists)
-			die(_("Slot %s already exists, drop it or use --drop-slot-if-exists to drop it automatically.\n"),
-				slot_name);
-
-		print_msg(VERBOSITY_VERBOSE,
-				  _("Droping existing slot %s ...\n"), slot_name);
-
-		printfPQExpBuffer(&query,
-						  "SELECT pg_catalog.pg_drop_replication_slot(%s)",
-						  PQescapeLiteral(conn, slot_name, strlen(slot_name)));
-
-		res = debug_exec(conn, query.data);
-		if (PQresultStatus(res) != PGRES_TUPLES_OK)
-			die(_("Could not drop existing slot %s: %s"), slot_name,
-				PQerrorMessage(conn));
-	}
-
-	PQclear(res);
-	resetPQExpBuffer(&query);
-
-	/* And finally, create the slot. */
-	appendPQExpBuffer(&query, "SELECT pg_create_logical_replication_slot(%s, '%s');",
-					  PQescapeLiteral(conn, slot_name, strlen(slot_name)),
-					  "spock_output");
-
-	res = debug_exec(conn, query.data);
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-	{
-		die(_("Could not create replication slot, status %s: %s\n"),
-			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
-	}
-
-	PQclear(res);
 	termPQExpBuffer(&query);
 
+	pg_free(create_logical_slot(conn, slot_name, drop_slot_if_exists,
+								"drop it or use --drop-slot-if-exists to drop "
+								"it automatically"));
+
+	return slot_name;
+}
+
+/*
+ * Create the remote logical replication slot for peer P using its
+ * pre-generated slot name.  Unlike initialize_replication_slot(), a
+ * pre-existing slot of this name is refused outright rather than
+ * silently reused or dropped-and-recreated -- at this point in the join
+ * it can only be a leftover from a botched earlier attempt, and its
+ * confirmed_flush_lsn cannot be trusted as the WAL-retention floor the
+ * direct subscription will rely on.  Returns the slot's creation LSN as
+ * text (caller must free).
+ */
+static char *
+create_peer_slot(PGconn *peer_conn, const char *peer_slot_name)
+{
+	return create_logical_slot(peer_conn, peer_slot_name, false,
+							   "this is unexpected at this stage of the "
+							   "join -- run --cleanup and retry");
+}
+
+/*
+ * Resolve the origin/slot name for conn's own subscription FROM
+ * upstream_node_name -- e.g. on the source, the name of its
+ * subscription to peer P, used to poll the source's own replication
+ * progress for P (the barrier's Hop 1); or, generalized, a peer's
+ * subscription to n3 after the reverse subscriptions are created
+ * (post-cutover dataflow verification).  Spock names a subscription's
+ * replication origin identically to its slot name, so this one value
+ * serves both the origin lookup and the WHERE external_id = ... poll;
+ * it is NOT the subscription name, which sub_show_status() needs
+ * separately, so it is returned too via the nullable sub_name_out
+ * (caller frees both).  Caller must free the return value.
+ */
+static char *
+get_origin_name_for_node(PGconn *conn, const char *upstream_node_name,
+						 const char *conn_label, char **sub_name_out)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	char	   *slot_name;
+
+	printfPQExpBuffer(query,
+					  "SELECT s.sub_slot_name, s.sub_name FROM spock.subscription s"
+					  " JOIN spock.node n ON s.sub_origin = n.node_id"
+					  " WHERE n.node_name = %s",
+					  PQescapeLiteral(conn, upstream_node_name, strlen(upstream_node_name)));
+	res = debug_exec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not resolve %s's subscription to \"%s\": %s\n"),
+			conn_label, upstream_node_name, PQerrorMessage(conn));
+	}
+	if (PQntuples(res) != 1)
+	{
+		PQclear(res);
+		die(_("expected exactly one subscription from \"%s\" on %s, found %d\n"),
+			upstream_node_name, conn_label, PQntuples(res));
+	}
+	slot_name = pg_strdup(PQgetvalue(res, 0, 0));
+	if (sub_name_out != NULL)
+		*sub_name_out = pg_strdup(PQgetvalue(res, 0, 1));
+	PQclear(res);
+
+	destroyPQExpBuffer(query);
 	return slot_name;
 }
 
@@ -3852,6 +4099,35 @@ set_readonly_local(PGconn *conn)
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("could not reload configuration after setting spock.readonly: %s\n"),
+			PQerrorMessage(conn));
+	}
+	PQclear(res);
+}
+
+/*
+ * Lift read-only mode.  Called only after every subscription (catchup,
+ * direct peer, and reverse) is verified replicating and bidirectional
+ * dataflow has actually been proven -- lifting any earlier risks an
+ * end-user write landing on n3 before it is a fully verified cluster
+ * member.
+ */
+static void
+lift_readonly(PGconn *conn)
+{
+	PGresult   *res;
+
+	res = debug_exec(conn, "ALTER SYSTEM SET spock.readonly = 'off'");
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	{
+		die(_("could not lift spock.readonly: status %s: %s\n"),
+			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+	}
+	PQclear(res);
+
+	res = debug_exec(conn, "SELECT pg_reload_conf()");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		die(_("could not reload configuration after lifting spock.readonly: %s\n"),
 			PQerrorMessage(conn));
 	}
 	PQclear(res);
@@ -4405,12 +4681,36 @@ create_disabled_peer_subscriptions(PGconn *subscriber_conn, PeerNodeInfo *peers,
 				  "created\n"), peer->slot_name, peer->node_name);
 		}
 		PQclear(res);
-
-		peer->disabled_sub_created = true;
 	}
 
 	destroyPQExpBuffer(query);
 	destroyPQExpBuffer(repsets);
+}
+
+/*
+ * Emit spock.sync_event() on conn and return the resulting LSN as text.
+ * sync_event() flushes durably before returning, so the LSN is
+ * guaranteed to arrive at any subscriber via the replication stream --
+ * used for the catchup target, both hops of the peer coverage barrier,
+ * and the post-cutover dataflow verification.  Caller must free the
+ * result.
+ */
+static char *
+get_sync_event_lsn(PGconn *conn, const char *node_label)
+{
+	PGresult   *res;
+	char	   *lsn;
+
+	res = debug_exec(conn, "SELECT spock.sync_event()");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+	{
+		PQclear(res);
+		die(_("could not emit sync_event on %s: %s\n"), node_label, PQerrorMessage(conn));
+	}
+	lsn = pg_strdup(PQgetvalue(res, 0, 0));
+	PQclear(res);
+
+	return lsn;
 }
 
 /*
@@ -4423,45 +4723,83 @@ static char *
 get_catchup_target_lsn(const char *source_dsn)
 {
 	PGconn	   *source_conn;
-	PGresult   *res;
 	char	   *target_lsn;
 
 	source_conn = connectdb(source_dsn);
-	res = debug_exec(source_conn, "SELECT spock.sync_event()");
-	if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
-	{
-		PQclear(res);
-		die(_("could not get catchup target LSN: %s\n"), PQerrorMessage(source_conn));
-	}
-	target_lsn = pg_strdup(PQgetvalue(res, 0, 0));
-	PQclear(res);
+	target_lsn = get_sync_event_lsn(source_conn, "source");
 	PQfinish(source_conn);
 
 	return target_lsn;
 }
 
 /*
- * Wait for n3's catchup subscription to reach target_lsn.  Progress
- * watchdog, not a flat wall-clock timeout -- reset the stall clock
- * whenever remote_lsn advances at all, since a legitimately large
- * catchup can take hours (same shape as wait_primary_connection(), which
- * does this for WAL replay).  Aborts immediately, without waiting out
- * the timeout, if the subscription's own status reports 'disabled' --
- * the signal an unresolvable apply exception leaves behind under
- * spock.exception_behaviour = 'sub_disable'; catchup must not be allowed
- * to silently stall forever behind a stopped apply worker.
+ * Shared elapsed-time bookkeeping for the bidirectional-join polling loops
+ * below (wait_for_origin_progress(), clear_forwarding(),
+ * wait_for_sub_replicating()) -- each is a progress watchdog, not a flat
+ * wall-clock timeout, tracking both "time since start" (--max-wait) and
+ * "time since progress was last observed" (--stall-timeout) separately.
+ * Each loop still forms and dies with its own message, since what counts
+ * as "progress" and how to describe it differs per wait; only the time
+ * math is shared.
+ */
+typedef struct WaitTracker
+{
+	time_t		start_time;
+	time_t		last_progress_time;
+} WaitTracker;
+
+static void
+wait_tracker_init(WaitTracker *wt)
+{
+	wt->start_time = time(NULL);
+	wt->last_progress_time = wt->start_time;
+}
+
+static void
+wait_tracker_reset_progress(WaitTracker *wt)
+{
+	wt->last_progress_time = time(NULL);
+}
+
+static bool
+wait_tracker_stalled(const WaitTracker *wt, int stall_timeout)
+{
+	return stall_timeout > 0 &&
+		(time(NULL) - wt->last_progress_time) >= stall_timeout;
+}
+
+static bool
+wait_tracker_timed_out(const WaitTracker *wt, int max_wait)
+{
+	return max_wait > 0 && (time(NULL) - wt->start_time) >= max_wait;
+}
+
+/*
+ * Wait for the replication origin named origin_name, on conn, to reach
+ * target_lsn.  Progress watchdog, not a flat wall-clock timeout --
+ * reset the stall clock whenever remote_lsn advances at all, since a
+ * legitimately large wait (a TB-scale catchup, or a laggy peer) can take
+ * hours (same shape as wait_primary_connection(), which does this for
+ * WAL replay).  If watch_sub_name is non-NULL, also aborts immediately,
+ * without waiting out the timeout, if that subscription's own status
+ * reports 'disabled' -- the signal an unresolvable apply exception
+ * leaves behind under spock.exception_behaviour = 'sub_disable'; a wait
+ * must not be allowed to silently stall forever behind a stopped apply
+ * worker.  context_label identifies the wait in progress/stall/timeout
+ * messages (e.g. "catchup", "peer marker (n2 -> n1)"), so a stall is
+ * attributed to a specific hop rather than reported as generic "waiting".
  */
 static void
-wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
-				 const char *source_slot_name, const char *target_lsn,
-				 int stall_timeout, int max_wait)
+wait_for_origin_progress(PGconn *conn, const char *origin_name, const char *target_lsn,
+						 const char *watch_sub_name, const char *context_label,
+						 int stall_timeout, int max_wait)
 {
 	PQExpBuffer query = createPQExpBuffer();
-	time_t		start_time = time(NULL);
-	time_t		last_progress_time = start_time;
+	WaitTracker	wt;
 	char	   *last_lsn = NULL;
 
-	print_msg(VERBOSITY_VERBOSE, "Waiting for catchup to reach %s...", target_lsn);
+	wait_tracker_init(&wt);
+	print_msg(VERBOSITY_VERBOSE, _("Waiting for %s to reach %s..."), context_label, target_lsn);
 
 	for (;;)
 	{
@@ -4471,13 +4809,13 @@ wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
 		printfPQExpBuffer(query,
 						  "SELECT (remote_lsn >= %s::pg_lsn), remote_lsn::text"
 						  " FROM pg_replication_origin_status WHERE external_id = %s",
-						  PQescapeLiteral(subscriber_conn, target_lsn, strlen(target_lsn)),
-						  PQescapeLiteral(subscriber_conn, source_slot_name, strlen(source_slot_name)));
-		res = debug_exec(subscriber_conn, query->data);
+						  PQescapeLiteral(conn, target_lsn, strlen(target_lsn)),
+						  PQescapeLiteral(conn, origin_name, strlen(origin_name)));
+		res = debug_exec(conn, query->data);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
 			PQclear(res);
-			die(_("could not check catchup progress: %s\n"), PQerrorMessage(subscriber_conn));
+			die(_("could not check %s progress: %s\n"), context_label, PQerrorMessage(conn));
 		}
 
 		reached = PQntuples(res) == 1 && !PQgetisnull(res, 0, 0) &&
@@ -4496,7 +4834,7 @@ wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
 			{
 				pg_free(last_lsn);
 				last_lsn = pg_strdup(cur_lsn);
-				last_progress_time = time(NULL);
+				wait_tracker_reset_progress(&wt);
 			}
 		}
 		PQclear(res);
@@ -4505,36 +4843,41 @@ wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
 		 * spock.sub_show_status() is the same primitive check_mesh_edges()
 		 * relies on for subscription health; 'disabled' here means the
 		 * apply worker hit an unresolvable exception and
-		 * spock.exception_behaviour disabled it -- catchup cannot recover
+		 * spock.exception_behaviour disabled it -- this wait cannot recover
 		 * from that on its own, so abort now rather than waiting out
 		 * stall_timeout/max_wait behind a subscription that will never
-		 * move again.
+		 * move again.  Skipped when the caller has no single subscription
+		 * to attribute the wait to (watch_sub_name == NULL).
 		 */
-		printfPQExpBuffer(query, "SELECT status FROM spock.sub_show_status(%s)",
-						  PQescapeLiteral(subscriber_conn, source_sub_name, strlen(source_sub_name)));
-		res = debug_exec(subscriber_conn, query->data);
-		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		if (watch_sub_name != NULL)
 		{
+			printfPQExpBuffer(query, "SELECT status FROM spock.sub_show_status(%s)",
+							  PQescapeLiteral(conn, watch_sub_name, strlen(watch_sub_name)));
+			res = debug_exec(conn, query->data);
+			if (PQresultStatus(res) != PGRES_TUPLES_OK)
+			{
+				PQclear(res);
+				die(_("could not check subscription \"%s\" status: %s\n"),
+					watch_sub_name, PQerrorMessage(conn));
+			}
+			if (PQntuples(res) == 1 && strcmp(PQgetvalue(res, 0, 0), "disabled") == 0)
+			{
+				PQclear(res);
+				die(_("subscription \"%s\" was disabled during %s, likely by "
+					  "an unresolvable apply exception; this is a hard join "
+					  "failure -- run --cleanup and retry\n"),
+					watch_sub_name, context_label);
+			}
 			PQclear(res);
-			die(_("could not check catchup subscription status: %s\n"),
-				PQerrorMessage(subscriber_conn));
 		}
-		if (PQntuples(res) == 1 && strcmp(PQgetvalue(res, 0, 0), "disabled") == 0)
-		{
-			PQclear(res);
-			die(_("catchup subscription \"%s\" was disabled during catchup, "
-				  "likely by an unresolvable apply exception; this is a hard "
-				  "join failure -- run --cleanup and retry\n"), source_sub_name);
-		}
-		PQclear(res);
 
-		if (stall_timeout > 0 && (time(NULL) - last_progress_time) >= stall_timeout)
-			die(_("catchup appears stalled: no origin progress for %d second(s) "
-				  "(--stall-timeout)\n"), stall_timeout);
+		if (wait_tracker_stalled(&wt, stall_timeout))
+			die(_("%s appears stalled: no origin progress for %d second(s) "
+				  "(--stall-timeout)\n"), context_label, stall_timeout);
 
-		if (max_wait > 0 && (time(NULL) - start_time) >= max_wait)
-			die(_("timed out after %d second(s) waiting for catchup to "
-				  "complete (--max-wait)\n"), max_wait);
+		if (wait_tracker_timed_out(&wt, max_wait))
+			die(_("timed out after %d second(s) waiting for %s to "
+				  "complete (--max-wait)\n"), max_wait, context_label);
 
 		pg_usleep(1000000);		/* 1 sec */
 		print_msg(VERBOSITY_VERBOSE, ".");
@@ -4543,6 +4886,682 @@ wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
 	pg_free(last_lsn);
 	destroyPQExpBuffer(query);
 	print_msg(VERBOSITY_VERBOSE, "\n");
+}
+
+/*
+ * Thin wrapper for the catchup wait: the origin polled is sub_n3_n1's,
+ * named identically to source_slot_name.
+ */
+static void
+wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
+				 const char *source_slot_name, const char *target_lsn,
+				 int stall_timeout, int max_wait)
+{
+	wait_for_origin_progress(subscriber_conn, source_slot_name, target_lsn,
+							 source_sub_name, "catchup", stall_timeout, max_wait);
+}
+
+/*
+ * Establish forward-coverage for every peer via a two-hop sync_event()
+ * barrier, then hand off to Hop 2 once every peer's Hop 1 has landed on
+ * the source.  Direct peer subscriptions stay disabled throughout; only
+ * forwarding through source_sub_name advances each peer's origin during
+ * this wait.
+ *
+ * Phase A (slot creation) and Hop 1 run interleaved, one peer at a
+ * time, rather than batching every slot creation first: an unconsumed
+ * peer slot pins WAL and catalog_xmin on its peer, so minimizing the
+ * time between a slot's creation and its own Hop 1 landing keeps that
+ * exposure as short as possible.
+ *
+ * Re-verifies replication-set/schema equivalence (P0.5) immediately
+ * beforehand via the existing check_replication_set_equivalence(),
+ * since the original precheck ran before the (possibly long) catchup
+ * wait and topology/schema could have drifted since.
+ */
+static void
+establish_peer_coverage_barrier(BidirectionalState *state, PGconn *n3_conn,
+								const char *prov_connstr, const char *source_node_name,
+								const char *source_sub_name, const char *source_slot_name,
+								const char *subscriber_name, const char *dbname,
+								const char *base_prov_connstr,
+								int stall_timeout, int max_wait)
+{
+	PGconn	   *source_conn = connectdb(prov_connstr);
+	char	   *source_cutover_marker;
+	int			i;
+
+	print_msg(VERBOSITY_NORMAL,
+			  _("Re-verifying replication-set and schema equivalence before "
+				"the coverage barrier...\n"));
+	check_replication_set_equivalence(source_conn, source_node_name,
+									  state->peers, state->num_peers);
+
+	for (i = 0; i < state->num_peers; i++)
+	{
+		PeerNodeInfo *peer = &state->peers[i];
+		PGconn	   *peer_conn;
+		char	   *source_slot_for_peer;
+		char	   *source_sub_for_peer;
+		char		context_label[NAMEDATALEN * 2 + 32];
+
+		print_msg(VERBOSITY_NORMAL,
+				  _("Creating replication slot for peer \"%s\"...\n"), peer->node_name);
+		peer_conn = connectdb(peer->dsn);
+
+		peer->slot_creation_lsn = create_peer_slot(peer_conn, peer->slot_name);
+		write_manifest(state, subscriber_name, dbname, base_prov_connstr);
+		print_msg(VERBOSITY_DEBUG,
+				  _("Peer \"%s\" slot \"%s\" created at LSN %s\n"),
+				  peer->node_name, peer->slot_name, peer->slot_creation_lsn);
+
+		peer->peer_marker_lsn = get_sync_event_lsn(peer_conn, peer->node_name);
+		PQfinish(peer_conn);
+
+		/*
+		 * Hop 1 (P -> source): poll the source's own pre-existing
+		 * subscription to this peer, never n3 -- a peer's own sync_event
+		 * marker is not forwarded through the source (only DML is), so
+		 * polling n3 for it would stall forever on an idle peer.
+		 */
+		source_slot_for_peer = get_origin_name_for_node(source_conn, peer->node_name,
+														"source", &source_sub_for_peer);
+		print_msg(VERBOSITY_NORMAL,
+				  _("Waiting for the source to catch up to peer \"%s\"...\n"),
+				  peer->node_name);
+		snprintf(context_label, sizeof(context_label),
+				 "peer marker (%s -> %s)", peer->node_name, source_node_name);
+		wait_for_origin_progress(source_conn, source_slot_for_peer, peer->peer_marker_lsn,
+								 source_sub_for_peer, context_label, stall_timeout, max_wait);
+		pg_free(source_slot_for_peer);
+		pg_free(source_sub_for_peer);
+	}
+
+	/*
+	 * Hop 2 (source -> n3), once, after every peer's Hop 1 has landed: a
+	 * source-local marker forwards to n3 normally, so reaching it on n3
+	 * proves n3 has consumed all source WAL ordered before it -- including
+	 * every peer transaction the source had applied by Hop 1.
+	 */
+	print_msg(VERBOSITY_NORMAL,
+			  _("Waiting for n3 to reach forward-coverage of all peers...\n"));
+	source_cutover_marker = get_sync_event_lsn(source_conn, source_node_name);
+	wait_for_origin_progress(n3_conn, source_slot_name, source_cutover_marker,
+							 source_sub_name, "cutover coverage", stall_timeout, max_wait);
+	pg_free(source_cutover_marker);
+
+	PQfinish(source_conn);
+}
+
+/*
+ * Clear forward_origins on the catchup subscription so no peer
+ * transaction can ever reach n3 by both paths at once -- forwarded via
+ * the source AND directly via the peer -- once the direct subs are
+ * enabled.  Spock has no origin-based dedup on the apply path, so an
+ * overlap would double-count delta-apply (conflict-free, additive)
+ * columns silently; no conflict resolver protects against it.
+ *
+ * sub_alter_options() commits the empty forward_origins to the catalog
+ * immediately and kills the apply worker so it restarts and reconnects
+ * -- but spock.sub_show_status()'s forward_origins column reads the
+ * catalog fresh on every call, so it reports the new value the instant
+ * the ALTER commits, regardless of whether the old, still-forwarding
+ * worker has actually been replaced yet.  That column alone is not
+ * proof forwarding has stopped.  Confirm both: sub_show_status() reports
+ * 'replicating' with forward_origins = {}, AND the source has accepted
+ * a *new* walsender connection for this slot (backend_start later than
+ * one captured before the ALTER) -- since forward_origins is only read
+ * at connect time (spock_apply.c, spock_connect_replica()), a new
+ * connection guarantees the empty value is the one actually in effect.
+ */
+static void
+clear_forwarding(PGconn *n3_conn, const char *source_dsn, const char *source_sub_name,
+				 const char *source_slot_name, int stall_timeout, int max_wait)
+{
+	PGconn	   *source_conn = connectdb(source_dsn);
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	char	   *baseline_backend_start = NULL;
+	WaitTracker	wt;
+	bool		prev_worker_ready = false;
+	bool		prev_reconnected = false;
+
+	wait_tracker_init(&wt);
+
+	printfPQExpBuffer(query,
+					  "SELECT backend_start::text FROM pg_stat_replication"
+					  " WHERE application_name = %s",
+					  PQescapeLiteral(source_conn, source_slot_name, strlen(source_slot_name)));
+	res = debug_exec(source_conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not check existing walsender for \"%s\": %s\n"),
+			source_slot_name, PQerrorMessage(source_conn));
+	}
+	if (PQntuples(res) == 1 && !PQgetisnull(res, 0, 0))
+		baseline_backend_start = pg_strdup(PQgetvalue(res, 0, 0));
+	PQclear(res);
+
+	print_msg(VERBOSITY_NORMAL, _("Clearing forwarding on \"%s\"...\n"), source_sub_name);
+	printfPQExpBuffer(query,
+					  "SELECT spock.sub_alter_options(%s, '{\"forward_origins\": []}'::jsonb)",
+					  PQescapeLiteral(n3_conn, source_sub_name, strlen(source_sub_name)));
+	res = debug_exec(n3_conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not clear forward_origins on \"%s\": %s\n"),
+			source_sub_name, PQerrorMessage(n3_conn));
+	}
+	PQclear(res);
+
+	print_msg(VERBOSITY_VERBOSE,
+			  _("Waiting for \"%s\" to reconnect without forwarding..."), source_sub_name);
+	for (;;)
+	{
+		bool		worker_ready = false;
+		bool		reconnected = false;
+
+		printfPQExpBuffer(query,
+						  "SELECT status, COALESCE(forward_origins::text, '{}')"
+						  " FROM spock.sub_show_status(%s)",
+						  PQescapeLiteral(n3_conn, source_sub_name, strlen(source_sub_name)));
+		res = debug_exec(n3_conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not check subscription \"%s\" status: %s\n"),
+				source_sub_name, PQerrorMessage(n3_conn));
+		}
+		if (PQntuples(res) == 1 && strcmp(PQgetvalue(res, 0, 0), "disabled") == 0)
+		{
+			PQclear(res);
+			die(_("subscription \"%s\" was disabled while clearing forwarding, "
+				  "likely by an unresolvable apply exception; this is a hard "
+				  "join failure -- run --cleanup and retry\n"), source_sub_name);
+		}
+		if (PQntuples(res) == 1 &&
+			strcmp(PQgetvalue(res, 0, 0), "replicating") == 0 &&
+			strcmp(PQgetvalue(res, 0, 1), "{}") == 0)
+			worker_ready = true;
+		PQclear(res);
+
+		if (worker_ready)
+		{
+			printfPQExpBuffer(query,
+							  "SELECT backend_start::text FROM pg_stat_replication"
+							  " WHERE application_name = %s",
+							  PQescapeLiteral(source_conn, source_slot_name, strlen(source_slot_name)));
+			res = debug_exec(source_conn, query->data);
+			if (PQresultStatus(res) != PGRES_TUPLES_OK)
+			{
+				PQclear(res);
+				die(_("could not check walsender for \"%s\": %s\n"),
+					source_slot_name, PQerrorMessage(source_conn));
+			}
+			if (PQntuples(res) == 1 && !PQgetisnull(res, 0, 0))
+			{
+				char *cur_backend_start = PQgetvalue(res, 0, 0);
+
+				reconnected = (baseline_backend_start == NULL ||
+							  strcmp(cur_backend_start, baseline_backend_start) != 0);
+			}
+			PQclear(res);
+		}
+
+		if (worker_ready && reconnected)
+			break;
+
+		/*
+		 * Reset the stall clock only on an actual transition to true, not
+		 * on every poll where a flag is merely still true -- otherwise a
+		 * worker_ready that becomes (and stays) true while reconnected
+		 * never does would reset the clock forever, defeating
+		 * --stall-timeout entirely.
+		 */
+		if ((worker_ready && !prev_worker_ready) ||
+			(reconnected && !prev_reconnected))
+			wait_tracker_reset_progress(&wt);
+		prev_worker_ready = worker_ready;
+		prev_reconnected = reconnected;
+
+		if (wait_tracker_stalled(&wt, stall_timeout))
+			die(_("clearing forwarding on \"%s\" appears stalled: the apply "
+				  "worker has not reconnected without forwarding after %d "
+				  "second(s) (--stall-timeout)\n"), source_sub_name, stall_timeout);
+
+		if (wait_tracker_timed_out(&wt, max_wait))
+			die(_("timed out after %d second(s) waiting for forwarding to "
+				  "clear on \"%s\" (--max-wait)\n"), max_wait, source_sub_name);
+
+		pg_usleep(1000000);		/* 1 sec */
+		print_msg(VERBOSITY_VERBOSE, ".");
+	}
+
+	pg_free(baseline_backend_start);
+	destroyPQExpBuffer(query);
+	PQfinish(source_conn);
+	print_msg(VERBOSITY_VERBOSE, "\n");
+}
+
+/*
+ * Wait for subscription_name on conn to reach status 'replicating'.
+ * Used after enabling a subscription via the ordinary (non-catchup)
+ * path, where there is no target LSN to poll against -- just
+ * confirmation that the apply worker is up.  Progress is tracked as
+ * "the status string changed" rather than an LSN, since there is
+ * nothing incremental to observe; dies immediately if the subscription
+ * reports 'disabled' instead.
+ */
+static void
+wait_for_sub_replicating(PGconn *conn, const char *sub_name, int stall_timeout, int max_wait)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	WaitTracker	wt;
+	char	   *last_status = NULL;
+
+	wait_tracker_init(&wt);
+	print_msg(VERBOSITY_VERBOSE, _("Waiting for \"%s\" to start replicating..."), sub_name);
+
+	for (;;)
+	{
+		PGresult   *res;
+		char	   *status;
+
+		printfPQExpBuffer(query, "SELECT status FROM spock.sub_show_status(%s)",
+						  PQescapeLiteral(conn, sub_name, strlen(sub_name)));
+		res = debug_exec(conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1)
+		{
+			PQclear(res);
+			die(_("could not check subscription \"%s\" status: %s\n"),
+				sub_name, PQerrorMessage(conn));
+		}
+		status = pg_strdup(PQgetvalue(res, 0, 0));
+		PQclear(res);
+
+		if (strcmp(status, "replicating") == 0)
+		{
+			pg_free(status);
+			break;
+		}
+		if (strcmp(status, "disabled") == 0)
+		{
+			pg_free(status);
+			die(_("subscription \"%s\" was disabled instead of starting to "
+				  "replicate, likely by an unresolvable apply exception; "
+				  "this is a hard join failure -- run --cleanup and retry\n"),
+				sub_name);
+		}
+
+		if (!last_status || strcmp(status, last_status) != 0)
+		{
+			pg_free(last_status);
+			last_status = status;
+			wait_tracker_reset_progress(&wt);
+		}
+		else
+			pg_free(status);
+
+		if (wait_tracker_stalled(&wt, stall_timeout))
+			die(_("\"%s\" appears stalled: status has not changed for %d "
+				  "second(s) (--stall-timeout)\n"), sub_name, stall_timeout);
+
+		if (wait_tracker_timed_out(&wt, max_wait))
+			die(_("timed out after %d second(s) waiting for \"%s\" to start "
+				  "replicating (--max-wait)\n"), max_wait, sub_name);
+
+		pg_usleep(1000000);		/* 1 sec */
+		print_msg(VERBOSITY_VERBOSE, ".");
+	}
+
+	pg_free(last_status);
+	destroyPQExpBuffer(query);
+	print_msg(VERBOSITY_VERBOSE, "\n");
+}
+
+/*
+ * Enable each peer's direct subscription, now that forwarding has been
+ * cleared.  Each subscription's origin is already
+ * durable and at the highest applied peer LSN (advanced in place during
+ * catchup), so sub_enable() on an already-READY subscription starts the
+ * apply worker directly with no INIT/sync path; the server clamps to
+ * the peer slot's floor if the origin is behind it.  Enabling only
+ * after forwarding is cleared is what prevents delivering the same
+ * peer transaction twice (see clear_forwarding()).
+ */
+static void
+enable_peer_subs(PGconn *n3_conn, PeerNodeInfo *peers, int num_peers,
+				 int stall_timeout, int max_wait)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	int			i;
+
+	for (i = 0; i < num_peers; i++)
+	{
+		PeerNodeInfo *peer = &peers[i];
+		PGresult   *res;
+
+		print_msg(VERBOSITY_NORMAL,
+				  _("Enabling direct subscription to peer \"%s\"...\n"), peer->node_name);
+		printfPQExpBuffer(query, "SELECT spock.sub_enable(%s)",
+						  PQescapeLiteral(n3_conn, peer->sub_name, strlen(peer->sub_name)));
+		res = debug_exec(n3_conn, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			die(_("could not enable subscription \"%s\" to peer \"%s\": %s\n"),
+				peer->sub_name, peer->node_name, PQerrorMessage(n3_conn));
+		}
+		PQclear(res);
+
+		wait_for_sub_replicating(n3_conn, peer->sub_name, stall_timeout, max_wait);
+	}
+
+	destroyPQExpBuffer(query);
+}
+
+/*
+ * Create an ordinary enabled subscription named sub_name on conn,
+ * pointing at provider_dsn, over replication sets repsets (already a
+ * literal "{...}" array).  Used for every reverse subscription -- n3
+ * as provider -- created on a peer or on the source.  synchronize_data
+ * := false since the far side already has the data via the physical
+ * backup and catchup: the INIT/cswp sync path this would otherwise
+ * take only pauses apply workers on n3, the just-joined node, never on
+ * an existing live cluster member, so skipping it does not reintroduce
+ * the pause this design otherwise avoids throughout the forward
+ * catchup and cutover.
+ */
+static void
+create_subscription_on_conn(PGconn *conn, const char *sub_name,
+							const char *provider_dsn, const char *repsets,
+							const char *conn_label)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+
+	printfPQExpBuffer(query,
+					  "SELECT spock.sub_create("
+					  "subscription_name := %s, provider_dsn := %s, "
+					  "replication_sets := %s, "
+					  "synchronize_structure := false, "
+					  "synchronize_data := false)",
+					  PQescapeLiteral(conn, sub_name, strlen(sub_name)),
+					  PQescapeLiteral(conn, provider_dsn, strlen(provider_dsn)),
+					  PQescapeLiteral(conn, repsets, strlen(repsets)));
+	res = debug_exec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not create subscription \"%s\" on %s: %s\n"),
+			sub_name, conn_label, PQerrorMessage(conn));
+	}
+	PQclear(res);
+
+	destroyPQExpBuffer(query);
+}
+
+/*
+ * Create reverse subscriptions -- n3 as provider -- on every peer and
+ * on the source, so replication becomes bidirectional.
+ *
+ * The reverse subscription name -- "sub_<node>_<subscriber_name>" --
+ * is not a free choice: cleanup_partial_state() already hard-codes
+ * this exact pattern when dropping a peer's reverse subscription, so
+ * getting the direction backwards here would make cleanup silently
+ * no-op instead of dropping it.  disabled_sub_created/reverse_sub_created
+ * is persisted immediately after each subscription, matching the
+ * "persist now, not just at the top of this block" discipline already
+ * used for the catchup and disabled-peer subscriptions: a crash
+ * partway through this loop must not leave --cleanup reading a
+ * manifest that still shows an already-created reverse subscription
+ * as not-yet-created.
+ */
+static void
+create_reverse_subscriptions(BidirectionalState *state, const char *subscriber_name,
+							 const char *n3_dsn, const char *replication_sets,
+							 const char *source_dsn, const char *source_node_name,
+							 const char *dbname, const char *base_prov_connstr)
+{
+	PQExpBuffer repsets = createPQExpBuffer();
+	PQExpBuffer sub_name_buf = createPQExpBuffer();
+	int			i;
+
+	printfPQExpBuffer(repsets, "{%s}", replication_sets);
+
+	for (i = 0; i < state->num_peers; i++)
+	{
+		PeerNodeInfo *peer = &state->peers[i];
+		PGconn	   *peer_conn;
+		char	   *reverse_sub_name;
+
+		printfPQExpBuffer(sub_name_buf, "sub_%s_%s", peer->node_name, subscriber_name);
+		reverse_sub_name = pg_strdup(sub_name_buf->data);
+
+		print_msg(VERBOSITY_NORMAL,
+				  _("Creating reverse subscription \"%s\" on peer \"%s\"...\n"),
+				  reverse_sub_name, peer->node_name);
+		peer_conn = connectdb(peer->dsn);
+		create_subscription_on_conn(peer_conn, reverse_sub_name, n3_dsn,
+									repsets->data, peer->node_name);
+		PQfinish(peer_conn);
+
+		peer->reverse_sub_created = true;
+		write_manifest(state, subscriber_name, dbname, base_prov_connstr);
+		pg_free(reverse_sub_name);
+	}
+
+	{
+		PGconn	   *source_conn;
+		char	   *reverse_sub_name;
+
+		printfPQExpBuffer(sub_name_buf, "sub_%s_%s", source_node_name, subscriber_name);
+		reverse_sub_name = pg_strdup(sub_name_buf->data);
+
+		print_msg(VERBOSITY_NORMAL,
+				  _("Creating reverse subscription \"%s\" on the source...\n"),
+				  reverse_sub_name);
+		source_conn = connectdb(source_dsn);
+		create_subscription_on_conn(source_conn, reverse_sub_name, n3_dsn,
+									repsets->data, "the source");
+		PQfinish(source_conn);
+
+		state->source_reverse_sub_created = true;
+		write_manifest(state, subscriber_name, dbname, base_prov_connstr);
+		pg_free(reverse_sub_name);
+	}
+
+	destroyPQExpBuffer(repsets);
+	destroyPQExpBuffer(sub_name_buf);
+}
+
+/*
+ * Wait for every reverse subscription just created to reach
+ * 'replicating' -- polled on the node that owns it (a peer or the
+ * source), not on n3.  Also sanity-checks n3's own inbound slot count
+ * as a belt-and-suspenders cross-check: one inbound slot per peer plus
+ * the source, matching the reverse subscriptions just created.
+ */
+static void
+wait_for_reverse_subs_ready(BidirectionalState *state, PGconn *n3_conn,
+							const char *source_dsn, const char *source_node_name,
+							const char *subscriber_name, int stall_timeout, int max_wait)
+{
+	PQExpBuffer sub_name_buf = createPQExpBuffer();
+	PGconn	   *source_conn;
+	PGresult   *res;
+	int			i;
+	int			slot_count;
+
+	for (i = 0; i < state->num_peers; i++)
+	{
+		PeerNodeInfo *peer = &state->peers[i];
+		PGconn	   *peer_conn;
+		char	   *reverse_sub_name;
+
+		printfPQExpBuffer(sub_name_buf, "sub_%s_%s", peer->node_name, subscriber_name);
+		reverse_sub_name = pg_strdup(sub_name_buf->data);
+
+		print_msg(VERBOSITY_NORMAL,
+				  _("Waiting for reverse subscription \"%s\" on peer \"%s\"...\n"),
+				  reverse_sub_name, peer->node_name);
+		peer_conn = connectdb(peer->dsn);
+		wait_for_sub_replicating(peer_conn, reverse_sub_name, stall_timeout, max_wait);
+		PQfinish(peer_conn);
+		pg_free(reverse_sub_name);
+	}
+
+	{
+		char	   *reverse_sub_name;
+
+		printfPQExpBuffer(sub_name_buf, "sub_%s_%s", source_node_name, subscriber_name);
+		reverse_sub_name = pg_strdup(sub_name_buf->data);
+
+		print_msg(VERBOSITY_NORMAL,
+				  _("Waiting for reverse subscription \"%s\" on the source...\n"),
+				  reverse_sub_name);
+		source_conn = connectdb(source_dsn);
+		wait_for_sub_replicating(source_conn, reverse_sub_name, stall_timeout, max_wait);
+		PQfinish(source_conn);
+		pg_free(reverse_sub_name);
+	}
+
+	res = debug_exec(n3_conn,
+					 "SELECT COUNT(*) FROM pg_replication_slots"
+					 " WHERE slot_type = 'logical' AND plugin = 'spock_output'");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not count inbound replication slots on n3: %s\n"),
+			PQerrorMessage(n3_conn));
+	}
+	slot_count = atoi(PQgetvalue(res, 0, 0));
+	PQclear(res);
+	if (slot_count < state->num_peers + 1)
+		die(_("expected at least %d inbound replication slot(s) on n3 "
+			  "(one per peer plus the source), found %d\n"),
+			state->num_peers + 1, slot_count);
+
+	destroyPQExpBuffer(sub_name_buf);
+}
+
+/*
+ * Confirm n3's marker n3_marker has reached remote_conn's own
+ * subscription from n3 -- i.e. that the reverse subscription actually
+ * delivers n3's changes outward, not just that sub_create() returned
+ * success.  Used for both a peer and the source below.
+ */
+static void
+verify_dataflow_from_n3(PGconn *remote_conn, const char *remote_node_name,
+						const char *subscriber_name, const char *n3_marker,
+						int stall_timeout, int max_wait)
+{
+	char	   *remote_origin_for_n3;
+	char	   *remote_sub_for_n3;
+	char		context_label[NAMEDATALEN * 2 + 32];
+
+	remote_origin_for_n3 = get_origin_name_for_node(remote_conn, subscriber_name,
+													remote_node_name, &remote_sub_for_n3);
+	snprintf(context_label, sizeof(context_label),
+			 "post-cutover dataflow (n3 -> %s)", remote_node_name);
+	wait_for_origin_progress(remote_conn, remote_origin_for_n3, n3_marker,
+							 remote_sub_for_n3, context_label, stall_timeout, max_wait);
+	pg_free(remote_origin_for_n3);
+	pg_free(remote_sub_for_n3);
+}
+
+/*
+ * Confirm remote_marker, emitted on a peer or the source, has reached
+ * n3 via slot_name/sub_name -- i.e. that the direct peer subscription
+ * or the catchup subscription still delivers inbound changes after
+ * cutover, not just that it reached 'replicating' once and then
+ * stalled.
+ */
+static void
+verify_dataflow_to_n3(PGconn *n3_conn, const char *remote_node_name,
+					  const char *remote_marker, const char *slot_name,
+					  const char *sub_name, int stall_timeout, int max_wait)
+{
+	char		context_label[NAMEDATALEN * 2 + 32];
+
+	snprintf(context_label, sizeof(context_label),
+			 "post-cutover dataflow (%s -> n3)", remote_node_name);
+	wait_for_origin_progress(n3_conn, slot_name, remote_marker, sub_name,
+							 context_label, stall_timeout, max_wait);
+}
+
+/*
+ * Prove bidirectional dataflow actually works, not just that every
+ * sub_create()/sub_enable() call so far returned success.  Reuses the
+ * exact two-hop-barrier mechanism -- a fresh sync_event() marker plus
+ * wait_for_origin_progress() -- in both directions, rather than any
+ * new SQL surface or a canary DML row the utility would have to pick
+ * a safe table for:
+ *
+ * n3 -> peers/source proves the reverse subscriptions actually deliver
+ * n3's own changes outward; peers/source -> n3 proves the direct peer
+ * subscriptions and the catchup subscription still deliver inbound
+ * changes after cutover, not just that they reached 'replicating'
+ * once and then stalled.
+ */
+static void
+verify_bidirectional_dataflow(BidirectionalState *state, PGconn *n3_conn,
+							  const char *source_dsn, const char *source_node_name,
+							  const char *subscriber_name,
+							  int stall_timeout, int max_wait)
+{
+	char	   *n3_marker;
+	int			i;
+
+	print_msg(VERBOSITY_NORMAL,
+			  _("Verifying n3's changes reach every peer and the source...\n"));
+	n3_marker = get_sync_event_lsn(n3_conn, "n3");
+
+	for (i = 0; i < state->num_peers; i++)
+	{
+		PeerNodeInfo *peer = &state->peers[i];
+		PGconn	   *peer_conn = connectdb(peer->dsn);
+
+		verify_dataflow_from_n3(peer_conn, peer->node_name, subscriber_name,
+								n3_marker, stall_timeout, max_wait);
+		PQfinish(peer_conn);
+	}
+
+	{
+		PGconn	   *source_conn = connectdb(source_dsn);
+
+		verify_dataflow_from_n3(source_conn, source_node_name, subscriber_name,
+								n3_marker, stall_timeout, max_wait);
+		PQfinish(source_conn);
+	}
+	pg_free(n3_marker);
+
+	print_msg(VERBOSITY_NORMAL,
+			  _("Verifying every peer's and the source's changes still reach "
+				"n3...\n"));
+	for (i = 0; i < state->num_peers; i++)
+	{
+		PeerNodeInfo *peer = &state->peers[i];
+		PGconn	   *peer_conn = connectdb(peer->dsn);
+		char	   *peer_marker = get_sync_event_lsn(peer_conn, peer->node_name);
+
+		PQfinish(peer_conn);
+		verify_dataflow_to_n3(n3_conn, peer->node_name, peer_marker,
+							  peer->slot_name, peer->sub_name, stall_timeout, max_wait);
+		pg_free(peer_marker);
+	}
+
+	{
+		PGconn	   *source_conn = connectdb(source_dsn);
+		char	   *source_marker = get_sync_event_lsn(source_conn, source_node_name);
+
+		PQfinish(source_conn);
+		verify_dataflow_to_n3(n3_conn, source_node_name, source_marker,
+							  state->source_slot_name, NULL, stall_timeout, max_wait);
+		pg_free(source_marker);
+	}
 }
 
 /*
