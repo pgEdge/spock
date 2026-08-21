@@ -2576,28 +2576,40 @@ spock_schema_is_ddl_local(const char *nspname)
 }
 
 /*
- * Resolve rv to its schema and test replicate_ddl=false.  Runs post-execution,
+ * Resolve rv to its schema and test it against purpose.  Runs post-execution,
  * so CREATE/ALTER targets exist and an unqualified name resolves by opening the
  * relation (relation_openrv, not table_openrv: rv may name an index/view).  A
  * dropped relation is classifiable only when schema-qualified.
+ *
+ * On a match, *matched (when non-NULL) receives the schema name.
  */
 static bool
-rangevar_is_ddl_local(RangeVar *rv)
+rangevar_schema_matches(RangeVar *rv, ReservedObjectPurpose purpose,
+						const char **matched)
 {
 	Relation	rel;
-	bool		local;
+	char	   *nspname;
 
 	if (rv == NULL)
 		return false;
-	if (rv->schemaname != NULL)
-		return spock_schema_is_ddl_local(rv->schemaname);
 
-	rel = relation_openrv_extended(rv, AccessShareLock, true);
-	if (rel == NULL)
+	if (rv->schemaname != NULL)
+		nspname = rv->schemaname;
+	else
+	{
+		rel = relation_openrv_extended(rv, AccessShareLock, true);
+		if (rel == NULL)
+			return false;
+		nspname = get_namespace_name(RelationGetNamespace(rel));
+		relation_close(rel, AccessShareLock);
+	}
+
+	if (!spock_name_is_reserved(RESERVED_KIND_SCHEMA, purpose, nspname))
 		return false;
-	local = spock_schema_is_ddl_local(get_namespace_name(RelationGetNamespace(rel)));
-	relation_close(rel, AccessShareLock);
-	return local;
+
+	if (matched != NULL)
+		*matched = nspname;
+	return true;
 }
 
 /* True if `name` (case-sensitive) appears in a List of C strings. */
@@ -2615,43 +2627,70 @@ name_in_list(List *names, const char *name)
 }
 
 /*
- * Does this DDL target ONLY node-local (replicate_ddl=false) schemas?  Only
- * statement types whose target schema is identifiable are classified; all
- * others replicate as before.  Known gap: dropping a node-local relation by an
- * unqualified name cannot be classified (the relation is already gone).
+ * Are this DDL statement's target schemas reserved for purpose?  Only statement
+ * types whose target schema is identifiable are classified; for all others this
+ * returns false and the statement is handled as before.  Known gap: dropping a
+ * relation by an unqualified name cannot be classified (the relation is
+ * already gone).
  *
- * A DROP is skipped only when EVERY object is node-local.  A statement mixing a
- * node-local object with a replicated one is shipped as-is: the raw command
- * text cannot be rewritten to strip the node-local object, so the subscriber --
- * where that object never existed -- would fail to drop it unless the drop
- * carries IF EXISTS.  Mixing node-local and replicated objects in one DROP is
- * therefore unsupported.
+ * match_all selects the quantifier over a multi-object DROP, and the two
+ * callers need opposite ones:
+ *
+ *	match_all = true   suppression.  A DROP is kept local only when EVERY
+ *					   object is node-local, because a false positive would
+ *					   silently lose DDL.  A statement mixing a node-local
+ *					   object with a replicated one is shipped as-is: the raw
+ *					   command text cannot be rewritten to strip the node-local
+ *					   object, so the subscriber -- where that object never
+ *					   existed -- would fail to drop it unless the drop carries
+ *					   IF EXISTS.  Mixing the two in one DROP is unsupported.
+ *
+ *	match_all = false  the guard rail.  ANY matching object trips it, because a
+ *					   false negative would let a mistake through.
+ *
+ * On a match, *matched (when non-NULL) receives the schema name that matched.
  */
 static bool
-stmt_targets_only_ddl_local(Node *stmt)
+stmt_schema_matches(Node *stmt, ReservedObjectPurpose purpose, bool match_all,
+					const char **matched)
 {
 	switch (nodeTag(stmt))
 	{
 		case T_CreateSchemaStmt:
-			return spock_schema_is_ddl_local(((CreateSchemaStmt *) stmt)->schemaname);
+			{
+				char	   *nspname = ((CreateSchemaStmt *) stmt)->schemaname;
+
+				if (nspname == NULL ||
+					!spock_name_is_reserved(RESERVED_KIND_SCHEMA, purpose, nspname))
+					return false;
+				if (matched != NULL)
+					*matched = nspname;
+				return true;
+			}
 		case T_CreateStmt:
-			return rangevar_is_ddl_local(((CreateStmt *) stmt)->relation);
+			return rangevar_schema_matches(((CreateStmt *) stmt)->relation,
+										   purpose, matched);
 		case T_CreateTableAsStmt:
-			return rangevar_is_ddl_local(((CreateTableAsStmt *) stmt)->into->rel);
+			return rangevar_schema_matches(((CreateTableAsStmt *) stmt)->into->rel,
+										   purpose, matched);
 		case T_AlterTableStmt:
-			return rangevar_is_ddl_local(((AlterTableStmt *) stmt)->relation);
+			return rangevar_schema_matches(((AlterTableStmt *) stmt)->relation,
+										   purpose, matched);
 		case T_ViewStmt:
-			return rangevar_is_ddl_local(((ViewStmt *) stmt)->view);
+			return rangevar_schema_matches(((ViewStmt *) stmt)->view,
+										   purpose, matched);
 		case T_CreateSeqStmt:
-			return rangevar_is_ddl_local(((CreateSeqStmt *) stmt)->sequence);
+			return rangevar_schema_matches(((CreateSeqStmt *) stmt)->sequence,
+										   purpose, matched);
 		case T_IndexStmt:
-			return rangevar_is_ddl_local(((IndexStmt *) stmt)->relation);
+			return rangevar_schema_matches(((IndexStmt *) stmt)->relation,
+										   purpose, matched);
 		case T_DropStmt:
 			{
 				DropStmt   *drop = (DropStmt *) stmt;
 				ListCell   *cell;
-				List	   *local;
-				bool		all_local = true;
+				List	   *reserved;
+				bool		result = match_all;
 
 				if (drop->objects == NIL)
 					return false;
@@ -2662,26 +2701,75 @@ stmt_targets_only_ddl_local(Node *stmt)
 					return false;
 
 				/* One catalog read for the whole (possibly multi-object) DROP. */
-				local = spock_reserved_object_names(RESERVED_KIND_SCHEMA,
-													RESERVED_PURPOSE_DDL);
+				reserved = spock_reserved_object_names(RESERVED_KIND_SCHEMA,
+													   purpose);
 				foreach(cell, drop->objects)
 				{
 					const char *schema = (drop->removeType == OBJECT_SCHEMA)
 						? strVal(lfirst(cell))
 						: makeRangeVarFromNameList((List *) lfirst(cell))->schemaname;
 
-					if (!name_in_list(local, schema))
+					if (name_in_list(reserved, schema) != match_all)
 					{
-						all_local = false;
+						/*
+						 * Decided: an unreserved object under ALL, or a
+						 * reserved one under ANY.  Either way the answer is
+						 * !match_all, and under ANY this object is the one to
+						 * name in the error.
+						 */
+						result = !match_all;
+						if (matched != NULL)
+							*matched = schema;
 						break;
 					}
 				}
-				list_free_deep(local);
-				return all_local;
+				list_free_deep(reserved);
+				return result;
 			}
 		default:
 			return false;
 	}
+}
+
+/* Does this DDL target ONLY node-local (replicate_ddl = false) schemas? */
+static bool
+stmt_targets_only_ddl_local(Node *stmt)
+{
+	return stmt_schema_matches(stmt, RESERVED_PURPOSE_DDL, true, NULL);
+}
+
+/*
+ * spock_guard_extension_owned_ddl
+ *
+ * Refuse direct DDL against a built-in extension-owned schema (spock,
+ * snowflake) while DDL replication is on.
+ *
+ * Nothing legitimate issues runtime DDL in these schemas -- their objects come
+ * from extension scripts, where AutoDDL is already suppressed via
+ * creating_extension -- so such a statement is almost certainly a user
+ * mistake.  Without this it would half-apply: the command text would replicate
+ * to peers while the relation was quietly kept out of every replication set.
+ *
+ * The caller runs this only when spock.enable_ddl_replication is on and the
+ * statement did not arrive from the apply queue, so clearing the GUC for the
+ * session (and repair mode) remains the escape hatch for deliberate
+ * node-local surgery.
+ */
+void
+spock_guard_extension_owned_ddl(Node *stmt)
+{
+	const char *nspname = NULL;
+
+	if (!stmt_schema_matches(stmt, RESERVED_PURPOSE_EXTENSION_OWNED, false,
+							 &nspname))
+		return;
+
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot run DDL against schema %s while DDL replication is enabled",
+					nspname),
+			 errdetail("The schema is managed by an extension and its objects are not replicated."),
+			 errhint("For a deliberate node-local change, run the statement with spock.enable_ddl_replication = off.")));
 }
 
 /*
