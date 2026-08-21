@@ -1,0 +1,402 @@
+-- Generated columns replication tests
+-- Tests for ensuring generated columns are properly handled during replication
+SELECT * FROM spock_regress_variables()
+\gset
+\c :provider_dsn
+-- Test 1: Basic table with generated column
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.gen_basic (
+    id integer PRIMARY KEY,
+    base_val integer NOT NULL,
+    doubled integer GENERATED ALWAYS AS (base_val * 2) STORED
+);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'gen_basic');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO gen_basic (id, base_val) VALUES (1, 10), (2, 20), (3, 30);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM gen_basic ORDER BY id;
+ id | base_val | doubled 
+----+----------+---------
+  1 |       10 |      20
+  2 |       20 |      40
+  3 |       30 |      60
+(3 rows)
+
+-- Test 2: INSERT, UPDATE, DELETE operations with generated columns
+\c :provider_dsn
+INSERT INTO gen_basic (id, base_val) VALUES (4, 40);
+UPDATE gen_basic SET base_val = 15 WHERE id = 1;
+DELETE FROM gen_basic WHERE id = 3;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM gen_basic ORDER BY id;
+ id | base_val | doubled 
+----+----------+---------
+  1 |       15 |      30
+  2 |       20 |      40
+  4 |       40 |      80
+(3 rows)
+
+-- Test 3: Multiple generated columns in different positions
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+CREATE TABLE gen_multiple (
+    gen1 integer GENERATED ALWAYS AS (id + 100) STORED,
+    id integer PRIMARY KEY,
+    val1 integer NOT NULL,
+    gen2 integer GENERATED ALWAYS AS (val1 * 10) STORED,
+    val2 text,
+    gen3 text GENERATED ALWAYS AS (val2 || '_suffix') STORED
+);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'gen_multiple');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO gen_multiple (id, val1, val2) VALUES (1, 5, 'test'), (2, 10, 'data');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM gen_multiple ORDER BY id;
+ gen1 | id | val1 | gen2 | val2 |    gen3     
+------+----+------+------+------+-------------
+  101 |  1 |    5 |   50 | test | test_suffix
+  102 |  2 |   10 |  100 | data | data_suffix
+(2 rows)
+
+-- Test 5: Row filter with generated columns
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.gen_filtered (
+    id integer PRIMARY KEY,
+    amount integer NOT NULL,
+    category text NOT NULL,
+    doubled_amount integer GENERATED ALWAYS AS (amount * 2) STORED
+);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+-- Filter to only replicate category 'A'
+SELECT * FROM spock.repset_add_table('default', 'gen_filtered', false,
+    row_filter := 'category = ''A''');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO gen_filtered (id, amount, category) VALUES
+    (1, 100, 'A'),
+    (2, 200, 'B'),
+    (3, 300, 'A'),
+    (4, 400, 'B');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+-- Should only see category 'A' rows
+SELECT * FROM gen_filtered ORDER BY id;
+ id | amount | category | doubled_amount 
+----+--------+----------+----------------
+  1 |    100 | A        |            200
+  3 |    300 | A        |            600
+(2 rows)
+
+\c :provider_dsn
+-- Insert more rows, only category 'A' should replicate
+INSERT INTO gen_filtered (id, amount, category) VALUES
+    (5, 500, 'A'),
+    (6, 600, 'B');
+UPDATE gen_filtered SET amount = 150 WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM gen_filtered ORDER BY id;
+ id | amount | category | doubled_amount 
+----+--------+----------+----------------
+  1 |    150 | A        |            300
+  3 |    300 | A        |            600
+  5 |    500 | A        |           1000
+(3 rows)
+
+-- Test 6: Table resync with generated columns
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.gen_resync (
+    id integer PRIMARY KEY,
+    data integer NOT NULL,
+    computed integer GENERATED ALWAYS AS (data + 1000) STORED
+);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+INSERT INTO gen_resync (id, data) VALUES (1, 1), (2, 2);
+SELECT * FROM spock.repset_add_table('default', 'gen_resync');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+-- Add more data before resync
+INSERT INTO gen_resync (id, data) VALUES (3, 3), (4, 4);
+\c :subscriber_dsn
+SELECT spock.sub_resync_table('test_subscription', 'gen_resync', true);
+ sub_resync_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.table_wait_for_sync('test_subscription', 'gen_resync');
+ table_wait_for_sync 
+---------------------
+ 
+(1 row)
+
+SELECT * FROM gen_resync ORDER BY id;
+ id | data | computed 
+----+------+----------
+  1 |    1 |     1001
+  2 |    2 |     1002
+  3 |    3 |     1003
+  4 |    4 |     1004
+(4 rows)
+
+-- Test 7: Generated column referencing multiple base columns
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.gen_multi_ref (
+    id integer PRIMARY KEY,
+    x integer NOT NULL,
+    y integer NOT NULL,
+    z integer NOT NULL,
+    sum_xy integer GENERATED ALWAYS AS (x + y) STORED,
+    product_xyz integer GENERATED ALWAYS AS (x * y * z) STORED
+);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'gen_multi_ref');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO gen_multi_ref (id, x, y, z) VALUES
+    (1, 2, 3, 4),
+    (2, 5, 6, 7);
+UPDATE gen_multi_ref SET x = 10, y = 20 WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM gen_multi_ref ORDER BY id;
+ id | x  | y  | z | sum_xy | product_xyz 
+----+----+----+---+--------+-------------
+  1 | 10 | 20 | 4 |     30 |         800
+  2 |  5 |  6 | 7 |     11 |         210
+(2 rows)
+
+-- Test 8: Generated column with NULL handling
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.gen_nulls (
+    id integer PRIMARY KEY,
+    val integer,
+    doubled integer GENERATED ALWAYS AS (val * 2) STORED
+);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'gen_nulls');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO gen_nulls (id, val) VALUES (1, 10), (2, NULL), (3, 30);
+UPDATE gen_nulls SET val = NULL WHERE id = 1;
+UPDATE gen_nulls SET val = 25 WHERE id = 2;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM gen_nulls ORDER BY id;
+ id | val | doubled 
+----+-----+---------
+  1 |     |        
+  2 |  25 |      50
+  3 |  30 |      60
+(3 rows)
+
+-- Test 9: Column list with generated columns
+-- (Generated columns should be automatically excluded)
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.gen_collist (
+    id integer PRIMARY KEY,
+    col1 integer NOT NULL,
+    gen1 integer GENERATED ALWAYS AS (col1 * 2) STORED,
+    col2 text NOT NULL,
+    gen2 text GENERATED ALWAYS AS (col2 || '_gen') STORED
+);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+-- Add table with explicit column list (including generated column)
+SELECT * FROM spock.repset_add_table('default', 'gen_collist', false,
+    columns := '{id, col1, col2, gen2}'); -- ERROR
+ERROR:  column gen2 cannot be declared as generated
+SELECT * FROM spock.repset_add_table('default', 'gen_collist', false,
+    columns := '{id, col1, col2}');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO gen_collist (id, col1, col2) VALUES (1, 10, 'test'), (2, 20, 'data');
+INSERT INTO gen_collist (id, col1, col2) VALUES (3, 30, 'more');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT * FROM gen_collist ORDER BY id;
+ id | col1 | gen1 | col2 |   gen2   
+----+------+------+------+----------
+  1 |   10 |   20 | test | test_gen
+  2 |   20 |   40 | data | data_gen
+  3 |   30 |   60 | more | more_gen
+(3 rows)
+
+-- Test 10: Mixed dropped and generated columns
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+CREATE TABLE public.gen_mixed (
+    id integer PRIMARY KEY,
+    col1 integer NOT NULL,
+    col2 integer,
+    gen1 integer GENERATED ALWAYS AS (col1 + 10) STORED
+);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'gen_mixed');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO gen_mixed (id, col1, col2) VALUES (1, 5, 50);
+-- Now drop col2 on provider
+ALTER TABLE gen_mixed DROP COLUMN col2;
+INSERT INTO gen_mixed (id, col1) VALUES (2, 10);
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+-- Drop col2 on subscriber too
+ALTER TABLE gen_mixed DROP COLUMN col2;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+SELECT * FROM gen_mixed ORDER BY id;
+ id | col1 | gen1 
+----+------+------
+  1 |    5 |   15
+  2 |   10 |   20
+(2 rows)
+
+-- Cleanup
+\c :provider_dsn
+DROP TABLE gen_basic CASCADE;
+NOTICE:  drop cascades to table gen_basic membership in replication set default
+DROP TABLE gen_multiple CASCADE;
+NOTICE:  drop cascades to table gen_multiple membership in replication set default
+DROP TABLE gen_filtered CASCADE;
+NOTICE:  drop cascades to table gen_filtered membership in replication set default
+DROP TABLE gen_resync CASCADE;
+NOTICE:  drop cascades to table gen_resync membership in replication set default
+DROP TABLE gen_multi_ref CASCADE;
+NOTICE:  drop cascades to table gen_multi_ref membership in replication set default
+DROP TABLE gen_nulls CASCADE;
+NOTICE:  drop cascades to table gen_nulls membership in replication set default
+DROP TABLE gen_collist CASCADE;
+NOTICE:  drop cascades to table gen_collist membership in replication set default
+DROP TABLE gen_mixed CASCADE;
+NOTICE:  drop cascades to table gen_mixed membership in replication set default
