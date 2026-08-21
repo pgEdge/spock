@@ -113,7 +113,7 @@ spock_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc,i);
 
-		if (att->attisdropped)
+		if (att->attisdropped || att->attgenerated)
 			continue;
 		if (att_list &&
 			!bms_is_member(att->attnum - FirstLowInvalidHeapAttributeNumber,
@@ -134,7 +134,7 @@ spock_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
 		uint16			len;
 		const char	   *attname;
 
-		if (att->attisdropped)
+		if (att->attisdropped || att->attgenerated)
 			continue;
 		if (att_list &&
 			!bms_is_member(att->attnum - FirstLowInvalidHeapAttributeNumber,
@@ -372,7 +372,7 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 	{
 		Form_pg_attribute att = TupleDescAttr(desc,i);
 
-		if (att->attisdropped)
+		if (att->attisdropped || att->attgenerated)
 			continue;
 		if (att_list &&
 			!bms_is_member(att->attnum - FirstLowInvalidHeapAttributeNumber,
@@ -401,7 +401,7 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 		char		transfer_type;
 
 		/* skip dropped columns */
-		if (att->attisdropped)
+		if (att->attisdropped || att->attgenerated)
 			continue;
 		if (att_list &&
 			!bms_is_member(att->attnum - FirstLowInvalidHeapAttributeNumber,
