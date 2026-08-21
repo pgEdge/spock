@@ -15,13 +15,18 @@ test: 004_non_default_repset
 # test: 005_daylight_savings
 # test: 006_sync_during_write
 test: 008_rmgr
+# ZODAN add/remove node: SQL/dblink orchestration (samples/Z0DAN/zodan.sql)
 test: 009_zodan_add_remove_nodes
+# ZODAN add/remove node: in-core C orchestration (spock.attach_node/detach_node)
+test: 034_attach_detach_node_incore
 
 test: 013_origin_change_restore
 test: 014_pgdump_restore_conflict
 
 # Tests, consuming too much time to be launched on each check:
+# (SQL/dblink orchestration, and its in-core C counterpart)
 #test: 011_zodan_sync_third
+#test: 035_attach_node_sync_third_incore
 #
 # Use GitHub Actions to launch them (see workflows/zodan_sync.yml for an example
 # Also, it may be run locally by a bash script like the following:
