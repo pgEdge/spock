@@ -114,6 +114,13 @@ spock_autoddl_process(PlannedStmt *pstmt,
 	if (get_local_node(false, true) == NULL)
 		goto end;
 
+	/*
+	 * Refuse DDL aimed at a built-in extension-owned schema before anything is
+	 * queued.  This is a post-execution hook, so the ERROR aborts the
+	 * transaction and rolls the statement back.
+	 */
+	spock_guard_extension_owned_ddl(parsetree);
+
 	/* Replicate DDL statement */
 	queryString = CleanQuerytext(queryString, &loc, &len);
 	curr_qry = pnstrdup(queryString, len);
