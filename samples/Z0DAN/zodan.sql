@@ -92,6 +92,17 @@ RETURNS int[] LANGUAGE sql IMMUTABLE AS $$
     SELECT (spock.version_to_array(v))[1:2];
 $$;
 
+-- spock.progress's apply-progress column is remote_lsn on Spock 5.x and
+-- remote_commit_lsn on 6.x; resolve it per endpoint.  The IN list keeps %I safe.
+CREATE OR REPLACE FUNCTION spock.progress_commit_lsn_column(p_dsn text)
+RETURNS text LANGUAGE sql AS $$
+    SELECT * FROM dblink(p_dsn,
+        $q$SELECT attname::text FROM pg_attribute
+           WHERE attrelid = 'spock.progress'::regclass
+             AND attname IN ('remote_commit_lsn', 'remote_lsn')
+           ORDER BY attname LIMIT 1$q$) AS t(attname text);
+$$;
+
 -- ============================================================================
 -- Procedure: check_spock_version_compatibility
 -- Purpose: Verify all nodes have the same Spock version before adding a node
@@ -1884,12 +1895,12 @@ BEGIN
             v_prev_statement_timeout text;
         BEGIN
             progress_sql := format(
-                'SELECT p.remote_commit_lsn '
+                'SELECT p.%I '
                 'FROM spock.progress p '
                 'JOIN spock.node n ON n.node_id = p.remote_node_id '
                 'WHERE p.node_id = (SELECT node_id FROM spock.node_info()) '
                 '  AND n.node_name = %L',
-                rec.node_name);
+                spock.progress_commit_lsn_column(src_dsn), rec.node_name);
 
             RAISE NOTICE '    - Waiting for source node % to apply % changes up to sync LSN %...',
                          src_node_name, rec.node_name, _catchup_lsn;
@@ -1905,12 +1916,13 @@ BEGIN
 
                     PERFORM set_config('statement_timeout', coalesce(v_prev_statement_timeout, '0'), true);
                 EXCEPTION
+                    WHEN undefined_column OR undefined_table
+                       OR undefined_function OR insufficient_privilege THEN
+                        RAISE EXCEPTION 'Cannot read apply progress from source node % (not replication lag): % (SQLSTATE %)',
+                                        src_node_name, SQLERRM, SQLSTATE;
                     WHEN OTHERS THEN
-					    -- Let user know if something wrong happens
-						IF verb THEN
-					      RAISE NOTICE 'An error happened: %', SQLERRM;
-						END IF;
                         -- Transient probe failure; restore timeout and retry.
+                        RAISE NOTICE 'An error happened: %', SQLERRM;
                         PERFORM set_config('statement_timeout', coalesce(v_prev_statement_timeout, '0'), true);
                         src_progress_lsn := NULL;
                 END;
@@ -2497,10 +2509,12 @@ BEGIN
                     -- Slot exists but is not active (unusual).  Advance defensively.
                     RAISE NOTICE '    Slot % found at LSN % (inactive)', src_slot_name, current_lsn;
 
-                    SELECT p.remote_commit_lsn INTO target_lsn
-                    FROM spock.progress p
-                    JOIN spock.node n ON n.node_id = p.remote_node_id
-                    WHERE n.node_name = src_node_name;
+                    EXECUTE format(
+                        'SELECT p.%I FROM spock.progress p '
+                        'JOIN spock.node n ON n.node_id = p.remote_node_id '
+                        'WHERE n.node_name = $1',
+                        spock.progress_commit_lsn_column(new_node_dsn))
+                    INTO target_lsn USING src_node_name;
 
                     IF target_lsn IS NOT NULL AND target_lsn > current_lsn THEN
                         RAISE NOTICE '    Snapshot LSN for %: %', src_node_name, target_lsn;
@@ -2593,10 +2607,12 @@ BEGIN
 
                 -- Advance the slot to resume_lsn: the last commit from this node
                 -- that N1 had applied at snapshot time (stored in N3's spock.progress).
-                SELECT p.remote_commit_lsn INTO target_lsn
-                FROM spock.progress p
-                JOIN spock.node n ON n.node_id = p.remote_node_id
-                WHERE n.node_name = rec.node_name;
+                EXECUTE format(
+                    'SELECT p.%I FROM spock.progress p '
+                    'JOIN spock.node n ON n.node_id = p.remote_node_id '
+                    'WHERE n.node_name = $1',
+                    spock.progress_commit_lsn_column(new_node_dsn))
+                INTO target_lsn USING rec.node_name;
 
                 IF target_lsn IS NULL THEN
                     RAISE NOTICE '    WARNING: No spock.progress entry for %, falling back to pg_current_wal_lsn()', rec.node_name;
