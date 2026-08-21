@@ -272,6 +272,22 @@ AutoDDL has been refactored and hardened:
   `REPLICA IDENTITY FULL` tables are now classified correctly.
 * **Safe `search_path` interpolation** — replicated DDL ships a valid
   `SET search_path` even when the session path is empty.
+* **Direct DDL against `spock` and `snowflake` is refused**
+  (behaviour change) — while `spock.enable_ddl_replication` is on, a
+  statement whose target schema is one of the built-in extension-owned
+  schemas now fails outright:
+
+  ```
+  ERROR:  cannot run DDL against schema snowflake while DDL replication is enabled
+  DETAIL:  The schema is managed by an extension and its objects are not replicated.
+  HINT:  For a deliberate node-local change, run the statement with spock.enable_ddl_replication = off.
+  ```
+
+  These schemas are populated by extension scripts, where AutoDDL is
+  already suppressed, so a runtime statement against them is almost always
+  a mistake.  Previously such a statement half-applied: the command text
+  replicated to peers while the relation was silently kept out of every
+  replication set.  See *Upgrading* for what this affects.
 
 ### Memory and stability
 
@@ -480,6 +496,17 @@ once the binaries are swapped.  The upgrade:
   and it skips slots that are in use at the time. See
   [Logical Slot Failover](logical_slot_failover.md) for how to handle any
   skipped slots.
+
+Check your runbooks and automation for direct DDL against the `spock` or
+`snowflake` schemas before upgrading.  Statements such as
+`DROP TABLE snowflake.x` or `CREATE INDEX` on a `spock` table succeeded on
+5.0.x and now raise an error (see *AutoDDL improvements* above).  Any
+procedure that needs to keep doing this must set
+`spock.enable_ddl_replication = off` for the session first, which is also
+what the error hint says.  The restriction covers only the built-in
+extension-owned schemas: schemas you reserve yourself with
+`spock.reserved_object_add()` are unaffected, and `pgedge_ace` continues to
+accept DDL and keep it node-local.
 
 ## Spock 5.0.11
 

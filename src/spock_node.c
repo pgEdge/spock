@@ -135,6 +135,20 @@ typedef struct SubscriptionTuple
  * DDL is reserved when the object is node-local, i.e. its DDL is not
  * replicated, so replicate_ddl == false means reserved.  A NULL flag (e.g.
  * replicate_ddl is NULL for extensions) is never treated as reserved.
+ *
+ * RESERVED_PURPOSE_EXTENSION_OWNED is the one compound purpose: builtin AND
+ * block_in_repset AND replicate_ddl, which today selects exactly the spock and
+ * snowflake schemas.  Their objects come from extension scripts, so runtime DDL
+ * against them is a user mistake and AutoDDL refuses it.  All three parts
+ * matter:
+ *
+ *   builtin          an operator may reserve a schema to keep it out of the
+ *                    dump and out of replication sets and still legitimately
+ *                    create objects in it, so their rows are never guarded.
+ *   block_in_repset  a reserved schema whose tables may replicate (lolor) is
+ *                    ordinary as far as DDL is concerned.
+ *   replicate_ddl    a node-local schema (pgedge_ace) is the never-replicate
+ *                    class: its DDL stays local silently rather than erroring.
  */
 static bool
 row_reserved_for_purpose(HeapTuple tuple, TupleDesc tuple_desc,
@@ -157,6 +171,18 @@ row_reserved_for_purpose(HeapTuple tuple, TupleDesc tuple_desc,
 			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_replicate_ddl,
 											 tuple_desc, &isnull));
 			return !isnull && !flag;
+		case RESERVED_PURPOSE_EXTENSION_OWNED:
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_builtin,
+											 tuple_desc, &isnull));
+			if (isnull || !flag)
+				return false;
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_block_in_repset,
+											 tuple_desc, &isnull));
+			if (isnull || !flag)
+				return false;
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_replicate_ddl,
+											 tuple_desc, &isnull));
+			return !isnull && flag;
 	}
 	elog(ERROR, "unknown reserved object purpose %d", (int) purpose);
 	return false;	/* unreachable; keeps the compiler quiet */
