@@ -1307,15 +1307,33 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		{
 			PQclear(res);
 
-			/* Restore what start_copy_target_tx() set for the rest of the copy. */
-			PQclear(sync_target_cmd(target_conn, "SET LOCAL lock_timeout = 0",
-									remoterel, "reset lock_timeout"));
+			stage_load = target_table_has_rows(target_conn, remoterel,
+											   relident.data);
+
+			if (stage_load)
+			{
+				/*
+				 * Rows landed between the first probe and the lock. Staging
+				 * copes with that, and holding EXCLUSIVE on a populated table
+				 * for the rest of the sync is the availability cost this path
+				 * exists to avoid, so drop the lock again. Rolling back to the
+				 * savepoint releases locks taken inside it, and undoes the
+				 * lock_timeout with them.
+				 */
+				PQclear(sync_target_cmd(target_conn,
+										"ROLLBACK TO SAVEPOINT " SPOCK_SYNC_LOCK_SAVEPOINT,
+										remoterel, "roll back to the lock savepoint"));
+			}
+			else
+			{
+				/* Keep the lock, restore what start_copy_target_tx() set. */
+				PQclear(sync_target_cmd(target_conn, "SET LOCAL lock_timeout = 0",
+										remoterel, "reset lock_timeout"));
+			}
+
 			PQclear(sync_target_cmd(target_conn,
 									"RELEASE SAVEPOINT " SPOCK_SYNC_LOCK_SAVEPOINT,
 									remoterel, "release the lock savepoint"));
-
-			stage_load = target_table_has_rows(target_conn, remoterel,
-											   relident.data);
 		}
 	}
 
@@ -1418,21 +1436,40 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	 */
 	if (stage_load)
 	{
+		const char *mergelist = attlist.data;
+
+		/*
+		 * The copy had no column list, so it moved every non-generated column.
+		 * Name them for the merge rather than using SELECT *, which would hand
+		 * the target a generated column and be rejected.
+		 */
+		if (!list_length(attnamelist))
+		{
+			res = sync_target_cmd(target_conn,
+								  "SELECT string_agg(quote_ident(attname), ', ' ORDER BY attnum)"
+								  " FROM pg_attribute"
+								  " WHERE attrelid = 'pg_temp." SPOCK_SYNC_STAGE_RELNAME "'::regclass"
+								  " AND attnum > 0 AND NOT attisdropped AND attgenerated = ''",
+								  remoterel, "list the staging table columns");
+
+			if (PQntuples(res) != 1 || PQgetisnull(res, 0, 0))
+			{
+				PQclear(res);
+				ereport(ERROR,
+						(errmsg("staging table for %s.%s has no columns to merge",
+								remoterel->nspname, remoterel->relname)));
+			}
+			mergelist = pstrdup(PQgetvalue(res, 0, 0));
+			PQclear(res);
+		}
+
 		resetStringInfo(&query);
-		if (list_length(attnamelist))
-			appendStringInfo(&query,
-							 "INSERT INTO %s (%s) %sSELECT %s FROM pg_temp.%s "
-							 "ON CONFLICT DO NOTHING",
-							 relident.data, attlist.data,
-							 override_identity ? "OVERRIDING SYSTEM VALUE " : "",
-							 attlist.data, SPOCK_SYNC_STAGE_RELNAME);
-		else
-			appendStringInfo(&query,
-							 "INSERT INTO %s %sSELECT * FROM pg_temp.%s "
-							 "ON CONFLICT DO NOTHING",
-							 relident.data,
-							 override_identity ? "OVERRIDING SYSTEM VALUE " : "",
-							 SPOCK_SYNC_STAGE_RELNAME);
+		appendStringInfo(&query,
+						 "INSERT INTO %s (%s) %sSELECT %s FROM pg_temp.%s "
+						 "ON CONFLICT DO NOTHING",
+						 relident.data, mergelist,
+						 override_identity ? "OVERRIDING SYSTEM VALUE " : "",
+						 mergelist, SPOCK_SYNC_STAGE_RELNAME);
 
 		res = sync_target_cmd(target_conn, query.data, remoterel,
 							  "merge the staged rows");
