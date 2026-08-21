@@ -687,6 +687,14 @@ remove_table_from_repsets(Oid nodeid, Oid reloid, bool only_for_update)
  * extension, and the subscriber runs its own copy when it applies the
  * replicated CREATE/DROP, so replicating it would execute that work twice.
  *
+ * For the CREATE side that holds unconditionally.  For the DROP side it holds
+ * only while the event trigger behind the cleanup is ENABLE ALWAYS or ENABLE
+ * REPLICA: the apply worker sets session_replication_role = replica, and a
+ * trigger left at the default fires on the origin only.  An origin-only
+ * trigger running DDL under a DROP EXTENSION therefore has that DDL suppressed
+ * here and not re-derived on the subscriber.  lolor, the case this exists for,
+ * marks its trigger ENABLE ALWAYS.
+ *
  * The two halves come from different places because core only tracks one of
  * them: creating_extension is set by execute_extension_script(), which covers
  * CREATE EXTENSION and ALTER EXTENSION ... UPDATE, but there is no dropping
