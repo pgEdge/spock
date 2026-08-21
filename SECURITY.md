@@ -2,8 +2,9 @@
 
 ## Reporting a Vulnerability
 
-Please report security vulnerabilities to **security@pgedge.com**, which
-reaches the pgEdge security team.
+Please report security vulnerabilities to
+[**security@pgedge.com**](mailto:security@pgedge.com), which reaches the
+pgEdge security team.
 
 Please do not open a public issue for a suspected vulnerability.
 
@@ -25,7 +26,7 @@ What is in scope, our safe harbour terms, and how we handle coordinated
 disclosure and CVE identifiers are all set out in the pgEdge Vulnerability
 Disclosure Statement:
 
-**https://docs.pgedge.com/security**
+[**https://docs.pgedge.com/security**](https://docs.pgedge.com/security)
 
 You may test this software freely in an environment you control. Testing
 pgEdge Cloud requires prior written authorisation — see the statement.
