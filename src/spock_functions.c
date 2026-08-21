@@ -214,6 +214,7 @@ static void check_readonly_for_resync(const char *nspname, const char *relname);
 
 bool		in_spock_replicate_ddl_command = false;
 bool		in_spock_queue_ddl_command = false;
+bool		in_spock_extension_drop = false;
 
 static SpockLocalNode *
 check_local_node(bool for_update)

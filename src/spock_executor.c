@@ -148,6 +148,24 @@ spock_prepare_row_filter(Node *row_filter)
 	return exprstate;
 }
 
+/*
+ * Run the rest of the ProcessUtility chain.  Factored out so the DROP
+ * EXTENSION path below can wrap it without duplicating the call.
+ */
+static void
+spock_next_process_utility(PlannedStmt *pstmt, const char *queryString,
+						   bool readOnlyTree, ProcessUtilityContext context,
+						   ParamListInfo params, QueryEnvironment *queryEnv,
+						   DestReceiver *dest, QueryCompletion *qc)
+{
+	if (next_ProcessUtility_hook)
+		next_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context,
+								 params, queryEnv, dest, qc);
+	else
+		standard_ProcessUtility(pstmt, queryString, readOnlyTree, context,
+								params, queryEnv, dest, qc);
+}
+
 static void
 spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 					 bool readOnlyTree, ProcessUtilityContext context,
@@ -156,6 +174,7 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 {
 	Node	   *parsetree = pstmt->utilityStmt;
 	NodeTag		toplevel_stmt = nodeTag(parsetree);
+	bool		is_extension_drop;
 
 	dropping_spock_obj = false;
 
@@ -183,12 +202,41 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 	Assert(CurrentMemoryContext != TopMemoryContext
 		   && CurrentMemoryContext != CacheMemoryContext);
 
-	if (next_ProcessUtility_hook)
-		next_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context,
-								 params, queryEnv, dest, qc);
+	/*
+	 * An extension's cleanup path runs while the DROP EXTENSION executes -- a
+	 * ddl_command_start event trigger, typically, which is free to run DDL of
+	 * its own through SPI.  That DDL is an implementation detail of dropping
+	 * the extension, not something to ship: the subscriber runs its own copy
+	 * when it applies the replicated DROP, so replicating it would execute the
+	 * cleanup twice there.  Core exposes creating_extension for the CREATE
+	 * side but has no counterpart for DROP, so flag it here and let
+	 * autoddl_can_proceed() skip anything nested inside.
+	 *
+	 * Restored before spock_autoddl_process() below, so the DROP EXTENSION
+	 * itself still replicates.
+	 */
+	is_extension_drop = (nodeTag(parsetree) == T_DropStmt &&
+						 ((DropStmt *) parsetree)->removeType == OBJECT_EXTENSION);
+
+	if (is_extension_drop)
+	{
+		bool		save_in_extension_drop = in_spock_extension_drop;
+
+		in_spock_extension_drop = true;
+		PG_TRY();
+		{
+			spock_next_process_utility(pstmt, queryString, readOnlyTree,
+									   context, params, queryEnv, dest, qc);
+		}
+		PG_FINALLY();
+		{
+			in_spock_extension_drop = save_in_extension_drop;
+		}
+		PG_END_TRY();
+	}
 	else
-		standard_ProcessUtility(pstmt, queryString, readOnlyTree, context,
-								params, queryEnv, dest, qc);
+		spock_next_process_utility(pstmt, queryString, readOnlyTree,
+								   context, params, queryEnv, dest, qc);
 
 	/* Check for AutoDDL */
 	spock_autoddl_process(pstmt, queryString, context, toplevel_stmt);
