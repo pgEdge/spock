@@ -6,6 +6,7 @@ use SpockTest qw(
     create_cluster destroy_cluster
     get_test_config scalar_query psql_or_bail
     wait_for_sub_status
+    log_offset log_since wait_for_log sync_nodes apply_worker_pid
 );
 
 # An ERROR raised in the apply worker BETWEEN two remote transactions sends
@@ -37,10 +38,8 @@ create_cluster(2, 'Create 2-node replay mode leak cluster');
 
 my $config = get_test_config();
 my $p1 = $config->{node_ports}->[0];
-my $p2 = $config->{node_ports}->[1];
 my $conn = "host=$config->{host} dbname=$config->{db_name} port=$p1 " .
            "user=$config->{db_user} password=$config->{db_password}";
-my $subscriber_log = "$config->{log_dir}/00${p2}.log";
 
 # Both modes discard the whole transaction on exception, so both turn a
 # leaked replay pass into a transaction the subscriber never applies.  discard
@@ -63,52 +62,6 @@ psql_or_bail(2,
 ok(wait_for_sub_status(2, 'sub_n1_n2', 'replicating', 30),
     'subscription starts in replicating state');
 
-sub read_log_from {
-    my ($offset) = @_;
-    open(my $lf, '<', $subscriber_log) or return '';
-    seek($lf, $offset, 0);
-    local $/;
-    my $data = <$lf> // '';
-    close($lf);
-    return $data;
-}
-
-sub wait_for_log {
-    my ($offset, $pattern, $timeout) = @_;
-    $timeout //= 60;
-    for (1 .. $timeout) {
-        return 1 if read_log_from($offset) =~ $pattern;
-        sleep(1);
-    }
-    return 0;
-}
-
-# spock sets application_name to the bgworker name, "spock apply <db>:<sub>".
-sub apply_worker_pid {
-    my ($timeout) = @_;
-    $timeout //= 30;
-    for (1 .. $timeout) {
-        my $pid = scalar_query(2,
-            "SELECT pid FROM pg_stat_activity " .
-            "WHERE application_name LIKE 'spock apply %'");
-        return $pid if defined $pid && $pid =~ /^\d+$/;
-        sleep(1);
-    }
-    return '';
-}
-
-# A non-transactional sync_event is decoded outside any remote transaction and
-# ordered after the preceding commit, so the origin reaching its LSN means the
-# worker finished handle_commit() -- replay queue reset, use_try_block cleared
-# -- and is back in the wait loop.  A plain SELECT then sees what node 1 sent.
-sub sync_subscriber {
-    my ($what) = @_;
-    my $lsn = scalar_query(1, "SELECT spock.sync_event()");
-    is(scalar_query(2,
-           "CALL spock.wait_for_sync_event(NULL, 'n1', '$lsn'::pg_lsn, 30)"),
-       't', $what);
-}
-
 for my $phase (@modes) {
     my $t    = $phase->{table};
     my $mode = $phase->{mode};
@@ -125,39 +78,41 @@ for my $phase (@modes) {
     # the cancel needs.  Also orders the reload: the worker tests
     # ConfigReloadPending before reading the stream, so processing this
     # message means it runs under this phase's spock.exception_behaviour.
-    sync_subscriber("$mode: apply worker drained and idle before the cancel");
+    ok(sync_nodes(1, 2),
+        "$mode: apply worker drained and idle before the cancel");
 
     is(scalar_query(2, "SELECT count(*) FROM $t WHERE id = 1"), '1',
         "$mode: baseline transaction replicates");
 
-    my $pid_before = apply_worker_pid();
+    my $pid_before = apply_worker_pid(2);
     like($pid_before, qr/^\d+$/, "$mode: found the apply worker ($pid_before)");
 
-    my $log_offset = -s $subscriber_log // 0;
+    my $offset = log_offset(2);
     is(scalar_query(2, "SELECT pg_cancel_backend($pid_before)"), 't',
         "$mode: cancel signal sent to the apply worker");
 
-    ok(wait_for_log($log_offset,
+    ok(wait_for_log(2,
             qr/caught initial exception.*57014.*canceling statement due to user request/,
-            30),
+            $offset, 30),
         "$mode: worker takes the replay path for the cancel");
 
     # It caught its own error rather than exiting, so it is now sitting in
     # replay mode with an empty queue.  Without that, the rest proves nothing.
-    is(apply_worker_pid(), $pid_before,
+    is(apply_worker_pid(2), $pid_before,
         "$mode: worker stays up in replay mode after the cancel");
 
     # The transaction that must not be treated as the recorded failure.
     psql_or_bail(1, "INSERT INTO $t VALUES (2, 'after cancel')");
-    sync_subscriber("$mode: worker consumes the stream past the next transaction");
+    ok(sync_nodes(1, 2),
+        "$mode: worker consumes the stream past the next transaction");
 
     is(scalar_query(2, "SELECT count(*) FROM $t WHERE id = 2"), '1',
         "$mode: the next transaction applies");
 
-    my $log = read_log_from($log_offset);
-    unlike($log, qr/applied nothing, retrying without exception handling/,
+    unlike(log_since(2, $offset),
+        qr/applied nothing, retrying without exception handling/,
         "$mode: the transaction is not replayed as if it had failed");
-    is(apply_worker_pid(), $pid_before,
+    is(apply_worker_pid(2), $pid_before,
         "$mode: worker is not restarted by the healthy transaction");
     is(scalar_query(2,
            "SELECT count(*) FROM spock.exception_log WHERE table_name = '$t'"),
