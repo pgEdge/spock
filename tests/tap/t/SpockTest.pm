@@ -8,6 +8,7 @@ use TAP::Formatter::Color;
 use TAP::Harness;
 use File::Path qw(make_path);
 use File::Basename;
+use Time::HiRes qw(usleep);
 use Cwd;
 
 our @EXPORT_OK = qw(
@@ -25,6 +26,13 @@ our @EXPORT_OK = qw(
     wait_for_pg_ready
     ensure_lolor
     output_plugin_libraries_conf
+    node_logfile
+    log_offset
+    log_since
+    wait_for_log
+    poll_query_until
+    sync_nodes
+    apply_worker_pid
 );
 
 # Test configuration
@@ -33,6 +41,12 @@ my $HOST = '127.0.0.1';
 my $DB_NAME = 'regression';
 my $DB_USER = 'regression';
 my $DB_PASSWORD = 'regression';
+
+# Poll every 0.1s, as PostgreSQL::Test does, rather than every second.  Most
+# of what the wait_* helpers below watch for lands in well under a second, so
+# the coarser interval was mostly dead time.
+my $POLL_INTERVAL_US = 100_000;
+my $POLL_PER_SECOND  = 10;
 
 # PostgreSQL binary paths - get from PATH
 my $PG_BIN = '';
@@ -522,6 +536,97 @@ sub wait_for_pg_ready {
         sleep(1);
     }
     return 0;
+}
+
+# Path to a node's server log.  create_postgresql_conf() names it after the
+# port, so this has to agree with the log_filename set there.
+sub node_logfile {
+    my ($node_num) = @_;
+    my $port = ($BASE_PORT + $node_num - 1);
+    return "$LOG_DIR/00$port.log";
+}
+
+# Current end of a node's log.  Take this before the action under test, then
+# pass it to log_since() or wait_for_log() to ignore everything written
+# earlier -- otherwise a match from a previous phase counts as a hit.
+sub log_offset {
+    my ($node_num) = @_;
+    return (-s node_logfile($node_num)) // 0;
+}
+
+# A node's log from $offset onward.
+sub log_since {
+    my ($node_num, $offset) = @_;
+    open(my $lf, '<', node_logfile($node_num)) or return '';
+    seek($lf, $offset // 0, 0);
+    local $/;
+    my $data = <$lf> // '';
+    close($lf);
+    return $data;
+}
+
+# Poll a node's log for $pattern, ignoring anything before $offset.  Returns
+# true on match, false on timeout.
+sub wait_for_log {
+    my ($node_num, $pattern, $offset, $timeout) = @_;
+    $timeout //= 30;
+    for (1 .. $timeout * $POLL_PER_SECOND) {
+        return 1 if log_since($node_num, $offset) =~ $pattern;
+        usleep($POLL_INTERVAL_US);
+    }
+    return 0;
+}
+
+# Poll $query on $node_num until it returns $expected.  Returns true on match,
+# false on timeout.
+sub poll_query_until {
+    my ($node_num, $query, $expected, $timeout) = @_;
+    $expected //= 't';
+    $timeout  //= 30;
+    for (1 .. $timeout * $POLL_PER_SECOND) {
+        my $got = scalar_query($node_num, $query);
+        return 1 if defined $got && $got eq $expected;
+        usleep($POLL_INTERVAL_US);
+    }
+    return 0;
+}
+
+# Wait until $to_node has applied everything $from_node has written so far.
+# A non-transactional sync_event is decoded outside any remote transaction and
+# ordered after the preceding commit, so the origin reaching its LSN means the
+# apply worker finished handle_commit() -- replay queue reset, use_try_block
+# cleared -- and is back in its wait loop.  A plain SELECT then sees whatever
+# $from_node sent.  Returns true on success, false on timeout.
+#
+# $origin_name defaults to the name create_cluster() gives the node.
+sub sync_nodes {
+    my ($from_node, $to_node, $origin_name, $timeout) = @_;
+    $origin_name //= "n$from_node";
+    $timeout     //= 30;
+
+    my $lsn = scalar_query($from_node, "SELECT spock.sync_event()");
+    return 0 unless defined $lsn && $lsn =~ m{^[0-9A-F]+/[0-9A-F]+$}i;
+
+    my $got = scalar_query($to_node,
+        "CALL spock.wait_for_sync_event(NULL, '$origin_name', " .
+        "'$lsn'::pg_lsn, $timeout)");
+    return (defined $got && $got eq 't') ? 1 : 0;
+}
+
+# PID of the apply worker on $node_num, or '' if none appears before timeout.
+# spock copies the bgworker name into application_name, so the worker shows up
+# as "spock apply <db>:<sub>".
+sub apply_worker_pid {
+    my ($node_num, $timeout) = @_;
+    $timeout //= 30;
+    my $query = "SELECT pid FROM pg_stat_activity " .
+                "WHERE application_name LIKE 'spock apply %'";
+    for (1 .. $timeout * $POLL_PER_SECOND) {
+        my $pid = scalar_query($node_num, $query);
+        return $pid if defined $pid && $pid =~ /^\d+$/;
+        usleep($POLL_INTERVAL_US);
+    }
+    return '';
 }
 
 # Ensure cleanup on module destruction
