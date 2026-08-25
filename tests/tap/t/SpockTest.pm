@@ -293,8 +293,14 @@ sub create_cluster {
         system("$PG_BIN/postgres -D $node_datadirs[$i] >> '$LOG_FILE' 2>&1 &");
     }
 
-    # Allow PostgreSQL servers to startup
-    system_or_bail 'sleep', '17';
+    # Wait for the servers to accept connections rather than guessing how long
+    # they need.  The timeout is generous so that a loaded machine still gets
+    # to start; the cost when startup is quick is only the polling interval.
+    for (my $i = 0; $i < $num_nodes; $i++) {
+        wait_for_pg_ready($HOST, $node_ports[$i], $PG_BIN, 60)
+            or die "n" . ($i + 1) . " did not accept connections on port "
+                   . "$node_ports[$i] within 60s";
+    }
 
     # Create superuser on all nodes (ignore if already exists)
     for (my $i = 0; $i < $num_nodes; $i++) {
@@ -503,10 +509,10 @@ sub wait_for_pg_ready {
     my ($host, $port, $pg_bin, $timeout) = @_;
     $pg_bin //= $PG_BIN;
     $timeout //= 30;
-    for (1 .. $timeout) {
+    for (1 .. $timeout * $POLL_PER_SECOND) {
         my $rc = system("$pg_bin/pg_isready -h $host -p $port -q 2>/dev/null");
         return 1 if $rc == 0;
-        sleep(1);
+        usleep($POLL_INTERVAL_US);
     }
     return 0;
 }
