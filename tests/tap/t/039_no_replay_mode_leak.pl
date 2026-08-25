@@ -97,15 +97,16 @@ sub apply_worker_pid {
     return '';
 }
 
-sub wait_for_row {
-    my ($table, $id, $timeout) = @_;
-    $timeout //= 90;
-    for (1 .. $timeout) {
-        my $c = scalar_query(2, "SELECT count(*) FROM $table WHERE id = $id");
-        return $c if defined $c && $c eq '1';
-        sleep(1);
-    }
-    return scalar_query(2, "SELECT count(*) FROM $table WHERE id = $id");
+# A non-transactional sync_event is decoded outside any remote transaction and
+# ordered after the preceding commit, so the origin reaching its LSN means the
+# worker finished handle_commit() -- replay queue reset, use_try_block cleared
+# -- and is back in the wait loop.  A plain SELECT then sees what node 1 sent.
+sub sync_subscriber {
+    my ($what) = @_;
+    my $lsn = scalar_query(1, "SELECT spock.sync_event()");
+    is(scalar_query(2,
+           "CALL spock.wait_for_sync_event(NULL, 'n1', '$lsn'::pg_lsn, 30)"),
+       't', $what);
 }
 
 for my $phase (@modes) {
@@ -114,20 +115,24 @@ for my $phase (@modes) {
 
     psql_or_bail(2, "ALTER SYSTEM SET spock.exception_behaviour = $mode");
     psql_or_bail(2, "SELECT pg_reload_conf()");
-    sleep(2);
 
     # A clean transaction first: it is what leaves a commit_lsn behind in the
     # worker's exception log slot, which is what the incoming transaction is
     # compared against after the cancel.
     psql_or_bail(1, "INSERT INTO $t VALUES (1, 'before cancel')");
-    is(wait_for_row($t, 1), '1', "$mode: baseline transaction replicates");
+
+    # Leaves the worker between transactions with nothing queued, the state
+    # the cancel needs.  Also orders the reload: the worker tests
+    # ConfigReloadPending before reading the stream, so processing this
+    # message means it runs under this phase's spock.exception_behaviour.
+    sync_subscriber("$mode: apply worker drained and idle before the cancel");
+
+    is(scalar_query(2, "SELECT count(*) FROM $t WHERE id = 1"), '1',
+        "$mode: baseline transaction replicates");
 
     my $pid_before = apply_worker_pid();
     like($pid_before, qr/^\d+$/, "$mode: found the apply worker ($pid_before)");
 
-    # The worker is idle here, so the cancel lands between transactions with
-    # nothing queued -- the state the fix is about.
-    sleep(2);
     my $log_offset = -s $subscriber_log // 0;
     is(scalar_query(2, "SELECT pg_cancel_backend($pid_before)"), 't',
         "$mode: cancel signal sent to the apply worker");
@@ -144,7 +149,10 @@ for my $phase (@modes) {
 
     # The transaction that must not be treated as the recorded failure.
     psql_or_bail(1, "INSERT INTO $t VALUES (2, 'after cancel')");
-    is(wait_for_row($t, 2), '1', "$mode: the next transaction applies");
+    sync_subscriber("$mode: worker consumes the stream past the next transaction");
+
+    is(scalar_query(2, "SELECT count(*) FROM $t WHERE id = 2"), '1',
+        "$mode: the next transaction applies");
 
     my $log = read_log_from($log_offset);
     unlike($log, qr/applied nothing, retrying without exception handling/,
