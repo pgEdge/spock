@@ -67,6 +67,7 @@ nav:
     - Using Snowflake Sequences: managing/snowflake.md
     - Using Lolor to Manage Large Objects: managing/lolor.md
     - Using Automatic DDL Replication: managing/spock_autoddl.md
+    - Using Group Replication Slots: managing/group_slots.md
   - Adding or Removing Nodes:
     - Modifying a Cluster: modify/index.md
     - Using Z0DAN:
