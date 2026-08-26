@@ -182,16 +182,10 @@ BEGIN
         RAISE EXCEPTION 'Spock extension not found on new node';
     END IF;
 
-    -- Check new node has required version (compare numerically, not lexically)
-    IF spock.version_to_array(new_version) < spock.version_to_array(min_required_version) THEN
-        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but minimum required version is %. Please upgrade all nodes to at least %.',
-            new_version, min_required_version, min_required_version;
-    END IF;
-
-    -- Allow rolling upgrades: patch differences are fine, but major.minor must match
-    IF spock.version_major_minor(new_version) IS DISTINCT FROM spock.version_major_minor(src_version) THEN
-        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. Major.minor versions must match (patch differences are allowed).',
-            new_version, src_version;
+    -- Check new node has required version
+    IF new_version <> '6.0.0'::text THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but should be 6.0.0.',
+            new_version;
     END IF;
 
     -- Check all existing nodes in cluster
@@ -213,11 +207,6 @@ BEGIN
                 node_rec.node_name, node_version, min_required_version, min_required_version;
         END IF;
 
-        -- Allow rolling upgrades: patch differences are fine, but major.minor must match
-        IF spock.version_major_minor(node_version) IS DISTINCT FROM spock.version_major_minor(new_version) THEN
-            RAISE EXCEPTION 'Spock version mismatch: new node has version %, but found node version %. Major.minor versions must match (patch differences are allowed).',
-                new_version, node_version;
-        END IF;
     END LOOP;
 
     PERFORM set_config('zodan.donor_spock_version', src_version, false);
