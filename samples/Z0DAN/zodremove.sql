@@ -446,6 +446,17 @@ BEGIN
     -- Example: Gather info about n4's subscriptions, slots, and sets in n1,n2,n3,n4.
     CALL spock.gather_cluster_info_for_removal(target_node_name, verbose_mode);
 
+    -- Phase 2b: Group slot integration (no-op unless spock.group_slots_enabled).
+    -- Freeze the group slot at the pre-removal boundary before slots are torn
+    -- down, so retained WAL covers the part.
+    IF COALESCE(current_setting('spock.group_slots_enabled', true), 'off')::boolean
+       AND to_regprocedure('spock.group_slot_begin_part(name)') IS NOT NULL THEN
+        PERFORM spock.group_slot_begin_part(target_node_name);
+        IF verbose_mode THEN
+            RAISE NOTICE 'Group slot: part started for %, boundary frozen', target_node_name;
+        END IF;
+    END IF;
+
     -- Phase 3: Remove subscriptions (before removing replication sets).
     -- Note that this will also remove slots on the provider and the node
     -- and node interface info if no other subscription relies on it.
@@ -467,6 +478,20 @@ BEGIN
     -- Summarize the removal process and report any errors or issues.
     -- Example: Show summary of n4 removal from cluster n1,n2,n3,n4.
     CALL spock.finalize_node_removal(target_node_name, verbose_mode);
+
+    -- Phase 7: Group slot integration (no-op unless spock.group_slots_enabled).
+    -- The node is gone: advance to the next generation, clear the freeze, and
+    -- resume advancement. Run the same call on every other remaining node,
+    -- since each maintains its own group slot.
+    IF COALESCE(current_setting('spock.group_slots_enabled', true), 'off')::boolean
+       AND to_regprocedure('spock.group_slot_complete_part(name)') IS NOT NULL THEN
+        PERFORM spock.group_slot_complete_part(target_node_name);
+        IF verbose_mode THEN
+            RAISE NOTICE 'Group slot: part completed for %. Run '
+                         'SELECT spock.group_slot_complete_part(%); on each remaining node.',
+                         target_node_name, quote_literal(target_node_name);
+        END IF;
+    END IF;
 
 END;
 $$ LANGUAGE plpgsql;

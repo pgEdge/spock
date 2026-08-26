@@ -9,3 +9,4 @@ The Spock extension is a powerful addition to any PostgreSQL installation; manag
 * use [Snowflake sequences](snowflake.md) for sequence management in a distributed cluster.
 * use [the Lolor extension](lolor.md) to replicate large objects.
 * enable [automatic DDL replication](spock_autoddl.md).
+* use [group replication slots](group_slots.md) to retain WAL at the oldest safe position for the whole replication group.

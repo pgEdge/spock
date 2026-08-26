@@ -55,6 +55,7 @@ nav:
   - Getting Started: getting_started.md
   - Using Advanced Configuration Options: configuring.md
   - Logical Slot Failover (HA Standby): logical_slot_failover.md
+  - Slow Apply and WAL Retention from Large Transactions: large_transaction_apply.md
   - Upgrading a Spock Installation: upgrading_spock.md
   - Conflict Types and Resolution: conflict_types.md
   - Spock's Conflict Avoidance Options: conflicts.md
@@ -67,12 +68,14 @@ nav:
     - Using Snowflake Sequences: managing/snowflake.md
     - Using Lolor to Manage Large Objects: managing/lolor.md
     - Using Automatic DDL Replication: managing/spock_autoddl.md
+    - Using Group Replication Slots: managing/group_slots.md
   - Adding or Removing Nodes:
     - Modifying a Cluster: modify/index.md
     - Using Z0DAN:
       - Modifying your Cluster with Zodan: modify/zodan/index.md
       - Using Zodan Scripts and Workflows: modify/zodan/zodan_readme.md
       - Adding a Node with Zero Downtime: modify/zodan/zodan_tutorial.md
+      - Failover Slots by PostgreSQL Version: modify/zodan/failover_slots.md
     - Adding a Node with Minimal Downtime with pgBackRest: modify/add_node_pgbackrest.md
     - Recovering from Catastrophic Node Failure: recovery/catastrophic_node_failure.md
   - Monitoring a Cluster:
