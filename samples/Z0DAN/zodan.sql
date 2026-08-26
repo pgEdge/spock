@@ -93,6 +93,40 @@ RETURNS int[] LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 -- ============================================================================
+-- Function: progress_commit_lsn_column
+-- Purpose : Return the name of spock.progress's apply-progress column, renamed
+--           with no overlap at the 6.0.0 boundary: remote_lsn on Spock 5.x,
+--           remote_commit_lsn on 6.x.
+--
+--           The name depends on the Spock running on the node the query will
+--           execute against, which is not always this one.  The sole caller is
+--           the Phase 3 catchup probe, whose SQL is shipped to the donor over
+--           dblink, so this resolves the donor's version as Phase 0 published
+--           it in zodan.donor_spock_version.
+-- Returns  : text, 'remote_commit_lsn' or 'remote_lsn'.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION spock.progress_commit_lsn_column()
+RETURNS text LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    version text;
+    major   int;
+BEGIN
+    version := current_setting('zodan.donor_spock_version', true);
+
+    -- version_to_array() answers NULL, not an error, on a string it cannot parse.
+    major := (spock.version_to_array(version))[1];
+
+    IF major IS NULL THEN
+        RAISE EXCEPTION '% is not a Spock version', quote_literal(version)
+            USING ERRCODE = 'invalid_parameter_value',
+                  HINT = 'Unset it and let spock.check_spock_version_compatibility() establish it.';
+    END IF;
+
+    RETURN CASE WHEN major >= 6 THEN 'remote_commit_lsn' ELSE 'remote_lsn' END;
+END;
+$$;
+
+-- ============================================================================
 -- Procedure: check_spock_version_compatibility
 -- Purpose: Verify all nodes have the same Spock version before adding a node
 -- ============================================================================
@@ -103,6 +137,7 @@ CREATE OR REPLACE PROCEDURE spock.check_spock_version_compatibility(
 ) LANGUAGE plpgsql AS $$
 DECLARE
     min_required_version text := '5.0.9';
+    local_extversion text;
     src_version text;
     new_version text;
     node_rec RECORD;
@@ -110,6 +145,16 @@ DECLARE
     node_version text;
     version_mismatch boolean := false;
 BEGIN
+    -- Z0DAN script should be treated as an integral part of Spock. So, it can
+    -- be called only with current Spock version.
+    SELECT extversion INTO local_extversion
+      FROM pg_extension WHERE extname = 'spock';
+
+    IF (local_extversion <> '6.0.0'::text) THEN
+        RAISE EXCEPTION 'This Z0DAN script cannot be used with Spock %',
+                        local_extversion;
+    END IF;
+
     -- Get source node Spock version
     remotesql := 'SELECT extversion FROM pg_extension WHERE extname = ''spock''';
     IF verb THEN
@@ -174,6 +219,8 @@ BEGIN
                 new_version, node_version;
         END IF;
     END LOOP;
+
+    PERFORM set_config('zodan.donor_spock_version', src_version, false);
 
     IF verb THEN
         RAISE NOTICE 'Version check passed: All nodes running Spock version % or later. Source version is %, new node version is %', min_required_version, src_version, new_version;
@@ -1884,12 +1931,12 @@ BEGIN
             v_prev_statement_timeout text;
         BEGIN
             progress_sql := format(
-                'SELECT p.remote_commit_lsn '
+                'SELECT p.%I '
                 'FROM spock.progress p '
                 'JOIN spock.node n ON n.node_id = p.remote_node_id '
                 'WHERE p.node_id = (SELECT node_id FROM spock.node_info()) '
                 '  AND n.node_name = %L',
-                rec.node_name);
+                spock.progress_commit_lsn_column(), rec.node_name);
 
             RAISE NOTICE '    - Waiting for source node % to apply % changes up to sync LSN %...',
                          src_node_name, rec.node_name, _catchup_lsn;
