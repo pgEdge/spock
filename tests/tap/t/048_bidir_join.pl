@@ -65,6 +65,9 @@
 #   1  n3 data directory removed after cleanup --force
 #   1  manifest removed after cleanup
 #   1  --bidirectional rejects a multi-database request
+#   1  --max-wait rejects a value that overflows int
+#   1  --stall-timeout rejects a non-numeric value
+#   1  --apply-delay rejects a value that overflows int
 #   1  --bidirectional aborts when another database on the source has spock configured
 #   1  --bidirectional rejects a broken full-mesh topology (disabled subscription)
 #   1  --bidirectional rejects mismatched replication-set flags between source and peer
@@ -84,12 +87,12 @@
 #   1  pending sidecar removed once cleanup actually completed
 #   1  destroy_cluster
 #  ---
-#  69  total
+#  72  total
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 69;
+use Test::More tests => 72;
 use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
@@ -515,6 +518,41 @@ ok(!system_maybe($SCS_BIN,
       '--databases',         "$dbname,postgres"),
    '--bidirectional rejects a multi-database request');
 remove_tree($multidb_datadir) if -d $multidb_datadir;
+
+# =============================================================================
+# TEST: option parsing rejects malformed/out-of-range integer arguments
+# instead of silently truncating them -- e.g. a value like 4294967296
+# wraps to 0 when cast to int after strtol(), which would otherwise turn
+# --max-wait=4294967296 into an accepted, effectively-unbounded wait.
+# =============================================================================
+my $intcheck_datadir = '/tmp/tmp_spock_node_2_datadir_bidir_pr3_intcheck';
+remove_tree($intcheck_datadir) if -d $intcheck_datadir;
+ok(!system_maybe($SCS_BIN,
+      '--bidirectional',
+      '--pgdata',            $intcheck_datadir,
+      '--subscriber-name',   'n3',
+      '--provider-dsn',      $n1_dsn,
+      '--subscriber-dsn',    $n3_dsn,
+      '--max-wait',          '4294967296'),
+   '--max-wait rejects a value that overflows int');
+
+ok(!system_maybe($SCS_BIN,
+      '--bidirectional',
+      '--pgdata',            $intcheck_datadir,
+      '--subscriber-name',   'n3',
+      '--provider-dsn',      $n1_dsn,
+      '--subscriber-dsn',    $n3_dsn,
+      '--stall-timeout',     'abc'),
+   '--stall-timeout rejects a non-numeric value');
+
+ok(!system_maybe($SCS_BIN,
+      '--pgdata',            $intcheck_datadir,
+      '--subscriber-name',   'n3',
+      '--provider-dsn',      $n1_dsn,
+      '--subscriber-dsn',    $n3_dsn,
+      '--apply-delay',       '99999999999999999999'),
+   '--apply-delay rejects a value that overflows int');
+remove_tree($intcheck_datadir) if -d $intcheck_datadir;
 
 # =============================================================================
 # TEST: --bidirectional aborts if the source instance has spock configured
