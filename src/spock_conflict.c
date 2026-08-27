@@ -162,7 +162,7 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 
 		if (loc_node->tiebreaker == rmt_node->tiebreaker)
 		{
-			/*
+			/*----------
 			 * Equal tiebreaker values. Node creation prevents this for new
 			 * nodes, but existing clusters may still hit it. Apply remote and
 			 * warn so the operator can assign unique tiebreaker values:

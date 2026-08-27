@@ -1904,7 +1904,7 @@ spock_init_failover_slot(void)
 		return;
 
 #if PG_VERSION_NUM >= 180000
-	/*
+	/*----------
 	 * PostgreSQL 18 natively synchronizes logical replication slots to
 	 * physical standbys via sync_replication_slots = on (slotsync worker)
 	 * and provides synchronized_standby_slots for walsender hold-back.

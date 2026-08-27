@@ -393,7 +393,7 @@ retry:
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
 
-	/*
+	/*----------
 	 * Mark the slot with (FAILOVER) when the *remote* provider is PG17+.
 	 * PG17+ supports logical slot synchronization to physical standbys via
 	 * sync_replication_slots = on.  PG17+ uses parenthesised option syntax:
