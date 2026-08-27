@@ -108,8 +108,8 @@ typedef struct SpockContext
 	LWLock	   *apply_group_master_lock;
 
 	/*
-	 * Pause mechanism for apply workers during slot creation.
-	 * Non-zero signals workers to sleep on pause_cv until cleared.
+	 * Pause mechanism for apply workers during slot creation. Non-zero
+	 * signals workers to sleep on pause_cv until cleared.
 	 */
 	pg_atomic_uint32 pause_apply;
 	ConditionVariable pause_cv;

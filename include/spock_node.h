@@ -57,7 +57,7 @@ typedef struct SpockSubscription
 	XLogRecPtr	skiplsn;		/* All changes finished at this LSN are
 								 * skipped */
 	List	   *skip_schema;	/* Array of schema names to skip */
-	TimestampTz	created_at;	/* When this subscription was created */
+	TimestampTz created_at;		/* When this subscription was created */
 } SpockSubscription;
 
 /*
@@ -74,8 +74,10 @@ typedef enum ReservedObjectKind
 
 typedef enum ReservedObjectPurpose
 {
-	RESERVED_PURPOSE_DUMP,		/* exclude_from_dump: kept out of structure sync */
-	RESERVED_PURPOSE_REPSET,	/* block_in_repset: cannot join a replication set */
+	RESERVED_PURPOSE_DUMP,		/* exclude_from_dump: kept out of structure
+								 * sync */
+	RESERVED_PURPOSE_REPSET,	/* block_in_repset: cannot join a replication
+								 * set */
 	RESERVED_PURPOSE_DDL,		/* replicate_ddl = false (node-local) */
 	RESERVED_PURPOSE_EXTENSION_OWNED	/* built-in, blocked from repsets, DDL
 										 * still replicated: spock, snowflake */

@@ -154,8 +154,8 @@ static bool
 row_reserved_for_purpose(HeapTuple tuple, TupleDesc tuple_desc,
 						 ReservedObjectPurpose purpose)
 {
-	bool	isnull;
-	bool	flag;
+	bool		isnull;
+	bool		flag;
 
 	switch (purpose)
 	{
@@ -185,7 +185,7 @@ row_reserved_for_purpose(HeapTuple tuple, TupleDesc tuple_desc,
 			return !isnull && flag;
 	}
 	elog(ERROR, "unknown reserved object purpose %d", (int) purpose);
-	return false;	/* unreachable; keeps the compiler quiet */
+	return false;				/* unreachable; keeps the compiler quiet */
 }
 
 /* Open spock.reserved_object, failing closed with a hint if it is missing. */
@@ -219,13 +219,13 @@ bool
 spock_name_is_reserved(ReservedObjectKind kind, ReservedObjectPurpose purpose,
 					   const char *name)
 {
-	Relation		catalog_rel;
-	TupleDesc		tuple_desc;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
-									? "extension" : "schema";
-	bool			found = false;
+	Relation	catalog_rel;
+	TupleDesc	tuple_desc;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	const char *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
+		? "extension" : "schema";
+	bool		found = false;
 
 	if (name == NULL)
 		return false;
@@ -236,8 +236,8 @@ spock_name_is_reserved(ReservedObjectKind kind, ReservedObjectPurpose purpose,
 	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		bool	isnull;
-		char   *row_kind;
+		bool		isnull;
+		char	   *row_kind;
 
 		if (strcmp(NameStr(*DatumGetName(heap_getattr(tuple, Anum_reserved_name,
 													  tuple_desc, &isnull))),
@@ -271,13 +271,13 @@ List *
 spock_reserved_object_names(ReservedObjectKind kind,
 							ReservedObjectPurpose purpose)
 {
-	Relation		catalog_rel;
-	TupleDesc		tuple_desc;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	List		   *names = NIL;
-	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
-									? "extension" : "schema";
+	Relation	catalog_rel;
+	TupleDesc	tuple_desc;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	List	   *names = NIL;
+	const char *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
+		? "extension" : "schema";
 
 	catalog_rel = open_reserved_object(AccessShareLock);
 	tuple_desc = RelationGetDescr(catalog_rel);
@@ -285,8 +285,8 @@ spock_reserved_object_names(ReservedObjectKind kind,
 	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		bool	isnull;
-		char   *row_kind;
+		bool		isnull;
+		char	   *row_kind;
 
 		row_kind = TextDatumGetCString(heap_getattr(tuple, Anum_reserved_kind,
 													tuple_desc, &isnull));
@@ -302,8 +302,8 @@ spock_reserved_object_names(ReservedObjectKind kind,
 
 		names = lappend(names,
 						pstrdup(NameStr(*DatumGetName(
-							heap_getattr(tuple, Anum_reserved_name,
-										 tuple_desc, &isnull)))));
+													  heap_getattr(tuple, Anum_reserved_name,
+																   tuple_desc, &isnull)))));
 	}
 
 	systable_endscan(scan);
@@ -373,15 +373,15 @@ create_node(SpockNode *node)
 	/*
 	 * Detect node_id hash collisions before insertion.  The id is a 16-bit
 	 * hash of the node name, so two different names can produce the same
-	 * value.  A collision causes replication-origin ambiguity between the
-	 * two nodes.
+	 * value.  A collision causes replication-origin ambiguity between the two
+	 * nodes.
 	 */
 	existing = get_node(node->id, true);
 	if (existing != NULL)
 		elog(ERROR,
-				"node id %u (computed from name \"%s\") collides with existing "
-				"node \"%s\"; rename this node to resolve the collision",
-				node->id, node->name, existing->name);
+			 "node id %u (computed from name \"%s\") collides with existing "
+			 "node \"%s\"; rename this node to resolve the collision",
+			 node->id, node->name, existing->name);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -1312,6 +1312,7 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		 * context that owns this SpockSubscription.
 		 */
 		Interval   *src = DatumGetIntervalP(d);
+
 		sub->apply_delay = (Interval *) palloc(sizeof(Interval));
 		memcpy(sub->apply_delay, src, sizeof(Interval));
 	}

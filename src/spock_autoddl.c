@@ -103,8 +103,9 @@ spock_autoddl_process(PlannedStmt *pstmt,
 		PushActiveSnapshot(GetTransactionSnapshot());
 
 	/*
-	 * Elevate access rights: Utility hook is called under the session user, who
-	 * does not necessarily have access permission to Spock extension objects.
+	 * Elevate access rights: Utility hook is called under the session user,
+	 * who does not necessarily have access permission to Spock extension
+	 * objects.
 	 */
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
@@ -115,8 +116,8 @@ spock_autoddl_process(PlannedStmt *pstmt,
 		goto end;
 
 	/*
-	 * Refuse DDL aimed at a built-in extension-owned schema before anything is
-	 * queued.  This is a post-execution hook, so the ERROR aborts the
+	 * Refuse DDL aimed at a built-in extension-owned schema before anything
+	 * is queued.  This is a post-execution hook, so the ERROR aborts the
 	 * transaction and rolls the statement back.
 	 */
 	spock_guard_extension_owned_ddl(parsetree);
@@ -164,14 +165,14 @@ end:
 void
 add_ddl_to_repset(Node *parsetree)
 {
-	Relation		targetrel;
+	Relation	targetrel;
 	SpockLocalNode *node;
-	Oid				reloid = InvalidOid;
-	RangeVar	   *relation = NULL;
-	List		   *reloids = NIL;
-	ListCell	   *lc;
-	bool			missing_ok = false;
-	bool			check_alter_stickiness = false;
+	Oid			reloid = InvalidOid;
+	RangeVar   *relation = NULL;
+	List	   *reloids = NIL;
+	ListCell   *lc;
+	bool		missing_ok = false;
+	bool		check_alter_stickiness = false;
 	AlterTableStmt *atstmt;
 
 	if (!spock_include_ddl_repset)
@@ -248,7 +249,7 @@ extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
 				}
 				else if (atstmt->objtype == OBJECT_INDEX)
 				{
-					ListCell *cell;
+					ListCell   *cell;
 
 					/*
 					 * ALTER INDEX ... ATTACH PARTITION may complete a
@@ -261,7 +262,7 @@ extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
 
 						if (cmd->subtype == AT_AttachPartition)
 						{
-							Relation indrel;
+							Relation	indrel;
 
 							indrel = relation_openrv(atstmt->relation,
 													 AccessShareLock);
@@ -357,8 +358,8 @@ static void
 apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 							   AlterTableStmt *atstmt)
 {
-	Relation		targetrel;
-	SpockRepSet	   *repset;
+	Relation	targetrel;
+	SpockRepSet *repset;
 
 	targetrel = RelationIdGetRelation(reloid);
 
@@ -412,8 +413,8 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 	if (atstmt != NULL)
 	{
 		AlterPkRiChange pkchange;
-		bool			in_any_upd_del;
-		bool			in_any_custom;
+		bool		in_any_upd_del;
+		bool		in_any_custom;
 
 		pkchange = classify_alter_pkri_change(atstmt, targetrel);
 
@@ -431,10 +432,10 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 			if (in_any_upd_del)
 			{
 				/*
-				 * One or more UPD/DEL memberships need the now-missing
-				 * PK/RI. Loud-warn only when a custom membership is in
-				 * play, since pure default-routed tables already produce
-				 * an INFO from the standard remove+add flow.
+				 * One or more UPD/DEL memberships need the now-missing PK/RI.
+				 * Loud-warn only when a custom membership is in play, since
+				 * pure default-routed tables already produce an INFO from the
+				 * standard remove+add flow.
 				 */
 				if (in_any_custom)
 					ereport(WARNING,
@@ -455,7 +456,7 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 			}
 			/* else: no custom, no UPD/DEL — fall through */
 		}
-		else	/* PKRI_ADDED */
+		else					/* PKRI_ADDED */
 		{
 			if (in_any_custom)
 			{
@@ -546,6 +547,7 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 				}
 				break;
 			case AT_AddColumn:
+
 				/*
 				 * "ALTER TABLE ... ADD COLUMN x int PRIMARY KEY" arrives as
 				 * AT_AddColumn with the PRIMARY KEY embedded in the
@@ -584,11 +586,12 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 						/*
 						 * REPLICA_IDENTITY_DEFAULT resets to "use the primary
 						 * key if one exists, otherwise nothing".  We cannot
-						 * determine the effective direction from the parse tree
-						 * alone, so set both flags and let the post-state
-						 * disambiguate: if rd_pkindex is valid after the ALTER,
-						 * the table gains effective RI (PKRI_ADDED); if not,
-						 * it loses whatever RI was in effect (PKRI_DROPPED).
+						 * determine the effective direction from the parse
+						 * tree alone, so set both flags and let the
+						 * post-state disambiguate: if rd_pkindex is valid
+						 * after the ALTER, the table gains effective RI
+						 * (PKRI_ADDED); if not, it loses whatever RI was in
+						 * effect (PKRI_DROPPED).
 						 */
 						has_add_pkri_cmd = true;
 						has_drop_pkri_candidate = true;
@@ -597,11 +600,12 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 				break;
 			case AT_DropConstraint:
 			case AT_DropColumn:
+
 				/*
-				 * Pessimistic: any constraint or column drop could remove
-				 * the PK.  The post-state check (!post_has_pk_or_ri) is the
-				 * real filter; if the table still has a PK/RI after the
-				 * ALTER, PKRI_UNCHANGED is returned regardless.
+				 * Pessimistic: any constraint or column drop could remove the
+				 * PK.  The post-state check (!post_has_pk_or_ri) is the real
+				 * filter; if the table still has a PK/RI after the ALTER,
+				 * PKRI_UNCHANGED is returned regardless.
 				 */
 				has_drop_pkri_candidate = true;
 				break;
@@ -657,7 +661,7 @@ classify_repset_membership(Oid nodeid, Oid reloid,
 			*in_any_upd_del = true;
 
 		if (*in_any_upd_del && *in_any_custom)
-			break;	/* both flags are now in their terminal state */
+			break;				/* both flags are now in their terminal state */
 	}
 }
 

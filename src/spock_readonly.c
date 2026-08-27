@@ -65,8 +65,8 @@ spockro_terminate_active_transactions(PG_FUNCTION_ARGS)
 #if PG_VERSION_NUM >= 190000
 		/*
 		 * PostgreSQL 19 replaced CancelVirtualTransaction() with
-		 * SignalRecoveryConflictWithVirtualXID() and moved the conflict reason
-		 * into the RecoveryConflictReason enum.
+		 * SignalRecoveryConflictWithVirtualXID() and moved the conflict
+		 * reason into the RecoveryConflictReason enum.
 		 */
 		(void) SignalRecoveryConflictWithVirtualXID(tvxid[i],
 													RECOVERY_CONFLICT_SNAPSHOT);
@@ -90,15 +90,15 @@ spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate
 	 * If spock.readonly is set, enforce Postgres core restriction for the
 	 * following query. We actively employ the fact that the core uses the
 	 * XactReadOnly value directly, not through the GetConfigOption function.
-	 * Also, we use this fact here to identify if XactReadOnly has been changed
-	 * by Spock or by external tools.
+	 * Also, we use this fact here to identify if XactReadOnly has been
+	 * changed by Spock or by external tools.
 	 */
 	if (spock_readonly >= READONLY_LOCAL && !superuser())
 		XactReadOnly = true;
 	else if (XactReadOnly)
 	{
 		const char *value =
-						GetConfigOption("transaction_read_only", false, false);
+			GetConfigOption("transaction_read_only", false, false);
 
 		if (strcmp(value, "off") == 0)
 			/* Spock imposed read-only. Restore the original state. */
@@ -125,7 +125,7 @@ spock_roExecutorStart(QueryDesc *queryDesc, int eflags)
 	else if (XactReadOnly)
 	{
 		const char *value =
-						GetConfigOption("transaction_read_only", false, false);
+			GetConfigOption("transaction_read_only", false, false);
 
 		if (strcmp(value, "off") == 0)
 			/* Spock imposed read-only. Restore the original state. */

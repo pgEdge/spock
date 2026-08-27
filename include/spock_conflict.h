@@ -70,8 +70,8 @@ typedef enum
 	SPOCK_CT_DELETE_MISSING,
 
 	/*
-	 * Unique to Spock, delete timestamp is earlier than an existing row.
-	 * Use a higher number so we don't conflict with PostgreSQL in the future.
+	 * Unique to Spock, delete timestamp is earlier than an existing row. Use
+	 * a higher number so we don't conflict with PostgreSQL in the future.
 	 */
 	SPOCK_CT_DELETE_EXISTS = 101
 
@@ -111,13 +111,13 @@ typedef enum
 
 
 extern bool spock_tuple_find_replidx(ResultRelInfo *relinfo,
-										 SpockTupleData *tuple,
-										 TupleTableSlot *oldslot,
-										 Oid *idxrelid);
+									 SpockTupleData *tuple,
+									 TupleTableSlot *oldslot,
+									 Oid *idxrelid);
 
-extern Oid spock_tuple_find_conflict(ResultRelInfo *relinfo,
-										 SpockTupleData *tuple,
-										 TupleTableSlot *oldslot);
+extern Oid	spock_tuple_find_conflict(ResultRelInfo *relinfo,
+									  SpockTupleData *tuple,
+									  TupleTableSlot *oldslot);
 
 extern bool get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple,
 							 ItemPointer tid, TransactionId *xmin,
@@ -164,4 +164,4 @@ extern void tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc,
 								HeapTuple tuple);
 extern uint64 spock_cleanup_resolutions(void);
 
-#endif /* SPOCK_CONFLICT_H */
+#endif							/* SPOCK_CONFLICT_H */

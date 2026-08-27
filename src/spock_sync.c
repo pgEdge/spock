@@ -191,8 +191,8 @@ build_exclude_schema_string(SpockSubscription *sub)
 
 		/*
 		 * Exclude unconditionally: we run on the subscriber but pg_dump reads
-		 * the provider (e.g. pgedge_ace exists only there on a fresh join), and
-		 * pg_dump ignores an exclude pattern that matches nothing.
+		 * the provider (e.g. pgedge_ace exists only there on a fresh join),
+		 * and pg_dump ignores an exclude pattern that matches nothing.
 		 */
 		arg = psprintf("--exclude-schema=%s", schema_name);
 		lst = lappend(lst, arg);
@@ -203,7 +203,7 @@ build_exclude_schema_string(SpockSubscription *sub)
 	{
 		foreach(lc, sub->skip_schema)
 		{
-			const char   *schema_name = (const char *) lfirst(lc);
+			const char *schema_name = (const char *) lfirst(lc);
 
 			if (!OidIsValid(LookupExplicitNamespace(schema_name, true)))
 				continue;
@@ -237,7 +237,7 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	get_pg_executable(PGDUMP_BINARY, pg_dump);
 
 	args = lappend(args, pg_dump);
-	args = lappend(args, "-Fc"); /* custom format */
+	args = lappend(args, "-Fc");	/* custom format */
 	args = lappend(args, "-s"); /* schema only */
 
 	arg = psprintf("--snapshot=%s", snapshot);
@@ -273,10 +273,10 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 						pg_dump)));
 
 	/*
-	 * Allocations have been made in the transaction context. Hence, don't bother
-	 * freeing memory - it will be released soon.
-	 * Also, some elements in the args list are string literals, so freeing
-	 * the list would be unsafe anyway.
+	 * Allocations have been made in the transaction context. Hence, don't
+	 * bother freeing memory - it will be released soon. Also, some elements
+	 * in the args list are string literals, so freeing the list would be
+	 * unsafe anyway.
 	 */
 }
 
@@ -495,9 +495,9 @@ adjust_progress_info(PGconn *origin_conn)
 		for (rno = 0; rno < PQntuples(originRes); rno++)
 		{
 			SpockApplyProgress *sap =
-								MemoryContextAlloc(CacheMemoryContext,
-												   sizeof(SpockApplyProgress));
-			MemoryContext		oldctx;
+				MemoryContextAlloc(CacheMemoryContext,
+								   sizeof(SpockApplyProgress));
+			MemoryContext oldctx;
 
 			/*
 			 * Update the remote node's progress entry to what our sync
@@ -554,6 +554,7 @@ adjust_progress_info(PGconn *origin_conn)
 				Assert(IS_VALID_TIMESTAMP(sap->last_updated_ts));
 
 				if (sap->last_updated_ts < sap->remote_commit_ts)
+
 					/*
 					 * Complaining at the end of the sync we shouldn't flood
 					 * the log
@@ -569,7 +570,7 @@ adjust_progress_info(PGconn *origin_conn)
 			}
 			sap->updated_by_decode = updated_by_decode[0] == 't',
 
-			oldctx = MemoryContextSwitchTo(CacheMemoryContext);
+				oldctx = MemoryContextSwitchTo(CacheMemoryContext);
 			resultList = lappend(resultList, sap);
 			MemoryContextSwitchTo(oldctx);
 
@@ -608,9 +609,9 @@ adjust_progress_info(PGconn *origin_conn)
  */
 static char *
 spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
-								   const char *slot_name,
-								   Oid origin_node_id, Oid subscriber_node_id,
-								   XLogRecPtr *lsn_out, List **progress_out)
+									const char *slot_name,
+									Oid origin_node_id, Oid subscriber_node_id,
+									XLogRecPtr *lsn_out, List **progress_out)
 {
 	StringInfoData query;
 	PGresult   *res;
@@ -618,14 +619,18 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	List	   *progress_list = NIL;
 	int			nrows;
 	int			rno;
-	/* Column indices in the result: lsn(0), snapshot(1) are skipped; GP_* start at 2 */
-	const int	COL_OFFSET = 2;	/* GP_* indices start at COL_OFFSET */
+
+	/*
+	 * Column indices in the result: lsn(0), snapshot(1) are skipped; GP_*
+	 * start at 2
+	 */
+	const int	COL_OFFSET = 2; /* GP_* indices start at COL_OFFSET */
 
 	initStringInfo(&query);
 
 	/*
-	 * Drop an existing inactive slot so we can re-create it cleanly.
-	 * Ignore errors (the slot may not exist, which is fine).
+	 * Drop an existing inactive slot so we can re-create it cleanly. Ignore
+	 * errors (the slot may not exist, which is fine).
 	 */
 	appendStringInfo(&query,
 					 "SELECT pg_drop_replication_slot('%s') "
@@ -652,10 +657,11 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 
 	/*
 	 * Create the slot via the replication protocol.  This returns a snapshot
-	 * consistent with the slot's WAL position — the correct snapshot for COPY.
+	 * consistent with the slot's WAL position — the correct snapshot for
+	 * COPY.
 	 *
-	 * Mark the slot with (FAILOVER) when the remote provider is PG17+.
-	 * Detect the version on the SQL connection (conn), held open anyway.
+	 * Mark the slot with (FAILOVER) when the remote provider is PG17+. Detect
+	 * the version on the SQL connection (conn), held open anyway.
 	 */
 	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
 					 slot_name, "spock_output");
@@ -690,7 +696,7 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	}
 
 	*lsn_out = DatumGetLSN(DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,
-							CStringGetDatum(PQgetvalue(res, 0, 1))));
+												   CStringGetDatum(PQgetvalue(res, 0, 1))));
 	snapshot = pstrdup(PQgetvalue(res, 0, 2));
 	PQclear(res);
 
@@ -698,8 +704,8 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 		 slot_name, LSN_FORMAT_ARGS(*lsn_out), snapshot);
 
 	/*
-	 * Import the slot's snapshot into a REPEATABLE READ transaction.
-	 * This is the snapshot the COPY will use.
+	 * Import the slot's snapshot into a REPEATABLE READ transaction. This is
+	 * the snapshot the COPY will use.
 	 */
 	appendStringInfo(&query,
 					 "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ; "
@@ -728,9 +734,11 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	if (nrows < 1)
 		elog(ERROR, "spock.read_peer_progress returned no rows");
 
-	/* Row 0 is the header row: lsn + snapshot, progress fields all NULL.
+	/*
+	 * Row 0 is the header row: lsn + snapshot, progress fields all NULL.
 	 * lsn_out and snapshot are already set from the replication protocol;
-	 * just log for debugging.  Skip COL_LSN/COL_SNAP from SQL result. */
+	 * just log for debugging.  Skip COL_LSN/COL_SNAP from SQL result.
+	 */
 	elog(LOG, "SPOCK cswp slot=%s lsn=%X/%X snapshot=%s peers=%d",
 		 slot_name, LSN_FORMAT_ARGS(*lsn_out), snapshot, nrows - 1);
 
@@ -738,28 +746,28 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	for (rno = 1; rno < nrows; rno++)
 	{
 		SpockApplyProgress *sap;
-		MemoryContext		oldctx;
-		char   *remote_node_id_str;
-		char   *remote_commit_ts_str;
-		char   *remote_commit_lsn_str;
-		char   *remote_insert_lsn_str;
-		char   *last_updated_ts_str;
+		MemoryContext oldctx;
+		char	   *remote_node_id_str;
+		char	   *remote_commit_ts_str;
+		char	   *remote_commit_lsn_str;
+		char	   *remote_insert_lsn_str;
+		char	   *last_updated_ts_str;
 
 		if (PQgetisnull(res, rno, COL_OFFSET + GP_REMOTE_NODE_ID))
-			continue;	/* shouldn't happen but be safe */
+			continue;			/* shouldn't happen but be safe */
 
 		sap = (SpockApplyProgress *) MemoryContextAlloc(CacheMemoryContext,
 														sizeof(SpockApplyProgress));
 		oldctx = MemoryContextSwitchTo(CacheMemoryContext);
 
-		sap->key.dbid			= MyDatabaseId;
-		sap->key.node_id		= MySubscription->target->id;
-		remote_node_id_str		= PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_NODE_ID);
-		sap->key.remote_node_id	= atooid(remote_node_id_str);
+		sap->key.dbid = MyDatabaseId;
+		sap->key.node_id = MySubscription->target->id;
+		remote_node_id_str = PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_NODE_ID);
+		sap->key.remote_node_id = atooid(remote_node_id_str);
 		Assert(OidIsValid(sap->key.remote_node_id));
 
-		sap->remote_commit_ts	= 0;
-		sap->prev_remote_ts		= 0;
+		sap->remote_commit_ts = 0;
+		sap->prev_remote_ts = 0;
 		if (!PQgetisnull(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_TS))
 		{
 			remote_commit_ts_str = PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_TS);
@@ -767,15 +775,15 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 		}
 		sap->prev_remote_ts = sap->remote_commit_ts;
 
-		remote_commit_lsn_str	= PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_LSN);
-		sap->remote_commit_lsn	= str_to_lsn(remote_commit_lsn_str);
+		remote_commit_lsn_str = PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_LSN);
+		sap->remote_commit_lsn = str_to_lsn(remote_commit_lsn_str);
 
-		remote_insert_lsn_str	= PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_INSERT_LSN);
-		sap->remote_insert_lsn	= str_to_lsn(remote_insert_lsn_str);
+		remote_insert_lsn_str = PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_INSERT_LSN);
+		sap->remote_insert_lsn = str_to_lsn(remote_insert_lsn_str);
 
-		sap->received_lsn		= sap->remote_commit_lsn;
+		sap->received_lsn = sap->remote_commit_lsn;
 
-		sap->last_updated_ts	= 0;
+		sap->last_updated_ts = 0;
 		if (!PQgetisnull(res, rno, COL_OFFSET + GP_LAST_UPDATED_TS))
 		{
 			last_updated_ts_str = PQgetvalue(res, rno, COL_OFFSET + GP_LAST_UPDATED_TS);
@@ -795,9 +803,9 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	PQclear(res);
 
 	/*
-	 * Resume apply workers now that slot and progress are captured.
-	 * The REPEATABLE READ transaction (and its snapshot) remain open
-	 * for the COPY phase; the workers can resume safely.
+	 * Resume apply workers now that slot and progress are captured. The
+	 * REPEATABLE READ transaction (and its snapshot) remain open for the COPY
+	 * phase; the workers can resume safely.
 	 */
 	res = PQexec(conn, "SELECT spock.resume_apply_workers()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -820,7 +828,7 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 static void
 spock_release_slot_snapshot(PGconn *conn)
 {
-	PGresult *res = PQexec(conn, "ROLLBACK");
+	PGresult   *res = PQexec(conn, "ROLLBACK");
 
 	PQclear(res);
 	PQfinish(conn);
@@ -879,8 +887,8 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 
 	/*
 	 * Set correct origin if target db supports it. We must do this before
-	 * starting the transaction otherwise the status code below would get
-	 * much more complicated.
+	 * starting the transaction otherwise the status code below would get much
+	 * more complicated.
 	 */
 	if (PQserverVersion(conn) >= 90500)
 	{
@@ -1247,10 +1255,9 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 	/*
 	 * Update replication progress. We must do it after commit of the COPY.
 	 *
-	 * NOTE:
-	 * It is not obvious we need to arrange progress in case of accidental
-	 * single-table re-sync. But while this machinery serves information goals
-	 * only we just follow the initial logic.
+	 * NOTE: It is not obvious we need to arrange progress in case of
+	 * accidental single-table re-sync. But while this machinery serves
+	 * information goals only we just follow the initial logic.
 	 */
 	spock_group_progress_update_list(progress_entries_list);
 }
@@ -1281,8 +1288,8 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	start_copy_origin_tx(origin_conn, origin_snapshot);
 
 	/*
-	 * Read progress info within the same snapshot used for COPY so that
-	 * the LSN values are consistent with the data we are about to copy.
+	 * Read progress info within the same snapshot used for COPY so that the
+	 * LSN values are consistent with the data we are about to copy.
 	 */
 	if (progress_out)
 		*progress_out = adjust_progress_info(origin_conn);
@@ -1315,7 +1322,7 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		StartTransactionCommand();
 		{
 			List	   *reserved = spock_reserved_object_names(RESERVED_KIND_SCHEMA,
-														   RESERVED_PURPOSE_REPSET);
+															   RESERVED_PURPOSE_REPSET);
 			ListCell   *lc_res;
 			MemoryContext txcxt = MemoryContextSwitchTo(synccxt);
 
@@ -1514,8 +1521,9 @@ spock_sync_subscription(SpockSubscription *sub)
 		 * rather than let the worker crash-loop on every restart.  Checked
 		 * before the replication connection and slot are created.  No
 		 * transaction is open (the switch above committed its own), so
-		 * spock_disable_subscription() commits its own and the disable survives
-		 * the FATAL; origin_conn is left open to keep remoteversion_str valid.
+		 * spock_disable_subscription() commits its own and the disable
+		 * survives the FATAL; origin_conn is left open to keep
+		 * remoteversion_str valid.
 		 */
 		if (SyncKindStructure(sync->kind) &&
 			!upstream_version_supports_structure_sync(origin_conn))
@@ -1544,20 +1552,20 @@ spock_sync_subscription(SpockSubscription *sub)
 												 sub->name, "snap");
 
 		/*
-		 * Pause apply workers, create slot via replication protocol
-		 * (returns snapshot consistent with slot's WAL position),
-		 * read peer progress, and resume workers.
+		 * Pause apply workers, create slot via replication protocol (returns
+		 * snapshot consistent with slot's WAL position), read peer progress,
+		 * and resume workers.
 		 */
 		PG_TRY();
 		{
 			snapshot = spock_create_slot_and_read_progress(
-									origin_conn,
-									origin_conn_repl,
-									sub->slot_name,
-									MySubscription->origin->id,
-									MySubscription->target->id,
-									&lsn,
-									&progress_entries_list);
+														   origin_conn,
+														   origin_conn_repl,
+														   sub->slot_name,
+														   MySubscription->origin->id,
+														   MySubscription->target->id,
+														   &lsn,
+														   &progress_entries_list);
 		}
 		PG_CATCH();
 		{
@@ -1567,8 +1575,8 @@ spock_sync_subscription(SpockSubscription *sub)
 			/*
 			 * CopyErrorData() requires that we are NOT running in
 			 * ErrorContext, otherwise its assertion in elog.c trips on
-			 * cassert builds and the apply worker dies with SIGABRT.
-			 * Switch into our long-lived sync context first.
+			 * cassert builds and the apply worker dies with SIGABRT. Switch
+			 * into our long-lived sync context first.
 			 */
 			savecxt = MemoryContextSwitchTo(myctx);
 			edata = CopyErrorData();
@@ -1578,13 +1586,16 @@ spock_sync_subscription(SpockSubscription *sub)
 				 sub->name, sub->slot_name,
 				 edata->message ? edata->message : "");
 
-			/* Best-effort resume of apply workers on the remote node.
-			 * If the connection is broken this will fail silently —
-			 * the workers' CV timeout will recover them. */
+			/*
+			 * Best-effort resume of apply workers on the remote node. If the
+			 * connection is broken this will fail silently — the workers'
+			 * CV timeout will recover them.
+			 */
 			if (origin_conn && PQstatus(origin_conn) == CONNECTION_OK)
 			{
-				PGresult *rres = PQexec(origin_conn,
-										"SELECT spock.resume_apply_workers()");
+				PGresult   *rres = PQexec(origin_conn,
+										  "SELECT spock.resume_apply_workers()");
+
 				if (rres)
 					PQclear(rres);
 			}
@@ -1595,10 +1606,12 @@ spock_sync_subscription(SpockSubscription *sub)
 		}
 		PG_END_TRY();
 
-		/* origin_conn transaction remains open — snapshot held for COPY.
-		 * Keep origin_conn_repl open too — the exported snapshot file
-		 * in pg_snapshots/ is tied to this connection and needed by
-		 * pg_dump during structure sync. */
+		/*
+		 * origin_conn transaction remains open — snapshot held for COPY.
+		 * Keep origin_conn_repl open too — the exported snapshot file in
+		 * pg_snapshots/ is tied to this connection and needed by pg_dump
+		 * during structure sync.
+		 */
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
@@ -1790,7 +1803,10 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	 */
 	if (sync->status != SYNC_STATUS_INIT)
 	{
-		/* We don't use the if-branch at the moment. Just check to be paranoid. */
+		/*
+		 * We don't use the if-branch at the moment. Just check to be
+		 * paranoid.
+		 */
 		Assert(sync->stop_on_error);
 
 		/*
@@ -2146,12 +2162,11 @@ syncstatus_fromtuple(HeapTuple tuple, TupleDesc desc)
 	{
 		/*
 		 * XXX: Adding a parameter to a stable extension's UI and DB table
-		 * always needs careful coding. So, let's do it step-by-step
-		 * and for now change defaults and stop attempting single table
-		 * synchronisation on an error.
-		 * Keep it false for subscriptions syncing purposes. We don't really use
-		 * it in subscription syncing code now - it should be covered by the
-		 * following commits.
+		 * always needs careful coding. So, let's do it step-by-step and for
+		 * now change defaults and stop attempting single table
+		 * synchronisation on an error. Keep it false for subscriptions
+		 * syncing purposes. We don't really use it in subscription syncing
+		 * code now - it should be covered by the following commits.
 		 */
 		sync->stop_on_error = true;
 	}
