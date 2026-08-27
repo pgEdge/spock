@@ -3833,7 +3833,7 @@ stream_replay:
 		MemoryContextSwitchTo(MessageContext);
 		edata = CopyErrorData();
 
-		/*
+		/*----------
 		 * Connection-class errors must NOT enter the apply-side replay
 		 * path (need_replay / use_try_block).  Two reasons:
 		 *
@@ -3956,7 +3956,7 @@ stream_replay:
 			PG_RE_THROW();
 		}
 
-		/*
+		/*----------
 		 * use_try_block == true indicates either:
 		 * 1. An exception occurred during a DML operation,
 		 * 2. Or we were replaying previously failed actions (via need_replay).

@@ -340,7 +340,7 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 
 	if (!SpockGroupHash || !SpockCtx)
 	{
-		/*
+		/*----------
 		 * This should never happen in normal operation. The shared memory
 		 * structures are initialized during postmaster startup via
 		 * shmem_startup_hook. If we hit this, it likely indicates:

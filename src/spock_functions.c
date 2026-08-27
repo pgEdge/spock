@@ -4052,7 +4052,7 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 	/* Signal apply workers to pause at their next between-transaction point. */
 	pg_atomic_write_u32(&SpockCtx->pause_apply, 1);
 
-	/*
+	/*----------
 	 * Wait until all apply workers in this database have either:
 	 * - no active transaction (xid invalid = between transactions or idle), or
 	 * - set their paused flag (spinning on the pause_apply flag).

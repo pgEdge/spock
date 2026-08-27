@@ -391,7 +391,7 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 	if (targetrel->rd_indexvalid == 0)
 		RelationGetIndexList(targetrel);
 
-	/*
+	/*----------
 	 * ALTER TABLE stickiness.
 	 *
 	 *	PKRI_UNCHANGED	- leave membership entirely alone.
