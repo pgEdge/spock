@@ -2627,12 +2627,103 @@ name_in_list(List *names, const char *name)
 	return false;
 }
 
+/* Does this DROP name relations, i.e. objects a RangeVar can address? */
+static bool
+drop_type_is_relation(ObjectType removeType)
+{
+	return removeType == OBJECT_TABLE || removeType == OBJECT_INDEX ||
+		removeType == OBJECT_SEQUENCE || removeType == OBJECT_VIEW ||
+		removeType == OBJECT_MATVIEW || removeType == OBJECT_FOREIGN_TABLE;
+}
+
+/*
+ * Schemas of the relations a DROP names, resolved before the DROP executed.
+ *
+ * AutoDDL's hook is post-execution, and by then an unqualified DROP target
+ * cannot be classified: the relation is gone, so the parse tree's RangeVar
+ * still carries schemaname == NULL and nothing else says which schema it was
+ * in.  So `SET search_path TO snowflake; DROP TABLE guard_seed` walked past
+ * spock_guard_extension_owned_ddl() and was queued for replication, while the
+ * qualified spelling of the same statement was refused.
+ *
+ * spock_ProcessUtility resolves the targets while they still exist and leaves
+ * the answers here: one entry per drop->objects element, in the same order,
+ * NULL where the name was already qualified or did not resolve.
+ */
+static List *drop_target_nsps = NIL;
+
+/*
+ * Resolve the DROP targets that only the search_path can identify.
+ *
+ * Returns NIL -- reading no catalog at all -- for everything that cannot need
+ * it: a non-DROP, a DROP of something other than a relation, a DROP whose
+ * names are all schema-qualified, or a session where AutoDDL is not going to
+ * look at the statement anyway.
+ */
+List *
+spock_resolve_drop_target_schemas(Node *stmt)
+{
+	DropStmt   *drop;
+	ListCell   *cell;
+	List	   *result = NIL;
+	bool		any_resolved = false;
+
+	if (!spock_enable_ddl_replication || spock_replication_repair_mode)
+		return NIL;
+	if (in_spock_queue_ddl_command || in_spock_replicate_ddl_command)
+		return NIL;
+	if (stmt == NULL || !IsA(stmt, DropStmt))
+		return NIL;
+
+	drop = (DropStmt *) stmt;
+	if (!drop_type_is_relation(drop->removeType))
+		return NIL;
+
+	foreach(cell, drop->objects)
+	{
+		RangeVar   *rv = makeRangeVarFromNameList((List *) lfirst(cell));
+		char	   *nspname = NULL;
+
+		if (rv->schemaname == NULL)
+		{
+			/*
+			 * NoLock: this is a classification read, and the DROP takes the
+			 * lock it needs a moment later.  Acquiring one here would change
+			 * the lock order of every DROP for the sake of a check.
+			 */
+			Oid			relid = RangeVarGetRelid(rv, NoLock, true);
+
+			if (OidIsValid(relid))
+			{
+				nspname = get_namespace_name(get_rel_namespace(relid));
+				any_resolved = true;
+			}
+		}
+		result = lappend(result, nspname);
+	}
+
+	if (!any_resolved)
+	{
+		list_free(result);
+		return NIL;
+	}
+	return result;
+}
+
+/* Install a resolved-target list, returning the one it replaces. */
+List *
+spock_set_drop_target_schemas(List *schemas)
+{
+	List	   *prev = drop_target_nsps;
+
+	drop_target_nsps = schemas;
+	return prev;
+}
+
 /*
  * Are this DDL statement's target schemas reserved for purpose?  Only statement
  * types whose target schema is identifiable are classified; for all others this
- * returns false and the statement is handled as before.  Known gap: dropping a
- * relation by an unqualified name cannot be classified (the relation is
- * already gone).
+ * returns false and the statement is handled as before.
  *
  * match_all selects the quantifier over a multi-object DROP, and the two
  * callers need opposite ones:
@@ -2692,13 +2783,12 @@ stmt_schema_matches(Node *stmt, ReservedObjectPurpose purpose, bool match_all,
 				ListCell   *cell;
 				List	   *reserved;
 				bool		result = match_all;
+				int			idx = 0;
 
 				if (drop->objects == NIL)
 					return false;
 				if (drop->removeType != OBJECT_SCHEMA &&
-					drop->removeType != OBJECT_TABLE && drop->removeType != OBJECT_INDEX &&
-					drop->removeType != OBJECT_SEQUENCE && drop->removeType != OBJECT_VIEW &&
-					drop->removeType != OBJECT_MATVIEW && drop->removeType != OBJECT_FOREIGN_TABLE)
+					!drop_type_is_relation(drop->removeType))
 					return false;
 
 				/* One catalog read for the whole (possibly multi-object) DROP. */
@@ -2706,9 +2796,24 @@ stmt_schema_matches(Node *stmt, ReservedObjectPurpose purpose, bool match_all,
 													   purpose);
 				foreach(cell, drop->objects)
 				{
-					const char *schema = (drop->removeType == OBJECT_SCHEMA)
-						? strVal(lfirst(cell))
-						: makeRangeVarFromNameList((List *) lfirst(cell))->schemaname;
+					const char *schema;
+
+					if (drop->removeType == OBJECT_SCHEMA)
+						schema = strVal(lfirst(cell));
+					else
+					{
+						schema = makeRangeVarFromNameList((List *) lfirst(cell))->schemaname;
+
+						/*
+						 * Unqualified: the schema came from the search_path,
+						 * and the relation is gone by the time this runs.
+						 * Use what spock_ProcessUtility resolved before the
+						 * DROP executed.
+						 */
+						if (schema == NULL && idx < list_length(drop_target_nsps))
+							schema = (const char *) list_nth(drop_target_nsps, idx);
+					}
+					idx++;
 
 					if (name_in_list(reserved, schema) != match_all)
 					{

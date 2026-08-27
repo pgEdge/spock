@@ -277,7 +277,7 @@ AutoDDL has been refactored and hardened:
   statement whose target schema is one of the built-in extension-owned
   schemas now fails outright:
 
-  ```
+  ```text
   ERROR:  cannot run DDL against schema snowflake while DDL replication is enabled
   DETAIL:  The schema is managed by an extension and its objects are not replicated.
   HINT:  For a deliberate node-local change, run the statement with spock.enable_ddl_replication = off.

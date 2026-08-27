@@ -158,6 +158,8 @@ extern bool spock_auto_replicate_ddl(const char *query, List *replication_sets,
 									 Oid roleoid, Node *stmt);
 extern bool spock_schema_is_ddl_local(const char *nspname);
 extern void spock_guard_extension_owned_ddl(Node *stmt);
+extern List *spock_resolve_drop_target_schemas(Node *stmt);
+extern List *spock_set_drop_target_schemas(List *schemas);
 extern bool name_in_list(List *names, const char *name);
 
 /* spock_readonly.c */

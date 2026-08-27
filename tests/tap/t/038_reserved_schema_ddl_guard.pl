@@ -106,6 +106,29 @@ refused('DROP TABLE public.mixed_ok, snowflake.guard_seed',
         'snowflake', 'DROP mixing a guarded and an ordinary table');
 
 # --------------------------------------------------------------------------
+# An unqualified target, resolved through the search_path. The parse tree
+# carries no schema, and the relation is gone by the time the post-execution
+# hook looks, so this used to walk straight past the guard and queue the DROP
+# while the qualified spelling of the same statement was refused.
+# --------------------------------------------------------------------------
+refused('SET search_path TO snowflake, public; DROP TABLE guard_seed',
+        'snowflake', 'unqualified DROP through a guarded search_path');
+is(scalar_query(1,
+    "SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " .
+    "WHERE n.nspname = 'snowflake' AND c.relname = 'guard_seed')"),
+   't', 'the refused unqualified DROP left the table in place');
+
+my ($rc_mixed2, $out_mixed2) = psql_try(
+    'CREATE TABLE public.mixed_ok2 (id int primary key)');
+is($rc_mixed2, 0, "second control table for the mixed DROP created: $out_mixed2");
+refused('SET search_path TO snowflake, public; DROP TABLE public.mixed_ok2, guard_seed',
+        'snowflake', 'DROP mixing an ordinary table with an unqualified guarded one');
+is(scalar_query(1,
+    "SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " .
+    "WHERE n.nspname = 'public' AND c.relname = 'mixed_ok2')"),
+   't', 'the ordinary table in the refused mixed DROP survived too');
+
+# --------------------------------------------------------------------------
 # The statement was rolled back. This is a post-execution hook, so the ERROR
 # aborts the transaction and undoes the DDL rather than leaving it applied
 # locally and merely unreplicated.
@@ -164,6 +187,19 @@ is(scalar_query(1,
     "SELECT count(*) FROM spock.tables WHERE nspname = 'pgedge_ace' AND set_name IS NOT NULL"),
    '0', 'pgedge_ace.node_local still kept out of every replication set');
 
+# The same blind spot in the other direction: an unqualified DROP of a
+# node-local table used to be replicated, because the suppression check could
+# not tell which schema the bare name resolved to either.
+my ($rc_ace3, $out_ace3) = psql_try(
+    'CREATE TABLE pgedge_ace.node_local2 (id int primary key)');
+is($rc_ace3, 0, "second pgedge_ace table created: $out_ace3");
+my $queue_ace = scalar_query(1, 'SELECT count(*) FROM spock.queue');
+my ($rc_ace4, $out_ace4) = psql_try(
+    'SET search_path TO pgedge_ace; DROP TABLE node_local2');
+is($rc_ace4, 0, "unqualified DROP of a node-local table succeeds: $out_ace4");
+is(scalar_query(1, 'SELECT count(*) FROM spock.queue') - $queue_ace, 0,
+   'and it was not queued for replication');
+
 # lolor is reserved but neither blocked from repsets nor node-local, so its
 # DDL is ordinary and must pass through untouched.
 my ($rc_lolor, $out_lolor) = psql_try('CREATE SCHEMA lolor');
@@ -178,6 +214,15 @@ is($rc_pub, 0, "ordinary CREATE TABLE still succeeds: $out_pub");
 is(scalar_query(1,
     "SELECT set_name FROM spock.tables WHERE nspname = 'public' AND relname = 'guard_control'"),
    'default', 'ordinary table still auto-added to the default replication set');
+
+# ...including an unqualified DROP of one. Resolving the search_path for the
+# guard must not turn into a blanket block on bare names.
+my $queue_pub = scalar_query(1, 'SELECT count(*) FROM spock.queue');
+my ($rc_dpub, $out_dpub) = psql_try(
+    'SET search_path TO public; DROP TABLE guard_control');
+is($rc_dpub, 0, "unqualified DROP in an ordinary schema still succeeds: $out_dpub");
+cmp_ok(scalar_query(1, 'SELECT count(*) FROM spock.queue') - $queue_pub, '>=', 1,
+   'and it was still queued for replication');
 
 # --------------------------------------------------------------------------
 # CREATE/ALTER EXTENSION for a guarded schema is unaffected: AutoDDL is

@@ -175,6 +175,7 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 	Node	   *parsetree = pstmt->utilityStmt;
 	NodeTag		toplevel_stmt = nodeTag(parsetree);
 	bool		is_extension_drop;
+	List	   *save_drop_nsps;
 
 	dropping_spock_obj = false;
 
@@ -218,28 +219,51 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 	is_extension_drop = (nodeTag(parsetree) == T_DropStmt &&
 						 ((DropStmt *) parsetree)->removeType == OBJECT_EXTENSION);
 
-	if (is_extension_drop)
-	{
-		bool		save_in_extension_drop = in_spock_extension_drop;
+	/*
+	 * Resolve the schemas of any unqualified DROP target now, while the
+	 * relations still exist.  The AutoDDL hook below runs after the DROP, and
+	 * an unqualified name cannot be classified there: the relation is gone and
+	 * the parse tree never carried a schema.  Saved and restored around the
+	 * pair because DDL nests -- an event trigger is free to run its own.
+	 */
+	save_drop_nsps = spock_set_drop_target_schemas(
+						 spock_resolve_drop_target_schemas(parsetree));
 
-		in_spock_extension_drop = true;
-		PG_TRY();
+	PG_TRY();
+	{
+		if (is_extension_drop)
 		{
+			bool		save_in_extension_drop = in_spock_extension_drop;
+
+			in_spock_extension_drop = true;
+			PG_TRY();
+			{
+				spock_next_process_utility(pstmt, queryString, readOnlyTree,
+										   context, params, queryEnv, dest, qc);
+			}
+			PG_FINALLY();
+			{
+				in_spock_extension_drop = save_in_extension_drop;
+			}
+			PG_END_TRY();
+		}
+		else
 			spock_next_process_utility(pstmt, queryString, readOnlyTree,
 									   context, params, queryEnv, dest, qc);
-		}
-		PG_FINALLY();
-		{
-			in_spock_extension_drop = save_in_extension_drop;
-		}
-		PG_END_TRY();
-	}
-	else
-		spock_next_process_utility(pstmt, queryString, readOnlyTree,
-								   context, params, queryEnv, dest, qc);
 
-	/* Check for AutoDDL */
-	spock_autoddl_process(pstmt, queryString, context, toplevel_stmt);
+		/* Check for AutoDDL */
+		spock_autoddl_process(pstmt, queryString, context, toplevel_stmt);
+	}
+	PG_FINALLY();
+	{
+		/*
+		 * Restore only.  On the error path the context holding the list may
+		 * already have been reset, so freeing it here would be a use after
+		 * free; it goes away with the statement's context either way.
+		 */
+		(void) spock_set_drop_target_schemas(save_drop_nsps);
+	}
+	PG_END_TRY();
 }
 
 /*
