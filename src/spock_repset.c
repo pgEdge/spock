@@ -1166,7 +1166,7 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 
 	/* Open the relation. */
 #if PG_VERSION_NUM < 170000
-	LOCKTAG			tag;
+	LOCKTAG		tag;
 
 	SET_LOCKTAG_RELATION(tag, MyDatabaseId, reloid);
 	if (!LockOrStrongerHeldByMe(&tag, AccessShareLock))
@@ -1186,10 +1186,10 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	if (!check_relation_replicatable(targetrel, repset, skip_unreplicatable))
 	{
 		/*
-		 * Caller's lock, caller's problem: we opened with NoLock if it already
-		 * held one, so releasing here would be releasing something we never
-		 * took.  Bulk callers hand the lock back themselves once we tell them
-		 * the relation is not going in.
+		 * Caller's lock, caller's problem: we opened with NoLock if it
+		 * already held one, so releasing here would be releasing something we
+		 * never took.  Bulk callers hand the lock back themselves once we
+		 * tell them the relation is not going in.
 		 */
 		table_close(targetrel, NoLock);
 		return false;
@@ -1275,7 +1275,7 @@ replication_set_add_seq(Oid setid, Oid seqoid)
 
 	/* Open the relation. */
 #if PG_VERSION_NUM < 170000
-	LOCKTAG			tag;
+	LOCKTAG		tag;
 
 	SET_LOCKTAG_RELATION(tag, MyDatabaseId, seqoid);
 	if (!LockOrStrongerHeldByMe(&tag, AccessShareLock))

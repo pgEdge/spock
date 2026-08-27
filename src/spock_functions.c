@@ -486,7 +486,7 @@ spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
  */
 static void
 enforce_forwarding_exclusivity(Oid target_sub_id, const char *target_sub_name,
-								bool target_enabled, List *target_forward_origins)
+							   bool target_enabled, List *target_forward_origins)
 {
 	SpockLocalNode *localnode = get_local_node(true, false);
 	List	   *subs;
@@ -494,7 +494,8 @@ enforce_forwarding_exclusivity(Oid target_sub_id, const char *target_sub_name,
 	bool		target_forwards = target_enabled && list_length(target_forward_origins) > 0;
 
 	if (!target_enabled)
-		return;		/* a disabled target can never conflict with anything */
+		return;					/* a disabled target can never conflict with
+								 * anything */
 
 	subs = get_node_subscriptions(localnode->node->id, false);
 	foreach(lc, subs)
@@ -1060,7 +1061,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 	while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_END_OBJECT)
 	{
-		char   *key;
+		char	   *key;
 
 		if (r != WJB_KEY)
 			ereport(ERROR,
@@ -1072,7 +1073,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 		if (strcmp(key, "forward_origins") == 0 ||
 			strcmp(key, "skip_schema") == 0)
 		{
-			List   *result = NIL;
+			List	   *result = NIL;
 
 			r = JsonbIteratorNext(&it, &v, false);
 			if (r != WJB_BEGIN_ARRAY)
@@ -1083,7 +1084,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 			while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_END_ARRAY)
 			{
-				char   *elem;
+				char	   *elem;
 
 				if (r != WJB_ELEM || v.type != jbvString)
 					ereport(ERROR,
@@ -1116,7 +1117,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 		}
 		else if (strcmp(key, "apply_delay") == 0)
 		{
-			char   *delay_str;
+			char	   *delay_str;
 
 			r = JsonbIteratorNext(&it, &v, false);
 			if (r != WJB_VALUE || v.type != jbvString)
@@ -1126,10 +1127,10 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 			delay_str = pnstrdup(v.val.string.val, v.val.string.len);
 			sub->apply_delay = DatumGetIntervalP(
-				DirectFunctionCall3(interval_in,
-									CStringGetDatum(delay_str),
-									ObjectIdGetDatum(InvalidOid),
-									Int32GetDatum(-1)));
+												 DirectFunctionCall3(interval_in,
+																	 CStringGetDatum(delay_str),
+																	 ObjectIdGetDatum(InvalidOid),
+																	 Int32GetDatum(-1)));
 			changed = true;
 		}
 		else
@@ -1242,7 +1243,7 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 static void
 check_readonly_for_resync(const char *nspname, const char *relname)
 {
-	char	tablename[NAMEDATALEN * 2 + 2];
+	char		tablename[NAMEDATALEN * 2 + 2];
 
 	if (spock_readonly != READONLY_OFF)
 	{
@@ -1286,10 +1287,10 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	relname = RelationGetRelationName(rel);
 
 	/*
-	 * Check that the subscriber is in read-only mode BEFORE modifying
-	 * sync status or truncating. If it is readonly, the sync will fail.
-	 * With truncate=true this would cause data loss; without truncate
-	 * it causes an error loop.
+	 * Check that the subscriber is in read-only mode BEFORE modifying sync
+	 * status or truncating. If it is readonly, the sync will fail. With
+	 * truncate=true this would cause data loss; without truncate it causes an
+	 * error loop.
 	 */
 	check_readonly_for_resync(nspname, relname);
 
@@ -2009,17 +2010,17 @@ spock_replication_set_add_all_relations(Name repset_name,
 				char	   *extname;
 
 				/*
-				 * The same schema may be named twice in nsp_names, and a second
-				 * visit would try to insert a duplicate catalog row and abort
-				 * the whole call.
+				 * The same schema may be named twice in nsp_names, and a
+				 * second visit would try to insert a duplicate catalog row
+				 * and abort the whole call.
 				 */
 				existing_relations = lappend_oid(existing_relations, reloid);
 
 				/*
 				 * Lock the relation and confirm it is still there before we
-				 * touch it.  This scan runs on the catalog snapshot, so a DROP
-				 * TABLE that committed after it started is not reflected in the
-				 * tuple we are holding.
+				 * touch it.  This scan runs on the catalog snapshot, so a
+				 * DROP TABLE that committed after it started is not reflected
+				 * in the tuple we are holding.
 				 */
 				targetrel = try_table_open(reloid, AccessShareLock);
 				if (targetrel == NULL)
@@ -2030,8 +2031,8 @@ spock_replication_set_add_all_relations(Name repset_name,
 				 * A relation belonging to an extension no replication set may
 				 * draw from is passed over here rather than inside the add
 				 * routines, which raise an error: a relation we merely came
-				 * across while walking a schema should not cost the caller the
-				 * rest of that schema.
+				 * across while walking a schema should not cost the caller
+				 * the rest of that schema.
 				 */
 				extoid = getExtensionOfObject(RelationRelationId, reloid);
 				extname = OidIsValid(extoid) ? get_extension_name(extoid) : NULL;
@@ -2623,7 +2624,7 @@ name_in_list(List *names, const char *name)
 		return false;
 	foreach(lc, names)
 		if (strcmp((char *) lfirst(lc), name) == 0)
-			return true;
+		return true;
 	return false;
 }
 
@@ -2701,7 +2702,10 @@ stmt_schema_matches(Node *stmt, ReservedObjectPurpose purpose, bool match_all,
 					drop->removeType != OBJECT_MATVIEW && drop->removeType != OBJECT_FOREIGN_TABLE)
 					return false;
 
-				/* One catalog read for the whole (possibly multi-object) DROP. */
+				/*
+				 * One catalog read for the whole (possibly multi-object)
+				 * DROP.
+				 */
 				reserved = spock_reserved_object_names(RESERVED_KIND_SCHEMA,
 													   purpose);
 				foreach(cell, drop->objects)
@@ -2820,12 +2824,12 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	/*
 	 * Filter local commands and decide on search path setting.
 	 *
-	 * We label command as 'local' sometimes to state the fact that the protocol
-	 * does not support its replication.
+	 * We label command as 'local' sometimes to state the fact that the
+	 * protocol does not support its replication.
 	 */
 	switch (nodeTag(stmt))
 	{
-		/* Purely local commands */
+			/* Purely local commands */
 		case T_FetchStmt:
 		case T_NotifyStmt:
 		case T_ListenStmt:
@@ -2833,9 +2837,10 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			goto skip_ddl;
 			break;
 
-		/*
-		 * We don't want to replicate statements that run outside of transactions
-		 */
+			/*
+			 * We don't want to replicate statements that run outside of
+			 * transactions
+			 */
 		case T_CreateTableSpaceStmt:
 		case T_DropTableSpaceStmt:
 		case T_VacuumStmt:
@@ -2881,11 +2886,12 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 					goto skip_ddl;
 
 				/*
-				 * The defining query is re-executed verbatim on the subscriber.
-				 * If it reads a temporary relation -- at any nesting level --
-				 * it would fail there, so let the local command stand but skip
-				 * replication and say why.  isQueryUsingTempRelation() walks the
-				 * whole analysed query tree.
+				 * The defining query is re-executed verbatim on the
+				 * subscriber. If it reads a temporary relation -- at any
+				 * nesting level -- it would fail there, so let the local
+				 * command stand but skip replication and say why.
+				 * isQueryUsingTempRelation() walks the whole analysed query
+				 * tree.
 				 */
 				if (isQueryUsingTempRelation(castNode(Query, ctas->query)))
 				{
@@ -2936,46 +2942,47 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 #if PG_VERSION_NUM >= 190000
-		/*
-		 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
-		 * CLUSTER statement now parses into a RepackStmt whose target is a
-		 * VacuumRelation rather than a bare RangeVar.
-		 */
+
+			/*
+			 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
+			 * CLUSTER statement now parses into a RepackStmt whose target is
+			 * a VacuumRelation rather than a bare RangeVar.
+			 */
 		case T_RepackStmt:
-		{
-			RepackStmt	   *cstmt = (RepackStmt *) stmt;
-			RangeVar	   *cluster_rel = cstmt->relation ? cstmt->relation->relation : NULL;
+			{
+				RepackStmt *cstmt = (RepackStmt *) stmt;
+				RangeVar   *cluster_rel = cstmt->relation ? cstmt->relation->relation : NULL;
 #else
 		case T_ClusterStmt:
-		{
-			ClusterStmt	   *cstmt = (ClusterStmt *) stmt;
-			RangeVar	   *cluster_rel = cstmt->relation;
-#endif
-			bool			skip_cluster = true;
-
-			if (cluster_rel != NULL)
 			{
-				Relation	rel;
-				Oid			tableOid;
+				ClusterStmt *cstmt = (ClusterStmt *) stmt;
+				RangeVar   *cluster_rel = cstmt->relation;
+#endif
+				bool		skip_cluster = true;
 
-				/*
-				 * Single relation case may be allowed if it is not a
-				 * partitioned table. Don't care about errors - if we replicate
-				 * this command it means everything must be ok, or we are in
-				 * trouble and deserve an ERROR.
-				 */
-				tableOid = RangeVarGetRelidExtended(cluster_rel,
-												AccessShareLock, 0, NULL, NULL);
-				rel = table_open(tableOid, NoLock);
-				skip_cluster = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
-				table_close(rel, AccessShareLock);
+				if (cluster_rel != NULL)
+				{
+					Relation	rel;
+					Oid			tableOid;
+
+					/*
+					 * Single relation case may be allowed if it is not a
+					 * partitioned table. Don't care about errors - if we
+					 * replicate this command it means everything must be ok,
+					 * or we are in trouble and deserve an ERROR.
+					 */
+					tableOid = RangeVarGetRelidExtended(cluster_rel,
+														AccessShareLock, 0, NULL, NULL);
+					rel = table_open(tableOid, NoLock);
+					skip_cluster = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
+					table_close(rel, AccessShareLock);
+				}
+
+				if (skip_cluster)
+					goto skip_ddl;
+
+				add_search_path = false;
 			}
-
-			if (skip_cluster)
-				goto skip_ddl;
-
-			add_search_path = false;
-		}
 			break;
 
 		case T_AlterTableSpaceOptionsStmt:
@@ -3003,22 +3010,22 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				goto skip_ddl;
 			break;
 		case T_ReindexStmt:
-		{
-			ReindexStmt	   *rstmt = (ReindexStmt *) stmt;
-			bool			concurrently = false;
-
-			foreach(lc, rstmt->params)
 			{
-				DefElem    *opt = (DefElem *) lfirst(lc);
+				ReindexStmt *rstmt = (ReindexStmt *) stmt;
+				bool		concurrently = false;
 
-				if (strcmp(opt->defname, "concurrently") != 0)
-					continue;
-				concurrently = defGetBoolean(opt);
+				foreach(lc, rstmt->params)
+				{
+					DefElem    *opt = (DefElem *) lfirst(lc);
+
+					if (strcmp(opt->defname, "concurrently") != 0)
+						continue;
+					concurrently = defGetBoolean(opt);
+				}
+
+				if (concurrently)
+					goto skip_ddl;
 			}
-
-			if (concurrently)
-				goto skip_ddl;
-		}
 			break;
 
 		case T_DropStmt:
@@ -3049,7 +3056,8 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 													roleoid,
 													castNode(Query, estmt->query)->utilityStmt);
 
-				return false;	/* EXPLAIN without ANALYZE: nothing replicated. */
+				return false;	/* EXPLAIN without ANALYZE: nothing
+								 * replicated. */
 			}
 			break;
 
@@ -3059,8 +3067,8 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	}
 
 	/*
-	 * Report replication status. In quiet mode, downgrade INFO/WARNING to
-	 * LOG level to reduce output verbosity.
+	 * Report replication status. In quiet mode, downgrade INFO/WARNING to LOG
+	 * level to reduce output verbosity.
 	 */
 	if (warn)
 		elog(spock_enable_quiet_mode ? LOG : WARNING,
@@ -3779,8 +3787,8 @@ get_channel_stats(PG_FUNCTION_ARGS)
 		/*
 		 * Acquire spinlock before reading counter values to prevent torn
 		 * reads. The writer (handle_stats_counter) uses entry->mutex to
-		 * protect counter updates, so we must use the same lock for reads
-		 * to ensure atomic access to 64-bit counter values.
+		 * protect counter updates, so we must use the same lock for reads to
+		 * ensure atomic access to 64-bit counter values.
 		 */
 		SpinLockAcquire(&entry->mutex);
 		for (j = 0; j < SPOCK_STATS_NUM_COUNTERS; j++)
@@ -3815,12 +3823,12 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 
 	/*
 	 * In principle we could reset only specific channel statistics; but that
-	 * would be more complicated, and it's probably not worth the trouble.
-	 * So for now, just reset all entries.
+	 * would be more complicated, and it's probably not worth the trouble. So
+	 * for now, just reset all entries.
 	 */
-		hash_seq_init(&hash_seq, SpockHash);
-		while ((entry = hash_seq_search(&hash_seq)) != NULL)
-		{
+	hash_seq_init(&hash_seq, SpockHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
 		if (hash_search(SpockHash,
 						&entry->key,
 						HASH_REMOVE,
@@ -4016,8 +4024,8 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	 * directly.
 	 */
 #if PG_VERSION_NUM >= 170000
-	lsn = (LogLogicalMessage)(SPOCK_MESSAGE_PREFIX, (char *) &message,
-							  sizeof(message), transactional, true);
+	lsn = (LogLogicalMessage) (SPOCK_MESSAGE_PREFIX, (char *) &message,
+							   sizeof(message), transactional, true);
 #else
 	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *) &message,
 							sizeof(message), transactional);
@@ -4062,7 +4070,7 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 	 */
 	while (waited_ms < max_wait_ms)
 	{
-		bool	all_paused = true;
+		bool		all_paused = true;
 
 		for (i = 0; i < SpockCtx->total_workers; i++)
 		{
@@ -4092,7 +4100,7 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 			break;
 
 		CHECK_FOR_INTERRUPTS();
-		pg_usleep(1000);	/* 1ms */
+		pg_usleep(1000);		/* 1ms */
 		waited_ms++;
 	}
 
@@ -4162,8 +4170,9 @@ spock_logical_replication_slot_scan(TimestampTz committs, bool *found)
 	 * Fix the upper bound of the scan before reading anything.
 	 *
 	 * The page_read callback used below waits for WAL rather than reporting
-	 * its end: once the reader catches up with the flush position it sleeps in
-	 * pg_usleep() until somebody appends more, which on an idle node is never.
+	 * its end: once the reader catches up with the flush position it sleeps
+	 * in pg_usleep() until somebody appends more, which on an idle node is
+	 * never.
 	 */
 	end_of_wal = GetFlushRecPtr(NULL);
 
@@ -4209,9 +4218,9 @@ spock_logical_replication_slot_scan(TimestampTz committs, bool *found)
 			/*
 			 * A NULL record with no message means the reader gave up short of
 			 * end_of_wal - it does that on a historic timeline, say after the
-			 * upstream of a cascading standby was promoted mid-scan.  The scan
-			 * result is then truncated rather than wrong: too early, never too
-			 * late.
+			 * upstream of a cascading standby was promoted mid-scan.  The
+			 * scan result is then truncated rather than wrong: too early,
+			 * never too late.
 			 */
 			if (record == NULL)
 				break;
@@ -4232,23 +4241,25 @@ spock_logical_replication_slot_scan(TimestampTz committs, bool *found)
 				continue;
 
 			/*
-			 * This origin test is what confines the scan to local commits, and
-			 * nothing below can stand in for it: xact_time is the local commit
-			 * time even on a replicated transaction, so without this a commit
-			 * from another node is indistinguishable from one of ours.
+			 * This origin test is what confines the scan to local commits,
+			 * and nothing below can stand in for it: xact_time is the local
+			 * commit time even on a replicated transaction, so without this a
+			 * commit from another node is indistinguishable from one of ours.
 			 */
 			if (XLogRecGetOrigin(ctx->reader) != InvalidRepOriginId)
 				continue;
 
 			/*
-			 * xl_xact_commit leads the record and xact_time is its first field
-			 * for both commit opcodes, so the timestamp needs no parsing.
+			 * xl_xact_commit leads the record and xact_time is its first
+			 * field for both commit opcodes, so the timestamp needs no
+			 * parsing.
 			 *
 			 * Do not reach for pg_commit_ts instead.  Once it has been
 			 * truncated past an xid it reports ts = 0, which reads here as a
 			 * commit older than anything the caller can ask about; it errors
 			 * out entirely when track_commit_timestamp is off; and it costs
-			 * CommitTsLock plus an SLRU lookup on every commit record scanned.
+			 * CommitTsLock plus an SLRU lookup on every commit record
+			 * scanned.
 			 */
 			Assert(XLogRecGetDataLen(ctx->reader) >= MinSizeOfXactCommit);
 			xlrec = (xl_xact_commit *) XLogRecGetData(ctx->reader);
@@ -4329,7 +4340,8 @@ spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 
 	/*
 	 * Keep a copy of restart_lsn for the log line below: it is emitted after
-	 * the slot has been released, and MyReplicationSlot must not be read then.
+	 * the slot has been released, and MyReplicationSlot must not be read
+	 * then.
 	 */
 	start_lsn = MyReplicationSlot->data.restart_lsn;
 
@@ -4487,8 +4499,8 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
 	{
 		SpockApplyProgress *sap = &e->progress;
-		Datum				values[_GP_LAST_];
-		bool				nulls[_GP_LAST_] = {0};
+		Datum		values[_GP_LAST_];
+		bool		nulls[_GP_LAST_] = {0};
 
 		/*
 		 * Centralise conversion of local representation of the progress data

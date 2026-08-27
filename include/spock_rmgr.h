@@ -42,12 +42,12 @@ typedef enum SpockResourceDumpEvent
 
 typedef struct SpockResourceDumpRec
 {
-	uint8				event_type;		/* SpockResourceDumpEvent */
-	uint8				flags;			/* reserved */
-	uint16				entry_seq;		/* 0-based index within this dump event */
-	uint16				entry_total;	/* total entries in this dump event */
-	uint16				_pad;
-	SpockApplyProgress	progress;		/* full snapshot for this entry */
+	uint8		event_type;		/* SpockResourceDumpEvent */
+	uint8		flags;			/* reserved */
+	uint16		entry_seq;		/* 0-based index within this dump event */
+	uint16		entry_total;	/* total entries in this dump event */
+	uint16		_pad;
+	SpockApplyProgress progress;	/* full snapshot for this entry */
 } SpockResourceDumpRec;
 
 /* RMGR function declarations */

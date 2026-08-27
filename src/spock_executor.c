@@ -207,9 +207,9 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 	 * ddl_command_start event trigger, typically, which is free to run DDL of
 	 * its own through SPI.  That DDL is an implementation detail of dropping
 	 * the extension, not something to ship: the subscriber runs its own copy
-	 * when it applies the replicated DROP, so replicating it would execute the
-	 * cleanup twice there.  Core exposes creating_extension for the CREATE
-	 * side but has no counterpart for DROP, so flag it here and let
+	 * when it applies the replicated DROP, so replicating it would execute
+	 * the cleanup twice there.  Core exposes creating_extension for the
+	 * CREATE side but has no counterpart for DROP, so flag it here and let
 	 * autoddl_can_proceed() skip anything nested inside.
 	 *
 	 * Restored before spock_autoddl_process() below, so the DROP EXTENSION
