@@ -11,12 +11,16 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/relation.h"
 #include "access/table.h"
 
+#include "catalog/dependency.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_authid_d.h"
+#include "catalog/pg_depend.h"
+#include "catalog/pg_extension.h"
 #include "catalog/pg_inherits.h"
 
 #include "commands/defrem.h"
@@ -24,6 +28,7 @@
 
 #include "tcop/utility.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -63,6 +68,7 @@ static AlterPkRiChange classify_alter_pkri_change(AlterTableStmt *atstmt,
 static void classify_repset_membership(Oid nodeid, Oid reloid,
 									   bool *in_any_upd_del,
 									   bool *in_any_custom);
+static void route_extension_tables(SpockLocalNode *node, const char *extname);
 
 /*
  * spock_autoddl_process
@@ -154,6 +160,8 @@ end:
  *		Route a just-executed DDL statement into the appropriate replication
  *		set(s). Only tables are auto-managed.
  *
+ * CREATE/ALTER EXTENSION is handled separately, see route_extension_tables().
+ *
  * Pipeline:
  *	1. extract_ddl_target() inspects the parse tree, decides if this DDL
  *	   targets a table, and reports the target.
@@ -176,6 +184,20 @@ add_ddl_to_repset(Node *parsetree)
 
 	if (!spock_include_ddl_repset)
 		return;
+
+	/* The script's own CREATE TABLEs are invisible here; route them by hand. */
+	if (IsA(parsetree, CreateExtensionStmt) || IsA(parsetree, AlterExtensionStmt))
+	{
+		node = get_local_node(false, true);
+		if (!node)
+			return;
+
+		route_extension_tables(node,
+							   IsA(parsetree, CreateExtensionStmt)
+							   ? castNode(CreateExtensionStmt, parsetree)->extname
+							   : castNode(AlterExtensionStmt, parsetree)->extname);
+		return;
+	}
 
 	if (!extract_ddl_target(parsetree, &relation, &reloid, &missing_ok,
 							&check_alter_stickiness))
@@ -209,6 +231,84 @@ add_ddl_to_repset(Node *parsetree)
 
 	foreach(lc, reloids)
 		apply_repset_policy_for_reloid(node, lfirst_oid(lc), atstmt);
+}
+
+/*
+ * route_extension_tables
+ *		Put an extension's tables into a replication set.
+ *
+ * autoddl_can_proceed() skips everything nested inside an extension script, so
+ * the tables a script creates never reach add_ddl_to_repset() on their own.
+ * For lolor -- reserved with block_in_repset = false -- they have to: they hold
+ * user data and are kept out of the structure dump as well, so nothing else
+ * places them.  Without this a re-CREATE after a DROP EXTENSION leaves them in
+ * no set at all and later writes silently stop replicating.
+ *
+ * Additive: a table already in a set keeps its placement.
+ */
+static void
+route_extension_tables(SpockLocalNode *node, const char *extname)
+{
+	Oid				extoid;
+	Relation		depRel;
+	ScanKeyData		key[2];
+	SysScanDesc		scan;
+	HeapTuple		tup;
+	List		   *reloids = NIL;
+	ListCell	   *lc;
+
+	if (!spock_name_is_reserved(RESERVED_KIND_EXTENSION,
+								RESERVED_PURPOSE_REPSET_MEMBER, extname))
+		return;
+
+	extoid = get_extension_oid(extname, true);
+	if (!OidIsValid(extoid))
+		return;
+
+	/* Collect the members first, so the writes below run with no scan open. */
+	depRel = table_open(DependRelationId, AccessShareLock);
+
+	ScanKeyInit(&key[0],
+				Anum_pg_depend_refclassid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(ExtensionRelationId));
+	ScanKeyInit(&key[1],
+				Anum_pg_depend_refobjid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(extoid));
+
+	scan = systable_beginscan(depRel, DependReferenceIndexId, true,
+							  NULL, 2, key);
+
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend		dep = (Form_pg_depend) GETSTRUCT(tup);
+		char				relkind;
+
+		if (dep->deptype != DEPENDENCY_EXTENSION ||
+			dep->classid != RelationRelationId ||
+			dep->objsubid != 0)
+			continue;
+
+		relkind = get_rel_relkind(dep->objid);
+		if (relkind != RELKIND_RELATION && relkind != RELKIND_PARTITIONED_TABLE)
+			continue;
+
+		reloids = lappend_oid(reloids, dep->objid);
+	}
+
+	systable_endscan(scan);
+	table_close(depRel, AccessShareLock);
+
+	foreach(lc, reloids)
+	{
+		Oid		reloid = lfirst_oid(lc);
+
+		if (get_table_replication_sets(node->node->id, reloid) != NIL)
+			continue;
+
+		apply_repset_policy_for_reloid(node, reloid, NULL);
+	}
 }
 
 /*

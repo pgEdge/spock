@@ -83,15 +83,17 @@ ok(psql_ok(3, "CREATE EXTENSION IF NOT EXISTS dblink"), 'dblink installed on n3'
 
 # lolor on the source cluster, its tables in the default replication set.
 # n1 and n2 are cross-wired with automatic DDL replication, so CREATE
-# EXTENSION on n1 arrives on n2 by itself.
+# EXTENSION on n1 arrives on n2 by itself, routing the tables on each node.
 ok(psql_ok(1, "CREATE EXTENSION lolor"), 'lolor installed on n1');
 ok(wait_for_scalar(2, "SELECT count(*) FROM pg_extension WHERE extname = 'lolor'", '1'),
    'lolor arrived on n2 via DDL replication');
 for my $node (1, 2) {
-    ok(psql_ok($node, "SELECT spock.repset_add_table('default', 'lolor.pg_largeobject')"),
-       "lolor.pg_largeobject in default repset on n$node");
-    ok(psql_ok($node, "SELECT spock.repset_add_table('default', 'lolor.pg_largeobject_metadata')"),
-       "lolor.pg_largeobject_metadata in default repset on n$node");
+    for my $tbl ('pg_largeobject', 'pg_largeobject_metadata') {
+        ok(wait_for_scalar($node,
+            "SELECT set_name FROM spock.tables " .
+            "WHERE nspname = 'lolor' AND relname = '$tbl'", 'default'),
+           "lolor.$tbl in default repset on n$node");
+    }
 }
 
 # Large object on n1; sanity-check it reaches n2 before involving zodan.
@@ -161,9 +163,10 @@ ok(wait_for_scalar(3, "SELECT count(*) FROM lolor.pg_largeobject WHERE encode(da
 # populates the sets during a normal join is AutoDDL firing while pg_restore
 # replays the structure dump, and that never sees the lolor tables: they are
 # left out of the dump (reserved_object.exclude_from_dump), so they arrive via
-# CREATE EXTENSION instead, and autoddl_can_proceed() returns false while
-# creating_extension is set. So the lolor tables reach n3's default set only
-# if add_node mirrors the source node's sets onto the new node.
+# CREATE EXTENSION instead. AutoDDL does route them at that point, but only on a
+# registered Spock node, and n3's registration was dropped above -- lolor went in
+# while it looked freshly prepared. So here the tables reach n3's default set
+# only if add_node mirrors the source node's sets onto the new node.
 
 for my $tbl ('pg_largeobject', 'pg_largeobject_metadata') {
     is(scalar_query(3,

@@ -130,6 +130,17 @@ applicable), while `exclude_from_dump`/`block_in_repset` apply to both.
 sets: its tables must replicate so that large objects survive a
 `DROP EXTENSION` on every node, not only where the drop was issued.
 
+Because a reserved object is left out of the structure dump, nothing else would
+ever place its tables in a set, so AutoDDL routes them itself when
+`CREATE EXTENSION` (or `ALTER EXTENSION ... UPDATE`) runs on a Spock node: any
+table the extension owns that is not yet in a set goes to `default` or
+`default_insert_only` by the usual primary key / replica identity rule. This
+applies only to reserved objects with `block_in_repset = no` — `lolor` today —
+and it never moves a table that already belongs to a set, so a custom placement
+is kept. It matters most after a `DROP EXTENSION`: the membership rows are
+cascade-dropped with the tables, and the routing is what puts them back when the
+extension is re-created.
+
 `pgedge_ace` is the schema used by the pgEdge ACE utility. It is node-local
 configuration/state, not application data: its DDL is kept local for the
 classified statement kinds above (`replicate_ddl=no`), and its tables can

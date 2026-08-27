@@ -128,9 +128,10 @@ typedef struct SubscriptionTuple
  * Each purpose is decided by one boolean column, but the column and the sense
  * of "reserved" differ, so keep that knowledge in one place:
  *
- *   RESERVED_PURPOSE_DUMP    exclude_from_dump  reserved when true
- *   RESERVED_PURPOSE_REPSET  block_in_repset    reserved when true
- *   RESERVED_PURPOSE_DDL     replicate_ddl      reserved when *false*
+ *   RESERVED_PURPOSE_DUMP           exclude_from_dump  reserved when true
+ *   RESERVED_PURPOSE_REPSET         block_in_repset    reserved when true
+ *   RESERVED_PURPOSE_DDL            replicate_ddl      reserved when *false*
+ *   RESERVED_PURPOSE_REPSET_MEMBER  block_in_repset    reserved when *false*
  *
  * DDL is reserved when the object is node-local, i.e. its DDL is not
  * replicated, so replicate_ddl == false means reserved.  A NULL flag (e.g.
@@ -149,6 +150,11 @@ typedef struct SubscriptionTuple
  *                    ordinary as far as DDL is concerned.
  *   replicate_ddl    a node-local schema (pgedge_ace) is the never-replicate
  *                    class: its DDL stays local silently rather than erroring.
+ *
+ * RESERVED_PURPOSE_REPSET_MEMBER is the inverse of RESERVED_PURPOSE_REPSET: a
+ * reserved object whose tables are meant to replicate (lolor).  AutoDDL routes
+ * those into a set when the extension script creates them, since being out of
+ * the dump means nothing else ever will.
  */
 static bool
 row_reserved_for_purpose(HeapTuple tuple, TupleDesc tuple_desc,
@@ -169,6 +175,10 @@ row_reserved_for_purpose(HeapTuple tuple, TupleDesc tuple_desc,
 			return !isnull && flag;
 		case RESERVED_PURPOSE_DDL:
 			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_replicate_ddl,
+											 tuple_desc, &isnull));
+			return !isnull && !flag;
+		case RESERVED_PURPOSE_REPSET_MEMBER:
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_block_in_repset,
 											 tuple_desc, &isnull));
 			return !isnull && !flag;
 		case RESERVED_PURPOSE_EXTENSION_OWNED:

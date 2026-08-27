@@ -77,8 +77,10 @@ typedef enum ReservedObjectPurpose
 	RESERVED_PURPOSE_DUMP,		/* exclude_from_dump: kept out of structure sync */
 	RESERVED_PURPOSE_REPSET,	/* block_in_repset: cannot join a replication set */
 	RESERVED_PURPOSE_DDL,		/* replicate_ddl = false (node-local) */
-	RESERVED_PURPOSE_EXTENSION_OWNED	/* built-in, blocked from repsets, DDL
+	RESERVED_PURPOSE_EXTENSION_OWNED,	/* built-in, blocked from repsets, DDL
 										 * still replicated: spock, snowflake */
+	RESERVED_PURPOSE_REPSET_MEMBER	/* block_in_repset = false: reserved, but
+									 * its tables are meant to replicate */
 } ReservedObjectPurpose;
 
 extern List *spock_reserved_object_names(ReservedObjectKind kind,

@@ -8,9 +8,10 @@ use SpockTest qw(create_cluster destroy_cluster system_maybe get_test_config
 # lolor stores large objects in ordinary tables in the "lolor" schema. Those
 # tables must be allowed into a replication set, otherwise a DROP EXTENSION
 # migrates the objects only on the node where it ran and the other nodes are
-# left with unreachable data. This test verifies that the tables replicate,
-# that other protected schemas (spock) stay blocked, and that add-node
-# structure sync still works when lolor is present on both ends.
+# left with unreachable data. This test verifies that CREATE EXTENSION routes
+# the tables into the default set by itself, that repset_add_table still
+# accepts them, that other protected schemas (spock) stay blocked, and that
+# add-node structure sync still works when lolor is present on both ends.
 
 my $cfg   = get_test_config();
 my $PG    = $cfg->{pg_bin};
@@ -47,11 +48,21 @@ ok(
 ok(wait_for_sub_status(2, 'sub_n1_n2', 'replicating', 60),
    'subscription reached replicating (structure sync excluded lolor)');
 
-# The fix: lolor tables may now be added to a replication set.
+# CREATE EXTENSION routes the tables into 'default' by itself; being out of the
+# structure dump, nothing else would.
+for my $tbl ('pg_largeobject', 'pg_largeobject_metadata') {
+    is(scalar_query(1,
+        "SELECT set_name FROM spock.tables " .
+        "WHERE nspname = 'lolor' AND relname = '$tbl'"),
+       'default',
+       "lolor.$tbl routed into the default set by CREATE EXTENSION");
+}
+
+# They are still ordinary members: a remove/add round trip has to work.
+ok(psql_ok(1, "SELECT spock.repset_remove_table('default', 'lolor.pg_largeobject')"),
+   'lolor.pg_largeobject removed from replication set');
 ok(psql_ok(1, "SELECT spock.repset_add_table('default', 'lolor.pg_largeobject')"),
-   'lolor.pg_largeobject added to replication set');
-ok(psql_ok(1, "SELECT spock.repset_add_table('default', 'lolor.pg_largeobject_metadata')"),
-   'lolor.pg_largeobject_metadata added to replication set');
+   'lolor.pg_largeobject added back to replication set');
 
 # The guard still protects other schemas: spock relations stay excluded.
 ok(!psql_ok(1, "SELECT spock.repset_add_table('default', 'spock.node')"),

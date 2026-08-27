@@ -272,6 +272,15 @@ AutoDDL has been refactored and hardened:
   `REPLICA IDENTITY FULL` tables are now classified correctly.
 * **Safe `search_path` interpolation** — replicated DDL ships a valid
   `SET search_path` even when the session path is empty.
+* **Extension tables are routed into a replication set** — with
+  `spock.include_ddl_repset` enabled, `CREATE EXTENSION` and
+  `ALTER EXTENSION … UPDATE` now place the tables of a reserved object with
+  `block_in_repset = no` (`lolor`) into `default` or `default_insert_only`.
+  Such an object is left out of the structure dump, so nothing else would
+  place them, and `DROP EXTENSION` cascades the membership away with the
+  tables — after which large objects created against a re-created `lolor`
+  were silently not replicated.  Tables already in a set are left where they
+  are, so custom placements survive.
 * **Direct DDL against `spock` and `snowflake` is refused**
   (behaviour change) — while `spock.enable_ddl_replication` is on, a
   statement whose target schema is one of the built-in extension-owned
