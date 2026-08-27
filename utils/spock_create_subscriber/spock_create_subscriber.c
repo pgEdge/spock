@@ -173,6 +173,49 @@ typedef struct CatalogCapture
 	int			num_sequences;
 } CatalogCapture;
 
+/*
+ * main()'s working state, threaded by pointer through each lifecycle
+ * phase function below (parse_options() through
+ * restart_with_spock_and_activate()) in the same order those phases run.
+ * Holds every option and every piece of state one phase sets that a
+ * later phase reads; pure loop/scratch locals (loop counters, one-shot
+ * PQExpBuffers, pg_ctl_ret) stay local to whichever phase uses them.
+ */
+typedef struct SubscriberCreateContext
+{
+	/* Parsed options */
+	char	   *subscriber_name;
+	char	   *base_sub_connstr;
+	char	   *base_prov_connstr;
+	char	   *replication_sets;
+	char	   *databases;
+	char	   *postgresql_conf;
+	char	   *postgresql_auto_conf;
+	char	   *pg_hba_conf;
+	char	   *recovery_conf;
+	int			apply_delay;
+	bool		force_text_transfer;
+	bool		stop;
+	bool		drop_slot_if_exists;
+	char	   *extra_basebackup_args;
+	BidirectionalState bidir;
+	char		bidir_manifest_path[MAXPGPATH];
+	char		bidir_pending_path[MAXPGPATH];
+
+	/* Resolved database targets */
+	char	  **database_list;
+	int			n_databases;
+
+	/* State set by one phase and consumed by a later one */
+	char	  **slot_names;
+	char	   *sub_connstr;
+	char	   *prov_connstr;
+	bool		use_existing_data_dir;
+	RemoteInfo *remote_info;
+	char	   *remote_lsn;
+	CatalogCapture capture;
+} SubscriberCreateContext;
+
 typedef enum {
 	VERBOSITY_NORMAL,
 	VERBOSITY_VERBOSE,
@@ -2238,43 +2281,17 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 }
 
 
-int
-main(int argc, char **argv)
+/*
+ * Phase 1: parse command-line options into ctx, then validate them and
+ * derive the bidirectional manifest/sidecar paths.  Handles --help
+ * directly (exits).  Self-contained -- no phase runs before this one.
+ */
+static void
+parse_options(int argc, char **argv, SubscriberCreateContext *ctx)
 {
-	int	i;
-	int	c;
-	PQExpBuffer recoveryconfcontents = createPQExpBuffer();
-	RemoteInfo *remote_info;
-	char	   *remote_lsn;
-	bool		stop = false;
-	bool		drop_slot_if_exists = false;
+	int			i;
+	int			c;
 	int			optindex;
-	char	   *subscriber_name = NULL;
-	char	   *base_sub_connstr = NULL;
-	char	   *base_prov_connstr = NULL;
-	char	   *replication_sets = NULL;
-	char       *databases = NULL;
-	char	   *postgresql_conf = NULL,
-			   *postgresql_auto_conf = NULL,
-			   *pg_hba_conf = NULL,
-			   *recovery_conf = NULL;
-	int			apply_delay = 0;
-	bool		force_text_transfer = false;
-	char	  **slot_names;
-	char       *sub_connstr;
-	char       *prov_connstr;
-	char      **database_list = { NULL };
-	int         n_databases = 1;
-	int         dbnum;
-	bool		use_existing_data_dir = false;
-	int			pg_ctl_ret,
-				logfd;
-	char	   *restore_point_name = NULL;
-	char	   *extra_basebackup_args = NULL;
-	BidirectionalState bidir = {0};
-	char		bidir_manifest_path[MAXPGPATH] = {0};
-	char		bidir_pending_path[MAXPGPATH] = {0};
-	CatalogCapture capture = {0};
 
 	static struct option long_options[] = {
 		{"subscriber-name", required_argument, NULL, 'n'},
@@ -2300,13 +2317,6 @@ main(int argc, char **argv)
 		{NULL, 0, NULL, 0}
 	};
 
-	argv0 = argv[0];
-	progname = get_progname(argv[0]);
-	pg_logging_init(argv[0]);
-	start_time = time(NULL);
-	signal(SIGINT, signal_handler);
-	signal(SIGTERM, signal_handler);
-
 	/* check for --help */
 	if (argc > 1)
 	{
@@ -2329,69 +2339,69 @@ main(int argc, char **argv)
 				data_dir = expand_tilde(pg_strdup(optarg));
 				break;
 			case 'n':
-				subscriber_name = pg_strdup(optarg);
+				ctx->subscriber_name = pg_strdup(optarg);
 				break;
 			case 1:
-				base_prov_connstr = pg_strdup(optarg);
+				ctx->base_prov_connstr = pg_strdup(optarg);
 				break;
 			case 2:
-				base_sub_connstr = pg_strdup(optarg);
+				ctx->base_sub_connstr = pg_strdup(optarg);
 				break;
 			case 3:
-				replication_sets = validate_replication_set_input(pg_strdup(optarg));
+				ctx->replication_sets = validate_replication_set_input(pg_strdup(optarg));
 				break;
 			case 4:
-				postgresql_conf = validated_existing_path(optarg, "postgresql.conf");
+				ctx->postgresql_conf = validated_existing_path(optarg, "postgresql.conf");
 				break;
 			case 5:
-				pg_hba_conf = validated_existing_path(optarg, "pg_hba.conf");
+				ctx->pg_hba_conf = validated_existing_path(optarg, "pg_hba.conf");
 				break;
 			case 6:
-				recovery_conf = validated_existing_path(optarg, "recovery configuration");
+				ctx->recovery_conf = validated_existing_path(optarg, "recovery configuration");
 				break;
 			case 'v':
 				verbosity++;
 				break;
 			case 's':
-				stop = true;
+				ctx->stop = true;
 				break;
 			case 7:
-				drop_slot_if_exists = true;
+				ctx->drop_slot_if_exists = true;
 				break;
 			case 8:
-				apply_delay = parse_checked_int(optarg, "apply-delay");
+				ctx->apply_delay = parse_checked_int(optarg, "apply-delay");
 				break;
 			case 9:
-				databases = pg_strdup(optarg);
+				ctx->databases = pg_strdup(optarg);
 				break;
 			case 10:
-				extra_basebackup_args = pg_strdup(optarg);
-				validate_extra_basebackup_args(extra_basebackup_args);
+				ctx->extra_basebackup_args = pg_strdup(optarg);
+				validate_extra_basebackup_args(ctx->extra_basebackup_args);
 				break;
 			case 11:
-				force_text_transfer = true;
+				ctx->force_text_transfer = true;
 				break;
 			case 12:
-				bidir.enabled = true;
+				ctx->bidir.enabled = true;
 				break;
 			case 13:
-				bidir.stall_timeout = parse_checked_int(optarg, "stall-timeout");
-				if (bidir.stall_timeout <= 0)
+				ctx->bidir.stall_timeout = parse_checked_int(optarg, "stall-timeout");
+				if (ctx->bidir.stall_timeout <= 0)
 					die(_("--stall-timeout must be a positive integer"));
 				break;
 			case 14:
-				bidir.max_wait = parse_checked_int(optarg, "max-wait");
-				if (bidir.max_wait < 0)
+				ctx->bidir.max_wait = parse_checked_int(optarg, "max-wait");
+				if (ctx->bidir.max_wait < 0)
 					die(_("--max-wait must be a non-negative integer"));
 				break;
 			case 15:
-				bidir.cleanup_mode = true;
+				ctx->bidir.cleanup_mode = true;
 				break;
 			case 16:
-				bidir.force_cleanup = true;
+				ctx->bidir.force_cleanup = true;
 				break;
 			case 17:
-				postgresql_auto_conf = validated_existing_path(optarg, "postgresql.auto.conf");
+				ctx->postgresql_auto_conf = validated_existing_path(optarg, "postgresql.auto.conf");
 				break;
 			default:
 				fprintf(stderr, _("Unknown option\n"));
@@ -2410,133 +2420,150 @@ main(int argc, char **argv)
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(1);
 	}
-	else if (subscriber_name == NULL && !bidir.cleanup_mode)
+	else if (ctx->subscriber_name == NULL && !ctx->bidir.cleanup_mode)
 	{
 		fprintf(stderr, _("No subscriber name specified\n"));
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(1);
 	}
 
-	if (bidir.cleanup_mode && !bidir.enabled)
+	if (ctx->bidir.cleanup_mode && !ctx->bidir.enabled)
 		die(_("--cleanup requires --bidirectional.\n"));
 
-	if (bidir.force_cleanup && !bidir.cleanup_mode)
+	if (ctx->bidir.force_cleanup && !ctx->bidir.cleanup_mode)
 		die(_("--force requires --cleanup.\n"));
 
-	if (!bidir.cleanup_mode && (!base_prov_connstr || !strlen(base_prov_connstr)))
+	if (!ctx->bidir.cleanup_mode && (!ctx->base_prov_connstr || !strlen(ctx->base_prov_connstr)))
 		die(_("Provider connection string must be specified.\n"));
-	if (!bidir.cleanup_mode &&
-		(!base_sub_connstr || !strlen(base_sub_connstr)))
+	if (!ctx->bidir.cleanup_mode &&
+		(!ctx->base_sub_connstr || !strlen(ctx->base_sub_connstr)))
 		die(_("Subscriber connection string must be specified: --subscriber-dsn "
 			  "is used both for the tool's own connection to the newly "
 			  "created node and, with --bidirectional, as the externally-"
 			  "reachable address registered via spock.node_create() for "
 			  "peers to connect back to it.\n"));
 
-	if (apply_delay < 0)
+	if (ctx->apply_delay < 0)
 		die(_("Apply delay cannot be negative.\n"));
 
-	if (apply_delay > MAX_APPLY_DELAY)
+	if (ctx->apply_delay > MAX_APPLY_DELAY)
 		die(_("Apply delay cannot be more than %d.\n"), MAX_APPLY_DELAY);
 
-	if (bidir.enabled)
+	if (ctx->bidir.enabled)
 	{
 		/*
 		 * n3 is joining an existing mesh, so its subscriptions must select
 		 * exactly what the mesh already replicates; replication_sets is
 		 * derived from the source's own subscriptions below instead.
 		 */
-		if (replication_sets != NULL)
+		if (ctx->replication_sets != NULL)
 			die(_("--replication-sets cannot be combined with --bidirectional; "
 				  "the joining node's replication sets are detected "
 				  "automatically from the cluster it is joining.\n"));
 	}
-	else if (!replication_sets || !strlen(replication_sets))
-		replication_sets = "default,default_insert_only,ddl_sql";
+	else if (!ctx->replication_sets || !strlen(ctx->replication_sets))
+		ctx->replication_sets = "default,default_insert_only,ddl_sql";
 
 	/* Build the manifest path from --pgdata */
-	if (bidir.enabled || bidir.cleanup_mode)
+	if (ctx->bidir.enabled || ctx->bidir.cleanup_mode)
 	{
-		snprintf(bidir_manifest_path, MAXPGPATH,
+		snprintf(ctx->bidir_manifest_path, MAXPGPATH,
 				 "%s/spock_bidirectional_manifest.json", data_dir);
-		bidir.manifest_path = bidir_manifest_path;
+		ctx->bidir.manifest_path = ctx->bidir_manifest_path;
 		/*
 		 * Sidecar path for the source slot orphan-protection record (see
 		 * the write near source-slot creation below) -- lives next to, not
 		 * inside, data_dir, since data_dir must still be empty when this is
 		 * first written (pg_basebackup requires an empty target directory).
 		 */
-		snprintf(bidir_pending_path, MAXPGPATH,
+		snprintf(ctx->bidir_pending_path, MAXPGPATH,
 				 "%s.spock_bidir_pending.json", data_dir);
-		if (bidir.stall_timeout == 0)
-			bidir.stall_timeout = 600;
+		if (ctx->bidir.stall_timeout == 0)
+			ctx->bidir.stall_timeout = 600;
 	}
+}
 
-	/* --cleanup: read manifest, remove partial state, exit */
-	if (bidir.cleanup_mode)
+/*
+ * Phase 2: if --cleanup was requested, read the manifest (or, failing
+ * that, the pending-cleanup sidecar), remove partial join state, and
+ * exit -- this phase never returns when ctx->bidir.cleanup_mode is set.
+ * A no-op otherwise.
+ */
+static void
+run_cleanup_mode_if_requested(SubscriberCreateContext *ctx)
+{
+	char *sub_name = NULL;
+	char *db = NULL;
+	char *src_dsn = NULL;
+
+	if (!ctx->bidir.cleanup_mode)
+		return;
+
+	if (read_manifest(ctx->bidir.manifest_path, &ctx->bidir, &sub_name, &db, &src_dsn))
+		exit(cleanup_partial_state(&ctx->bidir, sub_name, db, src_dsn,
+									ctx->bidir.force_cleanup) ? 0 : 1);
+
+	/*
+	 * No full manifest -- basebackup may never have completed.  Fall
+	 * back to the pending-cleanup sidecar written right after source
+	 * slot creation, so a slot orphaned by a failed/interrupted backup
+	 * is still reachable by --cleanup.
+	 */
+	if (read_manifest(ctx->bidir_pending_path, &ctx->bidir, &sub_name, &db, &src_dsn))
+		/* cleanup_partial_state() removes the sidecar itself on success. */
+		exit(cleanup_partial_state(&ctx->bidir, sub_name, db, src_dsn,
+									ctx->bidir.force_cleanup) ? 0 : 1);
+
+	/*
+	 * Neither record exists -- there's no slot/subscription bookkeeping
+	 * to act on, e.g. because the run died before the pending sidecar
+	 * was even written.  But an orphaned data_dir can still be sitting
+	 * there from that attempt, and --force is an explicit instruction
+	 * to remove it: don't leave it behind just because there was
+	 * nothing to read.
+	 */
+	if (ctx->bidir.force_cleanup && data_dir != NULL && data_dir[0] &&
+		file_exists(data_dir))
 	{
-		char *sub_name = NULL;
-		char *db = NULL;
-		char *src_dsn = NULL;
-
-		if (read_manifest(bidir.manifest_path, &bidir, &sub_name, &db, &src_dsn))
-			exit(cleanup_partial_state(&bidir, sub_name, db, src_dsn,
-										bidir.force_cleanup) ? 0 : 1);
-
-		/*
-		 * No full manifest -- basebackup may never have completed.  Fall
-		 * back to the pending-cleanup sidecar written right after source
-		 * slot creation, so a slot orphaned by a failed/interrupted backup
-		 * is still reachable by --cleanup.
-		 */
-		if (read_manifest(bidir_pending_path, &bidir, &sub_name, &db, &src_dsn))
-			/* cleanup_partial_state() removes the sidecar itself on success. */
-			exit(cleanup_partial_state(&bidir, sub_name, db, src_dsn,
-										bidir.force_cleanup) ? 0 : 1);
-
-		/*
-		 * Neither record exists -- there's no slot/subscription bookkeeping
-		 * to act on, e.g. because the run died before the pending sidecar
-		 * was even written.  But an orphaned data_dir can still be sitting
-		 * there from that attempt, and --force is an explicit instruction
-		 * to remove it: don't leave it behind just because there was
-		 * nothing to read.
-		 */
-		if (bidir.force_cleanup && data_dir != NULL && data_dir[0] &&
-			file_exists(data_dir))
-		{
-			fprintf(stderr,
-					_("No manifest found at %s or %s; no slot/subscription "
-					  "state to clean up, but --force was given -- removing "
-					  "data directory %s.\n"),
-					bidir.manifest_path, bidir_pending_path, data_dir);
-			exit(remove_data_dir_if_forced(true) ? 0 : 1);
-		}
-
-		fprintf(stderr, _("No manifest found at %s or %s; nothing to clean up.\n"),
-				bidir.manifest_path, bidir_pending_path);
-		exit(0);
+		fprintf(stderr,
+				_("No manifest found at %s or %s; no slot/subscription "
+				  "state to clean up, but --force was given -- removing "
+				  "data directory %s.\n"),
+				ctx->bidir.manifest_path, ctx->bidir_pending_path, data_dir);
+		exit(remove_data_dir_if_forced(true) ? 0 : 1);
 	}
 
+	fprintf(stderr, _("No manifest found at %s or %s; nothing to clean up.\n"),
+			ctx->bidir.manifest_path, ctx->bidir_pending_path);
+	exit(0);
+}
+
+/*
+ * Phase 3: resolve --databases/--provider-dsn into ctx->database_list,
+ * enforcing --bidirectional's single-database restriction.
+ */
+static void
+resolve_database_targets(SubscriberCreateContext *ctx)
+{
 	/* Init random numbers used for slot suffixes, etc */
 	srand(time(NULL));
 
 	/* Parse database list or connection string. */
-	if (databases != NULL)
+	if (ctx->databases != NULL)
 	{
-		database_list = get_database_list(databases, &n_databases);
+		ctx->database_list = get_database_list(ctx->databases, &ctx->n_databases);
 	}
 	else
 	{
-		char *dbname = get_connstr_dbname(base_prov_connstr);
+		char *dbname = get_connstr_dbname(ctx->base_prov_connstr);
 
 		if (!dbname)
 			die(_("Either provider connection string must contain database "
 				  "name or --databases option must be specified.\n"));
 
-		n_databases = 1;
-		database_list = palloc(n_databases * sizeof(char *));
-		database_list[0] = dbname;
+		ctx->n_databases = 1;
+		ctx->database_list = palloc(ctx->n_databases * sizeof(char *));
+		ctx->database_list[0] = dbname;
 	}
 
 	/*
@@ -2546,32 +2573,56 @@ main(int argc, char **argv)
 	 * database_list[0]. Separate from check_single_spock_database()
 	 * below, which checks the instance for spock on other databases.
 	 */
-	if (bidir.enabled && n_databases > 1)
+	if (ctx->bidir.enabled && ctx->n_databases > 1)
 		die(_("--bidirectional supports a single database only; "
 			  "%d were named via --databases/--provider-dsn.\n"),
-			n_databases);
+			ctx->n_databases);
 
-	slot_names = palloc(n_databases * sizeof(char *));
+	ctx->slot_names = palloc(ctx->n_databases * sizeof(char *));
+}
 
-	/*
-	 * Check connection strings for validity before doing anything
-	 * expensive.
-	 */
-	for (dbnum = 0; dbnum < n_databases; dbnum++)
+/*
+ * Phase 4: validate every resolved database's connection strings before
+ * doing anything expensive.  ctx->prov_connstr/ctx->sub_connstr here are
+ * just scratch -- the values used by later phases are recomputed there.
+ */
+static void
+validate_connection_strings(SubscriberCreateContext *ctx)
+{
+	int	dbnum;
+
+	for (dbnum = 0; dbnum < ctx->n_databases; dbnum++)
 	{
-		char *db = database_list[dbnum];
+		char *db = ctx->database_list[dbnum];
 
-		prov_connstr = get_connstr(base_prov_connstr, db);
-		if (!prov_connstr || !strlen(prov_connstr))
+		ctx->prov_connstr = get_connstr(ctx->base_prov_connstr, db);
+		if (!ctx->prov_connstr || !strlen(ctx->prov_connstr))
 			die(_("Provider connection string is not valid.\n"));
 
-		if (!bidir.enabled)
+		if (!ctx->bidir.enabled)
 		{
-			sub_connstr = get_connstr(base_sub_connstr, db);
-			if (!sub_connstr || !strlen(sub_connstr))
+			ctx->sub_connstr = get_connstr(ctx->base_sub_connstr, db);
+			if (!ctx->sub_connstr || !strlen(ctx->sub_connstr))
 				die(_("Subscriber connection string is not valid.\n"));
 		}
 	}
+}
+
+/*
+ * Phase 5: create the postgres startup log file, then, for each
+ * resolved database, connect to the provider and create a replication
+ * slot.  --bidirectional additionally discovers peers, checks join
+ * preconditions, and persists a pending-cleanup sidecar before the base
+ * backup even starts -- then breaks after database_list[0], since
+ * --bidirectional is single-database only (enforced in
+ * resolve_database_targets()).  Sets ctx->remote_info (the last/only
+ * database processed) and ctx->slot_names.
+ */
+static void
+create_replication_slots(SubscriberCreateContext *ctx)
+{
+	int	dbnum;
+	int	logfd;
 
 	/*
 	 * Create log file where new postgres instance will log to while being
@@ -2590,19 +2641,19 @@ main(int argc, char **argv)
 	/* Let's start the real work... */
 	print_msg(VERBOSITY_NORMAL, _("%s: starting ...\n"), progname);
 
-	for (dbnum = 0; dbnum < n_databases; dbnum++)
+	for (dbnum = 0; dbnum < ctx->n_databases; dbnum++)
 	{
-		char *db = database_list[dbnum];
+		char *db = ctx->database_list[dbnum];
 
-		prov_connstr = get_connstr(base_prov_connstr, db);
-		if (!prov_connstr || !strlen(prov_connstr))
+		ctx->prov_connstr = get_connstr(ctx->base_prov_connstr, db);
+		if (!ctx->prov_connstr || !strlen(ctx->prov_connstr))
 			die(_("Provider connection string is not valid.\n"));
 
 		/* Read the remote server indetification. */
 		print_msg(VERBOSITY_NORMAL,
 				  _("Getting information for database %s ...\n"), db);
-		provider_conn = connectdb(prov_connstr);
-		remote_info = get_remote_info(provider_conn);
+		provider_conn = connectdb(ctx->prov_connstr);
+		ctx->remote_info = get_remote_info(provider_conn);
 
 		/*
 		 * --bidirectional: discover peers, verify preconditions, then
@@ -2611,56 +2662,56 @@ main(int argc, char **argv)
 		 * write is deferred until after the basebackup; see the comment
 		 * there.
 		 */
-		if (bidir.enabled)
+		if (ctx->bidir.enabled)
 		{
 			char	   *source_sub_name;
 
 			/*
 			 * Inherit the replication sets already in use by the cluster
 			 * being joined, rather than accept a separately specified
-			 * list -- see the die() near the top of main() that rejects
+			 * list -- see the die() in parse_options() that rejects
 			 * --replication-sets together with --bidirectional.
 			 */
-			replication_sets = get_source_mesh_replication_sets(provider_conn);
+			ctx->replication_sets = get_source_mesh_replication_sets(provider_conn);
 			print_msg(VERBOSITY_VERBOSE,
 					  _("Replication sets inherited from the existing "
-						"cluster: %s\n"), replication_sets);
+						"cluster: %s\n"), ctx->replication_sets);
 
-			bidir.num_peers = discover_peer_nodes(provider_conn,
-												  remote_info->node_name,
-												  subscriber_name, db,
-												  &bidir.peers);
+			ctx->bidir.num_peers = discover_peer_nodes(provider_conn,
+												  ctx->remote_info->node_name,
+												  ctx->subscriber_name, db,
+												  &ctx->bidir.peers);
 			{
 				int	pi;
 
-				for (pi = 0; pi < bidir.num_peers; pi++)
+				for (pi = 0; pi < ctx->bidir.num_peers; pi++)
 					print_msg(VERBOSITY_DEBUG,
 							  _("Discovered peer \"%s\" (dsn \"%s\", slot \"%s\")\n"),
-							  bidir.peers[pi].node_name, bidir.peers[pi].dsn,
-							  bidir.peers[pi].slot_name);
+							  ctx->bidir.peers[pi].node_name, ctx->bidir.peers[pi].dsn,
+							  ctx->bidir.peers[pi].slot_name);
 			}
-			check_preconditions(provider_conn, remote_info->node_name,
-								bidir.peers, bidir.num_peers);
-			check_single_spock_database(provider_conn, base_prov_connstr, db);
+			check_preconditions(provider_conn, ctx->remote_info->node_name,
+								ctx->bidir.peers, ctx->bidir.num_peers);
+			check_single_spock_database(provider_conn, ctx->base_prov_connstr, db);
 			check_no_native_subscriptions(provider_conn);
-			use_existing_data_dir = check_data_dir(data_dir, remote_info);
-			if (use_existing_data_dir)
-				check_reused_data_dir_is_safe(data_dir, remote_info);
+			ctx->use_existing_data_dir = check_data_dir(data_dir, ctx->remote_info);
+			if (ctx->use_existing_data_dir)
+				check_reused_data_dir_is_safe(data_dir, ctx->remote_info);
 
-			source_sub_name = sub_name_for(subscriber_name, remote_info->node_name);
+			source_sub_name = sub_name_for(ctx->subscriber_name, ctx->remote_info->node_name);
 
 			print_msg(VERBOSITY_NORMAL,
 					  _("Creating source replication slot in database %s ...\n"), db);
 			print_msg(VERBOSITY_DEBUG,
 					  _("Creating replication slot on source \"%s\" for future "
-						"subscription \"%s\"\n"), remote_info->node_name, source_sub_name);
-			bidir.source_slot_name = initialize_replication_slot(provider_conn,
-																 remote_info->dbname,
-																 remote_info->node_name,
+						"subscription \"%s\"\n"), ctx->remote_info->node_name, source_sub_name);
+			ctx->bidir.source_slot_name = initialize_replication_slot(provider_conn,
+																 ctx->remote_info->dbname,
+																 ctx->remote_info->node_name,
 																 source_sub_name,
-																 drop_slot_if_exists);
+																 ctx->drop_slot_if_exists);
 			print_msg(VERBOSITY_DEBUG, _("Source replication slot created: \"%s\"\n"),
-					  bidir.source_slot_name);
+					  ctx->bidir.source_slot_name);
 			pg_free(source_sub_name);
 
 			/*
@@ -2672,9 +2723,9 @@ main(int argc, char **argv)
 			 * pg_basebackup).  Superseded and removed once the real
 			 * manifest is written below.
 			 */
-			bidir.manifest_path = bidir_pending_path;
-			write_manifest(&bidir, subscriber_name, db, base_prov_connstr);
-			bidir.manifest_path = bidir_manifest_path;
+			ctx->bidir.manifest_path = ctx->bidir_pending_path;
+			write_manifest(&ctx->bidir, ctx->subscriber_name, db, ctx->base_prov_connstr);
+			ctx->bidir.manifest_path = ctx->bidir_manifest_path;
 
 			PQfinish(provider_conn);
 			provider_conn = NULL;
@@ -2685,10 +2736,10 @@ main(int argc, char **argv)
 
 		if (dbnum == 0)
 		{
-			use_existing_data_dir = check_data_dir(data_dir, remote_info);
+			ctx->use_existing_data_dir = check_data_dir(data_dir, ctx->remote_info);
 
-			if (use_existing_data_dir)
-				check_reused_data_dir_is_safe(data_dir, remote_info);
+			if (ctx->use_existing_data_dir)
+				check_reused_data_dir_is_safe(data_dir, ctx->remote_info);
 		}
 
 		/*
@@ -2696,61 +2747,76 @@ main(int argc, char **argv)
 		 */
 		print_msg(VERBOSITY_NORMAL,
 				  _("Creating replication slot in database %s ...\n"), db);
-		slot_names[dbnum] = initialize_replication_slot(provider_conn,
-														remote_info->dbname,
-														remote_info->node_name,
-														subscriber_name,
-														drop_slot_if_exists);
+		ctx->slot_names[dbnum] = initialize_replication_slot(provider_conn,
+														ctx->remote_info->dbname,
+														ctx->remote_info->node_name,
+														ctx->subscriber_name,
+														ctx->drop_slot_if_exists);
 		PQfinish(provider_conn);
 		provider_conn = NULL;
 	}
+}
 
-	/*
-	 * Create basebackup or use existing one
-	 */
-	prov_connstr = get_connstr(base_prov_connstr, database_list[0]);
-	sub_connstr = get_connstr(base_sub_connstr, database_list[0]);
+/*
+ * Phase 6: take (or reuse) the physical base backup into data_dir, then
+ * write the real manifest -- deferred until here because pg_basebackup
+ * requires an empty target directory, and a manifest file in data_dir
+ * earlier would make it look non-empty.  The pending-cleanup sidecar
+ * written in create_replication_slots() covers the gap between then and
+ * now; it's superseded and removed here.
+ */
+static void
+run_basebackup_and_write_manifest(SubscriberCreateContext *ctx)
+{
+	ctx->prov_connstr = get_connstr(ctx->base_prov_connstr, ctx->database_list[0]);
+	ctx->sub_connstr = get_connstr(ctx->base_sub_connstr, ctx->database_list[0]);
 
-	if (!use_existing_data_dir)
+	if (!ctx->use_existing_data_dir)
 		print_msg(VERBOSITY_DEBUG,
 				  _("Taking a physical base backup from \"%s\" into \"%s\"\n"),
-				  prov_connstr, data_dir);
+				  ctx->prov_connstr, data_dir);
 	else
 		print_msg(VERBOSITY_DEBUG,
 				  _("Reusing existing data directory \"%s\" (already a basebackup "
 					"of this source)\n"), data_dir);
 	initialize_data_dir(data_dir,
-						use_existing_data_dir ? NULL : prov_connstr,
-						postgresql_conf, postgresql_auto_conf, pg_hba_conf,
-						extra_basebackup_args);
+						ctx->use_existing_data_dir ? NULL : ctx->prov_connstr,
+						ctx->postgresql_conf, ctx->postgresql_auto_conf, ctx->pg_hba_conf,
+						ctx->extra_basebackup_args);
 	snprintf(pid_file, MAXPGPATH, "%s/postmaster.pid", data_dir);
 
-	/*
-	 * Manifest write is deferred until here: pg_basebackup requires an
-	 * empty target directory, and a manifest file in data_dir earlier
-	 * would make it look non-empty.  The pending-cleanup sidecar written
-	 * right after source slot creation covers the gap between then and
-	 * now; it's superseded by the real manifest and removed below.
-	 */
-	if (bidir.enabled)
+	if (ctx->bidir.enabled)
 	{
-		write_manifest(&bidir, subscriber_name, database_list[0], base_prov_connstr);
-		if (unlink(bidir_pending_path) != 0 && errno != ENOENT)
+		write_manifest(&ctx->bidir, ctx->subscriber_name, ctx->database_list[0], ctx->base_prov_connstr);
+		if (unlink(ctx->bidir_pending_path) != 0 && errno != ENOENT)
 			print_msg(VERBOSITY_NORMAL,
 					  _("warning: could not remove superseded pending sidecar "
-						"%s: %s\n"), bidir_pending_path, strerror(errno));
+						"%s: %s\n"), ctx->bidir_pending_path, strerror(errno));
 		print_msg(VERBOSITY_NORMAL,
 				  _("Bidirectional plumbing complete: %d peer(s) discovered, "
 					"source slot created, manifest written to %s.\n"),
-				  bidir.num_peers, bidir.manifest_path);
+				  ctx->bidir.num_peers, ctx->bidir.manifest_path);
 	}
+}
+
+/*
+ * Phase 7: create a restore point on the provider, bring the subscriber
+ * up to it via physical recovery, and wait for it to start accepting
+ * connections -- proof it has caught up.  Sets ctx->remote_lsn.
+ */
+static void
+catchup_to_restore_point(SubscriberCreateContext *ctx)
+{
+	PQExpBuffer recoveryconfcontents = createPQExpBuffer();
+	char	   *restore_point_name;
+	int			pg_ctl_ret;
 
 	restore_point_name = generate_restore_point_name();
 
 	print_msg(VERBOSITY_NORMAL, _("Creating restore point \"%s\" on remote node ...\n"),
 		restore_point_name);
-	provider_conn = connectdb(prov_connstr);
-	remote_lsn = create_restore_point(provider_conn, restore_point_name);
+	provider_conn = connectdb(ctx->prov_connstr);
+	ctx->remote_lsn = create_restore_point(provider_conn, restore_point_name);
 	PQfinish(provider_conn);
 	provider_conn = NULL;
 
@@ -2759,14 +2825,14 @@ main(int argc, char **argv)
 	 */
 	print_msg(VERBOSITY_NORMAL,
 			  _("Bringing subscriber node to the restore point ...\n"));
-	if (recovery_conf)
+	if (ctx->recovery_conf)
 	{
-		CopyConfFile(recovery_conf, "postgresql.auto.conf", true);
+		CopyConfFile(ctx->recovery_conf, "postgresql.auto.conf", true);
 	}
 	else
 	{
 		appendPQExpBuffer(recoveryconfcontents, "primary_conninfo = '%s'\n",
-								escape_single_quotes_ascii(prov_connstr));
+								escape_single_quotes_ascii(ctx->prov_connstr));
 	}
 	appendPQExpBuffer(recoveryconfcontents, "recovery_target_name = '%s'\n", restore_point_name);
 	appendPQExpBuffer(recoveryconfcontents, "recovery_target_inclusive = true\n");
@@ -2792,9 +2858,24 @@ main(int argc, char **argv)
 	if (pg_ctl_ret != 0)
 		die(_("Postgres startup for restore point catchup failed with %d. See spock_create_subscriber_postgres.log."), pg_ctl_ret);
 
-	wait_primary_connection(sub_connstr,
-							 bidir.enabled ? bidir.stall_timeout : 0,
-							 bidir.enabled ? bidir.max_wait : 0);
+	wait_primary_connection(ctx->sub_connstr,
+							 ctx->bidir.enabled ? ctx->bidir.stall_timeout : 0,
+							 ctx->bidir.enabled ? ctx->bidir.max_wait : 0);
+}
+
+/*
+ * Phase 8: strip the spock configuration pg_basebackup copied over from
+ * the provider -- for --bidirectional, this also gives n3 its own
+ * system identifier, verifies --subscriber-dsn actually reaches it, and
+ * captures repset/table/sequence state before the catalog strip (sets
+ * ctx->bidir.node_sysid, ctx->capture); for the plain path, just clears
+ * each database's spock configuration.  Ends by stopping postgres so it
+ * can be restarted with spock loaded.
+ */
+static void
+strip_subscriber_catalog(SubscriberCreateContext *ctx)
+{
+	int	pg_ctl_ret;
 
 	/*
 	 * Clean any per-node data that were copied by pg_basebackup.
@@ -2802,7 +2883,7 @@ main(int argc, char **argv)
 	print_msg(VERBOSITY_VERBOSE,
 			  _("Removing old spock configuration ...\n"));
 
-	if (bidir.enabled)
+	if (ctx->bidir.enabled)
 	{
 		Oid			source_nodeid;
 		char	   *expected_sysid;
@@ -2848,9 +2929,9 @@ main(int argc, char **argv)
 		pg_ctl_ret = run_pg_ctl("start -l \"spock_create_subscriber_postgres.log\" -o \"-c shared_preload_libraries=''\"");
 		if (pg_ctl_ret != 0)
 			die(_("Postgres startup after resetting system identifier failed with %d."), pg_ctl_ret);
-		wait_postmaster_connection(sub_connstr);
+		wait_postmaster_connection(ctx->sub_connstr);
 
-		subscriber_conn = connectdb(sub_connstr);
+		subscriber_conn = connectdb(ctx->sub_connstr);
 
 		/*
 		 * --subscriber-dsn is expected to point directly at this node;
@@ -2885,41 +2966,43 @@ main(int argc, char **argv)
 		 * node_dsn still reaches this same node later, rather than trusting
 		 * a possibly stale manifest to still point at the right server.
 		 */
-		bidir.node_sysid = expected_sysid;
+		ctx->bidir.node_sysid = expected_sysid;
 
 		/* Capture repset/table/sequence state before the catalog strip. */
 		source_nodeid = get_local_node_id(subscriber_conn);
 		print_msg(VERBOSITY_DEBUG,
 				  _("Capturing replication-set/table/sequence membership for local "
 					"node id %u before dropping the spock extension\n"), source_nodeid);
-		capture_catalog_state(subscriber_conn, source_nodeid, &capture);
+		capture_catalog_state(subscriber_conn, source_nodeid, &ctx->capture);
 		print_msg(VERBOSITY_DEBUG,
 				  _("Captured %d replication set(s), %d table membership(s), "
 					"%d sequence(s)\n"),
-				  capture.num_repsets, capture.num_tables, capture.num_sequences);
+				  ctx->capture.num_repsets, ctx->capture.num_tables, ctx->capture.num_sequences);
 
 		/* Drop all origins, then guarded DROP EXTENSION. */
 		print_msg(VERBOSITY_DEBUG,
 				  _("Dropping replication origins and the spock extension (checking "
 					"pg_depend first for non-spock objects CASCADE would collaterally "
 					"drop)\n"));
-		remove_unwanted_data_bidir(subscriber_conn, &capture);
+		remove_unwanted_data_bidir(subscriber_conn, &ctx->capture);
 
 		PQfinish(subscriber_conn);
 		subscriber_conn = NULL;
 	}
 	else
 	{
-		for (dbnum = 0; dbnum < n_databases; dbnum++)
+		int	dbnum;
+
+		for (dbnum = 0; dbnum < ctx->n_databases; dbnum++)
 		{
-			char *db = database_list[dbnum];
+			char *db = ctx->database_list[dbnum];
 
-			sub_connstr = get_connstr(base_sub_connstr, db);
+			ctx->sub_connstr = get_connstr(ctx->base_sub_connstr, db);
 
-			if (!sub_connstr || !strlen(sub_connstr))
+			if (!ctx->sub_connstr || !strlen(ctx->sub_connstr))
 				die(_("Subscriber connection string is not valid.\n"));
 
-			subscriber_conn = connectdb(sub_connstr);
+			subscriber_conn = connectdb(ctx->sub_connstr);
 			remove_unwanted_data(subscriber_conn);
 			PQfinish(subscriber_conn);
 			subscriber_conn = NULL;
@@ -2931,6 +3014,20 @@ main(int argc, char **argv)
 	if (pg_ctl_ret != 0)
 		die(_("Postgres stop after restore point catchup failed with %d. See spock_create_subscriber_postgres.log."), pg_ctl_ret);
 	wait_postmaster_shutdown();
+}
+
+/*
+ * Phase 9: restart postgres with spock loaded, then bring the node
+ * live -- for --bidirectional, the full go-live pipeline (local node
+ * creation, readonly, replication-set restore, catchup subscription,
+ * coverage barrier, forwarding clear, direct/reverse subscriptions,
+ * dataflow verification, readonly lift); for the plain path, the
+ * ordinary extension/origin/subscription creation per database.
+ */
+static void
+restart_with_spock_and_activate(SubscriberCreateContext *ctx)
+{
+	int	pg_ctl_ret;
 
 	/*
 	 * Start the node again, now with spock active so that we can start the
@@ -2943,13 +3040,13 @@ main(int argc, char **argv)
 	pg_ctl_ret = run_pg_ctl("start");
 	if (pg_ctl_ret != 0)
 		die(_("Postgres restart with spock enabled failed with %d."), pg_ctl_ret);
-	wait_postmaster_connection(bidir.enabled ? sub_connstr : base_sub_connstr);
+	wait_postmaster_connection(ctx->bidir.enabled ? ctx->sub_connstr : ctx->base_sub_connstr);
 
-	if (bidir.enabled)
+	if (ctx->bidir.enabled)
 	{
-		char *db = database_list[0];
+		char *db = ctx->database_list[0];
 
-		subscriber_conn = connectdb(sub_connstr);
+		subscriber_conn = connectdb(ctx->sub_connstr);
 
 		print_msg(VERBOSITY_VERBOSE,
 				  _("Creating spock extension for database %s...\n"), db);
@@ -2966,19 +3063,19 @@ main(int argc, char **argv)
 		 * --node-dsn option.
 		 */
 		print_msg(VERBOSITY_NORMAL, _("Creating local Spock node \"%s\"...\n"),
-				  subscriber_name);
+				  ctx->subscriber_name);
 		print_msg(VERBOSITY_DEBUG, _("Registering node \"%s\" with dsn \"%s\"\n"),
-				  subscriber_name, sub_connstr);
+				  ctx->subscriber_name, ctx->sub_connstr);
 		{
 			PQExpBuffer nodequery = createPQExpBuffer();
 			PGresult   *res;
 
 			printfPQExpBuffer(nodequery,
 							  "SELECT spock.node_create(node_name := %s, dsn := %s)",
-							  PQescapeLiteral(subscriber_conn, subscriber_name,
-											  strlen(subscriber_name)),
-							  PQescapeLiteral(subscriber_conn, sub_connstr,
-											  strlen(sub_connstr)));
+							  PQescapeLiteral(subscriber_conn, ctx->subscriber_name,
+											  strlen(ctx->subscriber_name)),
+							  PQescapeLiteral(subscriber_conn, ctx->sub_connstr,
+											  strlen(ctx->sub_connstr)));
 			res = debug_exec(subscriber_conn, nodequery->data);
 			if (PQresultStatus(res) != PGRES_TUPLES_OK)
 			{
@@ -2998,77 +3095,77 @@ main(int argc, char **argv)
 		print_msg(VERBOSITY_DEBUG,
 				  _("Restoring %d replication set(s), %d table membership(s), "
 					"%d sequence(s) onto node \"%s\"\n"),
-				  capture.num_repsets, capture.num_tables, capture.num_sequences,
-				  subscriber_name);
-		restore_replication_sets(subscriber_conn, &capture);
+				  ctx->capture.num_repsets, ctx->capture.num_tables, ctx->capture.num_sequences,
+				  ctx->subscriber_name);
+		restore_replication_sets(subscriber_conn, &ctx->capture);
 
-		bidir.source_restore_lsn = pg_strdup(remote_lsn);
-		bidir.node_dsn = sub_connstr;
-		write_manifest(&bidir, subscriber_name, db, base_prov_connstr);
+		ctx->bidir.source_restore_lsn = pg_strdup(ctx->remote_lsn);
+		ctx->bidir.node_dsn = ctx->sub_connstr;
+		write_manifest(&ctx->bidir, ctx->subscriber_name, db, ctx->base_prov_connstr);
 
 		{
 			char	   *source_sub_name;
 			char	   *target_lsn;
 
-			source_sub_name = sub_name_for(subscriber_name, remote_info->node_name);
+			source_sub_name = sub_name_for(ctx->subscriber_name, ctx->remote_info->node_name);
 
 			print_msg(VERBOSITY_NORMAL, _("Creating catchup subscription to the source...\n"));
 			print_msg(VERBOSITY_DEBUG,
 					  _("Creating subscription \"%s\" to source \"%s\" using slot "
 						"\"%s\", forward_origins={all}, enabled=false\n"),
-					  source_sub_name, prov_connstr, bidir.source_slot_name);
-			create_catchup_subscription(subscriber_conn, source_sub_name, prov_connstr,
-										replication_sets, bidir.source_slot_name,
-										bidir.source_restore_lsn);
+					  source_sub_name, ctx->prov_connstr, ctx->bidir.source_slot_name);
+			create_catchup_subscription(subscriber_conn, source_sub_name, ctx->prov_connstr,
+										ctx->replication_sets, ctx->bidir.source_slot_name,
+										ctx->bidir.source_restore_lsn);
 			print_msg(VERBOSITY_DEBUG,
 					  _("Subscription \"%s\" created, origin advanced to %s, and "
-						"enabled\n"), source_sub_name, bidir.source_restore_lsn);
+						"enabled\n"), source_sub_name, ctx->bidir.source_restore_lsn);
 
 			print_msg(VERBOSITY_NORMAL, _("Creating disabled peer subscriptions...\n"));
-			create_disabled_peer_subscriptions(subscriber_conn, bidir.peers,
-											   bidir.num_peers, replication_sets);
+			create_disabled_peer_subscriptions(subscriber_conn, ctx->bidir.peers,
+											   ctx->bidir.num_peers, ctx->replication_sets);
 
 			print_msg(VERBOSITY_NORMAL, _("Getting catchup target from the source...\n"));
-			target_lsn = get_catchup_target_lsn(prov_connstr);
+			target_lsn = get_catchup_target_lsn(ctx->prov_connstr);
 			print_msg(VERBOSITY_DEBUG, _("Catchup target LSN: %s\n"), target_lsn);
 
 			print_msg(VERBOSITY_NORMAL, _("Waiting for catchup to the source...\n"));
 			print_msg(VERBOSITY_DEBUG,
 					  _("Waiting for subscription \"%s\" (origin \"%s\") to reach "
-						"LSN %s\n"), source_sub_name, bidir.source_slot_name, target_lsn);
-			wait_for_catchup(subscriber_conn, source_sub_name, bidir.source_slot_name,
-							 target_lsn, bidir.stall_timeout, bidir.max_wait);
+						"LSN %s\n"), source_sub_name, ctx->bidir.source_slot_name, target_lsn);
+			wait_for_catchup(subscriber_conn, source_sub_name, ctx->bidir.source_slot_name,
+							 target_lsn, ctx->bidir.stall_timeout, ctx->bidir.max_wait);
 			pg_free(target_lsn);
 
 			print_msg(VERBOSITY_NORMAL, _("Establishing peer coverage barrier...\n"));
-			establish_peer_coverage_barrier(&bidir, subscriber_conn, prov_connstr,
-											remote_info->node_name, source_sub_name,
-											bidir.source_slot_name, subscriber_name, db,
-											base_prov_connstr, bidir.stall_timeout,
-											bidir.max_wait);
+			establish_peer_coverage_barrier(&ctx->bidir, subscriber_conn, ctx->prov_connstr,
+											ctx->remote_info->node_name, source_sub_name,
+											ctx->bidir.source_slot_name, ctx->subscriber_name, db,
+											ctx->base_prov_connstr, ctx->bidir.stall_timeout,
+											ctx->bidir.max_wait);
 
 			print_msg(VERBOSITY_NORMAL, _("Clearing forwarding on the catchup subscription...\n"));
-			clear_forwarding(subscriber_conn, prov_connstr, source_sub_name,
-							 bidir.source_slot_name, bidir.stall_timeout, bidir.max_wait);
+			clear_forwarding(subscriber_conn, ctx->prov_connstr, source_sub_name,
+							 ctx->bidir.source_slot_name, ctx->bidir.stall_timeout, ctx->bidir.max_wait);
 
 			print_msg(VERBOSITY_NORMAL, _("Enabling direct peer subscriptions...\n"));
-			enable_peer_subs(subscriber_conn, bidir.peers, bidir.num_peers,
-							 bidir.stall_timeout, bidir.max_wait);
+			enable_peer_subs(subscriber_conn, ctx->bidir.peers, ctx->bidir.num_peers,
+							 ctx->bidir.stall_timeout, ctx->bidir.max_wait);
 
 			print_msg(VERBOSITY_NORMAL, _("Creating reverse subscriptions...\n"));
-			create_reverse_subscriptions(&bidir, subscriber_name, sub_connstr,
-										 replication_sets, prov_connstr,
-										 remote_info->node_name, db, base_prov_connstr);
+			create_reverse_subscriptions(&ctx->bidir, ctx->subscriber_name, ctx->sub_connstr,
+										 ctx->replication_sets, ctx->prov_connstr,
+										 ctx->remote_info->node_name, db, ctx->base_prov_connstr);
 
 			print_msg(VERBOSITY_NORMAL, _("Waiting for reverse subscriptions to be ready...\n"));
-			wait_for_reverse_subs_ready(&bidir, subscriber_conn, prov_connstr,
-										remote_info->node_name, subscriber_name,
-										bidir.stall_timeout, bidir.max_wait);
+			wait_for_reverse_subs_ready(&ctx->bidir, subscriber_conn, ctx->prov_connstr,
+										ctx->remote_info->node_name, ctx->subscriber_name,
+										ctx->bidir.stall_timeout, ctx->bidir.max_wait);
 
 			print_msg(VERBOSITY_NORMAL, _("Verifying bidirectional replication...\n"));
-			verify_bidirectional_dataflow(&bidir, subscriber_conn, prov_connstr,
-										  remote_info->node_name, source_sub_name,
-										  subscriber_name, bidir.stall_timeout, bidir.max_wait);
+			verify_bidirectional_dataflow(&ctx->bidir, subscriber_conn, ctx->prov_connstr,
+										  ctx->remote_info->node_name, source_sub_name,
+										  ctx->subscriber_name, ctx->bidir.stall_timeout, ctx->bidir.max_wait);
 
 			pg_free(source_sub_name);
 
@@ -3082,18 +3179,20 @@ main(int argc, char **argv)
 		print_msg(VERBOSITY_NORMAL,
 				  _("Bidirectional join complete: node \"%s\" is a live, verified "
 					"bidirectional member of the cluster.\n"),
-				  subscriber_name);
+				  ctx->subscriber_name);
 	}
 	else
 	{
-		for (dbnum = 0; dbnum < n_databases; dbnum++)
+		int	dbnum;
+
+		for (dbnum = 0; dbnum < ctx->n_databases; dbnum++)
 		{
-			char *db = database_list[dbnum];
+			char *db = ctx->database_list[dbnum];
 
-			sub_connstr = get_connstr(base_sub_connstr, db);
-			prov_connstr = get_connstr(base_prov_connstr, db);
+			ctx->sub_connstr = get_connstr(ctx->base_sub_connstr, db);
+			ctx->prov_connstr = get_connstr(ctx->base_prov_connstr, db);
 
-			subscriber_conn = connectdb(sub_connstr);
+			subscriber_conn = connectdb(ctx->sub_connstr);
 
 			/* Create the extension. */
 			print_msg(VERBOSITY_VERBOSE,
@@ -3106,27 +3205,53 @@ main(int argc, char **argv)
 			 */
 			print_msg(VERBOSITY_VERBOSE,
 					  _("Creating replication origin for database %s...\n"), db);
-			initialize_replication_origin(subscriber_conn, slot_names[dbnum], remote_lsn);
+			initialize_replication_origin(subscriber_conn, ctx->slot_names[dbnum], ctx->remote_lsn);
 
 			/*
 			 * And finally add the node to the cluster.
 			 */
 			print_msg(VERBOSITY_NORMAL, _("Creating subscriber %s for database %s...\n"),
-					  subscriber_name, db);
-			print_msg(VERBOSITY_VERBOSE, _("Replication sets: %s\n"), replication_sets);
+					  ctx->subscriber_name, db);
+			print_msg(VERBOSITY_VERBOSE, _("Replication sets: %s\n"), ctx->replication_sets);
 
-			spock_subscribe(subscriber_conn, subscriber_name, sub_connstr,
-								prov_connstr, replication_sets, apply_delay,
-								force_text_transfer);
+			spock_subscribe(subscriber_conn, ctx->subscriber_name, ctx->sub_connstr,
+								ctx->prov_connstr, ctx->replication_sets, ctx->apply_delay,
+								ctx->force_text_transfer);
 
 			PQfinish(subscriber_conn);
 			subscriber_conn = NULL;
 		}
 	}
+}
+
+int
+main(int argc, char **argv)
+{
+	SubscriberCreateContext ctx = {0};
+
+	argv0 = argv[0];
+	progname = get_progname(argv[0]);
+	pg_logging_init(argv[0]);
+	start_time = time(NULL);
+	signal(SIGINT, signal_handler);
+	signal(SIGTERM, signal_handler);
+
+	parse_options(argc, argv, &ctx);
+	run_cleanup_mode_if_requested(&ctx);	/* exits if --cleanup was given */
+
+	resolve_database_targets(&ctx);
+	validate_connection_strings(&ctx);
+	create_replication_slots(&ctx);
+	run_basebackup_and_write_manifest(&ctx);
+	catchup_to_restore_point(&ctx);
+	strip_subscriber_catalog(&ctx);
+	restart_with_spock_and_activate(&ctx);
 
 	/* If user does not want the node to be running at the end, stop it. */
-	if (stop)
+	if (ctx.stop)
 	{
+		int	pg_ctl_ret;
+
 		print_msg(VERBOSITY_NORMAL, _("Stopping the subscriber node ...\n"));
 		pg_ctl_ret = run_pg_ctl("stop");
 		if (pg_ctl_ret != 0)
