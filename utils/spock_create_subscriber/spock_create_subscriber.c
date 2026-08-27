@@ -18,6 +18,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <locale.h>
 #include <pwd.h>
 #include <signal.h>
@@ -199,6 +200,8 @@ static PGresult *debug_exec(PGconn *conn, const char *query);
 
 static int run_pg_ctl(const char *arg);
 static void validate_extra_basebackup_args(const char *args);
+static int parse_checked_int(const char *arg, const char *opt_name);
+static char *validated_existing_path(const char *arg, const char *file_label);
 static void run_basebackup(const char *provider_connstr, const char *data_dir,
 	const char *extra_basebackup_args);
 static char *reset_subscriber_sysid(const char *data_dir);
@@ -2338,26 +2341,14 @@ main(int argc, char **argv)
 				replication_sets = validate_replication_set_input(pg_strdup(optarg));
 				break;
 			case 4:
-				{
-					postgresql_conf = expand_tilde(pg_strdup(optarg));
-					if (postgresql_conf != NULL && !file_exists(postgresql_conf))
-						die(_("The specified postgresql.conf file does not exist."));
-					break;
-				}
+				postgresql_conf = validated_existing_path(optarg, "postgresql.conf");
+				break;
 			case 5:
-				{
-					pg_hba_conf = expand_tilde(pg_strdup(optarg));
-					if (pg_hba_conf != NULL && !file_exists(pg_hba_conf))
-						die(_("The specified pg_hba.conf file does not exist."));
-					break;
-				}
+				pg_hba_conf = validated_existing_path(optarg, "pg_hba.conf");
+				break;
 			case 6:
-				{
-					recovery_conf = expand_tilde(pg_strdup(optarg));
-					if (recovery_conf != NULL && !file_exists(recovery_conf))
-						die(_("The specified recovery configuration file does not exist."));
-					break;
-				}
+				recovery_conf = validated_existing_path(optarg, "recovery configuration");
+				break;
 			case 'v':
 				verbosity++;
 				break;
@@ -2368,12 +2359,7 @@ main(int argc, char **argv)
 				drop_slot_if_exists = true;
 				break;
 			case 8:
-				{
-					char *endptr;
-					apply_delay = (int) strtol(optarg, &endptr, 10);
-					if (*endptr != '\0' || endptr == optarg)
-						die(_("--apply-delay requires an integer value\n"));
-				}
+				apply_delay = parse_checked_int(optarg, "apply-delay");
 				break;
 			case 9:
 				databases = pg_strdup(optarg);
@@ -2389,12 +2375,12 @@ main(int argc, char **argv)
 				bidir.enabled = true;
 				break;
 			case 13:
-				bidir.stall_timeout = atoi(optarg);
+				bidir.stall_timeout = parse_checked_int(optarg, "stall-timeout");
 				if (bidir.stall_timeout <= 0)
 					die(_("--stall-timeout must be a positive integer"));
 				break;
 			case 14:
-				bidir.max_wait = atoi(optarg);
+				bidir.max_wait = parse_checked_int(optarg, "max-wait");
 				if (bidir.max_wait < 0)
 					die(_("--max-wait must be a non-negative integer"));
 				break;
@@ -2405,12 +2391,8 @@ main(int argc, char **argv)
 				bidir.force_cleanup = true;
 				break;
 			case 17:
-				{
-					postgresql_auto_conf = expand_tilde(pg_strdup(optarg));
-					if (postgresql_auto_conf != NULL && !file_exists(postgresql_auto_conf))
-						die(_("The specified postgresql.auto.conf file does not exist."));
-					break;
-				}
+				postgresql_auto_conf = validated_existing_path(optarg, "postgresql.auto.conf");
+				break;
 			default:
 				fprintf(stderr, _("Unknown option\n"));
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
@@ -3338,6 +3320,53 @@ validate_extra_basebackup_args(const char *args)
 			*p == '\n' || *p == '\r')
 			die(_("--extra-basebackup-args contains unsafe shell characters\n"));
 	}
+}
+
+/*
+ * Parse optarg as a base-10 integer, dying with a message naming
+ * opt_name if any part of it isn't numeric or the value doesn't fit in
+ * an int -- shared by every --<option> that takes a bare integer
+ * argument (--apply-delay, --stall-timeout, --max-wait).  Checking
+ * errno for ERANGE alone isn't enough on platforms where long is wider
+ * than int (strtol() only sets it when the value overflows long
+ * itself): a value like 4294967296 fits in a 64-bit long without
+ * ERANGE, but silently wraps to 0 when cast to int, e.g. turning
+ * --max-wait=4294967296 into an accepted, effectively-unbounded wait.
+ * Range constraints beyond "fits in an int" are the caller's own
+ * concern.
+ */
+static int
+parse_checked_int(const char *arg, const char *opt_name)
+{
+	char	   *endptr;
+	long		val;
+
+	errno = 0;
+	val = strtol(arg, &endptr, 10);
+	if (*endptr != '\0' || endptr == arg)
+		die(_("--%s requires an integer value\n"), opt_name);
+	if (errno == ERANGE || val < INT_MIN || val > INT_MAX)
+		die(_("--%s value is out of range\n"), opt_name);
+
+	return (int) val;
+}
+
+/*
+ * Expand ~ in arg and verify the resulting path exists, dying with a
+ * message naming file_label if it doesn't -- shared by every
+ * --<option> that takes an existing config-file path
+ * (--postgresql-conf, --hba-conf, --recovery-conf,
+ * --postgresql-auto-conf).
+ */
+static char *
+validated_existing_path(const char *arg, const char *file_label)
+{
+	char *path = expand_tilde(pg_strdup(arg));
+
+	if (path != NULL && !file_exists(path))
+		die(_("The specified %s file does not exist."), file_label);
+
+	return path;
 }
 
 /*
