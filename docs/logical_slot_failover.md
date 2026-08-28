@@ -44,10 +44,17 @@ These are the settings Spock needs to replicate at all. They are covered in
 wal_level = logical
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
-max_worker_processes = 10
-max_replication_slots = 10
+max_worker_processes = 20
+max_replication_slots = 12
 max_wal_senders = 10
 ```
+
+Size these for your cluster rather than copying the numbers - see
+[Sizing Postgres Resources for Spock](sizing.md). Note that a physical standby
+adds to both `max_wal_senders` and `max_replication_slots` on the primary, and
+that on PostgreSQL 15-17 the `spock_failover_slots` worker occupies one
+`max_worker_processes` slot on every node (it is not registered on PostgreSQL
+18+).
 
 On PostgreSQL 18, also size `max_active_replication_origins` (default 10) to at
 least the number of subscriptions plus some headroom.

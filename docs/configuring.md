@@ -5,13 +5,21 @@ replication scenario before creating the Spock extension:
 
 ```sql
 wal_level = 'logical'
-max_worker_processes = 10   # one per database needed on provider node
-                            # one per node needed on subscriber node
-max_replication_slots = 10  # one per node needed on provider node
-max_wal_senders = 10        # one per node needed on provider node
+max_worker_processes = 20   # supervisor + one per database + one per
+                            # subscription + sync workers, and shared with
+                            # parallel query - see the sizing guide
+max_replication_slots = 12  # one per subscriber, plus one per in-progress sync
+max_wal_senders = 10        # one per subscriber, plus one per in-progress sync
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
 ```
+
+These values suit a small cluster of two or three nodes replicating a single
+database. For anything larger, or for an instance hosting several databases
+or other extensions that use background workers, size each parameter with the
+formulas in
+[Sizing Postgres Resources for Spock](sizing.md). All three require a server
+restart to change.
 
 After modifying the parameters and restarting the Postgres server with your
 OS-specific restart command, connect with psql and create the Spock
