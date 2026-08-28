@@ -206,13 +206,22 @@ replication and load the Spock extension:
 
 ```sql
  wal_level = logical
-max_worker_processes = 10   # one per database on provider, one per node on subscriber
-max_replication_slots = 10  # one per node on provider
-max_wal_senders = 10        # one per node on provider
+max_worker_processes = 20   # see the sizing guide
+max_replication_slots = 12  # one per subscriber, plus one per in-progress sync
+max_wal_senders = 10        # one per subscriber, plus one per in-progress sync
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
 listen_addresses = '*'
 ```
+
+!!! info "Sizing `max_worker_processes`"
+
+    This parameter covers more than one worker per node: Spock runs a
+    supervisor, a manager for *every* connectable database in the instance
+    (including `postgres` and `template1`), an apply worker per subscription,
+    and a sync worker per subscription during table synchronization. The pool
+    is also shared with parallel query workers. See
+    [Sizing Postgres Resources for Spock](sizing.md) for the formulas.
 
 !!! note
 
@@ -510,7 +519,7 @@ Your two-node Spock cluster is now operational. The following documents describe
 If you encounter issues, review the following common problems and solutions.
 
 - Check the `pg_hba.conf` entries and ensure the nodes can connect to each other if replication is not starting.
-- Verify that `max_replication_slots` and `max_wal_senders` are set to sufficient values when a subscription is stuck initializing.
+- Verify that `max_replication_slots` and `max_wal_senders` are set to sufficient values when a subscription is stuck initializing. A subscription that is synchronizing needs a second slot and walsender on the provider in addition to those held by its apply stream; see [Sizing Postgres Resources for Spock](sizing.md).
 - If DDL is not replicating, confirm that the automatic DDL replication settings are enabled on both nodes.
 - If errors are not clear, review the PostgreSQL logs for detailed error messages.
 

@@ -44,7 +44,11 @@ configuration parameters.
   SHOW max_replication_slots;
   ```
 
-  The minimum value is one per node on the provider.
+  A subscription that is initializing needs *two* slots on the provider: the
+  one held by its apply stream, plus one created for the sync worker that
+  copies the table data. Size for `2 x subscribers` per node, plus any
+  physical or failover slots. On PostgreSQL 15-17 this parameter also caps
+  replication origins, so add one per subscription this node applies.
 
 - Verify that `max_wal_senders` is set to a sufficient value:
 
@@ -52,7 +56,9 @@ configuration parameters.
   SHOW max_wal_senders;
   ```
 
-  The minimum value is one per node on the provider.
+  Same accounting as above: `2 x subscribers` per node while syncs are in
+  progress, plus any physical standbys. This is the most common reason a
+  cluster that replicates fine in steady state cannot add or resync a table.
 
 - For PostgreSQL 18+, check the `max_active_replication_origins` setting:
 
@@ -181,12 +187,19 @@ function properly:
 
 ```sql
 wal_level = logical
-max_worker_processes = 10
-max_replication_slots = 10
+max_worker_processes = 20
+max_replication_slots = 12
 max_wal_senders = 10
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
 ```
+
+The three numeric values shown are a small-cluster starting point. If you are
+troubleshooting worker registration failures, stuck subscriptions, or apply
+workers that will not start, size them from your actual topology using
+[Sizing Postgres Resources for Spock](sizing.md) - the defaults in the
+tutorials do not account for parallel query workers sharing the
+`max_worker_processes` pool.
 
 After modifying `postgresql.conf`, restart PostgreSQL with this command:
 
@@ -264,7 +277,10 @@ subscription.
 
 Possible causes and solutions include:
 
-- Insufficient `max_worker_processes` - increase the value.
+- Insufficient `max_worker_processes` - increase the value; see
+  [Sizing Postgres Resources for Spock](sizing.md). Remember that parallel
+  query workers draw from the same pool, so a parallel-heavy workload can
+  starve apply workers even when the value looks generous.
 - Network bandwidth limitations - check network throughput.
 - Large transactions - break into smaller transactions if possible.
 - Slow subscriber hardware - upgrade hardware or reduce workload.
