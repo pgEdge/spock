@@ -518,6 +518,9 @@ adjust_progress_info(PGconn *origin_conn)
 			sap->key.remote_node_id = atooid(remote_node_id);
 			Assert(OidIsValid(sap->key.remote_node_id));
 
+			/* Alloc above doesn't zero; set every non-key field to "unset" */
+			spock_init_progress_fields(sap);
+
 			/* Check: we view only values related to a single database */
 			Assert(!PQgetisnull(originRes, rno, GP_DBOID));
 			if (dbid_str == NULL)
@@ -766,8 +769,8 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 		sap->key.remote_node_id = atooid(remote_node_id_str);
 		Assert(OidIsValid(sap->key.remote_node_id));
 
-		sap->remote_commit_ts = 0;
-		sap->prev_remote_ts = 0;
+		/* Alloc above doesn't zero; set every non-key field to "unset" */
+		spock_init_progress_fields(sap);
 		if (!PQgetisnull(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_TS))
 		{
 			remote_commit_ts_str = PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_TS);

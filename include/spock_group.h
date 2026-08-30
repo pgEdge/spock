@@ -150,6 +150,8 @@ extern void spock_group_shmem_startup(bool found);
 
 extern SpockGroupEntry *spock_group_attach(Oid dbid, Oid node_id,
 										   Oid remote_node_id);
+extern void spock_group_ensure_entry(Oid dbid, Oid node_id,
+									 Oid remote_node_id);
 extern void spock_group_detach(void);
 extern bool spock_group_progress_update(const SpockApplyProgress *sap);
 extern void spock_group_progress_update_ptr(SpockGroupEntry *entry,
