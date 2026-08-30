@@ -40,8 +40,12 @@ my $db_password = $config->{db_password};
 # Set up bidirectional replication
 cross_wire(2, ['n1', 'n2'], 'Cross-wire nodes N1 and N2');
 
-# Configure exception_behaviour to SUB_DISABLE on node 2
+# Configure exception_behaviour to SUB_DISABLE on node 2.  This test uses an
+# UPDATE of a missing row as its poison transaction, so turn off
+# spock.missing_update_to_insert (default on), which would otherwise apply
+# the UPDATE as an INSERT and never disable the subscription.
 psql_or_bail(2, "ALTER SYSTEM SET spock.exception_behaviour = 'sub_disable'");
+psql_or_bail(2, "ALTER SYSTEM SET spock.missing_update_to_insert = off");
 psql_or_bail(2, "SELECT pg_reload_conf()");
 
 # Wait for config reload

@@ -28,6 +28,9 @@ typedef struct SpockTupleData
 	Datum		values[MaxTupleAttributeNumber];
 	bool		nulls[MaxTupleAttributeNumber];
 	bool		changed[MaxTupleAttributeNumber];
+
+	/* a column arrived as 'u': its value is not in this message */
+	bool		has_unchanged;
 } SpockTupleData;
 
 extern void spock_write_commit_order(StringInfo out,

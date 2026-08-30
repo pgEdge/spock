@@ -21,15 +21,19 @@ are recorded in `spock.exception_log`.
 | `insert_exists`            | INSERT    | Yes                                 |
 | `update_origin_differs`    | UPDATE    | N/A (normal flow, not recorded)     |
 | `update_exists`            | UPDATE    | No (unique constraint violated), saved in `spock.exception_log` |
-| `update_missing`           | UPDATE    | No (row not found), saved in `spock.exception_log`              |
+| `update_missing`           | UPDATE    | Yes, by default (row is rebuilt and inserted); see below        |
 | `delete_origin_differs`    | DELETE    | N/A (normal flow, not recorded)     |
 | `delete_missing`           | DELETE    | Yes                                 |
 | `delete_exists`            | DELETE    | Yes                                 |
 
 A conflict is **resolvable** when Spock can automatically choose a
 winning tuple and continue replication without operator intervention.
-`update_missing` and `update_exists` are not resolvable and result in
-an ERROR that is recorded in `spock.exception_log`.
+`update_exists` is not resolvable and results in an ERROR that is
+recorded in `spock.exception_log`. `update_missing` is resolvable by
+default, but falls back to that same behaviour when the row cannot be
+rebuilt or when
+[`spock.missing_update_to_insert`](configuring.md#spockmissing_update_to_insert)
+is off.
 
 ---
 
@@ -97,10 +101,24 @@ replication gap.
 
 Spock retries the lookup several times (with short waits) in case the
 row is being inserted by a concurrent transaction. If the row still
-cannot be found after retries, the conflict is raised.
+cannot be found after retries, the conflict is reported.
 
-**Resolution:** This conflict is **not resolvable**. Spock raises an
-ERROR, which is logged to `spock.exception_log`.
+**Resolution:** By default Spock rebuilds the whole row from the UPDATE
+message and inserts it, resolving the conflict as `apply_remote` and
+recording it in `spock.resolutions` (when `spock.save_resolutions` is on).
+An UPDATE carries every replicated
+column of the new row, not only the changed ones, so the rebuilt row
+matches what the provider has.
+
+Spock refuses to rebuild, and raises an ERROR logged to
+`spock.exception_log` instead, when the row cannot be reconstructed
+faithfully -- an unchanged TOAST column is not present in the message, or
+a replica identity column is not replicated. Setting
+[`spock.missing_update_to_insert`](configuring.md#spockmissing_update_to_insert)
+to `off` restores the Spock 5 behaviour of always raising.
+
+Spock does not yet track tombstones, so a `DELETE` newer than the UPDATE
+that races it will be undone by the rebuild. See the GUC documentation.
 
 ---
 
@@ -160,8 +178,8 @@ kept (`skip` / `keep_local`). The event is recorded in the
 ### Conflict Resolution Strategies
 
 The `spock.conflict_resolution` GUC controls how resolvable conflicts
-(all types except `update_missing` and `update_exists`) are decided. In
-current Spock releases the only supported value is:
+(all types except `update_exists`) are decided. In current Spock
+releases the only supported value is:
 
 | Strategy              | Behavior                                                  |
 |-----------------------|-----------------------------------------------------------|
@@ -228,7 +246,7 @@ each system *resolves* conflicts and where it *records* them.
 | `insert_exists`         | Logs and raises ERROR.                 | Resolves via `last_update_wins`; transforms INSERT into UPDATE of the winning tuple. |
 | `update_origin_differs` | Logs and always applies the remote tuple. | Resolves via `last_update_wins`; local tuple can win. Treated as normal replication flow (not a true conflict) with optional logging via `log_origin_change`. |
 | `update_exists`         | Detects unique constraint violation on updated row; logs. | Logs and records in `spock.exception_log`. |
-| `update_missing`        | Logs and skips.                        | Logs and records in `spock.exception_log`. |
+| `update_missing`        | Logs and skips.                        | Rebuilds the row from the UPDATE and inserts it; records in `spock.resolutions`. Falls back to `spock.exception_log` when the row cannot be rebuilt. |
 | `delete_origin_differs` | Logs and always applies the delete.    | Resolves via `last_update_wins`; local tuple can win (reported as `delete_exists`). Treated as normal replication flow (not a true conflict) with optional logging. |
 | `delete_missing`        | Logs and skips.                        | Logs and skips. Records in `spock.resolutions`. |
 | `delete_exists`         | No equivalent.                         | Unique to Spock. The local row is newer than the remote DELETE, so the delete is skipped and the row is preserved. |
@@ -242,8 +260,9 @@ tuple to win when it is more recent.
 **Persistence.** PostgreSQL 18 writes conflicts only to the PostgreSQL
 server log. Spock additionally persists certain conflicts in the
 `spock.resolutions` table (with full tuple details in JSON) --
-specifically `insert_exists`, `delete_missing`, and `delete_exists` --
-and non-resolvable conflicts (`update_missing`, `update_exists`) in
+specifically `insert_exists`, `update_missing`, `delete_missing`, and
+`delete_exists` -- and non-resolvable conflicts (`update_exists`, plus
+`update_missing` when the row cannot be rebuilt) in
 `spock.exception_log`. Origin-differs events are not persisted to
 either table.
 

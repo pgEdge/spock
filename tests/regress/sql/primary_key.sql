@@ -11,6 +11,10 @@ SELECT pg_reload_conf();
 \c :subscriber_dsn
 ALTER SYSTEM SET spock.check_all_uc_indexes = true;
 ALTER SYSTEM SET spock.exception_behaviour = sub_disable;
+-- This test drives the subscription into 'disabled' by way of UPDATEs whose
+-- row cannot be found.  spock.missing_update_to_insert would rebuild the row
+-- instead, so turn it off here.
+ALTER SYSTEM SET spock.missing_update_to_insert = off;
 SELECT pg_reload_conf();
 
 \c :provider_dsn
@@ -457,4 +461,5 @@ SELECT pg_reload_conf();
 \c :subscriber_dsn
 ALTER SYSTEM SET spock.check_all_uc_indexes = false;
 ALTER SYSTEM SET spock.exception_behaviour = transdiscard;
+ALTER SYSTEM RESET spock.missing_update_to_insert;
 SELECT pg_reload_conf();

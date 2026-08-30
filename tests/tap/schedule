@@ -48,6 +48,7 @@ test: 022_rmgr_progress_post_checkpoint_crash
 test: 022_apply_mem_context
 test: 024_node_id_collision
 test: 025_tiebreaker_equal_warning
+test: 040_missing_update_to_insert
 test: 027_reserved_object
 test: 028_failover_slots_naptime_guc
 test: 030_autoddl_repset_stickiness

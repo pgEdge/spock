@@ -214,12 +214,13 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT id, other, data, "SomeThing" FROM basic_dml ORDER BY id;
- id | other | data | SomeThing 
-----+-------+------+-----------
+ id | other | data |    SomeThing     
+----+-------+------+------------------
   2 |     2 | bar2 | @ 84 days
+  3 |     3 | baz3 | @ 2 years 1 hour
   4 |     4 |      | @ 3 days
   5 |     5 |      | 
-(3 rows)
+(4 rows)
 
 \c :provider_dsn
 UPDATE basic_dml SET other = id, "SomeThing" = "SomeThing" - '10 seconds'::interval WHERE id < 3;
@@ -310,7 +311,8 @@ SELECT id, other, data, "SomeThing" FROM basic_dml ORDER BY id;
   3 |    99 | bar  | @ 2 years 1 hour
   4 |     4 |      | @ 3 days 10 secs
   5 |     5 |      | 
-(4 rows)
+  6 |   100 | abcd | @ 2 years 1 hour
+(5 rows)
 
 -- transaction timestamp should be updated for each row (see #148)
 SELECT count(DISTINCT subonly_def_ts) = count(DISTINCT insert_xid) FROM basic_dml;
@@ -334,7 +336,8 @@ SELECT id, other, data, "SomeThing" FROM basic_dml ORDER BY id;
 ----+-------+------+------------------
   4 |     4 |      | @ 3 days 10 secs
   5 |     5 |      | 
-(2 rows)
+  6 |   100 | abcd | @ 2 years 1 hour
+(3 rows)
 
 -- truncate
 \c :provider_dsn

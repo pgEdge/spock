@@ -19,6 +19,7 @@
 #include "pgstat.h"
 
 #include "access/commit_ts.h"
+#include "access/sysattr.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
 
@@ -108,6 +109,9 @@ static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 							  TupleTableSlot *localslot);
 #endif
 static bool physatt_in_attmap(SpockRelation *rel, int attid);
+static bool can_insert_missing_update(SpockRelation *rel,
+									  SpockTupleData *oldtup,
+									  SpockTupleData *newtup);
 
 /*
  * Executor state preparation for evaluation of constraint expressions,
@@ -522,6 +526,7 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 	Assert(rel->natts <= tupdesc->natts);
 	memset(deltatup->values, 0, tupdesc->natts * sizeof(Datum));
 	memset(deltatup->nulls, 1, tupdesc->natts * sizeof(bool));
+	deltatup->has_unchanged = false;
 
 	for (attidx = 0; attidx < rel->natts; attidx++)
 	{
@@ -817,6 +822,8 @@ zero_datum_for_type(Oid typid)
 static void
 init_tuple_with_defaults(SpockTupleData *oldtup, TupleDesc tupdesc)
 {
+	oldtup->has_unchanged = false;
+
 	for (int i = 0; i < tupdesc->natts; i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
@@ -831,44 +838,106 @@ init_tuple_with_defaults(SpockTupleData *oldtup, TupleDesc tupdesc)
 }
 
 /*
- * Handle insert via low level api.
+ * Can this UPDATE's new tuple be turned into a complete row?  Completes it
+ * where possible: a column that arrived as an unchanged TOAST pointer ('u')
+ * is not in the new tuple, but when its old value was WAL-logged (a
+ * LOG_OLD_VALUE column today, REPLICA IDENTITY FULL later) it is in oldtup,
+ * and unchanged means old value == new value.
+ *
+ * Refuse if any 'u' column remains unrecoverable.  The replica identity has
+ * to be fully replicated too: a key column filled from a local default would
+ * invent a row that matches nothing upstream, again on every later UPDATE.
  */
-void
-spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
+static bool
+can_insert_missing_update(SpockRelation *rel, SpockTupleData *oldtup,
+						  SpockTupleData *newtup)
 {
-	ApplyExecutionData *edata;
-	EState	   *estate;
-	TupleTableSlot *remoteslot;
+	Bitmapset  *idattrs;
+	TupleDesc	desc;
+	int			i;
+
+	/* Note: with no old tuple on the wire, the caller passes newtup twice. */
+	if (newtup->has_unchanged && oldtup != NULL && oldtup != newtup)
+	{
+		bool		remaining = false;
+
+		for (i = 0; i < rel->natts; i++)
+		{
+			int			attid = rel->attmap[i];
+
+			if (newtup->changed[attid])
+				continue;		/* not 'u' */
+
+			if (!oldtup->nulls[attid])
+			{
+				newtup->values[attid] = oldtup->values[attid];
+				newtup->nulls[attid] = false;
+				newtup->changed[attid] = true;
+			}
+			else
+				remaining = true;
+		}
+		newtup->has_unchanged = remaining;
+	}
+
+	if (newtup->has_unchanged)
+		return false;
+
+	idattrs = RelationGetIndexAttrBitmap(rel->rel,
+										 INDEX_ATTR_BITMAP_IDENTITY_KEY);
+	desc = RelationGetDescr(rel->rel);
+
+	for (i = 0; i < desc->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(desc, i);
+
+		if (att->attisdropped || att->attgenerated)
+			continue;
+
+		/*
+		 * With no identity index the whole row is the identity, so every
+		 * column has to be replicated.
+		 */
+		if (idattrs != NULL &&
+			!bms_is_member(att->attnum - FirstLowInvalidHeapAttributeNumber,
+						   idattrs))
+			continue;
+
+		if (!physatt_in_attmap(rel, i))
+			return false;
+	}
+
+	return true;
+}
+
+/*
+ * Apply a complete remote tuple as an INSERT.  The caller owns edata/estate,
+ * has opened the indexes and initialized epqstate.
+ *
+ * update_missing_key is NULL for a plain INSERT.  For an UPDATE being applied
+ * as an INSERT it holds that UPDATE's old key, and a clean insert is reported
+ * as SPOCK_CT_UPDATE_MISSING.  A collision is reported as SPOCK_CT_INSERT_EXISTS
+ * either way, so only one resolution is recorded.
+ */
+static void
+apply_heap_insert_tuple(SpockRelation *rel, ApplyExecutionData *edata,
+						EPQState *epqstate, TupleTableSlot *remoteslot,
+						SpockTupleData *newtup,
+						SpockTupleData *update_missing_key)
+{
+	EState	   *estate = edata->estate;
+	ResultRelInfo *relinfo = edata->targetRelInfo;
+	Oid			idxused = edata->targetRel->idxoid;
+	TupleTableSlot *localslot;
 	MemoryContext oldctx;
 	UserContext ucxt;
-
-	EPQState	epqstate;
-	TupleTableSlot *localslot;
-	ResultRelInfo *relinfo;
 	bool		found;
-	Oid			idxused;
-
-	/* Initialize the executor state. */
-	edata = create_edata_for_relation(rel);
-	estate = edata->estate;
-	remoteslot = ExecInitExtraTupleSlot(estate,
-										RelationGetDescr(rel->rel),
-										&TTSOpsVirtual);
-
-	/* update stats */
-	handle_stats_counter(rel->rel, MyApplyWorker->subid,
-						 SPOCK_STATS_INSERT_COUNT, 1);
 
 	/* Process and store remote tuple in the slot */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 	slot_store_data(remoteslot, rel, newtup);
 	slot_fill_defaults(rel, estate, remoteslot);
 	MemoryContextSwitchTo(oldctx);
-
-	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
-	ExecOpenIndices(edata->targetRelInfo, false);
-	relinfo = edata->targetRelInfo;
-	idxused = edata->targetRel->idxoid;
 
 	/*
 	 * TODO: do we need a retry finding a tuple? Also do we need
@@ -877,7 +946,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 
 	/* Find the current local tuple. */
 	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
-									edata->targetRel->idxoid,
+									idxused,
 									remoteslot, &localslot,
 									true);
 
@@ -903,7 +972,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		 */
 		init_tuple_with_defaults(&oldtup, RelationGetDescr(rel->rel));
 		spock_handle_conflict_and_apply(rel, estate, localslot, remoteslot,
-										&oldtup, newtup, relinfo, &epqstate,
+										&oldtup, newtup, relinfo, epqstate,
 										idxused, true);
 	}
 	else
@@ -916,6 +985,22 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		 */
 		exception_log->local_tuple = NULL;
 
+		if (update_missing_key != NULL)
+		{
+			HeapTuple	remotetuple;
+
+			remotetuple = heap_form_tuple(RelationGetDescr(rel->rel),
+										  newtup->values, newtup->nulls);
+			spock_report_conflict(SPOCK_CT_UPDATE_MISSING,
+								  rel, NULL, update_missing_key,
+								  remotetuple, remotetuple,
+								  SpockResolution_ApplyRemote,
+								  InvalidTransactionId, false,
+								  InvalidRepOriginId, (TimestampTz) 0,
+								  idxused);
+			heap_freetuple(remotetuple);
+		}
+
 		/* Make sure that any user-supplied code runs as the table owner. */
 		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 		/* Do the actual INSERT */
@@ -923,6 +1008,35 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		/* Switch back to the original user */
 		RestoreUserContext(&ucxt);
 	}
+}
+
+/*
+ * Handle insert via low level api.
+ */
+void
+spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
+{
+	ApplyExecutionData *edata;
+	EState	   *estate;
+	TupleTableSlot *remoteslot;
+
+	EPQState	epqstate;
+
+	/* Initialize the executor state. */
+	edata = create_edata_for_relation(rel);
+	estate = edata->estate;
+	remoteslot = ExecInitExtraTupleSlot(estate,
+										RelationGetDescr(rel->rel),
+										&TTSOpsVirtual);
+
+	/* update stats */
+	handle_stats_counter(rel->rel, MyApplyWorker->subid,
+						 SPOCK_STATS_INSERT_COUNT, 1);
+
+	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
+	ExecOpenIndices(edata->targetRelInfo, false);
+
+	apply_heap_insert_tuple(rel, edata, &epqstate, remoteslot, newtup, NULL);
 
 	/* Cleanup */
 	ExecCloseIndices(edata->targetRelInfo);
@@ -1015,6 +1129,19 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 										oldtup, newtup, relinfo, &epqstate,
 										idxused, false);
 	}
+	else if (missing_update_to_insert &&
+			 can_insert_missing_update(rel, oldtup, newtup))
+	{
+		/*
+		 * An UPDATE message carries every replicated column, so rebuild the
+		 * whole row and insert it rather than failing.  The search above used
+		 * the OLD key; apply_heap_insert_tuple() searches again with the new
+		 * tuple, so a key moved onto an existing row is an insert conflict
+		 * rather than a duplicate-key error.  It reports the resolution too.
+		 */
+		apply_heap_insert_tuple(rel, edata, &epqstate, remoteslot, newtup,
+								oldtup);
+	}
 	else
 	{
 		/*
@@ -1038,6 +1165,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 		/*
 		 * The tuple to be updated could not be found.  Do nothing except for
 		 * emitting a log message. TODO: Add pkey information as well.
+		 *
+		 * Also reached with the GUC on when the row cannot be rebuilt: see
+		 * can_insert_missing_update().
 		 */
 		exception_log->local_tuple = NULL;
 		elog(ERROR,

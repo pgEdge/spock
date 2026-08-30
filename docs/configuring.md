@@ -286,6 +286,57 @@ restart is not required.
 spock.read_retry_count = 5
 ```
 
+### `spock.missing_update_to_insert`
+
+Controls what the apply worker does with an `UPDATE` whose target row cannot
+be found locally, after [`spock.read_retry_count`](#spockread_retry_count)
+retries are exhausted.
+
+When enabled (the default), Spock rebuilds the row from the `UPDATE` message
+and inserts it, instead of raising an error. This works because an `UPDATE`
+carries every replicated column of the new row, not only the columns the
+statement changed. The conflict is still counted as `update_missing` and,
+when `spock.save_resolutions` is on, recorded in `spock.resolutions` with a
+resolution of `apply_remote`.
+
+When disabled, the `UPDATE` fails and is handled by
+[`spock.exception_behaviour`](#spock-exception_behaviour), as in Spock 5.
+
+The main reason to leave this enabled is out-of-order arrival. In a mesh, a
+node can receive an `UPDATE` from one peer before the original `INSERT`
+arrives from another; with serial apply there is no ordering between those
+two streams. Rebuilding the row converges correctly: when the older `INSERT`
+does arrive it is resolved as `insert_exists` and loses to the newer row.
+
+The conversion is refused, and the `UPDATE` fails as it would with the
+setting off, when the row cannot be rebuilt faithfully:
+
+* A column arrived as an **unchanged TOAST value**. PostgreSQL does not write
+  the TOAST chunks to WAL for an update that did not change them, and they
+  may already have been vacuumed, so the value is not in the message and
+  cannot be recovered. Inserting would silently store a `NULL` in its place.
+* A **replica identity column is not replicated**, for example because the
+  table was added to a replication set with a `columns` list that excludes
+  the key. The key would have to come from a local default, inventing a row
+  that matches nothing upstream.
+
+!!! warning
+
+    Spock does not yet track tombstones, so the apply worker cannot
+    distinguish a row that has not arrived yet from one that was
+    deliberately deleted. If a `DELETE` newer than the `UPDATE` races it,
+    the conversion will bring the row back. Set this to `off` if your
+    workload deletes rows that are concurrently updated on another node and
+    you would rather the `UPDATE` fail loudly.
+
+Valid values are `on` and `off`. Default: `on`. Changes take effect on
+`SIGHUP` (for example, `SELECT pg_reload_conf()`); a server restart is not
+required.
+
+```
+spock.missing_update_to_insert = on
+```
+
 ### Logical Slot Failover (HA Standby)
 
 Spock creates logical replication slots on each provider node. For high

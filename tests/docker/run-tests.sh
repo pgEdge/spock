@@ -42,7 +42,8 @@ wait_for_pg 10 1
 # b. Table without delta-apply columns
 #
 # 1. INSERT: Duplicate pkey, Duplicate secondary constraint
-# 2. UPDATE: Row not found, duplicate secondary constraint
+# 2. UPDATE: Row not found (applied as an INSERT by default since
+#    spock.missing_update_to_insert), duplicate secondary constraint
 # 3. DELETE: Row not found
 
 # ----
@@ -94,21 +95,17 @@ _EOF_
   psql -A -t -h ${peer_names[0]} -c \
     "CALL spock.wait_for_sync_event(true, '$HOSTNAME', '$lsn1'::pg_lsn, 30)"
 
-  echo "Checking the exception table now..."
-  elog_entries=$(psql -A -t -h ${peer_names[0]} -c "
-  	SELECT count(*)
-	FROM spock.exception_log e
-	JOIN spock.node n
-	ON e.remote_origin = n.node_id
-	WHERE e.operation = 'UPDATE'
-	AND n.node_name = 'n1'
-	AND e.remote_new_tup::text LIKE '%\"trigger missing key on UPDATE\"%';
-	")
+  # spock.missing_update_to_insert is on by default, so the UPDATE of the
+  # missing row is applied as an INSERT rather than logged as an exception.
+  echo "Checking the converted UPDATE now..."
+  converted_row=$(psql -A -t -h ${peer_names[0]} -c \
+    "SELECT data FROM t4 WHERE id = 2")
 
-  if [ "$elog_entries" -ne 1 ];
+  if [ "$converted_row" != "trigger missing key on UPDATE" ];
   then
+	  psql -h ${peer_names[0]} -c "SELECT * FROM t4 ORDER BY id;"
 	  psql -h ${peer_names[0]} -c "select * from spock.exception_log;"
-	  echo "Did not find an exception log entry. Exiting..."
+	  echo "UPDATE of a missing row was not applied as an INSERT. Exiting..."
 	  exit 1
   fi
 
@@ -116,16 +113,17 @@ _EOF_
     "SELECT conflict_type FROM spock.resolutions WHERE relname = 'public.t4'")
 
   insert_exists_count=$(echo "$resolution_check" | grep -c 'insert_exists')
+  update_missing_count=$(echo "$resolution_check" | grep -c 'update_missing')
   delete_missing_count=$(echo "$resolution_check" | grep -c 'delete_missing')
 
-  if [ "$insert_exists_count" -eq 1 ] && [ "$delete_missing_count" -eq 1 ];
+  if [ "$insert_exists_count" -eq 1 ] && [ "$update_missing_count" -eq 1 ] && [ "$delete_missing_count" -eq 1 ];
   then
-    echo "PASS: Found both insert_exists and delete_missing for public.t4"
+    echo "PASS: Found insert_exists, update_missing and delete_missing for public.t4"
   else
     psql -h ${peer_names[0]} -c "SELECT * FROM spock.resolutions WHERE relname = 'public.t4'"
     echo "FAIL: Resolution entries for public.t4 are incorrect"
     echo "Resolutions check=$resolution_check"
-    echo "Found: insert_exists=$insert_exists_count, delete_missing=$delete_missing_count"
+    echo "Found: insert_exists=$insert_exists_count, update_missing=$update_missing_count, delete_missing=$delete_missing_count"
     exit 1
   fi
 fi

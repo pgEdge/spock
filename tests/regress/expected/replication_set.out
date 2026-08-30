@@ -580,10 +580,11 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 (1 row)
 
 SELECT * FROM spoc_102l_u ORDER BY x;
- x 
----
- 5
-(1 row)
+ x  
+----
+ -3
+  5
+(2 rows)
 
 SELECT * FROM spoc_102g_u ORDER BY x;
  x  
@@ -603,33 +604,31 @@ SELECT
   ) AS error_message
 FROM spock.exception_log
 ORDER BY table_schema COLLATE "C",table_name COLLATE "C",remote_commit_ts;
- table_schema | table_name  | operation |                   remote_new_tup                   |                                             error_message                                              
---------------+-------------+-----------+----------------------------------------------------+--------------------------------------------------------------------------------------------------------
-              |             | INSERT    |                                                    | Spock can't find relation
-              |             | INSERT    |                                                    | Spock can't find relation
-              |             | INSERT    |                                                    | Spock can't find relation
-              |             | INSERT    |                                                    | Spock can't find relation
-              |             | UPDATE    |                                                    | Spock can't find relation
-              |             | UPDATE    |                                                    | Spock can't find relation
- public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | transdiscard: tuple discarded due to exception at command_counter 2
- public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
-(8 rows)
+ table_schema | table_name | operation |                   remote_new_tup                   |                            error_message                            
+--------------+------------+-----------+----------------------------------------------------+---------------------------------------------------------------------
+              |            | INSERT    |                                                    | Spock can't find relation
+              |            | INSERT    |                                                    | Spock can't find relation
+              |            | INSERT    |                                                    | Spock can't find relation
+              |            | INSERT    |                                                    | Spock can't find relation
+              |            | UPDATE    |                                                    | Spock can't find relation
+              |            | UPDATE    |                                                    | Spock can't find relation
+ public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | transdiscard: tuple discarded due to exception at command_counter 2
+(7 rows)
 
 -- Check exception_log
 SELECT table_schema, table_name, operation, remote_new_tup, error_message
 FROM spock.exception_log
 ORDER BY command_counter;
- table_schema | table_name  | operation |                   remote_new_tup                   |                                             error_message                                              
---------------+-------------+-----------+----------------------------------------------------+--------------------------------------------------------------------------------------------------------
-              |             | INSERT    |                                                    | Spock can't find relation
-              |             | INSERT    |                                                    | Spock can't find relation
- public       | spoc_102g   | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | transdiscard: tuple discarded due to exception at command_counter 2
-              |             | INSERT    |                                                    | Spock can't find relation
-              |             | INSERT    |                                                    | Spock can't find relation
-              |             | UPDATE    |                                                    | Spock can't find relation
-              |             | UPDATE    |                                                    | Spock can't find relation
- public       | spoc_102l_u | UPDATE    | [{"value": -3, "attname": "x", "atttype": "int4"}] | logical replication did not find row to be updated in replication target relation (public.spoc_102l_u)
-(8 rows)
+ table_schema | table_name | operation |                   remote_new_tup                   |                            error_message                            
+--------------+------------+-----------+----------------------------------------------------+---------------------------------------------------------------------
+              |            | INSERT    |                                                    | Spock can't find relation
+              |            | INSERT    |                                                    | Spock can't find relation
+ public       | spoc_102g  | INSERT    | [{"value": -4, "attname": "x", "atttype": "int4"}] | transdiscard: tuple discarded due to exception at command_counter 2
+              |            | INSERT    |                                                    | Spock can't find relation
+              |            | INSERT    |                                                    | Spock can't find relation
+              |            | UPDATE    |                                                    | Spock can't find relation
+              |            | UPDATE    |                                                    | Spock can't find relation
+(7 rows)
 
 \c :provider_dsn
 SELECT spock.replicate_ddl('DROP TABLE IF EXISTS spoc_102g_u,spoc_102l_u CASCADE');

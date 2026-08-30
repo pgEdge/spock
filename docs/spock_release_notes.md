@@ -15,6 +15,10 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
 * **More granular conflict classification** — seven conflict types (up from
   four), with origin-aware suppression and DELETE conflicts now resolved
   through timestamp-based resolution.
+* **`update_missing` is now resolvable** — an UPDATE whose row is gone
+  rebuilds the row and inserts it instead of failing. On by default; see
+  *UPDATE of a missing row is now applied as an INSERT* below for the
+  behaviour change and its one caveat.
 * **Per-subscription conflict statistics** on PostgreSQL 18+ via a custom
   pgstat kind.
 * **Liveness and feedback refactor** — TCP keepalive replaces the fragile
@@ -159,6 +163,76 @@ operations go through timestamp-based resolution, just like updates.  This
 enables the new `delete_exists` classification — Spock can determine
 whether a delete should be applied or whether a newer local version should
 be preserved.
+
+### UPDATE of a missing row is now applied as an INSERT
+
+**This is a behaviour change, on by default.**
+
+In v5.0, an UPDATE whose target row could not be found on the subscriber
+raised an error and was handed to `spock.exception_behaviour`.  In v6.0 the
+apply worker rebuilds the row from the UPDATE message and inserts it.  This
+is possible because an UPDATE carries every replicated column of the new
+row, not only the columns the statement changed, so the rebuilt row matches
+what the provider has.
+
+The motivating case is out-of-order arrival in a mesh.  A node can receive
+an UPDATE from one peer before the original INSERT arrives from another;
+under serial apply there is no ordering between those two streams, so no
+amount of waiting fixes it.  Rebuilding converges correctly: when the older
+INSERT does arrive it is resolved as `insert_exists` and loses to the newer
+row.  Row filters benefit too — a row that left a filter set and later
+re-entered it used to be lost permanently on the subscriber.
+
+The conflict is still counted as `update_missing` in the PostgreSQL 18+
+conflict statistics.  It no longer lands in `spock.exception_log`; it is
+recorded in `spock.resolutions` with a resolution of `apply_remote` instead,
+so monitoring that watched for update-missing exceptions should move to:
+
+```sql
+SELECT * FROM spock.resolutions WHERE conflict_type = 'update_missing';
+```
+
+Note that `spock.resolutions` is only written when `spock.save_resolutions`
+is on, and it defaults to off — enable it if this table is your monitoring
+point.  A message is always emitted to the server log at
+`spock.conflict_log_level` regardless.
+
+Spock refuses to rebuild, and the UPDATE fails exactly as it did in v5.0,
+when the row cannot be reconstructed faithfully:
+
+* a column arrived as an **unchanged TOAST value**, which PostgreSQL does
+  not put in WAL for an update that did not change it, so the value is not
+  in the message and inserting would store a `NULL` in its place;
+* a **replica identity column is not replicated**, for example a table added
+  to a replication set with a `columns` list that excludes the key, where
+  the key would have to be invented from a local default.
+
+**Deleted rows can come back.**  Spock does not yet track tombstones, so
+the apply worker cannot tell a row that has not arrived yet from one that
+was deliberately deleted.  If a DELETE newer than the UPDATE races it, the
+rebuild brings the row back and the nodes diverge — where in v5.0 the loud
+failure left them agreeing.  This applies to operator deletes too: a row
+removed by hand on a subscriber comes back on the next upstream UPDATE.
+This closes when tombstone support lands.
+
+Smaller behaviour notes:
+
+* If a subscriber-side `ON DELETE CASCADE` removed a row together with its
+  children, the rebuild reinserts only the parent — the children stay gone.
+* The rebuilt row is applied as an INSERT, so `ENABLE REPLICA` and
+  `ENABLE ALWAYS` INSERT triggers fire where in v5.0 nothing did.
+* Some teams used the failing UPDATE (and the disabled subscription under
+  `sub_disable`) as a drift alarm.  That alarm no longer fires; watch
+  `spock.resolutions` as above instead.
+* In a mixed-version cluster the conversion happens only on 6.0 subscribers;
+  a 5.0.x subscriber behind the same provider still fails such UPDATEs.
+
+To restore the 5.0 behaviour entirely:
+`ALTER SYSTEM SET spock.missing_update_to_insert = off`, per node.
+
+See
+[`spock.missing_update_to_insert`](configuring.md#spockmissing_update_to_insert)
+and [Conflict Types](conflict_types.md#update_missing).
 
 ### Cascade replication origin tracking
 
@@ -370,6 +444,11 @@ AutoDDL has been refactored and hardened:
   connection alive but stops sending data.  The timer resets on any
   received message.  Set to `0` to disable and rely solely on TCP
   keepalive for liveness detection.
+* `spock.missing_update_to_insert` (bool, default `on`, `SIGHUP`) —
+  rebuild and insert the row when an UPDATE cannot find it locally,
+  instead of raising.  Set to `off` for the v5.0 behaviour.  This
+  changes replication behaviour by default; see *UPDATE of a missing
+  row is now applied as an INSERT* above.
 * `spock.output_delay` (int milliseconds, default `0`, range 0–60000,
   `SIGHUP`) — artificial delay in the publisher-side output plugin.
   Used to reproduce conflict and lag scenarios in tests.
@@ -496,6 +575,17 @@ once the binaries are swapped.  The upgrade:
   and it skips slots that are in use at the time. See
   [Logical Slot Failover](logical_slot_failover.md) for how to handle any
   skipped slots.
+
+Also review any monitoring that alerts on `update_missing` exceptions.  From
+6.0 the converted updates are resolved and recorded in `spock.resolutions`
+rather than `spock.exception_log`, so such an alert gets much quieter — but
+not silent: an UPDATE whose row cannot be rebuilt (see the refusal cases
+above), and every update-missing on a node with
+`spock.missing_update_to_insert = off`, still lands in
+`spock.exception_log`.  Keep the exception alert for those, add the
+resolutions query above for the converted ones, and note that
+`spock.resolutions` rows are only written when `spock.save_resolutions` is
+on (default off).
 
 Check your runbooks and automation for direct DDL against the `spock` or
 `snowflake` schemas before upgrading.  Statements such as

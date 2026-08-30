@@ -52,16 +52,27 @@ UPDATE users SET mgr_id = 99 WHERE id = 3;
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
--- Expect 0 rows in spock.resolutions
+-- spock.missing_update_to_insert is on by default, so the row is rebuilt and
+-- reinserted: one update_missing/apply_remote resolution, no exception.
 SELECT COUNT(*) FROM spock.resolutions;
--- Expect 1 row in spock.exception_log
+SELECT conflict_type, conflict_resolution FROM spock.resolutions
+    WHERE relname='public.users';
+-- Expect 0 rows in spock.exception_log
 SELECT operation, table_name FROM spock.exception_log;
+-- The row is back
+SELECT * FROM users ORDER BY id;
 
--- Verify UPDATE_MISSING stat counter (PG18+ only)
+-- Verify UPDATE_MISSING stat counter still increments (PG18+ only).  The
+-- conflict is counted whether it is resolved or raised.
 \if :has_conflict_stats
 SELECT confl_update_missing
 FROM spock.get_subscription_stats(:origin_test_sub_id);
 \endif
+
+-- The UPDATE above put the row back, so delete it again to set up the
+-- DELETE_MISSING conflict the next section is about.
+DELETE FROM users where id = 3;
+TRUNCATE spock.resolutions;
 
 \c :provider_dsn
 -- This will create a conflict on the subscriber

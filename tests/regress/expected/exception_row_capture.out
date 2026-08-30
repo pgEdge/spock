@@ -12,6 +12,11 @@
 --   DISCARD:      truncated table (TRUNCATE on subscriber, row missing)
 --   SUB_DISABLE:  deleted row     (DELETE on subscriber, row missing)
 --
+-- Two of those rely on an UPDATE failing because its row is gone.  With
+-- spock.missing_update_to_insert on (the default) the row would be rebuilt
+-- and no exception raised, so this test turns it off.  The conversion itself
+-- is covered by conflict_stat and TAP 040.
+--
 SELECT * FROM spock_regress_variables()
 \gset
 -- ============================================================
@@ -94,6 +99,7 @@ SELECT * FROM drl_t3;
 TRUNCATE spock.exception_log;
 TRUNCATE spock.resolutions;
 ALTER SYSTEM SET spock.exception_behaviour = 'transdiscard';
+ALTER SYSTEM SET spock.missing_update_to_insert = off;
 SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------
@@ -505,6 +511,7 @@ CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
 -- Cleanup
 -- ============================================================
 ALTER SYSTEM RESET spock.exception_behaviour;
+ALTER SYSTEM RESET spock.missing_update_to_insert;
 SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------

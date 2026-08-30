@@ -954,6 +954,7 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 
 	memset(tuple->nulls, 1, sizeof(tuple->nulls));
 	memset(tuple->changed, 0, sizeof(tuple->changed));
+	tuple->has_unchanged = false;
 
 	natts = pq_getmsgint(in, 2);
 	if (rel->natts != natts)
@@ -982,6 +983,7 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 			case 'u':			/* unchanged column */
 				tuple->values[attid] = 0xfbadbeef;	/* make bad usage more
 													 * obvious */
+				tuple->has_unchanged = true;
 				break;
 			case 'i':			/* internal binary format */
 				tuple->nulls[attid] = false;

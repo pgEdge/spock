@@ -63,19 +63,20 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 (1 row)
 
 \c :subscriber_dsn
--- Row id=1 should still be missing on subscriber (update was skipped)
+-- spock.missing_update_to_insert is on by default, so row id=1 is rebuilt
+-- from the UPDATE and reinserted rather than skipped.
 SELECT * FROM conflict_stat_test ORDER BY id;
- id | data 
-----+------
+ id |     data     
+----+--------------
+  1 | updated_row1
   2 | row2
-(1 row)
+(2 rows)
 
--- The UPDATE_MISSING conflict should be logged in exception_log
+-- Resolved, so nothing lands in exception_log
 SELECT operation, table_name FROM spock.exception_log;
- operation |     table_name     
------------+--------------------
- UPDATE    | conflict_stat_test
-(1 row)
+ operation | table_name 
+-----------+------------
+(0 rows)
 
 -- Verify that the UPDATE_MISSING conflict was counted
 SELECT confl_update_missing,
@@ -100,9 +101,11 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 
 \c :subscriber_dsn
 SELECT * FROM conflict_stat_test ORDER BY id;
- id | data 
-----+------
-(0 rows)
+ id |     data     
+----+--------------
+  1 | updated_row1
+  2 | updated_row2
+(2 rows)
 
 -- Counter should now be 2
 SELECT confl_update_missing,
@@ -121,6 +124,155 @@ SELECT spock.reset_subscription_stats(:test_sub_id);
  
 (1 row)
 
+-- ============================================================
+-- UPDATE_MISSING with spock.missing_update_to_insert off: the row stays
+-- missing and the UPDATE is raised, as it was before the conversion existed.
+-- The counter increments either way -- the conflict is counted whether it is
+-- resolved or raised.
+-- ============================================================
+ALTER SYSTEM SET spock.missing_update_to_insert = off;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+DELETE FROM conflict_stat_test WHERE id = 1;
+TRUNCATE spock.exception_log;
+\c :provider_dsn
+UPDATE conflict_stat_test SET data = 'off_row1' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+-- Row must NOT come back
+SELECT * FROM conflict_stat_test WHERE id = 1;
+ id | data 
+----+------
+(0 rows)
+
+-- and the UPDATE must be logged as an exception
+SELECT operation, table_name FROM spock.exception_log;
+ operation |     table_name     
+-----------+--------------------
+ UPDATE    | conflict_stat_test
+(1 row)
+
+SELECT confl_update_missing
+FROM spock.get_subscription_stats(:test_sub_id);
+ confl_update_missing 
+----------------------
+                    1
+(1 row)
+
+ALTER SYSTEM RESET spock.missing_update_to_insert;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+SELECT spock.reset_subscription_stats(:test_sub_id);
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+TRUNCATE spock.exception_log;
+-- ============================================================
+-- UPDATE_MISSING that cannot be converted even with the GUC on: a column
+-- whose value is an unchanged TOAST pointer is not in the message, so the row
+-- cannot be rebuilt.  It must fail rather than store a NULL in its place.
+-- ============================================================
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+	CREATE TABLE public.conflict_stat_toast (
+		id integer PRIMARY KEY,
+		small text,
+		big text
+	);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT spock.replicate_ddl($$
+	ALTER TABLE public.conflict_stat_toast ALTER COLUMN big SET STORAGE EXTERNAL;
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'conflict_stat_toast');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+INSERT INTO conflict_stat_toast VALUES (1, 'small', repeat('x', 200000));
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, small, length(big) FROM conflict_stat_toast ORDER BY id;
+ id | small | length 
+----+-------+--------
+  1 | small | 200000
+(1 row)
+
+DELETE FROM conflict_stat_toast WHERE id = 1;
+TRUNCATE spock.exception_log;
+\c :provider_dsn
+-- 'big' is not touched, so it arrives as an unchanged TOAST pointer
+UPDATE conflict_stat_toast SET small = 'changed' WHERE id = 1;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+-- The row must not come back, and nothing may have a NULL big column
+SELECT count(*) AS rows_back FROM conflict_stat_toast WHERE id = 1;
+ rows_back 
+-----------
+         0
+(1 row)
+
+SELECT count(*) AS null_big FROM conflict_stat_toast WHERE big IS NULL;
+ null_big 
+----------
+        0
+(1 row)
+
+SELECT operation, table_name FROM spock.exception_log;
+ operation |     table_name      
+-----------+---------------------
+ UPDATE    | conflict_stat_toast
+(1 row)
+
+SELECT confl_update_missing
+FROM spock.get_subscription_stats(:test_sub_id);
+ confl_update_missing 
+----------------------
+                    1
+(1 row)
+
+SELECT spock.reset_subscription_stats(:test_sub_id);
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+TRUNCATE spock.exception_log;
 -- ============================================================
 -- Test INSERT_EXISTS: insert a row on subscriber, then insert the same key on
 -- provider.  The apply worker detects the duplicate and resolves the conflict
@@ -321,6 +473,13 @@ NOTICE:  drop cascades to table conflict_ue_test membership in replication set d
 
 -- Cleanup original test table
 TRUNCATE spock.exception_log;
+SELECT spock.replicate_ddl($$ DROP TABLE public.conflict_stat_toast CASCADE; $$);
+NOTICE:  drop cascades to table conflict_stat_toast membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
 SELECT spock.replicate_ddl($$ DROP TABLE public.conflict_stat_test CASCADE; $$);
 NOTICE:  drop cascades to table conflict_stat_test membership in replication set default
  replicate_ddl 

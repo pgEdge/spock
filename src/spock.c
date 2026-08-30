@@ -181,6 +181,7 @@ int			spock_sync_timeout = 0; /* seconds per sync wait; 0 = routine's
 int			spock_read_retry_count = 5; /* heap update/delete: retries when
 										 * local tuple is missing */
 bool		check_all_uc_indexes = false;
+bool		missing_update_to_insert = true;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
 int			spock_apply_idle_timeout = 300;
@@ -1432,6 +1433,16 @@ _PG_init(void)
 							 NULL,
 							 &check_all_uc_indexes,
 							 false,
+							 PGC_SIGHUP,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.missing_update_to_insert",
+							 gettext_noop("Apply an UPDATE whose row is missing as an INSERT."),
+							 gettext_noop("The UPDATE still fails when an unchanged TOAST column "
+										  "was not sent."),
+							 &missing_update_to_insert,
+							 true,
 							 PGC_SIGHUP,
 							 0,
 							 NULL, NULL, NULL);
