@@ -701,8 +701,14 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	spock_stat_create_subscription(sub.id);
 #endif
 
-	/* Create progress entry to track commit ts per local/remote origin */
-	spock_group_attach(MyDatabaseId, localnode->node->id, originif.nodeid);
+	/*
+	 * Create progress entry to track commit ts per local/remote origin.
+	 * Ensure-only: this backend is not an apply worker, so it must not count
+	 * itself in nattached (readers use it as the number of streams feeding
+	 * the entry).
+	 */
+	spock_group_ensure_entry(MyDatabaseId, localnode->node->id,
+							 originif.nodeid);
 
 
 	/* Create synchronization status for the subscription. */

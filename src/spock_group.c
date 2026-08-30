@@ -242,6 +242,48 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 }
 
 /*
+ * spock_group_ensure_entry
+ *
+ * Make sure a progress entry exists for the group without attaching to it.
+ * For callers (e.g. sub_create) that only need the entry present; nattached
+ * keeps counting actual apply workers, which readers rely on to know how
+ * many streams feed the entry.
+ */
+void
+spock_group_ensure_entry(Oid dbid, Oid node_id, Oid remote_node_id)
+{
+	SpockGroupKey key;
+	SpockGroupEntry *entry;
+	bool		found;
+
+	Assert(OidIsValid(dbid) && OidIsValid(node_id) &&
+		   OidIsValid(remote_node_id));
+
+	key = make_key(dbid, node_id, remote_node_id);
+
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
+	entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &key,
+											HASH_ENTER, &found);
+	if (entry == NULL)
+	{
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+		elog(ERROR, "SpockGroupHash is full, cannot create entry for group "
+			 "(dbid=%u, node_id=%u, remote_node_id=%u)",
+			 dbid, node_id, remote_node_id);
+	}
+
+	if (!found)
+	{
+		spock_init_progress_fields(&entry->progress);
+		pg_atomic_init_u32(&entry->nattached, 0);
+		ConditionVariableInit(&entry->prev_processed_cv);
+	}
+
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+}
+
+/*
  * spock_group_detach
  *
  * Decrements nattached. Entries are not deleted (stable pointers).
