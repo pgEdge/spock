@@ -27,11 +27,11 @@ unique, not partial, not deferrable, and include only columns marked NOT
 NULL. Replication has no way to find the tuple that should be updated or
 deleted since there is no unique identifier.
 
-`REPLICA IDENTITY FULL` is not supported as a standalone replication identity
-for UPDATE or DELETE operations. However, it is supported when used in
-conjunction with Delta-Apply columns on tables that have a primary key. For
-tables without a primary key or Delta-Apply configuration, UPDATE and DELETE
-operations require a PRIMARY KEY or explicit REPLICA IDENTITY USING INDEX.
+`REPLICA IDENTITY FULL` is supported for UPDATE and DELETE operations only on
+tables that also have a `PRIMARY KEY`: the whole old row is WAL-logged and
+travels with each change, and the `PRIMARY KEY` is used to find the row on the
+subscriber. A `REPLICA IDENTITY FULL` table without a `PRIMARY KEY` cannot
+replicate UPDATEs or DELETEs.
 
 ## Only One Unique Index or Constraint or PK
 

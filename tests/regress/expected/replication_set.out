@@ -975,13 +975,10 @@ HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL co
 -- existing unique index promoted.
 ALTER TABLE spoc410_r1.t_unique_no_pk
 	REPLICA IDENTITY USING INDEX t_unique_no_pk_id_key;
--- r2 is the trap: adding a PRIMARY KEY changes nothing while the identity is
--- still FULL, because FULL never resolves to an index.
+-- r2: adding a PRIMARY KEY makes the FULL table admissible.  The whole old
+-- row is WAL-logged for UPDATEs and the PRIMARY KEY serves for row lookup.
 ALTER TABLE spoc410_r2.t_full ADD PRIMARY KEY (id);
 SELECT spock.repset_add_all_tables('spoc410_upd', '{spoc410_r2}');
-WARNING:  skipping table spoc410_r2.t_full for replication set spoc410_upd
-DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
-HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
  repset_add_all_tables 
 -----------------------
  t

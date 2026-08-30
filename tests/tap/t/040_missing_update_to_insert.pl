@@ -40,6 +40,16 @@ use SpockTest qw(create_cluster destroy_cluster cross_wire
 #                               old value is the new value
 #   k  GUC on, two unchanged TOAST columns, only one logged
 #                            -> still refuses; partial recovery is not enough
+#   l  REPLICA IDENTITY FULL + PRIMARY KEY (the stock-Postgres knob)
+#                            -> repset admits the table, rows are found via
+#                               the PK, and the conversion recovers unchanged
+#                               TOAST from the full old tuple.  A no-PK
+#                               RI FULL table is still refused by the repset.
+#   m  the documented recipe, in the documented order: a PK table already in
+#      the default repset (auto-added at CREATE, REPLICA IDENTITY DEFAULT)
+#      is ALTERed to REPLICA IDENTITY FULL
+#                            -> membership survives the ALTER, and the
+#                               conversion recovers its unchanged TOAST column
 #   i  GUC on, a newer local DELETE races the UPDATE
 #                            -> the row comes back.  Known gap: spock does not
 #                               yet track tombstones, so the conversion cannot
@@ -119,12 +129,21 @@ psql_or_bail(1, "CREATE TABLE public.mui_lov2 (id int PRIMARY KEY, small text, b
 psql_or_bail(1, "ALTER TABLE public.mui_lov2 ALTER COLUMN big1 SET STORAGE EXTERNAL");
 psql_or_bail(1, "ALTER TABLE public.mui_lov2 ALTER COLUMN big2 SET STORAGE EXTERNAL");
 psql_or_bail(1, "ALTER TABLE public.mui_lov2 ALTER COLUMN big1 SET (log_old_value = true)");
+# The RI FULL tables stay out of the repset at CREATE so that case (l) can
+# exercise the explicit repset_add_table gate.
+psql_or_bail(1, "SET spock.include_ddl_repset = off; "
+              . "CREATE TABLE public.mui_rif (id int PRIMARY KEY, small text, big text); "
+              . "ALTER TABLE public.mui_rif ALTER COLUMN big SET STORAGE EXTERNAL; "
+              . "ALTER TABLE public.mui_rif REPLICA IDENTITY FULL");
+psql_or_bail(1, "SET spock.include_ddl_repset = off; "
+              . "CREATE TABLE public.mui_rif_nopk (id int, small text); "
+              . "ALTER TABLE public.mui_rif_nopk REPLICA IDENTITY FULL");
 
 is(wait_for_value(2,
      "SELECT count(*) FROM pg_class WHERE relkind = 'r' AND relname IN "
    . "('mui_marker', 'mui_basic', 'mui_toast', 'mui_extra', 'mui_req', "
-   . "'mui_race', 'mui_lov', 'mui_lov2')", '8'),
-   '8', "all test tables replicated to n2");
+   . "'mui_race', 'mui_lov', 'mui_lov2', 'mui_rif', 'mui_rif_nopk')", '10'),
+   '10', "all test tables replicated to n2");
 
 # n2 gains two columns that n1 does not have, so n1 never sends them.
 # DDL replication is disabled for these statements so they stay local to n2.
@@ -301,6 +320,88 @@ ok(wait_for_exception_log(2,
 is(scalar_query(2, "SELECT count(*) FROM public.mui_lov2 WHERE id = 1"), '0',
    "(k) no partially rebuilt row inserted");
 replication_still_flowing("(k)");
+
+# -----------------------------------------------------------------------------
+# (l) REPLICA IDENTITY FULL + PRIMARY KEY.  The full flattened old row is in
+#     WAL (stock behaviour), so every column travels with the UPDATE and the
+#     conversion never lacks a value.  Lookups use the PK.
+# -----------------------------------------------------------------------------
+is(scalar_query(1, "SELECT spock.repset_add_table('default', 'mui_rif')"),
+   't', "(l) repset admits RI FULL table that has a PK");
+
+# A no-PK RI FULL table must still be refused (error -> empty output).
+is(scalar_query(1, "SELECT spock.repset_add_table('default', 'mui_rif_nopk')"),
+   '', "(l) repset refuses RI FULL table without a PK");
+is(scalar_query(1,
+     "SELECT count(*) FROM spock.replication_set_table t "
+   . "JOIN spock.replication_set s ON s.set_id = t.set_id "
+   . "WHERE s.set_name = 'default' "
+   . "AND t.set_reloid = 'public.mui_rif_nopk'::regclass"), '0',
+   "(l) refused table is not in the set");
+
+psql_or_bail(1, "INSERT INTO public.mui_rif "
+              . "VALUES (1, 'small', repeat('z', 200000))");
+is(wait_for_value(2, "SELECT length(big) FROM public.mui_rif WHERE id = 1",
+                  '200000'),
+   '200000', "(l) toasted row replicated to n2");
+
+# Ordinary UPDATE with the row present: found via the PK fallback.
+psql_or_bail(1, "UPDATE public.mui_rif SET small = 'present' WHERE id = 1");
+is(wait_for_value(2, "SELECT small FROM public.mui_rif WHERE id = 1",
+                  'present'),
+   'present', "(l) row-present UPDATE applied via PK lookup");
+
+# The conversion: row missing, unchanged TOAST recovered from the old tuple.
+psql_or_bail(2, "DELETE FROM public.mui_rif WHERE id = 1");
+psql_or_bail(1, "UPDATE public.mui_rif SET small = 'changed' WHERE id = 1");
+is(wait_for_value(2,
+     "SELECT small || '/' || length(big) FROM public.mui_rif WHERE id = 1",
+     'changed/200000'),
+   'changed/200000',
+   "(l) RI FULL: missing row reinserted in full");
+is(scalar_query(2,
+     "SELECT count(*) FROM public.mui_rif WHERE big <> repeat('z', 200000)"),
+   '0', "(l) recovered TOAST value is byte-identical");
+
+# And a DELETE still lands (full old tuple as the search tuple, PK lookup).
+psql_or_bail(1, "DELETE FROM public.mui_rif WHERE id = 1");
+is(wait_for_value(2, "SELECT count(*) FROM public.mui_rif", '0'),
+   '0', "(l) DELETE on RI FULL table applied");
+
+# -----------------------------------------------------------------------------
+# (m) The recipe the docs recommend, in the recommended order.  The table is
+#     auto-added to 'default' at CREATE (spock.include_ddl_repset is on) with
+#     REPLICA IDENTITY DEFAULT; the later ALTER to FULL runs through the
+#     auto-DDL stickiness logic and must leave the membership alone.
+# -----------------------------------------------------------------------------
+my $stick_member =
+    "SELECT count(*) FROM spock.replication_set_table t "
+  . "JOIN spock.replication_set s ON s.set_id = t.set_id "
+  . "WHERE s.set_name = 'default' "
+  . "AND t.set_reloid = 'public.mui_stick'::regclass";
+
+psql_or_bail(1, "CREATE TABLE public.mui_stick (id int PRIMARY KEY, small text, big text)");
+psql_or_bail(1, "ALTER TABLE public.mui_stick ALTER COLUMN big SET STORAGE EXTERNAL");
+is(scalar_query(1, $stick_member), '1',
+   "(m) PK table auto-added to default while REPLICA IDENTITY DEFAULT");
+
+psql_or_bail(1, "ALTER TABLE public.mui_stick REPLICA IDENTITY FULL");
+is(scalar_query(1, $stick_member), '1',
+   "(m) membership in default survives ALTER REPLICA IDENTITY FULL");
+
+psql_or_bail(1, "INSERT INTO public.mui_stick "
+              . "VALUES (1, 'small', repeat('m', 200000))");
+is(wait_for_value(2, "SELECT length(big) FROM public.mui_stick WHERE id = 1",
+                  '200000'),
+   '200000', "(m) toasted row replicated to n2");
+
+psql_or_bail(2, "DELETE FROM public.mui_stick WHERE id = 1");
+psql_or_bail(1, "UPDATE public.mui_stick SET small = 'changed' WHERE id = 1");
+is(wait_for_value(2,
+     "SELECT small || '/' || length(big) FROM public.mui_stick WHERE id = 1",
+     'changed/200000'),
+   'changed/200000',
+   "(m) recipe table: missing row reinserted in full after the ALTER");
 
 # -----------------------------------------------------------------------------
 # (h) GUC on, subscriber-only NOT NULL column with no default.  Nothing can

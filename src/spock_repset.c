@@ -858,9 +858,7 @@ alter_replication_set(SpockRepSet *repset)
 			if (RelationGetForm(targetrel)->relkind == RELKIND_RELATION)
 			{
 
-				if (targetrel->rd_indexvalid == 0)
-					RelationGetIndexList(targetrel);
-				if (!OidIsValid(targetrel->rd_replidindex) &&
+				if (!relation_has_replication_identity(targetrel) &&
 					(repset->replicate_update || repset->replicate_delete))
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1092,16 +1090,37 @@ drop_node_replication_sets(Oid nodeid)
 }
 
 /*
+ * Does the relation have a usable identity for replicating UPDATEs and
+ * DELETEs?  Either a replica identity index, or REPLICA IDENTITY FULL
+ * paired with a PRIMARY KEY: FULL logs the whole old row (which is what
+ * lets an UPDATE of a missing row be applied as an INSERT with nothing
+ * lost) and the PRIMARY KEY serves for row lookup on the subscriber.
+ *
+ * The relation must be open.
+ */
+bool
+relation_has_replication_identity(Relation rel)
+{
+	if (rel->rd_indexvalid == 0)
+		RelationGetIndexList(rel);
+
+	if (OidIsValid(rel->rd_replidindex))
+		return true;
+
+	return rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL &&
+		OidIsValid(rel->rd_pkindex);
+}
+
+/*
  * May this relation join the replication set, as far as its replica identity
  * goes?  Reports the reason it may not, at WARNING when the caller is walking a
  * whole schema and at ERROR when it asked for this one relation.
  *
  * Replicating an UPDATE or a DELETE means locating the affected row on the
- * subscriber, which spock does through the relation's replica identity index.
- * Note that neither REPLICA IDENTITY FULL nor REPLICA IDENTITY NOTHING yields
- * an index, so both fail this test even when the table has a PRIMARY KEY.  A
- * relation without an index can still belong to a set that only replicates
- * INSERTs and TRUNCATEs.
+ * subscriber; see relation_has_replication_identity() for what qualifies.
+ * REPLICA IDENTITY NOTHING never does, and FULL only with a PRIMARY KEY.  A
+ * relation without a usable identity can still belong to a set that only
+ * replicates INSERTs and TRUNCATEs.
  *
  * Both wordings live here, side by side, so that they cannot drift apart, and
  * because a dynamically assembled message could not be translated.
@@ -1115,10 +1134,7 @@ check_relation_replicatable(Relation rel, SpockRepSet *repset,
 	if (!repset->replicate_update && !repset->replicate_delete)
 		return true;
 
-	if (rel->rd_indexvalid == 0)
-		RelationGetIndexList(rel);
-
-	if (OidIsValid(rel->rd_replidindex))
+	if (relation_has_replication_identity(rel))
 		return true;
 
 	if (!skip_unreplicatable)

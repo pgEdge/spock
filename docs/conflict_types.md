@@ -113,7 +113,10 @@ matches what the provider has.
 Spock refuses to rebuild, and raises an ERROR logged to
 `spock.exception_log` instead, when the row cannot be reconstructed
 faithfully -- an unchanged TOAST column is not present in the message, or
-a replica identity column is not replicated. Setting
+a replica identity column is not replicated. Tables with `REPLICA IDENTITY
+FULL` and a `PRIMARY KEY` are never refused for the TOAST reason: the whole
+old row travels with the UPDATE, and an unchanged column's old value is its
+new value. Setting
 [`spock.missing_update_to_insert`](configuring.md#spockmissing_update_to_insert)
 to `off` restores the Spock 5 behaviour of always raising.
 

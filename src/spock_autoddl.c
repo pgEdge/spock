@@ -489,7 +489,7 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 		remove_table_from_repsets(node->node->id, reloid, true);
 	}
 
-	if (!OidIsValid(targetrel->rd_replidindex) &&
+	if (!relation_has_replication_identity(targetrel) &&
 		(repset->replicate_update || repset->replicate_delete))
 	{
 		table_close(targetrel, NoLock);

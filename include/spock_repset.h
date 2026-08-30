@@ -70,6 +70,7 @@ extern void alter_replication_set(SpockRepSet *repset);
 extern void drop_replication_set(Oid setid);
 extern void drop_node_replication_sets(Oid nodeid);
 
+extern bool relation_has_replication_identity(Relation rel);
 extern bool replication_set_add_table(Oid setid, Oid reloid,
 									  List *att_list, Node *row_filter,
 									  bool skip_unreplicatable);

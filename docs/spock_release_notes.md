@@ -19,6 +19,9 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
   rebuilds the row and inserts it instead of failing. On by default; see
   *UPDATE of a missing row is now applied as an INSERT* below for the
   behaviour change and its one caveat.
+* **`REPLICA IDENTITY FULL` tables can replicate UPDATEs and DELETEs** when
+  they also have a PRIMARY KEY. The whole old row travels with each change
+  and the PRIMARY KEY serves for the row lookup.
 * **Per-subscription conflict statistics** on PostgreSQL 18+ via a custom
   pgstat kind.
 * **Liveness and feedback refactor** — TCP keepalive replaces the fragile
@@ -202,7 +205,9 @@ when the row cannot be reconstructed faithfully:
 
 * a column arrived as an **unchanged TOAST value**, which PostgreSQL does
   not put in WAL for an update that did not change it, so the value is not
-  in the message and inserting would store a `NULL` in its place;
+  in the message and inserting would store a `NULL` in its place.  Tables
+  with `REPLICA IDENTITY FULL` and a PRIMARY KEY are exempt — see the next
+  section;
 * a **replica identity column is not replicated**, for example a table added
   to a replication set with a `columns` list that excludes the key, where
   the key would have to be invented from a local default.
@@ -233,6 +238,41 @@ To restore the 5.0 behaviour entirely:
 See
 [`spock.missing_update_to_insert`](configuring.md#spockmissing_update_to_insert)
 and [Conflict Types](conflict_types.md#update_missing).
+
+### REPLICA IDENTITY FULL with a PRIMARY KEY
+
+Tables with `REPLICA IDENTITY FULL` can now belong to replication sets that
+replicate UPDATEs and DELETEs, provided they also have a `PRIMARY KEY`.
+`spock.repset_add_table()`, `spock.repset_add_all_tables()` and
+`spock.repset_alter()` all accept them; `REPLICA IDENTITY FULL` without a
+`PRIMARY KEY`, and `REPLICA IDENTITY NOTHING`, are still refused.
+
+FULL splits the two jobs a replica identity normally bundles: it decides
+what is WAL-logged — the entire old row, flattened, including TOAST values —
+while the `PRIMARY KEY` decides how the subscriber finds the row, via an
+ordinary index lookup.  The payoff is that every column of the old row
+travels with each UPDATE, so the missing-row conversion described above is
+never refused for an unchanged TOAST column: such tables always rebuild in
+full.
+
+The cost is WAL and network volume: the whole old row is logged and sent
+with every UPDATE and DELETE of the table.  Reserve it for tables that need
+the guarantee.
+
+Behaviour notes:
+
+* Set the `PRIMARY KEY` up first and then `ALTER TABLE ... REPLICA IDENTITY
+  FULL`.  A default-managed table stays in (or is routed into) the `default`
+  replication set across that ALTER; a table in a custom replication set
+  keeps its membership, as with any identity change.
+* A FULL table that reached a replication set on an earlier release (by
+  altering the identity after the table was added) was located by a
+  sequential scan on the subscriber; it now uses the `PRIMARY KEY`.  Besides
+  being faster, this changes conflict classification on rows that had
+  diverged locally: the old whole-row match reported such an UPDATE as
+  `update_missing`, while the key lookup finds the row and resolves it as
+  the update conflict it is.  DELETEs of diverged rows likewise now find
+  and resolve rather than skip as `delete_missing`.
 
 ### Cascade replication origin tracking
 

@@ -33,10 +33,11 @@ once and passed over as a whole.
 A replication set that replicates UPDATEs or DELETEs has to locate the affected
 row on the subscriber, so it can only take tables with an index-based replica
 identity — a PRIMARY KEY, or a unique index on NOT NULL columns nominated with
-ALTER TABLE ... REPLICA IDENTITY USING INDEX. Note that REPLICA IDENTITY FULL
-and REPLICA IDENTITY NOTHING do not qualify, even when the table has a PRIMARY
-KEY. Tables without an index-based replica identity can be added to a set that
-replicates only INSERTs and TRUNCATEs.
+ALTER TABLE ... REPLICA IDENTITY USING INDEX — or REPLICA IDENTITY FULL paired
+with a PRIMARY KEY, in which case the PRIMARY KEY serves for the row lookup.
+REPLICA IDENTITY NOTHING never qualifies, and neither does FULL without a
+PRIMARY KEY. Tables that do not qualify can be added to a set that replicates
+only INSERTs and TRUNCATEs.
 
 Unlike spock.repset_add_table(), which raises an error when the table cannot be
 replicated, this function never refuses the whole call on account of a single

@@ -314,11 +314,26 @@ setting off, when the row cannot be rebuilt faithfully:
 * A column arrived as an **unchanged TOAST value**. PostgreSQL does not write
   the TOAST chunks to WAL for an update that did not change them, and they
   may already have been vacuumed, so the value is not in the message and
-  cannot be recovered. Inserting would silently store a `NULL` in its place.
+  cannot be recovered — unless the old value travels with the UPDATE, which
+  it does on tables with `REPLICA IDENTITY FULL` and a `PRIMARY KEY`, or for
+  columns marked `LOG_OLD_VALUE`. Otherwise, inserting would silently store
+  a `NULL` in its place.
 * A **replica identity column is not replicated**, for example because the
   table was added to a replication set with a `columns` list that excludes
   the key. The key would have to come from a local default, inventing a row
   that matches nothing upstream.
+
+To guarantee the conversion for a table with TOAST-able columns, give the
+table a `PRIMARY KEY` and set `REPLICA IDENTITY FULL`, in that order:
+
+```sql
+ALTER TABLE mytable REPLICA IDENTITY FULL;
+```
+
+The whole old row then travels with every `UPDATE`, so the rebuild always
+has every value. The cost is WAL and network volume — the full old row is
+logged and sent on each `UPDATE` and `DELETE` of that table — so reserve it
+for tables that need the guarantee.
 
 !!! warning
 
