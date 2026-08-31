@@ -207,8 +207,8 @@ replication and load the Spock extension:
 ```sql
  wal_level = logical
 max_worker_processes = 20   # see the sizing guide
-max_replication_slots = 12  # one per subscriber, plus one per in-progress sync
-max_wal_senders = 10        # one per subscriber, plus one per in-progress sync
+max_replication_slots = 12  # two per subscriber, per replicated database
+max_wal_senders = 10        # two per subscriber, per replicated database
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
 listen_addresses = '*'
@@ -219,7 +219,9 @@ listen_addresses = '*'
     This parameter covers more than one worker per node: Spock runs a
     supervisor, a manager for *every* connectable database in the instance
     (including `postgres` and `template1`), an apply worker per subscription,
-    and a sync worker per subscription during table synchronization. The pool
+    and a sync worker per subscription during table synchronization.
+    Subscriptions are created per database, so their count is the number of
+    other nodes *multiplied by* the number of replicated databases. The pool
     is also shared with parallel query workers. See
     [Sizing Postgres Resources for Spock](sizing.md) for the formulas.
 
@@ -227,12 +229,14 @@ listen_addresses = '*'
 
     - PostgreSQL 15-17: The `max_replication_slots` parameter controls
       both slots and replication origin states. Account for both when
-      sizing (typically one origin per subscription).
+      sizing (one origin per subscription, and subscriptions are counted
+      per replicated database).
 
     - PostgreSQL 18+: A new parameter `max_active_replication_origins`
       separately controls origin states. The default value is 10, which
       may be insufficient. Set the value to at least the number of
-      subscriptions plus headroom.
+      subscriptions this node applies - `(nodes - 1) x replicated
+      databases` in a full mesh - plus headroom.
 
 After modifying `postgresql.conf`, restart PostgreSQL using your
 OS-specific command.
