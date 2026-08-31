@@ -46,9 +46,10 @@ configuration parameters.
 
   A subscription that is initializing needs *two* slots on the provider: the
   one held by its apply stream, plus one created for the sync worker that
-  copies the table data. Size for `2 x subscribers` per node, plus any
-  physical or failover slots. On PostgreSQL 15-17 this parameter also caps
-  replication origins, so add one per subscription this node applies.
+  copies the table data. Subscriptions are per database, so size for
+  `2 x subscribers x replicated databases` per node, plus any physical or
+  failover slots. On PostgreSQL 15-17 this parameter also caps replication
+  origins.
 
 - Verify that `max_wal_senders` is set to a sufficient value:
 
@@ -56,9 +57,10 @@ configuration parameters.
   SHOW max_wal_senders;
   ```
 
-  Same accounting as above: `2 x subscribers` per node while syncs are in
-  progress, plus any physical standbys. This is the most common reason a
-  cluster that replicates fine in steady state cannot add or resync a table.
+  Same accounting as above: `2 x subscribers x replicated databases` per node
+  while syncs are in progress, plus any physical standbys. This is the most
+  common reason a cluster that replicates fine in steady state cannot add or
+  resync a table.
 
 - For PostgreSQL 18+, check the `max_active_replication_origins` setting:
 
@@ -66,7 +68,9 @@ configuration parameters.
   SHOW max_active_replication_origins;
   ```
 
-  Ensure that the value to at least the number of subscriptions plus headroom.
+  Ensure that the value is at least the number of subscriptions this node
+  applies - `(nodes - 1) x replicated databases` in a full mesh - plus
+  headroom.
 
 - If parameters were modified, restart PostgreSQL with this command:
 

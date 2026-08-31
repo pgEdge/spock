@@ -8,16 +8,19 @@ wal_level = 'logical'
 max_worker_processes = 20   # supervisor + one per database + one per
                             # subscription + sync workers, and shared with
                             # parallel query - see the sizing guide
-max_replication_slots = 12  # one per subscriber, plus one per in-progress sync
-max_wal_senders = 10        # one per subscriber, plus one per in-progress sync
+max_replication_slots = 12  # two per subscriber, per replicated database
+max_wal_senders = 10        # two per subscriber, per replicated database
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
 ```
 
 These values suit a small cluster of two or three nodes replicating a single
-database. For anything larger, or for an instance hosting several databases
-or other extensions that use background workers, size each parameter with the
-formulas in
+database. Subscriptions - and the workers, walsenders, and slots that follow
+from them - scale with node count *multiplied by* the number of replicated
+databases, so an instance replicating several databases needs proportionally
+more of each. For anything larger, or for an instance hosting several
+databases or other extensions that use background workers, size each parameter
+with the formulas in
 [Sizing Postgres Resources for Spock](sizing.md). All three require a server
 restart to change.
 

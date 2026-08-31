@@ -25,9 +25,9 @@ Spock actually launches so you can size each parameter deliberately.
 | Manager | 1 per **connectable database** in the instance | `max_worker_processes` |
 | Apply worker | 1 per enabled subscription | `max_worker_processes` |
 | Sync worker | at most 1 concurrently per subscription | `max_worker_processes` |
-| Walsender | 1 per subscriber streaming from this node, plus 1 more per subscriber during table sync | `max_wal_senders` |
+| Walsender | 1 per subscription streaming from this node, plus 1 more per subscription during table sync | `max_wal_senders` |
 
-Two of these counts are commonly misjudged.
+Three of these counts are commonly misjudged.
 
 **Managers are launched for every connectable database, not just the ones
 using Spock.** The supervisor cannot determine whether a database contains a
@@ -41,6 +41,15 @@ excluded because it does not allow connections.
 **Walsenders are not background workers.** They are governed by
 `max_wal_senders` and counted separately in `MaxBackends`. Raising
 `max_worker_processes` does nothing for walsender exhaustion, and vice versa.
+
+**Subscriptions are per database, not per node.** A Spock node is created
+inside a single database, and each subscription connects one database on this
+instance to the corresponding database on one other instance. An instance that
+replicates several databases therefore hosts one Spock node per replicated
+database, and each of those nodes carries its own full set of subscriptions.
+Everything downstream of the subscription count — apply workers, sync workers,
+walsenders, slots, and origins — scales with **node count multiplied by
+replicated database count**, not node count alone.
 
 ## Sizing `max_worker_processes`
 
@@ -61,12 +70,16 @@ max_worker_processes = spock_workers
 
 Where:
 
+- `N` is the number of Spock nodes in the cluster.
 - `D` is the number of databases in the instance with `datallowconn = true`,
   including `postgres` and `template1` — **not** just the databases
   participating in replication.
+- `R` is the number of databases in this instance that actually participate
+  in Spock replication (`R <= D`). It is `1` in most deployments.
 - `S` is the total number of enabled subscriptions across all databases in
-  the instance. In a fully-meshed cluster of `N` nodes with a single
-  replicated database, `S = N - 1`.
+  the instance. In a fully-meshed cluster of `N` nodes each replicating the
+  same `R` databases, `S = R * (N - 1)`. With a single replicated database
+  that reduces to the familiar `S = N - 1`.
 
 !!! warning
 
@@ -80,8 +93,8 @@ Where:
 ### Recommended Minimums
 
 Assuming a single replicated database alongside `postgres` and `template1`
-(`D = 3`), the default `max_parallel_workers = 8`, and no other worker-using
-extensions:
+(`D = 3`, `R = 1`), the default `max_parallel_workers = 8`, and no other
+worker-using extensions:
 
 | Cluster | Spock Workers | Total Workers |
 |---|---|---|
@@ -97,50 +110,73 @@ shared memory, and the parameter cannot be changed without a restart.
 
 Add to these numbers if your instance hosts more databases, replicates more
 than one database, or runs other extensions that register background workers.
+Each **additional replicated database** costs `1` manager (if the database is
+not already counted in `D`) plus `2 * (N - 1)` workers for its apply and sync
+workers, so a 3-node cluster replicating three databases needs `3 * 2 * 2 = 12`
+apply and sync workers per instance rather than `4`.
 
 ## Sizing `max_wal_senders`
 
-Each node needs a walsender for every subscriber that streams from it, plus
-one additional walsender per subscriber while that subscriber is
+Each node needs a walsender for every subscription that streams from it, plus
+one additional walsender per subscription while that subscriber is
 synchronizing tables. Sync workers open their own replication connection
-alongside the ongoing apply stream.
+alongside the ongoing apply stream. Because subscriptions are per database, an
+instance replicating several databases serves one set of walsenders per
+replicated database.
 
 ```
-max_wal_senders = 2 * subscribers_of_this_node
+max_wal_senders = 2 * subscriptions_served     # apply stream + sync stream
                 + physical_standbys
-                + 2                              # pg_basebackup, ad-hoc tooling
+                + 2                            # pg_basebackup, ad-hoc tooling
 ```
 
-In a fully-meshed cluster of `N` nodes, `subscribers_of_this_node = N - 1`,
-so a 5-node mesh needs at least `2 * 4 = 8` walsenders per node before
-accounting for physical standbys.
+In a fully-meshed cluster of `N` nodes each replicating `R` databases,
+`subscriptions_served = R * (N - 1)`, giving:
+
+```
+max_wal_senders = 2 * R * (N - 1)
+                + physical_standbys
+                + 2
+```
+
+A 5-node mesh with one replicated database needs at least `2 * 1 * 4 = 8`
+walsenders per node; the same mesh replicating three databases needs
+`2 * 3 * 4 = 24`, before accounting for physical standbys in either case.
 
 Sync workers also open a second, non-replication connection to run `COPY`,
 which draws from `max_connections` rather than `max_wal_senders`.
 
 ## Sizing `max_replication_slots` and Replication Origins
 
-Each node holds a logical replication slot for every node subscribing to it,
+Each node holds a logical replication slot for every database subscription,
 plus a transient slot for each in-progress table sync. Sync slots are created
 as persistent slots (not temporary), so they occupy a slot until the sync
 completes and the slot is dropped.
 
-```
-max_replication_slots = 2 * subscribers_of_this_node
-                      + physical_and_failover_slots
-                      + 2                              # headroom
-```
+Consider this formula for determining the max slot count, where `N` is the
+number of Spock nodes and `R` the number of synchronized databases:
 
-Replication *origins* are tracked separately from slots, and where they are
-configured depends on your Postgres version:
+    max_replication_slots = 2 * R * (N - 1)
+                          + physical_and_failover_slots
+                          + 2  # headroom
 
-- **PostgreSQL 15-17**: `max_replication_slots` governs both replication
-  slots *and* replication origin states. Size it for the sum: add one origin
-  per subscription this node applies (`N - 1` in a full mesh) on top of the
-  slot count above.
-- **PostgreSQL 18+**: `max_active_replication_origins` governs origin states
-  independently. Its default is `10`, which may be insufficient for larger
-  clusters. Set it to at least the number of subscriptions plus headroom.
+The number of synced databases in a Spock cluster is 1 in most cases.
+
+Postgres uses *origins* to track local state for remote replication slots.
+Internally, Postgres tracks replication origins separately from slots and
+pins their count to `max_replication_slots` in Postgres versions 15-17. Our
+formula should make it impossible for there to be more origins than slots in
+those versions of Postgres.
+
+However, Postgres 18 introduces `max_active_replication_origins` with a
+default value of 10, which may be too low for an active Spock cluster. For
+the sake of simplicity, we encourage using this simple formula for that
+parameter:
+
+    max_active_replication_origins = max_replication_slots
+
+This should cause Postgres 18+ to operate with a sufficiently large origin
+pool.
 
 ## Worked Example: 3-Node Mesh on PostgreSQL 17
 
@@ -148,7 +184,7 @@ Three nodes, each with a single replicated database `app`, plus the default
 `postgres` and `template1` databases. Each node subscribes to the other two,
 and each node has one physical standby.
 
-Per node: `D = 3`, `S = 2`, `subscribers_of_this_node = 2`.
+Per node: `D = 3`, `R = 1`, `S = R * (N - 1) = 2`.
 
 ```ini
 # Background workers:
@@ -156,16 +192,23 @@ Per node: `D = 3`, `S = 2`, `subscribers_of_this_node = 2`.
 #   + 8 max_parallel_workers + 2 headroom = 19, rounded up
 max_worker_processes = 20
 
-# Walsenders: (2 subscribers x 2) + 1 physical standby + 2 spare = 7
+# Walsenders: (2 subscriptions x 2) + 1 physical standby + 2 spare = 7
 max_wal_senders = 10
 
-# Slots: (2 subscribers x 2) + 1 physical + 2 origins (PG 17) + 2 spare = 9
+# Slots: 2 x 1 database x 2 subscribers + 1 physical + 2 headroom = 7
 max_replication_slots = 12
 
 wal_level = logical
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
 ```
+
+If each of those three instances replicated **two** databases instead of one,
+the same topology would need `D = 4`, `R = 2`, and `S = 4`. Per node that is 14
+Spock workers at peak (1 supervisor + 1 failover-slots + 4 managers + 4 apply +
+4 sync), `2 * 2 * 2 = 8` subscription walsenders, and `2 * 2 * 2 = 8`
+subscription slots - so `max_worker_processes = 26`, `max_wal_senders = 12`,
+and `max_replication_slots = 12` once the standby and headroom are included.
 
 ## Verifying Your Configuration
 

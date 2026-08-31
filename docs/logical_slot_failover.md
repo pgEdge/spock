@@ -50,14 +50,18 @@ max_wal_senders = 10
 ```
 
 Size these for your cluster rather than copying the numbers - see
-[Sizing Postgres Resources for Spock](sizing.md). Note that a physical standby
+[Sizing Postgres Resources for Spock](sizing.md). Slots, walsenders, and
+origins scale with the number of other nodes multiplied by the number of
+replicated databases in the instance. Note that a physical standby
 adds to both `max_wal_senders` and `max_replication_slots` on the primary, and
 that on PostgreSQL 15-17 the `spock_failover_slots` worker occupies one
 `max_worker_processes` slot on every node (it is not registered on PostgreSQL
 18+).
 
 On PostgreSQL 18, also size `max_active_replication_origins` (default 10) to at
-least the number of subscriptions plus some headroom.
+least the number of subscriptions this node applies - `(nodes - 1) x replicated
+databases` in a full mesh - plus some headroom. Setting it equal to
+`max_replication_slots` is the simplest safe choice.
 
 ### Native path (PostgreSQL 17 with `sync_replication_slots = on`, and PostgreSQL 18)
 

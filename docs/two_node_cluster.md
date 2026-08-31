@@ -22,11 +22,14 @@ After installing and initializing Postgres and creating the Spock Extension, you
 
     `track_commit_timestamp = on`
 
-    These values are sized for this two-node example. Before moving to
-    production, or if you add nodes or databases, size them from your topology
-    using [Sizing Postgres Resources for Spock](sizing.md) -
-    `max_worker_processes` in particular is shared with parallel query workers
-    and needs one slot per database in the instance, not just per node.
+    These values are sized for this two-node example, which replicates a
+    single database. Before moving to production, or if you add nodes or
+    databases, size them from your topology using
+    [Sizing Postgres Resources for Spock](sizing.md) - subscriptions are
+    created per database, so slots, walsenders, and workers scale with node
+    count multiplied by replicated database count, and `max_worker_processes`
+    is additionally shared with parallel query workers and needs one slot per
+    database in the instance.
 
 3. Edit the [`pg_hba.conf` file](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html) (located in `/var/lib/pgsql/current/data/postgresql.conf`) and allow connections between `n1` and `n2`; the following commands are provided as an example only, and are not recommended for production systems as they will open your system for connection from any client:
 
