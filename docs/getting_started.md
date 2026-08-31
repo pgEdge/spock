@@ -207,8 +207,10 @@ replication and load the Spock extension:
 ```sql
  wal_level = logical
 max_worker_processes = 20   # see the sizing guide
-max_replication_slots = 12  # two per subscriber, per replicated database
-max_wal_senders = 10        # two per subscriber, per replicated database
+max_replication_slots = 10  # two per subscriber, per replicated database,
+                            # plus one per physical standby; 10 covers a
+                            # four-node mesh replicating one database
+max_wal_senders = 10        # keep equal to max_replication_slots
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
 listen_addresses = '*'
@@ -217,7 +219,8 @@ listen_addresses = '*'
 !!! info "Sizing `max_worker_processes`"
 
     This parameter covers more than one worker per node: Spock runs a
-    supervisor, a manager for *every* connectable database in the instance
+    supervisor, a slot sync worker (present on every node, primary or
+    standby), a manager for *every* connectable database in the instance
     (including `postgres` and `template1`), an apply worker per subscription,
     and a sync worker per subscription during table synchronization.
     Subscriptions are created per database, so their count is the number of

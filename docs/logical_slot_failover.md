@@ -19,9 +19,19 @@ and a full re-sync of all subscriber tables.
 
 | PostgreSQL | Slot sync mechanism | Spock worker |
 |---|---|---|
-| 15, 16 | Spock built-in `spock_failover_slots` worker | Always runs on standby |
+| 15, 16 | Spock built-in `spock_failover_slots` worker | Registered on every node; synchronizes only while in recovery |
 | 17 | Spock worker **or** native `sync_replication_slots` | Yields to native if enabled |
 | 18+ | Native `sync_replication_slots` (required) | Not registered |
+
+The mechanism changes with the version, but the requirement does not: a slot
+sync worker is running on every node of the cluster, primary and standby
+alike. It is started before the server knows which role it will hold, so on a
+primary it stays resident and idle, waking only to check whether the server
+has entered recovery. Spock's own worker is registered from
+`shared_preload_libraries` and occupies one `max_worker_processes` slot;
+PostgreSQL's native worker is a dedicated postmaster process outside that
+pool. Budget a worker for it on every node either way - see
+[Sizing Postgres Resources for Spock](sizing.md).
 
 On **PostgreSQL 17+**, Spock marks every logical slot with the `FAILOVER` flag
 at creation time. This enables PostgreSQL's built-in slotsync worker to pick
@@ -45,18 +55,17 @@ wal_level = logical
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
 max_worker_processes = 20
-max_replication_slots = 12
+max_replication_slots = 10
 max_wal_senders = 10
 ```
 
 Size these for your cluster rather than copying the numbers - see
 [Sizing Postgres Resources for Spock](sizing.md). Slots, walsenders, and
 origins scale with the number of other nodes multiplied by the number of
-replicated databases in the instance. Note that a physical standby
-adds to both `max_wal_senders` and `max_replication_slots` on the primary, and
-that on PostgreSQL 15-17 the `spock_failover_slots` worker occupies one
-`max_worker_processes` slot on every node (it is not registered on PostgreSQL
-18+).
+replicated databases in the instance, and `max_replication_slots` and
+`max_wal_senders` should be set to the same value. Note that a physical
+standby adds a slot to that value on the primary, and that a slot sync worker
+occupies one `max_worker_processes` slot on every node.
 
 On PostgreSQL 18, also size `max_active_replication_origins` (default 10) to at
 least the number of subscriptions this node applies - `(nodes - 1) x replicated
@@ -157,12 +166,15 @@ synchronized LSN with no data loss and no slot recreation required.
 
 ## Setup: PostgreSQL 15 and 16 (Spock Worker)
 
-On PostgreSQL 15 and 16, the `spock_failover_slots` background worker runs
-on the standby and periodically copies slot state from the primary.
+On PostgreSQL 15 and 16, the `spock_failover_slots` background worker
+periodically copies slot state from the primary. The worker is registered on
+every node, but it only does this work while the server is in recovery; on a
+primary it idles.
 
 ### Requirements
 
-- `hot_standby_feedback = on` on the standby (required for the worker to run)
+- `hot_standby_feedback = on` on the standby (required before the worker will
+  synchronize anything)
 - The standby must be able to connect to the primary
 
 ### Configuration GUCs
@@ -279,6 +291,12 @@ FROM pg_stat_activity
 WHERE application_name = 'spock_failover_slots worker';
 ```
 
+This row is present on primaries too, where the worker is resident but idle,
+so a hit here confirms only that the worker was registered - not that slots
+are being synchronized. Confirm that on the standby by comparing
+`confirmed_flush_lsn` against the primary, and look for the
+`slot synchronization from primary now active` message in the standby log.
+
 ## FAQ
 
 **Q: Do I need to do anything after a failover?**
@@ -286,8 +304,10 @@ WHERE application_name = 'spock_failover_slots worker';
 On PG17+: Just update the subscriber's `host=` in their DSN. No slot
 recreation needed.
 
-On PG15/16: Spock's worker on the standby (now primary) stops running
-since it is no longer in recovery. Subscribers reconnect automatically.
+On PG15/16: Spock's worker on the standby (now primary) stops
+synchronizing slots, since the server is no longer in recovery. The worker
+process itself remains, idle, and still holds its `max_worker_processes` slot.
+Subscribers reconnect automatically.
 
 **Q: What if `sync_replication_slots` is not configured on PG18?**
 

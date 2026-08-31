@@ -5,11 +5,14 @@ replication scenario before creating the Spock extension:
 
 ```sql
 wal_level = 'logical'
-max_worker_processes = 20   # supervisor + one per database + one per
-                            # subscription + sync workers, and shared with
-                            # parallel query - see the sizing guide
-max_replication_slots = 12  # two per subscriber, per replicated database
-max_wal_senders = 10        # two per subscriber, per replicated database
+max_worker_processes = 20   # supervisor + slot sync worker + one per
+                            # database + one per subscription + sync workers,
+                            # and shared with parallel query - see the
+                            # sizing guide
+max_replication_slots = 10  # two per subscriber, per replicated database,
+                            # plus one per physical standby; 10 covers a
+                            # four-node mesh replicating one database
+max_wal_senders = 10        # keep equal to max_replication_slots
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
 ```
@@ -226,7 +229,7 @@ the upstream server disappears unexpectedly. To disable them add
 For Spock replication, set `wal_sender_timeout` to a conservative value such
 as `5min` (300000ms) on each node in `postgresql.conf`:
 
-```
+```ini
 wal_sender_timeout = '5min'
 ```
 
@@ -245,7 +248,7 @@ the TCP connection alive but stops sending data. The timer resets on any
 received message. Set to `0` to disable and rely solely on TCP keepalive for
 liveness detection. Default: `300` (5 minutes).
 
-```
+```ini
 spock.apply_idle_timeout = 300
 ```
 
@@ -263,7 +266,7 @@ where a node joins in seconds; when catchup legitimately takes minutes or hours,
 the routines fail with a timeout long before the work is done. It can be raised
 for a single operation rather than cluster-wide:
 
-```
+```sql
 SET spock.sync_timeout = '2h';
 CALL spock.add_node(...);
 ```
@@ -273,7 +276,7 @@ that additionally bound each remote probe - so that one unresponsive peer
 cannot consume the entire budget - keep their own, much smaller limit for that
 purpose.
 
-```
+```ini
 spock.sync_timeout = 0
 ```
 
@@ -293,7 +296,7 @@ immediately). Valid range is `0` to `100`. Default: `5`. Changes take
 effect on `SIGHUP` (for example, `SELECT pg_reload_conf()`); a server
 restart is not required.
 
-```
+```ini
 spock.read_retry_count = 5
 ```
 
@@ -309,9 +312,13 @@ The behaviour depends on the PostgreSQL version:
 
 | PostgreSQL | Slot sync mechanism | Spock worker |
 |---|---|---|
-| 15, 16 | Spock built-in `spock_failover_slots` worker | Always runs |
+| 15, 16 | Spock built-in `spock_failover_slots` worker | Runs on every node |
 | 17 | Spock worker OR native `sync_replication_slots` | Spock worker yields to native if enabled |
 | 18+ | Native `sync_replication_slots` (required) | Not registered |
+
+Whichever mechanism applies, a slot sync worker is present on every node,
+primary and standby alike, so include one in the worker budget - see
+[Sizing Postgres Resources for Spock](sizing.md).
 
 #### PostgreSQL 17 and Later (Native Slot Sync)
 

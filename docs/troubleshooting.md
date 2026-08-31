@@ -57,10 +57,10 @@ configuration parameters.
   SHOW max_wal_senders;
   ```
 
-  Same accounting as above: `2 x subscribers x replicated databases` per node
-  while syncs are in progress, plus any physical standbys. This is the most
-  common reason a cluster that replicates fine in steady state cannot add or
-  resync a table.
+  Set this equal to `max_replication_slots`: every slot has a walsender behind
+  it while it streams, so the accounting above applies unchanged. A shortfall
+  here is the most common reason a cluster that replicates fine in steady
+  state cannot add or resync a table.
 
 - For PostgreSQL 18+, check the `max_active_replication_origins` setting:
 
@@ -151,7 +151,7 @@ only one `UNIQUE` index or constraint exists on downstream tables.
 
 The error message for deferrable index constraints appears as follows:
 
-```
+```text
 ERROR: spock doesn't support index rechecks needed for deferrable indexes
 DETAIL: relation "public"."test_relation" has deferrable indexes: "index1"
 ```
@@ -192,7 +192,7 @@ function properly:
 ```sql
 wal_level = logical
 max_worker_processes = 20
-max_replication_slots = 12
+max_replication_slots = 10
 max_wal_senders = 10
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
@@ -203,7 +203,8 @@ troubleshooting worker registration failures, stuck subscriptions, or apply
 workers that will not start, size them from your actual topology using
 [Sizing Postgres Resources for Spock](sizing.md) - the defaults in the
 tutorials do not account for parallel query workers sharing the
-`max_worker_processes` pool.
+`max_worker_processes` pool, nor for the per-database managers, the
+supervisor, and the slot sync worker that every node runs.
 
 After modifying `postgresql.conf`, restart PostgreSQL with this command:
 
@@ -284,7 +285,9 @@ Possible causes and solutions include:
 - Insufficient `max_worker_processes` - increase the value; see
   [Sizing Postgres Resources for Spock](sizing.md). Remember that parallel
   query workers draw from the same pool, so a parallel-heavy workload can
-  starve apply workers even when the value looks generous.
+  starve apply workers even when the value looks generous, and that the
+  supervisor, the per-database managers, and the slot sync worker each consume
+  a slot before any apply worker starts.
 - Network bandwidth limitations - check network throughput.
 - Large transactions - break into smaller transactions if possible.
 - Slow subscriber hardware - upgrade hardware or reduce workload.
@@ -462,7 +465,7 @@ SHOW log_filename;
 
 On RHEL/Rocky Linux, logs are typically located at:
 
-```
+```text
 /var/lib/pgsql/18/data/log/
 ```
 
