@@ -14,7 +14,7 @@ After installing and initializing Postgres and creating the Spock Extension, you
 
     `max_worker_processes = 20`
 
-    `max_replication_slots = 12`
+    `max_replication_slots = 10`
 
     `max_wal_senders = 10`
 
@@ -29,7 +29,8 @@ After installing and initializing Postgres and creating the Spock Extension, you
     created per database, so slots, walsenders, and workers scale with node
     count multiplied by replicated database count, and `max_worker_processes`
     is additionally shared with parallel query workers and needs one slot per
-    database in the instance.
+    database in the instance, one for the supervisor, and one more for the
+    slot sync worker.
 
 3. Edit the [`pg_hba.conf` file](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html) (located in `/var/lib/pgsql/current/data/postgresql.conf`) and allow connections between `n1` and `n2`; the following commands are provided as an example only, and are not recommended for production systems as they will open your system for connection from any client:
 

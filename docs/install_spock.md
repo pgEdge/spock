@@ -118,7 +118,7 @@ required Postgres parameters to the end of the file:
 ```sql
 wal_level = logical
 max_worker_processes = 20   # see the sizing guide below
-max_replication_slots = 12
+max_replication_slots = 10
 max_wal_senders = 10
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
@@ -126,10 +126,10 @@ track_commit_timestamp = on
 
 The values above are a working starting point for a small cluster (two or
 three nodes, one replicated database). They are not one-size-fits-all: Spock
-launches one background worker per database in the instance plus one per
-subscription, subscription counts scale with node count multiplied by the
-number of replicated databases, and `max_worker_processes` is shared with
-parallel query workers. See
+launches a supervisor, a slot sync worker, one background worker per database
+in the instance, and one per subscription; subscription counts scale with node count multiplied by the number of
+replicated databases, and `max_worker_processes` is shared with parallel query
+workers. See
 [Sizing Postgres Resources for Spock](sizing.md) for the formulas and
 per-cluster recommendations before going to production.
 
