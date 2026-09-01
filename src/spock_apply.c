@@ -2296,7 +2296,6 @@ handle_startup(StringInfo s)
 
 	/* Register callback for cleaning up */
 	before_shmem_exit(spock_apply_worker_shmem_exit, 0);
-	on_proc_exit(spock_apply_worker_on_exit, 0);
 }
 
 /*
@@ -2326,7 +2325,16 @@ spock_apply_worker_shmem_exit(int code, Datum arg)
 }
 
 /*
- * Cleanup called on proc_exit
+ * Cleanup callback: decrement the group's nattached.
+ *
+ * Must run BEFORE spock_worker_on_exit() releases our shmem worker slot:
+ * once the slot is released the manager can hand it to a new worker, whose
+ * spock_worker_attach() zeroes worker.apply.apply_group - and an on_proc_exit
+ * callback (which runs after all shmem-exit callbacks) would then read NULL
+ * through MyApplyWorker and silently skip the decrement, leaking nattached.
+ * Registering this as before_shmem_exit AFTER spock_worker_attach()'s
+ * registration makes LIFO ordering run it first, while the slot is still
+ * ours.
  */
 static void
 spock_apply_worker_on_exit(int code, Datum arg)
@@ -2350,6 +2358,13 @@ spock_apply_worker_attach(void)
 
 	Assert(MyApplyWorker->apply_group != NULL);
 	LWLockRelease(SpockCtx->apply_group_master_lock);
+
+	/*
+	 * Pair the attachment with its cleanup right here, so a worker that fails
+	 * before the startup message still detaches. See the ordering note on
+	 * spock_apply_worker_on_exit().
+	 */
+	before_shmem_exit(spock_apply_worker_on_exit, 0);
 }
 
 /* Remove a worker from it's group. */
