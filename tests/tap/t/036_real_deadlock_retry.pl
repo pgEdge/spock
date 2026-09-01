@@ -7,6 +7,7 @@ use SpockTest qw(
     create_cluster destroy_cluster
     get_test_config scalar_query psql_or_bail
     wait_for_sub_status
+    log_offset log_since wait_for_log
 );
 
 # 035_deadlock_retry.pl injects the transient SQLSTATEs directly.  This test
@@ -35,7 +36,6 @@ my $p2 = $config->{node_ports}->[1];
 my $pg_bin = $config->{pg_bin};
 my $conn = "host=$config->{host} dbname=$config->{db_name} port=$p1 " .
            "user=$config->{db_user} password=$config->{db_password}";
-my $subscriber_log = "$config->{log_dir}/00${p2}.log";
 
 # sub_disable is the mode where mishandling a deadlock is most destructive:
 # unfixed, the transient error stops replication altogether.
@@ -74,26 +74,6 @@ for (1 .. 60) {
 }
 is($seeded, '2', 'seed rows replicate to the subscriber');
 
-sub read_log_from {
-    my ($offset) = @_;
-    open(my $lf, '<', $subscriber_log) or return '';
-    seek($lf, $offset, 0);
-    local $/;
-    my $data = <$lf> // '';
-    close($lf);
-    return $data;
-}
-
-sub wait_for_log {
-    my ($offset, $pattern, $timeout) = @_;
-    $timeout //= 90;
-    for (1 .. $timeout) {
-        return 1 if read_log_from($offset) =~ $pattern;
-        sleep(1);
-    }
-    return 0;
-}
-
 # Block until the apply worker is inside dl_real_hold(): spock sets
 # application_name to the bgworker name, and pg_sleep() reports wait_event
 # 'PgSleep'.  The trigger is AFTER UPDATE, so a sleeping worker already holds
@@ -112,7 +92,7 @@ sub wait_for_apply_in_hold_trigger {
     return 0;
 }
 
-my $log_offset = -s $subscriber_log // 0;
+my $log_offset = log_offset(2);
 
 # Row 2 is updated first so that apply holds it while the trigger sleeps.
 psql_or_bail(1, q{
@@ -151,14 +131,14 @@ if ($local_pid == 0) {
     POSIX::_exit(127);
 }
 
-ok(wait_for_log($log_offset, qr/deadlock detected/, 90),
+ok(wait_for_log(2, qr/deadlock detected/, $log_offset, 90),
     'PostgreSQL detects a deadlock on the subscriber');
 
 # This message is only reachable when the apply worker itself was the victim,
 # so it also rules out the local session having been chosen instead.
-ok(wait_for_log($log_offset,
+ok(wait_for_log(2,
         qr/transient error \(deadlock\/lock timeout\), will restart and retry.*40P01/,
-        30),
+        $log_offset, 30),
     'apply worker is the deadlock victim and classifies it as transient');
 
 waitpid($local_pid, 0);
@@ -184,7 +164,7 @@ is($applied, '100,200', 'deadlocked transaction applies in full on retry');
 ok(wait_for_sub_status(2, 'sub_n1_n2', 'replicating', 60),
     'subscription returns to replicating state');
 
-unlike(read_log_from($log_offset),
+unlike(log_since(2, $log_offset),
        qr/Transaction failed, subscription will be disabled/,
        'deadlock does not enter the SUB_DISABLE exception path');
 

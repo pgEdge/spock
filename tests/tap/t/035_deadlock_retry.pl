@@ -6,6 +6,7 @@ use SpockTest qw(
     create_cluster destroy_cluster
     get_test_config scalar_query psql_or_bail
     wait_for_sub_status
+    log_offset log_since wait_for_log
 );
 
 # Some apply-worker errors are TRANSIENT: the same transaction succeeds on a
@@ -31,10 +32,8 @@ create_cluster(2, 'Create 2-node transient apply error retry cluster');
 
 my $config = get_test_config();
 my $p1 = $config->{node_ports}->[0];
-my $p2 = $config->{node_ports}->[1];
 my $conn = "host=$config->{host} dbname=$config->{db_name} port=$p1 " .
            "user=$config->{db_user} password=$config->{db_password}";
-my $subscriber_log = "$config->{log_dir}/00${p2}.log";
 
 # Gate table and replica trigger live on the subscriber only; node 1 has no
 # subscription back to node 2, so this DDL is not replicated.
@@ -106,30 +105,9 @@ psql_or_bail(2,
 ok(wait_for_sub_status(2, 'sub_n1_n2', 'replicating', 30),
     'subscription starts in replicating state');
 
-# Wait until $pattern shows up in the subscriber log at or after $offset.
-sub wait_for_log {
-    my ($offset, $pattern, $timeout) = @_;
-    $timeout //= 60;
-    for (1 .. $timeout) {
-        return 1 if read_log_from($offset) =~ $pattern;
-        sleep(1);
-    }
-    return 0;
-}
-
-sub read_log_from {
-    my ($offset) = @_;
-    open(my $lf, '<', $subscriber_log) or return '';
-    seek($lf, $offset, 0);
-    local $/;
-    my $data = <$lf> // '';
-    close($lf);
-    return $data;
-}
-
 sub count_in_log {
     my ($offset, $pattern) = @_;
-    my $data = read_log_from($offset);
+    my $data = log_since(2, $offset);
     my $n = () = $data =~ /$pattern/g;
     return $n;
 }
@@ -157,10 +135,10 @@ for my $phase (@phases) {
     # Close the gate: every apply attempt for this table now raises $ec.
     psql_or_bail(2, "UPDATE dl_gate SET blocked = true, errcode = '$ec' WHERE id = 1");
 
-    my $log_offset = -s $subscriber_log // 0;
+    my $log_offset = log_offset(2);
     psql_or_bail(1, "INSERT INTO $t VALUES (1, 'must survive $tag')");
 
-    ok(wait_for_log($log_offset, qr/injected transient apply failure/, 60),
+    ok(wait_for_log(2, qr/injected transient apply failure/, $log_offset, 60),
         "$tag: apply worker hits the transient error");
 
     # Give the error handler time to run to completion (disable the
@@ -177,7 +155,7 @@ for my $phase (@phases) {
     is(scalar_query(2, "SELECT count(*) FROM $t WHERE id = 1"),
        '0', "$tag: row is not applied while the error persists");
 
-    like(read_log_from($log_offset), $phase->{logpat},
+    like(log_since(2, $log_offset), $phase->{logpat},
          "$tag: error is classified as retryable");
 
     # Every retry branch must set restart_delay to restart_delay_default; a
@@ -212,10 +190,10 @@ for my $phase (@permanent) {
     psql_or_bail(2, "SELECT pg_reload_conf()");
     psql_or_bail(2, "UPDATE dl_gate SET blocked = true, errcode = '$ec' WHERE id = 1");
 
-    my $log_offset = -s $subscriber_log // 0;
+    my $log_offset = log_offset(2);
     psql_or_bail(1, "INSERT INTO $t VALUES (1, 'must not be retried')");
 
-    ok(wait_for_log($log_offset, qr/injected transient apply failure/, 60),
+    ok(wait_for_log(2, qr/injected transient apply failure/, $log_offset, 60),
         "$tag: apply worker hits the error");
 
     my $logged = 0;
@@ -227,7 +205,7 @@ for my $phase (@permanent) {
     }
     ok($logged >= 1, "$tag: $phase->{why} - reaches the exception path");
 
-    my $new_log = read_log_from($log_offset);
+    my $new_log = log_since(2, $log_offset);
     unlike($new_log, $CONTENTION_LOG, "$tag: not classified as contention");
     unlike($new_log, $RESOURCE_LOG,   "$tag: not classified as a resource shortage");
     unlike($new_log, $CONNECTION_LOG, "$tag: not classified as a connection error");
