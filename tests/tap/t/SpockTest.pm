@@ -8,6 +8,7 @@ use TAP::Formatter::Color;
 use TAP::Harness;
 use File::Path qw(make_path);
 use File::Basename;
+use File::Spec;
 use Time::HiRes qw(usleep);
 use Cwd;
 
@@ -63,8 +64,15 @@ sub {
 
 # Logging - derive test name from script filename
 my $test_name = basename($0, '.pl');  # e.g., "001_basic" from "t/001_basic.pl"
-# Use TESTLOGDIR from environment (set by Makefile) or fall back to relative logs/
-my $LOG_DIR = $ENV{TESTLOGDIR} // "logs";
+# Use TESTLOGDIR from the environment, else logs/ under the current directory.
+#
+# Absolute either way.  create_postgresql_conf() feeds this to log_directory,
+# and PostgreSQL resolves a relative log_directory against the data directory
+# while Perl resolves it against the current directory -- so a relative value
+# sends the server's log somewhere the test does not look for it.  Only
+# run_tests.sh and the make target export TESTLOGDIR; running one test with
+# plain "prove t/NNN_name.pl" does not, and used to land on a relative "logs".
+my $LOG_DIR = File::Spec->rel2abs($ENV{TESTLOGDIR} // 'logs');
 eval { make_path($LOG_DIR) };
 my $LOG_FILE = $ENV{SPOCKTEST_LOG_FILE} // "${LOG_DIR}/${test_name}.log";
 
