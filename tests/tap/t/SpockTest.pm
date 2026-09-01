@@ -561,10 +561,16 @@ sub log_offset {
 }
 
 # A node's log from $offset onward.
+#
+# Dies rather than returning nothing when the log cannot be read.  Callers
+# search the result for a pattern, and an unreadable log looks exactly like a
+# readable one that does not contain it -- so returning '' turns a broken read
+# into a passing unlike().
 sub log_since {
     my ($node_num, $offset) = @_;
-    open(my $lf, '<', node_logfile($node_num)) or return '';
-    seek($lf, $offset // 0, 0);
+    my $path = node_logfile($node_num);
+    open(my $lf, '<', $path) or die "cannot open $path: $!";
+    seek($lf, $offset // 0, 0) or die "cannot seek to $offset in $path: $!";
     local $/;
     my $data = <$lf> // '';
     close($lf);
@@ -619,17 +625,39 @@ sub sync_nodes {
     return (defined $got && $got eq 't') ? 1 : 0;
 }
 
-# PID of the apply worker on $node_num, or '' if none appears before timeout.
-# spock copies the bgworker name into application_name, so the worker shows up
-# as "spock apply <db>:<sub>".
+# PID of an apply worker on $node_num, or '' if none appears before timeout.
+# spock copies the bgworker name into application_name, so a worker shows up
+# as "spock apply <dboid>:<subid>" (spock_worker.c).
+#
+# Name the subscription whenever a node runs more than one.  pg_stat_activity
+# covers every database on the instance, so an unqualified match can return
+# several rows, and scalar_query() strips the newline between them -- two pids
+# come back as a single run of digits that still looks like a valid pid.  This
+# restricts the match to the current database, resolves $sub_name to the subid
+# in the worker's name when given, and dies on an ambiguous match rather than
+# handing back a pid that belongs to no process.
 sub apply_worker_pid {
-    my ($node_num, $timeout) = @_;
+    my ($node_num, $sub_name, $timeout) = @_;
     $timeout //= 30;
-    my $query = "SELECT pid FROM pg_stat_activity " .
-                "WHERE application_name LIKE 'spock apply %'";
+
+    my $match = "application_name LIKE 'spock apply %'";
+    $match .= " AND application_name LIKE '%:' || (SELECT sub_id FROM " .
+              "spock.subscription WHERE sub_name = '$sub_name')::text"
+        if defined $sub_name;
+
+    # string_agg keeps the result to one row, so a second worker arrives as a
+    # comma rather than as more digits.
+    my $query = "SELECT string_agg(pid::text, ',' ORDER BY pid) " .
+                "FROM pg_stat_activity " .
+                "WHERE datname = current_database() AND $match";
+
     for (1 .. $timeout * $POLL_PER_SECOND) {
-        my $pid = scalar_query($node_num, $query);
-        return $pid if defined $pid && $pid =~ /^\d+$/;
+        my $pids = scalar_query($node_num, $query);
+        if (defined $pids && $pids ne '') {
+            return $pids if $pids =~ /^\d+$/;
+            die "node $node_num has more than one apply worker ($pids); "
+                . "pass a subscription name to apply_worker_pid()";
+        }
         usleep($POLL_INTERVAL_US);
     }
     return '';

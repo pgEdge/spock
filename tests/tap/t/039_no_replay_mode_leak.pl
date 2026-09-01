@@ -84,7 +84,7 @@ for my $phase (@modes) {
     is(scalar_query(2, "SELECT count(*) FROM $t WHERE id = 1"), '1',
         "$mode: baseline transaction replicates");
 
-    my $pid_before = apply_worker_pid(2);
+    my $pid_before = apply_worker_pid(2, 'sub_n1_n2');
     like($pid_before, qr/^\d+$/, "$mode: found the apply worker ($pid_before)");
 
     my $offset = log_offset(2);
@@ -98,7 +98,7 @@ for my $phase (@modes) {
 
     # It caught its own error rather than exiting, so it is now sitting in
     # replay mode with an empty queue.  Without that, the rest proves nothing.
-    is(apply_worker_pid(2), $pid_before,
+    is(apply_worker_pid(2, 'sub_n1_n2'), $pid_before,
         "$mode: worker stays up in replay mode after the cancel");
 
     # The transaction that must not be treated as the recorded failure.
@@ -112,7 +112,7 @@ for my $phase (@modes) {
     unlike(log_since(2, $offset),
         qr/applied nothing, retrying without exception handling/,
         "$mode: the transaction is not replayed as if it had failed");
-    is(apply_worker_pid(2), $pid_before,
+    is(apply_worker_pid(2, 'sub_n1_n2'), $pid_before,
         "$mode: worker is not restarted by the healthy transaction");
     is(scalar_query(2,
            "SELECT count(*) FROM spock.exception_log WHERE table_name = '$t'"),
