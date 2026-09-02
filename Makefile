@@ -30,6 +30,24 @@ ifdef SPOCK_RANDOM_DELAYS
 PG_CPPFLAGS += -DSPOCK_RANDOM_DELAYS
 endif
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
+
+# -----------------------------------------------------------------------------
+# Optional HTTP client, for the etcd quorum provider
+# -----------------------------------------------------------------------------
+# etcd runs as its own daemon and is reached over its v3 HTTP/JSON gateway, so
+# that provider needs an HTTP client.  libcurl is used when curl-config is on
+# PATH and skipped otherwise: a dependency that only one optional provider
+# needs must not be one everybody has to satisfy.  Without it the provider is
+# still built and still selectable; it reports why it cannot be used.
+#
+# Set NO_LIBCURL=1 to force it off even where libcurl is available.
+ifndef NO_LIBCURL
+CURL_CONFIG := $(shell command -v curl-config 2>/dev/null)
+ifneq ($(CURL_CONFIG),)
+PG_CPPFLAGS += -DHAVE_LIBCURL $(shell $(CURL_CONFIG) --cflags)
+SHLIB_LINK += $(shell $(CURL_CONFIG) --libs)
+endif
+endif
 ifdef NO_LOG_OLD_VALUE
 PG_CPPFLAGS += -DNO_LOG_OLD_VALUE
 endif

@@ -62,6 +62,7 @@
 #include "spock_conflict.h"
 #include "spock_rmgr.h"
 #include "spock_worker.h"
+#include "spock_quorum.h"
 #include "spock_output_config.h"
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
@@ -161,6 +162,19 @@ static const struct config_enum_entry apply_change_logging_options[] = {
 	{"verbose", SPOCK_APPLY_CHANGE_LOG_VERBOSE, false},
 	{NULL, 0, false}
 };
+
+static const struct config_enum_entry quorum_provider_options[] = {
+	{"none", SPOCK_QUORUM_PROVIDER_NONE, false},
+	{"etcd", SPOCK_QUORUM_PROVIDER_ETCD, false},
+	{"pgraft", SPOCK_QUORUM_PROVIDER_PGRAFT, false},
+	{"pgbully", SPOCK_QUORUM_PROVIDER_PGBULLY, false},
+	{NULL, 0, false}
+};
+
+int			spock_quorum_provider = SPOCK_QUORUM_PROVIDER_NONE;
+int			spock_quorum_timeout = 2000;
+char	   *spock_quorum_etcd_endpoints = "";
+char	   *spock_quorum_cluster_id = "spock";
 
 bool		spock_synchronous_commit = false;
 char	   *spock_temp_directory = "";
@@ -1158,6 +1172,54 @@ _PG_init(void)
 							 exception_logging_options,
 							 PGC_SIGHUP, 0,
 							 NULL, NULL, NULL);
+
+	DefineCustomEnumVariable("spock.quorum_provider",
+							 gettext_noop("External system consulted for quorum decisions."),
+							 gettext_noop("Spock does not implement consensus; it asks the "
+										  "selected system whether this node is in a quorum "
+										  "and which members are live. With 'none' no system "
+										  "is consulted and Spock behaves conservatively, "
+										  "exactly as it does without this feature."),
+							 &spock_quorum_provider,
+							 SPOCK_QUORUM_PROVIDER_NONE,
+							 quorum_provider_options,
+							 PGC_SIGHUP, 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.quorum_timeout",
+							gettext_noop("Deadline for a single call to the quorum provider."),
+							gettext_noop("Overrunning this is treated as an unknown answer, "
+										 "which is handled exactly like a lost quorum: "
+										 "conservatively. It is never a reason to keep "
+										 "waiting, because these calls run on the path that "
+										 "decides whether WAL may be released."),
+							&spock_quorum_timeout,
+							2000,
+							100,
+							60000,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
+							NULL, NULL, NULL);
+
+	DefineCustomStringVariable("spock.quorum_etcd_endpoints",
+							   gettext_noop("Comma-separated etcd base URLs."),
+							   gettext_noop("For example http://127.0.0.1:2379. Endpoints are "
+											"tried in rotation, so one unreachable member "
+											"costs a single tick rather than every tick."),
+							   &spock_quorum_etcd_endpoints,
+							   "",
+							   PGC_SIGHUP, 0,
+							   NULL, NULL, NULL);
+
+	DefineCustomStringVariable("spock.quorum_cluster_id",
+							   gettext_noop("Key-space prefix identifying this Spock cluster."),
+							   gettext_noop("Two clusters sharing one quorum system must not "
+											"share this value, or each will count the other's "
+											"nodes as its own members."),
+							   &spock_quorum_cluster_id,
+							   "spock",
+							   PGC_SIGHUP, 0,
+							   NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.stats_max_entries",
 							"Maximum entries for statistics",
