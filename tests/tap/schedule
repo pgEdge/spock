@@ -62,6 +62,9 @@ test: 045_lsn_from_commit_ts
 #test: 018_upgrade_schema_match
 #
 
+# Group replication slots
+test: 105_group_slots
+
 # Regression tests
 test: 103_manager_worker_dboid_race
 test: 105_sub_disable_retransmit_after_disconnect

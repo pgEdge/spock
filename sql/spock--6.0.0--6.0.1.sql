@@ -1,0 +1,802 @@
+/* spock--6.0.0--6.0.1.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+\echo Use "ALTER EXTENSION spock UPDATE TO '6.0.1'" to load this file. \quit
+
+-- Group replication slots. One inactive logical slot per database pins WAL
+-- at the oldest position still needed by the group. Never drop a group slot
+-- with pg_drop_replication_slot(); use spock.repair_group_slot().
+
+-- Authoritative per-node group-slot state.
+CREATE TABLE spock.group_slot_state (
+    node_id                oid  NOT NULL PRIMARY KEY,
+    dboid                  oid  NOT NULL,
+    slot_name              name NOT NULL,
+    membership_generation  bigint      NOT NULL DEFAULT 1,
+    node_state             text        NOT NULL DEFAULT 'active',
+    safe_lsn               pg_lsn      NOT NULL DEFAULT '0/0',
+    freeze_lsn             pg_lsn      NOT NULL DEFAULT '0/0',
+    last_advanced_lsn      pg_lsn      NOT NULL DEFAULT '0/0',
+    updated_at             timestamptz NOT NULL DEFAULT now(),
+    blocked_reason         text,
+    repair_required        boolean     NOT NULL DEFAULT false,
+    manual_override        boolean     NOT NULL DEFAULT false,
+    CHECK (node_state IN ('active','joining','parting','unknown'))
+) WITH (user_catalog_table=true);
+
+-- Group members per generation and their lifecycle state.
+CREATE TABLE spock.group_slot_membership (
+    membership_generation  bigint      NOT NULL,
+    member_node_id         oid         NOT NULL,
+    member_node_name       name,
+    state                  text        NOT NULL DEFAULT 'active',
+    required               boolean     NOT NULL DEFAULT true,
+    effective_lsn          pg_lsn      NOT NULL DEFAULT '0/0',
+    created_at             timestamptz NOT NULL DEFAULT now(),
+    updated_at             timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (membership_generation, member_node_id),
+    CHECK (state IN ('active','joining','parting','removed','unknown'))
+) WITH (user_catalog_table=true);
+
+-- Per-member replay progress, refreshed each tick.
+CREATE TABLE spock.group_slot_member_progress (
+    membership_generation  bigint      NOT NULL,
+    remote_node_id         oid         NOT NULL,
+    sub_id                 oid,
+    node_state             text,
+    required               boolean     NOT NULL DEFAULT true,
+    flush_lsn              pg_lsn,
+    replay_lsn             pg_lsn,
+    confirmed_lsn          pg_lsn,
+    updated_at             timestamptz,
+    reason                 text,
+    PRIMARY KEY (membership_generation, remote_node_id)
+) WITH (user_catalog_table=true);
+
+CREATE FUNCTION spock.local_group_slot_name()
+RETURNS name
+AS 'MODULE_PATHNAME', 'spock_local_group_slot_name_sql'
+LANGUAGE C STABLE;
+
+-- Min confirmed_flush_lsn across per-subscription slots (the group-safe
+-- horizon); excludes the group slot. NULL when no downstream slots exist.
+CREATE FUNCTION spock.group_slot_min_downstream_lsn()
+RETURNS pg_lsn
+LANGUAGE sql STABLE AS $$
+    SELECT min(confirmed_flush_lsn)
+      FROM pg_replication_slots
+     WHERE database = current_database()
+       AND plugin IN ('spock_output', 'spock')
+       AND slot_type = 'logical'
+       AND slot_name LIKE 'spk\_%'
+       AND slot_name <> COALESCE(spock.local_group_slot_name(), '');
+$$;
+
+-- Staleness threshold as an interval, from the live GUC.
+CREATE FUNCTION spock.group_slot_staleness()
+RETURNS interval
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(
+             current_setting('spock.group_slots_progress_staleness_timeout', true),
+             '60s')::interval;
+$$;
+
+-- Create the inactive group slot if missing. Must run before any write in
+-- the transaction (a logical slot cannot be created after a write).
+CREATE FUNCTION spock.group_slot_ensure()
+RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_slot   name;
+    v_exists boolean;
+BEGIN
+    v_slot := spock.local_group_slot_name();
+    IF v_slot IS NULL THEN
+        RETURN false;
+    END IF;
+
+    SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = v_slot)
+      INTO v_exists;
+
+    IF NOT v_exists THEN
+        PERFORM pg_create_logical_replication_slot(v_slot, 'spock_output');
+    END IF;
+
+    RETURN true;
+END;
+$$;
+
+-- Refresh membership and per-member progress for the current generation.
+-- Existing lifecycle state is preserved; new members default to 'active'.
+CREATE FUNCTION spock.group_slot_refresh_members(p_gen bigint, p_stale interval)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local oid;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RETURN;
+    END IF;
+
+    -- One membership row per other known node, preserving existing state.
+    INSERT INTO spock.group_slot_membership
+            (membership_generation, member_node_id, member_node_name, state, required)
+    SELECT p_gen, n.node_id, n.node_name, 'active', true
+      FROM spock.node n
+     WHERE n.node_id <> v_local
+       AND NOT EXISTS (SELECT 1 FROM spock.group_slot_membership m
+                        WHERE m.membership_generation = p_gen
+                          AND m.member_node_id = n.node_id);
+
+    UPDATE spock.group_slot_membership m
+       SET member_node_name = n.node_name,
+           updated_at = now()
+      FROM spock.node n
+     WHERE m.membership_generation = p_gen
+       AND m.member_node_id = n.node_id
+       AND m.member_node_name IS DISTINCT FROM n.node_name;
+
+    -- Freshness comes from spock.progress.last_updated_ts; rebuild each tick.
+    DELETE FROM spock.group_slot_member_progress WHERE membership_generation = p_gen;
+
+    -- confirmed_lsn is left NULL: a member's downstream confirmation is not
+    -- attributable from local catalogs. Safety uses the min-downstream horizon.
+    INSERT INTO spock.group_slot_member_progress
+            (membership_generation, remote_node_id, sub_id, node_state,
+             required, flush_lsn, replay_lsn, confirmed_lsn, updated_at, reason)
+    SELECT p_gen,
+           m.member_node_id,
+           s.sub_id,
+           m.state,
+           m.required,
+           p.received_lsn,
+           p.remote_commit_lsn,
+           NULL,
+           p.last_updated_ts,
+           CASE
+               WHEN p.last_updated_ts IS NULL THEN 'no_progress'
+               WHEN now() - p.last_updated_ts > p_stale THEN 'stale'
+               ELSE NULL
+           END
+      FROM spock.group_slot_membership m
+      LEFT JOIN spock.progress p
+             ON p.remote_node_id = m.member_node_id
+            AND p.node_id = v_local
+      LEFT JOIN spock.subscription s
+             ON s.sub_origin = m.member_node_id
+            AND s.sub_target = v_local
+     WHERE m.membership_generation = p_gen;
+END;
+$$;
+
+-- Evaluate safety: return the blocking reason (NULL if clear) and safe LSN.
+CREATE FUNCTION spock.group_slot_evaluate(
+    p_gen   bigint,
+    p_mode  text,
+    p_stale interval,
+    OUT reason   text,
+    OUT safe_lsn pg_lsn
+)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_local      oid;
+    v_node_state text;
+    v_freeze     pg_lsn;
+    v_min        pg_lsn;
+BEGIN
+    reason := NULL;
+
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RETURN;
+    END IF;
+
+    SELECT node_state, freeze_lsn
+      INTO v_node_state, v_freeze
+      FROM spock.group_slot_state
+     WHERE node_id = v_local;
+
+    IF NOT FOUND THEN
+        reason := 'missing_slot_state';
+        RETURN;
+    END IF;
+
+    -- Compute the group-safe horizon (min confirmed downstream).  When there
+    -- is nothing downstream, the current WAL insert position is safe.
+    v_min := spock.group_slot_min_downstream_lsn();
+    IF v_min IS NULL THEN
+        v_min := pg_current_wal_lsn();
+    END IF;
+
+    -- During a part, never advance past the frozen part boundary.
+    IF v_freeze <> '0/0'::pg_lsn AND v_freeze < v_min THEN
+        v_min := v_freeze;
+    END IF;
+    safe_lsn := v_min;
+
+    -- Hard blockers, in priority order.
+    IF v_node_state = 'unknown'
+       OR EXISTS (SELECT 1 FROM spock.group_slot_membership
+                   WHERE membership_generation = p_gen AND state = 'unknown') THEN
+        reason := 'unknown_node_state';
+        RETURN;
+    END IF;
+
+    IF v_node_state = 'joining'
+       OR EXISTS (SELECT 1 FROM spock.group_slot_membership
+                   WHERE membership_generation = p_gen AND state = 'joining') THEN
+        reason := 'join_in_progress';
+        RETURN;
+    END IF;
+
+    IF v_node_state = 'parting'
+       OR EXISTS (SELECT 1 FROM spock.group_slot_membership
+                   WHERE membership_generation = p_gen AND state = 'parting') THEN
+        reason := 'part_in_progress';
+        RETURN;
+    END IF;
+
+    -- Any required, non-removed membership row belonging to a different
+    -- generation indicates the cluster has not converged on one generation.
+    IF EXISTS (SELECT 1 FROM spock.group_slot_membership
+                WHERE required
+                  AND state <> 'removed'
+                  AND membership_generation <> p_gen) THEN
+        reason := 'membership_generation_mismatch';
+        RETURN;
+    END IF;
+
+    -- Stale progress for any required, active member.
+    IF EXISTS (
+        SELECT 1
+          FROM spock.group_slot_membership m
+          LEFT JOIN spock.group_slot_member_progress pr
+                 ON pr.membership_generation = m.membership_generation
+                AND pr.remote_node_id = m.member_node_id
+         WHERE m.membership_generation = p_gen
+           AND m.required
+           AND m.state = 'active'
+           AND (pr.updated_at IS NULL
+                OR now() - pr.updated_at > p_stale)
+    ) THEN
+        reason := 'stale_progress';
+        RETURN;
+    END IF;
+
+    -- Advisory-only mode: keep metadata fresh but never advance.
+    IF p_mode = 'off' THEN
+        reason := 'safety_mode_off';
+        RETURN;
+    END IF;
+END;
+$$;
+
+-- Maintenance tick driven by the C worker: refresh, evaluate, advance.
+CREATE FUNCTION spock.group_slot_worker_tick()
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local   oid;
+    v_slot    name;
+    v_gen     bigint;
+    v_mode    text;
+    v_stale   interval;
+    v_reason  text;
+    v_safe    pg_lsn;
+    v_present boolean;
+    v_cur     pg_lsn;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RETURN;
+    END IF;
+
+    v_slot  := spock.local_group_slot_name();
+    v_mode  := COALESCE(current_setting('spock.group_slots_safety_mode', true), 'strict');
+    v_stale := spock.group_slot_staleness();
+
+    -- Create the physical slot BEFORE any write in this transaction.
+    PERFORM spock.group_slot_ensure();
+
+    -- Seed/refresh metadata (safe to write now that the slot exists).
+    UPDATE spock.group_slot_state SET slot_name = v_slot WHERE node_id = v_local;
+    IF NOT FOUND THEN
+        INSERT INTO spock.group_slot_state (node_id, dboid, slot_name)
+        VALUES (v_local,
+                (SELECT oid FROM pg_database WHERE datname = current_database()),
+                v_slot);
+    END IF;
+
+    SELECT membership_generation INTO v_gen
+      FROM spock.group_slot_state WHERE node_id = v_local;
+
+    PERFORM spock.group_slot_refresh_members(v_gen, v_stale);
+
+    SELECT reason, safe_lsn INTO v_reason, v_safe
+      FROM spock.group_slot_evaluate(v_gen, v_mode, v_stale);
+
+    v_present := EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = v_slot);
+    IF NOT v_present THEN
+        UPDATE spock.group_slot_state
+           SET blocked_reason = 'missing_slot_state',
+               repair_required = true,
+               safe_lsn = COALESCE(v_safe, safe_lsn),
+               updated_at = now()
+         WHERE node_id = v_local;
+        RETURN;
+    END IF;
+
+    IF v_reason IS NULL THEN
+        IF v_safe IS NOT NULL THEN
+            -- Compare against confirmed_flush_lsn, not restart_lsn: for a
+            -- logical slot that is the minimum pg_replication_slot_advance()
+            -- accepts, and restart_lsn trails it.  Guarding on restart_lsn
+            -- would call advance with a target it rejects outright, failing
+            -- the tick instead of simply having nothing to do.
+            SELECT confirmed_flush_lsn INTO v_cur
+              FROM pg_replication_slots WHERE slot_name = v_slot;
+
+            IF v_cur IS NULL OR v_safe > v_cur THEN
+                PERFORM pg_replication_slot_advance(v_slot, v_safe);
+                UPDATE spock.group_slot_state
+                   SET last_advanced_lsn = v_safe
+                 WHERE node_id = v_local;
+            END IF;
+        END IF;
+
+        UPDATE spock.group_slot_state
+           SET blocked_reason = NULL,
+               repair_required = false,
+               safe_lsn = v_safe,
+               updated_at = now()
+         WHERE node_id = v_local;
+    ELSE
+        UPDATE spock.group_slot_state
+           SET blocked_reason = v_reason,
+               safe_lsn = COALESCE(v_safe, safe_lsn),
+               repair_required = (v_reason = 'missing_slot_state'),
+               updated_at = now()
+         WHERE node_id = v_local;
+    END IF;
+END;
+$$;
+
+-- One-row status for the local group slot.
+CREATE FUNCTION spock.group_slot_status(
+    OUT slot_name             name,
+    OUT membership_generation bigint,
+    OUT node_state            text,
+    OUT safe_lsn              pg_lsn,
+    OUT freeze_lsn            pg_lsn,
+    OUT last_advanced_lsn     pg_lsn,
+    OUT blocked_reason        text,
+    OUT repair_required       boolean,
+    OUT slot_present          boolean,
+    OUT restart_lsn           pg_lsn,
+    OUT confirmed_flush_lsn   pg_lsn,
+    OUT updated_at            timestamptz,
+    OUT required_members      int,
+    OUT stale_members         int
+)
+RETURNS SETOF record
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_local oid;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT g.slot_name,
+           g.membership_generation,
+           g.node_state,
+           g.safe_lsn,
+           g.freeze_lsn,
+           g.last_advanced_lsn,
+           g.blocked_reason,
+           g.repair_required,
+           (rs.slot_name IS NOT NULL) AS slot_present,
+           rs.restart_lsn,
+           rs.confirmed_flush_lsn,
+           g.updated_at,
+           (SELECT count(*)::int FROM spock.group_slot_membership m
+             WHERE m.membership_generation = g.membership_generation
+               AND m.required AND m.state <> 'removed'),
+           (SELECT count(*)::int
+              FROM spock.group_slot_membership m
+              LEFT JOIN spock.group_slot_member_progress pr
+                     ON pr.membership_generation = m.membership_generation
+                    AND pr.remote_node_id = m.member_node_id
+             WHERE m.membership_generation = g.membership_generation
+               AND m.required AND m.state = 'active'
+               AND (pr.updated_at IS NULL
+                    OR now() - pr.updated_at > spock.group_slot_staleness()))
+      FROM spock.group_slot_state g
+      LEFT JOIN pg_replication_slots rs ON rs.slot_name = g.slot_name
+     WHERE g.node_id = v_local;
+END;
+$$;
+
+-- Guarded manual advancement. Hard blockers are never bypassed.
+CREATE FUNCTION spock.advance_group_slot(
+    target_lsn pg_lsn DEFAULT NULL,
+    force      boolean DEFAULT false
+)
+RETURNS pg_lsn
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local  oid;
+    v_slot   name;
+    v_gen    bigint;
+    v_mode   text;
+    v_stale  interval;
+    v_reason text;
+    v_safe   pg_lsn;
+    v_target pg_lsn;
+    v_cur    pg_lsn;
+    v_hard   boolean;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RAISE EXCEPTION 'current database is not configured as a spock node';
+    END IF;
+
+    v_slot  := spock.local_group_slot_name();
+    v_mode  := COALESCE(current_setting('spock.group_slots_safety_mode', true), 'strict');
+    v_stale := spock.group_slot_staleness();
+
+    PERFORM spock.group_slot_ensure();
+
+    SELECT membership_generation INTO v_gen
+      FROM spock.group_slot_state WHERE node_id = v_local;
+    IF v_gen IS NULL THEN
+        RAISE EXCEPTION 'group slot metadata missing; run spock.repair_group_slot()';
+    END IF;
+
+    PERFORM spock.group_slot_refresh_members(v_gen, v_stale);
+
+    SELECT reason, safe_lsn INTO v_reason, v_safe
+      FROM spock.group_slot_evaluate(v_gen, v_mode, v_stale);
+
+    -- Hard blockers can never be bypassed, even with force.
+    v_hard := v_reason IN ('unknown_node_state', 'join_in_progress',
+                           'part_in_progress', 'membership_generation_mismatch',
+                           'missing_slot_state');
+
+    IF v_reason IS NOT NULL THEN
+        IF v_hard THEN
+            RAISE EXCEPTION 'group slot advancement blocked: %', v_reason;
+        ELSIF NOT (force AND v_mode <> 'strict') THEN
+            -- Soft blockers (stale_progress, safety_mode_off) require an
+            -- explicit force AND a non-strict safety mode.
+            RAISE EXCEPTION 'group slot advancement blocked: % (use force with a non-strict safety mode to override)', v_reason;
+        ELSE
+            RAISE WARNING 'group slot advancement forced past soft blocker: %', v_reason;
+        END IF;
+    END IF;
+
+    v_target := COALESCE(target_lsn, v_safe);
+    IF v_target IS NULL THEN
+        RAISE EXCEPTION 'no group-safe LSN to advance to: no target_lsn given and the group-safe horizon is undefined';
+    END IF;
+
+    -- Never advance past the group-safe LSN without a forced, non-strict override.
+    IF v_safe IS NOT NULL AND v_target > v_safe THEN
+        IF force AND v_mode <> 'strict' THEN
+            RAISE WARNING 'group slot advanced past group-safe horizon (% > %) by explicit override',
+                v_target, v_safe;
+        ELSE
+            RAISE EXCEPTION 'requested LSN % is past the group-safe horizon %', v_target, v_safe;
+        END IF;
+    END IF;
+
+    -- confirmed_flush_lsn, not restart_lsn: see group_slot_worker_tick().
+    SELECT confirmed_flush_lsn INTO v_cur
+      FROM pg_replication_slots WHERE slot_name = v_slot;
+    IF v_cur IS NULL OR v_target > v_cur THEN
+        PERFORM pg_replication_slot_advance(v_slot, v_target);
+    END IF;
+
+    UPDATE spock.group_slot_state
+       SET last_advanced_lsn = v_target,
+           safe_lsn = COALESCE(v_safe, safe_lsn),
+           blocked_reason = CASE WHEN v_reason IS NULL THEN NULL ELSE blocked_reason END,
+           manual_override = force,
+           updated_at = now()
+     WHERE node_id = v_local;
+
+    RETURN v_target;
+END;
+$$;
+
+-- Repair a damaged slot: 'relink' adopts an existing slot; 'recreate' makes
+-- a missing one (guarded, non-strict only, drops older-WAL protection).
+CREATE FUNCTION spock.repair_group_slot(mode text DEFAULT 'recreate')
+RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local   oid;
+    v_slot    name;
+    v_present boolean;
+    v_safety  text;
+    v_safe    pg_lsn;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RAISE EXCEPTION 'current database is not configured as a spock node';
+    END IF;
+
+    v_slot   := spock.local_group_slot_name();
+    v_safety := COALESCE(current_setting('spock.group_slots_safety_mode', true), 'strict');
+    v_present := EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = v_slot);
+
+    IF mode NOT IN ('relink', 'recreate') THEN
+        RAISE EXCEPTION 'unknown repair mode %; use ''relink'' or ''recreate''', mode;
+    END IF;
+
+    -- Recreate before any write (a logical slot cannot be created after one).
+    -- It restarts protection at the current WAL, so require a non-strict mode.
+    IF mode = 'recreate' AND NOT v_present THEN
+        IF v_safety = 'strict' THEN
+            RAISE EXCEPTION 'refusing to recreate a missing group slot in strict safety mode'
+                USING ERRCODE = 'object_not_in_prerequisite_state',
+                      HINT = 'Set spock.group_slots_safety_mode = repair to allow recreation (older WAL protection will be lost).';
+        END IF;
+
+        RAISE WARNING 'recreating missing group slot %; WAL older than the current position is no longer protected', v_slot;
+        PERFORM pg_create_logical_replication_slot(v_slot, 'spock_output');
+        v_present := true;
+        SELECT restart_lsn INTO v_safe FROM pg_replication_slots WHERE slot_name = v_slot;
+    END IF;
+
+    -- Safe to write now: relink metadata to the deterministic name.
+    UPDATE spock.group_slot_state
+       SET slot_name = v_slot,
+           repair_required = (NOT v_present),
+           blocked_reason = CASE WHEN v_present THEN NULL ELSE 'missing_slot_state' END,
+           safe_lsn = CASE WHEN v_safe IS NOT NULL THEN v_safe ELSE safe_lsn END,
+           updated_at = now()
+     WHERE node_id = v_local;
+    IF NOT FOUND THEN
+        INSERT INTO spock.group_slot_state (node_id, dboid, slot_name, repair_required, safe_lsn)
+        VALUES (v_local,
+                (SELECT oid FROM pg_database WHERE datname = current_database()),
+                v_slot,
+                (NOT v_present),
+                COALESCE(v_safe, '0/0'::pg_lsn));
+    END IF;
+
+    IF mode = 'recreate' THEN
+        IF v_safe IS NOT NULL THEN
+            RETURN 'recreated';
+        ELSE
+            RETURN 'already_present';
+        END IF;
+    ELSIF v_present THEN
+        RETURN 'relinked';
+    ELSE
+        RETURN 'missing_slot';
+    END IF;
+END;
+$$;
+
+-- Base point a joining node can rely on; NULL when the slot is blocked.
+CREATE FUNCTION spock.group_slot_safe_horizon()
+RETURNS pg_lsn
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_local  oid;
+    v_safe   pg_lsn;
+    v_reason text;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM spock.group_slot_state WHERE node_id = v_local) THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT reason, safe_lsn INTO v_reason, v_safe
+      FROM spock.group_slot_evaluate(
+             (SELECT membership_generation FROM spock.group_slot_state WHERE node_id = v_local),
+             COALESCE(current_setting('spock.group_slots_safety_mode', true), 'strict'),
+             spock.group_slot_staleness());
+
+    IF v_reason IS NOT NULL THEN
+        RETURN NULL;
+    END IF;
+    RETURN v_safe;
+END;
+$$;
+
+-- Begin a join: new generation, mark the node 'joining', block advancement.
+CREATE FUNCTION spock.group_slot_begin_join(joining_node_name name)
+RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local   oid;
+    v_join    oid;
+    v_gen     bigint;
+    v_newgen  bigint;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RAISE EXCEPTION 'current database is not configured as a spock node';
+    END IF;
+
+    SELECT node_id INTO v_join FROM spock.node WHERE node_name = joining_node_name;
+
+    -- Do not bootstrap via group_slot_worker_tick() here: it creates the
+    -- logical slot, which errors inside a transaction that has already
+    -- performed writes (this runs from the node-add workflow, after writes).
+    SELECT membership_generation INTO v_gen
+      FROM spock.group_slot_state WHERE node_id = v_local;
+    IF v_gen IS NULL THEN
+        RAISE EXCEPTION 'group slot metadata missing; run spock.repair_group_slot() first';
+    END IF;
+
+    v_newgen := v_gen + 1;
+
+    -- Carry existing members into the new generation, then add the joiner.
+    DELETE FROM spock.group_slot_membership WHERE membership_generation = v_newgen;
+
+    INSERT INTO spock.group_slot_membership
+            (membership_generation, member_node_id, member_node_name, state, required)
+    SELECT v_newgen, member_node_id, member_node_name, state, required
+      FROM spock.group_slot_membership
+     WHERE membership_generation = v_gen
+       AND state <> 'removed'
+       AND (v_join IS NULL OR member_node_id <> v_join);
+
+    IF v_join IS NOT NULL THEN
+        INSERT INTO spock.group_slot_membership
+                (membership_generation, member_node_id, member_node_name, state, required)
+        VALUES (v_newgen, v_join, joining_node_name, 'joining', true);
+    END IF;
+
+    -- Retire the old generation so only one is current.
+    DELETE FROM spock.group_slot_membership WHERE membership_generation = v_gen;
+
+    UPDATE spock.group_slot_state
+       SET membership_generation = v_newgen,
+           node_state = 'joining',
+           blocked_reason = 'join_in_progress',
+           updated_at = now()
+     WHERE node_id = v_local;
+
+    RETURN v_newgen;
+END;
+$$;
+
+-- Complete a join: promote the joining node to active and resume advancement.
+CREATE FUNCTION spock.group_slot_complete_join(joining_node_name name)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local oid;
+    v_gen   bigint;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RETURN;
+    END IF;
+
+    SELECT membership_generation INTO v_gen
+      FROM spock.group_slot_state WHERE node_id = v_local;
+
+    UPDATE spock.group_slot_membership
+       SET state = 'active', updated_at = now()
+     WHERE membership_generation = v_gen
+       AND member_node_name = joining_node_name;
+
+    UPDATE spock.group_slot_state
+       SET node_state = 'active',
+           blocked_reason = NULL,
+           updated_at = now()
+     WHERE node_id = v_local;
+END;
+$$;
+
+-- Begin a part: freeze at the current safe boundary and block advancement.
+CREATE FUNCTION spock.group_slot_begin_part(parting_node_name name)
+RETURNS pg_lsn
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local  oid;
+    v_part   oid;
+    v_gen    bigint;
+    v_safe   pg_lsn;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RAISE EXCEPTION 'current database is not configured as a spock node';
+    END IF;
+
+    SELECT node_id INTO v_part FROM spock.node WHERE node_name = parting_node_name;
+
+    SELECT membership_generation, safe_lsn INTO v_gen, v_safe
+      FROM spock.group_slot_state WHERE node_id = v_local;
+    IF v_gen IS NULL THEN
+        RAISE EXCEPTION 'group slot metadata missing; run spock.repair_group_slot()';
+    END IF;
+
+    IF v_part IS NOT NULL THEN
+        UPDATE spock.group_slot_membership
+           SET state = 'parting', updated_at = now()
+         WHERE membership_generation = v_gen AND member_node_id = v_part;
+    END IF;
+
+    UPDATE spock.group_slot_state
+       SET node_state = 'parting',
+           freeze_lsn = CASE WHEN safe_lsn = '0/0'::pg_lsn THEN freeze_lsn ELSE safe_lsn END,
+           blocked_reason = 'part_in_progress',
+           updated_at = now()
+     WHERE node_id = v_local;
+
+    RETURN v_safe;
+END;
+$$;
+
+-- Complete a part: new generation without the removed node; clear freeze.
+CREATE FUNCTION spock.group_slot_complete_part(parting_node_name name)
+RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local  oid;
+    v_part   oid;
+    v_gen    bigint;
+    v_newgen bigint;
+BEGIN
+    SELECT node_id INTO v_local FROM spock.local_node;
+    IF v_local IS NULL THEN
+        RAISE EXCEPTION 'current database is not configured as a spock node';
+    END IF;
+
+    SELECT node_id INTO v_part FROM spock.node WHERE node_name = parting_node_name;
+
+    SELECT membership_generation INTO v_gen
+      FROM spock.group_slot_state WHERE node_id = v_local;
+    IF v_gen IS NULL THEN
+        RAISE EXCEPTION 'group slot metadata missing; run spock.repair_group_slot()';
+    END IF;
+    v_newgen := v_gen + 1;
+
+    -- Carry remaining members forward; the parting node is not carried over.
+    DELETE FROM spock.group_slot_membership WHERE membership_generation = v_newgen;
+
+    INSERT INTO spock.group_slot_membership
+            (membership_generation, member_node_id, member_node_name, state, required)
+    SELECT v_newgen, member_node_id, member_node_name, 'active', true
+      FROM spock.group_slot_membership
+     WHERE membership_generation = v_gen
+       AND (v_part IS NULL OR member_node_id <> v_part)
+       AND state <> 'removed';
+
+    DELETE FROM spock.group_slot_membership WHERE membership_generation = v_gen;
+
+    UPDATE spock.group_slot_state
+       SET membership_generation = v_newgen,
+           node_state = 'active',
+           freeze_lsn = '0/0'::pg_lsn,
+           blocked_reason = NULL,
+           updated_at = now()
+     WHERE node_id = v_local;
+
+    RETURN v_newgen;
+END;
+$$;
+
+-- Privileged maintenance functions.
+REVOKE ALL ON FUNCTION spock.advance_group_slot(pg_lsn, boolean) FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.repair_group_slot(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.group_slot_worker_tick() FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.group_slot_ensure() FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.group_slot_begin_join(name) FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.group_slot_complete_join(name) FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.group_slot_begin_part(name) FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.group_slot_complete_part(name) FROM PUBLIC;
