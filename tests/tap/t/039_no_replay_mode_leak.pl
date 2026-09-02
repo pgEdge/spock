@@ -7,6 +7,7 @@ use SpockTest qw(
     get_test_config scalar_query psql_or_bail
     wait_for_sub_status
     log_offset log_since wait_for_log sync_nodes apply_worker_pid
+    poll_query_until
 );
 
 # An ERROR raised in the apply worker BETWEEN two remote transactions sends
@@ -45,9 +46,22 @@ my $conn = "host=$config->{host} dbname=$config->{db_name} port=$p1 " .
 # leaked replay pass into a transaction the subscriber never applies.  discard
 # is not covered: it commits each successful action, so a healthy transaction
 # replayed under it still lands and there is nothing to observe.
+#
+# leaked is what handle_commit() logs when it takes the branch guarded by
+#
+#     !xact_had_exception && MyApplyWorker->use_try_block &&
+#     (exception_behaviour == TRANSDISCARD || SUB_DISABLE)
+#
+# which is the leak itself: a transaction that raised nothing, running under a
+# use_try_block left on by an earlier failure.  The two modes word it
+# differently, so the pattern belongs to the phase.
 my @modes = (
-    { mode => 'transdiscard', table => 'leak_transdiscard' },
-    { mode => 'sub_disable',  table => 'leak_sub_disable' },
+    { mode   => 'transdiscard',
+      table  => 'leak_transdiscard',
+      leaked => qr/Transaction discarded in TRANSDISCARD mode/ },
+    { mode   => 'sub_disable',
+      table  => 'leak_sub_disable',
+      leaked => qr/Transaction failed, subscription will be disabled/ },
 );
 
 # Created before sub_create so that no DDL is replicated during the test.
@@ -69,15 +83,26 @@ for my $phase (@modes) {
     psql_or_bail(2, "ALTER SYSTEM SET spock.exception_behaviour = $mode");
     psql_or_bail(2, "SELECT pg_reload_conf()");
 
+    # pg_reload_conf() only signals the postmaster, so the running worker can
+    # still hold the old value.  Restart it instead of racing: a new worker
+    # reads the setting at startup.  The manager respawns it after
+    # restart_delay, which handle_begin() leaves at 0.
+    my $stale = apply_worker_pid(2, 'sub_n1_n2');
+    psql_or_bail(2, "SELECT pg_terminate_backend($stale)");
+    ok(poll_query_until(2,
+           "SELECT pid <> $stale FROM pg_stat_activity " .
+           "WHERE application_name LIKE 'spock apply %:' || " .
+           "(SELECT sub_id FROM spock.subscription " .
+           "WHERE sub_name = 'sub_n1_n2')::text", 't', 60),
+       "$mode: apply worker restarts under the new exception_behaviour");
+
     # A clean transaction first: it is what leaves a commit_lsn behind in the
     # worker's exception log slot, which is what the incoming transaction is
     # compared against after the cancel.
     psql_or_bail(1, "INSERT INTO $t VALUES (1, 'before cancel')");
 
     # Leaves the worker between transactions with nothing queued, the state
-    # the cancel needs.  Also orders the reload: the worker tests
-    # ConfigReloadPending before reading the stream, so processing this
-    # message means it runs under this phase's spock.exception_behaviour.
+    # the cancel needs.
     ok(sync_nodes(1, 2),
         "$mode: apply worker drained and idle before the cancel");
 
@@ -109,8 +134,7 @@ for my $phase (@modes) {
     is(scalar_query(2, "SELECT count(*) FROM $t WHERE id = 2"), '1',
         "$mode: the next transaction applies");
 
-    unlike(log_since(2, $offset),
-        qr/applied nothing, retrying without exception handling/,
+    unlike(log_since(2, $offset), $phase->{leaked},
         "$mode: the transaction is not replayed as if it had failed");
     is(apply_worker_pid(2, 'sub_n1_n2'), $pid_before,
         "$mode: worker is not restarted by the healthy transaction");
