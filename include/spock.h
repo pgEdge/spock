@@ -16,6 +16,7 @@
 #include "postmaster/bgworker.h"
 #include "utils/array.h"
 #include "access/xlogdefs.h"
+#include "datatype/timestamp.h"
 #include "parser/analyze.h"
 #include "executor/executor.h"
 
@@ -26,6 +27,49 @@
 
 #define SPOCK_VERSION "6.0.0"
 #define SPOCK_VERSION_NUM 60000
+
+/*
+ * Core patch-set generation this Spock build is designed for. Bump in lockstep
+ * with the pgNN-000-spock-patchset.diff patches. 0 is reserved to mean the
+ * server's patch set predates generation tracking (baseline).
+ *
+ * NOT enforced yet: _PG_init() currently only detects and logs the server's
+ * generation. A future release may compare against this to gate or limit
+ * patch-dependent features.
+ */
+#define SPOCK_CORE_PATCHSET_TARGET 1
+
+/* Detected core patch-set generation; 0 = baseline/untracked. Set in _PG_init(). */
+extern int spock_detected_patchset;
+
+/*
+ * spock-lite groundwork. These point at patch-provided core symbols, resolved
+ * by name via dlsym() at _PG_init() so that spock.so can LOAD even on unpatched
+ * PostgreSQL (a hard link-time reference to a missing symbol would make the
+ * library fail to dlopen before any spock code runs). They are NULL when the
+ * server is unpatched.
+ *
+ *   spock_remote_ts_ptr - &remoteTransactionStopTimestamp (logical commit clock)
+ *   spock_subxact_setts - SubTransactionIdSetCommitTsData (delta apply)
+ *   spock_hlc_available - true when the logical commit clock support is present
+ */
+extern bool spock_hlc_available;
+extern TimestampTz *spock_remote_ts_ptr;
+
+/*
+ * RepOriginId was renamed to ReplOriginId in PG19 (access/xlogdefs.h); use the
+ * name that exists for the target version so this header compiles everywhere.
+ */
+#if PG_VERSION_NUM >= 190000
+typedef void (*SubTransactionSetCommitTs_fn) (TransactionId xid,
+											  TimestampTz ts,
+											  ReplOriginId nodeid);
+#else
+typedef void (*SubTransactionSetCommitTs_fn) (TransactionId xid,
+											  TimestampTz ts,
+											  RepOriginId nodeid);
+#endif
+extern SubTransactionSetCommitTs_fn spock_subxact_setts;
 
 #define EXTENSION_NAME "spock"
 
