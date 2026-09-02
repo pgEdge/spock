@@ -2,6 +2,9 @@
 -- ZODAN (Zero Downtime Add Node) - Spock Extension
 -- Version: 1.0.0
 -- Required Spock Version: 5.0.9 or later
+-- Mixed versions: the new node may run a newer major.minor than the existing
+--                 cluster (for example a 6.0.x node joining a 5.0.x cluster).
+--                 Existing nodes must all share one major.minor.
 -- ============================================================================
 -- Adds a new node to the cluster of Spock.
 -- NOTE: Run the add_node procedure on the new node you are adding, not on an existing cluster node.
@@ -93,6 +96,23 @@ RETURNS int[] LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 -- ============================================================================
+-- Function: progress_lsn_column
+-- Purpose : Name of the spock.progress column that holds the LSN of the last
+--           commit applied from a peer, for a node running the given Spock
+--           version.  Spock 6.0.0 renamed it from remote_lsn to
+--           remote_commit_lsn, so a query sent to a remote node over dblink
+--           has to use the name that node understands.
+-- Arguments:
+--   v - The remote node's Spock version string.
+-- Returns  : 'remote_lsn' for versions before 6.0.0, else 'remote_commit_lsn'.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION spock.progress_lsn_column(v text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN spock.version_to_array(v) < ARRAY[6,0,0]
+                THEN 'remote_lsn' ELSE 'remote_commit_lsn' END;
+$$;
+
+-- ============================================================================
 -- Procedure: check_spock_version_compatibility
 -- Purpose: Verify all nodes have the same Spock version before adding a node
 -- ============================================================================
@@ -143,9 +163,12 @@ BEGIN
             new_version, min_required_version, min_required_version;
     END IF;
 
-    -- Allow rolling upgrades: patch differences are fine, but major.minor must match
-    IF spock.version_major_minor(new_version) IS DISTINCT FROM spock.version_major_minor(src_version) THEN
-        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. Major.minor versions must match (patch differences are allowed).',
+    -- Patch differences are fine.  The new node may also run a newer
+    -- major.minor than the existing cluster (e.g. a 6.0.x node joining a
+    -- 5.0.x cluster), but never an older one: the new node's sync worker
+    -- knows how to talk to older providers, not the other way around.
+    IF spock.version_major_minor(new_version) < spock.version_major_minor(src_version) THEN
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. The new node must run the same or a newer major.minor version.',
             new_version, src_version;
     END IF;
 
@@ -168,12 +191,17 @@ BEGIN
                 node_rec.node_name, node_version, min_required_version, min_required_version;
         END IF;
 
-        -- Allow rolling upgrades: patch differences are fine, but major.minor must match
-        IF spock.version_major_minor(node_version) IS DISTINCT FROM spock.version_major_minor(new_version) THEN
-            RAISE EXCEPTION 'Spock version mismatch: new node has version %, but found node version %. Major.minor versions must match (patch differences are allowed).',
-                new_version, node_version;
+        -- Existing nodes must all share the source node's major.minor
+        -- (patch differences are allowed).
+        IF spock.version_major_minor(node_version) IS DISTINCT FROM spock.version_major_minor(src_version) THEN
+            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but source version is %. Existing cluster nodes must share the same major.minor version.',
+                node_rec.node_name, node_version, src_version;
         END IF;
     END LOOP;
+
+    IF spock.version_major_minor(new_version) IS DISTINCT FROM spock.version_major_minor(src_version) THEN
+        RAISE NOTICE 'Mixed-version add: new node runs Spock %, existing cluster runs Spock %', new_version, src_version;
+    END IF;
 
     IF verb THEN
         RAISE NOTICE 'Version check passed: All nodes running Spock version % or later. Source version is %, new node version is %', min_required_version, src_version, new_version;
@@ -1881,15 +1909,21 @@ BEGIN
             wait_started             timestamptz := clock_timestamp();
             wait_budget              integer  := spock.sync_timeout();
             progress_sql             text;
+            src_lsn_column           text;
             v_prev_statement_timeout text;
         BEGIN
+            -- The column name depends on the source node's Spock version
+            -- (remote_lsn before 6.0.0, remote_commit_lsn from 6.0.0 on).
+            SELECT spock.progress_lsn_column(t.v) INTO src_lsn_column
+              FROM dblink(src_dsn, 'SELECT extversion FROM pg_extension WHERE extname = ''spock''') AS t(v text);
+
             progress_sql := format(
-                'SELECT p.remote_commit_lsn '
+                'SELECT p.%I '
                 'FROM spock.progress p '
                 'JOIN spock.node n ON n.node_id = p.remote_node_id '
                 'WHERE p.node_id = (SELECT node_id FROM spock.node_info()) '
                 '  AND n.node_name = %L',
-                rec.node_name);
+                src_lsn_column, rec.node_name);
 
             RAISE NOTICE '    - Waiting for source node % to apply % changes up to sync LSN %...',
                          src_node_name, rec.node_name, _catchup_lsn;

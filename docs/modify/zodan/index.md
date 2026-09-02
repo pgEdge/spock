@@ -36,7 +36,10 @@ node addition:
 - Zodan automatically detects existing schemas on the new node and populates the
   `skip_schema` parameter, preventing conflicts during structure sync.
 
-- Zodan verifies all nodes run the same Spock version before starting.
+- Zodan checks Spock versions before starting. Existing nodes must all run
+  the same major.minor version (patch levels may differ). The new node may
+  run the same version or a newer major.minor, so a 6.0.x node can join a
+  5.0.x cluster; an older new node is rejected.
 
 - Zodan includes the `verify_subscription_replicating()` function after
   enabling subscriptions to ensure they reach replicating status.

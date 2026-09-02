@@ -622,12 +622,22 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	List	   *progress_list = NIL;
 	int			nrows;
 	int			rno;
+	int			provider_version_num = 0;
 
 	/*
-	 * Column indices in the result: lsn(0), snapshot(1) are skipped; GP_*
-	 * start at 2
+	 * Columns (PP_ = peer progress) of the peer progress query below.  Both
+	 * the 6.0.0 form (spock.read_peer_progress) and the pre-6.0.0 form
+	 * (direct read of spock.progress) select exactly these, in this order.
 	 */
-	const int	COL_OFFSET = 2; /* GP_* indices start at COL_OFFSET */
+	enum
+	{
+		PP_REMOTE_NODE_ID = 0,
+		PP_REMOTE_COMMIT_TS,
+		PP_REMOTE_COMMIT_LSN,
+		PP_REMOTE_INSERT_LSN,
+		PP_LAST_UPDATED_TS,
+		PP_UPDATED_BY_DECODE
+	};
 
 	initStringInfo(&query);
 
@@ -721,11 +731,51 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	PQclear(res);
 	resetStringInfo(&query);
 
-	/* Read peer progress via the SQL function (slot already exists) */
-	appendStringInfo(&query,
-					 "SELECT * FROM spock.read_peer_progress"
-					 "('%s', %u, %u)",
-					 slot_name, origin_node_id, subscriber_node_id);
+	/*
+	 * Read peer progress: one row per peer subscription on the provider, with
+	 * the PP_ columns declared above.  The resume LSN (remote_commit_lsn) is
+	 * the peer origin's remote_lsn from pg_replication_origin_status, exact
+	 * because apply workers are paused.
+	 *
+	 * A provider older than 6.0.0 has no spock.read_peer_progress() and keeps
+	 * progress in a plain table, so read the same six values from its catalog
+	 * directly.  Detect the version with spock_version_num(), which every
+	 * supported release has.
+	 */
+	res = PQexec(conn, "SELECT spock.spock_version_num()");
+	if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1)
+		provider_version_num = atoi(PQgetvalue(res, 0, 0));
+	PQclear(res);
+	elog(LOG, "SPOCK cswp provider spock version_num=%d", provider_version_num);
+
+	if (provider_version_num > 0 && provider_version_num < 60000)
+	{
+		appendStringInfo(&query,
+						 "SELECT p.remote_node_id, p.remote_commit_ts, "
+						 "       COALESCE(ros.remote_lsn, '0/0'::pg_lsn) AS remote_commit_lsn, "
+						 "       p.remote_insert_lsn, p.last_updated_ts, p.updated_by_decode "
+						 "FROM spock.subscription sub "
+						 "JOIN spock.progress p ON p.remote_node_id = sub.sub_origin "
+						 "                     AND p.node_id = sub.sub_target "
+						 "JOIN pg_replication_origin o ON o.roname = sub.sub_slot_name "
+						 "LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident "
+						 "WHERE sub.sub_target = %u AND sub.sub_origin <> %u",
+						 origin_node_id, subscriber_node_id);
+	}
+	else
+	{
+		/*
+		 * read_peer_progress() also returns a header row (remote_node_id
+		 * NULL) and lsn/snapshot columns; neither is needed here because the
+		 * slot's LSN and snapshot were taken from CREATE_REPLICATION_SLOT.
+		 */
+		appendStringInfo(&query,
+						 "SELECT remote_node_id, remote_commit_ts, remote_commit_lsn, "
+						 "       remote_insert_lsn, last_updated_ts, updated_by_decode "
+						 "FROM spock.read_peer_progress('%s', %u, %u) "
+						 "WHERE remote_node_id IS NOT NULL",
+						 slot_name, origin_node_id, subscriber_node_id);
+	}
 	res = PQexec(conn, query.data);
 	resetStringInfo(&query);
 
@@ -733,20 +783,12 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 		elog(ERROR, "could not create replication slot and get progress on "
 			 "origin: %s", PQerrorMessage(conn));
 
+	/* Zero rows is legitimate: the provider may have no other peers. */
 	nrows = PQntuples(res);
-	if (nrows < 1)
-		elog(ERROR, "spock.read_peer_progress returned no rows");
-
-	/*
-	 * Row 0 is the header row: lsn + snapshot, progress fields all NULL.
-	 * lsn_out and snapshot are already set from the replication protocol;
-	 * just log for debugging.  Skip COL_LSN/COL_SNAP from SQL result.
-	 */
 	elog(LOG, "SPOCK cswp slot=%s lsn=%X/%X snapshot=%s peers=%d",
-		 slot_name, LSN_FORMAT_ARGS(*lsn_out), snapshot, nrows - 1);
+		 slot_name, LSN_FORMAT_ARGS(*lsn_out), snapshot, nrows);
 
-	/* Rows 1+ are progress entries (remote_node_id NOT NULL) */
-	for (rno = 1; rno < nrows; rno++)
+	for (rno = 0; rno < nrows; rno++)
 	{
 		SpockApplyProgress *sap;
 		MemoryContext oldctx;
@@ -756,7 +798,7 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 		char	   *remote_insert_lsn_str;
 		char	   *last_updated_ts_str;
 
-		if (PQgetisnull(res, rno, COL_OFFSET + GP_REMOTE_NODE_ID))
+		if (PQgetisnull(res, rno, PP_REMOTE_NODE_ID))
 			continue;			/* shouldn't happen but be safe */
 
 		sap = (SpockApplyProgress *) MemoryContextAlloc(CacheMemoryContext,
@@ -765,35 +807,35 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 
 		sap->key.dbid = MyDatabaseId;
 		sap->key.node_id = MySubscription->target->id;
-		remote_node_id_str = PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_NODE_ID);
+		remote_node_id_str = PQgetvalue(res, rno, PP_REMOTE_NODE_ID);
 		sap->key.remote_node_id = atooid(remote_node_id_str);
 		Assert(OidIsValid(sap->key.remote_node_id));
 
 		/* Alloc above doesn't zero; set every non-key field to "unset" */
 		spock_init_progress_fields(sap);
-		if (!PQgetisnull(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_TS))
+		if (!PQgetisnull(res, rno, PP_REMOTE_COMMIT_TS))
 		{
-			remote_commit_ts_str = PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_TS);
+			remote_commit_ts_str = PQgetvalue(res, rno, PP_REMOTE_COMMIT_TS);
 			sap->remote_commit_ts = str_to_timestamptz(remote_commit_ts_str);
 		}
 		sap->prev_remote_ts = sap->remote_commit_ts;
 
-		remote_commit_lsn_str = PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_COMMIT_LSN);
+		remote_commit_lsn_str = PQgetvalue(res, rno, PP_REMOTE_COMMIT_LSN);
 		sap->remote_commit_lsn = str_to_lsn(remote_commit_lsn_str);
 
-		remote_insert_lsn_str = PQgetvalue(res, rno, COL_OFFSET + GP_REMOTE_INSERT_LSN);
+		remote_insert_lsn_str = PQgetvalue(res, rno, PP_REMOTE_INSERT_LSN);
 		sap->remote_insert_lsn = str_to_lsn(remote_insert_lsn_str);
 
 		sap->received_lsn = sap->remote_commit_lsn;
 
 		sap->last_updated_ts = 0;
-		if (!PQgetisnull(res, rno, COL_OFFSET + GP_LAST_UPDATED_TS))
+		if (!PQgetisnull(res, rno, PP_LAST_UPDATED_TS))
 		{
-			last_updated_ts_str = PQgetvalue(res, rno, COL_OFFSET + GP_LAST_UPDATED_TS);
+			last_updated_ts_str = PQgetvalue(res, rno, PP_LAST_UPDATED_TS);
 			sap->last_updated_ts = str_to_timestamptz(last_updated_ts_str);
 		}
 
-		sap->updated_by_decode = (PQgetvalue(res, rno, COL_OFFSET + GP_UPDATED_BY_DECODE)[0] == 't');
+		sap->updated_by_decode = (PQgetvalue(res, rno, PP_UPDATED_BY_DECODE)[0] == 't');
 
 		progress_list = lappend(progress_list, sap);
 		MemoryContextSwitchTo(oldctx);
