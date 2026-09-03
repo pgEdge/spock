@@ -300,21 +300,28 @@ for my $node (1, 2, 3) {
 ok(psql_ok(1, "SET lolor.node=1; SELECT lo_from_bytea(0, '\\xabad1dea')"),
    'large object created on n1 after lolor was recreated');
 
-for my $node (2, 3) {
-    my $arrived = wait_for_scalar($node,
-        "SELECT count(*) FROM lolor.pg_largeobject WHERE encode(data, 'hex') = 'abad1dea'", '1');
-    my $failed = scalar_query($node,
-        "SELECT count(*) FROM spock.local_sync_status WHERE sync_status = 'f'");
-
-    ok($arrived, "large object created after lolor recreate replicated to n$node");
-    # Guards the synchronize_data => false above: a failed table sync is the
-    # first sign that someone put it back to true.
-    is($failed, '0', "n$node has no failed table sync");
-
+sub diag_sync_status {
+    my ($node) = @_;
     diag("n$node local_sync_status:\n" . (psql_capture($node,
         "SELECT sync_kind, sync_subid, sync_nspname, sync_relname, sync_status, sync_statuslsn " .
-        "FROM spock.local_sync_status ORDER BY 2,3,4"))[1])
-        unless $arrived && defined $failed && $failed eq '0';
+        "FROM spock.local_sync_status ORDER BY 2,3,4"))[1]);
+}
+
+for my $node (2, 3) {
+    ok(wait_for_scalar($node,
+        "SELECT count(*) FROM lolor.pg_largeobject WHERE encode(data, 'hex') = 'abad1dea'", '1'),
+       "large object created after lolor recreate replicated to n$node")
+        or diag_sync_status($node);
+}
+
+# Guards the synchronize_data => false above: a failed table sync is the
+# first sign that someone put it back to true. Every node subscribes to the
+# others, so every node is checked.
+for my $node (1, 2, 3) {
+    is(scalar_query($node,
+        "SELECT count(*) FROM spock.local_sync_status WHERE sync_status = 'f'"),
+       '0', "n$node has no failed table sync")
+        or diag_sync_status($node);
 }
 
 # The three migrated large objects and the new one live side by side.
