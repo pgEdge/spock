@@ -3530,6 +3530,20 @@ stream_replay:
 			 * safety net for the case where the walsender process is alive
 			 * but hung -- TCP probes succeed because the kernel ACKs them,
 			 * but no data is being sent.
+			 *
+			 * This can fire mid-transaction: handle_begin() may already have
+			 * recorded the in-flight transaction's commit_lsn when the
+			 * provider goes quiet for longer than apply_idle_timeout (a slow
+			 * decode of a large transaction, a network stall). It is a
+			 * liveness condition, not a data fault, so it must be tagged
+			 * ERRCODE_CONNECTION_FAILURE like the other stream-level errors
+			 * above -- otherwise the PG_CATCH discriminator below cannot
+			 * distinguish it from a genuine apply exception, and would
+			 * misclassify a merely-slow provider as a permanent data
+			 * conflict: entering the same-process exception replay path for a
+			 * transaction that never actually failed, and disabling the
+			 * subscription (SUB_DISABLE) or discarding real rows
+			 * (DISCARD/TRANSDISCARD) with nothing having gone wrong.
 			 */
 			if (rc & WL_TIMEOUT && spock_apply_idle_timeout > 0)
 			{
@@ -3540,9 +3554,11 @@ stream_replay:
 				if (GetCurrentTimestamp() > timeout)
 				{
 					MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
-					elog(ERROR, "SPOCK %s: no data received for %d seconds, "
-						 "reconnecting (spock.apply_idle_timeout)",
-						 MySubscription->name, spock_apply_idle_timeout);
+					ereport(ERROR,
+							(errcode(ERRCODE_CONNECTION_FAILURE),
+							 errmsg("SPOCK %s: no data received for %d seconds, "
+									"reconnecting (spock.apply_idle_timeout)",
+									MySubscription->name, spock_apply_idle_timeout)));
 				}
 			}
 
