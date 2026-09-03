@@ -4123,6 +4123,21 @@ stream_replay:
 		goto stream_replay;
 	}
 
+	/*
+	 * A SIGTERM (e.g. sub_alter_options() restarting the worker to pick up a
+	 * new setting) can land while a transaction is mid-flight: handle_begin()
+	 * has already recorded its commit_lsn, but neither xact_had_exception nor
+	 * an ERROR has occurred. The provider retransmits that same transaction
+	 * to the replacement worker, which would otherwise misread the matching
+	 * commit_lsn as a prior apply failure and enter exception replay under
+	 * the configured policy. Clear the marker so the retransmission is
+	 * applied normally; see clear_transient_exception_state()'s own comment
+	 * for why this is safe (it no-ops when a genuine exception is already
+	 * recorded).
+	 */
+	if (got_SIGTERM)
+		clear_transient_exception_state("subscription worker restart");
+
 	elog(LOG, "SPOCK %s: falling out of apply_work() sigterm=%s",
 		 MySubscription->name, (got_SIGTERM) ? "true" : "false");
 }
