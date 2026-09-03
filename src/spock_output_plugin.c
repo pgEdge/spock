@@ -37,6 +37,7 @@
 
 #include "spock_output_plugin.h"
 #include "spock.h"
+#include "spock_injection.h"
 #include "spock_output_config.h"
 #include "spock_executor.h"
 #include "spock_node.h"
@@ -651,6 +652,14 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 
 	Assert(CurrentMemoryContext == data->context);
 	MemoryContextSwitchTo(old_ctx);
+
+	/*
+	 * Test hook: let a test stall the walsender here, once BEGIN has already
+	 * reached the subscriber (whose handle_begin() has recorded this
+	 * transaction's commit_lsn), to reproduce a provider that goes quiet
+	 * mid-transaction. No-op unless a test attaches to this injection point.
+	 */
+	SPOCK_OUTPUT_TXN_STALL();
 }
 
 /*
