@@ -1,15 +1,15 @@
 /*-------------------------------------------------------------------------
  *
  * spock_injection.c
- *		Unconditional random delay for Spock worker start/finish sites.
+ *		Unconditional random delay for Spock injection point sites.
  *
  * spock_random_delay() is compiled in only when SPOCK_RANDOM_DELAYS is set
  * in the environment at build time (make SPOCK_RANDOM_DELAYS=1).  It sleeps
  * for a random duration in [1, SPOCK_INJ_MAX_DELAY_MS] ms.
  *
- * On PG17+ without SPOCK_RANDOM_DELAYS, SPOCK_WORKER_DELAY() expands to
- * INJECTION_POINT("spock-worker-delay") instead -- attach a callback via
- * the core injection_points module when needed.
+ * On PG17+ without SPOCK_RANDOM_DELAYS, the injection point macros in
+ * spock_injection.h expand to INJECTION_POINT() instead -- attach a
+ * callback via the core injection_points module when needed.
  *
  * Copyright (c) 2022-2026, pgEdge, Inc.
  *
