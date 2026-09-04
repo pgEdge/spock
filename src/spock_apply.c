@@ -3530,6 +3530,20 @@ stream_replay:
 			 * safety net for the case where the walsender process is alive
 			 * but hung -- TCP probes succeed because the kernel ACKs them,
 			 * but no data is being sent.
+			 *
+			 * This can fire mid-transaction: handle_begin() may already have
+			 * recorded the in-flight transaction's commit_lsn when the
+			 * provider goes quiet for longer than apply_idle_timeout (a slow
+			 * decode of a large transaction, a network stall). It is a
+			 * liveness condition, not a data fault, so it must be tagged
+			 * ERRCODE_CONNECTION_FAILURE like the other stream-level errors
+			 * above -- otherwise the PG_CATCH discriminator below cannot
+			 * distinguish it from a genuine apply exception, and would
+			 * misclassify a merely-slow provider as a permanent data
+			 * conflict: entering the same-process exception replay path for a
+			 * transaction that never actually failed, and disabling the
+			 * subscription (SUB_DISABLE) or discarding real rows
+			 * (DISCARD/TRANSDISCARD) with nothing having gone wrong.
 			 */
 			if (rc & WL_TIMEOUT && spock_apply_idle_timeout > 0)
 			{
@@ -3540,9 +3554,11 @@ stream_replay:
 				if (GetCurrentTimestamp() > timeout)
 				{
 					MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
-					elog(ERROR, "SPOCK %s: no data received for %d seconds, "
-						 "reconnecting (spock.apply_idle_timeout)",
-						 MySubscription->name, spock_apply_idle_timeout);
+					ereport(ERROR,
+							(errcode(ERRCODE_CONNECTION_FAILURE),
+							 errmsg("SPOCK %s: no data received for %d seconds, "
+									"reconnecting (spock.apply_idle_timeout)",
+									MySubscription->name, spock_apply_idle_timeout)));
 				}
 			}
 
@@ -4122,6 +4138,21 @@ stream_replay:
 		MyApplyWorker->use_try_block = true;
 		goto stream_replay;
 	}
+
+	/*
+	 * A SIGTERM (e.g. sub_alter_options() restarting the worker to pick up a
+	 * new setting) can land while a transaction is mid-flight: handle_begin()
+	 * has already recorded its commit_lsn, but neither xact_had_exception nor
+	 * an ERROR has occurred. The provider retransmits that same transaction
+	 * to the replacement worker, which would otherwise misread the matching
+	 * commit_lsn as a prior apply failure and enter exception replay under
+	 * the configured policy. Clear the marker so the retransmission is
+	 * applied normally; see clear_transient_exception_state()'s own comment
+	 * for why this is safe (it no-ops when a genuine exception is already
+	 * recorded).
+	 */
+	if (got_SIGTERM)
+		clear_transient_exception_state("subscription worker restart");
 
 	elog(LOG, "SPOCK %s: falling out of apply_work() sigterm=%s",
 		 MySubscription->name, (got_SIGTERM) ? "true" : "false");
