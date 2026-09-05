@@ -43,9 +43,11 @@ typedef struct SpockSyncStatus
 #define SYNC_KIND_FULL		'f'
 #define SYNC_KIND_STRUCTURE	's'
 #define SYNC_KIND_DATA		'd'
+#define SYNC_KIND_MERGE		'm' /* Data, merged over the rows already there. */
 
 #define SyncKindData(kind) \
-	(kind == SYNC_KIND_FULL || kind == SYNC_KIND_DATA)
+	(kind == SYNC_KIND_FULL || kind == SYNC_KIND_DATA || \
+	 kind == SYNC_KIND_MERGE)
 
 #define SyncKindStructure(kind) \
 	(kind == SYNC_KIND_FULL || kind == SYNC_KIND_STRUCTURE)
@@ -87,6 +89,8 @@ extern SpockSyncStatus *get_table_sync_status(Oid subid,
 extern void set_table_sync_status(Oid subid, const char *schemaname,
 								  const char *relname, char status,
 								  XLogRecPtr status_lsn);
+extern void set_table_sync_kind(Oid subid, const char *schemaname,
+								const char *relname, char kind);
 extern List *get_unsynced_tables(Oid subid);
 
 /* For interface compat with spk3 */

@@ -174,6 +174,7 @@ bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
 int			spock_replay_queue_size;
+<<<<<<< Updated upstream
 int			spock_pause_timeout = 10;	/* seconds to wait for apply workers
 										 * to pause */
 int			spock_sync_timeout = 0; /* seconds per sync wait; 0 = routine's
@@ -183,6 +184,11 @@ bool		spock_sync_stage_and_merge = false;	/* stage the initial COPY
 									             * empty */
 int			spock_read_retry_count = 5; /* heap update/delete: retries when
 										 * local tuple is missing */
+=======
+int			spock_pause_timeout = 10;	/* seconds to wait for apply workers to pause */
+int			spock_sync_timeout = 0;		/* seconds per sync wait; 0 = routine's own default */
+int			spock_read_retry_count = 5;	/* heap update/delete: retries when local tuple is missing */
+>>>>>>> Stashed changes
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
@@ -1322,19 +1328,6 @@ _PG_init(void)
 							 "Allow replication of DDL statements from within functions",
 							 NULL,
 							 &allow_ddl_from_functions,
-							 false,
-							 PGC_USERSET,
-							 0,
-							 NULL, NULL, NULL);
-
-	DefineCustomBoolVariable("spock.sync_stage_and_merge",
-							 "Load the initial table copy through a staging table when the target already holds rows.",
-							 "Off by default, which keeps the direct COPY: a target that is not "
-							 "empty aborts on the first duplicate key and the table's sync status "
-							 "stays failed. On, such a table is copied into a temporary staging "
-							 "table and merged with ON CONFLICT DO NOTHING, so rows already "
-							 "present are kept and the sync converges instead.",
-							 &spock_sync_stage_and_merge,
 							 false,
 							 PGC_USERSET,
 							 0,

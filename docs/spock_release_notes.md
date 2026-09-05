@@ -418,6 +418,9 @@ AutoDDL has been refactored and hardened:
 * `spock.resolutions.conflict_type` values renamed during upgrade:
   `update_update` → `update_exists`, `update_delete` → `update_missing`,
   `delete_delete` → `delete_missing`.  `insert_exists` is unchanged.
+* `spock.local_sync_status.sync_kind` accepts a fifth value, `m`, recording a
+  table resync that merges into the rows already present (see
+  `spock.sub_resync_table()` below).
 * `spock.subscription.sub_skip_schema` is now correctly typed as `text[]`
   (the column was added as `text` in 5.0.2 but the C code always treated
   the bytes as `text[]`; the 5.0.7 step migration relabels the catalog so
@@ -438,6 +441,11 @@ AutoDDL has been refactored and hardened:
 * `spock.sub_alter_options(subscription_name name, options text[])` —
   bulk subscription option changes, with input validation and no-op
   restart skipping.
+* `spock.sub_resync_table()` gains `merge boolean DEFAULT false`.  With
+  `truncate := false, merge := true` the copy is staged and merged with
+  `ON CONFLICT DO NOTHING`, so rows already on the subscriber are kept and
+  only the missing ones are added.  This is the repair path for a table
+  whose plain copy failed on a duplicate key.  Requires a unique index.
 
 ### Removed functions
 

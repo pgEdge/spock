@@ -4492,7 +4492,8 @@ process_syncing_tables(XLogRecPtr end_lsn)
 					 * unqualified, and an apostrophe in either name would
 					 * truncate the literal.
 					 */
-							 errhint("Re-synchronize with spock.sub_resync_table(%s, %s) once the cause is fixed.",
+							 errhint("Re-synchronize with spock.sub_resync_table(%s, %s) once the cause is fixed; "
+									 "add truncate := false, merge := true to keep the rows already present.",
 									 quote_literal_cstr(MySubscription->name),
 									 quote_literal_cstr(
 										 quote_qualified_identifier(NameStr(sync->nspname),

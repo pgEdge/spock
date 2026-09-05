@@ -1076,7 +1076,8 @@ sync_target_cmd(PGconn *target_conn, const char *sql,
  */
 static void
 copy_table_data(PGconn *origin_conn, PGconn *target_conn,
-				SpockRemoteRel *remoterel, List *replication_sets)
+				SpockRemoteRel *remoterel, List *replication_sets,
+				bool merge)
 {
 	SpockRelation *rel;
 	PGresult   *res;
@@ -1233,11 +1234,9 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	 * key collision, and that failure is not recoverable: the table's sync
 	 * status ends up SYNC_STATUS_FAILED, and from then on the apply worker
 	 * drops every change for it (see should_apply_changes_for_rel), silently
-	 * and permanently. In a mesh this is the normal case rather than an edge
-	 * case, because adding an already-populated table to a replication set
-	 * with synchronize_data := true asks every peer to copy rows it already
-	 * has. Load those tables into an unconstrained staging table and merge,
-	 * so a sync of data we already hold converges instead of wedging.
+	 * and permanently. When the caller asked for a merge, load such a table
+	 * into an unconstrained staging table and merge it instead, so a sync of
+	 * data we already hold converges instead of wedging.
 	 */
 	initStringInfo(&relident);
 	appendStringInfo(&relident, "%s.%s",
@@ -1247,16 +1246,16 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 										strlen(remoterel->relname)));
 
 	/*
-	 * Off by default: spock.sync_stage_and_merge has to be turned on before
-	 * any of this happens.  With it off the COPY goes straight into the
-	 * table as it always has, the probe below is not even taken, and a
-	 * populated target still fails the way it used to -- which is the
+	 * Only a resync that asked for it merges (SYNC_KIND_MERGE, set by
+	 * spock.sub_resync_table(merge := true)).  Every other sync goes straight
+	 * into the table as it always has: the probe below is not even taken,
+	 * and a populated target still fails the way it used to, which is the
 	 * behaviour an existing deployment is relying on.
 	 */
-	stage_load = spock_sync_stage_and_merge &&
+	stage_load = merge &&
 		target_table_has_rows(target_conn, remoterel, relident.data);
 
-	if (spock_sync_stage_and_merge && !stage_load)
+	if (merge && !stage_load)
 	{
 		/*
 		 * That probe took no lock, so on its own it does not settle anything:
@@ -1521,7 +1520,7 @@ static void
 copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 				 const char *target_dsn, const char *origin_snapshot,
 				 List *tables, List *replication_sets,
-				 const char *origin_name)
+				 const char *origin_name, bool merge)
 {
 	PGconn	   *origin_conn;
 	PGconn	   *target_conn;
@@ -1551,7 +1550,8 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 		 * synchronized normally.
 		 */
 		if (!remoterel->ispartition)
-			copy_table_data(origin_conn, target_conn, remoterel, replication_sets);
+			copy_table_data(origin_conn, target_conn, remoterel,
+							replication_sets, merge);
 
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -1676,7 +1676,8 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		 * synchronized normally.
 		 */
 		if (!remoterel->ispartition)
-			copy_table_data(origin_conn, target_conn, remoterel, replication_sets);
+			copy_table_data(origin_conn, target_conn, remoterel,
+							replication_sets, false);
 
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -2084,6 +2085,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	RepOriginId originid;
 	char	   *snapshot;
 	SpockSyncStatus *sync;
+	bool		merge;
 
 	StartTransactionCommand();
 
@@ -2098,6 +2100,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	/* Check current state of the table. */
 	sync = get_table_sync_status(sub->id, table->schemaname, table->relname, false);
 	*status_lsn = sync->statuslsn;
+	merge = (sync->kind == SYNC_KIND_MERGE);
 
 	/* Already synchronized, nothing to do here. */
 	if (sync->status == SYNC_STATUS_READY ||
@@ -2171,7 +2174,7 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 		/* Copy data. */
 		copy_tables_data(sub, sub->origin_if->dsn, sub->target_if->dsn,
 						 snapshot, list_make1(table), sub->replication_sets,
-						 sub->slot_name);
+						 sub->slot_name, merge);
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
@@ -2830,10 +2833,13 @@ get_subscription_tables(Oid subid)
 	return res;
 }
 
-/* Set the sync status for a table. */
-void
-set_table_sync_status(Oid subid, const char *nspname, const char *relname,
-					  char status, XLogRecPtr statuslsn)
+/*
+ * Rewrite the given columns of one table's row in local_sync_status.
+ * values[] and replaces[] are indexed like the catalog, Anum_* - 1.
+ */
+static void
+update_table_sync_row(Oid subid, const char *nspname, const char *relname,
+					  Datum *values, bool *replaces)
 {
 	RangeVar   *rv;
 	Relation	rel;
@@ -2842,9 +2848,7 @@ set_table_sync_status(Oid subid, const char *nspname, const char *relname,
 	HeapTuple	oldtup,
 				newtup;
 	ScanKeyData key[3];
-	Datum		values[Natts_local_sync_state];
 	bool		nulls[Natts_local_sync_state];
-	bool		replaces[Natts_local_sync_state];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -2871,12 +2875,6 @@ set_table_sync_status(Oid subid, const char *nspname, const char *relname,
 			 nspname, relname);
 
 	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
-
-	values[Anum_sync_status - 1] = CharGetDatum(status);
-	replaces[Anum_sync_status - 1] = true;
-	values[Anum_sync_statuslsn - 1] = LSNGetDatum(statuslsn);
-	replaces[Anum_sync_statuslsn - 1] = true;
 
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 
@@ -2887,6 +2885,40 @@ set_table_sync_status(Oid subid, const char *nspname, const char *relname,
 	heap_freetuple(newtup);
 	systable_endscan(scan);
 	table_close(rel, RowExclusiveLock);
+}
+
+/* Set the table sync status and LSN in the catalog. */
+void
+set_table_sync_status(Oid subid, const char *nspname, const char *relname,
+					  char status, XLogRecPtr statuslsn)
+{
+	Datum		values[Natts_local_sync_state];
+	bool		replaces[Natts_local_sync_state];
+
+	memset(replaces, false, sizeof(replaces));
+
+	values[Anum_sync_status - 1] = CharGetDatum(status);
+	replaces[Anum_sync_status - 1] = true;
+	values[Anum_sync_statuslsn - 1] = LSNGetDatum(statuslsn);
+	replaces[Anum_sync_statuslsn - 1] = true;
+
+	update_table_sync_row(subid, nspname, relname, values, replaces);
+}
+
+/* Set the kind of sync a table's row asks for. */
+void
+set_table_sync_kind(Oid subid, const char *nspname, const char *relname,
+					char kind)
+{
+	Datum		values[Natts_local_sync_state];
+	bool		replaces[Natts_local_sync_state];
+
+	memset(replaces, false, sizeof(replaces));
+
+	values[Anum_sync_kind - 1] = CharGetDatum(kind);
+	replaces[Anum_sync_kind - 1] = true;
+
+	update_table_sync_row(subid, nspname, relname, values, replaces);
 }
 
 /*

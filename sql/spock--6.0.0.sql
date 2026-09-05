@@ -42,7 +42,7 @@ CREATE TABLE spock.subscription (
 CREATE SEQUENCE spock.sub_id_generator AS integer MINVALUE 1 CYCLE START WITH 1 OWNED BY spock.subscription.sub_id;
 
 CREATE TABLE spock.local_sync_status (
-    sync_kind "char" NOT NULL CHECK (sync_kind IN ('i', 's', 'd', 'f')),
+    sync_kind "char" NOT NULL CHECK (sync_kind IN ('i', 's', 'd', 'f', 'm')),
     sync_subid oid NOT NULL REFERENCES spock.subscription(sub_id),
     sync_nspname name,
     sync_relname name,
@@ -576,7 +576,8 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_su
 CREATE FUNCTION spock.sub_resync_table(
 	subscription_name name,
 	relation          regclass,
-	truncate          boolean DEFAULT true
+	truncate          boolean DEFAULT true,
+	merge             boolean DEFAULT false
 )
 RETURNS boolean
 AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table'

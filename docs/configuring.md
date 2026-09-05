@@ -252,36 +252,6 @@ liveness detection. Default: `300` (5 minutes).
 spock.apply_idle_timeout = 300
 ```
 
-### `spock.sync_stage_and_merge`
-
-Controls how the initial table copy behaves when the table on the subscriber
-already holds rows. Default: `off`.
-
-With this `off`, the copy is a direct `COPY` into the table, which is what
-Spock has always done. If the table is not empty, that `COPY` aborts on the
-first duplicate key, the table's entry in `spock.local_sync_status` is left at
-`failed`, and from that point the apply worker discards every change for the
-table - so it stops replicating and silently diverges.
-
-With this `on`, a table that already holds rows is copied into a temporary
-staging table instead and then merged with `ON CONFLICT DO NOTHING`. Rows
-already present locally are kept rather than overwritten, so a sync of data the
-node already has converges instead of wedging.
-
-This matters most when adding an already-populated table to a replication set
-with `synchronize_data := true`, which asks every peer to copy rows it may
-already hold.
-
-The copy runs in Spock's sync worker rather than in your session, so a
-session-level `SET` has no effect on it. Set it in `postgresql.conf`, or with
-`ALTER SYSTEM SET spock.sync_stage_and_merge = on` followed by
-`SELECT pg_reload_conf()`, and set it on the subscriber - the node receiving
-the copy.
-
-```
-spock.sync_stage_and_merge = off
-```
-
 ### `spock.sync_timeout`
 
 Overrides the time (in seconds) budgeted for a single synchronisation wait in

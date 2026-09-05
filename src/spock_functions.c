@@ -1265,6 +1265,34 @@ check_readonly_for_resync(const char *nspname, const char *relname)
 }
 
 /*
+ * Does the table have an index ON CONFLICT DO NOTHING can arbitrate on?
+ * That is any valid, non-deferrable unique index.
+ */
+static bool
+relation_has_unique_index(Relation rel)
+{
+	List	   *indexes = RelationGetIndexList(rel);
+	ListCell   *lc;
+	bool		found = false;
+
+	foreach(lc, indexes)
+	{
+		Relation	idx = index_open(lfirst_oid(lc), AccessShareLock);
+
+		found = idx->rd_index->indisunique &&
+			idx->rd_index->indimmediate &&
+			idx->rd_index->indisvalid;
+		index_close(idx, AccessShareLock);
+
+		if (found)
+			break;
+	}
+
+	list_free(indexes);
+	return found;
+}
+
+/*
  * Resynchronize one existing table.
  */
 Datum
@@ -1273,6 +1301,8 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	char	   *sub_name = NameStr(*PG_GETARG_NAME(0));
 	Oid			reloid = PG_GETARG_OID(1);
 	bool		truncate = PG_GETARG_BOOL(2);
+	bool		merge = PG_GETARG_BOOL(3);
+	char		kind = merge ? SYNC_KIND_MERGE : SYNC_KIND_DATA;
 	SpockSubscription *sub = get_subscription_by_name(sub_name, false);
 	SpockSyncStatus *oldsync;
 	Relation	rel;
@@ -1300,6 +1330,25 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	 */
 	check_readonly_for_resync(nspname, relname);
 
+	/*
+	 * A merge keeps the rows already in the table and adds the missing ones.
+	 * Truncating first would leave nothing to keep, and without a unique
+	 * index there is no way to tell an existing row from a copied one.
+	 */
+	if (merge && truncate)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("cannot merge into table \"%s.%s\" after truncating it",
+						nspname, relname),
+				 errhint("Pass truncate := false together with merge := true.")));
+
+	if (merge && !relation_has_unique_index(rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("cannot merge into table \"%s.%s\": it has no primary key or unique index",
+						nspname, relname),
+				 errdetail("The merge needs a unique index to recognise the rows already present.")));
+
 	/* Reset sync status of the table. */
 	oldsync = get_table_sync_status(sub->id, nspname, relname, true);
 	if (oldsync)
@@ -1313,13 +1362,20 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 
 		set_table_sync_status(sub->id, nspname, relname, SYNC_STATUS_INIT,
 							  InvalidXLogRecPtr);
+
+		if (oldsync->kind != kind)
+		{
+			/* Make the status update visible before touching the row again. */
+			CommandCounterIncrement();
+			set_table_sync_kind(sub->id, nspname, relname, kind);
+		}
 	}
 	else
 	{
 		SpockSyncStatus newsync;
 
 		memset(&newsync, 0, sizeof(SpockSyncStatus));
-		newsync.kind = SYNC_KIND_DATA;
+		newsync.kind = kind;
 		newsync.subid = sub->id;
 		namestrcpy(&newsync.nspname, nspname);
 		namestrcpy(&newsync.relname, relname);

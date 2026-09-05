@@ -454,3 +454,22 @@ LANGUAGE sql AS $$
     DELETE FROM spock.reserved_object WHERE name = p_name AND kind = p_kind;
 $$;
 
+
+-- sub_resync_table() can merge the copy into a table that already holds rows.
+-- The request is recorded as sync_kind 'm'.
+ALTER TABLE spock.local_sync_status
+    DROP CONSTRAINT local_sync_status_sync_kind_check;
+ALTER TABLE spock.local_sync_status
+    ADD CONSTRAINT local_sync_status_sync_kind_check
+    CHECK (sync_kind IN ('i', 's', 'd', 'f', 'm'));
+
+DROP FUNCTION spock.sub_resync_table(name, regclass, boolean);
+CREATE FUNCTION spock.sub_resync_table(
+	subscription_name name,
+	relation          regclass,
+	truncate          boolean DEFAULT true,
+	merge             boolean DEFAULT false
+)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'spock_alter_subscription_resynchronize_table'
+LANGUAGE C STRICT VOLATILE;

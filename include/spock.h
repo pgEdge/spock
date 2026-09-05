@@ -51,7 +51,6 @@ extern int	restart_delay_on_exception;
 extern int	spock_replay_queue_size;
 extern int	spock_pause_timeout;
 extern int	spock_sync_timeout;
-extern bool spock_sync_stage_and_merge;
 extern int	spock_read_retry_count;
 extern bool check_all_uc_indexes;
 extern bool spock_enable_quiet_mode;
