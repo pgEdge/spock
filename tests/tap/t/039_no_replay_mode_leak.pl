@@ -84,8 +84,11 @@ for my $phase (@modes) {
     psql_or_bail(2, "SELECT pg_reload_conf()");
 
     # pg_reload_conf() only signals the postmaster, so the running worker can
-    # still hold the old value.  Restart it instead of racing: a new worker
-    # reads the setting at startup.  The manager respawns it after
+    # still hold the old value.  Restart it rather than race.  A forked
+    # bgworker inherits the postmaster's settings rather than re-reading the
+    # file, so what makes this safe is that the postmaster applies a pending
+    # reload before it reaps and respawns children, and the reload above is
+    # requested before the terminate below.  The manager then respawns after
     # restart_delay, which handle_begin() leaves at 0.
     my $stale = apply_worker_pid(2, 'sub_n1_n2');
     psql_or_bail(2, "SELECT pg_terminate_backend($stale)");
