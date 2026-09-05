@@ -8,6 +8,8 @@ use TAP::Formatter::Color;
 use TAP::Harness;
 use File::Path qw(make_path);
 use File::Basename;
+use File::Spec;
+use Time::HiRes qw(usleep);
 use Cwd;
 
 our @EXPORT_OK = qw(
@@ -25,6 +27,13 @@ our @EXPORT_OK = qw(
     wait_for_pg_ready
     ensure_lolor
     output_plugin_libraries_conf
+    node_logfile
+    log_offset
+    log_since
+    wait_for_log
+    poll_query_until
+    sync_nodes
+    apply_worker_pid
 );
 
 # Test configuration
@@ -33,6 +42,12 @@ my $HOST = '127.0.0.1';
 my $DB_NAME = 'regression';
 my $DB_USER = 'regression';
 my $DB_PASSWORD = 'regression';
+
+# Poll every 0.1s, as PostgreSQL::Test does, rather than every second.  Most
+# of what the wait_* helpers below watch for lands in well under a second, so
+# the coarser interval was mostly dead time.
+my $POLL_INTERVAL_US = 100_000;
+my $POLL_PER_SECOND  = 10;
 
 # PostgreSQL binary paths - get from PATH
 my $PG_BIN = '';
@@ -49,8 +64,15 @@ sub {
 
 # Logging - derive test name from script filename
 my $test_name = basename($0, '.pl');  # e.g., "001_basic" from "t/001_basic.pl"
-# Use TESTLOGDIR from environment (set by Makefile) or fall back to relative logs/
-my $LOG_DIR = $ENV{TESTLOGDIR} // "logs";
+# Use TESTLOGDIR from the environment, else logs/ under the current directory.
+#
+# Absolute either way.  create_postgresql_conf() feeds this to log_directory,
+# and PostgreSQL resolves a relative log_directory against the data directory
+# while Perl resolves it against the current directory -- so a relative value
+# sends the server's log somewhere the test does not look for it.  Only
+# run_tests.sh and the make target export TESTLOGDIR; running one test with
+# plain "prove t/NNN_name.pl" does not, and used to land on a relative "logs".
+my $LOG_DIR = File::Spec->rel2abs($ENV{TESTLOGDIR} // 'logs');
 eval { make_path($LOG_DIR) };
 my $LOG_FILE = $ENV{SPOCKTEST_LOG_FILE} // "${LOG_DIR}/${test_name}.log";
 
@@ -296,8 +318,14 @@ sub create_cluster {
         system("$PG_BIN/postgres -D $node_datadirs[$i] >> '$LOG_FILE' 2>&1 &");
     }
 
-    # Allow PostgreSQL servers to startup
-    system_or_bail 'sleep', '17';
+    # Wait for the servers to accept connections rather than guessing how long
+    # they need.  The timeout is generous so that a loaded machine still gets
+    # to start; the cost when startup is quick is only the polling interval.
+    for (my $i = 0; $i < $num_nodes; $i++) {
+        wait_for_pg_ready($HOST, $node_ports[$i], $PG_BIN, 60)
+            or die "n" . ($i + 1) . " did not accept connections on port "
+                   . "$node_ports[$i] within 60s";
+    }
 
     # Create superuser on all nodes (ignore if already exists)
     for (my $i = 0; $i < $num_nodes; $i++) {
@@ -516,12 +544,131 @@ sub wait_for_pg_ready {
     my ($host, $port, $pg_bin, $timeout) = @_;
     $pg_bin //= $PG_BIN;
     $timeout //= 30;
-    for (1 .. $timeout) {
+    for (1 .. $timeout * $POLL_PER_SECOND) {
         my $rc = system("$pg_bin/pg_isready -h $host -p $port -q 2>/dev/null");
         return 1 if $rc == 0;
-        sleep(1);
+        usleep($POLL_INTERVAL_US);
     }
     return 0;
+}
+
+# Path to a node's server log.  create_postgresql_conf() names it after the
+# port, so this has to agree with the log_filename set there.
+sub node_logfile {
+    my ($node_num) = @_;
+    my $port = ($BASE_PORT + $node_num - 1);
+    return "$LOG_DIR/00$port.log";
+}
+
+# Current end of a node's log.  Take this before the action under test, then
+# pass it to log_since() or wait_for_log() to ignore everything written
+# earlier -- otherwise a match from a previous phase counts as a hit.
+sub log_offset {
+    my ($node_num) = @_;
+    return (-s node_logfile($node_num)) // 0;
+}
+
+# A node's log from $offset onward.
+#
+# Dies rather than returning nothing when the log cannot be read.  Callers
+# search the result for a pattern, and an unreadable log looks exactly like a
+# readable one that does not contain it -- so returning '' turns a broken read
+# into a passing unlike().
+sub log_since {
+    my ($node_num, $offset) = @_;
+    my $path = node_logfile($node_num);
+    open(my $lf, '<', $path) or die "cannot open $path: $!";
+    seek($lf, $offset // 0, 0) or die "cannot seek to $offset in $path: $!";
+    local $/;
+    my $data = <$lf> // '';
+    close($lf);
+    return $data;
+}
+
+# Poll a node's log for $pattern, ignoring anything before $offset.  Returns
+# true on match, false on timeout.
+sub wait_for_log {
+    my ($node_num, $pattern, $offset, $timeout) = @_;
+    $timeout //= 30;
+    for (1 .. $timeout * $POLL_PER_SECOND) {
+        return 1 if log_since($node_num, $offset) =~ $pattern;
+        usleep($POLL_INTERVAL_US);
+    }
+    return 0;
+}
+
+# Poll $query on $node_num until it returns $expected.  Returns true on match,
+# false on timeout.
+sub poll_query_until {
+    my ($node_num, $query, $expected, $timeout) = @_;
+    $expected //= 't';
+    $timeout  //= 30;
+    for (1 .. $timeout * $POLL_PER_SECOND) {
+        my $got = scalar_query($node_num, $query);
+        return 1 if defined $got && $got eq $expected;
+        usleep($POLL_INTERVAL_US);
+    }
+    return 0;
+}
+
+# Wait until $to_node has applied everything $from_node has written so far.
+# A non-transactional sync_event is decoded outside any remote transaction and
+# ordered after the preceding commit, so the origin reaching its LSN means the
+# apply worker finished handle_commit() -- replay queue reset, use_try_block
+# cleared -- and is back in its wait loop.  A plain SELECT then sees whatever
+# $from_node sent.  Returns true on success, false on timeout.
+#
+# $origin_name defaults to the name create_cluster() gives the node.
+sub sync_nodes {
+    my ($from_node, $to_node, $origin_name, $timeout) = @_;
+    $origin_name //= "n$from_node";
+    $timeout     //= 30;
+
+    my $lsn = scalar_query($from_node, "SELECT spock.sync_event()");
+    return 0 unless defined $lsn && $lsn =~ m{^[0-9A-F]+/[0-9A-F]+$}i;
+
+    my $got = scalar_query($to_node,
+        "CALL spock.wait_for_sync_event(NULL, '$origin_name', " .
+        "'$lsn'::pg_lsn, $timeout)");
+    return (defined $got && $got eq 't') ? 1 : 0;
+}
+
+# PID of an apply worker on $node_num, or '' if none appears before timeout.
+# spock copies the bgworker name into application_name, so a worker shows up
+# as "spock apply <dboid>:<subid>" (spock_worker.c).
+#
+# Name the subscription whenever a node runs more than one.  pg_stat_activity
+# covers every database on the instance, so an unqualified match can return
+# several rows, and scalar_query() strips the newline between them -- two pids
+# come back as a single run of digits that still looks like a valid pid.  This
+# restricts the match to the current database, resolves $sub_name to the subid
+# in the worker's name when given, and dies on an ambiguous match rather than
+# handing back a pid that belongs to no process.
+sub apply_worker_pid {
+    my ($node_num, $sub_name, $timeout) = @_;
+    $timeout //= 30;
+
+    my $match = "application_name LIKE 'spock apply %'";
+    $match .= " AND application_name LIKE '%:' || (SELECT sub_id FROM " .
+              "spock.subscription WHERE sub_name = '$sub_name')::text"
+        if defined $sub_name;
+
+    # string_agg keeps the result to one row, so a second worker arrives as a
+    # comma rather than as more digits.
+    my $query = "SELECT string_agg(pid::text, ',' ORDER BY pid) " .
+                "FROM pg_stat_activity " .
+                "WHERE datname = current_database() AND $match";
+
+    for (1 .. $timeout * $POLL_PER_SECOND) {
+        my $pids = scalar_query($node_num, $query);
+        if (defined $pids && $pids ne '') {
+            return $pids if $pids =~ /^\d+$/;
+            die "node $node_num has more than one apply worker ($pids); "
+                . "pass a subscription name to apply_worker_pid()";
+        }
+        usleep($POLL_INTERVAL_US);
+    }
+    return '';
 }
 
 # Ensure cleanup on module destruction
