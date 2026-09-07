@@ -1503,6 +1503,20 @@ write_manifest(BidirectionalState *state, const char *subscriber_name,
 }
 
 /*
+ * PG16 and earlier declare the JsonSemAction callbacks as returning void;
+ * PG16 was actually already JsonParseErrorType-returning for the callbacks
+ * we use here, but PG15 is not, so this is the one boundary that matters
+ * for the manifest_* functions below.
+ */
+#if PG_VERSION_NUM >= 160000
+#define JSON_CALLBACK_RESULT	JsonParseErrorType
+#define JSON_CALLBACK_RETURN	return JSON_SUCCESS
+#else
+#define JSON_CALLBACK_RESULT	void
+#define JSON_CALLBACK_RETURN	return
+#endif
+
+/*
  * Semantic-action state for read_manifest().  Passed as void *semstate to all
  * pg_parse_json callbacks; tracks nesting depth and accumulates field values.
  */
@@ -1530,7 +1544,7 @@ typedef struct ManifestParseState
 	int			peer_capacity;
 } ManifestParseState;
 
-static JsonParseErrorType
+static JSON_CALLBACK_RESULT
 manifest_object_start(void *st)
 {
 	ManifestParseState *s = (ManifestParseState *) st;
@@ -1538,10 +1552,10 @@ manifest_object_start(void *st)
 	s->depth++;
 	if (s->in_peers && s->depth == 3)
 		s->in_peer_obj = true;
-	return JSON_SUCCESS;
+	JSON_CALLBACK_RETURN;
 }
 
-static JsonParseErrorType
+static JSON_CALLBACK_RESULT
 manifest_object_end(void *st)
 {
 	ManifestParseState *s = (ManifestParseState *) st;
@@ -1569,10 +1583,10 @@ manifest_object_end(void *st)
 		s->in_peer_obj = false;
 	}
 	s->depth--;
-	return JSON_SUCCESS;
+	JSON_CALLBACK_RETURN;
 }
 
-static JsonParseErrorType
+static JSON_CALLBACK_RESULT
 manifest_array_start(void *st)
 {
 	ManifestParseState *s = (ManifestParseState *) st;
@@ -1581,10 +1595,10 @@ manifest_array_start(void *st)
 	if (s->depth == 2 && s->cur_field != NULL &&
 		strcmp(s->cur_field, MF_PEERS) == 0)
 		s->in_peers = true;
-	return JSON_SUCCESS;
+	JSON_CALLBACK_RETURN;
 }
 
-static JsonParseErrorType
+static JSON_CALLBACK_RESULT
 manifest_array_end(void *st)
 {
 	ManifestParseState *s = (ManifestParseState *) st;
@@ -1592,10 +1606,10 @@ manifest_array_end(void *st)
 	if (s->in_peers && s->depth == 2)
 		s->in_peers = false;
 	s->depth--;
-	return JSON_SUCCESS;
+	JSON_CALLBACK_RETURN;
 }
 
-static JsonParseErrorType
+static JSON_CALLBACK_RESULT
 manifest_ofield_start(void *st, char *fname, bool isnull)
 {
 	ManifestParseState *s = (ManifestParseState *) st;
@@ -1604,10 +1618,10 @@ manifest_ofield_start(void *st, char *fname, bool isnull)
 	pg_free(s->cur_field);
 	s->cur_field = pg_strdup(fname);
 	pg_free(fname);				/* callback owns the token */
-	return JSON_SUCCESS;
+	JSON_CALLBACK_RETURN;
 }
 
-static JsonParseErrorType
+static JSON_CALLBACK_RESULT
 manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 {
 	ManifestParseState *s = (ManifestParseState *) st;
@@ -1615,7 +1629,7 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 	if (s->cur_field == NULL)
 	{
 		pg_free(token);
-		return JSON_SUCCESS;
+		JSON_CALLBACK_RETURN;
 	}
 
 	/*
@@ -1630,7 +1644,7 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 		if (strcmp(s->cur_field, MF_REVERSE_SUB_CREATED) == 0)
 			s->peer_reverse_sub_created = value;
 		pg_free(token);
-		return JSON_SUCCESS;
+		JSON_CALLBACK_RETURN;
 	}
 
 	/* Top-level creation-state flags are also JSON booleans. */
@@ -1641,13 +1655,13 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 		if (strcmp(s->cur_field, MF_SOURCE_REVERSE_SUB_CREATED) == 0)
 			s->bidir->source_reverse_sub_created = value;
 		pg_free(token);
-		return JSON_SUCCESS;
+		JSON_CALLBACK_RETURN;
 	}
 
 	if (tokentype != JSON_TOKEN_STRING)
 	{
 		pg_free(token);
-		return JSON_SUCCESS;
+		JSON_CALLBACK_RETURN;
 	}
 
 	if (!s->in_peer_obj)
@@ -1684,7 +1698,7 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 		else
 			pg_free(token);
 	}
-	return JSON_SUCCESS;
+	JSON_CALLBACK_RETURN;
 }
 
 /*
@@ -1742,20 +1756,41 @@ read_manifest(const char *manifest_path, BidirectionalState *state,
 	sem.object_field_start = manifest_ofield_start;
 	sem.scalar = manifest_scalar;
 
+	/*
+	 * PG17 added a reusable JsonLexContext (leading lex argument) plus
+	 * freeJsonLexContext() to release it; older majors allocate and manage
+	 * the context internally and have no free function to call.
+	 */
+#if PG_VERSION_NUM >= 170000
 	lex = makeJsonLexContextCstringLen(NULL, content, st.st_size,
 									   PG_UTF8, true);
+#else
+	lex = makeJsonLexContextCstringLen(content, st.st_size, PG_UTF8, true);
+#endif
 	result = pg_parse_json(lex, &sem);
 	pg_free(content);
 	pg_free(pstate.cur_field);
 
 	if (result != JSON_SUCCESS)
 	{
+		/*
+		 * json_errdetail() is FRONTEND-safe only from PG17 on; PG15/16
+		 * restrict it to the backend, so older majors get a plainer message
+		 * naming the JsonParseErrorType instead.
+		 */
+#if PG_VERSION_NUM >= 170000
 		char	   *detail = json_errdetail(result, lex);
 
 		freeJsonLexContext(lex);
 		die(_("manifest file \"%s\" is malformed: %s"), manifest_path, detail);
+#else
+		die(_("manifest file \"%s\" is malformed (JSON parse error %d)"),
+			manifest_path, (int) result);
+#endif
 	}
+#if PG_VERSION_NUM >= 170000
 	freeJsonLexContext(lex);
+#endif
 
 	if (!*subscriber_name_out || !*dbname_out || !*source_dsn_out)
 		die(_("manifest file \"%s\" is malformed or missing required fields"),
