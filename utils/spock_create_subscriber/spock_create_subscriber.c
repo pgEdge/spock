@@ -66,35 +66,36 @@
 
 #define MAX_APPLY_DELAY 86400
 
-typedef struct RemoteInfo {
+typedef struct RemoteInfo
+{
 	Oid			nodeid;
 	char	   *node_name;
 	char	   *sysid;
 	char	   *dbname;
 	char	   *replication_sets;
-	TimeLineID	timeline_id;	/* current TLI, for detecting a data_dir
-								 * left over from an already-promoted
-								 * earlier attempt (see check_data_dir()) */
+	TimeLineID	timeline_id;	/* current TLI, for detecting a data_dir left
+								 * over from an already-promoted earlier
+								 * attempt (see check_data_dir()) */
 } RemoteInfo;
 
 typedef struct PeerNodeInfo
 {
 	char	   *node_name;
 	char	   *dsn;
-	char	   *slot_name;          /* from spock.spock_gen_slot_name() */
-	char	   *sub_name;           /* "sub_<subscriber>_<peer>" */
+	char	   *slot_name;		/* from spock.spock_gen_slot_name() */
+	char	   *sub_name;		/* "sub_<subscriber>_<peer>" */
 	bool		reverse_sub_created;
 
 	/*
-	 * slot_creation_lsn doubles as the "peer slot created" flag: a
-	 * non-empty value means the slot exists, so no separate boolean is
-	 * kept.  It is persisted to the manifest for --cleanup; peer_marker_lsn
-	 * below it is in-memory only -- it doesn't gate a --cleanup decision,
-	 * and cutover has no cross-invocation resume in v1 (see
-	 * check_reused_data_dir_is_safe()).
+	 * slot_creation_lsn doubles as the "peer slot created" flag: a non-empty
+	 * value means the slot exists, so no separate boolean is kept.  It is
+	 * persisted to the manifest for --cleanup; peer_marker_lsn below it is
+	 * in-memory only -- it doesn't gate a --cleanup decision, and cutover has
+	 * no cross-invocation resume in v1 (see check_reused_data_dir_is_safe()).
 	 */
-	char	   *slot_creation_lsn;  /* peer's replication slot creation LSN */
-	char	   *peer_marker_lsn;    /* this peer's marker once seen on the source */
+	char	   *slot_creation_lsn;	/* peer's replication slot creation LSN */
+	char	   *peer_marker_lsn;	/* this peer's marker once seen on the
+									 * source */
 } PeerNodeInfo;
 
 typedef struct BidirectionalState
@@ -102,34 +103,33 @@ typedef struct BidirectionalState
 	bool		enabled;
 	int			num_peers;
 	PeerNodeInfo *peers;
-	int			stall_timeout;      /* default 600s */
-	int			max_wait;           /* default 0 = unbounded */
+	int			stall_timeout;	/* default 600s */
+	int			max_wait;		/* default 0 = unbounded */
 	char	   *source_slot_name;
 	char	   *source_restore_lsn; /* recovery target LSN; consumed by the
 									 * disabled-first catchup sub_create.
-									 * Written to the manifest as a
-									 * diagnostic record of what was used,
-									 * but never read back on a --cleanup
-									 * reload -- nothing needs it restored
-									 * into memory there */
-	char	   *node_dsn;       /* DSN registered via spock.node_create();
-								 * the address peers use to connect back to
-								 * this node.  Derived from --subscriber-dsn. */
-	char	   *node_sysid;     /* n3's system_identifier; lets --cleanup
+									 * Written to the manifest as a diagnostic
+									 * record of what was used, but never read
+									 * back on a --cleanup reload -- nothing
+									 * needs it restored into memory there */
+	char	   *node_dsn;		/* DSN registered via spock.node_create(); the
+								 * address peers use to connect back to this
+								 * node.  Derived from --subscriber-dsn. */
+	char	   *node_sysid;		/* n3's system_identifier; lets --cleanup
 								 * confirm node_dsn still reaches this node
 								 * before dropping subscriptions there. */
 	bool		source_reverse_sub_created; /* sub_<source>_<n3> created on
 											 * the source -- must be
 											 * persisted, unlike the peer
-											 * progress bits, since it is
-											 * the only way --cleanup knows
-											 * to drop this specific
-											 * subscription on a node that
-											 * also has other, unrelated,
-											 * legitimate subscriptions */
+											 * progress bits, since it is the
+											 * only way --cleanup knows to
+											 * drop this specific subscription
+											 * on a node that also has other,
+											 * unrelated, legitimate
+											 * subscriptions */
 	bool		cleanup_mode;
-	bool		force_cleanup;      /* --force: also remove the data directory
-									 * on --cleanup, not just remote state */
+	bool		force_cleanup;	/* --force: also remove the data directory on
+								 * --cleanup, not just remote state */
 	char	   *manifest_path;
 } BidirectionalState;
 
@@ -150,9 +150,9 @@ typedef struct RepsetCapture
 typedef struct RepsetTableCapture
 {
 	char	   *set_name;
-	char	   *qualified_table;   /* rts.set_reloid::regclass */
-	char	   *columns;           /* rts.set_att_list, NULL if all columns */
-	char	   *row_filter;        /* pg_get_expr(...), NULL if none */
+	char	   *qualified_table;	/* rts.set_reloid::regclass */
+	char	   *columns;		/* rts.set_att_list, NULL if all columns */
+	char	   *row_filter;		/* pg_get_expr(...), NULL if none */
 } RepsetTableCapture;
 
 typedef struct SequenceCapture
@@ -216,37 +216,38 @@ typedef struct SubscriberCreateContext
 	CatalogCapture capture;
 } SubscriberCreateContext;
 
-typedef enum {
+typedef enum
+{
 	VERBOSITY_NORMAL,
 	VERBOSITY_VERBOSE,
 	VERBOSITY_DEBUG
 } VerbosityLevelEnum;
 
-static char		   *argv0 = NULL;
-static const char  *progname;
-static char		   *data_dir = NULL;
-static char			pid_file[MAXPGPATH];
-static time_t		start_time;
-static VerbosityLevelEnum	verbosity = VERBOSITY_NORMAL;
+static char *argv0 = NULL;
+static const char *progname;
+static char *data_dir = NULL;
+static char pid_file[MAXPGPATH];
+static time_t start_time;
+static VerbosityLevelEnum verbosity = VERBOSITY_NORMAL;
 
 /* defined as static so that die() can close them */
-static PGconn		*subscriber_conn = NULL;
-static PGconn		*provider_conn = NULL;
+static PGconn *subscriber_conn = NULL;
+static PGconn *provider_conn = NULL;
 
 static void signal_handler(int sig);
 static void usage(void);
 static void die(const char *fmt,...)
-pg_attribute_printf(1, 2);
+			pg_attribute_printf(1, 2);
 static void print_msg(VerbosityLevelEnum level, const char *fmt,...)
-pg_attribute_printf(2, 3);
+			pg_attribute_printf(2, 3);
 static PGresult *debug_exec(PGconn *conn, const char *query);
 
-static int run_pg_ctl(const char *arg);
+static int	run_pg_ctl(const char *arg);
 static void validate_extra_basebackup_args(const char *args);
-static int parse_checked_int(const char *arg, const char *opt_name);
+static int	parse_checked_int(const char *arg, const char *opt_name);
 static char *validated_existing_path(const char *arg, const char *file_label);
 static void run_basebackup(const char *provider_connstr, const char *data_dir,
-	const char *extra_basebackup_args);
+						   const char *extra_basebackup_args);
 static char *reset_subscriber_sysid(const char *data_dir);
 static void run_pg_resetwal(const char *data_dir);
 static void wait_postmaster_connection(const char *connstr);
@@ -259,30 +260,30 @@ static void remove_unwanted_data(PGconn *conn);
 static void initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn);
 static char *create_restore_point(PGconn *conn, char *restore_point_name);
 static char *create_logical_slot(PGconn *conn, const char *slot_name,
-							bool drop_if_exists, const char *already_exists_hint);
+								 bool drop_if_exists, const char *already_exists_hint);
 static char *initialize_replication_slot(PGconn *conn, char *dbname,
-							char *provider_node_name, char *subscription_name,
-							bool drop_slot_if_exists);
+										 char *provider_node_name, char *subscription_name,
+										 bool drop_slot_if_exists);
 static char *create_peer_slot(PGconn *peer_conn, const char *peer_slot_name);
 static char *sub_name_for(const char *local_node_name, const char *provider_node_name);
 static char *get_origin_name_for_node(PGconn *conn, const char *upstream_node_name,
-							const char *conn_label, char **sub_name_out);
+									  const char *conn_label, char **sub_name_out);
 static void spock_subscribe(PGconn *conn, char *subscriber_name,
-								char *subscriber_dsn,
-								char *provider_connstr,
-								char *replication_sets,
-								int apply_delay,
-								bool force_text_transfer);
+							char *subscriber_dsn,
+							char *provider_connstr,
+							char *replication_sets,
+							int apply_delay,
+							bool force_text_transfer);
 
-static RemoteInfo *get_remote_info(PGconn* conn);
+static RemoteInfo *get_remote_info(PGconn *conn);
 
 static bool extension_exists(PGconn *conn, const char *extname);
 static void install_extension(PGconn *conn, const char *extname);
 
 static void ensure_trailing_newline(const char *path);
 static void initialize_data_dir(char *data_dir, char *connstr,
-					char *postgresql_conf, char *postgresql_auto_conf,
-					char *pg_hba_conf, char *extra_basebackup_args);
+								char *postgresql_conf, char *postgresql_auto_conf,
+								char *pg_hba_conf, char *extra_basebackup_args);
 static bool check_data_dir(char *data_dir, RemoteInfo *remoteinfo);
 static void check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo);
 
@@ -293,7 +294,7 @@ static void CopyConfFile(char *fromfile, char *tofile, bool append);
 
 static char *get_connstr_dbname(char *connstr);
 static char *get_connstr(char *connstr, char *dbname);
-static char *PQconninfoParamsToConnstr(const char *const * keywords, const char *const * values);
+static char *PQconninfoParamsToConnstr(const char *const *keywords, const char *const *values);
 static void appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str);
 
 static bool file_exists(const char *path);
@@ -306,7 +307,7 @@ static long get_pgpid(void);
 static char **get_database_list(char *databases, int *n_databases);
 static char *generate_restore_point_name(void);
 
-static int discover_peer_nodes(PGconn *source_conn, const char *source_node_name,
+static int	discover_peer_nodes(PGconn *source_conn, const char *source_node_name,
 								const char *subscriber_name, const char *dbname,
 								PeerNodeInfo **peers_out);
 static void check_preconditions(PGconn *source_conn, const char *source_node_name,
@@ -318,10 +319,10 @@ static void check_peer_identity(PGconn *peer_conn, const char *expected_name);
 static void check_replication_set_equivalence(PGconn *source_conn,
 											  PeerNodeInfo *peers, int num_peers);
 static void write_manifest(BidirectionalState *state, const char *subscriber_name,
-							const char *dbname, const char *source_dsn);
+						   const char *dbname, const char *source_dsn);
 static bool read_manifest(const char *manifest_path, BidirectionalState *state,
-						   char **subscriber_name_out, char **dbname_out,
-						   char **source_dsn_out);
+						  char **subscriber_name_out, char **dbname_out,
+						  char **source_dsn_out);
 static bool cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 								  const char *dbname, const char *source_dsn,
 								  bool force_rm_datadir);
@@ -339,59 +340,59 @@ static void remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture);
 static void restore_replication_sets(PGconn *conn, CatalogCapture *capture);
 static void verify_replication_sets_restored(PGconn *conn, CatalogCapture *capture);
 static void create_catchup_subscription(PGconn *subscriber_conn, const char *source_sub_name,
-					const char *source_dsn, const char *replication_sets,
-					const char *source_slot_name, const char *source_restore_lsn);
+										const char *source_dsn, const char *replication_sets,
+										const char *source_slot_name, const char *source_restore_lsn);
 static void create_disabled_peer_subscriptions(PGconn *subscriber_conn, PeerNodeInfo *peers,
-					int num_peers, const char *replication_sets);
+											   int num_peers, const char *replication_sets);
 static char *get_sync_event_lsn(PGconn *conn, const char *node_label);
 static char *get_catchup_target_lsn(const char *source_dsn);
 static bool apply_worker_is_busy(PGconn *conn, const char *sub_name);
 static void wait_for_origin_progress(PGconn *conn, const char *origin_name,
-					const char *target_lsn, const char *watch_sub_name,
-					const char *context_label, int stall_timeout, int max_wait);
+									 const char *target_lsn, const char *watch_sub_name,
+									 const char *context_label, int stall_timeout, int max_wait);
 static void wait_for_catchup(PGconn *subscriber_conn, const char *source_sub_name,
-					const char *source_slot_name, const char *target_lsn,
-					int stall_timeout, int max_wait);
+							 const char *source_slot_name, const char *target_lsn,
+							 int stall_timeout, int max_wait);
 static void establish_peer_coverage_barrier(BidirectionalState *state, PGconn *n3_conn,
-					const char *prov_connstr, const char *source_node_name,
-					const char *source_sub_name, const char *source_slot_name,
-					const char *subscriber_name, const char *dbname,
-					const char *base_prov_connstr,
-					int stall_timeout, int max_wait);
+											const char *prov_connstr, const char *source_node_name,
+											const char *source_sub_name, const char *source_slot_name,
+											const char *subscriber_name, const char *dbname,
+											const char *base_prov_connstr,
+											int stall_timeout, int max_wait);
 static void clear_forwarding(PGconn *n3_conn, const char *source_dsn,
-					const char *source_sub_name, const char *source_slot_name,
-					int stall_timeout, int max_wait);
+							 const char *source_sub_name, const char *source_slot_name,
+							 int stall_timeout, int max_wait);
 static void wait_for_sub_replicating(PGconn *conn, const char *sub_name,
-					int stall_timeout, int max_wait);
+									 int stall_timeout, int max_wait);
 static void enable_peer_subs(PGconn *n3_conn, PeerNodeInfo *peers, int num_peers,
-					int stall_timeout, int max_wait);
+							 int stall_timeout, int max_wait);
 static void create_subscription_on_conn(PGconn *conn, const char *sub_name,
-					const char *provider_dsn, const char *repsets,
-					const char *conn_label);
+										const char *provider_dsn, const char *repsets,
+										const char *conn_label);
 static void create_reverse_subscriptions(BidirectionalState *state, const char *subscriber_name,
-					const char *n3_dsn, const char *replication_sets,
-					const char *source_dsn, const char *source_node_name,
-					const char *dbname, const char *base_prov_connstr);
+										 const char *n3_dsn, const char *replication_sets,
+										 const char *source_dsn, const char *source_node_name,
+										 const char *dbname, const char *base_prov_connstr);
 static void wait_for_reverse_subs_ready(BidirectionalState *state, PGconn *n3_conn,
-					const char *source_dsn, const char *source_node_name,
-					const char *subscriber_name, int stall_timeout, int max_wait);
+										const char *source_dsn, const char *source_node_name,
+										const char *subscriber_name, int stall_timeout, int max_wait);
 static void verify_dataflow_from_n3(PGconn *remote_conn, const char *remote_node_name,
-					const char *subscriber_name, const char *n3_marker,
-					int stall_timeout, int max_wait);
+									const char *subscriber_name, const char *n3_marker,
+									int stall_timeout, int max_wait);
 static void verify_dataflow_to_n3(PGconn *n3_conn, const char *remote_node_name,
-					const char *remote_marker, const char *slot_name,
-					const char *sub_name, int stall_timeout, int max_wait);
+								  const char *remote_marker, const char *slot_name,
+								  const char *sub_name, int stall_timeout, int max_wait);
 static void verify_bidirectional_dataflow(BidirectionalState *state, PGconn *n3_conn,
-					const char *source_dsn, const char *source_node_name,
-					const char *source_sub_name, const char *subscriber_name,
-					int stall_timeout, int max_wait);
+										  const char *source_dsn, const char *source_node_name,
+										  const char *source_sub_name, const char *subscriber_name,
+										  int stall_timeout, int max_wait);
 static void set_spock_readonly(PGconn *conn, const char *value);
 static Oid	get_local_node_id(PGconn *conn);
 
 static PGconn *
 connectdb(const char *connstr)
 {
-	PGconn *conn;
+	PGconn	   *conn;
 
 	conn = PQconnectdb(connstr);
 	if (PQstatus(conn) != CONNECTION_OK)
@@ -400,7 +401,8 @@ connectdb(const char *connstr)
 	return conn;
 }
 
-void signal_handler(int sig)
+void
+signal_handler(int sig)
 {
 	if (sig == SIGINT || sig == SIGTERM)
 	{
@@ -424,13 +426,27 @@ append_json_string(PQExpBuffer buf, const char *str)
 	{
 		switch (*p)
 		{
-			case '\b':	appendPQExpBufferStr(buf, "\\b");  break;
-			case '\f':	appendPQExpBufferStr(buf, "\\f");  break;
-			case '\n':	appendPQExpBufferStr(buf, "\\n");  break;
-			case '\r':	appendPQExpBufferStr(buf, "\\r");  break;
-			case '\t':	appendPQExpBufferStr(buf, "\\t");  break;
-			case '"':	appendPQExpBufferStr(buf, "\\\""); break;
-			case '\\':	appendPQExpBufferStr(buf, "\\\\"); break;
+			case '\b':
+				appendPQExpBufferStr(buf, "\\b");
+				break;
+			case '\f':
+				appendPQExpBufferStr(buf, "\\f");
+				break;
+			case '\n':
+				appendPQExpBufferStr(buf, "\\n");
+				break;
+			case '\r':
+				appendPQExpBufferStr(buf, "\\r");
+				break;
+			case '\t':
+				appendPQExpBufferStr(buf, "\\t");
+				break;
+			case '"':
+				appendPQExpBufferStr(buf, "\\\"");
+				break;
+			case '\\':
+				appendPQExpBufferStr(buf, "\\\\");
+				break;
 			default:
 				if ((unsigned char) *p < 0x20)
 					appendPQExpBuffer(buf, "\\u%04x", (unsigned char) *p);
@@ -545,9 +561,9 @@ check_spock_version_at_least_6(PGconn *conn, const char *node_label)
 		int			major = 0;
 
 		/*
-		 * die() exits immediately -- ver points inside res, so it must
-		 * not be PQclear()'d first (that would be a use-after-free when
-		 * die()'s own formatting reads ver).
+		 * die() exits immediately -- ver points inside res, so it must not be
+		 * PQclear()'d first (that would be a use-after-free when die()'s own
+		 * formatting reads ver).
 		 */
 		if (sscanf(ver, "%d.", &major) < 1)
 			die(_("could not parse Spock version \"%s\" on \"%s\""), ver, node_label);
@@ -575,9 +591,9 @@ check_mesh_edges(PGconn *conn, const char *this_node_name,
 	int			i;
 
 	/*
-	 * spock.sub_show_status() (not raw sub_enabled) so "enabled" also
-	 * means "actually replicating" -- a worker that's down or still
-	 * initializing must not satisfy the mesh.
+	 * spock.sub_show_status() (not raw sub_enabled) so "enabled" also means
+	 * "actually replicating" -- a worker that's down or still initializing
+	 * must not satisfy the mesh.
 	 */
 	res = debug_exec(conn, "SELECT provider_node, status FROM spock.sub_show_status()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -616,8 +632,8 @@ check_mesh_edges(PGconn *conn, const char *this_node_name,
 				this_node_name, origin_name);
 
 		/*
-		 * Count regardless of status: an extra disabled duplicate from
-		 * the same origin is still a duplicate edge.
+		 * Count regardless of status: an extra disabled duplicate from the
+		 * same origin is still a duplicate edge.
 		 */
 		edge_count[idx]++;
 		if (edge_count[idx] > 1)
@@ -633,7 +649,7 @@ check_mesh_edges(PGconn *conn, const char *this_node_name,
 	for (i = 0; i < total_nodes; i++)
 	{
 		if (strcmp(all_names[i], this_node_name) == 0)
-			continue;		/* skip self */
+			continue;			/* skip self */
 		if (!healthy[i])
 		{
 			pg_free(healthy);
@@ -667,7 +683,7 @@ check_peer_identity(PGconn *peer_conn, const char *expected_name)
 	}
 	if (strcmp(PQgetvalue(res, 0, 0), expected_name) != 0)
 	{
-		char *actual_name = pg_strdup(PQgetvalue(res, 0, 0));
+		char	   *actual_name = pg_strdup(PQgetvalue(res, 0, 0));
 
 		PQclear(res);
 		die(_("peer discovered as \"%s\" identifies itself as \"%s\" once "
@@ -767,12 +783,11 @@ compute_repset_fingerprints(PGconn *conn, Oid node_id, const char *selected_filt
 							  PQgetisnull(tres, j, 2) ? "-" : PQgetvalue(tres, j, 2));
 
 			/*
-			 * Schema fingerprint: relation kind and replica identity,
-			 * then per-column name, type, typmod (varchar(10) vs
-			 * varchar(100) is otherwise invisible), collation,
-			 * nullability, and generated/identity status -- so a
-			 * divergent column or relation definition is caught even if
-			 * repset membership itself matches.
+			 * Schema fingerprint: relation kind and replica identity, then
+			 * per-column name, type, typmod (varchar(10) vs varchar(100) is
+			 * otherwise invisible), collation, nullability, and
+			 * generated/identity status -- so a divergent column or relation
+			 * definition is caught even if repset membership itself matches.
 			 */
 			printfPQExpBuffer(schema_query,
 							  "SELECT relkind::text, relreplident::text"
@@ -889,13 +904,13 @@ static char *
 get_source_mesh_replication_sets(PGconn *conn)
 {
 	PGresult   *res;
-	PQExpBuffer	list;
+	PQExpBuffer list;
 	char	   *result;
 	int			i;
 
 	res = debug_exec(conn,
-				 "SELECT DISTINCT s FROM spock.subscription,"
-				 " unnest(sub_replication_sets) AS s ORDER BY 1");
+					 "SELECT DISTINCT s FROM spock.subscription,"
+					 " unnest(sub_replication_sets) AS s ORDER BY 1");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -929,13 +944,13 @@ static char *
 build_selected_set_name_filter(PGconn *conn)
 {
 	PGresult   *res;
-	PQExpBuffer	filter;
+	PQExpBuffer filter;
 	char	   *result;
 	int			i;
 
 	res = debug_exec(conn,
-				 "SELECT DISTINCT s FROM spock.subscription,"
-				 " unnest(sub_replication_sets) AS s ORDER BY 1");
+					 "SELECT DISTINCT s FROM spock.subscription,"
+					 " unnest(sub_replication_sets) AS s ORDER BY 1");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -952,7 +967,7 @@ build_selected_set_name_filter(PGconn *conn)
 	appendPQExpBufferStr(filter, "set_name IN (");
 	for (i = 0; i < PQntuples(res); i++)
 	{
-		char *name = PQgetvalue(res, i, 0);
+		char	   *name = PQgetvalue(res, i, 0);
 
 		appendPQExpBuffer(filter, "%s%s", i > 0 ? ", " : "",
 						  PQescapeLiteral(conn, name, strlen(name)));
@@ -1005,8 +1020,8 @@ check_replication_set_equivalence(PGconn *source_conn, PeerNodeInfo *peers, int 
 		 * die() exits immediately, so none of the branches below free
 		 * source_fps/peer_fps before calling it -- freeing first and then
 		 * still reading source_fps[j]/peer_fps[j] in the same die() call's
-		 * arguments would be a use-after-free (the process is about to
-		 * exit anyway; nothing else in this file frees before die() either).
+		 * arguments would be a use-after-free (the process is about to exit
+		 * anyway; nothing else in this file frees before die() either).
 		 */
 		for (j = 0; j < num_source_fps; j++)
 		{
@@ -1089,18 +1104,18 @@ check_preconditions(PGconn *source_conn, const char *source_node_name,
 	PQclear(res);
 
 	/*
-	 * All outbound replication caught up to the source's current WAL
-	 * position -- i.e. nothing (DDL or data) still in flight to an
-	 * existing peer.  spock.queue's row count is not a usable signal here:
-	 * queue_message() (spock_queue.c) only ever inserts into it, so its
-	 * count is monotonically non-decreasing and is never zero on any node
-	 * that has replicated so much as a single DDL statement.
+	 * All outbound replication caught up to the source's current WAL position
+	 * -- i.e. nothing (DDL or data) still in flight to an existing peer.
+	 * spock.queue's row count is not a usable signal here: queue_message()
+	 * (spock_queue.c) only ever inserts into it, so its count is
+	 * monotonically non-decreasing and is never zero on any node that has
+	 * replicated so much as a single DDL statement.
 	 */
 	res = debug_exec(source_conn,
-				 "SELECT COUNT(*) FROM pg_replication_slots"
-				 " WHERE slot_type = 'logical' AND plugin = 'spock_output'"
-				 " AND (confirmed_flush_lsn IS NULL"
-				 "      OR confirmed_flush_lsn < pg_current_wal_lsn())");
+					 "SELECT COUNT(*) FROM pg_replication_slots"
+					 " WHERE slot_type = 'logical' AND plugin = 'spock_output'"
+					 " AND (confirmed_flush_lsn IS NULL"
+					 "      OR confirmed_flush_lsn < pg_current_wal_lsn())");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		die(_("could not check replication slot lag: %s"),
 			PQerrorMessage(source_conn));
@@ -1113,9 +1128,9 @@ check_preconditions(PGconn *source_conn, const char *source_node_name,
 	check_mesh_edges(source_conn, source_node_name, all_names, total_nodes);
 
 	/*
-	 * Per-peer: connectivity, Spock version, track_commit_timestamp, and
-	 * the full-mesh directed-graph check from each peer's own perspective
-	 * (a mesh that's only complete as seen from the source is not a mesh).
+	 * Per-peer: connectivity, Spock version, track_commit_timestamp, and the
+	 * full-mesh directed-graph check from each peer's own perspective (a mesh
+	 * that's only complete as seen from the source is not a mesh).
 	 */
 	for (i = 0; i < num_peers; i++)
 	{
@@ -1137,8 +1152,8 @@ check_preconditions(PGconn *source_conn, const char *source_node_name,
 		{
 			/*
 			 * die() exits immediately -- PQerrorMessage() needs peer_conn
-			 * still open, so PQfinish() must not run first (that would be
-			 * a use-after-free when die()'s own formatting reads it).
+			 * still open, so PQfinish() must not run first (that would be a
+			 * use-after-free when die()'s own formatting reads it).
 			 */
 			PQclear(res);
 			die(_("could not check track_commit_timestamp on peer \"%s\": %s"),
@@ -1184,7 +1199,7 @@ check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
 {
 	PGresult   *res;
 	int			i;
-	PQExpBuffer	others = createPQExpBuffer();
+	PQExpBuffer others = createPQExpBuffer();
 	int			other_count = 0;
 
 	res = debug_exec(conn, "SELECT datname FROM pg_database WHERE NOT datistemplate");
@@ -1209,7 +1224,7 @@ check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
 		db_conn = PQconnectdb(db_connstr);
 		if (PQstatus(db_conn) != CONNECTION_OK)
 		{
-			char *errmsg = pg_strdup(PQerrorMessage(db_conn));
+			char	   *errmsg = pg_strdup(PQerrorMessage(db_conn));
 
 			PQfinish(db_conn);
 			PQclear(res);
@@ -1221,7 +1236,7 @@ check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
 		ext_res = debug_exec(db_conn, "SELECT 1 FROM pg_extension WHERE extname = 'spock'");
 		if (PQresultStatus(ext_res) != PGRES_TUPLES_OK)
 		{
-			char *errmsg = pg_strdup(PQerrorMessage(db_conn));
+			char	   *errmsg = pg_strdup(PQerrorMessage(db_conn));
 
 			PQclear(ext_res);
 			PQfinish(db_conn);
@@ -1236,7 +1251,7 @@ check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
 			node_res = debug_exec(db_conn, "SELECT 1 FROM spock.local_node");
 			if (PQresultStatus(node_res) != PGRES_TUPLES_OK)
 			{
-				char *errmsg = pg_strdup(PQerrorMessage(db_conn));
+				char	   *errmsg = pg_strdup(PQerrorMessage(db_conn));
 
 				PQclear(node_res);
 				PQclear(ext_res);
@@ -1280,10 +1295,10 @@ check_no_native_subscriptions(PGconn *conn)
 	PGresult   *res;
 
 	res = debug_exec(conn,
-				 "SELECT s.subname, d.datname"
-				 " FROM pg_subscription s"
-				 " JOIN pg_database d ON d.oid = s.subdbid"
-				 " WHERE s.subenabled");
+					 "SELECT s.subname, d.datname"
+					 " FROM pg_subscription s"
+					 " JOIN pg_database d ON d.oid = s.subdbid"
+					 " WHERE s.subenabled");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -1293,7 +1308,7 @@ check_no_native_subscriptions(PGconn *conn)
 
 	if (PQntuples(res) > 0)
 	{
-		PQExpBuffer	list = createPQExpBuffer();
+		PQExpBuffer list = createPQExpBuffer();
 		int			i;
 
 		for (i = 0; i < PQntuples(res); i++)
@@ -1388,7 +1403,7 @@ serialize_manifest(BidirectionalState *state, const char *subscriber_name,
 	for (i = 0; i < state->num_peers; i++)
 	{
 		PeerNodeInfo *p = &state->peers[i];
-		bool		 last = (i == state->num_peers - 1);
+		bool		last = (i == state->num_peers - 1);
 
 		appendPQExpBufferStr(buf, "        {\n");
 		append_json_str_field(buf, "            ", MF_NODE_NAME, p->node_name, true);
@@ -1463,10 +1478,9 @@ durably_replace_manifest(const char *path, const char *data, size_t len)
 
 	/*
 	 * fsync_parent_path() already treats "filesystem doesn't support
-	 * directory fsync" as success internally, so a nonzero return here
-	 * is a genuine failure that can orphan the resource(s) this
-	 * manifest is the only record of, after a crash.  Fatal, like the
-	 * durability steps above.
+	 * directory fsync" as success internally, so a nonzero return here is a
+	 * genuine failure that can orphan the resource(s) this manifest is the
+	 * only record of, after a crash.  Fatal, like the durability steps above.
 	 */
 	if (fsync_parent_path(path) != 0)
 		die(_("could not fsync directory containing \"%s\": %s\n"),
@@ -1480,7 +1494,7 @@ static void
 write_manifest(BidirectionalState *state, const char *subscriber_name,
 			   const char *dbname, const char *source_dsn)
 {
-	PQExpBuffer	buf = createPQExpBuffer();
+	PQExpBuffer buf = createPQExpBuffer();
 
 	serialize_manifest(state, subscriber_name, dbname, source_dsn, buf);
 	durably_replace_manifest(state->manifest_path, buf->data, buf->len);
@@ -1605,13 +1619,13 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 	}
 
 	/*
-	 * Per-peer creation-state flags are JSON booleans, not strings --
-	 * handle them before the string-only fields below (which free and
-	 * ignore anything that isn't JSON_TOKEN_STRING).
+	 * Per-peer creation-state flags are JSON booleans, not strings -- handle
+	 * them before the string-only fields below (which free and ignore
+	 * anything that isn't JSON_TOKEN_STRING).
 	 */
 	if (s->in_peer_obj && tokentype != JSON_TOKEN_STRING)
 	{
-		bool	value = (tokentype == JSON_TOKEN_TRUE);
+		bool		value = (tokentype == JSON_TOKEN_TRUE);
 
 		if (strcmp(s->cur_field, MF_REVERSE_SUB_CREATED) == 0)
 			s->peer_reverse_sub_created = value;
@@ -1622,7 +1636,7 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 	/* Top-level creation-state flags are also JSON booleans. */
 	if (!s->in_peer_obj && tokentype != JSON_TOKEN_STRING)
 	{
-		bool	value = (tokentype == JSON_TOKEN_TRUE);
+		bool		value = (tokentype == JSON_TOKEN_TRUE);
 
 		if (strcmp(s->cur_field, MF_SOURCE_REVERSE_SUB_CREATED) == 0)
 			s->bidir->source_reverse_sub_created = value;
@@ -1687,13 +1701,13 @@ read_manifest(const char *manifest_path, BidirectionalState *state,
 			  char **subscriber_name_out, char **dbname_out,
 			  char **source_dsn_out)
 {
-	struct stat			st;
-	char			   *content;
-	FILE			   *f;
-	JsonLexContext	   *lex;
-	JsonSemAction		sem;
-	ManifestParseState	pstate;
-	JsonParseErrorType	result;
+	struct stat st;
+	char	   *content;
+	FILE	   *f;
+	JsonLexContext *lex;
+	JsonSemAction sem;
+	ManifestParseState pstate;
+	JsonParseErrorType result;
 
 	if (stat(manifest_path, &st) != 0)
 		return false;
@@ -1729,14 +1743,14 @@ read_manifest(const char *manifest_path, BidirectionalState *state,
 	sem.scalar = manifest_scalar;
 
 	lex = makeJsonLexContextCstringLen(NULL, content, st.st_size,
-									  PG_UTF8, true);
+									   PG_UTF8, true);
 	result = pg_parse_json(lex, &sem);
 	pg_free(content);
 	pg_free(pstate.cur_field);
 
 	if (result != JSON_SUCCESS)
 	{
-		char *detail = json_errdetail(result, lex);
+		char	   *detail = json_errdetail(result, lex);
 
 		freeJsonLexContext(lex);
 		die(_("manifest file \"%s\" is malformed: %s"), manifest_path, detail);
@@ -1758,7 +1772,7 @@ read_manifest(const char *manifest_path, BidirectionalState *state,
 static void
 stop_postgres_in_data_dir(void)
 {
-	struct stat	st;
+	struct stat st;
 
 	if (data_dir == NULL || !data_dir[0] || !file_exists(data_dir))
 		return;
@@ -1949,7 +1963,7 @@ cleanup_verified_subscriber_node(BidirectionalState *state, const char *subscrib
 {
 	PGconn	   *n3_conn;
 	PGresult   *res;
-	PQExpBuffer	query;
+	PQExpBuffer query;
 	int			i;
 	bool		fully_cleaned = true;
 
@@ -2066,12 +2080,12 @@ cleanup_upstream_node_resources(BidirectionalState *state, const char *subscribe
 	}
 
 	/*
-	 * Drop the reverse subscription on the source if this run recorded
-	 * having created it.  Unlike n3 (whose block drops every subscription
-	 * it finds, since a fresh n3 has no other legitimate ones), the source
-	 * has its own pre-existing, unrelated subscriptions that must not be
-	 * touched -- so this is gated by the flag and targets the specific
-	 * reverse subscription by name.
+	 * Drop the reverse subscription on the source if this run recorded having
+	 * created it.  Unlike n3 (whose block drops every subscription it finds,
+	 * since a fresh n3 has no other legitimate ones), the source has its own
+	 * pre-existing, unrelated subscriptions that must not be touched -- so
+	 * this is gated by the flag and targets the specific reverse subscription
+	 * by name.
 	 */
 	if (source_conn && state->source_reverse_sub_created)
 	{
@@ -2087,7 +2101,7 @@ cleanup_upstream_node_resources(BidirectionalState *state, const char *subscribe
 		}
 		else
 		{
-			char *source_node_name = pg_strdup(PQgetvalue(res, 0, 0));
+			char	   *source_node_name = pg_strdup(PQgetvalue(res, 0, 0));
 
 			PQclear(res);
 			if (drop_reverse_sub(source_conn, source_node_name, subscriber_name,
@@ -2109,8 +2123,8 @@ cleanup_upstream_node_resources(BidirectionalState *state, const char *subscribe
 		/*
 		 * Only attempt to drop -- and only require connectivity for --
 		 * resources this run actually recorded as created.  Slot/sub names
-		 * are deterministic, not per-run unique, so --cleanup must not
-		 * touch a same-named resource from an unrelated join, nor report
+		 * are deterministic, not per-run unique, so --cleanup must not touch
+		 * a same-named resource from an unrelated join, nor report
 		 * "incomplete" over a peer that was never touched.
 		 */
 		if ((!peer->slot_creation_lsn || !peer->slot_creation_lsn[0]) &&
@@ -2138,11 +2152,10 @@ cleanup_upstream_node_resources(BidirectionalState *state, const char *subscribe
 		}
 
 		/*
-		 * Drop the reverse subscription (peer -> new subscriber) only if
-		 * this run recorded having created it.  The sub_drop second
-		 * argument is ifexists=true, so an absent subscription is not an
-		 * error -- only an actual query failure counts against
-		 * fully_cleaned.
+		 * Drop the reverse subscription (peer -> new subscriber) only if this
+		 * run recorded having created it.  The sub_drop second argument is
+		 * ifexists=true, so an absent subscription is not an error -- only an
+		 * actual query failure counts against fully_cleaned.
 		 */
 		if (peer->reverse_sub_created)
 		{
@@ -2190,23 +2203,23 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 		fully_cleaned = false;
 
 	/*
-	 * Stop n3's postmaster unconditionally (not gated by --force, which
-	 * only governs removing the data directory).  check_data_dir() and
-	 * check_reused_data_dir_is_safe() explicitly support resuming a join
-	 * into this same data_dir after a failed attempt, and that resume
-	 * path (main(), the "start -l ..." pg_ctl call before catchup) assumes
-	 * postgres is not already running here; leaving it up after
-	 * `--cleanup` would make the very next retry fail outright.  Every
-	 * drop above already ran while n3 was still reachable -- including
-	 * the source's and each peer's reverse subscription, whose provider
-	 * is n3, so dropping them needs a live connection back to it -- so
-	 * this is just shutdown, not a substitute for them.
+	 * Stop n3's postmaster unconditionally (not gated by --force, which only
+	 * governs removing the data directory).  check_data_dir() and
+	 * check_reused_data_dir_is_safe() explicitly support resuming a join into
+	 * this same data_dir after a failed attempt, and that resume path
+	 * (main(), the "start -l ..." pg_ctl call before catchup) assumes
+	 * postgres is not already running here; leaving it up after `--cleanup`
+	 * would make the very next retry fail outright.  Every drop above already
+	 * ran while n3 was still reachable -- including the source's and each
+	 * peer's reverse subscription, whose provider is n3, so dropping them
+	 * needs a live connection back to it -- so this is just shutdown, not a
+	 * substitute for them.
 	 */
 	stop_postgres_in_data_dir();
 
 	/*
-	 * The data directory a partial run may have created via basebackup.
-	 * Never touch it without --force.
+	 * The data directory a partial run may have created via basebackup. Never
+	 * touch it without --force.
 	 */
 	if (!remove_data_dir_if_forced(force_rm_datadir))
 		fully_cleaned = false;
@@ -2223,10 +2236,10 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 	/*
 	 * Every remote/local resource above was confirmed gone; now remove the
 	 * retry record(s) themselves.  An unexpected removal failure here
-	 * (anything but ENOENT, i.e. already gone) must also flip
-	 * fully_cleaned -- otherwise the caller reports success and exits 0
-	 * while a stale record that still references now-removed resources
-	 * lingers on disk, which a later --cleanup could misread as current.
+	 * (anything but ENOENT, i.e. already gone) must also flip fully_cleaned
+	 * -- otherwise the caller reports success and exits 0 while a stale
+	 * record that still references now-removed resources lingers on disk,
+	 * which a later --cleanup could misread as current.
 	 */
 	if (state->manifest_path && state->manifest_path[0])
 	{
@@ -2245,14 +2258,14 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 	/*
 	 * Also remove any pending-cleanup sidecar, even if it wasn't the file
 	 * that drove this cleanup: a stale one left behind by an earlier run
-	 * whose own sidecar-unlink failed could otherwise be misread as
-	 * current by a later --cleanup once the manifest above is gone,
-	 * reporting resources as still-pending that were, in fact, already
-	 * confirmed removed here.
+	 * whose own sidecar-unlink failed could otherwise be misread as current
+	 * by a later --cleanup once the manifest above is gone, reporting
+	 * resources as still-pending that were, in fact, already confirmed
+	 * removed here.
 	 */
 	if (data_dir != NULL && data_dir[0])
 	{
-		char	sidecar_path[MAXPGPATH];
+		char		sidecar_path[MAXPGPATH];
 
 		snprintf(sidecar_path, MAXPGPATH, "%s.spock_bidir_pending.json", data_dir);
 		if (unlink(sidecar_path) == 0)
@@ -2471,9 +2484,10 @@ parse_options(int argc, char **argv, SubscriberCreateContext *ctx)
 		snprintf(ctx->bidir_manifest_path, MAXPGPATH,
 				 "%s/spock_bidirectional_manifest.json", data_dir);
 		ctx->bidir.manifest_path = ctx->bidir_manifest_path;
+
 		/*
-		 * Sidecar path for the source slot orphan-protection record (see
-		 * the write near source-slot creation below) -- lives next to, not
+		 * Sidecar path for the source slot orphan-protection record (see the
+		 * write near source-slot creation below) -- lives next to, not
 		 * inside, data_dir, since data_dir must still be empty when this is
 		 * first written (pg_basebackup requires an empty target directory).
 		 */
@@ -2493,35 +2507,34 @@ parse_options(int argc, char **argv, SubscriberCreateContext *ctx)
 static void
 run_cleanup_mode_if_requested(SubscriberCreateContext *ctx)
 {
-	char *sub_name = NULL;
-	char *db = NULL;
-	char *src_dsn = NULL;
+	char	   *sub_name = NULL;
+	char	   *db = NULL;
+	char	   *src_dsn = NULL;
 
 	if (!ctx->bidir.cleanup_mode)
 		return;
 
 	if (read_manifest(ctx->bidir.manifest_path, &ctx->bidir, &sub_name, &db, &src_dsn))
 		exit(cleanup_partial_state(&ctx->bidir, sub_name, db, src_dsn,
-									ctx->bidir.force_cleanup) ? 0 : 1);
+								   ctx->bidir.force_cleanup) ? 0 : 1);
 
 	/*
-	 * No full manifest -- basebackup may never have completed.  Fall
-	 * back to the pending-cleanup sidecar written right after source
-	 * slot creation, so a slot orphaned by a failed/interrupted backup
-	 * is still reachable by --cleanup.
+	 * No full manifest -- basebackup may never have completed.  Fall back to
+	 * the pending-cleanup sidecar written right after source slot creation,
+	 * so a slot orphaned by a failed/interrupted backup is still reachable by
+	 * --cleanup.
 	 */
 	if (read_manifest(ctx->bidir_pending_path, &ctx->bidir, &sub_name, &db, &src_dsn))
 		/* cleanup_partial_state() removes the sidecar itself on success. */
 		exit(cleanup_partial_state(&ctx->bidir, sub_name, db, src_dsn,
-									ctx->bidir.force_cleanup) ? 0 : 1);
+								   ctx->bidir.force_cleanup) ? 0 : 1);
 
 	/*
-	 * Neither record exists -- there's no slot/subscription bookkeeping
-	 * to act on, e.g. because the run died before the pending sidecar
-	 * was even written.  But an orphaned data_dir can still be sitting
-	 * there from that attempt, and --force is an explicit instruction
-	 * to remove it: don't leave it behind just because there was
-	 * nothing to read.
+	 * Neither record exists -- there's no slot/subscription bookkeeping to
+	 * act on, e.g. because the run died before the pending sidecar was even
+	 * written.  But an orphaned data_dir can still be sitting there from that
+	 * attempt, and --force is an explicit instruction to remove it: don't
+	 * leave it behind just because there was nothing to read.
 	 */
 	if (ctx->bidir.force_cleanup && data_dir != NULL && data_dir[0] &&
 		file_exists(data_dir))
@@ -2556,7 +2569,7 @@ resolve_database_targets(SubscriberCreateContext *ctx)
 	}
 	else
 	{
-		char *dbname = get_connstr_dbname(ctx->base_prov_connstr);
+		char	   *dbname = get_connstr_dbname(ctx->base_prov_connstr);
 
 		if (!dbname)
 			die(_("Either provider connection string must contain database "
@@ -2569,10 +2582,10 @@ resolve_database_targets(SubscriberCreateContext *ctx)
 
 	/*
 	 * Single database only: all join state is per-database, and the
-	 * physical-backup/recovery path operates on one data directory.
-	 * Reject a multi-database request rather than silently joining only
-	 * database_list[0]. Separate from check_single_spock_database()
-	 * below, which checks the instance for spock on other databases.
+	 * physical-backup/recovery path operates on one data directory. Reject a
+	 * multi-database request rather than silently joining only
+	 * database_list[0]. Separate from check_single_spock_database() below,
+	 * which checks the instance for spock on other databases.
 	 */
 	if (ctx->bidir.enabled && ctx->n_databases > 1)
 		die(_("--bidirectional supports a single database only; "
@@ -2590,11 +2603,11 @@ resolve_database_targets(SubscriberCreateContext *ctx)
 static void
 validate_connection_strings(SubscriberCreateContext *ctx)
 {
-	int	dbnum;
+	int			dbnum;
 
 	for (dbnum = 0; dbnum < ctx->n_databases; dbnum++)
 	{
-		char *db = ctx->database_list[dbnum];
+		char	   *db = ctx->database_list[dbnum];
 
 		ctx->prov_connstr = get_connstr(ctx->base_prov_connstr, db);
 		if (!ctx->prov_connstr || !strlen(ctx->prov_connstr))
@@ -2622,8 +2635,8 @@ validate_connection_strings(SubscriberCreateContext *ctx)
 static void
 create_replication_slots(SubscriberCreateContext *ctx)
 {
-	int	dbnum;
-	int	logfd;
+	int			dbnum;
+	int			logfd;
 
 	/*
 	 * Create log file where new postgres instance will log to while being
@@ -2644,7 +2657,7 @@ create_replication_slots(SubscriberCreateContext *ctx)
 
 	for (dbnum = 0; dbnum < ctx->n_databases; dbnum++)
 	{
-		char *db = ctx->database_list[dbnum];
+		char	   *db = ctx->database_list[dbnum];
 
 		ctx->prov_connstr = get_connstr(ctx->base_prov_connstr, db);
 		if (!ctx->prov_connstr || !strlen(ctx->prov_connstr))
@@ -2659,9 +2672,8 @@ create_replication_slots(SubscriberCreateContext *ctx)
 		/*
 		 * --bidirectional: discover peers, verify preconditions, then
 		 * continue into the physical-backup pipeline below using the
-		 * "sub_<subscriber>_<source>" slot naming convention.  Manifest
-		 * write is deferred until after the basebackup; see the comment
-		 * there.
+		 * "sub_<subscriber>_<source>" slot naming convention.  Manifest write
+		 * is deferred until after the basebackup; see the comment there.
 		 */
 		if (ctx->bidir.enabled)
 		{
@@ -2669,8 +2681,8 @@ create_replication_slots(SubscriberCreateContext *ctx)
 
 			/*
 			 * Inherit the replication sets already in use by the cluster
-			 * being joined, rather than accept a separately specified
-			 * list -- see the die() in parse_options() that rejects
+			 * being joined, rather than accept a separately specified list --
+			 * see the die() in parse_options() that rejects
 			 * --replication-sets together with --bidirectional.
 			 */
 			ctx->replication_sets = get_source_mesh_replication_sets(provider_conn);
@@ -2679,11 +2691,11 @@ create_replication_slots(SubscriberCreateContext *ctx)
 						"cluster: %s\n"), ctx->replication_sets);
 
 			ctx->bidir.num_peers = discover_peer_nodes(provider_conn,
-												  ctx->remote_info->node_name,
-												  ctx->subscriber_name, db,
-												  &ctx->bidir.peers);
+													   ctx->remote_info->node_name,
+													   ctx->subscriber_name, db,
+													   &ctx->bidir.peers);
 			{
-				int	pi;
+				int			pi;
 
 				for (pi = 0; pi < ctx->bidir.num_peers; pi++)
 					print_msg(VERBOSITY_DEBUG,
@@ -2707,22 +2719,21 @@ create_replication_slots(SubscriberCreateContext *ctx)
 					  _("Creating replication slot on source \"%s\" for future "
 						"subscription \"%s\"\n"), ctx->remote_info->node_name, source_sub_name);
 			ctx->bidir.source_slot_name = initialize_replication_slot(provider_conn,
-																 ctx->remote_info->dbname,
-																 ctx->remote_info->node_name,
-																 source_sub_name,
-																 ctx->drop_slot_if_exists);
+																	  ctx->remote_info->dbname,
+																	  ctx->remote_info->node_name,
+																	  source_sub_name,
+																	  ctx->drop_slot_if_exists);
 			print_msg(VERBOSITY_DEBUG, _("Source replication slot created: \"%s\"\n"),
 					  ctx->bidir.source_slot_name);
 			pg_free(source_sub_name);
 
 			/*
 			 * Persist a pending-cleanup record now, before the base backup
-			 * even starts: the source slot above already exists on the
-			 * remote node, and a failed/interrupted backup would otherwise
-			 * orphan it with nothing for --cleanup to find (the real
-			 * manifest can't be written yet -- data_dir must stay empty for
-			 * pg_basebackup).  Superseded and removed once the real
-			 * manifest is written below.
+			 * even starts: the source slot above already exists on the remote
+			 * node, and a failed/interrupted backup would otherwise orphan it
+			 * with nothing for --cleanup to find (the real manifest can't be
+			 * written yet -- data_dir must stay empty for pg_basebackup).
+			 * Superseded and removed once the real manifest is written below.
 			 */
 			ctx->bidir.manifest_path = ctx->bidir_pending_path;
 			write_manifest(&ctx->bidir, ctx->subscriber_name, db, ctx->base_prov_connstr);
@@ -2749,10 +2760,10 @@ create_replication_slots(SubscriberCreateContext *ctx)
 		print_msg(VERBOSITY_NORMAL,
 				  _("Creating replication slot in database %s ...\n"), db);
 		ctx->slot_names[dbnum] = initialize_replication_slot(provider_conn,
-														ctx->remote_info->dbname,
-														ctx->remote_info->node_name,
-														ctx->subscriber_name,
-														ctx->drop_slot_if_exists);
+															 ctx->remote_info->dbname,
+															 ctx->remote_info->node_name,
+															 ctx->subscriber_name,
+															 ctx->drop_slot_if_exists);
 		PQfinish(provider_conn);
 		provider_conn = NULL;
 	}
@@ -2815,7 +2826,7 @@ catchup_to_restore_point(SubscriberCreateContext *ctx)
 	restore_point_name = generate_restore_point_name();
 
 	print_msg(VERBOSITY_NORMAL, _("Creating restore point \"%s\" on remote node ...\n"),
-		restore_point_name);
+			  restore_point_name);
 	provider_conn = connectdb(ctx->prov_connstr);
 	ctx->remote_lsn = create_restore_point(provider_conn, restore_point_name);
 	PQfinish(provider_conn);
@@ -2833,7 +2844,7 @@ catchup_to_restore_point(SubscriberCreateContext *ctx)
 	else
 	{
 		appendPQExpBuffer(recoveryconfcontents, "primary_conninfo = '%s'\n",
-								escape_single_quotes_ascii(ctx->prov_connstr));
+						  escape_single_quotes_ascii(ctx->prov_connstr));
 	}
 	appendPQExpBuffer(recoveryconfcontents, "recovery_target_name = '%s'\n", restore_point_name);
 	appendPQExpBuffer(recoveryconfcontents, "recovery_target_inclusive = true\n");
@@ -2845,12 +2856,13 @@ catchup_to_restore_point(SubscriberCreateContext *ctx)
 
 	/*
 	 * Start subscriber node with spock disabled, and wait until it starts
-	 * accepting connections which means it has caught up to the restore point.
+	 * accepting connections which means it has caught up to the restore
+	 * point.
 	 *
 	 * TODO: for --bidirectional this node should be network-quarantined
-	 * (private socket/listen address, or a restrictive pg_hba.conf) from
-	 * this first startup through the end of the join -- spock.readonly =
-	 * 'local' (set later) blocks writes but not reads or peer probes.  Not
+	 * (private socket/listen address, or a restrictive pg_hba.conf) from this
+	 * first startup through the end of the join -- spock.readonly = 'local'
+	 * (set later) blocks writes but not reads or peer probes.  Not
 	 * implemented: --subscriber-dsn must be directly reachable, and the
 	 * tool's own connections use that same DSN throughout, so restricting
 	 * listen_addresses here would also lock the tool itself out.
@@ -2860,8 +2872,8 @@ catchup_to_restore_point(SubscriberCreateContext *ctx)
 		die(_("Postgres startup for restore point catchup failed with %d. See spock_create_subscriber_postgres.log."), pg_ctl_ret);
 
 	wait_primary_connection(ctx->sub_connstr,
-							 ctx->bidir.enabled ? ctx->bidir.stall_timeout : 0,
-							 ctx->bidir.enabled ? ctx->bidir.max_wait : 0);
+							ctx->bidir.enabled ? ctx->bidir.stall_timeout : 0,
+							ctx->bidir.enabled ? ctx->bidir.max_wait : 0);
 }
 
 /*
@@ -2876,7 +2888,7 @@ catchup_to_restore_point(SubscriberCreateContext *ctx)
 static void
 strip_subscriber_catalog(SubscriberCreateContext *ctx)
 {
-	int	pg_ctl_ret;
+	int			pg_ctl_ret;
 
 	/*
 	 * Clean any per-node data that were copied by pg_basebackup.
@@ -2890,12 +2902,12 @@ strip_subscriber_catalog(SubscriberCreateContext *ctx)
 		char	   *expected_sysid;
 
 		/*
-		 * Give n3 its own permanent identity now, right after promotion
-		 * and before any catalog mutation: a physical backup preserves
-		 * the source's system identifier, which risks stray WAL from one
-		 * cluster being mistaken for the other's, and until reset makes
-		 * system_identifier useless for proving a connection actually
-		 * reaches n3 rather than the source.
+		 * Give n3 its own permanent identity now, right after promotion and
+		 * before any catalog mutation: a physical backup preserves the
+		 * source's system identifier, which risks stray WAL from one cluster
+		 * being mistaken for the other's, and until reset makes
+		 * system_identifier useless for proving a connection actually reaches
+		 * n3 rather than the source.
 		 */
 		print_msg(VERBOSITY_NORMAL,
 				  _("Assigning a new system identifier to the subscriber node...\n"));
@@ -2910,11 +2922,11 @@ strip_subscriber_catalog(SubscriberCreateContext *ctx)
 
 			/*
 			 * Neither step below is safe to interrupt -- both write
-			 * pg_control/WAL directly, and signal_handler() -> die() is
-			 * not async-signal-safe.  A signal landing mid-write could
-			 * corrupt pg_control with no repair short of --cleanup
-			 * --force.  Block both signals across this pair of calls;
-			 * any that arrives is deferred until right after.
+			 * pg_control/WAL directly, and signal_handler() -> die() is not
+			 * async-signal-safe.  A signal landing mid-write could corrupt
+			 * pg_control with no repair short of --cleanup --force.  Block
+			 * both signals across this pair of calls; any that arrives is
+			 * deferred until right after.
 			 */
 			sigemptyset(&block_set);
 			sigaddset(&block_set, SIGINT);
@@ -2935,13 +2947,12 @@ strip_subscriber_catalog(SubscriberCreateContext *ctx)
 		subscriber_conn = connectdb(ctx->sub_connstr);
 
 		/*
-		 * --subscriber-dsn is expected to point directly at this node;
-		 * verify that cheaply before running anything destructive, rather
-		 * than trusting it silently.  Now that n3 has just been given its
-		 * own system identifier above, a straightforward comparison is a
-		 * valid proof the connection reaches n3 and not the source or any
-		 * other server -- unlike before the reset, nothing else could
-		 * share it.
+		 * --subscriber-dsn is expected to point directly at this node; verify
+		 * that cheaply before running anything destructive, rather than
+		 * trusting it silently.  Now that n3 has just been given its own
+		 * system identifier above, a straightforward comparison is a valid
+		 * proof the connection reaches n3 and not the source or any other
+		 * server -- unlike before the reset, nothing else could share it.
 		 */
 		{
 			PGresult   *sysid_res = debug_exec(subscriber_conn, "SELECT system_identifier FROM pg_control_system()");
@@ -2964,8 +2975,8 @@ strip_subscriber_catalog(SubscriberCreateContext *ctx)
 
 		/*
 		 * Persist n3's own system identifier so --cleanup can re-verify
-		 * node_dsn still reaches this same node later, rather than trusting
-		 * a possibly stale manifest to still point at the right server.
+		 * node_dsn still reaches this same node later, rather than trusting a
+		 * possibly stale manifest to still point at the right server.
 		 */
 		ctx->bidir.node_sysid = expected_sysid;
 
@@ -2992,11 +3003,11 @@ strip_subscriber_catalog(SubscriberCreateContext *ctx)
 	}
 	else
 	{
-		int	dbnum;
+		int			dbnum;
 
 		for (dbnum = 0; dbnum < ctx->n_databases; dbnum++)
 		{
-			char *db = ctx->database_list[dbnum];
+			char	   *db = ctx->database_list[dbnum];
 
 			ctx->sub_connstr = get_connstr(ctx->base_sub_connstr, db);
 
@@ -3010,7 +3021,10 @@ strip_subscriber_catalog(SubscriberCreateContext *ctx)
 		}
 	}
 
-	/* Stop Postgres so we can start it again with spock (shared_preload_libraries) loaded. */
+	/*
+	 * Stop Postgres so we can start it again with spock
+	 * (shared_preload_libraries) loaded.
+	 */
 	pg_ctl_ret = run_pg_ctl("stop");
 	if (pg_ctl_ret != 0)
 		die(_("Postgres stop after restore point catchup failed with %d. See spock_create_subscriber_postgres.log."), pg_ctl_ret);
@@ -3028,12 +3042,12 @@ strip_subscriber_catalog(SubscriberCreateContext *ctx)
 static void
 restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 {
-	int	pg_ctl_ret;
+	int			pg_ctl_ret;
 
 	/*
 	 * Start the node again, now with spock active so that we can start the
-	 * logical replication.  This is final start, so don't log to to special log
-	 * file anymore.
+	 * logical replication.  This is final start, so don't log to to special
+	 * log file anymore.
 	 */
 	print_msg(VERBOSITY_NORMAL,
 			  _("Initializing spock on the subscriber node:\n"));
@@ -3045,7 +3059,7 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 
 	if (ctx->bidir.enabled)
 	{
-		char *db = ctx->database_list[0];
+		char	   *db = ctx->database_list[0];
 
 		subscriber_conn = connectdb(ctx->sub_connstr);
 
@@ -3054,14 +3068,13 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 		install_extension(subscriber_conn, "spock");
 
 		/*
-		 * Create the local node, then immediately go read-only -- no
-		 * window where n3 is reachable/writable before that lands.  No
-		 * origin creation here; the catchup subscription creates it
-		 * later.
+		 * Create the local node, then immediately go read-only -- no window
+		 * where n3 is reachable/writable before that lands.  No origin
+		 * creation here; the catchup subscription creates it later.
 		 *
 		 * dsn is --subscriber-dsn (sub_connstr) -- the externally-reachable
-		 * address other nodes use to connect back, not a separate
-		 * --node-dsn option.
+		 * address other nodes use to connect back, not a separate --node-dsn
+		 * option.
 		 */
 		print_msg(VERBOSITY_NORMAL, _("Creating local Spock node \"%s\"...\n"),
 				  ctx->subscriber_name);
@@ -3184,11 +3197,11 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 	}
 	else
 	{
-		int	dbnum;
+		int			dbnum;
 
 		for (dbnum = 0; dbnum < ctx->n_databases; dbnum++)
 		{
-			char *db = ctx->database_list[dbnum];
+			char	   *db = ctx->database_list[dbnum];
 
 			ctx->sub_connstr = get_connstr(ctx->base_sub_connstr, db);
 			ctx->prov_connstr = get_connstr(ctx->base_prov_connstr, db);
@@ -3201,8 +3214,8 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 			install_extension(subscriber_conn, "spock");
 
 			/*
-			 * Create the identifier which is setup with the position to which we
-			 * already caught up using physical replication.
+			 * Create the identifier which is setup with the position to which
+			 * we already caught up using physical replication.
 			 */
 			print_msg(VERBOSITY_VERBOSE,
 					  _("Creating replication origin for database %s...\n"), db);
@@ -3216,8 +3229,8 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 			print_msg(VERBOSITY_VERBOSE, _("Replication sets: %s\n"), ctx->replication_sets);
 
 			spock_subscribe(subscriber_conn, ctx->subscriber_name, ctx->sub_connstr,
-								ctx->prov_connstr, ctx->replication_sets, ctx->apply_delay,
-								ctx->force_text_transfer);
+							ctx->prov_connstr, ctx->replication_sets, ctx->apply_delay,
+							ctx->force_text_transfer);
 
 			PQfinish(subscriber_conn);
 			subscriber_conn = NULL;
@@ -3251,7 +3264,7 @@ main(int argc, char **argv)
 	/* If user does not want the node to be running at the end, stop it. */
 	if (ctx.stop)
 	{
-		int	pg_ctl_ret;
+		int			pg_ctl_ret;
 
 		print_msg(VERBOSITY_NORMAL, _("Stopping the subscriber node ...\n"));
 		pg_ctl_ret = run_pg_ctl("stop");
@@ -3326,7 +3339,8 @@ usage(void)
 static void
 die(const char *fmt,...)
 {
-	va_list argptr;
+	va_list		argptr;
+
 	va_start(argptr, fmt);
 	vfprintf(stderr, fmt, argptr);
 	va_end(argptr);
@@ -3355,7 +3369,8 @@ print_msg(VerbosityLevelEnum level, const char *fmt,...)
 {
 	if (verbosity >= level)
 	{
-		va_list argptr;
+		va_list		argptr;
+
 		va_start(argptr, fmt);
 		vfprintf(stdout, fmt, argptr);
 		va_end(argptr);
@@ -3401,9 +3416,9 @@ debug_exec(PGconn *conn, const char *query)
 static int
 run_pg_ctl(const char *arg)
 {
-	int			 ret;
-	PQExpBuffer  cmd = createPQExpBuffer();
-	char		*exec_path = find_other_exec_or_die(argv0, "pg_ctl");
+	int			ret;
+	PQExpBuffer cmd = createPQExpBuffer();
+	char	   *exec_path = find_other_exec_or_die(argv0, "pg_ctl");
 
 	appendPQExpBuffer(cmd, "\"%s\" %s -D \"%s\"", exec_path, arg, data_dir);
 
@@ -3487,7 +3502,7 @@ parse_checked_int(const char *arg, const char *opt_name)
 static char *
 validated_existing_path(const char *arg, const char *file_label)
 {
-	char *path = expand_tilde(pg_strdup(arg));
+	char	   *path = expand_tilde(pg_strdup(arg));
 
 	if (path != NULL && !file_exists(path))
 		die(_("The specified %s file does not exist."), file_label);
@@ -3500,18 +3515,18 @@ validated_existing_path(const char *arg, const char *file_label)
  */
 static void
 run_basebackup(const char *provider_connstr, const char *data_dir,
-	const char *extra_basebackup_args)
+			   const char *extra_basebackup_args)
 {
-	int			 ret;
-	PQExpBuffer  cmd = createPQExpBuffer();
-	char		*exec_path = find_other_exec_or_die(argv0, "pg_basebackup");
+	int			ret;
+	PQExpBuffer cmd = createPQExpBuffer();
+	char	   *exec_path = find_other_exec_or_die(argv0, "pg_basebackup");
 
 	/*
 	 * -c fast forces an immediate checkpoint.  Without it, pg_basebackup
 	 * requests the default "spread" checkpoint, which paces itself against
-	 * checkpoint_timeout (5 minutes by default) regardless of how little
-	 * data needs flushing -- an unpredictable, unnecessary stall for a
-	 * tool whose entire job is this one backup.
+	 * checkpoint_timeout (5 minutes by default) regardless of how little data
+	 * needs flushing -- an unpredictable, unnecessary stall for a tool whose
+	 * entire job is this one backup.
 	 */
 	appendPQExpBuffer(cmd, "\"%s\" -D \"%s\" -d \"%s\" -X s -c fast -P", exec_path, data_dir, provider_connstr);
 
@@ -3602,14 +3617,14 @@ initialize_data_dir(char *data_dir, char *connstr,
 
 		/*
 		 * postgresql.auto.conf is copied verbatim from the source by
-		 * pg_basebackup, and is loaded after postgresql.conf and wins
-		 * on conflicts -- most of it (tuning, spock GUCs) is exactly
-		 * what should carry over to this node, but a setting like port
-		 * or listen_addresses may need to differ. Append rather than
-		 * replace, so this node's overrides win (same-file, later
-		 * setting wins) while everything else inherited stays in effect.
-		 * A marker line makes any resulting duplicate settings obvious
-		 * to whoever next reads the file.
+		 * pg_basebackup, and is loaded after postgresql.conf and wins on
+		 * conflicts -- most of it (tuning, spock GUCs) is exactly what should
+		 * carry over to this node, but a setting like port or
+		 * listen_addresses may need to differ. Append rather than replace, so
+		 * this node's overrides win (same-file, later setting wins) while
+		 * everything else inherited stays in effect. A marker line makes any
+		 * resulting duplicate settings obvious to whoever next reads the
+		 * file.
 		 */
 		snprintf(auto_conf_path, sizeof(auto_conf_path), "%s/postgresql.auto.conf", data_dir);
 		f = fopen(auto_conf_path, "a");
@@ -3623,9 +3638,9 @@ initialize_data_dir(char *data_dir, char *connstr,
 
 		/*
 		 * primary_conninfo is appended to this same file later, in
-		 * WriteRecoveryConf(); if the override's last line lacks a
-		 * trailing newline, that append would merge onto it instead of
-		 * landing on its own line.
+		 * WriteRecoveryConf(); if the override's last line lacks a trailing
+		 * newline, that append would merge onto it instead of landing on its
+		 * own line.
 		 */
 		ensure_trailing_newline(auto_conf_path);
 	}
@@ -3644,11 +3659,11 @@ check_data_dir(char *data_dir, RemoteInfo *remoteinfo)
 	/* Run basebackup as needed. */
 	switch (pg_check_dir(data_dir))
 	{
-		case 0:		/* Does not exist */
-		case 1:		/* Exists, empty */
-				return false;
+		case 0:					/* Does not exist */
+		case 1:					/* Exists, empty */
+			return false;
 		case 2:
-		case 3:		/* Exists, not empty */
+		case 3:					/* Exists, not empty */
 		case 4:
 			{
 				if (!is_pg_dir(data_dir))
@@ -3656,7 +3671,7 @@ check_data_dir(char *data_dir, RemoteInfo *remoteinfo)
 						data_dir);
 				return true;
 			}
-		case -1:	/* Access problem */
+		case -1:				/* Access problem */
 			die(_("Could not access directory \"%s\": %s.\n"),
 				data_dir, strerror(errno));
 	}
@@ -3779,9 +3794,9 @@ initialize_replication_slot(PGconn *conn, char *dbname,
 							char *provider_node_name, char *subscription_name,
 							bool drop_slot_if_exists)
 {
-	PQExpBufferData		query;
-	char			   *slot_name;
-	PGresult		   *res;
+	PQExpBufferData query;
+	char	   *slot_name;
+	PGresult   *res;
 
 	/* Generate the slot name. */
 	initPQExpBuffer(&query);
@@ -3881,10 +3896,10 @@ get_origin_name_for_node(PGconn *conn, const char *upstream_node_name,
  * TODO: unify with spock_remote_node_info in spock_rpc
  */
 static RemoteInfo *
-get_remote_info(PGconn* conn)
+get_remote_info(PGconn *conn)
 {
-	RemoteInfo		    *ri = (RemoteInfo *)pg_malloc0(sizeof(RemoteInfo));
-	PGresult	   *res;
+	RemoteInfo *ri = (RemoteInfo *) pg_malloc0(sizeof(RemoteInfo));
+	PGresult   *res;
 
 	if (!extension_exists(conn, "spock"))
 		die(_("The remote node is not configured as a spock provider.\n"));
@@ -3925,9 +3940,9 @@ get_remote_info(PGconn* conn)
 static bool
 extension_exists(PGconn *conn, const char *extname)
 {
-	PQExpBuffer		query = createPQExpBuffer();
-	PGresult	   *res;
-	bool			ret;
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	bool		ret;
 
 	printfPQExpBuffer(query, "SELECT 1 FROM pg_catalog.pg_extension WHERE extname = %s;",
 					  PQescapeLiteral(conn, extname, strlen(extname)));
@@ -3953,8 +3968,8 @@ extension_exists(PGconn *conn, const char *extname)
 static void
 install_extension(PGconn *conn, const char *extname)
 {
-	PQExpBuffer		query = createPQExpBuffer();
-	PGresult	   *res;
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
 
 	printfPQExpBuffer(query, "CREATE EXTENSION IF NOT EXISTS %s;",
 					  PQescapeIdentifier(conn, extname, strlen(extname)));
@@ -3977,7 +3992,7 @@ install_extension(PGconn *conn, const char *extname)
 static void
 remove_unwanted_data(PGconn *conn)
 {
-	PGresult		   *res;
+	PGresult   *res;
 
 	/*
 	 * Remove replication identifiers (9.4 will get them removed by dropping
@@ -3995,7 +4010,7 @@ remove_unwanted_data(PGconn *conn)
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		die(_("Could not clean the spock extension, status %s: %s\n"),
-			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 	}
 	PQclear(res);
 }
@@ -4198,20 +4213,20 @@ remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
 {
 	PGresult   *res;
 
-	(void) capture;			/* must already be populated before this runs */
+	(void) capture;				/* must already be populated before this runs */
 
 	/*
 	 * Drop all replication origins copied by the basebackup.
-	 * pg_replication_origin is a cluster-wide (not per-database) catalog,
-	 * so this is scoped to spock's own "spk_..." naming convention
+	 * pg_replication_origin is a cluster-wide (not per-database) catalog, so
+	 * this is scoped to spock's own "spk_..." naming convention
 	 * (gen_slot_name(), shared with slot names) rather than dropping every
 	 * row -- an unrelated database on the same instance with its own
 	 * (non-spock) logical replication would otherwise lose its origins too.
 	 */
 	res = debug_exec(conn,
-				 "SELECT pg_replication_origin_drop(roname)"
-				 " FROM pg_replication_origin"
-				 " WHERE roname LIKE 'spk\\_%' ESCAPE '\\'");
+					 "SELECT pg_replication_origin_drop(roname)"
+					 " FROM pg_replication_origin"
+					 " WHERE roname LIKE 'spk\\_%' ESCAPE '\\'");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -4222,36 +4237,35 @@ remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
 
 	/* Guard against CASCADE collaterally dropping user objects. */
 	res = debug_exec(conn,
-				 "WITH spock_ext AS ("
-				 "  SELECT oid FROM pg_extension WHERE extname = 'spock'"
-				 "), ext_members AS ("
-				 "  SELECT classid, objid FROM pg_depend, spock_ext"
-				 "  WHERE refclassid = 'pg_extension'::regclass"
-				 "    AND refobjid = spock_ext.oid"
-				 "    AND deptype = 'e'"
-				 "), spock_members AS ("
-				 /*
-				  * Extension members proper (tables, views, functions, ...)
-				  * plus anything with an INTERNAL ('i') or AUTO ('a')
-				  * dependency on one of them -- a view's own rules use 'i',
-				  * while a table's own constraints (CHECK, FK, ...) use
-				  * 'a'; both are linked to their owning relation this way,
-				  * not directly to the extension, but are just as much
-				  * spock's own objects.
-				  */
-				 "  SELECT classid, objid FROM ext_members"
-				 "  UNION"
-				 "  SELECT d.classid, d.objid FROM pg_depend d"
-				 "  JOIN ext_members m ON d.refclassid = m.classid AND d.refobjid = m.objid"
-				 "  WHERE d.deptype IN ('i', 'a')"
-				 ")"
-				 "SELECT DISTINCT pg_describe_object(d.classid, d.objid, d.objsubid)"
-				 " FROM pg_depend d"
-				 " JOIN spock_members m ON d.refclassid = m.classid AND d.refobjid = m.objid"
-				 " WHERE d.deptype = 'n'"
-				 "   AND NOT EXISTS ("
-				 "     SELECT 1 FROM spock_members m2"
-				 "     WHERE m2.classid = d.classid AND m2.objid = d.objid)");
+					 "WITH spock_ext AS ("
+					 "  SELECT oid FROM pg_extension WHERE extname = 'spock'"
+					 "), ext_members AS ("
+					 "  SELECT classid, objid FROM pg_depend, spock_ext"
+					 "  WHERE refclassid = 'pg_extension'::regclass"
+					 "    AND refobjid = spock_ext.oid"
+					 "    AND deptype = 'e'"
+					 "), spock_members AS ("
+
+	/*
+	 * Extension members proper (tables, views, functions, ...) plus anything
+	 * with an INTERNAL ('i') or AUTO ('a') dependency on one of them -- a
+	 * view's own rules use 'i', while a table's own constraints (CHECK, FK,
+	 * ...) use 'a'; both are linked to their owning relation this way, not
+	 * directly to the extension, but are just as much spock's own objects.
+	 */
+					 "  SELECT classid, objid FROM ext_members"
+					 "  UNION"
+					 "  SELECT d.classid, d.objid FROM pg_depend d"
+					 "  JOIN ext_members m ON d.refclassid = m.classid AND d.refobjid = m.objid"
+					 "  WHERE d.deptype IN ('i', 'a')"
+					 ")"
+					 "SELECT DISTINCT pg_describe_object(d.classid, d.objid, d.objsubid)"
+					 " FROM pg_depend d"
+					 " JOIN spock_members m ON d.refclassid = m.classid AND d.refobjid = m.objid"
+					 " WHERE d.deptype = 'n'"
+					 "   AND NOT EXISTS ("
+					 "     SELECT 1 FROM spock_members m2"
+					 "     WHERE m2.classid = d.classid AND m2.objid = d.objid)");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		PQclear(res);
@@ -4260,7 +4274,7 @@ remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
 	}
 	if (PQntuples(res) > 0)
 	{
-		PQExpBuffer	list = createPQExpBuffer();
+		PQExpBuffer list = createPQExpBuffer();
 		int			i;
 
 		for (i = 0; i < PQntuples(res); i++)
@@ -4279,7 +4293,7 @@ remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		die(_("Could not clean the spock extension, status %s: %s\n"),
-			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 	}
 	PQclear(res);
 }
@@ -4307,7 +4321,7 @@ set_spock_readonly(PGconn *conn, const char *value)
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		die(_("could not set spock.readonly to '%s': status %s: %s\n"),
-			 value, PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+			value, PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 	}
 	PQclear(res);
 	destroyPQExpBuffer(query);
@@ -4339,8 +4353,8 @@ restore_repsets(PGconn *conn, CatalogCapture *capture)
 	{
 		RepsetCapture *s = &capture->repsets[i];
 		bool		builtin = (strcmp(s->set_name, "default") == 0 ||
-							  strcmp(s->set_name, "default_insert_only") == 0 ||
-							  strcmp(s->set_name, "ddl_sql") == 0);
+							   strcmp(s->set_name, "default_insert_only") == 0 ||
+							   strcmp(s->set_name, "ddl_sql") == 0);
 
 		printfPQExpBuffer(query,
 						  "SELECT spock.%s("
@@ -4466,8 +4480,8 @@ restore_replication_sets(PGconn *conn, CatalogCapture *capture)
 {
 	/*
 	 * 1.  Recreate custom sets.  The three built-in sets already exist from
-	 * node_create(), so apply the captured flags to them via
-	 * repset_alter() instead, since the source may have altered them.
+	 * node_create(), so apply the captured flags to them via repset_alter()
+	 * instead, since the source may have altered them.
 	 */
 	restore_repsets(conn, capture);
 
@@ -4770,7 +4784,7 @@ create_catchup_subscription(PGconn *subscriber_conn, const char *source_sub_name
 	}
 	if (strcmp(PQgetvalue(res, 0, 0), "{all}") != 0)
 	{
-		char *got = pg_strdup(PQgetvalue(res, 0, 0));
+		char	   *got = pg_strdup(PQgetvalue(res, 0, 0));
 
 		PQclear(res);
 		die(_("catchup subscription \"%s\" has forward_origins = %s, expected "
@@ -5023,7 +5037,7 @@ wait_for_origin_progress(PGconn *conn, const char *origin_name, const char *targ
 						 int stall_timeout, int max_wait)
 {
 	PQExpBuffer query = createPQExpBuffer();
-	WaitTracker	wt;
+	WaitTracker wt;
 	char	   *last_lsn = NULL;
 
 	wait_tracker_init(&wt);
@@ -5047,7 +5061,7 @@ wait_for_origin_progress(PGconn *conn, const char *origin_name, const char *targ
 		}
 
 		reached = PQntuples(res) == 1 && !PQgetisnull(res, 0, 0) &&
-				  PQgetvalue(res, 0, 0)[0] == 't';
+			PQgetvalue(res, 0, 0)[0] == 't';
 		if (reached)
 		{
 			PQclear(res);
@@ -5056,7 +5070,7 @@ wait_for_origin_progress(PGconn *conn, const char *origin_name, const char *targ
 
 		if (PQntuples(res) == 1 && !PQgetisnull(res, 0, 1))
 		{
-			char *cur_lsn = PQgetvalue(res, 0, 1);
+			char	   *cur_lsn = PQgetvalue(res, 0, 1);
 
 			if (!last_lsn || strcmp(cur_lsn, last_lsn) != 0)
 			{
@@ -5069,13 +5083,13 @@ wait_for_origin_progress(PGconn *conn, const char *origin_name, const char *targ
 
 		/*
 		 * spock.sub_show_status() is the same primitive check_mesh_edges()
-		 * relies on for subscription health; 'disabled' here means the
-		 * apply worker hit an unresolvable exception and
-		 * spock.exception_behaviour disabled it -- this wait cannot recover
-		 * from that on its own, so abort now rather than waiting out
-		 * stall_timeout/max_wait behind a subscription that will never
-		 * move again.  Skipped when the caller has no single subscription
-		 * to attribute the wait to (watch_sub_name == NULL).
+		 * relies on for subscription health; 'disabled' here means the apply
+		 * worker hit an unresolvable exception and spock.exception_behaviour
+		 * disabled it -- this wait cannot recover from that on its own, so
+		 * abort now rather than waiting out stall_timeout/max_wait behind a
+		 * subscription that will never move again.  Skipped when the caller
+		 * has no single subscription to attribute the wait to (watch_sub_name
+		 * == NULL).
 		 */
 		if (watch_sub_name != NULL)
 		{
@@ -5104,12 +5118,12 @@ wait_for_origin_progress(PGconn *conn, const char *origin_name, const char *targ
 			/*
 			 * Big-transaction-safe (design doc section 11): a frozen LSN
 			 * alone does not mean a stall -- it is also what one large
-			 * transaction still being decoded/applied looks like, since
-			 * the output plugin sends it only at COMMIT. Only declare a
-			 * stall when the apply worker is confirmed not busy too;
-			 * skipped (falls straight through to the old LSN-only
-			 * behavior) when the caller has no single subscription to
-			 * check liveness against (watch_sub_name == NULL).
+			 * transaction still being decoded/applied looks like, since the
+			 * output plugin sends it only at COMMIT. Only declare a stall
+			 * when the apply worker is confirmed not busy too; skipped (falls
+			 * straight through to the old LSN-only behavior) when the caller
+			 * has no single subscription to check liveness against
+			 * (watch_sub_name == NULL).
 			 */
 			if (watch_sub_name == NULL || !apply_worker_is_busy(conn, watch_sub_name))
 				die(_("%s appears stalled: no origin progress for %d second(s) "
@@ -5270,7 +5284,7 @@ clear_forwarding(PGconn *n3_conn, const char *source_dsn, const char *source_sub
 	PQExpBuffer query = createPQExpBuffer();
 	PGresult   *res;
 	char	   *baseline_backend_start = NULL;
-	WaitTracker	wt;
+	WaitTracker wt;
 	bool		prev_worker_ready = false;
 	bool		prev_reconnected = false;
 
@@ -5350,10 +5364,10 @@ clear_forwarding(PGconn *n3_conn, const char *source_dsn, const char *source_sub
 			}
 			if (PQntuples(res) == 1 && !PQgetisnull(res, 0, 0))
 			{
-				char *cur_backend_start = PQgetvalue(res, 0, 0);
+				char	   *cur_backend_start = PQgetvalue(res, 0, 0);
 
 				reconnected = (baseline_backend_start == NULL ||
-							  strcmp(cur_backend_start, baseline_backend_start) != 0);
+							   strcmp(cur_backend_start, baseline_backend_start) != 0);
 			}
 			PQclear(res);
 		}
@@ -5362,11 +5376,11 @@ clear_forwarding(PGconn *n3_conn, const char *source_dsn, const char *source_sub
 			break;
 
 		/*
-		 * Reset the stall clock only on an actual transition to true, not
-		 * on every poll where a flag is merely still true -- otherwise a
-		 * worker_ready that becomes (and stays) true while reconnected
-		 * never does would reset the clock forever, defeating
-		 * --stall-timeout entirely.
+		 * Reset the stall clock only on an actual transition to true, not on
+		 * every poll where a flag is merely still true -- otherwise a
+		 * worker_ready that becomes (and stays) true while reconnected never
+		 * does would reset the clock forever, defeating --stall-timeout
+		 * entirely.
 		 */
 		if ((worker_ready && !prev_worker_ready) ||
 			(reconnected && !prev_reconnected))
@@ -5406,7 +5420,7 @@ static void
 wait_for_sub_replicating(PGconn *conn, const char *sub_name, int stall_timeout, int max_wait)
 {
 	PQExpBuffer query = createPQExpBuffer();
-	WaitTracker	wt;
+	WaitTracker wt;
 	char	   *last_status = NULL;
 
 	wait_tracker_init(&wt);
@@ -5567,7 +5581,8 @@ typedef struct ReverseSubTarget
 	const char *dsn;			/* connection string for this node */
 	const char *slot_name;		/* this node's inbound slot on n3 */
 	const char *sub_name;		/* n3's subscription from this node, or NULL */
-	bool	   *reverse_sub_created; /* where to persist reverse_sub_created */
+	bool	   *reverse_sub_created;	/* where to persist
+										 * reverse_sub_created */
 } ReverseSubTarget;
 
 /*
@@ -5846,7 +5861,7 @@ initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
 	PQExpBuffer query = createPQExpBuffer();
 
 	printfPQExpBuffer(query, "SELECT pg_replication_origin_create(%s)",
-						PQescapeLiteral(conn, origin_name, strlen(origin_name)));
+					  PQescapeLiteral(conn, origin_name, strlen(origin_name)));
 
 	res = debug_exec(conn, query->data);
 
@@ -5861,8 +5876,8 @@ initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
 	if (remote_lsn)
 	{
 		printfPQExpBuffer(query, "SELECT pg_replication_origin_advance(%s, '%s')",
-							PQescapeLiteral(conn, origin_name, strlen(origin_name)),
-							remote_lsn);
+						  PQescapeLiteral(conn, origin_name, strlen(origin_name)),
+						  remote_lsn);
 
 		res = debug_exec(conn, query->data);
 
@@ -5886,9 +5901,9 @@ initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
 static char *
 create_restore_point(PGconn *conn, char *restore_point_name)
 {
-	PQExpBuffer  query = createPQExpBuffer();
-	PGresult	*res;
-	char		*remote_lsn = NULL;
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	char	   *remote_lsn = NULL;
 
 	printfPQExpBuffer(query, "SELECT pg_create_restore_point(%s)",
 					  PQescapeLiteral(conn, restore_point_name, strlen(restore_point_name)));
@@ -5896,7 +5911,7 @@ create_restore_point(PGconn *conn, char *restore_point_name)
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("Could not create restore point, status %s: %s\n"),
-			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 	}
 	remote_lsn = pstrdup(PQgetvalue(res, 0, 0));
 
@@ -5908,12 +5923,12 @@ create_restore_point(PGconn *conn, char *restore_point_name)
 
 static void
 spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
-					char *provider_dsn, char *replication_sets,
-					int apply_delay, bool force_text_transfer)
+				char *provider_dsn, char *replication_sets,
+				int apply_delay, bool force_text_transfer)
 {
-	PQExpBufferData		query;
-	PQExpBufferData		repsets;
-	PGresult		   *res;
+	PQExpBufferData query;
+	PQExpBufferData repsets;
+	PGresult   *res;
 
 	initPQExpBuffer(&query);
 	printfPQExpBuffer(&query,
@@ -5925,7 +5940,7 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("Could not create local node, status %s: %s\n"),
-			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 	}
 	PQclear(res);
 
@@ -5950,16 +5965,16 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		die(_("Could not create subscription, status %s: %s\n"),
-			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 	}
 	PQclear(res);
 
 	res = debug_exec(conn, "UPDATE spock.local_sync_status SET sync_status = 'r'"
-					   " WHERE sync_status != 'r'");
+					 " WHERE sync_status != 'r'");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		die(_("Could not update subscription, status %s: %s\n"),
-			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
 	}
 
 	PQclear(res);
@@ -5976,7 +5991,7 @@ static char *
 validate_replication_set_input(char *replication_sets)
 {
 	char	   *name;
-	PQExpBuffer	retbuf = createPQExpBuffer();
+	PQExpBuffer retbuf = createPQExpBuffer();
 	char	   *ret;
 	bool		first = true;
 
@@ -6058,7 +6073,7 @@ get_connstr_dbname(char *connstr)
 static char *
 get_connstr(char *connstr, char *dbname)
 {
-	char		*ret;
+	char	   *ret;
 	int			argcount = 4;	/* dbname, host, user, port */
 	int			i;
 	const char **keywords;
@@ -6068,8 +6083,8 @@ get_connstr(char *connstr, char *dbname)
 	char	   *err_msg = NULL;
 
 	/*
-	 * Merge the connection info inputs given in form of connection string
-	 * and options
+	 * Merge the connection info inputs given in form of connection string and
+	 * options
 	 */
 	i = 0;
 	if (connstr &&
@@ -6112,8 +6127,8 @@ get_connstr(char *connstr, char *dbname)
 		values = pg_malloc0((argcount + 1) * sizeof(*values));
 
 		/*
-		 * If connstr was provided but it's not in connection string format and
-		 * the dbname wasn't provided then connstr is actually dbname.
+		 * If connstr was provided but it's not in connection string format
+		 * and the dbname wasn't provided then connstr is actually dbname.
 		 */
 		if (connstr && !dbname)
 			dbname = connstr;
@@ -6149,10 +6164,10 @@ read_sysid(const char *data_dir)
 	char	   *res = (char *) pg_malloc0(33);
 
 	/*
-	 * get_controlfile() validates the control file's CRC; a torn or
-	 * corrupted control file must be rejected here rather than silently
-	 * misread, since this result feeds directly into check_data_dir()'s
-	 * "is this really a basebackup of the expected node" safety check.
+	 * get_controlfile() validates the control file's CRC; a torn or corrupted
+	 * control file must be rejected here rather than silently misread, since
+	 * this result feeds directly into check_data_dir()'s "is this really a
+	 * basebackup of the expected node" safety check.
 	 */
 	cf = get_controlfile(data_dir, &crc_ok);
 	if (!crc_ok)
@@ -6216,9 +6231,9 @@ reset_subscriber_sysid(const char *data_dir)
 static void
 run_pg_resetwal(const char *data_dir)
 {
-	int			 ret;
-	PQExpBuffer  cmd = createPQExpBuffer();
-	char		*exec_path = find_other_exec_or_die(argv0, "pg_resetwal");
+	int			ret;
+	PQExpBuffer cmd = createPQExpBuffer();
+	char	   *exec_path = find_other_exec_or_die(argv0, "pg_resetwal");
 
 	appendPQExpBuffer(cmd, "\"%s\" -D \"%s\"", exec_path, data_dir);
 
@@ -6257,7 +6272,7 @@ WriteRecoveryConf(PQExpBuffer contents)
 	if (fwrite(contents->data, contents->len, 1, cf) != 1)
 	{
 		die(_("%s: could not write to file \"%s\": %s\n"),
-				progname, filename, strerror(errno));
+			progname, filename, strerror(errno));
 	}
 
 	fclose(cf);
@@ -6294,11 +6309,11 @@ CopyConfFile(char *fromfile, char *tofile, bool append)
  * Convert PQconninfoOption array into conninfo string
  */
 static char *
-PQconninfoParamsToConnstr(const char *const * keywords, const char *const * values)
+PQconninfoParamsToConnstr(const char *const *keywords, const char *const *values)
 {
-	PQExpBuffer	 retbuf = createPQExpBuffer();
-	char		*ret;
-	int			 i = 0;
+	PQExpBuffer retbuf = createPQExpBuffer();
+	char	   *ret;
+	int			i = 0;
 
 	for (i = 0; keywords[i] != NULL; i++)
 	{
@@ -6393,8 +6408,8 @@ wait_postmaster_connection(const char *connstr)
 
 		/*
 		 * Check if the process is still alive.  This covers cases where the
-		 * postmaster successfully created the pidfile but then crashed without
-		 * removing it.
+		 * postmaster successfully created the pidfile but then crashed
+		 * without removing it.
 		 */
 		if (!postmaster_is_alive((pid_t) pmpid))
 			break;
@@ -6423,8 +6438,8 @@ static void
 wait_primary_connection(const char *connstr, int stall_timeout, int max_wait)
 {
 	bool		ispri = false;
-	PGconn		*conn = NULL;
-	PGresult	*res;
+	PGconn	   *conn = NULL;
+	PGresult   *res;
 	time_t		start_time = time(NULL);
 	time_t		last_progress_time = start_time;
 	char	   *last_lsn = NULL;
@@ -6459,7 +6474,7 @@ wait_primary_connection(const char *connstr, int stall_timeout, int max_wait)
 			if (PQresultStatus(lsn_res) == PGRES_TUPLES_OK && PQntuples(lsn_res) == 1 &&
 				!PQgetisnull(lsn_res, 0, 0))
 			{
-				char *cur_lsn = PQgetvalue(lsn_res, 0, 0);
+				char	   *cur_lsn = PQgetvalue(lsn_res, 0, 0);
 
 				if (!last_lsn || strcmp(cur_lsn, last_lsn) != 0)
 				{
@@ -6631,7 +6646,7 @@ copy_file(char *fromfile, char *tofile, bool append)
 		die(_("could not open file \"%s\""), fromfile);
 
 	dstfd = open(tofile, O_RDWR | O_CREAT | (append ? O_APPEND : O_TRUNC) | PG_BINARY,
-							  S_IRUSR | S_IWUSR);
+				 S_IRUSR | S_IWUSR);
 	if (dstfd < 0)
 		die(_("could not create file \"%s\""), tofile);
 
@@ -6685,15 +6700,15 @@ find_other_exec_or_die(const char *argv0, const char *target)
 
 		if (ret == -1)
 			die(_("The program \"%s\" is needed by %s "
-						   "but was not found in the\n"
-						   "same directory as \"%s\".\n"
-						   "Check your installation.\n"),
-						 target, progname, full_path);
+				  "but was not found in the\n"
+				  "same directory as \"%s\".\n"
+				  "Check your installation.\n"),
+				target, progname, full_path);
 		else
 			die(_("The program \"%s\" was found by \"%s\"\n"
-						   "but was not the same version as %s.\n"
-						   "Check your installation.\n"),
-						 target, full_path, progname);
+				  "but was not the same version as %s.\n"
+				  "Check your installation.\n"),
+				target, full_path, progname);
 	}
 	else
 	{
@@ -6704,9 +6719,9 @@ find_other_exec_or_die(const char *argv0, const char *target)
 
 		if (bin_version / 100 != PG_VERSION_NUM / 100)
 			die(_("The program \"%s\" was found by \"%s\"\n"
-						   "but was not the same version as %s.\n"
-						   "Check your installation.\n"),
-						 target, full_path, progname);
+				  "but was not the same version as %s.\n"
+				  "Check your installation.\n"),
+				target, full_path, progname);
 
 	}
 
@@ -6760,23 +6775,24 @@ get_pgpid(void)
 static char **
 get_database_list(char *databases, int *n_databases)
 {
-	char *c;
-	char **result;
-	int num = 1;
-	for (c = databases; *c; c++ )
+	char	   *c;
+	char	  **result;
+	int			num = 1;
+
+	for (c = databases; *c; c++)
 		if (*c == ',')
 			num++;
 	*n_databases = num;
 	result = palloc(num * sizeof(char *));
 	num = 0;
-	/* clone the argument so we don't destroy it with strtok*/
+	/* clone the argument so we don't destroy it with strtok */
 	databases = pstrdup(databases);
 	c = strtok(databases, ",");
 	while (c != NULL)
 	{
 		result[num] = pstrdup(c);
 		num++;
-		c = strtok(NULL,",");
+		c = strtok(NULL, ",");
 	}
 	pfree(databases);
 	return result;
@@ -6785,7 +6801,8 @@ get_database_list(char *databases, int *n_databases)
 static char *
 generate_restore_point_name(void)
 {
-	char *rpn = malloc(NAMEDATALEN);
+	char	   *rpn = malloc(NAMEDATALEN);
+
 	if (rpn == NULL)
 		die(_("out of memory\n"));
 	snprintf(rpn, NAMEDATALEN, "spock_create_subscriber_%lx", random());
