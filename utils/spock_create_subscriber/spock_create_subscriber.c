@@ -345,6 +345,7 @@ static void create_disabled_peer_subscriptions(PGconn *subscriber_conn, PeerNode
 					int num_peers, const char *replication_sets);
 static char *get_sync_event_lsn(PGconn *conn, const char *node_label);
 static char *get_catchup_target_lsn(const char *source_dsn);
+static bool apply_worker_is_busy(PGconn *conn, const char *sub_name);
 static void wait_for_origin_progress(PGconn *conn, const char *origin_name,
 					const char *target_lsn, const char *watch_sub_name,
 					const char *context_label, int stall_timeout, int max_wait);
@@ -4949,6 +4950,59 @@ wait_tracker_timed_out(const WaitTracker *wt, int max_wait)
 }
 
 /*
+ * Liveness signal for the big-transaction-safe stall watchdog (design doc
+ * section 11): the Spock output plugin registers no streaming (in-progress-
+ * transaction) callbacks, so a large transaction is decoded and sent only
+ * at its COMMIT -- every LSN signal freezes while it is in flight even
+ * though the apply worker is healthy and busy. A frozen LSN therefore
+ * does not by itself mean a stall.
+ *
+ * conn's own pg_stat_activity already has what's needed, no new
+ * connection required: the apply worker for sub_name always runs on the
+ * same side as conn, since conn is always the consuming/subscribing side
+ * in every wait_for_origin_progress() call site (the origin being polled
+ * is always conn's own). Spock names each apply worker's application_name
+ * "spock apply <dboid>:<subid>" (spock_worker.c) and feeds it straight to
+ * SetConfigOption("application_name", ...), so it is directly matchable
+ * against spock.subscription.sub_id without any new plumbing.
+ *
+ * Returns false (do not treat as busy) both when the worker genuinely
+ * isn't there and when the probe itself fails -- either way the wait's
+ * own LSN/disabled-subscription checks remain the authority, this is
+ * only ever consulted to avoid declaring a stall it would otherwise miss.
+ */
+static bool
+apply_worker_is_busy(PGconn *conn, const char *sub_name)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	bool		busy;
+
+	printfPQExpBuffer(query,
+					  "SELECT EXISTS ("
+					  "  SELECT 1 FROM pg_stat_activity a"
+					  "  JOIN spock.subscription s ON a.application_name ="
+					  "    'spock apply ' || (SELECT oid FROM pg_database"
+					  "      WHERE datname = current_database())::text"
+					  "    || ':' || s.sub_id::text"
+					  "  WHERE s.sub_name = %s AND a.state = 'active'"
+					  ")",
+					  PQescapeLiteral(conn, sub_name, strlen(sub_name)));
+	res = debug_exec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		destroyPQExpBuffer(query);
+		return false;
+	}
+	busy = PQntuples(res) == 1 && !PQgetisnull(res, 0, 0) &&
+		PQgetvalue(res, 0, 0)[0] == 't';
+	PQclear(res);
+	destroyPQExpBuffer(query);
+	return busy;
+}
+
+/*
  * Wait for the replication origin named origin_name, on conn, to reach
  * target_lsn.  Progress watchdog, not a flat wall-clock timeout --
  * reset the stall clock whenever remote_lsn advances at all, since a
@@ -5046,8 +5100,29 @@ wait_for_origin_progress(PGconn *conn, const char *origin_name, const char *targ
 		}
 
 		if (wait_tracker_stalled(&wt, stall_timeout))
-			die(_("%s appears stalled: no origin progress for %d second(s) "
-				  "(--stall-timeout)\n"), context_label, stall_timeout);
+		{
+			/*
+			 * Big-transaction-safe (design doc section 11): a frozen LSN
+			 * alone does not mean a stall -- it is also what one large
+			 * transaction still being decoded/applied looks like, since
+			 * the output plugin sends it only at COMMIT. Only declare a
+			 * stall when the apply worker is confirmed not busy too;
+			 * skipped (falls straight through to the old LSN-only
+			 * behavior) when the caller has no single subscription to
+			 * check liveness against (watch_sub_name == NULL).
+			 */
+			if (watch_sub_name == NULL || !apply_worker_is_busy(conn, watch_sub_name))
+				die(_("%s appears stalled: no origin progress for %d second(s) "
+					  "and the apply worker is not active (--stall-timeout)\n"),
+					context_label, stall_timeout);
+
+			print_msg(VERBOSITY_VERBOSE,
+					  _("\n%s: no LSN movement for %d second(s), but the apply "
+						"worker is active (likely a large transaction still "
+						"being applied) -- continuing to wait\n"),
+					  context_label, stall_timeout);
+			wait_tracker_reset_progress(&wt);
+		}
 
 		if (wait_tracker_timed_out(&wt, max_wait))
 			die(_("timed out after %d second(s) waiting for %s to "
