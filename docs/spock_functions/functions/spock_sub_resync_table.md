@@ -24,9 +24,19 @@ example after a plain copy failed on a duplicate key and the table's sync
 status is `failed`.
 
 A merge needs a way to recognise the rows that are already present, so the
-table must have a primary key or another unique index. A merge does not
-update rows that differ between the two nodes and does not delete rows that
-exist only locally.
+table must have a primary key or another unique index covering every row. A
+partial unique index does not qualify, because rows outside its predicate
+would be inserted a second time.
+
+A merge does not update rows that differ between the two nodes and does not
+delete rows that exist only locally, so the table can still differ from the
+provider once the merge reports success. The server log records how many of
+the copied rows were added and how many were already present, which is the
+measure of how far the two still differ.
+
+The requested kind of resync is recorded in `spock.local_sync_status.sync_kind`
+as `m`, and stays there until the next `spock.sub_resync_table()` call on that
+table.
 
 ## Arguments
 
@@ -38,8 +48,8 @@ The function accepts the following arguments:
   `true`. If you set this to `false` without also setting `merge`, a row that
   already exists locally makes the copy fail with a duplicate key error.
 - `merge` - Keep the rows already present and add only the missing ones; the
-  default value is `false`. Requires `truncate := false` and a unique index
-  on the table.
+  default value is `false`. Requires `truncate := false` and a non-partial
+  unique index on the table.
 
 ## Examples
 

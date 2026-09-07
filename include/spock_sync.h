@@ -89,8 +89,9 @@ extern SpockSyncStatus *get_table_sync_status(Oid subid,
 extern void set_table_sync_status(Oid subid, const char *schemaname,
 								  const char *relname, char status,
 								  XLogRecPtr status_lsn);
-extern void set_table_sync_kind(Oid subid, const char *schemaname,
-								const char *relname, char kind);
+extern void set_table_sync_status_kind(Oid subid, const char *schemaname,
+									   const char *relname, char status,
+									   XLogRecPtr statuslsn, char kind);
 extern List *get_unsynced_tables(Oid subid);
 
 /* For interface compat with spk3 */

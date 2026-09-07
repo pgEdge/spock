@@ -1088,6 +1088,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	bool		first;
 	bool		stage_load;
 	bool		override_identity = false;
+	char	   *staged = NULL;
 	char	   *merged = NULL;
 	StringInfoData query;
 	StringInfoData attlist;
@@ -1274,10 +1275,11 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		 * The wait is bounded, because every table is copied in one
 		 * transaction: this lock is held until the last table is done, and an
 		 * apply worker holding ROW EXCLUSIVE on a table this sync has not
-		 * reached yet would deadlock against it. A savepoint keeps the failure
-		 * recoverable, since an error would otherwise abort the copy
-		 * transaction. If the lock does not arrive, fall back to the staging
-		 * path, which is correct whether or not the table is empty.
+		 * reached yet can deadlock against it. A timeout and a lost deadlock
+		 * are handled the same way below: fall back to the staging path, which
+		 * is correct whether or not the table is empty. A savepoint keeps that
+		 * recoverable, since either error would otherwise abort the copy
+		 * transaction.
 		 */
 		PQclear(sync_target_cmd(target_conn,
 								"SAVEPOINT " SPOCK_SYNC_LOCK_SAVEPOINT,
@@ -1293,9 +1295,14 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		{
 			char	   *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
-			bool		busy = sqlstate != NULL &&
-				strcmp(sqlstate, "55P03" /*ERRCODE_LOCK_NOT_AVAILABLE*/) == 0;
+
+			/* Both point into res, which is cleared just below. */
+			char	   *state = pstrdup(sqlstate != NULL ? sqlstate : "");
 			char	   *msg = pstrdup(PQerrorMessage(target_conn));
+
+			/* Timed out, or lost a deadlock: either way someone else has it. */
+			bool		busy = strcmp(state, "55P03" /* lock_not_available */ ) == 0 ||
+				strcmp(state, "40P01" /* deadlock_detected */ ) == 0;
 
 			PQclear(res);
 
@@ -1318,9 +1325,8 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 								remoterel->nspname, remoterel->relname),
 						 errdetail("destination connection reported: %s", msg)));
 
-			elog(LOG, "SPOCK: could not lock %s.%s within %dms, staging the copy instead",
-				 remoterel->nspname, remoterel->relname,
-				 SPOCK_SYNC_LOCK_TIMEOUT_MS);
+			elog(LOG, "SPOCK: could not lock %s.%s (%s), staging the copy instead",
+				 remoterel->nspname, remoterel->relname, state);
 			stage_load = true;
 		}
 		else
@@ -1447,6 +1453,8 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 				(errmsg("COPY to destination table failed"),
 				 errdetail("destination connection reported: %s", msg)));
 	}
+	if (stage_load)
+		staged = pstrdup(PQcmdTuples(res));
 	PQclear(res);
 
 	/*
@@ -1456,15 +1464,36 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	 */
 	if (stage_load)
 	{
-		const char *mergelist = attlist.data;
+		const char *mergelist;
 
-		/*
-		 * The copy had no column list, so it moved every non-generated column.
-		 * Name them for the merge rather than using SELECT *, which would hand
-		 * the target a generated column and be rejected.
-		 */
-		if (!list_length(attnamelist))
+		if (list_length(attnamelist))
 		{
+			/* attlist is escaped for origin_conn; this query goes to target. */
+			StringInfoData mergecols;
+
+			initStringInfo(&mergecols);
+			first = true;
+			foreach(lc, attnamelist)
+			{
+				char	   *attname = strVal(lfirst(lc));
+
+				if (first)
+					first = false;
+				else
+					appendStringInfoString(&mergecols, ",");
+				appendStringInfoString(&mergecols,
+									   PQescapeIdentifier(target_conn, attname,
+														  strlen(attname)));
+			}
+			mergelist = mergecols.data;
+		}
+		else
+		{
+			/*
+			 * The copy had no column list, so it moved every non-generated
+			 * column. Name them for the merge rather than using SELECT *,
+			 * which would hand the target a generated column.
+			 */
 			res = sync_target_cmd(target_conn,
 								  "SELECT string_agg(quote_ident(attname), ', ' ORDER BY attnum)"
 								  " FROM pg_attribute"
@@ -1503,9 +1532,13 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 								"drop the staging table"));
 	}
 
+	/*
+	 * Report both counts. The gap between them is how many of the provider's
+	 * rows the merge declined, which is how far the table may still differ.
+	 */
 	if (stage_load)
-		elog(INFO, "finished synchronization of data for table %s.%s, %s row(s) added to existing data",
-			 remoterel->nspname, remoterel->relname, merged);
+		elog(INFO, "finished synchronization of data for table %s.%s, added %s of %s copied row(s), the others were already present",
+			 remoterel->nspname, remoterel->relname, merged, staged);
 	else
 		elog(INFO, "finished synchronization of data for table %s.%s",
 			 remoterel->nspname, remoterel->relname);
@@ -2100,6 +2133,11 @@ spock_sync_table(SpockSubscription *sub, RangeVar *table,
 	/* Check current state of the table. */
 	sync = get_table_sync_status(sub->id, table->schemaname, table->relname, false);
 	*status_lsn = sync->statuslsn;
+
+	/*
+	 * sync_kind records the last resync requested and stays 'm' once the merge
+	 * is done, so a retry still merges. A plain resync sets it back to 'd'.
+	 */
 	merge = (sync->kind == SYNC_KIND_MERGE);
 
 	/* Already synchronized, nothing to do here. */
@@ -2905,16 +2943,20 @@ set_table_sync_status(Oid subid, const char *nspname, const char *relname,
 	update_table_sync_row(subid, nspname, relname, values, replaces);
 }
 
-/* Set the kind of sync a table's row asks for. */
+/* Set the table sync status, LSN and kind in one update. */
 void
-set_table_sync_kind(Oid subid, const char *nspname, const char *relname,
-					char kind)
+set_table_sync_status_kind(Oid subid, const char *nspname, const char *relname,
+						   char status, XLogRecPtr statuslsn, char kind)
 {
 	Datum		values[Natts_local_sync_state];
 	bool		replaces[Natts_local_sync_state];
 
 	memset(replaces, false, sizeof(replaces));
 
+	values[Anum_sync_status - 1] = CharGetDatum(status);
+	replaces[Anum_sync_status - 1] = true;
+	values[Anum_sync_statuslsn - 1] = LSNGetDatum(statuslsn);
+	replaces[Anum_sync_statuslsn - 1] = true;
 	values[Anum_sync_kind - 1] = CharGetDatum(kind);
 	replaces[Anum_sync_kind - 1] = true;
 

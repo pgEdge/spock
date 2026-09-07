@@ -1265,8 +1265,10 @@ check_readonly_for_resync(const char *nspname, const char *relname)
 }
 
 /*
- * Does the table have an index ON CONFLICT DO NOTHING can arbitrate on?
- * That is any valid, non-deferrable unique index.
+ * Does a valid, non-deferrable unique index cover every row of the table?
+ *
+ * A partial index does not count: rows outside its predicate are
+ * unconstrained, so the merge would insert them a second time.
  */
 static bool
 relation_has_unique_index(Relation rel)
@@ -1281,7 +1283,8 @@ relation_has_unique_index(Relation rel)
 
 		found = idx->rd_index->indisunique &&
 			idx->rd_index->indimmediate &&
-			idx->rd_index->indisvalid;
+			idx->rd_index->indisvalid &&
+			RelationGetIndexPredicate(idx) == NIL;
 		index_close(idx, AccessShareLock);
 
 		if (found)
@@ -1347,7 +1350,7 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("cannot merge into table \"%s.%s\": it has no primary key or unique index",
 						nspname, relname),
-				 errdetail("The merge needs a unique index to recognise the rows already present.")));
+				 errdetail("The merge recognises the rows already present by their unique key, so every row must have one. A partial unique index does not qualify.")));
 
 	/* Reset sync status of the table. */
 	oldsync = get_table_sync_status(sub->id, nspname, relname, true);
@@ -1360,15 +1363,8 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 			elog(ERROR, "table %s.%s is already being synchronized",
 				 nspname, relname);
 
-		set_table_sync_status(sub->id, nspname, relname, SYNC_STATUS_INIT,
-							  InvalidXLogRecPtr);
-
-		if (oldsync->kind != kind)
-		{
-			/* Make the status update visible before touching the row again. */
-			CommandCounterIncrement();
-			set_table_sync_kind(sub->id, nspname, relname, kind);
-		}
+		set_table_sync_status_kind(sub->id, nspname, relname,
+								   SYNC_STATUS_INIT, InvalidXLogRecPtr, kind);
 	}
 	else
 	{

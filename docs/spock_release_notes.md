@@ -445,7 +445,8 @@ AutoDDL has been refactored and hardened:
   `truncate := false, merge := true` the copy is staged and merged with
   `ON CONFLICT DO NOTHING`, so rows already on the subscriber are kept and
   only the missing ones are added.  This is the repair path for a table
-  whose plain copy failed on a duplicate key.  Requires a unique index.
+  whose plain copy failed on a duplicate key.  Requires a unique index
+  covering every row; a partial one is rejected.
 
 ### Removed functions
 

@@ -174,21 +174,12 @@ bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
 int			spock_replay_queue_size;
-<<<<<<< Updated upstream
 int			spock_pause_timeout = 10;	/* seconds to wait for apply workers
 										 * to pause */
 int			spock_sync_timeout = 0; /* seconds per sync wait; 0 = routine's
 									 * own default */
-bool		spock_sync_stage_and_merge = false;	/* stage the initial COPY
-									             * when the target is not
-									             * empty */
 int			spock_read_retry_count = 5; /* heap update/delete: retries when
 										 * local tuple is missing */
-=======
-int			spock_pause_timeout = 10;	/* seconds to wait for apply workers to pause */
-int			spock_sync_timeout = 0;		/* seconds per sync wait; 0 = routine's own default */
-int			spock_read_retry_count = 5;	/* heap update/delete: retries when local tuple is missing */
->>>>>>> Stashed changes
 bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;

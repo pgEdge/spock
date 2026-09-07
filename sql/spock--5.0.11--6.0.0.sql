@@ -457,8 +457,29 @@ $$;
 
 -- sub_resync_table() can merge the copy into a table that already holds rows.
 -- The request is recorded as sync_kind 'm'.
-ALTER TABLE spock.local_sync_status
-    DROP CONSTRAINT local_sync_status_sync_kind_check;
+--
+-- Find the old check by what it constrains rather than by name. The name
+-- PostgreSQL assigned it depends on how far back the cluster was created, and
+-- a wrong guess would abort the whole extension update.
+DO $$
+DECLARE
+    v_conname name;
+BEGIN
+    FOR v_conname IN
+        SELECT c.conname
+        FROM pg_constraint c
+        JOIN pg_attribute a ON a.attrelid = c.conrelid
+                           AND a.attnum = ANY (c.conkey)
+        WHERE c.conrelid = 'spock.local_sync_status'::regclass
+          AND c.contype = 'c'
+          AND a.attname = 'sync_kind'
+    LOOP
+        EXECUTE format('ALTER TABLE spock.local_sync_status DROP CONSTRAINT %I',
+                       v_conname);
+    END LOOP;
+END
+$$;
+
 ALTER TABLE spock.local_sync_status
     ADD CONSTRAINT local_sync_status_sync_kind_check
     CHECK (sync_kind IN ('i', 's', 'd', 'f', 'm'));
