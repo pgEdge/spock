@@ -58,6 +58,15 @@ test: 037_wire_format_datestyle
 test: 038_reserved_schema_ddl_guard
 test: 044_apply_change_logging
 test: 045_lsn_from_commit_ts
+test: 048_bidir_join
+test: 050_bidir_join_crash_midcatchup
+test: 051_bidir_join_multipeer_lag
+test: 052_bidir_join_big_txn_liveness
+test: 053_bidir_join_unbounded_peer_slot_wal
+test: 054_bidir_join_precondition_negatives
+test: 055_bidir_join_lww_conflict
+test: 056_bidir_join_concurrent_load
+test: 057_bidir_join_stall_abort
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
@@ -65,3 +74,4 @@ test: 045_lsn_from_commit_ts
 # Regression tests
 test: 103_manager_worker_dboid_race
 test: 105_sub_disable_retransmit_after_disconnect
+
