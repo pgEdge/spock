@@ -21,3 +21,10 @@ test: 017_zodan_3n_timeout
 # deadlock.
 test: 035_deadlock_retry
 test: 036_real_deadlock_retry
+
+# --bidirectional join under sustained OLTP write load (pgedge-loadgen).
+# Not yet enabled here: needs its real-world runtime at
+# SPOCK_BIDIR_LOAD_LEVEL=medium/heavy characterized on CI hardware first,
+# and CI needs a pgedge-loadgen checkout (PGEDGE_LOADGEN_BIN) available --
+# it skip_alls cleanly without one. ~161s locally at the light default.
+#test: 049_bidir_join_under_load
