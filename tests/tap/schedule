@@ -58,6 +58,14 @@ test: 048_insert_conflict_race
 test: 049_wait_for_sync_dropped
 test: 052_change_log_attmap
 test: 070_bidir_plumbing
+test: 072_bidir_join_crash_midcatchup
+test: 073_bidir_join_multipeer_lag
+test: 074_bidir_join_big_txn_liveness
+test: 075_bidir_join_unbounded_peer_slot_wal
+test: 076_bidir_join_precondition_negatives
+test: 077_bidir_join_lww_conflict
+test: 078_bidir_join_concurrent_load
+test: 079_bidir_join_stall_abort
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
