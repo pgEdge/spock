@@ -342,14 +342,19 @@ if ($ver12 ne $ver3) {
 # adjust_progress_info(), which read the provider's spock.progress directly,
 # so it covers the other place the sync worker must understand an older
 # provider's catalog.
+my $n3_log = "$ENV{TESTLOGDIR}/00$ports->[2].log";
+sub count_progress_adjustments {
+    my $n = `grep -c 'SPOCK: adjust spock.progress' '$n3_log' 2>/dev/null`; chomp $n;
+    return $n || 0;
+}
+my $adjusted_before = count_progress_adjustments();
 psql_or_bail(1, "UPDATE pgbench_branches SET bbalance = bbalance + 1");
 psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
 psql_or_bail(3, "SELECT spock.sub_resync_table('sub_n1_n3', 'pgbench_branches')");
 wait_until(3, "SELECT status FROM spock.sub_show_table('sub_n1_n3', 'pgbench_branches')", 'replicating', 120,
     "single-table resync of pgbench_branches on n3 from n1 ($v[0]) completed");
-my $n3_log = "$ENV{TESTLOGDIR}/00$ports->[2].log";
-my $adjusted = `grep -c 'SPOCK: adjust spock.progress' '$n3_log' 2>/dev/null`; chomp $adjusted;
-cmp_ok($adjusted, '>=', 1, "resync read the provider's progress entries (adjust_progress_info ran)");
+cmp_ok(count_progress_adjustments(), '>', $adjusted_before,
+    "resync read the provider's progress entries (adjust_progress_info ran; $adjusted_before log lines before)");
 my @br = map { scalar_query($_, "SELECT sum(bbalance), count(*) FROM pgbench_branches") } 1, 3;
 is($br[1], $br[0], "pgbench_branches equal on n1 and n3 after resync");
 
