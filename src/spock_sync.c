@@ -82,7 +82,7 @@
 
 /*
  * Columns (PP_ = peer progress) of the queries that read a provider's
- * replication progress, in adjust_progress_info() and
+ * replication progress, in read_provider_progress() and
  * spock_create_slot_and_read_progress().  Every form of those queries, for
  * 6.0.0 and pre-6.0.0 providers alike, selects exactly these, in this order,
  * and peer_progress_from_row() turns one such row into a SpockApplyProgress.
@@ -575,7 +575,7 @@ peer_progress_from_row(PGresult *res, int rno)
 }
 
 static List *
-adjust_progress_info(PGconn *origin_conn)
+read_provider_progress(PGconn *origin_conn)
 {
 	StringInfoData query;
 	PGresult   *originRes;
@@ -613,7 +613,7 @@ adjust_progress_info(PGconn *origin_conn)
 			resultList = lappend(resultList, sap);
 			MemoryContextSwitchTo(oldctx);
 
-			elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
+			elog(LOG, "SPOCK: read provider progress %s->%d: "
 				 "remote_commit_ts='%s' "
 				 "remote_commit_lsn='%s' "
 				 "remote_insert_lsn='%s'",
@@ -1293,7 +1293,7 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	progress_entries_list = adjust_progress_info(origin_conn);
+	progress_entries_list = read_provider_progress(origin_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
@@ -1339,7 +1339,7 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 	 * LSN values are consistent with the data we are about to copy.
 	 */
 	if (progress_out)
-		*progress_out = adjust_progress_info(origin_conn);
+		*progress_out = read_provider_progress(origin_conn);
 
 	/* Get tables to copy from origin node. */
 	tables = spock_get_remote_repset_tables(origin_conn,
