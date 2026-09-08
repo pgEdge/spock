@@ -151,6 +151,16 @@ sub start_node {
     sleep(2);
 }
 
+# Run $sql on a node and check that it fails with an error matching $re.
+sub psql_expect_error {
+    my ($node, $sql, $re, $label) = @_;
+    my $c = get_test_config();
+    my $port = $c->{node_ports}->[$node-1];
+    my $out = `$c->{pg_bin}/psql -X -p $port -d $c->{db_name} -v ON_ERROR_STOP=1 -c "$sql" 2>&1`;
+    my $rc = $? >> 8;
+    ok($rc != 0 && $out =~ $re, $label) or diag("exit $rc, output:\n$out");
+}
+
 # Poll a scalar query on a node until it equals $want or timeout (seconds).
 sub wait_until {
     my ($node, $sql, $want, $timeout, $label) = @_;
@@ -307,6 +317,41 @@ psql_or_bail(3, "INSERT INTO mixed_test VALUES (3, 'n3')");
 wait_until($_, "SELECT count(*) FROM mixed_test", '3', 90, "n$_ sees rows from all three nodes") for 1..3;
 psql_or_bail(3, "UPDATE mixed_test SET src = 'n3-upd' WHERE id = 1");
 wait_until(1, "SELECT src FROM mixed_test WHERE id = 1", 'n3-upd', 60, "UPDATE from n3 ($v[2]) applied on n1 ($v[0])");
+
+# The version rule in check_spock_version_compatibility.  The passing case is
+# the add_node above; here are the two rejections, exercised by calling the
+# procedure directly with the roles swapped.  Only meaningful when the
+# versions differ.
+if ($ver12 ne $ver3) {
+    my $n1_dsn = "host=$host dbname=$dbname port=$ports->[0] user=$db_user";
+    my $n3_dsn = "host=$host dbname=$dbname port=$ports->[2] user=$db_user";
+    my $notice = `grep -c 'Mixed-version add: new node runs Spock $ver3, existing cluster runs Spock $ver12' '$out_file'`;
+    chomp $notice;
+    is($notice, '1', "add_node reported the mixed-version add ($ver12 cluster, $ver3 new node)");
+    psql_expect_error(3,
+        "CALL spock.check_spock_version_compatibility('$n3_dsn', '$n1_dsn')",
+        qr/new node has version \Q$ver12\E, but source version is \Q$ver3\E\. The new node must run the same or a newer major\.minor version/,
+        "version rule rejects an older new node ($ver12) joining via a $ver3 source");
+    psql_expect_error(3,
+        "CALL spock.check_spock_version_compatibility('$n1_dsn', '$n3_dsn')",
+        qr/node n3 has version \Q$ver3\E, but source version is \Q$ver12\E\. Existing cluster nodes must share the same major\.minor version/,
+        "version rule rejects a cluster whose existing nodes differ in major.minor");
+}
+
+# Resync one table on n3 from n1.  This goes through copy_tables_data() and
+# adjust_progress_info(), which read the provider's spock.progress directly,
+# so it covers the other place the sync worker must understand an older
+# provider's catalog.
+psql_or_bail(1, "UPDATE pgbench_branches SET bbalance = bbalance + 1");
+psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+psql_or_bail(3, "SELECT spock.sub_resync_table('sub_n1_n3', 'pgbench_branches')");
+wait_until(3, "SELECT status FROM spock.sub_show_table('sub_n1_n3', 'pgbench_branches')", 'replicating', 120,
+    "single-table resync of pgbench_branches on n3 from n1 ($v[0]) completed");
+my $n3_log = "$ENV{TESTLOGDIR}/00$ports->[2].log";
+my $adjusted = `grep -c 'SPOCK: adjust spock.progress' '$n3_log' 2>/dev/null`; chomp $adjusted;
+cmp_ok($adjusted, '>=', 1, "resync read the provider's progress entries (adjust_progress_info ran)");
+my @br = map { scalar_query($_, "SELECT sum(bbalance), count(*) FROM pgbench_branches") } 1, 3;
+is($br[1], $br[0], "pgbench_branches equal on n1 and n3 after resync");
 
 my @subs = map { scalar_query($_, "SELECT string_agg(subscription_name || ':' || status, ',' ORDER BY subscription_name) FROM spock.sub_show_status()") } 1..3;
 diag("Final subs: n1=[$subs[0]] n2=[$subs[1]] n3=[$subs[2]]");

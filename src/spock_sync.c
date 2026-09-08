@@ -80,6 +80,27 @@
 #define Anum_sync_status		5
 #define Anum_sync_statuslsn		6
 
+/*
+ * Columns (PP_ = peer progress) of the queries that read a provider's
+ * replication progress, in adjust_progress_info() and
+ * spock_create_slot_and_read_progress().  Every form of those queries, for
+ * 6.0.0 and pre-6.0.0 providers alike, selects exactly these, in this order,
+ * and peer_progress_from_row() turns one such row into a SpockApplyProgress.
+ */
+enum PeerProgressCol
+{
+	PP_REMOTE_NODE_ID = 0,
+	PP_REMOTE_COMMIT_TS,
+	PP_REMOTE_COMMIT_LSN,
+	PP_REMOTE_INSERT_LSN,
+	PP_LAST_UPDATED_TS,
+	PP_UPDATED_BY_DECODE
+};
+
+#define PEER_PROGRESS_COLUMNS \
+	"remote_node_id, remote_commit_ts, %s AS remote_commit_lsn, " \
+	"remote_insert_lsn, last_updated_ts, updated_by_decode"
+
 PGDLLEXPORT void spock_sync_main(Datum main_arg);
 
 static SpockSyncWorker *MySyncWorker = NULL;
@@ -464,19 +485,107 @@ ensure_replication_origin(char *slot_name)
 }
 
 
+/*
+ * Does the provider's spock.progress carry the 6.0.0 column names?  Before
+ * 6.0.0, and on a 6.0 binary whose extension has not been updated yet, it is
+ * a plain table whose commit-LSN column is called remote_lsn.  Ask the
+ * catalog, not the library version.
+ */
+static bool
+provider_progress_has_commit_lsn(PGconn *conn)
+{
+	PGresult   *res;
+	bool		found;
+
+	res = PQexec(conn,
+				 "SELECT EXISTS (SELECT 1 FROM pg_attribute "
+				 "WHERE attrelid = 'spock.progress'::regclass "
+				 "  AND attname = 'remote_commit_lsn' AND NOT attisdropped)");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		elog(ERROR, "could not inspect spock.progress on origin: %s",
+			 PQerrorMessage(conn));
+	found = (PQgetvalue(res, 0, 0)[0] == 't');
+	PQclear(res);
+	return found;
+}
+
+/*
+ * Build a SpockApplyProgress for this node from row rno of a result laid
+ * out per enum PeerProgressCol.  The caller owns the allocation, made in
+ * CacheMemoryContext.
+ */
+static SpockApplyProgress *
+peer_progress_from_row(PGresult *res, int rno)
+{
+	SpockApplyProgress *sap;
+	char	   *remote_node_id = PQgetvalue(res, rno, PP_REMOTE_NODE_ID);
+	char	   *remote_commit_ts = NULL;
+	char	   *last_updated_ts = NULL;
+
+	sap = MemoryContextAlloc(CacheMemoryContext, sizeof(SpockApplyProgress));
+	sap->key.dbid = MyDatabaseId;
+	sap->key.node_id = MySubscription->target->id;
+	sap->key.remote_node_id = atooid(remote_node_id);
+	Assert(OidIsValid(sap->key.remote_node_id));
+
+	/* Alloc above doesn't zero; set every non-key field to "unset" */
+	spock_init_progress_fields(sap);
+
+	if (!PQgetisnull(res, rno, PP_REMOTE_COMMIT_TS))
+	{
+		remote_commit_ts = PQgetvalue(res, rno, PP_REMOTE_COMMIT_TS);
+		sap->remote_commit_ts = str_to_timestamptz(remote_commit_ts);
+		Assert(IS_VALID_TIMESTAMP(sap->remote_commit_ts));
+	}
+	sap->prev_remote_ts = sap->remote_commit_ts;
+
+	sap->remote_commit_lsn = str_to_lsn(PQgetvalue(res, rno, PP_REMOTE_COMMIT_LSN));
+	sap->remote_insert_lsn = str_to_lsn(PQgetvalue(res, rno, PP_REMOTE_INSERT_LSN));
+
+	/*
+	 * We don't actually receive a single WAL record - just assume we've got
+	 * the last commit only. Don't set it to the Invalid value in case someone
+	 * uses tracking data in state monitoring scripts.
+	 */
+	sap->received_lsn = sap->remote_commit_lsn;
+
+	if (!PQgetisnull(res, rno, PP_LAST_UPDATED_TS))
+	{
+		last_updated_ts = PQgetvalue(res, rno, PP_LAST_UPDATED_TS);
+		sap->last_updated_ts = str_to_timestamptz(last_updated_ts);
+		Assert(IS_VALID_TIMESTAMP(sap->last_updated_ts));
+
+		if (sap->last_updated_ts < sap->remote_commit_ts)
+
+			/*
+			 * Complaining at the end of the sync we shouldn't flood the log
+			 */
+			ereport(WARNING,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("transaction apply time precedes its original commit time"),
+					 errdetail("Commit time %s (node ID %s), but it was applied at %s on the replica (node ID %d)",
+							   remote_commit_ts, remote_node_id,
+							   last_updated_ts,
+							   MySubscription->origin->id),
+					 errhint("usually it means that the server's clocks are out of sync.")));
+	}
+	sap->updated_by_decode = (PQgetvalue(res, rno, PP_UPDATED_BY_DECODE)[0] == 't');
+
+	return sap;
+}
+
 static List *
 adjust_progress_info(PGconn *origin_conn)
 {
-	const char *originQuery =
-		"SELECT * FROM spock.progress "
-		"WHERE node_id = %u AND remote_node_id <> %u";
 	StringInfoData query;
 	PGresult   *originRes;
 	List	   *resultList = NIL;
 
 	/*
-	 * Select the current content of the origin's spock.progress table where
-	 * the origin is the target and this node is not the origin.
+	 * Select the current content of the origin's spock.progress where the
+	 * origin is the target and this node is not the origin.  In 6.0.0 that is
+	 * a view already limited to the current database; before 6.0.0 it is a
+	 * per-database table with the commit LSN under its old name.
 	 *
 	 * We use this information to update the target's spock.progress table so
 	 * that START REPLICATION can ask the walsender to skip all transactions
@@ -484,96 +593,23 @@ adjust_progress_info(PGconn *origin_conn)
 	 * therefore part of the snapshot we are copying.
 	 */
 	initStringInfo(&query);
-	appendStringInfo(&query, originQuery, MySubscription->origin->id,
-					 MySubscription->target->id);
+	appendStringInfo(&query,
+					 "SELECT " PEER_PROGRESS_COLUMNS " FROM spock.progress "
+					 "WHERE node_id = %u AND remote_node_id <> %u",
+					 provider_progress_has_commit_lsn(origin_conn)
+					 ? "remote_commit_lsn" : "remote_lsn",
+					 MySubscription->origin->id, MySubscription->target->id);
 	originRes = PQexec(origin_conn, query.data);
 	if (PQresultStatus(originRes) == PGRES_TUPLES_OK)
 	{
 		int			rno;
-		char	   *dbid_str = NULL;
 
 		for (rno = 0; rno < PQntuples(originRes); rno++)
 		{
-			SpockApplyProgress *sap =
-				MemoryContextAlloc(CacheMemoryContext,
-								   sizeof(SpockApplyProgress));
+			SpockApplyProgress *sap = peer_progress_from_row(originRes, rno);
 			MemoryContext oldctx;
 
-			/*
-			 * Update the remote node's progress entry to what our sync
-			 * provider has included in the COPY snapshot.
-			 *
-			 * We assume here that the progress table entry already exists.
-			 * Turning this into an INSERT if not should be easy.
-			 */
-			char	   *remote_node_id = PQgetvalue(originRes, rno, GP_REMOTE_NODE_ID);
-			char	   *remote_commit_ts = NULL;
-			char	   *remote_commit_lsn = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_LSN);
-			char	   *remote_insert_lsn = PQgetvalue(originRes, rno, GP_REMOTE_INSERT_LSN);
-			char	   *last_updated_ts = NULL;
-			char	   *updated_by_decode = PQgetvalue(originRes, rno, GP_UPDATED_BY_DECODE);
-
-			sap->key.dbid = MyDatabaseId;
-			sap->key.node_id = MySubscription->target->id;
-			sap->key.remote_node_id = atooid(remote_node_id);
-			Assert(OidIsValid(sap->key.remote_node_id));
-
-			/* Alloc above doesn't zero; set every non-key field to "unset" */
-			spock_init_progress_fields(sap);
-
-			/* Check: we view only values related to a single database */
-			Assert(!PQgetisnull(originRes, rno, GP_DBOID));
-			if (dbid_str == NULL)
-				dbid_str = PQgetvalue(originRes, rno, GP_DBOID);
-			else
-			{
-				Assert(strcmp(dbid_str, PQgetvalue(originRes, rno, GP_DBOID)) == 0);
-			}
-
-			if (!PQgetisnull(originRes, rno, GP_REMOTE_COMMIT_TS))
-			{
-				remote_commit_ts = PQgetvalue(originRes, rno, GP_REMOTE_COMMIT_TS);
-				sap->remote_commit_ts = str_to_timestamptz(remote_commit_ts);
-				Assert(IS_VALID_TIMESTAMP(sap->remote_commit_ts));
-			}
-			sap->prev_remote_ts = sap->remote_commit_ts;
-
-			sap->remote_commit_lsn = str_to_lsn(remote_commit_lsn);
-			sap->remote_insert_lsn = str_to_lsn(remote_insert_lsn);
-
-			/*
-			 * We don't actually receive a single WAL record - just assume
-			 * we've got the last commit only. Don't set it to the Invalid
-			 * value in case someone uses tracking data in state monitoring
-			 * scripts.
-			 */
-			sap->received_lsn = str_to_lsn(remote_commit_lsn);
-
-			if (!PQgetisnull(originRes, rno, GP_LAST_UPDATED_TS))
-			{
-				last_updated_ts = PQgetvalue(originRes, rno, GP_LAST_UPDATED_TS);
-				sap->last_updated_ts = str_to_timestamptz(last_updated_ts);
-
-				Assert(IS_VALID_TIMESTAMP(sap->last_updated_ts));
-
-				if (sap->last_updated_ts < sap->remote_commit_ts)
-
-					/*
-					 * Complaining at the end of the sync we shouldn't flood
-					 * the log
-					 */
-					ereport(WARNING,
-							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							 errmsg("transaction apply time precedes its original commit time"),
-							 errdetail("Commit time %s (node ID %s), but it was applied at %s on the replica (node ID %d)",
-									   remote_commit_ts, remote_node_id,
-									   last_updated_ts,
-									   MySubscription->origin->id),
-							 errhint("usually it means that the server's clocks are out of sync.")));
-			}
-			sap->updated_by_decode = updated_by_decode[0] == 't',
-
-				oldctx = MemoryContextSwitchTo(CacheMemoryContext);
+			oldctx = MemoryContextSwitchTo(CacheMemoryContext);
 			resultList = lappend(resultList, sap);
 			MemoryContextSwitchTo(oldctx);
 
@@ -581,11 +617,11 @@ adjust_progress_info(PGconn *origin_conn)
 				 "remote_commit_ts='%s' "
 				 "remote_commit_lsn='%s' "
 				 "remote_insert_lsn='%s'",
-				 remote_node_id,
+				 PQgetvalue(originRes, rno, PP_REMOTE_NODE_ID),
 				 MySubscription->target->id,
-				 remote_commit_ts,
-				 remote_commit_lsn,
-				 remote_insert_lsn);
+				 PQgetvalue(originRes, rno, PP_REMOTE_COMMIT_TS),
+				 PQgetvalue(originRes, rno, PP_REMOTE_COMMIT_LSN),
+				 PQgetvalue(originRes, rno, PP_REMOTE_INSERT_LSN));
 		}
 	}
 	else
@@ -595,7 +631,7 @@ adjust_progress_info(PGconn *origin_conn)
 	}
 	PQclear(originRes);
 
-	resetStringInfo(&query);
+	pfree(query.data);
 	return resultList;
 }
 
@@ -622,22 +658,7 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	List	   *progress_list = NIL;
 	int			nrows;
 	int			rno;
-	int			provider_version_num = 0;
-
-	/*
-	 * Columns (PP_ = peer progress) of the peer progress query below.  Both
-	 * the 6.0.0 form (spock.read_peer_progress) and the pre-6.0.0 form
-	 * (direct read of spock.progress) select exactly these, in this order.
-	 */
-	enum
-	{
-		PP_REMOTE_NODE_ID = 0,
-		PP_REMOTE_COMMIT_TS,
-		PP_REMOTE_COMMIT_LSN,
-		PP_REMOTE_INSERT_LSN,
-		PP_LAST_UPDATED_TS,
-		PP_UPDATED_BY_DECODE
-	};
+	bool		have_read_peer_progress = false;
 
 	initStringInfo(&query);
 
@@ -657,6 +678,24 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 
 	elog(LOG, "SPOCK cswp slot=%s provider=%u subscriber=%u",
 		 slot_name, origin_node_id, subscriber_node_id);
+
+	/*
+	 * Does the provider have spock.read_peer_progress()?  It arrives with the
+	 * 6.0.0 extension version, so a provider on an older extension, or on the
+	 * 6.0 binary with ALTER EXTENSION spock UPDATE still pending, lacks it
+	 * and keeps its progress in the pre-6.0.0 spock.progress table.  Ask the
+	 * catalog rather than the library version, and ask before pausing apply
+	 * workers so a failure here cannot leave them paused.
+	 */
+	res = PQexec(conn,
+				 "SELECT to_regprocedure('spock.read_peer_progress(text,oid,oid)') IS NOT NULL");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		elog(ERROR, "could not check for spock.read_peer_progress() on origin: %s",
+			 PQerrorMessage(conn));
+	have_read_peer_progress = (PQgetvalue(res, 0, 0)[0] == 't');
+	PQclear(res);
+	elog(LOG, "SPOCK cswp provider has read_peer_progress: %s",
+		 have_read_peer_progress ? "yes" : "no");
 
 	/*
 	 * Pause apply workers so ros.remote_lsn reflects only fully committed
@@ -737,23 +776,23 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	 * the peer origin's remote_lsn from pg_replication_origin_status, exact
 	 * because apply workers are paused.
 	 *
-	 * A provider older than 6.0.0 has no spock.read_peer_progress() and keeps
-	 * progress in a plain table, so read the same six values from its catalog
-	 * directly.  Detect the version with spock_version_num(), which every
-	 * supported release has.
+	 * Without spock.read_peer_progress() (see the probe above) the provider
+	 * keeps progress in a plain table, so read the same six values from its
+	 * catalog directly.  Only the resume LSN is exact on that path: the table
+	 * is flushed at most once a second, so remote_commit_ts,
+	 * remote_insert_lsn, last_updated_ts and updated_by_decode can trail the
+	 * paused state by up to that.  They seed the new node's lag tracking and
+	 * are replaced by the first replicated message, so that is acceptable;
+	 * remote_insert_lsn is clamped to the resume LSN so it never reads as
+	 * behind a commit we know has been applied.
 	 */
-	res = PQexec(conn, "SELECT spock.spock_version_num()");
-	if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1)
-		provider_version_num = atoi(PQgetvalue(res, 0, 0));
-	PQclear(res);
-	elog(LOG, "SPOCK cswp provider spock version_num=%d", provider_version_num);
-
-	if (provider_version_num > 0 && provider_version_num < 60000)
+	if (!have_read_peer_progress)
 	{
 		appendStringInfo(&query,
 						 "SELECT p.remote_node_id, p.remote_commit_ts, "
 						 "       COALESCE(ros.remote_lsn, '0/0'::pg_lsn) AS remote_commit_lsn, "
-						 "       p.remote_insert_lsn, p.last_updated_ts, p.updated_by_decode "
+						 "       GREATEST(p.remote_insert_lsn, COALESCE(ros.remote_lsn, '0/0'::pg_lsn)) AS remote_insert_lsn, "
+						 "       p.last_updated_ts, p.updated_by_decode "
 						 "FROM spock.subscription sub "
 						 "JOIN spock.progress p ON p.remote_node_id = sub.sub_origin "
 						 "                     AND p.node_id = sub.sub_target "
@@ -770,10 +809,10 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 		 * slot's LSN and snapshot were taken from CREATE_REPLICATION_SLOT.
 		 */
 		appendStringInfo(&query,
-						 "SELECT remote_node_id, remote_commit_ts, remote_commit_lsn, "
-						 "       remote_insert_lsn, last_updated_ts, updated_by_decode "
+						 "SELECT " PEER_PROGRESS_COLUMNS " "
 						 "FROM spock.read_peer_progress('%s', %u, %u) "
 						 "WHERE remote_node_id IS NOT NULL",
+						 "remote_commit_lsn",
 						 slot_name, origin_node_id, subscriber_node_id);
 	}
 	res = PQexec(conn, query.data);
@@ -792,59 +831,22 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	{
 		SpockApplyProgress *sap;
 		MemoryContext oldctx;
-		char	   *remote_node_id_str;
-		char	   *remote_commit_ts_str;
-		char	   *remote_commit_lsn_str;
-		char	   *remote_insert_lsn_str;
-		char	   *last_updated_ts_str;
 
 		if (PQgetisnull(res, rno, PP_REMOTE_NODE_ID))
 			continue;			/* shouldn't happen but be safe */
 
-		sap = (SpockApplyProgress *) MemoryContextAlloc(CacheMemoryContext,
-														sizeof(SpockApplyProgress));
+		sap = peer_progress_from_row(res, rno);
+
 		oldctx = MemoryContextSwitchTo(CacheMemoryContext);
-
-		sap->key.dbid = MyDatabaseId;
-		sap->key.node_id = MySubscription->target->id;
-		remote_node_id_str = PQgetvalue(res, rno, PP_REMOTE_NODE_ID);
-		sap->key.remote_node_id = atooid(remote_node_id_str);
-		Assert(OidIsValid(sap->key.remote_node_id));
-
-		/* Alloc above doesn't zero; set every non-key field to "unset" */
-		spock_init_progress_fields(sap);
-		if (!PQgetisnull(res, rno, PP_REMOTE_COMMIT_TS))
-		{
-			remote_commit_ts_str = PQgetvalue(res, rno, PP_REMOTE_COMMIT_TS);
-			sap->remote_commit_ts = str_to_timestamptz(remote_commit_ts_str);
-		}
-		sap->prev_remote_ts = sap->remote_commit_ts;
-
-		remote_commit_lsn_str = PQgetvalue(res, rno, PP_REMOTE_COMMIT_LSN);
-		sap->remote_commit_lsn = str_to_lsn(remote_commit_lsn_str);
-
-		remote_insert_lsn_str = PQgetvalue(res, rno, PP_REMOTE_INSERT_LSN);
-		sap->remote_insert_lsn = str_to_lsn(remote_insert_lsn_str);
-
-		sap->received_lsn = sap->remote_commit_lsn;
-
-		sap->last_updated_ts = 0;
-		if (!PQgetisnull(res, rno, PP_LAST_UPDATED_TS))
-		{
-			last_updated_ts_str = PQgetvalue(res, rno, PP_LAST_UPDATED_TS);
-			sap->last_updated_ts = str_to_timestamptz(last_updated_ts_str);
-		}
-
-		sap->updated_by_decode = (PQgetvalue(res, rno, PP_UPDATED_BY_DECODE)[0] == 't');
-
 		progress_list = lappend(progress_list, sap);
 		MemoryContextSwitchTo(oldctx);
 
 		elog(LOG, "SPOCK cswp peer=%s->%d commit_lsn=%s insert_lsn=%s",
-			 remote_node_id_str, MySubscription->target->id,
-			 remote_commit_lsn_str, remote_insert_lsn_str);
+			 PQgetvalue(res, rno, PP_REMOTE_NODE_ID),
+			 MySubscription->target->id,
+			 PQgetvalue(res, rno, PP_REMOTE_COMMIT_LSN),
+			 PQgetvalue(res, rno, PP_REMOTE_INSERT_LSN));
 	}
-
 	PQclear(res);
 
 	/*
