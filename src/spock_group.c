@@ -316,22 +316,32 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 	Assert(dest->key.node_id == src->key.node_id);
 	Assert(dest->key.remote_node_id == src->key.remote_node_id);
 
+	/*
+	 * Track the commit position independently of commit timestamps. Forwarded
+	 * transactions retain the original node's timestamp, so timestamp order
+	 * need not match the provider's WAL order.
+	 *
+	 * Keep remote_commit_ts and its local observation fields together so lag
+	 * reporting uses values from the same commit. The resulting timestamp may
+	 * describe an earlier commit than remote_commit_lsn.
+	 *
+	 * prev_remote_ts is the synchronization token consumed by parallel apply,
+	 * not a high-water mark. Update it for commit records, including commits
+	 * whose timestamps are below the recorded maximum. Statistics-only
+	 * updates have remote_commit_ts == 0 and must leave it unchanged.
+	 */
+	if (dest->remote_commit_lsn < src->remote_commit_lsn)
+		dest->remote_commit_lsn = src->remote_commit_lsn;
+
 	if (dest->remote_commit_ts < src->remote_commit_ts)
 	{
-		/*
-		 * This is the most advanced commit. Save its progress.
-		 *
-		 * NOTE: According to apply group machinery their commit order should
-		 * follow the timestamp order. That means there are no way for a
-		 * commit to come with an oldest commit timestamp except we don't
-		 * update this commit's part of the data at all.
-		 */
 		dest->remote_commit_ts = src->remote_commit_ts;
-		dest->prev_remote_ts = src->prev_remote_ts;
-		dest->remote_commit_lsn = src->remote_commit_lsn;
 		dest->last_updated_ts = src->last_updated_ts;
 		dest->updated_by_decode = src->updated_by_decode;
 	}
+
+	if (src->remote_commit_ts != 0)
+		dest->prev_remote_ts = src->prev_remote_ts;
 
 	/* Here is more frequent statistics to update */
 	if (dest->remote_insert_lsn < src->remote_insert_lsn)
