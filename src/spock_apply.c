@@ -558,7 +558,7 @@ action_error_callback(void *arg)
  */
 
 /*
- * If the pause flag is set (slot creation in progress for add_node),
+ * If the pause flag is set (slot creation in progress for attach_node),
  * sleep on the ConditionVariable until resumed or timed out.
  */
 static void
@@ -602,8 +602,8 @@ begin_replication_step(void)
 	if (!IsTransactionState())
 	{
 		/*
-		 * Check if slot creation (add_node) needs us to pause.  This only
-		 * fires during add_node (a rare operation).  The fast path is a
+		 * Check if slot creation (attach_node) needs us to pause.  This only
+		 * fires during attach_node (a rare operation).  The fast path is a
 		 * single atomic read that almost always sees 0.
 		 *
 		 * Runs before StartTransactionCommand so the worker has no xid while
