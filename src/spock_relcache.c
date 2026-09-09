@@ -177,6 +177,19 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		entry->reloid = RelationGetRelid(entry->rel);
 		entry->idxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
 
+		/*
+		 * REPLICA IDENTITY FULL has no identity index.  Row lookups use the
+		 * PRIMARY KEY instead; the repset gate requires one on the provider,
+		 * and without one here we fall back to a sequential scan.
+		 */
+		if (!OidIsValid(entry->idxoid) &&
+			entry->rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
+#if PG_VERSION_NUM >= 180000
+			entry->idxoid = RelationGetPrimaryKeyIndex(entry->rel, false);
+#else
+			entry->idxoid = RelationGetPrimaryKeyIndex(entry->rel);
+#endif
+
 		/* Cache trigger info. */
 		entry->hasTriggers = false;
 		if (entry->rel->trigdesc != NULL)
