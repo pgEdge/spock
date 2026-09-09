@@ -9,6 +9,7 @@
 - [Getting Started](docs/getting_started.md)
 - [Using Advanced Configuration Options](docs/configuring.md)
 - [Upgrading a Spock Installation](docs/upgrading_spock.md)
+- [Upgrading Postgres under Spock](docs/upgrading_postgres.md)
 - [Spock's Conflict Avoidance Options](docs/conflicts.md)
 - Spock's Management Features
   - [Managing a Spock Installation](docs/managing/index.md)
