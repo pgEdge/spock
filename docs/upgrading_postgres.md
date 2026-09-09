@@ -3,9 +3,9 @@
 Upgrading Postgres beneath a Spock cluster is two different jobs, and this
 page treats them separately:
 
-- a **minor** upgrade (17.9 to 17.11, say) keeps the same catalog version.
+- A **minor** upgrade (17.9 to 17.11, say) keeps the same catalog version.
   Nothing is dumped or converted; you replace the binaries and restart.
-- a **major** upgrade (17 to 19) rewrites the catalog. `pg_upgrade` moves the
+- A **major** upgrade (17 to 19) rewrites the catalog. `pg_upgrade` moves the
   data directory, but it does not move the replication topology: Spock's
   inbound positions have to be recorded before the upgrade and restored after
   it, and each peer's subscription to the upgraded node has to be rebuilt.
