@@ -27,6 +27,10 @@ Do either upgrade **one node at a time**. The rest of the cluster keeps
 serving traffic, and the node being worked on is fenced first so nothing is
 lost while it is away.
 
+!!! warning
+    Take a backup of the node before you start, for a minor upgrade as well as
+    a major one.
+
 ## Upgrading the minor Postgres version
 
 A minor release changes no catalog structures, so there is no `pg_upgrade`
