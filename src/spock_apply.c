@@ -4473,10 +4473,11 @@ process_syncing_tables(XLogRecPtr end_lsn)
 				 * processes the error and changes the status.
 				 *
 				 * Say so once, on the transition. From here on every change
-				 * for this table is dropped by should_apply_changes_for_rel(),
-				 * so the table stops replicating and diverges; without this
-				 * the only trace is a status column in
-				 * spock.local_sync_status that nobody thinks to read.
+				 * for this table is dropped by
+				 * should_apply_changes_for_rel(), so the table stops
+				 * replicating and diverges; without this the only trace is a
+				 * status column in spock.local_sync_status that nobody thinks
+				 * to read.
 				 */
 				if (sync->status != SYNC_STATUS_FAILED)
 					ereport(WARNING,
@@ -4484,6 +4485,7 @@ process_syncing_tables(XLogRecPtr end_lsn)
 									MySubscription->name,
 									NameStr(sync->nspname),
 									NameStr(sync->relname)),
+
 					/*
 					 * The hint is meant to be pasted into psql, so both
 					 * arguments have to survive names that need quoting: the
@@ -4495,8 +4497,8 @@ process_syncing_tables(XLogRecPtr end_lsn)
 							 errhint("Re-synchronize with spock.sub_resync_table(%s, %s) once the cause is fixed.",
 									 quote_literal_cstr(MySubscription->name),
 									 quote_literal_cstr(
-										 quote_qualified_identifier(NameStr(sync->nspname),
-																	NameStr(sync->relname))))));
+														quote_qualified_identifier(NameStr(sync->nspname),
+																				   NameStr(sync->relname))))));
 
 				sync->status = SYNC_STATUS_FAILED;
 				sync->statuslsn = InvalidXLogRecPtr;

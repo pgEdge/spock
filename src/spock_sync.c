@@ -1248,10 +1248,10 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 
 	/*
 	 * Off by default: spock.sync_stage_and_merge has to be turned on before
-	 * any of this happens.  With it off the COPY goes straight into the
-	 * table as it always has, the probe below is not even taken, and a
-	 * populated target still fails the way it used to -- which is the
-	 * behaviour an existing deployment is relying on.
+	 * any of this happens.  With it off the COPY goes straight into the table
+	 * as it always has, the probe below is not even taken, and a populated
+	 * target still fails the way it used to -- which is the behaviour an
+	 * existing deployment is relying on.
 	 */
 	stage_load = spock_sync_stage_and_merge &&
 		target_table_has_rows(target_conn, remoterel, relident.data);
@@ -1275,8 +1275,8 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		 * The wait is bounded, because every table is copied in one
 		 * transaction: this lock is held until the last table is done, and an
 		 * apply worker holding ROW EXCLUSIVE on a table this sync has not
-		 * reached yet would deadlock against it. A savepoint keeps the failure
-		 * recoverable, since an error would otherwise abort the copy
+		 * reached yet would deadlock against it. A savepoint keeps the
+		 * failure recoverable, since an error would otherwise abort the copy
 		 * transaction. If the lock does not arrive, fall back to the staging
 		 * path, which is correct whether or not the table is empty.
 		 */
@@ -1295,16 +1295,16 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		{
 			char	   *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
 			bool		busy = sqlstate != NULL &&
-				strcmp(sqlstate, "55P03" /*ERRCODE_LOCK_NOT_AVAILABLE*/) == 0;
+				strcmp(sqlstate, "55P03" /* ERRCODE_LOCK_NOT_AVAILABLE */ ) == 0;
 			char	   *msg = pstrdup(PQerrorMessage(target_conn));
 
 			PQclear(res);
 
 			/*
-			 * Rolling back leaves the savepoint live, so release it too. Every
-			 * table in the sync shares this transaction, and one dangling
-			 * subtransaction per table would push a large sync past the 64 the
-			 * snapshot can track without overflowing.
+			 * Rolling back leaves the savepoint live, so release it too.
+			 * Every table in the sync shares this transaction, and one
+			 * dangling subtransaction per table would push a large sync past
+			 * the 64 the snapshot can track without overflowing.
 			 */
 			PQclear(sync_target_cmd(target_conn,
 									"ROLLBACK TO SAVEPOINT " SPOCK_SYNC_LOCK_SAVEPOINT,
@@ -1337,9 +1337,9 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 				 * Rows landed between the first probe and the lock. Staging
 				 * copes with that, and holding EXCLUSIVE on a populated table
 				 * for the rest of the sync is the availability cost this path
-				 * exists to avoid, so drop the lock again. Rolling back to the
-				 * savepoint releases locks taken inside it, and undoes the
-				 * lock_timeout with them.
+				 * exists to avoid, so drop the lock again. Rolling back to
+				 * the savepoint releases locks taken inside it, and undoes
+				 * the lock_timeout with them.
 				 */
 				PQclear(sync_target_cmd(target_conn,
 										"ROLLBACK TO SAVEPOINT " SPOCK_SYNC_LOCK_SAVEPOINT,
@@ -1460,9 +1460,9 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		const char *mergelist = attlist.data;
 
 		/*
-		 * The copy had no column list, so it moved every non-generated column.
-		 * Name them for the merge rather than using SELECT *, which would hand
-		 * the target a generated column and be rejected.
+		 * The copy had no column list, so it moved every non-generated
+		 * column. Name them for the merge rather than using SELECT *, which
+		 * would hand the target a generated column and be rejected.
 		 */
 		if (!list_length(attnamelist))
 		{

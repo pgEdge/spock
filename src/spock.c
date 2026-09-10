@@ -178,9 +178,8 @@ int			spock_pause_timeout = 10;	/* seconds to wait for apply workers
 										 * to pause */
 int			spock_sync_timeout = 0; /* seconds per sync wait; 0 = routine's
 									 * own default */
-bool		spock_sync_stage_and_merge = false;	/* stage the initial COPY
-												 * when the target is not
-												 * empty */
+bool		spock_sync_stage_and_merge = false; /* stage the initial COPY when
+												 * the target is not empty */
 int			spock_read_retry_count = 5; /* heap update/delete: retries when
 										 * local tuple is missing */
 bool		check_all_uc_indexes = false;
