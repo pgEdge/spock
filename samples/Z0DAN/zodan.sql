@@ -2,9 +2,11 @@
 -- ZODAN (Zero Downtime Add Node) - Spock Extension
 -- Version: 1.0.0
 -- Required Spock Version: 5.0.9 or later
--- Mixed versions: the new node may run a newer major.minor than the existing
---                 cluster (for example a 6.0.x node joining a 5.0.x cluster).
---                 Existing nodes must all share one major.minor.
+-- Mixed versions: the new node must run the same or a newer major.minor than
+--                 every existing node (for example a 6.0.x node joining a
+--                 cluster of 5.0.x nodes, or of 5.0.x and 6.0.x nodes).
+--                 Existing nodes may be mixed; a cluster becomes mixed the
+--                 moment a newer node joins it.
 -- ============================================================================
 -- Adds a new node to the cluster of Spock.
 -- NOTE: Run the add_node procedure on the new node you are adding, not on an existing cluster node.
@@ -128,7 +130,8 @@ DECLARE
     node_rec RECORD;
     remotesql text;
     node_version text;
-    version_mismatch boolean := false;
+    version_mismatch boolean := false;   -- any existing node differs in major.minor
+    existing_versions text := NULL;
 BEGIN
     -- Get source node Spock version
     remotesql := 'SELECT extversion FROM pg_extension WHERE extname = ''spock''';
@@ -163,12 +166,13 @@ BEGIN
             new_version, min_required_version, min_required_version;
     END IF;
 
-    -- Patch differences are fine.  The new node may also run a newer
-    -- major.minor than the existing cluster (e.g. a 6.0.x node joining a
-    -- 5.0.x cluster), but never an older one: the new node's sync worker
-    -- knows how to talk to older providers, not the other way around.
+    -- Patch differences are fine.  The new node may run a newer major.minor
+    -- than the existing nodes (e.g. a 6.0.x node joining 5.0.x nodes), but
+    -- never an older one: the new node's sync worker knows how to talk to
+    -- older providers, not the other way around.  The source is checked
+    -- here, every other existing node in the loop below.
     IF spock.version_major_minor(new_version) < spock.version_major_minor(src_version) THEN
-        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source version is %. The new node must run the same or a newer major.minor version.',
+        RAISE EXCEPTION 'Spock version mismatch: new node has version %, but source node has version %. The new node must run the same or a newer major.minor version than every existing node.',
             new_version, src_version;
     END IF;
 
@@ -186,21 +190,25 @@ BEGIN
         END IF;
 
         IF spock.version_to_array(node_version) < spock.version_to_array(min_required_version) THEN
-            version_mismatch := true;
             RAISE EXCEPTION 'Spock version mismatch: node % has version %, but required version is at least %. All nodes must have version % or later.',
                 node_rec.node_name, node_version, min_required_version, min_required_version;
         END IF;
 
-        -- Existing nodes must all share the source node's major.minor
-        -- (patch differences are allowed).
-        IF spock.version_major_minor(node_version) IS DISTINCT FROM spock.version_major_minor(src_version) THEN
-            RAISE EXCEPTION 'Spock version mismatch: node % has version %, but source version is %. Existing cluster nodes must share the same major.minor version.',
-                node_rec.node_name, node_version, src_version;
+        -- Existing nodes may differ from each other (a cluster is mixed from
+        -- the first newer node on), but none may be newer than the new node.
+        IF spock.version_major_minor(new_version) < spock.version_major_minor(node_version) THEN
+            RAISE EXCEPTION 'Spock version mismatch: new node has version %, but node % has version %. The new node must run the same or a newer major.minor version than every existing node.',
+                new_version, node_rec.node_name, node_version;
         END IF;
+
+        IF spock.version_major_minor(node_version) IS DISTINCT FROM spock.version_major_minor(new_version) THEN
+            version_mismatch := true;
+        END IF;
+        existing_versions := concat_ws(', ', existing_versions, node_rec.node_name || ' ' || node_version);
     END LOOP;
 
-    IF spock.version_major_minor(new_version) IS DISTINCT FROM spock.version_major_minor(src_version) THEN
-        RAISE NOTICE 'Mixed-version add: new node runs Spock %, existing cluster runs Spock %', new_version, src_version;
+    IF version_mismatch THEN
+        RAISE NOTICE 'Mixed-version add: new node runs Spock %, existing nodes run: %', new_version, existing_versions;
     END IF;
 
     IF verb THEN

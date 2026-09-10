@@ -14,9 +14,16 @@ use SpockTest qw(
 );
 
 # =============================================================================
-# Test: mixed-version add_node.  Two Spock 5.0.11 nodes (n1, n2, built from
-# v5_STABLE) plus a Spock 6.0.0 node (n3, current branch) added with zodan
-# add_node() running on n3.
+# Test: mixed-version add_node with zodan, old Spock (default 5.0.11, built
+# from v5_STABLE) and new Spock (HEAD).  Two layouts, chosen by ZODAN_SCENARIO:
+#
+#   chain (default)  n1 runs the old version alone.  n2 (new version) joins it
+#                    with add_node, making the cluster mixed.  n3 (new version)
+#                    then joins the mixed cluster, from n2 by default.  This is
+#                    the sequence QA reported.
+#   pair             n1 and n2 run the old version, cross-wired.  n3 (new
+#                    version) joins from n1.  Covers an old source with an old
+#                    peer.
 #
 # Each Spock build lives in its own PostgreSQL install tree under
 # /tmp/spock_rolling_upgrade_test/pg<major>_<name>: a copy of the install
@@ -30,12 +37,14 @@ use SpockTest qw(
 # runs; remove /tmp/spock_rolling_upgrade_test to force a rebuild.
 #
 # Env knobs:
-#   ZODAN_N12_VER  name of the build n1/n2 run: v5 (default, built from
-#                  origin/v5_STABLE), v6 (HEAD, gives the all-6.0.0 control
-#                  run), or any other name together with ZODAN_N12_REF
+#   ZODAN_SCENARIO chain (default) or pair, see above
+#   ZODAN_N3_SRC   chain only: node n3 joins from, n2 (default) or n1
+#   ZODAN_N12_VER  name of the old build: v5 (default, built from
+#                  origin/v5_STABLE), v6 (HEAD, gives an all-new-version
+#                  control run), or any other name together with ZODAN_N12_REF
 #   ZODAN_N12_REF  git ref to build for ZODAN_N12_VER (e.g. v5.0.9); defaults
 #                  exist for v5 and v6 only
-#   ZODAN_LOAD     1 = run pgbench load on n1/n2 while adding n3 (default 0)
+#   ZODAN_LOAD     1 = run pgbench load on the existing nodes while n3 joins
 #   ZODAN_SQL      path to the zodan.sql to use (default: ../../samples/Z0DAN/zodan.sql)
 #   ZODAN_SCRATCH  where add_node output and state dumps go (default: TESTLOGDIR or logs)
 # =============================================================================
@@ -61,6 +70,10 @@ make_path($SCRATCH) unless -d $SCRATCH;
 my $ZODAN_SQL  = $ENV{ZODAN_SQL} // '../../samples/Z0DAN/zodan.sql';
 my $LOAD       = $ENV{ZODAN_LOAD} // 0;
 my $N12_VER    = $ENV{ZODAN_N12_VER} // 'v5';
+my $SCENARIO   = $ENV{ZODAN_SCENARIO} // 'chain';
+my $N3_SRC     = $ENV{ZODAN_N3_SRC} // 'n2';
+die "ZODAN_SCENARIO must be chain or pair" unless $SCENARIO =~ /^(chain|pair)$/;
+die "ZODAN_N3_SRC must be n1 or n2" unless $N3_SRC =~ /^n[12]$/;
 
 my %BUILD_REF = (v5 => 'origin/v5_STABLE', v6 => 'HEAD');
 my $N12_REF = $ENV{ZODAN_N12_REF} // $BUILD_REF{$N12_VER}
@@ -208,36 +221,81 @@ sub dump_state {
 create_cluster(3, 'Create 3-node cluster (temporary, will be re-versioned)');
 my $config = get_test_config();
 my ($host, $dbname, $db_user, $ports) = ($config->{host}, $config->{db_name}, $config->{db_user}, $config->{node_ports});
+my @dsn = map { "host=$host dbname=$dbname port=$_ user=$db_user" } @$ports;
 
-my $ver12 = install_version($N12_VER);
-my $ver3  = install_version('v6');
-diag("Re-versioning: n1,n2 -> Spock $ver12 ($N12_VER tree), n3 -> Spock $ver3 (v6 tree)");
+my $ver12 = install_version($N12_VER);   # old version
+my $ver3  = install_version('v6');       # new version
+my $mixed = $ver12 ne $ver3;
+my @tree  = ($N12_VER, $SCENARIO eq 'pair' ? $N12_VER : 'v6', 'v6');
+diag("Scenario $SCENARIO: n1 -> $ver12 ($tree[0]), n2 -> " . install_version($tree[1]) . " ($tree[1]), n3 -> $ver3 (v6)");
+
 psql_or_bail($_, "DROP EXTENSION IF EXISTS spock CASCADE") for 1..3;
 stop_node($_) for 1..3;
-start_node(1, $N12_VER);
-start_node(2, $N12_VER);
-start_node(3, 'v6');
+start_node($_, $tree[$_-1]) for 1..3;
 psql_or_bail($_, "CREATE EXTENSION spock") for 1..3;
-psql_or_bail(1, "SELECT spock.node_create('n1', 'host=$host dbname=$dbname port=$ports->[0] user=$db_user')");
-psql_or_bail(2, "SELECT spock.node_create('n2', 'host=$host dbname=$dbname port=$ports->[1] user=$db_user')");
 
 my @v = map { scalar_query($_, "SELECT spock.spock_version()") } 1..3;
 diag("Versions: n1=$v[0] n2=$v[1] n3=$v[2]");
-is($v[0], $ver12, "n1 runs Spock $ver12 ($N12_VER build)");
-is($v[1], $ver12, "n2 runs Spock $ver12 ($N12_VER build)");
-is($v[2], $ver3, "n3 runs Spock $ver3 (v6 build)");
+is($v[$_-1], install_version($tree[$_-1]), "n$_ runs Spock " . install_version($tree[$_-1]) . " ($tree[$_-1] build)") for 1..3;
 
-cross_wire(2, ['n1', 'n2'], "Cross-wire n1 <-> n2 (both $N12_VER)");
-
-# zodan lives on the new node only.
-psql_or_bail(3, "CREATE EXTENSION dblink");
-psql_or_bail(3, "\\i $ZODAN_SQL");
+# zodan lives on each node that is added (its objects are in the spock
+# schema).  The wait_subscription() helper is a plain public function used
+# only for the lag checks on n3; it must not be on a node whose schema is
+# later dumped into n3, or the structure sync fails on the duplicate.
+for my $n ($SCENARIO eq 'chain' ? (2, 3) : (3)) {
+    psql_or_bail($n, "CREATE EXTENSION dblink");
+    psql_or_bail($n, "\\i $ZODAN_SQL");
+}
 psql_or_bail(3, "\\i ../../samples/Z0DAN/wait_subscription.sql");
 
-# Seed data on n1, wait for n2.
+# Run add_node on node $new with source $src.  Output goes to a file whose
+# name is returned; the test bails out if the call fails.
+sub run_add_node {
+    my ($new, $src) = @_;
+    my $out_file = "$SCRATCH/add_node_${SCENARIO}_${N12_VER}_n${new}_from_n${src}" . ($LOAD ? '_load' : '') . ".out";
+    my $sql = "CALL spock.add_node(src_node_name := 'n$src', src_dsn := '$dsn[$src-1]', "
+            . "new_node_name := 'n$new', new_node_dsn := '$dsn[$new-1]', verb := true);";
+    diag("Adding n$new (" . scalar_query($new, "SELECT spock.spock_version()") . ") from n$src ("
+         . scalar_query($src, "SELECT spock.spock_version()") . ")");
+    my $t0 = time();
+    my $rc = system("timeout 1200 $config->{pg_bin}/psql -X -p $ports->[$new-1] -d $dbname -v ON_ERROR_STOP=1 -c \"$sql\" > '$out_file' 2>&1");
+    my $elapsed = time() - $t0;
+    diag("add_node n$new exit code " . ($rc >> 8) . " after ${elapsed}s; output in $out_file");
+    is($rc, 0, "add_node n$new from n$src completed without error");
+    if ($rc != 0) {
+        open(my $fh, '<', $out_file); my @tail = <$fh>; close $fh;
+        diag("--- add_node output tail ---"); diag($_) for @tail[-25..-1];
+        dump_state("$SCRATCH/state_${SCENARIO}_${N12_VER}_failed_n${new}.txt");
+        destroy_cluster('Destroy cluster');
+        done_testing();
+        exit 0;
+    }
+    return $out_file;
+}
+
+# Nodes first, then data: tables created on a node that exists are added to
+# its replication sets (spock.include_ddl_repset), which is what the later
+# syncs copy.
+my ($out_n2, $out_n3);
+psql_or_bail(1, "SELECT spock.node_create('n1', '$dsn[0]')");
+if ($SCENARIO eq 'pair') {
+    psql_or_bail(2, "SELECT spock.node_create('n2', '$dsn[1]')");
+    cross_wire(2, ['n1', 'n2'], "Cross-wire n1 <-> n2 (both $ver12)");
+}
 system_or_bail("$config->{pg_bin}/pgbench", '-i', '-s', 1, '-h', $host, '-p', $ports->[0], '-U', $db_user, $dbname);
-psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
-wait_until(2, "SELECT count(*) FROM pgbench_accounts", '100000', 180, "pgbench data replicated n1 -> n2");
+is(scalar_query(1, "SELECT count(*) FROM spock.tables WHERE set_name IS NOT NULL AND relname LIKE 'pgbench_%'"), '4',
+    "pgbench tables are in replication sets on n1");
+if ($SCENARIO eq 'pair') {
+    psql_or_bail(1, 'SELECT spock.wait_slot_confirm_lsn(NULL, NULL)');
+    wait_until(2, "SELECT count(*) FROM pgbench_accounts", '100000', 180, "pgbench data replicated n1 -> n2");
+} else {
+    $out_n2 = run_add_node(2, 1);
+    wait_until(2, "SELECT count(*) FROM spock.sub_show_status() WHERE provider_node = 'n1' AND status = 'replicating'", '1', 120,
+        "n2 replicates from n1");
+    wait_until(1, "SELECT count(*) FROM spock.sub_show_status() WHERE provider_node = 'n2' AND status = 'replicating'", '1', 120,
+        "n1 replicates from n2");
+    wait_until(2, "SELECT count(*) FROM pgbench_accounts", '100000', 180, "pgbench data present on n2 after add");
+}
 
 my (@pgb, @pgb_out, @pgb_err);
 if ($LOAD) {
@@ -258,33 +316,11 @@ if ($LOAD) {
 }
 
 # ---------------------------------------------------------------------------
-diag("Calling spock.add_node() on n3 (6.0.0) with source n1 (5.0.11)");
-my $out_file = "$SCRATCH/add_node_" . $N12_VER . '_' . ($LOAD ? 'load' : 'noload') . ".out";
-my $add_sql = "CALL spock.add_node(src_node_name := 'n1',
-    src_dsn := 'host=$host dbname=$dbname port=$ports->[0] user=$db_user',
-    new_node_name := 'n3',
-    new_node_dsn := 'host=$host dbname=$dbname port=$ports->[2] user=$db_user',
-    verb := true);";
-my $t0 = time();
-my $rc = system("timeout 1200 $config->{pg_bin}/psql -X -p $ports->[2] -d $dbname -v ON_ERROR_STOP=1 -c \"$add_sql\" > '$out_file' 2>&1");
-my $elapsed = time() - $t0;
-diag("add_node exit code " . ($rc >> 8) . " after ${elapsed}s; output in $out_file");
-is($rc, 0, "add_node completed without error");
-if ($rc != 0) {
-    open(my $fh, '<', $out_file); my @tail = <$fh>; close $fh;
-    diag("--- add_node output tail ---"); diag($_) for @tail[-25..-1];
-}
-
-dump_state("$SCRATCH/state_" . $N12_VER . '_' . ($LOAD ? 'load' : 'noload') . ".txt");
+my $n3_src = $SCENARIO eq 'pair' ? 1 : substr($N3_SRC, 1);
+$out_n3 = run_add_node(3, $n3_src);
+dump_state("$SCRATCH/state_${SCENARIO}_${N12_VER}" . ($LOAD ? '_load' : '_noload') . ".txt");
 if ($LOAD) {
     for my $i (0, 1) { $pgb[$i]->kill_kill; $pgb[$i]->finish; }
-}
-
-if ($rc != 0) {
-    diag("add_node failed; skipping data verification");
-    destroy_cluster('Destroy cluster');
-    done_testing();
-    exit 0;
 }
 
 # ---------------------------------------------------------------------------
@@ -307,7 +343,7 @@ diag("pgbench_accounts aggregates: n1=$agg[0] n2=$agg[1] n3=$agg[2]");
 is($agg[2], $agg[0], "n3 data equals n1");
 is($agg[2], $agg[1], "n3 data equals n2");
 
-# Three-way traffic after the add, including DDL from a 5.0.11 node.
+# Three-way traffic after the add, including DDL from the old node.
 psql_or_bail(1, "CREATE TABLE mixed_test (id int PRIMARY KEY, src text)");
 wait_until(3, "SELECT count(*) FROM pg_tables WHERE tablename = 'mixed_test'", '1', 60, "DDL from n1 ($v[0]) reached n3 ($v[2])");
 wait_until(2, "SELECT count(*) FROM pg_tables WHERE tablename = 'mixed_test'", '1', 60, "DDL from n1 reached n2");
@@ -318,24 +354,25 @@ wait_until($_, "SELECT count(*) FROM mixed_test", '3', 90, "n$_ sees rows from a
 psql_or_bail(3, "UPDATE mixed_test SET src = 'n3-upd' WHERE id = 1");
 wait_until(1, "SELECT src FROM mixed_test WHERE id = 1", 'n3-upd', 60, "UPDATE from n3 ($v[2]) applied on n1 ($v[0])");
 
-# The version rule in check_spock_version_compatibility.  The passing case is
-# the add_node above; here are the two rejections, exercised by calling the
-# procedure directly with the roles swapped.  Only meaningful when the
-# versions differ.
-if ($ver12 ne $ver3) {
-    my $n1_dsn = "host=$host dbname=$dbname port=$ports->[0] user=$db_user";
-    my $n3_dsn = "host=$host dbname=$dbname port=$ports->[2] user=$db_user";
-    my $notice = `grep -c 'Mixed-version add: new node runs Spock $ver3, existing cluster runs Spock $ver12' '$out_file'`;
-    chomp $notice;
-    is($notice, '1', "add_node reported the mixed-version add ($ver12 cluster, $ver3 new node)");
+# The version rule in check_spock_version_compatibility.  The accepting path
+# is the add_node calls above; here are the notices they must have produced
+# and the rejection, exercised by calling the procedure directly with an old
+# node in the "new node" role.  Only meaningful when the versions differ.
+if ($mixed) {
+    if ($out_n2) {
+        my $n = `grep -c 'Mixed-version add: new node runs Spock $ver3, existing nodes run: n1 $ver12' '$out_n2'`; chomp $n;
+        is($n, '1', "add_node n2 reported the mixed-version add ($ver12 node, $ver3 new node)");
+    }
+    my $n = `grep -Ec 'Mixed-version add: new node runs Spock $ver3, existing nodes run: .*n1 $ver12' '$out_n3'`; chomp $n;
+    is($n, '1', "add_node n3 reported the mixed-version add (existing nodes include n1 $ver12)");
     psql_expect_error(3,
-        "CALL spock.check_spock_version_compatibility('$n3_dsn', '$n1_dsn')",
-        qr/new node has version \Q$ver12\E, but source version is \Q$ver3\E\. The new node must run the same or a newer major\.minor version/,
-        "version rule rejects an older new node ($ver12) joining via a $ver3 source");
+        "CALL spock.check_spock_version_compatibility('$dsn[2]', '$dsn[0]')",
+        qr/new node has version \Q$ver12\E, but source node has version \Q$ver3\E\. The new node must run the same or a newer major\.minor version than every existing node/,
+        "version rule rejects an older new node ($ver12) via a $ver3 source");
     psql_expect_error(3,
-        "CALL spock.check_spock_version_compatibility('$n1_dsn', '$n3_dsn')",
-        qr/node n3 has version \Q$ver3\E, but source version is \Q$ver12\E\. Existing cluster nodes must share the same major\.minor version/,
-        "version rule rejects a cluster whose existing nodes differ in major.minor");
+        "CALL spock.check_spock_version_compatibility('$dsn[0]', '$dsn[0]')",
+        qr/new node has version \Q$ver12\E, but node n[23] has version \Q$ver3\E\. The new node must run the same or a newer major\.minor version than every existing node/,
+        "version rule rejects an older new node ($ver12) via a $ver12 source when a $ver3 node exists");
 }
 
 # Resync one table on n3 from n1.  This goes through copy_tables_data() and
