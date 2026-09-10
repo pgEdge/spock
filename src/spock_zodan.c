@@ -135,6 +135,11 @@ typedef struct ZodanAddCtx
 	ZNode	   *nodes;
 	int			nnodes;
 
+	/* Source node's Spock version, from zodan_check_versions(). */
+	int			src_major;
+	int			src_minor;
+	int			src_patch;
+
 	MemoryContext mcxt;				/* survives SPI_commit() */
 } ZodanAddCtx;
 
@@ -298,6 +303,23 @@ zodan_version_cmp(int left_major, int left_minor, int left_patch,
 	if (left_minor != right_minor)
 		return left_minor - right_minor;
 	return left_patch - right_patch;
+}
+
+/*
+ * Name of the spock.progress column holding the LSN of the last commit applied
+ * from a peer, on a node running the given Spock version.  6.0.0 renamed it
+ * from remote_lsn to remote_commit_lsn, so a query sent to a remote node has
+ * to use the name that node understands.
+ */
+static const char *
+zodan_progress_lsn_column(int major, int minor, int patch)
+{
+	/* An unset version would silently pick the pre-6.0.0 name. */
+	Assert(major > 0);
+
+	if (zodan_version_cmp(major, minor, patch, 6, 0, 0) < 0)
+		return "remote_lsn";
+	return "remote_commit_lsn";
 }
 
 /* ------------------------------------------------------------------------
@@ -735,8 +757,12 @@ zodan_remote_spock_version(PGconn *conn, const char *label,
 
 /*
  * Phase 0: verify the Spock version on the source node, the new node and every
- * existing cluster node.  All nodes must be >= ZODAN_MIN_VERSION and share the
- * same major.minor (patch differences are allowed for rolling upgrades).
+ * existing cluster node.
+ *
+ * Every node must be >= ZODAN_MIN_VERSION.  The existing nodes must share one
+ * major.minor, patch differences being allowed for rolling upgrades.  The new
+ * node may run the same or a newer major.minor, but never an older one: only
+ * the newer sync worker knows how to talk to an older provider.
  */
 static void
 zodan_check_versions(ZodanAddCtx *ctx)
@@ -782,14 +808,16 @@ zodan_check_versions(ZodanAddCtx *ctx)
 						"but minimum required version is %s",
 						new_major, new_minor, new_patch, ZODAN_MIN_VERSION)));
 
-	if (new_major != src_major || new_minor != src_minor)
+	if (zodan_version_cmp(new_major, new_minor, 0,
+						  src_major, src_minor, 0) < 0)
 		ereport(ERROR,
 				(errmsg("Spock version mismatch: new node has version %d.%d.%d, "
-						"but source version is %d.%d.%d; major.minor versions must match",
+						"but source version is %d.%d.%d; the new node must run "
+						"the same or a newer major.minor version",
 						new_major, new_minor, new_patch,
 						src_major, src_minor, src_patch)));
 
-	/* Every existing cluster node must match too. */
+	/* Every existing cluster node must share the source's major.minor. */
 	for (i = 0; i < ctx->nnodes; i++)
 	{
 		int			node_major,
@@ -809,13 +837,28 @@ zodan_check_versions(ZodanAddCtx *ctx)
 							ctx->nodes[i].name,
 							node_major, node_minor, node_patch,
 							ZODAN_MIN_VERSION)));
-		if (node_major != new_major || node_minor != new_minor)
+		if (node_major != src_major || node_minor != src_minor)
 			ereport(ERROR,
-					(errmsg("Spock version mismatch: new node has version %d.%d.%d, "
-							"but found node %s version %d.%d.%d; major.minor must match",
-							new_major, new_minor, new_patch, ctx->nodes[i].name,
-							node_major, node_minor, node_patch)));
+					(errmsg("Spock version mismatch: node %s has version %d.%d.%d, "
+							"but source version is %d.%d.%d; existing cluster "
+							"nodes must share the same major.minor version",
+							ctx->nodes[i].name,
+							node_major, node_minor, node_patch,
+							src_major, src_minor, src_patch)));
 	}
+
+	/* zodan_progress_lsn_column() needs this once the copy is under way. */
+	ctx->src_major = src_major;
+	ctx->src_minor = src_minor;
+	ctx->src_patch = src_patch;
+
+	/* Worth saying without verb: this is not the usual shape of a cluster. */
+	if (new_major != src_major || new_minor != src_minor)
+		ereport(NOTICE,
+				(errmsg("mixed-version attach: new node runs Spock %d.%d.%d, "
+						"existing cluster runs Spock %d.%d.%d",
+						new_major, new_minor, new_patch,
+						src_major, src_minor, src_patch)));
 
 	ZNOTICE("Version check passed: source %d.%d.%d, new node %d.%d.%d",
 			src_major, src_minor, src_patch, new_major, new_minor, new_patch);
@@ -1138,12 +1181,15 @@ zodan_wait_source_caughtup(ZodanAddCtx *ctx, const char *origin_node,
 	XLogRecPtr	target;
 	TimestampTz start = GetCurrentTimestamp();
 
+	/* The column name is the source node's, not ours: it may predate 6.0.0. */
 	progress_sql = psprintf(
-		"SELECT p.remote_commit_lsn "
+		"SELECT p.%s "
 		"FROM spock.progress p "
 		"JOIN spock.node n ON n.node_id = p.remote_node_id "
 		"WHERE p.node_id = (SELECT node_id FROM spock.node_info()) "
 		"AND n.node_name = %s",
+		zodan_progress_lsn_column(ctx->src_major, ctx->src_minor,
+								  ctx->src_patch),
 		quote_literal_cstr(origin_node));
 
 	ZNOTICE("    - Waiting for source node %s to apply %s changes up to %s",
