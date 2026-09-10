@@ -23,9 +23,9 @@ test: 035_deadlock_retry
 test: 036_real_deadlock_retry
 
 # Mixed-version add_node: builds Spock from v5_STABLE and HEAD into separate
-# PostgreSQL install copies, adds a HEAD node to a two-node v5 cluster with
-# zodan, then checks replication, a single-table resync from the old
-# provider, and the version rule in check_spock_version_compatibility.
-# About two minutes once the trees are built; the first run also compiles
-# both Spock versions.
+# PostgreSQL install copies, then with zodan adds a HEAD node to a single
+# v5 node and a second HEAD node to the resulting mixed cluster.  Checks
+# replication, a single-table resync from the old provider, and the version
+# rule in check_spock_version_compatibility.  About three minutes once the
+# trees are built; the first run also compiles both Spock versions.
 test: 099_zodan_mixed_version
