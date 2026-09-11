@@ -1170,8 +1170,10 @@ handle_commit(StringInfo s)
 			.updated_by_decode = true,
 		};
 
-		/* XXX: Don't care in production yet */
-		Assert(sap.last_updated_ts >= sap.remote_commit_ts);
+		/*
+		 * The origin commit time and local apply time come from independent
+		 * clocks, so no ordering relationship is required between them.
+		 */
 
 		Assert(MyApplyWorker && MyApplyWorker->apply_group);
 
