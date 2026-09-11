@@ -774,8 +774,15 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 		if (is_delta_apply)
 		{
 			CurrentResourceOwner = save_resowner;
-			SubTransactionIdSetCommitTsData(GetCurrentTransactionId(),
-											local_ts, local_origin);
+			/*
+			 * Called through the dlsym-resolved pointer so spock.so has no hard
+			 * link-time reference to the patch-provided symbol (see spock.h).
+			 * _PG_init() refuses to start unless this symbol resolved, so the
+			 * pointer is non-NULL by invariant here.
+			 */
+			Assert(spock_subxact_setts != NULL);
+			spock_subxact_setts(GetCurrentTransactionId(),
+								local_ts, local_origin);
 			ReleaseCurrentSubTransaction();
 		}
 
