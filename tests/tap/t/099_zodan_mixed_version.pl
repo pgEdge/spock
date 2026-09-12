@@ -39,11 +39,12 @@ use SpockTest qw(
 # Env knobs:
 #   ZODAN_SCENARIO chain (default) or pair, see above
 #   ZODAN_N3_SRC   chain only: node n3 joins from, n2 (default) or n1
-#   ZODAN_N12_VER  name of the old build: v5 (default, built from
-#                  origin/v5_STABLE), v6 (HEAD, gives an all-new-version
+#   ZODAN_N12_VER  name of the old build: v5 (default, built from the
+#                  v5_STABLE branch), v6 (HEAD, gives an all-new-version
 #                  control run), or any other name together with ZODAN_N12_REF
-#   ZODAN_N12_REF  git ref to build for ZODAN_N12_VER (e.g. v5.0.9); defaults
-#                  exist for v5 and v6 only
+#   ZODAN_N12_REF  branch, tag or commit id to build for ZODAN_N12_VER (e.g.
+#                  v5.0.9); defaults exist for v5 and v6 only.  A ref the
+#                  checkout does not have is fetched from its origin remote.
 #   ZODAN_LOAD     1 = run pgbench load on the existing nodes while n3 joins
 #   ZODAN_SQL      path to the zodan.sql to use (default: ../../samples/Z0DAN/zodan.sql)
 #   ZODAN_SCRATCH  where add_node output and state dumps go (default: TESTLOGDIR or logs)
@@ -75,9 +76,21 @@ my $N3_SRC     = $ENV{ZODAN_N3_SRC} // 'n2';
 die "ZODAN_SCENARIO must be chain or pair" unless $SCENARIO =~ /^(chain|pair)$/;
 die "ZODAN_N3_SRC must be n1 or n2" unless $N3_SRC =~ /^n[12]$/;
 
-my %BUILD_REF = (v5 => 'origin/v5_STABLE', v6 => 'HEAD');
+my %BUILD_REF = (v5 => 'v5_STABLE', v6 => 'HEAD');
 my $N12_REF = $ENV{ZODAN_N12_REF} // $BUILD_REF{$N12_VER}
     // die "no default git ref for build '$N12_VER'; set ZODAN_N12_REF";
+die "ZODAN_N12_REF '$N12_REF' does not look like a branch or tag name"
+    unless $N12_REF =~ m{^[A-Za-z0-9][A-Za-z0-9._/-]*$};
+
+# Run a command given as a list (no shell) and return its stdout, chomped.
+sub capture {
+    my (@cmd) = @_;
+    open(my $fh, '-|', @cmd) or die "cannot run @cmd: $!";
+    my $out = do { local $/; <$fh> };
+    close $fh;
+    chomp $out if defined $out;
+    return $out // '';
+}
 
 # Repository to build from: the CI checkout if present, else derive from cwd
 # (tests run from tests/tap).  Same rule as 014_rolling_upgrade.pl.
@@ -91,6 +104,36 @@ if (-d "/home/pgedge/spock" && -f "/home/pgedge/spock/Makefile") {
 die "SPOCK_REPO not found or missing Makefile: $SPOCK_REPO"
     unless -d $SPOCK_REPO && -f "$SPOCK_REPO/Makefile";
 
+# Resolve HEAD, a branch, a tag or a commit id in $SPOCK_REPO to (commit,
+# what to fetch).  A CI checkout is usually shallow, single-commit and
+# detached, so a ref it does not have is fetched from its origin remote
+# first.  The second value is a full ref name, or the commit id itself when
+# the input was one; either is what the build below fetches from $SPOCK_REPO.
+sub resolve_build_ref {
+    my ($git_ref) = @_;
+    my $is_sha = $git_ref =~ /^[0-9a-f]{7,40}$/;
+    my @candidates = $git_ref eq 'HEAD' ? ('HEAD')
+        : $is_sha ? ($git_ref)
+        : ("refs/heads/$git_ref", "refs/tags/$git_ref", "refs/remotes/origin/$git_ref");
+    for my $attempt (1, 2) {
+        for my $ref (@candidates) {
+            my $commit = capture('git', '-C', $SPOCK_REPO, 'rev-parse', '--verify', '--quiet', "$ref^{commit}");
+            return ($commit, $ref =~ m{^refs/} ? $ref : $commit) if $commit;
+        }
+        last if $attempt == 2 || $git_ref eq 'HEAD';
+        diag("$SPOCK_REPO has no ref '$git_ref'; fetching it from origin");
+        if ($is_sha) {
+            system('git', '-C', $SPOCK_REPO, 'fetch', '--quiet', '--no-tags', '--depth=1', 'origin', $git_ref);
+        } else {
+            system('git', '-C', $SPOCK_REPO, 'fetch', '--quiet', '--no-tags', '--depth=1', 'origin',
+                   "+refs/heads/$git_ref:refs/remotes/origin/$git_ref") == 0
+                or system('git', '-C', $SPOCK_REPO, 'fetch', '--quiet', '--depth=1', 'origin',
+                          "+refs/tags/$git_ref:refs/tags/$git_ref");
+        }
+    }
+    die "cannot resolve git ref '$git_ref' in $SPOCK_REPO, and fetching it from origin failed";
+}
+
 # Build Spock at $git_ref into its own copy of the PostgreSQL install.
 # The commit that was built is recorded in the tree; an existing tree is
 # reused only when it holds the commit $git_ref resolves to now.
@@ -100,9 +143,7 @@ sub build_spock_tree {
     my $pg_bin = "$tree/bin";
     my $stamp = "$tree/.spock_commit";
 
-    my $commit = `git -C $SPOCK_REPO rev-parse --verify --quiet $git_ref`;
-    chomp $commit;
-    die "cannot resolve git ref '$git_ref' in $SPOCK_REPO" unless $commit;
+    my ($commit, $fetch_ref) = resolve_build_ref($git_ref);
 
     if (-f $stamp) {
         open(my $fh, '<', $stamp) or die "cannot read $stamp: $!";
@@ -115,7 +156,7 @@ sub build_spock_tree {
     }
 
     if ($git_ref eq 'HEAD') {
-        my $dirty = `git -C $SPOCK_REPO status --porcelain -- src sql include`;
+        my $dirty = capture('git', '-C', $SPOCK_REPO, 'status', '--porcelain', '--', 'src', 'sql', 'include');
         diag("NOTE: uncommitted changes under src/, sql/ or include/ are not part of this build (it clones HEAD):\n$dirty")
             if $dirty;
     }
@@ -135,8 +176,12 @@ sub build_spock_tree {
     my $sharedir = `$pg_bin/pg_config --sharedir`;  chomp $sharedir;
     unlink glob("$libdir/spock*.so"), glob("$sharedir/extension/spock*");
 
-    system_or_bail("git clone --quiet $SPOCK_REPO $build_dir");
-    system_or_bail("cd $build_dir && git checkout --quiet $git_ref") if $git_ref ne 'HEAD';
+    # Not a clone: git clone of a detached or shallow checkout has no branch
+    # to check out.  Fetch the resolved ref into an empty repository instead
+    # and check out the exact commit.
+    system_or_bail('git', 'init', '--quiet', $build_dir);
+    system_or_bail('git', '-C', $build_dir, 'fetch', '--quiet', $SPOCK_REPO, $fetch_ref);
+    system_or_bail('git', '-C', $build_dir, 'checkout', '--quiet', $commit);
     system_or_bail("cd $build_dir && make PG_CONFIG=$pg_bin/pg_config");
     system_or_bail("cd $build_dir && make install PG_CONFIG=$pg_bin/pg_config");
 
