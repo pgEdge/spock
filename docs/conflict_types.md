@@ -70,6 +70,28 @@ silently applied without any conflict reporting.
 replication flow, the event is not written to `spock.resolutions`
 regardless of which side wins.
 
+#### TOAST columns and convergence
+
+PostgreSQL does not write an unchanged TOAST value to WAL, so an `UPDATE`
+that leaves a large column alone does not carry that column. When the remote
+row wins an `update_origin_differs` resolution, Spock installs the remote row but has
+to keep the local value for any column that did not travel. After two nodes
+update the same row at the same time, one changing a TOAST column and the
+other changing a small one, both nodes agree on the winner and still end up
+with different rows.
+
+Tables with `REPLICA IDENTITY FULL` and a `PRIMARY KEY` do not have this
+problem: the whole old row travels with every `UPDATE`, and Spock takes an
+unchanged column's value from it, so the winner's whole row lands on every
+node. To switch a table, use
+[`spock.table_replica_identity_full()`](spock_functions/functions/spock_table_replica_identity_full.md);
+to switch every table in a set, use
+[`spock.repset_replica_identity_full()`](spock_functions/functions/spock_repset_replica_identity_full.md);
+to have new tables switched as they join a set, set
+[`spock.auto_replica_identity_full`](configuring.md#spockauto_replica_identity_full).
+The cost is WAL and network volume for every `UPDATE` and `DELETE` on the
+table.
+
 ---
 
 ### `update_exists`

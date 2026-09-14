@@ -448,6 +448,48 @@ adjustment to which replication set the table is part of. Setting a table to
 unlogged will remove it from replication. Detaching a partition will not
 remove it from replication.
 
+### `spock.auto_replica_identity_full`
+
+`spock.auto_replica_identity_full` makes Spock set `REPLICA IDENTITY FULL`
+on a table with a `PRIMARY KEY` when the table joins a replication set that
+replicates `UPDATE` or `DELETE`. It applies to `spock.repset_add_table()`,
+`spock.repset_add_all_tables()`, `spock.repset_add_partition()` and to the
+tables Spock adds on its own under `spock.include_ddl_repset`. Only tables
+at `REPLICA IDENTITY DEFAULT` are changed; `USING INDEX` and `NOTHING` are
+left as they are, and a table without a `PRIMARY KEY` is left alone. For a
+partitioned table each partition is switched; the parent is not, because
+PostgreSQL never cascades `REPLICA IDENTITY` to partitions and the
+partitions hold the rows.
+
+The default is `off`.
+
+Why you would turn it on: PostgreSQL does not write an unchanged TOAST
+value to WAL, so an `UPDATE` that leaves a large column alone does not carry
+that column, and the subscriber keeps whatever it holds locally. After two
+nodes update the same row at the same time they agree on the winner but can
+end up with different rows. With `REPLICA IDENTITY FULL` the whole old row
+travels with every `UPDATE` and `DELETE`, and Spock takes an unchanged
+column's value from it, so the winner's whole row lands on every node. See
+[`update_origin_differs`](conflict_types.md#update_origin_differs).
+
+The cost is WAL and network volume: the entire old row, TOAST values
+included, is logged and sent for every `UPDATE` and `DELETE` on the table.
+
+Set it on every node. Each node sets its own table identities: the change
+is made locally when the table joins a set and is not replicated as DDL, so
+a node with the setting off keeps `REPLICA IDENTITY DEFAULT` for the tables
+it adds, including tables it creates by applying replicated DDL. Existing
+tables are not changed by turning the setting on; use
+[`spock.repset_replica_identity_full()`](spock_functions/functions/spock_repset_replica_identity_full.md)
+or
+[`spock.table_replica_identity_full()`](spock_functions/functions/spock_table_replica_identity_full.md)
+for those.
+
+The change is made as an `ALTER TABLE`, so the role that adds the table to
+the replication set must own the table or be a superuser. With the setting
+on, `spock.repset_add_table()` run by a role that does not own the table
+fails with an ownership error where it used to succeed.
+
 ### `spock.log_origin_change`
 
 `spock.log_origin_change` indicates whether changes to a row's

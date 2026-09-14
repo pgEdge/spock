@@ -570,6 +570,13 @@ RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spoc
 CREATE FUNCTION spock.repset_remove_partition(parent regclass, partition regclass default NULL)
 RETURNS int CALLED ON NULL INPUT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_replication_set_remove_partition';
 
+CREATE FUNCTION spock.table_replica_identity_full(relation regclass,
+    include_partitions boolean DEFAULT true)
+RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_table_replica_identity_full';
+
+CREATE FUNCTION spock.repset_replica_identity_full(set_name name)
+RETURNS integer STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_repset_replica_identity_full';
+
 CREATE FUNCTION spock.sub_alter_sync(subscription_name name, truncate boolean DEFAULT false)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_subscription_synchronize';
 

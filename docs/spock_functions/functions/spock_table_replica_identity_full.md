@@ -1,0 +1,74 @@
+## NAME
+
+spock.table_replica_identity_full()
+
+### SYNOPSIS
+
+spock.table_replica_identity_full (relation regclass,
+include_partitions boolean DEFAULT true)
+
+### RETURNS
+
+  - true if at least one table's identity was changed.
+
+  - false if every target was already REPLICA IDENTITY FULL.
+
+### DESCRIPTION
+
+Sets `REPLICA IDENTITY FULL` on a table that has a `PRIMARY KEY`.
+
+Spock supports `REPLICA IDENTITY FULL` only together with a `PRIMARY KEY`:
+FULL decides what is written to WAL (the whole old row, TOAST values
+included), and the `PRIMARY KEY` is what the subscriber uses to find the
+row. A table without a `PRIMARY KEY` is refused with an error. This is the
+check that a plain `ALTER TABLE ... REPLICA IDENTITY FULL` does not make.
+
+For a partitioned table, every partition is switched and the parent is left
+alone, because PostgreSQL never cascades `REPLICA IDENTITY` to partitions
+and the partitions hold the rows. Calling with `include_partitions` set to
+false on a partitioned table is an error, since there would be nothing to
+alter.
+
+Replication set membership is not checked or changed. A table already in a
+replication set keeps its membership.
+
+The change is local to the node, like every `spock.repset_*` function. It
+does not pass through the DDL replication path, so it is not replicated
+even when `spock.enable_ddl_replication` is on. Run it on every node, the
+way you run `spock.repset_add_table()` on every node. A hand-typed
+`ALTER TABLE ... REPLICA IDENTITY FULL` behaves differently: with AutoDDL
+on it is replicated to the other nodes.
+
+The caller must own the table or be a superuser.
+
+### ARGUMENTS
+
+relation
+
+    The table, as a regclass (for example `'public.orders'`).
+
+include_partitions
+
+    For a partitioned table, whether to switch its partitions. Default
+    true. false on a partitioned table is an error.
+
+### EXAMPLE
+
+    postgres=# SELECT spock.table_replica_identity_full('public.orders');
+     table_replica_identity_full
+    -----------------------------
+     t
+
+A second call finds nothing to do:
+
+    postgres=# SELECT spock.table_replica_identity_full('public.orders');
+     table_replica_identity_full
+    -----------------------------
+     f
+
+A table without a PRIMARY KEY is refused:
+
+    postgres=# SELECT spock.table_replica_identity_full('public.log');
+    ERROR:  table log has no PRIMARY KEY
+    DETAIL:  REPLICA IDENTITY FULL is supported only together with a PRIMARY KEY, which the subscriber uses to find the row.
+    HINT:  Add a PRIMARY KEY to the table first.

@@ -1,0 +1,277 @@
+-- REPLICA IDENTITY FULL helpers: spock.table_replica_identity_full(),
+-- spock.repset_replica_identity_full() and spock.auto_replica_identity_full.
+SELECT * FROM spock_regress_variables()
+\gset
+\c :provider_dsn
+CREATE SCHEMA rif;
+CREATE TABLE rif.t_pk (id int PRIMARY KEY, payload text);
+CREATE TABLE rif.t_nopk (id int, payload text);
+CREATE TABLE rif.t_part (id int, payload text, PRIMARY KEY (id))
+	PARTITION BY RANGE (id);
+CREATE TABLE rif.t_part_a PARTITION OF rif.t_part FOR VALUES FROM (0) TO (10);
+CREATE TABLE rif.t_part_b PARTITION OF rif.t_part FOR VALUES FROM (10) TO (20);
+CREATE VIEW rif.idents AS
+	SELECT c.relname, c.relreplident
+	  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+	 WHERE n.nspname = 'rif' AND c.relkind IN ('r', 'p');
+-- Everything starts at DEFAULT.
+SELECT * FROM rif.idents ORDER BY 1;
+ relname  | relreplident 
+----------+--------------
+ t_nopk   | d
+ t_part   | d
+ t_part_a | d
+ t_part_b | d
+ t_pk     | d
+(5 rows)
+
+-- spock.table_replica_identity_full()
+-- A PK table at DEFAULT is switched; the second call has nothing to do.
+SELECT spock.table_replica_identity_full('rif.t_pk');
+ table_replica_identity_full 
+-----------------------------
+ t
+(1 row)
+
+SELECT spock.table_replica_identity_full('rif.t_pk');
+ table_replica_identity_full 
+-----------------------------
+ f
+(1 row)
+
+-- No PK: refused with a hint.
+SELECT spock.table_replica_identity_full('rif.t_nopk');
+ERROR:  table t_nopk has no PRIMARY KEY
+DETAIL:  REPLICA IDENTITY FULL is supported only together with a PRIMARY KEY, which the subscriber uses to find the row.
+HINT:  Add a PRIMARY KEY to the table first.
+-- A partitioned table: every leaf is switched, the parent is left alone,
+-- because REPLICA IDENTITY never cascades in PostgreSQL and the leaves
+-- hold the rows.
+SELECT spock.table_replica_identity_full('rif.t_part');
+ table_replica_identity_full 
+-----------------------------
+ t
+(1 row)
+
+-- The parent alone has nothing to alter.
+SELECT spock.table_replica_identity_full('rif.t_part', include_partitions := false);
+ERROR:  cannot set REPLICA IDENTITY FULL on partitioned table t_part alone
+DETAIL:  REPLICA IDENTITY does not cascade to partitions, and the partitions hold the rows.
+HINT:  Call the function with include_partitions set to true.
+-- NULL input does nothing (STRICT).
+SELECT spock.table_replica_identity_full(NULL) IS NULL AS is_null;
+ is_null 
+---------
+ t
+(1 row)
+
+SELECT * FROM rif.idents ORDER BY 1;
+ relname  | relreplident 
+----------+--------------
+ t_nopk   | d
+ t_part   | d
+ t_part_a | f
+ t_part_b | f
+ t_pk     | f
+(5 rows)
+
+-- spock.repset_replica_identity_full()
+SELECT spock.repset_create('rif_upd') IS NOT NULL AS created;
+ created 
+---------
+ t
+(1 row)
+
+SELECT spock.repset_create('rif_ins',
+	replicate_update := false, replicate_delete := false) IS NOT NULL AS created;
+ created 
+---------
+ t
+(1 row)
+
+CREATE TABLE rif.s1 (id int PRIMARY KEY, payload text);
+CREATE TABLE rif.s2 (id int PRIMARY KEY, payload text);
+CREATE TABLE rif.s3 (id int PRIMARY KEY, payload text);
+CREATE TABLE rif.s4 (id int PRIMARY KEY, payload text);
+ALTER TABLE rif.s4 REPLICA IDENTITY FULL;
+SELECT spock.repset_add_table('rif_upd', 'rif.s1');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.repset_add_table('rif_upd', 'rif.s2');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.repset_add_table('rif_upd', 'rif.s3');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.repset_add_table('rif_upd', 'rif.s4');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+-- Membership is not re-checked on DROP CONSTRAINT with auto-DDL off, so this
+-- is how a table without a PK comes to sit in an UPDATE/DELETE set.
+ALTER TABLE rif.s3 DROP CONSTRAINT s3_pkey;
+-- s1 and s2 are switched, s3 is skipped with a warning, s4 was FULL already.
+SELECT spock.repset_replica_identity_full('rif_upd');
+WARNING:  skipping table rif.s3 for REPLICA IDENTITY FULL
+DETAIL:  Table has no PRIMARY KEY, which REPLICA IDENTITY FULL needs for row lookup on the subscriber.
+ repset_replica_identity_full 
+------------------------------
+                            2
+(1 row)
+
+-- Nothing left to do; the warning for s3 repeats.
+SELECT spock.repset_replica_identity_full('rif_upd');
+WARNING:  skipping table rif.s3 for REPLICA IDENTITY FULL
+DETAIL:  Table has no PRIMARY KEY, which REPLICA IDENTITY FULL needs for row lookup on the subscriber.
+ repset_replica_identity_full 
+------------------------------
+                            0
+(1 row)
+
+-- An insert-only set has no use for FULL.
+SELECT spock.repset_replica_identity_full('rif_ins');
+ERROR:  replication set rif_ins replicates neither UPDATEs nor DELETEs
+DETAIL:  REPLICA IDENTITY FULL only affects how UPDATEs and DELETEs are replicated.
+-- Unknown set.
+SELECT spock.repset_replica_identity_full('rif_nosuch');
+ERROR:  replication set rif_nosuch not found
+-- NULL does nothing (STRICT): no "all sets" form exists on purpose.
+SELECT spock.repset_replica_identity_full(NULL) IS NULL AS is_null;
+ is_null 
+---------
+ t
+(1 row)
+
+SELECT * FROM rif.idents WHERE relname LIKE 's_' ORDER BY 1;
+ relname | relreplident 
+---------+--------------
+ s1      | f
+ s2      | f
+ s3      | d
+ s4      | f
+(4 rows)
+
+-- spock.auto_replica_identity_full
+-- Off by default: joining a set leaves the identity alone.
+SHOW spock.auto_replica_identity_full;
+ spock.auto_replica_identity_full 
+----------------------------------
+ off
+(1 row)
+
+CREATE TABLE rif.g_off (id int PRIMARY KEY, payload text);
+SELECT spock.repset_add_table('rif_upd', 'rif.g_off');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+SET spock.auto_replica_identity_full = on;
+-- A DEFAULT PK table joining an UPDATE/DELETE set is switched.
+CREATE TABLE rif.g_pk (id int PRIMARY KEY, payload text);
+SELECT spock.repset_add_table('rif_upd', 'rif.g_pk');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+-- A deliberate USING INDEX identity is left alone.
+CREATE TABLE rif.g_idx (id int PRIMARY KEY, alt int NOT NULL);
+CREATE UNIQUE INDEX g_idx_alt ON rif.g_idx (alt);
+ALTER TABLE rif.g_idx REPLICA IDENTITY USING INDEX g_idx_alt;
+SELECT spock.repset_add_table('rif_upd', 'rif.g_idx');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+-- An insert-only set gets no identity change.
+CREATE TABLE rif.g_ins (id int PRIMARY KEY, payload text);
+SELECT spock.repset_add_table('rif_ins', 'rif.g_ins');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+-- A table without a PK cannot join rif_upd at all, and is not touched on
+-- the way out.
+CREATE TABLE rif.g_nopk (id int, payload text);
+SELECT spock.repset_add_table('rif_upd', 'rif.g_nopk');
+ERROR:  table g_nopk cannot be added to replication set rif_upd
+DETAIL:  Table has no replica identity index, and the replication set replicates UPDATEs or DELETEs.
+HINT:  Add a PRIMARY KEY to the table, or nominate a unique index on NOT NULL columns with ALTER TABLE ... REPLICA IDENTITY USING INDEX.
+-- Partitions are switched one by one; the parent is left alone.
+CREATE TABLE rif.g_part (id int, payload text, PRIMARY KEY (id))
+	PARTITION BY RANGE (id);
+CREATE TABLE rif.g_part_a PARTITION OF rif.g_part FOR VALUES FROM (0) TO (10);
+CREATE TABLE rif.g_part_b PARTITION OF rif.g_part FOR VALUES FROM (10) TO (20);
+SELECT spock.repset_add_table('rif_upd', 'rif.g_part');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+-- repset_add_all_tables() goes through the same path.
+CREATE SCHEMA rif_all;
+CREATE TABLE rif_all.a1 (id int PRIMARY KEY, payload text);
+CREATE TABLE rif_all.a2 (id int PRIMARY KEY, payload text);
+SELECT spock.repset_add_all_tables('rif_upd', '{rif_all}');
+ repset_add_all_tables 
+-----------------------
+ t
+(1 row)
+
+RESET spock.auto_replica_identity_full;
+SELECT * FROM rif.idents WHERE relname LIKE 'g%' ORDER BY 1;
+ relname  | relreplident 
+----------+--------------
+ g_idx    | i
+ g_ins    | d
+ g_nopk   | d
+ g_off    | d
+ g_part   | d
+ g_part_a | f
+ g_part_b | f
+ g_pk     | f
+(8 rows)
+
+SELECT c.relname, c.relreplident
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = 'rif_all' ORDER BY 1;
+ relname | relreplident 
+---------+--------------
+ a1      | f
+ a1_pkey | n
+ a2      | f
+ a2_pkey | n
+(4 rows)
+
+-- Cleanup.
+SELECT spock.repset_drop('rif_upd');
+ repset_drop 
+-------------
+ t
+(1 row)
+
+SELECT spock.repset_drop('rif_ins');
+ repset_drop 
+-------------
+ t
+(1 row)
+
+DROP VIEW rif.idents;
+SET client_min_messages = warning;
+DROP SCHEMA rif CASCADE;
+DROP SCHEMA rif_all CASCADE;
+RESET client_min_messages;

@@ -156,6 +156,8 @@ PG_FUNCTION_INFO_V1(spock_replication_set_add_all_sequences);
 PG_FUNCTION_INFO_V1(spock_replication_set_remove_sequence);
 PG_FUNCTION_INFO_V1(spock_replication_set_add_partition);
 PG_FUNCTION_INFO_V1(spock_replication_set_remove_partition);
+PG_FUNCTION_INFO_V1(spock_table_replica_identity_full);
+PG_FUNCTION_INFO_V1(spock_repset_replica_identity_full);
 
 /* Other manipulation function */
 PG_FUNCTION_INFO_V1(spock_synchronize_sequence);
@@ -1878,6 +1880,144 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_BOOL(true);
+}
+
+/*
+ * Switch a table, and by default its partitions, to REPLICA IDENTITY FULL.
+ *
+ * REPLICA IDENTITY never cascades to partitions in any supported
+ * PostgreSQL version and the partitions are where the rows live, so a
+ * partitioned table is handled leaf by leaf; asking for the parent alone
+ * is refused because there would be nothing to alter.
+ *
+ * Local to this node, like every other spock.repset_* function: the ALTER
+ * does not pass through ProcessUtility, so auto-DDL does not replicate it.
+ *
+ * The relation is opened with AccessExclusiveLock, the lock ALTER TABLE ...
+ * REPLICA IDENTITY takes, so AlterTableInternal() has nothing to upgrade.
+ *
+ * Returns true if at least one relation was changed, false if every target
+ * was FULL already.
+ */
+Datum
+spock_table_replica_identity_full(PG_FUNCTION_ARGS)
+{
+	Oid			reloid = PG_GETARG_OID(0);
+	bool		inc_partitions = PG_GETARG_BOOL(1);
+	Relation	rel;
+	List	   *reloids;
+	ListCell   *lc;
+	bool		changed = false;
+
+	(void) check_local_node(false);
+
+	rel = table_open(reloid, AccessExclusiveLock);
+
+	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		if (!inc_partitions)
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("cannot set REPLICA IDENTITY FULL on partitioned table %s alone",
+							RelationGetRelationName(rel)),
+					 errdetail("REPLICA IDENTITY does not cascade to partitions, and the partitions hold the rows."),
+					 errhint("Call the function with include_partitions set to true.")));
+
+		reloids = find_all_inheritors(reloid, AccessExclusiveLock, NULL);
+	}
+	else
+		reloids = list_make1_oid(reloid);
+
+	foreach(lc, reloids)
+	{
+		Oid			partoid = lfirst_oid(lc);
+		Relation	partrel;
+
+		/* find_all_inheritors() locked the children; the parent is open. */
+		partrel = (partoid == reloid) ? rel : table_open(partoid, NoLock);
+
+		/* Sub-partitioned parents have nothing to alter either. */
+		if (partrel->rd_rel->relkind == RELKIND_RELATION)
+			changed |= spock_set_replica_identity_full(partrel);
+
+		if (partrel != rel)
+			table_close(partrel, NoLock);
+	}
+
+	table_close(rel, NoLock);
+
+	PG_RETURN_BOOL(changed);
+}
+
+/*
+ * Switch every PRIMARY KEY table of one replication set to REPLICA IDENTITY
+ * FULL.  Tables that are FULL already are passed over silently; tables
+ * without a PRIMARY KEY are passed over with a WARNING, the way
+ * repset_add_all_tables() reports what it cannot take rather than failing
+ * the whole call.  Partitioned parents are skipped: their leaves are
+ * members in their own right and are reached on their own.
+ *
+ * The set name is required.  There is deliberately no "all sets" form:
+ * FULL logs the whole old row on every UPDATE and DELETE, and a NULL that
+ * slipped in by mistake should not switch every table on the node.
+ *
+ * Returns the number of tables whose identity was changed.
+ */
+Datum
+spock_repset_replica_identity_full(PG_FUNCTION_ARGS)
+{
+	Name		repset_name = PG_GETARG_NAME(0);
+	SpockLocalNode *node;
+	SpockRepSet *repset;
+	List	   *reloids;
+	ListCell   *lc;
+	int32		changed = 0;
+
+	node = check_local_node(false);
+	repset = get_replication_set_by_name(node->node->id,
+										 NameStr(*repset_name), false);
+
+	if (!repset->replicate_update && !repset->replicate_delete)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("replication set %s replicates neither UPDATEs nor DELETEs",
+						repset->name),
+				 errdetail("REPLICA IDENTITY FULL only affects how UPDATEs and DELETEs are replicated.")));
+
+	reloids = replication_set_get_tables(repset->id);
+
+	foreach(lc, reloids)
+	{
+		Oid			reloid = lfirst_oid(lc);
+		Relation	rel = table_open(reloid, AccessExclusiveLock);
+
+		if (rel->rd_rel->relkind != RELKIND_RELATION)
+		{
+			table_close(rel, NoLock);
+			continue;
+		}
+
+		if (rel->rd_indexvalid == 0)
+			RelationGetIndexList(rel);
+
+		if (!OidIsValid(rel->rd_pkindex))
+		{
+			ereport(WARNING,
+					(errmsg("skipping table %s.%s for REPLICA IDENTITY FULL",
+							get_namespace_name(RelationGetNamespace(rel)),
+							RelationGetRelationName(rel)),
+					 errdetail("Table has no PRIMARY KEY, which REPLICA IDENTITY FULL needs for row lookup on the subscriber.")));
+			table_close(rel, NoLock);
+			continue;
+		}
+
+		if (spock_set_replica_identity_full(rel))
+			changed++;
+
+		table_close(rel, NoLock);
+	}
+
+	PG_RETURN_INT32(changed);
 }
 
 /*

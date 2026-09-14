@@ -141,8 +141,12 @@ columns.
 
 !!! note
 
-    `REPLICA IDENTITY FULL` is only supported with Delta-Apply columns on
-    primary key tables.
+    `REPLICA IDENTITY FULL` is supported only on tables that also have a
+    `PRIMARY KEY`. The whole old row is then logged and sent with every
+    `UPDATE` and `DELETE`, and the `PRIMARY KEY` is used to find the row on
+    the subscriber. `REPLICA IDENTITY FULL` without a `PRIMARY KEY` cannot
+    replicate `UPDATE` or `DELETE`. See
+    [`spock.table_replica_identity_full()`](spock_functions/functions/spock_table_replica_identity_full.md).
 
 ### Unique Constraint Conflicts
 

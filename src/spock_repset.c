@@ -28,12 +28,16 @@
 #include "catalog/objectaddress.h"
 #include "catalog/pg_type.h"
 
+#include "commands/tablecmds.h"
+
 #include "executor/spi.h"
 
 #include "nodes/makefuncs.h"
+#include "nodes/parsenodes.h"
 
 #include "replication/reorderbuffer.h"
 #include "storage/lmgr.h"
+#include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -1112,6 +1116,73 @@ relation_has_replication_identity(Relation rel)
 }
 
 /*
+ * Switch an open plain table to REPLICA IDENTITY FULL.
+ *
+ * FULL only makes sense next to a PRIMARY KEY: FULL decides what is
+ * WAL-logged (the whole old row, TOAST values flattened in), the PRIMARY
+ * KEY is what the subscriber looks the row up by.  So a table without one
+ * is refused, as is anything that is not a plain table: REPLICA IDENTITY
+ * never cascades to partitions, so a partitioned parent has nothing to
+ * alter and callers walk the leaves themselves.
+ *
+ * The ALTER goes through AlterTableInternal(), which does not pass through
+ * ProcessUtility.  Auto-DDL therefore neither captures nor re-replicates
+ * it, and each node sets its own identity, which is what a multi-master
+ * cluster needs.  AlterTableInternal() does no permission checks, so the
+ * ownership check ALTER TABLE would have made is done here.
+ *
+ * Returns true if the identity was changed, false if it was FULL already.
+ */
+bool
+spock_set_replica_identity_full(Relation rel)
+{
+	Oid			relid = RelationGetRelid(rel);
+	ReplicaIdentityStmt *ri;
+	AlterTableCmd *cmd;
+
+	if (rel->rd_rel->relkind != RELKIND_RELATION)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a table",
+						RelationGetRelationName(rel))));
+
+	if (rel->rd_indexvalid == 0)
+		RelationGetIndexList(rel);
+
+	if (!OidIsValid(rel->rd_pkindex))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("table %s has no PRIMARY KEY",
+						RelationGetRelationName(rel)),
+				 errdetail("REPLICA IDENTITY FULL is supported only together with a PRIMARY KEY, which the subscriber uses to find the row."),
+				 errhint("Add a PRIMARY KEY to the table first.")));
+
+#if PG_VERSION_NUM >= 160000
+	if (!object_ownercheck(RelationRelationId, relid, GetUserId()))
+#else
+	if (!pg_class_ownercheck(relid, GetUserId()))
+#endif
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_TABLE,
+					   RelationGetRelationName(rel));
+
+	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
+		return false;
+
+	ri = makeNode(ReplicaIdentityStmt);
+	ri->identity_type = REPLICA_IDENTITY_FULL;
+	ri->name = NULL;
+
+	cmd = makeNode(AlterTableCmd);
+	cmd->subtype = AT_ReplicaIdentity;
+	cmd->def = (Node *) ri;
+
+	AlterTableInternal(relid, list_make1(cmd), false);
+	CommandCounterIncrement();
+
+	return true;
+}
+
+/*
  * May this relation join the replication set, as far as its replica identity
  * goes?  Reports the reason it may not, at WARNING when the caller is walking a
  * whole schema and at ERROR when it asked for this one relation.
@@ -1212,6 +1283,29 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	}
 
 	EnsureRelationNotIgnored(targetrel);
+
+	/*
+	 * Under spock.auto_replica_identity_full, a PRIMARY KEY table joining a
+	 * set that replicates UPDATEs or DELETEs also gets REPLICA IDENTITY
+	 * FULL, so that the whole old row travels with each change and TOAST
+	 * columns converge (see spock_set_replica_identity_full()).  Only the
+	 * DEFAULT identity is upgraded: USING INDEX and NOTHING were chosen on
+	 * purpose.  Partitioned parents are skipped; their leaves come through
+	 * here on their own.
+	 */
+	if (spock_auto_replica_identity_full &&
+		(repset->replicate_update || repset->replicate_delete) &&
+		targetrel->rd_rel->relkind == RELKIND_RELATION &&
+		targetrel->rd_rel->relreplident == REPLICA_IDENTITY_DEFAULT)
+	{
+		if (targetrel->rd_indexvalid == 0)
+			RelationGetIndexList(targetrel);
+
+		if (OidIsValid(targetrel->rd_pkindex) &&
+			spock_set_replica_identity_full(targetrel))
+			elog(LOG, "table \"%s\" set to REPLICA IDENTITY FULL",
+				 RelationGetRelationName(targetrel));
+	}
 
 	table_close(targetrel, NoLock);
 

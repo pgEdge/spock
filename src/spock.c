@@ -170,6 +170,7 @@ static char *spock_country_code;
 bool		spock_deny_ddl = false;
 bool		spock_enable_ddl_replication = false;
 bool		spock_include_ddl_repset = false;
+bool		spock_auto_replica_identity_full = false;
 bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
@@ -1310,6 +1311,19 @@ _PG_init(void)
 							 "Add tables to the replication set while doing ddl replication",
 							 NULL,
 							 &spock_include_ddl_repset,
+							 false,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.auto_replica_identity_full",
+							 "Set REPLICA IDENTITY FULL on PRIMARY KEY tables as they join a replication set that replicates UPDATE or DELETE",
+							 "Applies to spock.repset_add_table(), spock.repset_add_all_tables(), "
+							 "spock.repset_add_partition() and to tables auto-DDL adds under "
+							 "spock.include_ddl_repset.  Only tables at REPLICA IDENTITY DEFAULT "
+							 "are changed.  The whole old row, TOAST values included, is then "
+							 "WAL-logged and sent on every UPDATE and DELETE of the table.",
+							 &spock_auto_replica_identity_full,
 							 false,
 							 PGC_USERSET,
 							 0,

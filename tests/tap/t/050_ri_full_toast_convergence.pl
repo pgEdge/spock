@@ -220,6 +220,159 @@ is(wait_for_value(2, "SELECT count(*) FROM public.rif_inert WHERE id = 2", '1'),
 is(scalar_query(2, "SELECT small || '/' || md5(big) FROM public.rif_inert WHERE id = 2"), "t/$z_md5",
    '(l) key-only old tuple: big left alone and intact');
 
+# ---------------------------------------------------------------------------
+# (j) spock.table_replica_identity_full().  Local to the node: n2 is not
+#     touched, which is why relreplident is checked on n1 only.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "CREATE TABLE public.rif_fn (id int PRIMARY KEY, small text)");
+psql_or_bail(1, "CREATE TABLE public.rif_fn_nopk (id int, small text)");
+psql_or_bail(1, "CREATE TABLE public.rif_fn_part (id int, small text, PRIMARY KEY (id)) PARTITION BY RANGE (id); "
+              . "CREATE TABLE public.rif_fn_p0 PARTITION OF public.rif_fn_part FOR VALUES FROM (0) TO (10); "
+              . "CREATE TABLE public.rif_fn_p1 PARTITION OF public.rif_fn_part FOR VALUES FROM (10) TO (20)");
+
+is(relreplident(1, 'public.rif_fn'), 'd', '(j) rif_fn starts at DEFAULT');
+is(scalar_query(1, "SELECT spock.table_replica_identity_full('public.rif_fn')"), 't',
+   '(j) first call changes the identity');
+is(relreplident(1, 'public.rif_fn'), 'f', '(j) rif_fn is FULL');
+is(scalar_query(1, "SELECT spock.table_replica_identity_full('public.rif_fn')"), 'f',
+   '(j) second call has nothing to do');
+
+is(scalar_query(1, "SELECT spock.table_replica_identity_full('public.rif_fn_nopk')"), '',
+   '(j) no PK: refused');
+is(relreplident(1, 'public.rif_fn_nopk'), 'd', '(j) refused table left at DEFAULT');
+
+is(scalar_query(1, "SELECT spock.table_replica_identity_full('public.rif_fn_part')"), 't',
+   '(j) partitioned table: leaves changed');
+is(relreplident(1, 'public.rif_fn_p0'), 'f', '(j) partition p0 is FULL');
+is(relreplident(1, 'public.rif_fn_p1'), 'f', '(j) partition p1 is FULL');
+is(relreplident(1, 'public.rif_fn_part'), 'd', '(j) parent left at DEFAULT');
+
+is(scalar_query(1, "SELECT spock.table_replica_identity_full('public.rif_fn_part', false)"), '',
+   '(j) parent alone with include_partitions = false: refused');
+
+is(wait_for_value(2, "SELECT count(*) FROM pg_class WHERE relname = 'rif_fn'", '1'),
+   '1', '(j) rif_fn exists on n2');
+is(relreplident(2, 'public.rif_fn'), 'd', '(j) function did not propagate: n2 still DEFAULT');
+
+# ---------------------------------------------------------------------------
+# (k) spock.repset_replica_identity_full().  One set per call, by name.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "SELECT spock.repset_create('rif_set')");
+psql_or_bail(1, "SELECT spock.repset_create('rif_ins', replicate_update := false, replicate_delete := false)");
+psql_or_bail(1, "SET spock.include_ddl_repset = off; "
+              . "CREATE TABLE public.rif_k1 (id int PRIMARY KEY, small text); "
+              . "CREATE TABLE public.rif_k2 (id int PRIMARY KEY, small text); "
+              . "CREATE TABLE public.rif_k3 (id int PRIMARY KEY, small text); "
+              . "CREATE TABLE public.rif_k4 (id int PRIMARY KEY, small text); "
+              . "ALTER TABLE public.rif_k4 REPLICA IDENTITY FULL");
+for my $t (qw(rif_k1 rif_k2 rif_k3 rif_k4)) {
+    is(scalar_query(1, "SELECT spock.repset_add_table('rif_set', 'public.$t')"), 't',
+       "(k) $t added to rif_set");
+}
+# With include_ddl_repset off the membership is not re-evaluated, so a
+# table without a PK ends up in an UPDATE/DELETE set: the warning path.
+psql_or_bail(1, "SET spock.include_ddl_repset = off; "
+              . "ALTER TABLE public.rif_k3 DROP CONSTRAINT rif_k3_pkey");
+is(members_of(1, 'rif_set', 'public.rif_k3'), '1', '(k) rif_k3 still in rif_set without a PK');
+
+is(scalar_query(1, "SELECT spock.repset_replica_identity_full('rif_set')"), '2',
+   '(k) two tables switched: k1 and k2; k3 skipped, k4 already FULL');
+is(relreplident(1, 'public.rif_k1'), 'f', '(k) rif_k1 is FULL');
+is(relreplident(1, 'public.rif_k2'), 'f', '(k) rif_k2 is FULL');
+is(relreplident(1, 'public.rif_k3'), 'd', '(k) rif_k3 left at DEFAULT');
+is(relreplident(1, 'public.rif_k4'), 'f', '(k) rif_k4 still FULL');
+is(scalar_query(1, "SELECT spock.repset_replica_identity_full('rif_set')"), '0',
+   '(k) second call has nothing to do');
+
+is(scalar_query(1, "SELECT spock.repset_replica_identity_full('rif_ins')"), '',
+   '(k) insert-only set: refused');
+is(scalar_query(1, "SELECT spock.repset_replica_identity_full('rif_nosuch')"), '',
+   '(k) unknown set: refused');
+
+# No "all sets" form: NULL is STRICT-returned and a DEFAULT PK table in
+# 'default' stays DEFAULT.
+psql_or_bail(1, "CREATE TABLE public.rif_k_default (id int PRIMARY KEY, small text)");
+is(members_of(1, 'default', 'public.rif_k_default'), '1', '(k) rif_k_default auto-added to default');
+is(scalar_query(1, "SELECT spock.repset_replica_identity_full(NULL) IS NULL"), 't',
+   '(k) NULL argument returns NULL');
+is(relreplident(1, 'public.rif_k_default'), 'd', '(k) NULL argument changed nothing');
+
+# ---------------------------------------------------------------------------
+# GUC spock.auto_replica_identity_full.  Turned on on both nodes.  The
+# apply workers are restarted so the one that executes replicated DDL runs
+# with the new value; a fresh psql session picks it up on its own.
+# ---------------------------------------------------------------------------
+for my $n (1, 2) {
+    psql_or_bail($n, "ALTER SYSTEM SET spock.auto_replica_identity_full = on");
+    psql_or_bail($n, "SELECT pg_reload_conf()");
+    is(wait_for_value($n, "SHOW spock.auto_replica_identity_full", 'on'), 'on',
+       "GUC on for new sessions on n$n");
+}
+psql_or_bail(1, "SELECT spock.sub_disable('sub_n1_n2', true)");
+psql_or_bail(2, "SELECT spock.sub_disable('sub_n2_n1', true)");
+ok(wait_for_sub_status(1, 'sub_n1_n2', 'disabled'), 'GUC: n1 apply stopped');
+ok(wait_for_sub_status(2, 'sub_n2_n1', 'disabled'), 'GUC: n2 apply stopped');
+psql_or_bail(1, "SELECT spock.sub_enable('sub_n1_n2', true)");
+psql_or_bail(2, "SELECT spock.sub_enable('sub_n2_n1', true)");
+ok(wait_for_sub_status(1, 'sub_n1_n2', 'replicating'), 'GUC: n1 apply restarted');
+ok(wait_for_sub_status(2, 'sub_n2_n1', 'replicating'), 'GUC: n2 apply restarted');
+
+# (f) repset_add_table on each node switches the table on that node.
+psql_or_bail(1, "SET spock.include_ddl_repset = off; "
+              . "CREATE TABLE public.rif_g_add (id int PRIMARY KEY, small text)");
+is(wait_for_value(2, "SELECT count(*) FROM pg_class WHERE relname = 'rif_g_add'", '1'),
+   '1', '(f) rif_g_add exists on n2');
+is(relreplident(1, 'public.rif_g_add'), 'd', '(f) starts at DEFAULT on n1');
+is(scalar_query(1, "SELECT spock.repset_add_table('default', 'public.rif_g_add')"), 't',
+   '(f) added on n1');
+is(relreplident(1, 'public.rif_g_add'), 'f', '(f) n1: FULL after repset_add_table');
+# n2 auto-added it at CREATE (its include_ddl_repset is on), so it is FULL
+# there through the auto-DDL path; that is case (g)'s mechanism.
+is(wait_for_value(2, "SELECT relreplident FROM pg_class WHERE oid = 'public.rif_g_add'::regclass", 'f'),
+   'f', '(f) n2: FULL through auto-add of the replicated CREATE');
+
+# (g) auto-DDL: CREATE TABLE with include_ddl_repset on switches the table
+#     on the creating node and on the node applying the DDL.
+psql_or_bail(1, "CREATE TABLE public.rif_g_auto (id int PRIMARY KEY, small text)");
+is(members_of(1, 'default', 'public.rif_g_auto'), '1', '(g) n1: auto-added to default');
+is(relreplident(1, 'public.rif_g_auto'), 'f', '(g) n1: FULL without an explicit ALTER');
+is(wait_for_value(2, "SELECT relreplident FROM pg_class WHERE oid = 'public.rif_g_auto'::regclass", 'f'),
+   'f', '(g) n2: FULL after applying the replicated CREATE');
+is(members_of(2, 'default', 'public.rif_g_auto'), '1', '(g) n2: auto-added to default');
+
+# (h) Deliberate identities are left alone.
+psql_or_bail(1, "SET spock.include_ddl_repset = off; "
+              . "CREATE TABLE public.rif_g_idx (id int PRIMARY KEY, alt int NOT NULL); "
+              . "CREATE UNIQUE INDEX rif_g_idx_alt ON public.rif_g_idx (alt); "
+              . "ALTER TABLE public.rif_g_idx REPLICA IDENTITY USING INDEX rif_g_idx_alt");
+is(scalar_query(1, "SELECT spock.repset_add_table('default', 'public.rif_g_idx')"), 't',
+   '(h) USING INDEX table added');
+is(relreplident(1, 'public.rif_g_idx'), 'i', '(h) USING INDEX left alone');
+psql_or_bail(1, "SET spock.include_ddl_repset = off; "
+              . "CREATE TABLE public.rif_g_nopk (id int, small text)");
+is(scalar_query(1, "SELECT spock.repset_add_table('default_insert_only', 'public.rif_g_nopk')"), 't',
+   '(h) no-PK table added to the insert-only set');
+is(relreplident(1, 'public.rif_g_nopk'), 'd', '(h) insert-only set: identity untouched');
+
+# (i) Partitions: every leaf switched, parent untouched.
+psql_or_bail(1, "SET spock.include_ddl_repset = off; "
+              . "CREATE TABLE public.rif_g_part (id int, small text, PRIMARY KEY (id)) PARTITION BY RANGE (id); "
+              . "CREATE TABLE public.rif_g_p0 PARTITION OF public.rif_g_part FOR VALUES FROM (0) TO (10); "
+              . "CREATE TABLE public.rif_g_p1 PARTITION OF public.rif_g_part FOR VALUES FROM (10) TO (20)");
+is(scalar_query(1, "SELECT spock.repset_add_table('default', 'public.rif_g_part')"), 't',
+   '(i) partitioned table added with its partitions');
+is(relreplident(1, 'public.rif_g_p0'), 'f', '(i) p0 is FULL');
+is(relreplident(1, 'public.rif_g_p1'), 'f', '(i) p1 is FULL');
+is(relreplident(1, 'public.rif_g_part'), 'd', '(i) parent left at DEFAULT');
+
+# A FULL table produced by the GUC replicates like any other.
+psql_or_bail(1, "INSERT INTO public.rif_g_auto VALUES (1, 's')");
+is(wait_for_value(2, "SELECT small FROM public.rif_g_auto WHERE id = 1", 's'),
+   's', '(g) rows replicate on the GUC-switched table');
+psql_or_bail(1, "UPDATE public.rif_g_auto SET small = 't' WHERE id = 1");
+is(wait_for_value(2, "SELECT small FROM public.rif_g_auto WHERE id = 1", 't'),
+   't', '(g) UPDATE replicates on the GUC-switched table');
+
 # Later tasks append their cases above this line.
 
 destroy_cluster('Destroy cluster');
