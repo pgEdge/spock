@@ -186,8 +186,19 @@ whenever the old tuple carries it, which it always does on a FULL table.
 The winner's whole row lands on every node. Tables at `REPLICA IDENTITY
 DEFAULT` behave exactly as before.
 
-The cost is WAL and network volume: the whole old row is logged and sent
-with every UPDATE and DELETE of the table.
+**What it costs.** FULL adds one copy of the whole old row, TOAST values
+included, per UPDATE and DELETE, in WAL and on every link, regardless of
+how much of the row the statement touched, and every node that applies the
+change writes the same copy to its own WAL. UPDATEs that do not change any
+TOAST column feel it most, because they used to be nearly free: as a guide,
+one 10 kB TOAST column leaves provider throughput not noticeably impacted
+but raises WAL volume 10 to 100× depending on the other columns; ten 10 kB
+columns may cut throughput 10 to 15×; one 1 MB column 30 to 50×. UPDATEs
+that change a TOAST column, and DELETEs, roughly halve at worst, since the
+value being written or removed already dominated. Table schema, system
+hardware and network all change these figures; they are guidance, not
+limits. See [What REPLICA IDENTITY FULL
+costs](configuring.md#what-replica-identity-full-costs).
 
 Behaviour notes:
 
@@ -217,9 +228,12 @@ Behaviour notes:
 * On a FULL table the new tuple recorded in `spock.exception_log`, and by
   `spock.apply_change_logging = verbose`, now carries the unchanged TOAST
   values that used to appear as null, so those rows can be large.
-* The subscriber compares a TOAST value recovered from the old row with the
-  one it already holds and writes it only when the two differ, so an UPDATE
-  applied to a row that is already in sync does not rewrite the TOAST data.
+* The subscriber compares an unchanged TOAST value taken from the old row
+  the provider sent with the one it already holds and writes it only when
+  the two differ, so an UPDATE applied to a row that is already in sync does
+  not rewrite the TOAST data. Without that comparison a subscriber applying
+  frequent updates to wide rows would rewrite every TOAST value on each
+  change and could fall minutes behind the provider.
 * `spock.repset_replica_identity_full()` leaves `REPLICA IDENTITY USING
   INDEX` and `REPLICA IDENTITY NOTHING` tables alone and says so in a
   WARNING, the way `spock.auto_replica_identity_full` only changes tables at
