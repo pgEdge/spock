@@ -29,6 +29,15 @@ and the partitions hold the rows. Calling with `include_partitions` set to
 false on a partitioned table is an error, since there would be nothing to
 alter.
 
+Whatever replica identity the table has now is replaced, including
+`REPLICA IDENTITY USING INDEX` and `REPLICA IDENTITY NOTHING`. This is the
+one path that overrides a deliberate identity:
+[`spock.repset_replica_identity_full()`](spock_repset_replica_identity_full.md)
+and
+[`spock.auto_replica_identity_full`](../../configuring.md#spockauto_replica_identity_full)
+both leave those alone, because there the table was reached by walking a
+set rather than named.
+
 Replication set membership is not checked or changed. A table already in a
 replication set keeps its membership.
 
@@ -40,6 +49,12 @@ way you run `spock.repset_add_table()` on every node. A hand-typed
 on it is replicated to the other nodes.
 
 The caller must own the table or be a superuser.
+
+The function takes an `AccessExclusiveLock` on the table, and on each
+partition, for the rest of the transaction: the lock
+`ALTER TABLE ... REPLICA IDENTITY` takes. It therefore blocks, and is
+blocked by, any concurrent use of the table. Run it in a short
+transaction.
 
 ### ARGUMENTS
 

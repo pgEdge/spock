@@ -4,7 +4,7 @@ use Test::More;
 use lib '.';
 use SpockTest qw(
     create_cluster cross_wire destroy_cluster
-    get_test_config psql_or_bail scalar_query
+    psql_or_bail scalar_query
     poll_query_until wait_for_sub_status sync_nodes
 );
 
@@ -27,6 +27,9 @@ use SpockTest qw(
 #   j  spock.table_replica_identity_full()            (Task 3)
 #   k  spock.repset_replica_identity_full()           (Task 4)
 #   f-i spock.auto_replica_identity_full               (Task 5)
+#   m  a FULL table that loses its PRIMARY KEY leaves 'default'
+#   n  a PRIMARY KEY table with identity NOTHING is not evicted from
+#      every replication set
 
 create_cluster(2, 'Create 2-node cluster for RI FULL TOAST convergence');
 cross_wire(2, ['n1', 'n2'], 'Cross-wire n1 and n2');
@@ -54,6 +57,32 @@ sub row_sig {
     my ($node, $rel, $id) = @_;
     return scalar_query($node,
         "SELECT small || '/' || md5(big) FROM $rel WHERE id = $id");
+}
+
+sub toast_oid {
+    my ($node, $rel) = @_;
+    return scalar_query($node,
+        "SELECT reltoastrelid FROM pg_class WHERE oid = '$rel'::regclass");
+}
+
+# One counter out of pg_stat_all_tables, 0 before the first stats flush.
+sub tup_stat {
+    my ($node, $col, $relid) = @_;
+    return scalar_query($node,
+        "SELECT coalesce((SELECT $col FROM pg_stat_all_tables "
+      . "WHERE relid = $relid), 0)");
+}
+
+# A backend flushes its pending statistics at most once a second, so a
+# counter read right after the statement that moved it can still be stale.
+# Wait until it has passed $floor and return the value it settled on.
+sub wait_tup_stat {
+    my ($node, $col, $relid, $floor) = @_;
+    ok(poll_query_until($node,
+        "SELECT coalesce((SELECT $col FROM pg_stat_all_tables "
+      . "WHERE relid = $relid), 0) > $floor", 't'),
+       "$col for relation $relid on n$node passed $floor");
+    return tup_stat($node, $col, $relid);
 }
 
 # Wait until $query on $node returns $expected, then return the last value.
@@ -146,9 +175,20 @@ isnt(row_sig(1, 'public.rif_base', 1), row_sig(2, 'public.rif_base', 1),
 # (b) Identity FULL: the same race converges.  n2 won, so both nodes must
 #     hold n2's whole row: small = 'b' and the original big.
 # ---------------------------------------------------------------------------
+my $conv_toast1 = toast_oid(1, 'public.rif_conv');
+my $conv_toast2 = toast_oid(2, 'public.rif_conv');
+
+my $t1_ins0 = tup_stat(1, 'n_tup_ins', $conv_toast1);
 psql_or_bail(1, "INSERT INTO public.rif_conv VALUES (1, 's', $BIG_Z)");
 is(wait_for_value(2, "SELECT length(big) FROM public.rif_conv WHERE id = 1", '200000'),
    '200000', '(b) toasted row replicated to n2');
+
+# One 200 kB value is this many TOAST chunks; used below as the unit.
+my $t1_ins1 = wait_tup_stat(1, 'n_tup_ins', $conv_toast1, $t1_ins0);
+my $one_value = $t1_ins1 - $t1_ins0;
+cmp_ok($one_value, '>', 1, '(b) one big value takes more than one TOAST chunk');
+
+my $c1_upd0 = tup_stat(1, 'n_tup_upd', "'public.rif_conv'::regclass");
 
 race('(b)',
      "UPDATE public.rif_conv SET big = $BIG_X WHERE id = 1",
@@ -160,6 +200,29 @@ is(row_sig(2, 'public.rif_conv', 1), "b/$z_md5",
    '(b) n2 kept its own row');
 is(row_sig(1, 'public.rif_conv', 1), row_sig(2, 'public.rif_conv', 1),
    '(b) identity FULL: nodes converge');
+
+# n1 wrote its own big locally and then had to replace it with the value
+# recovered from n2's old row, because the two differ: two whole values
+# through TOAST.  This is the contrast to the in-sync case below.
+wait_tup_stat(1, 'n_tup_upd', "'public.rif_conv'::regclass", $c1_upd0 + 1);
+my $t1_ins2 = tup_stat(1, 'n_tup_ins', $conv_toast1);
+cmp_ok($t1_ins2 - $t1_ins1, '>=', 2 * $one_value,
+   '(b) n1 rewrote the TOAST value because the recovered bytes differed');
+
+# The nodes are in sync now.  An UPDATE of the small column carries big as
+# 'u'; the apply side recovers it from the old row and finds it identical to
+# what it already holds, so heap_update() must not re-toast it.
+my $t2_ins0 = tup_stat(2, 'n_tup_ins', $conv_toast2);
+my $c2_upd0 = tup_stat(2, 'n_tup_upd', "'public.rif_conv'::regclass");
+psql_or_bail(1, "UPDATE public.rif_conv SET small = 'x' WHERE id = 1");
+is(wait_for_value(2, "SELECT small FROM public.rif_conv WHERE id = 1", 'x'),
+   'x', '(b) in-sync UPDATE of the small column applied on n2');
+# n_tup_upd moving proves the apply worker flushed this transaction's stats.
+wait_tup_stat(2, 'n_tup_upd', "'public.rif_conv'::regclass", $c2_upd0);
+is(tup_stat(2, 'n_tup_ins', $conv_toast2), $t2_ins0,
+   '(b) in-sync UPDATE wrote no new TOAST chunks on n2');
+is(scalar_query(2, "SELECT md5(big) FROM public.rif_conv WHERE id = 1"), $z_md5,
+   '(b) big is still intact on n2');
 
 # ---------------------------------------------------------------------------
 # (c) Admission gate: FULL + PK is admitted, FULL without PK is refused.
@@ -298,6 +361,55 @@ is(scalar_query(1, "SELECT spock.repset_replica_identity_full(NULL) IS NULL"), '
 is(relreplident(1, 'public.rif_k_default'), 'd', '(k) NULL argument changed nothing');
 
 # ---------------------------------------------------------------------------
+# (m) A FULL table that loses its PRIMARY KEY must leave 'default'.  Bare
+#     REPLICA IDENTITY FULL is not an identity Spock can replicate
+#     UPDATE/DELETE with: the subscriber needs the PRIMARY KEY to find the
+#     row.  Auto-DDL is on here, so the DROP CONSTRAINT is classified and
+#     the table is re-routed.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "CREATE TABLE public.rif_drop (id int PRIMARY KEY, small text)");
+psql_or_bail(1, "ALTER TABLE public.rif_drop REPLICA IDENTITY FULL");
+is(members_of(1, 'default', 'public.rif_drop'), '1',
+   '(m) FULL + PK table sits in default');
+psql_or_bail(1, "ALTER TABLE public.rif_drop DROP CONSTRAINT rif_drop_pkey");
+is(members_of(1, 'default', 'public.rif_drop'), '0',
+   '(m) dropping the PRIMARY KEY takes it out of default');
+is(members_of(1, 'default_insert_only', 'public.rif_drop'), '1',
+   '(m) and puts it in default_insert_only');
+
+# ---------------------------------------------------------------------------
+# (n) A PRIMARY KEY table with REPLICA IDENTITY NOTHING must not end up in
+#     no replication set at all.  Routing and the gate below it have to
+#     agree on what counts as an identity.
+# ---------------------------------------------------------------------------
+# NOTHING leaves the PRIMARY KEY in place but logs no key, so the table can
+# no longer replicate UPDATE or DELETE: the classification reads the
+# effective identity, not the key, and re-routes it.
+psql_or_bail(1, "CREATE TABLE public.rif_nothing (id int PRIMARY KEY, small text)");
+is(members_of(1, 'default', 'public.rif_nothing'), '1',
+   '(n) PK table auto-added to default');
+psql_or_bail(1, "ALTER TABLE public.rif_nothing REPLICA IDENTITY NOTHING");
+is(members_of(1, 'default', 'public.rif_nothing'), '0',
+   '(n) REPLICA IDENTITY NOTHING takes it out of default');
+is(members_of(1, 'default_insert_only', 'public.rif_nothing'), '1',
+   '(n) and puts it in default_insert_only');
+
+# A table that does reach the routing decision with a PRIMARY KEY and no
+# usable identity: created without a key, set to NOTHING, then given a
+# PRIMARY KEY.  Routing used to send it to 'default' on the strength of the
+# key alone, evict it from every set on the way, and then have the gate
+# refuse it, leaving it in nothing.
+psql_or_bail(1, "CREATE TABLE public.rif_nothing2 (id int, small text)");
+is(members_of(1, 'default_insert_only', 'public.rif_nothing2'), '1',
+   '(n) keyless table auto-added to default_insert_only');
+psql_or_bail(1, "ALTER TABLE public.rif_nothing2 REPLICA IDENTITY NOTHING");
+psql_or_bail(1, "ALTER TABLE public.rif_nothing2 ADD PRIMARY KEY (id)");
+is(members_of(1, 'default', 'public.rif_nothing2'), '0',
+   '(n) NOTHING keeps it out of default even once it has a PRIMARY KEY');
+is(members_of(1, 'default_insert_only', 'public.rif_nothing2'), '1',
+   '(n) and it is still in default_insert_only');
+
+# ---------------------------------------------------------------------------
 # GUC spock.auto_replica_identity_full.  Turned on on both nodes.  The
 # apply workers are restarted so the one that executes replicated DDL runs
 # with the new value; a fresh psql session picks it up on its own.
@@ -373,7 +485,13 @@ psql_or_bail(1, "UPDATE public.rif_g_auto SET small = 't' WHERE id = 1");
 is(wait_for_value(2, "SELECT small FROM public.rif_g_auto WHERE id = 1", 't'),
    't', '(g) UPDATE replicates on the GUC-switched table');
 
-# Later tasks append their cases above this line.
+# Put the GUC back so nothing after this block runs with it on.
+for my $n (1, 2) {
+    psql_or_bail($n, "ALTER SYSTEM RESET spock.auto_replica_identity_full");
+    psql_or_bail($n, "SELECT pg_reload_conf()");
+    is(wait_for_value($n, "SHOW spock.auto_replica_identity_full", 'off'), 'off',
+       "GUC back off for new sessions on n$n");
+}
 
 destroy_cluster('Destroy cluster');
 done_testing();

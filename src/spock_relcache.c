@@ -64,6 +64,22 @@ relcache_free_entry(SpockRelation *entry)
 	entry->has_delta_columns = false;
 }
 
+/*
+ * The relation's PRIMARY KEY index, or InvalidOid.  Deferrable primary
+ * keys are excluded on every version, matching core's
+ * GetRelationIdentityOrPK(): PG18 started recording them in rd_pkindex,
+ * and a deferrable key cannot serve as a replica identity.
+ */
+Oid
+spock_relation_pk_index(Relation rel)
+{
+#if PG_VERSION_NUM >= 180000
+	return RelationGetPrimaryKeyIndex(rel, false);
+#else
+	return RelationGetPrimaryKeyIndex(rel);
+#endif
+}
+
 
 SpockRelation *
 spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
@@ -184,11 +200,7 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		 */
 		if (!OidIsValid(entry->idxoid) &&
 			entry->rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
-#if PG_VERSION_NUM >= 180000
-			entry->idxoid = RelationGetPrimaryKeyIndex(entry->rel, false);
-#else
-			entry->idxoid = RelationGetPrimaryKeyIndex(entry->rel);
-#endif
+			entry->idxoid = spock_relation_pk_index(entry->rel);
 
 		/* Cache trigger info. */
 		entry->hasTriggers = false;

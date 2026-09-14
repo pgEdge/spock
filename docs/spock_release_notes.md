@@ -209,6 +209,28 @@ Behaviour notes:
   include_partitions)` and `spock.repset_replica_identity_full(set_name)`
   switch existing tables. Both are local to the node, like every
   `spock.repset_*` function.
+* Do not turn on `spock.auto_replica_identity_full`, and do not switch
+  tables to FULL, until every node in the cluster runs 6.0. A 5.x
+  subscriber has no `PRIMARY KEY` fallback for a FULL table: it finds rows
+  by a whole-row sequential scan, and reports rows that have diverged as
+  `update_missing`.
+* On a FULL table the new tuple recorded in `spock.exception_log`, and by
+  `spock.apply_change_logging = verbose`, now carries the unchanged TOAST
+  values that used to appear as null, so those rows can be large.
+* The subscriber compares a TOAST value recovered from the old row with the
+  one it already holds and writes it only when the two differ, so an UPDATE
+  applied to a row that is already in sync does not rewrite the TOAST data.
+* `spock.repset_replica_identity_full()` leaves `REPLICA IDENTITY USING
+  INDEX` and `REPLICA IDENTITY NOTHING` tables alone and says so in a
+  WARNING, the way `spock.auto_replica_identity_full` only changes tables at
+  `REPLICA IDENTITY DEFAULT`. `spock.table_replica_identity_full()` still
+  overrides any identity, because there the table was named. The bulk
+  function also inspects members under an `AccessShareLock` and takes an
+  `AccessExclusiveLock` only on the tables it will change.
+* With `spock.auto_replica_identity_full` on, `spock.repset_add_table()`,
+  `spock.repset_add_all_tables()` and `spock.repset_add_partition()` take
+  `AccessExclusiveLock` on each qualifying table up front rather than
+  upgrading a weaker lock inside the `ALTER`.
 
 ### Cascade replication origin tracking
 

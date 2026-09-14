@@ -123,6 +123,57 @@ SELECT c.relname, c.relreplident
   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE n.nspname = 'rif_all' ORDER BY 1;
 
+-- An event trigger must not break the internal ALTER.  AlterTableInternal()
+-- records the relation it altered in the event trigger command being
+-- collected, so the call has to be bracketed the way core brackets it.  A
+-- ddl_command_end trigger that reaches the helper is the case that crashed:
+-- there is event trigger state, and no command in it.
+CREATE TABLE rif.e0 (id int PRIMARY KEY, payload text);
+CREATE TABLE rif.e1 (id int PRIMARY KEY, payload text);
+CREATE FUNCTION rif.evt() RETURNS event_trigger LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM spock.table_replica_identity_full('rif.e0');
+END $$;
+CREATE EVENT TRIGGER rif_evt ON ddl_command_end EXECUTE FUNCTION rif.evt();
+
+SELECT spock.table_replica_identity_full('rif.e1');
+
+-- The CREATE fires the trigger, which switches rif.e0 from inside it.
+SET spock.auto_replica_identity_full = on;
+CREATE TABLE rif.e2 (id int PRIMARY KEY, payload text);
+SELECT spock.repset_add_table('rif_upd', 'rif.e2');
+RESET spock.auto_replica_identity_full;
+
+SELECT * FROM rif.idents WHERE relname LIKE 'e_' ORDER BY 1;
+
+DROP EVENT TRIGGER rif_evt;
+DROP FUNCTION rif.evt();
+
+-- Anything that is not a table is refused, rather than quietly doing
+-- nothing.
+SELECT spock.table_replica_identity_full('rif.idents');
+
+-- A column filter on a REPLICA IDENTITY FULL table has to carry the PRIMARY
+-- KEY: that is what the subscriber looks the row up by.  FULL has no
+-- identity index, so the list is checked against the PRIMARY KEY instead.
+CREATE TABLE rif.cf (id int PRIMARY KEY, payload text, extra text);
+ALTER TABLE rif.cf REPLICA IDENTITY FULL;
+SELECT spock.repset_add_table('rif_upd', 'rif.cf', columns := '{payload}');
+SELECT spock.repset_add_table('rif_upd', 'rif.cf', columns := '{id,payload}');
+
+-- The bulk function leaves a deliberate USING INDEX identity alone, the way
+-- the GUC does.  rif.s3 has no PRIMARY KEY and is still reported.  The
+-- per-table function overrides the identity, because the user named the
+-- table.
+CREATE TABLE rif.ui (id int PRIMARY KEY, alt int NOT NULL);
+CREATE UNIQUE INDEX rif_ui_alt ON rif.ui (alt);
+ALTER TABLE rif.ui REPLICA IDENTITY USING INDEX rif_ui_alt;
+SELECT spock.repset_add_table('rif_upd', 'rif.ui');
+SELECT spock.repset_replica_identity_full('rif_upd');
+SELECT relreplident FROM rif.idents WHERE relname = 'ui';
+SELECT spock.table_replica_identity_full('rif.ui');
+SELECT relreplident FROM rif.idents WHERE relname = 'ui';
+
 -- Cleanup.
 SELECT spock.repset_drop('rif_upd');
 SELECT spock.repset_drop('rif_ins');

@@ -485,10 +485,34 @@ or
 [`spock.table_replica_identity_full()`](spock_functions/functions/spock_table_replica_identity_full.md)
 for those.
 
-The change is made as an `ALTER TABLE`, so the role that adds the table to
-the replication set must own the table or be a superuser. With the setting
-on, `spock.repset_add_table()` run by a role that does not own the table
-fails with an ownership error where it used to succeed.
+The change is made as an `ALTER TABLE`, which takes an
+`AccessExclusiveLock` on the table for the rest of the transaction. With
+the setting on, `spock.repset_add_table()`, `spock.repset_add_all_tables()`
+and `spock.repset_add_partition()` take that lock on every candidate
+relation and partition up front, instead of the weaker lock they take when
+the setting is off, whenever the setting is on and the set replicates
+UPDATE or DELETE; whether a table actually qualifies (it may turn out to be
+already FULL, or to lack a PRIMARY KEY) is only known once the table is
+open, so the lock is taken on those tables too. The lock is never upgraded
+part-way through. The role adding the
+table must own it or be a superuser. With the setting on,
+`spock.repset_add_table()` and `spock.repset_add_partition()` run by a role
+that does not own the table fail with an ownership error where they used to
+succeed; `spock.repset_add_all_tables()` adds the table but leaves its
+replica identity alone and warns.
+
+Only `REPLICA IDENTITY DEFAULT` is changed, here and in
+[`spock.repset_replica_identity_full()`](spock_functions/functions/spock_repset_replica_identity_full.md);
+a table at `USING INDEX` or `NOTHING` is left as it is, and the bulk
+function says so in a WARNING.
+[`spock.table_replica_identity_full()`](spock_functions/functions/spock_table_replica_identity_full.md)
+is the one path that overrides a deliberate identity, because there the
+table was named.
+
+On the subscriber, a TOAST value recovered from the old row is compared
+with the value the subscriber already holds and written only when the two
+differ, so an `UPDATE` applied to a row that is already in sync does not
+rewrite the TOAST data.
 
 ### `spock.log_origin_change`
 

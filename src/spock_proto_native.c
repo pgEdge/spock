@@ -371,13 +371,16 @@ spock_write_update(StringInfo out, SpockOutputData *data,
 	pq_sendint(out, RelationGetRelid(rel), 4);
 
 	/*
-	 * TODO: support whole tuple (O tuple type)
+	 * The old tuple is whatever logical decoding recorded in WAL: the key
+	 * columns under a replica identity index, the whole old row under
+	 * REPLICA IDENTITY FULL.  Spock sends it as 'K' either way.  On a FULL
+	 * table the read side uses that whole row to recover a TOAST column the
+	 * UPDATE left unchanged, and the subscriber still finds the row through
+	 * the PRIMARY KEY rather than by matching every column.
 	 *
-	 * Right now we can only write the key-part since logical decoding doesn't
-	 * know how to record the whole old tuple for us in WAL. We can't use
-	 * REPLICA IDENTITY FULL for this, since that makes the key-part the whole
-	 * tuple, causing issues with conflict resultion and index lookups. We
-	 * need a separate decoding option to record whole tuples.
+	 * TODO: an 'O' (whole tuple) type would let a table with a replica
+	 * identity index carry its old row too, which would need a separate
+	 * decoding option to record whole tuples.
 	 */
 	if (oldtuple != NULL)
 	{
@@ -890,14 +893,18 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 	 * not in the message.  When the old tuple carries it -- REPLICA IDENTITY
 	 * FULL logs the whole old row, TOAST values flattened in -- the new
 	 * value is that old value, because the column did not change.  Take it,
-	 * so that everything downstream (conflict resolution, delta apply,
-	 * resolution and exception logging) sees the complete row and a
+	 * so that the applied row, what spock.exception_log records and what
+	 * spock.apply_change_logging prints are the complete row, and a
 	 * remote-wins UPDATE installs the winner's whole row instead of keeping
 	 * the local TOAST value.
 	 *
 	 * A 'u' column is never actually NULL, so a NULL in the old tuple can
 	 * only mean the column was not logged (a key-only old tuple).  Leave
 	 * those alone; slot_modify_data() then keeps the local value as before.
+	 *
+	 * from_old marks what was taken this way.  The value is usually the one
+	 * the subscriber already holds, and slot_modify_data() compares before
+	 * it overwrites, so an in-sync UPDATE does not rewrite the TOAST data.
 	 */
 	if (*hasoldtup)
 	{
@@ -915,6 +922,7 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 			newtup->values[attid] = oldtup->values[attid];
 			newtup->nulls[attid] = false;
 			newtup->changed[attid] = true;
+			newtup->from_old[attid] = true;
 		}
 	}
 
@@ -988,6 +996,7 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 
 	memset(tuple->nulls, 1, sizeof(tuple->nulls));
 	memset(tuple->changed, 0, sizeof(tuple->changed));
+	memset(tuple->from_old, 0, sizeof(tuple->from_old));
 
 	natts = pq_getmsgint(in, 2);
 	if (rel->natts != natts)
