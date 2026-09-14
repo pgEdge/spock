@@ -1,0 +1,37 @@
+diff --git a/src/backend/access/index/indexam.c b/src/backend/access/index/indexam.c
+index 7967e93..5ceead7 100644
+--- a/src/backend/access/index/indexam.c
++++ b/src/backend/access/index/indexam.c
+@@ -55,6 +55,7 @@
+ #include "storage/lmgr.h"
+ #include "storage/lock.h"
+ #include "storage/predicate.h"
++#include "utils/injection_point.h"
+ #include "utils/ruleutils.h"
+ #include "utils/snapmgr.h"
+ #include "utils/syscache.h"
+@@ -719,6 +720,20 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
+ 		 * the index.
+ 		 */
+ 		Assert(ItemPointerIsValid(&scan->xs_heaptid));
++
++		/*
++		 * SPOC-673 (test-only instrumentation): let a TAP test pin execution
++		 * here, after the scan has cached this index page's matching TIDs but
++		 * before fetching the heap tuple for the one it just read, so a
++		 * concurrent local UPDATE/DELETE's new index entry on the same page
++		 * can be forced to land after that page was cached -- reproducing the
++		 * DirtySnapshot index-scan skip described in PostgreSQL CF 5151. Not a
++		 * behavioural change: a no-op unless a test attaches to this point.
++		 *
++		 * NOTE: PG17's INJECTION_POINT() macro takes a single argument (no
++		 * NULL "arg" parameter, added in PG18) -- see PG17's
++		 * utils/injection_point.h.
++		 */
++#ifdef USE_INJECTION_POINTS
++		if (!IsCatalogRelation(scan->heapRelation))
++			INJECTION_POINT("index_getnext_slot_before_fetch_apply_dirty");
++#endif
+ 		if (index_fetch_heap(scan, slot))
+ 			return true;
+ 	}
