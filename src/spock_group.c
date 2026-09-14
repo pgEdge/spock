@@ -17,7 +17,7 @@
  *   - SpockGroupHash: shmem hash keyed by (dbid, node_id, remote_node_id).
  *     Each entry (SpockGroupEntry) contains:
  *       * key                           -- identity
- *       * progress (SpockApplyProgress) -- last applied remote commit snapshot
+ *       * progress (SpockApplyProgress) -- aggregate apply/receive progress
  *       * nattached, prev_processed_cv  -- apply-worker coordination (runtime)
  *
  * Persistence:
@@ -317,18 +317,10 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 	Assert(dest->key.remote_node_id == src->key.remote_node_id);
 
 	/*
-	 * Track the commit position independently of commit timestamps. Forwarded
-	 * transactions retain the original node's timestamp, so timestamp order
-	 * need not match the provider's WAL order.
-	 *
-	 * Keep remote_commit_ts and its local observation fields together so lag
-	 * reporting uses values from the same commit. The resulting timestamp may
-	 * describe an earlier commit than remote_commit_lsn.
-	 *
-	 * prev_remote_ts is the synchronization token consumed by parallel apply,
-	 * not a high-water mark. Update it for commit records, including commits
-	 * whose timestamps are below the recorded maximum. Statistics-only
-	 * updates have remote_commit_ts == 0 and must leave it unchanged.
+	 * LSN and timestamp order may differ for forwarded transactions. Keep
+	 * remote_commit_ts paired with its local observation fields, and update
+	 * prev_remote_ts in stream order. Statistics-only updates have no commit
+	 * timestamp and must not change prev_remote_ts.
 	 */
 	if (dest->remote_commit_lsn < src->remote_commit_lsn)
 		dest->remote_commit_lsn = src->remote_commit_lsn;
@@ -807,10 +799,8 @@ spock_group_progress_force_set_list(List *lst)
 		}
 
 		/*
-		 * Force-set: unconditionally adopt sap as authoritative. Cannot use
-		 * progress_update_struct here -- its max-by-timestamp merge skips
-		 * remote_commit_lsn when sap->remote_commit_ts == 0, which is a legal
-		 * shape when the peer is post-reconcile and pre-recovery.
+		 * The resume snapshot is authoritative and may move progress
+		 * backward; progress_update_struct() cannot express that override.
 		 */
 		entry->progress = *sap;
 

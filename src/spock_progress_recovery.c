@@ -126,10 +126,8 @@ spock_init_progress_state(XLogRecPtr origin_lsn)
 		 * NOT the local subscription's roident. Filter the scan on
 		 * MySubscription->origin->id so we match the recorded entries.
 		 *
-		 * Limitation: this filter is not subscription-unique. Sibling subs to
-		 * the same publisher, or a dropped/recreated sub with old commits
-		 * still in the 1M-xid window, can contribute to running_max_ts.
-		 * Forensic-only impact; parallel-apply rework will revisit.
+		 * This origin filter is neither subscription-unique nor inclusive of
+		 * forwarded commits, so recovery is approximate.
 		 */
 		recover_progress_timestamps_from_commit_ts(entry,
 												   (RepOriginId) MySubscription->origin->id);
@@ -277,16 +275,21 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 /*
  * recover_progress_timestamps_from_commit_ts
  *
- * After reconcile detects that resource.dat is stale (or absent) for this
- * origin, scan pg_commit_ts backward from the latest xid to recover the
- * most-recent remote_commit_ts for this origin. Restores accurate
- * post-crash values in the spock.progress view; the recovered values are
- * also intended to be useful for the planned parallel-apply rework.
+ * Scan pg_commit_ts backward to approximate the remote_commit_ts high-water
+ * mark after stale or absent file recovery. Pair last_updated_ts with it.
+ *
+ * Leave prev_remote_ts unset: concurrent xid order can differ from commit
+ * order, and forwarded commits use another origin, so any reconstruction
+ * here is a guess, not an approximation like remote_commit_ts's. 0 is safe
+ * -- it can never coincidentally equal a real required_commit_ts, so a
+ * worker only ever waits longer than necessary; a wrong guess could match
+ * by coincidence and let a worker commit out of order. Recovering this
+ * token correctly requires durable stream-order data.
  *
  * Termination: stop after observing SPOCK_TS_RECOVERY_MIN_SEEN_PER_ORIGIN
- * commits for this origin (any older commit is guaranteed to have a smaller
- * commit_ts under realistic concurrency widths) or after scanning
- * SPOCK_TS_RECOVERY_SCAN_LIMIT total xids.
+ * commits for this origin or after scanning SPOCK_TS_RECOVERY_SCAN_LIMIT total
+ * xids. The first limit is a bounded-work heuristic: clock skew and forwarding
+ * mean an older commit is not guaranteed to have a smaller origin timestamp.
  *
  * Caller must have ensured the entry exists in SpockGroupHash (reconcile
  * does this).
@@ -356,7 +359,6 @@ recover_progress_timestamps_from_commit_ts(SpockGroupEntry *entry,
 		if (entry->progress.remote_commit_ts < running_max_ts)
 		{
 			entry->progress.remote_commit_ts = running_max_ts;
-			entry->progress.prev_remote_ts = running_max_ts;
 
 			/*
 			 * Local apply time isn't recoverable post-crash. Use

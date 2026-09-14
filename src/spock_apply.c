@@ -1171,8 +1171,9 @@ handle_commit(StringInfo s)
 		};
 
 		/*
-		 * The origin commit time and local apply time come from independent
-		 * clocks, so no ordering relationship is required between them.
+		 * remote_commit_ts comes from the origin's commit clock;
+		 * last_updated_ts comes from this node's system clock. They have no
+		 * ordering relationship.
 		 */
 
 		Assert(MyApplyWorker && MyApplyWorker->apply_group);
