@@ -884,6 +884,40 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 
 	spock_read_tuple(in, rel, newtup);
 
+	/*
+	 * A column the provider did not change and that lives out of line in
+	 * TOAST arrives as 'u': PostgreSQL does not WAL-log the value, so it is
+	 * not in the message.  When the old tuple carries it -- REPLICA IDENTITY
+	 * FULL logs the whole old row, TOAST values flattened in -- the new
+	 * value is that old value, because the column did not change.  Take it,
+	 * so that everything downstream (conflict resolution, delta apply,
+	 * resolution and exception logging) sees the complete row and a
+	 * remote-wins UPDATE installs the winner's whole row instead of keeping
+	 * the local TOAST value.
+	 *
+	 * A 'u' column is never actually NULL, so a NULL in the old tuple can
+	 * only mean the column was not logged (a key-only old tuple).  Leave
+	 * those alone; slot_modify_data() then keeps the local value as before.
+	 */
+	if (*hasoldtup)
+	{
+		int			i;
+
+		for (i = 0; i < rel->natts; i++)
+		{
+			int			attid = rel->attmap[i];
+
+			if (newtup->changed[attid])
+				continue;
+			if (!oldtup->changed[attid] || oldtup->nulls[attid])
+				continue;
+
+			newtup->values[attid] = oldtup->values[attid];
+			newtup->nulls[attid] = false;
+			newtup->changed[attid] = true;
+		}
+	}
+
 	return rel;
 }
 
