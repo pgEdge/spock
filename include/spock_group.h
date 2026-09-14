@@ -92,22 +92,17 @@ typedef enum GroupProgressTupDescColumns
  * Field descriptions:
  * key - Identifies the replication group (dbid, node_id, remote_node_id).
  *       MUST be first field for hash table compatibility.
- * remote_commit_ts - the most advanced timestamp of COMMIT commands, already
- *       applied by the replication group. In fact, an apply worker may finish
- *       the COMMIT apply if only all other commits with smaller timestamps have
- *       already been committed by other workers. So, this value tells us about
- *       the real progress.
- * prev_remote_ts - XXX: It seems do nothing at the moment and should
- *       be considered to be removed.
- * remote_commit_lsn - LSN of the COMMIT corresponding to the remote_commit_ts.
+ * remote_commit_ts - greatest applied origin commit timestamp; used for lag.
+ * prev_remote_ts - timestamp of the last commit in stream order; used as the
+ *       parallel-apply synchronization token rather than as a maximum.
+ * remote_commit_lsn - the most advanced COMMIT LSN seen on this stream.
+ *       With forwarding, it may describe a later commit than remote_commit_ts.
  * remote_insert_lsn - an LSN of the most advanced WAL record written to
  *       the WAL on the remote side. Replication protocol attempts to update it as
  *       frequently as possible, but it still be a little stale.
  * received_lsn - an LSN of the most advanced WAL record that was received by
  *       the group.
- * last_updated_ts - timestamp when remote COMMIT command (identified by the
- *       remote_commit_ts and remote_commit_lsn) was applied locally.
- *       Spock employs this value to calculate replication_lag.
+ * last_updated_ts - local apply time paired with remote_commit_ts for lag.
  * updated_by_decode - obsolete value. It was needed to decide on the LR lag
  *       that seems not needed if we have NULL value for a timestamp column.
  */
@@ -115,14 +110,11 @@ typedef struct SpockApplyProgress
 {
 	SpockGroupKey key;			/* MUST be first field */
 
-	TimestampTz remote_commit_ts;	/* committed remote txn ts */
+	TimestampTz remote_commit_ts;	/* greatest origin commit timestamp */
 
-	/*
-	 * Bit of duplication of remote_commit_ts. Serves the same purpose, except
-	 * keep the last updated value
-	 */
+	/* Last origin timestamp in stream order; not a maximum. */
 	TimestampTz prev_remote_ts;
-	XLogRecPtr	remote_commit_lsn;	/* LSN of remote commit on origin */
+	XLogRecPtr	remote_commit_lsn;	/* greatest provider commit LSN */
 	XLogRecPtr	remote_insert_lsn;	/* origin insert/end LSN reported */
 
 	/*
