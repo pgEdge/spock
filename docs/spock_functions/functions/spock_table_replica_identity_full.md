@@ -48,13 +48,25 @@ way you run `spock.repset_add_table()` on every node. A hand-typed
 `ALTER TABLE ... REPLICA IDENTITY FULL` behaves differently: with AutoDDL
 on it is replicated to the other nodes.
 
-The caller must own the table or be a superuser.
+The caller must own the table, or be a superuser. For a partitioned table
+with `include_partitions` set to true, the caller must own every partition
+that will change: ownership is checked as each one is altered, so a call
+that reaches a partition the caller does not own fails and rolls back every
+identity it had already changed, even when the caller owns the parent.
 
 The function takes an `AccessExclusiveLock` on the table, and on each
 partition, for the rest of the transaction: the lock
 `ALTER TABLE ... REPLICA IDENTITY` takes. It therefore blocks, and is
 blocked by, any concurrent use of the table. Run it in a short
 transaction.
+
+!!! warning
+
+    Every node in the cluster must run Spock 6.0 before you switch any
+    table to `REPLICA IDENTITY FULL`. A 5.x subscriber has no `PRIMARY
+    KEY` fallback for a FULL table: it finds rows by a whole-row
+    sequential scan, and reports rows that have diverged as
+    `update_missing`. Finish the rolling upgrade first.
 
 ### ARGUMENTS
 

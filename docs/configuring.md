@@ -476,6 +476,14 @@ The cost is one extra copy of the whole old row per `UPDATE` and `DELETE`,
 in WAL on every node and on every link; see *What REPLICA IDENTITY FULL
 costs* below for guidance on the impact.
 
+!!! warning
+
+    Every node in the cluster must run Spock 6.0 before you turn this
+    setting on or switch any table to `REPLICA IDENTITY FULL`. A 5.x
+    subscriber has no `PRIMARY KEY` fallback for a FULL table: it finds
+    rows by a whole-row sequential scan, and reports rows that have
+    diverged as `update_missing`. Finish the rolling upgrade first.
+
 Set it on every node. Each node sets its own table identities: the change
 is made locally when the table joins a set and is not replicated as DDL, so
 a node with the setting off keeps `REPLICA IDENTITY DEFAULT` for the tables
@@ -488,19 +496,20 @@ for those.
 
 The change is made as an `ALTER TABLE`, which takes an
 `AccessExclusiveLock` on the table for the rest of the transaction. With
-the setting on, `spock.repset_add_table()`, `spock.repset_add_all_tables()`
-and `spock.repset_add_partition()` take that lock on every candidate
-relation and partition up front, instead of the weaker lock they take when
-the setting is off, whenever the setting is on and the set replicates
-UPDATE or DELETE; whether a table actually qualifies (it may turn out to be
-already FULL, or to lack a PRIMARY KEY) is only known once the table is
-open, so the lock is taken on those tables too. The lock is never upgraded
-part-way through. The role adding the
-table must own it or be a superuser. With the setting on,
-`spock.repset_add_table()` and `spock.repset_add_partition()` run by a role
-that does not own the table fail with an ownership error where they used to
-succeed; `spock.repset_add_all_tables()` adds the table but leaves its
-replica identity alone and warns.
+the setting on, and when the set replicates `UPDATE` or `DELETE`,
+`spock.repset_add_table()`, `spock.repset_add_all_tables()` and
+`spock.repset_add_partition()` take that lock on every candidate relation
+and partition up front, instead of the weaker lock they take when the
+setting is off. Whether a table actually qualifies is only known once it
+is open, since it may turn out to be already FULL or to lack a `PRIMARY
+KEY`, so the lock is taken on those tables too. The lock is never upgraded
+part-way through.
+
+The role adding the table must own it, or be a superuser. With the setting
+on, `spock.repset_add_table()` and `spock.repset_add_partition()` run by a
+role that does not own the table, or one of its partitions, fail with an
+ownership error where they used to succeed; `spock.repset_add_all_tables()`
+adds the table but leaves its replica identity alone and warns.
 
 Only `REPLICA IDENTITY DEFAULT` is changed, here and in
 [`spock.repset_replica_identity_full()`](spock_functions/functions/spock_repset_replica_identity_full.md);

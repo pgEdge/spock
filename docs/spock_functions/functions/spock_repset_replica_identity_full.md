@@ -51,7 +51,8 @@ is not replicated as DDL. Run it on every node.
 The function runs in the caller's transaction. If it fails part-way, every
 identity it changed is rolled back.
 
-The caller must own the tables or be a superuser.
+The caller must own every table the function will change, or be a
+superuser; ownership is checked as each table is altered.
 
 Every member of the set is inspected under an `AccessShareLock`, which is
 released again at once. Only a table whose identity will actually change is
@@ -60,6 +61,14 @@ the lock `ALTER TABLE ... REPLICA IDENTITY` takes. Such a table blocks, and
 is blocked by, any concurrent use of it until the transaction commits, so
 run the call in a short transaction. A set whose tables are all already
 `REPLICA IDENTITY FULL` takes no exclusive lock at all.
+
+!!! warning
+
+    Every node in the cluster must run Spock 6.0 before you switch any
+    table to `REPLICA IDENTITY FULL`. A 5.x subscriber has no `PRIMARY
+    KEY` fallback for a FULL table: it finds rows by a whole-row
+    sequential scan, and reports rows that have diverged as
+    `update_missing`. Finish the rolling upgrade first.
 
 ### ARGUMENTS
 
