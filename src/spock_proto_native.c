@@ -898,9 +898,18 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 	 * remote-wins UPDATE installs the winner's whole row instead of keeping
 	 * the local TOAST value.
 	 *
-	 * A 'u' column is never actually NULL, so a NULL in the old tuple can
-	 * only mean the column was not logged (a key-only old tuple).  Leave
-	 * those alone; slot_modify_data() then keeps the local value as before.
+	 * The old tuple is skipped in two cases, and both have to be left alone.
+	 * A column the old tuple did not carry at all reads back as unchanged
+	 * ('u' on the wire, or never sent); there is nothing to take.  A column
+	 * the old tuple logged as NULL reads back as a NULL.  That looks like a
+	 * value, but it cannot be this column's: spock_write_tuple() sends a
+	 * NULL as 'n' and only ever sends 'u' for a non-null out-of-line datum,
+	 * so a column that arrived as 'u' is not NULL on the provider.  Such a
+	 * NULL comes from a key-only old tuple, where ExtractReplicaIdentity()
+	 * nulls every non-identity column -- what an identity DEFAULT table
+	 * sends when an UPDATE changes the key.  Copying it would blank out a
+	 * column the provider still has.  Leave both alone; slot_modify_data()
+	 * then keeps the local value as before.
 	 *
 	 * from_old marks what was taken this way.  The value is usually the one
 	 * the subscriber already holds, and slot_modify_data() compares before

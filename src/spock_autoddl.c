@@ -547,16 +547,18 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 	bool		post_has_identity;
 
 	/*
-	 * What matters is the identity the table has now, which is the admission
-	 * rule itself: a replica identity index, or FULL together with a PRIMARY
-	 * KEY.  A PRIMARY KEY on its own is not one.  Bare FULL is not enough
-	 * either -- the subscriber needs the PRIMARY KEY to find the row -- so a
-	 * FULL table that drops its key is classified as PKRI_DROPPED and
-	 * re-routed, and so is a PRIMARY KEY table switched to REPLICA IDENTITY
-	 * NOTHING: PostgreSQL logs no key for it, so it cannot replicate UPDATE
+	 * What matters is only whether PostgreSQL still logs an old row the
+	 * subscriber could match on: a replica identity index, or REPLICA
+	 * IDENTITY FULL, which logs the whole row and is matched by a sequential
+	 * scan.  This is looser than the admission rule, which also wants a
+	 * PRIMARY KEY for FULL; a table that reached this state by ALTER still
+	 * replicates, so do not evict it (TAP 030 case T11).  A PRIMARY KEY on
+	 * its own is not enough, though: a table switched to REPLICA IDENTITY
+	 * NOTHING keeps its key but logs nothing, so it cannot replicate UPDATE
 	 * or DELETE and belongs in default_insert_only.
 	 */
-	post_has_identity = relation_has_replication_identity(targetrel);
+	post_has_identity = OidIsValid(targetrel->rd_replidindex) ||
+		targetrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL;
 
 	foreach(cell, atstmt->cmds)
 	{

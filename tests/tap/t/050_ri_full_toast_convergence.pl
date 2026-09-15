@@ -27,7 +27,7 @@ use SpockTest qw(
 #   j  spock.table_replica_identity_full()            (Task 3)
 #   k  spock.repset_replica_identity_full()           (Task 4)
 #   f-i spock.auto_replica_identity_full               (Task 5)
-#   m  a FULL table that loses its PRIMARY KEY leaves 'default'
+#   m  a FULL table that loses its PRIMARY KEY stays in 'default'
 #   n  a PRIMARY KEY table with identity NOTHING is not evicted from
 #      every replication set
 
@@ -361,21 +361,21 @@ is(scalar_query(1, "SELECT spock.repset_replica_identity_full(NULL) IS NULL"), '
 is(relreplident(1, 'public.rif_k_default'), 'd', '(k) NULL argument changed nothing');
 
 # ---------------------------------------------------------------------------
-# (m) A FULL table that loses its PRIMARY KEY must leave 'default'.  Bare
-#     REPLICA IDENTITY FULL is not an identity Spock can replicate
-#     UPDATE/DELETE with: the subscriber needs the PRIMARY KEY to find the
-#     row.  Auto-DDL is on here, so the DROP CONSTRAINT is classified and
-#     the table is re-routed.
+# (m) A FULL table that loses its PRIMARY KEY keeps its membership.  Bare
+#     REPLICA IDENTITY FULL still makes PostgreSQL log the whole old row,
+#     which the subscriber matches by sequential scan, so the table goes on
+#     replicating and auto-DDL leaves it where it is.  TAP 030 case T11
+#     covers the same rule for a custom replication set.
 # ---------------------------------------------------------------------------
 psql_or_bail(1, "CREATE TABLE public.rif_drop (id int PRIMARY KEY, small text)");
 psql_or_bail(1, "ALTER TABLE public.rif_drop REPLICA IDENTITY FULL");
 is(members_of(1, 'default', 'public.rif_drop'), '1',
    '(m) FULL + PK table sits in default');
 psql_or_bail(1, "ALTER TABLE public.rif_drop DROP CONSTRAINT rif_drop_pkey");
-is(members_of(1, 'default', 'public.rif_drop'), '0',
-   '(m) dropping the PRIMARY KEY takes it out of default');
-is(members_of(1, 'default_insert_only', 'public.rif_drop'), '1',
-   '(m) and puts it in default_insert_only');
+is(members_of(1, 'default', 'public.rif_drop'), '1',
+   '(m) dropping the PRIMARY KEY leaves a FULL table in default');
+is(members_of(1, 'default_insert_only', 'public.rif_drop'), '0',
+   '(m) and does not move it to default_insert_only');
 
 # ---------------------------------------------------------------------------
 # (n) A PRIMARY KEY table with REPLICA IDENTITY NOTHING must not end up in
