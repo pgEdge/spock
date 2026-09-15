@@ -46,3 +46,4 @@ test: 045_lsn_from_commit_ts
 # Regression tests
 test: 103_manager_worker_dboid_race
 test: 105_sub_disable_retransmit_after_disconnect
+test: 107_apply_worker_midtxn_restart
