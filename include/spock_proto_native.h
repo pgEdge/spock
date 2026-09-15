@@ -31,9 +31,9 @@ typedef struct SpockTupleData
 
 	/*
 	 * Set for a column the UPDATE did not change and that was recovered from
-	 * the provider's old row instead of the wire (an unchanged TOAST value
-	 * on a REPLICA IDENTITY FULL table).  Such a value is usually the one
-	 * the subscriber already holds; slot_modify_data() compares before it
+	 * the provider's old row instead of the wire (an unchanged TOAST value on
+	 * a REPLICA IDENTITY FULL table).  Such a value is usually the one the
+	 * subscriber already holds; slot_modify_data() compares before it
 	 * overwrites.
 	 */
 	bool		from_old[MaxTupleAttributeNumber];

@@ -502,8 +502,8 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 	 * table headed for an UPDATE/DELETE set normally has one. The only way
 	 * around that is a built-in insert-only set whose flags were changed
 	 * after the fact, e.g. spock.repset_alter('default_insert_only',
-	 * replicate_update := true); guard against that case instead of
-	 * asserting it away.
+	 * replicate_update := true); guard against that case instead of asserting
+	 * it away.
 	 */
 	if (!relation_has_replication_identity(targetrel) &&
 		(repset->replicate_update || repset->replicate_delete))

@@ -1163,8 +1163,8 @@ spock_set_replica_identity_full(Relation rel)
 				 errhint("Add a PRIMARY KEY to the table first.")));
 
 	/*
-	 * Nothing to do, so nothing to check: a no-op is a no-op whoever asks
-	 * for it.  Tested before the ownership check on purpose.
+	 * Nothing to do, so nothing to check: a no-op is a no-op whoever asks for
+	 * it.  Tested before the ownership check on purpose.
 	 */
 	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
 		return false;
@@ -1193,13 +1193,12 @@ spock_set_replica_identity_full(Relation rel)
 
 	/*
 	 * AlterTableInternal() records the relation it altered in the event
-	 * trigger command that is currently being collected, and core never
-	 * calls it outside EventTriggerAlterTableStart()/End().  Called bare it
-	 * writes through a NULL command whenever event trigger state exists --
-	 * which it does for anything running inside a ddl_command_end, sql_drop
-	 * or table_rewrite trigger -- and the backend crashes.  Both calls
-	 * return at once when there is no such state, so the ordinary path is
-	 * unchanged.
+	 * trigger command that is currently being collected, and core never calls
+	 * it outside EventTriggerAlterTableStart()/End().  Called bare it writes
+	 * through a NULL command whenever event trigger state exists -- which it
+	 * does for anything running inside a ddl_command_end, sql_drop or
+	 * table_rewrite trigger -- and the backend crashes.  Both calls return at
+	 * once when there is no such state, so the ordinary path is unchanged.
 	 */
 	EventTriggerAlterTableStart((Node *) stmt);
 	AlterTableInternal(relid, stmt->cmds, false);
@@ -1313,27 +1312,26 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 
 	/*
 	 * Under spock.auto_replica_identity_full, a PRIMARY KEY table joining a
-	 * set that replicates UPDATEs or DELETEs also gets REPLICA IDENTITY
-	 * FULL, so that the whole old row travels with each change and TOAST
-	 * columns converge (see spock_set_replica_identity_full()).  Only the
-	 * DEFAULT identity is upgraded: USING INDEX and NOTHING were chosen on
-	 * purpose.  Partitioned parents are skipped; their leaves come through
-	 * here on their own.
+	 * set that replicates UPDATEs or DELETEs also gets REPLICA IDENTITY FULL,
+	 * so that the whole old row travels with each change and TOAST columns
+	 * converge (see spock_set_replica_identity_full()).  Only the DEFAULT
+	 * identity is upgraded: USING INDEX and NOTHING were chosen on purpose.
+	 * Partitioned parents are skipped; their leaves come through here on
+	 * their own.
 	 *
 	 * The ALTER runs at AccessExclusiveLock.  The callers take that lock up
-	 * front when the setting is on and the set replicates UPDATEs or
-	 * DELETEs -- repset_add_table(), repset_add_all_tables() and
+	 * front when the setting is on and the set replicates UPDATEs or DELETEs
+	 * -- repset_add_table(), repset_add_all_tables() and
 	 * repset_add_partition() all do.  Under auto-DDL the hook normally runs
 	 * inside the CREATE TABLE's own AccessExclusiveLock, but an ALTER on a
 	 * partitioned parent that takes a weaker lock can reach here for a leaf
-	 * that is not yet a member, and then the ALTER below upgrades that
-	 * lock.
+	 * that is not yet a member, and then the ALTER below upgrades that lock.
 	 *
-	 * The identity change needs table ownership, which membership does not.
-	 * A bulk caller (skip_unreplicatable) should not lose a whole schema
-	 * over one table it does not own, so warn and leave that table's
-	 * identity alone; the table still joins the set.  When the caller asked
-	 * for this one table, let the helper raise the ownership error.
+	 * The identity change needs table ownership, which membership does not. A
+	 * bulk caller (skip_unreplicatable) should not lose a whole schema over
+	 * one table it does not own, so warn and leave that table's identity
+	 * alone; the table still joins the set.  When the caller asked for this
+	 * one table, let the helper raise the ownership error.
 	 */
 	if (spock_auto_replica_identity_full &&
 		(repset->replicate_update || repset->replicate_delete) &&

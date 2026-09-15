@@ -1805,8 +1805,8 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 	 * Make sure the relation exists (lock mode has to be the same one as in
 	 * replication_set_add_relation).
 	 *
-	 * Under spock.auto_replica_identity_full a qualifying table is ALTERed
-	 * on its way into a set that replicates UPDATEs or DELETEs, which needs
+	 * Under spock.auto_replica_identity_full a qualifying table is ALTERed on
+	 * its way into a set that replicates UPDATEs or DELETEs, which needs
 	 * AccessExclusiveLock.  Take it here rather than let the ALTER upgrade a
 	 * weaker lock half-way through the transaction.
 	 */
@@ -1831,10 +1831,10 @@ spock_replication_set_add_table(PG_FUNCTION_ARGS)
 
 		/*
 		 * Fetch the bitmap of columns the subscriber looks the row up by.
-		 * REPLICA IDENTITY FULL has no identity index, so the identity
-		 * bitmap comes back empty for such a table; the PRIMARY KEY is what
-		 * Spock uses there, and it has to be on the wire like any other
-		 * replica identity.
+		 * REPLICA IDENTITY FULL has no identity index, so the identity bitmap
+		 * comes back empty for such a table; the PRIMARY KEY is what Spock
+		 * uses there, and it has to be on the wire like any other replica
+		 * identity.
 		 */
 		if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
 			idattrs = RelationGetIndexAttrBitmap(rel,
@@ -2146,10 +2146,10 @@ spock_repset_replica_identity_full(PG_FUNCTION_ARGS)
 			continue;
 
 		/*
-		 * Re-check under the exclusive lock: a concurrent session could
-		 * have dropped the PRIMARY KEY or switched the identity to USING
-		 * INDEX or NOTHING between the two locks.  Skip rather than
-		 * override or let the helper ERROR out and abort the whole call.
+		 * Re-check under the exclusive lock: a concurrent session could have
+		 * dropped the PRIMARY KEY or switched the identity to USING INDEX or
+		 * NOTHING between the two locks.  Skip rather than override or let
+		 * the helper ERROR out and abort the whole call.
 		 */
 		if (!member_needs_replica_identity_full(rel))
 		{

@@ -372,11 +372,11 @@ spock_write_update(StringInfo out, SpockOutputData *data,
 
 	/*
 	 * The old tuple is whatever logical decoding recorded in WAL: the key
-	 * columns under a replica identity index, the whole old row under
-	 * REPLICA IDENTITY FULL.  Spock sends it as 'K' either way.  On a FULL
-	 * table the read side uses that whole row to recover a TOAST column the
-	 * UPDATE left unchanged, and the subscriber still finds the row through
-	 * the PRIMARY KEY rather than by matching every column.
+	 * columns under a replica identity index, the whole old row under REPLICA
+	 * IDENTITY FULL.  Spock sends it as 'K' either way.  On a FULL table the
+	 * read side uses that whole row to recover a TOAST column the UPDATE left
+	 * unchanged, and the subscriber still finds the row through the PRIMARY
+	 * KEY rather than by matching every column.
 	 *
 	 * TODO: an 'O' (whole tuple) type would let a table with a replica
 	 * identity index carry its old row too, which would need a separate
@@ -891,9 +891,9 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 	 * A column the provider did not change and that lives out of line in
 	 * TOAST arrives as 'u': PostgreSQL does not WAL-log the value, so it is
 	 * not in the message.  When the old tuple carries it -- REPLICA IDENTITY
-	 * FULL logs the whole old row, TOAST values flattened in -- the new
-	 * value is that old value, because the column did not change.  Take it,
-	 * so that the applied row, what spock.exception_log records and what
+	 * FULL logs the whole old row, TOAST values flattened in -- the new value
+	 * is that old value, because the column did not change.  Take it, so that
+	 * the applied row, what spock.exception_log records and what
 	 * spock.apply_change_logging prints are the complete row, and a
 	 * remote-wins UPDATE installs the winner's whole row instead of keeping
 	 * the local TOAST value.
@@ -902,18 +902,18 @@ spock_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 	 * A column the old tuple did not carry at all reads back as unchanged
 	 * ('u' on the wire, or never sent); there is nothing to take.  A column
 	 * the old tuple logged as NULL reads back as a NULL.  That looks like a
-	 * value, but it cannot be this column's: spock_write_tuple() sends a
-	 * NULL as 'n' and only ever sends 'u' for a non-null out-of-line datum,
-	 * so a column that arrived as 'u' is not NULL on the provider.  Such a
-	 * NULL comes from a key-only old tuple, where ExtractReplicaIdentity()
-	 * nulls every non-identity column -- what an identity DEFAULT table
-	 * sends when an UPDATE changes the key.  Copying it would blank out a
-	 * column the provider still has.  Leave both alone; slot_modify_data()
-	 * then keeps the local value as before.
+	 * value, but it cannot be this column's: spock_write_tuple() sends a NULL
+	 * as 'n' and only ever sends 'u' for a non-null out-of-line datum, so a
+	 * column that arrived as 'u' is not NULL on the provider.  Such a NULL
+	 * comes from a key-only old tuple, where ExtractReplicaIdentity() nulls
+	 * every non-identity column -- what an identity DEFAULT table sends when
+	 * an UPDATE changes the key.  Copying it would blank out a column the
+	 * provider still has.  Leave both alone; slot_modify_data() then keeps
+	 * the local value as before.
 	 *
 	 * from_old marks what was taken this way.  The value is usually the one
-	 * the subscriber already holds, and slot_modify_data() compares before
-	 * it overwrites, so an in-sync UPDATE does not rewrite the TOAST data.
+	 * the subscriber already holds, and slot_modify_data() compares before it
+	 * overwrites, so an in-sync UPDATE does not rewrite the TOAST data.
 	 */
 	if (*hasoldtup)
 	{
