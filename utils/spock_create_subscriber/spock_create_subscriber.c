@@ -281,6 +281,7 @@ static bool extension_exists(PGconn *conn, const char *extname);
 static void install_extension(PGconn *conn, const char *extname);
 
 static void ensure_trailing_newline(const char *path);
+static void ensure_output_plugin_libraries_has_spock(const char *data_dir);
 static void initialize_data_dir(char *data_dir, char *connstr,
 								char *postgresql_conf, char *postgresql_auto_conf,
 								char *pg_hba_conf, char *extra_basebackup_args);
@@ -3623,6 +3624,109 @@ ensure_trailing_newline(const char *path)
 }
 
 /*
+ * Ensure output_plugin_libraries -- the PG18+ security GUC restricting
+ * which logical decoding plugins a REPLICATION user may request (fix
+ * 2a29b607dbb) -- allows spock_output for data_dir, regardless of what
+ * postgresql.conf/postgresql.auto.conf ended up there above.
+ *
+ * A caller-supplied --postgresql-conf replaces the physically-backed-up
+ * postgresql.conf wholesale (see the CopyConfFile() call in
+ * initialize_data_dir()), and it is easy to hand-write one that omits a
+ * GUC this new.  On an affected server that falls back to the compiled-in
+ * default ('pgoutput, test_decoding'), which excludes spock_output, so
+ * CREATE_REPLICATION_SLOT fails for every subscription this tool creates
+ * on the node and the apply worker for each spins forever retrying it.
+ *
+ * "postgres -C output_plugin_libraries -D data_dir" reads the value that
+ * would actually be in effect for this data directory, without starting
+ * the server.  A server predating the fix doesn't recognize the parameter
+ * and exits nonzero; since appending an unrecognized parameter would keep
+ * such a postmaster from starting at all, ANY failure here -- unrecognized
+ * parameter or otherwise -- is treated the same way, by leaving the config
+ * alone.  A value must actually come back before anything is touched.
+ */
+static void
+ensure_output_plugin_libraries_has_spock(const char *data_dir)
+{
+	char	   *exec_path = find_other_exec_or_die(argv0, "postgres");
+	PQExpBuffer cmd = createPQExpBuffer();
+	FILE	   *fp;
+	char		value[1024];
+	bool		got_value = false;
+	char	   *tok;
+	char	   *saveptr;
+	char	   *members;
+	char		auto_conf_path[MAXPGPATH];
+	FILE	   *f;
+	char	   *escaped;
+
+	appendPQExpBuffer(cmd, "\"%s\" -C output_plugin_libraries -D \"%s\" 2>/dev/null",
+					  exec_path, data_dir);
+	fp = popen(cmd->data, "r");
+	if (fp == NULL)
+		die(_("could not run \"%s\": %s\n"), cmd->data, strerror(errno));
+	if (fgets(value, sizeof(value), fp) != NULL)
+	{
+		size_t		len = strlen(value);
+
+		if (len > 0 && value[len - 1] == '\n')
+			value[len - 1] = '\0';
+		got_value = true;
+	}
+	destroyPQExpBuffer(cmd);
+	if (pclose(fp) != 0 || !got_value)
+		return;					/* GUC unknown on this server, or query failed */
+
+	/*
+	 * Already covers spock_output? Nothing to do. Tokenize a copy; value
+	 * itself is still needed below if not.
+	 */
+	members = pg_strdup(value);
+	for (tok = strtok_r(members, ",", &saveptr); tok != NULL;
+		 tok = strtok_r(NULL, ",", &saveptr))
+	{
+		size_t		toklen;
+
+		while (*tok == ' ')
+			tok++;
+		toklen = strlen(tok);
+		while (toklen > 0 && tok[toklen - 1] == ' ')
+			tok[--toklen] = '\0';
+		if (strcmp(tok, "spock_output") == 0)
+		{
+			pfree(members);
+			return;
+		}
+	}
+	pfree(members);
+
+	/*
+	 * Missing -- append a corrective postgresql.auto.conf line.  It is always
+	 * loaded last and wins, so this is safe regardless of what
+	 * postgresql.conf/postgresql.auto.conf initialize_data_dir() applied
+	 * above.  value came back from "postgres -C", which prints the GUC's
+	 * decoded string value, not its config-file token -- if it contains a
+	 * literal single quote (from a doubled '' in whatever set it),
+	 * re-embedding it verbatim would produce a malformed assignment.
+	 */
+	escaped = escape_single_quotes_ascii(value);
+	if (escaped == NULL)
+		die(_("out of memory\n"));
+
+	snprintf(auto_conf_path, sizeof(auto_conf_path), "%s/postgresql.auto.conf", data_dir);
+	f = fopen(auto_conf_path, "a");
+	if (f == NULL)
+		die(_("could not open \"%s\": %s\n"), auto_conf_path, strerror(errno));
+	fprintf(f, "# --- appended by spock_create_subscriber to keep spock_output "
+			"usable as an output plugin (security fix 2a29b607dbb) ---\n");
+	fprintf(f, "output_plugin_libraries = '%s, spock_output'\n", escaped);
+	fclose(f);
+	free(escaped);
+
+	ensure_trailing_newline(auto_conf_path);
+}
+
+/*
  * Init the datadir
  *
  * This function can either ensure provided datadir is a postgres datadir,
@@ -3681,6 +3785,8 @@ initialize_data_dir(char *data_dir, char *connstr,
 	}
 	if (pg_hba_conf)
 		CopyConfFile(pg_hba_conf, "pg_hba.conf", false);
+
+	ensure_output_plugin_libraries_has_spock(data_dir);
 }
 
 /*

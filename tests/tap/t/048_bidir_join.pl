@@ -97,7 +97,7 @@ use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
                  command_ok system_maybe get_test_config scalar_query
-                 psql_or_bail wait_for_pg_ready);
+                 psql_or_bail wait_for_pg_ready output_plugin_libraries_conf);
 
 # =============================================================================
 # Locate spock_create_subscriber binary
@@ -250,6 +250,7 @@ my $n3_conf = '/tmp/tmp_spock_node_2_postgresql.conf.override';
 open my $conf_fh, '>', $n3_conf or die "Cannot write $n3_conf: $!";
 print $conf_fh "shared_buffers=1GB\n";
 print $conf_fh "shared_preload_libraries='spock'\n";
+print $conf_fh output_plugin_libraries_conf($pg_bin);
 print $conf_fh "wal_level=logical\n";
 print $conf_fh "spock.enable_ddl_replication=on\n";
 print $conf_fh "spock.include_ddl_repset=on\n";
