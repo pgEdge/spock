@@ -103,6 +103,8 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		int			i;
 		TupleDesc	desc;
 		ResultRelInfo *relinfo;
+		StringInfoData missing;
+		int			num_missing = 0;
 
 		rv->schemaname = (char *) entry->nspname;
 		rv->relname = (char *) entry->relname;
@@ -144,22 +146,22 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 			/*
 			 * A missing local column is handled like a missing local
-			 * relation. Report it on the first pass so apply_work() records
-			 * the cause, then return NULL during exception replay so the
-			 * caller can apply the configured exception behavior instead of
-			 * erroring again.
+			 * relation. Collect every missing column rather than stopping at
+			 * the first, so an operator repairing a drifted schema gets the
+			 * whole list at once instead of one column per apply attempt.
+			 * Skip the rest of the loop body: it indexes the local tupdesc by
+			 * attmap[i].
 			 */
 			if (unlikely(entry->attmap[i] < 0))
 			{
-				if (MyApplyWorker == NULL || !MyApplyWorker->use_try_block)
-					ereport(ERROR,
-							(errcode(ERRCODE_UNDEFINED_COLUMN),
-							 errmsg("unknown column name \"%s\" in relation \"%s\".\"%s\"",
-									entry->attnames[i], entry->nspname,
-									entry->relname)));
+				if (num_missing == 0)
+					initStringInfo(&missing);
+				else
+					appendStringInfoString(&missing, ", ");
 
-				spock_relation_close(entry, lockmode);
-				return NULL;
+				appendStringInfo(&missing, "\"%s\"", entry->attnames[i]);
+				num_missing++;
+				continue;
 			}
 
 			/*
@@ -191,6 +193,30 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 				entry->has_delta_columns = true;
 				entry->delta_apply_functions[entry->attmap[i]] = dfunc;
 			}
+		}
+
+		/*
+		 * Report the mismatch on the first pass so apply_work() records the
+		 * cause, then return NULL during exception replay so the caller can
+		 * apply the configured exception behaviour instead of erroring again.
+		 * Close with NoLock like every other apply-path close: the lock stays
+		 * until the replication transaction ends rather than being dropped on
+		 * a table we are part way through.
+		 */
+		if (unlikely(num_missing > 0))
+		{
+			if (MyApplyWorker == NULL || !MyApplyWorker->use_try_block)
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_COLUMN),
+						 errmsg_plural("unknown column name %s in relation \"%s\".\"%s\"",
+									   "unknown column names %s in relation \"%s\".\"%s\"",
+									   num_missing,
+									   missing.data, entry->nspname,
+									   entry->relname)));
+
+			pfree(missing.data);
+			spock_relation_close(entry, NoLock);
+			return NULL;
 		}
 
 		relinfo = makeNode(ResultRelInfo);
