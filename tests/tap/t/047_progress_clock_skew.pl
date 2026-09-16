@@ -44,7 +44,7 @@ my $conn_n2 = "host=$host port=$node_ports->[1] dbname=$dbname";
 
 for my $n (1, 2, 3) {
     psql_or_bail($n, "SELECT spock.repset_create('skew_set')");
-    psql_or_bail($n, "CREATE TABLE skew_test (id serial primary key, val text)");
+    psql_or_bail($n, "CREATE TABLE skew_test (id integer primary key, val text)");
     psql_or_bail($n, "SELECT spock.repset_add_table('skew_set', 'skew_test')");
 }
 pass('Created replication sets, test table, and repset membership on all nodes');
@@ -64,7 +64,7 @@ ok(wait_for_sub_status(3, 'sub_n3_n1', 'replicating', 30),
    'sub_n3_n1 is replicating');
 
 # Confirm live streaming rather than relying only on subscription status.
-psql_or_bail(1, "INSERT INTO skew_test (val) VALUES ('settle_check')");
+psql_or_bail(1, "INSERT INTO skew_test (id, val) VALUES (1, 'settle_check')");
 ok(poll_slow(3,
     "SELECT (COUNT(*) = 1)::text FROM skew_test WHERE val = 'settle_check'",
     'true', 30),
@@ -76,12 +76,12 @@ psql_or_bail(1, "SELECT spock.sub_disable('sub_n1_n2')");
 ok(wait_for_sub_status(1, 'sub_n1_n2', 'disabled', 30),
    'sub_n1_n2 disabled -- n2 writes now undelivered');
 
-psql_or_bail(2, "INSERT INTO skew_test (val) VALUES ('row_from_n2_old')");
+psql_or_bail(2, "INSERT INTO skew_test (id, val) VALUES (2, 'row_from_n2_old')");
 pass("Inserted row A on n2 (timestamp T_A) -- held back on n2's slot");
 
 system_or_bail 'sleep', '2';
 
-psql_or_bail(1, "INSERT INTO skew_test (val) VALUES ('row_from_n1_direct')");
+psql_or_bail(1, "INSERT INTO skew_test (id, val) VALUES (3, 'row_from_n1_direct')");
 pass('Inserted row B directly on n1 (timestamp T_B > T_A)');
 
 ok(poll_slow(3,
@@ -100,6 +100,11 @@ ok(poll_slow(3,
     "SELECT (COUNT(*) = 1)::text FROM skew_test WHERE val = 'row_from_n2_old'",
     'true', 30),
    'Row A (forwarded, older timestamp) converges on n3 despite arriving after B in LSN order');
+
+ok(poll_slow(3,
+    "SELECT (COUNT(*) = 3)::text FROM skew_test",
+    'true', 30),
+   'n3 has all three expected rows after Row A converges');
 
 # Check progress on n3 for the n1 stream.
 
@@ -154,7 +159,7 @@ diag("prev_remote_ts after crash+restart: '$prev_ts_after_crash'");
 is($prev_ts_after_crash, '',
    "prev_remote_ts reads NULL after crash recovery -- left unset, not reconstructed as a guess");
 
-psql_or_bail(1, "INSERT INTO skew_test (val) VALUES ('row_after_crash')");
+psql_or_bail(1, "INSERT INTO skew_test (id, val) VALUES (4, 'row_after_crash')");
 ok(poll_slow(3,
     "SELECT (COUNT(*) = 1)::text FROM skew_test WHERE val = 'row_after_crash'",
     'true', 30),
