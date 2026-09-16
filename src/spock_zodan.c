@@ -1601,7 +1601,8 @@ zodan_wait_sub_ready(ZodanAddCtx *ctx, const char *sub_name)
 		 */
 		failed = zodan_local_count(psprintf(
 			"SELECT count(*) FROM spock.local_sync_status "
-			"WHERE sync_subid = %s AND sync_status = 'f'", subid));
+			"WHERE sync_subid = %s AND sync_status = 'f'",
+			quote_literal_cstr(subid)));
 		if (failed > 0)
 			ereport(ERROR,
 					(errmsg("initial synchronization failed for subscription %s",
@@ -1612,7 +1613,8 @@ zodan_wait_sub_ready(ZodanAddCtx *ctx, const char *sub_name)
 
 		pending = zodan_local_count(psprintf(
 			"SELECT count(*) FROM spock.local_sync_status "
-			"WHERE sync_subid = %s AND sync_status NOT IN ('y','r','f')", subid));
+			"WHERE sync_subid = %s AND sync_status NOT IN ('y','r','f')",
+			quote_literal_cstr(subid)));
 
 		if (pending == 0)
 		{
