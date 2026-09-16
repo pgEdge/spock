@@ -3,7 +3,7 @@
  * spock_injection.h
  *		Injection point support for the Spock extension.
  *
- * Two named injection points are defined, one per side of the wire:
+ * Four named injection points are defined:
  *
  *   SPOCK_WORKER_DELAY()      – subscriber side, at apply-worker
  *                                start/finish sites ('spock-worker-delay').
@@ -26,6 +26,18 @@
  *                                insertion exists to survive, and the one
  *                                a concurrent local writer produces for
  *                                real.
+ *   SPOCK_FORWARDED_APPLY_ERROR() – subscriber side, right before a
+ *                                forwarded-origin row change is applied
+ *                                to the heap ('spock-forwarded-apply-
+ *                                error'). Lets a test attach an
+ *                                'error'-mode injection point (core's
+ *                                injection_points extension) to force
+ *                                an error-class exception on a
+ *                                forwarded transaction, e.g. during a
+ *                                bidirectional-join catchup, to verify
+ *                                the transaction aborts rather than
+ *                                silently committing with a missing
+ *                                row.
  *
  *   SPOCK_RANDOM_DELAYS defined  – the worker and output-plugin points call
  *                                   spock_random_delay() directly; fires
@@ -35,7 +47,10 @@
  *                                   a worker or transaction boundary, and a
  *                                   sleep averaging 50 ms on every applied
  *                                   row puts the regression suite hours past
- *                                   any sensible timeout.
+ *                                   any sensible timeout.  The same goes for
+ *                                   SPOCK_FORWARDED_APPLY_ERROR(), which is
+ *                                   also a no-op: a random sleep does not
+ *                                   serve an error-injection point.
  *   USE_INJECTION_POINTS defined – all expand to INJECTION_POINT(); the
  *                                   core injection_points module can
  *                                   attach to any name when needed.
@@ -72,6 +87,7 @@ extern void spock_random_delay(void);
 #define SPOCK_OUTPUT_TXN_STALL()	spock_random_delay()
 /* Per-row: delaying here would take the suite hours.  See above. */
 #define SPOCK_INSERT_CONFLICT_STALL()	((void) 0)
+#define SPOCK_FORWARDED_APPLY_ERROR()	((void) 0)
 
 #elif defined(USE_INJECTION_POINTS)
 
@@ -82,11 +98,13 @@ extern void spock_random_delay(void);
 #define SPOCK_OUTPUT_TXN_STALL()	INJECTION_POINT("spock-output-txn-stall", NULL)
 #define SPOCK_INSERT_CONFLICT_STALL()	\
 	INJECTION_POINT("spock-insert-conflict-stall", NULL)
+#define SPOCK_FORWARDED_APPLY_ERROR()	INJECTION_POINT("spock-forwarded-apply-error", NULL)
 #else
 #define SPOCK_WORKER_DELAY()		INJECTION_POINT("spock-worker-delay")
 #define SPOCK_OUTPUT_TXN_STALL()	INJECTION_POINT("spock-output-txn-stall")
 #define SPOCK_INSERT_CONFLICT_STALL()	\
 	INJECTION_POINT("spock-insert-conflict-stall")
+#define SPOCK_FORWARDED_APPLY_ERROR()	INJECTION_POINT("spock-forwarded-apply-error")
 #endif
 
 #else
@@ -94,6 +112,7 @@ extern void spock_random_delay(void);
 #define SPOCK_WORKER_DELAY()		((void) 0)
 #define SPOCK_OUTPUT_TXN_STALL()	((void) 0)
 #define SPOCK_INSERT_CONFLICT_STALL()	((void) 0)
+#define SPOCK_FORWARDED_APPLY_ERROR()	((void) 0)
 
 #endif							/* SPOCK_RANDOM_DELAYS / USE_INJECTION_POINTS */
 
