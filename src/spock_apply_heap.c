@@ -82,6 +82,7 @@
 #include "spock_apply_heap.h"
 #include "spock_apply.h"
 #include "spock_exception_handler.h"
+#include "spock_injection.h"
 #include "spock.h"
 
 typedef struct ApplyExecutionData
@@ -108,6 +109,23 @@ static void build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 							  TupleTableSlot *localslot);
 #endif
 static bool physatt_in_attmap(SpockRelation *rel, int attid);
+
+/*
+ * Is the row currently being applied part of a transaction whose origin is
+ * not this apply worker's direct provider -- i.e. a forwarded-origin
+ * change (cascade or bidirectional-join forwarding)?
+ *
+ * replorigin_session_origin mirrors handle_origin()'s remote_origin_id for
+ * the duration of the transaction (spock_apply.c), so this is the same
+ * first-order test handle_origin() itself uses, without needing any of
+ * spock_apply.c's file-static transaction state visible here.
+ */
+static inline bool
+is_forwarded_origin_apply(void)
+{
+	return replorigin_session_origin != InvalidRepOriginId &&
+		replorigin_session_origin != (RepOriginId) MySubscription->origin->id;
+}
 
 /*
  * Executor state preparation for evaluation of constraint expressions,
@@ -865,6 +883,9 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	slot_fill_defaults(rel, estate, remoteslot);
 	MemoryContextSwitchTo(oldctx);
 
+	if (is_forwarded_origin_apply())
+		SPOCK_FORWARDED_APPLY_ERROR();
+
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
 	ExecOpenIndices(edata->targetRelInfo, false);
 	relinfo = edata->targetRelInfo;
@@ -971,6 +992,9 @@ spock_apply_heap_update(SpockRelation *rel, SpockTupleData *oldtup,
 	slot_store_data(remoteslot, rel, oldtup);
 
 	MemoryContextSwitchTo(oldctx);
+
+	if (is_forwarded_origin_apply())
+		SPOCK_FORWARDED_APPLY_ERROR();
 
 	/* Find the current local tuple */
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
@@ -1094,6 +1118,9 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 	slot_store_data(remoteslot, rel, oldtup);
 
 	MemoryContextSwitchTo(oldctx);
+
+	if (is_forwarded_origin_apply())
+		SPOCK_FORWARDED_APPLY_ERROR();
 
 	/* Find the current local tuple */
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);

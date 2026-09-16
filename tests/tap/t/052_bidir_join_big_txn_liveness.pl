@@ -157,7 +157,13 @@ my $n3_pending  = "${n3_datadir}.spock_bidir_pending.json";
 my $n3_manifest = "$n3_datadir/spock_bidirectional_manifest.json";
 my $n3_dsn      = "host=$host port=$n3_port dbname=$dbname"
                 . " user=$db_user password=$db_password";
-my $stall_timeout = 5;
+# 5s used to be enough locally, but PR CI (pgEdge/spock#521) showed this
+# specific file intermittently failing on the PG15 job only -- the gap
+# between n1's commit and n3's handle_begin() (connection/decode startup,
+# not the slow-apply loop itself) can exceed a razor-thin 5s under
+# contended CI runners. 15s keeps a comfortable ~2x margin below
+# $expected_min_seconds (~24s) while giving that startup gap real headroom.
+my $stall_timeout = 15;
 
 remove_tree($n3_datadir) if -d $n3_datadir;
 unlink($n3_pending) if -f $n3_pending;

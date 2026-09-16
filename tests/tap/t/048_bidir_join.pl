@@ -64,6 +64,8 @@
 #   1  source slot removed from n1 after cleanup
 #   1  n3 data directory removed after cleanup --force
 #   1  manifest removed after cleanup
+#   1  --cleanup --force exits 0 when run again on an already-clean target (idempotent)
+#   1  no source slot reappears from a redundant cleanup call
 #   1  --bidirectional rejects a multi-database request
 #   1  --max-wait rejects a value that overflows int
 #   1  --stall-timeout rejects a non-numeric value
@@ -87,12 +89,12 @@
 #   1  pending sidecar removed once cleanup actually completed
 #   1  destroy_cluster
 #  ---
-#  72  total
+#  74  total
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 72;
+use Test::More tests => 74;
 use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
@@ -502,6 +504,27 @@ is($source_slot_after, '0', 'source slot removed from n1 after cleanup');
 
 ok(!-d $n3_datadir, 'n3 data directory removed after cleanup --force');
 ok(!-f $manifest, 'manifest removed after cleanup');
+
+# =============================================================================
+# TEST: --cleanup --force is a safe no-op when the target is already fully
+# clean -- no manifest, no pending sidecar, no data directory, nothing left
+# on the source to drop. This existed in the old 047_bidir_plumbing.pl and
+# was never carried forward when 048 superseded it.
+# =============================================================================
+command_ok(
+    [ $SCS_BIN,
+      '--bidirectional',
+      '--cleanup',
+      '--force',
+      '--pgdata', $n3_datadir,
+    ],
+    '--cleanup --force exits 0 when run again on an already-clean target (idempotent)'
+);
+
+my $source_slot_after_idempotent_cleanup = scalar_query(1,
+    "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name LIKE 'spk_%n3%'");
+is($source_slot_after_idempotent_cleanup, '0',
+   'no source slot reappears from a redundant cleanup call');
 
 # =============================================================================
 # TEST: --bidirectional hard-rejects a multi-database request outright,

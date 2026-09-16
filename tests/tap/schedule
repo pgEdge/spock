@@ -69,6 +69,8 @@ test: 054_bidir_join_precondition_negatives
 test: 055_bidir_join_lww_conflict
 test: 056_bidir_join_concurrent_load
 test: 057_bidir_join_stall_abort
+test: 058_bidir_join_failure_matrix
+test: 060_bidir_join_forwarded_discard_abort
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
