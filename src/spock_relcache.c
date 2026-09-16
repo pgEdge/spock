@@ -29,6 +29,7 @@
 #include "spock.h"
 #include "spock_common.h"
 #include "spock_relcache.h"
+#include "spock_worker.h"
 
 #define SPOCKRELATIONHASH_INITIAL_SIZE 128
 static HTAB *SpockRelationHash = NULL;
@@ -142,6 +143,26 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			entry->attmap[i] = tupdesc_get_att_by_name(desc, entry->attnames[i]);
 
 			/*
+			 * A missing local column is handled like a missing local
+			 * relation. Report it on the first pass so apply_work() records
+			 * the cause, then return NULL during exception replay so the
+			 * caller can apply the configured exception behavior instead of
+			 * erroring again.
+			 */
+			if (unlikely(entry->attmap[i] < 0))
+			{
+				if (MyApplyWorker == NULL || !MyApplyWorker->use_try_block)
+					ereport(ERROR,
+							(errcode(ERRCODE_UNDEFINED_COLUMN),
+							 errmsg("unknown column name \"%s\" in relation \"%s\".\"%s\"",
+									entry->attnames[i], entry->nspname,
+									entry->relname)));
+
+				spock_relation_close(entry, lockmode);
+				return NULL;
+			}
+
+			/*
 			 * If we find attribute options for this column and the
 			 * delta_apply_function is set, lookup the oid for it.
 			 */
@@ -249,7 +270,10 @@ spock_relation_cache_update(uint32 remoteid, char *schemaname,
 	entry->delta_apply_functions = palloc0(natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
 
-	/* XXX Should we validate the relation against local schema here? */
+	/*
+	 * Local-schema validation requires the lock taken by
+	 * spock_relation_open().
+	 */
 
 	entry->reloid = InvalidOid;
 }
@@ -287,7 +311,10 @@ spock_relation_cache_updater(SpockRemoteRel *remoterel)
 	entry->delta_apply_functions = palloc0(remoterel->natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
 
-	/* XXX Should we validate the relation against local schema here? */
+	/*
+	 * Local-schema validation requires the lock taken by
+	 * spock_relation_open().
+	 */
 
 	entry->reloid = InvalidOid;
 }
@@ -381,6 +408,10 @@ spock_relcache_init(void)
 
 /*
  * Find attribute index in TupleDesc struct by attribute name.
+ *
+ * Returns -1 if no such column exists locally; the caller decides how to
+ * react (this can legitimately happen on a schema mismatch between nodes,
+ * which is not this function's business to escalate).
  */
 static int
 tupdesc_get_att_by_name(TupleDesc desc, const char *attname)
@@ -395,7 +426,7 @@ tupdesc_get_att_by_name(TupleDesc desc, const char *attname)
 			return i;
 	}
 
-	elog(ERROR, "unknown column name %s", attname);
+	return -1;
 }
 
 
