@@ -45,7 +45,15 @@ addition:
 - Zodan stores sync LSNs and uses them later to ensure subscriptions start
   from the correct point even if time passes between steps.
 
-- Zodan verifies all nodes run a compatible Spock version before starting.
+- Zodan automatically detects existing schemas on the new node and populates the
+  `skip_schema` parameter, preventing conflicts during structure sync.
+
+- Zodan checks Spock versions before starting. Every node must be 5.0.9 or
+  later, and the new node must run the same or a newer major.minor version
+  than every existing node (patch levels may differ). So a 6.0.x node can
+  join a 5.0.x cluster, and further 6.0.x nodes can join the resulting
+  mixed cluster from any source node; a new node older than an existing
+  node is rejected.
 
 - Zodan waits for each new subscription to reach the replicating state before
   proceeding.

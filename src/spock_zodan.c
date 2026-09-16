@@ -759,10 +759,11 @@ zodan_remote_spock_version(PGconn *conn, const char *label,
  * Phase 0: verify the Spock version on the source node, the new node and every
  * existing cluster node.
  *
- * Every node must be >= ZODAN_MIN_VERSION.  The existing nodes must share one
- * major.minor, patch differences being allowed for rolling upgrades.  The new
- * node may run the same or a newer major.minor, but never an older one: only
- * the newer sync worker knows how to talk to an older provider.
+ * Every node must be >= ZODAN_MIN_VERSION, and the new node must run the same
+ * or a newer major.minor than every existing node, the source included: only
+ * the newer sync worker knows how to talk to an older provider.  The existing
+ * nodes may differ from each other, since a cluster is mixed from the first
+ * newer node on and further nodes still have to be able to join it.
  */
 static void
 zodan_check_versions(ZodanAddCtx *ctx)
@@ -776,6 +777,8 @@ zodan_check_versions(ZodanAddCtx *ctx)
 	int			new_major,
 				new_minor,
 				new_patch;
+	StringInfoData existing;
+	bool		mixed = false;
 	PGconn	   *conn;
 	int			i;
 
@@ -812,12 +815,21 @@ zodan_check_versions(ZodanAddCtx *ctx)
 						  src_major, src_minor, 0) < 0)
 		ereport(ERROR,
 				(errmsg("Spock version mismatch: new node has version %d.%d.%d, "
-						"but source version is %d.%d.%d; the new node must run "
-						"the same or a newer major.minor version",
+						"but source node has version %d.%d.%d; the new node must "
+						"run the same or a newer major.minor version than every "
+						"existing node",
 						new_major, new_minor, new_patch,
 						src_major, src_minor, src_patch)));
 
-	/* Every existing cluster node must share the source's major.minor. */
+	/*
+	 * The existing nodes may differ from each other: a cluster is mixed from
+	 * the first newer node on, and further nodes have to be able to join it.
+	 * What none of them may be is newer than the new node.
+	 */
+	initStringInfo(&existing);
+	appendStringInfo(&existing, "%s %d.%d.%d", ctx->src_node_name,
+					 src_major, src_minor, src_patch);
+
 	for (i = 0; i < ctx->nnodes; i++)
 	{
 		int			node_major,
@@ -837,14 +849,23 @@ zodan_check_versions(ZodanAddCtx *ctx)
 							ctx->nodes[i].name,
 							node_major, node_minor, node_patch,
 							ZODAN_MIN_VERSION)));
-		if (node_major != src_major || node_minor != src_minor)
+
+		if (zodan_version_cmp(new_major, new_minor, 0,
+							  node_major, node_minor, 0) < 0)
 			ereport(ERROR,
-					(errmsg("Spock version mismatch: node %s has version %d.%d.%d, "
-							"but source version is %d.%d.%d; existing cluster "
-							"nodes must share the same major.minor version",
+					(errmsg("Spock version mismatch: new node has version %d.%d.%d, "
+							"but node %s has version %d.%d.%d; the new node must "
+							"run the same or a newer major.minor version than "
+							"every existing node",
+							new_major, new_minor, new_patch,
 							ctx->nodes[i].name,
-							node_major, node_minor, node_patch,
-							src_major, src_minor, src_patch)));
+							node_major, node_minor, node_patch)));
+
+		if (node_major != new_major || node_minor != new_minor)
+			mixed = true;
+
+		appendStringInfo(&existing, ", %s %d.%d.%d", ctx->nodes[i].name,
+						 node_major, node_minor, node_patch);
 	}
 
 	/* zodan_progress_lsn_column() needs this once the copy is under way. */
@@ -853,12 +874,11 @@ zodan_check_versions(ZodanAddCtx *ctx)
 	ctx->src_patch = src_patch;
 
 	/* Worth saying without verb: this is not the usual shape of a cluster. */
-	if (new_major != src_major || new_minor != src_minor)
+	if (mixed || new_major != src_major || new_minor != src_minor)
 		ereport(NOTICE,
 				(errmsg("mixed-version attach: new node runs Spock %d.%d.%d, "
-						"existing cluster runs Spock %d.%d.%d",
-						new_major, new_minor, new_patch,
-						src_major, src_minor, src_patch)));
+						"existing nodes run %s",
+						new_major, new_minor, new_patch, existing.data)));
 
 	ZNOTICE("Version check passed: source %d.%d.%d, new node %d.%d.%d",
 			src_major, src_minor, src_patch, new_major, new_minor, new_patch);
