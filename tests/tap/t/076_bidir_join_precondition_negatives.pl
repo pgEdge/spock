@@ -60,7 +60,7 @@ use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
                  command_ok system_maybe get_test_config scalar_query
                  wait_for_sub_status
-                 psql_or_bail wait_for_pg_ready);
+                 psql_or_bail wait_for_pg_ready output_plugin_libraries_conf);
 
 # =============================================================================
 # Locate spock_create_subscriber binary
@@ -435,6 +435,7 @@ my $n3a_conf    = '/tmp/tmp_spock_node_2_postgresql.conf.override.n3a';
 open my $conf_fh_a, '>', $n3a_conf or die "Cannot write $n3a_conf: $!";
 print $conf_fh_a "shared_buffers=1GB\n";
 print $conf_fh_a "shared_preload_libraries='spock'\n";
+print $conf_fh_a output_plugin_libraries_conf($pg_bin);
 print $conf_fh_a "wal_level=logical\n";
 print $conf_fh_a "spock.enable_ddl_replication=on\n";
 print $conf_fh_a "spock.include_ddl_repset=on\n";
@@ -479,6 +480,7 @@ my $n3b_conf = '/tmp/tmp_spock_node_2_postgresql.conf.override.n3b';
 open my $conf_fh_b, '>', $n3b_conf or die "Cannot write $n3b_conf: $!";
 print $conf_fh_b "shared_buffers=1GB\n";
 print $conf_fh_b "shared_preload_libraries='spock'\n";
+print $conf_fh_b output_plugin_libraries_conf($pg_bin);
 print $conf_fh_b "wal_level=logical\n";
 print $conf_fh_b "spock.enable_ddl_replication=on\n";
 print $conf_fh_b "spock.include_ddl_repset=on\n";
