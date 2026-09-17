@@ -85,6 +85,8 @@ install -p -m 0644 %{_builddir}/%{pname}-%{version}/%{pname}%{spockmajorversion}
 %endif
 
 %changelog
+* Thu Sep 17 2026 Mason Sharp <mason.sharp@pgedge.com> - 5.0.12
+- Update spock package to 5.0.12
 * Thu Jul 16 2026 Muhammad Aqeel <muhammad.aqeel@pgedge.com> - 5.0.11
 - Update spock package to 5.0.11
 * Mon Jun 22 2026 Muhammad Aqeel <muhammad.aqeel@pgedge.com> - 5.0.10
