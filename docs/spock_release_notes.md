@@ -1,26 +1,173 @@
 # Spock Release Notes
 
-## Unreleased
+## Spock 5.0.12
 
 ### Upgrade Notes
+* There are no schema changes in 5.0.12.
+
 * PostgreSQL's 2026 security fix for CVE-2026-6471 (back-patched to every
   supported major) added the `output_plugin_libraries` parameter, and a library
   may no longer be used as an output plugin unless it is listed there. Its
   default excludes `spock_output`, so on a server carrying the fix logical
   decoding fails with `library "spock_output" may not be used as an output
   plugin`. The check runs whenever decoding starts, not only at slot creation,
-  so this stops an established cluster after a minor-version upgrade — not just
+  so this stops an established cluster after a minor-version upgrade - not just
   new subscriptions. Set
   `output_plugin_libraries = 'pgoutput, test_decoding, spock_output'` on every
   node, physical standbys included, and only on servers that have the parameter
-  — on older releases an unrecognised parameter stops the server from starting.
-  See [Configuring Spock](configuring.md).
+  - on older releases an unrecognised parameter stops the server from starting.
+  See [Configuring Spock](configuring.md). The regression and TAP test suites
+  and the Docker test image now check for the parameter and set it themselves.
 
-### New Features
-* **PostgreSQL 19 support** — new `compat/19` layer and version-specific API
-  adaptations (`CLUSTER` folded into `REPACK`, the recovery-conflict
-  signalling changes, tuple-descriptor finalisation, and the flattened
-  `ReorderBufferTXN` commit-time field).
+* When the apply worker fails for a reason that has nothing to do with the
+  data (a deadlock, a lock timeout, a provider that is restarting), it now
+  restarts and tries again instead of treating the failure as an exception.
+  See Bug Fixes. If the problem never goes away, you will see the apply worker
+  restart every `spock.restart_delay_default` (5 seconds by default) rather
+  than a disabled subscription or a discarded transaction.
+
+### Bug Fixes
+* The apply worker now retries after temporary errors. Some errors have
+  nothing to do with the replicated data: PostgreSQL picked the apply worker
+  as a deadlock victim, `lock_timeout` fired, the server briefly ran out of a
+  resource (SQLSTATE class 53), or the provider was restarting or still in
+  recovery (57P02, 57P03). All of these succeed if tried again. Before, they
+  went down the same path as a permanent data error, so depending on
+  `spock.exception_behaviour` the subscription was disabled or the transaction
+  was written to `spock.exception_log` and thrown away, even though the
+  provider would happily have sent it again. Now the worker exits without
+  moving the replication origin, the manager starts it again, and the
+  provider resends the transaction. Every restart path, including the
+  existing one for a lost connection, now waits `spock.restart_delay_default`
+  before starting again, so a problem that does not clear cannot turn into a
+  tight restart loop.
+
+* Tables with `GENERATED ALWAYS AS ... STORED` columns caused replication
+  errors. Generated columns were handled like ordinary columns during the
+  initial table copy, in the replication protocol, when filling in defaults
+  for missing columns, and during conflict resolution. They are now left out
+  everywhere, and the subscriber computes them from the column definition.
+
+* AutoDDL failed after utility commands that run outside a transaction
+  block, such as `CLUSTER` with no table name. These commands commit after
+  each table, so by the time the AutoDDL hook ran there was no open
+  transaction and no snapshot, and the catalog lookups and the queue insert
+  failed. AutoDDL now starts a transaction and takes a snapshot itself when it
+  needs to.
+
+* `spock.get_lsn_from_commit_ts()` could hang on an idle node. The function
+  scans the node's WAL for the last local commit at or before a timestamp,
+  but the scan had no stopping point, so once it caught up it sat waiting for
+  WAL that nobody was going to write. An `add_node` run was seen stuck behind
+  this call for over eleven minutes. The scan now stops at the end of WAL as
+  it stood when it began, takes the commit timestamp and origin from the WAL
+  record instead of `pg_commit_ts`, counts local two-phase commits written by
+  other applications, and refuses to run on a server in recovery. A timestamp
+  with no matching commit still returns the slot's `restart_lsn`, now logged
+  at DEBUG1.
+
+* A failure between transactions could make the apply worker mishandle the
+  next one. When a transaction fails to apply, the worker restarts, the
+  provider resends it, and the worker runs it again in what the code calls
+  replay mode: each row is tried in a subtransaction so the failing row can
+  be written to `spock.exception_log` and `spock.exception_behaviour` can
+  decide what to do with it. Replay mode is meant for that one transaction.
+  But an error raised between transactions switched the worker into replay
+  mode with no failed transaction to attach it to, and the flag stayed set
+  for whatever the provider sent next. That transaction, which had never
+  failed, ran as a replay and under `TRANSDISCARD` or `SUB_DISABLE` was
+  thrown away or used to disable the subscription. The worker now turns
+  replay mode on only for the transaction that actually failed, and any
+  other transaction clears the recorded failure.
+
+* A replayed transaction that applied nothing was still committed. Under
+  `TRANSDISCARD` and `SUB_DISABLE` every row of a replay runs in a
+  subtransaction that is always rolled back, so a replay applies no rows. The
+  check for "replayed but hit no error" ran only after the replication origin
+  had moved forward and the transaction had committed, so the origin ended up
+  past a transaction that was never applied. The transaction was lost while
+  the log said it had been discarded on purpose. The check now runs first and
+  the transaction is rolled back instead, so the provider resends it.
+  Transactions skipped with `spock.sub_alter_skiplsn` are exempt.
+
+* Two subscriptions whose names share a prefix (for example `sub` and
+  `sub_parallel`) shared one exception-log slot, because the lookup compared
+  only the first few characters. Sharing the slot means sharing the commit
+  LSN that marks a transaction as having already failed, so a failure
+  recorded by one subscription could push the other into replay mode for a
+  transaction that never failed. The lookup now compares the whole name. The
+  same code also read, and could have written, one entry past the end of the
+  array.
+
+* The failover-slots worker died whenever the walreceiver reconnected to the
+  primary. Without `spock.primary_dsn` the worker takes the primary's
+  connection string from the walreceiver, which blanks that string for the
+  whole of every connection attempt, not only at standby startup. The
+  connection then failed, the worker exited, and failover slots stopped
+  syncing until it restarted. The worker now waits for the next cycle.
+
+* Two retry messages for serialization failures are lowered from LOG to
+  DEBUG1, but the check that decides whether to print them at the new level
+  was backwards. With default settings they went to the server log no matter
+  what `log_min_messages` said. Also marked a deliberate switch fall-through
+  in the apply worker so clang stops warning about it on every build before
+  PostgreSQL 19.
+
+* Restarting an apply worker in the middle of a transaction could disable the
+  subscription. The worker records the commit LSN of every transaction it
+  begins, not only ones that fail, and a clean shutdown left the marker
+  behind, so the provider's resend of the interrupted transaction looked like
+  a transaction that had already failed. Under `SUB_DISABLE` that disabled
+  the subscription for no real error. The marker is now cleared when the
+  worker exits on `SIGTERM`.
+
+* A column that exists on the provider but not on the subscriber put the
+  apply worker in a restart loop. The error was raised while opening the
+  table, before the per-row subtransaction exception handling needs, so
+  `spock.exception_behaviour` never got a say and the error came back on
+  every retry without end. A missing column is now handled like a missing
+  table: the first attempt raises the error, the retry discards the change
+  and logs it through the normal exception path. The message also names every
+  column the local table is missing, so repairing a drifted schema no longer
+  costs one column per apply attempt.
+
+### Other Changes
+* Refreshed the `attoptions` server patch for the `heap_update()` change in
+  PostgreSQL 17.11, 18.5 and 19 beta 3. One hunk's context lines no longer
+  matched and the patch was rejected. Only context lines changed.
+
+* Spock builds against PostgreSQL 19 beta 3, with a new `compat/19` layer for
+  the API changes in that beta (`CLUSTER` folded into `REPACK`, the
+  recovery-conflict signalling changes, tuple-descriptor finalisation, and
+  the flattened `ReorderBufferTXN` commit-time field). `CREATE EXTENSION`
+  accepts major version 19, and CI and the release packaging cover it. This
+  is preliminary: PostgreSQL 19 is still in beta, the compatibility layer
+  will change before it is released, and Spock on 19 is not supported for
+  production use.
+
+* Dropped Debian bullseye from the platforms the release workflow builds
+  packages for. It has reached end of life.
+
+* Removed the old Z0DAN Python files and their TAP test. `add_node` and
+  `remove_node` are provided by the SQL implementation.
+
+* New documentation on running logical slot failover under Patroni on
+  PostgreSQL 17 and later. It covers the parameters you need, the settings to
+  put in the bootstrap DCS, and what to do about `synchronized_standby_slots`
+  on a switchover. A sample Patroni `on_role_change` callback,
+  `samples/set_synchronized_standby_slots.sh`, resets
+  `synchronized_standby_slots` after a promotion. See
+  [Logical Slot Failover](logical_slot_failover.md).
+
+* Documented the `wait_if_disabled` argument of `spock.wait_for_sync_event()`.
+
+* TAP suite: tests share one set of log and wait helpers instead of each
+  carrying a copy, cluster startup waits for the servers to be ready instead
+  of sleeping 17 seconds, and a single test can be run on its own with
+  `prove`. New tests cover retry after temporary errors, real deadlocks,
+  replay mode carrying over between transactions,
+  `spock.get_lsn_from_commit_ts()`, a worker restart in the middle of a
+  transaction, and a column missing on the subscriber.
 
 ## Spock 5.0.11
 
