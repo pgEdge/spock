@@ -25,11 +25,11 @@ export PG_MAJOR_VERSION="$(echo "$PG_VERSION" | cut -d. -f1)"
 # only used as the clone fallback when release-artifacts/ has no staged
 # tarball (i.e. a local build outside the workflow).
 export PG_SPOCK_REPO="https://github.com/pgEdge/spock.git"
-export SPOCK_BRANCH="${COMPONENT_BRANCH:-v5.0.11-rc.1}"
+export SPOCK_BRANCH="${COMPONENT_BRANCH:-v5.0.12-rc.1}"
 
 # Upstream version, suffix-stripped (e.g. 5.0.11). Used for the source
 # tarball name, its internal directory, and the RPM Version.
-export SPOCK_VERSION="${COMPONENT_VERSION:-5.0.11}"
+export SPOCK_VERSION="${COMPONENT_VERSION:-5.0.12}"
 
 # Appending 0 after 5 to create major version 50 even in case of 5.1.0
 export SPOCK_MAJOR_VERSION=$(echo ${SPOCK_VERSION} | cut -d. -f1 | tr -d .)0
