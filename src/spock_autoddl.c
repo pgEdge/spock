@@ -39,8 +39,10 @@
  * Classification of a post-execution ALTER TABLE with respect to the
  * table's primary key / replica identity. apply_repset_policy_for_reloid()
  * runs after the DDL has executed, so post-state is read from the relcache
- * and combined with parse-tree intent. "PKRI" covers PK and replica
- * identity since either is sufficient for UPDATE/DELETE replication.
+ * and combined with parse-tree intent. "PKRI" names the pair because the
+ * two travel together: what the classification tests is the identity the
+ * table ends up with, which is a replica identity index or REPLICA IDENTITY
+ * FULL next to a PRIMARY KEY.
  */
 typedef enum AlterPkRiChange
 {
@@ -351,8 +353,8 @@ extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
  *		- Otherwise: leave membership alone.
  *	- Else (CREATE, CREATE TABLE AS, ATTACH PARTITION, ALTER with no custom
  *	  repset, or fall-through from the PK-dropped safety net):
- *		- PK or replica identity present -> 'default' repset.
- *		- No PK/RI -> 'default_insert_only'.
+ *		- a replica identity the subscriber can use -> 'default' repset.
+ *		- anything else -> 'default_insert_only'.
  */
 static void
 apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
@@ -473,8 +475,14 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 		}
 	}
 
-	/* Choose default vs default_insert_only based on PK/RI presence. */
-	if (OidIsValid(targetrel->rd_pkindex) || OidIsValid(targetrel->rd_replidindex))
+	/*
+	 * Choose default vs default_insert_only on the same predicate the
+	 * admission rule uses.  Routing on a bare PRIMARY KEY instead would send
+	 * a table the rule then refuses -- a PRIMARY KEY with REPLICA IDENTITY
+	 * NOTHING, or a deferrable one on PG18+ -- to 'default', evict it from
+	 * every set on the way there, and leave it in no set at all.
+	 */
+	if (relation_has_replication_identity(targetrel))
 	{
 		repset = get_replication_set_by_name(node->node->id,
 											 DEFAULT_REPSET_NAME, false);
@@ -489,9 +497,21 @@ apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 		remove_table_from_repsets(node->node->id, reloid, true);
 	}
 
-	if (!OidIsValid(targetrel->rd_replidindex) &&
+	/*
+	 * The set above was chosen on relation_has_replication_identity(), so a
+	 * table headed for an UPDATE/DELETE set normally has one. The only way
+	 * around that is a built-in insert-only set whose flags were changed
+	 * after the fact, e.g. spock.repset_alter('default_insert_only',
+	 * replicate_update := true); guard against that case instead of asserting
+	 * it away.
+	 */
+	if (!relation_has_replication_identity(targetrel) &&
 		(repset->replicate_update || repset->replicate_delete))
 	{
+		ereport(WARNING,
+				(errmsg("table \"%s\" has no replica identity and replication set \"%s\" replicates UPDATE or DELETE; not adding it",
+						get_rel_name(reloid), repset->name),
+				 errhint("The built-in insert-only replication set has been altered to replicate UPDATE or DELETE.")));
 		table_close(targetrel, NoLock);
 		return;
 	}
@@ -524,10 +544,20 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 	ListCell   *cell;
 	bool		has_add_pkri_cmd = false;
 	bool		has_drop_pkri_candidate = false;
-	bool		post_has_pk_or_ri;
+	bool		post_has_identity;
 
-	post_has_pk_or_ri = OidIsValid(targetrel->rd_pkindex) ||
-		OidIsValid(targetrel->rd_replidindex) ||
+	/*
+	 * What matters is only whether PostgreSQL still logs an old row the
+	 * subscriber could match on: a replica identity index, or REPLICA
+	 * IDENTITY FULL, which logs the whole row and is matched by a sequential
+	 * scan.  This is looser than the admission rule, which also wants a
+	 * PRIMARY KEY for FULL; a table that reached this state by ALTER still
+	 * replicates, so do not evict it (TAP 030 case T11).  A PRIMARY KEY on
+	 * its own is not enough, though: a table switched to REPLICA IDENTITY
+	 * NOTHING keeps its key but logs nothing, so it cannot replicate UPDATE
+	 * or DELETE and belongs in default_insert_only.
+	 */
+	post_has_identity = OidIsValid(targetrel->rd_replidindex) ||
 		targetrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL;
 
 	foreach(cell, atstmt->cmds)
@@ -603,7 +633,7 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 
 				/*
 				 * Pessimistic: any constraint or column drop could remove the
-				 * PK.  The post-state check (!post_has_pk_or_ri) is the real
+				 * PK.  The post-state check (!post_has_identity) is the real
 				 * filter; if the table still has a PK/RI after the ALTER,
 				 * PKRI_UNCHANGED is returned regardless.
 				 */
@@ -614,9 +644,9 @@ classify_alter_pkri_change(AlterTableStmt *atstmt, Relation targetrel)
 		}
 	}
 
-	if (post_has_pk_or_ri && has_add_pkri_cmd)
+	if (post_has_identity && has_add_pkri_cmd)
 		return PKRI_ADDED;
-	if (!post_has_pk_or_ri && has_drop_pkri_candidate)
+	if (!post_has_identity && has_drop_pkri_candidate)
 		return PKRI_DROPPED;
 	return PKRI_UNCHANGED;
 }

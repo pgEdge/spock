@@ -17,6 +17,10 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
   through timestamp-based resolution.
 * **Per-subscription conflict statistics** on PostgreSQL 18+ via a custom
   pgstat kind.
+* **`REPLICA IDENTITY FULL` tables can replicate UPDATEs and DELETEs** when
+  they also have a `PRIMARY KEY`, and unchanged TOAST columns now converge
+  across nodes on such tables. New `spock.auto_replica_identity_full` GUC
+  and two helper functions. See *REPLICA IDENTITY FULL with a PRIMARY KEY*.
 * **Liveness and feedback refactor** — TCP keepalive replaces the fragile
   `wal_sender_timeout` workaround; new `spock.apply_idle_timeout` GUC.
 * **Logical slot failover** uses native PostgreSQL slotsync on PG17+ /
@@ -159,6 +163,88 @@ operations go through timestamp-based resolution, just like updates.  This
 enables the new `delete_exists` classification — Spock can determine
 whether a delete should be applied or whether a newer local version should
 be preserved.
+
+### REPLICA IDENTITY FULL with a PRIMARY KEY
+
+Tables with `REPLICA IDENTITY FULL` can now belong to replication sets that
+replicate UPDATEs and DELETEs, provided they also have a `PRIMARY KEY`.
+`spock.repset_add_table()`, `spock.repset_add_all_tables()` and
+`spock.repset_alter()` all accept them; `REPLICA IDENTITY FULL` without a
+`PRIMARY KEY`, and `REPLICA IDENTITY NOTHING`, are still refused.
+
+FULL decides what is WAL-logged: the entire old row, TOAST values included.
+The `PRIMARY KEY` decides how the subscriber finds the row, through an
+ordinary index lookup.
+
+**Why this matters.** PostgreSQL does not write an unchanged TOAST value to
+WAL, so an UPDATE that leaves a large column alone does not carry it, and
+the subscriber keeps whatever it holds locally. After two nodes update the
+same row at the same time, one changing a TOAST column and the other a
+small one, both agree on the winner but end up with different rows. The
+apply worker now takes an unchanged column's value from the old tuple
+whenever the old tuple carries it, which it always does on a FULL table.
+The winner's whole row lands on every node. Tables at `REPLICA IDENTITY
+DEFAULT` behave exactly as before.
+
+**What it costs.** FULL adds one copy of the whole old row, TOAST values
+included, per UPDATE and DELETE, in WAL and on every link, regardless of
+how much of the row the statement touched, and every node that applies the
+change writes the same copy to its own WAL. UPDATEs that do not change any
+TOAST column feel it most, because they used to be nearly free: as a guide,
+one 10 kB TOAST column leaves provider throughput not noticeably impacted
+but raises WAL volume 10 to 100× depending on the other columns; ten 10 kB
+columns may cut throughput 10 to 15×; one 1 MB column 30 to 50×. UPDATEs
+that change a TOAST column, and DELETEs, roughly halve at worst, since the
+value being written or removed already dominated. Table schema, system
+hardware and network all change these figures; they are guidance, not
+limits. See [What REPLICA IDENTITY FULL
+costs](configuring.md#what-replica-identity-full-costs).
+
+Behaviour notes:
+
+* `ALTER TABLE ... REPLICA IDENTITY FULL` on a `PRIMARY KEY` table that is
+  already in the `default` replication set now keeps its membership. It
+  used to be silently dropped from every set.
+* A FULL table that reached a replication set on an earlier release was
+  located by a sequential scan on the subscriber; it now uses the `PRIMARY
+  KEY`. Besides being faster, this changes conflict classification on rows
+  that had diverged locally: the old whole-row match reported such an
+  UPDATE as `update_missing`, while the key lookup finds the row and
+  resolves it by timestamp as the `update_origin_differs` event it is.
+  DELETEs of diverged rows likewise now find and resolve
+  (`delete_origin_differs`) rather than skip as `delete_missing`.
+* New GUC `spock.auto_replica_identity_full` (default off) switches
+  `PRIMARY KEY` tables to FULL as they join an UPDATE/DELETE replication
+  set, including tables auto-DDL adds. Set it on every node.
+* New functions `spock.table_replica_identity_full(relation,
+  include_partitions)` and `spock.repset_replica_identity_full(set_name)`
+  switch existing tables. Both are local to the node, like every
+  `spock.repset_*` function.
+* Do not turn on `spock.auto_replica_identity_full`, and do not switch
+  tables to FULL, until every node in the cluster runs 6.0. A 5.x
+  subscriber has no `PRIMARY KEY` fallback for a FULL table: it finds rows
+  by a whole-row sequential scan, and reports rows that have diverged as
+  `update_missing`.
+* On a FULL table the new tuple recorded in `spock.exception_log`, and by
+  `spock.apply_change_logging = verbose`, now carries the unchanged TOAST
+  values that used to appear as null, so those rows can be large.
+* The subscriber compares an unchanged TOAST value taken from the old row
+  the provider sent with the one it already holds and writes it only when
+  the two differ, so an UPDATE applied to a row that is already in sync does
+  not rewrite the TOAST data. Without that comparison a subscriber applying
+  frequent updates to wide rows would rewrite every TOAST value on each
+  change and could fall minutes behind the provider.
+* `spock.repset_replica_identity_full()` leaves `REPLICA IDENTITY USING
+  INDEX` and `REPLICA IDENTITY NOTHING` tables alone and says so in a
+  WARNING, the way `spock.auto_replica_identity_full` only changes tables at
+  `REPLICA IDENTITY DEFAULT`. `spock.table_replica_identity_full()` still
+  overrides any identity, because there the table was named. The bulk
+  function also inspects members under an `AccessShareLock` and takes an
+  `AccessExclusiveLock` only on the tables it will change.
+* With `spock.auto_replica_identity_full` on, `spock.repset_add_table()`,
+  `spock.repset_add_all_tables()` and `spock.repset_add_partition()` take
+  `AccessExclusiveLock` on each qualifying table up front rather than
+  upgrading a weaker lock inside the `ALTER`.
 
 ### Cascade replication origin tracking
 
@@ -396,6 +482,11 @@ AutoDDL has been refactored and hardened:
   hard-coded value of 5 (there is 1ms of sleep between each retry).
   Setting it to 0 disables retries. This helps when a node has a large
   lag and we do not want to slow down processing.
+* `spock.auto_replica_identity_full` (bool, default `off`, `USERSET`) —
+  set `REPLICA IDENTITY FULL` on `PRIMARY KEY` tables at `REPLICA IDENTITY
+  DEFAULT` as they join a replication set that replicates UPDATE or DELETE.
+  Covers `spock.repset_add_table()`, `spock.repset_add_all_tables()`,
+  `spock.repset_add_partition()` and auto-DDL adds. Local to each node.
 
 **Removed**
 
@@ -438,6 +529,12 @@ AutoDDL has been refactored and hardened:
 * `spock.sub_alter_options(subscription_name name, options text[])` —
   bulk subscription option changes, with input validation and no-op
   restart skipping.
+* `spock.table_replica_identity_full(relation regclass, include_partitions
+  boolean DEFAULT true)` — set `REPLICA IDENTITY FULL` on one table after
+  checking it has a `PRIMARY KEY`; partitions are switched one by one.
+* `spock.repset_replica_identity_full(set_name name)` — set `REPLICA
+  IDENTITY FULL` on every `PRIMARY KEY` table of one replication set;
+  returns the count changed, warns for tables without a `PRIMARY KEY`.
 
 ### Removed functions
 

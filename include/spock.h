@@ -45,6 +45,7 @@ extern bool spock_ch_stats;
 extern bool spock_deny_ddl;
 extern bool spock_enable_ddl_replication;
 extern bool spock_include_ddl_repset;
+extern bool spock_auto_replica_identity_full;
 extern bool allow_ddl_from_functions;
 extern int	restart_delay_default;
 extern int	restart_delay_on_exception;

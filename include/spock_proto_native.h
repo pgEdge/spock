@@ -28,6 +28,15 @@ typedef struct SpockTupleData
 	Datum		values[MaxTupleAttributeNumber];
 	bool		nulls[MaxTupleAttributeNumber];
 	bool		changed[MaxTupleAttributeNumber];
+
+	/*
+	 * Set for a column the UPDATE did not change and that was recovered from
+	 * the provider's old row instead of the wire (an unchanged TOAST value on
+	 * a REPLICA IDENTITY FULL table).  Such a value is usually the one the
+	 * subscriber already holds; slot_modify_data() compares before it
+	 * overwrites.
+	 */
+	bool		from_old[MaxTupleAttributeNumber];
 } SpockTupleData;
 
 extern void spock_write_commit_order(StringInfo out,

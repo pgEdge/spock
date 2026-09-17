@@ -111,6 +111,8 @@ nav:
       - spock.repset_remove_seq(): spock_functions/functions/spock_repset_remove_seq.md
       - spock.repset_remove_table(): spock_functions/functions/spock_repset_remove_table.md
       - spock.repset_show_table(): spock_functions/functions/spock_repset_show_table.md
+      - spock.repset_replica_identity_full(): spock_functions/functions/spock_repset_replica_identity_full.md
+      - spock.table_replica_identity_full(): spock_functions/functions/spock_table_replica_identity_full.md
       - spock.table_wait_for_sync(): spock_functions/functions/spock_table_wait_for_sync.md
       - spock.sync_seq(): spock_functions/functions/spock_sync_seq.md
       - spock.sub_add_repset(): spock_functions/functions/spock_sub_add_repset.md

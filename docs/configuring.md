@@ -448,6 +448,127 @@ adjustment to which replication set the table is part of. Setting a table to
 unlogged will remove it from replication. Detaching a partition will not
 remove it from replication.
 
+### `spock.auto_replica_identity_full`
+
+`spock.auto_replica_identity_full` makes Spock set `REPLICA IDENTITY FULL`
+on a table with a `PRIMARY KEY` when the table joins a replication set that
+replicates `UPDATE` or `DELETE`. It applies to `spock.repset_add_table()`,
+`spock.repset_add_all_tables()`, `spock.repset_add_partition()` and to the
+tables Spock adds on its own under `spock.include_ddl_repset`. Only tables
+at `REPLICA IDENTITY DEFAULT` are changed; `USING INDEX` and `NOTHING` are
+left as they are, and a table without a `PRIMARY KEY` is left alone. For a
+partitioned table each partition is switched; the parent is not, because
+PostgreSQL never cascades `REPLICA IDENTITY` to partitions and the
+partitions hold the rows.
+
+The default is `off`.
+
+Why you would turn it on: PostgreSQL does not write an unchanged TOAST
+value to WAL, so an `UPDATE` that leaves a large column alone does not carry
+that column, and the subscriber keeps whatever it holds locally. After two
+nodes update the same row at the same time they agree on the winner but can
+end up with different rows. With `REPLICA IDENTITY FULL` the whole old row
+travels with every `UPDATE` and `DELETE`, and Spock takes an unchanged
+column's value from it, so the winner's whole row lands on every node. See
+[`update_origin_differs`](conflict_types.md#update_origin_differs).
+
+The cost is one extra copy of the whole old row per `UPDATE` and `DELETE`,
+in WAL on every node and on every link; see *What REPLICA IDENTITY FULL
+costs* below for guidance on the impact.
+
+!!! warning
+
+    Every node in the cluster must run Spock 6.0 before you turn this
+    setting on or switch any table to `REPLICA IDENTITY FULL`. A 5.x
+    subscriber has no `PRIMARY KEY` fallback for a FULL table: it finds
+    rows by a whole-row sequential scan, and reports rows that have
+    diverged as `update_missing`. Finish the rolling upgrade first.
+
+Set it on every node. Each node sets its own table identities: the change
+is made locally when the table joins a set and is not replicated as DDL, so
+a node with the setting off keeps `REPLICA IDENTITY DEFAULT` for the tables
+it adds, including tables it creates by applying replicated DDL. Existing
+tables are not changed by turning the setting on; use
+[`spock.repset_replica_identity_full()`](spock_functions/functions/spock_repset_replica_identity_full.md)
+or
+[`spock.table_replica_identity_full()`](spock_functions/functions/spock_table_replica_identity_full.md)
+for those.
+
+The change is made as an `ALTER TABLE`, which takes an
+`AccessExclusiveLock` on the table for the rest of the transaction. With
+the setting on, and when the set replicates `UPDATE` or `DELETE`,
+`spock.repset_add_table()`, `spock.repset_add_all_tables()` and
+`spock.repset_add_partition()` take that lock on every candidate relation
+and partition up front, instead of the weaker lock they take when the
+setting is off. Whether a table actually qualifies is only known once it
+is open, since it may turn out to be already FULL or to lack a `PRIMARY
+KEY`, so the lock is taken on those tables too. The lock is never upgraded
+part-way through.
+
+The role adding the table must own it, or be a superuser. With the setting
+on, `spock.repset_add_table()` and `spock.repset_add_partition()` run by a
+role that does not own the table, or one of its partitions, fail with an
+ownership error where they used to succeed; `spock.repset_add_all_tables()`
+adds the table but leaves its replica identity alone and warns.
+
+Only `REPLICA IDENTITY DEFAULT` is changed, here and in
+[`spock.repset_replica_identity_full()`](spock_functions/functions/spock_repset_replica_identity_full.md);
+a table at `USING INDEX` or `NOTHING` is left as it is, and the bulk
+function says so in a WARNING.
+[`spock.table_replica_identity_full()`](spock_functions/functions/spock_table_replica_identity_full.md)
+is the one path that overrides a deliberate identity, because there the
+table was named.
+
+#### What REPLICA IDENTITY FULL costs
+
+Under `REPLICA IDENTITY DEFAULT`, a replicated `UPDATE` carries the new
+values of the row's columns, leaving out TOAST values that did not change,
+plus the primary key that identifies the old row. A `DELETE` carries the
+primary key. Under `REPLICA IDENTITY FULL`, both also carry the complete old
+row, TOAST values included, and PostgreSQL writes that old row to WAL first.
+So FULL adds one copy of the whole old row per `UPDATE` and `DELETE`, in WAL
+and on every link, regardless of how much of the row the statement touched.
+Every node that applies the change writes the same old-row copy to its own
+WAL, because in a multi-master cluster each node is also a provider.
+
+**UPDATE that does not change any TOAST column.** This is the case that
+changes most. Under DEFAULT such an update is cheap regardless of row width,
+since the TOAST values are not read, written or sent. Under FULL the whole
+row is read, logged and shipped anyway. As a guide:
+
+* one 10 kB TOAST column: provider throughput not noticeably impacted, but
+  WAL volume rises 10 to 100× depending on the other columns in the table,
+  and a busy subscriber may lag;
+* ten 10 kB TOAST columns: throughput may fall 10 to 15×;
+* one 1 MB TOAST column: throughput may fall 30 to 50×.
+
+**UPDATE that changes a TOAST column.** Taking the same single 10 kB column:
+the new value has to be written and sent under either identity, so FULL adds
+only the old value on top. WAL at most doubles compared with DEFAULT for the
+same statement, and throughput roughly halves. The wider the changed value,
+the smaller the relative difference; on a 1 MB column the two identities
+were indistinguishable.
+
+**DELETE.** The old row is logged and sent where DEFAULT sent only the key.
+Expect throughput to roughly halve on tables with TOAST columns.
+
+**On the subscriber.** The apply worker receives the old row and, when it
+applies the change, its own heap update logs it again. It does not rewrite
+TOAST values that did not change: an unchanged TOAST value taken from the
+old row the provider sent is compared with the value the subscriber already
+holds and kept when identical, so an update that left a TOAST column alone
+costs the subscriber WAL for the old row but no TOAST writes. Without that
+comparison, a subscriber applying frequent updates to wide rows would
+rewrite every TOAST value on each change and could fall minutes behind the
+provider. Under sustained load on wide rows the subscriber can still fall
+behind.
+
+Table schema, system hardware and network all change these figures. They
+are guidance on the potential impact, not limits. The identity is set per
+table, so switch only the tables that need to converge and leave wide, hot
+tables at DEFAULT where row-level convergence of TOAST columns is not
+required.
+
 ### `spock.log_origin_change`
 
 `spock.log_origin_change` indicates whether changes to a row's

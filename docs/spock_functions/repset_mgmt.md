@@ -12,6 +12,8 @@ the following commands to create and manage replication sets.
 | [spock.repset_add_table](functions/spock_repset_add_table.md) | Adds a table to replication set.
 | [spock.repset_add_all_tables](functions/spock_repset_add_all_tables.md) | Adds all tables in a given schema(s).
 | [spock.repset_remove_table](functions/spock_repset_remove_table.md) | Remove a table from replication set.
+| [spock.repset_replica_identity_full](functions/spock_repset_replica_identity_full.md) | Set REPLICA IDENTITY FULL on every PRIMARY KEY table of a replication set.
+| [spock.table_replica_identity_full](functions/spock_table_replica_identity_full.md) | Set REPLICA IDENTITY FULL on one table, checking it has a PRIMARY KEY.
 | [spock.repset_add_seq](functions/spock_repset_add_seq.md) | Adds a sequence to a replication set.
 | [spock.repset_add_all_seqs](functions/spock_repset_add_all_seqs.md) | Adds all sequences from the given schemas.
 | [spock.repset_remove_seq](functions/spock_repset_remove_seq.md) | Remove a sequence from a replication set.

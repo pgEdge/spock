@@ -323,6 +323,30 @@ slot_store_htup(TupleTableSlot *slot, SpockRelation *rel,
 }
 
 /*
+ * Do two varlena datums hold the same bytes?  Either side may be stored out
+ * of line or compressed, so both are detoasted first; a detoasted copy is
+ * freed again.
+ */
+static bool
+varlena_datum_equal(Datum a, Datum b)
+{
+	struct varlena *va = PG_DETOAST_DATUM(a);
+	struct varlena *vb = PG_DETOAST_DATUM(b);
+	bool		equal;
+
+	equal = (VARSIZE_ANY_EXHDR(va) == VARSIZE_ANY_EXHDR(vb) &&
+			 memcmp(VARDATA_ANY(va), VARDATA_ANY(vb),
+					VARSIZE_ANY_EXHDR(va)) == 0);
+
+	if ((Pointer) va != DatumGetPointer(a))
+		pfree(va);
+	if ((Pointer) vb != DatumGetPointer(b))
+		pfree(vb);
+
+	return equal;
+}
+
+/*
  * Replace updated columns with data from the SpockTupleData struct.
  * This is somewhat similar to heap_modify_tuple but also calls the type
  * input functions on the user data.
@@ -368,6 +392,20 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 
 		if (!tupleData->nulls[remoteattnum])
 		{
+			/*
+			 * The value came from the provider's old row, not from the wire,
+			 * and is usually identical to ours.  Overwriting our external
+			 * TOAST pointer with the inline copy would make heap_update()
+			 * delete and rewrite the TOAST chunks for nothing, so compare
+			 * first and keep what we have when the bytes match.
+			 */
+			if (tupleData->from_old[remoteattnum] &&
+				att->attlen == -1 &&
+				!srcslot->tts_isnull[att->attnum - 1] &&
+				varlena_datum_equal(srcslot->tts_values[att->attnum - 1],
+									tupleData->values[remoteattnum]))
+				continue;
+
 			/* Use the value from the NEW remote tuple */
 			slot->tts_values[att->attnum - 1] = tupleData->values[remoteattnum];
 			slot->tts_isnull[att->attnum - 1] = false;
@@ -522,6 +560,7 @@ build_delta_tuple(SpockRelation *rel, SpockTupleData *oldtup,
 	Assert(rel->natts <= tupdesc->natts);
 	memset(deltatup->values, 0, tupdesc->natts * sizeof(Datum));
 	memset(deltatup->nulls, 1, tupdesc->natts * sizeof(bool));
+	memset(deltatup->from_old, 0, tupdesc->natts * sizeof(bool));
 
 	for (attidx = 0; attidx < rel->natts; attidx++)
 	{
@@ -827,6 +866,7 @@ init_tuple_with_defaults(SpockTupleData *oldtup, TupleDesc tupdesc)
 		oldtup->values[i] = zero_datum_for_type(att->atttypid);
 		oldtup->nulls[i] = false;
 		oldtup->changed[i] = false;
+		oldtup->from_old[i] = false;
 	}
 }
 

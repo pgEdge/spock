@@ -28,12 +28,17 @@
 #include "catalog/objectaddress.h"
 #include "catalog/pg_type.h"
 
+#include "commands/event_trigger.h"
+#include "commands/tablecmds.h"
+
 #include "executor/spi.h"
 
 #include "nodes/makefuncs.h"
+#include "nodes/parsenodes.h"
 
 #include "replication/reorderbuffer.h"
 #include "storage/lmgr.h"
+#include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -45,6 +50,7 @@
 #include "spock_dependency.h"
 #include "spock_node.h"
 #include "spock_queue.h"
+#include "spock_relcache.h"
 #include "spock_repset.h"
 #include "spock.h"
 #include "spock_compat.h"
@@ -858,9 +864,7 @@ alter_replication_set(SpockRepSet *repset)
 			if (RelationGetForm(targetrel)->relkind == RELKIND_RELATION)
 			{
 
-				if (targetrel->rd_indexvalid == 0)
-					RelationGetIndexList(targetrel);
-				if (!OidIsValid(targetrel->rd_replidindex) &&
+				if (!relation_has_replication_identity(targetrel) &&
 					(repset->replicate_update || repset->replicate_delete))
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1092,16 +1096,128 @@ drop_node_replication_sets(Oid nodeid)
 }
 
 /*
+ * Does the relation have a usable identity for replicating UPDATEs and
+ * DELETEs?  Either a replica identity index, or REPLICA IDENTITY FULL
+ * paired with a PRIMARY KEY: FULL logs the whole old row, so a TOAST
+ * column the UPDATE did not change can be recovered on apply and the
+ * pre-image is complete for conflict logging, and the PRIMARY KEY serves
+ * for row lookup on the subscriber.
+ *
+ * The relation must be open.
+ */
+bool
+relation_has_replication_identity(Relation rel)
+{
+	if (rel->rd_indexvalid == 0)
+		RelationGetIndexList(rel);
+
+	if (OidIsValid(rel->rd_replidindex))
+		return true;
+
+	return rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL &&
+		OidIsValid(spock_relation_pk_index(rel));
+}
+
+/*
+ * Switch an open plain table to REPLICA IDENTITY FULL.
+ *
+ * FULL only makes sense next to a PRIMARY KEY: FULL decides what is
+ * WAL-logged (the whole old row, TOAST values flattened in), the PRIMARY
+ * KEY is what the subscriber looks the row up by.  So a table without one
+ * is refused, as is anything that is not a plain table: REPLICA IDENTITY
+ * never cascades to partitions, so a partitioned parent has nothing to
+ * alter and callers walk the leaves themselves.
+ *
+ * The ALTER goes through AlterTableInternal(), which does not pass through
+ * ProcessUtility.  Auto-DDL therefore neither captures nor re-replicates
+ * it, and each node sets its own identity, which is what a multi-master
+ * cluster needs.  AlterTableInternal() does check ownership -- ATPrepCmd()
+ * reaches ATSimplePermissions() -- so the check below is not what makes the
+ * ALTER safe.  It runs first for two reasons: the GUC path can turn it into
+ * a WARNING for bulk callers, and the error is raised before
+ * EventTriggerAlterTableStart() opens a command that would then be
+ * abandoned.
+ *
+ * Returns true if the identity was changed, false if it was FULL already.
+ */
+bool
+spock_set_replica_identity_full(Relation rel)
+{
+	Oid			relid = RelationGetRelid(rel);
+	ReplicaIdentityStmt *ri;
+	AlterTableCmd *cmd;
+	AlterTableStmt *stmt;
+
+	if (rel->rd_rel->relkind != RELKIND_RELATION)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a table",
+						RelationGetRelationName(rel))));
+
+	if (!OidIsValid(spock_relation_pk_index(rel)))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("table %s has no PRIMARY KEY",
+						RelationGetRelationName(rel)),
+				 errdetail("REPLICA IDENTITY FULL is supported only together with a PRIMARY KEY, which the subscriber uses to find the row."),
+				 errhint("Add a PRIMARY KEY to the table first.")));
+
+	/*
+	 * Nothing to do, so nothing to check: a no-op is a no-op whoever asks for
+	 * it.  Tested before the ownership check on purpose.
+	 */
+	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
+		return false;
+
+#if PG_VERSION_NUM >= 160000
+	if (!object_ownercheck(RelationRelationId, relid, GetUserId()))
+#else
+	if (!pg_class_ownercheck(relid, GetUserId()))
+#endif
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_TABLE,
+					   RelationGetRelationName(rel));
+
+	ri = makeNode(ReplicaIdentityStmt);
+	ri->identity_type = REPLICA_IDENTITY_FULL;
+	ri->name = NULL;
+
+	cmd = makeNode(AlterTableCmd);
+	cmd->subtype = AT_ReplicaIdentity;
+	cmd->def = (Node *) ri;
+
+	stmt = makeNode(AlterTableStmt);
+	stmt->relation = makeRangeVar(get_namespace_name(RelationGetNamespace(rel)),
+								  pstrdup(RelationGetRelationName(rel)), -1);
+	stmt->cmds = list_make1(cmd);
+	stmt->objtype = OBJECT_TABLE;
+
+	/*
+	 * AlterTableInternal() records the relation it altered in the event
+	 * trigger command that is currently being collected, and core never calls
+	 * it outside EventTriggerAlterTableStart()/End().  Called bare it writes
+	 * through a NULL command whenever event trigger state exists -- which it
+	 * does for anything running inside a ddl_command_end, sql_drop or
+	 * table_rewrite trigger -- and the backend crashes.  Both calls return at
+	 * once when there is no such state, so the ordinary path is unchanged.
+	 */
+	EventTriggerAlterTableStart((Node *) stmt);
+	AlterTableInternal(relid, stmt->cmds, false);
+	EventTriggerAlterTableEnd();
+	CommandCounterIncrement();
+
+	return true;
+}
+
+/*
  * May this relation join the replication set, as far as its replica identity
  * goes?  Reports the reason it may not, at WARNING when the caller is walking a
  * whole schema and at ERROR when it asked for this one relation.
  *
  * Replicating an UPDATE or a DELETE means locating the affected row on the
- * subscriber, which spock does through the relation's replica identity index.
- * Note that neither REPLICA IDENTITY FULL nor REPLICA IDENTITY NOTHING yields
- * an index, so both fail this test even when the table has a PRIMARY KEY.  A
- * relation without an index can still belong to a set that only replicates
- * INSERTs and TRUNCATEs.
+ * subscriber; see relation_has_replication_identity() for what qualifies.
+ * REPLICA IDENTITY NOTHING never does, and FULL only with a PRIMARY KEY.  A
+ * relation without a usable identity can still belong to a set that only
+ * replicates INSERTs and TRUNCATEs.
  *
  * Both wordings live here, side by side, so that they cannot drift apart, and
  * because a dynamically assembled message could not be translated.
@@ -1115,10 +1231,7 @@ check_relation_replicatable(Relation rel, SpockRepSet *repset,
 	if (!repset->replicate_update && !repset->replicate_delete)
 		return true;
 
-	if (rel->rd_indexvalid == 0)
-		RelationGetIndexList(rel);
-
-	if (OidIsValid(rel->rd_replidindex))
+	if (relation_has_replication_identity(rel))
 		return true;
 
 	if (!skip_unreplicatable)
@@ -1196,6 +1309,53 @@ replication_set_add_table(Oid setid, Oid reloid, List *att_list,
 	}
 
 	EnsureRelationNotIgnored(targetrel);
+
+	/*
+	 * Under spock.auto_replica_identity_full, a PRIMARY KEY table joining a
+	 * set that replicates UPDATEs or DELETEs also gets REPLICA IDENTITY FULL,
+	 * so that the whole old row travels with each change and TOAST columns
+	 * converge (see spock_set_replica_identity_full()).  Only the DEFAULT
+	 * identity is upgraded: USING INDEX and NOTHING were chosen on purpose.
+	 * Partitioned parents are skipped; their leaves come through here on
+	 * their own.
+	 *
+	 * The ALTER runs at AccessExclusiveLock.  The callers take that lock up
+	 * front when the setting is on and the set replicates UPDATEs or DELETEs
+	 * -- repset_add_table(), repset_add_all_tables() and
+	 * repset_add_partition() all do.  Under auto-DDL the hook normally runs
+	 * inside the CREATE TABLE's own AccessExclusiveLock, but an ALTER on a
+	 * partitioned parent that takes a weaker lock can reach here for a leaf
+	 * that is not yet a member, and then the ALTER below upgrades that lock.
+	 *
+	 * The identity change needs table ownership, which membership does not. A
+	 * bulk caller (skip_unreplicatable) should not lose a whole schema over
+	 * one table it does not own, so warn and leave that table's identity
+	 * alone; the table still joins the set.  When the caller asked for this
+	 * one table, let the helper raise the ownership error.
+	 */
+	if (spock_auto_replica_identity_full &&
+		(repset->replicate_update || repset->replicate_delete) &&
+		targetrel->rd_rel->relkind == RELKIND_RELATION &&
+		targetrel->rd_rel->relreplident == REPLICA_IDENTITY_DEFAULT &&
+		OidIsValid(spock_relation_pk_index(targetrel)))
+	{
+#if PG_VERSION_NUM >= 160000
+		bool		is_owner = object_ownercheck(RelationRelationId, reloid,
+												 GetUserId());
+#else
+		bool		is_owner = pg_class_ownercheck(reloid, GetUserId());
+#endif
+
+		if (!is_owner && skip_unreplicatable)
+			ereport(WARNING,
+					(errmsg("skipping REPLICA IDENTITY FULL for table %s.%s",
+							get_namespace_name(RelationGetNamespace(targetrel)),
+							RelationGetRelationName(targetrel)),
+					 errdetail("Only the table owner or a superuser can change its replica identity.")));
+		else if (spock_set_replica_identity_full(targetrel))
+			elog(LOG, "table \"%s\" set to REPLICA IDENTITY FULL",
+				 RelationGetRelationName(targetrel));
+	}
 
 	table_close(targetrel, NoLock);
 
