@@ -21,6 +21,23 @@
 # replorigin_session_origin vs. MySubscription->origin->id test
 # handle_origin() itself uses).
 #
+# Timing: the poisoned peer write must land, and forward_origins must still
+# be active, at the moment the apply worker processes it -- both of which
+# stop being true once establish_peer_coverage_barrier() finishes and
+# clear_forwarding() runs, which (per 050/057's own findings) can happen
+# well under a second after catchup completes against an idle peer. Polling
+# an external log line for "reached the catchup wait phase" and then racing
+# to attach the injection point and write the poisoned row is not a safe
+# margin against that. Instead this uses a second test-only hook,
+# SPOCK_CREATE_SUBSCRIBER_TEST_PAUSE_BEFORE=coverage_barrier (spock_create_
+# subscriber.c: maybe_test_pause_before()), which blocks the join right
+# after wait_for_catchup() returns and before establish_peer_coverage_
+# barrier() starts -- a point that deterministically guarantees forwarding
+# is still active and nothing has been torn down -- until this test creates
+# a resume marker file. The injection point is armed and the poisoned row
+# is written on the peer while the join is provably frozen there, so
+# forwarding it through the source is not a race against anything.
+#
 # n3 uses spock.exception_behaviour=sub_disable (the same setting every
 # other bidir-join test in this family uses; 'error' is not a real value --
 # the only ones the GUC accepts are discard/transdiscard/sub_disable). A
@@ -160,77 +177,26 @@ sub wait_for_slot_created {
     return 0;
 }
 
-sub wait_for_log_pattern {
-    my ($logfile, $pattern, $timeout) = @_;
+sub wait_for_file {
+    my ($path, $timeout) = @_;
     for (1 .. $timeout) {
-        if (-f $logfile) {
-            open(my $fh, '<', $logfile) or die "Cannot open $logfile: $!";
-            local $/;
-            my $content = <$fh>;
-            close($fh);
-            return 1 if defined $content && $content =~ $pattern;
-        }
+        return 1 if -f $path;
         sleep(1);
     }
     return 0;
 }
 
 # =============================================================================
-# SETUP: a small continuous writer on n1, purely to keep the catchup wait
-# genuinely open (rather than resolving instantly against an idle source,
-# per 050/057's own finding) long enough to attach the injection point and
-# land the poisoned peer write while forward_origins is still active.
+# SETUP: the peer's own table -- the row that will be forwarded through n1
+# to n3 and trip the injection point. Created directly on n2 (not
+# replicated from n1) so it is unambiguously n2-origin.
 # =============================================================================
-system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c',
-    "CREATE TABLE discard_test_tbl (id bigint PRIMARY KEY, val text)";
-system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c',
-    "CREATE SEQUENCE discard_test_id_seq";
-system_or_bail "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c', q{
-    CREATE PROCEDURE discard_test_load(n_batches int, batch_rows int)
-    LANGUAGE plpgsql AS $$
-    DECLARE i int;
-    BEGIN
-        FOR i IN 1..n_batches LOOP
-            INSERT INTO discard_test_tbl
-                SELECT nextval('discard_test_id_seq'), 'x' || g
-                FROM generate_series(1, batch_rows) g;
-            COMMIT;
-            PERFORM pg_sleep(0.05);
-        END LOOP;
-    END $$;
-};
-
-# The peer's own table -- the row that will be forwarded through n1 to n3
-# and trip the injection point. Created directly on n2 (not replicated from
-# n1) so it is unambiguously n2-origin.
 system_or_bail "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c',
     "CREATE TABLE discard_peer_tbl (id serial PRIMARY KEY, val text)";
-pass('writer procedure and peer test table created');
+pass('peer test table created');
 
 ok(wait_for_zero_lag(1, 60), 'replication drained before starting the join')
     or BAIL_OUT('n1->n2 replication never drained after setup; cannot proceed');
-
-my $writer_pid;
-
-sub start_writer {
-    $writer_pid = spawn_background("$log_dir/discard_test_writer.log",
-        "$pg_bin/psql", '-X', '-p', $node_ports->[0], '-d', $dbname,
-        '-c', "CALL discard_test_load(100000, 200)");
-}
-
-sub stop_writer {
-    system_or_bail "$pg_bin/psql", '-X', '-p', $node_ports->[0], '-d', $dbname, '-c',
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity " .
-        "WHERE query LIKE 'CALL discard_test_load%' AND pid <> pg_backend_pid()";
-    for (1 .. 30) {
-        my $still_running = scalar_query(1,
-            "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'CALL discard_test_load%'");
-        last if defined $still_running && $still_running eq '0';
-        sleep(1);
-    }
-    kill('TERM', $writer_pid);
-    waitpid($writer_pid, 0);
-}
 
 # =============================================================================
 # TEST: start --bidirectional, arm the forwarded-apply injection point on
@@ -242,6 +208,8 @@ my $n3_port     = $node_ports->[1] + 1;
 my $n3_datadir  = '/tmp/tmp_spock_node_2_datadir_bidir_discard';
 my $n3_pending  = "${n3_datadir}.spock_bidir_pending.json";
 my $n3_manifest = "$n3_datadir/spock_bidirectional_manifest.json";
+my $n3_pause_marker  = "${n3_datadir}.spock_bidir_test_paused";
+my $n3_resume_marker = "${n3_datadir}.spock_bidir_test_resume";
 my $n3_dsn      = "host=$host port=$n3_port dbname=$dbname"
                 . " user=$db_user password=$db_password";
 
@@ -272,30 +240,37 @@ close $conf_fh;
 my $scs_log = "$log_dir/scs_discard_abort.log";
 unlink($scs_log) if -f $scs_log;
 
-my $scs_pid = spawn_background($scs_log,
-    $SCS_BIN,
-    '--bidirectional',
-    '--pgdata',           $n3_datadir,
-    '--subscriber-name',  'n3',
-    '--provider-dsn',     $n1_dsn,
-    '--subscriber-dsn',   $n3_dsn,
-    '--postgresql-conf',  $n3_conf,
-    '--stall-timeout',    '20',
-    '--max-wait',         '90',
-);
+my $scs_pid;
+{
+    local $ENV{SPOCK_CREATE_SUBSCRIBER_TEST_PAUSE_BEFORE} = 'coverage_barrier';
+    $scs_pid = spawn_background($scs_log,
+        $SCS_BIN,
+        '--bidirectional',
+        '--pgdata',           $n3_datadir,
+        '--subscriber-name',  'n3',
+        '--provider-dsn',     $n1_dsn,
+        '--subscriber-dsn',   $n3_dsn,
+        '--postgresql-conf',  $n3_conf,
+        '--stall-timeout',    '20',
+        '--max-wait',         '90',
+    );
+}
 
 ok(wait_for_slot_created($n3_pending, $n3_manifest, 30),
-   'source slot created (safe to start the writer)')
+   'source slot created')
     or BAIL_OUT('spock_create_subscriber never created the source slot; see ' . $scs_log);
-start_writer();
 
 ok(wait_for_pg_ready($host, $n3_port, $pg_bin, 60),
    'n3 postgres is running')
     or BAIL_OUT('n3 postgres never came up; see ' . $scs_log);
 
-ok(wait_for_log_pattern($scs_log, qr/Waiting for catchup to the source/, 120),
-   'spock_create_subscriber reached the catchup wait phase')
-    or BAIL_OUT('never reached the catchup wait phase; see ' . $scs_log);
+# Deterministic rendezvous: catchup has completed and the join is blocked
+# immediately before establish_peer_coverage_barrier(), so forward_origins
+# is still active and nothing has been torn down yet -- see
+# maybe_test_pause_before() in spock_create_subscriber.c.
+ok(wait_for_file($n3_pause_marker, 60),
+   'join paused before the coverage barrier (forwarding still active)')
+    or BAIL_OUT('never reached the pre-coverage-barrier pause; see ' . $scs_log);
 
 system_or_bail "$pg_bin/psql", '-X', '-p', $n3_port, '-d', $dbname, '-c',
     "CREATE EXTENSION IF NOT EXISTS injection_points";
@@ -307,9 +282,15 @@ system_or_bail "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c',
     "INSERT INTO discard_peer_tbl (val) VALUES ('poison')";
 pass('wrote the poisoned row on the peer (n2), to be forwarded through n1');
 
+# Release the pause: forwarding was guaranteed active for both the arm and
+# the write above, so the poisoned row can only reach n3 by being forwarded
+# through n1, whatever pace the rest of the join now runs at.
+open(my $resume_fh, '>', $n3_resume_marker) or die "Cannot write $n3_resume_marker: $!";
+close($resume_fh);
+pass('released the join to proceed past the coverage barrier');
+
 my $scs_rc = wait_for_pid($scs_pid, 150);
 
-stop_writer();
 system_maybe("$pg_bin/psql", '-X', '-p', $n3_port, '-d', $dbname, '-c',
     "SELECT injection_points_detach('spock-forwarded-apply-error')");
 
@@ -407,8 +388,6 @@ ok((wait_for_sub_status(1, 'sub_n1_n2', 'replicating', 30)
     && wait_for_sub_status(2, 'sub_n2_n1', 'replicating', 30)),
    'pre-existing n1 <-> n2 mesh is unaffected by the abort + cleanup cycle');
 
-system_maybe "$pg_bin/psql", '-p', $node_ports->[0], '-d', $dbname, '-c',
-    "DROP TABLE IF EXISTS discard_test_tbl";
 system_maybe "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c',
     "DROP TABLE IF EXISTS discard_peer_tbl";
 
