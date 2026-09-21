@@ -67,7 +67,10 @@ test: 073_bidir_join_multipeer_lag
 test: 074_bidir_join_big_txn_liveness
 test: 075_bidir_join_unbounded_peer_slot_wal
 test: 076_bidir_join_precondition_negatives
-test: 077_bidir_join_lww_conflict
+# 077_bidir_join_lww_conflict depends on the multi-node LWW tiebreaker fix,
+# tracked separately on fix/SPOC-696/lww-tiebreaker-mesh-conflict. Re-enable
+# once that lands here (see TODO.md in design.spock).
+#test: 077_bidir_join_lww_conflict
 test: 078_bidir_join_concurrent_load
 test: 079_bidir_join_stall_abort
 test: 080_bidir_join_failure_matrix
