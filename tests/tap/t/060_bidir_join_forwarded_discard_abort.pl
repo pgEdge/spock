@@ -215,6 +215,13 @@ my $n3_dsn      = "host=$host port=$n3_port dbname=$dbname"
 
 remove_tree($n3_datadir) if -d $n3_datadir;
 unlink($n3_pending) if -f $n3_pending;
+# A stale marker from an interrupted prior run would otherwise desync the
+# rendezvous: a leftover resume marker lets maybe_test_pause_before() sail
+# through before this run's own arm-injection/write-poison/release sequence
+# ever happens; a leftover pause marker would make wait_for_file() below
+# report "paused" before this run's join has actually gotten there.
+unlink($n3_pause_marker) if -f $n3_pause_marker;
+unlink($n3_resume_marker) if -f $n3_resume_marker;
 
 my $n3_conf = '/tmp/tmp_spock_node_2_postgresql.conf.override.discard';
 open my $conf_fh, '>', $n3_conf or die "Cannot write $n3_conf: $!";
@@ -395,6 +402,8 @@ system_maybe "$pg_bin/psql", '-p', $node_ports->[1], '-d', $dbname, '-c',
 # CLEANUP
 # =============================================================================
 unlink($n3_conf) if -f $n3_conf;
+unlink($n3_pause_marker) if -f $n3_pause_marker;
+unlink($n3_resume_marker) if -f $n3_resume_marker;
 destroy_cluster('Destroy 2-node cluster');
 
 done_testing();
