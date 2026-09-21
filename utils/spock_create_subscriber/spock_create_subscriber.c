@@ -332,6 +332,7 @@ static bool remove_data_dir_if_forced(bool force);
 static bool check_sysid_matches(PGconn *conn, const char *expected_sysid);
 static void append_json_string(PQExpBuffer buf, const char *str);
 static void maybe_test_fail_after(const char *step_name);
+static void maybe_test_pause_before(const char *step_name);
 
 static void check_single_spock_database(PGconn *conn, const char *base_prov_connstr,
 										const char *current_dbname);
@@ -3188,6 +3189,8 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 							 target_lsn, ctx->bidir.stall_timeout, ctx->bidir.max_wait);
 			pg_free(target_lsn);
 
+			maybe_test_pause_before("coverage_barrier");
+
 			print_msg(VERBOSITY_NORMAL, _("Establishing peer coverage barrier...\n"));
 			establish_peer_coverage_barrier(&ctx->bidir, subscriber_conn, ctx->prov_connstr,
 											ctx->remote_info->node_name, source_sub_name,
@@ -3421,6 +3424,47 @@ maybe_test_fail_after(const char *step_name)
 
 	if (fail_after != NULL && strcmp(fail_after, step_name) == 0)
 		die(_("test-injected failure after step \"%s\"\n"), step_name);
+}
+
+/*
+ * Test-only hook: block right before a named Phase 3 step until the caller
+ * removes the rendezvous, if asked for it via
+ * SPOCK_CREATE_SUBSCRIBER_TEST_PAUSE_BEFORE.
+ *
+ * Writes a "<pgdata>.spock_bidir_test_paused" marker file the moment this
+ * step is about to start, then blocks until "<pgdata>.spock_bidir_test_resume"
+ * appears. This gives a TAP test a deterministic rendezvous with a specific
+ * point in the join -- e.g. pausing right before establish_peer_coverage_
+ * barrier() guarantees forward_origins is still active and nothing has been
+ * torn down yet, so a write landed on a peer during the pause is certain to
+ * require forwarding through the source to reach the subscriber, instead of
+ * racing an external log-line poll against how fast the cutover sequence
+ * happens to run on a given machine. Has no effect unless that environment
+ * variable is set, so it is inert in production use.
+ */
+static void
+maybe_test_pause_before(const char *step_name)
+{
+	const char *pause_before = getenv("SPOCK_CREATE_SUBSCRIBER_TEST_PAUSE_BEFORE");
+	char		marker_path[MAXPGPATH];
+	char		resume_path[MAXPGPATH];
+	FILE	   *f;
+
+	if (pause_before == NULL || strcmp(pause_before, step_name) != 0)
+		return;
+
+	snprintf(marker_path, MAXPGPATH, "%s.spock_bidir_test_paused", data_dir);
+	snprintf(resume_path, MAXPGPATH, "%s.spock_bidir_test_resume", data_dir);
+
+	f = fopen(marker_path, "w");
+	if (f != NULL)
+		fclose(f);
+
+	while (!file_exists(resume_path))
+		pg_usleep(100000L);	/* 100ms */
+
+	unlink(marker_path);
+	unlink(resume_path);
 }
 
 /*
