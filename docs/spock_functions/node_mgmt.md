@@ -10,6 +10,7 @@ cluster.
 | [spock.node_drop](functions/spock_node_drop.md) | Drop a `spock` node.
 | [spock.node_drop_interface](functions/spock_node_drop_interface.md) | Remove an existing interface from a node.
 | [spock.node_info](functions/spock_node_info.md) | Returns information about the local Spock node.
+| [spock.node_refresh_info](functions/spock_node_refresh_info.md) | Refresh this node's cached copy of a peer's (or every peer's) location, country, and info.
 
 
 ## Creating a Node
@@ -86,7 +87,11 @@ Parameters:
   be providers, this should be reachable from the subscription nodes.
 - `location` (optional) is a text label for the node's physical location.
 - `country` (optional) is a text label for the node's country.
-- `info` (optional) is a JSON object for any additional node metadata.
+- `info` (optional) is a JSON object for any additional node metadata. A
+  `tiebreaker` key overrides the node's default conflict-resolution
+  tiebreaker; see the Tiebreaker section in conflict_types.md for how each
+  node caches this independently and what that means for changing it
+  cluster-wide.
 
 ### spock.node_drop
 
@@ -154,3 +159,25 @@ Returns one row with the following columns:
 | `country` | `text` | Optional country label; `NULL` if not set during node creation. |
 | `info` | `jsonb` | Optional JSON metadata; `NULL` if not set during node creation. |
 
+### spock.node_refresh_info
+
+Use `spock.node_refresh_info` to refresh this node's cached copy of a
+peer's `location`, `country`, and `info` (including any `tiebreaker` key
+within `info`).
+
+`spock.node_refresh_info(p_node_name name DEFAULT NULL)`
+
+`spock.node` is a local catalog: each node populates its row for a peer
+once and does not refresh it automatically afterward. If a peer's `info`
+changes later (most commonly to assign a custom `tiebreaker`), every other
+node keeps using its stale, cached copy until refreshed explicitly. See the
+Tiebreaker section in [conflict_types.md](../conflict_types.md).
+
+Parameters:
+
+- `p_node_name` (optional) is the name of a single peer node to refresh. If
+  omitted, every node other than the local one is refreshed, best-effort:
+  a node that fails to refresh for any reason (an unreachable or
+  misconfigured interface, a dsn that now answers as a different node, or
+  any other error from the remote fetch) logs a warning rather than
+  aborting the rest.
