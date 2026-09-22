@@ -83,6 +83,10 @@ CORE_COUNT=$(wc -l < "$TMPFILE" | tr -d '[:space:]')
 #     appears later, on its closing "} Foo;" line at column 0. Missing
 #     this form silently drops every anonymous typedef enum/struct in
 #     the tree, which is most of them.
+#
+# Keep this program to POSIX awk.  macOS ships the one true awk as
+# /usr/bin/awk, which has no three-argument match() to capture a group
+# with -- the name is peeled off the closing line with sub() instead.
 echo "Extracting Spock typedefs from source..."
 xargs -0 awk '
     $1 == "typedef" &&
@@ -90,7 +94,14 @@ xargs -0 awk '
     $0 !~ /{/ && $3 != "" { print $3 }
 
     /^[[:space:]]*typedef[[:space:]]+(struct|enum|union)([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)?[[:space:]]*$/ { pending = 1; next }
-    pending && match($0, /^}[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*;/, m) { print m[1]; pending = 0 }
+    pending && /^}[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;/ {
+        name = $0
+        sub(/^}[[:space:]]*/, "", name)
+        sub(/[[:space:]]*;.*$/, "", name)
+        print name
+        pending = 0
+        next
+    }
     /^}/ { pending = 0 }
 ' < "$FILELIST" >> "$TMPFILE"
 SPOCK_COUNT=$(( $(wc -l < "$TMPFILE") - CORE_COUNT ))
