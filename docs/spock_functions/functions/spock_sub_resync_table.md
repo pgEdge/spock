@@ -12,6 +12,13 @@ spock.sub_resync_table(subscription_name name, relation regclass, truncate boole
 
 The `spock.sub_resync_table()` function resynchronizes one existing table.
 
+After the resynchronization is scheduled, the function compares the cached
+`spock.node` row of the subscription's provider with the provider's own row.
+If they differ, it raises a `WARNING` that suggests
+[`spock.node_refresh_info()`](spock_node_refresh_info.md). The check does not
+change `spock.node`, and a provider that cannot be reached for the check
+produces a `WARNING` without failing the resynchronization.
+
 ## Arguments
 
 The function accepts the following arguments:

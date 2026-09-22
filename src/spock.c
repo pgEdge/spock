@@ -456,10 +456,13 @@ spock_connect_base(const char *connstr, const char *appname,
 
 	if (PQstatus(conn) != CONNECTION_OK)
 	{
+		char	   *conn_errmsg = pstrdup(PQerrorMessage(conn));
+
+		PQfinish(conn);
 		ereport(ERROR,
 				(errmsg("could not connect to the postgresql server%s: %s",
 						replication ? " in replication mode" : "",
-						PQerrorMessage(conn)),
+						conn_errmsg),
 				 errdetail("dsn was: %s", s.data)));
 	}
 
