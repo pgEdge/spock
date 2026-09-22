@@ -116,6 +116,7 @@ PG_FUNCTION_INFO_V1(spock_create_node);
 PG_FUNCTION_INFO_V1(spock_drop_node);
 PG_FUNCTION_INFO_V1(spock_alter_node_add_interface);
 PG_FUNCTION_INFO_V1(spock_alter_node_drop_interface);
+PG_FUNCTION_INFO_V1(spock_node_refresh_info_one);
 
 /* Subscription management. */
 PG_FUNCTION_INFO_V1(spock_create_subscription);
@@ -465,6 +466,98 @@ spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 	drop_node_interface(oldif->id);
 
 	PG_RETURN_BOOL(true);
+}
+
+/*
+ * Fetch a known peer's identity via dsn and return its current
+ * location/country/info (including any "tiebreaker" key within info),
+ * provided it still answers as node_id/node_name. spock.node_refresh_info()
+ * (plpgsql) is the one that actually writes this into spock.node -- a
+ * plain UPDATE is simpler there than doing it here in C.
+ *
+ * This is the one piece of the refresh that has to be C -- opening an
+ * arbitrary libpq connection -- so it takes the resolved
+ * node_id/node_name/dsn as plain arguments rather than looking anything up
+ * itself; spock.node_refresh_info() does the interface-fallback lookup and
+ * node enumeration in SQL, where both are simpler, and calls this once per
+ * node with its own per-node error handling.
+ *
+ * spock_connect() cleans up its own connection internally on failure
+ * (spock_connect_base(), src/spock.c); the try/catch below instead
+ * guards spock_remote_node_info(), which can raise after a successful
+ * connect and would otherwise leak that connection. Without it, a bulk
+ * (no-argument) refresh with several peers failing at that step leaks one
+ * connection per failure in a single call, and spock.node_refresh_info()
+ * being called again later (e.g. from a periodic job) adds more on top --
+ * a real accumulation, not a single one-off leak.
+ */
+Datum
+spock_node_refresh_info_one(PG_FUNCTION_ARGS)
+{
+	Oid			node_id = PG_GETARG_OID(0);
+	char	   *node_name = NameStr(*PG_GETARG_NAME(1));
+	char	   *dsn = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	PGconn	   *conn;
+	SpockNode  *fresh = NULL;
+	TupleDesc	tupdesc;
+	Datum		values[3];
+	bool		nulls[3];
+	HeapTuple	result;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	conn = spock_connect(dsn, node_name, "refresh");
+	PG_TRY();
+	{
+		fresh = spock_remote_node_info(conn, NULL, NULL, NULL);
+	}
+	PG_CATCH();
+	{
+		PQfinish(conn);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	PQfinish(conn);
+
+	/*
+	 * Defense-in-depth, not the primary safeguard: in the common
+	 * single-interface case, a dsn that no longer points at the right node
+	 * would already show up as broken replication. This guards the narrower
+	 * case of a node with multiple interfaces (e.g. node_add_interface() for
+	 * failover) where the caller's chosen interface can go stale while the
+	 * active subscription keeps working fine over a different one.
+	 *
+	 * Check the name too, not just the id: node ids are 16-bit hashes of the
+	 * name, so a DSN that has drifted to an entirely different, unrelated
+	 * cluster can coincidentally answer with the same id for a different
+	 * node. Requiring both to match makes that far less likely to slip
+	 * through as a false match.
+	 */
+	if (fresh->id != node_id || strcmp(fresh->name, node_name) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("dsn for node \"%s\" now answers as a different "
+						"node (id=%u, name=\"%s\") than the one on record "
+						"(id=%u)",
+						node_name, fresh->id, fresh->name, node_id)));
+
+	memset(nulls, false, sizeof(nulls));
+	if (fresh->location != NULL)
+		values[0] = CStringGetTextDatum(fresh->location);
+	else
+		nulls[0] = true;
+	if (fresh->country != NULL)
+		values[1] = CStringGetTextDatum(fresh->country);
+	else
+		nulls[1] = true;
+	if (fresh->info != NULL)
+		values[2] = JsonbPGetDatum(fresh->info);
+	else
+		nulls[2] = true;
+
+	result = heap_form_tuple(BlessTupleDesc(tupdesc), values, nulls);
+	return HeapTupleGetDatum(result);
 }
 
 /*
