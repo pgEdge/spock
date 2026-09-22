@@ -4887,7 +4887,7 @@ apply_replay_spill_read_entry(void)
 	Assert(MyApplyWorker->use_try_block && apply_replay_spill_file != NULL);
 
 	nread = BufFileRead(apply_replay_spill_file, &len, sizeof(int));
-	if (nread != sizeof(int) || len <= 0 || len > (int) MaxAllocSize)
+	if (nread != sizeof(int) || len <= 0 || len >= (int) MaxAllocSize)
 	{
 		/*
 		 * Corrupt data on disk.  Raise ERROR to force worker restart or
@@ -4905,16 +4905,17 @@ apply_replay_spill_read_entry(void)
 	 */
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 
-	data = palloc(len);
+	data = palloc(len + 1);
 	nread = BufFileRead(apply_replay_spill_file, data, len);
 	if (nread != len)
 		elog(ERROR, "SPOCK %s: corrupt replay spill file: "
 			 "read %zu bytes, record length %d",
 			 MySubscription->name, nread, len);
+	data[len] = '\0';
 
 	entry = (ApplyReplayEntry *) palloc(sizeof(ApplyReplayEntry));
 	entry->copydata.len = len;
-	entry->copydata.maxlen = len;
+	entry->copydata.maxlen = len + 1;
 	entry->copydata.cursor = 0;
 	entry->copydata.data = data;
 	entry->from_pq = false;
