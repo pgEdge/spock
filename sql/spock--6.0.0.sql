@@ -228,6 +228,83 @@ RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_a
 CREATE FUNCTION spock.node_drop_interface(node_name name, interface_name name)
 RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_alter_node_drop_interface';
 
+-- Internal: fetch one already-known node's current info via the given
+-- dsn. Not meant to be called directly; see spock.node_refresh_info(),
+-- which is the one that writes the result into spock.node.
+CREATE FUNCTION spock.node_refresh_info_one(node_id oid, node_name name, dsn text,
+    OUT location text, OUT country text, OUT info jsonb)
+RETURNS record STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_node_refresh_info_one';
+REVOKE ALL ON FUNCTION spock.node_refresh_info_one(oid, name, text) FROM PUBLIC;
+
+CREATE FUNCTION spock.node_refresh_info(p_node_name name DEFAULT NULL)
+RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local_id oid;
+    v_rec      record;
+    v_fresh    record;
+    v_ok       boolean := true;
+BEGIN
+    SELECT ni.node_id INTO v_local_id FROM spock.node_info() ni;
+
+    IF p_node_name IS NOT NULL THEN
+        IF NOT EXISTS (SELECT 1 FROM spock.node n WHERE n.node_name = p_node_name) THEN
+            RAISE EXCEPTION 'node "%" not found', p_node_name;
+        END IF;
+        IF EXISTS (SELECT 1 FROM spock.node n
+                   WHERE n.node_name = p_node_name AND n.node_id = v_local_id) THEN
+            RAISE EXCEPTION 'cannot refresh info for the local node "%" from itself', p_node_name;
+        END IF;
+    END IF;
+
+    FOR v_rec IN
+        /*
+         * Prefer the interface named the same as the node (the default one
+         * node_create()/sub_create() set up), but fall back to any other
+         * interface the node has rather than silently skipping it -- the
+         * default one may have been legally dropped after a subscription
+         * was switched to use an alternate interface. Ordering guarantees
+         * exactly one row per node (never zero, when at least one interface
+         * exists), so a node is never dropped out of this loop -- and thus
+         * out of the existence/error checks below -- just because its
+         * default-named interface is gone.
+         */
+        SELECT n.node_id, n.node_name,
+               (SELECT ni.if_dsn
+                  FROM spock.node_interface ni
+                 WHERE ni.if_nodeid = n.node_id
+                 ORDER BY (ni.if_name = n.node_name) DESC, ni.if_id
+                 LIMIT 1) AS dsn
+        FROM spock.node n
+        WHERE n.node_id != v_local_id
+          AND (p_node_name IS NULL OR n.node_name = p_node_name)
+    LOOP
+        BEGIN
+            IF v_rec.dsn IS NULL THEN
+                RAISE EXCEPTION 'node "%" has no usable interface', v_rec.node_name;
+            END IF;
+
+            SELECT * INTO v_fresh
+              FROM spock.node_refresh_info_one(v_rec.node_id, v_rec.node_name, v_rec.dsn);
+
+            UPDATE spock.node
+               SET location = v_fresh.location,
+                   country  = v_fresh.country,
+                   info     = v_fresh.info
+             WHERE node_id = v_rec.node_id;
+        EXCEPTION WHEN OTHERS THEN
+            IF p_node_name IS NOT NULL THEN
+                RAISE;   -- explicit single-node call: bubble the real error up
+            END IF;
+            RAISE WARNING 'could not refresh info for node "%": %', v_rec.node_name, SQLERRM;
+            v_ok := false;
+        END;
+    END LOOP;
+
+    RETURN v_ok;
+END;
+$$;
+
 CREATE FUNCTION spock.sub_create(
   subscription_name     name,
   provider_dsn          text,
