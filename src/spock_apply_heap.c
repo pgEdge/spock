@@ -71,6 +71,7 @@
 #include "spock_conflict_stat.h"
 #endif
 #include "spock_executor.h"
+#include "spock_injection.h"
 #include "spock_node.h"
 #include "spock_proto_native.h"
 #include "spock_queue.h"
@@ -1138,6 +1139,13 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 				break;			/* trigger said skip the row */
 			prepared = true;
 		}
+
+		/*
+		 * Test hook: this is the window a concurrent local writer exploits,
+		 * between the lookup that found nothing and the store that acts on
+		 * it.
+		 */
+		SPOCK_INSERT_CONFLICT_STALL();
 
 		{
 			bool		stored;
