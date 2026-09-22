@@ -123,6 +123,12 @@ static SpockSyncWorker *MySyncWorker = NULL;
  *
  * Note that if we elog(ERROR) or elog(FATAL) here we won't kill the
  * child proc.
+ *
+ * The return value is a waitpid() status, not an errno: a child that ran and
+ * exited non-zero leaves errno untouched, so report failures with
+ * wait_result_to_str() rather than %m.  Only the -1 return, where waitpid()
+ * itself failed, is an errno case, and wait_result_to_str() renders that one
+ * as %m for us.
  */
 static int
 exec_cmd(const char *cmd, char *cmdargv[])
@@ -246,6 +252,7 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	char		pg_dump[MAXPGPATH];
 	char	  **cmdargv;
 	int			cmdargc = 0;
+	int			stat;
 	List	   *args = NIL;
 	char	   *arg;
 	ListCell   *lc;
@@ -287,11 +294,12 @@ dump_structure(SpockSubscription *sub, const char *destfile,
 	}
 	cmdargv[cmdargc++] = NULL;
 
-	if (exec_cmd(pg_dump, cmdargv) != 0)
+	stat = exec_cmd(pg_dump, cmdargv);
+	if (stat != 0)
 		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not execute pg_dump (\"%s\"): %m",
-						pg_dump)));
+				(errcode(ERRCODE_EXTERNAL_ROUTINE_EXCEPTION),
+				 errmsg("could not execute pg_dump (\"%s\"): %s",
+						pg_dump, wait_result_to_str(stat))));
 
 	/*
 	 * Allocations have been made in the transaction context. Hence, don't
@@ -310,6 +318,7 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
 	char		pg_restore[MAXPGPATH];
 	char	   *cmdargv[20];
 	int			cmdargc = 0;
+	int			stat;
 	StringInfoData s;
 
 	dsn = spk_get_connstr((char *) sub->target_if->dsn, NULL,
@@ -349,14 +358,12 @@ restore_structure(SpockSubscription *sub, const char *srcfile,
 
 	cmdargv[cmdargc++] = NULL;
 
-	/*
-	 * TODO: misleading error message can occur if an error interrupts
-	 * execution.
-	 */
-	if (exec_cmd(pg_restore, cmdargv) != 0)
+	stat = exec_cmd(pg_restore, cmdargv);
+	if (stat != 0)
 		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not execute pg_restore (\"%s\"): %m", pg_restore),
+				(errcode(ERRCODE_EXTERNAL_ROUTINE_EXCEPTION),
+				 errmsg("could not execute pg_restore (\"%s\"): %s",
+						pg_restore, wait_result_to_str(stat)),
 				 errhint("check the error log to determine the cause of the issue")));
 }
 
