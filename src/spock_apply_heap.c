@@ -1053,6 +1053,24 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		CHECK_FOR_INTERRUPTS();
 
 		/*
+		 * The operator has promised that an applied insert never collides
+		 * with a local row, on the replica identity or on any other unique
+		 * index.  Take them at their word: there is nothing for the lookup to
+		 * find and nothing for the arbiter indexes to report, so store the
+		 * tuple the ordinary way.  A promise that does not hold surfaces as
+		 * the duplicate key the index raises on its own, which
+		 * spock.exception_behaviour then decides what to do with.
+		 */
+		if (non_conflicting_inserts)
+		{
+			/* Make sure that any user-supplied code runs as the table owner. */
+			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+			ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
+			RestoreUserContext(&ucxt);
+			break;
+		}
+
+		/*
 		 * Reset: a previous pass that fell through to
 		 * FindReplTupleByUCIndex() and found nothing left this invalid.
 		 */

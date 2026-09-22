@@ -171,5 +171,42 @@ for (1 .. 60) {
 }
 is($followed, '1', 'a later insert still replicates');
 
+# spock.non_conflicting_inserts is the operator asserting that the race above
+# cannot happen on their cluster.  The apply worker then takes neither the
+# lookup nor the speculative store, so it never reaches the stall point: an
+# insert replicates straight through while that point is armed and waiting.
+open($conf, '>>', "$datadir2/postgresql.conf")
+    or die "Cannot open $datadir2/postgresql.conf: $!";
+print $conf "spock.non_conflicting_inserts = on\n";
+close($conf);
+
+system_or_bail("$pg_bin/pg_ctl", '-D', $datadir2, '-w', '-m', 'fast', 'stop');
+system("$pg_bin/postgres -D $datadir2 >> '$log_file' 2>&1 &");
+ok(wait_for_pg_ready($host, $p2, $pg_bin, 30),
+    'n2 restarted with spock.non_conflicting_inserts on');
+ok(wait_for_sub_status(2, 'sub_n1_n2', 'replicating', 30),
+    'subscription is replicating again after the restart');
+
+# The restart cleared the injection point along with the module's shared
+# state, so arm it again.
+psql_or_bail(2, "SELECT injection_points_attach('$point', 'wait')");
+
+psql_or_bail(1, "INSERT INTO conf_tab(a, data) VALUES (3, 'direct')");
+
+my $direct = '';
+for (1 .. 60) {
+    $direct = scalar_query(2, "SELECT count(*) FROM conf_tab WHERE a = 3");
+    last if $direct eq '1';
+    sleep(1);
+}
+is($direct, '1', 'the insert replicates without taking the speculative path');
+
+my $stalled = scalar_query(2,
+    "SELECT count(*) FROM pg_stat_activity " .
+    "WHERE application_name LIKE 'spock apply %' AND wait_event = '$point'");
+is($stalled, '0', 'the apply worker never reached the stall point');
+
+psql_or_bail(2, "SELECT injection_points_detach('$point')");
+
 destroy_cluster('Destroy insert-conflict-race cluster');
 done_testing();
