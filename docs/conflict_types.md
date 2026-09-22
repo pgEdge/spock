@@ -175,6 +175,47 @@ uses the `tiebreaker` value from the `spock.node` configuration to
 determine a winner. The node with the lower tiebreaker value wins. By
 default the tiebreaker is set to the node's unique ID.
 
+**Tiebreaker resolution is always local, and `info` is never automatically
+re-synchronized.** Every node keeps its own copy of what it believes
+each node's tiebreaker to be, read from its *own* `spock.node.info`
+column. A node's `info` (including `tiebreaker`) is populated once --
+either when the node is created, or when another node first
+subscribes to it (via `spock.sub_create()`, which fetches the
+provider's node metadata at that moment). Spock does not re-fetch or
+re-synchronize it automatically afterward, since `spock.node` is a local
+catalog table, not a replicated one.
+
+This matters when assigning a custom tiebreaker to resolve an
+equal-tiebreaker collision:
+
+```sql
+UPDATE spock.node
+   SET info = COALESCE(info, '{}'::jsonb) ||
+              '{"tiebreaker": <unique_integer>}'
+ WHERE node_name = '<name>';
+```
+
+Running this on only one node -- even the node being renumbered --
+does not update it everywhere. Each of the *other* nodes in the
+cluster holds its own independent copy of that node's row, cached from
+whenever it first learned about it, and none of those copies are
+touched by the `UPDATE` above. On every other node, refresh that
+node's cached copy with
+[`spock.node_refresh_info`](spock_functions/functions/spock_node_refresh_info.md)
+instead of hand-crafting the same `UPDATE` on each one:
+
+```sql
+-- on every other node in the cluster:
+SELECT spock.node_refresh_info('<name>');   -- one node
+
+SELECT spock.node_refresh_info();           -- or every known peer at once
+```
+
+Leaving some nodes unrefreshed has the same effect as updating them
+with different values: the cluster ends up with disagreeing tiebreaker
+values for the same node, which can cause different nodes to resolve
+the identical conflict differently.
+
 ### Frozen Tuples and Missing Timestamp Data
 
 Timestamp-based conflict resolution depends on commit timestamp and
