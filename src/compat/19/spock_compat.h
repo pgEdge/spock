@@ -123,6 +123,17 @@
 #define index_beginscan(heapRelation, indexRelation, snapshot, nkeys, norderbys) \
 	index_beginscan(heapRelation, indexRelation, snapshot, NULL, nkeys, norderbys, SO_NONE)
 
+/*
+ * PostgreSQL 19 folded the boolean arguments into an EIIT_* bitmask and
+ * reordered the parameters.  Keep the pre-19 spelling at the call sites.
+ */
+#define ExecInsertIndexTuples(resultRelInfo, slot, estate, update, noDupErr, specConflict, arbiterIndexes, onlySummarizing) \
+	ExecInsertIndexTuples(resultRelInfo, estate, \
+						  ((update) ? EIIT_IS_UPDATE : 0) | \
+						  ((noDupErr) ? EIIT_NO_DUPE_ERROR : 0) | \
+						  ((onlySummarizing) ? EIIT_ONLY_SUMMARIZING : 0), \
+						  slot, arbiterIndexes, specConflict)
+
 /* Deferrable true is ok */
 #define RelationGetPrimaryKeyIndex(relation) \
 	RelationGetPrimaryKeyIndex(relation, true)
