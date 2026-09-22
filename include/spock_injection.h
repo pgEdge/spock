@@ -24,6 +24,22 @@
  *                                   Requires --enable-injection-points.
  *   neither defined              – both compile to nothing.
  *
+ * A third, independent point is a boolean check rather than a fire site:
+ *
+ *   SPOCK_CONFLICT_TIE_FORCED()  – true once a test attaches to
+ *                                  'spock-conflict-force-tie' (any action;
+ *                                  only presence is checked). Used to force
+ *                                  every timestamp-based conflict
+ *                                  resolution into the tiebreaker branch on
+ *                                  demand, since two independently-
+ *                                  committed transactions on different
+ *                                  nodes landing in the exact same commit-
+ *                                  timestamp tick is otherwise a race no
+ *                                  test can control. Needs core's
+ *                                  IS_INJECTION_POINT_ATTACHED(), added in
+ *                                  PG18; always false on 15-17 or without
+ *                                  --enable-injection-points.
+ *
  * Copyright (c) 2022-2026, pgEdge, Inc.
  *
  *-------------------------------------------------------------------------
@@ -55,5 +71,12 @@ extern void spock_random_delay(void);
 #define SPOCK_OUTPUT_TXN_STALL()	((void) 0)
 
 #endif							/* SPOCK_RANDOM_DELAYS / USE_INJECTION_POINTS */
+
+#if defined(USE_INJECTION_POINTS) && PG_VERSION_NUM >= 180000
+#include "utils/injection_point.h"	/* safe to re-include, has its own guard */
+#define SPOCK_CONFLICT_TIE_FORCED() IS_INJECTION_POINT_ATTACHED("spock-conflict-force-tie")
+#else
+#define SPOCK_CONFLICT_TIE_FORCED() (false)
+#endif
 
 #endif							/* SPOCK_INJECTION_H */

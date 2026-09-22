@@ -67,4 +67,6 @@ test: 046_apply_worker_exception_misclassification
 # Regression tests
 test: 103_manager_worker_dboid_race
 test: 105_sub_disable_retransmit_after_disconnect
+test: 106_lww_conflict_full_mesh
+test: 107_node_refresh_info
 test: 108_apply_unknown_column_exception
