@@ -58,6 +58,11 @@ relcache_free_entry(SpockRelation *entry)
 		pfree(entry->attmap);
 	if (entry->delta_apply_functions)
 		pfree(entry->delta_apply_functions);
+	if (entry->arbiterIndexes != NIL)
+	{
+		list_free(entry->arbiterIndexes);
+		entry->arbiterIndexes = NIL;
+	}
 
 	entry->natts = 0;
 	entry->reloid = InvalidOid;
@@ -224,6 +229,31 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 		entry->reloid = RelationGetRelid(entry->rel);
 		entry->idxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
 
+		/*
+		 * Cache the indexes that can arbitrate an applied INSERT.  Like the
+		 * delta-apply metadata above this is derived state: a relcache
+		 * invalidation only resets entry->reloid, so rebuild it here rather
+		 * than let the previous mapping's list carry over.
+		 */
+		{
+			MemoryContext oldcontext;
+			List	   *arbiters;
+
+			/*
+			 * Build the new list before touching the old one.  This runs
+			 * catalog code that can throw, and the entry outlives the error:
+			 * freeing first would leave a dangling pointer behind for the
+			 * next lookup -- or for relcache_free_entry() -- to trip over.
+			 */
+			oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
+			arbiters = SpockBuildInsertArbiterIndexes(entry->rel);
+			MemoryContextSwitchTo(oldcontext);
+
+			if (entry->arbiterIndexes != NIL)
+				list_free(entry->arbiterIndexes);
+			entry->arbiterIndexes = arbiters;
+		}
+
 		/* Cache trigger info. */
 		entry->hasTriggers = false;
 		if (entry->rel->trigdesc != NULL)
@@ -296,6 +326,9 @@ spock_relation_cache_update(uint32 remoteid, char *schemaname,
 	entry->delta_apply_functions = palloc0(natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
 
+	/* Filled in by spock_relation_open() along with the rest of the mapping. */
+	entry->arbiterIndexes = NIL;
+
 	/*
 	 * Local-schema validation requires the lock taken by
 	 * spock_relation_open().
@@ -336,6 +369,9 @@ spock_relation_cache_updater(SpockRemoteRel *remoterel)
 	entry->has_delta_columns = false;
 	entry->delta_apply_functions = palloc0(remoterel->natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
+
+	/* Filled in by spock_relation_open() along with the rest of the mapping. */
+	entry->arbiterIndexes = NIL;
 
 	/*
 	 * Local-schema validation requires the lock taken by
