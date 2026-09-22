@@ -51,6 +51,7 @@
 
 #include "spock.h"
 #include "spock_conflict.h"
+#include "spock_injection.h"
 #if PG_VERSION_NUM >= 180000
 #include "spock_conflict_stat.h"
 #endif
@@ -112,7 +113,18 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 	 * inverting result of timestamp comparison if first update wins was
 	 * requested.
 	 */
-	if (!last_update_wins)
+	if (SPOCK_CONFLICT_TIE_FORCED())
+
+		/*
+		 * Test-only: force every conflict resolved by timestamp into the
+		 * tiebreaker branch below, regardless of the real commit timestamps.
+		 * Whether two independently-committed transactions on different nodes
+		 * land in the exact same commit-timestamp tick is otherwise a race no
+		 * test can force deterministically -- this makes the tiebreaker path
+		 * itself exercisable on demand.
+		 */
+		cmp = 0;
+	else if (!last_update_wins)
 		cmp = -cmp;
 
 	if (cmp > 0)
@@ -182,11 +194,11 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 			 *                 '{"tiebreaker": <unique_integer>}'
 			 *    WHERE node_name = '<name>';
 			 *
-			 * Run this against every node's own database that has a
-			 * spock.node row for the affected node, not just that node
-			 * itself -- each node caches this value locally and never
-			 * re-fetches it. See the Tiebreaker section in
-			 * docs/conflict_types.md.
+			 * Run this on the node itself, then call
+			 * spock.node_refresh_info() on every *other* node that has a
+			 * spock.node row for it -- each node caches this value locally
+			 * and never re-fetches it on its own. See the Tiebreaker
+			 * section in docs/conflict_types.md.
 			 */
 			ereport(WARNING,
 					(errmsg("CONFLICT: node \"%s\" (id=%d) and node \"%s\" (id=%d) "
