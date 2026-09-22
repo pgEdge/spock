@@ -918,10 +918,10 @@ spock_speculative_insert(ApplyExecutionData *edata, TupleTableSlot *slot,
 	Assert(arbiterIndexes != NIL);
 
 	/*
-	 * Take the token first: a local writer that reaches our index entry before
-	 * we decide waits on the token rather than on our transaction, which
-	 * carries a whole remote transaction and can run long.  If we lose and
-	 * super-delete, the writer goes on at once; if we confirm, it ends up
+	 * Take the token first: a local writer that reaches our index entry
+	 * before we decide waits on the token rather than on our transaction,
+	 * which carries a whole remote transaction and can run long.  If we lose
+	 * and super-delete, the writer goes on at once; if we confirm, it ends up
 	 * waiting on our transaction all the same.
 	 */
 	specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
