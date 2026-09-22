@@ -181,6 +181,7 @@ int			spock_sync_timeout = 0; /* seconds per sync wait; 0 = routine's
 int			spock_read_retry_count = 5; /* heap update/delete: retries when
 										 * local tuple is missing */
 bool		check_all_uc_indexes = false;
+bool		non_conflicting_inserts = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
 int			spock_apply_idle_timeout = 300;
@@ -1433,6 +1434,18 @@ _PG_init(void)
 							 &check_all_uc_indexes,
 							 false,
 							 PGC_SIGHUP,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.non_conflicting_inserts",
+							 gettext_noop("Assert that an applied INSERT never collides with a local row."),
+							 gettext_noop("Skips the conflict lookup and the speculative insertion "
+										  "the apply worker otherwise performs for every INSERT. "
+										  "A collision is then raised as a duplicate key error and "
+										  "handled according to spock.exception_behaviour."),
+							 &non_conflicting_inserts,
+							 false,
+							 PGC_POSTMASTER,
 							 0,
 							 NULL, NULL, NULL);
 
