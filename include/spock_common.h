@@ -71,6 +71,7 @@ extern void SPKExecARInsertTriggers(EState *estate,
 									List *recheckIndexes);
 
 extern bool IsIndexUsableForInsertConflict(Relation idxrel);
+extern List *SpockBuildInsertArbiterIndexes(Relation rel);
 extern bool SpockRelationFindReplTupleByIndex(EState *estate,
 											  Relation rel,
 											  Relation idxrel,
