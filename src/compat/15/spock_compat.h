@@ -69,6 +69,10 @@
 #define ExecARInsertTriggers(estate, relinfo, slot, recheckIndexes) \
 	ExecARInsertTriggers(estate, relinfo, slot, recheckIndexes, NULL)
 
+/* onlySummarizing was added in PG16 */
+#define ExecInsertIndexTuples(resultRelInfo, slot, estate, update, noDupErr, specConflict, arbiterIndexes, onlySummarizing) \
+	ExecInsertIndexTuples(resultRelInfo, slot, estate, update, noDupErr, specConflict, arbiterIndexes)
+
 #define ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple) \
 	ExecARDeleteTriggers(estate, relinfo, tupleid, fdw_trigtuple, NULL, false)
 
