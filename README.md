@@ -30,6 +30,7 @@
 - Monitoring a Cluster
   - [Monitoring the Configuration and Health of a Cluster](docs/monitoring/index.md)
   - [Finding Cluster Information](docs/monitoring/spock_info.md)
+  - [Monitoring a Node with the Status Views](docs/monitoring/node_monitoring.md)
   - [Using Lag Tracking to Evaluate your Cluster](docs/monitoring/lag_tracking.md)
   - [Using a Sync Event to Monitor Node Content](docs/monitoring/spock_sync_event.md)
 - Using Spock Functions
