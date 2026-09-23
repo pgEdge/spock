@@ -51,6 +51,7 @@
 
 #include "spock.h"
 #include "spock_conflict.h"
+#include "spock_injection.h"
 #if PG_VERSION_NUM >= 180000
 #include "spock_conflict_stat.h"
 #endif
@@ -112,7 +113,18 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 	 * inverting result of timestamp comparison if first update wins was
 	 * requested.
 	 */
-	if (!last_update_wins)
+	if (SPOCK_CONFLICT_TIE_FORCED())
+
+		/*
+		 * Test-only: force every conflict resolved by timestamp into the
+		 * tiebreaker branch below, regardless of the real commit timestamps.
+		 * Whether two independently-committed transactions on different nodes
+		 * land in the exact same commit-timestamp tick is otherwise a race no
+		 * test can force deterministically -- this makes the tiebreaker path
+		 * itself exercisable on demand.
+		 */
+		cmp = 0;
+	else if (!last_update_wins)
 		cmp = -cmp;
 
 	if (cmp > 0)
@@ -133,22 +145,28 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 		 * The timestamps were equal. Use the "tiebreaker" from the spock.node
 		 * configuration to come up with a winner.
 		 *
-		 * loc_node is always this node (the one applying the change), not the
-		 * origin of the local tuple.  The tiebreaker answers "which physical
-		 * node wins?" — that is a property of the applying node vs the
-		 * remote sending node, regardless of what origin is stamped on the
-		 * existing local tuple.  Using local_origin_id here incorrectly
-		 * resolves to the same node on both sides whenever the local row was
-		 * replicated from the same source that is sending the update
-		 * (single-writer topology).
+		 * Resolve the tie between the nodes that produced the two writes, not
+		 * necessarily the node applying the change. In a mesh, a third node
+		 * can hold a tuple from one origin while applying a change from
+		 * another. Every participant must compare that same origin pair to
+		 * choose the same winner.
 		 *
-		 * Same-origin shortcut: when the local tuple and the remote change
-		 * share the same origin (e.g. the same row updated twice in one
-		 * upstream transaction), there is no real conflict — apply the
-		 * remote value.
+		 * Use the applying node when the tuple has no recorded origin or the
+		 * origin is absent from spock.node. The missing_ok lookup avoids
+		 * turning an unresolvable origin into an apply error.
+		 *
+		 * A recorded origin is not always a portable spock.node ID. Initial
+		 * table synchronization records a local replication-origin ID, and
+		 * that 16-bit value can collide with a node ID. The value alone does
+		 * not preserve enough provenance to distinguish those cases. A full
+		 * fix requires storing the origin kind; until then, a numeric
+		 * collision can still select the wrong node.
+		 *
+		 * If both writes have the same nonzero recorded origin, apply the
+		 * incoming value. This occurs, for example, when one upstream
+		 * transaction updates the same row more than once.
 		 */
-		SpockLocalNode *applying_node;
-		SpockNode  *loc_node;
+		SpockNode  *loc_node = NULL;
 		SpockNode  *rmt_node;
 
 		if (local_origin_id != InvalidRepOriginId &&
@@ -158,8 +176,10 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 			return true;
 		}
 
-		applying_node = get_local_node(false, false);
-		loc_node = applying_node->node;
+		if (local_origin_id != InvalidRepOriginId)
+			loc_node = get_node(local_origin_id, true);
+		if (loc_node == NULL)
+			loc_node = get_local_node(false, false)->node;
 		rmt_node = get_node(remote_origin_id, false);
 
 		if (loc_node->tiebreaker == rmt_node->tiebreaker)
@@ -173,6 +193,12 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 			 *      SET info = COALESCE(info, '{}'::jsonb) ||
 			 *                 '{"tiebreaker": <unique_integer>}'
 			 *    WHERE node_name = '<name>';
+			 *
+			 * Run this on the node itself, then call
+			 * spock.node_refresh_info() on every *other* node that has a
+			 * spock.node row for it -- each node caches this value locally
+			 * and never re-fetches it on its own. See the Tiebreaker
+			 * section in docs/conflict_types.md.
 			 */
 			ereport(WARNING,
 					(errmsg("CONFLICT: node \"%s\" (id=%d) and node \"%s\" (id=%d) "
@@ -187,14 +213,18 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 		if (loc_node->tiebreaker < rmt_node->tiebreaker)
 		{
 			/* TODO: Need diagnostic logging for ACE here */
-			elog(LOG, "CONFLICT: current node=%d wins over %d by tiebreaker", loc_node->id, rmt_node->id);
+			elog(LOG, "CONFLICT: existing row's origin node=%d wins over "
+				 "incoming change's origin node=%d by tiebreaker",
+				 loc_node->id, rmt_node->id);
 			*resolution = SpockResolution_KeepLocal;
 			return false;
 		}
 		else
 		{
 			/* TODO: Need diagnostic logging for ACE here */
-			elog(LOG, "CONFLICT: remote  node=%d wins over %d by tiebreaker", rmt_node->id, loc_node->id);
+			elog(LOG, "CONFLICT: incoming change's origin node=%d wins over "
+				 "existing row's origin node=%d by tiebreaker",
+				 rmt_node->id, loc_node->id);
 			*resolution = SpockResolution_ApplyRemote;
 			return true;
 		}
