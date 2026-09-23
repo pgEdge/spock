@@ -3,6 +3,20 @@
 This document provides solutions to common issues encountered when using
 Spock for PostgreSQL logical replication.
 
+## Start with the Status Views
+
+Before reading the server log, query the
+[status views](monitoring/node_monitoring.md). They hold the last error of
+every apply worker and a history of recent events on the node:
+
+```sql
+SELECT * FROM spock.node_status;
+SELECT subscription_name, status, worker_status, last_error_message
+  FROM spock.subscription_status;
+SELECT event_time, event_type, severity, detail
+  FROM spock.events WHERE severity <> 'info' ORDER BY event_id DESC LIMIT 20;
+```
+
 ## Common Replication Issues
 
 This section describes common problems that prevent replication from
@@ -274,11 +288,15 @@ replication speed and efficiency.
 If replication lag is increasing, check the lag status with this query:
 
 ```sql
-SELECT * FROM spock.lag_tracker;
+SELECT subscription_name, provider_node, replication_lag_bytes,
+       replication_lag, worker_status
+  FROM spock.subscription_status;
 ```
 
 The query displays `replication_lag_bytes` and `replication_lag` for each
-subscription.
+subscription. `spock.lag_tracker` shows the same figures per node pair. On
+the provider, `spock.slot_status` shows how much WAL each subscriber still
+has to fetch in `pending_wal_bytes`.
 
 Possible causes and solutions include:
 
@@ -340,14 +358,27 @@ The recovery workflow involves five phases:
 
 If a subscription shows `down` status, check the following items:
 
+- Read the last error of the apply worker and the recent events of the
+  subscription:
+
+  ```sql
+  SELECT worker_status, worker_terminated_at, last_error_message
+    FROM spock.subscription_status WHERE subscription_name = 'sub_name';
+  SELECT event_time, event_type, detail FROM spock.events
+   WHERE subscription_name = 'sub_name' ORDER BY event_id DESC LIMIT 20;
+  ```
+
+  A `worker_status` of `restart pending` means the worker failed and the
+  manager will retry after `worker_restart_delay` milliseconds.
 - Verify the provider node is running and accessible.
 - Check replication slots on the provider with this query:
 
   ```sql
-  SELECT slot_name, active FROM pg_replication_slots;
+  SELECT slot_name, active, retained_wal_bytes FROM spock.slot_status;
   ```
 
-- Review PostgreSQL logs on both provider and subscriber nodes.
+- Review PostgreSQL logs on both provider and subscriber nodes if the views
+  do not explain the failure.
 - Restart the subscription with these commands:
 
   ```sql
@@ -364,28 +395,34 @@ installations after upgrading to a new version.
 
 After upgrading Spock, verify the installation with the following checks.
 
-1. Check the extension version with this query:
+1. Check that the extension matches the installed library and that the
+   upgrade was recorded:
 
    ```sql
-   SELECT extname, extversion FROM pg_extension WHERE extname = 'spock';
+   SELECT spock_version, extension_version, extension_update_pending
+     FROM spock.node_status;
+   SELECT event_time, detail FROM spock.events
+    WHERE event_type = 'extension_upgraded';
    ```
 
 2. Verify subscription status with this query:
 
    ```sql
-   SELECT sub_name, sub_enabled FROM spock.subscription;
+   SELECT subscription_name, enabled, status, worker_status
+     FROM spock.subscription_status;
    ```
 
-3. Check replication slots with this query:
+3. Check replication slots on each provider with this query:
 
    ```sql
-   SELECT slot_name, active FROM pg_replication_slots;
+   SELECT slot_name, active, state, retained_wal_bytes FROM spock.slot_status;
    ```
 
 4. Monitor replication lag with this query:
 
    ```sql
-   SELECT application_name, state, write_lag FROM pg_stat_replication;
+   SELECT subscription_name, replication_lag_bytes, replication_lag
+     FROM spock.subscription_status;
    ```
 
 ### DDL Replication After Upgrade
@@ -452,6 +489,12 @@ rows from the partition are replicated.
 
 
 ## Checking Logs
+
+Most replication errors are visible without the log: the last error of each
+apply worker is in `spock.subscription_status.last_error_message`, and every
+error raised in a spock worker is a `worker_error` row in `spock.events`.
+The log remains the place for the full context of an error, such as the
+statement and the detail lines.
 
 PostgreSQL logs provide detailed information about replication errors and
 issues.

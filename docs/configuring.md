@@ -183,6 +183,14 @@ Note that the value you choose for `spock.exception_behaviour` could
 potentially result in a large WAL log if transactions are allowed to
 accumulate.
 
+### `spock.event_history_size`
+
+`spock.event_history_size` sets how many recent events the `spock.events`
+view keeps in shared memory. Once the history is full the oldest event is
+dropped for each new one. The parameter accepts values from `16` to
+`1048576` (the default is `1024`) and can only be set when the postmaster
+starts.
+
 ### `spock.exception_logging`
 
 Use this GUC to specify which operations or transactions are written to the

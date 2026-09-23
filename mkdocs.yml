@@ -79,6 +79,7 @@ nav:
   - Monitoring a Cluster:
     - Monitoring the Configuration and Health of a Cluster: monitoring/index.md
     - Finding Cluster Information: monitoring/spock_info.md
+    - Monitoring a Node with the Status Views: monitoring/node_monitoring.md
     - Using Lag Tracking to Evaluate your Cluster: monitoring/lag_tracking.md
     - Using a Sync Event to Monitor Node Content: monitoring/spock_sync_event.md
   - Using Spock Functions:
@@ -139,5 +140,6 @@ nav:
   - Release Notes: spock_release_notes.md
   - Internals:
     - Design: internals-doc/DESIGN.md
+    - Node Monitoring Design: internals-doc/specs/spock-monitor-design.md
     - Output Plugin: internals-doc/OUTPUT.md
     - Protocol: internals-doc/protocol.md
