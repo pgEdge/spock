@@ -12,6 +12,7 @@
 #ifndef SPOCK_RELCACHE_H
 #define SPOCK_RELCACHE_H
 
+#include "nodes/pg_list.h"
 #include "storage/lock.h"
 
 typedef struct SpockRemoteRel
@@ -49,6 +50,12 @@ typedef struct SpockRelation
 
 	/* Additional cache, only valid as long as relation mapping is. */
 	bool		hasTriggers;
+
+	/*
+	 * Indexes that can arbitrate an applied INSERT, as OIDs.  Derived from
+	 * the relation's index set, so it is rebuilt whenever the mapping is.
+	 */
+	List	   *arbiterIndexes;
 } SpockRelation;
 
 extern void spock_relation_cache_update(uint32 remoteid,

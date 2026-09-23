@@ -201,6 +201,58 @@ IsIndexUsableForInsertConflict(Relation idxrel)
 }
 
 /*
+ * SpockBuildInsertArbiterIndexes
+ *		List the indexes that can arbitrate an applied INSERT on this relation.
+ *
+ * Every immediate unique index qualifies: any of them can reject the tuple, so
+ * any of them has to be able to report that rather than raise it.  Note this
+ * is not the set spock.check_all_uc_indexes selects -- that GUC picks the
+ * indexes searched when looking for the local row, a different question with a
+ * different answer.
+ *
+ * Deferrable indexes are omitted because ExecInsertIndexTuples() only reports
+ * a speculative conflict for immediate ones, and invalid indexes enforce
+ * nothing.  Exclusion constraints are not unique indexes, so violating one is
+ * still raised rather than reported.
+ *
+ * The result is palloc'd in the current memory context.
+ */
+List *
+SpockBuildInsertArbiterIndexes(Relation rel)
+{
+	List	   *indexoids;
+	List	   *arbiters = NIL;
+	ListCell   *lc;
+
+	indexoids = RelationGetIndexList(rel);
+
+	foreach(lc, indexoids)
+	{
+		Oid			indexoid = lfirst_oid(lc);
+		HeapTuple	tuple;
+		Form_pg_index index;
+		bool		usable;
+
+		tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "cache lookup failed for index %u", indexoid);
+
+		index = (Form_pg_index) GETSTRUCT(tuple);
+		usable = index->indisunique &&
+			index->indisvalid &&
+			index->indimmediate;
+		ReleaseSysCache(tuple);
+
+		if (usable)
+			arbiters = lappend_oid(arbiters, indexoid);
+	}
+
+	list_free(indexoids);
+
+	return arbiters;
+}
+
+/*
  * Does this unique index treat NULLs as distinct (the default)?
  *
  * For such an index a NULL in any key column means the row can never have a

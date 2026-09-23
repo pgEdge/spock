@@ -71,6 +71,7 @@
 #include "spock_conflict_stat.h"
 #endif
 #include "spock_executor.h"
+#include "spock_injection.h"
 #include "spock_node.h"
 #include "spock_proto_native.h"
 #include "spock_queue.h"
@@ -831,6 +832,162 @@ init_tuple_with_defaults(SpockTupleData *oldtup, TupleDesc tupdesc)
 }
 
 /*
+ * How many times an applied INSERT may go round the "store speculatively, lose
+ * the race, look the winner up, resolve" loop.  Two passes resolve an ordinary
+ * race -- the index reports a conflict only once the competing inserter has
+ * committed, so the next lookup finds that row -- and a third covers the
+ * winner being deleted in between.
+ */
+#define SPOCK_SPECULATIVE_MAX_ATTEMPTS			3
+
+/*
+ * spock_prepare_insert_tuple
+ *		Run everything ExecSimpleRelationInsert() would run before storing a
+ *		tuple: BEFORE ROW INSERT triggers, stored generated columns and the
+ *		relation's constraints.
+ *
+ * Returns false if a trigger asked for the row to be skipped, in which case
+ * the caller must not store it.
+ *
+ * Mirrors the preamble of ExecSimpleRelationInsert(), which the speculative
+ * path cannot call because it stores the tuple itself.  Keep the two in step.
+ */
+static bool
+spock_prepare_insert_tuple(ApplyExecutionData *edata, TupleTableSlot *slot)
+{
+	ResultRelInfo *relinfo = edata->targetRelInfo;
+	EState	   *estate = edata->estate;
+	Relation	rel = relinfo->ri_RelationDesc;
+
+	/* For now we support only tables. */
+	Assert(rel->rd_rel->relkind == RELKIND_RELATION);
+
+	CheckCmdReplicaIdentity(rel, CMD_INSERT);
+
+	/* BEFORE ROW INSERT Triggers */
+	if (relinfo->ri_TrigDesc &&
+		relinfo->ri_TrigDesc->trig_insert_before_row)
+	{
+		if (!SPKExecBRInsertTriggers(estate, relinfo, slot))
+			return false;		/* "do nothing" */
+	}
+
+	/* Compute stored generated columns */
+	if (rel->rd_att->constr &&
+		rel->rd_att->constr->has_generated_stored)
+		ExecComputeStoredGenerated(relinfo, estate, slot, CMD_INSERT);
+
+	/* Check the constraints of the tuple */
+	if (rel->rd_att->constr)
+		ExecConstraints(relinfo, slot, estate);
+	if (rel->rd_rel->relispartition)
+		ExecPartitionCheck(relinfo, slot, estate, true);
+
+	return true;
+}
+
+/*
+ * spock_speculative_insert
+ *		Store the tuple, asking the arbiter indexes to report a duplicate key
+ *		back to us instead of raising an error.
+ *
+ * Returns true if the tuple was stored.  Returns false if one of the arbiter
+ * indexes already holds this key; nothing remains stored in that case - the
+ * speculative tuple has been super-deleted - and the caller is expected to
+ * look the conflicting row up and hand it to conflict resolution.
+ *
+ * Caller must have prepared the tuple (spock_prepare_insert_tuple) and must
+ * pass a non-empty arbiter list.
+ */
+static bool
+spock_speculative_insert(ApplyExecutionData *edata, TupleTableSlot *slot,
+						 List *arbiterIndexes)
+{
+	ResultRelInfo *relinfo = edata->targetRelInfo;
+	EState	   *estate = edata->estate;
+	List	   *recheckIndexes;
+	uint32		specToken;
+	bool		specConflict = false;
+
+	Assert(arbiterIndexes != NIL);
+
+	/*
+	 * Take the token first: a local writer that reaches our index entry then
+	 * waits on it rather than on our transaction, which carries a whole
+	 * remote transaction and can run long.
+	 */
+	specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
+
+	/*
+	 * Not estate->es_output_cid: that predates the BEFORE triggers, which may
+	 * have run SQL of their own and moved the counter on.
+	 */
+	table_tuple_insert_speculative(relinfo->ri_RelationDesc, slot,
+								   GetCurrentCommandId(true), 0, NULL,
+								   specToken);
+
+	/*
+	 * The AM waits for a competing inserter before reporting, so a conflict
+	 * here means that row is already committed -- which is what lets the
+	 * caller find it on the next pass.
+	 */
+	recheckIndexes = ExecInsertIndexTuples(relinfo, slot, estate,
+										   false,	/* update */
+										   true,	/* noDupErr */
+										   &specConflict,
+										   arbiterIndexes,
+										   false /* onlySummarizing */ );
+
+	/* Confirm the tuple, or kill it if we lost the race. */
+	table_tuple_complete_speculative(relinfo->ri_RelationDesc, slot, specToken,
+									 !specConflict);
+
+	/* Wake anyone waiting on the decision we just made. */
+	SpeculativeInsertionLockRelease(GetCurrentTransactionId());
+
+	if (specConflict)
+	{
+		list_free(recheckIndexes);
+		return false;
+	}
+
+	/* AFTER ROW INSERT Triggers */
+	SPKExecARInsertTriggers(estate, relinfo, slot, recheckIndexes);
+	list_free(recheckIndexes);
+
+	return true;
+}
+
+/*
+ * spock_plain_insert
+ *		Store the tuple with the indexes left free to raise a duplicate key.
+ *
+ * The tail of ExecSimpleRelationInsert() without its preamble, for a caller
+ * that has already run spock_prepare_insert_tuple() and now wants the index to
+ * report the conflict itself.
+ */
+static void
+spock_plain_insert(ApplyExecutionData *edata, TupleTableSlot *slot)
+{
+	ResultRelInfo *relinfo = edata->targetRelInfo;
+	EState	   *estate = edata->estate;
+	List	   *recheckIndexes = NIL;
+
+	simple_table_tuple_insert(relinfo->ri_RelationDesc, slot);
+
+	if (relinfo->ri_NumIndices > 0)
+		recheckIndexes = ExecInsertIndexTuples(relinfo, slot, estate,
+											   false,	/* update */
+											   false,	/* noDupErr */
+											   NULL,	/* specConflict */
+											   NIL, /* arbiterIndexes */
+											   false /* onlySummarizing */ );
+
+	SPKExecARInsertTriggers(estate, relinfo, slot, recheckIndexes);
+	list_free(recheckIndexes);
+}
+
+/*
  * Handle insert via low level api.
  */
 void
@@ -845,7 +1002,10 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	EPQState	epqstate;
 	TupleTableSlot *localslot;
 	ResultRelInfo *relinfo;
+	List	   *arbiterIndexes;
 	bool		found;
+	bool		prepared = false;
+	int			attempt;
 	Oid			idxused;
 
 	/* Initialize the executor state. */
@@ -866,62 +1026,173 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	MemoryContextSwitchTo(oldctx);
 
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
-	ExecOpenIndices(edata->targetRelInfo, false);
-	relinfo = edata->targetRelInfo;
-	idxused = edata->targetRel->idxoid;
 
 	/*
-	 * TODO: do we need a retry finding a tuple? Also do we need
-	 * wait_for_previous_transaction() call here?
+	 * No speculative index info: only ExecCheckIndexConstraints() needs it,
+	 * and we never call it -- the conflict comes from the index AM itself.
 	 */
+	ExecOpenIndices(edata->targetRelInfo, false);
+	relinfo = edata->targetRelInfo;
 
-	/* Find the current local tuple. */
-	found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
-									edata->targetRel->idxoid,
-									remoteslot, &localslot,
-									true);
+	/*
+	 * Empty means nothing can arbitrate and we fall back to a plain insert
+	 * below -- not the same as the NIL that ExecInsertIndexTuples() reads as
+	 * "every unique index arbitrates".
+	 */
+	arbiterIndexes = edata->targetRel->arbiterIndexes;
 
-	if (check_all_uc_indexes && !found)
+	/*
+	 * Look the conflicting row up; if there is none, store ours speculatively
+	 * so that the arbiter indexes report a duplicate rather than raise one.
+	 * The lookup cannot settle this by itself: it races concurrent local
+	 * writers, and it runs before the store in any case, so a row committed
+	 * in between is missed either way.
+	 */
+	for (attempt = 1;; attempt++)
 	{
-		/*
-		 * Handle the special case of looking through all unique indexes
-		 * defined on the relation.
-		 */
-		found = FindReplTupleByUCIndex(edata, relinfo->ri_RelationDesc,
-									   remoteslot, &localslot, &idxused);
-	}
-
-	if (found)
-	{
-		SpockTupleData oldtup;
-
-		/*
-		 * When an INSERT is converted to an UPDATE on conflict, there is no
-		 * existing old tuple. In such cases, we simulate an old tuple by
-		 * initializing each attribute with a default value of 0 for supported
-		 * integral and numeric types.
-		 */
-		init_tuple_with_defaults(&oldtup, RelationGetDescr(rel->rel));
-		spock_handle_conflict_and_apply(rel, estate, localslot, remoteslot,
-										&oldtup, newtup, relinfo, &epqstate,
-										idxused, true);
-	}
-	else
-	{
-		SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
+		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * Clear out any old value for when logging it in the resolutions
-		 * table.
+		 * The operator has promised that an applied insert never collides
+		 * with a local row, on the replica identity or on any other unique
+		 * index.  Take them at their word: there is nothing for the lookup to
+		 * find and nothing for the arbiter indexes to report, so store the
+		 * tuple the ordinary way.  A promise that does not hold surfaces as
+		 * the duplicate key the index raises on its own, which
+		 * spock.exception_behaviour then decides what to do with.
 		 */
-		exception_log->local_tuple = NULL;
+		if (non_conflicting_inserts)
+		{
+			/* Make sure that any user-supplied code runs as the table owner. */
+			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+			ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
+			RestoreUserContext(&ucxt);
+			break;
+		}
 
-		/* Make sure that any user-supplied code runs as the table owner. */
-		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
-		/* Do the actual INSERT */
-		ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
-		/* Switch back to the original user */
-		RestoreUserContext(&ucxt);
+		/*
+		 * Reset: a previous pass that fell through to
+		 * FindReplTupleByUCIndex() and found nothing left this invalid.
+		 */
+		idxused = edata->targetRel->idxoid;
+
+		/* Find the current local tuple. */
+		found = FindReplTupleInLocalRel(edata, relinfo->ri_RelationDesc,
+										edata->targetRel->idxoid,
+										remoteslot, &localslot,
+										true);
+
+		if (check_all_uc_indexes && !found)
+		{
+			/*
+			 * Handle the special case of looking through all unique indexes
+			 * defined on the relation.
+			 */
+			found = FindReplTupleByUCIndex(edata, relinfo->ri_RelationDesc,
+										   remoteslot, &localslot, &idxused);
+		}
+
+		if (found)
+		{
+			SpockTupleData oldtup;
+
+			/*
+			 * When an INSERT is converted to an UPDATE on conflict, there is
+			 * no existing old tuple. In such cases, we simulate an old tuple
+			 * by initializing each attribute with a default value of 0 for
+			 * supported integral and numeric types.
+			 */
+			init_tuple_with_defaults(&oldtup, RelationGetDescr(rel->rel));
+			spock_handle_conflict_and_apply(rel, estate, localslot, remoteslot,
+											&oldtup, newtup, relinfo, &epqstate,
+											idxused, true);
+			break;
+		}
+		else
+		{
+			SpockExceptionLog *exception_log = &exception_log_ptr[my_exception_log_index];
+
+			/*
+			 * Clear out any old value for when logging it in the resolutions
+			 * table.
+			 */
+			exception_log->local_tuple = NULL;
+		}
+
+		/*
+		 * Nothing to arbitrate against: the relation has no immediate unique
+		 * index, so no insert on it can raise a duplicate key.  Store the
+		 * tuple the ordinary way.
+		 */
+		if (arbiterIndexes == NIL)
+		{
+			/* Make sure that any user-supplied code runs as the table owner. */
+			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+			/* Do the actual INSERT */
+			ExecSimpleRelationInsert(edata->targetRelInfo, estate, remoteslot);
+			/* Switch back to the original user */
+			RestoreUserContext(&ucxt);
+			break;
+		}
+
+		/*
+		 * Triggers and constraint checks run once, on the first attempt: a
+		 * BEFORE trigger may have edited the slot, and re-running it for each
+		 * lost race would apply its side effects again.
+		 */
+		if (!prepared)
+		{
+			bool		proceed;
+
+			/*
+			 * As the table owner, like the plain path above: CHECK
+			 * constraints, generated columns and partition constraints all
+			 * run user code.
+			 */
+			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+			proceed = spock_prepare_insert_tuple(edata, remoteslot);
+			RestoreUserContext(&ucxt);
+
+			if (!proceed)
+				break;			/* trigger said skip the row */
+			prepared = true;
+		}
+
+		/*
+		 * Test hook: this is the window a concurrent local writer exploits,
+		 * between the lookup that found nothing and the store that acts on
+		 * it.
+		 */
+		SPOCK_INSERT_CONFLICT_STALL();
+
+		{
+			bool		stored;
+
+			/* Index expressions and the AFTER triggers are user code too. */
+			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+			stored = spock_speculative_insert(edata, remoteslot,
+											  arbiterIndexes);
+			RestoreUserContext(&ucxt);
+
+			if (stored)
+				break;
+		}
+
+		/*
+		 * Somebody holds one of these keys and their row is committed by now,
+		 * so go back and look it up.  Once the attempts are spent, store the
+		 * tuple with the indexes free to raise instead: the conflict is real
+		 * and we simply cannot name the row holding it, and a duplicate key
+		 * naming the constraint and the key values is more use to whoever
+		 * ends up reading the exception log than anything we could say here.
+		 */
+		if (attempt >= SPOCK_SPECULATIVE_MAX_ATTEMPTS)
+		{
+			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
+			spock_plain_insert(edata, remoteslot);
+			RestoreUserContext(&ucxt);
+			break;
+		}
 	}
 
 	/* Cleanup */

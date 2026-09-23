@@ -503,6 +503,29 @@ This option can be set by a superuser via `SET`, or reloaded with the
 `SIGHUP` mechanism (for example, `SELECT pg_reload_conf()`); a server
 restart is not required.
 
+### `spock.non_conflicting_inserts`
+
+`spock.non_conflicting_inserts` is a boolean value (the default is `off`)
+with which you assert that a replicated `INSERT` can never collide with a row
+that already exists locally - because, for example, every node generates keys
+from its own range.
+
+Applying an `INSERT` normally costs two pieces of work that only a possible
+collision justifies: a lookup for the conflicting local row, and a
+speculative insertion that lets the unique indexes report a duplicate instead
+of raising one. When this parameter is `on`, the apply worker skips both and
+inserts the row directly.
+
+Nothing checks the assertion. If a collision does occur, the index raises
+`duplicate key value violates unique constraint`, the transaction is aborted,
+and the outcome is decided by
+[`spock.exception_behaviour`](#spock-exception_behaviour) - the row is not
+resolved by `spock.conflict_resolution` and is not recorded in
+`spock.resolutions`. Leave this parameter `off` unless collisions are
+impossible by design rather than merely rare.
+
+This option can only be set when the postmaster starts.
+
 ### `spock.save_resolutions`
 
 `spock.save_resolutions` is a boolean value (the default is `false`) that
