@@ -22,7 +22,6 @@
 #include "spock.h"
 
 PG_FUNCTION_INFO_V1(spock_get_subscription_stats);
-PG_FUNCTION_INFO_V1(spock_reset_subscription_stats);
 
 #if PG_VERSION_NUM >= 180000
 #include "spock_conflict_stat.h"
@@ -237,29 +236,17 @@ spock_get_subscription_stats(PG_FUNCTION_ARGS)
 }
 #undef SPOCK_STAT_GET_SUBSCRIPTION_STATS_COLS
 
-/* Reset subscription stats (a specific one or all of them) */
-Datum
-spock_reset_subscription_stats(PG_FUNCTION_ARGS)
+/*
+ * Reset the conflict counters of one subscription, or of all of them when
+ * called with InvalidOid.  Used by spock.reset_subscription_stats().
+ */
+void
+spock_stat_reset_subscription_conflicts(Oid subid)
 {
-	Oid			subid;
-
-	if (PG_ARGISNULL(0))
-	{
-		/* Clear all subscription stats */
+	if (!OidIsValid(subid))
 		pgstat_reset_of_kind(SPOCK_PGSTAT_KIND_LRCONFLICTS);
-	}
 	else
-	{
-		subid = PG_GETARG_OID(0);
-
-		if (!OidIsValid(subid))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("invalid subscription OID %u", subid)));
 		pgstat_reset(SPOCK_PGSTAT_KIND_LRCONFLICTS, MyDatabaseId, subid);
-	}
-
-	PG_RETURN_VOID();
 }
 
 static bool
@@ -300,15 +287,6 @@ spock_stat_subscription_reset_timestamp_cb(PgStatShared_Common *header,
 
 Datum
 spock_get_subscription_stats(PG_FUNCTION_ARGS)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("spock conflict statistics require PostgreSQL 18 or later")));
-	PG_RETURN_NULL();			/* unreachable; suppress compiler warning */
-}
-
-Datum
-spock_reset_subscription_stats(PG_FUNCTION_ARGS)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

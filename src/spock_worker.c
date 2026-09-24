@@ -50,6 +50,7 @@
 #include "spock_relcache.h"
 #include "spock_exception_handler.h"
 #include "spock_group.h"
+#include "spock_monitor.h"
 #include "spock_shmem.h"
 #include "spock_injection.h"
 
@@ -399,6 +400,8 @@ spock_worker_attach(int slot, SpockWorkerType type)
 		MemoryContextSwitchTo(oldcontext);
 		CommitTransactionCommand();
 	}
+
+	spock_monitor_worker_attached();
 }
 
 /*
@@ -421,6 +424,8 @@ spock_worker_detach(bool crash)
 	 * callers can distinguish worker types if needed.
 	 */
 	SPOCK_WORKER_DELAY();
+
+	spock_monitor_worker_detached(crash);
 
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 

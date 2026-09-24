@@ -60,7 +60,7 @@ all: spock.control
 # -----------------------------------------------------------------------------
 # Regression tests
 # -----------------------------------------------------------------------------
-REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
+REGRESS = preseed infofuncs init_fail init preseed_check basic monitor conflict_secondary_unique \
 		  excluded_schema conflict_stat \
 		  toasted replication_set exception_row_capture matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \

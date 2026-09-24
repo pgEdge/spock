@@ -34,6 +34,7 @@
 #include "replication/syncrep.h"
 #include "replication/walsender_private.h"
 #include "storage/ipc.h"
+#include "libpq/libpq-be.h"
 
 #include "spock_output_plugin.h"
 #include "spock.h"
@@ -45,6 +46,7 @@
 #include "spock_proto_native.h"
 #include "spock_queue.h"
 #include "spock_repset.h"
+#include "spock_monitor.h"
 #include "spock_worker.h"
 #include "spock_shmem.h"
 
@@ -230,6 +232,13 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 
 	/* Join our slot-group if possible */
 	spock_output_join_slot_group(ctx->slot->data.name);
+
+	spock_monitor_stream_started(NameStr(ctx->slot->data.name));
+
+	if (is_init)
+		spock_monitor_record_event(SPOCK_EVENT_SLOT_CREATED, InvalidOid,
+								   ctx->slot->data.confirmed_flush,
+								   "slot %s", NameStr(ctx->slot->data.name));
 
 	/* Short lived memory context for individual messages */
 	data->context = AllocSetContextCreate(ctx->context,
@@ -504,6 +513,15 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 			CommitTransactionCommand();
 
 		relmetacache_init(ctx->context);
+
+		spock_monitor_record_event(SPOCK_EVENT_STREAM_STARTED, InvalidOid,
+								   ctx->slot->data.confirmed_flush,
+								   "slot %s to subscriber at %s, client spock %s, protocol %u",
+								   NameStr(ctx->slot->data.name),
+								   (MyProcPort && MyProcPort->remote_host) ?
+								   MyProcPort->remote_host : "unknown address",
+								   data->spock_version ? data->spock_version : "unknown",
+								   data->negotiated_proto_version);
 	}
 
 	/* So we can identify the process type in Valgrind logs */
@@ -1257,6 +1275,11 @@ pg_decode_shutdown(LogicalDecodingContext *ctx)
 	relmetacache_flush();
 
 	spock_output_leave_slot_group();
+
+	spock_monitor_record_event(SPOCK_EVENT_STREAM_STOPPED, InvalidOid,
+							   InvalidXLogRecPtr, "slot %s",
+							   ctx->slot ? NameStr(ctx->slot->data.name) : "unknown");
+	spock_monitor_stream_stopped();
 
 	VALGRIND_PRINTF("SPOCK: output plugin shutdown\n");
 

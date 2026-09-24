@@ -40,6 +40,7 @@ extern void spock_stat_report_subscription_conflict(Oid subid,
 extern void spock_stat_create_subscription(Oid subid);
 extern void spock_stat_drop_subscription(Oid subid);
 extern Spock_Stat_StatSubEntry *spock_stat_fetch_stat_subscription(Oid subid);
+extern void spock_stat_reset_subscription_conflicts(Oid subid);
 
 #endif							/* PG_VERSION_NUM >= 180000 */
 

@@ -64,6 +64,7 @@
 #include "spock_repset.h"
 #include "spock_rpc.h"
 #include "spock_sync.h"
+#include "spock_monitor.h"
 #include "spock_worker.h"
 #include "spock.h"
 
@@ -104,6 +105,9 @@ enum PeerProgressCol
 PGDLLEXPORT void spock_sync_main(Datum main_arg);
 
 static SpockSyncWorker *MySyncWorker = NULL;
+
+/* Set when the initial copy of this worker's table failed. */
+static bool sync_worker_failed = false;
 
 
 /*
@@ -1954,6 +1958,15 @@ spock_sync_worker_finish(void)
 	elog(LOG, "finished sync of table %s.%s for subscriber %s",
 		 NameStr(MySyncWorker->nspname), NameStr(MySyncWorker->relname),
 		 MySubscription->name);
+
+	if (!sync_worker_failed)
+	{
+		spock_monitor_count(SPOCK_MONITOR_TABLES_SYNCED, 1);
+		spock_monitor_record_event(SPOCK_EVENT_SYNC_FINISHED, MySubscription->id,
+								   InvalidXLogRecPtr, "table %s.%s",
+								   NameStr(MySyncWorker->nspname),
+								   NameStr(MySyncWorker->relname));
+	}
 }
 
 void
@@ -2017,11 +2030,21 @@ spock_sync_main(Datum main_arg)
 
 	elog(LOG, "starting sync of table %s.%s for subscriber %s",
 		 copytable->schemaname, copytable->relname, MySubscription->name);
+	spock_monitor_record_event(SPOCK_EVENT_SYNC_STARTED, MySubscription->id,
+							   InvalidXLogRecPtr, "table %s.%s",
+							   copytable->schemaname, copytable->relname);
 	elog(DEBUG1, "connecting to provider %s, dsn %s",
 		 MySubscription->origin_if->name, MySubscription->origin_if->dsn);
 
 	/* Do the initial sync first. */
 	status = spock_sync_table(MySubscription, copytable, &status_lsn);
+	if (status == SYNC_STATUS_FAILED)
+	{
+		sync_worker_failed = true;
+		spock_monitor_record_event(SPOCK_EVENT_SYNC_FAILED, MySubscription->id,
+								   InvalidXLogRecPtr, "table %s.%s",
+								   copytable->schemaname, copytable->relname);
+	}
 	if (status == SYNC_STATUS_SYNCDONE || status == SYNC_STATUS_READY ||
 		status == SYNC_STATUS_FAILED)
 	{

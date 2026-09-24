@@ -98,6 +98,7 @@
 #endif
 #include "spock_dependency.h"
 #include "spock_executor.h"
+#include "spock_monitor.h"
 #include "spock_node.h"
 #include "spock_output_plugin.h"
 #include "spock_queue.h"
@@ -183,8 +184,6 @@ PG_FUNCTION_INFO_V1(spock_xact_commit_timestamp_origin);
 PG_FUNCTION_INFO_V1(spock_show_repset_table_info_by_target);
 
 /* Stats/Counters */
-PG_FUNCTION_INFO_V1(get_channel_stats);
-PG_FUNCTION_INFO_V1(reset_channel_stats);
 PG_FUNCTION_INFO_V1(prune_conflict_tracking);
 
 /* Generic delta apply functions */
@@ -201,9 +200,6 @@ PG_FUNCTION_INFO_V1(spock_repair_mode);
 
 /* Function to get a LSN based on commit timestamp */
 PG_FUNCTION_INFO_V1(spock_get_lsn_from_commit_ts);
-
-/* Apply Group */
-PG_FUNCTION_INFO_V1(get_apply_group_progress);
 
 extern void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -303,6 +299,9 @@ spock_create_node(PG_FUNCTION_ARGS)
 
 	create_local_node(node.id, nodeif.id);
 
+	spock_monitor_record_event(SPOCK_EVENT_NODE_CREATED, InvalidOid,
+							   InvalidXLogRecPtr, "node %s", node_name);
+
 	PG_RETURN_OID(node.id);
 }
 
@@ -383,6 +382,9 @@ spock_drop_node(PG_FUNCTION_ARGS)
 
 		/* Drop the node itself. */
 		drop_node(node->id);
+
+		spock_monitor_record_event(SPOCK_EVENT_NODE_DROPPED, InvalidOid,
+								   InvalidXLogRecPtr, "node %s", node_name);
 	}
 
 	PG_RETURN_BOOL(node != NULL);
@@ -700,6 +702,7 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 #if PG_VERSION_NUM >= 180000
 	spock_stat_create_subscription(sub.id);
 #endif
+	spock_monitor_create_subscription(sub.id);
 
 	/*
 	 * Create progress entry to track commit ts per local/remote origin.
@@ -752,6 +755,12 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	}
 	create_local_sync_status(&sync);
 
+	spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_CREATED, sub.id,
+							   InvalidXLogRecPtr,
+							   "subscription %s from provider %s, slot %s, %s",
+							   sub_name, origin->name, sub.slot_name,
+							   enabled ? "enabled" : "disabled");
+
 	PG_RETURN_OID(sub.id);
 }
 
@@ -783,6 +792,9 @@ spock_drop_subscription(PG_FUNCTION_ARGS)
 #if PG_VERSION_NUM >= 180000
 		spock_stat_drop_subscription(sub->id);
 #endif
+		spock_monitor_drop_subscription(sub->id);
+		spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_DROPPED, sub->id,
+								   InvalidXLogRecPtr, "subscription %s", sub_name);
 
 		/*
 		 * The rest is different depending on if we are doing this on provider
@@ -882,6 +894,10 @@ spock_alter_subscription_disable(PG_FUNCTION_ARGS)
 
 	alter_subscription(sub);
 
+	spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_DISABLED, sub->id,
+							   InvalidXLogRecPtr, "subscription %s disabled%s",
+							   sub_name, immediate ? " immediately" : "");
+
 	if (immediate)
 	{
 		SpockWorker *apply;
@@ -920,6 +936,10 @@ spock_alter_subscription_enable(PG_FUNCTION_ARGS)
 
 	alter_subscription(sub);
 
+	spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_ENABLED, sub->id,
+							   InvalidXLogRecPtr, "subscription %s enabled",
+							   sub_name);
+
 	/*
 	 * There is nothing more to immediate here than running it outside of
 	 * transaction.
@@ -957,6 +977,11 @@ spock_alter_subscription_interface(PG_FUNCTION_ARGS)
 	sub->origin_if = new_if;
 	alter_subscription(sub);
 
+	spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_ALTERED, sub->id,
+							   InvalidXLogRecPtr,
+							   "subscription %s switched to interface %s",
+							   sub_name, if_name);
+
 	PG_RETURN_BOOL(true);
 }
 
@@ -982,6 +1007,11 @@ spock_alter_subscription_add_replication_set(PG_FUNCTION_ARGS)
 	sub->replication_sets = lappend(sub->replication_sets, repset_name);
 	alter_subscription(sub);
 
+	spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_ALTERED, sub->id,
+							   InvalidXLogRecPtr,
+							   "subscription %s: replication set %s added",
+							   sub_name, repset_name);
+
 	PG_RETURN_BOOL(true);
 }
 
@@ -1006,6 +1036,11 @@ spock_alter_subscription_remove_replication_set(PG_FUNCTION_ARGS)
 														   lc);
 			alter_subscription(sub);
 
+			spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_ALTERED, sub->id,
+									   InvalidXLogRecPtr,
+									   "subscription %s: replication set %s removed",
+									   sub_name, repset_name);
+
 			PG_RETURN_BOOL(true);
 		}
 	}
@@ -1028,6 +1063,10 @@ spock_alter_subscription_skip_lsn(PG_FUNCTION_ARGS)
 
 	sub->skiplsn = lsn;
 	alter_subscription(sub);
+
+	spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_ALTERED, sub->id, lsn,
+							   "subscription %s: skip_lsn set to %X/%X",
+							   sub_name, LSN_FORMAT_ARGS(lsn));
 
 	PG_RETURN_BOOL(true);
 }
@@ -1150,7 +1189,12 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 	}
 
 	if (changed)
+	{
 		alter_subscription(sub);
+		spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_ALTERED, sub->id,
+								   InvalidXLogRecPtr,
+								   "subscription %s: options changed", sub_name);
+	}
 
 	PG_RETURN_BOOL(changed);
 }
@@ -1227,6 +1271,11 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 									   NameStr(tablesync->nspname),
 									   NameStr(tablesync->relname));
 	}
+
+	spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_ALTERED, sub->id,
+							   InvalidXLogRecPtr,
+							   "subscription %s: synchronization of missing tables requested%s",
+							   sub_name, truncate ? " with truncate" : "");
 
 	/* Tell apply to re-read sync statuses. */
 	spock_subscription_changed(sub->id, false);
@@ -1331,6 +1380,12 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 
 	if (truncate)
 		truncate_table(nspname, relname);
+
+	spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_ALTERED, sub->id,
+							   InvalidXLogRecPtr,
+							   "subscription %s: resynchronization of table %s.%s requested%s",
+							   sub_name, nspname, relname,
+							   truncate ? " with truncate" : "");
 
 	/* Tell apply to re-read sync statuses. */
 	spock_subscription_changed(sub->id, false);
@@ -3726,126 +3781,6 @@ spock_hooks_setup(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-PGDLLEXPORT extern Datum get_channel_stats(PG_FUNCTION_ARGS);
-Datum
-get_channel_stats(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc	tupdesc;
-	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
-	HASH_SEQ_STATUS hash_seq;
-	spockStatsEntry *entry;
-	Datum	   *values;
-	bool	   *nulls;
-
-	if (!SpockCtx || !SpockHash)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("spock must be loaded via shared_preload_libraries")));
-
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not "
-						"allowed in this context")));
-
-	/* Switch into long-lived context to construct returned data structures */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
-
-	LWLockAcquire(SpockCtx->lock, LW_SHARED);
-	hash_seq_init(&hash_seq, SpockHash);
-
-	values = palloc0(sizeof(Datum) * (SPOCK_STATS_NUM_COUNTERS + 2));
-	nulls = palloc0(sizeof(bool) * (SPOCK_STATS_NUM_COUNTERS + 2));
-
-	while ((entry = hash_seq_search(&hash_seq)) != NULL)
-	{
-		int			i = 0;
-		int			j;
-
-		if (entry->key.dboid != MyDatabaseId)
-			continue;
-
-		memset(values, 0, sizeof(Datum) * (SPOCK_STATS_NUM_COUNTERS + 2));
-		memset(nulls, 0, sizeof(bool) * (SPOCK_STATS_NUM_COUNTERS + 2));
-
-		values[i++] = ObjectIdGetDatum(entry->key.subid);
-		values[i++] = ObjectIdGetDatum(entry->key.relid);
-
-		/*
-		 * Acquire spinlock before reading counter values to prevent torn
-		 * reads. The writer (handle_stats_counter) uses entry->mutex to
-		 * protect counter updates, so we must use the same lock for reads to
-		 * ensure atomic access to 64-bit counter values.
-		 */
-		SpinLockAcquire(&entry->mutex);
-		for (j = 0; j < SPOCK_STATS_NUM_COUNTERS; j++)
-			values[i++] = Int64GetDatum(entry->counter[j]);
-		SpinLockRelease(&entry->mutex);
-
-		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
-	}
-
-	spock_stats_hash_full = false;
-
-	LWLockRelease(SpockCtx->lock);
-
-	MemoryContextSwitchTo(oldcontext);
-
-	return (Datum) 0;
-}
-
-PGDLLEXPORT extern Datum reset_channel_stats(PG_FUNCTION_ARGS);
-Datum
-reset_channel_stats(PG_FUNCTION_ARGS)
-{
-	HASH_SEQ_STATUS hash_seq;
-	spockStatsEntry *entry;
-
-	if (!SpockCtx || !SpockHash)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("spock must be loaded via shared_preload_libraries")));
-
-	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
-
-	/*
-	 * In principle we could reset only specific channel statistics; but that
-	 * would be more complicated, and it's probably not worth the trouble. So
-	 * for now, just reset all entries.
-	 */
-	hash_seq_init(&hash_seq, SpockHash);
-	while ((entry = hash_seq_search(&hash_seq)) != NULL)
-	{
-		if (hash_search(SpockHash,
-						&entry->key,
-						HASH_REMOVE,
-						NULL) == NULL)
-			elog(ERROR, "hash table corrupted");
-	}
-
-	LWLockRelease(SpockCtx->lock);
-	PG_RETURN_VOID();
-}
-
 /* Generic delta apply functions */
 Datum
 delta_apply_int2(PG_FUNCTION_ARGS)
@@ -3976,6 +3911,12 @@ spock_repair_mode(PG_FUNCTION_ARGS)
 	bool		enabled = PG_GETARG_BOOL(0);
 
 	lsn = skip_wal_records_decoding(enabled);
+
+	spock_monitor_record_event(enabled ? SPOCK_EVENT_REPAIR_MODE_ENABLED
+							   : SPOCK_EVENT_REPAIR_MODE_DISABLED,
+							   InvalidOid, lsn, "repair mode switched %s",
+							   enabled ? "on" : "off");
+
 	PG_RETURN_LSN(lsn);
 }
 
@@ -4122,6 +4063,10 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 	else
 		elog(DEBUG1, "SPOCK pause_apply_workers: all workers paused after %d ms", waited_ms);
 
+	spock_monitor_record_event(SPOCK_EVENT_APPLY_PAUSED, InvalidOid,
+							   InvalidXLogRecPtr,
+							   "apply workers paused after %d ms", waited_ms);
+
 	PG_RETURN_VOID();
 }
 
@@ -4139,6 +4084,9 @@ spock_resume_apply_workers(PG_FUNCTION_ARGS)
 	ConditionVariableBroadcast(&SpockCtx->pause_cv);
 
 	elog(DEBUG1, "SPOCK resume_apply_workers: workers resumed");
+
+	spock_monitor_record_event(SPOCK_EVENT_APPLY_RESUMED, InvalidOid,
+							   InvalidXLogRecPtr, "apply workers resumed");
 
 	PG_RETURN_VOID();
 }
@@ -4370,198 +4318,4 @@ spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_LSN(endlsn);
-}
-
-PG_FUNCTION_INFO_V1(get_apply_worker_status);
-/*
- * Show info about apply workers.
- */
-Datum
-get_apply_worker_status(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc	tupdesc;
-	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
-
-	/* Check if caller supports returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
-
-	/* Switch to long-lived context */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/* Build tuple descriptor */
-	tupdesc = CreateTemplateTupleDesc(4);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "worker_pid", INT8OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "worker_dboid", INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "worker_subid", INT8OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "worker_status", TEXTOID, -1, 0);
-#if PG_VERSION_NUM >= 190000
-	/* PG19 requires finalising a manually built descriptor before use */
-	TupleDescFinalize(tupdesc);
-#endif
-
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
-
-	/* Fetch and emit worker rows */
-	if (SpockCtx == NULL)
-		ereport(ERROR, (errmsg("Spock context is not initialized")));
-
-	LWLockAcquire(SpockCtx->lock, LW_SHARED);
-	for (int i = 0; i < SpockCtx->total_workers; i++)
-	{
-		SpockWorker *worker = &SpockCtx->workers[i];
-
-		if (worker->worker_type == SPOCK_WORKER_APPLY && worker->proc != NULL)
-		{
-			Datum		values[4];
-			bool		nulls[4] = {false, false, false, false};
-			const char *status_text;
-
-			/* Map worker_status to text */
-			switch (worker->worker_status)
-			{
-				case SPOCK_WORKER_STATUS_NONE:
-					status_text = "none";
-					break;
-				case SPOCK_WORKER_STATUS_IDLE:
-					status_text = "idle";
-					break;
-				case SPOCK_WORKER_STATUS_RUNNING:
-					status_text = "running";
-					break;
-				case SPOCK_WORKER_STATUS_STOPPING:
-					status_text = "stopping";
-					break;
-				case SPOCK_WORKER_STATUS_STOPPED:
-					status_text = "stopped";
-					break;
-				case SPOCK_WORKER_STATUS_FAILED:
-					status_text = "failed";
-					break;
-				default:
-					status_text = "unknown";
-					break;
-			}
-
-			values[0] = Int64GetDatum((int64) worker->proc->pid);
-			values[1] = Int32GetDatum(worker->dboid);
-			values[2] = Int64GetDatum((int64) worker->worker.apply.subid);
-			values[3] = CStringGetTextDatum(status_text);
-
-			tuplestore_putvalues(tupstore, tupdesc, values, nulls);
-		}
-	}
-	LWLockRelease(SpockCtx->lock);
-
-	PG_RETURN_VOID();
-}
-
-/*
- * get_apply_group_progress
- *
- * SQL function to show info about apply group progress.
- *
- * NOTE: In case when a timestamp is not initialized yet (zero), it returns
- * NULL value for corresponding column.
- */
-Datum
-get_apply_group_progress(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	HASH_SEQ_STATUS it;
-	SpockGroupEntry *e;
-
-	if (!SpockCtx || !SpockHash)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("spock must be loaded via shared_preload_libraries")));
-
-	if (!SpockGroupHash)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("spock group hash not initialized")));
-
-	InitMaterializedSRF(fcinfo, 0);
-
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
-
-	/* Iterate the hash and emit rows */
-	hash_seq_init(&it, SpockGroupHash);
-	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
-	{
-		SpockApplyProgress *sap = &e->progress;
-		Datum		values[_GP_LAST_];
-		bool		nulls[_GP_LAST_] = {0};
-
-		/*
-		 * Centralise conversion of local representation of the progress data
-		 * to an external representation. This is a good place to check
-		 * correctness of each value (valid oid and timestamps).
-		 */
-		Assert(OidIsValid(sap->key.dbid) && OidIsValid(sap->key.node_id) &&
-			   OidIsValid(sap->key.remote_node_id));
-
-		values[GP_DBOID] = ObjectIdGetDatum(sap->key.dbid);
-		values[GP_NODE_ID] = ObjectIdGetDatum(sap->key.node_id);
-		values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(sap->key.remote_node_id);
-
-		if (sap->remote_commit_ts != 0)
-		{
-			Assert(IS_VALID_TIMESTAMP(sap->remote_commit_ts));
-			values[GP_REMOTE_COMMIT_TS] =
-				TimestampTzGetDatum(sap->remote_commit_ts);
-		}
-		else
-			nulls[GP_REMOTE_COMMIT_TS] = true;
-
-		if (sap->prev_remote_ts != 0)
-		{
-			Assert(IS_VALID_TIMESTAMP(sap->prev_remote_ts));
-			values[GP_PREV_REMOTE_TS] =
-				TimestampTzGetDatum(sap->prev_remote_ts);
-		}
-		else
-			nulls[GP_PREV_REMOTE_TS] = true;
-
-		/*
-		 * There is quite typical situation to calculate a diff between zero
-		 * and the current LSN. Moreover, LSN=0 physically makes sense. So,
-		 * don't introduce NULL value for these LSN fields.
-		 */
-		values[GP_REMOTE_COMMIT_LSN] = LSNGetDatum(sap->remote_commit_lsn);
-		values[GP_REMOTE_INSERT_LSN] = LSNGetDatum(sap->remote_insert_lsn);
-		values[GP_RECEIVED_LSN] = LSNGetDatum(sap->received_lsn);
-
-		if (sap->last_updated_ts != 0)
-		{
-			Assert(IS_VALID_TIMESTAMP(sap->last_updated_ts));
-			values[GP_LAST_UPDATED_TS] =
-				TimestampTzGetDatum(sap->last_updated_ts);
-		}
-		else
-			nulls[GP_LAST_UPDATED_TS] = true;
-
-		values[GP_UPDATED_BY_DECODE] = BoolGetDatum(sap->updated_by_decode);
-
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-	}
-
-	LWLockRelease(SpockCtx->apply_group_master_lock);
-
-	return (Datum) 0;
 }
