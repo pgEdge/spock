@@ -13,6 +13,7 @@
 
 #include "access/sysattr.h"
 #include "access/detoast.h"
+#include "access/toast_compression.h"
 #include "catalog/pg_type.h"
 #include "libpq/pqformat.h"
 #include "nodes/parsenodes.h"
@@ -46,6 +47,8 @@ static void spock_read_attrs(StringInfo in, char ***attrnames,
 								  int *nattrnames);
 static void spock_read_tuple(StringInfo in, SpockRelation *rel,
 					  SpockTupleData *tuple);
+static const char *spock_read_cstring(StringInfo in, int len,
+									  const char *what);
 static void check_varlena_attribute(SpockRelation *rel,
 									Form_pg_attribute att,
 									const char *data, int len);
@@ -838,6 +841,38 @@ spock_read_delete(StringInfo in, LOCKMODE lockmode,
 
 
 /*
+ * spock_read_cstring
+ *		Read a string of exactly len bytes, terminator included.
+ *
+ *		The sender writes strlen(s) + 1 bytes.  Check that the terminator is
+ *		where it should be, since callers treat the result as a C string.
+ *
+ *		The result points into the message buffer; the caller copies whatever
+ *		it keeps.  'what' names the object for the error message.
+ */
+static const char *
+spock_read_cstring(StringInfo in, int len, const char *what)
+{
+	const char *res;
+
+	if (len <= 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("invalid length %d for %s in replication message",
+						len, what)));
+
+	/* pq_getmsgbytes() has verified that len bytes are in the message */
+	res = pq_getmsgbytes(in, len);
+
+	if (res[len - 1] != '\0')
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("unterminated %s in replication message", what)));
+
+	return res;
+}
+
+/*
  * check_varlena_attribute
  *		Verify that a varlena datum received in the internal binary format
  *		describes exactly the bytes that arrived with it.
@@ -881,6 +916,73 @@ check_varlena_attribute(SpockRelation *rel, Form_pg_attribute att,
 		reject_attribute(rel, att,
 						 "varlena header does not describe the %d bytes that arrived",
 						 len);
+
+	/*
+	 * An inline compressed datum is expanded by whoever reads the column
+	 * later, not by us, so bad metadata would surface as an error in an
+	 * unrelated backend long after the row was accepted, with nothing left to
+	 * point at replication.  Reject it while we can still say where it came
+	 * from.
+	 */
+	if (VARATT_IS_COMPRESSED(data))
+	{
+		ToastCompressionId cmid;
+		uint32		extsize;
+
+		/*
+		 * va_tcinfo follows the length word; VARSIZE() agreeing with len
+		 * above does not establish that it is there.
+		 */
+		if (len < (int) VARHDRSZ_COMPRESSED)
+			reject_attribute(rel, att,
+							 "compressed varlena datum is shorter than its header");
+
+		/*
+		 * A method this server cannot run would otherwise be stored and then
+		 * fail every later read of the column.
+		 */
+		cmid = (ToastCompressionId) VARDATA_COMPRESSED_GET_COMPRESS_METHOD(data);
+		switch (cmid)
+		{
+			case TOAST_PGLZ_COMPRESSION_ID:
+				break;
+			case TOAST_LZ4_COMPRESSION_ID:
+#ifndef USE_LZ4
+
+				/*
+				 * A build mismatch: a provider built with lz4 hands out such
+				 * a datum and this format carries it verbatim.  The check
+				 * belongs in check_binary_compatibility(), which already
+				 * settles the other properties the raw representation depends
+				 * on; settled there the answer would be a fallback to 'b' or
+				 * 't' instead of a stopped subscription.  Keep this as a
+				 * backstop until that exists.
+				 */
+				reject_attribute(rel, att,
+								 "compressed varlena datum uses lz4, which this server was not built to decompress");
+#endif
+				break;
+			default:
+				reject_attribute(rel, att,
+								 "compressed varlena datum uses unrecognised compression method %d",
+								 (int) cmid);
+		}
+
+		/*
+		 * The stored size is that of the uncompressed payload, and
+		 * toast_compress_datum() keeps the compressed form only when it is
+		 * smaller.  PG18 insists on a saving of more than two bytes, but only
+		 * the weaker form is checked here: that allowance has changed before,
+		 * and being wrong in that direction would reject good data.  No upper
+		 * bound is imposed, since a repetitive value can compress arbitrarily
+		 * well.
+		 */
+		extsize = VARDATA_COMPRESSED_GET_EXTSIZE(data);
+		if (extsize <= (uint32) len)
+			reject_attribute(rel, att,
+							 "compressed varlena datum claims an uncompressed size of %u bytes for %d bytes of input",
+							 extsize, len);
+	}
 }
 
 /*
@@ -1007,6 +1109,10 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 
 					len = pq_getmsgint(in, 4); /* read length */
 
+					if (len < 0)
+						reject_attribute(rel, att, "length %d is negative",
+										 len);
+
 					/*
 					 * From a security standpoint, it doesn't matter whether the input's
 					 * column type matches what we expect: the column type's receive
@@ -1071,6 +1177,10 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 
 					len = pq_getmsgint(in, 4); /* read length */
 
+					if (len < 0)
+						reject_attribute(rel, att, "length %d is negative",
+										 len);
+
 					getTypeInputInfo(att->atttypid, &typinput, &typioparam);
 
 					/* Copy the value out of the message buffer */
@@ -1111,12 +1221,16 @@ spock_read_rel(StringInfo in)
 
 	relid = pq_getmsgint(in, 4);
 
-	/* Read relation from stream */
+	/*
+	 * Read relation from stream.  The names are borrowed from the message
+	 * buffer: spock_relation_cache_update() pstrdup()s what it keeps.  const
+	 * is dropped only because that function takes char *.
+	 */
 	len = pq_getmsgbyte(in);
-	schemaname = (char *) pq_getmsgbytes(in, len);
+	schemaname = unconstify(char *, spock_read_cstring(in, len, "schema name"));
 
 	len = pq_getmsgbyte(in);
-	relname = (char *) pq_getmsgbytes(in, len);
+	relname = unconstify(char *, spock_read_cstring(in, len, "relation name"));
 
 	/* Get attribute description */
 	spock_read_attrs(in, &attrnames, &attrtypes, &attrtypmods, &natts);
@@ -1147,6 +1261,17 @@ spock_read_attrs(StringInfo in, char ***attrnames, Oid **attrtypes,
 		elog(ERROR, "expected ATTRS, got %c", blocktype);
 
 	nattrs = pq_getmsgint(in, 2);
+
+	/*
+	 * No relation can hold more attributes than this.  Check before the
+	 * allocations below, which are sized from the count.
+	 */
+	if (nattrs > MaxTupleAttributeNumber)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("replication message declares %d attributes for a relation, more than the maximum of %d",
+						(int) nattrs, MaxTupleAttributeNumber)));
+
 	attrs = palloc(nattrs * sizeof(char *));
 	types = (Oid *) palloc(nattrs * sizeof(Oid));
 	typmods = (Oid *) palloc(nattrs * sizeof(Oid));
@@ -1166,10 +1291,10 @@ spock_read_attrs(StringInfo in, char ***attrnames, Oid **attrtypes,
 		if (blocktype != 'N')
 			elog(ERROR, "expected NAME, got %c", blocktype);
 
-		/* attribute name */
+		/* attribute name; borrowed from the message buffer, see above */
 		len = pq_getmsgint(in, 2);
-		/* the string is NULL terminated */
-		attrs[i] = (char *) pq_getmsgbytes(in, len);
+		attrs[i] = unconstify(char *,
+							  spock_read_cstring(in, len, "attribute name"));
 		types[i] = pq_getmsgint(in, 4);		/* atttype */
 		typmods[i] = pq_getmsgint(in, 4);	/* atttypmod */
 	}
