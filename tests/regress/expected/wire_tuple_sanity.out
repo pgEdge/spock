@@ -18,6 +18,9 @@
 --       force_text_transfer := true, so it needs a subscription of its
 --       own -- see spock.sub_create() in init.sql for the shape.
 --
+-- The compression metadata checks in check_varlena_attribute() are
+-- not covered either.
+--
 SELECT * FROM spock_regress_variables()
 \gset
 -- Pin the exception policy so the outcome does not depend on the
