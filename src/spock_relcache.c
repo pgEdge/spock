@@ -38,6 +38,11 @@ static HTAB *SpockRelationHash = NULL;
 static void spock_relcache_init(void);
 static int tupdesc_get_att_by_name(TupleDesc desc, const char *attname);
 
+/*
+ * relcache_free_entry
+ *		Release everything an entry owns in CacheMemoryContext, leaving it
+ *		ready to be filled in again.
+ */
 static void
 relcache_free_entry(SpockRelation *entry)
 {
@@ -52,6 +57,22 @@ relcache_free_entry(SpockRelation *entry)
 			pfree(entry->attnames[i]);
 
 		pfree(entry->attnames);
+	}
+
+	/*
+	 * attrtypes and attrtypmods are allocated per entry in
+	 * spock_relation_cache_update(); free them with the rest of the entry
+	 * and clear the pointers so the entry can be refilled cleanly.
+	 */
+	if (entry->attrtypes)
+	{
+		pfree(entry->attrtypes);
+		entry->attrtypes = NULL;
+	}
+	if (entry->attrtypmods)
+	{
+		pfree(entry->attrtypmods);
+		entry->attrtypmods = NULL;
 	}
 
 	if (entry->attmap)
@@ -299,6 +320,10 @@ spock_relation_cache_updater(SpockRemoteRel *remoterel)
 	entry->attnames = palloc(remoterel->natts * sizeof(char *));
 	for (i = 0; i < remoterel->natts; i++)
 		entry->attnames[i] = pstrdup(remoterel->attnames[i]);
+
+	entry->attrtypes = NULL;
+	entry->attrtypmods = NULL;
+
 	entry->attmap = palloc(remoterel->natts * sizeof(int));
 	entry->has_delta_columns = false;
 	entry->delta_apply_functions = palloc0(remoterel->natts * sizeof(Oid));
