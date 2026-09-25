@@ -455,10 +455,20 @@ spock_connect_base(const char *connstr, const char *appname,
 
 	if (PQstatus(conn) != CONNECTION_OK)
 	{
+		char		msg[1024];
+
+		/*
+		 * A failed PGconn still owns memory and possibly a socket, and nothing
+		 * here is registered with a resource owner, so it must be closed before
+		 * we longjmp out.  Copy the message out first: PQerrorMessage() points
+		 * into the PGconn.
+		 */
+		snprintf(msg, sizeof(msg), "%s", PQerrorMessage(conn));
+		PQfinish(conn);
+
 		ereport(ERROR,
 				(errmsg("could not connect to the postgresql server%s: %s",
-						replication ? " in replication mode" : "",
-						PQerrorMessage(conn)),
+						replication ? " in replication mode" : "", msg),
 				 errdetail("dsn was: %s", s.data)));
 	}
 

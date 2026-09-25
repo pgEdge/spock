@@ -11,6 +11,9 @@
 #
 
 test: 012_zodan_basics
+# ZODAN basics/timeout: in-core C orchestration (spock.attach_node/detach_node)
+test: 036_attach_node_basics_incore
+test: 037_attach_node_3n_timeout_incore
 # test: 016_crash_recovery_progress
 test: 017_zodan_3n_timeout
 
