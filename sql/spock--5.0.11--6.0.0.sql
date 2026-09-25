@@ -380,8 +380,10 @@ CREATE TABLE spock.reserved_object (
 -- by this script, so only non-built-in rows are dumped.
 SELECT pg_catalog.pg_extension_config_dump('spock.reserved_object', 'WHERE NOT builtin');
 
--- lolor is excluded from the dump but NOT blocked from replication sets: its
--- tables must replicate so large objects survive a DROP EXTENSION on all nodes.
+-- lolor and coldfront are excluded from the dump but NOT blocked from
+-- replication sets: lolor's tables must replicate so large objects survive a
+-- DROP EXTENSION on all nodes, and coldfront adds its own claim, registry and
+-- configuration tables to the default set to coordinate the mesh.
 INSERT INTO spock.reserved_object
     (name, kind, exclude_from_dump, block_in_repset, replicate_ddl, builtin) VALUES
     ('spock',      'schema',    true, true,  true,  true),
@@ -390,6 +392,8 @@ INSERT INTO spock.reserved_object
     ('snowflake',  'extension', true, true,  NULL,  true),
     ('lolor',      'schema',    true, false, true,  true),
     ('lolor',      'extension', true, false, NULL,  true),
+    ('coldfront',  'schema',    true, false, true,  true),
+    ('coldfront',  'extension', true, false, NULL,  true),
     ('pgedge_ace', 'schema',    true, true,  false, true);
 
 CREATE FUNCTION spock.reserved_object_guard()
