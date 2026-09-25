@@ -310,6 +310,45 @@ SELECT spock.reset_subscription_stats(:test_sub_id);
 (1 row)
 
 TRUNCATE spock.exception_log;
+-- ============================================================
+-- Test spock.get_subscription_stats() against a disabled subscription
+-- whose apply worker has never run (PG18 stats hooks guard, read side).
+-- The pgstat entry is created at CREATE SUBSCRIPTION time regardless of
+-- "enabled", so this must return a well-defined all-zero row, not crash.
+-- ============================================================
+BEGIN;
+SELECT 1 FROM spock.sub_create(
+    subscription_name := 'test_subscription_disabled',
+    provider_dsn := (SELECT provider_dsn FROM spock_regress_variables()) || ' user=super',
+    replication_sets := '{}',
+    synchronize_structure := false,
+    synchronize_data := false,
+    forward_origins := '{}',
+    enabled := false);
+ ?column? 
+----------
+        1
+(1 row)
+
+COMMIT;
+SELECT sub_id AS disabled_sub_id FROM spock.subscription
+    WHERE sub_name = 'test_subscription_disabled' \gset
+SELECT confl_update_missing,
+  confl_insert_exists,confl_update_origin_differs,confl_update_exists,
+  confl_delete_origin_differs,confl_delete_missing,confl_delete_exists,
+  stats_reset
+FROM spock.get_subscription_stats(:disabled_sub_id);
+ confl_update_missing | confl_insert_exists | confl_update_origin_differs | confl_update_exists | confl_delete_origin_differs | confl_delete_missing | confl_delete_exists | stats_reset 
+----------------------+---------------------+-----------------------------+---------------------+-----------------------------+----------------------+---------------------+-------------
+                    0 |                   0 |                           0 |                   0 |                           0 |                    0 |                   0 | 
+(1 row)
+
+SELECT spock.sub_drop('test_subscription_disabled');
+ sub_drop 
+----------
+        1
+(1 row)
+
 -- Cleanup
 \c :provider_dsn
 SELECT spock.replicate_ddl($$ DROP TABLE public.conflict_ue_test CASCADE; $$);
