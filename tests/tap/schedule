@@ -48,3 +48,4 @@ test: 103_manager_worker_dboid_race
 test: 105_sub_disable_retransmit_after_disconnect
 test: 107_apply_worker_midtxn_restart
 test: 108_apply_unknown_column_exception
+test: 109_structure_sync_error_report
