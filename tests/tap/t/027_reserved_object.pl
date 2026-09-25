@@ -42,13 +42,30 @@ sub psql_try {
 # Seeded built-ins
 # --------------------------------------------------------------------------
 is(scalar_query(1, "SELECT count(*) FROM spock.reserved_object WHERE builtin"),
-   '7', 'seven built-in reserved objects are seeded');
+   '9', 'nine built-in reserved objects are seeded');
 is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='spock' AND kind='schema'"),
    't', 'spock schema is blocked from replication sets');
 is(scalar_query(1, "SELECT block_in_repset FROM spock.reserved_object WHERE name='lolor' AND kind='schema'"),
    'f', 'lolor schema is NOT blocked from replication sets (its tables must replicate)');
 is(scalar_query(1, "SELECT exclude_from_dump FROM spock.reserved_object WHERE name='lolor' AND kind='schema'"),
    't', 'lolor schema is excluded from the structure dump');
+
+# --------------------------------------------------------------------------
+# coldfront: excluded from the dump, allowed in replication sets
+# --------------------------------------------------------------------------
+is(scalar_query(1, "SELECT string_agg(kind || ':' || exclude_from_dump || block_in_repset || coalesce(replicate_ddl::text, '-'), ',' ORDER BY kind) FROM spock.reserved_object WHERE name='coldfront' AND builtin"),
+   'extension:truefalse-,schema:truefalsetrue',
+   'coldfront schema and extension are built-ins excluded from the dump, not blocked');
+
+# Coldfront adds its own tables to a replication set; that must keep working.
+my ($rc0, $out0) = psql_try("CREATE SCHEMA coldfront; CREATE TABLE coldfront.claims (id bigint PRIMARY KEY)");
+is($rc0, 0, 'a table can be created in the coldfront schema') or diag($out0);
+($rc0, $out0) = psql_try("SELECT spock.repset_create('coldfront_test'); SELECT spock.repset_add_table('coldfront_test', 'coldfront.claims')");
+is($rc0, 0, 'a table in the coldfront schema can join a replication set') or diag($out0);
+is(scalar_query(1, "SELECT count(*) FROM spock.replication_set_table t JOIN spock.replication_set s USING (set_id) WHERE s.set_name = 'coldfront_test' AND t.set_reloid = 'coldfront.claims'::regclass"),
+   '1', 'coldfront.claims is in the replication set');
+psql_try("SELECT spock.repset_drop('coldfront_test')");
+psql_try("DROP SCHEMA coldfront CASCADE");
 
 # --------------------------------------------------------------------------
 # pgedge_ace: node-local schema (replicate_ddl=false), seeded as builtin
@@ -256,8 +273,8 @@ diag("pg_restore exited $restore_rc; output follows:\n$restore_out")
 
 is($rt->("SELECT to_regclass('spock.reserved_object') IS NOT NULL"), 't',
    'pg_restore recreated the spock.reserved_object catalog');
-is($rt->("SELECT count(*) FROM spock.reserved_object WHERE builtin"), '7',
-   'restore re-seeded exactly 7 built-in rows (no duplicates)');
+is($rt->("SELECT count(*) FROM spock.reserved_object WHERE builtin"), '9',
+   'restore re-seeded exactly 9 built-in rows (no duplicates)');
 is($rt->("SELECT count(*) FROM spock.reserved_object WHERE NOT builtin"), '4',
    'restore preserved all 4 operator-added rows');
 is($rt->("SELECT replicate_ddl FROM spock.reserved_object WHERE name='foo' AND kind='schema'"),
