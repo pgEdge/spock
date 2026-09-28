@@ -58,6 +58,7 @@
 #endif
 #include "spock_executor.h"
 #include "spock_group.h"
+#include "spock_monitor.h"
 #include "spock_node.h"
 #include "spock_conflict.h"
 #include "spock_rmgr.h"
@@ -456,7 +457,8 @@ spock_connect_base(const char *connstr, const char *appname,
 	if (PQstatus(conn) != CONNECTION_OK)
 	{
 		ereport(ERROR,
-				(errmsg("could not connect to the postgresql server%s: %s",
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("could not connect to the postgresql server%s: %s",
 						replication ? " in replication mode" : "",
 						PQerrorMessage(conn)),
 				 errdetail("dsn was: %s", s.data)));
@@ -604,6 +606,11 @@ spock_manage_extension(void)
 			alter_stmt.options = NIL;
 			alter_stmt.extname = EXTENSION_NAME;
 			ExecAlterExtensionStmt(&alter_stmt);
+
+			spock_monitor_record_event(SPOCK_EVENT_EXTENSION_UPGRADED,
+									   InvalidOid, InvalidXLogRecPtr,
+									   "extension updated from %s to %s",
+									   extversion, SPOCK_VERSION);
 		}
 	}
 
@@ -768,6 +775,8 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 	PQclear(res);
 
 	elog(LOG, "SPOCK %s: connected", MySubscription->name);
+
+	spock_monitor_provider_connected(slot_name, start_pos);
 }
 
 /*
@@ -1043,6 +1052,9 @@ log_message_filter(ErrorData *edata)
 {
 	if (prev_emit_log_hook)
 		prev_emit_log_hook(edata);
+
+	/* Remember errors of spock workers for the monitoring views. */
+	spock_monitor_report_error(edata);
 
 	if (!edata->output_to_client && !edata->output_to_server)
 		/* Previous hook already done this job. */
@@ -1495,6 +1507,9 @@ _PG_init(void)
 
 	if (IsBinaryUpgrade)
 		return;
+
+	/* GUCs of the monitoring subsystem */
+	spock_monitor_init();
 
 	/* Init shared memory for all subsystems needed it */
 	spock_shmem_init();

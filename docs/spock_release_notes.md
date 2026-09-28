@@ -17,6 +17,10 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
   through timestamp-based resolution.
 * **Per-subscription conflict statistics** on PostgreSQL 18+ via a custom
   pgstat kind.
+* **Node monitoring views**: `spock.node_status`,
+  `spock.subscription_status`, `spock.subscription_stats`,
+  `spock.worker_status`, `spock.slot_status` and `spock.events` give the
+  complete picture of a node without reading the server log.
 * **Liveness and feedback refactor** — TCP keepalive replaces the fragile
   `wal_sender_timeout` workaround; new `spock.apply_idle_timeout` GUC.
 * **Logical slot failover** uses native PostgreSQL slotsync on PG17+ /
@@ -184,6 +188,46 @@ subscription.  New SQL functions
 `spock.reset_subscription_stats(subid)` expose per-subscription apply
 statistics.  On PostgreSQL versions before 18 these functions raise a
 feature-not-supported error.
+
+### Node monitoring views
+
+Spock now keeps a history of recent events and per-subscription activity
+counters in shared memory, and exposes them together with worker, slot and
+replication state through a set of views in the `spock` schema:
+
+* `spock.node_status`: the whole node on one row: library and extension
+  version, pending upgrade, worker and subscription counts, WAL retained by
+  slots, replication lag, last events.
+* `spock.subscription_status`: configuration, status, serving worker,
+  replication position and lag, and the last error of every subscription.
+* `spock.subscription_stats`: worker starts and failures, provider
+  connects, messages, transactions, tuple and conflict counters.
+* `spock.worker_status`: supervisor, manager, apply and sync workers,
+  including workers waiting for a restart.
+* `spock.slot_status`: provider side: spock slots with their walsender,
+  positions, retained WAL and feedback lag.
+* `spock.events`: subscription enable and disable, worker start, stop and
+  failure, provider connects and disconnects, skipped and discarded
+  transactions, table synchronization, extension upgrades.
+* `spock.peer_status`, `spock.replication_set_status` and `spock.settings`
+  for the known nodes, the replication sets and the parameters replication
+  depends on.
+* `spock.system_status` for the health of the host and the instance: disk
+  space of the data and WAL volumes, load, connections, long and idle
+  transactions, wraparound age, archiving.
+* `spock.spock_info()` returns the whole node as one text report: host and
+  versions, installed extensions, settings and every view in turn.
+* Errors are kept with SQLSTATE, DETAIL, CONTEXT, time and pid, classified
+  into deadlocks, lock timeouts, constraint violations and resource errors,
+  and errors of the walsender running the output plugin are recorded as
+  `stream_error` events. Workers waiting for a lock show the blocking
+  session.
+
+The event history size is set by the new `spock.event_history_size` GUC.
+`spock.reset_subscription_stats()` now resets both the activity and the
+conflict counters. The internal `spock.get_apply_worker_status()` function
+is replaced by `spock.get_worker_status()` and the `spock.worker_status`
+view.
 
 ### Liveness and feedback refactoring
 

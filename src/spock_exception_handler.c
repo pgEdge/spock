@@ -52,6 +52,7 @@
 #include "spock_relcache.h"
 #include "spock_exception_handler.h"
 #include "spock_jsonb_utils.h"
+#include "spock_monitor.h"
 
 #define Natts_exception_table 16
 #define Anum_exception_log_remote_origin 1
@@ -270,6 +271,10 @@ spock_disable_subscription(SpockSubscription *sub,
 		 " exceptions - origin_lsn=%X/%X",
 		 sub->name,
 		 LSN_FORMAT_ARGS(lsn));
+
+	spock_monitor_record_event(SPOCK_EVENT_SUBSCRIPTION_DISABLED, sub->id, lsn,
+							   "subscription %s disabled by exception handling",
+							   sub->name);
 
 	PopActiveSnapshot();
 	if (started_tx)
