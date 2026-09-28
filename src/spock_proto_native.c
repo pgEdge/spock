@@ -1205,6 +1205,16 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 									 att->attlen);
 
 				/*
+				 * The cases that could get here are a sender that writes a
+				 * length different from the bytes it appends, a reader that
+				 * lost its place in the message (protocol version skew, a
+				 * missed or extra field), and a spill-file record corrupted
+				 * between write and read-back. This is an assertion rather
+				 * than a check every attribute pays for in production.
+				 */
+				Assert(len <= in->len - in->cursor);
+
+				/*
 				 * Safety measure against underlying buffer reusage and
 				 * pointer dereference on strict-alignment platforms.  The
 				 * palloc() puts the copy into ApplyOperationContext (is reset
@@ -1289,6 +1299,9 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 					getTypeBinaryInputInfo(att->atttypid,
 										   &typreceive, &typioparam);
 
+					/* see the 'i' case */
+					Assert(len <= in->len - in->cursor);
+
 					/*
 					 * Give the StringInfo its own terminated copy of the
 					 * attribute, as receive functions expect.
@@ -1325,6 +1338,9 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 										 len);
 
 					getTypeInputInfo(att->atttypid, &typinput, &typioparam);
+
+					/* see the 'i' case */
+					Assert(len <= in->len - in->cursor);
 
 					/* Copy the value out of the message buffer */
 					data = (char *) palloc(len + 1);
