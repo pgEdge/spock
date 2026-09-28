@@ -128,7 +128,7 @@ void spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *j
  * the worker type, etc, prefixed by SPOCK:, in the Valgrind logs. We
  * need to stub it out if we aren't using valgrind.
  */
-pg_attribute_printf(1, 2) pg_attribute_unused() static inline void VALGRIND_PRINTF(const char *format, ...) {}
+pg_attribute_unused() pg_attribute_printf(1, 2) static inline void VALGRIND_PRINTF(const char *format, ...) {}
 
 #endif
 
