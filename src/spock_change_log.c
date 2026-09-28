@@ -64,9 +64,13 @@ static void
 append_row_json(StringInfo buf, SpockRelation *rel,
 				SpockTupleData *tup, bool pk_only)
 {
+	TupleDesc	desc;
 	Bitmapset  *pk_atts = NULL;
 	int			i;
 	bool		first = true;
+
+	Assert(rel->rel != NULL);
+	desc = RelationGetDescr(rel->rel);
 
 	appendStringInfoChar(buf, '{');
 
@@ -99,18 +103,23 @@ append_row_json(StringInfo buf, SpockRelation *rel,
 
 	for (i = 0; i < rel->natts; i++)
 	{
-		AttrNumber	local_attno;
+		int			attid = rel->attmap[i];
+		Form_pg_attribute att;
 
 		/*
-		 * SpockTupleData is indexed by remote attnum (0..natts-1).
-		 * rel->attmap (when set) maps remote -> local 0-based.  When attmap
-		 * is NULL the columns are 1:1 and the local attnum is simply i + 1.
+		 * Use the local attribute map to ensure that any differences in the
+		 * physical representation of remote and local tuple descriptors (such
+		 * as ordering shuffle or a different number of columns) are counted.
 		 */
-		local_attno = (rel->attmap != NULL) ? rel->attmap[i] + 1 : i + 1;
+
+		Assert(attid >= 0 && attid < desc->natts);
+		att = TupleDescAttr(desc, attid);
+		if (att->attisdropped)
+			continue;
 
 		if (pk_only)
 		{
-			if (pk_atts == NULL || !bms_is_member(local_attno, pk_atts))
+			if (pk_atts == NULL || !bms_is_member(attid + 1, pk_atts))
 				continue;
 		}
 
@@ -118,10 +127,10 @@ append_row_json(StringInfo buf, SpockRelation *rel,
 			appendStringInfoChar(buf, ',');
 		first = false;
 
-		escape_json(buf, rel->attnames[i]);
+		escape_json(buf, NameStr(att->attname));
 		appendStringInfoChar(buf, ':');
-		append_json_value(buf, rel->attrtypes[i],
-						  tup->values[i], tup->nulls[i]);
+		append_json_value(buf, att->atttypid,
+						  tup->values[attid], tup->nulls[attid]);
 	}
 
 	if (pk_atts != NULL)
