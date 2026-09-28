@@ -61,8 +61,8 @@ relcache_free_entry(SpockRelation *entry)
 
 	/*
 	 * attrtypes and attrtypmods are allocated per entry in
-	 * spock_relation_cache_update(); free them with the rest of the entry
-	 * and clear the pointers so the entry can be refilled cleanly.
+	 * spock_relation_cache_update(); free them with the rest of the entry and
+	 * clear the pointers so the entry can be refilled cleanly.
 	 */
 	if (entry->attrtypes)
 	{
