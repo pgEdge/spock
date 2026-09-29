@@ -15,6 +15,8 @@ max_replication_slots = 10  # two per subscriber, per replicated database,
 max_wal_senders = 10        # keep equal to max_replication_slots
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+                            # only on servers that have this parameter; see below
 ```
 
 These values suit a small cluster of two or three nodes replicating a single
@@ -26,6 +28,39 @@ databases or other extensions that use background workers, size each parameter
 with the formulas in
 [Sizing Postgres Resources for Spock](sizing.md). All three require a server
 restart to change.
+
+!!! warning "`output_plugin_libraries`"
+
+    A 2026 PostgreSQL security fix (CVE-2026-6471, back-patched to every
+    supported major) added the `output_plugin_libraries` parameter, and a
+    library may no longer be used as an output plugin unless it is listed
+    there. Its default, `'pgoutput, test_decoding'`, does not include
+    `spock_output`, so on such a server logical decoding fails with:
+
+    ```
+    ERROR:  library "spock_output" may not be used as an output plugin
+    ```
+
+    The check runs every time decoding starts, not only when the slot is
+    created, so an established cluster stops replicating after a minor-version
+    upgrade too. Add `spock_output` to the list, keeping the core defaults, as
+    shown above, on every node — including standbys, which need it once
+    promoted.
+
+    Only set the parameter if your server has it. On a PostgreSQL release
+    predating the fix an unrecognised parameter in `postgresql.conf` stops the
+    server from starting at all. To check, run against a server that is up:
+
+    ```sql
+    SELECT current_setting('output_plugin_libraries', true);
+    ```
+
+    A NULL result means the parameter does not exist and must not be set. You
+    can also ask the binary, with no server running:
+
+    ```bash
+    postgres --describe-config | grep '^output_plugin_libraries'
+    ```
 
 After modifying the parameters and restarting the Postgres server with your
 OS-specific restart command, connect with psql and create the Spock
@@ -306,7 +341,9 @@ Spock creates logical replication slots on each provider node. For high
 availability with a physical standby, these slots must be synchronized to the
 standby so that replication can resume without data loss after a failover.
 
-See [Logical Slot Failover](logical_slot_failover.md) for full setup instructions.
+See [Logical Slot Failover](logical_slot_failover.md) for full setup
+instructions, including a runbook step for clearing
+`synchronized_standby_slots` on the promoted node after a failover.
 
 The behaviour depends on the PostgreSQL version:
 
@@ -326,25 +363,47 @@ On PostgreSQL 17+, Spock marks every logical slot with the `FAILOVER` flag
 at creation time. PostgreSQL's built-in slotsync worker then synchronizes
 those slots automatically.
 
-On **PostgreSQL 18+**, Spock's own failover worker is not registered. You
-must configure the native mechanism:
+On **PostgreSQL 17**, Spock's worker only yields to native slotsync when you
+set `sync_replication_slots = on` (below). On **PostgreSQL 18+**, Spock's own
+failover worker is not registered, so the native mechanism is required.
+Either way, PostgreSQL's own slot synchronization must be configured.
+
+First create the physical replication slot on the primary. The standby streams
+through it, and its `catalog_xmin` (fed back via `hot_standby_feedback`) is what
+protects the synchronized logical slots from being invalidated:
+
+```sql
+SELECT pg_create_physical_replication_slot('physical_slot_name');
+```
 
 **Primary (`postgresql.conf`):**
 ```ini
+# Hold logical walsenders back until the standby has confirmed the changes.
 synchronized_standby_slots = 'physical_slot_name'
 ```
 
 **Standby (`postgresql.conf`):**
 ```ini
-sync_replication_slots = on
-primary_conninfo = 'host=<primary_host> dbname=<dbname> ...'
-primary_slot_name = 'physical_slot_name'
-hot_standby_feedback = on
+sync_replication_slots = on                      # enable the native slotsync worker
+hot_standby_feedback   = on                      # required; pins the primary's catalog vacuum
+primary_slot_name      = 'physical_slot_name'    # the physical slot created above
+primary_conninfo       = 'host=<primary_host> dbname=<dbname> ...'   # must include dbname
 ```
+
+Only logical slots created with `failover = true` are synchronized. Spock 6.0.0
+sets that flag when it creates a slot, and the upgrade from 5.x sets it on
+existing slots; see
+[Upgrading Spock to 6.0.0](logical_slot_failover.md#upgrading-spock-to-600)
+for any it skips.
 
 After a failover, subscribers only need to update their `host=` in the
 connection string — replication resumes from the last synchronized LSN with
-no data loss.
+no data loss. **However**, if the promoted node has
+`synchronized_standby_slots` set, you must clear or update it first —
+otherwise its walsenders wait forever on the now-orphaned physical slot(s) and
+logical replication to subscribers freezes. See the
+[runbook in Logical Slot Failover](logical_slot_failover.md#runbook-clear-synchronized_standby_slots-after-promotion)
+for when this applies and the exact steps.
 
 #### PostgreSQL 15, 16, and 17 (Spock Built-in Worker)
 
