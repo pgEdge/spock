@@ -24,12 +24,18 @@ this node's locally cached copy.
 
 `spock.node` is a local catalog: each node populates its row for a peer
 once, either when that node is created or when a subscription to it is
-first created, and does not refresh it automatically afterward. If a peer's
-`info` is changed later -- most commonly to assign a custom `tiebreaker` and
-resolve an equal-tiebreaker collision -- every other node keeps using its
-old, cached copy until it is explicitly refreshed. See the Tiebreaker
-section in [conflict_types.md](../../conflict_types.md) for why this matters
-and why `spock.node` is not simply replicated.
+first created. A peer's later `location`/`country`/`info` change -- most
+commonly to assign a custom `tiebreaker` and resolve an equal-tiebreaker
+collision -- now propagates automatically to every node that subscribes to
+that peer *directly* (see
+[Automatic Node Metadata Propagation](../node_mgmt.md#automatic-node-metadata-propagation)),
+with no call to this function needed. This function remains necessary for
+a node that is not a direct subscriber of the peer that changed (a cascade
+topology, or a subscription not currently active), and is convenient right
+after `spock.sub_create` or to force a specific peer's info to be
+re-fetched on demand. See the Tiebreaker section in
+[conflict_types.md](../../conflict_types.md) for why this matters and why
+`spock.node` is not simply replicated wholesale.
 
 Called with a specific `node_name`, only that node's row is refreshed and
 any failure refreshing it is reported as an error. Called with no
