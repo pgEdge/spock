@@ -29,10 +29,14 @@
  * SPOCK_MIN_VERSION_NUM_FOR_MULTI_PROTO is the minimum Spock version that
  * supports multi-protocol mode (protocol versions 4 and 5). Both nodes must
  * be at least this version to use protocol version 4.
+ *
+ * SPOCK_MIN_VERSION_NUM_FOR_NODE_INFO_PROPAGATION prevents sending node-info
+ * messages to subscribers that cannot decode them. The feature ships in 6.0.0.
  */
 #define SPOCK_PROTO_VERSION_NUM 5
 #define SPOCK_PROTO_MIN_VERSION_NUM 4
 #define SPOCK_MIN_VERSION_NUM_FOR_MULTI_PROTO 50000
+#define SPOCK_MIN_VERSION_NUM_FOR_NODE_INFO_PROPAGATION 60000
 
 /*
  * The startup parameter format is versioned separately to the rest of the wire

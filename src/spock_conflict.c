@@ -187,18 +187,17 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 			/*----------
 			 * Equal tiebreaker values. Node creation prevents this for new
 			 * nodes, but existing clusters may still hit it. Apply remote and
-			 * warn so the operator can assign unique tiebreaker values:
+			 * warn so the operator can assign unique tiebreaker values. Run on
+			 * the node itself:
 			 *
-			 *   UPDATE spock.node
-			 *      SET info = COALESCE(info, '{}'::jsonb) ||
-			 *                 '{"tiebreaker": <unique_integer>}'
-			 *    WHERE node_name = '<name>';
+			 *   SELECT spock.node_alter(p_info_patch =>
+			 *                           '{"tiebreaker": <unique_integer>}');
 			 *
-			 * Run this on the node itself, then call
-			 * spock.node_refresh_info() on every *other* node that has a
-			 * spock.node row for it -- each node caches this value locally
-			 * and never re-fetches it on its own. See the Tiebreaker
-			 * section in docs/conflict_types.md.
+			 * Direct subscribers receive the change automatically. A node whose
+			 * cached row missed the change, for example because the
+			 * transaction carrying it was skipped or discarded, keeps the old
+			 * value until spock.node_refresh_info() is run on it. See the
+			 * Tiebreaker section in docs/conflict_types.md.
 			 */
 			ereport(WARNING,
 					(errmsg("CONFLICT: node \"%s\" (id=%d) and node \"%s\" (id=%d) "

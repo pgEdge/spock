@@ -517,8 +517,34 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 
 		if (!isnullval)
 		{
-			intval = pg_strtoint32(TextDatumGetCString(value));
-			node->tiebreaker = intval;
+			char	   *tiebreaker_str = TextDatumGetCString(value);
+			MemoryContext oldcontext;
+
+			/* Invalid metadata must not break general conflict resolution. */
+			oldcontext = CurrentMemoryContext;
+			PG_TRY();
+			{
+				intval = pg_strtoint32(tiebreaker_str);
+				node->tiebreaker = intval;
+			}
+			PG_CATCH();
+			{
+				/*
+				 * PG_CATCH runs in ErrorContext, which FlushErrorState()
+				 * resets
+				 */
+				MemoryContextSwitchTo(oldcontext);
+				FlushErrorState();
+				ereport(WARNING,
+						(errmsg("node \"%s\" (id=%u) has a malformed \"tiebreaker\" value \"%s\"",
+								node->name, node->id, tiebreaker_str),
+						 errdetail("Falling back to the node id as the tiebreaker."),
+						 errhint("Use spock.node_alter() or fix the value directly: "
+								 "UPDATE spock.node SET info = info || '{\"tiebreaker\": <integer>}' "
+								 "WHERE node_name = '%s';", node->name)));
+				node->tiebreaker = node->id;
+			}
+			PG_END_TRY();
 		}
 		else
 		{

@@ -142,6 +142,7 @@ PG_FUNCTION_INFO_V1(spock_wait_for_subscription_sync_complete);
 PG_FUNCTION_INFO_V1(spock_wait_for_table_sync_complete);
 
 PG_FUNCTION_INFO_V1(spock_create_sync_event);
+PG_FUNCTION_INFO_V1(spock_node_info_emit);
 PG_FUNCTION_INFO_V1(spock_pause_apply_workers);
 PG_FUNCTION_INFO_V1(spock_resume_apply_workers);
 
@@ -4208,6 +4209,66 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	elog(DEBUG1, "SPOCK sync_event: emitted %s message at %X/%X",
 		 transactional ? "transactional" : "non-transactional",
 		 LSN_FORMAT_ARGS(lsn));
+
+	PG_RETURN_LSN(lsn);
+}
+
+/*
+ * Emit a transactional node-metadata snapshot. Receivers do not re-emit the
+ * message, so propagation is limited to direct subscribers.
+ */
+Datum
+spock_node_info_emit(PG_FUNCTION_ARGS)
+{
+	Name		node_name;
+	text	   *location = PG_ARGISNULL(1) ? NULL : PG_GETARG_TEXT_PP(1);
+	text	   *country = PG_ARGISNULL(2) ? NULL : PG_GETARG_TEXT_PP(2);
+	Jsonb	   *info = PG_ARGISNULL(3) ? NULL : PG_GETARG_JSONB_P(3);
+	StringInfoData json;
+	StringInfoData msg;
+	int32		mtype = SPOCK_NODE_INFO_MSG;
+	XLogRecPtr	lsn;
+
+	if (PG_ARGISNULL(0))
+		ereport(ERROR,
+				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+				 errmsg("node_name must not be null")));
+	node_name = PG_GETARG_NAME(0);
+
+	initStringInfo(&json);
+	appendStringInfoChar(&json, '{');
+
+	appendStringInfoString(&json, "\"node_name\": ");
+	escape_json(&json, NameStr(*node_name));
+
+	appendStringInfoString(&json, ", \"location\": ");
+	if (location != NULL)
+		escape_json(&json, text_to_cstring(location));
+	else
+		appendStringInfoString(&json, "null");
+
+	appendStringInfoString(&json, ", \"country\": ");
+	if (country != NULL)
+		escape_json(&json, text_to_cstring(country));
+	else
+		appendStringInfoString(&json, "null");
+
+	appendStringInfoString(&json, ", \"info\": ");
+	if (info != NULL)
+		appendStringInfoString(&json, JsonbToCString(NULL, &info->root, VARSIZE(info)));
+	else
+		appendStringInfoString(&json, "null");
+
+	appendStringInfoChar(&json, '}');
+
+	initStringInfo(&msg);
+	appendBinaryStringInfo(&msg, (char *) &mtype, sizeof(int32));
+	appendBinaryStringInfo(&msg, json.data, json.len);
+
+	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, msg.data, msg.len, true /* transactional */ );
+
+	pfree(msg.data);
+	pfree(json.data);
 
 	PG_RETURN_LSN(lsn);
 }
