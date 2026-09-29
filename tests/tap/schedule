@@ -71,4 +71,5 @@ test: 105_sub_disable_retransmit_after_disconnect
 test: 106_lww_conflict_full_mesh
 test: 107_node_refresh_info
 test: 108_apply_unknown_column_exception
+test: 109_node_info_propagation
 test: 110_resync_node_info_warning
