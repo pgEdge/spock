@@ -1,5 +1,109 @@
 # Spock Release Notes
 
+## Spock 6.0.0-beta.2
+
+This section lists what changed since 6.0.0-beta.1, for those testing the
+beta.  Each item is covered in full in the 6.0.0 notes below.  This section
+will be removed at general availability.
+
+### Upgrading from beta 1
+
+* Beta 1 and beta 2 both install extension version `6.0.0`, but the catalog
+  differs between them, so a plain `ALTER EXTENSION spock UPDATE` does
+  nothing on a beta 1 node.  Update a beta 1 node in two steps instead:
+
+  1. Pause DDL on the cluster.
+  2. Install the beta 2 binaries and restart the node.
+  3. In every database where Spock is installed, run:
+
+     ```sql
+     ALTER EXTENSION spock UPDATE TO '6.0.0-beta1-to-beta2';
+     ALTER EXTENSION spock UPDATE TO '6.0.0';
+     ```
+
+  4. Repeat for each node, then resume DDL.
+  5. On each primary, check that every Spock slot has the `failover` flag:
+
+     ```sql
+     SELECT slot_name, failover
+     FROM pg_replication_slots
+     WHERE plugin = 'spock_output';
+     ```
+
+     For any slot still showing `false`, pause the subscriber that holds it
+     and run `SELECT spock.slot_enable_failover();` on the primary.
+
+  The first command adds the objects beta 2 needs, removes
+  `spock.wait_for_apply_worker()`, and sets the `failover` flag on existing
+  slots.  The second only sets the version name back to `6.0.0`.
+
+  The `failover` flag matters on PostgreSQL 17 and 18, where native slot sync
+  copies only flagged slots to a standby.  Beta 1's upgrade from 5.x did not
+  flag the slots that already existed, so a beta 1 node upgraded from 5.x may
+  have slots that would be missing on the standby after a failover.  Slots
+  created by 6.0.0 already have the flag.  The first command flags the rest,
+  but skips any slot in use at that moment and prints a NOTICE naming it.  On
+  PostgreSQL 16 and older, or with Spock's own slot sync worker on 17, the
+  flag is not used and step 5 can be skipped.
+
+  Until a database has been updated, AutoDDL, adding tables to a replication
+  set and structure sync fail there with `catalog "spock.reserved_object"
+  does not exist`.  Running the commands on a node that already has beta 2's
+  catalog changes nothing.  These two update steps will be removed at general
+  availability.
+* The upgrade from 5.0.x now starts at 5.0.12.  A 5.0.11 node still
+  upgrades in one `ALTER EXTENSION spock UPDATE`, through 5.0.12.
+* On a server with PostgreSQL's fix for CVE-2026-6471, `spock_output` must be
+  listed in `output_plugin_libraries`.  See *Upgrading* below.
+
+### GUC changes
+
+* New `spock.sync_timeout` (seconds, default `0`, `USERSET`): the time
+  limit for a single wait in the node management routines.  `0` keeps each
+  routine's built-in limit.
+* New `spock.failover_slots_naptime` (milliseconds, default `1000`,
+  `SIGHUP`) and `spock.failover_slots_feedback_naptime` (milliseconds,
+  default `10000`, `SIGHUP`): how often Spock's failover-slots worker
+  syncs slots.  It used to wait a fixed 60 seconds.
+* `spock.pause_timeout`: the 300-second maximum is removed.
+* `spock.restart_delay_default`, `spock.restart_delay_on_exception` and
+  `spock.output_delay` are now declared in milliseconds, so they accept
+  values with units such as `'5s'`.
+* `spock.restart_delay_default` now applies to every apply-worker restart,
+  including after a lost connection or a temporary error.
+
+### SQL function and catalog changes
+
+* New table `spock.reserved_object`, listing the schemas and extensions Spock
+  keeps out of the structure-sync dump, out of replication sets, or out of
+  DDL replication.
+* New `spock.reserved_object_add(p_name name, p_kind text,
+  p_exclude_from_dump boolean DEFAULT true, p_block_in_repset boolean
+  DEFAULT true, p_replicate_ddl boolean DEFAULT NULL)`.
+* New `spock.reserved_object_remove(p_name name, p_kind text)`.
+* New `spock.slot_enable_failover() RETURNS integer`, called by the 5.x
+  upgrade.
+* Removed `spock.wait_for_apply_worker(p_subbid bigint, timeout int)`.
+* `spock.repset_add_all_tables()` now skips a table it cannot add, with a
+  warning, instead of failing the whole call.
+
+### Other changes
+
+* Direct DDL against the `spock` and `snowflake` schemas is refused while
+  DDL replication is on.
+* Large objects stored by lolor can be replicated, and Zodan `add_node`
+  copies them to the new node.
+* Zodan `add_node` can add a 6.0.0 node to a cluster of 5.0.9 or later
+  nodes, and copies the source node's replication sets to the new node.
+* `forward_origins` cannot be active on a subscription while another
+  subscription on the node is enabled.
+* The apply worker restarts and tries again after a temporary error, such
+  as a deadlock or lock timeout, instead of treating it as a data exception.
+* `pg_upgrade` of a Spock node on PostgreSQL 17 and later no longer fails
+  with `resource manager with ID 144 not registered`.
+* Bug fixes from 5.0.11 and 5.0.12.
+* Builds against PostgreSQL 19 beta 3 and 4.
+
 ## Spock 6.0.0
 
 The on-disk catalog format and the GUC surface both change in this release;
@@ -26,10 +130,21 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
 * **Exception handling refactor** — stable behaviour under TRANSDISCARD /
   SUB_DISABLE; original error messages preserved in `spock.exception_log`.
 * **Replay queue spills to disk** instead of refetching from the publisher.
+* **Reserved schemas and extensions are configurable** — a new
+  `spock.reserved_object` catalog controls which schemas and extensions are
+  left out of structure sync, replication sets and DDL replication.
+* **Mixed-version node addition** — Zodan `add_node` can add a 6.0.0 node
+  to a cluster of 5.0.9 or later nodes.
+* **Large object replication** — tables of the lolor extension can join a
+  replication set, and Zodan `add_node` copies large objects to the new
+  node.
 * **PostgreSQL 19 support** — compatibility work across core patches and
   version-specific API changes (replication-origin session state folded into
   `replorigin_xact_state`, `CLUSTER` folded into `REPACK`, the `pgstat` and
   recovery-conflict signalling changes, and the `RepOriginId` rename).
+  Spock builds against PostgreSQL 19 beta 3 and 4. This support is preliminary:
+  PostgreSQL 19 is still in beta, and Spock on 19 is not supported for
+  production use.
 
 ### Catastrophic node failure recovery
 
@@ -168,6 +283,12 @@ included in ORIGIN messages when the protocol version is 5 or higher.
 This ensures that conflict evaluation on Node C has accurate origin
 information even when changes pass through intermediate Node B.
 
+If Node C also has a disabled subscription directly to Node A, Spock now
+advances that subscription's replication origin as forwarded changes from
+Node A arrive through Node B.  When the direct subscription is later
+enabled, it starts from where the forwarded changes left off, so rows
+already received through Node B are not sent again.
+
 A subscription cannot activate `forward_origins` while another subscription
 is already enabled on the same node, and a subscription cannot be enabled
 while another has forwarding active; clear `forward_origins`
@@ -244,6 +365,24 @@ Additional Zodan fixes in 6.0:
   instead of guessing names.
 * Phase 3 catch-up wait aligned and `spock.sync_event()` parameterised to
   avoid the Phase 9 handshake deadlock.
+* **Mixed versions** — `add_node` can add a 6.0.0 node to a cluster whose
+  nodes run 5.0.9 or later, instead of requiring every node to be upgraded
+  first.  Existing nodes may already be mixed.  The new node must run the
+  same or a newer version than every existing node.
+* **Replication sets are copied** — the new node gets the source node's
+  replication sets, including user-created sets, column lists, row filters,
+  and tables removed from a set.  Before, the subscriptions named only the
+  three built-in sets, so tables in a user-created set were neither sent
+  nor received.
+* **Large objects** — the new node may have lolor installed as long as its
+  tables are empty, and must have it when the source replicates lolor
+  tables.  The initial data sync copies the large objects.
+* **Longer waits** — the new `spock.sync_timeout` GUC raises the time limit
+  on each wait in the node management routines, which was fixed at about
+  three minutes and too short for large databases.  `spock.pause_timeout`
+  no longer has a 300-second maximum.
+* The old Python versions, `zodan.py` and `zodremove.py`, are removed.
+  Use the SQL procedures.
 
 ### AutoDDL improvements
 
@@ -288,6 +427,56 @@ AutoDDL has been refactored and hardened:
   a mistake.  Previously such a statement half-applied: the command text
   replicated to peers while the relation was silently kept out of every
   replication set.  See *Upgrading* for what this affects.
+* **An extension's own DDL during `DROP EXTENSION` stays node-local** —
+  with `spock.allow_ddl_from_functions` on, DDL an extension ran while being
+  dropped was queued for replication, even though every peer runs the same
+  cleanup when it applies the `DROP EXTENSION`.  For lolor this left peers
+  unable to drop the extension and stalled apply.  The `DROP EXTENSION`
+  itself still replicates.
+
+### Reserved schemas and extensions
+
+Spock keeps some schemas and extensions out of the structure-sync dump and
+out of replication sets.  That list used to be fixed in the code.  It is now
+the `spock.reserved_object` catalog, with three settings per row:
+
+* `exclude_from_dump` — left out of the structure-sync dump.
+* `block_in_repset` — its tables may not be added to a replication set.
+* `replicate_ddl` (schemas only) — when `false`, DDL against the schema runs
+  only on the node where it is issued.
+
+The built-in rows cannot be changed or removed:
+
+| Object       | exclude_from_dump | block_in_repset | replicate_ddl |
+|--------------|-------------------|-----------------|---------------|
+| `spock`      | yes               | yes             | yes           |
+| `snowflake`  | yes               | yes             | yes           |
+| `lolor`      | yes               | no              | yes           |
+| `coldfront`  | yes               | no              | yes           |
+| `pgedge_ace` | yes               | yes             | no            |
+
+Add your own with `spock.reserved_object_add()` and remove them with
+`spock.reserved_object_remove()`.  Your rows are kept across dump and
+restore.  See
+[Reserved Schemas and Extensions](spock_functions/repset_mgmt.md#reserved-schemas-and-extensions)
+for details.
+
+Exclusion from the dump now applies whether or not the object exists on the
+subscriber.  Before, an object present only on the provider was never
+excluded.
+
+### `repset_add_all_tables()` skips tables it cannot add
+
+`spock.repset_add_all_tables()` used to fail, and add nothing, when any one
+table had no replica identity index.  It now adds the tables it can and
+prints a warning naming each table it skipped.  Tables in a reserved schema
+or owned by a reserved extension are skipped the same way.  Naming a
+reserved schema in the call is still an error, and
+`spock.repset_add_table()` still fails for a table it cannot add.
+
+The message now says "replica identity index" instead of blaming a missing
+primary key, since a table with a primary key and `REPLICA IDENTITY FULL`
+or `NOTHING` is also rejected.
 
 ### Memory and stability
 
@@ -337,6 +526,35 @@ AutoDDL has been refactored and hardened:
   on the subscriber (e.g. the relation does not exist) crash-looped the
   apply worker.  It is now wrapped in a subtransaction, logged, and
   discarded like other DML.
+* **`pg_upgrade` failed on PostgreSQL 17 and later** — `pg_upgrade` decodes
+  each logical slot's remaining WAL to check it is drained, and Spock's
+  resource manager was not registered in the servers `pg_upgrade` starts.
+  The check failed with `resource manager with ID 144 not registered`.
+* **Apply idle timeout treated as a data exception** — when
+  `spock.apply_idle_timeout` fired in the middle of a transaction, the error
+  went down the data-exception path, so the subscription could be disabled or
+  a good transaction discarded.  It is now handled like a lost connection.
+* **Clock skew in progress tracking** — an origin commit timestamp ahead of
+  the subscriber's clock, or forwarded transactions whose timestamps do not
+  rise with the provider's WAL position, tripped an assertion in
+  assert-enabled builds.  `remote_commit_lsn` now advances independently of
+  the timestamp fields.
+* **Replay entries restored from the spill file were not terminated** — a
+  truncated or malformed record read back from disk could be scanned past
+  the end of its buffer instead of being rejected.
+* **Peer sessions use a fixed time format** — Spock reads commit timestamps
+  from other nodes as text, and their meaning depended on each side's
+  `DateStyle` and `TimeZone`.  Where the two differed, the same text could
+  mean a different moment, which matters when a timestamp picks the LSN to
+  advance a slot to during `add_node`.  Peer connections now request
+  `datestyle=ISO`, and a peer timestamp without an explicit UTC offset is
+  rejected.
+* **Initial sync with a row filter on a table with a dropped column** —
+  rows were read at the wrong offsets after a dropped column, giving corrupt
+  rows or a crash.
+* **Sync worker lost the original error** — a failure while creating the
+  slot during table sync was reported as `errstart was not called` instead
+  of the real error.
 
 ### Security
 
@@ -360,6 +578,13 @@ AutoDDL has been refactored and hardened:
 * **PostgreSQL 18 support** — compatibility work across core patches,
   initdb, row filters, and compiler warnings.
 * **Source tree restructured** under `src/` and `include/` directories.
+* **Packaging** — the repository now builds the `spock60` RPM and DEB
+  packages itself.  Debian bullseye, which has reached end of life, is no
+  longer built.
+* **Documentation** — a new guide on sizing PostgreSQL resources for Spock
+  by node and database count (see [Sizing](sizing.md)), a `SECURITY.md`
+  explaining how to report vulnerabilities, and the `output_plugin_libraries`
+  requirement in the README.
 
 ### GUC changes
 
@@ -396,6 +621,23 @@ AutoDDL has been refactored and hardened:
   hard-coded value of 5 (there is 1ms of sleep between each retry).
   Setting it to 0 disables retries. This helps when a node has a large
   lag and we do not want to slow down processing.
+* `spock.sync_timeout` (int seconds, default `0`, `USERSET`) — the time
+  limit for one wait in the node management routines: for a sync event to
+  arrive, for a peer to catch up, or for a subscription to start
+  replicating.  Raise it on large databases, where catching up takes longer
+  than the built-in limits allow.  `0` keeps each routine's built-in limit.
+  It can be set for one operation, for example
+  `SET spock.sync_timeout = '2h'`.
+* `spock.failover_slots_naptime` (int milliseconds, default `1000`, range
+  1–3600000, `SIGHUP`) — how long Spock's failover-slots worker sleeps
+  between slot sync passes.  It used to be a fixed 60 seconds, which let a
+  standby's slots fall up to a minute behind.
+* `spock.failover_slots_feedback_naptime` (int milliseconds, default
+  `10000`, range 1–3600000, `SIGHUP`) — the shorter retry interval the
+  failover-slots worker uses while waiting for the standby to receive the
+  WAL a slot needs.  Both failover-slots settings matter only where Spock's
+  own worker runs: PostgreSQL 15 and 16, and 17 when
+  `sync_replication_slots` is off.
 
 **Removed**
 
@@ -408,11 +650,23 @@ AutoDDL has been refactored and hardened:
 * `spock.exception_replay_queue_size`: default `4194304` → `4`, unit
   changed from bytes to MB, semantics changed from a hard threshold (with
   publisher refetch) to a soft cap (with disk spill).  See above.
+* `spock.pause_timeout`: the 300-second maximum is removed, for very large
+  or long-running transactions.  The default is still 10 seconds.
+* `spock.restart_delay_default`, `spock.restart_delay_on_exception` and
+  `spock.output_delay` are now declared in milliseconds, so they accept
+  values with units (`'5s'`) and `SHOW` reports the unit.  Their values do
+  not change.
+* `spock.restart_delay_default` now applies to every apply-worker restart,
+  including after a lost connection or a temporary error, so a problem that
+  does not clear cannot become a tight restart loop.
 
 ### Catalog changes
 
 * New: `spock.sub_id_generator` sequence (replaces inline oid-from-counter
   generation for subscription rows).
+* New: `spock.reserved_object` table, the list of reserved schemas and
+  extensions (see *Reserved schemas and extensions* above).  Built-in rows
+  are protected by a trigger, and only user-added rows are dumped.
 * New index `spock.resolutions(log_time)` to support
   `spock.cleanup_resolutions()`.
 * `spock.resolutions.conflict_type` values renamed during upgrade:
@@ -438,15 +692,27 @@ AutoDDL has been refactored and hardened:
 * `spock.sub_alter_options(subscription_name name, options text[])` —
   bulk subscription option changes, with input validation and no-op
   restart skipping.
+* `spock.reserved_object_add(p_name name, p_kind text,
+  p_exclude_from_dump boolean DEFAULT true, p_block_in_repset boolean
+  DEFAULT true, p_replicate_ddl boolean DEFAULT NULL)` — reserve a schema
+  or extension, or change an existing row.
+* `spock.reserved_object_remove(p_name name, p_kind text)` — remove a
+  reserved schema or extension you added.
+* `spock.slot_enable_failover() RETURNS integer` — sets the `failover` flag
+  on Spock's logical slots on PostgreSQL 17 and later, and returns how many
+  it changed.  The upgrade from 5.x calls it.  EXECUTE is revoked from
+  PUBLIC.
 
 ### Removed functions
 
 * `spock.convert_column_to_int8(regclass, smallint)` — superseded.
 * `spock.convert_sequence_to_snowflake(regclass)` — superseded.
+* `spock.wait_for_apply_worker(p_subbid bigint, timeout int)` — had no
+  callers since SpockCtrl was removed.
 
 ### Bug fixes carried forward from the 5.0.x line
 
-These shipped in 5.0.6 – 5.0.11 and are included in 6.0.0:
+These shipped in 5.0.6 – 5.0.12 and are included in 6.0.0:
 
 * Handle upstream connection loss cleanly without replication-origin
   advance leak.  Previously a stale libpq socket fd produced an
@@ -478,16 +744,51 @@ These shipped in 5.0.6 – 5.0.11 and are included in 6.0.0:
 * Fix stack-use-after-scope in `spock_connect_base()` (ASan finding).
 * Fix resource owner bug
 * `apply_replay_bytes` `int` → `uint64` overflow fix (`b4ba9bdf`)
+* A lost provider connection under `SUB_DISABLE` could disable the
+  subscription: the resent transaction was mistaken for one that had failed
+  to apply.
+* The apply worker retries after temporary errors — deadlocks,
+  `lock_timeout`, running out of a resource (SQLSTATE class 53), or a
+  provider that is restarting or in recovery (57P02, 57P03) — instead of
+  treating them as data exceptions that disable the subscription or discard
+  the transaction.  The worker exits without advancing the replication
+  origin and the provider resends the transaction.
+* Restarting an apply worker in the middle of a transaction could disable
+  the subscription under `SUB_DISABLE`.  The failure marker is now cleared
+  when the worker exits on `SIGTERM`.
+* An error between transactions left the apply worker in replay mode for
+  the next transaction, which had never failed, so under `TRANSDISCARD` or
+  `SUB_DISABLE` it could be discarded or disable the subscription.
+* Two subscriptions whose names share a prefix (such as `sub` and
+  `sub_parallel`) shared one exception-log slot.  The lookup now compares
+  the whole name, and no longer reads past the end of the array.
+* `spock.get_lsn_from_commit_ts()` could hang on an idle node.  Its WAL scan
+  now stops at the end of WAL as it was when the scan began.
+* The failover-slots worker died whenever the walreceiver reconnected to
+  the primary, when `spock.primary_dsn` was not set.  It now waits for the
+  next cycle.
+* Two retry messages lowered from LOG to DEBUG1 still reached the server
+  log with default settings, because the level check was backwards.
+* A column that exists on the provider but not on the subscriber put the
+  apply worker in a restart loop.  It is now handled like a missing table,
+  and the error names every missing column.
+* Tuple data from the provider is checked against the local column
+  definition before use, so a tuple that does not fit is rejected instead of
+  applied.  Names and attribute counts in RELATION messages are checked too,
+  and a subscriber built without lz4 rejects an lz4-compressed value.
 
 ### Upgrading
 
-The upgrade from 5.0.11 to 6.0.0 is a single `ALTER EXTENSION spock UPDATE`
-once the binaries are swapped.  The upgrade:
+The upgrade from 5.0.12 to 6.0.0 is a single `ALTER EXTENSION spock UPDATE`
+once the binaries are swapped.  Earlier 5.0.x releases upgrade in the same
+single step, through 5.0.12.  The upgrade:
 
 * drops the legacy `spock.progress` table and recreates it as a view,
 * replaces the `spock.lag_tracker` view definition,
 * migrates `spock.resolutions.conflict_type` values,
-* adds the new functions and the `sub_id_generator` sequence,
+* adds the new functions, the `sub_id_generator` sequence and the
+  `spock.reserved_object` catalog,
+* drops `spock.wait_for_apply_worker()`,
 * refreshes the parallel-safety attributes on `spock.md5_agg_sfunc` and
   `spock.spock_gen_slot_name`,
 * turns on the `failover` flag for existing logical slots by calling
@@ -507,6 +808,18 @@ what the error hint says.  The restriction covers only the built-in
 extension-owned schemas: schemas you reserve yourself with
 `spock.reserved_object_add()` are unaffected, and `pgedge_ace` continues to
 accept DDL and keep it node-local.
+
+PostgreSQL's 2026 security fix for CVE-2026-6471 added the
+`output_plugin_libraries` parameter, and its default leaves out
+`spock_output`, so logical decoding fails on a server with the fix.  Set
+`output_plugin_libraries = 'pgoutput, test_decoding, spock_output'` on every
+node, physical standbys included, and only on servers that have the
+parameter.  See [Configuring Spock](configuring.md).
+
+The apply worker now restarts and tries again after a temporary error such
+as a deadlock or lock timeout.  If the problem never clears, expect the
+worker to restart every `spock.restart_delay_default` (5 seconds by default)
+instead of a disabled subscription or a discarded transaction.
 
 ## Spock 5.0.12
 
@@ -654,7 +967,7 @@ accept DDL and keep it node-local.
   PostgreSQL 17.11, 18.5 and 19 beta 3. One hunk's context lines no longer
   matched and the patch was rejected. Only context lines changed.
 
-* Spock builds against PostgreSQL 19 beta 3, with a new `compat/19` layer for
+* Spock builds against PostgreSQL 19 beta 3 and 4, with a new `compat/19` layer for
   the API changes in that beta (`CLUSTER` folded into `REPACK`, the
   recovery-conflict signalling changes, tuple-descriptor finalisation, and
   the flattened `ReorderBufferTXN` commit-time field). `CREATE EXTENSION`
