@@ -21,6 +21,60 @@ CREATE TABLE spock.local_node (
     node_local_interface oid NOT NULL REFERENCES node_interface(if_id)
 );
 
+-- Emit a full node-metadata snapshot to direct subscribers only.
+CREATE FUNCTION spock.node_info_emit(
+    node_name  name,
+    location   text,
+    country    text,
+    info       jsonb
+) RETURNS pg_lsn
+AS 'MODULE_PATHNAME', 'spock_node_info_emit'
+LANGUAGE C CALLED ON NULL INPUT VOLATILE;
+REVOKE ALL ON FUNCTION spock.node_info_emit(name, text, text, jsonb) FROM PUBLIC;
+
+-- Internal metadata update for a cached peer row. The C caller verifies
+-- that node_name belongs to the node that originated the transaction.
+-- Returns false when no row has that name. A missing row is not created.
+CREATE FUNCTION spock.node_info_apply(
+    p_node_name name,
+    p_location  text,
+    p_country   text,
+    p_info      jsonb
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE spock.node
+       SET location = p_location,
+           country  = p_country,
+           info     = p_info
+     WHERE node_name = p_node_name;
+
+    RETURN FOUND;
+END;
+$$;
+REVOKE ALL ON FUNCTION spock.node_info_apply(name, text, text, jsonb) FROM PUBLIC;
+
+-- Broadcast changes to this node's own row. Updates to cached peer rows return
+-- without emitting, preventing recursion on receivers.
+CREATE FUNCTION spock.node_info_broadcast() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.node_id IS DISTINCT FROM (SELECT node_id FROM spock.local_node) THEN
+        RETURN NULL;
+    END IF;
+
+    PERFORM spock.node_info_emit(NEW.node_name, NEW.location,
+                                 NEW.country, NEW.info);
+
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER node_info_broadcast_trigger
+    AFTER UPDATE ON spock.node
+    FOR EACH ROW
+    EXECUTE FUNCTION spock.node_info_broadcast();
+
 CREATE TABLE spock.subscription (
     sub_id oid NOT NULL PRIMARY KEY,
     sub_name name NOT NULL UNIQUE,
@@ -302,6 +356,65 @@ BEGIN
     END LOOP;
 
     RETURN v_ok;
+END;
+$$;
+
+-- Update this node's metadata, merging info and validating tiebreaker.
+-- The shared UPDATE trigger handles propagation.
+CREATE FUNCTION spock.node_alter(
+    p_location   text  DEFAULT NULL,
+    p_country    text  DEFAULT NULL,
+    p_info_patch jsonb DEFAULT NULL
+)
+RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_local_id   oid;
+    v_tiebreaker numeric;
+    v_rows       int;
+BEGIN
+    SELECT ni.node_id INTO v_local_id FROM spock.node_info() ni;
+
+    IF p_info_patch IS NOT NULL THEN
+        IF jsonb_typeof(p_info_patch) != 'object' THEN
+            RAISE EXCEPTION 'info patch must be a JSON object';
+        END IF;
+
+        -- Other info keys remain open-ended and unvalidated.
+        IF p_info_patch ? 'tiebreaker' THEN
+            IF jsonb_typeof(p_info_patch->'tiebreaker') != 'number' THEN
+                RAISE EXCEPTION 'invalid "tiebreaker" value %: must be a JSON number, not a string or null',
+                    p_info_patch->'tiebreaker';
+            END IF;
+
+            v_tiebreaker := (p_info_patch->>'tiebreaker')::numeric;
+            IF v_tiebreaker != trunc(v_tiebreaker)
+               OR v_tiebreaker NOT BETWEEN -2147483648 AND 2147483647 THEN
+                RAISE EXCEPTION 'invalid "tiebreaker" value %: must fit a 32-bit integer',
+                    p_info_patch->'tiebreaker';
+            END IF;
+
+            -- Store a canonical integer: node_fromtuple() parses the text
+            -- form with pg_strtoint32(), which rejects "5.0" or "1e2".
+            p_info_patch := jsonb_set(p_info_patch, '{tiebreaker}',
+                                      to_jsonb(v_tiebreaker::int));
+        END IF;
+    END IF;
+
+    UPDATE spock.node
+       SET location = COALESCE(p_location, location),
+           country  = COALESCE(p_country, country),
+           info     = CASE WHEN p_info_patch IS NOT NULL
+                            THEN COALESCE(info, '{}'::jsonb) || p_info_patch
+                            ELSE info END
+     WHERE node_id = v_local_id;
+
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    IF v_rows != 1 THEN
+        RAISE EXCEPTION 'local node (id=%) not found in spock.node', v_local_id;
+    END IF;
+
+    RETURN true;
 END;
 $$;
 

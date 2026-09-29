@@ -115,6 +115,7 @@ extern bool spock_replication_repair_mode;
 #define SPOCK_REPAIR_MODE_ON		1	/* Suppress subsequent DML/DDL */
 #define SPOCK_REPAIR_MODE_OFF		2	/* Resume regular replication */
 #define SPOCK_SYNC_EVENT_MSG		3	/* Sync event message */
+#define SPOCK_NODE_INFO_MSG			4	/* Direct node metadata update */
 #define SPOCK_SLOT_GROUPS_TRANCHE_NAME   "spock_slot_groups"
 
 extern int	spock_output_delay;

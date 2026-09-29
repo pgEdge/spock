@@ -33,6 +33,7 @@
 #include "storage/procsignal.h"
 #include "storage/procarray.h"
 
+#include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
@@ -263,4 +264,66 @@ heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupleDesc)
 
 	appendStringInfoString(&s, "]");
 	return s.data;
+}
+
+/*
+ * Extract the text value of `key` from `obj`, or NULL if the key is absent
+ * or its value is JSON null.
+ */
+char *
+spock_jsonb_get_text(Jsonb *obj, const char *key)
+{
+	FmgrInfo	flinfo;
+	FunctionCallInfo fcinfo;
+	Datum		value;
+	char	   *result;
+
+	fmgr_info(F_JSONB_OBJECT_FIELD_TEXT, &flinfo);
+	fcinfo = palloc0(SizeForFunctionCallInfo(2));
+	InitFunctionCallInfoData(*fcinfo, &flinfo, 2, InvalidOid, NULL, NULL);
+
+	fcinfo->args[0].value = PointerGetDatum(obj);
+	fcinfo->args[0].isnull = false;
+	fcinfo->args[1].value = CStringGetTextDatum(key);
+	fcinfo->args[1].isnull = false;
+
+	value = FunctionCallInvoke(fcinfo);
+	result = fcinfo->isnull ? NULL : TextDatumGetCString(value);
+
+	pfree(fcinfo);
+	return result;
+}
+
+/*
+ * Extract a jsonb field while mapping a missing key or JSON null to SQL NULL.
+ * The text probe distinguishes those cases before preserving the json value.
+ */
+Jsonb *
+spock_jsonb_get_field(Jsonb *obj, const char *key)
+{
+	FmgrInfo	flinfo;
+	FunctionCallInfo fcinfo;
+	Datum		value;
+	Jsonb	   *result;
+	char	   *null_probe;
+
+	null_probe = spock_jsonb_get_text(obj, key);
+	if (null_probe == NULL)
+		return NULL;
+	pfree(null_probe);
+
+	fmgr_info(F_JSONB_OBJECT_FIELD, &flinfo);
+	fcinfo = palloc0(SizeForFunctionCallInfo(2));
+	InitFunctionCallInfoData(*fcinfo, &flinfo, 2, InvalidOid, NULL, NULL);
+
+	fcinfo->args[0].value = PointerGetDatum(obj);
+	fcinfo->args[0].isnull = false;
+	fcinfo->args[1].value = CStringGetTextDatum(key);
+	fcinfo->args[1].isnull = false;
+
+	value = FunctionCallInvoke(fcinfo);
+	result = fcinfo->isnull ? NULL : DatumGetJsonbP(value);
+
+	pfree(fcinfo);
+	return result;
 }

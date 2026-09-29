@@ -827,6 +827,37 @@ pg_decode_message(LogicalDecodingContext *ctx,
 			}
 			break;
 
+		case SPOCK_NODE_INFO_MSG:
+			{
+				MemoryContext oldctx;
+				SpockOutputData *data;
+
+				data = (SpockOutputData *) ctx->output_plugin_private;
+
+				/* Do not send a message type the subscriber cannot decode. */
+				if (data->spock_version_num < SPOCK_MIN_VERSION_NUM_FOR_NODE_INFO_PROPAGATION)
+					break;
+
+				oldctx = MemoryContextSwitchTo(data->context);
+
+				if (!startup_message_sent)
+					send_startup_message(ctx, data, false);
+
+				OutputPluginPrepareWrite(ctx, true);
+				spock_write_message(ctx->out,
+									txn ? txn->xid : InvalidTransactionId,
+									message_lsn,
+									transactional,
+									prefix,
+									message_size,
+									message);
+				OutputPluginWrite(ctx, true);
+
+				Assert(CurrentMemoryContext == data->context);
+				MemoryContextSwitchTo(oldctx);
+			}
+			break;
+
 		default:
 			elog(WARNING, "Spock custom WAL message: unknown message type %d",
 				 msg->mtype);

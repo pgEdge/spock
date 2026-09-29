@@ -20,6 +20,7 @@
 
 #include "catalog/namespace.h"
 #include "catalog/pg_inherits.h"
+#include "catalog/pg_type.h"
 #include "catalog/catalog.h"
 
 #include "commands/async.h"
@@ -28,6 +29,7 @@
 #include "commands/tablecmds.h"
 
 #include "executor/executor.h"
+#include "executor/spi.h"
 
 #include "libpq/pqformat.h"
 
@@ -89,6 +91,7 @@
 #include "spock_readonly.h"
 #include "spock.h"
 #include "spock_injection.h"
+#include "spock_jsonb_utils.h"
 
 #include "spock_compat.h"
 
@@ -2900,6 +2903,165 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 	errcallback_arg.is_ddl_or_drop = false;
 }
 
+/*
+ * Upsert the node row through spock.node_info_apply().
+ */
+static void
+apply_node_info(const char *node_name, const char *location,
+				const char *country, Jsonb *info)
+{
+	Oid			argtypes[4] = {NAMEOID, TEXTOID, TEXTOID, JSONBOID};
+	Datum		values[4];
+	char		nulls[4];
+	NameData	name_data;
+	int			ret;
+
+	namestrcpy(&name_data, node_name);
+	values[0] = NameGetDatum(&name_data);
+	nulls[0] = ' ';
+
+	if (location != NULL)
+	{
+		values[1] = CStringGetTextDatum(location);
+		nulls[1] = ' ';
+	}
+	else
+		nulls[1] = 'n';
+
+	if (country != NULL)
+	{
+		values[2] = CStringGetTextDatum(country);
+		nulls[2] = ' ';
+	}
+	else
+		nulls[2] = 'n';
+
+	if (info != NULL)
+	{
+		values[3] = JsonbPGetDatum(info);
+		nulls[3] = ' ';
+	}
+	else
+		nulls[3] = 'n';
+
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPOCK %s: SPI_connect failed in apply_node_info",
+			 MySubscription->name);
+
+	ret = SPI_execute_with_args("SELECT spock.node_info_apply($1, $2, $3, $4)",
+								4, argtypes, values, nulls, false, 1);
+	if (ret != SPI_OK_SELECT || SPI_processed != 1)
+		elog(ERROR, "SPOCK %s: spock.node_info_apply() call failed (%d)",
+			 MySubscription->name, ret);
+
+	SPI_finish();
+}
+
+/*
+ * Validate and apply a direct peer's metadata snapshot. The catalog upsert is
+ * delegated to spock.node_info_apply() and bypasses normal row conflicts.
+ */
+static void
+handle_node_info(Jsonb *message)
+{
+	char	   *node_name;
+	char	   *location;
+	char	   *country;
+	Jsonb	   *info;
+	Oid			node_id;
+	Oid			local_node_id;
+	SpockNode  *known;
+
+	/* Keep replay bookkeeping on handle_commit()'s non-empty path. */
+	begin_replication_step();
+
+	/* Dry-run replay must retain the transaction but suppress this write. */
+	if (MyApplyWorker->use_try_block &&
+		(exception_behaviour == TRANSDISCARD ||
+		 exception_behaviour == SUB_DISABLE))
+	{
+		end_replication_step();
+		return;
+	}
+
+	if (!JB_ROOT_IS_OBJECT(message))
+		elog(ERROR, "SPOCK %s: malformed node-info message: root is not object",
+			 MySubscription->name);
+
+	node_name = spock_jsonb_get_text(message, "node_name");
+	location = spock_jsonb_get_text(message, "location");
+	country = spock_jsonb_get_text(message, "country");
+	info = spock_jsonb_get_field(message, "info");
+
+	if (!node_name)
+		elog(ERROR, "SPOCK %s: missing node_name in node-info message",
+			 MySubscription->name);
+
+	/*
+	 * The message describes the node that originated the transaction, whose
+	 * node id is the transaction's origin.
+	 */
+	if (replorigin_session_origin == InvalidRepOriginId)
+	{
+		ereport(WARNING,
+				(errmsg("SPOCK %s: ignoring node-info message for node \"%s\": "
+						"transaction has no origin",
+						MySubscription->name, node_name)));
+		end_replication_step();
+		return;
+	}
+	node_id = replorigin_session_origin;
+
+	/* Never update the subscriber's own node row. */
+	local_node_id = get_local_node(false, false)->node->id;
+	if (node_id == local_node_id)
+	{
+		ereport(WARNING,
+				(errmsg("SPOCK %s: ignoring node-info message describing "
+						"this node's own id %u", MySubscription->name,
+						node_id)));
+		end_replication_step();
+		return;
+	}
+
+	/*
+	 * The name in the message must identify the node that originated the
+	 * transaction; otherwise a provider could rewrite another node's row.
+	 */
+	known = get_node_by_name(node_name, true);
+	if (known == NULL || known->id != node_id)
+	{
+		SpockNode  *by_id = get_node(node_id, true);
+
+		if (known == NULL && by_id == NULL)
+			ereport(WARNING,
+					(errmsg("SPOCK %s: ignoring node-info message for unknown "
+							"node %u (\"%s\")",
+							MySubscription->name, node_id, node_name),
+					 errhint("Node rows are not created from node-info messages.")));
+		else
+			ereport(WARNING,
+					(errmsg("SPOCK %s: identity conflict applying node-info "
+							"update for node %u (\"%s\")",
+							MySubscription->name, node_id, node_name),
+					 known != NULL ?
+					 errdetail("Node name \"%s\" is known locally as node %u.",
+							   node_name, known->id) :
+					 errdetail("Node %u is known locally as \"%s\".",
+							   node_id, by_id->name),
+					 errhint("Investigate the identity mismatch before resolving it; "
+							 "spock.node_refresh_info() may help once a usable "
+							 "interface to the correct node exists.")));
+
+		end_replication_step();
+		return;
+	}
+
+	apply_node_info(node_name, location, country, info);
+
+	end_replication_step();
+}
+
 static void
 handle_message(StringInfo s)
 {
@@ -2966,6 +3128,27 @@ handle_message(StringInfo s)
 						 MySubscription->name,
 						 LSN_FORMAT_ARGS(lsn));
 				}
+			}
+			break;
+
+		case SPOCK_NODE_INFO_MSG:
+			{
+				const char *json_ptr;
+				Size		json_len;
+				char	   *json_cstr;
+				Jsonb	   *message_json;
+
+				/* Skip the entire message when its transaction is skipped. */
+				if (is_skipping_changes())
+					break;
+
+				json_ptr = temp + sizeof(int32);
+				json_len = sz - sizeof(int32);
+				json_cstr = pnstrdup(json_ptr, json_len);
+				message_json = DatumGetJsonbP(
+											  DirectFunctionCall1(jsonb_in, CStringGetDatum(json_cstr)));
+
+				handle_node_info(message_json);
 			}
 			break;
 
