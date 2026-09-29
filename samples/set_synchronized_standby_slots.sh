@@ -42,31 +42,55 @@ SCOPE="${3:-}"
 # Command + config used to enumerate the cluster's members.
 PATRONICTL="${PATRONICTL:-patronictl}"
 PATRONI_CONFIG="${PATRONI_CONFIG:-/etc/patroni/patroni.yml}"
+# The Python interpreter that runs Patroni. Slot names are derived by
+# Patroni's own function, so the same rule applies as when the slots were
+# created.
+PYTHON="${PYTHON:-python3}"
+# This member's name as Patroni knows it: the "name:" key of patroni.yml,
+# which need not be the hostname. Patroni does not pass it to callbacks or
+# export it; set PATRONI_NAME to override what is read from the config.
+PATRONI_NAME="${PATRONI_NAME:-$(awk '$1 == "name:" {print $2; exit}' "$PATRONI_CONFIG" 2>/dev/null || true)}"
 # Local superuser psql connection used to run ALTER SYSTEM / pg_reload_conf().
 # e.g. PGCONN="-h /var/run/postgresql -U postgres -d postgres"
 PSQL="${PSQL:-psql}"
 PGCONN="${PGCONN:-}"
 # ----------------------------------------------------------------------------
 
-log() { echo "$(date '+%Y-%m-%d %H:%M:%S') set_synchronized_standby_slots: $*"; }
+# Stderr, which Patroni relays into its own log; stdout is captured below.
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') set_synchronized_standby_slots: $*" >&2; }
 
 run_sql() {
 	# shellcheck disable=SC2086
 	$PSQL $PGCONN -X -q -v ON_ERROR_STOP=1 -c "$1"
 }
 
-# Patroni names a member's physical slot after the member, lowercased with any
-# character outside [a-z0-9_] replaced by '_'. Mirror that transform here.
+# Patroni names a member's physical slot after the member (lowercase, '-'
+# and '.' become '_', other characters are spelled out, 63 characters at
+# most). Ask Patroni itself rather than copy the rule: a name the leader's
+# walsenders wait for must match the slot Patroni made.
 slot_name_from_member() {
-	echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_]/_/g'
+	"$PYTHON" -c 'import sys; from patroni.dcs import slot_name_from_member_name as f; print(f(sys.argv[1]))' "$1"
 }
 
-# Comma-separated, quoted slot names of every member that is NOT this node.
+# Comma-separated, quoted slot names of every member that is NOT this node
+# and is up. A listed slot that nothing consumes holds the walsenders back
+# for good, so a member that is stopped or crashed is left out; it is picked
+# up again by the next role change once it streams. Columns of
+# "patronictl list -f tsv": Cluster, Member, Host, Role, State, TL, Lag.
+# Fails, leaving the setting untouched, when the members cannot be listed.
 other_member_slots() {
-	local self="$1" name role slots=""
-	while IFS='|' read -r name role; do
+	local self="$1" name state slots="" listing
+	if ! listing="$("$PATRONICTL" -c "$PATRONI_CONFIG" list -f tsv "$SCOPE")"; then
+		log "patronictl list failed; leaving synchronized_standby_slots unchanged"
+		return 1
+	fi
+	while IFS='|' read -r name state; do
 		[ -z "$name" ] && continue
 		[ "$name" = "$self" ] && continue
+		case "$state" in
+			running|streaming) ;;
+			*) log "skipping member $name in state '$state'"; continue ;;
+		esac
 		local slot
 		slot="$(slot_name_from_member "$name")"
 		if [ -z "$slots" ]; then
@@ -74,16 +98,19 @@ other_member_slots() {
 		else
 			slots="$slots, '$slot'"
 		fi
-	done < <("$PATRONICTL" -c "$PATRONI_CONFIG" list -f tsv "$SCOPE" \
-		| awk -F'\t' 'NR>1 {print $2 "|" $4}')
+	done < <(printf '%s\n' "$listing" | awk -F'\t' 'NR>1 {print $2 "|" $5}')
 	echo "$slots"
 }
 
 case "$ROLE" in
 	primary|master)
 		# This node is (becoming) the leader: hold its walsenders back for the
-		# other members' physical slots.
-		self="$(hostname)"
+		# other running members' physical slots.
+		self="$PATRONI_NAME"
+		if [ -z "$self" ]; then
+			log "member name unknown: set PATRONI_NAME or the name: key in $PATRONI_CONFIG"
+			exit 1
+		fi
 		slots="$(other_member_slots "$self")"
 		if [ -z "$slots" ]; then
 			log "no other members found; clearing synchronized_standby_slots"

@@ -200,10 +200,19 @@ cleanup:
 -- On the newly promoted node:
 ALTER SYSTEM SET synchronized_standby_slots = '';
 SELECT pg_reload_conf();
+```
 
--- Then drop the orphaned physical slot(s) that fed the old topology:
+The physical slot itself lives on the server that created it. In the setup
+above that is the old primary, so drop `spock_standby_slot` there once that
+node is rebuilt or retired:
+
+```sql
+-- On the old primary, once it is no longer needed:
 SELECT pg_drop_replication_slot('spock_standby_slot');
 ```
+
+Under Patroni the member slots are Patroni's: it removes a departed member's
+slot after `member_slots_ttl`, so do not drop them by hand.
 
 If the new topology has its own physical standby(s), set
 `synchronized_standby_slots` to the physical slot(s) for *that* standby
@@ -218,40 +227,71 @@ in use.
 
 ## Running Under Patroni (PostgreSQL 17+)
 
-Patroni manages the physical replication slots for its members itself. When
-`postgresql.use_slots: true` (the default), Patroni creates a slot per member
-and drops or recreates those slots as the topology changes, including on a
-graceful switchover. That behaviour is fine for the physical stream, but it
-is also what makes Spock's built-in `spock_failover_slots` worker unreliable
-under Patroni: when Patroni recreates a slot on switchover it resets the
-`catalog_xmin` that `hot_standby_feedback` had pinned, and a busy primary
-running vacuum can then remove catalog rows the promoted node's copied slot
-still needs. The slot comes back invalidated (`invalidation_reason =
-rows_removed`) and the subscriber has to re-sync from scratch.
+Patroni manages replication slots itself, and the way it does so decides
+which of Spock's two mechanisms can work under it.
 
-The fix is to stop copying logical slots by hand and let PostgreSQL do it.
-Spock creates its logical slots with the `FAILOVER` flag, so with
-`sync_replication_slots = on` PostgreSQL's own slotsync worker keeps them
-current on every member. On PostgreSQL 18 this is the only path. On
-PostgreSQL 17 it is optional, so under Patroni make sure
-`sync_replication_slots = on` is set. This is the same mechanism described
-under [Setup: PostgreSQL 17 and 18 (Native)](#setup-postgresql-17-and-18-native);
-the rest of this section is only about where those settings go in a Patroni
-configuration and the one sharp edge switchover introduces.
+- **Member slots.** With `postgresql.use_slots: true` (the default) Patroni
+  creates one physical slot per replica on that replica's upstream, named
+  after the member (see [naming](#slot-names) below), and drops it once the
+  member has been gone for `member_slots_ttl` (default `30min`). On a
+  switchover the new leader creates fresh slots for the others.
+- **Permanent slots.** Slots listed under `slots:` in the dynamic
+  configuration survive switchover. Permanent *logical* slots are copied
+  from the leader to each replica by stopping and restarting the replica,
+  then advanced every `loop_wait` seconds. That is Patroni's own answer to
+  logical slot failover, written before PostgreSQL had one.
+- **Unknown slots.** On a replica, Patroni drops logical slots it does not
+  manage. Since Patroni 4.1.0 it leaves slots created with `failover = true`
+  alone, with one exception on PostgreSQL 17 and later: on a replica it
+  removes failover slots whose `synced` is false, which is what a former
+  leader's own slots look like after a switchover, so that PostgreSQL's
+  slotsync worker can recreate them as synchronized copies of the new
+  leader's. Patroni 4.1.4 fixed a crash in that path.
 
-Use Patroni 4.x, the line these instructions are written and tested against.
+Spock's built-in `spock_failover_slots` worker is unreliable under Patroni.
+It copies logical slots to the standby by hand and relies on the standby's
+physical slot, through `hot_standby_feedback`, to pin `catalog_xmin` on the
+primary. Patroni drops and recreates that physical slot as the topology
+changes, which lets vacuum on a busy primary remove catalog rows a copied
+slot still needs; the slot is then invalidated (`invalidation_reason =
+rows_removed`) and the subscriber has to resynchronize from scratch.
+
+The path that works is PostgreSQL's own: Spock creates its logical slots
+with the `FAILOVER` flag, so with `sync_replication_slots = on` the slotsync
+worker keeps them current on every member, and Patroni, from 4.1.0 on,
+stays out of their way. On PostgreSQL 18 this is the only path, because
+Spock's worker is not registered there. On PostgreSQL 17 Spock's worker
+runs unless `sync_replication_slots = on` is set, so under Patroni set it.
+The mechanism is the one described under
+[Setup: PostgreSQL 17 and 18 (Native)](#setup-postgresql-17-and-18-native);
+this section is about where those settings go in a Patroni configuration
+and what a switchover does to them.
+
+**Requirements:** Patroni 4.1.4 or later, on PostgreSQL 17 or later. On an
+older Patroni release, protect the slots with an `ignore_slots` entry in the
+dynamic configuration, so that Patroni neither drops nor copies them:
+
+```yaml
+ignore_slots:
+  - plugin: spock_output
+    type: logical
+```
 
 ### Required settings
 
 | Setting | Value | Where | Restart? | Why |
 |---|---|---|---|---|
-| `sync_replication_slots` | `on` | dynamic config | No (reload) | PostgreSQL slotsync worker copies flagged slots to standbys |
-| `hot_standby_feedback` | `on` | dynamic config | No (reload) | Pins `catalog_xmin` so vacuum can't remove rows a slot needs |
-| `wal_level` | `logical` | dynamic config | Yes | Required for logical decoding |
-| `output_plugin_libraries` | include `spock_output` | dynamic config, **every member** | No (reload) | Only on servers that have the parameter (see note below). A synchronized slot keeps `spock_output` as its plugin, so a member missing this setting fails to serve replication once promoted |
-| `postgresql.use_slots` | `true` | Patroni config | n/a | Patroni manages the physical member slots (leave on) |
-| `max_replication_slots` / `max_wal_senders` | sized to cluster | dynamic config | Yes | Enough slots/senders for members plus Spock logical slots |
-| `synchronized_standby_slots` | standby member slot name(s) | dynamic config | No (reload) | Optional but recommended; holds the leader back until the standby confirms. See the [sharp edge](#the-switchover-sharp-edge-synchronized_standby_slots) below |
+| `sync_replication_slots` | `on` | dynamic config | No (reload) | PostgreSQL's slotsync worker copies flagged slots to every replica |
+| `hot_standby_feedback` | `on` | dynamic config | No (reload) | Required by slot synchronization; pins `catalog_xmin` so vacuum cannot remove rows a slot needs. Patroni turns it on by itself only when permanent logical slots are configured, so set it |
+| `wal_level` | `logical` | dynamic config | Yes | Required for logical decoding and for slot synchronization |
+| `output_plugin_libraries` | include `spock_output` | dynamic config, **every member** | No (reload) | Only on servers that have the parameter (see below). A synchronized slot keeps `spock_output` as its plugin, so a member missing this setting cannot serve replication once promoted |
+| `postgresql.use_slots` | `true` | Patroni config | n/a | The default. Patroni creates the member slot each replica streams through and sets `primary_slot_name` to it, which slot synchronization requires |
+| `max_replication_slots` / `max_wal_senders` | sized to cluster | dynamic config | Yes | Member slots plus Spock's logical slots on every node; see [Sizing](sizing.md) |
+| `synchronized_standby_slots` | standby member slot name(s) | dynamic config or callback | No (reload) | Optional but recommended; holds the leader's walsenders back until the standby has the WAL. See the [sharp edge](#the-switchover-sharp-edge-synchronized_standby_slots) |
+
+Two requirements of slot synchronization need no action under Patroni: the
+`primary_conninfo` Patroni writes for a replica always carries `dbname`, and
+`primary_slot_name` is the member slot.
 
 "Dynamic config" means Patroni's DCS-backed configuration:
 `bootstrap.dcs.postgresql.parameters` when you first bootstrap the cluster,
@@ -272,7 +312,7 @@ bootstrap:
       use_slots: true
       parameters:
         wal_level: logical
-        hot_standby_feedback: "on"          # required; pins catalog_xmin
+        hot_standby_feedback: "on"          # required by slot synchronization
         sync_replication_slots: "on"        # PG slotsync worker copies FAILOVER slots
         max_replication_slots: 10
         max_wal_senders: 10
@@ -295,41 +335,54 @@ member. Check first, on each member, with
 `SELECT current_setting('output_plugin_libraries', true)` — a NULL result means
 the parameter does not exist.
 
-Do **not** also declare the Spock logical slots as Patroni *permanent logical
-slots* (the `slots:` block in dynamic config). Permanent logical slots are
-copied by Patroni's own mechanism, which is exactly the hand-copying the
-native path replaces; declaring them there reintroduces the invalidation
-race. Let Patroni manage only the physical member slots and leave the logical
-slots to PostgreSQL's slotsync worker.
+Do **not** declare the Spock logical slots as Patroni *permanent logical
+slots* (the `slots:` block). That is the hand copying the native path
+replaces: Patroni would restart replicas to copy the slots and advance them
+itself, in competition with the slotsync worker. Leave the `slots:` block to
+physical slots you need preserved, and the logical slots to PostgreSQL.
+
+### Slot names
+
+Patroni derives a member's slot name from the member name: lowercased, with
+`-` and `.` turned into `_`, any other character outside `[a-z0-9_]` spelled
+as `u` followed by its four-digit code point, and cut at 63 characters. A
+member `pg-node.1` streams through slot `pg_node_1`. Whatever names the slots
+in `synchronized_standby_slots` has to follow the same rule, which is why the
+sample callback below asks Patroni for the name rather than computing it.
 
 ### The switchover sharp edge: `synchronized_standby_slots`
 
-`synchronized_standby_slots` (Setup step 2) must name the physical slot(s) of
-the standby member(s) so the leader's walsenders hold back until the standby
-has confirmed the LSN. Under Patroni the member slots are named after the
-members, so on a two-member cluster with leader `n2` and standby `r1` the
-leader needs:
+`synchronized_standby_slots` names the physical slot(s) the leader's
+walsenders must wait for, so that no logical subscriber gets ahead of the
+standby that may be promoted. Under Patroni those are the member slots, so
+on a two-member cluster with leader `n2` and replica `r1` the leader needs:
 
 ```
 synchronized_standby_slots = 'r1'
 ```
 
-The edge is that this value is *role-specific* but Patroni's dynamic config is
-*cluster-wide*. If you hardcode `'r1'` and then switch over so `r1` becomes
-leader, the new leader is left pointing at a slot for itself that nothing
-consumes, so its walsenders block forever and logical replication freezes. This
-is the same failure the
+The edge is that this value is *role-specific* while Patroni's dynamic
+configuration is *cluster-wide*. Hardcode `'r1'` and switch over so that `r1`
+becomes leader, and the new leader waits for a slot named after itself, which
+does not exist on it: its walsenders block and logical replication freezes.
+This is the failure the
 [post-promotion runbook](#runbook-clear-synchronized_standby_slots-after-promotion)
-describes, and under Patroni it will recur on every switchover unless you
-handle it.
+describes, and under Patroni it recurs on every switchover unless handled.
 
-Two ways to handle it:
+The same wait applies to any listed member that is down. Its slot stays on
+the leader, inactive, until `member_slots_ttl` expires and Patroni drops it,
+and a slot that is inactive or missing blocks alike. A standby that stops
+therefore stops logical replication until it is back or removed from the
+list.
 
-- **Automate it with an `on_role_change` callback.** Point
-  `synchronized_standby_slots` at the current standby member(s) whenever a
-  node's role changes. This keeps the guarantee intact across switchovers
-  without manual steps and is the recommended approach for anything beyond a
-  test cluster.
+Three ways to handle it:
+
+- **Automate it with an `on_role_change` callback.** Patroni runs the
+  script on promotion and demotion with the arguments `on_role_change
+  <role> <scope>`; the role is `primary` or `replica` (`master` on releases
+  before 4.0). On becoming leader the script sets
+  `synchronized_standby_slots` to the slots of the other members that are
+  up and reloads; on becoming a replica it clears it.
 
   ```yaml
   postgresql:
@@ -337,28 +390,49 @@ Two ways to handle it:
       on_role_change: /etc/patroni/set_synchronized_standby_slots.sh
   ```
 
-  The script receives `on_role_change <role> <scope>`; on becoming leader it
-  should `ALTER SYSTEM SET synchronized_standby_slots` to the other members'
-  slot names and reload, and on becoming a replica it should clear it. A
-  ready-to-adapt reference implementation ships with Spock at
-  [`samples/set_synchronized_standby_slots.sh`](https://github.com/pgEdge/spock/blob/main/samples/set_synchronized_standby_slots.sh);
-  review and tailor it to your environment before production use.
+  A reference implementation ships with Spock at
+  [`samples/set_synchronized_standby_slots.sh`](https://github.com/pgEdge/spock/blob/main/samples/set_synchronized_standby_slots.sh).
+  It reads the member name from `patroni.yml`, derives slot names with
+  Patroni's own function, skips members that are not running or streaming,
+  and leaves the setting untouched when the member list cannot be read.
+  Review and adapt it before production use. It acts only at role changes;
+  a standby that goes down afterwards has to be removed from the list by
+  hand or by a monitor of your own.
 
-- **Leave it unset and accept the trade-off.** Without
-  `synchronized_standby_slots`, nothing freezes on switchover, but the leader
-  no longer waits for the standby to confirm before letting logical
-  subscribers advance. A subscriber can then get slightly ahead of the
-  physical standby, so immediately after a promotion the new leader may be
-  marginally behind a subscriber. For many deployments that small window is
-  acceptable; for zero-data-loss requirements, use the callback instead.
+- **Let Patroni manage it.** Patroni's development branch has a
+  `manage_synchronized_standby_slots` option that keeps
+  `synchronized_standby_slots` equal to the synchronous standbys of
+  `synchronous_standby_names`; it needs `synchronous_mode` and is not in a
+  released version at the time of writing (4.1.5 is the latest). Once it
+  ships, prefer it to the callback on clusters that run synchronous
+  replication.
+
+- **Leave it unset and accept the trade-off.** Nothing freezes on
+  switchover, but the leader no longer waits for the standby before letting
+  subscribers advance, so a subscriber can be slightly ahead of the standby
+  at the moment of promotion and the new leader marginally behind it. For
+  zero data loss, use one of the two options above.
+
+### What a switchover does
+
+1. `patronictl switchover` demotes the leader and promotes a replica.
+2. On the new leader the synchronized Spock slots become usable; the
+   subscribers only need their DSN pointed at it, as described under
+   [After failover](#5-after-failover).
+3. The old leader rejoins as a replica. Its own Spock slots carry
+   `failover = true` and `synced = false`; Patroni 4.1.0 and later drops
+   them there, and the slotsync worker recreates them as synchronized
+   copies from the new leader.
+4. Whatever manages `synchronized_standby_slots` has to run: the callback
+   fires on both nodes, or you apply the runbook by hand.
 
 ### Verify
 
-After bootstrap, confirm every member carries the flagged, synchronized
-slots:
+After bootstrap, and again after a switchover, confirm every replica carries
+the flagged, synchronized slots:
 
 ```sql
--- on each standby member
+-- on each replica
 SELECT slot_name, synced, failover, invalidation_reason
 FROM pg_replication_slots
 WHERE plugin = 'spock_output' AND NOT temporary;
@@ -368,6 +442,8 @@ WHERE plugin = 'spock_output' AND NOT temporary;
 `NULL`. If `failover` is `false`, the slot was created by a Spock release
 before 6.0.0 and the upgrade could not flag it. See
 [Upgrading Spock to 6.0.0](#upgrading-spock-to-600) for how to handle it.
+On the leader, `SHOW synchronized_standby_slots` should name the slots of
+the replicas that are up, and `patronictl list` should show them streaming.
 
 ## Setup: PostgreSQL 15 and 16 (Spock Worker)
 

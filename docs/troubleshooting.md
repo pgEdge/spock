@@ -245,8 +245,9 @@ slots: a copied slot keeps `spock_output` as its plugin, so a standby missing
 this setting serves replication only until it is promoted, and then fails.
 
 The parameter is `PGC_SUSET`, so `SELECT pg_reload_conf();` is enough — no
-restart needed. Re-enable the subscription afterwards if the failure had
-already disabled it.
+restart needed. The apply worker on the subscriber treats the failure as a
+lost connection and reconnects by itself once the provider has been
+reloaded; the subscription is not disabled.
 
 Only set the parameter if your server has it; on a release predating the fix,
 an unrecognised parameter in `postgresql.conf` stops the server from starting.

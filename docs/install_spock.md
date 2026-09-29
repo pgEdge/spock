@@ -123,6 +123,7 @@ max_wal_senders = 10
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
 output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+                            # only on servers that have this parameter; see below
 ```
 
 The values above are a working starting point for a small cluster (two or

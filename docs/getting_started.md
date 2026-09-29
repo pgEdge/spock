@@ -215,6 +215,7 @@ shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
 listen_addresses = '*'
 output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+                            # only on servers that have this parameter; see below
 ```
 
 !!! info "Sizing `max_worker_processes`"
