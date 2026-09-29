@@ -1,35 +1,6 @@
 #!/usr/bin/perl
-# =============================================================================
-# Test: 107_node_refresh_info.pl - coverage for spock.node_refresh_info() and
-#                                   its internal helper spock.node_refresh_info_one()
-# =============================================================================
-# spock.node is a local catalog: each node populates its row for a peer once,
-# from whatever the peer reported at sub_create() time, and never refreshes
-# it afterward. If a peer's location/country/info (including a "tiebreaker"
-# key inside info) changes later, every other node keeps using its stale
-# cached copy until spock.node_refresh_info() is called explicitly. This
-# test exercises that function end to end:
-#
-#   - single-peer refresh actually picks up a changed value
-#   - bulk (no-argument) refresh updates every peer in one call
-#   - a peer with an alternate (non-default-named) interface is still found,
-#     via the fallback lookup, once its default-named interface is dropped
-#   - a bulk refresh with one peer failing still updates the others and
-#     returns false overall, without leaking that peer's failure into the
-#     others' results
-#   - a peer with no usable interface at all is reported, not silently
-#     skipped, in both the single-node (raises) and bulk (warns) forms
-#
-# Fresh-install and upgrade-script availability: create_cluster() already
-# exercises the fresh-install path (sql/spock--6.0.0.sql) for every node in
-# this test. The full old-version-build-and-upgrade path is covered
-# separately and much more expensively by 018_upgrade_schema_match.pl
-# (excluded from the default schedule). What this test adds cheaply instead
-# is a static check, below, that spock--6.0.0.sql and
-# spock--5.0.11--6.0.0.sql declare the exact same signatures for both
-# functions -- the two scripts drifting out of sync is a real mistake this
-# feature's review already caught once.
-# =============================================================================
+# Test single-node and bulk node_refresh_info(), including interface fallback
+# and partial failure. Direct peers may already be current via propagation.
 
 use strict;
 use warnings;
@@ -39,13 +10,9 @@ use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster scalar_query
                  get_test_config psql_or_bail wait_for_sub_status);
 
-# =============================================================================
-# STATIC CHECK: fresh-install and upgrade scripts declare matching signatures
-# for both functions. Does not need a running cluster.
-# =============================================================================
+# Fresh-install and upgrade scripts must expose matching signatures.
 {
-    # Same repo-root detection as 018_upgrade_schema_match.pl: check_prove
-    # runs this file from tests/tap, not the repo root.
+    # check_prove runs from tests/tap rather than the repository root.
     my $cwd = getcwd();
     my $spock_repo = ($cwd =~ m{^(/.+)/tests/tap(?:/t)?$}) ? $1 : $cwd;
 
@@ -76,11 +43,7 @@ use SpockTest qw(create_cluster cross_wire destroy_cluster scalar_query
     }
 }
 
-# =============================================================================
-# SETUP: 3-node cluster, full mesh (cross_wire's default), so n1's catalog
-# holds real, working node/interface rows for n2 and n3 obtained the normal
-# way (via sub_create()'s discovery), not fabricated.
-# =============================================================================
+# Build a full mesh with discovered node and interface rows.
 create_cluster(3, 'Create 3-node cluster');
 cross_wire(3, ['n1', 'n2', 'n3'], 'Full mesh among n1, n2, and n3');
 
@@ -98,10 +61,7 @@ sub dsn_for {
            "user=$db_user password=$db_password";
 }
 
-# Runs $sql on node $node_num and returns (exit_code, combined stdout+stderr)
-# -- unlike SpockTest's scalar_query()/psql_or_bail(), this does not die on
-# failure and does not discard stderr, since several scenarios below expect
-# an ERROR and need to inspect its text.
+# Run SQL and capture expected failures without discarding stderr.
 sub psql_capture_err {
     my ($node_num, $sql) = @_;
     my $port = $node_ports->[$node_num - 1];
@@ -110,13 +70,7 @@ sub psql_capture_err {
     return ($rc, $out);
 }
 
-# Same as psql_capture_err(), but with the connection's client_min_messages
-# raised to error via PGOPTIONS, so a RAISE WARNING from within the called
-# function is not sent to the client at all. Used where a test only wants
-# the query result itself, not the warning text (checked separately, via
-# plain psql_capture_err(), by another call).  A "SET client_min_messages
-# ...; SELECT ..." string in one -c would still print the SET command's own
-# completion tag ahead of the value, so this uses a startup option instead.
+# Suppress warnings when only the query result is under test.
 sub psql_capture_quiet {
     my ($node_num, $sql) = @_;
     my $port = $node_ports->[$node_num - 1];
@@ -125,8 +79,7 @@ sub psql_capture_quiet {
     return ($rc, $out);
 }
 
-# All leading/trailing whitespace stripped, for comparing a single-value
-# result exactly (psql -t pads/newlines the raw text captured above).
+# Normalize psql's padded scalar output.
 sub trimmed {
     my ($s) = @_;
     $s =~ s/^\s+|\s+$//g;
@@ -141,9 +94,7 @@ psql_or_bail(2,
     "info = '{\"tiebreaker\": 101}'::jsonb " .
     "WHERE node_id = (SELECT node_id FROM spock.node_info())");
 
-my $before = scalar_query(1, "SELECT location FROM spock.node WHERE node_name = 'n2'");
-isnt($before, 'loc-n2-v1',
-     "n1's cached location for n2 is still stale before any refresh");
+# Direct propagation may update n1 before this explicit refresh.
 
 my $refreshed = scalar_query(1, "SELECT spock.node_refresh_info('n2')");
 is($refreshed, 't', "single-peer refresh of n2 returns true");
