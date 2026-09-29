@@ -20,6 +20,8 @@ use SpockTest qw(create_cluster destroy_cluster get_test_config scalar_query
 #      pg_dump cannot open its output file and exits with code 1.
 #   2. The table already exists on the subscriber, so pg_restore, run with
 #      --exit-on-error, fails and exits with code 1.
+# The child inherits the worker's stderr, so its own message lands in the
+# server log next to Spock's report; both are checked.
 # =============================================================================
 
 create_cluster(2, 'Create 2-node cluster for structure sync error test');
@@ -53,9 +55,11 @@ ok(wait_for_log(2,
         $offset, 60),
     'pg_dump failure reports how the child exited');
 
-unlike(log_since(2, $offset),
-    qr/could not execute pg_dump \(".*"\): (Success|No such file or directory|Undefined error)/,
-    'pg_dump failure does not report a stale errno');
+# The child's own message reaches the server log too, so the cause is there.
+ok(wait_for_log(2,
+        qr/pg_dump: error: could not open output file ".*no_such_directory_\d+.*": No such file or directory/,
+        $offset, 10),
+    'the log names the actual pg_dump error');
 
 # ---- Recovery: a failed structure sync is not retried, so set up again -----
 psql_or_bail(2, "SELECT spock.sub_drop('sub_sync_report')");
@@ -84,9 +88,10 @@ ok(wait_for_log(2,
         $offset, 60),
     'pg_restore failure reports how the child exited');
 
-unlike(log_since(2, $offset),
-    qr/could not execute pg_restore \(".*"\): (Success|No such file or directory|Undefined error)/,
-    'pg_restore failure does not report a stale errno');
+ok(wait_for_log(2,
+        qr/pg_restore: error: could not execute query: ERROR:  relation "sync_report" already exists/,
+        $offset, 10),
+    'the log names the actual pg_restore error');
 
 psql_or_bail(2, "SELECT spock.sub_drop('sub_sync_report')");
 
