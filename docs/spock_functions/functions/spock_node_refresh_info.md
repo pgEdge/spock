@@ -24,12 +24,21 @@ this node's locally cached copy.
 
 `spock.node` is a local catalog: each node populates its row for a peer
 once, either when that node is created or when a subscription to it is
-first created, and does not refresh it automatically afterward. If a peer's
-`info` is changed later -- most commonly to assign a custom `tiebreaker` and
-resolve an equal-tiebreaker collision -- every other node keeps using its
-old, cached copy until it is explicitly refreshed. See the Tiebreaker
-section in [conflict_types.md](../../conflict_types.md) for why this matters
-and why `spock.node` is not simply replicated.
+first created. A peer's later `location`/`country`/`info` change -- most
+commonly to assign a custom `tiebreaker` and resolve an equal-tiebreaker
+collision -- propagates automatically to every node that subscribes to
+that peer *directly* (see
+[Automatic Node Metadata Propagation](../node_mgmt.md#automatic-node-metadata-propagation)),
+with no call to this function needed. The message is not forwarded, and a
+node normally has a row for a peer only through its own subscription to it,
+so a cascade node that does not subscribe to the changed peer has no row to
+refresh. This function is needed when a node's cached row missed an update,
+for example because the transaction carrying it was skipped or discarded,
+and to force a specific peer's info to be re-fetched on demand.
+`spock.sub_resync_table()` warns when the provider's row differs from the
+cached one. See the Tiebreaker section in
+[conflict_types.md](../../conflict_types.md) for why this matters and why
+`spock.node` is not simply replicated wholesale.
 
 Called with a specific `node_name`, only that node's row is refreshed and
 any failure refreshing it is reported as an error. Called with no
