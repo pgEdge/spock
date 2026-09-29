@@ -175,46 +175,54 @@ uses the `tiebreaker` value from the `spock.node` configuration to
 determine a winner. The node with the lower tiebreaker value wins. By
 default the tiebreaker is set to the node's unique ID.
 
-**Tiebreaker resolution is always local, and `info` is never automatically
-re-synchronized.** Every node keeps its own copy of what it believes
-each node's tiebreaker to be, read from its *own* `spock.node.info`
-column. A node's `info` (including `tiebreaker`) is populated once --
-either when the node is created, or when another node first
-subscribes to it (via `spock.sub_create()`, which fetches the
-provider's node metadata at that moment). Spock does not re-fetch or
-re-synchronize it automatically afterward, since `spock.node` is a local
-catalog table, not a replicated one.
+**Tiebreaker resolution is always local.** Every node keeps its own copy
+of what it believes each node's tiebreaker to be, read from its *own*
+`spock.node.info` column. A node's `info` (including `tiebreaker`) is
+populated once -- either when the node is created, or when another node
+first subscribes to it (via `spock.sub_create()`, which fetches the
+provider's node metadata at that moment).
 
-This matters when assigning a custom tiebreaker to resolve an
-equal-tiebreaker collision:
+A node's own `location`, `country`, and `info` (including `tiebreaker`)
+can be changed afterward with
+[`spock.node_alter`](spock_functions/functions/spock_node_alter.md) --
+the recommended way, since it validates a `tiebreaker` value and merges
+`info` rather than replacing it -- or with a raw `UPDATE spock.node`.
+Either way, the change propagates **automatically to every node that
+subscribes to it *directly*** (see
+[Automatic Node Metadata Propagation](spock_functions/node_mgmt.md#automatic-node-metadata-propagation)):
 
 ```sql
+-- on n1, one of these two (node_alter validates tiebreaker, UPDATE does not):
+SELECT spock.node_alter(p_info_patch => '{"tiebreaker": <unique_integer>}'::jsonb);
+
 UPDATE spock.node
    SET info = COALESCE(info, '{}'::jsonb) ||
               '{"tiebreaker": <unique_integer>}'
- WHERE node_name = '<name>';
+ WHERE node_id = (SELECT node_id FROM spock.node_info());
 ```
 
-Running this on only one node -- even the node being renumbered --
-does not update it everywhere. Each of the *other* nodes in the
-cluster holds its own independent copy of that node's row, cached from
-whenever it first learned about it, and none of those copies are
-touched by the `UPDATE` above. On every other node, refresh that
-node's cached copy with
+Every node that subscribes to `n1` directly picks this up with no
+further action. The message is not forwarded through a cascade topology
+(Node A → Node B → Node C): Node C normally has no `spock.node` row for
+`n1` unless it subscribes to `n1`, so there is nothing for it to update.
+
+A node that has a row for `n1` but did not apply the message keeps the old
+value. This happens when the transaction carrying the message is skipped or
+discarded by the exception handling. Use
 [`spock.node_refresh_info`](spock_functions/functions/spock_node_refresh_info.md)
-instead of hand-crafting the same `UPDATE` on each one:
+to catch up on demand:
 
 ```sql
--- on every other node in the cluster:
-SELECT spock.node_refresh_info('<name>');   -- one node
+-- on a node that has a stale row for n1:
+SELECT spock.node_refresh_info('n1');   -- one node
 
-SELECT spock.node_refresh_info();           -- or every known peer at once
+SELECT spock.node_refresh_info();       -- or every known peer at once
 ```
 
-Leaving some nodes unrefreshed has the same effect as updating them
-with different values: the cluster ends up with disagreeing tiebreaker
-values for the same node, which can cause different nodes to resolve
-the identical conflict differently.
+Leaving some nodes unrefreshed has the same effect as updating them with
+different values: the cluster ends up with disagreeing tiebreaker values
+for the same node, which can cause different nodes to resolve the
+identical conflict differently.
 
 ### Frozen Tuples and Missing Timestamp Data
 

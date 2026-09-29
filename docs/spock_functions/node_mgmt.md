@@ -10,6 +10,7 @@ cluster.
 | [spock.node_drop](functions/spock_node_drop.md) | Drop a `spock` node.
 | [spock.node_drop_interface](functions/spock_node_drop_interface.md) | Remove an existing interface from a node.
 | [spock.node_info](functions/spock_node_info.md) | Returns information about the local Spock node.
+| [spock.node_alter](functions/spock_node_alter.md) | Change this node's own location, country, and/or info (merging info), validating a tiebreaker if one is set.
 | [spock.node_refresh_info](functions/spock_node_refresh_info.md) | Refresh this node's cached copy of a peer's (or every peer's) location, country, and info.
 
 
@@ -68,6 +69,35 @@ SELECT spock.node_drop('n1', true);
 
 Drops a node named `n1`. If the node does not exist, an error message will
 be suppressed because `ifexists` is set to `true`.
+
+## Automatic Node Metadata Propagation
+
+A change to a node's own `location`, `country`, or `info` -- whether via
+[`spock.node_alter`](functions/spock_node_alter.md) or a raw
+`UPDATE spock.node SET ... WHERE node_id = (SELECT node_id FROM spock.node_info())`
+-- propagates automatically to every node that subscribes to it *directly*.
+No manual step is required for a direct subscriber to pick up the change.
+
+The message is not forwarded through a cascade topology (Node A → Node B →
+Node C): only Node B, as A's direct subscriber, receives A's change. Node C
+normally has no `spock.node` row for A unless it subscribes to A, so there
+is nothing for it to update.
+
+A node that has a row for the changed node but did not apply the message
+keeps the old values. This happens when the transaction carrying the message
+is skipped (for example with `skip_lsn`) or discarded by the exception
+handling. Run [`spock.node_refresh_info`](functions/spock_node_refresh_info.md)
+on that node to catch up. A table resynchronization does not replay these
+messages, but `spock.sub_resync_table()` warns when the provider's row
+differs from the cached one.
+
+An incoming change is applied only if the node named in the message has
+the same `node_id` locally as the node that sent it. Otherwise it is
+skipped and logged as a `WARNING`: either the name is unknown locally
+(rows are never created from these messages), or the name and the
+sender's `node_id` disagree with the local copy. This is a defensive
+check against a corrupted or misconfigured peer, not something normal
+operation triggers.
 
 ## Node Management Functions
 
@@ -159,6 +189,33 @@ Returns one row with the following columns:
 | `country` | `text` | Optional country label; `NULL` if not set during node creation. |
 | `info` | `jsonb` | Optional JSON metadata; `NULL` if not set during node creation. |
 
+### spock.node_alter
+
+Use `spock.node_alter` to change the local node's own `location`,
+`country`, and/or `info`, merging `info` rather than replacing it, with a
+`tiebreaker` key (if present in the patch) validated as a whole JSON
+number that fits a 32-bit integer.
+
+`spock.node_alter(p_location text DEFAULT NULL, p_country text DEFAULT NULL, p_info_patch jsonb DEFAULT NULL)`
+
+Unlike `spock.node_refresh_info`, this only ever targets the local node --
+there is no node-name argument. It ends in the same `UPDATE spock.node`
+that a hand-written `UPDATE` would use, so it propagates the same way; see
+[Automatic Node Metadata Propagation](#automatic-node-metadata-propagation)
+above. See [spock_node_alter.md](functions/spock_node_alter.md) for full
+details and examples.
+
+Parameters:
+
+- `p_location` (optional) replaces this node's `location`; left unchanged
+  if omitted.
+- `p_country` (optional) replaces this node's `country`; left unchanged if
+  omitted.
+- `p_info_patch` (optional) is merged into this node's existing `info`;
+  left unchanged if omitted. A `tiebreaker` key inside it must be a JSON
+  number representable as a 32-bit integer, or the call raises an error
+  and changes nothing.
+
 ### spock.node_refresh_info
 
 Use `spock.node_refresh_info` to refresh this node's cached copy of a
@@ -168,10 +225,16 @@ within `info`).
 `spock.node_refresh_info(p_node_name name DEFAULT NULL)`
 
 `spock.node` is a local catalog: each node populates its row for a peer
-once and does not refresh it automatically afterward. If a peer's `info`
-changes later (most commonly to assign a custom `tiebreaker`), every other
-node keeps using its stale, cached copy until refreshed explicitly. See the
-Tiebreaker section in [conflict_types.md](../conflict_types.md).
+once, either when that node is created or when a subscription to it is
+first created. A *direct* subscriber picks up a peer's later changes
+automatically -- see
+[Automatic Node Metadata Propagation](#automatic-node-metadata-propagation)
+above -- but the message is not forwarded, and it is lost if the
+transaction carrying it is skipped or discarded.
+`spock.node_refresh_info` is the way to catch such a node up on demand, in
+bulk for every known peer at once, or to recover a specific peer's info
+without waiting on it to change again. See the Tiebreaker section in
+[conflict_types.md](../conflict_types.md).
 
 Parameters:
 
