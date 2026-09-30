@@ -72,7 +72,7 @@ nav:
     - Modifying a Cluster: modify/index.md
     - Using Z0DAN:
       - Modifying your Cluster with Zodan: modify/zodan/index.md
-      - Using Zodan Scripts and Workflows: modify/zodan/zodan_readme.md
+      - Using Zodan (attach_node/detach_node and SQL scripts): modify/zodan/zodan_readme.md
       - Adding a Node with Zero Downtime: modify/zodan/zodan_tutorial.md
     - Adding a Node with Minimal Downtime with pgBackRest: modify/add_node_pgbackrest.md
     - Recovering from Catastrophic Node Failure: recovery/catastrophic_node_failure.md
