@@ -301,7 +301,7 @@ static void clear_subscription_skip_lsn(XLogRecPtr finish_lsn);
 
 static void multi_insert_finish(void);
 
-static void handle_queued_message(HeapTuple msgtup, bool tx_just_started);
+static void handle_queued_message(HeapTuple msgtup);
 static void handle_startup_param(const char *key, const char *value);
 static bool parse_bool_param(const char *key, const char *value);
 static void process_syncing_tables(XLogRecPtr end_lsn);
@@ -1718,7 +1718,6 @@ handle_insert(StringInfo s)
 	SpockRelation *rel;
 	ErrorData  *edata = NULL;
 	MemoryContext	oldcontext;
-	bool		started_tx;
 	bool		failed = false;
 
 	/*
@@ -1729,7 +1728,7 @@ handle_insert(StringInfo s)
 
 	oldcontext = MemoryContextSwitchTo(ApplyOperationContext);
 
-	started_tx = begin_replication_step();
+	begin_replication_step();
 
 	rel = spock_read_insert(s, RowExclusiveLock, &newtup);
 	if (unlikely(rel == NULL))
@@ -1877,7 +1876,7 @@ handle_insert(StringInfo s)
 
 		apply_api.on_commit();
 
-		handle_queued_message(ht, started_tx);
+		handle_queued_message(ht);
 
 		heap_freetuple(ht);
 
@@ -2661,7 +2660,7 @@ handle_sequence(QueuedMessage *queued_message)
  * Handle SQL message comming via queue table.
  */
 static void
-handle_sql(QueuedMessage *queued_message, bool tx_just_started, char **sql)
+handle_sql(QueuedMessage *queued_message, char **sql)
 {
 	JsonbIterator *it;
 	JsonbValue	v;
@@ -2708,15 +2707,21 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started, char **sql)
 			 "item type %d expected %d",
 			 MySubscription->name, r, WJB_DONE);
 
-	/* Run the extracted SQL. */
-	spock_execute_sql_command(*sql, queued_message->role, tx_just_started);
+	/*
+	 * Run the extracted SQL.  Never as a top-level statement: the apply
+	 * worker is always inside its own transaction, so a statement that
+	 * commits on its own, such as CLUSTER or VACUUM without a table, must be
+	 * refused by PostgreSQL's transaction-block check and reach exception
+	 * handling as an ordinary error, not tear down the worker's transaction.
+	 */
+	spock_execute_sql_command(*sql, queued_message->role, false);
 }
 
 /*
  * Handle SQL message comming via queue table.
  */
 static void
-handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
+handle_sql_or_exception(QueuedMessage *queued_message)
 {
 	bool		failed = false;
 	char	   *sql = NULL;
@@ -2740,7 +2745,7 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 		{
 			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
-			handle_sql(queued_message, tx_just_started, &sql);
+			handle_sql(queued_message, &sql);
 		}
 		PG_CATCH();
 		{
@@ -2795,7 +2800,7 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 	}
 	else
 	{
-		handle_sql(queued_message, tx_just_started, &sql);
+		handle_sql(queued_message, &sql);
 	}
 
 	end_replication_step();
@@ -2805,7 +2810,7 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
  * Handles messages comming from the queue.
  */
 static void
-handle_queued_message(HeapTuple msgtup, bool tx_just_started)
+handle_queued_message(HeapTuple msgtup)
 {
 	QueuedMessage *queued_message;
 	const char *old_action_name;
@@ -2822,7 +2827,7 @@ handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 			pg_fallthrough;
 		case QUEUE_COMMAND_TYPE_SQL:
 			errcallback_arg.action_name = "QUEUED_SQL";
-			handle_sql_or_exception(queued_message, tx_just_started);
+			handle_sql_or_exception(queued_message);
 			in_spock_queue_ddl_command = false;
 			break;
 		case QUEUE_COMMAND_TYPE_TABLESYNC:
