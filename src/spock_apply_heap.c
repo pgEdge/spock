@@ -293,8 +293,10 @@ slot_store_data(TupleTableSlot *slot, SpockRelation *rel,
 	ExecStoreVirtualTuple(slot);
 }
 
+#ifndef NO_LOG_OLD_VALUE
+
 /*
- * Store tuple data into slot from HeapTuple.
+ * Store tuple data into slot from HeapTuple.  Only delta apply needs it.
  */
 static void
 slot_store_htup(TupleTableSlot *slot, SpockRelation *rel,
@@ -321,6 +323,7 @@ slot_store_htup(TupleTableSlot *slot, SpockRelation *rel,
 
 	ExecStoreVirtualTuple(slot);
 }
+#endif							/* NO_LOG_OLD_VALUE */
 
 /*
  * Replace updated columns with data from the SpockTupleData struct.
@@ -650,6 +653,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 						  xmin, local_origin_found, local_origin,
 						  local_ts, idxused);
 
+#ifndef NO_LOG_OLD_VALUE
 	if (rel->has_delta_columns)
 	{
 		SpockTupleData deltatup;
@@ -692,6 +696,7 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 		MemoryContextSwitchTo(oldctx);
 		slot_store_htup(remoteslot, rel, applytuple);
 	}
+#endif							/* NO_LOG_OLD_VALUE */
 
 	/*
 	 * Finally do the actual tuple update if needed.
