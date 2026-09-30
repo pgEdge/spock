@@ -104,7 +104,10 @@ static char *standby_slot_names_raw;
 static char *standby_slot_names_string = NULL;
 static List *pg_standby_slot_names = NIL;
 static int	standby_slots_min_confirmed;
+
+#if PG_VERSION_NUM < 180000
 static XLogRecPtr standby_slot_names_oldest_flush_lsn = InvalidXLogRecPtr;
+#endif
 
 /* Slots to sync */
 static char *spock_failover_slots_dsn;
@@ -248,11 +251,14 @@ assign_standby_slot_names(const char *newval, void *extra)
 	if (pg_standby_slot_names)
 		list_free(pg_standby_slot_names);
 
+#if PG_VERSION_NUM < 180000
+
 	/*
 	 * We must invalidate our idea of the oldest lsn in all the named slots if
 	 * we might have changed the list.
 	 */
 	standby_slot_names_oldest_flush_lsn = InvalidXLogRecPtr;
+#endif
 
 	old_ctx = MemoryContextSwitchTo(TopMemoryContext);
 	standby_slot_names_string = pstrdup(newval);
