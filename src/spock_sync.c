@@ -1143,6 +1143,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		RepOriginId	originid;
 		char	   *snapshot;
 		bool		use_failover_slot;
+		bool		can_pause_apply_workers;
 
 		elog(INFO, "initializing subscriber %s", sub->name);
 
@@ -1169,7 +1170,22 @@ spock_sync_subscription(SpockSubscription *sub)
 		 * Workers are resumed inside copy_replication_sets_data after
 		 * adjust_progress_info completes.  If slot creation fails, the
 		 * PG_CATCH block below attempts a best-effort resume.
+		 *
+		 * pause_apply_workers() was added in 5.0.7; check for it first so an
+		 * older origin (a supported rolling-upgrade pairing) gets one clear
+		 * log line instead of a raw "does not exist" error.  Sync proceeds
+		 * unpaused if it's missing, reopening the race above.
 		 */
+		can_pause_apply_workers =
+			spock_remote_function_exists(origin_conn, "spock",
+											 "pause_apply_workers", 0, NULL);
+		if (!can_pause_apply_workers)
+			elog(LOG, "SPOCK: origin does not support spock.pause_apply_workers() "
+					  "(Spock older than 5.0.7); proceeding without it. A "
+					  "concurrent write load on the origin during this sync "
+					  "could leave the subscriber missing rows; upgrade the "
+					  "origin to close this window.");
+		else
 		{
 			PGresult *pres = PQexec(origin_conn,
 									"SELECT spock.pause_apply_workers()");
@@ -1190,7 +1206,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		{
 			/* Best-effort resume on error — workers' CV timeout will also
 			 * recover them if this fails. */
-			if (PQstatus(origin_conn) == CONNECTION_OK)
+			if (can_pause_apply_workers && PQstatus(origin_conn) == CONNECTION_OK)
 			{
 				PGresult *rres = PQexec(origin_conn,
 										"SELECT spock.resume_apply_workers()");
@@ -1202,9 +1218,17 @@ spock_sync_subscription(SpockSubscription *sub)
 		}
 		PG_END_TRY();
 
-		/* Keep origin_conn open — resume_conn is passed to
-		 * copy_replication_sets_data so workers are released after
-		 * adjust_progress_info reads progress within the slot snapshot. */
+		/*
+		 * Keep origin_conn open only if something was paused -- it's the
+		 * resume_conn passed to copy_replication_sets_data.  Otherwise
+		 * there's nothing to resume; close it now so nothing downstream
+		 * tries resume_apply_workers() on an origin that lacks it too.
+		 */
+		if (!can_pause_apply_workers)
+		{
+			PQfinish(origin_conn);
+			origin_conn = NULL;
+		}
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
