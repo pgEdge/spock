@@ -56,6 +56,7 @@ extern bool check_all_uc_indexes;
 extern bool spock_enable_quiet_mode;
 extern int	log_origin_change;
 extern int	spock_apply_idle_timeout;
+extern int	spock_sequence_sync_interval;
 extern int	spock_log_verbosity;
 extern int	spock_apply_change_logging;
 
@@ -149,6 +150,7 @@ extern bool synchronize_sequences(void);
 extern void synchronize_sequence(Oid seqoid);
 extern void spock_create_sequence_state_record(Oid seqoid);
 extern void spock_drop_sequence_state_record(Oid seqoid);
+extern void spock_sequence_state_adopt(Oid seqoid, int64 last_value);
 extern int64 sequence_get_last_value(Oid seqoid);
 
 extern bool in_spock_replicate_ddl_command;

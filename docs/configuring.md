@@ -252,6 +252,17 @@ liveness detection. Default: `300` (5 minutes).
 spock.apply_idle_timeout = 300
 ```
 
+### `spock.sequence_sync_interval`
+
+`spock.sequence_sync_interval` is how often, in seconds, the manager worker
+pushes the state of the sequences in replication sets to subscribers. A
+subscriber receives a value one cache ahead of the provider, so that its own
+copy of the sequence stays ahead of what the provider has handed out; a
+sequence consumed faster than its cache allows is pushed again after one
+second. The default is `60`. `0` disables the periodic push, leaving
+[`spock.sync_seq()`](spock_functions/functions/spock_sync_seq.md) as the only
+way to synchronize a sequence. Changes take effect on reload.
+
 ### `spock.sync_timeout`
 
 Overrides the time (in seconds) budgeted for a single synchronisation wait in

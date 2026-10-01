@@ -2685,6 +2685,12 @@ handle_sequence(QueuedMessage *queued_message)
 
 	DirectFunctionCall2(setval_oid, ObjectIdGetDatum(reloid),
 						Int64GetDatum(last_value));
+
+	/*
+	 * If this node publishes the sequence too, count the value as already
+	 * published, or the next periodic push would echo it back to the peer.
+	 */
+	spock_sequence_state_adopt(reloid, last_value);
 }
 
 /*

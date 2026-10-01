@@ -118,11 +118,15 @@ We strongly recommend that you use pgEdge [Snowflake
 Sequences](https://github.com/pgEdge/snowflake) rather than using the legacy
 sequences described below.
 
-The state of sequences added to replication sets is replicated periodically
-and not in real-time. Dynamic buffer is used for the value being replicated
-so that the subscribers actually receive future state of the sequence. This
-minimizes the chance of subscriber's notion of sequence's `last_value`
-falling behind but does not completely eliminate the possibility.
+The state of sequences added to replication sets is replicated periodically,
+every `spock.sequence_sync_interval` seconds (60 by default), not in real
+time. A dynamic buffer is used for the value being replicated, so that the
+subscribers actually receive a future state of the sequence. This minimizes
+the chance of a subscriber's notion of the sequence's `last_value` falling
+behind, but does not completely eliminate the possibility. A node that both
+receives a sequence and publishes it, as every node in a bidirectional setup
+does, treats a received value as already published, so the two nodes do not
+push the sequence back and forth.
 
 It might be desirable to call `sync_sequence` to ensure all subscribers have
 up to date information about given sequence after big events in the database

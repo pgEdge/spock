@@ -12,6 +12,7 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
+#include "postmaster/interrupt.h"
 
 #include "access/xact.h"
 
@@ -24,6 +25,7 @@
 #include "utils/lsyscache.h"	/* PG19 moved get_database_name() here */
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "utils/guc.h"
 #include "utils/timestamp.h"
 
 #include "pgstat.h"
@@ -190,6 +192,7 @@ spock_manager_main(Datum main_arg)
 {
 	int			slot = DatumGetInt32(main_arg);
 	Oid			extoid;
+	TimestampTz next_sequence_sync = 0;
 
 	/* Setup shmem. */
 	spock_worker_attach(slot, SPOCK_WORKER_MANAGER);
@@ -219,6 +222,12 @@ spock_manager_main(Datum main_arg)
 		int			rc;
 		int			sleep_timer;
 
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
 		/*
 		 * Launch or restart apply-workers. This determines how long we have
 		 * to wait before doing this again based on the restart delay of any
@@ -226,6 +235,38 @@ spock_manager_main(Datum main_arg)
 		 * exception handling).
 		 */
 		sleep_timer = manage_apply_workers();
+
+		/*
+		 * Push the state of replicated sequences to subscribers on a timer.
+		 * A sequence that is being consumed faster than its cache allows is
+		 * pushed again after a second rather than a full interval.
+		 */
+		if (spock_sequence_sync_interval > 0)
+		{
+			TimestampTz now = GetCurrentTimestamp();
+			long		until;
+
+			/* A shortened interval applies at once, not after the old one. */
+			if (next_sequence_sync >
+				TimestampTzPlusMilliseconds(now, spock_sequence_sync_interval * 1000L))
+				next_sequence_sync =
+					TimestampTzPlusMilliseconds(now, spock_sequence_sync_interval * 1000L);
+
+			if (now >= next_sequence_sync)
+			{
+				int			wait_s = synchronize_sequences()
+					? spock_sequence_sync_interval : 1;
+
+				now = GetCurrentTimestamp();
+				next_sequence_sync = TimestampTzPlusMilliseconds(now, wait_s * 1000L);
+			}
+
+			until = (next_sequence_sync - now) / 1000;
+			if (until < 1)
+				until = 1;
+			if (until < sleep_timer)
+				sleep_timer = (int) until;
+		}
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,

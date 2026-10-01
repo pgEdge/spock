@@ -184,6 +184,7 @@ bool		check_all_uc_indexes = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
 int			spock_apply_idle_timeout = 300;
+int			spock_sequence_sync_interval = 60;
 int			spock_log_verbosity = SPOCK_LOG_VERBOSITY_NORMAL;
 int			spock_apply_change_logging = SPOCK_APPLY_CHANGE_LOG_NONE;
 
@@ -1457,6 +1458,19 @@ _PG_init(void)
 							 SpockOriginConflicts,
 							 PGC_SUSET, 0,
 							 NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.sequence_sync_interval",
+							"How often the state of replicated sequences is pushed to subscribers.",
+							"A sequence consumed faster than its cache is pushed again after "
+							"one second. Zero disables the periodic push; spock.sync_seq() "
+							"still works.",
+							&spock_sequence_sync_interval,
+							60,
+							0,
+							86400,
+							PGC_SIGHUP,
+							GUC_UNIT_S,
+							NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.apply_idle_timeout",
 							"Maximum idle time in seconds before apply worker reconnects",

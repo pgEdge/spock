@@ -19,6 +19,11 @@ This function must be executed on the provider node. The sequence state update
 is embedded in the transaction where this function is called, and subscribers
 apply the update when they replicate that transaction.
 
+The manager worker does the same thing on a timer, every
+`spock.sequence_sync_interval` seconds. Call this function when a sequence
+must be synchronized right away, for example after a bulk load or before an
+upgrade.
+
 Replication set filtering applies — only subscribers whose subscriptions
 include the replication set containing this sequence will receive the update.
 

@@ -353,3 +353,54 @@ spock_drop_sequence_state_record(Oid seqoid)
 
 	CommandCounterIncrement();
 }
+
+/*
+ * Record a value received from a peer as if this node had published it.
+ *
+ * A node that both receives a sequence and publishes it, as every node in a
+ * bidirectional setup does, would otherwise see the peer's push as local
+ * consumption and push a higher value straight back.  Each round trip would
+ * add a cache's worth and double the cache, without end.  Setting the
+ * published value a cache ahead of what was applied makes the next
+ * synchronize_sequences() find nothing to do until this node consumes the
+ * sequence itself.
+ */
+void
+spock_sequence_state_adopt(Oid seqoid, int64 last_value)
+{
+	RangeVar   *rv;
+	Relation	rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	ScanKeyData key[1];
+
+	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SEQUENCE_STATE, -1);
+	rel = table_openrv(rv, RowExclusiveLock);
+
+	ScanKeyInit(&key[0],
+				Anum_sequence_state_seqoid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(seqoid));
+	scan = systable_beginscan(rel, 0, true, NULL, 1, key);
+
+	tuple = systable_getnext(scan);
+	if (HeapTupleIsValid(tuple))
+	{
+		SeqStateTuple *oldseq = (SeqStateTuple *) GETSTRUCT(tuple);
+		int64		published = last_value + oldseq->cache_size;
+
+		if (oldseq->last_value < published)
+		{
+			HeapTuple	newtup = heap_copytuple(tuple);
+			SeqStateTuple *newseq = (SeqStateTuple *) GETSTRUCT(newtup);
+
+			newseq->last_value = published;
+			CatalogTupleUpdate(rel, &tuple->t_self, newtup);
+		}
+	}
+
+	systable_endscan(scan);
+	table_close(rel, RowExclusiveLock);
+
+	CommandCounterIncrement();
+}
