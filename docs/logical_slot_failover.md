@@ -377,12 +377,12 @@ list.
 
 Three ways to handle it:
 
-- **Automate it with an `on_role_change` callback.** Patroni runs the
-  script on promotion and demotion with the arguments `on_role_change
-  <role> <scope>`; the role is `primary` or `replica` (`master` on releases
-  before 4.0). On becoming leader the script sets
-  `synchronized_standby_slots` to the slots of the other members that are
-  up and reloads; on becoming a replica it clears it.
+- **Automate it with a callback and a periodic reconcile.** Patroni runs
+  the `on_role_change` callback on promotion and demotion with the
+  arguments `on_role_change <role> <scope>`; the role is `primary` or
+  `replica` (`master` on releases before 4.0). On becoming leader the
+  script sets `synchronized_standby_slots` to the slots of the other
+  members that are up and reloads; on becoming a replica it clears it.
 
   ```yaml
   postgresql:
@@ -390,14 +390,23 @@ Three ways to handle it:
       on_role_change: /etc/patroni/set_synchronized_standby_slots.sh
   ```
 
+  That callback alone is not enough, because Patroni does not run it when
+  a standby that was down comes back, nor when one goes away. A standby
+  that rejoins after a promotion would stay off the list, and subscribers
+  could advance ahead of it. So the same script is also run periodically on
+  every member, from cron or a systemd timer, as
+  `set_synchronized_standby_slots.sh reconcile <scope>`: it asks Patroni
+  for the member's current role and brings the setting up to date,
+  touching it only when it differs. A standby is protected from the first
+  reconcile after it streams again; choose the interval accordingly.
+
   A reference implementation ships with Spock at
   [`samples/set_synchronized_standby_slots.sh`](https://github.com/pgEdge/spock/blob/main/samples/set_synchronized_standby_slots.sh).
   It reads the member name from `patroni.yml`, derives slot names with
   Patroni's own function, skips members that are not running or streaming,
-  and leaves the setting untouched when the member list cannot be read.
-  Review and adapt it before production use. It acts only at role changes;
-  a standby that goes down afterwards has to be removed from the list by
-  hand or by a monitor of your own.
+  and leaves the setting untouched when the member list cannot be read. It
+  supports Patroni's own member slots only, with `use_slots` on and no
+  hand-made `primary_slot_name`. Review and adapt it before production use.
 
 - **Let Patroni manage it.** Patroni's development branch has a
   `manage_synchronized_standby_slots` option that keeps
