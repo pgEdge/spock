@@ -69,6 +69,10 @@ PATRONI_NAME="${PATRONI_NAME:-$(awk '$1 == "name:" {print $2; exit}' "$PATRONI_C
 # e.g. PGCONN="-h /var/run/postgresql -U postgres -d postgres"
 PSQL="${PSQL:-psql}"
 PGCONN="${PGCONN:-}"
+# Lock shared by the callback and the reconcile, so that a reconcile that
+# looked at the cluster just before a promotion cannot overwrite what the
+# promotion callback set. Must be writable by the user Patroni runs as.
+LOCKFILE="${LOCKFILE:-/tmp/set_synchronized_standby_slots.lock}"
 # ----------------------------------------------------------------------------
 
 case "$ACTION" in
@@ -136,7 +140,10 @@ other_member_slots() {
 			*) log "skipping member $name in state '$state'"; continue ;;
 		esac
 		local slot
-		slot="$(slot_name_from_member "$name")"
+		if ! slot="$(slot_name_from_member "$name")"; then
+			log "cannot derive the slot name of member $name; leaving synchronized_standby_slots unchanged"
+			return 1
+		fi
 		slots="${slots:+$slots,}$slot"
 	done <<< "$members"
 	echo "$slots"
@@ -165,6 +172,14 @@ apply_setting() {
 
 if [ -z "$PATRONI_NAME" ]; then
 	log "member name unknown: set PATRONI_NAME or the name: key in $PATRONI_CONFIG"
+	exit 1
+fi
+
+# One run at a time per member. The cluster is read only after the lock is
+# held, so whichever entry point runs second sees the role as it is then.
+exec 9>"$LOCKFILE"
+if ! flock -w 60 9; then
+	log "could not lock $LOCKFILE within 60s; leaving synchronized_standby_slots unchanged"
 	exit 1
 fi
 
