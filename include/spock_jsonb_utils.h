@@ -35,3 +35,5 @@ typedef struct JsonbInState
 extern char *spock_tuple_to_json_cstring(SpockTupleData *tuple,
 										 TupleDesc tupdesc);
 extern char *heap_tuple_to_json_cstring(HeapTuple *tuple, TupleDesc tupdesc);
+extern char *spock_jsonb_get_text(Jsonb *obj, const char *key);
+extern Jsonb *spock_jsonb_get_field(Jsonb *obj, const char *key);

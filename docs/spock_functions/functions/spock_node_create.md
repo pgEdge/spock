@@ -55,6 +55,15 @@ info
     Optional JSONB field for storing arbitrary metadata about
     the node.  The default is NULL.
 
+    A `tiebreaker` key in this field overrides the node's default
+    last-update-wins tiebreaker (otherwise the node's unique ID). Each
+    node caches this value locally, populated once when it first learns
+    about the node. A later change (via `spock.node_alter`, the
+    recommended way, or a raw `UPDATE`) propagates automatically to every
+    direct subscriber; a node that is not a direct subscriber needs
+    `spock.node_refresh_info` to pick it up -- see the Tiebreaker section
+    in conflict_types.md for details.
+
 ### EXAMPLE
 
 In the following example, Spock creates a node named n3, with a connection

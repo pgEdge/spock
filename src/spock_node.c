@@ -42,6 +42,7 @@
 #include "funcapi.h"
 
 
+#include "spock_jsonb_utils.h"
 #include "spock_node.h"
 #include "spock_repset.h"
 #include "spock_worker.h"
@@ -487,11 +488,8 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 	datum = heap_getattr(tuple, Anum_node_info, desc, &isnull);
 	if (!isnull)
 	{
-		Datum		value;
 		int32		intval;
-		FmgrInfo	flinfo;
-		FunctionCallInfo fcinfo;
-		bool		isnullval;
+		char	   *tiebreaker_str;
 
 		node->info = DatumGetJsonbP(datum);
 
@@ -499,33 +497,42 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 		 * The node entry has jsonb info, try to extract the tiebreaker value
 		 * from that. If it isn't set we fallback to the node-id.
 		 */
+		tiebreaker_str = spock_jsonb_get_text(node->info, "tiebreaker");
 
-		/* Set up function call info for jsonb_object_field_text(jsonb, text) */
-		fmgr_info(F_JSONB_OBJECT_FIELD_TEXT, &flinfo);
-
-		/* Allocate and initialize the call info structure */
-		fcinfo = palloc0(SizeForFunctionCallInfo(2));
-		InitFunctionCallInfoData(*fcinfo, &flinfo, 2, InvalidOid, NULL, NULL);
-
-		fcinfo->args[0].value = PointerGetDatum(node->info);
-		fcinfo->args[0].isnull = false;
-		fcinfo->args[1].value = CStringGetTextDatum("tiebreaker");
-		fcinfo->args[1].isnull = false;
-
-		value = FunctionCallInvoke(fcinfo);
-		isnullval = fcinfo->isnull;
-
-		if (!isnullval)
+		if (tiebreaker_str != NULL)
 		{
-			intval = pg_strtoint32(TextDatumGetCString(value));
-			node->tiebreaker = intval;
+			MemoryContext oldcontext;
+
+			/* Invalid metadata must not break general conflict resolution. */
+			oldcontext = CurrentMemoryContext;
+			PG_TRY();
+			{
+				intval = pg_strtoint32(tiebreaker_str);
+				node->tiebreaker = intval;
+			}
+			PG_CATCH();
+			{
+				/*
+				 * PG_CATCH runs in ErrorContext, which FlushErrorState()
+				 * resets
+				 */
+				MemoryContextSwitchTo(oldcontext);
+				FlushErrorState();
+				ereport(WARNING,
+						(errmsg("node \"%s\" (id=%u) has a malformed \"tiebreaker\" value \"%s\"",
+								node->name, node->id, tiebreaker_str),
+						 errdetail("Falling back to the node id as the tiebreaker."),
+						 errhint("Use spock.node_alter() or fix the value directly: "
+								 "UPDATE spock.node SET info = info || '{\"tiebreaker\": <integer>}' "
+								 "WHERE node_name = '%s';", node->name)));
+				node->tiebreaker = node->id;
+			}
+			PG_END_TRY();
 		}
 		else
 		{
 			node->tiebreaker = node->id;
 		}
-
-		pfree(fcinfo);
 	}
 	else
 	{

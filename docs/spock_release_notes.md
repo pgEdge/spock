@@ -119,6 +119,11 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
 * **More granular conflict classification** — seven conflict types (up from
   four), with origin-aware suppression and DELETE conflicts now resolved
   through timestamp-based resolution.
+* **Automatic node metadata propagation** — a node's `location`, `country`,
+  and `info` (including its conflict-resolution `tiebreaker`) now
+  propagate automatically to every direct subscriber on change, via the
+  new `spock.node_alter()` function or a plain `UPDATE`; no more silently
+  disagreeing tiebreakers from a forgotten `spock.node_refresh_info()`.
 * **Per-subscription conflict statistics** on PostgreSQL 18+ via a custom
   pgstat kind.
 * **Liveness and feedback refactor** — TCP keepalive replaces the fragile
@@ -274,6 +279,31 @@ operations go through timestamp-based resolution, just like updates.  This
 enables the new `delete_exists` classification — Spock can determine
 whether a delete should be applied or whether a newer local version should
 be preserved.
+
+### Automatic node metadata propagation
+
+A node's `location`, `country`, and `info` (including a `tiebreaker` key
+used to break same-timestamp conflicts -- see *Tiebreaker* in
+[conflict_types.md](conflict_types.md)) previously had to be manually
+re-fetched onto every other node with `spock.node_refresh_info()` after
+any change; a node left unrefreshed would silently keep disagreeing with
+the rest of the cluster about that peer's tiebreaker.
+
+v6.0 propagates such a change automatically to every node that
+subscribes to it *directly*, via a new `AFTER UPDATE` trigger on
+`spock.node` and a custom logical-replication message -- deliberately
+direct-subscribers-only, not forwarded through a cascade topology, so it
+introduces no message-ordering dependency on the existing replication
+stream. The new `spock.node_alter()` function is the recommended way to
+make the change: it validates a `tiebreaker` value (must be a whole JSON
+number that fits a 32-bit integer) and merges an `info` patch rather than
+replacing it wholesale; a raw `UPDATE spock.node` on the node's own row
+continues to work and propagates the same way. `spock.node_refresh_info()`
+remains necessary for a node that is not a direct subscriber of the peer
+that changed. See
+[Automatic Node Metadata Propagation](spock_functions/node_mgmt.md#automatic-node-metadata-propagation)
+and [spock.node_alter](spock_functions/functions/spock_node_alter.md) for
+details.
 
 ### Cascade replication origin tracking
 
@@ -702,6 +732,15 @@ or `NOTHING` is also rejected.
   on Spock's logical slots on PostgreSQL 17 and later, and returns how many
   it changed.  The upgrade from 5.x calls it.  EXECUTE is revoked from
   PUBLIC.
+* `spock.node_alter(p_location text, p_country text, p_info_patch jsonb)`
+  — validated way to change the local node's own location/country/info
+  (merging info, validating a `tiebreaker` patch); see *Automatic node
+  metadata propagation* above.
+* `spock.node_info_emit()` / `spock.node_info_apply()` /
+  `spock.node_info_broadcast()` (trigger function, backing the new
+  `node_info_broadcast_trigger` on `spock.node`) — internal plumbing
+  behind automatic node metadata propagation; not intended to be called
+  directly (`EXECUTE` revoked from `PUBLIC`).
 
 ### Removed functions
 
@@ -789,6 +828,7 @@ single step, through 5.0.12.  The upgrade:
 * adds the new functions, the `sub_id_generator` sequence and the
   `spock.reserved_object` catalog,
 * drops `spock.wait_for_apply_worker()`,
+* adds the `node_info_broadcast_trigger` trigger on `spock.node`,
 * refreshes the parallel-safety attributes on `spock.md5_agg_sfunc` and
   `spock.spock_gen_slot_name`,
 * turns on the `failover` flag for existing logical slots by calling
