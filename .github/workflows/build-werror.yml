@@ -1,0 +1,163 @@
+#
+# Build Spock with -Werror
+#
+# Compiles Spock against every supported PostgreSQL major with warnings
+# promoted to errors.  Only the build is checked here; the test workflows
+# build Spock without -Werror, so a new warning fails this one job with a
+# clear cause instead of hiding the results of a test run.
+#
+# The matrix covers every build switch Spock's code branches on.  Switches
+# that live in PostgreSQL's pg_config.h or Makefile.global need a PostgreSQL
+# build of their own, so they form the matrix axes:
+#
+#   cc      gcc and clang produce different warning sets, and Spock carries
+#           compiler-specific code (pg_fallthrough, spock_fe.c).  PostgreSQL
+#           is built with the same compiler, so the CFLAGS PGXS hands to
+#           Spock were probed against the compiler that receives them.
+#
+#   config  stock: plain configure (-O2), the configuration packagers use.
+#           full:  --enable-cassert --with-lz4, plus --enable-injection-points
+#           on PG 17 and later, mirroring the Docker test builds.
+#           Code under USE_ASSERT_CHECKING and USE_LZ4 only compiles in
+#           "full", while variables used only inside Assert() turn into
+#           unused-variable warnings only in "stock".  Both use -O2, which
+#           enables the flow-sensitive warnings (maybe-uninitialized and
+#           friends) that the -O0 Docker builds never see.
+#
+# Switches that are Spock make variables need no PostgreSQL rebuild, so each
+# job compiles Spock several times against the one installation: plain,
+# with SPOCK_RANDOM_DELAYS and with NO_LOG_OLD_VALUE.  Together with the
+# config axis this compiles all three branches of spock_injection.h: none
+# (stock), injection points (full, PG 17+) and random delays.
+#
+# A weekly run catches warnings that appear without a change to Spock: a new
+# PostgreSQL release picked up by tests/resolve-pg-ref.sh, or a newer
+# compiler on the runner image.
+#
+# The gcc problem matcher turns each diagnostic into an annotation, so it
+# shows up on the offending line in the PR's "Files changed" tab.  clang
+# prints diagnostics in the same format.
+#
+
+name: Build with -Werror
+run-name: Compile spock with warnings as errors
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 22 * * 0'  # Sunday, 22:00 (UTC)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-werror-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # Explicit shell: GitHub then runs with -eo pipefail.
+    shell: bash
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        pgver: [15, 16, 17, 18, 19]
+        cc: [gcc, clang]
+        config: [stock, full]
+
+    name: PG ${{ matrix.pgver }} ${{ matrix.cc }} ${{ matrix.config }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CC: ${{ matrix.cc }}
+      PG_PREFIX: ${{ github.workspace }}/../pg-install
+      PG_SRCDIR: ${{ github.workspace }}/../postgres
+
+    steps:
+      # Checked out at the workspace root, so the relative paths the compiler
+      # prints (src/spock_apply.c) match repository paths for the annotations.
+      - name: Checkout spock
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang bison flex pkg-config \
+            libicu-dev libreadline-dev zlib1g-dev liblz4-dev
+
+      - name: Resolve and fetch PostgreSQL source
+        run: |
+          PG_REF=$(tests/resolve-pg-ref.sh "${{ matrix.pgver }}")
+          echo "PG ${{ matrix.pgver }} resolved to $PG_REF"
+          git init "$PG_SRCDIR"
+          git -C "$PG_SRCDIR" remote add origin \
+            https://github.com/postgres/postgres.git
+          git -C "$PG_SRCDIR" fetch --depth 1 origin "$PG_REF"
+          git -C "$PG_SRCDIR" checkout --detach FETCH_HEAD
+
+      - name: Apply spock patches
+        run: |
+          PATCH_DIR="${GITHUB_WORKSPACE}/patches/${{ matrix.pgver }}"
+          if [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR")" ]; then
+            cd "$PG_SRCDIR"
+            for p in "$PATCH_DIR"/*; do
+              echo "Applying $(basename "$p")"
+              patch -p1 < "$p"
+            done
+          else
+            echo "No spock patches for PG ${{ matrix.pgver }}; using vanilla source"
+          fi
+
+      - name: Configure, build, install PostgreSQL
+        id: pg
+        run: |
+          cd "$PG_SRCDIR"
+          CONFIGURE_OPTS=(--prefix="$PG_PREFIX")
+          if [ "${{ matrix.config }}" = "full" ]; then
+            CONFIGURE_OPTS+=(--enable-cassert --with-lz4)
+            # Injection points first appeared in PG 17.
+            if [ "${{ matrix.pgver }}" -ge 17 ]; then
+              CONFIGURE_OPTS+=(--enable-injection-points)
+            fi
+          fi
+          echo "configure ${CONFIGURE_OPTS[*]}"
+          ./configure "${CONFIGURE_OPTS[@]}"
+          make -j"$(nproc)" -s
+          make install -s
+          echo "$PG_PREFIX/bin" >> "$GITHUB_PATH"
+
+      - name: Register problem matcher
+        run: echo "::add-matcher::.github/gcc-problem-matcher.json"
+
+      # COPT is appended to CFLAGS by PGXS, so it reaches every object,
+      # spock_output.o included.  -k keeps going after the first failing
+      # file, so a single run reports every warning.  The later variants
+      # run even when an earlier one fails, as long as PostgreSQL built,
+      # so one run reports the warnings of every variant.
+      - name: Build spock
+        if: ${{ !cancelled() && steps.pg.outcome == 'success' }}
+        run: |
+          make clean
+          make -k -j"$(nproc)" COPT=-Werror
+
+      - name: Build spock with SPOCK_RANDOM_DELAYS
+        if: ${{ !cancelled() && steps.pg.outcome == 'success' }}
+        run: |
+          make clean
+          make -k -j"$(nproc)" COPT=-Werror SPOCK_RANDOM_DELAYS=1
+
+      - name: Build spock with NO_LOG_OLD_VALUE
+        if: ${{ !cancelled() && steps.pg.outcome == 'success' }}
+        run: |
+          make clean
+          make -k -j"$(nproc)" COPT=-Werror NO_LOG_OLD_VALUE=1
