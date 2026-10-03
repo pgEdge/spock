@@ -619,4 +619,27 @@ writable by the user running Postgres. The default is `empty`, which tells
 Spock to use the default temporary directory based on environment or
 operating system settings.
 
+### `spock.quorum_provider`
 
+`spock.quorum_provider` selects the external system Spock consults for quorum
+decisions: `none` (the default), `etcd`, `pgraft` or `pgbully`. With `none`
+nothing is consulted. See [Consulting a Quorum System](managing/quorum_layer.md).
+
+### `spock.quorum_timeout`
+
+`spock.quorum_timeout` is the deadline for one call to the quorum provider, in
+milliseconds. A call that overruns it is treated as giving no answer, which
+Spock handles like a lost quorum. The default is `2000`; the range is `100`
+to `60000`.
+
+### `spock.quorum_cluster_id`
+
+`spock.quorum_cluster_id` is the key prefix that identifies this Spock cluster
+in etcd. It is required by the `etcd` provider and ignored by the others.
+There is no default, so that two clusters cannot share a prefix by accident.
+
+### `spock.quorum_etcd_endpoints`
+
+`spock.quorum_etcd_endpoints` is a comma-separated list of etcd base URLs,
+for example `http://127.0.0.1:2379`. One endpoint is tried per call, rotating
+on failure.
