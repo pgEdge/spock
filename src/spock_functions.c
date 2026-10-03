@@ -2662,6 +2662,23 @@ spock_wait_for_sync_complete(char *subscription_name, char *relnamespace, char *
 		PushActiveSnapshot(GetLatestSnapshot());
 
 		subsync = get_subscription_sync_status(sub->id, true);
+
+		/*
+		 * No status row means the subscription was dropped under us, or
+		 * dropped and created again.  Look it up afresh: a wait on a row
+		 * that is never coming back, or on a subscription id that no longer
+		 * exists, would never end.
+		 */
+		if (subsync == NULL)
+		{
+			sub = get_subscription_by_name(subscription_name, true);
+			if (sub == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_OBJECT),
+						 errmsg("subscription \"%s\" does not exist",
+								subscription_name)));
+		}
+
 		isdone = subsync && subsync->status == SYNC_STATUS_READY;
 		free_sync_status(subsync);
 
