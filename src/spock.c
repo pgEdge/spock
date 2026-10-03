@@ -62,6 +62,7 @@
 #include "spock_conflict.h"
 #include "spock_rmgr.h"
 #include "spock_worker.h"
+#include "spock_quorum.h"
 #include "spock_output_config.h"
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
@@ -161,6 +162,19 @@ static const struct config_enum_entry apply_change_logging_options[] = {
 	{"verbose", SPOCK_APPLY_CHANGE_LOG_VERBOSE, false},
 	{NULL, 0, false}
 };
+
+static const struct config_enum_entry quorum_provider_options[] = {
+	{"none", SPOCK_QUORUM_PROVIDER_NONE, false},
+	{"etcd", SPOCK_QUORUM_PROVIDER_ETCD, false},
+	{"pgraft", SPOCK_QUORUM_PROVIDER_PGRAFT, false},
+	{"pgbully", SPOCK_QUORUM_PROVIDER_PGBULLY, false},
+	{NULL, 0, false}
+};
+
+int			spock_quorum_provider = SPOCK_QUORUM_PROVIDER_NONE;
+int			spock_quorum_timeout = 2000;
+char	   *spock_quorum_etcd_endpoints = "";
+char	   *spock_quorum_cluster_id = "";
 
 bool		spock_synchronous_commit = false;
 char	   *spock_temp_directory = "";
@@ -1159,6 +1173,42 @@ _PG_init(void)
 							 exception_logging_options,
 							 PGC_SIGHUP, 0,
 							 NULL, NULL, NULL);
+
+	DefineCustomEnumVariable("spock.quorum_provider",
+							 gettext_noop("External system consulted for quorum decisions."),
+							 gettext_noop("With none, nothing is consulted and Spock behaves as it does without the feature."),
+							 &spock_quorum_provider,
+							 SPOCK_QUORUM_PROVIDER_NONE,
+							 quorum_provider_options,
+							 PGC_SIGHUP, 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.quorum_timeout",
+							gettext_noop("Deadline for a single call to the quorum provider."),
+							gettext_noop("A call that overruns it yields no answer, which is treated like a lost quorum."),
+							&spock_quorum_timeout,
+							2000,
+							100,
+							60000,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
+							NULL, NULL, NULL);
+
+	DefineCustomStringVariable("spock.quorum_etcd_endpoints",
+							   gettext_noop("Comma-separated etcd base URLs."),
+							   gettext_noop("Endpoints are tried in rotation, one per call."),
+							   &spock_quorum_etcd_endpoints,
+							   "",
+							   PGC_SIGHUP, 0,
+							   NULL, NULL, NULL);
+
+	DefineCustomStringVariable("spock.quorum_cluster_id",
+							   gettext_noop("Key prefix identifying this Spock cluster in etcd."),
+							   gettext_noop("Required by the etcd provider; it has no default so two clusters cannot share one by accident."),
+							   &spock_quorum_cluster_id,
+							   "",
+							   PGC_SIGHUP, 0,
+							   NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.stats_max_entries",
 							"Maximum entries for statistics",
