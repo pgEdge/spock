@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 20;
+use Test::More;
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok get_test_config scalar_query psql_or_bail);
 
@@ -69,8 +69,13 @@ sub wait_for_value {
     return scalar_query($node, $query);
 }
 
-# Compute path to node 2's PostgreSQL log (logging_collector writes to <datadir>/logs/)
-my $n2_logfile = "$node_datadirs->[1]/logs/00$node_ports->[1].log";
+# Compute path to node 2's PostgreSQL log.  SpockTest sets log_directory to its
+# log_dir, which PostgreSQL resolves against the data directory only when it is
+# relative; run_tests.sh exports TESTLOGDIR as an absolute path.
+my $log_dir = $config->{log_dir};
+my $n2_logfile = ($log_dir =~ m{^/})
+    ? "$log_dir/00$node_ports->[1].log"
+    : "$node_datadirs->[1]/$log_dir/00$node_ports->[1].log";
 
 # =============================================================================
 # PART 1: Setup - Create data on node1 (publisher/writer)
@@ -341,3 +346,5 @@ psql_or_bail(2, "SELECT spock.sub_drop('pgdump_test_sub')");
 unlink $dump_file if -e $dump_file;
 
 destroy_cluster('Cleanup pg_dump/restore conflict test cluster');
+
+done_testing();
