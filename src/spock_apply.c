@@ -43,6 +43,7 @@
 #endif
 
 #include "postmaster/interrupt.h"
+#include "access/xloginsert.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 #include "replication/walsender.h"
@@ -135,6 +136,13 @@ static bool in_remote_transaction = false;
 static bool first_begin_at_startup = true;
 static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
 static RepOriginId remote_origin_id = InvalidRepOriginId;
+
+/*
+ * The replication origin this worker's session set up, whose progress the
+ * commit records do not carry; see log_origin_progress().  Set by the apply
+ * worker and by the sync worker before its catch-up.
+ */
+RepOriginId spock_session_origin_id = InvalidRepOriginId;
 static TimeOffset apply_delay = 0;
 static TimestampTz required_commit_ts = 0;
 
@@ -1150,6 +1158,39 @@ handle_begin(StringInfo s)
 }
 
 /*
+ * Make the subscription origin's progress durable.
+ *
+ * The commit record names the transaction's origin node, which is what
+ * conflict resolution and forwarding need, so the progress it carries is
+ * that node's, not this subscription's.  Crash recovery and a physical
+ * standby replay only what the WAL says, and would leave our origin where
+ * the last checkpoint or base backup put it; a worker started after a crash
+ * or a failover would then ask the provider to resend transactions this node
+ * already holds, and a table without a primary key would get them twice.
+ *
+ * So log the progress as a record of its own, as replorigin_advance() would;
+ * that function itself refuses to touch an origin a session holds, and the
+ * in-memory state was already advanced by the commit.  A crash between the
+ * commit and this record can still replay one transaction.
+ */
+static void
+log_origin_progress(XLogRecPtr remote_lsn)
+{
+	xl_replorigin_set xlrec;
+
+	if (spock_session_origin_id == InvalidRepOriginId)
+		return;
+
+	xlrec.remote_lsn = remote_lsn;
+	xlrec.node_id = spock_session_origin_id;
+	xlrec.force = false;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, sizeof(xlrec));
+	XLogInsert(RM_REPLORIGIN_ID, XLOG_REPLORIGIN_SET);
+}
+
+/*
  * Handle COMMIT message.
  */
 static void
@@ -1271,6 +1312,9 @@ handle_commit(StringInfo s)
 		remoteTransactionStopTimestamp = commit_time;
 
 		CommitTransactionCommand();
+
+		if (replorigin_session_origin_lsn == end_lsn)
+			log_origin_progress(end_lsn);
 
 		if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
 			append_feedback_position(XactLastCommitEnd, end_lsn);
@@ -4906,6 +4950,7 @@ spock_apply_main(Datum main_arg)
 		 MySubscription->slot_name, originid);
 	replorigin_session_setup(originid);
 	replorigin_session_origin = originid;
+	spock_session_origin_id = originid;
 	origin_startpos = replorigin_session_get_progress(false);
 
 	/* Start the replication. */
