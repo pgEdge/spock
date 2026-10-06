@@ -890,8 +890,7 @@ start_copy_origin_tx(PGconn *conn, const char *snapshot)
 {
 	PGresult   *res;
 	char	   *s;
-	const char *setup_query =
-		"BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n"
+	const char *session_setup =
 		"SET DATESTYLE = ISO;\n"
 		"SET INTERVALSTYLE = POSTGRES;\n"
 		"SET extra_float_digits TO 3;\n"
@@ -899,13 +898,29 @@ start_copy_origin_tx(PGconn *conn, const char *snapshot)
 		"SET lock_timeout = 0;\n";
 	StringInfoData query;
 
+	/*
+	 * Set the session GUCs before BEGIN, in a command of their own.  An
+	 * extension's ProcessUtility hook may run a query of its own for a plain
+	 * SET (pg_duckdb initializes its metadata cache that way), and one query
+	 * inside the transaction makes the import fail with "SET TRANSACTION
+	 * SNAPSHOT must be called before any query".  pg_dump orders it the same
+	 * way, which is why structure sync survives such extensions.
+	 */
+	res = PQexec(conn, session_setup);
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		elog(ERROR, "session setup on origin node failed: %s",
+			 PQresultErrorMessage(res));
+	PQclear(res);
+
 	initStringInfo(&query);
-	appendStringInfoString(&query, setup_query);
+	appendStringInfoString(&query,
+						   "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n");
 
 	if (snapshot)
 	{
 		s = PQescapeLiteral(conn, snapshot, strlen(snapshot));
 		appendStringInfo(&query, "SET TRANSACTION SNAPSHOT %s;\n", s);
+		PQfreemem(s);
 	}
 
 	res = PQexec(conn, query.data);
@@ -913,6 +928,8 @@ start_copy_origin_tx(PGconn *conn, const char *snapshot)
 		elog(ERROR, "BEGIN on origin node failed: %s",
 			 PQresultErrorMessage(res));
 	PQclear(res);
+
+	pfree(query.data);
 }
 
 static void
