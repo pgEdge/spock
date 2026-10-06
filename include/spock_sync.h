@@ -93,7 +93,8 @@ extern List *get_unsynced_tables(Oid subid);
 inline static void
 free_sync_status(SpockSyncStatus *sync)
 {
-	pfree(sync);
+	if (sync != NULL)
+		pfree(sync);
 }
 
 extern bool wait_for_sync_status_change(Oid subid, const char *nspname,
