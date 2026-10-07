@@ -1,5 +1,30 @@
 # Spock Release Notes
 
+## Spock 5.0.13
+
+### Upgrade Notes
+* There are no schema changes in 5.0.13.
+
+### Bug Fixes
+* A promoted standby of a subscriber could replay transactions the subscriber
+  had already applied. The subscription's replication origin was not written
+  to the WAL, so a standby resumed from the last checkpoint's position. The
+  apply and sync workers now log the origin's progress after each commit.
+
+* `spock.wait_for_subscription_sync_complete()` and
+  `spock.wait_for_table_sync_complete()` crashed the backend if the
+  subscription was dropped during the wait. They now report that the
+  subscription does not exist.
+
+* pg_dump and pg_restore failures during structure sync were reported with a
+  stale `errno` message such as `Invalid argument`. The error now gives the
+  child's exit code or signal.
+
+* Sync failed with `function does not exist` against an origin older than
+  5.0.7, which lacks `spock.pause_apply_workers()` and
+  `spock.resume_apply_workers()`. Sync now skips pausing and resuming in that
+  case.
+
 ## Spock 5.0.12
 
 ### Upgrade Notes
