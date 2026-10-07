@@ -49,12 +49,13 @@
 #    1  --cleanup --force removes the first join's state
 #    1  destroy_cluster
 #  ---
-#   27  total
+#   (new scenarios 7 (--drop-slot-if-exists), 8, 9, 10 are not counted here;
+#   the test uses done_testing())
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 27;
+use Test::More;
 use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
@@ -452,17 +453,42 @@ print $conf_fh_a "log_directory='" . $config->{log_dir} . "'\n";
 print $conf_fh_a "log_filename='00${n3a_port}.log'\n";
 close $conf_fh_a;
 
-command_ok(
-    [ $SCS_BIN,
-      '--bidirectional',
-      '--pgdata',            $n3a_datadir,
-      '--subscriber-name',   'n3',
-      '--provider-dsn',      $n1_dsn,
-      '--subscriber-dsn',    $n3a_dsn,
-      '--postgresql-conf',   $n3a_conf,
-    ],
-    'first --bidirectional join (minimal, no custom repset seeding) exits 0'
+# --drop-slot-if-exists: a leftover source slot of the same name is refused
+# without the flag and replaced with it.  A physical slot stands in for the
+# leftover: the tool matches on name only, and it does not count toward the
+# outbound-lag precondition.
+my $src_slot = scalar_query(1,
+    "SELECT spock.spock_gen_slot_name('$dbname', 'n1', 'sub_n3_n1')");
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
+    "SELECT pg_create_physical_replication_slot('$src_slot')";
+wait_for_n1_drained();
+
+my @n3a_join = (
+    $SCS_BIN,
+    '--bidirectional',
+    '--pgdata',            $n3a_datadir,
+    '--subscriber-name',   'n3',
+    '--provider-dsn',      $n1_dsn,
+    '--subscriber-dsn',    $n3a_dsn,
+    '--postgresql-conf',   $n3a_conf,
 );
+
+$before = log_size();
+ok(!system_maybe(@n3a_join),
+   'a leftover source slot is refused without --drop-slot-if-exists');
+ok(log_tail_has(qr/replication slot "\Q$src_slot\E" already exists/, $before),
+   'the refusal names the existing slot');
+is(scalar_query(1, "SELECT slot_type FROM pg_replication_slots " .
+                   "WHERE slot_name = '$src_slot'"),
+   'physical', 'the leftover slot is untouched');
+
+command_ok(
+    [ @n3a_join, '--drop-slot-if-exists' ],
+    'first --bidirectional join (replacing a leftover slot with --drop-slot-if-exists) exits 0'
+);
+is(scalar_query(1, "SELECT slot_type FROM pg_replication_slots " .
+                   "WHERE slot_name = '$src_slot'"),
+   'logical', 'the leftover slot was replaced by the join\'s logical slot');
 ok(wait_for_pg_ready($host, $n3a_port, $pg_bin, 30), 'n3a postgres is running');
 
 my $n3b_datadir = fresh_datadir();
@@ -508,6 +534,20 @@ ok(!system_maybe($SCS_BIN,
 remove_tree($n3b_datadir) if -d $n3b_datadir;
 unlink($n3b_conf) if -f $n3b_conf;
 
+# --drop-slot-if-exists must not destroy the live slot of the completed join.
+ok(!system_maybe($SCS_BIN,
+      '--bidirectional',
+      '--pgdata',            $n3b_datadir,
+      '--subscriber-name',   'n3',
+      '--provider-dsn',      $n1_dsn,
+      '--subscriber-dsn',    "host=$host port=$n3b_port dbname=$dbname",
+      '--drop-slot-if-exists'),
+   'a repeat join with --drop-slot-if-exists is also rejected');
+is(scalar_query(1, "SELECT COUNT(*) FROM pg_replication_slots " .
+                   "WHERE slot_name = '$src_slot' AND active"),
+   '1', 'the live source slot is still present and active');
+remove_tree($n3b_datadir) if -d $n3b_datadir;
+
 is(psql_capture('-p', $n3a_port, '-d', $dbname, '-t', '-A',
     '-c', "SELECT status FROM spock.sub_show_status('sub_n3_n1')"),
     'replicating', "the first n3's own subscription to the source is still replicating");
@@ -528,7 +568,132 @@ command_ok(
 unlink($n3a_conf) if -f $n3a_conf;
 remove_tree($n3a_datadir) if -d $n3a_datadir;
 
+wait_for_sub_status(1, 'sub_n1_n2', 'replicating', 30)
+    or BAIL_OUT('mesh did not restabilize after Scenario 7 cleanup');
+wait_for_sub_status(2, 'sub_n2_n1', 'replicating', 30)
+    or BAIL_OUT('mesh did not restabilize after Scenario 7 cleanup');
+wait_for_n1_drained();
+
+# =============================================================================
+# Scenario 8: an enabled native (non-spock) logical subscription on the
+# source is rejected before anything is created.
+# =============================================================================
+note("Scenario 8: enabled native logical subscription on the source");
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[1], '-d', $dbname, '-c',
+    "CREATE PUBLICATION pn_native_pub";
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
+    "CREATE SUBSCRIPTION pn_native_sub CONNECTION '$n2_dsn' " .
+    "PUBLICATION pn_native_pub WITH (copy_data = false)";
+wait_for_n1_drained();
+
+$before = log_size();
+my $dir8 = fresh_datadir();
+ok(!system_maybe($SCS_BIN,
+      '--bidirectional',
+      '--pgdata',            $dir8,
+      '--subscriber-name',   'n3',
+      '--provider-dsn',      $n1_dsn,
+      '--subscriber-dsn',    "host=$host port=" . ($node_ports->[1] + 160) . " dbname=$dbname"),
+   '--bidirectional rejects an enabled native subscription on the source');
+ok(log_tail_has(qr/no enabled native \(non-spock\) logical subscriptions.*pn_native_sub/s, $before),
+   'rejection names the native subscription');
+is(scalar_query(1, "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name LIKE 'spk_%n3%'"),
+   '0', 'no source slot was created');
+ok(!-e "${dir8}.spock_bidir_pending.json", 'no pending-cleanup sidecar was created');
+remove_tree($dir8) if -d $dir8;
+
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
+    "DROP SUBSCRIPTION pn_native_sub";
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[1], '-d', $dbname, '-c',
+    "DROP PUBLICATION pn_native_pub";
+wait_for_n1_drained();
+
+# =============================================================================
+# Scenario 9: a peer whose recorded DSN reaches a differently named node is
+# rejected as an identity mismatch.  n1's record of n2's DSN is pointed at n1
+# itself, so the node reached as "n2" identifies itself as "n1".
+# =============================================================================
+note("Scenario 9: peer identity mismatch");
+my $n2_if_dsn_sql = "SELECT if_dsn FROM spock.node_interface WHERE if_nodeid = " .
+    "(SELECT node_id FROM spock.node WHERE node_name = 'n2')";
+my $orig_n2_dsn = psql_capture('-p', $node_ports->[0], '-d', $dbname, '-t', '-A',
+                               '-c', $n2_if_dsn_sql);
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
+    "UPDATE spock.node_interface SET if_dsn = \$\$$n1_dsn\$\$ " .
+    "WHERE if_nodeid = (SELECT node_id FROM spock.node WHERE node_name = 'n2')";
+
+$before = log_size();
+my $dir9 = fresh_datadir();
+ok(!system_maybe($SCS_BIN,
+      '--bidirectional',
+      '--pgdata',            $dir9,
+      '--subscriber-name',   'n3',
+      '--provider-dsn',      $n1_dsn,
+      '--subscriber-dsn',    "host=$host port=" . ($node_ports->[1] + 161) . " dbname=$dbname"),
+   '--bidirectional rejects a peer DSN that reaches a differently named node');
+ok(log_tail_has(qr/identifies itself as "n1" once connected/, $before),
+   'rejection reports the node-name/identity mismatch');
+is(scalar_query(1, "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name LIKE 'spk_%n3%'"),
+   '0', 'no source slot was created');
+remove_tree($dir9) if -d $dir9;
+
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
+    "UPDATE spock.node_interface SET if_dsn = \$\$$orig_n2_dsn\$\$ " .
+    "WHERE if_nodeid = (SELECT node_id FROM spock.node WHERE node_name = 'n2')";
+is(psql_capture('-p', $node_ports->[0], '-d', $dbname, '-t', '-A', '-c', $n2_if_dsn_sql),
+   $orig_n2_dsn, "n2's recorded DSN is restored on n1");
+
+# =============================================================================
+# Scenario 10: a user object depending on the spock extension is rejected by
+# the DROP EXTENSION guard instead of being dropped by CASCADE.  The guard
+# runs on the new node after the base backup, so the join is torn down with
+# --cleanup afterwards.
+# =============================================================================
+note("Scenario 10: user view depending on the spock extension");
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
+    "SET spock.enable_ddl_replication = off; " .
+    "CREATE VIEW pn_dep_view AS SELECT node_id FROM spock.node";
+wait_for_n1_drained();
+
+my $dir10 = fresh_datadir();
+my $n3c_port = $node_ports->[1] + 162;
+my $n3c_dsn  = "host=$host port=$n3c_port dbname=$dbname"
+             . " user=$db_user password=$db_password";
+my $n3c_conf = '/tmp/tmp_spock_node_2_postgresql.conf.override.n3c';
+open my $conf_fh_c, '>', $n3c_conf or die "Cannot write $n3c_conf: $!";
+print $conf_fh_c "shared_preload_libraries='spock'\n";
+print $conf_fh_c output_plugin_libraries_conf($pg_bin);
+print $conf_fh_c "wal_level=logical\n";
+print $conf_fh_c "track_commit_timestamp=on\n";
+print $conf_fh_c "port=$n3c_port\n";
+print $conf_fh_c "listen_addresses='*'\n";
+close $conf_fh_c;
+
+$before = log_size();
+ok(!system_maybe($SCS_BIN,
+      '--bidirectional',
+      '--pgdata',            $dir10,
+      '--subscriber-name',   'n3',
+      '--provider-dsn',      $n1_dsn,
+      '--subscriber-dsn',    $n3c_dsn,
+      '--postgresql-conf',   $n3c_conf),
+   '--bidirectional rejects a user view depending on the spock extension');
+ok(log_tail_has(qr/cannot drop the spock extension.*pn_dep_view/s, $before),
+   'rejection names the dependent view');
+
+command_ok(
+    [ $SCS_BIN, '--bidirectional', '--cleanup', '--force', '--pgdata', $dir10 ],
+    '--cleanup --force removes the rejected join\'s state'
+);
+is(scalar_query(1, "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name LIKE 'spk_%n3%'"),
+   '0', 'no source slot remains after cleanup');
+system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
+    "SET spock.enable_ddl_replication = off; DROP VIEW pn_dep_view";
+remove_tree($dir10) if -d $dir10;
+unlink($n3c_conf) if -f $n3c_conf;
+
 # =============================================================================
 # CLEANUP
 # =============================================================================
 destroy_cluster('Cleanup');
+done_testing();
