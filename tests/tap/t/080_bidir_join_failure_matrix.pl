@@ -25,7 +25,7 @@
 # failure path (process exits non-zero, whatever manifest state was
 # persisted up to that point stays on disk) a genuine crash there would.
 #
-# For each of the 6 named steps: run the join to a deliberate death at that
+# For each of the 8 named steps: run the join to a deliberate death at that
 # step, confirm --cleanup --force fully recovers (source slot, peer slot,
 # data directory, manifest/sidecar, and any reverse subscriptions already
 # created are all gone; the pre-existing n1<->n2 mesh is untouched), then
@@ -212,8 +212,12 @@ sub run_join {
 my $n2_peer_slot_name = scalar_query(1,
     "SELECT spock.spock_gen_slot_name('$dbname', 'n2', 'sub_n3_n2')");
 
-my @steps = qw(coverage_barrier clear_forwarding enable_peer_subs
-               reverse_subs reverse_subs_ready verify);
+# peer_slot_created and reverse_sub_created fire between creating a peer-side
+# resource (the peer's slot, a reverse subscription) and the following manifest
+# write, so a death there must still be recoverable by --cleanup.
+my @steps = qw(peer_slot_created coverage_barrier clear_forwarding
+               enable_peer_subs reverse_sub_created reverse_subs
+               reverse_subs_ready verify);
 
 for my $step (@steps) {
     ok(wait_for_zero_lag(1, 60), "replication drained before the '$step' attempt")
@@ -222,7 +226,19 @@ for my $step (@steps) {
     remove_tree($n3_datadir) if -d $n3_datadir;
     unlink($n3_pending) if -f $n3_pending;
 
+    my $log_before = -s $config->{log_file} // 0;
     ok(!run_join($step), "join fails after step '$step' (test-injected)");
+
+    # die() stops the postgres it started on n3; stopping succeeds, so it must
+    # not warn that the node could not be stopped.
+    open(my $lfh, '<', $config->{log_file}) or die "cannot read log: $!";
+    seek($lfh, $log_before, 0);
+    my $join_log = do { local $/; <$lfh> } // '';
+    close($lfh);
+    unlike($join_log, qr/could not be stopped/,
+           "die() after '$step' reports no failed postgres stop");
+    isnt(system("$pg_bin/pg_isready -h $host -p $n3_port -q"), 0,
+         "n3 postgres is stopped after die() at '$step'");
 
     my $cleanup_log1 = "$log_dir/scs_failmatrix_cleanup_${step}_1.log";
     my $cleanup_rc1  = run_cleanup_once($cleanup_log1);

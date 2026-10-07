@@ -75,6 +75,7 @@ test: 078_bidir_join_concurrent_load
 test: 079_bidir_join_stall_abort
 test: 080_bidir_join_failure_matrix
 test: 081_bidir_join_forwarded_discard_abort
+test: 082_create_subscriber_basebackup
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #

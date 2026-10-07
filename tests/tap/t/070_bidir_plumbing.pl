@@ -87,14 +87,16 @@
 #   1  n1 postgres is running again
 #   1  --cleanup --force succeeds once the source is reachable again
 #   1  pending sidecar removed once cleanup actually completed
+#  11  --cleanup --force with no manifest/sidecar removes only an empty directory
+#   6  an unwritable sidecar location is rejected before the source slot is created
 #   1  destroy_cluster
 #  ---
-#  74  total
+#  91  total
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 74;
+use Test::More tests => 91;
 use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
@@ -763,6 +765,79 @@ command_ok(
 ok(!-f $retry_sidecar,
    'pending sidecar removed once cleanup actually completed');
 remove_tree($retry_datadir) if -d $retry_datadir;
+
+# =============================================================================
+# TEST: --cleanup --force with neither a manifest nor a sidecar removes only
+# an empty directory.  The sidecar precedes any write to --pgdata, so in that
+# case the tool has not populated it; a non-empty directory (e.g. another
+# node's data directory given by mistake) must be left alone.
+# =============================================================================
+sub cleanup_force {
+    my ($pgdata) = @_;
+    my $out = qx{"$SCS_BIN" --bidirectional --cleanup --force --pgdata "$pgdata" 2>&1};
+    return ($? >> 8, $out);
+}
+
+my $stray_dir = '/tmp/tmp_spock_048_stray_dir';
+remove_tree($stray_dir) if -d $stray_dir;
+mkdir($stray_dir) or die "cannot create $stray_dir: $!";
+open(my $stray_fh, '>', "$stray_dir/important.txt") or die "cannot write: $!";
+print $stray_fh "keep me\n";
+close($stray_fh);
+
+my ($cf_rc, $cf_out) = cleanup_force($stray_dir);
+isnt($cf_rc, 0, '--cleanup --force refuses a non-empty directory with no records');
+like($cf_out, qr/refusing to remove non-empty data directory/,
+     'the refusal is reported');
+ok(-f "$stray_dir/important.txt", 'the directory content is left in place');
+remove_tree($stray_dir);
+
+($cf_rc, $cf_out) = cleanup_force($n1_datadir);
+isnt($cf_rc, 0, "--cleanup --force refuses another node's running data directory");
+ok(-f "$n1_datadir/PG_VERSION", "the running node's data directory is still present");
+is(system("$pg_bin/pg_isready -h $host -p $node_ports->[0] -q"), 0,
+   'the running node is still accepting connections');
+like($cf_out, qr/refusing to remove non-empty data directory/,
+     "the refusal is reported for the running node's directory");
+
+my $empty_dir = '/tmp/tmp_spock_048_empty_dir';
+remove_tree($empty_dir) if -d $empty_dir;
+mkdir($empty_dir) or die "cannot create $empty_dir: $!";
+($cf_rc, $cf_out) = cleanup_force($empty_dir);
+is($cf_rc, 0, '--cleanup --force exits 0 for an empty directory');
+ok(!-e $empty_dir, 'the empty directory is removed');
+
+($cf_rc, $cf_out) = cleanup_force('/tmp/tmp_spock_048_does_not_exist');
+is($cf_rc, 0, '--cleanup --force exits 0 for a nonexistent directory');
+ok(!-e '/tmp/tmp_spock_048_does_not_exist', 'nothing was created');
+
+# =============================================================================
+# TEST: the sidecar is the only record of the source slot, so its location is
+# checked before the slot is created: a --pgdata whose parent directory does
+# not exist (or a trailing slash naming a missing directory) is rejected
+# without leaving a slot on the source.
+# =============================================================================
+for my $bad ('/tmp/tmp_spock_048_missing_parent/sub/n3',
+             '/tmp/tmp_spock_048_missing_dir/') {
+    for (1 .. 15) {
+        my $lag = scalar_query(1,
+            "SELECT COUNT(*) FROM pg_replication_slots" .
+            " WHERE slot_type = 'logical' AND plugin = 'spock_output'" .
+            " AND (confirmed_flush_lsn IS NULL OR confirmed_flush_lsn < pg_current_wal_lsn())");
+        last if defined $lag && $lag eq '0';
+        sleep(1);
+    }
+    my $join_cmd = qq{"$SCS_BIN" --bidirectional --pgdata "$bad" }
+                 . qq{--subscriber-name n3 --provider-dsn "$n1_dsn" }
+                 . qq{--subscriber-dsn "$n3_dsn" 2>&1};
+    my $join_out = qx{$join_cmd};
+    isnt($? >> 8, 0, "join with an unwritable sidecar location ($bad) is rejected");
+    like($join_out, qr/cannot write the pending-cleanup record/,
+         'the rejection names the sidecar');
+    is(scalar_query(1, "SELECT COUNT(*) FROM pg_replication_slots " .
+                       "WHERE slot_name LIKE 'spk_%n3%'"),
+       '0', 'no source slot was left on n1');
+}
 
 # =============================================================================
 # CLEANUP
