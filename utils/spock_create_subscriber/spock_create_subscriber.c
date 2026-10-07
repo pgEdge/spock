@@ -300,6 +300,9 @@ static void appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str);
 
 static bool file_exists(const char *path);
 static void check_sidecar_dir_writable(const char *sidecar_path);
+static char *filter_connstr(const char *connstr, bool drop_secrets,
+							char **password_out, bool *other_secret);
+static char *redacted_connstr(const char *connstr);
 static void reset_catchup_recovery_settings(const char *connstr);
 static char *expand_tilde(char *path);
 static bool is_pg_dir(const char *path);
@@ -401,7 +404,8 @@ connectdb(const char *connstr)
 
 	conn = PQconnectdb(connstr);
 	if (PQstatus(conn) != CONNECTION_OK)
-		die(_("Connection to database failed: %s, connection string was: %s\n"), PQerrorMessage(conn), connstr);
+		die(_("Connection to database failed: %s, connection string was: %s\n"),
+			PQerrorMessage(conn), redacted_connstr(connstr));
 
 	return conn;
 }
@@ -2767,7 +2771,8 @@ create_replication_slots(SubscriberCreateContext *ctx)
 				for (pi = 0; pi < ctx->bidir.num_peers; pi++)
 					print_msg(VERBOSITY_DEBUG,
 							  _("Discovered peer \"%s\" (dsn \"%s\", slot \"%s\")\n"),
-							  ctx->bidir.peers[pi].node_name, ctx->bidir.peers[pi].dsn,
+							  ctx->bidir.peers[pi].node_name,
+							  redacted_connstr(ctx->bidir.peers[pi].dsn),
 							  ctx->bidir.peers[pi].slot_name);
 			}
 			check_preconditions(provider_conn, ctx->remote_info->node_name,
@@ -2855,7 +2860,7 @@ run_basebackup_and_write_manifest(SubscriberCreateContext *ctx)
 	if (!ctx->use_existing_data_dir)
 		print_msg(VERBOSITY_DEBUG,
 				  _("Taking a physical base backup from \"%s\" into \"%s\"\n"),
-				  ctx->prov_connstr, data_dir);
+				  redacted_connstr(ctx->prov_connstr), data_dir);
 	else
 		print_msg(VERBOSITY_DEBUG,
 				  _("Reusing existing data directory \"%s\" (already a basebackup "
@@ -3178,7 +3183,7 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 		print_msg(VERBOSITY_NORMAL, _("Creating local Spock node \"%s\"...\n"),
 				  ctx->subscriber_name);
 		print_msg(VERBOSITY_DEBUG, _("Registering node \"%s\" with dsn \"%s\"\n"),
-				  ctx->subscriber_name, ctx->sub_connstr);
+				  ctx->subscriber_name, redacted_connstr(ctx->sub_connstr));
 		{
 			PQExpBuffer nodequery = createPQExpBuffer();
 			PGresult   *res;
@@ -3226,7 +3231,8 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 			print_msg(VERBOSITY_DEBUG,
 					  _("Creating subscription \"%s\" to source \"%s\" using slot "
 						"\"%s\", forward_origins={all}, enabled=false\n"),
-					  source_sub_name, ctx->prov_connstr, ctx->bidir.source_slot_name);
+					  source_sub_name, redacted_connstr(ctx->prov_connstr),
+					  ctx->bidir.source_slot_name);
 			create_catchup_subscription(subscriber_conn, source_sub_name, ctx->prov_connstr,
 										ctx->replication_sets, ctx->bidir.source_slot_name,
 										ctx->bidir.source_restore_lsn);
@@ -3687,6 +3693,10 @@ run_basebackup(const char *provider_connstr, const char *data_dir,
 	int			ret;
 	PQExpBuffer cmd = createPQExpBuffer();
 	char	   *exec_path = find_other_exec_or_die(argv0, "pg_basebackup");
+	char	   *safe_connstr;
+	char	   *password;
+	char	   *saved_password = NULL;
+	bool		other_secret;
 
 	/*
 	 * -c fast forces an immediate checkpoint.  Without it, pg_basebackup
@@ -3695,7 +3705,19 @@ run_basebackup(const char *provider_connstr, const char *data_dir,
 	 * needs flushing -- an unpredictable, unnecessary stall for a tool whose
 	 * entire job is this one backup.
 	 */
-	appendPQExpBuffer(cmd, "\"%s\" -D \"%s\" -d \"%s\" -X s -c fast -P", exec_path, data_dir, provider_connstr);
+
+	/*
+	 * Keep the password off the command line, where other local users can
+	 * read it: pass it to pg_basebackup through PGPASSWORD instead.
+	 */
+	safe_connstr = filter_connstr(provider_connstr, false, &password, &other_secret);
+	if (other_secret)
+		fprintf(stderr,
+				_("WARNING: the provider connection string has a secret option "
+				  "other than the password (e.g. sslpassword); it is visible "
+				  "to other local users in the pg_basebackup command line\n"));
+	appendPQExpBuffer(cmd, "\"%s\" -D \"%s\" -d \"%s\" -X s -c fast -P", exec_path, data_dir,
+					  safe_connstr ? safe_connstr : provider_connstr);
 
 	/* Run pg_basebackup in verbose mode if we are running in verbose mode. */
 	if (verbosity >= VERBOSITY_VERBOSE)
@@ -3705,7 +3727,23 @@ run_basebackup(const char *provider_connstr, const char *data_dir,
 		appendPQExpBuffer(cmd, " %s", extra_basebackup_args);
 
 	print_msg(VERBOSITY_DEBUG, _("Running pg_basebackup: %s.\n"), cmd->data);
+	if (password != NULL)
+	{
+		if (getenv("PGPASSWORD") != NULL)
+			saved_password = pg_strdup(getenv("PGPASSWORD"));
+		setenv("PGPASSWORD", password, 1);
+	}
 	ret = system(cmd->data);
+	if (password != NULL)
+	{
+		if (saved_password != NULL)
+			setenv("PGPASSWORD", saved_password, 1);
+		else
+			unsetenv("PGPASSWORD");
+	}
+	pg_free(password);
+	pg_free(saved_password);
+	pg_free(safe_connstr);
 
 	destroyPQExpBuffer(cmd);
 
@@ -6351,6 +6389,78 @@ get_connstr_dbname(char *connstr)
 	return ret;
 }
 
+
+/*
+ * Return connstr with secrets removed, or NULL if it cannot be parsed.
+ *
+ * The password is always removed and returned in *password_out (NULL if
+ * none).  Other options libpq marks secret (dispchar '*', e.g. sslpassword)
+ * or debug-only ('D') are removed only if drop_secrets is set; otherwise
+ * *other_secret reports whether a '*' option is still present.
+ */
+static char *
+filter_connstr(const char *connstr, bool drop_secrets, char **password_out,
+			   bool *other_secret)
+{
+	PQconninfoOption *opts = PQconninfoParse(connstr, NULL);
+	PQconninfoOption *opt;
+	const char **keywords;
+	const char **values;
+	char	   *ret;
+	int			n = 0;
+
+	*password_out = NULL;
+	if (other_secret)
+		*other_secret = false;
+	if (opts == NULL)
+		return NULL;
+
+	for (opt = opts; opt->keyword != NULL; opt++)
+		n++;
+	keywords = pg_malloc0((n + 1) * sizeof(*keywords));
+	values = pg_malloc0((n + 1) * sizeof(*values));
+
+	n = 0;
+	for (opt = opts; opt->keyword != NULL; opt++)
+	{
+		bool		secret = opt->dispchar != NULL && strchr(opt->dispchar, '*');
+		bool		debug = opt->dispchar != NULL && strchr(opt->dispchar, 'D');
+
+		if (opt->val == NULL || opt->val[0] == '\0')
+			continue;
+		if (strcmp(opt->keyword, "password") == 0)
+		{
+			*password_out = pg_strdup(opt->val);
+			continue;
+		}
+		if (secret && other_secret)
+			*other_secret = true;
+		if (drop_secrets && (secret || debug))
+			continue;
+		keywords[n] = opt->keyword;
+		values[n] = opt->val;
+		n++;
+	}
+
+	ret = PQconninfoParamsToConnstr(keywords, values);
+	pg_free(keywords);
+	pg_free(values);
+	PQconninfoFree(opts);
+	return ret;
+}
+
+/*
+ * connstr without secrets, for messages.  Never returns NULL.
+ */
+static char *
+redacted_connstr(const char *connstr)
+{
+	char	   *password;
+	char	   *ret = filter_connstr(connstr, true, &password, NULL);
+
+	pg_free(password);
+	return ret ? ret : pg_strdup("(unparseable connection string)");
+}
 
 /*
  * Build connection string from individual parameter.
