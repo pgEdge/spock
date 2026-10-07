@@ -291,18 +291,41 @@ note('Testing: pg_basebackup is invoked with -X s -c fast');
 # A backup that fails immediately keeps this cheap; -v -v prints the command
 # before it runs.
 my $bb_cmd = qq{"$SCS_BIN" -v -v --bidirectional --pgdata "$n3_datadir" }
-           . qq{--subscriber-name n3 --provider-dsn "$n1_dsn" }
+           . qq{--subscriber-name n3 }
+           . qq{--provider-dsn "$n1_dsn sslpassword=ssl_secret_061" }
            . qq{--subscriber-dsn "$n3_dsn" }
            . qq{--extra-basebackup-args '--waldir=/nonexistent_061_waldir' 2>&1};
 my $cmd_out = qx{$bb_cmd};
 isnt($? >> 8, 0, 'backup with an unusable --waldir fails');
 like($cmd_out, qr/Running pg_basebackup: .*-X s -c fast/,
      'pg_basebackup requested with streamed WAL and fast checkpoint');
+unlike($cmd_out, qr/(?<!ssl)password=/,
+       'the password is not on the pg_basebackup command line or in debug output');
+like($cmd_out, qr/secret option other than the password/,
+     'a secret option that cannot be moved off the command line is warned about');
 
 is(system($SCS_BIN, '--bidirectional', '--cleanup', '--force',
           '--pgdata', $n3_datadir),
    0, '--cleanup --force removes the failed attempt');
 remove_tree($n3_datadir) if -d $n3_datadir;
+
+# A failed connection must not echo the password from the connection string.
+note('Testing: connection errors do not include the password');
+{
+    my $secret = 's3cr3t_061_pw';
+    my $ssl_secret = 's3cr3t_061_ssl';
+    my $unreachable = qq{"$SCS_BIN" --bidirectional --pgdata "$n3_datadir" }
+        . qq{--subscriber-name n3 }
+        . qq{--provider-dsn "host=127.0.0.1 port=1 dbname=x user=u password=$secret sslpassword=$ssl_secret" }
+        . qq{--subscriber-dsn "$n3_dsn" 2>&1};
+    my $out = qx{$unreachable};
+    isnt($? >> 8, 0, 'join against an unreachable provider fails');
+    like($out, qr/Connection to database failed.*connection string was:/s,
+         'the connection failure is reported with the connection string');
+    unlike($out, qr/\Q$secret\E/, 'the password is not in the error output');
+    unlike($out, qr/\Q$ssl_secret\E/, 'sslpassword is not in the error output');
+    ok(!-e $n3_datadir, 'no data directory created');
+}
 
 # =============================================================================
 # 4-6. Join under write load with a long checkpoint_timeout
