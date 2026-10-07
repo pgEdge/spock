@@ -363,6 +363,7 @@ spock_worker_attach(int slot, SpockWorkerType type)
 	MySpockWorker->proc = MyProc;
 	MySpockWorkerGeneration = MySpockWorker->generation;
 	MySpockWorker->worker.apply.apply_group = NULL;
+	MySpockWorker->worker.apply.xact_commit_ts = 0;
 
 	elog(DEBUG2, "%s worker [%d] attaching to slot %d generation %hu",
 		 spock_worker_type_name(type), MyProcPid, slot,

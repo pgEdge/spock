@@ -88,6 +88,8 @@
 #include "spock_apply_heap.h"
 #include "spock_exception_handler.h"
 #include "spock_common.h"
+#include "utils/array.h"
+#include "utils/fmgrprotos.h"
 #include "spock_readonly.h"
 #include "spock.h"
 #include "spock_injection.h"
@@ -148,6 +150,52 @@ static ApplyReplayEntry * apply_replay_next = NULL;
 static uint64 apply_replay_bytes = 0;
 
 static bool apply_replay_mode = false;	/* true when replaying */
+
+/*
+ * Set when this worker gives way in a commit-order deadlock, so the error
+ * handler re-applies the transaction from the replay queue instead of
+ * treating the abort as an apply failure; see wait_for_previous_transaction().
+ */
+static bool commit_order_victim = false;
+static bool commit_order_replay = false;
+
+/*
+ * Does this subscription's slot belong to a provider slot group?  The
+ * provider joins a slot to a group when its name ends in an underscore and a
+ * single digit; see spock_output_join_slot_group().  A transaction from a
+ * slot group must not be retried by restarting the worker: the group has
+ * already handed it out, and would not send it again.
+ */
+static bool
+subscription_in_slot_group(void)
+{
+	const char *name;
+	size_t		len;
+
+	if (MySubscription == NULL || MySubscription->slot_name == NULL)
+		return false;
+
+	name = MySubscription->slot_name;
+	len = strlen(name);
+	return len >= 2 && name[len - 2] == '_' &&
+		name[len - 1] >= '0' && name[len - 1] <= '9';
+}
+
+/*
+ * Should this abort be retried in place, from the replay queue, rather than
+ * by restarting the worker or treating it as an apply failure?  Always for a
+ * worker giving way in a commit-order deadlock, and for a real deadlock or
+ * lock timeout on a slot-group subscription, which a restart would lose.
+ */
+static bool
+replay_in_place(int sqlerrcode)
+{
+	if (commit_order_victim)
+		return true;
+	return subscription_in_slot_group() &&
+		(sqlerrcode == ERRCODE_T_R_DEADLOCK_DETECTED ||
+		 sqlerrcode == ERRCODE_LOCK_NOT_AVAILABLE);
+}
 static BufFile *apply_replay_spill_file = NULL;
 static bool apply_replay_spilling = false;
 static int	apply_replay_spill_count = 0;
@@ -289,20 +337,113 @@ static ApplyReplayEntry * apply_replay_queue_next_entry(void);
 static bool apply_replay_queue_append_entry(ApplyReplayEntry * *entry_p,
 											StringInfo *msg_p);
 static void apply_replay_queue_start_replay(void);
+static void apply_replay_queue_restart(void);
 static void apply_replay_spill_write_entry(int len, char *data);
 static ApplyReplayEntry * apply_replay_spill_read_entry(void);
 static void request_initial_status_update(PGconn *conn, XLogRecPtr startpos);
+
+/*
+ * Is a worker that comes before us in the commit order waiting, directly or
+ * through other processes, on a lock we hold?
+ *
+ * The commit-order wait below runs after this transaction has applied its
+ * changes, so it holds their row locks while it sleeps on a condition
+ * variable.  If a transaction that must commit first needs one of those
+ * rows, its worker waits on our transaction id and we wait for its commit.
+ * The lock manager sees only the first edge, so the deadlock detector never
+ * finds the cycle and both workers wait forever.
+ *
+ * Only a worker of the same apply group, applying a transaction that does
+ * not come after ours in the commit order, can close that cycle.  Its wait
+ * may reach us through other processes, a local session blocked on us that
+ * holds what the earlier transaction needs, say, so the lock waits are
+ * followed transitively, as the deadlock detector would.  Returns the pid of
+ * such a worker, or 0.
+ */
+#define COMMIT_ORDER_MAX_PIDS	128
+
+static int
+find_blocked_predecessor(void)
+{
+	int			preds[COMMIT_ORDER_MAX_PIDS];
+	int			npreds = 0;
+	int			i;
+
+	if (!TransactionIdIsValid(GetTopTransactionIdIfAny()))
+		return 0;				/* no xid, so nothing of ours to wait on */
+
+	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+	for (i = 0; i < SpockCtx->total_workers && npreds < lengthof(preds); i++)
+	{
+		SpockWorker *w = &SpockCtx->workers[i];
+		TimestampTz ts;
+
+		if (w->worker_type != SPOCK_WORKER_APPLY || w->proc == NULL ||
+			w == MySpockWorker ||
+			w->worker.apply.apply_group != MyApplyWorker->apply_group)
+			continue;
+
+		ts = w->worker.apply.xact_commit_ts;
+		if (ts != 0 && ts <= replorigin_session_origin_timestamp)
+			preds[npreds++] = w->proc->pid;
+	}
+	LWLockRelease(SpockCtx->lock);
+
+	for (i = 0; i < npreds; i++)
+	{
+		int			seen[COMMIT_ORDER_MAX_PIDS];
+		int			nseen = 0;
+		int			next = 0;
+
+		/* Breadth-first over the lock waits, starting at the predecessor. */
+		seen[nseen++] = preds[i];
+		while (next < nseen)
+		{
+			ArrayType  *blockers;
+			int32	   *elems;
+			int			n;
+			int			j;
+
+			blockers = DatumGetArrayTypeP(DirectFunctionCall1(pg_blocking_pids,
+															  Int32GetDatum(seen[next++])));
+			n = ArrayGetNItems(ARR_NDIM(blockers), ARR_DIMS(blockers));
+			elems = (int32 *) ARR_DATA_PTR(blockers);
+			for (j = 0; j < n; j++)
+			{
+				int			k;
+
+				if (elems[j] == MyProcPid)
+				{
+					pfree(blockers);
+					return preds[i];
+				}
+				for (k = 0; k < nseen; k++)
+					if (seen[k] == elems[j])
+						break;
+				if (k == nseen && nseen < lengthof(seen))
+					seen[nseen++] = elems[j];
+			}
+			pfree(blockers);
+		}
+	}
+
+	return 0;
+}
 
 /* Wrapper for latch for waiting for previous transaction to commit */
 void
 wait_for_previous_transaction(void)
 {
+	TimestampTz next_check = 0;
+
 	/*
 	 * Sleep on a cv to be woken up once our the required predecessor has
 	 * commited.
 	 */
 	for (;;)
 	{
+		TimestampTz now;
+
 		/*
 		 * If our immediate predecessor has been processed, then break this
 		 * loop and process this transaction. Otherwise, wait for the
@@ -320,6 +461,37 @@ wait_for_previous_transaction(void)
 		{
 			ConfigReloadPending = false;
 			ProcessConfigFile(PGC_SIGHUP);
+		}
+
+		/*
+		 * Look for a commit-order deadlock once deadlock_timeout has passed,
+		 * and again every deadlock_timeout after that, as the lock manager
+		 * does.  We are the transaction that has to give way: the other one
+		 * comes first in the commit order, so we would wait for it anyway.
+		 * Aborting releases our locks and lets it commit.  The error unwinds
+		 * to apply_work(), which applies this transaction again from the
+		 * replay queue; restarting the worker would not do, because the
+		 * provider's slot group has already handed this transaction out and
+		 * would not send it again.
+		 */
+		now = GetCurrentTimestamp();
+		if (next_check == 0)
+			next_check = TimestampTzPlusMilliseconds(now, DeadlockTimeout);
+		else if (now >= next_check)
+		{
+			int			blocked = find_blocked_predecessor();
+
+			if (blocked != 0)
+			{
+				commit_order_victim = true;
+				ereport(ERROR,
+						(errcode(ERRCODE_T_R_DEADLOCK_DETECTED),
+						 errmsg("SPOCK %s: deadlock between apply workers of the same apply group",
+								MySubscription->name),
+						 errdetail("Process %d, applying an earlier transaction, is waiting for a lock held by this transaction, which is waiting for that transaction to commit.",
+								   blocked)));
+			}
+			next_check = TimestampTzPlusMilliseconds(now, DeadlockTimeout);
 		}
 
 		/*
@@ -688,6 +860,9 @@ handle_begin(StringInfo s)
 	replorigin_session_origin_timestamp = commit_time;
 	replorigin_session_origin_lsn = commit_lsn;
 	remote_origin_id = InvalidRepOriginId;
+
+	/* Publish our place in the commit order; see find_blocked_predecessor(). */
+	MyApplyWorker->xact_commit_ts = commit_time;
 
 	/*
 	 * Free and clear remote_origin_name - it's allocated in TopMemoryContext
@@ -1249,6 +1424,7 @@ handle_commit(StringInfo s)
 	xact_action_counter = 0;
 	remote_xid = InvalidTransactionId;
 	xact_had_exception = false;
+	MyApplyWorker->xact_commit_ts = 0;
 
 	/* Reset the ApplyReplayContext and pointers */
 	apply_replay_queue_reset();
@@ -1670,6 +1846,14 @@ handle_insert(StringInfo s)
 			}
 			PG_CATCH();
 			{
+				/*
+				 * Giving way in a commit-order deadlock, or a lock error in a
+				 * slot-group transaction, is not a failure of this row; let
+				 * apply_work() replay the transaction.
+				 */
+				if (replay_in_place(geterrcode()))
+					PG_RE_THROW();
+
 				/* Set per-operation error flag */
 				failed = true;
 				/* Set transaction-wide error flag */
@@ -1843,6 +2027,14 @@ handle_update(StringInfo s)
 			}
 			PG_CATCH();
 			{
+				/*
+				 * Giving way in a commit-order deadlock, or a lock error in a
+				 * slot-group transaction, is not a failure of this row; let
+				 * apply_work() replay the transaction.
+				 */
+				if (replay_in_place(geterrcode()))
+					PG_RE_THROW();
+
 				failed = true;
 				xact_had_exception = true;
 
@@ -1976,6 +2168,14 @@ handle_delete(StringInfo s)
 			}
 			PG_CATCH();
 			{
+				/*
+				 * Giving way in a commit-order deadlock, or a lock error in a
+				 * slot-group transaction, is not a failure of this row; let
+				 * apply_work() replay the transaction.
+				 */
+				if (replay_in_place(geterrcode()))
+					PG_RE_THROW();
+
 				failed = true;
 				xact_had_exception = true;
 
@@ -2200,6 +2400,14 @@ handle_truncate(StringInfo s)
 			}
 			PG_CATCH();
 			{
+				/*
+				 * Giving way in a commit-order deadlock, or a lock error in a
+				 * slot-group transaction, is not a failure of this row; let
+				 * apply_work() replay the transaction.
+				 */
+				if (replay_in_place(geterrcode()))
+					PG_RE_THROW();
+
 				failed = true;
 				xact_had_exception = true;
 
@@ -2803,6 +3011,14 @@ handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 			}
 			PG_CATCH();
 			{
+				/*
+				 * Giving way in a commit-order deadlock, or a lock error in a
+				 * slot-group transaction, is not a failure of this row; let
+				 * apply_work() replay the transaction.
+				 */
+				if (replay_in_place(geterrcode()))
+					PG_RE_THROW();
+
 				failed = true;
 				xact_had_exception = true;
 
@@ -4099,273 +4315,333 @@ stream_replay:
 		MemoryContextSwitchTo(MessageContext);
 		edata = CopyErrorData();
 
-		/*----------
-		 * Connection-class errors must NOT enter the apply-side replay
-		 * path (need_replay / use_try_block).  Two reasons:
-		 *
-		 * 1. The replay path re-enters the wait loop with stale libpq
-		 *    state, producing an epoll_ctl(EINVAL) cascade on Linux.
-		 *
-		 * 2. With spock.exception_behaviour = transdiscard the replay
-		 *    path eventually logs the in-flight remote transaction's
-		 *    rows to spock.exception_log as if they had failed apply,
-		 *    when in fact they were never applied -- producing a
-		 *    "missing row" on the subscriber after reconnect.
-		 *
-		 * Re-throw instead.  apply_work has the only PG_TRY in this call
-		 * stack; the error propagates to the bgworker error handler,
-		 * which aborts the current transaction (RecordTransactionAbort
-		 * does not advance replorigin) and runs proc_exit.  The
-		 * before_shmem_exit callback spock_apply_worker_shmem_exit()
-		 * (see ~line 2039) then clears
-		 * replorigin_session_origin{,_lsn,_timestamp} so no later code
-		 * path can advance the replication origin past the aborted
-		 * in-flight remote transaction.  The post-apply_work
-		 * flush_progress_if_needed(true) at the bottom of
-		 * spock_apply_main is also bypassed by the rethrow, which is
-		 * what we want -- it would otherwise be the path that advances
-		 * origin via RecordTransactionCommit.  The manager respawns the
-		 * worker, which resumes from the last durably-committed origin
-		 * LSN and re-streams the aborted txn.
-		 *
-		 * Detect via sqlerrcode (preferred -- spock's own disconnect
-		 * ereports are tagged ERRCODE_CONNECTION_FAILURE) with PQstatus
-		 * as a fallback for libpq-internal raises (e.g. epoll_ctl) that
-		 * don't tag.  Apply-side errors (constraint violations and the
-		 * like) do NOT take this branch and continue through the
-		 * existing exception_log replay path below.
-		 *
-		 * CRASH_SHUTDOWN and CANNOT_CONNECT_NOW join ADMIN_SHUTDOWN: all three
-		 * mean the provider is going away or not ready yet, and all clear on
-		 * their own.  DATABASE_DROPPED (57P04) is excluded -- it never does.
-		 *
-		 * Do not collapse this into an ERRCODE_TO_CATEGORY() class 08 test:
-		 * handle_startup_message() raises PROTOCOL_VIOLATION (08P01) for a
-		 * version-mismatched provider, which is permanent and would then retry
-		 * forever.
-		 */
-		if (edata->sqlerrcode == ERRCODE_CONNECTION_FAILURE ||
-			edata->sqlerrcode == ERRCODE_CONNECTION_EXCEPTION ||
-			edata->sqlerrcode == ERRCODE_CONNECTION_DOES_NOT_EXIST ||
-			edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
-			edata->sqlerrcode == ERRCODE_CRASH_SHUTDOWN ||
-			edata->sqlerrcode == ERRCODE_CANNOT_CONNECT_NOW ||
-			(applyconn != NULL && PQstatus(applyconn) == CONNECTION_BAD))
+		if (replay_in_place(edata->sqlerrcode))
 		{
-			clear_transient_exception_state("provider connection loss");
-
 			/*
-			 * Pace the respawn as the transient branches below do.  An error
-			 * raised once apply is under way leaves restart_delay at the
-			 * restart_delay_on_exception (default 0) that handle_begin()
-			 * installed, so a provider that fails every attempt -- 57P02 or
-			 * 57P03 for the length of its crash recovery, say -- otherwise
-			 * spins the worker as fast as it can reconnect and re-stream.
-			 * Costs up to restart_delay_default of extra recovery latency on
-			 * a one-off blip, which is the same trade native PG makes with
-			 * wal_retrieve_retry_interval.
+			 * We gave way to an earlier transaction of the same apply group,
+			 * or a slot-group transaction hit a deadlock or lock timeout.
+			 * Nothing is wrong with the data, so this is not an apply failure
+			 * for spock.exception_behaviour.  Nor can we restart: the
+			 * provider's slot group has already handed this transaction out
+			 * and would not send it again.  Roll back, so whoever we were
+			 * waiting on can proceed, and apply the same messages again from
+			 * the replay queue.
 			 */
-			MySpockWorker->restart_delay = restart_delay_default;
+			commit_order_victim = false;
+			AbortOutOfAnyTransaction();
 
-			elog(LOG, "SPOCK %s: connection error during apply, exiting via rethrow: %s",
-				 MySubscription->name, edata->message);
-			PG_RE_THROW();
+			MemoryContextSwitchTo(MessageContext);
+			elog(LOG, "%s; applying the transaction again", edata->message);
+			FlushErrorState();
+
+			MemoryContextReset(MessageContext);
+			MemoryContextReset(ApplyOperationContext);
+			spock_relation_cache_reset();
+
+			apply_replay_queue_restart();
+			commit_order_replay = true;
+
+			in_remote_transaction = false;
+			remote_origin_lsn = InvalidXLogRecPtr;
+			remote_origin_id = InvalidRepOriginId;
+			if (remote_origin_name != NULL)
+			{
+				pfree(remote_origin_name);
+				remote_origin_name = NULL;
+			}
+
+			need_replay = true;
 		}
-
-		/*
-		 * Retryable local aborts must not enter the replay path either.  A
-		 * deadlock victim or a lock_timeout abort is no fault of the
-		 * replicated data: the same transaction succeeds once the contending
-		 * local transaction is gone.  The replay path is for permanent data
-		 * faults, so every spock.exception_behaviour loses data the provider
-		 * would resend: SUB_DISABLE stops replication, TRANSDISCARD drops the
-		 * transaction, DISCARD skips the row.
-		 *
-		 * Rethrow as above, leaving the origin at the last durable commit so
-		 * the respawned worker re-applies from scratch.  Retry is INDEFINITE,
-		 * as on the connection path and in native PG logical replication:
-		 * contention that never clears surfaces as a restarting worker,
-		 * whereas a bounded count would end in discarding data anyway.
-		 *
-		 * Serialization errors are absent because they reach apply only when
-		 * the worker itself runs at REPEATABLE READ / SERIALIZABLE (from the
-		 * default isolation level, which is not yet pinned to READ
-		 * COMMITTED). Until then, a cluster-wide
-		 * default_transaction_isolation can still produce 40001, which then
-		 * takes the exception path.
-		 */
-		if (edata->sqlerrcode == ERRCODE_T_R_DEADLOCK_DETECTED ||
-			edata->sqlerrcode == ERRCODE_LOCK_NOT_AVAILABLE)
+		else
 		{
-			prepare_transient_error_retry(edata,
-										  "transient error (deadlock/lock timeout)");
-			PG_RE_THROW();
-		}
 
-		/*
-		 * Resource exhaustion (class 53: disk full, out of memory, too many
-		 * connections, configuration limit exceeded) is retryable for the
-		 * same reason, and this makes the handling self-consistent -- the
-		 * "error during exception handling" branch below already rethrows
-		 * out-of-memory and disk-full, but only on a second occurrence.
-		 *
-		 * The whole-category test is safe here, unlike class 08 and class 40:
-		 * every class 53 member can clear, whereas 40002
-		 * (T_R_INTEGRITY_CONSTRAINT_VIOLATION) is a permanent data fault.
-		 *
-		 * A shortage that never clears -- a disk kept full by a bulk load --
-		 * retries indefinitely instead of discarding: human intervention, but
-		 * a restarting worker rather than data loss.
-		 */
-		if (ERRCODE_TO_CATEGORY(edata->sqlerrcode) == ERRCODE_INSUFFICIENT_RESOURCES)
-		{
-			prepare_transient_error_retry(edata, "transient resource error");
-			PG_RE_THROW();
-		}
-
-		/*----------
-		 * use_try_block == true indicates either:
-		 * 1. An exception occurred during a DML operation,
-		 * 2. Or we were replaying previously failed actions (via need_replay).
-		 *
-		 * If an exception occurs during handle_commit after prior handling,
-		 * we still need to ensure proper cleanup (e.g., disabling the
-		 * subscription).
-		 *
-		 * Handle SUB_DISABLE mode for both cases: xact_had_exception means DML
-		 * operations failed during exception handling, while use_try_block
-		 * without xact_had_exception means an error occurred after successful
-		 * retry (e.g., TRANSDISCARD throwing ERROR).
-		 *
-		 * Note: spock_disable_subscription() handles transaction management
-		 * internally, so no need to wrap it in StartTransactionCommand().
-		 */
-		if (exception_behaviour == SUB_DISABLE &&
-			(xact_had_exception || MyApplyWorker->use_try_block))
-		{
-			spock_disable_subscription(MySubscription,
-									   remote_origin_id,
-									   remote_xid,
-									   replorigin_session_origin_lsn,
-									   replorigin_session_origin_timestamp);
-
-			/*
-			 * The subscription is now disabled, and this apply worker will
-			 * exit shortly. Since the process is terminating, memory contexts
-			 * and replication origin state will be cleaned up automatically,
-			 * so no explicit reset is needed.
-			 */
-			return;
-		}
-
-		/*
-		 * For other exceptions with use_try_block, where xact_had_exception
-		 * is false, this indicates an ERROR occurred during exception
-		 * handling (e.g., connection died, CommitTransactionCommand failure
-		 * during TRANSDISCARD logging, etc.).
-		 *
-		 * We log the error and re-throw to exit the worker. The background
-		 * worker infrastructure will restart the worker automatically. This
-		 * handles both transient errors (connection failures) and system
-		 * errors (out of memory, disk full) uniformly.
-		 */
-		if (!xact_had_exception && MyApplyWorker->use_try_block)
-		{
-			elog(LOG, "SPOCK %s: error during exception handling: %s",
-				 MySubscription->name, edata->message);
-			elog(LOG, "SPOCK %s: exiting to allow worker restart",
-				 MySubscription->name);
-			PG_RE_THROW();
-		}
-
-		/*
-		 * Note: Replay queue overflow handling removed - dynamic allocation
-		 * prevents overflow. We no longer kill and restart apply workers for
-		 * queue overflow. Exception handling now follows
-		 * spock.exception_behavior setting.
-		 */
-
-		/*
-		 * Reaching this point means that we are dealing with the first
-		 * occurrence of an exception in the default, non-exception-handling
-		 * mode. We need to abort the current toplevel transactions and reset
-		 * cache states so that we can retry the transaction in
-		 * exception-handling mode by replaying from the queue.
-		 */
-		AbortOutOfAnyTransaction();
-
-		MemoryContextSwitchTo(MessageContext);
-		elog(LOG, "SPOCK: caught initial exception - %s", errmsg_with_sqlstate(edata));
-
-		/*
-		 * Save the initial exception message and operation type so we can
-		 * include them in the exception_log if operations succeed on retry.
-		 * Store in the exception_log structure for this transaction.
-		 */
-		if (exception_log_ptr != NULL)
-		{
-			snprintf(exception_log_ptr[my_exception_log_index].initial_error_message,
-					 sizeof(exception_log_ptr[my_exception_log_index].initial_error_message),
-					 "%s", errmsg_with_sqlstate(edata));
-
-			/*
-			 * Remember which action in the transaction triggered the error.
-			 * During the read-only replay, only this action gets the real
-			 * error message; other records get NULL.
+			/*----------
+			 * Connection-class errors must NOT enter the apply-side replay
+			 * path (need_replay / use_try_block).  Two reasons:
 			 *
-			 * A failure during COMMIT (e.g. a deferred constraint trigger
-			 * that fires at commit) is not attributable to any replayed row:
-			 * handle_commit has already bumped the counter, so no row's
-			 * command_counter would match and the pointer would dangle. Treat
-			 * it as non-attributable (failed_action = 0) so the replay
-			 * surfaces the captured root cause instead of a dangling
-			 * command_counter.
+			 * 1. The replay path re-enters the wait loop with stale libpq
+			 *    state, producing an epoll_ctl(EINVAL) cascade on Linux.
+			 *
+			 * 2. With spock.exception_behaviour = transdiscard the replay
+			 *    path eventually logs the in-flight remote transaction's
+			 *    rows to spock.exception_log as if they had failed apply,
+			 *    when in fact they were never applied -- producing a
+			 *    "missing row" on the subscriber after reconnect.
+			 *
+			 * Re-throw instead.  apply_work has the only PG_TRY in this call
+			 * stack; the error propagates to the bgworker error handler,
+			 * which aborts the current transaction (RecordTransactionAbort
+			 * does not advance replorigin) and runs proc_exit.  The
+			 * before_shmem_exit callback spock_apply_worker_shmem_exit()
+			 * (see ~line 2039) then clears
+			 * replorigin_session_origin{,_lsn,_timestamp} so no later code
+			 * path can advance the replication origin past the aborted
+			 * in-flight remote transaction.  The post-apply_work
+			 * flush_progress_if_needed(true) at the bottom of
+			 * spock_apply_main is also bypassed by the rethrow, which is
+			 * what we want -- it would otherwise be the path that advances
+			 * origin via RecordTransactionCommit.  The manager respawns the
+			 * worker, which resumes from the last durably-committed origin
+			 * LSN and re-streams the aborted txn.
+			 *
+			 * Detect via sqlerrcode (preferred -- spock's own disconnect
+			 * ereports are tagged ERRCODE_CONNECTION_FAILURE) with PQstatus
+			 * as a fallback for libpq-internal raises (e.g. epoll_ctl) that
+			 * don't tag.  Apply-side errors (constraint violations and the
+			 * like) do NOT take this branch and continue through the
+			 * existing exception_log replay path below.
+			 *
+			 * CRASH_SHUTDOWN and CANNOT_CONNECT_NOW join ADMIN_SHUTDOWN: all three
+			 * mean the provider is going away or not ready yet, and all clear on
+			 * their own.  DATABASE_DROPPED (57P04) is excluded -- it never does.
+			 *
+			 * Do not collapse this into an ERRCODE_TO_CATEGORY() class 08 test:
+			 * handle_startup_message() raises PROTOCOL_VIOLATION (08P01) for a
+			 * version-mismatched provider, which is permanent and would then retry
+			 * forever.
 			 */
-			if (errcallback_arg.action_name != NULL &&
-				strcmp(errcallback_arg.action_name, "COMMIT") == 0)
-				exception_log_ptr[my_exception_log_index].failed_action = 0;
-			else
-				exception_log_ptr[my_exception_log_index].failed_action =
-					xact_action_counter;
+			if (edata->sqlerrcode == ERRCODE_CONNECTION_FAILURE ||
+				edata->sqlerrcode == ERRCODE_CONNECTION_EXCEPTION ||
+				edata->sqlerrcode == ERRCODE_CONNECTION_DOES_NOT_EXIST ||
+				edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
+				edata->sqlerrcode == ERRCODE_CRASH_SHUTDOWN ||
+				edata->sqlerrcode == ERRCODE_CANNOT_CONNECT_NOW ||
+				(applyconn != NULL && PQstatus(applyconn) == CONNECTION_BAD))
+			{
+				clear_transient_exception_state("provider connection loss");
+
+				/*
+				 * Pace the respawn as the transient branches below do.  An
+				 * error raised once apply is under way leaves restart_delay
+				 * at the restart_delay_on_exception (default 0) that
+				 * handle_begin() installed, so a provider that fails every
+				 * attempt -- 57P02 or 57P03 for the length of its crash
+				 * recovery, say -- otherwise spins the worker as fast as it
+				 * can reconnect and re-stream. Costs up to
+				 * restart_delay_default of extra recovery latency on a
+				 * one-off blip, which is the same trade native PG makes with
+				 * wal_retrieve_retry_interval.
+				 */
+				MySpockWorker->restart_delay = restart_delay_default;
+
+				elog(LOG, "SPOCK %s: connection error during apply, exiting via rethrow: %s",
+					 MySubscription->name, edata->message);
+				PG_RE_THROW();
+			}
+
+			/*
+			 * Retryable local aborts must not enter the replay path either. A
+			 * deadlock victim or a lock_timeout abort is no fault of the
+			 * replicated data: the same transaction succeeds once the
+			 * contending local transaction is gone.  The replay path is for
+			 * permanent data faults, so every spock.exception_behaviour loses
+			 * data the provider would resend: SUB_DISABLE stops replication,
+			 * TRANSDISCARD drops the transaction, DISCARD skips the row.
+			 *
+			 * Rethrow as above, leaving the origin at the last durable commit
+			 * so the respawned worker re-applies from scratch.  Retry is
+			 * INDEFINITE, as on the connection path and in native PG logical
+			 * replication: contention that never clears surfaces as a
+			 * restarting worker, whereas a bounded count would end in
+			 * discarding data anyway.
+			 *
+			 * Serialization errors are absent because they reach apply only
+			 * when the worker itself runs at REPEATABLE READ / SERIALIZABLE
+			 * (from the default isolation level, which is not yet pinned to
+			 * READ COMMITTED). Until then, a cluster-wide
+			 * default_transaction_isolation can still produce 40001, which
+			 * then takes the exception path.
+			 *
+			 * A slot-group subscription never gets here: a restart would lose
+			 * the transaction, so it is replayed in place instead; see
+			 * replay_in_place().
+			 */
+			if (edata->sqlerrcode == ERRCODE_T_R_DEADLOCK_DETECTED ||
+				edata->sqlerrcode == ERRCODE_LOCK_NOT_AVAILABLE)
+			{
+				prepare_transient_error_retry(edata,
+											  "transient error (deadlock/lock timeout)");
+				PG_RE_THROW();
+			}
+
+			/*
+			 * Resource exhaustion (class 53: disk full, out of memory, too
+			 * many connections, configuration limit exceeded) is retryable
+			 * for the same reason, and this makes the handling
+			 * self-consistent -- the "error during exception handling" branch
+			 * below already rethrows out-of-memory and disk-full, but only on
+			 * a second occurrence.
+			 *
+			 * The whole-category test is safe here, unlike class 08 and class
+			 * 40: every class 53 member can clear, whereas 40002
+			 * (T_R_INTEGRITY_CONSTRAINT_VIOLATION) is a permanent data fault.
+			 *
+			 * A shortage that never clears -- a disk kept full by a bulk load
+			 * -- retries indefinitely instead of discarding: human
+			 * intervention, but a restarting worker rather than data loss.
+			 */
+			if (ERRCODE_TO_CATEGORY(edata->sqlerrcode) == ERRCODE_INSUFFICIENT_RESOURCES)
+			{
+				prepare_transient_error_retry(edata, "transient resource error");
+				PG_RE_THROW();
+			}
+
+			/*----------
+			 * use_try_block == true indicates either:
+			 * 1. An exception occurred during a DML operation,
+			 * 2. Or we were replaying previously failed actions (via need_replay).
+			 *
+			 * If an exception occurs during handle_commit after prior handling,
+			 * we still need to ensure proper cleanup (e.g., disabling the
+			 * subscription).
+			 *
+			 * Handle SUB_DISABLE mode for both cases: xact_had_exception means DML
+			 * operations failed during exception handling, while use_try_block
+			 * without xact_had_exception means an error occurred after successful
+			 * retry (e.g., TRANSDISCARD throwing ERROR).
+			 *
+			 * Note: spock_disable_subscription() handles transaction management
+			 * internally, so no need to wrap it in StartTransactionCommand().
+			 */
+			if (exception_behaviour == SUB_DISABLE &&
+				(xact_had_exception || MyApplyWorker->use_try_block))
+			{
+				spock_disable_subscription(MySubscription,
+										   remote_origin_id,
+										   remote_xid,
+										   replorigin_session_origin_lsn,
+										   replorigin_session_origin_timestamp);
+
+				/*
+				 * The subscription is now disabled, and this apply worker
+				 * will exit shortly. Since the process is terminating, memory
+				 * contexts and replication origin state will be cleaned up
+				 * automatically, so no explicit reset is needed.
+				 */
+				return;
+			}
+
+			/*
+			 * For other exceptions with use_try_block, where
+			 * xact_had_exception is false, this indicates an ERROR occurred
+			 * during exception handling (e.g., connection died,
+			 * CommitTransactionCommand failure during TRANSDISCARD logging,
+			 * etc.).
+			 *
+			 * We log the error and re-throw to exit the worker. The
+			 * background worker infrastructure will restart the worker
+			 * automatically. This handles both transient errors (connection
+			 * failures) and system errors (out of memory, disk full)
+			 * uniformly.
+			 */
+			if (!xact_had_exception && MyApplyWorker->use_try_block)
+			{
+				elog(LOG, "SPOCK %s: error during exception handling: %s",
+					 MySubscription->name, edata->message);
+				elog(LOG, "SPOCK %s: exiting to allow worker restart",
+					 MySubscription->name);
+				PG_RE_THROW();
+			}
+
+			/*
+			 * Note: Replay queue overflow handling removed - dynamic
+			 * allocation prevents overflow. We no longer kill and restart
+			 * apply workers for queue overflow. Exception handling now
+			 * follows spock.exception_behavior setting.
+			 */
+
+			/*
+			 * Reaching this point means that we are dealing with the first
+			 * occurrence of an exception in the default,
+			 * non-exception-handling mode. We need to abort the current
+			 * toplevel transactions and reset cache states so that we can
+			 * retry the transaction in exception-handling mode by replaying
+			 * from the queue.
+			 */
+			AbortOutOfAnyTransaction();
+
+			MemoryContextSwitchTo(MessageContext);
+			elog(LOG, "SPOCK: caught initial exception - %s", errmsg_with_sqlstate(edata));
+
+			/*
+			 * Save the initial exception message and operation type so we can
+			 * include them in the exception_log if operations succeed on
+			 * retry. Store in the exception_log structure for this
+			 * transaction.
+			 */
+			if (exception_log_ptr != NULL)
+			{
+				snprintf(exception_log_ptr[my_exception_log_index].initial_error_message,
+						 sizeof(exception_log_ptr[my_exception_log_index].initial_error_message),
+						 "%s", errmsg_with_sqlstate(edata));
+
+				/*
+				 * Remember which action in the transaction triggered the
+				 * error. During the read-only replay, only this action gets
+				 * the real error message; other records get NULL.
+				 *
+				 * A failure during COMMIT (e.g. a deferred constraint trigger
+				 * that fires at commit) is not attributable to any replayed
+				 * row: handle_commit has already bumped the counter, so no
+				 * row's command_counter would match and the pointer would
+				 * dangle. Treat it as non-attributable (failed_action = 0) so
+				 * the replay surfaces the captured root cause instead of a
+				 * dangling command_counter.
+				 */
+				if (errcallback_arg.action_name != NULL &&
+					strcmp(errcallback_arg.action_name, "COMMIT") == 0)
+					exception_log_ptr[my_exception_log_index].failed_action = 0;
+				else
+					exception_log_ptr[my_exception_log_index].failed_action =
+						xact_action_counter;
+			}
+
+			FlushErrorState();
+
+			MemoryContextReset(MessageContext);
+			MemoryContextReset(ApplyOperationContext);
+			spock_relation_cache_reset();
+
+			/*
+			 * The error may have come during a commit-order replay, with the
+			 * queue already being replayed; rewind it either way, and make
+			 * this an ordinary exception replay.
+			 */
+			apply_replay_queue_restart();
+			commit_order_replay = false;
+
+			in_remote_transaction = false;
+
+			/*
+			 * Re-arm the exception log lookup in handle_begin().  The next
+			 * BEGIN has to compare the recorded commit_lsn against the
+			 * incoming one: that is where exception handling is entered for
+			 * the transaction that failed, and where the recorded failure is
+			 * dropped if the provider sends a different transaction instead.
+			 * Without this the stale entry would be left to govern
+			 * transactions it knows nothing about.
+			 */
+			first_begin_at_startup = true;
+			remote_origin_lsn = InvalidXLogRecPtr;
+			remote_origin_id = InvalidRepOriginId;
+			/* Free origin name - it's in TopMemoryContext, not MessageContext */
+			if (remote_origin_name != NULL)
+			{
+				pfree(remote_origin_name);
+				remote_origin_name = NULL;
+			}
+
+			/* Don't want to use goto inside of PG_CATCH() */
+			need_replay = true;
 		}
-
-		FlushErrorState();
-
-		MemoryContextReset(MessageContext);
-		MemoryContextReset(ApplyOperationContext);
-		spock_relation_cache_reset();
-
-		apply_replay_queue_start_replay();
-
-		in_remote_transaction = false;
-
-		/*
-		 * Re-arm the exception log lookup in handle_begin().  The next BEGIN
-		 * has to compare the recorded commit_lsn against the incoming one:
-		 * that is where exception handling is entered for the transaction
-		 * that failed, and where the recorded failure is dropped if the
-		 * provider sends a different transaction instead.  Without this the
-		 * stale entry would be left to govern transactions it knows nothing
-		 * about.
-		 */
-		first_begin_at_startup = true;
-		remote_origin_lsn = InvalidXLogRecPtr;
-		remote_origin_id = InvalidRepOriginId;
-		/* Free origin name - it's in TopMemoryContext, not MessageContext */
-		if (remote_origin_name != NULL)
-		{
-			pfree(remote_origin_name);
-			remote_origin_name = NULL;
-		}
-
-		/* Don't want to use goto inside of PG_CATCH() */
-		need_replay = true;
 	}
 	PG_END_TRY();
 
 	if (need_replay)
 	{
-		MyApplyWorker->use_try_block = true;
+		/* A commit-order replay applies normally, not in exception mode. */
+		if (!commit_order_replay)
+			MyApplyWorker->use_try_block = true;
 		goto stream_replay;
 	}
 
@@ -5111,7 +5387,8 @@ apply_replay_spill_read_entry(void)
 	ApplyReplayEntry *entry;
 	MemoryContext oldcontext;
 
-	Assert(MyApplyWorker->use_try_block && apply_replay_spill_file != NULL);
+	Assert((MyApplyWorker->use_try_block || commit_order_replay) &&
+		   apply_replay_spill_file != NULL);
 
 	nread = BufFileRead(apply_replay_spill_file, &len, sizeof(int));
 	if (nread != sizeof(int) || len <= 0 || len >= (int) MaxAllocSize)
@@ -5178,6 +5455,7 @@ apply_replay_queue_reset(void)
 	apply_replay_next = NULL;
 	apply_replay_bytes = 0;
 	apply_replay_mode = false;
+	commit_order_replay = false;
 
 	/* Close and delete the spill file if it exists */
 	if (apply_replay_spill_file != NULL)
@@ -5204,7 +5482,7 @@ static ApplyReplayEntry *
 apply_replay_queue_next_entry(void)
 {
 	Assert(apply_replay_mode);
-	Assert(MyApplyWorker->use_try_block);
+	Assert(MyApplyWorker->use_try_block || commit_order_replay);
 
 	if (apply_replay_next != NULL)
 	{
@@ -5411,4 +5689,20 @@ maybe_advance_forwarded_origin(XLogRecPtr local_lsn, bool xact_had_exception)
 
 	replorigin_advance(forwarded_local_origin_id, remote_origin_lsn,
 					   local_lsn, false, true);
+}
+
+/*
+ * Rewind the replay queue to the start of the current transaction, whether
+ * or not it is already being replayed.  A commit-order deadlock can strike
+ * during a replay as well as during the first pass.
+ */
+static void
+apply_replay_queue_restart(void)
+{
+	if (apply_replay_mode)
+	{
+		apply_replay_next = NULL;
+		apply_replay_mode = false;
+	}
+	apply_replay_queue_start_replay();
 }
