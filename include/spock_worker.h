@@ -151,6 +151,7 @@ extern HTAB *SpockHash;
 extern SpockContext *SpockCtx;
 extern SpockWorker *MySpockWorker;
 extern SpockApplyWorker *MyApplyWorker;
+extern RepOriginId spock_session_origin_id;
 extern SpockSubscription *MySubscription;
 extern int	spock_stats_max_entries_conf;
 extern int	spock_stats_max_entries;
