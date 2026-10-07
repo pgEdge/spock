@@ -61,6 +61,21 @@ test: 044_apply_change_logging
 test: 045_lsn_from_commit_ts
 test: 046_apply_worker_exception_misclassification
 test: 048_insert_conflict_race
+test: 070_bidir_plumbing
+test: 072_bidir_join_crash_midcatchup
+test: 073_bidir_join_multipeer_lag
+test: 074_bidir_join_big_txn_liveness
+test: 075_bidir_join_unbounded_peer_slot_wal
+test: 076_bidir_join_precondition_negatives
+# 077_bidir_join_lww_conflict depends on the multi-node LWW tiebreaker fix,
+# tracked separately on fix/SPOC-696/lww-tiebreaker-mesh-conflict. Re-enable
+# once that lands here (see TODO.md in design.spock).
+#test: 077_bidir_join_lww_conflict
+test: 078_bidir_join_concurrent_load
+test: 079_bidir_join_stall_abort
+test: 080_bidir_join_failure_matrix
+test: 081_bidir_join_forwarded_discard_abort
+test: 082_create_subscriber_basebackup
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #

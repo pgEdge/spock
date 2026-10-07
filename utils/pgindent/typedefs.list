@@ -1,3 +1,17 @@
+BidirectionalState
+CatalogCapture
+CleanupDropOutcome
+ManifestParseState
+PeerNodeInfo
+RemoteInfo
+RepsetCapture
+RepsetFingerprintEntry
+RepsetTableCapture
+ReverseSubTarget
+SequenceCapture
+SubscriberCreateContext
+VerbosityLevelEnum
+WaitTracker
 __m128i
 __m512i
 __mmask64
