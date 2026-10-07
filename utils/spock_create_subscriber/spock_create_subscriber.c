@@ -299,6 +299,8 @@ static char *PQconninfoParamsToConnstr(const char *const *keywords, const char *
 static void appendPQExpBufferConnstrValue(PQExpBuffer buf, const char *str);
 
 static bool file_exists(const char *path);
+static void check_sidecar_dir_writable(const char *sidecar_path);
+static void reset_catchup_recovery_settings(const char *connstr);
 static char *expand_tilde(char *path);
 static bool is_pg_dir(const char *path);
 static void copy_file(char *fromfile, char *tofile, bool append);
@@ -2570,17 +2572,28 @@ run_cleanup_mode_if_requested(SubscriberCreateContext *ctx)
 	/*
 	 * Neither record exists -- there's no slot/subscription bookkeeping to
 	 * act on, e.g. because the run died before the pending sidecar was even
-	 * written.  But an orphaned data_dir can still be sitting there from that
-	 * attempt, and --force is an explicit instruction to remove it: don't
-	 * leave it behind just because there was nothing to read.
+	 * written.  The sidecar precedes any write to data_dir, so in that case
+	 * this tool has not populated it: remove an empty directory only, never
+	 * one that may be another node's (e.g. a mistyped --pgdata).
 	 */
 	if (ctx->bidir.force_cleanup && data_dir != NULL && data_dir[0] &&
 		file_exists(data_dir))
 	{
+		if (pg_check_dir(data_dir) != 1)
+		{
+			fprintf(stderr,
+					_("No manifest found at %s or %s; refusing to remove "
+					  "non-empty data directory %s, which was not created "
+					  "by this tool.\n"),
+					ctx->bidir.manifest_path, ctx->bidir_pending_path,
+					data_dir);
+			exit(1);
+		}
+
 		fprintf(stderr,
 				_("No manifest found at %s or %s; no slot/subscription "
 				  "state to clean up, but --force was given -- removing "
-				  "data directory %s.\n"),
+				  "empty data directory %s.\n"),
 				ctx->bidir.manifest_path, ctx->bidir_pending_path, data_dir);
 		exit(remove_data_dir_if_forced(true) ? 0 : 1);
 	}
@@ -2658,6 +2671,22 @@ validate_connection_strings(SubscriberCreateContext *ctx)
 				die(_("Subscriber connection string is not valid.\n"));
 		}
 	}
+}
+
+/*
+ * Die unless the directory holding the pending-cleanup sidecar is writable:
+ * it is the only record of the source slot created right after.
+ */
+static void
+check_sidecar_dir_writable(const char *sidecar_path)
+{
+	char	   *dir = pg_strdup(sidecar_path);
+
+	get_parent_directory(dir);
+	if (access(dir[0] ? dir : ".", W_OK | X_OK) != 0)
+		die(_("cannot write the pending-cleanup record \"%s\": %s\n"),
+			sidecar_path, strerror(errno));
+	pg_free(dir);
 }
 
 /*
@@ -2750,6 +2779,8 @@ create_replication_slots(SubscriberCreateContext *ctx)
 				check_reused_data_dir_is_safe(data_dir, ctx->remote_info);
 
 			source_sub_name = sub_name_for(ctx->subscriber_name, ctx->remote_info->node_name);
+
+			check_sidecar_dir_writable(ctx->bidir_pending_path);
 
 			print_msg(VERBOSITY_NORMAL,
 					  _("Creating source replication slot in database %s ...\n"), db);
@@ -2915,6 +2946,34 @@ catchup_to_restore_point(SubscriberCreateContext *ctx)
 }
 
 /*
+ * Remove the recovery settings catchup_to_restore_point() wrote to
+ * postgresql.auto.conf, so the source's connection string (password
+ * included) is not kept in the promoted node's configuration.
+ */
+static void
+reset_catchup_recovery_settings(const char *connstr)
+{
+	static const char *const stmts[] = {
+		"ALTER SYSTEM RESET primary_conninfo",
+		"ALTER SYSTEM RESET recovery_target_name",
+		"ALTER SYSTEM RESET recovery_target_inclusive",
+		"ALTER SYSTEM RESET recovery_target_action"
+	};
+	PGconn	   *conn = connectdb(connstr);
+
+	for (int i = 0; i < lengthof(stmts); i++)
+	{
+		PGresult   *res = debug_exec(conn, stmts[i]);
+
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+			die(_("%s failed: %s\n"), stmts[i], PQerrorMessage(conn));
+		PQclear(res);
+	}
+
+	PQfinish(conn);
+}
+
+/*
  * Phase 8: strip the spock configuration pg_basebackup copied over from
  * the provider -- for --bidirectional, this also gives n3 its own
  * system identifier, verifies --subscriber-dsn actually reaches it, and
@@ -3058,6 +3117,8 @@ strip_subscriber_catalog(SubscriberCreateContext *ctx)
 			subscriber_conn = NULL;
 		}
 	}
+
+	reset_catchup_recovery_settings(ctx->sub_connstr);
 
 	/*
 	 * Stop Postgres so we can start it again with spock
@@ -3398,7 +3459,7 @@ die(const char *fmt,...)
 
 	if (get_pgpid())
 	{
-		if (!run_pg_ctl("stop -s"))
+		if (run_pg_ctl("stop -s") != 0)
 		{
 			fprintf(stderr, _("WARNING: postgres seems to be running, but could not be stopped\n"));
 		}
@@ -5422,7 +5483,17 @@ establish_peer_coverage_barrier(BidirectionalState *state, PGconn *n3_conn,
 				  _("Creating replication slot for peer \"%s\"...\n"), peer->node_name);
 		peer_conn = connectdb(peer->dsn);
 
+		/*
+		 * Record the slot before creating it, so a death in between leaves
+		 * --cleanup knowing to drop it.  "pending" is replaced by the
+		 * creation LSN below.
+		 */
+		peer->slot_creation_lsn = pg_strdup("pending");
+		write_manifest(state, subscriber_name, dbname, base_prov_connstr);
+
+		pg_free(peer->slot_creation_lsn);
 		peer->slot_creation_lsn = create_peer_slot(peer_conn, peer->slot_name);
+		maybe_test_fail_after("peer_slot_created");
 		write_manifest(state, subscriber_name, dbname, base_prov_connstr);
 		print_msg(VERBOSITY_DEBUG,
 				  _("Peer \"%s\" slot \"%s\" created at LSN %s\n"),
@@ -5861,12 +5932,9 @@ sub_name_for(const char *local_node_name, const char *provider_node_name)
 /*
  * Create reverse subscriptions -- n3 as provider -- on every peer and
  * on the source, so replication becomes bidirectional.  reverse_sub_created
- * is persisted immediately after each subscription, matching the
- * "persist now, not just at the top of this block" discipline already
- * used for the catchup and disabled-peer subscriptions: a crash
- * partway through this loop must not leave --cleanup reading a
- * manifest that still shows an already-created reverse subscription
- * as not-yet-created.
+ * is persisted before each subscription is created, so a crash partway
+ * through this loop cannot leave --cleanup reading a manifest that shows an
+ * already-created reverse subscription as not-yet-created.
  */
 static void
 create_reverse_subscriptions(BidirectionalState *state, const char *subscriber_name,
@@ -5890,13 +5958,21 @@ create_reverse_subscriptions(BidirectionalState *state, const char *subscriber_n
 		print_msg(VERBOSITY_NORMAL,
 				  _("Creating reverse subscription \"%s\" on \"%s\"...\n"),
 				  reverse_sub_name, targets[i].node_name);
+
+		/*
+		 * Record the subscription before creating it, so a death in between
+		 * leaves --cleanup knowing to drop it (sub_drop tolerates a
+		 * subscription that was never created).
+		 */
+		*targets[i].reverse_sub_created = true;
+		write_manifest(state, subscriber_name, dbname, base_prov_connstr);
+
 		conn = connectdb(targets[i].dsn);
 		create_subscription_on_conn(conn, reverse_sub_name, n3_dsn,
 									repsets->data, targets[i].node_name);
 		PQfinish(conn);
 
-		*targets[i].reverse_sub_created = true;
-		write_manifest(state, subscriber_name, dbname, base_prov_connstr);
+		maybe_test_fail_after("reverse_sub_created");
 		pg_free(reverse_sub_name);
 	}
 
