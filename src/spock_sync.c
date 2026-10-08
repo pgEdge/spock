@@ -2048,6 +2048,7 @@ spock_sync_main(Datum main_arg)
 		 MySubscription->slot_name, originid);
 	replorigin_session_setup(originid);
 	replorigin_session_origin = originid;
+	spock_session_origin_id = originid;
 	Assert(status_lsn == replorigin_session_get_progress(false));
 
 	/*
