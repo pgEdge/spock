@@ -128,6 +128,8 @@ jobs:
       # prints (src/spock_apply.c) match repository paths for the annotations.
       - name: Checkout spock
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install build dependencies
         run: |
