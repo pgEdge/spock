@@ -5,6 +5,14 @@ SPOCK_MAJOR_VERSION := 50
 %:
 	dh $@
 
+# spockctrl has the same build-id for every PG major, so its .debug file
+# would clash between the per-version -dbgsym packages.
+override_dh_strip:
+	dh_strip --exclude=spockctrl
+
+execute_after_dh_strip:
+	find debian -path '*/bin/spockctrl' -type f -exec strip --strip-unneeded {} +
+
 override_dh_builddeb:
 	dh_builddeb -- -Zgzip
 
