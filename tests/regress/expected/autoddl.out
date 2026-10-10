@@ -1,6 +1,10 @@
 --Tuple Origin
 SELECT * FROM spock_regress_variables()
 \gset
+-- Earlier tests leave rows in the subscriber's exception log; start clean so
+-- the rows checked below are this test's own.
+\c :subscriber_dsn
+TRUNCATE spock.exception_log;
 -- This is to ensure that the test runs with the correct configuration
 \c :provider_dsn
 ALTER SYSTEM SET spock.enable_ddl_replication = 'on';
@@ -39,6 +43,25 @@ INFO:  DDL statement replicated.
 (1 row)
 
 INSERT INTO test1 VALUES (1, 'one'), (2, 'two');
+-- CLUSTER without a table commits after every table it processes, so it
+-- cannot be replayed inside the apply worker's transaction: AutoDDL must
+-- warn and leave it out of the queue, while CLUSTER on one table replicates.
+-- The hook fires for it outside a transaction, which AutoDDL has to handle.
+CREATE TABLE test_380 (x serial PRIMARY KEY, y integer);
+INFO:  DDL statement replicated.
+CREATE INDEX test_380_y_idx ON test_380 (y);
+INFO:  DDL statement replicated.
+ALTER TABLE test_380 CLUSTER ON test_380_y_idx;
+INFO:  DDL statement replicated.
+CLUSTER;
+WARNING:  This DDL statement will not be replicated.
+CLUSTER test_380;
+INFO:  DDL statement replicated.
+-- A table-less CLUSTER that reaches the queue anyway, as from an older
+-- provider, must fail on the subscriber as an ordinary error that exception
+-- handling records, not take the apply worker's transaction apart.
+INSERT INTO spock.queue (queued_at, role, replication_sets, message_type, message)
+VALUES (now(), current_user, '{ddl_sql}', 'Q', '"CLUSTER"');
 -- Generate a sync event
 SELECT spock.sync_event() as sync_event
 \gset
@@ -69,21 +92,37 @@ SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3')
      2
 (1 row)
 
--- auto-ddl and transaction state: check that auto-ddl initiates a new
--- transaction if it is not inside one.
-CREATE TABLE test_380 (x serial PRIMARY KEY, y integer);
-INFO:  DDL statement replicated.
-CREATE INDEX test_380_y_idx ON test_380 (y);
-INFO:  DDL statement replicated.
-ALTER TABLE test_380 CLUSTER ON test_380_y_idx;
-INFO:  DDL statement replicated.
-CLUSTER; -- Should call utility hook outside of transaction state
-INFO:  DDL statement replicated.
+-- test_380 arrived with its clustered index; the table-less CLUSTER was
+-- refused and logged, and replication went on.
+SELECT indisclustered FROM pg_index WHERE indexrelid = 'test_380_y_idx'::regclass;
+ indisclustered 
+----------------
+ t
+(1 row)
+
+SELECT status FROM spock.sub_show_status();
+   status    
+-------------
+ replicating
+(1 row)
+
+SELECT operation,
+       error_message ~ 'CLUSTER cannot (run inside a|be executed from a)'
+           AS refused_in_transaction
+  FROM spock.exception_log
+ ORDER BY command_counter;
+ operation | refused_in_transaction 
+-----------+------------------------
+ INSERT    | t
+ DDL       | t
+(2 rows)
+
+TRUNCATE spock.exception_log;
+-- Reset the configuration to the default value
+\c :provider_dsn
 DROP TABLE test_380 CASCADE;
 NOTICE:  drop cascades to table test_380 membership in replication set default
 INFO:  DDL statement replicated.
--- Reset the configuration to the default value
-\c :provider_dsn
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';
 WARNING:  This DDL statement will not be replicated.
 ALTER SYSTEM SET spock.include_ddl_repset = 'off';

@@ -2223,17 +2223,32 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		case T_CreateTableSpaceStmt:	/* TABLESPACE */
 		case T_DropTableSpaceStmt:
 		case T_AlterTableSpaceOptionsStmt:
-#if PG_VERSION_NUM >= 190000
-		/*
-		 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
-		 * CLUSTER statement now parses into a RepackStmt.
-		 */
-		case T_RepackStmt:				/* CLUSTER */
-#else
-		case T_ClusterStmt:				/* CLUSTER */
-#endif
 			add_search_path = false;
 			break;
+
+			/*
+			 * CLUSTER without a table commits after every table it processes,
+			 * so it can run neither in a transaction block nor in the apply
+			 * worker's transaction, where it would leave the worker with a
+			 * committed transaction under its feet.  It reorganizes whatever
+			 * is clustered locally and has nothing to replicate.
+			 *
+			 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
+			 * CLUSTER statement now parses into a RepackStmt.
+			 */
+#if PG_VERSION_NUM >= 190000
+		case T_RepackStmt:				/* CLUSTER */
+			if (castNode(RepackStmt, stmt)->relation == NULL)
+				goto skip_ddl;
+			add_search_path = false;
+			break;
+#else
+		case T_ClusterStmt:				/* CLUSTER */
+			if (castNode(ClusterStmt, stmt)->relation == NULL)
+				goto skip_ddl;
+			add_search_path = false;
+			break;
+#endif
 
 		case T_AlterTableStmt:
 			{
