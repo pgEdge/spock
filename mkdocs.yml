@@ -74,6 +74,8 @@ nav:
       - Modifying your Cluster with Zodan: modify/zodan/index.md
       - Using Zodan Scripts and Workflows: modify/zodan/zodan_readme.md
       - Adding a Node with Zero Downtime: modify/zodan/zodan_tutorial.md
+      - Updating the Postgres Version with a Rolling Update: modify/zodan/zodan_rolling_pg_version_tutorial.md
+    - Upgrading the Postgres Version In Place with pg_upgrade: modify/pg_upgrade_rolling_tutorial.md
     - Adding a Node with Minimal Downtime with pgBackRest: modify/add_node_pgbackrest.md
     - Recovering from Catastrophic Node Failure: recovery/catastrophic_node_failure.md
   - Monitoring a Cluster:
