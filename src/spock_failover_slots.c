@@ -759,6 +759,20 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 }
 
 /*
+ * Is the slot invalidated?  Caller must hold the slot's mutex.
+ */
+static bool
+slot_is_invalidated(ReplicationSlot *s)
+{
+#if PG_VERSION_NUM >= 160000
+	return s->data.invalidated != RS_INVAL_NONE;
+#else
+	return !XLogRecPtrIsInvalid(s->data.invalidated_at) &&
+		XLogRecPtrIsInvalid(s->data.restart_lsn);
+#endif
+}
+
+/*
  * Synchronize one logical replication slot's state from the master to this
  * standby, creating it if necessary.
  *
@@ -776,6 +790,9 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 {
 	int i;
 	bool found = false;
+	bool		invalidated = false;
+	bool		active = false;
+	bool		synced = false;
 
 	if (!RecoveryInProgress())
 	{
@@ -805,10 +822,51 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		if (strcmp(NameStr(s->data.name), remote_slot->name) == 0)
 		{
 			found = true;
+			active = SlotIsActive(s);
+			SpinLockAcquire(&s->mutex);
+			invalidated = slot_is_invalidated(s);
+#if PG_VERSION_NUM >= 170000
+			synced = s->data.synced;
+#endif
+			SpinLockRelease(&s->mutex);
 			break;
 		}
 	}
 	LWLockRelease(ReplicationSlotControlLock);
+
+	/*
+	 * The local copy was invalidated, for example because the primary removed
+	 * catalog rows it still needed.  Advancing its metadata would make it
+	 * look healthy while it can never be used after promotion, so drop it and
+	 * create it again from the primary below.
+	 *
+	 * Leave it alone while a walsender holds it, and on PG17 when it was
+	 * created by native slot sync, since ReplicationSlotDrop() refuses to
+	 * drop a synced slot on a standby.  A walsender can still take the slot
+	 * between the check and the drop; the drop then errors out and the
+	 * restarted worker tries again.
+	 */
+	if (found && invalidated)
+	{
+		if (active || synced)
+		{
+			elog(WARNING,
+				 "replication slot \"%s\" is invalidated but %s, "
+				 "not synchronizing it",
+				 remote_slot->name,
+				 active ? "in use" : "owned by native slot sync");
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			return;
+		}
+
+		elog(WARNING,
+			 "replication slot \"%s\" is invalidated on the standby, "
+			 "recreating it from the primary",
+			 remote_slot->name);
+		ReplicationSlotDrop(remote_slot->name, true);
+		found = false;
+	}
 
 	/*
 	 * Remote slot exists locally, acquire and move. There's a race here where
