@@ -126,6 +126,13 @@
 #define ExecInitRangeTable(estate, rangeTable, permInfos) \
 	ExecInitRangeTable(estate, rangeTable, permInfos, bms_make_singleton(1))
 
+/*
+ * PG18 added the TID of a just-inserted tuple to skip.  Spock checks with no
+ * tuple of its own in the index, so pass none.
+ */
+#define ExecCheckIndexConstraints(resultRelInfo, slot, estate, conflictTid, arbiterIndexes) \
+	ExecCheckIndexConstraints(resultRelInfo, slot, estate, conflictTid, NULL, arbiterIndexes)
+
 #include "parser/parse_node.h"
 extern bool check_simple_rowfilter_expr(Node *node, ParseState *pstate);
 
