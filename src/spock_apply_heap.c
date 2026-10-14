@@ -22,6 +22,7 @@
 #include "access/htup_details.h"
 #include "access/xact.h"
 
+#include "catalog/index.h"
 #include "catalog/namespace.h"
 
 #include "commands/dbcommands.h"
@@ -842,12 +843,14 @@ init_tuple_with_defaults(SpockTupleData *oldtup, TupleDesc tupdesc)
  * race, and a third covers the winner being deleted in between.
  *
  * The arbiter reports a conflict without waiting for the competing inserter
- * (see spock_speculative_insert), so these passes are only as patient as the
- * lookup.  Where the lookup searches the index that reported, it waits on the
- * competitor itself and the budget is enough.  Where it does not, nothing
- * waits and the passes are spent at once.  How, and how long, to wait for an
- * inserter that is still in progress is a separate problem, left to a
- * follow-up.
+ * (see spock_speculative_insert), so after each lost race the loop waits for
+ * in-progress holders of the key itself (spock_wait_for_key_holders) before
+ * it starts the next pass, instead of relying on the lookup to wait for them.
+ * That wait stops at the first arbiter whose holder has committed; holders
+ * on the arbiters after it are left to the lookup or to the next lost race.
+ * This changes no outcome: a committed holder on an index the lookup searches
+ * is found and resolved, and one on an index it does not search ends in a
+ * duplicate key whatever happens to the others.
  */
 #define SPOCK_SPECULATIVE_MAX_ATTEMPTS			3
 
@@ -944,7 +947,9 @@ spock_speculative_insert(ApplyExecutionData *edata, TupleTableSlot *slot,
 	 * conflicting entry as soon as it sees one that is live or in progress,
 	 * without waiting to learn whether its inserter commits.  A conflict here
 	 * therefore means only that somebody holds the key -- committed or not.
-	 * Waiting for the holder is the caller's lookup's job, not ours.
+	 * Waiting for the holder is the caller's job (spock_wait_for_key_holders),
+	 * and it must happen after we have super-deleted our tuple below, not
+	 * while it still sits in the index.
 	 */
 	recheckIndexes = ExecInsertIndexTuples(relinfo, slot, estate,
 										   false,	/* update */
@@ -971,6 +976,54 @@ spock_speculative_insert(ApplyExecutionData *edata, TupleTableSlot *slot,
 	list_free(recheckIndexes);
 
 	return true;
+}
+
+/*
+ * spock_wait_for_key_holders
+ *		Wait for the transactions that hold this tuple's key in the arbiter
+ * 		indexes to finish.
+ *
+ * Every arbiter must be an immediate, valid unique index.
+ */
+static void
+spock_wait_for_key_holders(ApplyExecutionData *edata, TupleTableSlot *slot,
+						   List *arbiterIndexes)
+{
+	ResultRelInfo *relinfo = edata->targetRelInfo;
+	EState	   *estate = edata->estate;
+	ItemPointerData conflictTid;
+	int			i;
+
+	Assert(arbiterIndexes != NIL);
+
+	/*
+	 * The indexes were opened without the unique-check info that
+	 * ExecCheckIndexConstraints() needs: building it for every applied insert
+	 * would tax the path that never meets a conflict.  Build it here, for the
+	 * arbiters only, and only once.
+	 */
+	for (i = 0; i < relinfo->ri_NumIndices; i++)
+	{
+		Relation	idxrel = relinfo->ri_IndexRelationDescs[i];
+		IndexInfo  *ii = relinfo->ri_IndexRelationInfo[i];
+		MemoryContext oldctx;
+
+		if (ii->ii_UniqueOps != NULL || ii->ii_ExclusionOps != NULL ||
+			!list_member_oid(arbiterIndexes, RelationGetRelid(idxrel)))
+			/* This index does not fit arbiter rules or already set */
+			continue;
+
+		Assert(ii->ii_Unique);
+		Assert(idxrel->rd_index->indimmediate);
+
+		oldctx = MemoryContextSwitchTo(GetMemoryChunkContext(ii));
+		BuildSpeculativeIndexInfo(idxrel, ii);
+		MemoryContextSwitchTo(oldctx);
+	}
+
+	/* Called for its side effect only: it waits for in-progress holders. */
+	(void) ExecCheckIndexConstraints(relinfo, slot, estate, &conflictTid,
+									 arbiterIndexes);
 }
 
 /*
@@ -1020,6 +1073,7 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 	List	   *arbiterIndexes;
 	bool		found;
 	bool		prepared = false;
+	bool		done = false;
 	int			attempt;
 	Oid			idxused;
 
@@ -1044,7 +1098,8 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 
 	/*
 	 * No speculative index info: only ExecCheckIndexConstraints() needs it,
-	 * and we never call it -- the conflict comes from the index AM itself.
+	 * and only after a lost race, so spock_wait_for_key_holders() builds it
+	 * then.
 	 */
 	ExecOpenIndices(edata->targetRelInfo, false);
 	relinfo = edata->targetRelInfo;
@@ -1181,42 +1236,33 @@ spock_apply_heap_insert(SpockRelation *rel, SpockTupleData *newtup)
 		 */
 		SPOCK_INSERT_CONFLICT_STALL();
 
-		{
-			bool		stored;
+		/*
+		 * Everything from here to the end of the pass runs user code. Do it as
+		 * the table owner, switching once for the whole pass.
+		 */
+		SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 
-			/* Index expressions and the AFTER triggers are user code too. */
-			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
-			stored = spock_speculative_insert(edata, remoteslot,
-											  arbiterIndexes);
-			RestoreUserContext(&ucxt);
-
-			if (stored)
-				break;
-		}
+		if (spock_speculative_insert(edata, remoteslot, arbiterIndexes))
+			done = true;
 
 		/*
-		 * Somebody holds one of these keys, so go back and look it up.  The
-		 * holder may still be in progress: the arbiter does not wait for it,
-		 * but the lookup does, through its dirty snapshot, provided it
-		 * searches the index that reported.  If the holder commits, the next
-		 * pass finds its row; if it aborts, the next store succeeds.
-		 *
-		 * Once the attempts are spent, store the tuple with the indexes free
-		 * to raise instead: we cannot name the row holding the key, and a
-		 * duplicate key naming the constraint and the key values is more use
-		 * to whoever ends up reading the exception log than anything we could
-		 * say here.  The plain insert does wait for an in-progress holder, so
-		 * one that aborts in the meantime lets the row through; one that
-		 * commits still ends in a duplicate key.  Bounding that wait is left
-		 * to the follow-up mentioned at SPOCK_SPECULATIVE_MAX_ATTEMPTS.
+		 * Somebody holds one of these keys.  Once the attempts are spent,
+		 * store the tuple and let index duplicate-detection machinery to raise
+		 * an error as usual.
 		 */
-		if (attempt >= SPOCK_SPECULATIVE_MAX_ATTEMPTS)
+		else if (attempt >= SPOCK_SPECULATIVE_MAX_ATTEMPTS)
 		{
-			SwitchToUntrustedUser(rel->rel->rd_rel->relowner, &ucxt);
 			spock_plain_insert(edata, remoteslot);
-			RestoreUserContext(&ucxt);
-			break;
+			done = true;
 		}
+		/* Wait for the holder to finish before going back to look it up. */
+		else
+			spock_wait_for_key_holders(edata, remoteslot, arbiterIndexes);
+
+		RestoreUserContext(&ucxt);
+
+		if (done)
+			break;
 	}
 
 	/* Cleanup */
