@@ -17,9 +17,9 @@ name: Antithesis
 
 on:
   # TEMPORARY: lets the workflow run from a-test before it is on the default
-  # branch (workflow_dispatch needs that).  Push runs only build and
-  # validate: inputs.launch is empty, so nothing is launched.  Remove
-  # before merging.
+  # branch (workflow_dispatch needs that).  A push to a-test builds,
+  # validates and launches a run of PUSH_DURATION minutes.  Remove before
+  # merging.
   push:
     branches: [a-test]
   workflow_dispatch:
@@ -50,6 +50,9 @@ env:
   SNOUTY_CONTAINER_ENGINE: docker
   NO_COLOR: "1"
   CONFIG_DIR: antithesis/config
+  # Push runs have no inputs: they always launch, for this many minutes.
+  LAUNCH: ${{ github.event_name == 'push' || inputs.launch }}
+  PUSH_DURATION: "30"
 
 jobs:
   antithesis:
@@ -100,7 +103,7 @@ jobs:
       # Same login as Antithesis's demo CI: the registry key Antithesis
       # provides, as a service-account JSON key.
       - name: Log in to Artifact Registry
-        if: ${{ inputs.launch }}
+        if: ${{ env.LAUNCH == 'true' }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: us-central1-docker.pkg.dev
@@ -108,12 +111,12 @@ jobs:
           password: ${{ secrets.ANTITHESIS_GAR_KEY }}
 
       - name: Launch Antithesis run
-        if: ${{ inputs.launch }}
+        if: ${{ env.LAUNCH == 'true' }}
         env:
           ANTITHESIS_API_KEY: ${{ secrets.ANTITHESIS_API_KEY }}
           ANTITHESIS_TENANT: ${{ vars.ANTITHESIS_TENANT }}
           ANTITHESIS_REPOSITORY: ${{ vars.ANTITHESIS_REPOSITORY }}
-          DURATION: ${{ inputs.duration }}
+          DURATION: ${{ inputs.duration || env.PUSH_DURATION }}
           RUN_DESCRIPTION: ${{ inputs.description }}
           BRANCH: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
