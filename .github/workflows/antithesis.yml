@@ -16,6 +16,12 @@
 name: Antithesis
 
 on:
+  # TEMPORARY: lets the workflow run from a-test before it is on the default
+  # branch (workflow_dispatch needs that).  Push runs only build and
+  # validate: inputs.launch is empty, so nothing is launched.  Remove
+  # before merging.
+  push:
+    branches: [a-test]
   workflow_dispatch:
     inputs:
       launch:
