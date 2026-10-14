@@ -316,18 +316,14 @@ spock_create_node(PG_FUNCTION_ARGS)
 	spock_group_slot_init_local(node.id);
 
 	/*
-	 * Wake the supervisor so a per-database manager is (re)started promptly.
-	 * A lone node with no subscriptions would otherwise have no manager, and
-	 * therefore no group-slot worker, until the supervisor's periodic sweep.
+	 * Wake the supervisor at commit so a per-database manager is started
+	 * promptly.  A lone node with no subscriptions would otherwise have no
+	 * manager, and therefore no group-slot worker, until the supervisor's
+	 * periodic sweep.  Waking it here directly would also fire when this
+	 * transaction later aborts, starting a manager that finds no node and
+	 * exits; a wake that lands while it is still detaching is lost.
 	 */
-	if (SpockCtx != NULL)
-	{
-		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
-		SpockCtx->subscriptions_changed = true;
-		if (SpockCtx->supervisor != NULL)
-			SetLatch(&SpockCtx->supervisor->procLatch);
-		LWLockRelease(SpockCtx->lock);
-	}
+	spock_subscription_changed(InvalidOid, false);
 
 	PG_RETURN_OID(node.id);
 }
