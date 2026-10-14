@@ -1,0 +1,95 @@
+# Antithesis topology for Spock: three nodes in a full mesh (n1-n3), one
+# spare node that the workload joins with Z0DAN add_node (n4), and a workload
+# client.  See antithesis/scratchbook/deployment-topology.md.
+#
+# Build:  docker compose -f antithesis/config/docker-compose.yaml build
+# ARM hosts validate a native build with antithesis/local-validate.sh.
+#
+# Spock node names are n1..n4; their hosts are spock-n1..spock-n4.
+
+name: spock
+
+x-node: &node
+  platform: linux/amd64
+  init: true
+  build:
+    context: ../..
+    dockerfile: antithesis/Dockerfile
+    target: node
+  image: spock-node:latest
+  # Fast shutdown, so a graceful stop does not wait on client sessions.
+  stop_signal: SIGINT
+  # Fast shutdown still waits for walsenders to send pending WAL; with peers
+  # down that can take up to wal_sender_timeout (60s).  Docker's default
+  # 10s would turn every graceful stop into a kill.
+  stop_grace_period: 90s
+  environment: &node-env
+    NO_COLOR: "1"
+    SPOCK_CAPACITY: "32"
+    SPOCK_WAL_SENDER_TIMEOUT: "60s"
+    SPOCK_APPLY_IDLE_TIMEOUT: "120"
+    SPOCK_EXCEPTION_BEHAVIOUR: "transdiscard"
+    SPOCK_PAUSE_TIMEOUT: "1"
+  healthcheck:
+    test: ["CMD", "pg_isready", "-q", "-h", "localhost"]
+    interval: 2s
+    timeout: 2s
+    retries: 150
+
+services:
+  n1:
+    <<: *node
+    container_name: spock-n1
+    hostname: spock-n1
+    volumes:
+      - n1-data:/data
+
+  n2:
+    <<: *node
+    container_name: spock-n2
+    hostname: spock-n2
+    volumes:
+      - n2-data:/data
+
+  n3:
+    <<: *node
+    container_name: spock-n3
+    hostname: spock-n3
+    volumes:
+      - n3-data:/data
+
+  n4:
+    <<: *node
+    container_name: spock-n4
+    hostname: spock-n4
+    volumes:
+      - n4-data:/data
+
+  workload:
+    platform: linux/amd64
+    init: true
+    container_name: spock-workload
+    hostname: spock-workload
+    build:
+      context: ../..
+      dockerfile: antithesis/Dockerfile
+      target: workload
+    image: spock-workload:latest
+    environment:
+      NO_COLOR: "1"
+      NODE_HOST_PREFIX: "spock-"
+    depends_on:
+      n1:
+        condition: service_healthy
+      n2:
+        condition: service_healthy
+      n3:
+        condition: service_healthy
+      n4:
+        condition: service_healthy
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:
+  n4-data:
