@@ -128,7 +128,7 @@ typedef struct ZodanAddCtx
 	bool		verb;
 	char	   *new_node_location;
 	char	   *new_node_country;
-	char	   *new_node_info;		/* jsonb rendered as text */
+	char	   *new_node_info;	/* jsonb rendered as text */
 	int			timeout_sec;
 
 	/* Cluster snapshot fetched from the source node (all existing nodes). */
@@ -140,7 +140,7 @@ typedef struct ZodanAddCtx
 	int			src_minor;
 	int			src_patch;
 
-	MemoryContext mcxt;				/* survives SPI_commit() */
+	MemoryContext mcxt;			/* survives SPI_commit() */
 } ZodanAddCtx;
 
 /* A two-column row snapshotted out of SPI_tuptable; see zodan_local_pairs(). */
@@ -351,9 +351,10 @@ zodan_connect(const char *dsn, const char *purpose)
 	PGconn	   *conn;
 
 	/*
-	 * Refuse rather than hand back an untracked connection: overflow would mean
-	 * a leak on the error path, which is exactly what the registry exists to
-	 * prevent.  Reserve the slot before connecting so nothing can be dropped.
+	 * Refuse rather than hand back an untracked connection: overflow would
+	 * mean a leak on the error path, which is exactly what the registry
+	 * exists to prevent.  Reserve the slot before connecting so nothing can
+	 * be dropped.
 	 */
 	if (zodan_nconns >= ZODAN_MAX_CONNS)
 		elog(ERROR, "too many concurrent zodan connections (max %d)",
@@ -622,9 +623,9 @@ zodan_fetch_cluster_nodes(ZodanAddCtx *ctx)
 	zodan_disconnect(conn);
 
 	/*
-	 * src_node_name is only ever used to compare against these names -- to pick
-	 * the source out of the cluster, to count the "other" nodes (which selects
-	 * the 2-node vs multi-node path in several phases), and to build
+	 * src_node_name is only ever used to compare against these names -- to
+	 * pick the source out of the cluster, to count the "other" nodes (which
+	 * selects the 2-node vs multi-node path in several phases), and to build
 	 * subscription names.  A name that does not match any node therefore does
 	 * not fail here; it silently reclassifies the real source as an "other"
 	 * node and fails much later, in a confusing place.  Reject it up front.
@@ -665,9 +666,9 @@ zodan_repset_array(PGresult *res)
 	if (n == 0)
 	{
 		/*
-		 * A Spock node always has the built-ins, so no rows means the DSN does
-		 * not point at one.  Fall back rather than build an empty array that
-		 * would replicate nothing.
+		 * A Spock node always has the built-ins, so no rows means the DSN
+		 * does not point at one.  Fall back rather than build an empty array
+		 * that would replicate nothing.
 		 */
 		return pstrdup(ZODAN_DEFAULT_REPSETS);
 	}
@@ -742,7 +743,7 @@ zodan_remote_spock_version(PGconn *conn, const char *label,
 						   int *major, int *minor, int *patch)
 {
 	char	   *v = zodan_remote_scalar(conn,
-					"SELECT extversion FROM pg_extension WHERE extname = 'spock'");
+										"SELECT extversion FROM pg_extension WHERE extname = 'spock'");
 
 	if (v == NULL)
 		ereport(ERROR,
@@ -908,7 +909,7 @@ zodan_verify_prerequisites(ZodanAddCtx *ctx)
 
 	conn = zodan_connect(ctx->new_node_dsn, "prereq");
 	remote_sysid = zodan_remote_scalar(conn,
-					"SELECT system_identifier::text FROM pg_control_system()");
+									   "SELECT system_identifier::text FROM pg_control_system()");
 	remote_dbname = zodan_remote_scalar(conn, "SELECT current_database()");
 	zodan_disconnect(conn);
 
@@ -930,24 +931,25 @@ zodan_verify_prerequisites(ZodanAddCtx *ctx)
 	/*
 	 * lolor state on the new node.  Having the lolor extension installed is
 	 * fine (and required when the source replicates lolor tables), but any
-	 * pre-existing large object data would conflict with the data synchronized
-	 * from the source, so the lolor tables must be empty.  The lolor structure
-	 * itself is excluded from the structure dump (see skip_schema[]) and comes
-	 * from CREATE EXTENSION lolor, so the extension must already exist on the
-	 * new node when the source replicates lolor tables.
+	 * pre-existing large object data would conflict with the data
+	 * synchronized from the source, so the lolor tables must be empty.  The
+	 * lolor structure itself is excluded from the structure dump (see
+	 * skip_schema[]) and comes from CREATE EXTENSION lolor, so the extension
+	 * must already exist on the new node when the source replicates lolor
+	 * tables.
 	 */
 	{
 		bool		new_lolor_installed;
 		int64		src_lolor_repset_tables;
 
 		new_lolor_installed = zodan_local_count(
-			"SELECT count(*) FROM pg_catalog.pg_extension WHERE extname = 'lolor'") > 0;
+												"SELECT count(*) FROM pg_catalog.pg_extension WHERE extname = 'lolor'") > 0;
 
 		if (new_lolor_installed)
 		{
 			int64		lolor_rows = zodan_local_count(
-				"SELECT (SELECT count(*) FROM lolor.pg_largeobject) + "
-				"(SELECT count(*) FROM lolor.pg_largeobject_metadata)");
+													   "SELECT (SELECT count(*) FROM lolor.pg_largeobject) + "
+													   "(SELECT count(*) FROM lolor.pg_largeobject_metadata)");
 
 			if (lolor_rows > 0)
 				ereport(ERROR,
@@ -966,8 +968,8 @@ zodan_verify_prerequisites(ZodanAddCtx *ctx)
 			char	   *s;
 
 			s = zodan_remote_scalar(src_conn,
-				"SELECT count(*) FROM spock.tables "
-				"WHERE nspname = 'lolor' AND set_name IS NOT NULL");
+									"SELECT count(*) FROM spock.tables "
+									"WHERE nspname = 'lolor' AND set_name IS NOT NULL");
 			zodan_disconnect(src_conn);
 
 			src_lolor_repset_tables = (s != NULL) ? pg_strtoint64(s) : 0;
@@ -985,15 +987,15 @@ zodan_verify_prerequisites(ZodanAddCtx *ctx)
 
 	/*
 	 * No user tables on the new node.  'lolor' is excluded: its tables are
-	 * created by CREATE EXTENSION lolor, which is permitted (and required) when
-	 * the source replicates lolor data, and were already validated as empty
-	 * above.
+	 * created by CREATE EXTENSION lolor, which is permitted (and required)
+	 * when the source replicates lolor data, and were already validated as
+	 * empty above.
 	 */
 	cnt = zodan_local_count(
-		"SELECT count(*) FROM pg_tables "
-		"WHERE schemaname NOT IN ('information_schema','pg_catalog','pg_toast','spock','lolor') "
-		"AND schemaname NOT LIKE 'pg_temp_%' "
-		"AND schemaname NOT LIKE 'pg_toast_temp_%'");
+							"SELECT count(*) FROM pg_tables "
+							"WHERE schemaname NOT IN ('information_schema','pg_catalog','pg_toast','spock','lolor') "
+							"AND schemaname NOT LIKE 'pg_temp_%' "
+							"AND schemaname NOT LIKE 'pg_toast_temp_%'");
 	if (cnt > 0)
 		ereport(ERROR,
 				(errmsg("database %s on the new node has " INT64_FORMAT " user-created tables",
@@ -1010,16 +1012,16 @@ zodan_verify_prerequisites(ZodanAddCtx *ctx)
 
 		initStringInfo(&missing);
 		res = zodan_remote_query(src_conn,
-			"SELECT rolname FROM pg_roles "
-			"WHERE rolcanlogin = true "
-			"AND rolname NOT IN ('postgres','rdsadmin','rdsrepladmin','rds_superuser') "
-			"ORDER BY rolname");
+								 "SELECT rolname FROM pg_roles "
+								 "WHERE rolcanlogin = true "
+								 "AND rolname NOT IN ('postgres','rdsadmin','rdsrepladmin','rds_superuser') "
+								 "ORDER BY rolname");
 		for (i = 0; i < PQntuples(res); i++)
 		{
 			char	   *rolname = PQgetvalue(res, i, 0);
 			char	   *sql = psprintf(
-				"SELECT count(*) FROM pg_roles WHERE rolname = %s AND rolcanlogin = true",
-				quote_literal_cstr(rolname));
+									   "SELECT count(*) FROM pg_roles WHERE rolname = %s AND rolcanlogin = true",
+									   quote_literal_cstr(rolname));
 			int64		exists = zodan_local_count(sql);
 
 			pfree(sql);
@@ -1057,7 +1059,7 @@ zodan_verify_prerequisites(ZodanAddCtx *ctx)
 
 			nconn = zodan_connect(ctx->nodes[i].dsn, "prereq");
 			res = zodan_remote_query(nconn,
-					"SELECT sub_name, sub_enabled FROM spock.subscription");
+									 "SELECT sub_name, sub_enabled FROM spock.subscription");
 			for (j = 0; j < PQntuples(res); j++)
 			{
 				char	   *en = PQgetvalue(res, j, 1);
@@ -1086,13 +1088,13 @@ zodan_verify_prerequisites(ZodanAddCtx *ctx)
 
 	/* The new node must not already exist locally with subs/repsets. */
 	cnt = zodan_local_count(psprintf(
-		"SELECT count(*) FROM spock.node WHERE node_name = %s",
-		quote_literal_cstr(ctx->new_node_name)));
+									 "SELECT count(*) FROM spock.node WHERE node_name = %s",
+									 quote_literal_cstr(ctx->new_node_name)));
 	if (cnt > 0)
 		ereport(ERROR, (errmsg("new node %s already exists", ctx->new_node_name)));
 
 	cnt = zodan_local_count(
-		"SELECT count(*) FROM spock.subscription");
+							"SELECT count(*) FROM spock.subscription");
 	if (cnt > 0)
 		ereport(ERROR,
 				(errmsg("new node already has subscriptions; it must be a clean node")));
@@ -1149,8 +1151,8 @@ zodan_remote_create_slot(PGconn *conn, const char *slot_name)
 	char	   *lsn;
 
 	exists = zodan_remote_scalar(conn, psprintf(
-		"SELECT count(*) FROM pg_replication_slots WHERE slot_name = %s",
-		quote_literal_cstr(slot_name)));
+												"SELECT count(*) FROM pg_replication_slots WHERE slot_name = %s",
+												quote_literal_cstr(slot_name)));
 	if (exists != NULL)
 	{
 		bool		already = strcmp(exists, "0") != 0;
@@ -1203,17 +1205,17 @@ zodan_wait_source_caughtup(ZodanAddCtx *ctx, const char *origin_node,
 
 	/* The column name is the source node's, not ours: it may predate 6.0.0. */
 	progress_sql = psprintf(
-		"SELECT p.%s "
-		"FROM spock.progress p "
-		"JOIN spock.node n ON n.node_id = p.remote_node_id "
-		"WHERE p.node_id = (SELECT node_id FROM spock.node_info()) "
-		"AND n.node_name = %s",
-		zodan_progress_lsn_column(ctx->src_major, ctx->src_minor,
-								  ctx->src_patch),
-		quote_literal_cstr(origin_node));
+							"SELECT p.%s "
+							"FROM spock.progress p "
+							"JOIN spock.node n ON n.node_id = p.remote_node_id "
+							"WHERE p.node_id = (SELECT node_id FROM spock.node_info()) "
+							"AND n.node_name = %s",
+							zodan_progress_lsn_column(ctx->src_major, ctx->src_minor,
+													  ctx->src_patch),
+							quote_literal_cstr(origin_node));
 
 	ZNOTICE("    - Waiting for source node %s to apply %s changes up to %s",
-		  ctx->src_node_name, origin_node, target_lsn);
+			ctx->src_node_name, origin_node, target_lsn);
 
 	target = zodan_parse_lsn(target_lsn);
 
@@ -1298,12 +1300,12 @@ zodan_local_wait_for_sync_event(ZodanAddCtx *ctx, const char *origin_node,
 	TimestampTz start = GetCurrentTimestamp();
 
 	progress_sql = psprintf(
-		"SELECT p.remote_commit_lsn "
-		"FROM spock.progress p "
-		"JOIN spock.node n ON n.node_id = p.remote_node_id "
-		"WHERE p.node_id = (SELECT node_id FROM spock.node_info()) "
-		"AND n.node_name = %s",
-		quote_literal_cstr(origin_node));
+							"SELECT p.remote_commit_lsn "
+							"FROM spock.progress p "
+							"JOIN spock.node n ON n.node_id = p.remote_node_id "
+							"WHERE p.node_id = (SELECT node_id FROM spock.node_info()) "
+							"AND n.node_name = %s",
+							quote_literal_cstr(origin_node));
 
 	for (;;)
 	{
@@ -1397,13 +1399,13 @@ zodan_create_disabled_subs_and_slots(ZodanAddCtx *ctx)
 
 	/*
 	 * The temp table lives for the whole session, so a retry after a failed
-	 * attach_node in the same session finds the previous attempt's rows.  Start
-	 * from an empty table rather than relying on every later read being for an
-	 * origin this attempt has just refreshed.
+	 * attach_node in the same session finds the previous attempt's rows.
+	 * Start from an empty table rather than relying on every later read being
+	 * for an origin this attempt has just refreshed.
 	 */
 	zodan_local_command(
-		"CREATE TEMP TABLE IF NOT EXISTS temp_sync_lsns ("
-		"origin_node text PRIMARY KEY, sync_lsn text NOT NULL, slot_lsn pg_lsn)");
+						"CREATE TEMP TABLE IF NOT EXISTS temp_sync_lsns ("
+						"origin_node text PRIMARY KEY, sync_lsn text NOT NULL, slot_lsn pg_lsn)");
 	zodan_local_command("TRUNCATE temp_sync_lsns");
 
 	if (zodan_num_other_nodes(ctx) == 0)
@@ -1419,10 +1421,10 @@ zodan_create_disabled_subs_and_slots(ZodanAddCtx *ctx)
 							ctx->src_node_name)));
 
 		zodan_local_command(psprintf(
-			"INSERT INTO temp_sync_lsns (origin_node, sync_lsn) VALUES (%s, %s) "
-			"ON CONFLICT (origin_node) DO UPDATE SET sync_lsn = EXCLUDED.sync_lsn",
-			quote_literal_cstr(ctx->src_node_name),
-			quote_literal_cstr(lsn)));
+									 "INSERT INTO temp_sync_lsns (origin_node, sync_lsn) VALUES (%s, %s) "
+									 "ON CONFLICT (origin_node) DO UPDATE SET sync_lsn = EXCLUDED.sync_lsn",
+									 quote_literal_cstr(ctx->src_node_name),
+									 quote_literal_cstr(lsn)));
 		ZNOTICE("    - 2-node scenario: stored source sync event %s", lsn);
 		pfree(lsn);
 
@@ -1452,10 +1454,10 @@ zodan_create_disabled_subs_and_slots(ZodanAddCtx *ctx)
 		slot_lsn = zodan_remote_create_slot(conn, slot_name);
 		if (slot_lsn != NULL)
 			ZNOTICE("    OK: created replication slot %s on node %s",
-				  slot_name, rec->name);
+					slot_name, rec->name);
 		else
 			ZNOTICE("    - replication slot %s already exists on node %s",
-				  slot_name, rec->name);
+					slot_name, rec->name);
 
 		/* Anchor a real commit past the slot so the catch-up target exists. */
 		catchup_lsn = zodan_remote_sync_event(conn, true);
@@ -1465,32 +1467,35 @@ zodan_create_disabled_subs_and_slots(ZodanAddCtx *ctx)
 					(errmsg("could not trigger sync event on node %s", rec->name)));
 
 		zodan_local_command(psprintf(
-			"INSERT INTO temp_sync_lsns (origin_node, sync_lsn, slot_lsn) "
-			"VALUES (%s, %s, %s) "
-			"ON CONFLICT (origin_node) DO UPDATE "
-			"SET sync_lsn = EXCLUDED.sync_lsn, slot_lsn = EXCLUDED.slot_lsn",
-			quote_literal_cstr(rec->name),
-			quote_literal_cstr(catchup_lsn),
-			slot_lsn ? quote_literal_cstr(slot_lsn) : "NULL"));
+									 "INSERT INTO temp_sync_lsns (origin_node, sync_lsn, slot_lsn) "
+									 "VALUES (%s, %s, %s) "
+									 "ON CONFLICT (origin_node) DO UPDATE "
+									 "SET sync_lsn = EXCLUDED.sync_lsn, slot_lsn = EXCLUDED.slot_lsn",
+									 quote_literal_cstr(rec->name),
+									 quote_literal_cstr(catchup_lsn),
+									 slot_lsn ? quote_literal_cstr(slot_lsn) : "NULL"));
 
 		/* Wait until the source has applied rec's changes up to catchup_lsn. */
 		zodan_wait_source_caughtup(ctx, rec->name, catchup_lsn);
 
-		/* Drop any stale origin so the sub starts clean, then create disabled. */
+		/*
+		 * Drop any stale origin so the sub starts clean, then create
+		 * disabled.
+		 */
 		{
 			PGconn	   *nconn = zodan_connect(ctx->new_node_dsn, "origin");
 
 			zodan_remote_command(nconn, psprintf(
-				"DO $x$ BEGIN "
-				"IF EXISTS (SELECT 1 FROM pg_replication_origin WHERE roname = %s) THEN "
-				"PERFORM pg_replication_origin_drop(%s); END IF; END $x$",
-				quote_literal_cstr(slot_name), quote_literal_cstr(slot_name)));
+												 "DO $x$ BEGIN "
+												 "IF EXISTS (SELECT 1 FROM pg_replication_origin WHERE roname = %s) THEN "
+												 "PERFORM pg_replication_origin_drop(%s); END IF; END $x$",
+												 quote_literal_cstr(slot_name), quote_literal_cstr(slot_name)));
 			zodan_disconnect(nconn);
 		}
 
 		zodan_create_sub(ctx, NULL, sub_name, rec->dsn, false, false, false);
 		ZNOTICE("    OK: created disabled subscription %s (provider %s)",
-			  sub_name, rec->name);
+				sub_name, rec->name);
 
 		if (catchup_lsn)
 			pfree(catchup_lsn);
@@ -1595,13 +1600,13 @@ zodan_wait_sub_ready(ZodanAddCtx *ctx, const char *sub_name)
 	TimestampTz start = GetCurrentTimestamp();
 
 	subid = zodan_local_scalar(psprintf(
-		"SELECT sub_id::text FROM spock.subscription WHERE sub_name = %s",
-		quote_literal_cstr(sub_name)));
+										"SELECT sub_id::text FROM spock.subscription WHERE sub_name = %s",
+										quote_literal_cstr(sub_name)));
 
 	/*
-	 * The subscription was created and committed in phase 5, so it must be here.
-	 * Continuing without it would silently skip the readiness wait and let
-	 * attach_node proceed as if the initial COPY had finished.
+	 * The subscription was created and committed in phase 5, so it must be
+	 * here. Continuing without it would silently skip the readiness wait and
+	 * let attach_node proceed as if the initial COPY had finished.
 	 */
 	if (subid == NULL)
 		ereport(ERROR,
@@ -1615,14 +1620,14 @@ zodan_wait_sub_ready(ZodanAddCtx *ctx, const char *sub_name)
 
 		/*
 		 * SYNC_STATUS_FAILED is not a transient state -- it will never become
-		 * 'y'/'r' on its own -- so check it separately.  Counting it as merely
-		 * "pending" would spin out the whole timeout and then report a timeout
-		 * for what is really a failure with a diagnosable cause.
+		 * 'y'/'r' on its own -- so check it separately.  Counting it as
+		 * merely "pending" would spin out the whole timeout and then report a
+		 * timeout for what is really a failure with a diagnosable cause.
 		 */
 		failed = zodan_local_count(psprintf(
-			"SELECT count(*) FROM spock.local_sync_status "
-			"WHERE sync_subid = %s AND sync_status = 'f'",
-			quote_literal_cstr(subid)));
+											"SELECT count(*) FROM spock.local_sync_status "
+											"WHERE sync_subid = %s AND sync_status = 'f'",
+											quote_literal_cstr(subid)));
 		if (failed > 0)
 			ereport(ERROR,
 					(errmsg("initial synchronization failed for subscription %s",
@@ -1632,9 +1637,9 @@ zodan_wait_sub_ready(ZodanAddCtx *ctx, const char *sub_name)
 					 errhint("Check the subscriber and provider logs for the sync worker error, then retry with spock.detach_node() followed by spock.attach_node().")));
 
 		pending = zodan_local_count(psprintf(
-			"SELECT count(*) FROM spock.local_sync_status "
-			"WHERE sync_subid = %s AND sync_status NOT IN ('y','r','f')",
-			quote_literal_cstr(subid)));
+											 "SELECT count(*) FROM spock.local_sync_status "
+											 "WHERE sync_subid = %s AND sync_status NOT IN ('y','r','f')",
+											 quote_literal_cstr(subid)));
 
 		if (pending == 0)
 		{
@@ -1689,8 +1694,8 @@ zodan_wait_ready_and_advance(ZodanAddCtx *ctx)
 
 		conn = zodan_connect(rec->dsn, "advance");
 		cur_lsn = zodan_remote_scalar(conn, psprintf(
-			"SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = %s",
-			quote_literal_cstr(slot_name)));
+													 "SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = %s",
+													 quote_literal_cstr(slot_name)));
 		if (cur_lsn == NULL)
 		{
 			zodan_disconnect(conn);
@@ -1700,29 +1705,29 @@ zodan_wait_ready_and_advance(ZodanAddCtx *ctx)
 
 		/* Advance to the last commit from rec that the source had applied. */
 		target_lsn = zodan_local_scalar(psprintf(
-			"SELECT p.remote_commit_lsn::text "
-			"FROM spock.progress p JOIN spock.node n ON n.node_id = p.remote_node_id "
-			"WHERE p.node_id = (SELECT node_id FROM spock.node_info()) "
-			"AND n.node_name = %s", quote_literal_cstr(rec->name)));
+												 "SELECT p.remote_commit_lsn::text "
+												 "FROM spock.progress p JOIN spock.node n ON n.node_id = p.remote_node_id "
+												 "WHERE p.node_id = (SELECT node_id FROM spock.node_info()) "
+												 "AND n.node_name = %s", quote_literal_cstr(rec->name)));
 
 		if (target_lsn != NULL)
 		{
 			if (zodan_parse_lsn(target_lsn) > zodan_parse_lsn(cur_lsn))
 			{
 				zodan_remote_command(conn, psprintf(
-					"SELECT pg_replication_slot_advance(%s, %s::pg_lsn)",
-					quote_literal_cstr(slot_name), quote_literal_cstr(target_lsn)));
+													"SELECT pg_replication_slot_advance(%s, %s::pg_lsn)",
+													quote_literal_cstr(slot_name), quote_literal_cstr(target_lsn)));
 
 				/* Advance the origin locally (it lives on the new node). */
 				zodan_local_command(psprintf(
-					"DO $x$ BEGIN "
-					"IF NOT EXISTS (SELECT 1 FROM pg_replication_origin WHERE roname = %s) THEN "
-					"PERFORM pg_replication_origin_create(%s); END IF; "
-					"PERFORM pg_replication_origin_advance(%s, %s::pg_lsn); END $x$",
-					quote_literal_cstr(slot_name), quote_literal_cstr(slot_name),
-					quote_literal_cstr(slot_name), quote_literal_cstr(target_lsn)));
+											 "DO $x$ BEGIN "
+											 "IF NOT EXISTS (SELECT 1 FROM pg_replication_origin WHERE roname = %s) THEN "
+											 "PERFORM pg_replication_origin_create(%s); END IF; "
+											 "PERFORM pg_replication_origin_advance(%s, %s::pg_lsn); END $x$",
+											 quote_literal_cstr(slot_name), quote_literal_cstr(slot_name),
+											 quote_literal_cstr(slot_name), quote_literal_cstr(target_lsn)));
 				ZNOTICE("    OK: advanced slot/origin %s to %s",
-					  slot_name, target_lsn);
+						slot_name, target_lsn);
 			}
 			pfree(target_lsn);
 		}
@@ -1776,37 +1781,37 @@ zodan_sync_repsets_from_source(ZodanAddCtx *ctx)
 	initStringInfo(&missing);
 
 	/*
-	 * 1. Drop the membership AutoDDL derived during the structure restore.  The
-	 * source's memberships are replayed below; keeping both would leave two
-	 * sources of truth.  include_partitions is false throughout so the source's
-	 * rows are mirrored one for one: if the source has a partition in a set, it
-	 * has its own row for it.
+	 * 1. Drop the membership AutoDDL derived during the structure restore.
+	 * The source's memberships are replayed below; keeping both would leave
+	 * two sources of truth.  include_partitions is false throughout so the
+	 * source's rows are mirrored one for one: if the source has a partition
+	 * in a set, it has its own row for it.
 	 */
 	local = zodan_local_pairs(
-		"SELECT rs.set_name, rst.set_reloid::text "
-		"FROM spock.replication_set_table rst "
-		"JOIN spock.replication_set rs ON rs.set_id = rst.set_id "
-		"JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id",
-		mcxt, &nlocal);
+							  "SELECT rs.set_name, rst.set_reloid::text "
+							  "FROM spock.replication_set_table rst "
+							  "JOIN spock.replication_set rs ON rs.set_id = rst.set_id "
+							  "JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id",
+							  mcxt, &nlocal);
 	for (i = 0; i < nlocal; i++)
 	{
 		zodan_local_command(psprintf(
-			"SELECT spock.repset_remove_table(%s, %s::regclass, false)",
-			quote_literal_cstr(local[i].a), quote_literal_cstr(local[i].b)));
+									 "SELECT spock.repset_remove_table(%s, %s::regclass, false)",
+									 quote_literal_cstr(local[i].a), quote_literal_cstr(local[i].b)));
 		cleared++;
 	}
 
 	local = zodan_local_pairs(
-		"SELECT rs.set_name, rss.set_seqoid::text "
-		"FROM spock.replication_set_seq rss "
-		"JOIN spock.replication_set rs ON rs.set_id = rss.set_id "
-		"JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id",
-		mcxt, &nlocal);
+							  "SELECT rs.set_name, rss.set_seqoid::text "
+							  "FROM spock.replication_set_seq rss "
+							  "JOIN spock.replication_set rs ON rs.set_id = rss.set_id "
+							  "JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id",
+							  mcxt, &nlocal);
 	for (i = 0; i < nlocal; i++)
 	{
 		zodan_local_command(psprintf(
-			"SELECT spock.repset_remove_seq(%s, %s::regclass)",
-			quote_literal_cstr(local[i].a), quote_literal_cstr(local[i].b)));
+									 "SELECT spock.repset_remove_seq(%s, %s::regclass)",
+									 quote_literal_cstr(local[i].a), quote_literal_cstr(local[i].b)));
 		cleared++;
 	}
 	if (cleared > 0)
@@ -1835,14 +1840,14 @@ zodan_sync_repsets_from_source(ZodanAddCtx *ctx)
 		const char *trunc = ZBOOL(res, i, 4);
 
 		zodan_local_command(psprintf(
-			"SELECT CASE WHEN EXISTS (SELECT 1 FROM spock.replication_set rs "
-			"                         JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id "
-			"                         WHERE rs.set_name = %s) "
-			"            THEN spock.repset_alter(%s, %s, %s, %s, %s) "
-			"            ELSE spock.repset_create(%s, %s, %s, %s, %s) END",
-			quote_literal_cstr(name),
-			quote_literal_cstr(name), ins, upd, del, trunc,
-			quote_literal_cstr(name), ins, upd, del, trunc));
+									 "SELECT CASE WHEN EXISTS (SELECT 1 FROM spock.replication_set rs "
+									 "                         JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id "
+									 "                         WHERE rs.set_name = %s) "
+									 "            THEN spock.repset_alter(%s, %s, %s, %s, %s) "
+									 "            ELSE spock.repset_create(%s, %s, %s, %s, %s) END",
+									 quote_literal_cstr(name),
+									 quote_literal_cstr(name), ins, upd, del, trunc,
+									 quote_literal_cstr(name), ins, upd, del, trunc));
 	}
 
 	/*
@@ -1856,11 +1861,11 @@ zodan_sync_repsets_from_source(ZodanAddCtx *ctx)
 	zodan_disconnect(conn);
 
 	local = zodan_local_pairs(psprintf(
-		"SELECT rs.set_name, NULL::text "
-		"FROM spock.replication_set rs "
-		"JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id "
-		"WHERE rs.set_name <> ALL (%s::name[])", src_sets),
-		mcxt, &nlocal);
+									   "SELECT rs.set_name, NULL::text "
+									   "FROM spock.replication_set rs "
+									   "JOIN spock.local_node ln ON rs.set_nodeid = ln.node_id "
+									   "WHERE rs.set_name <> ALL (%s::name[])", src_sets),
+							  mcxt, &nlocal);
 	for (i = 0; i < nlocal; i++)
 	{
 		zodan_local_command(psprintf("SELECT spock.repset_drop(%s, true)",
@@ -1892,7 +1897,7 @@ zodan_sync_repsets_from_source(ZodanAddCtx *ctx)
 		char	   *present;
 
 		present = zodan_local_scalar(psprintf(
-			"SELECT to_regclass(%s) IS NOT NULL", quote_literal_cstr(rel)));
+											  "SELECT to_regclass(%s) IS NOT NULL", quote_literal_cstr(rel)));
 		if (present == NULL || present[0] != 't')
 		{
 			appendStringInfo(&missing, "%s%s", missing.len > 0 ? ", " : "", rel);
@@ -1901,8 +1906,8 @@ zodan_sync_repsets_from_source(ZodanAddCtx *ctx)
 		pfree(present);
 
 		zodan_local_command(psprintf(
-			"SELECT spock.repset_add_table(%s, %s::regclass, false, %s, %s, false)",
-			quote_literal_cstr(name), quote_literal_cstr(rel), atts, filter));
+									 "SELECT spock.repset_add_table(%s, %s::regclass, false, %s, %s, false)",
+									 quote_literal_cstr(name), quote_literal_cstr(rel), atts, filter));
 		added++;
 	}
 	zodan_clear(res);
@@ -1925,7 +1930,7 @@ zodan_sync_repsets_from_source(ZodanAddCtx *ctx)
 		char	   *present;
 
 		present = zodan_local_scalar(psprintf(
-			"SELECT to_regclass(%s) IS NOT NULL", quote_literal_cstr(rel)));
+											  "SELECT to_regclass(%s) IS NOT NULL", quote_literal_cstr(rel)));
 		if (present == NULL || present[0] != 't')
 		{
 			appendStringInfo(&missing, "%s%s", missing.len > 0 ? ", " : "", rel);
@@ -1934,8 +1939,8 @@ zodan_sync_repsets_from_source(ZodanAddCtx *ctx)
 		pfree(present);
 
 		zodan_local_command(psprintf(
-			"SELECT spock.repset_add_seq(%s, %s::regclass, false)",
-			quote_literal_cstr(name), quote_literal_cstr(rel)));
+									 "SELECT spock.repset_add_seq(%s, %s::regclass, false)",
+									 quote_literal_cstr(name), quote_literal_cstr(rel)));
 		added_seqs++;
 	}
 	zodan_clear(res);
@@ -1953,9 +1958,9 @@ zodan_sync_repsets_from_source(ZodanAddCtx *ctx)
 
 	/*
 	 * 5. The source is a moving target: somebody running repset_add_table()
-	 * there while the join is in progress would leave the two nodes out of step.
-	 * Re-read the source and fail loudly rather than finish with a node that
-	 * quietly replicates a different set of tables.
+	 * there while the join is in progress would leave the two nodes out of
+	 * step. Re-read the source and fail loudly rather than finish with a node
+	 * that quietly replicates a different set of tables.
 	 *
 	 * Comparing counts would miss a swap (one table removed, another added
 	 * keeps the count the same) and would not notice a changed column list or
@@ -2004,13 +2009,13 @@ zodan_enable_disabled_subs(ZodanAddCtx *ctx)
 		char	   *lsn;
 
 		zodan_local_command(psprintf(
-			"SELECT spock.sub_enable(subscription_name := %s, immediate := true)",
-			quote_literal_cstr(sub_name)));
+									 "SELECT spock.sub_enable(subscription_name := %s, immediate := true)",
+									 quote_literal_cstr(sub_name)));
 		SPI_commit();
 
 		lsn = zodan_local_scalar(psprintf(
-			"SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = %s",
-			quote_literal_cstr(ctx->src_node_name)));
+										  "SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = %s",
+										  quote_literal_cstr(ctx->src_node_name)));
 		if (lsn != NULL)
 		{
 			zodan_local_wait_for_sync_event(ctx, ctx->src_node_name, lsn);
@@ -2032,13 +2037,13 @@ zodan_enable_disabled_subs(ZodanAddCtx *ctx)
 
 		sub_name = zodan_gen_sub_name(rec->name, ctx->new_node_name);
 		zodan_local_command(psprintf(
-			"SELECT spock.sub_enable(subscription_name := %s, immediate := true)",
-			quote_literal_cstr(sub_name)));
+									 "SELECT spock.sub_enable(subscription_name := %s, immediate := true)",
+									 quote_literal_cstr(sub_name)));
 		SPI_commit();
 
 		lsn = zodan_local_scalar(psprintf(
-			"SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = %s",
-			quote_literal_cstr(rec->name)));
+										  "SELECT sync_lsn FROM temp_sync_lsns WHERE origin_node = %s",
+										  quote_literal_cstr(rec->name)));
 		if (lsn != NULL)
 		{
 			zodan_local_wait_for_sync_event(ctx, rec->name, lsn);
@@ -2100,8 +2105,8 @@ zodan_create_new_to_source_sub(ZodanAddCtx *ctx)
 	exists = 0;
 	{
 		char	   *c = zodan_remote_scalar(conn, psprintf(
-			"SELECT count(*) FROM spock.subscription WHERE sub_name = %s",
-			quote_literal_cstr(sub_name)));
+														   "SELECT count(*) FROM spock.subscription WHERE sub_name = %s",
+														   quote_literal_cstr(sub_name)));
 
 		if (c != NULL)
 		{
@@ -2142,9 +2147,9 @@ zodan_remove_subscriptions(const char *target_node_name)
 
 	/* Snapshot every node locally; the target is filtered out in C below. */
 	if (SPI_execute(
-			"SELECT n.node_name, i.if_dsn FROM spock.node n "
-			"JOIN spock.node_interface i ON n.node_id = i.if_nodeid",
-			true, 0) != SPI_OK_SELECT)
+					"SELECT n.node_name, i.if_dsn FROM spock.node n "
+					"JOIN spock.node_interface i ON n.node_id = i.if_nodeid",
+					true, 0) != SPI_OK_SELECT)
 		elog(ERROR, "failed to enumerate cluster nodes");
 
 	nnodes = SPI_processed;
@@ -2163,11 +2168,12 @@ zodan_remove_subscriptions(const char *target_node_name)
 	MemoryContextSwitchTo(old);
 
 	/*
-	 * Remote: drop each surviving node's inbound subscription from the target.
+	 * Remote: drop each surviving node's inbound subscription from the
+	 * target.
 	 *
 	 * Each node is handled inside its own internal subtransaction so that a
-	 * failure to reach or update one node (for example a node that is down) is
-	 * tolerated and does not abort the whole removal, matching the old
+	 * failure to reach or update one node (for example a node that is down)
+	 * is tolerated and does not abort the whole removal, matching the old
 	 * zodremove.sql behavior.  Without the subtransaction, catching the error
 	 * would leave the surrounding transaction in an aborted state.
 	 */
@@ -2177,8 +2183,8 @@ zodan_remove_subscriptions(const char *target_node_name)
 		ResourceOwner subowner = CurrentResourceOwner;
 
 		/*
-		 * volatile: assigned inside PG_TRY and read in PG_CATCH, so the compiler
-		 * must not keep it in a register clobbered by the longjmp.
+		 * volatile: assigned inside PG_TRY and read in PG_CATCH, so the
+		 * compiler must not keep it in a register clobbered by the longjmp.
 		 */
 		PGconn	   *volatile conn = NULL;
 
@@ -2195,15 +2201,15 @@ zodan_remove_subscriptions(const char *target_node_name)
 
 			conn = zodan_connect(others[i].dsn, "rmsub");
 			sub_name = zodan_remote_scalar(conn, psprintf(
-				"SELECT s.sub_name FROM spock.subscription s "
-				"JOIN spock.node n ON n.node_id = s.sub_origin "
-				"WHERE n.node_name = %s", quote_literal_cstr(target_node_name)));
+														  "SELECT s.sub_name FROM spock.subscription s "
+														  "JOIN spock.node n ON n.node_id = s.sub_origin "
+														  "WHERE n.node_name = %s", quote_literal_cstr(target_node_name)));
 			if (sub_name != NULL)
 			{
 				zodan_remote_command(conn, psprintf(
-					"SELECT spock.sub_drop(%s, true)", quote_literal_cstr(sub_name)));
+													"SELECT spock.sub_drop(%s, true)", quote_literal_cstr(sub_name)));
 				ZNOTICE("    OK: dropped subscription %s on node %s",
-					  sub_name, others[i].name);
+						sub_name, others[i].name);
 			}
 			zodan_disconnect(conn);
 			conn = NULL;
@@ -2246,7 +2252,7 @@ zodan_remove_subscriptions(const char *target_node_name)
 			if (names[i] == NULL)
 				continue;
 			zodan_local_command(psprintf(
-				"SELECT spock.sub_drop(%s, true)", quote_literal_cstr(names[i])));
+										 "SELECT spock.sub_drop(%s, true)", quote_literal_cstr(names[i])));
 			ZNOTICE("    OK: dropped local subscription %s", names[i]);
 		}
 	}
@@ -2295,18 +2301,20 @@ spock_attach_node(PG_FUNCTION_ARGS)
 	/* Every previous call must have drained its registries. */
 	Assert(zodan_nconns == 0 && zodan_nresults == 0);
 
-	/* Connect first, so nothing between the context creation and the PG_TRY
-	 * below can throw and orphan the context. */
+	/*
+	 * Connect first, so nothing between the context creation and the PG_TRY
+	 * below can throw and orphan the context.
+	 */
 	SPI_connect_ext(SPI_OPT_NONATOMIC);
 
 	/*
 	 * ctx and everything it points at must survive the SPI_commit() calls
 	 * between phases, so the context cannot live under the SPI procedure
-	 * context.  PortalContext is the right parent: a non-atomic SPI connection
-	 * parents its own contexts there (see spi.c), PreCommit_Portals leaves the
-	 * active portal alone across the commits, and the portal's cleanup releases
-	 * this context for us if argument parsing below or a later phase raises
-	 * before the PG_FINALLY.
+	 * context.  PortalContext is the right parent: a non-atomic SPI
+	 * connection parents its own contexts there (see spi.c),
+	 * PreCommit_Portals leaves the active portal alone across the commits,
+	 * and the portal's cleanup releases this context for us if argument
+	 * parsing below or a later phase raises before the PG_FINALLY.
 	 */
 	mcxt = AllocSetContextCreate(PortalContext != NULL ? PortalContext
 								 : TopMemoryContext,
@@ -2396,7 +2404,7 @@ zodan_verify_detach_target(const char *target_node_name, const char *target_dsn)
 
 	conn = zodan_connect(target_dsn, "detach");
 	remote_sysid = zodan_remote_scalar(conn,
-					"SELECT system_identifier::text FROM pg_control_system()");
+									   "SELECT system_identifier::text FROM pg_control_system()");
 	remote_dbname = zodan_remote_scalar(conn, "SELECT current_database()");
 	zodan_disconnect(conn);
 
@@ -2463,8 +2471,8 @@ spock_detach_node(PG_FUNCTION_ARGS)
 	{
 		/* Phase 1: validate the target node exists and that we are it. */
 		exists = zodan_local_count(psprintf(
-			"SELECT count(*) FROM spock.node WHERE node_name = %s",
-			quote_literal_cstr(target_node_name)));
+											"SELECT count(*) FROM spock.node WHERE node_name = %s",
+											quote_literal_cstr(target_node_name)));
 		if (exists == 0)
 			ereport(ERROR, (errmsg("node %s does not exist", target_node_name)));
 
@@ -2497,7 +2505,7 @@ spock_detach_node(PG_FUNCTION_ARGS)
 				if (sets[i] == NULL)
 					continue;
 				zodan_local_command(psprintf(
-					"SELECT spock.repset_drop(%s, true)", quote_literal_cstr(sets[i])));
+											 "SELECT spock.repset_drop(%s, true)", quote_literal_cstr(sets[i])));
 				ZNOTICE("    OK: dropped replication set %s", sets[i]);
 			}
 		}
@@ -2505,12 +2513,12 @@ spock_detach_node(PG_FUNCTION_ARGS)
 
 		/* Phase 5: drop the node itself. */
 		exists = zodan_local_count(psprintf(
-			"SELECT count(*) FROM spock.node WHERE node_name = %s",
-			quote_literal_cstr(target_node_name)));
+											"SELECT count(*) FROM spock.node WHERE node_name = %s",
+											quote_literal_cstr(target_node_name)));
 		if (exists > 0)
 		{
 			zodan_local_command(psprintf(
-				"SELECT spock.node_drop(%s, true)", quote_literal_cstr(target_node_name)));
+										 "SELECT spock.node_drop(%s, true)", quote_literal_cstr(target_node_name)));
 			ZNOTICE("    OK: dropped node %s", target_node_name);
 		}
 		SPI_commit();
