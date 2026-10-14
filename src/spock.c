@@ -64,6 +64,7 @@
 #include "spock_worker.h"
 #include "spock_output_config.h"
 #include "spock_output_plugin.h"
+#include "spock_antithesis.h"
 #include "spock_exception_handler.h"
 #include "spock_readonly.h"
 #include "spock_shmem.h"
@@ -1511,6 +1512,9 @@ _PG_init(void)
 
 	if (IsBinaryUpgrade)
 		return;
+
+	/* Declare Antithesis assertions (no-op unless built with ANTITHESIS=1) */
+	spock_antithesis_init();
 
 	/* Init shared memory for all subsystems needed it */
 	spock_shmem_init();

@@ -29,6 +29,24 @@ PG_CPPFLAGS += -I$(libpq_srcdir) \
 ifdef SPOCK_RANDOM_DELAYS
 PG_CPPFLAGS += -DSPOCK_RANDOM_DELAYS
 endif
+# Antithesis build (see include/spock_antithesis.h and antithesis/).
+#   ANTITHESIS=1               compile the SDK assertions
+#   ANTITHESIS_SDK_INCLUDE=dir also add coverage instrumentation; dir holds
+#                              antithesis_instrumentation.h. Needs clang.
+# Coverage flags go on every spock.so object except spock_antithesis.o,
+# which defines the coverage hooks and must stay uninstrumented.  No
+# pc-table: it needs a __sanitizer_cov_pcs_init hook that the SDK header
+# does not define, and spock.so then fails to load outside Antithesis.
+# spock_output.so is not instrumented: it would need its own copy of the
+# hooks.
+ifdef ANTITHESIS
+PG_CPPFLAGS += -DUSE_ANTITHESIS
+ifdef ANTITHESIS_SDK_INCLUDE
+PG_CPPFLAGS += -DUSE_ANTITHESIS_COVERAGE -I"$(ANTITHESIS_SDK_INCLUDE)"
+$(filter-out src/spock_antithesis.o, $(OBJS)): CFLAGS += -fsanitize-coverage=trace-pc-guard -g
+SHLIB_LINK += -Wl,--build-id
+endif
+endif
 SHLIB_LINK += $(libpq) $(filter -lintl, $(LIBS))
 ifdef NO_LOG_OLD_VALUE
 PG_CPPFLAGS += -DNO_LOG_OLD_VALUE

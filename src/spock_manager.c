@@ -28,6 +28,7 @@
 
 #include "pgstat.h"
 
+#include "spock_antithesis.h"
 #include "spock_node.h"
 #include "spock_worker.h"
 #include "spock.h"
@@ -205,6 +206,7 @@ spock_manager_main(Datum main_arg)
 
 	elog(LOG, "starting spock database manager for database %s",
 		 get_database_name(MyDatabaseId));
+	SPOCK_ANT_REACHABLE(SPOCK_ANT_MANAGER_STARTED, NULL);
 
 	CommitTransactionCommand();
 
