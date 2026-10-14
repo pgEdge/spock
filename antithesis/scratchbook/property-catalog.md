@@ -1,7 +1,7 @@
 ---
 sut_path: /home/msharp/dev/pgedgea/spock
-commit: 69d9228f5df363761dc3ae6eebf7e2fcfe49b8e5
-updated: 2026-10-13
+commit: f6382688fb99be86238ed37dc3a2325a355eab92
+updated: 2026-10-14
 external_references: []
 ---
 
@@ -1488,18 +1488,17 @@ Evaluation note (2026-10-13): Antithesis may restart a node fresh from its image
 |---|---|
 | **Type** | Liveness |
 | **Property** | After any mix of subset partitions, one-way loss and node pauses, once faults stop, `spock.sync_event()` on every node P is reached on every other member S within a fixed bound. |
-| **Invariant** | In an `eventually_`/`finally_` test command, per ordered pair `CALL spock.wait_for_sync_event(NULL, P, lsn, bound, false)`; `Always(result, "sync barrier P->S completes within bound after faults heal")`. Bound = `wal_sender_timeout` (60 s in the harness) `+ apply_idle_timeout + restart_delay_default + connect_timeout + catch-up margin`. Clock skips continue during quiet periods, so a barrier wait that spans a detected clock jump is re-run rather than scored. |
+| **Invariant** | In an `eventually_`/`finally_` test command, per ordered pair `CALL spock.wait_for_sync_event(NULL, P, lsn, bound, false)`; `Always(result, "sync barrier P->S completes within bound after faults heal")`. Bound = `wal_sender_timeout` (60 s in the harness) `+ apply_idle_timeout + restart_delay_default + connect_timeout + catch-up margin`. Clock skips continue during quiet periods, so a `false` from the wall-clock wait before the workload's monotonic deadline waits again, and a pair that misses the deadline gets one 5 s re-check before it is scored. |
 | **Antithesis Angle** | Partitions that cut one pair while both still reach the third node, one-way loss (old walsender keeps the slot active until `wal_sender_timeout`), silent drops with data in flight (only `apply_idle_timeout` notices), provider pauses. A default mesh does not relay through the third node. |
 | **Why It Matters** | Users are told to wait for connectivity to return; a pair that never resumes is silent while `sub_show_status` says `replicating`. It is also the gate for every data check after a fault phase. |
 
-**Open Questions:**
-
-- What recovery bound does the team consider acceptable after a partition heals? `(needs human input)`
+**Open Questions:** none. Resolved 2026-10-14: the recovery bound is 5 minutes from when faults stop (the team's choice; it matches the derived worst case of about 215 s plus catch-up).
 
 Priority: P1 · Topology: v1 · Faults: partition, one-way loss, pause
 Confidence: medium · Surfaced by: F7 Distributed
 Evidence: properties/mesh-barriers-complete-after-partition-heal.md
 Evaluation note (2026-10-13): with `wal_sender_timeout = 60s` and `spock.apply_idle_timeout = 120s` (raised from about 30 s so an idle link is not cut between walsender keepalives, which come about every `wal_sender_timeout / 2`), the bound is about 60 + 120 + 5 + 30 s plus catch-up margin, roughly 4-5 minutes per quiet period.
+Implemented (2026-10-14): `test/v1/main/eventually_mesh_barriers.py`, one `Always("sync barrier P->S completes within 5 minutes after faults stop")` evaluated per ordered pair (deadline on the workload's monotonic clock; a `false` from the wall-clock wait before the deadline waits again). Details carry each pair's backlog bytes when faults stopped. Writers cap payload at 25 MB per run so catch-up fits the bound. Reach claims: a slot inactive on its provider when faults stopped, every pair checked (no disabled subscription skipped), a barrier needing more than 30 s. Load from `parallel_driver_write_ledger.py` (swarmed writer nodes and transaction sizes). Not yet: n4 pairs (no add_node template), a mid-run check with `ANTITHESIS_STOP_FAULTS`.
 
 ### apply-worker-restarted-within-bound-after-exit — A dead apply worker comes back within a bound
 

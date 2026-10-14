@@ -82,8 +82,11 @@ assertion.
   `wal_sender_timeout` + margin").
 - Superuser `admin`, database `demo`, trust auth, port 5432.
 - Node-side test commands (pg_ctl stop, kill -9 postmaster) can go in
-  `antithesis/test/v1/<template>/`; the node image gets the same tree as the
-  workload image.
+  `antithesis/test/v1/<template>/`, but the node image does not copy the
+  whole tree (a command present in several containers may run in any of
+  them, and node images have no Python). Copy node-side commands into the
+  node stage one by one. Workload commands use `python3.12` (the system
+  `python3` is 3.9 and has neither psycopg nor the SDK).
 
 ## Workload container
 

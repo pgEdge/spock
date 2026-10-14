@@ -129,8 +129,7 @@ Current catalog line: Priority: P1 · Topology: v1 · Faults: partition, one-way
 
 ## Open questions
 
-- What recovery bound does the team consider acceptable after a partition
-  heals? Sets the timeout. `(needs human input)`
+- None open. The recovery bound was resolved 2026-10-14 (see below).
 
 ### Investigation Log
 
@@ -141,7 +140,8 @@ Current catalog line: Priority: P1 · Topology: v1 · Faults: partition, one-way
   `docs/recovery/catastrophic_node_failure.md`, release notes.
 - Found: component timeouts only; no end-to-end target.
 - Not found: any stated recovery time after a partition.
-- Conclusion: `(needs human input)`. The derived bound stays.
+- Conclusion: resolved by the team (2026-10-14): 5 minutes from when
+  faults stop, for every ordered pair.
 
 #### Should the harness keep `wal_sender_timeout` at 60 s or the doc-recommended 5 min?
 
