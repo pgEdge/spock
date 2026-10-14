@@ -5,13 +5,62 @@ replication scenario before creating the Spock extension:
 
 ```sql
 wal_level = 'logical'
-max_worker_processes = 10   # one per database needed on provider node
-                            # one per node needed on subscriber node
-max_replication_slots = 10  # one per node needed on provider node
-max_wal_senders = 10        # one per node needed on provider node
+max_worker_processes = 20   # supervisor + slot sync worker + one per
+                            # database + one per subscription + sync workers,
+                            # and shared with parallel query - see the
+                            # sizing guide
+max_replication_slots = 10  # two per subscriber, per replicated database,
+                            # plus one per physical standby; 10 covers a
+                            # four-node mesh replicating one database
+max_wal_senders = 10        # keep equal to max_replication_slots
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+                            # only on servers that have this parameter; see below
 ```
+
+These values suit a small cluster of two or three nodes replicating a single
+database. Subscriptions - and the workers, walsenders, and slots that follow
+from them - scale with node count *multiplied by* the number of replicated
+databases, so an instance replicating several databases needs proportionally
+more of each. For anything larger, or for an instance hosting several
+databases or other extensions that use background workers, size each parameter
+with the formulas in
+[Sizing Postgres Resources for Spock](sizing.md). All three require a server
+restart to change.
+
+!!! warning "`output_plugin_libraries`"
+
+    A 2026 PostgreSQL security fix (CVE-2026-6471, back-patched to every
+    supported major) added the `output_plugin_libraries` parameter, and a
+    library may no longer be used as an output plugin unless it is listed
+    there. Its default, `'pgoutput, test_decoding'`, does not include
+    `spock_output`, so on such a server logical decoding fails with:
+
+    ```
+    ERROR:  library "spock_output" may not be used as an output plugin
+    ```
+
+    The check runs every time decoding starts, not only when the slot is
+    created, so an established cluster stops replicating after a minor-version
+    upgrade too. Add `spock_output` to the list, keeping the core defaults, as
+    shown above, on every node — including standbys, which need it once
+    promoted.
+
+    Only set the parameter if your server has it. On a PostgreSQL release
+    predating the fix an unrecognised parameter in `postgresql.conf` stops the
+    server from starting at all. To check, run against a server that is up:
+
+    ```sql
+    SELECT current_setting('output_plugin_libraries', true);
+    ```
+
+    A NULL result means the parameter does not exist and must not be set. You
+    can also ask the binary, with no server running:
+
+    ```bash
+    postgres --describe-config | grep '^output_plugin_libraries'
+    ```
 
 After modifying the parameters and restarting the Postgres server with your
 OS-specific restart command, connect with psql and create the Spock
@@ -215,7 +264,7 @@ the upstream server disappears unexpectedly. To disable them add
 For Spock replication, set `wal_sender_timeout` to a conservative value such
 as `5min` (300000ms) on each node in `postgresql.conf`:
 
-```
+```ini
 wal_sender_timeout = '5min'
 ```
 
@@ -234,7 +283,7 @@ the TCP connection alive but stops sending data. The timer resets on any
 received message. Set to `0` to disable and rely solely on TCP keepalive for
 liveness detection. Default: `300` (5 minutes).
 
-```
+```ini
 spock.apply_idle_timeout = 300
 ```
 
@@ -252,7 +301,7 @@ where a node joins in seconds; when catchup legitimately takes minutes or hours,
 the routines fail with a timeout long before the work is done. It can be raised
 for a single operation rather than cluster-wide:
 
-```
+```sql
 SET spock.sync_timeout = '2h';
 CALL spock.add_node(...);
 ```
@@ -262,7 +311,7 @@ that additionally bound each remote probe - so that one unresponsive peer
 cannot consume the entire budget - keep their own, much smaller limit for that
 purpose.
 
-```
+```ini
 spock.sync_timeout = 0
 ```
 
@@ -282,7 +331,7 @@ immediately). Valid range is `0` to `100`. Default: `5`. Changes take
 effect on `SIGHUP` (for example, `SELECT pg_reload_conf()`); a server
 restart is not required.
 
-```
+```ini
 spock.read_retry_count = 5
 ```
 
@@ -292,15 +341,21 @@ Spock creates logical replication slots on each provider node. For high
 availability with a physical standby, these slots must be synchronized to the
 standby so that replication can resume without data loss after a failover.
 
-See [Logical Slot Failover](logical_slot_failover.md) for full setup instructions.
+See [Logical Slot Failover](logical_slot_failover.md) for full setup
+instructions, including a runbook step for clearing
+`synchronized_standby_slots` on the promoted node after a failover.
 
 The behaviour depends on the PostgreSQL version:
 
 | PostgreSQL | Slot sync mechanism | Spock worker |
 |---|---|---|
-| 15, 16 | Spock built-in `spock_failover_slots` worker | Always runs |
+| 15, 16 | Spock built-in `spock_failover_slots` worker | Runs on every node |
 | 17 | Spock worker OR native `sync_replication_slots` | Spock worker yields to native if enabled |
 | 18+ | Native `sync_replication_slots` (required) | Not registered |
+
+Whichever mechanism applies, a slot sync worker is present on every node,
+primary and standby alike, so include one in the worker budget - see
+[Sizing Postgres Resources for Spock](sizing.md).
 
 #### PostgreSQL 17 and Later (Native Slot Sync)
 
@@ -308,25 +363,47 @@ On PostgreSQL 17+, Spock marks every logical slot with the `FAILOVER` flag
 at creation time. PostgreSQL's built-in slotsync worker then synchronizes
 those slots automatically.
 
-On **PostgreSQL 18+**, Spock's own failover worker is not registered. You
-must configure the native mechanism:
+On **PostgreSQL 17**, Spock's worker only yields to native slotsync when you
+set `sync_replication_slots = on` (below). On **PostgreSQL 18+**, Spock's own
+failover worker is not registered, so the native mechanism is required.
+Either way, PostgreSQL's own slot synchronization must be configured.
+
+First create the physical replication slot on the primary. The standby streams
+through it, and its `catalog_xmin` (fed back via `hot_standby_feedback`) is what
+protects the synchronized logical slots from being invalidated:
+
+```sql
+SELECT pg_create_physical_replication_slot('physical_slot_name');
+```
 
 **Primary (`postgresql.conf`):**
 ```ini
+# Hold logical walsenders back until the standby has confirmed the changes.
 synchronized_standby_slots = 'physical_slot_name'
 ```
 
 **Standby (`postgresql.conf`):**
 ```ini
-sync_replication_slots = on
-primary_conninfo = 'host=<primary_host> dbname=<dbname> ...'
-primary_slot_name = 'physical_slot_name'
-hot_standby_feedback = on
+sync_replication_slots = on                      # enable the native slotsync worker
+hot_standby_feedback   = on                      # required; pins the primary's catalog vacuum
+primary_slot_name      = 'physical_slot_name'    # the physical slot created above
+primary_conninfo       = 'host=<primary_host> dbname=<dbname> ...'   # must include dbname
 ```
+
+Only logical slots created with `failover = true` are synchronized. Spock 6.0.0
+sets that flag when it creates a slot, and the upgrade from 5.x sets it on
+existing slots; see
+[Upgrading Spock to 6.0.0](logical_slot_failover.md#upgrading-spock-to-600)
+for any it skips.
 
 After a failover, subscribers only need to update their `host=` in the
 connection string — replication resumes from the last synchronized LSN with
-no data loss.
+no data loss. **However**, if the promoted node has
+`synchronized_standby_slots` set, you must clear or update it first —
+otherwise its walsenders wait forever on the now-orphaned physical slot(s) and
+logical replication to subscribers freezes. See the
+[runbook in Logical Slot Failover](logical_slot_failover.md#runbook-clear-synchronized_standby_slots-after-promotion)
+for when this applies and the exact steps.
 
 #### PostgreSQL 15, 16, and 17 (Spock Built-in Worker)
 
@@ -484,6 +561,29 @@ detail is promoted:
 This option can be set by a superuser via `SET`, or reloaded with the
 `SIGHUP` mechanism (for example, `SELECT pg_reload_conf()`); a server
 restart is not required.
+
+### `spock.non_conflicting_inserts`
+
+`spock.non_conflicting_inserts` is a boolean value (the default is `off`)
+with which you assert that a replicated `INSERT` can never collide with a row
+that already exists locally - because, for example, every node generates keys
+from its own range.
+
+Applying an `INSERT` normally costs two pieces of work that only a possible
+collision justifies: a lookup for the conflicting local row, and a
+speculative insertion that lets the unique indexes report a duplicate instead
+of raising one. When this parameter is `on`, the apply worker skips both and
+inserts the row directly.
+
+Nothing checks the assertion. If a collision does occur, the index raises
+`duplicate key value violates unique constraint`, the transaction is aborted,
+and the outcome is decided by
+[`spock.exception_behaviour`](#spock-exception_behaviour) - the row is not
+resolved by `spock.conflict_resolution` and is not recorded in
+`spock.resolutions`. Leave this parameter `off` unless collisions are
+impossible by design rather than merely rare.
+
+This option can only be set when the postmaster starts.
 
 ### `spock.save_resolutions`
 

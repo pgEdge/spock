@@ -53,7 +53,8 @@ extern int	spock_pause_timeout;
 extern int	spock_sync_timeout;
 extern int	spock_read_retry_count;
 extern bool check_all_uc_indexes;
-extern bool	spock_enable_quiet_mode;
+extern bool non_conflicting_inserts;
+extern bool spock_enable_quiet_mode;
 extern int	log_origin_change;
 extern int	spock_apply_idle_timeout;
 extern int	spock_log_verbosity;
@@ -153,9 +154,11 @@ extern int64 sequence_get_last_value(Oid seqoid);
 
 extern bool in_spock_replicate_ddl_command;
 extern bool in_spock_queue_ddl_command;
+extern bool in_spock_extension_drop;
 extern bool spock_auto_replicate_ddl(const char *query, List *replication_sets,
 									 Oid roleoid, Node *stmt);
 extern bool spock_schema_is_ddl_local(const char *nspname);
+extern void spock_guard_extension_owned_ddl(Node *stmt);
 extern bool name_in_list(List *names, const char *name);
 
 /* spock_readonly.c */
@@ -186,7 +189,7 @@ void		spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *
  * the worker type, etc, prefixed by SPOCK:, in the Valgrind logs. We
  * need to stub it out if we aren't using valgrind.
  */
-pg_attribute_printf(1, 2) pg_attribute_unused() static inline void
+pg_attribute_unused() pg_attribute_printf(1, 2) static inline void
 VALGRIND_PRINTF(const char *format,...)
 {
 }

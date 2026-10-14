@@ -54,8 +54,8 @@ void
 spock_shmem_init(void)
 {
 	/*
-	 * Clean global shared variable pointer. Subsystem-specific pointers
-	 * are cleaned on 'shmem_startup' in corresponding subsystems.
+	 * Clean global shared variable pointer. Subsystem-specific pointers are
+	 * cleaned on 'shmem_startup' in corresponding subsystems.
 	 */
 	SpockCtx = NULL;
 
@@ -74,7 +74,7 @@ spock_shmem_init(void)
 static Size
 spock_ctx_shmem_size(int nworkers)
 {
-	Size	num_bytes = 0;
+	Size		num_bytes = 0;
 
 	num_bytes = offsetof(SpockContext, workers);
 	num_bytes = add_size(num_bytes,
@@ -129,14 +129,13 @@ spock_shmem_request(void)
 static void
 spock_shmem_startup(void)
 {
-	int		nworkers = max_worker_processes;
-	bool	found;
+	int			nworkers = max_worker_processes;
+	bool		found;
 
 	Assert(nworkers > 0);
 
 	/*
-	 * XXX:
-	 * Do we have tests on 0, 1, etc workers allowed?
+	 * XXX: Do we have tests on 0, 1, etc workers allowed?
 	 */
 
 	/* Chain to previous hook first */
@@ -144,8 +143,8 @@ spock_shmem_startup(void)
 		prev_shmem_startup_hook();
 
 	/*
-	 * Acquire AddinShmemInitLock once for all subsystem initialization.
-	 * This avoids multiple lock acquisitions and potential race conditions.
+	 * Acquire AddinShmemInitLock once for all subsystem initialization. This
+	 * avoids multiple lock acquisitions and potential race conditions.
 	 */
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 

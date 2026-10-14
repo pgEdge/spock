@@ -13,7 +13,7 @@ export PG_VERSION="${PG_VERSION:-17}"
 export PG_MAJOR_VERSION="$(echo "$PG_VERSION" | cut -d. -f1)"
 
 export PG_SPOCK_REPO="https://github.com/pgEdge/spock.git"
-export SPOCK_BRANCH="${COMPONENT_BRANCH:-v6.0.0-beta.1}"
+export SPOCK_BRANCH="${COMPONENT_BRANCH:-v6.0.0-beta.2}"
 
 # Upstream version, suffix-stripped (e.g. 6.0.0). Used for the source
 # tarball name, its internal directory, and the RPM Version.

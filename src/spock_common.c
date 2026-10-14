@@ -21,6 +21,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "utils/builtins.h"
+#include "utils/datetime.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -200,6 +201,61 @@ IsIndexUsableForInsertConflict(Relation idxrel)
 }
 
 /*
+ * SpockBuildInsertArbiterIndexes
+ *		List the indexes that can arbitrate an applied INSERT on this relation.
+ *
+ * Every immediate unique index qualifies: any of them can reject the tuple, so
+ * any of them has to be able to report that rather than raise it.  Note this
+ * is not the set spock.check_all_uc_indexes selects -- that GUC picks the
+ * indexes searched when looking for the local row, a different question with a
+ * different answer.
+ *
+ * Deferrable indexes are omitted because ExecInsertIndexTuples() only reports
+ * a speculative conflict for immediate ones.  Invalid indexes are omitted as
+ * core's infer_arbiter_indexes() omits them, although one that is ready for
+ * inserts -- still being built concurrently, or left behind by a failed
+ * build -- does enforce uniqueness: a clash on it is raised rather than
+ * reported, as it was before arbitration.  Exclusion constraints are not
+ * unique indexes, so violating one is raised too.
+ *
+ * The result is palloc'd in the current memory context.
+ */
+List *
+SpockBuildInsertArbiterIndexes(Relation rel)
+{
+	List	   *indexoids;
+	List	   *arbiters = NIL;
+	ListCell   *lc;
+
+	indexoids = RelationGetIndexList(rel);
+
+	foreach(lc, indexoids)
+	{
+		Oid			indexoid = lfirst_oid(lc);
+		HeapTuple	tuple;
+		Form_pg_index index;
+		bool		usable;
+
+		tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "cache lookup failed for index %u", indexoid);
+
+		index = (Form_pg_index) GETSTRUCT(tuple);
+		usable = index->indisunique &&
+			index->indisvalid &&
+			index->indimmediate;
+		ReleaseSysCache(tuple);
+
+		if (usable)
+			arbiters = lappend_oid(arbiters, indexoid);
+	}
+
+	list_free(indexoids);
+
+	return arbiters;
+}
+
+/*
  * Does this unique index treat NULLs as distinct (the default)?
  *
  * For such an index a NULL in any key column means the row can never have a
@@ -230,7 +286,7 @@ SpockIndexNullsAreDistinct(Relation idxrel)
  */
 static bool
 index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
-			 ScanKey skey, int ncols)
+				 ScanKey skey, int ncols)
 {
 	bool		nulls_distinct = SpockIndexNullsAreDistinct(idxrel);
 	int			i;
@@ -289,12 +345,12 @@ index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
 static ExprState *
 SpockPreparePredicateExpr(Relation idxrel, EState *estate)
 {
-	List       *predExprList;
+	List	   *predExprList;
 	ExprState  *result;
 	MemoryContext oldcxt;
 
 	if (heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
-	    return NULL;
+		return NULL;
 
 	oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
 	predExprList = RelationGetIndexPredicate(idxrel);
@@ -302,6 +358,7 @@ SpockPreparePredicateExpr(Relation idxrel, EState *estate)
 	MemoryContextSwitchTo(oldcxt);
 	return result;
 }
+
 /*
  * Check if the predicate matches by evaluating the index predicate on the
  * given tuple slot. This is used for both remote and local tuples.
@@ -359,16 +416,16 @@ SpockRelationFindReplTupleByIndex(EState *estate,
 
 	/*
 	 * Under NULLS DISTINCT (the default), a remote row with a NULL in any of
-	 * this index's key columns can never conflict with an existing row here --
-	 * NULL is never equal to anything, including another NULL -- so skip the
-	 * probe entirely.
+	 * this index's key columns can never conflict with an existing row here
+	 * -- NULL is never equal to anything, including another NULL -- so skip
+	 * the probe entirely.
 	 *
-	 * This is not just an optimization: spock_build_replindex_scan_key() emits
-	 * SK_SEARCHNULL for a NULL key value, which makes the btree return *every*
-	 * row whose key IS NULL.  index_keys_match() below then discards each of
-	 * them, so without this short-circuit every applied insert would run an
-	 * O(rows) scan -- guaranteed to find nothing -- on a unique index over a
-	 * mostly-NULL key column.
+	 * This is not just an optimization: spock_build_replindex_scan_key()
+	 * emits SK_SEARCHNULL for a NULL key value, which makes the btree return
+	 * *every* row whose key IS NULL.  index_keys_match() below then discards
+	 * each of them, so without this short-circuit every applied insert would
+	 * run an O(rows) scan -- guaranteed to find nothing -- on a unique index
+	 * over a mostly-NULL key column.
 	 *
 	 * Under NULLS NOT DISTINCT, NULLs compare equal, so a NULL-keyed row CAN
 	 * conflict; don't short-circuit -- let the scan run and let
@@ -382,7 +439,7 @@ SpockRelationFindReplTupleByIndex(EState *estate,
 		slot_getallattrs(searchslot);
 		for (i = 0; i < IndexRelationGetNumberOfKeyAttributes(idxrel); i++)
 		{
-			int		table_attno = indkey->values[i];
+			int			table_attno = indkey->values[i];
 
 			if (AttributeNumberIsValid(table_attno) &&
 				searchslot->tts_isnull[table_attno - 1])
@@ -668,13 +725,129 @@ write_buf(int fd, const void *buf, size_t nbytes, const char *filename)
 	}
 }
 
+/*
+ * commit_ts_str_has_offset
+ *		Does this commit timestamp text representation carry an explicit UTC
+ *		offset?
+ *
+ *		Uses ParseDateTime(), the same tokeniser timestamptz_in() runs, so that
+ *		this predicate cannot drift away from what the parser actually accepts.
+ *		Hand-rolled scanning was tried first and got the era suffix wrong: ISO
+ *		output for a BC date is "0044-03-15 11:45:16-00:14:44 BC", where the
+ *		offset is not the last field.
+ *
+ *		Only the presence of an offset is decided here.  Whether the value
+ *		denotes a real instant is a separate question, and the caller answers it
+ *		separately; do not fold the two together.
+ */
+static bool
+commit_ts_str_has_offset(const char *s)
+{
+	char		workbuf[MAXDATELEN + MAXDATEFIELDS];
+	char	   *field[MAXDATEFIELDS];
+	int			ftype[MAXDATEFIELDS];
+	int			nf;
+	int			i;
+
+	Assert(s != NULL);
+
+	/*
+	 * Not tokenisable as a datetime at all.  The caller parses before asking,
+	 * so a string that reaches us has already satisfied timestamptz_in() and
+	 * this should not happen; answer no rather than claim an offset we did
+	 * not see. Note the contract is that negative means failure, zero or
+	 * positive success.
+	 */
+	if (ParseDateTime(s, workbuf, sizeof(workbuf), field, ftype,
+					  MAXDATEFIELDS, &nf) < 0)
+		return false;
+
+	/*
+	 * DTK_TZ is a numeric UTC offset.  A zone abbreviation arrives as
+	 * DTK_STRING instead and is deliberately not accepted here: an
+	 * abbreviation is not unique across zones -- CST is China, Cuba and US
+	 * Central -- so it does not pin down an instant even when the reader can
+	 * resolve it.
+	 */
+	for (i = 0; i < nf; i++)
+	{
+		if (ftype[i] == DTK_TZ)
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * str_to_timestamptz
+ *		Parse a commit timestamp that reached us from another node.
+ *
+ *		Deliberately not a general timestamptz parser.  Its only inputs are
+ *		spock.progress.remote_commit_ts and .last_updated_ts, read from a peer
+ *		over libpq, and both are instants stamped by a running server.  A finite
+ *		value bearing an explicit offset is the only thing that can legitimately
+ *		arrive, so everything else is refused rather than interpreted.
+ *
+ *		Peer sessions are started with datestyle=ISO (see spock_connect_base()),
+ *		so the offset should always be there.  If it is not, something between us
+ *		and the peer has changed the representation; timestamptz_in() would then
+ *		quietly resolve the value in the local TimeZone and move the instant, so
+ *		refuse rather than guess.
+ *
+ *		Both checks should be unreachable in a correctly configured cluster.
+ *		They are ereport() and not Assert() on purpose: this string arrives over
+ *		the network, which makes it input to be validated rather than an internal
+ *		invariant, and an Assert would be compiled out of exactly the production
+ *		builds where a mangled value does its damage.
+ *
+ *		Note the order.  Parsing comes first so that a malformed string draws
+ *		timestamptz_in()'s own complaint, which is better than anything we could
+ *		phrase, and so that "infinity" is diagnosed as the non-instant it is
+ *		rather than as a missing time zone.  Checking the offset first looked
+ *		tidier but made the finiteness test unreachable: no spelling of infinity
+ *		carries an offset, so it was always rejected one branch earlier, under a
+ *		message that would have sent the reader hunting through the peer's
+ *		DateStyle for nothing.  Parsing a zone-less value here is harmless; the
+ *		result is discarded before anyone can use it.
+ */
 TimestampTz
 str_to_timestamptz(const char *s)
 {
-	return DatumGetTimestampTz(DirectFunctionCall3(timestamptz_in,
-												   CStringGetDatum(s),
-												   ObjectIdGetDatum(InvalidOid),
-												   Int32GetDatum(-1)));
+	TimestampTz result;
+
+	result = DatumGetTimestampTz(DirectFunctionCall3(timestamptz_in,
+													 CStringGetDatum(s),
+													 ObjectIdGetDatum(InvalidOid),
+													 Int32GetDatum(-1)));
+
+	/*
+	 * Rejects infinity and -infinity, which no server stamps a commit with.
+	 * Letting one through would put INT64_MAX or INT64_MIN into
+	 * SpockApplyProgress and from there into spock.progress, where every lag
+	 * figure and every prev_remote_ts comparison derived from it turns into
+	 * nonsense.  spock_sync.c already Asserts IS_VALID_TIMESTAMP on the
+	 * result; this makes the same check hold in production builds, at the one
+	 * place all such values pass through.
+	 */
+	if (!IS_VALID_TIMESTAMP(result))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_DATETIME_FORMAT),
+				 errmsg("commit timestamp \"%s\" received from a peer node is not a finite instant",
+						s)));
+
+	if (!commit_ts_str_has_offset(s))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_DATETIME_FORMAT),
+				 errmsg("commit timestamp \"%s\" received from a peer node carries no time zone",
+						s),
+				 errdetail("A commit timestamp denotes an absolute instant; "
+						   "interpreting this one in the local time zone would "
+						   "shift it."),
+				 errhint("The peer session is expected to run with "
+						 "datestyle=ISO, which Spock requests when it "
+						 "connects.")));
+
+	return result;
 }
 
 XLogRecPtr

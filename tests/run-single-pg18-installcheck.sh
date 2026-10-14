@@ -83,7 +83,22 @@ DBNAME=regression
 DBUSER=regression
 TARGET_NODE=n1   # node we run `make installcheck` against
 
-PG_GIT_REMOTES="https://git.postgresql.org/git/postgresql.git https://github.com/postgres/postgres.git"
+# Remotes to fetch PostgreSQL from, in order.
+#
+# GitHub first, git.postgresql.org as the fallback.  Two reasons:
+#
+#   - git.postgresql.org is community infrastructure serving a full-history
+#     clone of a large repository; a CI rig that rebuilds several majors has
+#     no business being its heaviest caller when an official mirror exists.
+#   - tests/resolve-pg-ref.sh already resolves `tag` specs against GitHub by
+#     default.  With the old order the rig resolved a tag on one host and
+#     fetched it from another, which is precisely the split
+#     _do_clone_pg warns about: a tag not yet propagated to the second host
+#     fails the fetch for a reason that has nothing to do with the build.
+#
+# Set PG_GIT_REMOTE to put a private or internal mirror ahead of both; it is
+# honoured by resolve-pg-ref.sh too, so resolution and fetch stay on one host.
+PG_GIT_REMOTES="https://github.com/postgres/postgres.git https://git.postgresql.org/git/postgresql.git"
 # Each remote is tried PG_CLONE_ATTEMPTS times before moving to the next one.
 # A pack transfer dropped mid-stream ("early EOF", "RPC failed; curl 56") is
 # almost always transient, so an immediate retry is the cheapest cure; only
@@ -281,9 +296,10 @@ _do_clone_pg_once() {
 # The fetch is its own reachability test.  Probing with `git ls-remote HEAD`
 # first and then committing to whichever remote answered does not work: a
 # remote can serve that cheap request and still drop the connection part-way
-# through the real pack transfer, which is precisely how git.postgresql.org
-# fails from CI.  Selecting on the probe means the fallback mirror is never
-# reached on the one occasion it would have helped.
+# through the real pack transfer.  Selecting on the probe means the fallback
+# is never reached on the one occasion it would have helped.  That is a
+# property of large pack transfers over flaky links rather than of any one
+# host, so it applies whichever remote PG_GIT_REMOTES lists first.
 #
 # Every attempt reports itself into the phase log, so a run that eventually
 # succeeds still shows which remote it had to fall back to.
@@ -485,7 +501,12 @@ init_node() {
 		max_replication_slots = 32
 		max_wal_senders = 32
 
-		log_min_messages = 'log'
+		# 'warning', not 'log': log_min_messages orders severities
+		# ... WARNING, ERROR, LOG, FATAL, PANIC, so LOG sits above ERROR and
+		# 'log' drops every ERROR and WARNING from the server log -- exactly
+		# the lines a failing apply worker needs to be diagnosed by.
+		log_min_messages = 'warning'
+		log_min_error_statement = 'error'
 		log_statement = 'none'
 		logging_collector = off
 

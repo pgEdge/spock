@@ -48,9 +48,12 @@
 
 typedef enum ReconcileResult
 {
-	RECONCILE_FILE_IN_SYNC,		/* file_lsn == origin_lsn; recovery scan can skip */
-	RECONCILE_FILE_STALE,		/* file_lsn <  origin_lsn; recovery scan needed */
-	RECONCILE_FILE_ANOMALY,		/* file_lsn >  origin_lsn; recovery scan needed */
+	RECONCILE_FILE_IN_SYNC,		/* file_lsn == origin_lsn; recovery scan can
+								 * skip */
+	RECONCILE_FILE_STALE,		/* file_lsn <  origin_lsn; recovery scan
+								 * needed */
+	RECONCILE_FILE_ANOMALY,		/* file_lsn >  origin_lsn; recovery scan
+								 * needed */
 	RECONCILE_FILE_ABSENT		/* no entry was loaded; recovery scan needed */
 } ReconcileResult;
 
@@ -69,15 +72,15 @@ static void recover_progress_timestamps_from_commit_ts(SpockGroupEntry *entry,
 void
 spock_init_progress_state(XLogRecPtr origin_lsn)
 {
-	ReconcileResult		result;
-	SpockGroupKey		key;
-	SpockGroupEntry	   *entry;
-	bool				found;
+	ReconcileResult result;
+	SpockGroupKey key;
+	SpockGroupEntry *entry;
+	bool		found;
 
 	/*
-	 * Defense in depth: reconcile_progress_with_origin returns ABSENT on
-	 * NULL shmem rather than dereferencing it, but the rest of this function
-	 * does dereference SpockCtx/SpockGroupHash. Mirror the guard so the
+	 * Defense in depth: reconcile_progress_with_origin returns ABSENT on NULL
+	 * shmem rather than dereferencing it, but the rest of this function does
+	 * dereference SpockCtx/SpockGroupHash. Mirror the guard so the
 	 * caller-visible contract is self-consistent.
 	 */
 	if (!SpockCtx || !SpockGroupHash)
@@ -118,15 +121,13 @@ spock_init_progress_state(XLogRecPtr origin_lsn)
 	{
 		/*
 		 * The apply worker overwrites replorigin_session_origin per-message
-		 * with the publisher's spock node id (handle_origin) and that value is
-		 * what pg_commit_ts records for applied xacts on the subscriber --
+		 * with the publisher's spock node id (handle_origin) and that value
+		 * is what pg_commit_ts records for applied xacts on the subscriber --
 		 * NOT the local subscription's roident. Filter the scan on
 		 * MySubscription->origin->id so we match the recorded entries.
 		 *
-		 * Limitation: this filter is not subscription-unique. Sibling subs to
-		 * the same publisher, or a dropped/recreated sub with old commits
-		 * still in the 1M-xid window, can contribute to running_max_ts.
-		 * Forensic-only impact; parallel-apply rework will revisit.
+		 * This origin filter is neither subscription-unique nor inclusive of
+		 * forwarded commits, so recovery is approximate.
 		 */
 		recover_progress_timestamps_from_commit_ts(entry,
 												   (RepOriginId) MySubscription->origin->id);
@@ -149,10 +150,10 @@ spock_init_progress_state(XLogRecPtr origin_lsn)
 static ReconcileResult
 reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 {
-	SpockGroupKey	key;
+	SpockGroupKey key;
 	SpockGroupEntry *entry;
-	bool			found;
-	ReconcileResult	result;
+	bool		found;
+	ReconcileResult result;
 
 	if (!SpockGroupHash || !SpockCtx)
 	{
@@ -182,10 +183,10 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 	{
 		/*
 		 * New entry: hash_search already copied the key into
-		 * entry->progress.key.  Reset the rest via the same helper that
-		 * the hash insert path uses, then position the LSN fields at
-		 * origin_lsn so this worker starts from the durable origin
-		 * position and the insert >= commit invariant holds.
+		 * entry->progress.key.  Reset the rest via the same helper that the
+		 * hash insert path uses, then position the LSN fields at origin_lsn
+		 * so this worker starts from the durable origin position and the
+		 * insert >= commit invariant holds.
 		 */
 		spock_init_progress_fields(&entry->progress);
 		entry->progress.remote_commit_lsn = origin_lsn;
@@ -215,13 +216,14 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 		entry->progress.remote_commit_ts = 0;
 		entry->progress.prev_remote_ts = 0;
 		entry->progress.last_updated_ts = 0;
+
 		/*
-		 * Preserve the invariant remote_insert_lsn >= remote_commit_lsn.
-		 * If we only advance commit_lsn, later calls to
-		 * progress_update_struct will assert-fail. The publisher's forced
-		 * keepalive on reconnect will refresh remote_insert_lsn to a
-		 * current value; until then, pinning it to origin_lsn is correct
-		 * (any prior commit has necessarily already been inserted).
+		 * Preserve the invariant remote_insert_lsn >= remote_commit_lsn. If
+		 * we only advance commit_lsn, later calls to progress_update_struct
+		 * will assert-fail. The publisher's forced keepalive on reconnect
+		 * will refresh remote_insert_lsn to a current value; until then,
+		 * pinning it to origin_lsn is correct (any prior commit has
+		 * necessarily already been inserted).
 		 */
 		if (entry->progress.remote_insert_lsn < origin_lsn)
 			entry->progress.remote_insert_lsn = origin_lsn;
@@ -233,11 +235,12 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 	{
 		/*
 		 * Anomaly: file ahead of origin.  Most likely cause is operator
-		 * intervention on the replication origin (e.g. pg_replication_origin_advance
-		 * to roll back) or filesystem corruption.  We trust origin because that
-		 * is the value Postgres will use for incoming WAL acknowledgements; the
-		 * file's values are recorded in the log so an operator can recover them
-		 * after the fact if the trust-origin choice turns out to be wrong.
+		 * intervention on the replication origin (e.g.
+		 * pg_replication_origin_advance to roll back) or filesystem
+		 * corruption.  We trust origin because that is the value Postgres
+		 * will use for incoming WAL acknowledgements; the file's values are
+		 * recorded in the log so an operator can recover them after the fact
+		 * if the trust-origin choice turns out to be wrong.
 		 */
 		elog(WARNING,
 			 "SPOCK %s: reconcile: file LSN %X/%X ahead of origin %X/%X; trusting origin "
@@ -272,16 +275,21 @@ reconcile_progress_with_origin(XLogRecPtr origin_lsn)
 /*
  * recover_progress_timestamps_from_commit_ts
  *
- * After reconcile detects that resource.dat is stale (or absent) for this
- * origin, scan pg_commit_ts backward from the latest xid to recover the
- * most-recent remote_commit_ts for this origin. Restores accurate
- * post-crash values in the spock.progress view; the recovered values are
- * also intended to be useful for the planned parallel-apply rework.
+ * Scan pg_commit_ts backward to approximate the remote_commit_ts high-water
+ * mark after stale or absent file recovery. Pair last_updated_ts with it.
+ *
+ * Leave prev_remote_ts unset: concurrent xid order can differ from commit
+ * order, and forwarded commits use another origin, so any reconstruction
+ * here is a guess, not an approximation like remote_commit_ts's. 0 is safe
+ * -- it can never coincidentally equal a real required_commit_ts, so a
+ * worker only ever waits longer than necessary; a wrong guess could match
+ * by coincidence and let a worker commit out of order. Recovering this
+ * token correctly requires durable stream-order data.
  *
  * Termination: stop after observing SPOCK_TS_RECOVERY_MIN_SEEN_PER_ORIGIN
- * commits for this origin (any older commit is guaranteed to have a smaller
- * commit_ts under realistic concurrency widths) or after scanning
- * SPOCK_TS_RECOVERY_SCAN_LIMIT total xids.
+ * commits for this origin or after scanning SPOCK_TS_RECOVERY_SCAN_LIMIT total
+ * xids. The first limit is a bounded-work heuristic: clock skew and forwarding
+ * mean an older commit is not guaranteed to have a smaller origin timestamp.
  *
  * Caller must have ensured the entry exists in SpockGroupHash (reconcile
  * does this).
@@ -290,10 +298,10 @@ static void
 recover_progress_timestamps_from_commit_ts(SpockGroupEntry *entry,
 										   RepOriginId target_origin)
 {
-	TransactionId	xid_high;
-	TimestampTz		running_max_ts = 0;
-	int				seen_count = 0;
-	int64			total_scanned = 0;
+	TransactionId xid_high;
+	TimestampTz running_max_ts = 0;
+	int			seen_count = 0;
+	int64		total_scanned = 0;
 
 	xid_high = ReadNextTransactionId();
 	if (TransactionIdPrecedes(xid_high, FirstNormalTransactionId + 1))
@@ -307,9 +315,9 @@ recover_progress_timestamps_from_commit_ts(SpockGroupEntry *entry,
 	while (seen_count < SPOCK_TS_RECOVERY_MIN_SEEN_PER_ORIGIN
 		   && total_scanned < SPOCK_TS_RECOVERY_SCAN_LIMIT)
 	{
-		TransactionId	xid_low;
-		TransactionId	xid;
-		int64			batch_count;
+		TransactionId xid_low;
+		TransactionId xid;
+		int64		batch_count;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -324,13 +332,13 @@ recover_progress_timestamps_from_commit_ts(SpockGroupEntry *entry,
 
 		for (xid = xid_low; TransactionIdPrecedes(xid, xid_high + 1); xid++)
 		{
-			TimestampTz		ts;
-			RepOriginId		origin;
+			TimestampTz ts;
+			RepOriginId origin;
 
 			if (!TransactionIdGetCommitTsData(xid, &ts, &origin))
-				continue;					/* aborted, vacuumed, or no commit_ts */
+				continue;		/* aborted, vacuumed, or no commit_ts */
 			if (origin != target_origin)
-				continue;					/* local writes / other origins */
+				continue;		/* local writes / other origins */
 
 			seen_count++;
 			if (ts > running_max_ts)
@@ -340,7 +348,7 @@ recover_progress_timestamps_from_commit_ts(SpockGroupEntry *entry,
 		total_scanned += batch_count;
 
 		if (xid_low == FirstNormalTransactionId)
-			break;						/* wraparound floor */
+			break;				/* wraparound floor */
 
 		xid_high = xid_low - 1;
 	}
@@ -351,7 +359,7 @@ recover_progress_timestamps_from_commit_ts(SpockGroupEntry *entry,
 		if (entry->progress.remote_commit_ts < running_max_ts)
 		{
 			entry->progress.remote_commit_ts = running_max_ts;
-			entry->progress.prev_remote_ts = running_max_ts;
+
 			/*
 			 * Local apply time isn't recoverable post-crash. Use
 			 * remote_commit_ts as a lower bound; refreshes on the next

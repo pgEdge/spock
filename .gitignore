@@ -21,3 +21,9 @@ tmp/
 # Deliberately not dot-prefixed so the directory is visible in Finder / ls
 # and easy to inspect.
 single-pg18-installcheck/
+
+# Cluster-upgrade test rig (tests/run-cluster-upgrade.sh).  Holds a PG clone
+# plus install per version under test, two Spock source trees, a PGDATA dir per
+# node per version, logs and reports; tens of gigabytes.  Always ignored --
+# re-create by running the script.
+cluster-upgrade/

@@ -1,0 +1,308 @@
+#
+# Build Spock with -Werror
+#
+# Compiles Spock against every supported PostgreSQL major with warnings
+# promoted to errors.  Only the build is checked here; the test workflows
+# build Spock without -Werror, so a new warning fails this one job with a
+# clear cause instead of hiding the results of a test run.
+#
+# The matrix covers every build switch Spock's code branches on.  Switches
+# that live in PostgreSQL's pg_config.h or Makefile.global need a PostgreSQL
+# build of their own, so they form the matrix axes:
+#
+#   cc      gcc and clang produce different warning sets, and Spock carries
+#           compiler-specific code (pg_fallthrough, spock_fe.c).  PostgreSQL
+#           is built with the same compiler, so the CFLAGS PGXS hands to
+#           Spock were probed against the compiler that receives them.
+#
+#   config  stock: plain configure (-O2), the configuration packagers use.
+#           full:  --enable-cassert --with-lz4, plus --enable-injection-points
+#           on PG 17 and later, mirroring the Docker test builds.
+#           Code under USE_ASSERT_CHECKING and USE_LZ4 only compiles in
+#           "full", while variables used only inside Assert() turn into
+#           unused-variable warnings only in "stock".  Both use -O2, which
+#           enables the flow-sensitive warnings (maybe-uninitialized and
+#           friends) that the -O0 Docker builds never see.
+#
+# Switches that are Spock make variables need no PostgreSQL rebuild, so each
+# job compiles Spock several times against the one installation: plain,
+# with SPOCK_RANDOM_DELAYS and with NO_LOG_OLD_VALUE.  Together with the
+# config axis this compiles all three branches of spock_injection.h: none
+# (stock), injection points (full, PG 17+) and random delays.
+#
+# A weekly run catches warnings that appear without a change to Spock: a new
+# PostgreSQL release picked up by tests/resolve-pg-ref.sh, or a newer
+# compiler on the runner image.
+#
+# The gcc problem matcher turns each diagnostic into an annotation, so it
+# shows up on the offending line in the PR's "Files changed" tab.  clang
+# prints diagnostics in the same format.
+#
+# The PostgreSQL installation is cached; Spock never is.  Spock is the code
+# under check, so every run compiles it from the checkout after make clean.
+# The cache key names everything the installation is built from, and a key
+# is only ever restored on an exact match (no restore-keys), so a change in
+# any of these inputs means a fresh PostgreSQL build:
+#
+#   - the commit the PostgreSQL ref resolves to, not the ref name: a branch
+#     moves and a new minor release changes what "tag" resolves to, while
+#     the source is then fetched by that very commit, so the key and the
+#     build cannot disagree;
+#   - the Spock patches for this major, by name and content;
+#   - the configure options;
+#   - the compiler version, as the compiler reports it (this includes the
+#     distribution's package revision).  configure probes the compiler for
+#     warning flags and PGXS hands them on to Spock, so an installation
+#     built by an older compiler would quietly switch off warnings the new
+#     one supports;
+#   - the libc6-dev version, since configure records what the C library
+#     offers in pg_config.h, which Spock compiles against;
+#   - the list of build packages, but not their versions: configure only
+#     checks whether they are there, and Spock reads the headers of ICU,
+#     lz4 and the rest from the system when it compiles, not from the
+#     cache, so a security update to one of them needs no rebuild;
+#   - the runner image OS and architecture;
+#   - PG_CACHE_EPOCH, bumped by hand to drop every cached build at once.
+#
+# The installation is saved right after it builds, before Spock compiles,
+# so a Spock warning does not cost the next run a PostgreSQL rebuild.  A
+# manual run can bypass the cache with the rebuild-postgres input.
+#
+
+name: Build with -Werror
+run-name: Compile spock with warnings as errors
+
+on:
+  workflow_dispatch:
+    inputs:
+      rebuild-postgres:
+        description: Ignore cached PostgreSQL builds and compile them again
+        type: boolean
+        default: false
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 22 * * 0'  # Sunday, 22:00 (UTC)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-werror-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # Explicit shell: GitHub then runs with -eo pipefail.
+    shell: bash
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        pgver: [15, 16, 17, 18, 19]
+        cc: [gcc, clang]
+        config: [stock, full]
+
+    name: PG ${{ matrix.pgver }} ${{ matrix.cc }} ${{ matrix.config }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CC: ${{ matrix.cc }}
+      PG_REMOTE: https://github.com/postgres/postgres.git
+      # Bump to invalidate every cached PostgreSQL build at once.
+      PG_CACHE_EPOCH: 1
+      # Packages PostgreSQL is built against; the list, not the versions, is
+      # part of the cache key.
+      BUILD_DEPS: >-
+        build-essential clang bison flex pkg-config
+        libicu-dev libreadline-dev zlib1g-dev liblz4-dev
+
+    steps:
+      # Checked out at the workspace root, so the relative paths the compiler
+      # prints (src/spock_apply.c) match repository paths for the annotations.
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          # shellcheck disable=SC2086  # word splitting of the list is wanted
+          sudo apt-get install -y --no-install-recommends $BUILD_DEPS
+
+      # Everything the PostgreSQL installation depends on goes into the key;
+      # see the header comment.  The paths are set here rather than in the
+      # job env so that the cached path is a plain absolute one, without
+      # the ".." that github.workspace would need.
+      - name: Compute PostgreSQL build key
+        id: key
+        run: |
+          WORKROOT=$(realpath -m "$GITHUB_WORKSPACE/..")
+          echo "PG_PREFIX=$WORKROOT/pg-install" >> "$GITHUB_ENV"
+          echo "PG_SRCDIR=$WORKROOT/postgres" >> "$GITHUB_ENV"
+
+          # Pin the ref to the commit it names right now.
+          PG_REF=$(tests/resolve-pg-ref.sh "${{ matrix.pgver }}")
+          if printf '%s' "$PG_REF" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            PG_COMMIT=$PG_REF
+          elif printf '%s' "$PG_REF" | grep -Eq '^[0-9a-fA-F]+$'; then
+            echo "::error::pg${{ matrix.pgver }}_ref is an abbreviated SHA ($PG_REF); pin the full 40-character SHA"
+            exit 1
+          else
+            refs=$(git ls-remote "$PG_REMOTE" \
+                     "refs/heads/$PG_REF" "refs/tags/$PG_REF")
+            if [ "$(printf '%s\n' "$refs" | grep -c .)" -ne 1 ]; then
+              echo "::error::expected exactly one remote ref for $PG_REF, got:"
+              printf '%s\n' "$refs"
+              exit 1
+            fi
+            PG_COMMIT=$(printf '%s' "$refs" | cut -f1)
+          fi
+          echo "PG ${{ matrix.pgver }}: $PG_REF -> $PG_COMMIT"
+
+          CONFIGURE_OPTS=""
+          if [ "${{ matrix.config }}" = "full" ]; then
+            CONFIGURE_OPTS="--enable-cassert --with-lz4"
+            # Injection points first appeared in PG 17.
+            if [ "${{ matrix.pgver }}" -ge 17 ]; then
+              CONFIGURE_OPTS="$CONFIGURE_OPTS --enable-injection-points"
+            fi
+          fi
+
+          # Same file set, in the same order, as the step that applies them.
+          export LC_ALL=C
+          PATCH_DIR="$GITHUB_WORKSPACE/patches/${{ matrix.pgver }}"
+          patches=none
+          if [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR")" ]; then
+            patches=$(cd "$PATCH_DIR" && sha256sum -- * | sha256sum | cut -c1-16)
+          fi
+
+          # The compiler and libc versions, and the names of the other build
+          # packages; see the header comment for why not their versions.
+          # shellcheck disable=SC2086
+          toolchain=$({
+            "$CC" --version
+            dpkg-query -W -f='${Package} ${Version}\n' libc6-dev
+            printf '%s\n' $BUILD_DEPS | sort
+          } | sha256sum | cut -c1-16)
+
+          opts=$(printf '%s' "$CONFIGURE_OPTS" | sha256sum | cut -c1-16)
+
+          KEY="werror-pg-e${PG_CACHE_EPOCH}-${ImageOS:-unknown}-${RUNNER_ARCH}"
+          KEY="$KEY-pg${{ matrix.pgver }}-${PG_COMMIT}-${CC}-${{ matrix.config }}"
+          KEY="$KEY-o${opts}-p${patches}-t${toolchain}"
+          echo "cache key: $KEY"
+
+          {
+            echo "PG_COMMIT=$PG_COMMIT"
+            echo "PG_CONFIGURE_OPTS=$CONFIGURE_OPTS"
+            echo "PG_BUILD_KEY=$KEY"
+          } >> "$GITHUB_ENV"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      # Exact key only: no restore-keys, so nothing built from other inputs
+      # can be restored.
+      - name: Restore cached PostgreSQL build
+        id: pg-cache
+        if: ${{ !inputs.rebuild-postgres }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.PG_PREFIX }}
+          key: ${{ steps.key.outputs.key }}
+
+      # Fetched by the commit that went into the key, so a ref moving in the
+      # meantime cannot put a different source under that key.
+      - name: Fetch PostgreSQL source
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        run: |
+          git init "$PG_SRCDIR"
+          git -C "$PG_SRCDIR" remote add origin "$PG_REMOTE"
+          git -C "$PG_SRCDIR" fetch --depth 1 origin "$PG_COMMIT"
+          git -C "$PG_SRCDIR" checkout --detach FETCH_HEAD
+
+      - name: Apply spock patches
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        run: |
+          PATCH_DIR="${GITHUB_WORKSPACE}/patches/${{ matrix.pgver }}"
+          if [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR")" ]; then
+            cd "$PG_SRCDIR"
+            for p in "$PATCH_DIR"/*; do
+              echo "Applying $(basename "$p")"
+              patch -p1 < "$p"
+            done
+          else
+            echo "No spock patches for PG ${{ matrix.pgver }}; using vanilla source"
+          fi
+
+      - name: Configure, build, install PostgreSQL
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        run: |
+          cd "$PG_SRCDIR"
+          read -ra CONFIGURE_OPTS <<< "$PG_CONFIGURE_OPTS"
+          CONFIGURE_OPTS=(--prefix="$PG_PREFIX" "${CONFIGURE_OPTS[@]}")
+          echo "configure ${CONFIGURE_OPTS[*]}"
+          ./configure "${CONFIGURE_OPTS[@]}"
+          make -j"$(nproc)" -s
+          make install -s
+          printf '%s\n' "$PG_BUILD_KEY" > "$PG_PREFIX/.spock-ci-build-key"
+
+      # Saved before Spock compiles, so a Spock warning that fails the job
+      # does not throw the PostgreSQL build away.
+      - name: Save PostgreSQL build to cache
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.PG_PREFIX }}
+          key: ${{ steps.key.outputs.key }}
+
+      # Runs on both paths.  The stamp check guards against an installation
+      # that does not come from this key's build.
+      - name: Check PostgreSQL installation
+        id: pg
+        run: |
+          stamp=$(cat "$PG_PREFIX/.spock-ci-build-key" 2>/dev/null || true)
+          if [ "$stamp" != "$PG_BUILD_KEY" ]; then
+            echo "::error::PostgreSQL installation was built for '${stamp:-nothing}', expected '$PG_BUILD_KEY'"
+            exit 1
+          fi
+          version=$("$PG_PREFIX/bin/pg_config" --version)
+          echo "$version (commit $PG_COMMIT)"
+          major=$(printf '%s' "$version" | sed -E 's/^PostgreSQL ([0-9]+).*/\1/')
+          if [ "$major" != "${{ matrix.pgver }}" ]; then
+            echo "::error::expected PostgreSQL ${{ matrix.pgver }}, found: $version"
+            exit 1
+          fi
+          echo "$PG_PREFIX/bin" >> "$GITHUB_PATH"
+
+      - name: Register problem matcher
+        run: echo "::add-matcher::.github/gcc-problem-matcher.json"
+
+      # COPT is appended to CFLAGS by PGXS, so it reaches every object,
+      # spock_output.o included.  -k keeps going after the first failing
+      # file, so a single run reports every warning.  The later variants
+      # run even when an earlier one fails, as long as PostgreSQL built,
+      # so one run reports the warnings of every variant.
+      - name: Build spock
+        if: ${{ !cancelled() && steps.pg.outcome == 'success' }}
+        run: |
+          make clean
+          make -k -j"$(nproc)" COPT=-Werror
+
+      - name: Build spock with SPOCK_RANDOM_DELAYS
+        if: ${{ !cancelled() && steps.pg.outcome == 'success' }}
+        run: |
+          make clean
+          make -k -j"$(nproc)" COPT=-Werror SPOCK_RANDOM_DELAYS=1
+
+      - name: Build spock with NO_LOG_OLD_VALUE
+        if: ${{ !cancelled() && steps.pg.outcome == 'success' }}
+        run: |
+          make clean
+          make -k -j"$(nproc)" COPT=-Werror NO_LOG_OLD_VALUE=1

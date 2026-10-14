@@ -71,10 +71,10 @@ append_row_json(StringInfo buf, SpockRelation *rel,
 	appendStringInfoChar(buf, '{');
 
 	/*
-	 * Build the set of local attnums that are part of the primary key
-	 * index.  We deliberately use NoLock here - the apply worker
-	 * already holds a row-level lock on the user relation, and we are
-	 * only inspecting the in-memory index metadata.
+	 * Build the set of local attnums that are part of the primary key index.
+	 * We deliberately use NoLock here - the apply worker already holds a
+	 * row-level lock on the user relation, and we are only inspecting the
+	 * in-memory index metadata.
 	 */
 	if (pk_only && OidIsValid(rel->idxoid))
 	{
@@ -103,9 +103,8 @@ append_row_json(StringInfo buf, SpockRelation *rel,
 
 		/*
 		 * SpockTupleData is indexed by remote attnum (0..natts-1).
-		 * rel->attmap (when set) maps remote -> local 0-based.  When
-		 * attmap is NULL the columns are 1:1 and the local attnum is
-		 * simply i + 1.
+		 * rel->attmap (when set) maps remote -> local 0-based.  When attmap
+		 * is NULL the columns are 1:1 and the local attnum is simply i + 1.
 		 */
 		local_attno = (rel->attmap != NULL) ? rel->attmap[i] + 1 : i + 1;
 
@@ -201,7 +200,7 @@ spock_log_apply_change(const char *action,
 	if (pk_src != NULL)
 	{
 		appendStringInfoString(&buf, ",\"pk\":");
-		append_row_json(&buf, rel, pk_src, true /* pk_only */);
+		append_row_json(&buf, rel, pk_src, true /* pk_only */ );
 	}
 
 	if (spock_apply_change_logging == SPOCK_APPLY_CHANGE_LOG_VERBOSE)
