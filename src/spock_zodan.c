@@ -49,6 +49,9 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
+#if PG_VERSION_NUM >= 190000
+#include "nodes/miscnodes.h"
+#endif
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
 
@@ -285,7 +288,17 @@ zodan_parse_lsn(const char *lsn)
 	if (lsn == NULL)
 		ereport(ERROR, (errmsg("expected an LSN value, got NULL")));
 
+#if PG_VERSION_NUM >= 190000
+	{
+		/* PG19 replaced the have_error flag with soft error reporting. */
+		ErrorSaveContext escontext = {T_ErrorSaveContext};
+
+		ret = pg_lsn_in_safe(lsn, (Node *) &escontext);
+		have_error = escontext.error_occurred;
+	}
+#else
 	ret = pg_lsn_in_internal(lsn, &have_error);
+#endif
 	if (have_error)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
