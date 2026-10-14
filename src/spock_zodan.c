@@ -44,6 +44,7 @@
 #include "executor/spi.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "commands/dbcommands.h"
 #include "pgstat.h"
 #include "storage/latch.h"
 #include "utils/builtins.h"
@@ -245,18 +246,20 @@ zodan_gen_sub_name(const char *provider, const char *subscriber)
 }
 
 /*
- * Build the replication slot name for a subscription, matching
- * spock.spock_gen_slot_name(dbname, provider_node, sub_name).
+ * Build the replication slot name for a subscription on this node the way
+ * sub_create() does: from the local database name (the subscriber's, not the
+ * provider's), the provider node name and the subscription name as the name
+ * type stores it, so a name longer than NAMEDATALEN - 1 hashes the same.
  */
 static char *
-zodan_gen_slot_name(const char *dsn, const char *provider_node,
-					const char *sub_name)
+zodan_gen_slot_name(const char *provider_node, const char *sub_name)
 {
 	NameData	slot;
-	char	   *dbname = zodan_dbname_from_dsn(dsn);
+	NameData	sub;
 
-	gen_slot_name(&slot, dbname, provider_node, sub_name);
-	pfree(dbname);
+	namestrcpy(&sub, sub_name);
+	gen_slot_name(&slot, get_database_name(MyDatabaseId), provider_node,
+				  NameStr(sub));
 	return pstrdup(NameStr(slot));
 }
 
@@ -1106,6 +1109,21 @@ zodan_verify_prerequisites(ZodanAddCtx *ctx)
 	if (cnt > 0)
 		ereport(ERROR, (errmsg("new node %s already exists", ctx->new_node_name)));
 
+	/*
+	 * Nor in the cluster the source knows about, which a failed earlier
+	 * attach can leave behind: sub_create on the source would fail in Phase
+	 * 11 after the data sync.
+	 */
+	{
+		int			i;
+
+		for (i = 0; i < ctx->nnodes; i++)
+			if (strcmp(ctx->nodes[i].name, ctx->new_node_name) == 0)
+				ereport(ERROR,
+						(errmsg("new node %s already exists in the cluster with dsn %s",
+								ctx->new_node_name, ctx->nodes[i].dsn)));
+	}
+
 	cnt = zodan_local_count(
 							"SELECT count(*) FROM spock.subscription");
 	if (cnt > 0)
@@ -1289,7 +1307,7 @@ zodan_remote_wait_for_sync_event(ZodanAddCtx *ctx, PGconn *conn,
 					 "CALL spock.wait_for_sync_event(true, %s, %s::pg_lsn, %d, true)",
 					 quote_literal_cstr(origin_node),
 					 quote_literal_cstr(lsn),
-					 ctx->timeout_sec * 1000);
+					 ctx->timeout_sec);
 	ok = zodan_remote_scalar(conn, sql.data);
 	pfree(sql.data);
 
@@ -1460,7 +1478,7 @@ zodan_create_disabled_subs_and_slots(ZodanAddCtx *ctx)
 			continue;
 
 		sub_name = zodan_gen_sub_name(rec->name, ctx->new_node_name);
-		slot_name = zodan_gen_slot_name(rec->dsn, rec->name, sub_name);
+		slot_name = zodan_gen_slot_name(rec->name, sub_name);
 
 		/* Create the slot on the other node. */
 		conn = zodan_connect(rec->dsn, "slot");
@@ -1702,7 +1720,7 @@ zodan_wait_ready_and_advance(ZodanAddCtx *ctx)
 			strcmp(rec->name, ctx->new_node_name) == 0)
 			continue;
 
-		slot_name = zodan_gen_slot_name(rec->dsn, rec->name,
+		slot_name = zodan_gen_slot_name(rec->name,
 										zodan_gen_sub_name(rec->name, ctx->new_node_name));
 
 		conn = zodan_connect(rec->dsn, "advance");
@@ -1744,6 +1762,10 @@ zodan_wait_ready_and_advance(ZodanAddCtx *ctx)
 			}
 			pfree(target_lsn);
 		}
+		else
+			ereport(WARNING,
+					(errmsg("no spock.progress entry for node %s, leaving slot %s at %s",
+							rec->name, slot_name, cur_lsn)));
 		zodan_disconnect(conn);
 		pfree(cur_lsn);
 	}
@@ -2233,7 +2255,11 @@ zodan_remove_subscriptions(const char *target_node_name)
 		}
 		PG_CATCH();
 		{
+			ErrorData  *edata;
+
 			MemoryContextSwitchTo(subctx);
+			/* Keep the cause: FlushErrorState() discards it. */
+			edata = CopyErrorData();
 			if (conn != NULL)
 				zodan_disconnect(conn);
 			RollbackAndReleaseCurrentSubTransaction();
@@ -2242,7 +2268,9 @@ zodan_remove_subscriptions(const char *target_node_name)
 			FlushErrorState();
 			ereport(WARNING,
 					(errmsg("could not drop inbound subscription on node %s; continuing",
-							others[i].name)));
+							others[i].name),
+					 errdetail("%s", edata->message)));
+			FreeErrorData(edata);
 		}
 		PG_END_TRY();
 	}
